@@ -1,0 +1,7 @@
+/target
+/worktrees
+.cranelisp_history
+.cranelisp-cache/
+.DS_Store
+.proj*/
+_bmad-output/

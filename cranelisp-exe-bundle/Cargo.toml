@@ -1,0 +1,11 @@
+[package]
+name = "cranelisp-exe-bundle"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+crate-type = ["staticlib"]
+
+[dependencies]
+cranelisp-runtime = { path = "../cranelisp-runtime" }
+cranelisp-platform = { path = "../cranelisp-platform" }

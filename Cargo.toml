@@ -1,0 +1,31 @@
+[workspace]
+members = [".", "cranelisp-platform", "cranelisp-runtime", "cranelisp-exe-bundle", "platforms/stdio", "platforms/test-capture"]
+resolver = "2"
+
+[package]
+name = "cranelisp"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+cranelisp-platform = { path = "cranelisp-platform" }
+cranelisp-runtime = { path = "cranelisp-runtime" }
+peg = "0.8"
+cranelift = "0.125"
+cranelift-module = "0.125"
+cranelift-jit = "0.125"
+cranelift-native = "0.125"
+cranelift-codegen = { version = "0.125", features = ["disas"] }
+rustyline = "17"
+notify = "7"
+libloading = "0.8"
+cranelift-object = "0.125"
+object = { version = "0.36", features = ["read", "write"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+memmap2 = "0.9"
+libc = "0.2.182"
+
+[dev-dependencies]
+tempfile = "3"

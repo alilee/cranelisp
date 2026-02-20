@@ -1,0 +1,24 @@
+cranelisp v0.1.0
+; Type /help to get started
+user> /help
+Commands:
+  /sig <name>    (/s)  Show signature with docstring and typed params
+  /doc <name>    (/d)  Show docstring
+  /type <expr>   (/t)  Show type without evaluating
+  /info <name>   (/i)  Type, source, code size, compile time, specializations
+  /source <name>       Show original source text
+  /sexp <name>         Show S-expression (parser phase 1)
+  /ast <name>          Show AST (parser phase 2)
+  /clif <name>         Show Cranelift IR
+  /disasm <name>       Show disassembled native code
+  /time <expr>         Evaluate with timing breakdown
+  /expand <form> (/e)  Macro-expand a form and show result
+  /list [name]   (/l)  List symbols defined in current module
+  /imports [name]      List imported symbols and special forms
+  /mod [name]          Switch namespace (no arg = user)
+  /reload [name] (/r)  Reload module from file (no arg = locked modules)
+  /mem [<expr>]  (/m)  Allocation stats, deltas for expr, /mem reset
+  /exe [path]          Export standalone executable
+  /quit          (/q)  Exit the REPL
+  /help          (/h)  This help
+user>
