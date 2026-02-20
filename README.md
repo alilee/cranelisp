@@ -4,11 +4,13 @@ I found Claude Code over Xmas and decided I wanted to try to build the programmi
 
 It's a statically-typed, compiled, pure functional lisp, with influences from Carp (strict typing), Roc (purity) and Clojure (syntax and library), and is written in Rust.
 
-The short of it is that I built it in about four weeks part-time - way faster and better than I imagined. With Claude, I am temu Rich Hickey.
+The short of it is that I built it in about four weeks part-time - way faster and better than I imagined. With Claude, I am temu Rich Hickey. Before Claude, I had completed the MAL in rust (with difficulty), failed to turn it into a compiler, had only fiddled around in the repl with Carp and Roc, and written some toy web apps in Clojure).
 
 The world does not need another programming language and certainly not another lisp. Programming is dead anyway: "Claude, write it in rust, now write it in python, now 6502 assembly...".
 
 Don't look at my code, because you just build it yourself now: https://github.com/alilee/cranelisp
+
+In terms of process, I was using Opus 4.5 mostly where I was the keeper of ideas, aethestics and helping Claude avoid some terrible design (duplicate data structures mostly).
 
 ### Where I got to:
 - Statically-typed, pure functional lisp
@@ -62,4 +64,4 @@ Don't look at my code, because you just build it yourself now: https://github.co
     3.14 :: Float
  ```
 - 31k rust LOC
-- what's next? concurrency, llvm, Roc-style platform; until I get bored and me and Claude start writing an operating system for it.
+- what's next? concurrency, llvm, Roc-style platform; until I get bored and Claude and I start writing an operating system for it.

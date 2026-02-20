@@ -44,6 +44,12 @@ Code quality audits are in `audits/`:
 - **Clojure standard library**: Follow the Clojure standard library for function naming and design as much as possible.
 - **Optional prelude**: Nothing in the prelude is required for the language to work. An empty prelude is a valid starting point for the REPL or batch programs. The prelude provides convenience (traits, operators, types, macros) but the core language — primitives, special forms, type inference — works without it.
 
+## Git & Remote
+
+- **Remote**: `origin` → `https://github.com/alilee/cranelisp`
+- **History**: The remote uses an orphan commit (no prior history). When pushing, always force-push (`git push --force origin main`) since the local repo has a longer reflog that doesn't share ancestry with the remote.
+- **Do not push without explicit user request.**
+
 ## Known Issues
 
 Compromises in implementation (e.g. lack of tail call optimisation or ommissions in shifting reference counts) which are decided upon or deemed too big to resolve at the current stage of development should be documented in the KNOWN_ISSUES.md file.
