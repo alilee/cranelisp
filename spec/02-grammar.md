@@ -299,7 +299,7 @@ The macro body receives its arguments as `Sexp` values and MUST return a value o
 
 **Fixed parameters**: Each fixed parameter binds to the corresponding argument's S-expression.
 
-FIXME: this example is not great because it does have sound typing based on the int literal on the false side of if. it is also weird in a pure functional language.
+> **FIXME**: This example is not great — the false branch returns the `Int` literal `0`, which gives sound typing but is semantically odd in a pure functional language. Replace with a better example that doesn't imply `when` returns a dummy value.
 
 ```clojure
 (defmacro when [cond body]
@@ -324,7 +324,7 @@ always-one  ; -> 1
 
 An optional docstring MAY appear between the name and the parameter list:
 
-FIXME: Same issue with example as when above
+> **FIXME**: Same issue as the `when` example above — `unless` returns `0` on the true branch.
 
 ```clojure
 (defmacro unless "Evaluate body when condition is false" [cond body]
