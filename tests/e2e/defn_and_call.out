@@ -1,0 +1,7 @@
+cranelisp v0.1.0
+; Type /help to get started
+user> (defn square [x] (* x x))
+square :: (Fn [:Num a] a)
+user> (square 5)
+25 :: Int
+user>

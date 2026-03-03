@@ -1,0 +1,13 @@
+cranelisp v0.1.0
+; Type /help to get started
+user> 'foo
+(macros/SexpSym "foo") :: macros/Sexp
+user> '42
+(macros/SexpInt 42) :: macros/Sexp
+user> '(+ 1 2)
+(macros/SexpList (slist (macros/SexpSym "+") (macros/SexpInt 1) (macros/SexpInt 2))) :: macros/Sexp
+user> (#(+ % 1) 5)
+6 :: Int
+user> (#(* %1 %2) 3 4)
+12 :: Int
+user>

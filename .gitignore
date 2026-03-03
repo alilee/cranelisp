@@ -1,0 +1,10 @@
+/target
+/worktrees
+.worktrees/
+.cranelisp_history
+.cranelisp-cache/
+.DS_Store
+.proj*/
+_bmad/
+_bmad-output/
+profile.json.gz

@@ -1,0 +1,9 @@
+cranelisp v0.1.0
+; Type /help to get started
+user> (+ 1 2)
+3 :: Int
+user> (* 3 4)
+12 :: Int
+user> (if true 1 0)
+1 :: Int
+user>

@@ -1,0 +1,11 @@
+[package]
+name = "cranelisp-runtime"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+crate-type = ["rlib"]
+
+[dependencies]
+cranelisp-platform = { path = "../cranelisp-platform" }
+rayon = "1"
