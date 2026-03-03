@@ -37,6 +37,17 @@ cd sketch && just test                    # run all prototype tests
 
 See `sketch/CLAUDE.md` for full oracle instructions and key file locations.
 
+## Active Skill Indicator
+
+The Claude Code status bar shows the currently active skill. This is a **manual, single-session label** — useful when one terminal session is dedicated to a specific role. It does not track parallel subagents (which run concurrently and would race on the file).
+
+```bash
+echo "/spec" > .claude-role   # set active skill for this session
+rm .claude-role               # clear it
+```
+
+For parallel subagent work, use terminal tabs or tmux panes — one per agent — rather than relying on this file. `.claude-role` is git-ignored and local only.
+
 ## Skills
 
 11 Claude Code skills are available as slash commands (`.claude/commands/`). Each skill sets a role for the session:
