@@ -1,3 +1,7 @@
+sketch/target
+sketch/.cranelisp-cache/
+sketch/.cranelisp_history
+sketch/profile.json.gz
 /target
 /worktrees
 .worktrees/

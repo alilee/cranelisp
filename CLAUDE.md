@@ -10,33 +10,58 @@ glob **/CLAUDE.md
 
 Before doing work in any directory, read all `CLAUDE.md` files in that directory and every parent directory up to the project root. Local `CLAUDE.md` files contain conventions and context specific to nearby files.
 
-## Commands
+## Project Layout
 
-All build, test, and run commands are in the `justfile`. Use `just <recipe>`:
+This repository is organized for the Cranelisp reimplementation:
 
-- `just build` — compile
-- `just test` — run all tests
-- `just run <file>` — run a `.cl` source file in batch mode (`--run`)
-- `just hello` — run `examples/hello.cl` in batch mode
-- `just factorial` — run `examples/factorial.cl` in batch mode
-- `just check` — clippy
-- `just fmt` — format
+| Directory | Purpose |
+|---|---|
+| `spec/` | Language specification (16 files) — owned by `/spec` skill |
+| `design/` | Architecture and implementation design — owned by `/arch` skill |
+| `user/` | User-facing documentation (tutorials, guide) — owned by `/docs` skill |
+| `sketch/` | Prototype compiler — reference oracle, not the active compiler |
+| `src/` | New compiler source (to be created by `/arch`) |
+| `lib/` | Standard library in Cranelisp (to be created by `/stdlib`) |
+| `examples/` | Learning-sequence examples (to be created by `/examples`) |
+| `tests/` | Reimplementation test suite (to be created by `/qa`) |
 
-## Documentation
+## Sketch Oracle
 
-Design documents are in `docs/`:
+The prototype compiler lives in `sketch/`. Use it when the spec is ambiguous:
 
-- `docs/architecture.md` — pipeline overview, module responsibilities
-- `docs/syntax.md` — S-expression grammar, special forms
-- `docs/type-system.md` — Hindley-Milner inference, types
-- `docs/codegen.md` — Cranelift IR mapping, JIT lifecycle, builtin FFI
+```bash
+cd sketch && cargo run -- --run examples/hello.cl
+cd sketch && cargo run                    # start REPL
+cd sketch && just test                    # run all prototype tests
+```
 
-Every plan should include a step to update the documents for completeness and accuracy, and to update the ROADMAP.md for progress.
+See `sketch/CLAUDE.md` for full oracle instructions and key file locations.
 
-Code quality audits are in `audits/`:
+## Skills
 
-- `audits/CLAUDE.md` — audit process, prompt template, document structure conventions
-- Per-module audit files (e.g., `audits/typechecker.md`) — findings, code examples, prioritized improvement plans
+11 Claude Code skills are available as slash commands (`.claude/commands/`). Each skill sets a role for the session:
+
+| Command | Role |
+|---|---|
+| `/spec` | Language Specification Owner — owns `spec/`, arbitrates ambiguity |
+| `/arch` | Compiler Architect — owns `design/arch/`, interface types, crate structure |
+| `/frontend` | Frontend Developer — reader, macro expander, AST builder |
+| `/typecheck` | Typechecker Developer — Algorithm W, traits, monomorphisation |
+| `/backend` | Backend Developer — Cranelift IR, JIT, RC, caching, linking |
+| `/qa` | Quality Assurance — pipeline wiring, test suite, REPL |
+| `/review` | Code Reviewer — code quality, prevents structural debts |
+| `/stdlib` | Standard Library Developer — rebuilds `lib/` |
+| `/examples` | Example Developer — builds learning-sequence `examples/` |
+| `/platform` | Platform Developer — `cranelisp-platform/`, `cranelisp-runtime/`, DLLs |
+| `/docs` | Documentation Owner — owns `user/` |
+
+## Reimplementation Strategy
+
+See `design/reimplementation.md` for the full strategy:
+- **Ring model**: 5 rings (core → heap → abstraction → meta → effects)
+- **Phase sequence**: A (extract) → B (scaffold) → C–G (rings 0–4) → H (release compiler)
+- **Parallel work**: compiler skills work in parallel within each ring
+- **User-proxy skills**: `/stdlib`, `/examples`, `/platform`, `/docs` validate from user perspective
 
 ## Design Principles
 
@@ -52,4 +77,4 @@ Code quality audits are in `audits/`:
 
 ## Known Issues
 
-Compromises in implementation (e.g. lack of tail call optimisation or ommissions in shifting reference counts) which are decided upon or deemed too big to resolve at the current stage of development should be documented in the KNOWN_ISSUES.md file.
+Prototype compromises are documented in `KNOWN_ISSUES.md`. See `sketch/audits/` for the full audit findings. See `design/reimplementation.md` §"Risk Analysis" for known issues disposition.
