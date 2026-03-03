@@ -337,7 +337,9 @@ For HKT traits, the target is a bare type constructor name (not an applied type)
 
 ```ebnf
 defmacro_form  = '(' ('defmacro' | 'defmacro-') name docstring? macro_params body ')'
+               | '(' ('defmacro' | 'defmacro-') name docstring? macro_clause+ ')'
 macro_params   = '[' symbol* ('&' symbol)? ']'
+macro_clause   = '(' macro_params body ')'
 ```
 
 A macro definition introduces a compile-time transformation. The macro body is a Cranelisp function that receives its arguments as `Sexp` values and MUST return a `Sexp` value. Macros run during the macro expansion phase, before AST construction and type checking.
@@ -357,6 +359,7 @@ A macro definition introduces a compile-time transformation. The macro body is a
 - Macro bodies are compiled with Cranelift and executed via JIT during expansion. They have access to the full language, including all functions and macros defined before them.
 - Macros are expanded recursively: a macro may expand to forms containing other macro calls. An expansion limit (implementation-defined, at least 500 iterations) prevents infinite expansion.
 - Quasiquote (`` ` ``), unquote (`~`), and unquote-splicing (`~@`) provide convenient syntax for constructing `Sexp` return values. See [Section 9: Macros](09-macros.md) for full expansion semantics.
+- A `defmacro` MAY have multiple `([params] body)` clauses. Each clause is tried in order; the first whose parameter count and bracket-pattern constraints match the call site is selected. See [Section 9.2.6](09-macros.md#926-multi-clause-macros) for multi-clause macro semantics.
 
 ### 5.5.1 Zero-Argument Macros (Bare-Symbol Expansion)
 
@@ -443,7 +446,7 @@ A module declaration introduces a submodule. It triggers module loading: if a so
 - The module name MUST be a simple symbol (not qualified, not dotted).
 - `mod` is processed during the module loading phase, before macro expansion and AST construction. It is NOT an AST node.
 - `mod` does not switch into the child module. In a REPL, use `/mod name` to switch.
-- There is no `mod-` variant. Module visibility is controlled by `export`, not by the module declaration.
+- `mod-` declares a private submodule. Other modules MUST NOT import from or reference names in a private submodule. See [Section 8.2.3](08-modules.md#823-private-submodule-declaration).
 
 ## 5.9 Import and Export
 
@@ -510,12 +513,13 @@ All definitions are **public by default**. A `-` suffix on the definition keywor
 | `defmacro` | `defmacro-` | Macro |
 | `const` | `const-` | Constant |
 | `def` | `def-` | Named value |
+| `mod` | `mod-` | Submodule |
 
 **Semantics:**
 
-- Private names are accessible only within the defining module. They MUST NOT be imported by other modules.
+- Private names are accessible only within the defining module and its submodule subtree. They MUST NOT be imported by other modules.
 - `impl` has no private variant. Trait implementations are always visible wherever both the trait and the type are in scope.
-- `mod`, `import`, `export`, and `platform` have no private variants.
+- `import`, `export`, and `platform` have no private variants.
 
 ## 5.12 Docstrings
 
@@ -585,7 +589,7 @@ Macros MUST be defined before use. A macro cannot be forward-referenced. This is
 | `defmacro` / `defmacro-` | Special form | Public / Private | Macro expansion |
 | `const` / `const-` | Prelude macro | Public / Private | Macro expansion |
 | `def` / `def-` | Prelude macro | Public / Private | Macro expansion |
-| `mod` | Module declaration | N/A | Module loading |
+| `mod` / `mod-` | Module declaration | Public / Private | Module loading |
 | `import` | Module declaration | N/A | Module loading |
 | `export` | Module declaration | N/A | Module loading |
 | `platform` | Platform declaration | N/A | Module loading |

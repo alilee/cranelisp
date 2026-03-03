@@ -280,6 +280,7 @@ Methods within an `impl` block MUST use the `defn` keyword (not `defn-`). They a
 
 ```ebnf
 defmacro_form = '(' defmacro_kw name docstring? macro_params expr ')'
+              | '(' defmacro_kw name docstring? macro_clause+ ')'
 
 defmacro_kw   = 'defmacro' | 'defmacro-'
 
@@ -288,6 +289,8 @@ macro_params  = '[' fixed_param* rest_clause? ']'
 fixed_param   = SYMBOL
 
 rest_clause   = '&' SYMBOL
+
+macro_clause  = '(' macro_params expr ')'
 ```
 
 The `defmacro` form defines a compile-time macro. The `defmacro-` variant makes it module-private.
@@ -330,16 +333,15 @@ Macros are expanded iteratively to a fixed point before AST construction. The bo
 
 ```ebnf
 mod_form     = '(' 'mod' MODULE_NAME ')'
+             | '(' 'mod-' MODULE_NAME ')'
 ```
 
-The `mod` form declares a child module. `MODULE_NAME` MUST be a simple symbol (no dots, no qualifications). The child module's source is loaded from a file with the same name and a `.cl` extension, resolved relative to the current module's file.
+The `mod` form declares a child module. `MODULE_NAME` MUST be a simple symbol (no dots, no qualifications). The child module's source is loaded from a file with the same name and a `.cl` extension, resolved relative to the current module's file. The `mod-` variant declares a private submodule accessible only within the declaring module's subtree.
 
 ```clojure
 (mod math)        ; declares child module 'math', loaded from math.cl
-(mod util)        ; declares child module 'util', loaded from util.cl
+(mod- internal)   ; declares private child module 'internal'
 ```
-
-There is no private variant of `mod`.
 
 ### 2.2.7 `import` -- Module Import
 

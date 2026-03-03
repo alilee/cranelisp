@@ -907,7 +907,6 @@ The following features are NOT supported by the macro system:
 
 1. **No fully hygienic macros**: Auto-gensym (`x#`) prevents accidental capture in most cases, but macro-introduced names are still subject to capture for names that don't use the `#` suffix (see Section 9.8).
 2. **No forward references**: Macros must be defined before use.
-3. **No pattern-matching `defmacro`**: Multi-clause macro definitions (analogous to multi-sig `defn`) are not supported. Use `match` inside the body instead.
-4. **No user-defined reader macros**: Reader-level extensions (`'`, `` ` ``, `~`, `~@`, `#(...)`) are hardcoded. User-extensible reader macros (`defreader`) are planned but not yet implemented.
-5. **No compile-time type access**: Macro bodies cannot inspect or query the types of their arguments. Macros operate on syntactic structure only.
-6. **Error span limitation**: Error messages from expanded code point to the macro call site, not to the specific location within the macro definition body that produced the problematic form.
+3. **No user-defined reader macros**: Reader-level extensions (`'`, `` ` ``, `~`, `~@`, `#(...)`) are hardcoded. User-extensible reader macros (`defreader`) are planned but not yet implemented.
+4. **No compile-time type access**: Macro bodies cannot inspect or query the types of their arguments. Macros operate on syntactic structure only.
+5. **Error span limitation**: Error messages from expanded code point to the macro call site, not to the specific location within the macro definition body that produced the problematic form.

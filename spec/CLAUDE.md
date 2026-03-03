@@ -39,8 +39,30 @@ When a spec file and the prototype disagree, run the prototype to determine what
 | `appendix-b-examples.md` | Extended examples |
 | `index.md` | Spec index |
 
+## Phase A Review Status (first session complete)
+
+All 16 spec files reviewed. Sections confirmed current (no changes needed):
+- `01-lexical.md` — tokens, reader shortcuts (quote, quasiquote, anon_fn, gensym, percent params)
+- `03-types.md` — HM inference, constrained polymorphism, HKT
+- `04-expressions.md` — par-let (§4.12), evaluation order
+- `06-pattern-matching.md` — ADT patterns, exhaustiveness
+- `07-traits.md` — derive macro (§7.13), HKT traits
+- `08-modules.md` — modules, imports, super, inline submodules
+- `10-io.md` — automatic IO scheduling (§10.12), ResourceSerial, no explicit par-bind!
+- `11-stdlib.md` — non-normative reference
+- `12-runtime.md` — lenient evaluation (§12.4.3), RC layout
+- `appendix-a-builtins.md`, `appendix-b-examples.md`
+
+Inconsistencies fixed:
+- `09-macros.md §9.14` — removed stale item "multi-clause macros not supported" (contradicted §9.2.6)
+- `02-grammar.md §2.2.5` — added multi-clause `defmacro` grammar
+- `02-grammar.md §2.2.6` — corrected: `mod-` private variant exists
+- `05-definitions.md §5.5` — added multi-clause grammar + cross-ref to §9.2.6
+- `05-definitions.md §5.8` — corrected: `mod-` is the private submodule form
+- `05-definitions.md §5.11, §5.14` — added `mod`/`mod-` to visibility and summary tables
+
 ## For the `/spec` skill
 
-**First session (Phase A Step 1)**: Review all 16 files. Run examples against the sketch oracle (`cd sketch && cargo run -- --run <example>`). Document divergences between spec text and prototype behavior. Update spec to reflect current (intended) behavior.
+**First session (Phase A Step 1)**: ✓ Complete. All 16 files reviewed; inconsistencies fixed.
 
-**Ongoing**: When a compiler skill encounters ambiguous behavior, `/spec` arbitrates: run the prototype, decide what is normative, update the relevant spec file.
+**Ongoing**: When a compiler skill encounters ambiguous behavior, `/spec` arbitrates: run the prototype (`cd sketch && cargo run -- --run <example>`), decide what is normative, update the relevant spec file.
