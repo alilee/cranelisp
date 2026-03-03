@@ -483,21 +483,20 @@ Imports bring names from other modules into the current scope. Exports re-export
 
 ```ebnf
 platform_form = '(' 'platform' platform_name ')'
-platform_name = string
+platform_name = symbol
 ```
 
-A platform declaration specifies which platform library provides IO primitives for the module.
+A platform declaration specifies which platform DLL provides IO primitives for the program. It is **only valid in the entry module**.
 
 ```clojure
-(platform "stdio")
+(platform stdio)
 ```
 
 **Semantics:**
 
-- The platform name MUST be a string literal.
-- `(platform "stdio")` is the default and is equivalent to omitting the declaration.
-- Multiple `(platform ...)` forms are permitted in a single file.
-- Only the entry module's platform declarations are checked.
+- The platform name MUST be a bare symbol (not a string literal).
+- `platform` is only valid in the entry module. A `platform` form in any other module is a compile-time error.
+- Non-entry modules that need platform functions MUST use `(import [platform.stdio [*]])` instead.
 - `platform` is processed during the module loading phase, before macro expansion. It is NOT an AST node.
 - See [Section 10: IO Model](10-io.md) for platform loading and IO semantics.
 

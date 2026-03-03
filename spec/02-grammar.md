@@ -399,20 +399,19 @@ The `export` form re-exports names from child or imported modules as part of the
 
 ```ebnf
 platform_form = '(' 'platform' SYMBOL ')'
-              | '(' 'platform' SYMBOL STRING ')'
 ```
 
-The `platform` form declares which platform a module uses for IO operations. The first argument is a platform name (a symbol). An optional second argument provides an explicit path to the platform DLL.
+The `platform` form declares which platform DLL provides IO operations for the program. It is **only valid in the entry module**. Library modules and non-entry modules MUST NOT use `platform`; they access platform functions via `import`:
 
 ```clojure
-(platform stdio)              ; use the built-in stdio platform
-(platform stdio "/path/to/lib")  ; explicit path
+;; Entry module only:
+(platform stdio)
+
+;; Any module that needs platform functions:
+(import [platform.stdio [*]])
 ```
 
-- modules without platforms would only be useful for importing or evaluating forms at the repl
-- Multiple `platform` forms are permitted in the same file.
-FIXME: does this mean we only load platforms in the entry module? what about imports of modules that use other platforms and export functions which return IO?
-- Only the entry module's platform declarations are checked.
+`platform` is processed during the module loading phase. It is NOT an AST node.
 
 ## 2.3 Expression Forms
 
