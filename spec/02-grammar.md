@@ -47,7 +47,7 @@ top_level    = defn_form
              | platform_form      (* handled in module phase *)
 ```
 
-Note: `const`, `const-`, `def`, and `def-` are prelude macros that expand to combinations of `defn`, `defmacro`, and `begin`. They are described in Section 2.2.10 and 2.2.11 for completeness, but they are not primitive syntactic forms.
+Note: `const`, `const-`, `def`, and `def-` are library macros defined in the prelude. They are not primitive syntactic forms and are not described here. See [Section 11.7](11-stdlib.md#117-prelude-macros) for their definition and expansion.
 
 ### 2.2.1 `defn` -- Function Definition
 
@@ -414,44 +414,6 @@ The `platform` form declares which platform a module uses for IO operations. The
 FIXME: does this mean we only load platforms in the entry module? what about imports of modules that use other platforms and export functions which return IO?
 - Only the entry module's platform declarations are checked.
 
-### 2.2.10 `const` -- Named Constant (Prelude Macro)
-
-```ebnf
-const_form   = '(' const_kw name expr ')'
-
-const_kw     = 'const' | 'const-'
-```
-
-`const` is a prelude macro that defines a compile-time constant. The value expression is captured as an S-expression and substituted inline wherever the name appears (via a zero-argument macro). `const-` makes the constant module-private.
-
-```clojure
-(const PI 3.14)
-(const- INTERNAL_LIMIT 100)
-
-(* PI 2.0)    ; expands to (* 3.14 2.0)
-```
-
-Note: `const` is not a primitive form. It expands to a `defmacro` that returns the quoted value.
-
-### 2.2.11 `def` -- Named Value (Prelude Macro)
-
-```ebnf
-def_form     = '(' def_kw name expr ')'
-
-def_kw       = 'def' | 'def-'
-```
-
-`def` is a prelude macro that defines a named value. Unlike `const`, the value expression is evaluated once (as a zero-argument function) and called by reference. `def-` makes the value module-private.
-
-```clojure
-(def ten (+ 5 5))
-(def- secret 42)
-
-(show ten)    ; -> "10"
-```
-
-Note: `def` is not a primitive form. It expands to a `begin` containing a `defn` (the zero-arg function) and a `defmacro` (the bare-symbol expansion).
-
 ## 2.3 Expression Forms
 
 ```ebnf
@@ -786,18 +748,18 @@ Definitions may be public (visible to importing modules) or private (visible onl
 | `deftype` | `deftype-` | Type definition |
 | `deftrait` | `deftrait-` | Trait declaration |
 | `defmacro` | `defmacro-` | Macro definition |
-| `const` | `const-` | Named constant (macro) |
-| `def` | `def-` | Named value (macro) |
+| `mod` | `mod-` | Submodule declaration |
 
 The following forms have no private variant:
 
 | Form | Reason |
 |---|---|
 | `impl` | Trait implementations are always public |
-| `mod` | Module declarations are always public |
 | `import` | Imports affect only the current module's scope |
 | `export` | Re-exports are inherently public |
 | `platform` | Platform declarations are inherently public |
+
+Library macros such as `const`/`const-` and `def`/`def-` follow `defmacro` visibility rules and are described in [Section 11.7](11-stdlib.md#117-prelude-macros).
 
 By default (without the `-` suffix), all definitions are public. Private definitions MUST NOT be accessible to importing modules through `import` or `export`.
 
