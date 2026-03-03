@@ -32,6 +32,8 @@ Use `just <recipe>` for common tasks (build, test, run, check, fmt). See `justfi
 - `tests/` — ~978 behavioral tests encoding prototype behavior (acceptance criteria for reimplementation)
 - `audits/` — Code quality audits identifying structural debts to avoid in the rewrite
   - `typechecker.md`, `codegen.md`, `module.md`, `cache.md` — HIGH/MEDIUM/LOW severity findings
+- `ROADMAP.md` — Prototype feature inventory and completion status
+- `KNOWN_ISSUES.md` — Prototype compromises and their dispositions for the reimplementation
 
 ## Key Files for Each Role
 

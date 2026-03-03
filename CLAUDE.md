@@ -77,4 +77,4 @@ See `design/reimplementation.md` for the full strategy:
 
 ## Known Issues
 
-Prototype compromises are documented in `KNOWN_ISSUES.md`. See `sketch/audits/` for the full audit findings. See `design/reimplementation.md` §"Risk Analysis" for known issues disposition.
+Prototype compromises are documented in `sketch/KNOWN_ISSUES.md`. See `sketch/audits/` for the full audit findings. See `design/reimplementation.md` §"Risk Analysis" for known issues disposition.
