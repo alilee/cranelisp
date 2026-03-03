@@ -1,0 +1,8 @@
+[package]
+name = "cranelisp-backend"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+cranelisp-types = { path = "../cranelisp-types" }
+cranelisp-runtime = { path = "../cranelisp-runtime" }

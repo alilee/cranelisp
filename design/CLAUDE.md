@@ -5,14 +5,13 @@ Architecture and implementation design documents for the Cranelisp reimplementat
 ## Files
 
 - `reimplementation.md` — Full reimplementation strategy: skill definitions, ring model, phase sequence, risk analysis, success criteria. **Start here.**
-- `arch/` — Architecture deliverables from the `/arch` skill (to be created)
+- `arch/` — Architecture deliverables from the `/arch` skill
 
 ## design/arch/ (owned by /arch)
 
-The `/arch` skill creates:
+- `arch/architecture.md` — Overall architecture: 7-crate DAG, single pipeline principle, CompiledModule decomposition, audit findings resolution
 - `arch/interfaces.md` — Boundary type definitions with Rust signatures (Sexp, Expr, Type, CheckResult, etc.)
-- `arch/modules.md` — Crate dependency DAG and module decomposition
-- `arch/data-flow.md` — Data transformations at each pipeline stage
+- `arch/roadmap.md` — Ring-by-ring phased progression roadmap with per-skill deliverables and acceptance criteria
 
 ## Legacy Design Docs
 
@@ -28,11 +27,11 @@ Key sketch design docs by skill:
 
 ## For the `/arch` skill
 
-**First session (Phase B)**:
-1. Read `design/reimplementation.md` §"Extract architecture contracts" + §"Delivery Strategy"
-2. Read `sketch/audits/*.md` for structural problems to avoid
-3. Create a root `Cargo.toml` workspace stub
-4. Write `design/arch/interfaces.md` — define all boundary types
-5. Write `design/arch/modules.md` — crate dependency DAG
-6. Create `src/CLAUDE.md` with cross-cutting conventions
-7. Write `design/arch/CLAUDE.md`
+**Phase B (completed)**:
+1. Created `design/arch/architecture.md` — crate DAG, pipeline design, audit resolution
+2. Created `design/arch/interfaces.md` — all boundary type definitions
+3. Created `design/arch/roadmap.md` — ring-by-ring progression plan
+4. Created root `Cargo.toml` workspace with 7 member crates
+5. Created `src/CLAUDE.md` with cross-cutting source conventions
+6. Updated `design/reimplementation.md` — replaced options analysis with ring model decision
+7. Updated `design/arch/CLAUDE.md` with cross-references and session decisions

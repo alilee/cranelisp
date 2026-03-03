@@ -74,6 +74,17 @@ See `design/reimplementation.md` for the full strategy:
 - **Parallel work**: compiler skills work in parallel within each ring
 - **User-proxy skills**: `/stdlib`, `/examples`, `/platform`, `/docs` validate from user perspective
 
+## Skill Handoff
+
+Every skill plan must end with a **"Next skills"** section recommending which skill(s) the user should invoke next after the plan is implemented. Consult `design/arch/roadmap.md` for dependencies. Example:
+
+```
+## Next skills
+
+- `/typecheck` — Ring 0 core inference can now begin against the types defined here
+- `/backend` — Ring 0 codegen can begin in parallel with typecheck
+```
+
 ## Design Principles
 
 - **Self-documenting REPL**: Every symbol and expression entered at the REPL should produce useful feedback — its type, value, or usage description. No valid language construct should produce an opaque error. Special forms, operators, builtins, and user-defined names should all respond with what they are and how to use them. Feedback should reinforce the language syntax, using cranelisp type notation (e.g. `pure :: special form: (fn [a] (IO a))`).

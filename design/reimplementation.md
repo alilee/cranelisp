@@ -329,64 +329,9 @@ Produce:
 
 ## Delivery Strategy
 
-The reimplementation should deliver iteratively — each iteration produces a usable language subset that user-proxy skills can validate. Four strategies are presented with tradeoffs.
+### Decision: Feature-Ring Model
 
-### Option A: Vertical Slices
-
-Each iteration delivers a complete language subset through all pipeline stages.
-
-| Slice | Features | Pipeline stages exercised |
-|-------|----------|-------------------------|
-| 1 | Int, Bool, simple functions, REPL | All (reader → JIT → display) |
-| 2 | Strings, closures, let-polymorphism | + heap allocation, RC, closure codegen |
-| 3 | ADTs, pattern matching, traits | + type constructors, trait dispatch, exhaustiveness |
-| 4 | Macros, modules, imports | + macro mini-pipeline, module graph, caching |
-| 5 | IO model, platforms, parallelism | + IO ADT, platform DLLs, trampoline, par-let/par-bind! |
-
-**Pro**: Always have a working language. User-proxy skills validate each slice. Integration issues surface immediately. Enables early feedback from `/stdlib`, `/examples`, `/docs`.
-
-**Con**: Later features may require reworking earlier assumptions. Adding traits (slice 3) may reshape the type representation designed in slice 1. Each slice requires end-to-end wiring effort.
-
-**Risk mitigation**: The prototype proves which type representations work. The spec documents the full feature set upfront, so slice 1 can design `Type` with `ADT` and `Fn` variants from the start even if they're not exercised yet.
-
-### Option B: Pipeline-first, Features-later
-
-Build the full pipeline skeleton with minimal features, then add features incrementally.
-
-| Phase | Work |
-|-------|------|
-| 1 | Full pipeline: Int + Bool + simple functions, all stages connected |
-| 2 | Add types: String, Float, ADT, closures (incrementally) |
-| 3 | Add language features: traits, macros, modules (incrementally) |
-| 4 | Add runtime: IO model, platforms, parallelism, caching |
-
-**Pro**: Integration validated early with the simplest possible feature set. Adding features is additive — each new type or construct slots into an existing pipeline. Less rework.
-
-**Con**: Long stretch before user-proxy skills can meaningfully engage (String and closures are needed for interesting programs). Phase 1 may over-engineer the pipeline for simple cases.
-
-**Risk mitigation**: Keep phase 1 minimal — resist the urge to build infrastructure for features that don't exist yet.
-
-### Option C: Spec-section Milestones
-
-Group spec sections into coherent delivery milestones.
-
-| Milestone | Spec sections | Features |
-|-----------|--------------|----------|
-| 1 | 1 (Lexical) + 2 (Grammar) + 3 (Types) + 4 (Expressions) | Core language: all types, all expressions, type inference |
-| 2 | 5 (Definitions) + 6 (Pattern matching) | defn, deftype, match, multi-sig |
-| 3 | 7 (Traits) + 8 (Modules) | Trait system, module graph, imports/exports |
-| 4 | 9 (Macros) | Full macro system |
-| 5 | 10 (IO) + 12 (Runtime) | IO model, platforms, RC, caching, exe generation |
-
-**Pro**: Spec-aligned — each milestone has clear acceptance criteria from the specification. Easy to measure progress. Test catalog maps directly to milestones.
-
-**Con**: Spec sections have interdependencies not reflected in the milestone ordering (macros need modules for `defmacro` in library code, IO needs traits for `Display`, patterns need ADTs which need definitions). Milestone 1 is very large because the type system touches everything.
-
-**Risk mitigation**: Allow forward stubs — milestone 1 can define the `Type::ADT` variant without implementing full ADT support, deferring to milestone 2.
-
-### Option D: Feature-ring Model
-
-Concentric rings of capability, each ring stable before the next begins.
+The reimplementation uses a **feature-ring model** — concentric rings of capability, each stable before the next begins. This was chosen over vertical slices, pipeline-first, and spec-section approaches after evaluating all four against the prototype's lessons.
 
 | Ring | Capability | Key property |
 |------|-----------|-------------|
@@ -396,17 +341,13 @@ Concentric rings of capability, each ring stable before the next begins.
 | 3 (meta) | Macros, derive, standard library | Metaprogramming layer |
 | 4 (effects) | IO model, platforms, parallelism, caching, REPL | Side effects and build infrastructure |
 
-**Pro**: Each ring is a stable foundation for the next. RC complexity is isolated to ring 1+ (ring 0 programs never leak). Clear architectural layering — inner rings have no dependencies on outer rings. Rings roughly correspond to implementation complexity.
+### Rationale
 
-**Con**: Ring boundaries may not align perfectly with spec sections or existing tests. Some ring 0 features (match, function application) are simple without ADTs but complex with them, so ring 0 may feel artificially restricted. The standard library requires rings 0–3, delaying `/stdlib` engagement until ring 3.
+The ring model's key advantage is that each ring establishes a stable foundation. Ring 0 proves the pipeline works without any heap complexity. Ring 1 adds heap management as a clean layer. This matches the prototype's hardest lesson: reference counting interacts with everything, and getting it right requires a clean separation between heap and non-heap concerns.
 
-**Risk mitigation**: Ring 0 should include the `Type::ADT` representation and basic pattern matching over simple enums (no heap), so the transition to ring 1 is additive rather than a redesign.
+Within each ring, skills deliver vertically — they don't complete an entire pipeline stage before starting the next. Instead, each stage implements enough to support the current ring's features, validates end-to-end, then extends for the next ring.
 
-### Recommendation
-
-**Option D (Feature-ring)** with vertical validation. The ring model's key advantage is that each ring establishes a stable foundation. Ring 0 proves the pipeline works without any heap complexity. Ring 1 adds heap management as a clean layer. This matches the prototype's hardest lesson: reference counting interacts with everything, and getting it right requires a clean separation between heap and non-heap concerns.
-
-However, within each ring, deliver vertically — don't complete the entire typechecker for ring 0 before starting codegen. Instead, implement enough of each stage to support ring 0's features, validate end-to-end, then extend each stage for ring 1.
+Ring 0 defines the full `Type` enum (including `ADT`, `Fn`, `Var`) from the start even though it only exercises `Int`, `Bool`, `Float`, and simple `Fn`. This prevents rework when later rings add types — the transition from ring N to ring N+1 is additive, not a redesign.
 
 User-proxy skills engage progressively:
 - **Ring 0**: `/examples` writes simple integer/boolean programs; `/docs` drafts the getting-started tutorial
@@ -414,6 +355,8 @@ User-proxy skills engage progressively:
 - **Ring 2**: `/stdlib` begins trait definitions and collection functions; `/platform` implements stdio platform
 - **Ring 3**: `/stdlib` completes the prelude using macros; `/docs` writes the language guide
 - **Ring 4**: All user-proxy skills validate the full language
+
+For the detailed per-skill progression with acceptance criteria, see `design/arch/roadmap.md`.
 
 ## Implementation Workflow
 
