@@ -299,6 +299,8 @@ The macro body receives its arguments as `Sexp` values and MUST return a value o
 
 **Fixed parameters**: Each fixed parameter binds to the corresponding argument's S-expression.
 
+FIXME: this example is not great because it does have sound typing based on the int literal on the false side of if. it is also weird in a pure functional language.
+
 ```clojure
 (defmacro when [cond body]
   `(if ~cond ~body 0))
@@ -321,6 +323,8 @@ always-one  ; -> 1
 ```
 
 An optional docstring MAY appear between the name and the parameter list:
+
+FIXME: Same issue with example as when above
 
 ```clojure
 (defmacro unless "Evaluate body when condition is false" [cond body]
@@ -405,8 +409,9 @@ The `platform` form declares which platform a module uses for IO operations. The
 (platform stdio "/path/to/lib")  ; explicit path
 ```
 
-- When absent, the built-in `stdio` platform is used.
+- modules without platforms would only be useful for importing or evaluating forms at the repl
 - Multiple `platform` forms are permitted in the same file.
+FIXME: does this mean we only load platforms in the entry module? what about imports of modules that use other platforms and export functions which return IO?
 - Only the entry module's platform declarations are checked.
 
 ### 2.2.10 `const` -- Named Constant (Prelude Macro)
