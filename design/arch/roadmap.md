@@ -17,6 +17,7 @@ For the full reimplementation strategy, skill definitions, and risk analysis, se
 | `/qa` | Batch pipeline wiring (`compile_unit()`), ~50 integration tests | all compiler skills |
 | `/examples` | Simple integer/boolean programs | `/qa` pipeline |
 | `/docs` | Getting started tutorial | `/qa` pipeline |
+| `/repl` | Basic REPL experience tests: prompt, `/help`, value+type display, error messages | `/qa` pipeline |
 | `/review` | Ring 0 completion review | all above |
 
 **Acceptance criteria**:
@@ -28,6 +29,7 @@ For the full reimplementation strategy, skill definitions, and risk analysis, se
 - `(defn fact [n] (if (= n 0) 1 (* n (fact (- n 1)))))` runs correctly with TCO
 - Batch and REPL produce identical results for all tests
 - ~50 integration tests green
+- REPL experience tests pass: discoverability, value+type feedback
 - `cargo clippy` clean, no `unwrap()` in pipeline code
 
 ## Ring 1: Heap
@@ -41,6 +43,7 @@ For the full reimplementation strategy, skill definitions, and risk analysis, se
 | `/qa` | RC correctness tests (no leaks, no double-frees), ADT integration tests, closure tests | Ring 1 compiler |
 | `/examples` | String manipulation programs, ADT programs (Option, List) | Ring 1 `/qa` |
 | `/platform` | `cranelisp-runtime` crate (alloc, RC primitives, panic handler), begin platform C-ABI contract | Ring 1 `/backend` |
+| `/repl` | ADT display tests (`(Some 42) :: (Option Int)`), string display, error message quality assertions | Ring 1 compiler |
 | `/review` | RC correctness focus: drop glue, consuming conventions, scope cleanup | all above |
 
 **Acceptance criteria**:
@@ -65,6 +68,8 @@ For the full reimplementation strategy, skill definitions, and risk analysis, se
 | `/qa` | Module graph tests, trait dispatch tests, constrained poly tests, cross-module tests | Ring 2 compiler |
 | `/stdlib` | Begin trait definitions (`Num`, `Eq`, `Ord`, `Display`), collection functions (`map`, `filter`, `fold`) | Ring 2 `/typecheck` |
 | `/platform` | Stdio platform DLL | Ring 2 `/backend` |
+| `/repl` | Module navigation tests (`/mod`, `import`), trait introspection (`/info`), `/list` categories | Ring 2 compiler |
+| `/port` | Validate exemplar module patterns against Ring 2 compiler, refine design | Ring 2 compiler |
 | `/review` | Name resolution correctness, GOT/symbol-table separation, no god objects | all above |
 
 **Acceptance criteria**:
@@ -87,6 +92,8 @@ For the full reimplementation strategy, skill definitions, and risk analysis, se
 | `/stdlib` | Complete prelude using macros (`list`, `do`, `bind!`, `vec`, `cond`, `case`, threading macros), all `lib/core/` modules | Ring 3 `/frontend` |
 | `/qa` | Macro integration tests, prelude tests, standard library tests | Ring 3 compiler |
 | `/docs` | Language guide (feature-by-feature reference) | Ring 3 `/stdlib` |
+| `/repl` | Macro expansion viewing (`/expand`), prelude discoverability, full `/list` taxonomy | Ring 3 compiler |
+| `/port` | Implement pure core logic (data types, algorithms, unit tests) | Ring 3 `/stdlib` |
 | `/review` | Macro pipeline structure (no god functions), `MacroExpander` impl cleanliness | all above |
 
 **Acceptance criteria**:
@@ -111,6 +118,8 @@ For the full reimplementation strategy, skill definitions, and risk analysis, se
 | `/platform` | Test-capture platform DLL, platform documentation | Ring 4 `/backend` |
 | `/examples` | IO programs, multi-file project examples | Ring 4 `/qa` |
 | `/docs` | Complete tutorials, error message catalog | Ring 4 |
+| `/repl` | Full experience test suite: all slash commands, trace, run-tests, hot-reload, performance benchmarks | Ring 4 compiler |
+| `/port` | Complete exemplar project with IO, tests, walkthrough document, findings report | Ring 4 `/platform` |
 | `/review` | JIT/cache path parity (single ISA construction), no duplicate code paths between batch and REPL | all above |
 
 **Acceptance criteria**:
@@ -127,6 +136,8 @@ For the full reimplementation strategy, skill definitions, and risk analysis, se
 - All ~470 portable integration tests from prototype pass
 - All E2E transcript tests pass
 - Performance within 2x of prototype on representative benchmarks
+- REPL experience test suite passes (discoverability, self-documentation, performance targets)
+- Exemplar project compiles, runs, and passes its own test suite
 - `cargo clippy` clean across all crates
 
 ## Post-Ring 4: Release Compiler (Phase H)
@@ -154,23 +165,33 @@ Ring transitions are gated by `/review` completion review. All skills within a r
 ## Dependency Summary
 
 ```
-Ring 0 ─── Ring 1 ─── Ring 2 ─── Ring 3 ─── Ring 4
+Phase B ─── Ring 0 ─── Ring 1 ─── Ring 2 ─── Ring 3 ─── Ring 4
+  │           │           │           │           │           │
+  │           │           │           │           │           ├── /qa (REPL, E2E, perf)
+  │           │           │           │           │           ├── /stdlib (IO helpers)
+  │           │           │           │           │           ├── /platform (test-capture)
+  │           │           │           │           │           ├── /examples (IO programs)
+  │           │           │           │           │           ├── /docs (tutorials, errors)
+  │           │           │           │           │           ├── /repl (full experience suite)
+  │           │           │           │           │           └── /port (exemplar complete)
   │           │           │           │           │
-  │           │           │           │           ├── /qa (REPL, E2E, perf)
-  │           │           │           │           ├── /stdlib (IO helpers)
-  │           │           │           │           ├── /platform (test-capture)
-  │           │           │           │           ├── /examples (IO programs)
-  │           │           │           │           └── /docs (tutorials, errors)
+  │           │           │           │           ├── /frontend (macros)
+  │           │           │           │           ├── /stdlib (prelude)
+  │           │           │           │           ├── /docs (language guide)
+  │           │           │           │           └── /port (core logic)
   │           │           │           │
-  │           │           │           ├── /frontend (macros)
-  │           │           │           ├── /stdlib (prelude)
-  │           │           │           └── /docs (language guide)
+  │           │           │           ├── /stdlib (traits, collections)
+  │           │           │           ├── /platform (stdio DLL)
+  │           │           │           ├── /repl (modules, traits)
+  │           │           │           └── /port (validate design)
   │           │           │
-  │           │           ├── /stdlib (traits, collections)
-  │           │           └── /platform (stdio DLL)
+  │           │           ├── /platform (runtime crate)
+  │           │           └── /repl (ADT display)
   │           │
-  │           └── /platform (runtime crate)
+  │           ├── /examples (simple programs)
+  │           ├── /docs (getting started)
+  │           └── /repl (test harness + basic tests)
   │
-  ├── /examples (simple programs)
-  └── /docs (getting started)
+  ├── /repl (experience spec)
+  └── /port (project selection + design)
 ```

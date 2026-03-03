@@ -203,7 +203,7 @@ These skills build the compiler pipeline. Each owns a pipeline stage with clear 
 4. Check for: over-engineering, premature abstraction, god functions (>100 lines), repeated patterns that should be extracted, `.unwrap()` in non-test code, stringly-typed patterns
 5. At ring completion, write a brief ring summary and confirm `/arch`'s interface types remain clean
 
-### User-proxy skills (4)
+### User-proxy skills (6)
 
 These skills exercise the language from the user's perspective. They validate usability and provide feedback that flows back to compiler skills. User-proxy skills begin work once a usable language subset exists — they do not wait for the pipeline to be complete.
 
@@ -263,6 +263,36 @@ These skills exercise the language from the user's perspective. They validate us
 - Error message catalog with explanations
 
 **Feedback to compiler skills**: Reports when the learning curve has gaps, when concepts require too much prerequisite knowledge, when terminology is inconsistent between spec and user-facing docs.
+
+#### `/repl` — REPL Experience Developer
+
+**Owns**: `tests/repl/` — REPL experience test scripts and harness
+
+**Role**: Own the user's interactive experience at the REPL. Define what "good" looks like — from startup to form evaluation to shutdown — then build an executable test script and harness that proves it. Covers discoverability, self-documentation, iterative development workflow, testing/debugging at the REPL, and performance.
+
+**Artifacts**:
+- REPL experience test harness (scripted sessions with assertions on output and timing)
+- Discoverability tests (slash commands, type feedback, error messages)
+- Self-documentation tests (every valid construct produces useful feedback)
+- Performance benchmarks (startup, evaluation latency, module load, shutdown)
+- Testing/debugging workflow tests (trace, run-tests, pipeline introspection)
+
+**Feedback to compiler skills**: Reports when REPL output is confusing or unhelpful (`/qa`), when type error messages don't tell the user what to fix (`/typecheck`), when evaluation is too slow to feel interactive (`/backend`), when the pipeline structure makes a REPL experience goal impossible (`/arch`).
+
+#### `/port` — Exemplar Project Developer
+
+**Owns**: `exemplar/` — a medium-sized ported project that showcases the language at scale
+
+**Role**: Port a carefully selected project to Cranelisp to validate that the language works for real programming. Exercises all major features: ADTs, traits, pattern matching, closures, macros, modules, IO via platforms, and the standard library.
+
+**Artifacts**:
+- Complete application in Cranelisp (500–2000 lines, 3–5 modules)
+- Project test suite using `lib/testing.cl`
+- Gap analysis: standard library functions needed, platform capabilities required
+- Walkthrough document for the project as a learning resource
+- Actionable findings for compiler and library skills
+
+**Feedback to compiler skills**: Reports missing stdlib functions and API friction (`/stdlib`), type inference that requires too many annotations (`/typecheck`), macro limitations in real code (`/frontend`), platform API gaps (`/platform`), performance issues at application scale (`/backend`), module system friction (`/arch`).
 
 ## Extraction Phase
 
@@ -350,11 +380,12 @@ Within each ring, skills deliver vertically — they don't complete an entire pi
 Ring 0 defines the full `Type` enum (including `ADT`, `Fn`, `Var`) from the start even though it only exercises `Int`, `Bool`, `Float`, and simple `Fn`. This prevents rework when later rings add types — the transition from ring N to ring N+1 is additive, not a redesign.
 
 User-proxy skills engage progressively:
-- **Ring 0**: `/examples` writes simple integer/boolean programs; `/docs` drafts the getting-started tutorial
-- **Ring 1**: `/examples` writes string and ADT programs; `/platform` begins the runtime crate
-- **Ring 2**: `/stdlib` begins trait definitions and collection functions; `/platform` implements stdio platform
-- **Ring 3**: `/stdlib` completes the prelude using macros; `/docs` writes the language guide
-- **Ring 4**: All user-proxy skills validate the full language
+- **Phase B**: `/repl` writes the REPL experience specification (design input for `/qa` and `/arch`); `/port` evaluates candidate projects, selects one, writes exemplar design document (design input for `/stdlib`, `/platform`, `/arch`)
+- **Ring 0**: `/examples` writes simple integer/boolean programs; `/docs` drafts the getting-started tutorial; `/repl` creates test harness and writes basic discoverability tests
+- **Ring 1**: `/examples` writes string and ADT programs; `/platform` begins the runtime crate; `/repl` tests ADT display and error messages
+- **Ring 2**: `/stdlib` begins trait definitions and collection functions; `/platform` implements stdio platform; `/repl` tests module navigation and introspection; `/port` validates module patterns against Ring 2 compiler
+- **Ring 3**: `/stdlib` completes the prelude using macros; `/docs` writes the language guide; `/repl` tests macro expansion viewing and prelude discoverability; `/port` implements pure core logic (data types, algorithms, tests)
+- **Ring 4**: All user-proxy skills validate the full language; `/repl` runs full experience test suite with performance benchmarks; `/port` completes the exemplar project with IO and tests
 
 For the detailed per-skill progression with acceptance criteria, see `design/arch/roadmap.md`.
 
@@ -371,6 +402,8 @@ Phase A: Extract (parallel)
 
 Phase B: Scaffold (architect leads, blocking)
   /arch    — create crate structure, define boundary types, write CLAUDE.md files
+  /repl    — write REPL experience specification, study prototype REPL, establish performance targets
+  /port    — evaluate and select exemplar project, write design document, file stdlib/platform requirements
   All skills review interface contracts
 
 Phase C: Ring 0 — Core (parallel implementation)
@@ -380,6 +413,7 @@ Phase C: Ring 0 — Core (parallel implementation)
   /qa         — batch pipeline wiring, basic integration tests
   /examples   — simple programs
   /docs       — getting started tutorial
+  /repl       — basic discoverability tests (prompt, /help, value+type display, error messages)
   /review     — ring-completion quality pass before Phase D begins
 
 Phase D: Ring 1 — Heap (parallel, extends each stage)
@@ -389,6 +423,7 @@ Phase D: Ring 1 — Heap (parallel, extends each stage)
   /qa         — RC tests, ADT integration tests
   /examples   — string and ADT programs
   /platform   — runtime crate, begin platform contract
+  /repl       — ADT display tests, string display, richer error message assertions
   /review     — ring-completion quality pass (focus: RC correctness, drop glue, no unwrap in heap paths)
 
 Phase E: Ring 2 — Abstraction (parallel)
@@ -398,6 +433,8 @@ Phase E: Ring 2 — Abstraction (parallel)
   /qa         — module graph tests, trait dispatch tests
   /stdlib     — begin trait definitions, collection functions
   /platform   — stdio platform DLL
+  /repl       — module navigation tests (/mod, import), trait introspection, /list categories
+  /port       — validate exemplar module patterns against Ring 2 compiler, refine design
   /review     — ring-completion quality pass (focus: name resolution complexity, GOT/symbol-table separation)
 
 Phase F: Ring 3 — Meta (parallel)
@@ -407,6 +444,8 @@ Phase F: Ring 3 — Meta (parallel)
   /qa         — macro integration tests, prelude tests
   /stdlib     — complete prelude using macros
   /docs       — language guide
+  /repl       — macro expansion viewing (/expand), prelude discoverability, full /list taxonomy
+  /port       — implement pure core logic (data types, algorithms, unit tests)
   /review     — ring-completion quality pass (focus: macro pipeline internal structure, no god functions)
 
 Phase G: Ring 4 — Effects (parallel)
@@ -418,6 +457,8 @@ Phase G: Ring 4 — Effects (parallel)
   /platform   — test-capture platform, platform documentation
   /docs       — complete tutorials, error catalog
   /examples   — IO programs, multi-file examples
+  /repl       — full experience test suite, all slash commands, trace, run-tests, performance benchmarks
+  /port       — complete exemplar project with IO, tests, walkthrough document
   /review     — ring-completion quality pass (focus: JIT/cache path parity, no duplicate ISA construction)
 
 Phase H: Release Compiler (after pipeline stable)

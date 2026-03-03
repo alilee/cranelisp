@@ -27,9 +27,24 @@ Architecture deliverables for the Cranelisp reimplementation. Owned and maintain
 - `sketch/audits/*.md` — Structural debts to avoid (59 findings: 15 HIGH, 23 MEDIUM, 21 LOW)
 - `sketch/src/` — Prototype source as reference oracle
 
+## Architectural Principles
+
+The criteria `/arch` uses to evaluate every design decision. These are derived from the prototype's complexity analysis (59 audit findings across 4 modules):
+
+1. **Decoupling over convenience.** Each crate should be independently compilable, testable, and replaceable. If adding a feature requires modifying three crates, the boundaries are wrong. The prototype's `CompiledModule` was convenient (everything in one place) and catastrophic (133 references, 18 files, untestable in isolation).
+
+2. **Narrow interfaces.** Boundary types should be the minimum surface area needed. `CheckResult` carries exactly what the backend needs from the typechecker — not the typechecker's internal state. Adding a field to a boundary type has O(n) impact across skills; adding an internal type has O(1) impact. Interface changes require `/arch` review.
+
+3. **Dependency flows toward stability.** `cranelisp-types` is the most stable crate (data definitions, no logic). Everything depends on it; it depends on nothing. When you need to decide where a type lives, put it in the most stable crate that makes sense. This is why `SymbolTable` is in types (stable data) while `ModuleCodegenState` is in backend (volatile runtime state). The dependency graph must be acyclic — Cargo enforces this at build time.
+
+4. **Parallel development is a first-class constraint.** The architecture must enable skills to work concurrently within a ring without blocking each other. This means: clear ownership (one skill per crate), interface stubs (typecheck can test without backend), and no shared mutable state between crates.
+
+5. **Testability is structural.** If a component can't be unit-tested without constructing the entire pipeline, the boundaries are wrong. Each crate must be testable with stubs at its boundaries. The prototype had 6192 lines of codegen with zero unit tests — not because of laziness, but because the code was structurally untestable (everything depended on everything).
+
+6. **Complexity has a budget.** Every abstraction, indirection, or generalization must justify the complexity it introduces against the coupling it removes. The ring model exists so that Ring 0 code carries zero heap complexity. `CompileMode` exists so that batch/REPL share one pipeline instead of two. But a premature abstraction that serves no current ring is debt, not architecture.
+
+7. **Single source of truth.** When a concept (ISA flags, heap classification, primitive type names) appears in two places, it will diverge. The prototype had 3 ISA constructions and 9 duplicate primitive-name mappings. Every concept gets one authoritative location; other sites reference it.
+
 ## Conventions
 
-- Interface types define the contract between pipeline stages; changes require `/arch` review
-- Any compiler skill that needs an interface change proposes it here; `/arch` evaluates impact and updates
-- Dependency graph must be acyclic — Cargo enforces this at build time
 - All types in `cranelisp-types` derive `Serialize` + `Deserialize` for module caching

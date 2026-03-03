@@ -50,7 +50,7 @@ For parallel subagent work, use terminal tabs or tmux panes — one per agent �
 
 ## Skills
 
-11 Claude Code skills are available as slash commands (`.claude/commands/`). Each skill sets a role for the session:
+13 Claude Code skills are available as slash commands (`.claude/commands/`). Each skill sets a role for the session:
 
 | Command | Role |
 |---|---|
@@ -59,12 +59,14 @@ For parallel subagent work, use terminal tabs or tmux panes — one per agent �
 | `/frontend` | Frontend Developer — reader, macro expander, AST builder |
 | `/typecheck` | Typechecker Developer — Algorithm W, traits, monomorphisation |
 | `/backend` | Backend Developer — Cranelift IR, JIT, RC, caching, linking |
-| `/qa` | Quality Assurance — pipeline wiring, test suite, REPL |
+| `/qa` | Quality Assurance — pipeline wiring, test suite, REPL implementation |
 | `/review` | Code Reviewer — code quality, prevents structural debts |
 | `/stdlib` | Standard Library Developer — rebuilds `lib/` |
 | `/examples` | Example Developer — builds learning-sequence `examples/` |
 | `/platform` | Platform Developer — `cranelisp-platform/`, `cranelisp-runtime/`, DLLs |
 | `/docs` | Documentation Owner — owns `user/` |
+| `/repl` | REPL Experience Developer — owns REPL experience spec, test scripts, and harness |
+| `/port` | Exemplar Project Developer — ports a showcase project to validate the language at scale |
 
 ## Reimplementation Strategy
 
@@ -73,6 +75,7 @@ See `design/reimplementation.md` for the full strategy:
 - **Phase sequence**: A (extract) → B (scaffold) → C–G (rings 0–4) → H (release compiler)
 - **Parallel work**: compiler skills work in parallel within each ring
 - **User-proxy skills**: `/stdlib`, `/examples`, `/platform`, `/docs` validate from user perspective
+- **Architectural authority**: `/arch` is the final arbiter of design decisions that cross crate or skill boundaries. See `design/arch/CLAUDE.md` for the principles that guide these decisions.
 
 ## Skill Handoff
 
