@@ -1014,7 +1014,12 @@ impl TypeChecker {
             }
             crate::module::ModuleEntry::Import { source }
             | crate::module::ModuleEntry::Reexport { source } => {
-                self.resolve_entry_in_module(&source.module, &source.symbol, depth + 1, false)
+                // Propagate require_public through the chain. This is safe because
+                // resolve_module_imports validates that imported names are public in their
+                // source module, so Import entries in a module's symbol table always point
+                // to public terminal Defs. Propagating require_public provides
+                // defence-in-depth against any future edge case that bypasses that check.
+                self.resolve_entry_in_module(&source.module, &source.symbol, depth + 1, require_public)
             }
             crate::module::ModuleEntry::PlatformDecl { .. }
             | crate::module::ModuleEntry::Ambiguous => Some(entry),

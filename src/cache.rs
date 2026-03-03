@@ -457,7 +457,18 @@ pub fn compile_module_to_object(
     let ivar_force_func_id =
         declare_imported_func(&mut obj_module, ivar_force_jit_name, 1, 1)?;
 
-    // Declare builtin methods as imported functions (using correct JIT names and param counts)
+    // Declare builtin methods as imported functions (using correct JIT names and param counts).
+    //
+    // RC intrinsic coverage: cranelisp_dec_guarded, cranelisp_dec_mixed_guarded, and
+    // cranelisp_dec_closure_guarded are added to builtin_method_info by
+    // declare_non_platform_functions() in jit.rs and therefore declared here.
+    // cranelisp_rc_underflow_check is declared on-demand by FnCompiler::emit_rc_underflow_check()
+    // (codegen.rs) via module.declare_function() — it self-declares in the ObjectModule.
+    // Trace intrinsics (cranelisp_trace_enter, trace_exit, trace_swap_got, etc.) are declared
+    // on-demand by FnCompiler::declare_trace_extern() (codegen/trace.rs) the same way.
+    // Invariant: any new intrinsic added to the JIT path must either (a) be added to
+    // builtin_method_info in declare_non_platform_functions(), or (b) be self-declared via
+    // module.declare_function() in the codegen that emits calls to it.
     let mut obj_builtin_methods = HashMap::new();
     for (user_name, (jit_name, param_count)) in builtin_method_info {
         let fid = declare_imported_func(&mut obj_module, jit_name, *param_count, 1)?;

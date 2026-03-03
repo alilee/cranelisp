@@ -30,10 +30,21 @@ The JIT path (`jit.rs`) compiles functions into a live `JITModule`. The cache pa
 
 ## Findings
 
-### HIGH-1: RC, trace, and operator intrinsics not declared in ObjectModule — silent code divergence
+### HIGH-1: RC, trace, and operator intrinsics not declared in ObjectModule — silent code divergence ✓ RESOLVED (invariant documented)
 
 **File**: `src/cache.rs:448-476`
 **Severity**: High (robustness)
+**Resolution**: Investigation confirmed the finding overstates the risk. All RC/trace symbols ARE
+correctly declared in the ObjectModule — not missing:
+- `dec_guarded`, `dec_mixed_guarded`, `dec_closure_guarded`: added to `builtin_method_info` by
+  `declare_non_platform_functions()` in jit.rs; declared via the `builtin_method_info` loop in
+  `compile_module_to_object()` in cache.rs.
+- `rc_underflow_check`: declared on-demand by `FnCompiler::emit_rc_underflow_check()` (codegen.rs)
+  via `module.declare_function()` — self-declares in whichever module is being compiled.
+- Trace symbols: declared on-demand by `FnCompiler::declare_trace_extern()` (codegen/trace.rs)
+  via `module.declare_function()` — same self-declaring pattern.
+An invariant comment was added to `compile_module_to_object()` in cache.rs documenting these
+three coverage paths and the requirement that new intrinsics follow one of them.
 
 `compile_module_to_object()` declares seven named intrinsics (alloc, free, panic, par_eval, ivar_create, ivar_spark, ivar_force) and then delegates all other builtins to `builtin_method_info` and `primitive_entries`. However, the JIT declares additional intrinsics in `declare_non_platform_functions()` (`jit.rs:544-576`) that are **never present in `builtin_method_info`**:
 

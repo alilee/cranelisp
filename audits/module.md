@@ -56,10 +56,14 @@ fn discover(
 
 ---
 
-### HIGH-2: `require_public` flag dropped on the recursive Import/Reexport chain traversal
+### HIGH-2: `require_public` flag dropped on the recursive Import/Reexport chain traversal ✓ RESOLVED
 
 **File**: `src/typechecker.rs:1015-1018`
 **Severity**: High (robustness)
+**Resolution**: `false` changed to `require_public` in the recursive call. Added invariant comment
+explaining why this is safe: `resolve_module_imports` validates public visibility at import time,
+so Import entries always point to public terminal Defs. Propagating `require_public` provides
+defence-in-depth against any future edge case. All 919 tests pass.
 
 When `resolve_entry_in_module` encounters an `Import` or `Reexport` entry, it recurses with `require_public: false` regardless of the original caller's intent. This means: if module A imports (privately) from module B, and B imports (privately) from C, a cross-module qualified access like `a/name` that maps through B to C will succeed even if the intermediate link was private. The visibility check is applied only at the first hop.
 
