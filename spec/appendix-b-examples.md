@@ -1,6 +1,6 @@
 # Appendix B: Example Programs
 
-Complete, runnable example programs demonstrating Cranelisp features.
+Complete, runnable example programs demonstrating Cranelisp features. All examples assume the reference implementation's standard library (prelude) is available, including: the `do`, `bind!`, `list`, `cond`, `str`, `->`, `->>`, and `vec` macros; `pure`, `bind`, `show`, `parse-int`, and `str-concat` functions; `Option`, `List`, and `Seq` types; and the `Num`, `Eq`, `Ord`, `Display`, and `Functor` traits. See [Section 8.8.3](08-modules.md#883-empty-prelude) — an empty prelude is valid; the examples would require adjustment without prelude support.
 
 ## B.1 Hello World
 
@@ -310,3 +310,70 @@ Output:
 42
 6.28
 ```
+
+## B.11 IO Sequencing with `do`
+
+Evaluating multiple IO actions, discarding intermediate results.
+
+```clojure
+(platform stdio)
+(import [platform.stdio [*]])
+
+(defn main []
+  (do
+    (print "hello, world!")
+    (print (show 42))
+    (print (show true))))
+```
+
+`do` sequences three `print` calls. The first two results are discarded; the return value is the result of the last `print`. Output:
+```
+hello, world!
+42
+true
+```
+
+## B.12 Conditional IO with `pure`
+
+Using `pure` to satisfy branch type requirements.
+
+```clojure
+(platform stdio)
+(import [platform.stdio [*]])
+
+(defn maybe-print [x]
+  (if (> x 0)
+    (print (show x))
+    (pure 0)))
+
+(defn main []
+  (do
+    (maybe-print 42)
+    (maybe-print -1)
+    (maybe-print 7)))
+```
+
+The `then` branch returns `IO Int` (from `print`), so the `else` branch MUST also return `IO Int`. `(pure 0)` wraps `0` in `IO` to satisfy the type constraint. Output:
+```
+42
+7
+```
+
+## B.13 Combining `do` and `bind!`
+
+Sequencing effects and capturing results together.
+
+```clojure
+(platform stdio)
+(import [platform.stdio [*]])
+
+(defn main []
+  (do
+    (print "What is your name?")
+    (bind! [name (read-line)]
+      (do
+        (print (str-concat "Hello, " name))
+        (pure 0)))))
+```
+
+`do` sequences the prompt output; `bind!` captures the user's input as `name`; a nested `do` sequences the greeting with a `pure 0` exit code.

@@ -15,6 +15,8 @@ Each `.cl` source file defines exactly one module. The module's identity is deri
 
 The entry file (the file passed to the compiler or REPL) defines the **root module**. In batch mode, this is the file containing `main`.
 
+Module identity is determined solely by the file's path relative to the project root. A `(mod name)` declaration does **not** rename the loaded module — it triggers loading of whatever file is found at the resolved path, and that file's module identity is the path of the file itself. If `main.cl` contains `(mod util)` and the search (Section 8.2.5) finds `util.cl` at the project root, the loaded module is named `util` (not `main.util`). If instead `main/util.cl` is found, the loaded module is named `main.util`.
+
 ```
 project/
   main.cl             ; root module (entry point)
@@ -144,6 +146,8 @@ Imports `Some` and `None` from module `core.option` as bare names. Each listed n
 
 Imports all public names from `core.math`. Private names (defined with `-` suffix forms) are excluded.
 
+The `*` in `[*]` is reserved for the glob-all form and only has that meaning when it is the sole element in the names list. To import the `*` operator (multiplication) alongside other names, include it in a specific names list: `(import [core.numerics [+ - * /]])`. With multiple names present, `*` is treated as an operator symbol, not a glob.
+
 ### 8.3.3 Member Glob Import
 
 ```clojure
@@ -202,6 +206,8 @@ Module-names-list pairs are processed left to right.
 ### 8.3.8 Placement
 
 `import` forms MUST appear as top-level forms. They are extracted from the raw S-expression stream before macro expansion. An implementation MUST process `import` before compiling definitions in the same module, so that imported names are available during type checking and code generation.
+
+A module MAY contain multiple `import` forms. Their effects accumulate: names imported by each form are merged into the module's symbol table. The conflict rules in Section 8.6.4 apply across all `import` forms — importing the same bare name from two different source modules (across any number of `import` forms) is an error.
 
 **Example -- importing types and constructors:**
 
@@ -521,7 +527,7 @@ The `macros` module contains the `Sexp` and `SList` algebraic data types used by
 - `Sexp` -- the S-expression ADT with constructors for integers, strings, symbols, lists, and brackets
 - `SList` -- a cons-list type with `SCons` and `SNil` constructors
 
-The `macros` module is NOT implicitly imported. The macro expander and `quote-sexp` primitive emit qualified references (`macros/SexpSym`, `macros/SCons`, etc.), so quasiquote-based macros work without importing the module. Modules that directly reference Sexp constructors (e.g., for pattern matching on macro arguments) MUST include `(import [macros [*]])`.
+The `macros` module is NOT implicitly imported. The macro expander and `quote-sexp` primitive emit qualified references (`macros/SexpSym`, `macros/SCons`, etc.), so quasiquote-based macros work without importing the module. Modules that directly reference Sexp constructors (e.g., for pattern matching on macro arguments) MUST import or use qualified references eg. `(import [macros [*]])`.
 
 ### 8.9.3 Platform Modules
 
@@ -580,9 +586,12 @@ main.cl                 ; depends on prelude (implicit)
 
 Standard library modules live in a `lib/` directory. The implementation MUST search for the lib directory using the following order:
 
-1. The `CRANELISP_LIB` environment variable, if set
-2. `{project_root}/lib/`
-3. Implementation-defined fallback location (e.g., `~/.cranelisp/lib/`)
+1. A project configuration file (implementation-defined; e.g., `Cranelisp.toml`) MAY specify a lib directory. When present, this takes precedence.
+2. The `CRANELISP_LIB` environment variable, if set.
+3. `{project_root}/lib/`.
+4. Implementation-defined fallback location (e.g., `~/.cranelisp/lib/`).
+
+The standard library is not a special language feature beyond this search mechanism. Modules named `core`, `prelude`, `std`, or anything else are ordinary Cranelisp source files found through this search order — there is no distinction at the language level between "standard library" modules and user modules.
 
 ### 8.11.2 Module Resolution Search Order
 

@@ -1,188 +1,130 @@
 # Appendix A: Builtin Reference (Non-Normative)
 
-> **This appendix is non-normative.** It documents the reference implementation's standard environment. Compiler-seeded types (Sections A.1, A.2) are language-level requirements specified normatively in [Sections 3](03-types.md) and [8.9](08-modules.md#89-synthetic-modules). Everything else (Sections A.3-A.7) describes the reference implementation's standard library choices.
-
-Complete reference for all types, traits, functions, and macros available in the reference implementation's standard Cranelisp environment.
+> **This appendix is non-normative.** It documents the reference implementation's compiler-seeded types and primitive functions. Sections A.1–A.2 describe types that are language-level requirements (normatively specified in [Section 3](03-types.md) and [Section 8.9](08-modules.md#89-synthetic-modules)). Sections A.3–A.4 list primitive functions and special forms provided by the reference implementation.
 
 ## A.1 Primitive Types
+
+Registered in the `primitives` module. Available in all programs via `(import [primitives [*]])` or qualified reference.
 
 | Type | Description | Value Domain |
 |---|---|---|
 | `Int` | Signed 64-bit integer | -2^63 to 2^63 - 1 |
 | `Bool` | Boolean | `true`, `false` |
-| `String` | UTF-8 string | Immutable byte sequence |
+| `String` | Immutable UTF-8 string | Heap-allocated byte sequence |
 | `Float` | IEEE 754 double-precision | 64-bit floating point |
 
 ## A.2 Built-in Compound Types
 
-| Type | Kind | Description |
-|---|---|---|
-| `(Vec a)` | Built-in | Resizable array |
-| `(IO a)` | Compiler-seeded ADT | Effectful computation |
-| `Sexp` | Compiler-seeded ADT | S-expression values (for macros) |
-| `(SList a)` | Compiler-seeded ADT | Macro-internal list |
+Registered in the `primitives` and `macros` synthetic modules.
 
-## A.3 Prelude Types — Reference Implementation (ADTs)
+| Type | Module | Kind | Description |
+|---|---|---|---|
+| `(Vec a)` | `primitives` | Built-in | Resizable array, element access via extern primitives |
+| `(IO a)` | `primitives` | Compiler-seeded ADT | Effectful computation; constructors `Pure`, `Effect`, `Bind` |
+| `Sexp` | `macros` | Compiler-seeded ADT | S-expression value for macro system |
+| `(SList a)` | `macros` | Compiler-seeded ADT | Cons-list for S-expression manipulation |
 
-| Type | Constructors | Description |
-|---|---|---|
-| `(Option a)` | `None`, `(Some [:a val])` | Optional value |
-| `(List a)` | `Nil`, `(Cons [:a head :(List a) tail])` | Linked list |
-| `(Seq a)` | `SeqNil`, `(SeqCons [:a head :(Fn [] (Seq a)) rest])` | Lazy sequence |
+## A.3 Primitive Functions (Host-Implemented)
 
-## A.4 Traits — Reference Implementation
+Primitive functions are implemented in the host language and registered in the `primitives` module. They are the low-level substrate; standard library functions and trait implementations are built on top of them.
 
-| Trait | Methods | Implementations |
-|---|---|---|
-| `Num` | `+`, `-`, `*`, `/` | Int, Float |
-| `Eq` | `=` | Int, Float, Bool, String |
-| `Ord` | `<`, `>`, `<=`, `>=` | Int, Float, String |
-| `Display` | `show` | Int, Float, Bool, String |
-| `Functor` | `fmap` | Option, List, Seq |
+### Inline Primitives
 
-## A.5 Primitive Functions (Host-Implemented)
+Inline primitives compile to inline Cranelift IR instructions — no function call overhead.
 
-### Arithmetic (Inline)
+**Integer arithmetic** — all `(Fn [Int Int] Int)`:
 
-| Function | Type | Description |
-|---|---|---|
-| `+` | `Num a => a -> a -> a` | Addition |
-| `-` | `Num a => a -> a -> a` | Subtraction |
-| `*` | `Num a => a -> a -> a` | Multiplication |
-| `/` | `Num a => a -> a -> a` | Division |
+| Function | Description |
+|---|---|
+| `add-i64` | Add |
+| `sub-i64` | Subtract |
+| `mul-i64` | Multiply |
+| `div-i64` | Integer division |
 
-### Comparison (Inline)
+**Integer comparison** — all `(Fn [Int Int] Bool)`:
 
-| Function | Type | Description |
-|---|---|---|
-| `=` | `Eq a => a -> a -> Bool` | Equality |
-| `<` | `Ord a => a -> a -> Bool` | Less than |
-| `>` | `Ord a => a -> a -> Bool` | Greater than |
-| `<=` | `Ord a => a -> a -> Bool` | Less or equal |
-| `>=` | `Ord a => a -> a -> Bool` | Greater or equal |
+| Function | Description |
+|---|---|
+| `eq-i64` | Equality |
+| `lt-i64` | Less than |
+| `gt-i64` | Greater than |
+| `le-i64` | Less than or equal |
+| `ge-i64` | Greater than or equal |
 
-### Type Conversion (Extern)
+**Float arithmetic** — all `(Fn [Float Float] Float)`:
 
-| Function | Type | Description |
-|---|---|---|
-| `show` | `Display a => a -> String` | Convert to string |
-| `parse-int` | `String -> (Option Int)` | Parse integer (pure) |
+| Function | Description |
+|---|---|
+| `add-f64` | Add |
+| `sub-f64` | Subtract |
+| `mul-f64` | Multiply |
+| `div-f64` | Division |
 
-### String Operations (Extern)
+**Float comparison** — all `(Fn [Float Float] Bool)`:
 
-| Function | Type | Description |
-|---|---|---|
-| `str-concat` | `String -> String -> String` | Concatenate two strings |
-| `quote-sexp` | `Sexp -> Sexp` | Quote a Sexp value |
+| Function | Description |
+|---|---|
+| `eq-f64` | Equality |
+| `lt-f64` | Less than |
+| `gt-f64` | Greater than |
+| `le-f64` | Less than or equal |
+| `ge-f64` | Greater than or equal |
 
-### Vec Operations (Extern)
+### Extern Primitives
 
-| Function | Type | Description |
-|---|---|---|
-| `vec-get` | `(Vec a) -> Int -> a` | Index (bounds-checked) |
-| `vec-set` | `(Vec a) -> Int -> a -> (Vec a)` | Set element at index |
-| `vec-push` | `(Vec a) -> a -> (Vec a)` | Append element |
-| `vec-len` | `(Vec a) -> Int` | Length |
-| `vec-map` | `(a -> b) -> (Vec a) -> (Vec b)` | Map over Vec |
-| `vec-reduce` | `(b -> a -> b) -> b -> (Vec a) -> b` | Left fold over Vec |
+Extern primitives are called via the foreign function interface.
 
-### Platform Functions (stdio)
+**Type conversion**:
 
 | Function | Type | Description |
 |---|---|---|
-| `print` | `String -> IO Int` | Print with newline, returns 0 |
-| `read-line` | `(Fn [] (IO String))` | Read line from stdin |
+| `int-to-string` | `(Fn [Int] String)` | Convert integer to decimal string |
+| `float-to-string` | `(Fn [Float] String)` | Convert float to string |
+| `bool-to-string` | `(Fn [Bool] String)` | `"true"` or `"false"` |
+| `string-identity` | `(Fn [String] String)` | Identity for `String` (used by Display impl) |
 
-## A.6 Library Functions — Reference Implementation (Cranelisp-Defined)
-
-### IO (core.io)
-
-| Function | Type | Description |
-|---|---|---|
-| `pure` | `a -> IO a` | Lift value into IO |
-| `bind` | `IO a -> (a -> IO b) -> IO b` | Monadic bind |
-
-### Numeric (core.numerics)
+**String operations**:
 
 | Function | Type | Description |
 |---|---|---|
-| `inc` | `Int -> Int` | Increment by 1 |
+| `str-concat` | `(Fn [String String] String)` | Concatenate two strings |
+| `parse-int` | `(Fn [String] (Option Int))` | Parse decimal integer; `None` on failure |
 
-### List Operations (core.collections)
-
-| Function | Type | Description |
-|---|---|---|
-| `empty?` | `(List a) -> Bool` | Test for Nil |
-| `concat` | `(List a) -> (List a) -> (List a)` | Concatenate lists |
-| `list-map` | `(a -> b) -> (List a) -> (List b)` | Map over List |
-| `list-reduce` | `(b -> a -> b) -> b -> (List a) -> b` | Left fold over List |
-| `reverse` | `(List a) -> (List a)` | Reverse a list |
-
-### Unified Collection API (core.sequences, multi-sig)
+**Macro support**:
 
 | Function | Type | Description |
 |---|---|---|
-| `map` | `(a -> b) -> C -> (Seq b)` | Lazy map (C = Vec, List, or Seq) |
-| `filter` | `(a -> Bool) -> C -> (Seq a)` | Lazy filter |
-| `take` | `Int -> C -> (Seq a)` | Lazy take first N |
-| `drop` | `Int -> C -> (Seq a)` | Lazy drop first N |
-| `reduce` | `(b -> a -> b) -> b -> C -> b` | Eager left fold |
-| `seq` | `C -> (Seq a)` | Convert to lazy Seq (C = Vec or List) |
+| `quote-sexp` | `(Fn [Sexp] Sexp)` | Convert a runtime `Sexp` value to constructor source code |
 
-### Seq Producers (core.sequences)
+**Vec operations**:
 
 | Function | Type | Description |
 |---|---|---|
-| `range-from` | `Int -> (Seq Int)` | Infinite integer sequence from N |
-| `iterate` | `(a -> a) -> a -> (Seq a)` | Infinite repeated application |
-| `repeat` | `a -> (Seq a)` | Infinite repetition |
+| `vec-get` | `(Fn [(Vec a) Int] a)` | Index (bounds-checked; panics on out-of-bounds) |
+| `vec-set` | `(Fn [(Vec a) Int a] (Vec a))` | Return new Vec with element at index replaced |
+| `vec-push` | `(Fn [(Vec a) a] (Vec a))` | Return new Vec with element appended |
+| `vec-len` | `(Fn [(Vec a)] Int)` | Number of elements |
+| `vec-map` | `(Fn [(Fn [a] b) (Vec a)] (Vec b))` | Map function over elements |
+| `vec-reduce` | `(Fn [(Fn [b a] b) b (Vec a)] b)` | Left fold over elements |
 
-### Seq Consumers (core.sequences)
+`vec-set` and `vec-push` are semantically pure (return new values). The implementation MAY use copy-on-write when the reference count is 1.
 
-| Function | Type | Description |
-|---|---|---|
-| `to-list` | `(Seq a) -> (List a)` | Materialize to List (eager) |
+## A.4 Special Forms
 
-### SList Helpers (core.syntax)
-
-| Function | Type | Description |
-|---|---|---|
-| `sfold` | `(b -> a -> b) -> b -> (SList a) -> b` | Left fold over SList |
-| `sreverse` | `(SList a) -> (SList a)` | Reverse an SList |
-| `sconcat` | `(SList a) -> (SList a) -> (SList a)` | Concatenate SLists |
-| `sempty?` | `(SList a) -> Bool` | Test for SNil |
-
-## A.7 Prelude Macros — Reference Implementation
-
-| Macro | Parameters | Expansion |
-|---|---|---|
-| `list` | `& elems` | `(Cons e1 (Cons e2 ... Nil))` |
-| `slist` | `& elems` | `(SCons e1 (SCons e2 ... SNil))` |
-| `do` | `& exprs` | `(let [_ e1] (let [_ e2] ... en))` |
-| `bind!` | `bindings body` | `(bind e1 (fn [x] (bind e2 (fn [y] body))))` |
-| `vec` | `& elems` | Vec literal |
-| `str` | `& exprs` | `(str-concat (show e1) (str-concat (show e2) ...))` |
-| `cond` | `& pairs` | `(if c1 e1 (if c2 e2 ... en))` |
-| `case` | `x & pairs` | `(if (= x v1) e1 (if (= x v2) e2 ... en))` |
-| `->` | `x & forms` | Thread-first: `(f2 (f1 x) ...)` |
-| `->>` | `x & forms` | Thread-last: `(f2 ... (f1 ... x))` |
-| `const` | `name val` | Inline substitution (zero-arg macro) |
-| `def` | `name val` | Zero-arg function + call macro |
-
-## A.8 Special Forms
+Special forms are keywords processed directly by the compiler. They are not functions or macros and cannot be shadowed.
 
 | Form | Description |
 |---|---|
-| `defn` / `defn-` | Function definition (single or multi-sig) |
-| `deftype` / `deftype-` | Algebraic data type definition |
-| `deftrait` / `deftrait-` | Trait declaration |
+| `defn` / `defn-` | Function definition (single or multi-sig); `defn-` is module-private |
+| `deftype` / `deftype-` | Algebraic data type definition; `deftype-` is module-private |
+| `deftrait` / `deftrait-` | Trait declaration; `deftrait-` is module-private |
 | `impl` | Trait implementation |
-| `defmacro` / `defmacro-` | Macro definition |
-| `let` | Local bindings |
-| `if` | Conditional |
-| `fn` | Lambda expression |
-| `match` | Pattern matching |
-| `mod` | Submodule declaration |
-| `import` | Name import |
-| `export` | Name re-export |
-| `platform` | Platform DLL declaration |
+| `defmacro` / `defmacro-` | Macro definition; `defmacro-` is module-private |
+| `let` | Local bindings: `(let [x e1 y e2] body)` |
+| `if` | Conditional: `(if cond then else)` |
+| `fn` | Lambda expression: `(fn [params] body)` |
+| `match` | Pattern matching: `(match scrutinee [pat1 body1 ...])` |
+| `mod` / `mod-` | Submodule declaration; `mod-` is module-private |
+| `import` | Name import: `(import [module [names]])` |
+| `export` | Name re-export: `(export [module [names]])` |
+| `platform` | Platform DLL declaration (entry module only): `(platform stdio)` |

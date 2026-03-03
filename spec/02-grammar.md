@@ -299,11 +299,9 @@ The macro body receives its arguments as `Sexp` values and MUST return a value o
 
 **Fixed parameters**: Each fixed parameter binds to the corresponding argument's S-expression.
 
-> **FIXME**: This example is not great — the false branch returns the `Int` literal `0`, which gives sound typing but is semantically odd in a pure functional language. Replace with a better example that doesn't imply `when` returns a dummy value.
-
 ```clojure
-(defmacro when [cond body]
-  `(if ~cond ~body 0))
+(defmacro my-if [cond then else]
+  `(if ~cond ~then ~else))
 ```
 
 **Rest parameters**: The `&` symbol before the last parameter captures all remaining arguments as an `(SList Sexp)`.
@@ -324,11 +322,9 @@ always-one  ; -> 1
 
 An optional docstring MAY appear between the name and the parameter list:
 
-> **FIXME**: Same issue as the `when` example above — `unless` returns `0` on the true branch.
-
 ```clojure
-(defmacro unless "Evaluate body when condition is false" [cond body]
-  `(if ~cond 0 ~body))
+(defmacro my-and "Logical conjunction of two expressions" [a b]
+  `(if ~a ~b false))
 ```
 
 Macros are expanded iteratively to a fixed point before AST construction. The body MAY use quasiquote (`` ` ``), unquote (`~`), and unquote-splicing (`~@`) as described in [1. Lexical Structure](01-lexical.md), Section 1.6.

@@ -8,7 +8,11 @@ The spec is the source of truth for the reimplementation. When implementation an
 - If the spec is correct: the implementation is wrong, fix it
 - If the prototype behavior differs from the spec: check the prototype, then update the spec to reflect actual (intended) behavior
 
-When a spec file and the prototype disagree, run the prototype to determine what is normative, then update the spec.
+The spec only shows the language features and requirements of the compiler, and doesn't prescribe the standard library. There may be multiple standard 
+library candidates.
+
+When a spec file and the prototype disagree, run the prototype to determine what baseline was, then update the spec after validating with designer. Eventually, 
+the sketch and the spec will diverge because the sketch is not being maintained.
 
 ## Conventions
 
@@ -65,4 +69,18 @@ Inconsistencies fixed:
 
 **First session (Phase A Step 1)**: ✓ Complete. All 16 files reviewed; inconsistencies fixed.
 
-**Ongoing**: When a compiler skill encounters ambiguous behavior, `/spec` arbitrates: run the prototype (`cd sketch && cargo run -- --run <example>`), decide what is normative, update the relevant spec file.
+**Second session (FIXME resolution)**: Addressed all open FIXME comments across modified files:
+- `02-grammar.md §2.2.5` — replaced `when`/`unless` examples (dummy `0` branch) with `my-if` and `my-and`
+- `08-modules.md §8.1.1` — clarified module identity is file-path-based; sibling-file `mod` resolution loads a peer module, not a submodule
+- `08-modules.md §8.3.2` — clarified `[*]` is glob-all; importing `*` operator requires it alongside other names
+- `08-modules.md §8.3.8` — documented that multiple `import` forms accumulate
+- `08-modules.md §8.11` — updated lib search order: project config file takes priority; stdlib is not a special language feature
+- `09-macros.md §9.5` — resolved auto-lifting question: explicit Sexp constructors required; no auto-lifting
+- `09-macros.md §9.6` — removed FIXME; `begin` is a language-level macro expander protocol
+- `09-macros.md §9.10` — moved `const`/`def` to §9.10.1/2 (from §9.10.10/11); renumbered rest
+- `10-io.md §10.11` — moved complete examples to Appendix B; §10.11 now cross-references appendix
+- `11-stdlib.md` — complete rewrite: pared to bootstrapping support for stdlib writers; stdlib itself documented elsewhere
+- `appendix-a-builtins.md` — removed stdlib sections (A.3-A.7); builtins only (types, primitive functions, special forms)
+- `appendix-b-examples.md` — replaced FIXME with stdlib-assumption preface; added B.11-B.13 from §10.11
+
+**Ongoing**: When a compiler skill encounters ambiguous behavior, `/spec` arbitrates: run the prototype (`cd sketch && cargo run -- --run <example>`), decide what is normative, update the relevant spec file after validating with developer.

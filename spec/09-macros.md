@@ -336,6 +336,8 @@ Nested quasiquote with symbol construction:
 
 Zero-argument macros expand when referenced as bare symbols, without parentheses. This enables named constants and value aliases.
 
+Macro bodies must explicitly construct `Sexp` values — literals are not automatically lifted. Writing `(defmacro PI [] 3.14159)` is a compile-time error because the body has type `Float`, not `Sexp`. The `const` macro (Section 9.10.1) provides a more ergonomic way to define named constants that substitute literal values inline.
+
 ```clojure
 (defmacro PI [] (SexpFloat 3.14159))
 PI         ; expands to 3.14159 (no parentheses needed)
@@ -347,7 +349,7 @@ always-one ; -> 1
 
 An implementation MUST check for zero-argument macros during expansion whenever a bare symbol is encountered.
 
-This mechanism can be used to implement named constants. For example, the reference implementation provides `const` and `def` macros (Section 9.10.10, 9.10.11) built on bare-symbol expansion.
+This mechanism can be used to implement named constants. For example, the reference implementation provides `const` and `def` macros (Section 9.10.1, 9.10.2) built on bare-symbol expansion.
 
 ## 9.6 Multi-Form Expansion (`begin`)
 
@@ -541,7 +543,63 @@ Calling a macro with the wrong number of arguments is a compile-time error. For 
 
 The following macros illustrate the capabilities of the macro system. They are provided by the reference implementation's standard prelude (`lib/core/syntax.cl`) and are available in all modules that import the prelude (which is the default). Full details of the reference standard library are in Section 11 (non-normative); brief descriptions and expansion examples are given here.
 
-### 9.10.1 `list`
+### 9.10.1 `const` / `const-`
+
+```clojure
+(const name value)
+(const- name value)
+```
+
+Defines a named compile-time constant. The value S-expression is captured and substituted inline wherever the name appears. This works by defining a zero-argument macro that returns the quoted value (Section 9.5).
+
+```clojure
+(const PI 3.14159)
+(const GREETING "hello")
+
+(* PI 2.0)    ; expands to (* 3.14159 2.0)
+GREETING      ; expands to "hello"
+```
+
+`const-` creates a module-private constant.
+
+**Implementation:**
+
+```clojure
+(defmacro const "Define a named constant (bare symbol expansion)" [name value]
+  `(defmacro ~name [] ~(quote-sexp value)))
+```
+
+`const` uses the `quote-sexp` primitive (Section 9.11.1) to capture the value S-expression as a quoted form that reproduces the original value when evaluated.
+
+### 9.10.2 `def` / `def-`
+
+```clojure
+(def name value)
+(def- name value)
+```
+
+Defines a named value. Unlike `const`, the value expression is evaluated at runtime (as a zero-argument function). The name is defined as a macro that expands to a call to that function.
+
+```clojure
+(def ten (+ 5 5))
+
+(show ten)    ; ten expands to (ten-def), which returns 10
+```
+
+`def-` creates a module-private value.
+
+**Implementation:**
+
+```clojure
+(defmacro def "Define a named value (zero-arg function, bare symbol)" [name value]
+  `(begin
+    (defn ~(make-def-name name) [] ~value)
+    (defmacro ~name [] (SexpList (SCons ~(quote-sexp (make-def-name name)) SNil)))))
+```
+
+This uses `begin` (Section 9.6) to emit two forms: a `defn` for the backing function and a `defmacro` for the bare-symbol expansion.
+
+### 9.10.3 `list`
 
 ```clojure
 (list e1 e2 ... eN)
@@ -563,7 +621,7 @@ Constructs a `List` value from its arguments. Expands to nested `Cons`/`Nil` con
 
 Note: `list` builds user-visible `List` values (using `Cons`/`Nil`), while `slist` builds `SList` values (using `SCons`/`SNil`) for macro internals.
 
-### 9.10.2 `do`
+### 9.10.4 `do`
 
 ```clojure
 (do e1 e2 ... eN)
@@ -586,7 +644,7 @@ Expression sequencing. Evaluates expressions left to right and returns the value
   (do-build body))
 ```
 
-### 9.10.3 `bind!`
+### 9.10.5 `bind!`
 
 ```clojure
 (bind! [name1 io-expr1
@@ -618,7 +676,7 @@ The bindings argument MUST be a bracket form containing alternating name-express
     (bind!-fold items body)))
 ```
 
-### 9.10.4 `->` (Thread-First)
+### 9.10.6 `->` (Thread-First)
 
 ```clojure
 (-> initial form1 form2 ... formN)
@@ -643,7 +701,7 @@ Threads the initial value through a sequence of forms. Each form receives the ac
   (thread-first-fold x forms))
 ```
 
-### 9.10.5 `->>` (Thread-Last)
+### 9.10.7 `->>` (Thread-Last)
 
 ```clojure
 (->> initial form1 form2 ... formN)
@@ -665,7 +723,7 @@ Threads the initial value through a sequence of forms. Each form receives the ac
   (thread-last-fold x forms))
 ```
 
-### 9.10.6 `cond`
+### 9.10.8 `cond`
 
 ```clojure
 (cond test1 body1
@@ -696,7 +754,7 @@ The argument list MUST have an odd number of forms: zero or more test-body pairs
   (cond-fold clauses))
 ```
 
-### 9.10.7 `case`
+### 9.10.9 `case`
 
 ```clojure
 (case expr
@@ -734,7 +792,7 @@ The expression is bound to an internal variable (`__case__`) to avoid multiple e
       (SCons (case-fold "__case__" clauses) SNil)))))
 ```
 
-### 9.10.8 `vec`
+### 9.10.10 `vec`
 
 ```clojure
 (vec e1 e2 ... eN)
@@ -755,7 +813,7 @@ Constructs a `Vec` from its arguments. Expands to a bracket form `[e1 e2 ... eN]
   (SexpBracket elems))
 ```
 
-### 9.10.9 `str`
+### 9.10.11 `str`
 
 ```clojure
 (str e1 e2 ... eN)
@@ -780,62 +838,6 @@ With zero arguments, returns the empty string `""`.
      (SCons x rest)
        (str-fold (SexpList (SCons (SexpSym "show") (SCons x SNil))) rest)]))
 ```
-
-### 9.10.10 `const` / `const-`
-
-```clojure
-(const name value)
-(const- name value)
-```
-
-Defines a named compile-time constant. The value S-expression is captured and substituted inline wherever the name appears. This works by defining a zero-argument macro that returns the quoted value.
-
-```clojure
-(const PI 3.14159)
-(const GREETING "hello")
-
-(* PI 2.0)    ; expands to (* 3.14159 2.0)
-GREETING      ; expands to "hello"
-```
-
-`const-` creates a module-private constant.
-
-**Implementation:**
-
-```clojure
-(defmacro const "Define a named constant (bare symbol expansion)" [name value]
-  `(defmacro ~name [] ~(quote-sexp value)))
-```
-
-Note: `const` uses the `quote-sexp` primitive to capture the value S-expression as a quoted form that reproduces the original value when evaluated.
-
-### 9.10.11 `def` / `def-`
-
-```clojure
-(def name value)
-(def- name value)
-```
-
-Defines a named value. Unlike `const`, the value expression is evaluated at runtime (as a zero-argument function). The name is defined as a macro that expands to a call to that function.
-
-```clojure
-(def ten (+ 5 5))
-
-(show ten)    ; ten expands to (ten-def), which returns 10
-```
-
-`def-` creates a module-private value.
-
-**Implementation:**
-
-```clojure
-(defmacro def "Define a named value (zero-arg function, bare symbol)" [name value]
-  `(begin
-    (defn ~(make-def-name name) [] ~value)
-    (defmacro ~name [] (SexpList (SCons ~(quote-sexp (make-def-name name)) SNil)))))
-```
-
-This uses `begin` (Section 9.6) to emit two forms: a `defn` for the backing function and a `defmacro` for the bare-symbol expansion.
 
 ## 9.11 Primitives for Macro Authors
 
