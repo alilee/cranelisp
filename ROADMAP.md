@@ -1,0 +1,22 @@
+# Cranelisp Delivery Roadmap
+
+Delivery progress for the Cranelisp reimplementation. For technical scope per ring, see `design/arch/roadmap.md`. For quality gates, see `tests/plan/strategy.md`.
+
+## Phases
+
+| Phase | Description | Status |
+|-------|-------------|--------|
+| A | Extract: spec completion, architecture contracts, QA plan | COMPLETE |
+| B | Scaffold: crate structure, interfaces, CLAUDE.md files, experience specs | COMPLETE |
+| C | Ring 0 — Core: expressions, types, functions, let, if, match | Next |
+| D | Ring 1 — Heap: strings, ADTs, closures, reference counting | — |
+| E | Ring 2 — Abstraction: traits, modules, constrained polymorphism | — |
+| F | Ring 3 — Meta: macros, derive, standard library | — |
+| G | Ring 4 — Effects: IO, platforms, parallelism, REPL, caching | — |
+| H | Release Compiler: Tier 2 backend | — |
+
+## Sprints
+
+| Sprint | Scope | Status | Report |
+|--------|-------|--------|--------|
+| (none yet) | | | |

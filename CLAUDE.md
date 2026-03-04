@@ -24,6 +24,9 @@ This repository is organized for the Cranelisp reimplementation:
 | `lib/` | Standard library in Cranelisp (to be created by `/stdlib`) |
 | `examples/` | Learning-sequence examples (to be created by `/examples`) |
 | `tests/` | Reimplementation test suite (to be created by `/qa`) |
+| `ROADMAP.md` | Delivery roadmap — sprint sequence and progress — owned by `/sprint` skill |
+| `SPRINT.md` | Current sprint plan and task list — owned by `/sprint` skill |
+| `sprints/` | Archive of completed sprint reports — owned by `/sprint` skill |
 
 ## Sketch Oracle
 
@@ -54,7 +57,7 @@ For parallel subagent work, use terminal tabs or tmux panes — one per agent �
 
 ## Skills
 
-13 Claude Code skills are available as slash commands (`.claude/commands/`). Each skill sets a role for the session:
+14 Claude Code skills are available as slash commands (`.claude/commands/`). Each skill sets a role for the session:
 
 | Command | Role |
 |---|---|
@@ -65,6 +68,7 @@ For parallel subagent work, use terminal tabs or tmux panes — one per agent �
 | `/backend` | Backend Developer — Cranelift IR, JIT, RC, caching, linking |
 | `/qa` | Quality Assurance — pipeline wiring, test suite, REPL implementation |
 | `/review` | Code Reviewer — code quality, prevents structural debts |
+| `/sprint` | Sprint Manager — plans increments, coordinates skill execution, tracks delivery |
 | `/stdlib` | Standard Library Developer — rebuilds `lib/` |
 | `/examples` | Example Developer — builds learning-sequence `examples/` |
 | `/platform` | Platform Developer — `cranelisp-platform/`, `cranelisp-runtime/`, DLLs |
@@ -79,6 +83,7 @@ See `design/reimplementation.md` for the full strategy:
 - **Phase sequence**: A (extract) → B (scaffold) → C–G (rings 0–4) → H (release compiler)
 - **Parallel work**: compiler skills work in parallel within each ring
 - **User-proxy skills**: `/stdlib`, `/examples`, `/platform`, `/docs` validate from user perspective
+- **Sprint coordination**: `/sprint` decomposes rings into delivery increments; `ROADMAP.md` tracks progress, `SPRINT.md` contains the current sprint plan. All skills participate in every sprint — later-stage skills do planning and validation work until their implementation phase begins.
 - **Architectural authority**: `/arch` is the final arbiter of design decisions that cross crate or skill boundaries. See `design/arch/CLAUDE.md` for the principles that guide these decisions.
 
 ## Usability Register
@@ -89,7 +94,7 @@ Blocking usability findings are part of the ring gate — a ring cannot advance 
 
 ## Skill Handoff
 
-Every skill plan must end with a **"Next skills"** section recommending which skill(s) the user should invoke next after the plan is implemented. Consult `design/arch/roadmap.md` for dependencies. Example:
+Every skill plan must end with a **"Next skills"** section recommending which skill(s) the user should invoke next after the plan is implemented. When a sprint is active, consult `SPRINT.md` for the current task list and blocking dependencies. Otherwise consult `design/arch/roadmap.md` for dependencies. Example:
 
 ```
 ## Next skills
