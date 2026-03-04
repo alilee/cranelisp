@@ -2,7 +2,7 @@
 
 Ring-by-ring plan for the Cranelisp reimplementation. Each ring establishes a stable foundation before the next begins. Within each ring, compiler skills work in parallel against interface stubs.
 
-For the full reimplementation strategy, skill definitions, and risk analysis, see `design/reimplementation.md`. For boundary types, see `design/arch/interfaces.md`. For crate structure and architectural decisions, see `design/arch/architecture.md`.
+For the full reimplementation strategy, skill definitions, and risk analysis, see `sprints/reimplementation.md`. For boundary types, see `design/arch/interfaces.md`. For crate structure and architectural decisions, see `design/arch/architecture.md`.
 
 ## Ring 0: Core
 
@@ -12,7 +12,7 @@ For the full reimplementation strategy, skill definitions, and risk analysis, se
 |---|---|---|
 | `/arch` | Crate scaffolding (`Cargo.toml`s), `CLAUDE.md` files per source directory, `interfaces.md` | — |
 | `/frontend` | Reader (source -> Sexp), AST builder (Sexp -> Expr/TopLevel) | `interfaces.md` |
-| `/typecheck` | Core inference: `Int`, `Bool`, `Float`, simple `Fn`, `let`-polymorphism, basic `match` over enums | `interfaces.md` |
+| `/typecheck` | Core inference: `Int`, `Bool`, `Float`, simple `Fn`, `let`-polymorphism, basic `match` over enums. Arithmetic/comparison operators (`+`, `-`, `*`, `/`, `=`, `<`, `>`, `<=`, `>=`, `not`) are hard-wired as builtins in Ring 0; full trait dispatch defers to Ring 2. | `interfaces.md` |
 | `/backend` | Codegen for scalars, functions, `if`/`let`/`match` (no heap), JIT execution, `CompileMode` | `interfaces.md` |
 | `/qa` | Batch pipeline wiring (`compile_unit()`), ~50 integration tests | all compiler skills |
 | `/examples` | Simple integer/boolean programs | `/qa` pipeline |
@@ -20,16 +20,16 @@ For the full reimplementation strategy, skill definitions, and risk analysis, se
 | `/repl` | Basic REPL experience tests: prompt, `/help`, value+type display, error messages | `/qa` pipeline |
 | `/review` | Ring 0 completion review | all above |
 
-**Acceptance criteria**:
-- `(+ 1 2)` returns `3 :: Int`
-- `(defn id [x] x)` infers `id :: (Fn [:a] :a)`
-- `(if true 1 2)` returns `1 :: Int`
-- `(let [x 5] (+ x 1))` returns `6 :: Int`
-- `(deftype Color Red Green Blue)` + `(match Red (Red 1) (Green 2) (Blue 3))` returns `1 :: Int`
-- `(defn fact [n] (if (= n 0) 1 (* n (fact (- n 1)))))` runs correctly with TCO
-- Batch and REPL produce identical results for all tests
+**Acceptance criteria** (display format per `repl/spec.md` — `:Type value`):
+- `(+ 1 2)` → `:primitives/Int 3`
+- `(defn id [x] x)` → `:(Fn [a] a) user/id`
+- `(if true 1 2)` → `:primitives/Int 1`
+- `(let [x 5] (+ x 1))` → `:primitives/Int 6`
+- `(deftype Color Red Green Blue)` + `(match Color.Red [Color.Red 1 Color.Green 2 Color.Blue 3])` → `:primitives/Int 1`
+- `(defn fact [n] (if (= n 0) 1 (* n (fact (- n 1)))))` runs correctly (note: this formulation is not tail-recursive; TCO is exercised by accumulator-style functions like `(defn fact-acc [n acc] (if (= n 0) acc (fact-acc (- n 1) (* n acc))))`)
+- Batch and REPL produce identical results: the `compile_unit()` pipeline is shared via `CompileMode`; true batch mode with `main :: () -> IO _` defers to Ring 4
 - ~50 integration tests green
-- REPL experience tests pass: discoverability, value+type feedback
+- REPL experience tests pass: discoverability, value+type feedback (see `repl/spec.md`)
 - `cargo clippy` clean, no `unwrap()` in pipeline code
 
 ## Ring 1: Heap
@@ -43,15 +43,15 @@ For the full reimplementation strategy, skill definitions, and risk analysis, se
 | `/qa` | RC correctness tests (no leaks, no double-frees), ADT integration tests, closure tests | Ring 1 compiler |
 | `/examples` | String manipulation programs, ADT programs (Option, List) | Ring 1 `/qa` |
 | `/platform` | `cranelisp-runtime` crate (alloc, RC primitives, panic handler), begin platform C-ABI contract | Ring 1 `/backend` |
-| `/repl` | ADT display tests (`(Some 42) :: (Option Int)`), string display, error message quality assertions | Ring 1 compiler |
+| `/repl` | ADT display tests (`:(user/Option primitives/Int) (Option.Some 42)`), string display, error message quality assertions | Ring 1 compiler |
 | `/review` | RC correctness focus: drop glue, consuming conventions, scope cleanup | all above |
 
-**Acceptance criteria**:
-- `"hello"` returns `"hello" :: String`
+**Acceptance criteria** (display format per `repl/spec.md`):
+- `"hello"` → `:primitives/String "hello"`
 - `(deftype (Option a) None (Some [:a val]))` type-checks with polymorphic constructors
-- `(Some 42)` returns `(Some 42) :: (Option Int)`
-- `(match (Some 1) (Some x) x (None 0))` returns `1 :: Int`
-- `(fn [x] (+ x 1))` creates a closure; `((fn [x] (+ x 1)) 5)` returns `6 :: Int`
+- `(Some 42)` → `:(user/Option primitives/Int) (Option.Some 42)`
+- `(match (Option.Some 1) [(Option.Some x) x Option.None 0])` → `:primitives/Int 1`
+- `(fn [x] (+ x 1))` → `:(Fn [primitives/Int] primitives/Int) <closure>`; `((fn [x] (+ x 1)) 5)` → `:primitives/Int 6`
 - `(let [f (fn [x] (+ x 1))] (f 5))` — closure captured correctly
 - `CRANELISP_RC_TRACE=1` shows balanced inc/dec for all tests
 - No memory leaks detected by runtime tracking
@@ -75,7 +75,7 @@ For the full reimplementation strategy, skill definitions, and risk analysis, se
 **Acceptance criteria**:
 - `(deftrait (Num a) (+ [a a] a) (- [a a] a) (* [a a] a))` — trait declaration type-checks
 - `(impl Num Int ...)` — trait implementation
-- `(defn add [x y] (+ x y))` infers `add :: (Fn [:Num a :a] :a)`, monomorphised at call sites
+- `(defn add [x y] (+ x y))` → `:(Fn [:core.numerics/Num a :a] a) user/add`, monomorphised at call sites
 - `(import [core.option [*]])` — cross-module import
 - Multi-sig: `(defn show ([Int x] ...) ([Bool x] ...))` dispatches correctly
 - Auto-curry: `(map (+ 1) [1 2 3])` returns `[2 3 4]`
@@ -111,7 +111,7 @@ For the full reimplementation strategy, skill definitions, and risk analysis, se
 
 | Skill | Deliverables | Depends On |
 |---|---|---|
-| `/typecheck` | IO ADT typing, `par-let`/`par-bind!` type checking | Ring 3 |
+| `/typecheck` | IO ADT typing, lenient evaluation analysis | Ring 3 |
 | `/backend` | IO trampoline, platform DLL loading and effect dispatch, parallel evaluation, module caching, linker, standalone executable generation | Ring 3 |
 | `/qa` | IO tests, platform tests, E2E transcript tests, performance benchmarks, REPL implementation, `run-tests` special form | Ring 4 compiler |
 | `/stdlib` | IO helpers (`pure`, `bind!`, `do`), trace display functions, complete standard library | Ring 4 |
@@ -125,7 +125,7 @@ For the full reimplementation strategy, skill definitions, and risk analysis, se
 **Acceptance criteria**:
 - `(print "hello")` produces IO effect
 - `(do (print "hello") (print "world"))` chains IO effects
-- `(par-let [x (compute-a) y (compute-b)] (+ x y))` — parallel evaluation
+- `(let [x (compute-a) y (compute-b)] (+ x y))` — lenient evaluation parallelises independent bindings automatically
 - Platform DLLs load and function (`cranelisp-stdio`, `cranelisp-test-capture`)
 - Module caching: second compilation of unchanged module hits cache
 - Standalone executable generation: `cranelisp --compile examples/hello.cl` produces executable

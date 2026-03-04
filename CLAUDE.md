@@ -22,11 +22,10 @@ This repository is organized for the Cranelisp reimplementation:
 | `sketch/` | Prototype compiler — reference oracle, not the active compiler |
 | `src/` | New compiler source (to be created by `/arch`) |
 | `lib/` | Standard library in Cranelisp (to be created by `/stdlib`) |
-| `examples/` | Learning-sequence examples (to be created by `/examples`) |
+| `examples/` | Learning-sequence examples — owned by `/examples` skill |
+| `exemplar/` | Showcase project (Sudoku Solver) — owned by `/port` skill |
 | `tests/` | Reimplementation test suite (to be created by `/qa`) |
-| `ROADMAP.md` | Delivery roadmap — sprint sequence and progress — owned by `/sprint` skill |
-| `SPRINT.md` | Current sprint plan and task list — owned by `/sprint` skill |
-| `sprints/` | Archive of completed sprint reports — owned by `/sprint` skill |
+| `sprints/` | Delivery coordination — roadmap, current sprint, archive — owned by `/sprint` skill |
 
 ## Sketch Oracle
 
@@ -78,12 +77,12 @@ For parallel subagent work, use terminal tabs or tmux panes — one per agent �
 
 ## Reimplementation Strategy
 
-See `design/reimplementation.md` for the full strategy:
+See `sprints/reimplementation.md` for the full strategy:
 - **Ring model**: 5 rings (core → heap → abstraction → meta → effects)
 - **Phase sequence**: A (extract) → B (scaffold) → C–G (rings 0–4) → H (release compiler)
 - **Parallel work**: compiler skills work in parallel within each ring
 - **User-proxy skills**: `/stdlib`, `/examples`, `/platform`, `/docs` validate from user perspective
-- **Sprint coordination**: `/sprint` decomposes rings into delivery increments; `ROADMAP.md` tracks progress, `SPRINT.md` contains the current sprint plan. All skills participate in every sprint — later-stage skills do planning and validation work until their implementation phase begins.
+- **Sprint coordination**: `/sprint` decomposes rings into delivery increments; `sprints/ROADMAP.md` tracks progress, `sprints/SPRINT.md` contains the current sprint plan. All skills participate in every sprint — later-stage skills do planning and validation work until their implementation phase begins.
 - **Architectural authority**: `/arch` is the final arbiter of design decisions that cross crate or skill boundaries. See `design/arch/CLAUDE.md` for the principles that guide these decisions.
 
 ## Usability Register
@@ -92,9 +91,21 @@ See `design/reimplementation.md` for the full strategy:
 
 Blocking usability findings are part of the ring gate — a ring cannot advance with open blocking findings. See `tests/plan/strategy.md` §"Usability Register" for the full process.
 
+## Cross-Skill Changes
+
+When a skill discovers that an upstream document (owned by another skill) needs updating, it MUST NOT silently edit that document. Instead, add a `FIXME(/skill-name)` HTML comment at the relevant location in the upstream file, describing the issue and proposed resolution. The owning skill picks up the FIXME on its next invocation, evaluates it, and actions it.
+
+```html
+<!-- FIXME(/spec): Review whether Num trait declarations belong in language spec or stdlib. -->
+```
+
+This preserves ownership boundaries — each skill decides how to handle changes in its own files.
+
+**Wave gate**: Before `/sprint` advances to the next wave, it MUST scan for unresolved FIXMEs in all files touched by the current wave. Outstanding FIXMEs addressed to a skill in the current wave block advancement — they must be resolved or explicitly deferred with rationale.
+
 ## Skill Handoff
 
-Every skill plan must end with a **"Next skills"** section recommending which skill(s) the user should invoke next after the plan is implemented. When a sprint is active, consult `SPRINT.md` for the current task list and blocking dependencies. Otherwise consult `design/arch/roadmap.md` for dependencies. Example:
+Every skill plan must end with a **"Next skills"** section recommending which skill(s) the user should invoke next after the plan is implemented. When a sprint is active, consult `sprints/SPRINT.md` for the current task list and blocking dependencies. Otherwise consult `design/arch/roadmap.md` for dependencies. Example:
 
 ```
 ## Next skills
@@ -105,7 +116,7 @@ Every skill plan must end with a **"Next skills"** section recommending which sk
 
 ## Design Principles
 
-- **Self-documenting REPL**: Every symbol and expression entered at the REPL should produce useful feedback — its type, value, or usage description. No valid language construct should produce an opaque error. Special forms, operators, builtins, and user-defined names should all respond with what they are and how to use them. Feedback should reinforce the language syntax, using cranelisp type notation (e.g. `pure :: special form: (fn [a] (IO a))`).
+- **Self-documenting REPL**: Every symbol and expression entered at the REPL should produce useful feedback — its type, value, or usage description. No valid language construct should produce an opaque error. Special forms, operators, and user-defined names should all respond with what they are and how to use them. Output reinforces the language syntax using `:Type value` notation with fully-qualified names (e.g. `:primitives/Int 3`, `:(Fn [a] a) user/id`). See `repl/spec.md` for the normative REPL experience specification.
 - **Clojure standard library**: Follow the Clojure standard library for function naming and design as much as possible.
 - **Optional prelude**: Nothing in the prelude is required for the language to work. An empty prelude is a valid starting point for the REPL or batch programs. The prelude provides convenience (traits, operators, types, macros) but the core language — primitives, special forms, type inference — works without it.
 
@@ -117,4 +128,4 @@ Every skill plan must end with a **"Next skills"** section recommending which sk
 
 ## Known Issues
 
-Prototype compromises are documented in `sketch/KNOWN_ISSUES.md`. See `sketch/audits/` for the full audit findings. See `design/reimplementation.md` §"Risk Analysis" for known issues disposition.
+Prototype compromises are documented in `sketch/KNOWN_ISSUES.md`. See `sketch/audits/` for the full audit findings. See `sprints/reimplementation.md` §"Risk Analysis" for known issues disposition.

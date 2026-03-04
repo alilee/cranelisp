@@ -307,7 +307,7 @@ Review each spec file against prototype behavior. Fill gaps:
 - **Section 3 (Types)**: Monomorphisation algorithm for constrained polymorphism, cross-module specialization rules
 - **Section 4 (Expressions)**: Auto-currying dispatch rules, multi-sig disambiguation
 - **Section 7 (Traits)**: Derive mechanism (structural trait impl generation for Eq, Ord, Display)
-- **New section or subsection**: Parallelism constructs (par-let, par-bind!)
+- **Parallelism**: Lenient evaluation (§12.4.3) and automatic IO scheduling (§10.12) — both upgraded to MUST
 - **Section 1 (Lexical)**: Full reader shortcut semantics (`'expr`, `x#`, `#(...)`)
 
 **Acceptance criteria**: Every spec example runs against the prototype and produces the documented result.
@@ -450,7 +450,7 @@ Phase F: Ring 3 — Meta (parallel)
 
 Phase G: Ring 4 — Effects (parallel)
   /frontend   — (no changes)
-  /typecheck  — IO ADT, par-let/par-bind! type checking
+  /typecheck  — IO ADT, lenient evaluation analysis
   /backend    — IO trampoline, platform calls, parallel evaluation, caching, linker, exe generation
   /qa         — IO tests, platform tests, E2E tests, performance benchmarks, REPL
   /stdlib     — IO helpers, complete standard library

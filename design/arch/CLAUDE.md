@@ -22,7 +22,7 @@ Architecture deliverables for the Cranelisp reimplementation. Owned and maintain
 
 ## Cross-References
 
-- `design/reimplementation.md` — Full strategy: skill definitions, ring model decision, phase sequence, risk analysis
+- `sprints/reimplementation.md` — Full strategy: skill definitions, ring model decision, phase sequence, risk analysis
 - `src/CLAUDE.md` — Cross-cutting source conventions (error handling, code structure, naming)
 - `sketch/audits/*.md` — Structural debts to avoid (59 findings: 15 HIGH, 23 MEDIUM, 21 LOW)
 - `sketch/src/` — Prototype source as reference oracle
@@ -44,6 +44,28 @@ The criteria `/arch` uses to evaluate every design decision. These are derived f
 6. **Complexity has a budget.** Every abstraction, indirection, or generalization must justify the complexity it introduces against the coupling it removes. The ring model exists so that Ring 0 code carries zero heap complexity. `CompileMode` exists so that batch/REPL share one pipeline instead of two. But a premature abstraction that serves no current ring is debt, not architecture.
 
 7. **Single source of truth.** When a concept (ISA flags, heap classification, primitive type names) appears in two places, it will diverge. The prototype had 3 ISA constructions and 9 duplicate primitive-name mappings. Every concept gets one authoritative location; other sites reference it.
+
+## String Newtypes
+
+**Hard rule**: All identifier fields in boundary types MUST use the appropriate newtype, never bare `String`. This prevents accidental mixing of identifiers across semantic categories (e.g., passing a module path where a symbol name is expected).
+
+| Newtype | Semantic meaning | Examples |
+|---|---|---|
+| `Symbol` | Local identifier — variable, function, operator, constructor name | `"foo"`, `"+"`, `"Some"`, `"_"` |
+| `TypeName` | Type name (uppercase) — ADT, builtin, constructor | `"Int"`, `"Option"`, `"Color"` |
+| `TraitName` | Trait name (uppercase) | `"Num"`, `"Display"`, `"Eq"` |
+| `ModuleName` | Single module component (no dots) | `"core"`, `"option"`, `"math"` |
+| `ModuleFullPath` | Dotted module path | `"core.option"`, `"user"` |
+| `JitSymbol` | JIT linker name (mangled) | `"cranelisp_add$Int+Int"` |
+| `FQSymbol` | Fully qualified: module + symbol | `{ module: "core.option", symbol: "Some" }` |
+
+**When in doubt**: if a `String` field identifies something in the language (a name, a type, a module), it should be a newtype. The only bare `String` fields allowed are:
+- Error messages
+- Documentation strings
+- Source text
+- User-visible descriptions (e.g., `SpecialForm.description`)
+
+All newtypes are generated via `string_newtype!()` which derives the standard trait set and implements `Deref<Target=str>`, `From<String>`, `From<&str>`, `AsRef<str>`, `Display`.
 
 ## Conventions
 

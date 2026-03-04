@@ -44,5 +44,5 @@ You define what the language does. You arbitrate ambiguity. The spec is the auth
 
 - `spec/` — your owned files
 - `sketch/docs/spec/` — original spec files (same content, keep in sync if you modify)
-- `design/reimplementation.md` §"Skill Definitions" §"/spec" — role context
-- `design/reimplementation.md` §"Extraction Phase" Step 1 — your Phase A task
+- `sprints/reimplementation.md` §"Skill Definitions" §"/spec" — role context
+- `sprints/reimplementation.md` §"Extraction Phase" Step 1 — your Phase A task

@@ -52,4 +52,4 @@ Document in `tests/CLAUDE.md` once the new Cargo workspace exists.
 - `sketch/tests/rc.rs` — RC correctness tests
 - `sketch/tests/CLAUDE.md` — prototype test conventions
 - `spec/` — spec sections that each test should validate
-- `design/reimplementation.md` §"Extraction Phase" Step 3 — your Phase A task
+- `sprints/reimplementation.md` §"Extraction Phase" Step 3 — your Phase A task

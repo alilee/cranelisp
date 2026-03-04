@@ -10,25 +10,26 @@ You are NOT a technical authority. `/arch` decides how to build things. `/qa` de
 
 ## Owns
 
-- `ROADMAP.md` (project root) — delivery roadmap: phases, rings, sprint sequence, progress
-- `SPRINT.md` (project root) — current sprint plan, task list, and outcome report
-- `sprints/` — archive of completed sprint reports
+- `sprints/ROADMAP.md` — delivery roadmap: phases, rings, sprint sequence, progress
+- `sprints/SPRINT.md` — current sprint plan, task list, and outcome report
+- `sprints/reimplementation.md` — overall reimplementation strategy
+- `sprints/archive/` — completed sprint reports
 
 ## Interfaces
 
 ### Inputs
 
 - `design/arch/roadmap.md` — technical deliverables and dependencies per ring (owned by `/arch`)
-- `design/reimplementation.md` — overall strategy, phase sequence, risk analysis
+- `sprints/reimplementation.md` — overall strategy, phase sequence, risk analysis
 - `tests/plan/strategy.md` — quality gates and ring-completion criteria (owned by `/qa`)
 - Skill handoff sections — "Next skills" recommendations from completed work
 - Current project state — what files exist, what tests pass, what is implemented
 
 ### Outputs
 
-- `ROADMAP.md` — delivery progress visible to all skills and the user
-- `SPRINT.md` — current sprint assignment readable by any skill as its brief
-- Sprint reports in `sprints/` — historical record of what was delivered
+- `sprints/ROADMAP.md` — delivery progress visible to all skills and the user
+- `sprints/SPRINT.md` — current sprint assignment readable by any skill as its brief
+- Sprint reports in `sprints/archive/` — historical record of what was delivered
 
 ### Dependencies on Other Skills
 
@@ -63,7 +64,7 @@ This means every SPRINT.md has an assignment for every skill. For later-stage sk
 When the user invokes `/sprint` and no active sprint exists (or the current sprint is complete):
 
 1. Read `design/arch/roadmap.md` for the current ring's technical scope
-2. Read `ROADMAP.md` for delivery progress and what has already been done
+2. Read `sprints/ROADMAP.md` for delivery progress and what has already been done
 3. Assess the current project state: what code exists, what tests pass
 4. Identify the next coherent increment — a subset of ring work that:
    - Produces a testable result (not just scaffolding)
@@ -92,8 +93,8 @@ When all sprint tasks are done (or the user decides to close the sprint):
 
 1. Write the outcome section in SPRINT.md: what was delivered, what was deferred, findings
 2. Mark SPRINT.md as `COMPLETE`
-3. Move SPRINT.md to `sprints/sprint-{id}.md`
-4. Update ROADMAP.md with the completed sprint and its outcomes
+3. Move `sprints/SPRINT.md` to `sprints/archive/sprint-{id}.md`
+4. Update `sprints/ROADMAP.md` with the completed sprint and its outcomes
 5. If the ring is not yet complete, begin planning the next sprint
 6. If the ring is complete, note that `/review` should be invoked for ring-gate review
 
@@ -105,6 +106,12 @@ If the user invokes `/sprint` mid-sprint:
 2. Assess progress: what is done, what is blocked, what is at risk
 3. Recommend: continue as planned, re-scope, or close early
 4. Update SPRINT.md with any scope changes (with user approval)
+
+### 5. Wave Gate (FIXME Scan)
+
+Before advancing to the next wave within a sprint, `/sprint` MUST scan all files produced or modified by the current wave for unresolved `FIXME(/skill-name)` comments. Outstanding FIXMEs addressed to a skill in the current wave block advancement — they must be resolved by the owning skill or explicitly deferred with rationale recorded in the SPRINT.md Notes section.
+
+This ensures cross-skill issues are not silently dropped between waves.
 
 ## Sprint 0 (Preparation)
 
@@ -168,17 +175,17 @@ Sprint 0 assignments follow this pattern for each skill:
 ## First Steps
 
 1. Read `design/arch/roadmap.md` — understand the full ring-by-ring plan
-2. Read `design/reimplementation.md` — understand phases, risks, coordination model
+2. Read `sprints/reimplementation.md` — understand phases, risks, coordination model
 3. Read `tests/plan/strategy.md` — understand ring-gate criteria
 4. Survey the current project state: what phases are complete, what exists in `src/`, `tests/`, `lib/`
-5. Create `ROADMAP.md` at project root
-6. Create `sprints/` directory for sprint archives
+5. Create `sprints/ROADMAP.md`
+6. Create `sprints/archive/` directory for completed sprints
 7. Plan Sprint 0
 
 ## Key References
 
 - `design/arch/roadmap.md` — technical scope per ring (the "what")
-- `design/reimplementation.md` — overall strategy (the "why")
+- `sprints/reimplementation.md` — overall strategy (the "why")
 - `tests/plan/strategy.md` — quality model and ring gates
 - `tests/plan/ring{N}.md` — per-ring test plans
 - Root `CLAUDE.md` — project layout and skill list

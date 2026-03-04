@@ -19,4 +19,5 @@ Delivery progress for the Cranelisp reimplementation. For technical scope per ri
 
 | Sprint | Scope | Status | Report |
 |--------|-------|--------|--------|
-| (none yet) | | | |
+| 0 | Foundation survey and planning — every skill validates and plans | COMPLETE | `sprints/archive/sprint-0.md` |
+| 1 | Ring 0 — Core implementation | Next | — |

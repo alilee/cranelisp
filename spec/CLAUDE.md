@@ -36,7 +36,7 @@ the sketch and the spec will diverge because the sketch is not being maintained.
 | `07-traits.md` | Trait declarations, implementations, method resolution, derive |
 | `08-modules.md` | Module system, imports, exports, qualified names |
 | `09-macros.md` | Macro system, quasiquote, expansion rules |
-| `10-io.md` | IO model, effect nodes, trampoline, par-let/par-bind! |
+| `10-io.md` | IO model, effect nodes, trampoline, automatic IO scheduling |
 | `11-stdlib.md` | Standard library reference (non-normative) |
 | `12-runtime.md` | Runtime model: RC layout, calling conventions, drop glue |
 | `appendix-a-builtins.md` | Builtin primitive reference |
@@ -48,14 +48,16 @@ the sketch and the spec will diverge because the sketch is not being maintained.
 All 16 spec files reviewed. Sections confirmed current (no changes needed):
 - `01-lexical.md` — tokens, reader shortcuts (quote, quasiquote, anon_fn, gensym, percent params)
 - `03-types.md` — HM inference, constrained polymorphism, HKT
-- `04-expressions.md` — par-let (§4.12), evaluation order
 - `06-pattern-matching.md` — ADT patterns, exhaustiveness
 - `07-traits.md` — derive macro (§7.13), HKT traits
 - `08-modules.md` — modules, imports, super, inline submodules
-- `10-io.md` — automatic IO scheduling (§10.12), ResourceSerial, no explicit par-bind!
 - `11-stdlib.md` — non-normative reference
-- `12-runtime.md` — lenient evaluation (§12.4.3), RC layout
 - `appendix-a-builtins.md`, `appendix-b-examples.md`
+
+Sections updated during Sprint 0 FIXME resolution:
+- `04-expressions.md` — removed §4.12 (par-let); lenient evaluation (§12.4.3) supersedes it
+- `10-io.md` — §10.12 upgraded: auto IO scheduling is now MUST (was descriptive)
+- `12-runtime.md` — §12.4.3 upgraded: lenient evaluation is now MUST (was MAY); renamed from "Lenient Evaluation (Implementation-Defined)" to "Lenient Evaluation"
 
 Inconsistencies fixed:
 - `09-macros.md §9.14` — removed stale item "multi-clause macros not supported" (contradicted §9.2.6)

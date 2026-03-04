@@ -124,9 +124,24 @@ Produced by `cranelisp-frontend`, consumed by `cranelisp-typecheck` and `craneli
 ```rust
 /// Expression AST node. Every variant carries a Span.
 ///
+/// Expression AST node. Every variant carries a Span.
+///
+/// Spec traceability:
+///   IntLit, FloatLit, BoolLit, StringLit — spec §4.1 (Literals)
+///   Var — spec §4.2 (Variable Reference)
+///   Let — spec §4.3 (Let Expression)
+///   If — spec §4.4 (If Expression)
+///   Lambda — spec §4.5 (Lambda Expression)
+///   Apply — spec §4.6 (Function Application)
+///   Match — spec §4.8 (Match Expression)
+///   Annotate — spec §4.9 (Type Annotation)
+///   VecLit — spec §4.10 (Vec Literal)
+///   Trace — spec §12 (Runtime Model, implementation extension)
+///   RunTests — REPL-only special form (no spec section)
+///
 /// Ring 0: IntLit, FloatLit, BoolLit, Var, Let, If, Lambda, Apply, Match, Annotate
 /// Ring 1: StringLit, VecLit (heap-allocated)
-/// Ring 4: ParLet, ParBind, Trace, RunTests (effects)
+/// Ring 4: Trace, RunTests (effects)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Expr {
     IntLit {
@@ -146,11 +161,11 @@ pub enum Expr {
         span: Span,
     },
     Var {
-        name: String,
+        name: Symbol,
         span: Span,
     },
     Let {
-        bindings: Vec<(String, Expr)>,
+        bindings: Vec<(Symbol, Expr)>,
         body: Box<Expr>,
         span: Span,
     },
@@ -161,7 +176,7 @@ pub enum Expr {
         span: Span,
     },
     Lambda {
-        params: Vec<String>,
+        params: Vec<Symbol>,
         param_annotations: Vec<Option<TypeExpr>>,
         body: Box<Expr>,
         span: Span,
@@ -187,23 +202,13 @@ pub enum Expr {
         expr: Box<Expr>,
         span: Span,
     },
-    ParLet {
-        bindings: Vec<(String, Expr)>,
-        body: Box<Expr>,
-        span: Span,
-    },
-    ParBind {
-        bindings: Vec<(String, Expr)>,
-        body: Box<Expr>,
-        span: Span,
-    },
     Trace {
-        modules: Vec<String>,
+        modules: Vec<Symbol>,
         body: Box<Expr>,
         span: Span,
     },
     RunTests {
-        modules: Vec<String>,
+        modules: Vec<Symbol>,
         init: Box<Expr>,
         pass_fn: Box<Expr>,
         fail_fn: Box<Expr>,
@@ -225,8 +230,8 @@ impl Expr {
 pub enum Pattern {
     /// Constructor pattern: `(Some x)`, `None`, `(Cons h t)`
     Constructor {
-        name: String,
-        bindings: Vec<String>,
+        name: Symbol,
+        bindings: Vec<Symbol>,
         span: Span,
     },
     /// Wildcard: `_`
@@ -235,7 +240,7 @@ pub enum Pattern {
     },
     /// Variable binding: `x` (binds the scrutinee to a name)
     Var {
-        name: String,
+        name: Symbol,
         span: Span,
     },
 }
@@ -261,9 +266,9 @@ pub enum Visibility {
 /// Function definition.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Defn {
-    pub name: String,
+    pub name: Symbol,
     pub docstring: Option<String>,
-    pub params: Vec<String>,
+    pub params: Vec<Symbol>,
     pub param_annotations: Vec<Option<TypeExpr>>,
     pub body: Expr,
     pub visibility: Visibility,
@@ -273,7 +278,7 @@ pub struct Defn {
 /// One variant of a multi-signature function.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DefnVariant {
-    pub params: Vec<String>,
+    pub params: Vec<Symbol>,
     pub param_annotations: Vec<Option<TypeExpr>>,
     pub body: Expr,
     pub span: Span,
@@ -283,21 +288,21 @@ pub struct DefnVariant {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum TypeExpr {
     /// Named type: `Int`, `Bool`, `String`
-    Named(String),
+    Named(TypeName),
     /// Self type in trait methods: `Self`
     SelfType,
     /// Function type: `(Fn [Int Int] Bool)`
     FnType(Vec<TypeExpr>, Box<TypeExpr>),
     /// Type variable: `:a`, `:b`
-    TypeVar(String),
+    TypeVar(Symbol),
     /// Applied type constructor: `(Option Int)`, `(List :a)`
-    Applied(String, Vec<TypeExpr>),
+    Applied(TypeName, Vec<TypeExpr>),
 }
 
 /// Trait method signature.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TraitMethodSig {
-    pub name: String,
+    pub name: Symbol,
     pub docstring: Option<String>,
     pub params: Vec<TypeExpr>,
     pub ret_type: TypeExpr,
@@ -305,7 +310,7 @@ pub struct TraitMethodSig {
     /// Index of HKT parameter if this method uses higher-kinded types
     pub hkt_param_index: Option<usize>,
     /// Parameter names for default implementation
-    pub default_param_names: Vec<String>,
+    pub default_param_names: Vec<Symbol>,
     /// Default method body as Sexp (compiled on demand)
     pub default_body: Option<Sexp>,
 }
@@ -313,9 +318,9 @@ pub struct TraitMethodSig {
 /// Trait declaration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TraitDecl {
-    pub name: String,
+    pub name: TraitName,
     pub docstring: Option<String>,
-    pub type_params: Vec<String>,
+    pub type_params: Vec<Symbol>,
     pub methods: Vec<TraitMethodSig>,
     pub visibility: Visibility,
     pub span: Span,
@@ -324,10 +329,10 @@ pub struct TraitDecl {
 /// Trait implementation.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TraitImpl {
-    pub trait_name: String,
-    pub target_type: String,
-    pub type_args: Vec<String>,
-    pub type_constraints: Vec<(String, String)>,
+    pub trait_name: TraitName,
+    pub target_type: TypeName,
+    pub type_args: Vec<Symbol>,
+    pub type_constraints: Vec<(Symbol, TraitName)>,
     pub methods: Vec<Defn>,
     pub span: Span,
 }
@@ -335,14 +340,14 @@ pub struct TraitImpl {
 /// Field in a data constructor.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FieldDef {
-    pub name: String,
+    pub name: Symbol,
     pub type_expr: TypeExpr,
 }
 
 /// Data constructor (one variant of a sum type, or the sole constructor of a product type).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConstructorDef {
-    pub name: String,
+    pub name: Symbol,
     pub docstring: Option<String>,
     pub fields: Vec<FieldDef>,
     pub span: Span,
@@ -358,7 +363,7 @@ pub struct ConstructorDef {
 pub enum TopLevel {
     Defn(Defn),
     DefnMulti {
-        name: String,
+        name: Symbol,
         docstring: Option<String>,
         variants: Vec<DefnVariant>,
         visibility: Visibility,
@@ -367,9 +372,9 @@ pub enum TopLevel {
     TraitDecl(TraitDecl),
     TraitImpl(TraitImpl),
     TypeDef {
-        name: String,
+        name: TypeName,
         docstring: Option<String>,
-        type_params: Vec<String>,
+        type_params: Vec<Symbol>,
         constructors: Vec<ConstructorDef>,
         visibility: Visibility,
         span: Span,
@@ -384,7 +389,7 @@ pub type Program = Vec<TopLevel>;
 pub enum ReplInput {
     Defn(Defn),
     DefnMulti {
-        name: String,
+        name: Symbol,
         docstring: Option<String>,
         variants: Vec<DefnVariant>,
         visibility: Visibility,
@@ -394,9 +399,9 @@ pub enum ReplInput {
     TraitDecl(TraitDecl),
     TraitImpl(TraitImpl),
     TypeDef {
-        name: String,
+        name: TypeName,
         docstring: Option<String>,
-        type_params: Vec<String>,
+        type_params: Vec<Symbol>,
         constructors: Vec<ConstructorDef>,
         visibility: Visibility,
         span: Span,
@@ -425,8 +430,8 @@ pub enum Type {
     /// Function type: param types -> return type
     Fn(Vec<Type>, Box<Type>),
     /// Algebraic data type: type name + type arguments
-    /// e.g. ADT("Option", [Type::Int]) for Option Int
-    ADT(String, Vec<Type>),
+    /// e.g. ADT(TypeName::from("Option"), [Type::Int]) for Option Int
+    ADT(TypeName, Vec<Type>),
     /// Unification variable (inference internal; resolved before codegen)
     Var(TypeId),
     /// Type constructor application (for higher-kinded types)
@@ -469,7 +474,7 @@ pub struct Scheme {
     /// Quantified type variables
     pub vars: Vec<TypeId>,
     /// Trait constraints on type variables: TypeId -> list of required trait names
-    pub constraints: HashMap<TypeId, Vec<String>>,
+    pub constraints: HashMap<TypeId, Vec<TraitName>>,
     /// The underlying type
     pub ty: Type,
 }
@@ -496,7 +501,7 @@ pub struct CheckResult {
     /// How each call site was resolved (trait dispatch, overload, auto-curry, builtin)
     pub method_resolutions: MethodResolutions,
     /// Names of constrained polymorphic functions requiring monomorphisation
-    pub constrained_fn_names: HashSet<String>,
+    pub constrained_fn_names: HashSet<Symbol>,
     /// Monomorphised function definitions generated during checking
     pub mono_defns: Vec<MonoDefn>,
     /// Type of every expression, keyed by span (for codegen heap classification)
@@ -515,23 +520,23 @@ pub type MethodResolutions = HashMap<Span, ResolvedCall>;
 pub enum ResolvedCall {
     /// Resolved to a trait method implementation
     TraitMethod {
-        trait_name: String,
-        method_name: String,
-        impl_type: String,
-        mangled_name: String,
+        trait_name: TraitName,
+        method_name: Symbol,
+        impl_type: TypeName,
+        mangled_name: JitSymbol,
     },
     /// Resolved to a specific multi-sig variant
     SigDispatch {
-        mangled_name: String,
+        mangled_name: JitSymbol,
     },
     /// Resolved to an auto-curried partial application
     AutoCurry {
-        target_name: String,
+        target_name: Symbol,
         applied_count: usize,
     },
     /// Resolved to a builtin function
     BuiltinFn {
-        name: String,
+        name: Symbol,
     },
 }
 
@@ -602,7 +607,7 @@ pub enum ModuleEntry {
         scheme: Scheme,
         visibility: Visibility,
         docstring: Option<String>,
-        param_names: Vec<String>,
+        param_names: Vec<Symbol>,
         kind: DefKind,
     },
     /// An imported name from another module.
@@ -635,7 +640,7 @@ pub enum ModuleEntry {
     },
     /// A macro definition (defmacro).
     Macro {
-        name: String,
+        name: Symbol,
         clauses: Vec<MacroClauseInfo>,
         docstring: Option<String>,
         visibility: Visibility,
@@ -715,8 +720,8 @@ pub struct ConstrainedFn {
 /// Information about a user-defined type.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TypeDefInfo {
-    pub name: String,
-    pub type_params: Vec<String>,
+    pub name: TypeName,
+    pub type_params: Vec<Symbol>,
     pub constructors: Vec<ConstructorInfo>,
     pub docstring: Option<String>,
 }
@@ -724,7 +729,7 @@ pub struct TypeDefInfo {
 /// Information about a single data constructor.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConstructorInfo {
-    pub name: String,
+    pub name: Symbol,
     pub tag: usize,
     pub fields: Vec<FieldInfo>,
     pub docstring: Option<String>,
@@ -733,7 +738,7 @@ pub struct ConstructorInfo {
 /// Information about a constructor field.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FieldInfo {
-    pub name: String,
+    pub name: Symbol,
     pub ty: Type,
 }
 ```
@@ -752,11 +757,11 @@ pub struct MacroClauseInfo {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum MacroParam {
     /// Simple name binding
-    Name(String),
+    Name(Symbol),
     /// Bracket destructuring: `[fixed... & rest]`
     Bracket {
-        fixed: Vec<String>,
-        rest: Option<String>,
+        fixed: Vec<Symbol>,
+        rest: Option<Symbol>,
     },
 }
 ```
@@ -768,11 +773,11 @@ pub enum MacroParam {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum ImportNames {
     /// Import specific names: `[Some None]`
-    Specific(Vec<String>),
+    Specific(Vec<Symbol>),
     /// Import all public names: `[*]`
     Glob,
     /// Import all members of a type or trait: `[Display.*]`
-    MemberGlob(String),
+    MemberGlob(Symbol),
     /// No names — alias-only: `[]`
     None,
 }
@@ -781,7 +786,7 @@ pub enum ImportNames {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ImportSpec {
     pub module_path: ModuleFullPath,
-    pub alias: Option<String>,
+    pub alias: Option<ModuleName>,
     pub names: ImportNames,
     pub span: Span,
 }
@@ -856,13 +861,15 @@ pub const NULLARY_TAG_THRESHOLD: usize = 1024;
 ## Pipeline Configuration
 
 ```rust
-/// Controls batch vs interactive compilation differences.
+/// Controls compilation strategy.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CompileMode {
-    /// Direct function calls, no GOT indirection. Used for batch compilation.
-    Batch,
     /// GOT-indirect calls for hot-reload. Used for REPL and module reloading.
     Interactive,
+    /// Direct function calls, no GOT indirection. Used for batch compilation and testing.
+    Batch,
+    /// Whole-program optimisation, standalone binary. Ring 4+ / Phase H.
+    Release,
 }
 
 /// Result of compiling a single unit.

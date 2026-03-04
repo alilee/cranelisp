@@ -33,5 +33,5 @@ Key sketch design docs by skill:
 3. Created `design/arch/roadmap.md` — ring-by-ring progression plan
 4. Created root `Cargo.toml` workspace with 7 member crates
 5. Created `src/CLAUDE.md` with cross-cutting source conventions
-6. Updated `design/reimplementation.md` — replaced options analysis with ring model decision
+6. Updated `sprints/reimplementation.md` — replaced options analysis with ring model decision
 7. Updated `design/arch/CLAUDE.md` with cross-references and session decisions

@@ -142,15 +142,13 @@ Cranelisp uses **strict (eager) evaluation**. All sub-expressions are fully eval
 
 The `Seq` type provides lazy evaluation through thunks (zero-argument closures). Laziness is explicit and user-controlled — it is NOT a property of the evaluation model itself.
 
-### 12.4.3 Lenient Evaluation (Implementation-Defined)
+### 12.4.3 Lenient Evaluation
 
-An implementation MAY evaluate independent `let` bindings in parallel. This is called **lenient evaluation**. Because all binding expressions in a `let` are pure, evaluating them concurrently produces the same result as sequential evaluation — the non-determinism in evaluation order is not observable.
+An implementation MUST evaluate independent `let` bindings in parallel where a cost heuristic determines it is beneficial. This is called **lenient evaluation**. Because all binding expressions in a `let` are pure, evaluating them concurrently produces the same result as sequential evaluation — the non-determinism in evaluation order is not observable.
 
-A binding is independent if its free variables do not include any name bound earlier in the same `let` block. An implementation MAY apply a cost heuristic to avoid parallelizing trivially cheap bindings (e.g., arithmetic operations, variable references).
+A binding is independent if its free variables do not include any name bound earlier in the same `let` block. The implementation MUST apply a cost heuristic to avoid parallelizing trivially cheap bindings (e.g., arithmetic operations, variable references). Only bindings whose estimated cost exceeds the heuristic threshold are candidates for parallel evaluation.
 
-Lenient evaluation is semantically transparent — programs MUST NOT depend on whether it is enabled or disabled. An implementation MAY provide an opt-out mechanism (e.g., an environment variable).
-
-Note: `par-let` ([Section 4.12](04-expressions.md)) provides explicit user-controlled parallel evaluation. Lenient evaluation is the implicit, compiler-controlled counterpart.
+Lenient evaluation is semantically transparent — programs MUST NOT depend on whether any particular binding is parallelized. An implementation MAY provide an opt-out mechanism (e.g., an environment variable) for debugging purposes.
 
 ## 12.5 Tail Call Optimization
 

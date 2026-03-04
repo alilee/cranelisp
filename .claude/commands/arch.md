@@ -40,7 +40,7 @@ See `design/arch/CLAUDE.md` for the principles that guide these decisions.
 
 ## First Steps (Phase B)
 
-1. Read `design/reimplementation.md` §"Extract architecture contracts" and §"Delivery Strategy"
+1. Read `sprints/reimplementation.md` §"Extract architecture contracts" and §"Delivery Strategy"
 2. Read `sketch/audits/*.md` — understand structural debts to avoid:
    - `CompiledModule` god object (133 refs, 18 files) — decompose into SymbolTable, ModuleGraph, CodegenState, CacheMetadata
    - Dual batch/REPL pipelines — single pipeline
@@ -67,7 +67,7 @@ See `design/arch/CLAUDE.md` for the principles that guide these decisions.
 
 ## Key References
 
-- `design/reimplementation.md` — full strategy, skill definitions, ring model
+- `sprints/reimplementation.md` — full strategy, skill definitions, ring model
 - `design/arch/` — your owned deliverables
 - `sketch/audits/*.md` — structural debts to avoid
 - `sketch/src/module.rs` — prototype's CompiledModule (study to decompose)
