@@ -14,11 +14,13 @@ Validate the learning path. Ensure concepts build logically for new users. Maint
 
 - User-proxy skill: you represent new users discovering the language
 - Begin work once Ring 0 is stable (can draft getting-started content immediately)
-- Report to compiler skills when:
-  - Learning curve has gaps (prerequisite concept not introduced) → file with `/spec`
-  - Terminology is inconsistent between spec and user-facing docs → `/spec` to arbitrate
-  - Error messages are unhelpful for beginners → `/typecheck` or `/backend`
-  - REPL output doesn't help users understand what they typed → `/qa`
+- File usability findings to `/qa`'s **usability register** (`tests/plan/usability.md`):
+  - Learning curve gaps (prerequisite concept not introduced)
+  - Terminology inconsistencies between spec and user-facing docs
+  - Error messages unhelpful for beginners
+  - REPL output that doesn't help users understand what they typed
+  - Documentation that can't be written because language behavior is unclear
+  - Each finding needs: category, severity (blocking/important/deferred), description
 
 ## First Steps (Phase B)
 

@@ -14,11 +14,14 @@ Build the standard library as a user of the language. Validate that the type sys
 
 - User-proxy skill: you exercise the language from a library author's perspective
 - Begin work once Ring 2 is stable (traits + modules needed for real library code)
-- Report findings to compiler skills:
-  - Type inference too restrictive → `/typecheck`
-  - Macro expansion edge cases → `/frontend`
-  - Trait resolution surprises → `/typecheck`
-  - Unhelpful error messages → `/typecheck` or `/backend`
+- File usability findings to `/qa`'s **usability register** (`tests/plan/usability.md`):
+  - Type inference too restrictive, requiring excessive annotations
+  - Macro expansion edge cases or limitations
+  - Trait resolution surprises
+  - Unhelpful or misleading error messages
+  - Missing primitives or awkward APIs
+  - Naming surprises (Clojure convention deviations)
+  - Each finding needs: category, severity (blocking/important/deferred), description
 
 ## First Steps (Phase B)
 

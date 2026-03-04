@@ -17,6 +17,7 @@ Wire the pipeline end-to-end and validate that everything works together. Own th
 - Consumes output from all compiler skills
 - Owns top-level orchestration wiring stages together
 - Reports test failures back to the responsible compiler skill
+- Maintains the **usability register** (`tests/plan/usability.md`) — the structured destination for findings from user-proxy skills (`/stdlib`, `/examples`, `/docs`, `/port`, `/repl`, `/platform`). Triages findings as blocking/important/deferred and routes them to the responsible compiler skill. Blocking findings are part of the ring gate.
 
 ## First Steps (Phase A, Step 3 + Phase B)
 

@@ -27,6 +27,10 @@ This repository is organized for the Cranelisp reimplementation:
 
 ## Sketch Oracle
 
+We have a prototype compiler as a sketch. 
+
+> **Important** The sketch is a reference point only, not the destination. It's purpose is to de-risk the implementation by informing requirements, design decisions and technical risk assessments. At some point the sketch will be left behind and further development will be on the new system, so new work needs to stand on its own, start from a zero base and first principles - not copy the sketch.     
+
 The prototype compiler lives in `sketch/`. Use it when the spec is ambiguous:
 
 ```bash
@@ -76,6 +80,12 @@ See `design/reimplementation.md` for the full strategy:
 - **Parallel work**: compiler skills work in parallel within each ring
 - **User-proxy skills**: `/stdlib`, `/examples`, `/platform`, `/docs` validate from user perspective
 - **Architectural authority**: `/arch` is the final arbiter of design decisions that cross crate or skill boundaries. See `design/arch/CLAUDE.md` for the principles that guide these decisions.
+
+## Usability Register
+
+`/qa` maintains a **usability register** (`tests/plan/usability.md`) — the structured destination for findings from user-proxy skills. When `/stdlib`, `/examples`, `/docs`, `/port`, `/repl`, or `/platform` encounter corner cases, unhelpful errors, inference friction, missing APIs, or ergonomic issues, they file findings to the usability register rather than routing ad-hoc to individual compiler skills. `/qa` triages findings and routes them to the responsible skill.
+
+Blocking usability findings are part of the ring gate — a ring cannot advance with open blocking findings. See `tests/plan/strategy.md` §"Usability Register" for the full process.
 
 ## Skill Handoff
 

@@ -47,10 +47,12 @@ Proposed sequence (to be finalized in `examples/CLAUDE.md`):
 
 - User-proxy skill: exercise the language from a programmer's perspective
 - Engage progressively: Ring 0 examples first, then Ring 1, etc.
-- Report to compiler skills when:
-  - Error messages are confusing or mention internal names → `/typecheck` or `/backend`
-  - REPL feedback is unhelpful → `/qa`
-  - Language constructs are awkward in practice → `/arch`
+- File usability findings to `/qa`'s **usability register** (`tests/plan/usability.md`):
+  - Error messages confusing or mentioning internal names
+  - REPL feedback unhelpful for learners
+  - Language constructs awkward in practice
+  - Non-obvious syntax or missing affordances
+  - Each finding needs: category, severity (blocking/important/deferred), description
 
 ## First Steps (Phase B)
 

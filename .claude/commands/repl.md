@@ -54,12 +54,14 @@ This role is distinct from `/qa` (which owns REPL *implementation* — the code 
 
 - User-proxy skill: exercises the REPL from a developer's perspective
 - Consumes the REPL implementation from `/qa` (which owns `src/repl/`)
-- Reports findings to:
-  - `/qa` — REPL implementation bugs, missing features, orchestration issues
-  - `/typecheck` — unhelpful type error messages
-  - `/backend` — performance problems in codegen or JIT
-  - `/frontend` — reader or expansion surprises
-  - `/arch` — when the pipeline structure makes a REPL experience goal impossible
+- File usability findings to `/qa`'s **usability register** (`tests/plan/usability.md`):
+  - Discoverability gaps (new users can't find what's available)
+  - Feedback quality issues (opaque errors, missing type display, unhelpful responses)
+  - Performance problems (startup, evaluation, module load latency)
+  - Reader or expansion surprises at the prompt
+  - Pipeline structure that prevents a REPL experience goal
+  - Each finding needs: category, severity (blocking/important/deferred), description
+- Report REPL *implementation* bugs directly to `/qa` (which owns `src/repl/`)
 - Coordinates with `/docs` to ensure tutorial examples work as expected at the REPL
 
 ## First Steps (Phase B)

@@ -1,16 +1,271 @@
 # Test Strategy
 
-How `/qa` manages quality across the Cranelisp reimplementation: quality model, skill interactions, pipeline wiring, and portability classification.
+How `/qa` manages quality across the Cranelisp reimplementation.
+
+## Core Principle
+
+`/qa` is not a test porter. `/qa` is the authority that defines what the compiler must provide for testability, specifies the observability requirements for each skill, and owns the test pyramid from boundary tests upward. The prototype's tests are acceptance criteria, not the test design.
 
 ## Quality Model
 
-Quality has three dimensions:
+Quality has five dimensions:
 
-1. **Correctness**: does the compiler produce the right output for every input? (integration tests)
-2. **Parity**: do batch and REPL produce identical results? (dual-mode tests)
-3. **Soundness**: are memory, types, and modules internally consistent? (RC tests, type inference tests, module resolution tests)
+1. **Correctness**: does the compiler produce the right output for every input?
+2. **Parity**: do batch and REPL produce identical results for identical input?
+3. **Soundness**: are memory, types, and modules internally consistent?
+4. **Observability**: can failures be diagnosed without a debugger?
+5. **Usability**: is the language and environment simple and powerful enough for real software delivery?
 
-Each ring must satisfy all three before the next ring begins. `/review` gates ring transitions.
+Each ring must satisfy all five before the next ring begins. `/review` gates ring transitions.
+
+---
+
+## Test Pyramid
+
+Four layers, from fastest/narrowest to slowest/broadest:
+
+### Layer 1: Unit Tests (stage internals)
+
+**Owned by**: each compiler skill (`/frontend`, `/typecheck`, `/backend`)
+
+**Location**: `#[cfg(test)] mod tests` inside each source module
+
+**What they test**: internal algorithms in isolation — parser combinators, unification steps, IR emission for individual expression forms, RC inc/dec emission patterns, scope push/pop correctness.
+
+**QA's role**: `/qa` does not write these, but **specifies minimum coverage requirements** per ring. Each ring plan lists which internal behaviors must have unit tests before the ring gate passes. `/qa` reviews unit test coverage at ring gates.
+
+**Minimum coverage requirements**:
+- Every `Expr` variant has at least one unit test in both typecheck and codegen
+- Every error path that returns `CranelispError` has a unit test that triggers it
+- Every `debug_assert!` has a companion unit test that exercises the asserted invariant
+
+### Layer 2: Boundary Tests (contract verification)
+
+**Owned by**: `/qa`
+
+**Location**: `tests/boundary/`
+
+**What they test**: the data that crosses crate boundaries matches the contracts in `design/arch/interfaces.md`. Each boundary test constructs input for one stage, runs that stage, and validates the output type/structure — without running the full pipeline.
+
+**Examples**:
+- Reader produces well-formed `Sexp` with correct spans for all syntactic forms
+- AST builder produces the right `Expr` variant for each `Sexp` pattern
+- TypeChecker produces `CheckResult` with correct `expr_types` for known inputs
+- Codegen produces executable code that returns correct values for hand-constructed typed AST
+- `SymbolTable` entries have correct visibility, schemes, and DefKind after type checking
+
+**Why this layer matters**: boundary tests catch interface misunderstandings between skills *before* integration. If `/frontend` produces `Sexp::List` where `/typecheck` expects `Sexp::Bracket`, a boundary test catches it without wiring the full pipeline.
+
+### Layer 3: Integration Tests (pipeline verification)
+
+**Owned by**: `/qa`
+
+**Location**: `tests/integration/`
+
+**What they test**: stages wired together via `compile_unit()`, exercising the full pipeline from source text to execution result. These call Rust APIs (not the binary) and can inspect intermediate state.
+
+**Sub-categories**:
+- **Batch mode**: `compile_and_run_simple(src)` → assert result value
+- **REPL mode**: `repl_session()` → define, eval, assert
+- **Dual-mode**: `compile_both(src)` → assert batch and REPL agree
+- **Error paths**: `assert_type_error(src, msg)`, `assert_parse_error(src, msg)`
+- **RC correctness**: `assert_rc_balanced(src)` — serial, with allocation tracking
+- **Module graph**: multi-file compilation with imports, exports, visibility
+
+**Relation to prototype tests**: most of the ~591 prototype tests map to this layer. They are acceptance criteria — the expected source/result pairs are ported, but the test harness and helpers are new.
+
+### Layer 4: E2E Tests (black-box verification)
+
+**Owned by**: `/qa`
+
+**Location**: `tests/e2e/`
+
+**What they test**: the `cranelisp` binary invoked as a subprocess, checking stdout, stderr, and exit code. No Rust APIs. No internal state inspection. This is what the user sees.
+
+**Sub-categories**:
+- **Batch programs**: `cranelisp --run file.cl` → check stdout + exit code
+- **REPL sessions**: scripted stdin → check stdout line-by-line
+- **Compiler errors**: invalid programs → check stderr contains useful error message + exit code != 0
+- **Module projects**: multi-file projects → `cranelisp --run main.cl` → check output
+- **Executable generation**: `cranelisp --compile file.cl` → run generated binary → check output
+- **Performance**: wall-clock timing of representative programs
+
+**Why this layer matters**: E2E tests are the **release gate**. They are independent of all internal structure. If every crate is rewritten, renamed, or restructured, E2E tests still pass as long as the user experience is correct. They are the only tests that survive a hypothetical second reimplementation.
+
+**E2E test format**: each test is a directory containing:
+```
+tests/e2e/cases/
+  factorial/
+    input.cl           — source file(s)
+    expected_stdout     — expected stdout (or stdout_contains for substring match)
+    expected_exit       — expected exit code (default: 0)
+  repl_basic/
+    input.session       — scripted REPL input (one line per command)
+    expected_output     — expected REPL output (line-by-line or pattern match)
+  type_error/
+    input.cl
+    expected_stderr     — expected error message (substring match)
+    expected_exit       — 1
+```
+
+A test runner iterates over `tests/e2e/cases/`, invokes the binary, and asserts. This runner is simple enough to write in shell or Rust, and it is entirely decoupled from compiler internals.
+
+---
+
+## Diagnostic Requirements
+
+`/qa` specifies observability hooks that compiler skills **must implement**. These are not tests — they are infrastructure that makes tests (and debugging) possible.
+
+### Runtime Assertions
+
+Every skill must use `debug_assert!` for internal invariants that should never be violated. These fire during test runs (debug builds) but are compiled out in release. `/qa` requires:
+
+| Skill | Required Assertions |
+|---|---|
+| `/frontend` | Span monotonicity (child spans within parent), no empty symbol names, bracket/paren nesting consistency |
+| `/typecheck` | No unresolved `Var` in `CheckResult.expr_types`, substitution idempotency after unification, scheme vars are a subset of free vars in the type, no duplicate entries in `MethodResolutions` |
+| `/backend` | GOT slot uniqueness within a module, stack balance at function boundaries (push count == pop count), no code emission after function finalization, RC inc/dec balance within a scope (debug mode) |
+| `/runtime` | Allocation size > 0, RC never goes negative, no double-free (tracked via `LIVE_ALLOCS` set in debug mode) |
+
+### Diagnostic Logging
+
+Controlled by environment variables. Silent by default. `/qa` requires these knobs:
+
+| Variable | Skill | What it shows |
+|---|---|---|
+| `CRANELISP_RC_TRACE=1` | `/backend` + `/runtime` | Every alloc, inc, dec, free with pointer + type + location |
+| `CRANELISP_INFER_TRACE=1` | `/typecheck` | Unification steps, constraint generation, instantiation, generalization |
+| `CRANELISP_CODEGEN_TRACE=1` | `/backend` | CLIF IR for each function before/after optimization |
+| `CRANELISP_MODULE_TRACE=1` | `/qa` (binary crate) | Module discovery, compile order, import resolution, cache hits/misses |
+| `CRANELISP_MACRO_TRACE=1` | `/frontend` + binary | Macro expansion steps, input sexp → output sexp |
+
+These are not test infrastructure — they are diagnostic infrastructure that `/qa` uses to write better tests and diagnose failures. Each skill implements its own trace points; `/qa` specifies what must be traceable.
+
+### Structured Intermediate State
+
+Each pipeline stage must expose its intermediate output for inspection in tests:
+
+| Stage | Inspectable Output | How |
+|---|---|---|
+| Reader | `Vec<Sexp>` | `Frontend::parse(src) -> Result<Vec<Sexp>>` |
+| AST Builder | `Vec<TopLevel>` | `Frontend::build(sexps) -> Result<Vec<TopLevel>>` |
+| Macro Expander | expanded `Vec<Sexp>` | `MacroExpander::expand_all(sexps) -> Result<Vec<Sexp>>` |
+| TypeChecker | `CheckResult` + updated `SymbolTable` | `TypeChecker::check(program) -> Result<CheckResult>` |
+| Codegen | CLIF IR string, disassembly | `Backend::compile(program, check_result) -> Result<CompileResult>` |
+| Execution | raw `i64` result | `Backend::execute(symbol) -> Result<i64>` |
+
+Boundary tests exercise these interfaces directly. Integration tests use the composed `compile_unit()`.
+
+---
+
+## Skill Interaction Model
+
+### What /qa demands from each skill
+
+```
+Skill          /qa Demands                       /qa Provides Back
+─────────────  ───────────────────────────────── ─────────────────────────────────
+/frontend      Inspectable Sexp/AST output       Boundary tests for reader + AST
+               debug_assert! on span invariants  Parse error quality reports
+               CRANELISP_MACRO_TRACE support     Macro expansion regression tests
+
+/typecheck     Inspectable CheckResult           Boundary tests for inference
+               debug_assert! on type invariants  Type error quality reports
+               CRANELISP_INFER_TRACE support     Cross-module inference tests
+               No unresolved Var in output       Constrained-poly regression tests
+
+/backend       Inspectable CLIF IR + disasm      Boundary tests for codegen
+               debug_assert! on GOT + RC         RC correctness test results
+               CRANELISP_RC_TRACE support        Performance measurements
+               CRANELISP_CODEGEN_TRACE support   Panic handler requirements
+               Recoverable panic (not exit(1))   Codegen regression tests
+
+/runtime       LIVE_ALLOCS tracking in debug     RC balance verification
+               debug_assert! on RC invariants    Double-free detection
+               No undefined behavior in alloc    Memory safety verification
+
+/arch          Testable crate boundaries         Ring gate test reports
+               compile_unit() single entry       Boundary test coverage data
+               CompileMode for batch/REPL        Parity verification
+
+/platform      test-capture platform DLL         Platform loading tests
+               Deterministic test IO             IO integration tests
+
+/spec          Testable examples in every        Test-to-spec coverage mapping
+               spec section                      Spec gap reports
+```
+
+### Communication Protocol
+
+1. **Diagnostic request**: `/qa` specifies a diagnostic requirement (e.g., "typecheck must expose `CRANELISP_INFER_TRACE`"). The owning skill implements it. `/qa` validates the diagnostic output is useful.
+
+2. **Test failure triage**: When a test fails, `/qa` identifies the layer (boundary, integration, E2E) and the responsible skill. Diagnostic logging narrows the root cause.
+
+3. **Ring gate**: At ring completion, `/qa` produces a test report:
+   - Unit test coverage: per-crate, per-module
+   - Boundary tests: all boundary contracts verified (yes/no)
+   - Integration tests: N passing, M failing, K skipped
+   - E2E tests: all black-box tests pass (yes/no)
+   - RC balance: all allocation tracking clean (yes/no)
+   - Parity: batch and REPL agree on all tests (yes/no)
+   - Runtime assertions: no debug_assert! fires during any test run (yes/no)
+   - Usability: no blocking usability findings open (yes/no)
+   - Regressions: any prior-ring tests broken (yes/no)
+
+4. **Feedback to /spec**: When a test reveals ambiguous behavior, `/qa` reports to `/spec` with the test source, expected behavior, and actual behavior.
+
+5. **Usability feedback**: User-proxy skills (`/stdlib`, `/examples`, `/docs`, `/port`, `/repl`, `/platform`) file usability findings to `/qa`'s usability register (see below).
+
+---
+
+## Usability Register
+
+`/qa` maintains a usability register — a structured assembly point for findings from user-proxy skills. These skills exercise the language from different perspectives (library author, learner, documentation writer, application developer, interactive user, extension author) and encounter friction that automated tests don't catch.
+
+### What Gets Registered
+
+- Corner cases where language behavior is surprising or unintuitive
+- Unhelpful or misleading error messages
+- Type inference that requires too many annotations
+- Missing stdlib functions that real code needs
+- Macro system limitations encountered in practice
+- REPL experience gaps (discoverability, feedback, performance)
+- Module system friction (import patterns, visibility surprises)
+- Performance problems at realistic scale
+- Platform/FFI ergonomic issues
+
+### Who Contributes
+
+| Skill | Perspective | Typical Findings |
+|---|---|---|
+| `/stdlib` | Library author | Missing primitives, awkward trait APIs, naming surprises |
+| `/examples` | Learner | Confusing errors, non-obvious syntax, missing affordances |
+| `/docs` | New user advocate | Learning curve gaps, terminology inconsistencies |
+| `/port` | Application developer | Scale issues, module friction, stdlib gaps, IO model limits |
+| `/repl` | Interactive user | Discoverability gaps, feedback quality, latency |
+| `/platform` | Extension author | C-ABI awkwardness, marshalling pain, IO model leaks |
+
+### Filing Format
+
+Each finding includes:
+- **Source skill**: which skill encountered it
+- **Category**: error quality / inference friction / missing API / performance / ergonomics / other
+- **Severity**: blocking (must fix before ring advance) / important (should fix) / deferred (nice to have)
+- **Description**: what happened, what was expected, what would be better
+- **Responsible skill**: which compiler skill should address it (if known)
+
+### Ring Gate Integration
+
+The ring gate checklist (§"Communication Protocol" item 3) includes:
+- **Usability**: no blocking usability findings open (yes/no)
+
+A ring cannot advance if any blocking usability finding remains unresolved.
+
+### Location
+
+Usability findings are tracked in `tests/plan/usability.md`. Each ring's section accumulates findings as user-proxy skills report them. Resolved findings are marked with the ring and commit that addressed them.
+
+---
 
 ## Pipeline Wiring Responsibility
 
@@ -18,163 +273,49 @@ Each ring must satisfy all three before the next ring begins. `/review` gates ri
 
 - **Ring 0**: `/qa` writes `compile_unit()` in the binary crate, connecting `cranelisp-frontend` → `cranelisp-typecheck` → `cranelisp-backend`.
 - **Ring 2**: `/qa` extends `compile_unit()` with module graph discovery and ordered compilation.
-- **Ring 3**: `/qa` implements the `MacroExpander` trait in the binary crate (wiring frontend + typecheck + backend for macro bodies).
+- **Ring 3**: `/qa` implements the `MacroExpander` trait in the binary crate.
 - **Ring 4**: `/qa` adds caching, linking, REPL session management, and file watching.
 
-Each compiler skill implements its crate in isolation against interface stubs. `/qa` is the first to connect real implementations.
+Each compiler skill implements its crate in isolation against interface stubs. `/qa` is the first to connect real implementations and the first to discover interface mismatches.
 
-## Skill Interaction Model
+---
 
-```
-Skill          /qa Provides                      /qa Receives
-─────────────  ───────────────────────────────── ─────────────────────────────────
-/arch          Test plan review                  Interface types, crate structure,
-               Ring acceptance gate feedback     CompileMode design,
-                                                 compile_unit() signature
+## Test Portability (from prototype)
 
-/frontend      Integration tests validating      Reader (source → Sexp)
-               parse correctness                 AST builder (Sexp → Expr)
-               Error message quality reports     MacroExpander trait
+The prototype's 591 tests are acceptance criteria, not the test design. They map to test pyramid layers:
 
-/typecheck     Integration tests validating      CheckResult, type inference,
-               type inference end-to-end         method resolution, exhaustiveness
-               Regression reports                checking
-
-/backend       RC correctness test results       Codegen, JIT execution,
-               Performance measurements          RC emission, GOT management,
-               Panic handler requirements        platform call dispatch
-
-/stdlib        Standard library test runner      Library source files
-               Test failures assigned back       Test patterns
-
-/platform      Platform loading tests            DLL loading, C-ABI contract,
-               IO integration tests              test-capture platform
-
-/review        Ring completion test reports      Ring approval/rejection,
-               Test coverage summaries           quality findings
-
-/repl          REPL experience test harness      Experience spec,
-               Smoke tests for slash commands    performance targets
-
-/port          Exemplar project test suite       End-user validation,
-               Integration with run-tests        stdlib gap reports
-
-/examples      Example file compilation tests    Example programs to compile
-               Output validation                 Idiomatic patterns
-
-/docs          Error message catalog input       User-facing documentation
-               Test failure examples             Learning path validation
-
-/spec          Test-to-spec mapping              Spec section per test,
-               Coverage gap reports              acceptance criteria
-```
-
-## Communication Protocol
-
-1. **Test failure triage**: When a test fails, `/qa` identifies the responsible skill based on the failure location (parse → `/frontend`, type → `/typecheck`, codegen → `/backend`, module → `/typecheck` or `/arch`).
-
-2. **Ring gate**: At ring completion, `/qa` produces a test report:
-   - Total tests: N passing, M failing, K skipped
-   - RC balance: all allocation tracking clean (yes/no)
-   - Parity: batch and REPL agree on all tests (yes/no)
-   - New coverage: tests added this ring
-   - Regression: any Ring N-1 tests broken
-
-3. **Blocked test tracking**: `/qa` maintains a list of tests blocked until a later ring. When a ring completes, `/qa` unblocks and runs newly eligible tests.
-
-4. **Feedback to /spec**: When a test reveals ambiguous behavior, `/qa` reports to `/spec` with the test source, expected behavior, and actual behavior.
-
-## Unit Test Ownership
-
-Each source crate has `#[cfg(test)] mod tests` in every module. These are owned by the compiler skill that owns the module:
-
-- `/frontend` owns reader and AST builder unit tests
-- `/typecheck` owns inference, unification, trait resolution unit tests
-- `/backend` owns codegen, RC emission, GOT management unit tests
-
-`/qa` does not write unit tests for other skills. `/qa` owns integration tests that validate the pipeline end-to-end.
-
-## Test Portability Classification
-
-### Summary
-
-| Classification | Count | Action |
+| Prototype Source | Reimplementation Layer | Count |
 |---|---|---|
-| Directly portable | ~530 | Port source + expected value verbatim |
-| Needs API adaptation | ~40 | Rewrite against new crate APIs |
-| Rewrite | ~20 | Rewrite against new architecture |
-| Total | ~591 | No test dropped silently |
+| `integration.rs` batch tests | Integration (Layer 3) | ~300 |
+| `integration.rs` REPL tests | Integration (Layer 3) | ~120 |
+| `integration.rs` error tests | Integration (Layer 3) + E2E (Layer 4) | ~20 |
+| `integration.rs` example files | E2E (Layer 4) | ~16 |
+| `integration.rs` cache tests | Integration (Layer 3) | ~15 |
+| `integration.rs` module tests | Integration (Layer 3) | ~35 |
+| `rc.rs` | Integration (Layer 3) — serial, with diagnostics | 57 |
+| `trace.rs` | Integration (Layer 3) | 14 |
+| `run_tests.rs` | Integration (Layer 3) | 9 |
+| `platform.rs` | Integration (Layer 3) | 9 |
+| `e2e/*.cl/*.out` | E2E (Layer 4) | 4 |
 
-### Directly Portable Pattern
+**New tests not in prototype** (per layer):
+- **Boundary**: contract tests for every crate boundary (none exist in prototype)
+- **Integration**: dual-mode parity tests, cross-module RC tests
+- **E2E**: compiler error output tests, multi-file project tests, `--compile` tests, performance benchmarks
 
-Tests that compile source, run, and check output. Same source, same expected value:
+---
 
-```rust
-#[test]
-fn factorial() {
-    let result = compile_and_run_simple(r#"
-        (defn fact [n] (if (= n 0) 1 (* n (fact (- n 1)))))
-        (defn main [] (pure (fact 10)))
-    "#).unwrap();
-    assert_eq!(result, 3628800);
-}
-```
+## Performance Baselines
 
-### Needs API Adaptation Pattern
-
-Tests that use prototype-specific types (`FnSlot`, `GotReference`, `CompiledModule`, `ReplSession`):
-
-```rust
-// Prototype:
-let mut r = TestRepl::new();
-r.defn("(defn add1 [x] (+ x 1))").unwrap();
-assert_eq!(r.eval("(add1 5)").unwrap(), 6);
-
-// Reimplementation:
-let mut session = repl_session();
-session.eval("(defn add1 [x] (+ x 1))").unwrap();
-assert_eq!(session.eval("(add1 5)").unwrap(), 6);
-```
-
-### Rewrite
-
-Tests tightly coupled to prototype internals (cache file structure, GOT layout, JIT details). Rewritten against the new architecture when the relevant ring is implemented.
-
-## Ignored Test Disposition
-
-| Prototype Test | Reason Ignored | Reimplementation Plan |
-|---|---|---|
-| `checked_division_by_zero_panics` | process::exit(1) | Fix panic handler; make normal test |
-| `checked_add_overflow_panics` | process::exit(1) | Fix panic handler; make normal test |
-| `checked_sub_overflow_panics` | process::exit(1) | Fix panic handler; make normal test |
-| `checked_mul_overflow_panics` | process::exit(1) | Fix panic handler; make normal test |
-| `checked_div_min_neg1_panics` | process::exit(1) | Fix panic handler; make normal test |
-| `known_issue_vec_out_of_bounds` | process::exit(1) | Fix panic handler; make normal test |
-| `vec_get_out_of_bounds_panics` | process::exit(1) | Fix panic handler; make normal test |
-| `vec_get_negative_index_panics` | process::exit(1) | Fix panic handler; make normal test |
-| `ambiguous_trait_method_dotted_name_works` | Known issue: method resolution | Fix in reimplementation; make normal test |
-| `dotted_field_accessor_resolution` | Flaky: process::exit(1) | Fix panic handler + accessor resolution |
-
-All 10 should become normal (non-ignored) tests in the reimplementation.
-
-## Known Issue Test Disposition
-
-| Prototype Test | Known Issue | Reimplementation Plan |
-|---|---|---|
-| `known_issue_adt_accessor_shadowing` | Accessor "first wins" | Fix: module-scoped accessors |
-| `known_issue_qualified_name_resolution_error` | Qualified names parse but don't resolve | Fix: proper qualified name resolution |
-
-Both should test the *correct* behavior in the reimplementation.
-
-## Performance Baselines (to be captured)
-
-Capture before Ring 0 implementation begins, running against the prototype:
+Capture before Ring 0, running against the prototype:
 
 | Metric | How to Measure | Target |
 |---|---|---|
-| Reader throughput | Parse `lib/prelude.cl` + `lib/core/*.cl` (N times) | Within 2x of prototype |
+| Reader throughput | Parse `lib/prelude.cl` + `lib/core/*.cl` | Within 2x of prototype |
 | Type inference time | Check all example files | Within 2x of prototype |
 | Codegen time | Compile all example files | Within 2x of prototype |
 | Test suite total | `just test` wall clock | Within 2x of prototype |
 | REPL startup | Time to first prompt | <500ms |
 | Expression eval | `(+ 1 2)` at REPL | <100ms |
+
+E2E performance tests verify these on every ring.

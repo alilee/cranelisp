@@ -17,11 +17,12 @@ Build platform DLLs that extend the language with IO capabilities. Validate the 
 
 - User-proxy skill: exercise the FFI boundary from a platform author's perspective
 - Begin work once Ring 1 is stable (heap allocation and RC needed for CLOwned wrappers)
-- Report to compiler skills when:
-  - C-ABI contract is awkward → `/arch`
-  - Marshalling is error-prone → `/backend`
-  - IO model leaks abstractions → `/typecheck` or `/backend`
-  - `CLOwned`/`CLString`/`CLInt` wrapper ergonomics need improvement → `/arch`
+- File usability findings to `/qa`'s **usability register** (`tests/plan/usability.md`):
+  - C-ABI contract awkwardness for platform authors
+  - Marshalling that is error-prone or requires boilerplate
+  - IO model leaking abstractions
+  - `CLOwned`/`CLString`/`CLInt` wrapper ergonomic issues
+  - Each finding needs: category, severity (blocking/important/deferred), description
 
 ## First Steps (Phase B/D)
 

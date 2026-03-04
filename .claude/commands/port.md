@@ -37,14 +37,15 @@ Candidate categories (to be decided with user input):
 
 - User-proxy skill: exercises the language from an application developer's perspective
 - Begin work once Ring 3 is stable (needs macros, stdlib, modules) — fully active at Ring 4 (needs IO)
-- Reports findings to:
-  - `/stdlib` — missing standard library functions, awkward APIs, naming surprises
-  - `/typecheck` — type inference that requires too many annotations, surprising inference failures
-  - `/frontend` — macro limitations encountered in real code
-  - `/backend` — performance issues at application scale
-  - `/platform` — platform API gaps, IO model friction
-  - `/qa` — REPL workflow issues encountered during development
-  - `/arch` — when module boundaries or import patterns create friction for real projects
+- File usability findings to `/qa`'s **usability register** (`tests/plan/usability.md`):
+  - Missing stdlib functions, awkward APIs, naming surprises
+  - Type inference requiring too many annotations, surprising inference failures
+  - Macro limitations encountered in real code
+  - Performance issues at application scale
+  - Platform API gaps, IO model friction
+  - REPL workflow issues during development
+  - Module boundary or import patterns that create friction
+  - Each finding needs: category, severity (blocking/important/deferred), description
 - Coordinates with `/docs` to ensure the exemplar is documented as a learning resource
 
 ## First Steps (Phase B)
