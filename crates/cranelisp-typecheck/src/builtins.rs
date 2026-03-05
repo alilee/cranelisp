@@ -1,13 +1,17 @@
 //! Register Ring 0 primitives and special forms in the typechecker.
 //!
 //! Ring 0: 19 monomorphic named primitives (add-i64, add-f64, eq-i64, ..., not).
+//! Ring 1: 8 monomorphic string/conversion externs + 4 polymorphic Vec externs.
 //! Ring 2 adds trait-dispatched Num.+ etc. on top of these.
 //!
 //! Primitives are registered as ordinary symbol table entries with monomorphic
 //! schemes and `DefKind::Primitive { primitive_kind: PrimitiveKind::Inline }`.
+//! Vec primitives use polymorphic schemes with quantified type variables.
 //! No `builtin_operators` HashSet is needed — the DefKind is sufficient for lookup.
 
-use cranelisp_types::{ring0_primitives, ring1_primitives, DefKind, JitSymbol, ModuleEntry, PrimitiveKind, Symbol, Type, Visibility};
+use std::collections::HashMap;
+
+use cranelisp_types::{ring0_primitives, ring1_primitives, DefKind, JitSymbol, ModuleEntry, PrimitiveKind, Scheme, Symbol, Type, TypeName, Visibility};
 
 use crate::checker::TypeChecker;
 use crate::scheme::mono;
@@ -17,6 +21,7 @@ impl TypeChecker {
     pub(crate) fn register_builtins(&mut self) {
         self.register_primitives();
         self.register_ring1_primitives();
+        self.register_vec_primitives();
         self.register_special_forms();
     }
 
@@ -63,6 +68,87 @@ impl TypeChecker {
                     kind: Box::new(DefKind::Primitive {
                         primitive_kind: PrimitiveKind::Extern,
                         jit_name: Some(JitSymbol::from(prim.name.as_ref())),
+                    }),
+                },
+            );
+        }
+    }
+
+    /// Register Vec primitives with polymorphic type schemes.
+    ///
+    /// Vec primitives are polymorphic over the element type:
+    /// - `vec-get  :: forall a. (Fn [(Vec a) Int] a)`
+    /// - `vec-set  :: forall a. (Fn [(Vec a) Int a] (Vec a))`
+    /// - `vec-push :: forall a. (Fn [(Vec a) a] (Vec a))`
+    /// - `vec-len  :: forall a. (Fn [(Vec a)] Int)`
+    ///
+    /// Unlike Ring 1 string primitives (monomorphic), these require quantified
+    /// type variables so the typechecker can instantiate them at each call site.
+    fn register_vec_primitives(&mut self) {
+        // Allocate a fresh type variable ID for the polymorphic parameter 'a'.
+        // This ensures the scheme's Var(a) won't collide with any Var already
+        // in use by the typechecker, preventing infinite recursion in `apply`
+        // when `instantiate` maps Var(a) to a fresh var.
+        let (_, a) = self.fresh_var_id();
+        let vec_a = Type::ADT(TypeName::from("Vec"), vec![Type::Var(a)]);
+
+        let vec_prims: Vec<(&str, Vec<Symbol>, Scheme)> = vec![
+            // vec-get :: forall a. (Fn [(Vec a) Int] a)
+            (
+                "vec-get",
+                vec![Symbol::from("v"), Symbol::from("idx")],
+                Scheme {
+                    vars: vec![a],
+                    constraints: HashMap::new(),
+                    ty: Type::Fn(vec![vec_a.clone(), Type::Int], Box::new(Type::Var(a))),
+                },
+            ),
+            // vec-set :: forall a. (Fn [(Vec a) Int a] (Vec a))
+            (
+                "vec-set",
+                vec![Symbol::from("v"), Symbol::from("idx"), Symbol::from("val")],
+                Scheme {
+                    vars: vec![a],
+                    constraints: HashMap::new(),
+                    ty: Type::Fn(
+                        vec![vec_a.clone(), Type::Int, Type::Var(a)],
+                        Box::new(vec_a.clone()),
+                    ),
+                },
+            ),
+            // vec-push :: forall a. (Fn [(Vec a) a] (Vec a))
+            (
+                "vec-push",
+                vec![Symbol::from("v"), Symbol::from("val")],
+                Scheme {
+                    vars: vec![a],
+                    constraints: HashMap::new(),
+                    ty: Type::Fn(vec![vec_a.clone(), Type::Var(a)], Box::new(vec_a.clone())),
+                },
+            ),
+            // vec-len :: forall a. (Fn [(Vec a)] Int)
+            (
+                "vec-len",
+                vec![Symbol::from("v")],
+                Scheme {
+                    vars: vec![a],
+                    constraints: HashMap::new(),
+                    ty: Type::Fn(vec![vec_a.clone()], Box::new(Type::Int)),
+                },
+            ),
+        ];
+
+        for (name, param_names, scheme) in vec_prims {
+            self.symbol_table.insert(
+                Symbol::from(name),
+                ModuleEntry::Def {
+                    scheme,
+                    visibility: Visibility::Public,
+                    docstring: None,
+                    param_names,
+                    kind: Box::new(DefKind::Primitive {
+                        primitive_kind: PrimitiveKind::Extern,
+                        jit_name: Some(JitSymbol::from(name)),
                     }),
                 },
             );
@@ -250,6 +336,93 @@ mod tests {
         assert_eq!(int_cmp, 5, "5 int comparisons");
         assert_eq!(float_cmp, 5, "5 float comparisons");
         assert_eq!(bool_op, 1, "1 boolean op (not)");
+    }
+
+    #[test]
+    fn test_vec_primitives_registered() {
+        let tc = TypeChecker::new();
+        let vec_ops = ["vec-get", "vec-set", "vec-push", "vec-len"];
+        for name in vec_ops {
+            assert!(
+                tc.symbol_table.get(name).is_some(),
+                "Vec primitive {name} should be in symbol table"
+            );
+        }
+    }
+
+    #[test]
+    fn test_vec_get_scheme_is_polymorphic() {
+        let tc = TypeChecker::new();
+        if let Some(ModuleEntry::Def { scheme, kind, .. }) = tc.symbol_table.get("vec-get") {
+            assert_eq!(scheme.vars.len(), 1, "vec-get should have 1 quantified var");
+            // Type: (Fn [(Vec a) Int] a)
+            if let Type::Fn(params, ret) = &scheme.ty {
+                assert_eq!(params.len(), 2);
+                assert!(matches!(&params[0], Type::ADT(name, _) if name.as_ref() == "Vec"));
+                assert_eq!(params[1], Type::Int);
+                assert!(matches!(ret.as_ref(), Type::Var(_)));
+            } else {
+                panic!("vec-get should be a function type");
+            }
+            assert!(
+                matches!(kind.as_ref(), DefKind::Primitive { primitive_kind: PrimitiveKind::Extern, .. }),
+                "vec-get should be Primitive::Extern"
+            );
+        } else {
+            panic!("vec-get not found");
+        }
+    }
+
+    #[test]
+    fn test_vec_set_scheme_is_polymorphic() {
+        let tc = TypeChecker::new();
+        if let Some(ModuleEntry::Def { scheme, .. }) = tc.symbol_table.get("vec-set") {
+            assert_eq!(scheme.vars.len(), 1, "vec-set should have 1 quantified var");
+            if let Type::Fn(params, ret) = &scheme.ty {
+                assert_eq!(params.len(), 3, "vec-set takes (Vec a), Int, a");
+                assert!(matches!(&params[0], Type::ADT(name, _) if name.as_ref() == "Vec"));
+                assert_eq!(params[1], Type::Int);
+                // ret is (Vec a)
+                assert!(matches!(ret.as_ref(), Type::ADT(name, _) if name.as_ref() == "Vec"));
+            } else {
+                panic!("vec-set should be a function type");
+            }
+        } else {
+            panic!("vec-set not found");
+        }
+    }
+
+    #[test]
+    fn test_vec_push_scheme_is_polymorphic() {
+        let tc = TypeChecker::new();
+        if let Some(ModuleEntry::Def { scheme, .. }) = tc.symbol_table.get("vec-push") {
+            assert_eq!(scheme.vars.len(), 1, "vec-push should have 1 quantified var");
+            if let Type::Fn(params, ret) = &scheme.ty {
+                assert_eq!(params.len(), 2, "vec-push takes (Vec a), a");
+                assert!(matches!(ret.as_ref(), Type::ADT(name, _) if name.as_ref() == "Vec"));
+            } else {
+                panic!("vec-push should be a function type");
+            }
+        } else {
+            panic!("vec-push not found");
+        }
+    }
+
+    #[test]
+    fn test_vec_len_scheme_is_polymorphic() {
+        let tc = TypeChecker::new();
+        if let Some(ModuleEntry::Def { scheme, .. }) = tc.symbol_table.get("vec-len") {
+            assert_eq!(scheme.vars.len(), 1, "vec-len should have 1 quantified var");
+            if let Type::Fn(params, ret) = &scheme.ty {
+                assert_eq!(params.len(), 1, "vec-len takes (Vec a)");
+                assert!(matches!(&params[0], Type::ADT(name, _) if name.as_ref() == "Vec"));
+                assert_eq!(*ret.as_ref(), Type::Int);
+            } else {
+                panic!("vec-len should be a function type");
+            }
+        } else {
+            panic!("vec-len not found");
+        }
     }
 
     #[test]

@@ -1148,6 +1148,54 @@ const _: () = assert!(HeapClosure::CODE_PTR_OFFSET == 16);
 const _: () = assert!(HeapClosure::CAPTURES_START == 24);
 ```
 
+### HeapVec (in `cranelisp-backend`)
+
+Vec layout is used by the backend for Vec literal compilation, element access, COW mutation, and drop glue. Lives in `cranelisp-backend`.
+
+A Vec value consists of **two allocations**: a Vec struct (with RC header) and a separate data buffer for elements. The data buffer is a plain byte allocation — no RC header of its own — because it is never independently reference-counted; its lifetime is tied to the Vec struct.
+
+```rust
+/// Vec struct: [header | len | cap | data_ptr]
+/// The data buffer is a separate allocation: [elem_0 | elem_1 | ... | elem_{cap-1}]
+/// Each element is i64 (uniform representation). Only the first `len` elements are live.
+#[repr(C)]
+pub struct HeapVec {
+    pub header: HeapHeader,
+    /// Number of live elements (0..len are initialized).
+    pub len: i64,
+    /// Capacity of the data buffer (in elements, not bytes).
+    pub cap: i64,
+    /// Pointer to the data buffer. The buffer holds `cap` slots of i64.
+    pub data_ptr: i64, // ptr-width: i64 on native
+}
+
+impl HeapVec {
+    pub const LEN_OFFSET: i32 = offset_of!(Self, len) as i32;           // 16
+    pub const CAP_OFFSET: i32 = offset_of!(Self, cap) as i32;           // 24
+    pub const DATA_PTR_OFFSET: i32 = offset_of!(Self, data_ptr) as i32; // 32
+
+    /// Payload size after the header: len + cap + data_ptr.
+    pub const fn payload_size() -> usize {
+        3 * mem::size_of::<i64>()  // 24 bytes
+    }
+}
+
+const _: () = assert!(HeapVec::LEN_OFFSET == 16);
+const _: () = assert!(HeapVec::CAP_OFFSET == 24);
+const _: () = assert!(HeapVec::DATA_PTR_OFFSET == 32);
+const _: () = assert!(mem::size_of::<HeapVec>() == 40);
+```
+
+**Data buffer layout:**
+```
+data_ptr → [elem_0: i64 | elem_1: i64 | ... | elem_{cap-1}: i64]
+             ↑ live (0..len)                    ↑ uninitialized (len..cap)
+```
+
+Element offset: `data_ptr + index * 8`. The data buffer is allocated as `cap * 8` bytes via the system allocator (no RC header). When the Vec struct is freed, the data buffer is freed separately.
+
+**Vec type representation:** Vec reuses the existing `Type::ADT("Vec", vec![elem_type])` representation. The typechecker special-cases the name `"Vec"` to provide vec operations as typed primitives rather than ADT constructor calls. `VecLit` elements unify to determine `elem_type`; `[]` infers `Vec(a)` (polymorphic).
+
 ### Closure Calling Convention
 
 **Lambda body signature:** `(env_ptr: i64, param_0: i64, ..., param_n: i64) -> i64`
@@ -1190,6 +1238,18 @@ emit_rc_dec(builder, ptr):
 ```
 
 The inc/dec pattern matches `std::sync::Arc` semantics: Release on modification, Acquire fence before deallocation to ensure all writes to the object are visible before it is freed.
+
+**F-12 Null guard (prerequisite for Vec element RC):** `emit_rc_dec` MUST guard against bare i64 values that are not heap pointers before accessing the RC header. Nullary ADT constructors (e.g., `None` = 0, `Nil` = 0) are bare i64 tags, not heap pointers. Decrementing at `tag + HeapHeader::RC_OFFSET` would corrupt arbitrary memory.
+
+Guard pattern for `emit_rc_dec`:
+```
+emit_rc_dec(builder, ptr, ty):
+    if HeapCategory::classify(ty) == Mixed:
+        brif ptr < NULLARY_TAG_THRESHOLD, skip_block, dec_block
+    // ... proceed with atomic dec in dec_block
+```
+
+`NULLARY_TAG_THRESHOLD` is `1024` — any value below this is a nullary tag, not a heap pointer. This threshold is conservative: heap pointers from the allocator are always well above 1024. The guard is only needed for `Mixed` types (types with both nullary and data constructors, e.g., `Option`, `List`). `AlwaysHeap` types skip the guard. `NeverHeap` types skip the entire dec.
 
 ### Consuming Calling Convention (Ring 1)
 
@@ -1293,6 +1353,131 @@ All string primitives are registered in the `primitives` module with `PrimitiveK
 | `string-identity` | `string-identity` | `string_identity` | `(Fn [String] String)` | Borrowed |
 | `parse-int` | `parse-int` | `parse_int` | `(Fn [String] (Option Int))` | Borrowed |
 
+### Vec Primitives
+
+Vec operations use a **hybrid inline + extern** approach. Fast paths are compiled as inline Cranelift IR by the backend; slow paths (copy, grow) call extern functions in `cranelisp-runtime`.
+
+**Inline operations (emitted as Cranelift IR by the backend):**
+
+```rust
+/// vec-get: bounds-checked element access. O(1).
+/// Loads element at data_ptr + index * 8.
+/// Emits emit_rc_inc on the element for heap-typed elements (caller gets a new reference).
+/// Borrowed read optimization: if the owner Vec is unique (branch_depth == 0),
+/// skip inc and mark element as borrowed_temp.
+/// Panics at runtime if index < 0 or index >= len.
+/// vec-get :: (Fn [(Vec a) Int] a)
+/// Inline codegen — no JIT symbol.
+
+/// vec-set COW fast path: when is_last_use(vec) AND (static unique OR runtime rc==1),
+/// mutate in place: dec old element, store new element, return same Vec pointer.
+/// vec-set :: (Fn [(Vec a) Int a] (Vec a))
+/// Inline codegen — falls through to vec-set-copy extern on the copy path.
+
+/// vec-push COW fast path: when is_last_use(vec) AND (static unique OR runtime rc==1),
+/// store at data[len], increment len. If len >= cap, call vec-push-grow extern.
+/// vec-push :: (Fn [(Vec a) a] (Vec a))
+/// Inline codegen — falls through to vec-push-copy or vec-push-grow extern.
+```
+
+**Extern operations (in `cranelisp-runtime`, borrowed calling convention):**
+
+```rust
+/// Allocate a new Vec with the given initial capacity. Returns base pointer (rc=1).
+/// Data buffer is allocated separately as cap * 8 bytes.
+/// JIT name: "runtime/vec_new"
+extern "C" fn vec_new(cap: i64) -> i64;
+
+/// Vec length. Loads len from HeapVec::LEN_OFFSET.
+/// vec-len :: (Fn [(Vec a)] Int)
+/// JIT name: "vec-len"
+extern "C" fn vec_len(vec: i64) -> i64;
+
+/// Vec set — copy path. Allocates a new Vec, copies all elements with per-element
+/// RC inc via inc_fn, stores the new value at the given index.
+/// inc_fn: function pointer for per-element RC inc (null for NeverHeap types).
+/// Returns base pointer to the new Vec (rc=1).
+/// JIT name: "vec-set-copy"
+extern "C" fn vec_set_copy(vec: i64, index: i64, val: i64, inc_fn: i64) -> i64;
+
+/// Vec push — copy path. Allocates a new Vec with capacity for the appended element,
+/// copies all elements with per-element RC inc via inc_fn, appends val.
+/// Returns base pointer to the new Vec (rc=1).
+/// JIT name: "vec-push-copy"
+extern "C" fn vec_push_copy(vec: i64, val: i64, inc_fn: i64) -> i64;
+
+/// Vec push — COW growth path. Called when the Vec is unique (rc==1) but the data
+/// buffer is full (len >= cap). Reallocs the data buffer (doubles capacity),
+/// stores the new value, increments len. Returns the same Vec pointer.
+/// JIT name: "vec-push-grow"
+extern "C" fn vec_push_grow(vec: i64, val: i64) -> i64;
+
+/// Vec drop. Loops 0..len calling dec_fn on each element, then frees the data
+/// buffer and the Vec struct. Called from Vec drop glue.
+/// dec_fn: function pointer for per-element RC dec (null for NeverHeap types).
+/// JIT name: "runtime/vec_drop"
+extern "C" fn vec_drop(vec: i64, dec_fn: i64);
+```
+
+### Vec Primitives — Registration
+
+| Cranelisp name | Kind | JIT symbol | Type signature | Calling convention |
+|---|---|---|---|---|
+| `vec-get` | Inline | — | `(Fn [(Vec a) Int] a)` | Consuming (inline) |
+| `vec-set` | Inline | — | `(Fn [(Vec a) Int a] (Vec a))` | Consuming (inline) |
+| `vec-push` | Inline | — | `(Fn [(Vec a) a] (Vec a))` | Consuming (inline) |
+| `vec-len` | Extern | `vec-len` | `(Fn [(Vec a)] Int)` | Borrowed |
+| `vec-set-copy` | Extern | `vec-set-copy` | internal (not user-visible) | Borrowed |
+| `vec-push-copy` | Extern | `vec-push-copy` | internal (not user-visible) | Borrowed |
+| `vec-push-grow` | Extern | `vec-push-grow` | internal (not user-visible) | Borrowed |
+| `runtime/vec_drop` | Extern | `runtime/vec_drop` | internal (not user-visible) | Borrowed |
+
+### Vec Element Inc/Dec Functions (`vec_elem_inc_cache`)
+
+Per-element-type standalone Cranelift functions used as callback function pointers by the Vec copy-path externs (`vec-set-copy`, `vec-push-copy`) and by Vec drop glue. Generated lazily and cached in `vec_elem_inc_cache` / `vec_elem_dec_cache` on `FnCompiler`.
+
+Three variants by `HeapCategory::classify(elem_type)`:
+
+| Category | Inc function | Dec function |
+|---|---|---|
+| `NeverHeap` (Int, Bool, Float) | null pointer (0) — extern skips the call | null pointer (0) — drop glue skips the call |
+| `AlwaysHeap` (String, Fn, data-only ADT) | `atomic_rmw(Add, val + HeapHeader::RC_OFFSET, 1)` | Full `emit_rc_dec` pattern (atomic sub, conditional drop + free) |
+| `Mixed` (sum types with nullary + data ctors) | Guard `val < NULLARY_TAG_THRESHOLD`, then atomic inc | Guard `val < NULLARY_TAG_THRESHOLD`, then full dec |
+
+Function signature for both inc and dec callbacks: `(val: i64) -> i64` (return value ignored). The `i64 -> i64` signature allows uniform calling from extern Rust code.
+
+Mangling convention: `vec_elem_inc$<mangled_type>`, `vec_elem_dec$<mangled_type>` where `<mangled_type>` uses the same mangling as drop functions (`mangle_type_for_drop`).
+
+### Vec COW Protocol
+
+Copy-on-write for `vec-set` and `vec-push` uses a three-level decision:
+
+1. **Static COW** (compile-time only): `is_last_use(vec_arg) && is_var_unique(vec_name)` — the compiler statically knows the Vec is the sole reference. Mutate in place unconditionally. No runtime RC check emitted. Mark the Vec variable consumed.
+
+2. **Runtime COW** (compile-time + runtime): `is_last_use(vec_arg)` but Vec is not statically unique. Emit runtime check: `atomic_load(ptr + HeapHeader::RC_OFFSET) == 1`. If unique at runtime, mutate in place. Otherwise fall through to the copy path. Mark the Vec variable consumed either way (the reference is either mutated or replaced).
+
+3. **Copy** (always safe): Vec is not at last-use. Call `vec-set-copy` / `vec-push-copy` extern. The extern allocates a new Vec, copies all elements (calling inc_fn on each), and returns the new Vec. The caller's reference to the original Vec is NOT consumed (scope-exit dec will handle it).
+
+**New value RC** follows the constructor Var arg pattern:
+- Var + last-use → mark consumed (ownership transfers to Vec, no inc)
+- Var + not-last-use → `emit_rc_inc` (Vec gets a new reference)
+- Borrowed temp → `emit_rc_inc` (borrowed value escaping to a new owner)
+- Temp expression → nothing (fresh rc=1 value, ownership transfers)
+
+### Vec Drop Glue
+
+Vec drop glue is invoked when `emit_rc_dec` on a Vec decrements the RC to zero. The drop glue must:
+
+1. **Dec each live element** (indices `0..len`): Load each element from the data buffer, call the per-element-type dec function (from `vec_elem_dec_cache`). For `NeverHeap` elements, skip this step entirely (dec_fn is null).
+2. **Free the data buffer**: `dealloc(data_ptr, cap * 8)`. The data buffer has no RC header — it uses a plain system allocator free.
+3. **Free the Vec struct**: `runtime/dealloc(vec_ptr)`. This reads `HeapHeader::alloc_size` from the Vec struct's header and frees it.
+
+The drop glue can be implemented as either:
+- A generated Cranelift function (like ADT drop glue) that loops over elements inline.
+- A call to `runtime/vec_drop(vec_ptr, dec_fn)` extern that performs the loop in Rust.
+
+The extern approach is preferred because the loop body is trivial (load + call function pointer) and the Rust implementation is simpler to verify and debug. The generated-function approach is reserved for cases where the loop body needs type-specific inline code.
+
 ### Runtime Infrastructure
 
 ```rust
@@ -1334,6 +1519,9 @@ Display of runtime values in the REPL (`:Type value` format). Lives in the binar
 ///   String → reads bytes via string_read (JIT: "runtime/string_read"), wraps in quotes
 ///   ADT    → reads tag + fields from heap (HeapAdt layout), formats recursively
 ///            Nullary: constructor name. Data: "(Ctor.Name field1 field2 ...)"
+///   Vec    → reads len + data_ptr from HeapVec, formats as "[elem, elem, ...]"
+///            Comma-separated (visually distinct from bracket-literal syntax which has no commas).
+///            Elements formatted recursively with their concrete element type.
 ///   Fn     → "<closure>" (closure environments are not user-inspectable)
 ///
 /// symbol_tables provides constructor names and field info for ADT display.
@@ -1419,6 +1607,19 @@ impl FnCompiler {
         code_ptr: Value,
         captures: &[Value],
         capture_types: &[Type],
+        span: Span,
+    ) -> Result<Value>;
+
+    /// Allocate a Vec literal.
+    /// Emits: call runtime/vec_new(len) to allocate Vec struct + data buffer,
+    /// then stores each element into the data buffer.
+    /// Element RC follows the constructor Var arg pattern (emit_stored_value_rc).
+    /// Returns: base pointer (i64) to the new HeapVec.
+    fn emit_vec_alloc(
+        &mut self,
+        element_vals: &[Value],
+        element_exprs: &[Expr],
+        elem_type: &Type,
         span: Span,
     ) -> Result<Value>;
 }

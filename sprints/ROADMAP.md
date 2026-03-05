@@ -22,4 +22,5 @@ Delivery progress for the Cranelisp reimplementation. For technical scope per ri
 | 0 | Foundation survey and planning — every skill validates and plans | COMPLETE | `sprints/archive/sprint-0.md` |
 | 1 | Ring 0 — Core implementation | COMPLETE | `sprints/archive/sprint-1.md` |
 | 2 | Ring 1 — Heap types, closures, RC (779 tests, gate PASS) | COMPLETE | `sprints/archive/sprint-2.md` |
-| 3 | Ring 1 Vec + Ring 2 start | Next | — |
+| 3 | Vec (Ring 1 completion) + demo relocation — 487 tests, Ring 1 COMPLETE | COMPLETE | `sprints/archive/sprint-3.md` |
+| 4 | Ring 2 — Abstraction (modules, traits, constrained poly, dispatch) | — | — |

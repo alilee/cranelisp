@@ -10,8 +10,11 @@ This role is distinct from `/qa` (which owns REPL *implementation* — the code 
 
 ## Owns
 
+- `repl/` — REPL experience specification, demo scripts, and showcase player
+  - `repl/spec.md` — normative REPL experience specification
+  - `repl/demos/` — `.demo` scripts and demo player (`demo-player.py`)
+  - `repl/showcase` — top-level showcase script (builds binary, plays demos)
 - `tests/repl/` — REPL experience test scripts and harness
-- REPL experience specification (what behaviors to verify, what performance to expect)
 
 ## What You Test
 

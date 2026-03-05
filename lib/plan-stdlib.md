@@ -639,11 +639,134 @@ Ring 1 provides the heap foundation needed for stdlib work to begin at Ring 2. T
 
 ---
 
+## 10. Vec Availability Assessment (Sprint 3)
+
+Vec is now implemented in the Ring 1 compiler with these primitives:
+
+| Primitive | Type | Semantics |
+|---|---|---|
+| `vec-len` | `(Fn [(Vec a)] Int)` | Number of elements |
+| `vec-get` | `(Fn [(Vec a) Int] a)` | 0-based indexed access, bounds-checked |
+| `vec-set` | `(Fn [(Vec a) Int a] (Vec a))` | Returns new Vec with element replaced |
+| `vec-push` | `(Fn [(Vec a) a] (Vec a))` | Returns new Vec with element appended |
+
+Vec is polymorphic (`(Vec Int)`, `(Vec String)`, `(Vec (Option Int))`, etc.) and uses COW: if rc==1 and is-last-use, `vec-set` and `vec-push` mutate in place. Vec literals use bracket syntax: `[1 2 3]`.
+
+### 10.1 What This Unlocks for `collections/vec.cl`
+
+The planned `collections/vec.cl` module (Phase 4, item 18) provides higher-order operations over Vec. With the four primitives now available, the following functions can be implemented using **only** Ring 2 features (functions, closures, recursion — no macros, no traits):
+
+**Immediately implementable at Ring 2** (functions only, no trait dependency):
+
+| Function | Signature | Implementation strategy |
+|---|---|---|
+| `vec-map` | `(Fn [(Fn [a] b) (Vec a)] (Vec b))` | Tail-recursive loop: get each element, apply f, push to accumulator |
+| `vec-filter` | `(Fn [(Fn [a] Bool) (Vec a)] (Vec a))` | Loop: test predicate, conditionally push |
+| `vec-fold` | `(Fn [(Fn [b a] b) b (Vec a)] b)` | Tail-recursive loop: get each element, apply f to acc |
+| `vec-fold-right` | `(Fn [(Fn [a b] b) b (Vec a)] b)` | Loop from len-1 down to 0 |
+| `vec-reverse` | `(Fn [(Vec a)] (Vec a))` | Fold from end to start, push each |
+| `vec-concat` | `(Fn [(Vec a) (Vec a)] (Vec a))` | Fold over second Vec, push each onto copy of first |
+| `vec-any?` | `(Fn [(Fn [a] Bool) (Vec a)] Bool)` | Loop with early return via if |
+| `vec-every?` | `(Fn [(Fn [a] Bool) (Vec a)] Bool)` | Loop with early return on false |
+| `vec-find` | `(Fn [(Fn [a] Bool) (Vec a)] (Option a))` | Loop, return Some on match, None at end |
+| `vec-take` | `(Fn [Int (Vec a)] (Vec a))` | Loop from 0 to min(n, len), push each |
+| `vec-drop` | `(Fn [Int (Vec a)] (Vec a))` | Loop from n to len, push each |
+| `vec-zip` | `(Fn [(Vec a) (Vec b)] (Vec (Pair a b)))` | Loop to min(len-a, len-b), get from each, push Pair |
+| `vec-enumerate` | `(Fn [(Vec a)] (Vec (Pair Int a)))` | Loop 0..len, push (Pair i elem) |
+| `vec-nth` | `(Fn [Int (Vec a)] (Option a))` | Bounds check, then vec-get wrapped in Some/None |
+| `vec-contains?` | `(Fn [(Fn [a a] Bool) a (Vec a)] Bool)` | Loop with equality function (no Eq trait yet) |
+| `vec-count` | `(Fn [(Fn [a] Bool) (Vec a)] Int)` | Loop, increment counter on predicate match |
+| `vec-flat-map` | `(Fn [(Fn [a] (Vec b)) (Vec a)] (Vec b))` | Map then concat results |
+
+All of these are pure functions over the four Vec primitives plus recursion. They need no macros, no traits, no special forms beyond what Ring 1 provides plus Ring 2 modules.
+
+**Requires Eq trait (Ring 2, after `compare/eq.cl`)**:
+
+| Function | Dependency |
+|---|---|
+| `vec-contains?` (Eq version) | `(impl Eq a)` for element equality |
+| `vec-distinct` | Eq for dedup |
+| `vec-index-of` | Eq for element search |
+
+**Requires Ord trait (Ring 2, after `compare/ord.cl`)**:
+
+| Function | Dependency |
+|---|---|
+| `vec-sort` | Ord for comparison — also needs a sorting algorithm (insertion sort is sufficient for Ring 2) |
+| `vec-sort-by` | Takes comparison function, no Ord needed |
+| `vec-min` / `vec-max` | Ord for comparison |
+
+**Requires Functor/Foldable traits (Ring 2, after `collections/functor.cl`)**:
+
+| Function | Dependency |
+|---|---|
+| `fmap` impl for Vec | Functor trait definition; wraps `vec-map` |
+| `fold` impl for Vec | Foldable trait definition; wraps `vec-fold` |
+
+**Requires macros (Ring 3)**:
+
+| Function | Dependency |
+|---|---|
+| `vec` construction macro | `(vec 1 2 3)` as alternative to `[1 2 3]` — may not be needed given literal syntax |
+
+### 10.2 Impact on Build Order
+
+The original Phase 4 placed `collections/vec.cl` at item 18, after Functor and Foldable trait definitions. With Vec primitives available, this module can be **split across two phases**:
+
+**Revised Phase 2 addition** — After item 9 (`text/string.cl`), add:
+
+```
+9a. collections/vec.cl (core)   ; vec-map, vec-filter, vec-fold, vec-reverse, vec-concat,
+                                ; vec-take, vec-drop, vec-any?, vec-every?, vec-find,
+                                ; vec-zip, vec-enumerate, vec-nth, vec-count, vec-flat-map
+                                ; depends on: Option (item 3), Pair (when available)
+                                ; NO trait dependencies — pure functions over primitives
+```
+
+This is significant: most Vec operations need nothing beyond closures and the four primitives. They can ship immediately when modules are available, providing the most-used collection operations early. The Pair dependency for `vec-zip` and `vec-enumerate` means those two functions wait for item 16 (`collections/pair.cl`) or use tupled returns.
+
+**Revised Phase 3 (after Functor/Foldable traits)**:
+
+```
+18. collections/vec.cl (traits)  ; Functor impl, Foldable impl, Eq-dependent ops
+                                 ; depends on: functor.cl, foldable.cl, eq.cl
+```
+
+This two-phase approach means Vec collection functions are available for testing all subsequent modules from Phase 2 item 9a onward — a significant testing convenience.
+
+### 10.3 Sketch Comparison
+
+The sketch (`sketch/lib/core/sequences.cl`) implements Vec operations by converting Vec to lazy Seq and delegating to `fmap`/`lazy-filter`/`lazy-reduce`. This is elegant but has two costs:
+
+1. **Indirection**: Every Vec operation allocates a Seq, processes it lazily, then (if needed) materializes back to Vec. For `vec-map`, this means: Vec → Seq → (process) → Vec — two traversals and intermediate allocations.
+
+2. **Multi-sig dispatch**: The sketch uses multi-signature functions (`map`, `filter`, `reduce`) that dispatch on Vec/List/Seq. The reimplementation should keep Vec-specific functions (`vec-map`, `vec-filter`, `vec-fold`) as the concrete implementations, with unified `map`/`filter`/`reduce` names introduced later via Functor/Foldable traits or multi-sig dispatch.
+
+**Decision**: The reimplementation uses **direct Vec iteration** (loop over indices using `vec-get`/`vec-len`) rather than the sketch's Seq-conversion approach. This is simpler, avoids intermediate allocations, and works without the Seq type (which arrives later in Phase 4). The Functor/Foldable trait impls (Phase 3) provide the unified API.
+
+### 10.4 Usability Observations
+
+1. **No `vec-empty`**: There is no primitive to create an empty Vec. The literal `[]` serves this purpose, but a named function `(vec-empty)` returning `(Vec a)` would be useful for building Vecs programmatically in folds. Workaround: `(vec-push [] first-elem)`. Low priority — literal syntax is sufficient.
+
+2. **No `vec-slice`**: There is no primitive for extracting a sub-Vec. `vec-take` and `vec-drop` can be composed, but a direct `vec-slice` would avoid double traversal. Can be added as a runtime primitive later if profiling shows need.
+
+3. **No `vec-pop`**: There is no primitive to remove the last element. Can be simulated with `vec-take (- (vec-len v) 1) v`, but a direct primitive would enable efficient stack-like usage. Low priority for stdlib — file if exemplar needs it.
+
+4. **Functional API is natural**: The immutable-return-new-Vec API (`vec-set`, `vec-push` return new Vecs) aligns perfectly with the functional stdlib design. COW makes this efficient. No friction here.
+
+### 10.5 Updated Risk Assessment
+
+**Risk 3 (Map and Set implementation)**: Unchanged. Vec availability does not affect Map/Set — those need hash-based data structures that require additional runtime primitives. Vec *does* make a sorted-Vec-based prototype Map feasible as a stopgap, but this would be a stdlib-internal choice, not a compiler concern.
+
+**Risk 11 (NEW — Vec fold performance)**: Tail-recursive folds over Vec using `vec-get` at each index should be TCO-eligible (self-recursive tail calls). If TCO does not fire for these patterns, large Vec operations will stack-overflow. The Ring 1 TCO implementation should handle this, but it needs validation. `/qa` should include a large-Vec fold test (1000+ elements).
+
+---
+
 ## Next Skills
 
 - `/arch` — Confirm the builtin-to-trait transition strategy. Validate that cross-module trait impls work (trait in module A, type in module B, impl in module B). Review Map/Set implementation strategy.
 - `/frontend` — Update `~@` expansion to emit `macros/sconcat` instead of `core.syntax/sconcat`.
 - `/typecheck` — Coordinate operator resolution handoff: Ring 0 `ResolvedCall::BuiltinFn` must transparently yield to Ring 2 `ResolvedCall::TraitMethod` when trait impls are loaded. Fix `parse-int` return type when Option is available.
 - `/backend` — Add missing string primitives (`substring`, `char-at`, etc.) as extern functions in `cranelisp-runtime` when Ring 2 needs them.
-- `/qa` — Plan stdlib self-test execution. Add tests for closure-capturing-heap-types. Process usability findings U1.1–U1.5.
+- `/qa` — Plan stdlib self-test execution. Add tests for closure-capturing-heap-types. Process usability findings U1.1–U1.5. Add large-Vec fold test (Risk 11).
 - `/review` — The stdlib is Cranelisp's model code. Review it for idiom, clarity, and consistency from the first module.

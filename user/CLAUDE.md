@@ -28,4 +28,6 @@ The spec (`spec/`) is precise and normative — written for implementors. User d
 
 **Sprint 2 (Ring 1)**: Complete. Getting-started guide extended with strings, product types, sum types with fields, constructor pattern matching, closures/lambdas, higher-order functions, "putting it together" examples. Tutorial curriculum sections 14-18 and 21 drafted. Usability findings U1.6, U1.7, U1.8 filed.
 
+**Sprint 3 (Ring 2)**: In progress. Getting-started guide extended with Vec section (literals, primitives, polymorphism, immutable semantics, ADT integration, incremental building). Tutorial curriculum section 19 (collections) drafted. Vec primitives added to summary table.
+
 **Feedback loop**: Report to compiler skills when error messages are confusing, when REPL output is unhelpful, or when a concept has no good introduction path. File findings to `tests/plan/usability.md`.

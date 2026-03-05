@@ -744,10 +744,7 @@ fn build_expr(sexp: &Sexp, expander: &mut dyn MacroExpander) -> Result<Expr, Cra
             })
         }
         Sexp::List(children, span) => build_list_expr(children, *span, expander),
-        Sexp::Bracket(_children, span) => {
-            // Bracket in expression position -> VecLit (Ring 1)
-            Err(parse_err("vec literals not yet supported (Ring 1)", *span))
-        }
+        Sexp::Bracket(children, span) => build_vec_lit(children, *span, expander),
     }
 }
 
@@ -1013,6 +1010,19 @@ fn build_pattern(sexp: &Sexp) -> Result<Pattern, CranelispError> {
         }
         _ => Err(parse_err("invalid pattern", sexp.span())),
     }
+}
+
+// ---------------------------------------------------------------------------
+// Vec literal
+// ---------------------------------------------------------------------------
+
+fn build_vec_lit(
+    children: &[Sexp],
+    span: Span,
+    expander: &mut dyn MacroExpander,
+) -> Result<Expr, CranelispError> {
+    let elements = build_args_with_annotations(children, expander)?;
+    Ok(Expr::VecLit { elements, span })
 }
 
 // ---------------------------------------------------------------------------
@@ -1676,7 +1686,7 @@ mod tests {
     }
 
     #[test]
-    fn test_reject_vec() {
+    fn test_reject_vec_keyword() {
         let err = parse_and_build_expr("(vec 1 2 3)").unwrap_err();
         assert!(err.message().contains("vec literals not yet supported"));
     }
@@ -2162,6 +2172,113 @@ mod tests {
                 assert_eq!(value, "hello");
             }
             other => panic!("expected Expr(StringLit), got {other:?}"),
+        }
+    }
+
+    // -- Ring 1: Vec literals --
+
+    #[test]
+    fn test_vec_lit_integers() {
+        match parse_and_build_expr("[1 2 3]").unwrap() {
+            Expr::VecLit { elements, .. } => {
+                assert_eq!(elements.len(), 3);
+                match &elements[0] {
+                    Expr::IntLit { value, .. } => assert_eq!(*value, 1),
+                    other => panic!("expected IntLit, got {other:?}"),
+                }
+                match &elements[2] {
+                    Expr::IntLit { value, .. } => assert_eq!(*value, 3),
+                    other => panic!("expected IntLit, got {other:?}"),
+                }
+            }
+            other => panic!("expected VecLit, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_vec_lit_empty() {
+        match parse_and_build_expr("[]").unwrap() {
+            Expr::VecLit { elements, .. } => {
+                assert_eq!(elements.len(), 0);
+            }
+            other => panic!("expected VecLit, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_vec_lit_nested() {
+        match parse_and_build_expr("[[1] [2]]").unwrap() {
+            Expr::VecLit { elements, .. } => {
+                assert_eq!(elements.len(), 2);
+                match &elements[0] {
+                    Expr::VecLit { elements: inner, .. } => {
+                        assert_eq!(inner.len(), 1);
+                        match &inner[0] {
+                            Expr::IntLit { value, .. } => assert_eq!(*value, 1),
+                            other => panic!("expected IntLit, got {other:?}"),
+                        }
+                    }
+                    other => panic!("expected nested VecLit, got {other:?}"),
+                }
+            }
+            other => panic!("expected VecLit, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_vec_lit_mixed_types() {
+        match parse_and_build_expr("[true \"hello\" 42]").unwrap() {
+            Expr::VecLit { elements, .. } => {
+                assert_eq!(elements.len(), 3);
+                assert!(matches!(&elements[0], Expr::BoolLit { value: true, .. }));
+                assert!(matches!(&elements[1], Expr::StringLit { .. }));
+                assert!(matches!(&elements[2], Expr::IntLit { value: 42, .. }));
+            }
+            other => panic!("expected VecLit, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_defn_params_still_work() {
+        // Brackets in defn position are still parameter lists, not VecLit
+        match parse_and_build_program("(defn foo [x] x)").unwrap().as_slice() {
+            [TopLevel::Defn(defn)] => {
+                assert_eq!(defn.name, "foo");
+                assert_eq!(defn.params.len(), 1);
+                assert_eq!(defn.params[0], "x");
+            }
+            other => panic!("expected single Defn, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_vec_lit_in_let_binding() {
+        // Vec literal in a let binding value position
+        match parse_and_build_expr("(let [v [1 2 3]] v)").unwrap() {
+            Expr::Let { bindings, .. } => {
+                assert_eq!(bindings.len(), 1);
+                assert_eq!(bindings[0].0, "v");
+                match &bindings[0].1 {
+                    Expr::VecLit { elements, .. } => assert_eq!(elements.len(), 3),
+                    other => panic!("expected VecLit in binding, got {other:?}"),
+                }
+            }
+            other => panic!("expected Let, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_vec_lit_as_function_arg() {
+        // Vec literal as argument to a function
+        match parse_and_build_expr("(f [1 2])").unwrap() {
+            Expr::Apply { args, .. } => {
+                assert_eq!(args.len(), 1);
+                match &args[0] {
+                    Expr::VecLit { elements, .. } => assert_eq!(elements.len(), 2),
+                    other => panic!("expected VecLit arg, got {other:?}"),
+                }
+            }
+            other => panic!("expected Apply, got {other:?}"),
         }
     }
 }

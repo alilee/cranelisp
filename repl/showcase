@@ -2,9 +2,9 @@
 """Showcase the Cranelisp REPL experience.
 
 Usage:
-    ./showcase ring0          # build + play the Ring 0 demo
-    ./showcase ring1          # build + play the Ring 1 demo
-    ./showcase --list         # list available demos
+    ./repl/showcase ring0          # build + play the Ring 0 demo
+    ./repl/showcase ring1          # build + play the Ring 1 demo
+    ./repl/showcase --list         # list available demos
 
 Two-phase approach:
   Phase 1: Parse the .demo file into comments, blanks, and expressions.
@@ -27,8 +27,9 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-PROJECT_ROOT = Path(__file__).resolve().parent
-DEMOS_DIR = PROJECT_ROOT / "tests" / "repl" / "demos"
+REPL_DIR = Path(__file__).resolve().parent
+PROJECT_ROOT = REPL_DIR.parent
+DEMOS_DIR = REPL_DIR / "demos"
 RUNS_DIR = DEMOS_DIR / "runs"
 
 FAST = os.environ.get("DEMO_FAST") is not None
@@ -185,9 +186,9 @@ def main():
     args = sys.argv[1:]
 
     if not args or "--help" in args or "-h" in args:
-        print("Usage: ./showcase [--list] <demo-name>")
-        print("       ./showcase ring0")
-        print("       ./showcase --list")
+        print("Usage: ./repl/showcase [--list] <demo-name>")
+        print("       ./repl/showcase ring0")
+        print("       ./repl/showcase --list")
         sys.exit(0)
 
     if "--list" in args:

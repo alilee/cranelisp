@@ -15,12 +15,14 @@
 //! - `alloc` — heap allocator, dealloc, tracking counters, LIVE_ALLOCS
 //! - `rc` — RC trace logging, underflow check
 //! - `string` — HeapString layout, string allocation and operations
+//! - `vec` — Vec runtime primitives (new, len, set-copy, push-copy, push-grow, drop)
 //! - `primitives` — type conversion functions (int/float/bool to string, parse-int)
 //! - `panic` — runtime panic handler for JIT code
 
 pub mod alloc;
 pub mod rc;
 pub mod string;
+pub mod vec;
 pub mod primitives;
 pub mod panic;
 
@@ -34,6 +36,9 @@ pub use rc::rc_underflow_check;
 
 // String infrastructure (registered as runtime/alloc_string, runtime/string_read)
 pub use string::{heap_alloc_string, string_read};
+
+// Vec runtime primitives (registered as runtime/vec_new, vec-len, etc.)
+pub use vec::{vec_new, vec_len, vec_set_copy, vec_push_copy, vec_push_grow, vec_drop};
 
 // Extern primitives (registered by spec name: str-concat, str-eq, etc.)
 pub use string::{str_concat, str_eq, str_len, string_identity};

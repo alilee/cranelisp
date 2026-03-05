@@ -43,9 +43,27 @@ None
 (defn compose [f g] (fn [x] (f (g x))))
 (let [double (fn [x] (mul-i64 x 2))] (let [inc-then-double (compose double inc)] (inc-then-double 4)))
 
+; === Vecs — growable arrays ===
+
+[1 2 3]
+[10 20 30 40 50]
+[]
+
+(vec-len [10 20 30])
+(vec-get [10 20 30] 1)
+(vec-set [10 20 30] 1 99)
+(vec-push [1 2] 3)
+
+; Building a Vec step by step
+(vec-push (vec-push (vec-push [] 1) 2) 3)
+
 ; === Putting it together ===
 
 ; Combining ADTs, closures, and higher-order functions
 (defn transform [f opt] (match opt [None None (Some x) (Some (f x))]))
 (transform inc (Some 41))
 (transform inc None)
+
+; Vecs in ADTs
+(deftype (Pair a b) (MkPair [:a fst :b snd]))
+(MkPair [10 20 30] "hello")

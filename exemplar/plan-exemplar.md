@@ -541,6 +541,79 @@ But **Vec is the critical gate**. Without it, the `Grid` type cannot exist, and 
 4. **No `mod`/`rem` primitive** remains a minor annoyance. The `(sub-i64 a (mul-i64 (div-i64 a b) b))` workaround is adequate but verbose. Should be added as a Ring 0 primitive or Ring 2 stdlib function.
 5. **Deeply nested `str-concat` is painful**. Without macros (Ring 3) for string interpolation or threading (`->`), building HTML strings requires 5+ levels of nesting for a single element. This is a usability concern, not a blocker — it works, it's just ugly. Threading macros at Ring 3 will help significantly.
 
+### Sprint 3 Assessment — Vec Available (resolves U1.10)
+
+**Vec primitives now available**: `vec-len`, `vec-get`, `vec-set`, `vec-push`. Vec is polymorphic (`Vec(a)`), supports COW (copy-on-write when shared, mutate-in-place when unique), and works with all element types (Int, String, ADTs, closures). 32 integration tests passing, 4 REPL Vec tests passing. Vec literal syntax `[1 2 3]` works.
+
+**Vec RC status**: Vec allocation and operations are functionally correct, but scope-level dec (freeing Vec temporaries at scope exit) is deferred to Ring 2. This means Vec values leak in the current implementation. 10 RC balance tests are `#[ignore]`. This is acceptable for prototyping but means any long-running exemplar code (e.g., solving many puzzles) would accumulate memory. Not a blocker for algorithm validation.
+
+**Still NOT available**: Modules/imports, traits (`Eq`, `Display`, `derive`), macros (`do`, `bind!`, `->`, `cond`), IO, platform DLLs, `char-at`, `str-split`, `str-contains`, `str-sub`, `mod`/`rem` primitive, higher-order Vec functions (`vec-filter`, `vec-map`, `vec-fold`/`vec-reduce`).
+
+**Component-by-component assessment**:
+
+| Component | Sprint 3 viable? | Assessment |
+|---|---|---|
+| `grid.cl` — Grid/Cell types | **Yes (core)** | `Grid` can now be defined as `(deftype Grid [cells])` wrapping `:(Vec Cell)`. `Cell` uses bitmask candidates (Ring 1 design decision). `make-grid` can parse a string character-by-character using index arithmetic + `char-at` (blocked — see below). `cell-at` is `(vec-get (cells grid) idx)`. `set-cell` is `(deftype Grid [(vec-set (cells grid) idx cell)])`. `peers` returns `:(Vec Int)` — can be constructed via `vec-push` chains. `row-of`, `col-of`, `box-of` all work (Int arithmetic, workaround for missing `mod`). **Blocker**: `char-at` is needed for `make-grid` to parse input strings. Without it, grid construction from string input is impossible. Grid construction from a pre-built `Vec Cell` works. |
+| `solver.cl` — constraint propagation, backtracking | **Mostly yes** | With bitmask candidates and Vec-based grid, the core algorithm is expressible. `eliminate-from-peers`: iterate peer indices (recursive loop over Vec), clear candidate bit in each peer cell. `propagate`: iterate cells 0..80, apply elimination, detect fixed point. `naked-singles`: iterate units, bitwise analysis. `find-min-candidates`: iterate cells, track minimum. `solve`: recursive backtracking with TCO on the search loop. All of these use `vec-get`, `vec-set`, `vec-len`, and recursive index loops. **No higher-order functions needed** — the solver can use explicit recursion over indices. Without `vec-filter`/`vec-map`, code is more verbose but fully functional. |
+| `html.cl` — HTML generation | **Partially** | String building with `str-concat` works (Ring 1). Iterating over 81 cells via recursive index loop + `vec-get` works. Individual cell rendering, table row construction, CSS embedding — all expressible. **Pain point**: deeply nested `str-concat` (U1.11) makes HTML building verbose. No threading macro (`->`) or variadic `str` yet. Functional but ugly. **Blocker**: no `int-to-string` for digit display... wait, `int-to-string` IS available (Ring 1). So digit rendering works. |
+| `form.cl` — URL form parsing | **No** | Requires `str-split` (to split on `&` and `=`), `char-at` (character inspection), and `str-contains`/`str-sub` (substring operations). None of these exist as primitives yet (U1.1). `str-eq` and `str-len` are available but insufficient for parsing. **Hard blocker**: no character-level or substring string operations. |
+| `main.cl` — routing, IO models | **No** | IO model (Ring 4), platform DLL (Ring 4). String matching for routes (`str-eq`) works, but without IO the routing logic has no context. |
+| `test submodules` | **No** | Modules (Ring 2). Testing infrastructure (`run-tests`, `assert-eq`) (Ring 3+). |
+| `platforms/web/` — Rust DLL | **No** | Platform system (Ring 4). |
+
+**What CAN be implemented now (single-file, no modules/traits/macros)**:
+
+1. **Grid data model** — `Cell` ADT (bitmask candidates), `Grid` wrapping `Vec Cell`. Construction from a pre-built Vec (not from string parsing — blocked on `char-at`). All grid accessors: `cell-at`, `set-cell`, `row-of`, `col-of`, `box-of`. Peer calculation returning `Vec Int`.
+
+2. **Complete solver algorithm** — Constraint propagation (eliminate value from peers, detect contradictions, find naked singles), backtracking search (find minimum-candidate cell, try each candidate, recurse). The entire algorithm uses only: Int arithmetic, Bool logic, `if`, pattern matching on `Cell`/`PropResult`/`SolveResult`, `vec-get`/`vec-set`/`vec-len`, and self-recursive functions (TCO). No higher-order functions, closures, or stdlib needed.
+
+3. **Basic text output** — Given a solved grid, render it as a text string using `str-concat` and `int-to-string`. Not HTML (that needs iteration helpers for ergonomics) but sufficient to verify correctness. Example: render each row as "5 3 4 | 6 7 8 | 9 1 2".
+
+4. **Solver validation** — Hard-code a known puzzle as a Vec of Cell values (bypassing string parsing), solve it, verify the result. This is the single-file proof-of-concept that validates the core algorithm.
+
+**Proof-of-concept scope**: A single-file program (~300-400 lines) containing:
+- `Cell`, `Grid`, `PropResult`, `SolveResult` ADT definitions
+- `rem-i64`, `row-of`, `col-of`, `box-of` index arithmetic
+- `make-peers` peer index calculation
+- `eliminate`, `propagate`, `find-min-candidates`, `solve` — full solver
+- `make-test-grid` hard-coded puzzle (bypasses `char-at` blocker)
+- `grid-to-string` text rendering
+- `main` that constructs, solves, and returns a checksum value
+
+This would validate: ADTs with fields in Vec, Vec random access and functional update, recursive algorithms over Vec, bitmask operations, TCO in the search, and composition of all these features at realistic scale (~81-cell grid, ~20 peers per cell, recursive backtracking).
+
+**Blocking issues for full exemplar**:
+
+| Issue | Severity | Blocks | Arrives at |
+|---|---|---|---|
+| `char-at` primitive | **Blocking** | `make-grid` (string→Grid parsing), `form.cl` | Ring 2 stdlib or new primitive (U1.1) |
+| `str-split` primitive | **Blocking** | `form.cl` (URL form parsing) | Ring 2 stdlib or new primitive (U1.1) |
+| `str-contains` primitive | Important | `html/test.cl` assertions, `form.cl` | Ring 2 stdlib or new primitive (U1.1) |
+| `str-sub` (substring) | Important | `form.cl`, `url-decode` | Ring 2 stdlib or new primitive (U1.1) |
+| `mod`/`rem` primitive | Important | `col-of`, `box-of` (workaround exists) | Ring 2 stdlib |
+| Vec scope-level dec | Important | Long-running solver sessions (memory leak) | Ring 2 |
+| Modules/imports | **Blocking** (for decomposition) | Multi-file exemplar | Ring 2 |
+| Traits (`Eq`, `Display`) | Important | Test assertions, debug output, `derive` | Ring 2 |
+| Macros (`do`, `->`, `cond`) | Important | Ergonomics, especially HTML building | Ring 3 |
+| IO, platform DLLs | **Blocking** (for web) | `main.cl`, web server | Ring 4 |
+
+**Revised timeline**:
+
+| Milestone | Ring | What becomes possible |
+|---|---|---|
+| **Sprint 3 (now)** | 1 (complete) | Single-file proof-of-concept: Grid + solver + text output. Validates core algorithm and data model. ~300-400 lines. |
+| **Ring 2** | 2 | Multi-module decomposition. String primitives (`char-at`, `str-split`) enable `make-grid` and `form.cl`. Traits enable `Eq`-based test assertions and `Display` for debugging. Vec RC balanced. |
+| **Ring 3** | 3 | Full exemplar core with macros, prelude, stdlib, `run-tests`. All pure modules implementable: `grid.cl`, `solver.cl`, `html.cl`, `form.cl` with test submodules. Ergonomic string building with threading macros. |
+| **Ring 4** | 4 | Web platform DLL, IO wiring, `main.cl` with both serve models, integration tests. Exemplar complete. |
+
+**Risk updates**:
+
+1. **Vec confirmed functional** — 32 integration tests + 4 REPL tests passing. COW works. Polymorphic element types work. The critical-path blocker (U1.10) is resolved.
+2. **String primitive gap is now the critical path** — With Vec available, the next blocker is string manipulation primitives (`char-at`, `str-split`, `str-contains`, `str-sub`). These are needed for `make-grid` and `form.cl`. Filed as U1.1, expected at Ring 2.
+3. **Bitmask candidate design validated** — The decision to use Int bitmasks instead of `Vec Int` for candidate sets (made at Ring 1) is confirmed as the right call. It eliminates nested Vec complexity and is more performant.
+4. **Higher-order Vec functions not needed for solver** — The solver can use explicit recursive index loops over Vec. `vec-filter`/`vec-map`/`vec-fold` would improve ergonomics but are not blockers. They arrive with `/stdlib` at Ring 2-3.
+5. **Vec memory leak is acceptable for prototyping** — Scope-level dec deferred to Ring 2. The proof-of-concept solver runs once and exits, so leaks don't accumulate. Long-running web server (Ring 4) will need balanced RC.
+
 ### Ring 3+
 
 Grid model, solver, HTML generation, form parsing — all pure computation. Testable with `run-tests`. This is the bulk of the Cranelisp code.
@@ -572,9 +645,8 @@ Comfortably within the 500–2000 line target.
 
 ## Next Skills
 
-- `/arch` — Vec (Chunk D) should be highest priority in Sprint 3. It is the single most impactful unblock for both `/port` and `/stdlib`. Also review whether the platform callback mechanism (function pointer passed to DLL, DLL calls back into JIT code) requires architectural support or is already covered by the existing GOT/function-pointer model.
-- `/stdlib` — Prioritize `mod`/`rem`, `char-at`, `str-len`, `vec-filter`, `str-split` — these are blocking or important for the exemplar. Consider a variadic `str` function for string building ergonomics (U1.11).
+- `/stdlib` — String primitives (`char-at`, `str-split`, `str-contains`, `str-sub`) are now the critical path for the exemplar (U1.1). Also: `mod`/`rem`, `vec-filter`, `vec-map`, `vec-fold`. Consider a variadic `str` function for string building ergonomics (U1.11).
 - `/platform` — Review the web platform API above. Confirm that `declare_platform!` can handle: (a) a function receiving a function pointer callback (`serve`), (b) opaque heap values for Request/Response. Flag if the platform ABI needs extension for callbacks.
 - `/examples` — The exemplar's ADT patterns (sum types with data, enum types with derive) should align with the learning sequence.
 - `/docs` — The exemplar will serve as the capstone tutorial/walkthrough. The web platform authoring is a natural "advanced topic" chapter.
-- `/port` — Next exemplar assessment at Sprint 3 (post-Vec). At that point, attempt a single-file proof-of-concept: Grid + Cell (bitmask candidates) + basic solver, to validate the data model and algorithm patterns before multi-module decomposition at Ring 2–3.
+- `/port` — At Ring 2 (post-modules, post-string-primitives): attempt the single-file proof-of-concept with `make-grid` (needs `char-at`), then decompose into multi-module structure. At Ring 3: implement full exemplar core with macros and testing. At Ring 4: web platform DLL and IO wiring.

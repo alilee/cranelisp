@@ -4,7 +4,7 @@
 Usage:
     python3 demo-player.py <script.demo> [cranelisp-binary]
 
-The REPL runs in a clean timestamped directory under tests/repl/demos/runs/
+The REPL runs in a clean timestamped directory under repl/demos/runs/
 to isolate .cache artifacts. Each run creates a new directory like:
     runs/2026-03-05T14-30-00_ring1/
 

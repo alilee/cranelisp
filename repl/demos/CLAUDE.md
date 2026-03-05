@@ -44,9 +44,9 @@ Demo scripts use a format that is almost valid Cranelisp:
 The top-level `showcase` script builds the binary and pipes the demo straight into the REPL:
 
 ```bash
-./showcase ring0          # build + play Ring 0 demo
-./showcase ring1          # build + play Ring 1 demo
-./showcase --list         # list available demos
+./repl/showcase ring0          # build + play Ring 0 demo
+./repl/showcase ring1          # build + play Ring 1 demo
+./repl/showcase --list         # list available demos
 ```
 
 The showcase uses a two-phase approach:
@@ -58,7 +58,7 @@ This avoids the known REPL issue where comment-only lines produce `error: parse 
 
 ### Run isolation
 
-Each playback creates a timestamped directory under `tests/repl/demos/runs/`:
+Each playback creates a timestamped directory under `repl/demos/runs/`:
 ```
 runs/2026-03-05T14-30-00_ring1/
 ```
@@ -78,8 +78,9 @@ The REPL process `chdir`s into this directory, so `.cache` artifacts and any oth
 
 | File | Ring | Description |
 |------|------|-------------|
+| `first-session.demo` | 0–1 | Learner progression: evaluate, define, inspect, mistakes, recover |
 | `ring0.demo` | 0 | Arithmetic, booleans, let, if, defn, recursion, TCO |
-| `ring1.demo` | 1 | Strings, ADTs, pattern matching, closures, higher-order |
+| `ring1.demo` | 1 | Strings, ADTs, pattern matching, closures, higher-order, Vecs |
 
 Each sprint, `/repl` extends this library:
 - **Ring 2**: Traits, modules, constrained polymorphism

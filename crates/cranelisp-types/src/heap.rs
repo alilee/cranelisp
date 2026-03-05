@@ -80,6 +80,11 @@ impl HeapCategory {
     /// - All data -> `AlwaysHeap`
     /// - Mixed -> `Mixed`
     fn classify_adt(name: &TypeName, type_defs: Option<&HashMap<TypeName, TypeDefInfo>>) -> HeapCategory {
+        // Vec is a built-in heap type (not registered via deftype).
+        if name.as_ref() == "Vec" {
+            return HeapCategory::AlwaysHeap;
+        }
+
         let Some(registry) = type_defs else {
             // No registry available — conservative fallback
             return HeapCategory::Mixed;
@@ -326,6 +331,36 @@ mod tests {
         assert_eq!(
             HeapCategory::classify(&unknown, Some(&defs)),
             HeapCategory::Mixed,
+        );
+    }
+
+    // --- Vec type (built-in, always heap) ---
+
+    #[test]
+    fn test_vec_always_heap_without_registry() {
+        let vec_int = Type::ADT(TypeName::from("Vec"), vec![Type::Int]);
+        assert_eq!(
+            HeapCategory::classify(&vec_int, None),
+            HeapCategory::AlwaysHeap,
+        );
+    }
+
+    #[test]
+    fn test_vec_always_heap_with_registry() {
+        let defs: HashMap<TypeName, TypeDefInfo> = HashMap::new();
+        let vec_str = Type::ADT(TypeName::from("Vec"), vec![Type::String]);
+        assert_eq!(
+            HeapCategory::classify(&vec_str, Some(&defs)),
+            HeapCategory::AlwaysHeap,
+        );
+    }
+
+    #[test]
+    fn test_vec_polymorphic_always_heap() {
+        let vec_var = Type::ADT(TypeName::from("Vec"), vec![Type::Var(0)]);
+        assert_eq!(
+            HeapCategory::classify(&vec_var, None),
+            HeapCategory::AlwaysHeap,
         );
     }
 }

@@ -191,8 +191,8 @@ Each finding includes:
 | **Severity** | `important` |
 | **Description** | The Sudoku Solver exemplar requires `Vec` in 5 of 7 Cranelisp modules: `Grid` stores 81 cells as `:(Vec Cell)`, candidates need a collection type, `peers` returns indices, HTML generation iterates over cells, and form parsing produces a collection of values. Without Vec, none of these modules can be composed into a working program, even though Cell/SolveResult ADTs, string helpers, and closure patterns are individually expressible at Ring 1. Vec is deferred to Sprint 3 (Chunk D). This is intentional, but it means application-scale validation is blocked until Sprint 3. Recommend Vec be the highest-priority item in Sprint 3 to unblock both `/port` and `/stdlib` collection modules. |
 | **Responsible skill** | `/arch` (scheduling), `/backend` + `/platform` (implementation) |
-| **Status** | `open` |
-| **Resolution** | -- |
+| **Status** | `resolved` |
+| **Resolution** | Sprint 3: Vec delivered with `vec-get`, `vec-set`, `vec-push`, `vec-len`. 32 integration tests + 4 REPL tests passing. Grid data model and solver algorithm now expressible. String primitives (U1.1) are the new critical path for full exemplar. |
 
 ### U1.11 — Deeply nested str-concat is ergonomically painful for string-building
 
@@ -206,6 +206,19 @@ Each finding includes:
 | **Responsible skill** | `/stdlib` (variadic `str`), `/frontend` (threading macros at Ring 3) |
 | **Status** | `open` |
 | **Resolution** | -- |
+
+### U1.12 — Vec primitives not registered in typechecker symbol table
+
+| Field | Value |
+|---|---|
+| **ID** | U1.12 |
+| **Source skill** | `/qa` |
+| **Category** | `missing API` |
+| **Severity** | `blocking` |
+| **Description** | Vec primitives (`vec-get`, `vec-set`, `vec-push`, `vec-len`) are not registered in the typechecker's symbol table. The backend has inline codegen for them (`vec_codegen.rs`), the runtime has implementations (`vec.rs`), and the frontend parses `VecLit`, but the typechecker reports "undefined variable: vec-get" etc. These primitives are polymorphic (e.g., `vec-get :: (Fn [(Vec a) Int] a)`), unlike the Ring 1 string primitives which are monomorphic and registered via `ring1_primitives()`. The vec primitives need to be registered with polymorphic type schemes. 33 Vec integration tests and 10 Vec RC tests are `#[ignore]` in `tests/ring1.rs` and `tests/rc.rs` waiting on this fix. |
+| **Responsible skill** | `/typecheck` |
+| **Status** | `resolved` |
+| **Resolution** | Sprint 3: `register_vec_primitives()` in `builtins.rs` registers 4 Vec primitives with polymorphic type schemes (`forall a. ...`). Used `fresh_var_id()` to allocate type var IDs, avoiding collision with `next_id=0` which caused infinite recursion in `apply`. 32 Vec integration tests + 4 REPL Vec tests now pass. 5 unit tests added. |
 
 ---
 

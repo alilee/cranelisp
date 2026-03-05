@@ -57,10 +57,7 @@ impl TypeChecker {
             } => self.infer_annotate(annotation, expr, *span),
 
             Expr::StringLit { span, .. } => self.infer_string_lit(*span),
-            Expr::VecLit { span, .. } => Err(CranelispError::TypeError {
-                message: "vec literals not supported in Ring 0".into(),
-                span: *span,
-            }),
+            Expr::VecLit { elements, span } => self.infer_vec_lit(elements, *span),
             Expr::Trace { span, .. } => Err(CranelispError::TypeError {
                 message: "trace not supported in Ring 0".into(),
                 span: *span,
@@ -424,6 +421,29 @@ impl TypeChecker {
         }
 
         Ok(())
+    }
+
+    fn infer_vec_lit(
+        &mut self,
+        elements: &[Expr],
+        span: Span,
+    ) -> Result<Type, CranelispError> {
+        let elem_type = if elements.is_empty() {
+            // Empty vec: polymorphic (Vec fresh_var)
+            self.fresh_var()
+        } else {
+            // Non-empty vec: infer first element, unify all others with it
+            let first_ty = self.infer_expr(&elements[0])?;
+            for elem in &elements[1..] {
+                let elem_ty = self.infer_expr(elem)?;
+                self.unify(&first_ty, &elem_ty, elem.span())?;
+            }
+            self.apply_subst(&first_ty)
+        };
+
+        let vec_type = Type::ADT("Vec".into(), vec![elem_type]);
+        self.record_expr_type(span, vec_type.clone());
+        Ok(vec_type)
     }
 
     fn infer_annotate(
@@ -1579,5 +1599,228 @@ mod tests {
             span: span(900, 917),
         };
         assert_eq!(tc.infer_expr(&expr).unwrap(), Type::String);
+    }
+
+    // --- Vec literal tests (Sprint 3) ---
+
+    #[test]
+    fn test_infer_vec_lit_ints() {
+        let mut tc = tc();
+        // [1 2 3]
+        let expr = Expr::VecLit {
+            elements: vec![
+                Expr::IntLit { value: 1, span: span(1001, 1002) },
+                Expr::IntLit { value: 2, span: span(1003, 1004) },
+                Expr::IntLit { value: 3, span: span(1005, 1006) },
+            ],
+            span: span(1000, 1007),
+        };
+        assert_eq!(
+            tc.infer_expr(&expr).unwrap(),
+            Type::ADT(TypeName::from("Vec"), vec![Type::Int])
+        );
+    }
+
+    #[test]
+    fn test_infer_vec_lit_strings() {
+        let mut tc = tc();
+        // ["a" "b"]
+        let expr = Expr::VecLit {
+            elements: vec![
+                Expr::StringLit { value: "a".into(), span: span(1101, 1104) },
+                Expr::StringLit { value: "b".into(), span: span(1105, 1108) },
+            ],
+            span: span(1100, 1109),
+        };
+        assert_eq!(
+            tc.infer_expr(&expr).unwrap(),
+            Type::ADT(TypeName::from("Vec"), vec![Type::String])
+        );
+    }
+
+    #[test]
+    fn test_infer_vec_lit_empty_is_polymorphic() {
+        let mut tc = tc();
+        // []
+        let expr = Expr::VecLit {
+            elements: vec![],
+            span: span(1200, 1202),
+        };
+        let ty = tc.infer_expr(&expr).unwrap();
+        match &ty {
+            Type::ADT(name, args) => {
+                assert_eq!(name.as_ref(), "Vec");
+                assert_eq!(args.len(), 1);
+                // Element type should be a fresh type variable
+                assert!(matches!(args[0], Type::Var(_)));
+            }
+            _ => panic!("empty vec should be ADT(Vec, [Var]), got {ty:?}"),
+        }
+    }
+
+    #[test]
+    fn test_infer_vec_lit_type_mismatch() {
+        let mut tc = tc();
+        // [1 "hello"] -- Int vs String
+        let expr = Expr::VecLit {
+            elements: vec![
+                Expr::IntLit { value: 1, span: span(1301, 1302) },
+                Expr::StringLit { value: "hello".into(), span: span(1303, 1310) },
+            ],
+            span: span(1300, 1311),
+        };
+        let err = tc.infer_expr(&expr).unwrap_err();
+        assert!(err.message().contains("mismatch"), "expected type mismatch error, got: {}", err.message());
+    }
+
+    #[test]
+    fn test_infer_vec_lit_booleans() {
+        let mut tc = tc();
+        // [true false]
+        let expr = Expr::VecLit {
+            elements: vec![
+                Expr::BoolLit { value: true, span: span(1401, 1405) },
+                Expr::BoolLit { value: false, span: span(1406, 1411) },
+            ],
+            span: span(1400, 1412),
+        };
+        assert_eq!(
+            tc.infer_expr(&expr).unwrap(),
+            Type::ADT(TypeName::from("Vec"), vec![Type::Bool])
+        );
+    }
+
+    #[test]
+    fn test_infer_vec_lit_in_let_binding() {
+        let mut tc = tc();
+        // (let [xs [1 2 3]] xs)
+        let expr = Expr::Let {
+            bindings: vec![(
+                Symbol::from("xs"),
+                Expr::VecLit {
+                    elements: vec![
+                        Expr::IntLit { value: 1, span: span(1508, 1509) },
+                        Expr::IntLit { value: 2, span: span(1510, 1511) },
+                        Expr::IntLit { value: 3, span: span(1512, 1513) },
+                    ],
+                    span: span(1507, 1514),
+                },
+            )],
+            body: Box::new(Expr::Var {
+                name: Symbol::from("xs"),
+                span: span(1516, 1518),
+            }),
+            span: span(1500, 1519),
+        };
+        assert_eq!(
+            tc.infer_expr(&expr).unwrap(),
+            Type::ADT(TypeName::from("Vec"), vec![Type::Int])
+        );
+    }
+
+    #[test]
+    fn test_infer_vec_lit_as_function_arg() {
+        let mut tc = tc();
+        // Define a function that takes (Vec Int) -> Int
+        tc.bind_local(
+            Symbol::from("vec-len"),
+            mono(Type::Fn(
+                vec![Type::ADT(TypeName::from("Vec"), vec![Type::Int])],
+                Box::new(Type::Int),
+            )),
+        );
+        // (vec-len [1 2 3])
+        let expr = Expr::Apply {
+            callee: Box::new(Expr::Var {
+                name: Symbol::from("vec-len"),
+                span: span(1601, 1608),
+            }),
+            args: vec![Expr::VecLit {
+                elements: vec![
+                    Expr::IntLit { value: 1, span: span(1610, 1611) },
+                    Expr::IntLit { value: 2, span: span(1612, 1613) },
+                    Expr::IntLit { value: 3, span: span(1614, 1615) },
+                ],
+                span: span(1609, 1616),
+            }],
+            span: span(1600, 1617),
+        };
+        assert_eq!(tc.infer_expr(&expr).unwrap(), Type::Int);
+    }
+
+    #[test]
+    fn test_infer_vec_lit_as_function_return() {
+        let mut tc = tc();
+        // (fn [x] [x]) -- returns Vec of the param type
+        let expr = Expr::Lambda {
+            params: vec![Symbol::from("x")],
+            param_annotations: vec![Some(TypeExpr::Named(TypeName::from("Int")))],
+            body: Box::new(Expr::VecLit {
+                elements: vec![Expr::Var {
+                    name: Symbol::from("x"),
+                    span: span(1710, 1711),
+                }],
+                span: span(1709, 1712),
+            }),
+            span: span(1700, 1713),
+        };
+        let ty = tc.infer_expr(&expr).unwrap();
+        assert_eq!(
+            ty,
+            Type::Fn(
+                vec![Type::Int],
+                Box::new(Type::ADT(TypeName::from("Vec"), vec![Type::Int]))
+            )
+        );
+    }
+
+    #[test]
+    fn test_infer_vec_lit_single_element() {
+        let mut tc = tc();
+        // [42]
+        let expr = Expr::VecLit {
+            elements: vec![Expr::IntLit { value: 42, span: span(1801, 1803) }],
+            span: span(1800, 1804),
+        };
+        assert_eq!(
+            tc.infer_expr(&expr).unwrap(),
+            Type::ADT(TypeName::from("Vec"), vec![Type::Int])
+        );
+    }
+
+    #[test]
+    fn test_infer_vec_lit_expr_type_recorded() {
+        let mut tc = tc();
+        let s = span(1900, 1907);
+        let expr = Expr::VecLit {
+            elements: vec![
+                Expr::IntLit { value: 1, span: span(1901, 1902) },
+                Expr::IntLit { value: 2, span: span(1903, 1904) },
+            ],
+            span: s,
+        };
+        tc.infer_expr(&expr).unwrap();
+        assert_eq!(
+            tc.expr_types.get(&s),
+            Some(&Type::ADT(TypeName::from("Vec"), vec![Type::Int]))
+        );
+    }
+
+    #[test]
+    fn test_infer_vec_lit_floats() {
+        let mut tc = tc();
+        // [1.0 2.0 3.0]
+        let expr = Expr::VecLit {
+            elements: vec![
+                Expr::FloatLit { value: 1.0, span: span(2001, 2004) },
+                Expr::FloatLit { value: 2.0, span: span(2005, 2008) },
+                Expr::FloatLit { value: 3.0, span: span(2009, 2012) },
+            ],
+            span: span(2000, 2013),
+        };
+        assert_eq!(
+            tc.infer_expr(&expr).unwrap(),
+            Type::ADT(TypeName::from("Vec"), vec![Type::Float])
+        );
     }
 }

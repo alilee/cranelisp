@@ -78,6 +78,16 @@ fn register_intrinsics(builder: &mut JITBuilder) {
         cranelisp_runtime::string_read as *const u8,
     );
 
+    // Vec runtime infrastructure
+    builder.symbol("runtime/vec_new", cranelisp_runtime::vec_new as *const u8);
+    builder.symbol("runtime/vec_drop", cranelisp_runtime::vec_drop as *const u8);
+
+    // Vec extern primitives (user-visible and internal)
+    builder.symbol("vec-len", cranelisp_runtime::vec_len as *const u8);
+    builder.symbol("vec-set-copy", cranelisp_runtime::vec_set_copy as *const u8);
+    builder.symbol("vec-push-copy", cranelisp_runtime::vec_push_copy as *const u8);
+    builder.symbol("vec-push-grow", cranelisp_runtime::vec_push_grow as *const u8);
+
     // Extern primitives (user-visible via primitives module)
     builder.symbol("str-concat", cranelisp_runtime::str_concat as *const u8);
     builder.symbol("str-eq", cranelisp_runtime::str_eq as *const u8);
@@ -103,6 +113,10 @@ pub struct Jit {
     alloc_string_func_id: Option<FuncId>,
     /// FuncId for `runtime/panic` — needed for match exhaustiveness failure.
     panic_func_id: Option<FuncId>,
+    /// FuncId for `runtime/vec_new` — needed by Vec literal codegen.
+    vec_new_func_id: Option<FuncId>,
+    /// FuncId for `runtime/vec_drop` — needed by Vec drop glue.
+    vec_drop_func_id: Option<FuncId>,
 }
 
 impl Jit {
@@ -126,6 +140,8 @@ impl Jit {
             dealloc_func_id: None,
             alloc_string_func_id: None,
             panic_func_id: None,
+            vec_new_func_id: None,
+            vec_drop_func_id: None,
         })
     }
 
@@ -138,17 +154,24 @@ impl Jit {
         let dealloc_id = self.declare_import("runtime/dealloc", 1, 1)?;
         let alloc_string_id = self.declare_import("runtime/alloc_string", 2, 1)?;
         let panic_id = self.declare_import_no_return("runtime/panic", 2)?;
+        let vec_new_id = self.declare_import("runtime/vec_new", 1, 1)?;
+        // vec_drop returns void in Rust, but we declare it with no returns for Cranelift.
+        let vec_drop_id = self.declare_import_void("runtime/vec_drop", 2)?;
 
         self.alloc_func_id = Some(alloc_id);
         self.dealloc_func_id = Some(dealloc_id);
         self.alloc_string_func_id = Some(alloc_string_id);
         self.panic_func_id = Some(panic_id);
+        self.vec_new_func_id = Some(vec_new_id);
+        self.vec_drop_func_id = Some(vec_drop_id);
 
         Ok(IntrinsicIds {
             alloc: alloc_id,
             dealloc: dealloc_id,
             alloc_string: alloc_string_id,
             panic: panic_id,
+            vec_new: vec_new_id,
+            vec_drop: vec_drop_id,
         })
     }
 
@@ -248,6 +271,8 @@ impl Jit {
             dealloc_func_id: self.dealloc_func_id,
             alloc_string_func_id: self.alloc_string_func_id,
             panic_func_id: self.panic_func_id,
+            vec_new_func_id: self.vec_new_func_id,
+            vec_drop_func_id: self.vec_drop_func_id,
         }
     }
 
@@ -327,6 +352,25 @@ impl Jit {
             })
     }
 
+    /// Declare an imported void function (no return value).
+    fn declare_import_void(
+        &mut self,
+        name: &str,
+        n_params: usize,
+    ) -> Result<FuncId, CranelispError> {
+        let mut sig = self.module.make_signature();
+        for _ in 0..n_params {
+            sig.params.push(AbiParam::new(types::I64));
+        }
+        // No return values.
+        self.module
+            .declare_function(name, Linkage::Import, &sig)
+            .map_err(|e| CranelispError::CodegenError {
+                message: format!("failed to declare intrinsic '{name}': {e}"),
+                span: Span::SYNTHETIC,
+            })
+    }
+
     /// Declare an imported function that never returns (panic).
     fn declare_import_no_return(
         &mut self,
@@ -354,6 +398,8 @@ pub struct IntrinsicIds {
     pub dealloc: FuncId,
     pub alloc_string: FuncId,
     pub panic: FuncId,
+    pub vec_new: FuncId,
+    pub vec_drop: FuncId,
 }
 
 #[cfg(test)]

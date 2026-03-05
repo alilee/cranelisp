@@ -85,6 +85,36 @@ impl HeapClosure {
 const _: () = assert!(HeapClosure::CODE_PTR_OFFSET == 16);
 const _: () = assert!(HeapClosure::CAPTURES_START == 24);
 
+/// Vec: [header | len | cap | data_ptr]
+/// The data buffer is a separate allocation: [elem_0 | elem_1 | ... | elem_{cap-1}]
+/// Each element is i64 (uniform representation). Only the first `len` elements are live.
+#[repr(C)]
+pub struct HeapVec {
+    pub header: HeapHeader,
+    /// Number of live elements (0..len are initialized).
+    pub len: i64,
+    /// Capacity of the data buffer (in elements, not bytes).
+    pub cap: i64,
+    /// Pointer to the data buffer. The buffer holds `cap` slots of i64.
+    pub data_ptr: i64, // ptr-width: i64 on native
+}
+
+impl HeapVec {
+    pub const LEN_OFFSET: i32 = offset_of!(Self, len) as i32;           // 16
+    pub const CAP_OFFSET: i32 = offset_of!(Self, cap) as i32;           // 24
+    pub const DATA_PTR_OFFSET: i32 = offset_of!(Self, data_ptr) as i32; // 32
+
+    /// Payload size after the header: len + cap + data_ptr.
+    pub const fn payload_size() -> usize {
+        3 * mem::size_of::<i64>()  // 24 bytes
+    }
+}
+
+const _: () = assert!(HeapVec::LEN_OFFSET == 16);
+const _: () = assert!(HeapVec::CAP_OFFSET == 24);
+const _: () = assert!(HeapVec::DATA_PTR_OFFSET == 32);
+const _: () = assert!(mem::size_of::<HeapVec>() == 40);
+
 // ---------------------------------------------------------------------------
 // Generic heap access helpers — free functions
 // ---------------------------------------------------------------------------
@@ -131,6 +161,10 @@ pub fn emit_rc_inc(builder: &mut FunctionBuilder, ptr: Value) {
 
 /// Emit inline atomic RC decrement + conditional dealloc.
 ///
+/// For Mixed HeapCategory types (ADTs with both nullary and data constructors
+/// like Option), a null guard checks if the value is a bare tag (below
+/// NULLARY_TAG_THRESHOLD) before accessing the RC header.
+///
 /// old = atomic_rmw(Sub, ptr + RC_OFFSET, 1, Release)
 /// if old == 1:
 ///     fence(Acquire)
@@ -139,6 +173,7 @@ pub fn emit_rc_inc(builder: &mut FunctionBuilder, ptr: Value) {
 ///
 /// The `dealloc_func_id` is the FuncId for `runtime/dealloc`.
 /// The `drop_glue_id` is Some(FuncId) if the type has heap-typed fields.
+/// If `guard_nullary` is true, emit a check that skips dec for bare tags.
 pub fn emit_rc_dec(
     builder: &mut FunctionBuilder,
     module: &mut JITModule,
@@ -146,6 +181,36 @@ pub fn emit_rc_dec(
     dealloc_func_id: FuncId,
     drop_glue_id: Option<FuncId>,
 ) {
+    emit_rc_dec_guarded(builder, module, ptr, dealloc_func_id, drop_glue_id, false);
+}
+
+/// Emit RC dec with optional null guard for bare nullary tags.
+///
+/// When `guard_nullary` is true, values below `NULLARY_TAG_THRESHOLD` (bare
+/// ADT tags from nullary constructors) are skipped — they are not heap
+/// pointers and have no RC header.
+pub fn emit_rc_dec_guarded(
+    builder: &mut FunctionBuilder,
+    module: &mut JITModule,
+    ptr: Value,
+    dealloc_func_id: FuncId,
+    drop_glue_id: Option<FuncId>,
+    guard_nullary: bool,
+) {
+    let cont_block = builder.create_block();
+
+    // Guard: if value is a bare nullary tag, skip the dec entirely.
+    if guard_nullary {
+        let threshold = builder.ins().iconst(types::I64, NULLARY_THRESHOLD_I64);
+        let is_tag = builder.ins().icmp(IntCC::UnsignedLessThan, ptr, threshold);
+        let dec_block = builder.create_block();
+        builder
+            .ins()
+            .brif(is_tag, cont_block, &[], dec_block, &[]);
+        builder.switch_to_block(dec_block);
+        builder.seal_block(dec_block);
+    }
+
     let rc_addr = builder
         .ins()
         .iadd_imm(ptr, i64::from(HeapHeader::RC_OFFSET));
@@ -161,7 +226,6 @@ pub fn emit_rc_dec(
     // Branch: if old_rc == 1 (last reference), free the object.
     let cmp = builder.ins().icmp(IntCC::Equal, old_rc, one);
     let free_block = builder.create_block();
-    let cont_block = builder.create_block();
 
     builder
         .ins()
@@ -337,6 +401,15 @@ mod tests {
         assert_eq!(HeapClosure::capture_offset(1), 32);
         assert_eq!(HeapClosure::payload_size(0), 8); // code_ptr only
         assert_eq!(HeapClosure::payload_size(3), 32); // code_ptr + 3 captures
+    }
+
+    #[test]
+    fn test_heap_vec_layout() {
+        assert_eq!(HeapVec::LEN_OFFSET, 16);
+        assert_eq!(HeapVec::CAP_OFFSET, 24);
+        assert_eq!(HeapVec::DATA_PTR_OFFSET, 32);
+        assert_eq!(HeapVec::payload_size(), 24);
+        assert_eq!(std::mem::size_of::<HeapVec>(), 40);
     }
 
     #[test]

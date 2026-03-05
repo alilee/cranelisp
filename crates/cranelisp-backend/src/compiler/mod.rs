@@ -9,6 +9,7 @@ pub mod apply;
 pub mod control_flow;
 pub mod literals;
 pub mod match_codegen;
+pub mod vec_codegen;
 
 use std::collections::HashMap;
 
@@ -66,6 +67,10 @@ pub struct CompileContext<'a> {
     pub alloc_string_func_id: Option<FuncId>,
     /// FuncId for runtime/panic. None in Ring 0 (uses trap instead).
     pub panic_func_id: Option<FuncId>,
+    /// FuncId for runtime/vec_new. None in Ring 0 (no Vecs).
+    pub vec_new_func_id: Option<FuncId>,
+    /// FuncId for runtime/vec_drop. None in Ring 0 (no Vecs).
+    pub vec_drop_func_id: Option<FuncId>,
 }
 
 /// Match-arm-invariant data bundled to reduce parameter counts in
@@ -295,11 +300,7 @@ impl<'a> FnCompiler<'a> {
                 ..
             } => self.compile_match(scrutinee, arms, *span),
             Expr::Annotate { expr, .. } => self.compile_expr(expr),
-            // Ring 2+ forms: not yet implemented.
-            Expr::VecLit { span, .. } => Err(CranelispError::CodegenError {
-                message: "vec literals not supported until Ring 2".into(),
-                span: *span,
-            }),
+            Expr::VecLit { elements, span } => self.compile_vec_lit(elements, *span),
             Expr::Trace { span, .. } => Err(CranelispError::CodegenError {
                 message: "trace not supported until Ring 4".into(),
                 span: *span,

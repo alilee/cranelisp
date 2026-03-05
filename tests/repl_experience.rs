@@ -672,19 +672,35 @@ fn successful_eval_has_empty_warnings() {
 // =============================================================================
 
 #[test]
-fn empty_input_is_error() {
+fn empty_input_is_silent() {
     let mut session = repl_session();
-    let err = session.eval("");
-    assert!(err.is_err());
-    // Session still works after empty input.
+    let result = session.eval("").unwrap();
+    // Empty input produces no error; session still works.
+    assert_eq!(result.value, 0);
     assert_eq!(repl_eval(&mut session, "1"), 1);
 }
 
 #[test]
-fn whitespace_only_is_error() {
+fn whitespace_only_is_silent() {
     let mut session = repl_session();
-    let err = session.eval("   ");
-    assert!(err.is_err());
+    let result = session.eval("   ").unwrap();
+    assert_eq!(result.value, 0);
+    assert_eq!(repl_eval(&mut session, "1"), 1);
+}
+
+#[test]
+fn comment_only_is_silent() {
+    let mut session = repl_session();
+    let result = session.eval("; this is a comment").unwrap();
+    assert_eq!(result.value, 0);
+    assert_eq!(repl_eval(&mut session, "1"), 1);
+}
+
+#[test]
+fn indented_comment_is_silent() {
+    let mut session = repl_session();
+    let result = session.eval("  ; indented comment").unwrap();
+    assert_eq!(result.value, 0);
     assert_eq!(repl_eval(&mut session, "1"), 1);
 }
 
@@ -2003,4 +2019,58 @@ fn ring1_session_incremental_with_heap_types() {
     assert_eq!(repl_eval(&mut session, "((make-adder 5) 5)"), 10);
     let display = repl_eval_display(&mut session, "(Some 99)");
     assert_eq!(display, ":(Option Int) (Some 99)");
+}
+
+// =============================================================================
+// Vec Display (Ring 1)
+// =============================================================================
+
+#[test]
+fn display_vec_int() {
+    let mut session = repl_session();
+    let display = repl_eval_display(&mut session, "[1 2 3]");
+    assert!(
+        display.contains("[1, 2, 3]") || display.contains("[1 2 3]"),
+        "Vec of ints should display elements, got: {display}"
+    );
+}
+
+#[test]
+fn display_vec_empty() {
+    let mut session = repl_session();
+    let display = repl_eval_display(&mut session, "[]");
+    assert!(
+        display.contains("[]"),
+        "Empty Vec should display as [], got: {display}"
+    );
+}
+
+#[test]
+fn display_vec_after_push() {
+    let mut session = repl_session();
+    let display = repl_eval_display(&mut session, "(vec-push [1 2] 3)");
+    assert!(
+        display.contains("1") && display.contains("2") && display.contains("3"),
+        "Vec after push should show all elements, got: {display}"
+    );
+}
+
+// =============================================================================
+// Empty/Comment Input Handling (Ring 1)
+// =============================================================================
+
+#[test]
+fn repl_blank_line_no_error() {
+    let mut session = repl_session();
+    // Blank input should not produce an error
+    let result = session.eval("");
+    assert!(result.is_ok(), "Blank line should not error: {:?}", result.err());
+}
+
+#[test]
+fn repl_comment_only_no_error() {
+    let mut session = repl_session();
+    // Comment-only input should not produce an error
+    let result = session.eval("; this is a comment");
+    assert!(result.is_ok(), "Comment-only input should not error: {:?}", result.err());
 }

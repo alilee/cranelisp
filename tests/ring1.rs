@@ -1141,3 +1141,311 @@ fn let_bound_adt_and_closure() {
     ";
     assert_eq!(compile_and_run_simple(src), 42);
 }
+
+// =============================================================================
+// Vec: literals, primitives (spec: appendix-a-builtins, 04-expressions)
+// =============================================================================
+
+#[test]
+
+fn vec_literal_int() {
+    let src = "(defn main [] (vec-len [1 2 3]))";
+    assert_eq!(compile_and_run_simple(src), 3);
+}
+
+#[test]
+
+fn vec_literal_empty() {
+    let src = "(defn main [] (vec-len []))";
+    assert_eq!(compile_and_run_simple(src), 0);
+}
+
+#[test]
+
+fn vec_literal_strings() {
+    let src = r#"(defn main [] (vec-len ["a" "b"]))"#;
+    assert_eq!(compile_and_run_simple(src), 2);
+}
+
+#[test]
+
+fn vec_get_first() {
+    let src = "(defn main [] (vec-get [10 20 30] 0))";
+    assert_eq!(compile_and_run_simple(src), 10);
+}
+
+#[test]
+
+fn vec_get_last() {
+    let src = "(defn main [] (vec-get [10 20 30] 2))";
+    assert_eq!(compile_and_run_simple(src), 30);
+}
+
+#[test]
+
+fn vec_get_middle() {
+    let src = "(defn main [] (vec-get [10 20 30] 1))";
+    assert_eq!(compile_and_run_simple(src), 20);
+}
+
+#[test]
+
+fn vec_set_element() {
+    let src = "
+        (defn main []
+          (vec-get (vec-set [10 20 30] 1 99) 1))
+    ";
+    assert_eq!(compile_and_run_simple(src), 99);
+}
+
+#[test]
+
+fn vec_set_preserves_other_elements() {
+    let src = "
+        (defn main []
+          (let [v (vec-set [10 20 30] 1 99)]
+            (add-i64 (vec-get v 0) (vec-get v 2))))
+    ";
+    assert_eq!(compile_and_run_simple(src), 40);
+}
+
+#[test]
+
+fn vec_push_appends() {
+    let src = "
+        (defn main [] (vec-len (vec-push [1 2] 3)))
+    ";
+    assert_eq!(compile_and_run_simple(src), 3);
+}
+
+#[test]
+
+fn vec_push_value() {
+    let src = "
+        (defn main [] (vec-get (vec-push [1 2] 3) 2))
+    ";
+    assert_eq!(compile_and_run_simple(src), 3);
+}
+
+#[test]
+
+fn vec_len_zero() {
+    let src = "(defn main [] (vec-len []))";
+    assert_eq!(compile_and_run_simple(src), 0);
+}
+
+#[test]
+
+fn vec_len_three() {
+    let src = "(defn main [] (vec-len [1 2 3]))";
+    assert_eq!(compile_and_run_simple(src), 3);
+}
+
+#[test]
+
+fn vec_in_let() {
+    let src = "
+        (defn main []
+          (let [v [1 2 3]]
+            (vec-get v 0)))
+    ";
+    assert_eq!(compile_and_run_simple(src), 1);
+}
+
+#[test]
+
+fn vec_in_defn() {
+    let src = "
+        (defn first [v] (vec-get v 0))
+        (defn main [] (first [10 20]))
+    ";
+    assert_eq!(compile_and_run_simple(src), 10);
+}
+
+#[test]
+
+fn vec_of_strings_get() {
+    let src = r#"
+        (defn main []
+          (str-len (vec-get ["hello" "world"] 0)))
+    "#;
+    assert_eq!(compile_and_run_simple(src), 5);
+}
+
+#[test]
+
+fn vec_of_strings_get_second() {
+    let src = r#"
+        (defn main []
+          (str-len (vec-get ["hello" "world"] 1)))
+    "#;
+    assert_eq!(compile_and_run_simple(src), 5);
+}
+
+#[test]
+
+fn vec_of_adts() {
+    let src = "
+        (deftype (Option a) None (Some [:a val]))
+        (defn main []
+          (match (vec-get [(Some 1) None (Some 3)] 0)
+            [(Some x) x
+             None 0]))
+    ";
+    assert_eq!(compile_and_run_simple(src), 1);
+}
+
+#[test]
+
+fn vec_of_adts_none() {
+    let src = "
+        (deftype (Option a) None (Some [:a val]))
+        (defn main []
+          (match (vec-get [(Some 1) None (Some 3)] 1)
+            [(Some x) x
+             None 0]))
+    ";
+    assert_eq!(compile_and_run_simple(src), 0);
+}
+
+#[test]
+
+fn vec_push_to_empty() {
+    let src = "
+        (defn main []
+          (vec-get (vec-push [] 42) 0))
+    ";
+    assert_eq!(compile_and_run_simple(src), 42);
+}
+
+#[test]
+
+fn vec_set_first() {
+    let src = "
+        (defn main []
+          (vec-get (vec-set [1 2 3] 0 99) 0))
+    ";
+    assert_eq!(compile_and_run_simple(src), 99);
+}
+
+#[test]
+
+fn vec_set_last() {
+    let src = "
+        (defn main []
+          (vec-get (vec-set [1 2 3] 2 99) 2))
+    ";
+    assert_eq!(compile_and_run_simple(src), 99);
+}
+
+#[test]
+
+fn vec_returned_from_function() {
+    let src = "
+        (defn make-vec [] [10 20 30])
+        (defn main [] (vec-get (make-vec) 1))
+    ";
+    assert_eq!(compile_and_run_simple(src), 20);
+}
+
+#[test]
+
+fn vec_passed_to_function() {
+    let src = "
+        (defn sum-first-two [v]
+          (add-i64 (vec-get v 0) (vec-get v 1)))
+        (defn main [] (sum-first-two [3 4 5]))
+    ";
+    assert_eq!(compile_and_run_simple(src), 7);
+}
+
+#[test]
+
+fn vec_in_if_branch() {
+    let src = "
+        (defn main []
+          (vec-len (if true [1 2 3] [4 5])))
+    ";
+    assert_eq!(compile_and_run_simple(src), 3);
+}
+
+#[test]
+
+fn vec_push_chain() {
+    // Push multiple elements via chaining.
+    let src = "
+        (defn main []
+          (vec-len (vec-push (vec-push (vec-push [] 1) 2) 3)))
+    ";
+    assert_eq!(compile_and_run_simple(src), 3);
+}
+
+// =============================================================================
+// Dual-mode Vec tests (batch + interactive)
+// =============================================================================
+
+#[test]
+
+fn dual_mode_vec_literal() {
+    compile_both("(defn main [] (vec-len [1 2 3]))", 3);
+}
+
+#[test]
+
+fn dual_mode_vec_get() {
+    compile_both("(defn main [] (vec-get [10 20 30] 1))", 20);
+}
+
+#[test]
+
+fn dual_mode_vec_push() {
+    compile_both("(defn main [] (vec-len (vec-push [1 2] 3)))", 3);
+}
+
+// =============================================================================
+// REPL Vec tests
+// =============================================================================
+
+#[test]
+
+fn repl_vec_literal() {
+    let mut session = repl_session();
+    assert_eq!(repl_eval(&mut session, "(vec-len [1 2 3])"), 3);
+}
+
+#[test]
+
+fn repl_vec_get() {
+    let mut session = repl_session();
+    assert_eq!(repl_eval(&mut session, "(vec-get [10 20 30] 0)"), 10);
+}
+
+#[test]
+
+fn repl_vec_set() {
+    let mut session = repl_session();
+    assert_eq!(
+        repl_eval(&mut session, "(vec-get (vec-set [10 20 30] 1 99) 1)"),
+        99
+    );
+}
+
+#[test]
+
+fn repl_vec_push() {
+    let mut session = repl_session();
+    assert_eq!(
+        repl_eval(&mut session, "(vec-len (vec-push [1 2] 3))"),
+        3
+    );
+}
+
+#[test]
+fn repl_vec_display() {
+    let mut session = repl_session();
+    let display = repl_eval_display(&mut session, "[1 2 3]");
+    assert!(
+        display.contains("[1, 2, 3]") || display.contains("[1 2 3]"),
+        "Vec should display elements, got: {display}"
+    );
+}

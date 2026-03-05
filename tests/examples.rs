@@ -96,3 +96,9 @@ fn example_13_higher_order() {
     // 42+2+5+54+45+12+21+15+7 = 203
     assert_eq!(run_example("13-higher-order.cl"), 203);
 }
+
+#[test]
+fn example_14_vecs() {
+    // 5+60+99+6+3+6+300+62 = 541
+    assert_eq!(run_example("14-vecs.cl"), 541);
+}

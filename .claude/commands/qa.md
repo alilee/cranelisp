@@ -13,7 +13,7 @@ Wire the pipeline end-to-end and validate that everything works together. Own th
 **Why this matters:**
 - **E2E tests** (Layer 4) invoke the binary as a subprocess. No binary = no E2E tests = no release gate validation.
 - **Performance tests** measure real compilation and evaluation latency. No binary = no perf validation.
-- **`./showcase` demos** play through the REPL binary. No binary = no demos.
+- **`./repl/showcase` demos** play through the REPL binary. No binary = no demos.
 - **Examples** (`examples/*.cl`) are meant to be runnable via `cranelisp --run`. No binary = examples are untested files.
 - **User-proxy skills** (`/docs`, `/examples`, `/repl`, `/port`) produce artifacts that assume a working binary.
 
@@ -22,7 +22,7 @@ Wire the pipeline end-to-end and validate that everything works together. Own th
 2. The binary starts and accepts input (REPL mode or batch mode as appropriate for the ring)
 3. E2E tests (Layer 4) pass — these invoke the binary as a subprocess and assert on stdout/stderr/exit code
 
-**At every ring gate**, the E2E test suite must pass. E2E tests are the build confidence gate — they are stable, minimal, and independent of presentation tools like `./showcase`. If the binary is broken, `/qa` blocks the gate and files a task for the owning skill to fix it.
+**At every ring gate**, the E2E test suite must pass. E2E tests are the build confidence gate — they are stable, minimal, and independent of presentation tools like `./repl/showcase`. If the binary is broken, `/qa` blocks the gate and files a task for the owning skill to fix it.
 
 This requirement exists because API-level integration tests can pass with a perfect green suite while the actual user-facing binary is completely non-functional — a gap that is invisible until someone tries to use the compiler.
 

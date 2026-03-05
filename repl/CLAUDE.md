@@ -17,6 +17,8 @@ The REPL spec defines the **contract between the REPL and the user**: display fo
 |---|---|
 | `CLAUDE.md` | This file — ownership and conventions |
 | `spec.md` | Normative REPL experience specification |
+| `showcase` | Top-level showcase script — builds binary, plays demos |
+| `demos/` | `.demo` scripts, demo player (`demo-player.py`), and `CLAUDE.md` |
 
 ## Conventions
 

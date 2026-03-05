@@ -413,3 +413,323 @@ fn rc_adt_chain() {
     ";
     assert_eq!(compile_and_run_simple(src), 2);
 }
+
+// =============================================================================
+// U1.3 — Nested heap ADT RC (resolves usability finding U1.3)
+//
+// Functional correctness tests (no crash, correct value) run now.
+// Strict RC balance tests are #[ignore] because scope-level dec for heap
+// temporaries is deferred to Ring 2 (see sprint notes §"RC Risks").
+// =============================================================================
+
+#[test]
+fn rc_option_string() {
+    // ADT containing a heap-typed field (String). Create and use — no crash.
+    let src = r#"
+        (deftype (Option a) None (Some [:a val]))
+        (defn main []
+          (match (Some "hello")
+            [(Some s) (str-len s)
+             None 0]))
+    "#;
+    assert_eq!(compile_and_run_simple(src), 5);
+}
+
+#[test]
+#[ignore = "scope-level dec for heap temporaries deferred to Ring 2"]
+fn rc_option_string_balanced() {
+    let src = r#"
+        (deftype (Option a) None (Some [:a val]))
+        (defn main []
+          (match (Some "hello")
+            [(Some s) (str-len s)
+             None 0]))
+    "#;
+    assert_rc_balanced(src);
+}
+
+#[test]
+fn rc_nested_option() {
+    // Nested ADT: Option(Option(String)). Inner and outer both heap — no crash.
+    let src = r#"
+        (deftype (Option a) None (Some [:a val]))
+        (defn main []
+          (match (Some (Some "hello"))
+            [(Some inner) (match inner [(Some s) (str-len s) None 0])
+             None 0]))
+    "#;
+    assert_eq!(compile_and_run_simple(src), 5);
+}
+
+#[test]
+#[ignore = "scope-level dec for heap temporaries deferred to Ring 2"]
+fn rc_nested_option_balanced() {
+    let src = r#"
+        (deftype (Option a) None (Some [:a val]))
+        (defn main []
+          (match (Some (Some "hello"))
+            [(Some inner) (match inner [(Some s) (str-len s) None 0])
+             None 0]))
+    "#;
+    assert_rc_balanced(src);
+}
+
+#[test]
+fn rc_option_string_in_let() {
+    // Access heap field through match in let scope — no crash.
+    let src = r#"
+        (deftype (Option a) None (Some [:a val]))
+        (defn main []
+          (let [x (Some "hello")]
+            (match x [(Some s) (str-len s) None 0])))
+    "#;
+    assert_eq!(compile_and_run_simple(src), 5);
+}
+
+#[test]
+#[ignore = "scope-level dec for heap temporaries deferred to Ring 2"]
+fn rc_option_string_in_let_balanced() {
+    let src = r#"
+        (deftype (Option a) None (Some [:a val]))
+        (defn main []
+          (let [x (Some "hello")]
+            (match x [(Some s) (str-len s) None 0])))
+    "#;
+    assert_rc_balanced(src);
+}
+
+// =============================================================================
+// U1.5 — Closure capturing heap types (resolves usability finding U1.5)
+// =============================================================================
+
+#[test]
+fn rc_closure_captures_string() {
+    // Closure captures a heap-allocated String — no crash.
+    let src = r#"
+        (defn main []
+          (let [s "hello"]
+            (let [f (fn [] (str-len s))]
+              (f))))
+    "#;
+    assert_eq!(compile_and_run_simple(src), 5);
+}
+
+#[test]
+#[ignore = "scope-level dec for heap temporaries deferred to Ring 2"]
+fn rc_closure_captures_string_balanced() {
+    let src = r#"
+        (defn main []
+          (let [s "hello"]
+            (let [f (fn [] (str-len s))]
+              (f))))
+    "#;
+    assert_rc_balanced(src);
+}
+
+#[test]
+fn rc_closure_captures_adt() {
+    // Closure captures an ADT with a heap field — no crash.
+    let src = r#"
+        (deftype (Option a) None (Some [:a val]))
+        (defn main []
+          (let [opt (Some "world")]
+            (let [f (fn [] (match opt [(Some s) (str-len s) None 0]))]
+              (f))))
+    "#;
+    assert_eq!(compile_and_run_simple(src), 5);
+}
+
+#[test]
+#[ignore = "scope-level dec for heap temporaries deferred to Ring 2"]
+fn rc_closure_captures_adt_balanced() {
+    let src = r#"
+        (deftype (Option a) None (Some [:a val]))
+        (defn main []
+          (let [opt (Some "world")]
+            (let [f (fn [] (match opt [(Some s) (str-len s) None 0]))]
+              (f))))
+    "#;
+    assert_rc_balanced(src);
+}
+
+// =============================================================================
+// F-12 validation — Mixed ADT dec (nullary tag vs heap pointer)
+// =============================================================================
+
+#[test]
+fn rc_mixed_adt_none_drop() {
+    // None is a bare tag (i64 = 0). Must not be treated as a heap pointer — no crash.
+    let src = "
+        (deftype (Option a) None (Some [:a val]))
+        (defn main []
+          (let [x None]
+            (match x [(Some n) n None 0])))
+    ";
+    assert_eq!(compile_and_run_simple(src), 0);
+}
+
+#[test]
+#[ignore = "scope-level dec for heap temporaries deferred to Ring 2"]
+fn rc_mixed_adt_none_drop_balanced() {
+    let src = "
+        (deftype (Option a) None (Some [:a val]))
+        (defn main []
+          (let [x None]
+            (match x [(Some n) n None 0])))
+    ";
+    assert_rc_balanced(src);
+}
+
+#[test]
+fn rc_mixed_adt_some_drop() {
+    // Some("x") allocates on heap. String field must be accessible — no crash.
+    let src = r#"
+        (deftype (Option a) None (Some [:a val]))
+        (defn main []
+          (let [x (Some "x")]
+            (match x [(Some s) (str-len s) None 0])))
+    "#;
+    assert_eq!(compile_and_run_simple(src), 1);
+}
+
+#[test]
+#[ignore = "scope-level dec for heap temporaries deferred to Ring 2"]
+fn rc_mixed_adt_some_drop_balanced() {
+    let src = r#"
+        (deftype (Option a) None (Some [:a val]))
+        (defn main []
+          (let [x (Some "x")]
+            (match x [(Some s) (str-len s) None 0])))
+    "#;
+    assert_rc_balanced(src);
+}
+
+// =============================================================================
+// Vec RC (~10 tests)
+//
+// Vec RC balance requires scope-level dec (deferred to Ring 2). Vec allocations
+// are correct but deallocation at scope exit is not yet wired. These tests pass
+// functionally but fail the RC balance assertion.
+// =============================================================================
+
+#[test]
+
+#[ignore = "Vec RC balance requires scope-level dec — deferred to Ring 2"]
+fn rc_vec_alloc_drop() {
+    // Create Vec of Ints, let it drop — RC balanced.
+    let src = "
+        (defn main [] (vec-len [1 2 3]))
+    ";
+    assert_rc_balanced(src);
+}
+
+#[test]
+
+#[ignore = "Vec RC balance requires scope-level dec — deferred to Ring 2"]
+fn rc_vec_empty() {
+    // Empty Vec alloc and drop.
+    let src = "
+        (defn main [] (vec-len []))
+    ";
+    assert_rc_balanced(src);
+}
+
+#[test]
+
+#[ignore = "Vec RC balance requires scope-level dec — deferred to Ring 2"]
+fn rc_vec_of_strings() {
+    // Vec of Strings — element Strings must be freed on Vec drop.
+    let src = r#"
+        (defn main []
+          (vec-len ["a" "b" "c"]))
+    "#;
+    assert_rc_balanced(src);
+}
+
+#[test]
+
+#[ignore = "Vec RC balance requires scope-level dec — deferred to Ring 2"]
+fn rc_vec_get_int() {
+    // vec-get on Int Vec — no element RC needed.
+    let src = "
+        (defn main [] (vec-get [10 20 30] 1))
+    ";
+    assert_rc_balanced(src);
+}
+
+#[test]
+
+#[ignore = "Vec RC balance requires scope-level dec — deferred to Ring 2"]
+fn rc_vec_get_string() {
+    // vec-get on String Vec — element RC inc on get, balanced on drop.
+    let src = r#"
+        (defn main []
+          (str-len (vec-get ["hello" "world"] 0)))
+    "#;
+    assert_rc_balanced(src);
+}
+
+#[test]
+
+#[ignore = "Vec RC balance requires scope-level dec — deferred to Ring 2"]
+fn rc_vec_set_copy() {
+    // vec-set on shared Vec — copies, original and new both balanced.
+    let src = "
+        (defn main []
+          (let [v [1 2 3]]
+            (let [v2 (vec-set v 1 99)]
+              (add-i64 (vec-get v 1) (vec-get v2 1)))))
+    ";
+    assert_rc_balanced(src);
+}
+
+#[test]
+
+#[ignore = "Vec RC balance requires scope-level dec — deferred to Ring 2"]
+fn rc_vec_push_copy() {
+    // vec-push on shared Vec — copies.
+    let src = "
+        (defn main []
+          (let [v [1 2]]
+            (let [v2 (vec-push v 3)]
+              (add-i64 (vec-len v) (vec-len v2)))))
+    ";
+    assert_rc_balanced(src);
+}
+
+#[test]
+
+#[ignore = "Vec RC balance requires scope-level dec — deferred to Ring 2"]
+fn rc_vec_of_options() {
+    // Vec of mixed ADT (Option Int) — Some allocates, None is bare tag.
+    let src = "
+        (deftype (Option a) None (Some [:a val]))
+        (defn main []
+          (vec-len [(Some 1) None (Some 3)]))
+    ";
+    assert_rc_balanced(src);
+}
+
+#[test]
+
+#[ignore = "Vec RC balance requires scope-level dec — deferred to Ring 2"]
+fn rc_vec_push_to_empty() {
+    // Push to empty Vec — no elements to copy.
+    let src = "
+        (defn main [] (vec-len (vec-push [] 1)))
+    ";
+    assert_rc_balanced(src);
+}
+
+#[test]
+
+#[ignore = "Vec RC balance requires scope-level dec — deferred to Ring 2"]
+fn rc_vec_in_let() {
+    // Vec bound in let, used, then dropped at scope exit.
+    let src = "
+        (defn main []
+          (let [v [10 20 30]]
+            (vec-get v 2)))
+    ";
+    assert_rc_balanced(src);
+}

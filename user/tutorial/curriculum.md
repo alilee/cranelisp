@@ -139,7 +139,30 @@ Sections 1-13 cover Ring 0 features: integers, floats, booleans, arithmetic, com
 
 ### Section 19: `collections`
 
-**Deferred to Sprint 3** (Vec is not in Sprint 2 scope).
+**Teaches**: Vec literals, Vec primitives, building and transforming Vecs.
+
+**Prerequisite concepts**: Calling functions (section 9), let bindings (section 6), recursion (section 12).
+
+| # | Prompt | Trigger | Answer |
+|---|--------|---------|--------|
+| 1 | `; make a Vec of the numbers 1, 2, 3` | type: (Vec Int) | `[1 2 3]` |
+| 2 | `; make an empty Vec` | type: (Vec a) | `[]` |
+| 3 | `; how many elements are in [10 20 30]?` | value: 3 | `(vec-len [10 20 30])` |
+| 4 | `; get the first element of [10 20 30]` | value: 10 | `(vec-get [10 20 30] 0)` |
+| 5 | `; get the last element of [10 20 30]` | value: 30 | `(vec-get [10 20 30] 2)` |
+| 6 | `; replace the middle element of [10 20 30] with 99` | type: (Vec Int), value includes 99 | `(vec-set [10 20 30] 1 99)` |
+| 7 | `; append 40 to [10 20 30]` | type: (Vec Int) | `(vec-push [10 20 30] 40)` |
+| 8 | `; make a Vec of strings: "a", "b", "c"` | type: (Vec String) | `["a" "b" "c"]` |
+| 9 | `; push "d" onto ["a" "b" "c"]` | type: (Vec String) | `(vec-push ["a" "b" "c"] "d")` |
+| 10 | `; use let to bind v to [1 2 3], then get its length` | value: 3 | `(let [v [1 2 3]] (vec-len v))` |
+
+**Key concepts introduced**:
+- `[e1 e2 ...]` creates a Vec literal; `[]` is an empty Vec
+- All elements must have the same type
+- `vec-len` returns the number of elements
+- `vec-get` retrieves by zero-based index
+- `vec-set` and `vec-push` return new Vecs (immutable semantics)
+- Vecs are polymorphic: `(Vec Int)`, `(Vec String)`, etc.
 
 ---
 

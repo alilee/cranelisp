@@ -73,6 +73,17 @@ impl<'a> FnCompiler<'a> {
     ) -> Result<Value, CranelispError> {
         match resolved {
             ResolvedCall::BuiltinFn { name: ref op_name } => {
+                // Vec operations: intercept and compile inline.
+                if is_vec_primitive(op_name) {
+                    let arg_vals = self.compile_arg_list(args)?;
+                    self.in_tail_position = saved_tail;
+                    if let Some(val) = self.compile_vec_op(op_name, args, &arg_vals, span)? {
+                        return Ok(val);
+                    }
+                    // Fall through to extern if compile_vec_op returned None.
+                    return self.compile_extern_call(op_name, &arg_vals, span);
+                }
+
                 if is_extern_primitive(op_name) {
                     let arg_vals = self.compile_arg_list(args)?;
                     self.in_tail_position = saved_tail;
@@ -379,4 +390,9 @@ fn is_extern_primitive(name: &str) -> bool {
             | "bool-to-string"
             | "parse-int"
     )
+}
+
+/// Check if a builtin name is a Vec primitive (compiled inline by vec_codegen).
+fn is_vec_primitive(name: &str) -> bool {
+    matches!(name, "vec-get" | "vec-set" | "vec-push" | "vec-len")
 }

@@ -1059,9 +1059,150 @@ You can combine higher-order functions with recursion to build powerful patterns
 
 This computes the sum of numbers from 1 to 100 by folding with an addition function.
 
+## Vecs -- Growable Arrays
+
+A `Vec` is an ordered, growable collection of values. All elements must have the same type. You create a Vec with square bracket syntax:
+
+```
+> [1 2 3]
+:(Vec Int) [1 2 3]
+
+> ["hello" "world"]
+:(Vec String) ["hello" "world"]
+
+> []
+:(Vec a) []
+```
+
+The REPL shows the type as `(Vec Int)`, `(Vec String)`, and so on. An empty Vec `[]` has type `(Vec a)` -- the element type is not yet determined.
+
+### Vec Primitives
+
+Cranelisp provides four named functions for working with Vecs:
+
+`vec-len` returns the number of elements:
+
+```
+> (vec-len [10 20 30])
+:Int 3
+
+> (vec-len [])
+:Int 0
+```
+
+`vec-get` retrieves an element by index (starting from 0):
+
+```
+> (vec-get [10 20 30] 0)
+:Int 10
+
+> (vec-get [10 20 30] 2)
+:Int 30
+```
+
+If the index is out of bounds, the program panics at runtime.
+
+`vec-set` returns a new Vec with one element replaced:
+
+```
+> (vec-set [10 20 30] 1 99)
+:(Vec Int) [10 99 30]
+```
+
+`vec-push` returns a new Vec with an element appended at the end:
+
+```
+> (vec-push [10 20] 30)
+:(Vec Int) [10 20 30]
+```
+
+Both `vec-set` and `vec-push` return **new** Vecs. The original is not modified -- Cranelisp values are immutable. Under the hood, the compiler uses copy-on-write optimization so that when you are the only one holding a reference to the Vec, the update happens in place without copying.
+
+### Vecs Are Polymorphic
+
+A Vec can hold values of any single type. The type is written `(Vec Int)`, `(Vec String)`, `(Vec Bool)`, and so on:
+
+```
+> [true false true]
+:(Vec Bool) [true false true]
+
+> (vec-push ["a" "b"] "c")
+:(Vec String) ["a" "b" "c"]
+```
+
+All elements must have the same type. Mixing types is a compile-time error:
+
+```
+> [1 true]
+error: type mismatch ...
+```
+
+### Vecs with Let and Functions
+
+Vecs work with all the features you already know -- `let` bindings, functions, pattern matching:
+
+```
+> (let [v [1 2 3]]
+    (vec-len v))
+:Int 3
+```
+
+You can write functions that take and return Vecs:
+
+```
+> (defn first-or-zero [v]
+    (if (eq-i64 (vec-len v) 0)
+      0
+      (vec-get v 0)))
+
+> (first-or-zero [10 20 30])
+:Int 10
+
+> (first-or-zero [])
+:Int 0
+```
+
+### Vecs in ADTs
+
+Vecs can appear as fields in your own types:
+
+```
+> (deftype Row [:String label :(Vec Int) values])
+
+> (Row "scores" [90 85 92])
+:Row (Row "scores" [90 85 92])
+```
+
+And you can have Vecs of your own types:
+
+```
+> (deftype Color Red Green Blue)
+
+> [Red Green Blue Red]
+:(Vec Color) [Red Green Blue Red]
+```
+
+### Building Vecs Incrementally
+
+A common pattern is to build a Vec by starting empty and pushing elements in a loop:
+
+```
+> (defn count-up [n]
+    (defn go [i acc]
+      (if (eq-i64 i n)
+        acc
+        (go (add-i64 i 1) (vec-push acc i))))
+    (go 0 []))
+
+> (count-up 5)
+:(Vec Int) [0 1 2 3 4]
+```
+
+This uses a recursive helper `go` that pushes elements one at a time. Because each `vec-push` is the last use of `acc`, the copy-on-write optimization makes this efficient -- no unnecessary copies.
+
 ## Putting It Together
 
-You now have all of Ring 0 and Ring 1 at your disposal. Here is an example that combines several features -- types with fields, pattern matching, closures, and higher-order functions:
+You now have all of Ring 0 and Ring 1 at your disposal, plus Vec collections. Here is an example that combines several features -- types with fields, pattern matching, closures, and higher-order functions:
 
 ```clojure
 ; map-option.cl -- transform the value inside an Option
@@ -1098,6 +1239,24 @@ Here is another example combining strings and ADTs:
 ```
 
 This produces `9` -- the length of `"found: 42"`.
+
+Here is an example using Vecs with recursion:
+
+```clojure
+; sum-vec.cl -- sum all elements of an Int Vec
+
+(defn sum-vec [v]
+  (defn go [i acc]
+    (if (eq-i64 i (vec-len v))
+      acc
+      (go (add-i64 i 1) (add-i64 acc (vec-get v i)))))
+  (go 0 0))
+
+(defn main []
+  (sum-vec [10 20 30 40]))
+```
+
+Running this produces `100` -- the sum of all four elements. The helper function `go` iterates through the Vec by index, accumulating the total.
 
 ## Summary of Primitives
 
@@ -1148,11 +1307,19 @@ Here is a complete list of the named primitives available:
 | `float-to-string` | `(Fn [Float] String)` | Convert float to string |
 | `bool-to-string` | `(Fn [Bool] String)` | Convert boolean to string |
 
+### Vec
+
+| Function | Type | Description |
+|----------|------|-------------|
+| `vec-len` | `(Fn [(Vec a)] Int)` | Number of elements |
+| `vec-get` | `(Fn [(Vec a) Int] a)` | Get element by index (panics if out of bounds) |
+| `vec-set` | `(Fn [(Vec a) Int a] (Vec a))` | Return new Vec with element replaced |
+| `vec-push` | `(Fn [(Vec a) a] (Vec a))` | Return new Vec with element appended |
+
 ## What is Next
 
-This guide covers Ring 0 (core expressions, functions, enums, pattern matching) and Ring 1 (strings, data types with fields, closures, higher-order functions). As the language grows, you will gain access to:
+This guide covers Ring 0 (core expressions, functions, enums, pattern matching) and Ring 1 (strings, data types with fields, closures, higher-order functions) plus Vec collections. As the language grows, you will gain access to:
 
-- **Collections** -- `Vec` for ordered collections of values
 - **Traits** -- shared behavior across types, with operator syntax like `+` and `*`
 - **Modules** -- organizing code across multiple files
 - **Macros** -- programs that write programs

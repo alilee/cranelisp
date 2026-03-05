@@ -13,6 +13,7 @@ use std::collections::HashMap;
 use std::io::{self, BufRead, Write};
 
 use cranelisp_backend::got::ModuleCodegenState;
+use cranelisp_backend::heap::{HeapAdt, HeapVec};
 use cranelisp_backend::jit::Jit;
 use cranelisp_typecheck::TypeChecker;
 use cranelisp_types::{
@@ -65,6 +66,17 @@ impl ReplSession {
     ///
     /// On error, restores the TypeChecker to its pre-input state.
     pub fn eval(&mut self, source: &str) -> Result<ReplResult, CranelispError> {
+        // Skip blank and comment-only input before it reaches the parser.
+        let trimmed = source.trim();
+        if trimmed.is_empty() || is_comment_only(trimmed) {
+            return Ok(ReplResult {
+                value: 0,
+                ty: Type::Int,
+                is_definition: true,
+                warnings: Vec::new(),
+            });
+        }
+
         // Parse the source into sexps.
         let sexps = cranelisp_frontend::parse(source)?;
 
@@ -336,6 +348,13 @@ fn format_adt_value(
 ) -> String {
     let type_display = format_adt_type(type_name, type_args);
 
+    // Vec is a built-in type, not in type_defs -- handle it specially.
+    if type_name == "Vec" {
+        let elem_type = type_args.first();
+        let elems = format_vec_elements(value, elem_type, type_defs);
+        return format!(":{type_display} {elems}");
+    }
+
     let Some(type_info) = type_defs.get(type_name) else {
         // No type def available -- fallback to bare value display.
         return format!(":{type_display} {value}");
@@ -386,7 +405,7 @@ fn format_adt_heap_value(
 ) -> String {
     // SAFETY: value is a heap pointer to a valid HeapAdt (produced by JIT code).
     let base = value as *const u8;
-    let tag = unsafe { *(base.add(16) as *const i64) } as usize; // HeapAdt::TAG_OFFSET
+    let tag = unsafe { *(base.add(HeapAdt::TAG_OFFSET as usize) as *const i64) } as usize;
     let ctor = type_info.constructors.iter().find(|c| c.tag == tag);
 
     let Some(ctor) = ctor else {
@@ -401,7 +420,7 @@ fn format_adt_heap_value(
     // Read and format each field.
     let mut field_strs = Vec::new();
     for (i, field_info) in ctor.fields.iter().enumerate() {
-        let field_offset = 24 + i * 8; // HeapAdt::FIELDS_START + i * 8
+        let field_offset = HeapAdt::field_offset(i) as usize;
         let field_val = unsafe { *(base.add(field_offset) as *const i64) };
         let field_str = format_field_value(field_val, &field_info.ty, type_defs);
         field_strs.push(field_str);
@@ -409,6 +428,44 @@ fn format_adt_heap_value(
 
     let fields_display = field_strs.join(" ");
     format!(":{type_display} ({} {fields_display})", ctor.name)
+}
+
+/// Format Vec elements by reading the heap layout.
+///
+/// HeapVec layout: `[alloc_size(+0) | rc(+8) | len(+16) | cap(+24) | data_ptr(+32)]`
+/// Elements are stored in the data buffer at `data_ptr`, each 8 bytes (i64).
+fn format_vec_elements(
+    value: i64,
+    elem_type: Option<&Type>,
+    type_defs: &HashMap<TypeName, TypeDefInfo>,
+) -> String {
+    if value == 0 || (value as usize) < NULLARY_TAG_THRESHOLD {
+        return "[]".to_string();
+    }
+
+    let base = value as *const u8;
+    // SAFETY: value is a heap pointer to a valid HeapVec (produced by JIT code).
+    let len = unsafe { *(base.add(HeapVec::LEN_OFFSET as usize) as *const i64) } as usize;
+    if len == 0 {
+        return "[]".to_string();
+    }
+
+    let data_ptr = unsafe { *(base.add(HeapVec::DATA_PTR_OFFSET as usize) as *const *const i64) };
+    if data_ptr.is_null() {
+        return "[]".to_string();
+    }
+
+    let mut elems = Vec::with_capacity(len);
+    for i in 0..len {
+        let elem_val = unsafe { *data_ptr.add(i) };
+        let formatted = match elem_type {
+            Some(ty) => format_field_value(elem_val, ty, type_defs),
+            None => format!("{elem_val}"),
+        };
+        elems.push(formatted);
+    }
+
+    format!("[{}]", elems.join(", "))
 }
 
 /// Format a single field value based on its type.
@@ -436,6 +493,10 @@ fn format_field_value(
         }
         Type::Fn(_, _) => "<closure>".to_string(),
         Type::ADT(name, args) => {
+            // Vec is built-in, not in type_defs.
+            if name == "Vec" {
+                return format_vec_elements(value, args.first(), type_defs);
+            }
             // Recursive ADT formatting.
             let type_display = format_adt_type(name, args);
             if let Some(info) = type_defs.get(name) {
@@ -491,7 +552,7 @@ pub fn run_repl() {
         }
 
         let input = buffer.trim();
-        if input.is_empty() {
+        if input.is_empty() || is_comment_only(input) {
             buffer.clear();
             let _ = write!(stdout, "> ");
             let _ = stdout.flush();
@@ -525,23 +586,54 @@ pub fn run_repl() {
     let _ = writeln!(stdout);
 }
 
-/// Check if parentheses are balanced in the input.
+/// Check if the input consists only of comments (lines starting with `;`).
+///
+/// Returns true if every non-empty line in the input starts with `;`
+/// (ignoring leading whitespace). This prevents comment-only input
+/// from reaching the parser and producing an "empty input" error.
+fn is_comment_only(input: &str) -> bool {
+    input.lines().all(|line| {
+        let trimmed = line.trim();
+        trimmed.is_empty() || trimmed.starts_with(';')
+    })
+}
+
+/// Check if parentheses and brackets are balanced in the input.
+///
+/// Ignores content in string literals and after `;` comment markers.
+/// Tracks both `()` and `[]` depth so multi-line Vec literals are
+/// not submitted prematurely.
 fn parens_balanced(input: &str) -> bool {
-    let mut depth: i32 = 0;
+    let mut paren_depth: i32 = 0;
+    let mut bracket_depth: i32 = 0;
     let mut in_string = false;
+    let mut in_comment = false;
     let mut prev_char = '\0';
 
     for ch in input.chars() {
+        if in_comment {
+            if ch == '\n' {
+                in_comment = false;
+            }
+            prev_char = ch;
+            continue;
+        }
+
         match ch {
+            ';' if !in_string => {
+                in_comment = true;
+            }
             '"' if prev_char != '\\' => in_string = !in_string,
-            '(' if !in_string => depth += 1,
-            ')' if !in_string => depth -= 1,
+            '(' if !in_string => paren_depth += 1,
+            ')' if !in_string => paren_depth -= 1,
+            '[' if !in_string => bracket_depth += 1,
+            ']' if !in_string => bracket_depth -= 1,
             _ => {}
         }
         prev_char = ch;
     }
 
-    depth <= 0
+    paren_depth <= 0 && bracket_depth <= 0
 }
 
 #[cfg(test)]
@@ -586,6 +678,46 @@ mod tests {
     #[test]
     fn test_parens_balanced_string() {
         assert!(parens_balanced("\"hello (world\""));
+    }
+
+    #[test]
+    fn test_brackets_balanced() {
+        assert!(parens_balanced("[1 2 3]"));
+        assert!(!parens_balanced("[1 2"));
+        assert!(parens_balanced("(vec-get [1 2 3] 0)"));
+        assert!(!parens_balanced("(vec-get [1 2 3"));
+        // Multi-line Vec literal
+        assert!(!parens_balanced("[1 2\n"));
+        assert!(parens_balanced("[1 2\n 3]"));
+    }
+
+    #[test]
+    fn test_is_comment_only() {
+        assert!(is_comment_only("; a comment"));
+        assert!(is_comment_only("  ; indented comment"));
+        assert!(is_comment_only("; line one\n; line two"));
+        assert!(is_comment_only(""));
+        assert!(is_comment_only("   "));
+        assert!(!is_comment_only("42"));
+        assert!(!is_comment_only("(+ 1 2) ; trailing comment"));
+        assert!(!is_comment_only("; comment\n42"));
+    }
+
+    #[test]
+    fn test_session_eval_empty_input() {
+        let mut session = ReplSession::new();
+        let result = session.eval("").unwrap();
+        assert_eq!(result.value, 0);
+    }
+
+    #[test]
+    fn test_session_eval_comment_only() {
+        let mut session = ReplSession::new();
+        let result = session.eval("; just a comment").unwrap();
+        assert_eq!(result.value, 0);
+        // Session still works.
+        let result = session.eval("42").unwrap();
+        assert_eq!(result.value, 42);
     }
 
     #[test]
