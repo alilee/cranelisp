@@ -41,6 +41,7 @@ the sketch and the spec will diverge because the sketch is not being maintained.
 | `12-runtime.md` | Runtime model: RC layout, calling conventions, drop glue |
 | `appendix-a-builtins.md` | Builtin primitive reference |
 | `appendix-b-examples.md` | Extended examples |
+| `appendix-c-nfr.md` | Non-functional requirements: memory management, data structures, evaluation, concurrency, compilation, performance, target portability |
 | `index.md` | Spec index |
 
 ## Phase A Review Status (first session complete)
@@ -84,5 +85,10 @@ Inconsistencies fixed:
 - `11-stdlib.md` — complete rewrite: pared to bootstrapping support for stdlib writers; stdlib itself documented elsewhere
 - `appendix-a-builtins.md` — removed stdlib sections (A.3-A.7); builtins only (types, primitive functions, special forms)
 - `appendix-b-examples.md` — replaced FIXME with stdlib-assumption preface; added B.11-B.13 from §10.11
+
+**Third session (Sprint 2, Wave 3 — Task 9)**: Resolved two deferred items from Sprint 1:
+- `appendix-a-builtins.md` §A.3 — **M-6 resolved**: Added `not :: (Fn [Bool] Bool)` inline primitive under new "Boolean" subsection. Implementation has 19 inline primitives; spec now matches.
+- `06-pattern-matching.md` §6.5 — **F-1 resolved**: Restructured exhaustiveness section into §6.5.1 (ADT types), §6.5.2 (non-ADT types), §6.5.3 (runtime safety net). Non-ADT scrutinee types (Int, Bool, Float, String, function types, type variables) now MUST include a wildcard or variable pattern. Removed FIXME comment.
+- Reactive arbitration: scanned all files modified during Wave 2 (crates/, src/, tests/, design/) for FIXME(/spec) comments. No new FIXMEs found. The existing `spec/07-traits.md` §7.7 FIXME (Num/Eq/Ord trait placement) remains deferred to Ring 2+ (traits scope).
 
 **Ongoing**: When a compiler skill encounters ambiguous behavior, `/spec` arbitrates: run the prototype (`cd sketch && cargo run -- --run <example>`), decide what is normative, update the relevant spec file after validating with developer.

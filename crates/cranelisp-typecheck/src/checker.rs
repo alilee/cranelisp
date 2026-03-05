@@ -7,7 +7,7 @@ use std::collections::HashMap;
 
 use cranelisp_types::{
     CranelispError, MethodResolutions, ModuleFullPath, ReplSnapshot,
-    Scheme, Span, Subst, Symbol, SymbolTable, Type, TypeId, TypeName, Warning,
+    Scheme, Span, Subst, Symbol, SymbolTable, Type, TypeId, Warning,
     apply,
 };
 
@@ -90,6 +90,11 @@ impl TypeChecker {
         match self.symbol_table.get(name)? {
             ModuleEntry::Def { scheme, .. } => Some(scheme.clone()),
             ModuleEntry::Constructor { scheme, .. } => Some(scheme.clone()),
+            // Product types: TypeDef with constructor_scheme (same name)
+            ModuleEntry::TypeDef {
+                constructor_scheme: Some(scheme),
+                ..
+            } => Some(scheme.clone()),
             _ => None,
         }
     }
@@ -102,8 +107,7 @@ impl TypeChecker {
     }
 
     /// Generate a fresh type variable and return both the type and ID.
-    /// Ring 0: not yet used in production (reserved for Ring 2 constrained polymorphism).
-    #[allow(dead_code)]
+    /// Used by ADT registration to allocate type parameter variables.
     pub(crate) fn fresh_var_id(&mut self) -> (Type, TypeId) {
         crate::unify::fresh_var_id(&mut self.next_id)
     }
@@ -183,7 +187,7 @@ impl TypeChecker {
     // --- Known types lookup (for resolve_type_expr) ---
 
     /// Build a map of known type names for type expression resolution.
-    pub(crate) fn known_type_names(&self) -> HashMap<TypeName, ()> {
+    pub(crate) fn known_type_names(&self) -> crate::resolve::KnownTypes {
         self.type_defs.known_types()
     }
 }

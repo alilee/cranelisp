@@ -160,6 +160,70 @@ pub fn ring0_primitives() -> Vec<PrimitiveDef> {
     ]
 }
 
+/// Ring 1 extern primitive definitions.
+///
+/// These are string and type conversion functions implemented as extern "C"
+/// functions in `cranelisp-runtime`. They are NOT inlined as Cranelift IR
+/// at call sites -- the backend emits `call` instructions to the JIT-registered
+/// function pointers.
+///
+/// The `cranelift_op` field is the JIT symbol name (same as the spec name).
+pub fn ring1_primitives() -> Vec<PrimitiveDef> {
+    vec![
+        PrimitiveDef {
+            name: Symbol::from("str-concat"),
+            ty: Type::Fn(vec![Type::String, Type::String], Box::new(Type::String)),
+            cranelift_op: "str-concat",
+            param_names: vec![Symbol::from("a"), Symbol::from("b")],
+        },
+        PrimitiveDef {
+            name: Symbol::from("str-eq"),
+            ty: Type::Fn(vec![Type::String, Type::String], Box::new(Type::Bool)),
+            cranelift_op: "str-eq",
+            param_names: vec![Symbol::from("a"), Symbol::from("b")],
+        },
+        PrimitiveDef {
+            name: Symbol::from("str-len"),
+            ty: Type::Fn(vec![Type::String], Box::new(Type::Int)),
+            cranelift_op: "str-len",
+            param_names: vec![Symbol::from("s")],
+        },
+        PrimitiveDef {
+            name: Symbol::from("string-identity"),
+            ty: Type::Fn(vec![Type::String], Box::new(Type::String)),
+            cranelift_op: "string-identity",
+            param_names: vec![Symbol::from("s")],
+        },
+        PrimitiveDef {
+            name: Symbol::from("int-to-string"),
+            ty: Type::Fn(vec![Type::Int], Box::new(Type::String)),
+            cranelift_op: "int-to-string",
+            param_names: vec![Symbol::from("n")],
+        },
+        PrimitiveDef {
+            name: Symbol::from("float-to-string"),
+            ty: Type::Fn(vec![Type::Float], Box::new(Type::String)),
+            cranelift_op: "float-to-string",
+            param_names: vec![Symbol::from("f")],
+        },
+        PrimitiveDef {
+            name: Symbol::from("bool-to-string"),
+            ty: Type::Fn(vec![Type::Bool], Box::new(Type::String)),
+            cranelift_op: "bool-to-string",
+            param_names: vec![Symbol::from("b")],
+        },
+        PrimitiveDef {
+            name: Symbol::from("parse-int"),
+            ty: Type::Fn(vec![Type::String], Box::new(Type::Int)),
+            // parse-int actually returns Option Int, but since the Option ADT
+            // must be user-defined per ring, we use Int as a placeholder.
+            // The runtime constructs the ADT layout directly.
+            cranelift_op: "parse-int",
+            param_names: vec![Symbol::from("s")],
+        },
+    ]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

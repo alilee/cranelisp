@@ -38,6 +38,18 @@ The architect is also responsible for the solution's coherence. Review all the o
 
 See `design/arch/CLAUDE.md` for the principles that guide these decisions.
 
+### What `/arch` Does NOT Do
+
+`/arch` defines architecture and interfaces — it does not implement them. Specifically:
+
+- **NEVER edit source code** (anything under `crates/`, `src/` other than `src/CLAUDE.md`)
+- **NEVER edit test code** (anything under `tests/`)
+- **NEVER edit spec files** (`spec/`) — propose changes to `/spec`
+- **NEVER edit review reports** (`design/review/`) — those are owned by `/review`
+- **NEVER edit other skills' design docs** (`design/frontend/`, `design/typecheck/`, `design/backend/`, `design/platform/`) — file FIXMEs instead
+
+`/arch` owns: `design/arch/`, `src/CLAUDE.md`, root `Cargo.toml`. Changes to anything else should be filed as a FIXME to the owning skill.
+
 ## First Steps (Phase B)
 
 1. Read `sprints/reimplementation.md` §"Extract architecture contracts" and §"Delivery Strategy"

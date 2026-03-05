@@ -19,14 +19,18 @@ The prototype's structural debts are the primary input. Every HIGH finding repre
 | `CLAUDE.md` | This file. Ownership, directory description, review workflow. |
 | `checklist.md` | General review checklist applicable to ALL rings. |
 | `ring0-checklist.md` | Ring 0 specific review criteria. |
+| `ring0-report.md` | Ring 0 completion report -- findings, quality assessment, interface cleanliness. |
+| `ring1-checklist.md` | Ring 1 specific review criteria (heap layout, RC correctness, string opacity, ADT codegen, closures, naming). |
+| `naming-convention-review.md` | Cross-skill naming convention review (`cranelisp_` prefix removal). |
+| `sprint2-wave2-review.md` | Sprint 2 Wave 2 per-crate code review -- findings, checklist walkthrough, design doc assessment. |
+| `ring1-report.md` | Ring 1 completion report -- **PASS**. 779 tests, 0 failures, all review findings resolved, no blocking usability findings. |
 
 Future files (created at ring completion):
 
 | File | Purpose |
 |---|---|
-| `ring0-report.md` | Ring 0 completion report -- findings, quality assessment, interface cleanliness |
-| `ring1-checklist.md` | Ring 1 specific review criteria (heap, closures, strings, data constructors) |
-| `ring1-report.md` | Ring 1 completion report |
+| `ring2-checklist.md` | Ring 2 specific review criteria (traits, modules, constrained poly, GOT cross-module) |
+| `ring2-report.md` | Ring 2 completion report |
 | `ringN-*.md` | Pattern continues per ring |
 
 ## Review Workflow

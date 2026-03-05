@@ -15,7 +15,7 @@ pub mod operator;
 
 // Re-export key types at crate root for convenience.
 pub use span::Span;
-pub use error::{CranelispError, Warning};
+pub use error::{CranelispError, Warning, WarningKind};
 pub use sexp::Sexp;
 pub use ast::{
     ConstructorDef, Defn, DefnVariant, Expr, FieldDef, MatchArm, Pattern, Program, ReplInput,
@@ -30,9 +30,9 @@ pub use module::{
     ConstrainedFn, DefKind, ExportSpec, ImplSexp, ImportNames, ImportSpec, MacroClauseInfo,
     MacroParam, ModuleEntry, ModuleStructure, OverloadVariant, PrimitiveKind, SymbolTable,
 };
-pub use heap::HeapCategory;
+pub use heap::{HeapCategory, HeapHeader};
 pub use pipeline::{CompileMode, CompileResult, MacroExpander, NoOpExpander, NULLARY_TAG_THRESHOLD};
-pub use operator::{ring0_primitives, PrimitiveDef};
+pub use operator::{ring0_primitives, ring1_primitives, PrimitiveDef};
 
 // String newtypes
 pub use newtype::{

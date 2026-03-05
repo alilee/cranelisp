@@ -1,4 +1,4 @@
-// Integration tests verifying that Ring 0 example programs compile and
+// Integration tests verifying that example programs compile and
 // produce expected results.
 
 #[path = "helpers/mod.rs"]
@@ -63,4 +63,36 @@ fn example_07_polymorphism() {
 fn example_08_floats() {
     // 1+1+1+1+1+1+1+0+1+1 = 9
     assert_eq!(run_example("08-floats.cl"), 9);
+}
+
+// Ring 1 examples: strings, ADTs, destructuring, closures, higher-order
+
+#[test]
+fn example_09_strings() {
+    // 5+0+11+3+1+0+2+4+12+16+1 = 55
+    assert_eq!(run_example("09-strings.cl"), 55);
+}
+
+#[test]
+fn example_10_adts() {
+    // 7+60+42+99+7+0+30+20 = 265
+    assert_eq!(run_example("10-adts.cl"), 265);
+}
+
+#[test]
+fn example_11_destructuring() {
+    // 4+7+1+15+2+35+5 = 69
+    assert_eq!(run_example("11-destructuring.cl"), 69);
+}
+
+#[test]
+fn example_12_closures() {
+    // 6+42+42+6+42+10+42+42+10+10+11 = 263
+    assert_eq!(run_example("12-closures.cl"), 263);
+}
+
+#[test]
+fn example_13_higher_order() {
+    // 42+2+5+54+45+12+21+15+7 = 203
+    assert_eq!(run_example("13-higher-order.cl"), 203);
 }

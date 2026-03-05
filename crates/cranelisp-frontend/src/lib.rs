@@ -13,6 +13,7 @@ pub mod ast_builder;
 use cranelisp_types::{CranelispError, MacroExpander, Program, ReplInput, Sexp};
 
 /// Parse source text into a sequence of S-expressions.
+#[must_use = "parsing produces a result that should be checked for errors"]
 pub fn parse(source: &str) -> Result<Vec<Sexp>, CranelispError> {
     reader::parse(source)
 }

@@ -1,0 +1,209 @@
+#!/usr/bin/env python3
+"""Showcase the Cranelisp REPL experience.
+
+Usage:
+    ./showcase ring0          # build + play the Ring 0 demo
+    ./showcase ring1          # build + play the Ring 1 demo
+    ./showcase --list         # list available demos
+
+Two-phase approach:
+  Phase 1: Parse the .demo file into comments, blanks, and expressions.
+           Send only expressions to the REPL (piped stdin), capture output.
+  Phase 2: Replay the demo with typing effects — comments displayed dimmed,
+           expressions typed character-by-character with the REPL result
+           shown instantly after each.
+
+Environment:
+    DEMO_TYPING_MS         ms between characters (default: 30)
+    DEMO_LINE_PAUSE_MS     ms pause before each input line (default: 1500)
+    DEMO_COMMENT_PAUSE_MS  ms pause after displaying a comment (default: 800)
+    DEMO_FAST              if set, all delays are zero (CI mode)
+"""
+
+import os
+import subprocess
+import sys
+import time
+from datetime import datetime
+from pathlib import Path
+
+PROJECT_ROOT = Path(__file__).resolve().parent
+DEMOS_DIR = PROJECT_ROOT / "tests" / "repl" / "demos"
+RUNS_DIR = DEMOS_DIR / "runs"
+
+FAST = os.environ.get("DEMO_FAST") is not None
+TYPING_DELAY = 0 if FAST else int(os.environ.get("DEMO_TYPING_MS", "30")) / 1000.0
+LINE_PAUSE = 0 if FAST else int(os.environ.get("DEMO_LINE_PAUSE_MS", "1500")) / 1000.0
+COMMENT_PAUSE = 0 if FAST else int(os.environ.get("DEMO_COMMENT_PAUSE_MS", "800")) / 1000.0
+
+DIM = "\033[90m"
+BOLD = "\033[1m"
+RESET = "\033[0m"
+
+
+def list_demos():
+    demos = sorted(DEMOS_DIR.glob("*.demo"))
+    if not demos:
+        print("No demos found.")
+        return
+    print(f"{BOLD}Available demos:{RESET}")
+    for d in demos:
+        desc = ""
+        with open(d) as f:
+            for line in f:
+                if line.startswith(";"):
+                    desc = line.lstrip("; ").strip()
+                    break
+        print(f"  {d.stem:20s} {DIM}{desc}{RESET}")
+
+
+def build_binary():
+    print(f"{DIM}; building cranelisp...{RESET}")
+    sys.stdout.flush()
+    result = subprocess.run(
+        ["cargo", "build", "--quiet"],
+        cwd=PROJECT_ROOT,
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        print(f"Build failed:\n{result.stderr}", file=sys.stderr)
+        sys.exit(1)
+    binary = PROJECT_ROOT / "target" / "debug" / "cranelisp"
+    if not binary.exists():
+        print(f"Binary not found at {binary}", file=sys.stderr)
+        sys.exit(1)
+    return str(binary)
+
+
+def parse_demo(demo_path):
+    """Parse a .demo file into a sequence of events.
+
+    Returns a list of (type, text) tuples where type is one of:
+      'comment' — a ; comment line (section header)
+      'blank'   — an empty line (section separator)
+      'input'   — a REPL expression to evaluate
+    """
+    events = []
+    with open(demo_path) as f:
+        for line in f:
+            line = line.rstrip("\n")
+            if line.startswith(";"):
+                events.append(("comment", line))
+            elif line.strip() == "":
+                events.append(("blank", ""))
+            else:
+                events.append(("input", line))
+    return events
+
+
+def run_expressions(events, repl_binary, run_dir):
+    """Send only input expressions to the REPL, capture results.
+
+    Returns a list of result strings, one per input expression.
+    """
+    input_lines = [text for typ, text in events if typ == "input"]
+    if not input_lines:
+        return []
+
+    demo_input = "\n".join(input_lines) + "\n"
+    result = subprocess.run(
+        [repl_binary],
+        input=demo_input,
+        capture_output=True,
+        text=True,
+        cwd=run_dir,
+    )
+
+    # REPL output format: "> result\n" for each expression, then "> \n" at EOF.
+    # Extract the result text (everything after the "> " prompt prefix).
+    results = []
+    for line in result.stdout.splitlines():
+        if line.startswith("> ") and len(line) > 2:
+            results.append(line[2:])  # strip "> " prompt
+        elif line == ">":
+            pass  # bare prompt at EOF
+
+    return results
+
+
+def type_line(text):
+    """Write text character-by-character with typing delay."""
+    for char in text:
+        sys.stdout.write(char)
+        sys.stdout.flush()
+        time.sleep(TYPING_DELAY)
+
+
+def replay(events, results):
+    """Replay the demo with typing effects and section headers."""
+    result_idx = 0
+
+    for event_type, text in events:
+        if event_type == "comment":
+            # Display comment as a dimmed section header.
+            time.sleep(COMMENT_PAUSE)
+            print(f"{DIM}{text}{RESET}")
+        elif event_type == "blank":
+            print()
+        elif event_type == "input":
+            # Pause, then type the input slowly.
+            time.sleep(LINE_PAUSE)
+            sys.stdout.write("> ")
+            sys.stdout.flush()
+            type_line(text)
+            sys.stdout.write("\n")
+            sys.stdout.flush()
+            # Show the REPL result instantly.
+            if result_idx < len(results):
+                print(results[result_idx])
+                result_idx += 1
+
+
+def play_demo(demo_path, repl_binary):
+    # Create timestamped run directory for cache isolation.
+    RUNS_DIR.mkdir(parents=True, exist_ok=True)
+    demo_name = Path(demo_path).stem
+    timestamp = datetime.now().strftime("%Y-%m-%dT%H-%M-%S")
+    run_dir = RUNS_DIR / f"{timestamp}_{demo_name}"
+    run_dir.mkdir()
+
+    print(f"{DIM}; run dir: {run_dir}{RESET}\n")
+    sys.stdout.flush()
+
+    # Phase 1: parse demo, run expressions fast.
+    events = parse_demo(demo_path)
+    results = run_expressions(events, repl_binary, run_dir)
+
+    # Phase 2: replay with typing effects.
+    replay(events, results)
+
+    print(f"\n{DIM}; [demo complete]{RESET}")
+
+
+def main():
+    args = sys.argv[1:]
+
+    if not args or "--help" in args or "-h" in args:
+        print("Usage: ./showcase [--list] <demo-name>")
+        print("       ./showcase ring0")
+        print("       ./showcase --list")
+        sys.exit(0)
+
+    if "--list" in args:
+        list_demos()
+        sys.exit(0)
+
+    demo_name = args[0]
+    demo_path = DEMOS_DIR / f"{demo_name}.demo"
+    if not demo_path.exists():
+        print(f"Error: {demo_path} not found")
+        list_demos()
+        sys.exit(1)
+
+    repl_binary = build_binary()
+    play_demo(demo_path, repl_binary)
+
+
+if __name__ == "__main__":
+    main()

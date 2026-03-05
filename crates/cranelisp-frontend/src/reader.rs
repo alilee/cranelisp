@@ -66,6 +66,7 @@ impl<'a> Reader<'a> {
 // ---------------------------------------------------------------------------
 
 /// Parse source text into a sequence of S-expressions.
+#[must_use = "parsing produces a result that should be checked for errors"]
 pub fn parse(source: &str) -> Result<Vec<Sexp>, CranelispError> {
     let mut reader = Reader::new(source);
     let mut sexps = Vec::new();

@@ -4,7 +4,7 @@
 // so integration tests only need to provide source text.
 
 use cranelisp::pipeline;
-use cranelisp::repl::ReplSession;
+use cranelisp::repl::{format_result_value, ReplSession};
 use cranelisp_types::{CompileMode, CranelispError, Type};
 
 /// Full pipeline: compile source text and return the i64 result.
@@ -116,4 +116,61 @@ pub fn repl_eval_typed(session: &mut ReplSession, src: &str) -> (i64, Type) {
         .eval(src)
         .unwrap_or_else(|e| panic!("repl_eval_typed failed on '{src}': {e}"));
     (result.value, result.ty)
+}
+
+/// Full pipeline: compile source text and return (value, type, display_string).
+///
+/// Uses Batch mode. The display string is formatted with full type definition
+/// context for heap types (String, ADT, Fn).
+pub fn compile_and_run_heap(src: &str) -> (i64, Type, String) {
+    let result = pipeline::compile_and_run(src, CompileMode::Batch)
+        .unwrap_or_else(|e| panic!("compile_and_run_heap failed: {e}"));
+    let display = format_result_value(
+        result.value,
+        &result.ty,
+        &std::collections::HashMap::new(),
+    );
+    (result.value, result.ty, display)
+}
+
+/// Assert that all RC allocations are balanced (allocs == deallocs) after
+/// running the given source text.
+///
+/// Uses delta-based assertions: snapshots counters before and after execution,
+/// then asserts that alloc_count and dealloc_count incremented by the same amount
+/// and that bytes_current returned to its prior level.
+///
+/// Must be run serially (`--test-threads=1`) since global counters are shared.
+pub fn assert_rc_balanced(src: &str) {
+    let allocs_before = cranelisp_runtime::alloc_count();
+    let deallocs_before = cranelisp_runtime::dealloc_count();
+    let bytes_before = cranelisp_runtime::bytes_current();
+
+    let _result = pipeline::compile_and_run(src, CompileMode::Batch)
+        .unwrap_or_else(|e| panic!("assert_rc_balanced failed: {e}"));
+
+    let allocs_after = cranelisp_runtime::alloc_count();
+    let deallocs_after = cranelisp_runtime::dealloc_count();
+    let bytes_after = cranelisp_runtime::bytes_current();
+
+    let new_allocs = allocs_after - allocs_before;
+    let new_deallocs = deallocs_after - deallocs_before;
+
+    assert_eq!(
+        new_allocs, new_deallocs,
+        "RC imbalance: {new_allocs} allocs but {new_deallocs} deallocs for: {src}"
+    );
+    assert_eq!(
+        bytes_after, bytes_before,
+        "Leaked {} bytes for: {src}",
+        bytes_after - bytes_before
+    );
+}
+
+/// Evaluate in REPL and return the formatted display string with ADT context.
+pub fn repl_eval_display(session: &mut ReplSession, src: &str) -> String {
+    let result = session
+        .eval(src)
+        .unwrap_or_else(|e| panic!("repl_eval_display failed on '{src}': {e}"));
+    format_result_value(result.value, &result.ty, session.type_defs())
 }

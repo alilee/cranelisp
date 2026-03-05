@@ -17,9 +17,11 @@ use cranelift_jit::JITModule;
 use cranelift_module::FuncId;
 
 use cranelisp_types::{
-    CompileMode, CranelispError, Defn, Expr, ResolvedCall, Span, Symbol, Type,
+    CompileMode, CranelispError, Defn, Expr, HeapCategory, ResolvedCall, Span, Symbol, Type,
     TypeDefInfo, TypeName,
 };
+
+use crate::heap;
 
 // Variable allocation is per-FnCompiler instance via next_var field.
 
@@ -28,6 +30,11 @@ pub const MATCH_EXHAUSTION_TRAP: u8 = 1;
 
 /// Shared immutable context for compilation, bundling references that
 /// are threaded through from `compile_body` to all expression compilers.
+///
+/// All fields are references or `Copy` types, so the struct is `Clone`+`Copy`.
+/// This avoids verbose field-by-field copies when constructing inner compilers
+/// (e.g., for lambda bodies).
+#[derive(Clone, Copy)]
 pub struct CompileContext<'a> {
     /// Method resolutions from the typechecker.
     pub method_resolutions: &'a HashMap<Span, ResolvedCall>,
@@ -35,6 +42,8 @@ pub struct CompileContext<'a> {
     pub expr_types: &'a HashMap<Span, Type>,
     /// Function IDs for direct calls (Batch mode).
     pub func_ids: &'a HashMap<Symbol, FuncId>,
+    /// Function parameter counts, for generating closure wrappers.
+    pub func_arities: &'a HashMap<Symbol, usize>,
     /// Compilation mode (Batch or Interactive).
     pub mode: CompileMode,
     /// Type definitions for ADT codegen.
@@ -47,6 +56,16 @@ pub struct CompileContext<'a> {
     /// GOT base pointer as a raw i64 value (Interactive mode only).
     /// This is the address of the GOT table, baked into compiled IR as an iconst.
     pub got_base_ptr: Option<i64>,
+
+    // --- Ring 1 intrinsic FuncIds ---
+    /// FuncId for runtime/alloc. None in Ring 0 (no heap).
+    pub alloc_func_id: Option<FuncId>,
+    /// FuncId for runtime/dealloc. None in Ring 0 (no heap).
+    pub dealloc_func_id: Option<FuncId>,
+    /// FuncId for runtime/alloc_string. None in Ring 0 (no strings).
+    pub alloc_string_func_id: Option<FuncId>,
+    /// FuncId for runtime/panic. None in Ring 0 (uses trap instead).
+    pub panic_func_id: Option<FuncId>,
 }
 
 /// Match-arm-invariant data bundled to reduce parameter counts in
@@ -109,9 +128,56 @@ pub struct FnCompiler<'a> {
     pub(crate) in_tail_position: bool,
     /// Number of parameters of the current function.
     pub(crate) fn_param_count: usize,
+
+    // --- Ring 1 heap state (scaffolding for RC emission in Ring 2) ---
+
+    /// Types of local variables, for RC management.
+    #[allow(dead_code)]
+    pub(crate) variable_types: HashMap<Symbol, Type>,
+    /// Last-use information: (var_name, span) -> is_last_use.
+    #[allow(dead_code)]
+    pub(crate) last_uses: HashMap<(Symbol, Span), bool>,
+    /// Set of variables whose ownership has been transferred (consumed).
+    #[allow(dead_code)]
+    pub(crate) consumed_vars: std::collections::HashSet<Symbol>,
+    /// Captured variable names (variables closed over by a lambda).
+    /// These are NEVER eligible for last-use transfer.
+    #[allow(dead_code)]
+    pub(crate) captured_vars: std::collections::HashSet<Symbol>,
 }
 
 impl<'a> FnCompiler<'a> {
+    /// Create an inner `FnCompiler` for lambda bodies, continuations,
+    /// or (future) drop glue. This is the single construction point for
+    /// inner compilers (ring1-checklist section 5.9).
+    ///
+    /// TCO state is disabled for inner functions (no self-call detection,
+    /// no tail loop). The scope and variable maps start fresh.
+    pub(crate) fn inner(
+        builder: FunctionBuilder<'a>,
+        module: &'a mut JITModule,
+        ctx: CompileContext<'a>,
+        fn_param_count: usize,
+        last_uses: HashMap<(Symbol, Span), bool>,
+    ) -> Self {
+        FnCompiler {
+            builder,
+            module,
+            variables: HashMap::new(),
+            scope_stack: vec![vec![]],
+            ctx,
+            next_var: 0,
+            current_fn_name: None,
+            tail_loop_block: None,
+            in_tail_position: false,
+            fn_param_count,
+            variable_types: HashMap::new(),
+            last_uses,
+            consumed_vars: std::collections::HashSet::new(),
+            captured_vars: std::collections::HashSet::new(),
+        }
+    }
+
     /// Compile a function definition body into Cranelift IR.
     ///
     /// This is the main entry point called by Jit::compile_defn.
@@ -146,6 +212,9 @@ impl<'a> FnCompiler<'a> {
         // will be added during body compilation.
         builder.switch_to_block(loop_header);
 
+        // Compute last-use info for the body.
+        let last_uses = heap::compute_last_uses(&defn.body);
+
         let mut compiler = FnCompiler {
             builder,
             module,
@@ -157,6 +226,10 @@ impl<'a> FnCompiler<'a> {
             tail_loop_block: Some(loop_header),
             in_tail_position: true,
             fn_param_count: defn.params.len(),
+            variable_types: HashMap::new(),
+            last_uses,
+            consumed_vars: std::collections::HashSet::new(),
+            captured_vars: std::collections::HashSet::new(),
         };
 
         // Bind function parameters from loop header block params (not entry block).
@@ -194,6 +267,7 @@ impl<'a> FnCompiler<'a> {
             Expr::IntLit { value, .. } => self.compile_int_lit(*value),
             Expr::FloatLit { value, .. } => self.compile_float_lit(*value),
             Expr::BoolLit { value, .. } => self.compile_bool_lit(*value),
+            Expr::StringLit { value, span } => self.compile_string_lit(value, *span),
             Expr::Var { name, span } => self.compile_var(name, *span),
             Expr::Let {
                 bindings,
@@ -221,21 +295,17 @@ impl<'a> FnCompiler<'a> {
                 ..
             } => self.compile_match(scrutinee, arms, *span),
             Expr::Annotate { expr, .. } => self.compile_expr(expr),
-            // Ring 1+ forms: not yet implemented.
-            Expr::StringLit { span, .. } => Err(CranelispError::CodegenError {
-                message: "string literals not supported in Ring 0".into(),
-                span: *span,
-            }),
+            // Ring 2+ forms: not yet implemented.
             Expr::VecLit { span, .. } => Err(CranelispError::CodegenError {
-                message: "vec literals not supported in Ring 0".into(),
+                message: "vec literals not supported until Ring 2".into(),
                 span: *span,
             }),
             Expr::Trace { span, .. } => Err(CranelispError::CodegenError {
-                message: "trace not supported in Ring 0".into(),
+                message: "trace not supported until Ring 4".into(),
                 span: *span,
             }),
             Expr::RunTests { span, .. } => Err(CranelispError::CodegenError {
-                message: "run-tests not supported in Ring 0".into(),
+                message: "run-tests not supported until Ring 4".into(),
                 span: *span,
             }),
         }
@@ -260,8 +330,39 @@ impl<'a> FnCompiler<'a> {
         if let Some(frame) = self.scope_stack.pop() {
             for name in frame {
                 self.variables.remove(&name);
+                self.variable_types.remove(&name);
             }
         }
+    }
+
+    // --- Heap helpers (scaffolding for RC emission in Ring 2) ---
+
+    /// Check if a type is heap-allocated and needs RC management.
+    #[allow(dead_code)]
+    pub(crate) fn is_heap_type(&self, ty: &Type) -> bool {
+        matches!(
+            HeapCategory::classify(ty, Some(self.ctx.type_defs)),
+            HeapCategory::AlwaysHeap | HeapCategory::Mixed
+        )
+    }
+
+    /// Look up the type of an expression from the typechecker's expr_types.
+    #[allow(dead_code)]
+    pub(crate) fn expr_type(&self, span: Span) -> Option<&Type> {
+        self.ctx.expr_types.get(&span)
+    }
+
+    /// Check if a variable use is the last use (for ownership transfer).
+    #[allow(dead_code)]
+    pub(crate) fn is_last_use(&self, name: &Symbol, span: Span) -> bool {
+        if self.captured_vars.contains(name) {
+            // Captured variables are NEVER eligible for last-use transfer.
+            return false;
+        }
+        self.last_uses
+            .get(&(name.clone(), span))
+            .copied()
+            .unwrap_or(false)
     }
 }
 

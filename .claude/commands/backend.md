@@ -13,6 +13,7 @@ Typed AST in, executable code out. You translate typed AST to Cranelift IR, mana
 - `src/cache/` — object file caching and linking
 - `src/linker/` — object file linking
 - `src/exe/` — standalone executable generation
+- `design/backend/` — solution design documents (codegen patterns, heap/RC, closure/ADT compilation)
 
 ## Interfaces
 

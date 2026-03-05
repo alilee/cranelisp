@@ -9,8 +9,8 @@ Delivery progress for the Cranelisp reimplementation. For technical scope per ri
 | A | Extract: spec completion, architecture contracts, QA plan | COMPLETE |
 | B | Scaffold: crate structure, interfaces, CLAUDE.md files, experience specs | COMPLETE |
 | C | Ring 0 — Core: expressions, types, functions, let, if, match | COMPLETE |
-| D | Ring 1 — Heap: strings, ADTs, closures, reference counting | Next |
-| E | Ring 2 — Abstraction: traits, modules, constrained polymorphism | — |
+| D | Ring 1 — Heap: strings, ADTs, closures, reference counting | COMPLETE |
+| E | Ring 2 — Abstraction: traits, modules, constrained polymorphism | Next |
 | F | Ring 3 — Meta: macros, derive, standard library | — |
 | G | Ring 4 — Effects: IO, platforms, parallelism, REPL, caching | — |
 | H | Release Compiler: Tier 2 backend | — |
@@ -21,4 +21,5 @@ Delivery progress for the Cranelisp reimplementation. For technical scope per ri
 |--------|-------|--------|--------|
 | 0 | Foundation survey and planning — every skill validates and plans | COMPLETE | `sprints/archive/sprint-0.md` |
 | 1 | Ring 0 — Core implementation | COMPLETE | `sprints/archive/sprint-1.md` |
-| 2 | Ring 1 — Heap types, closures, RC | Next | — |
+| 2 | Ring 1 — Heap types, closures, RC (779 tests, gate PASS) | COMPLETE | `sprints/archive/sprint-2.md` |
+| 3 | Ring 1 Vec + Ring 2 start | Next | — |

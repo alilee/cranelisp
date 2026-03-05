@@ -42,7 +42,7 @@ string_newtype!(ModuleFullPath);   // dotted path: "core.option", "user"
 string_newtype!(TraitName);        // trait name: "Num", "Display"
 string_newtype!(TypeName);         // type name: "Int", "Option"
 string_newtype!(ModuleName);       // single component: "option", "core"
-string_newtype!(JitSymbol);        // JIT linker name: "cranelisp_add$Int+Int"
+string_newtype!(JitSymbol);        // JIT linker name: "add$Int+Int"
 
 /// Fully qualified symbol: module path + local name.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -77,9 +77,24 @@ pub enum CranelispError {
     },
 }
 
+/// Classification of non-fatal diagnostics.
+/// Enables filtering, counting by category, and future `-Werror=<kind>` support.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum WarningKind {
+    /// A binding is defined but never referenced.
+    UnusedBinding,
+    /// A match arm can never be reached (dominated by earlier patterns).
+    UnreachableArm,
+    /// A binding shadows an existing binding in an outer scope.
+    ShadowedName,
+    /// Catch-all for diagnostics that don't fit a specific category.
+    Other,
+}
+
 /// Non-fatal diagnostic accumulated during compilation.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Warning {
+    pub kind: WarningKind,
     pub message: String,
     pub span: Span,
 }
@@ -496,6 +511,9 @@ Produced by `cranelisp-typecheck`, consumed by `cranelisp-backend`.
 ```rust
 /// Result of type checking a compilation unit.
 /// This is the primary boundary type between typecheck and backend.
+///
+/// Self-contained: the backend can produce code from CheckResult + Program alone,
+/// with no hidden state from the typechecker (NFR C.5.3 — backend-agnostic boundary).
 #[derive(Debug)]
 pub struct CheckResult {
     /// How each call site was resolved (trait dispatch, overload, auto-curry, builtin)
@@ -510,6 +528,14 @@ pub struct CheckResult {
     pub default_method_defns: Vec<Defn>,
     /// Non-fatal warnings accumulated during checking
     pub warnings: Vec<Warning>,
+    /// All ADT definitions encountered in this compilation unit.
+    /// Backend needs this for constructor allocation, match discrimination, and drop glue.
+    /// Ring 1+. (Resolves deferred item M-2.)
+    pub type_defs: HashMap<TypeName, TypeDefInfo>,
+    /// Maps each constructor name to its parent type name.
+    /// Backend uses this to look up tag, field count, and field types for a constructor.
+    /// Ring 1+. (Resolves deferred item M-2.)
+    pub constructor_to_type: HashMap<Symbol, TypeName>,
 }
 
 /// Map from call site span to how that call was resolved.
@@ -965,3 +991,466 @@ pub trait MacroExpander {
     fn is_macro(&self, name: &str) -> bool;
 }
 ```
+
+---
+
+## Heap Object Layouts (Ring 1)
+
+Byte-level specifications for all heap-allocated value types. These `#[repr(C)]` structs define the memory layout with compile-time–verified offsets via `offset_of!`. All heap values share the `HeapHeader` prefix.
+
+### ABI Decision: Base-Pointer Convention
+
+`runtime/alloc` (Rust: `heap_alloc`) returns the **base pointer** — the start of the struct, not a payload pointer. All field offsets are positive, derived from struct layout. This departs from the sketch (which returned a payload pointer with negative offsets for the RC header at `ptr - 8`).
+
+**Rationale**: Positive-only offsets eliminate a class of sign errors, simplify the mental model, and let `offset_of!` assertions verify the actual memory layout. The sketch's negative-offset convention was a transitional compromise to avoid a breaking change when the header was added after codegen was written.
+
+### HeapHeader (in `cranelisp-types`)
+
+The universal prefix for all heap-allocated values. Lives in `cranelisp-types` because both the backend and runtime need it.
+
+```rust
+use std::mem::{self, offset_of};
+
+/// Universal header for all heap-allocated values.
+/// All offsets in the compiler derive from this struct's layout.
+#[repr(C)]
+pub struct HeapHeader {
+    /// Total allocation size in bytes (header + payload). Used by free().
+    pub alloc_size: i64,
+    /// Reference count. Accessed via atomic_rmw (Release ordering) per NFR C.4.1.
+    /// Initial value: 1 (the allocating binding owns the value).
+    pub rc: i64,
+}
+
+impl HeapHeader {
+    pub const SIZE: usize = mem::size_of::<Self>(); // 16
+    pub const ALLOC_SIZE_OFFSET: i32 = offset_of!(Self, alloc_size) as i32; // 0
+    /// RC is accessed by atomic_rmw in codegen. This offset is the single source of
+    /// truth for RC field location — emit_rc_inc and emit_rc_dec use it exclusively.
+    pub const RC_OFFSET: i32 = offset_of!(Self, rc) as i32; // 8
+}
+
+// Compile-time assertions — these fail at build time if the layout changes.
+const _: () = assert!(HeapHeader::SIZE == 16);
+const _: () = assert!(HeapHeader::ALLOC_SIZE_OFFSET == 0);
+const _: () = assert!(HeapHeader::RC_OFFSET == 8);
+```
+
+### HeapString (in `cranelisp-runtime`)
+
+The backend treats strings as **opaque heap pointers**. It knows `HeapHeader` (for RC operations) but never reads or writes string bytes directly — all string content access goes through extern functions in `cranelisp-runtime`. This containment enables future representation changes (e.g., ropes per NFR C.2.3) as runtime-only modifications.
+
+The struct definition below is owned by `cranelisp-runtime`. The backend does NOT import it.
+
+```rust
+/// Heap string: [header | len | bytes...]
+/// Owned by cranelisp-runtime. Opaque to the backend.
+#[repr(C)]
+pub struct HeapString {
+    pub header: HeapHeader,
+    /// Number of bytes (not characters) in the string.
+    pub len: i64,
+    // Bytes follow immediately at offset 24. Not a struct field because the
+    // length is dynamic. Access via: base_ptr.byte_add(DATA_OFFSET)
+}
+
+impl HeapString {
+    pub const LEN_OFFSET: i32 = offset_of!(Self, len) as i32;   // 16
+    pub const DATA_OFFSET: i32 = mem::size_of::<Self>() as i32;  // 24
+
+    /// Total payload size after the header: len field + byte data.
+    pub const fn payload_size(byte_len: usize) -> usize {
+        mem::size_of::<i64>() + byte_len
+    }
+}
+
+const _: () = assert!(HeapString::LEN_OFFSET == 16);
+const _: () = assert!(HeapString::DATA_OFFSET == 24);
+```
+
+**String allocation flow:**
+1. Backend stores string literal bytes in JIT data section (compile time).
+2. At runtime, backend emits `call runtime/alloc_string(data_ptr, len)`.
+3. `cranelisp-runtime` (Rust: `heap_alloc_string`) allocates `HeapHeader::SIZE + payload_size(len)` bytes, writes header + len + copies bytes, returns base pointer.
+4. Backend treats the returned i64 as an opaque heap pointer. RC operations use `HeapHeader::RC_OFFSET`.
+
+### HeapAdt (in `cranelisp-backend`)
+
+ADT layout knowledge is used by the backend for constructor allocation, match discrimination, field access, and drop glue generation. Lives in `cranelisp-backend`.
+
+```rust
+/// ADT data constructor: [header | tag | field_0 | field_1 | ... | field_n]
+/// Nullary constructors are NOT heap-allocated — they are bare i64 tags.
+#[repr(C)]
+pub struct HeapAdt {
+    pub header: HeapHeader,
+    /// Constructor tag (same tag value whether nullary or data constructor).
+    pub tag: i64,
+    // Fields follow at FIELDS_START. Each field is an i64.
+}
+
+impl HeapAdt {
+    pub const TAG_OFFSET: i32 = offset_of!(Self, tag) as i32;    // 16
+    pub const FIELDS_START: usize = mem::size_of::<Self>();        // 24
+
+    /// Offset of the i-th field from the base pointer.
+    pub const fn field_offset(i: usize) -> i32 {
+        (Self::FIELDS_START + i * mem::size_of::<i64>()) as i32
+    }
+
+    /// Payload size after the header: tag + n fields.
+    pub const fn payload_size(field_count: usize) -> usize {
+        mem::size_of::<i64>() + field_count * mem::size_of::<i64>()
+    }
+}
+
+const _: () = assert!(HeapAdt::TAG_OFFSET == 16);
+const _: () = assert!(HeapAdt::FIELDS_START == 24);
+```
+
+**Nullary/data discrimination:**
+- Nullary constructors are bare i64 tags: `0`, `1`, `2`, ...
+- Data constructors are heap pointers (well above `NULLARY_TAG_THRESHOLD`).
+- Mixed sum types: runtime check `value < NULLARY_TAG_THRESHOLD` to discriminate.
+
+### HeapClosure (in `cranelisp-backend`)
+
+Closure layout is used by the backend for lambda compilation, closure calls, and drop glue. Lives in `cranelisp-backend`.
+
+```rust
+/// Closure: [header | code_ptr | cap_0 | cap_1 | ... | cap_n]
+#[repr(C)]
+pub struct HeapClosure {
+    pub header: HeapHeader,
+    /// Pointer to the compiled lambda body.
+    /// Lambda body signature: (env_ptr: i64, params...) -> i64
+    /// where env_ptr IS the closure base pointer (this allocation).
+    pub code_ptr: i64, // ptr-width: i64 on native, i32 on wasm32 (see NFR C.5.4)
+    // Captures follow at CAPTURES_START. Each capture is an i64.
+}
+
+impl HeapClosure {
+    pub const CODE_PTR_OFFSET: i32 = offset_of!(Self, code_ptr) as i32; // 16
+    pub const CAPTURES_START: usize = mem::size_of::<Self>();             // 24
+
+    /// Offset of the i-th captured value from the base pointer.
+    pub const fn capture_offset(i: usize) -> i32 {
+        (Self::CAPTURES_START + i * mem::size_of::<i64>()) as i32
+    }
+
+    /// Payload size after the header: code_ptr + n captures.
+    pub const fn payload_size(capture_count: usize) -> usize {
+        mem::size_of::<i64>() + capture_count * mem::size_of::<i64>()
+    }
+}
+
+const _: () = assert!(HeapClosure::CODE_PTR_OFFSET == 16);
+const _: () = assert!(HeapClosure::CAPTURES_START == 24);
+```
+
+### Closure Calling Convention
+
+**Lambda body signature:** `(env_ptr: i64, param_0: i64, ..., param_n: i64) -> i64`
+
+- `env_ptr` is the closure's base pointer. The callee loads captures via `heap_load(builder, env_ptr, HeapClosure::capture_offset(i))`.
+- Non-capturing lambdas and named-function-as-value wrappers allocate a minimal closure: `[HeapHeader | code_ptr]` (zero captures). The wrapper function ignores `env_ptr`.
+- Indirect call: `call_indirect(sig, code_ptr, [closure_ptr, args...])` where `code_ptr` is loaded from `HeapClosure::CODE_PTR_OFFSET`.
+
+**Drop glue strategy — side table:**
+
+Ring 1 closures do NOT store a `drop_ptr` inline (departing from the sketch, which had `[code_ptr | drop_ptr | captures...]`). Instead, the backend maintains a side table:
+
+```rust
+/// Maps a lambda's code_ptr to its drop glue function pointer.
+/// Stored in the backend (not in the closure struct). Populated at compile time.
+/// Drop glue is a generated function: (env_ptr: i64) -> () that decs all
+/// heap-typed captures in the closure environment.
+type ClosureDropTable = HashMap<*const u8, *const u8>;
+```
+
+**Rationale:** Most closures have no heap-typed captures (their drop glue is just `free`). Storing a `drop_ptr` inline wastes 8 bytes per closure for the common case. The side table trades O(1) hash lookup at drop time for 8 bytes saved per allocation. The table is populated once at compile time and read-only during execution.
+
+**Re-entrant JIT:** Not needed in Ring 1. Closures capture values, not thunks. The first case requiring re-entrant compilation is the macro mini-pipeline in Ring 3.
+
+### Reference Counting Operations
+
+RC operations use **atomic instructions** from Ring 1 per NFR C.4.1. The codegen emits Cranelift `atomic_rmw` with Release ordering for both inc and dec.
+
+```
+emit_rc_inc(builder, ptr):
+    atomic_rmw(Add, ptr + HeapHeader::RC_OFFSET, 1, Release)
+
+emit_rc_dec(builder, ptr):
+    old_rc = atomic_rmw(Sub, ptr + HeapHeader::RC_OFFSET, 1, Release)
+    if old_rc == 1:
+        // Acquire fence before reading object fields for drop glue
+        fence(Acquire)
+        call drop_glue(ptr)  // type-specific, generated per-type
+        call runtime/dealloc(ptr)
+```
+
+The inc/dec pattern matches `std::sync::Arc` semantics: Release on modification, Acquire fence before deallocation to ensure all writes to the object are visible before it is freed.
+
+### Consuming Calling Convention (Ring 1)
+
+Two conventions, classified at compile time by call site:
+
+**Consuming (cranelisp-to-cranelisp calls):** Callee owns heap-typed parameters. Caller prepares arguments:
+- **Last-use variable in scope**: transfer ownership (no RC inc). Mark consumed — caller's scope exit skips dec.
+- **Non-last-use variable or capture**: RC inc before call. Callee's scope-exit dec won't destroy caller's reference.
+- **Temporary expression result**: no action (callee takes ownership of rc=1 value).
+
+**Borrowed (extern/platform calls):** Callee does not own parameters. Caller decs temps after the call returns.
+
+**Capture rule:** Captured variables (closed over by a lambda) are NEVER eligible for last-use transfer. The closure environment holds an implicit reference; drop glue manages it.
+
+**Scope cleanup:** At scope exit, the backend emits dec for all heap-typed values in the scope stack, EXCEPT the return value (which is transferred to the caller or to the parent scope).
+
+---
+
+## Ring 1 Extern Primitives
+
+Extern functions exported by `cranelisp-runtime` and called from JIT-compiled code. All use the **borrowed** calling convention (callee does not own heap arguments — caller is responsible for RC).
+
+All signatures use `i64` for both data values and heap pointers. The runtime interprets heap-pointer arguments by casting to the appropriate layout struct internally.
+
+### Allocation
+
+```rust
+/// Allocate a heap object. Writes HeapHeader (alloc_size, rc=1). Returns base pointer.
+/// payload_size: bytes needed after the header.
+/// JIT name: "runtime/alloc"
+extern "C" fn heap_alloc(payload_size: i64) -> i64;
+
+/// Deallocate a heap object. Reads alloc_size from HeapHeader at base pointer.
+/// JIT name: "runtime/dealloc"
+extern "C" fn heap_dealloc(base_ptr: i64);
+```
+
+### String Primitives
+
+```rust
+/// Allocate a new string from raw bytes. Copies byte_len bytes from bytes_ptr.
+/// Returns base pointer to a HeapString (rc=1).
+/// JIT name: "runtime/alloc_string" (runtime infrastructure, not user-visible)
+extern "C" fn heap_alloc_string(bytes_ptr: *const u8, byte_len: i64) -> i64;
+
+/// Concatenate two strings. Returns a new string (rc=1).
+/// str-concat :: (Fn [String String] String)
+/// JIT name: "str-concat" (user-visible primitive)
+extern "C" fn str_concat(a: i64, b: i64) -> i64;
+
+/// String equality (byte-wise). Returns 1 (true) or 0 (false).
+/// str-eq :: (Fn [String String] Bool)
+/// JIT name: "str-eq"
+extern "C" fn str_eq(a: i64, b: i64) -> i64;
+
+/// String byte length.
+/// str-len :: (Fn [String] Int)
+/// JIT name: "str-len"
+extern "C" fn str_len(s: i64) -> i64;
+
+/// Convert Int to its decimal string representation.
+/// int-to-string :: (Fn [Int] String)
+/// JIT name: "int-to-string"
+extern "C" fn int_to_string(n: i64) -> i64;
+
+/// Convert Float to its string representation.
+/// float-to-string :: (Fn [Float] String)
+/// JIT name: "float-to-string"
+extern "C" fn float_to_string(f: i64) -> i64;
+
+/// Convert Bool to "true" or "false".
+/// bool-to-string :: (Fn [Bool] String)
+/// JIT name: "bool-to-string"
+extern "C" fn bool_to_string(b: i64) -> i64;
+
+/// Identity function for strings — increments RC and returns the same pointer.
+/// Used when a string value needs to be copied (e.g., returned from a borrowed context).
+/// string-identity :: (Fn [String] String)
+/// JIT name: "string-identity"
+extern "C" fn string_identity(s: i64) -> i64;
+
+/// Parse an integer from a string. Returns an Option Int as a heap-allocated ADT.
+/// Depends on Chunk B (Option type must be defined).
+/// parse-int :: (Fn [String] (Option Int))
+/// JIT name: "parse-int"
+extern "C" fn parse_int(s: i64) -> i64;
+```
+
+### String Primitives — Registration
+
+All string primitives are registered in the `primitives` module with `PrimitiveKind::Extern`:
+
+| Cranelisp name | JIT symbol | Rust function | Type signature | Calling convention |
+|---|---|---|---|---|
+| `str-concat` | `str-concat` | `str_concat` | `(Fn [String String] String)` | Borrowed |
+| `str-eq` | `str-eq` | `str_eq` | `(Fn [String String] Bool)` | Borrowed |
+| `str-len` | `str-len` | `str_len` | `(Fn [String] Int)` | Borrowed |
+| `int-to-string` | `int-to-string` | `int_to_string` | `(Fn [Int] String)` | Borrowed |
+| `float-to-string` | `float-to-string` | `float_to_string` | `(Fn [Float] String)` | Borrowed |
+| `bool-to-string` | `bool-to-string` | `bool_to_string` | `(Fn [Bool] String)` | Borrowed |
+| `string-identity` | `string-identity` | `string_identity` | `(Fn [String] String)` | Borrowed |
+| `parse-int` | `parse-int` | `parse_int` | `(Fn [String] (Option Int))` | Borrowed |
+
+### Runtime Infrastructure
+
+```rust
+/// Match exhaustiveness panic. Called when pattern matching falls through all arms.
+/// Prints a diagnostic and aborts. Ring 0 uses a Cranelift trap; Ring 1+ uses this
+/// function to provide better diagnostics (source location, match value).
+/// JIT name: "runtime/panic"
+extern "C-unwind" fn runtime_panic(msg_ptr: *const u8, msg_len: i64) -> !;
+
+/// RC underflow diagnostic. Called from JIT code (debug builds only) when an RC
+/// decrement produces a value <= 0, indicating a double-free or use-after-free.
+/// Uses debug_assert! internally — no-op in release builds.
+/// JIT name: "runtime/rc_underflow_check"
+extern "C-unwind" fn rc_underflow_check(ptr: i64, old_rc: i64);
+
+/// Read a string's bytes for display/formatting. Returns (ptr, len) via out-params.
+/// Used by the binary crate's ValueFormatter — NOT called from JIT code.
+/// JIT name: "runtime/string_read" (runtime infrastructure, not user-visible)
+extern "C" fn string_read(s: i64, out_ptr: *mut *const u8, out_len: *mut i64);
+```
+
+### Inline RC Operations
+
+The core RC operations (`inc`, `dec`, `dealloc`) are emitted inline by the backend using `atomic_rmw` and layout constants — they are NOT extern functions. This avoids function-call overhead on the hot path.
+
+---
+
+## REPL Value Display (in binary crate)
+
+Display of runtime values in the REPL (`:Type value` format). Lives in the binary crate because it needs both type information (from the typechecker) and runtime memory access (reading heap values).
+
+```rust
+/// Format a runtime value for REPL display.
+///
+/// Dispatches by type:
+///   Int    → decimal representation
+///   Bool   → "true" / "false"
+///   Float  → decimal representation
+///   String → reads bytes via string_read (JIT: "runtime/string_read"), wraps in quotes
+///   ADT    → reads tag + fields from heap (HeapAdt layout), formats recursively
+///            Nullary: constructor name. Data: "(Ctor.Name field1 field2 ...)"
+///   Fn     → "<closure>" (closure environments are not user-inspectable)
+///
+/// symbol_tables provides constructor names and field info for ADT display.
+pub fn format_result_value(
+    result: i64,
+    ty: &Type,
+    symbol_tables: &HashMap<ModuleFullPath, SymbolTable>,
+) -> String { ... }
+
+/// Format a type for REPL display.
+///
+/// Examples:
+///   Type::Int                       → "primitives/Int"
+///   Type::Fn([Int], Int)            → "(Fn [primitives/Int] primitives/Int)"
+///   Type::ADT("Option", [Int])      → "(user/Option primitives/Int)"
+///   Type::Fn([Var(a)], Var(a))      → "(Fn [a] a)"
+pub fn format_type(
+    ty: &Type,
+    symbol_tables: &HashMap<ModuleFullPath, SymbolTable>,
+) -> String { ... }
+```
+
+**ADT display recursion:**
+1. Check `value < NULLARY_TAG_THRESHOLD` → nullary constructor: look up tag in `TypeDefInfo.constructors` to find the name.
+2. Otherwise, heap-allocated data constructor: read `HeapAdt::TAG_OFFSET` for tag, look up constructor info, read each field at `HeapAdt::field_offset(i)`, recurse with field type.
+3. For polymorphic ADTs (e.g., `Option Int`), the `Type::ADT(name, args)` provides the concrete type arguments for recursive field formatting.
+
+---
+
+## Codegen Emit Helpers (in `cranelisp-backend`)
+
+The emit helper pattern confines heap layout knowledge to a single file in the backend. Only emit helpers import layout constants (`HeapHeader`, `HeapAdt`, `HeapClosure`). All other codegen code calls emit helpers.
+
+### Generic Heap Access
+
+Free functions — work in any context that has a `FunctionBuilder`:
+
+```rust
+/// Load an i64 value from a heap object at the given byte offset.
+/// The offset MUST come from a layout constant (HeapHeader::RC_OFFSET,
+/// HeapAdt::field_offset(i), etc.) — never a bare numeric literal.
+///
+/// ptr is ptr-width (i64 on native; see NFR C.5.4 for wasm32 future).
+/// The returned value is always data-width (i64).
+pub fn heap_load(builder: &mut FunctionBuilder, ptr: Value, offset: i32) -> Value {
+    builder.ins().load(types::I64, MemFlags::trusted(), ptr, offset)
+}
+
+/// Store an i64 value into a heap object at the given byte offset.
+/// Same offset rules as heap_load.
+pub fn heap_store(builder: &mut FunctionBuilder, val: Value, ptr: Value, offset: i32) {
+    builder.ins().store(MemFlags::trusted(), val, ptr, offset);
+}
+```
+
+### Per-Type Construction Helpers
+
+Methods on `FnCompiler` — need access to `self` for allocation calls:
+
+```rust
+impl FnCompiler {
+    /// Allocate a string from bytes stored in the JIT data section.
+    /// Emits: call runtime/alloc_string(data_ptr, len).
+    /// Returns: base pointer (i64) to the new HeapString.
+    fn emit_string_alloc(&mut self, bytes: &[u8], span: Span) -> Result<Value>;
+
+    /// Allocate an ADT data constructor.
+    /// Emits: alloc(payload_size) + store tag + store each field.
+    /// Returns: base pointer (i64) to the new HeapAdt.
+    fn emit_adt_alloc(
+        &mut self,
+        tag: i64,
+        field_vals: &[Value],
+        span: Span,
+    ) -> Result<Value>;
+
+    /// Allocate a closure.
+    /// Emits: alloc(payload_size) + store code_ptr + store each capture.
+    /// Registers drop glue in the ClosureDropTable if any captures are heap-typed.
+    /// Returns: base pointer (i64) to the new HeapClosure.
+    fn emit_closure_alloc(
+        &mut self,
+        code_ptr: Value,
+        captures: &[Value],
+        capture_types: &[Type],
+        span: Span,
+    ) -> Result<Value>;
+}
+```
+
+### RC Emission Helpers
+
+```rust
+impl FnCompiler {
+    /// Emit atomic RC increment: atomic_rmw(Add, ptr + RC_OFFSET, 1, Release).
+    fn emit_rc_inc(&mut self, ptr: Value);
+
+    /// Emit atomic RC decrement + conditional dealloc.
+    /// old = atomic_rmw(Sub, ptr + RC_OFFSET, 1, Release)
+    /// if old == 1: fence(Acquire); call drop_glue(ptr); call runtime/dealloc(ptr)
+    fn emit_rc_dec(&mut self, ptr: Value, ty: &Type);
+}
+```
+
+### Representation Containment Rule
+
+These helpers are the **only** codegen code that imports layout constants from `HeapHeader`, `HeapAdt`, and `HeapClosure`. No other module in `cranelisp-backend` may use `offset_of!` or numeric offsets for heap access. This is the enforcement mechanism for NFR C.5.2 (representation containment).
+
+The `HeapString` layout is not imported by the backend at all — string operations go exclusively through extern functions. This is the strongest form of containment: the backend has zero knowledge of string internals.
+
+### Pointer-Width Documentation Convention
+
+Per NFR C.5.4 (target portability), emit helpers should document which values are pointer-width vs data-width:
+
+```rust
+// ptr-width: heap base pointers, code_ptr, data_ptr (i64 on native, i32 on wasm32)
+// data-width: Int, Float, Bool, tags, field values (always i64)
+```
+
+No abstraction is needed now — both are `i64` on native. But documenting the distinction ensures a future wasm32 port can identify and update pointer-width values without auditing every i64 in the codebase.

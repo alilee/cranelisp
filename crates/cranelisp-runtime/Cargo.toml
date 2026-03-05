@@ -5,3 +5,4 @@ edition = "2024"
 
 [dependencies]
 cranelisp-platform = { path = "../cranelisp-platform" }
+cranelisp-types = { path = "../cranelisp-types" }

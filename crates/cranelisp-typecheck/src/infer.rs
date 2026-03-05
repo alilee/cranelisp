@@ -6,8 +6,8 @@
 use std::collections::HashMap;
 
 use cranelisp_types::{
-    CranelispError, Expr, MatchArm, ModuleEntry, Pattern, ResolvedCall, Span, Symbol, Type,
-    TypeExpr,
+    CranelispError, Expr, MatchArm, ModuleEntry, Pattern, ResolvedCall, Scheme, Span, Symbol,
+    Type, TypeExpr,
 };
 
 use crate::checker::TypeChecker;
@@ -56,11 +56,7 @@ impl TypeChecker {
                 span,
             } => self.infer_annotate(annotation, expr, *span),
 
-            // Deferred to later rings
-            Expr::StringLit { span, .. } => Err(CranelispError::TypeError {
-                message: "string literals not supported in Ring 0".into(),
-                span: *span,
-            }),
+            Expr::StringLit { span, .. } => self.infer_string_lit(*span),
             Expr::VecLit { span, .. } => Err(CranelispError::TypeError {
                 message: "vec literals not supported in Ring 0".into(),
                 span: *span,
@@ -81,6 +77,11 @@ impl TypeChecker {
     fn infer_int_lit(&mut self, span: Span) -> Result<Type, CranelispError> {
         self.record_expr_type(span, Type::Int);
         Ok(Type::Int)
+    }
+
+    fn infer_string_lit(&mut self, span: Span) -> Result<Type, CranelispError> {
+        self.record_expr_type(span, Type::String);
+        Ok(Type::String)
     }
 
     fn infer_float_lit(&mut self, span: Span) -> Result<Type, CranelispError> {
@@ -306,6 +307,11 @@ impl TypeChecker {
     }
 
     /// Check a constructor pattern against the scrutinee type.
+    ///
+    /// For nullary constructors, validates no bindings and unifies with ADT type.
+    /// For data constructors, instantiates the polymorphic constructor scheme,
+    /// unifies the result type with the scrutinee, and binds pattern variables
+    /// to the instantiated field types.
     fn check_constructor_pattern(
         &mut self,
         name: &Symbol,
@@ -313,30 +319,109 @@ impl TypeChecker {
         scrutinee_ty: &Type,
         span: Span,
     ) -> Result<(), CranelispError> {
-        // Look up the constructor in the type_defs registry
-        let type_name = self
+        // Look up the constructor's scheme from the symbol table
+        let ctor_scheme = self.lookup_constructor_scheme(name, span)?;
+
+        // Instantiate the scheme with fresh type variables
+        let instantiated = self.instantiate(&ctor_scheme);
+
+        // Unify and bind depending on whether the constructor has fields
+        self.unify_pattern_with_scrutinee(
+            name, bindings, &instantiated, scrutinee_ty, span,
+        )
+    }
+
+    /// Look up a constructor's type scheme from the symbol table.
+    fn lookup_constructor_scheme(
+        &self,
+        name: &Symbol,
+        span: Span,
+    ) -> Result<Scheme, CranelispError> {
+        // Verify the constructor exists in the type registry
+        let _type_name = self
             .type_defs
             .constructor_type(name)
             .ok_or_else(|| CranelispError::TypeError {
                 message: format!("unknown constructor in pattern: {name}"),
                 span,
-            })?
-            .clone();
+            })?;
 
-        // Ring 0: all constructors are nullary
-        if !bindings.is_empty() {
+        // Get the scheme from the symbol table
+        self.lookup(name).ok_or_else(|| CranelispError::TypeError {
+            message: format!("constructor {name} has no type scheme"),
+            span,
+        })
+    }
+
+    /// Unify an instantiated constructor type with the scrutinee and bind variables.
+    fn unify_pattern_with_scrutinee(
+        &mut self,
+        name: &Symbol,
+        bindings: &[Symbol],
+        instantiated: &Type,
+        scrutinee_ty: &Type,
+        span: Span,
+    ) -> Result<(), CranelispError> {
+        match instantiated {
+            // Nullary constructor: type is just the ADT type
+            Type::ADT(..) => {
+                if !bindings.is_empty() {
+                    return Err(CranelispError::TypeError {
+                        message: format!(
+                            "constructor {name} takes no arguments, got {}",
+                            bindings.len()
+                        ),
+                        span,
+                    });
+                }
+                self.unify(scrutinee_ty, instantiated, span)
+            }
+
+            // Data constructor: type is Fn([field_types], adt_type)
+            Type::Fn(field_types, ret_type) => {
+                self.bind_data_ctor_pattern(
+                    name, bindings, field_types, ret_type, scrutinee_ty, span,
+                )
+            }
+
+            _ => Err(CranelispError::TypeError {
+                message: format!(
+                    "constructor {name} has unexpected type: {instantiated}"
+                ),
+                span,
+            }),
+        }
+    }
+
+    /// Bind pattern variables for a data constructor with fields.
+    fn bind_data_ctor_pattern(
+        &mut self,
+        name: &Symbol,
+        bindings: &[Symbol],
+        field_types: &[Type],
+        ret_type: &Type,
+        scrutinee_ty: &Type,
+        span: Span,
+    ) -> Result<(), CranelispError> {
+        if bindings.len() != field_types.len() {
             return Err(CranelispError::TypeError {
                 message: format!(
-                    "constructor {name} takes no arguments in Ring 0, got {}",
+                    "constructor {name} expects {} field(s), got {} binding(s)",
+                    field_types.len(),
                     bindings.len()
                 ),
                 span,
             });
         }
 
-        // Unify the scrutinee type with the constructor's ADT type
-        let ctor_adt_type = Type::ADT(type_name, vec![]);
-        self.unify(scrutinee_ty, &ctor_adt_type, span)?;
+        // Unify the constructor's result type with the scrutinee
+        self.unify(scrutinee_ty, ret_type, span)?;
+
+        // Bind each pattern variable to the resolved field type
+        for (binding_name, field_ty) in bindings.iter().zip(field_types.iter()) {
+            let resolved = self.apply_subst(field_ty);
+            self.bind_local(binding_name.clone(), mono(resolved));
+        }
 
         Ok(())
     }
@@ -1045,5 +1130,454 @@ mod tests {
             span: span(0, 25),
         };
         assert_eq!(tc.infer_expr(&expr).unwrap(), Type::Int);
+    }
+
+    // --- String literal tests (Ring 1) ---
+
+    #[test]
+    fn test_infer_string_lit() {
+        let mut tc = tc();
+        let expr = Expr::StringLit {
+            value: "hello".to_string(),
+            span: span(0, 7),
+        };
+        assert_eq!(tc.infer_expr(&expr).unwrap(), Type::String);
+    }
+
+    #[test]
+    fn test_string_lit_expr_types_recorded() {
+        let mut tc = tc();
+        let s = span(0, 7);
+        let expr = Expr::StringLit {
+            value: "hello".to_string(),
+            span: s,
+        };
+        tc.infer_expr(&expr).unwrap();
+        assert_eq!(tc.expr_types.get(&s), Some(&Type::String));
+    }
+
+    // --- Data constructor pattern tests (Ring 1) ---
+
+    /// Register (Option a) with None and Some[:a val].
+    fn register_option(tc: &mut TypeChecker) {
+        tc.register_type_def(
+            &TypeName::from("Option"),
+            &None,
+            &[Symbol::from("a")],
+            &[
+                ConstructorDef {
+                    name: Symbol::from("None"),
+                    docstring: None,
+                    fields: vec![],
+                    span: Span::SYNTHETIC,
+                },
+                ConstructorDef {
+                    name: Symbol::from("Some"),
+                    docstring: None,
+                    fields: vec![cranelisp_types::FieldDef {
+                        name: Symbol::from("val"),
+                        type_expr: TypeExpr::TypeVar(Symbol::from("a")),
+                    }],
+                    span: Span::SYNTHETIC,
+                },
+            ],
+            Visibility::Public,
+            Span::SYNTHETIC,
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn test_infer_match_data_constructor_pattern() {
+        let mut tc = tc();
+        register_option(&mut tc);
+
+        // (match (Some 42) [(Some x) x (None 0)])
+        let expr = Expr::Match {
+            scrutinee: Box::new(Expr::Apply {
+                callee: Box::new(Expr::Var {
+                    name: Symbol::from("Some"),
+                    span: span(8, 12),
+                }),
+                args: vec![Expr::IntLit {
+                    value: 42,
+                    span: span(13, 15),
+                }],
+                span: span(7, 16),
+            }),
+            arms: vec![
+                MatchArm {
+                    pattern: Pattern::Constructor {
+                        name: Symbol::from("Some"),
+                        bindings: vec![Symbol::from("x")],
+                        span: span(18, 24),
+                    },
+                    body: Expr::Var {
+                        name: Symbol::from("x"),
+                        span: span(26, 27),
+                    },
+                    span: span(18, 27),
+                },
+                MatchArm {
+                    pattern: Pattern::Constructor {
+                        name: Symbol::from("None"),
+                        bindings: vec![],
+                        span: span(29, 33),
+                    },
+                    body: Expr::IntLit {
+                        value: 0,
+                        span: span(34, 35),
+                    },
+                    span: span(29, 35),
+                },
+            ],
+            span: span(0, 36),
+            compiler_generated: false,
+        };
+
+        // Should infer result type Int (x : Int from Some pattern, 0 : Int)
+        assert_eq!(tc.infer_expr(&expr).unwrap(), Type::Int);
+    }
+
+    #[test]
+    fn test_infer_match_data_constructor_wrong_binding_count() {
+        let mut tc = tc();
+        register_option(&mut tc);
+
+        // (match (Some 42) [(Some x y) x]) -- too many bindings
+        let expr = Expr::Match {
+            scrutinee: Box::new(Expr::Apply {
+                callee: Box::new(Expr::Var {
+                    name: Symbol::from("Some"),
+                    span: span(108, 112),
+                }),
+                args: vec![Expr::IntLit {
+                    value: 42,
+                    span: span(113, 115),
+                }],
+                span: span(107, 116),
+            }),
+            arms: vec![MatchArm {
+                pattern: Pattern::Constructor {
+                    name: Symbol::from("Some"),
+                    bindings: vec![Symbol::from("x"), Symbol::from("y")],
+                    span: span(118, 128),
+                },
+                body: Expr::Var {
+                    name: Symbol::from("x"),
+                    span: span(130, 131),
+                },
+                span: span(118, 131),
+            }],
+            span: span(100, 132),
+            compiler_generated: false,
+        };
+
+        let err = tc.infer_expr(&expr).unwrap_err();
+        assert!(err.message().contains("expects 1 field"));
+    }
+
+    #[test]
+    fn test_infer_match_nullary_with_bindings_errors() {
+        let mut tc = tc();
+        register_option(&mut tc);
+
+        // (match (Some 1) [(None x) x]) -- None is nullary, no bindings allowed
+        let expr = Expr::Match {
+            scrutinee: Box::new(Expr::Apply {
+                callee: Box::new(Expr::Var {
+                    name: Symbol::from("Some"),
+                    span: span(208, 212),
+                }),
+                args: vec![Expr::IntLit {
+                    value: 1,
+                    span: span(213, 214),
+                }],
+                span: span(207, 215),
+            }),
+            arms: vec![MatchArm {
+                pattern: Pattern::Constructor {
+                    name: Symbol::from("None"),
+                    bindings: vec![Symbol::from("x")],
+                    span: span(217, 224),
+                },
+                body: Expr::Var {
+                    name: Symbol::from("x"),
+                    span: span(226, 227),
+                },
+                span: span(217, 227),
+            }],
+            span: span(200, 228),
+            compiler_generated: false,
+        };
+
+        let err = tc.infer_expr(&expr).unwrap_err();
+        assert!(err.message().contains("takes no arguments"));
+    }
+
+    #[test]
+    fn test_infer_match_option_non_exhaustive() {
+        let mut tc = tc();
+        register_option(&mut tc);
+
+        // Match only Some, missing None
+        let expr = Expr::Match {
+            scrutinee: Box::new(Expr::Apply {
+                callee: Box::new(Expr::Var {
+                    name: Symbol::from("Some"),
+                    span: span(308, 312),
+                }),
+                args: vec![Expr::IntLit {
+                    value: 1,
+                    span: span(313, 314),
+                }],
+                span: span(307, 315),
+            }),
+            arms: vec![MatchArm {
+                pattern: Pattern::Constructor {
+                    name: Symbol::from("Some"),
+                    bindings: vec![Symbol::from("x")],
+                    span: span(317, 324),
+                },
+                body: Expr::Var {
+                    name: Symbol::from("x"),
+                    span: span(326, 327),
+                },
+                span: span(317, 327),
+            }],
+            span: span(300, 328),
+            compiler_generated: false,
+        };
+
+        let err = tc.infer_expr(&expr).unwrap_err();
+        assert!(err.message().contains("None"));
+    }
+
+    // --- Lambda expr_types completeness (Ring 1 validation) ---
+
+    #[test]
+    fn test_lambda_expr_types_recorded() {
+        let mut tc = tc();
+        let s = span(0, 10);
+        let expr = Expr::Lambda {
+            params: vec![Symbol::from("x")],
+            param_annotations: vec![Some(TypeExpr::Named(TypeName::from("Int")))],
+            body: Box::new(Expr::Var {
+                name: Symbol::from("x"),
+                span: span(13, 14),
+            }),
+            span: s,
+        };
+        tc.infer_expr(&expr).unwrap();
+
+        // Lambda should record a Fn type in expr_types
+        let recorded = tc.expr_types.get(&s).unwrap();
+        assert!(matches!(recorded, Type::Fn(_, _)));
+    }
+
+    // --- Annotate with Applied type (Ring 1) ---
+
+    #[test]
+    fn test_annotate_with_applied_type() {
+        let mut tc = tc();
+        register_option(&mut tc);
+
+        // :(Option Int) (Some 42) -- annotate with applied type
+        let annotate_expr = Expr::Annotate {
+            annotation: TypeExpr::Applied(
+                TypeName::from("Option"),
+                vec![TypeExpr::Named(TypeName::from("Int"))],
+            ),
+            expr: Box::new(Expr::Apply {
+                callee: Box::new(Expr::Var {
+                    name: Symbol::from("Some"),
+                    span: span(418, 422),
+                }),
+                args: vec![Expr::IntLit {
+                    value: 42,
+                    span: span(423, 425),
+                }],
+                span: span(417, 426),
+            }),
+            span: span(400, 427),
+        };
+
+        let ty = tc.infer_expr(&annotate_expr).unwrap();
+        assert_eq!(
+            ty,
+            Type::ADT(TypeName::from("Option"), vec![Type::Int])
+        );
+    }
+
+    // --- Product type match tests ---
+
+    #[test]
+    fn test_infer_match_product_type() {
+        let mut tc = tc();
+        // (deftype Point [:Int x :Int y])
+        tc.register_type_def(
+            &TypeName::from("Point"),
+            &None,
+            &[],
+            &[ConstructorDef {
+                name: Symbol::from("Point"),
+                docstring: None,
+                fields: vec![
+                    cranelisp_types::FieldDef {
+                        name: Symbol::from("x"),
+                        type_expr: TypeExpr::Named(TypeName::from("Int")),
+                    },
+                    cranelisp_types::FieldDef {
+                        name: Symbol::from("y"),
+                        type_expr: TypeExpr::Named(TypeName::from("Int")),
+                    },
+                ],
+                span: Span::SYNTHETIC,
+            }],
+            Visibility::Public,
+            Span::SYNTHETIC,
+        )
+        .unwrap();
+
+        // (match (Point 1 2) [(Point a b) (add-i64 a b)])
+        let expr = Expr::Match {
+            scrutinee: Box::new(Expr::Apply {
+                callee: Box::new(Expr::Var {
+                    name: Symbol::from("Point"),
+                    span: span(508, 513),
+                }),
+                args: vec![
+                    Expr::IntLit {
+                        value: 1,
+                        span: span(514, 515),
+                    },
+                    Expr::IntLit {
+                        value: 2,
+                        span: span(516, 517),
+                    },
+                ],
+                span: span(507, 518),
+            }),
+            arms: vec![MatchArm {
+                pattern: Pattern::Constructor {
+                    name: Symbol::from("Point"),
+                    bindings: vec![Symbol::from("a"), Symbol::from("b")],
+                    span: span(520, 530),
+                },
+                body: Expr::Apply {
+                    callee: Box::new(Expr::Var {
+                        name: Symbol::from("add-i64"),
+                        span: span(532, 539),
+                    }),
+                    args: vec![
+                        Expr::Var {
+                            name: Symbol::from("a"),
+                            span: span(540, 541),
+                        },
+                        Expr::Var {
+                            name: Symbol::from("b"),
+                            span: span(542, 543),
+                        },
+                    ],
+                    span: span(531, 544),
+                },
+                span: span(520, 544),
+            }],
+            span: span(500, 545),
+            compiler_generated: false,
+        };
+
+        assert_eq!(tc.infer_expr(&expr).unwrap(), Type::Int);
+    }
+
+    #[test]
+    fn test_infer_constructor_as_function() {
+        let mut tc = tc();
+        register_option(&mut tc);
+
+        // (Some 42) -- constructor applied to argument
+        let expr = Expr::Apply {
+            callee: Box::new(Expr::Var {
+                name: Symbol::from("Some"),
+                span: span(601, 605),
+            }),
+            args: vec![Expr::IntLit {
+                value: 42,
+                span: span(606, 608),
+            }],
+            span: span(600, 609),
+        };
+
+        let ty = tc.infer_expr(&expr).unwrap();
+        assert_eq!(
+            ty,
+            Type::ADT(TypeName::from("Option"), vec![Type::Int])
+        );
+    }
+
+    #[test]
+    fn test_infer_none_has_polymorphic_type() {
+        let mut tc = tc();
+        register_option(&mut tc);
+
+        // None on its own should be (Option tN) for some N
+        let expr = Expr::Var {
+            name: Symbol::from("None"),
+            span: span(700, 704),
+        };
+
+        let ty = tc.infer_expr(&expr).unwrap();
+        match &ty {
+            Type::ADT(name, args) => {
+                assert_eq!(name.as_ref(), "Option");
+                assert_eq!(args.len(), 1);
+                // The arg should be a fresh var
+                assert!(matches!(args[0], Type::Var(_)));
+            }
+            _ => panic!("None should have ADT type, got {ty:?}"),
+        }
+    }
+
+    #[test]
+    fn test_infer_string_in_if_branches() {
+        let mut tc = tc();
+        // (if true "hello" "world")
+        let expr = Expr::If {
+            cond: Box::new(Expr::BoolLit {
+                value: true,
+                span: span(804, 808),
+            }),
+            then_branch: Box::new(Expr::StringLit {
+                value: "hello".to_string(),
+                span: span(809, 816),
+            }),
+            else_branch: Box::new(Expr::StringLit {
+                value: "world".to_string(),
+                span: span(817, 824),
+            }),
+            span: span(800, 825),
+        };
+        assert_eq!(tc.infer_expr(&expr).unwrap(), Type::String);
+    }
+
+    #[test]
+    fn test_infer_string_in_let() {
+        let mut tc = tc();
+        // (let [s "hello"] s)
+        let expr = Expr::Let {
+            bindings: vec![(
+                Symbol::from("s"),
+                Expr::StringLit {
+                    value: "hello".to_string(),
+                    span: span(906, 913),
+                },
+            )],
+            body: Box::new(Expr::Var {
+                name: Symbol::from("s"),
+                span: span(915, 916),
+            }),
+            span: span(900, 917),
+        };
+        assert_eq!(tc.infer_expr(&expr).unwrap(), Type::String);
     }
 }

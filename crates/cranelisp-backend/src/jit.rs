@@ -2,6 +2,10 @@
 //
 // Single ISA construction point. Addresses audit finding about
 // multiple ISA constructions in the prototype.
+//
+// Ring 1: registers all runtime intrinsics by function pointer
+// on the JITBuilder. Uses the naming convention from src/CLAUDE.md
+// §"JIT Symbol Names".
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -48,12 +52,57 @@ pub fn build_isa() -> Result<Arc<dyn cranelift::codegen::isa::TargetIsa>, Cranel
         })
 }
 
+/// Register all runtime intrinsics on a JITBuilder by function pointer.
+///
+/// Single source of truth for the JIT name -> function pointer mapping.
+/// Addresses cache audit HIGH-1: one authoritative registry for both
+/// JIT and (future) ObjectModule paths.
+///
+/// Convention: runtime infrastructure uses `runtime/name` prefix.
+/// User-visible primitives use spec kebab-case names.
+fn register_intrinsics(builder: &mut JITBuilder) {
+    // Runtime infrastructure (internal, not user-callable)
+    builder.symbol("runtime/alloc", cranelisp_runtime::heap_alloc as *const u8);
+    builder.symbol("runtime/dealloc", cranelisp_runtime::heap_dealloc as *const u8);
+    builder.symbol("runtime/panic", cranelisp_runtime::runtime_panic as *const u8);
+    builder.symbol(
+        "runtime/rc_underflow_check",
+        cranelisp_runtime::rc_underflow_check as *const u8,
+    );
+    builder.symbol(
+        "runtime/alloc_string",
+        cranelisp_runtime::heap_alloc_string as *const u8,
+    );
+    builder.symbol(
+        "runtime/string_read",
+        cranelisp_runtime::string_read as *const u8,
+    );
+
+    // Extern primitives (user-visible via primitives module)
+    builder.symbol("str-concat", cranelisp_runtime::str_concat as *const u8);
+    builder.symbol("str-eq", cranelisp_runtime::str_eq as *const u8);
+    builder.symbol("str-len", cranelisp_runtime::str_len as *const u8);
+    builder.symbol("string-identity", cranelisp_runtime::string_identity as *const u8);
+    builder.symbol("int-to-string", cranelisp_runtime::int_to_string as *const u8);
+    builder.symbol("float-to-string", cranelisp_runtime::float_to_string as *const u8);
+    builder.symbol("bool-to-string", cranelisp_runtime::bool_to_string as *const u8);
+    builder.symbol("parse-int", cranelisp_runtime::parse_int as *const u8);
+}
+
 /// JIT module wrapper. Owns the Cranelift JIT module and provides
 /// function compilation and execution services.
 pub struct Jit {
     module: JITModule,
     ctx: cranelift::codegen::Context,
     func_ctx: FunctionBuilderContext,
+    /// FuncId for `runtime/alloc` — needed by heap emission helpers.
+    alloc_func_id: Option<FuncId>,
+    /// FuncId for `runtime/dealloc` — needed by RC dec emission.
+    dealloc_func_id: Option<FuncId>,
+    /// FuncId for `runtime/alloc_string` — needed by string literal codegen.
+    alloc_string_func_id: Option<FuncId>,
+    /// FuncId for `runtime/panic` — needed for match exhaustiveness failure.
+    panic_func_id: Option<FuncId>,
 }
 
 impl Jit {
@@ -61,10 +110,10 @@ impl Jit {
     pub fn new() -> Result<Self, CranelispError> {
         let isa = build_isa()?;
 
-        let builder = JITBuilder::with_isa(isa, cranelift_module::default_libcall_names());
+        let mut builder = JITBuilder::with_isa(isa, cranelift_module::default_libcall_names());
+        register_intrinsics(&mut builder);
 
-        let module =
-            JITModule::new(builder);
+        let module = JITModule::new(builder);
 
         let ctx = module.make_context();
         let func_ctx = FunctionBuilderContext::new();
@@ -73,6 +122,33 @@ impl Jit {
             module,
             ctx,
             func_ctx,
+            alloc_func_id: None,
+            dealloc_func_id: None,
+            alloc_string_func_id: None,
+            panic_func_id: None,
+        })
+    }
+
+    /// Declare runtime intrinsics as imported functions in the JIT module.
+    ///
+    /// Must be called before compiling any function that needs heap operations.
+    /// Returns the declared FuncIds for use by codegen.
+    pub fn declare_intrinsics(&mut self) -> Result<IntrinsicIds, CranelispError> {
+        let alloc_id = self.declare_import("runtime/alloc", 1, 1)?;
+        let dealloc_id = self.declare_import("runtime/dealloc", 1, 1)?;
+        let alloc_string_id = self.declare_import("runtime/alloc_string", 2, 1)?;
+        let panic_id = self.declare_import_no_return("runtime/panic", 2)?;
+
+        self.alloc_func_id = Some(alloc_id);
+        self.dealloc_func_id = Some(dealloc_id);
+        self.alloc_string_func_id = Some(alloc_string_id);
+        self.panic_func_id = Some(panic_id);
+
+        Ok(IntrinsicIds {
+            alloc: alloc_id,
+            dealloc: dealloc_id,
+            alloc_string: alloc_string_id,
+            panic: panic_id,
         })
     }
 
@@ -100,32 +176,17 @@ impl Jit {
     /// Compile a function definition into Cranelift IR.
     /// Returns the CLIF IR text for introspection.
     ///
-    /// In Interactive mode, `got_slots` and `got_base_ptr` must be provided
-    /// so that function calls emit GOT-indirect `call_indirect` instructions.
+    /// The `compile_ctx` bundles all environment needed for codegen: function IDs,
+    /// arities, GOT state, and intrinsic IDs. Construct it at the call site using
+    /// `Jit::build_compile_context`.
     pub fn compile_defn(
         &mut self,
         defn: &Defn,
-        check: &CheckResult,
-        mode: CompileMode,
-        func_ids: &HashMap<Symbol, FuncId>,
-        got_slots: Option<&HashMap<Symbol, usize>>,
-        got_base_ptr: Option<i64>,
+        compile_ctx: CompileContext<'_>,
     ) -> Result<String, CranelispError> {
         self.ctx.func.signature = self.build_sig(defn.params.len());
         self.ctx.func.name =
             cranelift::codegen::ir::UserFuncName::testcase(defn.name.as_bytes());
-
-        // Build the compilation context.
-        let compile_ctx = CompileContext {
-            method_resolutions: &check.method_resolutions,
-            expr_types: &check.expr_types,
-            func_ids,
-            mode,
-            type_defs: &check.type_defs,
-            constructor_to_type: &check.constructor_to_type,
-            got_slots,
-            got_base_ptr,
-        };
 
         // Build the function body.
         FnCompiler::compile_body(
@@ -140,7 +201,8 @@ impl Jit {
         let clif_ir = format!("{}", self.ctx.func.display());
 
         // Compile to machine code.
-        let func_id = *func_ids
+        let func_id = *compile_ctx
+            .func_ids
             .get(&defn.name)
             .ok_or_else(|| CranelispError::CodegenError {
                 message: format!("function '{}' not declared", defn.name),
@@ -157,6 +219,36 @@ impl Jit {
         self.module.clear_context(&mut self.ctx);
 
         Ok(clif_ir)
+    }
+
+    /// Build a `CompileContext` from a `CheckResult` and environment parameters.
+    ///
+    /// Bundles all the information needed for codegen into a single struct,
+    /// eliminating the need to pass individual fields to `compile_defn`.
+    pub fn build_compile_context<'a>(
+        &self,
+        check: &'a CheckResult,
+        mode: CompileMode,
+        func_ids: &'a HashMap<Symbol, FuncId>,
+        func_arities: &'a HashMap<Symbol, usize>,
+        got_slots: Option<&'a HashMap<Symbol, usize>>,
+        got_base_ptr: Option<i64>,
+    ) -> CompileContext<'a> {
+        CompileContext {
+            method_resolutions: &check.method_resolutions,
+            expr_types: &check.expr_types,
+            func_ids,
+            func_arities,
+            mode,
+            type_defs: &check.type_defs,
+            constructor_to_type: &check.constructor_to_type,
+            got_slots,
+            got_base_ptr,
+            alloc_func_id: self.alloc_func_id,
+            dealloc_func_id: self.dealloc_func_id,
+            alloc_string_func_id: self.alloc_string_func_id,
+            panic_func_id: self.panic_func_id,
+        }
     }
 
     /// Finalize all pending function definitions.
@@ -197,6 +289,12 @@ impl Jit {
         Ok(self.module.get_finalized_function(func_id))
     }
 
+    /// Get a mutable reference to the inner JIT module.
+    /// Needed by FnCompiler for declaring extern functions.
+    pub fn jit_module(&mut self) -> &mut JITModule {
+        &mut self.module
+    }
+
     /// Build a Cranelift function signature: all params and return are i64.
     fn build_sig(&self, param_count: usize) -> cranelift::codegen::ir::Signature {
         let mut sig = self.module.make_signature();
@@ -206,6 +304,56 @@ impl Jit {
         sig.returns.push(AbiParam::new(types::I64));
         sig
     }
+
+    /// Declare an imported function (from runtime) with n params, m returns.
+    fn declare_import(
+        &mut self,
+        name: &str,
+        n_params: usize,
+        n_returns: usize,
+    ) -> Result<FuncId, CranelispError> {
+        let mut sig = self.module.make_signature();
+        for _ in 0..n_params {
+            sig.params.push(AbiParam::new(types::I64));
+        }
+        for _ in 0..n_returns {
+            sig.returns.push(AbiParam::new(types::I64));
+        }
+        self.module
+            .declare_function(name, Linkage::Import, &sig)
+            .map_err(|e| CranelispError::CodegenError {
+                message: format!("failed to declare intrinsic '{name}': {e}"),
+                span: Span::SYNTHETIC,
+            })
+    }
+
+    /// Declare an imported function that never returns (panic).
+    fn declare_import_no_return(
+        &mut self,
+        name: &str,
+        n_params: usize,
+    ) -> Result<FuncId, CranelispError> {
+        let mut sig = self.module.make_signature();
+        for _ in 0..n_params {
+            sig.params.push(AbiParam::new(types::I64));
+        }
+        // Panic returns i64 for cranelift compatibility (never actually returns).
+        sig.returns.push(AbiParam::new(types::I64));
+        self.module
+            .declare_function(name, Linkage::Import, &sig)
+            .map_err(|e| CranelispError::CodegenError {
+                message: format!("failed to declare intrinsic '{name}': {e}"),
+                span: Span::SYNTHETIC,
+            })
+    }
+}
+
+/// FuncIds for declared runtime intrinsics.
+pub struct IntrinsicIds {
+    pub alloc: FuncId,
+    pub dealloc: FuncId,
+    pub alloc_string: FuncId,
+    pub panic: FuncId,
 }
 
 #[cfg(test)]
@@ -222,5 +370,12 @@ mod tests {
     fn test_jit_creation() {
         let jit = Jit::new();
         assert!(jit.is_ok(), "JIT creation should succeed");
+    }
+
+    #[test]
+    fn test_intrinsic_declaration() {
+        let mut jit = Jit::new().unwrap();
+        let ids = jit.declare_intrinsics();
+        assert!(ids.is_ok(), "intrinsic declaration should succeed");
     }
 }

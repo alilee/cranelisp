@@ -7,15 +7,16 @@
 //! schemes and `DefKind::Primitive { primitive_kind: PrimitiveKind::Inline }`.
 //! No `builtin_operators` HashSet is needed — the DefKind is sufficient for lookup.
 
-use cranelisp_types::{ring0_primitives, DefKind, ModuleEntry, PrimitiveKind, Symbol, Type, Visibility};
+use cranelisp_types::{ring0_primitives, ring1_primitives, DefKind, JitSymbol, ModuleEntry, PrimitiveKind, Symbol, Type, Visibility};
 
 use crate::checker::TypeChecker;
 use crate::scheme::mono;
 
 impl TypeChecker {
-    /// Register all Ring 0 builtins: primitives and special forms.
+    /// Register all builtins: Ring 0 + Ring 1 primitives and special forms.
     pub(crate) fn register_builtins(&mut self) {
         self.register_primitives();
+        self.register_ring1_primitives();
         self.register_special_forms();
     }
 
@@ -38,6 +39,30 @@ impl TypeChecker {
                     kind: Box::new(DefKind::Primitive {
                         primitive_kind: PrimitiveKind::Inline,
                         jit_name: None,
+                    }),
+                },
+            );
+        }
+    }
+
+    /// Register Ring 1 extern primitives from the authoritative table.
+    ///
+    /// These are string and type conversion functions implemented as extern "C"
+    /// functions. The backend calls them via JIT symbol references, not inline IR.
+    fn register_ring1_primitives(&mut self) {
+        for prim in ring1_primitives() {
+            let scheme = mono(prim.ty.clone());
+
+            self.symbol_table.insert(
+                prim.name.clone(),
+                ModuleEntry::Def {
+                    scheme,
+                    visibility: Visibility::Public,
+                    docstring: None,
+                    param_names: prim.param_names.clone(),
+                    kind: Box::new(DefKind::Primitive {
+                        primitive_kind: PrimitiveKind::Extern,
+                        jit_name: Some(JitSymbol::from(prim.name.as_ref())),
                     }),
                 },
             );

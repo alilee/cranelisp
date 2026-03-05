@@ -354,7 +354,7 @@ for (i, arm) in arms.enumerate():
 // Panic block: match exhaustiveness failure
 switch_to_block(panic_block)
 seal_block(panic_block)
-// call cranelisp_panic("match failed")
+// call runtime/panic ("match failed")
 zero = iconst(I64, 0)
 jump(merge_block, [zero])
 
@@ -519,15 +519,15 @@ Ring 0 needs only `panic_func_id` — for match exhaustiveness failure. No `allo
 ### 8.2 Intrinsic Registration
 
 Ring 0 intrinsics registered on the `JITBuilder`:
-- `cranelisp_panic` — match failure handler (spec 12.7.2)
+- `runtime/panic` (Rust: `runtime_panic`) — match failure handler (spec 12.7.2)
 
 Ring 0 does NOT register:
-- `cranelisp_alloc` / `cranelisp_free` (no heap)
-- `cranelisp_par_eval` / `cranelisp_ivar_*` (no lenient evaluation)
-- `cranelisp_dec_*` / `cranelisp_rc_*` (no RC)
-- `cranelisp_trace_*` (no tracing)
+- `runtime/alloc` / `runtime/dealloc` (no heap)
+- `runtime/par_eval` / `runtime/ivar_*` (no lenient evaluation)
+- `runtime/rc_dec_*` / `runtime/rc_*` (no RC)
+- `runtime/trace_*` (no tracing)
 - Extern primitives (`int-to-string`, `str-concat`, etc. — no strings)
-- Operator wrappers (`cranelisp_op_add`, etc. — operators are inlined in Ring 0)
+- Operator wrappers (operators are inlined in Ring 0, not registered as JIT symbols)
 
 ### 8.3 Compilation Flow
 
@@ -735,7 +735,7 @@ No function exceeds 100 lines (addressing codegen audit LOW-2 and codegen audit 
 
 ### 12.1 Panic Intrinsic Signature
 
-The `cranelisp-runtime` crate must export a `cranelisp_panic` function with signature `extern "C" fn(i64) -> i64` that prints a panic message and aborts. This is needed in Ring 0 for match exhaustiveness failure. The panic message representation needs to be defined:
+The `cranelisp-runtime` crate must export a `runtime_panic` function (JIT name: `runtime/panic`) with signature `extern "C" fn(i64) -> i64` that prints a panic message and aborts. This is needed in Ring 0 for match exhaustiveness failure. The panic message representation needs to be defined:
 
 **Proposed**: In Ring 0 (no strings), the panic function receives a statically allocated C string pointer embedded as `iconst`. The function prints it via `eprintln!` and calls `std::process::exit(1)`. This avoids needing heap allocation for panic messages in Ring 0.
 

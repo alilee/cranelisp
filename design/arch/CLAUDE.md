@@ -7,6 +7,7 @@ Architecture deliverables for the Cranelisp reimplementation. Owned and maintain
 - `architecture.md` — Overall architecture: 7-crate DAG, single pipeline principle, CompiledModule decomposition, macro mini-pipeline resolution, audit findings addressed
 - `interfaces.md` — Complete Rust type signatures for all pipeline boundary types (the design book)
 - `roadmap.md` — Ring-by-ring phased progression roadmap with per-skill deliverables and acceptance criteria
+- `design-space.md` — Forward-looking analysis in two parts: Part 1 (§1–9) analyzes Ring 1 decisions against NFRs; Part 2 (§10–14) examines beyond-ring resilience: three-mode compilation, WASM/target portability, collection extensibility, concurrent channels, peer language patterns
 
 ## Key Decisions (Phase B)
 
@@ -19,6 +20,13 @@ Architecture deliverables for the Cranelisp reimplementation. Owned and maintain
 7. **`CompileMode` enum** — batch and REPL share `compile_unit()`, no dual pipelines
 8. **`MacroExpander` trait** — dependency inversion breaks frontend->backend circular dep
 9. **CompiledModule decomposed** into `SymbolTable` + `ModuleCodegenState` + `ModuleStructure` + `CacheMetadata`
+
+## Key Decisions (Ring 1)
+
+10. **Base-pointer ABI** — heap pointers point to the start of the allocation (offset 0 = alloc_size, offset 8 = rc, offset 16+ = payload). Positive offsets throughout. Departing from the sketch's interior-pointer convention.
+11. **Closure drop via side-table** — per-lambda drop functions stored in a `HashMap<*const u8, *const u8>` (code_ptr → drop_fn) rather than inline in the closure struct. Avoids an extra pointer-width field per closure and simplifies the calling convention.
+12. **Strings opaque to backend** — `HeapString` layout is owned by `cranelisp-runtime`. Backend never reads/writes string bytes — all string operations go through extern functions. Enables future rope upgrade as a runtime-only change.
+13. **Atomic RC from Ring 1** — reference count operations use `atomic_rmw` (Release for dec, Acquire for inc) even though Ring 1 is single-threaded. This avoids a breaking ABI change when concurrency arrives in Ring 4, per NFR C.4.1.
 
 ## Cross-References
 
@@ -60,7 +68,7 @@ The criteria `/arch` uses to evaluate every design decision. These are derived f
 | `TraitName` | Trait name (uppercase) | `"Num"`, `"Display"`, `"Eq"` |
 | `ModuleName` | Single module component (no dots) | `"core"`, `"option"`, `"math"` |
 | `ModuleFullPath` | Dotted module path | `"core.option"`, `"user"` |
-| `JitSymbol` | JIT linker name (mangled) | `"cranelisp_add$Int+Int"` |
+| `JitSymbol` | JIT linker name (mangled) | `"add$Int+Int"` |
 | `FQSymbol` | Fully qualified: module + symbol | `{ module: "core.option", symbol: "Some" }` |
 
 **When in doubt**: if a `String` field identifies something in the language (a name, a type, a module), it should be a newtype. The only bare `String` fields allowed are:

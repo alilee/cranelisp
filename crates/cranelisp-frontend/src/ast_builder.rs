@@ -732,7 +732,10 @@ fn build_expr(sexp: &Sexp, expander: &mut dyn MacroExpander) -> Result<Expr, Cra
             value: *v,
             span: *span,
         }),
-        Sexp::Str(_v, span) => Err(parse_err("strings not yet supported (Ring 1)", *span)),
+        Sexp::Str(v, span) => Ok(Expr::StringLit {
+            value: v.clone(),
+            span: *span,
+        }),
         Sexp::Symbol(name, span) => {
             reject_non_ring0_symbol(name, *span)?;
             Ok(Expr::Var {
@@ -1253,9 +1256,11 @@ mod tests {
     }
 
     #[test]
-    fn test_build_string_rejected_ring0() {
-        let err = parse_and_build_expr("\"hello\"").unwrap_err();
-        assert!(err.message().contains("strings not yet supported"));
+    fn test_build_string_literal() {
+        match parse_and_build_expr("\"hello\"").unwrap() {
+            Expr::StringLit { value, .. } => assert_eq!(value, "hello"),
+            other => panic!("expected StringLit, got {other:?}"),
+        }
     }
 
     // -- Variable reference --
@@ -1862,5 +1867,301 @@ mod tests {
         let err = parse_and_build_expr("foo#").unwrap_err();
         assert!(err.message().contains("gensym shorthand not yet supported"));
         assert!(err.message().contains("Ring 3"));
+    }
+
+    // -- Ring 1: String literal --
+
+    #[test]
+    fn test_string_literal_empty() {
+        match parse_and_build_expr("\"\"").unwrap() {
+            Expr::StringLit { value, .. } => assert_eq!(value, ""),
+            other => panic!("expected StringLit, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_string_literal_with_escapes() {
+        match parse_and_build_expr("\"line1\\nline2\"").unwrap() {
+            Expr::StringLit { value, .. } => assert_eq!(value, "line1\nline2"),
+            other => panic!("expected StringLit, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_string_literal_span() {
+        let expr = parse_and_build_expr("\"hello\"").unwrap();
+        assert_eq!(expr.span(), Span::new(0, 7));
+    }
+
+    #[test]
+    fn test_string_in_let_binding() {
+        match parse_and_build_expr("(let [s \"hello\"] s)").unwrap() {
+            Expr::Let { bindings, .. } => {
+                assert_eq!(bindings.len(), 1);
+                assert_eq!(bindings[0].0, "s");
+                match &bindings[0].1 {
+                    Expr::StringLit { value, .. } => assert_eq!(value, "hello"),
+                    other => panic!("expected StringLit in binding, got {other:?}"),
+                }
+            }
+            other => panic!("expected Let, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_string_as_function_argument() {
+        match parse_and_build_expr("(f \"world\")").unwrap() {
+            Expr::Apply { args, .. } => {
+                assert_eq!(args.len(), 1);
+                match &args[0] {
+                    Expr::StringLit { value, .. } => assert_eq!(value, "world"),
+                    other => panic!("expected StringLit, got {other:?}"),
+                }
+            }
+            other => panic!("expected Apply, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_string_in_if_branches() {
+        match parse_and_build_expr("(if true \"yes\" \"no\")").unwrap() {
+            Expr::If {
+                then_branch,
+                else_branch,
+                ..
+            } => {
+                match then_branch.as_ref() {
+                    Expr::StringLit { value, .. } => assert_eq!(value, "yes"),
+                    other => panic!("expected StringLit in then, got {other:?}"),
+                }
+                match else_branch.as_ref() {
+                    Expr::StringLit { value, .. } => assert_eq!(value, "no"),
+                    other => panic!("expected StringLit in else, got {other:?}"),
+                }
+            }
+            other => panic!("expected If, got {other:?}"),
+        }
+    }
+
+    // -- Ring 1: Docstring interaction audit --
+
+    #[test]
+    fn test_docstring_captured_in_defn() {
+        let prog =
+            parse_and_build_program("(defn greet \"docstring\" [x] x)").unwrap();
+        match &prog[0] {
+            TopLevel::Defn(defn) => {
+                assert_eq!(defn.docstring.as_deref(), Some("docstring"));
+                assert_eq!(defn.params.len(), 1);
+                assert_eq!(defn.params[0], "x");
+            }
+            other => panic!("expected Defn, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_string_in_let_is_not_docstring() {
+        // A string in a let binding position is a value, not a docstring.
+        match parse_and_build_expr("(let [s \"hello\"] s)").unwrap() {
+            Expr::Let { bindings, body, .. } => {
+                match &bindings[0].1 {
+                    Expr::StringLit { value, .. } => assert_eq!(value, "hello"),
+                    other => panic!("expected StringLit, got {other:?}"),
+                }
+                match body.as_ref() {
+                    Expr::Var { name, .. } => assert_eq!(name, "s"),
+                    other => panic!("expected Var in body, got {other:?}"),
+                }
+            }
+            other => panic!("expected Let, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_docstring_not_captured_when_absent() {
+        let prog = parse_and_build_program("(defn f [x] x)").unwrap();
+        match &prog[0] {
+            TopLevel::Defn(defn) => {
+                assert!(defn.docstring.is_none());
+            }
+            other => panic!("expected Defn, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_docstring_in_deftype() {
+        let prog =
+            parse_and_build_program("(deftype Color \"Primary colors\" Red Green Blue)")
+                .unwrap();
+        match &prog[0] {
+            TopLevel::TypeDef { docstring, .. } => {
+                assert_eq!(docstring.as_deref(), Some("Primary colors"));
+            }
+            other => panic!("expected TypeDef, got {other:?}"),
+        }
+    }
+
+    // -- Ring 1: TypeExpr::Applied via annotation --
+
+    #[test]
+    fn test_type_annotation_applied() {
+        // :(Option Int) expr -> Annotate { Applied("Option", [Named("Int")]) }
+        match parse_and_build_expr("(f :(Option Int) 42)").unwrap() {
+            Expr::Apply { args, .. } => {
+                assert_eq!(args.len(), 1);
+                match &args[0] {
+                    Expr::Annotate { annotation, .. } => match annotation {
+                        TypeExpr::Applied(name, type_args) => {
+                            assert_eq!(*name, "Option");
+                            assert_eq!(type_args.len(), 1);
+                            match &type_args[0] {
+                                TypeExpr::Named(n) => assert_eq!(*n, "Int"),
+                                other => panic!("expected Named(Int), got {other:?}"),
+                            }
+                        }
+                        other => panic!("expected Applied, got {other:?}"),
+                    },
+                    other => panic!("expected Annotate, got {other:?}"),
+                }
+            }
+            other => panic!("expected Apply, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_type_annotation_applied_multiple_args() {
+        // :(Map String Int) expr
+        match parse_and_build_expr("(f :(Map String Int) x)").unwrap() {
+            Expr::Apply { args, .. } => {
+                assert_eq!(args.len(), 1);
+                match &args[0] {
+                    Expr::Annotate { annotation, .. } => match annotation {
+                        TypeExpr::Applied(name, type_args) => {
+                            assert_eq!(*name, "Map");
+                            assert_eq!(type_args.len(), 2);
+                        }
+                        other => panic!("expected Applied, got {other:?}"),
+                    },
+                    other => panic!("expected Annotate, got {other:?}"),
+                }
+            }
+            other => panic!("expected Apply, got {other:?}"),
+        }
+    }
+
+    // -- Ring 1: Constructor pattern with field bindings --
+
+    #[test]
+    fn test_constructor_pattern_with_single_binding() {
+        match parse_and_build_expr("(match x [(Some v) v])").unwrap() {
+            Expr::Match { arms, .. } => {
+                assert_eq!(arms.len(), 1);
+                match &arms[0].pattern {
+                    Pattern::Constructor { name, bindings, .. } => {
+                        assert_eq!(name, "Some");
+                        assert_eq!(bindings.len(), 1);
+                        assert_eq!(bindings[0], "v");
+                    }
+                    other => panic!("expected Constructor, got {other:?}"),
+                }
+            }
+            other => panic!("expected Match, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_constructor_pattern_with_multiple_bindings() {
+        match parse_and_build_expr("(match p [(Point x y) (+ x y)])").unwrap() {
+            Expr::Match { arms, .. } => {
+                assert_eq!(arms.len(), 1);
+                match &arms[0].pattern {
+                    Pattern::Constructor { name, bindings, .. } => {
+                        assert_eq!(name, "Point");
+                        assert_eq!(bindings.len(), 2);
+                        assert_eq!(bindings[0], "x");
+                        assert_eq!(bindings[1], "y");
+                    }
+                    other => panic!("expected Constructor, got {other:?}"),
+                }
+            }
+            other => panic!("expected Match, got {other:?}"),
+        }
+    }
+
+    // -- Ring 1: Product type with fields --
+
+    #[test]
+    fn test_product_type_field_types() {
+        let prog = parse_and_build_program("(deftype Point [:Int x :Int y])").unwrap();
+        match &prog[0] {
+            TopLevel::TypeDef {
+                name,
+                constructors,
+                ..
+            } => {
+                assert_eq!(name, "Point");
+                assert_eq!(constructors.len(), 1);
+                let ctor = &constructors[0];
+                assert_eq!(ctor.name, "Point");
+                assert_eq!(ctor.fields.len(), 2);
+                assert_eq!(ctor.fields[0].name, "x");
+                match &ctor.fields[0].type_expr {
+                    TypeExpr::Named(n) => assert_eq!(*n, "Int"),
+                    other => panic!("expected Named(Int), got {other:?}"),
+                }
+                assert_eq!(ctor.fields[1].name, "y");
+                match &ctor.fields[1].type_expr {
+                    TypeExpr::Named(n) => assert_eq!(*n, "Int"),
+                    other => panic!("expected Named(Int), got {other:?}"),
+                }
+            }
+            other => panic!("expected TypeDef, got {other:?}"),
+        }
+    }
+
+    // -- Ring 1: Sum type with data constructors --
+
+    #[test]
+    fn test_sum_type_constructor_details() {
+        let prog = parse_and_build_program(
+            "(deftype (Option a) None (Some [:a val]))",
+        )
+        .unwrap();
+        match &prog[0] {
+            TopLevel::TypeDef {
+                name,
+                type_params,
+                constructors,
+                ..
+            } => {
+                assert_eq!(name, "Option");
+                assert_eq!(type_params, &["a"]);
+                assert_eq!(constructors.len(), 2);
+                // None: nullary
+                assert_eq!(constructors[0].name, "None");
+                assert!(constructors[0].fields.is_empty());
+                // Some: one field
+                assert_eq!(constructors[1].name, "Some");
+                assert_eq!(constructors[1].fields.len(), 1);
+                assert_eq!(constructors[1].fields[0].name, "val");
+                match &constructors[1].fields[0].type_expr {
+                    TypeExpr::TypeVar(v) => assert_eq!(*v, "a"),
+                    other => panic!("expected TypeVar(a), got {other:?}"),
+                }
+            }
+            other => panic!("expected TypeDef, got {other:?}"),
+        }
+    }
+
+    // -- Ring 1: REPL string literal --
+
+    #[test]
+    fn test_repl_string_literal() {
+        match parse_and_build_repl("\"hello\"").unwrap() {
+            ReplInput::Expr(Expr::StringLit { value, .. }) => {
+                assert_eq!(value, "hello");
+            }
+            other => panic!("expected Expr(StringLit), got {other:?}"),
+        }
     }
 }

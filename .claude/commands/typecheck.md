@@ -9,6 +9,7 @@ AST in, typed environment out. You implement Algorithm W (Hindley-Milner type in
 ## Owns
 
 - `src/typechecker/` — type inference engine, trait registry, monomorphisation
+- `design/typecheck/` — solution design documents (inference, traits, monomorphisation)
 
 ## Interfaces
 

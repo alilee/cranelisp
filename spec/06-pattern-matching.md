@@ -199,6 +199,10 @@ The type of a `match` expression is the unified type of all arm bodies. The type
 
 ## 6.5 Exhaustiveness
 
+Every `match` expression MUST be statically guaranteed to handle all possible values of the scrutinee type. The exhaustiveness rules depend on whether the scrutinee type is a concrete ADT or not.
+
+### 6.5.1 ADT Scrutinee Types
+
 When the scrutinee type resolves to a concrete ADT (a type defined via `deftype`), a `match` expression MUST be **exhaustive**: either every constructor of the ADT appears as a constructor pattern in at least one arm, or at least one arm uses a wildcard or variable pattern (which covers all remaining cases).
 
 A non-exhaustive match on a concrete ADT type is a **compile-time error**. The error message MUST name the type and list the uncovered constructors.
@@ -218,11 +222,33 @@ A non-exhaustive match on a concrete ADT type is a **compile-time error**. The e
 (match c [Red 1 Green 2])
 ```
 
-When the scrutinee type is not a concrete ADT (e.g. a type variable, `Int`, `Bool`, `String`, `Float`, or a function type), no exhaustiveness check applies — the match is accepted as-is.
+### 6.5.2 Non-ADT Scrutinee Types
+
+When the scrutinee type is not a concrete ADT — i.e., it is `Int`, `Bool`, `Float`, `String`, a function type, or a type variable — the type has no finite set of constructors that could be enumerated. In this case, a `match` expression MUST include at least one **wildcard pattern** (`_`) or **variable pattern** as a catch-all arm. A `match` on a non-ADT scrutinee type without a wildcard or variable pattern is a **compile-time error**.
+
+**Rationale:** Cranelisp has no panic/recovery mechanism. The language guarantees that well-typed programs do not encounter runtime match failure. Since non-ADT types cannot be fully enumerated by constructor patterns (there is no way to list all possible `Int` or `String` values as patterns), a catch-all arm is the only way to ensure exhaustiveness.
+
+**Example:**
+
+```clojure
+;; VALID: variable pattern catches all Int values
+(match n
+  [x (+ x 1)])
+
+;; VALID: wildcard catches all String values
+(match s
+  [_ "matched"])
+
+;; VALID: variable pattern on Bool scrutinee
+(match b
+  [x (if x 1 0)])
+```
+
+Note: `Bool` is a primitive type, not an ADT defined via `deftype`. Since literal patterns are not supported (see Section 6.6.2), there is no way to write constructor patterns for `true` or `false`. A `match` on a `Bool` scrutinee MUST use a wildcard or variable pattern to satisfy exhaustiveness.
+
+### 6.5.3 Runtime Safety Net
 
 The runtime panic path ("match failed") remains in generated code as a safety net, but SHOULD be unreachable in programs that pass the exhaustiveness check.
-
-<!-- FIXME(/spec): Exhaustiveness checking should be extended to non-ADT scrutinee types (Int, Bool, Float, String). Match on these types without a wildcard arm should be a compile-time error, not a runtime trap. The language has no panic/recovery mechanism — all match expressions must be statically guaranteed exhaustive. -->
 
 ## 6.6 Limitations
 

@@ -1,72 +1,52 @@
-// cranelisp-runtime: allocation, RC, panic, intrinsics for JIT-compiled code.
-//
-// Ring 0: minimal -- just the panic intrinsic for match exhaustiveness failure.
-// Ring 1+: heap allocation, reference counting, format_result.
+//! cranelisp-runtime: allocation, RC infrastructure, string runtime, and
+//! type conversion primitives for JIT-compiled Cranelisp code.
+//!
+//! Ring 0: panic intrinsic for match exhaustiveness failure.
+//! Ring 1: heap allocator, RC trace logging, opaque string runtime, type conversions.
+//!
+//! ## Base-pointer convention
+//!
+//! All heap pointers point to offset 0 of the allocation (where `alloc_size`
+//! lives). This departs from the sketch's interior-pointer convention.
+//! See `design/platform/runtime.md` for rationale.
+//!
+//! ## Module structure
+//!
+//! - `alloc` — heap allocator, dealloc, tracking counters, LIVE_ALLOCS
+//! - `rc` — RC trace logging, underflow check
+//! - `string` — HeapString layout, string allocation and operations
+//! - `primitives` — type conversion functions (int/float/bool to string, parse-int)
+//! - `panic` — runtime panic handler for JIT code
 
-/// Panic handler for JIT-compiled code.
-///
-/// Called when a match expression hits a non-exhaustive case at runtime.
-/// Uses `extern "C-unwind"` so the host can catch this via `std::panic::catch_unwind`.
-///
-/// # Safety
-///
-/// `msg_ptr` must point to a valid null-terminated UTF-8 string.
-#[unsafe(no_mangle)]
-#[allow(clippy::not_unsafe_ptr_arg_deref)] // Called from JIT code; cannot be marked unsafe
-pub extern "C-unwind" fn cranelisp_panic(msg_ptr: *const u8, msg_len: usize) {
-    let msg = if msg_ptr.is_null() || msg_len == 0 {
-        "match exhaustiveness failure"
-    } else {
-        // SAFETY: caller guarantees msg_ptr points to valid UTF-8 of length msg_len
-        unsafe { std::str::from_utf8_unchecked(std::slice::from_raw_parts(msg_ptr, msg_len)) }
-    };
-    panic!("cranelisp runtime: {msg}");
-}
+pub mod alloc;
+pub mod rc;
+pub mod string;
+pub mod primitives;
+pub mod panic;
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::panic;
+// Re-export extern "C" functions. The JIT builder registers these by function
+// pointer, not by symbol name — see src/CLAUDE.md §"JIT Symbol Names".
 
-    #[test]
-    fn test_panic_with_message() {
-        let result = panic::catch_unwind(|| {
-            let msg = "test panic message";
-            cranelisp_panic(msg.as_ptr(), msg.len());
-        });
-        assert!(result.is_err());
-        let err = result.unwrap_err();
-        let msg = err.downcast_ref::<String>().unwrap();
-        assert!(msg.contains("test panic message"));
-    }
+// Runtime infrastructure (registered as runtime/alloc, runtime/dealloc, etc.)
+pub use alloc::{heap_alloc, heap_dealloc};
+pub use panic::runtime_panic;
+pub use rc::rc_underflow_check;
 
-    #[test]
-    fn test_panic_with_null_ptr() {
-        let result = panic::catch_unwind(|| {
-            cranelisp_panic(std::ptr::null(), 0);
-        });
-        assert!(result.is_err());
-        let err = result.unwrap_err();
-        let msg = err.downcast_ref::<String>().unwrap();
-        assert!(msg.contains("match exhaustiveness failure"));
-    }
+// String infrastructure (registered as runtime/alloc_string, runtime/string_read)
+pub use string::{heap_alloc_string, string_read};
 
-    #[test]
-    fn test_panic_with_empty_len() {
-        let result = panic::catch_unwind(|| {
-            let msg = "ignored";
-            cranelisp_panic(msg.as_ptr(), 0);
-        });
-        assert!(result.is_err());
-    }
+// Extern primitives (registered by spec name: str-concat, str-eq, etc.)
+pub use string::{str_concat, str_eq, str_len, string_identity};
+pub use primitives::int::{int_to_string, parse_int};
+pub use primitives::float::float_to_string;
+pub use primitives::bool::bool_to_string;
 
-    #[test]
-    fn test_panic_is_catchable() {
-        // Verify that catch_unwind works with extern "C-unwind"
-        let result = panic::catch_unwind(|| {
-            let msg = "catchable";
-            cranelisp_panic(msg.as_ptr(), msg.len());
-        });
-        assert!(result.is_err(), "panic should be catchable via catch_unwind");
-    }
-}
+// Re-export public Rust API for use by /qa integration tests and binary crate.
+pub use alloc::{
+    alloc_count, alloc_with_rc, bytes_allocated, bytes_current, bytes_peak, dealloc_count,
+    reset_counts,
+};
+#[cfg(debug_assertions)]
+pub use alloc::is_live;
+pub use string::{alloc_string, read_string_as_str, HeapString};
+pub use rc::is_rc_trace_enabled;

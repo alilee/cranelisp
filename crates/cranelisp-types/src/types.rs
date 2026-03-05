@@ -50,10 +50,19 @@ impl Type {
         }
     }
 
-    /// Returns true if this type may require heap allocation at runtime.
-    /// For authoritative classification, use HeapCategory::classify().
-    pub fn is_heap(&self) -> bool {
-        matches!(self, Type::String | Type::ADT(_, _) | Type::Fn(_, _))
+    /// Returns true if this type contains any unresolved type variable (`Type::Var`).
+    /// Used in `debug_assert!` to verify all types are fully resolved before codegen.
+    pub fn contains_var(&self) -> bool {
+        match self {
+            Type::Var(_) => true,
+            Type::Fn(params, ret) => {
+                params.iter().any(|p| p.contains_var()) || ret.contains_var()
+            }
+            Type::ADT(_, args) | Type::TyConApp(_, args) => {
+                args.iter().any(|a| a.contains_var())
+            }
+            Type::Int | Type::Bool | Type::String | Type::Float => false,
+        }
     }
 }
 
@@ -223,6 +232,37 @@ mod tests {
         let ty = Type::Fn(vec![Type::Int], Box::new(Type::Bool));
         let fv = free_vars(&ty);
         assert!(fv.is_empty());
+    }
+
+    #[test]
+    fn test_contains_var_primitive() {
+        assert!(!Type::Int.contains_var());
+        assert!(!Type::Bool.contains_var());
+        assert!(!Type::String.contains_var());
+        assert!(!Type::Float.contains_var());
+    }
+
+    #[test]
+    fn test_contains_var_direct() {
+        assert!(Type::Var(0).contains_var());
+    }
+
+    #[test]
+    fn test_contains_var_nested_fn() {
+        let ty = Type::Fn(vec![Type::Int], Box::new(Type::Var(0)));
+        assert!(ty.contains_var());
+
+        let ty2 = Type::Fn(vec![Type::Int], Box::new(Type::Bool));
+        assert!(!ty2.contains_var());
+    }
+
+    #[test]
+    fn test_contains_var_nested_adt() {
+        let ty = Type::ADT(TypeName::from("Option"), vec![Type::Var(0)]);
+        assert!(ty.contains_var());
+
+        let ty2 = Type::ADT(TypeName::from("Option"), vec![Type::Int]);
+        assert!(!ty2.contains_var());
     }
 
     #[test]

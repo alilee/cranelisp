@@ -1,11 +1,31 @@
 # design/
 
-Architecture and implementation design documents for the Cranelisp reimplementation. Owned by the `/arch` skill.
+Architecture and implementation design documents for the Cranelisp reimplementation.
 
-## Files
+## Structure
 
-- `reimplementation.md` — Full reimplementation strategy: skill definitions, ring model, phase sequence, risk analysis, success criteria. **Start here.**
-- `arch/` — Architecture deliverables from the `/arch` skill
+Each compiler skill owns a subdirectory for its solution design:
+
+| Directory | Owner | Content |
+|---|---|---|
+| `arch/` | `/arch` | Architecture: crate DAG, boundary types, roadmap, design-space analysis |
+| `frontend/` | `/frontend` | Reader, macro expander, AST builder design |
+| `typecheck/` | `/typecheck` | Inference engine, traits, monomorphisation design |
+| `backend/` | `/backend` | Cranelift codegen, heap/RC, closure/ADT compilation design |
+| `platform/` | `/platform` | Allocator, RC primitives, string runtime, platform abstraction design |
+| `review/` | `/review` | Checklists, per-ring review reports |
+
+Top-level files:
+- `reimplementation.md` — Full reimplementation strategy. **Start here.**
+
+## Design Doc Expectations
+
+Every compiler skill MUST maintain design documents in its subdirectory. These describe *how* the skill solves problems — algorithms, data structures, internal architecture, and trade-offs. They are distinct from:
+- `design/arch/interfaces.md` — boundary contracts (what goes in and out)
+- `spec/` — language definition (what behaviour is correct)
+- `sketch/docs/` — prototype rationale (how the prototype did it)
+
+Design docs evolve with the implementation: sketched before coding, refined during, updated when designs change. A design doc should be created or updated as part of every implementation task. See each subdirectory's `CLAUDE.md` for specific guidance.
 
 ## design/arch/ (owned by /arch)
 

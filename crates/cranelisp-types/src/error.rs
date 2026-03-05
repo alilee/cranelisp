@@ -74,9 +74,24 @@ impl std::fmt::Display for CranelispError {
 
 impl std::error::Error for CranelispError {}
 
+/// Classification of non-fatal diagnostics.
+/// Enables filtering, counting by category, and future `-Werror=<kind>` support.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum WarningKind {
+    /// A binding is defined but never referenced.
+    UnusedBinding,
+    /// A match arm can never be reached (dominated by earlier patterns).
+    UnreachableArm,
+    /// A binding shadows an existing binding in an outer scope.
+    ShadowedName,
+    /// A warning that does not fit a structured category.
+    Other,
+}
+
 /// Non-fatal diagnostic accumulated during compilation.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Warning {
+    pub kind: WarningKind,
     pub message: String,
     pub span: Span,
 }

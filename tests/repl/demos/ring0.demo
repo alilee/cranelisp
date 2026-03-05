@@ -1,0 +1,42 @@
+; Cranelisp Ring 0 — Core Language
+; Arithmetic, booleans, functions, recursion
+
+; === Arithmetic ===
+
+(add-i64 2 3)
+(sub-i64 10 4)
+(mul-i64 6 7)
+
+; === Boolean logic ===
+
+(eq-i64 3 3)
+(lt-i64 2 5)
+(not true)
+
+; === Let bindings ===
+
+(let [x 10] (let [y 20] (add-i64 x y)))
+
+; === Defining functions ===
+
+(defn double [x] (mul-i64 x 2))
+(double 21)
+
+(defn square [n] (mul-i64 n n))
+(square 8)
+
+; === Conditional expressions ===
+
+(defn abs [n] (if (lt-i64 n 0) (sub-i64 0 n) n))
+(abs -42)
+(abs 7)
+
+; === Recursion ===
+
+(defn factorial [n] (if (eq-i64 n 0) 1 (mul-i64 n (factorial (sub-i64 n 1)))))
+(factorial 10)
+
+; === Composing it all ===
+
+(defn sum-to [n] (if (eq-i64 n 0) 0 (add-i64 n (sum-to (sub-i64 n 1)))))
+(sum-to 100)

@@ -7,9 +7,8 @@ use cranelisp_types::{Defn, Sexp};
 /// Named constant for GOT table size.
 pub const GOT_TABLE_SIZE: usize = 1024;
 
-/// Named constant for nullary constructor tag threshold.
-/// Values below this are nullary tags; values above are heap pointers.
-pub const NULLARY_TAG_THRESHOLD: usize = 1024;
+// M-1 resolved: NULLARY_TAG_THRESHOLD imported from cranelisp-types (single source of truth).
+pub use cranelisp_types::NULLARY_TAG_THRESHOLD;
 
 /// Codegen artifacts for a single definition.
 #[derive(Debug, Clone, Default)]

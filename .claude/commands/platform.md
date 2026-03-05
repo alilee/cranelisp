@@ -12,6 +12,7 @@ Build platform DLLs that extend the language with IO capabilities. Validate the 
 - `cranelisp-runtime/` — Rust-side runtime primitives (new; to be created)
 - `platforms/stdio/` — reference stdio platform (new; to be created)
 - `platforms/test-capture/` — test harness platform (new; to be created)
+- `design/platform/` — solution design documents (allocator, RC primitives, string runtime, platform abstraction)
 
 ## Interfaces
 

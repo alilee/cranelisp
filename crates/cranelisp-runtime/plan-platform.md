@@ -2,6 +2,8 @@
 
 Survey of the prototype platform and runtime crates, with a reimplementation plan organized by ring. This document inventories the C-ABI contract, maps crate responsibilities to the 7-crate DAG, proposes a panic handler redesign, and identifies per-ring deliverables.
 
+> **Naming convention**: All names in this document follow the reimplementation naming convention defined in `src/CLAUDE.md` §"JIT Symbol Names". Runtime infrastructure uses `runtime/name` JIT names and unprefixed Rust function names. Extern primitives use spec names (kebab-case) for JIT names. The sketch prototype used a `cranelisp_` prefix on all names; that prefix is not carried forward. Where sketch names appear (e.g., in §3.1 quoting prototype code), they are clearly marked as historical.
+
 ## Source Material
 
 Prototype crates surveyed:
@@ -31,46 +33,45 @@ Every function below uses `extern "C"` with all-`i64` parameters and return valu
 
 #### Allocation and RC (intrinsics.rs)
 
-| Export Name | Signature | Ring | Purpose |
-|---|---|---|---|
-| `cranelisp_alloc` | `(size: i64) -> i64` | 1 | Allocate `size` bytes with RC header (total_size + rc=1), return payload pointer |
-| `cranelisp_free` | `(ptr: i64) -> i64` | 1 | Free heap object (reads total_size from `ptr-16`, deallocates) |
-| `cranelisp_dec_guarded` | `(val: i64, guard: i64, drop_fn_ptr: i64) -> i64` | 1 | Guarded RC decrement: skip if val==guard or val<1024; call drop_fn on rc->0 |
-| `cranelisp_dec_closure_guarded` | `(val: i64, guard: i64) -> i64` | 1 | Closure-specific guarded dec: loads drop_ptr from closure[1] |
-| `cranelisp_dec_mixed_guarded` | `(val: i64, guard: i64, drop_fn_ptr: i64) -> i64` | 1 | Mixed (nullary/data) ADT guarded dec: skip if val<1024 (nullary tag) |
-| `cranelisp_rc_underflow_check` | `(val: i64, old_rc: i64) -> i64` | 1 | Debug-mode RC underflow assertion + trace logging |
+| Rust Name | JIT Name | Signature | Ring | Purpose |
+|---|---|---|---|---|
+| `heap_alloc` | `runtime/alloc` | `(size: i64) -> i64` | 1 | Allocate `size` bytes with RC header (alloc_size + rc=1), return base pointer |
+| `heap_dealloc` | `runtime/dealloc` | `(ptr: i64) -> i64` | 1 | Free heap object (reads alloc_size from offset 0, deallocates) |
+| `rc_underflow_check` | `runtime/rc_underflow_check` | `(val: i64, old_rc: i64) -> i64` | 1 | Debug-mode RC underflow assertion + trace logging |
+
+> **Note**: The sketch used `cranelisp_dec_guarded`, `cranelisp_dec_closure_guarded`, and `cranelisp_dec_mixed_guarded` as extern RC decrement functions. The reimplementation emits RC inc/dec **inline** as Cranelift `atomic_rmw` instructions (see `design/arch/interfaces.md` §"Reference Counting Operations"). These extern functions are eliminated.
 
 #### Panic Handler (intrinsics.rs)
 
-| Export Name | Signature | Ring | Purpose |
-|---|---|---|---|
-| `cranelisp_panic` | `(msg_ptr: i64) -> i64` | 0 | Runtime panic (match failure, etc.) -- currently calls `process::exit(1)` |
+| Rust Name | JIT Name | Signature | Ring | Purpose |
+|---|---|---|---|---|
+| `runtime_panic` | `runtime/panic` | `(msg_ptr: i64) -> i64` | 0 | Runtime panic (match failure, etc.) — redesigned from sketch's `process::exit(1)` |
 
 #### IO Trampoline (intrinsics.rs)
 
-| Export Name | Signature | Ring | Purpose |
-|---|---|---|---|
-| `cranelisp_run_io` | `(io_ptr: i64) -> i64` | 4 | Force IO task tree: trampoline loop over Pure/Effect/Bind/Par |
+| Rust Name | JIT Name | Signature | Ring | Purpose |
+|---|---|---|---|---|
+| `run_io` | `runtime/run_io` | `(io_ptr: i64) -> i64` | 4 | Force IO task tree: trampoline loop over Pure/Effect/Bind/Par |
 
 #### Parallel Evaluation (intrinsics.rs)
 
-| Export Name | Signature | Ring | Purpose |
-|---|---|---|---|
-| `cranelisp_par_eval` | `(thunks_ptr: i64, count: i64) -> i64` | 4 | Evaluate N thunks in parallel (rayon), return results array |
-| `cranelisp_ivar_create` | `(thunk: i64) -> i64` | 4 | Allocate IVar cell (state=PENDING, stores thunk closure) |
-| `cranelisp_ivar_spark` | `(ivar: i64) -> i64` | 4 | Submit IVar to rayon thread pool for evaluation |
-| `cranelisp_ivar_force` | `(ivar: i64) -> i64` | 4 | Force IVar: evaluate if PENDING, spin-wait if EVALUATING, return if RESOLVED |
+| Rust Name | JIT Name | Signature | Ring | Purpose |
+|---|---|---|---|---|
+| `par_eval` | `runtime/par_eval` | `(thunks_ptr: i64, count: i64) -> i64` | 4 | Evaluate N thunks in parallel (rayon), return results array |
+| `ivar_create` | `runtime/ivar_create` | `(thunk: i64) -> i64` | 4 | Allocate IVar cell (state=PENDING, stores thunk closure) |
+| `ivar_spark` | `runtime/ivar_spark` | `(ivar: i64) -> i64` | 4 | Submit IVar to rayon thread pool for evaluation |
+| `ivar_force` | `runtime/ivar_force` | `(ivar: i64) -> i64` | 4 | Force IVar: evaluate if PENDING, spin-wait if EVALUATING, return if RESOLVED |
 
 #### Trace Runtime (trace.rs)
 
-| Export Name | Signature | Ring | Purpose |
-|---|---|---|---|
-| `cranelisp_trace_swap_got` | `(got_base, n_slots, slots_ptr, wrappers_ptr) -> i64` | 4 | Save GOT, install trace wrappers, claim thread ownership |
-| `cranelisp_trace_restore_got` | `(got_base, saved_got) -> ()` | 4 | Restore GOT from saved copy |
-| `cranelisp_trace_enter` | `(name_ptr, name_len, params_count, params_array_ptr) -> ()` | 4 | Push trace frame at function entry |
-| `cranelisp_trace_exit` | `(result, result_str_ptr) -> i64` | 4 | Pop trace frame at function exit, build TraceCall ADT |
-| `cranelisp_collect_trace` | `() -> i64` | 4 | Collect root frame, release thread ownership, return Trace ADT |
-| `cranelisp_trace_first_child_nanos` | `(trace_adt: i64) -> i64` | 4 | Extract nanos from first child (for run-tests timing) |
+| Rust Name | JIT Name | Signature | Ring | Purpose |
+|---|---|---|---|---|
+| `trace_swap_got` | `runtime/trace_swap_got` | `(got_base, n_slots, slots_ptr, wrappers_ptr) -> i64` | 4 | Save GOT, install trace wrappers, claim thread ownership |
+| `trace_restore_got` | `runtime/trace_restore_got` | `(got_base, saved_got) -> ()` | 4 | Restore GOT from saved copy |
+| `trace_enter` | `runtime/trace_enter` | `(name_ptr, name_len, params_count, params_array_ptr) -> ()` | 4 | Push trace frame at function entry |
+| `trace_exit` | `runtime/trace_exit` | `(result, result_str_ptr) -> i64` | 4 | Pop trace frame at function exit, build TraceCall ADT |
+| `collect_trace` | `runtime/collect_trace` | `() -> i64` | 4 | Collect root frame, release thread ownership, return Trace ADT |
+| `trace_first_child_nanos` | `runtime/trace_first_child_nanos` | `(trace_adt: i64) -> i64` | 4 | Extract nanos from first child (for run-tests timing) |
 
 #### Sexp Marshalling (marshal.rs)
 
@@ -83,33 +84,33 @@ Every function below uses `extern "C"` with all-`i64` parameters and return valu
 
 **Int (primitives/int.rs)**
 
-| Export Name | Signature | Ring | Purpose |
-|---|---|---|---|
-| `int-to-string` | `(value: i64) -> i64` | 1 | Int to string representation |
-| `cranelisp_op_add` | `(a, b) -> i64` | 0 | `+` as first-class value (checked) |
-| `cranelisp_op_sub` | `(a, b) -> i64` | 0 | `-` as first-class value (checked) |
-| `cranelisp_op_mul` | `(a, b) -> i64` | 0 | `*` as first-class value (checked) |
-| `cranelisp_op_div` | `(a, b) -> i64` | 0 | `/` as first-class value (checked, div-by-zero guard) |
-| `cranelisp_op_eq` | `(a, b) -> i64` | 0 | `=` as first-class value |
-| `cranelisp_op_lt` | `(a, b) -> i64` | 0 | `<` as first-class value |
-| `cranelisp_op_gt` | `(a, b) -> i64` | 0 | `>` as first-class value |
-| `cranelisp_op_le` | `(a, b) -> i64` | 0 | `<=` as first-class value |
-| `cranelisp_op_ge` | `(a, b) -> i64` | 0 | `>=` as first-class value |
+| Rust Name | JIT Name | Signature | Ring | Purpose |
+|---|---|---|---|---|
+| `int_to_string` | `int-to-string` | `(value: i64) -> i64` | 1 | Int to string representation |
+| `op_add` | `runtime/op_add` | `(a, b) -> i64` | 0 | `+` as first-class value (wrapping per spec) |
+| `op_sub` | `runtime/op_sub` | `(a, b) -> i64` | 0 | `-` as first-class value (wrapping per spec) |
+| `op_mul` | `runtime/op_mul` | `(a, b) -> i64` | 0 | `*` as first-class value (wrapping per spec) |
+| `op_div` | `runtime/op_div` | `(a, b) -> i64` | 0 | `/` as first-class value (div-by-zero guard) |
+| `op_eq` | `runtime/op_eq` | `(a, b) -> i64` | 0 | `=` as first-class value |
+| `op_lt` | `runtime/op_lt` | `(a, b) -> i64` | 0 | `<` as first-class value |
+| `op_gt` | `runtime/op_gt` | `(a, b) -> i64` | 0 | `>` as first-class value |
+| `op_le` | `runtime/op_le` | `(a, b) -> i64` | 0 | `<=` as first-class value |
+| `op_ge` | `runtime/op_ge` | `(a, b) -> i64` | 0 | `>=` as first-class value |
 
 **Float (primitives/float.rs)**
 
-| Export Name | Signature | Ring | Purpose |
-|---|---|---|---|
-| `float-to-string` | `(value: i64) -> i64` | 1 | Float (bitcast i64) to string representation |
-| `cranelisp_op_fadd` | `(a, b) -> i64` | 0 | Float `+` |
-| `cranelisp_op_fsub` | `(a, b) -> i64` | 0 | Float `-` |
-| `cranelisp_op_fmul` | `(a, b) -> i64` | 0 | Float `*` |
-| `cranelisp_op_fdiv` | `(a, b) -> i64` | 0 | Float `/` |
-| `cranelisp_op_feq` | `(a, b) -> i64` | 0 | Float `=` |
-| `cranelisp_op_flt` | `(a, b) -> i64` | 0 | Float `<` |
-| `cranelisp_op_fgt` | `(a, b) -> i64` | 0 | Float `>` |
-| `cranelisp_op_fle` | `(a, b) -> i64` | 0 | Float `<=` |
-| `cranelisp_op_fge` | `(a, b) -> i64` | 0 | Float `>=` |
+| Rust Name | JIT Name | Signature | Ring | Purpose |
+|---|---|---|---|---|
+| `float_to_string` | `float-to-string` | `(value: i64) -> i64` | 1 | Float (bitcast i64) to string representation |
+| `op_fadd` | `runtime/op_fadd` | `(a, b) -> i64` | 0 | Float `+` |
+| `op_fsub` | `runtime/op_fsub` | `(a, b) -> i64` | 0 | Float `-` |
+| `op_fmul` | `runtime/op_fmul` | `(a, b) -> i64` | 0 | Float `*` |
+| `op_fdiv` | `runtime/op_fdiv` | `(a, b) -> i64` | 0 | Float `/` |
+| `op_feq` | `runtime/op_feq` | `(a, b) -> i64` | 0 | Float `=` |
+| `op_flt` | `runtime/op_flt` | `(a, b) -> i64` | 0 | Float `<` |
+| `op_fgt` | `runtime/op_fgt` | `(a, b) -> i64` | 0 | Float `>` |
+| `op_fle` | `runtime/op_fle` | `(a, b) -> i64` | 0 | Float `<=` |
+| `op_fge` | `runtime/op_fge` | `(a, b) -> i64` | 0 | Float `>=` |
 
 **Bool (primitives/bool.rs)**
 
@@ -177,7 +178,7 @@ Every function below uses `extern "C"` with all-`i64` parameters and return valu
 - `Commutative = 1` -- freely reorderable, no shared state
 - `ResourceSerial = 2` -- parallel unless same resource token
 
-**DLL Entry Point**: Every DLL exports exactly one function:
+**DLL Entry Point**: Every DLL exports exactly one function (the `cranelisp_` prefix is retained here as it is the linker symbol name for DLL discovery, not a JIT name):
 ```c
 extern "C" PlatformManifest cranelisp_platform_manifest(const HostCallbacks* callbacks);
 ```
@@ -190,8 +191,8 @@ extern "C" PlatformManifest cranelisp_platform_manifest(const HostCallbacks* cal
 
 | CL Name | JIT Name | Signature | Scheduling |
 |---|---|---|---|
-| `print` | `cranelisp_print` | `(CLString) -> CLIO<CLInt>` | Sequential |
-| `read-line` | `cranelisp_read_line` | `() -> CLIO<CLString>` | Sequential |
+| `print` | `stdio/print` | `(CLString) -> CLIO<CLInt>` | Sequential |
+| `read-line` | `stdio/read-line` | `() -> CLIO<CLString>` | Sequential |
 
 **test-capture** (2 platform functions + 4 test utilities):
 
@@ -236,12 +237,12 @@ All values are i64 at the ABI boundary:
 
 **`cranelisp-runtime`**: Minimal deliverables:
 
-1. **`cranelisp_panic`** -- The panic handler is needed from Ring 0 for match exhaustiveness failures. However, it must be redesigned (see Section 3). The Ring 0 version takes a message string pointer and panics -- but instead of `process::exit(1)`, it should `panic!()` or use a recoverable mechanism.
+1. **`runtime_panic`** (JIT: `runtime/panic`) -- The panic handler is needed from Ring 0 for match exhaustiveness failures. However, it must be redesigned (see Section 3). The Ring 0 version takes a message string pointer and panics -- but instead of `process::exit(1)`, it should `panic!()` or use a recoverable mechanism.
 
 <!-- FIXME(/platform): Operator wrappers may not be needed in Ring 0. The backend plan (Section 4.8) says Ring 0 does not support function values ("function values require closures -- not yet supported"). If operators-as-values like (let [f +] (f 1 2)) are not Ring 0, defer the 18 operator wrappers to Ring 1 when closures enable first-class function values. If they ARE Ring 0, the backend plan needs updating to support this pattern. -->
 2. **Operator wrappers** -- When operators are used as first-class values (e.g., `(let [f +] (f 1 2))`), the backend emits a call to an extern function. Ring 0 needs the 18 operator wrappers (9 int, 9 float) from `primitives/int.rs` and `primitives/float.rs`.
 
-3. **Allocation stub** -- `cranelisp_alloc` as a stub that panics ("heap not available in Ring 0") if called. This prevents accidental heap allocation in Ring 0 while allowing the symbol to be declared in the JIT.
+3. **Allocation stub** -- `heap_alloc` (JIT: `runtime/alloc`) as a stub that panics ("heap not available in Ring 0") if called. This prevents accidental heap allocation in Ring 0 while allowing the symbol to be declared in the JIT.
 
 **Decision**: The prototype places operator wrappers in `cranelisp-runtime`. In the reimplementation, these could live in `cranelisp-runtime` as well, since they are `extern "C"` functions that the JIT calls. They have no dependency on the heap.
 
@@ -251,15 +252,15 @@ All values are i64 at the ABI boundary:
 
 **`cranelisp-runtime`**: Primary deliverables:
 
-1. **Allocator** (`cranelisp_alloc`, `cranelisp_free`)
-   - Heap layout: `[total_size: i64][rc: i64][payload...]`
+1. **Allocator** (`heap_alloc` / `heap_dealloc`, JIT: `runtime/alloc` / `runtime/dealloc`)
+   - Heap layout: `[alloc_size: i64][rc: i64][payload...]` (base-pointer convention)
    - Allocation counter, deallocation counter, bytes tracking, live-alloc set (debug)
    - `alloc_with_rc(size)` -- Rust-callable helper (shared by runtime and platform)
 
-2. **RC primitives** (`cranelisp_dec_guarded`, `cranelisp_dec_closure_guarded`, `cranelisp_dec_mixed_guarded`, `cranelisp_rc_underflow_check`)
-   - Guarded decrement with nullary tag check (val < 1024)
-   - Drop function dispatch (type-specific or closure[1])
-   - Atomic RC operations (Relaxed for inc, Release for dec, Acquire fence before free)
+2. **RC infrastructure** (`rc_underflow_check`, JIT: `runtime/rc_underflow_check`)
+   - RC inc/dec emitted inline as Cranelift `atomic_rmw` instructions (not extern functions)
+   - Runtime provides trace logging and underflow check diagnostic only
+   - Atomic ordering: Relaxed for inc, Release for dec, Acquire fence before free
 
 3. **String primitives** (`str-concat`, `str-eq`, `int-to-string`, `float-to-string`, `bool-to-string`, `string-identity`, `parse-int`)
    - String layout: `[len: i64][bytes: u8...]`
@@ -310,10 +311,10 @@ All values are i64 at the ABI boundary:
 
 **`cranelisp-runtime`**: Full runtime:
 
-1. **IO trampoline** (`cranelisp_run_io`) -- iterative Pure/Effect/Bind/Par loop
+1. **IO trampoline** (`run_io`, JIT: `runtime/run_io`) -- iterative Pure/Effect/Bind/Par loop
 2. **Par node handling** -- rayon-based parallel IO branch execution
-3. **Lenient evaluation** (`cranelisp_ivar_create`, `cranelisp_ivar_spark`, `cranelisp_ivar_force`) -- IVar write-once cells, rayon sparking, CAS-based evaluation
-4. **Execution tracing** (`cranelisp_trace_swap_got`, `cranelisp_trace_restore_got`, `cranelisp_trace_enter`, `cranelisp_trace_exit`, `cranelisp_collect_trace`, `cranelisp_trace_first_child_nanos`) -- GOT-swap based tracing with thread ownership
+3. **Lenient evaluation** (`ivar_create`, `ivar_spark`, `ivar_force`, JIT: `runtime/ivar_*`) -- IVar write-once cells, rayon sparking, CAS-based evaluation
+4. **Execution tracing** (`trace_swap_got`, `trace_restore_got`, `trace_enter`, `trace_exit`, `collect_trace`, `trace_first_child_nanos`, JIT: `runtime/trace_*` / `runtime/collect_trace`) -- GOT-swap based tracing with thread ownership
 
 **`platforms/test-capture/`**: Test harness DLL:
 - Same `print`/`read-line` signatures as stdio
@@ -326,11 +327,14 @@ All values are i64 at the ABI boundary:
 
 ## 3. Panic Handler Redesign
 
-### 3.1 Prototype Behavior
+### 3.1 Prototype Behavior (Historical)
 
-The prototype's `cranelisp_panic` calls `std::process::exit(1)`:
+The sketch used `cranelisp_panic` (reimplementation: `runtime_panic`, JIT name: `runtime/panic`) which called `std::process::exit(1)`:
 
 ```rust
+// HISTORICAL — sketch prototype code, not the reimplementation convention.
+// Sketch name: cranelisp_panic
+// Reimplementation: runtime_panic (Rust) / runtime/panic (JIT)
 #[unsafe(export_name = "cranelisp_panic")]
 pub extern "C" fn panic(msg_ptr: i64) -> i64 {
     // ... extract message from heap string ...
@@ -339,7 +343,7 @@ pub extern "C" fn panic(msg_ptr: i64) -> i64 {
 }
 ```
 
-The prototype's checked arithmetic operators (`cranelisp_op_add`, etc.) also call `process::exit(1)` on overflow/divide-by-zero. Vec bounds checks (`vec-get`, `vec-set`) do the same.
+The sketch's checked arithmetic operators (e.g., `cranelisp_op_add`; reimplementation: `op_add`, JIT name: `runtime/op_add`) also called `process::exit(1)` on overflow/divide-by-zero. Vec bounds checks (`vec-get`, `vec-set`) did the same.
 
 ### 3.2 Why It Needs Redesign
 
@@ -360,8 +364,8 @@ Audit finding (codegen.md, HIGH-5): "Any panic in production generates an unreco
 **Ring 0 implementation**:
 
 ```rust
-#[unsafe(export_name = "cranelisp_panic")]
-pub extern "C" fn cranelisp_panic(msg_ptr: i64) -> i64 {
+#[unsafe(no_mangle)]
+pub extern "C" fn runtime_panic(msg_ptr: i64) -> i64 {
     let msg = extract_string(msg_ptr);
     panic!("cranelisp runtime error: {}", msg);
 }
@@ -385,14 +389,14 @@ match result {
 - Structured error with message (and eventually span) propagated to the user
 
 **Concerns and mitigations**:
-- **Unwind safety**: JIT-compiled code is `extern "C"`, and unwinding through `extern "C"` frames is UB in Rust. The panic must be caught at the boundary between Rust and JIT code. Since `cranelisp_panic` is a Rust function called by JIT code, the panic originates in Rust, unwinds through Rust frames back to the `catch_unwind` boundary. JIT frames are not on the call stack at this point -- the JIT function called `cranelisp_panic` via an extern "C" function pointer, so the Rust runtime owns the panic propagation.
-  - **IMPORTANT**: If the JIT code calls `cranelisp_panic` from within a deeply nested JIT call chain (e.g., JIT -> Rust runtime -> JIT -> Rust runtime), the intermediate JIT frames must not be on the unwind path. The `cranelisp_panic` function should use `longjmp`-style recovery rather than Rust panics for this case. A simpler alternative: register a thread-local "panic flag" that the JIT checks on return from extern calls, and propagate errors cooperatively.
+- **Unwind safety**: JIT-compiled code is `extern "C"`, and unwinding through `extern "C"` frames is UB in Rust. The panic must be caught at the boundary between Rust and JIT code. Since `runtime_panic` is a Rust function called by JIT code, the panic originates in Rust, unwinds through Rust frames back to the `catch_unwind` boundary. JIT frames are not on the call stack at this point -- the JIT function called `runtime_panic` via an extern "C" function pointer, so the Rust runtime owns the panic propagation.
+  - **IMPORTANT**: If the JIT code calls `runtime_panic` from within a deeply nested JIT call chain (e.g., JIT -> Rust runtime -> JIT -> Rust runtime), the intermediate JIT frames must not be on the unwind path. The `runtime_panic` function should use `longjmp`-style recovery rather than Rust panics for this case. A simpler alternative: register a thread-local "panic flag" that the JIT checks on return from extern calls, and propagate errors cooperatively.
 - **RC cleanup**: A panic during execution leaks heap allocations. This is acceptable for the REPL (session state is preserved) and tests (allocations are short-lived). For batch mode, the process is about to exit anyway.
 - **Operator overflow**: The spec says "integer overflow: silent wraparound (two's complement)". The prototype's checked arithmetic with `process::exit` on overflow contradicts the spec. The reimplementation should follow the spec: wrapping arithmetic for `+`, `-`, `*`, and a structured error for division by zero.
 
 **Ring-by-ring rollout**:
 <!-- FIXME(/platform): Commit to a specific panic recovery mechanism for Ring 0 before implementation begins. The current text leaves the deeply-nested case unresolved (panic!() vs longjmp vs thread-local flag). For Ring 0 (no nested JIT->Rust->JIT calls, no closures calling runtime functions), panic!() + catch_unwind is sound. State this explicitly and add a forward-reference that Ring 1+ (closures, callbacks) requires the thread-local error flag approach. -->
-- **Ring 0**: `cranelisp_panic` uses Rust `panic!()`. Binary crate uses `catch_unwind`. Operator wrappers use wrapping arithmetic per spec (no panic on overflow). Division by zero returns a `CranelispError`.
+- **Ring 0**: `runtime_panic` uses Rust `panic!()`. Binary crate uses `catch_unwind`. Operator wrappers use wrapping arithmetic per spec (no panic on overflow). Division by zero returns a `CranelispError`.
 - **Ring 1**: Vec bounds errors use the same mechanism. RC underflow check remains `debug_assert!` only.
 - **Ring 4**: IO trampoline errors propagate through the continuation stack.
 
@@ -465,7 +469,7 @@ cargo build -p cranelisp-stdio -p cranelisp-test-capture
 
 The reimplementation should follow the same pattern but with platform crates outside the main workspace (to avoid cdylib targets polluting the workspace build). A `justfile` recipe builds them separately.
 
-DLL search paths (from prototype):
+DLL search paths (from prototype; the `cranelisp_` prefix here is the Cargo library naming convention, not a JIT symbol name):
 1. `./platforms/<name>.<ext>`
 2. `./target/debug/libcranelisp_<name>.<ext>` (Cargo dev convenience)
 3. `./target/release/libcranelisp_<name>.<ext>`
@@ -532,16 +536,16 @@ Where `<ext>` is `.dylib` (macOS), `.so` (Linux), `.dll` (Windows).
 
 | Ring | cranelisp-platform | cranelisp-runtime | platforms/ |
 |---|---|---|---|
-| 0 | Stub (exists) | `cranelisp_panic` (redesigned), 18 operator wrappers, `cranelisp_alloc` stub | -- |
-| 1 | Full C-ABI contract, safe wrappers, `declare_platform!` macro | `cranelisp_alloc`/`cranelisp_free`, RC primitives, string primitives, vec primitives | -- |
+| 0 | Stub (exists) | `runtime_panic` (JIT: `runtime/panic`, redesigned), 18 operator wrappers, `heap_alloc` stub (JIT: `runtime/alloc`) | -- |
+| 1 | Full C-ABI contract, safe wrappers, `declare_platform!` macro | `heap_alloc`/`heap_dealloc` (JIT: `runtime/alloc`/`runtime/dealloc`), RC infrastructure, string primitives, vec primitives | -- |
 | 2 | -- (finalized) | -- (stable) | `platforms/stdio/` |
 | 3 | -- | `sconcat`, `quote-sexp`, marshal helpers | -- |
-| 4 | -- | IO trampoline, IVar, par_eval, trace runtime | `platforms/test-capture/` |
+| 4 | -- | IO trampoline, IVar, `par_eval`, trace runtime | `platforms/test-capture/` |
 
 ---
 
 ## Next skills
 
-- `/backend` -- Ring 0 codegen needs `cranelisp_panic` and operator wrapper symbols declared in the JIT; coordinate on the extern function registration pattern
+- `/backend` -- Ring 0 codegen needs `runtime/panic` (Rust: `runtime_panic`) and operator wrapper symbols declared in the JIT; coordinate on the extern function registration pattern
 - `/qa` -- Integration tests need the redesigned panic handler to be catchable; coordinate on `catch_unwind` boundary placement
 - `/arch` -- Review the panic handler redesign (crosses crate boundaries: runtime -> backend -> binary) and the decision to feature-gate rayon

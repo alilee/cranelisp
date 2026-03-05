@@ -16,7 +16,8 @@ use cranelisp_backend::got::ModuleCodegenState;
 use cranelisp_backend::jit::Jit;
 use cranelisp_typecheck::TypeChecker;
 use cranelisp_types::{
-    CompileMode, CranelispError, NoOpExpander, ReplCheckResult, ReplInput, Symbol, Type, Warning,
+    CompileMode, CranelispError, NoOpExpander, ReplCheckResult, ReplInput, Symbol, Type,
+    TypeDefInfo, TypeName, Warning, NULLARY_TAG_THRESHOLD,
 };
 
 /// Result of evaluating one REPL input.
@@ -40,6 +41,8 @@ pub struct ReplSession {
     /// JIT instances that must stay alive (their code is referenced via GOT).
     /// Each defn compilation creates a new JIT; we keep them alive here.
     jit_modules: Vec<Jit>,
+    /// Accumulated type definitions from all inputs (for ADT value display).
+    type_defs: HashMap<TypeName, TypeDefInfo>,
 }
 
 impl ReplSession {
@@ -49,7 +52,13 @@ impl ReplSession {
             tc: TypeChecker::new(),
             got_state: ModuleCodegenState::new(),
             jit_modules: Vec::new(),
+            type_defs: HashMap::new(),
         }
+    }
+
+    /// Get the accumulated type definitions for value display.
+    pub fn type_defs(&self) -> &HashMap<TypeName, TypeDefInfo> {
+        &self.type_defs
     }
 
     /// Evaluate a single source input, returning the result.
@@ -123,6 +132,9 @@ impl ReplSession {
                 let check = self.build_check_for_backend(check_result);
                 let mut jit = Jit::new()?;
 
+                // Declare runtime intrinsics (Ring 1 heap infrastructure).
+                jit.declare_intrinsics()?;
+
                 // Declare just this function.
                 let func_ids = jit.declare_functions(&[defn])?;
 
@@ -140,15 +152,25 @@ impl ReplSession {
 
                 let got_base = self.got_state.got_base_ptr() as i64;
 
+                // Build function arity map from existing GOT state + this defn.
+                let mut func_arities: HashMap<Symbol, usize> = HashMap::new();
+                for (name, dc) in &self.got_state.def_codegen {
+                    if let Some(pc) = dc.param_count {
+                        func_arities.insert(name.clone(), pc);
+                    }
+                }
+                func_arities.insert(defn.name.clone(), defn.params.len());
+
                 // Compile the function with awareness of existing GOT.
-                let _clif_ir = jit.compile_defn(
-                    defn,
+                let compile_ctx = jit.build_compile_context(
                     &check,
                     CompileMode::Interactive,
                     &func_ids,
+                    &func_arities,
                     Some(&got_slots),
                     Some(got_base),
-                )?;
+                );
+                let _clif_ir = jit.compile_defn(defn, compile_ctx)?;
 
                 // Finalize and get the code pointer.
                 let code_ptr = jit.finalize_and_get_ptr(&defn.name, defn.params.len())?;
@@ -182,6 +204,11 @@ impl ReplSession {
             }
 
             ReplInput::TypeDef { .. } => {
+                // Accumulate type definitions for ADT value display.
+                for (name, info) in &check_result.type_defs {
+                    self.type_defs.insert(name.clone(), info.clone());
+                }
+
                 // Type definitions don't produce a runtime value.
                 Ok(ReplResult {
                     value: 0,
@@ -231,14 +258,34 @@ impl Default for ReplSession {
     }
 }
 
-/// Format a result value for REPL display.
+/// Format a result value for REPL display (simple version, no ADT introspection).
 ///
 /// Format: `:Type value`
 /// - Bool: `true` / `false`
 /// - Float: reinterpret i64 bits as f64
 /// - Int: decimal integer
-/// - Other: decimal integer (fallback)
+/// - String: reads heap string content, displays as `:String "contents"`
+/// - Fn: displays as `:(Fn [...] ...) <closure>`
+/// - ADT without type_defs: `:TypeName tag` (fallback, no constructor name lookup)
+///
+/// For richer ADT display with constructor names and field values,
+/// use `format_result_value` which accepts `type_defs`.
 pub fn format_result(value: i64, ty: &Type) -> String {
+    format_result_value(value, ty, &HashMap::new())
+}
+
+/// Format a result value for REPL display with full type definition context.
+///
+/// When `type_defs` is provided, ADT values are displayed with constructor
+/// names and field values: `:(Option Int) (Some 42)`.
+///
+/// Strings are read from heap memory via `cranelisp_runtime::read_string_as_str`.
+/// Closures display as `:(Fn [...] ...) <closure>`.
+pub fn format_result_value(
+    value: i64,
+    ty: &Type,
+    type_defs: &HashMap<TypeName, TypeDefInfo>,
+) -> String {
     match ty {
         Type::Bool => {
             let display_val = if value != 0 { "true" } else { "false" };
@@ -249,7 +296,166 @@ pub fn format_result(value: i64, ty: &Type) -> String {
             format!(":Float {f}")
         }
         Type::Int => format!(":Int {value}"),
+        Type::String => format_string_value(value),
+        Type::Fn(params, ret) => {
+            format!(":(Fn {}) <closure>", format_fn_sig(params, ret))
+        }
+        Type::ADT(type_name, type_args) => {
+            format_adt_value(value, type_name, type_args, type_defs)
+        }
         other => format!(":{other} {value}"),
+    }
+}
+
+/// Format a String heap value as `:String "contents"`.
+fn format_string_value(value: i64) -> String {
+    if value == 0 || (value as usize) < NULLARY_TAG_THRESHOLD {
+        // Null or small value -- not a valid heap pointer.
+        return format!(":String <invalid:{value}>");
+    }
+    // SAFETY: value is a heap pointer to a valid HeapString (produced by JIT code).
+    let s = unsafe { cranelisp_runtime::read_string_as_str(value) };
+    format!(":String \"{s}\"")
+}
+
+/// Format a function type signature for display: `[Param1 Param2] ReturnType`.
+fn format_fn_sig(params: &[Type], ret: &Type) -> String {
+    let param_strs: Vec<String> = params.iter().map(|p| format!("{p}")).collect();
+    format!("[{}] {ret}", param_strs.join(" "))
+}
+
+/// Format an ADT value with constructor name lookup.
+///
+/// Nullary constructors (bare i64 tags) look up the constructor name from type_defs.
+/// Data constructors (heap pointers) read tag + fields from the heap.
+fn format_adt_value(
+    value: i64,
+    type_name: &TypeName,
+    type_args: &[Type],
+    type_defs: &HashMap<TypeName, TypeDefInfo>,
+) -> String {
+    let type_display = format_adt_type(type_name, type_args);
+
+    let Some(type_info) = type_defs.get(type_name) else {
+        // No type def available -- fallback to bare value display.
+        return format!(":{type_display} {value}");
+    };
+
+    // Determine if this is a nullary tag or a heap pointer.
+    if (value as usize) < NULLARY_TAG_THRESHOLD {
+        // Nullary constructor: value is the tag directly.
+        let tag = value as usize;
+        let ctor_name = find_constructor_by_tag(type_info, tag);
+        format!(":{type_display} {ctor_name}")
+    } else {
+        // Data constructor: read tag and fields from heap.
+        format_adt_heap_value(value, &type_display, type_info, type_defs)
+    }
+}
+
+/// Format the type portion of an ADT display.
+/// Simple types: `Color`. Parameterized: `(Option Int)`.
+fn format_adt_type(type_name: &TypeName, type_args: &[Type]) -> String {
+    if type_args.is_empty() {
+        format!("{type_name}")
+    } else {
+        let arg_strs: Vec<String> = type_args.iter().map(|a| format!("{a}")).collect();
+        format!("({type_name} {})", arg_strs.join(" "))
+    }
+}
+
+/// Find a constructor name by tag, or return a fallback string.
+fn find_constructor_by_tag(type_info: &TypeDefInfo, tag: usize) -> String {
+    type_info
+        .constructors
+        .iter()
+        .find(|c| c.tag == tag)
+        .map(|c| format!("{}", c.name))
+        .unwrap_or_else(|| format!("<tag:{tag}>"))
+}
+
+/// Format a heap-allocated ADT value (data constructor with fields).
+///
+/// Reads tag from HeapAdt::TAG_OFFSET (16), fields from HeapAdt::field_offset(i).
+/// Recursively formats field values using their declared types.
+fn format_adt_heap_value(
+    value: i64,
+    type_display: &str,
+    type_info: &TypeDefInfo,
+    type_defs: &HashMap<TypeName, TypeDefInfo>,
+) -> String {
+    // SAFETY: value is a heap pointer to a valid HeapAdt (produced by JIT code).
+    let base = value as *const u8;
+    let tag = unsafe { *(base.add(16) as *const i64) } as usize; // HeapAdt::TAG_OFFSET
+    let ctor = type_info.constructors.iter().find(|c| c.tag == tag);
+
+    let Some(ctor) = ctor else {
+        return format!(":{type_display} <unknown-tag:{tag}>");
+    };
+
+    if ctor.fields.is_empty() {
+        // Nullary constructor stored on heap (shouldn't happen, but handle gracefully).
+        return format!(":{type_display} {}", ctor.name);
+    }
+
+    // Read and format each field.
+    let mut field_strs = Vec::new();
+    for (i, field_info) in ctor.fields.iter().enumerate() {
+        let field_offset = 24 + i * 8; // HeapAdt::FIELDS_START + i * 8
+        let field_val = unsafe { *(base.add(field_offset) as *const i64) };
+        let field_str = format_field_value(field_val, &field_info.ty, type_defs);
+        field_strs.push(field_str);
+    }
+
+    let fields_display = field_strs.join(" ");
+    format!(":{type_display} ({} {fields_display})", ctor.name)
+}
+
+/// Format a single field value based on its type.
+fn format_field_value(
+    value: i64,
+    ty: &Type,
+    type_defs: &HashMap<TypeName, TypeDefInfo>,
+) -> String {
+    match ty {
+        Type::Int => format!("{value}"),
+        Type::Bool => {
+            if value != 0 { "true".to_string() } else { "false".to_string() }
+        }
+        Type::Float => {
+            let f = f64::from_bits(value as u64);
+            format!("{f}")
+        }
+        Type::String => {
+            if value == 0 || (value as usize) < NULLARY_TAG_THRESHOLD {
+                format!("<invalid-string:{value}>")
+            } else {
+                let s = unsafe { cranelisp_runtime::read_string_as_str(value) };
+                format!("\"{s}\"")
+            }
+        }
+        Type::Fn(_, _) => "<closure>".to_string(),
+        Type::ADT(name, args) => {
+            // Recursive ADT formatting.
+            let type_display = format_adt_type(name, args);
+            if let Some(info) = type_defs.get(name) {
+                if (value as usize) < NULLARY_TAG_THRESHOLD {
+                    let tag = value as usize;
+                    find_constructor_by_tag(info, tag)
+                } else {
+                    // Recursive heap ADT -- format with parens.
+                    let inner = format_adt_heap_value(value, &type_display, info, type_defs);
+                    // Strip the leading `:Type ` prefix from the recursive call.
+                    inner.split_once(' ').map_or_else(
+                        || inner.clone(),
+                        |(_, rest)| rest.to_string(),
+                    )
+                }
+            } else {
+                format!("{value}")
+            }
+        }
+        _ => format!("{value}"),
     }
 }
 
@@ -298,8 +504,13 @@ pub fn run_repl() {
                 for w in &result.warnings {
                     let _ = writeln!(stdout, "warning: {}", w.message);
                 }
-                // Print the result.
-                let _ = writeln!(stdout, "{}", format_result(result.value, &result.ty));
+                // Print the result with ADT introspection.
+                let display = format_result_value(
+                    result.value,
+                    &result.ty,
+                    session.type_defs(),
+                );
+                let _ = writeln!(stdout, "{display}");
             }
             Err(e) => {
                 let _ = writeln!(stdout, "error: {e}");
@@ -394,5 +605,171 @@ mod tests {
         // Session should still work after error.
         let result = session.eval("42").unwrap();
         assert_eq!(result.value, 42);
+    }
+
+    // --- Ring 1 format tests ---
+
+    #[test]
+    fn test_format_result_string() {
+        let s = cranelisp_runtime::alloc_string(b"hello") as i64;
+        let result = format_result(s, &Type::String);
+        assert_eq!(result, ":String \"hello\"");
+        cranelisp_runtime::heap_dealloc(s);
+    }
+
+    #[test]
+    fn test_format_result_empty_string() {
+        let s = cranelisp_runtime::alloc_string(b"") as i64;
+        let result = format_result(s, &Type::String);
+        assert_eq!(result, ":String \"\"");
+        cranelisp_runtime::heap_dealloc(s);
+    }
+
+    #[test]
+    fn test_format_result_fn_type() {
+        let fn_ty = Type::Fn(vec![Type::Int, Type::Bool], Box::new(Type::String));
+        let result = format_result(0, &fn_ty);
+        assert_eq!(result, ":(Fn [Int Bool] String) <closure>");
+    }
+
+    #[test]
+    fn test_format_result_adt_nullary_with_type_defs() {
+        use cranelisp_types::{ConstructorInfo, TypeDefInfo};
+
+        let type_name = TypeName::from("Color");
+        let mut type_defs = HashMap::new();
+        type_defs.insert(
+            type_name.clone(),
+            TypeDefInfo {
+                name: type_name.clone(),
+                type_params: vec![],
+                constructors: vec![
+                    ConstructorInfo {
+                        name: Symbol::from("Red"),
+                        tag: 0,
+                        fields: vec![],
+                        docstring: None,
+                    },
+                    ConstructorInfo {
+                        name: Symbol::from("Green"),
+                        tag: 1,
+                        fields: vec![],
+                        docstring: None,
+                    },
+                    ConstructorInfo {
+                        name: Symbol::from("Blue"),
+                        tag: 2,
+                        fields: vec![],
+                        docstring: None,
+                    },
+                ],
+                docstring: None,
+            },
+        );
+
+        let adt = Type::ADT(type_name, vec![]);
+        assert_eq!(
+            format_result_value(0, &adt, &type_defs),
+            ":Color Red"
+        );
+        assert_eq!(
+            format_result_value(1, &adt, &type_defs),
+            ":Color Green"
+        );
+        assert_eq!(
+            format_result_value(2, &adt, &type_defs),
+            ":Color Blue"
+        );
+    }
+
+    #[test]
+    fn test_format_result_adt_data_constructor() {
+        use cranelisp_types::{ConstructorInfo, FieldInfo, TypeDefInfo};
+
+        let type_name = TypeName::from("Option");
+        let mut type_defs = HashMap::new();
+        type_defs.insert(
+            type_name.clone(),
+            TypeDefInfo {
+                name: type_name.clone(),
+                type_params: vec![],
+                constructors: vec![
+                    ConstructorInfo {
+                        name: Symbol::from("None"),
+                        tag: 0,
+                        fields: vec![],
+                        docstring: None,
+                    },
+                    ConstructorInfo {
+                        name: Symbol::from("Some"),
+                        tag: 1,
+                        fields: vec![FieldInfo {
+                            name: Symbol::from("val"),
+                            ty: Type::Int,
+                        }],
+                        docstring: None,
+                    },
+                ],
+                docstring: None,
+            },
+        );
+
+        let adt = Type::ADT(type_name.clone(), vec![Type::Int]);
+
+        // Nullary: None (tag 0).
+        assert_eq!(
+            format_result_value(0, &adt, &type_defs),
+            ":(Option Int) None"
+        );
+
+        // Data constructor: allocate Some(42) on heap.
+        // Payload = tag (8 bytes) + 1 field (8 bytes) = 16 bytes.
+        let ptr = cranelisp_runtime::alloc_with_rc(16);
+        unsafe {
+            *(ptr.add(16) as *mut i64) = 1; // tag = 1 (Some)
+            *(ptr.add(24) as *mut i64) = 42; // field val = 42
+        }
+
+        assert_eq!(
+            format_result_value(ptr as i64, &adt, &type_defs),
+            ":(Option Int) (Some 42)"
+        );
+
+        cranelisp_runtime::heap_dealloc(ptr as i64);
+    }
+
+    #[test]
+    fn test_format_result_adt_no_type_defs() {
+        // Without type_defs, falls back to bare value display.
+        let adt = Type::ADT(TypeName::from("Color"), vec![]);
+        assert_eq!(format_result(0, &adt), ":Color 0");
+    }
+
+    #[test]
+    fn test_format_fn_sig() {
+        assert_eq!(
+            format_fn_sig(&[Type::Int], &Type::Bool),
+            "[Int] Bool"
+        );
+        assert_eq!(
+            format_fn_sig(&[Type::Int, Type::String], &Type::Float),
+            "[Int String] Float"
+        );
+        assert_eq!(
+            format_fn_sig(&[], &Type::Int),
+            "[] Int"
+        );
+    }
+
+    #[test]
+    fn test_format_adt_type() {
+        assert_eq!(
+            format_adt_type(&TypeName::from("Color"), &[]),
+            "Color"
+        );
+        assert_eq!(
+            format_adt_type(&TypeName::from("Option"), &[Type::Int]),
+            "(Option Int)"
+        );
     }
 }

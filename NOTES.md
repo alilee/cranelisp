@@ -7,3 +7,4 @@
 claude repl
 pretty printer
 lsp
+wasm deployment (repl in browser against wasm platform)

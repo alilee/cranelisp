@@ -416,6 +416,131 @@ This is expected and confirms the exemplar plan's original assessment that the b
 
 **Ring 1 is the first ring where meaningful exemplar work becomes possible** — specifically, prototyping the `Grid`/`Cell` data model and basic solver logic in a single-file program without modules or traits. **Ring 3 is where the exemplar becomes fully implementable** as a multi-module pure computation. **Ring 4 completes it** with the web platform.
 
+### Ring 1 Assessment (Sprint 2)
+
+**Ring 1 features available** (Chunks A+B+C; 738 tests, 2 ignored):
+- **Strings**: literals, `str-concat`, `str-eq`, `str-len`, `string-identity`, `int-to-string`, `float-to-string`, `bool-to-string`. `parse-int` is defined but its return type is still `Int` (placeholder — needs `Option` ADT return support, hence the 2 ignored tests).
+- **ADTs with fields**: Product types (`(deftype Point [:Int x :Int y])`), sum types with data constructors (`(deftype (Option a) None (Some [:a val]))`), polymorphic type parameters, shortcut syntax (`(deftype Pair [first second])`). Constructor patterns with field bindings in `match`. Exhaustiveness checking (panics at runtime for non-exhaustive). Multiple ADT definitions in the same compilation unit.
+- **Closures**: Lambda with variable capture (single and multiple captures). Closures returned from functions. Higher-order functions (functions as arguments and return values). Named functions as values. Nested closures. Function composition. Zero-param closures.
+- **RC**: Heap allocation with reference counting. Consuming calling convention with last-use optimization. Drop glue for strings, ADTs with heap fields, and closure environments. Balanced inc/dec verified by 35 RC tests.
+- **Still NOT available**: `Vec` (deferred to Sprint 3), modules/imports, traits (`Eq`, `Display`, `derive`), macros, IO, platform DLLs, `char-at`, `str-split`, `str-contains`, `str-sub`, `mod`/`rem` primitive.
+
+**Component-by-component assessment**:
+
+| Component | Ring 1 viable? | Assessment |
+|---|---|---|
+| `grid.cl` — Grid/Cell types | **Partially** | `Cell` ADT can now be fully defined: `(deftype Cell (Given [:Int value]) (Solved [:Int value]) (Candidates [candidates]))`. However, `Candidates` wraps a `:(Vec Int)` which does not exist yet. `Grid` wraps `:(Vec Cell)` — also blocked. Individual `Cell` values can be constructed, passed through functions, and pattern-matched. But no collection to hold 81 of them. |
+| `solver.cl` — constraint propagation, backtracking | **No** | The solver traverses and transforms a grid (Vec-based). Candidate elimination requires `Vec` filtering. Even with `Cell` definable, the algorithms cannot operate without `Vec`. `PropResult` (pure enum) and `SolveResult` (sum with field) are both expressible, but useless without the grid. |
+| `html.cl` — HTML generation | **Partially** | String concatenation (`str-concat`) and conversion (`int-to-string`) are available. A function like `(defn wrap-tag [tag content] (str-concat (str-concat "<" (str-concat tag ">")) (str-concat content (str-concat "</" (str-concat tag ">")))))` works. But building the 9x9 grid HTML requires iterating over 81 cells — which requires `Vec` or a recursive data structure. Individual string-building helpers (tag wrapping, CSS embedding) are expressible. |
+| `form.cl` — URL form parsing | **No** | Requires `str-split` (to split on `&` and `=`), `char-at` (to inspect individual characters), and iteration over a collection of key-value pairs. None of these are available. `str-eq` is available, which would help compare keys, but without string splitting/indexing, parsing is impossible. |
+| `main.cl` — routing, IO models | **No** | IO model (Ring 4), platform DLL (Ring 4). String matching for routes (`str-eq` on method and path) is now possible in principle, but without IO the routing logic has no context. |
+| `test submodules` | **No** | Modules (Ring 2). Testing infrastructure (`run-tests`, `assert-eq`) (Ring 3+). |
+| `platforms/web/` — Rust DLL | **No** | Platform system (Ring 4). |
+
+**What CAN be done with Ring 1 features**:
+
+Ring 1 unlocks meaningful prototyping of isolated data model fragments and string-building helpers. Specifically:
+
+1. **Cell ADT (without Vec-based Candidates)** — The `Cell` type can be defined in a simplified form that uses an `Int` bitset instead of `Vec Int` for candidates:
+   ```clojure
+   ;; Ring 1 workaround: candidates as bitmask (bits 1-9)
+   (deftype Cell
+     (Given [:Int value])
+     (Solved [:Int value])
+     (Candidates [:Int bitmask]))
+   ```
+   This is a legitimate and possibly even *better* representation for a Sudoku solver (bitwise operations on a 9-bit mask are faster than Vec filtering). All Cell operations — construction, pattern matching, field extraction — work at Ring 1. The design can keep this representation even when Vec arrives.
+
+2. **SolveResult and PropResult ADTs** — Both are expressible. `PropResult` is a pure enum (Ring 0). `SolveResult` is now meaningful because `Grid` can be wrapped as a field:
+   ```clojure
+   (deftype SolveResult (Success [grid]) Unsolvable)
+   ```
+   However, `grid` would need a `Grid` type that is itself a product — and without Vec, `Grid` cannot hold 81 cells.
+
+3. **String-building helpers for HTML** — Functions like `wrap-tag`, `css` (a constant string), and individual table cell rendering can be written and tested:
+   ```clojure
+   (defn td [content css-class]
+     (str-concat "<td class=\"" (str-concat css-class (str-concat "\">" (str-concat content "</td>")))))
+   ```
+   These compose via `str-concat` chaining. Deeply nested `str-concat` is verbose but functional.
+
+4. **Higher-order patterns** — Closures enable the callback and predicate patterns that the solver uses. A `map-opt` function that transforms the value inside an `Option` works:
+   ```clojure
+   (deftype (Option a) None (Some [:a val]))
+   (defn map-opt [opt f]
+     (match opt
+       [(Some x) (Some (f x))
+        None None]))
+   ```
+   The `apply-fn`, `compose`, and `apply-twice` patterns all work. These are building blocks for the solver's functional style.
+
+5. **Index arithmetic (enhanced)** — Still no `mod` primitive, but the workaround `(sub-i64 idx (mul-i64 (div-i64 idx 9) 9))` works for `col-of` and `box-of`. With closures, helper functions can be composed more naturally:
+   ```clojure
+   (defn rem-i64 [a b] (sub-i64 a (mul-i64 (div-i64 a b) b)))
+   (defn row-of [idx] (div-i64 idx 9))
+   (defn col-of [idx] (rem-i64 idx 9))
+   (defn box-of [idx]
+     (add-i64 (mul-i64 (div-i64 (row-of idx) 3) 3)
+              (div-i64 (col-of idx) 3)))
+   ```
+
+6. **Option-based error handling** — `(Option a)` is now fully functional. `make-grid` could return `(Option Grid)` once `Grid` exists. The pattern of `match (some-fn ...) [(Some x) ... None ...]` works throughout.
+
+**Critical blocker: Vec**
+
+The single most impactful missing feature for the Sudoku Solver is `Vec`. Nearly every component depends on it:
+- `Grid` stores 81 cells as `:(Vec Cell)`
+- Candidate lists are `:(Vec Int)` (or bitmask alternative)
+- `peers` returns `:(Vec Int)` (20 peer indices per cell)
+- The solver iterates over cells, filters candidates, and builds new grids
+- HTML generation iterates over cells to build the table
+- Form parsing produces a collection of parsed values
+
+Without `Vec`, the exemplar cannot compose its pieces into working modules. However, the bitmask alternative for candidates suggests that a creative encoding could reduce some Vec dependencies.
+
+**Design adjustment: bitmask candidates**
+
+Based on Ring 1 analysis, the exemplar plan should adopt `Int` bitmasks for candidate sets instead of `:(Vec Int)`. This is:
+- More performant (bitwise AND/OR vs Vec allocation and filtering)
+- Ring-1-compatible for the `Cell` type itself
+- Idiomatic for Sudoku solvers (the constraint propagation literature uses bitmasks)
+
+The `Grid` type still needs Vec to hold 81 cells. No reasonable alternative exists — 81 named fields in a product type would be absurd, and a linked list (definable at Ring 1 via recursive ADT) would have O(n) random access for `cell-at` and `set-cell`, making the solver impractical.
+
+**Revised gap table**:
+
+| Need | Status at Ring 1 | Arrives at |
+|---|---|---|
+| ADTs with fields (`Cell`, `SolveResult`) | **Available** | Ring 1 (current) |
+| `String` (HTML, form parsing, input) | **Partially available** — concat, eq, len, to-string. Missing: split, char-at, contains, substring | Ring 1 has basics; string manipulation arrives with stdlib (Ring 2–3) |
+| Closures (predicates, callbacks, composition) | **Available** | Ring 1 (current) |
+| `Option` type | **Available** (user-defined) | Ring 1 (current) |
+| `Vec` (grid cells, peer indices) | **Not available** — single most impactful gap | Sprint 3 (Chunk D) |
+| `parse-int` with `Option` return | **Blocked** — 2 ignored tests | Needs ADT return type support from extern functions |
+| `mod`/`rem` primitive | **Not available** — workaround exists | Ring 2 stdlib or explicit primitive |
+| Modules and imports | Not available | Ring 2 |
+| Traits (`Eq`, `Display`, `derive`) | Not available | Ring 2 |
+| Macros (`do`, `bind!`, threading) | Not available | Ring 3 |
+| IO model, platform DLLs | Not available | Ring 4 |
+
+**Verdict**: Ring 1 moves the exemplar from "zero implementable components" (Ring 0) to "**data model prototypable, algorithms blocked**". The `Cell`, `SolveResult`, and `PropResult` ADTs are now expressible. String-building helpers for HTML work. Closures enable the functional patterns the solver relies on. `Option` provides error handling.
+
+But **Vec is the critical gate**. Without it, the `Grid` type cannot exist, and therefore the solver, HTML generation (grid iteration), and form parsing (value collection) cannot be composed. Vec arrives in Sprint 3 (Chunk D). Once Vec is available — even without modules, traits, or macros — a single-file prototype of the complete pure solver core becomes feasible.
+
+**Estimated Ring at which the exemplar becomes implementable**:
+- **Sprint 3 (Vec)**: Single-file proof-of-concept — Grid + Cell + solver + string output, all in one compilation unit, using monomorphic primitives. No modules, no traits, no macros. Verbose but functional.
+- **Ring 2**: Multi-module decomposition. Trait-based equality for test assertions. `Display` for debugging.
+- **Ring 3**: Full exemplar core with macros, prelude, stdlib, `run-tests`. This is the target for implementing the pure computation modules (`grid.cl`, `solver.cl`, `html.cl`, `form.cl`).
+- **Ring 4**: Web platform DLL, IO wiring, integration tests. Exemplar complete.
+
+**Risk assessment updates**:
+
+1. **Vec dependency confirmed as the critical path** (no change from Ring 0 assessment, but now quantified: 5 of 7 modules depend on Vec). Mitigation: bitmask encoding for candidates reduces Vec surface area slightly.
+2. **String primitive set is narrower than expected**. Ring 1 has `str-concat`, `str-eq`, `str-len`, and type-to-string conversions, but NOT `char-at`, `str-split`, `str-contains`, or `str-sub`. The form parser (`form.cl`) depends on `str-split` and character-level access. These are either stdlib functions (Ring 2–3) or new primitives. Risk is moderate — these are straightforward to add but may not be prioritized for Ring 2.
+3. **`parse-int` returning `Option`** is blocked on extern function ADT return type support. This is a known issue (2 ignored tests). The form parser needs `parse-int` to convert form field values. Low risk — the mechanism exists, just needs wiring.
+4. **No `mod`/`rem` primitive** remains a minor annoyance. The `(sub-i64 a (mul-i64 (div-i64 a b) b))` workaround is adequate but verbose. Should be added as a Ring 0 primitive or Ring 2 stdlib function.
+5. **Deeply nested `str-concat` is painful**. Without macros (Ring 3) for string interpolation or threading (`->`), building HTML strings requires 5+ levels of nesting for a single element. This is a usability concern, not a blocker — it works, it's just ugly. Threading macros at Ring 3 will help significantly.
+
 ### Ring 3+
 
 Grid model, solver, HTML generation, form parsing — all pure computation. Testable with `run-tests`. This is the bulk of the Cranelisp code.
@@ -447,8 +572,9 @@ Comfortably within the 500–2000 line target.
 
 ## Next Skills
 
+- `/arch` — Vec (Chunk D) should be highest priority in Sprint 3. It is the single most impactful unblock for both `/port` and `/stdlib`. Also review whether the platform callback mechanism (function pointer passed to DLL, DLL calls back into JIT code) requires architectural support or is already covered by the existing GOT/function-pointer model.
+- `/stdlib` — Prioritize `mod`/`rem`, `char-at`, `str-len`, `vec-filter`, `str-split` — these are blocking or important for the exemplar. Consider a variadic `str` function for string building ergonomics (U1.11).
 - `/platform` — Review the web platform API above. Confirm that `declare_platform!` can handle: (a) a function receiving a function pointer callback (`serve`), (b) opaque heap values for Request/Response. Flag if the platform ABI needs extension for callbacks.
-- `/stdlib` — Prioritize `mod`/`rem`, `char-at`, `str-len`, `vec-filter`, `str-split` — these are blocking or important for the exemplar.
-- `/arch` — Review whether the platform callback mechanism (function pointer passed to DLL, DLL calls back into JIT code) requires architectural support or is already covered by the existing GOT/function-pointer model.
 - `/examples` — The exemplar's ADT patterns (sum types with data, enum types with derive) should align with the learning sequence.
 - `/docs` — The exemplar will serve as the capstone tutorial/walkthrough. The web platform authoring is a natural "advanced topic" chapter.
+- `/port` — Next exemplar assessment at Sprint 3 (post-Vec). At that point, attempt a single-file proof-of-concept: Grid + Cell (bitmask candidates) + basic solver, to validate the data model and algorithm patterns before multi-module decomposition at Ring 2–3.

@@ -1402,3 +1402,605 @@ fn session_with_all_three_primitive_types() {
     assert_eq!(r.ty, Type::Bool);
     assert_eq!(r.value, 0);
 }
+
+// =============================================================================
+// =============================================================================
+//
+// Ring 1 REPL Experience Tests
+//
+// These tests validate the REPL user experience for Ring 1 features: strings,
+// ADTs with fields, and closures. Focus is on display format, type reporting,
+// error quality, and session continuity — not on correctness (that's /qa's job
+// in ring1.rs and rc.rs).
+//
+// Ring 1 spec references:
+//   repl/spec.md §1.2 — expression result display
+//   repl/spec.md §1.5 — value display (String, data ADT, closure)
+//   repl/spec.md §5.3 — type error quality
+//
+// =============================================================================
+// =============================================================================
+
+// =============================================================================
+// String Display (repl/spec.md §1.5: String → "contents" with escapes)
+// =============================================================================
+
+#[test]
+fn ring1_string_literal_display_format() {
+    // Spec §1.5: String values display as `"contents"`.
+    // Full result format: `:String "contents"`.
+    let mut session = repl_session();
+    let display = repl_eval_display(&mut session, "\"hello\"");
+    assert_eq!(display, ":String \"hello\"");
+}
+
+#[test]
+fn ring1_string_empty_display() {
+    // Empty string should display as `:String ""`.
+    let mut session = repl_session();
+    let display = repl_eval_display(&mut session, "\"\"");
+    assert_eq!(display, ":String \"\"");
+}
+
+#[test]
+fn ring1_string_concat_result_display() {
+    // Result of str-concat should display the concatenated string.
+    let mut session = repl_session();
+    let display = repl_eval_display(&mut session, "(str-concat \"hello\" \" world\")");
+    assert_eq!(display, ":String \"hello world\"");
+}
+
+#[test]
+fn ring1_string_literal_reports_string_type() {
+    // Spec §1.2: string expression should report Type::String.
+    let mut session = repl_session();
+    let result = session.eval("\"hello\"").unwrap();
+    assert_eq!(result.ty, Type::String);
+    assert!(!result.is_definition);
+}
+
+#[test]
+fn ring1_string_primitive_reports_correct_types() {
+    // String primitives should report appropriate return types.
+    let mut session = repl_session();
+
+    // str-len returns Int.
+    let r = session.eval("(str-len \"hello\")").unwrap();
+    assert_eq!(r.ty, Type::Int);
+    assert_eq!(r.value, 5);
+
+    // str-eq returns Bool.
+    let r = session.eval("(str-eq \"a\" \"a\")").unwrap();
+    assert_eq!(r.ty, Type::Bool);
+    assert_eq!(r.value, 1);
+
+    // int-to-string returns String.
+    let r = session.eval("(int-to-string 42)").unwrap();
+    assert_eq!(r.ty, Type::String);
+}
+
+#[test]
+fn ring1_int_to_string_display() {
+    // Converting an integer to string and displaying the result.
+    let mut session = repl_session();
+    let display = repl_eval_display(&mut session, "(int-to-string 42)");
+    assert_eq!(display, ":String \"42\"");
+}
+
+#[test]
+fn ring1_string_with_spaces_display() {
+    // Strings containing spaces display correctly with surrounding quotes.
+    let mut session = repl_session();
+    let display = repl_eval_display(&mut session, "\"hello world\"");
+    assert_eq!(display, ":String \"hello world\"");
+}
+
+// =============================================================================
+// ADT Display (repl/spec.md §1.5: data constructors, product types, polymorphic)
+// =============================================================================
+
+#[test]
+fn ring1_adt_product_display() {
+    // Spec §1.5: Data constructor display: `(Type.Ctor field1 field2 ...)`.
+    // Product type with Int fields.
+    let mut session = repl_session();
+    repl_eval(&mut session, "(deftype Point [:Int x :Int y])");
+    let display = repl_eval_display(&mut session, "(Point 3 4)");
+    assert_eq!(display, ":Point (Point 3 4)");
+}
+
+#[test]
+fn ring1_adt_sum_some_display() {
+    // Spec §1.5: `:(Option Int) (Some 42)` for data constructor.
+    let mut session = repl_session();
+    repl_eval(&mut session, "(deftype (Option a) None (Some [:a val]))");
+    let display = repl_eval_display(&mut session, "(Some 42)");
+    assert_eq!(display, ":(Option Int) (Some 42)");
+}
+
+#[test]
+fn ring1_adt_sum_none_display() {
+    // Nullary constructor of polymorphic type displays correctly.
+    let mut session = repl_session();
+    repl_eval(&mut session, "(deftype (Option a) None (Some [:a val]))");
+    let display = repl_eval_display(&mut session, "None");
+    // None is nullary — type var may be unresolved. Display should show
+    // the Option type and the constructor name.
+    assert!(
+        display.contains("Option") && display.ends_with("None"),
+        "expected Option ... None display, got: {display}"
+    );
+}
+
+#[test]
+fn ring1_adt_polymorphic_type_display() {
+    // Parameterized types show their type args: `:(Option Int)`.
+    let mut session = repl_session();
+    repl_eval(&mut session, "(deftype (Option a) None (Some [:a val]))");
+    let result = session.eval("(Some 42)").unwrap();
+    // Type should be ADT("Option", [Int]).
+    assert_eq!(
+        result.ty,
+        Type::ADT(TypeName::from("Option"), vec![Type::Int])
+    );
+}
+
+#[test]
+fn ring1_adt_product_type_reports_adt_type() {
+    // Constructing a product type should report the ADT type.
+    let mut session = repl_session();
+    repl_eval(&mut session, "(deftype Point [:Int x :Int y])");
+    let result = session.eval("(Point 3 4)").unwrap();
+    assert_eq!(
+        result.ty,
+        Type::ADT(TypeName::from("Point"), vec![])
+    );
+    assert!(!result.is_definition);
+}
+
+#[test]
+fn ring1_adt_nested_string_field_display() {
+    // ADT containing a String field should recursively display the string.
+    // Spec §1.5: "ADT fields MUST be recursively formatted."
+    //
+    // USABILITY FINDING U1.1: Polymorphic ADT field display does not substitute
+    // type variables with concrete type args. `(Some "hello")` shows the raw
+    // pointer value instead of `"hello"` because the field type is stored as
+    // `Type::Var(a)` in TypeDefInfo, not `Type::String`. The type portion
+    // `:(Option String)` is correct, but the value display is not.
+    // Filed to tests/plan/usability.md.
+    let mut session = repl_session();
+    repl_eval(&mut session, "(deftype (Option a) None (Some [:a val]))");
+    let display = repl_eval_display(&mut session, "(Some \"hello\")");
+    // Current behavior: field rendered as raw i64 (the pointer) due to Var type.
+    // When U1.1 is fixed, this should become:
+    //   assert_eq!(display, ":(Option String) (Some \"hello\")");
+    assert!(
+        display.starts_with(":(Option String) (Some "),
+        "should show type as (Option String), got: {display}"
+    );
+}
+
+#[test]
+fn ring1_adt_monomorphic_string_field_display() {
+    // Monomorphic ADT with concrete String field type (no type variable issue).
+    // Spec §1.5: fields must be recursively formatted.
+    let mut session = repl_session();
+    repl_eval(&mut session, "(deftype Named [:String name])");
+    let display = repl_eval_display(&mut session, "(Named \"alice\")");
+    assert_eq!(display, ":Named (Named \"alice\")");
+}
+
+#[test]
+fn ring1_adt_enum_display_with_type_defs() {
+    // Nullary constructors should show constructor names, not bare tags.
+    // This uses a REPL session where type_defs are accumulated.
+    let mut session = repl_session();
+    repl_eval(&mut session, "(deftype Color Red Green Blue)");
+    let display = repl_eval_display(&mut session, "Red");
+    assert_eq!(display, ":Color Red");
+    let display = repl_eval_display(&mut session, "Blue");
+    assert_eq!(display, ":Color Blue");
+}
+
+#[test]
+fn ring1_deftype_with_fields_reports_type() {
+    // Spec §1.3: type definition displays the type name.
+    let mut session = repl_session();
+    let result = session
+        .eval("(deftype Point [:Int x :Int y])")
+        .unwrap();
+    assert!(result.is_definition);
+    assert_eq!(
+        result.ty,
+        Type::ADT(TypeName::from("Point"), vec![])
+    );
+}
+
+// =============================================================================
+// Closure Display (repl/spec.md §1.5: Closure → `<closure>`)
+// =============================================================================
+
+#[test]
+fn ring1_closure_display_format() {
+    // Spec §1.5: Closure values display as `<closure>`.
+    let mut session = repl_session();
+    repl_eval(&mut session, "(defn make-adder [n] (fn [x] (add-i64 n x)))");
+    let display = repl_eval_display(&mut session, "(make-adder 5)");
+    assert!(
+        display.contains("<closure>"),
+        "closure display should contain '<closure>', got: {display}"
+    );
+}
+
+#[test]
+fn ring1_closure_display_includes_fn_type() {
+    // Closure display format: `:(Fn [params] return) <closure>`.
+    let mut session = repl_session();
+    repl_eval(&mut session, "(defn make-adder [n] (fn [x] (add-i64 n x)))");
+    let display = repl_eval_display(&mut session, "(make-adder 5)");
+    assert!(
+        display.starts_with(":(Fn "),
+        "closure display should start with ':(Fn ', got: {display}"
+    );
+    assert!(
+        display.ends_with("<closure>"),
+        "closure display should end with '<closure>', got: {display}"
+    );
+}
+
+#[test]
+fn ring1_closure_result_type_is_fn() {
+    // The type of a closure value should be Type::Fn.
+    let mut session = repl_session();
+    repl_eval(&mut session, "(defn make-adder [n] (fn [x] (add-i64 n x)))");
+    let result = session.eval("(make-adder 5)").unwrap();
+    match &result.ty {
+        Type::Fn(params, _ret) => {
+            assert_eq!(params.len(), 1, "make-adder should return a 1-param closure");
+        }
+        other => panic!("expected Fn type for closure, got: {other:?}"),
+    }
+}
+
+#[test]
+fn ring1_defn_returning_closure_type() {
+    // Defining a function that returns a closure should report the higher-order type.
+    let mut session = repl_session();
+    let result = session
+        .eval("(defn make-adder [n] (fn [x] (add-i64 n x)))")
+        .unwrap();
+    assert!(result.is_definition);
+    // Should be (Fn [Int] (Fn [Int] Int)).
+    match &result.ty {
+        Type::Fn(params, ret) => {
+            assert_eq!(params.len(), 1);
+            assert_eq!(params[0], Type::Int);
+            match ret.as_ref() {
+                Type::Fn(inner_params, inner_ret) => {
+                    assert_eq!(inner_params.len(), 1);
+                    assert_eq!(inner_params[0], Type::Int);
+                    assert_eq!(inner_ret.as_ref(), &Type::Int);
+                }
+                other => panic!("expected inner Fn type, got: {other:?}"),
+            }
+        }
+        other => panic!("expected Fn type for make-adder, got: {other:?}"),
+    }
+}
+
+#[test]
+fn ring1_lambda_immediate_display_not_closure() {
+    // Immediately-applied lambda should show the result, not <closure>.
+    let mut session = repl_session();
+    let display = repl_eval_display(&mut session, "((fn [x] (add-i64 x 1)) 5)");
+    assert_eq!(display, ":Int 6");
+}
+
+// =============================================================================
+// Error Quality for Ring 1 Types (repl/spec.md §5.3)
+// =============================================================================
+
+#[test]
+fn ring1_error_string_where_int_expected() {
+    // Passing a String where Int is expected should produce a clear type error.
+    let mut session = repl_session();
+    match session.eval("(add-i64 \"hello\" 1)") {
+        Err(ref e) => {
+            let msg = e.message();
+            assert!(
+                msg.contains("Int") || msg.contains("String"),
+                "type error should mention the types involved, got: {msg}"
+            );
+        }
+        Ok(_) => panic!("expected type error for String where Int expected"),
+    }
+    // Session recovery.
+    assert_eq!(repl_eval(&mut session, "(add-i64 1 2)"), 3);
+}
+
+#[test]
+fn ring1_error_int_where_string_expected() {
+    // Passing an Int where String is expected.
+    let mut session = repl_session();
+    match session.eval("(str-len 42)") {
+        Err(ref e) => {
+            let msg = e.message();
+            assert!(
+                msg.contains("Int") || msg.contains("String"),
+                "type error should mention types, got: {msg}"
+            );
+        }
+        Ok(_) => panic!("expected type error for Int where String expected"),
+    }
+    // Session continues.
+    assert_eq!(repl_eval(&mut session, "(str-len \"hi\")"), 2);
+}
+
+#[test]
+fn ring1_error_if_branch_string_int_mismatch() {
+    // If branches with String and Int should produce a clear type error.
+    let mut session = repl_session();
+    match session.eval("(if true \"hello\" 42)") {
+        Err(ref e) => {
+            let msg = e.message();
+            assert!(
+                !msg.is_empty(),
+                "branch type mismatch error should have a message"
+            );
+        }
+        Ok(_) => panic!("expected type error for mismatched if branches (String vs Int)"),
+    }
+    assert_eq!(repl_eval(&mut session, "1"), 1);
+}
+
+#[test]
+fn ring1_error_constructor_wrong_arg_count() {
+    // Constructing an ADT with wrong number of arguments should error clearly.
+    let mut session = repl_session();
+    repl_eval(&mut session, "(deftype Point [:Int x :Int y])");
+    match session.eval("(Point 1)") {
+        Err(ref e) => {
+            let msg = e.message();
+            assert!(
+                !msg.is_empty(),
+                "constructor arity error should have a message"
+            );
+        }
+        Ok(_) => panic!("expected error for wrong constructor argument count"),
+    }
+    // Session recovery: correct usage still works.
+    let display = repl_eval_display(&mut session, "(Point 1 2)");
+    assert_eq!(display, ":Point (Point 1 2)");
+}
+
+#[test]
+fn ring1_error_constructor_wrong_type() {
+    // Constructing an ADT with wrong field type should produce a type error.
+    let mut session = repl_session();
+    repl_eval(&mut session, "(deftype Point [:Int x :Int y])");
+    match session.eval("(Point true 2)") {
+        Err(ref e) => {
+            let msg = e.message();
+            assert!(
+                msg.contains("Int") || msg.contains("Bool"),
+                "constructor type error should mention the types, got: {msg}"
+            );
+        }
+        Ok(_) => panic!("expected type error for wrong constructor field type"),
+    }
+}
+
+#[test]
+fn ring1_error_undefined_constructor() {
+    // Using an undefined constructor should produce a clear error.
+    let mut session = repl_session();
+    match session.eval("(Foo 1 2)") {
+        Err(ref e) => {
+            let msg = e.message();
+            assert!(
+                msg.contains("Foo") || msg.contains("unbound") || msg.contains("undefined")
+                    || msg.contains("unknown") || msg.contains("not found"),
+                "undefined constructor error should mention the name, got: {msg}"
+            );
+        }
+        Ok(_) => panic!("expected error for undefined constructor"),
+    }
+    assert_eq!(repl_eval(&mut session, "42"), 42);
+}
+
+#[test]
+fn ring1_error_closure_arity_mismatch() {
+    // Calling a closure with wrong number of arguments should error clearly.
+    let mut session = repl_session();
+    match session.eval("(let [f (fn [x] x)] (f 1 2))") {
+        Err(ref e) => {
+            let msg = e.message();
+            assert!(
+                !msg.is_empty(),
+                "closure arity error should have a message"
+            );
+        }
+        Ok(_) => panic!("expected error for closure arity mismatch"),
+    }
+    assert_eq!(repl_eval(&mut session, "(let [f (fn [x] x)] (f 42))"), 42);
+}
+
+#[test]
+fn ring1_error_has_span_for_heap_type_mismatch() {
+    // Spec §5.1: errors MUST include source location.
+    // Type errors involving heap types should have non-synthetic spans.
+    let mut session = repl_session();
+    match session.eval("(str-len 42)") {
+        Err(ref e) => {
+            let span = e.span();
+            assert!(
+                span != Span::SYNTHETIC,
+                "heap type error span should not be synthetic: {span:?}"
+            );
+        }
+        Ok(_) => panic!("expected type error"),
+    }
+}
+
+// =============================================================================
+// Type Display for Ring 1 (repl/spec.md §1.4)
+// =============================================================================
+
+#[test]
+fn ring1_defn_with_string_param_type() {
+    // Defining a function with String parameter should report String in the type.
+    let mut session = repl_session();
+    let result = session
+        .eval("(defn greet-len [s] (str-len s))")
+        .unwrap();
+    assert!(result.is_definition);
+    assert_eq!(
+        result.ty,
+        Type::Fn(vec![Type::String], Box::new(Type::Int))
+    );
+}
+
+#[test]
+fn ring1_defn_returning_string_type() {
+    // Defining a function returning String should report String in return type.
+    let mut session = repl_session();
+    let result = session
+        .eval("(defn greeting [] \"hello\")")
+        .unwrap();
+    assert!(result.is_definition);
+    assert_eq!(
+        result.ty,
+        Type::Fn(vec![], Box::new(Type::String))
+    );
+}
+
+#[test]
+fn ring1_defn_with_adt_param_type() {
+    // A function taking an ADT parameter shows the ADT type.
+    let mut session = repl_session();
+    repl_eval(&mut session, "(deftype Point [:Int x :Int y])");
+    let result = session
+        .eval("(defn get-x [p] (match p [(Point x y) x]))")
+        .unwrap();
+    assert!(result.is_definition);
+    assert_eq!(
+        result.ty,
+        Type::Fn(
+            vec![Type::ADT(TypeName::from("Point"), vec![])],
+            Box::new(Type::Int)
+        )
+    );
+}
+
+#[test]
+fn ring1_defn_polymorphic_adt_return_type() {
+    // A function returning a polymorphic ADT shows the instantiated type.
+    let mut session = repl_session();
+    repl_eval(&mut session, "(deftype (Option a) None (Some [:a val]))");
+    let result = session
+        .eval("(defn wrap [x] (Some x))")
+        .unwrap();
+    assert!(result.is_definition);
+    // wrap should be polymorphic: (Fn [a] (Option a))
+    match &result.ty {
+        Type::Fn(params, ret) => {
+            assert_eq!(params.len(), 1);
+            match ret.as_ref() {
+                Type::ADT(name, args) => {
+                    assert_eq!(name, &TypeName::from("Option"));
+                    assert_eq!(args.len(), 1, "Option should have 1 type arg");
+                }
+                other => panic!("expected ADT return type, got: {other:?}"),
+            }
+        }
+        other => panic!("expected Fn type for wrap, got: {other:?}"),
+    }
+}
+
+// =============================================================================
+// Session Continuity — Ring 1 (repl/spec.md §5.2)
+// =============================================================================
+
+#[test]
+fn ring1_error_between_adt_and_closure_definitions() {
+    // Define an ADT, trigger an error, then define a closure over the ADT.
+    // All definitions should survive.
+    let mut session = repl_session();
+
+    // Step 1: define an ADT.
+    repl_eval(&mut session, "(deftype (Option a) None (Some [:a val]))");
+
+    // Step 2: define a function using it.
+    repl_eval(
+        &mut session,
+        "(defn unwrap [opt] (match opt [(Some x) x None 0]))",
+    );
+
+    // Step 3: trigger an error.
+    let err = session.eval("(add-i64 \"hello\" 1)");
+    assert!(err.is_err());
+
+    // Step 4: the ADT and function still work.
+    assert_eq!(repl_eval(&mut session, "(unwrap (Some 99))"), 99);
+
+    // Step 5: define a closure that uses the ADT.
+    repl_eval(&mut session, "(defn make-wrapper [n] (fn [] (Some n)))");
+    let display = repl_eval_display(&mut session, "((make-wrapper 42))");
+    assert_eq!(display, ":(Option Int) (Some 42)");
+}
+
+#[test]
+fn ring1_error_preserves_string_definitions() {
+    // Define functions using strings, error, verify they survive.
+    let mut session = repl_session();
+
+    repl_eval(&mut session, "(defn greet [] \"hello\")");
+
+    // Error.
+    let err = session.eval("(add-i64 true 1)");
+    assert!(err.is_err());
+
+    // String function still works.
+    let display = repl_eval_display(&mut session, "(greet)");
+    assert_eq!(display, ":String \"hello\"");
+}
+
+#[test]
+fn ring1_session_incremental_with_heap_types() {
+    // Simulates a user building up definitions with strings, ADTs, and closures.
+    let mut session = repl_session();
+
+    // Step 1: explore strings.
+    let display = repl_eval_display(&mut session, "\"hello\"");
+    assert_eq!(display, ":String \"hello\"");
+
+    // Step 2: define an ADT.
+    repl_eval(&mut session, "(deftype (Option a) None (Some [:a val]))");
+
+    // Step 3: wrap a string in an ADT.
+    let display = repl_eval_display(&mut session, "(Some \"world\")");
+    // Note: field display for polymorphic ADTs shows raw value due to U1.1
+    // (type variable not substituted with concrete type). Type portion is correct.
+    assert!(
+        display.starts_with(":(Option String) (Some "),
+        "should show type as (Option String), got: {display}"
+    );
+
+    // Step 4: define a closure.
+    repl_eval(&mut session, "(defn make-adder [n] (fn [x] (add-i64 n x)))");
+    let display = repl_eval_display(&mut session, "(make-adder 10)");
+    assert!(display.contains("<closure>"), "got: {display}");
+
+    // Step 5: use the closure.
+    assert_eq!(repl_eval(&mut session, "((make-adder 10) 32)"), 42);
+
+    // Step 6: make a mistake.
+    let err = session.eval("(str-len 42)");
+    assert!(err.is_err());
+
+    // Step 7: everything still works.
+    assert_eq!(repl_eval(&mut session, "((make-adder 5) 5)"), 10);
+    let display = repl_eval_display(&mut session, "(Some 99)");
+    assert_eq!(display, ":(Option Int) (Some 99)");
+}

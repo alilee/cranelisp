@@ -627,9 +627,483 @@ cargo run -- classify.cl
 
 The result is `1`, because 42 is positive.
 
-## Summary of Ring 0 Primitives
+## Strings
+
+Strings are text values. They are enclosed in double quotes:
+
+```
+> "hello"
+:String "hello"
+
+> "world"
+:String "world"
+
+> ""
+:String ""
+```
+
+The REPL shows the type `String` and the text value in quotes.
+
+Strings can contain **escape sequences** for special characters:
+
+```
+> "line1\nline2"
+:String "line1\nline2"
+```
+
+The `\n` inside the string represents a newline character. Other escape sequences are `\t` (tab), `\\` (backslash), and `\"` (a literal double-quote inside a string).
+
+### String Primitives
+
+Cranelisp provides named functions for working with strings:
+
+```
+> (str-len "hello")
+:Int 5
+
+> (str-len "")
+:Int 0
+```
+
+`str-len` returns the length of a string as an `Int`.
+
+```
+> (str-concat "hello" " world")
+:String "hello world"
+```
+
+`str-concat` joins two strings together into a new string.
+
+```
+> (str-eq "abc" "abc")
+:Bool true
+
+> (str-eq "abc" "xyz")
+:Bool false
+```
+
+`str-eq` compares two strings for equality.
+
+You can convert other types to strings:
+
+```
+> (int-to-string 42)
+:String "42"
+
+> (float-to-string 3.14)
+:String "3.14"
+
+> (bool-to-string true)
+:String "true"
+```
+
+Strings work with all the features you already know -- `let`, `if`, functions:
+
+```
+> (let [greeting "hello"]
+    (str-len greeting))
+:Int 5
+
+> (defn longer [a b]
+    (if (gt-i64 (str-len a) (str-len b)) a b))
+
+> (str-len (longer "hi" "hello"))
+:Int 5
+```
+
+## Defining Types with Fields
+
+Earlier you saw enum types where each constructor is just a name with no data attached. Now you can define types where constructors carry **fields** -- named pieces of data.
+
+### Product Types
+
+A **product type** is a type with a single constructor that has one or more fields. Think of it as a bundle of values grouped together under one name.
+
+```
+(deftype Point [:Int x :Int y])
+```
+
+This defines a type called `Point` with two integer fields, `x` and `y`. The type name `Point` also serves as the constructor -- you call it like a function to create values:
+
+```
+> (deftype Point [:Int x :Int y])
+
+> (Point 3 4)
+:Point (Point 3 4)
+
+> (Point 0 0)
+:Point (Point 0 0)
+```
+
+Each field has a type annotation (`:Int`) and a name (`x`, `y`). The constructor takes arguments in the same order as the fields.
+
+You can define product types with any number of fields:
+
+```
+> (deftype Triple [:Int a :Int b :Int c])
+
+> (Triple 10 20 30)
+:Triple (Triple 10 20 30)
+```
+
+### Shortcut Syntax
+
+When you do not need to specify the field types, you can use bare field names. Cranelisp will figure out the types from how the values are used:
+
+```
+> (deftype Pair [first second])
+
+> (Pair 10 20)
+:(Pair Int Int) (Pair 10 20)
+```
+
+Here, `Pair` becomes a polymorphic type -- its fields can hold values of any type:
+
+```
+> (Pair true false)
+:(Pair Bool Bool) (Pair true false)
+```
+
+### Sum Types with Data
+
+A **sum type** is a type with multiple constructors. Some constructors can be nullary (no fields), and others can carry data.
+
+The classic example is `Option` -- a type that represents a value that might or might not exist:
+
+```
+(deftype (Option a) None (Some [:a val]))
+```
+
+This says: an `Option` value is either `None` (nothing is there) or `Some` wrapping a value. The `a` is a type parameter, so `Option` works with any type.
+
+```
+> (deftype (Option a) None (Some [:a val]))
+
+> (Some 42)
+:(Option Int) (Some 42)
+
+> None
+:(Option a) None
+```
+
+`None` is a nullary constructor -- it carries no data. `Some` is a data constructor -- it takes one argument.
+
+Here is another sum type with two data constructors:
+
+```
+> (deftype (Either a b) (Left [:a val]) (Right [:b val]))
+
+> (Left 42)
+:(Either Int b) (Left 42)
+
+> (Right true)
+:(Either a Bool) (Right true)
+```
+
+And a type where nullary and data constructors are mixed:
+
+```
+> (deftype (Result a) Ok (Err [:a val]))
+
+> Ok
+:(Result a) Ok
+
+> (Err 404)
+:(Result Int) (Err 404)
+```
+
+## Pattern Matching on Data Constructors
+
+In the earlier section on pattern matching, you matched against nullary constructors (names with no fields). Now you can match against data constructors too, binding variables to their fields.
+
+### Constructor Patterns with Bindings
+
+A parenthesized pattern matches a data constructor and binds its fields to variables:
+
+```
+(match value
+  [(ConstructorName var1 var2 ...) result
+   ...])
+```
+
+The variables bind to the fields by position. You choose the variable names -- they do not need to match the field names from the type definition.
+
+```
+> (deftype Point [:Int x :Int y])
+
+> (defn get-x [p]
+    (match p [(Point a b) a]))
+
+> (get-x (Point 3 4))
+:Int 3
+
+> (defn get-y [p]
+    (match p [(Point a b) b]))
+
+> (get-y (Point 3 4))
+:Int 4
+```
+
+Here, `a` binds to the first field (`x`) and `b` binds to the second field (`y`).
+
+You can compute with the bound variables in the result expression:
+
+```
+> (defn sum-point [p]
+    (match p [(Point x y) (add-i64 x y)]))
+
+> (sum-point (Point 3 4))
+:Int 7
+```
+
+### Matching Sum Types
+
+When a type has multiple constructors, the match covers each variant:
+
+```
+> (deftype (Option a) None (Some [:a val]))
+
+> (defn unwrap [opt]
+    (match opt
+      [(Some x) x
+       None 0]))
+
+> (unwrap (Some 42))
+:Int 42
+
+> (unwrap None)
+:Int 0
+```
+
+The `(Some x)` pattern matches the `Some` constructor and binds its field to `x`. The `None` pattern matches the nullary constructor.
+
+### Nested Matching
+
+You can nest match expressions to inspect values inside values:
+
+```
+> (deftype (Option a) None (Some [:a val]))
+
+> (defn add-opts [a b]
+    (match a
+      [None 0
+       (Some x)
+         (match b
+           [None x
+            (Some y) (add-i64 x y)])]))
+
+> (add-opts (Some 10) (Some 20))
+:Int 30
+
+> (add-opts (Some 10) None)
+:Int 10
+
+> (add-opts None (Some 5))
+:Int 0
+```
+
+### Wildcards and Variables Still Work
+
+You can mix constructor patterns with wildcard `_` and variable patterns:
+
+```
+> (deftype (Option a) None (Some [:a val]))
+
+> (defn is-some [opt]
+    (match opt
+      [(Some x) 1
+       _ 0]))
+
+> (is-some (Some 42))
+:Int 1
+
+> (is-some None)
+:Int 0
+```
+
+## Closures and Lambdas
+
+A **closure** (also called a **lambda**) is an anonymous function -- a function without a name. You create one with `fn`:
+
+```
+(fn [param1 param2 ...] body)
+```
+
+The parameters go in square brackets, just like `defn`. The body is an expression.
+
+```
+> ((fn [x] (add-i64 x 1)) 5)
+:Int 6
+```
+
+Here, `(fn [x] (add-i64 x 1))` creates a function that adds 1 to its argument. The outer parentheses call it immediately with the argument `5`.
+
+### Binding Lambdas with Let
+
+You can give a lambda a name using `let`:
+
+```
+> (let [f (fn [x] (mul-i64 x 2))]
+    (f 21))
+:Int 42
+```
+
+The variable `f` holds the function. You call it by writing `(f 21)`.
+
+### Capturing Values
+
+The real power of closures is that they can **capture** values from their surrounding scope. When the lambda refers to a name defined outside it, that value is remembered inside the closure:
+
+```
+> (let [n 10]
+    ((fn [x] (add-i64 n x)) 32))
+:Int 42
+```
+
+The lambda `(fn [x] (add-i64 n x))` captures the value of `n` (which is `10`). When called with `32`, it computes `10 + 32 = 42`.
+
+Closures can capture multiple values:
+
+```
+> (let [a 1 b 2 c 3]
+    ((fn [x] (add-i64 a (add-i64 b (add-i64 c x)))) 4))
+:Int 10
+```
+
+### Returning Closures from Functions
+
+A function can create and return a closure. The returned closure remembers the values that were captured when it was created:
+
+```
+> (defn make-adder [n]
+    (fn [x] (add-i64 n x)))
+
+> ((make-adder 10) 32)
+:Int 42
+
+> ((make-adder 100) 1)
+:Int 101
+```
+
+`make-adder` takes a number `n` and returns a new function that adds `n` to its argument. Each call to `make-adder` creates a different closure with a different captured value.
+
+## Higher-Order Functions
+
+A **higher-order function** is a function that takes another function as an argument or returns a function as its result. You have already seen `make-adder` returning a function. Now let's pass functions as arguments.
+
+### Passing Functions as Arguments
+
+```
+> (defn apply-fn [f x] (f x))
+
+> (apply-fn (fn [x] (add-i64 x 10)) 32)
+:Int 42
+```
+
+`apply-fn` takes a function `f` and a value `x`, then calls `f` with `x`. You can pass a lambda or a named function:
+
+```
+> (defn inc [x] (add-i64 x 1))
+
+> (apply-fn inc 41)
+:Int 42
+```
+
+Here, the named function `inc` is passed as a value to `apply-fn`.
+
+### Apply Twice
+
+Here is a function that applies a function twice:
+
+```
+> (defn apply-twice [f x] (f (f x)))
+
+> (apply-twice (fn [x] (add-i64 x 1)) 0)
+:Int 2
+
+> (apply-twice (fn [x] (mul-i64 x 2)) 3)
+:Int 12
+```
+
+### Compose
+
+Function composition creates a new function from two existing ones:
+
+```
+> (defn compose [f g]
+    (fn [x] (f (g x))))
+
+> (defn inc [x] (add-i64 x 1))
+
+> (defn double [x] (mul-i64 x 2))
+
+> ((compose inc double) 5)
+:Int 11
+```
+
+`(compose inc double)` returns a new function that first doubles its argument, then increments the result. So `5 * 2 + 1 = 11`.
+
+### Higher-Order Functions with Recursion
+
+You can combine higher-order functions with recursion to build powerful patterns. Here is a fold that applies a function repeatedly:
+
+```
+> (defn fold [f acc n]
+    (if (eq-i64 n 0)
+      acc
+      (fold f (f acc n) (sub-i64 n 1))))
+
+> (fold (fn [acc n] (add-i64 acc n)) 0 100)
+:Int 5050
+```
+
+This computes the sum of numbers from 1 to 100 by folding with an addition function.
+
+## Putting It Together
+
+You now have all of Ring 0 and Ring 1 at your disposal. Here is an example that combines several features -- types with fields, pattern matching, closures, and higher-order functions:
+
+```clojure
+; map-option.cl -- transform the value inside an Option
+
+(deftype (Option a) None (Some [:a val]))
+
+(defn map-opt [opt f]
+  (match opt
+    [(Some x) (Some (f x))
+     None None]))
+
+(defn main []
+  (match (map-opt (Some 10) (fn [x] (mul-i64 x 2)))
+    [(Some x) x
+     None 0]))
+```
+
+Running this produces `20` -- the value `10` inside `Some` is doubled by the lambda.
+
+Here is another example combining strings and ADTs:
+
+```clojure
+; describe.cl -- convert an Option Int to a descriptive string
+
+(deftype (Option a) None (Some [:a val]))
+
+(defn describe [opt]
+  (match opt
+    [(Some n) (str-concat "found: " (int-to-string n))
+     None "nothing"]))
+
+(defn main []
+  (str-len (describe (Some 42))))
+```
+
+This produces `9` -- the length of `"found: 42"`.
+
+## Summary of Primitives
 
 Here is a complete list of the named primitives available:
+
+### Integer Arithmetic and Comparison
 
 | Function | Type | Description |
 |----------|------|-------------|
@@ -642,6 +1116,11 @@ Here is a complete list of the named primitives available:
 | `gt-i64` | `(Fn [Int Int] Bool)` | Greater than? |
 | `le-i64` | `(Fn [Int Int] Bool)` | Less than or equal? |
 | `ge-i64` | `(Fn [Int Int] Bool)` | Greater than or equal? |
+
+### Float Arithmetic and Comparison
+
+| Function | Type | Description |
+|----------|------|-------------|
 | `add-f64` | `(Fn [Float Float] Float)` | Add two floats |
 | `sub-f64` | `(Fn [Float Float] Float)` | Subtract second from first |
 | `mul-f64` | `(Fn [Float Float] Float)` | Multiply two floats |
@@ -651,18 +1130,32 @@ Here is a complete list of the named primitives available:
 | `gt-f64` | `(Fn [Float Float] Bool)` | Greater than? |
 | `le-f64` | `(Fn [Float Float] Bool)` | Less than or equal? |
 | `ge-f64` | `(Fn [Float Float] Bool)` | Greater than or equal? |
+
+### Boolean
+
+| Function | Type | Description |
+|----------|------|-------------|
 | `not` | `(Fn [Bool] Bool)` | Negate a boolean |
+
+### String
+
+| Function | Type | Description |
+|----------|------|-------------|
+| `str-len` | `(Fn [String] Int)` | Length of a string |
+| `str-concat` | `(Fn [String String] String)` | Join two strings |
+| `str-eq` | `(Fn [String String] Bool)` | Compare two strings for equality |
+| `int-to-string` | `(Fn [Int] String)` | Convert integer to string |
+| `float-to-string` | `(Fn [Float] String)` | Convert float to string |
+| `bool-to-string` | `(Fn [Bool] String)` | Convert boolean to string |
 
 ## What is Next
 
-This guide covers the core of Cranelisp. As the language grows, you will gain access to:
+This guide covers Ring 0 (core expressions, functions, enums, pattern matching) and Ring 1 (strings, data types with fields, closures, higher-order functions). As the language grows, you will gain access to:
 
-- **Strings** -- text values like `"hello"`
-- **Data types with fields** -- types whose constructors carry data, like `(Some 42)`
-- **Closures** -- functions as values that you can pass around
+- **Collections** -- `Vec` for ordered collections of values
 - **Traits** -- shared behavior across types, with operator syntax like `+` and `*`
 - **Modules** -- organizing code across multiple files
 - **Macros** -- programs that write programs
 - **IO** -- reading input and writing output
 
-For now, experiment in the REPL. Try defining your own functions. Write a Fibonacci function. Define an enum type and match on it. The more you experiment, the more fluent you will become.
+Experiment in the REPL. Define your own types with fields. Write functions that return closures. Combine strings with ADTs to build descriptive outputs. The more you experiment, the more fluent you will become.

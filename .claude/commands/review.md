@@ -18,6 +18,17 @@ Review code written by compiler skills for simplicity, adherence to CLAUDE.md co
 - Escalates architectural concerns to `/arch`
 - Has **no blocking authority** — findings are advisory; skills decide whether to act immediately or defer
 
+### What `/review` Does NOT Do
+
+`/review` reviews code and design docs — it does not write implementation code. Specifically:
+
+- **NEVER edit source code** (anything under `crates/`, `src/` other than `src/CLAUDE.md`)
+- **NEVER edit test code** (anything under `tests/`)
+- **NEVER edit spec files** (`spec/`)
+- **NEVER edit other skills' design docs** — report findings, don't fix them
+
+`/review` owns: `design/review/`. Findings are reported to the owning skill via the review report. `/review` has no blocking authority — skills decide whether to act immediately or defer.
+
 ## First Steps (Phase B)
 
 1. Read all four audit files thoroughly:
@@ -35,8 +46,9 @@ Review code written by compiler skills for simplicity, adherence to CLAUDE.md co
 
 For each review session:
 
-1. Read the relevant audit file for the modules being reviewed
-2. Check that **HIGH-severity** audit findings are not reintroduced:
+1. **Start with design docs.** Read all design document changes for the sprint (in `design/frontend/`, `design/typecheck/`, `design/backend/`, `design/platform/`). Understand the intended solution before reviewing the code. If a skill made code changes without updating or creating a design doc, flag that as a finding.
+2. Read the relevant audit file for the modules being reviewed
+3. Check that **HIGH-severity** audit findings are not reintroduced:
    - Duplicate heap classification logic (`audits/codegen.md`)
    - ISA constructed separately from JIT path (`audits/codegen.md`)
    - Panics in non-test code (`audits/codegen.md`)
@@ -57,7 +69,13 @@ For each review session:
    - The risk surface should be **contained**: a reader should be able to find all `unsafe` usage by searching one module or type, not scattered across the crate. If `unsafe` usage is spreading, flag it as an architectural issue for `/arch`.
    - No `unsafe` in test code unless testing the unsafe boundary itself
    - Prefer safe abstractions: if an `unsafe` pattern can be replaced with a safe API (e.g., `Vec` instead of raw allocation, `Arc` instead of raw pointer sharing), flag it
-5. At ring completion: write `design/review/ring-N.md` summary, confirm `/arch`'s interface types are clean
+6. **Assess design doc completeness.** At the end of every review, evaluate whether each skill's design documents adequately explain the solution:
+   - Does a design doc exist for each major subsystem the skill changed?
+   - Does it explain the algorithm/approach, not just restate the interface contract?
+   - Are trade-offs and rejected alternatives documented?
+   - Is it current with the code, or has the code diverged?
+   - Flag missing or stale design docs as findings (Important severity)
+7. At ring completion: write `design/review/ring-N.md` summary, confirm `/arch`'s interface types are clean
 
 ## Key References
 

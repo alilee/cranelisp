@@ -21,6 +21,7 @@ impl TypeChecker {
     /// Two-pass pipeline:
     /// 1. Register type definitions and function signatures.
     /// 2. Check function bodies, generalize types.
+    #[must_use = "check result contains expr_types and method_resolutions needed by codegen"]
     pub fn check_program(
         &mut self,
         program: &[TopLevel],
@@ -39,6 +40,7 @@ impl TypeChecker {
     }
 
     /// Check a single REPL input incrementally.
+    #[must_use = "check result contains type and expr_types needed by codegen"]
     pub fn check_repl_input(
         &mut self,
         input: &ReplInput,
@@ -300,6 +302,18 @@ impl TypeChecker {
     fn build_check_result(&mut self) -> CheckResult {
         let resolved_expr_types = self.resolve_expr_types();
 
+        // Invariant: after monomorphisation (Ring 2+), no Type::Var should remain
+        // in expr_types. In Ring 0-1, polymorphic function bodies legitimately
+        // contain Var entries (e.g., `(defn id [x] x)` where x has a quantified
+        // type variable). This assertion activates in Ring 2 when monomorphisation
+        // resolves all type variables before codegen.
+        //
+        // TODO(Ring 2): uncomment when monomorphisation is implemented
+        // debug_assert!(
+        //     !resolved_expr_types.values().any(|ty| ty.contains_var()),
+        //     "build_check_result: unresolved Type::Var in expr_types"
+        // );
+
         CheckResult {
             method_resolutions: std::mem::take(&mut self.method_resolutions),
             constrained_fn_names: HashSet::new(),
@@ -315,6 +329,13 @@ impl TypeChecker {
     /// Build a ReplCheckResult from the current state.
     fn build_repl_result(&mut self, ty: Type, scheme: Option<Scheme>) -> ReplCheckResult {
         let resolved_expr_types = self.resolve_expr_types();
+
+        // See build_check_result comment: assertion deferred to Ring 2.
+        // TODO(Ring 2): uncomment when monomorphisation is implemented
+        // debug_assert!(
+        //     !resolved_expr_types.values().any(|ty| ty.contains_var()),
+        //     "build_repl_result: unresolved Type::Var in expr_types"
+        // );
 
         ReplCheckResult {
             ty,
@@ -934,6 +955,117 @@ mod tests {
                 assert_eq!(name.as_ref(), "add-i64");
             }
             _ => panic!("expected BuiltinFn"),
+        }
+    }
+
+    // --- Ring 1: Polymorphic ADT program tests ---
+
+    #[test]
+    fn test_check_program_polymorphic_typedef() {
+        let mut tc = TypeChecker::new();
+        // (deftype (Option a) None (Some [:a val]))
+        // (defn unwrap-or [opt default] (match opt [(Some x) x (None default)]))
+        let program = vec![
+            TopLevel::TypeDef {
+                name: TypeName::from("Option"),
+                docstring: None,
+                type_params: vec![Symbol::from("a")],
+                constructors: vec![
+                    cranelisp_types::ConstructorDef {
+                        name: Symbol::from("None"),
+                        docstring: None,
+                        fields: vec![],
+                        span: Span::SYNTHETIC,
+                    },
+                    cranelisp_types::ConstructorDef {
+                        name: Symbol::from("Some"),
+                        docstring: None,
+                        fields: vec![cranelisp_types::FieldDef {
+                            name: Symbol::from("val"),
+                            type_expr: cranelisp_types::TypeExpr::TypeVar(Symbol::from("a")),
+                        }],
+                        span: Span::SYNTHETIC,
+                    },
+                ],
+                visibility: Visibility::Public,
+                span: Span::SYNTHETIC,
+            },
+        ];
+
+        let result = tc.check_program(&program).unwrap();
+        assert!(result.type_defs.contains_key(&TypeName::from("Option")));
+        assert!(result.constructor_to_type.contains_key("Some"));
+        assert!(result.constructor_to_type.contains_key("None"));
+    }
+
+    #[test]
+    fn test_check_repl_polymorphic_typedef() {
+        let mut tc = TypeChecker::new();
+        let input = ReplInput::TypeDef {
+            name: TypeName::from("Option"),
+            docstring: None,
+            type_params: vec![Symbol::from("a")],
+            constructors: vec![
+                cranelisp_types::ConstructorDef {
+                    name: Symbol::from("None"),
+                    docstring: None,
+                    fields: vec![],
+                    span: Span::SYNTHETIC,
+                },
+                cranelisp_types::ConstructorDef {
+                    name: Symbol::from("Some"),
+                    docstring: None,
+                    fields: vec![cranelisp_types::FieldDef {
+                        name: Symbol::from("val"),
+                        type_expr: cranelisp_types::TypeExpr::TypeVar(Symbol::from("a")),
+                    }],
+                    span: Span::SYNTHETIC,
+                },
+            ],
+            visibility: Visibility::Public,
+            span: Span::SYNTHETIC,
+        };
+        let result = tc.check_repl_input(&input).unwrap();
+        assert!(result.type_defs.contains_key(&TypeName::from("Option")));
+    }
+
+    #[test]
+    fn test_check_repl_string_expression() {
+        let mut tc = TypeChecker::new();
+        let input = ReplInput::Expr(Expr::StringLit {
+            value: "hello".to_string(),
+            span: span(0, 7),
+        });
+        let result = tc.check_repl_input(&input).unwrap();
+        assert_eq!(result.ty, Type::String);
+    }
+
+    #[test]
+    fn test_check_program_string_in_function() {
+        let mut tc = TypeChecker::new();
+        // (defn greet [] "hello")
+        let program = vec![TopLevel::Defn(Defn {
+            name: Symbol::from("greet"),
+            docstring: None,
+            params: vec![],
+            param_annotations: vec![],
+            body: Expr::StringLit {
+                value: "hello".to_string(),
+                span: span(16, 23),
+            },
+            visibility: Visibility::Public,
+            span: span(0, 24),
+        })];
+
+        tc.check_program(&program).unwrap();
+
+        if let Some(ModuleEntry::Def { scheme, .. }) = tc.symbol_table.get("greet") {
+            assert_eq!(
+                scheme.ty,
+                Type::Fn(vec![], Box::new(Type::String))
+            );
+        } else {
+            panic!("greet not found in symbol table");
         }
     }
 }

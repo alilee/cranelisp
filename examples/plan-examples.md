@@ -62,38 +62,38 @@ Examples are numbered `01` through `30` (approximately). Each maps to one ring a
 
 ### Complete Learning Sequence
 
-| # | Title | Ring | Concept | Key Forms |
-|---|-------|------|---------|-----------|
-| 01 | Integers | 0 | Integer literals and arithmetic | `42`, `(+ 1 2)`, `(* 3 4)` |
-| 02 | Booleans | 0 | Boolean literals and comparisons | `true`, `false`, `(= 1 1)`, `(< 2 3)` |
-| 03 | Floats | 0 | Float literals and arithmetic | `3.14`, `(+ 1.5 2.5)`, `(* 2.0 3.0)` |
-| 04 | Conditionals | 0 | If expressions | `(if true 1 2)`, `(if (> 5 3) 10 20)` |
-| 05 | Let Bindings | 0 | Local names | `(let [x 5] (+ x 1))` |
-| 06 | Functions | 0 | Named functions (defn) | `(defn double [x] (* x 2))` |
-| 07 | Recursion | 0 | Self-recursive functions | factorial, fibonacci |
-| 08 | Enums | 0 | Enum types (nullary ADT) | `(deftype Color Red Green Blue)` |
-| 09 | Match | 0 | Pattern matching on enums | `(match c [Red 1 Green 2 Blue 3])` |
-| 10 | Polymorphism | 0 | Let-polymorphism and type variables | `(defn id [x] x)`, `(id 42)`, `(id true)` |
-| 11 | Strings | 1 | String type and operations | `"hello"`, `str-concat` |
-| 12 | ADTs with Fields | 1 | Product and sum types | `(deftype Point [:Int x :Int y])`, `(deftype (Option a) ...)` |
-| 13 | Destructuring Match | 1 | Pattern matching on data constructors | `(match (Some 42) [(Some x) x None 0])` |
-| 14 | Closures | 1 | Anonymous functions and capture | `(fn [x] (+ x 1))`, `(let [y 10] (fn [x] (+ x y)))` |
-| 15 | Higher-Order Functions | 1 | Functions as arguments and return values | `(defn apply-twice [f x] (f (f x)))` |
-| 16 | Vectors | 1 | Vec literals and operations | `[1 2 3]`, `vec-len`, `vec-get`, `vec-push` |
-| 17 | Lists | 1 | Linked list ADT | `(list 1 2 3)`, `head`, `tail`, `empty?` |
-| 18 | Traits | 2 | Trait declarations and implementations | `deftrait`, `impl`, method dispatch |
-| 19 | Constrained Poly | 2 | Constrained polymorphic functions | `(defn add [x y] (+ x y))` works on Int and Float |
-| 20 | Multi-Signature | 2 | Function overloading by type | `(defn size ([:Vec v] ...) ([:List l] ...))` |
-| 21 | Auto-Currying | 2 | Partial application | `(map (+ 1) [1 2 3])` |
-| 22 | Modules | 2 | Module declarations and imports | `(mod math)`, `(import [math [double]])` |
-| 23 | Lazy Sequences | 2 | Infinite sequences | `range-from`, `take`, `iterate` |
-| 24 | Macros | 3 | Compile-time code transformation | `defmacro`, quasiquote |
-| 25 | Threading Macros | 3 | Data pipeline composition | `->`, `->>` |
-| 26 | Derive | 3 | Auto-generated trait impls | `(derive [Eq Display] (deftype Color ...))` |
-| 27 | Hello World | 4 | IO model and print | `(platform stdio)`, `(defn main [] (print ...))` |
-| 28 | IO Sequencing | 4 | do and bind! | `do`, `bind!`, `pure` |
-| 29 | Interactive IO | 4 | User input | `read-line`, `parse-int`, IO loops |
-| 30 | Testing | 4 | Inline test modules | `mod test`, `assert-eq`, `run-tests` |
+**Numbering note**: The delivered file numbering is contiguous (01-13 so far). Ring 0 was delivered as examples 01-08 (condensed from the original 01-10 plan). Ring 1 continues as 09-13. Future rings will continue from 14.
+
+| # | File | Ring | Concept | Status |
+|---|------|------|---------|--------|
+| 01 | `01-integers.cl` | 0 | Integer literals and arithmetic | delivered |
+| 02 | `02-booleans.cl` | 0 | Boolean literals and comparisons | delivered |
+| 03 | `03-let-bindings.cl` | 0 | Local names with let | delivered |
+| 04 | `04-functions.cl` | 0 | Named functions (defn) | delivered |
+| 05 | `05-recursion.cl` | 0 | Self-recursive functions and TCO | delivered |
+| 06 | `06-enums.cl` | 0 | Enum types and pattern matching | delivered |
+| 07 | `07-polymorphism.cl` | 0 | Let-polymorphism and type variables | delivered |
+| 08 | `08-floats.cl` | 0 | Float literals and arithmetic | delivered |
+| 09 | `09-strings.cl` | 1 | String type and operations | delivered |
+| 10 | `10-adts.cl` | 1 | Product and sum types with fields | delivered |
+| 11 | `11-destructuring.cl` | 1 | Pattern matching on data constructors | delivered |
+| 12 | `12-closures.cl` | 1 | Anonymous functions and capture | delivered |
+| 13 | `13-higher-order.cl` | 1 | Functions as arguments and return values | delivered |
+| 14 | Vectors | 1 | Vec literals and operations | deferred (Sprint 3) |
+| 15 | Lists | 1 | Linked list ADT | deferred (Sprint 3) |
+| 16 | Traits | 2 | Trait declarations and implementations | planned |
+| 17 | Constrained Poly | 2 | Constrained polymorphic functions | planned |
+| 18 | Multi-Signature | 2 | Function overloading by type | planned |
+| 19 | Auto-Currying | 2 | Partial application | planned |
+| 20 | Modules | 2 | Module declarations and imports | planned |
+| 21 | Lazy Sequences | 2 | Infinite sequences | planned |
+| 22 | Macros | 3 | Compile-time code transformation | planned |
+| 23 | Threading Macros | 3 | Data pipeline composition | planned |
+| 24 | Derive | 3 | Auto-generated trait impls | planned |
+| 25 | Hello World | 4 | IO model and print | planned |
+| 26 | IO Sequencing | 4 | do and bind! | planned |
+| 27 | Interactive IO | 4 | User input | planned |
+| 28 | Testing | 4 | Inline test modules | planned |
 
 ### Feature Coverage Verification
 
@@ -551,87 +551,218 @@ Ring 0 examples are REPL sessions. Each example is a file containing a comment h
 | Batch/REPL identical results | All (REPL session format) |
 | REPL experience tests pass | All (`:Type value` format demonstrated) |
 
-## 4. Ring 1 Examples (Outline)
+## 4. Ring 1 Examples (Concrete)
 
-Ring 1 adds: `String` type, heap allocation (ADTs with fields, closures), reference counting, `Vec`, `List`.
+Ring 1 adds: `String` type, heap allocation (ADTs with fields, closures), reference counting. Vec and List deferred to Sprint 3.
 
-### Example 11: Strings
+**Note on numbering**: Ring 0 examples were delivered as 01-08. Ring 1 examples continue as 09-13 (renumbered from the original plan's 11-15 to maintain a contiguous sequence). Vec (16) and List (17) are deferred.
 
-- String literals: `"hello"`
-- `str-concat` for concatenation
-- Expected output: `:primitives/String "hello, world!"`
+### Example 09: Strings
 
-### Example 12: ADTs with Fields
+```clojure
+;; String literals, concatenation, equality, conversion.
+;; Since batch programs return Int from main, we use str-len
+;; and str-eq to convert string results to integers.
 
-- Product type: `(deftype Point [:Int x :Int y])`, constructor `(Point 3 4)`
-- Sum type: `(deftype (Option a) None (Some [:a val]))`, constructors `None`, `(Some 42)`
-- Polymorphic shortcut: `(deftype Pair [first second])`
-- Expected output: `:(user/Point) (Point 3 4)`, `:(user/Option primitives/Int) (Option.Some 42)`
+;; String literal length
+(defn test-literal-len [] (str-len "hello"))     ;; -> 5
 
-### Example 13: Destructuring Match
+;; Concatenation produces a new string
+(defn test-concat []
+  (str-len (str-concat "hello" " world")))       ;; -> 11
 
-- Match on data constructors: `(match (Some 42) [(Some x) x None 0])`
-- Match on product type: `(match (Point 3 4) [(Point px py) (+ px py)])`
-- Wildcard `_` in data match
+;; String equality
+(defn test-eq []
+  (if (str-eq "abc" "abc") 1 0))                 ;; -> 1
 
-### Example 14: Closures
+;; Convert an integer to a string
+(defn test-int-to-string []
+  (str-len (int-to-string 42)))                  ;; -> 2
 
-- Anonymous functions: `(fn [x] (+ x 1))`
-- Closure capture: `(let [y 10] (fn [x] (+ x y)))`
-- Expected output: `:(Fn [primitives/Int] primitives/Int) <closure>`
+;; Strings in let bindings
+(defn test-let-string []
+  (let [greeting "hello"
+        name     "world"
+        msg      (str-concat (str-concat greeting ", ") name)]
+    (str-len msg)))                               ;; -> 12
 
-### Example 15: Higher-Order Functions
+;; Strings passed to and returned from functions
+(defn make-greeting [who]
+  (str-concat "hello, " who))
 
-- `(defn apply-twice [f x] (f (f x)))`
-- `(defn make-adder [n] (fn [x] (+ n x)))`
-- Composing function arguments
+(defn test-fn-string []
+  (str-len (make-greeting "cranelisp")))          ;; -> 16
+```
 
-### Example 16: Vectors
+**Covers**: string literals, `str-concat`, `str-eq`, `str-len`, `int-to-string`, `float-to-string`, `bool-to-string`, strings in let bindings, strings as function args/returns.
+**Expected main return**: 55
 
-- Vec literal: `[1 2 3]`
-- `vec-len`, `vec-get`, `vec-push`, `vec-set`
-- Immutable semantics (operations return new Vecs)
+### Example 10: ADTs with Fields
 
-### Example 17: Lists
+```clojure
+;; Product types, sum types, polymorphic ADTs, shortcut syntax.
 
-- `(list 1 2 3)` via prelude macro
-- `head`, `tail`, `empty?`
-- Recursive list processing: length, sum
+;; Product type: a 2D point
+(deftype Point [:Int x :Int y])
+(defn get-x [p] (match p [(Point px py) px]))
+
+;; Sum type: polymorphic Option
+(deftype (Option a) None (Some [:a val]))
+(defn unwrap-or [opt default]
+  (match opt [(Some x) x  None default]))
+
+;; Two-constructor sum type
+(deftype (Either a b) (Left [:a val]) (Right [:b val]))
+
+;; Shortcut syntax: bare field names, types inferred
+(deftype Pair [first second])
+```
+
+**Covers**: product types with typed fields, polymorphic sum types, Either (two data constructors), shortcut syntax, constructors as function calls, ADTs returned from functions.
+**Expected main return**: 265
+
+### Example 11: Destructuring Match
+
+```clojure
+;; Pattern matching on data constructors to extract fields.
+
+;; Constructor pattern binds fields
+(match (Point 3 4) [(Point x y) (add-i64 x y)])  ;; -> 7
+
+;; Sum type discrimination
+(match (Some 42) [(Some x) x  None 0])            ;; -> 42
+
+;; Wildcard ignores the value
+(match (Some 42) [(Some _) 1  _ 0])                ;; -> 1
+
+;; Nested match for chained operations
+(defn add-opts [a b]
+  (match a
+    [None 0
+     (Some x) (match b [None x  (Some y) (add-i64 x y)])]))
+
+;; Safe division returning Option + chained match
+(defn safe-div [a b]
+  (if (eq-i64 b 0) None (Some (div-i64 a b))))
+```
+
+**Covers**: product destructuring, sum type discrimination, wildcard `_`, variable binding patterns, nested match, practical use (safe division with Option chaining).
+**Expected main return**: 69
+
+### Example 12: Closures
+
+```clojure
+;; Anonymous functions (fn) and variable capture.
+
+;; Immediate call
+((fn [x] (add-i64 x 1)) 5)                        ;; -> 6
+
+;; Lambda in let binding
+(let [double (fn [x] (mul-i64 x 2))] (double 21)) ;; -> 42
+
+;; Closure captures a variable
+(let [n 10] ((fn [x] (add-i64 n x)) 32))          ;; -> 42
+
+;; Function returning a closure (factory pattern)
+(defn make-adder [n] (fn [x] (add-i64 n x)))
+((make-adder 10) 32)                               ;; -> 42
+
+;; Nested closures
+(let [a 1]
+  (let [f (fn [x] (add-i64 a x))]
+    (let [g (fn [y] (f y))] (g 9))))               ;; -> 10
+```
+
+**Covers**: anonymous functions, zero/multi-parameter lambdas, single and multiple variable capture, boolean capture, closures as return values, factory pattern, nested closures, closure in if branches.
+**Expected main return**: 263
+
+### Example 13: Higher-Order Functions
+
+```clojure
+;; Functions as arguments and return values.
+
+;; Apply a function to a value
+(defn apply-fn [f x] (f x))
+
+;; Apply a function twice
+(defn apply-twice [f x] (f (f x)))
+
+;; Apply n times (recursion + higher-order)
+(defn repeat-fn [f n x]
+  (if (eq-i64 n 0) x (repeat-fn f (sub-i64 n 1) (f x))))
+
+;; Named functions as values
+(defn inc [x] (add-i64 x 1))
+(apply-fn inc 41)                                   ;; -> 42
+
+;; Function composition
+(defn compose [f g] (fn [x] (f (g x))))
+((compose inc double) 10)                           ;; -> 21
+
+;; Pipeline: chain three transformations
+(defn pipeline3 [f g h x] (h (g (f x))))
+```
+
+**Covers**: functions as arguments, apply-twice, recursive apply-n-times, named functions passed as values, function factories, function composition via compose, transform-and-check pattern, three-stage pipeline.
+**Expected main return**: 203
+
+### Ring 1 Acceptance Criteria Coverage
+
+| Acceptance Criterion | Example(s) |
+|---|---|
+| String literals | 09 |
+| `str-concat`, `str-eq`, `str-len` | 09 |
+| `int-to-string`, `bool-to-string` | 09 |
+| Product types with typed fields | 10, 11 |
+| Polymorphic sum types (Option) | 10, 11 |
+| Data-constructor match with field binding | 11 |
+| Wildcard `_` in data match | 11 |
+| Nested match | 11 |
+| Lambda expressions (fn) | 12 |
+| Variable capture (closures) | 12 |
+| Closures as return values | 12, 13 |
+| Higher-order function application | 13 |
+| Function composition | 13 |
+| Named functions as values | 13 |
+
+### Deferred to Sprint 3
+
+Examples 16 (Vectors) and 17 (Lists) are deferred alongside Vec (Chunk D).
 
 ## 5. Ring 2 Examples (Outline)
 
 Ring 2 adds: traits, trait implementations, constrained polymorphism, monomorphisation, multi-signature dispatch, modules, imports/exports.
 
-### Example 18: Traits
+### Example 16: Traits
 
 - `(deftrait (Doubled a) (doubled [a] Int))`
 - `(impl Doubled Int (defn doubled [x] (* x 2)))`
 - Method dispatch: `(doubled 21)` -> `:primitives/Int 42`
 
-### Example 19: Constrained Polymorphism
+### Example 17: Constrained Polymorphism
 
 - `(defn add [x y] (+ x y))` inferred as `:(Fn [:Num a :a] a)`
 - `(add 1 2)` -> Int, `(add 1.5 2.5)` -> Float
 - Monomorphisation at call sites
 
-### Example 20: Multi-Signature Dispatch
+### Example 18: Multi-Signature Dispatch
 
 - `(defn size ([:Vec v] (vec-len v)) ([:List l] (list-len l)))`
 - Static dispatch based on argument type
 
-### Example 21: Auto-Currying
+### Example 19: Auto-Currying
 
 - `(+ 1)` returns a closure
 - `(map (+ 1) [1 2 3])` -> `[2 3 4]`
 
-### Example 22: Modules
+### Example 20: Modules
 
 - `(mod math)` declaration
 - `(import [math [double]])` selective import
 - `(import [math [*]])` glob import
 - Qualified calls: `(math/double 21)`
 
-### Example 23: Lazy Sequences
+### Example 21: Lazy Sequences
 
 - `(range-from 0)` infinite sequence
 - `(take 5 (range-from 0))` finite slice
@@ -642,19 +773,19 @@ Ring 2 adds: traits, trait implementations, constrained polymorphism, monomorphi
 
 Ring 3 adds: macros (`defmacro`), quasiquote, multi-clause macros, derive, prelude macros (`->`, `->>`, `cond`, `case`, `vec`, `list`).
 
-### Example 24: Macros
+### Example 22: Macros
 
 - `(defmacro my-inc [x] \`(+ ~x 1))`
 - Quasiquote with unquote
 - `(my-inc 41)` -> `:primitives/Int 42`
 
-### Example 25: Threading Macros
+### Example 23: Threading Macros
 
 - `(-> 5 (+ 1) (* 2))` thread-first
 - `(->> [1 2 3] (map inc) (filter (fn [x] (> x 2))))` thread-last
 - Data pipeline style
 
-### Example 26: Derive
+### Example 24: Derive
 
 - `(derive [Eq Ord Display] (deftype Color Red Green Blue))`
 - `(= Color.Red Color.Red)` -> `true`
@@ -664,25 +795,25 @@ Ring 3 adds: macros (`defmacro`), quasiquote, multi-clause macros, derive, prelu
 
 Ring 4 adds: IO model (platform, `print`, `read-line`), `do`/`bind!`/`pure` macros, `main` entry point, parallel evaluation, testing infrastructure.
 
-### Example 27: Hello World
+### Example 25: Hello World
 
 - `(platform stdio)`, `(import [platform.stdio [*]])`
 - `(defn main [] (print "hello, world!"))`
 - First batch-mode program
 
-### Example 28: IO Sequencing
+### Example 26: IO Sequencing
 
 - `do` for sequencing IO actions
 - `bind!` for capturing IO results
 - `pure` for wrapping values in IO
 
-### Example 29: Interactive IO
+### Example 27: Interactive IO
 
 - `read-line`, `parse-int`
 - IO loop with recursion
 - Error handling with `Option` in IO context
 
-### Example 30: Testing
+### Example 28: Testing
 
 - `(mod test)` inline test submodule
 - `(import [testing [*]])`, `assert-eq`, `check`
@@ -690,68 +821,62 @@ Ring 4 adds: IO model (platform, `print`, `read-line`), `do`/`bind!`/`pure` macr
 
 ## 8. Appendix B Cross-Reference
 
-The spec's Appendix B contains 13 extended examples. Each maps to one or more learning-sequence examples:
+The spec's Appendix B contains 13 extended examples. Each maps to one or more learning-sequence examples (using delivered numbering):
 
 | Appendix B | Learning Sequence | Notes |
 |---|---|---|
-| B.1 Hello World | 27 | Deferred to Ring 4 (IO) |
-| B.2 Factorial | 07 | Ring 0 (REPL, no print) |
-| B.3 Algebraic Data Types | 08, 09, 12, 13 | Split across Ring 0 (enum) and Ring 1 (fields) |
-| B.4 IO with bind! | 29 | Ring 4 |
-| B.5 Lazy Sequences | 23 | Ring 2 |
-| B.6 Macros | 24 | Ring 3 |
-| B.7 Higher-Order Functions | 14, 15 | Ring 1 |
-| B.8 Threading Macros | 25 | Ring 3 |
-| B.9 Multi-Signature Dispatch | 20 | Ring 2 |
-| B.10 Constrained Polymorphism | 19 | Ring 2 |
-| B.11 IO Sequencing with do | 28 | Ring 4 |
-| B.12 Conditional IO with pure | 28 | Ring 4 (combined into IO Sequencing) |
-| B.13 Combining do and bind! | 29 | Ring 4 (combined into Interactive IO) |
+| B.1 Hello World | 25 | Deferred to Ring 4 (IO) |
+| B.2 Factorial | 05 | Ring 0 (recursion) |
+| B.3 Algebraic Data Types | 06, 10, 11 | Ring 0 (enums) and Ring 1 (fields, destructuring) |
+| B.4 IO with bind! | 27 | Ring 4 |
+| B.5 Lazy Sequences | 21 | Ring 2 |
+| B.6 Macros | 22 | Ring 3 |
+| B.7 Higher-Order Functions | 12, 13 | Ring 1 |
+| B.8 Threading Macros | 23 | Ring 3 |
+| B.9 Multi-Signature Dispatch | 18 | Ring 2 |
+| B.10 Constrained Polymorphism | 17 | Ring 2 |
+| B.11 IO Sequencing with do | 26 | Ring 4 |
+| B.12 Conditional IO with pure | 26 | Ring 4 (combined into IO Sequencing) |
+| B.13 Combining do and bind! | 27 | Ring 4 (combined into Interactive IO) |
 
 ## 9. File Structure
 
 ```
 examples/
-  CLAUDE.md           — conventions, numbering, per-ring availability
-  01-integers.cl
-  02-booleans.cl
-  03-floats.cl
-  04-conditionals.cl
-  05-let-bindings.cl
-  06-functions.cl
-  07-recursion.cl
-  08-enums.cl
-  09-match.cl
-  10-polymorphism.cl
-  11-strings.cl
-  12-adts.cl
-  13-destructuring.cl
-  14-closures.cl
-  15-higher-order.cl
-  16-vectors.cl
-  17-lists.cl
-  18-traits.cl
-  19-constrained-poly.cl
-  20-multi-sig.cl
-  21-auto-curry.cl
-  22-modules/           — multi-file example
-    main.cl
-    math.cl
-  23-lazy-sequences.cl
-  24-macros.cl
-  25-threading.cl
-  26-derive.cl
-  27-hello-world.cl
-  28-io-sequencing.cl
-  29-interactive-io.cl
-  30-testing/           — multi-file example
-    main.cl
-    test.cl
+  plan-examples.md      — this file
+  01-integers.cl        — delivered (Ring 0)
+  02-booleans.cl        — delivered (Ring 0)
+  03-let-bindings.cl    — delivered (Ring 0)
+  04-functions.cl       — delivered (Ring 0)
+  05-recursion.cl       — delivered (Ring 0)
+  06-enums.cl           — delivered (Ring 0)
+  07-polymorphism.cl    — delivered (Ring 0)
+  08-floats.cl          — delivered (Ring 0)
+  09-strings.cl         — delivered (Ring 1)
+  10-adts.cl            — delivered (Ring 1)
+  11-destructuring.cl   — delivered (Ring 1)
+  12-closures.cl        — delivered (Ring 1)
+  13-higher-order.cl    — delivered (Ring 1)
+  14-vectors.cl         — deferred (Sprint 3)
+  15-lists.cl           — deferred (Sprint 3)
+  16-traits.cl          — planned (Ring 2)
+  17-constrained-poly.cl — planned (Ring 2)
+  18-multi-sig.cl       — planned (Ring 2)
+  19-auto-curry.cl      — planned (Ring 2)
+  20-modules/           — planned (Ring 2, multi-file)
+  21-lazy-sequences.cl  — planned (Ring 2)
+  22-macros.cl          — planned (Ring 3)
+  23-threading.cl       — planned (Ring 3)
+  24-derive.cl          — planned (Ring 3)
+  25-hello-world.cl     — planned (Ring 4)
+  26-io-sequencing.cl   — planned (Ring 4)
+  27-interactive-io.cl  — planned (Ring 4)
+  28-testing/           — planned (Ring 4, multi-file)
 ```
 
 ## Next skills
 
-- `/docs` -- Getting-started tutorial can mirror examples 01-10 for Ring 0 content; documentation structure should reference the learning sequence
-- `/qa` -- Ring 0 integration tests should exercise the same expressions as examples 01-10; usability register may receive findings when examples are tested against the compiler
-- `/repl` -- REPL experience tests should verify the `:Type value` output format shown in Ring 0 examples
-- `/stdlib` -- Examples 17+ (list, traits, macros, threading) depend on stdlib availability; stdlib plan should align with example ring assignments
+- `/docs` -- Getting-started tutorial can reference examples 09-13 for Ring 1 content; update tutorial sections 14-18, 21
+- `/qa` -- Ring 1 integration tests are passing; usability register may receive findings from Ring 1 example validation
+- `/repl` -- REPL experience tests for Ring 1 heap type display (strings, ADTs, closures)
+- `/review` -- Ring gate review can confirm examples 09-13 exercise all Ring 1 acceptance criteria

@@ -237,6 +237,7 @@ dependencies = [
  "cranelift-jit",
  "cranelift-module",
  "cranelift-native",
+ "cranelisp-runtime",
  "cranelisp-types",
 ]
 
@@ -256,6 +257,7 @@ name = "cranelisp-runtime"
 version = "0.1.0"
 dependencies = [
  "cranelisp-platform",
+ "cranelisp-types",
 ]
 
 [[package]]

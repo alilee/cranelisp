@@ -1,0 +1,51 @@
+; Cranelisp Ring 1 — Heap Types
+; Strings, algebraic data types, closures
+
+; === Strings ===
+
+"hello, world"
+(str-len "cranelisp")
+(str-concat "hello" " world")
+(int-to-string 42)
+(str-eq "abc" "abc")
+
+; === Defining types with fields ===
+
+(deftype Point [:Int x :Int y])
+(Point 3 4)
+
+(deftype (Option a) None (Some [:a val]))
+(Some 42)
+None
+
+; === Pattern matching ===
+
+(defn get-or-zero [o] (match o [None 0 (Some x) x]))
+(get-or-zero (Some 99))
+(get-or-zero None)
+
+(defn sum-point [p] (match p [(Point a b) (add-i64 a b)]))
+(sum-point (Point 3 4))
+
+; === Closures ===
+
+(let [add-five (fn [x] (add-i64 x 5))] (add-five 10))
+
+(defn make-adder [n] (fn [x] (add-i64 n x)))
+(let [add-ten (make-adder 10)] (add-ten 25))
+
+; === Higher-order functions ===
+
+(defn apply-twice [f x] (f (f x)))
+(defn inc [n] (add-i64 n 1))
+(apply-twice inc 5)
+
+(defn compose [f g] (fn [x] (f (g x))))
+(let [double (fn [x] (mul-i64 x 2))] (let [inc-then-double (compose double inc)] (inc-then-double 4)))
+
+; === Putting it together ===
+
+; Combining ADTs, closures, and higher-order functions
+(defn transform [f opt] (match opt [None None (Some x) (Some (f x))]))
+(transform inc (Some 41))
+(transform inc None)

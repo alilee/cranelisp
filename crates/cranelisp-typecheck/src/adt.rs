@@ -1,17 +1,18 @@
 //! ADT type definitions: registration, constructor lookup, exhaustiveness checking.
 //!
-//! Ring 0 handles enum-only ADTs (all constructors nullary, no type params).
-//! Ring 1 extends to handle data constructors with fields and type parameters.
+//! Handles both enum-only ADTs (nullary constructors, Ring 0) and parameterized
+//! ADTs with data constructor fields (Ring 1). Polymorphic types produce
+//! polymorphic constructor schemes via `build_constructor_scheme`.
 
 use std::collections::HashMap;
 
 use cranelisp_types::{
-    ConstructorDef, ConstructorInfo, CranelispError, ModuleEntry,
-    Span, Symbol, Type, TypeDefInfo, TypeName, Visibility,
+    ConstructorDef, ConstructorInfo, CranelispError, FieldInfo, ModuleEntry,
+    Scheme, Span, Symbol, Type, TypeDefInfo, TypeId, TypeName, Visibility,
 };
 
 use crate::checker::TypeChecker;
-use crate::scheme::mono;
+use crate::resolve::resolve_type_expr;
 
 /// Registry of user-defined type definitions.
 #[derive(Debug, Clone)]
@@ -40,9 +41,13 @@ impl TypeDefRegistry {
         self.constructor_to_type.get(ctor_name)
     }
 
-    /// Build a map of known type names (for type expression resolution).
-    pub fn known_types(&self) -> HashMap<TypeName, ()> {
-        self.type_defs.keys().map(|k| (k.clone(), ())).collect()
+    /// Build a map of known type names with their type parameter counts.
+    /// Used by `resolve_type_expr` for ADT lookup and arity validation.
+    pub fn known_types(&self) -> crate::resolve::KnownTypes {
+        self.type_defs
+            .iter()
+            .map(|(k, info)| (k.clone(), info.type_params.len()))
+            .collect()
     }
 }
 
@@ -55,8 +60,9 @@ impl Default for TypeDefRegistry {
 impl TypeChecker {
     /// Register a type definition from a TopLevel::TypeDef.
     ///
-    /// Ring 0: enum-only (all constructors nullary, no type params).
-    /// Validates that Ring 0 constraints are met.
+    /// Handles both nullary enums (Ring 0) and parameterized ADTs with data
+    /// constructor fields (Ring 1). Allocates fresh type vars for type parameters,
+    /// resolves field types, and produces polymorphic constructor schemes.
     pub(crate) fn register_type_def(
         &mut self,
         name: &TypeName,
@@ -66,43 +72,21 @@ impl TypeChecker {
         visibility: Visibility,
         span: Span,
     ) -> Result<(), CranelispError> {
-        // Ring 0: no type parameters
-        if !type_params.is_empty() {
-            return Err(CranelispError::TypeError {
-                message: format!(
-                    "type {name}: parameterized types not supported in Ring 0"
-                ),
-                span,
-            });
-        }
+        // Allocate fresh type vars for type parameters
+        let (var_map, type_var_ids) = self.allocate_type_params(type_params);
 
-        // Validate constructors (Ring 0: all nullary) and build info
-        for ctor in constructors {
-            if !ctor.fields.is_empty() {
-                return Err(CranelispError::TypeError {
-                    message: format!(
-                        "constructor {} of type {name}: data constructors with fields not supported in Ring 0",
-                        ctor.name
-                    ),
-                    span: ctor.span,
-                });
-            }
-        }
+        // Build the ADT result type using the type parameter vars
+        let type_args: Vec<Type> = type_var_ids.iter().map(|&id| Type::Var(id)).collect();
+        let adt_type = Type::ADT(name.clone(), type_args);
 
-        let ctor_infos: Vec<ConstructorInfo> = constructors
-            .iter()
-            .enumerate()
-            .map(|(tag, ctor)| ConstructorInfo {
-                name: ctor.name.clone(),
-                tag,
-                fields: vec![],
-                docstring: ctor.docstring.clone(),
-            })
-            .collect();
+        // Build constructor infos with resolved field types
+        let ctor_infos = self.build_constructor_infos(
+            name, constructors, &var_map, span,
+        )?;
 
         let type_def_info = TypeDefInfo {
             name: name.clone(),
-            type_params: vec![],
+            type_params: type_params.to_vec(),
             constructors: ctor_infos,
             docstring: docstring.clone(),
         };
@@ -112,11 +96,127 @@ impl TypeChecker {
             .type_defs
             .insert(name.clone(), type_def_info.clone());
 
-        // Register each constructor
-        let adt_type = Type::ADT(name.clone(), vec![]);
+        // Register each constructor with its scheme
+        self.register_constructors(
+            name, &type_def_info, &adt_type, &type_var_ids, visibility,
+        );
+
+        // If a single constructor has the same name as the type (product type),
+        // store its scheme so lookups find the constructor through the TypeDef.
+        let ctor_scheme = self.find_same_name_constructor_scheme(name);
+
+        // Register the type in the symbol table
+        self.symbol_table.insert(
+            Symbol::from(name.as_ref()),
+            ModuleEntry::TypeDef {
+                info: type_def_info,
+                visibility,
+                constructor_scheme: ctor_scheme,
+                sexp: None,
+            },
+        );
+
+        Ok(())
+    }
+
+    /// Allocate fresh type variables for type parameters.
+    /// Returns a var_map (param name -> TypeId) and the ordered list of TypeIds.
+    fn allocate_type_params(
+        &mut self,
+        type_params: &[Symbol],
+    ) -> (HashMap<Symbol, TypeId>, Vec<TypeId>) {
+        let mut var_map = HashMap::new();
+        let mut type_var_ids = Vec::new();
+        for param in type_params {
+            let (_, id) = self.fresh_var_id();
+            var_map.insert(param.clone(), id);
+            type_var_ids.push(id);
+        }
+        (var_map, type_var_ids)
+    }
+
+    /// Build ConstructorInfo entries with resolved field types.
+    fn build_constructor_infos(
+        &self,
+        type_name: &TypeName,
+        constructors: &[ConstructorDef],
+        var_map: &HashMap<Symbol, TypeId>,
+        span: Span,
+    ) -> Result<Vec<ConstructorInfo>, CranelispError> {
+        let known_types = self.known_type_names();
+
+        constructors
+            .iter()
+            .enumerate()
+            .map(|(tag, ctor)| {
+                self.build_single_ctor_info(
+                    type_name, ctor, tag, var_map, &known_types, span,
+                )
+            })
+            .collect()
+    }
+
+    /// Build a single ConstructorInfo with resolved field types.
+    fn build_single_ctor_info(
+        &self,
+        _type_name: &TypeName,
+        ctor: &ConstructorDef,
+        tag: usize,
+        var_map: &HashMap<Symbol, TypeId>,
+        known_types: &crate::resolve::KnownTypes,
+        span: Span,
+    ) -> Result<ConstructorInfo, CranelispError> {
+        let fields: Vec<FieldInfo> = ctor
+            .fields
+            .iter()
+            .map(|field| {
+                let ty = resolve_type_expr(
+                    &field.type_expr, var_map, known_types, span,
+                )?;
+                Ok(FieldInfo {
+                    name: field.name.clone(),
+                    ty,
+                })
+            })
+            .collect::<Result<Vec<_>, CranelispError>>()?;
+
+        Ok(ConstructorInfo {
+            name: ctor.name.clone(),
+            tag,
+            fields,
+            docstring: ctor.docstring.clone(),
+        })
+    }
+
+    /// If a constructor has the same name as the type, return its scheme.
+    /// This supports product-type syntax like `(deftype Point [:Int x :Int y])`.
+    fn find_same_name_constructor_scheme(
+        &self,
+        type_name: &TypeName,
+    ) -> Option<Scheme> {
+        let ctor_sym = Symbol::from(type_name.as_ref());
+        if let Some(ModuleEntry::Constructor { scheme, .. }) =
+            self.symbol_table.get(ctor_sym.as_ref())
+        {
+            Some(scheme.clone())
+        } else {
+            None
+        }
+    }
+
+    /// Register constructors in symbol table and constructor_to_type map.
+    fn register_constructors(
+        &mut self,
+        name: &TypeName,
+        type_def_info: &TypeDefInfo,
+        adt_type: &Type,
+        type_var_ids: &[TypeId],
+        visibility: Visibility,
+    ) {
         for ctor_info in &type_def_info.constructors {
-            // Nullary constructors have type: ADT_name (no args)
-            let ctor_scheme = mono(adt_type.clone());
+            let ctor_scheme = build_constructor_scheme(
+                ctor_info, adt_type, type_var_ids,
+            );
 
             self.symbol_table.insert(
                 ctor_info.name.clone(),
@@ -132,21 +232,44 @@ impl TypeChecker {
                 .constructor_to_type
                 .insert(ctor_info.name.clone(), name.clone());
         }
-
-        // Register the type in the symbol table (after constructors, consuming type_def_info)
-        self.symbol_table.insert(
-            Symbol::from(name.as_ref()),
-            ModuleEntry::TypeDef {
-                info: type_def_info,
-                visibility,
-                constructor_scheme: None,
-                sexp: None,
-            },
-        );
-
-        Ok(())
     }
 
+}
+
+/// Build a type scheme for a constructor.
+///
+/// Nullary constructors: `forall [vars]. ADT_Type`
+/// Data constructors:    `forall [vars]. (Fn [field_types] ADT_Type)`
+///
+/// If there are no type parameters (vars is empty), the scheme is monomorphic.
+fn build_constructor_scheme(
+    ctor_info: &ConstructorInfo,
+    adt_type: &Type,
+    type_var_ids: &[TypeId],
+) -> Scheme {
+    let vars: Vec<TypeId> = type_var_ids.to_vec();
+
+    let ty = if ctor_info.fields.is_empty() {
+        // Nullary constructor: just the ADT type
+        adt_type.clone()
+    } else {
+        // Data constructor: Fn([field types...], ADT type)
+        let param_types: Vec<Type> = ctor_info
+            .fields
+            .iter()
+            .map(|f| f.ty.clone())
+            .collect();
+        Type::Fn(param_types, Box::new(adt_type.clone()))
+    };
+
+    Scheme {
+        vars,
+        constraints: HashMap::new(),
+        ty,
+    }
+}
+
+impl TypeChecker {
     /// Check exhaustiveness of match arms against an ADT type.
     ///
     /// Returns Ok(()) if the match is exhaustive, Err with details otherwise.
@@ -261,43 +384,117 @@ mod tests {
     }
 
     #[test]
-    fn test_reject_type_params_in_ring_0() {
+    fn test_register_polymorphic_option() {
         let mut tc = TypeChecker::new();
-        let err = tc
-            .register_type_def(
-                &TypeName::from("Option"),
-                &None,
-                &[Symbol::from("a")],
-                &[make_ctor("None"), make_ctor("Some")],
-                Visibility::Public,
-                Span::SYNTHETIC,
-            )
-            .unwrap_err();
-        assert!(err.message().contains("parameterized types"));
+        tc.register_type_def(
+            &TypeName::from("Option"),
+            &None,
+            &[Symbol::from("a")],
+            &[
+                make_ctor("None"),
+                ConstructorDef {
+                    name: Symbol::from("Some"),
+                    docstring: None,
+                    fields: vec![cranelisp_types::FieldDef {
+                        name: Symbol::from("val"),
+                        type_expr: cranelisp_types::TypeExpr::TypeVar(Symbol::from("a")),
+                    }],
+                    span: Span::SYNTHETIC,
+                },
+            ],
+            Visibility::Public,
+            Span::SYNTHETIC,
+        )
+        .unwrap();
+
+        // None should be polymorphic: forall [a]. (Option a)
+        if let Some(ModuleEntry::Constructor { scheme, .. }) = tc.symbol_table.get("None") {
+            assert_eq!(scheme.vars.len(), 1, "None should have 1 quantified var");
+            match &scheme.ty {
+                Type::ADT(name, args) => {
+                    assert_eq!(name.as_ref(), "Option");
+                    assert_eq!(args.len(), 1);
+                    assert!(matches!(args[0], Type::Var(_)));
+                }
+                _ => panic!("None should have ADT type, got {:?}", scheme.ty),
+            }
+        } else {
+            panic!("None should be a Constructor entry");
+        }
+
+        // Some should be polymorphic: forall [a]. (Fn [a] (Option a))
+        if let Some(ModuleEntry::Constructor { scheme, .. }) = tc.symbol_table.get("Some") {
+            assert_eq!(scheme.vars.len(), 1, "Some should have 1 quantified var");
+            match &scheme.ty {
+                Type::Fn(params, ret) => {
+                    assert_eq!(params.len(), 1);
+                    assert!(matches!(params[0], Type::Var(_)));
+                    match ret.as_ref() {
+                        Type::ADT(name, args) => {
+                            assert_eq!(name.as_ref(), "Option");
+                            assert_eq!(args.len(), 1);
+                            // The type var in Fn param should match the one in ADT args
+                            assert_eq!(params[0], args[0]);
+                        }
+                        _ => panic!("Some return should be ADT"),
+                    }
+                }
+                _ => panic!("Some should have Fn type, got {:?}", scheme.ty),
+            }
+        } else {
+            panic!("Some should be a Constructor entry");
+        }
     }
 
     #[test]
-    fn test_reject_data_constructors_in_ring_0() {
+    fn test_register_product_type_with_fields() {
         let mut tc = TypeChecker::new();
-        let err = tc
-            .register_type_def(
-                &TypeName::from("Pair"),
-                &None,
-                &[],
-                &[ConstructorDef {
-                    name: Symbol::from("MkPair"),
-                    docstring: None,
-                    fields: vec![cranelisp_types::FieldDef {
+        tc.register_type_def(
+            &TypeName::from("Pair"),
+            &None,
+            &[],
+            &[ConstructorDef {
+                name: Symbol::from("MkPair"),
+                docstring: None,
+                fields: vec![
+                    cranelisp_types::FieldDef {
                         name: Symbol::from("x"),
                         type_expr: cranelisp_types::TypeExpr::Named(TypeName::from("Int")),
-                    }],
-                    span: Span::SYNTHETIC,
-                }],
-                Visibility::Public,
-                Span::SYNTHETIC,
-            )
-            .unwrap_err();
-        assert!(err.message().contains("data constructors with fields"));
+                    },
+                    cranelisp_types::FieldDef {
+                        name: Symbol::from("y"),
+                        type_expr: cranelisp_types::TypeExpr::Named(TypeName::from("Bool")),
+                    },
+                ],
+                span: Span::SYNTHETIC,
+            }],
+            Visibility::Public,
+            Span::SYNTHETIC,
+        )
+        .unwrap();
+
+        // MkPair :: (Fn [Int Bool] Pair)
+        if let Some(ModuleEntry::Constructor { scheme, .. }) = tc.symbol_table.get("MkPair") {
+            assert!(scheme.vars.is_empty(), "MkPair should be monomorphic");
+            assert_eq!(
+                scheme.ty,
+                Type::Fn(
+                    vec![Type::Int, Type::Bool],
+                    Box::new(Type::ADT(TypeName::from("Pair"), vec![]))
+                )
+            );
+        } else {
+            panic!("MkPair should be a Constructor entry");
+        }
+
+        // TypeDefInfo should have the fields recorded
+        let info = tc.type_defs.get(&TypeName::from("Pair")).unwrap();
+        assert_eq!(info.constructors.len(), 1);
+        assert_eq!(info.constructors[0].fields.len(), 2);
+        assert_eq!(info.constructors[0].fields[0].name.as_ref(), "x");
+        assert_eq!(info.constructors[0].fields[0].ty, Type::Int);
+        assert_eq!(info.constructors[0].fields[1].name.as_ref(), "y");
+        assert_eq!(info.constructors[0].fields[1].ty, Type::Bool);
     }
 
     #[test]
@@ -385,5 +582,285 @@ mod tests {
         assert_eq!(info.constructors[1].tag, 1);
         assert_eq!(info.constructors[2].tag, 2);
         assert_eq!(info.constructors[3].tag, 3);
+    }
+
+    // --- Ring 1: Polymorphic ADT tests ---
+
+    /// Helper: register (Option a) with None and Some[:a val].
+    fn register_option(tc: &mut TypeChecker) {
+        tc.register_type_def(
+            &TypeName::from("Option"),
+            &None,
+            &[Symbol::from("a")],
+            &[
+                make_ctor("None"),
+                ConstructorDef {
+                    name: Symbol::from("Some"),
+                    docstring: None,
+                    fields: vec![cranelisp_types::FieldDef {
+                        name: Symbol::from("val"),
+                        type_expr: cranelisp_types::TypeExpr::TypeVar(Symbol::from("a")),
+                    }],
+                    span: Span::SYNTHETIC,
+                },
+            ],
+            Visibility::Public,
+            Span::SYNTHETIC,
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn test_polymorphic_type_params_recorded() {
+        let mut tc = TypeChecker::new();
+        register_option(&mut tc);
+
+        let info = tc.type_defs.get(&TypeName::from("Option")).unwrap();
+        assert_eq!(info.type_params.len(), 1);
+        assert_eq!(info.type_params[0].as_ref(), "a");
+    }
+
+    #[test]
+    fn test_polymorphic_constructor_tags() {
+        let mut tc = TypeChecker::new();
+        register_option(&mut tc);
+
+        let info = tc.type_defs.get(&TypeName::from("Option")).unwrap();
+        assert_eq!(info.constructors[0].name.as_ref(), "None");
+        assert_eq!(info.constructors[0].tag, 0);
+        assert_eq!(info.constructors[1].name.as_ref(), "Some");
+        assert_eq!(info.constructors[1].tag, 1);
+    }
+
+    #[test]
+    fn test_polymorphic_field_has_var_type() {
+        let mut tc = TypeChecker::new();
+        register_option(&mut tc);
+
+        let info = tc.type_defs.get(&TypeName::from("Option")).unwrap();
+        let some_ctor = &info.constructors[1];
+        assert_eq!(some_ctor.fields.len(), 1);
+        assert_eq!(some_ctor.fields[0].name.as_ref(), "val");
+        // Field type should be a type variable (the allocated ID)
+        assert!(matches!(some_ctor.fields[0].ty, Type::Var(_)));
+    }
+
+    #[test]
+    fn test_exhaustiveness_with_mixed_constructors() {
+        let mut tc = TypeChecker::new();
+        register_option(&mut tc);
+
+        // Missing None
+        let covered = vec![Symbol::from("Some")];
+        let err = tc
+            .check_exhaustiveness(
+                &TypeName::from("Option"),
+                &covered,
+                false,
+                Span::SYNTHETIC,
+            )
+            .unwrap_err();
+        assert!(err.message().contains("None"));
+
+        // Missing Some
+        let covered = vec![Symbol::from("None")];
+        let err = tc
+            .check_exhaustiveness(
+                &TypeName::from("Option"),
+                &covered,
+                false,
+                Span::SYNTHETIC,
+            )
+            .unwrap_err();
+        assert!(err.message().contains("Some"));
+
+        // Both covered
+        let covered = vec![Symbol::from("None"), Symbol::from("Some")];
+        assert!(tc
+            .check_exhaustiveness(
+                &TypeName::from("Option"),
+                &covered,
+                false,
+                Span::SYNTHETIC,
+            )
+            .is_ok());
+    }
+
+    #[test]
+    fn test_shortcut_product_type() {
+        // (deftype Pair [first second]) -- bare field names with type vars
+        let mut tc = TypeChecker::new();
+        tc.register_type_def(
+            &TypeName::from("Pair"),
+            &None,
+            &[Symbol::from("a"), Symbol::from("b")],
+            &[ConstructorDef {
+                name: Symbol::from("MkPair"),
+                docstring: None,
+                fields: vec![
+                    cranelisp_types::FieldDef {
+                        name: Symbol::from("first"),
+                        type_expr: cranelisp_types::TypeExpr::TypeVar(Symbol::from("a")),
+                    },
+                    cranelisp_types::FieldDef {
+                        name: Symbol::from("second"),
+                        type_expr: cranelisp_types::TypeExpr::TypeVar(Symbol::from("b")),
+                    },
+                ],
+                span: Span::SYNTHETIC,
+            }],
+            Visibility::Public,
+            Span::SYNTHETIC,
+        )
+        .unwrap();
+
+        // MkPair :: forall [a, b]. (Fn [a b] (Pair a b))
+        if let Some(ModuleEntry::Constructor { scheme, .. }) = tc.symbol_table.get("MkPair") {
+            assert_eq!(scheme.vars.len(), 2, "MkPair should have 2 quantified vars");
+            match &scheme.ty {
+                Type::Fn(params, ret) => {
+                    assert_eq!(params.len(), 2);
+                    match ret.as_ref() {
+                        Type::ADT(name, args) => {
+                            assert_eq!(name.as_ref(), "Pair");
+                            assert_eq!(args.len(), 2);
+                            // param vars should match the ADT arg vars
+                            assert_eq!(params[0], args[0]);
+                            assert_eq!(params[1], args[1]);
+                        }
+                        _ => panic!("MkPair return should be ADT"),
+                    }
+                }
+                _ => panic!("MkPair should have Fn type"),
+            }
+        } else {
+            panic!("MkPair should be a Constructor entry");
+        }
+    }
+
+    #[test]
+    fn test_register_multi_param_type() {
+        // (deftype (Either a b) (Left [:a val]) (Right [:b val]))
+        let mut tc = TypeChecker::new();
+        tc.register_type_def(
+            &TypeName::from("Either"),
+            &None,
+            &[Symbol::from("a"), Symbol::from("b")],
+            &[
+                ConstructorDef {
+                    name: Symbol::from("Left"),
+                    docstring: None,
+                    fields: vec![cranelisp_types::FieldDef {
+                        name: Symbol::from("val"),
+                        type_expr: cranelisp_types::TypeExpr::TypeVar(Symbol::from("a")),
+                    }],
+                    span: Span::SYNTHETIC,
+                },
+                ConstructorDef {
+                    name: Symbol::from("Right"),
+                    docstring: None,
+                    fields: vec![cranelisp_types::FieldDef {
+                        name: Symbol::from("val"),
+                        type_expr: cranelisp_types::TypeExpr::TypeVar(Symbol::from("b")),
+                    }],
+                    span: Span::SYNTHETIC,
+                },
+            ],
+            Visibility::Public,
+            Span::SYNTHETIC,
+        )
+        .unwrap();
+
+        let info = tc.type_defs.get(&TypeName::from("Either")).unwrap();
+        assert_eq!(info.type_params.len(), 2);
+        assert_eq!(info.constructors.len(), 2);
+
+        // Both constructors should have 2 quantified vars
+        if let Some(ModuleEntry::Constructor { scheme, .. }) = tc.symbol_table.get("Left") {
+            assert_eq!(scheme.vars.len(), 2);
+        } else {
+            panic!("Left should be a Constructor entry");
+        }
+    }
+
+    #[test]
+    fn test_known_types_includes_param_count() {
+        let mut tc = TypeChecker::new();
+        register_option(&mut tc);
+        tc.register_type_def(
+            &TypeName::from("Color"),
+            &None,
+            &[],
+            &[make_ctor("Red")],
+            Visibility::Public,
+            Span::SYNTHETIC,
+        )
+        .unwrap();
+
+        let known = tc.known_type_names();
+        assert_eq!(known.get(&TypeName::from("Option")), Some(&1));
+        assert_eq!(known.get(&TypeName::from("Color")), Some(&0));
+    }
+
+    #[test]
+    fn test_build_constructor_scheme_nullary_mono() {
+        let ctor = ConstructorInfo {
+            name: Symbol::from("Red"),
+            tag: 0,
+            fields: vec![],
+            docstring: None,
+        };
+        let adt_type = Type::ADT(TypeName::from("Color"), vec![]);
+        let scheme = build_constructor_scheme(&ctor, &adt_type, &[]);
+
+        assert!(scheme.vars.is_empty());
+        assert_eq!(scheme.ty, Type::ADT(TypeName::from("Color"), vec![]));
+    }
+
+    #[test]
+    fn test_build_constructor_scheme_data_mono() {
+        let ctor = ConstructorInfo {
+            name: Symbol::from("Point"),
+            tag: 0,
+            fields: vec![
+                FieldInfo { name: Symbol::from("x"), ty: Type::Int },
+                FieldInfo { name: Symbol::from("y"), ty: Type::Int },
+            ],
+            docstring: None,
+        };
+        let adt_type = Type::ADT(TypeName::from("Point"), vec![]);
+        let scheme = build_constructor_scheme(&ctor, &adt_type, &[]);
+
+        assert!(scheme.vars.is_empty());
+        assert_eq!(
+            scheme.ty,
+            Type::Fn(
+                vec![Type::Int, Type::Int],
+                Box::new(Type::ADT(TypeName::from("Point"), vec![]))
+            )
+        );
+    }
+
+    #[test]
+    fn test_build_constructor_scheme_polymorphic() {
+        let ctor = ConstructorInfo {
+            name: Symbol::from("Some"),
+            tag: 1,
+            fields: vec![
+                FieldInfo { name: Symbol::from("val"), ty: Type::Var(42) },
+            ],
+            docstring: None,
+        };
+        let adt_type = Type::ADT(TypeName::from("Option"), vec![Type::Var(42)]);
+        let scheme = build_constructor_scheme(&ctor, &adt_type, &[42]);
+
+        assert_eq!(scheme.vars, vec![42]);
+        assert_eq!(
+            scheme.ty,
+            Type::Fn(
+                vec![Type::Var(42)],
+                Box::new(Type::ADT(TypeName::from("Option"), vec![Type::Var(42)]))
+            )
+        );
     }
 }

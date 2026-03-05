@@ -11,6 +11,7 @@ Text in, AST out. You implement parsing (S-expression reader), macro compilation
 - `src/reader/` — S-expression reader (source text → `Sexp`)
 - `src/expander/` — macro compiler and expander
 - `src/ast_builder/` — AST construction (`Sexp` → `Expr`, `TopLevel`)
+- `design/frontend/` — solution design documents (reader, macro expansion, AST builder)
 
 ## Interfaces
 

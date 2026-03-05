@@ -1,7 +1,8 @@
 // cranelisp-typecheck: Hindley-Milner inference, traits, monomorphisation.
 //
-// Ring 0 scope: Algorithm W unification, type inference for 10 expression forms,
-// builtin operator type schemes, enum ADT type checking and exhaustiveness.
+// Rings 0-1: Algorithm W unification, type inference for all expression forms
+// including string literals and polymorphic ADTs with data constructor fields,
+// builtin operator type schemes, exhaustiveness checking.
 //
 // Architecture: TypeChecker struct with borrow-splitting pattern -- hot-path
 // functions (unify, fresh_var) take explicit &mut Subst / &mut TypeId parameters

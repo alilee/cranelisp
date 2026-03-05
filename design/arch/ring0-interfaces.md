@@ -1105,7 +1105,7 @@ Operators-as-values (e.g., `(let [f +] (f 1 2))`) require closures to wrap bare 
 
 ### 10. Panic handler → `panic!()` + `catch_unwind` for Ring 0
 
-Ring 0 has no nested JIT→Rust→JIT calls (no closures, no callbacks). `cranelisp_panic` uses Rust `panic!()`. The binary crate wraps JIT execution in `catch_unwind` to recover from match exhaustiveness failures without killing the REPL session. Ring 1+ (with closures and callbacks) will require a thread-local error flag for deeply nested cases.
+Ring 0 has no nested JIT->Rust->JIT calls (no closures, no callbacks). `runtime/panic` (Rust: `runtime_panic`) uses Rust `panic!()`. The binary crate wraps JIT execution in `catch_unwind` to recover from match exhaustiveness failures without killing the REPL session. Ring 1+ (with closures and callbacks) will require a thread-local error flag for deeply nested cases.
 
 ## Action Items for Ring 0 Implementation
 

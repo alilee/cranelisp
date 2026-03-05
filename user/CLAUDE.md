@@ -10,12 +10,13 @@ This directory contains documentation written for Cranelisp users, not implement
 - Language guide (feature-by-feature reference for practitioners)
 - Error message catalog (common errors with explanations and fixes)
 
-## Structure (to be created by /docs)
+## Structure
 
-- `getting-started.md` — Installation, hello world, REPL basics
-- `tutorial/` — Progressive introduction; chapters build on each other
-- `guide/` — Feature-by-feature reference
-- `errors/` — Error message catalog
+- `getting-started.md` — Installation, REPL basics, Ring 0 + Ring 1 features
+- `tutorial/` — Progressive introduction; curriculum data for the `/learn` engine
+  - `curriculum.md` — Section/prompt/trigger/answer definitions (Ring 1: sections 14-18, 21)
+- `guide/` — Feature-by-feature reference (to be created)
+- `errors/` — Error message catalog (to be created)
 
 ## Relationship to spec/
 
@@ -23,10 +24,8 @@ The spec (`spec/`) is precise and normative — written for implementors. User d
 
 ## For the `/docs` skill
 
-**First session (Phase B)**:
-1. Design the tutorial structure: what concepts are introduced in what order?
-2. Identify the learning progression: what does a programmer need to know before each concept?
-3. Draft the getting-started guide (can write Ring 0 content immediately — it only needs Int, Bool, functions, let, if)
-4. Update this CLAUDE.md with the tutorial chapter outline
+**Sprint 1 (Ring 0)**: Complete. Getting-started guide written covering Int, Float, Bool, arithmetic, let, if, defn, recursion, enum types, pattern matching, batch programs.
 
-**Feedback loop**: Report to compiler skills when error messages are confusing, when REPL output is unhelpful, or when a concept has no good introduction path. These are bugs.
+**Sprint 2 (Ring 1)**: Complete. Getting-started guide extended with strings, product types, sum types with fields, constructor pattern matching, closures/lambdas, higher-order functions, "putting it together" examples. Tutorial curriculum sections 14-18 and 21 drafted. Usability findings U1.6, U1.7, U1.8 filed.
+
+**Feedback loop**: Report to compiler skills when error messages are confusing, when REPL output is unhelpful, or when a concept has no good introduction path. File findings to `tests/plan/usability.md`.

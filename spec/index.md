@@ -2,7 +2,7 @@
 
 **Version**: 0.1 (Draft)
 
-This document specifies the Cranelisp programming language. It describes the syntax, type system, and evaluation semantics in implementation-agnostic terms. Section 11 and Appendix A are non-normative reference documentation describing the reference implementation's standard library. A conforming implementation may use any compilation strategy (JIT, AOT, interpretation) and any memory management approach (reference counting, tracing GC, region-based) provided it satisfies the behavioral requirements described herein.
+This document specifies the Cranelisp programming language. It describes the syntax, type system, and evaluation semantics in implementation-agnostic terms. Section 11 and Appendix A are non-normative reference documentation describing the reference implementation's standard library. Appendix C defines normative non-functional requirements that constrain implementation strategies. A conforming implementation may use any compilation strategy (JIT, AOT, interpretation) provided it satisfies the behavioral and non-functional requirements described herein.
 
 ## Design Philosophy
 
@@ -65,6 +65,7 @@ This specification uses terminology from RFC 2119:
 **Appendices**:
 - [A: Builtin Reference](appendix-a-builtins.md) — Complete function/type reference (non-normative)
 - [B: Examples](appendix-b-examples.md) — Extended example programs
+- [C: Non-Functional Requirements](appendix-c-nfr.md) — Memory management, data structures, evaluation, concurrency, compilation, performance, target portability (normative)
 
 ## Compilation Pipeline
 

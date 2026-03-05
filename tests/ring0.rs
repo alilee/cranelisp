@@ -221,19 +221,16 @@ fn repl_multiple_params() {
 
 // =============================================================================
 // Lambdas (spec: 04-expressions)
-// Ring 0 does not support closures/lambdas in codegen. These tests are deferred
-// to Ring 1. Marked #[ignore] to document the expected behavior.
+// Ring 1: closures and lambdas now supported in codegen.
 // =============================================================================
 
 #[test]
-#[ignore = "Ring 1: closures/lambdas not supported in Ring 0 codegen"]
 fn lambda_immediate_call() {
     let src = "(defn main [] ((fn [x] (add-i64 x 1)) 5))";
     assert_eq!(compile_and_run_simple(src), 6);
 }
 
 #[test]
-#[ignore = "Ring 1: closures/lambdas not supported in Ring 0 codegen"]
 fn lambda_in_let() {
     let src = "
         (defn main []
@@ -244,7 +241,6 @@ fn lambda_in_let() {
 }
 
 #[test]
-#[ignore = "Ring 1: closures/lambdas not supported in Ring 0 codegen"]
 fn lambda_passed_to_function() {
     let src = "
         (defn apply-fn [f x] (f x))
@@ -254,7 +250,6 @@ fn lambda_passed_to_function() {
 }
 
 #[test]
-#[ignore = "Ring 1: closures/lambdas not supported in Ring 0 codegen"]
 fn named_function_as_value() {
     let src = "
         (defn inc [x] (add-i64 x 1))
@@ -265,7 +260,6 @@ fn named_function_as_value() {
 }
 
 #[test]
-#[ignore = "Ring 1: closures/lambdas not supported in Ring 0 codegen"]
 fn lambda_zero_params() {
     let src = "
         (defn main []
@@ -276,7 +270,6 @@ fn lambda_zero_params() {
 }
 
 #[test]
-#[ignore = "Ring 1: closures/lambdas not supported in Ring 0 codegen"]
 fn lambda_multi_params() {
     let src = "
         (defn main []
@@ -287,14 +280,12 @@ fn lambda_multi_params() {
 }
 
 #[test]
-#[ignore = "Ring 1: closures/lambdas not supported in Ring 0 codegen"]
 fn repl_lambda_immediate() {
     let mut session = repl_session();
     assert_eq!(repl_eval(&mut session, "((fn [x] (add-i64 x 1)) 5)"), 6);
 }
 
 #[test]
-#[ignore = "Ring 1: closures/lambdas not supported in Ring 0 codegen"]
 fn repl_lambda_in_let() {
     let mut session = repl_session();
     assert_eq!(
@@ -304,7 +295,6 @@ fn repl_lambda_in_let() {
 }
 
 #[test]
-#[ignore = "Ring 1: closures/lambdas not supported in Ring 0 codegen"]
 fn repl_higher_order_function() {
     let mut session = repl_session();
     repl_eval(&mut session, "(defn apply-fn [f x] (f x))");
@@ -315,7 +305,6 @@ fn repl_higher_order_function() {
 }
 
 #[test]
-#[ignore = "Ring 1: closures/lambdas not supported in Ring 0 codegen"]
 fn repl_named_function_as_value() {
     let mut session = repl_session();
     repl_eval(&mut session, "(defn inc [x] (add-i64 x 1))");
@@ -702,7 +691,6 @@ fn let_polymorphism_identity() {
 }
 
 #[test]
-#[ignore = "Ring 1: let-bound lambdas require closures"]
 fn let_bound_polymorphic_usage() {
     // Let-bound identity used at multiple types within the same function.
     let src = "

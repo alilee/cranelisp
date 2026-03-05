@@ -506,10 +506,144 @@ Follow Clojure naming conventions:
 
 ---
 
+## 9. Ring 1 Review (Sprint 2, Wave 4)
+
+Review of Ring 1 compiler (Chunks A+B+C) from the stdlib author's perspective. Performed by `/stdlib` as Task 13.
+
+### 9.1 String Primitive Audit
+
+**Available Ring 1 string primitives** (8 total, defined in `cranelisp-types/src/operator.rs` `ring1_primitives()`):
+
+| Primitive | Type | Status |
+|---|---|---|
+| `str-concat` | `(Fn [String String] String)` | Available, tested |
+| `str-eq` | `(Fn [String String] Bool)` | Available, tested |
+| `str-len` | `(Fn [String] Int)` | Available, tested |
+| `string-identity` | `(Fn [String] String)` | Available, tested (RC inc + return same ptr) |
+| `int-to-string` | `(Fn [Int] String)` | Available, tested |
+| `float-to-string` | `(Fn [Float] String)` | Available, tested |
+| `bool-to-string` | `(Fn [Bool] String)` | Available, tested |
+| `parse-int` | `(Fn [String] Int)` | Available but **broken type** — returns Int placeholder, not `(Option Int)` |
+
+**Assessment for `text/string.cl` needs** (planned: `split`, `join`, `replace`, `trim`, `starts-with?`, `ends-with?`, `contains?`, `length`, `substring`, `to-upper`, `to-lower`):
+
+- **`str-len`** covers `length`. Good.
+- **`str-eq`** covers the equality primitive that `compare/eq.cl` needs for `(impl Eq String)`. Good.
+- **`str-concat`** covers concatenation. Good.
+- **Missing but deferrable**: `substring`, `char-at`, `split`, `join`, `replace`, `trim`, `starts-with?`, `ends-with?`, `contains?`, `to-upper`, `to-lower` are all absent. These are NOT needed for Ring 2 foundation modules (Eq, Display, Option, Result, assertions). They ARE needed for `text/string.cl` (Phase 2, module 9 in the build order), but that module can be delayed until the primitives exist. **Filed as U1.1.**
+- **`parse-int` type mismatch**: The runtime implementation correctly returns `Option Int` layout (tag 0 for None, heap `[tag=1, n]` for Some), but the type system declares it as `(Fn [String] Int)`. Two integration tests are `#[ignore]` because of this. This blocks `text/string.cl` and any code that needs safe string-to-int conversion. **Filed as U1.2.**
+
+**Assessment for `text/display.cl` needs** (planned: `(deftrait Display (show [self] String))`):
+
+- `int-to-string`, `float-to-string`, `bool-to-string`, `string-identity` provide exactly the primitives needed for `(impl Display Int/Float/Bool/String)`. The sketch's `core/formats.cl` uses precisely these 4 primitives. **No gaps.**
+
+### 9.2 ADT Representation Review
+
+**Capabilities validated by Ring 1 tests**:
+
+| Feature | Working | Evidence |
+|---|---|---|
+| Product types `(deftype Point [:Int x :Int y])` | Yes | `adt_product_construct_and_match`, etc. |
+| Sum types `(deftype (Option a) None (Some [:a val]))` | Yes | `adt_sum_option_some/none`, etc. |
+| Polymorphic ADTs with type params | Yes | `adt_polymorphic_type` — Option at Int and Bool |
+| Shortcut syntax `(deftype Pair [first second])` | Yes | `adt_shortcut_syntax` |
+| Constructor patterns with field bindings in match | Yes | All ADT match tests use field bindings |
+| Mixed nullary + data constructors | Yes | `adt_enum_mixed_nullary_and_data` (Result type) |
+| Nested ADTs `(Some Green)` where Green is an enum | Yes | `multiple_adt_definitions` |
+| ADT as function argument and return | Yes | `adt_product_as_function_arg/return` |
+| ADT heap allocation and RC | Yes | Implicitly validated by all data-constructor tests |
+| ADT display in REPL | Yes | `repl_adt_product` shows `:Point (Point 3 4)` |
+
+**Assessment for stdlib needs**:
+
+- **`fn/option.cl`**: `(deftype (Option a) None (Some [:a val]))` works. Match patterns with field bindings work. Polymorphic instantiation works. The `map`, `and-then`, `unwrap-or` functions (which use match + closures) have the primitives they need. **No gaps.**
+- **`fn/result.cl`**: `(deftype (Result a e) (Ok [:a val]) (Err [:e err]))` — two-param polymorphic ADTs with mixed nullary and data constructors are tested (`adt_either_type`). **No gaps.**
+- **`collections/list.cl`**: `(deftype (List a) Nil (Cons [:a head :(List a) tail]))` — recursive polymorphic ADT. Not directly tested in Ring 1, but the machinery (polymorphic ADTs, data constructors, match patterns) is all present. **Potential concern**: nested heap RC for `(List (Option Int))` — not exercised. **Filed as U1.3.**
+- **`collections/pair.cl`**: `(deftype (Pair a b) (Pair [:a first :b second]))` — two-param product. Covered by shortcut syntax test. **No gaps.**
+- **Field accessors**: The plan mentions "field accessor generation" for ADTs. Ring 1 does NOT appear to generate field accessor functions (e.g., auto-generated `Point.x :: (Fn [Point] Int)`). All field access goes through `match`. This is a significant ergonomic difference from the sketch, which had dotted field accessors. **Not a blocker** — stdlib functions can use `match` — but it increases verbosity for simple field extraction. **Filed as U1.4.**
+
+### 9.3 Closure Capability Check
+
+**Capabilities validated by Ring 1 tests**:
+
+| Feature | Working | Evidence |
+|---|---|---|
+| Simple capture | Yes | `closure_simple_capture` |
+| Multiple captures | Yes | `closure_multiple_captures` |
+| Closure returned from function | Yes | `closure_returned_from_function` |
+| Nested closures | Yes | `closure_nested` |
+| Higher-order functions | Yes | `closure_with_higher_order` |
+| Named function as value | Yes | `named_function_as_value_apply` |
+| Closure in if branches | Yes | `closure_in_if_branch` |
+| TCO with closure parameter | Yes | `closure_and_tco` |
+| Closure returning ADT | Yes | `closure_returning_adt` |
+| Closure capturing int, returning match | Yes | `closure_capturing_int_returning_match_result` |
+| Let-bound identity at multiple types | Yes | `let_bound_identity_at_multiple_types` |
+| Compose pattern | Yes | `closure_compose` |
+| Apply-twice pattern | Yes | `closure_apply_twice` |
+
+**Assessment for stdlib needs**:
+
+- **`fn/compose.cl`**: `compose`, `pipe`, `identity`, `const`, `flip` — all are pure higher-order functions. `compose` is directly validated by `closure_compose` test. **No gaps.**
+- **`fn/combinators.cl`**: `partial`, `juxt`, `complement` — higher-order transformers using closures. The patterns are supported (closures capturing arguments, returning closures). **No gaps for Ring 2 subset** (memoize needs mutation, deferred to later).
+- **`collections/functor.cl`**: `(deftrait (Functor f) (fmap [(Fn [a] b) (f a)] (f b))])` — requires closures as arguments and HKT. Closures-as-arguments are validated. HKT is Ring 2 (traits). **No closure gaps.**
+- **Closure capturing heap types**: `closure_returning_adt` validates closure returning heap ADT. But closure *capturing* a String or ADT is not directly tested. The RC infrastructure should handle it, but it is an untested interaction. **Filed as U1.5.**
+
+### 9.4 Error Message Quality
+
+**Tested error paths in Ring 1**:
+
+| Error | Test | Quality |
+|---|---|---|
+| String where Int expected | `error_string_where_int_expected` | Produces type error (empty message check) |
+| Int where String expected | `error_int_where_string_expected` | Produces type error (empty message check) |
+| Constructor wrong arg count | `error_adt_constructor_wrong_arg_count` | Produces error |
+| Constructor wrong type | `error_adt_constructor_wrong_type` | Produces type error |
+| If branches type mismatch (String/Int) | `error_if_branches_type_mismatch_string_int` | Produces type error |
+| Closure arity mismatch | `error_closure_arity_mismatch` | Produces error |
+| Undefined constructor | `error_undefined_constructor` | Produces error |
+| Non-exhaustive match | `non_exhaustive_match_panics` | Runtime panic (not a type error) |
+
+**Observation**: All error tests use empty string matchers `assert_type_error(src, "")`, which means they only verify that *some* error occurs, not that the error message is helpful. This is a testing gap — error message quality is not validated. However, this is a `/qa` concern, not a `/stdlib` blocker. From a library author perspective, the errors that *do* fire are appropriate (type mismatches, arity mismatches). **No usability findings filed** — this is noted for `/qa` awareness.
+
+### 9.5 Readiness Assessment
+
+**Go/No-Go for Ring 2 stdlib development: GO.**
+
+Ring 1 provides the heap foundation needed for stdlib work to begin at Ring 2. The critical requirements are met:
+
+1. **String primitives**: All 4 Display-impl primitives present (`int-to-string`, `float-to-string`, `bool-to-string`, `string-identity`). Core string operations (`str-concat`, `str-eq`, `str-len`) present. The 11 missing string operations (`substring`, `split`, etc.) are not needed until Phase 2 module 9 (`text/string.cl`), which can be deferred within Ring 2.
+
+2. **ADT types**: Product, sum, polymorphic, shortcut syntax, field binding in match — all work. This covers Option, Result, List, Pair, Either type definitions and their function implementations via `match`.
+
+3. **Closures**: Capture, higher-order, compose patterns — all work. This covers `fn/compose.cl`, `fn/combinators.cl`, and lambda-taking collection functions like `fmap`.
+
+4. **No module system yet** (Ring 2): This is expected. No stdlib code can be written until modules arrive. The plan's Ring 2 build order stands.
+
+**Blockers for later Ring 2 phases** (not Ring 2 start):
+
+- `parse-int` type signature must be fixed before `text/string.cl` can safely convert strings to integers (U1.2).
+- Additional string primitives (`substring`, `char-at`) must be added before `text/string.cl` is complete (U1.1). These can be added incrementally during Ring 2.
+
+### 9.6 Risk Assessment Updates
+
+**Risk 1 (builtin-to-trait transition)**: Unchanged. Ring 1 introduced no new operator-level primitives — only extern function primitives. The 19 Ring 0 monomorphic primitives (`add-i64`, etc.) remain the substrate for Ring 2 trait dispatch. The transition path is clean.
+
+**Risk 7 (NEW — parse-int type mismatch)**: `parse-int` returns `Option Int` at runtime but `Int` in the type system. This is a known placeholder (per the comment in `operator.rs`). Must be resolved before `text/string.cl` or any safe string parsing. Requires either: (a) a way to express `(Option Int)` as a return type referencing a user-defined Option, or (b) a compiler-seeded Option type in primitives. Option (b) would conflict with the "optional prelude" principle. Option (a) requires the module system (Ring 2). **Severity: important, not blocking Ring 2 start.**
+
+**Risk 8 (NEW — missing string primitives for text/string.cl)**: 11 string operations planned for `text/string.cl` have no runtime primitive. These need to be added as extern primitives in `cranelisp-runtime` and registered in `ring1_primitives()` (or a new `ring2_primitives()` batch). The runtime implementation is straightforward (Rust's `str` methods). The registration mechanism exists. **Severity: important, not blocking Ring 2 start.**
+
+**Risk 9 (NEW — no field accessors)**: Ring 1 ADTs require `match` for all field access. The sketch had auto-generated dotted field accessors (`Point.x`). If the reimplementation does not plan to add these, stdlib code will be more verbose (3-line match instead of 1-line accessor). This affects ergonomics but not capability. **Severity: deferred — match works, accessors are a convenience.**
+
+**Risk 10 (NEW — closure capturing heap types not tested)**: Closures capturing Strings or ADTs with heap fields are not directly tested in Ring 1. The RC infrastructure should handle this, but a specific test gap exists. If RC is wrong for captured heap values, stdlib higher-order functions over strings will leak or crash. **Severity: important — `/qa` should add specific tests.**
+
+---
+
 ## Next Skills
 
 - `/arch` — Confirm the builtin-to-trait transition strategy. Validate that cross-module trait impls work (trait in module A, type in module B, impl in module B). Review Map/Set implementation strategy.
 - `/frontend` — Update `~@` expansion to emit `macros/sconcat` instead of `core.syntax/sconcat`.
-- `/typecheck` — Coordinate operator resolution handoff: Ring 0 `ResolvedCall::BuiltinFn` must transparently yield to Ring 2 `ResolvedCall::TraitMethod` when trait impls are loaded.
-- `/qa` — Plan stdlib self-test execution. The `.test` submodule pattern needs to be compatible with the test runner infrastructure.
+- `/typecheck` — Coordinate operator resolution handoff: Ring 0 `ResolvedCall::BuiltinFn` must transparently yield to Ring 2 `ResolvedCall::TraitMethod` when trait impls are loaded. Fix `parse-int` return type when Option is available.
+- `/backend` — Add missing string primitives (`substring`, `char-at`, etc.) as extern functions in `cranelisp-runtime` when Ring 2 needs them.
+- `/qa` — Plan stdlib self-test execution. Add tests for closure-capturing-heap-types. Process usability findings U1.1–U1.5.
 - `/review` — The stdlib is Cranelisp's model code. Review it for idiom, clarity, and consistency from the first module.

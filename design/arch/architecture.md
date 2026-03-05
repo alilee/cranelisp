@@ -25,6 +25,7 @@ cranelisp (binary: pipeline orchestration, batch, REPL)
   +-- cranelisp-runtime (alloc, RC, panic, intrinsics)
   |     |
   |     +-- cranelisp-platform
+  |     +-- cranelisp-types
   |
   +-- cranelisp-platform (C-ABI contract for platform DLLs)
   |
@@ -88,11 +89,11 @@ Contents:
 Rust-side runtime support linked into the JIT. Provides allocation, reference counting primitives, panic handler, and intrinsics callable from compiled code.
 
 Contents:
-- `cranelisp_alloc` / `cranelisp_dealloc` — RC-aware heap allocation
-- `cranelisp_inc_ref` / `cranelisp_dec_ref` — reference count manipulation
-- `cranelisp_panic` — match exhaustiveness failure handler
-- String intrinsics (`cranelisp_str_eq`, `cranelisp_str_concat`, etc.)
-- Trace runtime (`cranelisp_trace_enter`, `cranelisp_trace_exit`, etc.)
+- `runtime/alloc` / `runtime/dealloc` (Rust: `heap_alloc` / `heap_dealloc`) — RC-aware heap allocation
+- RC inc/dec are emitted inline by the backend (not extern functions)
+- `runtime/panic` (Rust: `runtime_panic`) — match exhaustiveness failure handler
+- String intrinsics: `str-concat`, `str-eq`, `int-to-string`, etc. (Rust: `str_concat`, `str_eq`, `int_to_string`, etc.)
+- Trace runtime: `runtime/trace_enter`, `runtime/trace_exit`, etc.
 - IO trampoline
 
 #### `cranelisp-platform`

@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 #[macro_export]
 macro_rules! string_newtype {
     ($name:ident) => {
-        #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+        #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
         pub struct $name(pub String);
 
         impl std::ops::Deref for $name {

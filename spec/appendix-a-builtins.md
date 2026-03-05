@@ -70,6 +70,12 @@ Inline primitives compile to inline Cranelift IR instructions — no function ca
 | `le-f64` | Less than or equal |
 | `ge-f64` | Greater than or equal |
 
+**Boolean** — `(Fn [Bool] Bool)`:
+
+| Function | Description |
+|---|---|
+| `not` | Boolean negation |
+
 ### Extern Primitives
 
 Extern primitives are called via the foreign function interface.
