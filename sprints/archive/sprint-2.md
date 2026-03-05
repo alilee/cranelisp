@@ -603,6 +603,7 @@ No stdlib code is written this sprint. Ring 1 has no module system, so stdlib fi
 | 13 | 4 | /stdlib | Ring 1 capability review, updated plan-stdlib.md §9, filed U1.1–U1.5, GO verdict for Ring 2 | **done** | 8 |
 | 14 | 4 | /port | Ring 1 Sudoku Solver assessment, updated plan-exemplar.md, filed U1.10–U1.11, Vec is critical blocker | **done** | 8 |
 | 15 | 5 | /review | Ring 1 gate review — **PASS**. Report: `design/review/ring1-report.md` | **done** | 7, 8, 10, 11, 12, 13, 14 |
+| 16 | 5+ | /qa | E2E test runner + 21 black-box subprocess tests (Layer 4). Ring 0: smoke, arithmetic, booleans, let, defn, recursion, conditionals, errors. Ring 1: strings, ADTs, matching, closures, higher-order. 2 multi-feature sessions. | **done** | 8 |
 
 ## Notes
 

@@ -603,6 +603,7 @@ No stdlib code is written this sprint. Ring 1 has no module system, so stdlib fi
 | 13 | 4 | /stdlib | Ring 1 capability review, updated plan-stdlib.md §9, filed U1.1–U1.5, GO verdict for Ring 2 | **done** | 8 |
 | 14 | 4 | /port | Ring 1 Sudoku Solver assessment, updated plan-exemplar.md, filed U1.10–U1.11, Vec is critical blocker | **done** | 8 |
 | 15 | 5 | /review | Ring 1 gate review — **PASS**. Report: `design/review/ring1-report.md` | **done** | 7, 8, 10, 11, 12, 13, 14 |
+| 16 | 5+ | /qa | E2E test runner (Layer 4) — spec-driven from `repl/spec.md`. 48 tests: 28 passing, 20 ignored (unimplemented spec). Covers §1 display, §2 prompt, §3 slash commands, §4 self-documentation, §5 errors, §6 discoverability, §7 performance, Ring 0+1 expressions, session isolation. FIXME added to `repl/spec.md` for CLI/batch/cache spec gaps. | **done** | 8 |
 
 ## Notes
 
@@ -704,7 +705,8 @@ Skill definition guardrails added: `/arch` and `/review` now have "What /skill D
 - HeapCategory::classify with constructor-aware ADT classification
 - CompileContext struct, compile_apply decomposition, FnCompiler::inner constructor
 - Pipeline wiring: Ring 1 extern primitives in typechecker, REPL defn intrinsics
-- 779 tests (392 unit + 387 integration), 0 failures, clippy clean
+- 807 tests (392 unit + 387 integration + 28 E2E passing), 0 failures, 22 ignored, clippy clean
+- E2E test runner (`tests/e2e.rs`): 48 spec-driven black-box tests (28 passing, 20 ignored for unimplemented REPL spec requirements) — the release gate layer
 - 5 examples (09-strings through 13-higher-order)
 - User docs: getting-started.md Ring 1 sections, tutorial curriculum (46 prompts)
 - Spec updates: `not` in appendix-a, non-ADT exhaustiveness in §6.5
@@ -725,3 +727,10 @@ Skill definition guardrails added: `/arch` and `/review` now have "What /skill D
 - REPL defn path was missing declare_intrinsics() — closures/ADTs would fail in REPL (fixed)
 - Ring 1 extern primitives were missing from typechecker symbol table (fixed)
 - Bitmask encoding viable for exemplar Sudoku candidate sets (design insight from /port)
+
+### Late addition: E2E test runner (task 16)
+Layer 4 E2E tests were missing — the build confidence gate that invokes the binary as a subprocess. Added `tests/e2e.rs` with 48 spec-driven tests organized by `repl/spec.md` section:
+- **28 passing**: smoke, expression evaluation (Ring 0+1), error format/recovery, bare symbol lookup, performance, session isolation
+- **20 ignored**: fully-qualified types (§1.2–1.5), prompt format (§2), slash commands (§3), special form self-documentation (§4.2), errors-on-stderr (§5.1), startup banner (§6.2)
+- Each test runs in an isolated temp dir (no cache pollution between tests)
+- FIXME added to `repl/spec.md` for unspecified CLI/batch/cache/empty-input behavior

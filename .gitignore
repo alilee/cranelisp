@@ -14,3 +14,4 @@ _bmad-output/
 profile.json.gz
 .claude-role
 tests/repl/demos/runs/
+tests/e2e/.runs/

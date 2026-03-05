@@ -2,6 +2,14 @@
 
 Normative specification for the Cranelisp REPL user experience. A conforming REPL MUST satisfy all requirements tagged with the current ring or earlier.
 
+<!-- FIXME(/repl): This spec covers the interactive REPL but does not specify:
+     - CLI invocation modes (REPL mode, batch mode `--run file.cl`, `--version`, `--help`)
+     - Exit codes (success, compile error, runtime error)
+     - Batch mode output format (same `:Type value`? just value? nothing?)
+     - Cache lifecycle (`.cache/` creation, invalidation, cleanup)
+     - Empty/comment-only input handling (blank lines, `;` comment lines at the REPL)
+     These need their own spec sections or a companion CLI spec. -->
+
 ## Design Principle
 
 > **The REPL reinforces the syntax of the language.** Every output teaches the user how to write Cranelisp.
