@@ -40,11 +40,27 @@ You are NOT a technical authority. `/arch` decides how to build things. `/qa` de
 
 ### What `/sprint` Does NOT Do
 
+**CRITICAL — `/sprint` MUST NOT edit any file outside its owned `sprints/` directory.** This is the single most important boundary rule for this skill. `/sprint` coordinates; other skills execute. Specifically:
+
+- **NEVER edit source code** (anything under `src/`, `crates/`, `tests/`, `examples/`, `lib/`)
+- **NEVER edit spec files** (`spec/`)
+- **NEVER edit architecture or design docs** (`design/`)
+- **NEVER edit review findings or checklists** (`design/review/`)
+- **NEVER edit user documentation** (`user/`)
+- **NEVER edit example programs** (`examples/`)
+- **NEVER edit skill definitions** (`.claude/commands/`) — except this file with user approval
 - Does not make design decisions (that is `/arch`)
 - Does not write or review code (that is the compiler skills and `/review`)
 - Does not define test plans or quality criteria (that is `/qa`)
 - Does not change interface types or crate structure (that is `/arch`)
 - Does not override any skill's technical judgment
+
+When `/sprint` identifies that a file needs changing, the correct action is to:
+1. Record the finding in SPRINT.md Notes
+2. Create or update a task assigning the change to the owning skill
+3. Recommend the user invoke the owning skill
+
+Even when the change seems trivial or mechanical, `/sprint` delegates — it does not execute.
 
 ## Early Engagement
 
@@ -112,6 +128,22 @@ If the user invokes `/sprint` mid-sprint:
 Before advancing to the next wave within a sprint, `/sprint` MUST scan all files produced or modified by the current wave for unresolved `FIXME(/skill-name)` comments. Outstanding FIXMEs addressed to a skill in the current wave block advancement — they must be resolved by the owning skill or explicitly deferred with rationale recorded in the SPRINT.md Notes section.
 
 This ensures cross-skill issues are not silently dropped between waves.
+
+### 6. Review & Refactor Gate
+
+After implementation waves complete (typically after all compiler crates have their Ring N code), a mandatory review-and-refactor cycle MUST pass before the sprint proceeds to pipeline wiring, integration testing, or user-facing validation.
+
+**Process:**
+
+1. **Review**: `/review` inspects each implementation crate for code organisation, complexity, test coverage, and adherence to the architecture plan. Findings are classified as Blocker (B), Important (I), or Suggestion (S).
+2. **Refactor**: Each crate's owning skill addresses all Blockers and Important findings. Suggestions are addressed at skill discretion.
+3. **Re-review**: `/review` re-inspects to confirm findings are resolved and no new issues were introduced.
+4. **Iterate**: If the re-review finds new Blockers or Important issues, repeat steps 2–3.
+5. **Gate passes**: When all crates have zero Blockers and zero Important findings, the gate passes and the sprint may proceed to the next wave.
+
+**Rationale**: Code quality debt compounds rapidly when deferred past integration. Catching structural issues (oversized modules, parameter bloat, missing abstractions) immediately after implementation — before pipeline wiring couples the crates together — is far cheaper than fixing them later. This gate ensures the codebase maintains high quality at every ring boundary.
+
+**Sprint template impact**: Every sprint plan with implementation waves MUST include a review-and-refactor wave between implementation and integration waves. This is not optional.
 
 ## Sprint 0 (Preparation)
 

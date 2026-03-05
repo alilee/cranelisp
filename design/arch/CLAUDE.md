@@ -45,6 +45,10 @@ The criteria `/arch` uses to evaluate every design decision. These are derived f
 
 7. **Single source of truth.** When a concept (ISA flags, heap classification, primitive type names) appears in two places, it will diverge. The prototype had 3 ISA constructions and 9 duplicate primitive-name mappings. Every concept gets one authoritative location; other sites reference it.
 
+8. **No interim implementations of later-ring capabilities.** If a feature will arrive in a later ring with its proper mechanism, do NOT build a temporary version in an earlier ring. Instead, use the primitives that already exist at the current ring level and defer the user-facing syntax until the real mechanism is ready. Example: Ring 0 should not implement `+` with a bespoke operator dispatch table when Ring 2 will introduce `Num.+` via trait dispatch — instead, Ring 0 should expose named primitives (`add-i64`, `add-f64`) and let `+` wait for traits. Interim implementations create throwaway infrastructure that couples into multiple crates and must be unpicked later. The test is: "will this code survive into the ring where the real mechanism arrives?" If not, don't build it.
+
+9. **Rings are accretive.** Each ring adds code, tests, and capabilities — it should not replace or delete work from earlier rings. Earlier-ring tests remain as-is; later rings add new tests for the new mechanism. This provides diagnostic isolation: if `(+ 1 2)` (trait dispatch, Ring 2) fails but `(add-i64 1 2)` (primitive, Ring 0) passes, the bug is in dispatch, not codegen. The same applies to implementation: primitives survive as the foundation that higher-level mechanisms dispatch to.
+
 ## String Newtypes
 
 **Hard rule**: All identifier fields in boundary types MUST use the appropriate newtype, never bare `String`. This prevents accidental mixing of identifiers across semantic categories (e.g., passing a module path where a symbol name is expected).

@@ -222,6 +222,8 @@ When the scrutinee type is not a concrete ADT (e.g. a type variable, `Int`, `Boo
 
 The runtime panic path ("match failed") remains in generated code as a safety net, but SHOULD be unreachable in programs that pass the exhaustiveness check.
 
+<!-- FIXME(/spec): Exhaustiveness checking should be extended to non-ADT scrutinee types (Int, Bool, Float, String). Match on these types without a wildcard arm should be a compile-time error, not a runtime trap. The language has no panic/recovery mechanism — all match expressions must be statically guaranteed exhaustive. -->
+
 ## 6.6 Limitations
 
 The following pattern features are NOT supported:

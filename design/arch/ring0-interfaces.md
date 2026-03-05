@@ -17,20 +17,20 @@ Ring 0 property: **Expressions, types, functions, let, if, match. No heap alloca
   - `cranelisp-platform`: no cranelisp deps
   - `cranelisp` (binary): all six library crates
 
-### Cranelift Dependencies (not yet added)
+### Cranelift Dependencies
 
-`cranelisp-backend/Cargo.toml` must add Cranelift 0.125 dependencies before Ring 0 implementation begins. Required packages (from prototype):
+`cranelisp-backend/Cargo.toml` uses Cranelift **0.116** (not 0.125 as originally planned — 0.125 was unavailable). API differences are minor: `jump`/`brif` take `&[Value]` directly rather than `&[BlockArg]`.
 
 ```toml
 [dependencies]
-cranelift = "0.125"
-cranelift-module = "0.125"
-cranelift-jit = "0.125"
-cranelift-native = "0.125"
-cranelift-codegen = { version = "0.125", features = ["disas"] }
+cranelift = "0.116"
+cranelift-module = "0.116"
+cranelift-jit = "0.116"
+cranelift-native = "0.116"
+cranelift-codegen = { version = "0.116", features = ["disas"] }
 ```
 
-`cranelift-object = "0.125"` is needed for standalone executable generation (Ring 4 only). Not required in Ring 0.
+`cranelift-object` is needed for standalone executable generation (Ring 4 only). Not required in Ring 0.
 
 ---
 
@@ -516,7 +516,9 @@ impl Type {
         }
     }
 
-    <!-- FIXME(/arch): Consider removing is_heap(). It returns true for Fn and ADT, but HeapCategory::classify() is the authoritative heap classification and accounts for nullary ADTs and bare function pointers. Having both creates a second source of truth that may diverge. All call sites should use HeapCategory::classify() directly. -->
+    <!-- RESOLVED (Wave 1): is_heap() retained as a quick check. HeapCategory::classify() is the
+     authoritative source for codegen decisions. is_heap() is documented as a convenience that
+     may over-report (Fn and ADT are "potentially heap" even when not). Codegen must use classify(). -->
     pub fn is_heap(&self) -> bool {
         matches!(self, Type::String | Type::ADT(_, _) | Type::Fn(_, _))
     }
@@ -599,7 +601,8 @@ pub type MethodResolutions = HashMap<Span, ResolvedCall>;
 pub enum ResolvedCall {
     // --- Ring 0 exercised ---
     BuiltinFn {
-        name: Symbol,           // "+", "-", "*", "/", "=", "<", ">"
+        name: Symbol,           // "+", "-", "*", "/", "=", "<", ">", "<=", ">=", "not"
+        operand_type: Option<Type>,  // Wave 1: disambiguates Int/Float for arithmetic/comparison
     },
 
     // --- Defined, deferred ---
@@ -625,7 +628,11 @@ pub struct MonoDefn {           // Ring 2
 }
 ```
 
-<!-- FIXME(/arch): Define a single authoritative Ring 0 operator table here (name, type scheme, Cranelift inline IR instruction, extern wrapper JIT name). Currently the typechecker plan (Section 1.4), backend plan (Section 4.6), and platform plan (Section 2.1) each define their own operator list independently. A single table prevents cross-module divergence when operators are added or renamed. -->
+<!-- RESOLVED (Wave 1): Single authoritative operator table now lives in cranelisp-types/src/operator.rs.
+     ring0_operators() returns all 10 Ring 0 operators with category, Int instruction, and Float instruction.
+     operator_scheme() generates the type scheme from the category.
+     Three categories: Arithmetic (a,a)->a, Comparison (a,a)->Bool, Boolean (Bool)->Bool.
+     Typechecker and backend both reference this single source. -->
 
 **Ring 0 note on primitive operators**: The typechecker resolves `(+ 1 2)` by recognizing `+` as a builtin and recording `ResolvedCall::BuiltinFn { name: "+".into() }` keyed by the call site's `Span`. The backend uses this to emit inline Cranelift IR (`iadd`, `isub`, `imul`, `sdiv`, `icmp`) rather than function calls. Ring 0 builtins include at minimum:
 - Arithmetic: `+`, `-`, `*`, `/` (Int and Float)
@@ -922,7 +929,9 @@ pub const NULLARY_TAG_THRESHOLD: usize = 1024;
 
 ### `MacroExpander`
 
-<!-- FIXME(/arch): Specify which crate owns MacroExpander. The frontend plan says "cranelisp-frontend or cranelisp-types." If any crate other than cranelisp-frontend needs to reference this trait (e.g., the binary crate for dependency injection), it must live in cranelisp-types. architecture.md describes it as a dependency-inversion mechanism, which implies cranelisp-types. -->
+<!-- RESOLVED (Wave 1): MacroExpander trait lives in cranelisp-types (pipeline.rs).
+     Dependency inversion: frontend depends on the trait, binary crate implements it.
+     NoOpExpander also provided in cranelisp-types for Ring 0 convenience. -->
 
 **Ring 0 status**: Defined. Ring 0 uses a no-op implementation.
 
@@ -979,9 +988,124 @@ pub trait MacroExpander {
 | `DefCodegen` | backend | Core fields |
 | `GOT_TABLE_SIZE` | backend | **Full** |
 | `NULLARY_TAG_THRESHOLD` | backend | **Full** |
-| `MacroExpander` | frontend | No-op impl |
+| `MacroExpander` | **types** | No-op impl |
+| `NoOpExpander` | types | Ring 0 default |
+| `ReplCheckResult` | types | **Full** |
+| `ReplSnapshot` | types | **Full** |
+| `PrimitiveDef` | types | **Full** (replaces BuiltinOperator, Wave 3.5) |
 
-<!-- FIXME(/arch): REPL error recovery across the typecheck/codegen boundary is not specified. If codegen fails after successful typechecking, the SymbolTable may contain entries for functions that were never compiled. Neither the typecheck plan (Section 6) nor the backend plan addresses this cross-boundary rollback scenario. Define a recovery protocol (e.g., snapshot/restore of SymbolTable entries before each REPL input). -->
+<!-- RESOLVED (Wave 1): REPL error recovery uses ReplSnapshot (defined in cranelisp-types/src/check.rs).
+     Protocol:
+     1. Binary crate calls typechecker.snapshot() before each REPL input.
+     2. If typecheck fails: restore snapshot, report error, continue.
+     3. If typecheck succeeds but codegen fails: restore snapshot, report error, continue.
+     4. If both succeed: discard snapshot, commit state.
+     ReplSnapshot captures: next_type_id, symbol_count, subst_len.
+     The typechecker owns snapshot()/restore() methods; binary crate is the caller. -->
+
+## Wave 1 Architectural Decisions (Sprint 1)
+
+Resolved during Wave 1 implementation. These decisions are binding for Wave 2+ skills.
+
+### 1. MacroExpander placement → `cranelisp-types`
+
+The `MacroExpander` trait and `NoOpExpander` struct live in `cranelisp-types/src/pipeline.rs`. This is dependency inversion: the frontend depends on the trait (for AST building), the binary crate provides the real implementation (Ring 3). `NoOpExpander` is the Ring 0 default.
+
+### 2. Ring 0 primitives (replaces operator dispatch — Wave 3.5)
+
+**Supersedes**: The original operator type scheme categories (3 polymorphic categories) and the `operand_type` disambiguation. Per principle 8, operators like `+` are a Ring 2 feature (trait dispatch via `Num.+`). Ring 0 exposes only monomorphic named primitives.
+
+**19 monomorphic primitives**, defined in `cranelisp-types/src/operator.rs` via `ring0_primitives()`:
+
+| Primitive | Type | Cranelift instruction |
+|-----------|------|----------------------|
+| `add-i64` | `(Fn [Int Int] Int)` | `iadd` |
+| `sub-i64` | `(Fn [Int Int] Int)` | `isub` |
+| `mul-i64` | `(Fn [Int Int] Int)` | `imul` |
+| `div-i64` | `(Fn [Int Int] Int)` | `sdiv` |
+| `add-f64` | `(Fn [Float Float] Float)` | `fadd` |
+| `sub-f64` | `(Fn [Float Float] Float)` | `fsub` |
+| `mul-f64` | `(Fn [Float Float] Float)` | `fmul` |
+| `div-f64` | `(Fn [Float Float] Float)` | `fdiv` |
+| `eq-i64` | `(Fn [Int Int] Bool)` | `icmp_eq` |
+| `lt-i64` | `(Fn [Int Int] Bool)` | `icmp_slt` |
+| `gt-i64` | `(Fn [Int Int] Bool)` | `icmp_sgt` |
+| `le-i64` | `(Fn [Int Int] Bool)` | `icmp_sle` |
+| `ge-i64` | `(Fn [Int Int] Bool)` | `icmp_sge` |
+| `eq-f64` | `(Fn [Float Float] Bool)` | `fcmp_eq` |
+| `lt-f64` | `(Fn [Float Float] Bool)` | `fcmp_lt` |
+| `gt-f64` | `(Fn [Float Float] Bool)` | `fcmp_gt` |
+| `le-f64` | `(Fn [Float Float] Bool)` | `fcmp_le` |
+| `ge-f64` | `(Fn [Float Float] Bool)` | `fcmp_ge` |
+| `not` | `(Fn [Bool] Bool)` | `bxor` (with 1) |
+
+**Key design properties:**
+
+1. **Monomorphic**: Every primitive has a fixed, concrete type. No polymorphic type variables, no `operand_type` disambiguation needed.
+2. **Name encodes operation**: The primitive name uniquely determines both the operand types and the Cranelift instruction. No lookup tables needed — just a match on name.
+3. **Registered as `DefKind::Primitive { primitive_kind: PrimitiveKind::Inline }`** in the symbol table, not as operators. No `builtin_operators: HashSet` needed.
+4. **No special inference handling**: Primitives are normal function entries in the symbol table. `infer_apply` uses standard unification. The typechecker records `ResolvedCall::BuiltinFn { name }` for calls to primitives so the backend knows to inline them.
+5. **Accretive into Ring 2**: These primitives survive permanently. Ring 2 adds `Num.+` which dispatches to `add-i64`/`add-f64` via trait resolution. Ring 0 tests using `(add-i64 1 2)` remain as regression baselines.
+
+**Removed infrastructure:**
+- `OperatorCategory` enum
+- `BuiltinOperator` struct
+- `ring0_operators()` function
+- `operator_scheme()` function
+- `resolve_builtin_operator()` in infer.rs
+- `builtin_operators: HashSet<Symbol>` on `TypeChecker`
+- `operand_type: Option<Type>` on `ResolvedCall::BuiltinFn`
+
+**Data flow:**
+```
+ring0_primitives() → PrimitiveDef { name, ty, cranelift_op }
+  ↓                        ↓                    ↓
+typecheck registers     scheme = mono(ty)    backend matches
+in symbol table         no poly vars         on cranelift_op
+  ↓
+infer_apply sees DefKind::Primitive → records ResolvedCall::BuiltinFn { name }
+  ↓
+backend's compile_apply checks BuiltinFn → emits IR for cranelift_op
+```
+
+### 3. (Superseded by §2 — operand_type no longer needed)
+
+`ResolvedCall::BuiltinFn` now carries only `name: Symbol`. The `operand_type` field is removed because the primitive name already encodes the operand type (`add-i64` is always Int, `add-f64` is always Float).
+
+### 4. ReplCheckResult → new type in `cranelisp-types`
+
+`ReplCheckResult` (in `check.rs`) carries per-input results for REPL display: `ty`, `scheme`, `method_resolutions`, `expr_types`, `warnings`, `type_defs`, `constructor_to_type`. Distinct from batch `CheckResult` because REPL processes one form at a time and needs the inferred type/scheme for display.
+
+### 5. type_defs/constructor_to_type → added to CheckResult
+
+`CheckResult` now includes `type_defs: HashMap<TypeName, TypeDefInfo>` and `constructor_to_type: HashMap<Symbol, TypeName>`. The backend needs these for ADT tag lookup during match codegen. No need for a separate `TypeContext` struct.
+
+### 6. REPL error recovery → ReplSnapshot
+
+`ReplSnapshot` (in `check.rs`) captures typechecker state before each REPL input. On failure (typecheck or codegen), the binary crate calls `restore()` to roll back. Fields: `next_type_id`, `symbol_count`, `subst_len`. The typechecker owns the snapshot/restore mechanism; the binary crate is the caller.
+
+### 7. Warning type → struct (confirmed)
+
+`Warning { message: String, span: Span }` — a struct, not an enum. Simple and sufficient for Ring 0. If warning categories are needed later, it can be extended with a `kind` field.
+
+### 8. Borrow-splitting → explicit parameters for unify/occurs_check
+
+The typechecker's `unify()`, `occurs_check()`, `apply_subst()`, and `fresh_var()` take explicit `&mut Subst` and `&mut TypeId` parameters rather than `&mut self`. This avoids the prototype's clone-to-avoid-borrow debt (audit HIGH-3). The `TypeChecker` struct holds these fields, but hot-path functions borrow them independently.
+
+Pattern:
+```rust
+// Instead of: self.unify(t1, t2) where self is &mut TypeChecker
+// Use: unify(&mut self.subst, &mut self.next_id, t1, t2)
+fn unify(subst: &mut Subst, next_id: &mut TypeId, t1: &Type, t2: &Type) -> Result<(), CranelispError> { ... }
+```
+
+### 9. Operator wrappers → deferred to Ring 1
+
+Operators-as-values (e.g., `(let [f +] (f 1 2))`) require closures to wrap bare function pointers. Since closures are Ring 1, operator wrappers are deferred to Ring 1. In Ring 0, using an operator in a non-call position is a type error.
+
+### 10. Panic handler → `panic!()` + `catch_unwind` for Ring 0
+
+Ring 0 has no nested JIT→Rust→JIT calls (no closures, no callbacks). `cranelisp_panic` uses Rust `panic!()`. The binary crate wraps JIT execution in `catch_unwind` to recover from match exhaustiveness failures without killing the REPL session. Ring 1+ (with closures and callbacks) will require a thread-local error flag for deeply nested cases.
 
 ## Action Items for Ring 0 Implementation
 

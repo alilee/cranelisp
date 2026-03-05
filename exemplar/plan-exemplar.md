@@ -371,8 +371,58 @@ exemplar/
 
 ## Ring Readiness
 
-- **Ring 3**: Grid model, solver, HTML generation, form parsing — all pure computation. Testable with `run-tests`. This is the bulk of the Cranelisp code.
-- **Ring 4**: Web platform DLL, request routing, IO wiring (`main`, `serve-loop`, `serve`). Integration tests.
+### Ring 0 Assessment (Sprint 1)
+
+**Ring 0 features available**: `Int`, `Float`, `Bool` types. 19 monomorphic primitives (`add-i64`, `sub-i64`, `mul-i64`, `div-i64`, `eq-i64`, `lt-i64`, `gt-i64`, `le-i64`, `ge-i64`, `add-f64`, `sub-f64`, `mul-f64`, `div-f64`, `eq-f64`, `lt-f64`, `gt-f64`, `le-f64`, `ge-f64`, `not`). `defn`, `let`, `if`, `fn` (lambda), `match`. Enum ADTs (no fields). Pattern matching on enums and wildcards. TCO for self-recursion.
+
+**Ring 0 features NOT available**: Strings, closures, heap allocation, collections (`Vec`, `List`), modules, imports, traits, macros, IO, ADTs with fields, `derive`.
+
+**Component-by-component assessment**:
+
+| Component | Ring 0 viable? | Blocking gaps |
+|---|---|---|
+| `grid.cl` — Grid/Cell types | No | `Cell` is a sum ADT with fields (Ring 1). `Grid` wraps `Vec Cell` (Ring 1). `make-grid` parses a `String` (Ring 1). |
+| `solver.cl` — constraint propagation, backtracking | No | Operates on `Grid`/`Cell` (Ring 1). Candidate elimination uses `Vec` operations (Ring 1). `PropResult` is an enum ADT — but only useful if it can be returned from functions that manipulate `Grid`. |
+| `html.cl` — HTML generation | No | Entirely `String`-based (Ring 1). |
+| `form.cl` — URL form parsing | No | Entirely `String`-based (Ring 1). |
+| `main.cl` — routing, IO models | No | IO model (Ring 4). Platform DLL (Ring 4). `String` matching for routes (Ring 1+). |
+| `solver/test.cl`, etc. — test submodules | No | Modules (Ring 2). `run-tests` infrastructure (Ring 3+). |
+| `platforms/web/` — Rust DLL | No | Platform system (Ring 4). |
+
+**What CAN be done with Ring 0 features**:
+
+Very little of the Sudoku Solver itself, but two small algorithmic building blocks can be validated as standalone functions using only `Int`, `Bool`, `if`, and recursion:
+
+1. **Index arithmetic** — `row-of`, `col-of`, `box-of` are pure `Int -> Int` functions using `div-i64` and `mul-i64`. These can be written and tested at Ring 0 (they don't depend on grids or collections). However, `mod` (remainder) is not a Ring 0 primitive — `col-of` and `box-of` would need to be expressed as `(sub-i64 idx (mul-i64 (div-i64 idx 9) 9))` in place of `(mod idx 9)`.
+
+2. **`PropResult` enum** — This is a pure enum (all nullary constructors: `Unchanged`, `Reduced`, `Determined`, `Contradiction`). It can be defined and pattern-matched at Ring 0. But it has no practical use without the grid infrastructure that produces and consumes it.
+
+3. **`is-solved` recursion pattern** — A recursive traversal over a flat array index range `0..80` could be expressed as a self-recursive function taking an index, if the grid were representable. But it isn't (needs `Vec`).
+
+**Verdict**: Ring 0 unlocks **zero implementable Sudoku Solver components**. The solver fundamentally requires heap-allocated data structures (`Vec`, `String`, ADTs with fields) which arrive in Ring 1. The only Ring-0-expressible pieces (index arithmetic, `PropResult` enum) are isolated fragments with no useful composition at this ring.
+
+This is expected and confirms the exemplar plan's original assessment that the bulk of the work begins at Ring 3. The gap between Ring 0 and the exemplar's needs is:
+
+| Need | Arrives at |
+|---|---|
+| ADTs with fields (`Cell`, `Grid`, `SolveResult`) | Ring 1 |
+| `String` (HTML, form parsing, input) | Ring 1 |
+| `Vec` (grid cells, candidate lists, peer indices) | Ring 1 |
+| Closures (predicates for filtering, extractors) | Ring 1 |
+| Modules and imports | Ring 2 |
+| Traits (`Eq`, `Display`, `derive`) | Ring 2 |
+| Macros (`do`, `bind!`, `match` sugar, `list`) | Ring 3 |
+| IO model, platform DLLs | Ring 4 |
+
+**Ring 1 is the first ring where meaningful exemplar work becomes possible** — specifically, prototyping the `Grid`/`Cell` data model and basic solver logic in a single-file program without modules or traits. **Ring 3 is where the exemplar becomes fully implementable** as a multi-module pure computation. **Ring 4 completes it** with the web platform.
+
+### Ring 3+
+
+Grid model, solver, HTML generation, form parsing — all pure computation. Testable with `run-tests`. This is the bulk of the Cranelisp code.
+
+### Ring 4
+
+Web platform DLL, request routing, IO wiring (`main`, `serve-loop`, `serve`). Integration tests.
 
 The clean pure/IO split means most exemplar work can begin at Ring 3, before the platform exists.
 

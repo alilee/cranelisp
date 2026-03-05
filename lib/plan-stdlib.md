@@ -126,6 +126,8 @@ lib/
 
 #### num/ — Arithmetic and Numerics
 
+> **FIXME**: Should the Num trait be in num rather than num.num? Also, there should be a num/Unchecked trait next to it (definitely not in the prelude).
+
 **`num.cl`** — The Num trait: `(deftrait Num (+ [self self] self) (- [self self] self) (* [self self] self) (/ [self self] self))`. Impls for Int, Float. Functions: `inc`, `dec`. This is where the builtin-to-trait transition happens — Ring 0 hardwired operators yield to trait dispatch.
 
 **`int.cl`** — Int-specific operations beyond arithmetic: `abs`, `sign`, `even?`, `odd?`, `rem`, `quot`, `zero?`, `pos?`, `neg?`.
@@ -135,6 +137,8 @@ lib/
 **`unchecked.cl`** — Unchecked arithmetic trait (overflow wraps instead of trapping). Not in prelude — explicit import required for intentional use.
 
 #### text/ — Display and String Operations
+
+> **FIXME**: This too could be promoted to text rather than text.display
 
 **`display.cl`** — The Display trait: `(deftrait Display (show [self] String))`. Impls for Int, Float, Bool, String. At Ring 3, adds `derive-Display` for ADTs. Every type that wants human-readable output implements this.
 
@@ -190,6 +194,8 @@ Lazy computation streams. Collections can be viewed as sequences, but sequences 
 
 IO combinators for the platform model. Platform operations produce `(IO a)` values; these modules provide ways to compose them.
 
+> **FIXME**: io.monad could be lifted to just io
+
 **`monad.cl`** — `pure` (lift value into IO), `bind!` macro (monadic bind sugar), `do` macro (monadic sequencing). Ring 4 — requires IO trampoline.
 
 **`combinators.cl`** — Higher-order IO composition: `map-io`, `sequence-io`, `when-io`, `unless-io`. Ring 4.
@@ -198,6 +204,8 @@ IO combinators for the platform model. Platform operations produce `(IO a)` valu
 
 The stdlib's own test infrastructure. Also available to user programs.
 
+> **FIXME**: Why aren't these assert=, assert, assert-not, assert-some, assert-none, assert-ok, assert-err?
+
 **`assertions.cl`** — `assert-eq` (needs Eq + Display), `assert-true`, `assert-false`. Each returns `(Option String)` — `None` on success, `(Some "reason")` on failure. Written using only functions and primitives (no macros), so it lights up at Ring 2.
 
 **`runner.cl`** — `check` macro (chains assertions, Ring 3). `run-tests-pass-default`, `run-tests-fail-default`, `run-tests-report` (Ring 4 — need Trace type and `run-tests` special form).
@@ -205,6 +213,8 @@ The stdlib's own test infrastructure. Also available to user programs.
 **`trace.cl`** — Accessors for the compiler-seeded Trace ADT: `trace-name`, `trace-params`, `trace-result`, `trace-children`, `trace-nanos`. Display functions: `trace-depth`, `trace-flatten`, `trace-show-tree`. Ring 4 — requires `trace` special form.
 
 #### Depth-1 Singles
+
+> **FIXME**: would (or Bool*) and (and Bool*) go in control? maybe they are more aligned to boolean logic?
 
 **`control.cl`** — Branching macros: `cond` (multi-way if-else), `case` (equality dispatch), `when` (one-sided if), `unless` (negated when). Ring 3.
 
