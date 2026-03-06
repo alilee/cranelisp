@@ -168,9 +168,16 @@ pub fn assert_rc_balanced(src: &str) {
 }
 
 /// Evaluate in REPL and return the formatted display string with ADT context.
+///
+/// Uses `definition_display` when available (for deftrait, impl, constrained fn),
+/// otherwise falls back to `format_result_value`.
 pub fn repl_eval_display(session: &mut ReplSession, src: &str) -> String {
     let result = session
         .eval(src)
         .unwrap_or_else(|e| panic!("repl_eval_display failed on '{src}': {e}"));
-    format_result_value(result.value, &result.ty, session.type_defs())
+    if let Some(display) = result.definition_display {
+        display
+    } else {
+        format_result_value(result.value, &result.ty, session.type_defs())
+    }
 }

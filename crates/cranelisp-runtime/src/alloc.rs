@@ -191,6 +191,7 @@ mod tests {
     // Tests use delta-based assertions (snapshot before/after) because
     // global counters are shared across parallel tests.
 
+    // spec: 12-runtime §12.3.1 — heap alloc/dealloc round-trip with RC header
     #[test]
     fn test_alloc_and_dealloc_round_trip() {
         let allocs_before = alloc_count();
@@ -214,6 +215,7 @@ mod tests {
         assert!(dealloc_count() - deallocs_before >= 1);
     }
 
+    // spec: 12-runtime §12.3.1 — allocation tracking counters (alloc count, bytes)
     #[test]
     fn test_tracking_counters() {
         let allocs_before = alloc_count();
@@ -232,6 +234,7 @@ mod tests {
         assert!(dealloc_count() - deallocs_before >= 2);
     }
 
+    // spec: 12-runtime §12.3.2 — live allocation tracking (debug assertions)
     #[cfg(debug_assertions)]
     #[test]
     fn test_live_allocs_tracking() {
@@ -242,6 +245,7 @@ mod tests {
         assert!(!is_live(base as usize));
     }
 
+    // spec: 12-runtime §12.3.1 — double free detection (debug assertions)
     #[cfg(debug_assertions)]
     #[test]
     #[should_panic(expected = "double free")]
@@ -253,6 +257,7 @@ mod tests {
         }
     }
 
+    // spec: 12-runtime §12.3.1 — extern "C" alloc/dealloc interface for JIT
     #[test]
     fn test_extern_c_interface() {
         let allocs_before = alloc_count();
@@ -274,6 +279,7 @@ mod tests {
         assert!(dealloc_count() - deallocs_before >= 1);
     }
 
+    // spec: 12-runtime §12.3.1 — zero-payload allocation (header only)
     #[test]
     fn test_zero_payload() {
         // Zero payload is valid — just a bare header (alloc_size + rc).

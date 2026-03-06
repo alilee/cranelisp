@@ -160,6 +160,39 @@ Sections are ordered by concept dependency — what you need to understand befor
 | 26 | `organizing` | Modules — splitting code into files | 5–7 |
 | 27 | `importing` | `import` — using code from other modules | 4–6 |
 
+### Modules Detail (Ring 2) — Getting-Started Section Outline
+
+Sections 26 and 27 of the curriculum ("organizing" and "importing") cover modules interactively. The getting-started guide needs a companion reference section. Outline:
+
+#### 1. Creating Modules with `(mod name)`
+- A module is a named container for definitions
+- `(mod util)` in a file tells the compiler that `util.cl` exists alongside the current file
+- REPL: `/mod math` switches the current namespace to `math`
+
+#### 2. File Resolution Rules
+- `(mod util)` looks for `util.cl` in the same directory as the declaring file
+- Root modules resolve from the project root or `lib/` directory
+- Submodules use directory nesting: `(mod core.math)` resolves to `core/math.cl`
+
+#### 3. Importing with `(import [...])`
+- `(import [util [double triple]])` — selective import of specific names
+- `(import [util [*]])` — glob import of all exported names
+- Imported names become available as bare names in the current scope
+
+#### 4. Exporting with `(export [...])`
+- `(export [double triple])` — only these names are visible to importers
+- Without an explicit export, all public definitions are visible
+- Controls the public API of a module
+
+#### 5. Qualified Name Access
+- Any name can be accessed via its module path: `util/double`, `core.math/sqrt`
+- Qualified access works without importing — only requires the module to be loaded
+- The REPL always displays fully-qualified names: `:(Fn [a] a) util/id`
+
+#### 6. Private Definitions with `defn-`
+- `(defn- helper [x] (+ x 1))` — private, not exported or accessible via qualified name
+- Use for internal implementation details that callers should not depend on
+
 ### Meta (Ring 3)
 
 | # | Section | Teaches | Questions |

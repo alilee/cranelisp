@@ -26,6 +26,7 @@ mod tests {
     use super::*;
     use std::panic;
 
+    // spec: 12-runtime §12.7.2 — runtime panic with custom message
     #[test]
     fn test_panic_with_message() {
         let result = panic::catch_unwind(|| {
@@ -38,6 +39,7 @@ mod tests {
         assert!(msg.contains("test panic message"));
     }
 
+    // spec: 12-runtime §12.7.2 — null pointer panic defaults to "match exhaustiveness failure"
     #[test]
     fn test_panic_with_null_ptr() {
         let result = panic::catch_unwind(|| {
@@ -49,6 +51,7 @@ mod tests {
         assert!(msg.contains("match exhaustiveness failure"));
     }
 
+    // spec: 12-runtime §12.7.2 — zero-length message panic
     #[test]
     fn test_panic_with_empty_len() {
         let result = panic::catch_unwind(|| {
@@ -58,6 +61,7 @@ mod tests {
         assert!(result.is_err());
     }
 
+    // spec: 12-runtime §12.7.2 — runtime panic is catchable via catch_unwind
     #[test]
     fn test_panic_is_catchable() {
         let result = panic::catch_unwind(|| {

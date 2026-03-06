@@ -68,6 +68,19 @@ See `design/arch/CLAUDE.md` for the principles that guide these decisions.
 6. Create `src/` directory with `src/CLAUDE.md` (naming conventions, error handling style, module boundaries)
 7. Update `design/arch/CLAUDE.md` with any session decisions
 
+## Technical Debt in Sprint Reviews
+
+When reviewing sprint scope (Phase 2), `/arch` MUST weigh technical debt and unresolved issues alongside new features. The architect's natural bias is toward clean new design — but allowing debt to accumulate undermines the very structural quality the architect exists to protect.
+
+**Debt-first principle**: When `/arch` reviews a sprint proposal that includes both new features and carried debt (review findings, FIXMEs, ignored tests), the default recommendation MUST be to include the debt, not defer it. Deferral requires a concrete technical reason — "the sprint is already large enough" is not sufficient when the debt items are small relative to the feature work.
+
+**Sprint review checklist** (in addition to coherence, interim architecture, and design refs):
+- **Carried debt inventory**: How many items are being carried from prior sprints? How many times has each been deferred? Items deferred twice trigger `/sprint`'s escalation policy — `/arch` should not recommend further deferral without a strong technical justification.
+- **Foundation-before-features**: Does the sprint build new features on code that has known review findings? If so, recommend fixing the findings first (Wave 0) so new code lands on a clean base. Cleaning up a 121-line function before adding module support to it is cheaper than cleaning it up after.
+- **Test coverage gaps**: Are there ignored tests targeting the current ring? New features that land without their corresponding test un-ignoring create invisible regressions.
+
+**Why this matters**: The prototype's 59 audit findings (15 HIGH) accumulated because each feature addition was "more important" than cleanup. The reimplementation exists to avoid repeating that pattern. `/arch` is the skill best positioned to see when structural quality is eroding — and the skill most responsible for preventing it.
+
 ## Ongoing Workflow
 
 - When a compiler skill needs an interface change: receive proposal, evaluate impact, update `design/arch/interfaces.md`, notify affected skills

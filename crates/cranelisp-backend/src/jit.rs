@@ -15,7 +15,7 @@ use cranelift_jit::{JITBuilder, JITModule};
 use cranelift_module::{FuncId, Linkage, Module};
 
 use cranelisp_types::{
-    CheckResult, CompileMode, CranelispError, Defn, Span, Symbol,
+    CheckResult, CompileMode, CranelispError, Defn, ModuleFullPath, Span, Symbol,
 };
 
 use crate::compiler::{CompileContext, FnCompiler};
@@ -196,6 +196,38 @@ impl Jit {
         Ok(func_ids)
     }
 
+    /// Declare imported functions in the JIT module for cross-module linking.
+    ///
+    /// In Batch mode, when a module calls functions from other modules, those
+    /// functions must be declared with `Linkage::Import` so that Cranelift's
+    /// linker can resolve the cross-references. The orchestrator compiles
+    /// modules in dependency order, so imported functions are already finalized
+    /// by the time the calling module is compiled.
+    ///
+    /// Each entry is `(name, param_count)`. Returns the declared FuncIds merged
+    /// into the provided `func_ids` map.
+    pub fn declare_imported_functions(
+        &mut self,
+        imports: &[(Symbol, usize)],
+        func_ids: &mut HashMap<Symbol, FuncId>,
+    ) -> Result<(), CranelispError> {
+        for (name, param_count) in imports {
+            let sig = self.build_sig(*param_count);
+            let func_id = self
+                .module
+                .declare_function(name, Linkage::Import, &sig)
+                .map_err(|e| CranelispError::CodegenError {
+                    message: format!(
+                        "failed to declare imported function '{}': {e}",
+                        name
+                    ),
+                    span: Span::SYNTHETIC,
+                })?;
+            func_ids.insert(name.clone(), func_id);
+        }
+        Ok(())
+    }
+
     /// Compile a function definition into Cranelift IR.
     /// Returns the CLIF IR text for introspection.
     ///
@@ -256,6 +288,7 @@ impl Jit {
         func_arities: &'a HashMap<Symbol, usize>,
         got_slots: Option<&'a HashMap<Symbol, usize>>,
         got_base_ptr: Option<i64>,
+        cross_module_got: Option<&'a HashMap<(ModuleFullPath, Symbol), (i64, usize)>>,
     ) -> CompileContext<'a> {
         CompileContext {
             method_resolutions: &check.method_resolutions,
@@ -267,6 +300,7 @@ impl Jit {
             constructor_to_type: &check.constructor_to_type,
             got_slots,
             got_base_ptr,
+            cross_module_got,
             alloc_func_id: self.alloc_func_id,
             dealloc_func_id: self.dealloc_func_id,
             alloc_string_func_id: self.alloc_string_func_id,
@@ -406,22 +440,119 @@ pub struct IntrinsicIds {
 mod tests {
     use super::*;
 
+    // spec: 12-runtime §12.1 — ISA construction for host platform
     #[test]
     fn test_build_isa() {
         let isa = build_isa();
         assert!(isa.is_ok(), "ISA construction should succeed on host");
     }
 
+    // spec: 12-runtime §12.1 — JIT engine creation
     #[test]
     fn test_jit_creation() {
         let jit = Jit::new();
         assert!(jit.is_ok(), "JIT creation should succeed");
     }
 
+    // spec: 12-runtime §12.3 — runtime intrinsic function declarations (alloc, dealloc, panic)
     #[test]
     fn test_intrinsic_declaration() {
         let mut jit = Jit::new().unwrap();
         let ids = jit.declare_intrinsics();
         assert!(ids.is_ok(), "intrinsic declaration should succeed");
+    }
+
+    // spec: 08-modules §8.3 — imported function declarations for cross-module calls
+    #[test]
+    fn test_declare_imported_functions() {
+        let mut jit = Jit::new().unwrap();
+        let mut func_ids = HashMap::new();
+
+        let imports = vec![
+            (Symbol::from("math/add"), 2usize),
+            (Symbol::from("math/mul"), 2usize),
+        ];
+        let result = jit.declare_imported_functions(&imports, &mut func_ids);
+        assert!(result.is_ok(), "imported function declaration should succeed");
+        assert!(func_ids.contains_key(&Symbol::from("math/add")));
+        assert!(func_ids.contains_key(&Symbol::from("math/mul")));
+        assert_eq!(func_ids.len(), 2);
+    }
+
+    // spec: 08-modules §8.3 — imported declarations merge with local function declarations
+    #[test]
+    fn test_declare_imported_functions_merges_with_existing() {
+        let mut jit = Jit::new().unwrap();
+
+        // Declare a local function first.
+        let defn = Defn {
+            name: Symbol::from("local_fn"),
+            params: vec![Symbol::from("x")],
+            param_annotations: vec![],
+            visibility: cranelisp_types::Visibility::Public,
+            body: cranelisp_types::Expr::Var {
+                name: Symbol::from("x"),
+                span: Span::new(0, 1),
+            },
+            docstring: None,
+            span: Span::new(0, 10),
+        };
+        let mut func_ids = jit.declare_functions(&[&defn]).unwrap();
+        assert_eq!(func_ids.len(), 1);
+
+        // Now declare an imported function -- should merge into the same map.
+        let imports = vec![(Symbol::from("other/helper"), 1usize)];
+        jit.declare_imported_functions(&imports, &mut func_ids).unwrap();
+        assert_eq!(func_ids.len(), 2);
+        assert!(func_ids.contains_key(&Symbol::from("local_fn")));
+        assert!(func_ids.contains_key(&Symbol::from("other/helper")));
+    }
+
+    // spec: 08-modules §8.3 — compile context with cross-module GOT for module imports
+    #[test]
+    fn test_build_compile_context_with_cross_module_got() {
+        let jit = Jit::new().unwrap();
+        let check = CheckResult {
+            method_resolutions: HashMap::new(),
+            constrained_fn_names: std::collections::HashSet::new(),
+            mono_defns: Vec::new(),
+            expr_types: HashMap::new(),
+            default_method_defns: Vec::new(),
+            warnings: Vec::new(),
+            type_defs: HashMap::new(),
+            constructor_to_type: HashMap::new(),
+        };
+        let func_ids = HashMap::new();
+        let func_arities = HashMap::new();
+
+        // Build with cross-module GOT.
+        let mut xmod = HashMap::new();
+        xmod.insert(
+            (ModuleFullPath::from("math"), Symbol::from("add")),
+            (0x1000i64, 3usize),
+        );
+
+        let ctx = jit.build_compile_context(
+            &check,
+            CompileMode::Interactive,
+            &func_ids,
+            &func_arities,
+            None,
+            None,
+            Some(&xmod),
+        );
+        assert!(ctx.cross_module_got.is_some());
+
+        // Build without cross-module GOT.
+        let ctx2 = jit.build_compile_context(
+            &check,
+            CompileMode::Batch,
+            &func_ids,
+            &func_arities,
+            None,
+            None,
+            None,
+        );
+        assert!(ctx2.cross_module_got.is_none());
     }
 }

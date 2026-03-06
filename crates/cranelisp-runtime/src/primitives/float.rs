@@ -26,6 +26,7 @@ mod tests {
         f.to_bits() as i64
     }
 
+    // spec: appendix-a-builtins §A.3 — float-to-string converts whole number float
     #[test]
     fn test_float_to_string_integer() {
         let result = float_to_string(float_bits(3.0));
@@ -35,6 +36,7 @@ mod tests {
         }
     }
 
+    // spec: appendix-a-builtins §A.3 — float-to-string converts fractional float
     #[test]
     fn test_float_to_string_fractional() {
         let result = float_to_string(float_bits(3.14));
@@ -44,6 +46,7 @@ mod tests {
         }
     }
 
+    // spec: appendix-a-builtins §A.3 — float-to-string converts negative float
     #[test]
     fn test_float_to_string_negative() {
         let result = float_to_string(float_bits(-2.5));
@@ -53,6 +56,7 @@ mod tests {
         }
     }
 
+    // spec: appendix-a-builtins §A.3 — float-to-string converts zero
     #[test]
     fn test_float_to_string_zero() {
         let result = float_to_string(float_bits(0.0));

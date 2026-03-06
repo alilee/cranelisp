@@ -21,6 +21,7 @@ use cranelisp_types::Type;
 // Core Batch (spec: 04-expressions)
 // =============================================================================
 
+// spec: 04-expressions §4.1.1 — integer literal return
 #[test]
 fn hello() {
     // Simplest program: return an integer.
@@ -28,30 +29,35 @@ fn hello() {
     assert_eq!(result, 42);
 }
 
+// spec: appendix-a-builtins §A.3 — add-i64 primitive
 #[test]
 fn arithmetic_addition() {
     let result = compile_and_run_simple("(defn main [] (add-i64 3 4))");
     assert_eq!(result, 7);
 }
 
+// spec: appendix-a-builtins §A.3 — sub-i64 primitive
 #[test]
 fn arithmetic_subtraction() {
     let result = compile_and_run_simple("(defn main [] (sub-i64 10 3))");
     assert_eq!(result, 7);
 }
 
+// spec: appendix-a-builtins §A.3 — mul-i64 primitive
 #[test]
 fn arithmetic_multiplication() {
     let result = compile_and_run_simple("(defn main [] (mul-i64 6 7))");
     assert_eq!(result, 42);
 }
 
+// spec: appendix-a-builtins §A.3 — div-i64 primitive
 #[test]
 fn arithmetic_division() {
     let result = compile_and_run_simple("(defn main [] (div-i64 20 4))");
     assert_eq!(result, 5);
 }
 
+// spec: 04-expressions §4.6 — recursive function application
 #[test]
 fn factorial() {
     let src = "
@@ -65,6 +71,7 @@ fn factorial() {
     assert_eq!(result, 3628800);
 }
 
+// spec: 04-expressions §4.6 — recursive function application
 #[test]
 fn fibonacci() {
     let src = "
@@ -80,6 +87,7 @@ fn fibonacci() {
     assert_eq!(result, 55);
 }
 
+// spec: 04-expressions §4.3 — nested let bindings
 #[test]
 fn nested_let() {
     let src = "
@@ -93,6 +101,7 @@ fn nested_let() {
     assert_eq!(result, 30);
 }
 
+// spec: 04-expressions §4.6.1 — direct function calls
 #[test]
 fn chained_function_calls() {
     let src = "
@@ -104,6 +113,7 @@ fn chained_function_calls() {
     assert_eq!(result, 12);
 }
 
+// spec: appendix-a-builtins §A.3 — comparison primitives
 #[test]
 fn comparison_operators() {
     let src = "(defn main [] (if (lt-i64 3 5) 1 0))";
@@ -116,6 +126,7 @@ fn comparison_operators() {
     assert_eq!(compile_and_run_simple(src), 1);
 }
 
+// spec: 05-definitions §5.1 — forward reference in batch mode
 #[test]
 fn forward_reference() {
     // Forward reference: callee defined after caller.
@@ -129,6 +140,7 @@ fn forward_reference() {
     assert_eq!(result, 42);
 }
 
+// spec: 04-expressions §4.4 — nested if expression
 #[test]
 fn nested_if() {
     let src = "
@@ -148,18 +160,21 @@ fn nested_if() {
 // REPL Basics (spec: 04-expressions, 12-runtime)
 // =============================================================================
 
+// spec: 04-expressions §4.1.1 — integer literal in REPL
 #[test]
 fn repl_eval_expression() {
     let mut session = repl_session();
     assert_eq!(repl_eval(&mut session, "42"), 42);
 }
 
+// spec: appendix-a-builtins §A.3 — arithmetic primitive in REPL
 #[test]
 fn repl_eval_arithmetic() {
     let mut session = repl_session();
     assert_eq!(repl_eval(&mut session, "(add-i64 3 4)"), 7);
 }
 
+// spec: 05-definitions §5.1 — defn and call in REPL
 #[test]
 fn repl_define_and_call() {
     let mut session = repl_session();
@@ -167,6 +182,7 @@ fn repl_define_and_call() {
     assert_eq!(repl_eval(&mut session, "(double 21)"), 42);
 }
 
+// spec: 04-expressions §4.6.1 — chained calls in REPL
 #[test]
 fn repl_chained_calls() {
     let mut session = repl_session();
@@ -175,6 +191,7 @@ fn repl_chained_calls() {
     assert_eq!(repl_eval(&mut session, "(double (inc 5))"), 12);
 }
 
+// spec: repl/spec.md §5.2 — GOT-based redefinition
 #[test]
 fn repl_redefinition_updates_callers() {
     let mut session = repl_session();
@@ -188,6 +205,7 @@ fn repl_redefinition_updates_callers() {
     assert_eq!(repl_eval(&mut session, "(caller)"), 12);
 }
 
+// spec: 04-expressions §4.6 — recursive function in REPL
 #[test]
 fn repl_recursive_function() {
     let mut session = repl_session();
@@ -198,6 +216,7 @@ fn repl_recursive_function() {
     assert_eq!(repl_eval(&mut session, "(fact 5)"), 120);
 }
 
+// spec: repl/spec.md §5.2 — error recovery in REPL
 #[test]
 fn repl_type_error_recovers() {
     let mut session = repl_session();
@@ -209,6 +228,7 @@ fn repl_type_error_recovers() {
     assert_eq!(repl_eval(&mut session, "(add-i64 1 2)"), 3);
 }
 
+// spec: 05-definitions §5.1.1 — multi-param function
 #[test]
 fn repl_multiple_params() {
     let mut session = repl_session();
@@ -224,12 +244,14 @@ fn repl_multiple_params() {
 // Ring 1: closures and lambdas now supported in codegen.
 // =============================================================================
 
+// spec: 04-expressions §4.5 — lambda immediate application
 #[test]
 fn lambda_immediate_call() {
     let src = "(defn main [] ((fn [x] (add-i64 x 1)) 5))";
     assert_eq!(compile_and_run_simple(src), 6);
 }
 
+// spec: 04-expressions §4.5 — lambda bound in let
 #[test]
 fn lambda_in_let() {
     let src = "
@@ -240,6 +262,7 @@ fn lambda_in_let() {
     assert_eq!(compile_and_run_simple(src), 42);
 }
 
+// spec: 04-expressions §4.6 — lambda passed as argument
 #[test]
 fn lambda_passed_to_function() {
     let src = "
@@ -249,6 +272,7 @@ fn lambda_passed_to_function() {
     assert_eq!(compile_and_run_simple(src), 42);
 }
 
+// spec: 12-runtime §12.2.3 — top-level function as value
 #[test]
 fn named_function_as_value() {
     let src = "
@@ -259,6 +283,7 @@ fn named_function_as_value() {
     assert_eq!(compile_and_run_simple(src), 42);
 }
 
+// spec: 04-expressions §4.5 — zero-param lambda
 #[test]
 fn lambda_zero_params() {
     let src = "
@@ -269,6 +294,7 @@ fn lambda_zero_params() {
     assert_eq!(compile_and_run_simple(src), 42);
 }
 
+// spec: 04-expressions §4.5 — multi-param lambda
 #[test]
 fn lambda_multi_params() {
     let src = "
@@ -279,12 +305,14 @@ fn lambda_multi_params() {
     assert_eq!(compile_and_run_simple(src), 6);
 }
 
+// spec: 04-expressions §4.5 — lambda immediate in REPL
 #[test]
 fn repl_lambda_immediate() {
     let mut session = repl_session();
     assert_eq!(repl_eval(&mut session, "((fn [x] (add-i64 x 1)) 5)"), 6);
 }
 
+// spec: 04-expressions §4.5 — lambda in let in REPL
 #[test]
 fn repl_lambda_in_let() {
     let mut session = repl_session();
@@ -294,6 +322,7 @@ fn repl_lambda_in_let() {
     );
 }
 
+// spec: 04-expressions §4.6 — higher-order function in REPL
 #[test]
 fn repl_higher_order_function() {
     let mut session = repl_session();
@@ -304,6 +333,7 @@ fn repl_higher_order_function() {
     );
 }
 
+// spec: 12-runtime §12.2.3 — named function as value in REPL
 #[test]
 fn repl_named_function_as_value() {
     let mut session = repl_session();
@@ -316,6 +346,7 @@ fn repl_named_function_as_value() {
 // TCO (spec: 12-runtime)
 // =============================================================================
 
+// spec: 12-runtime §12.5 — self-recursive tail call optimization
 #[test]
 fn tco_deep_countdown() {
     // Deep recursion that would stack-overflow without TCO.
@@ -329,6 +360,7 @@ fn tco_deep_countdown() {
     assert_eq!(compile_and_run_simple(src), 0);
 }
 
+// spec: 12-runtime §12.5 — TCO with accumulator
 #[test]
 fn tco_accumulator() {
     let src = "
@@ -341,6 +373,7 @@ fn tco_accumulator() {
     assert_eq!(compile_and_run_simple(src), 5050);
 }
 
+// spec: 12-runtime §12.5 — TCO in match tail position
 #[test]
 fn tco_match_tail_position() {
     // TCO with match in tail position using enum (no fields in Ring 0).
@@ -356,6 +389,7 @@ fn tco_match_tail_position() {
     assert_eq!(compile_and_run_simple(src), 0);
 }
 
+// spec: 12-runtime §12.5 — TCO in let body tail position
 #[test]
 fn tco_let_body_tail_position() {
     let src = "
@@ -369,6 +403,7 @@ fn tco_let_body_tail_position() {
     assert_eq!(compile_and_run_simple(src), 42);
 }
 
+// spec: 12-runtime §12.5 — non-tail recursion unchanged
 #[test]
 fn tco_non_tail_recursion_unchanged() {
     // Non-tail recursion should still work (just not optimized).
@@ -387,6 +422,7 @@ fn tco_non_tail_recursion_unchanged() {
 // Ring 0 uses monomorphic float primitives (add-f64, sub-f64, etc.)
 // =============================================================================
 
+// spec: 03-types §3.1 — Float arithmetic
 #[test]
 fn float_arithmetic() {
     let src = "(defn main [] (add-f64 1.5 2.5))";
@@ -396,6 +432,7 @@ fn float_arithmetic() {
     assert!((f - 4.0).abs() < f64::EPSILON);
 }
 
+// spec: 03-types §3.1 — Float subtraction
 #[test]
 fn float_subtraction() {
     let src = "(defn main [] (sub-f64 10.0 3.5))";
@@ -404,6 +441,7 @@ fn float_subtraction() {
     assert!((f - 6.5).abs() < f64::EPSILON);
 }
 
+// spec: 03-types §3.1 — Float multiplication
 #[test]
 fn float_multiplication() {
     let src = "(defn main [] (mul-f64 3.0 4.0))";
@@ -412,6 +450,7 @@ fn float_multiplication() {
     assert!((f - 12.0).abs() < f64::EPSILON);
 }
 
+// spec: 03-types §3.1 — Float division
 #[test]
 fn float_division() {
     let src = "(defn main [] (div-f64 10.0 2.0))";
@@ -420,18 +459,21 @@ fn float_division() {
     assert!((f - 5.0).abs() < f64::EPSILON);
 }
 
+// spec: 03-types §3.1 — Float comparison
 #[test]
 fn float_comparison() {
     let src = "(defn main [] (if (lt-f64 1.0 2.0) 1 0))";
     assert_eq!(compile_and_run_simple(src), 1);
 }
 
+// spec: 03-types §3.1 — Float/Int type mismatch
 #[test]
 fn float_type_error_mixed() {
     // Cannot pass Float to add-i64.
     assert_type_error("(defn main [] (add-i64 1 1.5))", "");
 }
 
+// spec: 03-types §3.1 — Float literal in REPL
 #[test]
 fn repl_float_eval() {
     let mut session = repl_session();
@@ -441,6 +483,7 @@ fn repl_float_eval() {
     assert!((f - 1.234).abs() < f64::EPSILON);
 }
 
+// spec: 03-types §3.1 — Float arithmetic in REPL
 #[test]
 fn repl_float_arithmetic() {
     let mut session = repl_session();
@@ -454,48 +497,57 @@ fn repl_float_arithmetic() {
 // Errors (spec: various)
 // =============================================================================
 
+// spec: 12-runtime §12.7.1 — type error Bool in arithmetic
 #[test]
 fn type_error_add_bool() {
     assert_type_error("(defn main [] (add-i64 true 1))", "");
 }
 
+// spec: 12-runtime §12.7.1 — type error Int + Bool
 #[test]
 fn error_type_error_int_plus_bool() {
     assert_type_error("(defn main [] (add-i64 1 true))", "");
 }
 
+// spec: 12-runtime §12.7.1 — type error Bool as Int
 #[test]
 fn error_type_error_bool_as_int() {
     // Using a bool where int is expected.
     assert_type_error("(defn main [] (add-i64 true false))", "");
 }
 
+// spec: 04-expressions §4.4 — if branch type mismatch
 #[test]
 fn error_type_mismatch_if_branches() {
     assert_type_error("(defn main [] (if true 1 true))", "");
 }
 
+// spec: 03-types §3.5.3 — annotation body mismatch
 #[test]
 fn error_defn_body_type_mismatch() {
     // Annotation says Int but body can return Bool.
     assert_type_error("(defn bad [:Int x] (if true x true))", "");
 }
 
+// spec: 01-lexical §1.5 — unclosed parenthesis
 #[test]
 fn error_parse_error_unclosed_paren() {
     assert_parse_error("(defn main [] (add-i64 1 2)", "");
 }
 
+// spec: 01-lexical §1.5 — extra closing parenthesis
 #[test]
 fn error_parse_error_extra_closing_paren() {
     assert_parse_error("(defn main [] 42))", "");
 }
 
+// spec: 04-expressions §4.2 — unbound variable reference
 #[test]
 fn error_unbound_symbol() {
     assert_error("(defn main [] undefined-var)", "undefined");
 }
 
+// spec: 04-expressions §4.6 — wrong arity too many
 #[test]
 fn error_wrong_arity_too_many_args() {
     assert_error(
@@ -504,6 +556,7 @@ fn error_wrong_arity_too_many_args() {
     );
 }
 
+// spec: 04-expressions §4.6 — wrong arity too few
 #[test]
 fn error_wrong_arity_too_few_args() {
     assert_error(
@@ -517,6 +570,7 @@ fn error_wrong_arity_too_few_args() {
 // Match syntax: (match scrutinee [pattern body pattern body ...])
 // =============================================================================
 
+// spec: 06-pattern-matching §6.2.2 — nullary constructor pattern
 #[test]
 fn adt_enum_match() {
     let src = "
@@ -531,6 +585,7 @@ fn adt_enum_match() {
     assert_eq!(compile_and_run_simple(src), 2);
 }
 
+// spec: 05-definitions §5.2.3 — enum type in REPL
 #[test]
 fn repl_adt_enum() {
     let mut session = repl_session();
@@ -544,6 +599,7 @@ fn repl_adt_enum() {
     assert_eq!(value, 0);
 }
 
+// spec: 06-pattern-matching §6.2.2 — enum match in REPL
 #[test]
 fn repl_adt_enum_match() {
     let mut session = repl_session();
@@ -555,6 +611,7 @@ fn repl_adt_enum_match() {
     assert_eq!(repl_eval(&mut session, "(color-val Blue)"), 3);
 }
 
+// spec: 06-pattern-matching §6.5.3 — runtime safety net
 #[test]
 fn error_non_exhaustive_match_runtime() {
     // Non-exhaustive match should panic at runtime (caught by catch_unwind).
@@ -576,16 +633,19 @@ fn error_non_exhaustive_match_runtime() {
 // Dual-mode parity (batch + interactive produce same results)
 // =============================================================================
 
+// spec: 04-expressions §4.1.1 — dual-mode integer parity
 #[test]
 fn dual_mode_simple_int() {
     compile_both("(defn main [] 42)", 42);
 }
 
+// spec: appendix-a-builtins §A.3 — dual-mode arithmetic parity
 #[test]
 fn dual_mode_arithmetic() {
     compile_both("(defn main [] (add-i64 3 4))", 7);
 }
 
+// spec: 04-expressions §4.6 — dual-mode recursive parity
 #[test]
 fn dual_mode_factorial() {
     let src = "
@@ -595,11 +655,13 @@ fn dual_mode_factorial() {
     compile_both(src, 3628800);
 }
 
+// spec: 04-expressions §4.3 — dual-mode let parity
 #[test]
 fn dual_mode_nested_let() {
     compile_both("(defn main [] (let [x 10 y 20] (add-i64 x y)))", 30);
 }
 
+// spec: 04-expressions §4.6.1 — dual-mode chained calls parity
 #[test]
 fn dual_mode_chained_calls() {
     let src = "
@@ -610,11 +672,13 @@ fn dual_mode_chained_calls() {
     compile_both(src, 12);
 }
 
+// spec: appendix-a-builtins §A.3 — dual-mode comparison parity
 #[test]
 fn dual_mode_comparison() {
     compile_both("(defn main [] (if (lt-i64 3 5) 1 0))", 1);
 }
 
+// spec: 05-definitions §5.1 — dual-mode forward reference parity
 #[test]
 fn dual_mode_forward_reference() {
     // Callee defined before caller (dependency order).
@@ -625,12 +689,14 @@ fn dual_mode_forward_reference() {
     compile_both(src, 42);
 }
 
+// spec: 04-expressions §4.1.3 — dual-mode boolean parity
 #[test]
 fn dual_mode_boolean_logic() {
     compile_both("(defn main [] (if true 1 0))", 1);
     compile_both("(defn main [] (if false 1 0))", 0);
 }
 
+// spec: 06-pattern-matching §6.2.2 — dual-mode enum match parity
 #[test]
 fn dual_mode_enum_match() {
     let src = "
@@ -641,6 +707,7 @@ fn dual_mode_enum_match() {
     compile_both(src, 2);
 }
 
+// spec: 04-expressions §4.6 — dual-mode recursive parity
 #[test]
 fn dual_mode_recursive() {
     let src = "
@@ -654,12 +721,14 @@ fn dual_mode_recursive() {
 // Annotations (spec: 03-types)
 // =============================================================================
 
+// spec: 04-expressions §4.9 — type annotation on params
 #[test]
 fn annotated_params() {
     let src = "(defn inc [:Int x] (add-i64 x 1)) (defn main [] (inc 5))";
     assert_eq!(compile_and_run_simple(src), 6);
 }
 
+// spec: 04-expressions §4.9 — type annotation constrains inference
 #[test]
 fn annotated_return_inferred() {
     // Annotation on param constrains the body type.
@@ -667,6 +736,7 @@ fn annotated_return_inferred() {
     assert_eq!(compile_and_run_simple(src), 42);
 }
 
+// spec: 04-expressions §4.9 — annotation mismatch error
 #[test]
 fn annotation_mismatch_error() {
     // Annotated param as Int but passed a Bool.
@@ -680,6 +750,7 @@ fn annotation_mismatch_error() {
 // Let-polymorphism (spec: 03-types)
 // =============================================================================
 
+// spec: 03-types §3.4 — let-polymorphism identity
 #[test]
 fn let_polymorphism_identity() {
     // The identity function should work with different types.
@@ -690,6 +761,7 @@ fn let_polymorphism_identity() {
     assert_eq!(compile_and_run_simple(src), 3);
 }
 
+// spec: 03-types §3.4 — let-bound polymorphic usage
 #[test]
 fn let_bound_polymorphic_usage() {
     // Let-bound identity used at multiple types within the same function.
@@ -705,6 +777,7 @@ fn let_bound_polymorphic_usage() {
 // Multi-defn programs (spec: 04-expressions)
 // =============================================================================
 
+// spec: 05-definitions §5.1 — multiple function definitions
 #[test]
 fn multiple_functions() {
     let src = "
@@ -716,6 +789,7 @@ fn multiple_functions() {
     assert_eq!(compile_and_run_simple(src), 9);
 }
 
+// spec: 05-definitions §5.1 — forward references between functions
 #[test]
 fn mutual_forward_references() {
     // Both functions reference each other (structurally -- not mutual recursion).
@@ -727,6 +801,7 @@ fn mutual_forward_references() {
     assert_eq!(compile_and_run_simple(src), 18); // (5+10) + 3 = 18
 }
 
+// spec: 05-definitions §5.1 — main calls helper
 #[test]
 fn main_calls_helper() {
     let src = "
@@ -740,36 +815,42 @@ fn main_calls_helper() {
 // Additional batch tests
 // =============================================================================
 
+// spec: 04-expressions §4.1.1 — negative integer literal
 #[test]
 fn negative_integer() {
     let src = "(defn main [] -3)";
     assert_eq!(compile_and_run_simple(src), -3);
 }
 
+// spec: 04-expressions §4.1.1 — zero integer literal
 #[test]
 fn zero() {
     let src = "(defn main [] 0)";
     assert_eq!(compile_and_run_simple(src), 0);
 }
 
+// spec: 04-expressions §4.1.1 — large integer literal
 #[test]
 fn large_integer() {
     let src = "(defn main [] 1000000000)";
     assert_eq!(compile_and_run_simple(src), 1000000000);
 }
 
+// spec: appendix-a-builtins §A.3 — not primitive true
 #[test]
 fn boolean_not_true() {
     let src = "(defn main [] (not true))";
     assert_eq!(compile_and_run_simple(src), 0);
 }
 
+// spec: appendix-a-builtins §A.3 — not primitive false
 #[test]
 fn boolean_not_false() {
     let src = "(defn main [] (not false))";
     assert_eq!(compile_and_run_simple(src), 1);
 }
 
+// spec: 04-expressions §4.3 — deeply nested let
 #[test]
 fn deeply_nested_let() {
     let src = "
@@ -783,6 +864,7 @@ fn deeply_nested_let() {
     assert_eq!(compile_and_run_simple(src), 10);
 }
 
+// spec: 04-expressions §4.4 — if with let in branches
 #[test]
 fn if_with_let_branches() {
     let src = "
@@ -794,6 +876,7 @@ fn if_with_let_branches() {
     assert_eq!(compile_and_run_simple(src), 10);
 }
 
+// spec: 06-pattern-matching §6.2.3 — wildcard pattern
 #[test]
 fn match_wildcard() {
     let src = "
@@ -807,6 +890,7 @@ fn match_wildcard() {
     assert_eq!(compile_and_run_simple(src), 1);
 }
 
+// spec: 06-pattern-matching §6.2.4 — variable pattern
 #[test]
 fn match_var_pattern() {
     let src = "
@@ -820,12 +904,14 @@ fn match_var_pattern() {
     assert_eq!(compile_and_run_simple(src), 99);
 }
 
+// spec: appendix-a-builtins §A.3 — le-i64 primitive
 #[test]
 fn comparison_less_equal() {
     let src = "(defn main [] (if (le-i64 3 3) 1 0))";
     assert_eq!(compile_and_run_simple(src), 1);
 }
 
+// spec: appendix-a-builtins §A.3 — ge-i64 primitive
 #[test]
 fn comparison_greater_equal() {
     let src = "(defn main [] (if (ge-i64 5 3) 1 0))";
@@ -836,6 +922,7 @@ fn comparison_greater_equal() {
 // Additional REPL tests
 // =============================================================================
 
+// spec: 04-expressions §4.1.3 — boolean literal in REPL
 #[test]
 fn repl_boolean_expression() {
     let mut session = repl_session();
@@ -844,6 +931,7 @@ fn repl_boolean_expression() {
     assert_eq!(value, 1);
 }
 
+// spec: 04-expressions §4.1.3 — boolean false in REPL
 #[test]
 fn repl_boolean_false() {
     let mut session = repl_session();
@@ -852,6 +940,7 @@ fn repl_boolean_false() {
     assert_eq!(value, 0);
 }
 
+// spec: 04-expressions §4.4 — if expression in REPL
 #[test]
 fn repl_if_expression() {
     let mut session = repl_session();
@@ -859,6 +948,7 @@ fn repl_if_expression() {
     assert_eq!(repl_eval(&mut session, "(if false 1 2)"), 2);
 }
 
+// spec: 04-expressions §4.3 — let expression in REPL
 #[test]
 fn repl_let_expression() {
     let mut session = repl_session();
@@ -868,12 +958,14 @@ fn repl_let_expression() {
     );
 }
 
+// spec: 04-expressions §4.1.1 — negative integer in REPL
 #[test]
 fn repl_negative_int() {
     let mut session = repl_session();
     assert_eq!(repl_eval(&mut session, "-5"), -5);
 }
 
+// spec: 04-expressions §4.6.1 — nested calls in REPL
 #[test]
 fn repl_nested_calls() {
     let mut session = repl_session();
@@ -882,6 +974,7 @@ fn repl_nested_calls() {
     assert_eq!(repl_eval(&mut session, "(inc (double (inc 3)))"), 9);
 }
 
+// spec: repl/spec.md §5.2 — parse error recovery in REPL
 #[test]
 fn repl_parse_error_recovers() {
     let mut session = repl_session();
@@ -891,6 +984,7 @@ fn repl_parse_error_recovers() {
     assert_eq!(repl_eval(&mut session, "(add-i64 2 3)"), 5);
 }
 
+// spec: appendix-a-builtins §A.3 — not primitive in REPL
 #[test]
 fn repl_not_operator() {
     let mut session = repl_session();
@@ -898,6 +992,7 @@ fn repl_not_operator() {
     assert_eq!(repl_eval(&mut session, "(not false)"), 1);
 }
 
+// spec: appendix-a-builtins §A.3 — comparison primitives in REPL
 #[test]
 fn repl_comparison_operators() {
     let mut session = repl_session();
@@ -908,6 +1003,7 @@ fn repl_comparison_operators() {
     assert_eq!(repl_eval(&mut session, "(if (ge-i64 5 3) 1 0)"), 1);
 }
 
+// spec: 05-definitions §5.1 — multiple definitions in REPL
 #[test]
 fn repl_multiple_definitions() {
     let mut session = repl_session();
@@ -917,6 +1013,7 @@ fn repl_multiple_definitions() {
     assert_eq!(repl_eval(&mut session, "(add-i64 (a) (add-i64 (b) (c)))"), 6);
 }
 
+// spec: 04-expressions §4.6 — recursive countdown in REPL
 #[test]
 fn repl_recursive_countdown() {
     let mut session = repl_session();
@@ -927,6 +1024,7 @@ fn repl_recursive_countdown() {
     assert_eq!(repl_eval(&mut session, "(countdown 100)"), 0);
 }
 
+// spec: 05-definitions §5.2.3 — enum definition and use in REPL
 #[test]
 fn repl_enum_definition_and_use() {
     let mut session = repl_session();
@@ -937,6 +1035,7 @@ fn repl_enum_definition_and_use() {
     assert_eq!(value2, 1); // tag 1
 }
 
+// spec: 05-definitions §5.1 — defn then expression in REPL
 #[test]
 fn repl_defn_then_expression() {
     // Define a function, then evaluate a bare expression calling it.
@@ -949,17 +1048,20 @@ fn repl_defn_then_expression() {
 // Additional error tests
 // =============================================================================
 
+// spec: 04-expressions §4.4 — if condition must be Bool
 #[test]
 fn error_if_condition_not_bool() {
     assert_type_error("(defn main [] (if 1 2 3))", "");
 }
 
+// spec: 05-definitions §5.1.1 — duplicate parameter names
 #[test]
 fn error_duplicate_param_names() {
     // Two parameters with the same name.
     assert_error("(defn bad [x x] (add-i64 x x))", "");
 }
 
+// spec: 04-expressions §4.2 — undefined function call
 #[test]
 fn error_undefined_function_call() {
     assert_error("(defn main [] (nonexistent 1))", "");

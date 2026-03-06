@@ -124,6 +124,7 @@ mod tests {
     use super::*;
     use cranelisp_types::TypeName;
 
+    // spec: 03-types §3.8.1 — trivial unification of identical primitives
     #[test]
     fn test_unify_same_primitives() {
         let mut subst = Subst::new();
@@ -133,6 +134,7 @@ mod tests {
         assert!(unify(&mut subst, &Type::String, &Type::String).is_ok());
     }
 
+    // spec: 03-types §3.8.6 — incompatible primitive types fail unification
     #[test]
     fn test_unify_different_primitives_fails() {
         let mut subst = Subst::new();
@@ -140,6 +142,7 @@ mod tests {
         assert!(unify(&mut subst, &Type::Float, &Type::String).is_err());
     }
 
+    // spec: 03-types §3.8.2 — variable binding: Var(id) binds to concrete type
     #[test]
     fn test_unify_var_with_concrete() {
         let mut subst = Subst::new();
@@ -147,6 +150,7 @@ mod tests {
         assert_eq!(apply(&subst, &Type::Var(0)), Type::Int);
     }
 
+    // spec: 03-types §3.8.2 — variable binding is symmetric
     #[test]
     fn test_unify_concrete_with_var() {
         let mut subst = Subst::new();
@@ -154,6 +158,7 @@ mod tests {
         assert_eq!(apply(&subst, &Type::Var(0)), Type::Int);
     }
 
+    // spec: 03-types §3.8.2 — two distinct type variables unify by merging
     #[test]
     fn test_unify_var_with_var() {
         let mut subst = Subst::new();
@@ -164,6 +169,7 @@ mod tests {
         assert_eq!(t0, t1);
     }
 
+    // spec: 03-types §3.8.2 — same variable unifies with itself (no-op)
     #[test]
     fn test_unify_var_with_self() {
         let mut subst = Subst::new();
@@ -172,6 +178,7 @@ mod tests {
         assert!(subst.is_empty());
     }
 
+    // spec: 03-types §3.8.3 — function types unify pairwise by params and return
     #[test]
     fn test_unify_fn_types() {
         let mut subst = Subst::new();
@@ -180,6 +187,7 @@ mod tests {
         assert!(unify(&mut subst, &fn1, &fn2).is_ok());
     }
 
+    // spec: 03-types §3.8.3 — function type unification resolves type variables
     #[test]
     fn test_unify_fn_types_with_vars() {
         let mut subst = Subst::new();
@@ -190,6 +198,7 @@ mod tests {
         assert_eq!(apply(&subst, &Type::Var(1)), Type::Bool);
     }
 
+    // spec: 03-types §3.8.3 — function arity mismatch fails unification
     #[test]
     fn test_unify_fn_arity_mismatch() {
         let mut subst = Subst::new();
@@ -199,6 +208,7 @@ mod tests {
         assert!(err.message().contains("arity mismatch"));
     }
 
+    // spec: 03-types §3.8.4 — ADTs with same name unify
     #[test]
     fn test_unify_adt_same_name() {
         let mut subst = Subst::new();
@@ -207,6 +217,7 @@ mod tests {
         assert!(unify(&mut subst, &a1, &a2).is_ok());
     }
 
+    // spec: 03-types §3.8.4 — ADTs with different names fail unification
     #[test]
     fn test_unify_adt_different_names() {
         let mut subst = Subst::new();
@@ -217,6 +228,7 @@ mod tests {
         assert!(err.message().contains("Shape"));
     }
 
+    // spec: 03-types §3.8.2 — occurs check prevents infinite types
     #[test]
     fn test_occurs_check_prevents_infinite_type() {
         let mut subst = Subst::new();
@@ -226,6 +238,7 @@ mod tests {
         assert!(err.message().contains("infinite type"));
     }
 
+    // spec: 03-types §3.8.2 — occurs check detects variable in function type
     #[test]
     fn test_occurs_check_function() {
         let subst = Subst::new();
@@ -234,6 +247,7 @@ mod tests {
         assert!(!occurs_check(&subst, 1, &ty));
     }
 
+    // spec: 03-types §3.5.1 — fresh_var creates unique unification variables
     #[test]
     fn test_fresh_var() {
         let mut next_id: TypeId = 0;
@@ -244,6 +258,7 @@ mod tests {
         assert_eq!(next_id, 2);
     }
 
+    // spec: 03-types §3.5.1 — fresh_var_id returns both type and id
     #[test]
     fn test_fresh_var_id() {
         let mut next_id: TypeId = 5;
@@ -253,6 +268,7 @@ mod tests {
         assert_eq!(next_id, 6);
     }
 
+    // spec: 03-types §3.5.1 — apply resolves transitive variable chains
     #[test]
     fn test_unify_transitive_vars() {
         let mut subst = Subst::new();
@@ -262,6 +278,7 @@ mod tests {
         assert_eq!(apply(&subst, &Type::Var(0)), Type::Int);
     }
 
+    // spec: 03-types §3.8.3 — function param type mismatch fails unification
     #[test]
     fn test_unify_fn_param_type_mismatch() {
         let mut subst = Subst::new();

@@ -22,3 +22,7 @@ cranelisp-typecheck = { path = "crates/cranelisp-typecheck" }
 cranelisp-backend = { path = "crates/cranelisp-backend" }
 cranelisp-runtime = { path = "crates/cranelisp-runtime" }
 cranelisp-platform = { path = "crates/cranelisp-platform" }
+
+[dev-dependencies]
+serial_test = "3"
+tempfile = "3"

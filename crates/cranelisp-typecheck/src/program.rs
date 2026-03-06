@@ -195,7 +195,7 @@ impl TypeChecker {
 
         for defn in defns {
             if let Some(ModuleEntry::Def { kind, .. }) =
-                self.symbol_table.get(defn.name.as_ref())
+                self.current_symbol_table().get(defn.name.as_ref())
             {
                 if let DefKind::UserFn { constrained_fn: Some(_) } = kind.as_ref() {
                     names.insert(defn.name.clone());
@@ -246,7 +246,7 @@ impl TypeChecker {
         let fn_type = Type::Fn(param_types.clone(), Box::new(ret_ty.clone()));
         let scheme = mono(fn_type);
 
-        self.symbol_table.insert(
+        self.current_symbol_table_mut().insert(
             defn.name.clone(),
             ModuleEntry::Def {
                 scheme,
@@ -317,7 +317,7 @@ impl TypeChecker {
             if !trial_scheme.constraints.is_empty() {
                 // Mark as constrained immediately
                 if let Some(ModuleEntry::Def { kind, .. }) =
-                    self.symbol_table.symbols.get_mut(&defn.name)
+                    self.current_symbol_table_mut().symbols.get_mut(&defn.name)
                 {
                     let cf = ConstrainedFn {
                         defn: (*defn).clone(),
@@ -341,7 +341,7 @@ impl TypeChecker {
             );
             let scheme = self.generalize(&fn_type);
             if let Some(ModuleEntry::Def { scheme: s, kind, .. }) =
-                self.symbol_table.symbols.get_mut(&defn.name)
+                self.current_symbol_table_mut().symbols.get_mut(&defn.name)
             {
                 *s = scheme.clone();
                 // Clear eager constrained marker if final scheme is unconstrained
@@ -415,7 +415,7 @@ impl TypeChecker {
         // Update symbol table with generalized scheme
         // If constrained, also store as ConstrainedFn
         if let Some(ModuleEntry::Def { scheme: s, kind, .. }) =
-            self.symbol_table.symbols.get_mut(&defn.name)
+            self.current_symbol_table_mut().symbols.get_mut(&defn.name)
         {
             *s = scheme.clone();
 
@@ -519,7 +519,7 @@ impl TypeChecker {
         expr: &Expr,
     ) -> Result<Vec<MonoDefn>, CranelispError> {
         // Build the set of constrained fn names from the symbol table
-        let constrained_fn_names: HashSet<Symbol> = self.symbol_table.symbols
+        let constrained_fn_names: HashSet<Symbol> = self.current_symbol_table().symbols
             .iter()
             .filter_map(|(name, entry)| {
                 if let ModuleEntry::Def { kind, .. } = entry {
@@ -729,6 +729,7 @@ mod tests {
         Span::new(start, end)
     }
 
+    // spec: 05-definitions §5.1 — defn registers function with inferred type
     #[test]
     fn test_check_program_simple_defn() {
         let mut tc = TypeChecker::new();
@@ -762,7 +763,7 @@ mod tests {
         let _result = tc.check_program(&program).unwrap();
 
         // Check the function was registered with correct type: Fn([Int], Int)
-        if let Some(ModuleEntry::Def { scheme, .. }) = tc.symbol_table.get("add-one") {
+        if let Some(ModuleEntry::Def { scheme, .. }) = tc.symbol_table().get("add-one") {
             assert_eq!(
                 scheme.ty,
                 Type::Fn(vec![Type::Int], Box::new(Type::Int))
@@ -772,6 +773,7 @@ mod tests {
         }
     }
 
+    // spec: 03-types §3.4 — identity function generalized to polymorphic scheme
     #[test]
     fn test_check_program_identity_is_polymorphic() {
         let mut tc = TypeChecker::new();
@@ -791,7 +793,7 @@ mod tests {
 
         tc.check_program(&program).unwrap();
 
-        if let Some(ModuleEntry::Def { scheme, .. }) = tc.symbol_table.get("id") {
+        if let Some(ModuleEntry::Def { scheme, .. }) = tc.symbol_table().get("id") {
             // Should be forall [a]. Fn([a], a)
             assert_eq!(scheme.vars.len(), 1, "id should have 1 quantified var");
             match &scheme.ty {
@@ -806,6 +808,7 @@ mod tests {
         }
     }
 
+    // spec: 03-types §3.5.1 — recursive function inferred as monomorphic via self-reference
     #[test]
     fn test_check_program_recursive_function() {
         let mut tc = TypeChecker::new();
@@ -882,7 +885,7 @@ mod tests {
 
         tc.check_program(&program).unwrap();
 
-        if let Some(ModuleEntry::Def { scheme, .. }) = tc.symbol_table.get("fact") {
+        if let Some(ModuleEntry::Def { scheme, .. }) = tc.symbol_table().get("fact") {
             assert!(
                 scheme.vars.is_empty(),
                 "fact should be monomorphic (Int -> Int)"
@@ -896,6 +899,7 @@ mod tests {
         }
     }
 
+    // spec: 05-definitions §5.2 — deftype registers constructors and enables match
     #[test]
     fn test_check_program_with_typedef() {
         let mut tc = TypeChecker::new();
@@ -965,7 +969,7 @@ mod tests {
 
         let result = tc.check_program(&program).unwrap();
 
-        if let Some(ModuleEntry::Def { scheme, .. }) = tc.symbol_table.get("is-red") {
+        if let Some(ModuleEntry::Def { scheme, .. }) = tc.symbol_table().get("is-red") {
             assert_eq!(
                 scheme.ty,
                 Type::Fn(
@@ -982,6 +986,7 @@ mod tests {
         assert!(result.constructor_to_type.contains_key("Red"));
     }
 
+    // spec: 03-types §3.8 — unification failure produces type error
     #[test]
     fn test_check_program_type_error() {
         let mut tc = TypeChecker::new();
@@ -1018,6 +1023,7 @@ mod tests {
         assert!(result.is_err());
     }
 
+    // spec: 03-types §3.5.1 — all expression types fully resolved after inference
     #[test]
     fn test_check_program_expr_types_resolved() {
         let mut tc = TypeChecker::new();
@@ -1058,6 +1064,7 @@ mod tests {
         }
     }
 
+    // spec: 03-types §3.1 — REPL expression inferred as literal type
     #[test]
     fn test_check_repl_expression() {
         let mut tc = TypeChecker::new();
@@ -1070,6 +1077,7 @@ mod tests {
         assert!(result.scheme.is_none());
     }
 
+    // spec: 03-types §3.4 — REPL defn produces polymorphic scheme
     #[test]
     fn test_check_repl_defn() {
         let mut tc = TypeChecker::new();
@@ -1092,6 +1100,7 @@ mod tests {
         assert_eq!(scheme.vars.len(), 1);
     }
 
+    // spec: 05-definitions §5.2 — REPL typedef registers type and constructors
     #[test]
     fn test_check_repl_typedef() {
         let mut tc = TypeChecker::new();
@@ -1121,6 +1130,7 @@ mod tests {
         assert!(result.type_defs.contains_key(&TypeName::from("Dir")));
     }
 
+    // spec: 03-types §3.5.1 — forward references resolved via two-pass inference
     #[test]
     fn test_check_program_forward_reference() {
         let mut tc = TypeChecker::new();
@@ -1180,7 +1190,7 @@ mod tests {
         tc.check_program(&program).unwrap();
 
         // add-self is monomorphic: Fn([Int], Int) — add-i64 pins y to Int
-        if let Some(ModuleEntry::Def { scheme, .. }) = tc.symbol_table.get("add-self") {
+        if let Some(ModuleEntry::Def { scheme, .. }) = tc.symbol_table().get("add-self") {
             assert!(
                 scheme.vars.is_empty(),
                 "add-self should have no quantified vars (monomorphic via add-i64)"
@@ -1195,7 +1205,7 @@ mod tests {
         }
 
         // double should also be monomorphic (calls add-self with Int)
-        if let Some(ModuleEntry::Def { scheme, .. }) = tc.symbol_table.get("double") {
+        if let Some(ModuleEntry::Def { scheme, .. }) = tc.symbol_table().get("double") {
             assert!(
                 scheme.vars.is_empty(),
                 "double should have no quantified vars (monomorphic via add-self)"
@@ -1210,6 +1220,7 @@ mod tests {
         }
     }
 
+    // spec: 03-types §3.9 — type annotation pins parameter type in forward reference
     #[test]
     fn test_check_program_forward_reference_pinned() {
         let mut tc = TypeChecker::new();
@@ -1266,7 +1277,7 @@ mod tests {
         tc.check_program(&program).unwrap();
 
         // double is pinned: Fn([Int], Int) — annotation + add-i64 both constrain to Int
-        if let Some(ModuleEntry::Def { scheme, .. }) = tc.symbol_table.get("double") {
+        if let Some(ModuleEntry::Def { scheme, .. }) = tc.symbol_table().get("double") {
             assert_eq!(
                 scheme.ty,
                 Type::Fn(vec![Type::Int], Box::new(Type::Int))
@@ -1276,7 +1287,7 @@ mod tests {
         }
 
         // add-self is also pinned: Fn([Int], Int) — add-i64 constrains y to Int
-        if let Some(ModuleEntry::Def { scheme, .. }) = tc.symbol_table.get("add-self") {
+        if let Some(ModuleEntry::Def { scheme, .. }) = tc.symbol_table().get("add-self") {
             assert_eq!(
                 scheme.ty,
                 Type::Fn(vec![Type::Int], Box::new(Type::Int))
@@ -1286,6 +1297,7 @@ mod tests {
         }
     }
 
+    // spec: 07-traits §7.5 — builtin function call resolved as BuiltinFn in method resolutions
     #[test]
     fn test_check_program_check_result_has_builtin_resolutions() {
         let mut tc = TypeChecker::new();
@@ -1331,6 +1343,7 @@ mod tests {
 
     // --- Ring 1: Polymorphic ADT program tests ---
 
+    // spec: 05-definitions §5.2.2 — polymorphic typedef registers constructors with type params
     #[test]
     fn test_check_program_polymorphic_typedef() {
         let mut tc = TypeChecker::new();
@@ -1369,6 +1382,7 @@ mod tests {
         assert!(result.constructor_to_type.contains_key("None"));
     }
 
+    // spec: 05-definitions §5.2.2 — REPL polymorphic typedef registers type defs
     #[test]
     fn test_check_repl_polymorphic_typedef() {
         let mut tc = TypeChecker::new();
@@ -1400,6 +1414,7 @@ mod tests {
         assert!(result.type_defs.contains_key(&TypeName::from("Option")));
     }
 
+    // spec: 03-types §3.1 — string literal inferred as String type
     #[test]
     fn test_check_repl_string_expression() {
         let mut tc = TypeChecker::new();
@@ -1411,6 +1426,7 @@ mod tests {
         assert_eq!(result.ty, Type::String);
     }
 
+    // spec: 03-types §3.1 — function returning string literal has String return type
     #[test]
     fn test_check_program_string_in_function() {
         let mut tc = TypeChecker::new();
@@ -1430,7 +1446,7 @@ mod tests {
 
         tc.check_program(&program).unwrap();
 
-        if let Some(ModuleEntry::Def { scheme, .. }) = tc.symbol_table.get("greet") {
+        if let Some(ModuleEntry::Def { scheme, .. }) = tc.symbol_table().get("greet") {
             assert_eq!(
                 scheme.ty,
                 Type::Fn(vec![], Box::new(Type::String))
@@ -1442,6 +1458,7 @@ mod tests {
 
     // --- Ring 2: Constrained polymorphism tests ---
 
+    // spec: 03-types §3.6 — collect_constrained_calls finds direct call to constrained fn
     #[test]
     fn test_collect_constrained_calls_finds_direct_call() {
         let constrained = HashSet::from([Symbol::from("add")]);
@@ -1467,6 +1484,7 @@ mod tests {
         assert_eq!(calls[0].2, span(0, 9)); // call span
     }
 
+    // spec: 03-types §3.6 — collect_constrained_calls ignores non-constrained functions
     #[test]
     fn test_collect_constrained_calls_ignores_non_constrained() {
         let constrained = HashSet::from([Symbol::from("add")]);
@@ -1489,6 +1507,7 @@ mod tests {
         assert!(calls.is_empty());
     }
 
+    // spec: 03-types §3.6 — collect_constrained_calls recurses into let bindings
     #[test]
     fn test_collect_constrained_calls_recurses_into_let() {
         let constrained = HashSet::from([Symbol::from("add")]);
@@ -1522,6 +1541,7 @@ mod tests {
         assert_eq!(calls[0].0.as_ref(), "add");
     }
 
+    // spec: 03-types §3.6 — collect_constrained_calls recurses into if branches
     #[test]
     fn test_collect_constrained_calls_recurses_into_if() {
         let constrained = HashSet::from([Symbol::from("add")]);
@@ -1559,6 +1579,7 @@ mod tests {
         assert_eq!(calls.len(), 2, "should find calls in both branches");
     }
 
+    // spec: 03-types §3.6 — batch mode monomorphises constrained fn at concrete call site
     #[test]
     fn test_batch_monomorphise_generates_mono_defn() {
         let mut tc = TypeChecker::new();
@@ -1622,7 +1643,7 @@ mod tests {
         );
 
         // Verify add was correctly inferred as Fn([Int, Int], Int)
-        if let Some(ModuleEntry::Def { scheme, .. }) = tc.symbol_table.get("add") {
+        if let Some(ModuleEntry::Def { scheme, .. }) = tc.symbol_table().get("add") {
             assert_eq!(
                 scheme.ty,
                 Type::Fn(vec![Type::Int, Type::Int], Box::new(Type::Int))
@@ -1637,6 +1658,7 @@ mod tests {
         // doesn't need separate mono_defn generation.
     }
 
+    // spec: 03-types §3.6 — constrained fn without callers detected and registered
     #[test]
     fn test_batch_constrained_fn_alone_detected() {
         let mut tc = TypeChecker::new();
@@ -1675,7 +1697,7 @@ mod tests {
         );
 
         // Check the scheme has Num constraint
-        if let Some(ModuleEntry::Def { scheme, .. }) = tc.symbol_table.get("add") {
+        if let Some(ModuleEntry::Def { scheme, .. }) = tc.symbol_table().get("add") {
             assert!(
                 !scheme.constraints.is_empty(),
                 "add should have Num constraint"
@@ -1685,6 +1707,7 @@ mod tests {
         }
     }
 
+    // spec: 03-types §3.6 — REPL expression monomorphises constrained fn on demand
     #[test]
     fn test_repl_expr_monomorphise() {
         let mut tc = TypeChecker::new();
@@ -1736,6 +1759,7 @@ mod tests {
         );
     }
 
+    // spec: 03-types §3.6 — REPL defn body triggers monomorphisation of constrained calls
     #[test]
     fn test_repl_defn_body_monomorphise() {
         let mut tc = TypeChecker::new();
@@ -1795,6 +1819,7 @@ mod tests {
         );
     }
 
+    // spec: 03-types §3.6 — program without constrained fns produces empty mono results
     #[test]
     fn test_batch_mono_no_constrained_fns_produces_empty() {
         let mut tc = TypeChecker::new();

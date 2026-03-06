@@ -49,6 +49,7 @@ mod tests {
     use super::*;
     use crate::alloc::bytes_current;
 
+    // spec: appendix-a-builtins §A.3 — int-to-string converts positive integer
     #[test]
     fn test_int_to_string_positive() {
         let result = int_to_string(42);
@@ -58,6 +59,7 @@ mod tests {
         }
     }
 
+    // spec: appendix-a-builtins §A.3 — int-to-string converts negative integer
     #[test]
     fn test_int_to_string_negative() {
         let result = int_to_string(-7);
@@ -67,6 +69,7 @@ mod tests {
         }
     }
 
+    // spec: appendix-a-builtins §A.3 — int-to-string converts zero
     #[test]
     fn test_int_to_string_zero() {
         let result = int_to_string(0);
@@ -76,6 +79,7 @@ mod tests {
         }
     }
 
+    // spec: appendix-a-builtins §A.3 — parse-int returns Some for valid decimal string
     #[test]
     fn test_parse_int_valid() {
         let bytes_before = bytes_current();
@@ -96,6 +100,7 @@ mod tests {
         assert_eq!(bytes_current(), bytes_before);
     }
 
+    // spec: appendix-a-builtins §A.3 — parse-int parses negative integer
     #[test]
     fn test_parse_int_negative() {
         let s = string::alloc_string(b"-123") as i64;
@@ -111,6 +116,7 @@ mod tests {
         }
     }
 
+    // spec: appendix-a-builtins §A.3 — parse-int returns None for non-numeric string
     #[test]
     fn test_parse_int_invalid() {
         let s = string::alloc_string(b"not a number") as i64;
@@ -119,6 +125,7 @@ mod tests {
         unsafe { alloc::dealloc(s as *mut u8) };
     }
 
+    // spec: appendix-a-builtins §A.3 — parse-int trims whitespace
     #[test]
     fn test_parse_int_whitespace() {
         let s = string::alloc_string(b"  99  ") as i64;
@@ -132,6 +139,7 @@ mod tests {
         }
     }
 
+    // spec: appendix-a-builtins §A.3 — parse-int returns None for empty string
     #[test]
     fn test_parse_int_empty() {
         let s = string::alloc_string(b"") as i64;

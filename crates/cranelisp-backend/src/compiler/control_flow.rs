@@ -30,6 +30,11 @@ impl<'a> FnCompiler<'a> {
         self.in_tail_position = false;
 
         for (name, val_expr) in bindings {
+            // Record the binding's type from the typechecker's expr_types map.
+            if let Some(ty) = self.ctx.expr_types.get(&val_expr.span()) {
+                self.variable_types.insert(name.clone(), ty.clone());
+            }
+
             let val = self.compile_expr(val_expr)?;
             let var = self.fresh_variable();
             self.builder.declare_var(var, types::I64);
@@ -43,10 +48,20 @@ impl<'a> FnCompiler<'a> {
 
         // Body inherits tail position.
         self.in_tail_position = saved_tail;
+
+        // Determine which variable (if any) is the return value — its
+        // ownership transfers to the caller, so skip dec for it.
+        let skip_var = Self::return_var_in_scope(body, self.scope_stack.last());
+
         let result = self.compile_expr(body)?;
 
-        // Pop the scope frame.
-        self.pop_scope();
+        // Protect the return value from scope cleanup if skip_var didn't
+        // identify a specific variable to preserve (non-trivial body).
+        self.protect_return_value(&skip_var, result, body);
+
+        // Pop the scope frame, emitting rc_dec for heap-typed bindings
+        // except the return value.
+        self.pop_scope_with_cleanup(skip_var.as_ref());
 
         Ok(result)
     }

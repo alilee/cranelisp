@@ -189,6 +189,7 @@ mod tests {
     use super::*;
     use crate::alloc::bytes_current;
 
+    // spec: 12-runtime §12.1.2 — empty string heap allocation
     #[test]
     fn test_alloc_string_empty() {
         let bytes_before = bytes_current();
@@ -201,6 +202,7 @@ mod tests {
         assert_eq!(bytes_current(), bytes_before);
     }
 
+    // spec: 12-runtime §12.1.2 — string heap layout [length | bytes]
     #[test]
     fn test_alloc_string_hello() {
         let bytes_before = bytes_current();
@@ -215,6 +217,7 @@ mod tests {
         assert_eq!(bytes_current(), bytes_before);
     }
 
+    // spec: appendix-a-builtins §A.3 — str-concat concatenates two strings
     #[test]
     fn test_str_concat() {
         let bytes_before = bytes_current();
@@ -231,6 +234,7 @@ mod tests {
         assert_eq!(bytes_current(), bytes_before);
     }
 
+    // spec: appendix-a-builtins §A.3 — str-eq returns true for equal strings
     #[test]
     fn test_str_eq_equal() {
         let a = alloc_string(b"same") as i64;
@@ -242,6 +246,7 @@ mod tests {
         }
     }
 
+    // spec: appendix-a-builtins §A.3 — str-eq returns false for different strings
     #[test]
     fn test_str_eq_not_equal() {
         let a = alloc_string(b"hello") as i64;
@@ -253,6 +258,7 @@ mod tests {
         }
     }
 
+    // spec: 12-runtime §12.1.2 — string length in bytes (not characters)
     #[test]
     fn test_str_len() {
         let s = alloc_string(b"hello") as i64;
@@ -265,6 +271,7 @@ mod tests {
         }
     }
 
+    // spec: 12-runtime §12.3.2, appendix-a-builtins §A.3 — string-identity increments RC
     #[test]
     fn test_string_identity_increments_rc() {
         let bytes_before = bytes_current();
@@ -294,6 +301,7 @@ mod tests {
         assert_eq!(bytes_current(), bytes_before);
     }
 
+    // spec: 12-runtime §12.1.2 — string read returns pointer and byte length
     #[test]
     fn test_string_read() {
         let s = alloc_string(b"test read") as i64;
@@ -310,6 +318,7 @@ mod tests {
         unsafe { alloc::dealloc(s as *mut u8) };
     }
 
+    // spec: 12-runtime §12.1.2 — extern string allocation from raw pointer
     #[test]
     fn test_alloc_string_extern() {
         let bytes_before = bytes_current();
@@ -323,6 +332,7 @@ mod tests {
         assert_eq!(bytes_current(), bytes_before);
     }
 
+    // spec: 12-runtime §12.1.2 — null pointer string allocation produces empty string
     #[test]
     fn test_alloc_string_null_ptr() {
         let s = heap_alloc_string(std::ptr::null(), 0);
@@ -331,6 +341,7 @@ mod tests {
         unsafe { alloc::dealloc(s as *mut u8) };
     }
 
+    // spec: appendix-a-builtins §A.3 — str-concat with both empty strings
     #[test]
     fn test_str_concat_empty_strings() {
         let a = alloc_string(b"") as i64;
@@ -344,6 +355,7 @@ mod tests {
         }
     }
 
+    // spec: appendix-a-builtins §A.3 — str-concat with one empty string
     #[test]
     fn test_str_concat_one_empty() {
         let a = alloc_string(b"hello") as i64;
@@ -357,6 +369,7 @@ mod tests {
         }
     }
 
+    // spec: 12-runtime §12.1.2 — string stores UTF-8 bytes (multi-byte characters)
     #[test]
     fn test_unicode_string() {
         let s = alloc_string("héllo 世界".as_bytes()) as i64;

@@ -324,6 +324,7 @@ mod tests {
     use super::*;
     use crate::alloc::{alloc_count, bytes_current};
 
+    // spec: 12-runtime §12.1.5 — Vec creation with capacity, heap layout [len | cap | data_ptr]
     #[test]
     fn test_vec_new_basic() {
         let allocs_before = alloc_count();
@@ -344,6 +345,7 @@ mod tests {
         vec_drop(v, 0);
     }
 
+    // spec: 12-runtime §12.1.5 — Vec with zero capacity (null data pointer)
     #[test]
     fn test_vec_new_zero_capacity() {
         let v = vec_new(0);
@@ -357,6 +359,7 @@ mod tests {
         vec_drop(v, 0);
     }
 
+    // spec: appendix-a-builtins §A.3 — vec-push grows from empty Vec
     #[test]
     fn test_vec_push_grow_from_empty() {
         let v = vec_new(0);
@@ -374,6 +377,7 @@ mod tests {
         vec_drop(v, 0);
     }
 
+    // spec: appendix-a-builtins §A.3 — vec-push doubles capacity on grow
     #[test]
     fn test_vec_push_grow_doubles_capacity() {
         let v = vec_new(2);
@@ -399,6 +403,7 @@ mod tests {
         vec_drop(v, 0);
     }
 
+    // spec: 12-runtime §12.3.3 — vec-push copy path preserves original Vec
     #[test]
     fn test_vec_push_copy_basic() {
         let v = vec_new(2);
@@ -426,6 +431,7 @@ mod tests {
         vec_drop(v2, 0);
     }
 
+    // spec: 12-runtime §12.3.3 — vec-set copy path returns new Vec, original unchanged
     #[test]
     fn test_vec_set_copy_basic() {
         let v = vec_new(3);
@@ -456,6 +462,7 @@ mod tests {
         vec_drop(v2, 0);
     }
 
+    // spec: 12-runtime §12.3.1 — Vec drop frees all memory (header + data buffer)
     #[test]
     fn test_vec_drop_with_null_dec_fn() {
         let bytes_before = bytes_current();
@@ -487,6 +494,7 @@ mod tests {
         val
     }
 
+    // spec: 12-runtime §12.3.2 — vec-set copy calls RC inc on retained elements
     #[test]
     fn test_vec_set_copy_calls_inc_fn() {
         let before = INC_CALL_COUNT.load(std::sync::atomic::Ordering::Relaxed);
@@ -511,6 +519,7 @@ mod tests {
         vec_drop(v2, 0);
     }
 
+    // spec: 12-runtime §12.3.2 — vec-push copy calls RC inc on existing elements
     #[test]
     fn test_vec_push_copy_calls_inc_fn() {
         let before = INC_CALL_COUNT.load(std::sync::atomic::Ordering::Relaxed);
@@ -533,6 +542,7 @@ mod tests {
         vec_drop(v2, 0);
     }
 
+    // spec: 12-runtime §12.3.1 — Vec drop calls RC dec on all elements
     #[test]
     fn test_vec_drop_calls_dec_fn() {
         let before = DEC_CALL_COUNT.load(std::sync::atomic::Ordering::Relaxed);
@@ -553,6 +563,7 @@ mod tests {
         assert_eq!(after - before, 3);
     }
 
+    // spec: appendix-a-builtins §A.3 — vec-push grow preserves existing data
     #[test]
     fn test_vec_push_grow_preserves_data() {
         // Build a Vec with cap=4, fill it, then push to trigger growth.
@@ -581,6 +592,7 @@ mod tests {
         vec_drop(v, 0);
     }
 
+    // spec: appendix-a-builtins §A.3 — vec-set replaces first element
     #[test]
     fn test_vec_set_copy_first_element() {
         let v = vec_new(2);
@@ -602,6 +614,7 @@ mod tests {
         vec_drop(v2, 0);
     }
 
+    // spec: appendix-a-builtins §A.3 — vec-set replaces last element
     #[test]
     fn test_vec_set_copy_last_element() {
         let v = vec_new(3);
@@ -625,6 +638,7 @@ mod tests {
         vec_drop(v2, 0);
     }
 
+    // spec: 12-runtime §12.3.1 — Vec drop frees all memory (verified via byte counter)
     #[test]
     fn test_vec_memory_cleanup() {
         let bytes_before = bytes_current();

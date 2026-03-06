@@ -28,7 +28,7 @@ pub use check::{
 };
 pub use module::{
     ConstrainedFn, DefKind, ExportSpec, ImplSexp, ImportNames, ImportSpec, MacroClauseInfo,
-    MacroParam, ModuleEntry, ModuleStructure, OverloadVariant, PrimitiveKind, SymbolTable,
+    MacroParam, ModDecl, ModuleEntry, ModuleStructure, OverloadVariant, PrimitiveKind, SymbolTable,
 };
 pub use heap::{HeapCategory, HeapHeader};
 pub use pipeline::{CompileMode, CompileResult, MacroExpander, NoOpExpander, NULLARY_TAG_THRESHOLD};

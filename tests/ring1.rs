@@ -21,6 +21,7 @@ use cranelisp_types::Type;
 // Strings: literals, primitives, and display (spec: 01-lexical, 03-types)
 // =============================================================================
 
+// spec: 04-expressions §4.1.4 — string literal
 #[test]
 fn string_literal() {
     let (value, ty) = compile_and_run_typed("(defn main [] \"hello\")");
@@ -30,6 +31,7 @@ fn string_literal() {
     cranelisp_runtime::heap_dealloc(value);
 }
 
+// spec: 04-expressions §4.1.4 — empty string literal
 #[test]
 fn string_empty_literal() {
     let (value, ty) = compile_and_run_typed("(defn main [] \"\")");
@@ -39,6 +41,7 @@ fn string_empty_literal() {
     cranelisp_runtime::heap_dealloc(value);
 }
 
+// spec: 04-expressions §4.3 — string in let scope
 #[test]
 fn string_in_let() {
     let src = r#"
@@ -49,6 +52,7 @@ fn string_in_let() {
     assert_eq!(compile_and_run_simple(src), 5);
 }
 
+// spec: 04-expressions §4.6 — string as function argument
 #[test]
 fn string_as_function_argument() {
     let src = r#"
@@ -58,6 +62,7 @@ fn string_as_function_argument() {
     assert_eq!(compile_and_run_simple(src), 5);
 }
 
+// spec: 03-types §3.1 — string return type
 #[test]
 fn string_as_function_return() {
     let src = r#"
@@ -67,6 +72,7 @@ fn string_as_function_return() {
     assert_eq!(compile_and_run_simple(src), 5);
 }
 
+// spec: appendix-a-builtins §A.3 — str-concat primitive
 #[test]
 fn string_concat() {
     let src = r#"
@@ -75,6 +81,7 @@ fn string_concat() {
     assert_eq!(compile_and_run_simple(src), 11);
 }
 
+// spec: appendix-a-builtins §A.3 — str-eq primitive true
 #[test]
 fn string_eq_true() {
     let src = r#"
@@ -83,6 +90,7 @@ fn string_eq_true() {
     assert_eq!(compile_and_run_simple(src), 1);
 }
 
+// spec: appendix-a-builtins §A.3 — str-eq primitive false
 #[test]
 fn string_eq_false() {
     let src = r#"
@@ -91,6 +99,7 @@ fn string_eq_false() {
     assert_eq!(compile_and_run_simple(src), 0);
 }
 
+// spec: appendix-a-builtins §A.3 — int-to-string primitive
 #[test]
 fn string_int_to_string() {
     let src = r#"
@@ -99,6 +108,7 @@ fn string_int_to_string() {
     assert_eq!(compile_and_run_simple(src), 2);
 }
 
+// spec: appendix-a-builtins §A.3 — float-to-string primitive
 #[test]
 fn string_float_to_string() {
     let src = r#"
@@ -109,6 +119,7 @@ fn string_float_to_string() {
     assert!(result > 0, "float-to-string should produce non-empty string, got len={result}");
 }
 
+// spec: appendix-a-builtins §A.3 — bool-to-string primitive
 #[test]
 fn string_bool_to_string() {
     let src = r#"
@@ -117,6 +128,7 @@ fn string_bool_to_string() {
     assert_eq!(compile_and_run_simple(src), 1);
 }
 
+// spec: appendix-a-builtins §A.3 — chained str-concat
 #[test]
 fn string_concat_chained() {
     let src = r#"
@@ -126,18 +138,21 @@ fn string_concat_chained() {
     assert_eq!(compile_and_run_simple(src), 3);
 }
 
+// spec: appendix-a-builtins §A.3 — str-len primitive
 #[test]
 fn string_len() {
     let src = r#"(defn main [] (str-len "hello"))"#;
     assert_eq!(compile_and_run_simple(src), 5);
 }
 
+// spec: appendix-a-builtins §A.3 — str-len empty string
 #[test]
 fn string_len_empty() {
     let src = r#"(defn main [] (str-len ""))"#;
     assert_eq!(compile_and_run_simple(src), 0);
 }
 
+// spec: 04-expressions §4.4 — string in if branches
 #[test]
 fn string_in_if_branches() {
     let src = r#"
@@ -151,6 +166,7 @@ fn string_in_if_branches() {
 // REPL Strings
 // =============================================================================
 
+// spec: 04-expressions §4.1.4 — string literal in REPL
 #[test]
 fn repl_string_literal() {
     let mut session = repl_session();
@@ -160,6 +176,7 @@ fn repl_string_literal() {
     assert_eq!(s, "hello");
 }
 
+// spec: appendix-a-builtins §A.3 — str-concat in REPL
 #[test]
 fn repl_string_concat() {
     let mut session = repl_session();
@@ -169,6 +186,7 @@ fn repl_string_concat() {
     assert_eq!(s, "hello world");
 }
 
+// spec: appendix-a-builtins §A.3 — str-eq in REPL
 #[test]
 fn repl_string_eq() {
     let mut session = repl_session();
@@ -176,6 +194,7 @@ fn repl_string_eq() {
     assert_eq!(repl_eval(&mut session, "(str-eq \"abc\" \"xyz\")"), 0);
 }
 
+// spec: appendix-a-builtins §A.3 — int-to-string in REPL
 #[test]
 fn repl_int_to_string() {
     let mut session = repl_session();
@@ -189,6 +208,7 @@ fn repl_int_to_string() {
 // ADT Products (spec: 03-types, 06-pattern-matching)
 // =============================================================================
 
+// spec: 05-definitions §5.2.1 — product type construct and match
 #[test]
 fn adt_product_construct_and_match() {
     let src = "
@@ -199,6 +219,7 @@ fn adt_product_construct_and_match() {
     assert_eq!(compile_and_run_simple(src), 3);
 }
 
+// spec: 05-definitions §5.2.1 — product type field access
 #[test]
 fn adt_product_get_y() {
     let src = "
@@ -209,6 +230,7 @@ fn adt_product_get_y() {
     assert_eq!(compile_and_run_simple(src), 4);
 }
 
+// spec: 05-definitions §5.2.1 — product type multiple fields
 #[test]
 fn adt_product_multi_field() {
     let src = "
@@ -220,6 +242,7 @@ fn adt_product_multi_field() {
     assert_eq!(compile_and_run_simple(src), 60);
 }
 
+// spec: 05-definitions §5.2.1 — product type in let scope
 #[test]
 fn adt_product_in_let() {
     let src = "
@@ -231,6 +254,7 @@ fn adt_product_in_let() {
     assert_eq!(compile_and_run_simple(src), 15);
 }
 
+// spec: 05-definitions §5.2.1 — product type as function argument
 #[test]
 fn adt_product_as_function_arg() {
     let src = "
@@ -241,6 +265,7 @@ fn adt_product_as_function_arg() {
     assert_eq!(compile_and_run_simple(src), 42);
 }
 
+// spec: 05-definitions §5.2.1 — product type as function return
 #[test]
 fn adt_product_as_function_return() {
     let src = "
@@ -251,6 +276,7 @@ fn adt_product_as_function_return() {
     assert_eq!(compile_and_run_simple(src), 0);
 }
 
+// spec: 05-definitions §5.2.4 — shortcut syntax inferred type params
 #[test]
 fn adt_shortcut_syntax() {
     // Shortcut syntax: bare field names get fresh type vars.
@@ -267,6 +293,7 @@ fn adt_shortcut_syntax() {
 // ADT Sums (spec: 03-types, 06-pattern-matching)
 // =============================================================================
 
+// spec: 05-definitions §5.2.2 — sum type Some constructor
 #[test]
 fn adt_sum_option_some() {
     let src = "
@@ -280,6 +307,7 @@ fn adt_sum_option_some() {
     assert_eq!(compile_and_run_simple(src), 42);
 }
 
+// spec: 05-definitions §5.2.2 — sum type None constructor
 #[test]
 fn adt_sum_option_none() {
     let src = "
@@ -293,6 +321,7 @@ fn adt_sum_option_none() {
     assert_eq!(compile_and_run_simple(src), 0);
 }
 
+// spec: 06-pattern-matching §6.2.3 — wildcard pattern in sum
 #[test]
 fn adt_sum_wildcard_pattern() {
     let src = "
@@ -306,6 +335,7 @@ fn adt_sum_wildcard_pattern() {
     assert_eq!(compile_and_run_simple(src), 1);
 }
 
+// spec: 06-pattern-matching §6.2.4 — variable pattern in sum
 #[test]
 fn adt_sum_var_pattern() {
     let src = "
@@ -319,6 +349,7 @@ fn adt_sum_var_pattern() {
     assert_eq!(compile_and_run_simple(src), 99);
 }
 
+// spec: 06-pattern-matching §6.1 — nested match expressions
 #[test]
 fn adt_sum_nested_match() {
     let src = "
@@ -335,6 +366,7 @@ fn adt_sum_nested_match() {
     assert_eq!(compile_and_run_simple(src), 30);
 }
 
+// spec: 03-types §3.3 — polymorphic ADT instantiation
 #[test]
 fn adt_polymorphic_type() {
     // Polymorphic ADT instantiated at different types.
@@ -350,6 +382,7 @@ fn adt_polymorphic_type() {
     assert_eq!(compile_and_run_simple(src), 42);
 }
 
+// spec: 05-definitions §5.2.2 — sum type with two data constructors
 #[test]
 fn adt_either_type() {
     let src = "
@@ -363,6 +396,7 @@ fn adt_either_type() {
     assert_eq!(compile_and_run_simple(src), 99);
 }
 
+// spec: 05-definitions §5.2.2 — mixed nullary and data constructors
 #[test]
 fn adt_enum_mixed_nullary_and_data() {
     let src = "
@@ -380,6 +414,7 @@ fn adt_enum_mixed_nullary_and_data() {
 // REPL ADTs
 // =============================================================================
 
+// spec: 05-definitions §5.2.1 — product type in REPL
 #[test]
 fn repl_adt_product() {
     let mut session = repl_session();
@@ -388,6 +423,7 @@ fn repl_adt_product() {
     assert_eq!(display, ":Point (Point 3 4)");
 }
 
+// spec: 05-definitions §5.2.2 — sum type Some in REPL
 #[test]
 fn repl_adt_sum_some() {
     let mut session = repl_session();
@@ -396,6 +432,7 @@ fn repl_adt_sum_some() {
     assert_eq!(display, ":(Option Int) (Some 42)");
 }
 
+// spec: 05-definitions §5.2.2 — sum type None in REPL
 #[test]
 fn repl_adt_sum_none() {
     let mut session = repl_session();
@@ -408,6 +445,7 @@ fn repl_adt_sum_none() {
     );
 }
 
+// spec: 06-pattern-matching §6.1 — match expression in REPL
 #[test]
 fn repl_adt_match() {
     let mut session = repl_session();
@@ -420,6 +458,7 @@ fn repl_adt_match() {
     assert_eq!(repl_eval(&mut session, "(unwrap None)"), 0);
 }
 
+// spec: 06-pattern-matching §6.2.1 — constructor pattern in REPL
 #[test]
 fn repl_adt_product_match() {
     let mut session = repl_session();
@@ -435,6 +474,7 @@ fn repl_adt_product_match() {
 // Closures: lambda with captures (spec: 04-expressions)
 // =============================================================================
 
+// spec: 04-expressions §4.5.1 — simple free variable capture
 #[test]
 fn closure_simple_capture() {
     let src = "
@@ -445,6 +485,7 @@ fn closure_simple_capture() {
     assert_eq!(compile_and_run_simple(src), 42);
 }
 
+// spec: 04-expressions §4.5.1 — multiple free variable captures
 #[test]
 fn closure_multiple_captures() {
     let src = "
@@ -455,6 +496,7 @@ fn closure_multiple_captures() {
     assert_eq!(compile_and_run_simple(src), 10);
 }
 
+// spec: 04-expressions §4.5.1 — closure returned from function
 #[test]
 fn closure_returned_from_function() {
     let src = "
@@ -465,6 +507,7 @@ fn closure_returned_from_function() {
     assert_eq!(compile_and_run_simple(src), 42);
 }
 
+// spec: 04-expressions §4.5.1 — nested closures
 #[test]
 fn closure_nested() {
     let src = "
@@ -477,6 +520,7 @@ fn closure_nested() {
     assert_eq!(compile_and_run_simple(src), 10);
 }
 
+// spec: 04-expressions §4.6 — closure with higher-order function
 #[test]
 fn closure_with_higher_order() {
     let src = "
@@ -488,6 +532,7 @@ fn closure_with_higher_order() {
     assert_eq!(compile_and_run_simple(src), 15);
 }
 
+// spec: 04-expressions §4.5 — zero-param closure with capture
 #[test]
 fn closure_zero_param() {
     let src = "
@@ -498,6 +543,7 @@ fn closure_zero_param() {
     assert_eq!(compile_and_run_simple(src), 42);
 }
 
+// spec: 04-expressions §4.5 — multi-param closure with capture
 #[test]
 fn closure_multi_param() {
     let src = "
@@ -508,6 +554,7 @@ fn closure_multi_param() {
     assert_eq!(compile_and_run_simple(src), 103);
 }
 
+// spec: 04-expressions §4.5.1 — closure capturing Bool
 #[test]
 fn closure_capturing_bool() {
     let src = "
@@ -518,6 +565,7 @@ fn closure_capturing_bool() {
     assert_eq!(compile_and_run_simple(src), 42);
 }
 
+// spec: 04-expressions §4.6 — closure applied twice
 #[test]
 fn closure_apply_twice() {
     let src = "
@@ -527,6 +575,7 @@ fn closure_apply_twice() {
     assert_eq!(compile_and_run_simple(src), 2);
 }
 
+// spec: 04-expressions §4.5.1 — function composition via closures
 #[test]
 fn closure_compose() {
     let src = "
@@ -539,6 +588,7 @@ fn closure_compose() {
     assert_eq!(compile_and_run_simple(src), 11);
 }
 
+// spec: 12-runtime §12.2.3 — named function as value
 #[test]
 fn named_function_as_value_apply() {
     let src = "
@@ -549,6 +599,7 @@ fn named_function_as_value_apply() {
     assert_eq!(compile_and_run_simple(src), 42);
 }
 
+// spec: 04-expressions §4.5.1 — closure capturing function argument
 #[test]
 fn closure_capturing_function_arg() {
     let src = "
@@ -560,6 +611,7 @@ fn closure_capturing_function_arg() {
     assert_eq!(compile_and_run_simple(src), 203);
 }
 
+// spec: 04-expressions §4.4 — closure in if branch
 #[test]
 fn closure_in_if_branch() {
     let src = "
@@ -571,6 +623,7 @@ fn closure_in_if_branch() {
     assert_eq!(compile_and_run_simple(src), 11);
 }
 
+// spec: 04-expressions §4.6 — recursive HOF with closure
 #[test]
 fn closure_recursive_with_higher_order() {
     let src = "
@@ -587,6 +640,7 @@ fn closure_recursive_with_higher_order() {
 // REPL Closures
 // =============================================================================
 
+// spec: 04-expressions §4.5.1 — simple closure in REPL
 #[test]
 fn repl_closure_simple() {
     let mut session = repl_session();
@@ -599,6 +653,7 @@ fn repl_closure_simple() {
     );
 }
 
+// spec: 04-expressions §4.5.1 — multiple captures in REPL
 #[test]
 fn repl_closure_multiple_captures() {
     let mut session = repl_session();
@@ -611,6 +666,7 @@ fn repl_closure_multiple_captures() {
     );
 }
 
+// spec: 04-expressions §4.5.1 — closure returned in REPL
 #[test]
 fn repl_closure_returned() {
     let mut session = repl_session();
@@ -618,6 +674,7 @@ fn repl_closure_returned() {
     assert_eq!(repl_eval(&mut session, "((make-adder 10) 32)"), 42);
 }
 
+// spec: repl/spec.md §1.2 — closure display format
 #[test]
 fn repl_closure_display() {
     let mut session = repl_session();
@@ -633,6 +690,7 @@ fn repl_closure_display() {
 // ADT + Closure interactions
 // =============================================================================
 
+// spec: 04-expressions §4.5.1 — closure returning ADT
 #[test]
 fn closure_returning_adt() {
     let src = "
@@ -646,6 +704,7 @@ fn closure_returning_adt() {
     assert_eq!(compile_and_run_simple(src), 42);
 }
 
+// spec: 04-expressions §4.5.1 — closure with ADT match
 #[test]
 fn closure_capturing_int_returning_match_result() {
     let src = "
@@ -662,6 +721,7 @@ fn closure_capturing_int_returning_match_result() {
     assert_eq!(compile_and_run_simple(src), 20);
 }
 
+// spec: 05-definitions §5.2.2 — ADT containing closure result
 #[test]
 fn adt_containing_closure_result() {
     let src = "
@@ -679,6 +739,7 @@ fn adt_containing_closure_result() {
 // String + ADT interactions
 // =============================================================================
 
+// spec: 05-definitions §5.2.2 — string field in ADT
 #[test]
 fn string_in_adt() {
     let src = r#"
@@ -691,6 +752,7 @@ fn string_in_adt() {
     assert_eq!(compile_and_run_simple(src), 5);
 }
 
+// spec: 06-pattern-matching §6.1 — string conversion in match
 #[test]
 fn string_from_int_to_string_in_match() {
     let src = r#"
@@ -708,6 +770,7 @@ fn string_from_int_to_string_in_match() {
 // Exhaustiveness (spec: 06-pattern-matching)
 // =============================================================================
 
+// spec: 06-pattern-matching §6.5.1 — exhaustive match all constructors
 #[test]
 fn exhaustive_match_all_constructors() {
     let src = "
@@ -721,6 +784,7 @@ fn exhaustive_match_all_constructors() {
     assert_eq!(compile_and_run_simple(src), 42);
 }
 
+// spec: 06-pattern-matching §6.5.1 — exhaustive match with wildcard
 #[test]
 fn exhaustive_match_with_wildcard() {
     let src = "
@@ -734,6 +798,7 @@ fn exhaustive_match_with_wildcard() {
     assert_eq!(compile_and_run_simple(src), 1);
 }
 
+// spec: 06-pattern-matching §6.5.1 — exhaustive match with variable
 #[test]
 fn exhaustive_match_with_var_pattern() {
     let src = "
@@ -747,6 +812,7 @@ fn exhaustive_match_with_var_pattern() {
     assert_eq!(compile_and_run_simple(src), 1);
 }
 
+// spec: 06-pattern-matching §6.5.3 — runtime safety net
 #[test]
 fn non_exhaustive_match_panics() {
     let src = "
@@ -760,6 +826,7 @@ fn non_exhaustive_match_panics() {
     assert!(result.is_err(), "non-exhaustive match should panic");
 }
 
+// spec: 06-pattern-matching §6.5.1 — product type exhaustiveness
 #[test]
 fn exhaustive_product_type() {
     // Product types have exactly one constructor, so one pattern suffices.
@@ -772,6 +839,7 @@ fn exhaustive_product_type() {
     assert_eq!(compile_and_run_simple(src), 7);
 }
 
+// spec: 06-pattern-matching §6.5.1 — three constructor exhaustiveness
 #[test]
 fn match_three_constructors() {
     let src = "
@@ -790,26 +858,31 @@ fn match_three_constructors() {
 // Dual-mode parity: compile_both (batch + interactive produce same results)
 // =============================================================================
 
+// spec: appendix-a-builtins §A.3 — dual-mode str-len parity
 #[test]
 fn dual_mode_string_len() {
     compile_both("(defn main [] (str-len \"hello\"))", 5);
 }
 
+// spec: appendix-a-builtins §A.3 — dual-mode str-eq parity
 #[test]
 fn dual_mode_string_eq() {
     compile_both("(defn main [] (if (str-eq \"a\" \"a\") 1 0))", 1);
 }
 
+// spec: appendix-a-builtins §A.3 — dual-mode str-concat parity
 #[test]
 fn dual_mode_string_concat() {
     compile_both("(defn main [] (str-len (str-concat \"ab\" \"cd\")))", 4);
 }
 
+// spec: appendix-a-builtins §A.3 — dual-mode int-to-string parity
 #[test]
 fn dual_mode_int_to_string() {
     compile_both("(defn main [] (str-len (int-to-string 123)))", 3);
 }
 
+// spec: 05-definitions §5.2.1 — dual-mode product type parity
 #[test]
 fn dual_mode_adt_product() {
     let src = "
@@ -819,6 +892,7 @@ fn dual_mode_adt_product() {
     compile_both(src, 7);
 }
 
+// spec: 05-definitions §5.2.2 — dual-mode sum Some parity
 #[test]
 fn dual_mode_adt_sum_some() {
     let src = "
@@ -828,6 +902,7 @@ fn dual_mode_adt_sum_some() {
     compile_both(src, 42);
 }
 
+// spec: 05-definitions §5.2.2 — dual-mode sum None parity
 #[test]
 fn dual_mode_adt_sum_none() {
     let src = "
@@ -837,6 +912,7 @@ fn dual_mode_adt_sum_none() {
     compile_both(src, 99);
 }
 
+// spec: 04-expressions §4.5.1 — dual-mode closure capture parity
 #[test]
 fn dual_mode_closure_capture() {
     compile_both(
@@ -845,6 +921,7 @@ fn dual_mode_closure_capture() {
     );
 }
 
+// spec: 04-expressions §4.5.1 — dual-mode closure return parity
 #[test]
 fn dual_mode_closure_returned() {
     let src = "
@@ -854,6 +931,7 @@ fn dual_mode_closure_returned() {
     compile_both(src, 42);
 }
 
+// spec: 04-expressions §4.6 — dual-mode HOF parity
 #[test]
 fn dual_mode_higher_order() {
     let src = "
@@ -863,6 +941,7 @@ fn dual_mode_higher_order() {
     compile_both(src, 42);
 }
 
+// spec: 12-runtime §12.2.3 — dual-mode named fn value parity
 #[test]
 fn dual_mode_named_fn_value() {
     let src = "
@@ -873,6 +952,7 @@ fn dual_mode_named_fn_value() {
     compile_both(src, 42);
 }
 
+// spec: 06-pattern-matching §6.2.1 — dual-mode constructor pattern parity
 #[test]
 fn dual_mode_match_with_field_bindings() {
     let src = "
@@ -883,6 +963,7 @@ fn dual_mode_match_with_field_bindings() {
     compile_both(src, 42);
 }
 
+// spec: 06-pattern-matching §6.2.2 — dual-mode enum match parity
 #[test]
 fn dual_mode_enum_match() {
     let src = "
@@ -894,11 +975,13 @@ fn dual_mode_enum_match() {
     compile_both(src, 3);
 }
 
+// spec: 04-expressions §4.5 — dual-mode lambda immediate parity
 #[test]
 fn dual_mode_lambda_immediate() {
     compile_both("(defn main [] ((fn [x] (add-i64 x 1)) 5))", 6);
 }
 
+// spec: 04-expressions §4.5 — dual-mode lambda in let parity
 #[test]
 fn dual_mode_lambda_in_let() {
     compile_both(
@@ -911,16 +994,19 @@ fn dual_mode_lambda_in_let() {
 // Error paths (spec: various)
 // =============================================================================
 
+// spec: 03-types §3.5 — type error String where Int expected
 #[test]
 fn error_string_where_int_expected() {
     assert_type_error("(defn main [] (add-i64 \"hello\" 1))", "");
 }
 
+// spec: 03-types §3.5 — type error Int where String expected
 #[test]
 fn error_int_where_string_expected() {
     assert_type_error("(defn main [] (str-len 42))", "");
 }
 
+// spec: 05-definitions §5.2.7 — constructor wrong arg count
 #[test]
 fn error_adt_constructor_wrong_arg_count() {
     // Point expects 2 args.
@@ -930,6 +1016,7 @@ fn error_adt_constructor_wrong_arg_count() {
     );
 }
 
+// spec: 05-definitions §5.2.7 — constructor wrong type
 #[test]
 fn error_adt_constructor_wrong_type() {
     // Point expects Int, passing Bool.
@@ -939,6 +1026,7 @@ fn error_adt_constructor_wrong_type() {
     );
 }
 
+// spec: 04-expressions §4.4 — if branch String/Int mismatch
 #[test]
 fn error_if_branches_type_mismatch_string_int() {
     assert_type_error(
@@ -947,6 +1035,7 @@ fn error_if_branches_type_mismatch_string_int() {
     );
 }
 
+// spec: 04-expressions §4.6 — closure arity mismatch
 #[test]
 fn error_closure_arity_mismatch() {
     assert_error(
@@ -955,6 +1044,7 @@ fn error_closure_arity_mismatch() {
     );
 }
 
+// spec: 04-expressions §4.2.1 — undefined constructor reference
 #[test]
 fn error_undefined_constructor() {
     assert_error(
@@ -967,6 +1057,7 @@ fn error_undefined_constructor() {
 // Let-polymorphism with closures (spec: 03-types)
 // =============================================================================
 
+// spec: 03-types §3.4 — let-polymorphism at multiple types
 #[test]
 fn let_bound_identity_at_multiple_types() {
     let src = "
@@ -977,6 +1068,7 @@ fn let_bound_identity_at_multiple_types() {
     assert_eq!(compile_and_run_simple(src), 3);
 }
 
+// spec: 03-types §3.4 — polymorphic higher-order function
 #[test]
 fn polymorphic_higher_order() {
     let src = "
@@ -987,6 +1079,7 @@ fn polymorphic_higher_order() {
     assert_eq!(compile_and_run_simple(src), 3);
 }
 
+// spec: 03-types §3.4 — let-bound lambda with capture
 #[test]
 fn let_bound_lambda_with_capture() {
     let src = "
@@ -998,6 +1091,7 @@ fn let_bound_lambda_with_capture() {
     assert_eq!(compile_and_run_simple(src), 203);
 }
 
+// spec: 03-types §3.3 — polymorphic identity on String
 #[test]
 fn identity_on_string() {
     let src = r#"
@@ -1007,6 +1101,7 @@ fn identity_on_string() {
     assert_eq!(compile_and_run_simple(src), 5);
 }
 
+// spec: 03-types §3.3 — polymorphic identity on ADT
 #[test]
 fn identity_on_adt() {
     let src = "
@@ -1017,6 +1112,7 @@ fn identity_on_adt() {
     assert_eq!(compile_and_run_simple(src), 42);
 }
 
+// spec: 03-types §3.3 — polymorphic HOF on ADT
 #[test]
 fn higher_order_on_adt() {
     let src = "
@@ -1034,8 +1130,8 @@ fn higher_order_on_adt() {
 // parse-int (depends on ADTs: returns Option Int)
 // =============================================================================
 
+// spec: appendix-a-builtins §A.3 — parse-int valid input
 #[test]
-#[ignore = "parse-int return type is Int placeholder; needs Option ADT return type support"]
 fn parse_int_valid() {
     let src = r#"
         (deftype (Option a) None (Some [:a val]))
@@ -1047,8 +1143,8 @@ fn parse_int_valid() {
     assert_eq!(compile_and_run_simple(src), 42);
 }
 
+// spec: appendix-a-builtins §A.3 — parse-int invalid input
 #[test]
-#[ignore = "parse-int return type is Int placeholder; needs Option ADT return type support"]
 fn parse_int_invalid() {
     let src = r#"
         (deftype (Option a) None (Some [:a val]))
@@ -1064,6 +1160,7 @@ fn parse_int_invalid() {
 // Misc: edge cases and interactions
 // =============================================================================
 
+// spec: 12-runtime §12.5 — TCO with higher-order function
 #[test]
 fn closure_and_tco() {
     // TCO with higher-order function parameter.
@@ -1077,6 +1174,7 @@ fn closure_and_tco() {
     assert_eq!(compile_and_run_simple(src), 5050);
 }
 
+// spec: 12-runtime §12.5 — TCO with ADT match
 #[test]
 fn adt_in_tco() {
     // TCO with ADT match in the body.
@@ -1091,6 +1189,7 @@ fn adt_in_tco() {
     assert_eq!(compile_and_run_simple(src), 0);
 }
 
+// spec: 03-types §3.1 — string in recursive function
 #[test]
 fn string_in_recursive_function() {
     let src = r#"
@@ -1103,6 +1202,7 @@ fn string_in_recursive_function() {
     assert_eq!(compile_and_run_simple(src), 4);
 }
 
+// spec: 05-definitions §5.2 — multiple ADT definitions
 #[test]
 fn multiple_adt_definitions() {
     let src = "
@@ -1116,6 +1216,7 @@ fn multiple_adt_definitions() {
     assert_eq!(compile_and_run_simple(src), 2);
 }
 
+// spec: 04-expressions §4.5.1 — closure over closure
 #[test]
 fn closure_over_closure() {
     let src = "
@@ -1128,6 +1229,7 @@ fn closure_over_closure() {
     assert_eq!(compile_and_run_simple(src), 203);
 }
 
+// spec: 04-expressions §4.5.1 — let-bound ADT and closure
 #[test]
 fn let_bound_adt_and_closure() {
     let src = "
@@ -1146,6 +1248,7 @@ fn let_bound_adt_and_closure() {
 // Vec: literals, primitives (spec: appendix-a-builtins, 04-expressions)
 // =============================================================================
 
+// spec: 03-types §3.2.4 — Vec literal of Int
 #[test]
 
 fn vec_literal_int() {
@@ -1153,6 +1256,7 @@ fn vec_literal_int() {
     assert_eq!(compile_and_run_simple(src), 3);
 }
 
+// spec: 03-types §3.2.4 — empty Vec literal
 #[test]
 
 fn vec_literal_empty() {
@@ -1160,6 +1264,7 @@ fn vec_literal_empty() {
     assert_eq!(compile_and_run_simple(src), 0);
 }
 
+// spec: 03-types §3.2.4 — Vec literal of String
 #[test]
 
 fn vec_literal_strings() {
@@ -1167,6 +1272,7 @@ fn vec_literal_strings() {
     assert_eq!(compile_and_run_simple(src), 2);
 }
 
+// spec: appendix-a-builtins §A.3 — vec-get first element
 #[test]
 
 fn vec_get_first() {
@@ -1174,6 +1280,7 @@ fn vec_get_first() {
     assert_eq!(compile_and_run_simple(src), 10);
 }
 
+// spec: appendix-a-builtins §A.3 — vec-get last element
 #[test]
 
 fn vec_get_last() {
@@ -1181,6 +1288,7 @@ fn vec_get_last() {
     assert_eq!(compile_and_run_simple(src), 30);
 }
 
+// spec: appendix-a-builtins §A.3 — vec-get middle element
 #[test]
 
 fn vec_get_middle() {
@@ -1188,6 +1296,7 @@ fn vec_get_middle() {
     assert_eq!(compile_and_run_simple(src), 20);
 }
 
+// spec: appendix-a-builtins §A.3 — vec-set element
 #[test]
 
 fn vec_set_element() {
@@ -1198,6 +1307,7 @@ fn vec_set_element() {
     assert_eq!(compile_and_run_simple(src), 99);
 }
 
+// spec: 12-runtime §12.3.3 — vec-set preserves other elements
 #[test]
 
 fn vec_set_preserves_other_elements() {
@@ -1209,6 +1319,7 @@ fn vec_set_preserves_other_elements() {
     assert_eq!(compile_and_run_simple(src), 40);
 }
 
+// spec: appendix-a-builtins §A.3 — vec-push appends element
 #[test]
 
 fn vec_push_appends() {
@@ -1218,6 +1329,7 @@ fn vec_push_appends() {
     assert_eq!(compile_and_run_simple(src), 3);
 }
 
+// spec: appendix-a-builtins §A.3 — vec-push value accessible
 #[test]
 
 fn vec_push_value() {
@@ -1227,6 +1339,7 @@ fn vec_push_value() {
     assert_eq!(compile_and_run_simple(src), 3);
 }
 
+// spec: appendix-a-builtins §A.3 — vec-len empty
 #[test]
 
 fn vec_len_zero() {
@@ -1234,6 +1347,7 @@ fn vec_len_zero() {
     assert_eq!(compile_and_run_simple(src), 0);
 }
 
+// spec: appendix-a-builtins §A.3 — vec-len three elements
 #[test]
 
 fn vec_len_three() {
@@ -1241,6 +1355,7 @@ fn vec_len_three() {
     assert_eq!(compile_and_run_simple(src), 3);
 }
 
+// spec: 04-expressions §4.3 — Vec in let scope
 #[test]
 
 fn vec_in_let() {
@@ -1252,6 +1367,7 @@ fn vec_in_let() {
     assert_eq!(compile_and_run_simple(src), 1);
 }
 
+// spec: 04-expressions §4.6 — Vec as function argument
 #[test]
 
 fn vec_in_defn() {
@@ -1262,6 +1378,7 @@ fn vec_in_defn() {
     assert_eq!(compile_and_run_simple(src), 10);
 }
 
+// spec: 03-types §3.2.4 — Vec of String element access
 #[test]
 
 fn vec_of_strings_get() {
@@ -1272,6 +1389,7 @@ fn vec_of_strings_get() {
     assert_eq!(compile_and_run_simple(src), 5);
 }
 
+// spec: 03-types §3.2.4 — Vec of String second element
 #[test]
 
 fn vec_of_strings_get_second() {
@@ -1282,6 +1400,7 @@ fn vec_of_strings_get_second() {
     assert_eq!(compile_and_run_simple(src), 5);
 }
 
+// spec: 03-types §3.2.4 — Vec of ADTs element access
 #[test]
 
 fn vec_of_adts() {
@@ -1295,6 +1414,7 @@ fn vec_of_adts() {
     assert_eq!(compile_and_run_simple(src), 1);
 }
 
+// spec: 03-types §3.2.4 — Vec of ADTs None element
 #[test]
 
 fn vec_of_adts_none() {
@@ -1308,6 +1428,7 @@ fn vec_of_adts_none() {
     assert_eq!(compile_and_run_simple(src), 0);
 }
 
+// spec: appendix-a-builtins §A.3 — vec-push to empty Vec
 #[test]
 
 fn vec_push_to_empty() {
@@ -1318,6 +1439,7 @@ fn vec_push_to_empty() {
     assert_eq!(compile_and_run_simple(src), 42);
 }
 
+// spec: appendix-a-builtins §A.3 — vec-set first element
 #[test]
 
 fn vec_set_first() {
@@ -1328,6 +1450,7 @@ fn vec_set_first() {
     assert_eq!(compile_and_run_simple(src), 99);
 }
 
+// spec: appendix-a-builtins §A.3 — vec-set last element
 #[test]
 
 fn vec_set_last() {
@@ -1338,6 +1461,7 @@ fn vec_set_last() {
     assert_eq!(compile_and_run_simple(src), 99);
 }
 
+// spec: 03-types §3.2.4 — Vec returned from function
 #[test]
 
 fn vec_returned_from_function() {
@@ -1348,6 +1472,7 @@ fn vec_returned_from_function() {
     assert_eq!(compile_and_run_simple(src), 20);
 }
 
+// spec: 03-types §3.2.4 — Vec passed to function
 #[test]
 
 fn vec_passed_to_function() {
@@ -1359,6 +1484,7 @@ fn vec_passed_to_function() {
     assert_eq!(compile_and_run_simple(src), 7);
 }
 
+// spec: 04-expressions §4.4 — Vec in if branch
 #[test]
 
 fn vec_in_if_branch() {
@@ -1369,6 +1495,7 @@ fn vec_in_if_branch() {
     assert_eq!(compile_and_run_simple(src), 3);
 }
 
+// spec: appendix-a-builtins §A.3 — chained vec-push
 #[test]
 
 fn vec_push_chain() {
@@ -1384,18 +1511,21 @@ fn vec_push_chain() {
 // Dual-mode Vec tests (batch + interactive)
 // =============================================================================
 
+// spec: 03-types §3.2.4 — dual-mode Vec literal parity
 #[test]
 
 fn dual_mode_vec_literal() {
     compile_both("(defn main [] (vec-len [1 2 3]))", 3);
 }
 
+// spec: appendix-a-builtins §A.3 — dual-mode vec-get parity
 #[test]
 
 fn dual_mode_vec_get() {
     compile_both("(defn main [] (vec-get [10 20 30] 1))", 20);
 }
 
+// spec: appendix-a-builtins §A.3 — dual-mode vec-push parity
 #[test]
 
 fn dual_mode_vec_push() {
@@ -1406,6 +1536,7 @@ fn dual_mode_vec_push() {
 // REPL Vec tests
 // =============================================================================
 
+// spec: 03-types §3.2.4 — Vec literal in REPL
 #[test]
 
 fn repl_vec_literal() {
@@ -1413,6 +1544,7 @@ fn repl_vec_literal() {
     assert_eq!(repl_eval(&mut session, "(vec-len [1 2 3])"), 3);
 }
 
+// spec: appendix-a-builtins §A.3 — vec-get in REPL
 #[test]
 
 fn repl_vec_get() {
@@ -1420,6 +1552,7 @@ fn repl_vec_get() {
     assert_eq!(repl_eval(&mut session, "(vec-get [10 20 30] 0)"), 10);
 }
 
+// spec: appendix-a-builtins §A.3 — vec-set in REPL
 #[test]
 
 fn repl_vec_set() {
@@ -1430,6 +1563,7 @@ fn repl_vec_set() {
     );
 }
 
+// spec: appendix-a-builtins §A.3 — vec-push in REPL
 #[test]
 
 fn repl_vec_push() {
@@ -1440,6 +1574,7 @@ fn repl_vec_push() {
     );
 }
 
+// spec: repl/spec.md §1.2 — Vec display format in REPL
 #[test]
 fn repl_vec_display() {
     let mut session = repl_session();

@@ -115,6 +115,7 @@ fn resolve_applied(
 mod tests {
     use super::*;
 
+    // spec: 03-types §3.1 — resolve primitive type names to Type values
     #[test]
     fn test_resolve_primitives() {
         let var_map = HashMap::new();
@@ -148,6 +149,7 @@ mod tests {
         );
     }
 
+    // spec: 03-types §3.9.3 — unknown type name produces error
     #[test]
     fn test_resolve_unknown_type() {
         let var_map = HashMap::new();
@@ -164,6 +166,7 @@ mod tests {
         assert!(err.message().contains("unknown type"));
     }
 
+    // spec: 03-types §3.2.2 — resolve user-defined ADT name to ADT type
     #[test]
     fn test_resolve_user_defined_adt() {
         let var_map = HashMap::new();
@@ -181,6 +184,7 @@ mod tests {
         assert_eq!(ty, Type::ADT(TypeName::from("Color"), vec![]));
     }
 
+    // spec: 03-types §3.2.1 — resolve function type expression
     #[test]
     fn test_resolve_fn_type() {
         let var_map = HashMap::new();
@@ -195,6 +199,7 @@ mod tests {
         assert_eq!(ty, Type::Fn(vec![Type::Int], Box::new(Type::Bool)));
     }
 
+    // spec: 03-types §3.3 — resolve type variable to Var from var_map
     #[test]
     fn test_resolve_type_var() {
         let mut var_map = HashMap::new();
@@ -212,6 +217,7 @@ mod tests {
         assert_eq!(ty, Type::Var(42));
     }
 
+    // spec: 03-types §3.3 — unresolved type variable produces error
     #[test]
     fn test_resolve_unknown_type_var() {
         let var_map = HashMap::new();
@@ -228,6 +234,7 @@ mod tests {
         assert!(err.message().contains("unresolved type variable"));
     }
 
+    // spec: 07-traits §7.1.1 — Self type outside trait context is error
     #[test]
     fn test_resolve_self_type_error() {
         let var_map = HashMap::new();
@@ -237,6 +244,7 @@ mod tests {
         assert!(resolve_type_expr(&TypeExpr::SelfType, &var_map, &known, span).is_err());
     }
 
+    // spec: 03-types §3.2.2 — resolve applied type :(Option Int) to ADT
     #[test]
     fn test_resolve_applied_valid() {
         let var_map = HashMap::new();
@@ -255,6 +263,7 @@ mod tests {
         );
     }
 
+    // spec: 03-types §3.2.2 — applied type with wrong arity fails
     #[test]
     fn test_resolve_applied_arity_mismatch() {
         let var_map = HashMap::new();
@@ -279,6 +288,7 @@ mod tests {
         assert!(err.message().contains("expects 1 type argument"));
     }
 
+    // spec: 03-types §3.9.3 — applied unknown type name fails
     #[test]
     fn test_resolve_applied_unknown_type() {
         let var_map = HashMap::new();
@@ -293,6 +303,7 @@ mod tests {
         assert!(err.message().contains("unknown type"));
     }
 
+    // spec: 03-types §3.3 — applied type with type variable argument
     #[test]
     fn test_resolve_applied_with_type_var() {
         let mut var_map = HashMap::new();
@@ -312,6 +323,7 @@ mod tests {
         );
     }
 
+    // spec: 03-types §3.2.2 — applied type with multiple parameters
     #[test]
     fn test_resolve_applied_multi_param() {
         let var_map = HashMap::new();

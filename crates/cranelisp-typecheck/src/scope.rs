@@ -105,6 +105,7 @@ mod tests {
         }
     }
 
+    // spec: 03-types §3.5.3 — variable reference looks up name in environment
     #[test]
     fn test_basic_lookup() {
         let mut stack = ScopeStack::new();
@@ -112,6 +113,7 @@ mod tests {
         assert_eq!(stack.lookup("x").unwrap().ty, Type::Int);
     }
 
+    // spec: 04-expressions §4.2 — let bindings shadow outer scope
     #[test]
     fn test_shadowing() {
         let mut stack = ScopeStack::new();
@@ -123,6 +125,7 @@ mod tests {
         assert_eq!(stack.lookup("x").unwrap().ty, Type::Int);
     }
 
+    // spec: 03-types §3.5.3 — inner scope sees outer bindings; outer does not see inner
     #[test]
     fn test_lookup_outer_scope() {
         let mut stack = ScopeStack::new();
@@ -136,12 +139,14 @@ mod tests {
         assert!(stack.lookup("y").is_none());
     }
 
+    // spec: 03-types §3.5.3 — unbound variable lookup returns None
     #[test]
     fn test_lookup_not_found() {
         let stack = ScopeStack::new();
         assert!(stack.lookup("x").is_none());
     }
 
+    // spec: 03-types §3.5.1 — free vars in env excludes quantified scheme vars
     #[test]
     fn test_free_vars_in_env() {
         let mut stack = ScopeStack::new();
@@ -164,6 +169,7 @@ mod tests {
         assert!(!fv.contains(&1));
     }
 
+    // spec: 03-types §3.5.3 — scope nesting depth tracks push/pop correctly
     #[test]
     fn test_push_pop_depth() {
         let mut stack = ScopeStack::new();

@@ -51,6 +51,19 @@ impl CompiledProgram {
     }
 }
 
+/// Collected defn references and their metadata, produced by the first phase
+/// of `compile_program`.
+struct CollectedDefns<'a> {
+    /// Regular (non-constrained) defns from the program.
+    defns: Vec<&'a Defn>,
+    /// Extra defns owned by this struct (default method impls + mono specializations).
+    extra_defns: Vec<Defn>,
+    /// Function IDs declared in the JIT module.
+    func_ids: HashMap<Symbol, FuncId>,
+    /// Function parameter counts for closure wrapper generation.
+    func_arities: HashMap<Symbol, usize>,
+}
+
 /// Compile a batch program: declare all functions, compile them, finalize.
 ///
 /// The last zero-arg function in the program is the entry point.
@@ -61,11 +74,56 @@ pub fn compile_program(
     mode: CompileMode,
 ) -> Result<CompiledProgram, CranelispError> {
     let mut jit = Jit::new()?;
-
-    // Declare runtime intrinsics (Ring 1 heap infrastructure).
     jit.declare_intrinsics()?;
 
-    // Collect all defns from the program, skipping constrained fn base definitions.
+    // Phase 1: Collect defns, declare functions, build arity map.
+    let collected = collect_and_declare_defns(program, check, &mut jit)?;
+
+    // Phase 2: Set up GOT for Interactive mode.
+    let (got_slots, mut got_state) =
+        setup_interactive_got(&collected, mode)?;
+
+    let got_base_ptr = got_state.as_mut().map(|s| s.got_base_ptr() as i64);
+
+    // Build the compilation context once for all functions.
+    // No cross-module GOT for single-module compile_program.
+    let compile_ctx = jit.build_compile_context(
+        check, mode, &collected.func_ids, &collected.func_arities,
+        got_slots.as_ref(), got_base_ptr, None,
+    );
+
+    // Compile each regular function.
+    for defn in &collected.defns {
+        jit.compile_defn(defn, compile_ctx)?;
+    }
+
+    // Compile default method defns with the main resolutions.
+    for defn in &check.default_method_defns {
+        jit.compile_defn(defn, compile_ctx)?;
+    }
+
+    // Compile mono specializations with their per-specialization resolutions.
+    compile_mono_defns(
+        &mut jit, check, mode, &collected.func_ids, &collected.func_arities,
+        got_slots.as_ref(), got_base_ptr,
+    )?;
+
+    // Phase 3: Find entry, finalize JIT, populate GOT, build result.
+    find_entry_and_finalize(
+        &collected.defns, jit, &collected.func_ids,
+        got_slots, got_state,
+    )
+}
+
+/// Phase 1: Collect all defns from the program (skipping constrained fn base
+/// definitions), collect extra defns (default methods + mono specializations),
+/// declare all functions in the JIT, and build the arity map.
+fn collect_and_declare_defns<'a>(
+    program: &'a Program,
+    check: &CheckResult,
+    jit: &mut Jit,
+) -> Result<CollectedDefns<'a>, CranelispError> {
+    // Collect regular defns, skipping constrained fn base definitions.
     // Constrained fns are templates — only their monomorphised specializations
     // (in check.mono_defns) are compiled.
     let defns: Vec<&Defn> = program
@@ -107,45 +165,42 @@ pub fn compile_program(
         .map(|d| (d.name.clone(), d.params.len()))
         .collect();
 
-    // In Interactive mode, set up a temporary GOT so GOT-indirect calls work.
-    let (got_slots, mut got_state) = if mode == CompileMode::Interactive {
+    Ok(CollectedDefns { defns, extra_defns, func_ids, func_arities })
+}
+
+/// Phase 2: In Interactive mode, set up a temporary GOT so GOT-indirect calls
+/// work. In Batch/Release mode, returns (None, None).
+fn setup_interactive_got(
+    collected: &CollectedDefns<'_>,
+    mode: CompileMode,
+) -> Result<(Option<HashMap<Symbol, usize>>, Option<got::ModuleCodegenState>), CranelispError> {
+    if mode == CompileMode::Interactive {
         let mut state = got::ModuleCodegenState::new();
         let mut slots = HashMap::new();
-        for defn in &all_defn_refs {
-            let slot = state.ensure_slot_for(&defn.name)?;
-            slots.insert(defn.name.clone(), slot);
+
+        // Build the combined iterator over regular + extra defns.
+        let all_names = collected.defns.iter().map(|d| &d.name)
+            .chain(collected.extra_defns.iter().map(|d| &d.name));
+
+        for name in all_names {
+            let slot = state.ensure_slot_for(name)?;
+            slots.insert(name.clone(), slot);
         }
-        (Some(slots), Some(state))
+        Ok((Some(slots), Some(state)))
     } else {
-        (None, None)
-    };
-
-    let got_base_ptr = got_state.as_mut().map(|s| s.got_base_ptr() as i64);
-
-    // Build the compilation context once for all functions.
-    let compile_ctx = jit.build_compile_context(
-        check,
-        mode,
-        &func_ids,
-        &func_arities,
-        got_slots.as_ref(),
-        got_base_ptr,
-    );
-
-    // Compile each regular function.
-    for defn in &defns {
-        jit.compile_defn(defn, compile_ctx)?;
+        Ok((None, None))
     }
+}
 
-    // Compile default method defns with the main resolutions.
-    for defn in &check.default_method_defns {
-        jit.compile_defn(defn, compile_ctx)?;
-    }
-
-    // Compile mono specializations with their per-specialization resolutions.
-    compile_mono_defns(&mut jit, check, mode, &func_ids, &func_arities,
-                       got_slots.as_ref(), got_base_ptr)?;
-
+/// Phase 3: Find the last zero-arg defn as entry point, finalize the JIT,
+/// populate GOT slots (Interactive mode), and build the CompiledProgram.
+fn find_entry_and_finalize(
+    defns: &[&Defn],
+    mut jit: Jit,
+    func_ids: &HashMap<Symbol, FuncId>,
+    got_slots: Option<HashMap<Symbol, usize>>,
+    mut got_state: Option<got::ModuleCodegenState>,
+) -> Result<CompiledProgram, CranelispError> {
     // Find the entry function (last zero-arg defn).
     let entry_defn = defns
         .iter()
@@ -231,7 +286,7 @@ fn compile_mono_defns(
         };
 
         let ctx = jit.build_compile_context(
-            &mono_check, mode, func_ids, func_arities, got_slots, got_base_ptr,
+            &mono_check, mode, func_ids, func_arities, got_slots, got_base_ptr, None,
         );
         jit.compile_defn(&mono.defn, ctx)?;
     }
@@ -294,6 +349,7 @@ pub fn compile_and_run_expr_with_got(
         &func_arities,
         got_slots.as_ref(),
         got_base_ptr,
+        None, // No cross-module GOT for single-expression compilation.
     );
 
     jit.compile_defn(&wrapper_defn, compile_ctx)?;
@@ -326,6 +382,7 @@ mod tests {
         }
     }
 
+    // spec: 05-definitions §5.1 — single defn compiles and executes via JIT
     #[test]
     fn test_compile_program_simple() {
         let defn = Defn {
@@ -349,6 +406,7 @@ mod tests {
         assert_eq!(value, 42);
     }
 
+    // spec: 12-runtime §12.6 — batch mode requires main entry point
     #[test]
     fn test_compile_program_no_defns() {
         let program: Program = vec![];
@@ -358,6 +416,7 @@ mod tests {
         assert!(result.is_err());
     }
 
+    // spec: 04-expressions §4.1.1 — integer literal codegen
     #[test]
     fn test_compile_and_run_expr() {
         let expr = Expr::IntLit {
@@ -370,6 +429,7 @@ mod tests {
         assert_eq!(value, 99);
     }
 
+    // spec: 05-definitions §5.1 — defn compiles in interactive (REPL) mode
     #[test]
     fn test_compile_program_interactive_mode() {
         let defn = Defn {
@@ -393,6 +453,7 @@ mod tests {
         assert_eq!(value, 7);
     }
 
+    // spec: 04-expressions §4.1.1 — integer literal codegen with GOT state
     #[test]
     fn test_compile_and_run_expr_with_got_state() {
         let expr = Expr::IntLit {
@@ -411,6 +472,7 @@ mod tests {
         assert_eq!(value, 55);
     }
 
+    // spec: 05-definitions §5.13.1 — multiple function definitions compile together
     #[test]
     fn test_compile_program_multiple_defns() {
         // Two functions: helper and main. Main returns 100.
@@ -448,6 +510,7 @@ mod tests {
         assert_eq!(value, 100);
     }
 
+    // spec: 04-expressions §4.1.3 — boolean literal codegen
     #[test]
     fn test_compile_and_run_expr_bool() {
         let expr = Expr::BoolLit {
@@ -462,6 +525,7 @@ mod tests {
 
     // --- Ring 1 tests ---
 
+    // spec: 04-expressions §4.1.4 — string literal codegen, heap allocation
     #[test]
     fn test_compile_string_literal() {
         let expr = Expr::StringLit {
@@ -484,6 +548,7 @@ mod tests {
         cranelisp_runtime::heap_dealloc(ptr);
     }
 
+    // spec: 04-expressions §4.1.4 — empty string literal codegen
     #[test]
     fn test_compile_empty_string_literal() {
         let expr = Expr::StringLit {
@@ -503,6 +568,7 @@ mod tests {
         cranelisp_runtime::heap_dealloc(ptr);
     }
 
+    // spec: 12-runtime §12.1.4 — data constructor heap layout [tag | fields]
     #[test]
     fn test_compile_adt_data_constructor() {
         use cranelisp_types::{ConstructorInfo, FieldInfo, Type, TypeDefInfo, TypeName};
@@ -582,6 +648,7 @@ mod tests {
         cranelisp_runtime::heap_dealloc(ptr);
     }
 
+    // spec: 04-expressions §4.8 — match expression with constructor patterns and field extraction
     #[test]
     fn test_compile_match_with_fields() {
         use cranelisp_types::{
@@ -684,6 +751,7 @@ mod tests {
         assert_eq!(result.unwrap(), 99, "match should extract field value");
     }
 
+    // spec: 04-expressions §4.5 — lambda capture, closure allocation, and indirect call
     #[test]
     fn test_compile_lambda_closure() {
         // (let [n 5] ((fn [x] (+ n x)) 10))
@@ -757,6 +825,7 @@ mod tests {
 
     // --- Vec codegen tests ---
 
+    // spec: 04-expressions §4.10 — empty Vec literal codegen
     #[test]
     fn test_compile_empty_vec_literal() {
         let expr = Expr::VecLit {
@@ -778,6 +847,7 @@ mod tests {
         cranelisp_runtime::vec_drop(ptr, 0);
     }
 
+    // spec: 04-expressions §4.10 — Vec literal with integer elements
     #[test]
     fn test_compile_vec_literal_with_ints() {
         let expr = Expr::VecLit {
@@ -810,6 +880,7 @@ mod tests {
         cranelisp_runtime::vec_drop(ptr, 0);
     }
 
+    // spec: 04-expressions §4.10 — single-element Vec literal
     #[test]
     fn test_compile_vec_literal_single_element() {
         let expr = Expr::VecLit {
@@ -835,6 +906,7 @@ mod tests {
         cranelisp_runtime::vec_drop(ptr, 0);
     }
 
+    // spec: 04-expressions §4.10 — Vec literal with boolean elements
     #[test]
     fn test_compile_vec_literal_with_bool_elements() {
         let expr = Expr::VecLit {
@@ -861,6 +933,7 @@ mod tests {
         cranelisp_runtime::vec_drop(ptr, 0);
     }
 
+    // spec: appendix-a-builtins §A.3 — vec-len inline primitive codegen
     #[test]
     fn test_compile_vec_len_inline() {
         use cranelisp_types::ResolvedCall;
@@ -909,6 +982,7 @@ mod tests {
         assert_eq!(result.unwrap(), 3);
     }
 
+    // spec: appendix-a-builtins §A.3 — vec-get bounds-checked index codegen
     #[test]
     fn test_compile_vec_get_inline() {
         use cranelisp_types::ResolvedCall;
@@ -970,6 +1044,7 @@ mod tests {
         assert_eq!(result.unwrap(), 20);
     }
 
+    // spec: appendix-a-builtins §A.3 — vec-get index 0 boundary
     #[test]
     fn test_compile_vec_get_first_element() {
         use cranelisp_types::ResolvedCall;
@@ -1029,6 +1104,7 @@ mod tests {
         assert_eq!(result.unwrap(), 100);
     }
 
+    // spec: appendix-a-builtins §A.3 — vec-get last index boundary
     #[test]
     fn test_compile_vec_get_last_element() {
         use cranelisp_types::ResolvedCall;
@@ -1089,6 +1165,7 @@ mod tests {
         assert_eq!(result.unwrap(), 3);
     }
 
+    // spec: 12-runtime §12.3.3 — vec-set copy-on-write path codegen
     #[test]
     fn test_compile_vec_set_copy_path() {
         use cranelisp_types::ResolvedCall;
@@ -1167,6 +1244,7 @@ mod tests {
         assert_eq!(result.unwrap(), 3);
     }
 
+    // spec: 12-runtime §12.3.3 — vec-push copy-on-write path codegen
     #[test]
     fn test_compile_vec_push_copy_path() {
         use cranelisp_types::ResolvedCall;
@@ -1232,6 +1310,7 @@ mod tests {
         assert_eq!(result.unwrap(), 3);
     }
 
+    // spec: 04-expressions §4.3, §4.10 — Vec literal bound in let, accessed via vec-len
     #[test]
     fn test_compile_vec_literal_in_let() {
         // (let [v [1 2 3]] (vec-len v))
@@ -1290,6 +1369,7 @@ mod tests {
         assert_eq!(result.unwrap(), 3);
     }
 
+    // spec: 04-expressions §4.10, §4.11 — Vec literal with computed elements, left-to-right eval
     #[test]
     fn test_compile_vec_literal_with_computed_elements() {
         use cranelisp_types::ResolvedCall;
@@ -1351,6 +1431,7 @@ mod tests {
         cranelisp_runtime::vec_drop(ptr, 0);
     }
 
+    // spec: 05-definitions §5.1, 04-expressions §4.10 — Vec literal as function return value
     #[test]
     fn test_compile_vec_in_function_defn() {
         // (defn make-vec [] [1 2 3])
@@ -1383,6 +1464,7 @@ mod tests {
         cranelisp_runtime::vec_drop(ptr, 0);
     }
 
+    // spec: appendix-a-builtins §A.3 — vec-get returns correct element value
     #[test]
     fn test_compile_vec_get_verify_value() {
         use cranelisp_types::ResolvedCall;
@@ -1444,6 +1526,7 @@ mod tests {
         assert_eq!(result.unwrap(), 300);
     }
 
+    // spec: 12-runtime §12.3.3 — vec-push on temporary Vec (COW in-place path)
     #[test]
     fn test_compile_vec_push_on_temp() {
         use cranelisp_types::ResolvedCall;
@@ -1508,6 +1591,7 @@ mod tests {
         assert_eq!(result.unwrap(), 2);
     }
 
+    // spec: 12-runtime §12.3.3 — vec-set on temporary Vec (COW in-place path)
     #[test]
     fn test_compile_vec_set_on_temp() {
         use cranelisp_types::ResolvedCall;
@@ -1574,6 +1658,7 @@ mod tests {
         assert_eq!(result.unwrap(), 3);
     }
 
+    // spec: 04-expressions §4.10 — Vec literal in interactive (REPL) mode
     #[test]
     fn test_compile_vec_literal_interactive_mode() {
         let expr = Expr::VecLit {
@@ -1596,6 +1681,7 @@ mod tests {
         cranelisp_runtime::vec_drop(ptr, 0);
     }
 
+    // spec: appendix-a-builtins §A.3 — vec-len on empty Vec returns 0
     #[test]
     fn test_compile_vec_empty_len() {
         use cranelisp_types::ResolvedCall;
@@ -1640,6 +1726,7 @@ mod tests {
         assert_eq!(result.unwrap(), 0);
     }
 
+    // spec: appendix-a-builtins §A.3 — vec-push on empty Vec
     #[test]
     fn test_compile_vec_push_empty_vec() {
         use cranelisp_types::ResolvedCall;
@@ -1701,6 +1788,7 @@ mod tests {
         assert_eq!(result.unwrap(), 1);
     }
 
+    // spec: appendix-a-builtins §A.3 — vec-len on empty Vec (duplicate boundary check)
     #[test]
     fn test_compile_vec_len_empty_vec() {
         use cranelisp_types::ResolvedCall;
@@ -1743,6 +1831,7 @@ mod tests {
         assert_eq!(result.unwrap(), 0);
     }
 
+    // spec: 04-expressions §4.10 — nested Vec literals (Vec of Vecs)
     #[test]
     fn test_compile_nested_vec_literals() {
         // [[1 2] [3 4]] — a Vec of Vecs (nested heap values)
@@ -1792,6 +1881,7 @@ mod tests {
         cranelisp_runtime::vec_drop(outer_ptr, 0);
     }
 
+    // spec: 04-expressions §4.10 — large Vec literal (10 elements)
     #[test]
     fn test_compile_vec_large_literal() {
         // [0 1 2 3 4 5 6 7 8 9] — 10 elements
@@ -1826,6 +1916,7 @@ mod tests {
 
     // --- Ring 2A: TraitMethod dispatch tests ---
 
+    // spec: 07-traits §7.7, appendix-a-builtins §A.3 — Num.+ trait dispatch inlines to add-i64
     #[test]
     fn test_trait_method_dispatch_inline_add() {
         // (+ 3 4) resolved as TraitMethod Num.+ on Int → should inline as iadd.
@@ -1858,6 +1949,7 @@ mod tests {
         assert_eq!(value, 7);
     }
 
+    // spec: 07-traits §7.7, appendix-a-builtins §A.3 — Eq.= trait dispatch on Bool
     #[test]
     fn test_trait_method_dispatch_eq_bool() {
         // (= true true) resolved as TraitMethod Eq.= on Bool → eq-bool.
@@ -1890,6 +1982,7 @@ mod tests {
         assert_eq!(value, 1); // true == true → true (1)
     }
 
+    // spec: 07-traits §7.7 — constrained polymorphic fn skipped at definition, monomorphised at call
     #[test]
     fn test_constrained_fn_skipped_in_compile_program() {
         // A constrained fn should be skipped (not compiled).
@@ -1928,6 +2021,7 @@ mod tests {
         assert_eq!(value, 42);
     }
 
+    // spec: 07-traits §7.7 — no default method defns produces empty extras
     #[test]
     fn test_collect_extra_defns_empty() {
         let check = empty_check();
@@ -1935,6 +2029,7 @@ mod tests {
         assert!(extras.is_empty());
     }
 
+    // spec: 07-traits §7.7 — default trait methods collected as extra defns
     #[test]
     fn test_collect_extra_defns_with_defaults() {
         let mut check = empty_check();
@@ -1951,5 +2046,112 @@ mod tests {
         let extras = collect_extra_defns(&check);
         assert_eq!(extras.len(), 1);
         assert_eq!(extras[0].name, Symbol::from("!="));
+    }
+
+    // --- Cross-module GOT tests ---
+
+    // spec: 08-modules §8.3, 12-runtime §12.2.1 — cross-module function call via GOT indirection
+    #[test]
+    fn test_cross_module_got_call() {
+        use cranelisp_types::ModuleFullPath;
+
+        // Step 1: Compile a function "add42" in module A's GOT.
+        let add42_defn = Defn {
+            name: Symbol::from("add42"),
+            params: vec![Symbol::from("x")],
+            param_annotations: vec![],
+            visibility: cranelisp_types::Visibility::Public,
+            body: Expr::IntLit {
+                value: 42,
+                span: Span::new(0, 2),
+            },
+            docstring: None,
+            span: Span::new(0, 20),
+        };
+
+        let mut mod_a_got = got::ModuleCodegenState::new();
+        let add42_slot = mod_a_got.ensure_slot_for(&Symbol::from("add42")).unwrap();
+        mod_a_got
+            .def_codegen
+            .entry(Symbol::from("add42"))
+            .or_default()
+            .param_count = Some(1);
+
+        // Compile and finalize add42 in its own JIT.
+        let check = empty_check();
+        let mut jit_a = Jit::new().unwrap();
+        jit_a.declare_intrinsics().unwrap();
+        let func_ids_a = jit_a.declare_functions(&[&add42_defn]).unwrap();
+        let arities_a: HashMap<Symbol, usize> = vec![(Symbol::from("add42"), 1)].into_iter().collect();
+        let mut slots_a = HashMap::new();
+        slots_a.insert(Symbol::from("add42"), add42_slot);
+        let got_base_a = mod_a_got.got_base_ptr() as i64;
+        let ctx_a = jit_a.build_compile_context(
+            &check, CompileMode::Interactive, &func_ids_a, &arities_a,
+            Some(&slots_a), Some(got_base_a), None,
+        );
+        jit_a.compile_defn(&add42_defn, ctx_a).unwrap();
+        let add42_ptr = jit_a.finalize_and_get_ptr(&Symbol::from("add42"), 1).unwrap();
+        mod_a_got.update_slot(add42_slot, add42_ptr);
+
+        // Step 2: Compile a caller expression that calls "add42" via cross-module GOT.
+        // The expression is just `(add42 10)` which should return 42 (our stub ignores x).
+        let caller_expr = Expr::Apply {
+            callee: Box::new(Expr::Var {
+                name: Symbol::from("add42"),
+                span: Span::new(100, 105),
+            }),
+            args: vec![Expr::IntLit {
+                value: 10,
+                span: Span::new(106, 108),
+            }],
+            span: Span::new(100, 109),
+        };
+
+        // Build cross-module GOT mapping: add42 -> module A's GOT.
+        let mut xmod_got: HashMap<(ModuleFullPath, Symbol), (i64, usize)> = HashMap::new();
+        xmod_got.insert(
+            (ModuleFullPath::from("module_a"), Symbol::from("add42")),
+            (got_base_a, add42_slot),
+        );
+
+        // Compile the caller using cross_module_got.
+        let wrapper_name = Symbol::from("__test_caller__");
+        let wrapper_defn = Defn {
+            name: wrapper_name.clone(),
+            params: vec![],
+            param_annotations: vec![],
+            visibility: cranelisp_types::Visibility::Public,
+            body: caller_expr,
+            docstring: None,
+            span: Span::new(100, 120),
+        };
+
+        let mut jit_b = Jit::new().unwrap();
+        jit_b.declare_intrinsics().unwrap();
+        let func_ids_b = jit_b.declare_functions(&[&wrapper_defn]).unwrap();
+        let arities_b: HashMap<Symbol, usize> = vec![
+            (wrapper_name.clone(), 0),
+            (Symbol::from("add42"), 1),
+        ].into_iter().collect();
+
+        // No local GOT slots for add42 -- it's cross-module only.
+        let mut local_slots = HashMap::new();
+        let mut local_got = got::ModuleCodegenState::new();
+        let wrapper_slot = local_got.ensure_slot_for(&wrapper_name).unwrap();
+        local_slots.insert(wrapper_name.clone(), wrapper_slot);
+        let got_base_b = local_got.got_base_ptr() as i64;
+
+        let ctx_b = jit_b.build_compile_context(
+            &check, CompileMode::Interactive, &func_ids_b, &arities_b,
+            Some(&local_slots), Some(got_base_b), Some(&xmod_got),
+        );
+        jit_b.compile_defn(&wrapper_defn, ctx_b).unwrap();
+        let caller_ptr = jit_b.finalize_and_get_ptr(&wrapper_name, 0).unwrap();
+
+        // Execute: should call add42 from module A's GOT and return 42.
+        let func: extern "C" fn() -> i64 = unsafe { std::mem::transmute(caller_ptr) };
+        let result = func();
+        assert_eq!(result, 42, "cross-module GOT call should return add42's result");
     }
 }

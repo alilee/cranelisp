@@ -41,7 +41,7 @@ impl TypeChecker {
         for prim in ring0_primitives() {
             let scheme = mono(prim.ty.clone());
 
-            self.symbol_table.insert(
+            self.current_symbol_table_mut().insert(
                 prim.name.clone(),
                 ModuleEntry::Def {
                     scheme,
@@ -65,7 +65,7 @@ impl TypeChecker {
         for prim in ring1_primitives() {
             let scheme = mono(prim.ty.clone());
 
-            self.symbol_table.insert(
+            self.current_symbol_table_mut().insert(
                 prim.name.clone(),
                 ModuleEntry::Def {
                     scheme,
@@ -146,7 +146,7 @@ impl TypeChecker {
         ];
 
         for (name, param_names, scheme) in vec_prims {
-            self.symbol_table.insert(
+            self.current_symbol_table_mut().insert(
                 Symbol::from(name),
                 ModuleEntry::Def {
                     scheme,
@@ -176,7 +176,7 @@ impl TypeChecker {
         ];
 
         for (name, desc) in special_forms {
-            self.symbol_table.insert(
+            self.current_symbol_table_mut().insert(
                 Symbol::from(name),
                 ModuleEntry::Def {
                     // Special forms don't have meaningful type schemes.
@@ -193,7 +193,7 @@ impl TypeChecker {
         }
     }
 
-    /// Register core traits: Num, Eq, Ord.
+    /// Register core traits: Num, Eq, Ord, Display.
     ///
     /// These are registered at startup, not from stdlib files.
     /// See interfaces.md Ring 2A for the authoritative trait table.
@@ -201,6 +201,7 @@ impl TypeChecker {
         self.register_num_trait();
         self.register_eq_trait();
         self.register_ord_trait();
+        self.register_display_trait();
     }
 
     /// Register the Num trait: + - * / :: (Fn [a a] a)
@@ -284,6 +285,34 @@ impl TypeChecker {
         self.register_trait_decl(&decl)
             .unwrap_or_else(|e| {
                 unreachable!("invariant: core trait Ord registration failed: {e}")
+            });
+    }
+
+    /// Register the Display trait: show :: (Fn [a] String)
+    fn register_display_trait(&mut self) {
+        let show_method = TraitMethodSig {
+            name: Symbol::from("show"),
+            docstring: None,
+            params: vec![TypeExpr::TypeVar(Symbol::from("a"))],
+            ret_type: TypeExpr::Named(TypeName::from("String")),
+            span: Span::SYNTHETIC,
+            hkt_param_index: None,
+            default_param_names: vec![Symbol::from("self")],
+            default_body: None,
+        };
+
+        let decl = TraitDecl {
+            name: TraitName::from("Display"),
+            docstring: Some("String representation".to_string()),
+            type_params: vec![Symbol::from("a")],
+            methods: vec![show_method],
+            visibility: Visibility::Public,
+            span: Span::SYNTHETIC,
+        };
+
+        self.register_trait_decl(&decl)
+            .unwrap_or_else(|e| {
+                unreachable!("invariant: core trait Display registration failed: {e}")
             });
     }
 
@@ -433,6 +462,34 @@ impl TypeChecker {
             TypeName::from("Float"),
             vec![(Symbol::from("<"), Symbol::from("lt-f64"))],
         );
+
+        // Display for Int
+        self.register_builtin_impl(
+            TraitName::from("Display"),
+            TypeName::from("Int"),
+            vec![(Symbol::from("show"), Symbol::from("int-to-string"))],
+        );
+
+        // Display for Float
+        self.register_builtin_impl(
+            TraitName::from("Display"),
+            TypeName::from("Float"),
+            vec![(Symbol::from("show"), Symbol::from("float-to-string"))],
+        );
+
+        // Display for Bool
+        self.register_builtin_impl(
+            TraitName::from("Display"),
+            TypeName::from("Bool"),
+            vec![(Symbol::from("show"), Symbol::from("bool-to-string"))],
+        );
+
+        // Display for String (identity passthrough)
+        self.register_builtin_impl(
+            TraitName::from("Display"),
+            TypeName::from("String"),
+            vec![(Symbol::from("show"), Symbol::from("string-identity"))],
+        );
     }
 
 }
@@ -442,23 +499,25 @@ mod tests {
     use super::*;
     use cranelisp_types::{ring0_primitives, ModuleEntry, Type};
 
+    // spec: appendix-a-builtins §A.2 — all ring-0 primitives registered in symbol table
     #[test]
     fn test_primitives_registered() {
         let tc = TypeChecker::new();
         // All 20 primitives should be in the symbol table
         for prim in ring0_primitives() {
             assert!(
-                tc.symbol_table.get(prim.name.as_ref()).is_some(),
+                tc.symbol_table().get(prim.name.as_ref()).is_some(),
                 "primitive {} should be in symbol table",
                 prim.name
             );
         }
     }
 
+    // spec: appendix-a-builtins §A.2 — add-i64 has monomorphic (Fn [Int Int] Int) scheme
     #[test]
     fn test_add_i64_scheme() {
         let tc = TypeChecker::new();
-        if let Some(ModuleEntry::Def { scheme, .. }) = tc.symbol_table.get("add-i64") {
+        if let Some(ModuleEntry::Def { scheme, .. }) = tc.symbol_table().get("add-i64") {
             // Monomorphic: no quantified vars
             assert!(scheme.vars.is_empty(), "add-i64 should have no quantified vars");
             assert_eq!(
@@ -471,10 +530,11 @@ mod tests {
         }
     }
 
+    // spec: appendix-a-builtins §A.2 — add-f64 has monomorphic (Fn [Float Float] Float) scheme
     #[test]
     fn test_add_f64_scheme() {
         let tc = TypeChecker::new();
-        if let Some(ModuleEntry::Def { scheme, .. }) = tc.symbol_table.get("add-f64") {
+        if let Some(ModuleEntry::Def { scheme, .. }) = tc.symbol_table().get("add-f64") {
             assert!(scheme.vars.is_empty(), "add-f64 should have no quantified vars");
             assert_eq!(
                 scheme.ty,
@@ -486,10 +546,11 @@ mod tests {
         }
     }
 
+    // spec: appendix-a-builtins §A.2 — eq-i64 has monomorphic (Fn [Int Int] Bool) scheme
     #[test]
     fn test_eq_i64_scheme() {
         let tc = TypeChecker::new();
-        if let Some(ModuleEntry::Def { scheme, .. }) = tc.symbol_table.get("eq-i64") {
+        if let Some(ModuleEntry::Def { scheme, .. }) = tc.symbol_table().get("eq-i64") {
             assert!(scheme.vars.is_empty(), "eq-i64 should have no quantified vars");
             assert_eq!(
                 scheme.ty,
@@ -501,10 +562,11 @@ mod tests {
         }
     }
 
+    // spec: appendix-a-builtins §A.3 — not has monomorphic (Fn [Bool] Bool) scheme
     #[test]
     fn test_not_scheme() {
         let tc = TypeChecker::new();
-        if let Some(ModuleEntry::Def { scheme, .. }) = tc.symbol_table.get("not") {
+        if let Some(ModuleEntry::Def { scheme, .. }) = tc.symbol_table().get("not") {
             assert!(scheme.vars.is_empty(), "not should have no quantified vars");
             assert_eq!(
                 scheme.ty,
@@ -516,10 +578,11 @@ mod tests {
         }
     }
 
+    // spec: appendix-a-builtins §A.2 — arithmetic primitives are inline kind
     #[test]
     fn test_primitives_are_inline_kind() {
         let tc = TypeChecker::new();
-        if let Some(ModuleEntry::Def { kind, .. }) = tc.symbol_table.get("add-i64") {
+        if let Some(ModuleEntry::Def { kind, .. }) = tc.symbol_table().get("add-i64") {
             assert!(
                 matches!(
                     kind.as_ref(),
@@ -532,12 +595,13 @@ mod tests {
         }
     }
 
+    // spec: appendix-a-builtins §A.1 — special forms registered in symbol table
     #[test]
     fn test_special_forms_registered() {
         let tc = TypeChecker::new();
         let forms = ["if", "let", "fn", "defn", "deftype", "match", "deftrait", "impl"];
         for name in forms {
-            let entry = tc.symbol_table.get(name);
+            let entry = tc.symbol_table().get(name);
             assert!(entry.is_some(), "special form {name} should be registered");
             if let Some(ModuleEntry::Def { kind, .. }) = entry {
                 assert!(
@@ -548,6 +612,7 @@ mod tests {
         }
     }
 
+    // spec: appendix-a-builtins §A.2 — primitive count by category matches spec
     #[test]
     fn test_primitive_count() {
         let prims = ring0_primitives();
@@ -592,22 +657,24 @@ mod tests {
         assert_eq!(bool_cmp, 1, "1 boolean comparison (eq-bool)");
     }
 
+    // spec: 03-types §3.2.4 — Vec primitive operations registered
     #[test]
     fn test_vec_primitives_registered() {
         let tc = TypeChecker::new();
         let vec_ops = ["vec-get", "vec-set", "vec-push", "vec-len"];
         for name in vec_ops {
             assert!(
-                tc.symbol_table.get(name).is_some(),
+                tc.symbol_table().get(name).is_some(),
                 "Vec primitive {name} should be in symbol table"
             );
         }
     }
 
+    // spec: 03-types §3.2.4 — vec-get is polymorphic (Fn [(Vec a) Int] a)
     #[test]
     fn test_vec_get_scheme_is_polymorphic() {
         let tc = TypeChecker::new();
-        if let Some(ModuleEntry::Def { scheme, kind, .. }) = tc.symbol_table.get("vec-get") {
+        if let Some(ModuleEntry::Def { scheme, kind, .. }) = tc.symbol_table().get("vec-get") {
             assert_eq!(scheme.vars.len(), 1, "vec-get should have 1 quantified var");
             // Type: (Fn [(Vec a) Int] a)
             if let Type::Fn(params, ret) = &scheme.ty {
@@ -627,10 +694,11 @@ mod tests {
         }
     }
 
+    // spec: 03-types §3.2.4 — vec-set is polymorphic (Fn [(Vec a) Int a] (Vec a))
     #[test]
     fn test_vec_set_scheme_is_polymorphic() {
         let tc = TypeChecker::new();
-        if let Some(ModuleEntry::Def { scheme, .. }) = tc.symbol_table.get("vec-set") {
+        if let Some(ModuleEntry::Def { scheme, .. }) = tc.symbol_table().get("vec-set") {
             assert_eq!(scheme.vars.len(), 1, "vec-set should have 1 quantified var");
             if let Type::Fn(params, ret) = &scheme.ty {
                 assert_eq!(params.len(), 3, "vec-set takes (Vec a), Int, a");
@@ -646,10 +714,11 @@ mod tests {
         }
     }
 
+    // spec: 03-types §3.2.4 — vec-push is polymorphic (Fn [(Vec a) a] (Vec a))
     #[test]
     fn test_vec_push_scheme_is_polymorphic() {
         let tc = TypeChecker::new();
-        if let Some(ModuleEntry::Def { scheme, .. }) = tc.symbol_table.get("vec-push") {
+        if let Some(ModuleEntry::Def { scheme, .. }) = tc.symbol_table().get("vec-push") {
             assert_eq!(scheme.vars.len(), 1, "vec-push should have 1 quantified var");
             if let Type::Fn(params, ret) = &scheme.ty {
                 assert_eq!(params.len(), 2, "vec-push takes (Vec a), a");
@@ -662,10 +731,11 @@ mod tests {
         }
     }
 
+    // spec: 03-types §3.2.4 — vec-len is polymorphic (Fn [(Vec a)] Int)
     #[test]
     fn test_vec_len_scheme_is_polymorphic() {
         let tc = TypeChecker::new();
-        if let Some(ModuleEntry::Def { scheme, .. }) = tc.symbol_table.get("vec-len") {
+        if let Some(ModuleEntry::Def { scheme, .. }) = tc.symbol_table().get("vec-len") {
             assert_eq!(scheme.vars.len(), 1, "vec-len should have 1 quantified var");
             if let Type::Fn(params, ret) = &scheme.ty {
                 assert_eq!(params.len(), 1, "vec-len takes (Vec a)");
@@ -679,6 +749,7 @@ mod tests {
         }
     }
 
+    // spec: 07-traits §7.5 — operator symbols registered as trait method entries
     #[test]
     fn test_operator_names_registered_as_trait_methods() {
         let tc = TypeChecker::new();
@@ -686,7 +757,7 @@ mod tests {
         let ops = ["+", "-", "*", "/", "=", "!=", "<", ">", "<=", ">="];
         for name in ops {
             assert!(
-                tc.symbol_table.get(name).is_some(),
+                tc.symbol_table().get(name).is_some(),
                 "operator {name} should be registered as a trait method"
             );
         }

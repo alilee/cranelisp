@@ -582,23 +582,7 @@ When registering the resolution in `method_resolutions`, record `ResolvedCall::B
 
 The current interface does not specify how exhaustiveness warnings/errors flow. Exhaustiveness is a hard requirement per spec 6.5 -- non-exhaustive match on a concrete ADT is a compile-time error. The typechecker should return this as a `CranelispError::TypeError` during `infer_match`, not as a warning.
 
-### 8.3 REPL `check_repl_input` Not in `interfaces.md`
-
-The boundary type `ReplInput` is defined in `interfaces.md`, but there is no corresponding `ReplCheckResult` or `check_repl_input` API defined. This should be added for Ring 0:
-
-```rust
-pub struct ReplCheckResult {
-    pub ty: Type,                           // inferred type of the expression/definition
-    pub scheme: Option<Scheme>,             // generalized scheme (for defn display)
-    pub method_resolutions: MethodResolutions,
-    pub expr_types: HashMap<Span, Type>,
-    pub warnings: Vec<Warning>,
-}
-```
-
-<!-- FIXME(/arch): Add ReplCheckResult to interfaces.md. The typechecker needs a boundary type for incremental REPL checking distinct from batch CheckResult. -->
-
-### 8.4 `SymbolTable` Mutability
+### 8.3 `SymbolTable` Mutability
 
 The typechecker needs to mutate the `SymbolTable` during checking (Pass 1 registration, Pass 2 updates after generalization). The current `SymbolTable` in `interfaces.md` is a simple data container with `insert` and `get` methods, which is sufficient. No gap here.
 
@@ -650,4 +634,3 @@ Steps 1-6 can be developed and tested without any AST builder (using hand-constr
 - `/backend` -- Ring 0 codegen can begin in parallel, consuming `CheckResult` with `BuiltinFn` resolutions and `expr_types`.
 - `/frontend` -- Ring 0 AST builder produces `Expr` and `TopLevel` values that the typechecker consumes. Can develop in parallel using hand-constructed ASTs for typechecker tests.
 - `/qa` -- Integration tests wire frontend -> typecheck -> backend through `compile_unit()`. Blocked on all three compiler skills having at least a stub implementation.
-- `/arch` -- Review `ReplCheckResult` addition to `interfaces.md` (FIXME above).

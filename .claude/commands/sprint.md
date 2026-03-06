@@ -100,6 +100,8 @@ Every sprint follows this sequential flow. `/sprint` drives the process; other s
 
 ### Phase 3: Plan Updates (all skills in parallel)
 
+**Phase 3 is mandatory.** `/sprint` MUST NOT skip this phase or proceed directly to execution. Every skill fills out its own approach in SPRINT.md — `/sprint` does not fill approaches on behalf of other skills. Skills know their domain best; their plans surface risks, dependencies, and design choices that `/sprint` cannot anticipate.
+
 7. **All skills update their plan `.md` files** to address:
    - FIXMEs assigned to them (incorporate the change or explicitly defer with rationale)
    - Their sprint assignment (refine their plan section in SPRINT.md with concrete approach)
@@ -150,6 +152,18 @@ FIXMEs flow in one direction: the skill that discovers a problem files a `FIXME(
 - Or explicitly deferring with rationale recorded in SPRINT.md Notes
 
 `/sprint` tracks FIXMEs but MUST NOT rename, remove, or suppress them — only the owning skill removes a FIXME after resolving the underlying issue.
+
+### Debt and Deferral Escalation
+
+**Items deferred once may be deferred again with rationale. Items deferred twice MUST ship in the current sprint or require explicit user approval to defer a third time.** This prevents the pattern where reasonable-sounding rationale ("the sprint is already large enough") accumulates into chronic debt.
+
+During Phase 1 (scope), `/sprint` checks the deferral history of every carried item by scanning prior sprint archive Deferred sections. Items on their second deferral are flagged in the FIXME Debt table with `**2x deferred**` and included in the sprint scope by default. `/arch` may recommend deferral but `/sprint` escalates to the user rather than accepting automatically.
+
+The same rule applies to `#[ignore]` tests: if an ignored test's target sprint has passed and it was re-targeted once already, it must ship in the current sprint or get explicit user approval to defer again.
+
+**Review findings** (Important and Blocker) from `/review` follow the same escalation: deferred once is acceptable, deferred twice requires user sign-off. `/sprint` tracks the deferral count in the FIXME Debt table.
+
+**Rationale**: Tech debt, test gaps, and review findings are always easy to defer because new features feel more valuable in the moment. But deferred quality work compounds — files that need cleanup get more complex as features land on top, ignored tests mask real bugs, and review findings become harder to address as the code evolves. The two-deferral limit forces a conscious decision rather than allowing drift.
 
 ## Sprint 0 (Preparation)
 

@@ -61,6 +61,7 @@ pub fn generalize(subst: &Subst, ty: &Type, env_free_vars: &std::collections::Ha
 mod tests {
     use super::*;
 
+    // spec: 03-types §3.4 — monomorphic scheme has no quantified vars
     #[test]
     fn test_mono_scheme() {
         let s = mono(Type::Int);
@@ -69,6 +70,7 @@ mod tests {
         assert_eq!(s.ty, Type::Int);
     }
 
+    // spec: 03-types §3.5.1 — instantiate on monomorphic scheme is identity
     #[test]
     fn test_instantiate_mono() {
         let s = mono(Type::Int);
@@ -79,6 +81,7 @@ mod tests {
         assert_eq!(next_id, 0);
     }
 
+    // spec: 03-types §3.5.1 — instantiate replaces quantified vars with fresh vars
     #[test]
     fn test_instantiate_polymorphic() {
         // forall [0]. Fn([t0], t0) -- identity
@@ -97,6 +100,7 @@ mod tests {
         assert_eq!(next_id, 11);
     }
 
+    // spec: 03-types §3.5.1 — instantiate handles multiple quantified vars
     #[test]
     fn test_instantiate_multi_var() {
         // forall [0, 1]. Fn([t0, t1], t0)
@@ -114,6 +118,7 @@ mod tests {
         assert_eq!(next_id, 7);
     }
 
+    // spec: 03-types §3.5.1 — generalize quantifies all free vars not in env
     #[test]
     fn test_generalize_all_free() {
         let subst = Subst::new();
@@ -124,6 +129,7 @@ mod tests {
         assert_eq!(scheme.vars, vec![0]);
     }
 
+    // spec: 03-types §3.5.1 — generalize skips vars free in the environment
     #[test]
     fn test_generalize_some_in_env() {
         let subst = Subst::new();
@@ -135,6 +141,7 @@ mod tests {
         assert_eq!(scheme.vars, vec![1]);
     }
 
+    // spec: 03-types §3.4 — generalize on concrete type produces mono scheme
     #[test]
     fn test_generalize_none_free() {
         let subst = Subst::new();
@@ -145,6 +152,7 @@ mod tests {
         assert_eq!(scheme.ty, Type::Int);
     }
 
+    // spec: 03-types §3.5.1 — generalize applies substitution before quantifying
     #[test]
     fn test_generalize_applies_subst() {
         let mut subst = Subst::new();

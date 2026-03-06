@@ -237,6 +237,7 @@ mod tests {
 
     // --- primitive_for_trait_method tests ---
 
+    // spec: appendix-a-builtins §A.3 — Num.+ on Int maps to add-i64 inline primitive
     #[test]
     fn test_num_add_int_maps_to_add_i64() {
         let result = primitive_for_trait_method(
@@ -247,6 +248,7 @@ mod tests {
         assert_eq!(result, Some("add-i64"));
     }
 
+    // spec: appendix-a-builtins §A.3 — Num.+ on Float maps to add-f64 inline primitive
     #[test]
     fn test_num_add_float_maps_to_add_f64() {
         let result = primitive_for_trait_method(
@@ -257,6 +259,7 @@ mod tests {
         assert_eq!(result, Some("add-f64"));
     }
 
+    // spec: appendix-a-builtins §A.3 — all Num trait Int methods map to i64 primitives
     #[test]
     fn test_num_all_int_methods() {
         let ops = vec![("+", "add-i64"), ("-", "sub-i64"), ("*", "mul-i64"), ("/", "div-i64")];
@@ -270,6 +273,7 @@ mod tests {
         }
     }
 
+    // spec: appendix-a-builtins §A.3 — Eq.= on Int maps to eq-i64
     #[test]
     fn test_eq_int_maps_to_eq_i64() {
         let result = primitive_for_trait_method(
@@ -280,6 +284,7 @@ mod tests {
         assert_eq!(result, Some("eq-i64"));
     }
 
+    // spec: appendix-a-builtins §A.3 — Eq.= on Bool maps to eq-bool
     #[test]
     fn test_eq_bool_maps_to_eq_bool() {
         let result = primitive_for_trait_method(
@@ -290,6 +295,7 @@ mod tests {
         assert_eq!(result, Some("eq-bool"));
     }
 
+    // spec: appendix-a-builtins §A.3 — Eq.= on String maps to str-eq
     #[test]
     fn test_eq_string_maps_to_str_eq() {
         let result = primitive_for_trait_method(
@@ -300,6 +306,7 @@ mod tests {
         assert_eq!(result, Some("str-eq"));
     }
 
+    // spec: appendix-a-builtins §A.3 — Ord.< on Int maps to lt-i64
     #[test]
     fn test_ord_lt_int_maps_to_lt_i64() {
         let result = primitive_for_trait_method(
@@ -310,6 +317,7 @@ mod tests {
         assert_eq!(result, Some("lt-i64"));
     }
 
+    // spec: 07-traits §7.7 — unknown trait has no inline primitive mapping
     #[test]
     fn test_unknown_trait_returns_none() {
         let result = primitive_for_trait_method(
@@ -320,6 +328,7 @@ mod tests {
         assert_eq!(result, None);
     }
 
+    // spec: 07-traits §7.7 — unknown impl type has no inline primitive mapping
     #[test]
     fn test_unknown_impl_type_returns_none() {
         let result = primitive_for_trait_method(

@@ -1513,6 +1513,7 @@ mod tests {
 
     // -- Literals --
 
+    // spec: 02-grammar §2.3.1 — integer literal expression
     #[test]
     fn test_build_integer_literal() {
         match parse_and_build_expr("42").unwrap() {
@@ -1521,6 +1522,7 @@ mod tests {
         }
     }
 
+    // spec: 02-grammar §2.3.1 — negative integer literal expression
     #[test]
     fn test_build_negative_integer() {
         match parse_and_build_expr("-7").unwrap() {
@@ -1529,6 +1531,7 @@ mod tests {
         }
     }
 
+    // spec: 02-grammar §2.3.1 — float literal expression
     #[test]
     fn test_build_float_literal() {
         match parse_and_build_expr("2.72").unwrap() {
@@ -1537,6 +1540,7 @@ mod tests {
         }
     }
 
+    // spec: 02-grammar §2.3.1 — boolean literal expression
     #[test]
     fn test_build_bool_literal() {
         match parse_and_build_expr("true").unwrap() {
@@ -1545,6 +1549,7 @@ mod tests {
         }
     }
 
+    // spec: 02-grammar §2.3.1 — string literal expression
     #[test]
     fn test_build_string_literal() {
         match parse_and_build_expr("\"hello\"").unwrap() {
@@ -1555,6 +1560,7 @@ mod tests {
 
     // -- Variable reference --
 
+    // spec: 02-grammar §2.3.2 — variable reference
     #[test]
     fn test_build_variable() {
         match parse_and_build_expr("foo").unwrap() {
@@ -1565,6 +1571,7 @@ mod tests {
 
     // -- Let expression --
 
+    // spec: 02-grammar §2.3.3 — let expression with single binding
     #[test]
     fn test_build_let() {
         match parse_and_build_expr("(let [x 42] x)").unwrap() {
@@ -1586,6 +1593,7 @@ mod tests {
         }
     }
 
+    // spec: 02-grammar §2.3.3 — let expression with multiple bindings
     #[test]
     fn test_build_let_multiple_bindings() {
         match parse_and_build_expr("(let [x 1 y 2] (+ x y))").unwrap() {
@@ -1598,6 +1606,7 @@ mod tests {
         }
     }
 
+    // spec: 02-grammar §2.3.3 — let requires body expression
     #[test]
     fn test_build_let_wrong_arity() {
         assert!(parse_and_build_expr("(let [x 1])").is_err());
@@ -1605,6 +1614,7 @@ mod tests {
 
     // -- If expression --
 
+    // spec: 02-grammar §2.3.4 — if expression with three sub-expressions
     #[test]
     fn test_build_if() {
         match parse_and_build_expr("(if true 1 0)").unwrap() {
@@ -1625,6 +1635,7 @@ mod tests {
         }
     }
 
+    // spec: 02-grammar §2.3.4 — if requires exactly three sub-expressions
     #[test]
     fn test_build_if_wrong_arity() {
         assert!(parse_and_build_expr("(if true 1)").is_err());
@@ -1632,6 +1643,7 @@ mod tests {
 
     // -- Lambda expression --
 
+    // spec: 02-grammar §2.3.5 — fn lambda expression
     #[test]
     fn test_build_lambda() {
         match parse_and_build_expr("(fn [x] x)").unwrap() {
@@ -1647,6 +1659,7 @@ mod tests {
         }
     }
 
+    // spec: 02-grammar §2.3.5 — lambda keyword alias for fn
     #[test]
     fn test_build_lambda_with_lambda_keyword() {
         match parse_and_build_expr("(lambda [x] x)").unwrap() {
@@ -1657,6 +1670,7 @@ mod tests {
         }
     }
 
+    // spec: 02-grammar §2.8.2 — annotated parameter in lambda
     #[test]
     fn test_build_lambda_annotated_params() {
         match parse_and_build_expr("(fn [:Int x] x)").unwrap() {
@@ -1680,6 +1694,7 @@ mod tests {
 
     // -- Apply expression --
 
+    // spec: 02-grammar §2.3.6 — function application
     #[test]
     fn test_build_apply() {
         match parse_and_build_expr("(+ 1 2)").unwrap() {
@@ -1696,6 +1711,7 @@ mod tests {
         }
     }
 
+    // spec: 02-grammar §2.3.8 — type annotation in function argument
     #[test]
     fn test_build_apply_with_annotation() {
         // (f :Int 42) -> Apply(f, [Annotate(:Int, 42)])
@@ -1718,6 +1734,7 @@ mod tests {
 
     // -- Match expression --
 
+    // spec: 02-grammar §2.3.7 — match expression with constructor patterns
     #[test]
     fn test_build_match() {
         match parse_and_build_expr("(match x [Red 1 Green 2 Blue 3])").unwrap() {
@@ -1735,6 +1752,7 @@ mod tests {
         }
     }
 
+    // spec: 02-grammar §2.5.2 — wildcard pattern in match
     #[test]
     fn test_build_match_with_wildcard() {
         match parse_and_build_expr("(match x [Red 1 _ 0])").unwrap() {
@@ -1746,6 +1764,7 @@ mod tests {
         }
     }
 
+    // spec: 02-grammar §2.5.3 — variable pattern in match
     #[test]
     fn test_build_match_with_var_pattern() {
         match parse_and_build_expr("(match x [y y])").unwrap() {
@@ -1760,12 +1779,14 @@ mod tests {
         }
     }
 
+    // spec: 02-grammar §2.3.7 — match arms must be even number of elements
     #[test]
     fn test_build_match_odd_arms_rejected() {
         let err = parse_and_build_expr("(match x [Red 1 Green])").unwrap_err();
         assert!(err.message().contains("even number"));
     }
 
+    // spec: 02-grammar §2.5.1 — constructor pattern with field bindings
     #[test]
     fn test_build_match_with_constructor_bindings() {
         match parse_and_build_expr("(match x [(Some v) v])").unwrap() {
@@ -1786,6 +1807,7 @@ mod tests {
 
     // -- defn --
 
+    // spec: 02-grammar §2.2.1 — defn single-signature form
     #[test]
     fn test_build_defn() {
         let prog = parse_and_build_program("(defn add [a b] (+ a b))").unwrap();
@@ -1800,6 +1822,7 @@ mod tests {
         }
     }
 
+    // spec: 02-grammar §2.6 — defn- private function definition
     #[test]
     fn test_build_defn_private() {
         let prog = parse_and_build_program("(defn- helper [x] x)").unwrap();
@@ -1812,6 +1835,7 @@ mod tests {
         }
     }
 
+    // spec: 02-grammar §2.7 — defn with docstring
     #[test]
     fn test_build_defn_with_docstring() {
         let prog = parse_and_build_program("(defn add \"Adds two values\" [a b] (+ a b))").unwrap();
@@ -1823,6 +1847,7 @@ mod tests {
         }
     }
 
+    // spec: 02-grammar §2.2.1 — defn multi-signature form
     #[test]
     fn test_build_defn_multi() {
         let prog = parse_and_build_program("(defn f ([x] x) ([x y] (+ x y)))").unwrap();
@@ -1839,6 +1864,7 @@ mod tests {
 
     // -- deftype --
 
+    // spec: 02-grammar §2.2.2 — deftype enum (all nullary constructors)
     #[test]
     fn test_build_deftype_enum() {
         let prog = parse_and_build_program("(deftype Color Red Green Blue)").unwrap();
@@ -1859,6 +1885,7 @@ mod tests {
         }
     }
 
+    // spec: 02-grammar §2.2.2 — deftype product type with typed fields
     #[test]
     fn test_build_deftype_product() {
         let prog = parse_and_build_program("(deftype Point [:Int x :Int y])").unwrap();
@@ -1878,6 +1905,7 @@ mod tests {
         }
     }
 
+    // spec: 02-grammar §2.2.2 — deftype polymorphic sum type
     #[test]
     fn test_build_deftype_sum() {
         let prog = parse_and_build_program("(deftype (Option a) None (Some [:a val]))").unwrap();
@@ -1901,6 +1929,7 @@ mod tests {
         }
     }
 
+    // spec: 02-grammar §2.2.2 — deftype shortcut syntax (bare field names)
     #[test]
     fn test_build_deftype_shortcut_fields() {
         // (deftype Pair [first second]) — bare names get sequential type vars
@@ -1933,6 +1962,7 @@ mod tests {
 
     // -- REPL input --
 
+    // spec: 02-grammar §2.1 — REPL top-level expression
     #[test]
     fn test_repl_expression() {
         match parse_and_build_repl("42").unwrap() {
@@ -1941,6 +1971,7 @@ mod tests {
         }
     }
 
+    // spec: 02-grammar §2.1 — REPL defn definition
     #[test]
     fn test_repl_defn() {
         match parse_and_build_repl("(defn f [x] x)").unwrap() {
@@ -1949,6 +1980,7 @@ mod tests {
         }
     }
 
+    // spec: 02-grammar §2.1 — REPL deftype definition
     #[test]
     fn test_repl_deftype() {
         match parse_and_build_repl("(deftype Color Red Green Blue)").unwrap() {
@@ -1959,12 +1991,14 @@ mod tests {
 
     // -- Rejected forms --
 
+    // spec: 02-grammar §2.3 — trace not yet implemented
     #[test]
     fn test_reject_trace() {
         let err = parse_and_build_expr("(trace 42)").unwrap_err();
         assert!(err.message().contains("trace not yet supported"));
     }
 
+    // spec: 02-grammar §2.3.9 — vec keyword form not yet implemented
     #[test]
     fn test_reject_vec_keyword() {
         let err = parse_and_build_expr("(vec 1 2 3)").unwrap_err();
@@ -1973,6 +2007,7 @@ mod tests {
 
     // -- deftrait --
 
+    // spec: 02-grammar §2.2.3 — simple deftrait with one method
     #[test]
     fn test_build_deftrait_simple() {
         let prog = parse_and_build_program(
@@ -1993,6 +2028,7 @@ mod tests {
         }
     }
 
+    // spec: 02-grammar §2.7 — deftrait with docstring
     #[test]
     fn test_build_deftrait_with_docstring() {
         let prog = parse_and_build_program(
@@ -2006,6 +2042,7 @@ mod tests {
         }
     }
 
+    // spec: 02-grammar §2.2.3 — deftrait with multiple method signatures
     #[test]
     fn test_build_deftrait_multiple_methods() {
         let prog = parse_and_build_program(
@@ -2022,6 +2059,7 @@ mod tests {
         }
     }
 
+    // spec: 02-grammar §2.2.3 — higher-kinded deftrait
     #[test]
     fn test_build_deftrait_hkt() {
         let prog = parse_and_build_program(
@@ -2038,6 +2076,7 @@ mod tests {
         }
     }
 
+    // spec: 02-grammar §2.2.3 — deftrait with default method implementation
     #[test]
     fn test_build_deftrait_with_default() {
         let prog = parse_and_build_program(
@@ -2057,6 +2096,7 @@ mod tests {
         }
     }
 
+    // spec: 02-grammar §2.6 — deftrait- private trait declaration
     #[test]
     fn test_build_deftrait_private() {
         let prog = parse_and_build_program(
@@ -2070,6 +2110,7 @@ mod tests {
         }
     }
 
+    // spec: 02-grammar §2.2.3 — HKT traits reject default method implementations
     #[test]
     fn test_build_deftrait_hkt_default_rejected() {
         let err = parse_and_build_program(
@@ -2080,6 +2121,7 @@ mod tests {
 
     // -- impl --
 
+    // spec: 02-grammar §2.2.4 — impl concrete type
     #[test]
     fn test_build_impl_concrete() {
         let prog = parse_and_build_program(
@@ -2099,6 +2141,7 @@ mod tests {
         }
     }
 
+    // spec: 02-grammar §2.2.4 — impl polymorphic type with trait constraint
     #[test]
     fn test_build_impl_polymorphic_with_constraint() {
         let prog = parse_and_build_program(
@@ -2118,6 +2161,7 @@ mod tests {
         }
     }
 
+    // spec: 02-grammar §2.2.4 — impl higher-kinded trait
     #[test]
     fn test_build_impl_hkt() {
         let prog = parse_and_build_program(
@@ -2133,6 +2177,7 @@ mod tests {
         }
     }
 
+    // spec: 02-grammar §2.2.4 — impl in REPL context
     #[test]
     fn test_build_impl_repl() {
         match parse_and_build_repl(
@@ -2146,6 +2191,7 @@ mod tests {
         }
     }
 
+    // spec: 02-grammar §2.2.3 — deftrait in REPL context
     #[test]
     fn test_build_deftrait_repl() {
         match parse_and_build_repl(
@@ -2158,6 +2204,7 @@ mod tests {
         }
     }
 
+    // spec: 02-grammar §2.2.4 — impl with multiple methods
     #[test]
     fn test_build_impl_multiple_methods() {
         let prog = parse_and_build_program(
@@ -2175,6 +2222,7 @@ mod tests {
 
     // -- Type annotations --
 
+    // spec: 02-grammar §2.8.2 — simple named type annotation on param
     #[test]
     fn test_type_annotation_simple() {
         // (fn [:Int x] x) — annotation on param
@@ -2192,6 +2240,7 @@ mod tests {
         }
     }
 
+    // spec: 02-grammar §2.4.2 — type variable annotation on param
     #[test]
     fn test_type_annotation_type_var() {
         match parse_and_build_expr("(fn [:a x] x)").unwrap() {
@@ -2208,6 +2257,7 @@ mod tests {
         }
     }
 
+    // spec: 02-grammar §2.4.5 — function type annotation with bare colon
     #[test]
     fn test_type_annotation_fn_type() {
         // (fn [: (Fn [Int] Int) f] (f 42))
@@ -2240,6 +2290,7 @@ mod tests {
 
     // -- Empty application --
 
+    // spec: 02-grammar §2.3.6 — empty application is an error
     #[test]
     fn test_empty_application_rejected() {
         let err = parse_and_build_expr("()").unwrap_err();
@@ -2248,12 +2299,14 @@ mod tests {
 
     // -- Spans --
 
+    // spec: 02-grammar §2.3.1 — expression span tracking
     #[test]
     fn test_expr_span() {
         let expr = parse_and_build_expr("42").unwrap();
         assert_eq!(expr.span(), Span::new(0, 2));
     }
 
+    // spec: 02-grammar §2.3.3 — let expression span tracking
     #[test]
     fn test_let_span() {
         let expr = parse_and_build_expr("(let [x 1] x)").unwrap();
@@ -2262,6 +2315,7 @@ mod tests {
 
     // -- Nested expressions --
 
+    // spec: 02-grammar §2.3.4 — nested let inside if branch
     #[test]
     fn test_nested_let_in_if() {
         let expr = parse_and_build_expr("(if true (let [x 1] x) 0)").unwrap();
@@ -2273,6 +2327,7 @@ mod tests {
         }
     }
 
+    // spec: 02-grammar §2.3.5 — lambda in let binding value
     #[test]
     fn test_lambda_in_let() {
         let expr = parse_and_build_expr("(let [f (fn [x] x)] (f 42))").unwrap();
@@ -2286,6 +2341,7 @@ mod tests {
 
     // -- Rejection of reader-macro forms --
 
+    // spec: 01-lexical §1.6 — quote form rejected (Ring 3)
     #[test]
     fn test_reject_quote() {
         let err = parse_and_build_expr("'foo").unwrap_err();
@@ -2293,6 +2349,7 @@ mod tests {
         assert!(err.message().contains("Ring 3"));
     }
 
+    // spec: 01-lexical §1.6 — quasiquote form rejected (Ring 3)
     #[test]
     fn test_reject_quasiquote() {
         let err = parse_and_build_expr("`foo").unwrap_err();
@@ -2300,6 +2357,7 @@ mod tests {
         assert!(err.message().contains("Ring 3"));
     }
 
+    // spec: 01-lexical §1.6 — unquote form rejected (Ring 3)
     #[test]
     fn test_reject_unquote() {
         let err = parse_and_build_expr("~x").unwrap_err();
@@ -2307,6 +2365,7 @@ mod tests {
         assert!(err.message().contains("Ring 3"));
     }
 
+    // spec: 01-lexical §1.6 — unquote-splicing form rejected (Ring 3)
     #[test]
     fn test_reject_unquote_splicing() {
         let err = parse_and_build_expr("~@xs").unwrap_err();
@@ -2314,6 +2373,7 @@ mod tests {
         assert!(err.message().contains("Ring 3"));
     }
 
+    // spec: 01-lexical §1.6 — anonymous function form rejected (Ring 3)
     #[test]
     fn test_reject_anon_fn() {
         let err = parse_and_build_expr("#(+ %1 %2)").unwrap_err();
@@ -2321,6 +2381,7 @@ mod tests {
         assert!(err.message().contains("Ring 3"));
     }
 
+    // spec: 01-lexical §1.4.7 — percent param rejected in AST (Ring 3)
     #[test]
     fn test_reject_percent_param() {
         let err = parse_and_build_expr("%1").unwrap_err();
@@ -2328,6 +2389,7 @@ mod tests {
         assert!(err.message().contains("Ring 3"));
     }
 
+    // spec: 01-lexical §1.4.6 — gensym dollar rejected in AST (Ring 3)
     #[test]
     fn test_reject_gensym_dollar() {
         let err = parse_and_build_expr("$foo").unwrap_err();
@@ -2335,6 +2397,7 @@ mod tests {
         assert!(err.message().contains("Ring 3"));
     }
 
+    // spec: 01-lexical §1.4.8 — ampersand rejected in AST (Ring 3)
     #[test]
     fn test_reject_ampersand() {
         let err = parse_and_build_expr("&rest").unwrap_err();
@@ -2342,6 +2405,7 @@ mod tests {
         assert!(err.message().contains("Ring 3"));
     }
 
+    // spec: 01-lexical §1.4.6 — gensym shorthand rejected in AST (Ring 3)
     #[test]
     fn test_reject_gensym_shorthand() {
         let err = parse_and_build_expr("foo#").unwrap_err();
@@ -2351,6 +2415,7 @@ mod tests {
 
     // -- Ring 1: String literal --
 
+    // spec: 02-grammar §2.3.1 — empty string literal in AST
     #[test]
     fn test_string_literal_empty() {
         match parse_and_build_expr("\"\"").unwrap() {
@@ -2359,6 +2424,7 @@ mod tests {
         }
     }
 
+    // spec: 02-grammar §2.3.1 — string literal with escape sequences in AST
     #[test]
     fn test_string_literal_with_escapes() {
         match parse_and_build_expr("\"line1\\nline2\"").unwrap() {
@@ -2367,12 +2433,14 @@ mod tests {
         }
     }
 
+    // spec: 02-grammar §2.3.1 — string literal span tracking in AST
     #[test]
     fn test_string_literal_span() {
         let expr = parse_and_build_expr("\"hello\"").unwrap();
         assert_eq!(expr.span(), Span::new(0, 7));
     }
 
+    // spec: 02-grammar §2.3.3 — string literal in let binding value
     #[test]
     fn test_string_in_let_binding() {
         match parse_and_build_expr("(let [s \"hello\"] s)").unwrap() {
@@ -2388,6 +2456,7 @@ mod tests {
         }
     }
 
+    // spec: 02-grammar §2.3.6 — string literal as function argument
     #[test]
     fn test_string_as_function_argument() {
         match parse_and_build_expr("(f \"world\")").unwrap() {
@@ -2402,6 +2471,7 @@ mod tests {
         }
     }
 
+    // spec: 02-grammar §2.3.4 — string literals in if branches
     #[test]
     fn test_string_in_if_branches() {
         match parse_and_build_expr("(if true \"yes\" \"no\")").unwrap() {
@@ -2425,6 +2495,7 @@ mod tests {
 
     // -- Ring 1: Docstring interaction audit --
 
+    // spec: 02-grammar §2.7 — docstring captured between name and params
     #[test]
     fn test_docstring_captured_in_defn() {
         let prog =
@@ -2439,6 +2510,7 @@ mod tests {
         }
     }
 
+    // spec: 02-grammar §2.7 — string in let binding is value, not docstring
     #[test]
     fn test_string_in_let_is_not_docstring() {
         // A string in a let binding position is a value, not a docstring.
@@ -2457,6 +2529,7 @@ mod tests {
         }
     }
 
+    // spec: 02-grammar §2.7 — docstring is None when absent
     #[test]
     fn test_docstring_not_captured_when_absent() {
         let prog = parse_and_build_program("(defn f [x] x)").unwrap();
@@ -2468,6 +2541,7 @@ mod tests {
         }
     }
 
+    // spec: 02-grammar §2.7 — deftype docstring between head and body
     #[test]
     fn test_docstring_in_deftype() {
         let prog =
@@ -2483,6 +2557,7 @@ mod tests {
 
     // -- Ring 1: TypeExpr::Applied via annotation --
 
+    // spec: 02-grammar §2.4.4 — applied type annotation :(Option Int)
     #[test]
     fn test_type_annotation_applied() {
         // :(Option Int) expr -> Annotate { Applied("Option", [Named("Int")]) }
@@ -2508,6 +2583,7 @@ mod tests {
         }
     }
 
+    // spec: 02-grammar §2.4.4 — applied type with multiple type args
     #[test]
     fn test_type_annotation_applied_multiple_args() {
         // :(Map String Int) expr
@@ -2531,6 +2607,7 @@ mod tests {
 
     // -- Ring 1: Constructor pattern with field bindings --
 
+    // spec: 02-grammar §2.5.1 — constructor pattern with single field binding
     #[test]
     fn test_constructor_pattern_with_single_binding() {
         match parse_and_build_expr("(match x [(Some v) v])").unwrap() {
@@ -2549,6 +2626,7 @@ mod tests {
         }
     }
 
+    // spec: 02-grammar §2.5.1 — constructor pattern with multiple field bindings
     #[test]
     fn test_constructor_pattern_with_multiple_bindings() {
         match parse_and_build_expr("(match p [(Point x y) (+ x y)])").unwrap() {
@@ -2570,6 +2648,7 @@ mod tests {
 
     // -- Ring 1: Product type with fields --
 
+    // spec: 02-grammar §2.2.2 — product type field type expressions
     #[test]
     fn test_product_type_field_types() {
         let prog = parse_and_build_program("(deftype Point [:Int x :Int y])").unwrap();
@@ -2601,6 +2680,7 @@ mod tests {
 
     // -- Ring 1: Sum type with data constructors --
 
+    // spec: 02-grammar §2.2.2 — sum type constructor details
     #[test]
     fn test_sum_type_constructor_details() {
         let prog = parse_and_build_program(
@@ -2635,6 +2715,7 @@ mod tests {
 
     // -- Ring 1: REPL string literal --
 
+    // spec: 02-grammar §2.3.1 — REPL string literal expression
     #[test]
     fn test_repl_string_literal() {
         match parse_and_build_repl("\"hello\"").unwrap() {
@@ -2647,6 +2728,7 @@ mod tests {
 
     // -- Ring 1: Vec literals --
 
+    // spec: 02-grammar §2.3.9 — Vec literal with integers
     #[test]
     fn test_vec_lit_integers() {
         match parse_and_build_expr("[1 2 3]").unwrap() {
@@ -2665,6 +2747,7 @@ mod tests {
         }
     }
 
+    // spec: 02-grammar §2.3.9 — empty Vec literal
     #[test]
     fn test_vec_lit_empty() {
         match parse_and_build_expr("[]").unwrap() {
@@ -2675,6 +2758,7 @@ mod tests {
         }
     }
 
+    // spec: 02-grammar §2.3.9 — nested Vec literals
     #[test]
     fn test_vec_lit_nested() {
         match parse_and_build_expr("[[1] [2]]").unwrap() {
@@ -2695,6 +2779,7 @@ mod tests {
         }
     }
 
+    // spec: 02-grammar §2.3.9 — Vec literal with mixed element types
     #[test]
     fn test_vec_lit_mixed_types() {
         match parse_and_build_expr("[true \"hello\" 42]").unwrap() {
@@ -2708,6 +2793,7 @@ mod tests {
         }
     }
 
+    // spec: 02-grammar §2.8.2 — brackets in defn are param list, not VecLit
     #[test]
     fn test_defn_params_still_work() {
         // Brackets in defn position are still parameter lists, not VecLit
@@ -2721,6 +2807,7 @@ mod tests {
         }
     }
 
+    // spec: 02-grammar §2.3.9 — Vec literal in let binding value
     #[test]
     fn test_vec_lit_in_let_binding() {
         // Vec literal in a let binding value position
@@ -2737,6 +2824,7 @@ mod tests {
         }
     }
 
+    // spec: 02-grammar §2.3.9 — Vec literal as function argument
     #[test]
     fn test_vec_lit_as_function_arg() {
         // Vec literal as argument to a function

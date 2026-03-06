@@ -803,21 +803,25 @@ mod tests {
 
     // -- Integer literals --
 
+    // spec: 01-lexical §1.3.1 — integer literal (positive)
     #[test]
     fn test_parse_integer_literal() {
         assert_int(&parse_one("42"), 42);
     }
 
+    // spec: 01-lexical §1.3.1 — negative integer literal
     #[test]
     fn test_parse_negative_integer() {
         assert_int(&parse_one("-7"), -7);
     }
 
+    // spec: 01-lexical §1.3.1 — zero integer literal
     #[test]
     fn test_parse_zero() {
         assert_int(&parse_one("0"), 0);
     }
 
+    // spec: 01-lexical §1.3.1 — explicit positive sign integer
     #[test]
     fn test_parse_positive_integer() {
         assert_int(&parse_one("+3"), 3);
@@ -825,16 +829,19 @@ mod tests {
 
     // -- Float literals --
 
+    // spec: 01-lexical §1.3.2 — float literal
     #[test]
     fn test_parse_float_literal() {
         assert_float(&parse_one("2.72"), 2.72);
     }
 
+    // spec: 01-lexical §1.3.2 — negative float literal
     #[test]
     fn test_parse_negative_float() {
         assert_float(&parse_one("-0.5"), -0.5);
     }
 
+    // spec: 01-lexical §1.3.2 — zero float literal
     #[test]
     fn test_parse_zero_float() {
         assert_float(&parse_one("0.0"), 0.0);
@@ -842,6 +849,7 @@ mod tests {
 
     // -- Boolean literals --
 
+    // spec: 01-lexical §1.3.3 — boolean literal true
     #[test]
     fn test_parse_true() {
         match parse_one("true") {
@@ -850,6 +858,7 @@ mod tests {
         }
     }
 
+    // spec: 01-lexical §1.3.3 — boolean literal false
     #[test]
     fn test_parse_false() {
         match parse_one("false") {
@@ -858,12 +867,14 @@ mod tests {
         }
     }
 
+    // spec: 01-lexical §1.3.3 — boolean must not be followed by symbol char
     #[test]
     fn test_true_prefix_is_symbol() {
         // `trueness` should parse as a symbol, not boolean + "ness"
         assert_symbol(&parse_one("trueness"), "trueness");
     }
 
+    // spec: 01-lexical §1.3.3 — false prefix is a symbol, not boolean
     #[test]
     fn test_false_prefix_is_symbol() {
         assert_symbol(&parse_one("falsehood"), "falsehood");
@@ -871,6 +882,7 @@ mod tests {
 
     // -- String literals --
 
+    // spec: 01-lexical §1.3.4 — simple string literal
     #[test]
     fn test_parse_string() {
         match parse_one("\"hello\"") {
@@ -879,6 +891,7 @@ mod tests {
         }
     }
 
+    // spec: 01-lexical §1.3.4 — string escape sequences (newline)
     #[test]
     fn test_parse_string_escapes() {
         match parse_one("\"line1\\nline2\"") {
@@ -887,6 +900,7 @@ mod tests {
         }
     }
 
+    // spec: 01-lexical §1.3.4 — string escape sequences (escaped quote)
     #[test]
     fn test_parse_string_escaped_quote() {
         match parse_one("\"she said \\\"hi\\\"\"") {
@@ -895,6 +909,7 @@ mod tests {
         }
     }
 
+    // spec: 01-lexical §1.3.4 — empty string literal
     #[test]
     fn test_parse_empty_string() {
         match parse_one("\"\"") {
@@ -903,6 +918,7 @@ mod tests {
         }
     }
 
+    // spec: 01-lexical §1.3.4 — unterminated string is an error
     #[test]
     fn test_unterminated_string() {
         assert!(parse("\"hello").is_err());
@@ -910,31 +926,37 @@ mod tests {
 
     // -- Symbols --
 
+    // spec: 01-lexical §1.4.1 — simple symbol
     #[test]
     fn test_parse_simple_symbol() {
         assert_symbol(&parse_one("foo"), "foo");
     }
 
+    // spec: 01-lexical §1.4.1 — symbol with hyphens
     #[test]
     fn test_parse_symbol_with_hyphens() {
         assert_symbol(&parse_one("my-func"), "my-func");
     }
 
+    // spec: 01-lexical §1.4.1 — symbol with question mark
     #[test]
     fn test_parse_symbol_with_question_mark() {
         assert_symbol(&parse_one("empty?"), "empty?");
     }
 
+    // spec: 01-lexical §1.4.1 — symbol with exclamation mark
     #[test]
     fn test_parse_symbol_with_exclamation() {
         assert_symbol(&parse_one("do!"), "do!");
     }
 
+    // spec: 01-lexical §1.4.1 — underscore-prefixed symbol
     #[test]
     fn test_parse_underscore_symbol() {
         assert_symbol(&parse_one("_private"), "_private");
     }
 
+    // spec: 01-lexical §1.4.1 — uppercase symbol (type/constructor name)
     #[test]
     fn test_parse_uppercase_symbol() {
         assert_symbol(&parse_one("Point"), "Point");
@@ -942,36 +964,43 @@ mod tests {
 
     // -- Operator symbols --
 
+    // spec: 01-lexical §1.4.2 — operator symbol (+)
     #[test]
     fn test_parse_operator_plus() {
         assert_symbol(&parse_one("+"), "+");
     }
 
+    // spec: 01-lexical §1.4.2 — operator symbol (-)
     #[test]
     fn test_parse_operator_minus() {
         assert_symbol(&parse_one("- "), "-");
     }
 
+    // spec: 01-lexical §1.4.2 — multi-char operator symbol (<=)
     #[test]
     fn test_parse_operator_less_equal() {
         assert_symbol(&parse_one("<="), "<=");
     }
 
+    // spec: 01-lexical §1.4.2 — arrow operator symbol (->)
     #[test]
     fn test_parse_operator_arrow() {
         assert_symbol(&parse_one("->"), "->");
     }
 
+    // spec: 01-lexical §1.4.2 — thread-last operator symbol (->>)
     #[test]
     fn test_parse_operator_thread_last() {
         assert_symbol(&parse_one("->>"), "->>");
     }
 
+    // spec: 01-lexical §1.4.2 — not-equal operator symbol (!=)
     #[test]
     fn test_parse_operator_not_equal() {
         assert_symbol(&parse_one("!="), "!=");
     }
 
+    // spec: 01-lexical §1.4.2 — single-char operator symbol (!)
     #[test]
     fn test_parse_operator_bang_alone() {
         assert_symbol(&parse_one("!"), "!");
@@ -979,16 +1008,19 @@ mod tests {
 
     // -- Qualified symbols --
 
+    // spec: 01-lexical §1.4.3 — qualified symbol (module/name)
     #[test]
     fn test_parse_qualified_symbol() {
         assert_symbol(&parse_one("math/sin"), "math/sin");
     }
 
+    // spec: 01-lexical §1.4.3 — qualified symbol with dotted module path
     #[test]
     fn test_parse_qualified_dotted_module() {
         assert_symbol(&parse_one("core.io/pure"), "core.io/pure");
     }
 
+    // spec: 01-lexical §1.4.3 — qualified operator symbol (module/+)
     #[test]
     fn test_parse_qualified_operator() {
         assert_symbol(&parse_one("math/+"), "math/+");
@@ -996,11 +1028,13 @@ mod tests {
 
     // -- Dotted symbols --
 
+    // spec: 01-lexical §1.4.4 — dotted symbol (Type.member)
     #[test]
     fn test_parse_dotted_symbol() {
         assert_symbol(&parse_one("Option.Some"), "Option.Some");
     }
 
+    // spec: 01-lexical §1.4.4 — dotted operator symbol (Trait.+)
     #[test]
     fn test_parse_dotted_operator() {
         assert_symbol(&parse_one("Num.+"), "Num.+");
@@ -1008,16 +1042,19 @@ mod tests {
 
     // -- Colon-prefixed symbols --
 
+    // spec: 01-lexical §1.4.5 — colon-prefixed type annotation
     #[test]
     fn test_parse_colon_prefix() {
         assert_symbol(&parse_one(":Int"), ":Int");
     }
 
+    // spec: 01-lexical §1.4.5 — colon-prefixed type variable
     #[test]
     fn test_parse_colon_type_var() {
         assert_symbol(&parse_one(":a"), ":a");
     }
 
+    // spec: 01-lexical §1.4.5 — bare colon (field separator)
     #[test]
     fn test_parse_bare_colon() {
         assert_symbol(&parse_one(": "), ":");
@@ -1025,6 +1062,7 @@ mod tests {
 
     // -- Lists --
 
+    // spec: 01-lexical §1.8 — parenthesized list form
     #[test]
     fn test_parse_list() {
         let sexp = parse_one("(+ 1 2)");
@@ -1039,6 +1077,7 @@ mod tests {
         }
     }
 
+    // spec: 01-lexical §1.8 — empty parenthesized list
     #[test]
     fn test_parse_empty_list() {
         match parse_one("()") {
@@ -1047,6 +1086,7 @@ mod tests {
         }
     }
 
+    // spec: 01-lexical §1.8 — nested list forms
     #[test]
     fn test_parse_nested_list() {
         let sexp = parse_one("(+ (* 2 3) 4)");
@@ -1061,6 +1101,7 @@ mod tests {
 
     // -- Brackets --
 
+    // spec: 01-lexical §1.5 — bracket form
     #[test]
     fn test_parse_bracket() {
         let sexp = parse_one("[a b c]");
@@ -1075,6 +1116,7 @@ mod tests {
         }
     }
 
+    // spec: 01-lexical §1.5 — bracket with colon-prefixed type annotations
     #[test]
     fn test_parse_bracket_with_types() {
         let sexp = parse_one("[:Int x :Int y]");
@@ -1092,6 +1134,7 @@ mod tests {
 
     // -- Comments --
 
+    // spec: 01-lexical §1.2 — line comments
     #[test]
     fn test_parse_with_comment() {
         let sexps = parse("42 ; this is a comment\n43").unwrap();
@@ -1100,6 +1143,7 @@ mod tests {
         assert_int(&sexps[1], 43);
     }
 
+    // spec: 01-lexical §1.2 — trailing comment at end of input
     #[test]
     fn test_parse_comment_at_end() {
         let sexps = parse("42 ; trailing comment").unwrap();
@@ -1109,6 +1153,7 @@ mod tests {
 
     // -- Commas as whitespace --
 
+    // spec: 01-lexical §1.2 — commas are whitespace
     #[test]
     fn test_commas_are_whitespace() {
         let sexp = parse_one("[1, 2, 3]");
@@ -1125,6 +1170,7 @@ mod tests {
 
     // -- Multiple forms --
 
+    // spec: 01-lexical §1.8 — program is sequence of forms
     #[test]
     fn test_parse_multiple_forms() {
         let sexps = parse("(defn f [x] x) (f 42)").unwrap();
@@ -1133,18 +1179,21 @@ mod tests {
 
     // -- Spans --
 
+    // spec: 01-lexical §1.3.1 — integer literal span tracking
     #[test]
     fn test_span_integer() {
         let sexp = parse_one("42");
         assert_eq!(sexp.span(), Span::new(0, 2));
     }
 
+    // spec: 01-lexical §1.8 — list form span tracking
     #[test]
     fn test_span_list() {
         let sexp = parse_one("(+ 1 2)");
         assert_eq!(sexp.span(), Span::new(0, 7));
     }
 
+    // spec: 01-lexical §1.3.4 — string literal span tracking
     #[test]
     fn test_span_string() {
         let sexp = parse_one("\"hello\"");
@@ -1153,16 +1202,19 @@ mod tests {
 
     // -- Error cases --
 
+    // spec: 01-lexical §1.5 — unclosed parenthesis is an error
     #[test]
     fn test_unclosed_paren() {
         assert!(parse("(+ 1 2").is_err());
     }
 
+    // spec: 01-lexical §1.5 — unclosed bracket is an error
     #[test]
     fn test_unclosed_bracket() {
         assert!(parse("[1 2").is_err());
     }
 
+    // spec: 01-lexical §1.5 — unexpected close paren is an error
     #[test]
     fn test_unexpected_close_paren() {
         assert!(parse(")").is_err());
@@ -1170,6 +1222,7 @@ mod tests {
 
     // -- Complex forms --
 
+    // spec: 02-grammar §2.2.1 — defn form parsed as list
     #[test]
     fn test_parse_defn() {
         let sexp = parse_one("(defn add [a b] (+ a b))");
@@ -1185,6 +1238,7 @@ mod tests {
         }
     }
 
+    // spec: 02-grammar §2.2.2 — deftype enum form parsed as list
     #[test]
     fn test_parse_deftype_enum() {
         let sexp = parse_one("(deftype Color Red Green Blue)");
@@ -1201,6 +1255,7 @@ mod tests {
         }
     }
 
+    // spec: 01-lexical §1.4.5 — colon-prefixed symbol in list context
     #[test]
     fn test_parse_type_annotation() {
         let sexp = parse_one("(:Int)");
@@ -1215,6 +1270,7 @@ mod tests {
         }
     }
 
+    // spec: 02-grammar §2.8.3 — compound type annotation with bare colon
     #[test]
     fn test_parse_compound_type_annotation() {
         // :(Fn [Int] Int) should produce : followed by (Fn [Int] Int)
@@ -1233,18 +1289,21 @@ mod tests {
 
     // -- Whitespace edge cases --
 
+    // spec: 01-lexical §1.8 — empty input produces no forms
     #[test]
     fn test_parse_empty_input() {
         let sexps = parse("").unwrap();
         assert!(sexps.is_empty());
     }
 
+    // spec: 01-lexical §1.2 — whitespace-only input produces no forms
     #[test]
     fn test_parse_whitespace_only() {
         let sexps = parse("   \n\t  ").unwrap();
         assert!(sexps.is_empty());
     }
 
+    // spec: 01-lexical §1.2 — comment-only input produces no forms
     #[test]
     fn test_parse_comment_only() {
         let sexps = parse("; just a comment").unwrap();
@@ -1253,6 +1312,7 @@ mod tests {
 
     // -- Minus as operator vs negative number --
 
+    // spec: 01-lexical §1.7 — minus in list head is operator, not negative
     #[test]
     fn test_minus_in_list_is_operator() {
         let sexp = parse_one("(- 3 1)");
@@ -1267,6 +1327,7 @@ mod tests {
         }
     }
 
+    // spec: 01-lexical §1.7 — standalone -3 parses as negative integer
     #[test]
     fn test_negative_three_standalone() {
         assert_int(&parse_one("-3"), -3);
@@ -1274,6 +1335,7 @@ mod tests {
 
     // -- Reader macros: quote, quasiquote, unquote --
 
+    // spec: 01-lexical §1.6 — quote reader macro ('form -> (quote form))
     #[test]
     fn test_parse_quote() {
         let sexp = parse_one("'foo");
@@ -1287,6 +1349,7 @@ mod tests {
         }
     }
 
+    // spec: 01-lexical §1.6 — quote reader macro on list form
     #[test]
     fn test_parse_quote_list() {
         let sexp = parse_one("'(1 2 3)");
@@ -1300,6 +1363,7 @@ mod tests {
         }
     }
 
+    // spec: 01-lexical §1.6 — quasiquote reader macro (`form -> (quasiquote form))
     #[test]
     fn test_parse_quasiquote() {
         let sexp = parse_one("`foo");
@@ -1313,6 +1377,7 @@ mod tests {
         }
     }
 
+    // spec: 01-lexical §1.6 — quasiquote reader macro on list form
     #[test]
     fn test_parse_quasiquote_list() {
         let sexp = parse_one("`(a b c)");
@@ -1326,6 +1391,7 @@ mod tests {
         }
     }
 
+    // spec: 01-lexical §1.6 — unquote reader macro (~form -> (unquote form))
     #[test]
     fn test_parse_unquote() {
         let sexp = parse_one("~x");
@@ -1339,6 +1405,7 @@ mod tests {
         }
     }
 
+    // spec: 01-lexical §1.6 — unquote-splicing reader macro (~@form)
     #[test]
     fn test_parse_unquote_splicing() {
         let sexp = parse_one("~@xs");
@@ -1354,6 +1421,7 @@ mod tests {
 
     // -- Anonymous function --
 
+    // spec: 01-lexical §1.6 — anonymous function reader macro #(...)
     #[test]
     fn test_parse_anon_fn() {
         let sexp = parse_one("#(+ %1 %2)");
@@ -1375,6 +1443,7 @@ mod tests {
         }
     }
 
+    // spec: 01-lexical §1.6 — # without ( is an error
     #[test]
     fn test_parse_hash_without_paren_fails() {
         assert!(parse("#foo").is_err());
@@ -1382,17 +1451,20 @@ mod tests {
 
     // -- Percent params --
 
+    // spec: 01-lexical §1.4.7 — bare % is shorthand for %1
     #[test]
     fn test_parse_percent_param_bare() {
         // Bare `%` is shorthand for `%1`
         assert_symbol(&parse_one("% "), "%1");
     }
 
+    // spec: 01-lexical §1.4.7 — explicit %1 percent parameter
     #[test]
     fn test_parse_percent_param_1() {
         assert_symbol(&parse_one("%1"), "%1");
     }
 
+    // spec: 01-lexical §1.4.7 — %2 percent parameter
     #[test]
     fn test_parse_percent_param_2() {
         assert_symbol(&parse_one("%2"), "%2");
@@ -1400,11 +1472,13 @@ mod tests {
 
     // -- Gensym --
 
+    // spec: 01-lexical §1.4.6 — gensym dollar-prefixed symbol
     #[test]
     fn test_parse_gensym_dollar() {
         assert_symbol(&parse_one("$foo"), "$foo");
     }
 
+    // spec: 01-lexical §1.4.6 — bare $ without name is an error
     #[test]
     fn test_parse_gensym_dollar_needs_name() {
         assert!(parse("$ ").is_err());
@@ -1412,11 +1486,13 @@ mod tests {
 
     // -- Ampersand --
 
+    // spec: 01-lexical §1.4.8 — ampersand with rest parameter name
     #[test]
     fn test_parse_ampersand() {
         assert_symbol(&parse_one("&rest"), "&rest");
     }
 
+    // spec: 01-lexical §1.4.8 — bare & without name is an error
     #[test]
     fn test_parse_ampersand_needs_name() {
         assert!(parse("& ").is_err());
@@ -1424,11 +1500,13 @@ mod tests {
 
     // -- Gensym shorthand (name#) --
 
+    // spec: 01-lexical §1.4.6 — gensym shorthand (name#)
     #[test]
     fn test_parse_gensym_shorthand() {
         assert_symbol(&parse_one("foo#"), "foo#");
     }
 
+    // spec: 01-lexical §1.4.6 — gensym shorthand in list context
     #[test]
     fn test_parse_gensym_shorthand_in_list() {
         let sexp = parse_one("(let [x# 1] x#)");

@@ -98,7 +98,7 @@ impl TypeChecker {
         })?;
 
         // Don't instantiate special forms -- they are not callable as values
-        if let Some(ModuleEntry::Def { kind, .. }) = self.symbol_table.get(name)
+        if let Some(ModuleEntry::Def { kind, .. }) = self.current_symbol_table().get(name)
             && matches!(kind.as_ref(), cranelisp_types::DefKind::SpecialForm { .. })
         {
             return Err(CranelispError::TypeError {
@@ -240,7 +240,7 @@ impl TypeChecker {
     fn is_primitive(&self, name: &str) -> bool {
         use cranelisp_types::DefKind;
         matches!(
-            self.symbol_table.get(name),
+            self.current_symbol_table().get(name),
             Some(cranelisp_types::ModuleEntry::Def { kind, .. })
                 if matches!(kind.as_ref(), DefKind::Primitive { .. })
         )
@@ -592,6 +592,7 @@ mod tests {
 
     // --- Literal tests ---
 
+    // spec: 03-types §3.5.3 — integer literal infers to Int
     #[test]
     fn test_infer_int_lit() {
         let mut tc = tc();
@@ -602,6 +603,7 @@ mod tests {
         assert_eq!(tc.infer_expr(&expr).unwrap(), Type::Int);
     }
 
+    // spec: 03-types §3.5.3 — float literal infers to Float
     #[test]
     fn test_infer_float_lit() {
         let mut tc = tc();
@@ -612,6 +614,7 @@ mod tests {
         assert_eq!(tc.infer_expr(&expr).unwrap(), Type::Float);
     }
 
+    // spec: 03-types §3.5.3 — boolean literal infers to Bool
     #[test]
     fn test_infer_bool_lit() {
         let mut tc = tc();
@@ -624,6 +627,7 @@ mod tests {
 
     // --- Var tests ---
 
+    // spec: 03-types §3.5.3 — variable reference looks up and instantiates scheme
     #[test]
     fn test_infer_var_defined() {
         let mut tc = tc();
@@ -635,6 +639,7 @@ mod tests {
         assert_eq!(tc.infer_expr(&expr).unwrap(), Type::Int);
     }
 
+    // spec: 03-types §3.5.3 — undefined variable reference is a type error
     #[test]
     fn test_infer_var_undefined() {
         let mut tc = tc();
@@ -647,6 +652,7 @@ mod tests {
 
     // --- Let tests ---
 
+    // spec: 03-types §3.5.3 — let binding infers value type and propagates to body
     #[test]
     fn test_infer_let_simple() {
         let mut tc = tc();
@@ -668,6 +674,7 @@ mod tests {
         assert_eq!(tc.infer_expr(&expr).unwrap(), Type::Int);
     }
 
+    // spec: 03-types §3.5.3 — let sequential bindings: later bindings see earlier ones
     #[test]
     fn test_infer_let_sequential_bindings() {
         let mut tc = tc();
@@ -700,6 +707,7 @@ mod tests {
 
     // --- If tests ---
 
+    // spec: 03-types §3.5.3 — if expression: branches unify, result is branch type
     #[test]
     fn test_infer_if_ok() {
         let mut tc = tc();
@@ -722,6 +730,7 @@ mod tests {
         assert_eq!(tc.infer_expr(&expr).unwrap(), Type::Int);
     }
 
+    // spec: 03-types §3.5.3 — if condition must unify with Bool
     #[test]
     fn test_infer_if_non_bool_condition() {
         let mut tc = tc();
@@ -745,6 +754,7 @@ mod tests {
         assert!(err.message().contains("type mismatch"));
     }
 
+    // spec: 03-types §3.5.3 — if branches must unify with each other
     #[test]
     fn test_infer_if_branch_mismatch() {
         let mut tc = tc();
@@ -769,6 +779,7 @@ mod tests {
 
     // --- Lambda tests ---
 
+    // spec: 03-types §3.5.3 — lambda: params get fresh vars, result is Fn type
     #[test]
     fn test_infer_lambda_identity() {
         let mut tc = tc();
@@ -793,6 +804,7 @@ mod tests {
         }
     }
 
+    // spec: 03-types §3.9.1 — concrete type annotation constrains param type
     #[test]
     fn test_infer_lambda_annotated() {
         let mut tc = tc();
@@ -812,6 +824,7 @@ mod tests {
 
     // --- Apply tests ---
 
+    // spec: 03-types §3.5.3 — function application unifies callee with arg types
     #[test]
     fn test_infer_apply_lambda() {
         let mut tc = tc();
@@ -835,6 +848,7 @@ mod tests {
         assert_eq!(tc.infer_expr(&expr).unwrap(), Type::Int);
     }
 
+    // spec: 03-types §3.5.3 — apply primitive add-i64 records BuiltinFn resolution
     #[test]
     fn test_infer_apply_int_add() {
         let mut tc = tc();
@@ -868,6 +882,7 @@ mod tests {
         }
     }
 
+    // spec: 03-types §3.5.3 — apply primitive add-f64 infers Float return
     #[test]
     fn test_infer_apply_float_add() {
         let mut tc = tc();
@@ -900,6 +915,7 @@ mod tests {
         }
     }
 
+    // spec: 03-types §3.5.3 — apply comparison primitive returns Bool
     #[test]
     fn test_infer_apply_int_eq() {
         let mut tc = tc();
@@ -924,6 +940,7 @@ mod tests {
         assert_eq!(tc.infer_expr(&expr).unwrap(), Type::Bool);
     }
 
+    // spec: appendix-a-builtins §A.3 — not primitive: Bool -> Bool
     #[test]
     fn test_infer_apply_not() {
         let mut tc = tc();
@@ -950,6 +967,7 @@ mod tests {
         }
     }
 
+    // spec: 03-types §3.8.6 — type mismatch: float args to int primitive fails
     #[test]
     fn test_infer_apply_type_mismatch_int_add_float() {
         let mut tc = tc();
@@ -974,6 +992,7 @@ mod tests {
         assert!(tc.infer_expr(&expr).is_err(), "add-i64 with float args should fail");
     }
 
+    // spec: 03-types §3.8.3 — wrong arity in function application fails
     #[test]
     fn test_infer_apply_wrong_arity() {
         let mut tc = tc();
@@ -994,6 +1013,7 @@ mod tests {
 
     // --- Match tests ---
 
+    // spec: 06-pattern-matching §6.1 — match enum with all constructors covered
     #[test]
     fn test_infer_match_enum() {
         let mut tc = tc();
@@ -1049,6 +1069,7 @@ mod tests {
         assert_eq!(tc.infer_expr(&expr).unwrap(), Type::Int);
     }
 
+    // spec: 06-pattern-matching §6.5.1 — non-exhaustive match on ADT is compile error
     #[test]
     fn test_infer_match_non_exhaustive() {
         let mut tc = tc();
@@ -1079,6 +1100,7 @@ mod tests {
         assert!(err.message().contains("non-exhaustive"));
     }
 
+    // spec: 06-pattern-matching §6.2.3 — wildcard pattern covers remaining cases
     #[test]
     fn test_infer_match_wildcard() {
         let mut tc = tc();
@@ -1120,6 +1142,7 @@ mod tests {
         assert_eq!(tc.infer_expr(&expr).unwrap(), Type::Int);
     }
 
+    // spec: 06-pattern-matching §6.2.4 — variable pattern binds scrutinee value
     #[test]
     fn test_infer_match_var_pattern() {
         let mut tc = tc();
@@ -1150,6 +1173,7 @@ mod tests {
 
     // --- Annotate tests ---
 
+    // spec: 03-types §3.9.1 — annotation matching inferred type succeeds
     #[test]
     fn test_infer_annotate_matching() {
         let mut tc = tc();
@@ -1165,6 +1189,7 @@ mod tests {
         assert_eq!(tc.infer_expr(&expr).unwrap(), Type::Int);
     }
 
+    // spec: 03-types §3.9.1 — annotation mismatching inferred type fails
     #[test]
     fn test_infer_annotate_mismatch() {
         let mut tc = tc();
@@ -1182,6 +1207,7 @@ mod tests {
 
     // --- expr_types recording tests ---
 
+    // spec: 03-types §3.5.1 — expr_types map records inferred type per span
     #[test]
     fn test_expr_types_recorded() {
         let mut tc = tc();
@@ -1193,6 +1219,7 @@ mod tests {
 
     // --- Nested expression tests ---
 
+    // spec: 03-types §3.5.3 — nested function application infers correctly
     #[test]
     fn test_infer_nested_arithmetic() {
         let mut tc = tc();
@@ -1233,6 +1260,7 @@ mod tests {
 
     // --- String literal tests (Ring 1) ---
 
+    // spec: 03-types §3.5.3 — string literal infers to String
     #[test]
     fn test_infer_string_lit() {
         let mut tc = tc();
@@ -1243,6 +1271,7 @@ mod tests {
         assert_eq!(tc.infer_expr(&expr).unwrap(), Type::String);
     }
 
+    // spec: 03-types §3.5.1 — string literal records String in expr_types
     #[test]
     fn test_string_lit_expr_types_recorded() {
         let mut tc = tc();
@@ -1286,6 +1315,7 @@ mod tests {
         .unwrap();
     }
 
+    // spec: 06-pattern-matching §6.4.1 — data constructor pattern binds field types
     #[test]
     fn test_infer_match_data_constructor_pattern() {
         let mut tc = tc();
@@ -1338,6 +1368,7 @@ mod tests {
         assert_eq!(tc.infer_expr(&expr).unwrap(), Type::Int);
     }
 
+    // spec: 06-pattern-matching §6.2.1 — wrong binding count in constructor pattern is error
     #[test]
     fn test_infer_match_data_constructor_wrong_binding_count() {
         let mut tc = tc();
@@ -1376,6 +1407,7 @@ mod tests {
         assert!(err.message().contains("expects 1 field"));
     }
 
+    // spec: 06-pattern-matching §6.2.2 — nullary constructor with bindings is error
     #[test]
     fn test_infer_match_nullary_with_bindings_errors() {
         let mut tc = tc();
@@ -1414,6 +1446,7 @@ mod tests {
         assert!(err.message().contains("takes no arguments"));
     }
 
+    // spec: 06-pattern-matching §6.5.1 — non-exhaustive match on Option (missing None)
     #[test]
     fn test_infer_match_option_non_exhaustive() {
         let mut tc = tc();
@@ -1454,6 +1487,7 @@ mod tests {
 
     // --- Lambda expr_types completeness (Ring 1 validation) ---
 
+    // spec: 03-types §3.5.3 — lambda records Fn type in expr_types
     #[test]
     fn test_lambda_expr_types_recorded() {
         let mut tc = tc();
@@ -1476,6 +1510,7 @@ mod tests {
 
     // --- Annotate with Applied type (Ring 1) ---
 
+    // spec: 03-types §3.9.1 — annotate with applied type :(Option Int)
     #[test]
     fn test_annotate_with_applied_type() {
         let mut tc = tc();
@@ -1510,6 +1545,7 @@ mod tests {
 
     // --- Product type match tests ---
 
+    // spec: 06-pattern-matching §6.4.1 — product type destructuring in match
     #[test]
     fn test_infer_match_product_type() {
         let mut tc = tc();
@@ -1589,6 +1625,7 @@ mod tests {
         assert_eq!(tc.infer_expr(&expr).unwrap(), Type::Int);
     }
 
+    // spec: 05-definitions §5.2.7 — data constructor applied as function
     #[test]
     fn test_infer_constructor_as_function() {
         let mut tc = tc();
@@ -1614,6 +1651,7 @@ mod tests {
         );
     }
 
+    // spec: 05-definitions §5.2.7 — nullary constructor is polymorphic value
     #[test]
     fn test_infer_none_has_polymorphic_type() {
         let mut tc = tc();
@@ -1637,6 +1675,7 @@ mod tests {
         }
     }
 
+    // spec: 03-types §3.5.3 — if branches with String type unify
     #[test]
     fn test_infer_string_in_if_branches() {
         let mut tc = tc();
@@ -1659,6 +1698,7 @@ mod tests {
         assert_eq!(tc.infer_expr(&expr).unwrap(), Type::String);
     }
 
+    // spec: 03-types §3.5.3 — let binding with String value
     #[test]
     fn test_infer_string_in_let() {
         let mut tc = tc();
@@ -1682,6 +1722,7 @@ mod tests {
 
     // --- Vec literal tests (Sprint 3) ---
 
+    // spec: 03-types §3.5.3 — Vec literal with Int elements infers (Vec Int)
     #[test]
     fn test_infer_vec_lit_ints() {
         let mut tc = tc();
@@ -1700,6 +1741,7 @@ mod tests {
         );
     }
 
+    // spec: 03-types §3.5.3 — Vec literal with String elements infers (Vec String)
     #[test]
     fn test_infer_vec_lit_strings() {
         let mut tc = tc();
@@ -1717,6 +1759,7 @@ mod tests {
         );
     }
 
+    // spec: 03-types §3.5.3 — empty Vec literal is polymorphic (Vec a)
     #[test]
     fn test_infer_vec_lit_empty_is_polymorphic() {
         let mut tc = tc();
@@ -1737,6 +1780,7 @@ mod tests {
         }
     }
 
+    // spec: 03-types §3.5.3 — Vec literal elements must have same type
     #[test]
     fn test_infer_vec_lit_type_mismatch() {
         let mut tc = tc();
@@ -1752,6 +1796,7 @@ mod tests {
         assert!(err.message().contains("mismatch"), "expected type mismatch error, got: {}", err.message());
     }
 
+    // spec: 03-types §3.5.3 — Vec literal with Bool elements infers (Vec Bool)
     #[test]
     fn test_infer_vec_lit_booleans() {
         let mut tc = tc();
@@ -1769,6 +1814,7 @@ mod tests {
         );
     }
 
+    // spec: 03-types §3.5.3 — Vec literal in let binding propagates element type
     #[test]
     fn test_infer_vec_lit_in_let_binding() {
         let mut tc = tc();
@@ -1797,6 +1843,7 @@ mod tests {
         );
     }
 
+    // spec: 03-types §3.5.3 — Vec literal as function argument unifies element type
     #[test]
     fn test_infer_vec_lit_as_function_arg() {
         let mut tc = tc();
@@ -1827,6 +1874,7 @@ mod tests {
         assert_eq!(tc.infer_expr(&expr).unwrap(), Type::Int);
     }
 
+    // spec: 03-types §3.5.3 — lambda returning Vec infers (Fn [Int] (Vec Int))
     #[test]
     fn test_infer_vec_lit_as_function_return() {
         let mut tc = tc();
@@ -1853,6 +1901,7 @@ mod tests {
         );
     }
 
+    // spec: 03-types §3.5.3 — single-element Vec literal infers element type
     #[test]
     fn test_infer_vec_lit_single_element() {
         let mut tc = tc();
@@ -1867,6 +1916,7 @@ mod tests {
         );
     }
 
+    // spec: 03-types §3.5.1 — Vec literal records type in expr_types map
     #[test]
     fn test_infer_vec_lit_expr_type_recorded() {
         let mut tc = tc();
@@ -1885,6 +1935,7 @@ mod tests {
         );
     }
 
+    // spec: 03-types §3.5.3 — Vec literal with Float elements infers (Vec Float)
     #[test]
     fn test_infer_vec_lit_floats() {
         let mut tc = tc();

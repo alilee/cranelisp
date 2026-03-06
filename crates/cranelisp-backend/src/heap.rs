@@ -159,6 +159,40 @@ pub fn emit_rc_inc(builder: &mut FunctionBuilder, ptr: Value) {
     );
 }
 
+/// Emit inline atomic RC increment with nullary tag guard.
+///
+/// For Mixed HeapCategory types, checks if the value is a bare nullary tag
+/// (below NULLARY_TAG_THRESHOLD) before accessing the RC header.
+pub fn emit_rc_inc_guarded(builder: &mut FunctionBuilder, ptr: Value) {
+    let cont_block = builder.create_block();
+    let inc_block = builder.create_block();
+
+    let threshold = builder.ins().iconst(types::I64, NULLARY_THRESHOLD_I64);
+    let is_tag = builder.ins().icmp(IntCC::UnsignedLessThan, ptr, threshold);
+    builder
+        .ins()
+        .brif(is_tag, cont_block, &[], inc_block, &[]);
+
+    builder.switch_to_block(inc_block);
+    builder.seal_block(inc_block);
+
+    let rc_addr = builder
+        .ins()
+        .iadd_imm(ptr, i64::from(HeapHeader::RC_OFFSET));
+    let one = builder.ins().iconst(types::I64, 1);
+    builder.ins().atomic_rmw(
+        types::I64,
+        MemFlags::trusted(),
+        AtomicRmwOp::Add,
+        rc_addr,
+        one,
+    );
+
+    builder.ins().jump(cont_block, &[]);
+    builder.switch_to_block(cont_block);
+    builder.seal_block(cont_block);
+}
+
 /// Emit inline atomic RC decrement + conditional dealloc.
 ///
 /// For Mixed HeapCategory types (ADTs with both nullary and data constructors
@@ -383,6 +417,7 @@ fn collect_var_uses(
 mod tests {
     use super::*;
 
+    // spec: 12-runtime §12.1.4 — ADT heap layout offsets (tag at 16, fields at 24+)
     #[test]
     fn test_heap_adt_layout() {
         assert_eq!(HeapAdt::TAG_OFFSET, 16);
@@ -393,6 +428,7 @@ mod tests {
         assert_eq!(HeapAdt::payload_size(2), 24); // tag + 2 fields
     }
 
+    // spec: 12-runtime §12.1.3 — closure heap layout (code_ptr at 16, captures at 24+)
     #[test]
     fn test_heap_closure_layout() {
         assert_eq!(HeapClosure::CODE_PTR_OFFSET, 16);
@@ -403,6 +439,7 @@ mod tests {
         assert_eq!(HeapClosure::payload_size(3), 32); // code_ptr + 3 captures
     }
 
+    // spec: 12-runtime §12.1.5 — Vec heap layout (len/cap/data_ptr at 16/24/32)
     #[test]
     fn test_heap_vec_layout() {
         assert_eq!(HeapVec::LEN_OFFSET, 16);
@@ -412,6 +449,7 @@ mod tests {
         assert_eq!(std::mem::size_of::<HeapVec>(), 40);
     }
 
+    // spec: 12-runtime §12.3 — last-use analysis for RC consuming calling convention
     #[test]
     fn test_compute_last_uses() {
         use cranelisp_types::{Expr, Span, Symbol};

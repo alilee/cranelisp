@@ -13,12 +13,15 @@
 mod helpers;
 
 use helpers::*;
+use serial_test::serial;
 
 // =============================================================================
 // String RC (~8 tests)
 // =============================================================================
 
+// spec: 12-runtime §12.3 — string RC alloc and drop
 #[test]
+#[serial]
 fn rc_string_alloc_and_drop() {
     // String returned from main is the "last reference". The pipeline does not
     // free it (it returns the raw i64), so we track only internal temporaries.
@@ -30,7 +33,9 @@ fn rc_string_alloc_and_drop() {
     assert_eq!(compile_and_run_simple(src), 5);
 }
 
+// spec: 12-runtime §12.3 — string RC in let scope
 #[test]
+#[serial]
 fn rc_string_in_let_scope() {
     let src = r#"
         (defn main []
@@ -40,7 +45,9 @@ fn rc_string_in_let_scope() {
     assert_eq!(compile_and_run_simple(src), 5);
 }
 
+// spec: 12-runtime §12.3 — string RC passed to function
 #[test]
+#[serial]
 fn rc_string_passed_to_function() {
     let src = r#"
         (defn length [s] (str-len s))
@@ -49,7 +56,9 @@ fn rc_string_passed_to_function() {
     assert_eq!(compile_and_run_simple(src), 5);
 }
 
+// spec: 12-runtime §12.3 — string RC concat intermediate
 #[test]
+#[serial]
 fn rc_string_concat_intermediate() {
     // str-concat allocates a new string. The intermediates should not
     // cause double-frees or underflows.
@@ -60,7 +69,9 @@ fn rc_string_concat_intermediate() {
     assert_eq!(compile_and_run_simple(src), 11);
 }
 
+// spec: 12-runtime §12.3 — string RC in if branches
 #[test]
+#[serial]
 fn rc_string_in_if_branches() {
     // Only one branch is taken, so only one string is allocated.
     let src = r#"
@@ -70,7 +81,9 @@ fn rc_string_in_if_branches() {
     assert_eq!(compile_and_run_simple(src), 3);
 }
 
+// spec: 12-runtime §12.3 — string RC returned from function
 #[test]
+#[serial]
 fn rc_string_returned_from_function() {
     let src = r#"
         (defn greet [] "hello")
@@ -79,14 +92,18 @@ fn rc_string_returned_from_function() {
     assert_eq!(compile_and_run_simple(src), 5);
 }
 
+// spec: 12-runtime §12.3 — int-to-string RC allocation
 #[test]
+#[serial]
 fn rc_int_to_string_alloc() {
     // int-to-string allocates a new string.
     let src = "(defn main [] (str-len (int-to-string 42)))";
     assert_eq!(compile_and_run_simple(src), 2);
 }
 
+// spec: 12-runtime §12.3 — string comparison no allocation
 #[test]
+#[serial]
 fn rc_string_eq_no_alloc() {
     // str-eq does not allocate (compares in-place).
     let src = r#"(defn main [] (if (str-eq "a" "a") 1 0))"#;
@@ -97,7 +114,9 @@ fn rc_string_eq_no_alloc() {
 // ADT RC (~12 tests)
 // =============================================================================
 
+// spec: 12-runtime §12.3 — ADT product heap allocation
 #[test]
+#[serial]
 fn rc_adt_product_alloc() {
     // Product constructor allocates on heap.
     let src = "
@@ -107,7 +126,9 @@ fn rc_adt_product_alloc() {
     assert_eq!(compile_and_run_simple(src), 7);
 }
 
+// spec: 12-runtime §12.3 — ADT sum Some heap allocation
 #[test]
+#[serial]
 fn rc_adt_sum_some_alloc() {
     let src = "
         (deftype (Option a) None (Some [:a val]))
@@ -116,7 +137,9 @@ fn rc_adt_sum_some_alloc() {
     assert_eq!(compile_and_run_simple(src), 42);
 }
 
+// spec: 12-runtime §12.3 — ADT sum None no heap allocation
 #[test]
+#[serial]
 fn rc_adt_sum_none_no_alloc() {
     // None is a nullary constructor -- bare tag, no heap allocation.
     let src = "
@@ -126,7 +149,9 @@ fn rc_adt_sum_none_no_alloc() {
     assert_eq!(compile_and_run_simple(src), 0);
 }
 
+// spec: 12-runtime §12.3 — ADT RC in let scope
 #[test]
+#[serial]
 fn rc_adt_in_let_scope() {
     let src = "
         (deftype Point [:Int x :Int y])
@@ -137,7 +162,9 @@ fn rc_adt_in_let_scope() {
     assert_eq!(compile_and_run_simple(src), 15);
 }
 
+// spec: 12-runtime §12.3 — ADT RC returned from function
 #[test]
+#[serial]
 fn rc_adt_returned_from_function() {
     let src = "
         (deftype Point [:Int x :Int y])
@@ -147,7 +174,9 @@ fn rc_adt_returned_from_function() {
     assert_eq!(compile_and_run_simple(src), 7);
 }
 
+// spec: 12-runtime §12.3 — ADT RC in match arms
 #[test]
+#[serial]
 fn rc_adt_in_match_arms() {
     let src = "
         (deftype (Option a) None (Some [:a val]))
@@ -160,7 +189,9 @@ fn rc_adt_in_match_arms() {
     assert_eq!(compile_and_run_simple(src), 10);
 }
 
+// spec: 12-runtime §12.3 — ADT RC multiple heap fields
 #[test]
+#[serial]
 fn rc_adt_multiple_heap_fields() {
     let src = "
         (deftype Triple [:Int a :Int b :Int c])
@@ -170,7 +201,9 @@ fn rc_adt_multiple_heap_fields() {
     assert_eq!(compile_and_run_simple(src), 6);
 }
 
+// spec: 12-runtime §12.3 — ADT RC constructor as temporary
 #[test]
+#[serial]
 fn rc_adt_constructor_in_temporary() {
     // ADT constructed as temporary, immediately matched.
     let src = "
@@ -180,7 +213,9 @@ fn rc_adt_constructor_in_temporary() {
     assert_eq!(compile_and_run_simple(src), 42);
 }
 
+// spec: 12-runtime §12.3 — ADT RC with nested string field
 #[test]
+#[serial]
 fn rc_adt_with_string_field() {
     // ADT containing a string -- tests nested heap refs.
     let src = r#"
@@ -193,7 +228,9 @@ fn rc_adt_with_string_field() {
     assert_eq!(compile_and_run_simple(src), 5);
 }
 
+// spec: 12-runtime §12.3 — ADT RC nested Option
 #[test]
+#[serial]
 fn rc_adt_nested_option() {
     // Option(Option Int): nested heap ADTs.
     let src = "
@@ -206,7 +243,9 @@ fn rc_adt_nested_option() {
     assert_eq!(compile_and_run_simple(src), 42);
 }
 
+// spec: 12-runtime §12.3 — enum ADT no heap allocation
 #[test]
+#[serial]
 fn rc_adt_enum_no_alloc() {
     // Nullary-only enums do not allocate.
     let src = "
@@ -216,7 +255,9 @@ fn rc_adt_enum_no_alloc() {
     assert_eq!(compile_and_run_simple(src), 2);
 }
 
+// spec: 12-runtime §12.3 — ADT RC recursive matching
 #[test]
+#[serial]
 fn rc_adt_recursive_matching() {
     // Chain of match expressions with ADTs.
     let src = "
@@ -237,7 +278,9 @@ fn rc_adt_recursive_matching() {
 // Closure RC (~10 tests)
 // =============================================================================
 
+// spec: 12-runtime §12.3 — closure environment RC allocation
 #[test]
+#[serial]
 fn rc_closure_env_alloc() {
     // Lambda with capture allocates a closure environment.
     let src = "
@@ -248,7 +291,9 @@ fn rc_closure_env_alloc() {
     assert_eq!(compile_and_run_simple(src), 42);
 }
 
+// spec: 12-runtime §12.3 — closure RC multiple captures
 #[test]
+#[serial]
 fn rc_closure_multiple_captures() {
     let src = "
         (defn main []
@@ -258,7 +303,9 @@ fn rc_closure_multiple_captures() {
     assert_eq!(compile_and_run_simple(src), 10);
 }
 
+// spec: 12-runtime §12.3 — closure RC passed to function
 #[test]
+#[serial]
 fn rc_closure_passed_to_function() {
     let src = "
         (defn apply-fn [f x] (f x))
@@ -269,7 +316,9 @@ fn rc_closure_passed_to_function() {
     assert_eq!(compile_and_run_simple(src), 15);
 }
 
+// spec: 12-runtime §12.3 — closure RC returned from function
 #[test]
+#[serial]
 fn rc_closure_returned_from_function() {
     // Closure environment survives function return.
     let src = "
@@ -279,7 +328,9 @@ fn rc_closure_returned_from_function() {
     assert_eq!(compile_and_run_simple(src), 42);
 }
 
+// spec: 12-runtime §12.3 — closure RC in let scope
 #[test]
+#[serial]
 fn rc_closure_in_let_scope() {
     let src = "
         (defn main []
@@ -289,7 +340,9 @@ fn rc_closure_in_let_scope() {
     assert_eq!(compile_and_run_simple(src), 42);
 }
 
+// spec: 12-runtime §12.3 — closure RC called multiple times
 #[test]
+#[serial]
 fn rc_closure_called_multiple_times() {
     // Same closure called twice -- environment must remain valid.
     let src = "
@@ -301,7 +354,9 @@ fn rc_closure_called_multiple_times() {
     assert_eq!(compile_and_run_simple(src), 203);
 }
 
+// spec: 12-runtime §12.3 — named function as value RC
 #[test]
+#[serial]
 fn rc_named_function_as_value() {
     // Named-function-as-value creates a zero-capture closure wrapper.
     let src = "
@@ -312,7 +367,9 @@ fn rc_named_function_as_value() {
     assert_eq!(compile_and_run_simple(src), 42);
 }
 
+// spec: 12-runtime §12.3 — non-capturing closure RC
 #[test]
+#[serial]
 fn rc_closure_no_capture() {
     // Non-capturing lambda still allocates a closure (code_ptr only).
     let src = "
@@ -323,7 +380,9 @@ fn rc_closure_no_capture() {
     assert_eq!(compile_and_run_simple(src), 42);
 }
 
+// spec: 12-runtime §12.3 — closure RC in recursive HOF
 #[test]
+#[serial]
 fn rc_closure_in_recursive_higher_order() {
     // Closure passed through recursive function calls.
     let src = "
@@ -336,7 +395,9 @@ fn rc_closure_in_recursive_higher_order() {
     assert_eq!(compile_and_run_simple(src), 10);
 }
 
+// spec: 12-runtime §12.3 — nested closure RC
 #[test]
+#[serial]
 fn rc_closure_nested() {
     let src = "
         (defn main []
@@ -352,7 +413,9 @@ fn rc_closure_nested() {
 // Cross-cutting RC (~5 tests)
 // =============================================================================
 
+// spec: 12-runtime §12.3 — closure returning ADT RC
 #[test]
+#[serial]
 fn rc_closure_returning_adt() {
     let src = "
         (deftype (Option a) None (Some [:a val]))
@@ -365,7 +428,9 @@ fn rc_closure_returning_adt() {
     assert_eq!(compile_and_run_simple(src), 42);
 }
 
+// spec: 12-runtime §12.3 — ADT containing string in match RC
 #[test]
+#[serial]
 fn rc_adt_containing_string_in_match() {
     let src = r#"
         (deftype (Option a) None (Some [:a val]))
@@ -377,7 +442,9 @@ fn rc_adt_containing_string_in_match() {
     assert_eq!(compile_and_run_simple(src), 5);
 }
 
+// spec: 12-runtime §12.3 — int-to-string allocation RC
 #[test]
+#[serial]
 fn rc_string_built_from_int() {
     // int-to-string allocates, then str-len reads, then the string is unused.
     let src = "
@@ -386,7 +453,9 @@ fn rc_string_built_from_int() {
     assert_eq!(compile_and_run_simple(src), 6);
 }
 
+// spec: 12-runtime §12.3 — closure capturing function result RC
 #[test]
+#[serial]
 fn rc_closure_capturing_function_result() {
     let src = "
         (defn make-fn [n] (fn [x] (add-i64 n x)))
@@ -397,7 +466,9 @@ fn rc_closure_capturing_function_result() {
     assert_eq!(compile_and_run_simple(src), 203);
 }
 
+// spec: 12-runtime §12.3 — ADT chain allocation RC
 #[test]
+#[serial]
 fn rc_adt_chain() {
     // Multiple ADT allocations in sequence.
     let src = "
@@ -422,7 +493,9 @@ fn rc_adt_chain() {
 // temporaries is deferred to Ring 2 (see sprint notes §"RC Risks").
 // =============================================================================
 
+// spec: 12-runtime §12.3 — Option with string field RC
 #[test]
+#[serial]
 fn rc_option_string() {
     // ADT containing a heap-typed field (String). Create and use — no crash.
     let src = r#"
@@ -435,8 +508,9 @@ fn rc_option_string() {
     assert_eq!(compile_and_run_simple(src), 5);
 }
 
+// spec: 12-runtime §12.3 — Option with string field RC balanced
 #[test]
-#[ignore = "scope-level dec for heap temporaries deferred to Ring 2"]
+#[serial]
 fn rc_option_string_balanced() {
     let src = r#"
         (deftype (Option a) None (Some [:a val]))
@@ -448,7 +522,9 @@ fn rc_option_string_balanced() {
     assert_rc_balanced(src);
 }
 
+// spec: 12-runtime §12.3 — nested Option RC
 #[test]
+#[serial]
 fn rc_nested_option() {
     // Nested ADT: Option(Option(String)). Inner and outer both heap — no crash.
     let src = r#"
@@ -461,8 +537,9 @@ fn rc_nested_option() {
     assert_eq!(compile_and_run_simple(src), 5);
 }
 
+// spec: 12-runtime §12.3 — nested Option RC balanced
 #[test]
-#[ignore = "scope-level dec for heap temporaries deferred to Ring 2"]
+#[serial]
 fn rc_nested_option_balanced() {
     let src = r#"
         (deftype (Option a) None (Some [:a val]))
@@ -474,7 +551,9 @@ fn rc_nested_option_balanced() {
     assert_rc_balanced(src);
 }
 
+// spec: 12-runtime §12.3 — Option string in let RC
 #[test]
+#[serial]
 fn rc_option_string_in_let() {
     // Access heap field through match in let scope — no crash.
     let src = r#"
@@ -486,8 +565,9 @@ fn rc_option_string_in_let() {
     assert_eq!(compile_and_run_simple(src), 5);
 }
 
+// spec: 12-runtime §12.3 — Option string in let RC balanced
 #[test]
-#[ignore = "scope-level dec for heap temporaries deferred to Ring 2"]
+#[serial]
 fn rc_option_string_in_let_balanced() {
     let src = r#"
         (deftype (Option a) None (Some [:a val]))
@@ -502,7 +582,9 @@ fn rc_option_string_in_let_balanced() {
 // U1.5 — Closure capturing heap types (resolves usability finding U1.5)
 // =============================================================================
 
+// spec: 12-runtime §12.3 — closure captures string RC
 #[test]
+#[serial]
 fn rc_closure_captures_string() {
     // Closure captures a heap-allocated String — no crash.
     let src = r#"
@@ -514,8 +596,9 @@ fn rc_closure_captures_string() {
     assert_eq!(compile_and_run_simple(src), 5);
 }
 
+// spec: 12-runtime §12.3 — closure captures string RC balanced
 #[test]
-#[ignore = "scope-level dec for heap temporaries deferred to Ring 2"]
+#[serial]
 fn rc_closure_captures_string_balanced() {
     let src = r#"
         (defn main []
@@ -526,7 +609,9 @@ fn rc_closure_captures_string_balanced() {
     assert_rc_balanced(src);
 }
 
+// spec: 12-runtime §12.3 — closure captures ADT RC
 #[test]
+#[serial]
 fn rc_closure_captures_adt() {
     // Closure captures an ADT with a heap field — no crash.
     let src = r#"
@@ -539,8 +624,9 @@ fn rc_closure_captures_adt() {
     assert_eq!(compile_and_run_simple(src), 5);
 }
 
+// spec: 12-runtime §12.3 — closure captures ADT RC balanced
 #[test]
-#[ignore = "scope-level dec for heap temporaries deferred to Ring 2"]
+#[serial]
 fn rc_closure_captures_adt_balanced() {
     let src = r#"
         (deftype (Option a) None (Some [:a val]))
@@ -556,7 +642,9 @@ fn rc_closure_captures_adt_balanced() {
 // F-12 validation — Mixed ADT dec (nullary tag vs heap pointer)
 // =============================================================================
 
+// spec: 12-runtime §12.3 — mixed ADT None drop RC
 #[test]
+#[serial]
 fn rc_mixed_adt_none_drop() {
     // None is a bare tag (i64 = 0). Must not be treated as a heap pointer — no crash.
     let src = "
@@ -568,8 +656,9 @@ fn rc_mixed_adt_none_drop() {
     assert_eq!(compile_and_run_simple(src), 0);
 }
 
+// spec: 12-runtime §12.3 — mixed ADT None drop RC balanced
 #[test]
-#[ignore = "scope-level dec for heap temporaries deferred to Ring 2"]
+#[serial]
 fn rc_mixed_adt_none_drop_balanced() {
     let src = "
         (deftype (Option a) None (Some [:a val]))
@@ -580,7 +669,9 @@ fn rc_mixed_adt_none_drop_balanced() {
     assert_rc_balanced(src);
 }
 
+// spec: 12-runtime §12.3 — mixed ADT Some drop RC
 #[test]
+#[serial]
 fn rc_mixed_adt_some_drop() {
     // Some("x") allocates on heap. String field must be accessible — no crash.
     let src = r#"
@@ -592,8 +683,9 @@ fn rc_mixed_adt_some_drop() {
     assert_eq!(compile_and_run_simple(src), 1);
 }
 
+// spec: 12-runtime §12.3 — mixed ADT Some drop RC balanced
 #[test]
-#[ignore = "scope-level dec for heap temporaries deferred to Ring 2"]
+#[serial]
 fn rc_mixed_adt_some_drop_balanced() {
     let src = r#"
         (deftype (Option a) None (Some [:a val]))
@@ -612,9 +704,10 @@ fn rc_mixed_adt_some_drop_balanced() {
 // functionally but fail the RC balance assertion.
 // =============================================================================
 
+// spec: 12-runtime §12.3 — Vec alloc and drop RC
 #[test]
-
-#[ignore = "Vec RC balance requires scope-level dec — deferred to Ring 2"]
+#[serial]
+#[ignore = "Sprint 7+: Vec temporary argument cleanup requires non-scope-based dec"]
 fn rc_vec_alloc_drop() {
     // Create Vec of Ints, let it drop — RC balanced.
     let src = "
@@ -623,9 +716,10 @@ fn rc_vec_alloc_drop() {
     assert_rc_balanced(src);
 }
 
+// spec: 12-runtime §12.3 — empty Vec RC
 #[test]
-
-#[ignore = "Vec RC balance requires scope-level dec — deferred to Ring 2"]
+#[serial]
+#[ignore = "Sprint 7+: Vec temporary argument cleanup requires non-scope-based dec"]
 fn rc_vec_empty() {
     // Empty Vec alloc and drop.
     let src = "
@@ -634,9 +728,10 @@ fn rc_vec_empty() {
     assert_rc_balanced(src);
 }
 
+// spec: 12-runtime §12.3 — Vec of strings RC
 #[test]
-
-#[ignore = "Vec RC balance requires scope-level dec — deferred to Ring 2"]
+#[serial]
+#[ignore = "Sprint 7+: Vec temporary argument cleanup requires non-scope-based dec"]
 fn rc_vec_of_strings() {
     // Vec of Strings — element Strings must be freed on Vec drop.
     let src = r#"
@@ -646,9 +741,10 @@ fn rc_vec_of_strings() {
     assert_rc_balanced(src);
 }
 
+// spec: 12-runtime §12.3 — Vec get int RC
 #[test]
-
-#[ignore = "Vec RC balance requires scope-level dec — deferred to Ring 2"]
+#[serial]
+#[ignore = "Sprint 7+: Vec temporary argument cleanup requires non-scope-based dec"]
 fn rc_vec_get_int() {
     // vec-get on Int Vec — no element RC needed.
     let src = "
@@ -657,9 +753,10 @@ fn rc_vec_get_int() {
     assert_rc_balanced(src);
 }
 
+// spec: 12-runtime §12.3 — Vec get string RC
 #[test]
-
-#[ignore = "Vec RC balance requires scope-level dec — deferred to Ring 2"]
+#[serial]
+#[ignore = "Sprint 7+: Vec temporary argument cleanup requires non-scope-based dec"]
 fn rc_vec_get_string() {
     // vec-get on String Vec — element RC inc on get, balanced on drop.
     let src = r#"
@@ -669,9 +766,9 @@ fn rc_vec_get_string() {
     assert_rc_balanced(src);
 }
 
+// spec: 12-runtime §12.3.3 — Vec copy-on-write set
 #[test]
-
-#[ignore = "Vec RC balance requires scope-level dec — deferred to Ring 2"]
+#[serial]
 fn rc_vec_set_copy() {
     // vec-set on shared Vec — copies, original and new both balanced.
     let src = "
@@ -683,9 +780,9 @@ fn rc_vec_set_copy() {
     assert_rc_balanced(src);
 }
 
+// spec: 12-runtime §12.3.3 — Vec copy-on-write push
 #[test]
-
-#[ignore = "Vec RC balance requires scope-level dec — deferred to Ring 2"]
+#[serial]
 fn rc_vec_push_copy() {
     // vec-push on shared Vec — copies.
     let src = "
@@ -697,9 +794,10 @@ fn rc_vec_push_copy() {
     assert_rc_balanced(src);
 }
 
+// spec: 12-runtime §12.3 — Vec of ADTs RC
 #[test]
-
-#[ignore = "Vec RC balance requires scope-level dec — deferred to Ring 2"]
+#[serial]
+#[ignore = "Sprint 7+: Vec temporary argument cleanup requires non-scope-based dec"]
 fn rc_vec_of_options() {
     // Vec of mixed ADT (Option Int) — Some allocates, None is bare tag.
     let src = "
@@ -710,9 +808,10 @@ fn rc_vec_of_options() {
     assert_rc_balanced(src);
 }
 
+// spec: 12-runtime §12.3 — Vec push to empty RC
 #[test]
-
-#[ignore = "Vec RC balance requires scope-level dec — deferred to Ring 2"]
+#[serial]
+#[ignore = "Sprint 7+: Vec temporary argument cleanup requires non-scope-based dec"]
 fn rc_vec_push_to_empty() {
     // Push to empty Vec — no elements to copy.
     let src = "
@@ -721,9 +820,9 @@ fn rc_vec_push_to_empty() {
     assert_rc_balanced(src);
 }
 
+// spec: 12-runtime §12.3 — Vec in let RC
 #[test]
-
-#[ignore = "Vec RC balance requires scope-level dec — deferred to Ring 2"]
+#[serial]
 fn rc_vec_in_let() {
     // Vec bound in let, used, then dropped at scope exit.
     let src = "

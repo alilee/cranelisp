@@ -218,27 +218,14 @@ impl<'a> FnCompiler<'a> {
             }
             CompileMode::Interactive => {
                 // GOT-indirect call: load function pointer from GOT slot.
-                let got_slots = self.ctx.got_slots.ok_or_else(|| {
-                    CranelispError::CodegenError {
-                        message: "Interactive mode requires GOT slot assignments".into(),
-                        span,
-                    }
-                })?;
-                let got_base = self.ctx.got_base_ptr.ok_or_else(|| {
-                    CranelispError::CodegenError {
-                        message: "Interactive mode requires GOT base pointer".into(),
-                        span,
-                    }
-                })?;
-                let slot = got_slots.get(name).ok_or_else(|| {
-                    CranelispError::CodegenError {
-                        message: format!("no GOT slot for function: {name}"),
-                        span,
-                    }
-                })?;
+                //
+                // First try the local module's GOT. If the function isn't found
+                // locally, fall back to the cross-module GOT which maps imported
+                // functions to their defining module's GOT base and slot.
+                let (got_base, slot) = self.resolve_got_entry(name, span)?;
 
                 // Compute the address of the GOT slot: got_base + slot * 8
-                let slot_offset = (*slot * 8) as i64;
+                let slot_offset = (slot * 8) as i64;
                 let base_val = self.builder.ins().iconst(types::I64, got_base);
                 let slot_addr = self.builder.ins().iadd_imm(base_val, slot_offset);
 
@@ -263,6 +250,43 @@ impl<'a> FnCompiler<'a> {
                 Ok(self.builder.inst_results(call)[0])
             }
         }
+    }
+
+    /// Resolve a function name to a `(got_base_ptr, slot_index)` pair.
+    ///
+    /// Lookup order:
+    /// 1. Local module GOT (`ctx.got_slots` + `ctx.got_base_ptr`)
+    /// 2. Cross-module GOT (`ctx.cross_module_got`) — for imported functions
+    ///
+    /// Returns `(got_base_ptr_as_i64, slot_index)` or an error if not found.
+    fn resolve_got_entry(
+        &self,
+        name: &Symbol,
+        span: Span,
+    ) -> Result<(i64, usize), CranelispError> {
+        // Try local GOT first.
+        if let (Some(got_slots), Some(got_base)) = (self.ctx.got_slots, self.ctx.got_base_ptr) {
+            if let Some(&slot) = got_slots.get(name) {
+                return Ok((got_base, slot));
+            }
+        }
+
+        // Try cross-module GOT: scan all entries for a matching function name.
+        // The cross-module map is keyed by (ModuleFullPath, Symbol), so we search
+        // for any entry whose Symbol component matches.
+        if let Some(xmod_got) = self.ctx.cross_module_got {
+            for ((_, sym), &(base, slot)) in xmod_got {
+                if sym == name {
+                    return Ok((base, slot));
+                }
+            }
+        }
+
+        // Neither local nor cross-module GOT has this function.
+        Err(CranelispError::CodegenError {
+            message: format!("no GOT slot for function: {name}"),
+            span,
+        })
     }
 
     /// Compile a tail self-recursive call as a jump to the loop header.

@@ -9,8 +9,11 @@
 
 pub mod reader;
 pub mod ast_builder;
+pub mod module_extract;
 
 use cranelisp_types::{CranelispError, MacroExpander, Program, ReplInput, Sexp};
+
+pub use module_extract::extract_module_declarations;
 
 /// Parse source text into a sequence of S-expressions.
 #[must_use = "parsing produces a result that should be checked for errors"]

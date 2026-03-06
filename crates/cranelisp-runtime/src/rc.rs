@@ -61,12 +61,14 @@ pub extern "C-unwind" fn rc_underflow_check(ptr: i64, old_rc: i64) -> i64 {
 mod tests {
     use super::*;
 
+    // spec: 12-runtime §12.3.2 — RC trace logging does not panic
     #[test]
     fn test_rc_trace_does_not_panic() {
         // Just verify it doesn't crash — output goes to stderr.
         rc_trace("test", 0x1234, 1);
     }
 
+    // spec: 12-runtime §12.3.2 — RC trace disabled by default
     #[test]
     fn test_rc_trace_enabled_default_false() {
         // Without CRANELISP_RC_TRACE=1 in env, should be false.
@@ -74,6 +76,7 @@ mod tests {
         let _ = is_rc_trace_enabled();
     }
 
+    // spec: 12-runtime §12.3.2 — RC underflow panics on zero (debug assertions)
     #[cfg(debug_assertions)]
     #[test]
     #[should_panic(expected = "RC underflow")]
@@ -81,6 +84,7 @@ mod tests {
         rc_underflow_check(0x1234, 0);
     }
 
+    // spec: 12-runtime §12.3.2 — RC underflow check passes on positive count
     #[cfg(debug_assertions)]
     #[test]
     fn test_underflow_check_ok_on_positive() {

@@ -764,12 +764,33 @@ Demonstrates Num/Eq/Ord trait-based operator dispatch:
 - `(+ 1)` returns a closure
 - `(map (+ 1) [1 2 3])` -> `[2 3 4]`
 
-### Example 19: Modules
+### Example 19: Modules (Multi-File)
 
-- `(mod math)` declaration
-- `(import [math [double]])` selective import
-- `(import [math [*]])` glob import
-- Qualified calls: `(math/double 21)`
+**Structure**: A directory `19-modules/` with two files demonstrating cross-file module organization.
+
+**`19-modules/main.cl`** (entry point):
+- Declares an inline module: `(mod util)` — signals that `util.cl` exists alongside `main.cl`
+- Imports a specific helper: `(import [util [double]])`
+- Uses the imported name bare: `(double 21)` -> 42
+- Also demonstrates qualified access: `(util/double 10)` -> 20
+- Shows that unimported names require qualification: `util/triple` works, bare `triple` does not
+
+**`19-modules/util.cl`** (helper module):
+- Exports public functions: `(export [double triple])`
+- `(defn double [x] (* x 2))` — public, importable
+- `(defn triple [x] (* x 3))` — public, accessible as `util/triple`
+- `(defn- helper [x] (+ x 1))` — private, not visible from `main.cl`
+
+**Concepts demonstrated**:
+1. `(mod name)` declares a companion file
+2. File resolution: `util.cl` found next to `main.cl`
+3. `(import [util [double]])` selective import — bare name access
+4. `util/triple` qualified name access without import
+5. `(export [...])` controls what is visible
+6. `defn-` makes definitions private to their module
+
+**Depends on**: All Ring 0-1 examples (01-14) plus Ring 2 module system.
+**Cannot be delivered until**: Cross-module imports are fully wired in the compiler.
 
 ### Example 20: Lazy Sequences
 

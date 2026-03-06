@@ -15,6 +15,7 @@ mod tests {
     use super::*;
     use crate::alloc;
 
+    // spec: appendix-a-builtins §A.3 — bool-to-string converts true
     #[test]
     fn test_bool_to_string_true() {
         let result = bool_to_string(1);
@@ -24,6 +25,7 @@ mod tests {
         }
     }
 
+    // spec: appendix-a-builtins §A.3 — bool-to-string converts false
     #[test]
     fn test_bool_to_string_false() {
         let result = bool_to_string(0);
@@ -33,6 +35,7 @@ mod tests {
         }
     }
 
+    // spec: 12-runtime §12.1.1 — nonzero i64 value is truthy (Bool representation)
     #[test]
     fn test_bool_to_string_nonzero_is_true() {
         let result = bool_to_string(42);

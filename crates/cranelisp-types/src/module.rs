@@ -36,6 +36,11 @@ impl SymbolTable {
     pub fn public_symbols(&self) -> impl Iterator<Item = (&Symbol, &ModuleEntry)> {
         self.symbols.iter().filter(|(_, e)| e.is_public())
     }
+
+    /// Iterate over all symbols (public and private).
+    pub fn all_symbols(&self) -> impl Iterator<Item = (&Symbol, &ModuleEntry)> {
+        self.symbols.iter()
+    }
 }
 
 // --- Module Entries ---
@@ -214,6 +219,17 @@ pub struct ImplSexp {
     pub sexp: Sexp,
 }
 
+// --- Module Declarations ---
+
+/// A parsed `(mod name)` or `(mod- name)` declaration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ModDecl {
+    pub name: ModuleName,
+    pub is_private: bool,
+    pub inline_body: Option<Vec<Sexp>>,
+    pub span: Span,
+}
+
 // --- Module Structure ---
 
 /// Module structural metadata: file paths, declarations, imports, exports.
@@ -221,7 +237,7 @@ pub struct ImplSexp {
 pub struct ModuleStructure {
     pub path: ModuleFullPath,
     pub file_path: Option<PathBuf>,
-    pub mod_decls: Vec<ModuleName>,
+    pub mod_decls: Vec<ModDecl>,
     pub import_specs: Vec<ImportSpec>,
     pub export_specs: Vec<ExportSpec>,
     pub impl_sexps: Vec<ImplSexp>,

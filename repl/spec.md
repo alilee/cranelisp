@@ -446,7 +446,59 @@ After displaying a result, the next prompt MUST appear within **10ms**. There MU
 
 When displaying large values (e.g., a Vec with 1000 elements), the REPL SHOULD truncate output with an indication of the total size rather than flooding the terminal. The truncation threshold is implementation-defined but SHOULD be configurable.
 
-## 8. Ring Testability Matrix
+## 8. Ring 2B Module Demo Scenarios (Planned)
+
+When the module system is fully wired (Ring 2B), these 7 REPL scenarios validate the module experience. Each scenario has a concrete expected behavior.
+
+**Scenario 1: `/mod math` switches namespace**
+```
+user> /mod math
+math>
+```
+The prompt changes to reflect the active module. Definitions entered now belong to `math`.
+
+**Scenario 2: `/mod user` switches back**
+```
+math> /mod user
+user>
+```
+Switching back to `user` restores the default namespace. Previously defined `math` symbols remain accessible via qualified names.
+
+**Scenario 3: `(import [math [foo]])` loads module**
+```
+user> (import [math [foo]])
+```
+After defining `foo` in the `math` module (via `/mod math` + `defn`), importing it makes `foo` available as a bare name in `user`.
+
+**Scenario 4: Qualified access `math/foo`**
+```
+user> math/foo
+:(Fn [primitives/Int] primitives/Int) math/foo
+```
+Without importing, any symbol can be accessed via its qualified path.
+
+**Scenario 5: `/list` shows module symbols**
+```
+math> /list
+Fns: foo
+```
+The `/list` command in a module shows only that module's definitions, not the global scope.
+
+**Scenario 6: `/mod` shows current module**
+```
+math> /mod
+math
+```
+Bare `/mod` with no argument displays the name of the current module.
+
+**Scenario 7: Unknown module gives clear error**
+```
+user> /mod nonexistent
+Error: Module 'nonexistent' not found. Use /mod <name> to create a new module.
+```
+The error message is actionable — it tells the user what to do next.
+
+## 9. Ring Testability Matrix
 
 | Requirement | Ring 0 | Ring 1 | Ring 2 | Ring 3 | Ring 4 |
 |---|---|---|---|---|---|

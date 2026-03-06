@@ -103,6 +103,22 @@ Even "obvious one-line fixes" in source code are delegated — `/qa` validates, 
 
 **Why `#[ignore]` over no test:** An ignored test shows up in the test count (`142 passed; 5 ignored`). It's grep-able. It has a comment explaining what's wrong. It gets un-ignored when the fix lands. A requirement with no test is invisible — it passes every gate silently until someone tries to use the feature and discovers it doesn't work.
 
+**`#[ignore]` annotation format:** Every ignored test MUST use the `#[ignore = "reason"]` syntax (not a comment) with: (1) the spec reference, (2) the target ring, and (3) the target sprint (if known). The reason string shows up in `cargo test` output, making ignored tests self-documenting and grep-able for sprint planning.
+
+```rust
+#[ignore = "repl/spec.md §1.2 — Ring 2, Sprint 6: requires module-qualified type display"]
+#[ignore = "spec/12-runtime — Ring 2, Sprint 7: scope-level dec for heap temporaries"]
+#[ignore = "repl/spec.md §3.1 — Ring 4: slash commands require REPL command parser"]
+```
+
+When the target sprint is not yet determined, use the ring only: `Ring 4: reason`. When a sprint starts, `/qa` must scan all `#[ignore]` annotations targeting that sprint and add them to the sprint's acceptance criteria. When a sprint completes, zero `#[ignore]` tests should reference that sprint — they are either un-ignored (passing) or re-targeted to a later sprint with rationale.
+
+**Audit existing ignores on sprint rollover:** At the start of every sprint, `/qa` runs:
+```bash
+grep -rn '#\[ignore' tests/ --include="*.rs"
+```
+and verifies that (a) every ignored test has a ring/sprint target in its reason string, and (b) any tests targeting the current sprint are included in the sprint's QA acceptance criteria. Tests with stale targets (referencing completed sprints) are bugs — they should have been un-ignored or re-targeted.
+
 **Test naming for traceability:** Tests trace to spec sections via name and comment. Use `// spec: 07-traits §1.3` or similar. No separate traceability matrix — the tests ARE the traceability.
 
 **Source document annotations:** When a spec or plan section is covered by tests, annotate the section heading with its ring and sprint status — e.g., `[R2 S5]` for "covered in Ring 2, Sprint 5", or `[Done]` when fully tested. This makes coverage visible from both directions: tests trace forward to spec sections, and spec sections show which ring/sprint delivered their coverage. Annotations live on section headings in `spec/`, `repl/spec.md`, and `tests/plan/` files. `/qa` adds annotations when writing tests; other skills add annotations when delivering features against spec requirements.
@@ -127,6 +143,16 @@ Integration and E2E tests must only exercise features that belong to the current
 **Before writing a test**, ask: "Does the feature being tested exist in its final form in this ring, or will it be replaced by a later ring's mechanism?" If it will be replaced, test the current ring's actual primitives instead. When the later ring arrives, write NEW tests for the higher-level feature.
 
 Example: Ring 0 provides named primitives (`add-i64`, `sub-i64`). Ring 2 adds trait-dispatched operators (`+`, `-`). Tests in Ring 0 should use `(add-i64 1 2)`, not `(+ 1 2)`. Ring 2 introduces `(+ 1 2)` tests alongside the trait dispatch implementation.
+
+## Sprint Boundary Checklist
+
+At every sprint rollover, `/qa` MUST:
+
+1. **Audit all `#[ignore]` tests** — run `grep -rn '#\[ignore\]' tests/ --include="*.rs"` and verify every ignored test has a ring/sprint target annotation.
+2. **Identify tests targeting the new sprint** — these become sprint acceptance criteria. Add them to the sprint's QA task.
+3. **Re-target stale ignores** — any test targeting a completed sprint that is still ignored is a bug. Either the feature landed (un-ignore it) or it didn't (re-target to the sprint that will deliver it, with rationale).
+4. **Scan FIXMEs addressed to `/qa`** — every `FIXME(/qa)` in spec, design, or plan files. Write the test or defer with rationale.
+5. **Report the ignore inventory** in SPRINT.md Notes: total ignored, how many target this sprint, how many are untargeted.
 
 ## Workflow (ring by ring)
 

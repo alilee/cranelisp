@@ -1,54 +1,30 @@
-# Sprint 6: Ring 2B — Modules & Multi-Sig Dispatch
+# Sprint 7: Ring 2B Completion — Cross-Module Wiring, REPL Display, REPL Chrome
 
 **Status**: DRAFT
-**Ring**: 2 (Abstraction) — third increment
-**Goal**: Deliver file-based modules (import/export/visibility/qualified names), multi-signature dispatch, and Display trait registration.
+**Ring**: 2 (Abstraction) — fourth increment
+**Goal**: Complete Ring 2B by wiring cross-module imports end-to-end, implementing qualified REPL display, adding REPL chrome (slash commands, banner, prompt), and delivering multi-sig dispatch.
 
 ## Scope
 
-Ring 2A is complete (traits, constrained poly, default methods, user trait impls — 1177 tests, gate PASS). This sprint delivers Ring 2B: the module system and remaining Ring 2 features.
+Sprint 6 delivered module infrastructure (extraction, type scoping, GOT, orchestrator, graph discovery) but cross-module calls are not yet end-to-end wired. This sprint completes Ring 2B.
 
-### What this sprint delivers
+### Carried from Sprint 6
 
-1. **File-based modules**: `(mod name)`, file discovery, compilation ordering
-2. **Imports/exports**: `(import [module [names]])`, `(export [names])`, wildcard imports
-3. **Visibility**: `pub`/private enforcement across module boundaries
-4. **Qualified names**: `module/name` resolution
-5. **Multi-signature dispatch**: `(defn show ([Int x] ...) ([Bool x] ...))` (if feasible within sprint)
-6. **Display trait registration**: Register `Display` at startup alongside `Num`/`Eq`/`Ord` (FIXME U2.1)
-7. **I1, I2, I4, I6 tech debt** from Sprint 4 review
+1. **Cross-module import resolution** — wire export registration in orchestrator, un-ignore 4 module tests
+2. **REPL qualified display** — output `primitives/Int`, `user/id`, `Color.Red` notation, un-ignore 9 E2E tests
+3. **REPL chrome** — slash commands (/help, /quit, /list, /sig, /info, /type, /time), banner, stderr routing, special form feedback, un-ignore 11 E2E tests
+4. **7 Vec RC balance tests** — Vec temporary argument cleanup (non-scope-based dec)
+5. **Spec heading annotations** — `[Done]`/`[Rn Sn]` on spec section headings
+6. **Missing spec coverage tests** — `#[ignore]` tests for untested in-scope spec sections
+7. **QA FIXME test coverage** — U1.3, U1.5, U1.7, U1.6, U1.9
 
-### What this sprint does NOT deliver (Sprint 7+)
+### New scope
 
-- Auto-curry: `(map (+ 1) [1 2 3])`
-- Stdlib files in `lib/` (requires modules working first)
-- Platform DLL loading
-- Macros, derive (Ring 3)
+8. **Multi-signature dispatch** — `(defn show ([Int x] ...) ([Bool x] ...))` type detection + dispatch resolution + backend mangled codegen
+9. **Auto-curry** — `(map (+ 1) [1 2 3])` partial application
+10. **Primitives module** — proper `primitives` synthetic module replacing current "user" module seeding hack
+11. **Stdlib bootstrap** — begin writing `lib/` modules now that module infrastructure exists
 
-## FIXME Debt
+## Next steps
 
-{To be filled during Phase 1 scan}
-
-## Architecture Review
-
-{To be filled by /arch during Phase 2}
-
-## Skill Plans
-
-{To be filled by each skill during Phase 3}
-
-## Waves
-
-{To be filled during Phase 4}
-
-## Notes
-
-## Outcome
-
-{Filled in when sprint closes}
-
-### Delivered
-
-### Deferred
-
-### Findings
+Invoke `/sprint` to run Phase 1 (FIXME scan + state assessment) and Phase 2 (arch review).

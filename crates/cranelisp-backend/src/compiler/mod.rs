@@ -18,8 +18,8 @@ use cranelift_jit::JITModule;
 use cranelift_module::FuncId;
 
 use cranelisp_types::{
-    CompileMode, CranelispError, Defn, Expr, HeapCategory, ResolvedCall, Span, Symbol, Type,
-    TypeDefInfo, TypeName,
+    CompileMode, ConstructorInfo, CranelispError, Defn, Expr, HeapCategory, ModuleFullPath,
+    ResolvedCall, Span, Symbol, Type, TypeDefInfo, TypeName,
 };
 
 use crate::heap;
@@ -58,6 +58,16 @@ pub struct CompileContext<'a> {
     /// This is the address of the GOT table, baked into compiled IR as an iconst.
     pub got_base_ptr: Option<i64>,
 
+    /// Cross-module GOT references for imported functions (Interactive mode only).
+    ///
+    /// Maps `(defining_module, function_name)` to `(got_base_ptr, slot_index)` so
+    /// that calls to imported functions can use the defining module's GOT table
+    /// instead of the caller's local GOT. This enables cross-module calls in
+    /// Interactive mode without copying function pointers between GOT tables.
+    ///
+    /// In Batch/Release mode this is None; cross-module calls use Cranelift linking.
+    pub cross_module_got: Option<&'a HashMap<(ModuleFullPath, Symbol), (i64, usize)>>,
+
     // --- Ring 1 intrinsic FuncIds ---
     /// FuncId for runtime/alloc. None in Ring 0 (no heap).
     pub alloc_func_id: Option<FuncId>,
@@ -78,6 +88,8 @@ pub struct CompileContext<'a> {
 pub struct MatchContext {
     /// The compiled scrutinee value.
     pub scrut_val: Value,
+    /// The span of the scrutinee expression (for type lookup in expr_types).
+    pub scrut_span: Span,
     /// The block to branch to if this arm does not match.
     pub next_block: Block,
     /// The merge block where all arms converge.
@@ -336,10 +348,339 @@ impl<'a> FnCompiler<'a> {
         }
     }
 
+    /// Pop a scope frame and emit `rc_dec` for all heap-typed bindings,
+    /// except the variable named by `skip_var` (whose ownership transfers
+    /// to the caller as the return value).
+    ///
+    /// Key invariant: "Scope cleanup emits dec for all heap-typed bindings
+    /// EXCEPT the return value."
+    ///
+    /// For ADTs with AlwaysHeap fields, inline drop glue is emitted:
+    /// each heap-typed field is dec'd before the ADT itself is freed.
+    pub(crate) fn pop_scope_with_cleanup(
+        &mut self,
+        skip_var: Option<&Symbol>,
+    ) {
+        if let Some(frame) = self.scope_stack.last() {
+            // Collect bindings that need dec before we mutate state.
+            let to_dec: Vec<(Symbol, Type, bool)> = frame
+                .iter()
+                .filter(|name| {
+                    // Skip the return value variable.
+                    if let Some(skip) = skip_var {
+                        if *name == skip {
+                            return false;
+                        }
+                    }
+                    // Check if this binding is heap-typed.
+                    if let Some(ty) = self.variable_types.get(*name) {
+                        self.is_heap_type(ty)
+                    } else {
+                        false
+                    }
+                })
+                .map(|name| {
+                    let ty = self.variable_types.get(name).cloned()
+                        .unwrap_or(Type::Int); // fallback, should not happen
+                    let needs_guard = matches!(
+                        HeapCategory::classify(&ty, Some(self.ctx.type_defs)),
+                        HeapCategory::Mixed
+                    );
+                    (name.clone(), ty, needs_guard)
+                })
+                .collect();
+
+            // Emit rc_dec for each heap-typed binding.
+            if let Some(dealloc) = self.ctx.dealloc_func_id {
+                for (name, ty, needs_guard) in &to_dec {
+                    if let Some(var) = self.variables.get(name) {
+                        let val = self.builder.use_var(*var);
+
+                        // For ADTs with known AlwaysHeap fields, emit inline
+                        // drop glue: dec each heap-typed field before dec'ing
+                        // the ADT itself. This prevents field value leaks.
+                        // For Mixed ADTs, the field dec is guarded by a
+                        // heap-pointer check (skip if value is a bare tag).
+                        self.emit_inline_drop_glue(val, ty, dealloc, *needs_guard);
+
+                        if *needs_guard {
+                            heap::emit_rc_dec_guarded(
+                                &mut self.builder,
+                                self.module,
+                                val,
+                                dealloc,
+                                None,
+                                true, // Guard nullary tags
+                            );
+                        } else {
+                            heap::emit_rc_dec(
+                                &mut self.builder,
+                                self.module,
+                                val,
+                                dealloc,
+                                None,
+                            );
+                        }
+                    }
+                }
+            }
+        }
+
+        // Now actually pop the scope (remove variables from maps).
+        self.pop_scope();
+    }
+
+    /// Emit inline drop glue for an ADT: dec each AlwaysHeap field.
+    ///
+    /// This is a temporary measure until proper drop glue functions are
+    /// generated. It handles the common case of ADTs with String or other
+    /// heap-typed fields.
+    ///
+    /// For Mixed ADTs (with both nullary and data constructors), the field
+    /// dec is guarded by a heap-pointer check: if the value is a bare
+    /// nullary tag, no fields exist to dec.
+    fn emit_inline_drop_glue(
+        &mut self,
+        adt_val: Value,
+        ty: &Type,
+        dealloc: FuncId,
+        is_mixed: bool,
+    ) {
+        use crate::heap::HeapAdt;
+
+        let type_name = match ty {
+            Type::ADT(name, _) => name,
+            _ => return, // Not an ADT; nothing to do.
+        };
+
+        let type_def = match self.ctx.type_defs.get(type_name) {
+            Some(td) => td.clone(),
+            None => return,
+        };
+
+        // Get concrete type args from the variable's type.
+        let concrete_args = match ty {
+            Type::ADT(_, args) => args.clone(),
+            _ => return,
+        };
+
+        // Build substitution from Var ids to concrete types.
+        let mut unique_var_ids: Vec<cranelisp_types::TypeId> = Vec::new();
+        for c in &type_def.constructors {
+            for field in &c.fields {
+                collect_var_ids_from_type(&field.ty, &mut unique_var_ids);
+            }
+        }
+        let subst: std::collections::HashMap<cranelisp_types::TypeId, Type> = unique_var_ids
+            .iter()
+            .zip(concrete_args.iter())
+            .map(|(&id, arg)| (id, arg.clone()))
+            .collect();
+
+        // Collect data constructors (those with fields).
+        let data_ctors: Vec<_> = type_def.constructors.iter()
+            .filter(|c| !c.fields.is_empty())
+            .collect();
+
+        if data_ctors.is_empty() {
+            return; // No data constructors, nothing to drop.
+        }
+
+        // Check if any data constructor has heap-typed fields.
+        let has_heap_fields = data_ctors.iter().any(|ctor| {
+            ctor.fields.iter().any(|f| {
+                let resolved = substitute_type_inline(&f.ty, &subst);
+                matches!(
+                    HeapCategory::classify(&resolved, Some(self.ctx.type_defs)),
+                    HeapCategory::AlwaysHeap | HeapCategory::Mixed
+                )
+            })
+        });
+
+        if !has_heap_fields {
+            return; // No heap fields to drop.
+        }
+
+        // For Mixed ADTs, guard the field dec with a heap-pointer check.
+        let cont_block = if is_mixed {
+            let cont = self.builder.create_block();
+            let glue_block = self.builder.create_block();
+
+            let threshold = self
+                .builder
+                .ins()
+                .iconst(types::I64, heap::NULLARY_THRESHOLD_I64);
+            let is_heap = self.builder.ins().icmp(
+                IntCC::UnsignedGreaterThanOrEqual,
+                adt_val,
+                threshold,
+            );
+            self.builder
+                .ins()
+                .brif(is_heap, glue_block, &[], cont, &[]);
+
+            self.builder.switch_to_block(glue_block);
+            self.builder.seal_block(glue_block);
+            Some(cont)
+        } else {
+            None
+        };
+
+        // Emit field decs for each data constructor. For a single data
+        // constructor, dec fields directly. For multiple data constructors,
+        // emit tag-based dispatch (branch chain like match codegen).
+        if data_ctors.len() == 1 {
+            let ctor = data_ctors[0];
+            self.emit_field_decs(adt_val, ctor, &subst, dealloc);
+        } else {
+            // Multiple data constructors: load the tag and branch to the
+            // correct field-dec block for each variant.
+            let heap_tag = heap::heap_load(
+                &mut self.builder,
+                adt_val,
+                HeapAdt::TAG_OFFSET,
+            );
+
+            let done_block = self.builder.create_block();
+
+            for (idx, ctor) in data_ctors.iter().enumerate() {
+                let ctor_block = self.builder.create_block();
+                let next_block = if idx + 1 < data_ctors.len() {
+                    self.builder.create_block()
+                } else {
+                    // Last data constructor: fallthrough to done.
+                    done_block
+                };
+
+                let tag_val = self.builder.ins().iconst(types::I64, ctor.tag as i64);
+                let cmp = self.builder.ins().icmp(IntCC::Equal, heap_tag, tag_val);
+                self.builder.ins().brif(cmp, ctor_block, &[], next_block, &[]);
+
+                self.builder.switch_to_block(ctor_block);
+                self.builder.seal_block(ctor_block);
+
+                self.emit_field_decs(adt_val, ctor, &subst, dealloc);
+                self.builder.ins().jump(done_block, &[]);
+
+                if idx + 1 < data_ctors.len() {
+                    self.builder.switch_to_block(next_block);
+                    self.builder.seal_block(next_block);
+                }
+            }
+
+            self.builder.switch_to_block(done_block);
+            self.builder.seal_block(done_block);
+        }
+
+        // Jump to continuation for Mixed guard.
+        if let Some(cont) = cont_block {
+            self.builder.ins().jump(cont, &[]);
+            self.builder.switch_to_block(cont);
+            self.builder.seal_block(cont);
+        }
+    }
+
+    /// Emit rc_dec for each heap-typed field of a single constructor.
+    ///
+    /// Used by `emit_inline_drop_glue` for both the single-constructor case
+    /// and within each branch of the multi-constructor tag dispatch.
+    fn emit_field_decs(
+        &mut self,
+        adt_val: Value,
+        ctor: &ConstructorInfo,
+        subst: &std::collections::HashMap<cranelisp_types::TypeId, Type>,
+        dealloc: FuncId,
+    ) {
+        use crate::heap::HeapAdt;
+
+        for (i, field) in ctor.fields.iter().enumerate() {
+            let resolved_ty = substitute_type_inline(&field.ty, subst);
+            let category = HeapCategory::classify(&resolved_ty, Some(self.ctx.type_defs));
+            match category {
+                HeapCategory::AlwaysHeap => {
+                    let field_val = heap::heap_load(
+                        &mut self.builder,
+                        adt_val,
+                        HeapAdt::field_offset(i),
+                    );
+                    heap::emit_rc_dec(
+                        &mut self.builder,
+                        self.module,
+                        field_val,
+                        dealloc,
+                        None,
+                    );
+                }
+                HeapCategory::Mixed => {
+                    let field_val = heap::heap_load(
+                        &mut self.builder,
+                        adt_val,
+                        HeapAdt::field_offset(i),
+                    );
+                    heap::emit_rc_dec_guarded(
+                        &mut self.builder,
+                        self.module,
+                        field_val,
+                        dealloc,
+                        None,
+                        true,
+                    );
+                }
+                HeapCategory::NeverHeap => {}
+            }
+        }
+    }
+
+    // --- Return value identification ---
+
+    /// If `body` is a direct variable reference to a name in the current scope
+    /// frame, return that name. Used to skip rc_dec for the return value.
+    pub(crate) fn return_var_in_scope(
+        body: &Expr,
+        scope_frame: Option<&Vec<Symbol>>,
+    ) -> Option<Symbol> {
+        if let Expr::Var { name, .. } = body {
+            if let Some(frame) = scope_frame {
+                if frame.contains(name) {
+                    return Some(name.clone());
+                }
+            }
+        }
+        None
+    }
+
+    /// If `skip_var` is None and the return value has a heap type, emit
+    /// `rc_inc` on the value so it survives the subsequent scope cleanup.
+    /// Scope cleanup will dec all heap bindings, which may include the
+    /// value being returned (when the body is a non-trivial expression like
+    /// `if` or `match` that resolves to a scope binding). The caller will
+    /// dec it later, so the net ownership is correct.
+    pub(crate) fn protect_return_value(
+        &mut self,
+        skip_var: &Option<Symbol>,
+        body_val: Value,
+        body: &Expr,
+    ) {
+        if skip_var.is_some() {
+            return; // The skip_var mechanism already protects the return value.
+        }
+        if let Some(ty) = self.ctx.expr_types.get(&body.span()) {
+            let category = HeapCategory::classify(ty, Some(self.ctx.type_defs));
+            match category {
+                HeapCategory::AlwaysHeap => {
+                    heap::emit_rc_inc(&mut self.builder, body_val);
+                }
+                HeapCategory::Mixed => {
+                    heap::emit_rc_inc_guarded(&mut self.builder, body_val);
+                }
+                HeapCategory::NeverHeap => {}
+            }
+        }
+    }
+
     // --- Heap helpers (scaffolding for RC emission in Ring 2) ---
 
     /// Check if a type is heap-allocated and needs RC management.
-    #[allow(dead_code)]
     pub(crate) fn is_heap_type(&self, ty: &Type) -> bool {
         matches!(
             HeapCategory::classify(ty, Some(self.ctx.type_defs)),
@@ -364,6 +705,53 @@ impl<'a> FnCompiler<'a> {
             .get(&(name.clone(), span))
             .copied()
             .unwrap_or(false)
+    }
+}
+
+// --- Free helper functions for type variable resolution ---
+
+/// Collect all unique Var ids from a type, in order of first appearance.
+pub(crate) fn collect_var_ids_from_type(ty: &Type, ids: &mut Vec<cranelisp_types::TypeId>) {
+    match ty {
+        Type::Var(id) => {
+            if !ids.contains(id) {
+                ids.push(*id);
+            }
+        }
+        Type::ADT(_, args) => {
+            for a in args {
+                collect_var_ids_from_type(a, ids);
+            }
+        }
+        Type::Fn(params, ret) => {
+            for p in params {
+                collect_var_ids_from_type(p, ids);
+            }
+            collect_var_ids_from_type(ret, ids);
+        }
+        _ => {}
+    }
+}
+
+/// Substitute type variables in a type using a Var id -> Type mapping.
+pub(crate) fn substitute_type_inline(
+    ty: &Type,
+    subst: &std::collections::HashMap<cranelisp_types::TypeId, Type>,
+) -> Type {
+    match ty {
+        Type::Var(id) => {
+            subst.get(id).cloned().unwrap_or_else(|| ty.clone())
+        }
+        Type::ADT(name, args) => {
+            let new_args = args.iter().map(|a| substitute_type_inline(a, subst)).collect();
+            Type::ADT(name.clone(), new_args)
+        }
+        Type::Fn(params, ret) => {
+            let new_params = params.iter().map(|p| substitute_type_inline(p, subst)).collect();
+            let new_ret = Box::new(substitute_type_inline(ret, subst));
+            Type::Fn(new_params, new_ret)
+        }
+        _ => ty.clone(),
     }
 }
 

@@ -10,7 +10,7 @@
 //! Ring 2 will add `Num.+` which dispatches to `add-i64`/`add-f64` via trait resolution.
 //! These primitives survive permanently as the foundation for that dispatch.
 
-use crate::{Symbol, Type};
+use crate::{Symbol, Type, TypeName};
 
 /// A Ring 0 monomorphic primitive definition.
 ///
@@ -221,10 +221,10 @@ pub fn ring1_primitives() -> Vec<PrimitiveDef> {
         },
         PrimitiveDef {
             name: Symbol::from("parse-int"),
-            ty: Type::Fn(vec![Type::String], Box::new(Type::Int)),
-            // parse-int actually returns Option Int, but since the Option ADT
-            // must be user-defined per ring, we use Int as a placeholder.
-            // The runtime constructs the ADT layout directly.
+            ty: Type::Fn(
+                vec![Type::String],
+                Box::new(Type::ADT(TypeName::from("Option"), vec![Type::Int])),
+            ),
             cranelift_op: "parse-int",
             param_names: vec![Symbol::from("s")],
         },

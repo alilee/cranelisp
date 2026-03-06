@@ -106,7 +106,7 @@ impl TypeChecker {
         let ctor_scheme = self.find_same_name_constructor_scheme(name);
 
         // Register the type in the symbol table
-        self.symbol_table.insert(
+        self.current_symbol_table_mut().insert(
             Symbol::from(name.as_ref()),
             ModuleEntry::TypeDef {
                 info: type_def_info,
@@ -196,7 +196,7 @@ impl TypeChecker {
     ) -> Option<Scheme> {
         let ctor_sym = Symbol::from(type_name.as_ref());
         if let Some(ModuleEntry::Constructor { scheme, .. }) =
-            self.symbol_table.get(ctor_sym.as_ref())
+            self.current_symbol_table().get(ctor_sym.as_ref())
         {
             Some(scheme.clone())
         } else {
@@ -218,7 +218,7 @@ impl TypeChecker {
                 ctor_info, adt_type, type_var_ids,
             );
 
-            self.symbol_table.insert(
+            self.current_symbol_table_mut().insert(
                 ctor_info.name.clone(),
                 ModuleEntry::Constructor {
                     type_name: Symbol::from(name.as_ref()),
@@ -335,6 +335,7 @@ mod tests {
         }
     }
 
+    // spec: 05-definitions §5.2.3 — enum type registers constructors in symbol table
     #[test]
     fn test_register_enum_type() {
         let mut tc = TypeChecker::new();
@@ -352,9 +353,9 @@ mod tests {
         assert!(tc.type_defs.get(&TypeName::from("Color")).is_some());
 
         // Constructors should be in symbol table
-        assert!(tc.symbol_table.get("Red").is_some());
-        assert!(tc.symbol_table.get("Green").is_some());
-        assert!(tc.symbol_table.get("Blue").is_some());
+        assert!(tc.symbol_table().get("Red").is_some());
+        assert!(tc.symbol_table().get("Green").is_some());
+        assert!(tc.symbol_table().get("Blue").is_some());
 
         // Constructor type lookup
         assert_eq!(
@@ -363,6 +364,7 @@ mod tests {
         );
     }
 
+    // spec: 05-definitions §5.2.7 — nullary constructor scheme is ADT type
     #[test]
     fn test_constructor_scheme_is_adt_type() {
         let mut tc = TypeChecker::new();
@@ -376,13 +378,14 @@ mod tests {
         )
         .unwrap();
 
-        if let Some(ModuleEntry::Constructor { scheme, .. }) = tc.symbol_table.get("True2") {
+        if let Some(ModuleEntry::Constructor { scheme, .. }) = tc.symbol_table().get("True2") {
             assert_eq!(scheme.ty, Type::ADT(TypeName::from("Bool2"), vec![]));
         } else {
             panic!("True2 should be a Constructor entry");
         }
     }
 
+    // spec: 05-definitions §5.2.2 — polymorphic sum type: None and Some constructors
     #[test]
     fn test_register_polymorphic_option() {
         let mut tc = TypeChecker::new();
@@ -408,7 +411,7 @@ mod tests {
         .unwrap();
 
         // None should be polymorphic: forall [a]. (Option a)
-        if let Some(ModuleEntry::Constructor { scheme, .. }) = tc.symbol_table.get("None") {
+        if let Some(ModuleEntry::Constructor { scheme, .. }) = tc.symbol_table().get("None") {
             assert_eq!(scheme.vars.len(), 1, "None should have 1 quantified var");
             match &scheme.ty {
                 Type::ADT(name, args) => {
@@ -423,7 +426,7 @@ mod tests {
         }
 
         // Some should be polymorphic: forall [a]. (Fn [a] (Option a))
-        if let Some(ModuleEntry::Constructor { scheme, .. }) = tc.symbol_table.get("Some") {
+        if let Some(ModuleEntry::Constructor { scheme, .. }) = tc.symbol_table().get("Some") {
             assert_eq!(scheme.vars.len(), 1, "Some should have 1 quantified var");
             match &scheme.ty {
                 Type::Fn(params, ret) => {
@@ -446,6 +449,7 @@ mod tests {
         }
     }
 
+    // spec: 05-definitions §5.2.1 — product type constructor is function from fields to ADT
     #[test]
     fn test_register_product_type_with_fields() {
         let mut tc = TypeChecker::new();
@@ -474,7 +478,7 @@ mod tests {
         .unwrap();
 
         // MkPair :: (Fn [Int Bool] Pair)
-        if let Some(ModuleEntry::Constructor { scheme, .. }) = tc.symbol_table.get("MkPair") {
+        if let Some(ModuleEntry::Constructor { scheme, .. }) = tc.symbol_table().get("MkPair") {
             assert!(scheme.vars.is_empty(), "MkPair should be monomorphic");
             assert_eq!(
                 scheme.ty,
@@ -497,6 +501,7 @@ mod tests {
         assert_eq!(info.constructors[0].fields[1].ty, Type::Bool);
     }
 
+    // spec: 06-pattern-matching §6.5.1 — all constructors covered passes exhaustiveness
     #[test]
     fn test_exhaustiveness_all_covered() {
         let mut tc = TypeChecker::new();
@@ -520,6 +525,7 @@ mod tests {
             .is_ok());
     }
 
+    // spec: 06-pattern-matching §6.5.1 — missing constructor fails exhaustiveness check
     #[test]
     fn test_exhaustiveness_missing_constructor() {
         let mut tc = TypeChecker::new();
@@ -540,6 +546,7 @@ mod tests {
         assert!(err.message().contains("Blue"));
     }
 
+    // spec: 06-pattern-matching §6.5.1 — wildcard pattern covers all constructors
     #[test]
     fn test_exhaustiveness_wildcard_covers_all() {
         let mut tc = TypeChecker::new();
@@ -559,6 +566,7 @@ mod tests {
             .is_ok());
     }
 
+    // spec: 05-definitions §5.2.7 — constructors receive sequential integer tags
     #[test]
     fn test_constructor_tags() {
         let mut tc = TypeChecker::new();
@@ -610,6 +618,7 @@ mod tests {
         .unwrap();
     }
 
+    // spec: 05-definitions §5.2.2 — polymorphic type parameters recorded in TypeDefInfo
     #[test]
     fn test_polymorphic_type_params_recorded() {
         let mut tc = TypeChecker::new();
@@ -620,6 +629,7 @@ mod tests {
         assert_eq!(info.type_params[0].as_ref(), "a");
     }
 
+    // spec: 05-definitions §5.2.7 — polymorphic ADT constructors receive sequential tags
     #[test]
     fn test_polymorphic_constructor_tags() {
         let mut tc = TypeChecker::new();
@@ -632,6 +642,7 @@ mod tests {
         assert_eq!(info.constructors[1].tag, 1);
     }
 
+    // spec: 03-types §3.3 — polymorphic field type resolves to type variable
     #[test]
     fn test_polymorphic_field_has_var_type() {
         let mut tc = TypeChecker::new();
@@ -645,6 +656,7 @@ mod tests {
         assert!(matches!(some_ctor.fields[0].ty, Type::Var(_)));
     }
 
+    // spec: 06-pattern-matching §6.5.1 — exhaustiveness with mixed nullary and data constructors
     #[test]
     fn test_exhaustiveness_with_mixed_constructors() {
         let mut tc = TypeChecker::new();
@@ -686,6 +698,7 @@ mod tests {
             .is_ok());
     }
 
+    // spec: 05-definitions §5.2.4 — shortcut product type with bare field names gets type vars
     #[test]
     fn test_shortcut_product_type() {
         // (deftype Pair [first second]) -- bare field names with type vars
@@ -715,7 +728,7 @@ mod tests {
         .unwrap();
 
         // MkPair :: forall [a, b]. (Fn [a b] (Pair a b))
-        if let Some(ModuleEntry::Constructor { scheme, .. }) = tc.symbol_table.get("MkPair") {
+        if let Some(ModuleEntry::Constructor { scheme, .. }) = tc.symbol_table().get("MkPair") {
             assert_eq!(scheme.vars.len(), 2, "MkPair should have 2 quantified vars");
             match &scheme.ty {
                 Type::Fn(params, ret) => {
@@ -738,6 +751,7 @@ mod tests {
         }
     }
 
+    // spec: 05-definitions §5.2.2 — multi-parameter polymorphic ADT registration
     #[test]
     fn test_register_multi_param_type() {
         // (deftype (Either a b) (Left [:a val]) (Right [:b val]))
@@ -776,13 +790,14 @@ mod tests {
         assert_eq!(info.constructors.len(), 2);
 
         // Both constructors should have 2 quantified vars
-        if let Some(ModuleEntry::Constructor { scheme, .. }) = tc.symbol_table.get("Left") {
+        if let Some(ModuleEntry::Constructor { scheme, .. }) = tc.symbol_table().get("Left") {
             assert_eq!(scheme.vars.len(), 2);
         } else {
             panic!("Left should be a Constructor entry");
         }
     }
 
+    // spec: 03-types §3.2.2 — known_types tracks type parameter count for arity validation
     #[test]
     fn test_known_types_includes_param_count() {
         let mut tc = TypeChecker::new();
@@ -802,6 +817,7 @@ mod tests {
         assert_eq!(known.get(&TypeName::from("Color")), Some(&0));
     }
 
+    // spec: 05-definitions §5.2.7 — nullary monomorphic constructor scheme is bare ADT type
     #[test]
     fn test_build_constructor_scheme_nullary_mono() {
         let ctor = ConstructorInfo {
@@ -817,6 +833,7 @@ mod tests {
         assert_eq!(scheme.ty, Type::ADT(TypeName::from("Color"), vec![]));
     }
 
+    // spec: 05-definitions §5.2.1 — data constructor scheme is Fn from fields to ADT
     #[test]
     fn test_build_constructor_scheme_data_mono() {
         let ctor = ConstructorInfo {
@@ -841,6 +858,7 @@ mod tests {
         );
     }
 
+    // spec: 05-definitions §5.2.2 — polymorphic constructor scheme quantifies over type params
     #[test]
     fn test_build_constructor_scheme_polymorphic() {
         let ctor = ConstructorInfo {

@@ -129,6 +129,7 @@ impl Default for ModuleCodegenState {
 mod tests {
     use super::*;
 
+    // spec: 12-runtime §12.2 — GOT slot allocation for per-module function table
     #[test]
     fn test_allocate_slot() {
         let mut state = ModuleCodegenState::new();
@@ -138,6 +139,7 @@ mod tests {
         assert_eq!(slot2, 1);
     }
 
+    // spec: 12-runtime §12.2 — GOT slot update and retrieval
     #[test]
     fn test_update_and_get_slot() {
         let mut state = ModuleCodegenState::new();
@@ -147,6 +149,7 @@ mod tests {
         assert_eq!(state.get_slot(slot), Some(fake_ptr));
     }
 
+    // spec: 12-runtime §12.2 — GOT slot reuse for same symbol name
     #[test]
     fn test_ensure_slot_for_reuses() {
         let mut state = ModuleCodegenState::new();
@@ -156,6 +159,7 @@ mod tests {
         assert_eq!(slot1, slot2, "should reuse the same slot");
     }
 
+    // spec: 12-runtime §12.2 — GOT base pointer is valid (non-null)
     #[test]
     fn test_got_base_ptr_non_null() {
         let mut state = ModuleCodegenState::new();
@@ -163,6 +167,7 @@ mod tests {
         assert!(!ptr.is_null());
     }
 
+    // spec: 12-runtime §12.2 — GOT def update stores code pointer and metadata
     #[test]
     fn test_update_def() {
         let mut state = ModuleCodegenState::new();
