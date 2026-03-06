@@ -1,14 +1,14 @@
 /help
 3
++
+/sig +
+(+ 1 2)
+
 true
 "hello"
-(+ 1 2)
 (mul-i64 6 7)
 (eq-i64 3 3)
-
-+
 if
-Int
 
 (defn double [x] (mul-i64 x 2))
 double

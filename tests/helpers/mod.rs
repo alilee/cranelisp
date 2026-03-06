@@ -129,6 +129,7 @@ pub fn compile_and_run_heap(src: &str) -> (i64, Type, String) {
         result.value,
         &result.ty,
         &std::collections::HashMap::new(),
+        &std::collections::HashMap::new(),
     );
     (result.value, result.ty, display)
 }
@@ -178,6 +179,6 @@ pub fn repl_eval_display(session: &mut ReplSession, src: &str) -> String {
     if let Some(display) = result.definition_display {
         display
     } else {
-        format_result_value(result.value, &result.ty, session.type_defs())
+        format_result_value(result.value, &result.ty, session.type_defs(), session.type_modules())
     }
 }

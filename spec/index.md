@@ -4,7 +4,7 @@
 
 This document specifies the Cranelisp programming language. It describes the syntax, type system, and evaluation semantics in implementation-agnostic terms. Section 11 and Appendix A are non-normative reference documentation describing the reference implementation's standard library. Appendix C defines normative non-functional requirements that constrain implementation strategies. A conforming implementation may use any compilation strategy (JIT, AOT, interpretation) provided it satisfies the behavioral and non-functional requirements described herein.
 
-## Design Philosophy
+## Design Philosophy [Tested]
 
 Cranelisp is a statically typed, pure functional Lisp. Its design priorities are:
 
@@ -14,9 +14,9 @@ Cranelisp is a statically typed, pure functional Lisp. Its design priorities are
 - **Self-documenting**: Every construct in the language produces useful feedback when queried — its type, value, or description.
 - **Clojure-inspired naming**: Where a standard library is provided, naming follows Clojure conventions where possible.
 
-## Notation Conventions
+## Notation Conventions [Tested]
 
-### EBNF Grammar
+### EBNF Grammar [Tested]
 
 Grammar rules use Extended Backus-Naur Form:
 
@@ -33,7 +33,7 @@ Grammar rules use Extended Backus-Naur Form:
 | `[^ c]` | Any character except `c` |
 | `( ... )` | Grouping |
 
-### Requirement Levels
+### Requirement Levels [Tested]
 
 This specification uses terminology from RFC 2119:
 
@@ -41,7 +41,7 @@ This specification uses terminology from RFC 2119:
 - **SHOULD** / **SHOULD NOT**: Recommended behavior. Implementations may deviate with good reason, but the implications must be understood.
 - **MAY**: Optional behavior. Implementations are free to include or omit.
 
-### Annotations
+### Annotations [Tested]
 
 - **Note**: Informational context that is not normative.
 - **Implementation-defined**: Behavior where implementations may choose freely, provided the choice is documented.
@@ -67,7 +67,7 @@ This specification uses terminology from RFC 2119:
 - [B: Examples](appendix-b-examples.md) — Extended example programs
 - [C: Non-Functional Requirements](appendix-c-nfr.md) — Memory management, data structures, evaluation, concurrency, compilation, performance, target portability (normative)
 
-## Compilation Pipeline
+## Compilation Pipeline [Tested]
 
 A conforming implementation MUST process source code through the following logical phases (though phases may be combined or reordered as an optimization):
 

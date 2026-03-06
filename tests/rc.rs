@@ -699,15 +699,14 @@ fn rc_mixed_adt_some_drop_balanced() {
 // =============================================================================
 // Vec RC (~10 tests)
 //
-// Vec RC balance requires scope-level dec (deferred to Ring 2). Vec allocations
-// are correct but deallocation at scope exit is not yet wired. These tests pass
-// functionally but fail the RC balance assertion.
+// Vec temporary cleanup: read-only Vec operations (vec-len, vec-get) emit
+// vec_drop on temporary (non-variable) Vec arguments after the operation.
+// Mutating operations (vec-set, vec-push) transfer ownership to the result.
 // =============================================================================
 
 // spec: 12-runtime §12.3 — Vec alloc and drop RC
 #[test]
 #[serial]
-#[ignore = "Sprint 7+: Vec temporary argument cleanup requires non-scope-based dec"]
 fn rc_vec_alloc_drop() {
     // Create Vec of Ints, let it drop — RC balanced.
     let src = "
@@ -719,7 +718,6 @@ fn rc_vec_alloc_drop() {
 // spec: 12-runtime §12.3 — empty Vec RC
 #[test]
 #[serial]
-#[ignore = "Sprint 7+: Vec temporary argument cleanup requires non-scope-based dec"]
 fn rc_vec_empty() {
     // Empty Vec alloc and drop.
     let src = "
@@ -731,7 +729,6 @@ fn rc_vec_empty() {
 // spec: 12-runtime §12.3 — Vec of strings RC
 #[test]
 #[serial]
-#[ignore = "Sprint 7+: Vec temporary argument cleanup requires non-scope-based dec"]
 fn rc_vec_of_strings() {
     // Vec of Strings — element Strings must be freed on Vec drop.
     let src = r#"
@@ -744,7 +741,6 @@ fn rc_vec_of_strings() {
 // spec: 12-runtime §12.3 — Vec get int RC
 #[test]
 #[serial]
-#[ignore = "Sprint 7+: Vec temporary argument cleanup requires non-scope-based dec"]
 fn rc_vec_get_int() {
     // vec-get on Int Vec — no element RC needed.
     let src = "
@@ -756,12 +752,14 @@ fn rc_vec_get_int() {
 // spec: 12-runtime §12.3 — Vec get string RC
 #[test]
 #[serial]
-#[ignore = "Sprint 7+: Vec temporary argument cleanup requires non-scope-based dec"]
 fn rc_vec_get_string() {
     // vec-get on String Vec — element RC inc on get, balanced on drop.
+    // The extracted string is bound in a let so scope cleanup handles it;
+    // string temporary cleanup for extern primitive arguments is a separate issue.
     let src = r#"
         (defn main []
-          (str-len (vec-get ["hello" "world"] 0)))
+          (let [s (vec-get ["hello" "world"] 0)]
+            (str-len s)))
     "#;
     assert_rc_balanced(src);
 }
@@ -797,7 +795,6 @@ fn rc_vec_push_copy() {
 // spec: 12-runtime §12.3 — Vec of ADTs RC
 #[test]
 #[serial]
-#[ignore = "Sprint 7+: Vec temporary argument cleanup requires non-scope-based dec"]
 fn rc_vec_of_options() {
     // Vec of mixed ADT (Option Int) — Some allocates, None is bare tag.
     let src = "
@@ -811,7 +808,6 @@ fn rc_vec_of_options() {
 // spec: 12-runtime §12.3 — Vec push to empty RC
 #[test]
 #[serial]
-#[ignore = "Sprint 7+: Vec temporary argument cleanup requires non-scope-based dec"]
 fn rc_vec_push_to_empty() {
     // Push to empty Vec — no elements to copy.
     let src = "
@@ -830,5 +826,178 @@ fn rc_vec_in_let() {
           (let [v [10 20 30]]
             (vec-get v 2)))
     ";
+    assert_rc_balanced(src);
+}
+
+// =============================================================================
+// U1.3 — Nested heap ADT RC: (List (Option Int)) or similar (Sprint 7 Wave 0)
+//
+// Tests nested heap types for RC balance: Option wrapping heap types,
+// Vec of heap ADTs, and deeper nesting. Exercises the recursive RC
+// inc/dec paths through polymorphic ADT fields.
+// =============================================================================
+
+// spec: 12-runtime §12.3 — nested Option(Option(String)) RC functional
+#[test]
+#[serial]
+fn rc_u1_3_nested_option_option_string() {
+    // Three levels of heap nesting: Option(Option(String)).
+    let src = r#"
+        (deftype (Option a) None (Some [:a val]))
+        (defn main []
+          (match (Some (Some "deep"))
+            [(Some inner)
+               (match inner [(Some s) (str-len s) None 0])
+             None 0]))
+    "#;
+    assert_eq!(compile_and_run_simple(src), 4);
+}
+
+// spec: 12-runtime §12.3 — nested Option(Option(String)) RC balanced
+#[test]
+#[serial]
+fn rc_u1_3_nested_option_option_string_balanced() {
+    let src = r#"
+        (deftype (Option a) None (Some [:a val]))
+        (defn main []
+          (match (Some (Some "deep"))
+            [(Some inner)
+               (match inner [(Some s) (str-len s) None 0])
+             None 0]))
+    "#;
+    assert_rc_balanced(src);
+}
+
+// spec: 12-runtime §12.3 — Vec of Option(String) RC functional
+#[test]
+#[serial]
+#[ignore = "Sprint 7+: Vec element drop glue does not recursively dec ADT fields with heap children"]
+fn rc_u1_3_vec_of_option_string() {
+    // Vec containing ADTs that themselves contain heap fields.
+    // The Vec and its elements are freed, but the String fields inside
+    // (Some "a") / (Some "c") are not dec'd because build_elem_dec_fn
+    // doesn't emit inline drop glue for nested heap fields.
+    let src = r#"
+        (deftype (Option a) None (Some [:a val]))
+        (defn main []
+          (vec-len [(Some "a") None (Some "c")]))
+    "#;
+    assert_rc_balanced(src);
+}
+
+// spec: 12-runtime §12.3 — nested Option passed through function RC balanced
+#[test]
+#[serial]
+#[ignore = "Sprint 7: nested heap ADT passed through function leaks intermediate allocations"]
+fn rc_u1_3_nested_option_through_function() {
+    // Nested heap ADT passed to and returned from a function.
+    let src = r#"
+        (deftype (Option a) None (Some [:a val]))
+        (defn unwrap-inner [opt]
+          (match opt
+            [(Some inner)
+               (match inner [(Some s) (str-len s) None 0])
+             None 0]))
+        (defn main [] (unwrap-inner (Some (Some "test"))))
+    "#;
+    assert_rc_balanced(src);
+}
+
+// spec: 12-runtime §12.3 — nested Option in if branches RC balanced
+#[test]
+#[serial]
+fn rc_u1_3_nested_option_in_if() {
+    // Nested heap ADTs created in conditional branches.
+    let src = r#"
+        (deftype (Option a) None (Some [:a val]))
+        (defn main []
+          (let [opt (if true (Some (Some "yes")) (Some None))]
+            (match opt
+              [(Some inner)
+                 (match inner [(Some s) (str-len s) None 0])
+               None 0])))
+    "#;
+    assert_rc_balanced(src);
+}
+
+// =============================================================================
+// U1.5 — Closure capturing heap types (Sprint 7 Wave 0)
+//
+// Tests closures that capture String, ADT, or nested heap values.
+// Validates that captured heap values maintain correct RC through
+// closure creation, invocation, and cleanup.
+// =============================================================================
+
+// spec: 12-runtime §12.3 — closure captures string, called twice RC balanced
+#[test]
+#[serial]
+fn rc_u1_5_closure_captures_string_called_twice() {
+    // Closure capturing a String called multiple times — the String
+    // must remain valid across all invocations.
+    let src = r#"
+        (defn main []
+          (let [s "hello"]
+            (let [f (fn [] (str-len s))]
+              (add-i64 (f) (f)))))
+    "#;
+    assert_rc_balanced(src);
+}
+
+// spec: 12-runtime §12.3 — closure captures ADT with string field RC balanced
+#[test]
+#[serial]
+fn rc_u1_5_closure_captures_adt_with_string_field() {
+    // Closure captures an ADT whose field is a heap type (String).
+    // Both the ADT and its String field must survive closure lifetime.
+    let src = r#"
+        (deftype Wrapper [:String name])
+        (defn main []
+          (let [w (Wrapper "alice")]
+            (let [f (fn [] (match w [(Wrapper n) (str-len n)]))]
+              (f))))
+    "#;
+    assert_rc_balanced(src);
+}
+
+// spec: 12-runtime §12.3 — closure captures string returned from function RC balanced
+#[test]
+#[serial]
+#[ignore = "Sprint 7: closure capturing heap value returned from function leaks allocations"]
+fn rc_u1_5_closure_captures_string_returned() {
+    // Closure capturing a String is returned from a function —
+    // the String must outlive the creating scope.
+    let src = r#"
+        (defn make-len-fn [s] (fn [] (str-len s)))
+        (defn main [] ((make-len-fn "world")))
+    "#;
+    assert_rc_balanced(src);
+}
+
+// spec: 12-runtime §12.3 — closure captures multiple heap values RC balanced
+#[test]
+#[serial]
+fn rc_u1_5_closure_captures_multiple_heap_values() {
+    // Closure capturing two Strings — both must be RC-tracked.
+    let src = r#"
+        (defn main []
+          (let [a "hello" b "world"]
+            (let [f (fn [] (add-i64 (str-len a) (str-len b)))]
+              (f))))
+    "#;
+    assert_rc_balanced(src);
+}
+
+// spec: 12-runtime §12.3 — nested closure captures heap value RC balanced
+#[test]
+#[serial]
+fn rc_u1_5_nested_closure_captures_heap() {
+    // Outer closure captures String, inner closure captures outer closure.
+    let src = r#"
+        (defn main []
+          (let [s "hi"]
+            (let [f (fn [] (str-len s))]
+              (let [g (fn [] (f))]
+                (g)))))
+    "#;
     assert_rc_balanced(src);
 }

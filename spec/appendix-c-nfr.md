@@ -4,9 +4,9 @@
 
 Non-functional requirements (NFRs) differ from functional specification (Sections 1–12) in that they constrain the implementation space rather than the observable behavior. A program that runs correctly under one memory management strategy may violate NFRs if that strategy forecloses future capabilities the language commits to.
 
-## C.1 Memory Management Properties
+## C.1 Memory Management Properties [Tested]
 
-### C.1.1 Deterministic Deallocation
+### C.1.1 Deterministic Deallocation [Tested tests/rc.rs::rc_string_alloc_and_drop]
 
 A conforming implementation MUST deallocate heap values deterministically — at a point in the program that is statically predictable from the source code, not deferred to a later collection phase. This rules out tracing garbage collectors as the primary strategy (though a tracing collector MAY supplement a deterministic allocator for cycle detection if the language later introduces mutable references).
 
@@ -16,7 +16,7 @@ A conforming implementation MUST deallocate heap values deterministically — at
 
 **Activation**: Ring 1 (heap introduction).
 
-### C.1.2 Reference-Count-Equals-One Optimization (RC=1 COW)
+### C.1.2 Reference-Count-Equals-One Optimization (RC=1 COW) [Tested tests/rc.rs::rc_vec_set_copy]
 
 When a heap value has a reference count of exactly 1, operations that would otherwise copy MUST be permitted to mutate in place. This is the **copy-on-write** property: the implementation checks the reference count at runtime and either copies (rc > 1) or mutates (rc == 1). The optimization is semantically invisible — the caller observes pure functional behavior regardless.
 
@@ -32,7 +32,7 @@ This applies to:
 
 **Activation**: Ring 1 (Vec COW in Ring 1 Chunk D or Sprint 3).
 
-### C.1.3 Consuming Calling Convention
+### C.1.3 Consuming Calling Convention [Tested tests/rc.rs::rc_string_passed_to_function]
 
 Heap-typed function parameters MUST use a consuming calling convention: the callee owns the argument and is responsible for decrementing it (or transferring ownership onward). The caller performs a reference count increment for non-last-use arguments and transfers ownership (no increment) for last-use arguments.
 
@@ -42,7 +42,7 @@ Heap-typed function parameters MUST use a consuming calling convention: the call
 
 **Activation**: Ring 1 (heap introduction).
 
-### C.1.4 Per-Type Drop Glue
+### C.1.4 Per-Type Drop Glue [Tested tests/rc.rs::rc_adt_in_match_arms]
 
 When a heap value's reference count reaches zero, the implementation MUST invoke type-specific drop glue that recursively decrements any heap-typed fields before freeing the allocation. Drop glue functions MUST be generated per type — not dispatched through a generic mechanism that examines runtime type tags.
 
@@ -52,9 +52,9 @@ When a heap value's reference count reaches zero, the implementation MUST invoke
 
 **Activation**: Ring 1 (heap introduction).
 
-## C.2 Data Structure Strategies
+## C.2 Data Structure Strategies [R3 S9]
 
-### C.2.1 Persistent Vec (RRB Tree)
+### C.2.1 Persistent Vec (RRB Tree) [Tested tests/ring1.rs::vec_get_first]
 
 The implementation MUST NOT commit to a flat-array Vec representation in a way that precludes upgrading to a persistent data structure based on Relaxed Radix Balanced (RRB) trees. RRB trees provide O(log₃₂ n) random access, O(log₃₂ n) update, and O(log₃₂ n) concatenation — with structural sharing that makes persistent functional updates cheap.
 
@@ -66,7 +66,7 @@ The implementation MUST NOT commit to a flat-array Vec representation in a way t
 
 **Activation**: Post-Ring 4. The flat-array representation is acceptable through the ring sequence. RRB upgrade is a runtime-only change that does not affect language semantics.
 
-### C.2.2 Persistent Map (HAMT)
+### C.2.2 Persistent Map (HAMT) [R3 S9]
 
 When the `Map` type is introduced, the implementation SHOULD use a Hash Array Mapped Trie (HAMT) as the backing data structure. HAMTs provide O(log₃₂ n) lookup, insert, and delete with structural sharing.
 
@@ -79,7 +79,7 @@ When the `Map` type is introduced, the implementation SHOULD use a Hash Array Ma
 
 **Activation**: Ring 2 or Ring 3 (when trait dispatch enables `Hash` and `Eq` constraints on key types).
 
-### C.2.3 Rope Strings
+### C.2.3 Rope Strings [Tested tests/ring1.rs::string_concat]
 
 The implementation MUST NOT commit to a flat byte-array String representation in a way that precludes upgrading to a rope data structure. Ropes provide O(log n) concatenation and O(log n) indexing for large strings.
 
@@ -91,7 +91,7 @@ The implementation MUST NOT commit to a flat byte-array String representation in
 
 **Activation**: Post-Ring 4. The flat representation is acceptable through the ring sequence.
 
-### C.2.4 Collection Extensibility
+### C.2.4 Collection Extensibility [R3 S9]
 
 The standard library SHOULD be able to provide alternative collection implementations alongside the built-in primitives. Users SHOULD be able to choose the collection type that best fits their use case, and write code that works generically across collection types via traits.
 
@@ -107,9 +107,9 @@ The standard library SHOULD be able to provide alternative collection implementa
 
 **Activation**: Ring 2 (when trait dispatch enables collection-level abstraction). Advanced collection types are post-Ring 4.
 
-## C.3 Evaluation Properties
+## C.3 Evaluation Properties [R4 S11]
 
-### C.3.1 Lenient Evaluation
+### C.3.1 Lenient Evaluation [R4 S11]
 
 An implementation MUST evaluate independent `let` bindings in parallel where a cost heuristic determines it is beneficial. This is normatively specified in [§12.4.3](12-runtime.md#1243-lenient-evaluation).
 
@@ -117,7 +117,7 @@ An implementation MUST evaluate independent `let` bindings in parallel where a c
 
 **Activation**: Ring 4 (effects and runtime infrastructure). The mechanism requires safe stack management for parallel evaluation of pure sub-expressions.
 
-### C.3.2 Automatic IO Scheduling
+### C.3.2 Automatic IO Scheduling [R4 S11]
 
 The compiler MUST perform independence analysis on `bind!` chains and insert parallel execution nodes for commutative, data-independent effect pairs. This is normatively specified in [§10.12](10-io.md).
 
@@ -125,7 +125,7 @@ The compiler MUST perform independence analysis on `bind!` chains and insert par
 
 **Activation**: Ring 4 (IO and platform infrastructure).
 
-### C.3.3 Tail Call Optimization
+### C.3.3 Tail Call Optimization [Tested tests/ring0.rs::tco_deep_countdown]
 
 An implementation SHOULD optimize self-recursive tail calls into loops. This is normatively specified in [§12.5](12-runtime.md#125-tail-call-optimization).
 
@@ -133,9 +133,9 @@ An implementation SHOULD optimize self-recursive tail calls into loops. This is 
 
 **Activation**: Self-TCO in Ring 0. Mutual TCO and closure TCO are future extensions.
 
-## C.4 Concurrency Preparation
+## C.4 Concurrency Preparation [R4 S11]
 
-### C.4.1 Thread-Safe Reference Counting
+### C.4.1 Thread-Safe Reference Counting [Tested tests/rc.rs::rc_string_alloc_and_drop]
 
 Reference count operations MUST use atomic instructions (or equivalent memory ordering guarantees) so that values can be shared across concurrent evaluation contexts without data races.
 
@@ -145,7 +145,7 @@ Reference count operations MUST use atomic instructions (or equivalent memory or
 
 **Activation**: Ring 1 (heap introduction). Atomic operations MUST be used from the start — retrofitting atomicity is error-prone and requires auditing every RC operation site.
 
-### C.4.2 Value Immutability
+### C.4.2 Value Immutability [Tested tests/rc.rs::rc_vec_set_copy]
 
 All user-visible values MUST be immutable after construction. There is no `set!` or mutable reference. This is a language-level guarantee that enables safe concurrent access without synchronization beyond reference counting.
 
@@ -155,7 +155,7 @@ All user-visible values MUST be immutable after construction. There is no `set!`
 
 **Activation**: Always (language invariant from Ring 0).
 
-### C.4.3 No Global Mutable State in Generated Code
+### C.4.3 No Global Mutable State in Generated Code [R4 S11]
 
 Generated code MUST NOT use global mutable state (static mutable variables, global registries) for value-level operations. Module-level definitions are immutable after initialization. The GOT (Global Offset Table) used for JIT linking is a compile-time mechanism, not a runtime-mutable store.
 
@@ -165,7 +165,7 @@ Generated code MUST NOT use global mutable state (static mutable variables, glob
 
 **Activation**: Always (structural invariant from Ring 0).
 
-### C.4.4 Concurrent Communication
+### C.4.4 Concurrent Communication [R4 S11]
 
 The architecture MUST NOT preclude adding CSP-style (Communicating Sequential Processes) concurrent channels as a stdlib capability. Channels would enable coordination between concurrent tasks, complementing the automatic parallelism provided by lenient evaluation (§C.3.1) and IO scheduling (§C.3.2).
 
@@ -181,9 +181,9 @@ The architecture MUST NOT preclude adding CSP-style (Communicating Sequential Pr
 
 **Activation**: Post-Ring 4. Channels are a stdlib + runtime addition, not a language change. The shared infrastructure with lenient evaluation must be in place first.
 
-## C.5 Compilation Properties
+## C.5 Compilation Properties [R4 S11]
 
-### C.5.1 Static Monomorphisation
+### C.5.1 Static Monomorphisation [Tested tests/ring2.rs::constrained_add_int]
 
 All constrained polymorphic functions MUST be monomorphised at call sites. The compiler generates specialized code for each concrete type instantiation. There is no runtime type dispatch for polymorphic functions.
 
@@ -193,7 +193,7 @@ All constrained polymorphic functions MUST be monomorphised at call sites. The c
 
 **Activation**: Ring 0 (type inference), Ring 2 (trait dispatch and constrained polymorphism).
 
-### C.5.2 Representation Containment
+### C.5.2 Representation Containment [R1 S2]
 
 For each heap-allocated type (String, Vec, ADT, Closure), knowledge of the runtime representation MUST be confined to at most three locations:
 
@@ -209,7 +209,7 @@ No other part of the compiler (parser, AST builder, typechecker, pipeline wiring
 
 **Activation**: Ring 1 (heap introduction).
 
-### C.5.3 Three-Mode Compilation Strategy
+### C.5.3 Three-Mode Compilation Strategy [R4 S11]
 
 The architecture MUST support three compilation modes sharing a common frontend and typechecker:
 
@@ -227,7 +227,7 @@ The runtime extern function contract (function names, calling conventions, signa
 
 **Activation**: Dev mode and quick build mode in Ring 4 (module caching produces relocatable objects). Release mode is post-Ring 4 (LLVM backend is a future crate addition).
 
-### C.5.4 Target Portability
+### C.5.4 Target Portability [R4 S11]
 
 The architecture MUST NOT preclude targeting compilation platforms beyond the host native platform. Specifically, the architecture MUST support a future WASM (WebAssembly) target, enabling Cranelisp programs to run in browser and WASI environments.
 
@@ -242,13 +242,13 @@ The architecture MUST NOT preclude targeting compilation platforms beyond the ho
 
 **Activation**: Post-Ring 4. No WASM targeting is required during the ring sequence, but architectural decisions during Rings 1–4 MUST NOT foreclose it.
 
-## C.6 Performance Targets
+## C.6 Performance Targets [Tested]
 
-### C.6.1 Compilation Latency
+### C.6.1 Compilation Latency [Tested tests/repl_experience.rs::simple_eval_is_fast]
 
 REPL expressions SHOULD compile and execute in under 10ms for simple expressions and under 100ms for module-sized compilation units. This is not a hard requirement but guides architectural decisions — e.g., preferring Cranelift (fast compilation) over LLVM (slow compilation, faster output) for the JIT tier.
 
-### C.6.2 Allocation Pressure
+### C.6.2 Allocation Pressure [Tested tests/rc.rs::rc_adt_enum_no_alloc]
 
 The implementation SHOULD minimize allocation pressure for common patterns:
 - Scalar operations (arithmetic, comparison, boolean logic) MUST NOT allocate.
@@ -256,7 +256,7 @@ The implementation SHOULD minimize allocation pressure for common patterns:
 - Nullary ADT constructors MUST NOT allocate (bare tag representation).
 - RC=1 COW operations MUST NOT allocate when the reference count is 1.
 
-### C.6.3 Test Suite Performance
+### C.6.3 Test Suite Performance [Tested tests/repl_experience.rs::simple_eval_is_fast]
 
 The full test suite SHOULD complete in under 30 seconds. Individual tests SHOULD complete in under 100ms. These targets guide decisions about test infrastructure (in-process vs. subprocess) and compilation caching.
 

@@ -88,6 +88,8 @@ impl<'a> FnCompiler<'a> {
                 let result = self.compile_vec_get(
                     &args[0], arg_vals[0], arg_vals[1], span,
                 )?;
+                // Drop temporary Vec after read — it's consumed but not returned.
+                self.emit_vec_drop_if_temporary(&args[0], arg_vals[0], span)?;
                 Ok(Some(result))
             }
             "vec-set" if args.len() == 3 => {
@@ -104,6 +106,8 @@ impl<'a> FnCompiler<'a> {
             }
             "vec-len" if args.len() == 1 => {
                 let result = self.compile_vec_len(arg_vals[0]);
+                // Drop temporary Vec after read — it's consumed but not returned.
+                self.emit_vec_drop_if_temporary(&args[0], arg_vals[0], span)?;
                 Ok(Some(result))
             }
             _ => Ok(None),
@@ -497,6 +501,38 @@ impl<'a> FnCompiler<'a> {
         }
     }
 
+    /// Emit `vec_drop(vec_val, elem_dec_fn_ptr)` if the Vec expression is a
+    /// temporary (not a named variable). Named variables are cleaned up at
+    /// scope exit; temporaries have no scope entry and would leak.
+    fn emit_vec_drop_if_temporary(
+        &mut self,
+        vec_expr: &Expr,
+        vec_val: Value,
+        span: Span,
+    ) -> Result<(), CranelispError> {
+        // Named variables are handled by scope cleanup — skip.
+        if matches!(vec_expr, Expr::Var { .. }) {
+            return Ok(());
+        }
+
+        let vec_drop_id = self.ctx.vec_drop_func_id.ok_or_else(|| {
+            CranelispError::CodegenError {
+                message: "runtime/vec_drop not declared".into(),
+                span,
+            }
+        })?;
+
+        let elem_type = self.vec_elem_type(vec_expr);
+        let dec_fn_ptr = self.resolve_elem_dec_fn_ptr(&elem_type, span)?;
+
+        let vec_drop_ref = self
+            .module
+            .declare_func_in_func(vec_drop_id, self.builder.func);
+        self.builder.ins().call(vec_drop_ref, &[vec_val, dec_fn_ptr]);
+
+        Ok(())
+    }
+
     /// Resolve or generate a per-element-type inc function pointer.
     ///
     /// Returns iconst(0) for NeverHeap types (runtime skips the call).
@@ -530,8 +566,7 @@ impl<'a> FnCompiler<'a> {
     /// Resolve or generate a per-element-type dec function pointer.
     ///
     /// Returns iconst(0) for NeverHeap types (runtime skips the call).
-    /// Used by Vec drop glue (when integrated with scope-exit RC emission).
-    #[allow(dead_code)]
+    /// Used by Vec drop for temporary Vec cleanup after read-only operations.
     fn resolve_elem_dec_fn_ptr(
         &mut self,
         elem_type: &Option<Type>,
@@ -628,8 +663,7 @@ impl<'a> FnCompiler<'a> {
     /// Build a standalone dec function: `(val: i64) -> i64`.
     ///
     /// If `guarded` is true, guards against bare nullary tags.
-    /// Used by Vec drop glue (when integrated with scope-exit RC emission).
-    #[allow(dead_code)]
+    /// Used by Vec drop for temporary Vec cleanup after read-only operations.
     fn build_elem_dec_fn(
         &mut self,
         guarded: bool,

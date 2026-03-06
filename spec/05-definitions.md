@@ -1,10 +1,10 @@
-# 5. Definitions
+# 5. Definitions [R3 S8]
 
 This section specifies the top-level definition forms in Cranelisp. All definitions appear at the top level of a source file or module. They introduce named functions, types, traits, macros, constants, and module structure into the program.
 
-## 5.1 Function Definition (`defn` / `defn-`)
+## 5.1 Function Definition (`defn` / `defn-`) [R3 S8]
 
-### 5.1.1 Single-Signature
+### 5.1.1 Single-Signature [Tested tests/ring0::repl_define_and_call, tests/ring0::repl_multiple_params, tests/ring0::error_duplicate_param_names, tests/e2e::e2e_ring0_defn_and_call]
 
 ```ebnf
 defn_form       = '(' ('defn' | 'defn-') name docstring? params body ')'
@@ -40,7 +40,7 @@ A function definition binds a name to a function value. The parameter list uses 
 - When no annotation is provided, the parameter type is inferred via Hindley-Milner unification.
 - The return type is always inferred; there is no return type annotation syntax.
 
-### 5.1.2 Multi-Signature
+### 5.1.2 Multi-Signature [R3 S8]
 
 ```ebnf
 defn_multi_form = '(' ('defn' | 'defn-') name docstring? variant+ ')'
@@ -64,7 +64,7 @@ A multi-signature function definition provides multiple variants with different 
 - Variants MAY have different numbers of parameters.
 - The mangled name for each variant is the function name followed by `$` and the parameter types joined by `+`. For example, `size` with a `Vec` parameter becomes `size$Vec`.
 
-### 5.1.3 Auto-Currying
+### 5.1.3 Auto-Currying [R3 S8]
 
 When any function (single or multi-signature) is called with fewer arguments than it declares, the call returns a closure that captures the provided arguments and accepts the remaining ones. This is auto-currying.
 
@@ -75,7 +75,7 @@ When any function (single or multi-signature) is called with fewer arguments tha
   (inc 5))              ; -> 6
 ```
 
-## 5.2 Type Definition (`deftype` / `deftype-`)
+## 5.2 Type Definition (`deftype` / `deftype-`) [R2 S7]
 
 ```ebnf
 deftype_form   = '(' ('deftype' | 'deftype-') type_head docstring? type_body ')'
@@ -94,7 +94,7 @@ constructor    = name                          (* nullary *)
 
 A type definition introduces an algebraic data type (ADT) into scope. Three shapes are supported: product types, sum types, and enums.
 
-### 5.2.1 Product Type (Single Constructor)
+### 5.2.1 Product Type (Single Constructor) [Tested tests/ring1::adt_product_construct_and_match, tests/ring1::adt_product_get_y, tests/ring1::adt_product_multi_field, tests/ring1::repl_adt_product, tests/e2e::e2e_ring1_adt_product]
 
 When the type body is a bracketed field list, the type name doubles as the sole constructor.
 
@@ -108,7 +108,7 @@ When the type body is a bracketed field list, the type name doubles as the sole 
 - Fields are alternating `:Type name` pairs within brackets.
 - The constructor behaves as a function: `Point :: (Fn [Int Int] Point)`.
 
-### 5.2.2 Sum Type (Multiple Constructors)
+### 5.2.2 Sum Type (Multiple Constructors) [Tested tests/ring1::adt_sum_option_some, tests/ring1::adt_sum_option_none, tests/ring1::adt_either_type, tests/ring1::adt_enum_mixed_nullary_and_data, tests/e2e::e2e_ring1_adt_sum]
 
 When the type body contains one or more constructor forms, each introduces a distinct variant.
 
@@ -128,7 +128,7 @@ When the type body contains one or more constructor forms, each introduces a dis
 - Nullary constructors are values: `None :: (Option a)`.
 - Data constructors are functions: `Some :: (Fn [a] (Option a))`.
 
-### 5.2.3 Enum (All Nullary)
+### 5.2.3 Enum (All Nullary) [Tested tests/ring0::repl_adt_enum, tests/ring0::repl_enum_definition_and_use, tests/repl_experience::multiple_enum_types_in_session, tests/repl_experience::enum_with_many_constructors, tests/examples::example_06_enums]
 
 An enum is a sum type where all constructors are nullary.
 
@@ -138,7 +138,7 @@ An enum is a sum type where all constructors are nullary.
 
 This is syntactically a sum type with no field lists. Enum values are represented as bare integer tags at runtime (see [Section 12: Runtime Model](12-runtime.md)).
 
-### 5.2.4 Shortcut Syntax -- Inferred Type Parameters
+### 5.2.4 Shortcut Syntax -- Inferred Type Parameters [Tested tests/ring1::adt_shortcut_syntax]
 
 When field brackets contain bare names (no `:Type` prefix), each unique bare name is assigned a fresh type variable. Type parameters on the type head are inferred and need not be written.
 
@@ -168,7 +168,7 @@ When field brackets contain bare names (no `:Type` prefix), each unique bare nam
 ;; => (deftype (Named a) (Named [:String name :a value]))
 ```
 
-### 5.2.5 Docstrings on Types and Constructors
+### 5.2.5 Docstrings on Types and Constructors [R2 S7]
 
 An optional docstring MAY appear after the type head (before the body) and after each constructor name (before its field list).
 
@@ -178,7 +178,7 @@ An optional docstring MAY appear after the type head (before the body) and after
   (Some "Wraps a present value" [:a val]))
 ```
 
-### 5.2.6 Generated Accessors
+### 5.2.6 Generated Accessors [Tested tests/ring1::adt_product_get_y]
 
 For each named field in a type definition, an accessor function is automatically generated in the enclosing scope. The accessor's name is the field name.
 
@@ -205,14 +205,14 @@ For each named field in a type definition, an accessor function is automatically
 
 Accessor functions are first-class values and can be passed as arguments or bound to variables.
 
-### 5.2.7 Constructor Semantics
+### 5.2.7 Constructor Semantics [Tested tests/ring1::error_adt_constructor_wrong_arg_count, tests/ring1::error_adt_constructor_wrong_type]
 
 - **Nullary constructors** are values, not functions. Entering a nullary constructor at the REPL displays its type.
 - **Data constructors** are functions. They participate in auto-currying: `(let [f Some] (f 42))` works.
 - Constructor names are conventionally capitalized, but this is not enforced.
 - Constructor tags are assigned sequentially starting from 0 in definition order.
 
-## 5.3 Trait Declaration (`deftrait` / `deftrait-`)
+## 5.3 Trait Declaration (`deftrait` / `deftrait-`) [R3 S9]
 
 ```ebnf
 deftrait_form  = '(' ('deftrait' | 'deftrait-') trait_head docstring? method_sig+ ')'
@@ -227,7 +227,7 @@ type_expr      = 'Self'                       (* implementing type *)
 
 A trait declaration introduces a named interface with one or more method signatures.
 
-### 5.3.1 Simple Traits
+### 5.3.1 Simple Traits [Tested tests/ring2::user_trait_simple, tests/ring2::repl_user_trait, tests/repl_experience::ring2a_deftrait_in_repl]
 
 ```clojure
 (deftrait Display "Convert a value to its string representation"
@@ -241,7 +241,7 @@ A trait declaration introduces a named interface with one or more method signatu
 - `Self` refers to the type that will implement the trait.
 - An optional docstring MAY appear on the trait itself and on each method.
 
-### 5.3.2 Higher-Kinded Traits
+### 5.3.2 Higher-Kinded Traits [R3 S9]
 
 When the trait head includes type parameters, the trait operates on type constructors rather than concrete types.
 
@@ -254,13 +254,13 @@ When the trait head includes type parameters, the trait operates on type constru
 - The type parameter `f` represents a type constructor (e.g., `Option`, `List`).
 - Method signatures MAY use the type parameter applied to type variables: `(f a)`.
 
-### 5.3.3 Trait Semantics
+### 5.3.3 Trait Semantics [Tested tests/ring2::trait_plus_int, tests/ring2::error_plus_bool]
 
 - A trait declaration introduces method names into scope. These names cannot be used until at least one implementation is provided.
 - Method signatures declare the type contract. Implementations MUST conform to the declared signature.
 - Traits are the mechanism for operator overloading: `+`, `-`, `*`, `/` are methods of the `Num` trait; `=` is a method of `Eq`; `<`, `>`, `<=`, `>=` are methods of `Ord`.
 
-## 5.4 Trait Implementation (`impl`)
+## 5.4 Trait Implementation (`impl`) [R3 S9]
 
 ```ebnf
 impl_form      = '(' 'impl' trait_name target_type method_defn+ ')'
@@ -274,7 +274,7 @@ method_defn    = '(' 'defn' name params body ')' (* follows defn syntax *)
 
 A trait implementation provides method bodies for a specific type.
 
-### 5.4.1 Concrete Implementation
+### 5.4.1 Concrete Implementation [Tested tests/ring2::user_trait_simple, tests/ring2::user_trait_adt, tests/ring2::user_trait_multiple_impls]
 
 ```clojure
 (impl Display Int
@@ -288,7 +288,7 @@ A trait implementation provides method bodies for a specific type.
        Blue "Blue"])))
 ```
 
-### 5.4.2 Concrete ADT Instantiation
+### 5.4.2 Concrete ADT Instantiation [R2 S7]
 
 ```clojure
 (impl Display (Option Int)
@@ -300,7 +300,7 @@ A trait implementation provides method bodies for a specific type.
 
 This implements Display for `(Option Int)` specifically. The `(show x)` call in the `Some` arm dispatches to the `Int` implementation.
 
-### 5.4.3 Polymorphic Implementation
+### 5.4.3 Polymorphic Implementation [R2 S7]
 
 ```clojure
 (impl Display (Option :Display a)
@@ -314,7 +314,7 @@ This implements Display for `(Option Int)` specifically. The `(show x)` call in 
 - The implementation methods become constrained polymorphic functions, monomorphised at each call site.
 - `(show (Some 42))` generates a specialization `show$Option$Int`.
 
-### 5.4.4 Higher-Kinded Implementation
+### 5.4.4 Higher-Kinded Implementation [R3 S9]
 
 For HKT traits, the target is a bare type constructor name (not an applied type):
 
@@ -326,14 +326,14 @@ For HKT traits, the target is a bare type constructor name (not an applied type)
        (Some x) (Some (f x))])))
 ```
 
-### 5.4.5 Implementation Semantics
+### 5.4.5 Implementation Semantics [Tested tests/ring2::user_trait_simple, tests/ring2::error_plus_bool]
 
 - `impl` has no private variant. All trait implementations are visible wherever the trait and type are visible.
 - Method definitions within `impl` follow `defn` syntax but MUST NOT include docstrings (the docstring comes from the trait declaration).
 - The method parameter count and types MUST conform to the trait's declared signature.
 - Method bodies are type-checked against the instantiated trait signature.
 
-## 5.5 Macro Definition (`defmacro` / `defmacro-`)
+## 5.5 Macro Definition (`defmacro` / `defmacro-`) [R3 S9]
 
 ```ebnf
 defmacro_form  = '(' ('defmacro' | 'defmacro-') name docstring? macro_params body ')'
@@ -382,7 +382,7 @@ A macro MAY return `(begin form1 form2 ...)` to splice multiple top-level forms 
     (defn ~(make-name2 name) [] ~b)))
 ```
 
-## 5.6 Constants (`const` / `const-`)
+## 5.6 Constants (`const` / `const-`) [R3 S9]
 
 ```ebnf
 const_form = '(' ('const' | 'const-') name expr ')'
@@ -404,7 +404,7 @@ A constant definition creates an inline substitution. Every reference to the con
 - The value expression MUST be a literal or a form that can be quoted as `Sexp`. It is not evaluated -- it is substituted syntactically.
 - `const-` creates a module-private constant.
 
-## 5.7 Named Values (`def` / `def-`)
+## 5.7 Named Values (`def` / `def-`) [R3 S9]
 
 ```ebnf
 def_form = '(' ('def' | 'def-') name expr ')'
@@ -426,7 +426,7 @@ A named value definition evaluates its expression once and binds the result to a
 - Unlike `const`, the value expression IS evaluated. This means `def` can bind computed values, not just literals.
 - `def-` creates a module-private named value.
 
-## 5.8 Module Declaration (`mod`)
+## 5.8 Module Declaration (`mod`) [Tested tests/ring2::single_file_via_run_project, tests/ring2::module_missing_file_error, tests/ring2::module_cycle_detection]
 
 ```ebnf
 mod_form = '(' 'mod' module_name ')'
@@ -448,7 +448,7 @@ A module declaration introduces a submodule. It triggers module loading: if a so
 - `mod` does not switch into the child module. In a REPL, use `/mod name` to switch.
 - `mod-` declares a private submodule. Other modules MUST NOT import from or reference names in a private submodule. See [Section 8.2.3](08-modules.md#823-private-submodule-declaration).
 
-## 5.9 Import and Export
+## 5.9 Import and Export [R2 S7]
 
 ```ebnf
 import_form = '(' 'import' import_body ')'
@@ -479,7 +479,7 @@ Imports bring names from other modules into the current scope. Exports re-export
 - All non-prelude modules receive an implicit `(import [prelude [*]])`. The prelude itself and the `primitives` module are exempt.
 - See [Section 8: Modules](08-modules.md) for full module resolution semantics.
 
-## 5.10 Platform Declaration
+## 5.10 Platform Declaration [R4 S10]
 
 ```ebnf
 platform_form = '(' 'platform' platform_name ')'
@@ -500,7 +500,7 @@ A platform declaration specifies which platform DLL provides IO primitives for t
 - `platform` is processed during the module loading phase, before macro expansion. It is NOT an AST node.
 - See [Section 10: IO Model](10-io.md) for platform loading and IO semantics.
 
-## 5.11 Visibility
+## 5.11 Visibility [R2 S7]
 
 All definitions are **public by default**. A `-` suffix on the definition keyword makes the definition private to the defining module.
 
@@ -520,7 +520,7 @@ All definitions are **public by default**. A `-` suffix on the definition keywor
 - `impl` has no private variant. Trait implementations are always visible wherever both the trait and the type are in scope.
 - `import`, `export`, and `platform` have no private variants.
 
-## 5.12 Docstrings
+## 5.12 Docstrings [R2 S7]
 
 Definitions MAY include an optional docstring -- a string literal placed between the name and the parameter list (or body).
 
@@ -539,9 +539,9 @@ Definitions MAY include an optional docstring -- a string literal placed between
 - Docstrings have no effect on program semantics.
 - `const`, `def`, `impl`, `mod`, `import`, `export`, and `platform` do not support docstrings.
 
-## 5.13 Definition Ordering
+## 5.13 Definition Ordering [R3 S9]
 
-### 5.13.1 Functions, Types, Traits, and Implementations
+### 5.13.1 Functions, Types, Traits, and Implementations [Tested tests/ring0::forward_reference, tests/ring0::mutual_forward_references, tests/ring0::dual_mode_forward_reference]
 
 Top-level definitions of functions, types, traits, and implementations MAY reference each other freely, including forward references. The implementation uses a two-pass approach:
 
@@ -559,7 +559,7 @@ This means a function may call another function defined later in the file, and a
   (if (= n 0) false (is-even (- n 1))))
 ```
 
-### 5.13.2 Macros
+### 5.13.2 Macros [R3 S9]
 
 Macros MUST be defined before use. A macro cannot be forward-referenced. This is because macro expansion occurs in a single pass, and each `defmacro` is compiled immediately when encountered. A reference to a macro that has not yet been defined is an error.
 
@@ -573,11 +573,11 @@ Macros MUST be defined before use. A macro cannot be forward-referenced. This is
 (defmacro double [x] `(+ ~x ~x))
 ```
 
-### 5.13.3 Module-Phase Declarations
+### 5.13.3 Module-Phase Declarations [R2 S7]
 
 `mod`, `import`, `export`, and `platform` are extracted before any other processing. Their position in the source file relative to other definitions does not matter, though by convention they appear at the top.
 
-## 5.14 Summary of Top-Level Forms
+## 5.14 Summary of Top-Level Forms [R3 S8]
 
 | Form | Kind | Visibility | Phase |
 |---|---|---|---|

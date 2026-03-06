@@ -4,7 +4,7 @@
 
 The Cranelisp language does not mandate a specific standard library. Any conforming implementation MAY provide a different set of library modules, provided it satisfies the language-level guarantees defined in Sections 1–10 and 12. This section describes those guarantees from the perspective of a standard library author.
 
-## 11.1 Language Guarantees to Library Authors
+## 11.1 Language Guarantees to Library Authors [R3 S9]
 
 The language guarantees the following regardless of which standard library (if any) is provided:
 
@@ -16,7 +16,7 @@ The language guarantees the following regardless of which standard library (if a
 
 - **Special forms**: The special forms (`defn`, `deftype`, `deftrait`, `impl`, `defmacro`, `let`, `if`, `fn`, `match`, `mod`, `import`, `export`, `platform`) are always available without import. They live in the root module and are not affected by library contents.
 
-## 11.2 Compiler-Seeded Types
+## 11.2 Compiler-Seeded Types [R3 S9]
 
 The following types are seeded by the compiler into synthetic modules. A standard library author does not need to define them — they are always present. They are language-level requirements normatively specified in [Section 3](03-types.md), [Section 8.9](08-modules.md#89-synthetic-modules), and [Section 9.1](09-macros.md#91-sexp-data-model):
 
@@ -30,7 +30,7 @@ The following types are seeded by the compiler into synthetic modules. A standar
 
 Names in these modules are available via qualified reference (`primitives/add-i64`, `macros/SexpSym`) or by importing them (`(import [primitives [*]])`).
 
-## 11.3 Bootstrapping Order
+## 11.3 Bootstrapping Order [R3 S9]
 
 A standard library that provides macros must be compiled with care because macro definitions and the types they operate on form a circular dependency. The two-pass bootstrapping order resolves this:
 
@@ -47,7 +47,7 @@ This ordering means a `defmacro` form can reference:
 
 Forward references to macros are not supported — a macro must appear before the code that uses it.
 
-## 11.4 Writing a Standard Library
+## 11.4 Writing a Standard Library [R3 S9]
 
 Practical notes for library authors:
 

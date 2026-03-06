@@ -1,12 +1,12 @@
-# 1. Lexical Structure
+# 1. Lexical Structure [Tested]
 
 This section defines the lexical grammar of Cranelisp — the rules for converting source text into tokens.
 
-## 1.1 Source Encoding
+## 1.1 Source Encoding [R0 S1]
 
 Source text MUST be valid UTF-8.
 
-## 1.2 Whitespace and Comments
+## 1.2 Whitespace and Comments [Tested]
 
 Whitespace separates tokens but is otherwise insignificant. The following are whitespace:
 
@@ -14,7 +14,7 @@ Whitespace separates tokens but is otherwise insignificant. The following are wh
 - Tab (U+0009)
 - Newline (U+000A)
 - Carriage return (U+000D)
-- Comma (U+002C) — commas are whitespace, following Clojure convention
+- Comma (U+002C) — commas are whitespace, following Clojure convention [Tested crates/cranelisp-frontend/src/reader.rs::test_commas_are_whitespace]
 
 ```ebnf
 ws        = (ws_char | comment)*
@@ -22,7 +22,7 @@ ws_char   = ' ' | '\t' | '\n' | '\r' | ','
 comment   = ';' [^ '\n']* ('\n' | EOF)
 ```
 
-Line comments begin with `;` and extend to the end of the line (or end of input).
+Line comments begin with `;` and extend to the end of the line (or end of input). [Tested crates/cranelisp-frontend/src/reader.rs::test_parse_with_comment]
 
 ```clojure
 ; this is a comment
@@ -30,9 +30,9 @@ Line comments begin with `;` and extend to the end of the line (or end of input)
 [1, 2, 3] ; commas are whitespace, equivalent to [1 2 3]
 ```
 
-## 1.3 Literals
+## 1.3 Literals [Tested]
 
-### 1.3.1 Integer Literals
+### 1.3.1 Integer Literals [Tested crates/cranelisp-frontend/src/reader.rs::test_parse_integer_literal]
 
 ```ebnf
 integer   = '+' digit+
@@ -51,7 +51,7 @@ Integer literals represent signed 64-bit integers. The range is -2^63 to 2^63 - 
 
 Note: The parser attempts integer before operator, so `-3` is parsed as the integer negative three, not the operator `-` followed by `3`.
 
-### 1.3.2 Float Literals
+### 1.3.2 Float Literals [Tested crates/cranelisp-frontend/src/reader.rs::test_parse_float_literal]
 
 ```ebnf
 float     = '-'? digit+ '.' digit+
@@ -67,16 +67,16 @@ Float literals represent IEEE 754 double-precision (64-bit) floating-point numbe
 
 Note: The parser attempts float before integer, so `3.14` is parsed as a float, not the integer `3` followed by `.14`.
 
-### 1.3.3 Boolean Literals
+### 1.3.3 Boolean Literals [Tested crates/cranelisp-frontend/src/reader.rs::test_parse_true]
 
 ```ebnf
 boolean   = 'true' !symbol_char
           | 'false' !symbol_char
 ```
 
-The keywords `true` and `false` are boolean literals. They MUST NOT be followed by a symbol character — `trueness` is a symbol, not a boolean.
+The keywords `true` and `false` are boolean literals. They MUST NOT be followed by a symbol character — `trueness` is a symbol, not a boolean. [Tested crates/cranelisp-frontend/src/reader.rs::test_true_prefix_is_symbol]
 
-### 1.3.4 String Literals
+### 1.3.4 String Literals [Tested crates/cranelisp-frontend/src/reader.rs::test_parse_string]
 
 ```ebnf
 string    = '"' string_char* '"'
@@ -91,10 +91,10 @@ String literals are enclosed in double quotes. The following escape sequences ar
 
 | Escape | Character |
 |---|---|
-| `\n` | Newline (U+000A) |
+| `\n` | Newline (U+000A) [Tested crates/cranelisp-frontend/src/reader.rs::test_parse_string_escapes] |
 | `\t` | Tab (U+0009) |
 | `\\` | Backslash |
-| `\"` | Double quote |
+| `\"` | Double quote [Tested crates/cranelisp-frontend/src/reader.rs::test_parse_string_escaped_quote] |
 
 ```clojure
 "hello"           ; simple string
@@ -103,9 +103,9 @@ String literals are enclosed in double quotes. The following escape sequences ar
 ""                ; empty string
 ```
 
-## 1.4 Symbols
+## 1.4 Symbols [Tested]
 
-### 1.4.1 Simple Symbols
+### 1.4.1 Simple Symbols [Tested crates/cranelisp-frontend/src/reader.rs::test_parse_simple_symbol]
 
 ```ebnf
 symbol       = symbol_start symbol_char*
@@ -124,7 +124,7 @@ _private      ; underscore start
 Point         ; uppercase (typically types/constructors)
 ```
 
-### 1.4.2 Operator Symbols
+### 1.4.2 Operator Symbols [Tested crates/cranelisp-frontend/src/reader.rs::test_parse_operator_plus]
 
 ```ebnf
 operator_symbol = operator_char+ !digit
@@ -143,7 +143,7 @@ Operator symbols are sequences of operator characters. They MUST NOT be immediat
 
 Note: Operators are ordinary symbols — they have no special syntactic status. They are trait methods resolved through the same dispatch as any other function.
 
-### 1.4.3 Qualified Symbols
+### 1.4.3 Qualified Symbols [Tested crates/cranelisp-frontend/src/reader.rs::test_parse_qualified_symbol]
 
 ```ebnf
 qualified_symbol = module_path '/' local_name
@@ -165,7 +165,7 @@ math/+            ; operator '+' in module 'math'
 option/Option.Some ; dotted name in module 'option'
 ```
 
-### 1.4.4 Dotted Symbols
+### 1.4.4 Dotted Symbols [Tested crates/cranelisp-frontend/src/reader.rs::test_parse_dotted_symbol]
 
 ```ebnf
 dotted_symbol = symbol_start symbol_char* '.' (symbol_char+ | operator_char+)
@@ -179,14 +179,14 @@ Display.show      ; method 'show' of trait 'Display'
 Num.+             ; operator '+' of trait 'Num'
 ```
 
-### 1.4.5 Colon-Prefixed Symbols
+### 1.4.5 Colon-Prefixed Symbols [Tested crates/cranelisp-frontend/src/reader.rs::test_parse_colon_prefix]
 
 ```ebnf
 colon_prefix = ':' symbol_start symbol_char*
 colon_bare   = ':' !symbol_char
 ```
 
-Colon-prefixed symbols are used for type annotations. A bare colon `:` (not followed by a symbol character) is a separate token used in field definitions.
+Colon-prefixed symbols are used for type annotations. A bare colon `:` (not followed by a symbol character) is a separate token used in field definitions. [Tested crates/cranelisp-frontend/src/reader.rs::test_parse_bare_colon]
 
 ```clojure
 :Int              ; type annotation
@@ -195,7 +195,7 @@ Colon-prefixed symbols are used for type annotations. A bare colon `:` (not foll
 :                 ; bare colon (field separator)
 ```
 
-### 1.4.6 Gensym Symbols
+### 1.4.6 Gensym Symbols [Tested crates/cranelisp-frontend/src/reader.rs::test_parse_gensym_shorthand]
 
 ```ebnf
 gensym_symbol = symbol_start symbol_char* '#'
@@ -207,7 +207,7 @@ Symbols ending in `#` are auto-gensym symbols, used inside quasiquote templates 
 `(let [x# 42] x#)  ; both x# expand to the same unique name
 ```
 
-### 1.4.7 Percent Parameters
+### 1.4.7 Percent Parameters [Tested crates/cranelisp-frontend/src/reader.rs::test_parse_percent_param_bare]
 
 ```ebnf
 percent_param = '%' ('1'-'9')?
@@ -215,7 +215,7 @@ percent_param = '%' ('1'-'9')?
 
 Percent parameters (`%`, `%1`-`%9`) are used inside anonymous function shorthand `#(...)` to refer to positional arguments. Bare `%` is equivalent to `%1`.
 
-### 1.4.8 Ampersand
+### 1.4.8 Ampersand [Tested crates/cranelisp-frontend/src/reader.rs::test_parse_ampersand]
 
 ```ebnf
 ampersand = '&' !symbol_char
@@ -223,7 +223,7 @@ ampersand = '&' !symbol_char
 
 A standalone `&` (not followed by a symbol character) is used in macro parameter lists for variadic arguments.
 
-## 1.5 Delimiters
+## 1.5 Delimiters [Tested crates/cranelisp-frontend/src/reader.rs::test_parse_bracket]
 
 ```ebnf
 open_paren    = '('
@@ -234,7 +234,7 @@ close_bracket = ']'
 
 Parentheses delimit lists (function calls, special forms). Square brackets delimit parameter lists, binding lists, match arms, field definitions, and vector literals.
 
-## 1.6 Reader Macros
+## 1.6 Reader Macros [Tested crates/cranelisp-frontend/src/reader.rs::test_parse_quote]
 
 ```ebnf
 quote            = "'" form
@@ -246,11 +246,11 @@ anon_fn          = '#(' ws form* ws ')'
 
 Reader macros are syntactic sugar processed during parsing:
 
-- `'form` expands to `(quote form)` — produces an `Sexp` value at runtime
-- `` `form `` expands to `(quasiquote form)`
-- `~form` expands to `(unquote form)`
-- `~@form` expands to `(unquote-splicing form)`
-- `#(body)` expands to `(fn [%1 %2 ... %N] (body))` — anonymous function shorthand
+- `'form` expands to `(quote form)` — produces an `Sexp` value at runtime [Tested crates/cranelisp-frontend/src/reader.rs::test_parse_quote]
+- `` `form `` expands to `(quasiquote form)` [Tested crates/cranelisp-frontend/src/reader.rs::test_parse_quasiquote]
+- `~form` expands to `(unquote form)` [Tested crates/cranelisp-frontend/src/reader.rs::test_parse_unquote]
+- `~@form` expands to `(unquote-splicing form)` [Tested crates/cranelisp-frontend/src/reader.rs::test_parse_unquote_splicing]
+- `#(body)` expands to `(fn [%1 %2 ... %N] (body))` — anonymous function shorthand [Tested crates/cranelisp-frontend/src/reader.rs::test_parse_anon_fn]
 
 The `quote` form converts its argument to an `Sexp` value. `'foo` produces `(SexpSym "foo")`, `'42` produces `(SexpInt 42)`, `'(+ 1 2)` produces `(SexpList ...)`.
 
@@ -258,12 +258,12 @@ The anonymous function `#(...)` scans the body for `%`, `%1`-`%9` references, no
 
 Note: Quote (`'`) MUST be tried before quasiquote (`` ` ``). Unquote-splicing (`~@`) MUST be tried before unquote (`~`). Anonymous function (`#(`) MUST be tried before list (`(`). These orderings resolve ambiguity for overlapping prefixes.
 
-## 1.7 Token Precedence
+## 1.7 Token Precedence [Tested crates/cranelisp-frontend/src/reader.rs::test_negative_three_standalone]
 
 When multiple token rules could match at a given position, the parser MUST try them in the following order:
 
 1. Float literal (before integer, to capture the decimal point)
-2. Integer literal (before operator, so `-3` is an integer)
+2. Integer literal (before operator, so `-3` is an integer) [Tested crates/cranelisp-frontend/src/reader.rs::test_negative_three_standalone]
 3. Boolean literal
 4. String literal
 5. Colon-prefixed symbol
@@ -278,7 +278,7 @@ When multiple token rules could match at a given position, the parser MUST try t
 
 This ordering ensures that longer matches take priority and that ambiguous cases like `-3` (integer, not operator) and `true` (boolean, not symbol) are resolved correctly.
 
-## 1.8 Forms
+## 1.8 Forms [Tested crates/cranelisp-frontend/src/reader.rs::test_parse_list]
 
 A **form** is the basic unit of Cranelisp syntax:
 
@@ -297,4 +297,4 @@ atom    = float | integer | boolean | string
 program = ws form* ws
 ```
 
-A program is a sequence of zero or more forms separated by whitespace. Each form is either an atom (literal or symbol), a parenthesized list, a bracketed list, or a reader macro expansion.
+A program is a sequence of zero or more forms separated by whitespace. Each form is either an atom (literal or symbol), a parenthesized list, a bracketed list, or a reader macro expansion. [Tested crates/cranelisp-frontend/src/reader.rs::test_parse_multiple_forms]

@@ -124,6 +124,41 @@ Every skill plan must end with a **"Next skills"** section recommending which sk
 - **History**: The remote uses an orphan commit (no prior history). When pushing, always force-push (`git push --force origin main`) since the local repo has a longer reflog that doesn't share ancestry with the remote.
 - **Do not push without explicit user request.**
 
+## Requirements/Test Traceability
+
+Every spec requirement MUST be traceable to a test, and every test MUST trace back to a spec requirement. This creates bidirectional coverage visibility.
+
+### Annotation Convention
+
+Spec headings and table rows use inline annotations to show coverage status:
+
+| Annotation | Meaning |
+|---|---|
+| `[Tested tests/file::test_name]` | Requirement is tested by the named test |
+| `[Tested]` | Section-level: all sub-requirements have test annotations |
+| `[R{N} S{M}]` | Not yet tested; targeted for Ring N, Sprint M |
+| `[R{N} S{M} — tests/file::test_name IGNORED]` | Test exists but is `#[ignore]`'d (known gap) |
+
+**Fine-grained annotations** go on individual table rows and MUST requirements — each row should have its own `[Tested ...]` or `[R{N} S{M}]` tag. This makes it possible to see at a glance which specific behaviors are covered and which are not.
+
+**Section-level annotations** are summaries. A section heading says `[Tested]` only when ALL its sub-requirements have test annotations. If any child is untested, the section heading carries the lowest coverage level of its children (e.g., `[R2 S8]` if any child targets Ring 2 Sprint 8).
+
+**Test-side tracing**: Every test function has a `// spec:` comment naming the spec section it validates:
+```rust
+// spec: repl/spec.md §1.2 — Int display format
+#[test]
+fn display_int_result() { ... }
+```
+
+### Applying Annotations
+
+- `repl/spec.md` — REPL experience spec (owned by `/repl`)
+- `spec/*.md` — language spec files (owned by `/spec`)
+
+When `/qa` writes a test, it adds the test-side `// spec:` comment. When coverage is verified, the spec-side `[Tested ...]` annotation is added. The two sides cross-reference each other.
+
+**`[Done]` is retired.** It provided no traceability and was applied prematurely. All `[Done]` tags should be replaced with either `[Tested tests/file::test_name]` (if covered) or `[R{N} S{M}]` (if not).
+
 ## Known Issues
 
 Prototype compromises are documented in `sketch/KNOWN_ISSUES.md`. See `sketch/audits/` for the full audit findings. See `sprints/reimplementation.md` §"Risk Analysis" for known issues disposition.

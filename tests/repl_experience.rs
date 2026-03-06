@@ -33,7 +33,7 @@ fn display_int_result() {
     // Current format_result uses short names (:Int 3). This test documents
     // the current behavior. When qualified names are implemented, update.
     let s = format_result(3, &Type::Int);
-    assert_eq!(s, ":Int 3");
+    assert_eq!(s, ":primitives/Int 3");
 }
 
 // spec: repl/spec.md §1.2 — Bool true display format
@@ -41,44 +41,45 @@ fn display_int_result() {
 fn display_bool_true() {
     // Spec §1.2: `:primitives/Bool true`
     let s = format_result(1, &Type::Bool);
-    assert_eq!(s, ":Bool true");
+    assert_eq!(s, ":primitives/Bool true");
 }
 
 // spec: repl/spec.md §1.2 — Bool false display format
 #[test]
 fn display_bool_false() {
     let s = format_result(0, &Type::Bool);
-    assert_eq!(s, ":Bool false");
+    assert_eq!(s, ":primitives/Bool false");
 }
 
 // spec: repl/spec.md §1.2 — Float display format
 #[test]
 fn display_float_result() {
     // Spec §1.2: `:primitives/Float 3.14`
+    #[allow(clippy::approx_constant)]
     let bits = 3.14_f64.to_bits() as i64;
     let s = format_result(bits, &Type::Float);
-    assert!(s.starts_with(":Float 3.14"), "got: {s}");
+    assert!(s.starts_with(":primitives/Float 3.14"), "got: {s}");
 }
 
 // spec: repl/spec.md §1.2 — negative Int display format
 #[test]
 fn display_negative_int() {
     let s = format_result(-7, &Type::Int);
-    assert_eq!(s, ":Int -7");
+    assert_eq!(s, ":primitives/Int -7");
 }
 
 // spec: repl/spec.md §1.2 — zero display format
 #[test]
 fn display_zero() {
     let s = format_result(0, &Type::Int);
-    assert_eq!(s, ":Int 0");
+    assert_eq!(s, ":primitives/Int 0");
 }
 
 // spec: repl/spec.md §1.2 — large Int display format
 #[test]
 fn display_large_int() {
     let s = format_result(1_000_000_000, &Type::Int);
-    assert_eq!(s, ":Int 1000000000");
+    assert_eq!(s, ":primitives/Int 1000000000");
 }
 
 // spec: repl/spec.md §1.5 — enum ADT display format
@@ -97,7 +98,7 @@ fn display_adt_enum_type() {
 fn display_float_negative() {
     let bits = (-2.5_f64).to_bits() as i64;
     let s = format_result(bits, &Type::Float);
-    assert!(s.starts_with(":Float -2.5"), "got: {s}");
+    assert!(s.starts_with(":primitives/Float -2.5"), "got: {s}");
 }
 
 // spec: repl/spec.md §1.2 — zero Float display
@@ -105,7 +106,7 @@ fn display_float_negative() {
 fn display_float_zero() {
     let bits = 0.0_f64.to_bits() as i64;
     let s = format_result(bits, &Type::Float);
-    assert_eq!(s, ":Float 0");
+    assert_eq!(s, ":primitives/Float 0");
 }
 
 // =============================================================================
@@ -189,7 +190,7 @@ fn defn_reports_function_type() {
     let mut session = repl_session();
     let result = session.eval("(defn double [x] (mul-i64 x 2))").unwrap();
     assert!(result.is_definition);
-    // Type should be (Fn [Int] Int)
+    // Type should be (Fn [primitives/Int] primitives/Int)
     assert_eq!(
         result.ty,
         Type::Fn(vec![Type::Int], Box::new(Type::Int))
@@ -674,7 +675,7 @@ fn float_display_format_in_session() {
     let result = session.eval("(add-f64 1.5 2.5)").unwrap();
     assert_eq!(result.ty, Type::Float);
     let display = format_result(result.value, &result.ty);
-    assert!(display.starts_with(":Float 4"), "got: {display}");
+    assert!(display.starts_with(":primitives/Float 4"), "got: {display}");
 }
 
 // spec: 03-types §3.1 — Float and Int are distinct
@@ -1013,14 +1014,14 @@ fn display_function_type() {
 #[test]
 fn display_max_int() {
     let s = format_result(i64::MAX, &Type::Int);
-    assert_eq!(s, format!(":Int {}", i64::MAX));
+    assert_eq!(s, format!(":primitives/Int {}", i64::MAX));
 }
 
 // spec: repl/spec.md §1.2 — min Int display
 #[test]
 fn display_min_int() {
     let s = format_result(i64::MIN, &Type::Int);
-    assert_eq!(s, format!(":Int {}", i64::MIN));
+    assert_eq!(s, format!(":primitives/Int {}", i64::MIN));
 }
 
 // spec: repl/spec.md §1.2 — Float infinity display
@@ -1378,7 +1379,7 @@ fn display_format_type_value_separated_by_space() {
     let s = format_result(42, &Type::Int);
     let parts: Vec<&str> = s.splitn(2, ' ').collect();
     assert_eq!(parts.len(), 2, "display should be ':Type value', got: {s}");
-    assert_eq!(parts[0], ":Int");
+    assert_eq!(parts[0], ":primitives/Int");
     assert_eq!(parts[1], "42");
 }
 
@@ -1549,7 +1550,7 @@ fn ring1_string_literal_display_format() {
     // Full result format: `:String "contents"`.
     let mut session = repl_session();
     let display = repl_eval_display(&mut session, "\"hello\"");
-    assert_eq!(display, ":String \"hello\"");
+    assert_eq!(display, ":primitives/String \"hello\"");
 }
 
 // spec: repl/spec.md §1.5 — empty String display
@@ -1558,7 +1559,7 @@ fn ring1_string_empty_display() {
     // Empty string should display as `:String ""`.
     let mut session = repl_session();
     let display = repl_eval_display(&mut session, "\"\"");
-    assert_eq!(display, ":String \"\"");
+    assert_eq!(display, ":primitives/String \"\"");
 }
 
 // spec: repl/spec.md §1.5 — String concat result display
@@ -1567,7 +1568,7 @@ fn ring1_string_concat_result_display() {
     // Result of str-concat should display the concatenated string.
     let mut session = repl_session();
     let display = repl_eval_display(&mut session, "(str-concat \"hello\" \" world\")");
-    assert_eq!(display, ":String \"hello world\"");
+    assert_eq!(display, ":primitives/String \"hello world\"");
 }
 
 // spec: repl/spec.md §1.2 — String type reporting
@@ -1607,7 +1608,7 @@ fn ring1_int_to_string_display() {
     // Converting an integer to string and displaying the result.
     let mut session = repl_session();
     let display = repl_eval_display(&mut session, "(int-to-string 42)");
-    assert_eq!(display, ":String \"42\"");
+    assert_eq!(display, ":primitives/String \"42\"");
 }
 
 // spec: repl/spec.md §1.5 — String with spaces display
@@ -1616,7 +1617,7 @@ fn ring1_string_with_spaces_display() {
     // Strings containing spaces display correctly with surrounding quotes.
     let mut session = repl_session();
     let display = repl_eval_display(&mut session, "\"hello world\"");
-    assert_eq!(display, ":String \"hello world\"");
+    assert_eq!(display, ":primitives/String \"hello world\"");
 }
 
 // =============================================================================
@@ -1631,7 +1632,7 @@ fn ring1_adt_product_display() {
     let mut session = repl_session();
     repl_eval(&mut session, "(deftype Point [:Int x :Int y])");
     let display = repl_eval_display(&mut session, "(Point 3 4)");
-    assert_eq!(display, ":Point (Point 3 4)");
+    assert_eq!(display, ":user/Point (Point.Point 3 4)");
 }
 
 // spec: repl/spec.md §1.5 — sum ADT Some display
@@ -1641,7 +1642,7 @@ fn ring1_adt_sum_some_display() {
     let mut session = repl_session();
     repl_eval(&mut session, "(deftype (Option a) None (Some [:a val]))");
     let display = repl_eval_display(&mut session, "(Some 42)");
-    assert_eq!(display, ":(Option Int) (Some 42)");
+    assert_eq!(display, ":(user/Option primitives/Int) (Option.Some 42)");
 }
 
 // spec: repl/spec.md §1.5 — sum ADT None display
@@ -1706,8 +1707,8 @@ fn ring1_adt_nested_string_field_display() {
     // When U1.1 is fixed, this should become:
     //   assert_eq!(display, ":(Option String) (Some \"hello\")");
     assert!(
-        display.starts_with(":(Option String) (Some "),
-        "should show type as (Option String), got: {display}"
+        display.starts_with(":(user/Option primitives/String) (Option.Some "),
+        "should show type as (user/Option primitives/String), got: {display}"
     );
 }
 
@@ -1719,7 +1720,7 @@ fn ring1_adt_monomorphic_string_field_display() {
     let mut session = repl_session();
     repl_eval(&mut session, "(deftype Named [:String name])");
     let display = repl_eval_display(&mut session, "(Named \"alice\")");
-    assert_eq!(display, ":Named (Named \"alice\")");
+    assert_eq!(display, ":user/Named (Named.Named \"alice\")");
 }
 
 // spec: repl/spec.md §1.5 — ADT enum display with type defs
@@ -1730,9 +1731,9 @@ fn ring1_adt_enum_display_with_type_defs() {
     let mut session = repl_session();
     repl_eval(&mut session, "(deftype Color Red Green Blue)");
     let display = repl_eval_display(&mut session, "Red");
-    assert_eq!(display, ":Color Red");
+    assert_eq!(display, ":user/Color Color.Red");
     let display = repl_eval_display(&mut session, "Blue");
-    assert_eq!(display, ":Color Blue");
+    assert_eq!(display, ":user/Color Color.Blue");
 }
 
 // spec: repl/spec.md §1.3 — deftype with fields reports type
@@ -1808,7 +1809,7 @@ fn ring1_defn_returning_closure_type() {
         .eval("(defn make-adder [n] (fn [x] (add-i64 n x)))")
         .unwrap();
     assert!(result.is_definition);
-    // Should be (Fn [Int] (Fn [Int] Int)).
+    // Should be (Fn [Int] (Fn [primitives/Int] primitives/Int)).
     match &result.ty {
         Type::Fn(params, ret) => {
             assert_eq!(params.len(), 1);
@@ -1832,7 +1833,7 @@ fn ring1_lambda_immediate_display_not_closure() {
     // Immediately-applied lambda should show the result, not <closure>.
     let mut session = repl_session();
     let display = repl_eval_display(&mut session, "((fn [x] (add-i64 x 1)) 5)");
-    assert_eq!(display, ":Int 6");
+    assert_eq!(display, ":primitives/Int 6");
 }
 
 // =============================================================================
@@ -1913,7 +1914,7 @@ fn ring1_error_constructor_wrong_arg_count() {
     }
     // Session recovery: correct usage still works.
     let display = repl_eval_display(&mut session, "(Point 1 2)");
-    assert_eq!(display, ":Point (Point 1 2)");
+    assert_eq!(display, ":user/Point (Point.Point 1 2)");
 }
 
 // spec: repl/spec.md §5.3 — constructor wrong type
@@ -2098,7 +2099,7 @@ fn ring1_error_between_adt_and_closure_definitions() {
     // Step 5: define a closure that uses the ADT.
     repl_eval(&mut session, "(defn make-wrapper [n] (fn [] (Some n)))");
     let display = repl_eval_display(&mut session, "((make-wrapper 42))");
-    assert_eq!(display, ":(Option Int) (Some 42)");
+    assert_eq!(display, ":(user/Option primitives/Int) (Option.Some 42)");
 }
 
 // spec: repl/spec.md §5.2 — error preserves string definitions
@@ -2115,7 +2116,7 @@ fn ring1_error_preserves_string_definitions() {
 
     // String function still works.
     let display = repl_eval_display(&mut session, "(greet)");
-    assert_eq!(display, ":String \"hello\"");
+    assert_eq!(display, ":primitives/String \"hello\"");
 }
 
 // spec: repl/spec.md §6.1 — incremental session with heap types
@@ -2126,7 +2127,7 @@ fn ring1_session_incremental_with_heap_types() {
 
     // Step 1: explore strings.
     let display = repl_eval_display(&mut session, "\"hello\"");
-    assert_eq!(display, ":String \"hello\"");
+    assert_eq!(display, ":primitives/String \"hello\"");
 
     // Step 2: define an ADT.
     repl_eval(&mut session, "(deftype (Option a) None (Some [:a val]))");
@@ -2136,8 +2137,8 @@ fn ring1_session_incremental_with_heap_types() {
     // Note: field display for polymorphic ADTs shows raw value due to U1.1
     // (type variable not substituted with concrete type). Type portion is correct.
     assert!(
-        display.starts_with(":(Option String) (Some "),
-        "should show type as (Option String), got: {display}"
+        display.starts_with(":(user/Option primitives/String) (Option.Some "),
+        "should show type as (user/Option primitives/String), got: {display}"
     );
 
     // Step 4: define a closure.
@@ -2155,7 +2156,7 @@ fn ring1_session_incremental_with_heap_types() {
     // Step 7: everything still works.
     assert_eq!(repl_eval(&mut session, "((make-adder 5) 5)"), 10);
     let display = repl_eval_display(&mut session, "(Some 99)");
-    assert_eq!(display, ":(Option Int) (Some 99)");
+    assert_eq!(display, ":(user/Option primitives/Int) (Option.Some 99)");
 }
 
 // =============================================================================
@@ -2477,12 +2478,12 @@ fn u1_9_polymorphic_adt_data_ctor_display() {
         .unwrap();
     let display = repl_eval_display(&mut session, "(Some 42)");
     assert!(
-        display.contains("(Some 42)"),
-        "expected (Some 42) in display, got: {display}"
+        display.contains("(Option.Some 42)"),
+        "expected (Option.Some 42) in display, got: {display}"
     );
     assert!(
-        display.contains("(Option Int)"),
-        "type should show (Option Int), got: {display}"
+        display.contains("(user/Option primitives/Int)"),
+        "type should show (user/Option primitives/Int), got: {display}"
     );
 }
 
@@ -2515,8 +2516,8 @@ fn u1_9_polymorphic_adt_multi_field_display() {
         "both fields should display, got: {display}"
     );
     assert!(
-        display.contains("(Pair Int String)"),
-        "type should show (Pair Int String), got: {display}"
+        display.contains("(user/Pair primitives/Int primitives/String)"),
+        "type should show (user/Pair primitives/Int primitives/String), got: {display}"
     );
 }
 
@@ -2619,4 +2620,133 @@ fn ring2a_mixed_int_float_operators_error() {
     let mut session = repl_session();
     let err = session.eval("(+ 1 2.0)");
     assert!(err.is_err(), "mixing Int and Float should error");
+}
+
+// =============================================================================
+// U1.6 — Polymorphic ADT type var display (Sprint 7 Wave 0)
+//
+// When a polymorphic ADT value has unresolved type parameters (e.g., None
+// in Option), the display should use user-friendly variable names (a, b, ...)
+// rather than internal TypeId numbers (t1, t6, ...).
+//
+// Expected: `:(Option a) None`  not `:(Option t6) None`
+// =============================================================================
+
+// spec: repl/spec.md §1.5 — polymorphic ADT None displays with user-friendly type var
+#[test]
+#[ignore = "Sprint 7: polymorphic ADT type vars display as internal t-numbers instead of a/b/c"]
+fn display_polymorphic_adt_none_type_var() {
+    // Option.None has an unresolved type parameter. The display should
+    // show `:(Option a) None` with a user-friendly variable name.
+    let mut session = repl_session();
+    session.eval("(deftype (Option a) None (Some [:a val]))").unwrap();
+    let display = repl_eval_display(&mut session, "None");
+    // Should contain "(Option a)" not "(Option t<number>)"
+    assert!(
+        display.contains("(Option a)"),
+        "expected '(Option a)' in display, got: {display}"
+    );
+    // Should not contain internal type var format like t6, t1, etc.
+    assert!(
+        !display.contains("(Option t"),
+        "display should not contain internal type var (t-number), got: {display}"
+    );
+}
+
+// spec: repl/spec.md §1.5 — polymorphic enum nullary constructor display
+#[test]
+#[ignore = "Sprint 7: polymorphic ADT type vars display as internal t-numbers instead of a/b/c"]
+fn display_polymorphic_adt_nullary_constructor_name() {
+    // The constructor name should appear in the display.
+    let mut session = repl_session();
+    session.eval("(deftype (Option a) None (Some [:a val]))").unwrap();
+    let display = repl_eval_display(&mut session, "None");
+    assert!(
+        display.contains("None"),
+        "expected constructor name 'None' in display, got: {display}"
+    );
+}
+
+// spec: repl/spec.md §1.5 — concrete polymorphic ADT type display
+#[test]
+fn display_polymorphic_adt_concrete_type() {
+    // (Some 42) resolves the type var to Int.
+    // Should display as `:(user/Option primitives/Int) (Option.Some 42)`.
+    let mut session = repl_session();
+    session.eval("(deftype (Option a) None (Some [:a val]))").unwrap();
+    let display = repl_eval_display(&mut session, "(Some 42)");
+    assert!(
+        display.contains("(user/Option primitives/Int)"),
+        "expected '(user/Option primitives/Int)' in display, got: {display}"
+    );
+    assert!(
+        display.contains("(Option.Some 42)"),
+        "expected '(Option.Some 42)' in display, got: {display}"
+    );
+}
+
+// =============================================================================
+// U1.9 — Polymorphic ADT heap field display (Sprint 7 Wave 0)
+//
+// When a polymorphic ADT contains a heap-typed field (e.g., String),
+// the field value should be displayed with its contents, not as a
+// raw pointer or integer.
+//
+// Expected: `:(Option String) (Some "hello")`
+// =============================================================================
+
+// spec: repl/spec.md §1.5 — ADT with String field displays string contents
+#[test]
+fn display_adt_string_field_contents() {
+    // (Some "hello") should display the string contents, not a pointer.
+    let mut session = repl_session();
+    session.eval("(deftype (Option a) None (Some [:a val]))").unwrap();
+    let display = repl_eval_display(&mut session, r#"(Some "hello")"#);
+    assert!(
+        display.contains("(user/Option primitives/String)"),
+        "expected '(user/Option primitives/String)' in type, got: {display}"
+    );
+    assert!(
+        display.contains(r#""hello""#),
+        "expected string contents '\"hello\"' in display, got: {display}"
+    );
+    // Should not contain raw pointer-like numbers
+    assert!(
+        !display.contains("0x"),
+        "display should not contain raw pointer, got: {display}"
+    );
+}
+
+// spec: repl/spec.md §1.5 — ADT with nested ADT field displays recursively
+#[test]
+fn display_adt_nested_adt_field() {
+    // (Some (Some 42)) should display the inner constructor, not a raw value.
+    let mut session = repl_session();
+    session.eval("(deftype (Option a) None (Some [:a val]))").unwrap();
+    let display = repl_eval_display(&mut session, "(Some (Some 42))");
+    assert!(
+        display.contains("Some"),
+        "expected nested 'Some' in display, got: {display}"
+    );
+    assert!(
+        display.contains("42"),
+        "expected '42' in display, got: {display}"
+    );
+}
+
+// spec: repl/spec.md §1.5 — product ADT with string field displays contents
+#[test]
+fn display_product_adt_string_field() {
+    // Product ADT with a String field should show the string contents.
+    let mut session = repl_session();
+    session.eval("(deftype Named [:String name :Int value])").unwrap();
+    let display = repl_eval_display(&mut session, r#"(Named "alice" 42)"#);
+    assert!(
+        display.contains(r#""alice""#),
+        "expected string contents '\"alice\"' in display, got: {display}"
+    );
+    assert!(
+        display.contains("42"),
+        "expected '42' in display, got: {display}"
+    );
 }

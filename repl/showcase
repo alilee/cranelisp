@@ -23,9 +23,13 @@ Environment:
 """
 
 import os
+import re
+import select
 import subprocess
 import sys
+import termios
 import time
+import tty
 from datetime import datetime
 from pathlib import Path
 
@@ -91,74 +95,147 @@ def run_demo(demo_path, repl_binary, run_dir):
     result = subprocess.run(
         [repl_binary],
         input=demo_text,
-        capture_output=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
         text=True,
         cwd=run_dir,
     )
+
+    # Stderr carries traces and diagnostic output — include it after stdout.
+    if result.stderr:
+        sys.stderr.write(f"{DIM}{result.stderr}{RESET}")
+        sys.stderr.flush()
 
     return result.stdout
 
 
 def parse_repl_output(demo_text, raw_output):
-    """Parse raw REPL output into (input_line, result_lines) pairs.
+    """Parse raw REPL output into (prompt, input_line, result_lines) triples.
 
-    The REPL writes "> " (no newline) for each input line, then prints
-    any result followed by a newline. In piped mode this means:
-    - No-output lines (comments, blanks): consecutive "> " prompts
-    - Result lines: "> " prompt followed by result text on the same line
-    - Multi-line results: result continues on subsequent lines until next "> "
-
-    We split on "> " boundaries to recover which result goes with which input.
+    The REPL prompt has the form "N+Nms; module> " (e.g., "0+0ms; user> ").
+    We split on this pattern to correctly recover which result goes with which
+    input, and capture the prompt text for faithful replay.
     """
     input_lines = demo_text.splitlines()
 
-    # Split raw output on "> " prompt markers.
-    # The REPL always starts with "> ", so the first segment is empty.
-    segments = raw_output.split("> ")
+    # Split on the REPL prompt pattern, capturing the prompt itself.
+    # This matches prompts like "0+0ms; user> ", "4+0ms; user> ", etc.
+    prompt_re = re.compile(r"(\d+\+\d+ms; \w+> )")
+    parts = prompt_re.split(raw_output)
 
-    pairs = []
+    # parts alternates: [before_first_prompt, prompt1, result1, prompt2, result2, ...]
+    # Extract prompts and results as parallel lists.
+    prompts = []
+    segments = []
+    for j in range(1, len(parts), 2):
+        prompts.append(parts[j])
+        if j + 1 < len(parts):
+            segments.append(parts[j + 1])
+        else:
+            segments.append("")
+
+    triples = []
     for i, input_line in enumerate(input_lines):
-        # Segment i+1 corresponds to input line i (segment 0 is before first prompt).
-        seg_idx = i + 1
+        prompt = prompts[i] if i < len(prompts) else "? "
         result = None
-        if seg_idx < len(segments):
-            content = segments[seg_idx].strip()
+        if i < len(segments):
+            content = segments[i].strip()
             if content:
                 result = content
-        pairs.append((input_line, result))
+        triples.append((prompt, input_line, result))
 
-    return pairs
+    return triples
+
+
+def check_key():
+    """Check for keypress without blocking. Returns the key or None."""
+    if FAST or not sys.stdin.isatty():
+        return None
+    ready, _, _ = select.select([sys.stdin], [], [], 0)
+    if ready:
+        return sys.stdin.read(1)
+    return None
+
+
+def interruptible_sleep(seconds):
+    """Sleep that can be interrupted by spacebar (pause) or q (quit).
+
+    Returns True to continue, False to quit.
+    """
+    if FAST or seconds <= 0:
+        return True
+    end = time.time() + seconds
+    while time.time() < end:
+        key = check_key()
+        if key == "q":
+            return False
+        if key == " ":
+            # Paused — wait for another space or q.
+            sys.stdout.write(f"{DIM}[paused]{RESET}")
+            sys.stdout.flush()
+            while True:
+                ch = sys.stdin.read(1)
+                if ch == " ":
+                    # Clear the [paused] indicator.
+                    sys.stdout.write("\r" + " " * 8 + "\r")
+                    sys.stdout.flush()
+                    break
+                if ch == "q":
+                    sys.stdout.write("\r" + " " * 8 + "\r")
+                    sys.stdout.flush()
+                    return False
+        time.sleep(min(0.05, end - time.time()))
+    return True
 
 
 def type_line(text):
-    """Write text character-by-character with typing delay."""
+    """Write text character-by-character with typing delay.
+
+    Returns True to continue, False if user pressed q.
+    """
     for char in text:
         sys.stdout.write(char)
         sys.stdout.flush()
-        time.sleep(TYPING_DELAY)
+        if not interruptible_sleep(TYPING_DELAY):
+            return False
+    return True
 
 
-def replay(pairs):
+def replay(triples):
     """Replay the demo, showing exactly what the user would see at the REPL.
 
     Every input line is typed at the prompt. The REPL's actual response
     (or silence) follows. No special treatment for comments or blanks —
     the viewer sees exactly the user experience.
+
+    Press spacebar to pause/unpause, q to quit.
     """
-    for input_line, result in pairs:
-        time.sleep(LINE_PAUSE)
-        sys.stdout.write("> ")
-        sys.stdout.flush()
-        stripped = input_line.strip()
-        if stripped == "" or stripped.startswith(";"):
-            # Comments and blank lines: print instantly (nothing to learn from typing them)
-            sys.stdout.write(input_line + "\n")
-        else:
-            type_line(input_line)
-            sys.stdout.write("\n")
-        sys.stdout.flush()
-        if result is not None:
-            print(result)
+    # Set terminal to raw mode for keypress detection.
+    is_tty = sys.stdin.isatty() and not FAST
+    if is_tty:
+        old_attrs = termios.tcgetattr(sys.stdin)
+        tty.setcbreak(sys.stdin.fileno())
+
+    try:
+        for prompt, input_line, result in triples:
+            if not interruptible_sleep(LINE_PAUSE):
+                break
+            sys.stdout.write(prompt)
+            sys.stdout.flush()
+            stripped = input_line.strip()
+            if stripped == "" or stripped.startswith(";"):
+                sys.stdout.write(input_line + "\n")
+            else:
+                if not type_line(input_line):
+                    sys.stdout.write("\n")
+                    break
+                sys.stdout.write("\n")
+            sys.stdout.flush()
+            if result is not None:
+                print(result)
+    finally:
+        if is_tty:
+            termios.tcsetattr(sys.stdin, termios.TCSADRAIN, old_attrs)
 
 
 def play_demo(demo_path, repl_binary):
@@ -169,7 +246,10 @@ def play_demo(demo_path, repl_binary):
     run_dir = RUNS_DIR / f"{timestamp}_{demo_name}"
     run_dir.mkdir()
 
-    print(f"{DIM}; run dir: {run_dir}{RESET}\n")
+    print(f"{DIM}; run dir: {run_dir}{RESET}")
+    if not FAST and sys.stdin.isatty():
+        print(f"{DIM}; [space] pause/unpause, [q] quit{RESET}")
+    print()
     sys.stdout.flush()
 
     # Phase 1: send entire demo file to REPL, capture raw output.
@@ -179,8 +259,8 @@ def play_demo(demo_path, repl_binary):
     raw_output = run_demo(demo_path, repl_binary, run_dir)
 
     # Phase 2: parse and replay with typing effects.
-    pairs = parse_repl_output(demo_text, raw_output)
-    replay(pairs)
+    triples = parse_repl_output(demo_text, raw_output)
+    replay(triples)
 
     print(f"\n{DIM}; [demo complete]{RESET}")
 

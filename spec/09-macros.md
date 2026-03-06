@@ -1,8 +1,8 @@
-# 9. Macros
+# 9. Macros [R3 S9]
 
 This section defines the compile-time macro system in Cranelisp. Macros are ordinary Cranelisp functions that transform S-expression values before type checking. They are compiled with the same code generation pipeline as user functions and called during expansion — no separate interpreter is required.
 
-## 9.1 Sexp Data Model
+## 9.1 Sexp Data Model [R3 S9]
 
 The macro system operates on S-expression values. Two algebraic data types are provided by the compiler in a synthetic `macros` module. These types are immutable and not user-modifiable.
 
@@ -61,7 +61,7 @@ At macro expansion time, the implementation MUST convert between its internal S-
 
 The heap layout of marshalled values follows the standard ADT representation defined in Section 12.1.4. The details of the marshalling functions are implementation-defined.
 
-## 9.2 Macro Definition
+## 9.2 Macro Definition [R3 S9]
 
 ### 9.2.1 Syntax
 
@@ -212,7 +212,7 @@ Bracket destructuring composes with multi-clause dispatch. The `derive` macro us
   ...)  ; traits is a bracket pattern, dt is a plain Sexp
 ```
 
-## 9.3 Macro Expansion
+## 9.3 Macro Expansion [R3 S9]
 
 ### 9.3.1 Pipeline Position
 
@@ -267,7 +267,7 @@ A `defmacro` body MAY reference any function or macro that was defined before it
 
 The expanded S-expressions SHOULD carry the source location (span) of the original macro call site. This means that error messages resulting from expanded code point to where the macro was invoked, not where the macro was defined.
 
-## 9.4 Quasiquote
+## 9.4 Quasiquote [R3 S9]
 
 Quasiquote is reader syntax for template-based S-expression construction. It avoids the verbosity of manually calling `Sexp` constructors.
 
@@ -332,7 +332,7 @@ Nested quasiquote with symbol construction:
 ;; Expands to: (if (> x 0) (print "positive") 0)
 ```
 
-## 9.5 Bare-Symbol Expansion
+## 9.5 Bare-Symbol Expansion [R3 S9]
 
 Zero-argument macros expand when referenced as bare symbols, without parentheses. This enables named constants and value aliases.
 
@@ -351,7 +351,7 @@ An implementation MUST check for zero-argument macros during expansion whenever 
 
 This mechanism can be used to implement named constants. For example, the reference implementation provides `const` and `def` macros (Section 9.10.1, 9.10.2) built on bare-symbol expansion.
 
-## 9.6 Multi-Form Expansion (`begin`)
+## 9.6 Multi-Form Expansion (`begin`) [R3 S9]
 
 A macro MAY return a form whose head symbol is `begin`. The `begin` form causes the expander to splice multiple top-level forms into the surrounding context:
 
@@ -379,7 +379,7 @@ Each `form1` through `formN` is treated as a separate top-level form, as if the 
 
 The `begin` expansion is performed before re-expansion of individual forms. Each spliced form is then expanded independently.
 
-## 9.7 SList Helper Functions
+## 9.7 SList Helper Functions [R3 S9]
 
 Macro authors typically need helper functions for `SList`. A standard library may provide functions such as the following (these are defined in the reference implementation's `core.syntax` module).
 
@@ -463,7 +463,7 @@ The field accessors `shead` and `stail` are auto-generated from the `SCons` cons
 
 Calling `shead` or `stail` on `SNil` is a runtime error (match failure).
 
-## 9.8 Hygiene
+## 9.8 Hygiene [R3 S9]
 
 Cranelisp macros are **unhygienic** by default. Names introduced by macro expansion are subject to capture by the expansion context, and names from the expansion context are visible inside macro-generated code.
 
@@ -497,7 +497,7 @@ For cases where auto-gensym is not sufficient, macro authors MAY also use:
       (SCons (case-fold "__case__" clauses) SNil)))))
 ```
 
-## 9.9 Macro Errors
+## 9.9 Macro Errors [R3 S9]
 
 ### 9.9.1 Return Type Mismatch
 
@@ -539,7 +539,7 @@ If a macro function raises a runtime error during expansion (e.g., pattern match
 
 Calling a macro with the wrong number of arguments is a compile-time error. For non-variadic macros, the number of arguments MUST exactly match the number of parameters. For variadic macros, the number of arguments MUST be at least the number of fixed parameters.
 
-## 9.10 Example Prelude Macros
+## 9.10 Example Prelude Macros [R3 S9]
 
 The following macros illustrate the capabilities of the macro system. They are provided by the reference implementation's standard prelude (`lib/core/syntax.cl`) and are available in all modules that import the prelude (which is the default). Full details of the reference standard library are in Section 11 (non-normative); brief descriptions and expansion examples are given here.
 
@@ -839,7 +839,7 @@ With zero arguments, returns the empty string `""`.
        (str-fold (SexpList (SCons (SexpSym "show") (SCons x SNil))) rest)]))
 ```
 
-## 9.11 Primitives for Macro Authors
+## 9.11 Primitives for Macro Authors [R3 S9]
 
 ### 9.11.1 `quote-sexp`
 
@@ -867,7 +867,7 @@ Concatenates two strings. Available as a primitive and commonly used in macro he
 (str-concat "foo" "-def")   ; -> "foo-def"
 ```
 
-## 9.12 Bootstrapping Order
+## 9.12 Bootstrapping Order [R3 S9]
 
 The prelude is loaded in two passes to resolve the circular dependency between type definitions and macro definitions:
 
@@ -886,7 +886,7 @@ This ordering ensures that:
 
 A `defmacro` MAY appear at any point in a source file, interleaved with other definitions. It is available to all subsequent forms in the same file and to any module that imports it.
 
-## 9.13 REPL Integration
+## 9.13 REPL Integration [R3 S9]
 
 In a REPL session:
 
@@ -903,7 +903,7 @@ user> (double 21)
 42 :: Int
 ```
 
-## 9.14 Limitations
+## 9.14 Limitations [R3 S9]
 
 The following features are NOT supported by the macro system:
 

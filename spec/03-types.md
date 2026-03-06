@@ -1,10 +1,10 @@
-# 3. Type System
+# 3. Type System [R3 S9]
 
 This section defines the type system of Cranelisp: the set of types, the type inference algorithm, and the rules for type checking programs.
 
 Cranelisp uses Hindley-Milner type inference extended with traits, constrained polymorphism (monomorphisation), and higher-kinded types. All types can be inferred without annotations, but optional type annotations are available to constrain types or add trait requirements (see [Section 2](02-grammar.md) for annotation syntax).
 
-## 3.1 Primitive Types
+## 3.1 Primitive Types [Tested tests/ring0.rs::float_arithmetic]
 
 Cranelisp has four primitive types. All are immutable and unboxed at runtime.
 
@@ -17,9 +17,9 @@ Cranelisp has four primitive types. All are immutable and unboxed at runtime.
 
 `Int` values use two's complement representation; arithmetic overflow wraps silently. `Float` values follow IEEE 754 semantics including `NaN`, infinities, and signed zero.
 
-## 3.2 Compound Types
+## 3.2 Compound Types [R4 S10]
 
-### 3.2.1 Function Types
+### 3.2.1 Function Types [Tested tests/repl_experience.rs::defn_with_let_infers_return_type]
 
 ```
 Fn([T1, T2, ..., Tn], R)
@@ -34,7 +34,7 @@ A function type describes a callable value taking parameters of types `T1` throu
 
 All functions are first-class values. At runtime, function values are represented as closures (see [Section 12](12-runtime.md)).
 
-### 3.2.2 Algebraic Data Types
+### 3.2.2 Algebraic Data Types [Tested tests/ring1.rs::adt_polymorphic_type]
 
 ```
 ADT(Name, [A1, A2, ..., An])
@@ -54,7 +54,7 @@ ADTs may be:
 - **Sum types** (multiple constructors): `(deftype (Option a) None (Some [:a val]))`
 - **Enum types** (all constructors nullary): `(deftype Color Red Green Blue)`
 
-### 3.2.3 IO Type
+### 3.2.3 IO Type [R4 S10]
 
 ```
 IO(A)
@@ -70,7 +70,7 @@ IO(A)
 
 Operations such as `pure` and `bind` can be defined as ordinary library functions to compose IO values (see [Section 10](10-io.md) for details).
 
-### 3.2.4 Vec Type
+### 3.2.4 Vec Type [Tested tests/ring1.rs::vec_literal_int]
 
 ```
 Vec(A)
@@ -85,7 +85,7 @@ Vec(A)
 
 `Vec` is registered as a built-in type in the `primitives` module. It supports indexed access and functional update operations.
 
-## 3.3 Type Variables
+## 3.3 Type Variables [Tested tests/ring1.rs::adt_polymorphic_type]
 
 Type variables are lowercase identifiers that stand for unknown or universally quantified types:
 
@@ -101,7 +101,7 @@ Type variables are created in two contexts:
 
 Type variables are implicitly universally quantified at function definition boundaries. There is no explicit `forall` syntax in the source language -- quantification is determined by the inference algorithm.
 
-## 3.4 Type Schemes
+## 3.4 Type Schemes [Tested tests/ring0.rs::let_polymorphism_identity]
 
 A **type scheme** (or **polytype**) is a type with universally quantified variables and optional trait constraints:
 
@@ -141,7 +141,7 @@ show     :: forall [a]. {a: [Display]} => (Fn [a] String)
 fmap     :: forall [f, a, b]. {f: [Functor]} => (Fn [(Fn [a] b) (f a)] (f b))
 ```
 
-## 3.5 Type Inference (Algorithm W)
+## 3.5 Type Inference (Algorithm W) [Tested tests/repl_experience.rs::defn_with_let_infers_return_type]
 
 Cranelisp implements Algorithm W, the classic Hindley-Milner type inference algorithm. The typechecker maintains a mutable substitution map that accumulates type equalities as expressions are checked.
 
@@ -332,7 +332,7 @@ Consider the factorial function:
 
 3. Result after substitution: `fact :: (Fn [Int] Int)`
 
-## 3.6 Constrained Polymorphism
+## 3.6 Constrained Polymorphism [Tested tests/ring2.rs::constrained_add_int]
 
 When a function uses trait methods on type variables and multiple trait implementations exist (e.g., `+` is implemented for both `Num Int` and `Num Float`), the function becomes **constrained polymorphic**. Rather than producing an ambiguity error, the typechecker records the constraints and defers compilation.
 
@@ -406,7 +406,7 @@ If a constrained function calls another constrained function, the inner call gen
 
 - **No constrained closures**: Closures that capture constrained functions are not supported.
 
-## 3.7 Higher-Kinded Types
+## 3.7 Higher-Kinded Types [R3 S9]
 
 Cranelisp supports **type constructor parameters** in trait declarations. This enables abstractions over type constructors -- types that take type arguments to produce concrete types (e.g., `Option`, `List`).
 
@@ -486,7 +486,7 @@ HKT methods are **not** constrained polymorphic functions. Although the scheme c
 (fmap (fn [x] (* x 2)) (Some 3)) ; => (Some 6)
 ```
 
-## 3.8 Unification Rules
+## 3.8 Unification Rules [Tested tests/ring1.rs::error_type_mismatch_names_both_types]
 
 Unification asserts that two types are equal, extending the substitution map as needed. The following table defines all unification cases. Both input types have the current substitution applied before matching.
 
@@ -564,7 +564,7 @@ unify(Int, Fn(..)):     ERROR "type mismatch"
 
 Unification is symmetric: `unify(A, B)` and `unify(B, A)` produce the same result.
 
-## 3.9 Type Annotations
+## 3.9 Type Annotations [Tested tests/ring0.rs::annotated_params]
 
 Type annotations constrain the inferred type of a parameter. They appear as colon-prefixed symbols before parameter names in `defn` and `fn` forms:
 

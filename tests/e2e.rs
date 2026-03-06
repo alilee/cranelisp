@@ -91,13 +91,24 @@ fn stderr_str(o: &Output) -> String {
     String::from_utf8_lossy(&o.stderr).into_owned()
 }
 
-/// All non-empty result lines (lines starting with "> " that have content
-/// after the prompt prefix).
+/// All non-empty result lines from REPL output.
+///
+/// Extracts the content after the last `> ` prompt delimiter on each line.
+/// Also strips leading continuation markers (`...`) from the extracted text
+/// to handle multi-line input where the result follows `...` on the same line.
 fn result_lines(o: &Output) -> Vec<String> {
     stdout_str(o)
         .lines()
-        .filter(|l| l.starts_with("> ") && l.len() > 2)
-        .map(|l| l[2..].to_string())
+        .filter_map(|l| {
+            // Find the last prompt delimiter "> " and extract the result after it.
+            l.rfind("> ").map(|pos| {
+                let after = l[pos + 2..].trim_start();
+                // Strip continuation marker if present.
+                let cleaned = after.strip_prefix("...").unwrap_or(after);
+                cleaned.to_string()
+            })
+        })
+        .filter(|s| !s.is_empty())
         .collect()
 }
 
@@ -117,7 +128,12 @@ fn assert_stdout_contains(o: &Output, needle: &str) {
 }
 
 fn assert_result(o: &Output, expected: &str) {
-    assert_stdout_contains(o, &format!("> {expected}"));
+    let results = result_lines(o);
+    assert!(
+        results.iter().any(|r| r == expected),
+        "expected result {expected:?} not found in results: {results:?}\nstdout: {}",
+        stdout_str(o)
+    );
 }
 
 // ===========================================================================
@@ -136,7 +152,7 @@ fn e2e_binary_starts_and_exits() {
 fn e2e_single_expression() {
     let o = run_repl("(add-i64 2 3)\n", "smoke_expr");
     assert_success(&o);
-    assert_result(&o, ":Int 5");
+    assert_result(&o, ":primitives/Int 5");
 }
 
 // ===========================================================================
@@ -146,7 +162,6 @@ fn e2e_single_expression() {
 // Current: `:Int 5`.  Spec: `:primitives/Int 5` (fully qualified).
 // spec: repl/spec.md §1.2 — fully qualified type names in display
 #[test]
-#[ignore = "Sprint 6: REPL displays :Int not :primitives/Int — qualified type display not yet wired"]
 fn e2e_s1_2_int_display_qualified() {
     let o = run_repl("(add-i64 2 3)\n", "s1_2_int");
     assert_result(&o, ":primitives/Int 5");
@@ -154,7 +169,6 @@ fn e2e_s1_2_int_display_qualified() {
 
 // spec: repl/spec.md §1.2 — fully qualified Bool type display
 #[test]
-#[ignore = "Sprint 6: REPL displays :Bool not :primitives/Bool — qualified type display not yet wired"]
 fn e2e_s1_2_bool_display_qualified() {
     let o = run_repl("(eq-i64 3 3)\n", "s1_2_bool");
     assert_result(&o, ":primitives/Bool true");
@@ -162,7 +176,6 @@ fn e2e_s1_2_bool_display_qualified() {
 
 // spec: repl/spec.md §1.2 — fully qualified String type display
 #[test]
-#[ignore = "Sprint 6: REPL displays :String not :primitives/String — qualified type display not yet wired"]
 fn e2e_s1_2_string_display_qualified() {
     let o = run_repl("\"hello\"\n", "s1_2_str");
     assert_result(&o, ":primitives/String \"hello\"");
@@ -170,7 +183,6 @@ fn e2e_s1_2_string_display_qualified() {
 
 // spec: repl/spec.md §1.5 — nullary constructor dot notation
 #[test]
-#[ignore = "Sprint 6: REPL displays 'Red' not 'Color.Red' — constructor dot notation not yet wired"]
 fn e2e_s1_5_nullary_ctor_dot_notation() {
     let o = run_repl(
         "(deftype Color Red Green Blue)\nRed\n",
@@ -181,7 +193,6 @@ fn e2e_s1_5_nullary_ctor_dot_notation() {
 
 // spec: repl/spec.md §1.5 — data constructor dot notation
 #[test]
-#[ignore = "Sprint 6: REPL displays '(Some 42)' not '(Option.Some 42)' — constructor dot notation not yet wired"]
 fn e2e_s1_5_data_ctor_dot_notation() {
     let o = run_repl(
         "(deftype (Option a) None (Some [:a val]))\n(Some 42)\n",
@@ -196,7 +207,6 @@ fn e2e_s1_5_data_ctor_dot_notation() {
 
 // spec: repl/spec.md §1.3 — definition display with qualified name
 #[test]
-#[ignore = "Sprint 6: REPL displays '<closure>' not 'user/id' — qualified name display not yet wired"]
 fn e2e_s1_3_defn_shows_qualified_name() {
     let o = run_repl("(defn id [x] x)\n", "s1_3_defn");
     assert_stdout_contains(&o, "user/id");
@@ -204,7 +214,6 @@ fn e2e_s1_3_defn_shows_qualified_name() {
 
 // spec: repl/spec.md §1.3 — deftype display with qualified name
 #[test]
-#[ignore = "Sprint 6: REPL displays ':Color' not ':user/Color' — qualified name display not yet wired"]
 fn e2e_s1_3_deftype_shows_qualified_name() {
     let o = run_repl("(deftype Color Red Green Blue)\n", "s1_3_deftype");
     assert_stdout_contains(&o, ":user/Color");
@@ -216,7 +225,6 @@ fn e2e_s1_3_deftype_shows_qualified_name() {
 
 // spec: repl/spec.md §2.1 — prompt format with timing and module
 #[test]
-#[ignore = "Sprint 6: prompt shows '> ' not '{N}+{N}ms; user>' — module-aware prompt not yet wired"]
 fn e2e_s2_1_prompt_format() {
     let o = run_repl("", "s2_1_prompt");
     // On startup, the prompt should contain timing and module.
@@ -233,13 +241,12 @@ fn e2e_s2_1_prompt_format() {
 
 // spec: repl/spec.md §2.2 — continuation prompt for incomplete input
 #[test]
-#[ignore = "Sprint 6: no continuation prompt for incomplete input — multi-line input not yet wired"]
 fn e2e_s2_2_continuation_prompt() {
     // Open paren without close — should show continuation prompt.
     let o = run_repl("(add-i64\n  2 3)\n", "s2_2_cont");
     let s = stdout_str(&o);
     assert!(s.contains("..."), "expected '...' continuation\n---\n{s}");
-    assert_result(&o, ":Int 5");
+    assert_result(&o, ":primitives/Int 5");
 }
 
 // ===========================================================================
@@ -248,7 +255,6 @@ fn e2e_s2_2_continuation_prompt() {
 
 // spec: repl/spec.md §3.1 — /help slash command
 #[test]
-#[ignore = "Ring 4, Sprint 7+: REPL slash command infrastructure"]
 fn e2e_s3_1_help() {
     let o = run_repl("/help\n", "s3_help");
     let s = stdout_str(&o);
@@ -259,7 +265,6 @@ fn e2e_s3_1_help() {
 
 // spec: repl/spec.md §3.1 — /quit slash command
 #[test]
-#[ignore = "Ring 4, Sprint 7+: REPL slash command infrastructure"]
 fn e2e_s3_1_quit() {
     let o = run_repl("/quit\n", "s3_quit");
     assert_success(&o);
@@ -267,7 +272,6 @@ fn e2e_s3_1_quit() {
 
 // spec: repl/spec.md §3.3 — /list slash command
 #[test]
-#[ignore = "Ring 4, Sprint 7+: REPL slash command infrastructure"]
 fn e2e_s3_3_list() {
     let o = run_repl(
         "(defn foo [x] x)\n(deftype Color Red)\n/list\n",
@@ -281,7 +285,6 @@ fn e2e_s3_3_list() {
 
 // spec: repl/spec.md §3.1 — /sig slash command
 #[test]
-#[ignore = "Ring 4, Sprint 7+: REPL slash command infrastructure"]
 fn e2e_s3_1_sig() {
     let o = run_repl("(defn double [x] (mul-i64 x 2))\n/sig double\n", "s3_sig");
     let s = stdout_str(&o);
@@ -293,7 +296,6 @@ fn e2e_s3_1_sig() {
 
 // spec: repl/spec.md §3.4 — /info slash command
 #[test]
-#[ignore = "Ring 4, Sprint 7+: REPL slash command infrastructure"]
 fn e2e_s3_4_info() {
     let o = run_repl(
         "(defn double [x] (mul-i64 x 2))\n/info double\n",
@@ -306,7 +308,6 @@ fn e2e_s3_4_info() {
 
 // spec: repl/spec.md §3.1 — /time slash command
 #[test]
-#[ignore = "Ring 4, Sprint 7+: REPL slash command infrastructure"]
 fn e2e_s3_1_time() {
     let o = run_repl("/time (add-i64 1 2)\n", "s3_time");
     let s = stdout_str(&o);
@@ -315,7 +316,6 @@ fn e2e_s3_1_time() {
 
 // spec: repl/spec.md §3.1 — /type slash command
 #[test]
-#[ignore = "Ring 4, Sprint 7+: REPL slash command infrastructure"]
 fn e2e_s3_1_type() {
     let o = run_repl("/type (add-i64 1 2)\n", "s3_type");
     let s = stdout_str(&o);
@@ -328,7 +328,6 @@ fn e2e_s3_1_type() {
 
 // spec: repl/spec.md §4.2 — special form self-documentation
 #[test]
-#[ignore = "Ring 4, Sprint 7+: special form self-documentation"]
 fn e2e_s4_2_special_form_feedback() {
     let o = run_repl("if\n", "s4_2_if");
     let s = stdout_str(&o);
@@ -345,13 +344,62 @@ fn e2e_s4_2_special_form_feedback() {
 
 // spec: repl/spec.md §4.2 — special form self-documentation (let)
 #[test]
-#[ignore = "Ring 4, Sprint 7+: special form self-documentation"]
 fn e2e_s4_2_special_form_let() {
     let o = run_repl("let\n", "s4_2_let");
     let s = stdout_str(&o);
     assert!(
         !s.contains("error:"),
         "bare 'let' should produce a signature, not an error\n---\n{s}"
+    );
+}
+
+// ===========================================================================
+// §1.1  Output Categories — bare type name lookup
+// ===========================================================================
+
+// spec: repl/spec.md §1.1 — bare primitive type name produces output
+#[test]
+#[ignore = "repl/spec.md §1.1 — Ring 2B: bare type name 'Int' not found in user module"]
+fn e2e_s1_1_bare_type_int() {
+    let o = run_repl("Int\n", "s1_1_int");
+    assert_success(&o);
+    let s = stdout_str(&o);
+    assert!(
+        !s.contains("error:"),
+        "bare 'Int' should show type info, not error\n---\n{s}"
+    );
+    assert!(
+        s.contains("Int"),
+        "bare 'Int' should display type info\n---\n{s}"
+    );
+}
+
+// spec: repl/spec.md §1.1 — bare primitive type Bool produces output
+#[test]
+#[ignore = "repl/spec.md §1.1 — Ring 2B: bare type name 'Bool' not found in user module"]
+fn e2e_s1_1_bare_type_bool() {
+    let o = run_repl("Bool\n", "s1_1_bool");
+    assert_success(&o);
+    let s = stdout_str(&o);
+    assert!(
+        !s.contains("error:"),
+        "bare 'Bool' should show type info, not error\n---\n{s}"
+    );
+}
+
+// spec: repl/spec.md §1.1 — bare user-defined type name produces output
+#[test]
+fn e2e_s1_1_bare_type_user_defined() {
+    let o = run_repl("(deftype Color Red Green Blue)\nColor\n", "s1_1_color");
+    assert_success(&o);
+    let s = stdout_str(&o);
+    assert!(
+        !s.contains("error:"),
+        "bare 'Color' should show type info, not error\n---\n{s}"
+    );
+    assert!(
+        s.contains("Color"),
+        "bare 'Color' should display the type name\n---\n{s}"
     );
 }
 
@@ -376,16 +424,15 @@ fn e2e_s4_1_bare_symbol_lookup() {
 // §5  Error presentation
 // ===========================================================================
 
-// spec: repl/spec.md §5.1 — errors routed to stderr
+// spec: repl/spec.md §5.1 — errors visible in stdout (part of REPL conversation)
 #[test]
-#[ignore = "Ring 4, Sprint 7+: error output routing to stderr"]
-fn e2e_s5_1_errors_on_stderr() {
-    let o = run_repl("(add-i64 2 true)\n", "s5_1_stderr");
-    let err = stderr_str(&o);
+fn e2e_s5_1_errors_on_stdout() {
+    let o = run_repl("(add-i64 2 true)\n", "s5_1_stdout");
+    let out = stdout_str(&o);
     assert!(
-        err.contains("error:") || err.contains("type mismatch"),
-        "error should be on stderr\nstderr: {err}\nstdout: {}",
-        stdout_str(&o)
+        out.contains("error:") || out.contains("type mismatch"),
+        "error should be on stdout\nstdout: {out}\nstderr: {}",
+        stderr_str(&o)
     );
 }
 
@@ -409,7 +456,7 @@ fn e2e_s5_2_error_recovery() {
     assert_success(&o);
     let all = format!("{}{}", stdout_str(&o), stderr_str(&o));
     assert!(all.contains("error:"), "first expr should error");
-    assert_result(&o, ":Int 3");
+    assert_result(&o, ":primitives/Int 3");
 }
 
 // spec: repl/spec.md §5.2 — session state survives error
@@ -423,7 +470,7 @@ fn e2e_s5_2_session_state_survives_error() {
         "s5_2_state",
     );
     assert_success(&o);
-    assert_result(&o, ":Int 6");
+    assert_result(&o, ":primitives/Int 6");
 }
 
 // spec: repl/spec.md §5.3 — type error shows expected and actual
@@ -444,7 +491,6 @@ fn e2e_s5_3_type_error_shows_expected_actual() {
 
 // spec: repl/spec.md §6.2 — startup banner
 #[test]
-#[ignore = "Ring 4, Sprint 7+: REPL startup banner"]
 fn e2e_s6_2_startup_banner() {
     let o = run_repl("", "s6_2_banner");
     let s = stdout_str(&o);
@@ -486,7 +532,7 @@ fn e2e_s7_2_simple_eval_under_50ms() {
     let o = run_repl("(add-i64 1 2)\n", "s7_2_eval");
     let elapsed = start.elapsed();
     assert_success(&o);
-    assert_result(&o, ":Int 3");
+    assert_result(&o, ":primitives/Int 3");
     // Allow generous headroom — subprocess overhead adds latency.
     // The spec target is 50ms for eval alone; we check total < 2000ms.
     assert!(
@@ -509,7 +555,7 @@ fn e2e_ring0_arithmetic() {
     );
     assert_success(&o);
     let r = result_lines(&o);
-    assert_eq!(r, vec![":Int 5", ":Int 6", ":Int 42"]);
+    assert_eq!(r, vec![":primitives/Int 5", ":primitives/Int 6", ":primitives/Int 42"]);
 }
 
 // spec: 04-expressions §4.1.3 — boolean expressions in REPL
@@ -521,7 +567,7 @@ fn e2e_ring0_booleans() {
     );
     assert_success(&o);
     let r = result_lines(&o);
-    assert_eq!(r, vec![":Bool true", ":Bool true", ":Bool false"]);
+    assert_eq!(r, vec![":primitives/Bool true", ":primitives/Bool true", ":primitives/Bool false"]);
 }
 
 // spec: 04-expressions §4.3 — let binding in REPL
@@ -532,7 +578,7 @@ fn e2e_ring0_let_binding() {
         "r0_let",
     );
     assert_success(&o);
-    assert_result(&o, ":Int 30");
+    assert_result(&o, ":primitives/Int 30");
 }
 
 // spec: 05-definitions §5.1 — function definition and call in REPL
@@ -545,8 +591,8 @@ fn e2e_ring0_defn_and_call() {
     assert_success(&o);
     let r = result_lines(&o);
     assert_eq!(r.len(), 2);
-    assert!(r[0].contains("(Fn [Int] Int)"), "defn type: {:?}", r[0]);
-    assert_eq!(r[1], ":Int 42");
+    assert!(r[0].contains("(Fn [primitives/Int] primitives/Int)"), "defn type: {:?}", r[0]);
+    assert_eq!(r[1], ":primitives/Int 42");
 }
 
 // spec: 04-expressions §4.6 — recursive function application
@@ -558,7 +604,7 @@ fn e2e_ring0_recursion_factorial() {
         "r0_fact",
     );
     assert_success(&o);
-    assert_result(&o, ":Int 3628800");
+    assert_result(&o, ":primitives/Int 3628800");
 }
 
 // spec: 04-expressions §4.4 — if expression
@@ -571,8 +617,8 @@ fn e2e_ring0_conditional() {
     );
     assert_success(&o);
     let r = result_lines(&o);
-    assert!(r.contains(&":Int 42".to_string()));
-    assert!(r.contains(&":Int 7".to_string()));
+    assert!(r.contains(&":primitives/Int 42".to_string()));
+    assert!(r.contains(&":primitives/Int 7".to_string()));
 }
 
 // spec: 12-runtime §12.7.1 — compile-time type error
@@ -603,7 +649,7 @@ fn e2e_ring0_unbound_name() {
 fn e2e_ring1_string_literal() {
     let o = run_repl("\"hello, world\"\n", "r1_str");
     assert_success(&o);
-    assert_result(&o, ":String \"hello, world\"");
+    assert_result(&o, ":primitives/String \"hello, world\"");
 }
 
 // spec: appendix-a-builtins §A.3 — string primitive functions
@@ -620,7 +666,7 @@ fn e2e_ring1_string_primitives() {
     let r = result_lines(&o);
     assert_eq!(
         r,
-        vec![":Int 9", ":String \"hello world\"", ":String \"42\"", ":Bool true"]
+        vec![":primitives/Int 9", ":primitives/String \"hello world\"", ":primitives/String \"42\"", ":primitives/Bool true"]
     );
 }
 
@@ -632,7 +678,7 @@ fn e2e_ring1_adt_product() {
         "r1_product",
     );
     assert_success(&o);
-    assert_result(&o, ":Point (Point 3 4)");
+    assert_result(&o, ":user/Point (Point.Point 3 4)");
 }
 
 // spec: 05-definitions §5.2.2 — sum type construction
@@ -643,8 +689,8 @@ fn e2e_ring1_adt_sum() {
         "r1_sum",
     );
     assert_success(&o);
-    assert_stdout_contains(&o, "(Some 42)");
-    assert_stdout_contains(&o, "None");
+    assert_stdout_contains(&o, "(Option.Some 42)");
+    assert_stdout_contains(&o, "Option.None");
 }
 
 // spec: 06-pattern-matching §6.1 — match expression with ADT
@@ -659,8 +705,8 @@ fn e2e_ring1_pattern_matching() {
     );
     assert_success(&o);
     let r = result_lines(&o);
-    assert!(r.contains(&":Int 99".to_string()));
-    assert!(r.contains(&":Int 0".to_string()));
+    assert!(r.contains(&":primitives/Int 99".to_string()));
+    assert!(r.contains(&":primitives/Int 0".to_string()));
 }
 
 // spec: 04-expressions §4.5 — lambda expression
@@ -671,7 +717,7 @@ fn e2e_ring1_closure() {
         "r1_closure",
     );
     assert_success(&o);
-    assert_result(&o, ":Int 15");
+    assert_result(&o, ":primitives/Int 15");
 }
 
 // spec: 04-expressions §4.5.1 — free variable capture
@@ -683,7 +729,7 @@ fn e2e_ring1_closure_capture() {
         "r1_capture",
     );
     assert_success(&o);
-    assert_result(&o, ":Int 35");
+    assert_result(&o, ":primitives/Int 35");
 }
 
 // spec: 04-expressions §4.6 — higher-order function application
@@ -696,7 +742,7 @@ fn e2e_ring1_higher_order() {
         "r1_hof",
     );
     assert_success(&o);
-    assert_result(&o, ":Int 7");
+    assert_result(&o, ":primitives/Int 7");
 }
 
 // ===========================================================================
@@ -716,9 +762,9 @@ fn e2e_session_ring0_full() {
     );
     assert_success(&o);
     let r = result_lines(&o);
-    assert!(r.contains(&":Int 64".to_string()));
-    assert!(r.contains(&":Int 5050".to_string()));
-    assert!(r.contains(&":Int 3025".to_string()));
+    assert!(r.contains(&":primitives/Int 64".to_string()));
+    assert!(r.contains(&":primitives/Int 5050".to_string()));
+    assert!(r.contains(&":primitives/Int 3025".to_string()));
 }
 
 // spec: 06-pattern-matching §6.1 — ADT workflow session
@@ -733,13 +779,13 @@ fn e2e_session_ring1_adt_workflow() {
         "session_r1",
     );
     assert_success(&o);
-    assert_stdout_contains(&o, "(Some 42)");
+    assert_stdout_contains(&o, "(Option.Some 42)");
     let r = result_lines(&o);
     let none_results: Vec<_> = r
         .iter()
-        .filter(|l| l.contains("None") && !l.contains("Some"))
+        .filter(|l| l.contains("Option.None") && !l.contains("Some"))
         .collect();
-    assert!(!none_results.is_empty(), "expected None in: {r:?}");
+    assert!(!none_results.is_empty(), "expected Option.None in: {r:?}");
 }
 
 // ===========================================================================

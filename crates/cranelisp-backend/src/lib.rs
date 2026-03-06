@@ -293,6 +293,101 @@ fn compile_mono_defns(
     Ok(())
 }
 
+/// Result of compiling a module's program into a shared JIT.
+///
+/// Holds function name/arity pairs for symbols that downstream
+/// modules may need to reference.
+pub struct CompiledModuleInfo {
+    /// Function names and their param counts (for downstream import declarations).
+    pub func_signatures: Vec<(Symbol, usize)>,
+    /// Warnings accumulated during codegen.
+    pub warnings: Vec<Warning>,
+}
+
+/// Compile a module's program into an existing shared JIT (no finalize).
+///
+/// Used by the multi-module pipeline: all modules compile into one JIT,
+/// which is finalized once after all modules are compiled. This allows
+/// cross-module function calls to resolve via shared JIT symbol tables.
+///
+/// `prior_funcs` lists `(name, param_count)` from previously-compiled
+/// dependency modules. Names may include qualified aliases like
+/// `"util/helper"` that map to the same JIT function as `"helper"`.
+pub fn compile_module_program(
+    program: &Program,
+    check: &CheckResult,
+    mode: CompileMode,
+    jit: &mut Jit,
+    prior_funcs: &[(Symbol, usize)],
+) -> Result<CompiledModuleInfo, CranelispError> {
+    // Phase 1: Collect defns, declare them in the shared JIT.
+    let collected = collect_and_declare_defns(program, check, jit)?;
+
+    // Build merged func_ids from this module + prior dependencies.
+    // For qualified aliases (e.g., "util/helper"), map them to the same
+    // FuncId as the base function name ("helper") since they refer to
+    // the same JIT-compiled function.
+    let mut merged_func_ids = collected.func_ids.clone();
+
+    for (name, param_count) in prior_funcs {
+        if merged_func_ids.contains_key(name) {
+            continue; // Already declared by this module
+        }
+
+        // Check if this is a qualified alias ("module/name" -> "name").
+        if let Some(slash_pos) = name.as_ref().find('/') {
+            let base_name = &name.as_ref()[slash_pos + 1..];
+            let base_sym = Symbol::from(base_name);
+            if let Some(&func_id) = merged_func_ids.get(&base_sym) {
+                // Qualified alias: reuse the same FuncId (no JIT declaration needed).
+                merged_func_ids.insert(name.clone(), func_id);
+                continue;
+            }
+        }
+
+        // Not an alias — declare as an imported function in the shared JIT.
+        jit.declare_imported_functions(&[(name.clone(), *param_count)], &mut merged_func_ids)?;
+    }
+
+    let mut merged_arities: HashMap<Symbol, usize> = collected.func_arities.clone();
+    for (name, count) in prior_funcs {
+        merged_arities.insert(name.clone(), *count);
+    }
+
+    // Build compile context with merged symbol tables.
+    let compile_ctx = jit.build_compile_context(
+        check, mode, &merged_func_ids, &merged_arities,
+        None, None, None,
+    );
+
+    // Compile each regular function.
+    for defn in &collected.defns {
+        jit.compile_defn(defn, compile_ctx)?;
+    }
+
+    // Compile default method defns.
+    for defn in &check.default_method_defns {
+        jit.compile_defn(defn, compile_ctx)?;
+    }
+
+    // Compile mono specializations.
+    compile_mono_defns(
+        jit, check, mode, &merged_func_ids, &merged_arities,
+        None, None,
+    )?;
+
+    // Collect this module's function signatures for downstream modules.
+    let func_signatures: Vec<(Symbol, usize)> = collected
+        .func_arities
+        .into_iter()
+        .collect();
+
+    Ok(CompiledModuleInfo {
+        func_signatures,
+        warnings: Vec::new(),
+    })
+}
+
 /// Compile and execute a single expression in Interactive mode.
 ///
 /// Wraps the expression in a synthetic zero-arg function, compiles it,

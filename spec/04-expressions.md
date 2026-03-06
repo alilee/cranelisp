@@ -1,4 +1,4 @@
-# 4. Expressions
+# 4. Expressions [R3 S8]
 
 This section defines the evaluation semantics for each expression form in Cranelisp. All expressions evaluate to a value of a statically known type. Cranelisp uses strict (eager) evaluation -- sub-expressions are fully evaluated before their results are used.
 
@@ -14,11 +14,11 @@ Evaluation rules use the following notation:
 
 The environment `E` is a chain of lexical scopes: local bindings (from `let`, `fn`, `match`) shadow module-scope names.
 
-## 4.1 Literals
+## 4.1 Literals [Tested]
 
 Literal expressions evaluate to themselves. They carry no free variables and require no environment lookup.
 
-### 4.1.1 Integer Literals
+### 4.1.1 Integer Literals [Tested tests/ring0::hello, tests/ring0::negative_integer, tests/ring0::zero, tests/ring0::large_integer, tests/ring0::repl_eval_expression]
 
 An integer literal evaluates to the corresponding signed 64-bit integer value.
 
@@ -33,7 +33,7 @@ E |- 0 => 0 : Int
 -7      ; => -7
 ```
 
-### 4.1.2 Float Literals
+### 4.1.2 Float Literals [Tested tests/ring0::float_arithmetic, tests/ring0::repl_float_eval]
 
 A float literal evaluates to the corresponding IEEE 754 double-precision floating-point value.
 
@@ -47,7 +47,7 @@ E |- -0.5 => -0.5 : Float
 -0.5    ; => -0.5
 ```
 
-### 4.1.3 Boolean Literals
+### 4.1.3 Boolean Literals [Tested tests/ring0::repl_boolean_expression, tests/ring0::repl_boolean_false, tests/ring0::dual_mode_boolean_logic]
 
 The keywords `true` and `false` evaluate to their respective boolean values.
 
@@ -61,7 +61,7 @@ true    ; => true
 false   ; => false
 ```
 
-### 4.1.4 String Literals
+### 4.1.4 String Literals [Tested tests/ring1::string_literal, tests/ring1::string_empty_literal, tests/ring1::repl_string_literal]
 
 A string literal evaluates to the corresponding string value. Escape sequences are resolved during parsing (see [section 1.3.4](01-lexical.md#134-string-literals)).
 
@@ -75,7 +75,7 @@ E |- "" => "" : String
 "line1\nline2"  ; => a string containing a newline
 ```
 
-## 4.2 Variable Reference
+## 4.2 Variable Reference [R2 S7]
 
 A variable reference looks up a name in the current lexical environment. Resolution follows the scope chain: local bindings (from `let`, `fn` parameters, `match` pattern bindings) are searched first, then module scope. An unbound name is a compile-time error.
 
@@ -88,7 +88,7 @@ E |- x => error         when x is not bound
 (let [x 42] x)         ; => 42, x resolves to the let binding
 ```
 
-### 4.2.1 Constructor References
+### 4.2.1 Constructor References [Tested tests/ring1::error_undefined_constructor]
 
 Constructor names are resolved through the module system like any other name.
 
@@ -118,7 +118,7 @@ Some        ; => constructor function (fn [val] ...)
 (Some 42)   ; => (Some 42) : (Option Int)
 ```
 
-### 4.2.2 Qualified and Dotted References
+### 4.2.2 Qualified and Dotted References [R2 S7]
 
 Qualified references (`module/name`) and dotted references (`Type.Constructor`, `Trait.method`) resolve through the module system. The resolution rules are defined in [section 8: Modules](08-modules.md).
 
@@ -128,7 +128,7 @@ Display.show        ; => trait method (resolved at call site)
 math/sin            ; => function from the math module
 ```
 
-## 4.3 Let Expression
+## 4.3 Let Expression [Tested tests/ring0::nested_let, tests/ring0::deeply_nested_let, tests/ring0::repl_let_expression, tests/repl_experience::let_multiple_bindings, tests/repl_experience::let_binding_depends_on_previous, tests/repl_experience::let_binding_shadowing]
 
 ```clojure
 (let [x1 e1 x2 e2 ... xn en] body)
@@ -177,7 +177,7 @@ Bindings go out of scope after `body` is evaluated. Any heap-allocated values bo
 
 The binding list MUST contain an even number of forms -- alternating names and expressions. An odd number is a compile-time error.
 
-## 4.4 If Expression
+## 4.4 If Expression [Tested tests/ring0::nested_if, tests/ring0::repl_if_expression, tests/ring0::error_type_mismatch_if_branches, tests/ring0::error_if_condition_not_bool, tests/e2e::e2e_ring0_conditional]
 
 ```clojure
 (if cond then-expr else-expr)
@@ -225,7 +225,7 @@ E |- (if cond then-expr else-expr) => v
 (if 42 "yes" "no")
 ```
 
-## 4.5 Lambda Expression
+## 4.5 Lambda Expression [Tested tests/ring0::lambda_immediate_call, tests/ring0::lambda_in_let, tests/ring0::lambda_zero_params, tests/ring0::lambda_multi_params, tests/e2e::e2e_ring1_closure]
 
 ```clojure
 (fn [param1 param2 ... paramN] body)
@@ -246,7 +246,7 @@ The type of a lambda `(fn [p1 p2 ... pn] body)` where each `p_i` gets type `T_i`
 (fn [T1 T2 ... Tn] R)
 ```
 
-### 4.5.1 Free Variable Capture
+### 4.5.1 Free Variable Capture [Tested tests/ring1::closure_simple_capture, tests/ring1::closure_multiple_captures, tests/ring1::closure_returned_from_function, tests/ring1::closure_nested, tests/e2e::e2e_ring1_closure_capture]
 
 A lambda captures the values of all free variables referenced in its body -- variables that are neither parameters of the lambda nor top-level (global) definitions. Captured values are **copied** at the time the lambda is created. There is no shared mutable state between the lambda and the enclosing scope.
 
@@ -260,7 +260,7 @@ A lambda captures the values of all free variables referenced in its body -- var
 
 Top-level function names and builtins are NOT captured -- they are accessed via direct calls or the global function table.
 
-### 4.5.2 Parameter Type Annotations
+### 4.5.2 Parameter Type Annotations [Tested tests/ring2::annotated_lambda]
 
 Lambda parameters support optional type annotations using the `:Type name` syntax:
 
@@ -270,7 +270,7 @@ Lambda parameters support optional type annotations using the `:Type name` synta
 
 Concrete annotations (`:Int`, `:String`, `:(Option Int)`) constrain the parameter to that exact type. Trait annotations (`:Num`, `:Display`) add trait constraints. Unannotated parameters receive fresh type variables and are inferred from usage.
 
-### 4.5.3 Calling Convention
+### 4.5.3 Calling Convention [Tested tests/ring1::closure_simple_capture, tests/ring1::closure_returned_from_function]
 
 All lambda bodies are compiled with a closure calling convention: the closure pointer is passed as an implicit first argument, followed by the declared parameters. This allows the body to access captured values via offsets from the closure pointer. See [section 12.2: Calling Convention](12-runtime.md#122-calling-convention) for runtime details.
 
@@ -283,7 +283,7 @@ All lambda bodies are compiled with a closure calling convention: the closure po
   (fn [x] (+ n x)))        ; closure: [code_ptr, 10]
 ```
 
-## 4.6 Function Application
+## 4.6 Function Application [R3 S8]
 
 ```clojure
 (callee arg1 arg2 ... argN)
@@ -306,7 +306,7 @@ E |- (callee arg1 ... argN) => result
   (f 5))                        ; => 10, call via variable
 ```
 
-### 4.6.1 Direct Calls
+### 4.6.1 Direct Calls [Tested tests/ring0::chained_function_calls, tests/ring0::repl_chained_calls, tests/ring0::dual_mode_chained_calls]
 
 When the callee is a known function name (symbol resolving to a top-level definition), the implementation emits a direct call. This avoids closure allocation and the closure calling convention overhead.
 
@@ -315,7 +315,7 @@ When the callee is a known function name (symbol resolving to a top-level defini
 (+ 1 2)                         ; direct call to resolved trait method '+$Int'
 ```
 
-### 4.6.2 Indirect Calls
+### 4.6.2 Indirect Calls [Tested tests/ring0::lambda_passed_to_function, tests/ring1::closure_with_higher_order, tests/e2e::e2e_ring1_higher_order]
 
 When the callee is an arbitrary expression (variable, lambda, function application result), the call goes through the closure calling convention: load the code pointer from offset 0 of the closure, then call it with the closure pointer as the first argument followed by the evaluated arguments.
 
@@ -327,7 +327,7 @@ When the callee is an arbitrary expression (variable, lambda, function applicati
 (apply-fn inc 5)                ; f is a closure; indirect call
 ```
 
-### 4.6.3 Auto-Currying
+### 4.6.3 Auto-Currying [R3 S8]
 
 When a function is called with fewer arguments than it declares parameters, the result is a **closure** capturing the applied arguments. This applies to both named functions and closures.
 
@@ -364,7 +364,7 @@ Auto-currying works at any depth -- supplying k of n arguments returns a functio
 
 **Restriction**: A multi-signature function name MUST NOT be used as a bare value (without any arguments). This is a compile-time error because the reference is ambiguous -- the compiler cannot determine which variant to reference. Use auto-curry with at least one argument, or wrap in a lambda.
 
-## 4.7 Multi-Signature Dispatch
+## 4.7 Multi-Signature Dispatch [R3 S8]
 
 ```clojure
 (defn name
@@ -454,7 +454,7 @@ Multi-signature functions support auto-currying. When fewer arguments are suppli
 (let [f (add 10)] (f 5))       ; => 15, curries the 2-arg variant
 ```
 
-## 4.8 Match Expression
+## 4.8 Match Expression [Tested tests/ring0::adt_enum_match, tests/ring1::adt_sum_nested_match, tests/ring1::repl_adt_match, tests/e2e::e2e_ring1_pattern_matching]
 
 ```clojure
 (match scrutinee [pattern1 body1 pattern2 body2 ...])
@@ -470,7 +470,7 @@ E[b1 -> w1, ...] |- body_i => result
 E |- (match scrutinee [pattern_i body_i ...]) => result
 ```
 
-### 4.8.1 Evaluation Order
+### 4.8.1 Evaluation Order [Tested tests/ring0::adt_enum_match, tests/ring1::adt_sum_nested_match]
 
 1. The scrutinee is evaluated first, producing a value.
 2. Patterns are tested top-to-bottom against the scrutinee value.
@@ -479,7 +479,7 @@ E |- (match scrutinee [pattern_i body_i ...]) => result
 
 Only the body of the matching arm is evaluated. Bodies of non-matching arms are never executed.
 
-### 4.8.2 Pattern Bindings
+### 4.8.2 Pattern Bindings [Tested tests/ring1::adt_sum_var_pattern, tests/ring1::repl_adt_product_match]
 
 Variables introduced by a pattern are in scope only within that arm's body. They are not visible in other arms or after the `match` expression.
 
@@ -489,7 +489,7 @@ Variables introduced by a pattern are in scope only within that arm's body. They
   [None 0])                 ; x is not in scope here
 ```
 
-### 4.8.3 Type Constraint
+### 4.8.3 Type Constraint [Tested tests/ring0::adt_enum_match]
 
 All arm bodies MUST have the same type. This is enforced at compile time via unification:
 
@@ -506,7 +506,7 @@ All arm bodies MUST have the same type. This is enforced at compile time via uni
   [Green "green"])
 ```
 
-### 4.8.4 Examples
+### 4.8.4 Examples [Tested tests/ring0::match_wildcard, tests/ring0::match_var_pattern, tests/ring1::adt_sum_wildcard_pattern]
 
 **Simple ADT matching**:
 
@@ -536,7 +536,7 @@ All arm bodies MUST have the same type. This is enforced at compile time via uni
 
 See [section 6: Pattern Matching](06-pattern-matching.md) for the complete pattern syntax, including constructor patterns, wildcard patterns, and variable patterns.
 
-## 4.9 Type Annotation
+## 4.9 Type Annotation [Tested]
 
 ```clojure
 :Type expr
@@ -552,14 +552,14 @@ unify(T, Annotation) succeeds
 E |- :Annotation expr => v : T
 ```
 
-### 4.9.1 Simple Annotations
+### 4.9.1 Simple Annotations [Tested tests/ring2::annotation_concrete_type_int, tests/ring2::annotation_concrete_type_float, tests/ring0::annotated_params]
 
 ```clojure
 :Int 42                     ; => 42 : Int (redundant but valid)
 :Bool true                  ; => true : Bool
 ```
 
-### 4.9.2 Applied Type Annotations
+### 4.9.2 Applied Type Annotations [Tested tests/ring2::annotation_constrains_body]
 
 For parameterized types, use the `:(Constructor Args...)` syntax:
 
@@ -578,13 +578,13 @@ None                        ; : (Option a) -- 'a' is unconstrained
 :(Option Int) None          ; : (Option Int)
 ```
 
-### 4.9.3 Function Type Annotations
+### 4.9.3 Function Type Annotations [Tested tests/ring2::annotation_on_both_params, tests/ring2::annotation_wrong_type_error]
 
 ```clojure
 :(fn [Int] Bool) f          ; constrain f to Int -> Bool
 ```
 
-## 4.10 Vec Literal
+## 4.10 Vec Literal [Tested tests/ring1::vec_literal_int, tests/ring1::vec_literal_empty, tests/ring1::vec_literal_strings, tests/ring1::repl_vec_literal]
 
 ```clojure
 [e1 e2 ... eN]
@@ -625,7 +625,7 @@ E |- [e1 e2 ... eN] => <Vec [v1, v2, ..., vN]> : (Vec T)
 [[1 2] [3 4]]               ; => [[1 2] [3 4]] : (Vec (Vec Int))
 ```
 
-## 4.11 Evaluation Order Summary
+## 4.11 Evaluation Order Summary [Tested]
 
 Cranelisp uses **strict (eager) evaluation** throughout. All sub-expressions are fully evaluated before their results are consumed. The evaluation order within each expression form is:
 

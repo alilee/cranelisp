@@ -955,10 +955,6 @@ mod tests {
         TypeExpr, Visibility,
     };
 
-    fn span(start: u32, end: u32) -> Span {
-        Span::new(start, end)
-    }
-
     /// Make a test-only trait decl (not conflicting with builtins).
     fn make_test_trait_decl() -> TraitDecl {
         TraitDecl {
@@ -1628,7 +1624,7 @@ mod tests {
     fn test_generate_default_methods_produces_real_bodies() {
         // Register Eq trait and create an impl with only "=" provided.
         // The "!=" default should be generated with a real body.
-        let mut tc = TypeChecker::new();
+        let tc = TypeChecker::new();
 
         let impl_ = TraitImpl {
             trait_name: TraitName::from("Eq"),

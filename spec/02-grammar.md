@@ -1,10 +1,10 @@
-# 2. Grammar
+# 2. Grammar [R2 S7]
 
 This section defines the syntactic grammar of Cranelisp -- how S-expression trees (as defined in [1. Lexical Structure](01-lexical.md)) are interpreted as language constructs. The lexical grammar produces a tree of forms (atoms, lists, brackets); the syntactic grammar assigns meaning to those trees.
 
 Throughout this section, EBNF non-terminals in `UPPER_CASE` refer to lexical tokens from Section 1. Non-terminals in `lower_case` are syntactic grammar rules defined here. The notation `(...)` denotes a parenthesized list form, `[...]` denotes a bracket form.
 
-## 2.1 Program Structure
+## 2.1 Program Structure [R4 S10]
 
 A Cranelisp program is a sequence of top-level forms:
 
@@ -20,7 +20,7 @@ Top-level forms are processed in three phases:
 
 The implementation MUST process these phases in order: module declarations before macro expansion, and macro expansion before AST construction. Forms from one phase MUST NOT appear in a later phase -- for example, a `mod` or `import` form that survives to the AST phase is an error.
 
-### Batch Mode
+### Batch Mode [R4 S10]
 
 In batch mode (`--run`), the program MUST define a function named `main` that takes no parameters and returns a value of type `IO _`. Execution begins by calling `main`.
 
@@ -29,11 +29,11 @@ In batch mode (`--run`), the program MUST define a function named `main` that ta
   (print "hello world"))
 ```
 
-### Interactive Mode
+### Interactive Mode [Tested tests/ring0.rs::repl_eval_expression]
 
 In interactive mode (REPL), top-level expressions are permitted in addition to definitions. Each expression is evaluated and its type and value are displayed. See [12. Runtime Model](12-runtime.md) for REPL semantics.
 
-## 2.2 Top-Level Forms
+## 2.2 Top-Level Forms [R2 S7]
 
 ```ebnf
 top_level    = defn_form
@@ -49,7 +49,7 @@ top_level    = defn_form
 
 Note: `const`, `const-`, `def`, and `def-` are library macros defined in the prelude. They are not primitive syntactic forms and are not described here. See [Section 11.7](11-stdlib.md#117-prelude-macros) for their definition and expansion.
 
-### 2.2.1 `defn` -- Function Definition
+### 2.2.1 `defn` -- Function Definition [Tested tests/ring0.rs::hello]
 
 ```ebnf
 defn_form    = '(' defn_kw name docstring? single_sig ')'
@@ -93,7 +93,7 @@ An optional docstring MAY appear between the name and the parameter list (single
   ([x y z] (+ (+ x y) z)))
 ```
 
-### 2.2.2 `deftype` -- Algebraic Data Type Definition
+### 2.2.2 `deftype` -- Algebraic Data Type Definition [Tested tests/ring1.rs::adt_product_construct_and_match]
 
 ```ebnf
 deftype_form = '(' deftype_kw type_head docstring? type_body ')'
@@ -177,7 +177,7 @@ Constructors in a sum type MAY also have docstrings:
   (Err "The error case" [:b err]))
 ```
 
-### 2.2.3 `deftrait` -- Trait Declaration
+### 2.2.3 `deftrait` -- Trait Declaration [Tested tests/ring2.rs::user_trait_simple]
 
 ```ebnf
 deftrait_form = '(' deftrait_kw trait_head docstring? method_sig* ')'
@@ -224,7 +224,7 @@ An optional docstring MAY appear between the trait head and the method signature
   (show "Return the string form of a value" [Self] String))
 ```
 
-### 2.2.4 `impl` -- Trait Implementation
+### 2.2.4 `impl` -- Trait Implementation [Tested tests/ring2.rs::user_trait_simple]
 
 ```ebnf
 impl_form    = '(' 'impl' TRAIT_NAME impl_target impl_method* ')'
@@ -276,7 +276,7 @@ The `impl` form provides method bodies for a trait on a specific type. There is 
 
 Methods within an `impl` block MUST use the `defn` keyword (not `defn-`). They are always public. Each method's name MUST correspond to a method declared in the trait being implemented.
 
-### 2.2.5 `defmacro` -- Macro Definition
+### 2.2.5 `defmacro` -- Macro Definition [R3 S9]
 
 ```ebnf
 defmacro_form = '(' defmacro_kw name docstring? macro_params expr ')'
@@ -329,7 +329,7 @@ An optional docstring MAY appear between the name and the parameter list:
 
 Macros are expanded iteratively to a fixed point before AST construction. The body MAY use quasiquote (`` ` ``), unquote (`~`), and unquote-splicing (`~@`) as described in [1. Lexical Structure](01-lexical.md), Section 1.6.
 
-### 2.2.6 `mod` -- Module Declaration
+### 2.2.6 `mod` -- Module Declaration [Tested tests/ring2.rs::single_file_via_run_project]
 
 ```ebnf
 mod_form     = '(' 'mod' MODULE_NAME ')'
@@ -343,7 +343,7 @@ The `mod` form declares a child module. `MODULE_NAME` MUST be a simple symbol (n
 (mod- internal)   ; declares private child module 'internal'
 ```
 
-### 2.2.7 `import` -- Module Import
+### 2.2.7 `import` -- Module Import [Tested tests/ring2.rs::import_specific_names]
 
 ```ebnf
 import_form  = '(' 'import' '[' import_spec+ ']' ')'
@@ -376,7 +376,7 @@ The `import` form brings names from other modules into the current scope. The bo
          math []])
 ```
 
-### 2.2.8 `export` -- Module Export
+### 2.2.8 `export` -- Module Export [R2 S7]
 
 ```ebnf
 export_form  = '(' 'export' '[' export_spec+ ']' ')'
@@ -391,7 +391,7 @@ The `export` form re-exports names from child or imported modules as part of the
          core.string [*]])
 ```
 
-### 2.2.9 `platform` -- Platform Declaration
+### 2.2.9 `platform` -- Platform Declaration [R4 S10]
 
 ```ebnf
 platform_form = '(' 'platform' SYMBOL ')'
@@ -409,7 +409,7 @@ The `platform` form declares which platform DLL provides IO operations for the p
 
 `platform` is processed during the module loading phase. It is NOT an AST node.
 
-## 2.3 Expression Forms
+## 2.3 Expression Forms [Tested]
 
 ```ebnf
 expr         = literal
@@ -423,7 +423,7 @@ expr         = literal
              | apply_expr
 ```
 
-### 2.3.1 Literals
+### 2.3.1 Literals [Tested tests/ring0.rs::hello]
 
 ```ebnf
 literal      = INTEGER
@@ -441,7 +441,7 @@ true          ; Bool
 "hello"       ; String
 ```
 
-### 2.3.2 Variable Reference
+### 2.3.2 Variable Reference [Tested tests/ring0.rs::nested_let]
 
 ```ebnf
 var_ref      = SYMBOL
@@ -456,7 +456,7 @@ Option.Some   ; constructor reference
 math/sin      ; qualified reference
 ```
 
-### 2.3.3 `let` -- Local Bindings
+### 2.3.3 `let` -- Local Bindings [Tested tests/ring0.rs::nested_let]
 
 ```ebnf
 let_expr     = '(' 'let' '[' binding+ ']' expr ')'
@@ -482,7 +482,7 @@ Binding values MAY include type annotations:
   x)
 ```
 
-### 2.3.4 `if` -- Conditional
+### 2.3.4 `if` -- Conditional [Tested tests/ring0.rs::nested_if]
 
 ```ebnf
 if_expr      = '(' 'if' expr expr expr ')'
@@ -496,7 +496,7 @@ The `if` form evaluates a condition, then evaluates exactly one of the two branc
   "non-positive")
 ```
 
-### 2.3.5 `fn` -- Lambda Expression
+### 2.3.5 `fn` -- Lambda Expression [Tested tests/ring0.rs::lambda_immediate_call]
 
 ```ebnf
 fn_expr      = '(' 'fn' param_list expr ')'
@@ -513,7 +513,7 @@ The `fn` form creates an anonymous function (lambda). The parameter list uses th
   (fn [x] (+ x n)))      ; closure capturing n
 ```
 
-### 2.3.6 Function Application
+### 2.3.6 Function Application [Tested tests/ring0.rs::chained_function_calls]
 
 ```ebnf
 apply_expr   = '(' expr expr* ')'
@@ -537,7 +537,7 @@ If the callee is a keyword (`let`, `if`, `fn`, `match`, `vec`), the form is pars
   (inc 5))                    ; -> 6
 ```
 
-### 2.3.7 `match` -- Pattern Matching
+### 2.3.7 `match` -- Pattern Matching [Tested tests/ring0.rs::adt_enum_match]
 
 ```ebnf
 match_expr   = '(' 'match' expr '[' match_arm+ ']' ')'
@@ -560,7 +560,7 @@ The arms bracket MUST contain an even number of elements (alternating patterns a
    Blue "blue"])
 ```
 
-### 2.3.8 Type Annotation
+### 2.3.8 Type Annotation [Tested tests/ring0.rs::annotated_params]
 
 ```ebnf
 annotate_expr = annotation expr
@@ -578,7 +578,7 @@ See Section 2.4 for the `annotation` grammar.
 
 The annotation is checked at compile time -- the expression's inferred type MUST be compatible with the annotation. This is useful for disambiguating polymorphic constructors and constraining return types.
 
-### 2.3.9 Vec Literal
+### 2.3.9 Vec Literal [Tested tests/ring1.rs::vec_literal_int]
 
 ```ebnf
 vec_lit      = '[' expr* ']'
@@ -596,7 +596,7 @@ The `(vec ...)` form is an alternative syntax with identical semantics.
 (vec 1 2 3)                   ; same as [1 2 3]
 ```
 
-## 2.4 Type Expressions
+## 2.4 Type Expressions [Tested tests/ring2.rs::annotation_concrete_type_int]
 
 Type expressions appear in annotations, parameter lists, field definitions, and trait method signatures.
 
@@ -671,7 +671,7 @@ The `Fn` keyword followed by a bracketed parameter type list and a return type d
 (Fn [(Fn [a] b) (List a)] (List b))  ; higher-order
 ```
 
-## 2.5 Pattern Syntax
+## 2.5 Pattern Syntax [Tested]
 
 Patterns appear in `match` arms. Each pattern is tested against the scrutinee value.
 
@@ -733,7 +733,7 @@ A symbol in pattern position is interpreted as follows:
 
 There is no nested pattern matching -- constructor patterns bind field values to variables but do not recursively match on those fields.
 
-## 2.6 Visibility
+## 2.6 Visibility [R2 S7]
 
 Definitions may be public (visible to importing modules) or private (visible only within the defining module). The visibility is indicated by a `-` suffix on the definition keyword:
 
@@ -758,7 +758,7 @@ Library macros such as `const`/`const-` and `def`/`def-` follow `defmacro` visib
 
 By default (without the `-` suffix), all definitions are public. Private definitions MUST NOT be accessible to importing modules through `import` or `export`.
 
-## 2.7 Docstrings
+## 2.7 Docstrings [R2 S7]
 
 An optional docstring (a string literal) MAY appear between the name and the parameter list or body of a definition. Docstrings are preserved by the implementation and are available for introspection.
 
@@ -792,7 +792,7 @@ The following forms support docstrings:
 
 A docstring MUST be a string literal. It MUST NOT be a variable reference or expression -- only a literal `"..."` form in the correct position is recognized as a docstring.
 
-## 2.8 Common Grammar Elements
+## 2.8 Common Grammar Elements [Tested]
 
 This section collects grammar elements referenced by multiple rules above.
 

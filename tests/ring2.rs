@@ -1380,7 +1380,7 @@ fn closure_capturing_string_in_higher_order() {
 // R2.1 — deftrait REPL display
 // =============================================================================
 
-// spec: repl/spec.md §1.3 — deftrait display shows trait name
+// spec: repl/spec.md §1.3 — deftrait display shows `:module/TraitName`
 #[test]
 fn repl_deftrait_display_shows_trait_name() {
     let mut session = repl_session();
@@ -1388,13 +1388,9 @@ fn repl_deftrait_display_shows_trait_name() {
         &mut session,
         "(deftrait (Sizeable a) (size [a] Int))",
     );
-    assert!(
-        display.contains("Sizeable"),
-        "deftrait display should contain trait name 'Sizeable', got: {display}"
-    );
-    assert!(
-        !display.contains(":Bool false"),
-        "deftrait display should not be ':Bool false', got: {display}"
+    assert_eq!(
+        display, ":user/Sizeable",
+        "deftrait display should be ':user/Sizeable'"
     );
 }
 
@@ -1402,7 +1398,7 @@ fn repl_deftrait_display_shows_trait_name() {
 // R2.2 — constrained fn REPL display
 // =============================================================================
 
-// spec: repl/spec.md §1.3 — constrained fn display shows constraints
+// spec: repl/spec.md §1.3 — constrained fn display shows inline constraints
 #[test]
 fn repl_constrained_fn_shows_constraints() {
     let mut session = repl_session();
@@ -1410,9 +1406,26 @@ fn repl_constrained_fn_shows_constraints() {
         &mut session,
         "(defn double [x] (+ x x))",
     );
-    assert!(
-        display.contains("Num"),
-        "constrained fn display should contain constraint 'Num', got: {display}"
+    // spec §1.3: inline constraint notation for constrained fn.
+    // `double` takes one Num-constrained param and returns the same type.
+    assert_eq!(
+        display, ":(Fn [:Num a] a) user/double",
+        "constrained fn display should use inline constraint notation"
+    );
+}
+
+// spec: repl/spec.md §1.3 — two-param constrained fn shows `:var` on subsequent occurrences
+#[test]
+fn repl_constrained_fn_two_params_shows_subsequent_colon_var() {
+    let mut session = repl_session();
+    let display = repl_eval_display(
+        &mut session,
+        "(defn add [x y] (+ x y))",
+    );
+    // Two Num-constrained params: first gets `:Num a`, second gets `:a`.
+    assert_eq!(
+        display, ":(Fn [:Num a :a] a) user/add",
+        "two-param constrained fn should show :var on subsequent param"
     );
 }
 
@@ -1420,7 +1433,7 @@ fn repl_constrained_fn_shows_constraints() {
 // R2.3 — impl REPL display
 // =============================================================================
 
-// spec: repl/spec.md §1.3 — impl display shows trait for type
+// spec: repl/spec.md §1.3 — impl display shows `impl module/Trait for module/Type`
 #[test]
 fn repl_impl_display_shows_trait_for_type() {
     let mut session = repl_session();
@@ -1436,17 +1449,9 @@ fn repl_impl_display_shows_trait_for_type() {
         &mut session,
         "(impl Sizeable MyType (defn size [self] 42))",
     );
-    assert!(
-        display.contains("impl"),
-        "impl display should contain 'impl', got: {display}"
-    );
-    assert!(
-        display.contains("Sizeable"),
-        "impl display should contain trait name 'Sizeable', got: {display}"
-    );
-    assert!(
-        display.contains("MyType"),
-        "impl display should contain type name 'MyType', got: {display}"
+    assert_eq!(
+        display, "impl user/Sizeable for user/MyType",
+        "impl display should be 'impl user/Sizeable for user/MyType'"
     );
 }
 
@@ -1454,7 +1459,6 @@ fn repl_impl_display_shows_trait_for_type() {
 // Module integration tests (spec: 08-modules)
 // =============================================================================
 
-use std::path::Path;
 use tempfile::TempDir;
 
 /// Create a temporary project directory with the given files.
@@ -1551,7 +1555,6 @@ fn module_cycle_detection() {
 
 // spec: 08-modules §8.3 — qualified name resolution across modules
 #[test]
-#[ignore = "Sprint 6: cross-module import resolution not yet fully wired"]
 fn module_qualified_name_resolution() {
     let dir = create_test_project(&[
         ("main.cl", "(mod util)\n(defn main [] (util/helper))"),
@@ -1565,7 +1568,6 @@ fn module_qualified_name_resolution() {
 
 // spec: 08-modules §8.4 — import specific names
 #[test]
-#[ignore = "Sprint 6: cross-module import resolution not yet fully wired"]
 fn import_specific_names() {
     let dir = create_test_project(&[
         ("main.cl", "(mod util)\n(import [main.util [helper]])\n(defn main [] (helper))"),
@@ -1579,7 +1581,6 @@ fn import_specific_names() {
 
 // spec: 08-modules §8.4 — glob import
 #[test]
-#[ignore = "Sprint 6: cross-module import resolution not yet fully wired"]
 fn import_glob() {
     let dir = create_test_project(&[
         ("main.cl", "(mod util)\n(import [main.util [*]])\n(defn main [] (helper))"),
@@ -1593,7 +1594,6 @@ fn import_glob() {
 
 // spec: 08-modules §8.4 — importing nonexistent name gives clear error
 #[test]
-#[ignore = "Sprint 6: cross-module import resolution not yet fully wired"]
 fn import_nonexistent_name_errors() {
     let dir = create_test_project(&[
         ("main.cl", "(mod util)\n(import [main.util [nonexistent]])\n(defn main [] 1)"),

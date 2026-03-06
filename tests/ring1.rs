@@ -420,7 +420,7 @@ fn repl_adt_product() {
     let mut session = repl_session();
     repl_eval(&mut session, "(deftype Point [:Int x :Int y])");
     let display = repl_eval_display(&mut session, "(Point 3 4)");
-    assert_eq!(display, ":Point (Point 3 4)");
+    assert_eq!(display, ":user/Point (Point.Point 3 4)");
 }
 
 // spec: 05-definitions §5.2.2 — sum type Some in REPL
@@ -429,7 +429,7 @@ fn repl_adt_sum_some() {
     let mut session = repl_session();
     repl_eval(&mut session, "(deftype (Option a) None (Some [:a val]))");
     let display = repl_eval_display(&mut session, "(Some 42)");
-    assert_eq!(display, ":(Option Int) (Some 42)");
+    assert_eq!(display, ":(user/Option primitives/Int) (Option.Some 42)");
 }
 
 // spec: 05-definitions §5.2.2 — sum type None in REPL
@@ -440,8 +440,8 @@ fn repl_adt_sum_none() {
     let display = repl_eval_display(&mut session, "None");
     // Type variable name may be source-level `a` or internal `t1` depending on checker.
     assert!(
-        display.contains("Option") && display.ends_with("None"),
-        "expected :(Option ...) None, got: {display}"
+        display.contains("Option") && display.ends_with("Option.None"),
+        "expected :(user/Option ...) Option.None, got: {display}"
     );
 }
 
@@ -1583,4 +1583,67 @@ fn repl_vec_display() {
         display.contains("[1, 2, 3]") || display.contains("[1 2 3]"),
         "Vec should display elements, got: {display}"
     );
+}
+
+// =============================================================================
+// U1.7 — Error message quality (Sprint 7 Wave 0)
+//
+// Type mismatch errors should include helpful information: the expected type,
+// the actual type, and enough context for the user to locate the problem.
+// Ring 1 introduces String and ADT types, so errors involving these must
+// name the types clearly.
+// =============================================================================
+
+// spec: 03-types §3.8 — type mismatch names both types
+#[test]
+fn error_type_mismatch_names_both_types() {
+    // Passing a String where Int is expected should name both types.
+    assert_type_error(
+        r#"(defn main [] (add-i64 1 "hello"))"#,
+        "Int",
+    );
+    assert_type_error(
+        r#"(defn main [] (add-i64 1 "hello"))"#,
+        "String",
+    );
+}
+
+// spec: 03-types §3.8 — if-branch type mismatch error
+#[test]
+fn error_if_branch_type_mismatch() {
+    // If branches returning different types should produce a clear error.
+    let src = r#"(defn main [] (if true 42 "hello"))"#;
+    assert_type_error(src, "Int");
+    assert_type_error(src, "String");
+}
+
+// spec: 03-types §3.8 — ADT type mismatch error includes type name
+#[test]
+fn error_adt_type_mismatch_includes_type_name() {
+    // Passing wrong type to a function expecting an ADT should name the ADT.
+    let src = r#"
+        (deftype (Option a) None (Some [:a val]))
+        (defn unwrap [opt] (match opt [(Some x) x None 0]))
+        (defn main [] (unwrap "not-an-option"))
+    "#;
+    assert_type_error(src, "Option");
+}
+
+// spec: 03-types §3.8 — function arity mismatch error
+#[test]
+fn error_function_arity_mismatch() {
+    // Calling a function with wrong number of args should produce a clear error.
+    let src = "
+        (defn add2 [a b] (add-i64 a b))
+        (defn main [] (add2 1))
+    ";
+    // Should mention the mismatch in some form
+    assert_error(src, "mismatch");
+}
+
+// spec: 03-types §3.8 — undefined variable error names the variable
+#[test]
+fn error_undefined_variable_names_variable() {
+    let src = "(defn main [] nonexistent)";
+    assert_error(src, "nonexistent");
 }

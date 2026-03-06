@@ -172,6 +172,8 @@ impl TypeChecker {
     /// Resolution order per spec §8.6.1:
     /// 1. Local environment (let bindings, fn params, match vars)
     /// 2. Module scope (current module's defs + imports, following chains)
+    /// 3. Qualified name resolution: `module/name` splits on `/` and resolves
+    ///    via `resolve_qualified` (spec §8.6.6)
     pub(crate) fn lookup(&self, name: &str) -> Option<Scheme> {
         // Check local scope stack first
         if let Some(scheme) = self.env.lookup(name) {
@@ -179,7 +181,35 @@ impl TypeChecker {
         }
 
         // Fall back to current module's symbol table (following import chains)
-        self.lookup_in_current_module(name)
+        if let Some(scheme) = self.lookup_in_current_module(name) {
+            return Some(scheme);
+        }
+
+        // Try qualified name resolution: "module/name" -> resolve_qualified
+        if let Some(slash_pos) = name.find('/') {
+            let module_part = &name[..slash_pos];
+            let name_part = &name[slash_pos + 1..];
+            if !module_part.is_empty() && !name_part.is_empty() {
+                // Try child-of-current-module first: "util" in module "main"
+                // resolves to "main.util" (submodule reference).
+                let child_path = ModuleFullPath::from(
+                    format!("{}.{}", self.current_module, module_part),
+                );
+                if let Ok(Some(scheme)) = self.resolve_qualified(&child_path, name_part) {
+                    return Some(scheme);
+                }
+
+                // Fall back to absolute module path.
+                let abs_path = ModuleFullPath::from(module_part);
+                if let Ok(Some(scheme)) = self.resolve_qualified(&abs_path, name_part) {
+                    return Some(scheme);
+                }
+
+                // Also try alias resolution (handled inside resolve_qualified).
+            }
+        }
+
+        None
     }
 
     /// Look up a name in the current module's symbol table, following
@@ -587,7 +617,7 @@ mod tests {
     use super::*;
     use cranelisp_types::{
         DefKind, ImportNames, ImportSpec, ModuleEntry, ModuleFullPath,
-        Scheme, Span, Symbol, SymbolTable, Visibility,
+        Span, Symbol, Visibility,
     };
 
     // --- Module-scoped type environments ---

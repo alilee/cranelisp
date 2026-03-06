@@ -428,26 +428,31 @@ pub fn toposort(graph: &ModuleGraph) -> Result<Vec<ModuleFullPath>, CranelispErr
 /// Pipeline:
 /// 1. Discover module graph from entry file
 /// 2. Topological sort (dependencies first)
-/// 3. For each module in order: parse, extract declarations, build AST,
-///    type-check, compile, finalize JIT
-/// 4. Execute the entry module's last zero-arg defn
+/// 3. For each module in order: parse, extract declarations, process imports,
+///    build AST, type-check, compile into shared JIT
+/// 4. Finalize the shared JIT once all modules are compiled
+/// 5. Execute the entry module's last zero-arg defn
 pub fn compile_module_graph(entry: &Path) -> Result<CompiledModuleGraph, CranelispError> {
     let graph = discover_module_graph(entry)?;
     let order = toposort(&graph)?;
 
     let mut all_warnings: Vec<Warning> = Vec::new();
 
-    // TODO: Create a shared TypeChecker and ModuleCodegenState for cross-module
-    // symbol tables and GOT linking. Currently blocked on:
-    // - /typecheck: module-scoped type environments (cross-module symbol lookup)
-    // - /backend: cross-module GOT linking (per-module GOT with inter-module refs)
-    //
-    // For now, each module compiles independently (single-module semantics).
-    // This is sufficient for single-file projects and provides the orchestration
-    // framework that cross-module compilation will plug into.
-
+    // Shared TypeChecker: cross-module symbol tables persist across modules.
     let mut tc = cranelisp_typecheck::TypeChecker::new();
-    let mut last_compiled: Option<(i64, Type)> = None;
+
+    // Shared JIT: all modules compile into a single JIT so cross-module
+    // function calls resolve via the shared symbol table.
+    let mut jit = cranelisp_backend::jit::Jit::new()?;
+    jit.declare_intrinsics()?;
+
+    // Accumulated function signatures (name, param_count) from compiled
+    // dependency modules, for declaring as imports in downstream modules.
+    let mut all_func_sigs: Vec<(cranelisp_types::Symbol, usize)> = Vec::new();
+
+    // Track the entry module's last zero-arg defn for execution.
+    let mut entry_defn_name: Option<cranelisp_types::Symbol> = None;
+    let mut entry_result_type = Type::Int;
 
     for module_path in &order {
         let node = &graph.nodes[module_path];
@@ -464,7 +469,7 @@ pub fn compile_module_graph(entry: &Path) -> Result<CompiledModuleGraph, Craneli
         let sexps = cranelisp_frontend::parse(&source)?;
 
         // Extract module declarations (mod, import, export).
-        let (_structure, remaining) = cranelisp_frontend::extract_module_declarations(
+        let (structure, remaining) = cranelisp_frontend::extract_module_declarations(
             module_path.clone(),
             Some(node.file_path.clone()),
             sexps,
@@ -474,13 +479,20 @@ pub fn compile_module_graph(entry: &Path) -> Result<CompiledModuleGraph, Craneli
         let mut expander = NoOpExpander;
         let program = cranelisp_frontend::build_program(&remaining, &mut expander)?;
 
-        if program.is_empty() {
-            continue;
-        }
-
         // Switch the typechecker to the current module so symbols are
         // registered in the correct module-scoped symbol table.
         tc.set_current_module(module_path.clone());
+
+        // Process imports: register imported symbols from dependency modules.
+        // The dependency modules have already been type-checked and their symbols
+        // are in the TypeChecker's module tables, so register_imports can find them.
+        if !structure.import_specs.is_empty() {
+            tc.register_imports(&structure.import_specs)?;
+        }
+
+        if program.is_empty() {
+            continue;
+        }
 
         // Type check.
         let check = tc.check_program(&program)?;
@@ -489,22 +501,66 @@ pub fn compile_module_graph(entry: &Path) -> Result<CompiledModuleGraph, Craneli
         // Determine the result type.
         let result_type = infer_result_type(&program, &check);
 
-        // Compile.
-        let compiled = cranelisp_backend::compile_program(&program, &check, CompileMode::Batch)?;
-        all_warnings.extend(compiled.warnings.iter().cloned());
+        // Compile into the shared JIT with accumulated dependency symbols.
+        let module_info = cranelisp_backend::compile_module_program(
+            &program,
+            &check,
+            CompileMode::Batch,
+            &mut jit,
+            &all_func_sigs,
+        )?;
+        all_warnings.extend(module_info.warnings);
 
-        // Only execute the entry module (the last in topological order that has
-        // a zero-arg defn).
-        if module_path == &graph.entry {
-            // SAFETY: compiled code was just generated and finalized by our JIT.
-            let value = unsafe { compiled.execute()? };
-            last_compiled = Some((value, result_type));
+        // Accumulate this module's function signatures for downstream modules.
+        // Also register qualified name aliases so parent modules can reference
+        // submodule functions via `submod/name` syntax.
+        for (name, arity) in &module_info.func_signatures {
+            all_func_sigs.push((name.clone(), *arity));
+
+            // For submodule functions, register qualified aliases.
+            // E.g., module "main.util" function "helper" gets alias "util/helper"
+            // so that module "main" can call (util/helper).
+            let mod_str: &str = module_path.as_ref();
+            if let Some(dot_pos) = mod_str.rfind('.') {
+                let last_component = &mod_str[dot_pos + 1..];
+                let qualified = cranelisp_types::Symbol::from(
+                    format!("{}/{}", last_component, name),
+                );
+                all_func_sigs.push((qualified, *arity));
+            }
         }
-        // TODO: For non-entry modules, register their compiled symbols in the
-        // cross-module symbol tables so later modules can reference them.
+
+        // Track the entry module's entry point for execution.
+        if module_path == &graph.entry {
+            // Find the last zero-arg defn (same logic as backend entry_fn).
+            let last_nullary = program.iter().rev().find_map(|tl| {
+                if let cranelisp_types::TopLevel::Defn(defn) = tl {
+                    if defn.params.is_empty() {
+                        return Some(defn.name.clone());
+                    }
+                }
+                None
+            });
+            if let Some(name) = last_nullary {
+                entry_defn_name = Some(name);
+                entry_result_type = result_type;
+            }
+        }
     }
 
-    let (value, ty) = last_compiled.unwrap_or((0, Type::Int));
+    // Finalize the shared JIT (resolves all cross-references).
+    jit.finalize()?;
+
+    // Execute the entry module's entry point.
+    let (value, ty) = if let Some(ref name) = entry_defn_name {
+        let entry_ptr = jit.get_ptr_by_name(name, 0)?;
+        // SAFETY: compiled code was just generated and finalized by our JIT.
+        let func: extern "C" fn() -> i64 = unsafe { std::mem::transmute(entry_ptr) };
+        let value = func();
+        (value, entry_result_type)
+    } else {
+        (0, Type::Int)
+    };
 
     Ok(CompiledModuleGraph {
         value,
@@ -832,7 +888,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore] // Cross-module import resolution not yet wired (I3)
     fn test_cross_module_import_resolution() {
         // This test documents the limitation that compile_module_graph
         // does not yet wire cross-module imports. When a module imports

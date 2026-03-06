@@ -348,6 +348,26 @@ impl Jit {
         Ok(self.module.get_finalized_function(func_id))
     }
 
+    /// Look up a finalized function pointer by name and param count.
+    ///
+    /// Must be called after `finalize()`. Re-declares the function with
+    /// the same signature to obtain the FuncId, then returns the code pointer.
+    pub fn get_ptr_by_name(
+        &mut self,
+        name: &Symbol,
+        param_count: usize,
+    ) -> Result<*const u8, CranelispError> {
+        let sig = self.build_sig(param_count);
+        let func_id = self
+            .module
+            .declare_function(name, Linkage::Export, &sig)
+            .map_err(|e| CranelispError::CodegenError {
+                message: format!("failed to look up function '{}': {e}", name),
+                span: Span::SYNTHETIC,
+            })?;
+        Ok(self.module.get_finalized_function(func_id))
+    }
+
     /// Get a mutable reference to the inner JIT module.
     /// Needed by FnCompiler for declaring extern functions.
     pub fn jit_module(&mut self) -> &mut JITModule {

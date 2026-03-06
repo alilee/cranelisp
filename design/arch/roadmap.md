@@ -59,11 +59,6 @@ For the full reimplementation strategy, skill definitions, and risk analysis, se
      starts-with?, ends-with?, contains?, to-upper, to-lower. Straightforward extern
      primitives wrapping Rust str methods. Source: /stdlib. Severity: important. -->
 
-<!-- FIXME(/typecheck): U1.2 — parse-int returns Int but actually returns Option Int at runtime.
-     Type mismatch means no Cranelisp code can safely use parse-int. Fix requires expressing
-     (Option Int) as return type referencing user-defined Option ADT (needs module system).
-     Source: /stdlib. Severity: important. -->
-
 ## Ring 1: Heap
 
 **Property**: Strings, ADTs with fields, closures, reference counting. Heap management established as a clean layer over Ring 0.
@@ -103,11 +98,6 @@ For the full reimplementation strategy, skill definitions, and risk analysis, se
 | `/repl` | Module navigation tests (`/mod`, `import`), trait introspection (`/info`), `/list` categories | Ring 2 compiler |
 | `/port` | Validate exemplar module patterns against Ring 2 compiler, refine design | Ring 2 compiler |
 | `/review` | Name resolution correctness, GOT/symbol-table separation, no god objects | all above |
-
-<!-- FIXME(/typecheck): U2.1 — Display trait not registered at startup, blocking stdlib bootstrap.
-     Ring 2A registers Num, Eq, Ord but not Display. stdlib assert-eq needs show (Display).
-     Recommendation: add Display to startup registration alongside Num/Eq/Ord — the 4 display
-     primitives (int-to-string etc.) already exist as Ring 1 externs. Source: /stdlib. Severity: important. -->
 
 **Acceptance criteria**:
 - `(deftrait (Num a) (+ [a a] a) (- [a a] a) (* [a a] a))` — trait declaration type-checks

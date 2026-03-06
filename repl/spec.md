@@ -16,20 +16,27 @@ Output uses the `:Type value` format — the same colon-prefixed type annotation
 
 ## 1. Display Format
 
-### 1.1 Output Categories
+### 1.1 Output Categories [R2 S8]
+
+<!-- FIXME(/qa): Bare type name lookup is untested. Typing `Int` at the REPL produces
+     "undefined variable: Int" instead of `:primitives/Int`. The special_form_feedback()
+     function only searches the current module's symbol table — primitive types like Int,
+     Bool, Float, String live in the `primitives` module and aren't found. Need a test
+     for each row of the §1.1 category table, and the bare symbol lookup needs to search
+     imported modules (including primitives). -->
 
 REPL output falls into three categories. The format mirrors Cranelisp type annotation syntax (`:Type expr`).
 
-| Input kind | Format | Example |
-|---|---|---|
-| Expression result | `:QualifiedType value` | `:primitives/Int 3` |
-| Function definition | `:TypeScheme qualified-name` | `:(Fn [a] primitives/Int) user/foo` |
-| Type definition | `:qualified/TypeName` | `:user/Color` |
-| Symbol lookup | `:TypeScheme qualified-name` | `:(Fn [a] a) user/id` |
-| Constructor lookup | `:QualifiedType Type.Constructor` | `:user/Color user/Color.Red` |
-| Special form lookup | `:signature name` | `:(Fn [primitives/Bool a a] a) if` |
+| Input kind | Format | Example | Test |
+|---|---|---|---|
+| Expression result | `:QualifiedType value` | `:primitives/Int 3` | [Tested tests/e2e::e2e_s1_2_int_display_qualified] |
+| Function definition | `:TypeScheme qualified-name` | `:(Fn [a] primitives/Int) user/foo` | [Tested tests/e2e::e2e_s1_3_defn_shows_qualified_name] |
+| Type definition | `:qualified/TypeName` | `:user/Color` | [Tested tests/e2e::e2e_s1_1_bare_type_user_defined] |
+| Symbol lookup | `:TypeScheme qualified-name` | `:(Fn [a] a) user/id` | [Tested tests/e2e::e2e_s4_1_bare_symbol_lookup] |
+| Constructor lookup | `:QualifiedType Type.Constructor` | `:user/Color user/Color.Red` | [R2 S8] |
+| Special form lookup | `:signature name` | `:(Fn [primitives/Bool a a] a) if` | [Tested tests/e2e::e2e_s4_2_special_form_feedback] |
 
-### 1.2 Expression Results
+### 1.2 Expression Results [Tested]
 
 An expression evaluation MUST display the result in the format:
 
@@ -41,14 +48,14 @@ Values are runtime results — they have no module scope. The type is always ful
 
 Examples:
 
-```
-:primitives/Int 3
-:primitives/Bool true
-:primitives/Float 3.14
-:user/Color Color.Red
-:(user/Option primitives/Int) (Option.Some 42)
-:(Fn [a] a) <closure>
-```
+| Example | Test |
+|---|---|
+| `:primitives/Int 3` | [Tested tests/repl_experience::display_int_result] |
+| `:primitives/Bool true` | [Tested tests/repl_experience::display_bool_true] |
+| `:primitives/Float 3.14` | [Tested tests/repl_experience::display_float_result] |
+| `:user/Color Color.Red` | [Tested tests/repl_experience::display_enum_adt] |
+| `:(user/Option primitives/Int) (Option.Some 42)` | [Tested tests/repl_experience::r1_display_sum_adt_some] |
+| `:(Fn [a] a) <closure>` | [Tested tests/repl_experience::r1_display_closure_format] |
 
 **Ring 0**: `primitives/Int`, `primitives/Bool`, `primitives/Float`, nullary ADT constructors, non-capturing function values.
 **Ring 1**: `primitives/String`, data ADT constructors, closures, `Vec`, `List`.
@@ -65,7 +72,7 @@ Examples:
      Severity: important. -->
 **Ring 4**: `IO` (trampoline executes; inner value displayed as `:primitives/IO inner_value`).
 
-### 1.3 Definition Results
+### 1.3 Definition Results [Tested]
 
 A function definition MUST display its inferred type scheme and fully-qualified name. It MUST NOT display `<closure>` — the user defined a *named* function, not an anonymous closure:
 
@@ -75,6 +82,16 @@ A function definition MUST display its inferred type scheme and fully-qualified 
 ```
 
 Note: `<closure>` is reserved for anonymous function *values* (§1.2, §1.5). When the user writes `(defn double [x] (* x 2))`, the response shows the name `user/double`. Only `(fn [x] (* x 2))` evaluated as an expression produces `<closure>`.
+
+| Requirement | Test |
+|---|---|
+| defn shows type + qualified name | [Tested tests/repl_experience::defn_reports_type_and_name] |
+| polymorphic defn shows type vars | [Tested tests/repl_experience::defn_polymorphic_type_vars] |
+| deftype shows qualified type name | [Tested tests/repl_experience::deftype_reports_adt_type] |
+| deftrait shows trait name | [Tested tests/ring2::repl_deftrait_display] |
+| impl shows `impl Trait for Type` | [Tested tests/ring2::repl_impl_display] |
+| constrained fn shows inline constraints | [Tested tests/ring2::repl_constrained_fn_display] |
+| overloaded fn shows all variants | [R3 S8] |
 
 A type definition MUST display the fully-qualified type name:
 
@@ -107,18 +124,18 @@ An overloaded function definition MUST display all variant signatures.
 **Ring 2**: trait declarations, trait implementations, constrained functions, overloaded functions.
 **Ring 3**: macros.
 
-### 1.4 Type Display
+### 1.4 Type Display [Tested]
 
 Types MUST be displayed using Cranelisp type notation with fully-qualified names:
 
-| Type | Display |
-|---|---|
-| Primitive | `primitives/Int`, `primitives/Bool`, `primitives/Float`, `primitives/String` |
-| Function | `(Fn [ParamType1 ParamType2] ReturnType)` |
-| ADT (no args) | `user/Color` |
-| ADT (with args) | `(user/Option primitives/Int)` |
-| Type variable | lowercase letter: `a`, `b`, `c`, ... |
-| Constrained variable | `:core.numerics/Num a` |
+| Type | Display | Test |
+|---|---|---|
+| Primitive | `primitives/Int`, `primitives/Bool`, `primitives/Float`, `primitives/String` | [Tested tests/e2e::e2e_s1_2_int_display_qualified] |
+| Function | `(Fn [ParamType1 ParamType2] ReturnType)` | [Tested tests/repl_experience::display_function_type] |
+| ADT (no args) | `user/Color` | [Tested tests/e2e::e2e_s1_3_deftype_shows_qualified_name] |
+| ADT (with args) | `(user/Option primitives/Int)` | [Tested tests/repl_experience::r1_display_polymorphic_adt_type] |
+| Type variable | lowercase letter: `a`, `b`, `c`, ... | [Tested tests/repl_experience::r2a_polymorphic_fn_normalized_vars] |
+| Constrained variable | `:core.numerics/Num a` | [Tested tests/ring2::repl_constrained_fn_display] |
 
 Type names MUST always be fully qualified with their module path. Type variables are bare lowercase — they are not module-scoped.
 
@@ -133,24 +150,24 @@ Polymorphic type schemes MUST display quantified variables as consecutive lowerc
 
 Values are runtime results and have no module scope. They are displayed bare.
 
-| Type | Display | Ring |
-|---|---|---|
-| `Int` | decimal integer (e.g., `42`, `-7`) | 0 |
-| `Bool` | `true` or `false` | 0 |
-| `Float` | decimal float (e.g., `3.14`) | 0 |
-| `String` | `"contents"` with escapes | 1 |
-| Nullary constructor | `Type.Ctor` (e.g., `Color.Red`, `Option.None`) | 0 |
-| Data constructor | `(Type.Ctor field1 field2 ...)` (e.g., `(Option.Some 42)`) | 1 |
-| Closure | `<closure>` | 1 |
-| Vec | `[elem1 elem2 ...]` (empty: `[]`) | 1 |
-| List | `(list elem1 elem2 ...)` (empty: `List.Nil`) | 1 |
-| Seq | `(seq elem1 elem2 ... +more)` (forces up to 20) | 2 |
+| Type | Display | Ring | Test |
+|---|---|---|---|
+| `Int` | decimal integer (e.g., `42`, `-7`) | 0 | [Tested tests/repl_experience::display_int_result] |
+| `Bool` | `true` or `false` | 0 | [Tested tests/repl_experience::r0_bool_displays_as_word] |
+| `Float` | decimal float (e.g., `3.14`) | 0 | [Tested tests/repl_experience::display_float_result] |
+| `String` | `"contents"` with escapes | 1 | [Tested tests/repl_experience::r1_display_string_literal] |
+| Nullary constructor | `Type.Ctor` (e.g., `Color.Red`, `Option.None`) | 0 | [Tested tests/e2e::e2e_s1_5_nullary_ctor_dot_notation] |
+| Data constructor | `(Type.Ctor field1 field2 ...)` (e.g., `(Option.Some 42)`) | 1 | [Tested tests/e2e::e2e_s1_5_data_ctor_dot_notation] |
+| Closure | `<closure>` | 1 | [Tested tests/repl_experience::r1_display_closure_format] |
+| Vec | `[elem1 elem2 ...]` (empty: `[]`) | 1 | [Tested tests/repl_experience::r1_display_vec_int] |
+| List | `(list elem1 elem2 ...)` (empty: `List.Nil`) | 1 | [R3 S8] |
+| Seq | `(seq elem1 elem2 ... +more)` (forces up to 20) | 2 | [R3 S8] |
 
 ADT fields MUST be recursively formatted according to this table.
 
-## 2. Prompt
+## 2. Prompt [Tested]
 
-### 2.1 Primary Prompt
+### 2.1 Primary Prompt [Tested tests/e2e::e2e_s2_1_prompt_format]
 
 The primary prompt MUST display:
 
@@ -168,7 +185,7 @@ On startup (before any expression), the timing SHOULD be `0+0ms`.
 **Ring 0**: timing and prompt display.
 **Ring 2**: module name changes when `/mod` switches namespace.
 
-### 2.2 Continuation Prompt
+### 2.2 Continuation Prompt [Tested tests/e2e::e2e_s2_2_continuation_prompt]
 
 When multi-line input is in progress (unmatched parentheses or brackets), the continuation prompt MUST be:
 
@@ -178,7 +195,7 @@ When multi-line input is in progress (unmatched parentheses or brackets), the co
 
 Where `{spaces}` aligns the `...` with the start of user input on the primary prompt line.
 
-### 2.3 Empty and Comment-Only Input
+### 2.3 Empty and Comment-Only Input [Tested tests/repl_experience::empty_input_is_silent]
 
 Blank lines (empty or whitespace-only) MUST silently re-prompt with no output. The REPL MUST NOT produce an error, evaluation result, or any visible output — it simply presents the next prompt.
 
@@ -197,28 +214,28 @@ Slash commands provide introspection and navigation. All commands start with `/`
 
 ### 3.1 Command Inventory
 
-| Command | Aliases | Description | Ring |
-|---|---|---|---|
-| `/help` | `/h` | Show available commands and usage | 0 |
-| `/sig <name>` | `/s` | Show signature with typed parameters | 0 |
-| `/doc <name>` | `/d` | Show docstring | 0 |
-| `/type <expr>` | `/t` | Show type without evaluating | 0 |
-| `/info <name>` | `/i` | Full details: type, classification, code size, compile time | 0 |
-| `/source <name>` | — | Show original source text | 0 |
-| `/sexp <name>` | — | Show parsed S-expression | 0 |
-| `/ast <name>` | — | Show AST | 0 |
-| `/clif <name>` | — | Show Cranelift IR | 0 |
-| `/disasm <name>` | — | Show disassembled native code | 0 |
-| `/list [filter]` | `/l` | List symbols in current module | 0 |
-| `/time <expr>` | — | Evaluate with timing breakdown | 0 |
-| `/expand <form>` | `/e` | Macro-expand a form | 3 |
-| `/mod [name]` | — | Switch module namespace | 2 |
-| `/reload [name]` | `/r` | Reload module from file | 2 |
-| `/mem [expr]` | `/m` | Show allocation statistics | 1 |
-| `/run-tests` | — | Discover and run test functions | 4 |
-| `/quit` | `/q` | Exit REPL | 0 |
+| Command | Aliases | Description | Ring | Test |
+|---|---|---|---|---|
+| `/help` | `/h` | Show available commands and usage | 0 | [Tested tests/e2e::e2e_s3_1_help] |
+| `/sig <name>` | `/s` | Show signature with typed parameters | 0 | [Tested tests/e2e::e2e_s3_1_sig] |
+| `/doc <name>` | `/d` | Show docstring | 0 | [R4 S10] |
+| `/type <expr>` | `/t` | Show type without evaluating | 0 | [Tested tests/e2e::e2e_s3_1_type] |
+| `/info <name>` | `/i` | Full details: type, classification, code size, compile time | 0 | [Tested tests/e2e::e2e_s3_4_info] |
+| `/source <name>` | — | Show original source text | 0 | [R4 S10] |
+| `/sexp <name>` | — | Show parsed S-expression | 0 | [R4 S10] |
+| `/ast <name>` | — | Show AST | 0 | [R4 S10] |
+| `/clif <name>` | — | Show Cranelift IR | 0 | [R4 S10] |
+| `/disasm <name>` | — | Show disassembled native code | 0 | [R4 S10] |
+| `/list [filter]` | `/l` | List symbols in current module | 0 | [Tested tests/e2e::e2e_s3_3_list] |
+| `/time <expr>` | — | Evaluate with timing breakdown | 0 | [Tested tests/e2e::e2e_s3_1_time] |
+| `/expand <form>` | `/e` | Macro-expand a form | 3 | [R3 S9] |
+| `/mod [name]` | — | Switch module namespace | 2 | [R2 S8] |
+| `/reload [name]` | `/r` | Reload module from file | 2 | [R4 S10] |
+| `/mem [expr]` | `/m` | Show allocation statistics | 1 | [R4 S10] |
+| `/run-tests` | — | Discover and run test functions | 4 | [R4 S10] |
+| `/quit` | `/q` | Exit REPL | 0 | [Tested tests/e2e::e2e_s3_1_quit] |
 
-### 3.2 `/help` Output
+### 3.2 `/help` Output [Tested tests/e2e::e2e_s3_1_help]
 
 `/help` MUST list all available commands with a brief description. The output MUST be organized by category:
 
@@ -232,23 +249,23 @@ Available commands:
 
 Commands not yet available (due to ring) SHOULD be omitted or marked as unavailable.
 
-### 3.3 `/list` Categories
+### 3.3 `/list` Categories [R2 S8]
 
 `/list` MUST organize symbols into categories. Names MUST be fully qualified.
 
-| Category | Contents | Ring |
-|---|---|---|
-| Types | User-defined types (`deftype`) | 0 |
-| Special forms | `if`, `let`, `fn`, `defn`, `deftype`, `match` | 0 |
-| Functions | User-defined functions | 0 |
-| Traits | Trait declarations | 2 |
-| Macros | Macro definitions | 3 |
-| Modules | Declared submodules | 2 |
-| Imports | Imported names | 2 |
+| Category | Contents | Ring | Test |
+|---|---|---|---|
+| Types | User-defined types (`deftype`) | 0 | [Tested tests/e2e::e2e_s3_3_list] |
+| Special forms | `if`, `let`, `fn`, `defn`, `deftype`, `match` | 0 | [R2 S8] |
+| Functions | User-defined functions | 0 | [Tested tests/e2e::e2e_s3_3_list] |
+| Traits | Trait declarations | 2 | [R2 S8] |
+| Macros | Macro definitions | 3 | [R3 S9] |
+| Modules | Declared submodules | 2 | [R2 S8] |
+| Imports | Imported names | 2 | [R2 S8] |
 
 An optional filter argument narrows the listing (substring match on name).
 
-### 3.4 `/info` Output
+### 3.4 `/info` Output [Tested tests/e2e::e2e_s3_4_info]
 
 `/info <name>` MUST display multi-line details using the `:Type name` format:
 
@@ -268,14 +285,14 @@ Every valid language construct entered at the REPL MUST produce useful feedback.
 
 Entering a symbol name without arguments MUST produce its type and fully-qualified name:
 
-| Symbol kind | Response |
-|---|---|
-| Function | `:TypeScheme module/name` |
-| Constructor | `:QualifiedType module/Type.Ctor` |
-| Type | Type definition display |
-| Special form | `:signature name` |
-| Macro | Clause signatures |
-| Trait | Method signatures |
+| Symbol kind | Response | Test |
+|---|---|---|
+| Function | `:TypeScheme module/name` | [Tested tests/e2e::e2e_s4_1_bare_symbol_lookup] |
+| Constructor | `:QualifiedType module/Type.Ctor` | [R2 S8] |
+| Type | Type definition display | [R2 S8 — tests/e2e::e2e_s1_1_bare_type_int IGNORED] |
+| Special form | `:signature name` | [Tested tests/e2e::e2e_s4_2_special_form_feedback] |
+| Macro | Clause signatures | [R3 S9] |
+| Trait | Method signatures | [R2 S8] |
 
 If the symbol has a docstring (per spec §5.2), the **first line** of the docstring SHOULD be appended as a comment after the type display:
 
@@ -298,7 +315,7 @@ Examples:
 :(Fn [:core.numerics/Num a :a] a) core.numerics/+
 ```
 
-No valid name MUST produce an opaque error. If a name is unbound, the error MUST say so clearly.
+No valid name MUST produce an opaque error. If a name is unbound, the error MUST say so clearly. [Tested tests/repl_experience::unbound_symbol_clear_error]
 
 **Ring 0**: type + qualified name display.
 **Ring 2**: docstring display (requires docstrings, which depend on the module system for stored metadata).
@@ -306,6 +323,16 @@ No valid name MUST produce an opaque error. If a name is unbound, the error MUST
 ### 4.2 Special Form Feedback
 
 Special form keywords (`if`, `let`, `fn`, `defn`, `deftype`, `match`, `defmacro`) entered bare MUST produce a function-like type signature, NOT an opaque error. Special forms are not regular functions but displaying their shape teaches the user their syntax.
+
+| Form | Test |
+|---|---|
+| `if` | [Tested tests/e2e::e2e_s4_2_special_form_feedback] |
+| `let` | [Tested tests/e2e::e2e_s4_2_special_form_let] |
+| `fn` | [R2 S8] |
+| `defn` | [R2 S8] |
+| `deftype` | [R2 S8] |
+| `match` | [R2 S8] |
+| `defmacro` | [R3 S9] |
 
 Examples:
 
@@ -318,7 +345,7 @@ Examples:
 :(Fn [name params body] function) defn
 ```
 
-### 4.3 Operator Feedback
+### 4.3 Operator Feedback [R2 S8]
 
 Operators (`+`, `-`, `*`, `/`, `=`, `<`, `>`) are stdlib functions, not builtins. Entering them bare MUST display their type scheme and fully-qualified name showing their stdlib home.
 
@@ -331,39 +358,39 @@ Operators (`+`, `-`, `*`, `/`, `=`, `<`, `>`) are stdlib functions, not builtins
 
 In Ring 0 (before traits), the display SHOULD still show the operator's conceptual stdlib home. The implementation-level builtin is a temporary shortcut, not the truth.
 
-## 5. Error Presentation
+## 5. Error Presentation [Tested]
 
-### 5.1 Error Format
+### 5.1 Error Format [Tested]
 
 All errors MUST display:
 
-1. The error category (parse error, type error, etc.)
-2. The source location (file/line/column or character span)
-3. A human-readable message
+1. The error category (parse error, type error, etc.) [Tested tests/repl_experience::parse_error_category]
+2. The source location (file/line/column or character span) [Tested tests/repl_experience::error_has_source_span]
+3. A human-readable message [Tested tests/repl_experience::error_has_human_readable_message]
 
-Errors MUST be written to stderr. They MUST NOT crash the REPL session — the user MUST be able to continue entering expressions after any error.
+Errors MUST be written to stdout (as part of the REPL conversation flow, visible in piped output and the showcase). Stderr is reserved for traces and diagnostic output. Errors MUST NOT crash the REPL session — the user MUST be able to continue entering expressions after any error. [Tested tests/e2e::e2e_s5_1_errors_on_stdout]
 
-### 5.2 Error Recovery
+### 5.2 Error Recovery [Tested]
 
 After any error (parse, type, runtime), the REPL MUST:
-- Display the error
+- Display the error [Tested tests/e2e::e2e_s5_2_error_recovery]
 - Reset input state (clear any partial multi-line input)
 - Present the prompt for new input
 
-The session state (defined functions, types, modules) MUST NOT be corrupted by an error in a subsequent expression.
+The session state (defined functions, types, modules) MUST NOT be corrupted by an error in a subsequent expression. [Tested tests/repl_experience::type_error_does_not_corrupt_state]
 
-### 5.3 Type Error Quality
+### 5.3 Type Error Quality [Tested]
 
 Type errors MUST include:
-- The expected type (fully qualified)
-- The actual (inferred) type (fully qualified)
-- The source location of the mismatch
+- The expected type (fully qualified) [Tested tests/repl_experience::type_error_mentions_expected_and_actual]
+- The actual (inferred) type (fully qualified) [Tested tests/e2e::e2e_s5_3_type_error_shows_expected_actual]
+- The source location of the mismatch [Tested tests/repl_experience::error_has_source_span]
 
 Type errors SHOULD suggest common fixes when applicable.
 
-## 6. Discoverability
+## 6. Discoverability [Tested]
 
-### 6.1 First Five Minutes
+### 6.1 First Five Minutes [Tested tests/repl_experience::first_five_minutes_workflow]
 
 A new user opening the REPL with no prior knowledge MUST be able to:
 
@@ -373,7 +400,7 @@ A new user opening the REPL with no prior knowledge MUST be able to:
 4. Find available operators and functions via `/list`
 5. Get help on any symbol via `/info` or `/sig`
 
-### 6.2 Startup Banner
+### 6.2 Startup Banner [Tested tests/e2e::e2e_s6_2_startup_banner]
 
 The REPL MUST display a startup banner including:
 - The language name and version
@@ -381,7 +408,7 @@ The REPL MUST display a startup banner including:
 
 The banner SHOULD be concise (3 lines or fewer).
 
-### 6.3 First Session Journey
+### 6.3 First Session Journey [Tested tests/repl_experience::first_five_minutes_workflow]
 
 The "first five minutes" (§6.1) lists capabilities. This section scripts the **narrative arc** — the sequence a new user follows from launch to confidence. Each step builds on the previous one; nothing requires prior knowledge. This journey defines the `first-session.demo` showcase script.
 
@@ -419,7 +446,7 @@ The user combines what they've learned: a closure over an ADT, applied via a hig
 
 Later rings extend this journey with modules (`/mod`), traits, macros (`/expand`), and IO, but the core loop — evaluate, inspect, make mistakes, recover — is established by Ring 1.
 
-### 6.4 Tab Completion
+### 6.4 Tab Completion [R4 S11]
 
 The REPL SHOULD support tab completion for:
 - Symbol names (functions, types, constructors)
@@ -430,23 +457,23 @@ This is a SHOULD, not a MUST, because it depends on the terminal library.
 
 ## 7. Performance Targets
 
-### 7.1 Startup Time
+### 7.1 Startup Time [Tested tests/e2e::e2e_s7_1_startup_under_500ms]
 
 The REPL MUST start and display a prompt within **500ms** on a modern machine (defined as: Apple M-series or equivalent x86-64, SSD, 8GB+ RAM). This includes loading the prelude.
 
-### 7.2 Expression Evaluation
+### 7.2 Expression Evaluation [Tested tests/repl_experience::simple_eval_under_50ms]
 
 Simple expressions (arithmetic, boolean logic, small function calls) MUST evaluate and display within **50ms** of the user pressing Enter. This is the combined compile + eval time.
 
-### 7.3 Prompt Responsiveness
+### 7.3 Prompt Responsiveness [R4 S10]
 
 After displaying a result, the next prompt MUST appear within **10ms**. There MUST be no perceptible delay between result display and prompt readiness.
 
-### 7.4 Large Output
+### 7.4 Large Output [R3 S8]
 
 When displaying large values (e.g., a Vec with 1000 elements), the REPL SHOULD truncate output with an indication of the total size rather than flooding the terminal. The truncation threshold is implementation-defined but SHOULD be configurable.
 
-## 8. Ring 2B Module Demo Scenarios (Planned)
+## 8. Ring 2B Module Demo Scenarios [R2 S8]
 
 When the module system is fully wired (Ring 2B), these 7 REPL scenarios validate the module experience. Each scenario has a concrete expected behavior.
 
@@ -497,6 +524,37 @@ user> /mod nonexistent
 Error: Module 'nonexistent' not found. Use /mod <name> to create a new module.
 ```
 The error message is actionable — it tells the user what to do next.
+
+## 10. Terminal Styling [R4 S11]
+
+When connected to a colour-capable terminal (detected via `isatty()` and `TERM`/`NO_COLOR`), the REPL SHOULD apply ANSI colour to distinguish output categories. Styling MUST be suppressed in piped/batch mode and when `NO_COLOR` is set (per https://no-color.org).
+
+### 10.1 Colour Palette [R4 S11]
+
+| Element | Colour | ANSI | Rationale |
+|---|---|---|---|
+| Prompt (timing + module) | dim/grey | `\033[90m` | Recedes — not the focus |
+| User input (typed text) | white/default | `\033[0m` | Primary focus — what the user is writing |
+| Comment lines (`;`) | green | `\033[32m` | Familiar from editors; clearly non-code |
+| Result type (`:Type`) | cyan | `\033[36m` | Distinct from value; teaches the type system |
+| Result value | white/default | `\033[0m` | Primary content |
+| Error messages | red | `\033[31m` | Immediately noticeable |
+| Warnings | yellow | `\033[33m` | Less urgent than errors |
+| Slash command output | default | `\033[0m` | Informational, no special emphasis |
+
+### 10.2 Showcase Styling [R4 S11]
+
+The showcase player (`repl/showcase`) MAY apply the same colour palette during replay. Comment section headers SHOULD use the same green as REPL comments. The `[paused]` indicator SHOULD use dim/grey.
+
+### 10.3 Requirements [R4 S11]
+
+- Colour MUST be opt-out, not opt-in (enabled by default on capable terminals)
+- `NO_COLOR` environment variable MUST disable all colour output
+- Piped output (`!isatty(stdout)`) MUST NOT contain ANSI escape sequences
+- Colour choices SHOULD be legible on both light and dark terminal backgrounds
+- The colour scheme SHOULD be consistent between the REPL and the showcase player
+
+**Ring 4**: full terminal styling implementation.
 
 ## 9. Ring Testability Matrix
 

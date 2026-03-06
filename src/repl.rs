@@ -17,8 +17,9 @@ use cranelisp_backend::heap::{HeapAdt, HeapVec};
 use cranelisp_backend::jit::Jit;
 use cranelisp_typecheck::TypeChecker;
 use cranelisp_types::{
-    CompileMode, CranelispError, NoOpExpander, ReplCheckResult, ReplInput, Symbol, Type,
-    TypeDefInfo, TypeName, Warning, NULLARY_TAG_THRESHOLD,
+    CompileMode, CranelispError, DefKind, ModuleEntry, ModuleFullPath, NoOpExpander,
+    ReplCheckResult, ReplInput, Symbol, Type, TypeDefInfo, TypeName, Warning,
+    NULLARY_TAG_THRESHOLD,
 };
 
 /// Result of evaluating one REPL input.
@@ -47,6 +48,8 @@ pub struct ReplSession {
     jit_modules: Vec<Jit>,
     /// Accumulated type definitions from all inputs (for ADT value display).
     type_defs: HashMap<TypeName, TypeDefInfo>,
+    /// Maps type names to the module they were defined in (for qualified display).
+    type_modules: HashMap<TypeName, ModuleFullPath>,
 }
 
 impl ReplSession {
@@ -57,12 +60,18 @@ impl ReplSession {
             got_state: ModuleCodegenState::new(),
             jit_modules: Vec::new(),
             type_defs: HashMap::new(),
+            type_modules: HashMap::new(),
         }
     }
 
     /// Get the accumulated type definitions for value display.
     pub fn type_defs(&self) -> &HashMap<TypeName, TypeDefInfo> {
         &self.type_defs
+    }
+
+    /// Get the type-to-module mapping for qualified display.
+    pub fn type_modules(&self) -> &HashMap<TypeName, ModuleFullPath> {
+        &self.type_modules
     }
 
     /// Evaluate a single source input, returning the result.
@@ -188,11 +197,19 @@ impl ReplSession {
                     0
                 };
 
-                // Build definition display with constraint info for constrained fns.
+                // Build definition display with qualified name (spec §1.3).
+                let module = self.tc.current_module_path().clone();
                 let definition_display = if is_constrained {
                     check_result.scheme.as_ref().map(|s| {
-                        format_scheme_display(&defn.name, s)
+                        format_scheme_display(&defn.name, s, &module, &self.type_modules)
                     })
+                } else if !defn.params.is_empty() {
+                    // Function with params: show `:type module/name`
+                    let type_str = format_type_qualified(
+                        &check_result.ty,
+                        &self.type_modules,
+                    );
+                    Some(format!(":{type_str} {module}/{}", defn.name))
                 } else {
                     None
                 };
@@ -207,10 +224,20 @@ impl ReplSession {
             }
 
             ReplInput::TypeDef { .. } => {
+                let module = self.tc.current_module_path().clone();
+
                 // Accumulate type definitions for ADT value display.
                 for (name, info) in &check_result.type_defs {
                     self.type_defs.insert(name.clone(), info.clone());
+                    self.type_modules.insert(name.clone(), module.clone());
                 }
+
+                // Build qualified display: `:module/TypeName`
+                let type_name = match &check_result.ty {
+                    Type::ADT(name, _) => name.to_string(),
+                    _ => "?".to_string(),
+                };
+                let display = format!(":{module}/{type_name}");
 
                 // Type definitions don't produce a runtime value.
                 Ok(ReplResult {
@@ -218,7 +245,7 @@ impl ReplSession {
                     ty: check_result.ty.clone(),
                     is_definition: true,
                     warnings,
-                    definition_display: None,
+                    definition_display: Some(display),
                 })
             }
 
@@ -237,7 +264,8 @@ impl ReplSession {
                     }
                 }
 
-                let display = format!("deftrait {}", decl.name);
+                let module = self.tc.current_module_path();
+                let display = format!(":{module}/{}", decl.name);
 
                 Ok(ReplResult {
                     value: 0,
@@ -271,8 +299,9 @@ impl ReplSession {
                     self.compile_and_register_defn(&mono.defn, &mono_check)?;
                 }
 
+                let module = self.tc.current_module_path();
                 let display = format!(
-                    "impl {} {}",
+                    "impl {module}/{} for {module}/{}",
                     impl_.trait_name, impl_.target_type
                 );
 
@@ -380,6 +409,84 @@ impl Default for ReplSession {
     }
 }
 
+/// Qualify a type name with its module path for REPL display (spec §1.4).
+///
+/// Primitives get `primitives/` prefix. User-defined types look up their
+/// defining module in `type_modules`. `Fn` and type variables stay bare.
+fn qualify_type_name(name: &str, type_modules: &HashMap<TypeName, ModuleFullPath>) -> String {
+    if let Some(module) = type_modules.get(name) {
+        format!("{module}/{name}")
+    } else {
+        // Not in type_modules — unqualified (e.g., type vars, unknown types).
+        name.to_string()
+    }
+}
+
+/// Format a type with fully-qualified names for REPL display (spec §1.4).
+///
+/// Primitive types get `primitives/` prefix, ADT types get their module prefix,
+/// `Fn` keyword and type variables stay unqualified.
+fn format_type_qualified(ty: &Type, type_modules: &HashMap<TypeName, ModuleFullPath>) -> String {
+    // Compute var names from the full type, then use them in the recursive helper.
+    let var_names = cranelisp_types::type_var_names(ty);
+    format_type_qualified_inner(ty, type_modules, &var_names)
+}
+
+/// Recursive helper for `format_type_qualified` with pre-computed var names.
+fn format_type_qualified_inner(
+    ty: &Type,
+    type_modules: &HashMap<TypeName, ModuleFullPath>,
+    var_names: &HashMap<cranelisp_types::TypeId, String>,
+) -> String {
+    match ty {
+        Type::Int => "primitives/Int".to_string(),
+        Type::Bool => "primitives/Bool".to_string(),
+        Type::String => "primitives/String".to_string(),
+        Type::Float => "primitives/Float".to_string(),
+        Type::Fn(params, ret) => {
+            let parts: Vec<String> = params
+                .iter()
+                .map(|p| format_type_qualified_inner(p, type_modules, var_names))
+                .collect();
+            let ret_s = format_type_qualified_inner(ret, type_modules, var_names);
+            format!("(Fn [{}] {ret_s})", parts.join(" "))
+        }
+        Type::ADT(name, args) => {
+            let qname = qualify_type_name(name, type_modules);
+            if args.is_empty() {
+                qname
+            } else {
+                let arg_strs: Vec<String> = args
+                    .iter()
+                    .map(|a| format_type_qualified_inner(a, type_modules, var_names))
+                    .collect();
+                format!("({qname} {})", arg_strs.join(" "))
+            }
+        }
+        Type::Var(id) => {
+            var_names
+                .get(id)
+                .cloned()
+                .unwrap_or_else(|| format!("t{id}"))
+        }
+        Type::TyConApp(id, args) => {
+            let name = var_names
+                .get(id)
+                .cloned()
+                .unwrap_or_else(|| format!("t{id}"));
+            if args.is_empty() {
+                name
+            } else {
+                let arg_strs: Vec<String> = args
+                    .iter()
+                    .map(|a| format_type_qualified_inner(a, type_modules, var_names))
+                    .collect();
+                format!("({name} {})", arg_strs.join(" "))
+            }
+        }
+    }
+}
+
 /// Format a result value for REPL display (simple version, no ADT introspection).
 ///
 /// Format: `:Type value`
@@ -393,40 +500,153 @@ impl Default for ReplSession {
 /// For richer ADT display with constructor names and field values,
 /// use `format_result_value` which accepts `type_defs`.
 pub fn format_result(value: i64, ty: &Type) -> String {
-    format_result_value(value, ty, &HashMap::new())
+    format_result_value(value, ty, &HashMap::new(), &HashMap::new())
 }
 
-/// Format a constrained function's scheme for REPL display.
+/// Format a constrained function's scheme for REPL display (spec §1.3).
 ///
-/// Shows the function name, type signature, and trait constraints.
-/// Example: `defn double :: (Fn [:Num a] a) where a: Num`
-fn format_scheme_display(name: &str, scheme: &cranelisp_types::Scheme) -> String {
+/// Produces inline-constraint notation:
+///   `:(Fn [:Num a :a] a) user/double`
+///
+/// On first occurrence of a constrained type variable, the constraint trait
+/// is shown as `:TraitName var`. Subsequent occurrences use `:var`.
+/// Unconstrained variables appear bare.
+fn format_scheme_display(
+    name: &str,
+    scheme: &cranelisp_types::Scheme,
+    module: &cranelisp_types::ModuleFullPath,
+    type_modules: &HashMap<TypeName, ModuleFullPath>,
+) -> String {
     let var_names = cranelisp_types::type_var_names(&scheme.ty);
-    let type_str = cranelisp_types::format_type_with_vars(&scheme.ty, &var_names);
 
-    // Build constraint display
-    let mut constraint_parts = Vec::new();
+    // Build a map from TypeId to the constraint traits for quick lookup.
+    // Use sorted trait names for deterministic output.
+    let mut constraint_map: HashMap<cranelisp_types::TypeId, Vec<&str>> = HashMap::new();
     for (type_id, traits) in &scheme.constraints {
-        if let Some(var_name) = var_names.get(type_id) {
-            for trait_name in traits {
-                constraint_parts.push(format!("{var_name}: {trait_name}"));
-            }
-        }
+        let mut trait_strs: Vec<&str> = traits.iter().map(|t| t.as_ref()).collect();
+        trait_strs.sort();
+        constraint_map.insert(*type_id, trait_strs);
     }
 
-    if constraint_parts.is_empty() {
-        format!("defn {name} :: {type_str}")
-    } else {
-        constraint_parts.sort();
-        let constraints = constraint_parts.join(", ");
-        format!("defn {name} :: {type_str} where {constraints}")
+    // Track which constrained vars have been "introduced" (first occurrence shown).
+    let mut introduced: std::collections::HashSet<cranelisp_types::TypeId> =
+        std::collections::HashSet::new();
+
+    let type_str = format_type_with_inline_constraints(
+        &scheme.ty,
+        &var_names,
+        &constraint_map,
+        &mut introduced,
+        false,
+        type_modules,
+    );
+
+    format!(":{type_str} {module}/{name}")
+}
+
+/// Format a type with inline constraint annotations (spec §1.3, §1.4).
+///
+/// Type names are fully qualified. Inside function param lists (`in_params = true`):
+///   first occurrence of constrained var: `:TraitName var`
+///   subsequent occurrences: `:var`
+/// Outside param lists (return type, ADT args): vars are always bare.
+fn format_type_with_inline_constraints(
+    ty: &Type,
+    var_names: &HashMap<cranelisp_types::TypeId, String>,
+    constraints: &HashMap<cranelisp_types::TypeId, Vec<&str>>,
+    introduced: &mut std::collections::HashSet<cranelisp_types::TypeId>,
+    in_params: bool,
+    type_modules: &HashMap<TypeName, ModuleFullPath>,
+) -> String {
+    match ty {
+        Type::Int => "primitives/Int".to_string(),
+        Type::Bool => "primitives/Bool".to_string(),
+        Type::String => "primitives/String".to_string(),
+        Type::Float => "primitives/Float".to_string(),
+        Type::Fn(params, ret) => {
+            let parts: Vec<String> = params
+                .iter()
+                .map(|p| {
+                    format_type_with_inline_constraints(
+                        p, var_names, constraints, introduced, true, type_modules,
+                    )
+                })
+                .collect();
+            let ret_s = format_type_with_inline_constraints(
+                ret, var_names, constraints, introduced, false, type_modules,
+            );
+            format!("(Fn [{}] {ret_s})", parts.join(" "))
+        }
+        Type::ADT(name, args) => {
+            let qname = qualify_type_name(name, type_modules);
+            if args.is_empty() {
+                qname
+            } else {
+                let arg_strs: Vec<String> = args
+                    .iter()
+                    .map(|a| {
+                        format_type_with_inline_constraints(
+                            a, var_names, constraints, introduced, false, type_modules,
+                        )
+                    })
+                    .collect();
+                format!("({qname} {})", arg_strs.join(" "))
+            }
+        }
+        Type::Var(id) => {
+            let var_name = var_names
+                .get(id)
+                .cloned()
+                .unwrap_or_else(|| format!("t{id}"));
+            if in_params {
+                if let Some(traits) = constraints.get(id) {
+                    if !introduced.contains(id) {
+                        // First occurrence in params: show `:TraitName var`
+                        introduced.insert(*id);
+                        let trait_prefix = traits.join(" ");
+                        format!(":{trait_prefix} {var_name}")
+                    } else {
+                        // Subsequent occurrence in params: show `:var`
+                        format!(":{var_name}")
+                    }
+                } else {
+                    // Unconstrained var in params: bare name
+                    var_name
+                }
+            } else {
+                // Outside params (return type, etc.): always bare
+                var_name
+            }
+        }
+        Type::TyConApp(id, args) => {
+            let name = var_names
+                .get(id)
+                .cloned()
+                .unwrap_or_else(|| format!("t{id}"));
+            if args.is_empty() {
+                name
+            } else {
+                let arg_strs: Vec<String> = args
+                    .iter()
+                    .map(|a| {
+                        format_type_with_inline_constraints(
+                            a, var_names, constraints, introduced, false, type_modules,
+                        )
+                    })
+                    .collect();
+                format!("({name} {})", arg_strs.join(" "))
+            }
+        }
     }
 }
 
 /// Format a result value for REPL display with full type definition context.
 ///
 /// When `type_defs` is provided, ADT values are displayed with constructor
-/// names and field values: `:(Option Int) (Some 42)`.
+/// names and field values: `:(user/Option primitives/Int) (Option.Some 42)`.
+///
+/// Types are fully qualified per spec §1.4. Constructor values use
+/// `Type.Constructor` dot notation per spec §1.5.
 ///
 /// Strings are read from heap memory via `cranelisp_runtime::read_string_as_str`.
 /// Closures display as `:(Fn [...] ...) <closure>`.
@@ -434,59 +654,62 @@ pub fn format_result_value(
     value: i64,
     ty: &Type,
     type_defs: &HashMap<TypeName, TypeDefInfo>,
+    type_modules: &HashMap<TypeName, ModuleFullPath>,
 ) -> String {
     match ty {
         Type::Bool => {
             let display_val = if value != 0 { "true" } else { "false" };
-            format!(":Bool {display_val}")
+            format!(":primitives/Bool {display_val}")
         }
         Type::Float => {
             let f = f64::from_bits(value as u64);
-            format!(":Float {f}")
+            format!(":primitives/Float {f}")
         }
-        Type::Int => format!(":Int {value}"),
+        Type::Int => format!(":primitives/Int {value}"),
         Type::String => format_string_value(value),
         Type::Fn(_, _) => {
-            let type_str = cranelisp_types::format_type_display(ty);
+            let type_str = format_type_qualified(ty, type_modules);
             format!(":{type_str} <closure>")
         }
         Type::ADT(type_name, type_args) => {
-            format_adt_value(value, type_name, type_args, type_defs)
+            format_adt_value(value, type_name, type_args, type_defs, type_modules)
         }
         other => {
-            let type_str = cranelisp_types::format_type_display(other);
+            let type_str = format_type_qualified(other, type_modules);
             format!(":{type_str} {value}")
         }
     }
 }
 
-/// Format a String heap value as `:String "contents"`.
+/// Format a String heap value as `:primitives/String "contents"`.
 fn format_string_value(value: i64) -> String {
     if value == 0 || (value as usize) < NULLARY_TAG_THRESHOLD {
         // Null or small value -- not a valid heap pointer.
-        return format!(":String <invalid:{value}>");
+        return format!(":primitives/String <invalid:{value}>");
     }
     // SAFETY: value is a heap pointer to a valid HeapString (produced by JIT code).
     let s = unsafe { cranelisp_runtime::read_string_as_str(value) };
-    format!(":String \"{s}\"")
+    format!(":primitives/String \"{s}\"")
 }
 
-/// Format an ADT value with constructor name lookup.
+/// Format an ADT value with constructor name lookup and dot notation (spec §1.5).
 ///
-/// Nullary constructors (bare i64 tags) look up the constructor name from type_defs.
-/// Data constructors (heap pointers) read tag + fields from the heap.
+/// Nullary constructors display as `Type.Ctor` (e.g., `Color.Red`).
+/// Data constructors display as `(Type.Ctor field1 field2)` (e.g., `(Option.Some 42)`).
+/// Type names in the `:Type` prefix are fully qualified.
 fn format_adt_value(
     value: i64,
     type_name: &TypeName,
     type_args: &[Type],
     type_defs: &HashMap<TypeName, TypeDefInfo>,
+    type_modules: &HashMap<TypeName, ModuleFullPath>,
 ) -> String {
-    let type_display = format_adt_type(type_name, type_args);
+    let type_display = format_adt_type_qualified(type_name, type_args, type_modules);
 
     // Vec is a built-in type, not in type_defs -- handle it specially.
     if type_name == "Vec" {
         let elem_type = type_args.first();
-        let elems = format_vec_elements(value, elem_type, type_defs);
+        let elems = format_vec_elements(value, elem_type, type_defs, type_modules);
         return format!(":{type_display} {elems}");
     }
 
@@ -500,21 +723,30 @@ fn format_adt_value(
         // Nullary constructor: value is the tag directly.
         let tag = value as usize;
         let ctor_name = find_constructor_by_tag(type_info, tag);
-        format!(":{type_display} {ctor_name}")
+        // Dot notation: Type.Constructor (spec §1.5).
+        format!(":{type_display} {type_name}.{ctor_name}")
     } else {
         // Data constructor: read tag and fields from heap.
-        format_adt_heap_value(value, &type_display, type_info, type_args, type_defs)
+        format_adt_heap_value(value, &type_display, type_name, type_info, type_args, type_defs, type_modules)
     }
 }
 
-/// Format the type portion of an ADT display.
-/// Simple types: `Color`. Parameterized: `(Option Int)`.
-fn format_adt_type(type_name: &TypeName, type_args: &[Type]) -> String {
+/// Format the type portion of an ADT display with qualification (spec §1.4).
+/// Simple types: `user/Color`. Parameterized: `(user/Option primitives/Int)`.
+fn format_adt_type_qualified(
+    type_name: &TypeName,
+    type_args: &[Type],
+    type_modules: &HashMap<TypeName, ModuleFullPath>,
+) -> String {
+    let qname = qualify_type_name(type_name, type_modules);
     if type_args.is_empty() {
-        format!("{type_name}")
+        qname
     } else {
-        let arg_strs: Vec<String> = type_args.iter().map(|a| format!("{a}")).collect();
-        format!("({type_name} {})", arg_strs.join(" "))
+        let arg_strs: Vec<String> = type_args
+            .iter()
+            .map(|a| format_type_qualified(a, type_modules))
+            .collect();
+        format!("({qname} {})", arg_strs.join(" "))
     }
 }
 
@@ -532,6 +764,7 @@ fn find_constructor_by_tag(type_info: &TypeDefInfo, tag: usize) -> String {
 ///
 /// Reads tag from HeapAdt::TAG_OFFSET (16), fields from HeapAdt::field_offset(i).
 /// Recursively formats field values using their declared types.
+/// Uses `Type.Constructor` dot notation per spec §1.5.
 ///
 /// For polymorphic ADTs (e.g., `(Option Int)`), substitutes the concrete type_args
 /// into field types before formatting. Without this, fields with type variables
@@ -539,9 +772,11 @@ fn find_constructor_by_tag(type_info: &TypeDefInfo, tag: usize) -> String {
 fn format_adt_heap_value(
     value: i64,
     type_display: &str,
+    type_name: &TypeName,
     type_info: &TypeDefInfo,
     type_args: &[Type],
     type_defs: &HashMap<TypeName, TypeDefInfo>,
+    type_modules: &HashMap<TypeName, ModuleFullPath>,
 ) -> String {
     // SAFETY: value is a heap pointer to a valid HeapAdt (produced by JIT code).
     let base = value as *const u8;
@@ -554,7 +789,8 @@ fn format_adt_heap_value(
 
     if ctor.fields.is_empty() {
         // Nullary constructor stored on heap (shouldn't happen, but handle gracefully).
-        return format!(":{type_display} {}", ctor.name);
+        // Dot notation: Type.Constructor (spec §1.5).
+        return format!(":{type_display} {type_name}.{}", ctor.name);
     }
 
     // Build substitution from type_params to type_args for polymorphic ADTs.
@@ -567,12 +803,13 @@ fn format_adt_heap_value(
         let field_val = unsafe { *(base.add(field_offset) as *const i64) };
         // Substitute type args into field type before formatting.
         let field_ty = substitute_field_type(&field_info.ty, &subst);
-        let field_str = format_field_value(field_val, &field_ty, type_defs);
+        let field_str = format_field_value(field_val, &field_ty, type_defs, type_modules);
         field_strs.push(field_str);
     }
 
     let fields_display = field_strs.join(" ");
-    format!(":{type_display} ({} {fields_display})", ctor.name)
+    // Dot notation: (Type.Constructor fields...) (spec §1.5).
+    format!(":{type_display} ({type_name}.{} {fields_display})", ctor.name)
 }
 
 /// Build a type substitution from a TypeDefInfo's type_params and concrete type_args.
@@ -640,6 +877,7 @@ fn format_vec_elements(
     value: i64,
     elem_type: Option<&Type>,
     type_defs: &HashMap<TypeName, TypeDefInfo>,
+    type_modules: &HashMap<TypeName, ModuleFullPath>,
 ) -> String {
     if value == 0 || (value as usize) < NULLARY_TAG_THRESHOLD {
         return "[]".to_string();
@@ -661,20 +899,23 @@ fn format_vec_elements(
     for i in 0..len {
         let elem_val = unsafe { *data_ptr.add(i) };
         let formatted = match elem_type {
-            Some(ty) => format_field_value(elem_val, ty, type_defs),
+            Some(ty) => format_field_value(elem_val, ty, type_defs, type_modules),
             None => format!("{elem_val}"),
         };
         elems.push(formatted);
     }
 
-    format!("[{}]", elems.join(", "))
+    format!("[{}]", elems.join(" "))
 }
 
 /// Format a single field value based on its type.
+///
+/// Field values use `Type.Constructor` dot notation for ADT constructors (spec §1.5).
 fn format_field_value(
     value: i64,
     ty: &Type,
     type_defs: &HashMap<TypeName, TypeDefInfo>,
+    type_modules: &HashMap<TypeName, ModuleFullPath>,
 ) -> String {
     match ty {
         Type::Int => format!("{value}"),
@@ -697,17 +938,21 @@ fn format_field_value(
         Type::ADT(name, args) => {
             // Vec is built-in, not in type_defs.
             if name == "Vec" {
-                return format_vec_elements(value, args.first(), type_defs);
+                return format_vec_elements(value, args.first(), type_defs, type_modules);
             }
-            // Recursive ADT formatting.
-            let type_display = format_adt_type(name, args);
+            // Recursive ADT formatting with dot notation.
+            let type_display = format_adt_type_qualified(name, args, type_modules);
             if let Some(info) = type_defs.get(name) {
                 if (value as usize) < NULLARY_TAG_THRESHOLD {
                     let tag = value as usize;
-                    find_constructor_by_tag(info, tag)
+                    let ctor_name = find_constructor_by_tag(info, tag);
+                    // Dot notation: Type.Constructor (spec §1.5).
+                    format!("{name}.{ctor_name}")
                 } else {
-                    // Recursive heap ADT -- format with parens.
-                    let inner = format_adt_heap_value(value, &type_display, info, args, type_defs);
+                    // Recursive heap ADT -- format with parens and dot notation.
+                    let inner = format_adt_heap_value(
+                        value, &type_display, name, info, args, type_defs, type_modules,
+                    );
                     // Strip the leading `:Type ` prefix from the recursive call.
                     inner.split_once(' ').map_or_else(
                         || inner.clone(),
@@ -722,6 +967,60 @@ fn format_field_value(
     }
 }
 
+/// Parsed REPL slash command.
+enum ReplCommand<'a> {
+    Help,
+    Quit,
+    Sig(&'a str),
+    Type(&'a str),
+    Info(&'a str),
+    List(&'a str),
+    Time(&'a str),
+    Unknown(&'a str),
+}
+
+/// Parse a slash command from trimmed input.
+///
+/// Returns `None` if the input does not start with `/`.
+fn parse_slash_command(input: &str) -> Option<ReplCommand<'_>> {
+    if !input.starts_with('/') {
+        return None;
+    }
+
+    let (cmd, arg) = match input.split_once(char::is_whitespace) {
+        Some((c, a)) => (c, a.trim()),
+        None => (input, ""),
+    };
+
+    Some(match cmd {
+        "/help" | "/h" => ReplCommand::Help,
+        "/quit" | "/q" => ReplCommand::Quit,
+        "/sig" | "/s" => ReplCommand::Sig(arg),
+        "/type" | "/t" => ReplCommand::Type(arg),
+        "/info" | "/i" => ReplCommand::Info(arg),
+        "/list" | "/l" => ReplCommand::List(arg),
+        "/time" => ReplCommand::Time(arg),
+        _ => ReplCommand::Unknown(cmd),
+    })
+}
+
+/// Print the /help command output to stdout.
+fn print_help(stdout: &mut impl Write) {
+    let _ = writeln!(stdout, "Available commands:");
+    let _ = writeln!(stdout, "  /help (/h)          Show this help");
+    let _ = writeln!(stdout, "  /quit (/q)          Exit REPL");
+    let _ = writeln!(stdout, "  /sig (/s) NAME      Show type signature");
+    let _ = writeln!(stdout, "  /type (/t) EXPR     Show type without evaluating");
+    let _ = writeln!(stdout, "  /info (/i) NAME     Show full details");
+    let _ = writeln!(stdout, "  /list (/l) [FILTER] List symbols in current module");
+    let _ = writeln!(stdout, "  /time EXPR          Evaluate with timing breakdown");
+}
+
+/// Format the REPL prompt with timing and module info.
+fn format_prompt(compile_ms: u64, eval_ms: u64, module: &str) -> String {
+    format!("{compile_ms}+{eval_ms}ms; {module}> ")
+}
+
 /// Run the interactive REPL loop.
 ///
 /// Reads lines from stdin, evaluates them, prints results.
@@ -732,7 +1031,17 @@ pub fn run_repl() {
     let stdout = io::stdout();
     let mut stdout = stdout.lock();
 
-    let _ = write!(stdout, "> ");
+    // Startup banner.
+    let _ = writeln!(stdout, "Cranelisp v0.1.0");
+    let _ = writeln!(stdout, "Type /help for commands, /quit to exit.");
+
+    // Timing state for prompt.
+    let mut last_compile_ms: u64 = 0;
+    let mut last_eval_ms: u64 = 0;
+    let module = "user";
+
+    let prompt = format_prompt(last_compile_ms, last_eval_ms, module);
+    let _ = write!(stdout, "{prompt}");
     let _ = stdout.flush();
 
     let mut buffer = String::new();
@@ -748,7 +1057,9 @@ pub fn run_repl() {
         // Check for balanced parentheses for multi-line input.
         if !parens_balanced(&buffer) {
             buffer.push('\n');
-            let _ = write!(stdout, "  ");
+            // Continuation prompt: spaces aligning `...` with user input start.
+            let continuation = format!("{:>width$}", "...", width = prompt.len());
+            let _ = write!(stdout, "{continuation}");
             let _ = stdout.flush();
             continue;
         }
@@ -756,13 +1067,72 @@ pub fn run_repl() {
         let input = buffer.trim();
         if input.is_empty() || is_comment_only(input) {
             buffer.clear();
-            let _ = write!(stdout, "> ");
+            let prompt = format_prompt(last_compile_ms, last_eval_ms, module);
+            let _ = write!(stdout, "{prompt}");
             let _ = stdout.flush();
             continue;
         }
 
+        // Check for slash commands before sending to eval.
+        if let Some(cmd) = parse_slash_command(input) {
+            match cmd {
+                ReplCommand::Help => print_help(&mut stdout),
+                ReplCommand::Quit => {
+                    buffer.clear();
+                    break;
+                }
+                ReplCommand::Sig(name) => {
+                    handle_sig(&session, name, &mut stdout);
+                }
+                ReplCommand::Type(expr_src) => {
+                    handle_type(&mut session, expr_src, &mut stdout);
+                }
+                ReplCommand::Info(name) => {
+                    handle_info(&session, name, &mut stdout);
+                }
+                ReplCommand::List(filter) => {
+                    handle_list(&session, filter, &mut stdout);
+                }
+                ReplCommand::Time(expr_src) => {
+                    match handle_time(&mut session, expr_src) {
+                        Ok(display) => {
+                            let _ = writeln!(stdout, "{display}");
+                        }
+                        Err(e) => {
+                            let _ = writeln!(stdout, "error: {e}");
+                        }
+                    }
+                }
+                ReplCommand::Unknown(cmd) => {
+                    let _ = writeln!(stdout, "error: unknown command '{cmd}'. Type /help for available commands.");
+                }
+            }
+            buffer.clear();
+            let prompt = format_prompt(last_compile_ms, last_eval_ms, module);
+            let _ = write!(stdout, "{prompt}");
+            let _ = stdout.flush();
+            continue;
+        }
+
+        // Check for bare special form names before eval (spec §4.2).
+        if let Some(display) = special_form_feedback(input, &session) {
+            let _ = writeln!(stdout, "{display}");
+            buffer.clear();
+            let prompt = format_prompt(last_compile_ms, last_eval_ms, module);
+            let _ = write!(stdout, "{prompt}");
+            let _ = stdout.flush();
+            continue;
+        }
+
+        let compile_start = std::time::Instant::now();
         match session.eval(input) {
             Ok(result) => {
+                let compile_elapsed = compile_start.elapsed();
+                // For now, we approximate: compile time = total eval time,
+                // eval time = 0 (we don't have a separate eval phase yet).
+                last_compile_ms = compile_elapsed.as_millis() as u64;
+                last_eval_ms = 0;
+
                 // Print warnings first.
                 for w in &result.warnings {
                     let _ = writeln!(stdout, "warning: {}", w.message);
@@ -775,17 +1145,22 @@ pub fn run_repl() {
                         result.value,
                         &result.ty,
                         session.type_defs(),
+                        session.type_modules(),
                     )
                 };
                 let _ = writeln!(stdout, "{display}");
             }
             Err(e) => {
+                let compile_elapsed = compile_start.elapsed();
+                last_compile_ms = compile_elapsed.as_millis() as u64;
+                last_eval_ms = 0;
                 let _ = writeln!(stdout, "error: {e}");
             }
         }
 
         buffer.clear();
-        let _ = write!(stdout, "> ");
+        let prompt = format_prompt(last_compile_ms, last_eval_ms, module);
+        let _ = write!(stdout, "{prompt}");
         let _ = stdout.flush();
     }
 
@@ -842,30 +1217,319 @@ fn parens_balanced(input: &str) -> bool {
     paren_depth <= 0 && bracket_depth <= 0
 }
 
+// ---------------------------------------------------------------------------
+// Slash command handlers
+// ---------------------------------------------------------------------------
+
+/// Handle `/sig <name>` — show type signature of a symbol.
+fn handle_sig(session: &ReplSession, name: &str, stdout: &mut impl Write) {
+    if name.is_empty() {
+        let _ = writeln!(stdout, "usage: /sig <name>");
+        return;
+    }
+    let module = session.tc.current_module_path().clone();
+    match session.tc.symbol_table().get(name) {
+        Some(entry) => {
+            let display = format_entry_signature(entry, name, &module, &session.type_modules);
+            let _ = writeln!(stdout, "{display}");
+        }
+        None => {
+            let _ = writeln!(stdout, "error: unknown symbol '{name}'");
+        }
+    }
+}
+
+/// Handle `/type <expr>` — show type of expression without evaluating.
+fn handle_type(session: &mut ReplSession, expr_src: &str, stdout: &mut impl Write) {
+    if expr_src.is_empty() {
+        let _ = writeln!(stdout, "usage: /type <expr>");
+        return;
+    }
+    // Parse, build AST, typecheck — but do NOT compile or execute.
+    let snapshot = session.tc.snapshot();
+    let result = (|| -> Result<Type, CranelispError> {
+        let sexps = cranelisp_frontend::parse(expr_src)?;
+        if sexps.is_empty() {
+            return Err(CranelispError::ParseError {
+                message: "empty expression".into(),
+                span: cranelisp_types::Span::SYNTHETIC,
+            });
+        }
+        let mut expander = NoOpExpander;
+        let input = cranelisp_frontend::build_repl_input(&sexps[0], &mut expander)?;
+        let check_result = session.tc.check_repl_input(&input)?;
+        Ok(check_result.ty)
+    })();
+    // Always restore — we don't want /type to have side effects.
+    session.tc.restore(snapshot);
+    match result {
+        Ok(ty) => {
+            let display = format_type_qualified(&ty, &session.type_modules);
+            let _ = writeln!(stdout, ":{display}");
+        }
+        Err(e) => {
+            let _ = writeln!(stdout, "error: {e}");
+        }
+    }
+}
+
+/// Handle `/info <name>` — show full details about a symbol.
+fn handle_info(session: &ReplSession, name: &str, stdout: &mut impl Write) {
+    if name.is_empty() {
+        let _ = writeln!(stdout, "usage: /info <name>");
+        return;
+    }
+    let module = session.tc.current_module_path().clone();
+    match session.tc.symbol_table().get(name) {
+        Some(entry) => {
+            // Line 1: type signature (same as /sig).
+            let sig = format_entry_signature(entry, name, &module, &session.type_modules);
+            let _ = writeln!(stdout, "{sig}");
+            // Line 2: code size and compile time (if available).
+            if let Some(dc) = session.got_state.def_codegen.get(name) {
+                let size_str = dc
+                    .code_size
+                    .map(|s| format!("{s} bytes"))
+                    .unwrap_or_else(|| "? bytes".to_string());
+                let time_str = dc
+                    .compile_duration
+                    .map(|d| format!("{}ms", d.as_millis()))
+                    .unwrap_or_else(|| "?ms".to_string());
+                let _ = writeln!(stdout, "  {size_str}, {time_str}");
+            }
+        }
+        None => {
+            let _ = writeln!(stdout, "error: unknown symbol '{name}'");
+        }
+    }
+}
+
+/// Handle `/list [filter]` — list symbols in the current module by category.
+fn handle_list(session: &ReplSession, filter: &str, stdout: &mut impl Write) {
+    let module = session.tc.current_module_path().clone();
+    let table = session.tc.symbol_table();
+
+    let mut types: Vec<String> = Vec::new();
+    let mut traits: Vec<String> = Vec::new();
+    let mut special_forms: Vec<String> = Vec::new();
+    let mut functions: Vec<String> = Vec::new();
+
+    for (sym, entry) in table.all_symbols() {
+        // Skip constructors — they are listed under their type.
+        if matches!(entry, ModuleEntry::Constructor { .. }) {
+            continue;
+        }
+        // Skip imports and reexports for now (they clutter the listing).
+        if matches!(entry, ModuleEntry::Import { .. } | ModuleEntry::Reexport { .. }) {
+            continue;
+        }
+
+        let name = sym.to_string();
+        // Apply filter if provided.
+        if !filter.is_empty() && !name.contains(filter) {
+            continue;
+        }
+
+        match entry {
+            ModuleEntry::TypeDef { .. } => {
+                types.push(format!("{module}/{name}"));
+            }
+            ModuleEntry::TraitDecl { .. } => {
+                traits.push(format!("{module}/{name}"));
+            }
+            ModuleEntry::Def { kind, .. } => match kind.as_ref() {
+                DefKind::SpecialForm { .. } => {
+                    special_forms.push(name);
+                }
+                _ => {
+                    functions.push(format!("{module}/{name}"));
+                }
+            },
+            _ => {}
+        }
+    }
+
+    // Sort each category for deterministic output.
+    types.sort();
+    traits.sort();
+    special_forms.sort();
+    functions.sort();
+
+    if !types.is_empty() {
+        let _ = writeln!(stdout, "Types:");
+        for t in &types {
+            let _ = writeln!(stdout, "  {t}");
+        }
+    }
+    if !traits.is_empty() {
+        let _ = writeln!(stdout, "Traits:");
+        for t in &traits {
+            let _ = writeln!(stdout, "  {t}");
+        }
+    }
+    if !special_forms.is_empty() {
+        let _ = writeln!(stdout, "Special forms:");
+        for sf in &special_forms {
+            let _ = writeln!(stdout, "  {sf}");
+        }
+    }
+    if !functions.is_empty() {
+        let _ = writeln!(stdout, "Functions:");
+        for f in &functions {
+            let _ = writeln!(stdout, "  {f}");
+        }
+    }
+}
+
+/// Handle `/time <expr>` — evaluate with timing breakdown.
+fn handle_time(
+    session: &mut ReplSession,
+    expr_src: &str,
+) -> Result<String, CranelispError> {
+    if expr_src.is_empty() {
+        return Ok("usage: /time <expr>".to_string());
+    }
+    let compile_start = std::time::Instant::now();
+    let result = session.eval(expr_src)?;
+    let compile_elapsed = compile_start.elapsed();
+    let compile_ms = compile_elapsed.as_millis();
+
+    // Format the result value.
+    let display = if let Some(ref def_display) = result.definition_display {
+        def_display.clone()
+    } else {
+        format_result_value(
+            result.value,
+            &result.ty,
+            session.type_defs(),
+            session.type_modules(),
+        )
+    };
+    Ok(format!("{display} (compile: {compile_ms}ms, eval: 0ms)"))
+}
+
+/// Format a module entry's type signature for /sig and /info display.
+fn format_entry_signature(
+    entry: &ModuleEntry,
+    name: &str,
+    module: &ModuleFullPath,
+    type_modules: &HashMap<TypeName, ModuleFullPath>,
+) -> String {
+    match entry {
+        ModuleEntry::Def {
+            scheme,
+            kind,
+            ..
+        } => {
+            if let DefKind::SpecialForm { description } = kind.as_ref() {
+                return format_special_form_display(name, description);
+            }
+            if !scheme.constraints.is_empty() {
+                format_scheme_display(name, scheme, module, type_modules)
+            } else {
+                let type_str = format_type_qualified(&scheme.ty, type_modules);
+                format!(":{type_str} {module}/{name}")
+            }
+        }
+        ModuleEntry::Constructor {
+            type_name, scheme, ..
+        } => {
+            let type_str = format_type_qualified(&scheme.ty, type_modules);
+            format!(":{type_str} {module}/{type_name}.{name}")
+        }
+        ModuleEntry::TypeDef { info, .. } => {
+            let qname = qualify_type_name(&info.name, type_modules);
+            format!(":{qname}")
+        }
+        ModuleEntry::TraitDecl { decl, .. } => {
+            format!("trait {module}/{}", decl.name)
+        }
+        _ => format!("{module}/{name}"),
+    }
+}
+
+/// Format a special form for display (spec §4.2).
+///
+/// Produces a function-like signature that teaches the user the form's shape.
+fn format_special_form_display(name: &str, description: &str) -> String {
+    match name {
+        "if" => ":(Fn [primitives/Bool a a] a) if".to_string(),
+        "let" => ":(Fn [bindings body] a) let".to_string(),
+        "fn" => ":(Fn [params body] function) fn".to_string(),
+        "defn" => ":(Fn [name params body] function) defn".to_string(),
+        "deftype" => ":(Fn [name ctors...] type) deftype".to_string(),
+        "match" => ":(Fn [expr [pat body]...] a) match".to_string(),
+        _ => format!("{name} — {description}"),
+    }
+}
+
+/// Check if the trimmed input is a bare special form name and return its display.
+///
+/// Returns `Some(display_string)` if the input matches a special form,
+/// `None` otherwise.
+fn special_form_feedback(input: &str, session: &ReplSession) -> Option<String> {
+    let trimmed = input.trim();
+    // Must be a single bare identifier (no parens, no spaces, no brackets).
+    if trimmed.contains(|c: char| c.is_whitespace() || c == '(' || c == ')' || c == '[' || c == ']') {
+        return None;
+    }
+    if trimmed.is_empty() {
+        return None;
+    }
+    // Look up in the symbol table (spec §4.1 — bare symbol lookup).
+    let module = session.tc.current_module_path();
+    let entry = session.tc.symbol_table().get(trimmed)?;
+    match entry {
+        ModuleEntry::Def { kind, scheme, .. } => {
+            if let DefKind::SpecialForm { description } = kind.as_ref() {
+                Some(format_special_form_display(trimmed, description))
+            } else {
+                // Regular function/primitive: show `:TypeScheme module/name`
+                let type_str = format_type_qualified(&scheme.ty, &session.type_modules);
+                Some(format!(":{type_str} {module}/{trimmed}"))
+            }
+        }
+        ModuleEntry::TypeDef { .. } => {
+            // Bare type name: show `:module/TypeName`
+            Some(format!(":{module}/{trimmed}"))
+        }
+        ModuleEntry::TraitDecl { .. } => {
+            // Bare trait name: show `:module/TraitName`
+            Some(format!(":{module}/{trimmed}"))
+        }
+        ModuleEntry::Constructor { type_name, scheme, .. } => {
+            // Bare constructor: show `:QualifiedType module/Type.Ctor`
+            let type_str = format_type_qualified(&scheme.ty, &session.type_modules);
+            Some(format!(":{type_str} {module}/{type_name}.{trimmed}"))
+        }
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn test_format_result_int() {
-        assert_eq!(format_result(42, &Type::Int), ":Int 42");
+        assert_eq!(format_result(42, &Type::Int), ":primitives/Int 42");
     }
 
     #[test]
     fn test_format_result_bool_true() {
-        assert_eq!(format_result(1, &Type::Bool), ":Bool true");
+        assert_eq!(format_result(1, &Type::Bool), ":primitives/Bool true");
     }
 
     #[test]
     fn test_format_result_bool_false() {
-        assert_eq!(format_result(0, &Type::Bool), ":Bool false");
+        assert_eq!(format_result(0, &Type::Bool), ":primitives/Bool false");
     }
 
     #[test]
     fn test_format_result_float() {
         let bits = 1.234_f64.to_bits() as i64;
         let result = format_result(bits, &Type::Float);
-        assert!(result.starts_with(":Float 1.234"));
+        assert!(result.starts_with(":primitives/Float 1.234"));
     }
 
     #[test]
@@ -951,7 +1615,7 @@ mod tests {
     fn test_format_result_string() {
         let s = cranelisp_runtime::alloc_string(b"hello") as i64;
         let result = format_result(s, &Type::String);
-        assert_eq!(result, ":String \"hello\"");
+        assert_eq!(result, ":primitives/String \"hello\"");
         cranelisp_runtime::heap_dealloc(s);
     }
 
@@ -959,7 +1623,7 @@ mod tests {
     fn test_format_result_empty_string() {
         let s = cranelisp_runtime::alloc_string(b"") as i64;
         let result = format_result(s, &Type::String);
-        assert_eq!(result, ":String \"\"");
+        assert_eq!(result, ":primitives/String \"\"");
         cranelisp_runtime::heap_dealloc(s);
     }
 
@@ -967,7 +1631,7 @@ mod tests {
     fn test_format_result_fn_type() {
         let fn_ty = Type::Fn(vec![Type::Int, Type::Bool], Box::new(Type::String));
         let result = format_result(0, &fn_ty);
-        assert_eq!(result, ":(Fn [Int Bool] String) <closure>");
+        assert_eq!(result, ":(Fn [primitives/Int primitives/Bool] primitives/String) <closure>");
     }
 
     #[test]
@@ -1006,17 +1670,18 @@ mod tests {
         );
 
         let adt = Type::ADT(type_name, vec![]);
+        let tm = HashMap::new();
         assert_eq!(
-            format_result_value(0, &adt, &type_defs),
-            ":Color Red"
+            format_result_value(0, &adt, &type_defs, &tm),
+            ":Color Color.Red"
         );
         assert_eq!(
-            format_result_value(1, &adt, &type_defs),
-            ":Color Green"
+            format_result_value(1, &adt, &type_defs, &tm),
+            ":Color Color.Green"
         );
         assert_eq!(
-            format_result_value(2, &adt, &type_defs),
-            ":Color Blue"
+            format_result_value(2, &adt, &type_defs, &tm),
+            ":Color Color.Blue"
         );
     }
 
@@ -1053,11 +1718,12 @@ mod tests {
         );
 
         let adt = Type::ADT(type_name.clone(), vec![Type::Int]);
+        let tm = HashMap::new();
 
-        // Nullary: None (tag 0).
+        // Nullary: None (tag 0) — dot notation.
         assert_eq!(
-            format_result_value(0, &adt, &type_defs),
-            ":(Option Int) None"
+            format_result_value(0, &adt, &type_defs, &tm),
+            ":(Option primitives/Int) Option.None"
         );
 
         // Data constructor: allocate Some(42) on heap.
@@ -1068,9 +1734,10 @@ mod tests {
             *(ptr.add(24) as *mut i64) = 42; // field val = 42
         }
 
+        // Data constructor — dot notation: (Option.Some 42).
         assert_eq!(
-            format_result_value(ptr as i64, &adt, &type_defs),
-            ":(Option Int) (Some 42)"
+            format_result_value(ptr as i64, &adt, &type_defs, &tm),
+            ":(Option primitives/Int) (Option.Some 42)"
         );
 
         cranelisp_runtime::heap_dealloc(ptr as i64);
@@ -1097,14 +1764,25 @@ mod tests {
     }
 
     #[test]
-    fn test_format_adt_type() {
+    fn test_format_adt_type_qualified() {
+        let tm = HashMap::new();
         assert_eq!(
-            format_adt_type(&TypeName::from("Color"), &[]),
+            format_adt_type_qualified(&TypeName::from("Color"), &[], &tm),
             "Color"
         );
         assert_eq!(
-            format_adt_type(&TypeName::from("Option"), &[Type::Int]),
-            "(Option Int)"
+            format_adt_type_qualified(&TypeName::from("Option"), &[Type::Int], &tm),
+            "(Option primitives/Int)"
+        );
+        // With type_modules, ADT name gets qualified too.
+        let mut tm2 = HashMap::new();
+        tm2.insert(
+            TypeName::from("Color"),
+            ModuleFullPath::from("user"),
+        );
+        assert_eq!(
+            format_adt_type_qualified(&TypeName::from("Color"), &[], &tm2),
+            "user/Color"
         );
     }
 }

@@ -1,8 +1,8 @@
-# 8. Modules
+# 8. Modules [R2 S7]
 
 This section defines the module system of Cranelisp -- how source files map to modules, how names are imported and exported across module boundaries, and how name resolution operates in the presence of multiple modules.
 
-## 8.1 File-to-Module Mapping
+## 8.1 File-to-Module Mapping [R2 S7]
 
 Each `.cl` source file defines exactly one module. The module's identity is derived from the file's path relative to the project root or library directory.
 
@@ -30,7 +30,7 @@ project/
 
 A file's module identity is determined entirely by its filesystem path. There is no in-file declaration of module identity -- a file does not name itself.
 
-## 8.2 Module Declaration
+## 8.2 Module Declaration [Tested tests/ring2::single_file_via_run_project]
 
 The `mod` special form declares that the current module has a submodule, and triggers loading of the corresponding `.cl` file.
 
@@ -113,7 +113,7 @@ If neither file exists, it is a compile-time error.
 (defn double [:Int x] :Int (* x 2))
 ```
 
-## 8.3 Import
+## 8.3 Import [Tested tests/ring2::import_specific_names]
 
 The `import` special form brings names from other modules into the current module's scope as bare (unqualified) symbols.
 
@@ -227,7 +227,7 @@ A module MAY contain multiple `import` forms. Their effects accumulate: names im
 (defn make-point [:Int x :Int y] :Point (Point x y))
 ```
 
-## 8.4 Export
+## 8.4 Export [R2 S7]
 
 The `export` special form re-exports names from imported modules, making them part of the current module's public API.
 
@@ -298,7 +298,7 @@ An implementation MUST track re-export provenance so that introspection can disp
                      str-concat quote-sexp]])
 ```
 
-## 8.5 Qualified Names
+## 8.5 Qualified Names [Tested tests/ring2::module_qualified_name_resolution]
 
 Names MAY be referenced with explicit module qualification, bypassing the need for imports.
 
@@ -348,7 +348,7 @@ When a qualified name references a module that has not yet been loaded, the impl
 
 In a REPL environment, qualified name references SHOULD trigger lazy loading of the referenced module.
 
-## 8.6 Name Resolution
+## 8.6 Name Resolution [R2 S7]
 
 Name resolution converts source-level names into their definitions. An implementation MUST follow the resolution layers defined in this section.
 
@@ -433,7 +433,7 @@ For a qualified name `path/sym`, resolution proceeds:
 
 The target symbol MUST be public in the resolved module. Accessing a private name through a qualified reference is a compile-time error.
 
-## 8.7 Visibility
+## 8.7 Visibility [R2 S7]
 
 ### 8.7.1 Public by Default
 
@@ -478,7 +478,7 @@ A private name:
 (util/internal 42)         ; error: 'internal' is private
 ```
 
-## 8.8 Prelude
+## 8.8 Prelude [R2 S7]
 
 ### 8.8.1 Implicit Import
 
@@ -506,7 +506,7 @@ An empty prelude is valid. The core language -- primitives, special forms, type 
 ;; A valid, empty prelude.cl
 ```
 
-## 8.9 Synthetic Modules
+## 8.9 Synthetic Modules [R2 S7]
 
 Synthetic modules are registered by the runtime without corresponding `.cl` source files. They provide compiler-seeded types, built-in functions, and platform bindings.
 
@@ -529,7 +529,7 @@ The `macros` module contains the `Sexp` and `SList` algebraic data types used by
 
 The `macros` module is NOT implicitly imported. The macro expander and `quote-sexp` primitive emit qualified references (`macros/SexpSym`, `macros/SCons`, etc.), so quasiquote-based macros work without importing the module. Modules that directly reference Sexp constructors (e.g., for pattern matching on macro arguments) MUST import or use qualified references eg. `(import [macros [*]])`.
 
-### 8.9.3 Platform Modules
+### 8.9.3 Platform Modules [R4 S10]
 
 Platform modules are loaded from dynamic libraries (DLLs) via the `platform` special form:
 
@@ -545,7 +545,7 @@ Platform module names follow the pattern `platform.<name>`.
 
 Synthetic modules are always known to the module system. Their names are seeded into the module name registry so that `(import [primitives [*]])` resolves without file discovery.
 
-## 8.10 Module Compilation Order
+## 8.10 Module Compilation Order [Tested tests/ring2::module_cycle_detection]
 
 ### 8.10.1 Dependency Graph
 
@@ -580,7 +580,7 @@ lib/prelude.cl          ; depends on core
 main.cl                 ; depends on prelude (implicit)
 ```
 
-## 8.11 Lib Directory
+## 8.11 Lib Directory [R2 S7]
 
 ### 8.11.1 Standard Library Location
 
@@ -624,7 +624,7 @@ lib/
 
 Each core submodule imports only what it needs from `primitives` and sibling submodules. The `core.cl` shell re-exports everything. The `prelude.cl` re-exports from `core` plus selected primitives.
 
-## 8.12 Macro Interaction
+## 8.12 Macro Interaction [R3 S9]
 
 ### 8.12.1 Pre-Expansion Processing
 
@@ -638,7 +638,7 @@ Macros from imported modules are available for expansion in the importing module
 
 Macro authors SHOULD use qualified names for non-prelude references within macro bodies to avoid capture by the importing module's local names.
 
-## 8.13 REPL Integration
+## 8.13 REPL Integration [R4 S10]
 
 A conforming REPL implementation SHOULD support the following module-related behaviors.
 
@@ -667,7 +667,7 @@ The REPL SHOULD support `(import ...)` as an interactive command. Importing a mo
 
 Typing a module name at the REPL SHOULD display information about that module: its public definitions, types, and traits. This is consistent with the self-documenting design principle.
 
-## 8.14 Summary of Forms
+## 8.14 Summary of Forms [R2 S7]
 
 | Form | Purpose | Visibility |
 |---|---|---|
@@ -680,7 +680,7 @@ Typing a module name at the REPL SHOULD display information about that module: i
 | `module/name` | Qualified name reference | N/A |
 | `Type.member` | Dotted member access | N/A |
 
-## 8.15 Complete Example
+## 8.15 Complete Example [R4 S10]
 
 The following example demonstrates the full module system in a project with multiple files, imports, exports, visibility, and qualified access.
 
