@@ -34,6 +34,15 @@ Text in, AST out. You implement parsing (S-expression reader), macro compilation
 6. Write `src/ast_builder/CLAUDE.md` when beginning that stage
 7. Implement macros last (most complex — requires internal mini-pipeline)
 
+## Release Gate
+
+Before considering any task complete, you MUST verify:
+1. `cargo build` succeeds with no errors
+2. `cargo test` passes with no new failures (pre-existing ignored tests are acceptable)
+3. `cargo clippy` produces no new warnings in your owned files
+
+Do not hand off to `/sprint` or `/review` with a broken build. If your changes cause failures in another crate, fix the issue or coordinate with the owning skill before completing.
+
 ## Workflow
 
 - **Ring 0**: Reader + AST builder (no macros). Produce `Vec<TopLevel>` for simple programs.

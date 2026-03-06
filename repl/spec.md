@@ -2,12 +2,11 @@
 
 Normative specification for the Cranelisp REPL user experience. A conforming REPL MUST satisfy all requirements tagged with the current ring or earlier.
 
-<!-- FIXME(/repl): This spec covers the interactive REPL but does not specify:
-     - CLI invocation modes (REPL mode, batch mode `--run file.cl`, `--version`, `--help`)
-     - Exit codes (success, compile error, runtime error)
-     - Batch mode output format (same `:Type value`? just value? nothing?)
-     - Cache lifecycle (`.cache/` creation, invalidation, cleanup)
-     These need their own spec sections or a companion CLI spec. -->
+<!-- FIXME(/repl): DEFERRED to Ring 4. CLI invocation modes (--run, --version, --help),
+     exit codes, batch output format, and cache lifecycle are CLI-level concerns, not REPL
+     experience concerns. They should be specified in a companion CLI spec (owned by /qa or /arch)
+     once the REPL experience itself is stable. The REPL spec intentionally covers only the
+     interactive session contract. -->
 
 ## Design Principle
 
@@ -53,6 +52,17 @@ Examples:
 
 **Ring 0**: `primitives/Int`, `primitives/Bool`, `primitives/Float`, nullary ADT constructors, non-capturing function values.
 **Ring 1**: `primitives/String`, data ADT constructors, closures, `Vec`, `List`.
+
+<!-- FIXME(/qa): U1.6 — Polymorphic ADT type variables display as internal names (e.g. t1)
+     instead of source-level names from deftype (e.g. a). REPL shows :(Option t1) None instead
+     of :(Option a) None. format_result_value should normalize type vars to match source-level
+     names from TypeDefInfo. Source: /docs. Severity: important. -->
+
+<!-- FIXME(/qa): U1.9 — Polymorphic ADT fields with heap types display raw pointers instead of
+     formatted values. (Some "hello") shows (Some 40383875776) instead of (Some "hello").
+     format_adt_heap_value reads field types from TypeDefInfo as Type::Var(a) — needs to build
+     substitution map from type_params to type_args before formatting fields. Source: /repl.
+     Severity: important. -->
 **Ring 4**: `IO` (trampoline executes; inner value displayed as `:primitives/IO inner_value`).
 
 ### 1.3 Definition Results
@@ -84,6 +94,14 @@ A trait implementation MUST confirm the trait and type:
 ```
 impl user/Sizeable for user/Circle
 ```
+
+A constrained function definition MUST display its constraints inline on the first occurrence of each constrained type variable:
+
+```
+:(Fn [:core.numerics/Num a :a] a) user/double
+```
+
+An overloaded function definition MUST display all variant signatures.
 
 **Ring 0**: function definitions, type definitions.
 **Ring 2**: trait declarations, trait implementations, constrained functions, overloaded functions.

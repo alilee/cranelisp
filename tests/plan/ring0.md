@@ -1,5 +1,9 @@
 # Ring 0 Test Plan: Core
 
+<!-- FIXME(/qa): U0.2 — /learn tutorial engine requires REPL implementation work (watch mechanism,
+     trigger evaluation, progress tracking). This is implementation work, not just documentation
+     content. Plan as a deliverable. Source: /docs. Severity: important. -->
+
 **Features**: Int, Bool, Float, simple Fn, let, if, match (enums only), defn, forward references, TCO. No heap allocation, no reference counting.
 
 **Test count target**: ~80 integration tests (ported from prototype + new).
@@ -50,7 +54,7 @@
 
 ## REPL Spec Compliance (repl/spec.md)
 
-<!-- FIXME(/qa): The following repl/spec.md Ring 0 requirements have no test coverage and the implementation does not conform. The spec is clear — the QA plan should have tests for each. See U1.13. -->
+<!-- Acknowledged: These 10 REPL spec non-conformance items are tracked as U1.13 in tests/plan/usability.md (blocking severity). Tests will be written as part of the REPL implementation work. The table below documents the gap and expected behavior for each requirement. Resolved from FIXME at design/arch/roadmap.md:35. -->
 
 | Spec Section | Requirement | Ring | Current Behavior | Priority |
 |---|---|---|---|---|

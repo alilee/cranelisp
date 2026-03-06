@@ -29,8 +29,8 @@
 
 ; === Functions using operators ===
 
-(defn double [x] (* x 2))
-(double 21)
+(defn times-two [x] (* x 2))
+(times-two 21)
 
 (defn sum-to [n] (if (= n 0) 0 (+ n (sum-to (- n 1)))))
 (sum-to 100)
@@ -62,6 +62,21 @@
 ; === Trait declarations ===
 
 (deftrait (Sizeable a) (size [:a] :Int))
+
+; === Constrained polymorphism — one definition, multiple types ===
+
+(defn double [x] (+ x x))
+(double 5)
+(double 2.5)
+
+; === Default method operators ===
+
+(defn clamp [x lo hi] (if (< x lo) lo (if (> x hi) hi x)))
+(clamp 15 0 10)
+(clamp -3 0 10)
+(clamp 5 0 10)
+(!= 3 4)
+(!= 5 5)
 
 ; === Putting it together ===
 

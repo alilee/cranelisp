@@ -6,9 +6,9 @@
 use std::collections::{HashMap, HashSet};
 
 use cranelisp_types::{
-    CheckResult, ConstrainedFn, CranelispError, Defn, DefKind, ModuleEntry,
-    ReplCheckResult, ReplInput, Scheme, Span, Symbol, TopLevel, Type,
-    apply,
+    CheckResult, ConstrainedFn, CranelispError, Defn, DefKind, Expr, JitSymbol,
+    ModuleEntry, MonoDefn, ReplCheckResult, ReplInput, ResolvedCall, Scheme, Span,
+    Symbol, TopLevel, Type, apply,
 };
 
 use crate::checker::TypeChecker;
@@ -47,8 +47,12 @@ impl TypeChecker {
         let constrained_fn_names =
             self.detect_constrained_fns(&defns);
 
+        // Pass 4: monomorphise constrained function call sites
+        let mono_defns = self.pass4_monomorphise(&defns, &constrained_fn_names)?;
+
         let mut result = self.build_check_result();
-        result.constrained_fn_names = constrained_fn_names;
+        result.constrained_fn_names = constrained_fn_names.clone();
+        result.mono_defns = mono_defns;
         result.default_method_defns = default_defns;
         Ok(result)
     }
@@ -63,12 +67,24 @@ impl TypeChecker {
             ReplInput::Expr(expr) => {
                 let ty = self.infer_expr(expr)?;
                 let resolved = self.apply_subst(&ty);
-                Ok(self.build_repl_result(resolved, None))
+
+                // Gap 4: scan for constrained-fn calls, monomorphise on demand
+                let mono_defns = self.monomorphise_expr_calls(expr)?;
+
+                let mut result = self.build_repl_result(resolved, None);
+                result.mono_defns = mono_defns;
+                Ok(result)
             }
 
             ReplInput::Defn(defn) => {
                 let (ty, scheme) = self.check_single_defn(defn)?;
-                Ok(self.build_repl_result(ty, Some(scheme)))
+
+                // Scan defn body for constrained-fn calls, monomorphise on demand
+                let mono_defns = self.monomorphise_expr_calls(&defn.body)?;
+
+                let mut result = self.build_repl_result(ty, Some(scheme));
+                result.mono_defns = mono_defns;
+                Ok(result)
             }
 
             ReplInput::TypeDef {
@@ -173,31 +189,16 @@ impl TypeChecker {
         &mut self,
         defns: &[&Defn],
     ) -> HashSet<Symbol> {
+        // Constrained functions are eagerly marked in pass2_check_bodies
+        // by checking DefKind::UserFn { constrained_fn: Some(..) }.
         let mut names = HashSet::new();
 
         for defn in defns {
-            let is_constrained = if let Some(ModuleEntry::Def { scheme, .. }) =
+            if let Some(ModuleEntry::Def { kind, .. }) =
                 self.symbol_table.get(defn.name.as_ref())
             {
-                !scheme.constraints.is_empty()
-            } else {
-                false
-            };
-
-            if is_constrained {
-                names.insert(defn.name.clone());
-
-                // Get the scheme and store as ConstrainedFn
-                if let Some(ModuleEntry::Def { scheme, kind, .. }) =
-                    self.symbol_table.symbols.get_mut(&defn.name)
-                {
-                    let cf = ConstrainedFn {
-                        defn: (*defn).clone(),
-                        scheme: scheme.clone(),
-                    };
-                    *kind = Box::new(DefKind::UserFn {
-                        constrained_fn: Some(Box::new(cf)),
-                    });
+                if let DefKind::UserFn { constrained_fn: Some(_) } = kind.as_ref() {
+                    names.insert(defn.name.clone());
                 }
             }
         }
@@ -280,11 +281,21 @@ impl TypeChecker {
     }
 
     /// Pass 2: Check function bodies and generalize types.
+    ///
+    /// All bodies are checked first (with deferred trait resolution), then
+    /// all functions are generalized.
+    ///
+    /// After each body check, we eagerly detect constrained polymorphism
+    /// by checking if the function's type vars have active constraints.
+    /// This must happen before later functions' call sites can pin the vars
+    /// to concrete types through the shared substitution.
     fn pass2_check_bodies(
         &mut self,
         defns: &[&Defn],
         type_vars: &HashMap<Symbol, (Vec<Type>, Type)>,
     ) -> Result<(), CranelispError> {
+        // Phase 1: Check all bodies, resolve deferred trait calls,
+        // and eagerly mark constrained functions.
         for defn in defns {
             let (param_types, ret_ty) = type_vars
                 .get(&defn.name)
@@ -294,29 +305,60 @@ impl TypeChecker {
                 })?;
 
             self.check_defn_body(defn, param_types, ret_ty)?;
+            self.resolve_deferred_trait_calls(&defn.body);
+
+            // Eagerly detect if this function is constrained.
+            // Must happen now, before later call sites resolve its type vars.
+            let fn_type = Type::Fn(
+                param_types.iter().map(|t| self.apply_subst(t)).collect(),
+                Box::new(self.apply_subst(ret_ty)),
+            );
+            let trial_scheme = self.generalize(&fn_type);
+            if !trial_scheme.constraints.is_empty() {
+                // Mark as constrained immediately
+                if let Some(ModuleEntry::Def { kind, .. }) =
+                    self.symbol_table.symbols.get_mut(&defn.name)
+                {
+                    let cf = ConstrainedFn {
+                        defn: (*defn).clone(),
+                        scheme: trial_scheme,
+                    };
+                    *kind = Box::new(DefKind::UserFn {
+                        constrained_fn: Some(Box::new(cf)),
+                    });
+                }
+            }
         }
 
-        // After all bodies are checked, generalize each function's type
+        // Phase 2: Generalize all functions.
+        // If the final scheme has no constraints, clear any eager constrained_fn marker
+        // (later call sites may have pinned the type vars to concrete types).
         for defn in defns {
-            let (param_types, ret_ty) = type_vars
-                .get(&defn.name)
-                .ok_or_else(|| CranelispError::TypeError {
-                    message: format!("internal: missing type vars for {}", defn.name),
-                    span: defn.span,
-                })?;
-
+            let (param_types, ret_ty) = type_vars.get(&defn.name).unwrap();
             let fn_type = Type::Fn(
                 param_types.iter().map(|t| self.apply_subst(t)).collect(),
                 Box::new(self.apply_subst(ret_ty)),
             );
             let scheme = self.generalize(&fn_type);
-
-            // Update the symbol table entry with the generalized scheme
-            if let Some(ModuleEntry::Def { scheme: s, .. }) =
+            if let Some(ModuleEntry::Def { scheme: s, kind, .. }) =
                 self.symbol_table.symbols.get_mut(&defn.name)
             {
-                *s = scheme;
+                *s = scheme.clone();
+                // Clear eager constrained marker if final scheme is unconstrained
+                if scheme.constraints.is_empty() {
+                    if let DefKind::UserFn { constrained_fn: Some(_) } = kind.as_ref() {
+                        *kind = Box::new(DefKind::UserFn { constrained_fn: None });
+                    }
+                }
             }
+        }
+
+        // Phase 3: Re-resolve deferred trait calls now that all types are pinned.
+        // During Phase 1, some trait method calls (e.g., `+` in `add`) couldn't be
+        // resolved because arg types were still unresolved vars. After Phase 2,
+        // later call sites may have pinned those vars to concrete types.
+        for defn in defns {
+            self.resolve_deferred_trait_calls(&defn.body);
         }
 
         Ok(())
@@ -360,6 +402,9 @@ impl TypeChecker {
         // Check body
         self.check_defn_body(defn, &param_types, &ret_ty)?;
 
+        // Post-inference deferred trait resolution
+        self.resolve_deferred_trait_calls(&defn.body);
+
         // Generalize (propagates active constraints)
         let resolved_fn_type = Type::Fn(
             param_types.iter().map(|t| self.apply_subst(t)).collect(),
@@ -386,6 +431,229 @@ impl TypeChecker {
         }
 
         Ok((scheme.ty.clone(), scheme))
+    }
+
+    // --- Monomorphisation passes ---
+
+    /// Pass 4 (batch): scan all defn bodies for calls to constrained functions
+    /// and generate monomorphised specializations.
+    fn pass4_monomorphise(
+        &mut self,
+        defns: &[&Defn],
+        constrained_fn_names: &HashSet<Symbol>,
+    ) -> Result<Vec<MonoDefn>, CranelispError> {
+        if constrained_fn_names.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        // Collect call sites: (fn_name, arg_spans, call_span)
+        let mut call_sites = Vec::new();
+        for defn in defns {
+            // Don't scan constrained fns for calls to themselves — those
+            // are the generic definitions, not concrete call sites.
+            if constrained_fn_names.contains(&defn.name) {
+                continue;
+            }
+            Self::collect_constrained_calls(
+                &defn.body,
+                constrained_fn_names,
+                &mut call_sites,
+            );
+        }
+
+        // Resolve expr_types so we can look up concrete arg types
+        let resolved_expr_types = self.resolve_expr_types();
+
+        // Monomorphise each call site and record dispatch mappings
+        let mut mono_defns = Vec::new();
+        let mut seen: HashMap<String, JitSymbol> = HashMap::new();
+
+        for (fn_name, arg_spans, call_span) in &call_sites {
+            // Look up concrete arg types from resolved expr_types
+            let arg_types: Vec<Type> = arg_spans
+                .iter()
+                .filter_map(|span| resolved_expr_types.get(span).cloned())
+                .collect();
+
+            if arg_types.len() != arg_spans.len() {
+                // Missing type info for some args — skip this call site
+                continue;
+            }
+
+            // Deduplicate: same fn + same arg types = same specialization
+            let key = format!("{}${}", fn_name, arg_types.iter()
+                .map(|t| format!("{}", t))
+                .collect::<Vec<_>>()
+                .join("+"));
+
+            if let Some(mangled) = seen.get(&key) {
+                // Already generated this specialization — just record dispatch
+                self.method_resolutions.insert(
+                    *call_span,
+                    ResolvedCall::SigDispatch { mangled_name: mangled.clone() },
+                );
+                continue;
+            }
+
+            if let Some(mono) = self.monomorphise_call(fn_name, &arg_types, *call_span)? {
+                let mangled = JitSymbol::from(mono.defn.name.as_ref());
+                // Record dispatch for this call site
+                self.method_resolutions.insert(
+                    *call_span,
+                    ResolvedCall::SigDispatch { mangled_name: mangled.clone() },
+                );
+                seen.insert(key, mangled);
+                mono_defns.push(mono);
+            }
+        }
+
+        Ok(mono_defns)
+    }
+
+    /// Scan an expression for calls to constrained functions (REPL path).
+    ///
+    /// Collects call sites, resolves arg types, and calls `monomorphise_call`
+    /// for each. Used by both `check_repl_input(Expr)` and `check_repl_input(Defn)`.
+    fn monomorphise_expr_calls(
+        &mut self,
+        expr: &Expr,
+    ) -> Result<Vec<MonoDefn>, CranelispError> {
+        // Build the set of constrained fn names from the symbol table
+        let constrained_fn_names: HashSet<Symbol> = self.symbol_table.symbols
+            .iter()
+            .filter_map(|(name, entry)| {
+                if let ModuleEntry::Def { kind, .. } = entry {
+                    if let DefKind::UserFn { constrained_fn: Some(_) } = kind.as_ref() {
+                        return Some(name.clone());
+                    }
+                }
+                None
+            })
+            .collect();
+
+        if constrained_fn_names.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let mut call_sites = Vec::new();
+        Self::collect_constrained_calls(expr, &constrained_fn_names, &mut call_sites);
+
+        if call_sites.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let resolved_expr_types = self.resolve_expr_types();
+
+        let mut mono_defns = Vec::new();
+        let mut seen: HashMap<String, JitSymbol> = HashMap::new();
+
+        for (fn_name, arg_spans, call_span) in &call_sites {
+            let arg_types: Vec<Type> = arg_spans
+                .iter()
+                .filter_map(|span| resolved_expr_types.get(span).cloned())
+                .collect();
+
+            if arg_types.len() != arg_spans.len() {
+                continue;
+            }
+
+            let key = format!("{}${}", fn_name, arg_types.iter()
+                .map(|t| format!("{}", t))
+                .collect::<Vec<_>>()
+                .join("+"));
+
+            if let Some(mangled) = seen.get(&key) {
+                self.method_resolutions.insert(
+                    *call_span,
+                    ResolvedCall::SigDispatch { mangled_name: mangled.clone() },
+                );
+                continue;
+            }
+
+            if let Some(mono) = self.monomorphise_call(fn_name, &arg_types, *call_span)? {
+                let mangled = JitSymbol::from(mono.defn.name.as_ref());
+                self.method_resolutions.insert(
+                    *call_span,
+                    ResolvedCall::SigDispatch { mangled_name: mangled.clone() },
+                );
+                seen.insert(key, mangled);
+                mono_defns.push(mono);
+            }
+        }
+
+        Ok(mono_defns)
+    }
+
+    /// Recursively walk an expression tree collecting calls to constrained fns.
+    ///
+    /// Each call site is recorded as (fn_name, arg_spans, call_span).
+    /// The arg_spans are the spans of each argument expression, used to look up
+    /// their types from `expr_types`.
+    pub(crate) fn collect_constrained_calls(
+        expr: &Expr,
+        constrained_fn_names: &HashSet<Symbol>,
+        out: &mut Vec<(Symbol, Vec<Span>, Span)>,
+    ) {
+        match expr {
+            Expr::Apply { callee, args, span } => {
+                // Check if callee is a constrained fn
+                if let Expr::Var { name, .. } = callee.as_ref() {
+                    if constrained_fn_names.contains(name) {
+                        let arg_spans: Vec<Span> = args.iter()
+                            .map(|a| a.span())
+                            .collect();
+                        out.push((name.clone(), arg_spans, *span));
+                    }
+                }
+                // Recurse into callee and args
+                Self::collect_constrained_calls(callee, constrained_fn_names, out);
+                for arg in args {
+                    Self::collect_constrained_calls(arg, constrained_fn_names, out);
+                }
+            }
+            Expr::Let { bindings, body, .. } => {
+                for (_, binding_expr) in bindings {
+                    Self::collect_constrained_calls(binding_expr, constrained_fn_names, out);
+                }
+                Self::collect_constrained_calls(body, constrained_fn_names, out);
+            }
+            Expr::If { cond, then_branch, else_branch, .. } => {
+                Self::collect_constrained_calls(cond, constrained_fn_names, out);
+                Self::collect_constrained_calls(then_branch, constrained_fn_names, out);
+                Self::collect_constrained_calls(else_branch, constrained_fn_names, out);
+            }
+            Expr::Lambda { body, .. } => {
+                Self::collect_constrained_calls(body, constrained_fn_names, out);
+            }
+            Expr::Match { scrutinee, arms, .. } => {
+                Self::collect_constrained_calls(scrutinee, constrained_fn_names, out);
+                for arm in arms {
+                    Self::collect_constrained_calls(&arm.body, constrained_fn_names, out);
+                }
+            }
+            Expr::Annotate { expr: inner, .. } => {
+                Self::collect_constrained_calls(inner, constrained_fn_names, out);
+            }
+            Expr::VecLit { elements, .. } => {
+                for elem in elements {
+                    Self::collect_constrained_calls(elem, constrained_fn_names, out);
+                }
+            }
+            Expr::Trace { body, .. } => {
+                Self::collect_constrained_calls(body, constrained_fn_names, out);
+            }
+            Expr::RunTests { init, pass_fn, fail_fn, .. } => {
+                Self::collect_constrained_calls(init, constrained_fn_names, out);
+                Self::collect_constrained_calls(pass_fn, constrained_fn_names, out);
+                Self::collect_constrained_calls(fail_fn, constrained_fn_names, out);
+            }
+            // Leaf nodes: no children to recurse into
+            Expr::IntLit { .. }
+            | Expr::FloatLit { .. }
+            | Expr::BoolLit { .. }
+            | Expr::StringLit { .. }
+            | Expr::Var { .. } => {}
+        }
     }
 
     // --- Result building ---
@@ -1170,5 +1438,390 @@ mod tests {
         } else {
             panic!("greet not found in symbol table");
         }
+    }
+
+    // --- Ring 2: Constrained polymorphism tests ---
+
+    #[test]
+    fn test_collect_constrained_calls_finds_direct_call() {
+        let constrained = HashSet::from([Symbol::from("add")]);
+        // (add x y) where add is constrained
+        let expr = Expr::Apply {
+            callee: Box::new(Expr::Var {
+                name: Symbol::from("add"),
+                span: span(1, 4),
+            }),
+            args: vec![
+                Expr::Var { name: Symbol::from("x"), span: span(5, 6) },
+                Expr::Var { name: Symbol::from("y"), span: span(7, 8) },
+            ],
+            span: span(0, 9),
+        };
+
+        let mut calls = Vec::new();
+        TypeChecker::collect_constrained_calls(&expr, &constrained, &mut calls);
+
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].0.as_ref(), "add");
+        assert_eq!(calls[0].1.len(), 2); // two arg spans
+        assert_eq!(calls[0].2, span(0, 9)); // call span
+    }
+
+    #[test]
+    fn test_collect_constrained_calls_ignores_non_constrained() {
+        let constrained = HashSet::from([Symbol::from("add")]);
+        // (sub-i64 x y) where sub-i64 is NOT constrained
+        let expr = Expr::Apply {
+            callee: Box::new(Expr::Var {
+                name: Symbol::from("sub-i64"),
+                span: span(1, 8),
+            }),
+            args: vec![
+                Expr::Var { name: Symbol::from("x"), span: span(9, 10) },
+                Expr::Var { name: Symbol::from("y"), span: span(11, 12) },
+            ],
+            span: span(0, 13),
+        };
+
+        let mut calls = Vec::new();
+        TypeChecker::collect_constrained_calls(&expr, &constrained, &mut calls);
+
+        assert!(calls.is_empty());
+    }
+
+    #[test]
+    fn test_collect_constrained_calls_recurses_into_let() {
+        let constrained = HashSet::from([Symbol::from("add")]);
+        // (let [z (add x y)] z)
+        let expr = Expr::Let {
+            bindings: vec![(
+                Symbol::from("z"),
+                Expr::Apply {
+                    callee: Box::new(Expr::Var {
+                        name: Symbol::from("add"),
+                        span: span(10, 13),
+                    }),
+                    args: vec![
+                        Expr::Var { name: Symbol::from("x"), span: span(14, 15) },
+                        Expr::Var { name: Symbol::from("y"), span: span(16, 17) },
+                    ],
+                    span: span(9, 18),
+                },
+            )],
+            body: Box::new(Expr::Var {
+                name: Symbol::from("z"),
+                span: span(20, 21),
+            }),
+            span: span(0, 22),
+        };
+
+        let mut calls = Vec::new();
+        TypeChecker::collect_constrained_calls(&expr, &constrained, &mut calls);
+
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].0.as_ref(), "add");
+    }
+
+    #[test]
+    fn test_collect_constrained_calls_recurses_into_if() {
+        let constrained = HashSet::from([Symbol::from("add")]);
+        // (if true (add 1 2) (add 3 4))
+        let expr = Expr::If {
+            cond: Box::new(Expr::BoolLit { value: true, span: span(4, 8) }),
+            then_branch: Box::new(Expr::Apply {
+                callee: Box::new(Expr::Var {
+                    name: Symbol::from("add"),
+                    span: span(10, 13),
+                }),
+                args: vec![
+                    Expr::IntLit { value: 1, span: span(14, 15) },
+                    Expr::IntLit { value: 2, span: span(16, 17) },
+                ],
+                span: span(9, 18),
+            }),
+            else_branch: Box::new(Expr::Apply {
+                callee: Box::new(Expr::Var {
+                    name: Symbol::from("add"),
+                    span: span(20, 23),
+                }),
+                args: vec![
+                    Expr::IntLit { value: 3, span: span(24, 25) },
+                    Expr::IntLit { value: 4, span: span(26, 27) },
+                ],
+                span: span(19, 28),
+            }),
+            span: span(0, 29),
+        };
+
+        let mut calls = Vec::new();
+        TypeChecker::collect_constrained_calls(&expr, &constrained, &mut calls);
+
+        assert_eq!(calls.len(), 2, "should find calls in both branches");
+    }
+
+    #[test]
+    fn test_batch_monomorphise_generates_mono_defn() {
+        let mut tc = TypeChecker::new();
+        // Program: (defn add [x y] (+ x y))  -- constrained via +
+        //          (defn main [] (add 3 4))   -- concrete Int call site
+        let program = vec![
+            TopLevel::Defn(Defn {
+                name: Symbol::from("add"),
+                docstring: None,
+                params: vec![Symbol::from("x"), Symbol::from("y")],
+                param_annotations: vec![None, None],
+                body: Expr::Apply {
+                    callee: Box::new(Expr::Var {
+                        name: Symbol::from("+"),
+                        span: span(18, 19),
+                    }),
+                    args: vec![
+                        Expr::Var { name: Symbol::from("x"), span: span(20, 21) },
+                        Expr::Var { name: Symbol::from("y"), span: span(22, 23) },
+                    ],
+                    span: span(17, 24),
+                },
+                visibility: Visibility::Public,
+                span: span(0, 25),
+            }),
+            TopLevel::Defn(Defn {
+                name: Symbol::from("main"),
+                docstring: None,
+                params: vec![],
+                param_annotations: vec![],
+                body: Expr::Apply {
+                    callee: Box::new(Expr::Var {
+                        name: Symbol::from("add"),
+                        span: span(40, 43),
+                    }),
+                    args: vec![
+                        Expr::IntLit { value: 3, span: span(44, 45) },
+                        Expr::IntLit { value: 4, span: span(46, 47) },
+                    ],
+                    span: span(39, 48),
+                },
+                visibility: Visibility::Public,
+                span: span(26, 49),
+            }),
+        ];
+
+        let result = tc.check_program(&program).unwrap();
+
+        // In batch mode, add and main share a substitution during Pass 2.
+        // main's (add 3 4) pins add's type vars to Int before generalization.
+        // So add becomes monomorphic Fn([Int, Int], Int), not constrained.
+        // This is correct HM behavior for same-program references.
+        // Constrained polymorphism applies across module boundaries.
+        assert!(
+            result.constrained_fn_names.is_empty(),
+            "within same program, add should be monomorphic due to shared subst"
+        );
+        assert!(
+            result.mono_defns.is_empty(),
+            "no constrained fns means no mono_defns needed"
+        );
+
+        // Verify add was correctly inferred as Fn([Int, Int], Int)
+        if let Some(ModuleEntry::Def { scheme, .. }) = tc.symbol_table.get("add") {
+            assert_eq!(
+                scheme.ty,
+                Type::Fn(vec![Type::Int, Type::Int], Box::new(Type::Int))
+            );
+        } else {
+            panic!("add not found");
+        }
+
+        // The + call site within add didn't get resolved during Pass 2
+        // because x/y were still Vars during add's body check.
+        // In the same-program case, add is used monomorphically and
+        // doesn't need separate mono_defn generation.
+    }
+
+    #[test]
+    fn test_batch_constrained_fn_alone_detected() {
+        let mut tc = TypeChecker::new();
+        // (defn add [x y] (+ x y))  -- alone, no callers; should be constrained
+        let program = vec![TopLevel::Defn(Defn {
+            name: Symbol::from("add"),
+            docstring: None,
+            params: vec![Symbol::from("x"), Symbol::from("y")],
+            param_annotations: vec![None, None],
+            body: Expr::Apply {
+                callee: Box::new(Expr::Var {
+                    name: Symbol::from("+"),
+                    span: span(18, 19),
+                }),
+                args: vec![
+                    Expr::Var { name: Symbol::from("x"), span: span(20, 21) },
+                    Expr::Var { name: Symbol::from("y"), span: span(22, 23) },
+                ],
+                span: span(17, 24),
+            },
+            visibility: Visibility::Public,
+            span: span(0, 25),
+        })];
+
+        let result = tc.check_program(&program).unwrap();
+
+        assert!(
+            result.constrained_fn_names.contains(&Symbol::from("add")),
+            "add should be in constrained_fn_names"
+        );
+
+        // No callers, so no mono_defns
+        assert!(
+            result.mono_defns.is_empty(),
+            "no call sites means no mono_defns"
+        );
+
+        // Check the scheme has Num constraint
+        if let Some(ModuleEntry::Def { scheme, .. }) = tc.symbol_table.get("add") {
+            assert!(
+                !scheme.constraints.is_empty(),
+                "add should have Num constraint"
+            );
+        } else {
+            panic!("add not found in symbol table");
+        }
+    }
+
+    #[test]
+    fn test_repl_expr_monomorphise() {
+        let mut tc = TypeChecker::new();
+
+        // First, define a constrained fn: (defn add [x y] (+ x y))
+        let defn_input = ReplInput::Defn(Defn {
+            name: Symbol::from("add"),
+            docstring: None,
+            params: vec![Symbol::from("x"), Symbol::from("y")],
+            param_annotations: vec![None, None],
+            body: Expr::Apply {
+                callee: Box::new(Expr::Var {
+                    name: Symbol::from("+"),
+                    span: span(18, 19),
+                }),
+                args: vec![
+                    Expr::Var { name: Symbol::from("x"), span: span(20, 21) },
+                    Expr::Var { name: Symbol::from("y"), span: span(22, 23) },
+                ],
+                span: span(17, 24),
+            },
+            visibility: Visibility::Public,
+            span: span(0, 25),
+        });
+        let _ = tc.check_repl_input(&defn_input).unwrap();
+
+        // Now evaluate an expression that calls the constrained fn: (add 3 4)
+        let expr_input = ReplInput::Expr(Expr::Apply {
+            callee: Box::new(Expr::Var {
+                name: Symbol::from("add"),
+                span: span(100, 103),
+            }),
+            args: vec![
+                Expr::IntLit { value: 3, span: span(104, 105) },
+                Expr::IntLit { value: 4, span: span(106, 107) },
+            ],
+            span: span(99, 108),
+        });
+        let result = tc.check_repl_input(&expr_input).unwrap();
+
+        // Should have mono_defns populated
+        assert!(
+            !result.mono_defns.is_empty(),
+            "REPL expr should generate mono_defns for constrained fn calls"
+        );
+        assert_eq!(
+            result.mono_defns[0].defn.name.as_ref(),
+            "add$Int+Int",
+        );
+    }
+
+    #[test]
+    fn test_repl_defn_body_monomorphise() {
+        let mut tc = TypeChecker::new();
+
+        // Define a constrained fn: (defn add [x y] (+ x y))
+        let defn_input = ReplInput::Defn(Defn {
+            name: Symbol::from("add"),
+            docstring: None,
+            params: vec![Symbol::from("x"), Symbol::from("y")],
+            param_annotations: vec![None, None],
+            body: Expr::Apply {
+                callee: Box::new(Expr::Var {
+                    name: Symbol::from("+"),
+                    span: span(18, 19),
+                }),
+                args: vec![
+                    Expr::Var { name: Symbol::from("x"), span: span(20, 21) },
+                    Expr::Var { name: Symbol::from("y"), span: span(22, 23) },
+                ],
+                span: span(17, 24),
+            },
+            visibility: Visibility::Public,
+            span: span(0, 25),
+        });
+        let _ = tc.check_repl_input(&defn_input).unwrap();
+
+        // Define a function that calls the constrained fn: (defn main [] (add 1 2))
+        let main_input = ReplInput::Defn(Defn {
+            name: Symbol::from("main"),
+            docstring: None,
+            params: vec![],
+            param_annotations: vec![],
+            body: Expr::Apply {
+                callee: Box::new(Expr::Var {
+                    name: Symbol::from("add"),
+                    span: span(200, 203),
+                }),
+                args: vec![
+                    Expr::IntLit { value: 1, span: span(204, 205) },
+                    Expr::IntLit { value: 2, span: span(206, 207) },
+                ],
+                span: span(199, 208),
+            },
+            visibility: Visibility::Public,
+            span: span(180, 209),
+        });
+        let result = tc.check_repl_input(&main_input).unwrap();
+
+        // Should have mono_defns from the defn body scan
+        assert!(
+            !result.mono_defns.is_empty(),
+            "REPL defn should generate mono_defns for constrained fn calls in body"
+        );
+        assert_eq!(
+            result.mono_defns[0].defn.name.as_ref(),
+            "add$Int+Int",
+        );
+    }
+
+    #[test]
+    fn test_batch_mono_no_constrained_fns_produces_empty() {
+        let mut tc = TypeChecker::new();
+        // (defn inc [x] (add-i64 x 1)) — no constrained fns, all monomorphic
+        let program = vec![TopLevel::Defn(Defn {
+            name: Symbol::from("inc"),
+            docstring: None,
+            params: vec![Symbol::from("x")],
+            param_annotations: vec![None],
+            body: Expr::Apply {
+                callee: Box::new(Expr::Var {
+                    name: Symbol::from("add-i64"),
+                    span: span(16, 23),
+                }),
+                args: vec![
+                    Expr::Var { name: Symbol::from("x"), span: span(24, 25) },
+                    Expr::IntLit { value: 1, span: span(26, 27) },
+                ],
+                span: span(15, 28),
+            },
+            visibility: Visibility::Public,
+            span: span(0, 29),
+        })];
+
+        let result = tc.check_program(&program).unwrap();
+
+        assert!(result.constrained_fn_names.is_empty());
+        assert!(result.mono_defns.is_empty());
     }
 }

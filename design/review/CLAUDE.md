@@ -56,7 +56,7 @@ Future files (created at ring completion):
 
 - At ring completion gates, outstanding HIGH review findings must be explicitly acknowledged (accepted or deferred with rationale) before the gate passes.
 - `/review` can escalate to `/arch` if a finding represents an architectural boundary violation.
-- `/review` can file usability findings to `/qa`'s usability register if a review reveals user-facing quality issues.
+- `/review` can file usability findings as `FIXME(/skill-name)` comments on the relevant spec or design doc if a review reveals user-facing quality issues.
 
 ## Deriving Checklists
 
@@ -79,4 +79,3 @@ The general `checklist.md` covers items that apply regardless of ring.
 - `sketch/audits/module.md` -- module system structural debts (3 HIGH, 6 MED, 5 LOW)
 - `sketch/audits/cache.md` -- cache structural debts (3 HIGH, 7 MED, 5 LOW)
 - `tests/plan/strategy.md` -- test strategy and quality criteria
-- `tests/plan/usability.md` -- usability register for user-facing findings

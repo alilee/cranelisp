@@ -14,14 +14,7 @@ Build the standard library as a user of the language. Validate that the type sys
 
 - User-proxy skill: you exercise the language from a library author's perspective
 - Begin work once Ring 2 is stable (traits + modules needed for real library code)
-- File usability findings to `/qa`'s **usability register** (`tests/plan/usability.md`):
-  - Type inference too restrictive, requiring excessive annotations
-  - Macro expansion edge cases or limitations
-  - Trait resolution surprises
-  - Unhelpful or misleading error messages
-  - Missing primitives or awkward APIs
-  - Naming surprises (Clojure convention deviations)
-  - Each finding needs: category, severity (blocking/important/deferred), description
+- File usability findings as `FIXME(/skill-name)` comments on the relevant spec or design doc (e.g., `spec/07-traits.md`, `spec/03-types.md`). Typical issues: inference friction, trait resolution surprises, missing primitives, naming deviations from Clojure conventions.
 
 ## First Steps (Phase B)
 

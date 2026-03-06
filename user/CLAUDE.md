@@ -32,4 +32,6 @@ The spec (`spec/`) is precise and normative — written for implementors. User d
 
 **Sprint 4 (Ring 2A)**: Complete. Getting-started guide extended with Traits section covering: trait concept, operators as trait methods (Num/Eq/Ord), using operators, defining custom traits with deftrait, implementing traits with impl, multiple traits, default methods, constrained polymorphism, trait constraint annotations. Trait operators summary table added. "Putting It Together" examples updated to use operators. "What is Next" updated.
 
-**Feedback loop**: Report to compiler skills when error messages are confusing, when REPL output is unhelpful, or when a concept has no good introduction path. File findings to `tests/plan/usability.md`.
+**Sprint 5 Wave 4**: Constrained polymorphism section updated with monomorphisation explanation, `max-of` example using `Ord`, and `(double 2.5)` example. Default methods section corrected to show full `Ord` trait declaration with `<=`/`>=` defaults and usage examples. Trait operators summary table expanded with `>`, `<=`, `>=`.
+
+**Feedback loop**: Report to compiler skills when error messages are confusing, when REPL output is unhelpful, or when a concept has no good introduction path. File findings as `FIXME(/skill-name)` comments on the relevant spec or design doc.

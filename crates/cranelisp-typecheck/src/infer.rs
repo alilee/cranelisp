@@ -246,6 +246,77 @@ impl TypeChecker {
         )
     }
 
+    /// Post-inference pass: resolve trait method calls that couldn't be resolved
+    /// during inference because argument types were still unresolved type variables.
+    ///
+    /// Called after a function body is fully checked and all substitutions are
+    /// established. Walks the expression tree, finds Apply nodes whose callee is
+    /// a known trait method but has no entry in method_resolutions, and resolves them.
+    pub(crate) fn resolve_deferred_trait_calls(&mut self, expr: &Expr) {
+        match expr {
+            Expr::Apply { callee, args, span } => {
+                // Try to resolve this Apply if it's not already resolved
+                if !self.method_resolutions.contains_key(span) {
+                    if let Expr::Var { name, .. } = callee.as_ref() {
+                        if self.is_trait_method(name) {
+                            let resolved_args: Vec<Type> = args
+                                .iter()
+                                .map(|a| {
+                                    self.expr_types
+                                        .get(&a.span())
+                                        .map(|t| self.apply_subst(t))
+                                        .unwrap_or_else(|| Type::Var(0))
+                                })
+                                .collect();
+                            if let Some(resolution) =
+                                self.try_resolve_trait_method(name, &resolved_args, *span)
+                            {
+                                self.method_resolutions.insert(*span, resolution);
+                            }
+                        }
+                    }
+                }
+                // Recurse
+                self.resolve_deferred_trait_calls(callee);
+                for arg in args {
+                    self.resolve_deferred_trait_calls(arg);
+                }
+            }
+            Expr::Let { bindings, body, .. } => {
+                for (_, binding_expr) in bindings {
+                    self.resolve_deferred_trait_calls(binding_expr);
+                }
+                self.resolve_deferred_trait_calls(body);
+            }
+            Expr::If { cond, then_branch, else_branch, .. } => {
+                self.resolve_deferred_trait_calls(cond);
+                self.resolve_deferred_trait_calls(then_branch);
+                self.resolve_deferred_trait_calls(else_branch);
+            }
+            Expr::Lambda { body, .. } => {
+                self.resolve_deferred_trait_calls(body);
+            }
+            Expr::Match { scrutinee, arms, .. } => {
+                self.resolve_deferred_trait_calls(scrutinee);
+                for arm in arms {
+                    self.resolve_deferred_trait_calls(&arm.body);
+                }
+            }
+            Expr::Annotate { expr: inner, .. } => {
+                self.resolve_deferred_trait_calls(inner);
+            }
+            Expr::VecLit { elements, .. } => {
+                for elem in elements {
+                    self.resolve_deferred_trait_calls(elem);
+                }
+            }
+            Expr::Trace { body, .. } => {
+                self.resolve_deferred_trait_calls(body);
+            }
+            _ => {}
+        }
+    }
+
     fn infer_match(
         &mut self,
         scrutinee: &Expr,

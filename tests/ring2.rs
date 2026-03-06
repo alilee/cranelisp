@@ -233,62 +233,51 @@ fn trait_lt_float_false() {
 
 // =============================================================================
 // Default methods — >, <=, >= (spec: 07-traits)
-// NOTE: Default method codegen not yet wired — functions like Ord.>$Int
-// are generated but not compiled in batch mode. These tests document the
-// intended behavior and are ignored until the pipeline is complete.
 // =============================================================================
 
 #[test]
-#[ignore = "default method codegen: Ord.>$Int not compiled in batch pipeline"]
 fn default_method_gt_int() {
     let src = "(defn main [] (if (> 5 3) 1 0))";
     assert_eq!(compile_and_run_simple(src), 1);
 }
 
 #[test]
-#[ignore = "default method codegen: Ord.>$Int not compiled in batch pipeline"]
 fn default_method_gt_int_false() {
     let src = "(defn main [] (if (> 3 5) 1 0))";
     assert_eq!(compile_and_run_simple(src), 0);
 }
 
 #[test]
-#[ignore = "default method codegen: Ord.<=$Int not compiled in batch pipeline"]
 fn default_method_le_int() {
     let src = "(defn main [] (if (<= 3 5) 1 0))";
     assert_eq!(compile_and_run_simple(src), 1);
 }
 
 #[test]
-#[ignore = "default method codegen: Ord.<=$Int not compiled in batch pipeline"]
 fn default_method_le_int_equal() {
     let src = "(defn main [] (if (<= 5 5) 1 0))";
     assert_eq!(compile_and_run_simple(src), 1);
 }
 
 #[test]
-#[ignore = "default method codegen: Ord.<=$Int not compiled in batch pipeline"]
 fn default_method_le_int_false() {
     let src = "(defn main [] (if (<= 5 3) 1 0))";
     assert_eq!(compile_and_run_simple(src), 0);
 }
 
 #[test]
-#[ignore = "default method codegen: Ord.>=$Int not compiled in batch pipeline"]
 fn default_method_ge_int() {
     let src = "(defn main [] (if (>= 5 3) 1 0))";
     assert_eq!(compile_and_run_simple(src), 1);
 }
 
 #[test]
-#[ignore = "default method codegen: Ord.>=$Int not compiled in batch pipeline"]
 fn default_method_ge_int_equal() {
     let src = "(defn main [] (if (>= 5 5) 1 0))";
     assert_eq!(compile_and_run_simple(src), 1);
 }
 
 #[test]
-#[ignore = "default method codegen: Ord.>=$Int not compiled in batch pipeline"]
 fn default_method_ge_int_false() {
     let src = "(defn main [] (if (>= 3 5) 1 0))";
     assert_eq!(compile_and_run_simple(src), 0);
@@ -296,14 +285,12 @@ fn default_method_ge_int_false() {
 
 // != requires reader support for ! as operator char.
 #[test]
-#[ignore = "reader: ! not in operator_char set, cannot parse !="]
 fn default_method_neq_int() {
     let src = "(defn main [] (if (!= 3 5) 1 0))";
     assert_eq!(compile_and_run_simple(src), 1);
 }
 
 #[test]
-#[ignore = "reader: ! not in operator_char set, cannot parse !="]
 fn default_method_neq_int_equal() {
     let src = "(defn main [] (if (!= 5 5) 1 0))";
     assert_eq!(compile_and_run_simple(src), 0);
@@ -353,7 +340,6 @@ fn fn_factorial_with_operators() {
 // Functions where operators only act on type-variable params are constrained.
 // These need monomorphisation which isn't fully wired.
 #[test]
-#[ignore = "constrained poly: fib is constrained (uses =,+,- on type-var params)"]
 fn constrained_fn_fibonacci() {
     let src = "
         (defn fib [n]
@@ -366,7 +352,6 @@ fn constrained_fn_fibonacci() {
 }
 
 #[test]
-#[ignore = "constrained poly: clamp is constrained (< on type-var params)"]
 fn constrained_fn_clamp() {
     let src = "
         (defn clamp [x lo hi]
@@ -377,7 +362,6 @@ fn constrained_fn_clamp() {
 }
 
 #[test]
-#[ignore = "constrained poly: clamp is constrained"]
 fn constrained_fn_clamp_low() {
     let src = "
         (defn clamp [x lo hi]
@@ -388,7 +372,6 @@ fn constrained_fn_clamp_low() {
 }
 
 #[test]
-#[ignore = "constrained poly: clamp is constrained"]
 fn constrained_fn_clamp_high() {
     let src = "
         (defn clamp [x lo hi]
@@ -400,7 +383,6 @@ fn constrained_fn_clamp_high() {
 
 // Truly constrained functions (params remain polymorphic) need monomorphisation.
 #[test]
-#[ignore = "constrained poly: mono specialization has empty method_resolutions"]
 fn constrained_add_int() {
     let src = "
         (defn add [x y] (+ x y))
@@ -410,7 +392,6 @@ fn constrained_add_int() {
 }
 
 #[test]
-#[ignore = "constrained poly: mono specialization has empty method_resolutions"]
 fn constrained_add_float() {
     let src = "
         (defn add [x y] (+ x y))
@@ -423,7 +404,6 @@ fn constrained_add_float() {
 }
 
 #[test]
-#[ignore = "constrained poly: mono specialization has empty method_resolutions"]
 fn constrained_add_both_types() {
     let src = "
         (defn add [x y] (+ x y))
@@ -433,7 +413,6 @@ fn constrained_add_both_types() {
 }
 
 #[test]
-#[ignore = "constrained poly: mono specialization has empty method_resolutions"]
 fn constrained_multiply() {
     let src = "
         (defn square [x] (* x x))
@@ -443,7 +422,6 @@ fn constrained_multiply() {
 }
 
 #[test]
-#[ignore = "constrained poly: mono specialization has empty method_resolutions"]
 fn constrained_subtract() {
     let src = "
         (defn diff [x y] (- x y))
@@ -453,7 +431,6 @@ fn constrained_subtract() {
 }
 
 #[test]
-#[ignore = "constrained poly: mono specialization has empty method_resolutions"]
 fn constrained_comparison() {
     let src = "
         (defn less-than [x y] (< x y))
@@ -463,7 +440,6 @@ fn constrained_comparison() {
 }
 
 #[test]
-#[ignore = "constrained poly: mono specialization has empty method_resolutions"]
 fn constrained_equality() {
     let src = "
         (defn is-equal [x y] (= x y))
@@ -473,7 +449,6 @@ fn constrained_equality() {
 }
 
 #[test]
-#[ignore = "constrained poly: mono specialization has empty method_resolutions"]
 fn constrained_multi_op() {
     let src = "
         (defn compute [x y] (+ (* x x) (* y y)))
@@ -483,7 +458,6 @@ fn constrained_multi_op() {
 }
 
 #[test]
-#[ignore = "constrained poly: mono specialization has empty method_resolutions"]
 fn constrained_never_called_ok() {
     // A constrained function that is never called should not error.
     let src = "
@@ -494,7 +468,6 @@ fn constrained_never_called_ok() {
 }
 
 #[test]
-#[ignore = "constrained poly: mono specialization has empty method_resolutions"]
 fn constrained_with_let() {
     let src = "
         (defn double [x] (+ x x))
@@ -504,7 +477,6 @@ fn constrained_with_let() {
 }
 
 #[test]
-#[ignore = "constrained poly: mono specialization has empty method_resolutions"]
 fn constrained_with_if() {
     let src = "
         (defn abs-diff [x y]
@@ -671,7 +643,6 @@ fn regression_named_and_trait_ops_in_same_program() {
 // =============================================================================
 
 #[test]
-#[ignore = "user trait: impl methods not compiled under mangled name in batch pipeline"]
 fn user_trait_simple() {
     let src = "
         (deftrait (Sizeable a)
@@ -684,7 +655,6 @@ fn user_trait_simple() {
 }
 
 #[test]
-#[ignore = "user trait: impl methods not compiled under mangled name in batch pipeline"]
 fn user_trait_adt() {
     let src = "
         (deftrait (Sizeable a)
@@ -698,7 +668,6 @@ fn user_trait_adt() {
 }
 
 #[test]
-#[ignore = "user trait: impl methods not compiled under mangled name in batch pipeline"]
 fn user_trait_multiple_impls() {
     let src = "
         (deftrait (Sizeable a)
@@ -831,28 +800,24 @@ fn repl_trait_arithmetic_chained() {
 
 // REPL: Default methods (same issues as batch)
 #[test]
-#[ignore = "default method codegen: not wired in REPL pipeline"]
 fn repl_trait_neq_default() {
     let mut session = repl_session();
     assert_eq!(repl_eval(&mut session, "(if (!= 3 5) 1 0)"), 1);
 }
 
 #[test]
-#[ignore = "default method codegen: not wired in REPL pipeline"]
 fn repl_trait_ge_default() {
     let mut session = repl_session();
     assert_eq!(repl_eval(&mut session, "(if (>= 5 3) 1 0)"), 1);
 }
 
 #[test]
-#[ignore = "default method codegen: not wired in REPL pipeline"]
 fn repl_trait_le_default() {
     let mut session = repl_session();
     assert_eq!(repl_eval(&mut session, "(if (<= 3 5) 1 0)"), 1);
 }
 
 #[test]
-#[ignore = "default method codegen: not wired in REPL pipeline"]
 fn repl_trait_gt_default() {
     let mut session = repl_session();
     assert_eq!(repl_eval(&mut session, "(if (> 5 3) 1 0)"), 1);
@@ -863,7 +828,6 @@ fn repl_trait_gt_default() {
 // =============================================================================
 
 #[test]
-#[ignore = "constrained poly: mono specialization not wired in REPL"]
 fn repl_constrained_fn_int() {
     let mut session = repl_session();
     repl_eval(&mut session, "(defn add [x y] (+ x y))");
@@ -871,7 +835,6 @@ fn repl_constrained_fn_int() {
 }
 
 #[test]
-#[ignore = "constrained poly: mono specialization not wired in REPL"]
 fn repl_constrained_fn_float() {
     let mut session = repl_session();
     repl_eval(&mut session, "(defn add [x y] (+ x y))");
@@ -886,7 +849,6 @@ fn repl_constrained_fn_float() {
 // =============================================================================
 
 #[test]
-#[ignore = "user trait: impl methods not compiled under mangled name in REPL"]
 fn repl_user_trait() {
     let mut session = repl_session();
     repl_eval(
@@ -923,7 +885,6 @@ fn repl_defn_eq_returns_bool() {
 }
 
 #[test]
-#[ignore = "constrained poly: defn using operators with polymorphic params"]
 fn repl_defn_using_comparison_chain() {
     let mut session = repl_session();
     repl_eval(
@@ -1017,19 +978,16 @@ fn dual_mode_sum_to_with_operators() {
 
 // Dual mode for default methods
 #[test]
-#[ignore = "default method codegen: not wired in pipeline"]
 fn dual_mode_default_neq() {
     compile_both("(defn main [] (if (!= 3 5) 1 0))", 1);
 }
 
 #[test]
-#[ignore = "default method codegen: not wired in pipeline"]
 fn dual_mode_default_le() {
     compile_both("(defn main [] (if (<= 3 5) 1 0))", 1);
 }
 
 #[test]
-#[ignore = "default method codegen: not wired in pipeline"]
 fn dual_mode_default_ge() {
     compile_both("(defn main [] (if (>= 5 3) 1 0))", 1);
 }

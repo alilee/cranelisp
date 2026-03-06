@@ -576,7 +576,7 @@ The current `interfaces.md` design registers operators as single `ModuleEntry::D
 
 When registering the resolution in `method_resolutions`, record `ResolvedCall::BuiltinFn { name: Symbol::from("+") }`. The backend uses the resolved operand type (from `expr_types`) to choose between `iadd` and `fadd`.
 
-<!-- FIXME(/typecheck): Specify exactly which expr_types entries the backend should consult to determine Int vs Float for a BuiltinFn resolution. The backend plan (Section 4.6) says "the resolved operand type from expr_types" without specifying which span key to use. Recommend: the backend looks up the first argument's type in expr_types using the argument expression's Span. Document this protocol so both plans agree. -->
+**Resolved (Sprint 5)**: This FIXME is moot. Ring 2 trait dispatch replaced the Ring 0 `BuiltinFn` approach for operators. Operators like `+` now resolve to `ResolvedCall::TraitMethod { mangled_name: "Num.+$Int", impl_type: "Int", ... }`, which carries the concrete type directly. The backend dispatches on `mangled_name`/`impl_type` — no `expr_types` lookup needed for operator type discrimination. `BuiltinFn` remains only for monomorphic named primitives (e.g., `add-i64`, `str-concat`) where there is no type ambiguity.
 
 ### 8.2 Exhaustiveness Checking Return Type
 

@@ -124,7 +124,7 @@ fn is_symbol_char(b: u8) -> bool {
 }
 
 fn is_operator_char(b: u8) -> bool {
-    matches!(b, b'+' | b'-' | b'*' | b'/' | b'=' | b'<' | b'>')
+    matches!(b, b'+' | b'-' | b'*' | b'/' | b'=' | b'<' | b'>' | b'!')
 }
 
 fn is_digit(b: u8) -> bool {
@@ -965,6 +965,16 @@ mod tests {
     #[test]
     fn test_parse_operator_thread_last() {
         assert_symbol(&parse_one("->>"), "->>");
+    }
+
+    #[test]
+    fn test_parse_operator_not_equal() {
+        assert_symbol(&parse_one("!="), "!=");
+    }
+
+    #[test]
+    fn test_parse_operator_bang_alone() {
+        assert_symbol(&parse_one("!"), "!");
     }
 
     // -- Qualified symbols --

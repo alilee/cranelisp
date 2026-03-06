@@ -1,13 +1,17 @@
-;; 15-traits.cl -- Trait-based operator dispatch
+;; 15-traits.cl -- Trait-based operator dispatch and constrained polymorphism
 ;;
 ;; Cranelisp has three core traits built into the language:
 ;;   Num  -- arithmetic operators: + - * /
-;;   Eq   -- equality operator: =
-;;   Ord  -- ordering operator: <
+;;   Eq   -- equality operator: =  (default method: !=)
+;;   Ord  -- ordering operator: <  (default methods: > <= >=)
 ;;
 ;; These traits are implemented for Int and Float (Eq also for Bool
 ;; and String). The operators dispatch to the correct implementation
 ;; based on the types of their arguments.
+;;
+;; Functions that use trait operators become constrained polymorphic:
+;; (defn double [x] (+ x x)) works on any Num type. The compiler
+;; monomorphises such functions at each call site.
 ;;
 ;; Prior examples used monomorphic named primitives like add-i64
 ;; and eq-i64. Trait operators replace those with polymorphic
@@ -105,6 +109,68 @@
 (defn test-adt-ops []
   (distance-sq (Point 3 4)))                          ;; -> 25
 
+;; --- Constrained polymorphic functions ---
+
+;; A function using a trait operator becomes constrained polymorphic:
+;; its type contains a trait bound. The compiler monomorphises it at
+;; each call site, generating specialised code for the concrete type.
+;;
+;; In the REPL:
+;;   > (defn double [x] (+ x x))
+;;   :(Fn [:Num a a] a) user/double
+;;   > (double 21)
+;;   :primitives/Int 42
+;;   > (double 2.5)
+;;   :primitives/Float 5.0
+
+;; double: (+ x x) constrains x to Num
+(defn double [x] (+ x x))
+
+;; Called at Int — the compiler generates double$Int
+(defn test-double-int [] (double 21))                 ;; -> 42
+
+;; square: (* x x) also constrains x to Num
+(defn square [x] (* x x))
+
+;; Called at Int — the compiler generates square$Int
+(defn test-square-int [] (square 7))                  ;; -> 49
+
+;; Constrained functions compose: sum-of-squares uses both + and *
+(defn sum-of-sq [x y] (+ (square x) (square y)))
+
+(defn test-sum-of-sq [] (sum-of-sq 3 4))              ;; -> 25
+
+;; --- Default methods ---
+
+;; The Ord trait provides default methods derived from <:
+;;   >  is (< b a)
+;;   <= is (not (< b a))
+;;   >= is (not (< a b))
+;; These work without explicit implementation.
+
+(defn test-gt []
+  (if (> 5 3) 1 0))                                  ;; -> 1
+
+(defn test-lte-equal []
+  (if (<= 3 3) 1 0))                                 ;; -> 1
+
+(defn test-lte-less []
+  (if (<= 2 3) 1 0))                                 ;; -> 1
+
+(defn test-gte-equal []
+  (if (>= 5 5) 1 0))                                 ;; -> 1
+
+(defn test-gte-false []
+  (if (>= 4 5) 1 0))                                 ;; -> 0
+
+;; The Eq trait provides a default != (not equal) derived from =.
+
+(defn test-neq-true []
+  (if (!= 1 2) 1 0))                                 ;; -> 1
+
+(defn test-neq-false []
+  (if (!= 3 3) 1 0))                                 ;; -> 0
+
 ;; --- Named primitives still work ---
 
 ;; The transition is accretive: add-i64, mul-i64, etc. remain available
@@ -114,7 +180,8 @@
 
 ;; --- Sum all results ---
 
-;; Expected: 7+7+42+5+30 + 1+1 + 1+1+1+1+0 + 1+1+0 + 1+1 + 42+25+25 = 193
+;; Expected: 7+7+42+5+30 + 1+1 + 1+1+1+1+0 + 1+1+0 + 1+1 + 42+25+25
+;;         + 42+49+25 + 1+1+1+1+0 + 1+0 = 314
 (defn main []
   (add-i64 (test-plus-int)
     (add-i64 (test-minus-int)
@@ -135,4 +202,14 @@
                                   (add-i64 (test-sum-to)
                                     (add-i64 (test-closure-op)
                                       (add-i64 (test-adt-ops)
-                                               (test-named-prim)))))))))))))))))))))
+                                        (add-i64 (test-named-prim)
+                                          (add-i64 (test-double-int)
+                                            (add-i64 (test-square-int)
+                                              (add-i64 (test-sum-of-sq)
+                                                (add-i64 (test-gt)
+                                                  (add-i64 (test-lte-equal)
+                                                    (add-i64 (test-lte-less)
+                                                      (add-i64 (test-gte-equal)
+                                                        (add-i64 (test-gte-false)
+                                                          (add-i64 (test-neq-true)
+                                                            (test-neq-false)))))))))))))))))))))))))))))))

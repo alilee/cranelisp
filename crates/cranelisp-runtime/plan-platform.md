@@ -239,8 +239,7 @@ All values are i64 at the ABI boundary:
 
 1. **`runtime_panic`** (JIT: `runtime/panic`) -- The panic handler is needed from Ring 0 for match exhaustiveness failures. However, it must be redesigned (see Section 3). The Ring 0 version takes a message string pointer and panics -- but instead of `process::exit(1)`, it should `panic!()` or use a recoverable mechanism.
 
-<!-- FIXME(/platform): Operator wrappers may not be needed in Ring 0. The backend plan (Section 4.8) says Ring 0 does not support function values ("function values require closures -- not yet supported"). If operators-as-values like (let [f +] (f 1 2)) are not Ring 0, defer the 18 operator wrappers to Ring 1 when closures enable first-class function values. If they ARE Ring 0, the backend plan needs updating to support this pattern. -->
-2. **Operator wrappers** -- When operators are used as first-class values (e.g., `(let [f +] (f 1 2))`), the backend emits a call to an extern function. Ring 0 needs the 18 operator wrappers (9 int, 9 float) from `primitives/int.rs` and `primitives/float.rs`.
+2. **Operator wrappers** -- Deferred to Ring 1. Operators-as-values (e.g., `(let [f +] (f 1 2))`) require closures to wrap bare function pointers. Since closures are Ring 1 and Ring 0 emits all operators as inline Cranelift IR (`iadd`, `icmp`, etc.), the 18 operator wrappers are not needed until Ring 1. In Ring 0, using an operator in a non-call position is a type error. See `design/arch/ring0-interfaces.md` §9 "Operator wrappers → deferred to Ring 1".
 
 3. **Allocation stub** -- `heap_alloc` (JIT: `runtime/alloc`) as a stub that panics ("heap not available in Ring 0") if called. This prevents accidental heap allocation in Ring 0 while allowing the symbol to be declared in the JIT.
 
@@ -395,8 +394,8 @@ match result {
 - **Operator overflow**: The spec says "integer overflow: silent wraparound (two's complement)". The prototype's checked arithmetic with `process::exit` on overflow contradicts the spec. The reimplementation should follow the spec: wrapping arithmetic for `+`, `-`, `*`, and a structured error for division by zero.
 
 **Ring-by-ring rollout**:
-<!-- FIXME(/platform): Commit to a specific panic recovery mechanism for Ring 0 before implementation begins. The current text leaves the deeply-nested case unresolved (panic!() vs longjmp vs thread-local flag). For Ring 0 (no nested JIT->Rust->JIT calls, no closures calling runtime functions), panic!() + catch_unwind is sound. State this explicitly and add a forward-reference that Ring 1+ (closures, callbacks) requires the thread-local error flag approach. -->
-- **Ring 0**: `runtime_panic` uses Rust `panic!()`. Binary crate uses `catch_unwind`. Operator wrappers use wrapping arithmetic per spec (no panic on overflow). Division by zero returns a `CranelispError`.
+- **Ring 0**: `runtime_panic` uses Rust `panic!()`. Binary crate uses `catch_unwind`. This is sound for Ring 0 because there are no nested JIT->Rust->JIT call chains -- JIT code calls `runtime_panic` directly, and the panic unwinds through Rust frames only back to the `catch_unwind` boundary. Operator wrappers use wrapping arithmetic per spec (no panic on overflow). Division by zero returns a `CranelispError`.
+  - **Forward reference (Ring 1+)**: Once closures enable callbacks (Ring 1) and higher-order runtime functions like `vec-map` create JIT->Rust->JIT call chains, `panic!()` may unwind through foreign JIT frames. At that point, adopt a thread-local error flag approach: `runtime_panic` sets a `thread_local! { RUNTIME_ERROR: Cell<Option<String>> }` flag and returns a sentinel value; the `catch_unwind` boundary checks the flag after each top-level JIT call. This avoids unwinding through JIT frames entirely.
 - **Ring 1**: Vec bounds errors use the same mechanism. RC underflow check remains `debug_assert!` only.
 - **Ring 4**: IO trampoline errors propagate through the continuation stack.
 
@@ -536,8 +535,8 @@ Where `<ext>` is `.dylib` (macOS), `.so` (Linux), `.dll` (Windows).
 
 | Ring | cranelisp-platform | cranelisp-runtime | platforms/ |
 |---|---|---|---|
-| 0 | Stub (exists) | `runtime_panic` (JIT: `runtime/panic`, redesigned), 18 operator wrappers, `heap_alloc` stub (JIT: `runtime/alloc`) | -- |
-| 1 | Full C-ABI contract, safe wrappers, `declare_platform!` macro | `heap_alloc`/`heap_dealloc` (JIT: `runtime/alloc`/`runtime/dealloc`), RC infrastructure, string primitives, vec primitives | -- |
+| 0 | Stub (exists) | `runtime_panic` (JIT: `runtime/panic`, redesigned via `panic!()` + `catch_unwind`), `heap_alloc` stub (JIT: `runtime/alloc`) | -- |
+| 1 | Full C-ABI contract, safe wrappers, `declare_platform!` macro | `heap_alloc`/`heap_dealloc` (JIT: `runtime/alloc`/`runtime/dealloc`), RC infrastructure, string primitives, vec primitives, 18 operator wrappers (deferred from Ring 0), thread-local error flag for nested JIT->Rust->JIT panic recovery | -- |
 | 2 | -- (finalized) | -- (stable) | `platforms/stdio/` |
 | 3 | -- | `sconcat`, `quote-sexp`, marshal helpers | -- |
 | 4 | -- | IO trampoline, IVar, `par_eval`, trace runtime | `platforms/test-capture/` |

@@ -210,11 +210,20 @@ fn compile_mono_defns(
         let mut merged = check.method_resolutions.clone();
         merged.extend(mono.resolutions.clone());
 
+        // I5 fix: Use the per-mono expr_types subset instead of cloning the
+        // full program expr_types map. Falls back to the full map if the
+        // per-mono subset is empty (before /typecheck populates it).
+        let expr_types = if mono.expr_types.is_empty() {
+            check.expr_types.clone()
+        } else {
+            mono.expr_types.clone()
+        };
+
         let mono_check = CheckResult {
             method_resolutions: merged,
             constrained_fn_names: check.constrained_fn_names.clone(),
             mono_defns: Vec::new(),
-            expr_types: check.expr_types.clone(),
+            expr_types,
             default_method_defns: Vec::new(),
             warnings: Vec::new(),
             type_defs: check.type_defs.clone(),

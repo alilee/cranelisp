@@ -161,13 +161,38 @@ impl TypeChecker {
 
     /// Generalize a type relative to the current environment,
     /// propagating any active constraints on the quantified variables.
+    ///
+    /// Constraints are resolved through the substitution: if a constraint
+    /// was recorded on var X, and X is unified with var Y (the scheme var),
+    /// the constraint attaches to Y. This handles the case where
+    /// `instantiate_constrained` records a constraint on a fresh var that
+    /// gets unified with a different var during type checking.
     pub(crate) fn generalize(&self, ty: &Type) -> Scheme {
         let env_fv = self.env.free_vars_in_env();
         let mut scheme = scheme::generalize(&self.subst, ty, &env_fv);
 
-        // Propagate constraints from active_constraints to the scheme
-        let constraints =
-            self.active_constraints.collect_for_vars(&scheme.vars);
+        // Build a set of scheme vars for fast lookup
+        let scheme_var_set: std::collections::HashSet<TypeId> =
+            scheme.vars.iter().copied().collect();
+
+        // Propagate constraints from active_constraints to the scheme,
+        // resolving through the substitution.
+        let mut constraints: std::collections::HashMap<TypeId, Vec<_>> =
+            std::collections::HashMap::new();
+
+        for (constrained_var, traits) in self.active_constraints.all() {
+            // Resolve the constrained var through the substitution
+            let resolved = apply(&self.subst, &Type::Var(*constrained_var));
+            if let Type::Var(resolved_id) = resolved {
+                if scheme_var_set.contains(&resolved_id) {
+                    constraints
+                        .entry(resolved_id)
+                        .or_default()
+                        .extend(traits.iter().cloned());
+                }
+            }
+        }
+
         if !constraints.is_empty() {
             scheme.constraints = constraints;
         }

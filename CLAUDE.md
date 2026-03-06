@@ -85,11 +85,9 @@ See `sprints/reimplementation.md` for the full strategy:
 - **Sprint coordination**: `/sprint` decomposes rings into delivery increments; `sprints/ROADMAP.md` tracks progress, `sprints/SPRINT.md` contains the current sprint plan. All skills participate in every sprint — later-stage skills do planning and validation work until their implementation phase begins.
 - **Architectural authority**: `/arch` is the final arbiter of design decisions that cross crate or skill boundaries. See `design/arch/CLAUDE.md` for the principles that guide these decisions.
 
-## Usability Register
+## Usability Findings
 
-`/qa` maintains a **usability register** (`tests/plan/usability.md`) — the structured destination for findings from user-proxy skills. When `/stdlib`, `/examples`, `/docs`, `/port`, `/repl`, or `/platform` encounter corner cases, unhelpful errors, inference friction, missing APIs, or ergonomic issues, they file findings to the usability register rather than routing ad-hoc to individual compiler skills. `/qa` triages findings and routes them to the responsible skill.
-
-Blocking usability findings are part of the ring gate — a ring cannot advance with open blocking findings. See `tests/plan/strategy.md` §"Usability Register" for the full process.
+When user-proxy skills (`/stdlib`, `/examples`, `/docs`, `/port`, `/repl`, `/platform`) encounter corner cases, unhelpful errors, inference friction, missing APIs, or ergonomic issues, they file a `FIXME(/skill-name)` comment on the relevant spec, design, or plan document — the same cross-skill protocol described below. This keeps findings in context, discoverable by grep, and owned by the skill that can fix them.
 
 ## Cross-Skill Changes
 

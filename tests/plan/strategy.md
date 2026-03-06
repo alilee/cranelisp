@@ -209,61 +209,12 @@ Skill          /qa Demands                       /qa Provides Back
    - RC balance: all allocation tracking clean (yes/no)
    - Parity: batch and REPL agree on all tests (yes/no)
    - Runtime assertions: no debug_assert! fires during any test run (yes/no)
-   - Usability: no blocking usability findings open (yes/no)
+   - Usability: no blocking `FIXME` findings from user-proxy skills open (yes/no)
    - Regressions: any prior-ring tests broken (yes/no)
 
 4. **Feedback to /spec**: When a test reveals ambiguous behavior, `/qa` reports to `/spec` with the test source, expected behavior, and actual behavior.
 
-5. **Usability feedback**: User-proxy skills (`/stdlib`, `/examples`, `/docs`, `/port`, `/repl`, `/platform`) file usability findings to `/qa`'s usability register (see below).
-
----
-
-## Usability Register
-
-`/qa` maintains a usability register — a structured assembly point for findings from user-proxy skills. These skills exercise the language from different perspectives (library author, learner, documentation writer, application developer, interactive user, extension author) and encounter friction that automated tests don't catch.
-
-### What Gets Registered
-
-- Corner cases where language behavior is surprising or unintuitive
-- Unhelpful or misleading error messages
-- Type inference that requires too many annotations
-- Missing stdlib functions that real code needs
-- Macro system limitations encountered in practice
-- REPL experience gaps (discoverability, feedback, performance)
-- Module system friction (import patterns, visibility surprises)
-- Performance problems at realistic scale
-- Platform/FFI ergonomic issues
-
-### Who Contributes
-
-| Skill | Perspective | Typical Findings |
-|---|---|---|
-| `/stdlib` | Library author | Missing primitives, awkward trait APIs, naming surprises |
-| `/examples` | Learner | Confusing errors, non-obvious syntax, missing affordances |
-| `/docs` | New user advocate | Learning curve gaps, terminology inconsistencies |
-| `/port` | Application developer | Scale issues, module friction, stdlib gaps, IO model limits |
-| `/repl` | Interactive user | Discoverability gaps, feedback quality, latency |
-| `/platform` | Extension author | C-ABI awkwardness, marshalling pain, IO model leaks |
-
-### Filing Format
-
-Each finding includes:
-- **Source skill**: which skill encountered it
-- **Category**: error quality / inference friction / missing API / performance / ergonomics / other
-- **Severity**: blocking (must fix before ring advance) / important (should fix) / deferred (nice to have)
-- **Description**: what happened, what was expected, what would be better
-- **Responsible skill**: which compiler skill should address it (if known)
-
-### Ring Gate Integration
-
-The ring gate checklist (§"Communication Protocol" item 3) includes:
-- **Usability**: no blocking usability findings open (yes/no)
-
-A ring cannot advance if any blocking usability finding remains unresolved.
-
-### Location
-
-Usability findings are tracked in `tests/plan/usability.md`. Each ring's section accumulates findings as user-proxy skills report them. Resolved findings are marked with the ring and commit that addressed them.
+5. **Usability feedback**: User-proxy skills (`/stdlib`, `/examples`, `/docs`, `/port`, `/repl`, `/platform`) file usability findings as `FIXME(/skill-name)` comments on the relevant spec or design doc — the same cross-skill FIXME protocol used by all skills.
 
 ---
 

@@ -30,6 +30,15 @@ AST in, typed environment out. You implement Algorithm W (Hindley-Milner type in
 5. Implement core inference first: literals, variables, let, if, apply, lambda
 6. Build up: ADTs + pattern matching → traits + method resolution → constrained polymorphism
 
+## Release Gate
+
+Before considering any task complete, you MUST verify:
+1. `cargo build` succeeds with no errors
+2. `cargo test` passes with no new failures (pre-existing ignored tests are acceptable)
+3. `cargo clippy` produces no new warnings in your owned files
+
+Do not hand off to `/sprint` or `/review` with a broken build. If your changes cause failures in another crate, fix the issue or coordinate with the owning skill before completing.
+
 ## Workflow (ring by ring)
 
 - **Ring 0**: Core inference — Int, Bool, Float, simple Fn, let-polymorphism

@@ -35,6 +35,15 @@ Typed AST in, executable code out. You translate typed AST to Cranelift IR, mana
    - Document the GOT (global offset table) layout for cross-module calls
 5. Implement basic codegen for core types first (Int, Bool, no heap)
 
+## Release Gate
+
+Before considering any task complete, you MUST verify:
+1. `cargo build` succeeds with no errors
+2. `cargo test` passes with no new failures (pre-existing ignored tests are acceptable)
+3. `cargo clippy` produces no new warnings in your owned files
+
+Do not hand off to `/sprint` or `/review` with a broken build. If your changes cause failures in another crate, fix the issue or coordinate with the owning skill before completing.
+
 ## Workflow (ring by ring)
 
 - **Ring 0**: Expression codegen for Int, Bool, Float. No heap, no RC.

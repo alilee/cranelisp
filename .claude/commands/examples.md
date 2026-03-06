@@ -47,12 +47,7 @@ Proposed sequence (to be finalized in `examples/CLAUDE.md`):
 
 - User-proxy skill: exercise the language from a programmer's perspective
 - Engage progressively: Ring 0 examples first, then Ring 1, etc.
-- File usability findings to `/qa`'s **usability register** (`tests/plan/usability.md`):
-  - Error messages confusing or mentioning internal names
-  - REPL feedback unhelpful for learners
-  - Language constructs awkward in practice
-  - Non-obvious syntax or missing affordances
-  - Each finding needs: category, severity (blocking/important/deferred), description
+- File usability findings as `FIXME(/skill-name)` comments on the relevant spec or design doc. Typical issues: confusing error messages, unhelpful REPL feedback, awkward language constructs, non-obvious syntax.
 
 ## First Steps (Phase B)
 

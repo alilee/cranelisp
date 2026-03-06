@@ -15,7 +15,7 @@ This role is distinct from `/qa` (which owns REPL *implementation* — the code 
 Every sprint, `/repl` MUST audit the REPL output against `repl/spec.md`. When the implementation does not conform:
 
 1. **Spec gap** (spec doesn't specify this behavior clearly): Elaborate the spec in `repl/spec.md` with the expected behavior and ring tag. Then file a `FIXME(/repl)` in `design/arch/roadmap.md` noting the new requirement.
-2. **Implementation defect** (spec is clear, implementation doesn't conform): File a `FIXME(/qa)` in `tests/plan/ring{N}.md` or `tests/plan/usability.md` describing the non-conformance. This creates a task for `/qa` to write a failing test and fix the implementation.
+2. **Implementation defect** (spec is clear, implementation doesn't conform): File a `FIXME(/qa)` in `tests/plan/ring{N}.md` describing the non-conformance. This creates a task for `/qa` to write a failing test and fix the implementation.
 3. **Test gap** (spec is clear, no test covers it): File a `FIXME(/qa)` in the relevant ring test plan noting the missing test coverage.
 
 The spec is the source of truth. If the spec says `:(Fn [Int] Int) user/double` and the REPL shows `:(Fn [Int] Int) <closure>`, that's a defect — not a spec change.
@@ -69,13 +69,12 @@ The spec is the source of truth. If the spec says `:(Fn [Int] Int) user/double` 
 
 - User-proxy skill: exercises the REPL from a developer's perspective
 - Consumes the REPL implementation from `/qa` (which owns `src/repl/`)
-- File usability findings to `/qa`'s **usability register** (`tests/plan/usability.md`):
+- File usability findings as `FIXME(/skill-name)` comments on the relevant spec or design doc:
   - Discoverability gaps (new users can't find what's available)
   - Feedback quality issues (opaque errors, missing type display, unhelpful responses)
   - Performance problems (startup, evaluation, module load latency)
   - Reader or expansion surprises at the prompt
   - Pipeline structure that prevents a REPL experience goal
-  - Each finding needs: category, severity (blocking/important/deferred), description
 - Report REPL *implementation* bugs directly to `/qa` (which owns `src/repl/`)
 - Coordinates with `/docs` to ensure tutorial examples work as expected at the REPL
 
@@ -99,9 +98,9 @@ The spec is the source of truth. If the spec says `:(Fn [Int] Int) user/double` 
 
 ### Every Sprint
 
-1. **Compliance audit**: Run the REPL. Compare actual output against `repl/spec.md` for every ring ≤ current. File FIXMEs for non-conformance (see §"Compliance Watchdog" above).
+1. **Compliance audit**: Run **every** showcase demo via `DEMO_FAST=1 ./repl/showcase <name>` and **read the captured output line by line**. For each output line, compare the actual format against `repl/spec.md` for the relevant section (§1.2 for expression results, §1.3 for definitions, §1.4 for types, §1.5 for values, §2.1 for prompt, etc.). File FIXMEs for every non-conformance (see §"Compliance Watchdog" above). Do not skip this step or assume demos work because they were written — the showcase shows the real REPL output, including bugs.
 2. **Spec elaboration**: If a user interaction isn't covered by the spec, add it. If a spec requirement is vague, tighten it. The spec must be precise enough that non-conformance is binary — either the output matches or it doesn't.
-3. **Demo validation**: Run showcase demos. Verify the output matches what users would actually see. If the demo shows output that doesn't match the live REPL, fix the demo.
+3. **Demo validation**: After reading the captured output, verify each demo tells a coherent story. If the output contains errors, nonsense values (e.g., `:Bool false` for a trait declaration), or missing information (e.g., no constraints on a constrained function), fix the demo or file a FIXME — do not ship a demo that demonstrates bugs as features.
 
 ### Ring by Ring
 

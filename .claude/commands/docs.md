@@ -14,13 +14,7 @@ Validate the learning path. Ensure concepts build logically for new users. Maint
 
 - User-proxy skill: you represent new users discovering the language
 - Begin work once Ring 0 is stable (can draft getting-started content immediately)
-- File usability findings to `/qa`'s **usability register** (`tests/plan/usability.md`):
-  - Learning curve gaps (prerequisite concept not introduced)
-  - Terminology inconsistencies between spec and user-facing docs
-  - Error messages unhelpful for beginners
-  - REPL output that doesn't help users understand what they typed
-  - Documentation that can't be written because language behavior is unclear
-  - Each finding needs: category, severity (blocking/important/deferred), description
+- File usability findings as `FIXME(/skill-name)` comments on the relevant spec or design doc (e.g., `spec/`, `repl/spec.md`). Typical issues: learning curve gaps, terminology inconsistencies, unhelpful error messages, REPL output that doesn't aid understanding.
 
 ## First Steps (Phase B)
 

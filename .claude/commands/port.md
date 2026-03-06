@@ -37,14 +37,7 @@ Candidate categories (to be decided with user input):
 
 - User-proxy skill: exercises the language from an application developer's perspective
 - Begin work once Ring 3 is stable (needs macros, stdlib, modules) — fully active at Ring 4 (needs IO)
-- File usability findings to `/qa`'s **usability register** (`tests/plan/usability.md`):
-  - Missing stdlib functions, awkward APIs, naming surprises
-  - Type inference requiring too many annotations, surprising inference failures
-  - Macro limitations encountered in real code
-  - Performance issues at application scale
-  - Platform API gaps, IO model friction
-  - REPL workflow issues during development
-  - Module boundary or import patterns that create friction
+- File usability findings as `FIXME(/skill-name)` comments on the relevant spec or design doc. Typical issues: missing stdlib functions, inference friction, macro limitations, performance at scale, platform API gaps, module boundary friction.
   - Each finding needs: category, severity (blocking/important/deferred), description
 - Coordinates with `/docs` to ensure the exemplar is documented as a learning resource
 

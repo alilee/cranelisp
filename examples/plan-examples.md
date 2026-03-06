@@ -885,6 +885,6 @@ examples/
 ## Next skills
 
 - `/docs` -- Getting-started tutorial can reference examples 09-13 for Ring 1 content; update tutorial sections 14-18, 21
-- `/qa` -- Ring 1 integration tests are passing; usability register may receive findings from Ring 1 example validation
+- `/qa` -- Ring 1 integration tests are passing; file FIXMEs on relevant docs for any Ring 1 example findings
 - `/repl` -- REPL experience tests for Ring 1 heap type display (strings, ADTs, closures)
 - `/review` -- Ring gate review can confirm examples 09-13 exercise all Ring 1 acceptance criteria

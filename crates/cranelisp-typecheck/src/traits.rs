@@ -3,12 +3,12 @@
 //! Ring 2A: traits provide constrained polymorphism. Operators like `+` are
 //! resolved as trait methods (`Num.+$Int`), not builtin primitives.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use cranelisp_types::{
-    ConstrainedFn, CranelispError, Defn, JitSymbol, MonoDefn, ResolvedCall, Scheme,
-    Span, Symbol, TraitDecl, TraitImpl, TraitMethodSig, TraitName, Type,
-    TypeId, TypeName, Visibility, apply,
+    ConstrainedFn, CranelispError, DefKind, Defn, JitSymbol, ModuleEntry, MonoDefn,
+    ResolvedCall, Scheme, Span, Symbol, TraitDecl, TraitImpl, TraitMethodSig,
+    TraitName, Type, TypeId, TypeName, Visibility, apply,
 };
 
 use crate::checker::TypeChecker;
@@ -100,8 +100,16 @@ impl ActiveConstraints {
         self.constraints.clear();
     }
 
+    /// Iterate over all (var_id, traits) pairs.
+    pub fn all(&self) -> impl Iterator<Item = (&TypeId, &Vec<TraitName>)> {
+        self.constraints.iter()
+    }
+
     /// Collect constraints for a set of type variable IDs.
     /// Returns a constraints map suitable for Scheme.constraints.
+    /// Note: does NOT follow the substitution — use `TypeChecker::generalize`
+    /// for correct constraint propagation through unified vars.
+    #[allow(dead_code)]
     pub fn collect_for_vars(
         &self,
         vars: &[TypeId],
@@ -149,6 +157,7 @@ impl TypeChecker {
                 &decl.name,
                 method,
                 type_var_id,
+                &decl.type_params,
                 decl.span,
             )?;
         }
@@ -177,10 +186,11 @@ impl TypeChecker {
         trait_name: &TraitName,
         method: &TraitMethodSig,
         type_var_id: TypeId,
+        trait_type_params: &[Symbol],
         span: Span,
     ) -> Result<(), CranelispError> {
         let method_type =
-            self.build_method_type(method, type_var_id, span)?;
+            self.build_method_type(method, type_var_id, trait_type_params, span)?;
 
         let mut constraints = HashMap::new();
         constraints.insert(type_var_id, vec![trait_name.clone()]);
@@ -216,23 +226,31 @@ impl TypeChecker {
     /// Build the function type for a trait method.
     ///
     /// Resolves `Self` type expressions to the type variable.
+    /// TypeVars matching the trait's type parameters map to self_type;
+    /// other TypeVars get fresh type variables (I3 fix).
     fn build_method_type(
-        &self,
+        &mut self,
         method: &TraitMethodSig,
         type_var_id: TypeId,
+        trait_type_params: &[Symbol],
         span: Span,
     ) -> Result<Type, CranelispError> {
-        let _ = span; // used transitively
         let self_type = Type::Var(type_var_id);
+
+        // Pre-seed var_map: trait type params map to self_type.
+        let mut var_map: HashMap<Symbol, Type> = HashMap::new();
+        for param in trait_type_params {
+            var_map.insert(param.clone(), self_type.clone());
+        }
 
         let param_types: Vec<Type> = method
             .params
             .iter()
-            .map(|p| resolve_trait_type_expr(p, &self_type, span))
+            .map(|p| resolve_trait_type_expr(p, &self_type, span, &mut var_map, &mut self.next_id))
             .collect::<Result<Vec<_>, _>>()?;
 
         let ret_type =
-            resolve_trait_type_expr(&method.ret_type, &self_type, span)?;
+            resolve_trait_type_expr(&method.ret_type, &self_type, span, &mut var_map, &mut self.next_id)?;
 
         Ok(Type::Fn(param_types, Box::new(ret_type)))
     }
@@ -283,16 +301,32 @@ impl TypeChecker {
             },
         );
 
-        // Type-check each impl method body
+        // Type-check each impl method body and generate mangled-name Defns.
+        let mut all_defns = default_defns;
         for method_defn in &impl_.methods {
             self.check_impl_method(
                 &decl,
                 impl_,
                 method_defn,
             )?;
+
+            // Gap 3: Emit a Defn with the mangled name for the backend to compile.
+            let mangled = format!(
+                "{}.{}${}",
+                impl_.trait_name, method_defn.name, impl_.target_type
+            );
+            all_defns.push(Defn {
+                name: Symbol::from(mangled.as_str()),
+                docstring: method_defn.docstring.clone(),
+                params: method_defn.params.clone(),
+                param_annotations: method_defn.param_annotations.clone(),
+                body: method_defn.body.clone(),
+                visibility: Visibility::Public,
+                span: method_defn.span,
+            });
         }
 
-        Ok(default_defns)
+        Ok(all_defns)
     }
 
     /// Check that all required methods are provided in the impl.
@@ -352,17 +386,25 @@ impl TypeChecker {
                 Type::ADT(impl_.target_type.clone(), vec![])
             });
 
+        // Pre-seed var_map: trait type params map to concrete self type.
+        let mut var_map: HashMap<Symbol, Type> = HashMap::new();
+        for param in &decl.type_params {
+            var_map.insert(param.clone(), concrete_self.clone());
+        }
+
         // Build concrete param types
         let param_types: Vec<Type> = method_sig
             .params
             .iter()
-            .map(|p| resolve_trait_type_expr(p, &concrete_self, method_defn.span))
+            .map(|p| resolve_trait_type_expr(p, &concrete_self, method_defn.span, &mut var_map, &mut self.next_id))
             .collect::<Result<Vec<_>, _>>()?;
 
         let ret_ty = resolve_trait_type_expr(
             &method_sig.ret_type,
             &concrete_self,
             method_defn.span,
+            &mut var_map,
+            &mut self.next_id,
         )?;
 
         // Check the body
@@ -393,6 +435,9 @@ impl TypeChecker {
         let body_ty = self.infer_expr(&defn.body)?;
         self.unify(&body_ty, ret_ty, defn.span)?;
 
+        // Post-inference deferred trait resolution
+        self.resolve_deferred_trait_calls(&defn.body);
+
         self.pop_scope();
         Ok(())
     }
@@ -403,8 +448,6 @@ impl TypeChecker {
         decl: &TraitDecl,
         impl_: &TraitImpl,
     ) -> Result<Vec<Defn>, CranelispError> {
-        use cranelisp_types::Expr;
-
         let provided: std::collections::HashSet<&str> = impl_
             .methods
             .iter()
@@ -640,10 +683,74 @@ impl TypeChecker {
             }
         }
 
-        // Build method resolutions for the specialization body
-        let resolutions = HashMap::new();
-        // Re-check the body with concrete types to get resolutions
-        // For now, the backend will resolve from the types
+        // Gap 2: Re-check the body with concrete types to populate
+        // method_resolutions and expr_types for this specialization.
+        let concrete_ret_ty = if let Type::Fn(_, ret) = &resolved {
+            *ret.clone()
+        } else {
+            return Ok(None);
+        };
+
+        // Save and clear the typechecker's resolution/expr_types state
+        let saved_resolutions = std::mem::take(&mut self.method_resolutions);
+        let saved_expr_types = std::mem::take(&mut self.expr_types);
+
+        self.check_defn_body_with_types(&defn, &concrete_param_types, &concrete_ret_ty)?;
+
+        // Harvest per-mono resolutions and expr_types
+        let mut resolutions = std::mem::take(&mut self.method_resolutions);
+        let mono_expr_types: HashMap<Span, Type> = self.expr_types
+            .iter()
+            .map(|(span, ty)| (*span, apply(&self.subst, ty)))
+            .collect();
+
+        // Restore the typechecker's state
+        self.method_resolutions = saved_resolutions;
+        self.expr_types = saved_expr_types;
+
+        // Scan mono body for constrained fn calls (e.g. self-recursive calls)
+        // and add SigDispatch entries so the backend can find them.
+        let constrained_fn_names: HashSet<Symbol> = self.symbol_table.symbols
+            .iter()
+            .filter_map(|(name, entry)| {
+                if let ModuleEntry::Def { kind, .. } = entry {
+                    if let DefKind::UserFn { constrained_fn: Some(_) } = kind.as_ref() {
+                        return Some(name.clone());
+                    }
+                }
+                None
+            })
+            .collect();
+        let mut inner_calls = Vec::new();
+        Self::collect_constrained_calls(&defn.body, &constrained_fn_names, &mut inner_calls);
+        for (inner_fn_name, arg_spans, inner_call_span) in &inner_calls {
+            if resolutions.contains_key(inner_call_span) {
+                continue; // already resolved (e.g. as a trait method)
+            }
+            let inner_arg_types: Vec<Type> = arg_spans
+                .iter()
+                .filter_map(|span| mono_expr_types.get(span).cloned())
+                .collect();
+            if inner_arg_types.len() != arg_spans.len() {
+                continue;
+            }
+            // Build the mangled name for this inner call
+            let inner_type_names: Vec<String> = inner_arg_types
+                .iter()
+                .filter_map(|t| type_to_name(t))
+                .collect();
+            let inner_mangled = format!(
+                "{}${}",
+                inner_fn_name,
+                inner_type_names.join("+")
+            );
+            resolutions.insert(
+                *inner_call_span,
+                ResolvedCall::SigDispatch {
+                    mangled_name: JitSymbol::from(inner_mangled.as_str()),
+                },
+            );
+        }
 
         let mono_defn = MonoDefn {
             defn: Defn {
@@ -656,6 +763,7 @@ impl TypeChecker {
                 span: defn.span,
             },
             resolutions,
+            expr_types: mono_expr_types,
         };
 
         Ok(Some(mono_defn))
@@ -792,6 +900,8 @@ fn resolve_trait_type_expr(
     texpr: &cranelisp_types::TypeExpr,
     self_type: &Type,
     span: Span,
+    var_map: &mut HashMap<Symbol, Type>,
+    next_id: &mut TypeId,
 ) -> Result<Type, CranelispError> {
     use cranelisp_types::TypeExpr;
 
@@ -802,13 +912,21 @@ fn resolve_trait_type_expr(
                 message: format!("unknown type: {name}"),
                 span,
             }),
-        TypeExpr::TypeVar(_) => Ok(self_type.clone()),
+        TypeExpr::TypeVar(name) => {
+            if let Some(ty) = var_map.get(name) {
+                Ok(ty.clone())
+            } else {
+                let ty = crate::unify::fresh_var(next_id);
+                var_map.insert(name.clone(), ty.clone());
+                Ok(ty)
+            }
+        }
         TypeExpr::FnType(params, ret) => {
             let ps: Vec<Type> = params
                 .iter()
-                .map(|p| resolve_trait_type_expr(p, self_type, span))
+                .map(|p| resolve_trait_type_expr(p, self_type, span, var_map, next_id))
                 .collect::<Result<Vec<_>, _>>()?;
-            let r = resolve_trait_type_expr(ret, self_type, span)?;
+            let r = resolve_trait_type_expr(ret, self_type, span, var_map, next_id)?;
             Ok(Type::Fn(ps, Box::new(r)))
         }
         TypeExpr::Applied(name, _args) => {
@@ -1106,10 +1224,14 @@ mod tests {
 
     #[test]
     fn test_resolve_trait_type_expr_self() {
+        let mut var_map = HashMap::new();
+        let mut next_id: TypeId = 100;
         let result = resolve_trait_type_expr(
             &TypeExpr::SelfType,
             &Type::Int,
             Span::SYNTHETIC,
+            &mut var_map,
+            &mut next_id,
         )
         .unwrap();
         assert_eq!(result, Type::Int);
@@ -1117,24 +1239,72 @@ mod tests {
 
     #[test]
     fn test_resolve_trait_type_expr_named() {
+        let mut var_map = HashMap::new();
+        let mut next_id: TypeId = 100;
         let result = resolve_trait_type_expr(
             &TypeExpr::Named(TypeName::from("Bool")),
             &Type::Int,
             Span::SYNTHETIC,
+            &mut var_map,
+            &mut next_id,
         )
         .unwrap();
         assert_eq!(result, Type::Bool);
     }
 
     #[test]
-    fn test_resolve_trait_type_expr_type_var() {
+    fn test_resolve_trait_type_expr_type_var_gets_fresh_var() {
+        let mut var_map = HashMap::new();
+        let mut next_id: TypeId = 100;
+        let result = resolve_trait_type_expr(
+            &TypeExpr::TypeVar(Symbol::from("b")),
+            &Type::Float,
+            Span::SYNTHETIC,
+            &mut var_map,
+            &mut next_id,
+        )
+        .unwrap();
+        assert!(matches!(result, Type::Var(_)));
+        assert_ne!(result, Type::Float);
+    }
+
+    #[test]
+    fn test_resolve_trait_type_expr_type_var_preseeded() {
+        let mut var_map = HashMap::new();
+        var_map.insert(Symbol::from("a"), Type::Int);
+        let mut next_id: TypeId = 100;
         let result = resolve_trait_type_expr(
             &TypeExpr::TypeVar(Symbol::from("a")),
             &Type::Float,
             Span::SYNTHETIC,
+            &mut var_map,
+            &mut next_id,
         )
         .unwrap();
-        assert_eq!(result, Type::Float);
+        assert_eq!(result, Type::Int);
+    }
+
+    #[test]
+    fn test_resolve_trait_type_expr_same_var_reused() {
+        let mut var_map = HashMap::new();
+        let mut next_id: TypeId = 100;
+        let r1 = resolve_trait_type_expr(
+            &TypeExpr::TypeVar(Symbol::from("b")),
+            &Type::Int,
+            Span::SYNTHETIC,
+            &mut var_map,
+            &mut next_id,
+        )
+        .unwrap();
+        let r2 = resolve_trait_type_expr(
+            &TypeExpr::TypeVar(Symbol::from("b")),
+            &Type::Int,
+            Span::SYNTHETIC,
+            &mut var_map,
+            &mut next_id,
+        )
+        .unwrap();
+        assert_eq!(r1, r2);
     }
 
     #[test]

@@ -8,7 +8,7 @@ The test strategy, risk assessment, and per-ring test plans live in `tests/plan/
 
 | File | Contents |
 |---|---|
-| `plan/strategy.md` | Test strategy: quality model, test pyramid, diagnostic requirements, skill demands, usability register |
+| `plan/strategy.md` | Test strategy: quality model, test pyramid, diagnostic requirements, skill demands |
 | `plan/risks.md` | QA risk review: 10 ranked risks with mitigations, spec coverage gaps |
 | `plan/ring0.md` | Ring 0 test plan: core expressions, types, functions |
 | `plan/ring1.md` | Ring 1 test plan: heap, ADTs, closures, RC |
@@ -64,18 +64,12 @@ Controlled by environment variables, silent by default:
 | `CRANELISP_MODULE_TRACE=1` | Module discovery, compile order, cache hits |
 | `CRANELISP_MACRO_TRACE=1` | Macro expansion steps |
 
-## Usability Register
-
-`/qa` maintains a usability register (`tests/plan/usability.md`) — the structured destination for findings from user-proxy skills (`/stdlib`, `/examples`, `/docs`, `/port`, `/repl`, `/platform`). These skills file corner cases, unhelpful errors, inference friction, missing APIs, and ergonomic issues they encounter while exercising the language. See `plan/strategy.md` §"Usability Register" for the full process.
-
-Findings are triaged as **blocking** (must fix before ring advance), **important** (should fix), or **deferred**. Blocking findings are part of the ring gate — a ring cannot advance with open blocking usability findings.
-
 ## Test File Organization
 
 ```
 tests/
   CLAUDE.md              — this file
-  plan/                  — test book (strategy, risks, per-ring plans, usability register)
+  plan/                  — test book (strategy, risks, per-ring plans)
   boundary/              — Layer 2: crate boundary contract tests
     reader.rs            — Sexp output structure and spans
     ast_builder.rs       — Expr/TopLevel from Sexp

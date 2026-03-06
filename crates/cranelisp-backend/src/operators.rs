@@ -63,6 +63,18 @@ pub fn emit_builtin_op(
         // Boolean equality (Ring 2A): icmp eq on i64 0/1 values.
         "eq-bool" => emit_int_cmp(builder, name, args, IntCC::Equal, span),
 
+        // Inequality (default method for Eq.!=)
+        "neq-i64" => emit_int_cmp(builder, name, args, IntCC::NotEqual, span),
+        "neq-f64" => emit_float_cmp(builder, name, args, FloatCC::NotEqual, span),
+        "neq-bool" => emit_int_cmp(builder, name, args, IntCC::NotEqual, span),
+        "neq-string" => {
+            // String inequality: call str-eq then negate
+            Err(CranelispError::CodegenError {
+                message: "neq-string: use str-eq + not instead".into(),
+                span,
+            })
+        }
+
         _ => Err(CranelispError::CodegenError {
             message: format!("unknown builtin primitive: {name}"),
             span,
@@ -186,6 +198,18 @@ pub fn primitive_for_trait_method(
         // Ord trait: comparison operators
         ("Ord", "<", "Int") => Some("lt-i64"),
         ("Ord", "<", "Float") => Some("lt-f64"),
+        ("Ord", ">", "Int") => Some("gt-i64"),
+        ("Ord", ">", "Float") => Some("gt-f64"),
+        ("Ord", "<=", "Int") => Some("le-i64"),
+        ("Ord", "<=", "Float") => Some("le-f64"),
+        ("Ord", ">=", "Int") => Some("ge-i64"),
+        ("Ord", ">=", "Float") => Some("ge-f64"),
+
+        // Eq trait: inequality (default method)
+        ("Eq", "!=", "Int") => Some("neq-i64"),
+        ("Eq", "!=", "Float") => Some("neq-f64"),
+        ("Eq", "!=", "Bool") => Some("neq-bool"),
+        ("Eq", "!=", "String") => Some("neq-string"),
 
         _ => None,
     }

@@ -126,12 +126,10 @@ impl<'a> FnCompiler<'a> {
                 self.compile_direct_call(&sym, &arg_vals, span)
             }
             ResolvedCall::SigDispatch { mangled_name } => {
-                Err(CranelispError::CodegenError {
-                    message: format!(
-                        "multi-sig dispatch not supported in Ring 1: {mangled_name}"
-                    ),
-                    span,
-                })
+                let arg_vals = self.compile_arg_list(args)?;
+                self.in_tail_position = saved_tail;
+                let sym = Symbol::from(mangled_name.as_ref());
+                self.compile_direct_call(&sym, &arg_vals, span)
             }
             ResolvedCall::AutoCurry { target_name, .. } => {
                 Err(CranelispError::CodegenError {

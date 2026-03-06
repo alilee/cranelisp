@@ -38,6 +38,9 @@ pub enum ResolvedCall {
 pub struct MonoDefn {
     pub defn: Defn,
     pub resolutions: MethodResolutions,
+    /// Per-mono expression types (subset of the full program's expr_types).
+    /// Avoids O(n*m) cloning of the full expr_types map for each mono defn.
+    pub expr_types: HashMap<Span, Type>,
 }
 
 /// Result of type checking a batch compilation unit.

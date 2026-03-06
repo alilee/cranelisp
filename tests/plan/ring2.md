@@ -118,6 +118,22 @@
   - `adt_accessor_shadowing` — should use module-scoped accessors
   - `qualified_name_resolution` — should resolve correctly
 
+## REPL Display Non-Conformances
+
+<!-- FIXME(/qa): R2.1 — deftrait display shows `:Bool false` instead of `:user/Sizeable`.
+     Spec §1.3 requires trait declaration to display the trait name. The deftrait form appears
+     to evaluate to a boolean rather than producing a trait-name display. This is a codegen or
+     REPL response-formatting bug, not just a display issue. Source: /repl sprint 6 audit. Severity: important. -->
+
+<!-- FIXME(/qa): R2.2 — Constrained function type display omits trait constraints.
+     `(defn double [x] (+ x x))` shows `:(Fn [a] a)` but spec §1.4 requires
+     `:(Fn [:core.numerics/Num a] a)`. Constraints from Scheme.constraints are not rendered
+     in the type display. Same issue for clamp/Ord. Source: /repl sprint 6 audit. Severity: important. -->
+
+<!-- FIXME(/qa): R2.3 — impl display not verified.
+     Spec §1.3 requires `impl user/Sizeable for user/Circle` format. No demo exercises impl
+     display. Need E2E test coverage. Source: /repl sprint 6 audit. Severity: suggestion. -->
+
 ## Acceptance Gate
 
 - All module import/export tests pass

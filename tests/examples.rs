@@ -108,6 +108,7 @@ fn example_14_vecs() {
 #[test]
 fn example_15_traits() {
     // Num(7+7+42+5+30) + Float(1+1) + Eq(1+1+1+1+0) + Ord(1+1+0)
-    // + fact(1) + fib(1) + closure(42) + ADT(25) + named(25) = 193
-    assert_eq!(run_example("15-traits.cl"), 193);
+    // + fact(1) + sum(1) + closure(42) + ADT(25) + named(25)
+    // + constrained(42+49+25) + default(1+1+1+1+0+1+0) = 314
+    assert_eq!(run_example("15-traits.cl"), 314);
 }

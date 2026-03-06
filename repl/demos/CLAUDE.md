@@ -82,7 +82,7 @@ The REPL process `chdir`s into this directory, so `.cache` artifacts and any oth
 | `first-session.demo` | 0–1 | Learner progression: evaluate, define, inspect, mistakes, recover |
 | `ring0.demo` | 0 | Arithmetic, booleans, let, if, defn, recursion, TCO |
 | `ring1.demo` | 1 | Strings, ADTs, pattern matching, closures, higher-order, Vecs |
-| `ring2a.demo` | 2A | Trait-dispatched operators, float dispatch, deftrait, polymorphic display |
+| `ring2a.demo` | 2A | Trait-dispatched operators, float dispatch, deftrait, constrained polymorphism, default methods |
 
 Each sprint, `/repl` extends this library:
 - **Ring 2**: Traits, modules, constrained polymorphism

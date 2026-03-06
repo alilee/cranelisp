@@ -125,6 +125,19 @@ impl ReplSession {
             ReplInput::Expr(expr) => {
                 // Build a CheckResult for the backend.
                 let check = self.build_check_for_backend(check_result);
+
+                // Compile any monomorphised specializations before executing
+                // the expression (Gap 4: REPL constrained-poly path).
+                for mono in &check_result.mono_defns {
+                    // Build per-mono CheckResult with merged resolutions.
+                    let mut mono_check = self.build_check_for_backend(check_result);
+                    mono_check.method_resolutions.extend(mono.resolutions.clone());
+                    if !mono.expr_types.is_empty() {
+                        mono_check.expr_types = mono.expr_types.clone();
+                    }
+                    self.compile_and_register_defn(&mono.defn, &mono_check)?;
+                }
+
                 let value = cranelisp_backend::compile_and_run_expr_with_got(
                     expr,
                     &check,
@@ -140,11 +153,20 @@ impl ReplSession {
             }
 
             ReplInput::Defn(defn) => {
-                let check = self.build_check_for_backend(check_result);
-                self.compile_and_register_defn(defn, &check)?;
+                // Skip compiling constrained fn base definitions — they are
+                // templates that get monomorphised at call sites.
+                let is_constrained = check_result
+                    .scheme
+                    .as_ref()
+                    .map_or(false, |s| !s.constraints.is_empty());
+
+                if !is_constrained {
+                    let check = self.build_check_for_backend(check_result);
+                    self.compile_and_register_defn(defn, &check)?;
+                }
 
                 // For defn, execute if it's zero-arg, otherwise return 0.
-                let value = if defn.params.is_empty() {
+                let value = if defn.params.is_empty() && !is_constrained {
                     let entry = self.got_state.def_codegen.get(defn.name.as_ref());
                     let code_ptr = entry
                         .and_then(|e| e.code_ptr)
@@ -221,7 +243,13 @@ impl ReplSession {
 
                 // Compile any monomorphised definitions generated during checking.
                 for mono in &check_result.mono_defns {
-                    self.compile_and_register_defn(&mono.defn, &check)?;
+                    // Build per-mono CheckResult with merged resolutions.
+                    let mut mono_check = self.build_check_for_backend(check_result);
+                    mono_check.method_resolutions.extend(mono.resolutions.clone());
+                    if !mono.expr_types.is_empty() {
+                        mono_check.expr_types = mono.expr_types.clone();
+                    }
+                    self.compile_and_register_defn(&mono.defn, &mono_check)?;
                 }
 
                 Ok(ReplResult {

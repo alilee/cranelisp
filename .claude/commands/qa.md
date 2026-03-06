@@ -29,7 +29,7 @@ This requirement exists because API-level integration tests can pass with a perf
 ## Owns
 
 - `tests/` — integration tests, E2E tests, performance benchmarks, test helpers
-- `tests/plan/` — test plans, strategy, usability register
+- `tests/plan/` — test plans, strategy
 
 ## What `/qa` Does NOT Do
 
@@ -45,7 +45,7 @@ This requirement exists because API-level integration tests can pass with a perf
 
 When `/qa` discovers a bug or gap, the correct action is to:
 1. Write a failing test that demonstrates the issue (in `tests/`)
-2. File a finding in `tests/plan/usability.md` or a `FIXME(/skill)` comment
+2. File a `FIXME(/skill-name)` comment on the relevant spec or design doc
 3. Report to `/sprint` for task assignment to the owning skill
 
 Even "obvious one-line fixes" in source code are delegated — `/qa` validates, it does not implement.
@@ -54,7 +54,6 @@ Even "obvious one-line fixes" in source code are delegated — `/qa` validates, 
 
 - Consumes output from all compiler skills
 - Reports test failures back to the responsible compiler skill
-- Maintains the **usability register** (`tests/plan/usability.md`) — the structured destination for findings from user-proxy skills (`/stdlib`, `/examples`, `/docs`, `/port`, `/repl`, `/platform`). Triages findings as blocking/important/deferred and routes them to the responsible compiler skill. Blocking findings are part of the ring gate.
 
 ## First Steps (Phase A, Step 3 + Phase B)
 
@@ -91,6 +90,22 @@ Even "obvious one-line fixes" in source code are delegated — `/qa` validates, 
 | Perf | `#[ignore]` stress/benchmark tests | < 60s total | After fast suite passes, before ring gate |
 
 **Reporting**: Include test suite runtime in wave completion notes in SPRINT.md (e.g., "286 tests in 1.2s"). Flag regressions.
+
+## Requirement Coverage
+
+**Every spec requirement in scope (current ring and all prior rings) MUST have a test.** If the implementation can't pass it yet, the test is `#[ignore]` with a comment naming the gap. An ignored test is visible debt. An untested requirement is invisible debt — and invisible debt is how sprints pass their gate while the binary doesn't work.
+
+**On every sprint:**
+
+1. **Scan FIXMEs addressed to `/qa`**: Every `FIXME(/qa)` in spec, design, or plan files represents a test gap. For each one, either write the test (passing or `#[ignore]`'d) or explicitly defer with rationale in SPRINT.md.
+2. **Scan `repl/spec.md` for the current ring**: Every requirement tagged with the current ring or earlier MUST have a corresponding test in `tests/`. If the implementation doesn't conform, write an `#[ignore]` test documenting the expected vs actual behavior.
+3. **Verify before approving a sprint**: Before marking a QA wave as done, confirm that every in-scope spec requirement has test coverage. "All tests pass" is necessary but not sufficient — "all requirements are tested" is the actual gate.
+
+**Why `#[ignore]` over no test:** An ignored test shows up in the test count (`142 passed; 5 ignored`). It's grep-able. It has a comment explaining what's wrong. It gets un-ignored when the fix lands. A requirement with no test is invisible — it passes every gate silently until someone tries to use the feature and discovers it doesn't work.
+
+**Test naming for traceability:** Tests trace to spec sections via name and comment. Use `// spec: 07-traits §1.3` or similar. No separate traceability matrix — the tests ARE the traceability.
+
+**Source document annotations:** When a spec or plan section is covered by tests, annotate the section heading with its ring and sprint status — e.g., `[R2 S5]` for "covered in Ring 2, Sprint 5", or `[Done]` when fully tested. This makes coverage visible from both directions: tests trace forward to spec sections, and spec sections show which ring/sprint delivered their coverage. Annotations live on section headings in `spec/`, `repl/spec.md`, and `tests/plan/` files. `/qa` adds annotations when writing tests; other skills add annotations when delivering features against spec requirements.
 
 ## Spec-First Testing
 

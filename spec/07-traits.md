@@ -400,15 +400,9 @@ Note: When used as a value, the operator's type is the fully polymorphic trait m
 
 ## 7.7 Standard Library Traits (Non-Normative)
 
-<!-- FIXME(/spec): Review whether this section belongs in the language spec at all.
-     The spec should define the trait mechanism (deftrait, impl, method resolution)
-     but the specific traits (Num, Eq, Ord, Display, Functor) and their methods
-     (+, -, *, /, =, <, >, show) are stdlib constructs. Consider moving to
-     spec/11-stdlib.md or stdlib documentation. The REPL should display + as
-     core.numerics/+ (its stdlib home), not as a builtin. See also §7.5 which
-     correctly says operators "have no special syntactic status." -->
+This section is **non-normative**. The traits below (Num, Eq, Ord, Display, Functor) are not language primitives — they are ordinary `deftrait` declarations defined in the standard library's core modules. They appear here as illustrative examples of the trait mechanism defined in §§7.1–7.6, and to document the semantic contracts (checked arithmetic, IEEE 754 comparison, etc.) that a conforming standard library is expected to provide. The authoritative home for these definitions is the standard library itself (e.g., `core/numerics`, `core/formats`); the REPL displays them under their stdlib-qualified names (e.g., `core.numerics/+`), not as builtins.
 
-The following traits are defined in the reference implementation's standard library (core modules) and are available in all programs that load the prelude. They are not compiler intrinsics -- they are ordinary trait declarations with ordinary implementations. A standard library typically provides these traits because operators and string conversion depend on them.
+The following traits are available in all programs that load the prelude. They are not compiler intrinsics — they are ordinary trait declarations with ordinary implementations. A standard library typically provides these traits because operators and string conversion depend on them.
 
 ### 7.7.1 Num
 

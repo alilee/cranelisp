@@ -200,9 +200,9 @@ user> Color.Red
 
 This means every builtin type, primitive function, special form, and user-defined type/function needs a docstring. The `defn` form already supports docstrings: `(defn add "Add two numbers" [x y] (+ x y))`. Builtins and special forms need docstrings registered by the compiler.
 
-<!-- FIXME(/repl): Add docstring display to REPL output format specification. When a value lookup, type lookup, or definition result is displayed, include the docstring after a semicolon if one exists. -->
+<!-- FIXME(/repl): RESOLVED — docstring display is already specified in repl/spec.md §4.1 (bare symbol lookup appends first line of docstring as "; comment") and tagged Ring 2 at §4.1 line 286. No additional spec work needed. -->
 
-<!-- FIXME(/arch): Ensure all builtin types (Int, Bool, Float, String), primitive functions (+, -, *, /, =, <, >, etc.), and special forms (if, let, match, fn, defn, deftype, etc.) have docstrings registered in the compiler. These appear in REPL output. -->
+<!-- FIXME(/arch): RESOLVED. The architecture already provides `docstring: Option<String>` on `ModuleEntry::Def` (interfaces.md line 635) and `description: String` on `DefKind::SpecialForm` (line 699). Populating these fields with actual docstring text during `register_builtins()` is an implementation task for `/typecheck` (primitives module seeding) and `/qa` (REPL display verification). No architectural change needed. -->
 
 ## Directory Structure
 
@@ -434,13 +434,13 @@ Full inventory of concepts from `spec/` sections 01–12, mapped to tutorial sec
 
 ## Usability Findings (Pre-Ring 0)
 
-Filed to the usability register (`tests/plan/usability.md`) for `/qa` triage:
+Filed as FIXMEs on the relevant documents:
 
 1. **Category**: Learning curve. **Severity**: Important. **Description**: The getting-started guide cannot show a "hello world" batch program at Ring 0 because batch mode requires IO (Ring 4). The `/learn` system makes this less painful — the student starts with `/learn` instead of "write a file and run it." But hello-world is a universal expectation. Consider whether a minimal batch mode that prints `main`'s return value could be available at Ring 0.
 
 2. **Category**: REPL feature. **Severity**: Important. **Description**: The `/learn` system requires a REPL feature (watch mechanism, trigger evaluation, progress tracking). This is not just documentation content — it's REPL implementation work. `/qa` needs to plan this as a Ring 0 deliverable so the tutorial is available from the first release.
 
-<!-- FIXME(/qa): Usability findings above need to be added to tests/plan/usability.md. Finding 2 is new: /learn requires REPL implementation work at Ring 0. -->
+<!-- Finding 1 → FIXME(/arch) on design/arch/roadmap.md (U0.1). Finding 2 → FIXME(/qa) on tests/plan/ring0.md (U0.2). -->
 
 ## Dependencies and Coordination
 

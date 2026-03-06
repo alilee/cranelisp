@@ -47,6 +47,19 @@
 - Gap 1: closures escaping/stored in ADTs (4 tests)
 - Gap 2: user-defined recursive ADTs (2 tests)
 
+<!-- FIXME(/qa): U1.3 — Nested heap ADT RC not directly tested. Need tests for (List (Option Int)),
+     (Option String), (List String) — deeper nesting to verify drop glue recursively decrements
+     nested heap fields. Source: /stdlib. Severity: important. -->
+
+<!-- FIXME(/qa): U1.5 — Closure capturing heap types (String, ADT) not tested. Need tests for
+     closures that capture String or ADT-with-heap-fields, e.g. (let [s "hello"] (fn [] (str-len s))).
+     Critical for Option/Result combinators. Source: /stdlib. Severity: important. -->
+
+<!-- FIXME(/qa): U1.7 — Error messages for Ring 1 type mismatches are untested for quality.
+     Ring 1 error path tests use empty substring matching (assert_type_error(src, "")).
+     Need to verify message content for: wrong type args, wrong constructor arity, if-branch
+     type mismatch, closure arity mismatch, undefined constructor. Source: /docs. Severity: important. -->
+
 ## New Tests
 
 - RC tests for every heap-typed expression form

@@ -1376,14 +1376,28 @@ This produces `30` -- the size of a dog (5) plus the weight of a dog (25).
 
 When defining a trait, you can provide **default implementations** for some methods. A default method has named parameters and a body, and it is written in terms of other methods from the same trait (or other traits).
 
-The `Ord` trait is a good example. It declares `<` as a required method, and derives other comparisons from it:
+The `Ord` trait is a good example. It declares `<` and `>` as required methods, and provides default implementations for `<=` and `>=` that are built from the required methods and `=`:
 
 ```clojure
 (deftrait Ord
-  (< [self self] Bool))
+  (< [self self] Bool)
+  (> [self self] Bool)
+  (<= [x y] Bool (if (< x y) true (= x y)))
+  (>= [x y] Bool (if (> x y) true (= x y))))
 ```
 
-An implementation only needs to provide `<`. The compiler derives `>`, `<=`, and `>=` automatically from `<` and `=`.
+An implementation only needs to provide `<` and `>`. The compiler provides `<=` and `>=` automatically from the defaults. You can use all four comparison operators with `Int` and `Float`:
+
+```
+> (> 5 3)
+:Bool true
+
+> (<= 3 3)
+:Bool true
+
+> (>= 2.0 3.0)
+:Bool false
+```
 
 When you define your own trait, you can include default methods the same way:
 
@@ -1409,16 +1423,32 @@ Cranelisp infers that `double` requires the `Num` trait, because it uses `+`. Yo
 > (double 5)
 :Int 10
 
-> (double 3.14)
-:Float 6.28
+> (double 2.5)
+:Float 5
 ```
 
-But you cannot call it with a type that does not implement `Num`:
+Behind the scenes, the compiler generates a separate version of `double` for each type you call it with. When you write `(double 5)`, the compiler creates a version specialized for `Int`. When you write `(double 2.5)`, it creates a version specialized for `Float`. This process is called **monomorphisation** -- turning one generic definition into multiple concrete ones. You do not need to do anything special; it happens automatically at each call site.
+
+But you cannot call `double` with a type that does not implement `Num`:
 
 ```
 > (double true)
 error: ...
 ```
+
+Here is another example -- a generic function constrained by `Ord`:
+
+```
+> (defn max-of [a b] (if (> a b) a b))
+
+> (max-of 10 20)
+:Int 20
+
+> (max-of 3.14 2.72)
+:Float 3.14
+```
+
+The compiler infers that `max-of` requires the `Ord` trait because it uses `>`. Each call site gets its own specialized version.
 
 Here is a more involved example -- a function that uses both `Num` and `Eq`:
 
@@ -1517,6 +1547,9 @@ These operators work with any type that implements the corresponding trait. `Int
 | `/` | `Num` | `(Fn [a a] a)` | Divide first by second |
 | `=` | `Eq` | `(Fn [a a] Bool)` | Equal? |
 | `<` | `Ord` | `(Fn [a a] Bool)` | Less than? |
+| `>` | `Ord` | `(Fn [a a] Bool)` | Greater than? |
+| `<=` | `Ord` | `(Fn [a a] Bool)` | Less than or equal? (default) |
+| `>=` | `Ord` | `(Fn [a a] Bool)` | Greater than or equal? (default) |
 
 ### Named Primitives
 

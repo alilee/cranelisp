@@ -226,7 +226,7 @@ The stdlib's own test infrastructure. Also available to user programs.
 
 **`macros.cl`** — The macro-writing toolkit: `sfold`, `sreverse`, `sconcat`, `sempty?`, `slength`, `snth`, `smap`, `sdrop`, `slist` construction macro, `scontains?`. Operates on the compiler-seeded `Sexp` and `SList` types from the `macros` synthetic module. Ring 3.
 
-<!-- FIXME(/frontend): The ~@ (unquote-splicing) operator currently emits references to core.syntax/sconcat. In the new module layout, this should be macros/sconcat. Coordinate the qualified path. -->
+**Unquote-splicing dependency** (Ring 3): The quasiquote expander (owned by `/frontend`) will emit `macros/sconcat` as the qualified path for unquote-splicing list concatenation. The `sconcat` function defined in this module must be available under that path by the time Ring 3 macros are delivered. This is a straightforward path constant in the expander — no cross-skill coordination needed beyond ensuring `macros.cl` exports `sconcat` and is importable as the `macros` module.
 
 ---
 

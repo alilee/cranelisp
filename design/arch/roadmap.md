@@ -4,6 +4,10 @@ Ring-by-ring plan for the Cranelisp reimplementation. Each ring establishes a st
 
 For the full reimplementation strategy, skill definitions, and risk analysis, see `sprints/reimplementation.md`. For boundary types, see `design/arch/interfaces.md`. For crate structure and architectural decisions, see `design/arch/architecture.md`.
 
+<!-- FIXME(/arch): U0.1 — Batch hello-world not possible at Ring 0 because IO requires Ring 4.
+     Consider whether a minimal batch mode that prints main's return value could be available earlier.
+     Source: /docs. Severity: important. -->
+
 ## Ring 0: Core
 
 **Property**: Expressions, types, functions, let, if, match. No heap allocation, no reference counting.
@@ -33,7 +37,7 @@ For the full reimplementation strategy, skill definitions, and risk analysis, se
 - `cargo clippy` clean, no `unwrap()` in pipeline code
 
 <!-- FIXME(/qa): Ring 0 REPL spec non-conformance — spec is clear, QA plan has no tests for these. See U1.13.
-     10 repl/spec.md Ring 0 requirements not met:
+     12 repl/spec.md Ring 0 requirements not met:
      1. §1.3 Definition display: defn shows name, not <closure>
      2. §1.4 Fully-qualified types: primitives/Int not bare Int
      3. §1.5 Constructor notation: Color.Red not bare Red
@@ -44,8 +48,21 @@ For the full reimplementation strategy, skill definitions, and risk analysis, se
      8. §4.1 Bare trait name lookup: Num → "undefined variable" error
      9. §4.2 Bare special form: if → error instead of shape display
      10. §6.2 Startup banner: no banner at all
-     Items 5, 7-9 completely block the first-five-minutes discoverability journey (§6.1). -->
+     11. §1.5 Float display: (+ 1.0 2.0) → `:Float 3` not `:Float 3.0` — floats without fractional part display as integers
+     12. §1.3 deftype display: (deftype Color Red ...) → `:Color Red` not `:user/Color` — shows first constructor value instead of qualified type name
+     Items 5, 7-9 completely block the first-five-minutes discoverability journey (§6.1).
+     Items 11-12 added by /repl sprint 6 audit. -->
 
+
+<!-- FIXME(/backend): U1.1 — Missing string primitives for stdlib text/string.cl.
+     11 additional operations needed: substring, char-at, split, join, replace, trim,
+     starts-with?, ends-with?, contains?, to-upper, to-lower. Straightforward extern
+     primitives wrapping Rust str methods. Source: /stdlib. Severity: important. -->
+
+<!-- FIXME(/typecheck): U1.2 — parse-int returns Int but actually returns Option Int at runtime.
+     Type mismatch means no Cranelisp code can safely use parse-int. Fix requires expressing
+     (Option Int) as return type referencing user-defined Option ADT (needs module system).
+     Source: /stdlib. Severity: important. -->
 
 ## Ring 1: Heap
 
@@ -86,6 +103,11 @@ For the full reimplementation strategy, skill definitions, and risk analysis, se
 | `/repl` | Module navigation tests (`/mod`, `import`), trait introspection (`/info`), `/list` categories | Ring 2 compiler |
 | `/port` | Validate exemplar module patterns against Ring 2 compiler, refine design | Ring 2 compiler |
 | `/review` | Name resolution correctness, GOT/symbol-table separation, no god objects | all above |
+
+<!-- FIXME(/typecheck): U2.1 — Display trait not registered at startup, blocking stdlib bootstrap.
+     Ring 2A registers Num, Eq, Ord but not Display. stdlib assert-eq needs show (Display).
+     Recommendation: add Display to startup registration alongside Num/Eq/Ord — the 4 display
+     primitives (int-to-string etc.) already exist as Ring 1 externs. Source: /stdlib. Severity: important. -->
 
 **Acceptance criteria**:
 - `(deftrait (Num a) (+ [a a] a) (- [a a] a) (* [a a] a))` — trait declaration type-checks

@@ -18,12 +18,7 @@ Build platform DLLs that extend the language with IO capabilities. Validate the 
 
 - User-proxy skill: exercise the FFI boundary from a platform author's perspective
 - Begin work once Ring 1 is stable (heap allocation and RC needed for CLOwned wrappers)
-- File usability findings to `/qa`'s **usability register** (`tests/plan/usability.md`):
-  - C-ABI contract awkwardness for platform authors
-  - Marshalling that is error-prone or requires boilerplate
-  - IO model leaking abstractions
-  - `CLOwned`/`CLString`/`CLInt` wrapper ergonomic issues
-  - Each finding needs: category, severity (blocking/important/deferred), description
+- File usability findings as `FIXME(/skill-name)` comments on the relevant spec or design doc (e.g., `spec/10-io.md`, `spec/12-runtime.md`). Typical issues: C-ABI contract awkwardness, marshalling boilerplate, IO model leaking abstractions, wrapper ergonomic issues.
 
 ## First Steps (Phase B/D)
 
@@ -36,6 +31,15 @@ Build platform DLLs that extend the language with IO capabilities. Validate the 
 5. Create `cranelisp-runtime/` at root with:
    - Stub `Cargo.toml`
    - `cranelisp-runtime/CLAUDE.md` documenting runtime primitives
+
+## Release Gate
+
+Before considering any task complete, you MUST verify:
+1. `cargo build` succeeds with no errors
+2. `cargo test` passes with no new failures (pre-existing ignored tests are acceptable)
+3. `cargo clippy` produces no new warnings in your owned files
+
+Do not hand off to `/sprint` or `/review` with a broken build. If your changes cause failures in another crate, fix the issue or coordinate with the owning skill before completing.
 
 ## Workflow (ring by ring)
 

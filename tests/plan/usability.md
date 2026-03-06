@@ -1,8 +1,26 @@
-# Usability Register
+# Usability Register (ARCHIVED)
 
-Structured destination for findings from user-proxy skills. When `/stdlib`, `/examples`, `/docs`, `/port`, `/repl`, or `/platform` encounter corner cases, unhelpful errors, inference friction, missing APIs, or ergonomic issues, they file findings here rather than routing ad-hoc to individual compiler skills. `/qa` triages findings and routes them to the responsible skill.
+**This register is no longer active.** As of Sprint 5, usability findings are filed as `FIXME(/skill-name)` comments directly on the relevant spec, design, or plan document — the same cross-skill protocol used by all skills. This avoids the indirection of a separate register that requires review and ownership decisions.
 
-**Blocking findings are part of the ring gate** -- a ring cannot advance if any blocking usability finding remains unresolved.
+Open findings from this register have been converted to FIXMEs on their target documents:
+- U0.1 → `design/arch/roadmap.md` (FIXME(/arch))
+- U0.2 → `tests/plan/ring0.md` (FIXME(/qa))
+- U1.1 → `design/arch/roadmap.md` (FIXME(/backend))
+- U1.2 → `design/arch/roadmap.md` (FIXME(/typecheck))
+- U1.3 → `tests/plan/ring1.md` (FIXME(/qa))
+- U1.5 → `tests/plan/ring1.md` (FIXME(/qa))
+- U1.6 → `repl/spec.md` (FIXME(/qa))
+- U1.7 → `tests/plan/ring1.md` (FIXME(/qa))
+- U1.9 → `repl/spec.md` (FIXME(/qa))
+- U1.11 → deferred (Ring 3 threading macros will address)
+- U1.13 → `design/arch/roadmap.md` (FIXME(/qa), already existed)
+- U2.1 → `design/arch/roadmap.md` (FIXME(/typecheck))
+- U1.4, U1.8 → deferred
+- U1.10, U1.12 → resolved
+
+---
+
+The historical register contents are preserved below for reference.
 
 ---
 
@@ -58,7 +76,31 @@ Each finding includes:
 
 ## Ring 0: Core
 
-*No findings yet.*
+### U0.1 — Batch hello-world not possible at Ring 0 (IO requires Ring 4)
+
+| Field | Value |
+|---|---|
+| **ID** | U0.1 |
+| **Source skill** | `/docs` |
+| **Category** | `ergonomics` |
+| **Severity** | `important` |
+| **Description** | The getting-started guide cannot show a "hello world" batch program at Ring 0 because batch mode requires IO (Ring 4). The `/learn` system makes this less painful -- the student starts with `/learn` instead of "write a file and run it." But hello-world is a universal expectation. Consider whether a minimal batch mode that prints `main`'s return value could be available at Ring 0. |
+| **Responsible skill** | `/arch` (design decision), `/qa` (implementation) |
+| **Status** | `open` |
+| **Resolution** | -- |
+
+### U0.2 — `/learn` engine requires REPL implementation work
+
+| Field | Value |
+|---|---|
+| **ID** | U0.2 |
+| **Source skill** | `/docs` |
+| **Category** | `missing API` |
+| **Severity** | `important` |
+| **Description** | The `/learn` tutorial system requires a REPL feature (watch mechanism, trigger evaluation, progress tracking). This is not just documentation content -- it's REPL implementation work. `/qa` needs to plan this as a deliverable so the tutorial is available. |
+| **Responsible skill** | `/qa` (REPL implementation), `/repl` (experience design) |
+| **Status** | `open` |
+| **Resolution** | -- |
 
 ---
 
