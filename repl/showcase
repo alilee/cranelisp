@@ -6,17 +6,19 @@ Usage:
     ./repl/showcase ring1          # build + play the Ring 1 demo
     ./repl/showcase --list         # list available demos
 
-Two-phase approach:
-  Phase 1: Parse the .demo file into comments, blanks, and expressions.
-           Send only expressions to the REPL (piped stdin), capture output.
-  Phase 2: Replay the demo with typing effects — comments displayed dimmed,
-           expressions typed character-by-character with the REPL result
-           shown instantly after each.
+Transparent pipe approach:
+  Phase 1: Send the ENTIRE .demo file to the REPL as stdin. Capture raw output.
+  Phase 2: Parse the output into (input, result) pairs by matching prompts.
+           Replay with typing effects — the viewer sees exactly what the REPL
+           actually produced, not a filtered reconstruction.
+
+The showcase MUST NOT filter, reorder, or hide any REPL behavior. If comments
+produce errors, blank lines produce output, or definitions show <closure> instead
+of names — that is what the viewer sees. The showcase shows the product as-is.
 
 Environment:
     DEMO_TYPING_MS         ms between characters (default: 30)
     DEMO_LINE_PAUSE_MS     ms pause before each input line (default: 1500)
-    DEMO_COMMENT_PAUSE_MS  ms pause after displaying a comment (default: 800)
     DEMO_FAST              if set, all delays are zero (CI mode)
 """
 
@@ -35,7 +37,6 @@ RUNS_DIR = DEMOS_DIR / "runs"
 FAST = os.environ.get("DEMO_FAST") is not None
 TYPING_DELAY = 0 if FAST else int(os.environ.get("DEMO_TYPING_MS", "30")) / 1000.0
 LINE_PAUSE = 0 if FAST else int(os.environ.get("DEMO_LINE_PAUSE_MS", "1500")) / 1000.0
-COMMENT_PAUSE = 0 if FAST else int(os.environ.get("DEMO_COMMENT_PAUSE_MS", "800")) / 1000.0
 
 DIM = "\033[90m"
 BOLD = "\033[1m"
@@ -77,55 +78,56 @@ def build_binary():
     return str(binary)
 
 
-def parse_demo(demo_path):
-    """Parse a .demo file into a sequence of events.
+def run_demo(demo_path, repl_binary, run_dir):
+    """Send the entire .demo file to the REPL and capture raw output.
 
-    Returns a list of (type, text) tuples where type is one of:
-      'comment' — a ; comment line (section header)
-      'blank'   — an empty line (section separator)
-      'input'   — a REPL expression to evaluate
+    Returns the raw stdout from the REPL process. No filtering, no
+    reordering — the REPL sees comments, blank lines, and expressions
+    exactly as written in the .demo file.
     """
-    events = []
     with open(demo_path) as f:
-        for line in f:
-            line = line.rstrip("\n")
-            if line.startswith(";"):
-                events.append(("comment", line))
-            elif line.strip() == "":
-                events.append(("blank", ""))
-            else:
-                events.append(("input", line))
-    return events
+        demo_text = f.read()
 
-
-def run_expressions(events, repl_binary, run_dir):
-    """Send only input expressions to the REPL, capture results.
-
-    Returns a list of result strings, one per input expression.
-    """
-    input_lines = [text for typ, text in events if typ == "input"]
-    if not input_lines:
-        return []
-
-    demo_input = "\n".join(input_lines) + "\n"
     result = subprocess.run(
         [repl_binary],
-        input=demo_input,
+        input=demo_text,
         capture_output=True,
         text=True,
         cwd=run_dir,
     )
 
-    # REPL output format: "> result\n" for each expression, then "> \n" at EOF.
-    # Extract the result text (everything after the "> " prompt prefix).
-    results = []
-    for line in result.stdout.splitlines():
-        if line.startswith("> ") and len(line) > 2:
-            results.append(line[2:])  # strip "> " prompt
-        elif line == ">":
-            pass  # bare prompt at EOF
+    return result.stdout
 
-    return results
+
+def parse_repl_output(demo_text, raw_output):
+    """Parse raw REPL output into (input_line, result_lines) pairs.
+
+    The REPL writes "> " (no newline) for each input line, then prints
+    any result followed by a newline. In piped mode this means:
+    - No-output lines (comments, blanks): consecutive "> " prompts
+    - Result lines: "> " prompt followed by result text on the same line
+    - Multi-line results: result continues on subsequent lines until next "> "
+
+    We split on "> " boundaries to recover which result goes with which input.
+    """
+    input_lines = demo_text.splitlines()
+
+    # Split raw output on "> " prompt markers.
+    # The REPL always starts with "> ", so the first segment is empty.
+    segments = raw_output.split("> ")
+
+    pairs = []
+    for i, input_line in enumerate(input_lines):
+        # Segment i+1 corresponds to input line i (segment 0 is before first prompt).
+        seg_idx = i + 1
+        result = None
+        if seg_idx < len(segments):
+            content = segments[seg_idx].strip()
+            if content:
+                result = content
+        pairs.append((input_line, result))
+
+    return pairs
 
 
 def type_line(text):
@@ -136,29 +138,27 @@ def type_line(text):
         time.sleep(TYPING_DELAY)
 
 
-def replay(events, results):
-    """Replay the demo with typing effects and section headers."""
-    result_idx = 0
+def replay(pairs):
+    """Replay the demo, showing exactly what the user would see at the REPL.
 
-    for event_type, text in events:
-        if event_type == "comment":
-            # Display comment as a dimmed section header.
-            time.sleep(COMMENT_PAUSE)
-            print(f"{DIM}{text}{RESET}")
-        elif event_type == "blank":
-            print()
-        elif event_type == "input":
-            # Pause, then type the input slowly.
-            time.sleep(LINE_PAUSE)
-            sys.stdout.write("> ")
-            sys.stdout.flush()
-            type_line(text)
+    Every input line is typed at the prompt. The REPL's actual response
+    (or silence) follows. No special treatment for comments or blanks —
+    the viewer sees exactly the user experience.
+    """
+    for input_line, result in pairs:
+        time.sleep(LINE_PAUSE)
+        sys.stdout.write("> ")
+        sys.stdout.flush()
+        stripped = input_line.strip()
+        if stripped == "" or stripped.startswith(";"):
+            # Comments and blank lines: print instantly (nothing to learn from typing them)
+            sys.stdout.write(input_line + "\n")
+        else:
+            type_line(input_line)
             sys.stdout.write("\n")
-            sys.stdout.flush()
-            # Show the REPL result instantly.
-            if result_idx < len(results):
-                print(results[result_idx])
-                result_idx += 1
+        sys.stdout.flush()
+        if result is not None:
+            print(result)
 
 
 def play_demo(demo_path, repl_binary):
@@ -172,12 +172,15 @@ def play_demo(demo_path, repl_binary):
     print(f"{DIM}; run dir: {run_dir}{RESET}\n")
     sys.stdout.flush()
 
-    # Phase 1: parse demo, run expressions fast.
-    events = parse_demo(demo_path)
-    results = run_expressions(events, repl_binary, run_dir)
+    # Phase 1: send entire demo file to REPL, capture raw output.
+    with open(demo_path) as f:
+        demo_text = f.read()
 
-    # Phase 2: replay with typing effects.
-    replay(events, results)
+    raw_output = run_demo(demo_path, repl_binary, run_dir)
+
+    # Phase 2: parse and replay with typing effects.
+    pairs = parse_repl_output(demo_text, raw_output)
+    replay(pairs)
 
     print(f"\n{DIM}; [demo complete]{RESET}")
 

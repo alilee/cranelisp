@@ -6,7 +6,7 @@
 use std::collections::{HashMap, HashSet};
 
 use cranelisp_types::{
-    CheckResult, CranelispError, Defn, DefKind, ModuleEntry,
+    CheckResult, ConstrainedFn, CranelispError, Defn, DefKind, ModuleEntry,
     ReplCheckResult, ReplInput, Scheme, Span, Symbol, TopLevel, Type,
     apply,
 };
@@ -29,6 +29,13 @@ impl TypeChecker {
         // Pass 1: register type definitions
         self.register_type_defs_from_program(program)?;
 
+        // Pass 1: register trait declarations
+        self.register_trait_decls_from_program(program)?;
+
+        // Pass 1: register trait implementations
+        let default_defns =
+            self.register_trait_impls_from_program(program)?;
+
         // Pass 1: register function signatures with fresh type variables
         let defns = Self::collect_defns(program);
         let defn_type_vars = self.pass1_register_signatures(&defns)?;
@@ -36,7 +43,14 @@ impl TypeChecker {
         // Pass 2: check function bodies and generalize
         self.pass2_check_bodies(&defns, &defn_type_vars)?;
 
-        Ok(self.build_check_result())
+        // Pass 3: detect constrained polymorphic functions
+        let constrained_fn_names =
+            self.detect_constrained_fns(&defns);
+
+        let mut result = self.build_check_result();
+        result.constrained_fn_names = constrained_fn_names;
+        result.default_method_defns = default_defns;
+        Ok(result)
     }
 
     /// Check a single REPL input incrementally.
@@ -75,14 +89,20 @@ impl TypeChecker {
                 message: "multi-signature functions not supported in Ring 0".into(),
                 span: *span,
             }),
-            ReplInput::TraitDecl(decl) => Err(CranelispError::TypeError {
-                message: "trait declarations not supported in Ring 0".into(),
-                span: decl.span,
-            }),
-            ReplInput::TraitImpl(impl_) => Err(CranelispError::TypeError {
-                message: "trait implementations not supported in Ring 0".into(),
-                span: impl_.span,
-            }),
+
+            ReplInput::TraitDecl(decl) => {
+                self.register_trait_decl(decl)?;
+                let ty = Type::Bool; // Placeholder return type for trait decl
+                Ok(self.build_repl_result(ty, None))
+            }
+
+            ReplInput::TraitImpl(impl_) => {
+                let default_defns = self.register_trait_impl(impl_)?;
+                let ty = Type::Bool; // Placeholder return type for trait impl
+                let mut result = self.build_repl_result(ty, None);
+                result.default_method_defns = default_defns;
+                Ok(result)
+            }
         }
     }
 
@@ -114,6 +134,75 @@ impl TypeChecker {
             }
         }
         Ok(())
+    }
+
+    /// Register all TraitDecl entries from the program.
+    fn register_trait_decls_from_program(
+        &mut self,
+        program: &[TopLevel],
+    ) -> Result<(), CranelispError> {
+        for top in program {
+            if let TopLevel::TraitDecl(decl) = top {
+                self.register_trait_decl(decl)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Register all TraitImpl entries from the program.
+    /// Returns default method definitions generated.
+    fn register_trait_impls_from_program(
+        &mut self,
+        program: &[TopLevel],
+    ) -> Result<Vec<Defn>, CranelispError> {
+        let mut default_defns = Vec::new();
+        for top in program {
+            if let TopLevel::TraitImpl(impl_) = top {
+                let defaults = self.register_trait_impl(impl_)?;
+                default_defns.extend(defaults);
+            }
+        }
+        Ok(default_defns)
+    }
+
+    /// Detect constrained polymorphic functions after generalization.
+    ///
+    /// A function is constrained if its generalized scheme has non-empty constraints.
+    /// These functions are stored with `ConstrainedFn` in their DefKind.
+    fn detect_constrained_fns(
+        &mut self,
+        defns: &[&Defn],
+    ) -> HashSet<Symbol> {
+        let mut names = HashSet::new();
+
+        for defn in defns {
+            let is_constrained = if let Some(ModuleEntry::Def { scheme, .. }) =
+                self.symbol_table.get(defn.name.as_ref())
+            {
+                !scheme.constraints.is_empty()
+            } else {
+                false
+            };
+
+            if is_constrained {
+                names.insert(defn.name.clone());
+
+                // Get the scheme and store as ConstrainedFn
+                if let Some(ModuleEntry::Def { scheme, kind, .. }) =
+                    self.symbol_table.symbols.get_mut(&defn.name)
+                {
+                    let cf = ConstrainedFn {
+                        defn: (*defn).clone(),
+                        scheme: scheme.clone(),
+                    };
+                    *kind = Box::new(DefKind::UserFn {
+                        constrained_fn: Some(Box::new(cf)),
+                    });
+                }
+            }
+        }
+
+        names
     }
 
     /// Collect all Defn entries from the program.
@@ -271,7 +360,7 @@ impl TypeChecker {
         // Check body
         self.check_defn_body(defn, &param_types, &ret_ty)?;
 
-        // Generalize
+        // Generalize (propagates active constraints)
         let resolved_fn_type = Type::Fn(
             param_types.iter().map(|t| self.apply_subst(t)).collect(),
             Box::new(self.apply_subst(&ret_ty)),
@@ -279,10 +368,21 @@ impl TypeChecker {
         let scheme = self.generalize(&resolved_fn_type);
 
         // Update symbol table with generalized scheme
-        if let Some(ModuleEntry::Def { scheme: s, .. }) =
+        // If constrained, also store as ConstrainedFn
+        if let Some(ModuleEntry::Def { scheme: s, kind, .. }) =
             self.symbol_table.symbols.get_mut(&defn.name)
         {
             *s = scheme.clone();
+
+            if !scheme.constraints.is_empty() {
+                let cf = ConstrainedFn {
+                    defn: defn.clone(),
+                    scheme: scheme.clone(),
+                };
+                *kind = Box::new(DefKind::UserFn {
+                    constrained_fn: Some(Box::new(cf)),
+                });
+            }
         }
 
         Ok((scheme.ty.clone(), scheme))
@@ -345,6 +445,9 @@ impl TypeChecker {
             warnings: std::mem::take(&mut self.warnings),
             type_defs: self.type_defs.type_defs.clone(),
             constructor_to_type: self.type_defs.constructor_to_type.clone(),
+            constrained_fn_names: HashSet::new(),
+            mono_defns: Vec::new(),
+            default_method_defns: Vec::new(),
         }
     }
 }

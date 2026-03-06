@@ -11,18 +11,25 @@
 
 use std::collections::HashMap;
 
-use cranelisp_types::{ring0_primitives, ring1_primitives, DefKind, JitSymbol, ModuleEntry, PrimitiveKind, Scheme, Symbol, Type, TypeName, Visibility};
+use cranelisp_types::{
+    ring0_primitives, ring1_primitives, DefKind, JitSymbol, ModuleEntry, PrimitiveKind,
+    Scheme, Span, Symbol, TraitDecl, TraitMethodSig, TraitName, Type, TypeExpr, TypeName,
+    Visibility,
+};
 
 use crate::checker::TypeChecker;
 use crate::scheme::mono;
 
 impl TypeChecker {
-    /// Register all builtins: Ring 0 + Ring 1 primitives and special forms.
+    /// Register all builtins: Ring 0 + Ring 1 primitives, special forms,
+    /// Ring 2 core traits and builtin impls.
     pub(crate) fn register_builtins(&mut self) {
         self.register_primitives();
         self.register_ring1_primitives();
         self.register_vec_primitives();
         self.register_special_forms();
+        self.register_core_traits();
+        self.register_builtin_impls();
     }
 
     /// Register Ring 0 primitives from the authoritative table.
@@ -164,6 +171,8 @@ impl TypeChecker {
             ("defn", "function definition: (defn name [params] body)"),
             ("deftype", "type definition: (deftype Name ctor1 ctor2 ...)"),
             ("match", "pattern matching: (match expr [pat body] ...)"),
+            ("deftrait", "trait declaration: (deftrait (TraitName a) (method [a ...] ret) ...)"),
+            ("impl", "trait implementation: (impl TraitName Type (method [params] body) ...)"),
         ];
 
         for (name, desc) in special_forms {
@@ -183,6 +192,249 @@ impl TypeChecker {
             );
         }
     }
+
+    /// Register core traits: Num, Eq, Ord.
+    ///
+    /// These are registered at startup, not from stdlib files.
+    /// See interfaces.md Ring 2A for the authoritative trait table.
+    fn register_core_traits(&mut self) {
+        self.register_num_trait();
+        self.register_eq_trait();
+        self.register_ord_trait();
+    }
+
+    /// Register the Num trait: + - * / :: (Fn [a a] a)
+    fn register_num_trait(&mut self) {
+        let methods: Vec<(&str, &[&str])> = vec![
+            ("+", &["lhs", "rhs"]),
+            ("-", &["lhs", "rhs"]),
+            ("*", &["lhs", "rhs"]),
+            ("/", &["lhs", "rhs"]),
+        ];
+
+        let method_sigs: Vec<TraitMethodSig> = methods
+            .into_iter()
+            .map(|(name, params)| self.make_aa_a_method(name, params))
+            .collect();
+
+        let decl = TraitDecl {
+            name: TraitName::from("Num"),
+            docstring: Some("Numeric operations".to_string()),
+            type_params: vec![Symbol::from("a")],
+            methods: method_sigs,
+            visibility: Visibility::Public,
+            span: Span::SYNTHETIC,
+        };
+
+        // Use register_trait_decl which handles method registration
+        self.register_trait_decl(&decl)
+            .unwrap_or_else(|e| {
+                unreachable!("invariant: core trait Num registration failed: {e}")
+            });
+    }
+
+    /// Register the Eq trait: = != :: (Fn [a a] Bool)
+    fn register_eq_trait(&mut self) {
+        let eq_method = self.make_aa_bool_method("=", &["lhs", "rhs"]);
+        let neq_method = self.make_aa_bool_method_with_default(
+            "!=",
+            &["x", "y"],
+        );
+
+        let decl = TraitDecl {
+            name: TraitName::from("Eq"),
+            docstring: Some("Equality".to_string()),
+            type_params: vec![Symbol::from("a")],
+            methods: vec![eq_method, neq_method],
+            visibility: Visibility::Public,
+            span: Span::SYNTHETIC,
+        };
+
+        self.register_trait_decl(&decl)
+            .unwrap_or_else(|e| {
+                unreachable!("invariant: core trait Eq registration failed: {e}")
+            });
+    }
+
+    /// Register the Ord trait: < > <= >= :: (Fn [a a] Bool)
+    fn register_ord_trait(&mut self) {
+        let lt_method = self.make_aa_bool_method("<", &["lhs", "rhs"]);
+        let gt_method = self.make_aa_bool_method_with_default(
+            ">",
+            &["x", "y"],
+        );
+        let le_method = self.make_aa_bool_method_with_default(
+            "<=",
+            &["x", "y"],
+        );
+        let ge_method = self.make_aa_bool_method_with_default(
+            ">=",
+            &["x", "y"],
+        );
+
+        let decl = TraitDecl {
+            name: TraitName::from("Ord"),
+            docstring: Some("Ordering".to_string()),
+            type_params: vec![Symbol::from("a")],
+            methods: vec![lt_method, gt_method, le_method, ge_method],
+            visibility: Visibility::Public,
+            span: Span::SYNTHETIC,
+        };
+
+        self.register_trait_decl(&decl)
+            .unwrap_or_else(|e| {
+                unreachable!("invariant: core trait Ord registration failed: {e}")
+            });
+    }
+
+    /// Helper: build a method sig of shape (Fn [a a] a) — for Num ops.
+    fn make_aa_a_method(
+        &self,
+        name: &str,
+        param_names: &[&str],
+    ) -> TraitMethodSig {
+        TraitMethodSig {
+            name: Symbol::from(name),
+            docstring: None,
+            params: vec![
+                TypeExpr::TypeVar(Symbol::from("a")),
+                TypeExpr::TypeVar(Symbol::from("a")),
+            ],
+            ret_type: TypeExpr::TypeVar(Symbol::from("a")),
+            span: Span::SYNTHETIC,
+            hkt_param_index: None,
+            default_param_names: param_names
+                .iter()
+                .map(|s| Symbol::from(*s))
+                .collect(),
+            default_body: None,
+        }
+    }
+
+    /// Helper: build a method sig of shape (Fn [a a] Bool) — for Eq/Ord.
+    fn make_aa_bool_method(
+        &self,
+        name: &str,
+        param_names: &[&str],
+    ) -> TraitMethodSig {
+        TraitMethodSig {
+            name: Symbol::from(name),
+            docstring: None,
+            params: vec![
+                TypeExpr::TypeVar(Symbol::from("a")),
+                TypeExpr::TypeVar(Symbol::from("a")),
+            ],
+            ret_type: TypeExpr::Named(TypeName::from("Bool")),
+            span: Span::SYNTHETIC,
+            hkt_param_index: None,
+            default_param_names: param_names
+                .iter()
+                .map(|s| Symbol::from(*s))
+                .collect(),
+            default_body: None,
+        }
+    }
+
+    /// Helper: method sig of shape (Fn [a a] Bool) with a default body marker.
+    fn make_aa_bool_method_with_default(
+        &self,
+        name: &str,
+        param_names: &[&str],
+    ) -> TraitMethodSig {
+        // The default body is represented as a Sexp placeholder.
+        // Actual default method generation happens in impl registration.
+        TraitMethodSig {
+            name: Symbol::from(name),
+            docstring: None,
+            params: vec![
+                TypeExpr::TypeVar(Symbol::from("a")),
+                TypeExpr::TypeVar(Symbol::from("a")),
+            ],
+            ret_type: TypeExpr::Named(TypeName::from("Bool")),
+            span: Span::SYNTHETIC,
+            hkt_param_index: None,
+            default_param_names: param_names
+                .iter()
+                .map(|s| Symbol::from(*s))
+                .collect(),
+            default_body: Some(cranelisp_types::Sexp::Symbol(
+                "default".to_string(),
+                Span::SYNTHETIC,
+            )),
+        }
+    }
+
+    /// Register builtin trait implementations.
+    ///
+    /// See interfaces.md Ring 2A for the authoritative impl table.
+    fn register_builtin_impls(&mut self) {
+        // Num for Int
+        self.register_builtin_impl(
+            TraitName::from("Num"),
+            TypeName::from("Int"),
+            vec![
+                (Symbol::from("+"), Symbol::from("add-i64")),
+                (Symbol::from("-"), Symbol::from("sub-i64")),
+                (Symbol::from("*"), Symbol::from("mul-i64")),
+                (Symbol::from("/"), Symbol::from("div-i64")),
+            ],
+        );
+
+        // Num for Float
+        self.register_builtin_impl(
+            TraitName::from("Num"),
+            TypeName::from("Float"),
+            vec![
+                (Symbol::from("+"), Symbol::from("add-f64")),
+                (Symbol::from("-"), Symbol::from("sub-f64")),
+                (Symbol::from("*"), Symbol::from("mul-f64")),
+                (Symbol::from("/"), Symbol::from("div-f64")),
+            ],
+        );
+
+        // Eq for Int
+        self.register_builtin_impl(
+            TraitName::from("Eq"),
+            TypeName::from("Int"),
+            vec![(Symbol::from("="), Symbol::from("eq-i64"))],
+        );
+
+        // Eq for Float
+        self.register_builtin_impl(
+            TraitName::from("Eq"),
+            TypeName::from("Float"),
+            vec![(Symbol::from("="), Symbol::from("eq-f64"))],
+        );
+
+        // Eq for Bool
+        self.register_builtin_impl(
+            TraitName::from("Eq"),
+            TypeName::from("Bool"),
+            vec![(Symbol::from("="), Symbol::from("eq-bool"))],
+        );
+
+        // Eq for String
+        self.register_builtin_impl(
+            TraitName::from("Eq"),
+            TypeName::from("String"),
+            vec![(Symbol::from("="), Symbol::from("str-eq"))],
+        );
+
+        // Ord for Int
+        self.register_builtin_impl(
+            TraitName::from("Ord"),
+            TypeName::from("Int"),
+            vec![(Symbol::from("<"), Symbol::from("lt-i64"))],
+        );
+
+        // Ord for Float
+        self.register_builtin_impl(
+            TraitName::from("Ord"),
+            TypeName::from("Float"),
+            vec![(Symbol::from("<"), Symbol::from("lt-f64"))],
+        );
+    }
+
 }
 
 #[cfg(test)]
@@ -193,7 +445,7 @@ mod tests {
     #[test]
     fn test_primitives_registered() {
         let tc = TypeChecker::new();
-        // All 19 primitives should be in the symbol table
+        // All 20 primitives should be in the symbol table
         for prim in ring0_primitives() {
             assert!(
                 tc.symbol_table.get(prim.name.as_ref()).is_some(),
@@ -283,7 +535,7 @@ mod tests {
     #[test]
     fn test_special_forms_registered() {
         let tc = TypeChecker::new();
-        let forms = ["if", "let", "fn", "defn", "deftype", "match"];
+        let forms = ["if", "let", "fn", "defn", "deftype", "match", "deftrait", "impl"];
         for name in forms {
             let entry = tc.symbol_table.get(name);
             assert!(entry.is_some(), "special form {name} should be registered");
@@ -331,11 +583,13 @@ mod tests {
             })
             .count();
         let bool_op = prims.iter().filter(|p| p.name.as_ref() == "not").count();
+        let bool_cmp = prims.iter().filter(|p| p.name.as_ref() == "eq-bool").count();
         assert_eq!(int_arith, 4, "4 int arithmetic ops (add-i64/sub-i64/mul-i64/div-i64)");
         assert_eq!(float_arith, 4, "4 float arithmetic ops (add-f64/sub-f64/mul-f64/div-f64)");
         assert_eq!(int_cmp, 5, "5 int comparisons");
         assert_eq!(float_cmp, 5, "5 float comparisons");
         assert_eq!(bool_op, 1, "1 boolean op (not)");
+        assert_eq!(bool_cmp, 1, "1 boolean comparison (eq-bool)");
     }
 
     #[test]
@@ -426,14 +680,14 @@ mod tests {
     }
 
     #[test]
-    fn test_old_operator_names_not_registered() {
+    fn test_operator_names_registered_as_trait_methods() {
         let tc = TypeChecker::new();
-        // Old polymorphic operator names should NOT be in the symbol table
-        let old_ops = ["+", "-", "*", "/", "=", "<", ">", "<=", ">="];
-        for name in old_ops {
+        // Ring 2A: operators are now registered as trait method entries
+        let ops = ["+", "-", "*", "/", "=", "!=", "<", ">", "<=", ">="];
+        for name in ops {
             assert!(
-                tc.symbol_table.get(name).is_none(),
-                "old operator {name} should NOT be registered (replaced by named primitives)"
+                tc.symbol_table.get(name).is_some(),
+                "operator {name} should be registered as a trait method"
             );
         }
     }

@@ -614,6 +614,60 @@ This would validate: ADTs with fields in Vec, Vec random access and functional u
 4. **Higher-order Vec functions not needed for solver** — The solver can use explicit recursive index loops over Vec. `vec-filter`/`vec-map`/`vec-fold` would improve ergonomics but are not blockers. They arrive with `/stdlib` at Ring 2-3.
 5. **Vec memory leak is acceptable for prototyping** — Scope-level dec deferred to Ring 2. The proof-of-concept solver runs once and exits, so leaks don't accumulate. Long-running web server (Ring 4) will need balanced RC.
 
+### Ring 2A Assessment (Sprint 4) — Trait Dispatch
+
+**Ring 2A features available**: Trait declarations (`deftrait`), trait implementations (`impl`), operator dispatch via `Num`/`Eq`/`Ord` traits with impls for `Int`, `Float`, `Bool`, `String`. Constrained polymorphism (`(defn add [x y] (+ x y))` infers `Num a => (Fn [a a] a)`, monomorphised at call sites). Default methods (`<=`, `>=`, `!=`). ADT trait impls (concrete and polymorphic). Type annotations with trait constraints.
+
+**Ring 2A does NOT deliver**: Modules/imports, multi-sig dispatch, auto-curry, stdlib files, platform DLLs, `derive`. These are Sprint 5 (Ring 2B).
+
+**Component-by-component trait assessment**:
+
+| Component | Trait impact | Assessment |
+|---|---|---|
+| `grid.cl` — index arithmetic | **Direct benefit** | `row-of`, `col-of`, `box-of` can use `+`, `-`, `*`, `/` via `Num` instead of `add-i64`, `sub-i64`, `mul-i64`, `div-i64`. Code becomes readable: `(/ idx 9)` instead of `(div-i64 idx 9)`. The `rem-i64` workaround `(- a (* (/ a b) b))` becomes `(- a (* (/ a b) b))` — same logic, cleaner syntax. |
+| `grid.cl` — Cell comparison | **Partially available** | `Eq` could be manually implemented for `Cell` via `(impl Eq Cell ...)`, enabling `(= cell1 cell2)` in test assertions. However, `derive [Eq]` is not yet available (Sprint 5), so each constructor case must be hand-written in the `impl`. For the bitmask-candidate `Cell` (3 constructors, each with one `Int` field), this is ~15 lines — tedious but feasible. |
+| `solver.cl` — constraint propagation | **Direct benefit** | All arithmetic in the solver (candidate bitmask operations, index calculations, counting) now uses clean operator syntax. `(> count 0)` instead of `(gt-i64 count 0)`. This is the biggest ergonomic win — the solver has dozens of arithmetic/comparison expressions. |
+| `solver.cl` — PropResult/SolveResult comparison | **Partially available** | `PropResult` is a pure enum (4 nullary constructors). `(impl Eq PropResult ...)` is straightforward — compare tags. `SolveResult` has a data constructor `(Success [grid])` — `Eq` impl would need to compare grids, which requires `Eq` on `Vec Cell`. Not practical without `derive` or Vec equality. Pattern matching remains the primary dispatch mechanism for these types. |
+| `html.cl` — grid display | **Limited** | `Display` trait with `show :: (Fn [a] String)` could be implemented for `Cell` to produce digit strings. But the HTML renderer needs structured output (CSS classes, table cells), not just `show`. `Display` on `Cell` is useful for debugging (`(show cell)`) but not for HTML generation. `int-to-string` remains the practical choice for digit rendering. |
+| `html.cl` — string building | **Minor benefit** | `str-concat` is already available; trait dispatch does not change string building. The real ergonomic improvement for HTML comes from threading macros (`->`) at Ring 3. |
+| `form.cl` — form parsing | **No change** | Still blocked on string manipulation primitives (`char-at`, `str-split`, `str-contains`, `str-sub`). Trait dispatch does not address these gaps. |
+| `main.cl` — routing | **No change** | Still blocked on IO model and platform DLLs (Ring 4). |
+| Test assertions | **Available** | With `Eq` impls on `Cell` and `PropResult`, test assertions can use `(= actual expected)` instead of pattern-matching each case. This is a significant testing ergonomic win, though `assert-eq` infrastructure itself needs `run-tests` (Ring 3). |
+
+**What can be done now that could not before**:
+
+1. **Clean operator syntax throughout** — Every `add-i64`/`sub-i64`/`mul-i64`/`div-i64`/`eq-i64`/`lt-i64`/`gt-i64`/`le-i64`/`ge-i64` call in the proof-of-concept can be replaced with `+`/`-`/`*`/`/`/`=`/`<`/`>`/`<=`/`>=`. This is the single biggest readability improvement.
+
+2. **Constrained polymorphic helpers** — Generic utility functions like `(defn max [x y] (if (> x y) x y))` get inferred as `Ord a => (Fn [a a] a)`. Useful for `find-min-candidates` which needs to compare candidate counts.
+
+3. **Manual `Eq` on Cell** — Enables equality-based test assertions for the grid data model. Not blocked on `derive`.
+
+4. **`Display` for debugging** — `(impl Display Cell (show [c] ...))` can produce a text representation. Useful for REPL-based debugging of the solver, even though the real output is HTML.
+
+**What still needs later rings**:
+
+| Need | Blocked on | Arrives at |
+|---|---|---|
+| `derive [Eq Display]` on ADTs | `derive` macro infrastructure | Ring 3 (macros) |
+| Multi-module decomposition | Module system | Sprint 5 (Ring 2B) |
+| `char-at`, `str-split`, `str-contains` | String primitives in stdlib | Sprint 5+ (stdlib) |
+| `vec-filter`, `vec-map`, `vec-fold` | Higher-order Vec functions | Sprint 5+ (stdlib) |
+| `mod`/`rem` as operator | Stdlib or new primitive | Sprint 5+ |
+| IO model, platform DLLs | Platform system | Ring 4 |
+| Threading macros (`->`, `->>`) | Macro system | Ring 3 |
+
+**Risks and concerns**:
+
+1. **Manual `Eq` impls are fragile** — Without `derive`, any change to an ADT requires updating the corresponding `Eq` impl. For the exemplar this is manageable (3-4 types), but it means the exemplar code written now will need updating when `derive` arrives. Acceptable for prototyping.
+
+2. **No `Display`-based print** — The `show` method returns a `String`, but there is no `print` or `println` that dispatches on `Display`. Printing a value still requires calling `show` explicitly and then using an IO primitive. This is fine for the exemplar (HTML output is string-based anyway) but worth noting.
+
+3. **Proof-of-concept rewrite opportunity** — If a Sprint 3 proof-of-concept exists using `add-i64`-style primitives, it should be rewritten with operator syntax to validate trait dispatch at realistic scale. This is a good validation exercise for Ring 2A.
+
+**Verdict**: Ring 2A is a **significant ergonomic improvement** for the exemplar but does not unlock new components. The solver algorithm and grid model were already expressible (Sprint 3). What changes is readability: operator syntax replaces verbose primitive names throughout. Manual `Eq` impls enable equality-based assertions. `Display` provides debug output. The exemplar remains blocked on modules (Sprint 5) for multi-file decomposition and on string primitives for `make-grid` and `form.cl`.
+
+**Recommended action**: If a single-file proof-of-concept was built at Sprint 3, rewrite it with trait-based operators as a Ring 2A validation exercise. Otherwise, wait for Sprint 5 (modules + stdlib) before beginning serious exemplar implementation.
+
 ### Ring 3+
 
 Grid model, solver, HTML generation, form parsing — all pure computation. Testable with `run-tests`. This is the bulk of the Cranelisp code.
@@ -645,8 +699,8 @@ Comfortably within the 500–2000 line target.
 
 ## Next Skills
 
-- `/stdlib` — String primitives (`char-at`, `str-split`, `str-contains`, `str-sub`) are now the critical path for the exemplar (U1.1). Also: `mod`/`rem`, `vec-filter`, `vec-map`, `vec-fold`. Consider a variadic `str` function for string building ergonomics (U1.11).
+- `/stdlib` — String primitives (`char-at`, `str-split`, `str-contains`, `str-sub`) remain the critical path for the exemplar (U1.1). Also: `mod`/`rem`, `vec-filter`, `vec-map`, `vec-fold`. Consider a variadic `str` function for string building ergonomics (U1.11).
 - `/platform` — Review the web platform API above. Confirm that `declare_platform!` can handle: (a) a function receiving a function pointer callback (`serve`), (b) opaque heap values for Request/Response. Flag if the platform ABI needs extension for callbacks.
 - `/examples` — The exemplar's ADT patterns (sum types with data, enum types with derive) should align with the learning sequence.
 - `/docs` — The exemplar will serve as the capstone tutorial/walkthrough. The web platform authoring is a natural "advanced topic" chapter.
-- `/port` — At Ring 2 (post-modules, post-string-primitives): attempt the single-file proof-of-concept with `make-grid` (needs `char-at`), then decompose into multi-module structure. At Ring 3: implement full exemplar core with macros and testing. At Ring 4: web platform DLL and IO wiring.
+- `/port` — At Sprint 5 (Ring 2B, post-modules, post-string-primitives): decompose into multi-module structure, implement `make-grid` (needs `char-at`). At Ring 3: implement full exemplar core with macros, `derive`, and testing. At Ring 4: web platform DLL and IO wiring.

@@ -212,15 +212,23 @@ impl TypeChecker {
         let expected_fn = Type::Fn(arg_types.clone(), Box::new(ret_ty.clone()));
         self.unify(&callee_ty, &expected_fn, span)?;
 
-        // If the callee is a named primitive, record a BuiltinFn resolution.
-        // The backend uses this to emit inline Cranelift IR instead of a call.
-        // No special validation needed — unification already enforces the
-        // monomorphic type; any type mismatch will have been caught above.
-        if let Expr::Var { name, .. } = callee
-            && self.is_primitive(name)
-        {
-            self.method_resolutions
-                .insert(span, ResolvedCall::BuiltinFn { name: name.clone() });
+        // Resolve the call: trait method, builtin primitive, or user function.
+        if let Expr::Var { name, .. } = callee {
+            let resolved_args: Vec<Type> = arg_types
+                .iter()
+                .map(|t| self.apply_subst(t))
+                .collect();
+
+            if let Some(resolution) =
+                self.try_resolve_trait_method(name, &resolved_args, span)
+            {
+                // Trait method resolution (Ring 2): operators like +, -, =, <
+                self.method_resolutions.insert(span, resolution);
+            } else if self.is_primitive(name) {
+                // Named primitive resolution (Ring 0-1): add-i64, str-concat, etc.
+                self.method_resolutions
+                    .insert(span, ResolvedCall::BuiltinFn { name: name.clone() });
+            }
         }
 
         let resolved = self.apply_subst(&ret_ty);

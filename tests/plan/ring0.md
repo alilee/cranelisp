@@ -48,6 +48,23 @@
   - Negative integer parsing (`-3` as integer, not operator)
 - `CompileMode::Batch` vs `CompileMode::Interactive` produce identical results
 
+## REPL Spec Compliance (repl/spec.md)
+
+<!-- FIXME(/qa): The following repl/spec.md Ring 0 requirements have no test coverage and the implementation does not conform. The spec is clear — the QA plan should have tests for each. See U1.13. -->
+
+| Spec Section | Requirement | Ring | Current Behavior | Priority |
+|---|---|---|---|---|
+| §1.3 | Definition result shows name: `:(Fn [Int] Int) user/double` | 0 | Shows `<closure>` instead of name | blocking |
+| §1.4 | Type names fully qualified: `primitives/Int` | 0 | Shows bare `Int` | blocking |
+| §1.5 | ADT constructors use `Type.Ctor` notation: `Color.Red` | 0 | Shows bare `Red` | blocking |
+| §2.1 | Prompt shows `{compile}+{eval}ms; {module}>` | 0 | Shows bare `> ` | important |
+| §3.1 | Slash commands work: `/help`, `/sig`, `/list`, etc. | 0 | `/` parsed as division → `error: undefined variable: /` | blocking |
+| §4.1 | Bare function lookup shows type + qualified name | 0 | Shows `<closure>` for Fn types | blocking |
+| §4.1 | Bare type name lookup (`Int`) shows type info | 0 | `error: undefined variable: Int` | blocking |
+| §4.1 | Bare trait name lookup (`Num`) shows trait info | 0 | `error: undefined variable: Num` | blocking |
+| §4.2 | Bare special form (`if`) shows shape | 0 | Error instead of shape display | blocking |
+| §6.2 | Startup banner with name, version, `/help` hint | 0 | No banner | blocking |
+
 ## Acceptance Gate
 
 - All ~80 tests pass in both batch and REPL

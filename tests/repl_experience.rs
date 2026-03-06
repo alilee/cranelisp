@@ -1,4 +1,4 @@
-// REPL experience tests for Ring 0.
+// REPL experience tests for Rings 0, 1, and 2A.
 //
 // These tests validate the REPL from the user's perspective, as specified in
 // repl/spec.md. They focus on display formats, session state management, and
@@ -8,7 +8,7 @@
 //   add-i64, sub-i64, mul-i64, div-i64, eq-i64, lt-i64, gt-i64, le-i64, ge-i64
 //   add-f64, sub-f64, mul-f64, div-f64, eq-f64, lt-f64, gt-f64, le-f64, ge-f64
 //   not
-// Polymorphic operator syntax (+, <, etc.) arrives in Ring 2 via trait dispatch.
+// Ring 2A adds trait-dispatched operators: +, -, *, /, =, <
 //
 // Many basic REPL behaviors (eval int, define and call, etc.) are already
 // tested in ring0.rs. This file tests the REPL *experience* aspects:
@@ -2073,4 +2073,378 @@ fn repl_comment_only_no_error() {
     // Comment-only input should not produce an error
     let result = session.eval("; this is a comment");
     assert!(result.is_ok(), "Comment-only input should not error: {:?}", result.err());
+}
+
+// =============================================================================
+// Ring 2A: Trait-based Operator Dispatch (spec: §4.3)
+// =============================================================================
+
+#[test]
+fn ring2a_operator_add_int() {
+    // Spec §4.3: Operators are stdlib functions dispatched via traits.
+    let mut session = repl_session();
+    let (value, ty) = repl_eval_typed(&mut session, "(+ 1 2)");
+    assert_eq!(value, 3);
+    assert_eq!(ty, Type::Int);
+}
+
+#[test]
+fn ring2a_operator_add_float() {
+    let mut session = repl_session();
+    let (value, ty) = repl_eval_typed(&mut session, "(+ 1.0 2.0)");
+    assert_eq!(ty, Type::Float);
+    let f = f64::from_bits(value as u64);
+    assert!((f - 3.0).abs() < f64::EPSILON, "expected 3.0, got {f}");
+}
+
+#[test]
+fn ring2a_operator_sub_int() {
+    let mut session = repl_session();
+    let (value, ty) = repl_eval_typed(&mut session, "(- 10 3)");
+    assert_eq!(value, 7);
+    assert_eq!(ty, Type::Int);
+}
+
+#[test]
+fn ring2a_operator_mul_int() {
+    let mut session = repl_session();
+    let (value, ty) = repl_eval_typed(&mut session, "(* 4 5)");
+    assert_eq!(value, 20);
+    assert_eq!(ty, Type::Int);
+}
+
+#[test]
+fn ring2a_operator_div_int() {
+    let mut session = repl_session();
+    let (value, ty) = repl_eval_typed(&mut session, "(/ 10 2)");
+    assert_eq!(value, 5);
+    assert_eq!(ty, Type::Int);
+}
+
+#[test]
+fn ring2a_operator_eq_returns_bool() {
+    // = is dispatched via Eq trait, returns Bool.
+    let mut session = repl_session();
+    let (value, ty) = repl_eval_typed(&mut session, "(= 5 5)");
+    assert_eq!(value, 1); // true
+    assert_eq!(ty, Type::Bool);
+}
+
+#[test]
+fn ring2a_operator_eq_false() {
+    let mut session = repl_session();
+    let (value, ty) = repl_eval_typed(&mut session, "(= 5 3)");
+    assert_eq!(value, 0); // false
+    assert_eq!(ty, Type::Bool);
+}
+
+#[test]
+fn ring2a_operator_lt_returns_bool() {
+    // < is dispatched via Ord trait, returns Bool.
+    let mut session = repl_session();
+    let (value, ty) = repl_eval_typed(&mut session, "(< 1 2)");
+    assert_eq!(value, 1); // true
+    assert_eq!(ty, Type::Bool);
+}
+
+#[test]
+fn ring2a_operator_lt_false() {
+    let mut session = repl_session();
+    let (value, ty) = repl_eval_typed(&mut session, "(< 5 3)");
+    assert_eq!(value, 0); // false
+    assert_eq!(ty, Type::Bool);
+}
+
+#[test]
+fn ring2a_operators_compose_with_let() {
+    // Operators work in compound expressions.
+    let mut session = repl_session();
+    let value = repl_eval(&mut session, "(let [x 10 y 3] (+ x y))");
+    assert_eq!(value, 13);
+}
+
+#[test]
+fn ring2a_operators_compose_with_if() {
+    let mut session = repl_session();
+    let value = repl_eval(&mut session, "(if (< 1 2) (+ 10 20) 0)");
+    assert_eq!(value, 30);
+}
+
+#[test]
+fn ring2a_operators_compose_with_defn() {
+    // A function using operators gets a concrete type (resolved via trait dispatch).
+    let mut session = repl_session();
+    let result = session.eval("(defn double [x] (* x 2))").unwrap();
+    assert!(result.is_definition);
+    assert_eq!(
+        result.ty,
+        Type::Fn(vec![Type::Int], Box::new(Type::Int))
+    );
+    let value = repl_eval(&mut session, "(double 21)");
+    assert_eq!(value, 42);
+}
+
+#[test]
+fn ring2a_operators_nested() {
+    // Nested operator calls work.
+    let mut session = repl_session();
+    let value = repl_eval(&mut session, "(+ (* 3 4) (- 10 5))");
+    assert_eq!(value, 17);
+}
+
+#[test]
+fn ring2a_operator_in_recursive_fn() {
+    // Operators work in recursive functions.
+    let mut session = repl_session();
+    session
+        .eval("(defn fact [n] (if (= n 0) 1 (* n (fact (- n 1)))))")
+        .unwrap();
+    let value = repl_eval(&mut session, "(fact 5)");
+    assert_eq!(value, 120);
+}
+
+// =============================================================================
+// Ring 2A: Trait Declaration in REPL (spec: §4.1)
+// =============================================================================
+
+#[test]
+fn ring2a_deftrait_in_repl() {
+    // A trait declaration should succeed without error.
+    let mut session = repl_session();
+    let result = session.eval("(deftrait (MyTrait a) (my-method [:a] :Int))");
+    assert!(result.is_ok(), "deftrait should succeed: {:?}", result.err());
+    let r = result.unwrap();
+    assert!(r.is_definition);
+}
+
+#[test]
+fn ring2a_deftrait_session_continues() {
+    // After declaring a trait, the session continues normally.
+    let mut session = repl_session();
+    session
+        .eval("(deftrait (Describable a) (describe [:a] :Int))")
+        .unwrap();
+    // Other expressions still work.
+    let value = repl_eval(&mut session, "(+ 1 2)");
+    assert_eq!(value, 3);
+}
+
+// =============================================================================
+// Ring 2A: U1.6 Verification — Type Variable Name Normalization
+// =============================================================================
+
+#[test]
+fn u1_6_polymorphic_fn_shows_a_not_t0() {
+    // U1.6: Type variables should display as `a`, `b`, `c`, not `t0`, `t1`, `t2`.
+    // Spec §1.4: Type variables are lowercase letters starting from `a`.
+    let mut session = repl_session();
+    let result = session.eval("(defn id [x] x)").unwrap();
+    // The type should be (Fn [Var(n)] Var(n)) — display as (Fn [a] a).
+    let display = format_result(result.value, &result.ty);
+    assert!(
+        display.contains("[a]") && display.contains("] a)"),
+        "expected (Fn [a] a) in display, got: {display}"
+    );
+    // Verify no raw type var names leak.
+    assert!(
+        !display.contains("t0") && !display.contains("t1"),
+        "raw type var names should not appear: {display}"
+    );
+}
+
+#[test]
+fn u1_6_two_var_fn_shows_a_b() {
+    // (defn const [x y] x) should show (Fn [a b] a), not (Fn [t5 t6] t5).
+    let mut session = repl_session();
+    let result = session.eval("(defn konst [x y] x)").unwrap();
+    let display = format_result(result.value, &result.ty);
+    assert!(
+        display.contains("[a b]") && display.contains("] a)"),
+        "expected (Fn [a b] a) in display, got: {display}"
+    );
+}
+
+#[test]
+fn u1_6_compose_fn_shows_three_vars() {
+    // (defn compose [f g] (fn [x] (f (g x)))) — three type vars.
+    let mut session = repl_session();
+    let result = session
+        .eval("(defn compose [f g] (fn [x] (f (g x))))")
+        .unwrap();
+    let display = format_result(result.value, &result.ty);
+    // Should contain a, b, c — not t-prefixed numbers.
+    assert!(
+        !display.contains("t0")
+            && !display.contains("t1")
+            && !display.contains("t2")
+            && !display.contains("t3"),
+        "raw type var names should not appear: {display}"
+    );
+    // Should have three distinct vars (a, b, c).
+    assert!(
+        display.contains('a') && display.contains('b') && display.contains('c'),
+        "expected three type vars (a, b, c) in: {display}"
+    );
+}
+
+#[test]
+fn u1_6_bare_polymorphic_fn_lookup_normalized() {
+    // Bare function name lookup should also use normalized type var names.
+    let mut session = repl_session();
+    session.eval("(defn id [x] x)").unwrap();
+    let result = session.eval("id").unwrap();
+    let display = format_result(result.value, &result.ty);
+    assert!(
+        display.contains("[a]") && display.contains("] a)"),
+        "bare id lookup should show (Fn [a] a), got: {display}"
+    );
+}
+
+// =============================================================================
+// Ring 2A: U1.9 Verification — Polymorphic ADT Field Display
+// =============================================================================
+
+#[test]
+fn u1_9_polymorphic_adt_data_ctor_display() {
+    // U1.9: Polymorphic ADT data constructors should display fields with
+    // correct types, not raw pointers or raw type vars.
+    let mut session = repl_session();
+    session
+        .eval("(deftype (Option a) None (Some [:a val]))")
+        .unwrap();
+    let display = repl_eval_display(&mut session, "(Some 42)");
+    assert!(
+        display.contains("(Some 42)"),
+        "expected (Some 42) in display, got: {display}"
+    );
+    assert!(
+        display.contains("(Option Int)"),
+        "type should show (Option Int), got: {display}"
+    );
+}
+
+#[test]
+fn u1_9_polymorphic_adt_string_field_display() {
+    // Heap-typed fields should display correctly (not as raw pointers).
+    let mut session = repl_session();
+    session
+        .eval("(deftype (Box a) (Wrap [:a inner]))")
+        .unwrap();
+    let display = repl_eval_display(&mut session, "(Wrap \"hello\")");
+    assert!(
+        display.contains("\"hello\""),
+        "string field should display as quoted string, got: {display}"
+    );
+}
+
+#[test]
+fn u1_9_polymorphic_adt_multi_field_display() {
+    // Multi-field polymorphic ADT: both fields should display correctly.
+    let mut session = repl_session();
+    session
+        .eval("(deftype (Pair a b) (MkPair [:a fst :b snd]))")
+        .unwrap();
+    let display = repl_eval_display(&mut session, "(MkPair 42 \"hello\")");
+    assert!(
+        display.contains("42") && display.contains("\"hello\""),
+        "both fields should display, got: {display}"
+    );
+    assert!(
+        display.contains("(Pair Int String)"),
+        "type should show (Pair Int String), got: {display}"
+    );
+}
+
+#[test]
+fn u1_9_adt_type_display_normalizes_vars_for_fn() {
+    // When a polymorphic fn returns an ADT type, the fn type display
+    // should normalize vars even inside ADT type args.
+    let mut session = repl_session();
+    session
+        .eval("(deftype (Wrapper a) (Wrap [:a val]))")
+        .unwrap();
+    let result = session
+        .eval("(defn wrap [x] (Wrap x))")
+        .unwrap();
+    let display = format_result(result.value, &result.ty);
+    // Should show (Fn [a] (Wrapper a)), not (Fn [t5] (Wrapper t5))
+    assert!(
+        !display.contains("t0")
+            && !display.contains("t1")
+            && !display.contains("t2")
+            && !display.contains("t3")
+            && !display.contains("t4")
+            && !display.contains("t5"),
+        "type var names in ADT args should be normalized: {display}"
+    );
+}
+
+// =============================================================================
+// Ring 2A: Session Continuity with Trait Features
+// =============================================================================
+
+#[test]
+fn ring2a_session_operators_and_old_primitives_coexist() {
+    // Both trait-dispatched operators and Ring 0 named primitives work in the same session.
+    let mut session = repl_session();
+    let v1 = repl_eval(&mut session, "(+ 10 20)");
+    assert_eq!(v1, 30);
+    let v2 = repl_eval(&mut session, "(add-i64 10 20)");
+    assert_eq!(v2, 30);
+}
+
+#[test]
+fn ring2a_session_defn_with_operators_then_call() {
+    // Define a function using operators, call it, redefine with a different
+    // operator, call again.
+    let mut session = repl_session();
+    session.eval("(defn compute [x] (* x 2))").unwrap();
+    assert_eq!(repl_eval(&mut session, "(compute 5)"), 10);
+    // Redefine with a different computation.
+    session.eval("(defn compute [x] (+ x 100))").unwrap();
+    assert_eq!(repl_eval(&mut session, "(compute 5)"), 105);
+}
+
+#[test]
+fn ring2a_session_adt_with_operator_functions() {
+    // Combine ADTs and trait-dispatched operators.
+    let mut session = repl_session();
+    session
+        .eval("(deftype (Option a) None (Some [:a val]))")
+        .unwrap();
+    session
+        .eval("(defn add-opt [o] (match o [None 0 (Some x) (+ x 1)]))")
+        .unwrap();
+    assert_eq!(repl_eval(&mut session, "(add-opt (Some 41))"), 42);
+    assert_eq!(repl_eval(&mut session, "(add-opt None)"), 0);
+}
+
+#[test]
+fn ring2a_error_recovery_after_operator_error() {
+    // After an operator-related error, the session should continue.
+    let mut session = repl_session();
+    // Type mismatch: (+ 1 true) should fail.
+    let err = session.eval("(+ 1 true)");
+    assert!(err.is_err(), "type mismatch should produce an error");
+    // Session should still work.
+    let value = repl_eval(&mut session, "(+ 1 2)");
+    assert_eq!(value, 3);
+}
+
+#[test]
+fn ring2a_float_operators() {
+    // Float operators work via trait dispatch.
+    let mut session = repl_session();
+    let (v, ty) = repl_eval_typed(&mut session, "(* 2.0 3.0)");
+    assert_eq!(ty, Type::Float);
+    let f = f64::from_bits(v as u64);
+    assert!((f - 6.0).abs() < f64::EPSILON, "expected 6.0, got {f}");
+}
+
+#[test]
+fn ring2a_mixed_int_float_operators_error() {
+    // Mixing Int and Float in the same operator call should be a type error.
+    let mut session = repl_session();
+    let err = session.eval("(+ 1 2.0)");
+    assert!(err.is_err(), "mixing Int and Float should error");
 }

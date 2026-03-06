@@ -102,3 +102,12 @@ fn example_14_vecs() {
     // 5+60+99+6+3+6+300+62 = 541
     assert_eq!(run_example("14-vecs.cl"), 541);
 }
+
+// Ring 2A examples: traits, operator dispatch
+
+#[test]
+fn example_15_traits() {
+    // Num(7+7+42+5+30) + Float(1+1) + Eq(1+1+1+1+0) + Ord(1+1+0)
+    // + fact(1) + fib(1) + closure(42) + ADT(25) + named(25) = 193
+    assert_eq!(run_example("15-traits.cl"), 193);
+}

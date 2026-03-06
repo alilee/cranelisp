@@ -16,6 +16,7 @@ mod program;
 mod resolve;
 mod scheme;
 mod scope;
+mod traits;
 mod unify;
 
 // Public API

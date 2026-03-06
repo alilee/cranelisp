@@ -1,73 +1,43 @@
-; Cranelisp — Your First Session
-; Follow along as a new user discovers the language.
-;
-; Status: tracks shipped features. Phases marked (not yet) are
-; in the spec (repl/spec.md §6.3) but not implemented.
-
-; === Evaluate expressions ===
-; The REPL shows :Type value for every result.
-
-(add-i64 2 3)
+/help
+3
+true
+"hello"
+(+ 1 2)
 (mul-i64 6 7)
 (eq-i64 3 3)
-true
-42
 
-; === Define functions ===
-; The REPL infers types without annotations.
++
+if
+Int
 
 (defn double [x] (mul-i64 x 2))
+double
 (double 21)
 
-; === Strings ===
+(deftype Color Red Green Blue)
+Red
+Color
 
-"hello, world"
-(str-len "cranelisp")
-(str-concat "hello" " world")
+(defn flip [c] (match c [Red Blue Blue Red Green Green]))
+(flip Red)
+(flip (flip Green))
 
-; === Algebraic data types ===
+(double "oops")
+(double 7)
 
 (deftype (Option a) None (Some [:a val]))
 (Some 42)
 None
 
-; === Pattern matching ===
-
 (defn get-or-zero [o] (match o [None 0 (Some x) x]))
 (get-or-zero (Some 99))
 (get-or-zero None)
 
-; === Vecs — growable arrays ===
-
 [1 2 3]
 (vec-push [10 20] 30)
 (vec-get [10 20 30] 1)
-(vec-len [10 20 30 40 50])
-
-; === Closures and higher-order functions ===
 
 (defn inc [n] (add-i64 n 1))
 (defn apply-twice [f x] (f (f x)))
 (apply-twice inc 5)
 (apply-twice double 3)
-
-; === Combining features ===
-; ADTs + closures + higher-order
-
-(defn transform [f opt] (match opt [None None (Some x) (Some (f x))]))
-(transform inc (Some 41))
-(transform inc None)
-
-; === Making mistakes ===
-; Type errors don't crash the session.
-
-(double "oops")
-(double 7)
-
-; That's Ring 1. As more features ship, this demo grows:
-;   /help, /list, /sig, /info  — slash commands (Ring 0 spec)
-;   bare symbol lookup          — self-documentation (Ring 0 spec)
-;   startup banner              — discoverability (Ring 0 spec)
-;   modules, traits             — Ring 2
-;   macros                      — Ring 3
-;   IO, trace, run-tests        — Ring 4

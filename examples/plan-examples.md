@@ -62,7 +62,7 @@ Examples are numbered `01` through `30` (approximately). Each maps to one ring a
 
 ### Complete Learning Sequence
 
-**Numbering note**: The delivered file numbering is contiguous (01-13 so far). Ring 0 was delivered as examples 01-08 (condensed from the original 01-10 plan). Ring 1 continues as 09-13. Future rings will continue from 14.
+**Numbering note**: The delivered file numbering is contiguous (01-15 so far). Ring 0 was delivered as examples 01-08 (condensed from the original 01-10 plan). Ring 1 continues as 09-14. Ring 2A begins at 15. The original plan had 14=Vectors, 15=Lists, 16=Traits, but actual delivery renumbered: 14=Vecs (Sprint 3), 15=Traits (Sprint 4). Future examples continue from 16.
 
 | # | File | Ring | Concept | Status |
 |---|------|------|---------|--------|
@@ -79,21 +79,20 @@ Examples are numbered `01` through `30` (approximately). Each maps to one ring a
 | 11 | `11-destructuring.cl` | 1 | Pattern matching on data constructors | delivered |
 | 12 | `12-closures.cl` | 1 | Anonymous functions and capture | delivered |
 | 13 | `13-higher-order.cl` | 1 | Functions as arguments and return values | delivered |
-| 14 | Vectors | 1 | Vec literals and operations | deferred (Sprint 3) |
-| 15 | Lists | 1 | Linked list ADT | deferred (Sprint 3) |
-| 16 | Traits | 2 | Trait declarations and implementations | planned |
-| 17 | Constrained Poly | 2 | Constrained polymorphic functions | planned |
-| 18 | Multi-Signature | 2 | Function overloading by type | planned |
-| 19 | Auto-Currying | 2 | Partial application | planned |
-| 20 | Modules | 2 | Module declarations and imports | planned |
-| 21 | Lazy Sequences | 2 | Infinite sequences | planned |
-| 22 | Macros | 3 | Compile-time code transformation | planned |
-| 23 | Threading Macros | 3 | Data pipeline composition | planned |
-| 24 | Derive | 3 | Auto-generated trait impls | planned |
-| 25 | Hello World | 4 | IO model and print | planned |
-| 26 | IO Sequencing | 4 | do and bind! | planned |
-| 27 | Interactive IO | 4 | User input | planned |
-| 28 | Testing | 4 | Inline test modules | planned |
+| 14 | `14-vecs.cl` | 1 | Vec literals and operations | delivered |
+| 15 | `15-traits.cl` | 2 | Trait-based operator dispatch | delivered |
+| 16 | Constrained Poly | 2 | Constrained polymorphic functions | planned |
+| 17 | Multi-Signature | 2 | Function overloading by type | planned |
+| 18 | Auto-Currying | 2 | Partial application | planned |
+| 19 | Modules | 2 | Module declarations and imports | planned |
+| 20 | Lazy Sequences | 2 | Infinite sequences | planned |
+| 21 | Macros | 3 | Compile-time code transformation | planned |
+| 22 | Threading Macros | 3 | Data pipeline composition | planned |
+| 23 | Derive | 3 | Auto-generated trait impls | planned |
+| 24 | Hello World | 4 | IO model and print | planned |
+| 25 | IO Sequencing | 4 | do and bind! | planned |
+| 26 | Interactive IO | 4 | User input | planned |
+| 27 | Testing | 4 | Inline test modules | planned |
 
 ### Feature Coverage Verification
 
@@ -733,36 +732,46 @@ Examples 16 (Vectors) and 17 (Lists) are deferred alongside Vec (Chunk D).
 
 Ring 2 adds: traits, trait implementations, constrained polymorphism, monomorphisation, multi-signature dispatch, modules, imports/exports.
 
-### Example 16: Traits
+### Example 15: Traits (delivered)
 
-- `(deftrait (Doubled a) (doubled [a] Int))`
-- `(impl Doubled Int (defn doubled [x] (* x 2)))`
-- Method dispatch: `(doubled 21)` -> `:primitives/Int 42`
+Demonstrates Num/Eq/Ord trait-based operator dispatch:
+- `(+ 3 4)`, `(- 10 3)`, `(* 6 7)`, `(/ 20 4)` on Int
+- `(+ 1.5 2.5)`, `(* 3.0 4.0)` on Float
+- `(= 42 42)` on Int, Float, Bool, String
+- `(< 3 5)` on Int and Float
+- Trait operators in recursive functions (factorial, sum-to)
+- Trait operators inside closures and match bodies
+- Named primitives remain available alongside trait dispatch
 
-### Example 17: Constrained Polymorphism
+**Not yet demonstrated** (pending compiler fixes):
+- User-defined traits with `deftrait`/`impl` (GOT slot issue in batch)
+- Default methods (`!=`, `>`, `<=`, `>=`) (GOT slot issue in batch)
+- Constrained polymorphism (codegen issue for separate constrained+caller defns)
+
+### Example 16: Constrained Polymorphism
 
 - `(defn add [x y] (+ x y))` inferred as `:(Fn [:Num a :a] a)`
 - `(add 1 2)` -> Int, `(add 1.5 2.5)` -> Float
 - Monomorphisation at call sites
 
-### Example 18: Multi-Signature Dispatch
+### Example 17: Multi-Signature Dispatch
 
 - `(defn size ([:Vec v] (vec-len v)) ([:List l] (list-len l)))`
 - Static dispatch based on argument type
 
-### Example 19: Auto-Currying
+### Example 18: Auto-Currying
 
 - `(+ 1)` returns a closure
 - `(map (+ 1) [1 2 3])` -> `[2 3 4]`
 
-### Example 20: Modules
+### Example 19: Modules
 
 - `(mod math)` declaration
 - `(import [math [double]])` selective import
 - `(import [math [*]])` glob import
 - Qualified calls: `(math/double 21)`
 
-### Example 21: Lazy Sequences
+### Example 20: Lazy Sequences
 
 - `(range-from 0)` infinite sequence
 - `(take 5 (range-from 0))` finite slice
@@ -773,19 +782,19 @@ Ring 2 adds: traits, trait implementations, constrained polymorphism, monomorphi
 
 Ring 3 adds: macros (`defmacro`), quasiquote, multi-clause macros, derive, prelude macros (`->`, `->>`, `cond`, `case`, `vec`, `list`).
 
-### Example 22: Macros
+### Example 21: Macros
 
 - `(defmacro my-inc [x] \`(+ ~x 1))`
 - Quasiquote with unquote
 - `(my-inc 41)` -> `:primitives/Int 42`
 
-### Example 23: Threading Macros
+### Example 22: Threading Macros
 
 - `(-> 5 (+ 1) (* 2))` thread-first
 - `(->> [1 2 3] (map inc) (filter (fn [x] (> x 2))))` thread-last
 - Data pipeline style
 
-### Example 24: Derive
+### Example 23: Derive
 
 - `(derive [Eq Ord Display] (deftype Color Red Green Blue))`
 - `(= Color.Red Color.Red)` -> `true`
@@ -795,25 +804,25 @@ Ring 3 adds: macros (`defmacro`), quasiquote, multi-clause macros, derive, prelu
 
 Ring 4 adds: IO model (platform, `print`, `read-line`), `do`/`bind!`/`pure` macros, `main` entry point, parallel evaluation, testing infrastructure.
 
-### Example 25: Hello World
+### Example 24: Hello World
 
 - `(platform stdio)`, `(import [platform.stdio [*]])`
 - `(defn main [] (print "hello, world!"))`
 - First batch-mode program
 
-### Example 26: IO Sequencing
+### Example 25: IO Sequencing
 
 - `do` for sequencing IO actions
 - `bind!` for capturing IO results
 - `pure` for wrapping values in IO
 
-### Example 27: Interactive IO
+### Example 26: Interactive IO
 
 - `read-line`, `parse-int`
 - IO loop with recursion
 - Error handling with `Option` in IO context
 
-### Example 28: Testing
+### Example 27: Testing
 
 - `(mod test)` inline test submodule
 - `(import [testing [*]])`, `assert-eq`, `check`
@@ -857,21 +866,20 @@ examples/
   11-destructuring.cl   — delivered (Ring 1)
   12-closures.cl        — delivered (Ring 1)
   13-higher-order.cl    — delivered (Ring 1)
-  14-vectors.cl         — deferred (Sprint 3)
-  15-lists.cl           — deferred (Sprint 3)
-  16-traits.cl          — planned (Ring 2)
-  17-constrained-poly.cl — planned (Ring 2)
-  18-multi-sig.cl       — planned (Ring 2)
-  19-auto-curry.cl      — planned (Ring 2)
-  20-modules/           — planned (Ring 2, multi-file)
-  21-lazy-sequences.cl  — planned (Ring 2)
-  22-macros.cl          — planned (Ring 3)
-  23-threading.cl       — planned (Ring 3)
-  24-derive.cl          — planned (Ring 3)
-  25-hello-world.cl     — planned (Ring 4)
-  26-io-sequencing.cl   — planned (Ring 4)
-  27-interactive-io.cl  — planned (Ring 4)
-  28-testing/           — planned (Ring 4, multi-file)
+  14-vecs.cl            — delivered (Ring 1, Sprint 3)
+  15-traits.cl          — delivered (Ring 2A, Sprint 4)
+  16-constrained-poly.cl — planned (Ring 2)
+  17-multi-sig.cl       — planned (Ring 2)
+  18-auto-curry.cl      — planned (Ring 2)
+  19-modules/           — planned (Ring 2, multi-file)
+  20-lazy-sequences.cl  — planned (Ring 2)
+  21-macros.cl          — planned (Ring 3)
+  22-threading.cl       — planned (Ring 3)
+  23-derive.cl          — planned (Ring 3)
+  24-hello-world.cl     — planned (Ring 4)
+  25-io-sequencing.cl   — planned (Ring 4)
+  26-interactive-io.cl  — planned (Ring 4)
+  27-testing/           — planned (Ring 4, multi-file)
 ```
 
 ## Next skills

@@ -129,6 +129,25 @@ Before advancing to the next wave within a sprint, `/sprint` MUST scan all files
 
 This ensures cross-skill issues are not silently dropped between waves.
 
+### 5b. FIXME Debt Tracking
+
+At sprint planning and sprint close, `/sprint` MUST scan the entire project for unresolved `FIXME(/skill-name)` comments:
+
+```
+grep -r "FIXME(" --include="*.md" --include="*.rs" .
+```
+
+For each unresolved FIXME:
+1. Identify the owning skill (from the `/skill-name` in the FIXME)
+2. Create a sprint task assigning the owning skill to resolve the FIXME — either incorporate it into their plan/code or explicitly defer with rationale
+3. Track resolution in the Task List
+
+FIXMEs are real debt, not noise. They represent cross-skill issues that an upstream skill filed because it couldn't fix the problem itself. The owning skill must resolve each FIXME by:
+- Incorporating the change into their owned files (plan, spec, code), then removing the FIXME comment
+- Or explicitly deferring with rationale recorded in SPRINT.md Notes
+
+`/sprint` MUST NOT rename FIXMEs to FIXED, remove them, or otherwise suppress them — only the owning skill removes a FIXME after resolving the underlying issue.
+
 ### 6. Review & Refactor Gate
 
 After implementation waves complete (typically after all compiler crates have their Ring N code), a mandatory review-and-refactor cycle MUST pass before the sprint proceeds to pipeline wiring, integration testing, or user-facing validation.

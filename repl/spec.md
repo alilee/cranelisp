@@ -57,12 +57,14 @@ Examples:
 
 ### 1.3 Definition Results
 
-A function definition MUST display its inferred type scheme and fully-qualified name:
+A function definition MUST display its inferred type scheme and fully-qualified name. It MUST NOT display `<closure>` — the user defined a *named* function, not an anonymous closure:
 
 ```
 :(Fn [a] a) user/id
 :(Fn [primitives/Int] primitives/Int) user/double
 ```
+
+Note: `<closure>` is reserved for anonymous function *values* (§1.2, §1.5). When the user writes `(defn double [x] (* x 2))`, the response shows the name `user/double`. Only `(fn [x] (* x 2))` evaluated as an expression produces `<closure>`.
 
 A type definition MUST display the fully-qualified type name:
 
@@ -71,8 +73,20 @@ A type definition MUST display the fully-qualified type name:
 :user/Option
 ```
 
+A trait declaration MUST display the trait name:
+
+```
+:user/Sizeable
+```
+
+A trait implementation MUST confirm the trait and type:
+
+```
+impl user/Sizeable for user/Circle
+```
+
 **Ring 0**: function definitions, type definitions.
-**Ring 2**: constrained functions, overloaded functions.
+**Ring 2**: trait declarations, trait implementations, constrained functions, overloaded functions.
 **Ring 3**: macros.
 
 ### 1.4 Type Display
@@ -245,11 +259,21 @@ Entering a symbol name without arguments MUST produce its type and fully-qualifi
 | Macro | Clause signatures |
 | Trait | Method signatures |
 
+If the symbol has a docstring (per spec §5.2), the **first line** of the docstring SHOULD be appended as a comment after the type display:
+
+```
+:TypeScheme module/name ; first line of docstring
+```
+
+This provides inline documentation without requiring a separate `/doc` command, reinforcing discoverability.
+
 Examples:
 
 ```
 0+0ms; user> id
 :(Fn [a] a) user/id
+0+0ms; user> double
+:(Fn [primitives/Int] primitives/Int) user/double ; Multiply by 2
 0+0ms; user> Red
 :user/Color user/Color.Red
 0+0ms; user> +
@@ -257,6 +281,9 @@ Examples:
 ```
 
 No valid name MUST produce an opaque error. If a name is unbound, the error MUST say so clearly.
+
+**Ring 0**: type + qualified name display.
+**Ring 2**: docstring display (requires docstrings, which depend on the module system for stored metadata).
 
 ### 4.2 Special Form Feedback
 

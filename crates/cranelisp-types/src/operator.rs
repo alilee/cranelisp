@@ -157,6 +157,13 @@ pub fn ring0_primitives() -> Vec<PrimitiveDef> {
             cranelift_op: "bxor", // XOR with 1 to flip bool
             param_names: vec![Symbol::from("b")],
         },
+        // --- Boolean equality: (Fn [Bool Bool] Bool) ---
+        PrimitiveDef {
+            name: Symbol::from("eq-bool"),
+            ty: Type::Fn(vec![Type::Bool, Type::Bool], Box::new(Type::Bool)),
+            cranelift_op: "icmp_eq",
+            param_names: vec![Symbol::from("lhs"), Symbol::from("rhs")],
+        },
     ]
 }
 
@@ -231,7 +238,7 @@ mod tests {
     #[test]
     fn test_ring0_primitive_count() {
         let prims = ring0_primitives();
-        assert_eq!(prims.len(), 19, "Ring 0 should define exactly 19 primitives");
+        assert_eq!(prims.len(), 20, "Ring 0 should define exactly 20 primitives (19 + eq-bool)");
     }
 
     #[test]

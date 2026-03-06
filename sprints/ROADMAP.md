@@ -23,4 +23,5 @@ Delivery progress for the Cranelisp reimplementation. For technical scope per ri
 | 1 | Ring 0 — Core implementation | COMPLETE | `sprints/archive/sprint-1.md` |
 | 2 | Ring 1 — Heap types, closures, RC (779 tests, gate PASS) | COMPLETE | `sprints/archive/sprint-2.md` |
 | 3 | Vec (Ring 1 completion) + demo relocation — 487 tests, Ring 1 COMPLETE | COMPLETE | `sprints/archive/sprint-3.md` |
-| 4 | Ring 2 — Abstraction (modules, traits, constrained poly, dispatch) | — | — |
+| 4 | Ring 2A — Traits & operator dispatch: 622 tests, 0 failures, gate PASS | COMPLETE | `sprints/archive/sprint-4.md` |
+| 5 | Ring 2A completion (constrained poly codegen, default method codegen) + Ring 2B start (modules, multi-sig) | — | — |

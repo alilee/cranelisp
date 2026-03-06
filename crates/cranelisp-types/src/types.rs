@@ -117,6 +117,107 @@ pub struct Scheme {
     pub ty: Type,
 }
 
+/// Map from internal TypeId to user-friendly type variable name (a, b, c, ...).
+///
+/// Collects all Var ids in order of first occurrence, then assigns sequential
+/// names. Used by REPL display and Scheme formatting.
+pub fn type_var_names(ty: &Type) -> HashMap<TypeId, String> {
+    let mut ids = Vec::new();
+    collect_var_ids_ordered(ty, &mut ids);
+    ids.into_iter()
+        .enumerate()
+        .map(|(i, id)| {
+            let name = if i < 26 {
+                String::from((b'a' + i as u8) as char)
+            } else {
+                format!("t{id}")
+            };
+            (id, name)
+        })
+        .collect()
+}
+
+/// Format a type with user-friendly variable names (a, b, c, ...).
+///
+/// Replaces internal TypeId numbers with sequential letters.
+pub fn format_type_display(ty: &Type) -> String {
+    let names = type_var_names(ty);
+    format_type_with_vars(ty, &names)
+}
+
+/// Format a type using the given variable name mapping.
+pub fn format_type_with_vars(ty: &Type, var_names: &HashMap<TypeId, String>) -> String {
+    match ty {
+        Type::Int => "Int".to_string(),
+        Type::Bool => "Bool".to_string(),
+        Type::String => "String".to_string(),
+        Type::Float => "Float".to_string(),
+        Type::Fn(params, ret) => {
+            let parts: Vec<String> = params
+                .iter()
+                .map(|p| format_type_with_vars(p, var_names))
+                .collect();
+            let ret_s = format_type_with_vars(ret, var_names);
+            format!("(Fn [{}] {ret_s})", parts.join(" "))
+        }
+        Type::ADT(name, args) => {
+            if args.is_empty() {
+                format!("{name}")
+            } else {
+                let arg_strs: Vec<String> = args
+                    .iter()
+                    .map(|a| format_type_with_vars(a, var_names))
+                    .collect();
+                format!("({name} {})", arg_strs.join(" "))
+            }
+        }
+        Type::Var(id) => {
+            var_names
+                .get(id)
+                .cloned()
+                .unwrap_or_else(|| format!("t{id}"))
+        }
+        Type::TyConApp(id, args) => {
+            let name = var_names
+                .get(id)
+                .cloned()
+                .unwrap_or_else(|| format!("t{id}"));
+            if args.is_empty() {
+                name
+            } else {
+                let arg_strs: Vec<String> = args
+                    .iter()
+                    .map(|a| format_type_with_vars(a, var_names))
+                    .collect();
+                format!("({name} {})", arg_strs.join(" "))
+            }
+        }
+    }
+}
+
+/// Collect Var ids in order of first occurrence (left-to-right, depth-first).
+fn collect_var_ids_ordered(ty: &Type, ids: &mut Vec<TypeId>) {
+    match ty {
+        Type::Var(id) => {
+            if !ids.contains(id) {
+                ids.push(*id);
+            }
+        }
+        Type::Fn(params, ret) => {
+            for p in params {
+                collect_var_ids_ordered(p, ids);
+            }
+            collect_var_ids_ordered(ret, ids);
+        }
+        Type::ADT(_, args) | Type::TyConApp(_, args) => {
+            for a in args {
+                collect_var_ids_ordered(a, ids);
+            }
+        }
+        Type::Int | Type::Bool | Type::String | Type::Float => {}
+    }
+}
+
 /// Type substitution: mapping from type variables to concrete types.
 pub type Subst = HashMap<TypeId, Type>;
 
@@ -272,5 +373,54 @@ mod tests {
         assert_eq!(format!("{fn_ty}"), "(Fn [Int Int] Int)");
         let adt = Type::ADT(TypeName::from("Color"), vec![]);
         assert_eq!(format!("{adt}"), "Color");
+    }
+
+    // --- U1.6: type variable display name tests ---
+
+    #[test]
+    fn test_format_type_display_single_var() {
+        // A single type variable should display as "a", not "t42".
+        let ty = Type::Var(42);
+        assert_eq!(format_type_display(&ty), "a");
+    }
+
+    #[test]
+    fn test_format_type_display_identity_fn() {
+        // (Fn [Var(5)] Var(5)) should display as "(Fn [a] a)".
+        let ty = Type::Fn(vec![Type::Var(5)], Box::new(Type::Var(5)));
+        assert_eq!(format_type_display(&ty), "(Fn [a] a)");
+    }
+
+    #[test]
+    fn test_format_type_display_two_vars() {
+        // Two distinct vars should be "a" and "b".
+        let ty = Type::Fn(vec![Type::Var(10), Type::Var(20)], Box::new(Type::Var(10)));
+        assert_eq!(format_type_display(&ty), "(Fn [a b] a)");
+    }
+
+    #[test]
+    fn test_format_type_display_concrete_type() {
+        // Concrete types should display normally.
+        assert_eq!(format_type_display(&Type::Int), "Int");
+        assert_eq!(format_type_display(&Type::Bool), "Bool");
+    }
+
+    #[test]
+    fn test_format_type_display_polymorphic_adt() {
+        // (Option Var(3)) should display as "(Option a)".
+        let ty = Type::ADT(TypeName::from("Option"), vec![Type::Var(3)]);
+        assert_eq!(format_type_display(&ty), "(Option a)");
+    }
+
+    #[test]
+    fn test_type_var_names_ordering() {
+        // Variable names assigned in order of first occurrence.
+        let ty = Type::Fn(
+            vec![Type::Var(99), Type::Var(50)],
+            Box::new(Type::Var(99)),
+        );
+        let names = type_var_names(&ty);
+        assert_eq!(names.get(&99), Some(&"a".to_string()));
+        assert_eq!(names.get(&50), Some(&"b".to_string()));
     }
 }

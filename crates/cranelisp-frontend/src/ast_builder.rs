@@ -9,7 +9,8 @@
 
 use cranelisp_types::{
     CranelispError, ConstructorDef, Defn, DefnVariant, Expr, FieldDef, MacroExpander, MatchArm,
-    Pattern, Program, ReplInput, Sexp, Span, Symbol, TopLevel, TypeExpr, TypeName, Visibility,
+    Pattern, Program, ReplInput, Sexp, Span, Symbol, TopLevel, TraitDecl, TraitImpl,
+    TraitMethodSig, TraitName, TypeExpr, TypeName, Visibility,
 };
 
 // ---------------------------------------------------------------------------
@@ -149,7 +150,8 @@ pub fn build_repl_input(
 
                 // impl has no private variant
                 if head == "impl" {
-                    reject_non_ring0("impl", *span)?;
+                    let tl = build_trait_impl(children, *span, expander)?;
+                    return Ok(toplevel_to_repl_input(tl));
                 }
 
                 // Check if head is a macro (I3: match what build_top_level does)
@@ -168,8 +170,8 @@ pub fn build_repl_input(
                             Ok(toplevel_to_repl_input(tl))
                         }
                         "deftrait" => {
-                            reject_non_ring0("deftrait", *span)?;
-                            unreachable!("invariant: reject_non_ring0 returns Err");
+                            let tl = build_deftrait(children, *span, vis)?;
+                            Ok(toplevel_to_repl_input(tl))
                         }
                         _ => unreachable!("invariant: parse_def_visibility returns known base"),
                     };
@@ -219,11 +221,9 @@ fn reject_pre_ast_forms(head: &str, span: Span) -> Result<(), CranelispError> {
 }
 
 /// Reject non-Ring-0 top-level forms with clear error messages.
-fn reject_non_ring0_toplevel(head: &str, span: Span) -> Result<(), CranelispError> {
-    match head {
-        "impl" | "deftrait" | "deftrait-" => reject_non_ring0(head, span),
-        _ => Ok(()),
-    }
+fn reject_non_ring0_toplevel(_head: &str, _span: Span) -> Result<(), CranelispError> {
+    // All formerly-rejected top-level forms (deftrait, impl) are now handled.
+    Ok(())
 }
 
 /// Reject non-Ring-0 symbol forms in expression position.
@@ -250,20 +250,6 @@ fn reject_non_ring0_symbol(name: &str, span: Span) -> Result<(), CranelispError>
         ));
     }
     Ok(())
-}
-
-/// Reject a specific non-Ring-0 form.
-fn reject_non_ring0(form: &str, span: Span) -> Result<(), CranelispError> {
-    let msg = match form {
-        "impl" => "trait implementations not yet supported (Ring 2)",
-        "deftrait" | "deftrait-" => "trait declarations not yet supported (Ring 2)",
-        "trace" => "trace not yet supported (Ring 4)",
-        "run-tests" => "run-tests not yet supported (Ring 4)",
-        "vec" => "vec literals not yet supported (Ring 1)",
-        "par-let" => "par-let not yet supported (Ring 4)",
-        _ => return Ok(()),
-    };
-    Err(parse_err(msg, span))
 }
 
 // ---------------------------------------------------------------------------
@@ -301,17 +287,14 @@ fn build_top_level(
         return match base {
             "defn" => build_defn(children, span, vis, expander),
             "deftype" => build_deftype(children, span, vis),
-            "deftrait" => {
-                reject_non_ring0("deftrait", span)?;
-                unreachable!("invariant: reject_non_ring0 returns Err");
-            }
+            "deftrait" => build_deftrait(children, span, vis),
             _ => unreachable!("invariant: parse_def_visibility returns known base"),
         };
     }
 
     // impl has no private variant
     if head == "impl" {
-        reject_non_ring0("impl", span)?;
+        return build_trait_impl(children, span, expander);
     }
 
     Err(parse_err(
@@ -712,6 +695,303 @@ fn sequential_type_var(index: usize) -> String {
         n = n / 26 - 1;
     }
     result
+}
+
+// ---------------------------------------------------------------------------
+// deftrait builder
+// ---------------------------------------------------------------------------
+
+fn build_deftrait(
+    children: &[Sexp],
+    span: Span,
+    visibility: Visibility,
+) -> Result<TopLevel, CranelispError> {
+    // (deftrait Head "doc"? method_sig+)
+    // Head = TraitName | (TraitName type_var)
+    if children.len() < 3 {
+        return Err(parse_err("deftrait requires a trait head and at least one method", span));
+    }
+
+    let (trait_name, type_params, hkt_param_name) = build_trait_head(&children[1])?;
+    let (docstring, next) = extract_optional_docstring(children, 2);
+
+    if next >= children.len() {
+        return Err(parse_err("deftrait requires at least one method signature", span));
+    }
+
+    let is_hkt = hkt_param_name.is_some();
+    let methods = children[next..]
+        .iter()
+        .map(|s| build_method_sig(s, is_hkt, &hkt_param_name))
+        .collect::<Result<Vec<_>, _>>()?;
+
+    Ok(TopLevel::TraitDecl(TraitDecl {
+        name: trait_name,
+        docstring,
+        type_params,
+        methods,
+        visibility,
+        span,
+    }))
+}
+
+/// Parse a trait head: either `TraitName` or `(TraitName var)`.
+/// Returns (trait_name, type_params, optional_hkt_param_name).
+fn build_trait_head(sexp: &Sexp) -> Result<(TraitName, Vec<Symbol>, Option<Symbol>), CranelispError> {
+    match sexp {
+        Sexp::Symbol(name, _) if is_uppercase_start(name) => {
+            Ok((TraitName::from(name.as_str()), vec![], None))
+        }
+        Sexp::List(children, span) => {
+            if children.len() != 2 {
+                return Err(parse_err(
+                    "HKT trait head must be (TraitName var)",
+                    *span,
+                ));
+            }
+            let (name, _) = expect_symbol(&children[0])?;
+            if !is_uppercase_start(name) {
+                return Err(parse_err("trait name must start with uppercase", children[0].span()));
+            }
+            let (var, _) = expect_symbol(&children[1])?;
+            Ok((TraitName::from(name), vec![var.into()], Some(var.into())))
+        }
+        _ => Err(parse_err("expected trait name or (TraitName var)", sexp.span())),
+    }
+}
+
+/// Parse a method signature within a deftrait.
+///
+/// Without default: `(method_name "doc"? [type_expr+] ret_type)`
+/// With default:    `(method_name "doc"? [param_name+] ret_type body)`
+fn build_method_sig(
+    sexp: &Sexp,
+    is_hkt: bool,
+    hkt_param_name: &Option<Symbol>,
+) -> Result<TraitMethodSig, CranelispError> {
+    let (children, span) = expect_list(sexp)?;
+    if children.len() < 3 {
+        return Err(parse_err("method signature requires name, params, and return type", span));
+    }
+
+    let (name, _) = expect_symbol(&children[0])?;
+    let (docstring, next) = extract_optional_docstring(children, 1);
+
+    let (bracket_items, _) = expect_bracket(&children[next])?;
+    let ret_pos = next + 1;
+    if ret_pos >= children.len() {
+        return Err(parse_err("method signature missing return type", span));
+    }
+    let ret_type = build_type_expr(&children[ret_pos])?;
+
+    let has_default_body = ret_pos + 1 < children.len();
+
+    if has_default_body && is_hkt {
+        return Err(parse_err(
+            "default method implementations are not supported on higher-kinded traits",
+            span,
+        ));
+    }
+
+    // Detect HKT param index: find which parameter position uses the
+    // constructor variable (e.g., `(f a)` where f is the HKT var).
+    let hkt_param_index = if let Some(hkt_var) = hkt_param_name {
+        bracket_items.iter().position(|item| {
+            if let Sexp::List(inner, _) = item {
+                if let Some(Sexp::Symbol(s, _)) = inner.first() {
+                    return s.as_str() == hkt_var.as_ref();
+                }
+            }
+            false
+        })
+    } else {
+        None
+    };
+
+    if has_default_body {
+        // Default body: bracket items are param names, not type exprs
+        let param_names: Vec<Symbol> = bracket_items
+            .iter()
+            .map(|s| {
+                let (n, _) = expect_symbol(s)?;
+                Ok(n.into())
+            })
+            .collect::<Result<Vec<_>, CranelispError>>()?;
+
+        // Build param types as SelfType (self-typed) for each param
+        let params = param_names.iter().map(|_| TypeExpr::SelfType).collect();
+
+        // The default body is the raw sexp after the return type
+        let default_body = Some(children[ret_pos + 1].clone());
+
+        Ok(TraitMethodSig {
+            name: name.into(),
+            docstring,
+            params,
+            ret_type,
+            span,
+            hkt_param_index,
+            default_param_names: param_names,
+            default_body,
+        })
+    } else {
+        // No default: bracket items are type expressions
+        let params = bracket_items
+            .iter()
+            .map(build_type_expr)
+            .collect::<Result<Vec<_>, _>>()?;
+
+        Ok(TraitMethodSig {
+            name: name.into(),
+            docstring,
+            params,
+            ret_type,
+            span,
+            hkt_param_index,
+            default_param_names: vec![],
+            default_body: None,
+        })
+    }
+}
+
+// ---------------------------------------------------------------------------
+// impl builder
+// ---------------------------------------------------------------------------
+
+fn build_trait_impl(
+    children: &[Sexp],
+    span: Span,
+    expander: &mut dyn MacroExpander,
+) -> Result<TopLevel, CranelispError> {
+    // (impl TraitName impl_target method_def+)
+    // impl_target = Type | (Type :Constraint var ...)
+    if children.len() < 4 {
+        return Err(parse_err(
+            "impl requires trait name, target type, and at least one method",
+            span,
+        ));
+    }
+
+    let (trait_name, _) = expect_symbol(&children[1])?;
+    if !is_uppercase_start(trait_name) {
+        return Err(parse_err("trait name must start with uppercase", children[1].span()));
+    }
+
+    let (target_type, type_args, type_constraints) = build_impl_target(&children[2])?;
+
+    let methods = children[3..]
+        .iter()
+        .map(|s| build_impl_method(s, expander))
+        .collect::<Result<Vec<_>, _>>()?;
+
+    Ok(TopLevel::TraitImpl(TraitImpl {
+        trait_name: trait_name.into(),
+        target_type,
+        type_args,
+        type_constraints,
+        methods,
+        span,
+    }))
+}
+
+/// Parse an impl target. Three forms:
+///   - `Type` — concrete: bare type name
+///   - `(Type :Constraint var ...)` — polymorphic ADT with constraints
+///   - `(Type var ...)` — parameterized concrete (e.g., `(Option Int)`)
+fn build_impl_target(
+    sexp: &Sexp,
+) -> Result<(TypeName, Vec<Symbol>, Vec<(Symbol, TraitName)>), CranelispError> {
+    match sexp {
+        Sexp::Symbol(name, _) if is_uppercase_start(name) => {
+            Ok((TypeName::from(name.as_str()), vec![], vec![]))
+        }
+        Sexp::List(children, span) => {
+            if children.is_empty() {
+                return Err(parse_err("empty impl target", *span));
+            }
+            let (type_name, _) = expect_symbol(&children[0])?;
+            if !is_uppercase_start(type_name) {
+                return Err(parse_err(
+                    "impl target type must start with uppercase",
+                    children[0].span(),
+                ));
+            }
+
+            let mut type_args = Vec::new();
+            let mut type_constraints = Vec::new();
+            let mut i = 1;
+
+            while i < children.len() {
+                if let Sexp::Symbol(s, _) = &children[i] {
+                    if s.starts_with(':') && s.len() > 1 {
+                        // Constraint annotation: `:TraitName` followed by type var
+                        let constraint_name = &s[1..];
+                        i += 1;
+                        if i >= children.len() {
+                            return Err(parse_err(
+                                "constraint annotation missing type variable",
+                                children[i - 1].span(),
+                            ));
+                        }
+                        let (var_name, _) = expect_symbol(&children[i])?;
+                        type_args.push(var_name.into());
+                        type_constraints.push((
+                            Symbol::from(var_name),
+                            TraitName::from(constraint_name),
+                        ));
+                        i += 1;
+                    } else {
+                        // Bare type arg (concrete type or unconstrained var)
+                        type_args.push(s.as_str().into());
+                        i += 1;
+                    }
+                } else {
+                    return Err(parse_err(
+                        "expected symbol in impl target",
+                        children[i].span(),
+                    ));
+                }
+            }
+
+            Ok((TypeName::from(type_name), type_args, type_constraints))
+        }
+        _ => Err(parse_err("expected impl target type", sexp.span())),
+    }
+}
+
+/// Parse a method definition inside an impl block.
+/// (defn method_name [params] body)
+fn build_impl_method(
+    sexp: &Sexp,
+    expander: &mut dyn MacroExpander,
+) -> Result<Defn, CranelispError> {
+    let (children, span) = expect_list(sexp)?;
+    if children.is_empty() {
+        return Err(parse_err("empty method definition", span));
+    }
+    let (head, _) = expect_symbol(&children[0])?;
+    if head != "defn" {
+        return Err(parse_err(
+            "impl methods must use (defn name [params] body)",
+            span,
+        ));
+    }
+    if children.len() < 4 {
+        return Err(parse_err("method defn requires name, params, and body", span));
+    }
+    let name = get_defn_name(&children[1])?;
+    let (params, param_annotations) = build_annotated_params(&children[2])?;
+    let body = build_expr(&children[3], expander)?;
+
+    Ok(Defn {
+        name,
+        docstring: None,
+        params,
+        param_annotations,
+        body,
+        visibility: Visibility::Public,
+        span,
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -1691,16 +1971,206 @@ mod tests {
         assert!(err.message().contains("vec literals not yet supported"));
     }
 
+    // -- deftrait --
+
     #[test]
-    fn test_reject_deftrait() {
-        let err = parse_and_build_program("(deftrait Foo)").unwrap_err();
-        assert!(err.message().contains("trait declarations not yet supported"));
+    fn test_build_deftrait_simple() {
+        let prog = parse_and_build_program(
+            "(deftrait Display (show [self] String))",
+        ).unwrap();
+        match &prog[0] {
+            TopLevel::TraitDecl(decl) => {
+                assert_eq!(decl.name, "Display");
+                assert!(decl.type_params.is_empty());
+                assert_eq!(decl.methods.len(), 1);
+                assert_eq!(decl.methods[0].name, "show");
+                assert_eq!(decl.methods[0].params.len(), 1);
+                assert!(matches!(&decl.methods[0].params[0], TypeExpr::SelfType));
+                assert!(matches!(&decl.methods[0].ret_type, TypeExpr::Named(n) if n == "String"));
+                assert!(decl.methods[0].default_body.is_none());
+            }
+            other => panic!("expected TraitDecl, got {other:?}"),
+        }
     }
 
     #[test]
-    fn test_reject_impl() {
-        let err = parse_and_build_program("(impl Foo Int)").unwrap_err();
-        assert!(err.message().contains("trait implementations not yet supported"));
+    fn test_build_deftrait_with_docstring() {
+        let prog = parse_and_build_program(
+            "(deftrait Display \"Convert to string\" (show [self] String))",
+        ).unwrap();
+        match &prog[0] {
+            TopLevel::TraitDecl(decl) => {
+                assert_eq!(decl.docstring.as_deref(), Some("Convert to string"));
+            }
+            other => panic!("expected TraitDecl, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_build_deftrait_multiple_methods() {
+        let prog = parse_and_build_program(
+            "(deftrait Num (+ [self self] self) (- [self self] self))",
+        ).unwrap();
+        match &prog[0] {
+            TopLevel::TraitDecl(decl) => {
+                assert_eq!(decl.name, "Num");
+                assert_eq!(decl.methods.len(), 2);
+                assert_eq!(decl.methods[0].name, "+");
+                assert_eq!(decl.methods[1].name, "-");
+            }
+            other => panic!("expected TraitDecl, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_build_deftrait_hkt() {
+        let prog = parse_and_build_program(
+            "(deftrait (Functor f) (fmap [(Fn [a] b) (f a)] (f b)))",
+        ).unwrap();
+        match &prog[0] {
+            TopLevel::TraitDecl(decl) => {
+                assert_eq!(decl.name, "Functor");
+                assert_eq!(decl.type_params.len(), 1);
+                assert_eq!(decl.type_params[0], "f");
+                assert_eq!(decl.methods[0].hkt_param_index, Some(1));
+            }
+            other => panic!("expected TraitDecl, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_build_deftrait_with_default() {
+        let prog = parse_and_build_program(
+            "(deftrait Ord (< [self self] Bool) (<= [x y] Bool (if (< x y) true (= x y))))",
+        ).unwrap();
+        match &prog[0] {
+            TopLevel::TraitDecl(decl) => {
+                assert_eq!(decl.methods.len(), 2);
+                assert!(decl.methods[0].default_body.is_none());
+                assert!(decl.methods[0].default_param_names.is_empty());
+                assert!(decl.methods[1].default_body.is_some());
+                assert_eq!(decl.methods[1].default_param_names.len(), 2);
+                assert_eq!(decl.methods[1].default_param_names[0], "x");
+                assert_eq!(decl.methods[1].default_param_names[1], "y");
+            }
+            other => panic!("expected TraitDecl, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_build_deftrait_private() {
+        let prog = parse_and_build_program(
+            "(deftrait- Internal (method [self] Int))",
+        ).unwrap();
+        match &prog[0] {
+            TopLevel::TraitDecl(decl) => {
+                assert_eq!(decl.visibility, Visibility::Private);
+            }
+            other => panic!("expected TraitDecl, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_build_deftrait_hkt_default_rejected() {
+        let err = parse_and_build_program(
+            "(deftrait (Functor f) (fmap [x] (f Int) x))",
+        ).unwrap_err();
+        assert!(err.message().contains("default method implementations are not supported on higher-kinded traits"));
+    }
+
+    // -- impl --
+
+    #[test]
+    fn test_build_impl_concrete() {
+        let prog = parse_and_build_program(
+            "(impl Display Int (defn show [x] (int-to-string x)))",
+        ).unwrap();
+        match &prog[0] {
+            TopLevel::TraitImpl(imp) => {
+                assert_eq!(imp.trait_name, "Display");
+                assert_eq!(imp.target_type, "Int");
+                assert!(imp.type_args.is_empty());
+                assert!(imp.type_constraints.is_empty());
+                assert_eq!(imp.methods.len(), 1);
+                assert_eq!(imp.methods[0].name, "show");
+                assert_eq!(imp.methods[0].params.len(), 1);
+            }
+            other => panic!("expected TraitImpl, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_build_impl_polymorphic_with_constraint() {
+        let prog = parse_and_build_program(
+            "(impl Display (Option :Display a) (defn show [x] x))",
+        ).unwrap();
+        match &prog[0] {
+            TopLevel::TraitImpl(imp) => {
+                assert_eq!(imp.trait_name, "Display");
+                assert_eq!(imp.target_type, "Option");
+                assert_eq!(imp.type_args.len(), 1);
+                assert_eq!(imp.type_args[0], "a");
+                assert_eq!(imp.type_constraints.len(), 1);
+                assert_eq!(imp.type_constraints[0].0, "a");
+                assert_eq!(imp.type_constraints[0].1, "Display");
+            }
+            other => panic!("expected TraitImpl, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_build_impl_hkt() {
+        let prog = parse_and_build_program(
+            "(impl Functor Option (defn fmap [f opt] opt))",
+        ).unwrap();
+        match &prog[0] {
+            TopLevel::TraitImpl(imp) => {
+                assert_eq!(imp.trait_name, "Functor");
+                assert_eq!(imp.target_type, "Option");
+                assert!(imp.type_args.is_empty());
+            }
+            other => panic!("expected TraitImpl, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_build_impl_repl() {
+        match parse_and_build_repl(
+            "(impl Eq Int (defn = [x y] (eq-i64 x y)))",
+        ).unwrap() {
+            ReplInput::TraitImpl(imp) => {
+                assert_eq!(imp.trait_name, "Eq");
+                assert_eq!(imp.target_type, "Int");
+            }
+            other => panic!("expected TraitImpl, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_build_deftrait_repl() {
+        match parse_and_build_repl(
+            "(deftrait Showable (show [self] String))",
+        ).unwrap() {
+            ReplInput::TraitDecl(decl) => {
+                assert_eq!(decl.name, "Showable");
+            }
+            other => panic!("expected TraitDecl, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_build_impl_multiple_methods() {
+        let prog = parse_and_build_program(
+            "(impl Num Int (defn + [x y] (add-i64 x y)) (defn - [x y] (sub-i64 x y)))",
+        ).unwrap();
+        match &prog[0] {
+            TopLevel::TraitImpl(imp) => {
+                assert_eq!(imp.methods.len(), 2);
+                assert_eq!(imp.methods[0].name, "+");
+                assert_eq!(imp.methods[1].name, "-");
+            }
+            other => panic!("expected TraitImpl, got {other:?}"),
+        }
     }
 
     // -- Type annotations --

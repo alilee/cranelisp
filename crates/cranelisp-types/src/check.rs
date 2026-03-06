@@ -83,6 +83,12 @@ pub struct ReplCheckResult {
     pub type_defs: HashMap<TypeName, TypeDefInfo>,
     /// Constructor-to-type mappings registered by this input
     pub constructor_to_type: HashMap<Symbol, TypeName>,
+    /// Names of constrained polymorphic functions requiring monomorphisation (Ring 2)
+    pub constrained_fn_names: HashSet<Symbol>,
+    /// Monomorphised function definitions generated during checking (Ring 2)
+    pub mono_defns: Vec<MonoDefn>,
+    /// Default trait method implementations expanded during checking (Ring 2)
+    pub default_method_defns: Vec<Defn>,
 }
 
 /// Information about a user-defined type.

@@ -14,6 +14,7 @@ use cranelisp_types::{
 use crate::adt::TypeDefRegistry;
 use crate::scope::ScopeStack;
 use crate::scheme;
+use crate::traits::{ActiveConstraints, ImplRegistry, TraitRegistry};
 
 /// Central state for Hindley-Milner type inference.
 ///
@@ -36,6 +37,12 @@ pub struct TypeChecker {
     pub(crate) symbol_table: SymbolTable,
     /// Registered type definitions (ADTs).
     pub(crate) type_defs: TypeDefRegistry,
+    /// Registered trait declarations (Ring 2).
+    pub(crate) trait_registry: TraitRegistry,
+    /// Registered trait implementations (Ring 2).
+    pub(crate) impl_registry: ImplRegistry,
+    /// Active type variable constraints during body checking (Ring 2).
+    pub(crate) active_constraints: ActiveConstraints,
 }
 
 impl TypeChecker {
@@ -50,6 +57,9 @@ impl TypeChecker {
             warnings: Vec::new(),
             symbol_table: SymbolTable::new(ModuleFullPath::from("user")),
             type_defs: TypeDefRegistry::new(),
+            trait_registry: TraitRegistry::default(),
+            impl_registry: ImplRegistry::default(),
+            active_constraints: ActiveConstraints::default(),
         };
         tc.register_builtins();
         tc
@@ -138,14 +148,31 @@ impl TypeChecker {
     // --- Scheme operations ---
 
     /// Instantiate a scheme with fresh variables.
+    ///
+    /// If the scheme has constraints, they are tracked on the fresh variables
+    /// in `self.active_constraints` for later propagation during generalize.
     pub(crate) fn instantiate(&mut self, s: &Scheme) -> Type {
-        scheme::instantiate(s, &mut self.next_id)
+        if s.constraints.is_empty() {
+            scheme::instantiate(s, &mut self.next_id)
+        } else {
+            self.instantiate_constrained(s)
+        }
     }
 
-    /// Generalize a type relative to the current environment.
+    /// Generalize a type relative to the current environment,
+    /// propagating any active constraints on the quantified variables.
     pub(crate) fn generalize(&self, ty: &Type) -> Scheme {
         let env_fv = self.env.free_vars_in_env();
-        scheme::generalize(&self.subst, ty, &env_fv)
+        let mut scheme = scheme::generalize(&self.subst, ty, &env_fv);
+
+        // Propagate constraints from active_constraints to the scheme
+        let constraints =
+            self.active_constraints.collect_for_vars(&scheme.vars);
+        if !constraints.is_empty() {
+            scheme.constraints = constraints;
+        }
+
+        scheme
     }
 
     // --- Expression type recording ---

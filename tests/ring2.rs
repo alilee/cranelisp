@@ -1,0 +1,1277 @@
+// Ring 2A integration tests: traits, operator dispatch, constrained polymorphism.
+//
+// Tests the full pipeline from source text to execution result.
+// Organized by category per tests/plan/ring2.md (Ring 2A items only).
+//
+// Ring 2A introduces trait-based operator dispatch:
+//   Num trait: +, -, *, / for Int and Float
+//   Eq trait:  =   for Int, Float, Bool, String
+//   Ord trait: <   for Int, Float
+// Default methods (!=, >, <=, >=) are registered but codegen not yet wired.
+// Named primitives (add-i64, eq-i64, etc.) remain available (accretive).
+
+#[path = "helpers/mod.rs"]
+mod helpers;
+
+use helpers::*;
+use cranelisp_types::Type;
+
+// =============================================================================
+// Trait: Num operator dispatch — Int (spec: 07-traits)
+// =============================================================================
+
+#[test]
+fn trait_plus_int() {
+    let src = "(defn main [] (+ 1 2))";
+    assert_eq!(compile_and_run_simple(src), 3);
+}
+
+#[test]
+fn trait_minus_int() {
+    let src = "(defn main [] (- 10 3))";
+    assert_eq!(compile_and_run_simple(src), 7);
+}
+
+#[test]
+fn trait_multiply_int() {
+    let src = "(defn main [] (* 6 7))";
+    assert_eq!(compile_and_run_simple(src), 42);
+}
+
+#[test]
+fn trait_divide_int() {
+    let src = "(defn main [] (/ 20 4))";
+    assert_eq!(compile_and_run_simple(src), 5);
+}
+
+#[test]
+fn trait_plus_negative() {
+    let src = "(defn main [] (+ -3 5))";
+    assert_eq!(compile_and_run_simple(src), 2);
+}
+
+#[test]
+fn trait_minus_negative_result() {
+    let src = "(defn main [] (- 3 10))";
+    assert_eq!(compile_and_run_simple(src), -7);
+}
+
+#[test]
+fn trait_plus_zero() {
+    let src = "(defn main [] (+ 0 42))";
+    assert_eq!(compile_and_run_simple(src), 42);
+}
+
+// =============================================================================
+// Trait: Num operator dispatch — Float (spec: 07-traits)
+// =============================================================================
+
+#[test]
+fn trait_plus_float() {
+    let src = "(defn main [] (+ 1.5 2.5))";
+    let (value, ty) = compile_and_run_typed(src);
+    assert_eq!(ty, Type::Float);
+    let f = f64::from_bits(value as u64);
+    assert!((f - 4.0).abs() < f64::EPSILON);
+}
+
+#[test]
+fn trait_minus_float() {
+    let src = "(defn main [] (- 10.0 3.5))";
+    let (value, _) = compile_and_run_typed(src);
+    let f = f64::from_bits(value as u64);
+    assert!((f - 6.5).abs() < f64::EPSILON);
+}
+
+#[test]
+fn trait_multiply_float() {
+    let src = "(defn main [] (* 3.0 4.0))";
+    let (value, _) = compile_and_run_typed(src);
+    let f = f64::from_bits(value as u64);
+    assert!((f - 12.0).abs() < f64::EPSILON);
+}
+
+#[test]
+fn trait_divide_float() {
+    let src = "(defn main [] (/ 10.0 2.0))";
+    let (value, _) = compile_and_run_typed(src);
+    let f = f64::from_bits(value as u64);
+    assert!((f - 5.0).abs() < f64::EPSILON);
+}
+
+// =============================================================================
+// Trait: Num nested/compound expressions (spec: 07-traits)
+// =============================================================================
+
+#[test]
+fn trait_plus_nested() {
+    let src = "(defn main [] (+ (+ 1 2) (+ 3 4)))";
+    assert_eq!(compile_and_run_simple(src), 10);
+}
+
+#[test]
+fn trait_mixed_arithmetic_expr() {
+    let src = "(defn main [] (* (+ 2 3) (- 10 4)))";
+    assert_eq!(compile_and_run_simple(src), 30);
+}
+
+#[test]
+fn trait_arithmetic_in_let() {
+    let src = "
+        (defn main []
+          (let [x (+ 3 4)
+                y (* 2 3)]
+            (+ x y)))
+    ";
+    assert_eq!(compile_and_run_simple(src), 13);
+}
+
+#[test]
+fn trait_arithmetic_in_if() {
+    let src = "
+        (defn main []
+          (if (= 1 1) (+ 10 20) (- 10 20)))
+    ";
+    assert_eq!(compile_and_run_simple(src), 30);
+}
+
+#[test]
+fn trait_arithmetic_as_function_arg() {
+    // Using an annotated param avoids constrained poly — type is concrete.
+    let src = "
+        (defn double [:Int x] (+ x x))
+        (defn main [] (double (+ 10 11)))
+    ";
+    assert_eq!(compile_and_run_simple(src), 42);
+}
+
+// =============================================================================
+// Trait: Eq operator dispatch (spec: 07-traits)
+// =============================================================================
+
+#[test]
+fn trait_eq_int_true() {
+    let src = "(defn main [] (if (= 5 5) 1 0))";
+    assert_eq!(compile_and_run_simple(src), 1);
+}
+
+#[test]
+fn trait_eq_int_false() {
+    let src = "(defn main [] (if (= 5 3) 1 0))";
+    assert_eq!(compile_and_run_simple(src), 0);
+}
+
+#[test]
+fn trait_eq_float() {
+    let src = "(defn main [] (if (= 3.14 3.14) 1 0))";
+    assert_eq!(compile_and_run_simple(src), 1);
+}
+
+#[test]
+fn trait_eq_float_false() {
+    let src = "(defn main [] (if (= 3.14 2.71) 1 0))";
+    assert_eq!(compile_and_run_simple(src), 0);
+}
+
+#[test]
+fn trait_eq_bool_true() {
+    let src = "(defn main [] (if (= true true) 1 0))";
+    assert_eq!(compile_and_run_simple(src), 1);
+}
+
+#[test]
+fn trait_eq_bool_false() {
+    let src = "(defn main [] (if (= true false) 1 0))";
+    assert_eq!(compile_and_run_simple(src), 0);
+}
+
+#[test]
+fn trait_eq_string() {
+    let src = r#"(defn main [] (if (= "hello" "hello") 1 0))"#;
+    assert_eq!(compile_and_run_simple(src), 1);
+}
+
+#[test]
+fn trait_eq_string_false() {
+    let src = r#"(defn main [] (if (= "hello" "world") 1 0))"#;
+    assert_eq!(compile_and_run_simple(src), 0);
+}
+
+// =============================================================================
+// Trait: Ord operator dispatch — < (spec: 07-traits)
+// =============================================================================
+
+#[test]
+fn trait_lt_int_true() {
+    let src = "(defn main [] (if (< 3 5) 1 0))";
+    assert_eq!(compile_and_run_simple(src), 1);
+}
+
+#[test]
+fn trait_lt_int_false() {
+    let src = "(defn main [] (if (< 5 3) 1 0))";
+    assert_eq!(compile_and_run_simple(src), 0);
+}
+
+#[test]
+fn trait_lt_int_equal() {
+    let src = "(defn main [] (if (< 5 5) 1 0))";
+    assert_eq!(compile_and_run_simple(src), 0);
+}
+
+#[test]
+fn trait_lt_float() {
+    let src = "(defn main [] (if (< 1.0 2.0) 1 0))";
+    assert_eq!(compile_and_run_simple(src), 1);
+}
+
+#[test]
+fn trait_lt_float_false() {
+    let src = "(defn main [] (if (< 2.0 1.0) 1 0))";
+    assert_eq!(compile_and_run_simple(src), 0);
+}
+
+// =============================================================================
+// Default methods — >, <=, >= (spec: 07-traits)
+// NOTE: Default method codegen not yet wired — functions like Ord.>$Int
+// are generated but not compiled in batch mode. These tests document the
+// intended behavior and are ignored until the pipeline is complete.
+// =============================================================================
+
+#[test]
+#[ignore = "default method codegen: Ord.>$Int not compiled in batch pipeline"]
+fn default_method_gt_int() {
+    let src = "(defn main [] (if (> 5 3) 1 0))";
+    assert_eq!(compile_and_run_simple(src), 1);
+}
+
+#[test]
+#[ignore = "default method codegen: Ord.>$Int not compiled in batch pipeline"]
+fn default_method_gt_int_false() {
+    let src = "(defn main [] (if (> 3 5) 1 0))";
+    assert_eq!(compile_and_run_simple(src), 0);
+}
+
+#[test]
+#[ignore = "default method codegen: Ord.<=$Int not compiled in batch pipeline"]
+fn default_method_le_int() {
+    let src = "(defn main [] (if (<= 3 5) 1 0))";
+    assert_eq!(compile_and_run_simple(src), 1);
+}
+
+#[test]
+#[ignore = "default method codegen: Ord.<=$Int not compiled in batch pipeline"]
+fn default_method_le_int_equal() {
+    let src = "(defn main [] (if (<= 5 5) 1 0))";
+    assert_eq!(compile_and_run_simple(src), 1);
+}
+
+#[test]
+#[ignore = "default method codegen: Ord.<=$Int not compiled in batch pipeline"]
+fn default_method_le_int_false() {
+    let src = "(defn main [] (if (<= 5 3) 1 0))";
+    assert_eq!(compile_and_run_simple(src), 0);
+}
+
+#[test]
+#[ignore = "default method codegen: Ord.>=$Int not compiled in batch pipeline"]
+fn default_method_ge_int() {
+    let src = "(defn main [] (if (>= 5 3) 1 0))";
+    assert_eq!(compile_and_run_simple(src), 1);
+}
+
+#[test]
+#[ignore = "default method codegen: Ord.>=$Int not compiled in batch pipeline"]
+fn default_method_ge_int_equal() {
+    let src = "(defn main [] (if (>= 5 5) 1 0))";
+    assert_eq!(compile_and_run_simple(src), 1);
+}
+
+#[test]
+#[ignore = "default method codegen: Ord.>=$Int not compiled in batch pipeline"]
+fn default_method_ge_int_false() {
+    let src = "(defn main [] (if (>= 3 5) 1 0))";
+    assert_eq!(compile_and_run_simple(src), 0);
+}
+
+// != requires reader support for ! as operator char.
+#[test]
+#[ignore = "reader: ! not in operator_char set, cannot parse !="]
+fn default_method_neq_int() {
+    let src = "(defn main [] (if (!= 3 5) 1 0))";
+    assert_eq!(compile_and_run_simple(src), 1);
+}
+
+#[test]
+#[ignore = "reader: ! not in operator_char set, cannot parse !="]
+fn default_method_neq_int_equal() {
+    let src = "(defn main [] (if (!= 5 5) 1 0))";
+    assert_eq!(compile_and_run_simple(src), 0);
+}
+
+// =============================================================================
+// Constrained polymorphism (spec: 03-types, 07-traits)
+// Functions that use operators with type-variable args become constrained.
+// Monomorphisation codegen not yet wired (empty resolutions).
+// =============================================================================
+
+// Functions that use operators with literal operands (unified to Int within body)
+// are NOT constrained — the operators resolve during type inference.
+// Functions whose operator operands are ALL type-variable params become constrained.
+#[test]
+fn inline_operator_in_main() {
+    // Operators used directly in main with literals — always works.
+    let src = "
+        (defn main []
+          (if (= 0 0) (+ 10 20) (- 10 20)))
+    ";
+    assert_eq!(compile_and_run_simple(src), 30);
+}
+
+#[test]
+fn fn_using_operators_with_literals() {
+    // n is unified to Int by literal 0, so this is NOT constrained.
+    let src = "
+        (defn sum-to [n]
+          (if (= n 0) 0 (+ n (sum-to (- n 1)))))
+        (defn main [] (sum-to 10))
+    ";
+    assert_eq!(compile_and_run_simple(src), 55);
+}
+
+#[test]
+fn fn_factorial_with_operators() {
+    // n unified to Int by literal 0.
+    let src = "
+        (defn fact [n]
+          (if (= n 0) 1 (* n (fact (- n 1)))))
+        (defn main [] (fact 10))
+    ";
+    assert_eq!(compile_and_run_simple(src), 3628800);
+}
+
+// Functions where operators only act on type-variable params are constrained.
+// These need monomorphisation which isn't fully wired.
+#[test]
+#[ignore = "constrained poly: fib is constrained (uses =,+,- on type-var params)"]
+fn constrained_fn_fibonacci() {
+    let src = "
+        (defn fib [n]
+          (if (= n 0) 0
+            (if (= n 1) 1
+              (+ (fib (- n 1)) (fib (- n 2))))))
+        (defn main [] (fib 10))
+    ";
+    assert_eq!(compile_and_run_simple(src), 55);
+}
+
+#[test]
+#[ignore = "constrained poly: clamp is constrained (< on type-var params)"]
+fn constrained_fn_clamp() {
+    let src = "
+        (defn clamp [x lo hi]
+          (if (< x lo) lo (if (< hi x) hi x)))
+        (defn main [] (clamp 5 0 10))
+    ";
+    assert_eq!(compile_and_run_simple(src), 5);
+}
+
+#[test]
+#[ignore = "constrained poly: clamp is constrained"]
+fn constrained_fn_clamp_low() {
+    let src = "
+        (defn clamp [x lo hi]
+          (if (< x lo) lo (if (< hi x) hi x)))
+        (defn main [] (clamp -5 0 10))
+    ";
+    assert_eq!(compile_and_run_simple(src), 0);
+}
+
+#[test]
+#[ignore = "constrained poly: clamp is constrained"]
+fn constrained_fn_clamp_high() {
+    let src = "
+        (defn clamp [x lo hi]
+          (if (< x lo) lo (if (< hi x) hi x)))
+        (defn main [] (clamp 15 0 10))
+    ";
+    assert_eq!(compile_and_run_simple(src), 10);
+}
+
+// Truly constrained functions (params remain polymorphic) need monomorphisation.
+#[test]
+#[ignore = "constrained poly: mono specialization has empty method_resolutions"]
+fn constrained_add_int() {
+    let src = "
+        (defn add [x y] (+ x y))
+        (defn main [] (add 3 4))
+    ";
+    assert_eq!(compile_and_run_simple(src), 7);
+}
+
+#[test]
+#[ignore = "constrained poly: mono specialization has empty method_resolutions"]
+fn constrained_add_float() {
+    let src = "
+        (defn add [x y] (+ x y))
+        (defn main [] (add 1.5 2.5))
+    ";
+    let (value, ty) = compile_and_run_typed(src);
+    assert_eq!(ty, Type::Float);
+    let f = f64::from_bits(value as u64);
+    assert!((f - 4.0).abs() < f64::EPSILON);
+}
+
+#[test]
+#[ignore = "constrained poly: mono specialization has empty method_resolutions"]
+fn constrained_add_both_types() {
+    let src = "
+        (defn add [x y] (+ x y))
+        (defn main [] (add 3 4))
+    ";
+    assert_eq!(compile_and_run_simple(src), 7);
+}
+
+#[test]
+#[ignore = "constrained poly: mono specialization has empty method_resolutions"]
+fn constrained_multiply() {
+    let src = "
+        (defn square [x] (* x x))
+        (defn main [] (square 7))
+    ";
+    assert_eq!(compile_and_run_simple(src), 49);
+}
+
+#[test]
+#[ignore = "constrained poly: mono specialization has empty method_resolutions"]
+fn constrained_subtract() {
+    let src = "
+        (defn diff [x y] (- x y))
+        (defn main [] (diff 10 3))
+    ";
+    assert_eq!(compile_and_run_simple(src), 7);
+}
+
+#[test]
+#[ignore = "constrained poly: mono specialization has empty method_resolutions"]
+fn constrained_comparison() {
+    let src = "
+        (defn less-than [x y] (< x y))
+        (defn main [] (if (less-than 3 5) 1 0))
+    ";
+    assert_eq!(compile_and_run_simple(src), 1);
+}
+
+#[test]
+#[ignore = "constrained poly: mono specialization has empty method_resolutions"]
+fn constrained_equality() {
+    let src = "
+        (defn is-equal [x y] (= x y))
+        (defn main [] (if (is-equal 5 5) 1 0))
+    ";
+    assert_eq!(compile_and_run_simple(src), 1);
+}
+
+#[test]
+#[ignore = "constrained poly: mono specialization has empty method_resolutions"]
+fn constrained_multi_op() {
+    let src = "
+        (defn compute [x y] (+ (* x x) (* y y)))
+        (defn main [] (compute 3 4))
+    ";
+    assert_eq!(compile_and_run_simple(src), 25);
+}
+
+#[test]
+#[ignore = "constrained poly: mono specialization has empty method_resolutions"]
+fn constrained_never_called_ok() {
+    // A constrained function that is never called should not error.
+    let src = "
+        (defn unused-add [x y] (+ x y))
+        (defn main [] 42)
+    ";
+    assert_eq!(compile_and_run_simple(src), 42);
+}
+
+#[test]
+#[ignore = "constrained poly: mono specialization has empty method_resolutions"]
+fn constrained_with_let() {
+    let src = "
+        (defn double [x] (+ x x))
+        (defn main [] (let [n 21] (double n)))
+    ";
+    assert_eq!(compile_and_run_simple(src), 42);
+}
+
+#[test]
+#[ignore = "constrained poly: mono specialization has empty method_resolutions"]
+fn constrained_with_if() {
+    let src = "
+        (defn abs-diff [x y]
+          (if (< x y) (- y x) (- x y)))
+        (defn main [] (abs-diff 3 10))
+    ";
+    assert_eq!(compile_and_run_simple(src), 7);
+}
+
+// =============================================================================
+// Type annotations (spec: 03-types)
+// =============================================================================
+
+#[test]
+fn annotation_concrete_type_int() {
+    let src = "(defn inc [:Int x] (+ x 1)) (defn main [] (inc 5))";
+    assert_eq!(compile_and_run_simple(src), 6);
+}
+
+#[test]
+fn annotation_concrete_type_float() {
+    let src = "(defn half [:Float x] (/ x 2.0)) (defn main [] (half 10.0))";
+    let (value, _) = compile_and_run_typed(src);
+    let f = f64::from_bits(value as u64);
+    assert!((f - 5.0).abs() < f64::EPSILON);
+}
+
+#[test]
+fn annotation_wrong_type_error() {
+    assert_type_error("(defn inc [:Int x] (+ x 1)) (defn main [] (inc 1.5))", "");
+}
+
+#[test]
+fn annotation_bool_param() {
+    let src = "(defn to-int [:Bool b] (if b 1 0)) (defn main [] (to-int true))";
+    assert_eq!(compile_and_run_simple(src), 1);
+}
+
+#[test]
+fn annotation_string_param() {
+    let src = r#"(defn len [:String s] (str-len s)) (defn main [] (len "hello"))"#;
+    assert_eq!(compile_and_run_simple(src), 5);
+}
+
+#[test]
+fn annotated_lambda() {
+    let src = "(defn main [] ((fn [:Int x] (+ x 1)) 5))";
+    assert_eq!(compile_and_run_simple(src), 6);
+}
+
+#[test]
+fn annotation_mixed_annotated_and_inferred() {
+    let src = "
+        (defn add-offset [:Int x y] (+ x y))
+        (defn main [] (add-offset 10 20))
+    ";
+    assert_eq!(compile_and_run_simple(src), 30);
+}
+
+#[test]
+fn annotation_constrains_body() {
+    // Annotating param as Int means body operators resolve concretely.
+    let src = "
+        (defn square [:Int x] (* x x))
+        (defn main [] (square 7))
+    ";
+    assert_eq!(compile_and_run_simple(src), 49);
+}
+
+#[test]
+fn annotation_on_both_params() {
+    let src = "
+        (defn add [:Int a :Int b] (+ a b))
+        (defn main [] (add 10 20))
+    ";
+    assert_eq!(compile_and_run_simple(src), 30);
+}
+
+#[test]
+fn annotation_mismatch_call_error() {
+    // Float arg to Int-annotated param.
+    assert_type_error(
+        "(defn inc [:Int x] (+ x 1)) (defn main [] (inc 1.5))",
+        "",
+    );
+}
+
+// =============================================================================
+// Operator transition regression: named primitives still work
+// =============================================================================
+
+#[test]
+fn regression_named_prim_add_i64() {
+    let src = "(defn main [] (add-i64 3 4))";
+    assert_eq!(compile_and_run_simple(src), 7);
+}
+
+#[test]
+fn regression_named_prim_sub_i64() {
+    let src = "(defn main [] (sub-i64 10 3))";
+    assert_eq!(compile_and_run_simple(src), 7);
+}
+
+#[test]
+fn regression_named_prim_mul_i64() {
+    let src = "(defn main [] (mul-i64 6 7))";
+    assert_eq!(compile_and_run_simple(src), 42);
+}
+
+#[test]
+fn regression_named_prim_div_i64() {
+    let src = "(defn main [] (div-i64 20 4))";
+    assert_eq!(compile_and_run_simple(src), 5);
+}
+
+#[test]
+fn regression_named_prim_eq_i64() {
+    let src = "(defn main [] (if (eq-i64 5 5) 1 0))";
+    assert_eq!(compile_and_run_simple(src), 1);
+}
+
+#[test]
+fn regression_named_prim_lt_i64() {
+    let src = "(defn main [] (if (lt-i64 3 5) 1 0))";
+    assert_eq!(compile_and_run_simple(src), 1);
+}
+
+#[test]
+fn regression_named_prim_add_f64() {
+    let src = "(defn main [] (add-f64 1.5 2.5))";
+    let (value, ty) = compile_and_run_typed(src);
+    assert_eq!(ty, Type::Float);
+    let f = f64::from_bits(value as u64);
+    assert!((f - 4.0).abs() < f64::EPSILON);
+}
+
+#[test]
+fn regression_named_prim_le_i64() {
+    let src = "(defn main [] (if (le-i64 3 3) 1 0))";
+    assert_eq!(compile_and_run_simple(src), 1);
+}
+
+#[test]
+fn regression_named_prim_ge_i64() {
+    let src = "(defn main [] (if (ge-i64 5 3) 1 0))";
+    assert_eq!(compile_and_run_simple(src), 1);
+}
+
+#[test]
+fn regression_named_and_trait_ops_in_same_program() {
+    // Mix named primitives and trait operators in the same program.
+    let src = "
+        (defn main []
+          (let [a (add-i64 1 2)
+                b (+ 3 4)]
+            (+ a b)))
+    ";
+    assert_eq!(compile_and_run_simple(src), 10);
+}
+
+// =============================================================================
+// User-defined traits (spec: 07-traits)
+// User-defined trait impl methods need pipeline wiring for batch compilation.
+// =============================================================================
+
+#[test]
+#[ignore = "user trait: impl methods not compiled under mangled name in batch pipeline"]
+fn user_trait_simple() {
+    let src = "
+        (deftrait (Sizeable a)
+          (size [a] Int))
+        (impl Sizeable Int
+          (defn size [x] x))
+        (defn main [] (size 42))
+    ";
+    assert_eq!(compile_and_run_simple(src), 42);
+}
+
+#[test]
+#[ignore = "user trait: impl methods not compiled under mangled name in batch pipeline"]
+fn user_trait_adt() {
+    let src = "
+        (deftrait (Sizeable a)
+          (size [a] Int))
+        (deftype Color Red Green Blue)
+        (impl Sizeable Color
+          (defn size [c] (match c [Red 1 Green 2 Blue 3])))
+        (defn main [] (size Green))
+    ";
+    assert_eq!(compile_and_run_simple(src), 2);
+}
+
+#[test]
+#[ignore = "user trait: impl methods not compiled under mangled name in batch pipeline"]
+fn user_trait_multiple_impls() {
+    let src = "
+        (deftrait (Sizeable a)
+          (size [a] Int))
+        (impl Sizeable Int
+          (defn size [x] x))
+        (impl Sizeable Bool
+          (defn size [b] (if b 1 0)))
+        (defn main [] (+ (size 10) (size true)))
+    ";
+    assert_eq!(compile_and_run_simple(src), 11);
+}
+
+// =============================================================================
+// Error cases (spec: 07-traits, 03-types)
+// =============================================================================
+
+#[test]
+fn error_type_mismatch_plus() {
+    assert_type_error("(defn main [] (+ 1 1.5))", "");
+}
+
+#[test]
+fn error_type_mismatch_eq() {
+    assert_type_error("(defn main [] (= 1 true))", "");
+}
+
+#[test]
+fn error_plus_bool() {
+    assert_error("(defn main [] (+ true false))", "");
+}
+
+#[test]
+fn error_plus_string() {
+    assert_error(r#"(defn main [] (+ "a" "b"))"#, "");
+}
+
+#[test]
+fn error_lt_bool() {
+    assert_error("(defn main [] (< true false))", "");
+}
+
+#[test]
+fn error_lt_string() {
+    assert_error(r#"(defn main [] (< "a" "b"))"#, "");
+}
+
+#[test]
+fn error_mixed_types_in_operator() {
+    // Int and String in + should fail.
+    assert_error(r#"(defn main [] (+ 1 "hello"))"#, "");
+}
+
+// =============================================================================
+// REPL: Trait operator dispatch (spec: 07-traits, 12-runtime)
+// =============================================================================
+
+#[test]
+fn repl_trait_plus_int() {
+    let mut session = repl_session();
+    assert_eq!(repl_eval(&mut session, "(+ 1 2)"), 3);
+}
+
+#[test]
+fn repl_trait_minus_int() {
+    let mut session = repl_session();
+    assert_eq!(repl_eval(&mut session, "(- 10 3)"), 7);
+}
+
+#[test]
+fn repl_trait_multiply_int() {
+    let mut session = repl_session();
+    assert_eq!(repl_eval(&mut session, "(* 6 7)"), 42);
+}
+
+#[test]
+fn repl_trait_divide_int() {
+    let mut session = repl_session();
+    assert_eq!(repl_eval(&mut session, "(/ 20 4)"), 5);
+}
+
+#[test]
+fn repl_trait_eq_int() {
+    let mut session = repl_session();
+    assert_eq!(repl_eval(&mut session, "(if (= 5 5) 1 0)"), 1);
+    assert_eq!(repl_eval(&mut session, "(if (= 5 3) 1 0)"), 0);
+}
+
+#[test]
+fn repl_trait_lt_int() {
+    let mut session = repl_session();
+    assert_eq!(repl_eval(&mut session, "(if (< 3 5) 1 0)"), 1);
+    assert_eq!(repl_eval(&mut session, "(if (< 5 3) 1 0)"), 0);
+}
+
+#[test]
+fn repl_trait_plus_float() {
+    let mut session = repl_session();
+    let (value, ty) = repl_eval_typed(&mut session, "(+ 1.5 2.5)");
+    assert_eq!(ty, Type::Float);
+    let f = f64::from_bits(value as u64);
+    assert!((f - 4.0).abs() < f64::EPSILON);
+}
+
+#[test]
+fn repl_trait_eq_string() {
+    let mut session = repl_session();
+    assert_eq!(repl_eval(&mut session, r#"(if (= "abc" "abc") 1 0)"#), 1);
+    assert_eq!(repl_eval(&mut session, r#"(if (= "abc" "xyz") 1 0)"#), 0);
+}
+
+#[test]
+fn repl_trait_eq_bool() {
+    let mut session = repl_session();
+    assert_eq!(repl_eval(&mut session, "(if (= true true) 1 0)"), 1);
+    assert_eq!(repl_eval(&mut session, "(if (= true false) 1 0)"), 0);
+}
+
+#[test]
+fn repl_trait_lt_float() {
+    let mut session = repl_session();
+    assert_eq!(repl_eval(&mut session, "(if (< 1.0 2.0) 1 0)"), 1);
+}
+
+#[test]
+fn repl_trait_arithmetic_chained() {
+    let mut session = repl_session();
+    assert_eq!(repl_eval(&mut session, "(+ (* 3 4) (- 10 2))"), 20);
+}
+
+// REPL: Default methods (same issues as batch)
+#[test]
+#[ignore = "default method codegen: not wired in REPL pipeline"]
+fn repl_trait_neq_default() {
+    let mut session = repl_session();
+    assert_eq!(repl_eval(&mut session, "(if (!= 3 5) 1 0)"), 1);
+}
+
+#[test]
+#[ignore = "default method codegen: not wired in REPL pipeline"]
+fn repl_trait_ge_default() {
+    let mut session = repl_session();
+    assert_eq!(repl_eval(&mut session, "(if (>= 5 3) 1 0)"), 1);
+}
+
+#[test]
+#[ignore = "default method codegen: not wired in REPL pipeline"]
+fn repl_trait_le_default() {
+    let mut session = repl_session();
+    assert_eq!(repl_eval(&mut session, "(if (<= 3 5) 1 0)"), 1);
+}
+
+#[test]
+#[ignore = "default method codegen: not wired in REPL pipeline"]
+fn repl_trait_gt_default() {
+    let mut session = repl_session();
+    assert_eq!(repl_eval(&mut session, "(if (> 5 3) 1 0)"), 1);
+}
+
+// =============================================================================
+// REPL: Constrained polymorphism
+// =============================================================================
+
+#[test]
+#[ignore = "constrained poly: mono specialization not wired in REPL"]
+fn repl_constrained_fn_int() {
+    let mut session = repl_session();
+    repl_eval(&mut session, "(defn add [x y] (+ x y))");
+    assert_eq!(repl_eval(&mut session, "(add 3 4)"), 7);
+}
+
+#[test]
+#[ignore = "constrained poly: mono specialization not wired in REPL"]
+fn repl_constrained_fn_float() {
+    let mut session = repl_session();
+    repl_eval(&mut session, "(defn add [x y] (+ x y))");
+    let (value, ty) = repl_eval_typed(&mut session, "(add 1.5 2.5)");
+    assert_eq!(ty, Type::Float);
+    let f = f64::from_bits(value as u64);
+    assert!((f - 4.0).abs() < f64::EPSILON);
+}
+
+// =============================================================================
+// REPL: User-defined trait
+// =============================================================================
+
+#[test]
+#[ignore = "user trait: impl methods not compiled under mangled name in REPL"]
+fn repl_user_trait() {
+    let mut session = repl_session();
+    repl_eval(
+        &mut session,
+        "(deftrait (Sizeable a) (size [a] Int))",
+    );
+    repl_eval(
+        &mut session,
+        "(impl Sizeable Int (defn size [x] x))",
+    );
+    assert_eq!(repl_eval(&mut session, "(size 42)"), 42);
+}
+
+// =============================================================================
+// REPL: Defn type finalization (spec: 03-types, 07-traits)
+// Functions that use operators with concrete types work fine.
+// =============================================================================
+
+#[test]
+fn repl_defn_operator_returns_int() {
+    let mut session = repl_session();
+    // Using annotated param avoids constrained poly.
+    repl_eval(&mut session, "(defn double [:Int x] (+ x x))");
+    assert_eq!(repl_eval(&mut session, "(double 21)"), 42);
+}
+
+#[test]
+fn repl_defn_eq_returns_bool() {
+    let mut session = repl_session();
+    repl_eval(&mut session, "(defn is-zero [x] (= x 0))");
+    let (value, ty) = repl_eval_typed(&mut session, "(is-zero 0)");
+    assert_eq!(ty, Type::Bool);
+    assert_eq!(value, 1);
+}
+
+#[test]
+#[ignore = "constrained poly: defn using operators with polymorphic params"]
+fn repl_defn_using_comparison_chain() {
+    let mut session = repl_session();
+    repl_eval(
+        &mut session,
+        "(defn clamp [x lo hi] (if (< x lo) lo (if (< hi x) hi x)))",
+    );
+    assert_eq!(repl_eval(&mut session, "(clamp 5 0 10)"), 5);
+}
+
+#[test]
+fn repl_defn_concrete_comparison() {
+    // clamp called immediately with Int literals pins everything to Int.
+    let mut session = repl_session();
+    assert_eq!(
+        repl_eval(
+            &mut session,
+            "(let [x 5 lo 0 hi 10] (if (< x lo) lo (if (< hi x) hi x)))"
+        ),
+        5
+    );
+}
+
+#[test]
+fn repl_type_error_recovers() {
+    let mut session = repl_session();
+    // Type error: + with mismatched types.
+    let err = session.eval("(+ 1 true)");
+    assert!(err.is_err());
+    // Session should still work after error.
+    assert_eq!(repl_eval(&mut session, "(+ 1 2)"), 3);
+}
+
+// =============================================================================
+// Dual-mode parity (batch + interactive produce same results)
+// =============================================================================
+
+#[test]
+fn dual_mode_trait_plus() {
+    compile_both("(defn main [] (+ 3 4))", 7);
+}
+
+#[test]
+fn dual_mode_trait_minus() {
+    compile_both("(defn main [] (- 10 3))", 7);
+}
+
+#[test]
+fn dual_mode_trait_multiply() {
+    compile_both("(defn main [] (* 6 7))", 42);
+}
+
+#[test]
+fn dual_mode_trait_divide() {
+    compile_both("(defn main [] (/ 20 4))", 5);
+}
+
+#[test]
+fn dual_mode_trait_eq() {
+    compile_both("(defn main [] (if (= 5 5) 1 0))", 1);
+}
+
+#[test]
+fn dual_mode_trait_lt() {
+    compile_both("(defn main [] (if (< 3 5) 1 0))", 1);
+}
+
+#[test]
+fn dual_mode_trait_nested_arithmetic() {
+    compile_both("(defn main [] (* (+ 2 3) (- 10 4)))", 30);
+}
+
+#[test]
+fn dual_mode_factorial_operators() {
+    let src = "
+        (defn fact [n]
+          (if (= n 0) 1 (* n (fact (- n 1)))))
+        (defn main [] (fact 10))
+    ";
+    compile_both(src, 3628800);
+}
+
+#[test]
+fn dual_mode_sum_to_with_operators() {
+    let src = "
+        (defn sum-to [n]
+          (if (= n 0) 0 (+ n (sum-to (- n 1)))))
+        (defn main [] (sum-to 100))
+    ";
+    compile_both(src, 5050);
+}
+
+// Dual mode for default methods
+#[test]
+#[ignore = "default method codegen: not wired in pipeline"]
+fn dual_mode_default_neq() {
+    compile_both("(defn main [] (if (!= 3 5) 1 0))", 1);
+}
+
+#[test]
+#[ignore = "default method codegen: not wired in pipeline"]
+fn dual_mode_default_le() {
+    compile_both("(defn main [] (if (<= 3 5) 1 0))", 1);
+}
+
+#[test]
+#[ignore = "default method codegen: not wired in pipeline"]
+fn dual_mode_default_ge() {
+    compile_both("(defn main [] (if (>= 5 3) 1 0))", 1);
+}
+
+// =============================================================================
+// Trait + ADT interaction
+// =============================================================================
+
+#[test]
+fn trait_operators_in_match_body() {
+    let src = "
+        (deftype (Option a) None (Some [:a val]))
+        (defn unwrap-or [opt default]
+          (match opt
+            [(Some x) x
+             None default]))
+        (defn main [] (+ (unwrap-or (Some 10) 0) (unwrap-or None 5)))
+    ";
+    assert_eq!(compile_and_run_simple(src), 15);
+}
+
+#[test]
+fn trait_operators_in_adt_function() {
+    let src = "
+        (deftype Point [:Int x :Int y])
+        (defn distance-sq [p]
+          (match p
+            [(Point x y) (+ (* x x) (* y y))]))
+        (defn main [] (distance-sq (Point 3 4)))
+    ";
+    assert_eq!(compile_and_run_simple(src), 25);
+}
+
+#[test]
+fn trait_eq_in_match_branch() {
+    let src = "
+        (deftype Color Red Green Blue)
+        (defn is-primary [c]
+          (match c
+            [Red (= 1 1)
+             Green (= 2 2)
+             Blue (= 3 3)]))
+        (defn main [] (if (is-primary Red) 1 0))
+    ";
+    assert_eq!(compile_and_run_simple(src), 1);
+}
+
+#[test]
+fn trait_arithmetic_with_adt_field() {
+    let src = "
+        (deftype Pair [:Int first :Int second])
+        (defn sum-pair [p]
+          (match p [(Pair a b) (+ a b)]))
+        (defn main [] (sum-pair (Pair 17 25)))
+    ";
+    assert_eq!(compile_and_run_simple(src), 42);
+}
+
+// =============================================================================
+// Trait + Closure interaction
+// =============================================================================
+
+#[test]
+fn closure_using_trait_operators() {
+    let src = "
+        (defn main []
+          (let [n 10]
+            ((fn [x] (+ n x)) 32)))
+    ";
+    assert_eq!(compile_and_run_simple(src), 42);
+}
+
+#[test]
+fn higher_order_with_trait_operators() {
+    let src = "
+        (defn apply-fn [f x] (f x))
+        (defn main [] (apply-fn (fn [x] (* x 2)) 21))
+    ";
+    assert_eq!(compile_and_run_simple(src), 42);
+}
+
+#[test]
+fn closure_with_comparison() {
+    let src = "
+        (defn main []
+          (let [threshold 10]
+            ((fn [x] (if (< x threshold) 0 1)) 15)))
+    ";
+    assert_eq!(compile_and_run_simple(src), 1);
+}
+
+#[test]
+fn closure_with_eq() {
+    let src = "
+        (defn main []
+          (let [target 42]
+            ((fn [x] (if (= x target) 1 0)) 42)))
+    ";
+    assert_eq!(compile_and_run_simple(src), 1);
+}
+
+// =============================================================================
+// Trait + TCO interaction
+// =============================================================================
+
+#[test]
+fn tco_countdown_with_operators() {
+    let src = "
+        (defn countdown [n]
+          (if (= n 0) 0 (countdown (- n 1))))
+        (defn main [] (countdown 1000000))
+    ";
+    assert_eq!(compile_and_run_simple(src), 0);
+}
+
+#[test]
+fn tco_accumulator_with_operators() {
+    let src = "
+        (defn sum-acc [n acc]
+          (if (= n 0) acc (sum-acc (- n 1) (+ acc n))))
+        (defn main [] (sum-acc 100 0))
+    ";
+    assert_eq!(compile_and_run_simple(src), 5050);
+}
+
+// =============================================================================
+// U1.3 resolution: Nested heap ADT tests (deferred from Ring 1)
+// =============================================================================
+
+#[test]
+fn nested_adt_with_string() {
+    let src = r#"
+        (deftype (Option a) None (Some [:a val]))
+        (defn main []
+          (let [opt (Some "hello")]
+            (match opt
+              [(Some s) (str-len s)
+               None 0])))
+    "#;
+    assert_eq!(compile_and_run_simple(src), 5);
+}
+
+#[test]
+fn nested_adt_option_of_option() {
+    let src = "
+        (deftype (Option a) None (Some [:a val]))
+        (defn main []
+          (match (Some (Some 42))
+            [(Some inner)
+              (match inner
+                [(Some x) x
+                 None 0])
+             None 0]))
+    ";
+    assert_eq!(compile_and_run_simple(src), 42);
+}
+
+#[test]
+fn nested_adt_vec_of_strings() {
+    let src = r#"
+        (defn main []
+          (str-len (vec-get ["hello" "world" "test"] 1)))
+    "#;
+    assert_eq!(compile_and_run_simple(src), 5);
+}
+
+#[test]
+fn nested_adt_point_in_option() {
+    let src = "
+        (deftype Point [:Int x :Int y])
+        (deftype (Option a) None (Some [:a val]))
+        (defn main []
+          (match (Some (Point 3 4))
+            [(Some p) (match p [(Point x y) (+ x y)])
+             None 0]))
+    ";
+    assert_eq!(compile_and_run_simple(src), 7);
+}
+
+#[test]
+fn nested_adt_string_in_product() {
+    let src = r#"
+        (deftype Named [:String name :Int value])
+        (defn main []
+          (match (Named "test" 42)
+            [(Named n v) v]))
+    "#;
+    assert_eq!(compile_and_run_simple(src), 42);
+}
+
+// =============================================================================
+// U1.5 resolution: Closure capturing heap types (deferred from Ring 1)
+// =============================================================================
+
+#[test]
+fn closure_capturing_string() {
+    let src = r#"
+        (defn main []
+          (let [s "hello"]
+            ((fn [] (str-len s)))))
+    "#;
+    assert_eq!(compile_and_run_simple(src), 5);
+}
+
+#[test]
+fn closure_capturing_adt() {
+    let src = "
+        (deftype (Option a) None (Some [:a val]))
+        (defn main []
+          (let [opt (Some 42)]
+            ((fn [] (match opt [(Some x) x None 0])))))
+    ";
+    assert_eq!(compile_and_run_simple(src), 42);
+}
+
+#[test]
+fn closure_capturing_vec() {
+    let src = "
+        (defn main []
+          (let [v [1 2 3]]
+            ((fn [] (vec-len v)))))
+    ";
+    assert_eq!(compile_and_run_simple(src), 3);
+}
+
+#[test]
+fn closure_returning_captured_string() {
+    let src = r#"
+        (defn make-greeter [greeting]
+          (fn [] greeting))
+        (defn main [] (str-len ((make-greeter "hello"))))
+    "#;
+    assert_eq!(compile_and_run_simple(src), 5);
+}
+
+#[test]
+fn closure_capturing_string_in_higher_order() {
+    let src = r#"
+        (defn apply-fn [f] (f))
+        (defn main []
+          (let [s "test"]
+            (apply-fn (fn [] (str-len s)))))
+    "#;
+    assert_eq!(compile_and_run_simple(src), 4);
+}

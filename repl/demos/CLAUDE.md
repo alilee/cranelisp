@@ -26,10 +26,9 @@ Demo scripts use a format that is almost valid Cranelisp:
 
 ### Rules
 
-- `;` lines are comments — displayed dimmed as section headers, not sent to the REPL
-- Blank lines are pauses — the player waits briefly
-- All other lines are REPL input — typed slowly, then the REPL response is shown
-- No special prefix on input lines — they look like real REPL input
+- Every line is sent to the REPL — comments, blanks, expressions, slash commands
+- The showcase types each line at the `> ` prompt, then shows whatever the REPL produced
+- No line gets special treatment — if the REPL silently re-prompts for a comment, that's what the viewer sees
 - Files use `.demo` extension
 - One demo per ring, plus optional themed demos (e.g., `adt-tour.demo`)
 
@@ -49,12 +48,14 @@ The top-level `showcase` script builds the binary and pipes the demo straight in
 ./repl/showcase --list         # list available demos
 ```
 
-The showcase uses a two-phase approach:
+### Transparent pipe — no filtering
 
-1. **Phase 1** — Parse the `.demo` file. Send only expression lines to the REPL as piped stdin (comments and blanks are filtered out). Capture stdout.
-2. **Phase 2** — Replay the demo: comments displayed dimmed as section headers, expression input typed character-by-character with the REPL result shown instantly after each.
+The showcase sends the **entire** `.demo` file to the REPL as stdin, captures the raw output, then replays it with typing effects. It MUST NOT filter, reorder, or suppress any REPL behavior. If comments produce errors, definitions show `<closure>`, or types are unqualified — that is what the viewer sees. The showcase shows the product as-is.
 
-This avoids the known REPL issue where comment-only lines produce `error: parse error at 0..0: empty input` (the reader strips `;` but the REPL evaluates the empty result). The REPL should eventually skip empty input — filed for the `src/repl.rs` owner — but the showcase works around it.
+1. **Phase 1** — Send the entire `.demo` file to the REPL process. Capture raw stdout.
+2. **Phase 2** — Parse output by splitting on `"> "` prompts to pair each input line with its result. Replay with typing effects: comments displayed dimmed, expressions typed character-by-character with the REPL's actual result shown instantly.
+
+If the showcase output looks wrong, the fix goes in the REPL — not in the showcase.
 
 ### Run isolation
 
@@ -81,6 +82,7 @@ The REPL process `chdir`s into this directory, so `.cache` artifacts and any oth
 | `first-session.demo` | 0–1 | Learner progression: evaluate, define, inspect, mistakes, recover |
 | `ring0.demo` | 0 | Arithmetic, booleans, let, if, defn, recursion, TCO |
 | `ring1.demo` | 1 | Strings, ADTs, pattern matching, closures, higher-order, Vecs |
+| `ring2a.demo` | 2A | Trait-dispatched operators, float dispatch, deftrait, polymorphic display |
 
 Each sprint, `/repl` extends this library:
 - **Ring 2**: Traits, modules, constrained polymorphism

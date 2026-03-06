@@ -762,6 +762,163 @@ The sketch (`sketch/lib/core/sequences.cl`) implements Vec operations by convert
 
 ---
 
+## 11. Trait Hierarchy Design (Sprint 4, Wave 3)
+
+Sprint 4 delivers Ring 2A: trait declarations, trait impls, constrained polymorphism, and operator dispatch. This section records the trait hierarchy as now implemented in the compiler and assesses what it means for stdlib planning.
+
+### 11.1 Core Traits — Registered at Startup
+
+Per arch decision 17, the three core traits are registered by the typechecker in `register_builtins()` (in `crates/cranelisp-typecheck/src/builtins.rs`), **not** from stdlib `.cl` files. Stdlib files require the module system, which arrives in Sprint 5. This means:
+
+- The trait declarations and their builtin impls exist from the moment the compiler starts.
+- Stdlib modules (`compare/eq.cl`, `compare/ord.cl`, `num/num.cl`) will **not** re-declare these traits. Instead they will provide:
+  - Convenience functions built on the trait methods (e.g., `min`, `max`, `clamp`, `inc`, `dec`)
+  - Additional impls for ADT types (e.g., `(impl Eq (Option a) ...)`)
+  - Derive macros at Ring 3 (e.g., `derive-Eq`)
+
+#### Num — Numeric Operations
+
+| Method | Signature | Default body |
+|--------|-----------|-------------|
+| `+` | `(Fn [a a] a)` | — |
+| `-` | `(Fn [a a] a)` | — |
+| `*` | `(Fn [a a] a)` | — |
+| `/` | `(Fn [a a] a)` | — |
+
+**Built-in impls:**
+
+| Type | `+` | `-` | `*` | `/` |
+|------|-----|-----|-----|-----|
+| `Int` | `add-i64` | `sub-i64` | `mul-i64` | `div-i64` |
+| `Float` | `add-f64` | `sub-f64` | `mul-f64` | `div-f64` |
+
+All four methods are required (no defaults). All map directly to Ring 0 inline primitives.
+
+#### Eq — Equality
+
+| Method | Signature | Default body |
+|--------|-----------|-------------|
+| `=` | `(Fn [a a] Bool)` | — |
+| `!=` | `(Fn [a a] Bool)` | `(fn [x y] (not (= x y)))` |
+
+**Built-in impls** (only `=` is provided; `!=` uses the default):
+
+| Type | `=` primitive |
+|------|---------------|
+| `Int` | `eq-i64` |
+| `Float` | `eq-f64` |
+| `Bool` | `eq-bool` |
+| `String` | `str-eq` |
+
+`eq-bool` is new in Ring 2A (Ring 0 only had `not`). `str-eq` is a Ring 1 extern primitive.
+
+#### Ord — Ordering
+
+| Method | Signature | Default body |
+|--------|-----------|-------------|
+| `<` | `(Fn [a a] Bool)` | — |
+| `>` | `(Fn [a a] Bool)` | `(fn [x y] (< y x))` |
+| `<=` | `(Fn [a a] Bool)` | `(fn [x y] (not (< y x)))` |
+| `>=` | `(Fn [a a] Bool)` | `(fn [x y] (not (< x y)))` |
+
+**Built-in impls** (only `<` is provided; `>`, `<=`, `>=` use defaults):
+
+| Type | `<` primitive |
+|------|---------------|
+| `Int` | `lt-i64` |
+| `Float` | `lt-f64` |
+
+Only `<` needs a primitive; the other three comparisons are derived from it via default methods.
+
+### 11.2 Impact on Stdlib Module Design
+
+The original plan (sections 3.3 and 5.3) assumed stdlib modules would declare the core traits. With startup registration, the design shifts:
+
+| Module | Original plan | Revised plan |
+|--------|--------------|--------------|
+| `compare/eq.cl` | Declare `Eq` trait + impls for Int, Float, Bool, String | Provide ADT impls (Option, List, etc.) + `derive-Eq` (Ring 3) + convenience fns |
+| `compare/ord.cl` | Declare `Ord` trait + impls for Int, Float | Provide ADT impls + `min`, `max`, `clamp` + `derive-Ord` (Ring 3) |
+| `num/num.cl` | Declare `Num` trait + impls for Int, Float | Provide `inc`, `dec` + any convenience wrappers |
+
+This is a simplification: the foundation traits are available from the start with no module-system dependency. The stdlib modules become thinner — focused on extensions and convenience rather than the trait bedrock.
+
+### 11.3 Stdlib Modules Now Plannable with Trait Support
+
+With Num, Eq, and Ord available at startup, the following modules can be written at Ring 2 (once the module system arrives in Sprint 5) using trait-dispatched operators throughout:
+
+**Fully plannable now (no additional compiler work needed beyond modules):**
+
+| Module | Trait dependencies | Notes |
+|--------|-------------------|-------|
+| `compare/eq.cl` | Eq (startup) | ADT impls, convenience fns |
+| `compare/ord.cl` | Eq (startup), Ord (startup) | `min`, `max`, `clamp` |
+| `num/num.cl` | Num (startup) | `inc`, `dec` — trivial wrappers |
+| `num/int.cl` | Num (startup), Ord (startup) | `abs`, `sign`, `even?`, `odd?`, `rem`, `quot` |
+| `num/float.cl` | Num (startup), Ord (startup) | `floor`, `ceil`, `round` (need runtime primitives) |
+| `fn/compose.cl` | None | Pure higher-order fns |
+| `fn/combinators.cl` | None | Pure higher-order fns |
+| `fn/option.cl` | Eq, Ord (startup) for impls | Type + ops + trait impls |
+| `fn/result.cl` | Eq (startup) for impls | Type + ops + trait impls |
+| `collections/vec.cl` (core) | None | Already assessed (section 10) |
+| `testing/assertions.cl` | Eq (startup) | `assert-eq` needs `=` |
+| `default.cl` | None (declares its own trait) | `Default` trait |
+| `collections/pair.cl` | Eq, Ord (startup) | Product type + impls |
+
+**Blocked on additional trait declarations (Display, Functor, Foldable, Hash):**
+
+| Module | Missing trait | When available |
+|--------|--------------|---------------|
+| `text/display.cl` | `Display` must be declared in stdlib or startup | Sprint 5+ |
+| `collections/functor.cl` | `Functor` (HKT trait) | Requires HKT support |
+| `collections/foldable.cl` | `Foldable` (HKT trait) | Requires HKT support |
+| `compare/hash.cl` | `Hash` must be declared | Sprint 5+ |
+| `collections/map.cl` | `Hash` + runtime | Sprint 5+ |
+| `collections/set.cl` | `Hash` + runtime | Sprint 5+ |
+
+**Key insight**: Display is not a startup trait. The stdlib must declare it (or it must be added to startup registration). The current `builtins.rs` registers only Num, Eq, and Ord. Display is needed for `testing/assertions.cl` (which uses `show` for failure messages) and for most ADT impls. This is a planning decision for Sprint 5.
+
+### 11.4 Constrained Polymorphism Impact
+
+Ring 2A introduces constrained polymorphism: `(defn add [x y] (+ x y))` infers `add :: forall a. { a: [Num] } => (Fn [a a] a)` and monomorphises at call sites. This directly enables:
+
+- **`num/num.cl`**: `(defn inc [x] (+ x 1))` and `(defn dec [x] (- x 1))` — these are constrained polymorphic (work for any `Num` type).
+- **`compare/ord.cl`**: `(defn min [x y] (if (< x y) x y))` and `(defn max [x y] (if (< x y) y x))` — constrained on `Ord`.
+- **`compare/ord.cl`**: `(defn clamp [lo hi x] (min hi (max lo x)))` — constrained on `Ord`.
+- **`testing/assertions.cl`**: `assert-eq` can use `(= actual expected)` generically across all `Eq` types.
+
+This is a significant expressiveness gain. Without constrained polymorphism, these functions would need per-type overloads or would be limited to specific types.
+
+### 11.5 Build Order Refinement
+
+The Phase 1 bootstrap (section 5.3) assumed Eq and Display needed to be declared first. With Eq available at startup:
+
+**Revised Phase 1** (when modules arrive):
+
+```
+1. fn/option.cl            ; Option type — no stdlib deps (Eq impl uses startup trait)
+2. testing/assertions.cl   ; assert-eq — depends on Eq (startup), Option
+                           ; NOTE: show/Display not available yet — use primitives for
+                           ; error messages until Display is declared or startup-registered
+3. compare/ord.cl          ; min, max, clamp — depends on Eq (startup), Ord (startup)
+4. num/num.cl              ; inc, dec — depends on Num (startup)
+```
+
+The bottleneck shifts from "declare Eq" to "declare Display". `testing/assertions.cl` needs some way to render values in failure messages. Options:
+
+1. **Add Display to startup registration** — aligns with Num/Eq/Ord pattern. Requires `int-to-string`, `float-to-string`, `bool-to-string` primitives already present.
+2. **Use primitives directly** — `assert-eq` calls `int-to-string` etc. explicitly. Works but loses generic rendering.
+3. **Defer show integration** — `assert-eq` returns `(Option String)` with a fixed message, no value display. Functional but less informative.
+
+**Recommendation**: Option 1 (add Display to startup) is cleanest. Filed as observation — not a usability finding since it is a planning-stage decision.
+
+### 11.6 Updated Risk Assessment
+
+**Risk 1 (builtin-to-trait transition)**: Now **resolved by design**. Ring 0-1 named primitives (`add-i64`, etc.) retain their `BuiltinFn` path. Operators (`+`, etc.) gain a `TraitMethod` path. Both coexist per arch principle 9 (rings are accretive). The transition is transparent — `(+ 1 2)` dispatches through `Num.+$Int` which the backend maps back to `iadd` inline. No user-visible change.
+
+**Risk 12 (NEW — Display not a startup trait)**: The stdlib plan assumes Display is available alongside Eq/Ord/Num for the bootstrap sequence. Display is not currently registered at startup. This must be resolved before stdlib Phase 1 can execute. Severity: important — blocks the testing bootstrap but not Ring 2A compiler work. Decision point: Sprint 5 planning.
+
+---
+
 ## Next Skills
 
 - `/arch` — Confirm the builtin-to-trait transition strategy. Validate that cross-module trait impls work (trait in module A, type in module B, impl in module B). Review Map/Set implementation strategy.

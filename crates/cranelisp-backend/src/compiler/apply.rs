@@ -95,13 +95,35 @@ impl<'a> FnCompiler<'a> {
 
                 operators::emit_builtin_op(&mut self.builder, op_name, &arg_vals, span)
             }
-            ResolvedCall::TraitMethod { mangled_name, .. } => {
-                Err(CranelispError::CodegenError {
-                    message: format!(
-                        "trait method dispatch not supported in Ring 1: {mangled_name}"
-                    ),
-                    span,
-                })
+            ResolvedCall::TraitMethod {
+                ref trait_name,
+                ref method_name,
+                ref impl_type,
+                ref mangled_name,
+            } => {
+                // Check if this is a known primitive trait method (inline IR).
+                if let Some(prim_name) =
+                    operators::primitive_for_trait_method(trait_name, method_name, impl_type)
+                {
+                    // Extern primitives (e.g. str-eq for Eq.=.String).
+                    if is_extern_primitive(prim_name) {
+                        let arg_vals = self.compile_arg_list(args)?;
+                        self.in_tail_position = saved_tail;
+                        return self.compile_extern_call(prim_name, &arg_vals, span);
+                    }
+
+                    let arg_vals = self.compile_arg_list(args)?;
+                    self.in_tail_position = saved_tail;
+                    return operators::emit_builtin_op(
+                        &mut self.builder, prim_name, &arg_vals, span,
+                    );
+                }
+
+                // Not a primitive: compile as a normal function call to mangled name.
+                let sym = Symbol::from(mangled_name.as_ref());
+                let arg_vals = self.compile_arg_list(args)?;
+                self.in_tail_position = saved_tail;
+                self.compile_direct_call(&sym, &arg_vals, span)
             }
             ResolvedCall::SigDispatch { mangled_name } => {
                 Err(CranelispError::CodegenError {

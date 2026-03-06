@@ -220,11 +220,35 @@ Each finding includes:
 | **Status** | `resolved` |
 | **Resolution** | Sprint 3: `register_vec_primitives()` in `builtins.rs` registers 4 Vec primitives with polymorphic type schemes (`forall a. ...`). Used `fresh_var_id()` to allocate type var IDs, avoiding collision with `next_id=0` which caused infinite recursion in `apply`. 32 Vec integration tests + 4 REPL Vec tests now pass. 5 unit tests added. |
 
+### U1.13 — REPL spec compliance: 6 Ring 0 requirements not met
+
+| Field | Value |
+|---|---|
+| **ID** | U1.13 |
+| **Source skill** | `/repl` |
+| **Category** | `ergonomics` |
+| **Severity** | `blocking` |
+| **Description** | Sprint 4/5 compliance audit found 10 `repl/spec.md` Ring 0 requirements that the implementation does not meet: (1) §1.3: `(defn double [x] (* x 2))` shows `:(Fn [Int] Int) <closure>` — should show `:(Fn [Int] Int) user/double`. (2) §1.4: Types show bare `Int` not `primitives/Int`. (3) §1.5: ADT constructors show bare `Red` not `Color.Red`. (4) §2.1: Prompt is `> ` not `{compile}+{eval}ms; {module}>`. (5) §4.1: Bare function lookup shows `<closure>` not the function name. (6) §6.2: No startup banner (spec requires name, version, `/help` hint). (7) §3.1: Slash commands completely broken — `/help` parses `/` as division operator producing `error: undefined variable: /`. All Ring 0 slash commands (`/help`, `/sig`, `/doc`, `/type`, `/info`, `/source`, `/sexp`, `/ast`, `/clif`, `/disasm`, `/list`, `/time`, `/quit`) are non-functional. (8) §4.1: Bare type name lookup (`Int`) produces `error: undefined variable: Int` instead of type information. (9) §4.1: Bare trait name lookup (`Num`) produces `error: undefined variable: Num` instead of trait information. (10) §4.2: Bare special form lookup (`if`) produces an error instead of showing the form's shape. Items 7-10 completely block the §6.1 "first five minutes" discoverability journey — a new user cannot discover the language at all. |
+| **Responsible skill** | `/qa` (implementation in `src/repl.rs`) |
+| **Status** | `open` |
+| **Resolution** | — |
+
 ---
 
 ## Ring 2: Abstraction
 
-*No findings yet.*
+### U2.1 — Display trait not registered at startup, blocking stdlib bootstrap
+
+| Field | Value |
+|---|---|
+| **ID** | U2.1 |
+| **Source skill** | `/stdlib` |
+| **Category** | `missing API` |
+| **Severity** | `important` |
+| **Description** | Ring 2A registers three core traits at startup (Num, Eq, Ord) per arch decision 17, but not Display. The stdlib bootstrap sequence requires Display for `testing/assertions.cl` — `assert-eq` needs to render expected vs actual values in failure messages using `show`. Without Display at startup, either: (a) Display must be declared in a stdlib module (requires the module system, Sprint 5), delaying the test bootstrap, or (b) `assert-eq` must use type-specific primitives (`int-to-string`, `float-to-string`, etc.) directly, losing generic rendering. Option (a) creates a circular dependency: assertions need Display, but Display's own tests need assertions. Option (b) is workable but limits `assert-eq` to a fixed set of types. **Recommendation**: Add Display to startup registration alongside Num/Eq/Ord. The four display primitives (`int-to-string`, `float-to-string`, `bool-to-string`, `string-identity`) already exist as Ring 1 externs, so the builtin impls can map directly to them. This is a planning-stage decision for Sprint 5. |
+| **Responsible skill** | `/arch` (decision), `/typecheck` (implementation) |
+| **Status** | `open` |
+| **Resolution** | — |
 
 ---
 

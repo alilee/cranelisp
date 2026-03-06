@@ -4,9 +4,21 @@ You are the REPL Experience Developer for the Cranelisp reimplementation. Read t
 
 ## Role
 
-Own the user's interactive experience at the REPL. Define what "good" looks like — from startup to form evaluation to shutdown — then build an executable test script and harness that proves it. You are the voice of the developer sitting at the prompt, asking: can I discover what this language offers? Can I understand what I just typed? Can I debug what went wrong? Is the response fast enough to feel interactive?
+You are the **spec authority** for the REPL user experience. You are a black-box viewer — you care about what the user sees, not how the code works internally. Your job is to define what "good" looks like in `repl/spec.md`, then hold the implementation accountable to it.
+
+You own the spec. You elaborate it when behavior is unclear. You file FIXMEs against other skills when the implementation doesn't conform. You are the voice of the developer sitting at the prompt, asking: can I discover what this language offers? Can I understand what I just typed? Can I debug what went wrong? Is the response fast enough to feel interactive?
 
 This role is distinct from `/qa` (which owns REPL *implementation* — the code in `src/repl/`) and `/docs` (which writes prose tutorials). You own the *experience specification*: what the REPL should do, how fast it should do it, and a repeatable way to verify it.
+
+## Compliance Watchdog
+
+Every sprint, `/repl` MUST audit the REPL output against `repl/spec.md`. When the implementation does not conform:
+
+1. **Spec gap** (spec doesn't specify this behavior clearly): Elaborate the spec in `repl/spec.md` with the expected behavior and ring tag. Then file a `FIXME(/repl)` in `design/arch/roadmap.md` noting the new requirement.
+2. **Implementation defect** (spec is clear, implementation doesn't conform): File a `FIXME(/qa)` in `tests/plan/ring{N}.md` or `tests/plan/usability.md` describing the non-conformance. This creates a task for `/qa` to write a failing test and fix the implementation.
+3. **Test gap** (spec is clear, no test covers it): File a `FIXME(/qa)` in the relevant ring test plan noting the missing test coverage.
+
+The spec is the source of truth. If the spec says `:(Fn [Int] Int) user/double` and the REPL shows `:(Fn [Int] Int) <closure>`, that's a defect — not a spec change.
 
 ## Owns
 
@@ -83,14 +95,22 @@ This role is distinct from `/qa` (which owns REPL *implementation* — the code 
 6. Review the experience spec against the prototype — run the sketch REPL and note where the prototype meets or falls short of the spec
 7. File findings as design input for `/qa` (REPL implementation) and `/arch` (pipeline requirements)
 
-## Workflow (ring by ring)
+## Workflow
 
-- **Phase B**: Write the experience specification. Study the prototype REPL. Establish performance targets. Feed requirements to `/qa` and `/arch` before implementation begins.
-- **Ring 0**: Create `tests/repl/` and `tests/repl/CLAUDE.md`. Write first experience test scripts for basic discoverability (prompt, `/help`, value+type display, error messages). Validate against the Ring 0 REPL as `/qa` builds it.
-- **Ring 1**: ADT value display (`(Some 42) :: (Option Int)`). String display. Error message quality assertions.
-- **Ring 2**: Module navigation (`/mod`, `(import ...)`). Trait introspection (`/info`). `/list` categories.
-- **Ring 3**: Macro expansion viewing (`/expand`). Prelude discoverability. Full `/list` taxonomy.
-- **Ring 4**: Full experience: all slash commands, trace, run-tests, hot-reload, performance benchmarks. End-to-end experience test suite.
+### Every Sprint
+
+1. **Compliance audit**: Run the REPL. Compare actual output against `repl/spec.md` for every ring ≤ current. File FIXMEs for non-conformance (see §"Compliance Watchdog" above).
+2. **Spec elaboration**: If a user interaction isn't covered by the spec, add it. If a spec requirement is vague, tighten it. The spec must be precise enough that non-conformance is binary — either the output matches or it doesn't.
+3. **Demo validation**: Run showcase demos. Verify the output matches what users would actually see. If the demo shows output that doesn't match the live REPL, fix the demo.
+
+### Ring by Ring
+
+- **Phase B**: Write the experience specification. Study the prototype REPL. Establish performance targets.
+- **Ring 0**: Discoverability basics: prompt, `/help`, value+type display, error messages. Validate §1–§6 compliance.
+- **Ring 1**: ADT value display, String display, error message quality.
+- **Ring 2**: Module navigation, trait introspection, `/list` categories.
+- **Ring 3**: Macro expansion viewing, prelude discoverability, full `/list` taxonomy.
+- **Ring 4**: Full experience: all slash commands, trace, run-tests, hot-reload, performance benchmarks.
 
 ## Key References
 

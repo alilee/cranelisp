@@ -1655,3 +1655,195 @@ Per NFR C.5.4 (target portability), emit helpers should document which values ar
 ```
 
 No abstraction is needed now — both are `i64` on native. But documenting the distinction ensures a future wasm32 port can identify and update pointer-width values without auditing every i64 in the codebase.
+
+---
+
+## Ring 2A: Trait Dispatch Decisions (Sprint 4)
+
+Architectural decisions for Ring 2A (traits and operator dispatch). These complement the existing type definitions already in this document (`TraitDecl`, `TraitImpl`, `TraitMethodSig`, `ResolvedCall::TraitMethod`, `CheckResult` Ring 2 fields, `Scheme.constraints`, `ConstrainedFn`, `MonoDefn`).
+
+### Verification: Existing Types Are Sufficient
+
+All Ring 2A boundary types already exist in `cranelisp-types` and are verified as sufficient for Sprint 4:
+
+| Type | Location | Status |
+|------|----------|--------|
+| `TraitDecl` | `ast.rs` | Sufficient — has `name`, `type_params`, `methods` (with `TraitMethodSig`) |
+| `TraitImpl` | `ast.rs` | Sufficient — has `trait_name`, `target_type`, `type_args`, `type_constraints`, `methods` |
+| `TraitMethodSig` | `ast.rs` | Sufficient — has `default_body: Option<Sexp>`, `default_param_names` for defaults |
+| `ResolvedCall::TraitMethod` | `check.rs` | Sufficient — has `trait_name`, `method_name`, `impl_type`, `mangled_name` |
+| `CheckResult` Ring 2 fields | `check.rs` | Sufficient — `constrained_fn_names`, `mono_defns`, `default_method_defns` |
+| `Scheme.constraints` | `types.rs` | Sufficient — `HashMap<TypeId, Vec<TraitName>>` |
+| `ConstrainedFn` | `module.rs` | Sufficient — stores `defn` + `scheme` for deferred monomorphisation |
+| `MonoDefn` | `check.rs` | Sufficient — stores monomorphised `defn` + per-specialization `resolutions` |
+| `ModuleEntry::TraitDecl` | `module.rs` | Sufficient — stores the `TraitDecl` + visibility |
+| `TopLevel::TraitDecl/TraitImpl` | `ast.rs` | Sufficient — parsing targets |
+| `ReplInput::TraitDecl/TraitImpl` | `ast.rs` | Sufficient — REPL parsing targets |
+
+**No new boundary types are needed for Ring 2A.**
+
+### Gap: `ReplCheckResult` Missing Ring 2 Fields
+
+`ReplCheckResult` is missing the Ring 2 fields that `CheckResult` already has. This must be fixed for REPL trait support.
+
+**Specification:**
+
+```rust
+/// Result of type checking a single REPL input.
+#[derive(Debug)]
+pub struct ReplCheckResult {
+    pub ty: Type,
+    pub scheme: Option<Scheme>,
+    pub method_resolutions: MethodResolutions,
+    /// Names of constrained polymorphic functions requiring monomorphisation (Ring 2)
+    pub constrained_fn_names: HashSet<Symbol>,
+    /// Monomorphised function definitions generated during checking (Ring 2)
+    pub mono_defns: Vec<MonoDefn>,
+    /// Default trait method implementations expanded during checking (Ring 2)
+    pub default_method_defns: Vec<Defn>,
+    pub expr_types: HashMap<Span, Type>,
+    pub warnings: Vec<Warning>,
+    pub type_defs: HashMap<TypeName, TypeDefInfo>,
+    pub constructor_to_type: HashMap<Symbol, TypeName>,
+}
+```
+
+**Three locations must change atomically:**
+
+1. **`cranelisp-types/src/check.rs`** — Add three fields to `ReplCheckResult`: `constrained_fn_names`, `mono_defns`, `default_method_defns`. (`/typecheck` owns this change via the types crate.)
+2. **`cranelisp-typecheck/src/program.rs`** (`build_repl_result`) — Populate the new fields from typechecker state (same pattern as `build_check_result`). (`/typecheck`)
+3. **`src/repl.rs`** (`build_check_for_backend`) — Forward the new fields from `ReplCheckResult` into `CheckResult` instead of hardcoding empty values. (`/qa` owns the binary crate pipeline wiring.)
+
+### Decision: Primitive-Trait-Method Mapping
+
+**How the backend knows that `Num.+$Int` means "emit iadd inline."**
+
+The typecheck crate ALWAYS emits `ResolvedCall::TraitMethod` for operator calls after Ring 2A. It never emits `ResolvedCall::BuiltinFn` for operators. The backend is responsible for recognizing which trait method implementations correspond to primitive operations and emitting inline IR instead of function calls.
+
+**Mechanism:** The backend maintains a compile-time mapping from `(TraitName, Symbol, TypeName)` to the primitive operation to emit:
+
+```rust
+/// Backend-side mapping from trait method implementations to inline IR.
+/// Populated at startup — no runtime overhead.
+///
+/// Key: (trait_name, method_name, impl_type)
+/// Value: the same inline IR that was previously emitted for the BuiltinFn
+///
+/// Example entries:
+///   ("Num", "+", "Int")   → iadd
+///   ("Num", "+", "Float") → fadd
+///   ("Num", "-", "Int")   → isub
+///   ("Num", "*", "Int")   → imul
+///   ("Num", "/", "Int")   → sdiv
+///   ("Eq",  "=", "Int")   → icmp eq
+///   ("Eq",  "=", "Float") → fcmp eq
+///   ("Ord", "<", "Int")   → icmp slt
+///   ...
+fn is_primitive_trait_method(
+    trait_name: &TraitName,
+    method_name: &Symbol,
+    impl_type: &TypeName,
+) -> Option<PrimitiveOp>;
+```
+
+**Rationale:** This keeps the typecheck layer clean (all operators flow through the trait dispatch path uniformly) while letting the backend optimize known primitives. The mapping is static and exhaustive — if a trait method isn't in the table, it's a user-defined method and gets compiled as a normal function call.
+
+**Ring 0-1 coexistence:** Existing `ResolvedCall::BuiltinFn` entries for named primitives (`add-i64`, `eq-i64`, etc.) are UNCHANGED. They continue to work exactly as before. The `+`, `-`, etc. operators gain a NEW `ResolvedCall::TraitMethod` path alongside. Both paths coexist per principle 9 (rings are accretive).
+
+### JIT Name Convention: Trait Method Implementations
+
+Formalized mangling convention for trait method implementations:
+
+```
+Trait.method$Type
+```
+
+**Examples:**
+- `Num.+$Int` — `+` method of `Num` trait for `Int`
+- `Num.+$Float` — `+` method of `Num` trait for `Float`
+- `Eq.=$Int` — `=` method of `Eq` trait for `Int`
+- `Ord.<$Float` — `<` method of `Ord` trait for `Float`
+- `Display.show$Color` — `show` method of `Display` trait for user type `Color`
+
+**Polymorphic ADT impls:**
+- `Display.show$Option` — polymorphic impl (type args not in mangled name since the method is constrained-polymorphic, monomorphised separately)
+
+**Constrained function specializations** (user-defined):
+```
+name$Type1+Type2+...
+```
+- `add$Int+Int` — specialization of constrained `add` for `(Int, Int)` args
+- `add$Float+Float` — specialization for `(Float, Float)` args
+
+This extends the existing convention already documented in `src/CLAUDE.md` §"JIT Symbol Names".
+
+### Constraint Propagation Protocol
+
+How `Scheme.constraints` flows through the type inference pipeline:
+
+**1. Trait method registration (startup):**
+When a trait is registered (e.g., `(deftrait (Num a) (+ [a a] a))`), each method gets a constrained scheme:
+```
++ :: forall [t0]. { t0: [Num] } => (Fn [t0 t0] t0)
+```
+The constraint `{ t0: [Num] }` is stored in `Scheme.constraints`.
+
+**2. Instantiation at call sites:**
+When `+` is used in `(+ x y)`, the typechecker instantiates the constrained scheme with fresh type variables. The constraints are carried forward on the fresh variables.
+
+**3. Generalization with constraint propagation:**
+When `(defn add [x y] (+ x y))` is generalized, the `generalize` function must:
+1. Collect free type variables in the resolved function type as usual.
+2. For each free variable, collect ALL constraints accumulated during body checking (from trait method calls that unified with that variable).
+3. Store these in `Scheme.constraints` on the generalized scheme.
+
+The result: `add :: forall [t0]. { t0: [Num] } => (Fn [t0 t0] t0)`.
+
+**4. Constrained function detection:**
+After generalization, if `scheme.constraints` is non-empty, the function is a constrained polymorphic function. It gets stored as a `ConstrainedFn` in `DefKind::UserFn { constrained_fn: Some(...) }` and its name is added to `CheckResult.constrained_fn_names`.
+
+**5. Monomorphisation at call sites:**
+When `(add 1 2)` is encountered:
+1. Instantiate `add`'s scheme with fresh vars.
+2. Unify args: `t_fresh = Int`.
+3. Check constraint: `Num(Int)` — is there an `(impl Num Int ...)`? Yes.
+4. Generate specialization `add$Int+Int` with concrete method resolutions: `{ (+ call span) → TraitMethod { Num, +, Int, "Num.+$Int" } }`.
+5. Add to `CheckResult.mono_defns`.
+
+**Implementation note:** The typechecker needs to track which constraints are active on which type variables during body checking. A `HashMap<TypeId, Vec<TraitName>>` on the checker state is sufficient — populated when a constrained scheme is instantiated, consulted during `generalize`.
+
+### Special Forms: `deftrait` and `impl`
+
+`deftrait` and `impl` must be registered as special forms in the typechecker's `register_special_forms()` for REPL `/help` display:
+
+```rust
+("deftrait", "trait declaration: (deftrait (TraitName a) (method [a ...] ret) ...)"),
+("impl", "trait implementation: (impl TraitName Type (method [params] body) ...)"),
+```
+
+This is a `/typecheck` task (builtins.rs).
+
+### Core Trait Definitions (Ring 2A)
+
+The following traits are registered by the typechecker at startup (not from stdlib files — those require the module system in Sprint 5):
+
+| Trait | Type param | Methods | Default methods |
+|-------|-----------|---------|-----------------|
+| `Num` | `a` | `+ [a a] a`, `- [a a] a`, `* [a a] a`, `/ [a a] a` | — |
+| `Eq` | `a` | `= [a a] Bool`, `!= [a a] Bool` | `!=` defined as `(fn [x y] (not (= x y)))` |
+| `Ord` | `a` | `< [a a] Bool`, `> [a a] Bool`, `<= [a a] Bool`, `>= [a a] Bool` | `>` as `(fn [x y] (< y x))`, `<=` as `(fn [x y] (not (< y x)))`, `>=` as `(fn [x y] (not (< x y)))` |
+
+**Built-in impls** (also registered at startup):
+
+| Trait | Type | Method → primitive mapping |
+|-------|------|--------------------------|
+| `Num` | `Int` | `+ → add-i64`, `- → sub-i64`, `* → mul-i64`, `/ → div-i64` |
+| `Num` | `Float` | `+ → add-f64`, `- → sub-f64`, `* → mul-f64`, `/ → div-f64` |
+| `Eq` | `Int` | `= → eq-i64` |
+| `Eq` | `Float` | `= → eq-f64` |
+| `Eq` | `Bool` | `= → eq-bool` |
+| `Eq` | `String` | `= → str-eq` |
+| `Ord` | `Int` | `< → lt-i64` |
+| `Ord` | `Float` | `< → lt-f64` |
+
+**Note:** `eq-bool` is a new Ring 2A primitive — boolean equality (Ring 0 only had `not`). It must be added to the primitive table alongside the existing Ring 0 primitives. `eq-bool` emits `icmp_eq` (booleans are i64 0/1).

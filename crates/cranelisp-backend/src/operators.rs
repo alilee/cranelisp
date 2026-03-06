@@ -14,7 +14,7 @@
 
 use cranelift::prelude::*;
 
-use cranelisp_types::{CranelispError, Span};
+use cranelisp_types::{CranelispError, Span, Symbol, TraitName, TypeName};
 
 /// Emit inline Cranelift IR for a builtin primitive.
 ///
@@ -59,6 +59,9 @@ pub fn emit_builtin_op(
 
         // Boolean not
         "not" => emit_not(builder, args, span),
+
+        // Boolean equality (Ring 2A): icmp eq on i64 0/1 values.
+        "eq-bool" => emit_int_cmp(builder, name, args, IntCC::Equal, span),
 
         _ => Err(CranelispError::CodegenError {
             message: format!("unknown builtin primitive: {name}"),
@@ -144,6 +147,50 @@ fn emit_not(
     Ok(builder.ins().bxor(args[0], one))
 }
 
+// --- Primitive trait method mapping ---
+
+/// Check if a trait method implementation corresponds to a known primitive.
+///
+/// Returns the primitive name that should be emitted inline (e.g., "add-i64")
+/// if this is a known primitive impl. Returns None for user-defined impls,
+/// which should be compiled as normal function calls.
+///
+/// Static mapping from (TraitName, method_name, impl_type) to primitive name.
+/// Per arch decision 14: typecheck emits TraitMethod, backend maps to primitives.
+pub fn primitive_for_trait_method(
+    trait_name: &TraitName,
+    method_name: &Symbol,
+    impl_type: &TypeName,
+) -> Option<&'static str> {
+    let t = trait_name.as_ref();
+    let m = method_name.as_ref();
+    let i = impl_type.as_ref();
+
+    match (t, m, i) {
+        // Num trait: arithmetic operators
+        ("Num", "+", "Int") => Some("add-i64"),
+        ("Num", "-", "Int") => Some("sub-i64"),
+        ("Num", "*", "Int") => Some("mul-i64"),
+        ("Num", "/", "Int") => Some("div-i64"),
+        ("Num", "+", "Float") => Some("add-f64"),
+        ("Num", "-", "Float") => Some("sub-f64"),
+        ("Num", "*", "Float") => Some("mul-f64"),
+        ("Num", "/", "Float") => Some("div-f64"),
+
+        // Eq trait: equality operators
+        ("Eq", "=", "Int") => Some("eq-i64"),
+        ("Eq", "=", "Float") => Some("eq-f64"),
+        ("Eq", "=", "Bool") => Some("eq-bool"),
+        ("Eq", "=", "String") => Some("str-eq"),
+
+        // Ord trait: comparison operators
+        ("Ord", "<", "Int") => Some("lt-i64"),
+        ("Ord", "<", "Float") => Some("lt-f64"),
+
+        _ => None,
+    }
+}
+
 // --- Utility ---
 
 /// Return an error if `args.len() != expected`.
@@ -162,14 +209,100 @@ fn require_args(name: &str, args: &[Value], expected: usize, span: Span) -> Resu
 
 #[cfg(test)]
 mod tests {
-    // Primitive codegen is tested via compile_and_run in the integration tests.
-    // The functions above emit Cranelift IR and require a FunctionBuilder context,
-    // so they are exercised indirectly through the JIT pipeline.
-    //
-    // The 19 Ring 0 primitives covered here:
-    //   add-i64, sub-i64, mul-i64, div-i64
-    //   add-f64, sub-f64, mul-f64, div-f64
-    //   eq-i64, lt-i64, gt-i64, le-i64, ge-i64
-    //   eq-f64, lt-f64, gt-f64, le-f64, ge-f64
-    //   not
+    use super::*;
+
+    // --- primitive_for_trait_method tests ---
+
+    #[test]
+    fn test_num_add_int_maps_to_add_i64() {
+        let result = primitive_for_trait_method(
+            &TraitName::from("Num"),
+            &Symbol::from("+"),
+            &TypeName::from("Int"),
+        );
+        assert_eq!(result, Some("add-i64"));
+    }
+
+    #[test]
+    fn test_num_add_float_maps_to_add_f64() {
+        let result = primitive_for_trait_method(
+            &TraitName::from("Num"),
+            &Symbol::from("+"),
+            &TypeName::from("Float"),
+        );
+        assert_eq!(result, Some("add-f64"));
+    }
+
+    #[test]
+    fn test_num_all_int_methods() {
+        let ops = vec![("+", "add-i64"), ("-", "sub-i64"), ("*", "mul-i64"), ("/", "div-i64")];
+        for (method, expected) in ops {
+            let result = primitive_for_trait_method(
+                &TraitName::from("Num"),
+                &Symbol::from(method),
+                &TypeName::from("Int"),
+            );
+            assert_eq!(result, Some(expected), "Num.{method}$Int");
+        }
+    }
+
+    #[test]
+    fn test_eq_int_maps_to_eq_i64() {
+        let result = primitive_for_trait_method(
+            &TraitName::from("Eq"),
+            &Symbol::from("="),
+            &TypeName::from("Int"),
+        );
+        assert_eq!(result, Some("eq-i64"));
+    }
+
+    #[test]
+    fn test_eq_bool_maps_to_eq_bool() {
+        let result = primitive_for_trait_method(
+            &TraitName::from("Eq"),
+            &Symbol::from("="),
+            &TypeName::from("Bool"),
+        );
+        assert_eq!(result, Some("eq-bool"));
+    }
+
+    #[test]
+    fn test_eq_string_maps_to_str_eq() {
+        let result = primitive_for_trait_method(
+            &TraitName::from("Eq"),
+            &Symbol::from("="),
+            &TypeName::from("String"),
+        );
+        assert_eq!(result, Some("str-eq"));
+    }
+
+    #[test]
+    fn test_ord_lt_int_maps_to_lt_i64() {
+        let result = primitive_for_trait_method(
+            &TraitName::from("Ord"),
+            &Symbol::from("<"),
+            &TypeName::from("Int"),
+        );
+        assert_eq!(result, Some("lt-i64"));
+    }
+
+    #[test]
+    fn test_unknown_trait_returns_none() {
+        let result = primitive_for_trait_method(
+            &TraitName::from("Display"),
+            &Symbol::from("show"),
+            &TypeName::from("Int"),
+        );
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_unknown_impl_type_returns_none() {
+        let result = primitive_for_trait_method(
+            &TraitName::from("Num"),
+            &Symbol::from("+"),
+            &TypeName::from("Color"),
+        );
+        assert_eq!(result, None);
+    }
 }

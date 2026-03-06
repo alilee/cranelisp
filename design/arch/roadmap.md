@@ -32,6 +32,21 @@ For the full reimplementation strategy, skill definitions, and risk analysis, se
 - REPL experience tests pass: discoverability, value+type feedback (see `repl/spec.md`)
 - `cargo clippy` clean, no `unwrap()` in pipeline code
 
+<!-- FIXME(/qa): Ring 0 REPL spec non-conformance — spec is clear, QA plan has no tests for these. See U1.13.
+     10 repl/spec.md Ring 0 requirements not met:
+     1. §1.3 Definition display: defn shows name, not <closure>
+     2. §1.4 Fully-qualified types: primitives/Int not bare Int
+     3. §1.5 Constructor notation: Color.Red not bare Red
+     4. §2.1 Prompt format: {compile}+{eval}ms; {module}> not bare >
+     5. §3.1 Slash commands: /help etc. — / parsed as division, all broken
+     6. §4.1 Bare function lookup: shows <closure> not function name
+     7. §4.1 Bare type name lookup: Int → "undefined variable" error
+     8. §4.1 Bare trait name lookup: Num → "undefined variable" error
+     9. §4.2 Bare special form: if → error instead of shape display
+     10. §6.2 Startup banner: no banner at all
+     Items 5, 7-9 completely block the first-five-minutes discoverability journey (§6.1). -->
+
+
 ## Ring 1: Heap
 
 **Property**: Strings, ADTs with fields, closures, reference counting. Heap management established as a clean layer over Ring 0.

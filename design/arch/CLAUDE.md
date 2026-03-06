@@ -28,6 +28,15 @@ Architecture deliverables for the Cranelisp reimplementation. Owned and maintain
 12. **Strings opaque to backend** — `HeapString` layout is owned by `cranelisp-runtime`. Backend never reads/writes string bytes — all string operations go through extern functions. Enables future rope upgrade as a runtime-only change.
 13. **Atomic RC from Ring 1** — reference count operations use `atomic_rmw` (Release for dec, Acquire for inc) even though Ring 1 is single-threaded. This avoids a breaking ABI change when concurrency arrives in Ring 4, per NFR C.4.1.
 
+## Key Decisions (Ring 2A)
+
+14. **Typecheck emits `TraitMethod`, backend maps to primitives** — the typecheck crate always emits `ResolvedCall::TraitMethod` for trait-dispatched operators. The backend recognizes known primitive impls (e.g., `Num.+$Int` → `iadd`) via a static `(TraitName, Symbol, TypeName) → PrimitiveOp` mapping. This keeps typecheck clean and backend-optimizable.
+15. **Ring 0-1 `BuiltinFn` coexists with Ring 2 `TraitMethod`** — named primitives (`add-i64`, etc.) retain their `BuiltinFn` resolution path. Operators (`+`, `-`, etc.) gain a new `TraitMethod` path. Both paths coexist per principle 9.
+16. **JIT mangling: `Trait.method$Type`** — trait method implementations use `Num.+$Int` format. Constrained fn specializations use `name$Type1+Type2` format.
+17. **Core traits registered at startup, not from files** — `Num`, `Eq`, `Ord` are registered by the typechecker in `register_builtins()`, not from stdlib `.cl` files (those require the module system, Sprint 5).
+18. **`ReplCheckResult` gains Ring 2 fields** — `constrained_fn_names`, `mono_defns`, `default_method_defns` added to match `CheckResult`. Three-location atomic change.
+19. **Constraint propagation in `generalize`** — `Scheme.constraints` populated by collecting trait constraints from active type variables during generalization. Non-empty constraints → constrained polymorphic function.
+
 ## Cross-References
 
 - `sprints/reimplementation.md` — Full strategy: skill definitions, ring model decision, phase sequence, risk analysis

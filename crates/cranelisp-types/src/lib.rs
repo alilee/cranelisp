@@ -21,7 +21,7 @@ pub use ast::{
     ConstructorDef, Defn, DefnVariant, Expr, FieldDef, MatchArm, Pattern, Program, ReplInput,
     TopLevel, TraitDecl, TraitImpl, TraitMethodSig, TypeExpr, Visibility,
 };
-pub use types::{Scheme, Subst, Type, TypeId, apply, free_vars};
+pub use types::{Scheme, Subst, Type, TypeId, apply, free_vars, format_type_display, format_type_with_vars, type_var_names};
 pub use check::{
     CheckResult, ConstructorInfo, FieldInfo, MethodResolutions, MonoDefn, ReplCheckResult,
     ReplSnapshot, ResolvedCall, TypeDefInfo,

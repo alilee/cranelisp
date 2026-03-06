@@ -308,6 +308,21 @@ impl<'a> FnCompiler<'a> {
             }
         }
 
+        // Inc the new value (if heap type) — the vec needs its own reference.
+        // The caller retains its reference; the vec is gaining one.
+        if let Some(ty) = &elem_type {
+            let category = HeapCategory::classify(ty, Some(self.ctx.type_defs));
+            match category {
+                HeapCategory::AlwaysHeap => {
+                    heap::emit_rc_inc(&mut self.builder, new_val);
+                }
+                HeapCategory::Mixed => {
+                    emit_guarded_rc_inc(&mut self.builder, new_val);
+                }
+                HeapCategory::NeverHeap => {}
+            }
+        }
+
         // Store new value.
         self.builder
             .ins()

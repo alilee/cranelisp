@@ -14,6 +14,8 @@ pub mod operators;
 
 use std::collections::HashMap;
 
+use cranelift_module::FuncId;
+
 use cranelisp_types::{
     CheckResult, CompileMode, CranelispError, Defn, Expr, Program, Span, Symbol, TopLevel,
     Warning,
@@ -63,27 +65,44 @@ pub fn compile_program(
     // Declare runtime intrinsics (Ring 1 heap infrastructure).
     jit.declare_intrinsics()?;
 
-    // Collect all defns from the program.
+    // Collect all defns from the program, skipping constrained fn base definitions.
+    // Constrained fns are templates — only their monomorphised specializations
+    // (in check.mono_defns) are compiled.
     let defns: Vec<&Defn> = program
         .iter()
         .filter_map(|tl| match tl {
-            TopLevel::Defn(defn) => Some(defn),
+            TopLevel::Defn(defn) => {
+                if check.constrained_fn_names.contains(&defn.name) {
+                    None // Skip constrained fn base defs — templates only
+                } else {
+                    Some(defn)
+                }
+            }
             _ => None,
         })
         .collect();
 
-    if defns.is_empty() {
+    // Collect additional defns: default method impls and mono specializations.
+    let extra_defns = collect_extra_defns(check);
+
+    if defns.is_empty() && extra_defns.is_empty() {
         return Err(CranelispError::CodegenError {
             message: "no function definitions in program".into(),
             span: Span::SYNTHETIC,
         });
     }
 
+    // Build full list of defn references for declaration.
+    let mut all_defn_refs: Vec<&Defn> = defns.clone();
+    for d in &extra_defns {
+        all_defn_refs.push(d);
+    }
+
     // Declare all functions first (so they can reference each other).
-    let func_ids = jit.declare_functions(&defns)?;
+    let func_ids = jit.declare_functions(&all_defn_refs)?;
 
     // Build function arity map for named-function-as-value closure wrappers.
-    let func_arities: HashMap<Symbol, usize> = defns
+    let func_arities: HashMap<Symbol, usize> = all_defn_refs
         .iter()
         .map(|d| (d.name.clone(), d.params.len()))
         .collect();
@@ -92,7 +111,7 @@ pub fn compile_program(
     let (got_slots, mut got_state) = if mode == CompileMode::Interactive {
         let mut state = got::ModuleCodegenState::new();
         let mut slots = HashMap::new();
-        for defn in &defns {
+        for defn in &all_defn_refs {
             let slot = state.ensure_slot_for(&defn.name)?;
             slots.insert(defn.name.clone(), slot);
         }
@@ -113,10 +132,19 @@ pub fn compile_program(
         got_base_ptr,
     );
 
-    // Compile each function.
+    // Compile each regular function.
     for defn in &defns {
         jit.compile_defn(defn, compile_ctx)?;
     }
+
+    // Compile default method defns with the main resolutions.
+    for defn in &check.default_method_defns {
+        jit.compile_defn(defn, compile_ctx)?;
+    }
+
+    // Compile mono specializations with their per-specialization resolutions.
+    compile_mono_defns(&mut jit, check, mode, &func_ids, &func_arities,
+                       got_slots.as_ref(), got_base_ptr)?;
 
     // Find the entry function (last zero-arg defn).
     let entry_defn = defns
@@ -147,6 +175,58 @@ pub fn compile_program(
         _got_state: got_state,
         warnings: Vec::new(),
     })
+}
+
+/// Collect extra defns from CheckResult: default method impls and mono specializations.
+///
+/// These are additional functions that need to be declared and compiled alongside
+/// the regular program defns.
+fn collect_extra_defns(check: &CheckResult) -> Vec<Defn> {
+    let mut extras = Vec::new();
+    for d in &check.default_method_defns {
+        extras.push(d.clone());
+    }
+    for mono in &check.mono_defns {
+        extras.push(mono.defn.clone());
+    }
+    extras
+}
+
+/// Compile monomorphised specializations with their per-specialization resolutions.
+///
+/// Each MonoDefn carries its own method_resolutions (from the specific type
+/// instantiation). We build a temporary CheckResult overlay for each one.
+fn compile_mono_defns(
+    jit: &mut Jit,
+    check: &CheckResult,
+    mode: CompileMode,
+    func_ids: &HashMap<Symbol, FuncId>,
+    func_arities: &HashMap<Symbol, usize>,
+    got_slots: Option<&HashMap<Symbol, usize>>,
+    got_base_ptr: Option<i64>,
+) -> Result<(), CranelispError> {
+    for mono in &check.mono_defns {
+        // Merge base resolutions with per-specialization resolutions.
+        let mut merged = check.method_resolutions.clone();
+        merged.extend(mono.resolutions.clone());
+
+        let mono_check = CheckResult {
+            method_resolutions: merged,
+            constrained_fn_names: check.constrained_fn_names.clone(),
+            mono_defns: Vec::new(),
+            expr_types: check.expr_types.clone(),
+            default_method_defns: Vec::new(),
+            warnings: Vec::new(),
+            type_defs: check.type_defs.clone(),
+            constructor_to_type: check.constructor_to_type.clone(),
+        };
+
+        let ctx = jit.build_compile_context(
+            &mono_check, mode, func_ids, func_arities, got_slots, got_base_ptr,
+        );
+        jit.compile_defn(&mono.defn, ctx)?;
+    }
+    Ok(())
 }
 
 /// Compile and execute a single expression in Interactive mode.
@@ -1733,5 +1813,134 @@ mod tests {
         }
 
         cranelisp_runtime::vec_drop(ptr, 0);
+    }
+
+    // --- Ring 2A: TraitMethod dispatch tests ---
+
+    #[test]
+    fn test_trait_method_dispatch_inline_add() {
+        // (+ 3 4) resolved as TraitMethod Num.+ on Int → should inline as iadd.
+        let apply_span = Span::new(100, 110);
+        let expr = Expr::Apply {
+            callee: Box::new(Expr::Var {
+                name: Symbol::from("+"),
+                span: Span::new(101, 102),
+            }),
+            args: vec![
+                Expr::IntLit { value: 3, span: Span::new(103, 104) },
+                Expr::IntLit { value: 4, span: Span::new(105, 106) },
+            ],
+            span: apply_span,
+        };
+
+        let mut check = empty_check();
+        check.method_resolutions.insert(
+            apply_span,
+            cranelisp_types::ResolvedCall::TraitMethod {
+                trait_name: cranelisp_types::TraitName::from("Num"),
+                method_name: Symbol::from("+"),
+                impl_type: cranelisp_types::TypeName::from("Int"),
+                mangled_name: cranelisp_types::JitSymbol::from("Num.+$Int"),
+            },
+        );
+
+        let value = compile_and_run_expr_with_got(&expr, &check, CompileMode::Batch, None)
+            .expect("TraitMethod inline add should compile");
+        assert_eq!(value, 7);
+    }
+
+    #[test]
+    fn test_trait_method_dispatch_eq_bool() {
+        // (= true true) resolved as TraitMethod Eq.= on Bool → eq-bool.
+        let apply_span = Span::new(200, 210);
+        let expr = Expr::Apply {
+            callee: Box::new(Expr::Var {
+                name: Symbol::from("="),
+                span: Span::new(201, 202),
+            }),
+            args: vec![
+                Expr::BoolLit { value: true, span: Span::new(203, 207) },
+                Expr::BoolLit { value: true, span: Span::new(208, 212) },
+            ],
+            span: apply_span,
+        };
+
+        let mut check = empty_check();
+        check.method_resolutions.insert(
+            apply_span,
+            cranelisp_types::ResolvedCall::TraitMethod {
+                trait_name: cranelisp_types::TraitName::from("Eq"),
+                method_name: Symbol::from("="),
+                impl_type: cranelisp_types::TypeName::from("Bool"),
+                mangled_name: cranelisp_types::JitSymbol::from("Eq.=$Bool"),
+            },
+        );
+
+        let value = compile_and_run_expr_with_got(&expr, &check, CompileMode::Batch, None)
+            .expect("TraitMethod eq-bool should compile");
+        assert_eq!(value, 1); // true == true → true (1)
+    }
+
+    #[test]
+    fn test_constrained_fn_skipped_in_compile_program() {
+        // A constrained fn should be skipped (not compiled).
+        let defn = Defn {
+            name: Symbol::from("add"),
+            params: vec![Symbol::from("x"), Symbol::from("y")],
+            param_annotations: vec![],
+            visibility: cranelisp_types::Visibility::Public,
+            body: Expr::IntLit { value: 0, span: Span::new(10, 11) },
+            docstring: None,
+            span: Span::new(0, 20),
+        };
+
+        let main_defn = Defn {
+            name: Symbol::from("main"),
+            params: vec![],
+            param_annotations: vec![],
+            visibility: cranelisp_types::Visibility::Public,
+            body: Expr::IntLit { value: 42, span: Span::new(30, 32) },
+            docstring: None,
+            span: Span::new(25, 40),
+        };
+
+        let program: Program = vec![
+            TopLevel::Defn(defn),
+            TopLevel::Defn(main_defn),
+        ];
+
+        let mut check = empty_check();
+        // Mark "add" as constrained — should be skipped during compilation.
+        check.constrained_fn_names.insert(Symbol::from("add"));
+
+        let compiled = compile_program(&program, &check, CompileMode::Batch)
+            .expect("should compile with constrained fn skipped");
+        let value = unsafe { compiled.execute().unwrap() };
+        assert_eq!(value, 42);
+    }
+
+    #[test]
+    fn test_collect_extra_defns_empty() {
+        let check = empty_check();
+        let extras = collect_extra_defns(&check);
+        assert!(extras.is_empty());
+    }
+
+    #[test]
+    fn test_collect_extra_defns_with_defaults() {
+        let mut check = empty_check();
+        check.default_method_defns.push(Defn {
+            name: Symbol::from("!="),
+            params: vec![Symbol::from("x"), Symbol::from("y")],
+            param_annotations: vec![],
+            visibility: cranelisp_types::Visibility::Public,
+            body: Expr::IntLit { value: 0, span: Span::new(0, 1) },
+            docstring: None,
+            span: Span::new(0, 10),
+        });
+
+        let extras = collect_extra_defns(&check);
+        assert_eq!(extras.len(), 1);
+        assert_eq!(extras[0].name, Symbol::from("!="));
     }
 }

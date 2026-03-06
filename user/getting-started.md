@@ -1200,9 +1200,254 @@ A common pattern is to build a Vec by starting empty and pushing elements in a l
 
 This uses a recursive helper `go` that pushes elements one at a time. Because each `vec-push` is the last use of `acc`, the copy-on-write optimization makes this efficient -- no unnecessary copies.
 
+## Traits
+
+A **trait** describes a shared ability that different types can have. For example, "can be added" is an ability that both integers and floats have, but booleans do not. Traits let you write one function that works with any type that has a particular ability, instead of writing separate functions for each type.
+
+Think of a trait as a contract: "any type that implements this trait promises to support these operations."
+
+### Operators Are Trait Methods
+
+In earlier sections, you used named functions like `add-i64` and `eq-i64` for arithmetic and comparisons. Cranelisp also provides familiar operators like `+`, `-`, `*`, `/`, `=`, and `<`. These operators are **trait methods** -- they work with any type that implements the right trait.
+
+The three core traits are:
+
+- **`Num`** -- numeric operations: `+`, `-`, `*`, `/`
+- **`Eq`** -- equality: `=`
+- **`Ord`** -- ordering: `<`
+
+Both `Int` and `Float` implement `Num`, so `+` works with either:
+
+```
+> (+ 3 4)
+:Int 7
+
+> (+ 1.5 2.5)
+:Float 4
+
+> (* 6 7)
+:Int 42
+
+> (- 10.0 3.5)
+:Float 6.5
+```
+
+The `=` operator works with `Int`, `Float`, `Bool`, and `String`:
+
+```
+> (= 5 5)
+:Bool true
+
+> (= 5 3)
+:Bool false
+
+> (= "hello" "hello")
+:Bool true
+```
+
+The `<` operator works with `Int` and `Float`:
+
+```
+> (< 3 5)
+:Bool true
+
+> (< 5 3)
+:Bool false
+```
+
+You cannot mix types -- both arguments must be the same type:
+
+```
+> (+ 1 1.5)
+error: type mismatch ...
+```
+
+The named primitives (`add-i64`, `sub-i64`, etc.) still work alongside operators. You can use whichever style you prefer.
+
+### Using Operators in Your Code
+
+You can use operators anywhere you previously used named primitives. Here is the factorial example rewritten with operators:
+
+```
+> (defn fact [n]
+    (if (= n 0)
+      1
+      (* n (fact (- n 1)))))
+
+> (fact 5)
+:Int 120
+```
+
+Compare this to the earlier version that used `eq-i64`, `mul-i64`, and `sub-i64` -- the operator version is shorter and easier to read.
+
+Nesting works the same way:
+
+```
+> (+ 1 (* 2 3))
+:Int 7
+```
+
+### Defining Your Own Traits
+
+You can define your own traits with `deftrait`. A trait declares one or more **methods** -- operations that implementing types must provide.
+
+```
+(deftrait TraitName
+  (method-name [param-types ...] return-type))
+```
+
+The keyword `self` in a method signature is a placeholder for the implementing type. When a type implements the trait, `self` is replaced by that type.
+
+Here is a trait for things that have a numeric size:
+
+```
+(deftrait Sizeable
+  (size [self] Int))
+```
+
+This says: any type that implements `Sizeable` must provide a `size` method that takes a value of that type and returns an `Int`.
+
+### Implementing Traits
+
+You implement a trait for a specific type with `impl`. Inside the `impl`, you define each method using `defn`:
+
+```
+(impl TraitName TypeName
+  (defn method-name [params ...] body))
+```
+
+Here is a complete example:
+
+```clojure
+(deftype Shape
+  Circle
+  Square
+  Triangle)
+
+(deftrait Sizeable
+  (size [self] Int))
+
+(impl Sizeable Shape
+  (defn size [s]
+    (match s
+      [Circle   1
+       Square   4
+       Triangle 3])))
+
+(defn main [] (size Square))
+```
+
+Running this produces `4` -- a square has 4 sides. The `size` function is called through trait dispatch: Cranelisp looks up the `Sizeable` implementation for `Shape` and calls that version of `size`.
+
+### Multiple Traits
+
+A type can implement multiple traits. Here is a type that implements two different traits:
+
+```clojure
+(deftrait Sizeable
+  (size [self] Int))
+
+(deftrait Weighable
+  (weight [self] Int))
+
+(deftype Animal Cat Dog Bird)
+
+(impl Sizeable Animal
+  (defn size [a]
+    (match a
+      [Cat 3
+       Dog 5
+       Bird 1])))
+
+(impl Weighable Animal
+  (defn weight [a]
+    (match a
+      [Cat 10
+       Dog 25
+       Bird 2])))
+
+(defn main []
+  (+ (size Dog) (weight Dog)))
+```
+
+This produces `30` -- the size of a dog (5) plus the weight of a dog (25).
+
+### Default Methods
+
+When defining a trait, you can provide **default implementations** for some methods. A default method has named parameters and a body, and it is written in terms of other methods from the same trait (or other traits).
+
+The `Ord` trait is a good example. It declares `<` as a required method, and derives other comparisons from it:
+
+```clojure
+(deftrait Ord
+  (< [self self] Bool))
+```
+
+An implementation only needs to provide `<`. The compiler derives `>`, `<=`, and `>=` automatically from `<` and `=`.
+
+When you define your own trait, you can include default methods the same way:
+
+```
+(deftrait Describable
+  (name [self] String)
+  (greeting [x] String (str-concat "Hello, " (name x))))
+```
+
+Here, `greeting` has a default implementation that calls `name`. An `impl` block only needs to provide `name` -- `greeting` comes for free.
+
+### Constrained Polymorphism
+
+When you write a function that uses a trait method, Cranelisp automatically infers that the function requires that trait. This is called **constrained polymorphism** -- the function works with any type, as long as that type implements the needed trait.
+
+```
+> (defn double [x] (+ x x))
+```
+
+Cranelisp infers that `double` requires the `Num` trait, because it uses `+`. You can call it with any numeric type:
+
+```
+> (double 5)
+:Int 10
+
+> (double 3.14)
+:Float 6.28
+```
+
+But you cannot call it with a type that does not implement `Num`:
+
+```
+> (double true)
+error: ...
+```
+
+Here is a more involved example -- a function that uses both `Num` and `Eq`:
+
+```clojure
+(defn sum-to [n]
+  (defn go [i acc]
+    (if (= i n)
+      acc
+      (go (+ i 1) (+ acc i))))
+  (go 0 0))
+
+(defn main [] (sum-to 100))
+```
+
+This produces `4950` -- the sum of integers from 0 to 99. The function uses `=` (which requires `Eq`) and `+` (which requires `Num`). Cranelisp infers both constraints automatically.
+
+### Type Annotations with Trait Constraints
+
+You already know that type annotations use a colon before a type name, like `:Int`. You can also annotate with a **trait constraint** using the trait name:
+
+```
+(defn double [:Num x] (+ x x))
+```
+
+This says: `x` can be any type, as long as it implements `Num`. The effect is the same as writing `(defn double [x] (+ x x))` -- Cranelisp would infer the constraint anyway -- but the annotation makes the requirement explicit and serves as documentation.
+
 ## Putting It Together
 
-You now have all of Ring 0 and Ring 1 at your disposal, plus Vec collections. Here is an example that combines several features -- types with fields, pattern matching, closures, and higher-order functions:
+You now have all of Ring 0 and Ring 1 at your disposal, plus Vec collections and traits. Here is an example that combines several features -- types with fields, pattern matching, closures, and higher-order functions:
 
 ```clojure
 ; map-option.cl -- transform the value inside an Option
@@ -1215,7 +1460,7 @@ You now have all of Ring 0 and Ring 1 at your disposal, plus Vec collections. He
      None None]))
 
 (defn main []
-  (match (map-opt (Some 10) (fn [x] (mul-i64 x 2)))
+  (match (map-opt (Some 10) (fn [x] (* x 2)))
     [(Some x) x
      None 0]))
 ```
@@ -1247,20 +1492,35 @@ Here is an example using Vecs with recursion:
 
 (defn sum-vec [v]
   (defn go [i acc]
-    (if (eq-i64 i (vec-len v))
+    (if (= i (vec-len v))
       acc
-      (go (add-i64 i 1) (add-i64 acc (vec-get v i)))))
+      (go (+ i 1) (+ acc (vec-get v i)))))
   (go 0 0))
 
 (defn main []
   (sum-vec [10 20 30 40]))
 ```
 
-Running this produces `100` -- the sum of all four elements. The helper function `go` iterates through the Vec by index, accumulating the total.
+Running this produces `100` -- the sum of all four elements. The helper function `go` iterates through the Vec by index, accumulating the total. Notice how the operator versions (`=`, `+`) are more readable than the named primitives (`eq-i64`, `add-i64`).
 
-## Summary of Primitives
+## Summary of Operators and Primitives
 
-Here is a complete list of the named primitives available:
+### Trait Operators
+
+These operators work with any type that implements the corresponding trait. `Int` and `Float` implement all three core traits. `Bool` and `String` implement `Eq`.
+
+| Operator | Trait | Type | Description |
+|----------|-------|------|-------------|
+| `+` | `Num` | `(Fn [a a] a)` | Add two values |
+| `-` | `Num` | `(Fn [a a] a)` | Subtract second from first |
+| `*` | `Num` | `(Fn [a a] a)` | Multiply two values |
+| `/` | `Num` | `(Fn [a a] a)` | Divide first by second |
+| `=` | `Eq` | `(Fn [a a] Bool)` | Equal? |
+| `<` | `Ord` | `(Fn [a a] Bool)` | Less than? |
+
+### Named Primitives
+
+The named primitives below work with specific types. They are available alongside the trait operators above -- you can use either style:
 
 ### Integer Arithmetic and Comparison
 
@@ -1318,11 +1578,10 @@ Here is a complete list of the named primitives available:
 
 ## What is Next
 
-This guide covers Ring 0 (core expressions, functions, enums, pattern matching) and Ring 1 (strings, data types with fields, closures, higher-order functions) plus Vec collections. As the language grows, you will gain access to:
+This guide covers Ring 0 (core expressions, functions, enums, pattern matching), Ring 1 (strings, data types with fields, closures, higher-order functions, Vec collections), and Ring 2A (traits, operators, constrained polymorphism). As the language grows, you will gain access to:
 
-- **Traits** -- shared behavior across types, with operator syntax like `+` and `*`
 - **Modules** -- organizing code across multiple files
 - **Macros** -- programs that write programs
 - **IO** -- reading input and writing output
 
-Experiment in the REPL. Define your own types with fields. Write functions that return closures. Combine strings with ADTs to build descriptive outputs. The more you experiment, the more fluent you will become.
+Experiment in the REPL. Define your own traits and implement them for your types. Write polymorphic functions that work across numeric types. Combine operators with pattern matching and closures. The more you experiment, the more fluent you will become.
