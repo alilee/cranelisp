@@ -871,7 +871,7 @@ fn rc_u1_3_nested_option_option_string_balanced() {
 // spec: 12-runtime §12.3 — Vec of Option(String) RC functional
 #[test]
 #[serial]
-#[ignore = "Sprint 7+: Vec element drop glue does not recursively dec ADT fields with heap children"]
+#[ignore = "RC bug: build_elem_dec_fn emits flat dec for Vec elements but not recursive drop glue for ADT fields with heap children (5 allocs, 3 deallocs)"]
 fn rc_u1_3_vec_of_option_string() {
     // Vec containing ADTs that themselves contain heap fields.
     // The Vec and its elements are freed, but the String fields inside
@@ -888,7 +888,7 @@ fn rc_u1_3_vec_of_option_string() {
 // spec: 12-runtime §12.3 — nested Option passed through function RC balanced
 #[test]
 #[serial]
-#[ignore = "Sprint 7: nested heap ADT passed through function leaks intermediate allocations"]
+#[ignore = "RC bug: consuming calling convention does not emit dec for intermediate heap ADT temporaries when passed through function boundary (3 allocs, 1 dealloc)"]
 fn rc_u1_3_nested_option_through_function() {
     // Nested heap ADT passed to and returned from a function.
     let src = r#"
@@ -962,7 +962,7 @@ fn rc_u1_5_closure_captures_adt_with_string_field() {
 // spec: 12-runtime §12.3 — closure captures string returned from function RC balanced
 #[test]
 #[serial]
-#[ignore = "Sprint 7: closure capturing heap value returned from function leaks allocations"]
+#[ignore = "RC bug: closure env and captured String not dec'd when closure returned from function is consumed (2 allocs, 0 deallocs — neither env nor captured String freed)"]
 fn rc_u1_5_closure_captures_string_returned() {
     // Closure capturing a String is returned from a function —
     // the String must outlive the creating scope.
@@ -998,6 +998,150 @@ fn rc_u1_5_nested_closure_captures_heap() {
             (let [f (fn [] (str-len s))]
               (let [g (fn [] (f))]
                 (g)))))
+    "#;
+    assert_rc_balanced(src);
+}
+
+// =============================================================================
+// U1.3 — Additional nested heap ADT RC coverage (Sprint 8 Wave 3)
+//
+// These tests go beyond the existing U1.3 tests by exercising deeper nesting
+// and additional type combinations: List(String), List(Option(Int)),
+// Option(String) through multiple lets, and multiple nested ADTs in sequence.
+// =============================================================================
+
+// spec: 12-runtime §12.3 — triple with all String fields RC balanced
+#[test]
+#[serial]
+fn rc_u1_3_triple_all_strings() {
+    // Product ADT with three String fields — all must be dec'd on drop.
+    let src = r#"
+        (deftype Triple [:String a :String b :String c])
+        (defn main []
+          (match (Triple "x" "y" "z")
+            [(Triple a b c) (add-i64 (str-len a) (add-i64 (str-len b) (str-len c)))]))
+    "#;
+    assert_rc_balanced(src);
+}
+
+// spec: 12-runtime §12.3 — Wrapper of Option(String) two-level nesting RC balanced
+#[test]
+#[serial]
+fn rc_u1_3_wrapper_of_option_string() {
+    // Product wrapping Option(String) — three levels of heap nesting.
+    let src = r#"
+        (deftype (Option a) None (Some [:a val]))
+        (deftype Wrapper [:(Option String) inner])
+        (defn main []
+          (match (Wrapper (Some "deep"))
+            [(Wrapper opt) (match opt [(Some s) (str-len s) None 0])]))
+    "#;
+    assert_rc_balanced(src);
+}
+
+// spec: 12-runtime §12.3 — multiple Option(String) in let sequence RC balanced
+#[test]
+#[serial]
+fn rc_u1_3_multiple_option_string_in_let() {
+    // Two Option(String) values bound in a let — both must be cleaned up.
+    let src = r#"
+        (deftype (Option a) None (Some [:a val]))
+        (defn main []
+          (let [a (Some "hello")
+                b (Some "world")]
+            (add-i64
+              (match a [(Some s) (str-len s) None 0])
+              (match b [(Some s) (str-len s) None 0]))))
+    "#;
+    assert_rc_balanced(src);
+}
+
+// spec: 12-runtime §12.3 — Pair of two Strings RC balanced
+#[test]
+#[serial]
+fn rc_u1_3_pair_of_strings() {
+    // Product type with two heap-typed fields.
+    let src = r#"
+        (deftype Pair [:String fst :String snd])
+        (defn main []
+          (match (Pair "hello" "world")
+            [(Pair a b) (add-i64 (str-len a) (str-len b))]))
+    "#;
+    assert_rc_balanced(src);
+}
+
+// spec: 12-runtime §12.3 — Option(Option(Int)) three-level nesting RC balanced
+#[test]
+#[serial]
+fn rc_u1_3_option_option_int() {
+    // Three-level nesting: Option wrapping Option wrapping Int.
+    // Only the outer two Options are heap — Int is not.
+    let src = r#"
+        (deftype (Option a) None (Some [:a val]))
+        (defn main []
+          (match (Some (Some 42))
+            [(Some inner)
+              (match inner [(Some v) v None 0])
+             None 0]))
+    "#;
+    assert_rc_balanced(src);
+}
+
+// =============================================================================
+// U1.5 — Additional closure-captures-heap coverage (Sprint 8 Wave 3)
+//
+// These tests cover closures capturing ADTs with heap fields, closures
+// capturing multiple heap types, and closures over Option(String).
+// =============================================================================
+
+// spec: 12-runtime §12.3 — closure captures Option(String) RC balanced
+#[test]
+#[serial]
+fn rc_u1_5_closure_captures_option_string() {
+    // Closure captures an Option containing a String. Both Option and
+    // String must survive through the closure invocation.
+    let src = r#"
+        (deftype (Option a) None (Some [:a val]))
+        (defn main []
+          (let [opt (Some "captured")]
+            (let [f (fn []
+                      (match opt [(Some s) (str-len s) None 0]))]
+              (f))))
+    "#;
+    assert_rc_balanced(src);
+}
+
+// spec: 12-runtime §12.3 — closure captures string and ADT RC balanced
+#[test]
+#[serial]
+fn rc_u1_5_closure_captures_string_and_adt() {
+    // Closure captures both a bare String and an ADT — two different
+    // heap types in the same environment.
+    let src = r#"
+        (deftype (Option a) None (Some [:a val]))
+        (defn main []
+          (let [s "hello"
+                opt (Some 42)]
+            (let [f (fn []
+                      (add-i64 (str-len s)
+                               (match opt [(Some v) v None 0])))]
+              (f))))
+    "#;
+    assert_rc_balanced(src);
+}
+
+// spec: 12-runtime §12.3 — closure captures Pair with string fields RC balanced
+#[test]
+#[serial]
+fn rc_u1_5_closure_captures_pair_with_strings() {
+    // Closure captures a product ADT with two String fields.
+    let src = r#"
+        (deftype StrPair [:String fst :String snd])
+        (defn main []
+          (let [p (StrPair "hello" "world")]
+            (let [f (fn []
+                      (match p [(StrPair a b) (add-i64 (str-len a) (str-len b))]))]
+              (f))))
     "#;
     assert_rc_balanced(src);
 }

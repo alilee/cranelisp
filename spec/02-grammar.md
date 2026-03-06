@@ -1,4 +1,4 @@
-# 2. Grammar [R2 S7]
+# 2. Grammar [R3 S8]
 
 This section defines the syntactic grammar of Cranelisp -- how S-expression trees (as defined in [1. Lexical Structure](01-lexical.md)) are interpreted as language constructs. The lexical grammar produces a tree of forms (atoms, lists, brackets); the syntactic grammar assigns meaning to those trees.
 
@@ -33,7 +33,7 @@ In batch mode (`--run`), the program MUST define a function named `main` that ta
 
 In interactive mode (REPL), top-level expressions are permitted in addition to definitions. Each expression is evaluated and its type and value are displayed. See [12. Runtime Model](12-runtime.md) for REPL semantics.
 
-## 2.2 Top-Level Forms [R2 S7]
+## 2.2 Top-Level Forms [R3 S8]
 
 ```ebnf
 top_level    = defn_form
@@ -376,7 +376,7 @@ The `import` form brings names from other modules into the current scope. The bo
          math []])
 ```
 
-### 2.2.8 `export` -- Module Export [R2 S7]
+### 2.2.8 `export` -- Module Export [Tested crates/cranelisp-frontend/src/module_extract.rs::test_export_specific]
 
 ```ebnf
 export_form  = '(' 'export' '[' export_spec+ ']' ')'
@@ -733,7 +733,7 @@ A symbol in pattern position is interpreted as follows:
 
 There is no nested pattern matching -- constructor patterns bind field values to variables but do not recursively match on those fields.
 
-## 2.6 Visibility [R2 S7]
+## 2.6 Visibility [Tested tests/ring2.rs::visibility_private_defn_not_importable, tests/ring2.rs::visibility_public_defn_importable]
 
 Definitions may be public (visible to importing modules) or private (visible only within the defining module). The visibility is indicated by a `-` suffix on the definition keyword:
 
@@ -758,7 +758,7 @@ Library macros such as `const`/`const-` and `def`/`def-` follow `defmacro` visib
 
 By default (without the `-` suffix), all definitions are public. Private definitions MUST NOT be accessible to importing modules through `import` or `export`.
 
-## 2.7 Docstrings [R2 S7]
+## 2.7 Docstrings [Tested tests/ring2.rs::docstring_on_defn, tests/ring2.rs::docstring_on_deftype, tests/ring2.rs::docstring_on_deftrait]
 
 An optional docstring (a string literal) MAY appear between the name and the parameter list or body of a definition. Docstrings are preserved by the implementation and are available for introspection.
 

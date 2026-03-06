@@ -26,4 +26,5 @@ Delivery progress for the Cranelisp reimplementation. For technical scope per ri
 | 4 | Ring 2A — Traits & operator dispatch: 622 tests, 0 failures, gate PASS | COMPLETE | `sprints/archive/sprint-4.md` |
 | 5 | Ring 2A completion — constrained poly, default methods, user traits, `!=`: 1177 tests, 0 failures, gate PASS | COMPLETE | `sprints/archive/sprint-5.md` |
 | 6 | Ring 2B — module infrastructure, tech debt, RC scope-dec, traceability: 691 tests, 0 failures | COMPLETE | `sprints/archive/sprint-6.md` |
-| 7 | Ring 2B completion — cross-module wiring, REPL qualified display, REPL chrome, multi-sig | — | — |
+| 7 | Ring 2B completion — cross-module wiring, REPL qualified display, REPL chrome: 748 tests, 0 failures | COMPLETE | `sprints/archive/sprint-7.md` |
+| 8 | QA catchup — test coverage for Rings 0-2B implemented functionality | — | — |

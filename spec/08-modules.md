@@ -1,8 +1,8 @@
-# 8. Modules [R2 S7]
+# 8. Modules [R2 S8]
 
 This section defines the module system of Cranelisp -- how source files map to modules, how names are imported and exported across module boundaries, and how name resolution operates in the presence of multiple modules.
 
-## 8.1 File-to-Module Mapping [R2 S7]
+## 8.1 File-to-Module Mapping [Tested crates/cranelisp-frontend/src/module_extract.rs::test_module_path_preserved]
 
 Each `.cl` source file defines exactly one module. The module's identity is derived from the file's path relative to the project root or library directory.
 
@@ -75,7 +75,7 @@ In the REPL, an inline `(mod name ...)` writes the backing file and loads the su
 
 Declares `internal` as a private submodule, accessible only within the declaring module and its submodule subtree. Other modules MUST NOT import from or reference names in a private submodule.
 
-### 8.2.5 File Resolution
+### 8.2.5 File Resolution [Tested tests/ring2::module_missing_file_error]
 
 When `(mod name)` appears in a file (after inline extraction, if applicable), the implementation MUST resolve the corresponding `.cl` file using the following search order:
 
@@ -88,7 +88,7 @@ For example, if `app.cl` contains `(mod handler)`:
 
 If neither file exists, it is a compile-time error.
 
-### 8.2.6 Placement
+### 8.2.6 Placement [Tested tests/ring2::module_cycle_detection, crates/cranelisp-frontend/src/module_extract.rs::test_mixed_forms]
 
 `mod` declarations MUST appear as top-level forms. They are extracted from the raw S-expression stream before macro expansion. A `mod` form encountered in any other position (inside a function body, let binding, etc.) is an error.
 
@@ -227,7 +227,7 @@ A module MAY contain multiple `import` forms. Their effects accumulate: names im
 (defn make-point [:Int x :Int y] :Point (Point x y))
 ```
 
-## 8.4 Export [R2 S7]
+## 8.4 Export [Tested crates/cranelisp-frontend/src/module_extract.rs::test_export_specific, crates/cranelisp-frontend/src/module_extract.rs::test_export_glob]
 
 The `export` special form re-exports names from imported modules, making them part of the current module's public API.
 
@@ -348,7 +348,7 @@ When a qualified name references a module that has not yet been loaded, the impl
 
 In a REPL environment, qualified name references SHOULD trigger lazy loading of the referenced module.
 
-## 8.6 Name Resolution [R2 S7]
+## 8.6 Name Resolution [Tested tests/ring2.rs::name_resolution_local_shadows_module, tests/ring2.rs::module_qualified_name_resolution]
 
 Name resolution converts source-level names into their definitions. An implementation MUST follow the resolution layers defined in this section.
 
@@ -433,7 +433,7 @@ For a qualified name `path/sym`, resolution proceeds:
 
 The target symbol MUST be public in the resolved module. Accessing a private name through a qualified reference is a compile-time error.
 
-## 8.7 Visibility [R2 S7]
+## 8.7 Visibility [Tested tests/ring2.rs::visibility_private_defn_not_importable, tests/ring2.rs::visibility_public_defn_importable, tests/ring2.rs::visibility_private_deftype_not_importable]
 
 ### 8.7.1 Public by Default
 
@@ -478,7 +478,7 @@ A private name:
 (util/internal 42)         ; error: 'internal' is private
 ```
 
-## 8.8 Prelude [R2 S7]
+## 8.8 Prelude [R2 S8]
 
 ### 8.8.1 Implicit Import
 
@@ -506,7 +506,7 @@ An empty prelude is valid. The core language -- primitives, special forms, type 
 ;; A valid, empty prelude.cl
 ```
 
-## 8.9 Synthetic Modules [R2 S7]
+## 8.9 Synthetic Modules [Tested tests/ring2.rs::synthetic_primitives_module_available]
 
 Synthetic modules are registered by the runtime without corresponding `.cl` source files. They provide compiler-seeded types, built-in functions, and platform bindings.
 
@@ -580,7 +580,7 @@ lib/prelude.cl          ; depends on core
 main.cl                 ; depends on prelude (implicit)
 ```
 
-## 8.11 Lib Directory [R2 S7]
+## 8.11 Lib Directory [R2 S8]
 
 ### 8.11.1 Standard Library Location
 
@@ -667,7 +667,7 @@ The REPL SHOULD support `(import ...)` as an interactive command. Importing a mo
 
 Typing a module name at the REPL SHOULD display information about that module: its public definitions, types, and traits. This is consistent with the self-documenting design principle.
 
-## 8.14 Summary of Forms [R2 S7]
+## 8.14 Summary of Forms [R2 S8]
 
 | Form | Purpose | Visibility |
 |---|---|---|

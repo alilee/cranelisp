@@ -85,9 +85,40 @@ The REPL process `chdir`s into this directory, so `.cache` artifacts and any oth
 | `ring2a.demo` | 2A | Trait-dispatched operators, float dispatch, deftrait, constrained polymorphism, default methods |
 
 Each sprint, `/repl` extends this library:
-- **Ring 2**: Traits, modules, constrained polymorphism
-- **Ring 3**: Macros, derive, standard library
+- **Ring 2B**: Modules, cross-module imports, qualified names
+- **Ring 3**: Macros, derive, standard library, prelude
 - **Ring 4**: IO, platforms, full REPL experience (slash commands, trace, run-tests)
+
+## No Prelude Bootstrapping
+
+Until the stdlib and prelude are loaded at startup (Ring 3+), the REPL starts with only the `primitives` module — named primitives like `add-i64`, builtin types, and special forms. **No traits, no operators (`+`, `-`, etc.), no standard library functions.**
+
+Demos that want to use operators must build up their own traits inline. This is actually a good teaching sequence — it shows the user how the language is constructed from primitives:
+
+```
+; Explore what's available
+/help
+3
+/l add
+
+; Named primitives work directly
+(add-i64 3 4)
+
+; Define the Num trait to get operator syntax
+(deftrait (Num a) (+ [a a] a) (- [a a] a) (* [a a] a) (/ [a a] a))
+(impl Num Int
+  (+ [lhs rhs] (add-i64 lhs rhs))
+  (- [lhs rhs] (sub-i64 lhs rhs))
+  (* [lhs rhs] (mul-i64 lhs rhs))
+  (/ [lhs rhs] (div-i64 lhs rhs)))
+
+; Now operators work
+(+ 3 4)
+```
+
+When the prelude lands (Ring 3), this bootstrapping disappears — operators just work from the first prompt. But until then, every demo that uses `+` must include the trait setup. Consider factoring the trait definitions into a comment block at the top of each demo so it's clear what's boilerplate vs. what's being demonstrated.
+
+**Note**: Once `/arch` Decision 17 is resolved (eliminating compiler-seeded traits in `builtins.rs`), this bootstrapping sequence becomes mandatory — not just a demo concern but a startup concern. The fix is a startup `.cl` file evaluated before the first prompt.
 
 ## Conventions
 

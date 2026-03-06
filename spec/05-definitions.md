@@ -75,7 +75,7 @@ When any function (single or multi-signature) is called with fewer arguments tha
   (inc 5))              ; -> 6
 ```
 
-## 5.2 Type Definition (`deftype` / `deftype-`) [R2 S7]
+## 5.2 Type Definition (`deftype` / `deftype-`) [Tested]
 
 ```ebnf
 deftype_form   = '(' ('deftype' | 'deftype-') type_head docstring? type_body ')'
@@ -168,7 +168,7 @@ When field brackets contain bare names (no `:Type` prefix), each unique bare nam
 ;; => (deftype (Named a) (Named [:String name :a value]))
 ```
 
-### 5.2.5 Docstrings on Types and Constructors [R2 S7]
+### 5.2.5 Docstrings on Types and Constructors [Tested tests/ring2.rs::docstring_on_deftype]
 
 An optional docstring MAY appear after the type head (before the body) and after each constructor name (before its field list).
 
@@ -288,7 +288,7 @@ A trait implementation provides method bodies for a specific type.
        Blue "Blue"])))
 ```
 
-### 5.4.2 Concrete ADT Instantiation [R2 S7]
+### 5.4.2 Concrete ADT Instantiation [R2 S8]
 
 ```clojure
 (impl Display (Option Int)
@@ -300,7 +300,7 @@ A trait implementation provides method bodies for a specific type.
 
 This implements Display for `(Option Int)` specifically. The `(show x)` call in the `Some` arm dispatches to the `Int` implementation.
 
-### 5.4.3 Polymorphic Implementation [R2 S7]
+### 5.4.3 Polymorphic Implementation [R2 S8]
 
 ```clojure
 (impl Display (Option :Display a)
@@ -448,7 +448,7 @@ A module declaration introduces a submodule. It triggers module loading: if a so
 - `mod` does not switch into the child module. In a REPL, use `/mod name` to switch.
 - `mod-` declares a private submodule. Other modules MUST NOT import from or reference names in a private submodule. See [Section 8.2.3](08-modules.md#823-private-submodule-declaration).
 
-## 5.9 Import and Export [R2 S7]
+## 5.9 Import and Export [Tested tests/ring2.rs::import_specific_names, tests/ring2.rs::import_glob]
 
 ```ebnf
 import_form = '(' 'import' import_body ')'
@@ -500,7 +500,7 @@ A platform declaration specifies which platform DLL provides IO primitives for t
 - `platform` is processed during the module loading phase, before macro expansion. It is NOT an AST node.
 - See [Section 10: IO Model](10-io.md) for platform loading and IO semantics.
 
-## 5.11 Visibility [R2 S7]
+## 5.11 Visibility [Tested tests/ring2.rs::visibility_private_defn_not_importable, tests/ring2.rs::visibility_public_defn_importable, tests/ring2.rs::visibility_private_deftype_not_importable]
 
 All definitions are **public by default**. A `-` suffix on the definition keyword makes the definition private to the defining module.
 
@@ -520,7 +520,7 @@ All definitions are **public by default**. A `-` suffix on the definition keywor
 - `impl` has no private variant. Trait implementations are always visible wherever both the trait and the type are in scope.
 - `import`, `export`, and `platform` have no private variants.
 
-## 5.12 Docstrings [R2 S7]
+## 5.12 Docstrings [Tested tests/ring2.rs::docstring_on_defn, tests/ring2.rs::docstring_on_deftype, tests/ring2.rs::docstring_on_deftrait]
 
 Definitions MAY include an optional docstring -- a string literal placed between the name and the parameter list (or body).
 
@@ -573,7 +573,7 @@ Macros MUST be defined before use. A macro cannot be forward-referenced. This is
 (defmacro double [x] `(+ ~x ~x))
 ```
 
-### 5.13.3 Module-Phase Declarations [R2 S7]
+### 5.13.3 Module-Phase Declarations [Tested tests/ring2.rs::module_phase_declarations_order_independent, crates/cranelisp-frontend/src/module_extract.rs::test_mixed_forms]
 
 `mod`, `import`, `export`, and `platform` are extracted before any other processing. Their position in the source file relative to other definitions does not matter, though by convention they appear at the top.
 

@@ -1456,6 +1456,208 @@ fn repl_impl_display_shows_trait_for_type() {
 }
 
 // =============================================================================
+// Trait implementation forms (spec: 07-traits §7.3)
+// =============================================================================
+
+// spec: 07-traits §7.3 — impl form provides method bodies for a concrete type
+#[test]
+fn trait_impl_concrete_type() {
+    // Basic concrete impl: Display for a simple type.
+    let src = r#"
+        (deftrait (Showable a)
+          (show-it [a] Int))
+        (deftype Color Red Green Blue)
+        (impl Showable Color
+          (defn show-it [c]
+            (match c [Red 1 Green 2 Blue 3])))
+        (defn main [] (show-it Green))
+    "#;
+    assert_eq!(compile_and_run_simple(src), 2);
+}
+
+// =============================================================================
+// Trait scope and visibility (spec: 07-traits §7.11)
+// =============================================================================
+
+// spec: 07-traits §7.11 — trait methods accessible via import across modules
+#[test]
+fn trait_method_accessible_across_modules() {
+    let dir = create_test_project(&[
+        ("main.cl", "(mod types)\n(import [main.types [Classify classify Color Red Green Blue]])\n(defn main [] (classify Green))"),
+        ("types.cl", "(deftrait (Classify a) (classify [a] Int))\n(deftype Color Red Green Blue)\n(impl Classify Color (defn classify [c] (match c [Red 1 Green 2 Blue 3])))"),
+    ]);
+    let result = cranelisp::pipeline::compile_module_graph(
+        &dir.path().join("main.cl"),
+    ).unwrap();
+    assert_eq!(result.value, 2);
+}
+
+// =============================================================================
+// Visibility (spec: 05-definitions §5.11, 02-grammar §2.6)
+// =============================================================================
+
+// spec: 05-definitions §5.11 — defn- creates private function
+#[test]
+fn visibility_private_defn_not_importable() {
+    let dir = create_test_project(&[
+        ("main.cl", "(mod util)\n(import [main.util [helper]])\n(defn main [] (helper))"),
+        ("util.cl", "(defn- helper [] 42)"),
+    ]);
+    let result = cranelisp::pipeline::compile_module_graph(
+        &dir.path().join("main.cl"),
+    );
+    assert!(result.is_err(), "private defn should not be importable");
+}
+
+// spec: 05-definitions §5.11 — public defn accessible via import
+#[test]
+fn visibility_public_defn_importable() {
+    let dir = create_test_project(&[
+        ("main.cl", "(mod util)\n(import [main.util [helper]])\n(defn main [] (helper))"),
+        ("util.cl", "(defn helper [] 42)"),
+    ]);
+    let result = cranelisp::pipeline::compile_module_graph(
+        &dir.path().join("main.cl"),
+    ).unwrap();
+    assert_eq!(result.value, 42);
+}
+
+// spec: 05-definitions §5.11 — deftype- creates private type
+#[test]
+fn visibility_private_deftype_not_importable() {
+    let dir = create_test_project(&[
+        ("main.cl", "(mod types)\n(import [main.types [Secret]])\n(defn main [] 1)"),
+        ("types.cl", "(deftype- Secret [:Int val])"),
+    ]);
+    let result = cranelisp::pipeline::compile_module_graph(
+        &dir.path().join("main.cl"),
+    );
+    assert!(result.is_err(), "private deftype should not be importable");
+}
+
+// =============================================================================
+// Docstrings (spec: 05-definitions §5.12, 02-grammar §2.7)
+// =============================================================================
+
+// spec: 05-definitions §5.12 — defn with docstring compiles and runs correctly
+#[test]
+fn docstring_on_defn() {
+    let src = r#"
+        (defn inc "Increment by one" [:Int x] (+ x 1))
+        (defn main [] (inc 5))
+    "#;
+    assert_eq!(compile_and_run_simple(src), 6);
+}
+
+// spec: 05-definitions §5.12 — deftype with docstring
+#[test]
+fn docstring_on_deftype() {
+    let src = r#"
+        (deftype Color "A primary color" Red Green Blue)
+        (defn main [] (match Green [Red 1 Green 2 Blue 3]))
+    "#;
+    assert_eq!(compile_and_run_simple(src), 2);
+}
+
+// spec: 05-definitions §5.12 — deftrait with docstring
+#[test]
+fn docstring_on_deftrait() {
+    let src = r#"
+        (deftrait (Sizeable a) "Types that have a size"
+          (size "Get the size" [a] Int))
+        (impl Sizeable Int
+          (defn size [x] x))
+        (defn main [] (size 42))
+    "#;
+    assert_eq!(compile_and_run_simple(src), 42);
+}
+
+// =============================================================================
+// Export (spec: 08-modules §8.4)
+// =============================================================================
+
+// spec: 08-modules §8.4 — export re-exports names from submodule
+// Note: Export parsing is tested at unit level in module_extract.rs.
+// Full pipeline re-export resolution across nested modules is not yet
+// implemented — this test is left as future work.
+// #[test]
+// fn export_re_exports_names() { ... }
+
+// =============================================================================
+// Module: prelude, synthetic modules, lib dir (spec: 08-modules §8.8, §8.9, §8.11)
+// =============================================================================
+
+// spec: 08-modules §8.9 — primitives module available without file
+#[test]
+fn synthetic_primitives_module_available() {
+    // Primitives module is always available — test by using add-i64 directly.
+    let src = "(defn main [] (add-i64 2 3))";
+    assert_eq!(compile_and_run_simple(src), 5);
+}
+
+// =============================================================================
+// Module-phase declarations (spec: 05-definitions §5.13.3)
+// =============================================================================
+
+// spec: 05-definitions §5.13.3 — mod/import extracted before compilation
+#[test]
+fn module_phase_declarations_order_independent() {
+    // mod and import at top work correctly in compilation order.
+    let dir = create_test_project(&[
+        ("main.cl", "(mod helper)\n(import [main.helper [double]])\n(defn main [] (double 21))"),
+        ("helper.cl", "(defn double [:Int x] (+ x x))"),
+    ]);
+    let result = cranelisp::pipeline::compile_module_graph(
+        &dir.path().join("main.cl"),
+    ).unwrap();
+    assert_eq!(result.value, 42);
+}
+
+// =============================================================================
+// Name resolution (spec: 08-modules §8.6)
+// =============================================================================
+
+// spec: 08-modules §8.6 — resolution layers: local > module > root
+#[test]
+fn name_resolution_local_shadows_module() {
+    // Local let binding shadows module-level definition.
+    let src = "
+        (defn val [] 10)
+        (defn main [] (let [val 42] val))
+    ";
+    assert_eq!(compile_and_run_simple(src), 42);
+}
+
+// =============================================================================
+// Variable reference (spec: 04-expressions §4.2)
+// =============================================================================
+
+// spec: 04-expressions §4.2 — variable reference resolves in lexical scope
+#[test]
+fn variable_reference_lexical_scope() {
+    let src = "
+        (defn main []
+          (let [x 10]
+            (let [y (add-i64 x 5)]
+              y)))
+    ";
+    assert_eq!(compile_and_run_simple(src), 15);
+}
+
+// spec: 04-expressions §4.2.2 — qualified reference to module function
+#[test]
+fn qualified_reference_to_module() {
+    let dir = create_test_project(&[
+        ("main.cl", "(mod math)\n(defn main [] (math/double 21))"),
+        ("math.cl", "(defn double [:Int x] (+ x x))"),
+    ]);
+    let result = cranelisp::pipeline::compile_module_graph(
+        &dir.path().join("main.cl"),
+    ).unwrap();
+    assert_eq!(result.value, 42);
+}
+
+// =============================================================================
 // Module integration tests (spec: 08-modules)
 // =============================================================================
 

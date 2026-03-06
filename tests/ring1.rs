@@ -1617,6 +1617,208 @@ fn error_if_branch_type_mismatch() {
     assert_type_error(src, "String");
 }
 
+// =============================================================================
+// Pattern matching semantics (spec: 06-pattern-matching §6.3)
+// =============================================================================
+
+// spec: 06-pattern-matching §6.3.1 — scrutinee evaluated once, arms tested top-to-bottom
+#[test]
+fn match_eval_order_top_to_bottom() {
+    // First matching arm wins: Red matches the first arm.
+    let src = "
+        (deftype Color Red Green Blue)
+        (defn classify [c]
+          (match c
+            [Red   1
+             Red   2
+             Green 3
+             Blue  4]))
+        (defn main [] (classify Red))
+    ";
+    assert_eq!(compile_and_run_simple(src), 1);
+}
+
+// spec: 06-pattern-matching §6.3.2 — binding scope limited to arm body
+#[test]
+fn match_binding_scope_limited_to_arm() {
+    // Variable 'x' bound in Some arm is used only in that arm body.
+    let src = "
+        (deftype (Option a) None (Some [:a val]))
+        (defn extract [opt]
+          (match opt
+            [(Some x) (add-i64 x 10)
+             None     0]))
+        (defn main [] (extract (Some 5)))
+    ";
+    assert_eq!(compile_and_run_simple(src), 15);
+}
+
+// spec: 06-pattern-matching §6.3.3 — arm body type agreement (error)
+#[test]
+fn error_match_arm_type_disagreement() {
+    // First arm returns Int, second returns String — type error.
+    let src = r#"
+        (deftype Color Red Green Blue)
+        (defn main []
+          (match Red
+            [Red   1
+             Green "two"
+             Blue  3]))
+    "#;
+    assert_type_error(src, "");
+}
+
+// =============================================================================
+// Type checking patterns (spec: 06-pattern-matching §6.4)
+// =============================================================================
+
+// spec: 06-pattern-matching §6.4.1 — constructor pattern type checking
+#[test]
+fn match_constructor_pattern_type_checking() {
+    // Constructor pattern correctly instantiates polymorphic type vars.
+    let src = "
+        (deftype (Option a) None (Some [:a val]))
+        (defn get-or-zero [opt]
+          (match opt
+            [(Some x) x
+             None     0]))
+        (defn main [] (get-or-zero (Some 42)))
+    ";
+    assert_eq!(compile_and_run_simple(src), 42);
+}
+
+// spec: 06-pattern-matching §6.4.2 — variable pattern gets scrutinee type
+#[test]
+fn match_variable_pattern_gets_scrutinee_type() {
+    // Variable pattern 'v' gets the scrutinee's type (Int).
+    let src = "
+        (defn main []
+          (let [n 42]
+            (match n
+              [v (add-i64 v 1)])))
+    ";
+    assert_eq!(compile_and_run_simple(src), 43);
+}
+
+// spec: 06-pattern-matching §6.4.3 — wildcard adds no constraints
+#[test]
+fn match_wildcard_no_constraints() {
+    // Wildcard pattern adds no bindings or constraints.
+    let src = "
+        (deftype Color Red Green Blue)
+        (defn default-val [c]
+          (match c
+            [_ 99]))
+        (defn main [] (default-val Green))
+    ";
+    assert_eq!(compile_and_run_simple(src), 99);
+}
+
+// spec: 06-pattern-matching §6.4.4 — return type is unified body type
+#[test]
+fn match_return_type_unified() {
+    // Match expression type is the unified type of all arm bodies (Int here).
+    let src = "
+        (deftype Color Red Green Blue)
+        (defn to-int [c]
+          (match c
+            [Red   10
+             Green 20
+             Blue  30]))
+        (defn main [] (add-i64 (to-int Red) (to-int Blue)))
+    ";
+    assert_eq!(compile_and_run_simple(src), 40);
+}
+
+// =============================================================================
+// Non-ADT scrutinee (spec: 06-pattern-matching §6.5.2)
+// =============================================================================
+
+// spec: 06-pattern-matching §6.5.2 — match on Int with variable pattern
+#[test]
+fn match_non_adt_int_var_pattern() {
+    // Non-ADT scrutinee (Int) requires wildcard or variable pattern.
+    let src = "
+        (defn inc [n]
+          (match n [x (add-i64 x 1)]))
+        (defn main [] (inc 5))
+    ";
+    assert_eq!(compile_and_run_simple(src), 6);
+}
+
+// spec: 06-pattern-matching §6.5.2 — match on Bool with wildcard
+#[test]
+fn match_non_adt_bool_wildcard() {
+    let src = "
+        (defn bool-to-int [b]
+          (match b [_ (if b 1 0)]))
+        (defn main [] (bool-to-int true))
+    ";
+    assert_eq!(compile_and_run_simple(src), 1);
+}
+
+// =============================================================================
+// Limitations (spec: 06-pattern-matching §6.6)
+// =============================================================================
+
+// spec: 06-pattern-matching §6.6.1 — no nested patterns (error)
+#[test]
+fn error_nested_pattern() {
+    // Nested constructor patterns should produce a compile error.
+    let src = "
+        (deftype (Option a) None (Some [:a val]))
+        (deftype Point [:Int x :Int y])
+        (defn bad [opt]
+          (match opt
+            [(Some (Point x y)) (add-i64 x y)
+             None 0]))
+        (defn main [] (bad None))
+    ";
+    // Should fail during compilation — nested patterns aren't supported.
+    let result = cranelisp::pipeline::compile_and_run(src, cranelisp_types::CompileMode::Batch);
+    assert!(result.is_err(), "nested pattern should be rejected");
+}
+
+// =============================================================================
+// Match in trait impls (spec: 06-pattern-matching §6.7.8)
+// =============================================================================
+
+// spec: 06-pattern-matching §6.7.8 — pattern matching used in trait impl
+#[test]
+fn match_in_trait_impl() {
+    // Match is commonly used in trait implementations for ADTs.
+    let src = "
+        (deftrait (Sizeable a)
+          (size [a] Int))
+        (deftype Color Red Green Blue)
+        (impl Sizeable Color
+          (defn size [c]
+            (match c
+              [Red 1
+               Green 2
+               Blue 3])))
+        (defn main [] (size Blue))
+    ";
+    assert_eq!(compile_and_run_simple(src), 3);
+}
+
+// =============================================================================
+// String-identity primitive (spec: appendix-a-builtins §A.3)
+// =============================================================================
+
+// spec: appendix-a-builtins §A.3 — string-identity returns same string
+#[test]
+fn string_identity_returns_same() {
+    let src = r#"
+        (defn main [] (str-len (string-identity "hello")))
+    "#;
+    assert_eq!(compile_and_run_simple(src), 5);
+}
+
+// =============================================================================
+// Additional error tests (pattern matching)
+// =============================================================================
+
 // spec: 03-types §3.8 — ADT type mismatch error includes type name
 #[test]
 fn error_adt_type_mismatch_includes_type_name() {
@@ -1646,4 +1848,84 @@ fn error_function_arity_mismatch() {
 fn error_undefined_variable_names_variable() {
     let src = "(defn main [] nonexistent)";
     assert_error(src, "nonexistent");
+}
+
+// =============================================================================
+// U1.7 — Error message quality tests (Sprint 8 Wave 3)
+//
+// These tests verify that Ring 1 error messages contain useful diagnostic
+// content: both the expected and actual types, constructor names, etc.
+// Replaces the empty-string assertions in the original error tests.
+// =============================================================================
+
+// spec: 03-types §3.8 — String-where-Int-expected error names String
+#[test]
+fn error_quality_string_where_int_names_string() {
+    // add-i64 expects Int; passing String should mention String in error.
+    assert_type_error(
+        r#"(defn main [] (add-i64 "hello" 1))"#,
+        "String",
+    );
+}
+
+// spec: 03-types §3.8 — String-where-Int-expected error names Int
+#[test]
+fn error_quality_string_where_int_names_int() {
+    assert_type_error(
+        r#"(defn main [] (add-i64 "hello" 1))"#,
+        "Int",
+    );
+}
+
+// spec: 03-types §3.8 — Int-where-String-expected error names Int
+#[test]
+fn error_quality_int_where_string_names_int() {
+    // str-len expects String; passing Int should mention Int.
+    assert_type_error("(defn main [] (str-len 42))", "Int");
+}
+
+// spec: 03-types §3.8 — Int-where-String-expected error names String
+#[test]
+fn error_quality_int_where_string_names_string() {
+    assert_type_error("(defn main [] (str-len 42))", "String");
+}
+
+// spec: 05-definitions §5.2.7 — constructor wrong type error names Bool
+#[test]
+fn error_quality_constructor_wrong_type_names_bool() {
+    // Point expects Int fields; passing Bool should mention Bool.
+    assert_type_error(
+        "(deftype Point [:Int x :Int y]) (defn main [] (match (Point true 2) [(Point x y) x]))",
+        "Bool",
+    );
+}
+
+// spec: 04-expressions §4.4 — if-branch mismatch error names both types
+#[test]
+fn error_quality_if_branch_mismatch_names_types() {
+    let src = r#"(defn main [] (if true "hello" 42))"#;
+    assert_type_error(src, "Int");
+    assert_type_error(src, "String");
+}
+
+// spec: 04-expressions §4.2.1 — undefined constructor error names the constructor
+#[test]
+fn error_quality_undefined_constructor_names_it() {
+    assert_error("(defn main [] (Foo 1 2))", "Foo");
+}
+
+// spec: 06-pattern-matching §6.3.3 — match arm type mismatch names both types
+#[test]
+fn error_quality_match_arm_type_mismatch() {
+    let src = r#"
+        (deftype Color Red Green Blue)
+        (defn main []
+          (match Red
+            [Red   1
+             Green "two"
+             Blue  3]))
+    "#;
+    // Should mention both Int and String
+    assert_type_error(src, "Int");
+    assert_type_error(src, "String");
 }

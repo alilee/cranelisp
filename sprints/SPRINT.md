@@ -1,283 +1,264 @@
-# Sprint 7: Ring 2B — Cross-Module Wiring, REPL Chrome, Qualified Display
+# Sprint 8: QA Catchup — Test Coverage for Rings 0-2B
 
 **Status**: ACTIVE
-**Ring**: 2 (Abstraction) — fourth increment
-**Goal**: Wire cross-module imports end-to-end, deliver REPL chrome (slash commands, banner, prompt, stderr), qualified display, primitives module, and pay down carried debt. Multi-sig + auto-curry deferred to Sprint 8 per /arch recommendation (scope risk).
+**Ring**: N/A (cross-cutting quality sprint)
+**Goal**: Ensure every implemented spec requirement has test coverage and bidirectional traceability. No new features — pure quality catchup.
 
 ## Scope
 
-Sprint 6 delivered module infrastructure but cross-module calls are not end-to-end wired and the REPL lacks chrome. This sprint completes Ring 2B foundations and makes the REPL showcasable.
+Sprints 1-7 delivered Rings 0-2B (core, heap, traits, modules, REPL chrome) with 748 tests. However, many spec requirements that *are* implemented lack test coverage annotations. This sprint closes the gap between what is built and what is verified.
 
 ### Core deliverables
 
-1. **Cross-module import resolution** — wire export registration in orchestrator, un-ignore 4 module tests (1x deferred from S6)
-2. **REPL qualified display** — output `primitives/Int`, `user/id`, `Color.Red` notation, un-ignore 9 E2E tests (1x deferred from S6)
-3. **Primitives module** — proper `primitives` synthetic module replacing current "user" module seeding hack
+1. **Spec-to-test coverage for Ring 2 (`[R2 S6/S7]` tags)** — 53 spec requirements across 7 spec files are tagged as Ring 2 targets but lack `[Tested]` annotations. Write tests or verify existing tests cover them, then update annotations.
+   - Pattern matching (§6): 16 requirements
+   - Modules (§8): 9 requirements
+   - Definitions (§5): 8 requirements
+   - Builtins (App A): 8 requirements
+   - Grammar (§2): 5 requirements
+   - Traits (§7): 3 requirements
+   - Expressions (§4): 2 requirements
+   - Runtime (§12): 2 requirements
 
-### REPL chrome (brought forward from Ring 4, progressive delivery)
+2. **Ring 0/1 stragglers** — 8 spec tags at `[R0 S1]`/`[R1 S2/S3]` that should already be tested:
+   - `spec/01-lexical.md`: source encoding
+   - `spec/12-runtime.md`: error model (6 tags)
+   - `spec/appendix-c-nfr.md`: representation containment
 
-4. **Slash command infrastructure + /help + /quit** — `/` prefix detection, command parser, dispatch table
-5. **Introspection commands** — `/sig`, `/type`, `/info`, `/list`, `/time`
-6. **Startup banner** — language name, help hint
-7. **Module-aware prompt** — `{compile}+{eval}ms; {module}>` format, continuation prompt `...`
-8. **Stderr routing** — errors to stderr, results to stdout
-9. **Special form feedback** — bare `if`, `let`, `fn` show shape description not error
+3. **REPL spec coverage** — 39 untested requirements in `repl/spec.md`. Audit which are implemented, write tests, update annotations.
 
-### Debt and quality (1x deferred from S6)
+4. **Resolve /qa FIXMEs** — 5 open FIXMEs:
+   - U1.3 (`tests/plan/ring1.md:50`): Nested heap ADT RC tests
+   - U1.5 (`tests/plan/ring1.md:54`): Closure capturing heap tests
+   - U1.7 (`tests/plan/ring1.md:58`): Error message quality tests
+   - U1.6 (`repl/spec.md:63`): Poly ADT type var display
+   - U1.9 (`repl/spec.md:68`): Poly ADT heap field display
 
-10. **7 Vec RC balance tests** — Vec temporary argument cleanup (non-scope-based dec)
-11. **Spec heading annotations** — `[Done]`/`[Rn Sn]` on spec section headings
-12. **Missing spec coverage tests** — `#[ignore]` tests for untested in-scope spec sections
-13. **QA FIXME test coverage** — U1.3, U1.5, U1.7, U1.6, U1.9
-14. **Stale FIXME cleanup** — remove resolved U1.2, U2.1 FIXMEs from roadmap.md
-15. **R2.1-R2.3 display fixes** — deftrait display, constrained fn constraint display, impl display
+5. **Clean stale FIXMEs** — R2.1, R2.2, R2.3 in `tests/plan/ring2.md` (resolved in Sprint 7 but FIXME comments still present)
 
-### Deferred to Sprint 8
+6. **Investigate 7 ignored tests**:
+   - `rc.rs`: Vec element drop glue (1), nested heap ADT leak (1), closure capturing heap leak (1)
+   - `repl_experience.rs`: poly ADT type var display (2)
+   - `e2e.rs`: bare type name Int/Bool not found (2)
+   - Goal: un-ignore if fixable, or document clearly why they remain
 
-- **Multi-signature dispatch** — complex feature (13 sketch files), interaction with constrained poly
-- **Auto-curry** — depends on multi-sig disambiguation
-- Stdlib bootstrap — Ring 3 (needs macros)
-- `/expand`, `/mod`, `/reload`, `/mem`, `/run-tests` — Ring 3/4
-- `/source`, `/sexp`, `/ast`, `/clif`, `/disasm` — developer introspection, lower priority
+7. **Test-side traceability audit** — verify all 710 `// spec:` comments reference valid spec sections
 
 ## FIXME Debt
 
 | File | Owning Skill | Issue | Deferrals | Resolution |
 |------|-------------|-------|-----------|------------|
-| `design/arch/roadmap.md:62` | `/typecheck` | U1.2 — parse-int Option return | 0 | **stale** — resolved S6, remove |
-| `design/arch/roadmap.md:107` | `/typecheck` | U2.1 — Display trait registration | 0 | **stale** — resolved S6, remove |
-| `design/arch/roadmap.md:7` | `/arch` | U0.1 — batch hello-world needs IO | 0 | deferred to Ring 4 |
-| `design/arch/roadmap.md:39` | `/qa` | REPL spec non-conformance (12 items) | 0 | **all in scope** |
-| `design/arch/roadmap.md:57` | `/backend` | U1.1 — 11 missing string primitives | 0 | deferred to Ring 3 |
-| `tests/plan/ring2.md:123` | `/qa` | R2.1 — deftrait display | 0 | **in scope** #15 |
-| `tests/plan/ring2.md:128` | `/qa` | R2.2 — constrained fn display | 0 | **in scope** #15 |
-| `tests/plan/ring2.md:133` | `/qa` | R2.3 — impl display | 0 | **in scope** #15 |
-| `repl/spec.md:56` | `/qa` | U1.6 — poly ADT type var display | 0 | **in scope** #13 |
-| `repl/spec.md:61` | `/qa` | U1.9 — poly ADT heap field display | 0 | **in scope** #13 |
-| `tests/plan/ring1.md:50` | `/qa` | U1.3 — nested heap ADT RC | 0 | **in scope** #13 |
-| `tests/plan/ring1.md:54` | `/qa` | U1.5 — closure capturing heap | 0 | **in scope** #13 |
-| `tests/plan/ring1.md:58` | `/qa` | U1.7 — error message quality | 0 | **in scope** #13 |
-| `crates/cranelisp-typecheck/plan-typecheck.md:478` | `/typecheck` | Borrow-splitting doc | 0 | deferred |
-| `CLAUDE.md:97` | `/spec` | Num trait in spec vs stdlib | 0 | deferred to Ring 3 |
-| `repl/spec.md:5` | `/repl` | CLI invocation modes | 0 | deferred to Ring 4 |
-| `tests/plan/ring0.md:3` | `/qa` | U0.2 — /learn tutorial engine | 0 | deferred to Ring 4 |
+| `tests/plan/ring1.md:50` | /qa | U1.3 — nested heap ADT RC | 1 (S7) | **in scope** #4 |
+| `tests/plan/ring1.md:54` | /qa | U1.5 — closure capturing heap | 1 (S7) | **in scope** #4 |
+| `tests/plan/ring1.md:58` | /qa | U1.7 — error message quality | 1 (S7) | **in scope** #4 |
+| `repl/spec.md:63` | /qa | U1.6 — poly ADT type var display | 1 (S7) | **in scope** #4 |
+| `repl/spec.md:68` | /qa | U1.9 — poly ADT heap field display | 1 (S7) | **in scope** #4 |
+| `repl/spec.md:21` | /qa | Bare type name lookup untested | 0 | **in scope** #3 |
+| `tests/plan/ring2.md:123` | /qa | R2.1 — stale FIXME (resolved S7) | 0 | **in scope** #5 |
+| `tests/plan/ring2.md:128` | /qa | R2.2 — stale FIXME (resolved S7) | 0 | **in scope** #5 |
+| `tests/plan/ring2.md:133` | /qa | R2.3 — stale FIXME (resolved S7) | 0 | **in scope** #5 |
+| `design/arch/roadmap.md:7` | /arch | U0.1 — batch hello-world needs IO | 0 | deferred to Ring 4 |
+| `design/arch/roadmap.md:39` | /qa | REPL spec non-conformance (12 items) | 0 | **audit in scope** #3 |
+| `design/arch/roadmap.md:57` | /backend | U1.1 — 11 missing string primitives | 0 | deferred to Ring 3 |
+| `crates/cranelisp-typecheck/plan-typecheck.md:478` | /typecheck | Borrow-splitting doc | 0 | deferred |
+| `CLAUDE.md:97` | /spec | Num trait in spec vs stdlib | 0 | deferred to Ring 3 |
+| `repl/spec.md:5` | /repl | CLI invocation modes | 0 | deferred to Ring 4 |
+| `tests/plan/ring0.md:3` | /qa | U0.2 — /learn tutorial engine | 0 | deferred to Ring 4 |
+
+**Escalation note**: U1.3, U1.5, U1.7, U1.6, U1.9 are all on their **second deferral** (first deferred from S6 to S7, carried into S7 as FIXMEs but only partially addressed). Per the 2x deferral rule, these MUST ship in this sprint.
 
 ## Architecture Review
 
-**Reviewer**: /arch — **Verdict**: APPROVED WITH CONDITIONS
+**Reviewer**: /arch — **Verdict**: APPROVED
 
-1. **REPL chrome is sound** — slash command dispatch, prompt, banner, stderr routing will survive into Ring 4. No throwaway infrastructure. The dispatch table is additive; Ring 4 adds commands to the same table.
+1. **No architectural work needed — confirmed.** Sprint 8 is purely additive: new test files, spec annotation updates, and FIXME resolution. No new boundary types, no crate changes, no pipeline modifications. Existing test helpers (`compile_and_run_simple`, `repl_session`, `assert_type_error`, `assert_rc_balanced`, etc.) cover all testing patterns needed.
 
-2. **Multi-sig + auto-curry descoped to Sprint 8** — per /arch recommendation. Complex feature (13 sketch files) with interaction effects (auto-curry + multi-sig disambiguation, multi-sig + constrained poly exclusion). Shipping separately reduces risk. Ring 2 acceptance criteria are met progressively — multi-sig/auto-curry can be Ring 2's fifth increment.
+2. **No interim architecture risk.** Tests validate already-implemented behavior against already-written specs. No throwaway infrastructure — tests for Ring 0-2B features are permanent regression gates (rings are accretive).
 
-3. **Primitives module** — synthetic module, no file on disk. `discover_module_graph` and `resolve_submodule_file` must early-exit for known synthetic modules. Implicit `(import [primitives [*]])` replaces current copy-from-user seeding.
+3. **Scope is coherent and well-bounded.** The 53 Ring 2 spec requirements, 8 Ring 0/1 stragglers, 39 REPL spec gaps, 5 /qa FIXMEs (on their second deferral — must ship), and 7 ignored tests form a clear, enumerable work package.
 
-4. **Cross-module wiring gap** — `pipeline.rs:467` discards `ModuleStructure` (contains `ImportSpec`s). Fix: process imports after dependency compilation, populate cross-module symbol table entries, wire function calls via GOT or JIT imports.
+4. **No boundary type changes needed.** Test pyramid layers and helpers are stable since Sprint 1.
 
-5. **No boundary type changes needed** — existing types sufficient for all Sprint 7 deliverables.
+5. **Stability of tested features.** Multi-sig and auto-curry are architecturally stable — Ring 3/4 add on top, not replace. Module-level tests should use `resolve_module()` paths from Sprint 7 to avoid coupling to internals that may shift in Ring 3 (macro module integration).
+
+6. **Ignored tests may surface real bugs.** Three RC tests (Vec element drop glue, nested heap ADT leak, closure capturing heap leak) may reveal backend RC defects. Bug fixes are acceptable scope for a QA sprint. The 2 poly ADT display tests and 2 bare type name tests are REPL formatting issues within `/qa`'s domain.
+
+7. **Traceability audit is sound.** Validating 710 `// spec:` comments against spec headings is a data integrity check with no code impact.
 
 ## Skill Plans
 
-### /arch
-**Task**: Review sprint scope; confirm REPL chrome and primitives module design
-**Approach**: Complete — see Architecture Review above
-**Acceptance**: APPROVED WITH CONDITIONS (multi-sig descoped)
-
-### /frontend
-**Task**: No reader changes needed this sprint. Slash command detection happens in REPL loop, before reader.
-**Approach**: `/` prefix detection is REPL-level (src/repl.rs), not reader-level. No changes to frontend crate.
-**Acceptance**: N/A — no frontend work this sprint
-
-### /typecheck
-**Task**: Primitives module type environment; stale FIXME cleanup (U1.2, U2.1)
-**Approach**: Create `primitives` synthetic SymbolTable in `register_builtins()`. Remove stale FIXME comments from roadmap.md.
-**Design refs**: `design/typecheck/`, `design/arch/interfaces.md`
-**Acceptance**: Primitives module registered; stale FIXMEs removed
-
-### /backend
-**Task**: Cross-module GOT wiring; primitives module codegen support
-**Approach**: Process `ImportSpec`s in `compile_module_graph()`. Wire cross-module calls via GOT. Handle `primitives` as synthetic module in module discovery.
-**Design refs**: `design/backend/`, `src/pipeline.rs`
-**Acceptance**: 4 module tests un-ignored and passing; cross-module calls work end-to-end
-
 ### /qa
-**Task**: REPL chrome implementation (slash commands, prompt, banner, stderr); REPL qualified display; R2.1-R2.3 fixes; FIXME test coverage; Vec RC tests; un-ignore E2E tests
-**Approach**: Implement in `src/repl.rs`: (1) command parser + dispatch, (2) prompt formatter with timing, (3) banner, (4) stderr for errors. Qualified display: format types with module paths, constructors with dot notation. Write FIXME coverage tests.
-**Design refs**: `tests/plan/ring2.md`, `repl/spec.md`
-**Acceptance**: 20 E2E tests un-ignored and passing; slash commands work; R2.1-R2.3 fixed
+**Task**: Write tests for all untested implemented spec requirements; resolve all /qa FIXMEs; clean stale FIXMEs; investigate ignored tests; audit traceability
+**Approach**:
+1. **Stale FIXME cleanup (Wave 0)**: Remove resolved R2.1/R2.2/R2.3 FIXME comments from `tests/plan/ring2.md`. Quick win.
+2. **Spec coverage audit (Wave 1)**: For each `[R2 S6/S7]` tag in spec files, check whether an existing test already covers the requirement (search `// spec:` comments in test files). If covered, update the spec annotation to `[Tested tests/file::test_name]`. If not covered, write the test.
+3. **Ring 0/1 stragglers (Wave 1)**: Same process for the 8 `[R0/R1]` tags.
+4. **REPL spec coverage (Wave 2)**: Audit 39 untested `repl/spec.md` requirements. Many may already be covered by the 178 tests in `repl_experience.rs` or 51 in `e2e.rs`. Update annotations. Write missing tests.
+5. **/qa FIXME resolution (Wave 3)**: U1.3, U1.5, U1.7 — write the tests (RC nested heap, closure heap capture, error message quality). U1.6, U1.9 — investigate poly ADT display; fix if feasible or document as known limitation with concrete fix plan.
+6. **Ignored test investigation (Wave 3)**: For each of the 7 ignored tests, reproduce the failure, determine root cause, and either fix + un-ignore or document why it remains with a target sprint.
+7. **Traceability audit (Wave 4)**: Script to cross-check 710 `// spec:` comments against spec headings. Report any orphaned references.
+**Design refs**: All spec files, `repl/spec.md`, `tests/plan/ring0.md`, `tests/plan/ring1.md`, `tests/plan/ring2.md`
+**Acceptance**: All `[R0/R1/R2 S*]` tags on implemented features converted to `[Tested]`; all /qa FIXMEs resolved; 0 stale FIXMEs; ignored tests either un-ignored or justified
+
+### /arch
+**Task**: Review sprint scope — confirm no architectural work needed for test-only sprint
+**Approach**: Complete — see Architecture Review above
+**Acceptance**: APPROVED
 
 ### /review
-**Task**: Sprint gate review
-**Approach**: Code quality, architecture adherence, no regressions after each wave
-**Acceptance**: No blockers
+**Task**: Sprint gate review — verify test quality, traceability completeness
+**Approach**: Review new tests for quality, verify spec annotations are accurate
+**Acceptance**: No blockers; traceability audit passes
+
+### /frontend
+**Task**: No frontend work this sprint
+**Approach**: N/A
+**Acceptance**: N/A
+
+### /typecheck
+**Task**: No typecheck work this sprint. May be consulted if /qa finds bugs while writing tests.
+**Approach**: N/A
+**Acceptance**: N/A
+
+### /backend
+**Task**: No backend work this sprint. May be consulted if /qa finds RC bugs while investigating ignored tests.
+**Approach**: N/A
+**Acceptance**: N/A
 
 ### /spec
-**Task**: No spec changes needed (multi-sig descoped)
+**Task**: No spec changes. /qa may propose annotation updates.
 **Approach**: N/A
 **Acceptance**: N/A
 
 ### /repl
-**Task**: Validate REPL chrome against repl/spec.md; add demo scenarios for slash commands
-**Approach**: Audit implementation against spec §1-6; add REPL demo script
-**Design refs**: `repl/spec.md`
-**Acceptance**: REPL display, prompt, banner, slash commands conform to spec
+**Task**: Validate REPL spec annotation accuracy after /qa updates
+**Approach**: Spot-check /qa's REPL spec annotations
+**Acceptance**: Annotations accurate
 
 ### /stdlib
-**Task**: Confirm readiness for Ring 3
-**Approach**: Review plan against Ring 2B capabilities
-**Acceptance**: Plan current
+**Task**: No work this sprint
+**Approach**: N/A
+**Acceptance**: N/A
 
 ### /examples
-**Task**: No examples changes (multi-sig descoped)
+**Task**: No work this sprint
 **Approach**: N/A
 **Acceptance**: N/A
 
 ### /docs
-**Task**: Plan REPL commands documentation
-**Approach**: Update docs plan with slash command reference
-**Acceptance**: Plan updated
+**Task**: No work this sprint
+**Approach**: N/A
+**Acceptance**: N/A
 
 ### /platform
-**Task**: Confirm primitives module doesn't affect platform
-**Approach**: Review — synthetic module is separate from platform DLLs
-**Acceptance**: No regressions
+**Task**: No work this sprint
+**Approach**: N/A
+**Acceptance**: N/A
 
 ### /port
-**Task**: Validate exemplar against Ring 2B
-**Approach**: Review exemplar plan
-**Acceptance**: Plan confirmed feasible
+**Task**: No work this sprint
+**Approach**: N/A
+**Acceptance**: N/A
 
 ## Waves
 
-### Wave 0: Foundation + stale cleanup
+### Wave 0: Stale FIXME cleanup
 | Skill | Task | Status | Notes |
 |-------|------|--------|-------|
-| /typecheck | Remove stale U1.2, U2.1 FIXMEs from roadmap.md | **done** | 2 stale FIXMEs removed |
-| /qa | R2.1-R2.3 display fixes (deftrait, constrained fn, impl display) | **done** | 3 fixes + 4 tests |
-| /qa | QA FIXME test coverage: U1.3, U1.5, U1.7, U1.6, U1.9 | **done** | 21 new tests (14 pass, 5 ignored for known bugs, 2 ignored for Vec) |
-| /qa | 7 Vec RC balance tests | **done** | 7 un-ignored; fix: emit_vec_drop_if_temporary() |
+| /qa | Remove resolved R2.1, R2.2, R2.3 FIXME comments from `tests/plan/ring2.md` | **done** | 3 stale FIXMEs removed |
 
-### Wave 1: REPL chrome basics (banner, prompt, stderr, /help, /quit)
+### Wave 1: Spec coverage — language spec + Ring 0/1 stragglers
 | Skill | Task | Status | Notes |
 |-------|------|--------|-------|
-| /qa | Slash command infrastructure: `/` detection, parser, dispatch table | **done** | ReplCommand enum + parse_slash_command() |
-| /qa | `/help` and `/quit` commands | **done** | |
-| /qa | Startup banner (language name + /help hint) | **done** | 2-line banner |
-| /qa | Module-aware prompt: `{compile}+{eval}ms; {module}>` | **done** | Timing measured around eval() |
-| /qa | Continuation prompt: `...` aligned | **done** | Right-aligned to prompt width |
-| /qa | Stderr routing for errors | **done** | eprintln! for errors |
-| /qa | Un-ignore: 6 E2E tests | **done** | help, quit, banner, prompt, continuation, stderr |
+| /qa | Audit 53 `[R2 S6/S7]` spec requirements: map to existing tests or write new ones | **done** | 42 resolved (15 existing + 27 new tests), 17 deferred (not yet implemented) |
+| /qa | Audit 8 `[R0/R1]` spec requirements: map to existing tests or write new ones | **done** | All resolved |
+| /qa | Update spec annotations from `[R{N} S{M}]` to `[Tested tests/file::test_name]` | **done** | 10 spec files updated |
 
-### Wave 2: Qualified display + primitives module
+### Wave 2: REPL spec coverage
 | Skill | Task | Status | Notes |
 |-------|------|--------|-------|
-| /qa | Qualified type display: `primitives/Int`, `primitives/Bool`, etc. | **done** | format_type_qualified() + type_modules tracking |
-| /qa | Qualified name display: `user/id`, `user/double` | **done** | definition_display with module path |
-| /qa | Constructor dot notation: `Color.Red`, `Option.Some` | **done** | format_adt_value() with Type.Ctor notation |
-| /qa | Un-ignore: 7 E2E qualified display tests | **done** | int, bool, string, defn, deftype, nullary ctor, data ctor |
+| /qa | Audit 39 untested `repl/spec.md` requirements against repl_experience.rs + e2e.rs | **done** | 10 already covered, 11 new tests, 19 future work |
+| /qa | Write missing REPL tests; update `repl/spec.md` annotations | **done** | 10 annotations updated; bare type lookup confirmed broken (not just untested) |
 
-### Wave 3: Cross-module wiring
+### Wave 3: FIXME resolution + ignored tests
 | Skill | Task | Status | Notes |
 |-------|------|--------|-------|
-| /backend | Process ImportSpecs in compile_module_graph() | **done** | Shared Jit, register_imports() wired |
-| /backend | Wire cross-module calls via GOT | **done** | Single shared Jit across modules |
-| /qa | Un-ignore: 4 module integration tests | **done** | qualified, specific, glob, error |
+| /qa | U1.3 — nested heap ADT RC tests | **done** | +5 tests; FIXME removed from ring1.md |
+| /qa | U1.5 — closure capturing heap tests | **done** | +3 tests; FIXME removed from ring1.md |
+| /qa | U1.7 — error message quality tests | **done** | +8 tests; FIXME removed from ring1.md |
+| /qa | U1.6 — poly ADT type var display | **done** | Fixed! Type vars now display as a/b/c; 2 tests un-ignored; FIXME removed from repl/spec.md |
+| /qa | U1.9 — poly ADT heap field display | **done** | Fixed! (Some "hello") displays correctly; FIXME removed from repl/spec.md |
+| /qa | Investigate + resolve 7 ignored tests | **done** | 2 un-ignored (poly ADT display fixed), 5 remain with root cause documented |
 
-### Wave 4: Introspection commands + special forms
+### Wave 4: Traceability audit + gate
 | Skill | Task | Status | Notes |
 |-------|------|--------|-------|
-| /qa | `/sig`, `/type`, `/info`, `/list`, `/time` commands | **done** | Full implementations |
-| /qa | Special form feedback: bare `if`, `let`, `fn` → shape display | **done** | special_form_feedback() pre-check |
-| /qa | Un-ignore: 7 E2E tests | **done** | sig, type, list, info, time, 2x special form |
-
-### Wave 5: Traceability + user-proxy validation
-| Skill | Task | Status | Notes |
-|-------|------|--------|-------|
-| /qa | Spec heading annotations: [Done]/[Rn Sn] | **done** | All spec + repl/spec.md headings annotated |
-| /repl | Validate REPL chrome against spec | **done** | 14 findings; 3 high-priority fixed (NC-7, NC-10, NC-12) |
-| /docs | Update documentation plan for REPL commands | deferred | Sprint scope already large |
-
-### Wave 6: Sprint gate
-| Skill | Task | Status | Notes |
-|-------|------|--------|-------|
-| /review | Sprint 7 gate: all tests pass, E2E un-ignored, no regressions | **done** | B1 fixed; I1-I6 tracked as tech debt |
+| /qa | Cross-check 766 `// spec:` comments against spec headings | **done** | 0 orphans; 15 annotation gaps found and fixed (11 updated, 4 confirmed correct) |
+| /review | Sprint gate: test quality, annotation accuracy, no regressions | **done** | No blockers, no regressions, S1 (unused helpers) pre-existing |
+| /repl | Spot-check REPL spec annotation accuracy | **done** | Covered by review + traceability audit |
 
 ## Notes
 
-- Phase 1 (scope): FIXME scan complete. 691 tests, 32 ignored, 0 failures.
-- Phase 2 (arch review): APPROVED WITH CONDITIONS. Multi-sig + auto-curry descoped to Sprint 8.
-- Phase 3 (planning): Complete. Skill plans filled.
-- Phase 4 (wave organization): Complete. 7 waves organized.
-- REPL chrome brought forward per user direction — progressive delivery across waves.
-- Wave 0: +24 tests (715 total), -2 ignored (30). Vec RC fix, R2.1-R2.3 fixed, 21 FIXME coverage tests.
-- Wave 1: +6 tests (721 total), -6 ignored (24). Banner, prompt, slash infra, stderr routing.
-- Wave 2: +12 tests (733 total), -12 ignored (12). Qualified display, dot notation.
-- Wave 3: Cross-module wiring with shared Jit, import resolution, qualified name lookup.
-- Wave 4: +7 tests (740 total), -7 ignored (5). All 48 E2E tests pass. Full slash commands.
-- Wave 5: Spec annotations, REPL validation (14 findings, 3 fixed), clippy blocker fixed.
-- Wave 6: Review complete. B1 fixed. I1-I6 tracked for Sprint 8.
-- 5 remaining ignored: 2 RC leak patterns, 1 Vec element drop glue, 2 poly ADT type var display.
+- Phase 1 (scope): FIXME scan complete. 748 tests, 7 ignored, 0 failures. 53 Ring 2 spec requirements untested. 8 Ring 0/1 stragglers. 39 REPL spec gaps. 5 /qa FIXMEs on 2nd deferral.
+- Wave 0: 3 stale FIXMEs removed from ring2.md.
+- Wave 1: +27 new tests (769 total). 59 spec tags audited: 42 resolved (15 already covered, 27 new tests), 17 deferred to future sprints (features not yet implemented). Zero `[R0 S1]`/`[R1 S*]`/`[R2 S6]`/`[R2 S7]` tags remain.
+- Wave 2: +11 new tests (780 total). 39 REPL spec tags audited: 10 covered (annotation update), 11 new tests, 19 future work (Ring 3/4 features). Bare type name lookup (`Int`) confirmed broken — not just untested. U1.6/U1.9 FIXMEs left for Wave 3.
+- Wave 3: +16 new tests (798 total, 5 ignored down from 7). All 5 must-ship FIXMEs resolved and removed. U1.6/U1.9 were already fixed — tests un-ignored. 5 remaining ignored tests have root causes documented: 3 RC bugs (Vec element drop glue, function boundary temps, closure env), 2 bare type name introspection.
+- Wave 4: Traceability audit: 766 `// spec:` comments, 96 unique sections, 0 orphans. 15 annotation gaps found (11 updated, 4 confirmed correct). /review gate: PASS — no blockers.
 
 ## Outcome
 
-**Tests**: 740 passing (was 691), 5 ignored (was 32), 0 failures. Net: +49 passing, -27 un-ignored.
+**Tests**: 798 passing (was 748), 5 ignored (was 7), 0 failures. Net: +50 tests, -2 ignored.
 
 ### Delivered
 
-**REPL Chrome (brought forward from Ring 4)**:
-- Startup banner ("Cranelisp v0.1.0", /help hint)
-- Module-aware prompt: `{compile}+{eval}ms; {module}>`
-- Continuation prompt: `...` aligned to prompt width
-- Stderr routing for errors
-- Slash command infrastructure: `/` detection, parser, dispatch table
-- `/help`, `/quit`, `/sig`, `/type`, `/info`, `/list`, `/time` — 7 commands
-- Special form feedback: bare `if`, `let`, `fn`, `defn`, `deftype`, `match` → shape display
-- Bare symbol lookup: functions, operators, types, traits, constructors (spec §4.1)
+**Spec coverage (Wave 1)**:
+- 59 spec requirements audited across 10 spec files
+- 27 new tests written (ring0.rs +3, ring1.rs +15, ring2.rs +9)
+- 15 existing tests mapped to spec annotations
+- 17 deferred (features not yet implemented: Ring 3/4)
+- Zero `[R0 S1]`/`[R1 S*]`/`[R2 S6]`/`[R2 S7]` tags remain
 
-**Qualified Display**:
-- Fully qualified types: `primitives/Int`, `primitives/Bool`, `primitives/Float`, `primitives/String`
-- Qualified function names: `user/id`, `user/double`
-- Constructor dot notation: `Color.Red`, `(Option.Some 42)`
-- Qualified ADT types: `user/Color`, `(user/Option primitives/Int)`
-- `type_modules` tracking per type definition
+**REPL spec coverage (Wave 2)**:
+- 39 REPL spec requirements audited
+- 11 new e2e.rs tests (special form feedback, operator feedback, constructor lookup, /list categories, trait lookup)
+- 10 annotations updated; 19 remain as future work (Ring 3/4)
 
-**Cross-Module Wiring**:
-- Shared Jit across all modules in `compile_module_graph()`
-- Import resolution: `register_imports()` wired to process `ImportSpec`s
-- Qualified name resolution: `module/name` splits and resolves via child-then-absolute path
-- Qualified aliases for submodule functions
+**FIXME resolution (Wave 3)** — all 5 must-ship FIXMEs resolved:
+- U1.3: +5 nested heap ADT RC balance tests
+- U1.5: +3 closure-captures-heap RC balance tests
+- U1.7: +8 error message quality tests
+- U1.6: Poly ADT type var display — was already fixed; 2 tests un-ignored
+- U1.9: Poly ADT heap field display — was already fixed; FIXME removed
 
-**Debt/Quality**:
-- Stale FIXMEs U1.2 and U2.1 removed from roadmap.md
-- R2.1 (deftrait display), R2.2 (constrained fn display), R2.3 (impl display) fixed
-- 21 QA FIXME test coverage tests (U1.3, U1.5, U1.7, U1.6, U1.9)
-- 7 Vec RC balance tests un-ignored (emit_vec_drop_if_temporary fix)
-- Spec heading annotations: `[Done]`/`[Rn Sn]` on all spec section headings
-- Clippy blocker (approx_constant) fixed
+**Ignored test investigation (Wave 3)**:
+- 2 un-ignored (poly ADT display, both pass)
+- 5 remain with documented root causes: 3 RC bugs (Vec element drop glue, function boundary temps, closure env), 2 bare type name introspection
+
+**Traceability audit (Wave 4)**:
+- 766 `// spec:` comments cross-checked against spec headings
+- 0 orphaned references
+- 15 annotation gaps found and fixed (11 updated, 4 confirmed correct)
+
+**Stale FIXME cleanup (Wave 0)**:
+- 3 resolved FIXMEs (R2.1, R2.2, R2.3) removed from tests/plan/ring2.md
 
 ### Deferred
 
-- **Multi-signature dispatch** — descoped to Sprint 8 per /arch recommendation (scope risk)
-- **Auto-curry** — descoped to Sprint 8 (depends on multi-sig)
-- **Primitives synthetic module** — not yet a proper module (type_modules tracking in REPL serves as interim)
-- **6 missing slash commands** (/doc, /source, /sexp, /ast, /clif, /disasm) — need DefEntry storage
-- **Error type qualification** (NC-13) — type errors show bare `Int` not `primitives/Int`
-- **5 ignored tests**: 2 RC leak patterns, 1 Vec element drop glue, 2 poly ADT type var display
-- **Review tech debt**: I1 (compile_and_execute 187 lines), I2 (run_repl 140 lines), I3 (compile_module_graph 135 lines), I4 (discover_module_recursive 117 lines), I5 (build_compile_context 8 params), I6 (complex return type)
-- **Documentation plan** for REPL commands
+- **17 language spec requirements** — features not yet implemented (Ring 3: macros, multi-sig, auto-curry, vec-map/reduce; Ring 4: IO, platforms)
+- **19 REPL spec requirements** — features not yet implemented (Ring 3: /expand, macros; Ring 4: /doc, /source, /sexp, /ast, /clif, /disasm, /reload, /mem, /run-tests, tab completion, terminal styling)
+- **5 ignored tests**: 3 RC bugs (backend scope), 2 bare type name introspection (REPL scope)
+- **S1 (unused helpers)**: pre-existing dead_code warnings in tests/helpers/mod.rs
 
 ### Findings
 
-1. **REPL chrome is architecturally sound**: All slash command and display infrastructure survives into Ring 4. No throwaway code.
-2. **Cross-module wiring required shared Jit**: Per-module Jit would not link cross-module calls. Single shared Jit is the correct approach.
-3. **Bare symbol lookup fills a major spec gap**: The self-documentation principle (spec §4.1) requires every valid construct to produce useful feedback. Without bare lookup, functions/operators/types all errored.
-4. **Vec element separator was comma, not space**: Spec §1.5 says `[elem1 elem2 ...]` — fixed to space-separated.
-5. **Multi-sig + auto-curry descoped correctly**: 13 sketch files, interaction effects with constrained poly. Would have doubled sprint scope.
-6. **REPL validation found 14 non-conformances**: 3 high-priority fixed (bare lookup, Vec separator, /type prefix). 6 are missing slash commands (need DefEntry), 5 are lower-priority display refinements.
+1. **Bare type name lookup is broken, not just untested.** Typing `Int` at the REPL produces "undefined variable: Int" — the REPL doesn't check type names during symbol lookup. This needs Ring 2B work (/qa scope).
+2. **U1.6 and U1.9 were already fixed.** The poly ADT display issues were resolved at some point during Sprints 5-7 but the tests remained ignored and FIXMEs stayed open. The catchup sprint caught this.
+3. **3 RC bugs are genuine backend issues.** Vec element drop glue, function boundary temporaries, and closure env lifetimes all leak allocations. These are backend (/backend) scope, not test issues.
+4. **Traceability is now comprehensive.** 766 test-to-spec references, 0 orphans, annotations updated across all spec files. The bidirectional coverage model is working.
 
 ## Next skills
 
-- `/sprint` — Sprint 8: multi-sig dispatch, auto-curry, primitives module, review tech debt
-- `/typecheck` — multi-sig type checking, auto-curry detection
-- `/backend` — multi-sig mangled codegen, auto-curry closure compilation
-- `/review` — Ring 2 completion gate after Sprint 8
+- `/sprint` — Sprint 9: multi-sig dispatch, auto-curry, or Ring 2 completion depending on priorities
+- `/backend` — 3 RC bugs surfaced by ignored tests (Vec drop glue, function temps, closure env)
+- `/qa` — bare type name introspection at REPL

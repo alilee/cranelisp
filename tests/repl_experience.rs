@@ -2634,28 +2634,26 @@ fn ring2a_mixed_int_float_operators_error() {
 
 // spec: repl/spec.md §1.5 — polymorphic ADT None displays with user-friendly type var
 #[test]
-#[ignore = "Sprint 7: polymorphic ADT type vars display as internal t-numbers instead of a/b/c"]
 fn display_polymorphic_adt_none_type_var() {
     // Option.None has an unresolved type parameter. The display should
-    // show `:(Option a) None` with a user-friendly variable name.
+    // show `:(user/Option a) Option.None` with a user-friendly variable name.
     let mut session = repl_session();
     session.eval("(deftype (Option a) None (Some [:a val]))").unwrap();
     let display = repl_eval_display(&mut session, "None");
-    // Should contain "(Option a)" not "(Option t<number>)"
+    // Should contain "Option a)" with user-friendly var name (qualified: "user/Option a)")
     assert!(
-        display.contains("(Option a)"),
-        "expected '(Option a)' in display, got: {display}"
+        display.contains("Option a)"),
+        "expected 'Option a)' in display, got: {display}"
     );
     // Should not contain internal type var format like t6, t1, etc.
     assert!(
-        !display.contains("(Option t"),
+        !display.contains("Option t"),
         "display should not contain internal type var (t-number), got: {display}"
     );
 }
 
 // spec: repl/spec.md §1.5 — polymorphic enum nullary constructor display
 #[test]
-#[ignore = "Sprint 7: polymorphic ADT type vars display as internal t-numbers instead of a/b/c"]
 fn display_polymorphic_adt_nullary_constructor_name() {
     // The constructor name should appear in the display.
     let mut session = repl_session();

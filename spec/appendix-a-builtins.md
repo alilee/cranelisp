@@ -24,7 +24,7 @@ Registered in the `primitives` and `macros` synthetic modules.
 | `Sexp` | `macros` | Compiler-seeded ADT | S-expression value for macro system | [R3 S8]
 | `(SList a)` | `macros` | Compiler-seeded ADT | Cons-list for S-expression manipulation | [R3 S8]
 
-## A.3 Primitive Functions (Host-Implemented) [R2 S7]
+## A.3 Primitive Functions (Host-Implemented) [R3 S8]
 
 Primitive functions are implemented in the host language and registered in the `primitives` module. They are the low-level substrate; standard library functions and trait implementations are built on top of them.
 
@@ -87,7 +87,7 @@ Extern primitives are called via the foreign function interface.
 | `int-to-string` | `(Fn [Int] String)` | Convert integer to decimal string | [Tested tests/ring1.rs::string_int_to_string]
 | `float-to-string` | `(Fn [Float] String)` | Convert float to string | [Tested tests/ring1.rs::string_float_to_string]
 | `bool-to-string` | `(Fn [Bool] String)` | `"true"` or `"false"` | [Tested tests/ring1.rs::string_bool_to_string]
-| `string-identity` | `(Fn [String] String)` | Identity for `String` (used by Display impl) | [R2 S7]
+| `string-identity` | `(Fn [String] String)` | Identity for `String` (used by Display impl) | [Tested tests/ring1.rs::string_identity_returns_same]
 
 **String operations**:
 
@@ -110,12 +110,12 @@ Extern primitives are called via the foreign function interface.
 | `vec-set` | `(Fn [(Vec a) Int a] (Vec a))` | Return new Vec with element at index replaced | [Tested tests/ring1.rs::vec_set_element]
 | `vec-push` | `(Fn [(Vec a) a] (Vec a))` | Return new Vec with element appended | [Tested tests/ring1.rs::vec_push_appends]
 | `vec-len` | `(Fn [(Vec a)] Int)` | Number of elements | [Tested tests/ring1.rs::vec_len_three]
-| `vec-map` | `(Fn [(Fn [a] b) (Vec a)] (Vec b))` | Map function over elements | [R2 S7]
-| `vec-reduce` | `(Fn [(Fn [b a] b) b (Vec a)] b)` | Left fold over elements | [R2 S7]
+| `vec-map` | `(Fn [(Fn [a] b) (Vec a)] (Vec b))` | Map function over elements | [R3 S8]
+| `vec-reduce` | `(Fn [(Fn [b a] b) b (Vec a)] b)` | Left fold over elements | [R3 S8]
 
 `vec-set` and `vec-push` are semantically pure (return new values). The implementation MAY use copy-on-write when the reference count is 1.
 
-## A.4 Special Forms [R2 S7]
+## A.4 Special Forms [R2 S8]
 
 Special forms are keywords processed directly by the compiler. They are not functions or macros and cannot be shadowed.
 
@@ -130,7 +130,7 @@ Special forms are keywords processed directly by the compiler. They are not func
 | `if` | Conditional: `(if cond then else)` | [Tested tests/ring0.rs::comparison_operators]
 | `fn` | Lambda expression: `(fn [params] body)` | [Tested tests/ring1.rs::closure_simple_capture]
 | `match` | Pattern matching: `(match scrutinee [pat1 body1 ...])` | [Tested tests/ring1.rs::parse_int_valid]
-| `mod` / `mod-` | Submodule declaration; `mod-` is module-private | [R2 S7]
-| `import` | Name import: `(import [module [names]])` | [R2 S7]
-| `export` | Name re-export: `(export [module [names]])` | [R2 S7]
+| `mod` / `mod-` | Submodule declaration; `mod-` is module-private | [Tested tests/ring2.rs::single_file_via_run_project]
+| `import` | Name import: `(import [module [names]])` | [Tested tests/ring2.rs::import_specific_names]
+| `export` | Name re-export: `(export [module [names]])` | [Tested crates/cranelisp-frontend/src/module_extract.rs::test_export_specific]
 | `platform` | Platform DLL declaration (entry module only): `(platform stdio)` | [R4 S9]

@@ -176,7 +176,7 @@ After both passes complete, all function types are generalized into schemes.
 
 This two-pass approach ensures that any function can reference any other function defined in the same scope, regardless of textual order. Recursive and mutually recursive definitions are handled naturally.
 
-### 3.5.3 Inference Rules
+### 3.5.3 Inference Rules [Tested]
 
 The following typing judgments define how types are assigned to each expression form. The notation uses:
 
@@ -366,7 +366,7 @@ Constraints propagate through three mechanisms:
 - **Instantiation**: When a constrained scheme is instantiated, constraints are copied to the fresh type variables.
 - **Generalization**: Constraints on variables that are being quantified are preserved in the resulting scheme.
 
-### 3.6.3 Monomorphisation
+### 3.6.3 Monomorphisation [Tested tests/ring2::constrained_add_int, tests/ring2::constrained_add_float, tests/ring2::constrained_add_both_types]
 
 Constrained functions are compiled by **monomorphisation** at call sites. Each distinct combination of concrete type arguments generates a specialized version of the function:
 

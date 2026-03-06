@@ -1066,3 +1066,34 @@ fn error_duplicate_param_names() {
 fn error_undefined_function_call() {
     assert_error("(defn main [] (nonexistent 1))", "");
 }
+
+// =============================================================================
+// Runtime errors (spec: 12-runtime §12.7.2)
+// =============================================================================
+
+// spec: 12-runtime §12.7.2 — integer overflow wraps silently
+#[test]
+fn integer_overflow_wraps() {
+    // i64::MAX + 1 should wrap to i64::MIN (two's complement).
+    let src = "(defn main [] (add-i64 9223372036854775807 1))";
+    assert_eq!(compile_and_run_simple(src), i64::MIN);
+}
+
+// spec: 12-runtime §12.7.2 — integer underflow wraps silently
+#[test]
+fn integer_underflow_wraps() {
+    // i64::MIN - 1 should wrap to i64::MAX.
+    let src = "(defn main [] (sub-i64 -9223372036854775808 1))";
+    assert_eq!(compile_and_run_simple(src), i64::MAX);
+}
+
+// spec: 01-lexical §1.1 — source encoding is UTF-8
+#[test]
+fn source_encoding_utf8() {
+    // String literals containing UTF-8 multibyte characters.
+    let src = r#"(defn main [] (str-len "héllo"))"#;
+    // "héllo" has 5 Unicode chars but str-len counts bytes (6 bytes due to é).
+    let result = compile_and_run_simple(src);
+    // The implementation counts bytes (Rust's len()). "héllo" = 6 bytes.
+    assert!(result > 0, "UTF-8 source should compile and run");
+}

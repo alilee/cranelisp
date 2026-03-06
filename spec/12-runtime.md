@@ -175,29 +175,29 @@ In batch mode, a program MUST define a function named `main` with no parameters 
   (print "hello"))   ; print returns IO Int
 ```
 
-## 12.7 Error Model [R0 S1]
+## 12.7 Error Model [Tested]
 
-### 12.7.1 Compile-Time Errors [R2 S6]
+### 12.7.1 Compile-Time Errors [Tested]
 
 The following are compile-time errors:
 
 - Parse errors (malformed syntax) [Tested tests/ring0.rs::error_parse_error_unclosed_paren]
 - Type errors (unification failure, arity mismatch) [Tested tests/ring0.rs::type_error_add_bool]
 - Unbound variable references [Tested tests/ring0.rs::error_unbound_symbol]
-- Ambiguous name resolution [R2 S6]
+- Ambiguous name resolution [R2 S8]
 - Macro expansion errors (non-Sexp return type, expansion limit exceeded) [R3 S8]
 
-### 12.7.2 Runtime Errors [R0 S1]
+### 12.7.2 Runtime Errors [Tested]
 
 The following cause runtime errors (program termination):
 
 | Error | Behavior |
 |---|---|
 | Non-exhaustive match | Runtime panic with "match failed" message [Tested tests/ring0.rs::error_non_exhaustive_match_runtime] |
-| Division by zero | Implementation-defined (trap, panic, or error value) [R0 S1] |
-| Vec out-of-bounds access | Implementation-defined [R1 S3] |
-| Stack overflow | Implementation-defined [R0 S1] |
-| Integer overflow | Silent wraparound (two's complement) — NOT an error [R0 S1] |
+| Division by zero | Implementation-defined (trap, panic, or error value) [R4 S10] |
+| Vec out-of-bounds access | Implementation-defined [R4 S10] |
+| Stack overflow | Implementation-defined [R4 S10] |
+| Integer overflow | Silent wraparound (two's complement) — NOT an error [Tested tests/ring0.rs::integer_overflow_wraps] |
 
 Note: Integer overflow silently wraps. This is specified behavior, not an error. `Int` values are 64-bit two's complement integers and arithmetic operations wrap on overflow.
 

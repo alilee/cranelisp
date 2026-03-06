@@ -16,7 +16,8 @@ Output uses the `:Type value` format — the same colon-prefixed type annotation
 
 ## 1. Display Format
 
-### 1.1 Output Categories [R2 S8]
+### 1.1 Output Categories [Tested]
+<!-- All table rows below have [Tested] annotations -->
 
 <!-- FIXME(/qa): Bare type name lookup is untested. Typing `Int` at the REPL produces
      "undefined variable: Int" instead of `:primitives/Int`. The special_form_feedback()
@@ -33,7 +34,7 @@ REPL output falls into three categories. The format mirrors Cranelisp type annot
 | Function definition | `:TypeScheme qualified-name` | `:(Fn [a] primitives/Int) user/foo` | [Tested tests/e2e::e2e_s1_3_defn_shows_qualified_name] |
 | Type definition | `:qualified/TypeName` | `:user/Color` | [Tested tests/e2e::e2e_s1_1_bare_type_user_defined] |
 | Symbol lookup | `:TypeScheme qualified-name` | `:(Fn [a] a) user/id` | [Tested tests/e2e::e2e_s4_1_bare_symbol_lookup] |
-| Constructor lookup | `:QualifiedType Type.Constructor` | `:user/Color user/Color.Red` | [R2 S8] |
+| Constructor lookup | `:QualifiedType Type.Constructor` | `:user/Color user/Color.Red` | [Tested tests/e2e::e2e_s1_1_constructor_lookup] |
 | Special form lookup | `:signature name` | `:(Fn [primitives/Bool a a] a) if` | [Tested tests/e2e::e2e_s4_2_special_form_feedback] |
 
 ### 1.2 Expression Results [Tested]
@@ -60,16 +61,7 @@ Examples:
 **Ring 0**: `primitives/Int`, `primitives/Bool`, `primitives/Float`, nullary ADT constructors, non-capturing function values.
 **Ring 1**: `primitives/String`, data ADT constructors, closures, `Vec`, `List`.
 
-<!-- FIXME(/qa): U1.6 — Polymorphic ADT type variables display as internal names (e.g. t1)
-     instead of source-level names from deftype (e.g. a). REPL shows :(Option t1) None instead
-     of :(Option a) None. format_result_value should normalize type vars to match source-level
-     names from TypeDefInfo. Source: /docs. Severity: important. -->
 
-<!-- FIXME(/qa): U1.9 — Polymorphic ADT fields with heap types display raw pointers instead of
-     formatted values. (Some "hello") shows (Some 40383875776) instead of (Some "hello").
-     format_adt_heap_value reads field types from TypeDefInfo as Type::Var(a) — needs to build
-     substitution map from type_params to type_args before formatting fields. Source: /repl.
-     Severity: important. -->
 **Ring 4**: `IO` (trampoline executes; inner value displayed as `:primitives/IO inner_value`).
 
 ### 1.3 Definition Results [Tested]
@@ -146,7 +138,7 @@ Polymorphic type schemes MUST display quantified variables as consecutive lowerc
 :(Fn [:core.numerics/Num a :a] a) core.numerics/+
 ```
 
-### 1.5 Value Display
+### 1.5 Value Display [R3 S8]
 
 Values are runtime results and have no module scope. They are displayed bare.
 
@@ -212,7 +204,7 @@ This enables:
 
 Slash commands provide introspection and navigation. All commands start with `/` and are NOT expressions — they are REPL-only features.
 
-### 3.1 Command Inventory
+### 3.1 Command Inventory [R2 S8]
 
 | Command | Aliases | Description | Ring | Test |
 |---|---|---|---|---|
@@ -250,15 +242,16 @@ Available commands:
 Commands not yet available (due to ring) SHOULD be omitted or marked as unavailable.
 
 ### 3.3 `/list` Categories [R2 S8]
+<!-- Section-level stays R2 S8 because Modules and Imports categories are not yet implemented -->
 
 `/list` MUST organize symbols into categories. Names MUST be fully qualified.
 
 | Category | Contents | Ring | Test |
 |---|---|---|---|
 | Types | User-defined types (`deftype`) | 0 | [Tested tests/e2e::e2e_s3_3_list] |
-| Special forms | `if`, `let`, `fn`, `defn`, `deftype`, `match` | 0 | [R2 S8] |
+| Special forms | `if`, `let`, `fn`, `defn`, `deftype`, `match` | 0 | [Tested tests/e2e::e2e_s3_3_list_special_forms] |
 | Functions | User-defined functions | 0 | [Tested tests/e2e::e2e_s3_3_list] |
-| Traits | Trait declarations | 2 | [R2 S8] |
+| Traits | Trait declarations | 2 | [Tested tests/e2e::e2e_s3_3_list_traits] |
 | Macros | Macro definitions | 3 | [R3 S9] |
 | Modules | Declared submodules | 2 | [R2 S8] |
 | Imports | Imported names | 2 | [R2 S8] |
@@ -281,18 +274,18 @@ For overloaded functions, all variants MUST be listed. For constrained functions
 
 Every valid language construct entered at the REPL MUST produce useful feedback. This is the **self-documentation principle** from the project's design principles. All output reinforces the language syntax.
 
-### 4.1 Bare Symbol Lookup
+### 4.1 Bare Symbol Lookup [R2 S8]
 
 Entering a symbol name without arguments MUST produce its type and fully-qualified name:
 
 | Symbol kind | Response | Test |
 |---|---|---|
 | Function | `:TypeScheme module/name` | [Tested tests/e2e::e2e_s4_1_bare_symbol_lookup] |
-| Constructor | `:QualifiedType module/Type.Ctor` | [R2 S8] |
+| Constructor | `:QualifiedType module/Type.Ctor` | [Tested tests/e2e::e2e_s1_1_constructor_lookup] |
 | Type | Type definition display | [R2 S8 — tests/e2e::e2e_s1_1_bare_type_int IGNORED] |
 | Special form | `:signature name` | [Tested tests/e2e::e2e_s4_2_special_form_feedback] |
 | Macro | Clause signatures | [R3 S9] |
-| Trait | Method signatures | [R2 S8] |
+| Trait | Method signatures | [Tested tests/e2e::e2e_s4_1_bare_trait_lookup] |
 
 If the symbol has a docstring (per spec §5.2), the **first line** of the docstring SHOULD be appended as a comment after the type display:
 
@@ -320,7 +313,7 @@ No valid name MUST produce an opaque error. If a name is unbound, the error MUST
 **Ring 0**: type + qualified name display.
 **Ring 2**: docstring display (requires docstrings, which depend on the module system for stored metadata).
 
-### 4.2 Special Form Feedback
+### 4.2 Special Form Feedback [R3 S9]
 
 Special form keywords (`if`, `let`, `fn`, `defn`, `deftype`, `match`, `defmacro`) entered bare MUST produce a function-like type signature, NOT an opaque error. Special forms are not regular functions but displaying their shape teaches the user their syntax.
 
@@ -328,10 +321,10 @@ Special form keywords (`if`, `let`, `fn`, `defn`, `deftype`, `match`, `defmacro`
 |---|---|
 | `if` | [Tested tests/e2e::e2e_s4_2_special_form_feedback] |
 | `let` | [Tested tests/e2e::e2e_s4_2_special_form_let] |
-| `fn` | [R2 S8] |
-| `defn` | [R2 S8] |
-| `deftype` | [R2 S8] |
-| `match` | [R2 S8] |
+| `fn` | [Tested tests/e2e::e2e_s4_2_special_form_fn] |
+| `defn` | [Tested tests/e2e::e2e_s4_2_special_form_defn] |
+| `deftype` | [Tested tests/e2e::e2e_s4_2_special_form_deftype] |
+| `match` | [Tested tests/e2e::e2e_s4_2_special_form_match] |
 | `defmacro` | [R3 S9] |
 
 Examples:
@@ -345,7 +338,7 @@ Examples:
 :(Fn [name params body] function) defn
 ```
 
-### 4.3 Operator Feedback [R2 S8]
+### 4.3 Operator Feedback [Tested tests/e2e::e2e_s4_3_operator_plus_feedback]
 
 Operators (`+`, `-`, `*`, `/`, `=`, `<`, `>`) are stdlib functions, not builtins. Entering them bare MUST display their type scheme and fully-qualified name showing their stdlib home.
 

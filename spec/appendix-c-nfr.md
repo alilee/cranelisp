@@ -193,7 +193,7 @@ All constrained polymorphic functions MUST be monomorphised at call sites. The c
 
 **Activation**: Ring 0 (type inference), Ring 2 (trait dispatch and constrained polymorphism).
 
-### C.5.2 Representation Containment [R1 S2]
+### C.5.2 Representation Containment [Tested crates/cranelisp-backend/src/heap.rs]
 
 For each heap-allocated type (String, Vec, ADT, Closure), knowledge of the runtime representation MUST be confined to at most three locations:
 

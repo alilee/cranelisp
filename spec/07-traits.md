@@ -1,4 +1,4 @@
-# 7. Traits [R2 S7]
+# 7. Traits [R3 S9]
 
 This section defines the trait system of Cranelisp -- the mechanism for ad-hoc polymorphism. Traits declare method signatures parameterized over a type (or type constructor). Implementations provide concrete method bodies for specific types. All trait method calls are resolved at compile time via static dispatch.
 
@@ -73,7 +73,7 @@ A trait MAY declare multiple methods. An implementation of the trait MUST provid
   (/ "Divide two values" [self self] self))
 ```
 
-### 7.1.5 Default Method Implementations
+### 7.1.5 Default Method Implementations [Tested tests/ring2::default_method_gt_int, tests/ring2::repl_default_neq, tests/ring2::repl_default_ge, tests/ring2::repl_default_le]
 
 A method signature MAY include a default body. Default methods use named parameters (not type keywords) and a trailing body expression:
 
@@ -181,7 +181,7 @@ An implementation MUST validate that the impl target's type parameter count matc
 
 Primitive types (`Int`, `Bool`, `String`, `Float`) MUST be rejected as HKT impl targets.
 
-## 7.3 Trait Implementation [R2 S7]
+## 7.3 Trait Implementation [Tested tests/ring2.rs::trait_impl_concrete_type, tests/ring2.rs::user_trait_simple, tests/ring2.rs::user_trait_multiple_impls]
 
 The `impl` form provides method bodies for a trait applied to a specific type.
 
@@ -197,7 +197,7 @@ constraint   = ':' trait_name
 
 There are three forms of trait implementation.
 
-### 7.3.1 Concrete Implementation
+### 7.3.1 Concrete Implementation [Tested tests/ring2::user_trait_simple, tests/ring2::user_trait_adt, tests/ring2::user_trait_multiple_impls, tests/ring2::repl_user_trait]
 
 The simplest form targets a specific concrete type.
 
@@ -719,7 +719,7 @@ cranelisp> fmap
 Functor.fmap :: (Fn [(Fn [a] b) (:Functor f a)] (f b))
 ```
 
-## 7.11 Scope and Visibility [R2 S7]
+## 7.11 Scope and Visibility [Tested tests/ring2.rs::trait_method_accessible_across_modules]
 
 Trait declarations and implementations participate in the module system (see section 8).
 

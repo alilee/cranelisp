@@ -359,7 +359,7 @@ fn e2e_s4_2_special_form_let() {
 
 // spec: repl/spec.md §1.1 — bare primitive type name produces output
 #[test]
-#[ignore = "repl/spec.md §1.1 — Ring 2B: bare type name 'Int' not found in user module"]
+#[ignore = "REPL treats bare 'Int' as variable lookup, gets 'undefined variable: Int' — needs type-name introspection for primitive types in user module"]
 fn e2e_s1_1_bare_type_int() {
     let o = run_repl("Int\n", "s1_1_int");
     assert_success(&o);
@@ -376,7 +376,7 @@ fn e2e_s1_1_bare_type_int() {
 
 // spec: repl/spec.md §1.1 — bare primitive type Bool produces output
 #[test]
-#[ignore = "repl/spec.md §1.1 — Ring 2B: bare type name 'Bool' not found in user module"]
+#[ignore = "REPL treats bare 'Bool' as variable lookup, gets 'undefined variable: Bool' — needs type-name introspection for primitive types in user module"]
 fn e2e_s1_1_bare_type_bool() {
     let o = run_repl("Bool\n", "s1_1_bool");
     assert_success(&o);
@@ -786,6 +786,193 @@ fn e2e_session_ring1_adt_workflow() {
         .filter(|l| l.contains("Option.None") && !l.contains("Some"))
         .collect();
     assert!(!none_results.is_empty(), "expected Option.None in: {r:?}");
+}
+
+// ===========================================================================
+// §4.2  Special form feedback — fn, defn, deftype, match
+// ===========================================================================
+
+// spec: repl/spec.md §4.2 — special form self-documentation (fn)
+#[test]
+fn e2e_s4_2_special_form_fn() {
+    let o = run_repl("fn\n", "s4_2_fn");
+    let s = stdout_str(&o);
+    assert!(
+        !s.contains("error:"),
+        "bare 'fn' should produce a signature, not an error\n---\n{s}"
+    );
+    assert!(
+        s.contains("Fn") && s.contains("fn"),
+        "expected signature-like output for 'fn'\n---\n{s}"
+    );
+}
+
+// spec: repl/spec.md §4.2 — special form self-documentation (defn)
+#[test]
+fn e2e_s4_2_special_form_defn() {
+    let o = run_repl("defn\n", "s4_2_defn");
+    let s = stdout_str(&o);
+    assert!(
+        !s.contains("error:"),
+        "bare 'defn' should produce a signature, not an error\n---\n{s}"
+    );
+    assert!(
+        s.contains("Fn") && s.contains("defn"),
+        "expected signature-like output for 'defn'\n---\n{s}"
+    );
+}
+
+// spec: repl/spec.md §4.2 — special form self-documentation (deftype)
+#[test]
+fn e2e_s4_2_special_form_deftype() {
+    let o = run_repl("deftype\n", "s4_2_deftype");
+    let s = stdout_str(&o);
+    assert!(
+        !s.contains("error:"),
+        "bare 'deftype' should produce a signature, not an error\n---\n{s}"
+    );
+    assert!(
+        s.contains("Fn") && s.contains("deftype"),
+        "expected signature-like output for 'deftype'\n---\n{s}"
+    );
+}
+
+// spec: repl/spec.md §4.2 — special form self-documentation (match)
+#[test]
+fn e2e_s4_2_special_form_match() {
+    let o = run_repl("match\n", "s4_2_match");
+    let s = stdout_str(&o);
+    assert!(
+        !s.contains("error:"),
+        "bare 'match' should produce a signature, not an error\n---\n{s}"
+    );
+    assert!(
+        s.contains("Fn") && s.contains("match"),
+        "expected signature-like output for 'match'\n---\n{s}"
+    );
+}
+
+// ===========================================================================
+// §4.3  Operator feedback
+// ===========================================================================
+
+// spec: repl/spec.md §4.3 — bare + operator shows type
+#[test]
+fn e2e_s4_3_operator_plus_feedback() {
+    let o = run_repl("+\n", "s4_3_plus");
+    let s = stdout_str(&o);
+    assert!(
+        !s.contains("error:"),
+        "bare '+' should produce type info, not an error\n---\n{s}"
+    );
+    assert!(
+        s.contains("Fn") && s.contains("+"),
+        "expected type signature for '+'\n---\n{s}"
+    );
+}
+
+// spec: repl/spec.md §4.3 — bare = operator shows type
+#[test]
+fn e2e_s4_3_operator_eq_feedback() {
+    let o = run_repl("=\n", "s4_3_eq");
+    let s = stdout_str(&o);
+    assert!(
+        !s.contains("error:"),
+        "bare '=' should produce type info, not an error\n---\n{s}"
+    );
+    assert!(
+        s.contains("Fn") && s.contains("Bool"),
+        "expected type signature for '=' showing Bool return\n---\n{s}"
+    );
+}
+
+// spec: repl/spec.md §4.3 — bare < operator shows type
+#[test]
+fn e2e_s4_3_operator_lt_feedback() {
+    let o = run_repl("<\n", "s4_3_lt");
+    let s = stdout_str(&o);
+    assert!(
+        !s.contains("error:"),
+        "bare '<' should produce type info, not an error\n---\n{s}"
+    );
+    assert!(
+        s.contains("Fn") && s.contains("Bool"),
+        "expected type signature for '<' showing Bool return\n---\n{s}"
+    );
+}
+
+// ===========================================================================
+// §1.1  Constructor lookup
+// ===========================================================================
+
+// spec: repl/spec.md §1.1 — bare constructor lookup shows type and dot notation
+#[test]
+fn e2e_s1_1_constructor_lookup() {
+    let o = run_repl(
+        "(deftype Color Red Green Blue)\nRed\n",
+        "s1_1_ctor",
+    );
+    let s = stdout_str(&o);
+    assert!(
+        s.contains("Color.Red"),
+        "bare constructor 'Red' should show Color.Red\n---\n{s}"
+    );
+    assert!(
+        s.contains("user/Color"),
+        "constructor lookup should show qualified type\n---\n{s}"
+    );
+}
+
+// ===========================================================================
+// §3.3  /list categories: Special forms, Traits
+// ===========================================================================
+
+// spec: repl/spec.md §3.3 — /list shows Special forms category
+#[test]
+fn e2e_s3_3_list_special_forms() {
+    let o = run_repl("/list\n", "s3_3_specials");
+    let s = stdout_str(&o);
+    assert!(
+        s.contains("Special forms"),
+        "expected 'Special forms' category in /list\n---\n{s}"
+    );
+    assert!(
+        s.contains("if") && s.contains("let") && s.contains("defn"),
+        "expected special forms in listing\n---\n{s}"
+    );
+}
+
+// spec: repl/spec.md §3.3 — /list shows Traits category
+#[test]
+fn e2e_s3_3_list_traits() {
+    let o = run_repl("/list\n", "s3_3_traits");
+    let s = stdout_str(&o);
+    assert!(
+        s.contains("Traits"),
+        "expected 'Traits' category in /list\n---\n{s}"
+    );
+}
+
+// ===========================================================================
+// §4.1  Bare trait lookup
+// ===========================================================================
+
+// spec: repl/spec.md §4.1 — bare trait name shows trait info
+#[test]
+fn e2e_s4_1_bare_trait_lookup() {
+    let o = run_repl(
+        "(deftrait (Sizeable a) (size [a] Int))\nSizeable\n",
+        "s4_1_trait",
+    );
+    let s = stdout_str(&o);
+    assert!(
+        s.contains("Sizeable"),
+        "bare trait name should show trait info\n---\n{s}"
+    );
+    assert!(
+        !s.contains("error:"),
+        "bare trait name should not error\n---\n{s}"
+    );
 }
 
 // ===========================================================================

@@ -75,7 +75,7 @@ E |- "" => "" : String
 "line1\nline2"  ; => a string containing a newline
 ```
 
-## 4.2 Variable Reference [R2 S7]
+## 4.2 Variable Reference [Tested tests/ring0.rs::nested_let, tests/ring0.rs::error_unbound_symbol, tests/ring2.rs::variable_reference_lexical_scope]
 
 A variable reference looks up a name in the current lexical environment. Resolution follows the scope chain: local bindings (from `let`, `fn` parameters, `match` pattern bindings) are searched first, then module scope. An unbound name is a compile-time error.
 
@@ -118,7 +118,7 @@ Some        ; => constructor function (fn [val] ...)
 (Some 42)   ; => (Some 42) : (Option Int)
 ```
 
-### 4.2.2 Qualified and Dotted References [R2 S7]
+### 4.2.2 Qualified and Dotted References [Tested tests/ring2.rs::qualified_reference_to_module, tests/ring2.rs::module_qualified_name_resolution]
 
 Qualified references (`module/name`) and dotted references (`Type.Constructor`, `Trait.method`) resolve through the module system. The resolution rules are defined in [section 8: Modules](08-modules.md).
 
