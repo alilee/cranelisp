@@ -168,6 +168,7 @@ pub struct ConstrainedFn {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MacroClauseInfo {
     pub params: Vec<MacroParam>,
+    pub rest_param: Option<Symbol>,
     pub source: Option<String>,
 }
 

@@ -409,21 +409,33 @@ impl TypeChecker {
     }
 
     /// Look up a constructor's type scheme from the symbol table.
+    ///
+    /// Supports module-qualified names (e.g. `macros/SCons`): strips the module
+    /// prefix for the `constructor_to_type` registry lookup, then uses the full
+    /// qualified name for scheme resolution (which already handles `/`).
     fn lookup_constructor_scheme(
         &self,
         name: &Symbol,
         span: Span,
     ) -> Result<Scheme, CranelispError> {
+        // For qualified names like "macros/SCons", use the bare name for
+        // the constructor_to_type lookup (which stores unqualified names).
+        let bare_name: &str = if let Some(slash_pos) = name.as_ref().find('/') {
+            &name.as_ref()[slash_pos + 1..]
+        } else {
+            name.as_ref()
+        };
+
         // Verify the constructor exists in the type registry
         let _type_name = self
             .type_defs
-            .constructor_type(name)
+            .constructor_type(bare_name)
             .ok_or_else(|| CranelispError::TypeError {
                 message: format!("unknown constructor in pattern: {name}"),
                 span,
             })?;
 
-        // Get the scheme from the symbol table
+        // Get the scheme from the symbol table (handles qualified names via lookup)
         self.lookup(name).ok_or_else(|| CranelispError::TypeError {
             message: format!("constructor {name} has no type scheme"),
             span,

@@ -91,6 +91,11 @@ Each sprint, `/repl` extends this library:
 
 ## No Prelude Bootstrapping
 
+<!-- FIXME(/repl): Decision 17 — when compiler-seeded traits are removed from builtins.rs,
+     first-session.demo lines 3-4 (bare `+` and `/sig +`) will fail because Num won't
+     exist. Either remove those lines or add inline `(deftrait (Num a) ...)` + `(impl Num Int ...)`
+     before them. Same applies to any other demo that uses operators without defining traits. -->
+
 Until the stdlib and prelude are loaded at startup (Ring 3+), the REPL starts with only the `primitives` module — named primitives like `add-i64`, builtin types, and special forms. **No traits, no operators (`+`, `-`, etc.), no standard library functions.**
 
 Demos that want to use operators must build up their own traits inline. This is actually a good teaching sequence — it shows the user how the language is constructed from primitives:

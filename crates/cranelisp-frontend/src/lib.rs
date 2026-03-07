@@ -1,8 +1,9 @@
 //! cranelisp-frontend: reader (source -> Sexp) and AST builder (Sexp -> Expr/TopLevel).
 //!
-//! Two-phase pipeline:
+//! Three-phase pipeline:
 //!   1. Reader: source text -> Vec<Sexp>
-//!   2. AST builder: Vec<Sexp> -> Vec<TopLevel> (batch) or ReplInput (REPL)
+//!   2. Macro expansion: quasiquote desugaring, defmacro parsing (Ring 3)
+//!   3. AST builder: Vec<Sexp> -> Vec<TopLevel> (batch) or ReplInput (REPL)
 //!
 //! The macro expander trait is defined in cranelisp-types for dependency inversion.
 //! Ring 0 uses NoOpExpander (no macros).
@@ -10,10 +11,17 @@
 pub mod reader;
 pub mod ast_builder;
 pub mod module_extract;
+pub mod quasiquote;
+pub mod defmacro;
 
 use cranelisp_types::{CranelispError, MacroExpander, Program, ReplInput, Sexp};
 
 pub use module_extract::extract_module_declarations;
+pub use quasiquote::expand_quasiquotes;
+pub use defmacro::{
+    is_defmacro, is_begin, flatten_begin, parse_defmacro, parse_macro_params,
+    synthesize_macro_clause_defn, DefmacroInfo, MacroClause,
+};
 
 /// Parse source text into a sequence of S-expressions.
 #[must_use = "parsing produces a result that should be checked for errors"]

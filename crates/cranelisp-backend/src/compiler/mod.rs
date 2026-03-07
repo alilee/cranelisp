@@ -29,6 +29,19 @@ use crate::heap;
 /// Named constant for the user trap code used when match exhaustion occurs.
 pub const MATCH_EXHAUSTION_TRAP: u8 = 1;
 
+/// Strip module prefix from a possibly-qualified constructor name.
+///
+/// E.g. `"macros/SCons"` -> `"SCons"`, `"Some"` -> `"Some"`.
+/// Constructor registries store unqualified names, so callers of
+/// `constructor_to_type` and `type_defs` use this before lookup.
+pub(crate) fn bare_ctor_name(name: &Symbol) -> &str {
+    if let Some(slash_pos) = name.as_ref().find('/') {
+        &name.as_ref()[slash_pos + 1..]
+    } else {
+        name.as_ref()
+    }
+}
+
 /// Cross-module GOT mapping: `(defining_module, function_name)` -> `(got_base_ptr, slot_index)`.
 pub type CrossModuleGot = HashMap<(ModuleFullPath, Symbol), (i64, usize)>;
 

@@ -8,7 +8,7 @@ use cranelift_module::Module;
 
 use cranelisp_types::{CranelispError, Span, Symbol};
 
-use super::FnCompiler;
+use super::{FnCompiler, bare_ctor_name};
 
 impl<'a> FnCompiler<'a> {
     // --- Literal codegen ---
@@ -127,10 +127,14 @@ impl<'a> FnCompiler<'a> {
     }
 
     /// Look up the tag value for a nullary constructor.
+    ///
+    /// Supports module-qualified names (e.g. `macros/SNil`): strips the module
+    /// prefix for registry lookups which store unqualified names.
     pub(crate) fn nullary_constructor_tag(&self, name: &Symbol) -> Option<usize> {
-        let type_name = self.ctx.constructor_to_type.get(name)?;
+        let bare = bare_ctor_name(name);
+        let type_name = self.ctx.constructor_to_type.get(bare)?;
         let type_def = self.ctx.type_defs.get(type_name)?;
-        let ctor = type_def.constructors.iter().find(|c| c.name == *name)?;
+        let ctor = type_def.constructors.iter().find(|c| c.name.as_ref() == bare)?;
         if ctor.fields.is_empty() {
             Some(ctor.tag)
         } else {
@@ -139,13 +143,17 @@ impl<'a> FnCompiler<'a> {
     }
 
     /// Look up the tag and field count for a data constructor.
+    ///
+    /// Supports module-qualified names (e.g. `macros/SexpInt`): strips the module
+    /// prefix for registry lookups which store unqualified names.
     pub(crate) fn data_constructor_info(
         &self,
         name: &Symbol,
     ) -> Option<(usize, usize)> {
-        let type_name = self.ctx.constructor_to_type.get(name)?;
+        let bare = bare_ctor_name(name);
+        let type_name = self.ctx.constructor_to_type.get(bare)?;
         let type_def = self.ctx.type_defs.get(type_name)?;
-        let ctor = type_def.constructors.iter().find(|c| c.name == *name)?;
+        let ctor = type_def.constructors.iter().find(|c| c.name.as_ref() == bare)?;
         if ctor.fields.is_empty() {
             None
         } else {

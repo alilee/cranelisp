@@ -127,6 +127,27 @@ tests/
 - **E2E tests invoke the binary.** No Rust API calls. No internal state inspection.
 - **Each ring is a regression gate.** All prior-ring tests at all layers must pass before advancing.
 - **No test is silently dropped.** Every prototype test gets a disposition in the ring plans.
+- **Negative tests verify absence, not just presence.** For any MUST requirement that constrains what appears, write a companion test that verifies wrong things are absent. See below.
+
+## Negative Test Convention
+
+Positive tests verify correct behavior. Negative tests verify **incorrect behavior does not occur**. Both are required for full coverage — a test suite that only checks "the right thing appears" will pass green while the system also does wrong things.
+
+**Naming**: Negative test names use `_neg_` or `_not_` to distinguish them from positive tests:
+```rust
+// Positive: /list shows user-defined functions
+fn e2e_s3_3_list() { ... }
+// Negative: /list does NOT show primitives in user module
+fn e2e_s3_3_list_neg_no_primitives_in_user() { ... }
+```
+
+**Spec annotation**: When negative tests exist alongside positive tests, the spec annotation upgrades from `[Tested ...]` to `[Tested+Neg ...]`. This makes coverage gaps visible at the spec level.
+
+**Priority areas for negative tests:**
+- **Module boundaries**: Symbols from `primitives` must NOT appear as `user/` entries
+- **Category boundaries**: `/list` categories must NOT contain items from other categories
+- **Error boundaries**: Valid input must NOT produce errors; invalid input must NOT succeed silently
+- **Display format**: Output must NOT contain unqualified names where qualified names are required
 
 ## Build Commands
 

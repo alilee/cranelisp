@@ -23,6 +23,10 @@ pub enum CranelispError {
         file: Option<PathBuf>,
         span: Span,
     },
+    MacroError {
+        message: String,
+        span: Span,
+    },
 }
 
 impl CranelispError {
@@ -31,7 +35,8 @@ impl CranelispError {
             CranelispError::ParseError { span, .. }
             | CranelispError::TypeError { span, .. }
             | CranelispError::CodegenError { span, .. }
-            | CranelispError::ModuleError { span, .. } => *span,
+            | CranelispError::ModuleError { span, .. }
+            | CranelispError::MacroError { span, .. } => *span,
         }
     }
 
@@ -40,7 +45,8 @@ impl CranelispError {
             CranelispError::ParseError { message, .. }
             | CranelispError::TypeError { message, .. }
             | CranelispError::CodegenError { message, .. }
-            | CranelispError::ModuleError { message, .. } => message,
+            | CranelispError::ModuleError { message, .. }
+            | CranelispError::MacroError { message, .. } => message,
         }
     }
 }
@@ -67,6 +73,9 @@ impl std::fmt::Display for CranelispError {
                 } else {
                     write!(f, "module error at {span}: {message}")
                 }
+            }
+            CranelispError::MacroError { message, span } => {
+                write!(f, "macro error at {span}: {message}")
             }
         }
     }

@@ -760,6 +760,32 @@ Analysis of which exemplar patterns depend on macros vs IO, and what becomes imp
 
 **Ring 3 unlocks 5 of 7 Cranelisp modules** (grid, solver, html, form, plus all test submodules). Only `main.cl` and the platform DLL require Ring 4. The exemplar's pure/IO split means that approximately 85% of the Cranelisp code (~630 of ~740 estimated lines) can be implemented and tested at Ring 3. The critical macro dependencies are `derive`, `cond`, `->`, and `str` — all of which are in the prelude macro set and have no IO dependency.
 
+## Ring 3 Macro Usage Map (Sprint 10 Refinement)
+
+Module-level macro dependency matrix, refined from the Sprint 9 readiness assessment.
+
+| Module | `cond` | `case` | `->` / `->>` | `str` | `vec` | `when` | `list` | `def`/`const` | `do`/`bind!` |
+|--------|--------|--------|---------------|-------|-------|--------|--------|---------------|--------------|
+| `grid.cl` | x | | | | x | | | x | |
+| `solver.cl` | x | | x | | | x | | | |
+| `html.cl` | x | | x | x | | | | x | |
+| `form.cl` | x | x | x | | | | | | |
+| `main.cl` | | | | | | | | | x |
+| `**/test.cl` | | | | | x | | | x | |
+
+**Implementable after Sprint 11 prelude macros** (pure computation, no IO):
+- `grid.cl` — ADTs, `cond`, `vec` literal, `def` constants. Needs `char-at`/`str-split` from stdlib.
+- `solver.cl` — core algorithm uses `cond`, `->`, `when`. Fully self-contained once macros land.
+- `html.cl` — heaviest macro user (`str`, `->`, `cond`, `def`). String-building ergonomics depend on `str` macro.
+- `form.cl` — `cond`/`case`/`->` for parsing logic. Needs string primitives from stdlib.
+- `**/test.cl` — all four test submodules use `run-tests`, `vec` literals, `def` for test data.
+
+**Requires Ring 4 IO** (~15% of Cranelisp code, as identified in Sprint 9):
+- `main.cl` (~60 lines) — `do`/`bind!` for IO sequencing, `(platform web)` declaration.
+- `platforms/web/` — Rust DLL, entirely Ring 4.
+
+**Sprint 11 /port task**: Implement `grid.cl` and `solver.cl` first (lowest stdlib dependency, highest algorithm value), then `html.cl` and `form.cl` (heavier stdlib/string dependency). All four test submodules follow their parent module. Defer `main.cl` and platform DLL to Ring 4 sprint.
+
 ---
 
 ## Next Skills

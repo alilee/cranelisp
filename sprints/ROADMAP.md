@@ -11,7 +11,7 @@ Delivery progress for the Cranelisp reimplementation. For technical scope per ri
 | C | Ring 0 — Core: expressions, types, functions, let, if, match | COMPLETE |
 | D | Ring 1 — Heap: strings, ADTs, closures, reference counting | COMPLETE |
 | E | Ring 2 — Abstraction: traits, modules, constrained polymorphism | COMPLETE |
-| F | Ring 3 — Meta: macros, derive, standard library | — |
+| F | Ring 3 — Meta: macros, derive, standard library | Sprint 10 |
 | G | Ring 4 — Effects: IO, platforms, parallelism, REPL, caching | — |
 | H | Release Compiler: Tier 2 backend | — |
 
@@ -29,3 +29,4 @@ Delivery progress for the Cranelisp reimplementation. For technical scope per ri
 | 7 | Ring 2B completion — cross-module wiring, REPL qualified display, REPL chrome: 748 tests, 0 failures | COMPLETE | `sprints/archive/sprint-7.md` |
 | 8 | QA catchup — test coverage for Rings 0-2B, traceability audit: 798 tests, 5 ignored, 0 failures | COMPLETE | `sprints/archive/sprint-8.md` |
 | 9 | Ring 2 gate + Ring 3 prep — RC fixes, Decision 17, macro architecture, function decomposition, float display: 807 tests, 0 failures, 0 ignored, 0 clippy, Ring 2 PASS | COMPLETE | `sprints/archive/sprint-9.md` |
+| 10 | Ring 3 macro infrastructure (Phases 1-4) — synthetic macros module, marshal, quasiquote, defmacro, CraneliftExpander: 1446 tests, 0 failures, 0 clippy | COMPLETE | `sprints/archive/sprint-10.md` |

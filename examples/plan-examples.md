@@ -968,6 +968,63 @@ The planned Ring 3 learning examples (21-Macros, 22-Threading, 23-Derive) are **
 
 Ring 3 examples (21-23) are self-contained and do not depend on IO. They can proceed as soon as the macro pipeline lands. Ring 4 examples (24-27) depend on the IO model and platform system. No sketch example can be ported verbatim before Ring 4 due to universal `(platform stdio)` dependency, but the learning-sequence examples are designed as REPL sessions and avoid this constraint.
 
+## 11. Ring 3 Learning Examples (Sprint 11 Plan)
+
+Sprint 11 wires macros into the batch/REPL pipelines and delivers prelude macros. Once that lands, four new REPL-first examples can be built. All are pure computation -- no IO required.
+
+### Example 21: `macro-basics.cl`
+
+**Demonstrates**: `defmacro`, quasiquote (`` ` ``), unquote (`~`), `/expand` REPL command.
+
+Defines simple single-clause macros (`when`, `unless`, `my-and`) using quasiquote templates. Shows how macro expansion works by inspecting output with `/expand`. Illustrates the `Sexp` return-type constraint and the distinction between compile-time transformation and runtime evaluation.
+
+- **Macro features**: `defmacro`, quasiquote, unquote, single-clause
+- **Prelude macros used**: none (all user-defined)
+- **REPL-only**: yes -- no IO needed; expressions evaluate and display results
+
+### Example 22: `multi-clause-macro.cl`
+
+**Demonstrates**: Multi-clause `defmacro` with arity dispatch, rest params (`&`), recursive macro expansion.
+
+Builds a `log` macro with 1-arg and 2-arg forms (arity dispatch), then a recursive `my-list` macro that uses a base clause `([] ...)` and a step clause `([x & rest] ...)` to construct a List from arguments. Shows clause ordering and how the first matching clause wins.
+
+- **Macro features**: multi-clause `defmacro`, `& rest` params, recursive expansion, clause dispatch
+- **Prelude macros used**: none (all user-defined; uses `Cons`/`Nil` constructors for list building)
+- **REPL-only**: yes -- all results observable via REPL display
+
+### Example 23: `prelude-macros.cl`
+
+**Demonstrates**: Using prelude-provided macros: `list`, `cond`, `case`, `->`, `->>`, `vec`.
+
+No user-defined macros -- this example exercises the macros that ship with the prelude. Shows data construction (`list`, `vec`), multi-way conditionals (`cond`, `case`), and data-pipeline composition (`->`, `->>`). Uses `/expand` to reveal the generated code behind each macro call.
+
+- **Macro features**: prelude macro usage (not definition)
+- **Prelude macros used**: `list`, `cond`, `case`, `->`, `->>`, `vec`
+- **REPL-only**: yes -- all results observable via REPL display
+
+### Example 24: `custom-control-flow.cl`
+
+**Demonstrates**: Building a control-flow abstraction with macros -- a `for-each` macro that iterates a function over a list, and a `with-default` macro that unwraps an Option or substitutes a default.
+
+Shows how macros enable user-defined syntax that looks like built-in control flow. Uses bracket destructuring (`[name expr]` parameter patterns) and splicing unquote (`~@`). Combines user macros with prelude macros (`list`, `cond`) to build higher-level abstractions.
+
+- **Macro features**: bracket destructuring params, splicing unquote (`~@`), composing macros
+- **Prelude macros used**: `list`, `cond`
+- **REPL-only**: yes -- all results observable via REPL display
+
+### Numbering Impact
+
+These four examples shift the existing Ring 4 plan forward:
+
+| Old # | New # | File |
+|-------|-------|------|
+| 24 | 25 | `hello-world.cl` |
+| 25 | 26 | `io-sequencing.cl` |
+| 26 | 27 | `interactive-io.cl` |
+| 27 | 28 | `testing/` |
+
+The `derive` example (previously outlined as example 23 in section 6) is absorbed into `prelude-macros.cl` or deferred to a dedicated example if `derive` infrastructure lands in Sprint 11.
+
 ---
 
 ## Next skills

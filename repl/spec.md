@@ -220,6 +220,7 @@ Slash commands provide introspection and navigation. All commands start with `/`
 | `/time <expr>` | — | Evaluate with timing breakdown | 0 | [Tested tests/e2e::e2e_s3_1_time] |
 | `/expand <form>` | `/e` | Macro-expand a form | 3 | [R3 S9] |
 | `/mod [name]` | — | Switch module namespace | 2 | [R4 S10] |
+| `/imports` | — | Show imports in current module with source | 2 | [R3 S11] |
 | `/reload [name]` | `/r` | Reload module from file | 2 | [R4 S10] |
 | `/mem [expr]` | `/m` | Show allocation statistics | 1 | [R4 S10] |
 | `/run-tests` | — | Discover and run test functions | 4 | [R4 S10] |
@@ -252,11 +253,82 @@ Commands not yet available (due to ring) SHOULD be omitted or marked as unavaila
 | Traits | Trait declarations | 2 | [Tested tests/e2e::e2e_s3_3_list_traits] |
 | Macros | Macro definitions | 3 | [R3 S9] |
 | Modules | Declared submodules | 2 | [R4 S10] |
-| Imports | Imported names | 2 | [R4 S10] |
+| Imports | Count of imported names by source module | 2 | [R3 S11] |
 
-An optional filter argument narrows the listing (substring match on name).
+**`/list` scope rule:** `/list` MUST show only names **defined in** the current module. Imported names appear in the Imports category as a summary (count per source module), not individually mixed into other categories. Primitives (`add-i64`, `eq-i64`, etc.) are defined in the `primitives` module — they MUST NOT appear in `/list` when the current module is `user`. Trait methods (`+`, `show`, etc.) are either user-defined (appear under Functions) or imported (appear under Imports).
 
-### 3.4 `/info` Output [Tested tests/e2e::e2e_s3_4_info]
+**`/list` Imports category format:**
+
+```
+Imports:
+  primitives (3 names)
+  math (2 names: foo, bar)
+```
+
+The Imports category shows which modules have been imported and how many names came from each. For small imports (≤5 names), the names are listed inline. For glob imports or large counts, only the count is shown. This gives the user a quick overview; `/imports` provides full detail.
+
+**`/list` negative requirements** (what MUST NOT appear):
+
+- Functions category MUST NOT contain names from other modules (primitives, imports)
+- Types category MUST NOT contain types from other modules unless imported
+- No category should contain compiler-internal symbols not in the spec
+- In a fresh `user` session with no definitions, `/list` MUST show only Special forms (no Functions, no Types, no Traits — until the user defines them or loads a prelude)
+
+**Filter argument:** `/list <text>` performs a case-insensitive substring match on symbol names across all categories, showing matching symbols with full type info (like `/sig`). `/list <module-name>` (when the argument matches a loaded module name) shows that module's public definitions. `/list <module-name> <text>` combines both: searches within a specific module.
+
+**Large category display:** When a category contains 7 or more names, the display SHOULD use the following layout algorithm:
+
+1. **Operators first, then mandatory break.** Non-alphabetic symbols (`+`, `-`, `*`, `!=`, etc.) are displayed first, wrapping at 6 per line. After all operators, a new line starts — operators never share a line with alphabetic names.
+
+2. **Letter groups pack onto rows, breaking early to stay together.** Names are grouped by first letter (case-insensitive, sorted). Before adding a letter group to the current row, check: would `current_count + group_size > 6`? If so, flush the current row first. This ensures a letter group either fits entirely on the current row alongside previous groups, or starts a new row — it never splits across a row boundary (unless the group itself has 7+ names).
+
+3. **Hard wrap at 6 within large groups.** If a single letter group has more than 6 names, it wraps at 6 per line within itself.
+
+Categories with fewer than 7 names appear on a single line after the category label.
+
+```
+Fns:
+  + - * / < > <= >= !=
+  abs add ceil concat
+  double drop
+  empty? even? filter floor fold
+  get
+  ...
+```
+
+In this example: operators get their own line(s). Then A-group (abs, add) and C-group (ceil, concat) fit together on one row (4 items). D-group (double, drop) would push to 6+ so starts a new row. E-group (empty?, even?) and F-group (filter, floor, fold) fit together (5 items). G-group (get) starts a new row since adding it to the previous row would exceed 6.
+
+### 3.4 `/imports` — Import Detail [R3 S11]
+
+`/imports` MUST show all imports active in the current module, grouped by source module, with the individual names listed. This is the detailed companion to `/list`'s summary Imports category.
+
+```
+user> /imports
+From primitives:
+  add-i64 :: (Fn [primitives/Int primitives/Int] primitives/Int)
+  eq-i64  :: (Fn [primitives/Int primitives/Int] primitives/Bool)
+  sub-i64 :: (Fn [primitives/Int primitives/Int] primitives/Int)
+From math:
+  bar :: (Fn [primitives/Int primitives/Int] primitives/Int)
+  foo :: (Fn [primitives/Int] primitives/Int)
+```
+
+**Format:** Each imported name shows its type signature using fully-qualified type names (per §1.4). Names are grouped by **immediate source module** (the module named in the `import` form, not the ultimate origin) and sorted alphabetically within each group. Source modules are sorted alphabetically.
+
+**Re-export provenance:** When the user writes `(import [prelude [*]])` and the prelude re-exports `+` from `core.numerics`, `/imports` shows `From prelude:` — because that is the module the user imported from. The user's mental model is "I imported from prelude." The ultimate origin is available via `/info +` (which shows the defining module per §3.5).
+
+**Glob imports:** When `(import [mod [*]])` was used, `/imports` MUST show the individual names that were imported (the expansion of `*` at the time the import was evaluated), not just `*`.
+
+**Implicit prelude import (Ring 3+):** The compiler injects an implicit `(import [prelude [*]])` for all non-prelude modules (spec §8.8.1). This implicit import IS visible in `/imports` — the user needs to discover what the prelude provides. `/imports prelude` filters to show only names from that source module (exact module name match).
+
+**No imports:** In a fresh session with no explicit `(import ...)` and no prelude, `/imports` MUST show nothing (empty output, silent re-prompt). The `primitives` module's implicit availability is via the module resolution fallback, NOT via import — so it does not appear in `/imports` unless the user explicitly writes `(import [primitives [add-i64]])`.
+
+**Filter argument:** `/imports <module-name>` filters to a single source module (exact match on the module name). This is useful when prelude imports are large — `/imports prelude` shows only prelude imports. `/imports` with no argument shows all imports.
+
+**Error cases:**
+- `/imports nonexistent` — no imports from that module; silent re-prompt (not an error)
+
+### 3.5 `/info` Output [Tested tests/e2e::e2e_s3_4_info]
 
 `/info <name>` MUST display multi-line details using the `:Type name` format:
 
@@ -495,12 +567,31 @@ user> math/foo
 ```
 Without importing, any symbol can be accessed via its qualified path.
 
-**Scenario 5: `/list` shows module symbols**
+**Scenario 5: `/list` shows module symbols only**
 ```
 math> /list
-Fns: foo
+Functions:
+  math/foo
 ```
-The `/list` command in a module shows only that module's definitions, not the global scope.
+The `/list` command in a module shows only that module's own definitions, not imported or global symbols. After switching back to `user` and importing:
+```
+user> (import [math [foo]])
+user> /list
+Special forms:
+  defn, deftype, ...
+Imports:
+  math (1 name)
+```
+The imported `foo` appears under Imports (summary), not under Functions.
+
+**Scenario 5b: `/imports` shows detail**
+```
+user> /imports
+From math:
+  foo :: (Fn [primitives/Int] primitives/Int)
+```
+The imported `foo` appears with its full type signature. The source module is `math` (the module named in the `import` form).
+The `/imports` command shows exactly what was imported and from where. The user can see the type signature of each imported name.
 
 **Scenario 6: `/mod` shows current module**
 ```
@@ -569,3 +660,139 @@ The showcase player (`repl/showcase`) MAY apply the same colour palette during r
 | Eval < 50ms (simple) | yes | | | | |
 | Fully-qualified names | all output | | | | |
 | `Type.Constructor` notation | yes | | | | |
+
+## 11. Ring 3 REPL Requirements [R3 S11]
+
+Ring 3 introduces the macro system. The REPL MUST integrate macros into all existing introspection and display mechanisms so that macros are first-class citizens of the self-documentation experience.
+
+### 11.1 `/expand` Command [R3 S11]
+
+The `/expand` (alias `/e`) command MUST accept a single S-expression form, perform recursive macro expansion to a fixed point (per spec Section 9.3.3), and display the fully expanded S-expression WITHOUT evaluating it.
+
+```
+user> /expand (double-list 1 2)
+(Cons 1 (Cons 1 (Cons 2 (Cons 2 Nil))))
+user> /expand (cond (> x 0) "pos" (= x 0) "zero" "neg")
+(if (> x 0) "pos" (if (= x 0) "zero" "neg"))
+user> /expand (+ 1 2)
+(+ 1 2)
+```
+
+If the input form contains no macro calls, `/expand` MUST display it unchanged. If expansion fails (e.g., arity mismatch, expansion limit exceeded), `/expand` MUST display the error without corrupting session state.
+
+The output MUST be a valid S-expression string. Fully-qualified constructor names generated by quasiquote expansion (e.g., `macros/SexpSym`) SHOULD be simplified to bare names when they are unambiguous in context.
+
+### 11.2 Macro Introspection [R3 S11]
+
+Macros MUST appear in existing REPL introspection commands alongside functions and types.
+
+#### 11.2.1 `/list` — Macros Category [R3 S11]
+
+`/list` MUST include a "Macros" category listing all macros defined or imported in the current module. Macros MUST be listed by their unqualified name within the current module scope.
+
+```
+user> /list
+Macros: double-list, when
+Fns: ...
+Types: ...
+```
+
+#### 11.2.2 `/info` — Macro Details [R3 S11]
+
+`/info <name>` for a macro MUST display:
+- The macro's classification as `macro`
+- The number of clauses (if multi-clause)
+- The docstring (if present)
+
+```
+user> /info cond
+cond :: macro (2 clauses)
+  "Multi-way conditional with mandatory default"
+user> /info when
+when :: macro
+```
+
+#### 11.2.3 `/sig` — Macro Signature [R3 S11]
+
+`/sig <name>` for a macro MUST display the parameter signature of each clause, using `& rest` syntax for variadic parameters and bracket notation for bracket destructuring parameters.
+
+```
+user> /sig cond
+cond :: macro
+  [x]
+  [x body & rest]
+user> /sig bind!
+bind! :: macro
+  [[name expr & bindings] body]
+```
+
+For single-clause macros, the clause signature MAY be displayed on the same line:
+
+```
+user> /sig when
+when :: macro [cond body]
+```
+
+#### 11.2.4 `/doc` — Macro Docstring [R3 S11]
+
+`/doc <name>` for a macro MUST display the macro's docstring. If the macro has no docstring, `/doc` MUST display a message indicating none is available.
+
+```
+user> /doc list
+list: "Construct a list from elements"
+user> /doc my-macro
+my-macro: no docstring
+```
+
+### 11.3 `defmacro` Display [R3 S11]
+
+When the user defines a macro at the REPL, the display MUST confirm the definition using the format:
+
+```
+name :: macro
+```
+
+For multi-clause macros, the clause count SHOULD be shown:
+
+```
+name :: macro (N clauses)
+```
+
+Examples:
+
+```
+user> (defmacro double [x] `(+ ~x ~x))
+double :: macro
+user> (defmacro cond ([x] x) ([x body & rest] `(if ~x ~body (cond ~@rest))))
+cond :: macro (2 clauses)
+```
+
+This mirrors the definition display pattern established for functions (Section 1.3) and types, keeping the REPL output self-documenting.
+
+### 11.4 Bare Macro Lookup [R3 S11]
+
+Entering a macro name as a bare symbol (without arguments) MUST produce its clause signatures, consistent with the self-documentation contract (Section 4.1). Zero-argument macros are an exception: they expand immediately via bare-symbol expansion (spec Section 9.5) rather than displaying introspection.
+
+```
+user> double
+double :: macro [x]
+user> cond
+cond :: macro
+  [x]
+  [x body & rest]
+```
+
+### 11.5 Sprint 11 Test Scenarios [R3 S11]
+
+The following test scenarios validate the Ring 3 REPL macro experience. Each MUST have a corresponding test in `tests/`.
+
+| # | Scenario | Expected Behavior | Spec Reference |
+|---|---|---|---|
+| 1 | `/expand` with a single macro | Displays expanded form without evaluation | §11.1, §9.3.2 |
+| 2 | `/expand` with nested macros | Displays fully expanded form (recursive to fixed point) | §11.1, §9.3.3 |
+| 3 | `/expand` with no macro calls | Displays input unchanged | §11.1 |
+| 4 | `/list` after `defmacro` | Macro appears under "Macros" category | §11.2.1, §3.3 |
+| 5 | `/info` on a multi-clause macro | Shows clause count and docstring | §11.2.2 |
+| 6 | `/sig` on a variadic macro | Shows parameter signature with `& rest` | §11.2.3 |
+| 7 | `defmacro` display at REPL | Shows `name :: macro` confirmation | §11.3, §9.13 |
+| 8 | Bare macro name lookup | Shows clause signatures (non-zero-arg macros) | §11.4, §4.1 |

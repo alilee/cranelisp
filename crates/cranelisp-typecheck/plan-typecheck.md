@@ -475,8 +475,6 @@ cranelisp-typecheck/
 
 **`lib.rs`** -- Public API surface. Re-exports `TypeChecker`, `check_program`, and any types needed by the binary crate. Minimal code.
 
-<!-- FIXME(/typecheck): Document the borrow-splitting strategy for TypeChecker methods. When infer_apply calls unify (mutating subst) while also needing to record in expr_types, how are &mut self borrow conflicts avoided? The prototype hit this in resolve_one_method (audit HIGH-3: clone-to-avoid-borrow). Recommend: unify() and occurs_check() take explicit &mut Subst parameters rather than going through &mut self, keeping expr_types borrowable independently. State the chosen pattern so Ring 0 code is structured correctly from the start. -->
-
 **`checker.rs`** -- The `TypeChecker` struct definition. Constructor (`new()`), scope stack operations (`push_scope`, `pop_scope`, `bind_local`, `lookup`), `fresh_var`, `fresh_var_id`, `record_expr_type`. This module owns the struct but delegates work to other modules via `impl TypeChecker` blocks.
 
 Ring 0 `TypeChecker` fields:

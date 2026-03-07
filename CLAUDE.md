@@ -134,14 +134,18 @@ Spec headings and table rows use inline annotations to show coverage status:
 
 | Annotation | Meaning |
 |---|---|
-| `[Tested tests/file::test_name]` | Requirement is tested by the named test |
+| `[Tested tests/file::test_name]` | Positive path tested by the named test |
+| `[Tested+Neg tests/file::test_name]` | Both positive and negative paths tested (see below) |
 | `[Tested]` | Section-level: all sub-requirements have test annotations |
+| `[Tested+Neg]` | Section-level: all sub-requirements have positive AND negative coverage |
 | `[R{N} S{M}]` | Not yet tested; targeted for Ring N, Sprint M |
 | `[R{N} S{M} — tests/file::test_name IGNORED]` | Test exists but is `#[ignore]`'d (known gap) |
 
+**Positive vs negative coverage.** `[Tested]` means the happy path works — the feature produces correct output for valid input. `[Tested+Neg]` means the test suite also verifies **what must NOT happen**: wrong items are absent, invalid input produces the right error, boundary violations are rejected. A spec section that says "MUST organize symbols into categories" needs positive tests (categories appear) AND negative tests (non-category items are absent, wrong-module items don't leak through). `[Tested]` without `+Neg` is a coverage gap — the feature works but nobody has verified it doesn't also do wrong things.
+
 **Fine-grained annotations** go on individual table rows and MUST requirements — each row should have its own `[Tested ...]` or `[R{N} S{M}]` tag. This makes it possible to see at a glance which specific behaviors are covered and which are not.
 
-**Section-level annotations** are summaries. A section heading says `[Tested]` only when ALL its sub-requirements have test annotations. If any child is untested, the section heading carries the lowest coverage level of its children (e.g., `[R2 S8]` if any child targets Ring 2 Sprint 8).
+**Section-level annotations** are summaries. A section heading says `[Tested]` only when ALL its sub-requirements have test annotations. A section heading says `[Tested+Neg]` only when ALL its sub-requirements have both positive and negative annotations. If any child is untested, the section heading carries the lowest coverage level of its children (e.g., `[R2 S8]` if any child targets Ring 2 Sprint 8).
 
 **Test-side tracing**: Every test function has a `// spec:` comment naming the spec section it validates:
 ```rust

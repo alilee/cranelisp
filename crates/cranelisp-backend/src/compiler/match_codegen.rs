@@ -11,7 +11,7 @@ use cranelisp_types::{CranelispError, Expr, HeapCategory, MatchArm, Pattern, Spa
 
 use crate::heap::{self, HeapAdt};
 
-use super::{FnCompiler, MatchContext, MATCH_EXHAUSTION_TRAP, collect_var_ids_from_type, substitute_type_inline};
+use super::{FnCompiler, MatchContext, MATCH_EXHAUSTION_TRAP, bare_ctor_name, collect_var_ids_from_type, substitute_type_inline};
 
 impl<'a> FnCompiler<'a> {
     // --- Match expression ---
@@ -180,11 +180,19 @@ impl<'a> FnCompiler<'a> {
         body: &Expr,
         span: Span,
     ) -> Result<(), CranelispError> {
+        // For module-qualified names like "macros/SCons", strip the module
+        // prefix for registry lookups (which store unqualified names).
+        let bare_name: &str = if let Some(slash_pos) = name.as_ref().find('/') {
+            &name.as_ref()[slash_pos + 1..]
+        } else {
+            name.as_ref()
+        };
+
         // Look up constructor info.
         let type_name =
             self.ctx
                 .constructor_to_type
-                .get(name)
+                .get(bare_name)
                 .ok_or_else(|| CranelispError::CodegenError {
                     message: format!("unknown constructor: {name}"),
                     span,
@@ -200,7 +208,7 @@ impl<'a> FnCompiler<'a> {
         let ctor = type_def
             .constructors
             .iter()
-            .find(|c| c.name == *name)
+            .find(|c| c.name.as_ref() == bare_name)
             .ok_or_else(|| CranelispError::CodegenError {
                 message: format!("constructor '{name}' not found in type '{type_name}'"),
                 span,
@@ -448,8 +456,11 @@ impl<'a> FnCompiler<'a> {
     ) -> Vec<cranelisp_types::Type> {
         use cranelisp_types::Type;
 
+        // Strip module prefix for registry lookups (which store bare names).
+        let bare = bare_ctor_name(ctor_name);
+
         // Look up the parent type name for this constructor.
-        let type_name = match self.ctx.constructor_to_type.get(ctor_name) {
+        let type_name = match self.ctx.constructor_to_type.get(bare) {
             Some(tn) => tn,
             None => return Vec::new(),
         };
@@ -461,7 +472,7 @@ impl<'a> FnCompiler<'a> {
         };
 
         // Find the constructor info.
-        let ctor = match type_def.constructors.iter().find(|c| c.name == *ctor_name) {
+        let ctor = match type_def.constructors.iter().find(|c| c.name.as_ref() == bare) {
             Some(c) => c,
             None => return Vec::new(),
         };

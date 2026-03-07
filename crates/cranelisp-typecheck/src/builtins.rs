@@ -2,12 +2,19 @@
 //!
 //! Ring 0: 19 monomorphic named primitives (add-i64, add-f64, eq-i64, ..., not).
 //! Ring 1: 8 monomorphic string/conversion externs + 4 polymorphic Vec externs.
-//! Ring 2 adds trait-dispatched Num.+ etc. on top of these.
 //!
-//! Core traits (Num, Eq, Ord, Display) are registered via the normal
-//! `register_trait_decl()` / `register_trait_impl()` pipeline — the same
-//! paths used for user-defined traits. This eliminates the interim
-//! `register_builtin_impl()` shortcut (Decision 17).
+//! <!-- FIXME(/typecheck): Decision 17 — remove register_core_trait_decls(),
+//!      register_core_trait_impls(), and import_primitives_into_user(). Only genuinely
+//!      primitive things should be compiler-seeded (types, named primitives, special forms,
+//!      synthetic modules). Traits (Num, Eq, Ord, Display) and their impls are ordinary
+//!      Cranelisp expressible via deftrait/impl — they belong in the prelude (Ring 3), not
+//!      in builtins. Until the prelude exists, tests/examples/demos that need operators
+//!      define the traits themselves inline. See design/arch/CLAUDE.md Decision 17. -->
+//!
+//! Primitives are registered as ordinary symbol table entries with monomorphic
+//! schemes and `DefKind::Primitive { primitive_kind: PrimitiveKind::Inline }`.
+//! Vec primitives use polymorphic schemes with quantified type variables.
+//! No `builtin_operators` HashSet is needed — the DefKind is sufficient for lookup.
 //!
 //! Primitives are registered as ordinary symbol table entries with monomorphic
 //! schemes and `DefKind::Primitive { primitive_kind: PrimitiveKind::Inline }`.
@@ -17,9 +24,10 @@
 use std::collections::HashMap;
 
 use cranelisp_types::{
-    ring0_primitives, ring1_primitives, DefKind, Defn, Expr, JitSymbol, ModuleEntry,
-    ModuleFullPath, PrimitiveKind, Scheme, Sexp, Span, Symbol, TraitDecl, TraitImpl,
-    TraitMethodSig, TraitName, Type, TypeExpr, TypeName, Visibility,
+    ring0_primitives, ring1_primitives, ConstructorDef, DefKind, Defn, Expr, FieldDef,
+    JitSymbol, ModuleEntry, ModuleFullPath, PrimitiveKind, Scheme, Sexp, Span, Symbol,
+    TraitDecl, TraitImpl, TraitMethodSig, TraitName, Type, TypeDefInfo, TypeExpr, TypeName,
+    Visibility,
 };
 
 use crate::checker::TypeChecker;
@@ -27,7 +35,7 @@ use crate::scheme::mono;
 
 impl TypeChecker {
     /// Register all builtins: Ring 0 + Ring 1 primitives, special forms,
-    /// Ring 2 core traits and trait impls.
+    /// Ring 2 core traits and trait impls, Ring 3 synthetic macros module.
     pub(crate) fn register_builtins(&mut self) {
         self.register_primitives();
         self.register_ring1_primitives();
@@ -46,6 +54,10 @@ impl TypeChecker {
         // Import all trait-related entries from `primitives` into `user` so they
         // are visible at the REPL and propagated to new modules via set_current_module.
         self.import_primitives_into_user(&primitives_path);
+
+        // Ring 3: Seed synthetic `macros` module with SList and Sexp ADTs.
+        // Must come after primitives registration (references Int, Bool, Float, String).
+        self.register_macros_module();
 
         // Clear transient state accumulated during core trait impl type-checking.
         // register_trait_impl() type-checks method bodies (e.g. `(add-i64 x y)`),
@@ -244,6 +256,147 @@ impl TypeChecker {
                     }),
                 },
             );
+        }
+    }
+
+    /// Register the synthetic `macros` module with SList and Sexp ADTs.
+    ///
+    /// The `macros` module is compiler-seeded (like `primitives`) and contains
+    /// the S-expression types used by the macro system (spec §9.1):
+    ///
+    /// ```clojure
+    /// (deftype (SList a) SNil (SCons [:a shead :(SList a) stail]))
+    /// (deftype Sexp
+    ///   (SexpInt [:Int sval])
+    ///   (SexpFloat [:Float sval])
+    ///   (SexpBool [:Bool sval])
+    ///   (SexpStr [:String sval])
+    ///   (SexpSym [:String sname])
+    ///   (SexpList [:(SList Sexp) sitems])
+    ///   (SexpBracket [:(SList Sexp) sitems]))
+    /// ```
+    ///
+    /// These are NOT auto-imported into `user`. Access is via qualified names
+    /// (`macros/SexpSym`, `macros/SCons`, etc.) or explicit import.
+    fn register_macros_module(&mut self) {
+        // Switch to the synthetic `macros` module.
+        let saved_module = self.current_module_path().clone();
+        let macros_path = ModuleFullPath::from("macros");
+        self.set_current_module(macros_path);
+
+        self.register_slist_type();
+        self.register_sexp_type();
+
+        // Restore the original module context.
+        self.set_current_module(saved_module);
+    }
+
+    /// Register `(deftype (SList a) SNil (SCons [:a shead :(SList a) stail]))`.
+    fn register_slist_type(&mut self) {
+        // Pre-seed SList in type_defs so SCons's self-referential stail field resolves.
+        self.type_defs.type_defs.insert(
+            TypeName::from("SList"),
+            TypeDefInfo {
+                name: TypeName::from("SList"),
+                type_params: vec![Symbol::from("a")],
+                constructors: vec![],
+                docstring: None,
+            },
+        );
+
+        let slist_ctors = vec![
+            // SNil: nullary constructor (tag 0)
+            ConstructorDef {
+                name: Symbol::from("SNil"),
+                docstring: None,
+                fields: vec![],
+                span: Span::SYNTHETIC,
+            },
+            // SCons: data constructor (tag 1) — shead: :a, stail: :(SList a)
+            ConstructorDef {
+                name: Symbol::from("SCons"),
+                docstring: None,
+                fields: vec![
+                    FieldDef {
+                        name: Symbol::from("shead"),
+                        type_expr: TypeExpr::TypeVar(Symbol::from("a")),
+                    },
+                    FieldDef {
+                        name: Symbol::from("stail"),
+                        type_expr: TypeExpr::Applied(
+                            TypeName::from("SList"),
+                            vec![TypeExpr::TypeVar(Symbol::from("a"))],
+                        ),
+                    },
+                ],
+                span: Span::SYNTHETIC,
+            },
+        ];
+
+        self.register_type_def(
+            &TypeName::from("SList"),
+            &None,
+            &[Symbol::from("a")],
+            &slist_ctors,
+            Visibility::Public,
+            Span::SYNTHETIC,
+        )
+        .unwrap_or_else(|e| {
+            unreachable!("invariant: SList type registration failed: {e}")
+        });
+    }
+
+    /// Register the Sexp type with 7 data constructors (SexpInt through SexpBracket).
+    fn register_sexp_type(&mut self) {
+        // Pre-seed Sexp so SexpList/SexpBracket's :(SList Sexp) fields resolve.
+        self.type_defs.type_defs.insert(
+            TypeName::from("Sexp"),
+            TypeDefInfo {
+                name: TypeName::from("Sexp"),
+                type_params: vec![],
+                constructors: vec![],
+                docstring: None,
+            },
+        );
+
+        let slist_sexp = TypeExpr::Applied(
+            TypeName::from("SList"),
+            vec![TypeExpr::Named(TypeName::from("Sexp"))],
+        );
+
+        let sexp_ctors = vec![
+            Self::sexp_ctor("SexpInt", "sval", TypeExpr::Named(TypeName::from("Int"))),
+            Self::sexp_ctor("SexpFloat", "sval", TypeExpr::Named(TypeName::from("Float"))),
+            Self::sexp_ctor("SexpBool", "sval", TypeExpr::Named(TypeName::from("Bool"))),
+            Self::sexp_ctor("SexpStr", "sval", TypeExpr::Named(TypeName::from("String"))),
+            Self::sexp_ctor("SexpSym", "sname", TypeExpr::Named(TypeName::from("String"))),
+            Self::sexp_ctor("SexpList", "sitems", slist_sexp.clone()),
+            Self::sexp_ctor("SexpBracket", "sitems", slist_sexp),
+        ];
+
+        self.register_type_def(
+            &TypeName::from("Sexp"),
+            &None,
+            &[],
+            &sexp_ctors,
+            Visibility::Public,
+            Span::SYNTHETIC,
+        )
+        .unwrap_or_else(|e| {
+            unreachable!("invariant: Sexp type registration failed: {e}")
+        });
+    }
+
+    /// Build a single-field Sexp constructor definition.
+    fn sexp_ctor(name: &str, field: &str, type_expr: TypeExpr) -> ConstructorDef {
+        ConstructorDef {
+            name: Symbol::from(name),
+            docstring: None,
+            fields: vec![FieldDef {
+                name: Symbol::from(field),
+                type_expr,
+            }],
+            span: Span::SYNTHETIC,
         }
     }
 
@@ -908,6 +1061,244 @@ mod tests {
             tc.trait_registry.method_to_trait.get(&Symbol::from("show"))
                 == Some(&TraitName::from("Display")),
             "show should map to Display trait"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Synthetic macros module tests (Ring 3, spec §9.1)
+    // -----------------------------------------------------------------------
+
+    // spec: 09-macros §9.1 — macros module exists after initialization
+    #[test]
+    fn test_macros_module_exists() {
+        let tc = TypeChecker::new();
+        let macros_path = ModuleFullPath::from("macros");
+        assert!(
+            tc.modules.get(&macros_path).is_some(),
+            "macros module should exist after TypeChecker initialization"
+        );
+    }
+
+    // spec: 09-macros §9.1.1 — SList type registered in macros module
+    #[test]
+    fn test_slist_type_registered() {
+        let tc = TypeChecker::new();
+        let info = tc.type_defs.get(&TypeName::from("SList"));
+        assert!(info.is_some(), "SList type should be registered");
+        let info = info.unwrap();
+        assert_eq!(info.type_params.len(), 1, "SList has 1 type parameter");
+        assert_eq!(info.type_params[0].as_ref(), "a");
+        assert_eq!(info.constructors.len(), 2, "SList has 2 constructors: SNil, SCons");
+    }
+
+    // spec: 09-macros §9.1.1 — SNil is nullary constructor (tag 0)
+    #[test]
+    fn test_snil_is_nullary() {
+        let tc = TypeChecker::new();
+        let macros_path = ModuleFullPath::from("macros");
+        let macros_table = tc.modules.get(&macros_path).unwrap();
+        if let Some(ModuleEntry::Constructor { info, scheme, .. }) = macros_table.get("SNil") {
+            assert_eq!(info.tag, 0, "SNil should be tag 0");
+            assert!(info.fields.is_empty(), "SNil should have no fields");
+            assert_eq!(scheme.vars.len(), 1, "SNil should have 1 quantified var (polymorphic)");
+            // SNil :: forall [a]. (SList a)
+            match &scheme.ty {
+                Type::ADT(name, args) => {
+                    assert_eq!(name.as_ref(), "SList");
+                    assert_eq!(args.len(), 1);
+                    assert!(matches!(args[0], Type::Var(_)));
+                }
+                _ => panic!("SNil should have ADT type, got {:?}", scheme.ty),
+            }
+        } else {
+            panic!("SNil should be a Constructor entry in macros module");
+        }
+    }
+
+    // spec: 09-macros §9.1.1 — SCons constructor: (Fn [a (SList a)] (SList a))
+    #[test]
+    fn test_scons_constructor_type() {
+        let tc = TypeChecker::new();
+        let macros_path = ModuleFullPath::from("macros");
+        let macros_table = tc.modules.get(&macros_path).unwrap();
+        if let Some(ModuleEntry::Constructor { info, scheme, .. }) = macros_table.get("SCons") {
+            assert_eq!(info.tag, 1, "SCons should be tag 1");
+            assert_eq!(info.fields.len(), 2, "SCons has 2 fields: shead, stail");
+            assert_eq!(info.fields[0].name.as_ref(), "shead");
+            assert_eq!(info.fields[1].name.as_ref(), "stail");
+            assert_eq!(scheme.vars.len(), 1, "SCons should have 1 quantified var");
+            // SCons :: forall [a]. (Fn [a (SList a)] (SList a))
+            match &scheme.ty {
+                Type::Fn(params, ret) => {
+                    assert_eq!(params.len(), 2);
+                    // First param: a (type var)
+                    assert!(matches!(params[0], Type::Var(_)), "first param should be type var");
+                    // Second param: (SList a)
+                    match &params[1] {
+                        Type::ADT(name, args) => {
+                            assert_eq!(name.as_ref(), "SList");
+                            assert_eq!(args.len(), 1);
+                            // SList's type arg should be the same var as the first param
+                            assert_eq!(params[0], args[0]);
+                        }
+                        _ => panic!("second SCons param should be (SList a)"),
+                    }
+                    // Return: (SList a)
+                    match ret.as_ref() {
+                        Type::ADT(name, args) => {
+                            assert_eq!(name.as_ref(), "SList");
+                            assert_eq!(args.len(), 1);
+                            assert_eq!(params[0], args[0]);
+                        }
+                        _ => panic!("SCons return should be (SList a)"),
+                    }
+                }
+                _ => panic!("SCons should have Fn type, got {:?}", scheme.ty),
+            }
+        } else {
+            panic!("SCons should be a Constructor entry in macros module");
+        }
+    }
+
+    // spec: 09-macros §9.1.2 — Sexp type registered with 7 constructors
+    #[test]
+    fn test_sexp_type_registered() {
+        let tc = TypeChecker::new();
+        let info = tc.type_defs.get(&TypeName::from("Sexp"));
+        assert!(info.is_some(), "Sexp type should be registered");
+        let info = info.unwrap();
+        assert!(info.type_params.is_empty(), "Sexp has 0 type parameters");
+        assert_eq!(info.constructors.len(), 7, "Sexp has 7 constructors");
+
+        // Verify tag order matches spec: SexpInt=0 through SexpBracket=6
+        let expected_names = [
+            "SexpInt", "SexpFloat", "SexpBool", "SexpStr",
+            "SexpSym", "SexpList", "SexpBracket",
+        ];
+        for (i, name) in expected_names.iter().enumerate() {
+            assert_eq!(
+                info.constructors[i].name.as_ref(), *name,
+                "constructor at tag {i} should be {name}"
+            );
+            assert_eq!(info.constructors[i].tag, i, "{name} should have tag {i}");
+        }
+    }
+
+    // spec: 09-macros §9.1.2 — SexpSym constructor: (Fn [String] Sexp)
+    #[test]
+    fn test_sexpsym_constructor_type() {
+        let tc = TypeChecker::new();
+        let macros_path = ModuleFullPath::from("macros");
+        let macros_table = tc.modules.get(&macros_path).unwrap();
+        if let Some(ModuleEntry::Constructor { scheme, .. }) = macros_table.get("SexpSym") {
+            assert!(scheme.vars.is_empty(), "SexpSym should be monomorphic");
+            assert_eq!(
+                scheme.ty,
+                Type::Fn(
+                    vec![Type::String],
+                    Box::new(Type::ADT(TypeName::from("Sexp"), vec![]))
+                ),
+                "SexpSym :: (Fn [String] Sexp)"
+            );
+        } else {
+            panic!("SexpSym should be a Constructor entry in macros module");
+        }
+    }
+
+    // spec: 09-macros §9.1.2 — all 7 Sexp constructors have correct field types
+    #[test]
+    fn test_all_sexp_constructor_field_types() {
+        let tc = TypeChecker::new();
+        let macros_path = ModuleFullPath::from("macros");
+        let macros_table = tc.modules.get(&macros_path).unwrap();
+
+        let sexp_type = Type::ADT(TypeName::from("Sexp"), vec![]);
+        let slist_sexp_type = Type::ADT(
+            TypeName::from("SList"),
+            vec![Type::ADT(TypeName::from("Sexp"), vec![])],
+        );
+
+        // (SexpInt [:Int sval]) -> (Fn [Int] Sexp)
+        check_sexp_ctor(&macros_table, "SexpInt", &[("sval", &Type::Int)], &sexp_type);
+        // (SexpFloat [:Float sval]) -> (Fn [Float] Sexp)
+        check_sexp_ctor(&macros_table, "SexpFloat", &[("sval", &Type::Float)], &sexp_type);
+        // (SexpBool [:Bool sval]) -> (Fn [Bool] Sexp)
+        check_sexp_ctor(&macros_table, "SexpBool", &[("sval", &Type::Bool)], &sexp_type);
+        // (SexpStr [:String sval]) -> (Fn [String] Sexp)
+        check_sexp_ctor(&macros_table, "SexpStr", &[("sval", &Type::String)], &sexp_type);
+        // (SexpSym [:String sname]) -> (Fn [String] Sexp)
+        check_sexp_ctor(&macros_table, "SexpSym", &[("sname", &Type::String)], &sexp_type);
+        // (SexpList [:(SList Sexp) sitems]) -> (Fn [(SList Sexp)] Sexp)
+        check_sexp_ctor(&macros_table, "SexpList", &[("sitems", &slist_sexp_type)], &sexp_type);
+        // (SexpBracket [:(SList Sexp) sitems]) -> (Fn [(SList Sexp)] Sexp)
+        check_sexp_ctor(&macros_table, "SexpBracket", &[("sitems", &slist_sexp_type)], &sexp_type);
+    }
+
+    /// Helper: verify a Sexp constructor has the expected fields and function type.
+    fn check_sexp_ctor(
+        table: &cranelisp_types::SymbolTable,
+        name: &str,
+        expected_fields: &[(&str, &Type)],
+        ret_type: &Type,
+    ) {
+        if let Some(ModuleEntry::Constructor { info, scheme, .. }) = table.get(name) {
+            assert_eq!(
+                info.fields.len(),
+                expected_fields.len(),
+                "{name}: field count mismatch"
+            );
+            for (i, (fname, ftype)) in expected_fields.iter().enumerate() {
+                assert_eq!(
+                    info.fields[i].name.as_ref(), *fname,
+                    "{name}: field {i} name"
+                );
+                assert_eq!(
+                    &info.fields[i].ty, *ftype,
+                    "{name}: field {i} type"
+                );
+            }
+            // Check the constructor scheme
+            assert!(scheme.vars.is_empty(), "{name} should be monomorphic");
+            let param_types: Vec<Type> = expected_fields.iter().map(|(_, t)| (*t).clone()).collect();
+            assert_eq!(
+                scheme.ty,
+                Type::Fn(param_types, Box::new(ret_type.clone())),
+                "{name}: constructor scheme"
+            );
+        } else {
+            panic!("{name} should be a Constructor entry");
+        }
+    }
+
+    // spec: 09-macros §9.1.3 — qualified access macros/SexpSym works from user module
+    #[test]
+    fn test_qualified_access_from_user() {
+        let tc = TypeChecker::new();
+        // The TypeChecker's current module is "user" by default.
+        // Qualified lookup: "macros/SexpSym" should resolve.
+        let scheme = tc.lookup("macros/SexpSym");
+        assert!(
+            scheme.is_some(),
+            "macros/SexpSym should be resolvable from user module"
+        );
+        let scheme = scheme.unwrap();
+        assert_eq!(
+            scheme.ty,
+            Type::Fn(
+                vec![Type::String],
+                Box::new(Type::ADT(TypeName::from("Sexp"), vec![]))
+            ),
+            "macros/SexpSym :: (Fn [String] Sexp)"
+        );
+
+        // Also check qualified access to SCons and SNil
+        assert!(
+            tc.lookup("macros/SCons").is_some(),
+            "macros/SCons should be resolvable"
+        );
+        assert!(
+            tc.lookup("macros/SNil").is_some(),
+            "macros/SNil should be resolvable"
         );
     }
 }

@@ -1014,6 +1014,79 @@ Analysis of the 12 prelude macros from `spec/09-macros.md` section 9.10, classif
 
 ---
 
+## 14. Sprint 11 Preparation (Sprint 10, Wave 1)
+
+Analysis of `/stdlib` deliverables for Sprint 11, based on macro infrastructure built in Sprint 10 (Phases 1-4) and pipeline integration (Phase 5, early Sprint 11).
+
+### 14.1 SList Helper Dependency Matrix
+
+Which prelude macros depend on which SList helpers:
+
+| Helper | Used by | How |
+|--------|---------|-----|
+| `sfold` | `list` | Folds over reversed element list to build nested `(Cons e acc)` |
+| `sreverse` | `list` | Reverses element list so `sfold` builds `Cons` in correct order |
+| `sconcat` | `~@` (quasiquote-splicing) | Emitted by the quasiquote expander for splice operations; used implicitly by any macro with `~@` in its body (`do`, `cond`, `str`, `bind!`) |
+| `sempty?` | (no direct prelude macro use) | Available for user-written recursive macros that need a base-case test on `(SList Sexp)` |
+
+Additional helper functions needed by specific macros (these are NOT SList helpers but are macro-authoring utilities):
+
+| Helper | Used by | Purpose |
+|--------|---------|---------|
+| `quote-sexp` | `const`, `const-`, `def`, `def-` | Converts runtime `Sexp` to a self-reproducing `Sexp` (primitive or stdlib fn) |
+| `make-def-name` | `def`, `def-` | Appends `"-def"` suffix to a symbol name, producing backing fn name |
+
+### 14.2 Implementation Order Confirmation
+
+The recommended order from section 13 is: `vec` -> `when` -> `const`/`const-` -> `do` -> `cond` -> `list` -> `str` -> `case` -> `->` / `->>` -> `def`/`def-` -> `bind!`.
+
+After Sprint 10 builds Phases 1-4 and Sprint 11 wires in Phase 5 (pipeline integration + two-pass prelude loading), this order **holds with one refinement**:
+
+1. **`vec`** — simplest macro (no quasiquote, no helpers). Validates the end-to-end pipeline.
+2. **`when`** — single-clause, quasiquote only. Validates quasiquote expansion.
+3. **`const` / `const-`** — requires `quote-sexp`. Validates bare-symbol expansion.
+4. **`do`** — multi-clause, recursive self-call. Validates multi-clause dispatch.
+5. **`cond`** — multi-clause, recursive self-call. Similar pattern to `do`.
+6. **`list`** — multi-clause, requires `sfold` + `sreverse`. **SList helpers must be compiled before this point.**
+7. **`str`** — multi-clause, recursive. Requires `show` (Display trait, Ring 2).
+8. **`case`** — manual Sexp construction, needs `=` (Eq trait, Ring 2).
+9. **`->` / `->>`** — variadic, recursive fold over forms. Pure syntactic rewriting.
+10. **`def` / `def-`** — requires `begin` multi-form + `make-def-name` + `quote-sexp`. Most complex infrastructure dependency.
+11. **`bind!`** — bracket destructuring. Definable at Ring 3 but untestable until Ring 4 (IO).
+
+**Refinement**: `bind!` should still be *defined* in Sprint 11 to validate bracket destructuring, but marked as Ring 4 for testing.
+
+### 14.3 SList Helper Ordering Constraint
+
+The SList helpers (`sfold`, `sreverse`, `sconcat`, `sempty?`) are **ordinary Cranelisp functions**, not macros. They must be compiled as regular `defn` forms before any macro that references them. This creates a hard ordering requirement in the two-pass prelude loading sequence:
+
+1. SList helpers are defined in `lib/core/syntax.cl` (or the reimplementation equivalent, `lib/macros.cl` per section 3.2).
+2. The module containing these helpers must be loaded and compiled **before** `lib/prelude.cl` processes its `defmacro` forms.
+3. Per spec section 9.12, Pass 2 processes forms sequentially — a `defmacro` body can call functions defined earlier. So the module loading order must be: `macros.cl` (SList helpers) -> `prelude.cl` (prelude macros).
+
+The `sconcat` function has an additional constraint: it is referenced by quasiquote-generated code (`~@` expansion emits qualified `macros/sconcat` calls). It must be compiled and resolvable before any macro whose body uses `~@` is expanded.
+
+### 14.4 Sprint 11 Stdlib Task Summary
+
+`/stdlib` deliverables for Sprint 11:
+
+**(a) SList helper functions** — in `lib/macros.cl`:
+- `sfold`, `sreverse`, `sconcat`, `sempty?` as `defn` forms
+- `slist` as a `defmacro` (convenience constructor for `(SList a)`)
+- Only `sconcat` re-exported through prelude (per spec section 9.7.0)
+
+**(b) Macro-authoring helpers** — in `lib/macros.cl` or `lib/defs.cl`:
+- `make-def-name` — symbol name transformation for `def`/`def-`
+- `quote-sexp` — either as a stdlib function (pattern match on all 7 Sexp variants) or as a compiler primitive
+
+**(c) Prelude macros** — in `lib/prelude.cl` (or distributed across `lib/control.cl`, `lib/defs.cl`, `lib/fn/threading.cl`, etc. per section 3.2):
+- 12 macros in the order from section 14.2
+- Each macro validated by at least one integration test
+
+**(d) Prelude wiring** — update `lib/prelude.cl` to re-export Ring 3 additions (~12 names per section 4): `cond`, `case`, `when`, `const`, `def`, `->`, `->>`, `derive`, `list`, plus macro-specific helpers.
+
+---
+
 ## Next Skills
 
 - `/arch` — Confirm the builtin-to-trait transition strategy. Validate that cross-module trait impls work (trait in module A, type in module B, impl in module B). Review Map/Set implementation strategy.

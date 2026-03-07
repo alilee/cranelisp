@@ -160,6 +160,23 @@ At every sprint rollover, `/qa` MUST:
 3. **Re-target stale ignores** — any test targeting a completed sprint that is still ignored is a bug. Either the feature landed (un-ignore it) or it didn't (re-target to the sprint that will deliver it, with rationale).
 4. **Scan FIXMEs addressed to `/qa`** — every `FIXME(/qa)` in spec, design, or plan files. Write the test or defer with rationale.
 5. **Report the ignore inventory** in SPRINT.md Notes: total ignored, how many target this sprint, how many are untargeted.
+6. **Audit negative coverage gaps** — scan spec and repl/spec.md for `[Tested` annotations that lack `+Neg`. For each, assess whether negative tests are needed (most MUST requirements need them). Prioritize sections where the absence of negative tests has allowed spec violations to pass undetected (e.g., `/list` showing non-spec items, wrong module qualification). Add neg coverage tasks to the sprint plan. See root `CLAUDE.md` §"Annotation Convention" for the `[Tested+Neg]` notation.
+
+### Negative Test Guidance
+
+A **negative test** verifies that wrong things do NOT happen. Every spec requirement has an implicit negative side:
+
+| Spec requirement | Positive test | Negative test needed |
+|---|---|---|
+| `/list` shows user-defined functions | `contains("foo")` after `(defn foo ...)` | Does NOT contain `add-i64`, `show`, or other primitives in Functions category |
+| Primitives are in `primitives` module | `primitives/add-i64` resolves | `user/add-i64` does NOT appear in `/list` |
+| Errors display on stdout | `stdout.contains("error:")` | `stderr` is empty (or contains only traces) |
+| Type display is fully qualified | Output contains `primitives/Int` | Output does NOT contain bare `Int` in type position |
+| `/list` categories | Types, Special forms, Functions appear | Categories that shouldn't exist (e.g., Traits when none defined) are absent |
+
+**When to require `+Neg`:** Any MUST requirement that constrains *what appears* implicitly constrains *what must not appear*. If the spec says "Names MUST be fully qualified" (§3.3), a positive test checks qualification is present, a negative test checks unqualified names are absent. If the spec says "User-defined functions" (§3.3 Functions row), a negative test checks that compiler-seeded functions don't leak into the user category.
+
+**Priority:** Focus neg coverage on boundaries where implementation shortcuts can silently violate the spec — module boundaries (`user` vs `primitives`), category boundaries (`/list`), and error boundaries (what produces errors vs what doesn't).
 
 ## Workflow (ring by ring)
 
