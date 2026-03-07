@@ -335,6 +335,20 @@ fn default_method_neq_int_equal() {
     assert_eq!(compile_and_run_simple(src), 0);
 }
 
+// spec: 07-traits §7.1.5 — default method != String (different strings)
+#[test]
+fn default_method_neq_string() {
+    let src = r#"(defn main [] (if (!= "hello" "world") 1 0))"#;
+    assert_eq!(compile_and_run_simple(src), 1);
+}
+
+// spec: 07-traits §7.1.5 — default method != String (equal strings)
+#[test]
+fn default_method_neq_string_equal() {
+    let src = r#"(defn main [] (if (!= "same" "same") 1 0))"#;
+    assert_eq!(compile_and_run_simple(src), 0);
+}
+
 // =============================================================================
 // Constrained polymorphism (spec: 03-types, 07-traits)
 // Functions that use operators with type-variable args become constrained.

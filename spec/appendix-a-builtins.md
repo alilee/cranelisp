@@ -110,12 +110,12 @@ Extern primitives are called via the foreign function interface.
 | `vec-set` | `(Fn [(Vec a) Int a] (Vec a))` | Return new Vec with element at index replaced | [Tested tests/ring1.rs::vec_set_element]
 | `vec-push` | `(Fn [(Vec a) a] (Vec a))` | Return new Vec with element appended | [Tested tests/ring1.rs::vec_push_appends]
 | `vec-len` | `(Fn [(Vec a)] Int)` | Number of elements | [Tested tests/ring1.rs::vec_len_three]
-| `vec-map` | `(Fn [(Fn [a] b) (Vec a)] (Vec b))` | Map function over elements | [R3 S8]
-| `vec-reduce` | `(Fn [(Fn [b a] b) b (Vec a)] b)` | Left fold over elements | [R3 S8]
+| `vec-map` | `(Fn [(Fn [a] b) (Vec a)] (Vec b))` | Map function over elements | [R3 S10]
+| `vec-reduce` | `(Fn [(Fn [b a] b) b (Vec a)] b)` | Left fold over elements | [R3 S10]
 
 `vec-set` and `vec-push` are semantically pure (return new values). The implementation MAY use copy-on-write when the reference count is 1.
 
-## A.4 Special Forms [R2 S8]
+## A.4 Special Forms [R3 S10]
 
 Special forms are keywords processed directly by the compiler. They are not functions or macros and cannot be shadowed.
 
@@ -125,7 +125,7 @@ Special forms are keywords processed directly by the compiler. They are not func
 | `deftype` / `deftype-` | Algebraic data type definition; `deftype-` is module-private | [Tested tests/ring1.rs::parse_int_valid]
 | `deftrait` / `deftrait-` | Trait declaration; `deftrait-` is module-private | [Tested tests/ring2.rs::user_trait_simple]
 | `impl` | Trait implementation | [Tested tests/ring2.rs::trait_plus_int]
-| `defmacro` / `defmacro-` | Macro definition; `defmacro-` is module-private | [R3 S8]
+| `defmacro` / `defmacro-` | Macro definition; `defmacro-` is module-private | [R3 S10]
 | `let` | Local bindings: `(let [x e1 y e2] body)` | [Tested tests/ring0.rs::nested_let]
 | `if` | Conditional: `(if cond then else)` | [Tested tests/ring0.rs::comparison_operators]
 | `fn` | Lambda expression: `(fn [params] body)` | [Tested tests/ring1.rs::closure_simple_capture]

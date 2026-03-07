@@ -14,6 +14,13 @@ Build platform DLLs that extend the language with IO capabilities. Validate the 
 - `platforms/test-capture/` — test harness platform (new; to be created)
 - `design/platform/` — solution design documents (allocator, RC primitives, string runtime, platform abstraction)
 
+## Design Doc Obligation
+
+Design docs in `design/platform/` are owned deliverables, not post-hoc documentation. They must be:
+- **Written before implementation** — articulate the design (ABI contracts, marshalling protocols, runtime primitives) before writing code. If you can't describe the design in a document, you're not ready to code it.
+- **Kept current** — when implementation changes the design (new platform functions, revised ABI, etc.), update the design doc in the same sprint. A design doc that doesn't match the code is worse than no doc.
+- **Reviewed by `/arch`** — design docs are reviewed for architectural coherence during each sprint. Address FIXMEs filed by `/arch` promptly.
+
 ## Interfaces
 
 - User-proxy skill: exercise the FFI boundary from a platform author's perspective

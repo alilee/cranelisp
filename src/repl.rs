@@ -132,188 +132,209 @@ impl ReplSession {
         input: &ReplInput,
         check_result: &ReplCheckResult,
     ) -> Result<ReplResult, CranelispError> {
-        let warnings: Vec<Warning> = check_result.warnings.clone();
-
         match input {
-            ReplInput::Expr(expr) => {
-                // Build a CheckResult for the backend.
-                let check = self.build_check_for_backend(check_result);
-
-                // Compile any monomorphised specializations before executing
-                // the expression (Gap 4: REPL constrained-poly path).
-                for mono in &check_result.mono_defns {
-                    // Build per-mono CheckResult with merged resolutions.
-                    let mut mono_check = self.build_check_for_backend(check_result);
-                    mono_check.method_resolutions.extend(mono.resolutions.clone());
-                    if !mono.expr_types.is_empty() {
-                        mono_check.expr_types = mono.expr_types.clone();
-                    }
-                    self.compile_and_register_defn(&mono.defn, &mono_check)?;
-                }
-
-                let value = cranelisp_backend::compile_and_run_expr_with_got(
-                    expr,
-                    &check,
-                    CompileMode::Interactive,
-                    Some(&mut self.got_state),
-                )?;
-                Ok(ReplResult {
-                    value,
-                    ty: check_result.ty.clone(),
-                    is_definition: false,
-                    warnings,
-                    definition_display: None,
-                })
-            }
-
-            ReplInput::Defn(defn) => {
-                // Skip compiling constrained fn base definitions — they are
-                // templates that get monomorphised at call sites.
-                let is_constrained = check_result
-                    .scheme
-                    .as_ref()
-                    .map_or(false, |s| !s.constraints.is_empty());
-
-                if !is_constrained {
-                    let check = self.build_check_for_backend(check_result);
-                    self.compile_and_register_defn(defn, &check)?;
-                }
-
-                // For defn, execute if it's zero-arg, otherwise return 0.
-                let value = if defn.params.is_empty() && !is_constrained {
-                    let entry = self.got_state.def_codegen.get(defn.name.as_ref());
-                    let code_ptr = entry
-                        .and_then(|e| e.code_ptr)
-                        .ok_or_else(|| CranelispError::CodegenError {
-                            message: format!(
-                                "no code pointer after compiling defn '{}'",
-                                defn.name
-                            ),
-                            span: cranelisp_types::Span::SYNTHETIC,
-                        })?;
-                    let func: extern "C" fn() -> i64 = unsafe { std::mem::transmute(code_ptr) };
-                    func()
-                } else {
-                    0
-                };
-
-                // Build definition display with qualified name (spec §1.3).
-                let module = self.tc.current_module_path().clone();
-                let definition_display = if is_constrained {
-                    check_result.scheme.as_ref().map(|s| {
-                        format_scheme_display(&defn.name, s, &module, &self.type_modules)
-                    })
-                } else if !defn.params.is_empty() {
-                    // Function with params: show `:type module/name`
-                    let type_str = format_type_qualified(
-                        &check_result.ty,
-                        &self.type_modules,
-                    );
-                    Some(format!(":{type_str} {module}/{}", defn.name))
-                } else {
-                    None
-                };
-
-                Ok(ReplResult {
-                    value,
-                    ty: check_result.ty.clone(),
-                    is_definition: true,
-                    warnings,
-                    definition_display,
-                })
-            }
-
-            ReplInput::TypeDef { .. } => {
-                let module = self.tc.current_module_path().clone();
-
-                // Accumulate type definitions for ADT value display.
-                for (name, info) in &check_result.type_defs {
-                    self.type_defs.insert(name.clone(), info.clone());
-                    self.type_modules.insert(name.clone(), module.clone());
-                }
-
-                // Build qualified display: `:module/TypeName`
-                let type_name = match &check_result.ty {
-                    Type::ADT(name, _) => name.to_string(),
-                    _ => "?".to_string(),
-                };
-                let display = format!(":{module}/{type_name}");
-
-                // Type definitions don't produce a runtime value.
-                Ok(ReplResult {
-                    value: 0,
-                    ty: check_result.ty.clone(),
-                    is_definition: true,
-                    warnings,
-                    definition_display: Some(display),
-                })
-            }
-
-            // Not supported in Ring 0.
+            ReplInput::Expr(expr) => self.execute_expr(expr, check_result),
+            ReplInput::Defn(defn) => self.execute_defn(defn, check_result),
+            ReplInput::TypeDef { .. } => self.execute_typedef(check_result),
             ReplInput::DefnMulti { span, .. } => Err(CranelispError::TypeError {
                 message: "multi-signature functions not supported in Ring 0".into(),
                 span: *span,
             }),
-            ReplInput::TraitDecl(decl) => {
-                // Trait registration is already done by check_repl_input.
-                // Compile any default method bodies generated by the typechecker.
-                if !check_result.default_method_defns.is_empty() {
-                    let check = self.build_check_for_backend(check_result);
-                    for defn in &check_result.default_method_defns {
-                        self.compile_and_register_defn(defn, &check)?;
-                    }
-                }
+            ReplInput::TraitDecl(decl) => self.execute_trait_decl(decl, check_result),
+            ReplInput::TraitImpl(impl_) => self.execute_trait_impl(impl_, check_result),
+        }
+    }
 
-                let module = self.tc.current_module_path();
-                let display = format!(":{module}/{}", decl.name);
+    /// Compile and execute an expression input.
+    fn execute_expr(
+        &mut self,
+        expr: &cranelisp_types::Expr,
+        check_result: &ReplCheckResult,
+    ) -> Result<ReplResult, CranelispError> {
+        let check = self.build_check_for_backend(check_result);
 
-                Ok(ReplResult {
-                    value: 0,
-                    ty: check_result.ty.clone(),
-                    is_definition: true,
-                    warnings,
-                    definition_display: Some(display),
-                })
-            }
-            ReplInput::TraitImpl(impl_) => {
-                let check = self.build_check_for_backend(check_result);
+        // Compile any monomorphised specializations before executing
+        // the expression (Gap 4: REPL constrained-poly path).
+        self.compile_mono_defns(check_result)?;
 
-                // Compile the impl methods.
-                for defn in &impl_.methods {
-                    self.compile_and_register_defn(defn, &check)?;
-                }
+        let value = cranelisp_backend::compile_and_run_expr_with_got(
+            expr,
+            &check,
+            CompileMode::Interactive,
+            Some(&mut self.got_state),
+        )?;
+        Ok(ReplResult {
+            value,
+            ty: check_result.ty.clone(),
+            is_definition: false,
+            warnings: check_result.warnings.clone(),
+            definition_display: None,
+        })
+    }
 
-                // Compile any default method bodies generated by the typechecker.
-                for defn in &check_result.default_method_defns {
-                    self.compile_and_register_defn(defn, &check)?;
-                }
+    /// Compile and execute a function definition input.
+    fn execute_defn(
+        &mut self,
+        defn: &cranelisp_types::Defn,
+        check_result: &ReplCheckResult,
+    ) -> Result<ReplResult, CranelispError> {
+        // Skip compiling constrained fn base definitions — they are
+        // templates that get monomorphised at call sites.
+        let is_constrained = check_result
+            .scheme
+            .as_ref()
+            .is_some_and(|s| !s.constraints.is_empty());
 
-                // Compile any monomorphised definitions generated during checking.
-                for mono in &check_result.mono_defns {
-                    // Build per-mono CheckResult with merged resolutions.
-                    let mut mono_check = self.build_check_for_backend(check_result);
-                    mono_check.method_resolutions.extend(mono.resolutions.clone());
-                    if !mono.expr_types.is_empty() {
-                        mono_check.expr_types = mono.expr_types.clone();
-                    }
-                    self.compile_and_register_defn(&mono.defn, &mono_check)?;
-                }
+        if !is_constrained {
+            let check = self.build_check_for_backend(check_result);
+            self.compile_and_register_defn(defn, &check)?;
+        }
 
-                let module = self.tc.current_module_path();
-                let display = format!(
-                    "impl {module}/{} for {module}/{}",
-                    impl_.trait_name, impl_.target_type
-                );
+        // For defn, execute if it's zero-arg, otherwise return 0.
+        let value = if defn.params.is_empty() && !is_constrained {
+            let entry = self.got_state.def_codegen.get(defn.name.as_ref());
+            let code_ptr = entry
+                .and_then(|e| e.code_ptr)
+                .ok_or_else(|| CranelispError::CodegenError {
+                    message: format!("no code pointer after compiling defn '{}'", defn.name),
+                    span: cranelisp_types::Span::SYNTHETIC,
+                })?;
+            let func: extern "C" fn() -> i64 = unsafe { std::mem::transmute(code_ptr) };
+            func()
+        } else {
+            0
+        };
 
-                Ok(ReplResult {
-                    value: 0,
-                    ty: check_result.ty.clone(),
-                    is_definition: true,
-                    warnings,
-                    definition_display: Some(display),
-                })
+        // Build definition display with qualified name (spec §1.3).
+        let module = self.tc.current_module_path().clone();
+        let definition_display = if is_constrained {
+            check_result.scheme.as_ref().map(|s| {
+                format_scheme_display(&defn.name, s, &module, &self.type_modules)
+            })
+        } else if !defn.params.is_empty() {
+            let type_str = format_type_qualified(&check_result.ty, &self.type_modules);
+            Some(format!(":{type_str} {module}/{}", defn.name))
+        } else {
+            None
+        };
+
+        Ok(ReplResult {
+            value,
+            ty: check_result.ty.clone(),
+            is_definition: true,
+            warnings: check_result.warnings.clone(),
+            definition_display,
+        })
+    }
+
+    /// Execute a type definition input.
+    fn execute_typedef(
+        &mut self,
+        check_result: &ReplCheckResult,
+    ) -> Result<ReplResult, CranelispError> {
+        let module = self.tc.current_module_path().clone();
+
+        // Accumulate type definitions for ADT value display.
+        for (name, info) in &check_result.type_defs {
+            self.type_defs.insert(name.clone(), info.clone());
+            self.type_modules.insert(name.clone(), module.clone());
+        }
+
+        // Build qualified display: `:module/TypeName`
+        let type_name = match &check_result.ty {
+            Type::ADT(name, _) => name.to_string(),
+            _ => "?".to_string(),
+        };
+        let display = format!(":{module}/{type_name}");
+
+        Ok(ReplResult {
+            value: 0,
+            ty: check_result.ty.clone(),
+            is_definition: true,
+            warnings: check_result.warnings.clone(),
+            definition_display: Some(display),
+        })
+    }
+
+    /// Execute a trait declaration input.
+    fn execute_trait_decl(
+        &mut self,
+        decl: &cranelisp_types::TraitDecl,
+        check_result: &ReplCheckResult,
+    ) -> Result<ReplResult, CranelispError> {
+        // Trait registration is already done by check_repl_input.
+        // Compile any default method bodies generated by the typechecker.
+        if !check_result.default_method_defns.is_empty() {
+            let check = self.build_check_for_backend(check_result);
+            for defn in &check_result.default_method_defns {
+                self.compile_and_register_defn(defn, &check)?;
             }
         }
+
+        let module = self.tc.current_module_path();
+        let display = format!(":{module}/{}", decl.name);
+
+        Ok(ReplResult {
+            value: 0,
+            ty: check_result.ty.clone(),
+            is_definition: true,
+            warnings: check_result.warnings.clone(),
+            definition_display: Some(display),
+        })
+    }
+
+    /// Execute a trait implementation input.
+    fn execute_trait_impl(
+        &mut self,
+        impl_: &cranelisp_types::TraitImpl,
+        check_result: &ReplCheckResult,
+    ) -> Result<ReplResult, CranelispError> {
+        let check = self.build_check_for_backend(check_result);
+
+        // Compile the impl methods.
+        for defn in &impl_.methods {
+            self.compile_and_register_defn(defn, &check)?;
+        }
+
+        // Compile any default method bodies generated by the typechecker.
+        for defn in &check_result.default_method_defns {
+            self.compile_and_register_defn(defn, &check)?;
+        }
+
+        // Compile any monomorphised definitions generated during checking.
+        self.compile_mono_defns(check_result)?;
+
+        let module = self.tc.current_module_path();
+        let display = format!(
+            "impl {module}/{} for {module}/{}",
+            impl_.trait_name, impl_.target_type
+        );
+
+        Ok(ReplResult {
+            value: 0,
+            ty: check_result.ty.clone(),
+            is_definition: true,
+            warnings: check_result.warnings.clone(),
+            definition_display: Some(display),
+        })
+    }
+
+    /// Compile monomorphised specializations from a check result.
+    ///
+    /// Used by both expression and trait impl execution paths.
+    fn compile_mono_defns(
+        &mut self,
+        check_result: &ReplCheckResult,
+    ) -> Result<(), CranelispError> {
+        for mono in &check_result.mono_defns {
+            let mut mono_check = self.build_check_for_backend(check_result);
+            mono_check.method_resolutions.extend(mono.resolutions.clone());
+            if !mono.expr_types.is_empty() {
+                mono_check.expr_types = mono.expr_types.clone();
+            }
+            self.compile_and_register_defn(&mono.defn, &mono_check)?;
+        }
+        Ok(())
     }
 
     /// Compile a single function definition and register it in the GOT.
@@ -663,7 +684,12 @@ pub fn format_result_value(
         }
         Type::Float => {
             let f = f64::from_bits(value as u64);
-            format!(":primitives/Float {f}")
+            let s = format!("{f}");
+            if s.contains('.') {
+                format!(":primitives/Float {s}")
+            } else {
+                format!(":primitives/Float {s}.0")
+            }
         }
         Type::Int => format!(":primitives/Int {value}"),
         Type::String => format_string_value(value),
@@ -924,7 +950,8 @@ fn format_field_value(
         }
         Type::Float => {
             let f = f64::from_bits(value as u64);
-            format!("{f}")
+            let s = format!("{f}");
+            if s.contains('.') { s } else { format!("{s}.0") }
         }
         Type::String => {
             if value == 0 || (value as usize) < NULLARY_TAG_THRESHOLD {
@@ -1021,6 +1048,83 @@ fn format_prompt(compile_ms: u64, eval_ms: u64, module: &str) -> String {
     format!("{compile_ms}+{eval_ms}ms; {module}> ")
 }
 
+/// Write the prompt string to stdout and flush.
+fn write_prompt(stdout: &mut impl Write, compile_ms: u64, eval_ms: u64, module: &str) {
+    let prompt = format_prompt(compile_ms, eval_ms, module);
+    let _ = write!(stdout, "{prompt}");
+    let _ = stdout.flush();
+}
+
+/// Dispatch a parsed slash command, returning true if the REPL should quit.
+fn dispatch_slash_command(
+    cmd: ReplCommand,
+    session: &mut ReplSession,
+    stdout: &mut impl Write,
+) -> bool {
+    match cmd {
+        ReplCommand::Help => print_help(stdout),
+        ReplCommand::Quit => return true,
+        ReplCommand::Sig(name) => handle_sig(session, name, stdout),
+        ReplCommand::Type(expr_src) => handle_type(session, expr_src, stdout),
+        ReplCommand::Info(name) => handle_info(session, name, stdout),
+        ReplCommand::List(filter) => handle_list(session, filter, stdout),
+        ReplCommand::Time(expr_src) => {
+            match handle_time(session, expr_src) {
+                Ok(display) => {
+                    let _ = writeln!(stdout, "{display}");
+                }
+                Err(e) => {
+                    let _ = writeln!(stdout, "error: {e}");
+                }
+            }
+        }
+        ReplCommand::Unknown(cmd) => {
+            let _ = writeln!(
+                stdout,
+                "error: unknown command '{cmd}'. Type /help for available commands."
+            );
+        }
+    }
+    false
+}
+
+/// Evaluate an input and display the result, returning updated timing.
+fn eval_and_display(
+    session: &mut ReplSession,
+    input: &str,
+    stdout: &mut impl Write,
+) -> (u64, u64) {
+    let compile_start = std::time::Instant::now();
+    match session.eval(input) {
+        Ok(result) => {
+            let compile_elapsed = compile_start.elapsed();
+            let compile_ms = compile_elapsed.as_millis() as u64;
+
+            for w in &result.warnings {
+                let _ = writeln!(stdout, "warning: {}", w.message);
+            }
+            let display = if let Some(ref def_display) = result.definition_display {
+                def_display.clone()
+            } else {
+                format_result_value(
+                    result.value,
+                    &result.ty,
+                    session.type_defs(),
+                    session.type_modules(),
+                )
+            };
+            let _ = writeln!(stdout, "{display}");
+            (compile_ms, 0)
+        }
+        Err(e) => {
+            let compile_elapsed = compile_start.elapsed();
+            let compile_ms = compile_elapsed.as_millis() as u64;
+            let _ = writeln!(stdout, "error: {e}");
+            (compile_ms, 0)
+        }
+    }
+}
+
 /// Run the interactive REPL loop.
 ///
 /// Reads lines from stdin, evaluates them, prints results.
@@ -1035,14 +1139,12 @@ pub fn run_repl() {
     let _ = writeln!(stdout, "Cranelisp v0.1.0");
     let _ = writeln!(stdout, "Type /help for commands, /quit to exit.");
 
-    // Timing state for prompt.
     let mut last_compile_ms: u64 = 0;
     let mut last_eval_ms: u64 = 0;
     let module = "user";
 
     let prompt = format_prompt(last_compile_ms, last_eval_ms, module);
-    let _ = write!(stdout, "{prompt}");
-    let _ = stdout.flush();
+    write_prompt(&mut stdout, last_compile_ms, last_eval_ms, module);
 
     let mut buffer = String::new();
 
@@ -1054,10 +1156,8 @@ pub fn run_repl() {
 
         buffer.push_str(&line);
 
-        // Check for balanced parentheses for multi-line input.
         if !parens_balanced(&buffer) {
             buffer.push('\n');
-            // Continuation prompt: spaces aligning `...` with user input start.
             let continuation = format!("{:>width$}", "...", width = prompt.len());
             let _ = write!(stdout, "{continuation}");
             let _ = stdout.flush();
@@ -1067,101 +1167,32 @@ pub fn run_repl() {
         let input = buffer.trim();
         if input.is_empty() || is_comment_only(input) {
             buffer.clear();
-            let prompt = format_prompt(last_compile_ms, last_eval_ms, module);
-            let _ = write!(stdout, "{prompt}");
-            let _ = stdout.flush();
+            write_prompt(&mut stdout, last_compile_ms, last_eval_ms, module);
             continue;
         }
 
-        // Check for slash commands before sending to eval.
         if let Some(cmd) = parse_slash_command(input) {
-            match cmd {
-                ReplCommand::Help => print_help(&mut stdout),
-                ReplCommand::Quit => {
-                    buffer.clear();
-                    break;
-                }
-                ReplCommand::Sig(name) => {
-                    handle_sig(&session, name, &mut stdout);
-                }
-                ReplCommand::Type(expr_src) => {
-                    handle_type(&mut session, expr_src, &mut stdout);
-                }
-                ReplCommand::Info(name) => {
-                    handle_info(&session, name, &mut stdout);
-                }
-                ReplCommand::List(filter) => {
-                    handle_list(&session, filter, &mut stdout);
-                }
-                ReplCommand::Time(expr_src) => {
-                    match handle_time(&mut session, expr_src) {
-                        Ok(display) => {
-                            let _ = writeln!(stdout, "{display}");
-                        }
-                        Err(e) => {
-                            let _ = writeln!(stdout, "error: {e}");
-                        }
-                    }
-                }
-                ReplCommand::Unknown(cmd) => {
-                    let _ = writeln!(stdout, "error: unknown command '{cmd}'. Type /help for available commands.");
-                }
-            }
+            let should_quit = dispatch_slash_command(cmd, &mut session, &mut stdout);
             buffer.clear();
-            let prompt = format_prompt(last_compile_ms, last_eval_ms, module);
-            let _ = write!(stdout, "{prompt}");
-            let _ = stdout.flush();
+            if should_quit {
+                break;
+            }
+            write_prompt(&mut stdout, last_compile_ms, last_eval_ms, module);
             continue;
         }
 
-        // Check for bare special form names before eval (spec §4.2).
         if let Some(display) = special_form_feedback(input, &session) {
             let _ = writeln!(stdout, "{display}");
             buffer.clear();
-            let prompt = format_prompt(last_compile_ms, last_eval_ms, module);
-            let _ = write!(stdout, "{prompt}");
-            let _ = stdout.flush();
+            write_prompt(&mut stdout, last_compile_ms, last_eval_ms, module);
             continue;
         }
 
-        let compile_start = std::time::Instant::now();
-        match session.eval(input) {
-            Ok(result) => {
-                let compile_elapsed = compile_start.elapsed();
-                // For now, we approximate: compile time = total eval time,
-                // eval time = 0 (we don't have a separate eval phase yet).
-                last_compile_ms = compile_elapsed.as_millis() as u64;
-                last_eval_ms = 0;
-
-                // Print warnings first.
-                for w in &result.warnings {
-                    let _ = writeln!(stdout, "warning: {}", w.message);
-                }
-                // Print the result, using definition_display when available.
-                let display = if let Some(ref def_display) = result.definition_display {
-                    def_display.clone()
-                } else {
-                    format_result_value(
-                        result.value,
-                        &result.ty,
-                        session.type_defs(),
-                        session.type_modules(),
-                    )
-                };
-                let _ = writeln!(stdout, "{display}");
-            }
-            Err(e) => {
-                let compile_elapsed = compile_start.elapsed();
-                last_compile_ms = compile_elapsed.as_millis() as u64;
-                last_eval_ms = 0;
-                let _ = writeln!(stdout, "error: {e}");
-            }
-        }
+        (last_compile_ms, last_eval_ms) =
+            eval_and_display(&mut session, input, &mut stdout);
 
         buffer.clear();
-        let prompt = format_prompt(last_compile_ms, last_eval_ms, module);
-        let _ = write!(stdout, "{prompt}");
-        let _ = stdout.flush();
+        write_prompt(&mut stdout, last_compile_ms, last_eval_ms, module);
     }
 
     let _ = writeln!(stdout);
@@ -1230,7 +1261,7 @@ fn handle_sig(session: &ReplSession, name: &str, stdout: &mut impl Write) {
     let module = session.tc.current_module_path().clone();
     match session.tc.symbol_table().get(name) {
         Some(entry) => {
-            let display = format_entry_signature(entry, name, &module, &session.type_modules);
+            let display = format_entry_signature(entry, name, &module, &session.type_modules, &session.tc);
             let _ = writeln!(stdout, "{display}");
         }
         None => {
@@ -1283,7 +1314,7 @@ fn handle_info(session: &ReplSession, name: &str, stdout: &mut impl Write) {
     match session.tc.symbol_table().get(name) {
         Some(entry) => {
             // Line 1: type signature (same as /sig).
-            let sig = format_entry_signature(entry, name, &module, &session.type_modules);
+            let sig = format_entry_signature(entry, name, &module, &session.type_modules, &session.tc);
             let _ = writeln!(stdout, "{sig}");
             // Line 2: code size and compile time (if available).
             if let Some(dc) = session.got_state.def_codegen.get(name) {
@@ -1335,7 +1366,8 @@ fn handle_list(session: &ReplSession, filter: &str, stdout: &mut impl Write) {
                 types.push(format!("{module}/{name}"));
             }
             ModuleEntry::TraitDecl { .. } => {
-                traits.push(format!("{module}/{name}"));
+                let defining = session.tc.defining_module_for(&name);
+                traits.push(format!("{defining}/{name}"));
             }
             ModuleEntry::Def { kind, .. } => match kind.as_ref() {
                 DefKind::SpecialForm { .. } => {
@@ -1414,6 +1446,7 @@ fn format_entry_signature(
     name: &str,
     module: &ModuleFullPath,
     type_modules: &HashMap<TypeName, ModuleFullPath>,
+    tc: &cranelisp_typecheck::TypeChecker,
 ) -> String {
     match entry {
         ModuleEntry::Def {
@@ -1442,7 +1475,8 @@ fn format_entry_signature(
             format!(":{qname}")
         }
         ModuleEntry::TraitDecl { decl, .. } => {
-            format!("trait {module}/{}", decl.name)
+            let defining = tc.defining_module_for(decl.name.as_ref());
+            format!("trait {defining}/{}", decl.name)
         }
         _ => format!("{module}/{name}"),
     }
@@ -1476,6 +1510,13 @@ fn special_form_feedback(input: &str, session: &ReplSession) -> Option<String> {
     if trimmed.is_empty() {
         return None;
     }
+    // Check primitive type names: Int, Bool, Float, String (spec §4.1).
+    // These live in the `primitives` synthetic module but are not bare names
+    // in the user module's symbol table, so we check before the lookup.
+    if Type::from_name(trimmed).is_some() {
+        return Some(format!(":primitives/{trimmed}"));
+    }
+
     // Look up in the symbol table (spec §4.1 — bare symbol lookup).
     let module = session.tc.current_module_path();
     let entry = session.tc.symbol_table().get(trimmed)?;
@@ -1494,8 +1535,9 @@ fn special_form_feedback(input: &str, session: &ReplSession) -> Option<String> {
             Some(format!(":{module}/{trimmed}"))
         }
         ModuleEntry::TraitDecl { .. } => {
-            // Bare trait name: show `:module/TraitName`
-            Some(format!(":{module}/{trimmed}"))
+            // Bare trait name: show `:defining_module/TraitName`
+            let defining_module = session.tc.defining_module_for(trimmed);
+            Some(format!(":{defining_module}/{trimmed}"))
         }
         ModuleEntry::Constructor { type_name, scheme, .. } => {
             // Bare constructor: show `:QualifiedType module/Type.Ctor`
@@ -1530,6 +1572,19 @@ mod tests {
         let bits = 1.234_f64.to_bits() as i64;
         let result = format_result(bits, &Type::Float);
         assert!(result.starts_with(":primitives/Float 1.234"));
+
+        // Whole-number floats must display with `.0` suffix (spec §1.2).
+        let whole_bits = 5.0_f64.to_bits() as i64;
+        assert_eq!(
+            format_result(whole_bits, &Type::Float),
+            ":primitives/Float 5.0"
+        );
+
+        let zero_bits = 0.0_f64.to_bits() as i64;
+        assert_eq!(
+            format_result(zero_bits, &Type::Float),
+            ":primitives/Float 0.0"
+        );
     }
 
     #[test]

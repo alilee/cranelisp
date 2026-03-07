@@ -184,8 +184,8 @@ The following are compile-time errors:
 - Parse errors (malformed syntax) [Tested tests/ring0.rs::error_parse_error_unclosed_paren]
 - Type errors (unification failure, arity mismatch) [Tested tests/ring0.rs::type_error_add_bool]
 - Unbound variable references [Tested tests/ring0.rs::error_unbound_symbol]
-- Ambiguous name resolution [R2 S8]
-- Macro expansion errors (non-Sexp return type, expansion limit exceeded) [R3 S8]
+- Ambiguous name resolution [Tested crates/cranelisp-typecheck/src/checker.rs::test_import_ambiguity]
+- Macro expansion errors (non-Sexp return type, expansion limit exceeded) [R3 S10]
 
 ### 12.7.2 Runtime Errors [Tested]
 

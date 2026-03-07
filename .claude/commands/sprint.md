@@ -8,7 +8,13 @@ Plan coherent delivery increments and coordinate skill execution within them. Yo
 
 You are NOT a technical authority. `/arch` decides how to build things. `/qa` decides when quality is sufficient. `/review` decides when code is clean. You decide what to build *next* and in what *order*, subject to user approval.
 
-**The REPL showcase is a key quality gate.** Each sprint's `/repl` demo (played via `repl/demos/*.demo`) is the buyer's first impression of the sprint's deliverables. It validates that new features work end-to-end from the user's perspective — not just in test harnesses. A sprint is not complete until its REPL showcase plays cleanly. User-proxy validation (Wave 4) is not optional polish; it is the sprint's acceptance test from the buyer's point of view.
+**Two cardinal rules govern every sprint:**
+
+1. **Design before code** (compiler skills) — no coding happens until design docs are written, reviewed by `/arch`, and used by `/qa` to derive test cases. Design docs are prerequisite thinking, not post-hoc documentation.
+
+2. **It's not done unless a user can use it** (user-proxy skills) — every sprint must produce visible, usable progress demonstrated through the REPL showcase. Passing tests prove correctness; the showcase proves value. User-proxy skills (`/stdlib`, `/examples`, `/docs`, `/port`, `/repl`) must expose what has been built so far — not plan for the future, but show the present.
+
+**REPL showcase gates sprint close.** Each sprint's REPL demo (played via `repl/demos/*.demo`) is the buyer's first impression of the sprint's deliverables. `/port` uses the showcase to demonstrate what can be built with the features available so far (via REPL until a web platform is in reach). `/examples` ensures the learning sequence works up to the current ring. `/repl` validates the interactive experience. A sprint is not complete until its showcase plays cleanly and user-proxy skills confirm that the new capabilities are usable.
 
 ## Owns
 
@@ -77,7 +83,7 @@ This means every SPRINT.md has an assignment for every skill. For later-stage sk
 
 ## Sprint Archetype
 
-Every sprint follows this sequential flow. `/sprint` drives the process; other skills execute their work within it. The cardinal rule is **plan before do** — no coding happens until scope is agreed, architecture is reviewed, and plans are updated.
+Every sprint follows this sequential flow. `/sprint` drives the process; other skills execute their work within it. The two cardinal rules (see Role section) govern the entire process: compiler skills design before they code, user-proxy skills showcase before the sprint closes.
 
 ### Phase 1: Scope (driven by `/sprint`)
 
@@ -98,43 +104,72 @@ Every sprint follows this sequential flow. `/sprint` drives the process; other s
    - Interface gaps — do boundary types need extending before implementation begins?
 6. `/arch` updates `design/arch/` docs if needed and confirms the sprint is sound.
 
-### Phase 3: Plan Updates (all skills in parallel)
+### Phase 3: Design (compiler skills, then all skills)
 
-**Phase 3 is mandatory.** `/sprint` MUST NOT skip this phase or proceed directly to execution. Every skill fills out its own approach in SPRINT.md — `/sprint` does not fill approaches on behalf of other skills. Skills know their domain best; their plans surface risks, dependencies, and design choices that `/sprint` cannot anticipate.
+**Phase 3 is mandatory.** `/sprint` MUST NOT skip this phase or proceed directly to execution. Design docs are where the hard thinking happens — algorithms, data structures, ownership models, edge cases, trade-offs. Implementation without design produces ad-hoc decisions that cause bugs (Sprint 9: RC double-free from undocumented ownership overlap) and deferred debt (Sprint 9: "no Ring 2 design docs" discovered at gate review).
 
-7. **All skills update their plan `.md` files** to address:
-   - FIXMEs assigned to them (incorporate the change or explicitly defer with rationale)
-   - Their sprint assignment (refine their plan section in SPRINT.md with concrete approach)
-8. `/sprint` collects the updated plans, confirms all FIXMEs are resolved or deferred.
+**Phase 3a — Design docs (compiler skills)**:
+
+7. **Compiler skills write or update design docs** in `design/{skill}/` for their sprint scope. Each design doc must cover:
+   - The problem being solved and key design decisions
+   - Data structures, algorithms, or protocols being introduced or changed
+   - Interactions with other crates/skills (ownership, calling conventions, data flow)
+   - Edge cases and invariants
+   - Reference to spec sections and sketch implementation where relevant
+
+   This is NOT optional documentation — it is the prerequisite thinking that informs implementation. A skill that cannot articulate its design in a document is not ready to write code.
+
+8. **`/arch` reviews the design docs** for architectural coherence: correct crate boundaries, no dependency violations, consistent with existing decisions, interactions between skills are sound. `/arch` may request revisions before approving. This review replaces ad-hoc discovery of design issues during implementation.
+
+9. **`/qa` reviews the design docs** to inform test planning: identifies testable invariants, edge cases to cover, interaction boundaries to verify. `/qa` updates the relevant ring test plan (`tests/plan/ring{N}.md`) with test cases derived from the design docs. This ensures tests are designed against the *intended* behavior, not reverse-engineered from the implementation.
+
+**Phase 3b — Plan and approach (all skills)**:
+
+10. **All skills update their plan `.md` files** to address:
+    - FIXMEs assigned to them (incorporate the change or explicitly defer with rationale)
+    - Their sprint assignment (refine their plan section in SPRINT.md with concrete approach)
+    - **Approach MUST reference the design doc** — the approach in SPRINT.md summarizes *what* will be done; the design doc in `design/{skill}/` explains *why* and *how*
+11. `/sprint` collects the updated plans, confirms all FIXMEs are resolved or deferred, and verifies that every compiler skill with implementation work has a current design doc that has been reviewed by `/arch`.
 
 ### Phase 4: Wave Organization (driven by `/sprint`)
 
-9. **`/sprint` reviews dependencies** across the updated skill plans and organizes parallel activities into waves. A wave is a set of skill invocations that can run concurrently because they have no inter-dependencies.
-10. `/sprint` writes the wave structure and task list into SPRINT.md, marks it `ACTIVE`.
+12. **`/sprint` reviews dependencies** across the updated skill plans and organizes parallel activities into waves. A wave is a set of skill invocations that can run concurrently because they have no inter-dependencies.
+13. `/sprint` writes the wave structure and task list into SPRINT.md, marks it `ACTIVE`.
 
 ### Phase 5: Wave Execution (iterative)
 
 `/sprint` starts waves sequentially. Within each wave, skills run in parallel.
 
-11. **Compiler skill waves**: Only compiler skills (`/frontend`, `/typecheck`, `/backend`, `/qa`, `/platform`) write code. They work according to specs (`spec/`), design docs (`design/`), and their own plans. Each compiler skill completes its wave assignment.
+**Wave ordering principle**: Design precedes implementation precedes showcase. The standard wave sequence is:
+1. **Design wave** — compiler skills write/update design docs in `design/{skill}/`
+2. **Design review wave** — `/arch` reviews design docs for architectural coherence; `/qa` derives test cases from design docs and updates ring test plans
+3. **Implementation wave(s)** — compiler skills write code according to their reviewed design docs
+4. **Verification wave** — `/qa` test verification, `/review` code assessment
+5. **Showcase wave** — user-proxy skills expose the progress: `/port` builds showcase demos, `/examples` updates learning sequence, `/repl` validates interactive experience, `/docs` updates user-facing docs. This wave produces the `repl/demos/*.demo` files that gate sprint close.
 
-12. **Review after each compiler skill completes**: `/review` inspects each compiler skill's work for code quality, adherence to architecture, and correctness. Findings are classified as Blocker (B), Important (I), or Suggestion (S).
+A compiler skill MUST NOT begin implementation until its design doc for the sprint scope exists and has been reviewed by `/arch`. If a design review surfaces issues that change the sprint scope, `/sprint` pauses to re-scope with user approval.
+
+A sprint MUST NOT close until user-proxy skills have demonstrated that the new capabilities are usable. The showcase wave is not optional polish — it is the sprint's acceptance test from the buyer's perspective.
+
+14. **Compiler skill waves**: Only compiler skills (`/frontend`, `/typecheck`, `/backend`, `/qa`, `/platform`) write code. They work according to specs (`spec/`), design docs (`design/`), and their own plans. Each compiler skill completes its wave assignment.
+
+15. **Review after each compiler skill completes**: `/review` inspects each compiler skill's work for code quality, adherence to design docs and architecture, and correctness. Findings are classified as Blocker (B), Important (I), or Suggestion (S).
     - `/review` and `/qa` raise `FIXME(/skill-name)` comments on the relevant design doc or plan for the compiler skill to fix — they do not fix code themselves.
     - The compiler skill addresses Blockers and Important findings.
     - `/review` re-inspects. Iterate until all Blockers and Important findings are resolved (or explicitly deferred with rationale).
 
-13. **FIXME gate**: Before advancing to the next wave, `/sprint` scans all files produced or modified by the current wave for unresolved `FIXME(/skill-name)` comments. Outstanding FIXMEs block advancement.
+16. **FIXME gate**: Before advancing to the next wave, `/sprint` scans all files produced or modified by the current wave for unresolved `FIXME(/skill-name)` comments. Outstanding FIXMEs block advancement.
 
-14. **Repeat**: `/sprint` spawns the next wave. Continue until all waves are complete or user input is required.
+17. **Repeat**: `/sprint` spawns the next wave. Continue until all waves are complete or user input is required.
 
 ### Phase 6: Close (driven by `/sprint`)
 
-15. Write the outcome section in SPRINT.md: delivered, deferred, findings.
-16. Mark SPRINT.md as `COMPLETE`.
-17. Move `sprints/SPRINT.md` to `sprints/archive/sprint-{id}.md`.
-18. Update `sprints/ROADMAP.md` with the completed sprint and its outcomes.
-19. If the ring is not yet complete, begin Phase 1 for the next sprint.
-20. If the ring is complete, note that `/review` should be invoked for ring-gate review.
+18. Write the outcome section in SPRINT.md: delivered, deferred, findings.
+19. Mark SPRINT.md as `COMPLETE`.
+20. Move `sprints/SPRINT.md` to `sprints/archive/sprint-{id}.md`.
+21. Update `sprints/ROADMAP.md` with the completed sprint and its outcomes.
+22. If the ring is not yet complete, begin Phase 1 for the next sprint.
+23. If the ring is complete, note that `/review` should be invoked for ring-gate review.
 
 ### Mid-Sprint Adjustment
 
@@ -153,17 +188,23 @@ FIXMEs flow in one direction: the skill that discovers a problem files a `FIXME(
 
 `/sprint` tracks FIXMEs but MUST NOT rename, remove, or suppress them — only the owning skill removes a FIXME after resolving the underlying issue.
 
-### Debt and Deferral Escalation
+### Deferral Principles
 
-**Items deferred once may be deferred again with rationale. Items deferred twice MUST ship in the current sprint or require explicit user approval to defer a third time.** This prevents the pattern where reasonable-sounding rationale ("the sprint is already large enough") accumulates into chronic debt.
+**Three anti-patterns govern what `/sprint` may and may not defer:**
 
-During Phase 1 (scope), `/sprint` checks the deferral history of every carried item by scanning prior sprint archive Deferred sections. Items on their second deferral are flagged in the FIXME Debt table with `**2x deferred**` and included in the sprint scope by default. `/arch` may recommend deferral but `/sprint` escalates to the user rather than accepting automatically.
+1. **Carrying defects out of a sprint is an anti-pattern.** Bugs found during a sprint are fixed in that sprint. A defect is not "out of scope" — it is broken software. If a showcase or test reveals a bug, the sprint does not close until it is fixed. The only exception is a bug that requires architectural work not yet designed (in which case it is tracked as a FIXME, not silently deferred).
+
+2. **Refactoring during progression is an anti-pattern.** Code that needs cleanup gets harder to clean up as features land on top. "We'll refactor later" is a lie — later never comes, or comes at 3x the cost. When `/review` identifies structural issues (functions too long, parameter counts too high, missing abstractions), fix them in the current sprint while the code is fresh and the context is loaded.
+
+3. **The only legitimate deferral is avoiding interim architecture.** If implementing a feature now would require throwaway infrastructure that a later ring replaces, deferral is correct — it avoids waste and unnecessary complexity. This is `/arch`'s Principle 8 applied to sprint planning. But "the sprint is already large enough" is not a legitimate reason to defer defects or cleanup.
+
+**Escalation mechanics**: Items deferred once may be deferred again with rationale. Items deferred twice MUST ship in the current sprint or require explicit user approval to defer a third time. During Phase 1 (scope), `/sprint` checks the deferral history of every carried item by scanning prior sprint archive Deferred sections. Items on their second deferral are flagged in the FIXME Debt table with `**2x deferred**` and included in the sprint scope by default. `/arch` may recommend deferral but `/sprint` escalates to the user rather than accepting automatically.
 
 The same rule applies to `#[ignore]` tests: if an ignored test's target sprint has passed and it was re-targeted once already, it must ship in the current sprint or get explicit user approval to defer again.
 
 **Review findings** (Important and Blocker) from `/review` follow the same escalation: deferred once is acceptable, deferred twice requires user sign-off. `/sprint` tracks the deferral count in the FIXME Debt table.
 
-**Rationale**: Tech debt, test gaps, and review findings are always easy to defer because new features feel more valuable in the moment. But deferred quality work compounds — files that need cleanup get more complex as features land on top, ignored tests mask real bugs, and review findings become harder to address as the code evolves. The two-deferral limit forces a conscious decision rather than allowing drift.
+**Rationale**: Tech debt, test gaps, and review findings are always easy to defer because new features feel more valuable in the moment. But deferred quality work compounds — files that need cleanup get more complex as features land on top, ignored tests mask real bugs, and review findings become harder to address as the code evolves. The deferral principles above draw a bright line: defects and cleanup are not deferrable; only interim architecture avoidance justifies pushing work to a later sprint.
 
 ## Sprint 0 (Preparation)
 
@@ -181,7 +222,7 @@ Sprint 0 assignments follow this pattern for each skill:
 ```markdown
 # Sprint {ID}: {Title}
 
-**Status**: DRAFT | ARCH REVIEW | PLANNING | ACTIVE | COMPLETE
+**Status**: DRAFT | ARCH REVIEW | DESIGN | DESIGN REVIEW | PLANNING | ACTIVE | COMPLETE
 **Ring**: {N} ({name})
 **Goal**: {One-sentence goal}
 
@@ -207,7 +248,8 @@ Sprint 0 assignments follow this pattern for each skill:
 
 ### /skill-name
 **Task**: {what this skill does in this sprint}
-**Approach**: {how the skill will accomplish it — filled by the skill itself}
+**Design doc**: {path to design doc written/updated for this sprint — required for compiler skills with implementation work}
+**Approach**: {how the skill will accomplish it — filled by the skill itself, must reference design doc}
 **Design refs**: {relevant spec/design docs — highlighted by /arch}
 **Acceptance**: {how to verify the task is done}
 

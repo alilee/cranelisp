@@ -12,12 +12,12 @@ use cranelift::prelude::*;
 use cranelift_module::{Linkage, Module};
 
 use cranelisp_types::{
-    CranelispError, Expr, HeapCategory, HeapHeader, Span, Type,
+    CranelispError, Expr, HeapCategory, HeapHeader, Span, Type, TypeName,
 };
 
-use crate::heap::{self, HeapVec, NULLARY_THRESHOLD_I64};
+use crate::heap::{self, HeapAdt, HeapVec, NULLARY_THRESHOLD_I64};
 
-use super::FnCompiler;
+use super::{collect_var_ids_from_type, substitute_type_inline, FnCompiler};
 
 impl<'a> FnCompiler<'a> {
     /// Compile a Vec literal: `[e1 e2 e3]` → allocate Vec, store elements.
@@ -483,11 +483,10 @@ impl<'a> FnCompiler<'a> {
 
     /// Extract the element type from a Vec expression's type in expr_types.
     fn vec_elem_type(&self, vec_expr: &Expr) -> Option<Type> {
-        if let Some(Type::ADT(name, args)) = self.ctx.expr_types.get(&vec_expr.span()) {
-            if name.as_ref() == "Vec" && args.len() == 1 {
+        if let Some(Type::ADT(name, args)) = self.ctx.expr_types.get(&vec_expr.span())
+            && name.as_ref() == "Vec" && args.len() == 1 {
                 return Some(args[0].clone());
             }
-        }
         None
     }
 
@@ -566,7 +565,8 @@ impl<'a> FnCompiler<'a> {
     /// Resolve or generate a per-element-type dec function pointer.
     ///
     /// Returns iconst(0) for NeverHeap types (runtime skips the call).
-    /// Used by Vec drop for temporary Vec cleanup after read-only operations.
+    /// For ADT element types with heap fields, builds a drop glue function
+    /// so that fields are dec'd when the element reaches rc=0.
     fn resolve_elem_dec_fn_ptr(
         &mut self,
         elem_type: &Option<Type>,
@@ -580,12 +580,12 @@ impl<'a> FnCompiler<'a> {
         match category {
             HeapCategory::NeverHeap => Ok(self.builder.ins().iconst(types::I64, 0)),
             HeapCategory::AlwaysHeap => {
-                let func_id = self.build_elem_dec_fn(false, span)?;
+                let func_id = self.build_elem_dec_fn(false, ty, span)?;
                 let func_ref = self.module.declare_func_in_func(func_id, self.builder.func);
                 Ok(self.builder.ins().func_addr(types::I64, func_ref))
             }
             HeapCategory::Mixed => {
-                let func_id = self.build_elem_dec_fn(true, span)?;
+                let func_id = self.build_elem_dec_fn(true, ty, span)?;
                 let func_ref = self.module.declare_func_in_func(func_id, self.builder.func);
                 Ok(self.builder.ins().func_addr(types::I64, func_ref))
             }
@@ -663,10 +663,13 @@ impl<'a> FnCompiler<'a> {
     /// Build a standalone dec function: `(val: i64) -> i64`.
     ///
     /// If `guarded` is true, guards against bare nullary tags.
-    /// Used by Vec drop for temporary Vec cleanup after read-only operations.
+    /// If `elem_type` is an ADT with heap-typed fields, a drop glue function
+    /// is built and passed to `emit_rc_dec_guarded` so that fields are dec'd
+    /// before the ADT itself is freed.
     fn build_elem_dec_fn(
         &mut self,
         guarded: bool,
+        elem_type: &Type,
         span: Span,
     ) -> Result<cranelift_module::FuncId, CranelispError> {
         let dealloc_id = self.ctx.dealloc_func_id.ok_or_else(|| {
@@ -676,8 +679,15 @@ impl<'a> FnCompiler<'a> {
             }
         })?;
 
+        // Build drop glue for ADT element types with heap fields.
+        let drop_glue_id = self.build_adt_drop_glue_fn(elem_type, dealloc_id, span)?;
+
         let suffix = if guarded { "mixed" } else { "heap" };
-        let name = format!("runtime/vec_elem_dec_{suffix}");
+        let type_suffix = match elem_type {
+            Type::ADT(name, _) => format!("_{name}"),
+            _ => String::new(),
+        };
+        let name = format!("runtime/vec_elem_dec_{suffix}{type_suffix}");
 
         let mut sig = self.module.make_signature();
         sig.params.push(AbiParam::new(types::I64));
@@ -708,7 +718,7 @@ impl<'a> FnCompiler<'a> {
             self.module,
             val,
             dealloc_id,
-            None,
+            drop_glue_id,
             guarded,
         );
 
@@ -724,6 +734,200 @@ impl<'a> FnCompiler<'a> {
             })?;
 
         Ok(func_id)
+    }
+
+    /// Build a standalone ADT drop glue function: `(ptr: i64) -> ()`.
+    ///
+    /// For each data constructor, loads each heap-typed field and dec's it.
+    /// Returns None if the type is not an ADT or has no heap-typed fields.
+    fn build_adt_drop_glue_fn(
+        &mut self,
+        ty: &Type,
+        dealloc_id: cranelift_module::FuncId,
+        span: Span,
+    ) -> Result<Option<cranelift_module::FuncId>, CranelispError> {
+        let type_name = match ty {
+            Type::ADT(name, _) => name.clone(),
+            _ => return Ok(None),
+        };
+
+        let type_def = match self.ctx.type_defs.get(&type_name) {
+            Some(td) => td.clone(),
+            None => return Ok(None),
+        };
+
+        let concrete_args = match ty {
+            Type::ADT(_, args) => args.clone(),
+            _ => return Ok(None),
+        };
+
+        // Build substitution from Var ids to concrete types.
+        let mut unique_var_ids: Vec<cranelisp_types::TypeId> = Vec::new();
+        for c in &type_def.constructors {
+            for field in &c.fields {
+                collect_var_ids_from_type(&field.ty, &mut unique_var_ids);
+            }
+        }
+        let subst: std::collections::HashMap<cranelisp_types::TypeId, Type> = unique_var_ids
+            .iter()
+            .zip(concrete_args.iter())
+            .map(|(&id, arg)| (id, arg.clone()))
+            .collect();
+
+        // Collect data constructors with fields.
+        let data_ctors: Vec<_> = type_def
+            .constructors
+            .iter()
+            .filter(|c| !c.fields.is_empty())
+            .collect();
+
+        if data_ctors.is_empty() {
+            return Ok(None);
+        }
+
+        // Check if any data constructor has heap-typed fields.
+        let has_heap_fields = data_ctors.iter().any(|ctor| {
+            ctor.fields.iter().any(|f| {
+                let resolved = substitute_type_inline(&f.ty, &subst);
+                matches!(
+                    HeapCategory::classify(&resolved, Some(self.ctx.type_defs)),
+                    HeapCategory::AlwaysHeap | HeapCategory::Mixed
+                )
+            })
+        });
+
+        if !has_heap_fields {
+            return Ok(None);
+        }
+
+        // Build the drop glue function.
+        let glue_name = format!("runtime/drop_glue_{type_name}");
+
+        let mut sig = self.module.make_signature();
+        sig.params.push(AbiParam::new(types::I64)); // ptr
+
+        let glue_func_id = self
+            .module
+            .declare_function(&glue_name, Linkage::Local, &sig)
+            .map_err(|e| CranelispError::CodegenError {
+                message: format!("failed to declare drop glue fn: {e}"),
+                span,
+            })?;
+
+        let mut ctx = self.module.make_context();
+        let mut func_ctx = FunctionBuilderContext::new();
+        ctx.func.signature = sig;
+
+        let mut builder = FunctionBuilder::new(&mut ctx.func, &mut func_ctx);
+        let entry = builder.create_block();
+        builder.append_block_params_for_function_params(entry);
+        builder.switch_to_block(entry);
+        builder.seal_block(entry);
+
+        let adt_val = builder.block_params(entry)[0];
+
+        // Drop glue is only called from the free path of emit_rc_dec_guarded,
+        // so the value is guaranteed to be a heap pointer (not a bare tag).
+        // No mixed guard needed here.
+
+        if data_ctors.len() == 1 {
+            let ctor = data_ctors[0];
+            Self::emit_standalone_field_decs(
+                &mut builder,
+                self.module,
+                adt_val,
+                ctor,
+                &subst,
+                dealloc_id,
+                self.ctx.type_defs,
+            );
+        } else {
+            // Multiple data constructors: load tag, branch to correct handler.
+            let heap_tag = heap::heap_load(&mut builder, adt_val, HeapAdt::TAG_OFFSET);
+            let done_block = builder.create_block();
+
+            for (idx, ctor) in data_ctors.iter().enumerate() {
+                let ctor_block = builder.create_block();
+                let next_block = if idx + 1 < data_ctors.len() {
+                    builder.create_block()
+                } else {
+                    done_block
+                };
+
+                let tag_val = builder.ins().iconst(types::I64, ctor.tag as i64);
+                let cmp = builder.ins().icmp(IntCC::Equal, heap_tag, tag_val);
+                builder.ins().brif(cmp, ctor_block, &[], next_block, &[]);
+
+                builder.switch_to_block(ctor_block);
+                builder.seal_block(ctor_block);
+
+                Self::emit_standalone_field_decs(
+                    &mut builder,
+                    self.module,
+                    adt_val,
+                    ctor,
+                    &subst,
+                    dealloc_id,
+                    self.ctx.type_defs,
+                );
+                builder.ins().jump(done_block, &[]);
+
+                if idx + 1 < data_ctors.len() {
+                    builder.switch_to_block(next_block);
+                    builder.seal_block(next_block);
+                }
+            }
+
+            builder.switch_to_block(done_block);
+            builder.seal_block(done_block);
+        }
+
+        builder.ins().return_(&[]);
+        builder.seal_all_blocks();
+        builder.finalize();
+
+        self.module
+            .define_function(glue_func_id, &mut ctx)
+            .map_err(|e| CranelispError::CodegenError {
+                message: format!("failed to define drop glue fn: {e}"),
+                span,
+            })?;
+
+        Ok(Some(glue_func_id))
+    }
+
+    /// Emit rc_dec for each heap-typed field of a constructor (standalone).
+    ///
+    /// Unlike `emit_field_decs` on FnCompiler, this operates on a bare
+    /// FunctionBuilder without the FnCompiler's scope state.
+    fn emit_standalone_field_decs(
+        builder: &mut FunctionBuilder,
+        module: &mut cranelift_jit::JITModule,
+        adt_val: Value,
+        ctor: &cranelisp_types::ConstructorInfo,
+        subst: &std::collections::HashMap<cranelisp_types::TypeId, Type>,
+        dealloc_id: cranelift_module::FuncId,
+        type_defs: &std::collections::HashMap<TypeName, cranelisp_types::TypeDefInfo>,
+    ) {
+        for (i, field) in ctor.fields.iter().enumerate() {
+            let resolved_ty = substitute_type_inline(&field.ty, subst);
+            let category = HeapCategory::classify(&resolved_ty, Some(type_defs));
+            match category {
+                HeapCategory::AlwaysHeap => {
+                    let field_val =
+                        heap::heap_load(builder, adt_val, HeapAdt::field_offset(i));
+                    heap::emit_rc_dec(builder, module, field_val, dealloc_id, None);
+                }
+                HeapCategory::Mixed => {
+                    let field_val =
+                        heap::heap_load(builder, adt_val, HeapAdt::field_offset(i));
+                    heap::emit_rc_dec_guarded(
+                        builder, module, field_val, dealloc_id, None, true,
+                    );
+                }
+                HeapCategory::NeverHeap => {}
+            }
+        }
     }
 
     /// Emit an extern call with 2 i64 args, returning i64.

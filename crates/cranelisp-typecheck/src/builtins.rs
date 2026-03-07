@@ -4,6 +4,11 @@
 //! Ring 1: 8 monomorphic string/conversion externs + 4 polymorphic Vec externs.
 //! Ring 2 adds trait-dispatched Num.+ etc. on top of these.
 //!
+//! Core traits (Num, Eq, Ord, Display) are registered via the normal
+//! `register_trait_decl()` / `register_trait_impl()` pipeline — the same
+//! paths used for user-defined traits. This eliminates the interim
+//! `register_builtin_impl()` shortcut (Decision 17).
+//!
 //! Primitives are registered as ordinary symbol table entries with monomorphic
 //! schemes and `DefKind::Primitive { primitive_kind: PrimitiveKind::Inline }`.
 //! Vec primitives use polymorphic schemes with quantified type variables.
@@ -12,9 +17,9 @@
 use std::collections::HashMap;
 
 use cranelisp_types::{
-    ring0_primitives, ring1_primitives, DefKind, JitSymbol, ModuleEntry, PrimitiveKind,
-    Scheme, Span, Symbol, TraitDecl, TraitMethodSig, TraitName, Type, TypeExpr, TypeName,
-    Visibility,
+    ring0_primitives, ring1_primitives, DefKind, Defn, Expr, JitSymbol, ModuleEntry,
+    ModuleFullPath, PrimitiveKind, Scheme, Sexp, Span, Symbol, TraitDecl, TraitImpl,
+    TraitMethodSig, TraitName, Type, TypeExpr, TypeName, Visibility,
 };
 
 use crate::checker::TypeChecker;
@@ -22,14 +27,63 @@ use crate::scheme::mono;
 
 impl TypeChecker {
     /// Register all builtins: Ring 0 + Ring 1 primitives, special forms,
-    /// Ring 2 core traits and builtin impls.
+    /// Ring 2 core traits and trait impls.
     pub(crate) fn register_builtins(&mut self) {
         self.register_primitives();
         self.register_ring1_primitives();
         self.register_vec_primitives();
         self.register_special_forms();
-        self.register_core_traits();
-        self.register_builtin_impls();
+
+        // Core traits belong in the `primitives` module, not `user`.
+        // Save current module, switch to primitives, register, then restore.
+        let saved_module = self.current_module_path().clone();
+        let primitives_path = ModuleFullPath::from("primitives");
+        self.set_current_module(primitives_path.clone());
+        self.register_core_trait_decls();
+        self.register_core_trait_impls();
+        self.set_current_module(saved_module);
+
+        // Import all trait-related entries from `primitives` into `user` so they
+        // are visible at the REPL and propagated to new modules via set_current_module.
+        self.import_primitives_into_user(&primitives_path);
+
+        // Clear transient state accumulated during core trait impl type-checking.
+        // register_trait_impl() type-checks method bodies (e.g. `(add-i64 x y)`),
+        // which populates expr_types, method_resolutions, and subst with entries
+        // keyed at Span::SYNTHETIC. These must not leak into user program checking.
+        self.clear_transient_state();
+    }
+
+    /// Copy all entries from the `primitives` module into the `user` module.
+    ///
+    /// After core traits are registered in `primitives`, this makes trait methods
+    /// (+, -, =, show, etc.) and trait decls (Num, Eq, Ord, Display) visible in
+    /// `user` as direct entries (not imports). This ensures `set_current_module`
+    /// propagates them to new modules, and `/list` displays them correctly.
+    fn import_primitives_into_user(&mut self, primitives_path: &ModuleFullPath) {
+        let user_path = ModuleFullPath::from("user");
+
+        // Collect entries to copy (avoid borrowing self.modules while mutating).
+        let entries_to_copy: Vec<(Symbol, ModuleEntry)> = self
+            .modules
+            .get(primitives_path)
+            .map(|table| {
+                table
+                    .all_symbols()
+                    .map(|(name, entry)| (name.clone(), entry.clone()))
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        // Insert copies into user module.
+        if let Some(user_table) = self.modules.get_mut(&user_path) {
+            for (name, entry) in entries_to_copy {
+                // Don't overwrite existing entries (e.g. primitives already in user).
+                if user_table.get(name.as_ref()).is_none() {
+                    user_table.insert(name, entry);
+                }
+            }
+        }
     }
 
     /// Register Ring 0 primitives from the authoritative table.
@@ -193,305 +247,263 @@ impl TypeChecker {
         }
     }
 
-    /// Register core traits: Num, Eq, Ord, Display.
+    /// Register core trait declarations: Num, Eq, Ord, Display.
     ///
-    /// These are registered at startup, not from stdlib files.
-    /// See interfaces.md Ring 2A for the authoritative trait table.
-    fn register_core_traits(&mut self) {
-        self.register_num_trait();
-        self.register_eq_trait();
-        self.register_ord_trait();
-        self.register_display_trait();
-    }
-
-    /// Register the Num trait: + - * / :: (Fn [a a] a)
-    fn register_num_trait(&mut self) {
-        let methods: Vec<(&str, &[&str])> = vec![
-            ("+", &["lhs", "rhs"]),
-            ("-", &["lhs", "rhs"]),
-            ("*", &["lhs", "rhs"]),
-            ("/", &["lhs", "rhs"]),
-        ];
-
-        let method_sigs: Vec<TraitMethodSig> = methods
-            .into_iter()
-            .map(|(name, params)| self.make_aa_a_method(name, params))
-            .collect();
-
-        let decl = TraitDecl {
+    /// Constructs `TraitDecl` AST structs and routes them through the normal
+    /// `register_trait_decl()` pipeline — the same path used for user-defined traits.
+    ///
+    /// Equivalent Cranelisp:
+    /// ```clojure
+    /// (deftrait (Num a) (+ [a a] a) (- [a a] a) (* [a a] a) (/ [a a] a))
+    /// (deftrait (Eq a) (= [a a] Bool) (!= [x y] Bool (not (= x y))))
+    /// (deftrait (Ord a) (< [a a] Bool) (> [x y] Bool (< y x))
+    ///                   (<= [x y] Bool (not (< y x))) (>= [x y] Bool (not (< x y))))
+    /// (deftrait (Display a) (show [a] String))
+    /// ```
+    fn register_core_trait_decls(&mut self) {
+        // --- Num: + - * / :: (Fn [a a] a) ---
+        let num_decl = TraitDecl {
             name: TraitName::from("Num"),
             docstring: Some("Numeric operations".to_string()),
             type_params: vec![Symbol::from("a")],
-            methods: method_sigs,
+            methods: ["+", "-", "*", "/"]
+                .iter()
+                .map(|op| make_aa_a_sig(op, &["lhs", "rhs"]))
+                .collect(),
             visibility: Visibility::Public,
             span: Span::SYNTHETIC,
         };
+        self.register_trait_decl(&num_decl)
+            .unwrap_or_else(|e| unreachable!("invariant: core trait Num registration failed: {e}"));
 
-        // Use register_trait_decl which handles method registration
-        self.register_trait_decl(&decl)
-            .unwrap_or_else(|e| {
-                unreachable!("invariant: core trait Num registration failed: {e}")
-            });
-    }
-
-    /// Register the Eq trait: = != :: (Fn [a a] Bool)
-    fn register_eq_trait(&mut self) {
-        let eq_method = self.make_aa_bool_method("=", &["lhs", "rhs"]);
-        let neq_method = self.make_aa_bool_method_with_default(
-            "!=",
-            &["x", "y"],
-        );
-
-        let decl = TraitDecl {
+        // --- Eq: = :: (Fn [a a] Bool), != with default body ---
+        let eq_decl = TraitDecl {
             name: TraitName::from("Eq"),
             docstring: Some("Equality".to_string()),
             type_params: vec![Symbol::from("a")],
-            methods: vec![eq_method, neq_method],
+            methods: vec![
+                make_aa_bool_sig("=", &["lhs", "rhs"], false),
+                make_aa_bool_sig("!=", &["x", "y"], true),
+            ],
             visibility: Visibility::Public,
             span: Span::SYNTHETIC,
         };
+        self.register_trait_decl(&eq_decl)
+            .unwrap_or_else(|e| unreachable!("invariant: core trait Eq registration failed: {e}"));
 
-        self.register_trait_decl(&decl)
-            .unwrap_or_else(|e| {
-                unreachable!("invariant: core trait Eq registration failed: {e}")
-            });
-    }
-
-    /// Register the Ord trait: < > <= >= :: (Fn [a a] Bool)
-    fn register_ord_trait(&mut self) {
-        let lt_method = self.make_aa_bool_method("<", &["lhs", "rhs"]);
-        let gt_method = self.make_aa_bool_method_with_default(
-            ">",
-            &["x", "y"],
-        );
-        let le_method = self.make_aa_bool_method_with_default(
-            "<=",
-            &["x", "y"],
-        );
-        let ge_method = self.make_aa_bool_method_with_default(
-            ">=",
-            &["x", "y"],
-        );
-
-        let decl = TraitDecl {
+        // --- Ord: < :: (Fn [a a] Bool), > <= >= with default bodies ---
+        let ord_decl = TraitDecl {
             name: TraitName::from("Ord"),
             docstring: Some("Ordering".to_string()),
             type_params: vec![Symbol::from("a")],
-            methods: vec![lt_method, gt_method, le_method, ge_method],
+            methods: vec![
+                make_aa_bool_sig("<", &["lhs", "rhs"], false),
+                make_aa_bool_sig(">", &["x", "y"], true),
+                make_aa_bool_sig("<=", &["x", "y"], true),
+                make_aa_bool_sig(">=", &["x", "y"], true),
+            ],
             visibility: Visibility::Public,
             span: Span::SYNTHETIC,
         };
+        self.register_trait_decl(&ord_decl)
+            .unwrap_or_else(|e| unreachable!("invariant: core trait Ord registration failed: {e}"));
 
-        self.register_trait_decl(&decl)
-            .unwrap_or_else(|e| {
-                unreachable!("invariant: core trait Ord registration failed: {e}")
-            });
-    }
-
-    /// Register the Display trait: show :: (Fn [a] String)
-    fn register_display_trait(&mut self) {
-        let show_method = TraitMethodSig {
-            name: Symbol::from("show"),
-            docstring: None,
-            params: vec![TypeExpr::TypeVar(Symbol::from("a"))],
-            ret_type: TypeExpr::Named(TypeName::from("String")),
-            span: Span::SYNTHETIC,
-            hkt_param_index: None,
-            default_param_names: vec![Symbol::from("self")],
-            default_body: None,
-        };
-
-        let decl = TraitDecl {
+        // --- Display: show :: (Fn [a] String) ---
+        let display_decl = TraitDecl {
             name: TraitName::from("Display"),
             docstring: Some("String representation".to_string()),
             type_params: vec![Symbol::from("a")],
-            methods: vec![show_method],
+            methods: vec![TraitMethodSig {
+                name: Symbol::from("show"),
+                docstring: None,
+                params: vec![TypeExpr::TypeVar(Symbol::from("a"))],
+                ret_type: TypeExpr::Named(TypeName::from("String")),
+                span: Span::SYNTHETIC,
+                hkt_param_index: None,
+                default_param_names: vec![Symbol::from("self")],
+                default_body: None,
+            }],
             visibility: Visibility::Public,
             span: Span::SYNTHETIC,
         };
+        self.register_trait_decl(&display_decl)
+            .unwrap_or_else(|e| unreachable!("invariant: core trait Display registration failed: {e}"));
+    }
 
-        self.register_trait_decl(&decl)
+    /// Register core trait implementations for primitive types.
+    ///
+    /// Constructs `TraitImpl` AST structs with real method bodies that delegate
+    /// to named primitives, then routes them through the normal `register_trait_impl()`
+    /// pipeline. The returned `Defn` nodes are discarded — the backend's
+    /// `primitive_for_trait_method()` short-circuits all core methods to inline IR.
+    ///
+    /// Equivalent Cranelisp:
+    /// ```clojure
+    /// (impl Num Int  (+ [x y] (add-i64 x y)) (- [x y] (sub-i64 x y)) ...)
+    /// (impl Num Float (+ [x y] (add-f64 x y)) ...)
+    /// (impl Eq Int   (= [x y] (eq-i64 x y)))
+    /// (impl Eq Float (= [x y] (eq-f64 x y)))
+    /// (impl Eq Bool  (= [x y] (eq-bool x y)))
+    /// (impl Eq String (= [x y] (str-eq x y)))
+    /// (impl Ord Int  (< [x y] (lt-i64 x y)))
+    /// (impl Ord Float (< [x y] (lt-f64 x y)))
+    /// (impl Display Int    (show [x] (int-to-string x)))
+    /// (impl Display Float  (show [x] (float-to-string x)))
+    /// (impl Display Bool   (show [x] (bool-to-string x)))
+    /// (impl Display String (show [x] (string-identity x)))
+    /// ```
+    fn register_core_trait_impls(&mut self) {
+        // --- Num impls ---
+        let num_methods = ["+", "-", "*", "/"];
+
+        // Num for Int: + → add-i64, - → sub-i64, * → mul-i64, / → div-i64
+        let int_prims = ["add-i64", "sub-i64", "mul-i64", "div-i64"];
+        self.register_core_impl(
+            "Num",
+            "Int",
+            &num_methods.iter().zip(int_prims.iter())
+                .map(|(m, p)| (*m, *p, &["x", "y"] as &[&str]))
+                .collect::<Vec<_>>(),
+        );
+
+        // Num for Float: + → add-f64, - → sub-f64, * → mul-f64, / → div-f64
+        let float_prims = ["add-f64", "sub-f64", "mul-f64", "div-f64"];
+        self.register_core_impl(
+            "Num",
+            "Float",
+            &num_methods.iter().zip(float_prims.iter())
+                .map(|(m, p)| (*m, *p, &["x", "y"] as &[&str]))
+                .collect::<Vec<_>>(),
+        );
+
+        // --- Eq impls (only `=` required; `!=` has default body) ---
+        self.register_core_impl("Eq", "Int",    &[("=", "eq-i64", &["x", "y"])]);
+        self.register_core_impl("Eq", "Float",  &[("=", "eq-f64", &["x", "y"])]);
+        self.register_core_impl("Eq", "Bool",   &[("=", "eq-bool", &["x", "y"])]);
+        self.register_core_impl("Eq", "String", &[("=", "str-eq", &["x", "y"])]);
+
+        // --- Ord impls (only `<` required; `>` `<=` `>=` have default bodies) ---
+        self.register_core_impl("Ord", "Int",   &[("<", "lt-i64", &["x", "y"])]);
+        self.register_core_impl("Ord", "Float", &[("<", "lt-f64", &["x", "y"])]);
+
+        // --- Display impls ---
+        self.register_core_impl("Display", "Int",    &[("show", "int-to-string", &["x"])]);
+        self.register_core_impl("Display", "Float",  &[("show", "float-to-string", &["x"])]);
+        self.register_core_impl("Display", "Bool",   &[("show", "bool-to-string", &["x"])]);
+        self.register_core_impl("Display", "String", &[("show", "string-identity", &["x"])]);
+    }
+
+    /// Register a single core trait implementation via the normal pipeline.
+    ///
+    /// Each entry in `methods` is `(method_name, primitive_name, param_names)`.
+    /// The body of each method is `(primitive_name param1 param2 ...)`.
+    fn register_core_impl(
+        &mut self,
+        trait_name: &str,
+        target_type: &str,
+        methods: &[(&str, &str, &[&str])],
+    ) {
+        let method_defns: Vec<Defn> = methods
+            .iter()
+            .map(|(method_name, prim_name, param_names)| {
+                let params: Vec<Symbol> = param_names
+                    .iter()
+                    .map(|p| Symbol::from(*p))
+                    .collect();
+                let args: Vec<Expr> = param_names
+                    .iter()
+                    .map(|p| Expr::Var {
+                        name: Symbol::from(*p),
+                        span: Span::SYNTHETIC,
+                    })
+                    .collect();
+
+                Defn {
+                    name: Symbol::from(*method_name),
+                    docstring: None,
+                    params,
+                    param_annotations: vec![None; param_names.len()],
+                    body: Expr::Apply {
+                        callee: Box::new(Expr::Var {
+                            name: Symbol::from(*prim_name),
+                            span: Span::SYNTHETIC,
+                        }),
+                        args,
+                        span: Span::SYNTHETIC,
+                    },
+                    visibility: Visibility::Public,
+                    span: Span::SYNTHETIC,
+                }
+            })
+            .collect();
+
+        let impl_ = TraitImpl {
+            trait_name: TraitName::from(trait_name),
+            target_type: TypeName::from(target_type),
+            type_args: vec![],
+            type_constraints: vec![],
+            methods: method_defns,
+            span: Span::SYNTHETIC,
+        };
+
+        // Route through the normal pipeline; discard returned Defn nodes.
+        // The backend's primitive_for_trait_method() handles codegen.
+        let _defns = self.register_trait_impl(&impl_)
             .unwrap_or_else(|e| {
-                unreachable!("invariant: core trait Display registration failed: {e}")
+                unreachable!(
+                    "invariant: core impl {trait_name} for {target_type} registration failed: {e}"
+                )
             });
     }
+}
 
-    /// Helper: build a method sig of shape (Fn [a a] a) — for Num ops.
-    fn make_aa_a_method(
-        &self,
-        name: &str,
-        param_names: &[&str],
-    ) -> TraitMethodSig {
-        TraitMethodSig {
-            name: Symbol::from(name),
-            docstring: None,
-            params: vec![
-                TypeExpr::TypeVar(Symbol::from("a")),
-                TypeExpr::TypeVar(Symbol::from("a")),
-            ],
-            ret_type: TypeExpr::TypeVar(Symbol::from("a")),
-            span: Span::SYNTHETIC,
-            hkt_param_index: None,
-            default_param_names: param_names
-                .iter()
-                .map(|s| Symbol::from(*s))
-                .collect(),
-            default_body: None,
-        }
+// --- Standalone helper functions for building trait method signatures ---
+
+/// Build a method signature of shape `(Fn [a a] a)` — for Num arithmetic ops.
+fn make_aa_a_sig(name: &str, param_names: &[&str]) -> TraitMethodSig {
+    TraitMethodSig {
+        name: Symbol::from(name),
+        docstring: None,
+        params: vec![
+            TypeExpr::TypeVar(Symbol::from("a")),
+            TypeExpr::TypeVar(Symbol::from("a")),
+        ],
+        ret_type: TypeExpr::TypeVar(Symbol::from("a")),
+        span: Span::SYNTHETIC,
+        hkt_param_index: None,
+        default_param_names: param_names
+            .iter()
+            .map(|s| Symbol::from(*s))
+            .collect(),
+        default_body: None,
     }
+}
 
-    /// Helper: build a method sig of shape (Fn [a a] Bool) — for Eq/Ord.
-    fn make_aa_bool_method(
-        &self,
-        name: &str,
-        param_names: &[&str],
-    ) -> TraitMethodSig {
-        TraitMethodSig {
-            name: Symbol::from(name),
-            docstring: None,
-            params: vec![
-                TypeExpr::TypeVar(Symbol::from("a")),
-                TypeExpr::TypeVar(Symbol::from("a")),
-            ],
-            ret_type: TypeExpr::Named(TypeName::from("Bool")),
-            span: Span::SYNTHETIC,
-            hkt_param_index: None,
-            default_param_names: param_names
-                .iter()
-                .map(|s| Symbol::from(*s))
-                .collect(),
-            default_body: None,
-        }
+/// Build a method signature of shape `(Fn [a a] Bool)` — for Eq/Ord ops.
+///
+/// If `has_default` is true, a placeholder `default_body` is set so that
+/// `register_trait_impl()` generates the hard-coded default body.
+fn make_aa_bool_sig(name: &str, param_names: &[&str], has_default: bool) -> TraitMethodSig {
+    TraitMethodSig {
+        name: Symbol::from(name),
+        docstring: None,
+        params: vec![
+            TypeExpr::TypeVar(Symbol::from("a")),
+            TypeExpr::TypeVar(Symbol::from("a")),
+        ],
+        ret_type: TypeExpr::Named(TypeName::from("Bool")),
+        span: Span::SYNTHETIC,
+        hkt_param_index: None,
+        default_param_names: param_names
+            .iter()
+            .map(|s| Symbol::from(*s))
+            .collect(),
+        default_body: if has_default {
+            Some(Sexp::Symbol("default".to_string(), Span::SYNTHETIC))
+        } else {
+            None
+        },
     }
-
-    /// Helper: method sig of shape (Fn [a a] Bool) with a default body marker.
-    fn make_aa_bool_method_with_default(
-        &self,
-        name: &str,
-        param_names: &[&str],
-    ) -> TraitMethodSig {
-        // The default body is represented as a Sexp placeholder.
-        // Actual default method generation happens in impl registration.
-        TraitMethodSig {
-            name: Symbol::from(name),
-            docstring: None,
-            params: vec![
-                TypeExpr::TypeVar(Symbol::from("a")),
-                TypeExpr::TypeVar(Symbol::from("a")),
-            ],
-            ret_type: TypeExpr::Named(TypeName::from("Bool")),
-            span: Span::SYNTHETIC,
-            hkt_param_index: None,
-            default_param_names: param_names
-                .iter()
-                .map(|s| Symbol::from(*s))
-                .collect(),
-            default_body: Some(cranelisp_types::Sexp::Symbol(
-                "default".to_string(),
-                Span::SYNTHETIC,
-            )),
-        }
-    }
-
-    /// Register builtin trait implementations.
-    ///
-    /// See interfaces.md Ring 2A for the authoritative impl table.
-    fn register_builtin_impls(&mut self) {
-        // Num for Int
-        self.register_builtin_impl(
-            TraitName::from("Num"),
-            TypeName::from("Int"),
-            vec![
-                (Symbol::from("+"), Symbol::from("add-i64")),
-                (Symbol::from("-"), Symbol::from("sub-i64")),
-                (Symbol::from("*"), Symbol::from("mul-i64")),
-                (Symbol::from("/"), Symbol::from("div-i64")),
-            ],
-        );
-
-        // Num for Float
-        self.register_builtin_impl(
-            TraitName::from("Num"),
-            TypeName::from("Float"),
-            vec![
-                (Symbol::from("+"), Symbol::from("add-f64")),
-                (Symbol::from("-"), Symbol::from("sub-f64")),
-                (Symbol::from("*"), Symbol::from("mul-f64")),
-                (Symbol::from("/"), Symbol::from("div-f64")),
-            ],
-        );
-
-        // Eq for Int
-        self.register_builtin_impl(
-            TraitName::from("Eq"),
-            TypeName::from("Int"),
-            vec![(Symbol::from("="), Symbol::from("eq-i64"))],
-        );
-
-        // Eq for Float
-        self.register_builtin_impl(
-            TraitName::from("Eq"),
-            TypeName::from("Float"),
-            vec![(Symbol::from("="), Symbol::from("eq-f64"))],
-        );
-
-        // Eq for Bool
-        self.register_builtin_impl(
-            TraitName::from("Eq"),
-            TypeName::from("Bool"),
-            vec![(Symbol::from("="), Symbol::from("eq-bool"))],
-        );
-
-        // Eq for String
-        self.register_builtin_impl(
-            TraitName::from("Eq"),
-            TypeName::from("String"),
-            vec![(Symbol::from("="), Symbol::from("str-eq"))],
-        );
-
-        // Ord for Int
-        self.register_builtin_impl(
-            TraitName::from("Ord"),
-            TypeName::from("Int"),
-            vec![(Symbol::from("<"), Symbol::from("lt-i64"))],
-        );
-
-        // Ord for Float
-        self.register_builtin_impl(
-            TraitName::from("Ord"),
-            TypeName::from("Float"),
-            vec![(Symbol::from("<"), Symbol::from("lt-f64"))],
-        );
-
-        // Display for Int
-        self.register_builtin_impl(
-            TraitName::from("Display"),
-            TypeName::from("Int"),
-            vec![(Symbol::from("show"), Symbol::from("int-to-string"))],
-        );
-
-        // Display for Float
-        self.register_builtin_impl(
-            TraitName::from("Display"),
-            TypeName::from("Float"),
-            vec![(Symbol::from("show"), Symbol::from("float-to-string"))],
-        );
-
-        // Display for Bool
-        self.register_builtin_impl(
-            TraitName::from("Display"),
-            TypeName::from("Bool"),
-            vec![(Symbol::from("show"), Symbol::from("bool-to-string"))],
-        );
-
-        // Display for String (identity passthrough)
-        self.register_builtin_impl(
-            TraitName::from("Display"),
-            TypeName::from("String"),
-            vec![(Symbol::from("show"), Symbol::from("string-identity"))],
-        );
-    }
-
 }
 
 #[cfg(test)]
@@ -761,5 +773,141 @@ mod tests {
                 "operator {name} should be registered as a trait method"
             );
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // Decision 17 elimination: core traits via normal pipeline
+    // -----------------------------------------------------------------------
+
+    // spec: 07-traits §7.7 — core traits registered via register_trait_decl (check trait_registry.decls)
+    #[test]
+    fn test_core_traits_registered_via_trait_decl() {
+        let tc = TypeChecker::new();
+        let core_traits = ["Num", "Eq", "Ord", "Display"];
+        for name in core_traits {
+            assert!(
+                tc.trait_registry.decls.contains_key(&TraitName::from(name)),
+                "core trait {name} should be in trait_registry.decls"
+            );
+        }
+    }
+
+    // spec: 07-traits §7.7 — all 12 core impl entries registered in impl_registry
+    #[test]
+    fn test_all_12_core_impls_registered() {
+        let tc = TypeChecker::new();
+        let expected: Vec<(&str, &str)> = vec![
+            // Num: Int, Float
+            ("Num", "Int"), ("Num", "Float"),
+            // Eq: Int, Float, Bool, String
+            ("Eq", "Int"), ("Eq", "Float"), ("Eq", "Bool"), ("Eq", "String"),
+            // Ord: Int, Float
+            ("Ord", "Int"), ("Ord", "Float"),
+            // Display: Int, Float, Bool, String
+            ("Display", "Int"), ("Display", "Float"), ("Display", "Bool"), ("Display", "String"),
+        ];
+        for (trait_name, impl_type) in &expected {
+            assert!(
+                tc.impl_registry.has_impl(
+                    &TraitName::from(*trait_name),
+                    &TypeName::from(*impl_type),
+                ),
+                "impl {trait_name} for {impl_type} should be registered"
+            );
+        }
+        // Count total entries
+        let total: usize = tc.impl_registry.impls.values()
+            .map(|inner| inner.len())
+            .sum();
+        assert_eq!(total, 12, "exactly 12 core impl entries expected");
+    }
+
+    // spec: 07-traits §7.7 — default methods (!=, >, <=, >=) resolve correctly
+    #[test]
+    fn test_default_methods_resolve_correctly() {
+        let mut tc = TypeChecker::new();
+
+        // != should resolve for Int (default via Eq)
+        let neq_result = tc.try_resolve_trait_method(
+            &Symbol::from("!="),
+            &[Type::Int, Type::Int],
+            Span::SYNTHETIC,
+        );
+        assert!(neq_result.is_some(), "!= should resolve for Int");
+
+        // > should resolve for Int (default via Ord)
+        let gt_result = tc.try_resolve_trait_method(
+            &Symbol::from(">"),
+            &[Type::Int, Type::Int],
+            Span::SYNTHETIC,
+        );
+        assert!(gt_result.is_some(), "> should resolve for Int");
+
+        // <= should resolve for Float (default via Ord)
+        let le_result = tc.try_resolve_trait_method(
+            &Symbol::from("<="),
+            &[Type::Float, Type::Float],
+            Span::SYNTHETIC,
+        );
+        assert!(le_result.is_some(), "<= should resolve for Float");
+
+        // >= should resolve for Float (default via Ord)
+        let ge_result = tc.try_resolve_trait_method(
+            &Symbol::from(">="),
+            &[Type::Float, Type::Float],
+            Span::SYNTHETIC,
+        );
+        assert!(ge_result.is_some(), ">= should resolve for Float");
+    }
+
+    // spec: 07-traits §7.7 — bootstrap: impl bodies reference named primitives in scope
+    #[test]
+    fn test_bootstrap_impl_bodies_typecheck() {
+        // This test verifies that register_trait_impl() succeeds for core impls,
+        // which means the method bodies (e.g., `(add-i64 x y)`) type-check
+        // against named primitives already registered by register_primitives().
+        //
+        // The fact that TypeChecker::new() does not panic proves this — but
+        // we verify the impl exists and the trait method resolves correctly.
+        let mut tc = TypeChecker::new();
+
+        // Num.+ for Int should resolve (body was `(add-i64 x y)`)
+        let plus_result = tc.try_resolve_trait_method(
+            &Symbol::from("+"),
+            &[Type::Int, Type::Int],
+            Span::SYNTHETIC,
+        );
+        assert!(plus_result.is_some(), "Num.+ should resolve for Int");
+
+        // Display.show for Bool should resolve (body was `(bool-to-string x)`)
+        let show_result = tc.try_resolve_trait_method(
+            &Symbol::from("show"),
+            &[Type::Bool],
+            Span::SYNTHETIC,
+        );
+        assert!(show_result.is_some(), "Display.show should resolve for Bool");
+
+        // Eq.= for String should resolve (body was `(str-eq x y)`)
+        let eq_result = tc.try_resolve_trait_method(
+            &Symbol::from("="),
+            &[Type::String, Type::String],
+            Span::SYNTHETIC,
+        );
+        assert!(eq_result.is_some(), "Eq.= should resolve for String");
+    }
+
+    // spec: 07-traits §7.7 — Display.show registered as trait method
+    #[test]
+    fn test_show_registered_as_trait_method() {
+        let tc = TypeChecker::new();
+        assert!(
+            tc.symbol_table().get("show").is_some(),
+            "show should be registered as a trait method"
+        );
+        assert!(
+            tc.trait_registry.method_to_trait.get(&Symbol::from("show"))
+                == Some(&TraitName::from("Display")),
+            "show should map to Display trait"
+        );
     }
 }

@@ -574,6 +574,10 @@ pub struct MonoDefn {
     pub defn: Defn,
     /// Method resolutions specific to this monomorphisation
     pub resolutions: MethodResolutions,
+    /// Per-expression types for this monomorphisation, keyed by AST span.
+    /// The backend uses these instead of the program-wide expr_types map
+    /// so that each specialization compiles against its concrete types.
+    pub expr_types: HashMap<Span, Type>,
 }
 ```
 
@@ -1017,7 +1021,7 @@ use std::mem::{self, offset_of};
 pub struct HeapHeader {
     /// Total allocation size in bytes (header + payload). Used by free().
     pub alloc_size: i64,
-    /// Reference count. Accessed via atomic_rmw (Release ordering) per NFR C.4.1.
+    /// Reference count. Accessed via atomic_rmw (seq-cst ordering) per NFR C.4.1.
     /// Initial value: 1 (the allocating binding owns the value).
     pub rc: i64,
 }
@@ -1118,7 +1122,7 @@ const _: () = assert!(HeapAdt::FIELDS_START == 24);
 Closure layout is used by the backend for lambda compilation, closure calls, and drop glue. Lives in `cranelisp-backend`.
 
 ```rust
-/// Closure: [header | code_ptr | cap_0 | cap_1 | ... | cap_n]
+/// Closure: [header | code_ptr | drop_glue_ptr | cap_0 | cap_1 | ... | cap_n]
 #[repr(C)]
 pub struct HeapClosure {
     pub header: HeapHeader,
@@ -1126,26 +1130,33 @@ pub struct HeapClosure {
     /// Lambda body signature: (env_ptr: i64, params...) -> i64
     /// where env_ptr IS the closure base pointer (this allocation).
     pub code_ptr: i64, // ptr-width: i64 on native, i32 on wasm32 (see NFR C.5.4)
+    /// Pointer to the drop glue function for this closure's captures.
+    /// Drop glue signature: (env_ptr: i64) -> ()
+    /// Decrements all heap-typed captures in the closure environment.
+    /// Null (0) for closures with no heap-typed captures.
+    pub drop_glue_ptr: i64,
     // Captures follow at CAPTURES_START. Each capture is an i64.
 }
 
 impl HeapClosure {
-    pub const CODE_PTR_OFFSET: i32 = offset_of!(Self, code_ptr) as i32; // 16
-    pub const CAPTURES_START: usize = mem::size_of::<Self>();             // 24
+    pub const CODE_PTR_OFFSET: i32 = offset_of!(Self, code_ptr) as i32;         // 16
+    pub const DROP_GLUE_PTR_OFFSET: i32 = offset_of!(Self, drop_glue_ptr) as i32; // 24
+    pub const CAPTURES_START: usize = mem::size_of::<Self>();                      // 32
 
     /// Offset of the i-th captured value from the base pointer.
     pub const fn capture_offset(i: usize) -> i32 {
         (Self::CAPTURES_START + i * mem::size_of::<i64>()) as i32
     }
 
-    /// Payload size after the header: code_ptr + n captures.
+    /// Payload size after the header: code_ptr + drop_glue_ptr + n captures.
     pub const fn payload_size(capture_count: usize) -> usize {
-        mem::size_of::<i64>() + capture_count * mem::size_of::<i64>()
+        2 * mem::size_of::<i64>() + capture_count * mem::size_of::<i64>()
     }
 }
 
 const _: () = assert!(HeapClosure::CODE_PTR_OFFSET == 16);
-const _: () = assert!(HeapClosure::CAPTURES_START == 24);
+const _: () = assert!(HeapClosure::DROP_GLUE_PTR_OFFSET == 24);
+const _: () = assert!(HeapClosure::CAPTURES_START == 32);
 ```
 
 ### HeapVec (in `cranelisp-backend`)
@@ -1201,35 +1212,31 @@ Element offset: `data_ptr + index * 8`. The data buffer is allocated as `cap * 8
 **Lambda body signature:** `(env_ptr: i64, param_0: i64, ..., param_n: i64) -> i64`
 
 - `env_ptr` is the closure's base pointer. The callee loads captures via `heap_load(builder, env_ptr, HeapClosure::capture_offset(i))`.
-- Non-capturing lambdas and named-function-as-value wrappers allocate a minimal closure: `[HeapHeader | code_ptr]` (zero captures). The wrapper function ignores `env_ptr`.
+- Non-capturing lambdas and named-function-as-value wrappers allocate a minimal closure: `[HeapHeader | code_ptr | drop_glue_ptr(0)]` (zero captures, null drop glue). The wrapper function ignores `env_ptr`.
 - Indirect call: `call_indirect(sig, code_ptr, [closure_ptr, args...])` where `code_ptr` is loaded from `HeapClosure::CODE_PTR_OFFSET`.
 
-**Drop glue strategy — side table:**
+**Drop glue strategy — embedded drop_glue_ptr:**
 
-Ring 1 closures do NOT store a `drop_ptr` inline (departing from the sketch, which had `[code_ptr | drop_ptr | captures...]`). Instead, the backend maintains a side table:
+Each closure carries a `drop_glue_ptr` at offset 24 (`HeapClosure::DROP_GLUE_PTR_OFFSET`). The drop glue function is generated per-lambda at compile time:
 
-```rust
-/// Maps a lambda's code_ptr to its drop glue function pointer.
-/// Stored in the backend (not in the closure struct). Populated at compile time.
-/// Drop glue is a generated function: (env_ptr: i64) -> () that decs all
-/// heap-typed captures in the closure environment.
-type ClosureDropTable = HashMap<*const u8, *const u8>;
-```
+- **Signature:** `(env_ptr: i64) -> ()` — loads and dec's each heap-typed capture from the closure environment.
+- **Null for no heap captures:** Closures with no heap-typed captures store `0` in `drop_glue_ptr`. The dec path checks for null before calling drop glue.
+- **Self-contained operation:** When decrementing a closure (rc reaches zero), the runtime reads `drop_glue_ptr` directly from the closure struct and calls it. No external tables or module lookups are needed.
 
-**Rationale:** Most closures have no heap-typed captures (their drop glue is just `free`). Storing a `drop_ptr` inline wastes 8 bytes per closure for the common case. The side table trades O(1) hash lookup at drop time for 8 bytes saved per allocation. The table is populated once at compile time and read-only during execution.
+**Rationale:** An earlier design used a side table (`HashMap<*const u8, *const u8>` mapping `code_ptr → drop_fn`), but this was rejected during Ring 2 because: (1) cross-module closures cannot look up the creating module's side table, and (2) the embedded pointer makes closure dec a self-contained operation that works uniformly regardless of where the closure was created. The 8-byte overhead per closure is acceptable given the correctness and simplicity benefits. See `design/backend/ring2-rc.md` §1.3 and §9.1.
 
 **Re-entrant JIT:** Not needed in Ring 1. Closures capture values, not thunks. The first case requiring re-entrant compilation is the macro mini-pipeline in Ring 3.
 
 ### Reference Counting Operations
 
-RC operations use **atomic instructions** from Ring 1 per NFR C.4.1. The codegen emits Cranelift `atomic_rmw` with Release ordering for both inc and dec.
+RC operations use **atomic instructions** from Ring 1 per NFR C.4.1. The codegen emits Cranelift `atomic_rmw` with sequentially-consistent ordering (Cranelift's default for `atomic_rmw`). `MemFlags::trusted()` is used as a validity flag (non-trapping memory access), not a memory ordering directive.
 
 ```
 emit_rc_inc(builder, ptr):
-    atomic_rmw(Add, ptr + HeapHeader::RC_OFFSET, 1, Release)
+    atomic_rmw(Add, ptr + HeapHeader::RC_OFFSET, 1)  // seq-cst
 
 emit_rc_dec(builder, ptr):
-    old_rc = atomic_rmw(Sub, ptr + HeapHeader::RC_OFFSET, 1, Release)
+    old_rc = atomic_rmw(Sub, ptr + HeapHeader::RC_OFFSET, 1)  // seq-cst
     if old_rc == 1:
         // Acquire fence before reading object fields for drop glue
         fence(Acquire)
@@ -1237,7 +1244,7 @@ emit_rc_dec(builder, ptr):
         call runtime/dealloc(ptr)
 ```
 
-The inc/dec pattern matches `std::sync::Arc` semantics: Release on modification, Acquire fence before deallocation to ensure all writes to the object are visible before it is freed.
+The `atomic_rmw` provides sequentially-consistent ordering for both inc and dec. A separate Acquire fence is emitted on the free path (when `old_rc == 1`) to ensure all writes to the object are visible before reading fields for drop glue. See `design/backend/ring2-rc.md` §2.1.
 
 **F-12 Null guard (prerequisite for Vec element RC):** `emit_rc_dec` MUST guard against bare i64 values that are not heap pointers before accessing the RC header. Nullary ADT constructors (e.g., `None` = 0, `Nil` = 0) are bare i64 tags, not heap pointers. Decrementing at `tag + HeapHeader::RC_OFFSET` would corrupt arbitrary memory.
 
@@ -1600,7 +1607,7 @@ impl FnCompiler {
 
     /// Allocate a closure.
     /// Emits: alloc(payload_size) + store code_ptr + store each capture.
-    /// Registers drop glue in the ClosureDropTable if any captures are heap-typed.
+    /// Stores drop_glue_ptr in the closure (null if no heap-typed captures).
     /// Returns: base pointer (i64) to the new HeapClosure.
     fn emit_closure_alloc(
         &mut self,

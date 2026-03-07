@@ -67,14 +67,6 @@ pub fn emit_builtin_op(
         "neq-i64" => emit_int_cmp(builder, name, args, IntCC::NotEqual, span),
         "neq-f64" => emit_float_cmp(builder, name, args, FloatCC::NotEqual, span),
         "neq-bool" => emit_int_cmp(builder, name, args, IntCC::NotEqual, span),
-        "neq-string" => {
-            // String inequality: call str-eq then negate
-            Err(CranelispError::CodegenError {
-                message: "neq-string: use str-eq + not instead".into(),
-                span,
-            })
-        }
-
         _ => Err(CranelispError::CodegenError {
             message: format!("unknown builtin primitive: {name}"),
             span,
@@ -211,6 +203,12 @@ pub fn primitive_for_trait_method(
         ("Eq", "!=", "Bool") => Some("neq-bool"),
         ("Eq", "!=", "String") => Some("neq-string"),
 
+        // Display trait: show (string conversion)
+        ("Display", "show", "Int") => Some("int-to-string"),
+        ("Display", "show", "Float") => Some("float-to-string"),
+        ("Display", "show", "Bool") => Some("bool-to-string"),
+        ("Display", "show", "String") => Some("string-identity"),
+
         _ => None,
     }
 }
@@ -317,12 +315,56 @@ mod tests {
         assert_eq!(result, Some("lt-i64"));
     }
 
+    // spec: 07-traits §7.7 — Display.show on Int maps to int-to-string
+    #[test]
+    fn test_display_show_int_maps_to_int_to_string() {
+        let result = primitive_for_trait_method(
+            &TraitName::from("Display"),
+            &Symbol::from("show"),
+            &TypeName::from("Int"),
+        );
+        assert_eq!(result, Some("int-to-string"));
+    }
+
+    // spec: 07-traits §7.7 — Display.show on Float maps to float-to-string
+    #[test]
+    fn test_display_show_float_maps_to_float_to_string() {
+        let result = primitive_for_trait_method(
+            &TraitName::from("Display"),
+            &Symbol::from("show"),
+            &TypeName::from("Float"),
+        );
+        assert_eq!(result, Some("float-to-string"));
+    }
+
+    // spec: 07-traits §7.7 — Display.show on Bool maps to bool-to-string
+    #[test]
+    fn test_display_show_bool_maps_to_bool_to_string() {
+        let result = primitive_for_trait_method(
+            &TraitName::from("Display"),
+            &Symbol::from("show"),
+            &TypeName::from("Bool"),
+        );
+        assert_eq!(result, Some("bool-to-string"));
+    }
+
+    // spec: 07-traits §7.7 — Display.show on String maps to string-identity
+    #[test]
+    fn test_display_show_string_maps_to_string_identity() {
+        let result = primitive_for_trait_method(
+            &TraitName::from("Display"),
+            &Symbol::from("show"),
+            &TypeName::from("String"),
+        );
+        assert_eq!(result, Some("string-identity"));
+    }
+
     // spec: 07-traits §7.7 — unknown trait has no inline primitive mapping
     #[test]
     fn test_unknown_trait_returns_none() {
         let result = primitive_for_trait_method(
-            &TraitName::from("Display"),
-            &Symbol::from("show"),
+            &TraitName::from("Hashable"),
+            &Symbol::from("hash"),
             &TypeName::from("Int"),
         );
         assert_eq!(result, None);

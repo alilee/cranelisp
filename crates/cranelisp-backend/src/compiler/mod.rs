@@ -15,7 +15,7 @@ use std::collections::HashMap;
 
 use cranelift::prelude::*;
 use cranelift_jit::JITModule;
-use cranelift_module::FuncId;
+use cranelift_module::{FuncId, Module};
 
 use cranelisp_types::{
     CompileMode, ConstructorInfo, CranelispError, Defn, Expr, HeapCategory, ModuleFullPath,
@@ -28,6 +28,9 @@ use crate::heap;
 
 /// Named constant for the user trap code used when match exhaustion occurs.
 pub const MATCH_EXHAUSTION_TRAP: u8 = 1;
+
+/// Cross-module GOT mapping: `(defining_module, function_name)` -> `(got_base_ptr, slot_index)`.
+pub type CrossModuleGot = HashMap<(ModuleFullPath, Symbol), (i64, usize)>;
 
 /// Shared immutable context for compilation, bundling references that
 /// are threaded through from `compile_body` to all expression compilers.
@@ -66,7 +69,7 @@ pub struct CompileContext<'a> {
     /// Interactive mode without copying function pointers between GOT tables.
     ///
     /// In Batch/Release mode this is None; cross-module calls use Cranelift linking.
-    pub cross_module_got: Option<&'a HashMap<(ModuleFullPath, Symbol), (i64, usize)>>,
+    pub cross_module_got: Option<&'a CrossModuleGot>,
 
     // --- Ring 1 intrinsic FuncIds ---
     /// FuncId for runtime/alloc. None in Ring 0 (no heap).
@@ -149,18 +152,25 @@ pub struct FnCompiler<'a> {
     // --- Ring 1 heap state (scaffolding for RC emission in Ring 2) ---
 
     /// Types of local variables, for RC management.
-    #[allow(dead_code)]
     pub(crate) variable_types: HashMap<Symbol, Type>,
     /// Last-use information: (var_name, span) -> is_last_use.
-    #[allow(dead_code)]
     pub(crate) last_uses: HashMap<(Symbol, Span), bool>,
     /// Set of variables whose ownership has been transferred (consumed).
-    #[allow(dead_code)]
     pub(crate) consumed_vars: std::collections::HashSet<Symbol>,
     /// Captured variable names (variables closed over by a lambda).
     /// These are NEVER eligible for last-use transfer.
-    #[allow(dead_code)]
     pub(crate) captured_vars: std::collections::HashSet<Symbol>,
+
+    /// Drop glue FuncIds for closure variables.
+    /// When a closure with heap-typed captures is bound to a variable,
+    /// the drop glue function is stored here so that `pop_scope_with_cleanup`
+    /// can pass it to `emit_rc_dec` when freeing the closure.
+    pub(crate) closure_drop_glue: HashMap<Symbol, FuncId>,
+
+    /// Pending closure drop glue from the last `compile_lambda` call.
+    /// Set by `compile_lambda`, consumed by `compile_let` or `compile_body`
+    /// when binding the closure value to a variable name.
+    pub(crate) pending_closure_drop_glue: Option<FuncId>,
 }
 
 impl<'a> FnCompiler<'a> {
@@ -192,6 +202,8 @@ impl<'a> FnCompiler<'a> {
             last_uses,
             consumed_vars: std::collections::HashSet::new(),
             captured_vars: std::collections::HashSet::new(),
+            closure_drop_glue: HashMap::new(),
+            pending_closure_drop_glue: None,
         }
     }
 
@@ -247,9 +259,13 @@ impl<'a> FnCompiler<'a> {
             last_uses,
             consumed_vars: std::collections::HashSet::new(),
             captured_vars: std::collections::HashSet::new(),
+            closure_drop_glue: HashMap::new(),
+            pending_closure_drop_glue: None,
         };
 
         // Bind function parameters from loop header block params (not entry block).
+        // Also record parameter types in variable_types so scope cleanup
+        // can emit rc_dec for heap-typed parameters at function exit.
         for (i, param_name) in defn.params.iter().enumerate() {
             let val = compiler.builder.block_params(loop_header)[i];
             let var = compiler.fresh_variable();
@@ -261,10 +277,22 @@ impl<'a> FnCompiler<'a> {
                 .last_mut()
                 .unwrap_or_else(|| unreachable!("invariant: scope_stack non-empty"))
                 .push(param_name.clone());
+
+            // Derive parameter type from expr_types via last_uses.
+            // Any use site of this parameter in the body has the same type.
+            if let Some(ty) = compiler.derive_param_type(param_name) {
+                compiler.variable_types.insert(param_name.clone(), ty);
+            }
         }
 
-        // Compile the function body.
+        // Compile the function body with scope cleanup for parameters.
+        // This implements the consuming calling convention: the callee owns
+        // heap-typed parameters and dec's them at exit. The caller inc's
+        // variable arguments before the call.
+        let skip_var = Self::return_var_in_scope(&defn.body, compiler.scope_stack.last());
         let result = compiler.compile_expr(&defn.body)?;
+        compiler.protect_return_value(&skip_var, result, &defn.body);
+        compiler.pop_scope_with_cleanup(skip_var.as_ref());
 
         // Return the result.
         compiler.builder.ins().return_(&[result]);
@@ -367,10 +395,13 @@ impl<'a> FnCompiler<'a> {
                 .iter()
                 .filter(|name| {
                     // Skip the return value variable.
-                    if let Some(skip) = skip_var {
-                        if *name == skip {
+                    if let Some(skip) = skip_var
+                        && *name == skip {
                             return false;
                         }
+                    // Skip consumed variables (ownership transferred to callee).
+                    if self.consumed_vars.contains(*name) {
+                        return false;
                     }
                     // Check if this binding is heap-typed.
                     if let Some(ty) = self.variable_types.get(*name) {
@@ -395,6 +426,15 @@ impl<'a> FnCompiler<'a> {
                 for (name, ty, needs_guard) in &to_dec {
                     if let Some(var) = self.variables.get(name) {
                         let val = self.builder.use_var(*var);
+
+                        // For closures (Type::Fn), use runtime-embedded drop glue.
+                        // This handles both locally-created closures AND closures
+                        // received as function parameters (where the static
+                        // closure_drop_glue map has no entry).
+                        if matches!(ty, Type::Fn(_, _)) {
+                            self.emit_closure_dec_inline(val, dealloc);
+                            continue;
+                        }
 
                         // For ADTs with known AlwaysHeap fields, emit inline
                         // drop glue: dec each heap-typed field before dec'ing
@@ -446,8 +486,6 @@ impl<'a> FnCompiler<'a> {
         dealloc: FuncId,
         is_mixed: bool,
     ) {
-        use crate::heap::HeapAdt;
-
         let type_name = match ty {
             Type::ADT(name, _) => name,
             _ => return, // Not an ADT; nothing to do.
@@ -458,24 +496,7 @@ impl<'a> FnCompiler<'a> {
             None => return,
         };
 
-        // Get concrete type args from the variable's type.
-        let concrete_args = match ty {
-            Type::ADT(_, args) => args.clone(),
-            _ => return,
-        };
-
-        // Build substitution from Var ids to concrete types.
-        let mut unique_var_ids: Vec<cranelisp_types::TypeId> = Vec::new();
-        for c in &type_def.constructors {
-            for field in &c.fields {
-                collect_var_ids_from_type(&field.ty, &mut unique_var_ids);
-            }
-        }
-        let subst: std::collections::HashMap<cranelisp_types::TypeId, Type> = unique_var_ids
-            .iter()
-            .zip(concrete_args.iter())
-            .map(|(&id, arg)| (id, arg.clone()))
-            .collect();
+        let subst = build_adt_type_substitution(ty, &type_def);
 
         // Collect data constructors (those with fields).
         let data_ctors: Vec<_> = type_def.constructors.iter()
@@ -503,35 +524,66 @@ impl<'a> FnCompiler<'a> {
 
         // For Mixed ADTs, guard the field dec with a heap-pointer check.
         let cont_block = if is_mixed {
-            let cont = self.builder.create_block();
-            let glue_block = self.builder.create_block();
-
-            let threshold = self
-                .builder
-                .ins()
-                .iconst(types::I64, heap::NULLARY_THRESHOLD_I64);
-            let is_heap = self.builder.ins().icmp(
-                IntCC::UnsignedGreaterThanOrEqual,
-                adt_val,
-                threshold,
-            );
-            self.builder
-                .ins()
-                .brif(is_heap, glue_block, &[], cont, &[]);
-
-            self.builder.switch_to_block(glue_block);
-            self.builder.seal_block(glue_block);
-            Some(cont)
+            Some(self.emit_mixed_adt_heap_guard(adt_val))
         } else {
             None
         };
 
-        // Emit field decs for each data constructor. For a single data
-        // constructor, dec fields directly. For multiple data constructors,
-        // emit tag-based dispatch (branch chain like match codegen).
+        // Emit field decs for each data constructor.
+        self.emit_drop_glue_field_decs(adt_val, &data_ctors, &subst, dealloc);
+
+        // Jump to continuation for Mixed guard.
+        if let Some(cont) = cont_block {
+            self.builder.ins().jump(cont, &[]);
+            self.builder.switch_to_block(cont);
+            self.builder.seal_block(cont);
+        }
+    }
+
+    /// Emit a heap-pointer guard for Mixed ADTs in drop glue.
+    ///
+    /// Creates a branch that skips field dec if the value is a bare nullary
+    /// tag (below the heap threshold). Returns the continuation block that
+    /// the caller must jump to when field dec is done.
+    fn emit_mixed_adt_heap_guard(&mut self, adt_val: Value) -> Block {
+        let cont = self.builder.create_block();
+        let glue_block = self.builder.create_block();
+
+        let threshold = self
+            .builder
+            .ins()
+            .iconst(types::I64, heap::NULLARY_THRESHOLD_I64);
+        let is_heap = self.builder.ins().icmp(
+            IntCC::UnsignedGreaterThanOrEqual,
+            adt_val,
+            threshold,
+        );
+        self.builder
+            .ins()
+            .brif(is_heap, glue_block, &[], cont, &[]);
+
+        self.builder.switch_to_block(glue_block);
+        self.builder.seal_block(glue_block);
+        cont
+    }
+
+    /// Emit field decs for data constructors in drop glue.
+    ///
+    /// For a single data constructor, dec fields directly.
+    /// For multiple data constructors, emit tag-based dispatch
+    /// (branch chain like match codegen).
+    fn emit_drop_glue_field_decs(
+        &mut self,
+        adt_val: Value,
+        data_ctors: &[&ConstructorInfo],
+        subst: &std::collections::HashMap<cranelisp_types::TypeId, Type>,
+        dealloc: FuncId,
+    ) {
+        use crate::heap::HeapAdt;
+
         if data_ctors.len() == 1 {
             let ctor = data_ctors[0];
-            self.emit_field_decs(adt_val, ctor, &subst, dealloc);
+            self.emit_field_decs(adt_val, ctor, subst, dealloc);
         } else {
             // Multiple data constructors: load the tag and branch to the
             // correct field-dec block for each variant.
@@ -559,7 +611,7 @@ impl<'a> FnCompiler<'a> {
                 self.builder.switch_to_block(ctor_block);
                 self.builder.seal_block(ctor_block);
 
-                self.emit_field_decs(adt_val, ctor, &subst, dealloc);
+                self.emit_field_decs(adt_val, ctor, subst, dealloc);
                 self.builder.ins().jump(done_block, &[]);
 
                 if idx + 1 < data_ctors.len() {
@@ -570,13 +622,6 @@ impl<'a> FnCompiler<'a> {
 
             self.builder.switch_to_block(done_block);
             self.builder.seal_block(done_block);
-        }
-
-        // Jump to continuation for Mixed guard.
-        if let Some(cont) = cont_block {
-            self.builder.ins().jump(cont, &[]);
-            self.builder.switch_to_block(cont);
-            self.builder.seal_block(cont);
         }
     }
 
@@ -639,13 +684,11 @@ impl<'a> FnCompiler<'a> {
         body: &Expr,
         scope_frame: Option<&Vec<Symbol>>,
     ) -> Option<Symbol> {
-        if let Expr::Var { name, .. } = body {
-            if let Some(frame) = scope_frame {
-                if frame.contains(name) {
+        if let Expr::Var { name, .. } = body
+            && let Some(frame) = scope_frame
+                && frame.contains(name) {
                     return Some(name.clone());
                 }
-            }
-        }
         None
     }
 
@@ -663,6 +706,22 @@ impl<'a> FnCompiler<'a> {
     ) {
         if skip_var.is_some() {
             return; // The skip_var mechanism already protects the return value.
+        }
+        // Fresh allocations (Lambda, StringLit) cannot be the same as any
+        // scope binding, so scope cleanup cannot affect them. Skip protect.
+        if matches!(body, Expr::Lambda { .. } | Expr::StringLit { .. }) {
+            return;
+        }
+        // Only protect if the current scope has heap-typed bindings that
+        // scope cleanup will dec. If no bindings are heap-typed, the return
+        // value cannot be affected by scope cleanup regardless of its type.
+        let has_heap_bindings = self.scope_stack.last().is_some_and(|frame| {
+            frame.iter().any(|name| {
+                self.variable_types.get(name).is_some_and(|ty| self.is_heap_type(ty))
+            })
+        });
+        if !has_heap_bindings {
+            return;
         }
         if let Some(ty) = self.ctx.expr_types.get(&body.span()) {
             let category = HeapCategory::classify(ty, Some(self.ctx.type_defs));
@@ -694,8 +753,22 @@ impl<'a> FnCompiler<'a> {
         self.ctx.expr_types.get(&span)
     }
 
+    /// Derive a function parameter's type from `expr_types` via `last_uses`.
+    ///
+    /// Function parameters don't have their own span in `expr_types`, but
+    /// every use site of the parameter in the body does. We scan `last_uses`
+    /// for any entry matching this parameter name and look up its type.
+    pub(crate) fn derive_param_type(&self, name: &Symbol) -> Option<Type> {
+        for (var_name, span) in self.last_uses.keys() {
+            if var_name == name
+                && let Some(ty) = self.ctx.expr_types.get(span) {
+                    return Some(ty.clone());
+                }
+        }
+        None
+    }
+
     /// Check if a variable use is the last use (for ownership transfer).
-    #[allow(dead_code)]
     pub(crate) fn is_last_use(&self, name: &Symbol, span: Span) -> bool {
         if self.captured_vars.contains(name) {
             // Captured variables are NEVER eligible for last-use transfer.
@@ -706,18 +779,132 @@ impl<'a> FnCompiler<'a> {
             .copied()
             .unwrap_or(false)
     }
+
+    /// Emit RC dec for a closure value using its embedded drop glue pointer.
+    ///
+    /// Unlike `emit_rc_dec` which takes a compile-time `drop_glue_id`,
+    /// this loads the drop glue pointer from the closure's embedded
+    /// `DROP_GLUE_PTR_OFFSET` field at runtime and calls it if non-zero.
+    ///
+    /// Used for:
+    /// - Closure parameters received from callers (type unknown at compile time)
+    /// - Temporary closure expressions used as callees
+    /// - Any closure variable where the static drop glue is not available
+    pub(crate) fn emit_closure_dec_inline(&mut self, closure_val: Value, dealloc_id: FuncId) {
+        use crate::heap::HeapClosure;
+        use cranelisp_types::HeapHeader;
+        use cranelift_codegen::ir::AtomicRmwOp;
+
+        let cont_block = self.builder.create_block();
+
+        // Decrement RC.
+        let rc_addr = self
+            .builder
+            .ins()
+            .iadd_imm(closure_val, i64::from(HeapHeader::RC_OFFSET));
+        let one = self.builder.ins().iconst(types::I64, 1);
+        let old_rc = self.builder.ins().atomic_rmw(
+            types::I64,
+            MemFlags::trusted(),
+            AtomicRmwOp::Sub,
+            rc_addr,
+            one,
+        );
+
+        // Branch: if old_rc == 1, free the closure.
+        let cmp = self.builder.ins().icmp(IntCC::Equal, old_rc, one);
+        let free_block = self.builder.create_block();
+        self.builder
+            .ins()
+            .brif(cmp, free_block, &[], cont_block, &[]);
+
+        // Free path.
+        self.builder.switch_to_block(free_block);
+        self.builder.seal_block(free_block);
+        self.builder.ins().fence();
+
+        // Load drop_glue_ptr from the closure.
+        let drop_glue_ptr = heap::heap_load(
+            &mut self.builder,
+            closure_val,
+            HeapClosure::DROP_GLUE_PTR_OFFSET,
+        );
+
+        // If drop_glue_ptr != 0, call it.
+        let zero = self.builder.ins().iconst(types::I64, 0);
+        let has_glue = self
+            .builder
+            .ins()
+            .icmp(IntCC::NotEqual, drop_glue_ptr, zero);
+        let glue_block = self.builder.create_block();
+        let dealloc_block = self.builder.create_block();
+        self.builder
+            .ins()
+            .brif(has_glue, glue_block, &[], dealloc_block, &[]);
+
+        // Call drop glue: (closure_ptr: i64) -> ()
+        self.builder.switch_to_block(glue_block);
+        self.builder.seal_block(glue_block);
+
+        let mut glue_sig = self.module.make_signature();
+        glue_sig.params.push(AbiParam::new(types::I64));
+        let glue_sig_ref = self.builder.import_signature(glue_sig);
+        self.builder
+            .ins()
+            .call_indirect(glue_sig_ref, drop_glue_ptr, &[closure_val]);
+        self.builder.ins().jump(dealloc_block, &[]);
+
+        // Dealloc the closure.
+        self.builder.switch_to_block(dealloc_block);
+        self.builder.seal_block(dealloc_block);
+        let dealloc_ref = self
+            .module
+            .declare_func_in_func(dealloc_id, self.builder.func);
+        self.builder.ins().call(dealloc_ref, &[closure_val]);
+        self.builder.ins().jump(cont_block, &[]);
+
+        // Continue.
+        self.builder.switch_to_block(cont_block);
+        self.builder.seal_block(cont_block);
+    }
 }
 
 // --- Free helper functions for type variable resolution ---
 
+/// Build a substitution map from type variable IDs to concrete types
+/// for an ADT value. Extracts the concrete type args from the ADT type
+/// and maps them positionally to the Var IDs found in the type definition.
+pub(crate) fn build_adt_type_substitution(
+    ty: &Type,
+    type_def: &TypeDefInfo,
+) -> std::collections::HashMap<cranelisp_types::TypeId, Type> {
+    // Get concrete type args from the variable's type.
+    let concrete_args = match ty {
+        Type::ADT(_, args) => args.clone(),
+        _ => return std::collections::HashMap::new(),
+    };
+
+    // Build substitution from Var ids to concrete types.
+    let mut unique_var_ids: Vec<cranelisp_types::TypeId> = Vec::new();
+    for c in &type_def.constructors {
+        for field in &c.fields {
+            collect_var_ids_from_type(&field.ty, &mut unique_var_ids);
+        }
+    }
+    unique_var_ids
+        .iter()
+        .zip(concrete_args.iter())
+        .map(|(&id, arg)| (id, arg.clone()))
+        .collect()
+}
+
 /// Collect all unique Var ids from a type, in order of first appearance.
 pub(crate) fn collect_var_ids_from_type(ty: &Type, ids: &mut Vec<cranelisp_types::TypeId>) {
     match ty {
-        Type::Var(id) => {
-            if !ids.contains(id) {
+        Type::Var(id)
+            if !ids.contains(id) => {
                 ids.push(*id);
             }
-        }
         Type::ADT(_, args) => {
             for a in args {
                 collect_var_ids_from_type(a, ids);

@@ -288,7 +288,7 @@ A trait implementation provides method bodies for a specific type.
        Blue "Blue"])))
 ```
 
-### 5.4.2 Concrete ADT Instantiation [R2 S8]
+### 5.4.2 Concrete ADT Instantiation [R2 S10]
 
 ```clojure
 (impl Display (Option Int)
@@ -300,7 +300,7 @@ A trait implementation provides method bodies for a specific type.
 
 This implements Display for `(Option Int)` specifically. The `(show x)` call in the `Some` arm dispatches to the `Int` implementation.
 
-### 5.4.3 Polymorphic Implementation [R2 S8]
+### 5.4.3 Polymorphic Implementation [R2 S10]
 
 ```clojure
 (impl Display (Option :Display a)

@@ -15,10 +15,10 @@ use cranelift_jit::{JITBuilder, JITModule};
 use cranelift_module::{FuncId, Linkage, Module};
 
 use cranelisp_types::{
-    CheckResult, CompileMode, CranelispError, Defn, ModuleFullPath, Span, Symbol,
+    CheckResult, CompileMode, CranelispError, Defn, Span, Symbol,
 };
 
-use crate::compiler::{CompileContext, FnCompiler};
+use crate::compiler::{CompileContext, CrossModuleGot, FnCompiler};
 
 /// Build the ISA for the current host architecture.
 ///
@@ -280,6 +280,7 @@ impl Jit {
     ///
     /// Bundles all the information needed for codegen into a single struct,
     /// eliminating the need to pass individual fields to `compile_defn`.
+    #[allow(clippy::too_many_arguments)]
     pub fn build_compile_context<'a>(
         &self,
         check: &'a CheckResult,
@@ -288,7 +289,7 @@ impl Jit {
         func_arities: &'a HashMap<Symbol, usize>,
         got_slots: Option<&'a HashMap<Symbol, usize>>,
         got_base_ptr: Option<i64>,
-        cross_module_got: Option<&'a HashMap<(ModuleFullPath, Symbol), (i64, usize)>>,
+        cross_module_got: Option<&'a CrossModuleGot>,
     ) -> CompileContext<'a> {
         CompileContext {
             method_resolutions: &check.method_resolutions,
@@ -459,6 +460,7 @@ pub struct IntrinsicIds {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use cranelisp_types::ModuleFullPath;
 
     // spec: 12-runtime §12.1 — ISA construction for host platform
     #[test]

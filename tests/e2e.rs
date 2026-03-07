@@ -359,7 +359,6 @@ fn e2e_s4_2_special_form_let() {
 
 // spec: repl/spec.md §1.1 — bare primitive type name produces output
 #[test]
-#[ignore = "REPL treats bare 'Int' as variable lookup, gets 'undefined variable: Int' — needs type-name introspection for primitive types in user module"]
 fn e2e_s1_1_bare_type_int() {
     let o = run_repl("Int\n", "s1_1_int");
     assert_success(&o);
@@ -376,7 +375,6 @@ fn e2e_s1_1_bare_type_int() {
 
 // spec: repl/spec.md §1.1 — bare primitive type Bool produces output
 #[test]
-#[ignore = "REPL treats bare 'Bool' as variable lookup, gets 'undefined variable: Bool' — needs type-name introspection for primitive types in user module"]
 fn e2e_s1_1_bare_type_bool() {
     let o = run_repl("Bool\n", "s1_1_bool");
     assert_success(&o);
@@ -384,6 +382,38 @@ fn e2e_s1_1_bare_type_bool() {
     assert!(
         !s.contains("error:"),
         "bare 'Bool' should show type info, not error\n---\n{s}"
+    );
+}
+
+// spec: repl/spec.md §1.1 — bare primitive type Float produces output
+#[test]
+fn e2e_s1_1_bare_type_float() {
+    let o = run_repl("Float\n", "s1_1_float");
+    assert_success(&o);
+    let s = stdout_str(&o);
+    assert!(
+        !s.contains("error:"),
+        "bare 'Float' should show type info, not error\n---\n{s}"
+    );
+    assert!(
+        s.contains("Float"),
+        "bare 'Float' should display type info\n---\n{s}"
+    );
+}
+
+// spec: repl/spec.md §1.1 — bare primitive type String produces output
+#[test]
+fn e2e_s1_1_bare_type_string() {
+    let o = run_repl("String\n", "s1_1_string");
+    assert_success(&o);
+    let s = stdout_str(&o);
+    assert!(
+        !s.contains("error:"),
+        "bare 'String' should show type info, not error\n---\n{s}"
+    );
+    assert!(
+        s.contains("String"),
+        "bare 'String' should display type info\n---\n{s}"
     );
 }
 

@@ -15,6 +15,13 @@ Typed AST in, executable code out. You translate typed AST to Cranelift IR, mana
 - `src/exe/` — standalone executable generation
 - `design/backend/` — solution design documents (codegen patterns, heap/RC, closure/ADT compilation)
 
+## Design Doc Obligation
+
+Design docs in `design/backend/` are owned deliverables, not post-hoc documentation. They must be:
+- **Written before implementation** — articulate the design (data structures, algorithms, interactions, edge cases) before writing code. If you can't describe the design in a document, you're not ready to code it.
+- **Kept current** — when implementation changes the design (new calling conventions, revised heap layout, etc.), update the design doc in the same sprint. A design doc that doesn't match the code is worse than no doc.
+- **Reviewed by `/arch`** — design docs are reviewed for architectural coherence during each sprint. Address FIXMEs filed by `/arch` promptly.
+
 ## Interfaces
 
 - **Input**: `Vec<TopLevel>` (AST), `CheckResult` (typed environment), `ModuleSymbolTable`

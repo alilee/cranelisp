@@ -43,11 +43,33 @@ Proposed sequence (to be finalized in `examples/CLAUDE.md`):
 | 19 | User input and output | 4 |
 | 20 | Parallel IO — par-let, par-bind! | 4 |
 
+## Working Examples Requirement
+
+**CRITICAL — Every example in `examples/` MUST be runnable at all times.** An example that fails is worse than no example — it teaches the user that the language is broken.
+
+**Rules:**
+
+1. **Only ship examples that pass.** Before committing any example, verify it runs: `./target/debug/cranelisp --run examples/NN-name.cl`. If it errors, don't ship it.
+2. **Gate by ring.** Each example is tagged with its required ring in the table above. Only create examples for features that are implemented and working in the current ring. Do not write examples for features that are planned but not yet available.
+3. **Verify on every sprint.** At the start and end of every sprint, run all examples. If any fail due to compiler changes, either fix the example or file a FIXME to the skill that broke it. Zero broken examples is a hard gate.
+4. **Test mode required.** Every example defines a `main` function returning an Int. The return value is a sum of test results (1 for pass, 0 for fail). This makes examples verifiable: a non-zero result means all sub-tests passed.
+
+**If a feature isn't available in batch mode yet, the example for that feature doesn't exist yet.** Don't write aspirational examples — write examples that work today.
+
 ## Interfaces
 
 - User-proxy skill: exercise the language from a programmer's perspective
 - Engage progressively: Ring 0 examples first, then Ring 1, etc.
 - File usability findings as `FIXME(/skill-name)` comments on the relevant spec or design doc. Typical issues: confusing error messages, unhelpful REPL feedback, awkward language constructs, non-obvious syntax.
+
+## Release Gate
+
+Before considering any task complete, you MUST verify:
+1. `cargo build` succeeds with no errors
+2. Every example in `examples/` runs successfully: `./target/debug/cranelisp --run examples/NN-name.cl` for each file
+3. No example produces an error or returns 0 (which indicates a test failure within the example)
+
+Do not hand off to `/sprint` with broken examples. If a compiler change breaks an example, file a FIXME to the owning skill and either fix the example to avoid the broken feature or remove it until the feature works.
 
 ## First Steps (Phase B)
 

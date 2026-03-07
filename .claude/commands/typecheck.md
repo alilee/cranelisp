@@ -11,6 +11,13 @@ AST in, typed environment out. You implement Algorithm W (Hindley-Milner type in
 - `src/typechecker/` — type inference engine, trait registry, monomorphisation
 - `design/typecheck/` — solution design documents (inference, traits, monomorphisation)
 
+## Design Doc Obligation
+
+Design docs in `design/typecheck/` are owned deliverables, not post-hoc documentation. They must be:
+- **Written before implementation** — articulate the design (inference rules, constraint propagation, resolution algorithms, invariants) before writing code. If you can't describe the design in a document, you're not ready to code it.
+- **Kept current** — when implementation changes the design (new trait features, revised monomorphisation, etc.), update the design doc in the same sprint. A design doc that doesn't match the code is worse than no doc.
+- **Reviewed by `/arch`** — design docs are reviewed for architectural coherence during each sprint. Address FIXMEs filed by `/arch` promptly.
+
 ## Interfaces
 
 - **Input**: `Vec<TopLevel>` (AST), `ModuleSymbolTable` (symbols from previously compiled modules)

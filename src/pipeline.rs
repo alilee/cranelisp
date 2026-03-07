@@ -423,6 +423,71 @@ pub fn toposort(graph: &ModuleGraph) -> Result<Vec<ModuleFullPath>, CranelispErr
     Ok(sorted)
 }
 
+/// Parse, extract declarations, and build the AST for a single module.
+///
+/// Returns the import specs and the program (AST). If the module has no
+/// definitions or expressions, the program will be empty.
+fn parse_and_build_module(
+    module_path: &ModuleFullPath,
+    node: &ModuleNode,
+) -> Result<(Vec<cranelisp_types::ImportSpec>, Program), CranelispError> {
+    let source = std::fs::read_to_string(&node.file_path).map_err(|e| {
+        CranelispError::ModuleError {
+            message: format!("cannot read '{}': {}", node.file_path.display(), e),
+            file: Some(node.file_path.clone()),
+            span: Span::SYNTHETIC,
+        }
+    })?;
+
+    let sexps = cranelisp_frontend::parse(&source)?;
+
+    let (structure, remaining) = cranelisp_frontend::extract_module_declarations(
+        module_path.clone(),
+        Some(node.file_path.clone()),
+        sexps,
+    )?;
+
+    let mut expander = NoOpExpander;
+    let program = cranelisp_frontend::build_program(&remaining, &mut expander)?;
+
+    Ok((structure.import_specs, program))
+}
+
+/// Accumulate function signatures from a compiled module, including
+/// qualified aliases for submodule functions.
+fn accumulate_func_sigs(
+    module_path: &ModuleFullPath,
+    func_signatures: &[(cranelisp_types::Symbol, usize)],
+    all_func_sigs: &mut Vec<(cranelisp_types::Symbol, usize)>,
+) {
+    for (name, arity) in func_signatures {
+        all_func_sigs.push((name.clone(), *arity));
+
+        // For submodule functions, register qualified aliases.
+        // E.g., module "main.util" function "helper" gets alias "util/helper"
+        // so that module "main" can call (util/helper).
+        let mod_str: &str = module_path.as_ref();
+        if let Some(dot_pos) = mod_str.rfind('.') {
+            let last_component = &mod_str[dot_pos + 1..];
+            let qualified =
+                cranelisp_types::Symbol::from(format!("{}/{}", last_component, name));
+            all_func_sigs.push((qualified, *arity));
+        }
+    }
+}
+
+/// Find the last zero-arg defn in a program (the entry point).
+fn find_entry_defn(program: &Program) -> Option<cranelisp_types::Symbol> {
+    program.iter().rev().find_map(|tl| {
+        if let cranelisp_types::TopLevel::Defn(defn) = tl
+            && defn.params.is_empty()
+        {
+            return Some(defn.name.clone());
+        }
+        None
+    })
+}
+
 /// Compile a multi-file module graph and execute the entry point.
 ///
 /// Pipeline:
@@ -437,71 +502,33 @@ pub fn compile_module_graph(entry: &Path) -> Result<CompiledModuleGraph, Craneli
     let order = toposort(&graph)?;
 
     let mut all_warnings: Vec<Warning> = Vec::new();
-
-    // Shared TypeChecker: cross-module symbol tables persist across modules.
     let mut tc = cranelisp_typecheck::TypeChecker::new();
-
-    // Shared JIT: all modules compile into a single JIT so cross-module
-    // function calls resolve via the shared symbol table.
     let mut jit = cranelisp_backend::jit::Jit::new()?;
     jit.declare_intrinsics()?;
 
-    // Accumulated function signatures (name, param_count) from compiled
-    // dependency modules, for declaring as imports in downstream modules.
     let mut all_func_sigs: Vec<(cranelisp_types::Symbol, usize)> = Vec::new();
-
-    // Track the entry module's last zero-arg defn for execution.
     let mut entry_defn_name: Option<cranelisp_types::Symbol> = None;
     let mut entry_result_type = Type::Int;
 
     for module_path in &order {
         let node = &graph.nodes[module_path];
+        let (import_specs, program) = parse_and_build_module(module_path, node)?;
 
-        // Read and parse the module source.
-        let source = std::fs::read_to_string(&node.file_path).map_err(|e| {
-            CranelispError::ModuleError {
-                message: format!("cannot read '{}': {}", node.file_path.display(), e),
-                file: Some(node.file_path.clone()),
-                span: Span::SYNTHETIC,
-            }
-        })?;
-
-        let sexps = cranelisp_frontend::parse(&source)?;
-
-        // Extract module declarations (mod, import, export).
-        let (structure, remaining) = cranelisp_frontend::extract_module_declarations(
-            module_path.clone(),
-            Some(node.file_path.clone()),
-            sexps,
-        )?;
-
-        // Build AST from remaining sexps (definitions and expressions).
-        let mut expander = NoOpExpander;
-        let program = cranelisp_frontend::build_program(&remaining, &mut expander)?;
-
-        // Switch the typechecker to the current module so symbols are
-        // registered in the correct module-scoped symbol table.
         tc.set_current_module(module_path.clone());
 
-        // Process imports: register imported symbols from dependency modules.
-        // The dependency modules have already been type-checked and their symbols
-        // are in the TypeChecker's module tables, so register_imports can find them.
-        if !structure.import_specs.is_empty() {
-            tc.register_imports(&structure.import_specs)?;
+        if !import_specs.is_empty() {
+            tc.register_imports(&import_specs)?;
         }
 
         if program.is_empty() {
             continue;
         }
 
-        // Type check.
         let check = tc.check_program(&program)?;
         all_warnings.extend(check.warnings.iter().cloned());
 
-        // Determine the result type.
         let result_type = infer_result_type(&program, &check);
 
-        // Compile into the shared JIT with accumulated dependency symbols.
         let module_info = cranelisp_backend::compile_module_program(
             &program,
             &check,
@@ -511,40 +538,13 @@ pub fn compile_module_graph(entry: &Path) -> Result<CompiledModuleGraph, Craneli
         )?;
         all_warnings.extend(module_info.warnings);
 
-        // Accumulate this module's function signatures for downstream modules.
-        // Also register qualified name aliases so parent modules can reference
-        // submodule functions via `submod/name` syntax.
-        for (name, arity) in &module_info.func_signatures {
-            all_func_sigs.push((name.clone(), *arity));
+        accumulate_func_sigs(module_path, &module_info.func_signatures, &mut all_func_sigs);
 
-            // For submodule functions, register qualified aliases.
-            // E.g., module "main.util" function "helper" gets alias "util/helper"
-            // so that module "main" can call (util/helper).
-            let mod_str: &str = module_path.as_ref();
-            if let Some(dot_pos) = mod_str.rfind('.') {
-                let last_component = &mod_str[dot_pos + 1..];
-                let qualified = cranelisp_types::Symbol::from(
-                    format!("{}/{}", last_component, name),
-                );
-                all_func_sigs.push((qualified, *arity));
-            }
-        }
-
-        // Track the entry module's entry point for execution.
-        if module_path == &graph.entry {
-            // Find the last zero-arg defn (same logic as backend entry_fn).
-            let last_nullary = program.iter().rev().find_map(|tl| {
-                if let cranelisp_types::TopLevel::Defn(defn) = tl {
-                    if defn.params.is_empty() {
-                        return Some(defn.name.clone());
-                    }
-                }
-                None
-            });
-            if let Some(name) = last_nullary {
-                entry_defn_name = Some(name);
-                entry_result_type = result_type;
-            }
+        if module_path == &graph.entry
+            && let Some(name) = find_entry_defn(&program)
+        {
+            entry_defn_name = Some(name);
+            entry_result_type = result_type;
         }
     }
 

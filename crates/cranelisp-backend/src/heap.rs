@@ -57,33 +57,43 @@ impl HeapAdt {
 const _: () = assert!(HeapAdt::TAG_OFFSET == 16);
 const _: () = assert!(HeapAdt::FIELDS_START == 24);
 
-/// Closure: [header | code_ptr | cap_0 | cap_1 | ... | cap_n]
+/// Closure: [header | code_ptr | drop_glue_ptr | cap_0 | cap_1 | ... | cap_n]
+///
+/// `drop_glue_ptr` is 0 for closures with no heap-typed captures.
+/// When non-zero, it points to a `(ptr: i64) -> ()` function that dec's
+/// each captured heap value before the closure env is freed.
 #[repr(C)]
 pub struct HeapClosure {
     pub header: HeapHeader,
     /// Pointer to the compiled lambda body.
     /// Lambda body signature: (env_ptr: i64, params...) -> i64
     pub code_ptr: i64,
+    /// Pointer to the drop glue function for captured heap values.
+    /// Zero if no captures are heap-typed.
+    /// Drop glue signature: (closure_ptr: i64) -> ()
+    pub drop_glue_ptr: i64,
     // Captures follow at CAPTURES_START. Each capture is an i64.
 }
 
 impl HeapClosure {
     pub const CODE_PTR_OFFSET: i32 = offset_of!(Self, code_ptr) as i32; // 16
-    pub const CAPTURES_START: usize = mem::size_of::<Self>(); // 24
+    pub const DROP_GLUE_PTR_OFFSET: i32 = offset_of!(Self, drop_glue_ptr) as i32; // 24
+    pub const CAPTURES_START: usize = mem::size_of::<Self>(); // 32
 
     /// Offset of the i-th captured value from the base pointer.
     pub const fn capture_offset(i: usize) -> i32 {
         (Self::CAPTURES_START + i * mem::size_of::<i64>()) as i32
     }
 
-    /// Payload size after the header: code_ptr + n captures.
+    /// Payload size after the header: code_ptr + drop_glue_ptr + n captures.
     pub const fn payload_size(capture_count: usize) -> usize {
-        mem::size_of::<i64>() + capture_count * mem::size_of::<i64>()
+        2 * mem::size_of::<i64>() + capture_count * mem::size_of::<i64>()
     }
 }
 
 const _: () = assert!(HeapClosure::CODE_PTR_OFFSET == 16);
-const _: () = assert!(HeapClosure::CAPTURES_START == 24);
+const _: () = assert!(HeapClosure::DROP_GLUE_PTR_OFFSET == 24);
+const _: () = assert!(HeapClosure::CAPTURES_START == 32);
 
 /// Vec: [header | len | cap | data_ptr]
 /// The data buffer is a separate allocation: [elem_0 | elem_1 | ... | elem_{cap-1}]
@@ -428,15 +438,16 @@ mod tests {
         assert_eq!(HeapAdt::payload_size(2), 24); // tag + 2 fields
     }
 
-    // spec: 12-runtime §12.1.3 — closure heap layout (code_ptr at 16, captures at 24+)
+    // spec: 12-runtime §12.1.3 — closure heap layout (code_ptr at 16, drop_glue at 24, captures at 32+)
     #[test]
     fn test_heap_closure_layout() {
         assert_eq!(HeapClosure::CODE_PTR_OFFSET, 16);
-        assert_eq!(HeapClosure::CAPTURES_START, 24);
-        assert_eq!(HeapClosure::capture_offset(0), 24);
-        assert_eq!(HeapClosure::capture_offset(1), 32);
-        assert_eq!(HeapClosure::payload_size(0), 8); // code_ptr only
-        assert_eq!(HeapClosure::payload_size(3), 32); // code_ptr + 3 captures
+        assert_eq!(HeapClosure::DROP_GLUE_PTR_OFFSET, 24);
+        assert_eq!(HeapClosure::CAPTURES_START, 32);
+        assert_eq!(HeapClosure::capture_offset(0), 32);
+        assert_eq!(HeapClosure::capture_offset(1), 40);
+        assert_eq!(HeapClosure::payload_size(0), 16); // code_ptr + drop_glue_ptr only
+        assert_eq!(HeapClosure::payload_size(3), 40); // code_ptr + drop_glue_ptr + 3 captures
     }
 
     // spec: 12-runtime §12.1.5 — Vec heap layout (len/cap/data_ptr at 16/24/32)

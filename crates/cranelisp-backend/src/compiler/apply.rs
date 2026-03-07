@@ -7,7 +7,7 @@
 use cranelift::prelude::*;
 use cranelift_module::Module;
 
-use cranelisp_types::{CompileMode, CranelispError, Expr, ResolvedCall, Span, Symbol};
+use cranelisp_types::{CompileMode, CranelispError, Expr, HeapCategory, ResolvedCall, Span, Symbol};
 
 use crate::heap::{self, HeapAdt, HeapClosure};
 use crate::operators;
@@ -54,12 +54,38 @@ impl<'a> FnCompiler<'a> {
         }
 
         // Callee is not a variable -- could be a closure call (Ring 1).
-        // Compile as closure call: load code_ptr from the closure, call_indirect.
+        // Closure body is a user function — consuming convention.
         let callee_val = self.compile_expr(callee)?;
-        let arg_vals = self.compile_arg_list(args)?;
+        let arg_vals = self.compile_consuming_arg_list(args)?;
         self.in_tail_position = saved_tail;
 
-        self.compile_closure_call(callee_val, &arg_vals, span)
+        let result = self.compile_closure_call(callee_val, &arg_vals, span)?;
+
+        // Protect the return value: if the result is heap-typed, inc it
+        // before freeing the closure. The closure's drop glue will dec
+        // all captured heap values — if the result aliases a capture,
+        // the inc prevents premature deallocation. The caller's later
+        // dec (scope cleanup or parent expression) restores balance.
+        if let Some(ty) = self.ctx.expr_types.get(&span) {
+            let category = HeapCategory::classify(ty, Some(self.ctx.type_defs));
+            match category {
+                HeapCategory::AlwaysHeap => {
+                    heap::emit_rc_inc(&mut self.builder, result);
+                }
+                HeapCategory::Mixed => {
+                    heap::emit_rc_inc_guarded(&mut self.builder, result);
+                }
+                HeapCategory::NeverHeap => {}
+            }
+        }
+
+        // Dec the temporary closure after the call. The closure was a
+        // temporary expression (not a named variable), so nobody else
+        // will dec it. Load the drop glue pointer from the closure and
+        // use it for cleaning up captured heap values.
+        self.emit_closure_dec(callee_val, span);
+
+        Ok(result)
     }
 
     /// Compile a call to a resolved callee (builtin, trait method, sig-dispatch,
@@ -73,7 +99,12 @@ impl<'a> FnCompiler<'a> {
     ) -> Result<Value, CranelispError> {
         match resolved {
             ResolvedCall::BuiltinFn { name: ref op_name } => {
+                // Builtins are borrowing: they don't dec params.
+                // We dec temporary (non-variable) heap args after the call.
+
                 // Vec operations: intercept and compile inline.
+                // Vec ops handle their own temporary cleanup internally
+                // via emit_vec_drop_if_temporary — do NOT call dec_temporary_args.
                 if is_vec_primitive(op_name) {
                     let arg_vals = self.compile_arg_list(args)?;
                     self.in_tail_position = saved_tail;
@@ -87,13 +118,17 @@ impl<'a> FnCompiler<'a> {
                 if is_extern_primitive(op_name) {
                     let arg_vals = self.compile_arg_list(args)?;
                     self.in_tail_position = saved_tail;
-                    return self.compile_extern_call(op_name, &arg_vals, span);
+                    let result = self.compile_extern_call(op_name, &arg_vals, span)?;
+                    self.dec_temporary_args(args, &arg_vals);
+                    return Ok(result);
                 }
 
                 let arg_vals = self.compile_arg_list(args)?;
                 self.in_tail_position = saved_tail;
-
-                operators::emit_builtin_op(&mut self.builder, op_name, &arg_vals, span)
+                let result =
+                    operators::emit_builtin_op(&mut self.builder, op_name, &arg_vals, span)?;
+                self.dec_temporary_args(args, &arg_vals);
+                Ok(result)
             }
             ResolvedCall::TraitMethod {
                 ref trait_name,
@@ -105,28 +140,43 @@ impl<'a> FnCompiler<'a> {
                 if let Some(prim_name) =
                     operators::primitive_for_trait_method(trait_name, method_name, impl_type)
                 {
-                    // Extern primitives (e.g. str-eq for Eq.=.String).
+                    // Primitive trait methods are borrowing.
                     if is_extern_primitive(prim_name) {
                         let arg_vals = self.compile_arg_list(args)?;
                         self.in_tail_position = saved_tail;
-                        return self.compile_extern_call(prim_name, &arg_vals, span);
+                        let result = self.compile_extern_call(prim_name, &arg_vals, span)?;
+                        self.dec_temporary_args(args, &arg_vals);
+                        return Ok(result);
+                    }
+
+                    // neq-string: call str-eq (extern) and negate the result.
+                    if prim_name == "neq-string" {
+                        let arg_vals = self.compile_arg_list(args)?;
+                        self.in_tail_position = saved_tail;
+                        let eq_result = self.compile_extern_call("str-eq", &arg_vals, span)?;
+                        let result = self.builder.ins().bxor_imm(eq_result, 1);
+                        self.dec_temporary_args(args, &arg_vals);
+                        return Ok(result);
                     }
 
                     let arg_vals = self.compile_arg_list(args)?;
                     self.in_tail_position = saved_tail;
-                    return operators::emit_builtin_op(
+                    let result = operators::emit_builtin_op(
                         &mut self.builder, prim_name, &arg_vals, span,
-                    );
+                    )?;
+                    self.dec_temporary_args(args, &arg_vals);
+                    return Ok(result);
                 }
 
-                // Not a primitive: compile as a normal function call to mangled name.
+                // Not a primitive: user function — consuming convention.
                 let sym = Symbol::from(mangled_name.as_ref());
-                let arg_vals = self.compile_arg_list(args)?;
+                let arg_vals = self.compile_consuming_arg_list(args)?;
                 self.in_tail_position = saved_tail;
                 self.compile_direct_call(&sym, &arg_vals, span)
             }
             ResolvedCall::SigDispatch { mangled_name } => {
-                let arg_vals = self.compile_arg_list(args)?;
+                // User function — consuming convention.
+                let arg_vals = self.compile_consuming_arg_list(args)?;
                 self.in_tail_position = saved_tail;
                 let sym = Symbol::from(mangled_name.as_ref());
                 self.compile_direct_call(&sym, &arg_vals, span)
@@ -163,6 +213,8 @@ impl<'a> FnCompiler<'a> {
                 });
             }
 
+            // Data constructors store args as fields; no function body
+            // to dec them. ADT drop glue handles field cleanup.
             let arg_vals = self.compile_arg_list(args)?;
             self.in_tail_position = saved_tail;
             return self.compile_data_constructor_call(tag, &arg_vals, span);
@@ -171,22 +223,111 @@ impl<'a> FnCompiler<'a> {
         // Check if the callee is a local variable (holding a closure value).
         if self.variables.contains_key(name) {
             let callee_val = self.compile_expr(callee)?;
-            let arg_vals = self.compile_arg_list(args)?;
+            // Closure body is a user function — consuming convention.
+            let arg_vals = self.compile_consuming_arg_list(args)?;
             self.in_tail_position = saved_tail;
             return self.compile_closure_call(callee_val, &arg_vals, span);
         }
 
-        // Not a local variable: try direct function call.
-        let arg_vals = self.compile_arg_list(args)?;
+        // Not a local variable: user function — consuming convention.
+        let arg_vals = self.compile_consuming_arg_list(args)?;
         self.in_tail_position = saved_tail;
         self.compile_direct_call(name, &arg_vals, var_span)
     }
 
     /// Compile a list of argument expressions into Cranelift values.
+    ///
+    /// Plain compilation: no RC adjustments. The caller is responsible for
+    /// any inc/dec depending on whether the callee is consuming (user fn)
+    /// or borrowing (builtin/extern).
     fn compile_arg_list(&mut self, args: &[Expr]) -> Result<Vec<Value>, CranelispError> {
         args.iter()
-            .map(|a| self.compile_expr(a))
-            .collect::<Result<_, _>>()
+            .map(|arg| self.compile_expr(arg))
+            .collect()
+    }
+
+    /// Compile args for a consuming callee (user-defined function).
+    ///
+    /// The callee dec's all heap-typed parameters at exit. We inc
+    /// heap-typed variable arguments so the caller's binding survives
+    /// the callee's dec. Temporary expressions start at rc=1 and
+    /// the callee's dec frees them — no caller action needed.
+    fn compile_consuming_arg_list(
+        &mut self,
+        args: &[Expr],
+    ) -> Result<Vec<Value>, CranelispError> {
+        let mut vals = Vec::with_capacity(args.len());
+        for arg in args {
+            let val = self.compile_expr(arg)?;
+
+            // Inc heap-typed variable arguments for consuming convention.
+            if let Expr::Var { name, .. } = arg
+                && let Some(ty) = self.variable_types.get(name) {
+                    let category =
+                        HeapCategory::classify(ty, Some(self.ctx.type_defs));
+                    match category {
+                        HeapCategory::AlwaysHeap => {
+                            heap::emit_rc_inc(&mut self.builder, val);
+                        }
+                        HeapCategory::Mixed => {
+                            heap::emit_rc_inc_guarded(&mut self.builder, val);
+                        }
+                        HeapCategory::NeverHeap => {}
+                    }
+                }
+
+            vals.push(val);
+        }
+        Ok(vals)
+    }
+
+    /// Dec temporary (non-variable) heap-typed arguments after a
+    /// borrowing call (builtin/extern). Variable arguments are owned
+    /// by their scope and will be dec'd by `pop_scope_with_cleanup`.
+    fn dec_temporary_args(&mut self, args: &[Expr], arg_vals: &[Value]) {
+        let dealloc_id = match self.ctx.dealloc_func_id {
+            Some(id) => id,
+            None => return,
+        };
+
+        for (arg, &val) in args.iter().zip(arg_vals.iter()) {
+            // Only dec temporaries (non-variable expressions).
+            if matches!(arg, Expr::Var { .. }) {
+                continue;
+            }
+            // Check if the expression produces a heap-typed value.
+            if let Some(ty) = self.ctx.expr_types.get(&arg.span()) {
+                let category = HeapCategory::classify(ty, Some(self.ctx.type_defs));
+                match category {
+                    HeapCategory::AlwaysHeap => {
+                        if matches!(ty, cranelisp_types::Type::Fn(_, _)) {
+                            self.emit_closure_dec_inline(val, dealloc_id);
+                        } else {
+                            self.emit_inline_drop_glue(val, ty, dealloc_id, false);
+                            heap::emit_rc_dec(
+                                &mut self.builder,
+                                self.module,
+                                val,
+                                dealloc_id,
+                                None,
+                            );
+                        }
+                    }
+                    HeapCategory::Mixed => {
+                        self.emit_inline_drop_glue(val, ty, dealloc_id, true);
+                        heap::emit_rc_dec_guarded(
+                            &mut self.builder,
+                            self.module,
+                            val,
+                            dealloc_id,
+                            None,
+                            true,
+                        );
+                    }
+                    HeapCategory::NeverHeap => {}
+                }
+            }
+        }
     }
 
     /// Compile a call to a named function.
@@ -265,11 +406,10 @@ impl<'a> FnCompiler<'a> {
         span: Span,
     ) -> Result<(i64, usize), CranelispError> {
         // Try local GOT first.
-        if let (Some(got_slots), Some(got_base)) = (self.ctx.got_slots, self.ctx.got_base_ptr) {
-            if let Some(&slot) = got_slots.get(name) {
+        if let (Some(got_slots), Some(got_base)) = (self.ctx.got_slots, self.ctx.got_base_ptr)
+            && let Some(&slot) = got_slots.get(name) {
                 return Ok((got_base, slot));
             }
-        }
 
         // Try cross-module GOT: scan all entries for a matching function name.
         // The cross-module map is keyed by (ModuleFullPath, Symbol), so we search
@@ -418,6 +558,13 @@ impl<'a> FnCompiler<'a> {
             .ins()
             .call_indirect(sig_ref, code_ptr, &call_args);
         Ok(self.builder.inst_results(call)[0])
+    }
+
+    /// Emit RC dec for a temporary closure value, using the shared method.
+    pub(crate) fn emit_closure_dec(&mut self, closure_val: Value, _span: Span) {
+        if let Some(dealloc_id) = self.ctx.dealloc_func_id {
+            self.emit_closure_dec_inline(closure_val, dealloc_id);
+        }
     }
 }
 

@@ -19,12 +19,10 @@ Output uses the `:Type value` format — the same colon-prefixed type annotation
 ### 1.1 Output Categories [Tested]
 <!-- All table rows below have [Tested] annotations -->
 
-<!-- FIXME(/qa): Bare type name lookup is untested. Typing `Int` at the REPL produces
-     "undefined variable: Int" instead of `:primitives/Int`. The special_form_feedback()
-     function only searches the current module's symbol table — primitive types like Int,
-     Bool, Float, String live in the `primitives` module and aren't found. Need a test
-     for each row of the §1.1 category table, and the bare symbol lookup needs to search
-     imported modules (including primitives). -->
+<!-- RESOLVED: Sprint 9 — bare type name lookup implemented. Type::from_name() check
+     added to special_form_feedback() before symbol table lookup. Int, Bool, Float, String
+     now produce `:primitives/{name}` output. Tests: e2e.rs::e2e_s1_1_bare_type_int,
+     e2e_s1_1_bare_type_bool, e2e_s1_1_bare_type_float, e2e_s1_1_bare_type_string. -->
 
 REPL output falls into three categories. The format mirrors Cranelisp type annotation syntax (`:Type expr`).
 
@@ -204,7 +202,7 @@ This enables:
 
 Slash commands provide introspection and navigation. All commands start with `/` and are NOT expressions — they are REPL-only features.
 
-### 3.1 Command Inventory [R2 S8]
+### 3.1 Command Inventory [R3 S10]
 
 | Command | Aliases | Description | Ring | Test |
 |---|---|---|---|---|
@@ -221,7 +219,7 @@ Slash commands provide introspection and navigation. All commands start with `/`
 | `/list [filter]` | `/l` | List symbols in current module | 0 | [Tested tests/e2e::e2e_s3_3_list] |
 | `/time <expr>` | — | Evaluate with timing breakdown | 0 | [Tested tests/e2e::e2e_s3_1_time] |
 | `/expand <form>` | `/e` | Macro-expand a form | 3 | [R3 S9] |
-| `/mod [name]` | — | Switch module namespace | 2 | [R2 S8] |
+| `/mod [name]` | — | Switch module namespace | 2 | [R4 S10] |
 | `/reload [name]` | `/r` | Reload module from file | 2 | [R4 S10] |
 | `/mem [expr]` | `/m` | Show allocation statistics | 1 | [R4 S10] |
 | `/run-tests` | — | Discover and run test functions | 4 | [R4 S10] |
@@ -241,8 +239,8 @@ Available commands:
 
 Commands not yet available (due to ring) SHOULD be omitted or marked as unavailable.
 
-### 3.3 `/list` Categories [R2 S8]
-<!-- Section-level stays R2 S8 because Modules and Imports categories are not yet implemented -->
+### 3.3 `/list` Categories [R4 S10]
+<!-- Section-level: Modules and Imports categories not yet implemented -->
 
 `/list` MUST organize symbols into categories. Names MUST be fully qualified.
 
@@ -253,8 +251,8 @@ Commands not yet available (due to ring) SHOULD be omitted or marked as unavaila
 | Functions | User-defined functions | 0 | [Tested tests/e2e::e2e_s3_3_list] |
 | Traits | Trait declarations | 2 | [Tested tests/e2e::e2e_s3_3_list_traits] |
 | Macros | Macro definitions | 3 | [R3 S9] |
-| Modules | Declared submodules | 2 | [R2 S8] |
-| Imports | Imported names | 2 | [R2 S8] |
+| Modules | Declared submodules | 2 | [R4 S10] |
+| Imports | Imported names | 2 | [R4 S10] |
 
 An optional filter argument narrows the listing (substring match on name).
 
@@ -274,7 +272,7 @@ For overloaded functions, all variants MUST be listed. For constrained functions
 
 Every valid language construct entered at the REPL MUST produce useful feedback. This is the **self-documentation principle** from the project's design principles. All output reinforces the language syntax.
 
-### 4.1 Bare Symbol Lookup [R2 S8]
+### 4.1 Bare Symbol Lookup [R3 S10]
 
 Entering a symbol name without arguments MUST produce its type and fully-qualified name:
 
@@ -282,7 +280,7 @@ Entering a symbol name without arguments MUST produce its type and fully-qualifi
 |---|---|---|
 | Function | `:TypeScheme module/name` | [Tested tests/e2e::e2e_s4_1_bare_symbol_lookup] |
 | Constructor | `:QualifiedType module/Type.Ctor` | [Tested tests/e2e::e2e_s1_1_constructor_lookup] |
-| Type | Type definition display | [R2 S8 — tests/e2e::e2e_s1_1_bare_type_int IGNORED] |
+| Type | Type definition display | [Tested tests/e2e::e2e_s1_1_bare_type_int, tests/e2e::e2e_s1_1_bare_type_bool, tests/e2e::e2e_s1_1_bare_type_float, tests/e2e::e2e_s1_1_bare_type_string] |
 | Special form | `:signature name` | [Tested tests/e2e::e2e_s4_2_special_form_feedback] |
 | Macro | Clause signatures | [R3 S9] |
 | Trait | Method signatures | [Tested tests/e2e::e2e_s4_1_bare_trait_lookup] |
@@ -466,7 +464,7 @@ After displaying a result, the next prompt MUST appear within **10ms**. There MU
 
 When displaying large values (e.g., a Vec with 1000 elements), the REPL SHOULD truncate output with an indication of the total size rather than flooding the terminal. The truncation threshold is implementation-defined but SHOULD be configurable.
 
-## 8. Ring 2B Module Demo Scenarios [R2 S8]
+## 8. Ring 2B Module Demo Scenarios [R4 S10]
 
 When the module system is fully wired (Ring 2B), these 7 REPL scenarios validate the module experience. Each scenario has a concrete expected behavior.
 

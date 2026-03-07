@@ -23,6 +23,9 @@ use cranelisp_types::{
 
 use crate::jit::Jit;
 
+/// Result of setting up interactive GOT: (slot_assignments, codegen_state).
+type InteractiveGotResult = (Option<HashMap<Symbol, usize>>, Option<got::ModuleCodegenState>);
+
 /// Result of compiling a batch program. Holds the JIT and entry point
 /// so the caller can execute and then drop the JIT.
 pub struct CompiledProgram {
@@ -173,7 +176,7 @@ fn collect_and_declare_defns<'a>(
 fn setup_interactive_got(
     collected: &CollectedDefns<'_>,
     mode: CompileMode,
-) -> Result<(Option<HashMap<Symbol, usize>>, Option<got::ModuleCodegenState>), CranelispError> {
+) -> Result<InteractiveGotResult, CranelispError> {
     if mode == CompileMode::Interactive {
         let mut state = got::ModuleCodegenState::new();
         let mut slots = HashMap::new();

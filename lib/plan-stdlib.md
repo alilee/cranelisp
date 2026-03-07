@@ -934,6 +934,86 @@ The module infrastructure survey (Phase 3, Sprint 5) confirmed that 25 stdlib mo
 
 ---
 
+## 13. Ring 3 Dependencies — Prelude Macro Survey (Sprint 9)
+
+Analysis of the 12 prelude macros from `spec/09-macros.md` section 9.10, classifying each by required macro features and runtime dependencies. This informs the Ring 3 implementation order.
+
+### Macro Feature Classification
+
+| Macro | Clauses | Bracket Destr. | `&` rest | Quasiquote | `begin` | Helpers needed |
+|-------|---------|---------------|----------|------------|---------|----------------|
+| `const` | single | no | no | yes (`\``) | no | `quote-sexp` primitive |
+| `const-` | single | no | no | yes | no | `quote-sexp` primitive |
+| `def` | single | no | no | yes | yes | `quote-sexp`, `make-def-name` |
+| `def-` | single | no | no | yes | yes | `quote-sexp`, `make-def-name` |
+| `list` | multi (2) | no | yes | yes | no | `sfold`, `sreverse` |
+| `vec` | single | no | yes | no | no | none (direct `SexpBracket` ctor) |
+| `do` | multi (2) | no | yes | yes | no | recursive self-call |
+| `bind!` | single | yes | no | yes | no | recursive helper or self-call |
+| `cond` | multi (2) | no | yes | yes | no | recursive self-call |
+| `case` | single | no | yes | no | no | recursive `case-fold` helper |
+| `->` | single | no | yes | no | no | recursive `thread-first-fold` helper |
+| `->>` | single | no | yes | no | no | recursive `thread-last-fold` helper |
+| `str` | multi (2) | no | yes | yes | no | recursive `str-fold` helper |
+| `when` | single | no | no | yes | no | none |
+
+### Required Macro Infrastructure by Phase
+
+**Phase A — Core macro pipeline (no quasiquote needed):**
+- `vec` — single-clause, variadic, no quasiquote. Uses direct `SexpBracket` constructor. Simplest possible macro.
+
+**Phase B — Quasiquote engine:**
+- `const`, `const-` — single-clause, quasiquote + `quote-sexp` primitive.
+- `when` — single-clause, quasiquote only. No helpers.
+
+**Phase C — Multi-clause + variadic + quasiquote:**
+- `do` — multi-clause, variadic, quasiquote with recursive self-call.
+- `cond` — multi-clause, variadic, quasiquote with recursive self-call.
+- `list` — multi-clause, variadic, quasiquote. Needs `sfold`, `sreverse` from SList helpers.
+- `str` — multi-clause, variadic. Needs `str-fold` helper (recursive, builds `str-concat`/`show` chains).
+
+**Phase D — Helpers + `begin`:**
+- `def`, `def-` — single-clause, quasiquote + `begin` multi-form. Needs `make-def-name` helper.
+- `case` — single-clause, variadic. Needs `case-fold` recursive helper (manual Sexp construction, no quasiquote in body).
+- `->`, `->>` — single-clause, variadic. Need `thread-first-fold`/`thread-last-fold` recursive helpers.
+
+**Phase E — Bracket destructuring:**
+- `bind!` — single-clause, bracket destructuring on bindings parameter, quasiquote. Needs recursive fold over binding pairs.
+
+### Runtime Dependencies
+
+| Macro | Runtime dependency | Ring gate |
+|-------|--------------------|-----------|
+| `const`, `const-` | none (pure substitution) | Ring 3 |
+| `def`, `def-` | none (defines a zero-arg fn) | Ring 3 |
+| `vec` | Vec type (Ring 1) | Ring 3 |
+| `list` | List type with `Cons`/`Nil` (Ring 1) | Ring 3 |
+| `when` | none | Ring 3 |
+| `do` | `let` (core language) | Ring 3 |
+| `cond` | `if` (core language) | Ring 3 |
+| `case` | `let`, `if`, `=` via Eq trait (Ring 2) | Ring 3 |
+| `str` | `show` via Display trait (Ring 2), `str-concat` primitive | Ring 3 |
+| `->`, `->>` | none (pure syntactic rewriting) | Ring 3 |
+| `bind!` | `bind` function from IO model (Ring 4) | **Ring 4** (useless without IO) |
+
+### Key Findings
+
+1. **All prelude macros except `bind!` can be implemented and tested at Ring 3.** `bind!` depends on the `bind` function from the IO model (Ring 4), so while the macro itself can be *defined* at Ring 3, it cannot be *used* until IO arrives.
+
+2. **`vec` is the simplest macro** (no quasiquote, no helpers) and should be the first prelude macro implemented, making it ideal for validating the macro pipeline end-to-end.
+
+3. **SList helpers (`sfold`, `sreverse`, `sconcat`) are prerequisites for `list` and `str`.** These must be defined in `core/syntax.cl` (or its reimplementation equivalent) before those macros.
+
+4. **`case` depends on Eq trait** (`=` operator) which is Ring 2 infrastructure. The macro itself is Ring 3 but its expansion uses `=`, so it requires that Eq impls are registered.
+
+5. **`begin` multi-form support is required only by `def`/`def-`.** All other macros return a single Sexp.
+
+6. **Bracket destructuring is required only by `bind!`.** This is the most complex parameter form and can be deferred to the end of Ring 3 macro implementation.
+
+7. **Recommended implementation order**: `vec` -> `when` -> `const`/`const-` -> `do` -> `cond` -> `list` -> `str` -> `case` -> `->` / `->>` -> `def`/`def-` -> `bind!`.
+
+---
+
 ## Next Skills
 
 - `/arch` — Confirm the builtin-to-trait transition strategy. Validate that cross-module trait impls work (trait in module A, type in module B, impl in module B). Review Map/Set implementation strategy.

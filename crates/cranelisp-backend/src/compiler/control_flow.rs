@@ -7,7 +7,7 @@ use std::collections::HashSet;
 use cranelift::prelude::*;
 use cranelift_module::{Linkage, Module};
 
-use cranelisp_types::{CompileMode, CranelispError, Expr, Span, Symbol};
+use cranelisp_types::{CompileMode, CranelispError, Expr, HeapCategory, Span, Symbol, Type};
 
 use crate::heap::{self, HeapClosure};
 
@@ -36,6 +36,12 @@ impl<'a> FnCompiler<'a> {
             }
 
             let val = self.compile_expr(val_expr)?;
+
+            // If compile_expr produced a closure with drop glue, record it.
+            if let Some(glue_id) = self.pending_closure_drop_glue.take() {
+                self.closure_drop_glue.insert(name.clone(), glue_id);
+            }
+
             let var = self.fresh_variable();
             self.builder.declare_var(var, types::I64);
             self.builder.def_var(var, val);
@@ -198,7 +204,30 @@ impl<'a> FnCompiler<'a> {
             HeapClosure::CODE_PTR_OFFSET,
         );
 
+        // Build closure drop glue and store pointer at DROP_GLUE_PTR_OFFSET (24).
+        // Must be built BEFORE storing captures (build_closure_drop_glue needs
+        // self.module which is borrowed mutably during function definition).
+        let drop_glue = self.build_closure_drop_glue(&captures, span)?;
+        let drop_glue_val = if let Some(glue_id) = drop_glue {
+            let glue_ref = self
+                .module
+                .declare_func_in_func(glue_id, self.builder.func);
+            self.builder.ins().func_addr(types::I64, glue_ref)
+        } else {
+            self.builder.ins().iconst(types::I64, 0)
+        };
+        heap::heap_store(
+            &mut self.builder,
+            drop_glue_val,
+            base_ptr,
+            HeapClosure::DROP_GLUE_PTR_OFFSET,
+        );
+        self.pending_closure_drop_glue = drop_glue;
+
         // Store each captured value at HeapClosure::capture_offset(i).
+        // For heap-typed captures, emit rc_inc so the closure env holds
+        // its own reference (the enclosing scope retains its reference
+        // independently and will dec it at scope exit).
         for (i, cap_name) in captures.iter().enumerate() {
             if let Some(var) = self.variables.get(cap_name) {
                 let cap_val = self.builder.use_var(*var);
@@ -208,10 +237,135 @@ impl<'a> FnCompiler<'a> {
                     base_ptr,
                     HeapClosure::capture_offset(i),
                 );
+
+                // Inc heap-typed captures: the closure env needs its own reference.
+                if let Some(ty) = self.variable_types.get(cap_name) {
+                    let category = HeapCategory::classify(ty, Some(self.ctx.type_defs));
+                    match category {
+                        HeapCategory::AlwaysHeap => {
+                            heap::emit_rc_inc(&mut self.builder, cap_val);
+                        }
+                        HeapCategory::Mixed => {
+                            heap::emit_rc_inc_guarded(&mut self.builder, cap_val);
+                        }
+                        HeapCategory::NeverHeap => {}
+                    }
+                }
             }
         }
 
         Ok(base_ptr)
+    }
+
+    /// Build a closure drop glue function: `(ptr: i64) -> ()`.
+    ///
+    /// For each heap-typed capture, loads the value from the closure env
+    /// at its known offset and emits `rc_dec` (with guard for Mixed types).
+    /// Returns `None` if no captures are heap-typed.
+    fn build_closure_drop_glue(
+        &mut self,
+        captures: &[Symbol],
+        span: Span,
+    ) -> Result<Option<cranelift_module::FuncId>, CranelispError> {
+        let dealloc_id = self.ctx.dealloc_func_id.ok_or_else(|| {
+            CranelispError::CodegenError {
+                message: "runtime/dealloc not declared (need declare_intrinsics)".into(),
+                span,
+            }
+        })?;
+
+        // Collect (capture_index, type, heap_category) for heap-typed captures.
+        let heap_captures: Vec<(usize, Type, HeapCategory)> = captures
+            .iter()
+            .enumerate()
+            .filter_map(|(i, cap_name)| {
+                let ty = self.variable_types.get(cap_name)?;
+                let category = HeapCategory::classify(ty, Some(self.ctx.type_defs));
+                match category {
+                    HeapCategory::AlwaysHeap | HeapCategory::Mixed => {
+                        Some((i, ty.clone(), category))
+                    }
+                    HeapCategory::NeverHeap => None,
+                }
+            })
+            .collect();
+
+        if heap_captures.is_empty() {
+            return Ok(None);
+        }
+
+        // Build the drop glue function.
+        let glue_name = format!(
+            "runtime/closure_drop_glue_{}_{}",
+            span.start, span.end
+        );
+
+        let mut sig = self.module.make_signature();
+        sig.params.push(AbiParam::new(types::I64)); // closure ptr
+
+        let glue_func_id = self
+            .module
+            .declare_function(&glue_name, Linkage::Local, &sig)
+            .map_err(|e| CranelispError::CodegenError {
+                message: format!("failed to declare closure drop glue fn: {e}"),
+                span,
+            })?;
+
+        let mut ctx = self.module.make_context();
+        let mut func_ctx = FunctionBuilderContext::new();
+        ctx.func.signature = sig;
+
+        let mut builder = FunctionBuilder::new(&mut ctx.func, &mut func_ctx);
+        let entry = builder.create_block();
+        builder.append_block_params_for_function_params(entry);
+        builder.switch_to_block(entry);
+        builder.seal_block(entry);
+
+        let closure_ptr = builder.block_params(entry)[0];
+
+        // For each heap-typed capture, load from its offset and dec.
+        for (cap_idx, _cap_ty, category) in &heap_captures {
+            let cap_val = heap::heap_load(
+                &mut builder,
+                closure_ptr,
+                HeapClosure::capture_offset(*cap_idx),
+            );
+            match category {
+                HeapCategory::AlwaysHeap => {
+                    heap::emit_rc_dec(
+                        &mut builder,
+                        self.module,
+                        cap_val,
+                        dealloc_id,
+                        None,
+                    );
+                }
+                HeapCategory::Mixed => {
+                    heap::emit_rc_dec_guarded(
+                        &mut builder,
+                        self.module,
+                        cap_val,
+                        dealloc_id,
+                        None,
+                        true,
+                    );
+                }
+                HeapCategory::NeverHeap => {} // unreachable, filtered above
+            }
+        }
+
+        builder.ins().return_(&[]);
+        builder.seal_all_blocks();
+        builder.finalize();
+
+        self.module
+            .define_function(glue_func_id, &mut ctx)
+            .map_err(|e| CranelispError::CodegenError {
+                message: format!("failed to define closure drop glue fn: {e}"),
+                span,
+            })?;
+
+        Ok(Some(glue_func_id))
     }
 
     /// Compile the body of a lambda as a separate JIT function.
@@ -369,6 +523,15 @@ impl<'a> FnCompiler<'a> {
             code_ptr,
             base_ptr,
             HeapClosure::CODE_PTR_OFFSET,
+        );
+
+        // Store zero drop glue pointer (no captures to drop).
+        let zero = self.builder.ins().iconst(types::I64, 0);
+        heap::heap_store(
+            &mut self.builder,
+            zero,
+            base_ptr,
+            HeapClosure::DROP_GLUE_PTR_OFFSET,
         );
 
         Ok(base_ptr)

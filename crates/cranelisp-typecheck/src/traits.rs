@@ -6,9 +6,10 @@
 use std::collections::{HashMap, HashSet};
 
 use cranelisp_types::{
-    ConstrainedFn, CranelispError, DefKind, Defn, JitSymbol, ModuleEntry, MonoDefn,
-    ResolvedCall, Scheme, Span, Symbol, TraitDecl, TraitImpl, TraitMethodSig,
-    TraitName, Type, TypeId, TypeName, Visibility, apply,
+    ConstrainedFn, CranelispError, DefKind, Defn, JitSymbol, MethodResolutions,
+    ModuleEntry, MonoDefn, ResolvedCall, Scheme, Span, Symbol, TraitDecl,
+    TraitImpl, TraitMethodSig, TraitName, Type, TypeId, TypeName, Visibility,
+    apply,
 };
 
 use crate::checker::TypeChecker;
@@ -31,8 +32,7 @@ impl TraitRegistry {
     /// Check if a method belongs to a specific trait.
     pub fn method_belongs_to_trait(&self, method: &Symbol, trait_name: &TraitName) -> bool {
         self.method_to_trait
-            .get(method)
-            .map_or(false, |tn| tn == trait_name)
+            .get(method) == Some(trait_name)
     }
 }
 
@@ -125,10 +125,10 @@ impl ActiveConstraints {
     ) -> HashMap<TypeId, Vec<TraitName>> {
         let mut result = HashMap::new();
         for &var_id in vars {
-            if let Some(traits) = self.constraints.get(&var_id) {
-                if !traits.is_empty() {
-                    result.insert(var_id, traits.clone());
-                }
+            if let Some(traits) = self.constraints.get(&var_id)
+                && !traits.is_empty()
+            {
+                result.insert(var_id, traits.clone());
             }
         }
         result
@@ -504,36 +504,6 @@ impl TypeChecker {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Builtin Impl Registration
-// ---------------------------------------------------------------------------
-
-impl TypeChecker {
-    /// Register a builtin trait impl (e.g., Num for Int).
-    ///
-    /// `method_primitives` maps method name -> underlying primitive name.
-    pub(crate) fn register_builtin_impl(
-        &mut self,
-        trait_name: TraitName,
-        impl_type: TypeName,
-        method_primitives: Vec<(Symbol, Symbol)>,
-    ) {
-        let mp: HashMap<Symbol, Symbol> =
-            method_primitives.into_iter().collect();
-
-        self.impl_registry.impls
-            .entry(trait_name.clone())
-            .or_default()
-            .insert(
-                impl_type.clone(),
-                RegisteredImpl {
-                    trait_name,
-                    impl_type,
-                    method_primitives: mp,
-                },
-            );
-    }
-}
 
 // ---------------------------------------------------------------------------
 // Method Resolution
@@ -649,17 +619,8 @@ impl TypeChecker {
         let scheme = constrained_fn.scheme.clone();
         let defn = constrained_fn.defn.clone();
 
-        // Instantiate and unify with arg types to find concrete types
-        let inst_type = scheme::instantiate(&scheme, &mut self.next_id);
-
-        if let Type::Fn(param_types, _) = &inst_type {
-            for (pt, at) in param_types.iter().zip(arg_types.iter()) {
-                self.unify(pt, at, call_span)?;
-            }
-        }
-
-        // Resolve the concrete types
-        let resolved = self.apply_subst(&inst_type);
+        // Instantiate, unify with arg types, and resolve concrete types
+        let resolved = self.instantiate_and_resolve(&scheme, arg_types, call_span)?;
 
         let concrete_param_types = if let Type::Fn(pts, _) = &resolved {
             pts.clone()
@@ -667,18 +628,71 @@ impl TypeChecker {
             return Ok(None);
         };
 
-        // Build mangled name: name$Type1+Type2
-        let type_names: Vec<String> = concrete_param_types
-            .iter()
-            .filter_map(|t| concrete_type_name(t).map(|tn| tn.to_string()))
-            .collect();
-        let mangled_name = format!(
-            "{}${}",
-            fn_name,
-            type_names.join("+")
-        );
+        let mangled_name = build_mangled_name(fn_name, &concrete_param_types);
 
         // Check constraints are satisfied
+        self.verify_constraints(&scheme, call_span)?;
+
+        // Re-check the body with concrete types and harvest resolutions
+        let concrete_ret_ty = if let Type::Fn(_, ret) = &resolved {
+            *ret.clone()
+        } else {
+            return Ok(None);
+        };
+
+        let (mut resolutions, mono_expr_types) =
+            self.recheck_body_for_mono(&defn, &concrete_param_types, &concrete_ret_ty)?;
+
+        // Add SigDispatch entries for inner constrained fn calls
+        self.resolve_inner_constrained_calls(
+            &defn,
+            &mono_expr_types,
+            &mut resolutions,
+        );
+
+        let mono_defn = MonoDefn {
+            defn: Defn {
+                name: Symbol::from(mangled_name.as_str()),
+                docstring: defn.docstring.clone(),
+                params: defn.params.clone(),
+                param_annotations: defn.param_annotations.clone(),
+                body: defn.body.clone(),
+                visibility: defn.visibility,
+                span: defn.span,
+            },
+            resolutions,
+            expr_types: mono_expr_types,
+        };
+
+        Ok(Some(mono_defn))
+    }
+
+    /// Instantiate a scheme with fresh type variables, unify with the given
+    /// argument types, and return the fully-resolved function type.
+    fn instantiate_and_resolve(
+        &mut self,
+        scheme: &Scheme,
+        arg_types: &[Type],
+        call_span: Span,
+    ) -> Result<Type, CranelispError> {
+        let inst_type = scheme::instantiate(scheme, &mut self.next_id);
+
+        if let Type::Fn(param_types, _) = &inst_type {
+            for (pt, at) in param_types.iter().zip(arg_types.iter()) {
+                self.unify(pt, at, call_span)?;
+            }
+        }
+
+        Ok(self.apply_subst(&inst_type))
+    }
+
+    /// Verify that all trait constraints in the scheme are satisfied by
+    /// the concrete types determined during unification.
+    fn verify_constraints(
+        &self,
+        scheme: &Scheme,
+        call_span: Span,
+    ) -> Result<(), CranelispError> {
         for (var_id, traits) in &scheme.constraints {
             let resolved_var = apply(&self.subst, &Type::Var(*var_id));
             let impl_type = match concrete_type_name(&resolved_var) {
@@ -697,41 +711,51 @@ impl TypeChecker {
                 }
             }
         }
+        Ok(())
+    }
 
-        // Gap 2: Re-check the body with concrete types to populate
-        // method_resolutions and expr_types for this specialization.
-        let concrete_ret_ty = if let Type::Fn(_, ret) = &resolved {
-            *ret.clone()
-        } else {
-            return Ok(None);
-        };
-
-        // Save and clear the typechecker's resolution/expr_types state
+    /// Re-check a function body with concrete types, saving and restoring
+    /// the typechecker's resolution/expr_types state around the check.
+    ///
+    /// Returns the per-specialization method resolutions and expression types.
+    fn recheck_body_for_mono(
+        &mut self,
+        defn: &Defn,
+        concrete_param_types: &[Type],
+        concrete_ret_ty: &Type,
+    ) -> Result<(MethodResolutions, HashMap<Span, Type>), CranelispError> {
         let saved_resolutions = std::mem::take(&mut self.method_resolutions);
         let saved_expr_types = std::mem::take(&mut self.expr_types);
 
-        self.check_defn_body_with_types(&defn, &concrete_param_types, &concrete_ret_ty)?;
+        self.check_defn_body_with_types(defn, concrete_param_types, concrete_ret_ty)?;
 
-        // Harvest per-mono resolutions and expr_types
-        let mut resolutions = std::mem::take(&mut self.method_resolutions);
+        let resolutions = std::mem::take(&mut self.method_resolutions);
         let mono_expr_types: HashMap<Span, Type> = self.expr_types
             .iter()
             .map(|(span, ty)| (*span, apply(&self.subst, ty)))
             .collect();
 
-        // Restore the typechecker's state
         self.method_resolutions = saved_resolutions;
         self.expr_types = saved_expr_types;
 
-        // Scan mono body for constrained fn calls (e.g. self-recursive calls)
-        // and add SigDispatch entries so the backend can find them.
+        Ok((resolutions, mono_expr_types))
+    }
+
+    /// Scan the monomorphised body for constrained fn calls (e.g. self-recursive
+    /// calls) and add SigDispatch entries so the backend can find them.
+    fn resolve_inner_constrained_calls(
+        &self,
+        defn: &Defn,
+        mono_expr_types: &HashMap<Span, Type>,
+        resolutions: &mut MethodResolutions,
+    ) {
         let constrained_fn_names: HashSet<Symbol> = self.current_symbol_table().symbols
             .iter()
             .filter_map(|(name, entry)| {
-                if let ModuleEntry::Def { kind, .. } = entry {
-                    if let DefKind::UserFn { constrained_fn: Some(_) } = kind.as_ref() {
-                        return Some(name.clone());
-                    }
+                if let ModuleEntry::Def { kind, .. } = entry
+                    && let DefKind::UserFn { constrained_fn: Some(_) } = kind.as_ref()
+                {
+                    return Some(name.clone());
                 }
                 None
             })
@@ -749,16 +773,7 @@ impl TypeChecker {
             if inner_arg_types.len() != arg_spans.len() {
                 continue;
             }
-            // Build the mangled name for this inner call
-            let inner_type_names: Vec<String> = inner_arg_types
-                .iter()
-                .filter_map(|t| concrete_type_name(t).map(|tn| tn.to_string()))
-                .collect();
-            let inner_mangled = format!(
-                "{}${}",
-                inner_fn_name,
-                inner_type_names.join("+")
-            );
+            let inner_mangled = build_mangled_name(inner_fn_name, &inner_arg_types);
             resolutions.insert(
                 *inner_call_span,
                 ResolvedCall::SigDispatch {
@@ -766,22 +781,6 @@ impl TypeChecker {
                 },
             );
         }
-
-        let mono_defn = MonoDefn {
-            defn: Defn {
-                name: Symbol::from(mangled_name.as_str()),
-                docstring: defn.docstring.clone(),
-                params: defn.params.clone(),
-                param_annotations: defn.param_annotations.clone(),
-                body: defn.body.clone(),
-                visibility: defn.visibility,
-                span: defn.span,
-            },
-            resolutions,
-            expr_types: mono_expr_types,
-        };
-
-        Ok(Some(mono_defn))
     }
 
     /// Look up a constrained function by name.
@@ -807,6 +806,17 @@ impl TypeChecker {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+/// Build a mangled name from a function name and its concrete parameter types.
+///
+/// Format: `name$Type1+Type2`
+fn build_mangled_name(fn_name: &Symbol, param_types: &[Type]) -> String {
+    let type_names: Vec<String> = param_types
+        .iter()
+        .filter_map(|t| concrete_type_name(t).map(|tn| tn.to_string()))
+        .collect();
+    format!("{}${}", fn_name, type_names.join("+"))
+}
 
 /// Extract the TypeName from a concrete (non-Var) type.
 fn concrete_type_name(ty: &Type) -> Option<TypeName> {
@@ -1147,17 +1157,38 @@ mod tests {
 
     // spec: 07-traits §7.3.1 — register concrete trait implementation
     #[test]
-    fn test_register_builtin_impl() {
+    fn test_register_trait_impl() {
         let mut tc = TypeChecker::new();
         let decl = make_test_trait_decl();
         tc.register_trait_decl(&decl).unwrap();
-        tc.register_builtin_impl(
-            TraitName::from("TestTrait"),
-            TypeName::from("Int"),
-            vec![
-                (Symbol::from("test-op"), Symbol::from("add-i64")),
-            ],
-        );
+
+        let impl_ = TraitImpl {
+            trait_name: TraitName::from("TestTrait"),
+            target_type: TypeName::from("Int"),
+            type_args: vec![],
+            type_constraints: vec![],
+            methods: vec![Defn {
+                name: Symbol::from("test-op"),
+                docstring: None,
+                params: vec![Symbol::from("lhs"), Symbol::from("rhs")],
+                param_annotations: vec![None, None],
+                body: cranelisp_types::Expr::Apply {
+                    callee: Box::new(cranelisp_types::Expr::Var {
+                        name: Symbol::from("add-i64"),
+                        span: Span::SYNTHETIC,
+                    }),
+                    args: vec![
+                        cranelisp_types::Expr::Var { name: Symbol::from("lhs"), span: Span::SYNTHETIC },
+                        cranelisp_types::Expr::Var { name: Symbol::from("rhs"), span: Span::SYNTHETIC },
+                    ],
+                    span: Span::SYNTHETIC,
+                },
+                visibility: Visibility::Public,
+                span: Span::SYNTHETIC,
+            }],
+            span: Span::SYNTHETIC,
+        };
+        tc.register_trait_impl(&impl_).unwrap();
 
         assert!(tc
             .impl_registry
@@ -1173,11 +1204,34 @@ mod tests {
         let mut tc = TypeChecker::new();
         let decl = make_test_trait_decl();
         tc.register_trait_decl(&decl).unwrap();
-        tc.register_builtin_impl(
-            TraitName::from("TestTrait"),
-            TypeName::from("Int"),
-            vec![(Symbol::from("test-op"), Symbol::from("add-i64"))],
-        );
+
+        let impl_ = TraitImpl {
+            trait_name: TraitName::from("TestTrait"),
+            target_type: TypeName::from("Int"),
+            type_args: vec![],
+            type_constraints: vec![],
+            methods: vec![Defn {
+                name: Symbol::from("test-op"),
+                docstring: None,
+                params: vec![Symbol::from("lhs"), Symbol::from("rhs")],
+                param_annotations: vec![None, None],
+                body: cranelisp_types::Expr::Apply {
+                    callee: Box::new(cranelisp_types::Expr::Var {
+                        name: Symbol::from("add-i64"),
+                        span: Span::SYNTHETIC,
+                    }),
+                    args: vec![
+                        cranelisp_types::Expr::Var { name: Symbol::from("lhs"), span: Span::SYNTHETIC },
+                        cranelisp_types::Expr::Var { name: Symbol::from("rhs"), span: Span::SYNTHETIC },
+                    ],
+                    span: Span::SYNTHETIC,
+                },
+                visibility: Visibility::Public,
+                span: Span::SYNTHETIC,
+            }],
+            span: Span::SYNTHETIC,
+        };
+        tc.register_trait_impl(&impl_).unwrap();
 
         let result = tc.try_resolve_trait_method(
             &Symbol::from("test-op"),

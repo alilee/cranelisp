@@ -196,10 +196,9 @@ impl TypeChecker {
         for defn in defns {
             if let Some(ModuleEntry::Def { kind, .. }) =
                 self.current_symbol_table().get(defn.name.as_ref())
+                && let DefKind::UserFn { constrained_fn: Some(_) } = kind.as_ref()
             {
-                if let DefKind::UserFn { constrained_fn: Some(_) } = kind.as_ref() {
-                    names.insert(defn.name.clone());
-                }
+                names.insert(defn.name.clone());
             }
         }
 
@@ -323,9 +322,9 @@ impl TypeChecker {
                         defn: (*defn).clone(),
                         scheme: trial_scheme,
                     };
-                    *kind = Box::new(DefKind::UserFn {
+                    **kind = DefKind::UserFn {
                         constrained_fn: Some(Box::new(cf)),
-                    });
+                    };
                 }
             }
         }
@@ -345,10 +344,10 @@ impl TypeChecker {
             {
                 *s = scheme.clone();
                 // Clear eager constrained marker if final scheme is unconstrained
-                if scheme.constraints.is_empty() {
-                    if let DefKind::UserFn { constrained_fn: Some(_) } = kind.as_ref() {
-                        *kind = Box::new(DefKind::UserFn { constrained_fn: None });
-                    }
+                if scheme.constraints.is_empty()
+                    && let DefKind::UserFn { constrained_fn: Some(_) } = kind.as_ref()
+                {
+                    **kind = DefKind::UserFn { constrained_fn: None };
                 }
             }
         }
@@ -424,9 +423,9 @@ impl TypeChecker {
                     defn: defn.clone(),
                     scheme: scheme.clone(),
                 };
-                *kind = Box::new(DefKind::UserFn {
+                **kind = DefKind::UserFn {
                     constrained_fn: Some(Box::new(cf)),
-                });
+                };
             }
         }
 
@@ -522,10 +521,10 @@ impl TypeChecker {
         let constrained_fn_names: HashSet<Symbol> = self.current_symbol_table().symbols
             .iter()
             .filter_map(|(name, entry)| {
-                if let ModuleEntry::Def { kind, .. } = entry {
-                    if let DefKind::UserFn { constrained_fn: Some(_) } = kind.as_ref() {
-                        return Some(name.clone());
-                    }
+                if let ModuleEntry::Def { kind, .. } = entry
+                    && let DefKind::UserFn { constrained_fn: Some(_) } = kind.as_ref()
+                {
+                    return Some(name.clone());
                 }
                 None
             })
@@ -597,13 +596,13 @@ impl TypeChecker {
         match expr {
             Expr::Apply { callee, args, span } => {
                 // Check if callee is a constrained fn
-                if let Expr::Var { name, .. } = callee.as_ref() {
-                    if constrained_fn_names.contains(name) {
-                        let arg_spans: Vec<Span> = args.iter()
-                            .map(|a| a.span())
-                            .collect();
-                        out.push((name.clone(), arg_spans, *span));
-                    }
+                if let Expr::Var { name, .. } = callee.as_ref()
+                    && constrained_fn_names.contains(name)
+                {
+                    let arg_spans: Vec<Span> = args.iter()
+                        .map(|a| a.span())
+                        .collect();
+                    out.push((name.clone(), arg_spans, *span));
                 }
                 // Recurse into callee and args
                 Self::collect_constrained_calls(callee, constrained_fn_names, out);

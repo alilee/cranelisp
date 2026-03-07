@@ -201,18 +201,18 @@ fn parse_names_list(sexp: &Sexp) -> Result<(ImportNames, Span), CranelispError> 
             }
 
             // Check for glob: single `*`
-            if items.len() == 1 {
-                if let Sexp::Symbol(name, _) = &items[0] {
-                    if name == "*" {
-                        return Ok((ImportNames::Glob, *span));
-                    }
-                    // Check for member glob: `Display.*`
-                    if let Some(base) = name.strip_suffix(".*") {
-                        return Ok((
-                            ImportNames::MemberGlob(base.to_string().into()),
-                            *span,
-                        ));
-                    }
+            if items.len() == 1
+                && let Sexp::Symbol(name, _) = &items[0]
+            {
+                if name == "*" {
+                    return Ok((ImportNames::Glob, *span));
+                }
+                // Check for member glob: `Display.*`
+                if let Some(base) = name.strip_suffix(".*") {
+                    return Ok((
+                        ImportNames::MemberGlob(base.to_string().into()),
+                        *span,
+                    ));
                 }
             }
 

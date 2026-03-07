@@ -697,6 +697,71 @@ Comfortably within the 500–2000 line target.
 
 ---
 
+## Ring 3 Readiness Assessment (Sprint 9)
+
+Analysis of which exemplar patterns depend on macros vs IO, and what becomes implementable at Ring 3.
+
+### Macro Dependencies by Module
+
+| Module | Macros used | IO required? | Ring 3 viable? |
+|--------|------------|--------------|----------------|
+| `grid.cl` | `derive [Eq Display]`, `list` (if candidate sets use lists), `cond` (multi-way dispatch) | no | **yes** |
+| `solver.cl` | `cond` (multi-way propagation results), `->` (pipeline compositions), `case` (optional) | no | **yes** |
+| `html.cl` | `str` (string building), `->` (threading for string pipelines), `cond` (conditional rendering) | no | **yes** |
+| `form.cl` | `cond` or `case` (dispatch on parsed values), `->` (threading) | no | **yes** |
+| `main.cl` | `do`, `bind!` | **yes** (platform, `listen`/`accept`/`send`/`serve`) | **no** — Ring 4 |
+| `**/test.cl` | `do` (sequencing assertions), testing macros | no (uses `run-tests`) | **yes** |
+
+### Pattern Analysis
+
+**Pure computation patterns (Ring 3)**:
+- **`derive [Eq Display]`** on `Cell`, `SolveResult`, `PropResult`, `Color` — requires the `derive` macro infrastructure (multi-form expansion, per-trait helper macros). This is a Ring 3 feature.
+- **`cond` multi-way conditional** — used in solver for propagation result dispatch, in HTML for conditional rendering, in routing for method/path dispatch. Pure syntactic rewriting to nested `if`.
+- **`->` thread-first** — used in HTML string building pipelines and solver data transformations. Pure syntactic rewriting.
+- **`str` variadic string concatenation** — heavily used in `html.cl` for building HTML strings. Depends on `show` (Display trait, Ring 2) and `str-concat` (primitive, Ring 1).
+- **`list` construction** — used if candidate sets are represented as List values (current plan uses bitmask Int, so this is optional).
+- **`case` value dispatch** — optional; `cond` with explicit `=` comparisons is equivalent.
+
+**IO patterns (Ring 4 only)**:
+- **`do` sequencing** — used in `main.cl` for IO action sequencing. Also appears in test modules for assertion sequencing, but test modules can use `let [_ ...]` chains instead.
+- **`bind!` monadic bind** — used exclusively in `main.cl` for IO binding (`listen`, `accept`, `send`, `serve`, `read-line`). Not needed in any pure module.
+- **`platform` declaration** — only in `main.cl`. All other modules are platform-independent.
+
+### What Becomes Possible at Ring 3
+
+1. **Full `grid.cl` module** — With `derive [Eq Display]`, the Cell/Grid/SolveResult/PropResult types get automatic equality and display. With `cond`, multi-way dispatch reads naturally. With string primitives from stdlib (`char-at`, `str-split`), `make-grid` can parse puzzle strings.
+
+2. **Full `solver.cl` module** — The entire constraint propagation + backtracking algorithm is pure computation. `cond` for multi-way result dispatch, `->` for pipeline-style transformations. No IO dependency.
+
+3. **Full `html.cl` module** — HTML generation is pure string building. `str` macro for concatenation, `->` for threading through string transformations, `cond` for conditional rendering. Heavily macro-dependent for ergonomics but functionally possible without macros (just verbose).
+
+4. **Full `form.cl` module** — URL form parsing is pure string manipulation. Depends on string primitives (`str-split`, `char-at`, `str-contains`) and `cond`/`case` for dispatch.
+
+5. **All test submodules** — `grid/test.cl`, `solver/test.cl`, `html/test.cl`, `form/test.cl` can use `run-tests` infrastructure with `assert-eq`, `assert-true`. Test assertions use `Eq` trait (Ring 2). Test discovery uses `run-tests` (Ring 3+).
+
+6. **NOT `main.cl`** — Routing and IO wiring depend on the platform system (Ring 4). However, the pure `handle` function (request routing to response) can be written and tested at Ring 3 using mock Request/Response values.
+
+### Blocking Dependencies
+
+| Dependency | Status | Blocks |
+|-----------|--------|--------|
+| `derive` macro | Ring 3 | `Eq`/`Display` impls on all ADTs |
+| `cond` macro | Ring 3 | Multi-way dispatch in solver, HTML, routing |
+| `->` macro | Ring 3 | Pipeline-style string building in HTML |
+| `str` macro | Ring 3 | Ergonomic string concatenation in HTML |
+| `char-at` primitive | Ring 3 stdlib | `make-grid` string parsing |
+| `str-split` primitive | Ring 3 stdlib | `form.cl` URL parsing |
+| `str-contains` primitive | Ring 3 stdlib | Test assertions, URL decoding |
+| `mod`/`rem` | Ring 3 stdlib or primitive | `col-of`, `box-of` (workaround exists) |
+| Platform DLL system | Ring 4 | `main.cl`, web server |
+| `do`, `bind!` macros | Definable at Ring 3, usable at Ring 4 | IO sequencing in `main.cl` |
+
+### Verdict
+
+**Ring 3 unlocks 5 of 7 Cranelisp modules** (grid, solver, html, form, plus all test submodules). Only `main.cl` and the platform DLL require Ring 4. The exemplar's pure/IO split means that approximately 85% of the Cranelisp code (~630 of ~740 estimated lines) can be implemented and tested at Ring 3. The critical macro dependencies are `derive`, `cond`, `->`, and `str` — all of which are in the prelude macro set and have no IO dependency.
+
+---
+
 ## Next Skills
 
 - `/stdlib` — String primitives (`char-at`, `str-split`, `str-contains`, `str-sub`) remain the critical path for the exemplar (U1.1). Also: `mod`/`rem`, `vec-filter`, `vec-map`, `vec-fold`. Consider a variadic `str` function for string building ergonomics (U1.11).

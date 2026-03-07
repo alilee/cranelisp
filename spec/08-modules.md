@@ -1,4 +1,4 @@
-# 8. Modules [R2 S8]
+# 8. Modules [R3 S10]
 
 This section defines the module system of Cranelisp -- how source files map to modules, how names are imported and exported across module boundaries, and how name resolution operates in the presence of multiple modules.
 
@@ -478,7 +478,7 @@ A private name:
 (util/internal 42)         ; error: 'internal' is private
 ```
 
-## 8.8 Prelude [R2 S8]
+## 8.8 Prelude [R3 S10]
 
 ### 8.8.1 Implicit Import
 
@@ -580,7 +580,7 @@ lib/prelude.cl          ; depends on core
 main.cl                 ; depends on prelude (implicit)
 ```
 
-## 8.11 Lib Directory [R2 S8]
+## 8.11 Lib Directory [R2 S10]
 
 ### 8.11.1 Standard Library Location
 
@@ -667,7 +667,7 @@ The REPL SHOULD support `(import ...)` as an interactive command. Importing a mo
 
 Typing a module name at the REPL SHOULD display information about that module: its public definitions, types, and traits. This is consistent with the self-documenting design principle.
 
-## 8.14 Summary of Forms [R2 S8]
+## 8.14 Summary of Forms [Tested]
 
 | Form | Purpose | Visibility |
 |---|---|---|

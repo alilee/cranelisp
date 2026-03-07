@@ -903,6 +903,73 @@ examples/
   27-testing/           — planned (Ring 4, multi-file)
 ```
 
+## 10. Ring 3 Readiness Assessment (Sprint 9)
+
+Survey of sketch examples classified by Ring 3 readiness. Each sketch example is assessed for macro forms used and IO dependency.
+
+### Sketch Example Classification
+
+| # | File | Macro forms used | IO required? | Ring readiness |
+|---|------|-----------------|--------------|----------------|
+| 1 | `hello.cl` | none | yes (`platform`, `print`) | Ring 4 |
+| 2 | `factorial.cl` | none | yes (`platform`, `print`) | Ring 4 (but core logic is Ring 0; already ported as example 07) |
+| 3 | `strings.cl` | `do` | yes (`platform`, `print`) | Ring 4 |
+| 4 | `float.cl` | `do` | yes (`platform`, `print`, `pure`) | Ring 4 |
+| 5 | `closure.cl` | `do` | yes (`platform`, `print`) | Ring 4 |
+| 6 | `list.cl` | `do`, `list` | yes (`platform`, `print`) | Ring 4 |
+| 7 | `vec.cl` | `do` | yes (`platform`, `print`, `pure`) | Ring 4 |
+| 8 | `seq.cl` | `do` | yes (`platform`, `print`) | Ring 4 |
+| 9 | `curry.cl` | `do` | yes (`platform`, `print`, `pure`) | Ring 4 |
+| 10 | `adt.cl` | `do` | yes (`platform`, `print`) | Ring 4 |
+| 11 | `functor.cl` | `do`, `list` | yes (`platform`, `print`) | Ring 4 |
+| 12 | `mapfold.cl` | `do`, `list` | yes (`platform`, `print`) | Ring 4 |
+| 13 | `threading.cl` | `do`, `->`, `->>`, `cond`, `case`, `vec` | yes (`platform`, `print`) | Ring 4 |
+| 14 | `dot_notation.cl` | `do` | yes (`platform`, `print`) | Ring 4 |
+| 15 | `sum-input.cl` | `do`, `bind!` | yes (`platform`, `print`, `read-line`, `pure`) | Ring 4 |
+| 16 | `reader.cl` | `do`, quasiquote (`` ` ``), `defmacro` | yes (`platform`, `print`) | Ring 4 |
+| 17 | `derived.cl` | `do`, `derive` | yes (`platform`, `print`, `pure`) | Ring 4 |
+| 18 | `macro.cl` | `do`, `defmacro`, `slist`, `SexpList`, `SexpSym`, `SexpInt` | yes (`platform`, `print`, `pure`) | Ring 4 |
+| 19 | `test-demo.cl` | `mod` | yes (`run-tests` + testing infra) | Ring 4 |
+| 20 | `parallel.cl` | `bind!`, `par-let` | yes (`platform`, `print`, `pure`) | Ring 4 |
+| 21 | `traits.cl` | none | yes (`platform`, `print`) | Ring 4 |
+
+### Analysis
+
+**All 21 sketch examples require IO** (all use `(platform stdio)` and `print`). There are no pure-computation sketch examples. This is expected — the sketch was designed for batch execution, not REPL evaluation.
+
+**Macro forms appearing in sketch examples**:
+
+| Macro | Count of examples using it |
+|-------|--------------------------|
+| `do` | 16 |
+| `list` | 3 (`list.cl`, `functor.cl`, `mapfold.cl`) |
+| `bind!` | 2 (`sum-input.cl`, `parallel.cl`) |
+| `->` | 1 (`threading.cl`) |
+| `->>` | 1 (`threading.cl`) |
+| `cond` | 1 (`threading.cl`) |
+| `case` | 1 (`threading.cl`) |
+| `vec` | 1 (`threading.cl`) |
+| `derive` | 1 (`derived.cl`) |
+| `defmacro` | 2 (`reader.cl`, `macro.cl`) |
+
+### Impact on Learning Sequence Examples 21-23
+
+The planned Ring 3 learning examples (21-Macros, 22-Threading, 23-Derive) are **REPL-first** and do not require IO. They can be implemented as soon as the macro pipeline is functional:
+
+| Example | Macro features needed | IO needed? | Implementable at |
+|---------|----------------------|------------|-------------------|
+| 21 — Macros | `defmacro`, quasiquote, `SexpList`/`SexpSym`/`SexpInt` constructors | no (REPL) | Ring 3, after macro pipeline |
+| 22 — Threading | `->`, `->>`, `cond`, `case`, `vec` | no (REPL) | Ring 3, after prelude macros |
+| 23 — Derive | `derive` macro | no (REPL) | Ring 3, after derive infrastructure |
+
+**Ring 3 porting opportunity**: Several sketch examples have pure-computation cores that can be extracted as REPL examples once macros are available. For instance, `threading.cl`'s `->`, `->>`, `cond`, `case` demonstrations can be ported directly as REPL input/output pairs (stripping the `do`/`print` IO wrapper). Similarly, `derived.cl`'s derive demonstrations and `macro.cl`'s defmacro demonstrations are pure-computation at their core.
+
+### Conclusion
+
+Ring 3 examples (21-23) are self-contained and do not depend on IO. They can proceed as soon as the macro pipeline lands. Ring 4 examples (24-27) depend on the IO model and platform system. No sketch example can be ported verbatim before Ring 4 due to universal `(platform stdio)` dependency, but the learning-sequence examples are designed as REPL sessions and avoid this constraint.
+
+---
+
 ## Next skills
 
 - `/docs` -- Getting-started tutorial can reference examples 09-13 for Ring 1 content; update tutorial sections 14-18, 21

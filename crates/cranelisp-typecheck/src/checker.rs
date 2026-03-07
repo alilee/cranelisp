@@ -105,13 +105,13 @@ impl TypeChecker {
             let mut table = SymbolTable::new(path.clone());
             // Seed new modules with imports from "user" module's builtins so
             // that primitives (if, +, add-i64, etc.) are accessible everywhere.
-            // TODO: This should become a proper "primitives" module with explicit
-            // imports once the module system is fully wired.
+            // Also copies trait decls and trait methods that were registered in
+            // `primitives` and cloned into `user` by register_builtins.
             let user_path = ModuleFullPath::from("user");
             if let Some(user_table) = self.modules.get(&user_path) {
                 for (name, entry) in user_table.all_symbols() {
-                    // Copy builtins: primitives, special forms, and trait
-                    // method entries (registered by register_builtins).
+                    // Copy builtins: primitives, special forms, trait method
+                    // entries, trait decls, constructors, and type defs.
                     let is_builtin = matches!(entry, ModuleEntry::Def { kind, .. }
                         if matches!(kind.as_ref(),
                             cranelisp_types::DefKind::Primitive { .. }
@@ -120,7 +120,8 @@ impl TypeChecker {
                     ) || matches!(entry, ModuleEntry::Def { scheme, .. }
                         if !scheme.constraints.is_empty()
                     ) || matches!(entry, ModuleEntry::Constructor { .. })
-                      || matches!(entry, ModuleEntry::TypeDef { .. });
+                      || matches!(entry, ModuleEntry::TypeDef { .. })
+                      || matches!(entry, ModuleEntry::TraitDecl { .. });
                     if is_builtin {
                         table.insert(
                             name.clone(),
@@ -148,6 +149,18 @@ impl TypeChecker {
     /// Used by tests and external code that needs to inspect symbols.
     pub fn symbol_table(&self) -> &SymbolTable {
         self.current_symbol_table()
+    }
+
+    /// Look up the defining module for a symbol. Checks the `primitives` module
+    /// first (for core traits and builtins), then falls back to the current module.
+    pub fn defining_module_for(&self, name: &str) -> ModuleFullPath {
+        let primitives_path = ModuleFullPath::from("primitives");
+        if let Some(table) = self.modules.get(&primitives_path)
+            && table.get(name).is_some()
+        {
+            return primitives_path;
+        }
+        self.current_module.clone()
     }
 
     // --- Scope operations (delegate to ScopeStack) ---
@@ -254,6 +267,32 @@ impl TypeChecker {
         let source_table = self.modules.get(&fq.module)?;
         let entry = source_table.get(fq.symbol.as_ref())?;
         self.extract_scheme_from_entry(entry, depth)
+    }
+
+    /// Resolve a name in the current module to its terminal `ModuleEntry`,
+    /// following Import/Reexport chains.
+    pub(crate) fn resolve_entry_in_current_module(&self, name: &str) -> Option<&ModuleEntry> {
+        let entry = self.current_symbol_table().get(name)?;
+        self.resolve_to_terminal_entry(entry, 0)
+    }
+
+    /// Follow Import/Reexport chains to the terminal `ModuleEntry`.
+    fn resolve_to_terminal_entry<'a>(
+        &'a self,
+        entry: &'a ModuleEntry,
+        depth: usize,
+    ) -> Option<&'a ModuleEntry> {
+        if depth > IMPORT_CHAIN_DEPTH_LIMIT {
+            return None;
+        }
+        match entry {
+            ModuleEntry::Import { source } | ModuleEntry::Reexport { source } => {
+                let source_table = self.modules.get(&source.module)?;
+                let target = source_table.get(source.symbol.as_ref())?;
+                self.resolve_to_terminal_entry(target, depth + 1)
+            }
+            other => Some(other),
+        }
     }
 
     /// Resolve a qualified name `module_path/name` (spec §8.6.6).
@@ -383,13 +422,13 @@ impl TypeChecker {
         for (constrained_var, traits) in self.active_constraints.all() {
             // Resolve the constrained var through the substitution
             let resolved = apply(&self.subst, &Type::Var(*constrained_var));
-            if let Type::Var(resolved_id) = resolved {
-                if scheme_var_set.contains(&resolved_id) {
-                    constraints
-                        .entry(resolved_id)
-                        .or_default()
-                        .extend(traits.iter().cloned());
-                }
+            if let Type::Var(resolved_id) = resolved
+                && scheme_var_set.contains(&resolved_id)
+            {
+                constraints
+                    .entry(resolved_id)
+                    .or_default()
+                    .extend(traits.iter().cloned());
             }
         }
 
@@ -405,6 +444,18 @@ impl TypeChecker {
     /// Record the inferred type for an expression (keyed by span).
     pub(crate) fn record_expr_type(&mut self, span: Span, ty: Type) {
         self.expr_types.insert(span, ty);
+    }
+
+    /// Clear transient inference state (expr_types, method_resolutions,
+    /// active_constraints) accumulated during bootstrap type-checking.
+    ///
+    /// Called after core trait impl registration to prevent Span::SYNTHETIC
+    /// entries from leaking into user program checking. Does NOT clear `subst`
+    /// because unification results from bootstrap are harmless (all concrete).
+    pub(crate) fn clear_transient_state(&mut self) {
+        self.expr_types.clear();
+        self.method_resolutions.clear();
+        self.active_constraints = ActiveConstraints::default();
     }
 
     /// Apply the current substitution to a type.
@@ -451,98 +502,21 @@ impl TypeChecker {
                 }
             };
 
-            // Collect names to import (we need to collect first to avoid
-            // borrowing self.modules while mutating current symbol table)
+            // Collect names to import (collect first to avoid borrowing
+            // self.modules while mutating current symbol table)
             let imports_to_add: Vec<(Symbol, ModuleEntry)> = match &spec.names {
                 ImportNames::Glob => {
-                    source_table
-                        .public_symbols()
-                        .map(|(name, _entry)| {
-                            let fq = FQSymbol {
-                                module: spec.module_path.clone(),
-                                symbol: name.clone(),
-                            };
-                            (name.clone(), ModuleEntry::Import { source: fq })
-                        })
-                        .collect()
+                    collect_glob_imports(source_table, &spec.module_path)
                 }
                 ImportNames::Specific(names) => {
-                    let mut result = Vec::new();
-                    for name in names {
-                        match source_table.get(name.as_ref()) {
-                            Some(entry) => {
-                                if !entry.is_public()
-                                    && !self.is_in_subtree(
-                                        &self.current_module,
-                                        &spec.module_path,
-                                    )
-                                {
-                                    return Err(CranelispError::TypeError {
-                                        message: format!(
-                                            "'{}' is not public in '{}'",
-                                            name, spec.module_path
-                                        ),
-                                        span: spec.span,
-                                    });
-                                }
-                                let fq = FQSymbol {
-                                    module: spec.module_path.clone(),
-                                    symbol: name.clone(),
-                                };
-                                result.push((
-                                    name.clone(),
-                                    ModuleEntry::Import { source: fq },
-                                ));
-                            }
-                            None => {
-                                return Err(CranelispError::TypeError {
-                                    message: format!(
-                                        "'{}' not found in module '{}'",
-                                        name, spec.module_path
-                                    ),
-                                    span: spec.span,
-                                });
-                            }
-                        }
-                    }
-                    result
+                    self.collect_specific_imports(
+                        source_table, names, &spec.module_path, spec.span,
+                    )?
                 }
                 ImportNames::MemberGlob(parent) => {
-                    // Import all constructors of a type, or all methods of a trait
-                    let mut result = Vec::new();
-                    for (name, entry) in source_table.public_symbols() {
-                        let is_member = match entry {
-                            ModuleEntry::Constructor { type_name, .. } => {
-                                type_name.as_ref() == parent.as_ref()
-                            }
-                            ModuleEntry::Def { kind, .. } => {
-                                // Trait methods: check if this is a trait method
-                                // whose trait name matches `parent`
-                                matches!(
-                                    kind.as_ref(),
-                                    cranelisp_types::DefKind::Primitive { .. }
-                                        | cranelisp_types::DefKind::UserFn { .. }
-                                ) && self
-                                    .trait_registry
-                                    .method_belongs_to_trait(
-                                        name,
-                                        &cranelisp_types::TraitName::from(parent.as_ref()),
-                                    )
-                            }
-                            _ => false,
-                        };
-                        if is_member {
-                            let fq = FQSymbol {
-                                module: spec.module_path.clone(),
-                                symbol: name.clone(),
-                            };
-                            result.push((
-                                name.clone(),
-                                ModuleEntry::Import { source: fq },
-                            ));
-                        }
-                    }
-                    result
+                    self.collect_member_glob_imports(
+                        source_table, parent, &spec.module_path,
+                    )
                 }
                 ImportNames::None => {
                     // Alias-only import — no bare names
@@ -551,27 +525,102 @@ impl TypeChecker {
             };
 
             // Insert into current symbol table, detecting ambiguities
-            let current = self.current_symbol_table_mut();
-            for (name, new_entry) in imports_to_add {
-                if let Some(existing) = current.get(name.as_ref()) {
-                    // Same-source duplicate is NOT ambiguous (spec §8.6.4)
-                    let is_same_source = match (existing, &new_entry) {
-                        (
-                            ModuleEntry::Import { source: s1 },
-                            ModuleEntry::Import { source: s2 },
-                        ) => s1 == s2,
-                        _ => false,
-                    };
-                    if !is_same_source {
-                        // Different sources: mark ambiguous
-                        current.insert(name, ModuleEntry::Ambiguous);
-                        continue;
-                    }
-                }
-                current.insert(name, new_entry);
-            }
+            insert_imports_detecting_ambiguity(
+                self.current_symbol_table_mut(),
+                imports_to_add,
+            );
         }
         Ok(())
+    }
+
+    /// Collect specific named imports from a source module, checking
+    /// visibility and existence (spec §8.3).
+    fn collect_specific_imports(
+        &self,
+        source_table: &SymbolTable,
+        names: &[Symbol],
+        module_path: &ModuleFullPath,
+        span: Span,
+    ) -> Result<Vec<(Symbol, ModuleEntry)>, CranelispError> {
+        let mut result = Vec::new();
+        for name in names {
+            match source_table.get(name.as_ref()) {
+                Some(entry) => {
+                    if !entry.is_public()
+                        && !self.is_in_subtree(
+                            &self.current_module,
+                            module_path,
+                        )
+                    {
+                        return Err(CranelispError::TypeError {
+                            message: format!(
+                                "'{}' is not public in '{}'",
+                                name, module_path
+                            ),
+                            span,
+                        });
+                    }
+                    let fq = FQSymbol {
+                        module: module_path.clone(),
+                        symbol: name.clone(),
+                    };
+                    result.push((
+                        name.clone(),
+                        ModuleEntry::Import { source: fq },
+                    ));
+                }
+                None => {
+                    return Err(CranelispError::TypeError {
+                        message: format!(
+                            "'{}' not found in module '{}'",
+                            name, module_path
+                        ),
+                        span,
+                    });
+                }
+            }
+        }
+        Ok(result)
+    }
+
+    /// Collect all constructors of a type or all methods of a trait from a
+    /// source module (member glob import).
+    fn collect_member_glob_imports(
+        &self,
+        source_table: &SymbolTable,
+        parent: &Symbol,
+        module_path: &ModuleFullPath,
+    ) -> Vec<(Symbol, ModuleEntry)> {
+        let trait_name = cranelisp_types::TraitName::from(parent.as_ref());
+        let mut result = Vec::new();
+        for (name, entry) in source_table.public_symbols() {
+            let is_member = match entry {
+                ModuleEntry::Constructor { type_name, .. } => {
+                    type_name.as_ref() == parent.as_ref()
+                }
+                ModuleEntry::Def { kind, .. } => {
+                    matches!(
+                        kind.as_ref(),
+                        cranelisp_types::DefKind::Primitive { .. }
+                            | cranelisp_types::DefKind::UserFn { .. }
+                    ) && self
+                        .trait_registry
+                        .method_belongs_to_trait(name, &trait_name)
+                }
+                _ => false,
+            };
+            if is_member {
+                let fq = FQSymbol {
+                    module: module_path.clone(),
+                    symbol: name.clone(),
+                };
+                result.push((
+                    name.clone(),
+                    ModuleEntry::Import { source: fq },
+                ));
+            }
+        }
+        result
     }
 
     // --- REPL snapshot/restore ---
@@ -603,6 +652,54 @@ impl TypeChecker {
     /// Build a map of known type names for type expression resolution.
     pub(crate) fn known_type_names(&self) -> crate::resolve::KnownTypes {
         self.type_defs.known_types()
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Import helpers (free functions to avoid borrow conflicts)
+// ---------------------------------------------------------------------------
+
+/// Collect all public symbols from a source module as glob imports.
+fn collect_glob_imports(
+    source_table: &SymbolTable,
+    module_path: &ModuleFullPath,
+) -> Vec<(Symbol, ModuleEntry)> {
+    source_table
+        .public_symbols()
+        .map(|(name, _entry)| {
+            let fq = FQSymbol {
+                module: module_path.clone(),
+                symbol: name.clone(),
+            };
+            (name.clone(), ModuleEntry::Import { source: fq })
+        })
+        .collect()
+}
+
+/// Insert import entries into a symbol table, marking same-name entries from
+/// different sources as ambiguous (spec §8.6.4). Same-source duplicates are
+/// allowed and silently deduplicated.
+fn insert_imports_detecting_ambiguity(
+    table: &mut SymbolTable,
+    imports: Vec<(Symbol, ModuleEntry)>,
+) {
+    for (name, new_entry) in imports {
+        if let Some(existing) = table.get(name.as_ref()) {
+            // Same-source duplicate is NOT ambiguous (spec §8.6.4)
+            let is_same_source = match (existing, &new_entry) {
+                (
+                    ModuleEntry::Import { source: s1 },
+                    ModuleEntry::Import { source: s2 },
+                ) => s1 == s2,
+                _ => false,
+            };
+            if !is_same_source {
+                // Different sources: mark ambiguous
+                table.insert(name, ModuleEntry::Ambiguous);
+                continue;
+            }
+        }
+        table.insert(name, new_entry);
     }
 }
 

@@ -871,7 +871,6 @@ fn rc_u1_3_nested_option_option_string_balanced() {
 // spec: 12-runtime §12.3 — Vec of Option(String) RC functional
 #[test]
 #[serial]
-#[ignore = "RC bug: build_elem_dec_fn emits flat dec for Vec elements but not recursive drop glue for ADT fields with heap children (5 allocs, 3 deallocs)"]
 fn rc_u1_3_vec_of_option_string() {
     // Vec containing ADTs that themselves contain heap fields.
     // The Vec and its elements are freed, but the String fields inside
@@ -888,7 +887,6 @@ fn rc_u1_3_vec_of_option_string() {
 // spec: 12-runtime §12.3 — nested Option passed through function RC balanced
 #[test]
 #[serial]
-#[ignore = "RC bug: consuming calling convention does not emit dec for intermediate heap ADT temporaries when passed through function boundary (3 allocs, 1 dealloc)"]
 fn rc_u1_3_nested_option_through_function() {
     // Nested heap ADT passed to and returned from a function.
     let src = r#"
@@ -962,7 +960,6 @@ fn rc_u1_5_closure_captures_adt_with_string_field() {
 // spec: 12-runtime §12.3 — closure captures string returned from function RC balanced
 #[test]
 #[serial]
-#[ignore = "RC bug: closure env and captured String not dec'd when closure returned from function is consumed (2 allocs, 0 deallocs — neither env nor captured String freed)"]
 fn rc_u1_5_closure_captures_string_returned() {
     // Closure capturing a String is returned from a function —
     // the String must outlive the creating scope.

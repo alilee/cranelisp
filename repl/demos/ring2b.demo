@@ -1,0 +1,56 @@
+; Cranelisp Ring 2B — Strings, Display & User Traits
+
+; === String equality and inequality ===
+
+(= "hello" "hello")
+(= "hello" "world")
+(!= "hello" "world")
+(!= "same" "same")
+
+; === The Display trait — converting values to strings ===
+
+(show 42)
+(show true)
+(show "already a string")
+/sig show
+
+; === Constrained polymorphism with Display ===
+
+(defn describe [x] (str-concat "value is " (show x)))
+(describe 42)
+(describe true)
+/sig describe
+
+; === User-defined ADTs ===
+
+(deftype Color Red Green Blue)
+Color
+Red
+(match Green [Red "r" Green "g" Blue "b"])
+
+; === Implementing Display for a user type ===
+
+(impl Display Color (defn show [c] (match c [Red "Red" Green "Green" Blue "Blue"])))
+(show Red)
+(show Green)
+
+; === The payoff — describe works on user types too ===
+
+(describe Red)
+(describe Blue)
+
+; === Self-documenting types and traits ===
+
+Int
+Bool
+Num
+Display
+/info Num
+/info Display
+
+; === Constrained polymorphism across types ===
+
+(defn square [x] (* x x))
+(square 7)
+(square 3.0)
+/sig square

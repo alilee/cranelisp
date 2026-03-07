@@ -797,10 +797,10 @@ fn build_method_sig(
     // constructor variable (e.g., `(f a)` where f is the HKT var).
     let hkt_param_index = if let Some(hkt_var) = hkt_param_name {
         bracket_items.iter().position(|item| {
-            if let Sexp::List(inner, _) = item {
-                if let Some(Sexp::Symbol(s, _)) = inner.first() {
-                    return s.as_str() == hkt_var.as_ref();
-                }
+            if let Sexp::List(inner, _) = item
+                && let Some(Sexp::Symbol(s, _)) = inner.first()
+            {
+                return s.as_str() == hkt_var.as_ref();
             }
             false
         })
@@ -894,13 +894,16 @@ fn build_trait_impl(
     }))
 }
 
+/// Parsed impl target: (type_name, type_params, trait_constraints).
+type ImplTarget = (TypeName, Vec<Symbol>, Vec<(Symbol, TraitName)>);
+
 /// Parse an impl target. Three forms:
 ///   - `Type` — concrete: bare type name
 ///   - `(Type :Constraint var ...)` — polymorphic ADT with constraints
 ///   - `(Type var ...)` — parameterized concrete (e.g., `(Option Int)`)
 fn build_impl_target(
     sexp: &Sexp,
-) -> Result<(TypeName, Vec<Symbol>, Vec<(Symbol, TraitName)>), CranelispError> {
+) -> Result<ImplTarget, CranelispError> {
     match sexp {
         Sexp::Symbol(name, _) if is_uppercase_start(name) => {
             Ok((TypeName::from(name.as_str()), vec![], vec![]))

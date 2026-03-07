@@ -94,7 +94,7 @@ When user-proxy skills (`/stdlib`, `/examples`, `/docs`, `/port`, `/repl`, `/pla
 When a skill discovers that an upstream document (owned by another skill) needs updating, it MUST NOT silently edit that document. Instead, add a `FIXME(/skill-name)` HTML comment at the relevant location in the upstream file, describing the issue and proposed resolution. The owning skill picks up the FIXME on its next invocation, evaluates it, and actions it.
 
 ```html
-<!-- FIXME(/spec): Review whether Num trait declarations belong in language spec or stdlib. -->
+<!-- Example FIXME syntax (resolved FIXMEs are removed; see cross-skill protocol above) -->
 ```
 
 This preserves ownership boundaries — each skill decides how to handle changes in its own files.

@@ -237,10 +237,12 @@ impl TypeChecker {
     }
 
     /// Check whether a name refers to a `DefKind::Primitive` in the symbol table.
+    /// Follows Import/Reexport chains so that primitives are found in non-"user"
+    /// modules where builtins are stored as `ModuleEntry::Import`.
     fn is_primitive(&self, name: &str) -> bool {
         use cranelisp_types::DefKind;
         matches!(
-            self.current_symbol_table().get(name),
+            self.resolve_entry_in_current_module(name),
             Some(cranelisp_types::ModuleEntry::Def { kind, .. })
                 if matches!(kind.as_ref(), DefKind::Primitive { .. })
         )
@@ -256,24 +258,23 @@ impl TypeChecker {
         match expr {
             Expr::Apply { callee, args, span } => {
                 // Try to resolve this Apply if it's not already resolved
-                if !self.method_resolutions.contains_key(span) {
-                    if let Expr::Var { name, .. } = callee.as_ref() {
-                        if self.is_trait_method(name) {
-                            let resolved_args: Vec<Type> = args
-                                .iter()
-                                .map(|a| {
-                                    self.expr_types
-                                        .get(&a.span())
-                                        .map(|t| self.apply_subst(t))
-                                        .unwrap_or_else(|| Type::Var(0))
-                                })
-                                .collect();
-                            if let Some(resolution) =
-                                self.try_resolve_trait_method(name, &resolved_args, *span)
-                            {
-                                self.method_resolutions.insert(*span, resolution);
-                            }
-                        }
+                if !self.method_resolutions.contains_key(span)
+                    && let Expr::Var { name, .. } = callee.as_ref()
+                    && self.is_trait_method(name)
+                {
+                    let resolved_args: Vec<Type> = args
+                        .iter()
+                        .map(|a| {
+                            self.expr_types
+                                .get(&a.span())
+                                .map(|t| self.apply_subst(t))
+                                .unwrap_or_else(|| Type::Var(0))
+                        })
+                        .collect();
+                    if let Some(resolution) =
+                        self.try_resolve_trait_method(name, &resolved_args, *span)
+                    {
+                        self.method_resolutions.insert(*span, resolution);
                     }
                 }
                 // Recurse

@@ -10,7 +10,7 @@ Delivery progress for the Cranelisp reimplementation. For technical scope per ri
 | B | Scaffold: crate structure, interfaces, CLAUDE.md files, experience specs | COMPLETE |
 | C | Ring 0 — Core: expressions, types, functions, let, if, match | COMPLETE |
 | D | Ring 1 — Heap: strings, ADTs, closures, reference counting | COMPLETE |
-| E | Ring 2 — Abstraction: traits, modules, constrained polymorphism | Next |
+| E | Ring 2 — Abstraction: traits, modules, constrained polymorphism | COMPLETE |
 | F | Ring 3 — Meta: macros, derive, standard library | — |
 | G | Ring 4 — Effects: IO, platforms, parallelism, REPL, caching | — |
 | H | Release Compiler: Tier 2 backend | — |
@@ -27,4 +27,5 @@ Delivery progress for the Cranelisp reimplementation. For technical scope per ri
 | 5 | Ring 2A completion — constrained poly, default methods, user traits, `!=`: 1177 tests, 0 failures, gate PASS | COMPLETE | `sprints/archive/sprint-5.md` |
 | 6 | Ring 2B — module infrastructure, tech debt, RC scope-dec, traceability: 691 tests, 0 failures | COMPLETE | `sprints/archive/sprint-6.md` |
 | 7 | Ring 2B completion — cross-module wiring, REPL qualified display, REPL chrome: 748 tests, 0 failures | COMPLETE | `sprints/archive/sprint-7.md` |
-| 8 | QA catchup — test coverage for Rings 0-2B implemented functionality | — | — |
+| 8 | QA catchup — test coverage for Rings 0-2B, traceability audit: 798 tests, 5 ignored, 0 failures | COMPLETE | `sprints/archive/sprint-8.md` |
+| 9 | Ring 2 gate + Ring 3 prep — RC fixes, Decision 17, macro architecture, function decomposition, float display: 807 tests, 0 failures, 0 ignored, 0 clippy, Ring 2 PASS | COMPLETE | `sprints/archive/sprint-9.md` |

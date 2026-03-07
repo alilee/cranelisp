@@ -106,7 +106,7 @@ fn display_float_negative() {
 fn display_float_zero() {
     let bits = 0.0_f64.to_bits() as i64;
     let s = format_result(bits, &Type::Float);
-    assert_eq!(s, ":primitives/Float 0");
+    assert_eq!(s, ":primitives/Float 0.0");
 }
 
 // =============================================================================

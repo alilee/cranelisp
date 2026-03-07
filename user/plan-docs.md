@@ -233,10 +233,6 @@ user> Color.Red
 
 This means every builtin type, primitive function, special form, and user-defined type/function needs a docstring. The `defn` form already supports docstrings: `(defn add "Add two numbers" [x y] (+ x y))`. Builtins and special forms need docstrings registered by the compiler.
 
-<!-- FIXME(/repl): RESOLVED — docstring display is already specified in repl/spec.md §4.1 (bare symbol lookup appends first line of docstring as "; comment") and tagged Ring 2 at §4.1 line 286. No additional spec work needed. -->
-
-<!-- FIXME(/arch): RESOLVED. The architecture already provides `docstring: Option<String>` on `ModuleEntry::Def` (interfaces.md line 635) and `description: String` on `DefKind::SpecialForm` (line 699). Populating these fields with actual docstring text during `register_builtins()` is an implementation task for `/typecheck` (primitives module seeding) and `/qa` (REPL display verification). No architectural change needed. -->
-
 ## Directory Structure
 
 ```

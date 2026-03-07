@@ -31,6 +31,13 @@ This requirement exists because API-level integration tests can pass with a perf
 - `tests/` — integration tests, E2E tests, performance benchmarks, test helpers
 - `tests/plan/` — test plans, strategy
 
+## Test Plan Obligation
+
+Test plans in `tests/plan/` are owned deliverables, not afterthoughts. They must be:
+- **Derived from design docs** — when compiler skills produce design docs, `/qa` reviews them and derives test cases covering invariants, edge cases, and interaction boundaries. Tests should validate the *intended* design, not be reverse-engineered from the implementation.
+- **Kept current** — when design docs are updated or new features land, update the test plans in the same sprint. A test plan that doesn't cover the current design is a false sense of coverage.
+- **Traceable** — every test case in the plan should reference the spec section or design doc invariant it validates. Every spec requirement should trace to a test.
+
 ## What `/qa` Does NOT Do
 
 **CRITICAL — `/qa` MUST NOT edit any file outside its owned `tests/` directory and `sprints/SPRINT.md` (task status only).** `/qa` tests and reports; other skills fix. Specifically:

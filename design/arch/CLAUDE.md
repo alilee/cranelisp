@@ -24,9 +24,9 @@ Architecture deliverables for the Cranelisp reimplementation. Owned and maintain
 ## Key Decisions (Ring 1)
 
 10. **Base-pointer ABI** — heap pointers point to the start of the allocation (offset 0 = alloc_size, offset 8 = rc, offset 16+ = payload). Positive offsets throughout. Departing from the sketch's interior-pointer convention.
-11. **Closure drop via side-table** — per-lambda drop functions stored in a `HashMap<*const u8, *const u8>` (code_ptr → drop_fn) rather than inline in the closure struct. Avoids an extra pointer-width field per closure and simplifies the calling convention.
+11. **Embedded drop_glue_ptr in closures** — Each closure carries a `drop_glue_ptr` at offset 24 in the closure struct (`HeapClosure` layout: `[header(16) | code_ptr(8) | drop_glue_ptr(8) | captures...]`, `CAPTURES_START = 32`). The drop glue function is a per-lambda generated function that dec's all heap-typed captures; null for closures with no heap captures. This replaced an earlier side-table design (`code_ptr → drop_fn` HashMap) which was rejected during Ring 2 because cross-module closures cannot look up the creating module's side table, and the embedded pointer makes closure dec a self-contained operation. See `design/backend/ring2-rc.md` §1.3 and §9.1, and `design/arch/interfaces.md` §HeapClosure.
 12. **Strings opaque to backend** — `HeapString` layout is owned by `cranelisp-runtime`. Backend never reads/writes string bytes — all string operations go through extern functions. Enables future rope upgrade as a runtime-only change.
-13. **Atomic RC from Ring 1** — reference count operations use `atomic_rmw` (Release for dec, Acquire for inc) even though Ring 1 is single-threaded. This avoids a breaking ABI change when concurrency arrives in Ring 4, per NFR C.4.1.
+13. **Atomic RC from Ring 1** — reference count operations use `atomic_rmw` with sequentially-consistent ordering (Cranelift's default for `atomic_rmw`) even though Ring 1 is single-threaded. A separate Acquire fence is emitted on the free path (when `old_rc == 1`) before reading object fields for drop glue. This avoids a breaking ABI change when concurrency arrives in Ring 4, per NFR C.4.1. See `design/backend/ring2-rc.md` §2.1.
 
 ## Key Decisions (Ring 2A)
 
@@ -36,6 +36,10 @@ Architecture deliverables for the Cranelisp reimplementation. Owned and maintain
 17. **~~Core traits registered at startup, not from files~~ — INTERIM, should be eliminated.** `Num`, `Eq`, `Ord`, `Display` are currently registered by the typechecker in `register_builtins()` via Rust code. This violates Principle 8: `deftrait`/`impl` special forms already exist and the named primitives (`add-i64` etc.) are available — these traits can be defined as ordinary Cranelisp source evaluated at startup. No module system or macros required. **Fix**: write a startup `.cl` source (or inline string) with the `deftrait`/`impl` declarations, evaluate through the normal pipeline, delete `register_*_trait()` from `builtins.rs`. This can ship immediately — no Ring 3 dependency.
 18. **`ReplCheckResult` gains Ring 2 fields** — `constrained_fn_names`, `mono_defns`, `default_method_defns` added to match `CheckResult`. Three-location atomic change.
 19. **Constraint propagation in `generalize`** — `Scheme.constraints` populated by collecting trait constraints from active type variables during generalization. Non-empty constraints → constrained polymorphic function.
+
+## Key Decisions (Ring 2B)
+
+20. **Split calling convention for RC** — User functions use consuming convention (callee owns heap params, dec's them at scope exit; caller inc's variable args before the call). Builtins/externs use borrowing convention (caller dec's temporaries after the call; callee has no RC responsibility). Data constructors use plain arg lists (field values stored directly into the ADT; ADT drop glue handles recursive field dec at destruction time). The convention is determined statically at each call site based on the callee's `ResolvedCall` classification. The typecheck crate is entirely unaware of calling conventions — this is a backend-only concern. See `design/backend/ring2-rc.md` §3 for the full decision table.
 
 ## Cross-References
 

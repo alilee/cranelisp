@@ -65,31 +65,10 @@ impl<'a> FnCompiler<'a> {
                     self.builder.ins().jump(merge_block, &[body_val]);
                 }
                 Pattern::Var { name, .. } => {
-                    // Bind scrutinee to variable, always matches.
-                    self.push_scope();
-                    let var = self.fresh_variable();
-                    self.builder.declare_var(var, types::I64);
-                    self.builder.def_var(var, scrut_val);
-                    self.variables.insert(name.clone(), var);
-                    // Record type for RC management.
-                    if let Some(ty) = self.ctx.expr_types.get(&scrutinee.span()) {
-                        self.variable_types.insert(name.clone(), ty.clone());
-                    }
-                    self.scope_stack
-                        .last_mut()
-                        .unwrap_or_else(|| {
-                            unreachable!("invariant: scope_stack non-empty")
-                        })
-                        .push(name.clone());
-
-                    self.in_tail_position = saved_tail;
-                    let skip_var = Self::return_var_in_scope(
-                        &arm.body, self.scope_stack.last(),
-                    );
-                    let body_val = self.compile_expr(&arm.body)?;
-                    self.protect_return_value(&skip_var, body_val, &arm.body);
-                    self.pop_scope_with_cleanup(skip_var.as_ref());
-                    self.builder.ins().jump(merge_block, &[body_val]);
+                    self.compile_var_pattern_arm(
+                        name, scrut_val, scrutinee, &arm.body,
+                        saved_tail, merge_block,
+                    )?;
                 }
                 Pattern::Constructor { name, bindings, .. } => {
                     let match_ctx = MatchContext {
@@ -115,12 +94,59 @@ impl<'a> FnCompiler<'a> {
         self.builder.switch_to_block(merge_block);
         self.builder.seal_block(merge_block);
 
-        // Emit rc_dec for the scrutinee if it's a heap-typed temporary.
-        // Variable references are dec'd by their owning scope — only
-        // temporaries (non-Var expressions) need dec here.
+        // Dec temporary scrutinee after all arms have used it.
+        self.dec_temporary_scrutinee(scrutinee, scrut_val);
+
+        Ok(self.builder.block_params(merge_block)[0])
+    }
+
+    /// Compile a variable-binding pattern arm: bind the scrutinee to a
+    /// name, compile the body in a new scope, then jump to the merge block.
+    fn compile_var_pattern_arm(
+        &mut self,
+        name: &Symbol,
+        scrut_val: Value,
+        scrutinee: &Expr,
+        body: &Expr,
+        saved_tail: bool,
+        merge_block: Block,
+    ) -> Result<(), CranelispError> {
+        // Bind scrutinee to variable, always matches.
+        self.push_scope();
+        let var = self.fresh_variable();
+        self.builder.declare_var(var, types::I64);
+        self.builder.def_var(var, scrut_val);
+        self.variables.insert(name.clone(), var);
+        // Record type for RC management.
+        if let Some(ty) = self.ctx.expr_types.get(&scrutinee.span()) {
+            self.variable_types.insert(name.clone(), ty.clone());
+        }
+        self.scope_stack
+            .last_mut()
+            .unwrap_or_else(|| {
+                unreachable!("invariant: scope_stack non-empty")
+            })
+            .push(name.clone());
+
+        self.in_tail_position = saved_tail;
+        let skip_var = Self::return_var_in_scope(body, self.scope_stack.last());
+        let body_val = self.compile_expr(body)?;
+        self.protect_return_value(&skip_var, body_val, body);
+        self.pop_scope_with_cleanup(skip_var.as_ref());
+        self.builder.ins().jump(merge_block, &[body_val]);
+
+        Ok(())
+    }
+
+    /// Emit rc_dec for the scrutinee if it is a heap-typed temporary.
+    ///
+    /// Variable references are dec'd by their owning scope -- only
+    /// temporaries (non-Var expressions) need dec here. This also emits
+    /// inline drop glue for ADT fields before dec'ing the scrutinee itself.
+    fn dec_temporary_scrutinee(&mut self, scrutinee: &Expr, scrut_val: Value) {
         let is_temp = !matches!(scrutinee, Expr::Var { .. });
-        if is_temp {
-            if let Some(scrut_ty) = self.ctx.expr_types.get(&scrutinee.span()) {
+        if is_temp
+            && let Some(scrut_ty) = self.ctx.expr_types.get(&scrutinee.span()) {
                 let category = HeapCategory::classify(scrut_ty, Some(self.ctx.type_defs));
                 if let (Some(dealloc), HeapCategory::AlwaysHeap | HeapCategory::Mixed) =
                     (self.ctx.dealloc_func_id, category)
@@ -140,9 +166,6 @@ impl<'a> FnCompiler<'a> {
                     );
                 }
             }
-        }
-
-        Ok(self.builder.block_params(merge_block)[0])
     }
 
     /// Compile a constructor pattern arm.
@@ -280,6 +303,43 @@ impl<'a> FnCompiler<'a> {
         match_ctx: &MatchContext,
         body: &Expr,
     ) -> Result<(), CranelispError> {
+        let body_block = self.emit_data_pattern_tag_check(
+            tag, is_mixed, match_ctx,
+        );
+
+        // Body: bind fields from known offsets.
+        self.builder.switch_to_block(body_block);
+        self.builder.seal_block(body_block);
+
+        // Resolve concrete field types by looking at the scrutinee's type
+        // and matching against the constructor's fields. This allows us to
+        // determine which extracted fields are heap-typed for RC management.
+        let field_types = self.resolve_field_types(ctor_name, match_ctx);
+
+        self.push_scope();
+        self.bind_data_pattern_fields(bindings, &field_types, match_ctx.scrut_val);
+
+        self.in_tail_position = match_ctx.saved_tail;
+        let skip_var = Self::return_var_in_scope(body, self.scope_stack.last());
+        let body_val = self.compile_expr(body)?;
+        self.protect_return_value(&skip_var, body_val, body);
+        self.pop_scope_with_cleanup(skip_var.as_ref());
+        self.builder
+            .ins()
+            .jump(match_ctx.merge_block, &[body_val]);
+
+        Ok(())
+    }
+
+    /// Emit the heap-pointer guard (for mixed ADTs) and tag comparison
+    /// for a data constructor pattern. Returns the body block where
+    /// field bindings should be emitted.
+    fn emit_data_pattern_tag_check(
+        &mut self,
+        tag: usize,
+        is_mixed: bool,
+        match_ctx: &MatchContext,
+    ) -> Block {
         let tag_check_block = self.builder.create_block();
         let body_block = self.builder.create_block();
 
@@ -323,29 +383,27 @@ impl<'a> FnCompiler<'a> {
             .ins()
             .brif(cmp, body_block, &[], match_ctx.next_block, &[]);
 
-        // Body: bind fields from known offsets.
-        self.builder.switch_to_block(body_block);
-        self.builder.seal_block(body_block);
+        body_block
+    }
 
-        // Resolve concrete field types by looking at the scrutinee's type
-        // and matching against the constructor's fields. This allows us to
-        // determine which extracted fields are heap-typed for RC management.
-        let field_types = self.resolve_field_types(ctor_name, match_ctx);
-
-        self.push_scope();
+    /// Extract fields from a data constructor and bind them as local
+    /// variables, emitting rc_inc for heap-typed fields.
+    ///
+    /// Each heap-typed field gets its own RC reference so that when the
+    /// parent ADT is dec'd/freed, the extracted binding survives.
+    fn bind_data_pattern_fields(
+        &mut self,
+        bindings: &[Symbol],
+        field_types: &[cranelisp_types::Type],
+        scrut_val: Value,
+    ) {
         for (i, binding_name) in bindings.iter().enumerate() {
             let field_val = heap::heap_load(
                 &mut self.builder,
-                match_ctx.scrut_val,
+                scrut_val,
                 HeapAdt::field_offset(i),
             ); // field_i: i64
 
-            // If this field is heap-typed, emit rc_inc to give the extracted
-            // binding its own RC reference. This is needed because when the
-            // parent ADT is dec'd/freed, the field pointer would otherwise
-            // dangle (the ADT "owns" one reference to the field value, and
-            // without drop glue that reference is silently lost).
-            //
             // AlwaysHeap: unconditional inc.
             // Mixed: guarded inc (skip for bare nullary tags).
             // NeverHeap: no inc needed.
@@ -375,17 +433,6 @@ impl<'a> FnCompiler<'a> {
                 .unwrap_or_else(|| unreachable!("invariant: scope_stack non-empty"))
                 .push(binding_name.clone());
         }
-
-        self.in_tail_position = match_ctx.saved_tail;
-        let skip_var = Self::return_var_in_scope(body, self.scope_stack.last());
-        let body_val = self.compile_expr(body)?;
-        self.protect_return_value(&skip_var, body_val, body);
-        self.pop_scope_with_cleanup(skip_var.as_ref());
-        self.builder
-            .ins()
-            .jump(match_ctx.merge_block, &[body_val]);
-
-        Ok(())
     }
 
     /// Resolve concrete field types for a constructor pattern by examining

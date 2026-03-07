@@ -36,22 +36,21 @@ For the full reimplementation strategy, skill definitions, and risk analysis, se
 - REPL experience tests pass: discoverability, value+type feedback (see `repl/spec.md`)
 - `cargo clippy` clean, no `unwrap()` in pipeline code
 
-<!-- FIXME(/qa): Ring 0 REPL spec non-conformance — spec is clear, QA plan has no tests for these. See U1.13.
-     12 repl/spec.md Ring 0 requirements not met:
-     1. §1.3 Definition display: defn shows name, not <closure>
-     2. §1.4 Fully-qualified types: primitives/Int not bare Int
-     3. §1.5 Constructor notation: Color.Red not bare Red
-     4. §2.1 Prompt format: {compile}+{eval}ms; {module}> not bare >
-     5. §3.1 Slash commands: /help etc. — / parsed as division, all broken
-     6. §4.1 Bare function lookup: shows <closure> not function name
-     7. §4.1 Bare type name lookup: Int → "undefined variable" error
-     8. §4.1 Bare trait name lookup: Num → "undefined variable" error
-     9. §4.2 Bare special form: if → error instead of shape display
-     10. §6.2 Startup banner: no banner at all
-     11. §1.5 Float display: (+ 1.0 2.0) → `:Float 3` not `:Float 3.0` — floats without fractional part display as integers
-     12. §1.3 deftype display: (deftype Color Red ...) → `:Color Red` not `:user/Color` — shows first constructor value instead of qualified type name
-     Items 5, 7-9 completely block the first-five-minutes discoverability journey (§6.1).
-     Items 11-12 added by /repl sprint 6 audit. -->
+<!-- FIXME(/qa): Ring 0 REPL spec non-conformance — 11 of 12 FIXED (Sprints 4-9), 1 remaining.
+     12 repl/spec.md Ring 0 requirements originally not met:
+     1. §1.3 Definition display: defn shows name, not <closure> — FIXED (Sprint 4)
+     2. §1.4 Fully-qualified types: primitives/Int not bare Int — FIXED (Sprint 4)
+     3. §1.5 Constructor notation: Color.Red not bare Red — FIXED (Sprint 4)
+     4. §2.1 Prompt format: {compile}+{eval}ms; {module}> not bare > — FIXED (Sprint 5)
+     5. §3.1 Slash commands: /help etc. — / parsed as division, all broken — FIXED (Sprint 5)
+     6. §4.1 Bare function lookup: shows <closure> not function name — FIXED (Sprint 5)
+     7. §4.1 Bare type name lookup: Int → "undefined variable" error — FIXED (Sprint 9, bare type introspection)
+     8. §4.1 Bare trait name lookup: Num → "undefined variable" error — FIXED (Sprint 6)
+     9. §4.2 Bare special form: if → error instead of shape display — FIXED (Sprint 6)
+     10. §6.2 Startup banner: no banner at all — FIXED (Sprint 6)
+     11. §1.5 Float display: (+ 1.0 2.0) → `:Float 3` not `:Float 3.0` — STILL OPEN (deferred)
+     12. §1.3 deftype display: (deftype Color Red ...) → `:Color Red` not `:user/Color` — FIXED (Sprint 8)
+     Status: 11/12 fixed. Remaining item 11 (float display) deferred — requires format_result changes for Float. -->
 
 
 <!-- FIXME(/backend): U1.1 — Missing string primitives for stdlib text/string.cl.
