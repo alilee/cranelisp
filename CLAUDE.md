@@ -21,7 +21,7 @@ This repository is organized for the Cranelisp reimplementation:
 | `user/` | User-facing documentation (tutorials, guide) — owned by `/docs` skill |
 | `sketch/` | Prototype compiler — reference oracle, not the active compiler |
 | `src/` | New compiler source (to be created by `/arch`) |
-| `lib/` | Standard library in Cranelisp (to be created by `/stdlib`) |
+| `stdlib/` | Standard library in Cranelisp — owned by `/stdlib` |
 | `examples/` | Learning-sequence examples — owned by `/examples` skill |
 | `exemplar/` | Showcase project (Sudoku Solver) — owned by `/port` skill |
 | `tests/` | Reimplementation test suite (to be created by `/qa`) |
@@ -56,7 +56,7 @@ For parallel subagent work, use terminal tabs or tmux panes — one per agent �
 
 ## Skills
 
-14 Claude Code skills are available as slash commands (`.claude/commands/`). Each skill sets a role for the session:
+15 Claude Code skills are available as slash commands (`.claude/commands/`). Each skill sets a role for the session:
 
 | Command | Role |
 |---|---|
@@ -65,10 +65,11 @@ For parallel subagent work, use terminal tabs or tmux panes — one per agent �
 | `/frontend` | Frontend Developer — reader, macro expander, AST builder |
 | `/typecheck` | Typechecker Developer — Algorithm W, traits, monomorphisation |
 | `/backend` | Backend Developer — Cranelift IR, JIT, RC, caching, linking |
-| `/qa` | Quality Assurance — pipeline wiring, test suite, REPL implementation |
+| `/int` | Integration Developer — owns `src/`, pipeline orchestration, REPL session, slash commands, prelude loading, CLI |
+| `/qa` | Quality Assurance — test suite, spec conformance, coverage analysis |
 | `/review` | Code Reviewer — code quality, prevents structural debts |
 | `/sprint` | Sprint Manager — plans increments, coordinates skill execution, tracks delivery |
-| `/stdlib` | Standard Library Developer — rebuilds `lib/` |
+| `/stdlib` | Standard Library Developer — owns `stdlib/` |
 | `/examples` | Example Developer — builds learning-sequence `examples/` |
 | `/platform` | Platform Developer — `cranelisp-platform/`, `cranelisp-runtime/`, DLLs |
 | `/docs` | Documentation Owner — owns `user/` |
@@ -117,6 +118,7 @@ Every skill plan must end with a **"Next skills"** section recommending which sk
 - **Self-documenting REPL**: Every symbol and expression entered at the REPL should produce useful feedback — its type, value, or usage description. No valid language construct should produce an opaque error. Special forms, operators, and user-defined names should all respond with what they are and how to use them. Output reinforces the language syntax using `:Type value` notation with fully-qualified names (e.g. `:primitives/Int 3`, `:(Fn [a] a) user/id`). See `repl/spec.md` for the normative REPL experience specification.
 - **Clojure standard library**: Follow the Clojure standard library for function naming and design as much as possible.
 - **Optional prelude**: Nothing in the prelude is required for the language to work. An empty prelude is a valid starting point for the REPL or batch programs. The prelude provides convenience (traits, operators, types, macros) but the core language — primitives, special forms, type inference — works without it.
+- **Stdlib separation**: Tests (`tests/`) and examples (`examples/`) MUST be free-standing — zero dependency on `stdlib/`. They define any needed helpers inline using compiler primitives and special forms. Only the exemplar (`exemplar/`) and production binary (`src/main.rs`) may depend on the standard library. This ensures the language itself is validated independently of any particular library code.
 
 ## Git & Remote
 

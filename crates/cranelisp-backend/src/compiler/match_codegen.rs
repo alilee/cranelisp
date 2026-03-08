@@ -121,12 +121,21 @@ impl<'a> FnCompiler<'a> {
         if let Some(ty) = self.ctx.expr_types.get(&scrutinee.span()) {
             self.variable_types.insert(name.clone(), ty.clone());
         }
-        self.scope_stack
-            .last_mut()
-            .unwrap_or_else(|| {
-                unreachable!("invariant: scope_stack non-empty")
-            })
-            .push(name.clone());
+
+        // P7 fix: Only register the alias in scope_stack for RC cleanup
+        // when the scrutinee is NOT an existing variable. When the scrutinee
+        // IS a variable, the original variable's owning scope will dec it.
+        // Registering the alias would cause a double-dec: once for the
+        // alias's scope exit, and once for the original variable's scope exit.
+        let is_alias = matches!(scrutinee, Expr::Var { .. });
+        if !is_alias {
+            self.scope_stack
+                .last_mut()
+                .unwrap_or_else(|| {
+                    unreachable!("invariant: scope_stack non-empty")
+                })
+                .push(name.clone());
+        }
 
         self.in_tail_position = saved_tail;
         let skip_var = Self::return_var_in_scope(body, self.scope_stack.last());

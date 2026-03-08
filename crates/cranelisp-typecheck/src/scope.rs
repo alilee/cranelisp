@@ -74,9 +74,14 @@ impl ScopeStack {
     }
 
     /// Return the number of frames (for snapshot/restore).
-    #[allow(dead_code)]
     pub fn depth(&self) -> usize {
         self.frames.len()
+    }
+
+    /// Truncate the scope stack to the given depth (for snapshot/restore).
+    /// Pops extra frames that were pushed during a failed type-check.
+    pub fn truncate_to(&mut self, depth: usize) {
+        self.frames.truncate(depth);
     }
 
     /// Number of entries in the base (module-level) frame.

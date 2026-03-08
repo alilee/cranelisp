@@ -32,7 +32,7 @@ pub use module::{
 };
 pub use heap::{HeapCategory, HeapHeader};
 pub use pipeline::{CompileMode, CompileResult, MacroExpander, NoOpExpander, NULLARY_TAG_THRESHOLD};
-pub use operator::{ring0_primitives, ring1_primitives, PrimitiveDef};
+pub use operator::{ring0_primitives, ring1_primitives, ring3_primitives, PrimitiveDef};
 
 // String newtypes
 pub use newtype::{

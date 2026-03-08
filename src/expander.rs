@@ -324,7 +324,7 @@ fn expand_sexp_recursive(
             }
             // Not a macro call — recurse into children.
             let Sexp::List(children, span) = sexp else {
-                unreachable!();
+                unreachable!("invariant: sexp matched Sexp::List in outer arm");
             };
             let expanded: Vec<Sexp> = children
                 .into_iter()
@@ -439,7 +439,13 @@ fn compile_single_clause(
         func_ids.keys().map(|n| (n.clone(), defn.params.len())).collect();
 
     // Build compile context and compile.
-    let compile_ctx = jit.build_compile_context(
+    // Disable dealloc so no rc_dec is emitted: macro functions build
+    // throwaway Sexp trees that are marshalled back to the compiler.
+    // All allocations are leaked by design (see marshal.rs header).
+    // Without this override, scope cleanup dec's match-extracted Sexp
+    // values whose pointers are stored in the newly-built result tree,
+    // causing use-after-free on unmarshal.
+    let mut compile_ctx = jit.build_compile_context(
         &check,
         CompileMode::Batch,
         &func_ids,
@@ -448,6 +454,7 @@ fn compile_single_clause(
         None,
         None,
     );
+    compile_ctx.dealloc_func_id = None;
     jit.compile_defn(defn, compile_ctx)?;
 
     // Finalize and get the function pointer.
@@ -614,6 +621,35 @@ mod tests {
                     std::mem::discriminant(&back)
                 ),
             }
+        }
+    }
+
+    // spec: 09-macros.md section 9.4.2 — quasiquote macro with bracket
+    #[test]
+    fn test_quasiquote_bracket_macro() {
+        let (mut tc, mut jit) = setup();
+        let mut expander = CraneliftExpander::new();
+
+        // Parse and compile: (defmacro my-let [n v body] `(let [~n ~v] ~body))
+        let sexp = parse_one("(defmacro my-let [n v body] `(let [~n ~v] ~body))");
+        let info = cranelisp_frontend::parse_defmacro(&sexp).unwrap();
+        expander.compile_macro(&info, &mut tc, &mut jit).unwrap();
+
+        // Expand: (my-let x 10 (add-i64 x 5))
+        let call_sexp = parse_one("(my-let x 10 (add-i64 x 5))");
+        let result = expander.expand_sexp(call_sexp).unwrap();
+        // Should produce (let [x 10] (add-i64 x 5))
+        if let Sexp::List(children, _) = &result {
+            assert_eq!(children.len(), 3, "expected 3 children: let, bracket, body");
+            assert!(matches!(&children[0], Sexp::Symbol(s, _) if s == "let"),
+                "head should be 'let', got {:?}", children[0]);
+            assert!(matches!(&children[1], Sexp::Bracket(_, _)),
+                "second should be Bracket, got {:?}", children[1]);
+            if let Sexp::Bracket(inner, _) = &children[1] {
+                assert_eq!(inner.len(), 2, "bracket should have 2 elements");
+            }
+        } else {
+            panic!("expected List, got {:?}", result);
         }
     }
 

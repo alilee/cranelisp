@@ -1,3 +1,9 @@
+<!-- FIXME(/spec): lib/ renamed to stdlib/ (Sprint 11). All `lib/` references in this file
+     have been updated to `stdlib/` — please review §8.5 examples, §8.10 compile order,
+     §8.11 lib directory section for correctness. The rename was made to physically enforce
+     that tests and examples do not depend on the standard library. Also: verify your skill
+     definition (.claude/commands/spec.md) does not reference `lib/`. -->
+
 # 8. Modules [R3 S10]
 
 This section defines the module system of Cranelisp -- how source files map to modules, how names are imported and exported across module boundaries, and how name resolution operates in the presence of multiple modules.
@@ -272,7 +278,7 @@ An implementation MUST track re-export provenance so that introspection can disp
 **Example:** A standard library might organize re-exports through a shell module:
 
 ```clojure
-;; lib/core.cl
+;; stdlib/core.cl
 (mod numerics)
 (mod formats)
 (mod collections)
@@ -291,7 +297,7 @@ An implementation MUST track re-export provenance so that introspection can disp
 ```
 
 ```clojure
-;; lib/prelude.cl
+;; stdlib/prelude.cl
 (export [core       [*]
          primitives [vec-len vec-get vec-set vec-push
                      vec-map vec-reduce parse-int
@@ -568,15 +574,15 @@ Module-level expressions (definitions, trait implementations) execute at load ti
 **Example:** The reference implementation's standard library compiles in this order. The specific structure is not required -- any module organization that satisfies the topological ordering constraint is valid:
 
 ```
-lib/core/numerics.cl    ; compiled first (leaf dependency)
-lib/core/formats.cl     ; depends on numerics
-lib/core/collections.cl ; depends on numerics, formats
-lib/core/option.cl      ; depends on collections
-lib/core/sequences.cl   ; depends on numerics, collections
-lib/core/io.cl          ; depends on primitives
-lib/core/syntax.cl      ; depends on collections, sequences
-lib/core.cl             ; depends on all core submodules
-lib/prelude.cl          ; depends on core
+stdlib/core/numerics.cl    ; compiled first (leaf dependency)
+stdlib/core/formats.cl     ; depends on numerics
+stdlib/core/collections.cl ; depends on numerics, formats
+stdlib/core/option.cl      ; depends on collections
+stdlib/core/sequences.cl   ; depends on numerics, collections
+stdlib/core/io.cl          ; depends on primitives
+stdlib/core/syntax.cl      ; depends on collections, sequences
+stdlib/core.cl             ; depends on all core submodules
+stdlib/prelude.cl          ; depends on core
 main.cl                 ; depends on prelude (implicit)
 ```
 
@@ -584,12 +590,12 @@ main.cl                 ; depends on prelude (implicit)
 
 ### 8.11.1 Standard Library Location
 
-Standard library modules live in a `lib/` directory. The implementation MUST search for the lib directory using the following order:
+Standard library modules live in a `stdlib/` directory. The implementation MUST search for the stdlib directory using the following order:
 
-1. A project configuration file (implementation-defined; e.g., `Cranelisp.toml`) MAY specify a lib directory. When present, this takes precedence.
+1. A project configuration file (implementation-defined; e.g., `Cranelisp.toml`) MAY specify a stdlib directory. When present, this takes precedence.
 2. The `CRANELISP_LIB` environment variable, if set.
-3. `{project_root}/lib/`.
-4. Implementation-defined fallback location (e.g., `~/.cranelisp/lib/`).
+3. `{project_root}/stdlib/`.
+4. Implementation-defined fallback location (e.g., `~/.cranelisp/stdlib/`).
 
 The standard library is not a special language feature beyond this search mechanism. Modules named `core`, `prelude`, `std`, or anything else are ordinary Cranelisp source files found through this search order — there is no distinction at the language level between "standard library" modules and user modules.
 
@@ -601,14 +607,14 @@ When resolving a module name to a file, the implementation MUST search in this o
 2. **Project root** -- the directory containing the entry file
 3. **Lib directory** -- the standard library location
 
-A module in the project root shadows a module with the same name in the lib directory. This is intentional -- it allows projects to override library modules.
+A module in the project root shadows a module with the same name in the stdlib directory. This is intentional -- it allows projects to override library modules.
 
 ### 8.11.3 Standard Library Structure (Reference Implementation)
 
 Note: The following layout describes the reference implementation's standard library. The language does not mandate a specific library structure -- any module organization is valid provided it satisfies the module system rules defined in this section.
 
 ```
-lib/
+stdlib/
   prelude.cl              ; re-export shell
   core.cl                 ; declares submodules, re-exports all
   core/

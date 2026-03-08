@@ -16,6 +16,24 @@ use std::process::{Command, Output, Stdio};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 // ---------------------------------------------------------------------------
+// Trait prelude for tests that use operators (+, -, *, /, =, <)
+// ---------------------------------------------------------------------------
+
+const NUM_TRAIT_PRELUDE: &str = "(deftrait Num (+ [self self] self) (- [self self] self) (* [self self] self) (/ [self self] self))\n\
+(impl Num Int (defn + [a b] (add-i64 a b)) (defn - [a b] (sub-i64 a b)) (defn * [a b] (mul-i64 a b)) (defn / [a b] (div-i64 a b)))\n\
+(impl Num Float (defn + [a b] (add-f64 a b)) (defn - [a b] (sub-f64 a b)) (defn * [a b] (mul-f64 a b)) (defn / [a b] (div-f64 a b)))\n";
+
+const EQ_TRAIT_PRELUDE: &str = "(deftrait Eq (= [self self] Bool))\n\
+(impl Eq Int (defn = [a b] (eq-i64 a b)))\n\
+(impl Eq Float (defn = [a b] (eq-f64 a b)))\n\
+(impl Eq String (defn = [a b] (str-eq a b)))\n\
+(impl Eq Bool (defn = [a b] (eq-bool a b)))\n";
+
+const ORD_TRAIT_PRELUDE: &str = "(deftrait Ord (< [self self] Bool))\n\
+(impl Ord Int (defn < [a b] (lt-i64 a b)))\n\
+(impl Ord Float (defn < [a b] (lt-f64 a b)))\n";
+
+// ---------------------------------------------------------------------------
 // Test infrastructure
 // ---------------------------------------------------------------------------
 
@@ -889,7 +907,8 @@ fn e2e_s4_2_special_form_match() {
 // spec: repl/spec.md §4.3 — bare + operator shows type
 #[test]
 fn e2e_s4_3_operator_plus_feedback() {
-    let o = run_repl("+\n", "s4_3_plus");
+    let input = format!("{NUM_TRAIT_PRELUDE}+\n");
+    let o = run_repl(&input, "s4_3_plus");
     let s = stdout_str(&o);
     assert!(
         !s.contains("error:"),
@@ -904,7 +923,8 @@ fn e2e_s4_3_operator_plus_feedback() {
 // spec: repl/spec.md §4.3 — bare = operator shows type
 #[test]
 fn e2e_s4_3_operator_eq_feedback() {
-    let o = run_repl("=\n", "s4_3_eq");
+    let input = format!("{EQ_TRAIT_PRELUDE}=\n");
+    let o = run_repl(&input, "s4_3_eq");
     let s = stdout_str(&o);
     assert!(
         !s.contains("error:"),
@@ -919,7 +939,8 @@ fn e2e_s4_3_operator_eq_feedback() {
 // spec: repl/spec.md §4.3 — bare < operator shows type
 #[test]
 fn e2e_s4_3_operator_lt_feedback() {
-    let o = run_repl("<\n", "s4_3_lt");
+    let input = format!("{ORD_TRAIT_PRELUDE}<\n");
+    let o = run_repl(&input, "s4_3_lt");
     let s = stdout_str(&o);
     assert!(
         !s.contains("error:"),
@@ -975,7 +996,8 @@ fn e2e_s3_3_list_special_forms() {
 // spec: repl/spec.md §3.3 — /list shows Traits category
 #[test]
 fn e2e_s3_3_list_traits() {
-    let o = run_repl("/list\n", "s3_3_traits");
+    let input = format!("{NUM_TRAIT_PRELUDE}/list\n");
+    let o = run_repl(&input, "s3_3_traits");
     let s = stdout_str(&o);
     assert!(
         s.contains("Traits"),

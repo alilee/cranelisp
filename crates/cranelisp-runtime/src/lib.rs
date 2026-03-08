@@ -25,6 +25,7 @@ pub mod string;
 pub mod vec;
 pub mod primitives;
 pub mod panic;
+pub mod marshal;
 
 // Re-export extern "C" functions. The JIT builder registers these by function
 // pointer, not by symbol name — see src/CLAUDE.md §"JIT Symbol Names".
@@ -45,6 +46,9 @@ pub use string::{str_concat, str_eq, str_len, string_identity};
 pub use primitives::int::{int_to_string, parse_int};
 pub use primitives::float::float_to_string;
 pub use primitives::bool::bool_to_string;
+
+// Marshal primitives (registered by spec name: sconcat, quote-sexp)
+pub use marshal::{sconcat, quote_sexp};
 
 // Re-export public Rust API for use by /qa integration tests and binary crate.
 pub use alloc::{

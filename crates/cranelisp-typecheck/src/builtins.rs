@@ -1,77 +1,84 @@
-//! Register Ring 0 primitives and special forms in the typechecker.
+//! Register Ring 0-3 primitives, special forms, and synthetic modules.
 //!
-//! Ring 0: 19 monomorphic named primitives (add-i64, add-f64, eq-i64, ..., not).
+//! Ring 0: 20 monomorphic named primitives (add-i64, add-f64, eq-i64, ..., not, eq-bool).
 //! Ring 1: 8 monomorphic string/conversion externs + 4 polymorphic Vec externs.
+//! Ring 3: Synthetic `macros` module (Sexp, SList ADTs + sconcat extern) +
+//!         `quote-sexp` extern in `primitives`.
 //!
-//! <!-- FIXME(/typecheck): Decision 17 — remove register_core_trait_decls(),
-//!      register_core_trait_impls(), and import_primitives_into_user(). Only genuinely
-//!      primitive things should be compiler-seeded (types, named primitives, special forms,
-//!      synthetic modules). Traits (Num, Eq, Ord, Display) and their impls are ordinary
-//!      Cranelisp expressible via deftrait/impl — they belong in the prelude (Ring 3), not
-//!      in builtins. Until the prelude exists, tests/examples/demos that need operators
-//!      define the traits themselves inline. See design/arch/CLAUDE.md Decision 17. -->
+//! Traits (Num, Eq, Ord, Display) and their impls are ordinary Cranelisp
+//! defined in prelude `.cl` files, NOT compiler-seeded. Tests that need
+//! operators should either load the prelude or define traits inline.
+//! See design/arch/CLAUDE.md Decision 17.
 //!
-//! Primitives are registered as ordinary symbol table entries with monomorphic
-//! schemes and `DefKind::Primitive { primitive_kind: PrimitiveKind::Inline }`.
-//! Vec primitives use polymorphic schemes with quantified type variables.
-//! No `builtin_operators` HashSet is needed — the DefKind is sufficient for lookup.
-//!
-//! Primitives are registered as ordinary symbol table entries with monomorphic
-//! schemes and `DefKind::Primitive { primitive_kind: PrimitiveKind::Inline }`.
-//! Vec primitives use polymorphic schemes with quantified type variables.
-//! No `builtin_operators` HashSet is needed — the DefKind is sufficient for lookup.
+//! Registration order (per pipeline-orchestration.md §3):
+//! 1. register_primitives()          — types + Ring 0 inline prims
+//! 2. register_ring1_primitives()    — str-concat, int-to-string, etc.
+//! 3. register_vec_primitives()      — vec-get, vec-set, etc.
+//! 4. register_special_forms()       — defn, let, if, match, deftrait, impl, defmacro, etc.
+//! 5. register_macros_module()       — Sexp, SList ADTs + sconcat extern in `macros` module
+//! 6. register_ring3_primitives()    — quote-sexp in `primitives` (requires Sexp from step 5)
+//! 7. import_primitives_into_user()  — copy genuine primitives -> user
 
 use std::collections::HashMap;
 
 use cranelisp_types::{
-    ring0_primitives, ring1_primitives, ConstructorDef, DefKind, Defn, Expr, FieldDef,
-    JitSymbol, ModuleEntry, ModuleFullPath, PrimitiveKind, Scheme, Sexp, Span, Symbol,
-    TraitDecl, TraitImpl, TraitMethodSig, TraitName, Type, TypeDefInfo, TypeExpr, TypeName,
-    Visibility,
+    ring0_primitives, ring1_primitives, ring3_primitives, ConstructorDef, DefKind, FieldDef,
+    JitSymbol, ModuleEntry, ModuleFullPath, PrimitiveKind, Scheme, Span, Symbol,
+    Type, TypeDefInfo, TypeExpr, TypeName, Visibility,
 };
 
 use crate::checker::TypeChecker;
 use crate::scheme::mono;
 
 impl TypeChecker {
-    /// Register all builtins: Ring 0 + Ring 1 primitives, special forms,
-    /// Ring 2 core traits and trait impls, Ring 3 synthetic macros module.
+    /// Register all builtins: Ring 0-3 primitives, special forms, synthetic modules.
+    ///
+    /// Registration order per pipeline-orchestration.md §3:
+    /// 1. register_primitives()          — types + Ring 0 inline prims
+    /// 2. register_ring1_primitives()    — str-concat, int-to-string, etc.
+    /// 3. register_vec_primitives()      — vec-get, vec-set, etc.
+    /// 4. register_special_forms()       — defn, let, if, match, deftrait, impl, defmacro, etc.
+    /// 5. register_macros_module()       — Sexp, SList ADTs + sconcat extern in `macros` module
+    /// 6. register_ring3_primitives()    — quote-sexp in `primitives` (requires Sexp from step 5)
+    /// 7. import_primitives_into_user()  — copy genuine primitives -> user
+    ///
+    /// Traits (Num, Eq, Ord, Display) are NOT registered here — they come from
+    /// prelude `.cl` files loaded through the normal module pipeline.
     pub(crate) fn register_builtins(&mut self) {
+        // Ensure the `primitives` synthetic module exists.
+        // Ring 3 primitives (quote-sexp) are registered there; other ring
+        // primitives are registered directly in the current module (user).
+        let primitives_path = ModuleFullPath::from("primitives");
+        if !self.modules.contains_key(&primitives_path) {
+            self.modules.insert(
+                primitives_path.clone(),
+                cranelisp_types::SymbolTable::new(primitives_path.clone()),
+            );
+        }
+
         self.register_primitives();
         self.register_ring1_primitives();
         self.register_vec_primitives();
         self.register_special_forms();
 
-        // Core traits belong in the `primitives` module, not `user`.
-        // Save current module, switch to primitives, register, then restore.
-        let saved_module = self.current_module_path().clone();
-        let primitives_path = ModuleFullPath::from("primitives");
-        self.set_current_module(primitives_path.clone());
-        self.register_core_trait_decls();
-        self.register_core_trait_impls();
-        self.set_current_module(saved_module);
-
-        // Import all trait-related entries from `primitives` into `user` so they
-        // are visible at the REPL and propagated to new modules via set_current_module.
-        self.import_primitives_into_user(&primitives_path);
-
-        // Ring 3: Seed synthetic `macros` module with SList and Sexp ADTs.
+        // Ring 3: Seed synthetic `macros` module with SList and Sexp ADTs + sconcat.
         // Must come after primitives registration (references Int, Bool, Float, String).
         self.register_macros_module();
 
-        // Clear transient state accumulated during core trait impl type-checking.
-        // register_trait_impl() type-checks method bodies (e.g. `(add-i64 x y)`),
-        // which populates expr_types, method_resolutions, and subst with entries
-        // keyed at Span::SYNTHETIC. These must not leak into user program checking.
-        self.clear_transient_state();
+        // Ring 3: quote-sexp in `primitives` — must come after register_macros_module()
+        // because the type references Sexp.
+        self.register_ring3_primitives();
+
+        // Copy entries from `primitives` into `user` module (quote-sexp, etc.).
+        self.import_primitives_into_user(&primitives_path);
     }
 
     /// Copy all entries from the `primitives` module into the `user` module.
     ///
-    /// After core traits are registered in `primitives`, this makes trait methods
-    /// (+, -, =, show, etc.) and trait decls (Num, Eq, Ord, Display) visible in
-    /// `user` as direct entries (not imports). This ensures `set_current_module`
-    /// propagates them to new modules, and `/list` displays them correctly.
+    /// Makes named primitives (add-i64, str-concat, quote-sexp, etc.), types
+    /// (Vec, Option), and special forms visible in `user` as direct entries.
+    /// Does NOT copy entries from `macros` — those are accessed via qualified
+    /// names (`macros/sconcat`) or explicit import.
     fn import_primitives_into_user(&mut self, primitives_path: &ModuleFullPath) {
         let user_path = ModuleFullPath::from("user");
 
@@ -259,7 +266,40 @@ impl TypeChecker {
         }
     }
 
-    /// Register the synthetic `macros` module with SList and Sexp ADTs.
+    /// Register Ring 3 extern primitives in the `primitives` module.
+    ///
+    /// These depend on the `Sexp` type from `register_macros_module()` and
+    /// MUST be called after it. Currently contains `quote-sexp`.
+    ///
+    /// Registered in `primitives` (not `user`) so that `import_primitives_into_user()`
+    /// copies them into `user` alongside Ring 0-1 primitives.
+    fn register_ring3_primitives(&mut self) {
+        let primitives_path = ModuleFullPath::from("primitives");
+        let primitives_table = self
+            .modules
+            .get_mut(&primitives_path)
+            .expect("primitives module should exist");
+
+        for prim in ring3_primitives() {
+            let scheme = mono(prim.ty.clone());
+
+            primitives_table.insert(
+                prim.name.clone(),
+                ModuleEntry::Def {
+                    scheme,
+                    visibility: Visibility::Public,
+                    docstring: None,
+                    param_names: prim.param_names.clone(),
+                    kind: Box::new(DefKind::Primitive {
+                        primitive_kind: PrimitiveKind::Extern,
+                        jit_name: Some(JitSymbol::from(prim.name.as_ref())),
+                    }),
+                },
+            );
+        }
+    }
+
+    /// Register the synthetic `macros` module with SList and Sexp ADTs + sconcat extern.
     ///
     /// The `macros` module is compiler-seeded (like `primitives`) and contains
     /// the S-expression types used by the macro system (spec §9.1):
@@ -276,8 +316,13 @@ impl TypeChecker {
     ///   (SexpBracket [:(SList Sexp) sitems]))
     /// ```
     ///
+    /// Also registers `sconcat` as an extern primitive in this module:
+    /// ```clojure
+    /// sconcat :: (Fn [(SList Sexp) (SList Sexp)] (SList Sexp))
+    /// ```
+    ///
     /// These are NOT auto-imported into `user`. Access is via qualified names
-    /// (`macros/SexpSym`, `macros/SCons`, etc.) or explicit import.
+    /// (`macros/SexpSym`, `macros/SCons`, `macros/sconcat`, etc.) or explicit import.
     fn register_macros_module(&mut self) {
         // Switch to the synthetic `macros` module.
         let saved_module = self.current_module_path().clone();
@@ -286,9 +331,40 @@ impl TypeChecker {
 
         self.register_slist_type();
         self.register_sexp_type();
+        self.register_sconcat();
 
         // Restore the original module context.
         self.set_current_module(saved_module);
+    }
+
+    /// Register `sconcat` as an extern primitive in the `macros` module.
+    ///
+    /// Type: `(Fn [(SList Sexp) (SList Sexp)] (SList Sexp))`
+    /// The quasiquote expander emits `macros/sconcat` calls to concatenate
+    /// S-expression lists during macro expansion.
+    fn register_sconcat(&mut self) {
+        let slist_sexp = Type::ADT(
+            TypeName::from("SList"),
+            vec![Type::ADT(TypeName::from("Sexp"), vec![])],
+        );
+        let sconcat_type = Type::Fn(
+            vec![slist_sexp.clone(), slist_sexp.clone()],
+            Box::new(slist_sexp),
+        );
+
+        self.current_symbol_table_mut().insert(
+            Symbol::from("sconcat"),
+            ModuleEntry::Def {
+                scheme: mono(sconcat_type),
+                visibility: Visibility::Public,
+                docstring: Some("Concatenate two SList Sexp values".to_string()),
+                param_names: vec![Symbol::from("a"), Symbol::from("b")],
+                kind: Box::new(DefKind::Primitive {
+                    primitive_kind: PrimitiveKind::Extern,
+                    jit_name: Some(JitSymbol::from("sconcat")),
+                }),
+            },
+        );
     }
 
     /// Register `(deftype (SList a) SNil (SCons [:a shead :(SList a) stail]))`.
@@ -400,263 +476,6 @@ impl TypeChecker {
         }
     }
 
-    /// Register core trait declarations: Num, Eq, Ord, Display.
-    ///
-    /// Constructs `TraitDecl` AST structs and routes them through the normal
-    /// `register_trait_decl()` pipeline — the same path used for user-defined traits.
-    ///
-    /// Equivalent Cranelisp:
-    /// ```clojure
-    /// (deftrait (Num a) (+ [a a] a) (- [a a] a) (* [a a] a) (/ [a a] a))
-    /// (deftrait (Eq a) (= [a a] Bool) (!= [x y] Bool (not (= x y))))
-    /// (deftrait (Ord a) (< [a a] Bool) (> [x y] Bool (< y x))
-    ///                   (<= [x y] Bool (not (< y x))) (>= [x y] Bool (not (< x y))))
-    /// (deftrait (Display a) (show [a] String))
-    /// ```
-    fn register_core_trait_decls(&mut self) {
-        // --- Num: + - * / :: (Fn [a a] a) ---
-        let num_decl = TraitDecl {
-            name: TraitName::from("Num"),
-            docstring: Some("Numeric operations".to_string()),
-            type_params: vec![Symbol::from("a")],
-            methods: ["+", "-", "*", "/"]
-                .iter()
-                .map(|op| make_aa_a_sig(op, &["lhs", "rhs"]))
-                .collect(),
-            visibility: Visibility::Public,
-            span: Span::SYNTHETIC,
-        };
-        self.register_trait_decl(&num_decl)
-            .unwrap_or_else(|e| unreachable!("invariant: core trait Num registration failed: {e}"));
-
-        // --- Eq: = :: (Fn [a a] Bool), != with default body ---
-        let eq_decl = TraitDecl {
-            name: TraitName::from("Eq"),
-            docstring: Some("Equality".to_string()),
-            type_params: vec![Symbol::from("a")],
-            methods: vec![
-                make_aa_bool_sig("=", &["lhs", "rhs"], false),
-                make_aa_bool_sig("!=", &["x", "y"], true),
-            ],
-            visibility: Visibility::Public,
-            span: Span::SYNTHETIC,
-        };
-        self.register_trait_decl(&eq_decl)
-            .unwrap_or_else(|e| unreachable!("invariant: core trait Eq registration failed: {e}"));
-
-        // --- Ord: < :: (Fn [a a] Bool), > <= >= with default bodies ---
-        let ord_decl = TraitDecl {
-            name: TraitName::from("Ord"),
-            docstring: Some("Ordering".to_string()),
-            type_params: vec![Symbol::from("a")],
-            methods: vec![
-                make_aa_bool_sig("<", &["lhs", "rhs"], false),
-                make_aa_bool_sig(">", &["x", "y"], true),
-                make_aa_bool_sig("<=", &["x", "y"], true),
-                make_aa_bool_sig(">=", &["x", "y"], true),
-            ],
-            visibility: Visibility::Public,
-            span: Span::SYNTHETIC,
-        };
-        self.register_trait_decl(&ord_decl)
-            .unwrap_or_else(|e| unreachable!("invariant: core trait Ord registration failed: {e}"));
-
-        // --- Display: show :: (Fn [a] String) ---
-        let display_decl = TraitDecl {
-            name: TraitName::from("Display"),
-            docstring: Some("String representation".to_string()),
-            type_params: vec![Symbol::from("a")],
-            methods: vec![TraitMethodSig {
-                name: Symbol::from("show"),
-                docstring: None,
-                params: vec![TypeExpr::TypeVar(Symbol::from("a"))],
-                ret_type: TypeExpr::Named(TypeName::from("String")),
-                span: Span::SYNTHETIC,
-                hkt_param_index: None,
-                default_param_names: vec![Symbol::from("self")],
-                default_body: None,
-            }],
-            visibility: Visibility::Public,
-            span: Span::SYNTHETIC,
-        };
-        self.register_trait_decl(&display_decl)
-            .unwrap_or_else(|e| unreachable!("invariant: core trait Display registration failed: {e}"));
-    }
-
-    /// Register core trait implementations for primitive types.
-    ///
-    /// Constructs `TraitImpl` AST structs with real method bodies that delegate
-    /// to named primitives, then routes them through the normal `register_trait_impl()`
-    /// pipeline. The returned `Defn` nodes are discarded — the backend's
-    /// `primitive_for_trait_method()` short-circuits all core methods to inline IR.
-    ///
-    /// Equivalent Cranelisp:
-    /// ```clojure
-    /// (impl Num Int  (+ [x y] (add-i64 x y)) (- [x y] (sub-i64 x y)) ...)
-    /// (impl Num Float (+ [x y] (add-f64 x y)) ...)
-    /// (impl Eq Int   (= [x y] (eq-i64 x y)))
-    /// (impl Eq Float (= [x y] (eq-f64 x y)))
-    /// (impl Eq Bool  (= [x y] (eq-bool x y)))
-    /// (impl Eq String (= [x y] (str-eq x y)))
-    /// (impl Ord Int  (< [x y] (lt-i64 x y)))
-    /// (impl Ord Float (< [x y] (lt-f64 x y)))
-    /// (impl Display Int    (show [x] (int-to-string x)))
-    /// (impl Display Float  (show [x] (float-to-string x)))
-    /// (impl Display Bool   (show [x] (bool-to-string x)))
-    /// (impl Display String (show [x] (string-identity x)))
-    /// ```
-    fn register_core_trait_impls(&mut self) {
-        // --- Num impls ---
-        let num_methods = ["+", "-", "*", "/"];
-
-        // Num for Int: + → add-i64, - → sub-i64, * → mul-i64, / → div-i64
-        let int_prims = ["add-i64", "sub-i64", "mul-i64", "div-i64"];
-        self.register_core_impl(
-            "Num",
-            "Int",
-            &num_methods.iter().zip(int_prims.iter())
-                .map(|(m, p)| (*m, *p, &["x", "y"] as &[&str]))
-                .collect::<Vec<_>>(),
-        );
-
-        // Num for Float: + → add-f64, - → sub-f64, * → mul-f64, / → div-f64
-        let float_prims = ["add-f64", "sub-f64", "mul-f64", "div-f64"];
-        self.register_core_impl(
-            "Num",
-            "Float",
-            &num_methods.iter().zip(float_prims.iter())
-                .map(|(m, p)| (*m, *p, &["x", "y"] as &[&str]))
-                .collect::<Vec<_>>(),
-        );
-
-        // --- Eq impls (only `=` required; `!=` has default body) ---
-        self.register_core_impl("Eq", "Int",    &[("=", "eq-i64", &["x", "y"])]);
-        self.register_core_impl("Eq", "Float",  &[("=", "eq-f64", &["x", "y"])]);
-        self.register_core_impl("Eq", "Bool",   &[("=", "eq-bool", &["x", "y"])]);
-        self.register_core_impl("Eq", "String", &[("=", "str-eq", &["x", "y"])]);
-
-        // --- Ord impls (only `<` required; `>` `<=` `>=` have default bodies) ---
-        self.register_core_impl("Ord", "Int",   &[("<", "lt-i64", &["x", "y"])]);
-        self.register_core_impl("Ord", "Float", &[("<", "lt-f64", &["x", "y"])]);
-
-        // --- Display impls ---
-        self.register_core_impl("Display", "Int",    &[("show", "int-to-string", &["x"])]);
-        self.register_core_impl("Display", "Float",  &[("show", "float-to-string", &["x"])]);
-        self.register_core_impl("Display", "Bool",   &[("show", "bool-to-string", &["x"])]);
-        self.register_core_impl("Display", "String", &[("show", "string-identity", &["x"])]);
-    }
-
-    /// Register a single core trait implementation via the normal pipeline.
-    ///
-    /// Each entry in `methods` is `(method_name, primitive_name, param_names)`.
-    /// The body of each method is `(primitive_name param1 param2 ...)`.
-    fn register_core_impl(
-        &mut self,
-        trait_name: &str,
-        target_type: &str,
-        methods: &[(&str, &str, &[&str])],
-    ) {
-        let method_defns: Vec<Defn> = methods
-            .iter()
-            .map(|(method_name, prim_name, param_names)| {
-                let params: Vec<Symbol> = param_names
-                    .iter()
-                    .map(|p| Symbol::from(*p))
-                    .collect();
-                let args: Vec<Expr> = param_names
-                    .iter()
-                    .map(|p| Expr::Var {
-                        name: Symbol::from(*p),
-                        span: Span::SYNTHETIC,
-                    })
-                    .collect();
-
-                Defn {
-                    name: Symbol::from(*method_name),
-                    docstring: None,
-                    params,
-                    param_annotations: vec![None; param_names.len()],
-                    body: Expr::Apply {
-                        callee: Box::new(Expr::Var {
-                            name: Symbol::from(*prim_name),
-                            span: Span::SYNTHETIC,
-                        }),
-                        args,
-                        span: Span::SYNTHETIC,
-                    },
-                    visibility: Visibility::Public,
-                    span: Span::SYNTHETIC,
-                }
-            })
-            .collect();
-
-        let impl_ = TraitImpl {
-            trait_name: TraitName::from(trait_name),
-            target_type: TypeName::from(target_type),
-            type_args: vec![],
-            type_constraints: vec![],
-            methods: method_defns,
-            span: Span::SYNTHETIC,
-        };
-
-        // Route through the normal pipeline; discard returned Defn nodes.
-        // The backend's primitive_for_trait_method() handles codegen.
-        let _defns = self.register_trait_impl(&impl_)
-            .unwrap_or_else(|e| {
-                unreachable!(
-                    "invariant: core impl {trait_name} for {target_type} registration failed: {e}"
-                )
-            });
-    }
-}
-
-// --- Standalone helper functions for building trait method signatures ---
-
-/// Build a method signature of shape `(Fn [a a] a)` — for Num arithmetic ops.
-fn make_aa_a_sig(name: &str, param_names: &[&str]) -> TraitMethodSig {
-    TraitMethodSig {
-        name: Symbol::from(name),
-        docstring: None,
-        params: vec![
-            TypeExpr::TypeVar(Symbol::from("a")),
-            TypeExpr::TypeVar(Symbol::from("a")),
-        ],
-        ret_type: TypeExpr::TypeVar(Symbol::from("a")),
-        span: Span::SYNTHETIC,
-        hkt_param_index: None,
-        default_param_names: param_names
-            .iter()
-            .map(|s| Symbol::from(*s))
-            .collect(),
-        default_body: None,
-    }
-}
-
-/// Build a method signature of shape `(Fn [a a] Bool)` — for Eq/Ord ops.
-///
-/// If `has_default` is true, a placeholder `default_body` is set so that
-/// `register_trait_impl()` generates the hard-coded default body.
-fn make_aa_bool_sig(name: &str, param_names: &[&str], has_default: bool) -> TraitMethodSig {
-    TraitMethodSig {
-        name: Symbol::from(name),
-        docstring: None,
-        params: vec![
-            TypeExpr::TypeVar(Symbol::from("a")),
-            TypeExpr::TypeVar(Symbol::from("a")),
-        ],
-        ret_type: TypeExpr::Named(TypeName::from("Bool")),
-        span: Span::SYNTHETIC,
-        hkt_param_index: None,
-        default_param_names: param_names
-            .iter()
-            .map(|s| Symbol::from(*s))
-            .collect(),
-        default_body: if has_default {
-            Some(Sexp::Symbol("default".to_string(), Span::SYNTHETIC))
-        } else {
-            None
-        },
-    }
 }
 
 #[cfg(test)]
@@ -914,154 +733,36 @@ mod tests {
         }
     }
 
-    // spec: 07-traits §7.5 — operator symbols registered as trait method entries
+    // -----------------------------------------------------------------------
+    // Decision 17 elimination: traits NOT compiler-seeded
+    // -----------------------------------------------------------------------
+
+    // spec: pipeline-orchestration §5 — no traits registered at startup
     #[test]
-    fn test_operator_names_registered_as_trait_methods() {
+    fn test_no_traits_at_startup() {
         let tc = TypeChecker::new();
-        // Ring 2A: operators are now registered as trait method entries
-        let ops = ["+", "-", "*", "/", "=", "!=", "<", ">", "<=", ">="];
+        assert!(
+            tc.trait_registry.decls.is_empty(),
+            "no traits should be registered at startup (Decision 17 eliminated)"
+        );
+        assert!(
+            tc.impl_registry.impls.is_empty(),
+            "no impls should be registered at startup"
+        );
+    }
+
+    // spec: pipeline-orchestration §5 — operator symbols NOT in symbol table at startup
+    #[test]
+    fn test_no_operator_symbols_at_startup() {
+        let tc = TypeChecker::new();
+        let ops = ["+", "-", "*", "/", "=", "!=", "<", ">", "<=", ">=", "show"];
         for name in ops {
             assert!(
-                tc.symbol_table().get(name).is_some(),
-                "operator {name} should be registered as a trait method"
+                tc.symbol_table().get(name).is_none(),
+                "operator {name} should NOT be in symbol table at startup \
+                 (traits come from prelude .cl files)"
             );
         }
-    }
-
-    // -----------------------------------------------------------------------
-    // Decision 17 elimination: core traits via normal pipeline
-    // -----------------------------------------------------------------------
-
-    // spec: 07-traits §7.7 — core traits registered via register_trait_decl (check trait_registry.decls)
-    #[test]
-    fn test_core_traits_registered_via_trait_decl() {
-        let tc = TypeChecker::new();
-        let core_traits = ["Num", "Eq", "Ord", "Display"];
-        for name in core_traits {
-            assert!(
-                tc.trait_registry.decls.contains_key(&TraitName::from(name)),
-                "core trait {name} should be in trait_registry.decls"
-            );
-        }
-    }
-
-    // spec: 07-traits §7.7 — all 12 core impl entries registered in impl_registry
-    #[test]
-    fn test_all_12_core_impls_registered() {
-        let tc = TypeChecker::new();
-        let expected: Vec<(&str, &str)> = vec![
-            // Num: Int, Float
-            ("Num", "Int"), ("Num", "Float"),
-            // Eq: Int, Float, Bool, String
-            ("Eq", "Int"), ("Eq", "Float"), ("Eq", "Bool"), ("Eq", "String"),
-            // Ord: Int, Float
-            ("Ord", "Int"), ("Ord", "Float"),
-            // Display: Int, Float, Bool, String
-            ("Display", "Int"), ("Display", "Float"), ("Display", "Bool"), ("Display", "String"),
-        ];
-        for (trait_name, impl_type) in &expected {
-            assert!(
-                tc.impl_registry.has_impl(
-                    &TraitName::from(*trait_name),
-                    &TypeName::from(*impl_type),
-                ),
-                "impl {trait_name} for {impl_type} should be registered"
-            );
-        }
-        // Count total entries
-        let total: usize = tc.impl_registry.impls.values()
-            .map(|inner| inner.len())
-            .sum();
-        assert_eq!(total, 12, "exactly 12 core impl entries expected");
-    }
-
-    // spec: 07-traits §7.7 — default methods (!=, >, <=, >=) resolve correctly
-    #[test]
-    fn test_default_methods_resolve_correctly() {
-        let mut tc = TypeChecker::new();
-
-        // != should resolve for Int (default via Eq)
-        let neq_result = tc.try_resolve_trait_method(
-            &Symbol::from("!="),
-            &[Type::Int, Type::Int],
-            Span::SYNTHETIC,
-        );
-        assert!(neq_result.is_some(), "!= should resolve for Int");
-
-        // > should resolve for Int (default via Ord)
-        let gt_result = tc.try_resolve_trait_method(
-            &Symbol::from(">"),
-            &[Type::Int, Type::Int],
-            Span::SYNTHETIC,
-        );
-        assert!(gt_result.is_some(), "> should resolve for Int");
-
-        // <= should resolve for Float (default via Ord)
-        let le_result = tc.try_resolve_trait_method(
-            &Symbol::from("<="),
-            &[Type::Float, Type::Float],
-            Span::SYNTHETIC,
-        );
-        assert!(le_result.is_some(), "<= should resolve for Float");
-
-        // >= should resolve for Float (default via Ord)
-        let ge_result = tc.try_resolve_trait_method(
-            &Symbol::from(">="),
-            &[Type::Float, Type::Float],
-            Span::SYNTHETIC,
-        );
-        assert!(ge_result.is_some(), ">= should resolve for Float");
-    }
-
-    // spec: 07-traits §7.7 — bootstrap: impl bodies reference named primitives in scope
-    #[test]
-    fn test_bootstrap_impl_bodies_typecheck() {
-        // This test verifies that register_trait_impl() succeeds for core impls,
-        // which means the method bodies (e.g., `(add-i64 x y)`) type-check
-        // against named primitives already registered by register_primitives().
-        //
-        // The fact that TypeChecker::new() does not panic proves this — but
-        // we verify the impl exists and the trait method resolves correctly.
-        let mut tc = TypeChecker::new();
-
-        // Num.+ for Int should resolve (body was `(add-i64 x y)`)
-        let plus_result = tc.try_resolve_trait_method(
-            &Symbol::from("+"),
-            &[Type::Int, Type::Int],
-            Span::SYNTHETIC,
-        );
-        assert!(plus_result.is_some(), "Num.+ should resolve for Int");
-
-        // Display.show for Bool should resolve (body was `(bool-to-string x)`)
-        let show_result = tc.try_resolve_trait_method(
-            &Symbol::from("show"),
-            &[Type::Bool],
-            Span::SYNTHETIC,
-        );
-        assert!(show_result.is_some(), "Display.show should resolve for Bool");
-
-        // Eq.= for String should resolve (body was `(str-eq x y)`)
-        let eq_result = tc.try_resolve_trait_method(
-            &Symbol::from("="),
-            &[Type::String, Type::String],
-            Span::SYNTHETIC,
-        );
-        assert!(eq_result.is_some(), "Eq.= should resolve for String");
-    }
-
-    // spec: 07-traits §7.7 — Display.show registered as trait method
-    #[test]
-    fn test_show_registered_as_trait_method() {
-        let tc = TypeChecker::new();
-        assert!(
-            tc.symbol_table().get("show").is_some(),
-            "show should be registered as a trait method"
-        );
-        assert!(
-            tc.trait_registry.method_to_trait.get(&Symbol::from("show"))
-                == Some(&TraitName::from("Display")),
-            "show should map to Display trait"
-        );
     }
 
     // -----------------------------------------------------------------------
@@ -1300,5 +1001,135 @@ mod tests {
             tc.lookup("macros/SNil").is_some(),
             "macros/SNil should be resolvable"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // sconcat extern in macros module (P1, pipeline-orchestration §3)
+    // -----------------------------------------------------------------------
+
+    // spec: pipeline-orchestration §3 — sconcat registered as extern primitive in macros module
+    #[test]
+    fn test_sconcat_registered_in_macros() {
+        let tc = TypeChecker::new();
+        let macros_path = ModuleFullPath::from("macros");
+        let macros_table = tc.modules.get(&macros_path).unwrap();
+        let entry = macros_table.get("sconcat");
+        assert!(entry.is_some(), "sconcat should be in macros module");
+
+        if let Some(ModuleEntry::Def { scheme, kind, .. }) = entry {
+            // Type: (Fn [(SList Sexp) (SList Sexp)] (SList Sexp))
+            let slist_sexp = Type::ADT(
+                TypeName::from("SList"),
+                vec![Type::ADT(TypeName::from("Sexp"), vec![])],
+            );
+            assert_eq!(
+                scheme.ty,
+                Type::Fn(vec![slist_sexp.clone(), slist_sexp.clone()], Box::new(slist_sexp)),
+                "sconcat :: (Fn [(SList Sexp) (SList Sexp)] (SList Sexp))"
+            );
+            assert!(scheme.vars.is_empty(), "sconcat should be monomorphic");
+            assert!(
+                matches!(
+                    kind.as_ref(),
+                    DefKind::Primitive { primitive_kind: PrimitiveKind::Extern, .. }
+                ),
+                "sconcat should be Primitive::Extern"
+            );
+        } else {
+            panic!("sconcat should be a Def entry");
+        }
+    }
+
+    // spec: pipeline-orchestration §3 — sconcat accessible via qualified name macros/sconcat
+    #[test]
+    fn test_sconcat_qualified_access() {
+        let tc = TypeChecker::new();
+        let scheme = tc.lookup("macros/sconcat");
+        assert!(
+            scheme.is_some(),
+            "macros/sconcat should be resolvable from user module"
+        );
+    }
+
+    // spec: pipeline-orchestration §3 — sconcat NOT imported into user module
+    #[test]
+    fn test_sconcat_not_in_user() {
+        let tc = TypeChecker::new();
+        assert!(
+            tc.symbol_table().get("sconcat").is_none(),
+            "sconcat should NOT be in user module (it's in macros, not primitives)"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // quote-sexp extern in primitives module (P2, pipeline-orchestration §3)
+    // -----------------------------------------------------------------------
+
+    // spec: pipeline-orchestration §3 — quote-sexp registered as extern primitive
+    #[test]
+    fn test_quote_sexp_registered() {
+        let tc = TypeChecker::new();
+        let entry = tc.symbol_table().get("quote-sexp");
+        assert!(entry.is_some(), "quote-sexp should be in user symbol table (imported from primitives)");
+
+        if let Some(ModuleEntry::Def { scheme, kind, .. }) = entry {
+            let sexp_type = Type::ADT(TypeName::from("Sexp"), vec![]);
+            assert_eq!(
+                scheme.ty,
+                Type::Fn(vec![sexp_type.clone()], Box::new(sexp_type)),
+                "quote-sexp :: (Fn [Sexp] Sexp)"
+            );
+            assert!(scheme.vars.is_empty(), "quote-sexp should be monomorphic");
+            assert!(
+                matches!(
+                    kind.as_ref(),
+                    DefKind::Primitive { primitive_kind: PrimitiveKind::Extern, .. }
+                ),
+                "quote-sexp should be Primitive::Extern"
+            );
+        } else {
+            panic!("quote-sexp should be a Def entry");
+        }
+    }
+
+    // spec: pipeline-orchestration §3 — quote-sexp also in primitives module directly
+    #[test]
+    fn test_quote_sexp_in_primitives_module() {
+        let tc = TypeChecker::new();
+        let primitives_path = ModuleFullPath::from("primitives");
+        let primitives_table = tc.modules.get(&primitives_path).unwrap();
+        assert!(
+            primitives_table.get("quote-sexp").is_some(),
+            "quote-sexp should be in primitives module"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Registration order (pipeline-orchestration §3)
+    // -----------------------------------------------------------------------
+
+    // spec: pipeline-orchestration §3 — registration order: primitives -> macros -> ring3 -> import
+    #[test]
+    fn test_registration_order_no_panic() {
+        // TypeChecker::new() exercises the full registration sequence.
+        // If the ordering is wrong (e.g. quote-sexp before macros module),
+        // it would either panic or produce invalid types.
+        let tc = TypeChecker::new();
+
+        // Verify all expected modules exist
+        assert!(tc.modules.get(&ModuleFullPath::from("user")).is_some());
+        assert!(tc.modules.get(&ModuleFullPath::from("primitives")).is_some());
+        assert!(tc.modules.get(&ModuleFullPath::from("macros")).is_some());
+
+        // Verify quote-sexp has the correct type referencing Sexp (proves ordering)
+        let sexp_type = Type::ADT(TypeName::from("Sexp"), vec![]);
+        if let Some(ModuleEntry::Def { scheme, .. }) = tc.symbol_table().get("quote-sexp") {
+            assert_eq!(
+                scheme.ty,
+                Type::Fn(vec![sexp_type.clone()], Box::new(sexp_type)),
+            );
+        } else {
+            panic!("quote-sexp should be registered after macros module");
+        }
     }
 }

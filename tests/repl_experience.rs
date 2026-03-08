@@ -18,9 +18,67 @@
 #[path = "helpers/mod.rs"]
 mod helpers;
 
-use cranelisp::repl::format_result;
+use cranelisp::repl::{format_result, ReplSession};
 use cranelisp_types::{CranelispError, Span, Type, TypeName};
 use helpers::*;
+
+// ---------------------------------------------------------------------------
+// Trait prelude helpers — since traits are no longer compiler-seeded,
+// tests that use operators (+, -, *, /, =, <) must define them inline.
+// ---------------------------------------------------------------------------
+
+fn num_trait_prelude() -> &'static str {
+    r#"(deftrait Num (+ [self self] self) (- [self self] self) (* [self self] self) (/ [self self] self))
+(impl Num Int (defn + [a b] (add-i64 a b)) (defn - [a b] (sub-i64 a b)) (defn * [a b] (mul-i64 a b)) (defn / [a b] (div-i64 a b)))
+(impl Num Float (defn + [a b] (add-f64 a b)) (defn - [a b] (sub-f64 a b)) (defn * [a b] (mul-f64 a b)) (defn / [a b] (div-f64 a b)))"#
+}
+
+fn eq_trait_prelude() -> &'static str {
+    r#"(deftrait Eq (= [self self] Bool))
+(impl Eq Int (defn = [a b] (eq-i64 a b)))
+(impl Eq Float (defn = [a b] (eq-f64 a b)))
+(impl Eq String (defn = [a b] (str-eq a b)))
+(impl Eq Bool (defn = [a b] (eq-bool a b)))"#
+}
+
+fn ord_trait_prelude() -> &'static str {
+    r#"(deftrait Ord (< [self self] Bool))
+(impl Ord Int (defn < [a b] (lt-i64 a b)))
+(impl Ord Float (defn < [a b] (lt-f64 a b)))"#
+}
+
+fn display_trait_prelude() -> &'static str {
+    r#"(deftrait Display (show [self] String))
+(impl Display Int (defn show [x] (int-to-string x)))
+(impl Display Float (defn show [x] (float-to-string x)))
+(impl Display Bool (defn show [x] (bool-to-string x)))
+(impl Display String (defn show [x] x))"#
+}
+
+/// Install all core trait preludes into a REPL session.
+/// Each form is eval'd separately because REPL eval processes one sexp at a time.
+fn install_trait_prelude(session: &mut ReplSession) {
+    for line in num_trait_prelude().lines() {
+        if !line.trim().is_empty() {
+            session.eval(line).unwrap();
+        }
+    }
+    for line in eq_trait_prelude().lines() {
+        if !line.trim().is_empty() {
+            session.eval(line).unwrap();
+        }
+    }
+    for line in ord_trait_prelude().lines() {
+        if !line.trim().is_empty() {
+            session.eval(line).unwrap();
+        }
+    }
+    for line in display_trait_prelude().lines() {
+        if !line.trim().is_empty() {
+            session.eval(line).unwrap();
+        }
+    }
+}
 
 // =============================================================================
 // Display Format (spec: §1.2 Expression Results)
@@ -2227,6 +2285,7 @@ fn repl_comment_only_no_error() {
 fn ring2a_operator_add_int() {
     // Spec §4.3: Operators are stdlib functions dispatched via traits.
     let mut session = repl_session();
+    install_trait_prelude(&mut session);
     let (value, ty) = repl_eval_typed(&mut session, "(+ 1 2)");
     assert_eq!(value, 3);
     assert_eq!(ty, Type::Int);
@@ -2236,6 +2295,7 @@ fn ring2a_operator_add_int() {
 #[test]
 fn ring2a_operator_add_float() {
     let mut session = repl_session();
+    install_trait_prelude(&mut session);
     let (value, ty) = repl_eval_typed(&mut session, "(+ 1.0 2.0)");
     assert_eq!(ty, Type::Float);
     let f = f64::from_bits(value as u64);
@@ -2246,6 +2306,7 @@ fn ring2a_operator_add_float() {
 #[test]
 fn ring2a_operator_sub_int() {
     let mut session = repl_session();
+    install_trait_prelude(&mut session);
     let (value, ty) = repl_eval_typed(&mut session, "(- 10 3)");
     assert_eq!(value, 7);
     assert_eq!(ty, Type::Int);
@@ -2255,6 +2316,7 @@ fn ring2a_operator_sub_int() {
 #[test]
 fn ring2a_operator_mul_int() {
     let mut session = repl_session();
+    install_trait_prelude(&mut session);
     let (value, ty) = repl_eval_typed(&mut session, "(* 4 5)");
     assert_eq!(value, 20);
     assert_eq!(ty, Type::Int);
@@ -2264,6 +2326,7 @@ fn ring2a_operator_mul_int() {
 #[test]
 fn ring2a_operator_div_int() {
     let mut session = repl_session();
+    install_trait_prelude(&mut session);
     let (value, ty) = repl_eval_typed(&mut session, "(/ 10 2)");
     assert_eq!(value, 5);
     assert_eq!(ty, Type::Int);
@@ -2274,6 +2337,7 @@ fn ring2a_operator_div_int() {
 fn ring2a_operator_eq_returns_bool() {
     // = is dispatched via Eq trait, returns Bool.
     let mut session = repl_session();
+    install_trait_prelude(&mut session);
     let (value, ty) = repl_eval_typed(&mut session, "(= 5 5)");
     assert_eq!(value, 1); // true
     assert_eq!(ty, Type::Bool);
@@ -2283,6 +2347,7 @@ fn ring2a_operator_eq_returns_bool() {
 #[test]
 fn ring2a_operator_eq_false() {
     let mut session = repl_session();
+    install_trait_prelude(&mut session);
     let (value, ty) = repl_eval_typed(&mut session, "(= 5 3)");
     assert_eq!(value, 0); // false
     assert_eq!(ty, Type::Bool);
@@ -2293,6 +2358,7 @@ fn ring2a_operator_eq_false() {
 fn ring2a_operator_lt_returns_bool() {
     // < is dispatched via Ord trait, returns Bool.
     let mut session = repl_session();
+    install_trait_prelude(&mut session);
     let (value, ty) = repl_eval_typed(&mut session, "(< 1 2)");
     assert_eq!(value, 1); // true
     assert_eq!(ty, Type::Bool);
@@ -2302,6 +2368,7 @@ fn ring2a_operator_lt_returns_bool() {
 #[test]
 fn ring2a_operator_lt_false() {
     let mut session = repl_session();
+    install_trait_prelude(&mut session);
     let (value, ty) = repl_eval_typed(&mut session, "(< 5 3)");
     assert_eq!(value, 0); // false
     assert_eq!(ty, Type::Bool);
@@ -2312,6 +2379,7 @@ fn ring2a_operator_lt_false() {
 fn ring2a_operators_compose_with_let() {
     // Operators work in compound expressions.
     let mut session = repl_session();
+    install_trait_prelude(&mut session);
     let value = repl_eval(&mut session, "(let [x 10 y 3] (+ x y))");
     assert_eq!(value, 13);
 }
@@ -2320,6 +2388,7 @@ fn ring2a_operators_compose_with_let() {
 #[test]
 fn ring2a_operators_compose_with_if() {
     let mut session = repl_session();
+    install_trait_prelude(&mut session);
     let value = repl_eval(&mut session, "(if (< 1 2) (+ 10 20) 0)");
     assert_eq!(value, 30);
 }
@@ -2329,6 +2398,7 @@ fn ring2a_operators_compose_with_if() {
 fn ring2a_operators_compose_with_defn() {
     // A function using operators gets a concrete type (resolved via trait dispatch).
     let mut session = repl_session();
+    install_trait_prelude(&mut session);
     let result = session.eval("(defn double [x] (* x 2))").unwrap();
     assert!(result.is_definition);
     assert_eq!(
@@ -2344,6 +2414,7 @@ fn ring2a_operators_compose_with_defn() {
 fn ring2a_operators_nested() {
     // Nested operator calls work.
     let mut session = repl_session();
+    install_trait_prelude(&mut session);
     let value = repl_eval(&mut session, "(+ (* 3 4) (- 10 5))");
     assert_eq!(value, 17);
 }
@@ -2353,6 +2424,7 @@ fn ring2a_operators_nested() {
 fn ring2a_operator_in_recursive_fn() {
     // Operators work in recursive functions.
     let mut session = repl_session();
+    install_trait_prelude(&mut session);
     session
         .eval("(defn fact [n] (if (= n 0) 1 (* n (fact (- n 1)))))")
         .unwrap();
@@ -2380,6 +2452,7 @@ fn ring2a_deftrait_in_repl() {
 fn ring2a_deftrait_session_continues() {
     // After declaring a trait, the session continues normally.
     let mut session = repl_session();
+    install_trait_prelude(&mut session);
     session
         .eval("(deftrait (Describable a) (describe [:a] :Int))")
         .unwrap();
@@ -2555,6 +2628,7 @@ fn u1_9_adt_type_display_normalizes_vars_for_fn() {
 fn ring2a_session_operators_and_old_primitives_coexist() {
     // Both trait-dispatched operators and Ring 0 named primitives work in the same session.
     let mut session = repl_session();
+    install_trait_prelude(&mut session);
     let v1 = repl_eval(&mut session, "(+ 10 20)");
     assert_eq!(v1, 30);
     let v2 = repl_eval(&mut session, "(add-i64 10 20)");
@@ -2567,6 +2641,7 @@ fn ring2a_session_defn_with_operators_then_call() {
     // Define a function using operators, call it, redefine with a different
     // operator, call again.
     let mut session = repl_session();
+    install_trait_prelude(&mut session);
     session.eval("(defn compute [x] (* x 2))").unwrap();
     assert_eq!(repl_eval(&mut session, "(compute 5)"), 10);
     // Redefine with a different computation.
@@ -2579,6 +2654,7 @@ fn ring2a_session_defn_with_operators_then_call() {
 fn ring2a_session_adt_with_operator_functions() {
     // Combine ADTs and trait-dispatched operators.
     let mut session = repl_session();
+    install_trait_prelude(&mut session);
     session
         .eval("(deftype (Option a) None (Some [:a val]))")
         .unwrap();
@@ -2594,6 +2670,7 @@ fn ring2a_session_adt_with_operator_functions() {
 fn ring2a_error_recovery_after_operator_error() {
     // After an operator-related error, the session should continue.
     let mut session = repl_session();
+    install_trait_prelude(&mut session);
     // Type mismatch: (+ 1 true) should fail.
     let err = session.eval("(+ 1 true)");
     assert!(err.is_err(), "type mismatch should produce an error");
@@ -2607,6 +2684,7 @@ fn ring2a_error_recovery_after_operator_error() {
 fn ring2a_float_operators() {
     // Float operators work via trait dispatch.
     let mut session = repl_session();
+    install_trait_prelude(&mut session);
     let (v, ty) = repl_eval_typed(&mut session, "(* 2.0 3.0)");
     assert_eq!(ty, Type::Float);
     let f = f64::from_bits(v as u64);
@@ -2618,6 +2696,7 @@ fn ring2a_float_operators() {
 fn ring2a_mixed_int_float_operators_error() {
     // Mixing Int and Float in the same operator call should be a type error.
     let mut session = repl_session();
+    install_trait_prelude(&mut session);
     let err = session.eval("(+ 1 2.0)");
     assert!(err.is_err(), "mixing Int and Float should error");
 }

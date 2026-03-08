@@ -132,8 +132,12 @@ pub struct FieldInfo {
 pub struct ReplSnapshot {
     /// Next type variable ID at snapshot time
     pub next_type_id: TypeId,
-    /// Number of symbol table entries at snapshot time
-    pub symbol_count: usize,
+    /// Symbol keys present in the current module's symbol table at snapshot time.
+    /// On restore, any keys not in this set are removed.
+    pub symbol_keys: HashSet<Symbol>,
     /// Substitution state at snapshot time
     pub subst_len: usize,
+    /// Scope stack depth at snapshot time (number of frames).
+    /// On restore, extra frames pushed during a failed check are popped.
+    pub scope_depth: usize,
 }

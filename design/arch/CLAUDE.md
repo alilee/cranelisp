@@ -1,3 +1,8 @@
+<!-- FIXME(/arch): lib/ renamed to stdlib/ (Sprint 11). Decision 17 text in this file
+     updated to reference `stdlib/core/numerics.cl` etc. Also update pipeline-orchestration.md,
+     roadmap.md, macro-pipeline.md — all `lib/` refs changed to `stdlib/`. Please review.
+     Also: verify your skill definition does not reference `lib/`. -->
+
 # design/arch/
 
 Architecture deliverables for the Cranelisp reimplementation. Owned and maintained by the `/arch` skill.
@@ -33,7 +38,7 @@ Architecture deliverables for the Cranelisp reimplementation. Owned and maintain
 14. **Typecheck emits `TraitMethod`, backend maps to primitives** — the typecheck crate always emits `ResolvedCall::TraitMethod` for trait-dispatched operators. The backend recognizes known primitive impls (e.g., `Num.+$Int` → `iadd`) via a static `(TraitName, Symbol, TypeName) → PrimitiveOp` mapping. This keeps typecheck clean and backend-optimizable.
 15. **Ring 0-1 `BuiltinFn` coexists with Ring 2 `TraitMethod`** — named primitives (`add-i64`, etc.) retain their `BuiltinFn` resolution path. Operators (`+`, `-`, etc.) gain a new `TraitMethod` path. Both paths coexist per principle 9.
 16. **JIT mangling: `Trait.method$Type`** — trait method implementations use `Num.+$Int` format. Constrained fn specializations use `name$Type1+Type2` format.
-17. **~~Core traits registered at startup, not from files~~ — INTERIM, must be eliminated.** `Num`, `Eq`, `Ord`, `Display` and their impls are currently registered by the typechecker in `register_builtins()` via Rust code. This violates Principle 8: these are ordinary Cranelisp that can be expressed with `deftrait`/`impl`. **Fix**: Remove `register_core_trait_decls()`, `register_core_trait_impls()`, and `import_primitives_into_user()` from `builtins.rs`. Only genuinely primitive things remain seeded (types, named primitives, special forms, synthetic modules). There is **no** startup `.cl` source — that is the prelude mechanism (Ring 3). Until the prelude exists, tests/examples/demos that need operators must define the traits themselves inline. This makes the dependency explicit and eliminates the `user/+` display anomaly (trait methods defined by the user display correctly as `user/+`; compiler-seeded methods masquerading as user symbols was wrong).
+17. **~~Core traits registered at startup, not from files~~ — RESOLVED (Sprint 11).** `register_core_trait_decls()` and `register_core_trait_impls()` are removed from `builtins.rs`. Traits (`Num`, `Eq`, `Ord`, `Display`) and their impls are ordinary Cranelisp defined in prelude `.cl` files (`stdlib/core/numerics.cl`, `stdlib/core/formats.cl`), loaded through the standard module pipeline. `import_primitives_into_user()` is retained for genuine primitives only (types, named functions, special forms). Tests that need operators must either load the prelude or define traits inline. See `design/arch/pipeline-orchestration.md` §5.
 18. **`ReplCheckResult` gains Ring 2 fields** — `constrained_fn_names`, `mono_defns`, `default_method_defns` added to match `CheckResult`. Three-location atomic change.
 19. **Constraint propagation in `generalize`** — `Scheme.constraints` populated by collecting trait constraints from active type variables during generalization. Non-empty constraints → constrained polymorphic function.
 

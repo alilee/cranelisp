@@ -1,3 +1,6 @@
+<!-- FIXME(/spec): lib/ renamed to stdlib/ (Sprint 11). The §9.10 reference to
+     `lib/core/syntax.cl` has been updated to `stdlib/core/syntax.cl`. Please verify. -->
+
 # 9. Macros [R3 S9]
 
 This section defines the compile-time macro system in Cranelisp. Macros are ordinary Cranelisp functions that transform S-expression values before type checking. They are compiled with the same code generation pipeline as user functions and called during expansion — no separate interpreter is required.
@@ -541,7 +544,7 @@ Calling a macro with the wrong number of arguments is a compile-time error. For 
 
 ## 9.10 Example Prelude Macros [R3 S9]
 
-The following macros illustrate the capabilities of the macro system. They are provided by the reference implementation's standard prelude (`lib/core/syntax.cl`) and are available in all modules that import the prelude (which is the default). Full details of the reference standard library are in Section 11 (non-normative); brief descriptions and expansion examples are given here.
+The following macros illustrate the capabilities of the macro system. They are provided by the reference implementation's standard prelude (`stdlib/core/syntax.cl`) and are available in all modules that import the prelude (which is the default). Full details of the reference standard library are in Section 11 (non-normative); brief descriptions and expansion examples are given here.
 
 ### 9.10.1 `const` / `const-`
 

@@ -1,13 +1,9 @@
 ;; 15-traits.cl -- Trait-based operator dispatch and constrained polymorphism
 ;;
-;; Cranelisp has three core traits built into the language:
-;;   Num  -- arithmetic operators: + - * /
-;;   Eq   -- equality operator: =  (default method: !=)
-;;   Ord  -- ordering operator: <  (default methods: > <= >=)
-;;
-;; These traits are implemented for Int and Float (Eq also for Bool
-;; and String). The operators dispatch to the correct implementation
-;; based on the types of their arguments.
+;; Cranelisp defines traits for operator dispatch. This example declares
+;; the Num, Eq, and Ord traits and their implementations for Int and Float
+;; (Eq also for Bool and String). The operators dispatch to the correct
+;; implementation based on the types of their arguments.
 ;;
 ;; Functions that use trait operators become constrained polymorphic:
 ;; (defn double [x] (+ x x)) works on any Num type. The compiler
@@ -18,6 +14,64 @@
 ;; versions: (+ 1 2) and (+ 1.5 2.5) both use +, dispatched by type.
 ;;
 ;; Named primitives remain available (the transition is accretive).
+
+;; --- Trait declarations and implementations ---
+
+(deftrait Num
+  (+ [self self] self)
+  (- [self self] self)
+  (* [self self] self)
+  (/ [self self] self))
+
+(impl Num Int
+  (defn + [a b] (add-i64 a b))
+  (defn - [a b] (sub-i64 a b))
+  (defn * [a b] (mul-i64 a b))
+  (defn / [a b] (div-i64 a b)))
+
+(impl Num Float
+  (defn + [a b] (add-f64 a b))
+  (defn - [a b] (sub-f64 a b))
+  (defn * [a b] (mul-f64 a b))
+  (defn / [a b] (div-f64 a b)))
+
+(deftrait Eq
+  (= [self self] Bool)
+  (!= [self self] Bool))
+
+(impl Eq Int
+  (defn = [a b] (eq-i64 a b))
+  (defn != [a b] (not (eq-i64 a b))))
+
+(impl Eq Float
+  (defn = [a b] (eq-f64 a b))
+  (defn != [a b] (not (eq-f64 a b))))
+
+(impl Eq Bool
+  (defn = [a b] (eq-bool a b))
+  (defn != [a b] (not (eq-bool a b))))
+
+(impl Eq String
+  (defn = [a b] (str-eq a b))
+  (defn != [a b] (not (str-eq a b))))
+
+(deftrait Ord
+  (< [self self] Bool)
+  (> [self self] Bool)
+  (<= [self self] Bool)
+  (>= [self self] Bool))
+
+(impl Ord Int
+  (defn < [a b] (lt-i64 a b))
+  (defn > [a b] (lt-i64 b a))
+  (defn <= [a b] (not (lt-i64 b a)))
+  (defn >= [a b] (not (lt-i64 a b))))
+
+(impl Ord Float
+  (defn < [a b] (lt-f64 a b))
+  (defn > [a b] (lt-f64 b a))
+  (defn <= [a b] (not (lt-f64 b a)))
+  (defn >= [a b] (not (lt-f64 a b))))
 
 ;; --- Num trait: arithmetic on Int ---
 
@@ -140,13 +194,11 @@
 
 (defn test-sum-of-sq [] (sum-of-sq 3 4))              ;; -> 25
 
-;; --- Default methods ---
+;; --- Ord and Eq derived methods ---
 
-;; The Ord trait provides default methods derived from <:
-;;   >  is (< b a)
-;;   <= is (not (< b a))
-;;   >= is (not (< a b))
-;; These work without explicit implementation.
+;; The Ord trait provides >, <=, >= alongside <.
+;; The Eq trait provides != alongside =.
+;; Each method has an explicit implementation.
 
 (defn test-gt []
   (if (> 5 3) 1 0))                                  ;; -> 1
@@ -163,7 +215,7 @@
 (defn test-gte-false []
   (if (>= 4 5) 1 0))                                 ;; -> 0
 
-;; The Eq trait provides a default != (not equal) derived from =.
+;; The Eq trait provides != (not equal) alongside =.
 
 (defn test-neq-true []
   (if (!= 1 2) 1 0))                                 ;; -> 1

@@ -12,6 +12,8 @@ use cranelisp_types::{Sexp, Span, NULLARY_TAG_THRESHOLD};
 
 // ---------------------------------------------------------------------------
 // Tag constants — MUST match constructor order in register_macros_module()
+// FIXME(/arch): These constants are duplicated in crates/cranelisp-runtime/src/marshal.rs.
+// Define once in cranelisp-types alongside NULLARY_TAG_THRESHOLD to prevent divergence.
 // ---------------------------------------------------------------------------
 
 // SList tags (polymorphic at the type level, but fixed at runtime)

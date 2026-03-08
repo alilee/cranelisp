@@ -2,11 +2,9 @@
 
 Normative specification for the Cranelisp REPL user experience. A conforming REPL MUST satisfy all requirements tagged with the current ring or earlier.
 
-<!-- FIXME(/repl): DEFERRED to Ring 4. CLI invocation modes (--run, --version, --help),
-     exit codes, batch output format, and cache lifecycle are CLI-level concerns, not REPL
-     experience concerns. They should be specified in a companion CLI spec (owned by /qa or /arch)
-     once the REPL experience itself is stable. The REPL spec intentionally covers only the
-     interactive session contract. -->
+While called repl, the repl experience encompasses the entire user experience from invoking the repl as well as its associated CLI invocation modes, exit codes, batch output format, and cache lifecycle.
+
+<!-- FIXME(/repl): Specify CLI invocation modes (--run, --version, --help) -->
 
 ## Design Principle
 
@@ -218,9 +216,9 @@ Slash commands provide introspection and navigation. All commands start with `/`
 | `/disasm <name>` | — | Show disassembled native code | 0 | [R4 S10] |
 | `/list [filter]` | `/l` | List symbols in current module | 0 | [Tested tests/e2e::e2e_s3_3_list] |
 | `/time <expr>` | — | Evaluate with timing breakdown | 0 | [Tested tests/e2e::e2e_s3_1_time] |
-| `/expand <form>` | `/e` | Macro-expand a form | 3 | [R3 S9] |
+| `/expand <form>` | `/e` | Macro-expand a form | 3 | [R3 S11 — tests/ring3_repl::r3_expand_single_macro IGNORED] |
 | `/mod [name]` | — | Switch module namespace | 2 | [R4 S10] |
-| `/imports` | — | Show imports in current module with source | 2 | [R3 S11] |
+| `/imports` | — | Show imports in current module with source | 2 | [R3 S11 — tests/ring3_repl::r3_imports_empty IGNORED] |
 | `/reload [name]` | `/r` | Reload module from file | 2 | [R4 S10] |
 | `/mem [expr]` | `/m` | Show allocation statistics | 1 | [R4 S10] |
 | `/run-tests` | — | Discover and run test functions | 4 | [R4 S10] |
@@ -251,7 +249,7 @@ Commands not yet available (due to ring) SHOULD be omitted or marked as unavaila
 | Special forms | `if`, `let`, `fn`, `defn`, `deftype`, `match` | 0 | [Tested tests/e2e::e2e_s3_3_list_special_forms] |
 | Functions | User-defined functions | 0 | [Tested tests/e2e::e2e_s3_3_list] |
 | Traits | Trait declarations | 2 | [Tested tests/e2e::e2e_s3_3_list_traits] |
-| Macros | Macro definitions | 3 | [R3 S9] |
+| Macros | Macro definitions | 3 | [Tested+Neg tests/ring3_repl::r3_list_macros_category_via_symbol_table, tests/ring3_repl::r3_neg_non_macros_absent_from_macros] |
 | Modules | Declared submodules | 2 | [R4 S10] |
 | Imports | Count of imported names by source module | 2 | [R3 S11] |
 
@@ -298,7 +296,7 @@ Fns:
 
 In this example: operators get their own line(s). Then A-group (abs, add) and C-group (ceil, concat) fit together on one row (4 items). D-group (double, drop) would push to 6+ so starts a new row. E-group (empty?, even?) and F-group (filter, floor, fold) fit together (5 items). G-group (get) starts a new row since adding it to the previous row would exceed 6.
 
-### 3.4 `/imports` — Import Detail [R3 S11]
+### 3.4 `/imports` — Import Detail [R3 S11 — tests/ring3_repl::r3_imports_empty IGNORED]
 
 `/imports` MUST show all imports active in the current module, grouped by source module, with the individual names listed. This is the detailed companion to `/list`'s summary Imports category.
 
@@ -354,7 +352,7 @@ Entering a symbol name without arguments MUST produce its type and fully-qualifi
 | Constructor | `:QualifiedType module/Type.Ctor` | [Tested tests/e2e::e2e_s1_1_constructor_lookup] |
 | Type | Type definition display | [Tested tests/e2e::e2e_s1_1_bare_type_int, tests/e2e::e2e_s1_1_bare_type_bool, tests/e2e::e2e_s1_1_bare_type_float, tests/e2e::e2e_s1_1_bare_type_string] |
 | Special form | `:signature name` | [Tested tests/e2e::e2e_s4_2_special_form_feedback] |
-| Macro | Clause signatures | [R3 S9] |
+| Macro | Clause signatures | [R3 S11 — tests/ring3_repl::r3_bare_macro_lookup IGNORED] |
 | Trait | Method signatures | [Tested tests/e2e::e2e_s4_1_bare_trait_lookup] |
 
 If the symbol has a docstring (per spec §5.2), the **first line** of the docstring SHOULD be appended as a comment after the type display:
@@ -395,7 +393,7 @@ Special form keywords (`if`, `let`, `fn`, `defn`, `deftype`, `match`, `defmacro`
 | `defn` | [Tested tests/e2e::e2e_s4_2_special_form_defn] |
 | `deftype` | [Tested tests/e2e::e2e_s4_2_special_form_deftype] |
 | `match` | [Tested tests/e2e::e2e_s4_2_special_form_match] |
-| `defmacro` | [R3 S9] |
+| `defmacro` | [R3 S11 — tests/ring3_repl::r3_special_form_defmacro IGNORED] |
 
 Examples:
 
@@ -662,10 +660,11 @@ The showcase player (`repl/showcase`) MAY apply the same colour palette during r
 | `Type.Constructor` notation | yes | | | | |
 
 ## 11. Ring 3 REPL Requirements [R3 S11]
+<!-- Partial: §11.3 and §11.2.1-2 tested, §11.1/§11.4 not yet -->
 
 Ring 3 introduces the macro system. The REPL MUST integrate macros into all existing introspection and display mechanisms so that macros are first-class citizens of the self-documentation experience.
 
-### 11.1 `/expand` Command [R3 S11]
+### 11.1 `/expand` Command [R3 S11 — tests/ring3_repl::r3_expand_single_macro IGNORED]
 
 The `/expand` (alias `/e`) command MUST accept a single S-expression form, perform recursive macro expansion to a fixed point (per spec Section 9.3.3), and display the fully expanded S-expression WITHOUT evaluating it.
 
@@ -686,7 +685,7 @@ The output MUST be a valid S-expression string. Fully-qualified constructor name
 
 Macros MUST appear in existing REPL introspection commands alongside functions and types.
 
-#### 11.2.1 `/list` — Macros Category [R3 S11]
+#### 11.2.1 `/list` — Macros Category [Tested+Neg tests/ring3_repl::r3_list_macros_category_via_symbol_table, tests/ring3_repl::r3_list_neg_macros_not_in_functions, tests/ring3_repl::r3_neg_non_macros_absent_from_macros]
 
 `/list` MUST include a "Macros" category listing all macros defined or imported in the current module. Macros MUST be listed by their unqualified name within the current module scope.
 
@@ -697,7 +696,7 @@ Fns: ...
 Types: ...
 ```
 
-#### 11.2.2 `/info` — Macro Details [R3 S11]
+#### 11.2.2 `/info` — Macro Details [Tested tests/ring3_repl::r3_info_macro_clause_count, tests/ring3_repl::r3_info_macro_docstring]
 
 `/info <name>` for a macro MUST display:
 - The macro's classification as `macro`
@@ -712,7 +711,7 @@ user> /info when
 when :: macro
 ```
 
-#### 11.2.3 `/sig` — Macro Signature [R3 S11]
+#### 11.2.3 `/sig` — Macro Signature [Tested tests/ring3_repl::r3_sig_macro_params — variadic IGNORED]
 
 `/sig <name>` for a macro MUST display the parameter signature of each clause, using `& rest` syntax for variadic parameters and bracket notation for bracket destructuring parameters.
 
@@ -733,7 +732,7 @@ user> /sig when
 when :: macro [cond body]
 ```
 
-#### 11.2.4 `/doc` — Macro Docstring [R3 S11]
+#### 11.2.4 `/doc` — Macro Docstring [R3 S11 — tests/ring3_repl::r3_doc_macro_no_docstring IGNORED]
 
 `/doc <name>` for a macro MUST display the macro's docstring. If the macro has no docstring, `/doc` MUST display a message indicating none is available.
 
@@ -744,7 +743,7 @@ user> /doc my-macro
 my-macro: no docstring
 ```
 
-### 11.3 `defmacro` Display [R3 S11]
+### 11.3 `defmacro` Display [Tested tests/ring3_repl::r3_defmacro_display_single_clause, tests/ring3_repl::r3_defmacro_display_multi_clause, tests/macros::repl_defmacro_display_single_clause, tests/macros::repl_defmacro_display_multi_clause]
 
 When the user defines a macro at the REPL, the display MUST confirm the definition using the format:
 
@@ -769,7 +768,7 @@ cond :: macro (2 clauses)
 
 This mirrors the definition display pattern established for functions (Section 1.3) and types, keeping the REPL output self-documenting.
 
-### 11.4 Bare Macro Lookup [R3 S11]
+### 11.4 Bare Macro Lookup [R3 S11 — tests/ring3_repl::r3_bare_macro_lookup IGNORED]
 
 Entering a macro name as a bare symbol (without arguments) MUST produce its clause signatures, consistent with the self-documentation contract (Section 4.1). Zero-argument macros are an exception: they expand immediately via bare-symbol expansion (spec Section 9.5) rather than displaying introspection.
 
@@ -786,13 +785,13 @@ cond :: macro
 
 The following test scenarios validate the Ring 3 REPL macro experience. Each MUST have a corresponding test in `tests/`.
 
-| # | Scenario | Expected Behavior | Spec Reference |
-|---|---|---|---|
-| 1 | `/expand` with a single macro | Displays expanded form without evaluation | §11.1, §9.3.2 |
-| 2 | `/expand` with nested macros | Displays fully expanded form (recursive to fixed point) | §11.1, §9.3.3 |
-| 3 | `/expand` with no macro calls | Displays input unchanged | §11.1 |
-| 4 | `/list` after `defmacro` | Macro appears under "Macros" category | §11.2.1, §3.3 |
-| 5 | `/info` on a multi-clause macro | Shows clause count and docstring | §11.2.2 |
-| 6 | `/sig` on a variadic macro | Shows parameter signature with `& rest` | §11.2.3 |
-| 7 | `defmacro` display at REPL | Shows `name :: macro` confirmation | §11.3, §9.13 |
-| 8 | Bare macro name lookup | Shows clause signatures (non-zero-arg macros) | §11.4, §4.1 |
+| # | Scenario | Expected Behavior | Spec Reference | Test |
+|---|---|---|---|---|
+| 1 | `/expand` with a single macro | Displays expanded form without evaluation | §11.1, §9.3.2 | [R3 S11 — tests/ring3_repl::r3_expand_single_macro IGNORED] |
+| 2 | `/expand` with nested macros | Displays fully expanded form (recursive to fixed point) | §11.1, §9.3.3 | [R3 S11 — tests/ring3_repl::r3_expand_nested_macros IGNORED] |
+| 3 | `/expand` with no macro calls | Displays input unchanged | §11.1 | [R3 S11 — tests/ring3_repl::r3_expand_no_macro IGNORED] |
+| 4 | `/list` after `defmacro` | Macro appears under "Macros" category | §11.2.1, §3.3 | [Tested tests/ring3_repl::r3_list_macros_category_via_symbol_table] |
+| 5 | `/info` on a multi-clause macro | Shows clause count and docstring | §11.2.2 | [Tested tests/ring3_repl::r3_info_macro_clause_count] |
+| 6 | `/sig` on a variadic macro | Shows parameter signature with `& rest` | §11.2.3 | [Tested tests/ring3_repl::r3_sig_macro_params — variadic IGNORED] |
+| 7 | `defmacro` display at REPL | Shows `name :: macro` confirmation | §11.3, §9.13 | [Tested tests/ring3_repl::r3_defmacro_display_single_clause] |
+| 8 | Bare macro name lookup | Shows clause signatures (non-zero-arg macros) | §11.4, §4.1 | [R3 S11 — tests/ring3_repl::r3_bare_macro_lookup IGNORED] |

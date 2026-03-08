@@ -1047,19 +1047,19 @@ fn build_list_expr(
             "if" => return build_if(children, span, expander),
             "fn" | "lambda" => return build_fn(children, span, expander),
             "match" => return build_match(children, span, expander),
-            // Reader-macro forms (desugared by reader, rejected here until their ring)
+            // Reader-macro forms — should be handled by the expander before reaching AST builder
             "quote" => {
-                return Err(parse_err("quote not yet supported (Ring 3)", *head_span))
+                return Err(parse_err("unexpected quote form — should have been expanded", *head_span))
             }
             "quasiquote" => {
-                return Err(parse_err("quasiquote not yet supported (Ring 3)", *head_span))
+                return Err(parse_err("unexpected quasiquote form — should have been expanded", *head_span))
             }
             "unquote" => {
-                return Err(parse_err("unquote not yet supported (Ring 3)", *head_span))
+                return Err(parse_err("unexpected unquote form — should have been expanded", *head_span))
             }
             "unquote-splicing" => {
                 return Err(parse_err(
-                    "unquote-splicing not yet supported (Ring 3)",
+                    "unexpected unquote-splicing form — should have been expanded",
                     *head_span,
                 ))
             }
@@ -2342,38 +2342,38 @@ mod tests {
         }
     }
 
-    // -- Rejection of reader-macro forms --
+    // -- Unexpected reader-macro forms (should be handled by expander) --
 
-    // spec: 01-lexical §1.6 — quote form rejected (Ring 3)
+    // spec: 01-lexical §1.6 — quote form unexpected in AST builder (expander should handle)
     #[test]
     fn test_reject_quote() {
         let err = parse_and_build_expr("'foo").unwrap_err();
-        assert!(err.message().contains("quote not yet supported"));
-        assert!(err.message().contains("Ring 3"));
+        assert!(err.message().contains("unexpected quote form"));
+        assert!(err.message().contains("should have been expanded"));
     }
 
-    // spec: 01-lexical §1.6 — quasiquote form rejected (Ring 3)
+    // spec: 01-lexical §1.6 — quasiquote form unexpected in AST builder (expander should handle)
     #[test]
     fn test_reject_quasiquote() {
         let err = parse_and_build_expr("`foo").unwrap_err();
-        assert!(err.message().contains("quasiquote not yet supported"));
-        assert!(err.message().contains("Ring 3"));
+        assert!(err.message().contains("unexpected quasiquote form"));
+        assert!(err.message().contains("should have been expanded"));
     }
 
-    // spec: 01-lexical §1.6 — unquote form rejected (Ring 3)
+    // spec: 01-lexical §1.6 — unquote form unexpected in AST builder (expander should handle)
     #[test]
     fn test_reject_unquote() {
         let err = parse_and_build_expr("~x").unwrap_err();
-        assert!(err.message().contains("unquote not yet supported"));
-        assert!(err.message().contains("Ring 3"));
+        assert!(err.message().contains("unexpected unquote form"));
+        assert!(err.message().contains("should have been expanded"));
     }
 
-    // spec: 01-lexical §1.6 — unquote-splicing form rejected (Ring 3)
+    // spec: 01-lexical §1.6 — unquote-splicing form unexpected in AST builder (expander should handle)
     #[test]
     fn test_reject_unquote_splicing() {
         let err = parse_and_build_expr("~@xs").unwrap_err();
-        assert!(err.message().contains("unquote-splicing not yet supported"));
-        assert!(err.message().contains("Ring 3"));
+        assert!(err.message().contains("unexpected unquote-splicing form"));
+        assert!(err.message().contains("should have been expanded"));
     }
 
     // spec: 01-lexical §1.6 — anonymous function form rejected (Ring 3)

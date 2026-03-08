@@ -11,6 +11,8 @@ This directory contains the **normative REPL experience specification** — what
 
 The REPL spec defines the **contract between the REPL and the user**: display formats, commands, error presentation, self-documentation, discoverability, and performance. Implementation plans for meeting this contract live in `design/`.
 
+It encompasses the entire user experience from invoking the repl as well as its associated CLI invocation modes, exit codes, batch output format, and cache lifecycle.
+
 ## Files
 
 | File | Contents |

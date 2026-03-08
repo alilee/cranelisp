@@ -1,3 +1,8 @@
+<!-- FIXME(/qa): lib/ renamed to stdlib/ (Sprint 11). References to lib/core/syntax.cl
+     and lib/prelude.cl updated to stdlib/. Tests and examples MUST NOT depend on stdlib/.
+     Please review acceptance gate and test plan references. Also: verify that no tests
+     import from stdlib/ — all tests must be free-standing. -->
+
 # Ring 3 Test Plan: Meta
 
 <!-- FIXME(/qa): Decision 17 — when compiler-seeded traits (Num, Eq, Ord, Display) are
@@ -239,17 +244,239 @@ Test cases derived from `design/arch/macro-pipeline.md` and `design/frontend/mac
 #### Return type enforcement [R3 S10]
 - `expander_bad_return_type_error` — `(defmacro bad [] 42)` produces compile error: body type Int, expected Sexp [R3 S10]
 
+## Phase 5-7 Pipeline, Prelude & REPL Tests (Sprint 11)
+
+Test cases derived from `design/frontend/macro-plan.md` Phases 5-7, `design/arch/macro-pipeline.md` §7 (bootstrapping), `repl/spec.md` §3.3-3.4 + §11, and `sprints/SPRINT.md` Sprint 11 scope.
+
+### Phase 5: Pipeline Integration (spec: 09-macros §9.12, macro-pipeline.md §7)
+
+#### CraneliftExpander wiring [R3 S11]
+- `pipeline_batch_uses_cranelift_expander` — Batch `compile_and_run()` uses `CraneliftExpander` (not `NoOpExpander`); a defmacro + usage in the same batch file compiles and executes correctly [R3 S11]
+- `pipeline_repl_uses_cranelift_expander` — REPL `eval()` uses `CraneliftExpander`; defmacro at REPL followed by usage in next eval produces correct result [R3 S11]
+- `repl_session_owns_expander` — `ReplSession` stores a `CraneliftExpander` field that persists across eval calls; macros defined in one eval are available in subsequent evals [R3 S11]
+
+#### Two-pass prelude loading (spec: 09-macros §9.12) [R3 S11]
+- `prelude_pass1_registers_types` — After prelude loading, all prelude-defined types (e.g., `List`, `Option`) are resolvable as type constructors [R3 S11]
+- `prelude_pass2_compiles_macros` — After prelude loading, all prelude-defined macros (e.g., `list`, `cond`, `->`) are registered in `CraneliftExpander.is_macro()` [R3 S11]
+- `prelude_macros_available_at_repl_startup` — A fresh REPL session can immediately use `(list 1 2 3)` without explicit import or definition [R3 S11]
+- `prelude_macro_uses_earlier_macro` — Prelude macros that depend on earlier prelude macros (e.g., `list` uses `slist`) work correctly after two-pass loading [R3 S11]
+- `prelude_macro_uses_type_from_pass1` — A prelude macro body that references a type constructor registered in Pass 1 compiles correctly [R3 S11]
+
+#### defmacro interception at Sexp level [R3 S11]
+- `batch_defmacro_intercepted_before_ast` — In batch mode, `(defmacro ...)` is intercepted at the Sexp level before reaching the AST builder; the macro is compiled and registered in `MacroEnv` [R3 S11]
+- `repl_defmacro_intercepted_before_ast` — In REPL mode, `(defmacro ...)` is intercepted at the Sexp level; subsequent input sees the macro [R3 S11]
+- `batch_sequential_defmacro_then_usage` — A batch file with `(defmacro foo ...)` followed by `(foo ...)` compiles and runs correctly because forms are processed sequentially [R3 S11]
+
+#### begin splicing [R3 S11]
+- `begin_splicing_batch` — A macro that expands to `(begin form1 form2)` in batch mode: both forms are processed sequentially [R3 S11]
+- `begin_splicing_repl` — A macro that expands to `(begin form1 form2)` in REPL mode: both forms are processed; the last form's result is displayed [R3 S11]
+- `begin_splicing_defmacro_in_begin` — A `(begin ...)` result containing a `(defmacro ...)` sub-form: the inner defmacro is compiled and registered, subsequent sub-forms can use it [R3 S11]
+
+#### defmacro-in-results [R3 S11]
+- `defmacro_in_results_batch` — A macro expansion that produces `(begin (defn ...) (defmacro ...))` (e.g., `def` macro): both the defn and the nested defmacro are compiled and registered [R3 S11]
+- `defmacro_in_results_repl` — Same as above but at the REPL; subsequent REPL input can use the nested macro [R3 S11]
+- `def_macro_produces_defmacro_in_begin` — The `def` prelude macro expands to a `begin` containing both a `defn` and a `defmacro`; both are functional after expansion [R3 S11]
+
+#### REPL defmacro display (spec: repl/spec.md §11.3) [R3 S11]
+- `repl_defmacro_display_single_clause` — Defining a single-clause macro at the REPL displays `name :: macro` [R3 S11]
+- `repl_defmacro_display_multi_clause` — Defining a multi-clause macro at the REPL displays `name :: macro (N clauses)` [R3 S11]
+
+#### Error recovery [R3 S11]
+- `repl_failed_macro_compilation_no_corrupt` — A `defmacro` with a type error in its body produces an error message but does not corrupt the session; subsequent valid expressions still work [R3 S11]
+- `repl_failed_macro_expansion_no_corrupt` — A macro call that fails during expansion (e.g., arity mismatch) produces an error but does not corrupt the expander or typechecker state [R3 S11]
+
+#### Ring 3 gate errors removed [R3 S11]
+- `gate_quote_no_longer_errors` — `(quote foo)` no longer produces a Ring 3 gate error in the AST builder [R3 S11]
+- `gate_quasiquote_no_longer_errors` — `(quasiquote ...)` no longer produces a Ring 3 gate error [R3 S11]
+- `gate_unquote_no_longer_errors` — `(unquote ...)` inside a quasiquote no longer produces a Ring 3 gate error [R3 S11]
+- `gate_unquote_splicing_no_longer_errors` — `(unquote-splicing ...)` inside a quasiquote no longer produces a Ring 3 gate error [R3 S11]
+
+### Phase 6: SList Helpers + Prelude Macros (spec: 09-macros §9.7, §9.10, 11-stdlib)
+
+#### SList helpers (stdlib/core/syntax.cl) [R3 S11]
+- `slist_sfold_left_fold` — `(sfold f init slist)` performs left fold over an SList; `(sfold + 0 (slist 1 2 3))` yields `6` [R3 S11]
+- `slist_sreverse` — `(sreverse (slist 1 2 3))` produces an SList with elements in reverse order [R3 S11]
+- `slist_sconcat` — `(sconcat (slist 1 2) (slist 3 4))` produces an SList `(slist 1 2 3 4)` [R3 S11]
+- `slist_sempty_nil` — `(sempty? macros/SNil)` returns `true` [R3 S11]
+- `slist_sempty_cons` — `(sempty? (macros/SCons x macros/SNil))` returns `false` [R3 S11]
+- `slist_macro_builds_chain` — `(slist 1 2 3)` builds an SCons chain equivalent to `(SCons 1 (SCons 2 (SCons 3 SNil)))` [R3 S11]
+
+#### Prelude macro: list [R3 S11]
+- `prelude_list_empty` — `(list)` produces `Nil` (empty list) [R3 S11]
+- `prelude_list_single` — `(list 1)` produces `(Cons 1 Nil)` [R3 S11]
+- `prelude_list_multi` — `(list 1 2 3)` produces a three-element list [R3 S11]
+- `prelude_list_nested` — `(list (list 1 2) (list 3 4))` produces nested lists [R3 S11]
+
+#### Prelude macro: do [R3 S11]
+- `prelude_do_single` — `(do expr)` evaluates to `expr` [R3 S11]
+- `prelude_do_multi` — `(do expr1 expr2 expr3)` evaluates all expressions, returns last [R3 S11]
+
+#### Prelude macro: vec [R3 S11]
+- `prelude_vec_elements` — `(vec 1 2 3)` produces a Vec with three elements [R3 S11]
+- `prelude_vec_empty` — `(vec)` produces an empty Vec [R3 S11]
+
+#### Prelude macro: cond [R3 S11]
+- `prelude_cond_first_match` — `(cond true "yes" "no")` returns `"yes"` [R3 S11]
+- `prelude_cond_second_match` — `(cond false "a" true "b" "c")` returns `"b"` [R3 S11]
+- `prelude_cond_default` — `(cond false "a" false "b" "default")` returns `"default"` [R3 S11]
+- `prelude_cond_with_comparison` — `(cond (> x 0) "pos" (= x 0) "zero" "neg")` works with expressions [R3 S11]
+
+#### Prelude macro: case [R3 S11]
+- `prelude_case_first_match` — `(case x Color.Red "red" Color.Green "green" "other")` matches first branch [R3 S11]
+- `prelude_case_second_match` — case matches second branch when first fails [R3 S11]
+- `prelude_case_default` — case falls through to default [R3 S11]
+
+#### Prelude macro: -> (thread-first) [R3 S11]
+- `prelude_thread_first_single` — `(-> x f)` expands to `(f x)` [R3 S11]
+- `prelude_thread_first_multi` — `(-> x f g h)` threads through multiple forms [R3 S11]
+- `prelude_thread_first_list_form` — `(-> x (f a) (g b))` threads as first arg in list forms [R3 S11]
+- `prelude_thread_first_bare_symbol` — `(-> x f)` where `f` is a bare symbol treats it as `(f x)` [R3 S11]
+
+#### Prelude macro: ->> (thread-last) [R3 S11]
+- `prelude_thread_last_single` — `(->> x f)` expands to `(f x)` [R3 S11]
+- `prelude_thread_last_multi` — `(->> x f g h)` threads through multiple forms [R3 S11]
+- `prelude_thread_last_list_form` — `(->> x (f a) (g b))` threads as last arg in list forms [R3 S11]
+
+#### Prelude macro: str [R3 S11]
+- `prelude_str_empty` — `(str)` produces `""` [R3 S11]
+- `prelude_str_single` — `(str "hello")` produces `"hello"` [R3 S11]
+- `prelude_str_multi` — `(str "hello" " " "world")` concatenates strings [R3 S11]
+
+#### Prelude macro: when [R3 S11]
+- `prelude_when_true` — `(when true expr)` evaluates and returns `expr` [R3 S11]
+- `prelude_when_false` — `(when false expr)` returns `None` (or unit equivalent) [R3 S11]
+
+#### Prelude macro: const / const- [R3 S11]
+- `prelude_const_int` — `(const PI 3)` defines a macro that expands to `3` [R3 S11]
+- `prelude_const_float` — `(const TAU 6.28)` defines a float constant [R3 S11]
+- `prelude_const_string` — `(const GREETING "hello")` defines a string constant [R3 S11]
+- `prelude_const_private` — `(const- internal 42)` defines a private constant (not exported) [R3 S11]
+- `prelude_const_bare_expansion` — After `(const X 42)`, bare `X` expands to `42` [R3 S11]
+
+#### Prelude macro: def / def- [R3 S11]
+- `prelude_def_basic` — `(def foo 42)` defines a zero-arg function and a bare-symbol macro; `(foo)` and bare `foo` both yield `42` [R3 S11]
+- `prelude_def_expression` — `(def bar (+ 1 2))` captures expression result; `bar` evaluates to `3` [R3 S11]
+- `prelude_def_got_call` — `(def baz (some-fn 1))` — the function is called once at definition time and the result is cached via GOT [R3 S11]
+- `prelude_def_private` — `(def- internal 42)` defines a private def (not exported) [R3 S11]
+
+### Phase 7: REPL Polish + New Commands (spec: repl/spec.md §3.3-3.4, §11)
+
+#### /expand command (spec: repl/spec.md §11.1) [R3 S11]
+- `repl_expand_single_macro` — `/expand (macro-name arg)` shows the expanded form without evaluating [R3 S11]
+- `repl_expand_nested_macros` — `/expand` with nested macro calls shows fully expanded form (recursive to fixed point) [R3 S11]
+- `repl_expand_no_macro` — `/expand (+ 1 2)` on a non-macro form displays the input unchanged [R3 S11]
+- `repl_expand_error_no_corrupt` — `/expand` on a form with expansion error (e.g., arity mismatch) displays error without corrupting session [R3 S11]
+- `repl_expand_alias` — `/e (macro-name arg)` works as alias for `/expand` [R3 S11]
+
+#### /imports command (spec: repl/spec.md §3.4) [R3 S11]
+- `repl_imports_shows_grouped` — `/imports` shows all imports grouped by source module with type signatures [R3 S11]
+- `repl_imports_alphabetical_names` — Names within each source module group are sorted alphabetically [R3 S11]
+- `repl_imports_alphabetical_modules` — Source module groups are sorted alphabetically [R3 S11]
+- `repl_imports_shows_individual_names_from_glob` — After `(import [mod [*]])`, `/imports` shows the individual names that were imported, not just `*` [R3 S11]
+- `repl_imports_immediate_source` — For re-exported names, `/imports` shows the immediate source module (the module in the import form), not the ultimate origin [R3 S11]
+- `repl_imports_filter_by_module` — `/imports prelude` filters to show only names imported from `prelude` [R3 S11]
+- `repl_imports_implicit_prelude_visible` — The implicit `(import [prelude [*]])` IS visible in `/imports` output [R3 S11]
+- `repl_imports_no_imports_empty` — In a fresh session with no imports and no prelude, `/imports` shows empty output (silent re-prompt, not error) [R3 S11]
+- `repl_imports_nonexistent_module` — `/imports nonexistent` shows empty output (silent re-prompt, not error) [R3 S11]
+
+#### /list Macros category (spec: repl/spec.md §11.2.1, §3.3) [R3 S11]
+- `repl_list_macros_category_present` — After defining a macro, `/list` includes a "Macros" category listing the macro name [R3 S11]
+- `repl_list_macros_multiple` — Multiple defined macros all appear under the Macros category [R3 S11]
+- `repl_list_macros_prelude` — Prelude macros (e.g., `list`, `cond`) appear under Macros category after prelude loading [R3 S11]
+
+#### /list Imports category (spec: repl/spec.md §3.3) [R3 S11]
+- `repl_list_imports_summary` — After importing, the Imports category shows a count of imported names per source module [R3 S11]
+- `repl_list_imports_small_inline` — For small imports (<=5 names), the names are listed inline after the count [R3 S11]
+- `repl_list_imports_large_count_only` — For large imports (>5 names), only the count is shown [R3 S11]
+
+#### Macro introspection (spec: repl/spec.md §11.2.2-11.2.4, §11.4) [R3 S11]
+- `repl_info_macro_single_clause` — `/info name` for a single-clause macro shows `name :: macro` [R3 S11]
+- `repl_info_macro_multi_clause` — `/info name` for a multi-clause macro shows `name :: macro (N clauses)` and clause count [R3 S11]
+- `repl_info_macro_docstring` — `/info name` for a macro with a docstring shows the docstring [R3 S11]
+- `repl_sig_macro_variadic` — `/sig name` for a variadic macro shows parameter signature with `& rest` [R3 S11]
+- `repl_sig_macro_bracket` — `/sig name` for a bracket-destructuring macro shows bracket notation in signature [R3 S11]
+- `repl_sig_macro_multi_clause` — `/sig name` for a multi-clause macro shows each clause's parameter list [R3 S11]
+- `repl_doc_macro_present` — `/doc name` for a macro with docstring shows the docstring [R3 S11]
+- `repl_doc_macro_absent` — `/doc name` for a macro without docstring shows "no docstring" message [R3 S11]
+- `repl_bare_macro_lookup` — Entering a macro name bare (non-zero-arg) displays clause signatures per self-documentation contract [R3 S11]
+
+#### List value display (spec: repl/spec.md §1.5) [R3 S11]
+- `repl_list_value_display` — `(list 1 2 3)` displays as `:... (list 1 2 3)` using the `(list ...)` format [R3 S11]
+- `repl_list_value_display_empty` — `List.Nil` displays as `List.Nil` (nullary constructor notation) [R3 S11]
+- `repl_list_value_display_nested` — Nested lists display recursively in `(list ...)` format [R3 S11]
+
+#### Overloaded fn display (spec: repl/spec.md §1.3) [R3 S11]
+- `repl_overloaded_fn_shows_all_variants` — Defining an overloaded function shows all variant signatures [R3 S11]
+
+### Sprint 10 Deferred Items (spec: 09-macros)
+
+#### Edge-case test gaps [R3 S11]
+- `expander_depth_limit_error_message` — Self-expanding macro hits depth limit; error message names the macro and the iteration count [R3 S11]
+- `marshal_rc_inc_direct` — Direct test of `rc_inc` on marshalled Sexp values (verify no double-free or leak) [R3 S11]
+- `defmacro_malformed_missing_name` — `(defmacro)` with no name produces a clear parse error [R3 S11]
+- `defmacro_malformed_missing_params` — `(defmacro foo body)` with no param bracket produces a clear parse error [R3 S11]
+- `defmacro_malformed_bad_return_type` — `(defmacro bad [] 42)` produces compile error: body type Int, expected Sexp [R3 S11]
+
+### Negative Test Audit: Rings 0-2 Existing Features (Sprint 11, Wave 2)
+
+These tests run against the CURRENT codebase BEFORE Ring 3 changes land. They verify what MUST NOT happen for existing REPL features, surfacing hidden defects early.
+
+#### /list scope boundaries (spec: repl/spec.md §3.3 negative requirements) [R3 S11]
+- `list_neg_no_primitives_in_functions` — `/list` Functions category MUST NOT contain primitives (`add-i64`, `mul-i64`, `eq-i64`, etc.) when current module is `user` [R3 S11]
+- `list_neg_no_imported_names_in_functions` — `/list` Functions category MUST NOT contain imported names (trait methods like `+`, `show`) — they belong in Imports [R3 S11]
+- `list_neg_no_primitives_types_in_types` — `/list` Types category MUST NOT contain types from `primitives` module (`Int`, `Bool`, `Float`, `String`) [R3 S11]
+- `list_neg_fresh_session_special_forms_only` — Fresh `user` session with no definitions: `/list` MUST show ONLY Special forms (no Functions, no Types, no Traits) [R3 S11]
+- `list_neg_defn_adds_functions_not_primitives` — After `(defn foo [x] x)`: Functions category appears with `foo`, but primitives still absent from Functions [R3 S11]
+- `list_neg_constructors_not_in_functions` — After `(deftype Color Red Green Blue)`: constructors `Red`, `Green`, `Blue` MUST NOT appear in Functions category (they belong to their type) [R3 S11]
+- `list_neg_no_item_in_two_categories` — No item appears in two different `/list` categories simultaneously [R3 S11]
+
+#### Expression/definition display negatives (spec: repl/spec.md §1.2-1.3) [R3 S11]
+- `display_neg_defn_not_closure` — `(defn foo [x] x)` MUST NOT display `<closure>` — must show qualified name `user/foo` [R3 S11]
+- `display_neg_type_always_qualified` — Named function result MUST NOT show bare unqualified type (`Int` alone); must show `primitives/Int` [R3 S11]
+- `display_neg_type_vars_normalized` — Type variables MUST NOT show internal names (`t0`, `t1`, `_t42`) — must be normalized to `a`, `b`, `c` [R3 S11]
+- `display_neg_deftype_not_function` — `(deftype Color Red Green Blue)` MUST NOT show function-like type — must show `:user/Color` [R3 S11]
+
+#### Error boundary negatives (spec: repl/spec.md §5.2) [R3 S11]
+- `error_neg_type_error_no_corrupt_next` — After a type error, next valid expression MUST NOT be affected by failed type state [R3 S11]
+- `error_neg_parse_error_preserves_definitions` — After a parse error, previously defined functions MUST still be callable [R3 S11]
+- `error_neg_failed_defn_no_partial_binding` — Failed `defn` (e.g., type error in body) MUST NOT leave a partial binding in scope [R3 S11]
+
+#### Module resolution negatives (spec: repl/spec.md §4.1) [R3 S11]
+- `module_neg_unimported_primitive_unbound` — Entering a name that exists in `primitives` but not `user` (e.g., `add-i64` without import) MUST produce "unbound" error, not silently resolve [R3 S11]
+
+### Negative Tests: Ring 3 New Features (Sprint 11, Wave 4)
+
+These verify what MUST NOT happen for Ring 3-specific features.
+
+#### /imports empty and boundary cases [R3 S11]
+- `imports_neg_no_imports_not_error` — `/imports` with no imports produces empty output (silent re-prompt), NOT an error message [R3 S11]
+- `imports_neg_nonexistent_module_not_error` — `/imports nonexistent` produces empty output, NOT an error message [R3 S11]
+
+#### Macro category boundaries [R3 S11]
+- `list_neg_non_macros_absent_from_macros` — `/list` Macros category MUST NOT contain functions, types, or other non-macro definitions [R3 S11]
+- `list_neg_macros_absent_from_functions` — `/list` Functions category MUST NOT contain macro names [R3 S11]
+- `macro_neg_zero_arg_expands_not_introspects` — A zero-argument macro entered bare MUST expand (not display introspection); introspection is for non-zero-arg macros [R3 S11]
+
+#### /expand boundary cases [R3 S11]
+- `expand_neg_non_macro_unchanged` — `/expand (+ 1 2)` on a non-macro form MUST display the input unchanged, NOT an error [R3 S11]
+- `expand_neg_error_no_corrupt` — `/expand` on a malformed macro call MUST display an error WITHOUT corrupting session state [R3 S11]
+
+#### Malformed macro errors [R3 S11]
+- `macro_neg_malformed_no_crash` — A malformed macro call (wrong arity, wrong arg types) MUST produce a clear error message, NOT a crash or panic [R3 S11]
+- `macro_neg_expansion_limit_clear_error` — A self-recursive macro that exceeds the expansion depth limit MUST produce a clear error naming the macro, NOT an infinite loop [R3 S11]
+- `macro_neg_bad_return_type_compile_error` — A macro body that returns `Int` instead of `Sexp` MUST produce a compile-time type error [R3 S11]
+
 ## New Tests
 
 - Macro expansion depth limit (verify error, not infinite loop)
 - Macro error reporting (error span points to call site, not macro body)
 - Prelude completeness (every prelude export is reachable via import)
-- `lib/core/*.cl` modules all compile without errors
+- `stdlib/core/*.cl` modules all compile without errors
 - Macro + RC interaction (macro-generated code with heap types has balanced RC)
 
 ## Acceptance Gate
 
-- `lib/prelude.cl` compiles fully
+- `stdlib/prelude.cl` compiles fully
 - All prelude macros expand correctly
 - Standard library functions pass unit tests
 - All Ring 0–2 tests still pass (regression)

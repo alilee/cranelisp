@@ -381,11 +381,11 @@ No new files. Macro clause compilation uses the existing `compile_defn` / `compi
 
 No new files. Marshal code in the binary crate calls existing `heap_alloc` and string allocation functions.
 
-### Standard library (`lib/`)
+### Standard library (`stdlib/`)
 
 | File | Purpose | Approx. lines |
 |---|---|---|
-| `lib/core/syntax.cl` | SList helpers (`sfold`, `sreverse`, `sconcat`, `sempty?`, `slist`), prelude macros (`list`, `do`, `bind!`, `cond`, `case`, `->`, `->>`, `vec`, `str`, `const`, `def`, `when`) | ~150 |
+| `stdlib/core/syntax.cl` | SList helpers (`sfold`, `sreverse`, `sconcat`, `sempty?`, `slist`), prelude macros (`list`, `do`, `bind!`, `cond`, `case`, `->`, `->>`, `vec`, `str`, `const`, `def`, `when`) | ~150 |
 
 ### Test files (`tests/`)
 

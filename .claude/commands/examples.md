@@ -53,6 +53,7 @@ Proposed sequence (to be finalized in `examples/CLAUDE.md`):
 2. **Gate by ring.** Each example is tagged with its required ring in the table above. Only create examples for features that are implemented and working in the current ring. Do not write examples for features that are planned but not yet available.
 3. **Verify on every sprint.** At the start and end of every sprint, run all examples. If any fail due to compiler changes, either fix the example or file a FIXME to the skill that broke it. Zero broken examples is a hard gate.
 4. **Test mode required.** Every example defines a `main` function returning an Int. The return value is a sum of test results (1 for pass, 0 for fail). This makes examples verifiable: a non-zero result means all sub-tests passed.
+5. **Free-standing.** Examples MUST NOT depend on `stdlib/`. They define any needed helpers inline using compiler primitives and special forms. This ensures examples validate the language itself, not the standard library. Only the exemplar (`exemplar/`) may depend on the standard library.
 
 **If a feature isn't available in batch mode yet, the example for that feature doesn't exist yet.** Don't write aspirational examples — write examples that work today.
 

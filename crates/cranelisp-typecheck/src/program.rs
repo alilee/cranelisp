@@ -722,10 +722,69 @@ impl TypeChecker {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use cranelisp_types::{Expr, ReplInput, TypeName, Visibility};
+    use cranelisp_types::{
+        Expr, ReplInput, TraitDecl, TraitImpl, TraitMethodSig, TraitName, TypeExpr,
+        TypeName, Visibility,
+    };
 
     fn span(start: u32, end: u32) -> Span {
         Span::new(start, end)
+    }
+
+    /// Register a minimal Num trait with `+` method, plus an impl for Int,
+    /// so tests using `(+ x y)` work after Decision 17 elimination.
+    fn register_num_trait_inline(tc: &mut TypeChecker) {
+        let num_decl = TraitDecl {
+            name: TraitName::from("Num"),
+            docstring: None,
+            type_params: vec![Symbol::from("a")],
+            methods: vec![TraitMethodSig {
+                name: Symbol::from("+"),
+                docstring: None,
+                params: vec![
+                    TypeExpr::TypeVar(Symbol::from("a")),
+                    TypeExpr::TypeVar(Symbol::from("a")),
+                ],
+                ret_type: TypeExpr::TypeVar(Symbol::from("a")),
+                span: Span::SYNTHETIC,
+                hkt_param_index: None,
+                default_param_names: vec![Symbol::from("lhs"), Symbol::from("rhs")],
+                default_body: None,
+            }],
+            visibility: Visibility::Public,
+            span: Span::SYNTHETIC,
+        };
+        tc.register_trait_decl(&num_decl).unwrap();
+
+        // impl Num for Int: + → add-i64
+        let impl_ = TraitImpl {
+            trait_name: TraitName::from("Num"),
+            target_type: TypeName::from("Int"),
+            type_args: vec![],
+            type_constraints: vec![],
+            methods: vec![Defn {
+                name: Symbol::from("+"),
+                docstring: None,
+                params: vec![Symbol::from("x"), Symbol::from("y")],
+                param_annotations: vec![None, None],
+                body: Expr::Apply {
+                    callee: Box::new(Expr::Var {
+                        name: Symbol::from("add-i64"),
+                        span: Span::SYNTHETIC,
+                    }),
+                    args: vec![
+                        Expr::Var { name: Symbol::from("x"), span: Span::SYNTHETIC },
+                        Expr::Var { name: Symbol::from("y"), span: Span::SYNTHETIC },
+                    ],
+                    span: Span::SYNTHETIC,
+                },
+                visibility: Visibility::Public,
+                span: Span::SYNTHETIC,
+            }],
+            span: Span::SYNTHETIC,
+        };
+        tc.register_trait_impl(&impl_).unwrap();
+        tc.clear_transient_state();
     }
 
     // spec: 05-definitions §5.1 — defn registers function with inferred type
@@ -1582,6 +1641,7 @@ mod tests {
     #[test]
     fn test_batch_monomorphise_generates_mono_defn() {
         let mut tc = TypeChecker::new();
+        register_num_trait_inline(&mut tc);
         // Program: (defn add [x y] (+ x y))  -- constrained via +
         //          (defn main [] (add 3 4))   -- concrete Int call site
         let program = vec![
@@ -1661,6 +1721,7 @@ mod tests {
     #[test]
     fn test_batch_constrained_fn_alone_detected() {
         let mut tc = TypeChecker::new();
+        register_num_trait_inline(&mut tc);
         // (defn add [x y] (+ x y))  -- alone, no callers; should be constrained
         let program = vec![TopLevel::Defn(Defn {
             name: Symbol::from("add"),
@@ -1710,6 +1771,7 @@ mod tests {
     #[test]
     fn test_repl_expr_monomorphise() {
         let mut tc = TypeChecker::new();
+        register_num_trait_inline(&mut tc);
 
         // First, define a constrained fn: (defn add [x y] (+ x y))
         let defn_input = ReplInput::Defn(Defn {
@@ -1762,6 +1824,7 @@ mod tests {
     #[test]
     fn test_repl_defn_body_monomorphise() {
         let mut tc = TypeChecker::new();
+        register_num_trait_inline(&mut tc);
 
         // Define a constrained fn: (defn add [x y] (+ x y))
         let defn_input = ReplInput::Defn(Defn {

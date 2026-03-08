@@ -224,10 +224,11 @@ impl TypeChecker {
             {
                 // Trait method resolution (Ring 2): operators like +, -, =, <
                 self.method_resolutions.insert(span, resolution);
-            } else if self.is_primitive(name) {
-                // Named primitive resolution (Ring 0-1): add-i64, str-concat, etc.
+            } else if let Some(jit_name) = self.resolve_primitive_jit_name(name) {
+                // Named primitive resolution (Ring 0-3): add-i64, str-concat,
+                // macros/sconcat, quote-sexp, etc.
                 self.method_resolutions
-                    .insert(span, ResolvedCall::BuiltinFn { name: name.clone() });
+                    .insert(span, ResolvedCall::BuiltinFn { name: jit_name });
             }
         }
 
@@ -236,16 +237,47 @@ impl TypeChecker {
         Ok(resolved)
     }
 
-    /// Check whether a name refers to a `DefKind::Primitive` in the symbol table.
-    /// Follows Import/Reexport chains so that primitives are found in non-"user"
-    /// modules where builtins are stored as `ModuleEntry::Import`.
-    fn is_primitive(&self, name: &str) -> bool {
-        use cranelisp_types::DefKind;
-        matches!(
-            self.resolve_entry_in_current_module(name),
-            Some(cranelisp_types::ModuleEntry::Def { kind, .. })
-                if matches!(kind.as_ref(), DefKind::Primitive { .. })
-        )
+    /// Resolve a name to its JIT-level primitive name, if it is a primitive.
+    ///
+    /// Handles both unqualified names (looked up in current module) and
+    /// qualified names like `macros/sconcat` (split on `/`, looked up in
+    /// the target module directly). Returns the bare JIT name (not qualified)
+    /// for `ResolvedCall::BuiltinFn`.
+    ///
+    /// This is needed because the quasiquote expander emits `macros/sconcat`
+    /// calls with the module prefix.
+    fn resolve_primitive_jit_name(&self, name: &str) -> Option<Symbol> {
+        use cranelisp_types::{DefKind, ModuleFullPath};
+
+        // Try qualified name: "module/name" -> look up in target module
+        if let Some(slash_pos) = name.find('/') {
+            let module_part = &name[..slash_pos];
+            let name_part = &name[slash_pos + 1..];
+            if !module_part.is_empty() && !name_part.is_empty() {
+                let module_path = ModuleFullPath::from(module_part);
+                if let Some(table) = self.modules.get(&module_path) {
+                    if let Some(entry) = table.get(name_part) {
+                        let terminal = self.resolve_to_terminal_entry(entry, 0)?;
+                        if let ModuleEntry::Def { kind, .. } = terminal {
+                            if matches!(kind.as_ref(), DefKind::Primitive { .. }) {
+                                // Return the bare name (JIT symbol), not the qualified form
+                                return Some(Symbol::from(name_part));
+                            }
+                        }
+                    }
+                }
+            }
+            return None;
+        }
+
+        // Unqualified name: resolve in current module
+        let entry = self.resolve_entry_in_current_module(name)?;
+        if let ModuleEntry::Def { kind, .. } = entry {
+            if matches!(kind.as_ref(), DefKind::Primitive { .. }) {
+                return Some(Symbol::from(name));
+            }
+        }
+        None
     }
 
     /// Post-inference pass: resolve trait method calls that couldn't be resolved
@@ -1965,5 +1997,79 @@ mod tests {
             tc.infer_expr(&expr).unwrap(),
             Type::ADT(TypeName::from("Vec"), vec![Type::Float])
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // resolve_primitive_jit_name tests (pipeline-orchestration §3)
+    // -----------------------------------------------------------------------
+
+    // spec: pipeline-orchestration §3 — unqualified primitive resolves to bare name
+    #[test]
+    fn test_resolve_primitive_unqualified() {
+        let tc = tc();
+        let result = tc.resolve_primitive_jit_name("add-i64");
+        assert_eq!(result.as_deref(), Some("add-i64"));
+    }
+
+    // spec: pipeline-orchestration §3 — non-primitive returns None
+    #[test]
+    fn test_resolve_primitive_non_primitive() {
+        let tc = tc();
+        let result = tc.resolve_primitive_jit_name("if");
+        // "if" is a SpecialForm, not a Primitive
+        assert!(result.is_none(), "special forms should not resolve as primitives");
+    }
+
+    // spec: pipeline-orchestration §3 — unknown name returns None
+    #[test]
+    fn test_resolve_primitive_unknown() {
+        let tc = tc();
+        let result = tc.resolve_primitive_jit_name("nonexistent");
+        assert!(result.is_none());
+    }
+
+    // spec: pipeline-orchestration §3 — qualified macros/sconcat resolves to bare "sconcat"
+    #[test]
+    fn test_resolve_primitive_qualified_sconcat() {
+        let tc = tc();
+        let result = tc.resolve_primitive_jit_name("macros/sconcat");
+        assert_eq!(
+            result.as_deref(),
+            Some("sconcat"),
+            "macros/sconcat should resolve to bare name 'sconcat'"
+        );
+    }
+
+    // spec: pipeline-orchestration §3 — qualified name for non-primitive returns None
+    #[test]
+    fn test_resolve_primitive_qualified_non_primitive() {
+        let tc = tc();
+        // macros/SNil is a Constructor, not a Primitive
+        let result = tc.resolve_primitive_jit_name("macros/SNil");
+        assert!(result.is_none(), "constructors should not resolve as primitives");
+    }
+
+    // spec: pipeline-orchestration §3 — qualified name in unknown module returns None
+    #[test]
+    fn test_resolve_primitive_qualified_unknown_module() {
+        let tc = tc();
+        let result = tc.resolve_primitive_jit_name("unknown/foo");
+        assert!(result.is_none());
+    }
+
+    // spec: pipeline-orchestration §3 — extern primitives resolve (str-concat)
+    #[test]
+    fn test_resolve_primitive_extern() {
+        let tc = tc();
+        let result = tc.resolve_primitive_jit_name("str-concat");
+        assert_eq!(result.as_deref(), Some("str-concat"));
+    }
+
+    // spec: pipeline-orchestration §3 — quote-sexp resolves as primitive
+    #[test]
+    fn test_resolve_primitive_quote_sexp() {
+        let tc = tc();
+        let result = tc.resolve_primitive_jit_name("quote-sexp");
+        assert_eq!(result.as_deref(), Some("quote-sexp"));
     }
 }

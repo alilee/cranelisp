@@ -231,6 +231,26 @@ pub fn ring1_primitives() -> Vec<PrimitiveDef> {
     ]
 }
 
+/// Ring 3 extern primitive definitions.
+///
+/// These are macro-infrastructure primitives that depend on the synthetic
+/// `Sexp` type from the `macros` module. They must be registered AFTER
+/// `register_macros_module()` populates the type definition for `Sexp`.
+///
+/// `quote-sexp` converts a runtime Sexp value into a quoted form suitable
+/// for splicing into macro output.
+pub fn ring3_primitives() -> Vec<PrimitiveDef> {
+    let sexp_type = Type::ADT(TypeName::from("Sexp"), vec![]);
+    vec![
+        PrimitiveDef {
+            name: Symbol::from("quote-sexp"),
+            ty: Type::Fn(vec![sexp_type.clone()], Box::new(sexp_type)),
+            cranelift_op: "quote-sexp",
+            param_names: vec![Symbol::from("sexp")],
+        },
+    ]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -402,5 +422,26 @@ mod tests {
                 p.name
             );
         }
+    }
+
+    // spec: appendix-a-builtins §A.4 — ring3 primitives count
+    #[test]
+    fn test_ring3_primitive_count() {
+        let prims = ring3_primitives();
+        assert_eq!(prims.len(), 1, "Ring 3 should define exactly 1 primitive (quote-sexp)");
+    }
+
+    // spec: appendix-a-builtins §A.4 — quote-sexp type is (Fn [Sexp] Sexp)
+    #[test]
+    fn test_quote_sexp_type() {
+        let prims = ring3_primitives();
+        let qs = prims.iter().find(|p| p.name.as_ref() == "quote-sexp").unwrap();
+        let sexp_type = Type::ADT(TypeName::from("Sexp"), vec![]);
+        assert_eq!(
+            qs.ty,
+            Type::Fn(vec![sexp_type.clone()], Box::new(sexp_type)),
+            "quote-sexp: (Fn [Sexp] Sexp)"
+        );
+        assert_eq!(qs.cranelift_op, "quote-sexp");
     }
 }

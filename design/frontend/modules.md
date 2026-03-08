@@ -1,3 +1,6 @@
+<!-- FIXME(/frontend): lib/ renamed to stdlib/ (Sprint 11). §2.1 reference updated.
+     Please review. -->
+
 # Module System Design
 
 Solution design for the Cranelisp module system as implemented in Ring 2. This document is the authoritative design reference for Ring 3 and later implementers who need to understand how modules work -- particularly for macro system integration (the `macros` synthetic module, cross-module macro exports, and module-aware compilation).
@@ -141,7 +144,7 @@ Implemented in `src/pipeline.rs`.
 Entry point for multi-file compilation. Starting from the entry file:
 
 1. Canonicalizes the entry path, derives the project root (parent directory).
-2. Checks for a `lib/` subdirectory in the project root.
+2. Checks for a `stdlib/` subdirectory in the project root.
 3. Recursively discovers modules via `discover_module_recursive`.
 4. Returns a `ModuleGraph` containing all `ModuleNode`s and the entry path.
 

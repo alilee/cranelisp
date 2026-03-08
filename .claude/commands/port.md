@@ -22,7 +22,7 @@ The exemplar project must exercise all major language features and produce a res
 4. **Traits**: Should use trait dispatch (Display at minimum, ideally Eq/Ord as well)
 5. **Higher-order functions**: Should use map/filter/fold, closures, function composition
 6. **Multiple modules**: At least 3–5 modules with clear responsibilities
-7. **Testable**: Should have its own test suite using `lib/testing.cl`
+7. **Testable**: Should have its own test suite using `stdlib/testing.cl`
 8. **Self-contained**: No external dependencies beyond the standard library and standard platforms
 9. **Familiar domain**: The problem should be understandable without domain expertise
 
@@ -46,12 +46,12 @@ Candidate categories (to be decided with user input):
 1. Read `spec/` — understand the full language surface: types, expressions, ADTs, traits, macros, modules, IO
 2. Read `sketch/examples/` — understand what existing examples cover and where the gaps are
 3. Read `spec/10-io.md` and `spec/08-modules.md` — understand IO and module capabilities
-4. Read `sketch/lib/` — understand what the standard library provides (this is what `lib/` will rebuild)
+4. Read `sketch/lib/` — understand what the standard library provides (this is what `stdlib/` will rebuild)
 5. Evaluate candidate projects against selection criteria. For each candidate, sketch:
    - What ADTs and traits it needs
    - What IO operations it requires (which platform capabilities)
    - How it decomposes into modules
-   - What stdlib functions it depends on (gap analysis against `sketch/lib/`)
+   - What stdlib functions it depends on (gap analysis against `sketch/lib/` / `stdlib/plan-stdlib.md`)
 6. Propose 2–3 candidates to the user with rationale, tradeoffs, and feature coverage matrix
 7. Once selected, write `design/exemplar-design.md`:
    - Project description and goals
@@ -84,6 +84,6 @@ The exemplar project is successful when:
 ## Key References
 
 - `spec/` — language specification (what features are available)
-- `lib/` — standard library (what functions are available)
+- `stdlib/` — standard library (what functions are available)
 - `sketch/examples/` — prototype examples (for style reference)
 - `design/arch/roadmap.md` — ring progression (when features become available)

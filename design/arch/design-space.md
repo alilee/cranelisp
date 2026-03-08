@@ -582,6 +582,189 @@ This validates the architectural decision to not require persistent data structu
 
 No immediate architectural changes are required. The current design is forward-compatible.
 
+### 15. ANF with Defunctionalized Continuations (Stack-Safe General Recursion)
+
+Cranelisp currently provides only self-recursive tail call optimization (loop-header pattern in Cranelift). This handles accumulator-style recursion (`fact-acc`, `fold`) but leaves structurally recursive algorithms (tree traversals, divide-and-conquer) relying on the system call stack. A user writing `(defn depth [t] (match t [(Leaf _) 1] [(Node l r) (+ 1 (max (depth l) (depth r)))]))` has implicit stack usage at every non-tail recursive call.
+
+**The problem space:**
+
+With first-class functions + TCO, any recursion is *expressible* via manual continuation-passing style (CPS) — the user threads a continuation through every call. But forcing users to write CPS is antithetical to the language's design. The question is whether and how the compiler could automate this.
+
+**Three approaches, from lightest to heaviest:**
+
+| Approach | Transform | Output | Type complexity | Cranelisp fit |
+|----------|-----------|--------|----------------|---------------|
+| **CPS transform** | Every function gets extra `k` parameter | All tail calls; "stack" is closure chain on heap | Polymorphic answer type `R` is fiddly in HM | Medium — closure chain = heap pressure |
+| **ANF (naming intermediates)** | Every non-trivial sub-expression gets a `let` binding | Explicit evaluation order; NOT stack-safe by itself | None — trivial | Good as IR but insufficient alone |
+| **ANF + defunctionalized continuations** | CPS transform, then replace continuation closures with ADT constructors | All tail calls; "stack" is a linked list of ADT frames on heap | Monomorphic per-function Kont type | **Best fit** — uses existing ADTs + TCO |
+
+**How defunctionalized continuations work in Cranelisp's setting:**
+
+The compiler internally generates a `Kont` ADT per function (or per SCC for mutual recursion), reifying each continuation point as a constructor:
+
+```clojure
+;; Source (user writes this):
+(defn depth [t]
+  (match t
+    [(Leaf _) 1]
+    [(Node l r) (+ 1 (max (depth l) (depth r)))]))
+
+;; Compiler-internal output (user never sees this):
+(deftype Kont
+  Done
+  (HaveLeft [:Kont k] [:Tree r])
+  (HaveRight [:Kont k] [:Int dl]))
+
+(defn depth [t] (depth-go t Done))
+
+(defn depth-go [t k]
+  (match t
+    [(Leaf _)   (apply-k k 1)]
+    [(Node l r) (depth-go l (HaveLeft k r))]))
+
+(defn apply-k [k val]
+  (match k
+    [Done             val]
+    [(HaveLeft k2 r)  (depth-go r (HaveRight k2 val))]
+    [(HaveRight k2 dl) (apply-k k2 (+ 1 (max dl val)))]))
+```
+
+`depth-go` and `apply-k` are mutually tail-recursive. The `Kont` linked list on the heap is morally the call stack, but managed by RC like any other ADT value. When `apply-k` matches `Done`, the entire `Kont` chain is freed through normal drop glue.
+
+**Why this fits Cranelisp particularly well:**
+
+1. **ADTs already exist.** The generated `Kont` type uses the same representation as user ADTs — same heap layout, same tag dispatch, same drop glue. No new runtime infrastructure.
+
+2. **Purity eliminates ordering constraints.** The ANF pass can freely reorder bindings since all expressions are pure. This gives the compiler maximum freedom during the transform.
+
+3. **Static types make `Kont` monomorphic.** Each function's continuation type is fully determined at compile time — no polymorphic answer-type headache that plagues CPS in HM systems. The `Kont` type for `depth` holds exactly `Tree` and `Int` values.
+
+4. **Mutual recursion maps to mutual TCO.** The output (`depth-go` / `apply-k`) is mutually tail-recursive. The current TCO infrastructure handles self-recursion; extending to mutual TCO within an SCC (strongly connected component) is an incremental change — both functions compile to a shared loop with a dispatch tag.
+
+5. **RC manages the "stack" lifetime.** Each `Kont` frame is heap-allocated with RC. When the computation completes, frames are freed in reverse order through `apply-k`'s pattern matching. No separate stack deallocation mechanism needed.
+
+**Architectural implications:**
+
+- **Pipeline position**: The transform would sit between typechecking and codegen — it rewrites `CheckResult`'s AST and adds synthetic ADT types. The typechecker sees the original; the backend sees the transformed version. This preserves the `CheckResult` boundary contract.
+
+- **Selectivity**: The transform only fires for functions with non-tail recursive self-calls. Functions already in tail form pass through unchanged (principle 9: accretive). A simple walk identifies candidates: any `Apply` node targeting the current function where the `Apply` is not in tail position.
+
+- **Mutual recursion**: For SCCs, a combined `Kont` type covers frames from all functions in the SCC. The analysis is whole-SCC, not per-function. SCC detection is a standard graph algorithm on the call graph.
+
+- **Space behavior**: Naive defunctionalized CPS builds heap-allocated `Kont` chains proportional to recursion depth. For tree traversal of depth `d`, this is O(d) — same as a call stack. For pathological cases (e.g., processing a million-deep linked list), the heap pressure is real. Potential mitigations: detect linear recursion (single recursive call in tail-of-continuation) and optimize to iterative form; or use a flat Vec as a stack for the `Kont` frames instead of a linked list.
+
+- **Ring placement**: This is a Ring 4+ optimization. Rings 0-3 establish the language surface; the defunctionalization pass is an internal optimization that doesn't change semantics. Users who need stack safety before Ring 4 can write tail-recursive code manually (which is always possible in a pure language with ADTs).
+
+**What the architecture must preserve:**
+
+- `CheckResult + Program` must remain the boundary contract. The transform produces a new `Program` with additional `TypeDef` and `Defn` nodes — it does not change the contract shape.
+- Synthetic ADT types generated by the transform must not collide with user types. A naming convention (e.g., `__Kont_depth__`) or a synthetic module handles this.
+- Drop glue generation must handle `Kont` types correctly — they are ordinary ADTs with heap-typed fields.
+
+**Decision:** No action required now. The architecture is compatible. When implemented (Ring 4+), the transform is a pass between typecheck and codegen that rewrites AST nodes and generates synthetic ADT types. All existing infrastructure (ADT layout, drop glue, mutual TCO) supports it. The main design work is the transform itself — identifying continuation points, building the `Kont` type, and splitting functions into dispatch + apply.
+
+---
+
+### 16. AI-Integrated REPL (Claude as Conversational Partner)
+
+An alternative REPL model where the interactive session integrates an LLM (Claude) as a conversational partner alongside the language evaluator. The two share a single prompt — the dispatch rule determines which handles each input.
+
+**The dispatch rule:**
+
+```
+Input starts with ( or is a literal  →  language evaluator (as today)
+Anything else                        →  Claude (natural language)
+```
+
+Bare identifiers (`foo`) evaluate as today (symbol lookup). Natural language is distinguished syntactically — Cranelisp expressions always start with `(` or are literals/identifiers. A sentence like "how do I sum the leaves?" is unambiguously not a Cranelisp form.
+
+**Claude's context:**
+
+Each Claude turn receives a system prompt populated from the live session:
+
+- Current module name and import list
+- Signatures and docstrings of all visible bindings (from the `CompiledModule` symbol table)
+- A doc manifest showing which `.md` files exist and their coverage
+- Session notes (see Memory below)
+
+This reuses existing infrastructure: `ModuleEntry` already stores types, docstrings, and classification. The `/list` and `/sig` handlers already serialize this information — the AI context is the same data in a different format.
+
+**Tool interface:**
+
+Claude gets tools that operate on the live REPL session:
+
+| Tool | Effect | Maps to |
+|------|--------|---------|
+| `eval` | Evaluate a form, return result + type | `ReplSession::eval()` |
+| `type-of` | Return type without evaluating | `/type` handler |
+| `expand` | Macro-expand a form | `/expand` handler |
+| `define` | Add a binding to the session | `ReplSession::eval()` on a `defn` |
+| `read-doc` | Read a `.md` file | filesystem read |
+| `write-doc` | Create/overwrite a doc file | filesystem write |
+| `patch-doc` | Edit a section of a doc by heading | structured edit |
+| `list-docs` | List available doc files | filesystem scan |
+| `note` | Append to session memory | write to `.repl/session.md` |
+
+The key property: Claude doesn't just describe code — it executes it in the running environment and shows real results. Type errors feed back as tool results, enabling self-correction. The user sees the working version or a clear explanation of why it can't work.
+
+**Memory model (layered `.md` files):**
+
+| File | Scope | Content |
+|------|-------|---------|
+| `~/.repl/preferences.md` | Global, user-level | Style preferences, interaction patterns, documentation tone |
+| `project/.repl/context.md` | Project-level | Architecture decisions, naming conventions, domain knowledge |
+| `project/.repl/session.md` | Per-session, ephemeral | Working decisions, current focus, Claude's self-notes via `note` tool |
+
+All memory is plain markdown files the user owns, can read, hand-edit, and version control. No opaque database. Claude reads them in context and can write to them with tools, but the user has final authority.
+
+**Architectural implications for Cranelisp:**
+
+1. **No language changes required.** The AI integration is entirely in the binary crate's REPL implementation. The language evaluator, type system, and compilation pipeline are unchanged. Claude is a consumer of existing APIs (`ReplSession::eval`, symbol table queries), not a new pipeline stage.
+
+2. **`ReplSession` as the API surface.** The existing `ReplSession` struct provides everything Claude's tools need: `eval()` for execution, `tc` for type queries, `got_state` for symbol lookup. The AI integration layer wraps `ReplSession` rather than modifying it.
+
+3. **Context serialization reuses `/list` + `/sig` infrastructure.** The code that formats symbol information for `/list`, `/sig`, and `/info` already converts `ModuleEntry` data into human-readable strings. The AI context format is a superset — same data, formatted for an LLM system prompt instead of terminal output.
+
+4. **Offline graceful degradation.** When no API connection is available, the REPL works exactly as today — all expression evaluation is local. Only the natural-language path is unavailable. The language is never dependent on the AI service.
+
+5. **Doc tools are filesystem operations.** `read-doc`, `write-doc`, `patch-doc`, `list-docs` are thin wrappers around filesystem I/O. They don't interact with the compilation pipeline. The `patch-doc` tool needs a markdown-aware section editor (find heading, insert/replace content), but this is straightforward string manipulation.
+
+6. **Provenance transparency.** Claude's tool calls should be visible in the REPL output (e.g., `[eval: (sum-tree ...)]` → `Result: 6`) so the user always sees exactly what was executed. This aligns with the self-documentation principle — the REPL shows everything, hides nothing.
+
+**Interaction with existing design:**
+
+- **Platform model**: The AI integration is NOT a platform. Platforms provide IO effects for Cranelisp programs. The AI integration provides a conversational layer around the REPL — it doesn't execute as part of user programs.
+
+- **Module system**: Claude sees the same module structure the user sees. When the user switches modules (`/mod math`), Claude's context updates to show `math`'s bindings. Module privacy is respected — Claude cannot access private bindings any more than the user can.
+
+- **Macro system**: Claude can use `expand` to understand macro behavior, and `define` to create macros. The macro expansion pipeline is used as-is.
+
+**Ring placement:** Post-Ring 4. The AI integration depends on a fully functional REPL (all slash commands, module system, macros, IO). It is additive — no existing code changes, just a new dispatch layer in the binary crate's REPL loop.
+
+**Decision:** No architectural changes required. The existing `ReplSession` API, symbol table infrastructure, and slash command handlers provide the foundation. The AI integration is a binary-crate-only addition that wraps the existing REPL with a dispatch rule and tool interface. File as a post-Ring-4 enhancement.
+
+---
+
+## Part 2 Summary: Beyond-Ring Architectural Resilience
+
+| Direction | NFRs Affected | Architecture Resilient? | Key Constraint |
+|-----------|---------------|------------------------|----------------|
+| Three-mode compilation | C.5.3, C.5.4 | Yes | CheckResult + Program must be self-contained; FnCompiler must not call JIT APIs |
+| WASM/target portability | C.5.4, C.5.2 | Yes, with care | Pointer-width containment in emit helpers; runtime allocation abstraction |
+| Collection extensibility | C.2.1, C.2.2, C.2.4 | Yes | Trait system must support collection-level abstraction (HKT, multi-param traits) |
+| Concurrent channels | C.3.1, C.4.1, C.4.4 | Yes | Shared task-pool infrastructure with lenient evaluation; IO trampoline extensibility |
+| ANF + defunctionalized continuations | C.3.3 (TCO) | Yes | Transform between typecheck and codegen; synthetic ADTs use existing infrastructure |
+| AI-integrated REPL | None (additive) | Yes | `ReplSession` API is sufficient; binary-crate-only addition; offline graceful degradation |
+| Peer patterns | All | Validated | Representation containment (C.5.2) is the linchpin — it enables all future directions |
+
+**Overall assessment:** The 7-crate DAG, representation containment principle, extern-function pattern, platform system, and IO trampoline are resilient to all examined future directions. Two specific risks require attention:
+
+1. **Pointer-width conflation** (§11): Ring 1 emit helpers should distinguish pointer-width values from data-width values via documentation/comments, so a future wasm32 port is tractable without auditing every i64 usage.
+
+2. **FnCompiler portability** (§10): `FnCompiler` must produce Cranelift `Function` objects without reaching into `JITModule`. `/review` should enforce this boundary at each ring gate.
+
+No immediate architectural changes are required. The current design is forward-compatible.
+
 ## Cross-References
 
 - `spec/appendix-c-nfr.md` — The NFRs this document analyzes (including C.2.4, C.4.4, C.5.4 added alongside this analysis)

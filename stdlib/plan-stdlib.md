@@ -1,3 +1,25 @@
+<!-- FIXME(/stdlib): REMEDIATION REQUIRED (Sprint 11).
+
+     1. lib/ renamed to stdlib/ — all `lib/` references in this plan need updating to `stdlib/`.
+
+     2. stdlib/prelude.cl contradicts this plan. The plan (§3.2) specifies a modular tree:
+        - control.cl (cond, case, when)
+        - defs.cl (const, def)
+        - fn/threading.cl (->, ->>)
+        - fn/option.cl (Option type)
+        - collections/list.cl (List type)
+        But the actual prelude.cl is a monolith containing ALL of these — Option, List,
+        vec, when, const, do, cond, list, str, case, ->, ->>, def, bind! — with no module
+        structure. This happened because the Sprint 11 /stdlib task was "write prelude macros"
+        and the agent dumped everything into prelude.cl without creating the planned modules.
+
+     3. No trait definitions at all — the plan says Ring 2 prelude re-exports Eq, Ord, Num,
+        Display from domain modules. The current prelude has none of these.
+
+     4. Clarify stdlib separation invariant: tests and examples MUST NOT depend on stdlib/.
+        Only the exemplar and production binary may. Update the plan accordingly.
+     -->
+
 # Standard Library Plan
 
 Motivation, end-state design, and delivery strategy for the Cranelisp standard library.

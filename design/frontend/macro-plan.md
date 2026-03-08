@@ -1,3 +1,7 @@
+<!-- FIXME(/frontend): lib/ renamed to stdlib/ (Sprint 11). References to lib/core/syntax.cl
+     and lib/prelude.cl updated to stdlib/. Please review. Also: verify your skill definition
+     (.claude/commands/frontend.md) does not reference `lib/`. -->
+
 # Ring 3 Macro Implementation Plan
 
 Implementation plan for the Cranelisp macro system in the reimplementation. Covers 7 phases from synthetic module seeding through REPL polish. Implementation begins Sprint 10; this document is the Sprint 9 deliverable.
@@ -149,7 +153,7 @@ A global `AtomicU32` counter starting at 1,000,000 ensures synthetic spans never
 
 - Phase 1: Constructor names (`macros/SexpSym`, etc.) must be registered so the AST builder/typechecker can resolve them.
 - Reader: Already parses `` ` ``, `~`, `~@` into `(quasiquote ...)`, `(unquote ...)`, `(unquote-splicing ...)` forms (confirmed in `reader.rs`).
-- `sconcat`: The `~@` (unquote-splicing) operator generates calls to `sconcat`. This function must be available at expansion time. It lives in `lib/core/syntax.cl` and is re-exported through the prelude (spec Section 9.7.0).
+- `sconcat`: The `~@` (unquote-splicing) operator generates calls to `sconcat`. This function must be available at expansion time. It lives in `stdlib/core/syntax.cl` and is re-exported through the prelude (spec Section 9.7.0).
 
 ### Estimated Scope
 
@@ -371,7 +375,7 @@ for sexp in sexps {
 
 ### Two-Pass Prelude Loading (spec Section 9.12)
 
-The prelude (`lib/prelude.cl` and its submodules) is loaded with two passes:
+The prelude (`stdlib/prelude.cl` and its submodules) is loaded with two passes:
 
 **Pass 1 -- Type registration**: Scan all forms for `deftype`. Parse each to AST and register in the TypeChecker. This makes all constructors (including Sexp constructors from the `macros` module) available for use in macro bodies.
 
@@ -444,8 +448,8 @@ When a module imports a macro from another module:
 
 | File | Owner | Content |
 |------|-------|---------|
-| `lib/core/syntax.cl` | /stdlib | `sfold`, `sreverse`, `sconcat`, `sempty?`, `slist` macro, `make-def-name`, `quote-sexp` |
-| `lib/prelude.cl` | /stdlib | 10 prelude macros: `list`, `do`, `bind!`, `vec`, `cond`, `case`, `->`, `->>`, `str`, `when` |
+| `stdlib/core/syntax.cl` | /stdlib | `sfold`, `sreverse`, `sconcat`, `sempty?`, `slist` macro, `make-def-name`, `quote-sexp` |
+| `stdlib/prelude.cl` | /stdlib | 10 prelude macros: `list`, `do`, `bind!`, `vec`, `cond`, `case`, `->`, `->>`, `str`, `when` |
 
 ### SList Helpers (spec Section 9.7)
 

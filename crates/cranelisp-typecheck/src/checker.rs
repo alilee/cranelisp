@@ -104,9 +104,9 @@ impl TypeChecker {
         if !self.modules.contains_key(&path) {
             let mut table = SymbolTable::new(path.clone());
             // Seed new modules with imports from "user" module's builtins so
-            // that primitives (if, +, add-i64, etc.) are accessible everywhere.
-            // Also copies trait decls and trait methods that were registered in
-            // `primitives` and cloned into `user` by register_builtins.
+            // that primitives (if, add-i64, quote-sexp, etc.) are accessible
+            // everywhere. Also copies any trait decls and trait methods that
+            // were loaded from prelude .cl files into `user`.
             let user_path = ModuleFullPath::from("user");
             if let Some(user_table) = self.modules.get(&user_path) {
                 for (name, entry) in user_table.all_symbols() {
@@ -145,10 +145,33 @@ impl TypeChecker {
         &self.current_module
     }
 
+    /// Check whether a module has been registered.
+    pub fn has_module(&self, path: &ModuleFullPath) -> bool {
+        self.modules.contains_key(path)
+    }
+
     /// Convenience accessor for the current module's symbol table (public).
     /// Used by tests and external code that needs to inspect symbols.
     pub fn symbol_table(&self) -> &SymbolTable {
         self.current_symbol_table()
+    }
+
+    /// Mutable accessor for the current module's symbol table (public).
+    /// Used by the pipeline orchestrator to register macro entries.
+    pub fn symbol_table_mut(&mut self) -> &mut SymbolTable {
+        self.current_symbol_table_mut()
+    }
+
+    /// Public accessor for the type definition registry.
+    /// Used by prelude loading to copy type defs into the REPL session.
+    pub fn type_def_registry(&self) -> &TypeDefRegistry {
+        &self.type_defs
+    }
+
+    /// Look up a specific module's symbol table by path.
+    /// Used by `/imports` to resolve type signatures of imported symbols.
+    pub fn module_table(&self, path: &ModuleFullPath) -> Option<&SymbolTable> {
+        self.modules.get(path)
     }
 
     /// Look up the defining module for a symbol. Checks the `primitives` module
@@ -277,7 +300,7 @@ impl TypeChecker {
     }
 
     /// Follow Import/Reexport chains to the terminal `ModuleEntry`.
-    fn resolve_to_terminal_entry<'a>(
+    pub(crate) fn resolve_to_terminal_entry<'a>(
         &'a self,
         entry: &'a ModuleEntry,
         depth: usize,
@@ -447,11 +470,12 @@ impl TypeChecker {
     }
 
     /// Clear transient inference state (expr_types, method_resolutions,
-    /// active_constraints) accumulated during bootstrap type-checking.
+    /// active_constraints) accumulated during type-checking.
     ///
-    /// Called after core trait impl registration to prevent Span::SYNTHETIC
-    /// entries from leaking into user program checking. Does NOT clear `subst`
-    /// because unification results from bootstrap are harmless (all concrete).
+    /// Called after inline trait registration (e.g., from prelude loading or
+    /// test setup) to prevent stale entries from leaking into subsequent
+    /// program checking. Does NOT clear `subst` because unification results
+    /// from registration are harmless (all concrete).
     pub(crate) fn clear_transient_state(&mut self) {
         self.expr_types.clear();
         self.method_resolutions.clear();
@@ -629,8 +653,9 @@ impl TypeChecker {
     pub fn snapshot(&self) -> ReplSnapshot {
         ReplSnapshot {
             next_type_id: self.next_id,
-            symbol_count: self.current_symbol_table().symbols.len(),
+            symbol_keys: self.current_symbol_table().symbols.keys().cloned().collect(),
             subst_len: self.subst.len(),
+            scope_depth: self.env.depth(),
         }
     }
 
@@ -641,10 +666,12 @@ impl TypeChecker {
         self.expr_types.clear();
         self.method_resolutions.clear();
         self.warnings.clear();
-        // Symbol table entries added after snapshot are removed
-        // We track by count, but HashMap doesn't preserve order.
-        // For Ring 0, we accept this limitation -- full REPL restore
-        // is implemented in Wave 3 with proper tracking.
+        // Remove symbol table entries added after the snapshot was taken.
+        self.current_symbol_table_mut()
+            .symbols
+            .retain(|key, _| snapshot.symbol_keys.contains(key));
+        // Restore scope stack depth (pop frames left by failed check_defn_body).
+        self.env.truncate_to(snapshot.scope_depth);
     }
 
     // --- Known types lookup (for resolve_type_expr) ---
@@ -693,11 +720,26 @@ fn insert_imports_detecting_ambiguity(
                 ) => s1 == s2,
                 _ => false,
             };
-            if !is_same_source {
-                // Different sources: mark ambiguous
+            if is_same_source {
+                // Same source — skip silently (no overwrite needed).
+                continue;
+            }
+
+            // Both are Import entries from different sources: mark
+            // ambiguous (spec §8.6.4).
+            let both_imports = matches!(
+                (existing, &new_entry),
+                (ModuleEntry::Import { .. }, ModuleEntry::Import { .. })
+            );
+            if both_imports {
                 table.insert(name, ModuleEntry::Ambiguous);
                 continue;
             }
+
+            // Existing is a directly-defined entry (Def, TypeDef,
+            // Constructor, Macro, TraitDecl). It takes priority
+            // over an incoming Import — skip the new entry.
+            continue;
         }
         table.insert(name, new_entry);
     }
@@ -730,10 +772,12 @@ mod tests {
     #[test]
     fn test_builtins_in_user_module() {
         let tc = TypeChecker::new();
-        // Builtins should be accessible via the current symbol table
+        // Named primitives and special forms should be accessible
         assert!(tc.symbol_table().get("add-i64").is_some());
-        assert!(tc.symbol_table().get("+").is_some());
         assert!(tc.symbol_table().get("if").is_some());
+        assert!(tc.symbol_table().get("quote-sexp").is_some());
+        // Operators (+, =, etc.) are NOT registered at startup — they come from prelude
+        assert!(tc.symbol_table().get("+").is_none());
     }
 
     // spec: 08-modules §8.9 — new modules are seeded with builtin imports
@@ -744,8 +788,9 @@ mod tests {
         assert_eq!(tc.current_module_path().as_ref(), "math");
         // New modules are seeded with builtin imports from "user"
         assert!(tc.symbol_table().get("add-i64").is_some());
-        assert!(tc.symbol_table().get("+").is_some());
         assert!(tc.symbol_table().get("if").is_some());
+        // Operators come from prelude, NOT compiler builtins
+        assert!(tc.symbol_table().get("+").is_none());
         // User-defined names are NOT copied
         assert!(tc.symbol_table().get("user-only").is_none());
     }

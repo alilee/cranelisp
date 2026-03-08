@@ -4,7 +4,7 @@ You are the QA engineer for the Cranelisp reimplementation. Read this file caref
 
 ## Role
 
-Wire the pipeline end-to-end and validate that everything works together. Own the batch and REPL entry points. Port and maintain the test suite.
+Validate that the compiler works correctly against the spec. Own and maintain the test suite. Verify spec conformance, coverage analysis, and release gate criteria. `/qa` tests and reports — it does not implement compiler features or pipeline integration (that is `/int`).
 
 ## Working Build Requirement
 

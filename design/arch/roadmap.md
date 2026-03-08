@@ -38,11 +38,6 @@ For the full reimplementation strategy, skill definitions, and risk analysis, se
 
 <!-- Ring 0 REPL spec non-conformance — 12/12 FIXED (Sprints 4-9). RESOLVED. -->
 
-<!-- FIXME(/backend): U1.1 — Missing string primitives for stdlib text/string.cl.
-     11 additional operations needed: substring, char-at, split, join, replace, trim,
-     starts-with?, ends-with?, contains?, to-upper, to-lower. Straightforward extern
-     primitives wrapping Rust str methods. Source: /stdlib. Severity: important. -->
-
 ## Ring 1: Heap
 
 **Property**: Strings, ADTs with fields, closures, reference counting. Heap management established as a clean layer over Ring 0.
@@ -100,7 +95,7 @@ For the full reimplementation strategy, skill definitions, and risk analysis, se
 | Skill | Deliverables | Depends On |
 |---|---|---|
 | `/frontend` | Full macro system: `MacroExpander` implementation (mini-pipeline: parse -> typecheck -> compile -> execute), multi-clause `defmacro`, bracket destructuring, quasiquote | Ring 2 |
-| `/stdlib` | Complete prelude using macros (`list`, `do`, `bind!`, `vec`, `cond`, `case`, threading macros), all `lib/core/` modules | Ring 3 `/frontend` |
+| `/stdlib` | Complete prelude using macros (`list`, `do`, `bind!`, `vec`, `cond`, `case`, threading macros), all `stdlib/core/` modules | Ring 3 `/frontend` |
 | `/qa` | Macro integration tests, prelude tests, standard library tests | Ring 3 compiler |
 | `/docs` | Language guide (feature-by-feature reference) | Ring 3 `/stdlib` |
 | `/repl` | Macro expansion viewing (`/expand`), prelude discoverability, full `/list` taxonomy | Ring 3 compiler |
@@ -113,7 +108,7 @@ For the full reimplementation strategy, skill definitions, and risk analysis, se
 - `(list 1 2 3)` expands to nested `Cons`/`Nil`
 - `(do (print "hello") (print "world"))` expands correctly (requires IO from Ring 4 for execution)
 - Prelude macros all compile: `cond`, `case`, `->`, `->>`, `vec`
-- `lib/prelude.cl` compiles fully
+- `stdlib/prelude.cl` compiles fully
 - ~100 additional integration tests green
 
 ## Ring 4: Effects

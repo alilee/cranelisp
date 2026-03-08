@@ -580,6 +580,8 @@ fn is_extern_primitive(name: &str) -> bool {
             | "float-to-string"
             | "bool-to-string"
             | "parse-int"
+            | "sconcat"
+            | "quote-sexp"
     )
 }
 

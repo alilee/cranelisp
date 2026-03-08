@@ -961,7 +961,7 @@ mod tests {
     use super::*;
     use crate::checker::TypeChecker;
     use cranelisp_types::{
-        Defn, ModuleEntry, Span, TraitDecl, TraitImpl, TraitMethodSig,
+        Defn, ModuleEntry, Sexp, Span, TraitDecl, TraitImpl, TraitMethodSig,
         TypeExpr, Visibility,
     };
 
@@ -1401,103 +1401,87 @@ mod tests {
         assert_eq!(r1, r2);
     }
 
-    // spec: 07-traits §7.7 — core traits (Num, Eq, Ord) registered at startup
+    // spec: pipeline-orchestration §5 — no core traits at startup (Decision 17 eliminated)
     #[test]
-    fn test_core_traits_registered_at_startup() {
+    fn test_no_core_traits_at_startup() {
         let tc = TypeChecker::new();
-        // Core traits should be registered
-        assert!(tc.trait_registry.decls.contains_key(&TraitName::from("Num")));
-        assert!(tc.trait_registry.decls.contains_key(&TraitName::from("Eq")));
-        assert!(tc.trait_registry.decls.contains_key(&TraitName::from("Ord")));
+        // Traits come from prelude .cl files, NOT compiler builtins
+        assert!(tc.trait_registry.decls.is_empty(),
+            "no traits should be registered at startup");
+        assert!(tc.impl_registry.impls.is_empty(),
+            "no impls should be registered at startup");
     }
 
-    // spec: 07-traits §7.5 — operator symbols registered with constrained schemes
+    // spec: pipeline-orchestration §5 — operator symbols NOT in symbol table at startup
     #[test]
-    fn test_core_trait_operators_registered() {
+    fn test_no_operators_at_startup() {
         let tc = TypeChecker::new();
-        // Operators should be in symbol table with constrained schemes
         let ops = ["+", "-", "*", "/", "=", "!=", "<", ">", "<=", ">="];
         for op in ops {
             assert!(
-                tc.symbol_table().get(op).is_some(),
-                "operator {op} should be registered"
+                tc.symbol_table().get(op).is_none(),
+                "operator {op} should NOT be in symbol table at startup"
             );
         }
     }
 
-    // spec: 07-traits §7.7 — built-in impls for Num/Eq/Ord on Int/Float/Bool/String
+    // spec: 07-traits §7.4.2 — trait method resolution works with inline trait definitions
     #[test]
-    fn test_core_impls_registered() {
-        let tc = TypeChecker::new();
-        // Built-in impls should be registered
-        assert!(tc
-            .impl_registry
-            .has_impl(&TraitName::from("Num"), &TypeName::from("Int")));
-        assert!(tc
-            .impl_registry
-            .has_impl(&TraitName::from("Num"), &TypeName::from("Float")));
-        assert!(tc
-            .impl_registry
-            .has_impl(&TraitName::from("Eq"), &TypeName::from("Int")));
-        assert!(tc
-            .impl_registry
-            .has_impl(&TraitName::from("Eq"), &TypeName::from("Float")));
-        assert!(tc
-            .impl_registry
-            .has_impl(&TraitName::from("Eq"), &TypeName::from("Bool")));
-        assert!(tc
-            .impl_registry
-            .has_impl(&TraitName::from("Eq"), &TypeName::from("String")));
-        assert!(tc
-            .impl_registry
-            .has_impl(&TraitName::from("Ord"), &TypeName::from("Int")));
-        assert!(tc
-            .impl_registry
-            .has_impl(&TraitName::from("Ord"), &TypeName::from("Float")));
-    }
-
-    // spec: 07-traits §7.7.1 — + operator scheme is (Fn [a a] a) with Num constraint
-    #[test]
-    fn test_plus_operator_scheme() {
-        let tc = TypeChecker::new();
-        if let Some(ModuleEntry::Def { scheme, .. }) = tc.symbol_table().get("+") {
-            assert_eq!(scheme.vars.len(), 1);
-            assert!(!scheme.constraints.is_empty());
-            // Type should be (Fn [a a] a) with Num constraint on a
-            if let Type::Fn(params, ret) = &scheme.ty {
-                assert_eq!(params.len(), 2);
-                assert_eq!(params[0], params[1]);
-                assert_eq!(params[0], *ret.as_ref());
-            } else {
-                panic!("+ should have Fn type");
-            }
-        } else {
-            panic!("+ should be registered");
-        }
-    }
-
-    // spec: 07-traits §7.7.2 — = operator scheme is (Fn [a a] Bool) with Eq constraint
-    #[test]
-    fn test_eq_operator_scheme_return_bool() {
-        let tc = TypeChecker::new();
-        if let Some(ModuleEntry::Def { scheme, .. }) = tc.symbol_table().get("=") {
-            // Type should be (Fn [a a] Bool) with Eq constraint
-            if let Type::Fn(params, ret) = &scheme.ty {
-                assert_eq!(params.len(), 2);
-                assert_eq!(params[0], params[1]);
-                assert_eq!(*ret.as_ref(), Type::Bool);
-            } else {
-                panic!("= should have Fn type");
-            }
-        } else {
-            panic!("= should be registered");
-        }
-    }
-
-    // spec: 07-traits §7.4.2 — + resolves to Num.+$Int mangled name
-    #[test]
-    fn test_try_resolve_trait_method_with_real_startup() {
+    fn test_try_resolve_with_inline_trait() {
         let mut tc = TypeChecker::new();
+        // Register Num trait inline (as prelude would)
+        let num_decl = TraitDecl {
+            name: TraitName::from("Num"),
+            docstring: None,
+            type_params: vec![Symbol::from("a")],
+            methods: vec![TraitMethodSig {
+                name: Symbol::from("+"),
+                docstring: None,
+                params: vec![
+                    TypeExpr::TypeVar(Symbol::from("a")),
+                    TypeExpr::TypeVar(Symbol::from("a")),
+                ],
+                ret_type: TypeExpr::TypeVar(Symbol::from("a")),
+                span: Span::SYNTHETIC,
+                hkt_param_index: None,
+                default_param_names: vec![Symbol::from("lhs"), Symbol::from("rhs")],
+                default_body: None,
+            }],
+            visibility: Visibility::Public,
+            span: Span::SYNTHETIC,
+        };
+        tc.register_trait_decl(&num_decl).unwrap();
+
+        // Register impl Num for Int
+        let impl_ = TraitImpl {
+            trait_name: TraitName::from("Num"),
+            target_type: TypeName::from("Int"),
+            type_args: vec![],
+            type_constraints: vec![],
+            methods: vec![Defn {
+                name: Symbol::from("+"),
+                docstring: None,
+                params: vec![Symbol::from("x"), Symbol::from("y")],
+                param_annotations: vec![None, None],
+                body: Expr::Apply {
+                    callee: Box::new(Expr::Var {
+                        name: Symbol::from("add-i64"),
+                        span: Span::SYNTHETIC,
+                    }),
+                    args: vec![
+                        Expr::Var { name: Symbol::from("x"), span: Span::SYNTHETIC },
+                        Expr::Var { name: Symbol::from("y"), span: Span::SYNTHETIC },
+                    ],
+                    span: Span::SYNTHETIC,
+                },
+                visibility: Visibility::Public,
+                span: Span::SYNTHETIC,
+            }],
+            span: Span::SYNTHETIC,
+        };
+        tc.register_trait_impl(&impl_).unwrap();
+        tc.clear_transient_state();
+
         let result = tc.try_resolve_trait_method(
             &Symbol::from("+"),
             &[Type::Int, Type::Int],
@@ -1506,36 +1490,6 @@ mod tests {
         assert!(result.is_some());
         if let Some(ResolvedCall::TraitMethod { mangled_name, .. }) = result {
             assert_eq!(mangled_name.as_ref(), "Num.+$Int");
-        }
-    }
-
-    // spec: 07-traits §7.4.2 — = resolves to Eq.=$Int mangled name
-    #[test]
-    fn test_try_resolve_eq_method() {
-        let mut tc = TypeChecker::new();
-        let result = tc.try_resolve_trait_method(
-            &Symbol::from("="),
-            &[Type::Int, Type::Int],
-            Span::SYNTHETIC,
-        );
-        assert!(result.is_some());
-        if let Some(ResolvedCall::TraitMethod { mangled_name, .. }) = result {
-            assert_eq!(mangled_name.as_ref(), "Eq.=$Int");
-        }
-    }
-
-    // spec: 07-traits §7.4.2 — < resolves to Ord.<$Float mangled name
-    #[test]
-    fn test_try_resolve_ord_method() {
-        let mut tc = TypeChecker::new();
-        let result = tc.try_resolve_trait_method(
-            &Symbol::from("<"),
-            &[Type::Float, Type::Float],
-            Span::SYNTHETIC,
-        );
-        assert!(result.is_some());
-        if let Some(ResolvedCall::TraitMethod { mangled_name, .. }) = result {
-            assert_eq!(mangled_name.as_ref(), "Ord.<$Float");
         }
     }
 
@@ -1676,9 +1630,47 @@ mod tests {
     // spec: 07-traits §7.1.5 — generate_default_methods synthesizes missing impl methods
     #[test]
     fn test_generate_default_methods_produces_real_bodies() {
-        // Register Eq trait and create an impl with only "=" provided.
+        // Register Eq trait inline and create an impl with only "=" provided.
         // The "!=" default should be generated with a real body.
-        let tc = TypeChecker::new();
+        let mut tc = TypeChecker::new();
+
+        // Register Eq trait inline (as prelude would)
+        let eq_decl = TraitDecl {
+            name: TraitName::from("Eq"),
+            docstring: None,
+            type_params: vec![Symbol::from("a")],
+            methods: vec![
+                TraitMethodSig {
+                    name: Symbol::from("="),
+                    docstring: None,
+                    params: vec![
+                        TypeExpr::TypeVar(Symbol::from("a")),
+                        TypeExpr::TypeVar(Symbol::from("a")),
+                    ],
+                    ret_type: TypeExpr::Named(TypeName::from("Bool")),
+                    span: Span::SYNTHETIC,
+                    hkt_param_index: None,
+                    default_param_names: vec![Symbol::from("lhs"), Symbol::from("rhs")],
+                    default_body: None,
+                },
+                TraitMethodSig {
+                    name: Symbol::from("!="),
+                    docstring: None,
+                    params: vec![
+                        TypeExpr::TypeVar(Symbol::from("a")),
+                        TypeExpr::TypeVar(Symbol::from("a")),
+                    ],
+                    ret_type: TypeExpr::Named(TypeName::from("Bool")),
+                    span: Span::SYNTHETIC,
+                    hkt_param_index: None,
+                    default_param_names: vec![Symbol::from("x"), Symbol::from("y")],
+                    default_body: Some(Sexp::Symbol("default".to_string(), Span::SYNTHETIC)),
+                },
+            ],
+            visibility: Visibility::Public,
+            span: Span::SYNTHETIC,
+        };
+        tc.register_trait_decl(&eq_decl).unwrap();
 
         let impl_ = TraitImpl {
             trait_name: TraitName::from("Eq"),

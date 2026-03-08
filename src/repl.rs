@@ -17,10 +17,12 @@ use cranelisp_backend::heap::{HeapAdt, HeapVec};
 use cranelisp_backend::jit::Jit;
 use cranelisp_typecheck::TypeChecker;
 use cranelisp_types::{
-    CompileMode, CranelispError, DefKind, ModuleEntry, ModuleFullPath, NoOpExpander,
-    ReplCheckResult, ReplInput, Symbol, Type, TypeDefInfo, TypeName, Warning,
-    NULLARY_TAG_THRESHOLD,
+    CompileMode, CranelispError, DefKind, MacroClauseInfo, MacroParam,
+    ModuleEntry, ModuleFullPath, ReplCheckResult, ReplInput, Sexp, Symbol, Type,
+    TypeDefInfo, TypeName, Visibility, Warning, NULLARY_TAG_THRESHOLD,
 };
+
+use crate::expander::CraneliftExpander;
 
 /// Result of evaluating one REPL input.
 pub struct ReplResult {
@@ -43,6 +45,8 @@ pub struct ReplSession {
     pub tc: TypeChecker,
     /// Backend GOT state (persists across inputs for function redefinition).
     pub got_state: ModuleCodegenState,
+    /// Macro expander (persists across inputs — macros accumulate).
+    expander: CraneliftExpander,
     /// JIT instances that must stay alive (their code is referenced via GOT).
     /// Each defn compilation creates a new JIT; we keep them alive here.
     jit_modules: Vec<Jit>,
@@ -53,15 +57,53 @@ pub struct ReplSession {
 }
 
 impl ReplSession {
-    /// Create a new REPL session.
+    /// Create a new REPL session without prelude loading.
     pub fn new() -> Self {
         ReplSession {
             tc: TypeChecker::new(),
             got_state: ModuleCodegenState::new(),
+            expander: CraneliftExpander::new(),
             jit_modules: Vec::new(),
             type_defs: HashMap::new(),
             type_modules: HashMap::new(),
         }
+    }
+
+    /// Create a new REPL session with prelude loading.
+    ///
+    /// Resolves the prelude module from `project_root` or `lib_dir`, compiles
+    /// it through the normal module graph pipeline, and injects an implicit
+    /// `(import [prelude [*]])`. If no prelude is found, the session works
+    /// normally without it.
+    pub fn new_with_prelude(
+        project_root: &std::path::Path,
+        lib_dir: Option<&std::path::Path>,
+    ) -> Result<Self, CranelispError> {
+        let mut session = Self::new();
+
+        // We need a temporary JIT for prelude compilation.
+        let mut jit = Jit::new()?;
+        jit.declare_intrinsics()?;
+        let mut all_func_sigs: Vec<(Symbol, usize)> = Vec::new();
+
+        let prelude_jits = crate::pipeline::load_prelude(
+            project_root,
+            lib_dir,
+            &mut session.tc,
+            &mut session.expander,
+            &mut jit,
+            &mut all_func_sigs,
+        )?;
+
+        // Store prelude JIT modules to keep code alive.
+        session.jit_modules.extend(prelude_jits);
+        // The main JIT for prelude code also needs to stay alive.
+        session.jit_modules.push(jit);
+
+        // Switch back to user module for REPL input.
+        session.tc.set_current_module(ModuleFullPath::from("user"));
+
+        Ok(session)
     }
 
     /// Get the accumulated type definitions for value display.
@@ -75,6 +117,13 @@ impl ReplSession {
     }
 
     /// Evaluate a single source input, returning the result.
+    ///
+    /// Pipeline:
+    /// 1. Parse source -> sexps
+    /// 2. Check for defmacro -> compile + register, return display
+    /// 3. Expand through CraneliftExpander
+    /// 4. Flatten (begin ...) results, process sub-forms
+    /// 5. Build REPL input -> typecheck -> compile -> execute
     ///
     /// On error, restores the TypeChecker to its pre-input state.
     pub fn eval(&mut self, source: &str) -> Result<ReplResult, CranelispError> {
@@ -91,7 +140,7 @@ impl ReplSession {
         }
 
         // Parse the source into sexps.
-        let sexps = cranelisp_frontend::parse(source)?;
+        let mut sexps = cranelisp_frontend::parse(source)?;
 
         if sexps.is_empty() {
             return Err(CranelispError::ParseError {
@@ -100,30 +149,121 @@ impl ReplSession {
             });
         }
 
-        // Build REPL input from the first sexp.
-        let mut expander = NoOpExpander;
-        let input = cranelisp_frontend::build_repl_input(&sexps[0], &mut expander)?;
+        // Take the first sexp for evaluation.
+        let first_sexp = sexps.swap_remove(0);
 
-        // Snapshot for error recovery.
+        // Snapshot for error recovery (covers macro compilation too).
         let snapshot = self.tc.snapshot();
 
-        // Type check the input.
-        let check_result = match self.tc.check_repl_input(&input) {
-            Ok(r) => r,
-            Err(e) => {
-                self.tc.restore(snapshot);
-                return Err(e);
-            }
-        };
-
-        // Compile and execute.
-        match self.compile_and_execute(&input, &check_result) {
+        match self.eval_sexp(first_sexp) {
             Ok(result) => Ok(result),
             Err(e) => {
                 self.tc.restore(snapshot);
                 Err(e)
             }
         }
+    }
+
+    /// Evaluate a single Sexp with defmacro interception and macro expansion.
+    ///
+    /// This is the core of the REPL eval loop, separated to allow recursive
+    /// processing of begin-flattened sub-forms.
+    fn eval_sexp(&mut self, sexp: Sexp) -> Result<ReplResult, CranelispError> {
+        // Step 1: Check for defmacro — compile and register the macro.
+        if cranelisp_frontend::is_defmacro(&sexp) {
+            return self.eval_defmacro(&sexp);
+        }
+
+        // Step 2: Expand macros in the sexp.
+        let expanded = self.expander.expand_sexp(sexp)?;
+
+        // Step 3: Flatten (begin ...) results and process sub-forms.
+        let forms = cranelisp_frontend::flatten_begin(expanded);
+        self.eval_flattened_forms(forms)
+    }
+
+    /// Process a sequence of flattened forms, returning the result of the last.
+    ///
+    /// Each form may itself be a defmacro (defmacro-in-results from macro
+    /// expansion). Non-macro, non-type forms are accumulated and compiled
+    /// as a batch.
+    fn eval_flattened_forms(
+        &mut self,
+        forms: Vec<Sexp>,
+    ) -> Result<ReplResult, CranelispError> {
+        let mut last_result = None;
+
+        for form in forms {
+            if cranelisp_frontend::is_defmacro(&form) {
+                last_result = Some(self.eval_defmacro(&form)?);
+                continue;
+            }
+
+            // Build and process a normal REPL input.
+            let input = cranelisp_frontend::build_repl_input(&form, &mut self.expander)?;
+            let check_result = self.tc.check_repl_input(&input)?;
+            last_result = Some(self.compile_and_execute(&input, &check_result)?);
+        }
+
+        last_result.ok_or_else(|| CranelispError::ParseError {
+            message: "empty input after expansion".into(),
+            span: cranelisp_types::Span::SYNTHETIC,
+        })
+    }
+
+    /// Compile a defmacro form and register it in the expander and symbol table.
+    ///
+    /// Creates a fresh JIT for the macro clause compilation, keeps it alive
+    /// so the compiled function pointer remains valid. Registers the macro
+    /// in the TC's symbol table as `ModuleEntry::Macro` for introspection.
+    fn eval_defmacro(&mut self, sexp: &Sexp) -> Result<ReplResult, CranelispError> {
+        let info = cranelisp_frontend::parse_defmacro(sexp)?;
+
+        let mut jit = Jit::new()?;
+        jit.declare_intrinsics()?;
+
+        self.expander.compile_macro(&info, &mut self.tc, &mut jit)?;
+
+        // Keep JIT alive so macro function pointers remain valid.
+        self.jit_modules.push(jit);
+
+        // Register macro in the symbol table for introspection (spec §11.2).
+        let clause_infos: Vec<MacroClauseInfo> = info
+            .clauses
+            .iter()
+            .map(|c| MacroClauseInfo {
+                params: c.fixed_params.clone(),
+                rest_param: c.rest_param.clone(),
+                source: None,
+            })
+            .collect();
+        let visibility = if info.is_private {
+            Visibility::Private
+        } else {
+            Visibility::Public
+        };
+        self.tc.symbol_table_mut().insert(
+            info.name.clone(),
+            ModuleEntry::Macro {
+                name: info.name.clone(),
+                clauses: clause_infos,
+                docstring: info.docstring.clone(),
+                visibility,
+                sexp: Some(sexp.clone()),
+                source: None,
+            },
+        );
+
+        // Display format per spec §11.3: "name :: macro" or "name :: macro (N clauses)"
+        let display = format_defmacro_display(&info.name, info.clauses.len());
+
+        Ok(ReplResult {
+            value: 0,
+            ty: Type::Int,
+            is_definition: true,
+            warnings: Vec::new(),
+            definition_display: Some(display),
+        })
     }
 
     /// Compile and execute a checked REPL input.
@@ -994,15 +1134,30 @@ fn format_field_value(
     }
 }
 
+/// Format the REPL display for a defmacro definition (spec §11.3).
+///
+/// Single clause: `name :: macro`
+/// Multi-clause:  `name :: macro (N clauses)`
+fn format_defmacro_display(name: &str, clause_count: usize) -> String {
+    if clause_count <= 1 {
+        format!("{name} :: macro")
+    } else {
+        format!("{name} :: macro ({clause_count} clauses)")
+    }
+}
+
 /// Parsed REPL slash command.
 enum ReplCommand<'a> {
     Help,
     Quit,
     Sig(&'a str),
+    Doc(&'a str),
     Type(&'a str),
     Info(&'a str),
     List(&'a str),
     Time(&'a str),
+    Expand(&'a str),
+    Imports(&'a str),
     Unknown(&'a str),
 }
 
@@ -1023,10 +1178,13 @@ fn parse_slash_command(input: &str) -> Option<ReplCommand<'_>> {
         "/help" | "/h" => ReplCommand::Help,
         "/quit" | "/q" => ReplCommand::Quit,
         "/sig" | "/s" => ReplCommand::Sig(arg),
+        "/doc" | "/d" => ReplCommand::Doc(arg),
         "/type" | "/t" => ReplCommand::Type(arg),
         "/info" | "/i" => ReplCommand::Info(arg),
         "/list" | "/l" => ReplCommand::List(arg),
         "/time" => ReplCommand::Time(arg),
+        "/expand" | "/e" => ReplCommand::Expand(arg),
+        "/imports" => ReplCommand::Imports(arg),
         _ => ReplCommand::Unknown(cmd),
     })
 }
@@ -1037,10 +1195,13 @@ fn print_help(stdout: &mut impl Write) {
     let _ = writeln!(stdout, "  /help (/h)          Show this help");
     let _ = writeln!(stdout, "  /quit (/q)          Exit REPL");
     let _ = writeln!(stdout, "  /sig (/s) NAME      Show type signature");
+    let _ = writeln!(stdout, "  /doc (/d) NAME      Show docstring");
     let _ = writeln!(stdout, "  /type (/t) EXPR     Show type without evaluating");
     let _ = writeln!(stdout, "  /info (/i) NAME     Show full details");
     let _ = writeln!(stdout, "  /list (/l) [FILTER] List symbols in current module");
     let _ = writeln!(stdout, "  /time EXPR          Evaluate with timing breakdown");
+    let _ = writeln!(stdout, "  /expand (/e) FORM   Macro-expand a form");
+    let _ = writeln!(stdout, "  /imports [MODULE]   Show imports in current module");
 }
 
 /// Format the REPL prompt with timing and module info.
@@ -1065,6 +1226,7 @@ fn dispatch_slash_command(
         ReplCommand::Help => print_help(stdout),
         ReplCommand::Quit => return true,
         ReplCommand::Sig(name) => handle_sig(session, name, stdout),
+        ReplCommand::Doc(name) => handle_doc(session, name, stdout),
         ReplCommand::Type(expr_src) => handle_type(session, expr_src, stdout),
         ReplCommand::Info(name) => handle_info(session, name, stdout),
         ReplCommand::List(filter) => handle_list(session, filter, stdout),
@@ -1078,6 +1240,8 @@ fn dispatch_slash_command(
                 }
             }
         }
+        ReplCommand::Expand(form) => handle_expand(session, form, stdout),
+        ReplCommand::Imports(filter) => handle_imports(session, filter, stdout),
         ReplCommand::Unknown(cmd) => {
             let _ = writeln!(
                 stdout,
@@ -1125,12 +1289,41 @@ fn eval_and_display(
     }
 }
 
+/// Create a REPL session, attempting prelude loading from the current directory.
+///
+/// If a `lib/` directory exists in the current directory, attempts to load
+/// the prelude from it. If prelude loading fails, falls back to a session
+/// without prelude.
+fn create_repl_session() -> ReplSession {
+    let cwd = std::env::current_dir().ok();
+
+    if let Some(ref project_root) = cwd {
+        let lib_dir = crate::pipeline::discover_lib_dir(
+            // discover_lib_dir expects a file path, but we just need the parent dir.
+            // We can use a dummy file in the project root.
+            &project_root.join("dummy.cl"),
+        );
+
+        match ReplSession::new_with_prelude(project_root, lib_dir.as_deref()) {
+            Ok(session) => return session,
+            Err(e) => {
+                eprintln!("warning: prelude loading failed: {e}");
+            }
+        }
+    }
+
+    ReplSession::new()
+}
+
 /// Run the interactive REPL loop.
 ///
 /// Reads lines from stdin, evaluates them, prints results.
 /// Errors are printed without crashing the session.
+///
+/// Attempts to load the prelude from the current directory's `lib/` folder.
+/// If prelude loading fails, starts without it and prints a warning.
 pub fn run_repl() {
-    let mut session = ReplSession::new();
+    let mut session = create_repl_session();
     let stdin = io::stdin();
     let stdout = io::stdout();
     let mut stdout = stdout.lock();
@@ -1270,6 +1463,43 @@ fn handle_sig(session: &ReplSession, name: &str, stdout: &mut impl Write) {
     }
 }
 
+/// Handle `/doc <name>` — show docstring of a symbol (spec §11.2.4).
+fn handle_doc(session: &ReplSession, name: &str, stdout: &mut impl Write) {
+    if name.is_empty() {
+        let _ = writeln!(stdout, "usage: /doc <name>");
+        return;
+    }
+    match session.tc.symbol_table().get(name) {
+        Some(ModuleEntry::Macro { docstring, .. }) => {
+            if let Some(doc) = docstring {
+                let _ = writeln!(stdout, "{name}: \"{doc}\"");
+            } else {
+                let _ = writeln!(stdout, "{name}: no docstring");
+            }
+        }
+        Some(ModuleEntry::Def { docstring, .. }) => {
+            if let Some(doc) = docstring {
+                let _ = writeln!(stdout, "{name}: \"{doc}\"");
+            } else {
+                let _ = writeln!(stdout, "{name}: no docstring");
+            }
+        }
+        Some(ModuleEntry::TraitDecl { decl, .. }) => {
+            if let Some(doc) = &decl.docstring {
+                let _ = writeln!(stdout, "{name}: \"{doc}\"");
+            } else {
+                let _ = writeln!(stdout, "{name}: no docstring");
+            }
+        }
+        Some(_) => {
+            let _ = writeln!(stdout, "{name}: no docstring");
+        }
+        None => {
+            let _ = writeln!(stdout, "error: unknown symbol '{name}'");
+        }
+    }
+}
+
 /// Handle `/type <expr>` — show type of expression without evaluating.
 fn handle_type(session: &mut ReplSession, expr_src: &str, stdout: &mut impl Write) {
     if expr_src.is_empty() {
@@ -1278,19 +1508,7 @@ fn handle_type(session: &mut ReplSession, expr_src: &str, stdout: &mut impl Writ
     }
     // Parse, build AST, typecheck — but do NOT compile or execute.
     let snapshot = session.tc.snapshot();
-    let result = (|| -> Result<Type, CranelispError> {
-        let sexps = cranelisp_frontend::parse(expr_src)?;
-        if sexps.is_empty() {
-            return Err(CranelispError::ParseError {
-                message: "empty expression".into(),
-                span: cranelisp_types::Span::SYNTHETIC,
-            });
-        }
-        let mut expander = NoOpExpander;
-        let input = cranelisp_frontend::build_repl_input(&sexps[0], &mut expander)?;
-        let check_result = session.tc.check_repl_input(&input)?;
-        Ok(check_result.ty)
-    })();
+    let result = typecheck_only(session, expr_src);
     // Always restore — we don't want /type to have side effects.
     session.tc.restore(snapshot);
     match result {
@@ -1304,7 +1522,21 @@ fn handle_type(session: &mut ReplSession, expr_src: &str, stdout: &mut impl Writ
     }
 }
 
-/// Handle `/info <name>` — show full details about a symbol.
+/// Parse, expand, and typecheck an expression without compiling or executing.
+fn typecheck_only(session: &mut ReplSession, expr_src: &str) -> Result<Type, CranelispError> {
+    let sexps = cranelisp_frontend::parse(expr_src)?;
+    if sexps.is_empty() {
+        return Err(CranelispError::ParseError {
+            message: "empty expression".into(),
+            span: cranelisp_types::Span::SYNTHETIC,
+        });
+    }
+    let input = cranelisp_frontend::build_repl_input(&sexps[0], &mut session.expander)?;
+    let check_result = session.tc.check_repl_input(&input)?;
+    Ok(check_result.ty)
+}
+
+/// Handle `/info <name>` — show full details about a symbol (spec §3.5, §11.2.2).
 fn handle_info(session: &ReplSession, name: &str, stdout: &mut impl Write) {
     if name.is_empty() {
         let _ = writeln!(stdout, "usage: /info <name>");
@@ -1316,17 +1548,26 @@ fn handle_info(session: &ReplSession, name: &str, stdout: &mut impl Write) {
             // Line 1: type signature (same as /sig).
             let sig = format_entry_signature(entry, name, &module, &session.type_modules, &session.tc);
             let _ = writeln!(stdout, "{sig}");
-            // Line 2: code size and compile time (if available).
-            if let Some(dc) = session.got_state.def_codegen.get(name) {
-                let size_str = dc
-                    .code_size
-                    .map(|s| format!("{s} bytes"))
-                    .unwrap_or_else(|| "? bytes".to_string());
-                let time_str = dc
-                    .compile_duration
-                    .map(|d| format!("{}ms", d.as_millis()))
-                    .unwrap_or_else(|| "?ms".to_string());
-                let _ = writeln!(stdout, "  {size_str}, {time_str}");
+            // Line 2: for macros, show docstring; for functions, show code info.
+            match entry {
+                ModuleEntry::Macro { docstring, .. } => {
+                    if let Some(doc) = docstring {
+                        let _ = writeln!(stdout, "  \"{doc}\"");
+                    }
+                }
+                _ => {
+                    if let Some(dc) = session.got_state.def_codegen.get(name) {
+                        let size_str = dc
+                            .code_size
+                            .map(|s| format!("{s} bytes"))
+                            .unwrap_or_else(|| "? bytes".to_string());
+                        let time_str = dc
+                            .compile_duration
+                            .map(|d| format!("{}ms", d.as_millis()))
+                            .unwrap_or_else(|| "?ms".to_string());
+                        let _ = writeln!(stdout, "  {size_str}, {time_str}");
+                    }
+                }
             }
         }
         None => {
@@ -1336,79 +1577,121 @@ fn handle_info(session: &ReplSession, name: &str, stdout: &mut impl Write) {
 }
 
 /// Handle `/list [filter]` — list symbols in the current module by category.
+///
+/// Categories (spec §3.3): Types, Traits, Special forms, Macros, Functions, Imports.
+/// Only shows names defined in the current module. Imported names appear
+/// in the Imports category as a summary count per source module.
 fn handle_list(session: &ReplSession, filter: &str, stdout: &mut impl Write) {
+    let categories = classify_symbols(session, filter);
+    print_categories(&categories, stdout);
+}
+
+/// Classified symbols for `/list` display.
+struct ListCategories {
+    types: Vec<String>,
+    traits: Vec<String>,
+    special_forms: Vec<String>,
+    macros: Vec<String>,
+    functions: Vec<String>,
+    imports: HashMap<String, Vec<String>>,
+}
+
+/// Classify all symbols in the current module into `/list` categories.
+fn classify_symbols(session: &ReplSession, filter: &str) -> ListCategories {
     let module = session.tc.current_module_path().clone();
     let table = session.tc.symbol_table();
 
-    let mut types: Vec<String> = Vec::new();
-    let mut traits: Vec<String> = Vec::new();
-    let mut special_forms: Vec<String> = Vec::new();
-    let mut functions: Vec<String> = Vec::new();
+    let mut cats = ListCategories {
+        types: Vec::new(),
+        traits: Vec::new(),
+        special_forms: Vec::new(),
+        macros: Vec::new(),
+        functions: Vec::new(),
+        imports: HashMap::new(),
+    };
 
     for (sym, entry) in table.all_symbols() {
-        // Skip constructors — they are listed under their type.
         if matches!(entry, ModuleEntry::Constructor { .. }) {
-            continue;
-        }
-        // Skip imports and reexports for now (they clutter the listing).
-        if matches!(entry, ModuleEntry::Import { .. } | ModuleEntry::Reexport { .. }) {
             continue;
         }
 
         let name = sym.to_string();
-        // Apply filter if provided.
-        if !filter.is_empty() && !name.contains(filter) {
+        if !filter.is_empty() && !name.to_lowercase().contains(&filter.to_lowercase()) {
             continue;
         }
 
         match entry {
+            ModuleEntry::Import { source } | ModuleEntry::Reexport { source } => {
+                cats.imports
+                    .entry(source.module.to_string())
+                    .or_default()
+                    .push(name);
+            }
             ModuleEntry::TypeDef { .. } => {
-                types.push(format!("{module}/{name}"));
+                cats.types.push(format!("{module}/{name}"));
             }
             ModuleEntry::TraitDecl { .. } => {
                 let defining = session.tc.defining_module_for(&name);
-                traits.push(format!("{defining}/{name}"));
+                cats.traits.push(format!("{defining}/{name}"));
+            }
+            ModuleEntry::Macro { .. } => {
+                cats.macros.push(name);
             }
             ModuleEntry::Def { kind, .. } => match kind.as_ref() {
                 DefKind::SpecialForm { .. } => {
-                    special_forms.push(name);
+                    cats.special_forms.push(name);
                 }
                 _ => {
-                    functions.push(format!("{module}/{name}"));
+                    cats.functions.push(format!("{module}/{name}"));
                 }
             },
             _ => {}
         }
     }
 
-    // Sort each category for deterministic output.
-    types.sort();
-    traits.sort();
-    special_forms.sort();
-    functions.sort();
+    cats.types.sort();
+    cats.traits.sort();
+    cats.special_forms.sort();
+    cats.macros.sort();
+    cats.functions.sort();
+    cats
+}
 
-    if !types.is_empty() {
-        let _ = writeln!(stdout, "Types:");
-        for t in &types {
-            let _ = writeln!(stdout, "  {t}");
+/// Print classified symbols to stdout in `/list` format.
+fn print_categories(cats: &ListCategories, stdout: &mut impl Write) {
+    let print_section = |name: &str, items: &[String], out: &mut dyn Write| {
+        if !items.is_empty() {
+            let _ = writeln!(out, "{name}:");
+            for item in items {
+                let _ = writeln!(out, "  {item}");
+            }
         }
-    }
-    if !traits.is_empty() {
-        let _ = writeln!(stdout, "Traits:");
-        for t in &traits {
-            let _ = writeln!(stdout, "  {t}");
-        }
-    }
-    if !special_forms.is_empty() {
-        let _ = writeln!(stdout, "Special forms:");
-        for sf in &special_forms {
-            let _ = writeln!(stdout, "  {sf}");
-        }
-    }
-    if !functions.is_empty() {
-        let _ = writeln!(stdout, "Functions:");
-        for f in &functions {
-            let _ = writeln!(stdout, "  {f}");
+    };
+
+    print_section("Types", &cats.types, stdout);
+    print_section("Traits", &cats.traits, stdout);
+    print_section("Special forms", &cats.special_forms, stdout);
+    print_section("Macros", &cats.macros, stdout);
+    print_section("Functions", &cats.functions, stdout);
+
+    if !cats.imports.is_empty() {
+        let _ = writeln!(stdout, "Imports:");
+        let mut sorted_modules: Vec<_> = cats.imports.keys().cloned().collect();
+        sorted_modules.sort();
+        for mod_name in &sorted_modules {
+            let names = cats.imports.get(mod_name).map(|v| v.as_slice()).unwrap_or(&[]);
+            let count = names.len();
+            if count <= 5 {
+                let mut sorted_names: Vec<_> = names.to_vec();
+                sorted_names.sort();
+                let _ = writeln!(
+                    stdout,
+                    "  {mod_name} ({count} names: {})",
+                    sorted_names.join(", ")
+                );
+            } else {
+                let _ = writeln!(stdout, "  {mod_name} ({count} names)");
+            }
         }
     }
 }
@@ -1440,7 +1723,154 @@ fn handle_time(
     Ok(format!("{display} (compile: {compile_ms}ms, eval: 0ms)"))
 }
 
+/// Handle `/expand <form>` — macro-expand a form without evaluating (spec §11.1).
+fn handle_expand(session: &mut ReplSession, form_src: &str, stdout: &mut impl Write) {
+    if form_src.is_empty() {
+        let _ = writeln!(stdout, "usage: /expand <form>");
+        return;
+    }
+    match expand_form(session, form_src) {
+        Ok(expanded) => {
+            let _ = writeln!(stdout, "{expanded}");
+        }
+        Err(e) => {
+            let _ = writeln!(stdout, "error: {e}");
+        }
+    }
+}
+
+/// Parse and expand a form through the session's macro expander.
+///
+/// Does not evaluate the result. Returns the expanded Sexp as a formatted string.
+fn expand_form(session: &mut ReplSession, form_src: &str) -> Result<String, CranelispError> {
+    let sexps = cranelisp_frontend::parse(form_src)?;
+    if sexps.is_empty() {
+        return Err(CranelispError::ParseError {
+            message: "empty form".into(),
+            span: cranelisp_types::Span::SYNTHETIC,
+        });
+    }
+    let expanded = session.expander.expand_sexp(sexps.into_iter().next().ok_or_else(|| {
+        CranelispError::ParseError {
+            message: "empty form".into(),
+            span: cranelisp_types::Span::SYNTHETIC,
+        }
+    })?)?;
+    Ok(format_sexp(&expanded))
+}
+
+/// Format an S-expression as a readable string.
+///
+/// Produces valid S-expression syntax: symbols, integers, floats, booleans,
+/// strings (quoted), lists (parenthesized), and brackets (square).
+fn format_sexp(sexp: &Sexp) -> String {
+    match sexp {
+        Sexp::Symbol(name, _) => name.clone(),
+        Sexp::Int(n, _) => format!("{n}"),
+        Sexp::Float(v, _) => {
+            let s = format!("{v}");
+            if s.contains('.') { s } else { format!("{s}.0") }
+        }
+        Sexp::Bool(b, _) => format!("{b}"),
+        Sexp::Str(s, _) => format!("\"{s}\""),
+        Sexp::List(children, _) => {
+            let parts: Vec<String> = children.iter().map(format_sexp).collect();
+            format!("({})", parts.join(" "))
+        }
+        Sexp::Bracket(children, _) => {
+            let parts: Vec<String> = children.iter().map(format_sexp).collect();
+            format!("[{}]", parts.join(" "))
+        }
+    }
+}
+
+/// Handle `/imports [module]` — show imports in current module (spec §3.4).
+///
+/// Groups imported names by source module. Optional filter narrows to one
+/// source module (exact match). Empty output for no imports or unknown module.
+fn handle_imports(session: &ReplSession, filter: &str, stdout: &mut impl Write) {
+    let table = session.tc.symbol_table();
+
+    // Collect imports grouped by source module.
+    let mut imports: HashMap<String, Vec<(String, String)>> = HashMap::new();
+    for (sym, entry) in table.all_symbols() {
+        if let ModuleEntry::Import { source } = entry {
+            let source_mod = source.module.to_string();
+            // Apply module filter if provided.
+            if !filter.is_empty() && source_mod != filter {
+                continue;
+            }
+            // Look up the type signature of the imported symbol in the source module.
+            let type_sig = lookup_import_type(session, source);
+            imports
+                .entry(source_mod)
+                .or_default()
+                .push((sym.to_string(), type_sig));
+        }
+    }
+
+    // Display grouped by source module, sorted.
+    let mut sorted_modules: Vec<_> = imports.keys().cloned().collect();
+    sorted_modules.sort();
+    for mod_name in &sorted_modules {
+        let _ = writeln!(stdout, "From {mod_name}:");
+        if let Some(names) = imports.get(mod_name) {
+            let mut sorted = names.clone();
+            sorted.sort_by(|a, b| a.0.cmp(&b.0));
+            for (name, sig) in &sorted {
+                let _ = writeln!(stdout, "  {name} :: {sig}");
+            }
+        }
+    }
+}
+
+/// Look up the type signature for an imported symbol.
+fn lookup_import_type(
+    session: &ReplSession,
+    source: &cranelisp_types::FQSymbol,
+) -> String {
+    // Try to find the entry in the source module's symbol table.
+    if let Some(table) = session.tc.module_table(&source.module) {
+        if let Some(entry) = table.get(source.symbol.as_ref()) {
+            return format_import_type_sig(entry, &session.type_modules);
+        }
+    }
+    // Fallback: unknown type.
+    "?".to_string()
+}
+
+/// Format the type signature of an imported module entry.
+fn format_import_type_sig(
+    entry: &ModuleEntry,
+    type_modules: &HashMap<TypeName, ModuleFullPath>,
+) -> String {
+    match entry {
+        ModuleEntry::Def { scheme, .. } => {
+            format_type_qualified(&scheme.ty, type_modules)
+        }
+        ModuleEntry::Constructor { scheme, .. } => {
+            format_type_qualified(&scheme.ty, type_modules)
+        }
+        ModuleEntry::TypeDef { info, .. } => {
+            qualify_type_name(&info.name, type_modules)
+        }
+        ModuleEntry::TraitDecl { decl, .. } => {
+            format!("trait {}", decl.name)
+        }
+        ModuleEntry::Macro { name, clauses, .. } => {
+            if clauses.len() <= 1 {
+                format!("{name} :: macro")
+            } else {
+                format!("{name} :: macro ({} clauses)", clauses.len())
+            }
+        }
+        _ => "?".to_string(),
+    }
+}
+
 /// Format a module entry's type signature for /sig and /info display.
+///
+/// Handles functions, constructors, types, traits, and macros (spec §11.2.3).
 fn format_entry_signature(
     entry: &ModuleEntry,
     name: &str,
@@ -1478,8 +1908,60 @@ fn format_entry_signature(
             let defining = tc.defining_module_for(decl.name.as_ref());
             format!("trait {defining}/{}", decl.name)
         }
+        ModuleEntry::Macro { clauses, .. } => {
+            format_macro_signature(name, clauses)
+        }
         _ => format!("{module}/{name}"),
     }
+}
+
+/// Format a macro's signature for /sig and bare symbol display (spec §11.2.3).
+///
+/// Single clause: `name :: macro [param1 param2]`
+/// Multi-clause:  `name :: macro (N clauses)\n  [param1 param2]\n  [param1 & rest]`
+fn format_macro_signature(name: &str, clauses: &[MacroClauseInfo]) -> String {
+    if clauses.len() == 1 {
+        let params = format_macro_clause_params(&clauses[0]);
+        format!("{name} :: macro {params}")
+    } else {
+        let mut lines = vec![format!(
+            "{name} :: macro ({} clauses)",
+            clauses.len()
+        )];
+        for clause in clauses {
+            let params = format_macro_clause_params(clause);
+            lines.push(format!("  {params}"));
+        }
+        lines.join("\n")
+    }
+}
+
+/// Format a single macro clause's parameter list.
+///
+/// Uses `& rest` syntax for variadic and bracket notation for destructuring.
+fn format_macro_clause_params(clause: &MacroClauseInfo) -> String {
+    let mut parts = Vec::new();
+    for param in &clause.params {
+        match param {
+            MacroParam::Name(name) => {
+                parts.push(name.to_string());
+            }
+            MacroParam::Bracket { fixed, rest } => {
+                let mut inner = Vec::new();
+                for f in fixed {
+                    inner.push(f.to_string());
+                }
+                if let Some(r) = rest {
+                    inner.push(format!("& {r}"));
+                }
+                parts.push(format!("[{}]", inner.join(" ")));
+            }
+        }
+    }
+    if let Some(rest) = &clause.rest_param {
+        parts.push(format!("& {rest}"));
+    }
+    format!("[{}]", parts.join(" "))
 }
 
 /// Format a special form for display (spec §4.2).
@@ -1493,14 +1975,16 @@ fn format_special_form_display(name: &str, description: &str) -> String {
         "defn" => ":(Fn [name params body] function) defn".to_string(),
         "deftype" => ":(Fn [name ctors...] type) deftype".to_string(),
         "match" => ":(Fn [expr [pat body]...] a) match".to_string(),
+        "defmacro" => ":(Fn [name params body] macro) defmacro".to_string(),
         _ => format!("{name} — {description}"),
     }
 }
 
-/// Check if the trimmed input is a bare special form name and return its display.
+/// Check if the trimmed input is a bare symbol name and return its display.
 ///
-/// Returns `Some(display_string)` if the input matches a special form,
-/// `None` otherwise.
+/// Handles special forms, primitive types, functions, constructors, traits,
+/// and macros (spec §4.1, §11.4). Returns `Some(display_string)` if the
+/// input matches a known symbol, `None` otherwise.
 fn special_form_feedback(input: &str, session: &ReplSession) -> Option<String> {
     let trimmed = input.trim();
     // Must be a single bare identifier (no parens, no spaces, no brackets).
@@ -1543,6 +2027,12 @@ fn special_form_feedback(input: &str, session: &ReplSession) -> Option<String> {
             // Bare constructor: show `:QualifiedType module/Type.Ctor`
             let type_str = format_type_qualified(&scheme.ty, &session.type_modules);
             Some(format!(":{type_str} {module}/{type_name}.{trimmed}"))
+        }
+        ModuleEntry::Macro { clauses, .. } => {
+            // Bare macro name: show clause signatures (spec §11.4).
+            // Zero-arg macros expand immediately via bare-symbol expansion,
+            // so they won't reach here (the expander handles them first).
+            Some(format_macro_signature(trimmed, clauses))
         }
         _ => None,
     }
@@ -1839,5 +2329,131 @@ mod tests {
             format_adt_type_qualified(&TypeName::from("Color"), &[], &tm2),
             "user/Color"
         );
+    }
+
+    // --- Macro integration tests ---
+
+    // spec: 09-macros.md §9.2 — defmacro in REPL
+    #[test]
+    fn test_repl_defmacro_and_use() {
+        let mut session = ReplSession::new();
+
+        // Define a macro.
+        let result = session.eval("(defmacro id [x] x)").unwrap();
+        assert!(result.is_definition);
+        assert!(result.definition_display.is_some());
+
+        // Use the macro.
+        let result = session.eval("(id 42)").unwrap();
+        assert_eq!(result.value, 42);
+        assert_eq!(result.ty, Type::Int);
+    }
+
+    // spec: 09-macros.md §9.4.2 — quasiquote macro in REPL
+    #[test]
+    fn test_repl_defmacro_quasiquote() {
+        let mut session = ReplSession::new();
+
+        session.eval("(defmacro inc1 [x] `(add-i64 1 ~x))").unwrap();
+
+        let result = session.eval("(inc1 41)").unwrap();
+        assert_eq!(result.value, 42);
+    }
+
+    // spec: 09-macros.md §9.2 — macro accumulates across evals
+    #[test]
+    fn test_repl_macro_persists() {
+        let mut session = ReplSession::new();
+
+        session.eval("(defmacro id [x] x)").unwrap();
+
+        // First use.
+        let r1 = session.eval("(id 10)").unwrap();
+        assert_eq!(r1.value, 10);
+
+        // Second use — macro is still registered.
+        let r2 = session.eval("(id 20)").unwrap();
+        assert_eq!(r2.value, 20);
+    }
+
+    // spec: 09-macros.md §9.2 — error recovery does not corrupt expander
+    #[test]
+    fn test_repl_macro_error_recovery() {
+        let mut session = ReplSession::new();
+
+        // Define a macro.
+        session.eval("(defmacro id [x] x)").unwrap();
+
+        // Cause an error (type error after macro expansion).
+        let err = session.eval("(id (add-i64 true 2))");
+        assert!(err.is_err());
+
+        // Macro should still work after error.
+        let result = session.eval("(id 42)").unwrap();
+        assert_eq!(result.value, 42);
+    }
+
+    // spec: 09-macros.md — session without macros still works
+    #[test]
+    fn test_repl_no_macros_unchanged() {
+        let mut session = ReplSession::new();
+        let result = session.eval("(add-i64 1 2)").unwrap();
+        assert_eq!(result.value, 3);
+    }
+
+    // spec: 09-macros.md §9.2 — macro in defn body
+    #[test]
+    fn test_repl_macro_in_defn_body() {
+        let mut session = ReplSession::new();
+
+        session.eval("(defmacro id [x] x)").unwrap();
+
+        // Define a function that uses the macro.
+        session.eval("(defn f [] (id 77))").unwrap();
+
+        // Call the function.
+        let result = session.eval("(f)").unwrap();
+        assert_eq!(result.value, 77);
+    }
+
+    // spec: 08-modules.md — REPL prelude loading
+    #[test]
+    fn test_repl_with_prelude() {
+        let dir = tempfile::tempdir().unwrap();
+        let lib_dir = dir.path().join("lib");
+        std::fs::create_dir_all(&lib_dir).unwrap();
+        std::fs::write(
+            lib_dir.join("prelude.cl"),
+            "(defmacro id [x] x)",
+        )
+        .unwrap();
+
+        let session = ReplSession::new_with_prelude(
+            dir.path(),
+            Some(&lib_dir),
+        )
+        .unwrap();
+
+        // Verify the macro from the prelude is available.
+        let mut session = session;
+        let result = session.eval("(id 42)").unwrap();
+        assert_eq!(result.value, 42);
+    }
+
+    // spec: 08-modules.md — REPL without prelude still works
+    #[test]
+    fn test_repl_without_prelude() {
+        let dir = tempfile::tempdir().unwrap();
+
+        // No prelude.cl anywhere — should succeed with empty prelude.
+        let session = ReplSession::new_with_prelude(
+            dir.path(),
+            None,
+        )
+        .unwrap();
+
+        let mut session = session;
+        let result = session.eval("42").unwrap();
+        assert_eq!(result.value, 42);
     }
 }

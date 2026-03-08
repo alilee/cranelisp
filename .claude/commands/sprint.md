@@ -8,6 +8,8 @@ Plan coherent delivery increments and coordinate skill execution within them. Yo
 
 You are NOT a technical authority. `/arch` decides how to build things. `/qa` decides when quality is sufficient. `/review` decides when code is clean. You decide what to build *next* and in what *order*, subject to user approval.
 
+**Sizing constraint**: `/int` (Integration Developer) is the primary bottleneck. All pipeline, REPL, slash command, CLI, and prelude work flows through this single skill owning `src/`. Sprint scope MUST be sized to what `/int` can deliver — other skills can prepare work in parallel, but the sprint doesn't ship until `/int` integrates it. When scoping a sprint, assess `/int`'s task list first and cut scope if it's overloaded.
+
 **Two cardinal rules govern every sprint:**
 
 1. **Design before code** (compiler skills) — no coding happens until design docs are written, reviewed by `/arch`, and used by `/qa` to derive test cases. Design docs are prerequisite thinking, not post-hoc documentation.
@@ -50,7 +52,7 @@ You are NOT a technical authority. `/arch` decides how to build things. `/qa` de
 
 **CRITICAL — `/sprint` MUST NOT edit any file outside its owned `sprints/` directory.** This is the single most important boundary rule for this skill. `/sprint` coordinates; other skills execute. Specifically:
 
-- **NEVER edit source code** (anything under `src/`, `crates/`, `tests/`, `examples/`, `lib/`)
+- **NEVER edit source code** (anything under `src/`, `crates/`, `tests/`, `examples/`, `stdlib/`)
 - **NEVER edit spec files** (`spec/`)
 - **NEVER edit architecture or design docs** (`design/`)
 - **NEVER edit review findings or checklists** (`design/review/`)
@@ -289,7 +291,7 @@ Sprint 0 assignments follow this pattern for each skill:
 1. Read `design/arch/roadmap.md` — understand the full ring-by-ring plan
 2. Read `sprints/reimplementation.md` — understand phases, risks, coordination model
 3. Read `tests/plan/strategy.md` — understand ring-gate criteria
-4. Survey the current project state: what phases are complete, what exists in `src/`, `tests/`, `lib/`
+4. Survey the current project state: what phases are complete, what exists in `src/`, `tests/`, `stdlib/`
 5. Create `sprints/ROADMAP.md`
 6. Create `sprints/archive/` directory for completed sprints
 7. Plan Sprint 0

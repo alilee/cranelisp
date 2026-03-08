@@ -97,6 +97,10 @@ fn register_intrinsics(builder: &mut JITBuilder) {
     builder.symbol("float-to-string", cranelisp_runtime::float_to_string as *const u8);
     builder.symbol("bool-to-string", cranelisp_runtime::bool_to_string as *const u8);
     builder.symbol("parse-int", cranelisp_runtime::parse_int as *const u8);
+
+    // Marshal primitives (macros module + primitives module)
+    builder.symbol("sconcat", cranelisp_runtime::sconcat as *const u8);
+    builder.symbol("quote-sexp", cranelisp_runtime::quote_sexp as *const u8);
 }
 
 /// JIT module wrapper. Owns the Cranelift JIT module and provides
@@ -122,10 +126,28 @@ pub struct Jit {
 impl Jit {
     /// Create a new JIT instance for the current host architecture.
     pub fn new() -> Result<Self, CranelispError> {
+        Self::new_with_symbols(&[])
+    }
+
+    /// Create a new JIT instance with extra symbol registrations.
+    ///
+    /// Same as `new()` but pre-registers additional symbols on the
+    /// JITBuilder before creating the module. This enables cross-module
+    /// function calls (P4): when compiling module B that depends on
+    /// module A, A's compiled function pointers are passed in as
+    /// extra symbols so B can link against them.
+    pub fn new_with_symbols(
+        extra_symbols: &[(&str, *const u8)],
+    ) -> Result<Self, CranelispError> {
         let isa = build_isa()?;
 
         let mut builder = JITBuilder::with_isa(isa, cranelift_module::default_libcall_names());
         register_intrinsics(&mut builder);
+
+        // Register extra symbols from previously compiled JIT modules.
+        for &(name, ptr) in extra_symbols {
+            builder.symbol(name, ptr);
+        }
 
         let module = JITModule::new(builder);
 
@@ -528,6 +550,25 @@ mod tests {
         assert_eq!(func_ids.len(), 2);
         assert!(func_ids.contains_key(&Symbol::from("local_fn")));
         assert!(func_ids.contains_key(&Symbol::from("other/helper")));
+    }
+
+    // spec: pipeline-orchestration §4 — JIT with extra symbols for cross-module calls
+    #[test]
+    fn test_jit_new_with_symbols() {
+        // An empty extra_symbols list should work identically to new().
+        let jit = Jit::new_with_symbols(&[]);
+        assert!(jit.is_ok(), "new_with_symbols with empty list should succeed");
+
+        // Extra symbols should be accepted (though we can't call them in
+        // this unit test, we verify the builder doesn't reject them).
+        extern "C" fn dummy_fn(_x: i64) -> i64 {
+            0
+        }
+        let jit2 = Jit::new_with_symbols(&[("test/dummy", dummy_fn as *const u8)]);
+        assert!(
+            jit2.is_ok(),
+            "new_with_symbols with extra symbol should succeed"
+        );
     }
 
     // spec: 08-modules §8.3 — compile context with cross-module GOT for module imports
