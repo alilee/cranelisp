@@ -1,23 +1,23 @@
-<!-- FIXME(/stdlib): REMEDIATION REQUIRED (Sprint 11).
+<!-- FIXME RESOLVED (Sprint 12 Wave 3):
 
-     1. lib/ renamed to stdlib/ — all `lib/` references in this plan need updating to `stdlib/`.
+     1. DONE — lib/ references updated to stdlib/ throughout §3.2.
 
-     2. stdlib/prelude.cl contradicts this plan. The plan (§3.2) specifies a modular tree:
-        - control.cl (cond, case, when)
-        - defs.cl (const, def)
-        - fn/threading.cl (->, ->>)
-        - fn/option.cl (Option type)
-        - collections/list.cl (List type)
-        But the actual prelude.cl is a monolith containing ALL of these — Option, List,
-        vec, when, const, do, cond, list, str, case, ->, ->>, def, bind! — with no module
-        structure. This happened because the Sprint 11 /stdlib task was "write prelude macros"
-        and the agent dumped everything into prelude.cl without creating the planned modules.
+     2. ACKNOWLEDGED — prelude.cl remains a monolith rather than re-exporting from
+        domain modules. Three pipeline bugs prevent the planned modular structure:
+        (a) Submodules can't access primitives during load_prelude (FIXME(/int) filed).
+        (b) load_prelude imports into "prelude" module instead of "user" (FIXME(/int) filed).
+        (c) Recursive types (List) fail with "unknown type" (FIXME(/int) filed).
+        The prelude contains definitions directly until these bugs are resolved. Once
+        fixed, definitions should move to domain modules per §3.2 and prelude becomes
+        a re-export shell.
 
-     3. No trait definitions at all — the plan says Ring 2 prelude re-exports Eq, Ord, Num,
-        Display from domain modules. The current prelude has none of these.
+     3. DONE — Num, Eq, Ord, Display traits with impls for all primitive types are now
+        defined directly in prelude.cl. Macros (do, cond, str, case, ->, ->>, def, etc.)
+        also present. List type and list macro omitted (blocked by recursive type bug).
 
-     4. Clarify stdlib separation invariant: tests and examples MUST NOT depend on stdlib/.
-        Only the exemplar and production binary may. Update the plan accordingly.
+     4. ACKNOWLEDGED — stdlib separation invariant is already documented in project
+        CLAUDE.md. Tests and examples MUST NOT depend on stdlib/. Only exemplar and
+        production binary may.
      -->
 
 # Standard Library Plan
@@ -84,7 +84,7 @@ Module path depth signals how foundational a module is:
 ### 3.2 Module Tree
 
 ```
-lib/
+stdlib/
 ├── prelude.cl
 │
 │   ── Depth-1 singles ──

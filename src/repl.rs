@@ -71,13 +71,13 @@ impl ReplSession {
 
     /// Create a new REPL session with prelude loading.
     ///
-    /// Resolves the prelude module from `project_root` or `lib_dir`, compiles
+    /// Resolves the prelude module from `project_root` or `lib_dirs`, compiles
     /// it through the normal module graph pipeline, and injects an implicit
     /// `(import [prelude [*]])`. If no prelude is found, the session works
     /// normally without it.
     pub fn new_with_prelude(
         project_root: &std::path::Path,
-        lib_dir: Option<&std::path::Path>,
+        lib_dirs: &[std::path::PathBuf],
     ) -> Result<Self, CranelispError> {
         let mut session = Self::new();
 
@@ -88,7 +88,7 @@ impl ReplSession {
 
         let prelude_jits = crate::pipeline::load_prelude(
             project_root,
-            lib_dir,
+            lib_dirs,
             &mut session.tc,
             &mut session.expander,
             &mut jit,
@@ -1291,20 +1291,16 @@ fn eval_and_display(
 
 /// Create a REPL session, attempting prelude loading from the current directory.
 ///
-/// If a `lib/` directory exists in the current directory, attempts to load
-/// the prelude from it. If prelude loading fails, falls back to a session
-/// without prelude.
+/// Library directories are assembled from `CRANELISP_LIB` (if set) or the
+/// `stdlib/` directory in the current directory (fallback). If prelude loading
+/// fails, falls back to a session without prelude.
 fn create_repl_session() -> ReplSession {
     let cwd = std::env::current_dir().ok();
 
     if let Some(ref project_root) = cwd {
-        let lib_dir = crate::pipeline::discover_lib_dir(
-            // discover_lib_dir expects a file path, but we just need the parent dir.
-            // We can use a dummy file in the project root.
-            &project_root.join("dummy.cl"),
-        );
+        let lib_dirs = crate::pipeline::assemble_lib_dirs(project_root);
 
-        match ReplSession::new_with_prelude(project_root, lib_dir.as_deref()) {
+        match ReplSession::new_with_prelude(project_root, &lib_dirs) {
             Ok(session) => return session,
             Err(e) => {
                 eprintln!("warning: prelude loading failed: {e}");
@@ -1320,8 +1316,9 @@ fn create_repl_session() -> ReplSession {
 /// Reads lines from stdin, evaluates them, prints results.
 /// Errors are printed without crashing the session.
 ///
-/// Attempts to load the prelude from the current directory's `lib/` folder.
-/// If prelude loading fails, starts without it and prints a warning.
+/// Library directories are resolved from `CRANELISP_LIB` (if set) or the
+/// `stdlib/` directory in the current directory. If prelude loading fails,
+/// starts without it and prints a warning.
 pub fn run_repl() {
     let mut session = create_repl_session();
     let stdin = io::stdin();
@@ -1641,6 +1638,7 @@ fn classify_symbols(session: &ReplSession, filter: &str) -> ListCategories {
                 DefKind::SpecialForm { .. } => {
                     cats.special_forms.push(name);
                 }
+                DefKind::Primitive { .. } => {} // skip — belongs in primitives module
                 _ => {
                     cats.functions.push(format!("{module}/{name}"));
                 }
@@ -2430,7 +2428,7 @@ mod tests {
 
         let session = ReplSession::new_with_prelude(
             dir.path(),
-            Some(&lib_dir),
+            &[lib_dir.clone()],
         )
         .unwrap();
 
@@ -2448,7 +2446,7 @@ mod tests {
         // No prelude.cl anywhere — should succeed with empty prelude.
         let session = ReplSession::new_with_prelude(
             dir.path(),
-            None,
+            &[],
         )
         .unwrap();
 

@@ -166,12 +166,22 @@ A sprint MUST NOT close until user-proxy skills have demonstrated that the new c
 
 ### Phase 6: Close (driven by `/sprint`)
 
-18. Write the outcome section in SPRINT.md: delivered, deferred, findings.
-19. Mark SPRINT.md as `COMPLETE`.
-20. Move `sprints/SPRINT.md` to `sprints/archive/sprint-{id}.md`.
-21. Update `sprints/ROADMAP.md` with the completed sprint and its outcomes.
-22. If the ring is not yet complete, begin Phase 1 for the next sprint.
-23. If the ring is complete, note that `/review` should be invoked for ring-gate review.
+18. **Sprint close checklist** — every item must pass before marking COMPLETE:
+    - [ ] All demos play cleanly (existing ring demos + any new ones)
+    - [ ] `/port` (exemplar) demo is current — shows what can be built with features so far
+    - [ ] `/stdlib` demo is current — shows available stdlib functionality
+    - [ ] All examples compile and run (`cargo run -- --run examples/*.cl`)
+    - [ ] All tests pass (`cargo test`) — 0 failures
+    - [ ] Ignored test count documented with justification for each
+    - [ ] FIXME scan clean (all resolved or explicitly deferred with rationale)
+    - [ ] ROADMAP.md updated with test count and outcomes
+    - [ ] User-proxy skills confirmed showcase adequacy
+19. Write the outcome section in SPRINT.md: delivered, deferred, findings.
+20. Mark SPRINT.md as `COMPLETE`.
+21. Move `sprints/SPRINT.md` to `sprints/archive/sprint-{id}.md`.
+22. Update `sprints/ROADMAP.md` with the completed sprint and its outcomes.
+23. If the ring is not yet complete, begin Phase 1 for the next sprint.
+24. If the ring is complete, note that `/review` should be invoked for ring-gate review.
 
 ### Mid-Sprint Adjustment
 
@@ -255,7 +265,7 @@ Sprint 0 assignments follow this pattern for each skill:
 **Design refs**: {relevant spec/design docs — highlighted by /arch}
 **Acceptance**: {how to verify the task is done}
 
-{Repeat for every skill}
+{Repeat for every skill. /port and /stdlib MUST include a demo deliverable showing current capabilities — see sprint close checklist.}
 
 ## Waves
 

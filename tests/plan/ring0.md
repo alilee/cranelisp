@@ -1,8 +1,10 @@
 # Ring 0 Test Plan: Core
 
-<!-- FIXME(/qa): U0.2 — /learn tutorial engine requires REPL implementation work (watch mechanism,
-     trigger evaluation, progress tracking). This is implementation work, not just documentation
-     content. Plan as a deliverable. Source: /docs. Severity: important. -->
+<!-- /learn tutorial engine (U0.2): Acknowledged. The /learn command requires REPL implementation
+     work (watch mechanism, trigger evaluation, progress tracking). This is deferred to Ring 4+
+     since it needs the full REPL infrastructure (slash commands, session state, IO). /qa will
+     write acceptance tests for /learn when the feature is scoped into a sprint. Curriculum data
+     lives in user/tutorial/curriculum.md. -->
 
 **Features**: Int, Bool, Float, simple Fn, let, if, match (enums only), defn, forward references, TCO. No heap allocation, no reference counting.
 

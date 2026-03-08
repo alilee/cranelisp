@@ -1594,7 +1594,7 @@ fn trait_method_accessible_across_modules() {
     ]);
     let result = cranelisp::pipeline::compile_module_graph(
         &dir.path().join("main.cl"),
-        None,
+        &[],
     ).unwrap();
     assert_eq!(result.value, 2);
 }
@@ -1612,7 +1612,7 @@ fn visibility_private_defn_not_importable() {
     ]);
     let result = cranelisp::pipeline::compile_module_graph(
         &dir.path().join("main.cl"),
-        None,
+        &[],
     );
     assert!(result.is_err(), "private defn should not be importable");
 }
@@ -1626,7 +1626,7 @@ fn visibility_public_defn_importable() {
     ]);
     let result = cranelisp::pipeline::compile_module_graph(
         &dir.path().join("main.cl"),
-        None,
+        &[],
     ).unwrap();
     assert_eq!(result.value, 42);
 }
@@ -1640,7 +1640,7 @@ fn visibility_private_deftype_not_importable() {
     ]);
     let result = cranelisp::pipeline::compile_module_graph(
         &dir.path().join("main.cl"),
-        None,
+        &[],
     );
     assert!(result.is_err(), "private deftype should not be importable");
 }
@@ -1719,7 +1719,7 @@ fn module_phase_declarations_order_independent() {
     ]);
     let result = cranelisp::pipeline::compile_module_graph(
         &dir.path().join("main.cl"),
-        None,
+        &[],
     ).unwrap();
     assert_eq!(result.value, 42);
 }
@@ -1764,7 +1764,7 @@ fn qualified_reference_to_module() {
     ]);
     let result = cranelisp::pipeline::compile_module_graph(
         &dir.path().join("main.cl"),
-        None,
+        &[],
     ).unwrap();
     assert_eq!(result.value, 42);
 }
@@ -1797,7 +1797,7 @@ fn single_file_via_run_project() {
     ]);
     let result = cranelisp::pipeline::compile_module_graph(
         &dir.path().join("main.cl"),
-        None,
+        &[],
     ).unwrap();
     assert_eq!(result.value, 42);
     assert_eq!(result.ty, cranelisp_types::Type::Int);
@@ -1811,7 +1811,7 @@ fn module_missing_file_error() {
     ]);
     let result = cranelisp::pipeline::compile_module_graph(
         &dir.path().join("main.cl"),
-        None,
+        &[],
     );
     let msg = match result {
         Err(e) => e.message().to_string(),
@@ -1855,7 +1855,7 @@ fn module_cycle_detection() {
         nodes,
         entry: ModuleFullPath::from("a"),
         project_root: PathBuf::from("."),
-        lib_dir: None,
+        lib_dirs: Vec::new(),
     };
 
     let result = toposort(&graph);
@@ -1878,7 +1878,7 @@ fn module_qualified_name_resolution() {
     ]);
     let result = cranelisp::pipeline::compile_module_graph(
         &dir.path().join("main.cl"),
-        None,
+        &[],
     ).unwrap();
     assert_eq!(result.value, 42);
 }
@@ -1892,7 +1892,7 @@ fn import_specific_names() {
     ]);
     let result = cranelisp::pipeline::compile_module_graph(
         &dir.path().join("main.cl"),
-        None,
+        &[],
     ).unwrap();
     assert_eq!(result.value, 42);
 }
@@ -1906,7 +1906,7 @@ fn import_glob() {
     ]);
     let result = cranelisp::pipeline::compile_module_graph(
         &dir.path().join("main.cl"),
-        None,
+        &[],
     ).unwrap();
     assert_eq!(result.value, 42);
 }
@@ -1920,7 +1920,7 @@ fn import_nonexistent_name_errors() {
     ]);
     let result = cranelisp::pipeline::compile_module_graph(
         &dir.path().join("main.cl"),
-        None,
+        &[],
     );
     let msg = match result {
         Err(e) => e.message().to_string(),

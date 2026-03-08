@@ -1,33 +1,10 @@
-;; prelude.cl — Standard prelude for Cranelisp
+;; prelude.cl — Stable demo prelude for showcase scripts
 ;;
-;; Loaded implicitly for all non-prelude modules. Provides:
-;; - Core types (Option)
-;; - Core traits (Num, Eq, Ord, Display) with impls for primitive types
-;; - Convenience macros (do, cond, list, str, case, ->, ->>, def, bind!, etc.)
+;; This is a COPY of stdlib/prelude.cl, frozen for demo stability.
+;; Demos depend on this file (via CRANELISP_LIB) so that stdlib
+;; development doesn't break showcase playback.
 ;;
-;; The prelude is self-contained — no external module dependencies — to avoid
-;; a pipeline limitation where submodules cannot access primitives during
-;; prelude loading.
-;;
-;; Spec references: 07-traits.md §7.1-7.4, 09-macros.md §9.5, §9.6, §9.10
-
-;; FIXME(/int): Three pipeline bugs prevent full prelude functionality:
-;;
-;; 1. SUBMODULE PRIMITIVE SEEDING: Modules created during load_prelude don't
-;;    get primitives seeded from `user`. set_current_module works correctly in
-;;    compile_module_graph but not in load_prelude. Until fixed, the prelude
-;;    must be a single file with no submodule dependencies.
-;;
-;; 2. PRELUDE IMPORT TARGET: load_prelude's register_imports (prelude [*]) runs
-;;    while tc.current_module is "prelude" (last module in toposort), not "user".
-;;    The import goes into prelude (self-import, no-op) instead of user. Prelude
-;;    symbols never reach the user module. Fix: switch tc.current_module to "user"
-;;    before the register_imports call in load_prelude, or do the import in the
-;;    caller (new_with_prelude / compile_module_graph) after switching to user.
-;;
-;; 3. RECURSIVE TYPES: (deftype (List a) Nil (Cons [:a head :(List a) tail]))
-;;    fails with "unknown type: List" — the type name isn't registered before
-;;    constructor fields are resolved. Until fixed, List is omitted from prelude.
+;; Update this file deliberately when demos need new prelude features.
 
 (import [macros [SexpSym SexpStr SexpInt SexpFloat SexpBool SexpList SexpBracket
                  SCons SNil Sexp SList]])
@@ -35,9 +12,6 @@
 ;; ── Core types ───────────────────────────────────────────────────────────
 
 (deftype (Option a) None (Some [:a val]))
-
-;; List omitted — blocked by recursive type bug (see FIXME 3 above).
-;; (deftype (List a) Nil (Cons [:a head :(List a) tail]))
 
 ;; ── Traits: Num ──────────────────────────────────────────────────────────
 
@@ -144,9 +118,6 @@
   ([x] x)
   ([x body &rest] `(if ~x ~body (cond ~@rest))))
 
-;; list macro omitted — blocked by recursive type bug (see FIXME 3 above).
-;; (defmacro list ([] `Nil) ([x &rest] `(Cons ~x (list ~@rest))))
-
 (defmacro str "Concatenate string representations of all arguments"
   ([] (SexpStr ""))
   ([x] `(show ~x))
@@ -177,10 +148,6 @@
        _ `(->> ~(SexpList (SCons form (SCons x SNil))) ~@rest)])))
 
 ;; ── Group E: Need begin splicing + defmacro-in-results ───────────────────
-
-;; def and def- inline the name-mangling (append "-def" to symbol name)
-;; rather than calling a separate make-def-name helper, because defn-defined
-;; helpers are not available during macro compilation (Phase 3 vs Phase 4).
 
 (defmacro def "Define a named value (zero-arg function, bare symbol)" [name value]
   (match name

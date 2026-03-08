@@ -1,0 +1,75 @@
+; Cranelisp Exemplar Progress — Sudoku Solver Building Blocks
+; The exemplar is a Sudoku solver. Here we show what works today.
+
+; === Sudoku domain types ===
+
+(deftype Cell (Given [:Int value]) (Solved [:Int value]) (Unknown [:Int remaining]))
+
+(deftype PropResult Unchanged Reduced Determined Contradiction)
+
+; === Pattern matching on domain ADTs ===
+
+(Given 5)
+
+(Unknown 9)
+
+(defn cell-value [c] (match c [(Given v) v (Solved v) v (Unknown _) 0]))
+
+(cell-value (Given 5))
+
+(cell-value (Unknown 9))
+
+; === Display trait for propagation results ===
+
+(impl Display PropResult (defn show [r] (match r [Unchanged "no change" Reduced "reduced" Determined "determined" Contradiction "contradiction"])))
+
+(show Unchanged)
+
+(show Contradiction)
+
+; === Grid index arithmetic ===
+
+(defn row-of [idx] (/ idx 9))
+
+(defn col-of [idx] (- idx (* (/ idx 9) 9)))
+
+(defn box-of [idx] (+ (* (/ (row-of idx) 3) 3) (/ (col-of idx) 3)))
+
+(row-of 20)
+
+(col-of 20)
+
+(box-of 20)
+
+; === Working 4x4 mini-Sudoku solver ===
+; Same algorithm as the full 9x9 — backtracking with constraint checking
+
+(defn row4 [i] (/ i 4))
+
+(defn col4 [i] (- i (* (/ i 4) 4)))
+
+(defn box4 [i] (+ (* (/ (row4 i) 2) 2) (/ (col4 i) 2)))
+
+(defn no-conflict [board pos val i] (if (= i 16) true (if (= i pos) (no-conflict board pos val (+ i 1)) (if (= (vec-get board i) 0) (no-conflict board pos val (+ i 1)) (let [same-row (= (row4 i) (row4 pos)) same-col (= (col4 i) (col4 pos)) same-box (= (box4 i) (box4 pos))] (if (if same-row true (if same-col true same-box)) (if (= (vec-get board i) val) false (no-conflict board pos val (+ i 1))) (no-conflict board pos val (+ i 1))))))))
+
+(defn solve [board pos guess] (if (= pos 16) board (if (not (= (vec-get board pos) 0)) (solve board (+ pos 1) 1) (if (> guess 4) [] (if (no-conflict board pos guess 0) (let [result (solve (vec-set board pos guess) (+ pos 1) 1)] (if (= (vec-len result) 0) (solve board pos (+ guess 1)) result)) (solve board pos (+ guess 1)))))))
+
+; === Pretty-print the grid ===
+
+(defn format-cell [val] (if (= val 0) "." (int-to-string val)))
+
+(defn format-row [board row col acc] (if (= col 4) acc (let [val (vec-get board (+ (* row 4) col)) sep (if (= col 0) "" " ")] (format-row board row (+ col 1) (str-concat acc (str-concat sep (format-cell val)))))))
+
+(defn format-grid [board row acc] (if (= row 4) acc (let [sep (if (= row 0) "" "\n")] (format-grid board (+ row 1) (str-concat acc (str-concat sep (format-row board row 0 "")))))))
+
+; === Show the puzzle ===
+
+(format-grid [0 2 0 0 0 0 0 3 4 0 0 0 0 0 1 0] 0 "")
+
+; === Solve it ===
+
+(let [solution (solve [0 2 0 0 0 0 0 3 4 0 0 0 0 0 1 0] 0 1)] (format-grid solution 0 ""))
+
+; === Another puzzle: sparse givens, backtracking required ===
+
+(let [solution (solve [1 0 0 0 0 0 0 0 0 0 0 0 0 0 0 4] 0 1)] (format-grid solution 0 ""))

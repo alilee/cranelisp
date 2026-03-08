@@ -1,6 +1,3 @@
-<!-- FIXME(/frontend): lib/ renamed to stdlib/ (Sprint 11). §2.1 reference updated.
-     Please review. -->
-
 # Module System Design
 
 Solution design for the Cranelisp module system as implemented in Ring 2. This document is the authoritative design reference for Ring 3 and later implementers who need to understand how modules work -- particularly for macro system integration (the `macros` synthetic module, cross-module macro exports, and module-aware compilation).

@@ -15,6 +15,7 @@
 - `repl_user_defined_trait`, `repl_user_trait_with_show`
 
 ### Trait introspection (spec: 07-traits, 12-runtime)
+<!-- FIXME(/qa): None of the trait introspection tests below have been written. Typing a bare trait name (e.g. `Num`, `Display`) at the REPL produces `undefined variable` instead of listing method signatures. Spec: repl/spec.md §4.1 (bare trait name should produce method signatures). Implementing skill: /int (REPL eval path). Found by /repl in ring2b.demo Sprint 12. -->
 - `repl_bare_builtin_trait_method_type`, `repl_bare_user_trait_method_type`
 - `repl_non_trait_var_returns_none`
 - `repl_bare_builtin_trait_display`, `repl_bare_user_trait_display`
@@ -203,6 +204,7 @@ Tests identified by reviewing the three Ring 2 design documents (`design/backend
 #### Already covered (no new tests needed)
 
 - Core trait operators (+, -, *, /, =, <, show): 60+ tests in ring2.rs covering Int/Float/Bool/String
+<!-- FIXME(/qa): `default_method_neq_int` test listed below but never written. `!=` cannot even parse because `!` is not in the sexp parser's `operator_char` set (only `+ - * / = < >`). The test must first verify that `!=` parses as an operator symbol, then verify its default-method semantics. Spec: spec/07-traits.md line 206 (defines `!=` as Eq default method). Implementing skill: /frontend (sexp parser operator_char pattern). Found by /repl in ring2b.demo Sprint 12. -->
 - Default methods (!=, >, <=, >=): `default_method_gt_int`, `default_method_le_int`, `default_method_ge_int`, `default_method_neq_int` etc.
 - User-defined traits: `user_trait_simple`, `user_trait_adt`, `user_trait_multiple_impls`
 - Constrained polymorphism basic: `constrained_add_int`, `constrained_add_float`, `constrained_add_both_types`, `constrained_never_called_ok`

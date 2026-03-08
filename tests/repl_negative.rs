@@ -48,6 +48,7 @@ fn classify_entry(
         ModuleEntry::Macro { .. } => Some(("Macros", sym.to_string())),
         ModuleEntry::Def { kind, .. } => match kind.as_ref() {
             DefKind::SpecialForm { .. } => Some(("Special forms", sym.to_string())),
+            DefKind::Primitive { .. } => None, // skip — belongs in primitives module
             _ => Some(("Functions", format!("{module}/{sym}"))),
         },
         _ => None,
@@ -88,15 +89,7 @@ fn collect_list_categories(
 }
 
 // spec: repl/spec.md §3.3 — Functions MUST NOT contain primitives
-// BUG: Primitives (add-i64, mul-i64, etc.) are registered as Def entries with
-// DefKind::Primitive directly in the `user` module's symbol table rather than
-// in the `primitives` module. handle_list classifies them as Functions because
-// they are Def entries (not Import/Reexport). The spec says /list MUST show
-// only names defined in the current module, and primitives are defined in
-// `primitives`, not `user`. Fix: either move primitive Defs to the `primitives`
-// module and import them, or filter DefKind::Primitive in handle_list.
 #[test]
-#[ignore = "BUG: primitives registered as Def in user module, not in primitives module"]
 fn list_neg_no_primitives_in_functions() {
     // /list Functions category MUST NOT contain primitives (add-i64, mul-i64,
     // eq-i64, etc.) when current module is `user`. Primitives are defined in
@@ -179,14 +172,7 @@ fn list_neg_no_primitives_types_in_types() {
 }
 
 // spec: repl/spec.md §3.3 — Fresh session: ONLY Special forms
-// BUG: A fresh `user` session has all primitives (add-i64, etc.) and trait
-// methods (+, show, etc.) registered as Def entries in the user module's
-// symbol table. handle_list classifies them all as Functions. The spec says
-// a fresh session with no user definitions should show ONLY Special forms.
-// Root cause: primitives and trait methods are seeded into `user` as Defs,
-// not kept in `primitives` and imported.
 #[test]
-#[ignore = "BUG: fresh session has primitives/trait methods as Defs in user module"]
 fn list_neg_fresh_session_special_forms_only() {
     // In a fresh `user` session with no definitions, /list MUST show ONLY
     // Special forms. No Functions, no Types, no Traits that the user defined.
@@ -217,11 +203,7 @@ fn list_neg_fresh_session_special_forms_only() {
 }
 
 // spec: repl/spec.md §3.3 — After defn: Functions appears, primitives still absent
-// BUG: Same root cause as list_neg_no_primitives_in_functions — primitives are
-// Def entries in the user module, so they show up in Functions alongside
-// user-defined functions.
 #[test]
-#[ignore = "BUG: primitives registered as Def in user module, appear in Functions"]
 fn list_neg_defn_adds_functions_not_primitives() {
     // After (defn foo [x] x): Functions category appears with foo, but
     // primitives MUST still be absent from Functions.

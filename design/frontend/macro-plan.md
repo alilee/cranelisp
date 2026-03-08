@@ -1,7 +1,3 @@
-<!-- FIXME(/frontend): lib/ renamed to stdlib/ (Sprint 11). References to lib/core/syntax.cl
-     and lib/prelude.cl updated to stdlib/. Please review. Also: verify your skill definition
-     (.claude/commands/frontend.md) does not reference `lib/`. -->
-
 # Ring 3 Macro Implementation Plan
 
 Implementation plan for the Cranelisp macro system in the reimplementation. Covers 7 phases from synthetic module seeding through REPL polish. Implementation begins Sprint 10; this document is the Sprint 9 deliverable.

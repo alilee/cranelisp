@@ -62,7 +62,7 @@ Examples are numbered `01` through `30` (approximately). Each maps to one ring a
 
 ### Complete Learning Sequence
 
-**Numbering note**: The delivered file numbering is contiguous (01-15 so far). Ring 0 was delivered as examples 01-08 (condensed from the original 01-10 plan). Ring 1 continues as 09-14. Ring 2A begins at 15. The original plan had 14=Vectors, 15=Lists, 16=Traits, but actual delivery renumbered: 14=Vecs (Sprint 3), 15=Traits (Sprint 4). Future examples continue from 16.
+**Numbering note**: The delivered file numbering is contiguous (01-18 so far). Ring 0 was delivered as examples 01-08. Ring 1 continues as 09-14. Ring 2 is 15-17 (traits, modules, display). Ring 3 begins at 18 (macros). Constrained polymorphism is covered within 15-traits.cl. Multi-signature and auto-currying are deferred (batch mode issues). Future examples continue from 19.
 
 | # | File | Ring | Concept | Status |
 |---|------|------|---------|--------|
@@ -80,19 +80,18 @@ Examples are numbered `01` through `30` (approximately). Each maps to one ring a
 | 12 | `12-closures.cl` | 1 | Anonymous functions and capture | delivered |
 | 13 | `13-higher-order.cl` | 1 | Functions as arguments and return values | delivered |
 | 14 | `14-vecs.cl` | 1 | Vec literals and operations | delivered |
-| 15 | `15-traits.cl` | 2 | Trait-based operator dispatch | delivered |
-| 16 | Constrained Poly | 2 | Constrained polymorphic functions | planned |
-| 17 | Multi-Signature | 2 | Function overloading by type | planned |
-| 18 | Auto-Currying | 2 | Partial application | planned |
-| 19 | Modules | 2 | Module declarations and imports | planned |
-| 20 | Lazy Sequences | 2 | Infinite sequences | planned |
-| 21 | Macros | 3 | Compile-time code transformation | planned |
-| 22 | Threading Macros | 3 | Data pipeline composition | planned |
-| 23 | Derive | 3 | Auto-generated trait impls | planned |
-| 24 | Hello World | 4 | IO model and print | planned |
-| 25 | IO Sequencing | 4 | do and bind! | planned |
-| 26 | Interactive IO | 4 | User input | planned |
-| 27 | Testing | 4 | Inline test modules | planned |
+| 15 | `15-traits.cl` | 2 | Trait-based operator dispatch + constrained poly | delivered |
+| 16 | `16-modules/` | 2 | Multi-file programs with modules | delivered |
+| 17 | `17-display.cl` | 2 | User-defined traits and Display | delivered |
+| 18 | `18-macros.cl` | 3 | Macros: defmacro, quasiquote, multi-clause | delivered |
+| 19 | Multi-Signature | 2 | Function overloading by type | planned (batch mode blocked) |
+| 20 | Auto-Currying | 2 | Partial application | planned (batch mode blocked) |
+| 21 | Threading Macros | 3 | Data pipeline composition | planned |
+| 22 | Derive | 3 | Auto-generated trait impls | planned |
+| 23 | Hello World | 4 | IO model and print | planned |
+| 24 | IO Sequencing | 4 | do and bind! | planned |
+| 25 | Interactive IO | 4 | User input | planned |
+| 26 | Testing | 4 | Inline test modules | planned |
 
 ### Feature Coverage Verification
 
@@ -889,18 +888,17 @@ examples/
   13-higher-order.cl    — delivered (Ring 1)
   14-vecs.cl            — delivered (Ring 1, Sprint 3)
   15-traits.cl          — delivered (Ring 2A, Sprint 4)
-  16-constrained-poly.cl — planned (Ring 2)
-  17-multi-sig.cl       — planned (Ring 2)
-  18-auto-curry.cl      — planned (Ring 2)
-  19-modules/           — planned (Ring 2, multi-file)
-  20-lazy-sequences.cl  — planned (Ring 2)
-  21-macros.cl          — planned (Ring 3)
-  22-threading.cl       — planned (Ring 3)
-  23-derive.cl          — planned (Ring 3)
-  24-hello-world.cl     — planned (Ring 4)
-  25-io-sequencing.cl   — planned (Ring 4)
-  26-interactive-io.cl  — planned (Ring 4)
-  27-testing/           — planned (Ring 4, multi-file)
+  16-modules/           — delivered (Ring 2, Sprint 12, multi-file)
+  17-display.cl         — delivered (Ring 2, Sprint 12)
+  18-macros.cl          — delivered (Ring 3, Sprint 12)
+  19-multi-sig.cl       — planned (Ring 2, blocked: batch mode)
+  20-auto-curry.cl      — planned (Ring 2, blocked: batch mode)
+  21-threading.cl       — planned (Ring 3)
+  22-derive.cl          — planned (Ring 3)
+  23-hello-world.cl     — planned (Ring 4)
+  24-io-sequencing.cl   — planned (Ring 4)
+  25-interactive-io.cl  — planned (Ring 4)
+  26-testing/           — planned (Ring 4, multi-file)
 ```
 
 ## 10. Ring 3 Readiness Assessment (Sprint 9)

@@ -79,10 +79,32 @@ impl TypeChecker {
         let type_args: Vec<Type> = type_var_ids.iter().map(|&id| Type::Var(id)).collect();
         let adt_type = Type::ADT(name.clone(), type_args);
 
-        // Build constructor infos with resolved field types
-        let ctor_infos = self.build_constructor_infos(
+        // Pre-seed the type name so recursive constructor fields (e.g.,
+        // `:(List a) tail` inside a `(deftype (List a) ...)`) can resolve
+        // the type during `build_constructor_infos`. The full TypeDefInfo
+        // replaces this placeholder below.
+        self.type_defs.type_defs.insert(
+            name.clone(),
+            TypeDefInfo {
+                name: name.clone(),
+                type_params: type_params.to_vec(),
+                constructors: vec![],
+                docstring: None,
+            },
+        );
+
+        // Build constructor infos with resolved field types.
+        // If resolution fails, remove the pre-seeded placeholder so it
+        // doesn't pollute known_types for subsequent definitions.
+        let ctor_infos = match self.build_constructor_infos(
             name, constructors, &var_map, span,
-        )?;
+        ) {
+            Ok(infos) => infos,
+            Err(e) => {
+                self.type_defs.type_defs.remove(name);
+                return Err(e);
+            }
+        };
 
         let type_def_info = TypeDefInfo {
             name: name.clone(),

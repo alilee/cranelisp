@@ -1,8 +1,3 @@
-<!-- FIXME(/arch): lib/ renamed to stdlib/ (Sprint 11). Decision 17 text in this file
-     updated to reference `stdlib/core/numerics.cl` etc. Also update pipeline-orchestration.md,
-     roadmap.md, macro-pipeline.md — all `lib/` refs changed to `stdlib/`. Please review.
-     Also: verify your skill definition does not reference `lib/`. -->
-
 # design/arch/
 
 Architecture deliverables for the Cranelisp reimplementation. Owned and maintained by the `/arch` skill.

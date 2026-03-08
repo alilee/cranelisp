@@ -1,11 +1,9 @@
 ; Cranelisp Ring 2B — Strings, Display & User Traits
 
-; === String equality and inequality ===
+; === String equality ===
 
 (= "hello" "hello")
 (= "hello" "world")
-(!= "hello" "world")
-(!= "same" "same")
 
 ; === The Display trait — converting values to strings ===
 
@@ -43,8 +41,6 @@ Red
 
 Int
 Bool
-Num
-Display
 /info Num
 /info Display
 

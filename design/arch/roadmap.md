@@ -4,13 +4,11 @@ Ring-by-ring plan for the Cranelisp reimplementation. Each ring establishes a st
 
 For the full reimplementation strategy, skill definitions, and risk analysis, see `sprints/reimplementation.md`. For boundary types, see `design/arch/interfaces.md`. For crate structure and architectural decisions, see `design/arch/architecture.md`.
 
-<!-- FIXME(/arch): U0.1 — Batch hello-world not possible at Ring 0 because IO requires Ring 4.
-     Consider whether a minimal batch mode that prints main's return value could be available earlier.
-     Source: /docs. Severity: important. -->
-
 ## Ring 0: Core
 
 **Property**: Expressions, types, functions, let, if, match. No heap allocation, no reference counting.
+
+**Note on batch output**: True batch programs that produce IO effects (e.g., `(print "hello")`) require Ring 4's IO model (`main :: () -> IO _`). At Rings 0-3, the batch runner evaluates expressions and displays their return values using the same `:Type value` format as the REPL. This is by design: the ring model defers IO to its proper mechanism rather than building interim print infrastructure that would be discarded when the real IO trampoline arrives (per principle 8).
 
 | Skill | Deliverables | Depends On |
 |---|---|---|

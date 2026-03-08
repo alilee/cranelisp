@@ -79,51 +79,26 @@ The REPL process `chdir`s into this directory, so `.cache` artifacts and any oth
 
 | File | Ring | Description |
 |------|------|-------------|
-| `first-session.demo` | 0–1 | Learner progression: evaluate, define, inspect, mistakes, recover |
+| `first-session.demo` | 0–3 | Learner progression: evaluate, define, inspect, mistakes, recover |
 | `ring0.demo` | 0 | Arithmetic, booleans, let, if, defn, recursion, TCO |
 | `ring1.demo` | 1 | Strings, ADTs, pattern matching, closures, higher-order, Vecs |
 | `ring2a.demo` | 2A | Trait-dispatched operators, float dispatch, deftrait, constrained polymorphism, default methods |
+| `ring2b.demo` | 2B | String equality, Display trait, user-defined impls, constrained polymorphism |
+| `ring3.demo` | 3 | Macros: defmacro, quasiquote, multi-clause, splice, prelude macros, /expand |
+<!-- FIXME(/repl): Add exemplar-progress.demo and stdlib-progress.demo to this table. exemplar-progress.demo: Ring 3, "Exemplar progress: Sudoku domain ADTs, backtracking solver, Display trait, grid display". stdlib-progress.demo: check its content and add appropriate description. -->
 
 Each sprint, `/repl` extends this library:
-- **Ring 2B**: Modules, cross-module imports, qualified names
-- **Ring 3**: Macros, derive, standard library, prelude
 - **Ring 4**: IO, platforms, full REPL experience (slash commands, trace, run-tests)
 
-## No Prelude Bootstrapping
+## Prelude and Trait Availability
 
-<!-- FIXME(/repl): Decision 17 — when compiler-seeded traits are removed from builtins.rs,
-     first-session.demo lines 3-4 (bare `+` and `/sig +`) will fail because Num won't
-     exist. Either remove those lines or add inline `(deftrait (Num a) ...)` + `(impl Num Int ...)`
-     before them. Same applies to any other demo that uses operators without defining traits. -->
+With prelude loading (Sprint 11+), the REPL loads `stdlib/prelude.cl` at startup, which provides the four core traits (`Num`, `Eq`, `Ord`, `Display`) and their primitive type implementations, plus standard macros and convenience functions. **Operators like `+`, `-`, `*`, `/` work from the first prompt** — demos no longer need inline trait boilerplate.
 
-Until the stdlib and prelude are loaded at startup (Ring 3+), the REPL starts with only the `primitives` module — named primitives like `add-i64`, builtin types, and special forms. **No traits, no operators (`+`, `-`, etc.), no standard library functions.**
+Decision 17 (eliminating bespoke compiler-seeded trait registration) was resolved in Sprint 9: core traits now flow through the normal `register_trait_decl` / `register_trait_impl` pipeline in `builtins.rs`. The prelude loading mechanism (Sprint 11) then made these traits available via stdlib rather than requiring inline setup in demos.
 
-Demos that want to use operators must build up their own traits inline. This is actually a good teaching sequence — it shows the user how the language is constructed from primitives:
+**Current state**: Demos can freely use operators, trait-dispatched functions, and prelude macros without any setup. The `first-session.demo` script uses bare `+` and `/sig +` — these work because the prelude provides `Num` and its `Int`/`Float` implementations at startup.
 
-```
-; Explore what's available
-/help
-3
-/l add
-
-; Named primitives work directly
-(add-i64 3 4)
-
-; Define the Num trait to get operator syntax
-(deftrait (Num a) (+ [a a] a) (- [a a] a) (* [a a] a) (/ [a a] a))
-(impl Num Int
-  (+ [lhs rhs] (add-i64 lhs rhs))
-  (- [lhs rhs] (sub-i64 lhs rhs))
-  (* [lhs rhs] (mul-i64 lhs rhs))
-  (/ [lhs rhs] (div-i64 lhs rhs)))
-
-; Now operators work
-(+ 3 4)
-```
-
-When the prelude lands (Ring 3), this bootstrapping disappears — operators just work from the first prompt. But until then, every demo that uses `+` must include the trait setup. Consider factoring the trait definitions into a comment block at the top of each demo so it's clear what's boilerplate vs. what's being demonstrated.
-
-**Note**: Once `/arch` Decision 17 is resolved (eliminating compiler-seeded traits in `builtins.rs`), this bootstrapping sequence becomes mandatory — not just a demo concern but a startup concern. The fix is a startup `.cl` file evaluated before the first prompt.
+**If prelude loading is broken**: If a sprint breaks prelude loading (e.g., import registration ordering), operators will fail with unresolved trait errors. The fix belongs in the compiler pipeline (`/int`), not in the demos. Do not add inline trait boilerplate to demos as a workaround — file a FIXME against `/int` or `/qa` instead.
 
 ## Conventions
 

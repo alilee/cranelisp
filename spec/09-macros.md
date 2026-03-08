@@ -1,6 +1,3 @@
-<!-- FIXME(/spec): lib/ renamed to stdlib/ (Sprint 11). The §9.10 reference to
-     `lib/core/syntax.cl` has been updated to `stdlib/core/syntax.cl`. Please verify. -->
-
 # 9. Macros [R3 S9]
 
 This section defines the compile-time macro system in Cranelisp. Macros are ordinary Cranelisp functions that transform S-expression values before type checking. They are compiled with the same code generation pipeline as user functions and called during expansion — no separate interpreter is required.
@@ -300,6 +297,8 @@ Within a quasiquoted form:
 - **Brackets** `[a b c]` become `(SexpBracket (SCons <a> (SCons <b> (SCons <c> SNil))))`.
 - **Unquote** `~expr` evaluates `expr` in the current scope. The result MUST be of type `Sexp` and is spliced into the template at that position.
 - **Unquote-splicing** `~@expr` evaluates `expr` in the current scope. The result MUST be of type `(SList Sexp)`. Each element of the list is spliced into the surrounding list. Unquote-splicing MUST only appear inside a list or bracket form.
+
+<!-- FIXME(/frontend): Quasiquote triple-unquote bug — when the same `~x` parameter appears in all three positions of an `if` form (condition, then-branch, else-branch), batch mode produces incorrect results. E.g. `(defmacro my-abs [x] \`(if (lt-i64 ~x 0) (sub-i64 0 ~x) ~x))` then `(my-abs 5)` returns -5 instead of 5. Likely a span collision issue in the macro expander. Discovered Sprint 12 by /examples. -->
 
 ### 9.4.3 Examples
 

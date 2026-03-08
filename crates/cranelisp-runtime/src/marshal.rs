@@ -4,28 +4,16 @@
 //! JIT-compiled code. These operate directly on i64 runtime representations
 //! without the compiler's `Sexp` enum.
 //!
-//! Tag constants MUST match the constructor order in `register_macros_module()`
-//! in the typechecker's builtins.
+//! Tag constants are imported from `cranelisp_types::marshal` (single source
+//! of truth). See that module for constructor order documentation.
 
 use crate::alloc::alloc_with_rc;
 use crate::string::alloc_string;
-
-// ---------------------------------------------------------------------------
-// Tag constants (must match register_macros_module order)
-// ---------------------------------------------------------------------------
-
-// SList tags
-const TAG_SNIL: i64 = 0; // nullary constructor
-const TAG_SCONS: i64 = 1; // data constructor: [1, head, tail]
-
-// Sexp tags (all data constructors)
-const TAG_SEXP_INT: i64 = 0;
-const TAG_SEXP_FLOAT: i64 = 1;
-const TAG_SEXP_BOOL: i64 = 2;
-const TAG_SEXP_STR: i64 = 3;
-const TAG_SEXP_SYM: i64 = 4;
-const TAG_SEXP_LIST: i64 = 5;
-const TAG_SEXP_BRACKET: i64 = 6;
+use cranelisp_types::{
+    TAG_SNIL, TAG_SCONS,
+    TAG_SEXP_INT, TAG_SEXP_FLOAT, TAG_SEXP_BOOL, TAG_SEXP_STR,
+    TAG_SEXP_SYM, TAG_SEXP_LIST, TAG_SEXP_BRACKET,
+};
 
 // Heap layout constants (base-pointer convention, Decision 10)
 const PAYLOAD_OFFSET: usize = 16;

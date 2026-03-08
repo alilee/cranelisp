@@ -8,26 +8,12 @@
 //! server), leaked allocations accumulate without bound. Acceptable for the
 //! batch compiler and REPL where macro expansion is bounded per session.
 
-use cranelisp_types::{Sexp, Span, NULLARY_TAG_THRESHOLD};
-
-// ---------------------------------------------------------------------------
-// Tag constants — MUST match constructor order in register_macros_module()
-// FIXME(/arch): These constants are duplicated in crates/cranelisp-runtime/src/marshal.rs.
-// Define once in cranelisp-types alongside NULLARY_TAG_THRESHOLD to prevent divergence.
-// ---------------------------------------------------------------------------
-
-// SList tags (polymorphic at the type level, but fixed at runtime)
-const TAG_SNIL: i64 = 0; // nullary constructor
-const TAG_SCONS: i64 = 1; // data constructor: [tag, head, tail]
-
-// Sexp tags (all data constructors — no nullary)
-const TAG_SEXP_INT: i64 = 0;
-const TAG_SEXP_FLOAT: i64 = 1;
-const TAG_SEXP_BOOL: i64 = 2;
-const TAG_SEXP_STR: i64 = 3;
-const TAG_SEXP_SYM: i64 = 4;
-const TAG_SEXP_LIST: i64 = 5;
-const TAG_SEXP_BRACKET: i64 = 6;
+use cranelisp_types::{
+    Sexp, Span, NULLARY_TAG_THRESHOLD,
+    TAG_SNIL, TAG_SCONS,
+    TAG_SEXP_INT, TAG_SEXP_FLOAT, TAG_SEXP_BOOL, TAG_SEXP_STR,
+    TAG_SEXP_SYM, TAG_SEXP_LIST, TAG_SEXP_BRACKET,
+};
 
 /// NULLARY_TAG_THRESHOLD cast to i64 for comparison with runtime values.
 const NULLARY_THRESHOLD: i64 = NULLARY_TAG_THRESHOLD as i64;

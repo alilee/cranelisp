@@ -92,6 +92,9 @@ def run_demo(demo_path, repl_binary, run_dir):
     with open(demo_path) as f:
         demo_text = f.read()
 
+    env = os.environ.copy()
+    env["CRANELISP_LIB"] = str(REPL_DIR / "demos" / "lib")
+
     result = subprocess.run(
         [repl_binary],
         input=demo_text,
@@ -99,6 +102,7 @@ def run_demo(demo_path, repl_binary, run_dir):
         stderr=subprocess.PIPE,
         text=True,
         cwd=run_dir,
+        env=env,
     )
 
     # Stderr carries traces and diagnostic output — include it after stdout.
@@ -184,7 +188,10 @@ def interruptible_sleep(seconds):
                     sys.stdout.write("\r" + " " * 8 + "\r")
                     sys.stdout.flush()
                     return False
-        time.sleep(min(0.05, end - time.time()))
+        # FIXME(/repl): interruptible_sleep can produce negative durations when
+        # the loop overshoots the deadline. Clamped to 0 as a band-aid — review
+        # the timing logic for robustness.
+        time.sleep(max(0, min(0.05, end - time.time())))
     return True
 
 

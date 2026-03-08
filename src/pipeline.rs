@@ -10,7 +10,8 @@ use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 
 use cranelisp_types::{
-    CheckResult, CompileMode, CranelispError, ModuleFullPath, Program, Sexp, Span, Type, Warning,
+    CheckResult, CompileMode, CranelispError, ModuleFullPath, ModuleStructure, Program, Sexp, Span,
+    Type, Warning,
 };
 
 use crate::expander::CraneliftExpander;
@@ -211,8 +212,8 @@ pub struct ModuleGraph {
     pub entry: ModuleFullPath,
     /// Project root directory (parent of the entry file).
     pub project_root: PathBuf,
-    /// Lib directory for standard library resolution.
-    pub lib_dir: Option<PathBuf>,
+    /// Library directories for module resolution (searched in order after project root).
+    pub lib_dirs: Vec<PathBuf>,
 }
 
 /// Result of compiling a multi-file module graph.
@@ -231,11 +232,12 @@ pub struct CompiledModuleGraph {
 /// per spec section 8.2.5, and recurses into submodules. Detects circular
 /// dependencies.
 ///
-/// `lib_dir` provides an optional library search path for module resolution.
-/// Pass `None` to disable library resolution (e.g. in tests with controlled fixtures).
+/// `lib_dirs` provides library search paths for module resolution (searched in
+/// order after the project root). Pass `&[]` to disable library resolution
+/// (e.g. in tests with controlled fixtures).
 pub fn discover_module_graph(
     entry: &Path,
-    lib_dir: Option<&Path>,
+    lib_dirs: &[PathBuf],
 ) -> Result<ModuleGraph, CranelispError> {
     let entry = entry.canonicalize().map_err(|e| CranelispError::ModuleError {
         message: format!("cannot resolve entry file '{}': {}", entry.display(), e),
@@ -260,13 +262,11 @@ pub fn discover_module_graph(
         })?;
     let entry_path = ModuleFullPath::from(entry_stem);
 
-    let lib_dir_buf = lib_dir.map(|p| p.to_path_buf());
-
     let mut graph = ModuleGraph {
         nodes: HashMap::new(),
         entry: entry_path.clone(),
         project_root: project_root.clone(),
-        lib_dir: lib_dir_buf,
+        lib_dirs: lib_dirs.to_vec(),
     };
 
     // BFS/DFS discovery with cycle detection.
@@ -275,7 +275,7 @@ pub fn discover_module_graph(
         &entry_path,
         &entry,
         &project_root,
-        &graph.lib_dir,
+        &graph.lib_dirs,
         &mut graph.nodes,
         &mut visiting,
     )?;
@@ -290,7 +290,7 @@ fn discover_module_recursive(
     module_path: &ModuleFullPath,
     file_path: &Path,
     project_root: &Path,
-    lib_dir: &Option<PathBuf>,
+    lib_dirs: &[PathBuf],
     nodes: &mut HashMap<ModuleFullPath, ModuleNode>,
     visiting: &mut Vec<ModuleFullPath>,
 ) -> Result<(), CranelispError> {
@@ -366,7 +366,7 @@ fn discover_module_recursive(
             file_path,
             submod_name.as_ref(),
             project_root,
-            lib_dir,
+            lib_dirs,
         )?;
 
         dependencies.push(child_path.clone());
@@ -376,11 +376,24 @@ fn discover_module_recursive(
             &child_path,
             &resolved,
             project_root,
-            lib_dir,
+            lib_dirs,
             nodes,
             visiting,
         )?;
     }
+
+    // Also discover modules referenced by import specs (spec §8.10.1).
+    // Import paths may reference modules not declared via (mod ...).
+    discover_import_dependencies(
+        &structure,
+        module_path,
+        file_path,
+        project_root,
+        lib_dirs,
+        nodes,
+        visiting,
+        &mut dependencies,
+    )?;
 
     // Register this module in the graph.
     nodes.insert(
@@ -396,18 +409,114 @@ fn discover_module_recursive(
     Ok(())
 }
 
-/// Resolve a submodule's file path per spec section 8.2.5.
+/// Synthetic modules seeded by the compiler (no corresponding files).
+const SYNTHETIC_MODULES: &[&str] = &["primitives", "macros"];
+
+/// Discover modules referenced by import specs that aren't already in the graph.
+///
+/// Import specs reference modules by their full dotted path (e.g., "util",
+/// "core.option"). This function resolves the root module name and discovers
+/// it if not already known. Synthetic modules (`primitives`, `macros`) and
+/// `super` references are skipped — they have no files.
+fn discover_import_dependencies(
+    structure: &ModuleStructure,
+    module_path: &ModuleFullPath,
+    file_path: &Path,
+    project_root: &Path,
+    lib_dirs: &[PathBuf],
+    nodes: &mut HashMap<ModuleFullPath, ModuleNode>,
+    visiting: &mut Vec<ModuleFullPath>,
+    dependencies: &mut Vec<ModuleFullPath>,
+) -> Result<(), CranelispError> {
+    for import_spec in &structure.import_specs {
+        let import_path: &str = import_spec.module_path.as_ref();
+
+        // Skip synthetic modules — they are compiler-seeded with no files.
+        if is_synthetic_or_special(import_path) {
+            continue;
+        }
+
+        // Extract the root module name (first component before any dot).
+        // E.g., "core.option" -> "core", "util" -> "util".
+        let root_name = import_path.split('.').next().unwrap_or(import_path);
+
+        // The import path may be relative (bare name) or prefixed with the
+        // current module path (e.g., "main.util" when current is "main").
+        // Check both the bare import path and a child-qualified version.
+        let candidate_path = if module_path.0.is_empty() {
+            ModuleFullPath::from(root_name)
+        } else {
+            // Check if the import path already starts with the module path prefix.
+            let mod_prefix = format!("{}.", module_path);
+            if import_path.starts_with(&mod_prefix) {
+                // Already fully qualified relative to this module — use as-is.
+                import_spec.module_path.clone()
+            } else {
+                // Bare name — resolve as a root-level module.
+                ModuleFullPath::from(root_name)
+            }
+        };
+
+        // Skip if already discovered (via mod_decls or prior import).
+        if nodes.contains_key(&candidate_path) || dependencies.contains(&candidate_path) {
+            continue;
+        }
+
+        // Try to resolve the module file.
+        let resolved = match resolve_submodule_file(
+            file_path,
+            root_name,
+            project_root,
+            lib_dirs,
+        ) {
+            Ok(path) => path,
+            Err(_) => {
+                // Module file not found — it might be compiled later or be
+                // a qualified reference to an already-loaded module. Skip
+                // silently; the typechecker will produce a proper error if
+                // the import cannot be resolved.
+                continue;
+            }
+        };
+
+        dependencies.push(candidate_path.clone());
+
+        // Recurse into the discovered module.
+        discover_module_recursive(
+            &candidate_path,
+            &resolved,
+            project_root,
+            lib_dirs,
+            nodes,
+            visiting,
+        )?;
+    }
+
+    Ok(())
+}
+
+/// Check if a module path refers to a synthetic or special module.
+///
+/// Synthetic modules (`primitives`, `macros`) are compiler-seeded.
+/// `super` is a relative reference to the parent module.
+/// `prelude` is loaded separately via `load_prelude`.
+fn is_synthetic_or_special(module_path: &str) -> bool {
+    let root = module_path.split('.').next().unwrap_or(module_path);
+    SYNTHETIC_MODULES.contains(&root) || root == "super" || root == "prelude"
+}
+
+/// Resolve a submodule's file path per spec section 8.2.5 and 8.11.2.
 ///
 /// Search order:
 /// 1. Child directory: `{parent_dir}/{stem}/{name}.cl`
 /// 2. Sibling file: `{parent_dir}/{name}.cl`
 /// 3. Project root: `{project_root}/{name}.cl`
-/// 4. Lib directory: `{lib_dir}/{name}.cl`
+/// 4. Lib directories: `{lib_dir}/{name}.cl` (each dir in order)
 fn resolve_submodule_file(
     parent_file: &Path,
     name: &str,
     project_root: &Path,
-    lib_dir: &Option<PathBuf>,
+    lib_dirs: &[PathBuf],
 ) -> Result<PathBuf, CranelispError> {
     let parent_dir = parent_file.parent().unwrap_or(Path::new("."));
     let stem = parent_file
@@ -437,9 +546,9 @@ fn resolve_submodule_file(
         }
     }
 
-    // 4. Lib directory: {lib_dir}/{name}.cl
-    if let Some(lib) = lib_dir {
-        let lib_file = lib.join(&filename);
+    // 4. Lib directories: {lib_dir}/{name}.cl (each dir in order)
+    for lib_dir in lib_dirs {
+        let lib_file = lib_dir.join(&filename);
         if lib_file.is_file() {
             return Ok(lib_file);
         }
@@ -448,7 +557,7 @@ fn resolve_submodule_file(
     Err(CranelispError::ModuleError {
         message: format!(
             "cannot find module '{}' (searched child dir '{}/{}/', sibling '{}/{}', \
-             project root, and lib)",
+             project root, and lib directories)",
             name, parent_dir.display(), stem, parent_dir.display(), filename
         ),
         file: Some(parent_file.to_path_buf()),
@@ -517,19 +626,18 @@ pub fn toposort(graph: &ModuleGraph) -> Result<Vec<ModuleFullPath>, CranelispErr
     Ok(sorted)
 }
 
-/// Parse, extract declarations, and build the AST for a single module.
+/// Parse source and extract module declarations (imports/exports/mods).
 ///
-/// Returns the import specs and the program (AST). Module declarations
-/// (mod, import, export) are extracted first; remaining forms go through
-/// sequential processing (defmacro interception, macro expansion, begin
-/// flattening) before AST building.
-fn parse_and_build_module(
+/// Phase 1 of module compilation: no TypeChecker interaction. Returns the
+/// module structure (import specs, exports, submodule declarations) and the
+/// remaining unprocessed sexps. The caller must register imports with the
+/// TypeChecker BEFORE processing the remaining sexps (Phase 2), because
+/// `process_forms_sequentially` compiles `defmacro` forms that may reference
+/// imported names.
+fn parse_and_extract_module(
     module_path: &ModuleFullPath,
     node: &ModuleNode,
-    expander: &mut CraneliftExpander,
-    tc: &mut cranelisp_typecheck::TypeChecker,
-    jit_modules: &mut Vec<cranelisp_backend::jit::Jit>,
-) -> Result<(Vec<cranelisp_types::ImportSpec>, Program), CranelispError> {
+) -> Result<(ModuleStructure, Vec<Sexp>), CranelispError> {
     let source = std::fs::read_to_string(&node.file_path).map_err(|e| {
         CranelispError::ModuleError {
             message: format!("cannot read '{}': {}", node.file_path.display(), e),
@@ -540,15 +648,11 @@ fn parse_and_build_module(
 
     let sexps = cranelisp_frontend::parse(&source)?;
 
-    let (structure, remaining) = cranelisp_frontend::extract_module_declarations(
+    cranelisp_frontend::extract_module_declarations(
         module_path.clone(),
         Some(node.file_path.clone()),
         sexps,
-    )?;
-
-    let program = process_forms_sequentially(remaining, expander, tc, jit_modules)?;
-
-    Ok((structure.import_specs, program))
+    )
 }
 
 /// Accumulate function signatures from a compiled module, including
@@ -586,31 +690,51 @@ fn find_entry_defn(program: &Program) -> Option<cranelisp_types::Symbol> {
     })
 }
 
-// FIXME(/int): Function still named `discover_lib_dir` — rename to `discover_stdlib_dir`
-// and update callers (main.rs, repl.rs). Also rename `lib_dir` parameters throughout
-// pipeline.rs to `stdlib_dir` for consistency with the lib/ → stdlib/ rename.
-
-/// Auto-discover the `stdlib/` directory from an entry file's parent directory.
+/// Assemble the list of library directories for module resolution.
 ///
-/// Returns `Some(path)` if a `stdlib/` directory exists next to the entry file,
-/// `None` otherwise. Use with `compile_module_graph` and `discover_module_graph`.
-pub fn discover_lib_dir(entry: &Path) -> Option<PathBuf> {
-    let parent = entry.parent()?;
-    let candidate = parent.join("stdlib");
-    if candidate.is_dir() { Some(candidate) } else { None }
+/// Per spec section 8.11.2, lib directory locations are specified by:
+/// 1. `CRANELISP_LIB` environment variable (colon-separated list of paths)
+/// 2. Fallback: `{project_root}/stdlib/` if it exists and `CRANELISP_LIB` is not set
+///
+/// When `CRANELISP_LIB` is set (even to empty), the fallback is NOT used — the
+/// env var takes full control of the library search path.
+///
+// FIXME(/int): spec/08-modules.md §8.11 was updated — stdlib is not special, it is
+// just a module search location. The spec now says lib directory locations come from:
+// 1. Project config file (Cranelisp.toml) — MAY specify a module search priority list
+// 2. CRANELISP_LIB env var
+// The stdlib/ fallback is an implementation convenience, not spec-mandated. Review
+// this function against the updated spec and ensure the search order matches.
+pub fn assemble_lib_dirs(project_root: &Path) -> Vec<PathBuf> {
+    if let Ok(env_val) = std::env::var("CRANELISP_LIB") {
+        // CRANELISP_LIB is set: split on ':' and collect non-empty paths.
+        return env_val
+            .split(':')
+            .filter(|s| !s.is_empty())
+            .map(PathBuf::from)
+            .collect();
+    }
+
+    // Fallback: {project_root}/stdlib/ if it exists.
+    let candidate = project_root.join("stdlib");
+    if candidate.is_dir() {
+        vec![candidate]
+    } else {
+        Vec::new()
+    }
 }
 
 /// Resolve the prelude module file, if it exists.
 ///
-/// Search order (matching normal module resolution):
+/// Search order (matching normal module resolution per spec §8.11.2):
 /// 1. Project root: `{project_root}/prelude.cl`
-/// 2. Lib directory: `{lib_dir}/prelude.cl`
+/// 2. Lib directories: `{lib_dir}/prelude.cl` (each dir in order)
 ///
 /// Returns `None` if no prelude file is found. The system works
 /// without a prelude — named primitives remain available.
 pub fn resolve_prelude(
     project_root: &Path,
-    lib_dir: Option<&Path>,
+    lib_dirs: &[PathBuf],
 ) -> Option<PathBuf> {
     // 1. Project root (local prelude overrides lib prelude).
     let root_prelude = project_root.join("prelude.cl");
@@ -618,9 +742,9 @@ pub fn resolve_prelude(
         return Some(root_prelude);
     }
 
-    // 2. Lib directory.
-    if let Some(lib) = lib_dir {
-        let lib_prelude = lib.join("prelude.cl");
+    // 2. Lib directories (in order).
+    for lib_dir in lib_dirs {
+        let lib_prelude = lib_dir.join("prelude.cl");
         if lib_prelude.is_file() {
             return Some(lib_prelude);
         }
@@ -641,39 +765,40 @@ pub fn resolve_prelude(
 /// The function modifies `tc`, `expander`, and `jit` in place.
 pub fn load_prelude(
     project_root: &Path,
-    lib_dir: Option<&Path>,
+    lib_dirs: &[PathBuf],
     tc: &mut cranelisp_typecheck::TypeChecker,
     expander: &mut CraneliftExpander,
     jit: &mut cranelisp_backend::jit::Jit,
     all_func_sigs: &mut Vec<(cranelisp_types::Symbol, usize)>,
 ) -> Result<Vec<cranelisp_backend::jit::Jit>, CranelispError> {
-    let prelude_file = match resolve_prelude(project_root, lib_dir) {
+    let prelude_file = match resolve_prelude(project_root, lib_dirs) {
         Some(f) => f,
         None => return Ok(Vec::new()),
     };
 
     // Discover the prelude module graph.
-    let graph = discover_module_graph(&prelude_file, lib_dir)?;
+    let graph = discover_module_graph(&prelude_file, lib_dirs)?;
     let order = toposort(&graph)?;
 
     let mut macro_jit_modules: Vec<cranelisp_backend::jit::Jit> = Vec::new();
 
     for module_path in &order {
         let node = &graph.nodes[module_path];
-        let (import_specs, program) = parse_and_build_module(
-            module_path,
-            node,
-            expander,
-            tc,
-            &mut macro_jit_modules,
-        )?;
 
+        // Phase 1: Parse and extract declarations (no tc interaction).
+        let (structure, remaining_sexps) = parse_and_extract_module(module_path, node)?;
+
+        // Phase 2: Set up module context BEFORE processing forms.
         tc.set_current_module(module_path.clone());
-
-        if !import_specs.is_empty() {
-            tc.register_imports(&import_specs)?;
+        if !structure.import_specs.is_empty() {
+            tc.register_imports(&structure.import_specs)?;
         }
 
+        // Phase 3: Process forms (defmacro compilation happens here, needs imports).
+        let program =
+            process_forms_sequentially(remaining_sexps, expander, tc, &mut macro_jit_modules)?;
+
+        // Phase 4: Typecheck and compile.
         if program.is_empty() {
             continue;
         }
@@ -691,8 +816,13 @@ pub fn load_prelude(
         accumulate_func_sigs(module_path, &module_info.func_signatures, all_func_sigs);
     }
 
-    // Inject implicit (import [prelude [*]]) — the prelude module name
-    // is the file stem of the prelude file.
+    // Inject implicit (import [prelude [*]]) into the "user" module.
+    // After the loop above, tc.current_module is the last module in toposort
+    // (i.e. "prelude"), so we must switch to "user" before registering the
+    // import — otherwise it becomes a self-import no-op on "prelude".
+    let user_module = ModuleFullPath::from("user");
+    tc.set_current_module(user_module);
+
     let prelude_module = ModuleFullPath::from("prelude");
     let import_spec = cranelisp_types::ImportSpec {
         module_path: prelude_module,
@@ -717,9 +847,9 @@ pub fn load_prelude(
 /// 5. Execute the entry module's last zero-arg defn
 pub fn compile_module_graph(
     entry: &Path,
-    lib_dir: Option<&Path>,
+    lib_dirs: &[PathBuf],
 ) -> Result<CompiledModuleGraph, CranelispError> {
-    let graph = discover_module_graph(entry, lib_dir)?;
+    let graph = discover_module_graph(entry, lib_dirs)?;
     let order = toposort(&graph)?;
 
     let mut all_warnings: Vec<Warning> = Vec::new();
@@ -734,7 +864,7 @@ pub fn compile_module_graph(
     // Load prelude if available (optional — system works without it).
     let prelude_jits = load_prelude(
         &graph.project_root,
-        graph.lib_dir.as_deref(),
+        &graph.lib_dirs,
         &mut tc,
         &mut expander,
         &mut jit,
@@ -747,20 +877,25 @@ pub fn compile_module_graph(
 
     for module_path in &order {
         let node = &graph.nodes[module_path];
-        let (import_specs, program) = parse_and_build_module(
-            module_path,
-            node,
+
+        // Phase 1: Parse and extract declarations (no tc interaction).
+        let (structure, remaining_sexps) = parse_and_extract_module(module_path, node)?;
+
+        // Phase 2: Set up module context BEFORE processing forms.
+        tc.set_current_module(module_path.clone());
+        if !structure.import_specs.is_empty() {
+            tc.register_imports(&structure.import_specs)?;
+        }
+
+        // Phase 3: Process forms (defmacro compilation happens here, needs imports).
+        let program = process_forms_sequentially(
+            remaining_sexps,
             &mut expander,
             &mut tc,
             &mut macro_jit_modules,
         )?;
 
-        tc.set_current_module(module_path.clone());
-
-        if !import_specs.is_empty() {
-            tc.register_imports(&import_specs)?;
-        }
-
+        // Phase 4: Typecheck and compile.
         if program.is_empty() {
             continue;
         }
@@ -854,7 +989,7 @@ mod tests {
         let entry = dir.path().join("main.cl");
         std::fs::write(&entry, "(defn main [] 42)").unwrap();
 
-        let graph = discover_module_graph(&entry, None).unwrap();
+        let graph = discover_module_graph(&entry, &[]).unwrap();
         assert_eq!(graph.nodes.len(), 1);
         assert!(graph.nodes.contains_key(&ModuleFullPath::from("main")));
         assert_eq!(graph.entry, ModuleFullPath::from("main"));
@@ -870,7 +1005,7 @@ mod tests {
         let util_file = dir.path().join("util.cl");
         std::fs::write(&util_file, "(defn helper [] 1)").unwrap();
 
-        let graph = discover_module_graph(&entry, None).unwrap();
+        let graph = discover_module_graph(&entry, &[]).unwrap();
         assert_eq!(graph.nodes.len(), 2);
         assert!(graph.nodes.contains_key(&ModuleFullPath::from("main")));
         assert!(graph.nodes.contains_key(&ModuleFullPath::from("main.util")));
@@ -891,7 +1026,7 @@ mod tests {
         // Also create sibling version (should be ignored).
         std::fs::write(dir.path().join("handler.cl"), "(defn handle [] 2)").unwrap();
 
-        let graph = discover_module_graph(&entry, None).unwrap();
+        let graph = discover_module_graph(&entry, &[]).unwrap();
         let handler_node = &graph.nodes[&ModuleFullPath::from("app.handler")];
         // Should resolve to child directory version.
         assert!(handler_node.file_path.to_str().unwrap().contains("app/handler.cl"));
@@ -903,7 +1038,7 @@ mod tests {
         let entry = dir.path().join("main.cl");
         std::fs::write(&entry, "(mod nonexistent)").unwrap();
 
-        let result = discover_module_graph(&entry, None);
+        let result = discover_module_graph(&entry, &[]);
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(err.message().contains("cannot find module 'nonexistent'"));
@@ -954,7 +1089,7 @@ mod tests {
             nodes,
             entry: ModuleFullPath::from("a"),
             project_root: dir.path().to_path_buf(),
-            lib_dir: None,
+            lib_dirs: Vec::new(),
         };
 
         let result = toposort(&graph);
@@ -999,7 +1134,7 @@ mod tests {
             nodes,
             entry: ModuleFullPath::from("a"),
             project_root: PathBuf::from("."),
-            lib_dir: None,
+            lib_dirs: Vec::new(),
         };
 
         let order = toposort(&graph).unwrap();
@@ -1029,7 +1164,7 @@ mod tests {
             nodes,
             entry: ModuleFullPath::from("main"),
             project_root: PathBuf::from("."),
-            lib_dir: None,
+            lib_dirs: Vec::new(),
         };
 
         let order = toposort(&graph).unwrap();
@@ -1044,14 +1179,14 @@ mod tests {
         let entry = dir.path().join("main.cl");
         std::fs::write(&entry, "(defn main [] 42)").unwrap();
 
-        let result = compile_module_graph(&entry, None).unwrap();
+        let result = compile_module_graph(&entry, &[]).unwrap();
         assert_eq!(result.value, 42);
         assert_eq!(result.ty, Type::Int);
     }
 
     #[test]
     fn test_compile_file_not_found() {
-        let result = compile_module_graph(Path::new("/nonexistent/path/main.cl"), None);
+        let result = compile_module_graph(Path::new("/nonexistent/path/main.cl"), &[]);
         assert!(result.is_err());
     }
 
@@ -1068,7 +1203,7 @@ mod tests {
         std::fs::write(&util_file, "(defn helper [] 1)").unwrap();
 
         // Discovery should find both modules.
-        let graph = discover_module_graph(&entry, None).unwrap();
+        let graph = discover_module_graph(&entry, &[]).unwrap();
         assert_eq!(graph.nodes.len(), 2);
 
         // Toposort should put util before main.
@@ -1087,11 +1222,11 @@ mod tests {
         std::fs::write(&entry, "(mod helper)\n(defn main [] 1)").unwrap();
 
         // Create lib/ directory with the module.
-        let lib_dir = dir.path().join("lib");
-        std::fs::create_dir_all(&lib_dir).unwrap();
-        std::fs::write(lib_dir.join("helper.cl"), "(defn help [] 2)").unwrap();
+        let stdlib_dir = dir.path().join("lib");
+        std::fs::create_dir_all(&stdlib_dir).unwrap();
+        std::fs::write(stdlib_dir.join("helper.cl"), "(defn help [] 2)").unwrap();
 
-        let graph = discover_module_graph(&entry, Some(&lib_dir)).unwrap();
+        let graph = discover_module_graph(&entry, &[stdlib_dir.clone()]).unwrap();
         assert_eq!(graph.nodes.len(), 2);
         assert!(graph.nodes.contains_key(&ModuleFullPath::from("main.helper")));
     }
@@ -1113,7 +1248,7 @@ mod tests {
         std::fs::create_dir_all(&a_dir).unwrap();
         std::fs::write(a_dir.join("b.cl"), "(defn leaf [] 3)").unwrap();
 
-        let graph = discover_module_graph(&entry, None).unwrap();
+        let graph = discover_module_graph(&entry, &[]).unwrap();
         assert_eq!(graph.nodes.len(), 3);
         assert!(graph.nodes.contains_key(&ModuleFullPath::from("main")));
         assert!(graph.nodes.contains_key(&ModuleFullPath::from("main.a")));
@@ -1148,7 +1283,7 @@ mod tests {
         let util_file = dir.path().join("util.cl");
         std::fs::write(&util_file, "(defn helper [] 42)").unwrap();
 
-        let result = compile_module_graph(&entry, None).unwrap();
+        let result = compile_module_graph(&entry, &[]).unwrap();
         assert_eq!(result.value, 42);
     }
 
@@ -1219,7 +1354,7 @@ mod tests {
         )
         .unwrap();
 
-        let result = compile_module_graph(&entry, None).unwrap();
+        let result = compile_module_graph(&entry, &[]).unwrap();
         assert_eq!(result.value, 42);
     }
 
@@ -1231,10 +1366,10 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
 
         // Create lib/prelude.cl with a simple macro.
-        let lib_dir = dir.path().join("lib");
-        std::fs::create_dir_all(&lib_dir).unwrap();
+        let stdlib_dir = dir.path().join("lib");
+        std::fs::create_dir_all(&stdlib_dir).unwrap();
         std::fs::write(
-            lib_dir.join("prelude.cl"),
+            stdlib_dir.join("prelude.cl"),
             "(defmacro id [x] x)",
         )
         .unwrap();
@@ -1243,7 +1378,7 @@ mod tests {
         let entry = dir.path().join("main.cl");
         std::fs::write(&entry, "(defn main [] (id 55))").unwrap();
 
-        let result = compile_module_graph(&entry, Some(&lib_dir)).unwrap();
+        let result = compile_module_graph(&entry, &[stdlib_dir.clone()]).unwrap();
         assert_eq!(result.value, 55);
     }
 
@@ -1255,7 +1390,7 @@ mod tests {
         std::fs::write(&entry, "(defn main [] 42)").unwrap();
 
         // No lib/ directory, no prelude.
-        let result = compile_module_graph(&entry, None).unwrap();
+        let result = compile_module_graph(&entry, &[]).unwrap();
         assert_eq!(result.value, 42);
     }
 
@@ -1265,10 +1400,10 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
 
         // Create lib/prelude.cl with one macro.
-        let lib_dir = dir.path().join("lib");
-        std::fs::create_dir_all(&lib_dir).unwrap();
+        let stdlib_dir = dir.path().join("lib");
+        std::fs::create_dir_all(&stdlib_dir).unwrap();
         std::fs::write(
-            lib_dir.join("prelude.cl"),
+            stdlib_dir.join("prelude.cl"),
             "(defmacro id [x] `(add-i64 100 ~x))",
         )
         .unwrap();
@@ -1284,7 +1419,7 @@ mod tests {
         let entry = dir.path().join("main.cl");
         std::fs::write(&entry, "(defn main [] (id 42))").unwrap();
 
-        let result = compile_module_graph(&entry, Some(&lib_dir)).unwrap();
+        let result = compile_module_graph(&entry, &[stdlib_dir.clone()]).unwrap();
         // Project root prelude: (id 42) -> 42
         // Lib prelude: (id 42) -> (add-i64 100 42) -> 142
         assert_eq!(result.value, 42);
@@ -1294,7 +1429,7 @@ mod tests {
     #[test]
     fn test_resolve_prelude_none() {
         let dir = tempfile::tempdir().unwrap();
-        let result = resolve_prelude(dir.path(), None);
+        let result = resolve_prelude(dir.path(), &[]);
         assert!(result.is_none());
     }
 
@@ -1302,11 +1437,11 @@ mod tests {
     #[test]
     fn test_resolve_prelude_from_lib() {
         let dir = tempfile::tempdir().unwrap();
-        let lib_dir = dir.path().join("lib");
-        std::fs::create_dir_all(&lib_dir).unwrap();
-        std::fs::write(lib_dir.join("prelude.cl"), "").unwrap();
+        let stdlib_dir = dir.path().join("lib");
+        std::fs::create_dir_all(&stdlib_dir).unwrap();
+        std::fs::write(stdlib_dir.join("prelude.cl"), "").unwrap();
 
-        let result = resolve_prelude(dir.path(), Some(&lib_dir));
+        let result = resolve_prelude(dir.path(), &[stdlib_dir.clone()]);
         assert!(result.is_some());
         assert!(result.unwrap().ends_with("prelude.cl"));
     }
@@ -1315,15 +1450,158 @@ mod tests {
     #[test]
     fn test_resolve_prelude_project_root_priority() {
         let dir = tempfile::tempdir().unwrap();
-        let lib_dir = dir.path().join("lib");
-        std::fs::create_dir_all(&lib_dir).unwrap();
-        std::fs::write(lib_dir.join("prelude.cl"), "").unwrap();
+        let stdlib_dir = dir.path().join("lib");
+        std::fs::create_dir_all(&stdlib_dir).unwrap();
+        std::fs::write(stdlib_dir.join("prelude.cl"), "").unwrap();
         std::fs::write(dir.path().join("prelude.cl"), "").unwrap();
 
-        let result = resolve_prelude(dir.path(), Some(&lib_dir));
+        let result = resolve_prelude(dir.path(), &[stdlib_dir.clone()]);
         assert!(result.is_some());
         // Should be the project root version, not lib/.
         let path = result.unwrap();
         assert!(!path.to_str().unwrap().contains("lib"));
+    }
+
+    // --- assemble_lib_dirs tests ---
+
+    // spec: 08-modules.md §8.11.2 — fallback to {project_root}/stdlib/
+    #[test]
+    fn test_assemble_lib_dirs_fallback_stdlib() {
+        // When CRANELISP_LIB is not set, falls back to {project_root}/stdlib/.
+        let dir = tempfile::tempdir().unwrap();
+        let stdlib = dir.path().join("stdlib");
+        std::fs::create_dir_all(&stdlib).unwrap();
+
+        // Temporarily remove CRANELISP_LIB if it is set.
+        // SAFETY: Test-only; env var manipulation is not thread-safe but
+        // acceptable in unit tests.
+        let saved = std::env::var("CRANELISP_LIB").ok();
+        unsafe { std::env::remove_var("CRANELISP_LIB"); }
+
+        let dirs = assemble_lib_dirs(dir.path());
+
+        // Restore.
+        if let Some(val) = saved {
+            unsafe { std::env::set_var("CRANELISP_LIB", val); }
+        }
+
+        assert_eq!(dirs.len(), 1);
+        assert_eq!(dirs[0], stdlib);
+    }
+
+    // spec: 08-modules.md §8.11.2 — no stdlib dir, no env var -> empty
+    #[test]
+    fn test_assemble_lib_dirs_empty_fallback() {
+        let dir = tempfile::tempdir().unwrap();
+        // No stdlib/ directory exists.
+
+        // SAFETY: Test-only; env var manipulation is not thread-safe.
+        let saved = std::env::var("CRANELISP_LIB").ok();
+        unsafe { std::env::remove_var("CRANELISP_LIB"); }
+
+        let dirs = assemble_lib_dirs(dir.path());
+
+        if let Some(val) = saved {
+            unsafe { std::env::set_var("CRANELISP_LIB", val); }
+        }
+
+        assert!(dirs.is_empty());
+    }
+
+    // spec: 08-modules.md §8.11.2 — CRANELISP_LIB overrides fallback
+    #[test]
+    fn test_assemble_lib_dirs_env_var() {
+        let dir = tempfile::tempdir().unwrap();
+        let lib_a = dir.path().join("lib_a");
+        let lib_b = dir.path().join("lib_b");
+        std::fs::create_dir_all(&lib_a).unwrap();
+        std::fs::create_dir_all(&lib_b).unwrap();
+
+        // Also create stdlib/ — should be IGNORED when CRANELISP_LIB is set.
+        let stdlib = dir.path().join("stdlib");
+        std::fs::create_dir_all(&stdlib).unwrap();
+
+        // SAFETY: Test-only; env var manipulation is not thread-safe.
+        let saved = std::env::var("CRANELISP_LIB").ok();
+        let env_val = format!("{}:{}", lib_a.display(), lib_b.display());
+        unsafe { std::env::set_var("CRANELISP_LIB", &env_val); }
+
+        let dirs = assemble_lib_dirs(dir.path());
+
+        // Restore.
+        if let Some(val) = saved {
+            unsafe { std::env::set_var("CRANELISP_LIB", val); }
+        } else {
+            unsafe { std::env::remove_var("CRANELISP_LIB"); }
+        }
+
+        assert_eq!(dirs.len(), 2);
+        assert_eq!(dirs[0], lib_a);
+        assert_eq!(dirs[1], lib_b);
+    }
+
+    // spec: 08-modules.md §8.11.2 — CRANELISP_LIB empty string -> no dirs
+    #[test]
+    fn test_assemble_lib_dirs_env_var_empty() {
+        let dir = tempfile::tempdir().unwrap();
+        // Create stdlib/ — should be IGNORED when CRANELISP_LIB is set (even empty).
+        let stdlib = dir.path().join("stdlib");
+        std::fs::create_dir_all(&stdlib).unwrap();
+
+        // SAFETY: Test-only; env var manipulation is not thread-safe.
+        let saved = std::env::var("CRANELISP_LIB").ok();
+        unsafe { std::env::set_var("CRANELISP_LIB", ""); }
+
+        let dirs = assemble_lib_dirs(dir.path());
+
+        if let Some(val) = saved {
+            unsafe { std::env::set_var("CRANELISP_LIB", val); }
+        } else {
+            unsafe { std::env::remove_var("CRANELISP_LIB"); }
+        }
+
+        assert!(dirs.is_empty());
+    }
+
+    // spec: 08-modules.md §8.11.2 — module found via CRANELISP_LIB
+    #[test]
+    fn test_module_resolution_via_cranelisp_lib() {
+        let dir = tempfile::tempdir().unwrap();
+
+        // Create entry file.
+        let entry = dir.path().join("main.cl");
+        std::fs::write(&entry, "(mod helper)\n(defn main [] 1)").unwrap();
+
+        // Create a separate lib directory with the module.
+        let lib_dir = dir.path().join("mylibs");
+        std::fs::create_dir_all(&lib_dir).unwrap();
+        std::fs::write(lib_dir.join("helper.cl"), "(defn help [] 2)").unwrap();
+
+        // Pass lib_dir explicitly (same as what assemble_lib_dirs would produce).
+        let graph = discover_module_graph(&entry, &[lib_dir]).unwrap();
+        assert_eq!(graph.nodes.len(), 2);
+        assert!(graph.nodes.contains_key(&ModuleFullPath::from("main.helper")));
+    }
+
+    // spec: 08-modules.md §8.11.2 — multiple lib dirs, first match wins
+    #[test]
+    fn test_multiple_lib_dirs_first_wins() {
+        let dir = tempfile::tempdir().unwrap();
+
+        // Create entry file that uses a macro from prelude.
+        let entry = dir.path().join("main.cl");
+        std::fs::write(&entry, "(mod helper)\n(defn main [] (helper/val))").unwrap();
+
+        // Two lib directories with the same module name.
+        let lib_first = dir.path().join("first");
+        let lib_second = dir.path().join("second");
+        std::fs::create_dir_all(&lib_first).unwrap();
+        std::fs::create_dir_all(&lib_second).unwrap();
+        std::fs::write(lib_first.join("helper.cl"), "(defn val [] 100)").unwrap();
+        std::fs::write(lib_second.join("helper.cl"), "(defn val [] 200)").unwrap();
+
+        // First lib dir should win.
+        let result = compile_module_graph(&entry, &[lib_first, lib_second]).unwrap();
+        assert_eq!(result.value, 100, "first lib dir should take precedence");
     }
 }

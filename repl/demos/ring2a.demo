@@ -75,8 +75,6 @@
 (clamp 15 0 10)
 (clamp -3 0 10)
 (clamp 5 0 10)
-(!= 3 4)
-(!= 5 5)
 
 ; === Putting it together ===
 

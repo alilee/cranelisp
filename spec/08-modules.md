@@ -1,9 +1,3 @@
-<!-- FIXME(/spec): lib/ renamed to stdlib/ (Sprint 11). All `lib/` references in this file
-     have been updated to `stdlib/` — please review §8.5 examples, §8.10 compile order,
-     §8.11 lib directory section for correctness. The rename was made to physically enforce
-     that tests and examples do not depend on the standard library. Also: verify your skill
-     definition (.claude/commands/spec.md) does not reference `lib/`. -->
-
 # 8. Modules [R3 S10]
 
 This section defines the module system of Cranelisp -- how source files map to modules, how names are imported and exported across module boundaries, and how name resolution operates in the presence of multiple modules.
@@ -502,7 +496,7 @@ An explicit `(import [prelude [...]])` in a module replaces the implicit glob im
 
 The prelude uses normal module resolution (Section 8.11.2) with no special search paths. It is discovered, loaded, and compiled as a regular module through the standard compilation pipeline -- it participates in the module graph like any other module and is compiled in topological order (its dependencies first, then the prelude, then user modules).
 
-A project MAY provide its own `prelude.cl` that shadows a library prelude, since module resolution checks the project directory before the lib directory.
+A project MAY provide its own `prelude.cl` that shadows a library prelude, since module resolution checks the project directory before the stdlib directory.
 
 ### 8.8.3 Empty Prelude
 
@@ -586,18 +580,11 @@ stdlib/prelude.cl          ; depends on core
 main.cl                 ; depends on prelude (implicit)
 ```
 
-## 8.11 Lib Directory [R2 S10]
+## 8.11 Stdlib Directory [R2 S10]
 
 ### 8.11.1 Standard Library Location
 
-Standard library modules live in a `stdlib/` directory. The implementation MUST search for the stdlib directory using the following order:
-
-1. A project configuration file (implementation-defined; e.g., `Cranelisp.toml`) MAY specify a stdlib directory. When present, this takes precedence.
-2. The `CRANELISP_LIB` environment variable, if set.
-3. `{project_root}/stdlib/`.
-4. Implementation-defined fallback location (e.g., `~/.cranelisp/stdlib/`).
-
-The standard library is not a special language feature beyond this search mechanism. Modules named `core`, `prelude`, `std`, or anything else are ordinary Cranelisp source files found through this search order — there is no distinction at the language level between "standard library" modules and user modules.
+The standard library is not a special language feature beyond the module search mechanism. Modules named `core`, `prelude`, `std`, or anything else are ordinary Cranelisp source files found through the module search order — there is no distinction at the language level between "standard library" modules and user modules.
 
 ### 8.11.2 Module Resolution Search Order
 
@@ -605,30 +592,18 @@ When resolving a module name to a file, the implementation MUST search in this o
 
 1. **Submodule of current module** -- child directory of the current file
 2. **Project root** -- the directory containing the entry file
-3. **Lib directory** -- the standard library location
+3. **Lib directories** -- the library search locations
 
-A module in the project root shadows a module with the same name in the stdlib directory. This is intentional -- it allows projects to override library modules.
+A module in the project root shadows a module with the same name in the stdlib directory. This is intentional -- it allows projects to override library modules on import.
+
+Lib directory locations are specified externally through:
+
+1. A project configuration file (implementation-defined; e.g., `Cranelisp.toml`) MAY specify a module search priority list. When present, this takes precedence.
+2. The `CRANELISP_LIB` environment variable, if set.
 
 ### 8.11.3 Standard Library Structure (Reference Implementation)
 
-Note: The following layout describes the reference implementation's standard library. The language does not mandate a specific library structure -- any module organization is valid provided it satisfies the module system rules defined in this section.
-
-```
-stdlib/
-  prelude.cl              ; re-export shell
-  core.cl                 ; declares submodules, re-exports all
-  core/
-    numerics.cl           ; Num, Eq, Ord traits + Int/Float impls
-    formats.cl            ; Display trait + show implementations
-    collections.cl        ; Functor trait + List type + list operations
-    option.cl             ; Option type + Functor Option impl
-    sequences.cl          ; Seq type + lazy sequence operations
-    io.cl                 ; IO helpers (pure, bind)
-    syntax.cl             ; Macros (do, bind!, list, vec, cond, etc.)
-  testing.cl              ; Test assertions (assert-eq, assert-true, assert-false, check)
-```
-
-Each core submodule imports only what it needs from `primitives` and sibling submodules. The `core.cl` shell re-exports everything. The `prelude.cl` re-exports from `core` plus selected primitives.
+There is no language-level requirement for the standard library structure.
 
 ## 8.12 Macro Interaction [R3 S9]
 

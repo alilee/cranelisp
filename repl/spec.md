@@ -4,7 +4,38 @@ Normative specification for the Cranelisp REPL user experience. A conforming REP
 
 While called repl, the repl experience encompasses the entire user experience from invoking the repl as well as its associated CLI invocation modes, exit codes, batch output format, and cache lifecycle.
 
-<!-- FIXME(/repl): Specify CLI invocation modes (--run, --version, --help) -->
+## 0. CLI Invocation Modes
+
+The `cranelisp` binary supports the following invocation modes:
+
+| Mode | Invocation | Description | Status |
+|---|---|---|---|
+| REPL | `cranelisp` | Start the interactive REPL | Implemented |
+| Batch | `cranelisp --run <file.cl>` | Compile and execute a source file, print result, exit | Implemented |
+| Version | `cranelisp --version` | Print version string and exit | Future work |
+| Help | `cranelisp --help` | Print usage summary and exit | Future work |
+
+### 0.1 REPL Mode (no arguments)
+
+When invoked with no arguments, the binary MUST start the interactive REPL: display the startup banner (see Section 6.2), load the prelude, and present the primary prompt. The REPL runs until the user enters `/quit` or sends EOF (Ctrl-D).
+
+### 0.2 Batch Mode (`--run <file>`)
+
+`cranelisp --run <file.cl>` MUST compile and execute the named source file via the module graph pipeline. On success, the result value MUST be printed to stdout in the same `:Type value` format used by the REPL (Section 1.2). Warnings MUST be printed to stderr. On failure, the error MUST be printed to stderr and the process MUST exit with a non-zero status code.
+
+If the file does not exist, the binary MUST print an error to stderr and exit with status code 1.
+
+### 0.3 Error Handling
+
+Invalid arguments (e.g., `cranelisp --run` without a file, or unknown flags) MUST print a usage hint to stderr and exit with status code 1. The usage hint MUST show the supported invocation forms.
+
+### 0.4 Future: `--version` and `--help` [R4]
+
+`cranelisp --version` SHOULD print the version string (format: `cranelisp <semver>`) to stdout and exit with status code 0.
+
+`cranelisp --help` SHOULD print a usage summary listing all supported flags and their descriptions to stdout and exit with status code 0.
+
+These are not yet implemented. When added, they MUST follow standard CLI conventions (GNU-style long flags, stdout for informational output, exit code 0 on success).
 
 ## Design Principle
 

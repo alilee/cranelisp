@@ -55,8 +55,9 @@ fn run_file(path: &str) {
         process::exit(1);
     }
 
-    let lib_dir = cranelisp::pipeline::discover_lib_dir(file_path);
-    match cranelisp::pipeline::compile_module_graph(file_path, lib_dir.as_deref()) {
+    let project_root = file_path.parent().unwrap_or(Path::new("."));
+    let lib_dirs = cranelisp::pipeline::assemble_lib_dirs(project_root);
+    match cranelisp::pipeline::compile_module_graph(file_path, &lib_dirs) {
         Ok(result) => {
             // Print warnings to stderr.
             for w in &result.warnings {

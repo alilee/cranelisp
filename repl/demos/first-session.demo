@@ -1,43 +1,45 @@
-/help
-3
-+
-/sig +
-(+ 1 2)
+; Cranelisp — Your first session
+; Values have types. The REPL shows both.
 
+3
 true
 "hello"
-(mul-i64 6 7)
-(eq-i64 3 3)
-if
 
-(defn double [x] (mul-i64 x 2))
-double
+; === Arithmetic just works ===
+
+(+ 1 2)
+(* 6 7)
+(- 100 58)
+
+; === Comparisons return booleans ===
+
+(= 3 3)
+(< 1 2)
+(if (< 1 2) "yes" "no")
+
+; === Define a function ===
+
+(defn double [x] (* x 2))
 (double 21)
+/sig double
 
-(deftype Color Red Green Blue)
-Red
-Color
-
-(defn flip [c] (match c [Red Blue Blue Red Green Green]))
-(flip Red)
-(flip (flip Green))
+; === Type errors are caught ===
 
 (double "oops")
 (double 7)
 
-(deftype (Option a) None (Some [:a val]))
-(Some 42)
-None
+; === Algebraic data types ===
 
-(defn get-or-zero [o] (match o [None 0 (Some x) x]))
-(get-or-zero (Some 99))
-(get-or-zero None)
+(deftype Color Red Green Blue)
+Red
+(match Green [Red "r" Green "g" Blue "b"])
 
-[1 2 3]
-(vec-push [10 20] 30)
-(vec-get [10 20 30] 1)
+; === Closures and higher-order functions ===
 
-(defn inc [n] (add-i64 n 1))
 (defn apply-twice [f x] (f (f x)))
-(apply-twice inc 5)
-(apply-twice double 3)
+(apply-twice double 5)
+
+; === Putting it together ===
+
+(defn factorial [n] (if (= n 0) 1 (* n (factorial (- n 1)))))
+(factorial 10)

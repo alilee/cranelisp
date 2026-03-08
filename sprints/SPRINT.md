@@ -1,5 +1,3 @@
-# Sprint 12
+# Sprint 13
 
 **Status**: NOT STARTED
-**Ring**: 3 (Meta)
-**Goal**: TBD — invoke `/sprint` to plan.

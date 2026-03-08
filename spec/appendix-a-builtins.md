@@ -96,11 +96,13 @@ Extern primitives are called via the foreign function interface.
 | `str-concat` | `(Fn [String String] String)` | Concatenate two strings | [Tested tests/ring1.rs::string_concat]
 | `parse-int` | `(Fn [String] (Option Int))` | Parse decimal integer; `None` on failure | [Tested tests/ring1.rs::parse_int_valid]
 
-<!-- FIXME(/spec): U1.1 — 11 additional string primitives needed for stdlib text/string.cl.
-     Add to this table with [R3 S{N}] annotations when text/string.cl is scheduled:
-     substring, char-at, split, join, replace, trim, starts-with?, ends-with?,
-     contains?, to-upper, to-lower. Straightforward extern primitives wrapping Rust str
-     methods. Source: /stdlib plan-stdlib.md §14. -->
+<!-- FIXME(/spec): U1.1 — DEFERRED. 11 additional string primitives needed for stdlib
+     text/string.cl: substring, char-at, split, join, replace, trim, starts-with?,
+     ends-with?, contains?, to-upper, to-lower. These are straightforward extern primitives
+     wrapping Rust str methods, but text/string.cl is not yet scheduled in any sprint.
+     Add to this table with appropriate ring/sprint annotations when text/string.cl is
+     scheduled for implementation. Source: /stdlib plan-stdlib.md §14.
+     Deferred: Sprint 12 (3x deferred from S9). -->
 
 **Macro support**:
 

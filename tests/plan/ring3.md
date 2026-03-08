@@ -1,17 +1,15 @@
-<!-- FIXME(/qa): lib/ renamed to stdlib/ (Sprint 11). References to lib/core/syntax.cl
-     and lib/prelude.cl updated to stdlib/. Tests and examples MUST NOT depend on stdlib/.
-     Please review acceptance gate and test plan references. Also: verify that no tests
-     import from stdlib/ — all tests must be free-standing. -->
+<!-- lib/ renamed to stdlib/ (Sprint 11): Reviewed. All test plan references now use
+     stdlib/ paths (stdlib/core/syntax.cl, stdlib/prelude.cl, stdlib/core/*.cl).
+     Verified: no integration tests (tests/*.rs) import from or depend on stdlib/.
+     All tests are free-standing per the stdlib separation principle. -->
 
 # Ring 3 Test Plan: Meta
 
-<!-- FIXME(/qa): Decision 17 — when compiler-seeded traits (Num, Eq, Ord, Display) are
-     removed from builtins.rs, all existing integration tests that use operators (+, -, *,
-     /, =, <, >, <=, >=, show) will fail. Each test must either (a) define the necessary
-     traits/impls inline, or (b) use named primitives (add-i64 etc.) directly. A shared
-     test helper that emits the trait boilerplate would reduce duplication. Ring 2 tests
-     that specifically test trait dispatch should define traits inline — that makes the
-     test self-contained and explicit. See design/arch/CLAUDE.md Decision 17. -->
+<!-- Decision 17: RESOLVED. Compiler-seeded traits (Num, Eq, Ord, Display) were removed
+     from builtins.rs (Sprint 9). All integration tests that use operators now define
+     traits inline via shared helpers in ring2.rs (num_trait_prelude(), eq_trait_prelude(),
+     ord_trait_prelude()). Tests that don't need operator dispatch use named primitives
+     (add-i64, etc.) directly. -->
 
 **Features**: defmacro, quasiquote, multi-clause macros, bracket destructuring, gensym, reader shortcuts, prelude macros, standard library. Metaprogramming layer.
 

@@ -533,6 +533,72 @@ But **Vec is the critical gate**. Without it, the `Grid` type cannot exist, and 
 - **Ring 3**: Full exemplar core with macros, prelude, stdlib, `run-tests`. This is the target for implementing the pure computation modules (`grid.cl`, `solver.cl`, `html.cl`, `form.cl`).
 - **Ring 4**: Web platform DLL, IO wiring, integration tests. Exemplar complete.
 
+### Sprint 12 Assessment (Ring 3)
+
+**Ring 3 features available** (Sprint 11; 1551 tests):
+- **ADTs with fields**: Sum and product types, polymorphic type parameters, pattern matching with field bindings.
+- **Traits**: `deftrait`, `impl`, constrained polymorphism with monomorphisation. Prelude provides `Num`, `Eq`, `Ord`, `Display` with implementations for `Int`, `Float`, `Bool`, `String`.
+- **Operators via traits**: `+`, `-`, `*`, `/`, `=`, `<`, `>` work in `defn` bodies via trait dispatch.
+- **Vecs**: `vec-get`, `vec-set`, `vec-push`, `vec-len`. Functional update via `vec-set`.
+- **Strings**: `str-concat`, `str-eq`, `str-len`, `int-to-string`, `show` (Display).
+- **TCO**: Self-recursive tail calls optimized to loops.
+- **Macros**: `defmacro`, quasiquote, prelude macros.
+- **Modules**: `mod`, `import`, qualified names.
+
+**What was demonstrated** (see `repl/demos/exemplar-progress.demo`):
+
+A working 4x4 mini-Sudoku solver was implemented entirely in the REPL, exercising:
+
+1. **Domain ADTs**: `Cell` (Given/Solved/Unknown), `PropResult` (pure enum), defined and pattern-matched.
+2. **Display trait**: Custom `impl Display PropResult` showing match-based string conversion.
+3. **Grid index arithmetic**: `row-of`, `col-of`, `box-of` — pure Int functions for 9x9 Sudoku geometry.
+4. **Backtracking solver**: Recursive `solve` function with constraint checking (`no-conflict`), backtracking on failure, using `vec-set` for functional grid updates.
+5. **Grid display**: `format-grid`/`format-row`/`format-cell` — recursive string-building to pretty-print boards.
+6. **Two puzzles solved**: From given digits to complete valid solutions, with correct constraint propagation.
+
+**Findings and blockers**:
+
+| Finding | Severity | Skill | Description |
+|---|---|---|---|
+| Vec in polymorphic ADT display | Important | `/backend` | `(Solved [1 2 3])` displays as `(SolveResult.Solved [])` — the Vec field shows empty in ADT display, though data is correct when extracted via `match`. Prevents wrapping solution Vec in a `SolveResult` ADT for the demo. |
+| Trait operators in closures | Important | `/backend` | `(fn [x] (* x x))` fails with "no GOT slot for function: *". Trait-dispatched operators work in `defn` but not inside anonymous `fn` closures. Workaround: use monomorphic primitives (`mul-i64`) in closures. |
+| `!=` operator parse error | Minor | `/frontend` | `(!= 3 4)` → "unexpected character: '\'". The `!` character is not accepted as an operator character. Workaround: `(not (= 3 4))`. |
+| No `mod`/`rem` primitive | Important | `/stdlib` | Index arithmetic for `col-of` and `box-of` requires remainder. Workaround: `(- idx (* (/ idx 9) 9))`. |
+| No `char-at` / `str-split` | Blocking | `/stdlib` | Parsing puzzle input strings requires character-level access. Cannot implement `make-grid :: (Fn [String] Grid)`. |
+| No mutual recursion | Important | `/backend` | Solver `solve`/`try-each` pattern requires mutual recursion or workaround (combined into one function with extra `guess` parameter). |
+| Constrained poly GOT slots in REPL | Minor | `/backend` | Second call to a constrained polymorphic function in the same REPL session sometimes fails with "no GOT slot". Workaround: use monomorphic versions. |
+| IO / platform system | Blocking | Ring 4 | Web platform DLL and IO model not yet available. |
+
+<!-- FIXME(/backend): Vec in polymorphic ADT — display shows empty Vec when a Vec is stored as a field in a polymorphic ADT constructor. The data is preserved (extractable via match), but `format_adt_value` renders it as `[]`. Likely an RC/display issue with how the Vec pointer is read from the ADT heap layout. -->
+
+<!-- FIXME(/backend): Trait-dispatched operators (`+`, `*`, `=`, etc.) fail inside anonymous closures with "no GOT slot for function: *". They work in `defn` bodies because those are monomorphised at call sites, but closures capture them differently. This blocks using higher-order patterns like `(vec-fold v 0 (fn [acc x] (+ acc x)) 0)` — must use `add-i64` instead. -->
+
+<!-- FIXME(/frontend): `!=` operator — the `!` character is rejected by the sexp parser's operator_char pattern. Either add `!` to operator chars, or define `!=` as a named symbol. The prelude's `!=` default method exists but is unreachable from the parser. -->
+
+**Revised gap table (Sprint 12)**:
+
+| Need | Status | Arrives at |
+|---|---|---|
+| ADTs with fields | **Available** | Ring 1 |
+| Pattern matching | **Available** | Ring 1 |
+| Traits (Display, Eq) | **Available** | Ring 2 |
+| Vec operations | **Available** | Ring 1 |
+| Operators via traits | **Available in defn** — broken in closures | Needs fix |
+| Strings (concat, show) | **Available** | Ring 1 |
+| Recursive algorithms | **Available** — self-recursion with TCO | Ring 0 |
+| `mod`/`rem` | **Not available** — workaround exists | stdlib |
+| `char-at`, `str-split` | **Not available** — blocks input parsing | stdlib |
+| Modules | **Available** — not exercised in demo | Ring 2 |
+| Macros | **Available** — not exercised in demo | Ring 3 |
+| IO / Platform DLLs | **Not available** | Ring 4 |
+
+**Verdict**: Ring 3 moves the exemplar from "data model prototypable" to "**core algorithm demonstrable**". A working backtracking solver (4x4 scale) runs in the REPL with ADTs, pattern matching, Vec operations, recursive constraint checking, and string-based grid display. The 9x9 solver is algorithmically identical — only the constants change.
+
+The remaining blockers for a full exemplar implementation are:
+1. **String manipulation** (`char-at`, `str-split`) for input parsing — stdlib work
+2. **IO / platform system** for the web server — Ring 4
+3. **Operator closures** and **Vec-in-ADT display** — compiler fixes needed for idiomatic code
+
 **Risk assessment updates**:
 
 1. **Vec dependency confirmed as the critical path** (no change from Ring 0 assessment, but now quantified: 5 of 7 modules depend on Vec). Mitigation: bitmask encoding for candidates reduces Vec surface area slightly.

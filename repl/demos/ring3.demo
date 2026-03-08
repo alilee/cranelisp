@@ -1,0 +1,56 @@
+; Cranelisp Ring 3 — Macros & Metaprogramming
+; Macros transform code at compile time using quasiquote
+
+; === Defining a macro ===
+
+(defmacro twice "Evaluate and double" [x] `(+ ~x ~x))
+(twice 21)
+/expand (twice 21)
+/doc twice
+
+; === Multi-clause macros — dispatch on argument count ===
+
+(defmacro add "Variadic add" ([x] x) ([x y] `(+ ~x ~y)) ([x y z] `(+ ~x (+ ~y ~z))))
+(add 5)
+(add 3 4)
+(add 1 2 3)
+/sig add
+/expand (add 1 2 3)
+
+; === Splice with ~@ ===
+
+(defmacro my-vec "Build a vec from elements" [&elems] `[~@elems])
+(my-vec 10 20 30)
+/expand (my-vec 10 20 30)
+
+; === Prelude macros — do sequences expressions ===
+
+(do (+ 1 2) (+ 3 4))
+/expand (do (+ 1 2) (+ 3 4))
+
+; === Prelude macros — cond for multi-way branches ===
+
+(cond false "a" true "b" "default")
+/expand (cond false "a" true "b" "default")
+
+; === Prelude macros — const and def ===
+
+(const MAX 100)
+(+ MAX 1)
+/expand MAX
+
+(def answer (* 6 7))
+(+ answer 1)
+
+; === Thread-first and thread-last ===
+
+(defn inc [x] (+ x 1))
+(defn double [x] (* x 2))
+(-> 5 inc double)
+/expand (-> 5 inc double)
+(-> 10 (- 3))
+(->> 10 (- 3))
+
+; === Inspect your environment ===
+
+/list
