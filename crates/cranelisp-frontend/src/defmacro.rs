@@ -384,7 +384,7 @@ pub fn synthesize_macro_clause_defn(
 
     Sexp::List(
         vec![
-            Sexp::Symbol("defn".to_string(), next_span()),
+            Sexp::Symbol("defn-".to_string(), next_span()),
             Sexp::Symbol(fn_name, next_span()),
             param_bracket,
             body,
@@ -843,8 +843,8 @@ mod tests {
         };
         let result = synthesize_macro_clause_defn("test", 0, &clause, Span::SYNTHETIC);
 
-        // Should be (defn __macro_test_clause_0 [...] (match ...))
-        assert!(is_list_headed_by(&result, "defn"));
+        // Should be (defn- __macro_test_clause_0 [...] (match ...))
+        assert!(is_list_headed_by(&result, "defn-"));
         // Check function name
         if let Sexp::List(ch, _) = &result {
             assert!(matches!(&ch[1], Sexp::Symbol(s, _) if s == "__macro_test_clause_0"));
@@ -864,8 +864,8 @@ mod tests {
         };
         let result = synthesize_macro_clause_defn("const", 0, &clause, Span::SYNTHETIC);
 
-        // Should be (defn __macro_const_clause_0 [...] 42)
-        assert!(is_list_headed_by(&result, "defn"));
+        // Should be (defn- __macro_const_clause_0 [...] 42)
+        assert!(is_list_headed_by(&result, "defn-"));
         // Body should be the integer directly (no match chain)
         if let Sexp::List(ch, _) = &result {
             // ch[3] is the body

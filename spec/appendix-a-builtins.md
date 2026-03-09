@@ -132,6 +132,10 @@ Extern primitives are called via the foreign function interface.
 
 Special forms are keywords processed directly by the compiler. They are not functions or macros and cannot be shadowed.
 
+## A.5 Docstrings for Builtins [R1]
+
+All primitive functions (§A.3) and special forms (§A.4) MUST have docstrings available at runtime. The docstring for each builtin is the Description column text from the tables above (or an equivalent concise description). These docstrings MUST be accessible via the `/doc` REPL command and MUST appear in the `; classification - docstring` suffix of the universal output format (repl/spec.md §1.1) when the symbol is displayed.
+
 | Form | Description |
 |---|---|
 | `defn` / `defn-` | Function definition (single or multi-sig); `defn-` is module-private | [Tested tests/ring0.rs::arithmetic_addition]

@@ -97,7 +97,7 @@ With prelude loading (Sprint 11+), the REPL loads `stdlib/prelude.cl` at startup
 
 Decision 17 (eliminating bespoke compiler-seeded trait registration) was resolved in Sprint 9: core traits now flow through the normal `register_trait_decl` / `register_trait_impl` pipeline in `builtins.rs`. The prelude loading mechanism (Sprint 11) then made these traits available via stdlib rather than requiring inline setup in demos.
 
-**Current state**: Demos can freely use operators, trait-dispatched functions, and prelude macros without any setup. The `first-session.demo` script uses bare `+` and `/sig +` — these work because the prelude provides `Num` and its `Int`/`Float` implementations at startup.
+**Current state**: Demos can freely use operators, trait-dispatched functions, and prelude macros without any setup. The `first-session.demo` script uses bare `+` and `/imports` — these work because the prelude provides `Num` and its `Int`/`Float` implementations at startup.
 
 **If prelude loading is broken**: If a sprint breaks prelude loading (e.g., import registration ordering), operators will fail with unresolved trait errors. The fix belongs in the compiler pipeline (`/int`), not in the demos. Do not add inline trait boilerplate to demos as a workaround — file a FIXME against `/int` or `/qa` instead.
 
@@ -105,6 +105,6 @@ Decision 17 (eliminating bespoke compiler-seeded trait registration) was resolve
 
 - Keep demos short (20–40 lines of input) — they should be watchable in 2–3 minutes
 - Build a narrative: introduce a concept, show it, combine with previous concepts
-- **Use REPL discoverability to introduce new features.** When a demo uses a feature for the first time, let the viewer discover it through the REPL — type the name, see its type/description, then use it. For example, ring2a introduces `+` which comes from the prelude: run `/l` to see what's available, type `+` to see it's `Num.+`, type `Num` to see the trait. The REPL's self-documenting output sets up each section, not the demo author's comments. Comments are section breaks at most.
+- **Use REPL discoverability to introduce new features.** When a demo uses a feature for the first time, let the viewer discover it through the REPL — type the name, see its type/description, then use it. For example, ring2a introduces `+` which comes from the prelude: run `/imports` to see what's available, type `+` to see it's `Num.+`, type `Num` to see the trait. The REPL's self-documenting output sets up each section, not the demo author's comments. Comments are section breaks at most.
 - End with something satisfying — a composition of features that feels powerful
 - Each ring's demo should be self-contained (doesn't depend on previous demos)

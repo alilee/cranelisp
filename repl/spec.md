@@ -260,7 +260,7 @@ Slash commands provide introspection and navigation. All commands start with `/`
 |---|---|---|---|---|
 | `/help` | `/h` | Show available commands and usage | 0 | [Tested tests/e2e::e2e_s3_1_help] |
 | `/sig <name>` | `/s` | Show signature with typed parameters | 0 | [Tested tests/e2e::e2e_s3_1_sig] |
-| `/doc <name>` | `/d` | Show docstring | 0 | [R4 S10] |
+| `/doc <name>` | `/d` | Show docstring (including builtins — see spec/appendix-a-builtins.md §A.5) | 0 | [R1] |
 | `/type <expr>` | `/t` | Show type without evaluating | 0 | [Tested tests/e2e::e2e_s3_1_type] |
 | `/info <name>` | `/i` | Full details: type, classification, code size, compile time | 0 | [Tested tests/e2e::e2e_s3_4_info] |
 | `/source <name>` | — | Show original source text | 0 | [R4 S10] |
@@ -293,11 +293,11 @@ Available commands:
 
 Commands not yet available (due to ring) SHOULD be omitted or marked as unavailable.
 
-### 3.3 `/list` — Module Definitions [R3 S14]
+### 3.3 `/list` — Module Definitions [R4 S15]
 
 `/list` shows symbols **defined in the current module** — the user's own work. It does NOT show imports or special forms (those belong on `/imports`). Constructors are included alongside other symbols alphabetically.
 
-**Scope rule:** `/list` MUST show only names created by definitions in the current module: `defn`, `deftype`, `deftrait`, `impl` (trait method definitions), `defmacro`. Imported names MUST NOT appear. Special forms MUST NOT appear (they are always available and shown by `/imports`). Primitives (`add-i64`, etc.) MUST NOT appear when the current module is `user`.
+**Scope rule:** `/list` MUST show only names created by definitions in the current module: `defn`, `deftype`, `deftrait`, `impl` (trait method definitions), `defmacro`. Imported names MUST NOT appear. [Tested+Neg tests/e2e::e2e_s3_3_list_neg_no_imports] Special forms MUST NOT appear (they are always available and shown by `/imports`). [Tested+Neg tests/e2e::e2e_s3_3_list_neg_no_special_forms] Primitives (`add-i64`, etc.) MUST NOT appear when the current module is `user`. [Tested+Neg tests/e2e::e2e_s3_3_list_neg_no_imports]
 
 **Categories:**
 
@@ -306,21 +306,21 @@ Commands not yet available (due to ring) SHOULD be omitted or marked as unavaila
 | Modules | Declared submodules | 2 | [R4 S15] |
 | Macros | Macro definitions (`defmacro`) | 3 | [Tested+Neg tests/ring3_repl::r3_list_macros_category_via_symbol_table, tests/ring3_repl::r3_neg_non_macros_absent_from_macros] |
 | Traits | Trait declarations (`deftrait`) | 2 | [Tested tests/e2e::e2e_s3_3_list_traits] |
-| Types | User-defined types and constructors (`deftype`) | 0 | [Tested tests/e2e::e2e_s3_3_list] |
-| Fns | User-defined functions and trait method implementations | 0 | [Tested tests/e2e::e2e_s3_3_list] |
+| Types | User-defined types and constructors (`deftype`) | 0 | [Tested+Neg tests/e2e::e2e_s3_3_list_constructors_in_types, tests/e2e::e2e_s3_3_list_neg_ctors_not_in_fns] |
+| Fns | User-defined functions and trait method implementations | 0 | [Tested tests/e2e::e2e_s3_3_list, tests/e2e::e2e_s3_3_list_fns_category_name] |
 
-Category order: Modules, Macros, Traits, Types, Fns. Empty categories are omitted.
+Category order: Modules, Macros, Traits, Types, Fns. Empty categories are omitted. [Tested+Neg tests/e2e::e2e_s3_3_list_neg_empty_categories_omitted]
 
-**Empty module:** When no definitions exist in the current module, `/list` MUST print `(no definitions)`. This distinguishes "command worked on empty module" from a failed command.
+**Empty module:** When no definitions exist in the current module, `/list` MUST print `(no definitions)`. [Tested tests/e2e::e2e_s3_3_list_empty_module] This distinguishes "command worked on empty module" from a failed command.
 
-**Negative requirements** (what MUST NOT appear):
+**Negative requirements** (what MUST NOT appear): [Tested+Neg]
 
-- No category should contain imported names (those belong on `/imports`)
-- No category should contain special forms (those belong on `/imports`)
-- No category should contain compiler-internal symbols (`__macro_*`, `$`-mangled names)
-- Constructors MUST appear in Types, not in Fns
+- No category should contain imported names (those belong on `/imports`) [Tested+Neg tests/e2e::e2e_s3_3_list_neg_no_imports]
+- No category should contain special forms (those belong on `/imports`) [Tested+Neg tests/e2e::e2e_s3_3_list_neg_no_special_forms]
+- No category should contain compiler-internal symbols (`__macro_*`, `$`-mangled names) [R4 S15]
+- Constructors MUST appear in Types, not in Fns [Tested+Neg tests/e2e::e2e_s3_3_list_constructors_in_types, tests/e2e::e2e_s3_3_list_neg_ctors_not_in_fns]
 
-**Filter argument:** `/list <text>` performs a case-insensitive prefix match on symbol names across all categories, showing matching symbols with full type info. `/list` with no argument shows all definitions.
+**Filter argument:** `/list <text>` performs a case-insensitive prefix match on symbol names across all categories, showing matching symbols with full type info. [Tested tests/e2e::e2e_s3_3_list_prefix_filter] `/list` with no argument shows all definitions. [Tested tests/e2e::e2e_s3_3_list]
 
 **Large category display:** When a category contains 7 or more names, the display SHOULD use the following layout algorithm:
 
@@ -342,7 +342,7 @@ Fns:
   ...
 ```
 
-### 3.4 `/imports` — Imports and Special Forms [R3 S14]
+### 3.4 `/imports` — Imports and Special Forms [R4 S15]
 
 `/imports` shows everything available in the current module that was NOT defined here: imported names and language special forms. This is the complement of `/list` — together they cover all symbols in scope.
 
@@ -350,17 +350,17 @@ Fns:
 
 | Category | Contents | Ring | Test |
 |---|---|---|---|
-| Special forms | `if`, `let`, `fn`, `defn`, `deftype`, `match`, etc. | 0 | [Tested tests/e2e::e2e_s3_3_list_special_forms] |
-| Macros | Imported macro definitions | 3 | [R3 S14] |
-| Traits | Imported trait declarations | 2 | [R3 S14] |
-| Types | Imported types and constructors | 0 | [R3 S14] |
-| Fns | Imported functions and trait methods | 0 | [R3 S14] |
+| Special forms | `if`, `let`, `fn`, `defn`, `deftype`, `match`, etc. | 0 | [Tested tests/e2e::e2e_s3_4_imports_special_forms, tests/e2e::e2e_s3_4_imports_special_forms_always] |
+| Macros | Imported macro definitions | 3 | [R4 S15] |
+| Traits | Imported trait declarations | 2 | [R4 S15] |
+| Types | Imported types and constructors | 0 | [R4 S15] |
+| Fns | Imported functions and trait methods | 0 | [Tested tests/e2e::e2e_s3_4_imports_includes_imports] |
 
-Category order: Special forms, Macros, Traits, Types, Fns. Empty categories are omitted (except Special forms, which are always present).
+Category order: Special forms, Macros, Traits, Types, Fns. Empty categories are omitted (except Special forms, which are always present). [Tested tests/e2e::e2e_s3_4_imports_special_forms_always]
 
 **Format:** Each category lists names using the same layout algorithm as `/list` (§3.3) — names only, no type signatures. Type the symbol name for more detail.
 
-**Source module filter:** `/imports <module-name>` filters to show only imports from that source module (exact match). Names are grouped under `From <module>:` and sorted alphabetically. Source modules sorted alphabetically.
+**Source module filter:** `/imports <module-name>` filters to show only imports from that source module (exact match). [Tested tests/e2e::e2e_s3_4_imports_filter_by_module, tests/e2e::e2e_s3_4_imports_filter_shows_from] Names are grouped under `From <module>:` and sorted alphabetically. Source modules sorted alphabetically.
 
 ```
 user> /imports prelude
@@ -371,30 +371,30 @@ From prelude:
   ...
 ```
 
-**Unfiltered mode:** `/imports` with no argument shows all imports organized by category (not by source module). This gives a quick overview of what's available. Use `/imports <module>` for per-module detail.
+**Unfiltered mode:** `/imports` with no argument shows all imports organized by category (not by source module). [Tested tests/e2e::e2e_s3_4_imports_after_import] This gives a quick overview of what's available. Use `/imports <module>` for per-module detail.
 
 **Re-export provenance:** When the user writes `(import [prelude [*]])` and the prelude re-exports `+` from `core.numerics`, `/imports prelude` shows `+` under `From prelude:` — because that is the module the user imported from. The ultimate origin is available via `/info +` (§3.6).
 
-**Reexport entries:** Both `Import` and `Reexport` module entries MUST be included. A symbol re-exported through the prelude is still an import from the user's perspective.
+**Reexport entries:** Both `Import` and `Reexport` module entries MUST be included. [Tested tests/e2e::e2e_s3_4_imports_includes_imports] A symbol re-exported through the prelude is still an import from the user's perspective.
 
 **Glob imports:** When `(import [mod [*]])` was used, `/imports` MUST show the individual names that were imported (the expansion of `*` at the time the import was evaluated), not just `*`.
 
 **Implicit prelude import (Ring 3+):** The compiler injects an implicit `(import [prelude [*]])` for all non-prelude modules (spec §8.8.1). This implicit import IS visible in `/imports` — the user needs to discover what the prelude provides.
 
-**No imports:** In a fresh session with no explicit `(import ...)` and no prelude, `/imports` MUST show only Special forms. The `primitives` module's implicit availability is via the module resolution fallback, NOT via import — so primitives do not appear in `/imports` unless explicitly imported.
+**No imports:** In a fresh session with no explicit `(import ...)` and no prelude, `/imports` MUST show only Special forms. [Tested tests/e2e::e2e_s3_4_imports_empty] The `primitives` module's implicit availability is via the module resolution fallback, NOT via import — so primitives do not appear in `/imports` unless explicitly imported.
 
 **Error cases:**
-- `/imports nonexistent` — no imports from that module; silent re-prompt (not an error)
+- `/imports nonexistent` — no imports from that module; silent re-prompt (not an error) [Tested+Neg tests/e2e::e2e_s3_4_neg_imports_nonexistent_not_error, tests/e2e::e2e_s3_4_neg_imports_nonexistent_silent]
 
-### 3.5 `/exports <module>` — Module Public API [R3 S14]
+### 3.5 `/exports <module>` — Module Public API [R4 S15]
 
 `/exports <module>` resolves a module and lists its importable (public) symbols. This answers "what can I import from this module?" before writing an `(import ...)` form.
 
-**Argument:** The module name is required. `/exports` with no argument MUST print a usage hint: `Usage: /exports <module-name>`.
+**Argument:** The module name is required. `/exports` with no argument MUST print a usage hint: `Usage: /exports <module-name>`. [Tested tests/e2e::e2e_s3_5_exports_no_arg_usage]
 
-**Module resolution:** The argument is resolved using the same resolution logic as `(import [module [...]])` — submodule paths, root modules, and stdlib modules. If the module is not yet loaded, it SHOULD be resolved and loaded (same as an import would trigger). If the module cannot be found, print an error: `Module '<name>' not found`.
+**Module resolution:** The argument is resolved using the same resolution logic as `(import [module [...]])` — submodule paths, root modules, and stdlib modules. If the module is not yet loaded, it SHOULD be resolved and loaded (same as an import would trigger). If the module cannot be found, print an error: `Module '<name>' not found`. [Tested tests/e2e::e2e_s3_5_exports_not_found]
 
-**Output format:** Public symbols listed by category — names only, no type signatures. Type the symbol name for more detail.
+**Output format:** Public symbols listed by category — names only, no type signatures. [Tested tests/e2e::e2e_s3_5_exports_lists_symbols] Type the symbol name for more detail.
 
 ```
 user> /exports math
@@ -407,9 +407,9 @@ Categories follow the same order as `/list`: Modules, Macros, Traits, Types, Fns
 
 **What counts as public:** Definitions with public visibility — `Def`, `Constructor`, `TraitDecl`, `TypeDef`, `Macro`. Import and Reexport entries in the target module are NOT shown (those are the module's own imports, not its exports).
 
-**Empty module:** If the module has no public symbols, print `Module '<name>' has no public symbols`.
+**Empty module:** If the module has no public symbols, print `Module '<name>' has no public symbols`. [R4 S15]
 
-**Filter argument:** `/exports <module> <prefix>` performs a case-insensitive prefix match within the module's exports.
+**Filter argument:** `/exports <module> <prefix>` performs a case-insensitive prefix match within the module's exports. [R4 S15]
 
 ### 3.6 `/info` Output [Tested tests/e2e::e2e_s3_4_info]
 

@@ -9,39 +9,9 @@
 //
 // No `unwrap()` in this module -- all errors use `?`.
 //
-// FIXME(/int): Universal output format (repl/spec.md §1.1, S14) — major rework needed:
-//
-// 1. special_form_feedback(): Add classification comment suffix to ALL outputs:
-//    - Functions: `:Type module/name ; defn - docstring`
-//    - Constructors: `:Type module/Type.Ctor ; deftype`
-//    - Types: `:module/Type ; deftype` + related symbols (match: ctors, impl: traits)
-//    - Traits: `:module/Trait ; deftrait` + related symbols (defn: methods, impl: types)
-//    - Special forms: `:Type name ; special form - description`
-//    - Macros: `:module/name ; defmacro` + clause signatures (`; [params] -> Sexp`)
-//    - Primitives: currently skipped (DefKind::Primitive returns None) — MUST show as defn
-//    - Trait methods: use `Trait.method` dot notation (e.g. `core.num/Num.+`)
-//    - Builtin types (Int, Bool, Float, String): `:primitives/Type ; type` + impl: section
-//
-// 2. handle_list(): Align with spec §3.3:
-//    - Remove special_forms category (belongs on /imports)
-//    - Remove imports category (belongs on /imports)
-//    - Include constructors in Types category
-//    - Print `(no definitions)` for empty module
-//    - Change filter from substring to prefix match (case-insensitive)
-//    - Category order: Modules, Macros, Traits, Types, Fns
-//
-// 3. handle_imports(): Align with spec §3.4:
-//    - ADD special forms category (always present)
-//    - Include Reexport entries (not just Import)
-//    - Per-source-module filter: `/imports modulename` → `From module:` groups
-//    - Unfiltered: organize by category (Macros, Traits, Types, Fns)
-//
-// 4. /exports: New command (spec §3.5) — resolve module, list public symbols by category
-//
-// 5. Macro display: Replace `name :: macro` format with universal format:
-//    `:module/name ; defmacro` + `; [params] -> Sexp` clause lines
-//    Affects: defmacro definition response, /info, /sig, /doc, bare symbol lookup
-//
+// Universal output format (repl/spec.md §1.1, implemented Sprint 15):
+// All REPL output uses `:Type {value|name} ; {classification} - {docstring}`
+// with optional related symbol sections for types, traits, and macros.
 
 use std::collections::HashMap;
 use std::io::{self, BufRead, Write};
@@ -53,7 +23,7 @@ use cranelisp_backend::jit::Jit;
 use cranelisp_typecheck::TypeChecker;
 use cranelisp_types::{
     CompileMode, CranelispError, DefKind, MacroClauseInfo, MacroParam,
-    ModuleEntry, ModuleFullPath, ReplCheckResult, ReplInput, Sexp, Symbol, Type,
+    ModuleEntry, ModuleFullPath, ReplCheckResult, ReplInput, Sexp, Symbol, TraitName, Type,
     TypeDefInfo, TypeName, Visibility, Warning, NULLARY_TAG_THRESHOLD,
 };
 
@@ -296,6 +266,10 @@ impl ReplSession {
                 source: None,
             })
             .collect();
+        // Compute display before moving clause_infos into symbol table.
+        let module = self.tc.current_module_path().clone();
+        let display = format_defmacro_display(&info.name, &clause_infos, &module);
+
         let visibility = if info.is_private {
             Visibility::Private
         } else {
@@ -312,9 +286,6 @@ impl ReplSession {
                 source: None,
             },
         );
-
-        // Display format per spec §11.3: "name :: macro" or "name :: macro (N clauses)"
-        let display = format_defmacro_display(&info.name, info.clauses.len());
 
         Ok(ReplResult {
             value: 0,
@@ -345,7 +316,7 @@ impl ReplSession {
         // Look up the symbol in the current module's symbol table.
         let entry = self.tc.symbol_table().get(name.as_str())?;
         match entry {
-            ModuleEntry::Macro { clauses, .. } => {
+            ModuleEntry::Macro { clauses, docstring, .. } => {
                 // Check if any clause accepts zero args — if so, let the
                 // expander handle it (it's a valid zero-arg macro call).
                 let has_zero_arg_clause = clauses.iter().any(|c| {
@@ -354,8 +325,11 @@ impl ReplSession {
                 if has_zero_arg_clause {
                     return None; // Let expander handle zero-arg expansion.
                 }
-                // Non-zero-arg macro: show signature info.
-                let display = format_macro_signature(name, clauses);
+                // Non-zero-arg macro: show universal format (spec §4.1.6).
+                let module = self.tc.current_module_path().clone();
+                let display = format_macro_display_universal(
+                    name, clauses, docstring.as_deref(), &module,
+                );
                 Some(ReplResult {
                     value: 0,
                     ty: Type::Int,
@@ -509,15 +483,16 @@ impl ReplSession {
             (0, Duration::ZERO)
         };
 
-        // Build definition display with qualified name (spec §1.3).
+        // Build definition display with qualified name (spec §1.1, §1.3).
         let module = self.tc.current_module_path().clone();
         let definition_display = if is_constrained {
             check_result.scheme.as_ref().map(|s| {
-                format_scheme_display(&defn.name, s, &module, &self.type_modules)
+                let base = format_scheme_display(&defn.name, s, &module, &self.type_modules);
+                format!("{base} ; defn")
             })
         } else if !defn.params.is_empty() {
             let type_str = format_type_qualified(&check_result.ty, &self.type_modules);
-            Some(format!(":{type_str} {module}/{}", defn.name))
+            Some(format!(":{type_str} {module}/{} ; defn", defn.name))
         } else {
             None
         };
@@ -545,12 +520,12 @@ impl ReplSession {
             self.type_modules.insert(name.clone(), module.clone());
         }
 
-        // Build qualified display: `:module/TypeName`
+        // Build qualified display: `:module/TypeName ; deftype` + related symbols
         let type_name = match &check_result.ty {
             Type::ADT(name, _) => name.to_string(),
             _ => "?".to_string(),
         };
-        let display = format!(":{module}/{type_name}");
+        let display = format_type_display_universal(&type_name, &module, self);
 
         Ok(ReplResult {
             value: 0,
@@ -577,8 +552,11 @@ impl ReplSession {
             }
         }
 
-        let module = self.tc.current_module_path();
-        let display = format!(":{module}/{}", decl.name);
+        let display = format_trait_display_universal(
+            decl.name.as_ref(),
+            decl.docstring.as_deref(),
+            self,
+        );
 
         Ok(ReplResult {
             value: 0,
@@ -1327,16 +1305,11 @@ fn format_field_value(
     }
 }
 
-/// Format the REPL display for a defmacro definition (spec §11.3).
+/// Format the REPL display for a defmacro definition (spec §1.1, §11.3).
 ///
-/// Single clause: `name :: macro`
-/// Multi-clause:  `name :: macro (N clauses)`
-fn format_defmacro_display(name: &str, clause_count: usize) -> String {
-    if clause_count <= 1 {
-        format!("{name} :: macro")
-    } else {
-        format!("{name} :: macro ({clause_count} clauses)")
-    }
+/// Uses universal format: `:module/name ; defmacro` + clause signatures.
+fn format_defmacro_display(name: &str, clauses: &[MacroClauseInfo], module: &ModuleFullPath) -> String {
+    format_macro_display_universal(name, clauses, None, module)
 }
 
 /// Parsed REPL slash command.
@@ -1351,6 +1324,7 @@ enum ReplCommand<'a> {
     Time(&'a str),
     Expand(&'a str),
     Imports(&'a str),
+    Exports(&'a str),
     Unknown(&'a str),
 }
 
@@ -1378,6 +1352,7 @@ fn parse_slash_command(input: &str) -> Option<ReplCommand<'_>> {
         "/time" => ReplCommand::Time(arg),
         "/expand" | "/e" => ReplCommand::Expand(arg),
         "/imports" => ReplCommand::Imports(arg),
+        "/exports" => ReplCommand::Exports(arg),
         _ => ReplCommand::Unknown(cmd),
     })
 }
@@ -1394,7 +1369,8 @@ fn print_help(stdout: &mut impl Write) {
     let _ = writeln!(stdout, "  /list (/l) [FILTER] List symbols in current module");
     let _ = writeln!(stdout, "  /time EXPR          Evaluate with timing breakdown");
     let _ = writeln!(stdout, "  /expand (/e) FORM   Macro-expand a form");
-    let _ = writeln!(stdout, "  /imports [MODULE]   Show imports in current module");
+    let _ = writeln!(stdout, "  /imports [MODULE]   Show imports and special forms");
+    let _ = writeln!(stdout, "  /exports MODULE     Show module's public symbols");
 }
 
 /// Format the REPL prompt with timing and module info.
@@ -1435,6 +1411,7 @@ fn dispatch_slash_command(
         }
         ReplCommand::Expand(form) => handle_expand(session, form, stdout),
         ReplCommand::Imports(filter) => handle_imports(session, filter, stdout),
+        ReplCommand::Exports(arg) => handle_exports(session, arg, stdout),
         ReplCommand::Unknown(cmd) => {
             let _ = writeln!(
                 stdout,
@@ -1652,10 +1629,17 @@ fn handle_sig(session: &ReplSession, name: &str, stdout: &mut impl Write) {
         let _ = writeln!(stdout, "usage: /sig <name>");
         return;
     }
+    // Check builtin types first (not in symbol table)
+    if Type::from_name(name).is_some() {
+        let _ = writeln!(stdout, "{}", format_builtin_type_display(name, session));
+        return;
+    }
     let module = session.tc.current_module_path().clone();
     match session.tc.symbol_table().get(name) {
         Some(entry) => {
-            let display = format_entry_signature(entry, name, &module, &session.type_modules, &session.tc);
+            let (resolved_entry, resolved_module) =
+                resolve_entry_for_display(entry, &module, session);
+            let display = format_entry_signature(resolved_entry, name, resolved_module, session);
             let _ = writeln!(stdout, "{display}");
         }
         None => {
@@ -1737,37 +1721,37 @@ fn typecheck_only(session: &mut ReplSession, expr_src: &str) -> Result<Type, Cra
     Ok(check_result.ty)
 }
 
-/// Handle `/info <name>` — show full details about a symbol (spec §3.5, §11.2.2).
+/// Handle `/info <name>` — show full details about a symbol (spec §3.6).
 fn handle_info(session: &ReplSession, name: &str, stdout: &mut impl Write) {
     if name.is_empty() {
         let _ = writeln!(stdout, "usage: /info <name>");
         return;
     }
+    // Check builtin types first (not in symbol table)
+    if Type::from_name(name).is_some() {
+        let _ = writeln!(stdout, "{}", format_builtin_type_display(name, session));
+        return;
+    }
     let module = session.tc.current_module_path().clone();
     match session.tc.symbol_table().get(name) {
         Some(entry) => {
+            let (resolved_entry, resolved_module) =
+                resolve_entry_for_display(entry, &module, session);
             // Line 1: type signature (same as /sig).
-            let sig = format_entry_signature(entry, name, &module, &session.type_modules, &session.tc);
+            let sig = format_entry_signature(resolved_entry, name, resolved_module, session);
             let _ = writeln!(stdout, "{sig}");
-            // Line 2: for macros, show docstring; for functions, show code info.
-            match entry {
-                ModuleEntry::Macro { docstring, .. } => {
-                    if let Some(doc) = docstring {
-                        let _ = writeln!(stdout, "  \"{doc}\"");
-                    }
-                }
-                _ => {
-                    if let Some(dc) = session.got_state.def_codegen.get(name) {
-                        let size_str = dc
-                            .code_size
-                            .map(|s| format!("{s} bytes"))
-                            .unwrap_or_else(|| "? bytes".to_string());
-                        let time_str = dc
-                            .compile_duration
-                            .map(|d| format!("{}ms", d.as_millis()))
-                            .unwrap_or_else(|| "?ms".to_string());
-                        let _ = writeln!(stdout, "  {size_str}, {time_str}");
-                    }
+            // Line 2: for functions, show code info.
+            if !matches!(resolved_entry, ModuleEntry::Macro { .. } | ModuleEntry::TypeDef { .. } | ModuleEntry::TraitDecl { .. }) {
+                if let Some(dc) = session.got_state.def_codegen.get(name) {
+                    let size_str = dc
+                        .code_size
+                        .map(|s| format!("{s} bytes"))
+                        .unwrap_or_else(|| "? bytes".to_string());
+                    let time_str = dc
+                        .compile_duration
+                        .map(|d| format!("{}ms", d.as_millis()))
+                        .unwrap_or_else(|| "?ms".to_string());
+                    let _ = writeln!(stdout, "  {size_str}, {time_str}");
                 }
             }
         }
@@ -1777,126 +1761,94 @@ fn handle_info(session: &ReplSession, name: &str, stdout: &mut impl Write) {
     }
 }
 
-/// Handle `/list [filter]` — list symbols in the current module by category.
+/// Handle `/list [prefix]` — list definitions in the current module (spec §3.3).
 ///
-/// Categories (spec §3.3): Types, Traits, Special forms, Macros, Functions, Imports.
-/// Only shows names defined in the current module. Imported names appear
-/// in the Imports category as a summary count per source module.
+/// Shows only symbols DEFINED in the current module. No imports, no special forms.
+/// Categories: Modules, Macros, Traits, Types (incl constructors), Fns.
 fn handle_list(session: &ReplSession, filter: &str, stdout: &mut impl Write) {
-    let categories = classify_symbols(session, filter);
-    print_categories(&categories, stdout);
-}
-
-/// Classified symbols for `/list` display.
-struct ListCategories {
-    types: Vec<String>,
-    traits: Vec<String>,
-    special_forms: Vec<String>,
-    macros: Vec<String>,
-    functions: Vec<String>,
-    imports: HashMap<String, Vec<String>>,
-}
-
-/// Classify all symbols in the current module into `/list` categories.
-fn classify_symbols(session: &ReplSession, filter: &str) -> ListCategories {
-    let module = session.tc.current_module_path().clone();
     let table = session.tc.symbol_table();
 
-    let mut cats = ListCategories {
-        types: Vec::new(),
-        traits: Vec::new(),
-        special_forms: Vec::new(),
-        macros: Vec::new(),
-        functions: Vec::new(),
-        imports: HashMap::new(),
-    };
+    let mut macros: Vec<String> = Vec::new();
+    let mut traits: Vec<String> = Vec::new();
+    let mut types: Vec<String> = Vec::new();
+    let mut fns: Vec<String> = Vec::new();
 
     for (sym, entry) in table.all_symbols() {
-        if matches!(entry, ModuleEntry::Constructor { .. }) {
-            continue;
-        }
-
         let name = sym.to_string();
-        if !filter.is_empty() && !name.to_lowercase().contains(&filter.to_lowercase()) {
+
+        // Prefix match filter (case-insensitive)
+        if !filter.is_empty()
+            && !name.to_lowercase().starts_with(&filter.to_lowercase())
+        {
             continue;
         }
 
         match entry {
-            ModuleEntry::Import { source } | ModuleEntry::Reexport { source } => {
-                cats.imports
-                    .entry(source.module.to_string())
-                    .or_default()
-                    .push(name);
-            }
+            // Skip imports, reexports — belong on /imports
+            ModuleEntry::Import { .. } | ModuleEntry::Reexport { .. } => {}
+            // Types and their constructors in Types category
             ModuleEntry::TypeDef { .. } => {
-                cats.types.push(format!("{module}/{name}"));
+                types.push(name);
+            }
+            ModuleEntry::Constructor { .. } => {
+                types.push(name);
             }
             ModuleEntry::TraitDecl { .. } => {
-                let defining = session.tc.defining_module_for(&name);
-                cats.traits.push(format!("{defining}/{name}"));
+                traits.push(name);
             }
             ModuleEntry::Macro { .. } => {
-                cats.macros.push(name);
+                macros.push(name);
             }
-            ModuleEntry::Def { kind, .. } => match kind.as_ref() {
-                DefKind::SpecialForm { .. } => {
-                    cats.special_forms.push(name);
-                }
-                DefKind::Primitive { .. } => {} // skip — belongs in primitives module
-                _ => {
-                    // Skip internal macro implementation functions (e.g. __macro_twice_clause_0)
-                    if !name.starts_with("__macro_") {
-                        cats.functions.push(format!("{module}/{name}"));
+            ModuleEntry::Def { kind, .. } => {
+                match kind.as_ref() {
+                    // Skip special forms — belong on /imports
+                    DefKind::SpecialForm { .. } => {}
+                    // Skip primitives — belong in primitives module
+                    DefKind::Primitive { .. } => {}
+                    _ => {
+                        fns.push(name);
                     }
                 }
-            },
+            }
             _ => {}
         }
     }
 
-    cats.types.sort();
-    cats.traits.sort();
-    cats.special_forms.sort();
-    cats.macros.sort();
-    cats.functions.sort();
-    cats
+    macros.sort();
+    traits.sort();
+    types.sort();
+    fns.sort();
+
+    let has_any = !macros.is_empty() || !traits.is_empty()
+        || !types.is_empty() || !fns.is_empty();
+
+    if !has_any {
+        let _ = writeln!(stdout, "(no definitions)");
+        return;
+    }
+
+    // Category order: Modules, Macros, Traits, Types, Fns
+    print_name_category("Macros", &macros, stdout);
+    print_name_category("Traits", &traits, stdout);
+    print_name_category("Types", &types, stdout);
+    print_name_category("Fns", &fns, stdout);
 }
 
-/// Print classified symbols to stdout in `/list` format.
-fn print_categories(cats: &ListCategories, stdout: &mut impl Write) {
-    let print_section = |name: &str, items: &[String], out: &mut dyn Write| {
-        if !items.is_empty() {
-            let _ = writeln!(out, "{name}:");
-            for item in items {
-                let _ = writeln!(out, "  {item}");
-            }
-        }
-    };
-
-    print_section("Types", &cats.types, stdout);
-    print_section("Traits", &cats.traits, stdout);
-    print_section("Special forms", &cats.special_forms, stdout);
-    print_section("Macros", &cats.macros, stdout);
-    print_section("Functions", &cats.functions, stdout);
-
-    if !cats.imports.is_empty() {
-        let _ = writeln!(stdout, "Imports:");
-        let mut sorted_modules: Vec<_> = cats.imports.keys().cloned().collect();
-        sorted_modules.sort();
-        for mod_name in &sorted_modules {
-            let names = cats.imports.get(mod_name).map(|v| v.as_slice()).unwrap_or(&[]);
-            let count = names.len();
-            if count <= 5 {
-                let mut sorted_names: Vec<_> = names.to_vec();
-                sorted_names.sort();
-                let _ = writeln!(
-                    stdout,
-                    "  {mod_name} ({count} names: {})",
-                    sorted_names.join(", ")
-                );
-            } else {
-                let _ = writeln!(stdout, "  {mod_name} ({count} names)");
-            }
+/// Print a category of names for `/list`, `/imports`, `/exports`.
+///
+/// Names are shown compactly: up to 6 per line for categories with 7+ names,
+/// all on one line for smaller categories.
+fn print_name_category(label: &str, names: &[String], stdout: &mut impl Write) {
+    if names.is_empty() {
+        return;
+    }
+    let _ = writeln!(stdout, "{label}:");
+    if names.len() < 7 {
+        let _ = writeln!(stdout, "  {}", names.join(" "));
+    } else {
+        // Compact layout: 6 names per line
+        for chunk in names.chunks(6) {
+            let _ = writeln!(stdout, "  {}", chunk.join(" "));
         }
     }
 }
@@ -1995,159 +1947,330 @@ fn format_sexp(sexp: &Sexp) -> String {
 
 /// Handle `/imports [module]` — show imports in current module (spec §3.4).
 ///
-/// Groups imported names by source module. Optional filter narrows to one
-/// source module (exact match). Empty output for no imports or unknown module.
+/// Unfiltered: organize by category (Special forms, Macros, Traits, Types, Fns).
+/// Filtered: `/imports <module>` shows imports from that source module only,
+/// organized as `From <module>:` groups with sorted names.
+/// Names only — no type signatures. Type the name for more detail.
 fn handle_imports(session: &ReplSession, filter: &str, stdout: &mut impl Write) {
     let table = session.tc.symbol_table();
 
-    // Collect imports grouped by source module.
-    let mut imports: HashMap<String, Vec<(String, String)>> = HashMap::new();
-    for (sym, entry) in table.all_symbols() {
-        if let ModuleEntry::Import { source } = entry {
-            let source_mod = source.module.to_string();
-            // Apply module filter if provided.
-            if !filter.is_empty() && source_mod != filter {
+    if filter.is_empty() {
+        // Unfiltered mode: organize by category (spec §3.4)
+        let mut special_forms: Vec<String> = Vec::new();
+        let mut macros: Vec<String> = Vec::new();
+        let mut traits: Vec<String> = Vec::new();
+        let mut types: Vec<String> = Vec::new();
+        let mut fns: Vec<String> = Vec::new();
+
+        for (sym, entry) in table.all_symbols() {
+            let name = sym.to_string();
+            match entry {
+                ModuleEntry::Def { kind, .. } => {
+                    if let DefKind::SpecialForm { .. } = kind.as_ref() {
+                        special_forms.push(name);
+                    } else if matches!(kind.as_ref(), DefKind::Primitive { .. }) {
+                        // Primitives are NOT shown in /imports (they're via module
+                        // resolution fallback, not import).
+                    } else {
+                        // Skip locally-defined fns (not imports)
+                    }
+                }
+                ModuleEntry::Import { source } | ModuleEntry::Reexport { source } => {
+                    // Skip monomorphised variant names (e.g. add$Int+Int)
+                    if name.contains('$') {
+                        continue;
+                    }
+                    // Classify by looking up the source entry
+                    let classification = classify_import(session, source);
+                    match classification {
+                        ImportClass::Macro => macros.push(name),
+                        ImportClass::Trait => traits.push(name),
+                        ImportClass::Type | ImportClass::Constructor => types.push(name),
+                        ImportClass::Fn => fns.push(name),
+                    }
+                }
+                _ => {} // TypeDef, TraitDecl, Constructor, Macro — locally defined
+            }
+        }
+
+        special_forms.sort();
+        macros.sort();
+        traits.sort();
+        types.sort();
+        fns.sort();
+
+        // Special forms always present (spec §3.4)
+        print_name_category("Special forms", &special_forms, stdout);
+        print_name_category("Macros", &macros, stdout);
+        print_name_category("Traits", &traits, stdout);
+        print_name_category("Types", &types, stdout);
+        print_name_category("Fns", &fns, stdout);
+
+        if special_forms.is_empty() && macros.is_empty() && traits.is_empty()
+            && types.is_empty() && fns.is_empty()
+        {
+            // Shouldn't happen (special forms always present), but just in case
+            let _ = writeln!(stdout, "(no imports)");
+        }
+    } else {
+        // Filtered mode: `/imports <module>` — show imports from that source module
+        let mut names: Vec<String> = Vec::new();
+        for (sym, entry) in table.all_symbols() {
+            let source = match entry {
+                ModuleEntry::Import { source } => source,
+                ModuleEntry::Reexport { source } => source,
+                _ => continue,
+            };
+            let name = sym.to_string();
+            // Skip monomorphised variant names
+            if name.contains('$') {
                 continue;
             }
-            // Look up the type signature of the imported symbol in the source module.
-            let type_sig = lookup_import_type(session, source);
-            imports
-                .entry(source_mod)
-                .or_default()
-                .push((sym.to_string(), type_sig));
-        }
-    }
-
-    // Display grouped by source module, sorted.
-    let mut sorted_modules: Vec<_> = imports.keys().cloned().collect();
-    sorted_modules.sort();
-    for mod_name in &sorted_modules {
-        let _ = writeln!(stdout, "From {mod_name}:");
-        if let Some(names) = imports.get(mod_name) {
-            let mut sorted = names.clone();
-            sorted.sort_by(|a, b| a.0.cmp(&b.0));
-            for (name, sig) in &sorted {
-                let _ = writeln!(stdout, "  {name} :: {sig}");
+            if source.module.to_string() == filter {
+                names.push(name);
             }
         }
+        if names.is_empty() {
+            // Silent re-prompt for no matches (spec §3.4)
+            return;
+        }
+        names.sort();
+        print_name_category(&format!("From {filter}"), &names, stdout);
     }
 }
 
-/// Look up the type signature for an imported symbol.
-fn lookup_import_type(
-    session: &ReplSession,
+/// Handle `/exports <module>` — list a module's public symbols (spec §3.5).
+///
+/// Resolves the module, lists public symbols by category (names only).
+/// Usage hint for no argument. Error for not-found module.
+fn handle_exports(session: &ReplSession, arg: &str, stdout: &mut impl Write) {
+    if arg.is_empty() {
+        let _ = writeln!(stdout, "Usage: /exports <module-name>");
+        return;
+    }
+
+    // Parse: first word is module name, rest is optional prefix filter
+    let mut parts = arg.splitn(2, char::is_whitespace);
+    let mod_name = parts.next().unwrap_or("");
+    let prefix_filter = parts.next().unwrap_or("").trim();
+
+    // Resolve module
+    let module_path = match session.tc.resolve_module_by_name(mod_name) {
+        Some(path) => path,
+        None => {
+            let _ = writeln!(stdout, "Module '{mod_name}' not found");
+            return;
+        }
+    };
+
+    // Get the module's symbol table
+    let table = match session.tc.module_table(&module_path) {
+        Some(t) => t,
+        None => {
+            let _ = writeln!(stdout, "Module '{mod_name}' not found");
+            return;
+        }
+    };
+
+    // Collect public symbols by category
+    let mut macros: Vec<String> = Vec::new();
+    let mut traits: Vec<String> = Vec::new();
+    let mut types: Vec<String> = Vec::new();
+    let mut fns: Vec<String> = Vec::new();
+
+    for (sym, entry) in table.all_symbols() {
+        // Skip imports/reexports — those are the module's own imports, not exports
+        if matches!(entry, ModuleEntry::Import { .. } | ModuleEntry::Reexport { .. }) {
+            continue;
+        }
+        // Skip non-public symbols
+        if !entry.is_public() {
+            continue;
+        }
+        let name = sym.to_string();
+        // Skip monomorphised variant names
+        if name.contains('$') {
+            continue;
+        }
+        // Apply prefix filter if provided
+        if !prefix_filter.is_empty()
+            && !name.to_lowercase().starts_with(&prefix_filter.to_lowercase())
+        {
+            continue;
+        }
+
+        match entry {
+            ModuleEntry::Macro { .. } => macros.push(name),
+            ModuleEntry::TraitDecl { .. } => traits.push(name),
+            ModuleEntry::TypeDef { .. } | ModuleEntry::Constructor { .. } => types.push(name),
+            ModuleEntry::Def { kind, .. } => {
+                if !matches!(kind.as_ref(), DefKind::SpecialForm { .. }) {
+                    fns.push(name);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    macros.sort();
+    traits.sort();
+    types.sort();
+    fns.sort();
+
+    let has_any = !macros.is_empty() || !traits.is_empty()
+        || !types.is_empty() || !fns.is_empty();
+
+    if !has_any {
+        let _ = writeln!(stdout, "Module '{mod_name}' has no public symbols");
+        return;
+    }
+
+    let _ = writeln!(stdout, "Module '{mod_name}':");
+    print_name_category("Macros", &macros, stdout);
+    print_name_category("Traits", &traits, stdout);
+    print_name_category("Types", &types, stdout);
+    print_name_category("Fns", &fns, stdout);
+}
+
+/// Classification of an imported symbol for category-based display.
+enum ImportClass {
+    Macro,
+    Trait,
+    Type,
+    Constructor,
+    Fn,
+}
+
+/// Classify an imported symbol by looking up the source entry.
+///
+/// Follows Import/Reexport chains to the ultimate definition (depth-limited).
+fn classify_import(session: &ReplSession, source: &cranelisp_types::FQSymbol) -> ImportClass {
+    match resolve_to_definition(session, source) {
+        Some(entry) => match entry {
+            ModuleEntry::Macro { .. } => ImportClass::Macro,
+            ModuleEntry::TraitDecl { .. } => ImportClass::Trait,
+            ModuleEntry::TypeDef { .. } => ImportClass::Type,
+            ModuleEntry::Constructor { .. } => ImportClass::Constructor,
+            _ => ImportClass::Fn,
+        },
+        None => ImportClass::Fn, // Default: treat unknown as function
+    }
+}
+
+/// Maximum depth for following Import/Reexport chains to prevent cycles.
+const RESOLVE_DEPTH_LIMIT: usize = 10;
+
+/// Follow Import/Reexport chains to find the ultimate definition entry.
+///
+/// Returns the concrete entry (Def, Macro, TypeDef, TraitDecl, Constructor)
+/// or None if the chain is broken or exceeds the depth limit.
+fn resolve_to_definition<'a>(
+    session: &'a ReplSession,
     source: &cranelisp_types::FQSymbol,
-) -> String {
-    // Try to find the entry in the source module's symbol table.
-    if let Some(table) = session.tc.module_table(&source.module) {
-        if let Some(entry) = table.get(source.symbol.as_ref()) {
-            return format_import_type_sig(entry, &session.type_modules);
+) -> Option<&'a ModuleEntry> {
+    let mut current_module = source.module.clone();
+    let mut current_name: String = source.symbol.to_string();
+    for _ in 0..RESOLVE_DEPTH_LIMIT {
+        let table = session.tc.module_table(&current_module)?;
+        let entry = table.get(&current_name)?;
+        match entry {
+            ModuleEntry::Import { source: next } | ModuleEntry::Reexport { source: next } => {
+                current_module = next.module.clone();
+                current_name = next.symbol.to_string();
+            }
+            _ => return Some(entry),
         }
     }
-    // Fallback: unknown type.
-    "?".to_string()
+    None // Depth limit exceeded (cycle or very deep chain)
 }
 
-/// Format the type signature of an imported module entry.
-fn format_import_type_sig(
-    entry: &ModuleEntry,
-    type_modules: &HashMap<TypeName, ModuleFullPath>,
-) -> String {
-    match entry {
-        ModuleEntry::Def { scheme, .. } => {
-            format_type_qualified(&scheme.ty, type_modules)
-        }
-        ModuleEntry::Constructor { scheme, .. } => {
-            format_type_qualified(&scheme.ty, type_modules)
-        }
-        ModuleEntry::TypeDef { info, .. } => {
-            qualify_type_name(&info.name, type_modules)
-        }
-        ModuleEntry::TraitDecl { decl, .. } => {
-            format!("trait {}", decl.name)
-        }
-        ModuleEntry::Macro { name, clauses, .. } => {
-            if clauses.len() <= 1 {
-                format!("{name} :: macro")
-            } else {
-                format!("{name} :: macro ({} clauses)", clauses.len())
+/// Resolve an entry for display: if Import/Reexport, follow the chain to the
+/// definition and return the resolved entry with its defining module.
+///
+/// Returns the original entry and module if not Import/Reexport or if
+/// the chain cannot be resolved.
+fn resolve_entry_for_display<'a>(
+    entry: &'a ModuleEntry,
+    module: &'a ModuleFullPath,
+    session: &'a ReplSession,
+) -> (&'a ModuleEntry, &'a ModuleFullPath) {
+    let source = match entry {
+        ModuleEntry::Import { source } | ModuleEntry::Reexport { source } => source,
+        _ => return (entry, module),
+    };
+    // Follow the chain to the ultimate definition.
+    let mut current_module = &source.module;
+    let mut current_name: String = source.symbol.to_string();
+    for _ in 0..RESOLVE_DEPTH_LIMIT {
+        let table = match session.tc.module_table(current_module) {
+            Some(t) => t,
+            None => return (entry, module),
+        };
+        let resolved = match table.get(&current_name) {
+            Some(e) => e,
+            None => return (entry, module),
+        };
+        match resolved {
+            ModuleEntry::Import { source: next } | ModuleEntry::Reexport { source: next } => {
+                current_module = &next.module;
+                current_name = next.symbol.to_string();
             }
+            _ => return (resolved, current_module),
         }
-        _ => "?".to_string(),
     }
+    (entry, module) // Depth limit exceeded — return original
 }
 
 /// Format a module entry's type signature for /sig and /info display.
 ///
-/// Handles functions, constructors, types, traits, and macros (spec §11.2.3).
+/// Uses universal output format (spec §1.1).
 fn format_entry_signature(
     entry: &ModuleEntry,
     name: &str,
     module: &ModuleFullPath,
-    type_modules: &HashMap<TypeName, ModuleFullPath>,
-    tc: &cranelisp_typecheck::TypeChecker,
+    session: &ReplSession,
 ) -> String {
     match entry {
         ModuleEntry::Def {
             scheme,
             kind,
+            docstring,
             ..
         } => {
             if let DefKind::SpecialForm { description } = kind.as_ref() {
                 return format_special_form_display(name, description);
             }
-            if !scheme.constraints.is_empty() {
-                format_scheme_display(name, scheme, module, type_modules)
+            let base = if !scheme.constraints.is_empty() {
+                format_scheme_display(name, scheme, module, &session.type_modules)
             } else {
-                let type_str = format_type_qualified(&scheme.ty, type_modules);
+                let type_str = format_type_qualified(&scheme.ty, &session.type_modules);
                 format!(":{type_str} {module}/{name}")
-            }
+            };
+            let base = format!("{base} ; defn");
+            append_docstring_comment(base, docstring.as_deref())
         }
         ModuleEntry::Constructor {
             type_name, scheme, ..
         } => {
-            let type_str = format_type_qualified(&scheme.ty, type_modules);
+            let type_str = format_type_qualified(&scheme.ty, &session.type_modules);
             let tn = TypeName::from(type_name.0.as_str());
-            let ctor_display = if let Some(info) = tc.type_def_registry().get(&tn) {
+            let ctor_display = if let Some(info) = session.tc.type_def_registry().get(&tn) {
                 format_ctor_display(&tn, name, info)
             } else {
                 format!("{type_name}.{name}")
             };
-            format!(":{type_str} {module}/{ctor_display}")
+            format!(":{type_str} {module}/{ctor_display} ; deftype")
         }
-        ModuleEntry::TypeDef { info, .. } => {
-            let qname = qualify_type_name(&info.name, type_modules);
-            format!(":{qname}")
+        ModuleEntry::TypeDef { .. } => {
+            format_type_display_universal(name, module, session)
         }
         ModuleEntry::TraitDecl { decl, .. } => {
-            let defining = tc.defining_module_for(decl.name.as_ref());
-            format!("trait {defining}/{}", decl.name)
+            format_trait_display_universal(name, decl.docstring.as_deref(), session)
         }
-        ModuleEntry::Macro { clauses, .. } => {
-            format_macro_signature(name, clauses)
+        ModuleEntry::Macro { clauses, docstring, .. } => {
+            format_macro_display_universal(name, clauses, docstring.as_deref(), module)
         }
         _ => format!("{module}/{name}"),
-    }
-}
-
-/// Format a macro's signature for /sig and bare symbol display (spec §11.2.3).
-///
-/// Single clause: `name :: macro [param1 param2]`
-/// Multi-clause:  `name :: macro (N clauses)\n  [param1 param2]\n  [param1 & rest]`
-fn format_macro_signature(name: &str, clauses: &[MacroClauseInfo]) -> String {
-    if clauses.len() == 1 {
-        let params = format_macro_clause_params(&clauses[0]);
-        format!("{name} :: macro {params}")
-    } else {
-        let mut lines = vec![format!(
-            "{name} :: macro ({} clauses)",
-            clauses.len()
-        )];
-        for clause in clauses {
-            let params = format_macro_clause_params(clause);
-            lines.push(format!("  {params}"));
-        }
-        lines.join("\n")
     }
 }
 
@@ -2179,19 +2302,28 @@ fn format_macro_clause_params(clause: &MacroClauseInfo) -> String {
     format!("[{}]", parts.join(" "))
 }
 
-/// Format a special form for display (spec §4.2).
+/// Format a special form for display (spec §4.1.5).
 ///
-/// Produces a function-like signature that teaches the user the form's shape.
+/// Produces a function-like signature with `; special form - description`.
 fn format_special_form_display(name: &str, description: &str) -> String {
-    match name {
-        "if" => ":(Fn [primitives/Bool a a] a) if".to_string(),
-        "let" => ":(Fn [bindings body] a) let".to_string(),
-        "fn" => ":(Fn [params body] function) fn".to_string(),
-        "defn" => ":(Fn [name params body] function) defn".to_string(),
-        "deftype" => ":(Fn [name ctors...] type) deftype".to_string(),
-        "match" => ":(Fn [expr [pat body]...] a) match".to_string(),
-        "defmacro" => ":(Fn [name params body] macro) defmacro".to_string(),
-        _ => format!("{name} — {description}"),
+    let type_sig = match name {
+        "if" => ":(Fn [primitives/Bool a a] a)",
+        "let" => ":(Fn [bindings body] a)",
+        "fn" => ":(Fn [params body] function)",
+        "defn" => ":(Fn [name params body] function)",
+        "deftype" => ":(Fn [name ctors...] type)",
+        "match" => ":(Fn [expr [pat body]...] a)",
+        "defmacro" => ":(Fn [name params body] macro)",
+        "deftrait" => ":(Fn [name methods...] trait)",
+        "impl" => ":(Fn [trait type methods...] impl)",
+        "import" => ":(Fn [module names] import)",
+        "do" => ":(Fn [exprs...] a)",
+        _ => "",
+    };
+    if type_sig.is_empty() {
+        format!("{name} ; special form - {description}")
+    } else {
+        format!("{type_sig} {name} ; special form - {description}")
     }
 }
 
@@ -2201,8 +2333,9 @@ fn format_special_form_display(name: &str, description: &str) -> String {
 /// and macros (spec §4.1, §11.4). Returns `Some(display_string)` if the
 /// input matches a known symbol, `None` otherwise.
 ///
-/// When a symbol has a docstring, the first line is appended as a comment
-/// (spec §4.1): `:(Fn [Int] Int) user/double ; Multiply by 2`
+/// Universal output format (spec §1.1):
+///   `:Type {value|name} ; {classification} - {docstring}`
+/// with optional related symbol sections for types, traits, and macros.
 fn special_form_feedback(input: &str, session: &ReplSession) -> Option<String> {
     let trimmed = input.trim();
     // Must be a single bare identifier (no parens, no spaces, no brackets).
@@ -2212,58 +2345,117 @@ fn special_form_feedback(input: &str, session: &ReplSession) -> Option<String> {
     if trimmed.is_empty() {
         return None;
     }
-    // Check primitive type names: Int, Bool, Float, String (spec §4.1).
+    // Check primitive type names: Int, Bool, Float, String (spec §4.1.3).
     // These live in the `primitives` synthetic module but are not bare names
     // in the user module's symbol table, so we check before the lookup.
     if Type::from_name(trimmed).is_some() {
-        return Some(format!(":primitives/{trimmed}"));
+        return Some(format_builtin_type_display(trimmed, session));
     }
 
     // Look up in the symbol table (spec §4.1 — bare symbol lookup).
-    let module = session.tc.current_module_path();
+    // Delegate to format_entry_signature which implements the universal format
+    // for all symbol classes.
+    let module = session.tc.current_module_path().clone();
     let entry = session.tc.symbol_table().get(trimmed)?;
-    match entry {
-        ModuleEntry::Def { kind, scheme, docstring, .. } => {
-            if let DefKind::SpecialForm { description } = kind.as_ref() {
-                Some(format_special_form_display(trimmed, description))
-            } else {
-                // Regular function/primitive: show `:TypeScheme module/name`
-                let type_str = format_type_qualified(&scheme.ty, &session.type_modules);
-                let base = format!(":{type_str} {module}/{trimmed}");
-                Some(append_docstring_comment(base, docstring.as_deref()))
-            }
-        }
-        ModuleEntry::TypeDef { .. } => {
-            // Bare type name: show `:module/TypeName`
-            Some(format!(":{module}/{trimmed}"))
-        }
-        ModuleEntry::TraitDecl { .. } => {
-            // Bare trait name: show `:defining_module/TraitName`
-            let defining_module = session.tc.defining_module_for(trimmed);
-            Some(format!(":{defining_module}/{trimmed}"))
-        }
-        ModuleEntry::Constructor { type_name, scheme, .. } => {
-            // Bare constructor: show `:QualifiedType module/Type.Ctor`
-            // For single-constructor types where ctor name matches type name,
-            // suppress the `Type.` prefix: `module/Ctor` instead of `module/Type.Ctor`.
-            let type_str = format_type_qualified(&scheme.ty, &session.type_modules);
-            let tn = TypeName::from(type_name.0.as_str());
-            let ctor_display = if let Some(info) = session.type_defs().get(&tn) {
-                format_ctor_display(&tn, trimmed, info)
-            } else {
-                format!("{type_name}.{trimmed}")
-            };
-            Some(format!(":{type_str} {module}/{ctor_display}"))
-        }
-        ModuleEntry::Macro { clauses, docstring, .. } => {
-            // Bare macro name: show clause signatures (spec §11.4).
-            // Zero-arg macros expand immediately via bare-symbol expansion,
-            // so they won't reach here (the expander handles them first).
-            let base = format_macro_signature(trimmed, clauses);
-            Some(append_docstring_comment(base, docstring.as_deref()))
-        }
-        _ => None,
+    // For Import/Reexport entries, resolve through the chain to the definition.
+    // This allows bare-symbol display for imported special forms, macros, etc.
+    let (resolved_entry, resolved_module) =
+        resolve_entry_for_display(entry, &module, session);
+    Some(format_entry_signature(resolved_entry, trimmed, resolved_module, session))
+}
+
+/// Format a builtin type (Int, Bool, Float, String) for bare symbol lookup.
+///
+/// Shows `:primitives/Type ; type` with `; impl:` section listing traits
+/// that have implementations for this type (spec §4.1.3).
+fn format_builtin_type_display(type_name: &str, session: &ReplSession) -> String {
+    let tn = TypeName::from(type_name);
+    let mut result = format!(":primitives/{type_name} ; type");
+    let trait_names = session.tc.get_impls_for_type(&tn);
+    if !trait_names.is_empty() {
+        let names: Vec<&str> = trait_names.iter().map(|t| t.as_ref()).collect();
+        result.push_str(&format_related_section("impl", &names));
     }
+    result
+}
+
+/// Format a user-defined type for bare symbol lookup (spec §4.1.3).
+///
+/// Shows `:module/TypeName ; deftype` with `; match:` (constructors) and
+/// `; impl:` (trait implementations) related symbol sections.
+fn format_type_display_universal(type_name: &str, module: &ModuleFullPath, session: &ReplSession) -> String {
+    let mut result = format!(":{module}/{type_name} ; deftype");
+    let tn = TypeName::from(type_name);
+    // Related: constructors under `; match:`
+    if let Some(ctors) = session.tc.get_type_constructors(&tn) {
+        if !ctors.is_empty() {
+            let names: Vec<&str> = ctors.iter().map(|c| c.name.as_ref()).collect();
+            result.push_str(&format_related_section("match", &names));
+        }
+    }
+    // Related: trait implementations under `; impl:`
+    let trait_names = session.tc.get_impls_for_type(&tn);
+    if !trait_names.is_empty() {
+        let names: Vec<&str> = trait_names.iter().map(|t| t.as_ref()).collect();
+        result.push_str(&format_related_section("impl", &names));
+    }
+    result
+}
+
+/// Format a trait for bare symbol lookup (spec §4.1.4).
+///
+/// Shows `:defining_module/TraitName ; deftrait` with `; defn:` (methods)
+/// and `; impl:` (implementing types) related symbol sections.
+fn format_trait_display_universal(
+    trait_name: &str,
+    docstring: Option<&str>,
+    session: &ReplSession,
+) -> String {
+    let defining_module = session.tc.defining_module_for(trait_name);
+    let tn = TraitName::from(trait_name);
+    let mut result = format!(":{defining_module}/{trait_name} ; deftrait");
+    result = append_docstring_comment(result, docstring);
+    // Related: methods under `; defn:`
+    if let Some(methods) = session.tc.get_trait_methods(&tn) {
+        if !methods.is_empty() {
+            let names: Vec<&str> = methods.iter().map(|m| m.as_ref()).collect();
+            result.push_str(&format_related_section("defn", &names));
+        }
+    }
+    // Related: implementing types under `; impl:`
+    let impl_types = session.tc.get_implementing_types(&tn);
+    if !impl_types.is_empty() {
+        let names: Vec<&str> = impl_types.iter().map(|t| t.as_ref()).collect();
+        result.push_str(&format_related_section("impl", &names));
+    }
+    result
+}
+
+/// Format a macro for bare symbol lookup (spec §4.1.6, §11.4).
+///
+/// Shows `:module/name ; defmacro` with `; [params] -> Sexp` clause lines.
+fn format_macro_display_universal(
+    name: &str,
+    clauses: &[MacroClauseInfo],
+    docstring: Option<&str>,
+    module: &ModuleFullPath,
+) -> String {
+    let mut result = format!(":{module}/{name} ; defmacro");
+    result = append_docstring_comment(result, docstring);
+    for clause in clauses {
+        let params = format_macro_clause_params(clause);
+        result.push_str(&format!("\n; {params} -> Sexp"));
+    }
+    result
+}
+
+/// Format a related symbols section for universal output (spec §1.1).
+///
+/// Produces `\n; {label}:\n;  name1 name2 ...` with names on one line.
+fn format_related_section(label: &str, names: &[&str]) -> String {
+    let mut result = format!("\n; {label}:");
+    result.push_str(&format!("\n;  {}", names.join(" ")));
+    result
 }
 
 /// Append the first line of a docstring as a ` ; comment` suffix.
@@ -2701,5 +2893,265 @@ mod tests {
         let mut session = session;
         let result = session.eval("42").unwrap();
         assert_eq!(result.value, 42);
+    }
+
+    // --- classify_import + resolve_to_definition tests ---
+
+    /// Helper: build a ReplSession with custom module tables for classify_import tests.
+    ///
+    /// Uses `set_current_module` to create each module, inserts entries via
+    /// `symbol_table_mut()`, then switches back to the "user" module.
+    fn session_with_modules(
+        modules: Vec<(ModuleFullPath, Vec<(Symbol, ModuleEntry)>)>,
+    ) -> ReplSession {
+        let mut session = ReplSession::new();
+        for (path, entries) in modules {
+            session.tc.set_current_module(path);
+            for (sym, entry) in entries {
+                session.tc.symbol_table_mut().insert(sym, entry);
+            }
+        }
+        // Switch back to user module
+        session.tc.set_current_module(ModuleFullPath::from("user"));
+        session
+    }
+
+    // spec: repl/spec.md §3.4 — classify_import resolves direct definition
+    #[test]
+    fn test_classify_import_direct_definition() {
+        use cranelisp_types::{FQSymbol, Scheme};
+
+        let mod_path = ModuleFullPath::from("core.num");
+        let session = session_with_modules(vec![(
+            mod_path.clone(),
+            vec![
+                (
+                    Symbol::from("Num"),
+                    ModuleEntry::TraitDecl {
+                        decl: cranelisp_types::TraitDecl {
+                            name: TraitName::from("Num"),
+                            type_params: vec![Symbol::from("a")],
+                            methods: vec![],
+                            docstring: None,
+                            visibility: Visibility::Public,
+                            span: cranelisp_types::Span::SYNTHETIC,
+                        },
+                        visibility: Visibility::Public,
+                        sexp: None,
+                    },
+                ),
+                (
+                    Symbol::from("add"),
+                    ModuleEntry::Def {
+                        scheme: Scheme { vars: vec![], constraints: HashMap::new(), ty: Type::Int },
+                        visibility: Visibility::Public,
+                        docstring: None,
+                        param_names: vec![],
+                        kind: Box::new(DefKind::UserFn { constrained_fn: None }),
+                    },
+                ),
+            ],
+        )]);
+
+        let trait_source = FQSymbol {
+            module: mod_path.clone(),
+            symbol: Symbol::from("Num"),
+        };
+        assert!(matches!(
+            classify_import(&session, &trait_source),
+            ImportClass::Trait
+        ));
+
+        let fn_source = FQSymbol {
+            module: mod_path,
+            symbol: Symbol::from("add"),
+        };
+        assert!(matches!(
+            classify_import(&session, &fn_source),
+            ImportClass::Fn
+        ));
+    }
+
+    // spec: repl/spec.md §3.4 — classify_import follows reexport chain
+    #[test]
+    fn test_classify_import_reexport_chain() {
+        use cranelisp_types::FQSymbol;
+
+        let origin = ModuleFullPath::from("core.num");
+        let prelude = ModuleFullPath::from("prelude");
+
+        let session = session_with_modules(vec![
+            (
+                origin.clone(),
+                vec![(
+                    Symbol::from("Num"),
+                    ModuleEntry::TraitDecl {
+                        decl: cranelisp_types::TraitDecl {
+                            name: TraitName::from("Num"),
+                            type_params: vec![Symbol::from("a")],
+                            methods: vec![],
+                            docstring: None,
+                            visibility: Visibility::Public,
+                            span: cranelisp_types::Span::SYNTHETIC,
+                        },
+                        visibility: Visibility::Public,
+                        sexp: None,
+                    },
+                )],
+            ),
+            (
+                prelude.clone(),
+                vec![(
+                    Symbol::from("Num"),
+                    ModuleEntry::Reexport {
+                        source: FQSymbol {
+                            module: origin.clone(),
+                            symbol: Symbol::from("Num"),
+                        },
+                    },
+                )],
+            ),
+        ]);
+
+        // Importing from prelude should follow the reexport chain to core.num
+        let source = FQSymbol {
+            module: prelude,
+            symbol: Symbol::from("Num"),
+        };
+        assert!(matches!(
+            classify_import(&session, &source),
+            ImportClass::Trait
+        ));
+    }
+
+    // spec: repl/spec.md §3.4 — internal names filtered from /imports
+    #[test]
+    fn test_imports_filters_internal_names() {
+        // Verify that monomorphised variant names (containing $) are filtered.
+        // __macro_ names are now private (defn-) and won't appear in imports.
+        let internal_names = vec!["add$Int+Int", "foo$Float"];
+        let public_names = vec!["add", "Num", "Display"];
+
+        for name in &internal_names {
+            assert!(name.contains('$'), "{name} should be filtered");
+        }
+        for name in &public_names {
+            assert!(!name.contains('$'), "{name} should NOT be filtered");
+        }
+    }
+
+    // spec: repl/spec.md §3.4 — classify_import with macro entry
+    #[test]
+    fn test_classify_import_macro() {
+        use cranelisp_types::FQSymbol;
+
+        let mod_path = ModuleFullPath::from("prelude");
+        let session = session_with_modules(vec![(
+            mod_path.clone(),
+            vec![(
+                Symbol::from("defn-macro"),
+                ModuleEntry::Macro {
+                    name: Symbol::from("defn-macro"),
+                    clauses: vec![],
+                    docstring: None,
+                    visibility: Visibility::Public,
+                    sexp: None,
+                    source: None,
+                },
+            )],
+        )]);
+
+        let source = FQSymbol {
+            module: mod_path,
+            symbol: Symbol::from("defn-macro"),
+        };
+        assert!(matches!(
+            classify_import(&session, &source),
+            ImportClass::Macro
+        ));
+    }
+
+    // spec: repl/spec.md §3.4 — classify_import with constructor entry
+    #[test]
+    fn test_classify_import_constructor() {
+        use cranelisp_types::{ConstructorInfo, FQSymbol, Scheme};
+
+        let mod_path = ModuleFullPath::from("core.option");
+        let session = session_with_modules(vec![(
+            mod_path.clone(),
+            vec![(
+                Symbol::from("Some"),
+                ModuleEntry::Constructor {
+                    type_name: Symbol::from("Option"),
+                    info: ConstructorInfo {
+                        name: Symbol::from("Some"),
+                        tag: 1,
+                        fields: vec![],
+                        docstring: None,
+                    },
+                    scheme: Scheme { vars: vec![], constraints: HashMap::new(), ty: Type::Int },
+                    visibility: Visibility::Public,
+                },
+            )],
+        )]);
+
+        let source = FQSymbol {
+            module: mod_path,
+            symbol: Symbol::from("Some"),
+        };
+        assert!(matches!(
+            classify_import(&session, &source),
+            ImportClass::Constructor
+        ));
+    }
+
+    // spec: repl/spec.md §3.4 — classify_import with type def entry
+    #[test]
+    fn test_classify_import_typedef() {
+        use cranelisp_types::{FQSymbol, TypeDefInfo};
+
+        let mod_path = ModuleFullPath::from("core.option");
+        let session = session_with_modules(vec![(
+            mod_path.clone(),
+            vec![(
+                Symbol::from("Option"),
+                ModuleEntry::TypeDef {
+                    info: TypeDefInfo {
+                        name: TypeName::from("Option"),
+                        type_params: vec![],
+                        constructors: vec![],
+                        docstring: None,
+                    },
+                    visibility: Visibility::Public,
+                    constructor_scheme: None,
+                    sexp: None,
+                },
+            )],
+        )]);
+
+        let source = FQSymbol {
+            module: mod_path,
+            symbol: Symbol::from("Option"),
+        };
+        assert!(matches!(
+            classify_import(&session, &source),
+            ImportClass::Type
+        ));
+    }
+
+    // spec: repl/spec.md §3.4 — classify_import unknown symbol defaults to Fn
+    #[test]
+    fn test_classify_import_unknown_defaults_to_fn() {
+        use cranelisp_types::FQSymbol;
+
+        let session = ReplSession::new();
+        let source = FQSymbol {
+            module: ModuleFullPath::from("nonexistent"),
+            symbol: Symbol::from("whatever"),
+        };
+        assert!(matches!(
+            classify_import(&session, &source),
+            ImportClass::Fn
+        ));
     }
 }

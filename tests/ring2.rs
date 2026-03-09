@@ -1489,9 +1489,14 @@ fn repl_deftrait_display_shows_trait_name() {
         &mut session,
         "(deftrait (Sizeable a) (size [a] Int))",
     );
-    assert_eq!(
-        display, ":user/Sizeable",
-        "deftrait display should be ':user/Sizeable'"
+    // Universal format: `:user/Sizeable ; deftrait` + `; defn:` section with methods
+    assert!(
+        display.contains(":user/Sizeable ; deftrait"),
+        "deftrait display should contain ':user/Sizeable ; deftrait', got: {display}"
+    );
+    assert!(
+        display.contains("; defn:") && display.contains("size"),
+        "deftrait display should show '; defn:' section with 'size', got: {display}"
     );
 }
 
@@ -1508,11 +1513,15 @@ fn repl_constrained_fn_shows_constraints() {
         &mut session,
         "(defn double [x] (+ x x))",
     );
-    // spec §1.3: inline constraint notation for constrained fn.
+    // spec §1.3, §1.1: inline constraint notation + '; defn' classification.
     // `double` takes one Num-constrained param and returns the same type.
-    assert_eq!(
-        display, ":(Fn [:Num a] a) user/double",
-        "constrained fn display should use inline constraint notation"
+    assert!(
+        display.contains(":(Fn [:Num a] a) user/double"),
+        "constrained fn display should use inline constraint notation, got: {display}"
+    );
+    assert!(
+        display.contains("; defn"),
+        "constrained fn display should include '; defn' classification, got: {display}"
     );
 }
 
@@ -1527,11 +1536,14 @@ fn repl_constrained_fn_two_params_shows_subsequent_colon_var() {
     );
     // Two Num-constrained params: with user-defined traits (Decision 17),
     // the typechecker infers separate type vars for each param.
-    // The `self`/`other` naming in trait methods doesn't force unification
-    // across call-site params the way compiler-seeded traits did.
-    assert_eq!(
-        display, ":(Fn [:Num a b] a) user/add",
-        "two-param constrained fn should show type vars for each param"
+    // Universal format adds '; defn' classification.
+    assert!(
+        display.contains(":(Fn [:Num a b] a) user/add"),
+        "two-param constrained fn should show type vars for each param, got: {display}"
+    );
+    assert!(
+        display.contains("; defn"),
+        "constrained fn display should include '; defn' classification, got: {display}"
     );
 }
 

@@ -17,8 +17,12 @@ fn repl_defmacro_identity() {
     let mut s = repl_session();
     let display = repl_eval_display(&mut s, "(defmacro id [x] x)");
     assert!(
-        display.contains(":: macro"),
-        "expected macro display, got: {display}"
+        display.contains("; defmacro"),
+        "expected '; defmacro' in display, got: {display}"
+    );
+    assert!(
+        display.contains("user/id"),
+        "expected 'user/id' in display, got: {display}"
     );
     // Use the macro.
     let val = repl_eval(&mut s, "(id 42)");
@@ -43,9 +47,14 @@ fn repl_defmacro_multi_clause() {
         &mut s,
         "(defmacro pick ([x] x) ([x y] x))",
     );
+    // New universal format: `:user/pick ; defmacro` + clause signature lines
     assert!(
-        display.contains("2 clauses"),
-        "expected '2 clauses' in display, got: {display}"
+        display.contains("; defmacro"),
+        "expected '; defmacro' in display, got: {display}"
+    );
+    assert!(
+        display.contains("; [x] -> Sexp") && display.contains("; [x y] -> Sexp"),
+        "expected clause signature lines, got: {display}"
     );
     // Dispatch to 1-arg clause.
     let val1 = repl_eval(&mut s, "(pick 42)");
@@ -55,22 +64,23 @@ fn repl_defmacro_multi_clause() {
     assert_eq!(val2, 10);
 }
 
-// spec: 09-macros.md §9.13 — defmacro display format
+// spec: repl/spec.md §4.1.6 — defmacro display universal format
 #[test]
 fn repl_defmacro_display_single_clause() {
     let mut s = repl_session();
     let display = repl_eval_display(&mut s, "(defmacro my-id [x] x)");
+    // Universal format: `:user/my-id ; defmacro` + `; [x] -> Sexp`
     assert!(
-        display.contains("my-id :: macro"),
-        "expected 'my-id :: macro', got: {display}"
+        display.contains(":user/my-id ; defmacro"),
+        "expected ':user/my-id ; defmacro', got: {display}"
     );
     assert!(
-        !display.contains("clauses"),
-        "single clause should not mention 'clauses', got: {display}"
+        display.contains("; [x] -> Sexp"),
+        "expected clause signature '; [x] -> Sexp', got: {display}"
     );
 }
 
-// spec: 09-macros.md §9.13 — defmacro display for multi-clause
+// spec: repl/spec.md §4.1.6 — defmacro display for multi-clause
 #[test]
 fn repl_defmacro_display_multi_clause() {
     let mut s = repl_session();
@@ -78,9 +88,18 @@ fn repl_defmacro_display_multi_clause() {
         &mut s,
         "(defmacro mc ([x] x) ([x y] y) ([x y z] z))",
     );
+    // Universal format: 3 clause signature lines
     assert!(
-        display.contains("3 clauses"),
-        "expected '3 clauses' in display, got: {display}"
+        display.contains("; [x] -> Sexp"),
+        "expected '; [x] -> Sexp' clause line, got: {display}"
+    );
+    assert!(
+        display.contains("; [x y] -> Sexp"),
+        "expected '; [x y] -> Sexp' clause line, got: {display}"
+    );
+    assert!(
+        display.contains("; [x y z] -> Sexp"),
+        "expected '; [x y z] -> Sexp' clause line, got: {display}"
     );
 }
 

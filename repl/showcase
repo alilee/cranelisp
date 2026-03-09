@@ -172,12 +172,16 @@ def interruptible_sleep(seconds):
     if FAST or seconds <= 0:
         return True
     end = time.time() + seconds
-    while time.time() < end:
+    while True:
+        remaining = end - time.time()
+        if remaining <= 0:
+            break
         key = check_key()
         if key == "q":
             return False
         if key == " ":
             # Paused — wait for another space or q.
+            pause_start = time.time()
             sys.stdout.write(f"{DIM}[paused]{RESET}")
             sys.stdout.flush()
             while True:
@@ -191,10 +195,11 @@ def interruptible_sleep(seconds):
                     sys.stdout.write("\r" + " " * 8 + "\r")
                     sys.stdout.flush()
                     return False
-        # FIXME(/repl): interruptible_sleep can produce negative durations when
-        # the loop overshoots the deadline. Clamped to 0 as a band-aid — review
-        # the timing logic for robustness.
-        time.sleep(max(0, min(0.05, end - time.time())))
+            # Extend the deadline by the time spent paused so the
+            # remaining animation plays at the original pace.
+            end += time.time() - pause_start
+            continue
+        time.sleep(min(0.05, remaining))
     return True
 
 

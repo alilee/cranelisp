@@ -6,9 +6,10 @@
 use std::collections::HashMap;
 
 use cranelisp_types::{
-    CranelispError, FQSymbol, ImportNames, ImportSpec, MethodResolutions,
-    ModuleEntry, ModuleFullPath, ReplSnapshot, Scheme, Span, Subst, Symbol,
-    SymbolTable, Type, TypeId, Warning, apply,
+    ConstructorInfo, CranelispError, FQSymbol, ImportNames, ImportSpec,
+    MethodResolutions, ModuleEntry, ModuleFullPath, ReplSnapshot, Scheme, Span,
+    Subst, Symbol, SymbolTable, TraitName, Type, TypeId, TypeName, Warning,
+    apply,
 };
 
 use crate::adt::TypeDefRegistry;
@@ -645,6 +646,67 @@ impl TypeChecker {
             }
         }
         result
+    }
+
+    // --- REPL query methods for output formatting ---
+
+    /// Look up a type definition and return its constructors.
+    pub fn get_type_constructors(&self, type_name: &TypeName) -> Option<Vec<ConstructorInfo>> {
+        self.type_defs
+            .get(type_name)
+            .map(|info| info.constructors.clone())
+    }
+
+    /// Return all trait names that have an impl registered for `type_name`.
+    /// Results are sorted alphabetically.
+    pub fn get_impls_for_type(&self, type_name: &TypeName) -> Vec<TraitName> {
+        let mut traits: Vec<TraitName> = self
+            .impl_registry
+            .impls
+            .iter()
+            .filter(|(_, type_map)| type_map.contains_key(type_name))
+            .map(|(trait_name, _)| trait_name.clone())
+            .collect();
+        traits.sort();
+        traits
+    }
+
+    /// Return the method names declared in a trait.
+    pub fn get_trait_methods(&self, trait_name: &TraitName) -> Option<Vec<Symbol>> {
+        self.trait_registry
+            .decls
+            .get(trait_name)
+            .map(|decl| decl.methods.iter().map(|m| m.name.clone()).collect())
+    }
+
+    /// Return all type names that implement a given trait.
+    /// Results are sorted alphabetically.
+    pub fn get_implementing_types(&self, trait_name: &TraitName) -> Vec<TypeName> {
+        let mut types: Vec<TypeName> = self
+            .impl_registry
+            .impls
+            .get(trait_name)
+            .map(|type_map| type_map.keys().cloned().collect())
+            .unwrap_or_default();
+        types.sort();
+        types
+    }
+
+    /// Resolve a module name: try as child of current module first, then as
+    /// root module. Returns `None` if not found.
+    pub fn resolve_module_by_name(&self, name: &str) -> Option<ModuleFullPath> {
+        // Try as child of current module (e.g., "user.foo" when current is "user")
+        let child_path =
+            ModuleFullPath::from(format!("{}.{}", self.current_module, name));
+        if self.has_module(&child_path) {
+            return Some(child_path);
+        }
+        // Try as root module
+        let root_path = ModuleFullPath::from(name);
+        if self.has_module(&root_path) {
+            return Some(root_path);
+        }
+        None
     }
 
     // --- REPL snapshot/restore ---

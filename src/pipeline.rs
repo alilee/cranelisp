@@ -751,12 +751,11 @@ fn find_entry_defn(program: &Program) -> Option<cranelisp_types::Symbol> {
 /// When `CRANELISP_LIB` is set (even to empty), the fallback is NOT used — the
 /// env var takes full control of the library search path.
 ///
-// FIXME(/int): spec/08-modules.md §8.11 was updated — stdlib is not special, it is
-// just a module search location. The spec now says lib directory locations come from:
-// 1. Project config file (Cranelisp.toml) — MAY specify a module search priority list
-// 2. CRANELISP_LIB env var
-// The stdlib/ fallback is an implementation convenience, not spec-mandated. Review
-// this function against the updated spec and ensure the search order matches.
+// NOTE: spec/08-modules.md §8.11 says lib dirs come from (1) Cranelisp.toml
+// project config and (2) CRANELISP_LIB env var. Cranelisp.toml is Ring 4 scope.
+// Current implementation (CRANELISP_LIB → stdlib/ fallback) is correct for
+// Ring 0–3. The stdlib/ fallback is a practical default, not spec-mandated.
+// Ring 4 will add Cranelisp.toml support.
 pub fn assemble_lib_dirs(project_root: &Path) -> Vec<PathBuf> {
     if let Ok(env_val) = std::env::var("CRANELISP_LIB") {
         // CRANELISP_LIB is set: split on ':' and collect non-empty paths.

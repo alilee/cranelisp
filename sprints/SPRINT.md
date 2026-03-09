@@ -1,7 +1,7 @@
-# Sprint 15: TBD
+# Sprint 16: (next sprint)
 
 **Status**: NOT STARTED
-**Ring**: 4 (Effects) or transitional
+**Ring**: TBD
 **Goal**: TBD
 
-_Invoke `/sprint` to scope Sprint 15._
+_Invoke `/sprint` to plan the next sprint._

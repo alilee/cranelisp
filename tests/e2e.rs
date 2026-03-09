@@ -296,7 +296,7 @@ fn e2e_s3_3_list() {
         "s3_list",
     );
     let s = stdout_str(&o);
-    assert!(s.contains("Functions"), "expected Functions category\n---\n{s}");
+    assert!(s.contains("Fns"), "expected Fns category\n---\n{s}");
     assert!(s.contains("foo"), "expected foo in listing\n---\n{s}");
     assert!(s.contains("Types"), "expected Types category\n---\n{s}");
 }
@@ -978,18 +978,18 @@ fn e2e_s1_1_constructor_lookup() {
 // §3.3  /list categories: Special forms, Traits
 // ===========================================================================
 
-// spec: repl/spec.md §3.3 — /list shows Special forms category
+// spec: repl/spec.md §3.4 — /imports shows Special forms category
 #[test]
-fn e2e_s3_3_list_special_forms() {
-    let o = run_repl("/list\n", "s3_3_specials");
+fn e2e_s3_4_imports_special_forms() {
+    let o = run_repl("/imports\n", "s3_4_specials");
     let s = stdout_str(&o);
     assert!(
         s.contains("Special forms"),
-        "expected 'Special forms' category in /list\n---\n{s}"
+        "expected 'Special forms' category in /imports\n---\n{s}"
     );
     assert!(
         s.contains("if") && s.contains("let") && s.contains("defn"),
-        "expected special forms in listing\n---\n{s}"
+        "expected special forms in /imports listing\n---\n{s}"
     );
 }
 
@@ -1208,7 +1208,6 @@ fn e2e_s3_4_neg_imports_nonexistent_not_error() {
 // ===========================================================================
 
 // spec: 09-macros.md §9.9.4 — runtime error during expansion reported as error, not crash
-// FIXME(/int): div-by-zero during macro expansion causes SIGILL instead of clean error
 #[test]
 fn e2e_s9_9_4_runtime_error_during_expansion() {
     // Define a macro whose body triggers division by zero during expansion.
@@ -1239,5 +1238,429 @@ fn e2e_s4_2_special_form_defmacro() {
     assert!(
         !out.contains("undefined variable"),
         "bare 'defmacro' should produce feedback, not 'undefined variable', got:\n{out}"
+    );
+}
+
+// ===========================================================================
+// Sprint 15 Wave 3: /list boundary tests (repl/spec.md §3.3)
+// ===========================================================================
+
+// spec: repl/spec.md §3.3 — /list on empty module shows `(no definitions)`
+#[test]
+fn e2e_s3_3_list_empty_module() {
+    let o = run_repl("/list\n", "s3_3_empty");
+    let s = stdout_str(&o);
+    assert!(
+        s.contains("(no definitions)"),
+        "expected '(no definitions)' for empty module, got:\n{s}"
+    );
+}
+
+// spec: repl/spec.md §3.3 — /list prefix filter matches names
+#[test]
+fn e2e_s3_3_list_prefix_filter() {
+    let o = run_repl(
+        "(defn foo [x] x)\n(defn bar [x] x)\n(defn fuzz [x] x)\n/list f\n",
+        "s3_3_prefix",
+    );
+    let s = stdout_str(&o);
+    assert!(
+        s.contains("foo"),
+        "expected 'foo' with prefix 'f'\n---\n{s}"
+    );
+    assert!(
+        s.contains("fuzz"),
+        "expected 'fuzz' with prefix 'f'\n---\n{s}"
+    );
+}
+
+// spec: repl/spec.md §3.3 — /list MUST NOT show imports
+#[test]
+fn e2e_s3_3_list_neg_no_imports() {
+    let o = run_repl(
+        "(import [primitives [add-i64]])\n/list\n",
+        "s3_3_neg_imports",
+    );
+    let s = stdout_str(&o);
+    // The /list result lines (after the import line) should not contain add-i64.
+    // /list should show "(no definitions)" since only an import was made.
+    assert!(
+        s.contains("(no definitions)"),
+        "expected '(no definitions)' when only imports exist, got:\n{s}"
+    );
+}
+
+// spec: repl/spec.md §3.3 — /list MUST NOT show special forms
+#[test]
+fn e2e_s3_3_list_neg_no_special_forms() {
+    let o = run_repl("/list\n", "s3_3_neg_sf");
+    let s = stdout_str(&o);
+    assert!(
+        !s.contains("Special forms"),
+        "expected NO 'Special forms' in /list output\n---\n{s}"
+    );
+}
+
+// spec: repl/spec.md §3.3 — /list shows constructors in Types category
+#[test]
+fn e2e_s3_3_list_constructors_in_types() {
+    let o = run_repl(
+        "(deftype Color Red Green Blue)\n/list\n",
+        "s3_3_ctors_types",
+    );
+    let s = stdout_str(&o);
+    assert!(
+        s.contains("Types"),
+        "expected 'Types' category\n---\n{s}"
+    );
+    // Constructors should appear in Types alongside their type name.
+    assert!(
+        s.contains("Red") && s.contains("Green") && s.contains("Blue"),
+        "expected constructors in Types category\n---\n{s}"
+    );
+    assert!(
+        s.contains("Color"),
+        "expected type name in Types category\n---\n{s}"
+    );
+}
+
+// spec: repl/spec.md §3.3 — /list shows Fns category (not Functions)
+#[test]
+fn e2e_s3_3_list_fns_category_name() {
+    let o = run_repl("(defn foo [x] x)\n/list\n", "s3_3_fns_name");
+    let s = stdout_str(&o);
+    assert!(
+        s.contains("Fns:"),
+        "expected 'Fns:' category label\n---\n{s}"
+    );
+    assert!(
+        !s.contains("Functions:"),
+        "expected 'Fns:' not 'Functions:'\n---\n{s}"
+    );
+}
+
+// ===========================================================================
+// Sprint 15 Wave 3: /imports tests (repl/spec.md §3.4)
+// ===========================================================================
+
+// spec: repl/spec.md §3.4 — /imports always shows Special forms
+#[test]
+fn e2e_s3_4_imports_special_forms_always() {
+    let o = run_repl("/imports\n", "s3_4_sf_always");
+    let s = stdout_str(&o);
+    assert!(
+        s.contains("Special forms"),
+        "expected 'Special forms' always present in /imports\n---\n{s}"
+    );
+    // Should contain at least some special forms
+    assert!(
+        s.contains("if") && s.contains("let"),
+        "expected 'if' and 'let' in /imports Special forms\n---\n{s}"
+    );
+}
+
+// spec: repl/spec.md §3.4 — /imports <module> filters by source module
+// Note: E2E tests run in isolated dirs without stdlib, so (import [primitives ...])
+// doesn't work. Instead, we define a module and import from it.
+#[test]
+fn e2e_s3_4_imports_filter_shows_from() {
+    let input = "/mod mymod\n(defn bar [x] x)\n/mod user\n(import [mymod [bar]])\n/imports mymod\n";
+    let o = run_repl(input, "s3_4_filter_from");
+    let s = stdout_str(&o);
+    assert!(
+        s.contains("bar"),
+        "expected 'bar' in /imports mymod\n---\n{s}"
+    );
+}
+
+// spec: repl/spec.md §3.4 — /imports includes reexports
+// Note: E2E tests run in isolated dirs without stdlib/prelude. Instead, we
+// define a module, import from it, and verify the import appears.
+#[test]
+fn e2e_s3_4_imports_includes_imports() {
+    let input = "/mod mymod\n(defn bar [x] x)\n/mod user\n(import [mymod [bar]])\n/imports\n";
+    let o = run_repl(input, "s3_4_imports_incl");
+    let s = stdout_str(&o);
+    // Should show Fns category with imported bar
+    assert!(
+        s.contains("Fns") || s.contains("bar"),
+        "expected imported function 'bar' in /imports\n---\n{s}"
+    );
+}
+
+// spec: repl/spec.md §3.4 — /imports nonexistent: silent re-prompt, not error (negative)
+#[test]
+fn e2e_s3_4_neg_imports_nonexistent_silent() {
+    let input = "/imports nonexistent\n42\n";
+    let o = run_repl(input, "s3_4_neg_nomod");
+    assert_success(&o);
+    let s = stdout_str(&o);
+    assert!(
+        !s.contains("error:"),
+        "/imports nonexistent should not produce an error\n---\n{s}"
+    );
+    // The next expression should still work
+    assert_result(&o, ":primitives/Int 42");
+}
+
+// ===========================================================================
+// Sprint 15 Wave 3: /exports tests (repl/spec.md §3.5)
+// ===========================================================================
+
+// spec: repl/spec.md §3.5 — /exports with no argument prints usage hint
+#[test]
+fn e2e_s3_5_exports_no_arg_usage() {
+    let o = run_repl("/exports\n", "s3_5_no_arg");
+    let s = stdout_str(&o);
+    assert!(
+        s.contains("Usage:") || s.contains("usage:") || s.contains("/exports <module"),
+        "expected usage hint for /exports with no argument\n---\n{s}"
+    );
+}
+
+// spec: repl/spec.md §3.5 — /exports nonexistent prints module not found
+#[test]
+fn e2e_s3_5_exports_not_found() {
+    let o = run_repl("/exports nonexistent\n", "s3_5_notfound");
+    let s = stdout_str(&o);
+    assert!(
+        s.contains("not found") || s.contains("Module"),
+        "expected 'not found' for /exports nonexistent\n---\n{s}"
+    );
+}
+
+// spec: repl/spec.md §3.5 — /exports on module with public symbols
+#[test]
+fn e2e_s3_5_exports_lists_symbols() {
+    // Define a module via /mod, add definitions, then check /exports from user.
+    let input = "/mod mymod\n(defn bar [x] x)\n/mod user\n/exports mymod\n";
+    let o = run_repl(input, "s3_5_exports");
+    let s = stdout_str(&o);
+    assert!(
+        s.contains("bar"),
+        "expected 'bar' in /exports mymod output\n---\n{s}"
+    );
+}
+
+// ===========================================================================
+// Sprint 15 Wave 3: Universal format — definition results (repl/spec.md §1.1, §1.3)
+// ===========================================================================
+
+// spec: repl/spec.md §1.3 — defn response includes `; defn` classification
+#[test]
+fn e2e_s1_3_defn_classification() {
+    let o = run_repl("(defn double [x] (mul-i64 x 2))\n", "s1_3_defn_class");
+    let s = stdout_str(&o);
+    assert!(
+        s.contains("; defn"),
+        "defn response should include '; defn' classification\n---\n{s}"
+    );
+}
+
+// spec: repl/spec.md §1.3 — deftype response includes `; deftype`
+#[test]
+fn e2e_s1_3_deftype_classification() {
+    let o = run_repl("(deftype Color Red Green Blue)\n", "s1_3_deftype_class");
+    let s = stdout_str(&o);
+    assert!(
+        s.contains("; deftype"),
+        "deftype response should include '; deftype' classification\n---\n{s}"
+    );
+}
+
+// spec: repl/spec.md §1.3 — deftype response includes `; match:` with constructors
+#[test]
+fn e2e_s1_3_deftype_match_section() {
+    let o = run_repl("(deftype Color Red Green Blue)\n", "s1_3_deftype_match");
+    let s = stdout_str(&o);
+    assert!(
+        s.contains("; match:"),
+        "deftype response should include '; match:' section\n---\n{s}"
+    );
+    assert!(
+        s.contains("Red") && s.contains("Green") && s.contains("Blue"),
+        "deftype match section should list constructors\n---\n{s}"
+    );
+}
+
+// spec: repl/spec.md §1.3 — deftrait response includes `; deftrait` and `; defn:` section
+#[test]
+fn e2e_s1_3_deftrait_defn_section() {
+    let o = run_repl(
+        "(deftrait (Sizeable a) (size [a] Int))\n",
+        "s1_3_deftrait_defn",
+    );
+    let s = stdout_str(&o);
+    assert!(
+        s.contains("; deftrait"),
+        "deftrait response should include '; deftrait'\n---\n{s}"
+    );
+    assert!(
+        s.contains("; defn:"),
+        "deftrait response should include '; defn:' section\n---\n{s}"
+    );
+    assert!(
+        s.contains("size"),
+        "deftrait '; defn:' section should list 'size'\n---\n{s}"
+    );
+}
+
+// ===========================================================================
+// Sprint 15 Wave 3: Universal format — bare symbol lookup (repl/spec.md §4.1)
+// ===========================================================================
+
+// spec: repl/spec.md §4.1.1 — bare function shows `; defn` classification
+#[test]
+fn e2e_s4_1_bare_fn_classification() {
+    let o = run_repl("(defn inc [n] (add-i64 n 1))\ninc\n", "s4_1_fn_class");
+    let s = stdout_str(&o);
+    // The second result line (bare lookup) should contain '; defn'
+    let results = result_lines(&o);
+    assert!(
+        results.len() >= 2,
+        "expected defn result + lookup result, got: {results:?}"
+    );
+    assert!(
+        results[1].contains("; defn"),
+        "bare fn lookup should show '; defn' classification, got: {:?}",
+        results[1]
+    );
+}
+
+// spec: repl/spec.md §4.1.3 — bare type shows `; deftype` and `; match:` section
+#[test]
+fn e2e_s4_1_bare_type_match_section() {
+    let o = run_repl(
+        "(deftype Color Red Green Blue)\nColor\n",
+        "s4_1_type_match",
+    );
+    let s = stdout_str(&o);
+    assert!(
+        s.contains("; deftype"),
+        "bare type should show '; deftype' classification\n---\n{s}"
+    );
+    assert!(
+        s.contains("; match:"),
+        "bare type should show '; match:' section\n---\n{s}"
+    );
+}
+
+// spec: repl/spec.md §4.1.4 — bare trait shows `; deftrait` and `; defn:` section
+#[test]
+fn e2e_s4_1_bare_trait_defn_section() {
+    let o = run_repl(
+        "(deftrait (Sizeable a) (size [a] Int))\nSizeable\n",
+        "s4_1_trait_defn",
+    );
+    let s = stdout_str(&o);
+    assert!(
+        s.contains("; deftrait"),
+        "bare trait should show '; deftrait' classification\n---\n{s}"
+    );
+    assert!(
+        s.contains("; defn:"),
+        "bare trait should show '; defn:' section\n---\n{s}"
+    );
+    assert!(
+        s.contains("size"),
+        "bare trait '; defn:' section should list 'size'\n---\n{s}"
+    );
+}
+
+// spec: repl/spec.md §4.1.5 — bare special form shows `; special form` classification
+#[test]
+fn e2e_s4_1_bare_special_form_classification() {
+    let o = run_repl("if\n", "s4_1_sf_class");
+    let s = stdout_str(&o);
+    assert!(
+        s.contains("; special form"),
+        "bare 'if' should show '; special form' classification\n---\n{s}"
+    );
+}
+
+// spec: repl/spec.md §4.1.6 — bare macro shows `; defmacro` and clause signatures
+#[test]
+fn e2e_s4_1_bare_macro_defmacro() {
+    let input = "(defmacro inc [x] `(add-i64 ~x 1))\ninc\n";
+    let o = run_repl(input, "s4_1_macro_cls");
+    let s = stdout_str(&o);
+    assert!(
+        s.contains("; defmacro"),
+        "bare macro should show '; defmacro' classification\n---\n{s}"
+    );
+    assert!(
+        s.contains("; [x] -> Sexp"),
+        "bare macro should show clause signature\n---\n{s}"
+    );
+}
+
+// spec: repl/spec.md §4.1.3 — bare builtin type Int shows `; type` classification
+// Note: `; impl:` section only appears when traits are loaded (prelude).
+// E2E tests run without prelude, so we only check the classification.
+#[test]
+fn e2e_s4_1_bare_builtin_type() {
+    let o = run_repl("Int\n", "s4_1_int_type");
+    let s = stdout_str(&o);
+    assert!(
+        s.contains("; type"),
+        "bare 'Int' should show '; type' classification\n---\n{s}"
+    );
+    assert!(
+        s.contains("primitives/Int"),
+        "bare 'Int' should show 'primitives/Int'\n---\n{s}"
+    );
+}
+
+// spec: repl/spec.md §4.1.2 — bare constructor shows `; deftype` classification
+#[test]
+fn e2e_s4_1_bare_constructor_classification() {
+    let o = run_repl(
+        "(deftype Color Red Green Blue)\nRed\n",
+        "s4_1_ctor_class",
+    );
+    let s = stdout_str(&o);
+    assert!(
+        s.contains("; deftype"),
+        "bare constructor 'Red' should show '; deftype' classification\n---\n{s}"
+    );
+}
+
+// ===========================================================================
+// Sprint 15 Wave 3: Negative tests — format boundary checks
+// ===========================================================================
+
+// spec: repl/spec.md §3.3 — /list neg: Fns category MUST NOT contain constructors
+#[test]
+fn e2e_s3_3_list_neg_ctors_not_in_fns() {
+    let o = run_repl(
+        "(deftype Color Red Green Blue)\n/list\n",
+        "s3_3_neg_ctors_fns",
+    );
+    let s = stdout_str(&o);
+    // Find the Fns section if it exists — it should NOT exist since no fns defined.
+    // With only a deftype, only Types category should appear.
+    assert!(
+        !s.contains("Fns:"),
+        "expected no 'Fns:' category when only deftype defined\n---\n{s}"
+    );
+}
+
+// spec: repl/spec.md §3.3 — /list neg: empty categories omitted
+#[test]
+fn e2e_s3_3_list_neg_empty_categories_omitted() {
+    let o = run_repl("(defn foo [x] x)\n/list\n", "s3_3_neg_empty_cats");
+    let s = stdout_str(&o);
+    // Only Fns should appear, not Types or Traits or Macros
+    assert!(
+        !s.contains("Types:"),
+        "expected no 'Types:' when no types defined\n---\n{s}"
+    );
+    assert!(
+        !s.contains("Traits:"),
+        "expected no 'Traits:' when no traits defined\n---\n{s}"
+    );
+    assert!(
+        !s.contains("Macros:"),
+        "expected no 'Macros:' when no macros defined\n---\n{s}"
     );
 }

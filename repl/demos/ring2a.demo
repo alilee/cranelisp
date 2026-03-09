@@ -2,7 +2,7 @@
 
 ; What did the prelude give us?
 
-/l
+/imports
 
 ; Operators are trait methods
 

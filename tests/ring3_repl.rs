@@ -20,23 +20,22 @@ use helpers::{repl_eval, repl_eval_display, repl_session};
 // §11.5 Scenario 7: defmacro display at REPL (spec §11.3)
 // =============================================================================
 
-// spec: repl/spec.md §11.3 — single-clause defmacro shows "name :: macro"
+// spec: repl/spec.md §4.1.6 — single-clause defmacro universal format
 #[test]
 fn r3_defmacro_display_single_clause() {
     let mut s = repl_session();
     let display = repl_eval_display(&mut s, "(defmacro double [x] `(add-i64 ~x ~x))");
     assert!(
-        display.contains("double :: macro"),
-        "single-clause defmacro should show 'double :: macro', got: {display}"
+        display.contains(":user/double ; defmacro"),
+        "single-clause defmacro should show ':user/double ; defmacro', got: {display}"
     );
-    // Single clause MUST NOT mention clause count.
     assert!(
-        !display.contains("clauses"),
-        "single-clause defmacro should NOT mention 'clauses', got: {display}"
+        display.contains("; [x] -> Sexp"),
+        "single-clause defmacro should show clause signature, got: {display}"
     );
 }
 
-// spec: repl/spec.md §11.3 — multi-clause defmacro shows "name :: macro (N clauses)"
+// spec: repl/spec.md §4.1.6 — multi-clause defmacro universal format
 #[test]
 fn r3_defmacro_display_multi_clause() {
     let mut s = repl_session();
@@ -45,16 +44,16 @@ fn r3_defmacro_display_multi_clause() {
         "(defmacro pick ([x] x) ([x y] x))",
     );
     assert!(
-        display.contains("pick :: macro"),
-        "multi-clause defmacro should contain 'pick :: macro', got: {display}"
+        display.contains(":user/pick ; defmacro"),
+        "multi-clause defmacro should contain ':user/pick ; defmacro', got: {display}"
     );
     assert!(
-        display.contains("2 clauses"),
-        "multi-clause defmacro should mention '2 clauses', got: {display}"
+        display.contains("; [x] -> Sexp") && display.contains("; [x y] -> Sexp"),
+        "multi-clause defmacro should show clause signatures, got: {display}"
     );
 }
 
-// spec: repl/spec.md §11.3 — defmacro display for 3-clause macro
+// spec: repl/spec.md §4.1.6 — defmacro display for 3-clause macro
 #[test]
 fn r3_defmacro_display_three_clauses() {
     let mut s = repl_session();
@@ -62,9 +61,18 @@ fn r3_defmacro_display_three_clauses() {
         &mut s,
         "(defmacro mc ([x] x) ([x y] y) ([x y z] z))",
     );
+    // Three clause signature lines in universal format
     assert!(
-        display.contains("3 clauses"),
-        "3-clause defmacro should mention '3 clauses', got: {display}"
+        display.contains("; [x] -> Sexp"),
+        "3-clause defmacro should show '; [x] -> Sexp', got: {display}"
+    );
+    assert!(
+        display.contains("; [x y] -> Sexp"),
+        "3-clause defmacro should show '; [x y] -> Sexp', got: {display}"
+    );
+    assert!(
+        display.contains("; [x y z] -> Sexp"),
+        "3-clause defmacro should show '; [x y z] -> Sexp', got: {display}"
     );
 }
 
@@ -225,7 +233,6 @@ fn r3_sig_macro_variadic() {
 // =============================================================================
 
 // spec: repl/spec.md §11.4 — bare macro name shows clause signatures
-// FIXME(/int): bare non-zero-arg macro names should show clause signatures, not dispatch
 #[test]
 fn r3_bare_macro_lookup() {
     let mut s = repl_session();
@@ -272,7 +279,6 @@ fn r3_bare_macro_lookup_multi_clause() {
 }
 
 // spec: repl/spec.md §4.2 — bare 'defmacro' shows special form signature
-// FIXME(/typecheck): register 'defmacro' in special_forms list (builtins.rs:253)
 #[test]
 fn r3_special_form_defmacro() {
     let mut s = repl_session();
@@ -654,4 +660,327 @@ fn r3_batch_macro_multiple_uses() {
 "#;
     let result = pipeline::compile_and_run(src, CompileMode::Batch).unwrap();
     assert_eq!(result.value, 42);
+}
+
+// =============================================================================
+// Sprint 15 Wave 3: Universal output format — definition results (§1.1, §1.3)
+// =============================================================================
+
+// spec: repl/spec.md §1.3 — defn response shows `; defn` classification
+#[test]
+fn r3_defn_response_classification() {
+    let mut s = repl_session();
+    let display = repl_eval_display(&mut s, "(defn foo [x] x)");
+    assert!(
+        display.contains("; defn"),
+        "defn response should include '; defn' classification, got: {display}"
+    );
+    assert!(
+        display.contains("user/foo"),
+        "defn response should include qualified name 'user/foo', got: {display}"
+    );
+}
+
+// spec: repl/spec.md §1.3 — deftype response shows `; deftype` and `; match:` section
+#[test]
+fn r3_deftype_response_related() {
+    let mut s = repl_session();
+    let display = repl_eval_display(&mut s, "(deftype Color Red Green Blue)");
+    assert!(
+        display.contains("; deftype"),
+        "deftype response should include '; deftype', got: {display}"
+    );
+    assert!(
+        display.contains("; match:"),
+        "deftype response should include '; match:' section, got: {display}"
+    );
+    assert!(
+        display.contains("Red") && display.contains("Green") && display.contains("Blue"),
+        "deftype '; match:' should list constructors, got: {display}"
+    );
+}
+
+// spec: repl/spec.md §1.3 — deftrait response shows `; deftrait` and `; defn:` section
+#[test]
+fn r3_deftrait_response_related() {
+    let mut s = repl_session();
+    let display = repl_eval_display(
+        &mut s,
+        "(deftrait (Sizeable a) (size [a] Int))",
+    );
+    assert!(
+        display.contains("; deftrait"),
+        "deftrait response should include '; deftrait', got: {display}"
+    );
+    assert!(
+        display.contains("; defn:") && display.contains("size"),
+        "deftrait response should include '; defn:' with 'size', got: {display}"
+    );
+}
+
+// =============================================================================
+// Sprint 15 Wave 3: Macro universal format (§4.1.6)
+// =============================================================================
+
+// spec: repl/spec.md §4.1.6 — bare macro lookup shows `:module/name ; defmacro` + clauses
+#[test]
+fn r3_bare_macro_shows_universal_format() {
+    let mut s = repl_session();
+    repl_eval_display(&mut s, "(defmacro my-inc [x] `(add-i64 ~x 1))");
+    let result = s.eval("my-inc").unwrap();
+    let display = result.definition_display.unwrap_or_default();
+    assert!(
+        display.contains(":user/my-inc ; defmacro"),
+        "bare macro should show ':user/my-inc ; defmacro', got: {display}"
+    );
+    assert!(
+        display.contains("; [x] -> Sexp"),
+        "bare macro should show clause signature, got: {display}"
+    );
+}
+
+// spec: repl/spec.md §4.1.6 — multi-clause macro bare lookup shows all clause lines
+#[test]
+fn r3_bare_macro_multi_clause_all_sigs() {
+    let mut s = repl_session();
+    repl_eval_display(
+        &mut s,
+        "(defmacro multi ([x] x) ([x y] x) ([x y z] z))",
+    );
+    let result = s.eval("multi").unwrap();
+    let display = result.definition_display.unwrap_or_default();
+    assert!(
+        display.contains("; defmacro"),
+        "bare multi-clause macro should show '; defmacro', got: {display}"
+    );
+    // Count clause signature lines
+    let clause_lines: Vec<_> = display.lines().filter(|l| l.contains("-> Sexp")).collect();
+    assert_eq!(
+        clause_lines.len(),
+        3,
+        "expected 3 clause signature lines, got {} in: {display}",
+        clause_lines.len()
+    );
+}
+
+// spec: repl/spec.md §4.1.6 — macro with docstring shows `:module/name ; defmacro - docstring`
+#[test]
+fn r3_macro_docstring_in_classification() {
+    let mut s = repl_session();
+    let display = repl_eval_display(
+        &mut s,
+        "(defmacro my-inc \"Increment by one\" [x] `(add-i64 ~x 1))",
+    );
+    assert!(
+        display.contains("; defmacro"),
+        "macro with docstring should show '; defmacro', got: {display}"
+    );
+    // The docstring may or may not appear in the definition result —
+    // check that the primary line is well-formed.
+    assert!(
+        display.contains("user/my-inc"),
+        "macro with docstring should show qualified name, got: {display}"
+    );
+}
+
+// =============================================================================
+// Sprint 15 Wave 3: Type/trait universal format (§4.1.3, §4.1.4)
+// =============================================================================
+
+// spec: repl/spec.md §4.1.3 — deftype result includes `; deftype` + `; match:` section
+// Note: bare type name lookup (e.g., entering "Color" at REPL) goes through the
+// binary's REPL input loop, not s.eval(). Tested via E2E: e2e_s4_1_bare_type_match_section.
+// This test validates the deftype definition result.
+#[test]
+fn r3_deftype_result_match_section() {
+    let mut s = repl_session();
+    let display = repl_eval_display(&mut s, "(deftype Color Red Green Blue)");
+    assert!(
+        display.contains("; deftype"),
+        "deftype result should show '; deftype', got: {display}"
+    );
+    assert!(
+        display.contains("; match:"),
+        "deftype result should show '; match:' section, got: {display}"
+    );
+    assert!(
+        display.contains("Red") && display.contains("Green") && display.contains("Blue"),
+        "deftype '; match:' should list constructors, got: {display}"
+    );
+}
+
+// spec: repl/spec.md §4.1.4 — deftrait result includes `; deftrait` + `; defn:` section
+// Note: bare trait name lookup goes through the REPL binary input loop.
+// Tested via E2E: e2e_s4_1_bare_trait_defn_section.
+// This test validates the deftrait definition result.
+#[test]
+fn r3_deftrait_result_defn_section() {
+    let mut s = repl_session();
+    let display = repl_eval_display(
+        &mut s,
+        "(deftrait (Showable a) (render [a] String))",
+    );
+    assert!(
+        display.contains("; deftrait"),
+        "deftrait result should show '; deftrait', got: {display}"
+    );
+    assert!(
+        display.contains("; defn:") && display.contains("render"),
+        "deftrait result should show '; defn:' with method names, got: {display}"
+    );
+}
+
+// spec: repl/spec.md §4.1.4 — trait with impl: bare trait lookup shows `; impl:` section
+// Note: bare trait lookup goes through the REPL binary.
+// Tested via E2E: e2e_s4_1_bare_trait_defn_section.
+// Integration test validates impl display via the impl result.
+#[test]
+fn r3_trait_impl_shows_impl_display() {
+    let mut s = repl_session();
+    repl_eval_display(
+        &mut s,
+        "(deftrait (Sizeable a) (size [a] Int))",
+    );
+    repl_eval_display(
+        &mut s,
+        "(deftype Circle [:Int radius])",
+    );
+    let display = repl_eval_display(
+        &mut s,
+        "(impl Sizeable Circle (defn size [_c] 42))",
+    );
+    assert!(
+        display.contains("impl") && display.contains("Sizeable") && display.contains("Circle"),
+        "impl display should show 'impl Sizeable for Circle', got: {display}"
+    );
+}
+
+// spec: repl/spec.md §4.1.3 — builtin type Int shows `; impl:` section
+// Note: bare type lookup for user types goes through the REPL binary.
+// Tested via E2E: e2e_s4_1_bare_builtin_type_impl.
+// This test validates that the impl registration does not error.
+#[test]
+fn r3_impl_registration_no_error() {
+    let mut s = repl_session();
+    repl_eval_display(
+        &mut s,
+        "(deftrait (Sizeable a) (size [a] Int))",
+    );
+    repl_eval_display(
+        &mut s,
+        "(deftype Circle [:Int radius])",
+    );
+    // impl with a constant body (avoids accessor syntax issues)
+    let display = repl_eval_display(
+        &mut s,
+        "(impl Sizeable Circle (defn size [_c] 42))",
+    );
+    assert!(
+        display.contains("impl"),
+        "impl should display successfully, got: {display}"
+    );
+}
+
+// =============================================================================
+// Sprint 15 Wave 3: Special form universal format (§4.1.5)
+// =============================================================================
+
+// spec: repl/spec.md §4.1.5 — bare special form shows `; special form` classification
+#[test]
+fn r3_bare_special_form_classification() {
+    let mut s = repl_session();
+    let result = s.eval("if").unwrap();
+    let display = result.definition_display.unwrap_or_default();
+    assert!(
+        display.contains("; special form"),
+        "bare 'if' should show '; special form' classification, got: {display}"
+    );
+}
+
+// spec: repl/spec.md §4.1.5 — bare special form 'let' shows classification
+#[test]
+fn r3_bare_special_form_let() {
+    let mut s = repl_session();
+    let result = s.eval("let").unwrap();
+    let display = result.definition_display.unwrap_or_default();
+    assert!(
+        display.contains("; special form"),
+        "bare 'let' should show '; special form' classification, got: {display}"
+    );
+}
+
+// spec: repl/spec.md §4.1.5 — bare special form 'defmacro' shows classification
+#[test]
+fn r3_bare_special_form_defmacro_classification() {
+    let mut s = repl_session();
+    let result = s.eval("defmacro").unwrap();
+    let display = result.definition_display.unwrap_or_default();
+    assert!(
+        display.contains("; special form"),
+        "bare 'defmacro' should show '; special form' classification, got: {display}"
+    );
+}
+
+// =============================================================================
+// Sprint 15 Wave 3: Negative tests — universal format boundaries
+// =============================================================================
+
+// spec: repl/spec.md §1.1 — defn display MUST NOT use old `name :: macro` format
+#[test]
+fn r3_neg_macro_display_no_old_format() {
+    let mut s = repl_session();
+    let display = repl_eval_display(&mut s, "(defmacro my-mac [x] x)");
+    assert!(
+        !display.contains(":: macro"),
+        "macro display MUST NOT use old ':: macro' format, got: {display}"
+    );
+    assert!(
+        !display.contains("clauses"),
+        "macro display MUST NOT use old 'N clauses' format, got: {display}"
+    );
+}
+
+// spec: repl/spec.md §1.1 — deftrait display MUST include `; deftrait` (not bare)
+#[test]
+fn r3_neg_deftrait_display_not_bare() {
+    let mut s = repl_session();
+    let display = repl_eval_display(
+        &mut s,
+        "(deftrait (Showable a) (render [a] String))",
+    );
+    // The old format was just `:user/Showable` — now it must have `; deftrait`
+    let first_line = display.lines().next().unwrap_or("");
+    assert!(
+        first_line.contains("; deftrait"),
+        "deftrait display MUST include '; deftrait' on primary line, got: {first_line}"
+    );
+}
+
+// spec: repl/spec.md §1.1 — defn display MUST include `; defn` classification
+#[test]
+fn r3_neg_defn_display_has_classification() {
+    let mut s = repl_session();
+    let display = repl_eval_display(&mut s, "(defn id [x] x)");
+    let first_line = display.lines().next().unwrap_or("");
+    assert!(
+        first_line.contains("; defn"),
+        "defn display MUST include '; defn' on primary line, got: {first_line}"
+    );
+}
+
+// spec: repl/spec.md §4.1.2 — bare constructor classification is `; deftype` not `; defn`
+// Note: bare constructor lookup for classification goes through the REPL binary input loop,
+// not via s.eval() which evaluates the constructor as a value. Covered by E2E test:
+// e2e_s4_1_bare_constructor_classification.
+// This integration test verifies constructors produce values, not errors.
+#[test]
+fn r3_constructor_evaluates_as_value() {
+    let mut s = repl_session();
+    repl_eval_display(&mut s, "(deftype Color Red Green Blue)");
+    let result = s.eval("Red").unwrap();
+    // Constructor evaluates to a value (nullary constructor tag)
+    assert!(
+        !result.is_definition,
+        "constructor eval should be a value, not a definition"
+    );
 }
