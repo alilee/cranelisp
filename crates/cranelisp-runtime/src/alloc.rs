@@ -175,6 +175,17 @@ pub extern "C" fn heap_alloc(payload_size: i64) -> i64 {
     alloc_with_rc(payload_size as usize) as i64
 }
 
+/// Allocate a heap object. Returns **payload pointer** (base + HeapHeader::SIZE).
+///
+/// Used as `HostCallbacks.alloc` for platform DLLs, which write fields
+/// starting at payload offset 0. The DLL code then subtracts HEAP_HEADER_SIZE
+/// to get the base pointer for return values.
+#[unsafe(no_mangle)]
+pub extern "C" fn heap_alloc_payload(payload_size: i64) -> i64 {
+    let base = alloc_with_rc(payload_size as usize);
+    base as i64 + cranelisp_types::HeapHeader::SIZE as i64
+}
+
 /// Deallocate a heap object. Reads alloc_size from HeapHeader at base pointer.
 #[unsafe(no_mangle)]
 pub extern "C" fn heap_dealloc(base_ptr: i64) -> i64 {

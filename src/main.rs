@@ -67,6 +67,12 @@ fn run_file(path: &str) {
             // Print the result value to stdout (for batch mode).
             let display = cranelisp::repl::format_result(result.value, &result.ty);
             println!("{display}");
+
+            // Determine exit code from the result.
+            let exit_code = cranelisp::pipeline::determine_exit_code(result.value, &result.ty);
+            if exit_code != 0 {
+                process::exit(exit_code);
+            }
         }
         Err(e) => {
             eprintln!("error: {e}");

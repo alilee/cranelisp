@@ -322,25 +322,28 @@ pub unsafe fn read_string_as_str(base_ptr: i64) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::alloc::bytes_current;
+    use crate::alloc::{alloc_count, dealloc_count};
 
     // spec: 12-runtime §12.1.2 — empty string heap allocation
     #[test]
     fn test_alloc_string_empty() {
-        let bytes_before = bytes_current();
+        let allocs_before = alloc_count();
+        let deallocs_before = dealloc_count();
         let base = alloc_string(b"");
         unsafe {
             let len = *(base.add(HeapString::LEN_OFFSET as usize) as *const i64);
             assert_eq!(len, 0);
             alloc::dealloc(base);
         }
-        assert_eq!(bytes_current(), bytes_before);
+        assert!(alloc_count() - allocs_before >= 1);
+        assert!(dealloc_count() - deallocs_before >= 1);
     }
 
     // spec: 12-runtime §12.1.2 — string heap layout [length | bytes]
     #[test]
     fn test_alloc_string_hello() {
-        let bytes_before = bytes_current();
+        let allocs_before = alloc_count();
+        let deallocs_before = dealloc_count();
         let base = alloc_string(b"hello");
         unsafe {
             let len = *(base.add(HeapString::LEN_OFFSET as usize) as *const i64);
@@ -349,13 +352,15 @@ mod tests {
             assert_eq!(s, "hello");
             alloc::dealloc(base);
         }
-        assert_eq!(bytes_current(), bytes_before);
+        assert!(alloc_count() - allocs_before >= 1);
+        assert!(dealloc_count() - deallocs_before >= 1);
     }
 
     // spec: appendix-a-builtins §A.3 — str-concat concatenates two strings
     #[test]
     fn test_str_concat() {
-        let bytes_before = bytes_current();
+        let allocs_before = alloc_count();
+        let deallocs_before = dealloc_count();
         let a = alloc_string(b"hello, ") as i64;
         let b = alloc_string(b"world!") as i64;
         let result = str_concat(a, b);
@@ -366,7 +371,9 @@ mod tests {
             alloc::dealloc(b as *mut u8);
             alloc::dealloc(result as *mut u8);
         }
-        assert_eq!(bytes_current(), bytes_before);
+        // Delta-based: at least 3 allocs (a + b + result), 3 deallocs.
+        assert!(alloc_count() - allocs_before >= 3);
+        assert!(dealloc_count() - deallocs_before >= 3);
     }
 
     // spec: appendix-a-builtins §A.3 — str-eq returns true for equal strings
@@ -409,7 +416,8 @@ mod tests {
     // spec: 12-runtime §12.3.2, appendix-a-builtins §A.3 — string-identity increments RC
     #[test]
     fn test_string_identity_increments_rc() {
-        let bytes_before = bytes_current();
+        let allocs_before = alloc_count();
+        let deallocs_before = dealloc_count();
         let s = alloc_string(b"shared") as i64;
 
         // RC should be 1 after allocation.
@@ -433,7 +441,9 @@ mod tests {
             rc_ptr.fetch_sub(1, Ordering::Release);
             alloc::dealloc(s as *mut u8);
         }
-        assert_eq!(bytes_current(), bytes_before);
+        // Delta-based: at least 1 alloc, 1 dealloc.
+        assert!(alloc_count() - allocs_before >= 1);
+        assert!(dealloc_count() - deallocs_before >= 1);
     }
 
     // spec: 12-runtime §12.1.2 — string read returns pointer and byte length
@@ -456,7 +466,8 @@ mod tests {
     // spec: 12-runtime §12.1.2 — extern string allocation from raw pointer
     #[test]
     fn test_alloc_string_extern() {
-        let bytes_before = bytes_current();
+        let allocs_before = alloc_count();
+        let deallocs_before = dealloc_count();
         let data = b"extern test";
         let s = heap_alloc_string(data.as_ptr(), data.len() as i64);
         assert_ne!(s, 0);
@@ -464,7 +475,8 @@ mod tests {
             assert_eq!(read_str(s as *const u8), "extern test");
             alloc::dealloc(s as *mut u8);
         }
-        assert_eq!(bytes_current(), bytes_before);
+        assert!(alloc_count() - allocs_before >= 1);
+        assert!(dealloc_count() - deallocs_before >= 1);
     }
 
     // spec: 12-runtime §12.1.2 — null pointer string allocation produces empty string

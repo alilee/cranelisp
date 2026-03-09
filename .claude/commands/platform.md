@@ -55,8 +55,41 @@ Do not hand off to `/sprint` or `/review` with a broken build. If your changes c
 - **Ring 2**: Define `cranelisp-platform` C-ABI contract
 - **Ring 4**: Implement `platforms/stdio/` and `platforms/test-capture/`
 
+## Per-Platform Spec Governance
+
+Each platform has its own `spec.md` under `platforms/{name}/`. This is the authoritative record of what the platform provides, who needs it, and why.
+
+### Ownership
+
+- `/platform` owns all `platforms/*/spec.md` files
+- `/platform` implements against the platform spec, not the language spec
+- The language spec (`spec/10-io.md`) defines only the platform **mechanism** (IO type, trampoline, ABI contract) — not specific platforms or their functions
+
+### Consumer Protocol
+
+Consumer skills (`/repl`, `/port`, `/qa`, `/examples`) file requirements on platform specs via the FIXME protocol:
+
+```html
+<!-- FIXME(/platform): /repl needs `write :: (Fn [String] (IO Int))` for stderr output -->
+```
+
+`/platform` evaluates each FIXME, adds the function to the platform spec and implementation, or responds with rationale for deferral.
+
+### Platform Specs
+
+| Platform | Spec | Purpose |
+|---|---|---|
+| `stdio` | `platforms/stdio/spec.md` | Console IO for interactive and batch programs |
+| `test-capture` | `platforms/test-capture/spec.md` | Deterministic testing — drop-in stdio substitute |
+
+### Conformance
+
+Any platform that exports the same function names with the same type signatures as stdio can substitute for it. The test-capture platform is the canonical substitute. Platform specs define the conformance criteria.
+
 ## Key References
 
+- `platforms/stdio/spec.md` — stdio platform specification
+- `platforms/test-capture/spec.md` — test-capture platform specification
 - `sketch/cranelisp-platform/` — prototype ABI contract (ABI_VERSION=2, deferred IO model)
 - `sketch/cranelisp-runtime/` — prototype runtime primitives
 - `sketch/platforms/stdio/` — reference stdio platform

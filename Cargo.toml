@@ -7,6 +7,8 @@ members = [
     "crates/cranelisp-backend",
     "crates/cranelisp-runtime",
     "crates/cranelisp-platform",
+    "platforms/stdio",
+    "platforms/test-capture",
 ]
 resolver = "2"
 
@@ -25,6 +27,9 @@ cranelisp-platform = { path = "crates/cranelisp-platform" }
 
 [dependencies.libc]
 version = "0.2"
+
+[dependencies.libloading]
+version = "0.8"
 
 [dev-dependencies]
 serial_test = "3"

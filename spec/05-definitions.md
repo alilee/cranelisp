@@ -1,8 +1,8 @@
-# 5. Definitions [R3 S8]
+# 5. Definitions [Tested]
 
 This section specifies the top-level definition forms in Cranelisp. All definitions appear at the top level of a source file or module. They introduce named functions, types, traits, macros, constants, and module structure into the program.
 
-## 5.1 Function Definition (`defn` / `defn-`) [R3 S8]
+## 5.1 Function Definition (`defn` / `defn-`) [Tested]
 
 ### 5.1.1 Single-Signature [Tested tests/ring0::repl_define_and_call, tests/ring0::repl_multiple_params, tests/ring0::error_duplicate_param_names, tests/e2e::e2e_ring0_defn_and_call]
 
@@ -40,7 +40,7 @@ A function definition binds a name to a function value. The parameter list uses 
 - When no annotation is provided, the parameter type is inferred via Hindley-Milner unification.
 - The return type is always inferred; there is no return type annotation syntax.
 
-### 5.1.2 Multi-Signature [R3 S8]
+### 5.1.2 Multi-Signature [Tested tests/ring2::neg_multi_sig_bare_value_errors, tests/repl_experience::defn_multi_param_reports_full_signature]
 
 ```ebnf
 defn_multi_form = '(' ('defn' | 'defn-') name docstring? variant+ ')'
@@ -64,7 +64,7 @@ A multi-signature function definition provides multiple variants with different 
 - Variants MAY have different numbers of parameters.
 - The mangled name for each variant is the function name followed by `$` and the parameter types joined by `+`. For example, `size` with a `Vec` parameter becomes `size$Vec`.
 
-### 5.1.3 Auto-Currying [R3 S8]
+### 5.1.3 Auto-Currying [R3 S17]
 
 When any function (single or multi-signature) is called with fewer arguments than it declares, the call returns a closure that captures the provided arguments and accepts the remaining ones. This is auto-currying.
 
@@ -212,7 +212,7 @@ Accessor functions are first-class values and can be passed as arguments or boun
 - Constructor names are conventionally capitalized, but this is not enforced.
 - Constructor tags are assigned sequentially starting from 0 in definition order.
 
-## 5.3 Trait Declaration (`deftrait` / `deftrait-`) [R3 S9]
+## 5.3 Trait Declaration (`deftrait` / `deftrait-`) [Tested]
 
 ```ebnf
 deftrait_form  = '(' ('deftrait' | 'deftrait-') trait_head docstring? method_sig+ ')'
@@ -241,7 +241,7 @@ A trait declaration introduces a named interface with one or more method signatu
 - `Self` refers to the type that will implement the trait.
 - An optional docstring MAY appear on the trait itself and on each method.
 
-### 5.3.2 Higher-Kinded Traits [R3 S9]
+### 5.3.2 Higher-Kinded Traits [R3 S17]
 
 When the trait head includes type parameters, the trait operates on type constructors rather than concrete types.
 
@@ -260,7 +260,7 @@ When the trait head includes type parameters, the trait operates on type constru
 - Method signatures declare the type contract. Implementations MUST conform to the declared signature.
 - Traits are the mechanism for operator overloading: `+`, `-`, `*`, `/` are methods of the `Num` trait; `=` is a method of `Eq`; `<`, `>`, `<=`, `>=` are methods of `Ord`.
 
-## 5.4 Trait Implementation (`impl`) [R3 S9]
+## 5.4 Trait Implementation (`impl`) [Tested]
 
 ```ebnf
 impl_form      = '(' 'impl' trait_name target_type method_defn+ ')'
@@ -314,7 +314,7 @@ This implements Display for `(Option Int)` specifically. The `(show x)` call in 
 - The implementation methods become constrained polymorphic functions, monomorphised at each call site.
 - `(show (Some 42))` generates a specialization `show$Option$Int`.
 
-### 5.4.4 Higher-Kinded Implementation [R3 S9]
+### 5.4.4 Higher-Kinded Implementation [R3 S17]
 
 For HKT traits, the target is a bare type constructor name (not an applied type):
 
@@ -333,7 +333,7 @@ For HKT traits, the target is a bare type constructor name (not an applied type)
 - The method parameter count and types MUST conform to the trait's declared signature.
 - Method bodies are type-checked against the instantiated trait signature.
 
-## 5.5 Macro Definition (`defmacro` / `defmacro-`) [R3 S9]
+## 5.5 Macro Definition (`defmacro` / `defmacro-`) [Tested tests/macros::repl_defmacro_identity, tests/macros::repl_defmacro_quasiquote, tests/macros::repl_defmacro_multi_clause, tests/macros::batch_defmacro_simple]
 
 ```ebnf
 defmacro_form  = '(' ('defmacro' | 'defmacro-') name docstring? macro_params body ')'
@@ -382,7 +382,7 @@ A macro MAY return `(begin form1 form2 ...)` to splice multiple top-level forms 
     (defn ~(make-name2 name) [] ~b)))
 ```
 
-## 5.6 Constants (`const` / `const-`) [R3 S9]
+## 5.6 Constants (`const` / `const-`) [Tested tests/stdlib::macro_const_int_batch, tests/stdlib::macro_const_string_batch, tests/exemplar::exemplar_batch_const_macro]
 
 ```ebnf
 const_form = '(' ('const' | 'const-') name expr ')'
@@ -404,7 +404,7 @@ A constant definition creates an inline substitution. Every reference to the con
 - The value expression MUST be a literal or a form that can be quoted as `Sexp`. It is not evaluated -- it is substituted syntactically.
 - `const-` creates a module-private constant.
 
-## 5.7 Named Values (`def` / `def-`) [R3 S9]
+## 5.7 Named Values (`def` / `def-`) [Tested tests/stdlib::macro_def_basic_batch, tests/stdlib::macro_def_expression_batch]
 
 ```ebnf
 def_form = '(' ('def' | 'def-') name expr ')'
@@ -539,7 +539,7 @@ Definitions MAY include an optional docstring -- a string literal placed between
 - Docstrings have no effect on program semantics.
 - `const`, `def`, `impl`, `mod`, `import`, `export`, and `platform` do not support docstrings.
 
-## 5.13 Definition Ordering [R3 S9]
+## 5.13 Definition Ordering [Tested]
 
 ### 5.13.1 Functions, Types, Traits, and Implementations [Tested tests/ring0::forward_reference, tests/ring0::mutual_forward_references, tests/ring0::dual_mode_forward_reference]
 
@@ -559,7 +559,7 @@ This means a function may call another function defined later in the file, and a
   (if (= n 0) false (is-even (- n 1))))
 ```
 
-### 5.13.2 Macros [R3 S9]
+### 5.13.2 Macros [Tested tests/ring3_repl::r3_neg_forward_reference_not_expanded, tests/macros::batch_defmacro_simple]
 
 Macros MUST be defined before use. A macro cannot be forward-referenced. This is because macro expansion occurs in a single pass, and each `defmacro` is compiled immediately when encountered. A reference to a macro that has not yet been defined is an error.
 
@@ -577,7 +577,7 @@ Macros MUST be defined before use. A macro cannot be forward-referenced. This is
 
 `mod`, `import`, `export`, and `platform` are extracted before any other processing. Their position in the source file relative to other definitions does not matter, though by convention they appear at the top.
 
-## 5.14 Summary of Top-Level Forms [R3 S8]
+## 5.14 Summary of Top-Level Forms [Tested]
 
 | Form | Kind | Visibility | Phase |
 |---|---|---|---|

@@ -127,7 +127,7 @@ The implementation MAY use any memory management strategy:
 
 Vec operations (`vec-set`, `vec-push`) return a new Vec value. The implementation MAY optimize by mutating the backing storage in place when the Vec has a single owner. This is semantically invisible — the caller observes pure functional behavior regardless.
 
-## 12.4 Evaluation Order [R3 S8]
+## 12.4 Evaluation Order [Tested]
 
 ### 12.4.1 Strict Evaluation [Tested tests/ring0.rs::chained_function_calls]
 
@@ -138,7 +138,7 @@ Cranelisp uses **strict (eager) evaluation**. All sub-expressions are fully eval
 - Both branches of `if` exist but only the selected branch is evaluated.
 - `match` arms are tested top-to-bottom; only the first matching arm's body is evaluated.
 
-### 12.4.2 Lazy Sequences [R3 S8]
+### 12.4.2 Lazy Sequences [R3 S17]
 
 The `Seq` type provides lazy evaluation through thunks (zero-argument closures). Laziness is explicit and user-controlled — it is NOT a property of the evaluation model itself.
 
@@ -185,7 +185,7 @@ The following are compile-time errors:
 - Type errors (unification failure, arity mismatch) [Tested tests/ring0.rs::type_error_add_bool]
 - Unbound variable references [Tested tests/ring0.rs::error_unbound_symbol]
 - Ambiguous name resolution [Tested crates/cranelisp-typecheck/src/checker.rs::test_import_ambiguity]
-- Macro expansion errors (non-Sexp return type, expansion limit exceeded) [R3 S10]
+- Macro expansion errors (non-Sexp return type, expansion limit exceeded) [Tested tests/macros::neg_macro_non_sexp_return_type_batch, tests/macros::neg_macro_expansion_depth_limit_exceeded]
 
 ### 12.7.2 Runtime Errors [Tested]
 

@@ -50,6 +50,22 @@ impl Type {
         }
     }
 
+    /// Check whether this type is `IO _`.
+    pub fn is_io(&self) -> bool {
+        matches!(self, Type::ADT(name, _) if name.as_ref() == "IO")
+    }
+
+    /// Extract the inner type from `IO T`.
+    ///
+    /// Returns the inner type (e.g., `Int` from `IO Int`).
+    /// If the type is not IO or has no type arguments, returns the type unchanged.
+    pub fn io_inner_type(&self) -> Type {
+        match self {
+            Type::ADT(_, args) if !args.is_empty() => args[0].clone(),
+            _ => self.clone(),
+        }
+    }
+
     /// Returns true if this type contains any unresolved type variable (`Type::Var`).
     /// Used in `debug_assert!` to verify all types are fully resolved before codegen.
     pub fn contains_var(&self) -> bool {
@@ -373,6 +389,41 @@ mod tests {
         assert_eq!(format!("{fn_ty}"), "(Fn [Int Int] Int)");
         let adt = Type::ADT(TypeName::from("Color"), vec![]);
         assert_eq!(format!("{adt}"), "Color");
+    }
+
+    // --- IO type detection ---
+
+    // spec: 10-io §10.6.1 — Type::is_io detects IO ADT
+    #[test]
+    fn test_is_io_positive() {
+        let io_int = Type::ADT(TypeName::from("IO"), vec![Type::Int]);
+        assert!(io_int.is_io());
+    }
+
+    // spec: 10-io §10.6.1 — Type::is_io rejects non-IO types
+    #[test]
+    fn test_is_io_negative() {
+        assert!(!Type::Int.is_io());
+        assert!(!Type::Bool.is_io());
+        let option_int = Type::ADT(TypeName::from("Option"), vec![Type::Int]);
+        assert!(!option_int.is_io());
+    }
+
+    // spec: 10-io §10.6.1 — Type::io_inner_type unwraps IO
+    #[test]
+    fn test_io_inner_type() {
+        let io_int = Type::ADT(TypeName::from("IO"), vec![Type::Int]);
+        assert_eq!(io_int.io_inner_type(), Type::Int);
+
+        let io_string = Type::ADT(TypeName::from("IO"), vec![Type::String]);
+        assert_eq!(io_string.io_inner_type(), Type::String);
+    }
+
+    // spec: 10-io §10.8 — Type::io_inner_type fallback for non-IO
+    #[test]
+    fn test_io_inner_type_no_args() {
+        let io_bare = Type::ADT(TypeName::from("IO"), vec![]);
+        assert_eq!(io_bare.io_inner_type(), io_bare);
     }
 
     // --- U1.6: type variable display name tests ---

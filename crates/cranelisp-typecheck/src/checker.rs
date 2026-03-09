@@ -51,6 +51,9 @@ pub struct TypeChecker {
     pub(crate) active_constraints: ActiveConstraints,
     /// Module aliases: alias name -> full module path (from aliased imports).
     pub(crate) module_aliases: HashMap<Symbol, ModuleFullPath>,
+    /// Transient flag: set true during `infer_apply` when inferring the callee.
+    /// Used to suppress the "constrained fn as value" error for direct calls.
+    pub(crate) in_call_position: bool,
 }
 
 impl TypeChecker {
@@ -78,6 +81,7 @@ impl TypeChecker {
             impl_registry: ImplRegistry::default(),
             active_constraints: ActiveConstraints::default(),
             module_aliases: HashMap::new(),
+            in_call_position: false,
         };
         tc.register_builtins();
         tc
@@ -741,6 +745,20 @@ impl TypeChecker {
     /// Build a map of known type names for type expression resolution.
     pub(crate) fn known_type_names(&self) -> crate::resolve::KnownTypes {
         self.type_defs.known_types()
+    }
+
+    /// Check whether a constructor name refers to an internal constructor.
+    ///
+    /// Internal constructors (e.g. `Bind` for the IO type) cannot be
+    /// constructed or pattern-matched by user code.
+    pub(crate) fn is_internal_constructor(&self, name: &Symbol) -> bool {
+        // Strip module prefix for qualified names like "primitives/Bind"
+        let bare_name: &str = if let Some(slash_pos) = name.as_ref().find('/') {
+            &name.as_ref()[slash_pos + 1..]
+        } else {
+            name.as_ref()
+        };
+        self.type_defs.is_internal_constructor(bare_name)
     }
 }
 

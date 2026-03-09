@@ -170,15 +170,114 @@ pub fn assert_rc_balanced(src: &str) {
 
 /// Evaluate in REPL and return the formatted display string with ADT context.
 ///
-/// Uses `definition_display` when available (for deftrait, impl, constrained fn),
-/// otherwise falls back to `format_result_value`.
+/// Uses `definition_display` when available (for deftrait, impl, constrained fn).
+/// For IO types, forces the IO tree via trampoline (executing side effects) and
+/// formats the inner result value, mirroring what the REPL does in its eval loop.
+/// Otherwise falls back to `format_result_value`.
 pub fn repl_eval_display(session: &mut ReplSession, src: &str) -> String {
     let result = session
         .eval(src)
         .unwrap_or_else(|e| panic!("repl_eval_display failed on '{src}': {e}"));
     if let Some(display) = result.definition_display {
         display
+    } else if result.ty.is_io() {
+        // IO expression: force the IO tree via trampoline, then format the inner
+        // value. This mirrors the REPL's force_io_and_format behavior.
+        let inner_val = cranelisp_runtime::run_io_trampoline(result.value);
+        let inner_ty = result.ty.io_inner_type();
+        // Format the inner value, then extract just the value portion by stripping
+        // the `:Type ` prefix. We parse the prefix robustly: if the type is
+        // parenthesized (starts with `:(`) we find the matching `)`, otherwise
+        // we find the first space after `:`.
+        let inner_display = format_result_value(
+            inner_val,
+            &inner_ty,
+            session.type_defs(),
+            session.type_modules(),
+        );
+        let value_part = extract_value_from_display(&inner_display);
+        // Build the IO type annotation from the Type directly, avoiding string surgery.
+        // result.ty is the full IO type, e.g. ADT("IO", [Int]).
+        // inner_ty is the unwrapped inner type.
+        // We use the inner type's qualified display (extracted from format_result_value)
+        // to build the IO wrapper type string.
+        let inner_type_str = extract_type_from_display(&inner_display);
+        format!(":(IO {inner_type_str}) {value_part}")
     } else {
         format_result_value(result.value, &result.ty, session.type_defs(), session.type_modules())
+    }
+}
+
+/// Extract the type string from a `:Type value` display string.
+///
+/// Handles both simple types (`:primitives/Int`) and parenthesized types
+/// (`:(Fn [a] a)`, `:(Option primitives/Int)`).
+fn extract_type_from_display(display: &str) -> &str {
+    if !display.starts_with(':') {
+        return display;
+    }
+    if display.starts_with(":(") {
+        // Parenthesized type: find the matching ')' by counting parens.
+        let mut depth = 0;
+        for (i, ch) in display[1..].char_indices() {
+            match ch {
+                '(' => depth += 1,
+                ')' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        // Type is display[1..1+i+1], i.e. the parenthesized expression.
+                        return &display[1..i + 2];
+                    }
+                }
+                _ => {}
+            }
+        }
+        // Malformed: return everything after ':'
+        &display[1..]
+    } else {
+        // Simple type: everything from ':' to first space.
+        match display[1..].find(' ') {
+            Some(pos) => &display[1..pos + 1],
+            None => &display[1..],
+        }
+    }
+}
+
+/// Extract the value string from a `:Type value` display string.
+///
+/// Handles both simple types and parenthesized types.
+fn extract_value_from_display(display: &str) -> &str {
+    if !display.starts_with(':') {
+        return display;
+    }
+    if display.starts_with(":(") {
+        // Parenthesized type: find the matching ')' by counting parens in display[1..],
+        // then the value follows after ') '.
+        let mut depth = 0;
+        for (i, ch) in display[1..].char_indices() {
+            match ch {
+                '(' => depth += 1,
+                ')' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        // ')' is at display[1 + i]. Value starts after ') '.
+                        let close_paren_pos = 1 + i; // position in display
+                        let value_start = close_paren_pos + 2; // skip ') '
+                        if value_start <= display.len() {
+                            return &display[value_start..];
+                        }
+                        return "";
+                    }
+                }
+                _ => {}
+            }
+        }
+        display
+    } else {
+        // Simple type: value is everything after first space.
+        match display.find(' ') {
+            Some(pos) => &display[pos + 1..],
+            None => display,
+        }
     }
 }

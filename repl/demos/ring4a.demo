@@ -1,0 +1,44 @@
+; Cranelisp Ring 4A — IO Foundation
+
+; What is IO?
+
+Pure
+bind
+
+; Lift values into IO — Pure wraps any value
+
+(Pure 42)
+(Pure "hello")
+(Pure true)
+
+; bind chains IO actions — extract a value, pass to continuation
+
+(bind (Pure 42) (fn [x] (Pure (add-i64 x 1))))
+(bind (Pure 5) (fn [x] (Pure (mul-i64 x x))))
+
+; Named IO functions compose with bind
+
+(defn double-io "Double a value inside IO" [x] (Pure (* x 2)))
+double-io
+(bind (Pure 21) double-io)
+
+; Nested bind chains — threading values through a pipeline
+
+(bind (Pure 1)
+      (fn [a] (bind (Pure (add-i64 a 10))
+                    (fn [b] (Pure (add-i64 b 100))))))
+
+; IO in conditionals — both branches must agree on IO
+
+(if true (Pure 1) (Pure 2))
+(if (> 10 5) (Pure "yes") (Pure "no"))
+
+; Combining two IO values
+
+(defn io-add [a b]
+  (bind a (fn [x] (bind b (fn [y] (Pure (add-i64 x y)))))))
+(io-add (Pure 3) (Pure 4))
+
+; IO wraps any expression
+
+(Pure (str "IO " "works"))

@@ -135,7 +135,7 @@ Reading input, parsing, and error handling with monadic IO.
     (print (show total))))
 ```
 
-## B.5 Lazy Sequences [R3 S8]
+## B.5 Lazy Sequences [R4 S17]
 
 Infinite sequences, lazy operations, and the unified collection API.
 
@@ -175,7 +175,7 @@ Output:
 42
 ```
 
-## B.6 Macros [R3 S9]
+## B.6 Macros [R4 S17]
 
 Compile-time code transformation with `defmacro`.
 
@@ -202,7 +202,7 @@ Compile-time code transformation with `defmacro`.
     (print (show (my-add 10 20)))))  ; → 30
 ```
 
-## B.7 Higher-Order Functions and Closures [R3 S8]
+## B.7 Higher-Order Functions and Closures [R4 S17]
 
 First-class functions, closures, and auto-currying.
 
@@ -229,7 +229,7 @@ First-class functions, closures, and auto-currying.
       (print (show (add5 37))))))         ; → 42
 ```
 
-## B.8 Threading Macros [R3 S9]
+## B.8 Threading Macros [R4 S17]
 
 Data transformation pipelines with `->` and `->>`.
 
@@ -251,7 +251,7 @@ Data transformation pipelines with `->` and `->>`.
                    (reduce + 0))))))  ; → 9 (4+5)
 ```
 
-## B.9 Multi-Signature Dispatch [R3 S8]
+## B.9 Multi-Signature Dispatch [R4 S17]
 
 Functions with multiple implementations dispatched by argument type.
 

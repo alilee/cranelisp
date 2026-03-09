@@ -1,0 +1,284 @@
+//! IO trampoline — iterative evaluation of IO task trees.
+//!
+//! The IO model is a deferred-execution system. User code builds IO trees
+//! by calling constructors (Pure, Effect) and the `bind` primitive. The
+//! trampoline walks the tree iteratively with an explicit continuation
+//! stack, avoiding stack overflow for arbitrarily deep bind chains.
+//!
+//! See `design/backend/io-trampoline.md` for the full design.
+
+use cranelisp_platform::{IO_TAG_BIND, IO_TAG_EFFECT, IO_TAG_PURE};
+use cranelisp_types::HeapHeader;
+
+/// Byte offset of the tag field from the base pointer.
+const TAG_OFFSET: isize = HeapHeader::SIZE as isize; // 16
+
+/// Byte offset of the first field from the base pointer.
+const FIELD_0_OFFSET: isize = TAG_OFFSET + 8; // 24
+
+/// Byte offset of the second field from the base pointer.
+const FIELD_1_OFFSET: isize = FIELD_0_OFFSET + 8; // 32
+
+/// Byte offset of the code pointer within a closure from the base pointer.
+/// Closure layout: [header(16) | code_ptr(8) | drop_glue_ptr(8) | captures...]
+const CLOSURE_CODE_PTR_OFFSET: isize = HeapHeader::SIZE as isize; // 16
+
+/// Force an IO task tree to completion (extern "C" entry point).
+///
+/// Takes a base pointer to a heap-allocated IO node (Pure/Effect/Bind).
+/// Returns the final result value (i64).
+///
+/// # Safety
+/// `io_ptr` must be a valid base pointer to an IO node with rc > 0.
+/// The IO tree must remain live for the duration of this call.
+#[unsafe(no_mangle)]
+pub extern "C" fn cranelisp_run_io(io_ptr: i64) -> i64 {
+    run_io_trampoline(io_ptr)
+}
+
+/// Core trampoline implementation. Separate from the extern "C" wrapper
+/// so that panics (on invalid tags) can unwind normally in tests.
+///
+/// The trampoline is iterative with an explicit continuation stack.
+/// It does not perform any RC operations — the IO tree must remain
+/// live for the duration of this call (see design doc §6).
+pub fn run_io_trampoline(io_ptr: i64) -> i64 {
+    let mut cont_stack: Vec<i64> = Vec::new();
+    let mut current: i64 = io_ptr;
+
+    loop {
+        let tag = unsafe { *((current as isize + TAG_OFFSET) as *const i64) };
+
+        match tag {
+            t if t == IO_TAG_PURE => {
+                let val = unsafe { *((current as isize + FIELD_0_OFFSET) as *const i64) };
+                match cont_stack.pop() {
+                    Some(cont_ptr) => {
+                        current = call_continuation(cont_ptr, val);
+                    }
+                    None => return val,
+                }
+            }
+            t if t == IO_TAG_EFFECT => {
+                let thunk_ptr =
+                    unsafe { *((current as isize + FIELD_0_OFFSET) as *const i64) };
+                let result = unsafe { cranelisp_platform::call_effect_thunk(thunk_ptr) };
+                match cont_stack.pop() {
+                    Some(cont_ptr) => {
+                        current = call_continuation(cont_ptr, result);
+                    }
+                    None => return result,
+                }
+            }
+            t if t == IO_TAG_BIND => {
+                let inner = unsafe { *((current as isize + FIELD_0_OFFSET) as *const i64) };
+                let cont = unsafe { *((current as isize + FIELD_1_OFFSET) as *const i64) };
+                cont_stack.push(cont);
+                current = inner;
+            }
+            _ => {
+                panic!("cranelisp_run_io: unknown IO tag {tag}");
+            }
+        }
+    }
+}
+
+/// Call a continuation closure with a value, returning the new IO tree pointer.
+///
+/// Continuations are Cranelisp closures with standard HeapClosure layout:
+/// `[header(16) | code_ptr(8) | drop_glue_ptr(8) | captures...]`
+///
+/// The code_ptr has signature `extern "C" fn(env_ptr: i64, val: i64) -> i64`.
+/// The closure pointer itself is passed as the first argument (env_ptr).
+fn call_continuation(cont_ptr: i64, val: i64) -> i64 {
+    let code_ptr = unsafe { *((cont_ptr as isize + CLOSURE_CODE_PTR_OFFSET) as *const i64) };
+    let call: extern "C" fn(i64, i64) -> i64 =
+        unsafe { std::mem::transmute(code_ptr as *const ()) };
+    call(cont_ptr, val)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::alloc::alloc_with_rc;
+
+    /// Helper: allocate a Pure node with the given value.
+    /// Layout: [header(16) | tag=0(8) | value(8)]
+    fn make_pure_node(value: i64) -> i64 {
+        let base = alloc_with_rc(16); // tag + 1 field = 16 bytes payload
+        unsafe {
+            *((base as isize + TAG_OFFSET) as *mut i64) = IO_TAG_PURE;
+            *((base as isize + FIELD_0_OFFSET) as *mut i64) = value;
+        }
+        base as i64
+    }
+
+    /// Helper: allocate an Effect node with a pre-built thunk.
+    /// Layout: [header(16) | tag=1(8) | thunk_ptr(8) | resource_token(8)]
+    fn make_effect_node(result_value: i64) -> i64 {
+        // Double-box a closure that returns the given value.
+        let thunk: Box<Box<dyn FnOnce() -> i64>> =
+            Box::new(Box::new(move || result_value));
+        let thunk_ptr = Box::into_raw(thunk) as i64;
+
+        let base = alloc_with_rc(24); // tag + thunk + resource_token = 24 bytes
+        unsafe {
+            *((base as isize + TAG_OFFSET) as *mut i64) = IO_TAG_EFFECT;
+            *((base as isize + FIELD_0_OFFSET) as *mut i64) = thunk_ptr;
+            *((base as isize + FIELD_1_OFFSET) as *mut i64) = 0; // resource_token
+        }
+        base as i64
+    }
+
+    /// Helper: allocate a Bind node linking inner IO to a continuation.
+    /// Layout: [header(16) | tag=2(8) | inner_io(8) | cont(8)]
+    fn make_bind_node(inner: i64, cont: i64) -> i64 {
+        let base = alloc_with_rc(24); // tag + inner + cont = 24 bytes
+        unsafe {
+            *((base as isize + TAG_OFFSET) as *mut i64) = IO_TAG_BIND;
+            *((base as isize + FIELD_0_OFFSET) as *mut i64) = inner;
+            *((base as isize + FIELD_1_OFFSET) as *mut i64) = cont;
+        }
+        base as i64
+    }
+
+    /// Helper: allocate a minimal "closure" that returns a Pure node wrapping
+    /// the argument value + an offset.
+    ///
+    /// This simulates `(fn [x] (Pure (+ x offset)))`.
+    /// The closure env stores the offset as a capture at offset 32.
+    fn make_add_and_pure_closure(offset: i64) -> i64 {
+        // The closure's code function: reads offset from env, adds to val,
+        // wraps in Pure.
+        extern "C" fn add_and_pure(env_ptr: i64, val: i64) -> i64 {
+            let offset = unsafe { *((env_ptr as isize + 32) as *const i64) };
+            make_pure_node_inline(val + offset)
+        }
+
+        // Allocate closure: [header(16) | code_ptr(8) | drop_glue_ptr(8) | capture_offset(8)]
+        let base = alloc_with_rc(24); // code_ptr + drop_glue_ptr + 1 capture = 24
+        unsafe {
+            // code_ptr at offset 16
+            *((base as isize + 16) as *mut i64) = add_and_pure as *const () as i64;
+            // drop_glue_ptr at offset 24 (0 = no captures to drop)
+            *((base as isize + 24) as *mut i64) = 0;
+            // capture: offset at offset 32
+            *((base as isize + 32) as *mut i64) = offset;
+        }
+        base as i64
+    }
+
+    /// Helper: allocate an identity continuation closure `(fn [x] (Pure x))`.
+    fn make_identity_pure_closure() -> i64 {
+        extern "C" fn identity_pure(_env_ptr: i64, val: i64) -> i64 {
+            make_pure_node_inline(val)
+        }
+
+        let base = alloc_with_rc(16); // code_ptr + drop_glue_ptr = 16
+        unsafe {
+            *((base as isize + 16) as *mut i64) = identity_pure as *const () as i64;
+            *((base as isize + 24) as *mut i64) = 0;
+        }
+        base as i64
+    }
+
+    /// Allocate a Pure node — callable from any context including extern "C".
+    fn make_pure_node_inline(value: i64) -> i64 {
+        let base = alloc_with_rc(16);
+        unsafe {
+            *((base as isize + TAG_OFFSET) as *mut i64) = IO_TAG_PURE;
+            *((base as isize + FIELD_0_OFFSET) as *mut i64) = value;
+        }
+        base as i64
+    }
+
+    // spec: 10-io §10.8.1 — Pure node returns value directly
+    #[test]
+    fn test_run_io_pure() {
+        let io = make_pure_node(42);
+        let result = run_io_trampoline(io);
+        assert_eq!(result, 42);
+    }
+
+    // spec: 10-io §10.8.1 — Effect node executes thunk and returns result
+    #[test]
+    fn test_run_io_effect() {
+        let io = make_effect_node(99);
+        let result = run_io_trampoline(io);
+        assert_eq!(result, 99);
+    }
+
+    // spec: 10-io §10.8.2 — Bind chains are evaluated iteratively (not recursively)
+    #[test]
+    fn test_run_io_bind_pure_to_pure() {
+        // bind (Pure 10) (fn [x] (Pure (+ x 5)))
+        let inner = make_pure_node(10);
+        let cont = make_add_and_pure_closure(5);
+        let io = make_bind_node(inner, cont);
+        let result = run_io_trampoline(io);
+        assert_eq!(result, 15);
+    }
+
+    // spec: 10-io §10.8.2 — nested bind chains
+    #[test]
+    fn test_run_io_nested_bind() {
+        // bind (bind (Pure 1) (fn [x] (Pure (+ x 10)))) (fn [y] (Pure (+ y 100)))
+        let inner = make_pure_node(1);
+        let cont1 = make_add_and_pure_closure(10);
+        let bind1 = make_bind_node(inner, cont1);
+        let cont2 = make_add_and_pure_closure(100);
+        let io = make_bind_node(bind1, cont2);
+        let result = run_io_trampoline(io);
+        assert_eq!(result, 111);
+    }
+
+    // spec: 10-io §10.8.2 — bind with Effect evaluates the thunk
+    #[test]
+    fn test_run_io_bind_effect() {
+        // bind (Effect -> 7) (fn [x] (Pure (+ x 3)))
+        let inner = make_effect_node(7);
+        let cont = make_add_and_pure_closure(3);
+        let io = make_bind_node(inner, cont);
+        let result = run_io_trampoline(io);
+        assert_eq!(result, 10);
+    }
+
+    // spec: 10-io §10.8.2 — deep bind chain runs without stack overflow (O(1) call stack)
+    #[test]
+    fn test_run_io_deep_bind_chain() {
+        // Build a chain of 1000 binds: bind (bind (... (Pure 0) ...) (+1)) (+1)
+        // Result should be 1000.
+        let mut io = make_pure_node(0);
+        for _ in 0..1000 {
+            let cont = make_add_and_pure_closure(1);
+            io = make_bind_node(io, cont);
+        }
+        let result = run_io_trampoline(io);
+        assert_eq!(result, 1000);
+    }
+
+    // spec: 10-io §10.8.2 — bind with identity continuation
+    #[test]
+    fn test_run_io_bind_identity() {
+        // bind (Pure 42) (fn [x] (Pure x))
+        let inner = make_pure_node(42);
+        let cont = make_identity_pure_closure();
+        let io = make_bind_node(inner, cont);
+        let result = run_io_trampoline(io);
+        assert_eq!(result, 42);
+    }
+
+    // spec: 10-io §10.8.1 — unknown IO tag panics
+    #[test]
+    #[should_panic(expected = "unknown IO tag")]
+    fn test_run_io_unknown_tag_panics() {
+        // Create a node with an invalid tag.
+        // Call run_io_trampoline (not the extern "C" wrapper) so panic can unwind.
+        let base = alloc_with_rc(16);
+        unsafe {
+            *((base as isize + TAG_OFFSET) as *mut i64) = 99; // invalid tag
+            *((base as isize + FIELD_0_OFFSET) as *mut i64) = 0;
+        }
+        run_io_trampoline(base as i64);
+    }
+}

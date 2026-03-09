@@ -270,10 +270,10 @@ Slash commands provide introspection and navigation. All commands start with `/`
 | `/disasm <name>` | — | Show disassembled native code | 0 | [R4 S10] |
 | `/list [prefix]` | `/l` | List definitions in current module | 0 | [Tested tests/e2e::e2e_s3_3_list] |
 | `/time <expr>` | — | Evaluate with timing breakdown | 0 | [Tested tests/e2e::e2e_s3_1_time] |
-| `/expand <form>` | `/e` | Macro-expand a form | 3 | [R3 S11 — tests/ring3_repl::r3_expand_single_macro IGNORED] |
+| `/expand <form>` | `/e` | Macro-expand a form | 3 | [R3 S16] |
 | `/mod [name]` | — | Switch module namespace | 2 | [R4 S10] |
-| `/imports [module]` | — | Show imports and special forms; filter by source module | 0 | [R3 S14] |
-| `/exports <module>` | — | List a module's importable public symbols | 2 | [R3 S14] |
+| `/imports [module]` | — | Show imports and special forms; filter by source module | 0 | [Tested tests/e2e::e2e_s3_4_imports_special_forms, tests/e2e::e2e_s3_4_imports_empty] |
+| `/exports <module>` | — | List a module's importable public symbols | 2 | [Tested tests/e2e::e2e_s3_5_exports_lists_symbols, tests/e2e::e2e_s3_5_exports_no_arg_usage] |
 | `/reload [name]` | `/r` | Reload module from file | 2 | [R4 S10] |
 | `/mem [expr]` | `/m` | Show allocation statistics | 1 | [R4 S10] |
 | `/run-tests` | — | Discover and run test functions | 4 | [R4 S10] |
@@ -564,9 +564,9 @@ user> defmacro
 | `defn` | [Tested tests/e2e::e2e_s4_2_special_form_defn] |
 | `deftype` | [Tested tests/e2e::e2e_s4_2_special_form_deftype] |
 | `match` | [Tested tests/e2e::e2e_s4_2_special_form_match] |
-| `defmacro` | [R3 S14 — tests/ring3_repl::r3_special_form_defmacro] |
+| `defmacro` | [Tested tests/ring3_repl::r3_special_form_defmacro, tests/e2e::e2e_s4_2_special_form_defmacro] |
 
-#### 4.1.6 Macros (defmacro) [R3 S14]
+#### 4.1.6 Macros (defmacro) [Tested]
 
 Primary line plus clause signatures. Classification `defmacro`. Each clause shows its parameter list on a separate comment line.
 
@@ -586,8 +586,8 @@ Zero-arg macros expand immediately — they do not reach the lookup path.
 
 | Requirement | Test |
 |---|---|
-| macro shows clause signatures | [R3 S14 — tests/ring3_repl::r3_bare_macro_lookup] |
-| multi-clause macro | [R3 S14 — tests/ring3_repl::r3_bare_macro_lookup_multi_clause] |
+| macro shows clause signatures | [Tested tests/ring3_repl::r3_bare_macro_lookup] |
+| multi-clause macro | [Tested tests/ring3_repl::r3_bare_macro_lookup_multi_clause] |
 
 #### 4.1.7 Primitive Functions [R3 S14]
 
@@ -893,11 +893,11 @@ The showcase player (`repl/showcase`) MAY apply the same colour palette during r
 | `Type.Constructor` notation | yes | | | | |
 
 ## 11. Ring 3 REPL Requirements [R3 S11]
-<!-- Partial: §11.3 and §11.2.1-2 tested, §11.1/§11.4 not yet -->
+<!-- Partial: §11.2–§11.4 tested, §11.1 (/expand) targeted for S16 -->
 
 Ring 3 introduces the macro system. The REPL MUST integrate macros into all existing introspection and display mechanisms so that macros are first-class citizens of the self-documentation experience.
 
-### 11.1 `/expand` Command [R3 S11 — tests/ring3_repl::r3_expand_single_macro IGNORED]
+### 11.1 `/expand` Command [R3 S16]
 
 The `/expand` (alias `/e`) command MUST accept a single S-expression form, perform recursive macro expansion to a fixed point (per spec Section 9.3.3), and display the fully expanded S-expression WITHOUT evaluating it.
 
@@ -945,7 +945,7 @@ user> /info when
 ; [cond body] -> Sexp
 ```
 
-#### 11.2.3 `/sig` — Macro Signature [Tested tests/ring3_repl::r3_sig_macro_params — variadic IGNORED]
+#### 11.2.3 `/sig` — Macro Signature [Tested tests/ring3_repl::r3_sig_macro_params, tests/ring3_repl::r3_sig_macro_variadic]
 
 `/sig <name>` for a macro MUST display the clause signatures using the universal format (§1.1, §4.1.6), with `& rest` syntax for variadic parameters and bracket notation for bracket destructuring.
 
@@ -964,7 +964,7 @@ user> /sig when
 ; [cond body] -> Sexp
 ```
 
-#### 11.2.4 `/doc` — Macro Docstring [R3 S11 — tests/ring3_repl::r3_doc_macro_no_docstring IGNORED]
+#### 11.2.4 `/doc` — Macro Docstring [Tested tests/ring3_repl::r3_macro_no_docstring, tests/e2e::e2e_s11_2_4_doc_macro_no_docstring, tests/e2e::e2e_s11_2_4_doc_macro_with_docstring]
 
 `/doc <name>` for a macro MUST display the macro's docstring. If the macro has no docstring, `/doc` MUST display a message indicating none is available.
 
@@ -994,7 +994,7 @@ user> (defmacro cond ([x] x) ([x body & rest] `(if ~x ~body (cond ~@rest))))
 
 This mirrors the definition display pattern established for functions (Section 1.3) and types, keeping the REPL output self-documenting.
 
-### 11.4 Bare Macro Lookup [R3 S11 — tests/ring3_repl::r3_bare_macro_lookup IGNORED]
+### 11.4 Bare Macro Lookup [Tested tests/ring3_repl::r3_bare_macro_lookup, tests/ring3_repl::r3_bare_macro_lookup_multi_clause]
 
 Entering a macro name as a bare symbol (without arguments) MUST produce output per the universal format (§1.1, §4.1.6). Zero-argument macros are an exception: they expand immediately via bare-symbol expansion (spec Section 9.5) rather than displaying introspection.
 
@@ -1015,11 +1015,11 @@ The following test scenarios validate the Ring 3 REPL macro experience. Each MUS
 
 | # | Scenario | Expected Behavior | Spec Reference | Test |
 |---|---|---|---|---|
-| 1 | `/expand` with a single macro | Displays expanded form without evaluation | §11.1, §9.3.2 | [R3 S11 — tests/ring3_repl::r3_expand_single_macro IGNORED] |
-| 2 | `/expand` with nested macros | Displays fully expanded form (recursive to fixed point) | §11.1, §9.3.3 | [R3 S11 — tests/ring3_repl::r3_expand_nested_macros IGNORED] |
-| 3 | `/expand` with no macro calls | Displays input unchanged | §11.1 | [R3 S11 — tests/ring3_repl::r3_expand_no_macro IGNORED] |
+| 1 | `/expand` with a single macro | Displays expanded form without evaluation | §11.1, §9.3.2 | [R3 S16] |
+| 2 | `/expand` with nested macros | Displays fully expanded form (recursive to fixed point) | §11.1, §9.3.3 | [R3 S16] |
+| 3 | `/expand` with no macro calls | Displays input unchanged | §11.1 | [R3 S16] |
 | 4 | `/list` after `defmacro` | Macro appears under "Macros" category | §11.2.1, §3.3 | [Tested tests/ring3_repl::r3_list_macros_category_via_symbol_table] |
 | 5 | `/info` on a multi-clause macro | Shows universal format with clause signatures and docstring | §11.2.2 | [Tested tests/ring3_repl::r3_info_macro_clause_count] |
-| 6 | `/sig` on a variadic macro | Shows universal format with `& rest` clause signature | §11.2.3 | [Tested tests/ring3_repl::r3_sig_macro_params — variadic IGNORED] |
+| 6 | `/sig` on a variadic macro | Shows universal format with `& rest` clause signature | §11.2.3 | [Tested tests/ring3_repl::r3_sig_macro_variadic] |
 | 7 | `defmacro` display at REPL | Shows universal format `:module/name ; defmacro` with clause signatures | §11.3, §9.13 | [Tested tests/ring3_repl::r3_defmacro_display_single_clause] |
-| 8 | Bare macro name lookup | Shows universal format with clause signatures (non-zero-arg macros) | §11.4, §4.1.6 | [R3 S11 — tests/ring3_repl::r3_bare_macro_lookup IGNORED] |
+| 8 | Bare macro name lookup | Shows universal format with clause signatures (non-zero-arg macros) | §11.4, §4.1.6 | [Tested tests/ring3_repl::r3_bare_macro_lookup] |

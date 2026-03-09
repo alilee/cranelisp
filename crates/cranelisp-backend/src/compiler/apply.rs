@@ -102,6 +102,24 @@ impl<'a> FnCompiler<'a> {
                 // Builtins are borrowing: they don't dec params.
                 // We dec temporary (non-variable) heap args after the call.
 
+                // IO bind: intercept and compile inline.
+                // bind uses consuming semantics: it takes ownership of both args
+                // by storing them in the Bind node. For variables, inc to add
+                // the Bind node's reference. For temporaries, transfer ownership
+                // (temp starts at rc=1, Bind node inherits it — no inc/dec needed).
+                //
+                // CRITICAL: do NOT call dec_temporary_args after bind. Unlike
+                // borrowing builtins, bind stores its args. dec_temporary_args
+                // would call emit_inline_drop_glue which dec's ADT fields
+                // while the node is still alive, causing use-after-free.
+                if op_name.as_ref() == "bind" {
+                    let arg_vals = self.compile_consuming_arg_list(args)?;
+                    self.in_tail_position = saved_tail;
+                    let result = self.compile_bind_inline(&arg_vals, span)?;
+                    // No dec_temporary_args — bind owns the args.
+                    return Ok(result);
+                }
+
                 // Vec operations: intercept and compile inline.
                 // Vec ops handle their own temporary cleanup internally
                 // via emit_vec_drop_if_temporary — do NOT call dec_temporary_args.
@@ -121,6 +139,17 @@ impl<'a> FnCompiler<'a> {
                     let result = self.compile_extern_call(op_name, &arg_vals, span)?;
                     self.dec_temporary_args(args, &arg_vals);
                     return Ok(result);
+                }
+
+                // Unrecognized builtin: treat as extern call.
+                // This covers platform effect functions (PlatformEffect) whose
+                // JIT symbol names are resolved by the typechecker. Platform
+                // functions use consuming convention — the DLL owns heap args
+                // (e.g., CLString::own() captures the string).
+                if !operators::is_known_builtin(op_name) {
+                    let arg_vals = self.compile_consuming_arg_list(args)?;
+                    self.in_tail_position = saved_tail;
+                    return self.compile_extern_call(op_name, &arg_vals, span);
                 }
 
                 let arg_vals = self.compile_arg_list(args)?;
@@ -558,6 +587,76 @@ impl<'a> FnCompiler<'a> {
             .ins()
             .call_indirect(sig_ref, code_ptr, &call_args);
         Ok(self.builder.inst_results(call)[0])
+    }
+
+    /// Compile `bind` inline: allocate a Bind node [tag=2, inner_io, cont],
+    /// inc both arguments.
+    ///
+    /// `bind :: (Fn [(IO a) (Fn [a] (IO b))] (IO b))`
+    ///
+    /// The Bind node is an IO ADT constructor (tag=2) with two fields:
+    /// - inner_io (offset 24): pointer to an IO node
+    /// - cont (offset 32): pointer to a continuation closure
+    ///
+    /// Both arguments are inc'd because the Bind node holds references to them
+    /// that are independent of whatever references the caller already holds.
+    /// The Bind node's drop glue (tag-based dispatch) will dec both fields
+    /// when the Bind node itself is freed.
+    ///
+    /// See `design/backend/io-trampoline.md` §2 for the full design.
+    fn compile_bind_inline(
+        &mut self,
+        arg_vals: &[Value],
+        span: Span,
+    ) -> Result<Value, CranelispError> {
+        if arg_vals.len() != 2 {
+            return Err(CranelispError::CodegenError {
+                message: format!(
+                    "bind requires 2 arguments, got {}",
+                    arg_vals.len()
+                ),
+                span,
+            });
+        }
+
+        let io_val = arg_vals[0]; // inner IO tree
+        let cont_val = arg_vals[1]; // continuation closure
+
+        let alloc_id =
+            self.ctx
+                .alloc_func_id
+                .ok_or_else(|| CranelispError::CodegenError {
+                    message: "runtime/alloc not declared (need declare_intrinsics)".into(),
+                    span,
+                })?;
+
+        // Allocate Bind node: 3 fields x 8 bytes = 24 bytes payload
+        // (tag + inner_io + cont)
+        let payload_size = HeapAdt::payload_size(2) as i64; // tag + 2 fields = 24 bytes
+        let base_ptr = heap::emit_alloc(
+            &mut self.builder,
+            self.module,
+            alloc_id,
+            payload_size,
+        );
+
+        // Store tag=2 at TAG_OFFSET (16)
+        let tag_val = self.builder.ins().iconst(types::I64, 2);
+        heap::heap_store(&mut self.builder, tag_val, base_ptr, HeapAdt::TAG_OFFSET);
+
+        // Store inner_io at field_offset(0) (24)
+        heap::heap_store(&mut self.builder, io_val, base_ptr, HeapAdt::field_offset(0));
+
+        // Store cont at field_offset(1) (32)
+        heap::heap_store(&mut self.builder, cont_val, base_ptr, HeapAdt::field_offset(1));
+
+        // RC: No explicit inc needed here.
+        // bind uses consuming calling convention (compile_consuming_arg_list):
+        // - Variable args are already inc'd by the consuming arg list
+        // - Temporary args transfer ownership (rc=1 → Bind node inherits)
+        // The Bind node's drop glue will dec both fields when freed.
+
+        Ok(base_ptr)
     }
 
     /// Emit RC dec for a temporary closure value, using the shared method.

@@ -335,3 +335,119 @@ fn batch_defmacro_name_error() {
     let result = pipeline::compile_and_run("(defmacro 42 [x] x)", CompileMode::Batch);
     assert!(result.is_err());
 }
+
+// ---------------------------------------------------------------------------
+// D3: Macro expansion error handling (Sprint 16)
+// ---------------------------------------------------------------------------
+
+// spec: 09-macros.md §9.2.3 — macro body returning non-Sexp type produces type error
+// The macro body is compiled as a function (SList Sexp) -> Sexp. If the body
+// returns Int instead of Sexp, the typechecker catches it during macro compilation.
+#[test]
+fn neg_macro_non_sexp_return_type_batch() {
+    use cranelisp::pipeline;
+    use cranelisp_types::CompileMode;
+
+    // Macro body returns Int (42) instead of Sexp — should fail at typecheck.
+    let src = r#"
+(defmacro bad [x] 42)
+(defn main [] (bad 1))
+"#;
+    let result = pipeline::compile_and_run(src, CompileMode::Batch);
+    assert!(
+        result.is_err(),
+        "macro returning non-Sexp should produce a compile error"
+    );
+}
+
+// spec: 09-macros.md §9.2.3 — macro body returning non-Sexp type in REPL
+#[test]
+fn neg_macro_non_sexp_return_type_repl() {
+    let mut s = repl_session();
+    // Macro body returns Int instead of Sexp.
+    let result = s.eval("(defmacro bad [x] 42)");
+    assert!(
+        result.is_err(),
+        "REPL: macro returning non-Sexp should produce a compile error"
+    );
+}
+
+// spec: 09-macros.md §9.2.3 — macro body returning Bool (non-Sexp) errors
+#[test]
+fn neg_macro_non_sexp_return_bool_batch() {
+    use cranelisp::pipeline;
+    use cranelisp_types::CompileMode;
+
+    // Macro body returns Bool — not Sexp.
+    let src = r#"
+(defmacro bad [x] true)
+(defn main [] (bad 1))
+"#;
+    let result = pipeline::compile_and_run(src, CompileMode::Batch);
+    assert!(
+        result.is_err(),
+        "macro returning Bool should produce a compile error"
+    );
+}
+
+// spec: 12-runtime.md §12.7 — macro expansion depth limit exceeded
+// When two macros expand to each other infinitely, the expander hits
+// EXPANSION_DEPTH_LIMIT (100) and produces a MacroError.
+#[test]
+fn neg_macro_expansion_depth_limit_exceeded() {
+    let mut s = repl_session();
+    // Define two macros that expand to each other, creating infinite recursion.
+    s.eval("(defmacro ping [x] `(pong ~x))").unwrap();
+    s.eval("(defmacro pong [x] `(ping ~x))").unwrap();
+    // Trying to expand this should hit the depth limit.
+    let result = s.eval("(ping 42)");
+    assert!(
+        result.is_err(),
+        "mutually recursive macros should hit expansion depth limit"
+    );
+    let msg = match result {
+        Err(e) => e.message().to_string(),
+        Ok(_) => unreachable!("already asserted is_err"),
+    };
+    assert!(
+        msg.contains("depth") || msg.contains("limit") || msg.contains("expansion"),
+        "error should mention depth/limit/expansion, got: {msg}"
+    );
+}
+
+// spec: 09-macros.md §9.14 — macro arity mismatch produces clear error
+#[test]
+fn neg_macro_arity_mismatch() {
+    let mut s = repl_session();
+    s.eval("(defmacro one-arg [x] x)").unwrap();
+    // Call with wrong number of arguments.
+    let result = s.eval("(one-arg 1 2 3)");
+    assert!(
+        result.is_err(),
+        "calling macro with wrong arity should error"
+    );
+    let msg = match result {
+        Err(e) => e.message().to_string(),
+        Ok(_) => unreachable!("already asserted is_err"),
+    };
+    assert!(
+        msg.contains("no matching clause") || msg.contains("argument"),
+        "error should mention clause matching or arguments, got: {msg}"
+    );
+}
+
+// spec: 09-macros.md §9.14 — macro error does not corrupt REPL session
+#[test]
+fn neg_macro_error_no_session_corruption() {
+    let mut s = repl_session();
+    // Failed macro definition should not corrupt session.
+    let _ = s.eval("(defmacro bad [x] 42)");
+    // Session should still work.
+    let val = repl_eval(&mut s, "(add-i64 1 2)");
+    assert_eq!(val, 3);
+
+    // Define a working macro.
+    s.eval("(defmacro good [x] x)").unwrap();
+    let val = repl_eval(&mut s, "(good 42)");
+    assert_eq!(val, 42);
+}

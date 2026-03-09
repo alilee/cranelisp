@@ -1,9 +1,10 @@
-//! Register Ring 0-3 primitives, special forms, and synthetic modules.
+//! Register Ring 0-4 primitives, special forms, and synthetic modules.
 //!
 //! Ring 0: 20 monomorphic named primitives (add-i64, add-f64, eq-i64, ..., not, eq-bool).
 //! Ring 1: 8 monomorphic string/conversion externs + 4 polymorphic Vec externs.
 //! Ring 3: Synthetic `macros` module (Sexp, SList ADTs + sconcat extern) +
 //!         `quote-sexp` extern in `primitives`.
+//! Ring 4: IO ADT (Pure, Effect, Bind) + `bind` inline primitive in `primitives`.
 //!
 //! Traits (Num, Eq, Ord, Display) and their impls are ordinary Cranelisp
 //! defined in prelude `.cl` files, NOT compiler-seeded. Tests that need
@@ -17,21 +18,23 @@
 //! 4. register_special_forms()       — defn, let, if, match, deftrait, impl, defmacro, etc.
 //! 5. register_macros_module()       — Sexp, SList ADTs + sconcat extern in `macros` module
 //! 6. register_ring3_primitives()    — quote-sexp in `primitives` (requires Sexp from step 5)
-//! 7. import_primitives_into_user()  — copy genuine primitives -> user
+//! 7. register_io_type()            — IO ADT (Pure, Effect, Bind) in `primitives`
+//! 8. register_bind_primitive()     — bind inline primitive in `primitives`
+//! 9. import_primitives_into_user()  — copy genuine primitives -> user
 
 use std::collections::HashMap;
 
 use cranelisp_types::{
-    ring0_primitives, ring1_primitives, ring3_primitives, ConstructorDef, DefKind, FieldDef,
-    JitSymbol, ModuleEntry, ModuleFullPath, PrimitiveKind, Scheme, Span, Symbol,
-    Type, TypeDefInfo, TypeExpr, TypeName, Visibility,
+    ring0_primitives, ring1_primitives, ring3_primitives, ConstructorDef, ConstructorInfo,
+    DefKind, FieldDef, FieldInfo, JitSymbol, ModuleEntry, ModuleFullPath, PrimitiveKind,
+    Scheme, Span, Symbol, Type, TypeDefInfo, TypeExpr, TypeName, Visibility,
 };
 
 use crate::checker::TypeChecker;
 use crate::scheme::mono;
 
 impl TypeChecker {
-    /// Register all builtins: Ring 0-3 primitives, special forms, synthetic modules.
+    /// Register all builtins: Ring 0-4 primitives, special forms, synthetic modules.
     ///
     /// Registration order per pipeline-orchestration.md §3:
     /// 1. register_primitives()          — types + Ring 0 inline prims
@@ -40,7 +43,9 @@ impl TypeChecker {
     /// 4. register_special_forms()       — defn, let, if, match, deftrait, impl, defmacro, etc.
     /// 5. register_macros_module()       — Sexp, SList ADTs + sconcat extern in `macros` module
     /// 6. register_ring3_primitives()    — quote-sexp in `primitives` (requires Sexp from step 5)
-    /// 7. import_primitives_into_user()  — copy genuine primitives -> user
+    /// 7. register_io_type()            — IO ADT (Pure, Effect, Bind) in `primitives`
+    /// 8. register_bind_primitive()     — bind inline primitive in `primitives`
+    /// 9. import_primitives_into_user()  — copy genuine primitives -> user
     ///
     /// Traits (Num, Eq, Ord, Display) are NOT registered here — they come from
     /// prelude `.cl` files loaded through the normal module pipeline.
@@ -69,16 +74,24 @@ impl TypeChecker {
         // because the type references Sexp.
         self.register_ring3_primitives();
 
-        // Copy entries from `primitives` into `user` module (quote-sexp, etc.).
+        // Ring 4: IO ADT and bind primitive in `primitives`.
+        self.register_io_type();
+        self.register_bind_primitive();
+
+        // Copy entries from `primitives` into `user` module (quote-sexp, IO, bind, etc.).
         self.import_primitives_into_user(&primitives_path);
     }
 
     /// Copy all entries from the `primitives` module into the `user` module.
     ///
     /// Makes named primitives (add-i64, str-concat, quote-sexp, etc.), types
-    /// (Vec, Option), and special forms visible in `user` as direct entries.
+    /// (IO, Pure, Effect), and special forms visible in `user` as Import entries.
     /// Does NOT copy entries from `macros` — those are accessed via qualified
     /// names (`macros/sconcat`) or explicit import.
+    ///
+    /// TypeDef and Constructor entries are converted to Import entries so that
+    /// `/list` (which shows only user definitions) does not display them, while
+    /// `/imports` correctly shows them as available from `primitives`.
     fn import_primitives_into_user(&mut self, primitives_path: &ModuleFullPath) {
         let user_path = ModuleFullPath::from("user");
 
@@ -99,6 +112,19 @@ impl TypeChecker {
             for (name, entry) in entries_to_copy {
                 // Don't overwrite existing entries (e.g. primitives already in user).
                 if user_table.get(name.as_ref()).is_none() {
+                    // TypeDef and Constructor entries become Import entries so
+                    // they are accessible but don't appear as user definitions.
+                    let entry = match &entry {
+                        ModuleEntry::TypeDef { .. } | ModuleEntry::Constructor { .. } => {
+                            ModuleEntry::Import {
+                                source: cranelisp_types::FQSymbol {
+                                    module: primitives_path.clone(),
+                                    symbol: name.clone(),
+                                },
+                            }
+                        }
+                        _ => entry,
+                    };
                     user_table.insert(name, entry);
                 }
             }
@@ -110,16 +136,19 @@ impl TypeChecker {
     /// Each primitive gets a monomorphic scheme (`mono(prim.ty)`) — no type variables.
     /// The backend recognises these via `ResolvedCall::BuiltinFn` and emits inline
     /// Cranelift IR for the `cranelift_op` field.
+    ///
+    /// Docstrings are taken from spec appendix-a-builtins.md §A.3.
     fn register_primitives(&mut self) {
         for prim in ring0_primitives() {
             let scheme = mono(prim.ty.clone());
+            let docstring = builtin_docstring(prim.name.as_ref());
 
             self.current_symbol_table_mut().insert(
                 prim.name.clone(),
                 ModuleEntry::Def {
                     scheme,
                     visibility: Visibility::Public,
-                    docstring: None,
+                    docstring,
                     param_names: prim.param_names.clone(),
                     kind: Box::new(DefKind::Primitive {
                         primitive_kind: PrimitiveKind::Inline,
@@ -134,16 +163,19 @@ impl TypeChecker {
     ///
     /// These are string and type conversion functions implemented as extern "C"
     /// functions. The backend calls them via JIT symbol references, not inline IR.
+    ///
+    /// Docstrings are taken from spec appendix-a-builtins.md §A.3.
     fn register_ring1_primitives(&mut self) {
         for prim in ring1_primitives() {
             let scheme = mono(prim.ty.clone());
+            let docstring = builtin_docstring(prim.name.as_ref());
 
             self.current_symbol_table_mut().insert(
                 prim.name.clone(),
                 ModuleEntry::Def {
                     scheme,
                     visibility: Visibility::Public,
-                    docstring: None,
+                    docstring,
                     param_names: prim.param_names.clone(),
                     kind: Box::new(DefKind::Primitive {
                         primitive_kind: PrimitiveKind::Extern,
@@ -219,12 +251,13 @@ impl TypeChecker {
         ];
 
         for (name, param_names, scheme) in vec_prims {
+            let docstring = builtin_docstring(name);
             self.current_symbol_table_mut().insert(
                 Symbol::from(name),
                 ModuleEntry::Def {
                     scheme,
                     visibility: Visibility::Public,
-                    docstring: None,
+                    docstring,
                     param_names,
                     kind: Box::new(DefKind::Primitive {
                         primitive_kind: PrimitiveKind::Extern,
@@ -292,17 +325,18 @@ impl TypeChecker {
         let primitives_table = self
             .modules
             .get_mut(&primitives_path)
-            .expect("primitives module should exist");
+            .unwrap_or_else(|| unreachable!("invariant: primitives module should exist"));
 
         for prim in ring3_primitives() {
             let scheme = mono(prim.ty.clone());
+            let docstring = builtin_docstring(prim.name.as_ref());
 
             primitives_table.insert(
                 prim.name.clone(),
                 ModuleEntry::Def {
                     scheme,
                     visibility: Visibility::Public,
-                    docstring: None,
+                    docstring,
                     param_names: prim.param_names.clone(),
                     kind: Box::new(DefKind::Primitive {
                         primitive_kind: PrimitiveKind::Extern,
@@ -490,6 +524,242 @@ impl TypeChecker {
         }
     }
 
+    /// Register the IO ADT in the `primitives` module.
+    ///
+    /// IO is an ordinary ADT with three constructors:
+    /// - `Pure` (tag=0): wraps a value — field `ioval` of type `a`
+    /// - `Effect` (tag=1): wraps a thunk — field `thunk` typed as `a`
+    /// - `Bind` (tag=2, internal): chains IO actions — fields `inner: (IO b)`,
+    ///   `cont: (Fn [b] (IO a))`, where `b` is an existential type var
+    ///
+    /// Pure and Effect are registered through `register_type_def()`.
+    /// Bind is added manually afterward as an internal constructor — it is
+    /// NOT registered in the symbol table (users cannot construct or match on it).
+    ///
+    /// See `design/typecheck/io-types.md` §2-3 for the full design rationale.
+    fn register_io_type(&mut self) {
+        // Switch to the synthetic `primitives` module.
+        let saved_module = self.current_module_path().clone();
+        let primitives_path = ModuleFullPath::from("primitives");
+        self.set_current_module(primitives_path);
+
+        // Define Pure and Effect constructors via the normal registration path.
+        let io_ctors = vec![
+            // Pure (tag=0): field `ioval` of type `a`
+            ConstructorDef {
+                name: Symbol::from("Pure"),
+                docstring: Some("Lift a value into IO".to_string()),
+                fields: vec![FieldDef {
+                    name: Symbol::from("ioval"),
+                    type_expr: TypeExpr::TypeVar(Symbol::from("a")),
+                }],
+                span: Span::SYNTHETIC,
+            },
+            // Effect (tag=1): field `thunk` typed as `a` (see design doc §2 for why)
+            ConstructorDef {
+                name: Symbol::from("Effect"),
+                docstring: Some("Deferred effectful computation".to_string()),
+                fields: vec![FieldDef {
+                    name: Symbol::from("thunk"),
+                    type_expr: TypeExpr::TypeVar(Symbol::from("a")),
+                }],
+                span: Span::SYNTHETIC,
+            },
+        ];
+
+        self.register_type_def(
+            &TypeName::from("IO"),
+            &Some("Deferred IO computation tree".to_string()),
+            &[Symbol::from("a")],
+            &io_ctors,
+            Visibility::Public,
+            Span::SYNTHETIC,
+        )
+        .unwrap_or_else(|e| {
+            unreachable!("invariant: IO type registration failed: {e}")
+        });
+
+        // Add Bind as an internal constructor (tag=2).
+        // Bind has an existential type that cannot be expressed via ConstructorDef:
+        //   Bind :: exists b. (IO b, (Fn [b] (IO a))) -> (IO a)
+        // We add it directly to TypeDefInfo so REPL introspection sees it,
+        // but do NOT register it in the symbol table or constructor_to_type.
+        self.add_internal_bind_constructor();
+
+        // Restore the original module context.
+        self.set_current_module(saved_module);
+    }
+
+    /// Add the internal Bind constructor to the IO TypeDefInfo.
+    ///
+    /// Bind has fields with types involving an existential type variable `b`
+    /// that is independent of IO's type parameter `a`. HM inference cannot
+    /// express existentials, so Bind bypasses the normal constructor registration.
+    ///
+    /// The Bind constructor appears in `TypeDefInfo.constructors` for REPL
+    /// introspection (`/info IO` shows all three constructors) but is NOT
+    /// resolvable as a name in the type environment.
+    fn add_internal_bind_constructor(&mut self) {
+        // Allocate fresh type vars for the existential types.
+        let (_, a_id) = self.fresh_var_id();
+        let (_, b_id) = self.fresh_var_id();
+
+        // inner :: (IO b)
+        let io_b = Type::ADT(TypeName::from("IO"), vec![Type::Var(b_id)]);
+        // cont :: (Fn [b] (IO a))
+        let io_a = Type::ADT(TypeName::from("IO"), vec![Type::Var(a_id)]);
+        let cont_ty = Type::Fn(vec![Type::Var(b_id)], Box::new(io_a));
+
+        let bind_ctor = ConstructorInfo {
+            name: Symbol::from("Bind"),
+            tag: 2,
+            fields: vec![
+                FieldInfo {
+                    name: Symbol::from("inner"),
+                    ty: io_b,
+                },
+                FieldInfo {
+                    name: Symbol::from("cont"),
+                    ty: cont_ty,
+                },
+            ],
+            docstring: Some(
+                "Chain IO actions (internal — constructed by bind primitive)".to_string(),
+            ),
+            internal: true,
+        };
+
+        // Append Bind to the IO TypeDefInfo.
+        let io_type_def = self
+            .type_defs
+            .type_defs
+            .get_mut(&TypeName::from("IO"))
+            .unwrap_or_else(|| unreachable!("invariant: IO type should be registered before adding Bind"));
+        io_type_def.constructors.push(bind_ctor);
+
+        // Do NOT register Bind in the symbol table — it is not user-constructable.
+        // Do NOT register in constructor_to_type — Bind should not be resolvable by name.
+    }
+
+    /// Register `bind` as an inline primitive in the `primitives` module.
+    ///
+    /// Type: `forall a b. (Fn [(IO a) (Fn [a] (IO b))] (IO b))`
+    ///
+    /// `bind` is the IO sequencing primitive. At each call site, the backend
+    /// emits inline Cranelift IR to allocate a Bind node: `[tag=2, io_ptr, cont_ptr]`.
+    ///
+    /// See `design/typecheck/io-types.md` §4 for the type scheme construction.
+    fn register_bind_primitive(&mut self) {
+        let primitives_path = ModuleFullPath::from("primitives");
+
+        // Allocate fresh type vars for the polymorphic parameters.
+        let (_, a_id) = self.fresh_var_id();
+        let (_, b_id) = self.fresh_var_id();
+
+        // Build the type: (Fn [(IO a) (Fn [a] (IO b))] (IO b))
+        let io_a = Type::ADT(TypeName::from("IO"), vec![Type::Var(a_id)]);
+        let io_b = Type::ADT(TypeName::from("IO"), vec![Type::Var(b_id)]);
+        let cont_ty = Type::Fn(vec![Type::Var(a_id)], Box::new(io_b.clone()));
+        let bind_ty = Type::Fn(vec![io_a, cont_ty], Box::new(io_b));
+
+        let bind_scheme = Scheme {
+            vars: vec![a_id, b_id],
+            constraints: HashMap::new(),
+            ty: bind_ty,
+        };
+
+        let primitives_table = self
+            .modules
+            .get_mut(&primitives_path)
+            .unwrap_or_else(|| unreachable!("invariant: primitives module should exist"));
+
+        primitives_table.insert(
+            Symbol::from("bind"),
+            ModuleEntry::Def {
+                scheme: bind_scheme,
+                visibility: Visibility::Public,
+                docstring: Some(
+                    "Chain IO actions: extract value from first IO, pass to continuation"
+                        .to_string(),
+                ),
+                param_names: vec![Symbol::from("io"), Symbol::from("f")],
+                kind: Box::new(DefKind::Primitive {
+                    primitive_kind: PrimitiveKind::Inline,
+                    jit_name: None,
+                }),
+            },
+        );
+    }
+
+}
+
+/// Look up the spec-mandated docstring for a builtin primitive.
+///
+/// Docstrings are taken verbatim from the Description column in
+/// `spec/appendix-a-builtins.md` §A.3. Section A.5 requires all
+/// primitive functions to have docstrings available at runtime.
+///
+/// Returns `Some(docstring)` for known primitives, `None` otherwise.
+fn builtin_docstring(name: &str) -> Option<String> {
+    let doc = match name {
+        // --- Integer arithmetic ---
+        "add-i64" => "Add",
+        "sub-i64" => "Subtract",
+        "mul-i64" => "Multiply",
+        "div-i64" => "Integer division",
+        // --- Float arithmetic ---
+        "add-f64" => "Add",
+        "sub-f64" => "Subtract",
+        "mul-f64" => "Multiply",
+        "div-f64" => "Division",
+        // --- Integer comparison ---
+        "eq-i64" => "Equality",
+        "lt-i64" => "Less than",
+        "gt-i64" => "Greater than",
+        "le-i64" => "Less than or equal",
+        "ge-i64" => "Greater than or equal",
+        // --- Float comparison ---
+        "eq-f64" => "Equality",
+        "lt-f64" => "Less than",
+        "gt-f64" => "Greater than",
+        "le-f64" => "Less than or equal",
+        "ge-f64" => "Greater than or equal",
+        // --- Boolean ---
+        "not" => "Boolean negation",
+        "eq-bool" => "Boolean equality",
+        // --- Type conversion ---
+        "int-to-string" => "Convert integer to decimal string",
+        "float-to-string" => "Convert float to string",
+        "bool-to-string" => "\"true\" or \"false\"",
+        "string-identity" => "Identity for String (used by Display impl)",
+        // --- String operations ---
+        "str-concat" => "Concatenate two strings",
+        "str-eq" => "String equality (byte-wise)",
+        "str-len" => "String length in bytes",
+        "parse-int" => "Parse decimal integer; None on failure",
+        "substring" => "Extract substring from start (inclusive) to end (exclusive); clamps out-of-bounds indices",
+        "char-at" => "Character at byte index as single-character string; empty string if out of bounds",
+        "split" => "Split string by separator",
+        "join" => "Join strings with separator",
+        "replace" => "Replace all occurrences of from with to",
+        "trim" => "Trim leading and trailing whitespace",
+        "starts-with?" => "Test if string starts with prefix",
+        "ends-with?" => "Test if string ends with suffix",
+        "contains?" => "Test if string contains substring",
+        "to-upper" => "Convert to uppercase",
+        "to-lower" => "Convert to lowercase",
+        // --- Macro support ---
+        "quote-sexp" => "Convert a runtime Sexp value to constructor source code",
+        // --- Vec operations ---
+        "vec-get" => "Index (bounds-checked; panics on out-of-bounds)",
+        "vec-set" => "Return new Vec with element at index replaced",
+        "vec-push" => "Return new Vec with element appended",
+        "vec-len" => "Number of elements",
+        "vec-map" => "Map function over elements",
+        "vec-reduce" => "Left fold over elements",
+        _ => return None,
+    };
+    Some(doc.to_string())
 }
 
 #[cfg(test)]
@@ -1145,5 +1415,392 @@ mod tests {
         } else {
             panic!("quote-sexp should be registered after macros module");
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // IO ADT type registration (Ring 4, spec §10.1, design/typecheck/io-types.md)
+    // -----------------------------------------------------------------------
+
+    // spec: 10-io §10.1 — IO type registered in primitives module
+    #[test]
+    fn test_io_type_registered() {
+        let tc = TypeChecker::new();
+        let info = tc.type_defs.get(&TypeName::from("IO"));
+        assert!(info.is_some(), "IO type should be registered");
+        let info = info.unwrap();
+        assert_eq!(info.type_params.len(), 1, "IO has 1 type parameter");
+        assert_eq!(info.type_params[0].as_ref(), "a");
+        assert_eq!(
+            info.constructors.len(), 3,
+            "IO has 3 constructors: Pure, Effect, Bind"
+        );
+        assert_eq!(
+            info.docstring.as_deref(),
+            Some("Deferred IO computation tree")
+        );
+    }
+
+    // spec: 10-io §10.1 — Pure constructor: tag=0, field `ioval` of type `a`
+    #[test]
+    fn test_pure_constructor() {
+        let tc = TypeChecker::new();
+        let primitives_path = ModuleFullPath::from("primitives");
+        let primitives_table = tc.modules.get(&primitives_path).unwrap();
+
+        if let Some(ModuleEntry::Constructor { info, scheme, .. }) =
+            primitives_table.get("Pure")
+        {
+            assert_eq!(info.tag, 0, "Pure should be tag 0");
+            assert_eq!(info.fields.len(), 1, "Pure has 1 field");
+            assert_eq!(info.fields[0].name.as_ref(), "ioval");
+            assert!(!info.internal, "Pure is not internal");
+            assert_eq!(scheme.vars.len(), 1, "Pure should have 1 quantified var");
+            // Pure :: forall [a]. (Fn [a] (IO a))
+            match &scheme.ty {
+                Type::Fn(params, ret) => {
+                    assert_eq!(params.len(), 1);
+                    assert!(matches!(params[0], Type::Var(_)), "param should be type var");
+                    match ret.as_ref() {
+                        Type::ADT(name, args) => {
+                            assert_eq!(name.as_ref(), "IO");
+                            assert_eq!(args.len(), 1);
+                            assert_eq!(params[0], args[0], "param var should match IO's type arg");
+                        }
+                        _ => panic!("Pure return should be (IO a), got {:?}", ret),
+                    }
+                }
+                _ => panic!("Pure should have Fn type, got {:?}", scheme.ty),
+            }
+        } else {
+            panic!("Pure should be a Constructor entry in primitives module");
+        }
+    }
+
+    // spec: 10-io §10.1 — Effect constructor: tag=1, field `thunk` of type `a`
+    #[test]
+    fn test_effect_constructor() {
+        let tc = TypeChecker::new();
+        let primitives_path = ModuleFullPath::from("primitives");
+        let primitives_table = tc.modules.get(&primitives_path).unwrap();
+
+        if let Some(ModuleEntry::Constructor { info, scheme, .. }) =
+            primitives_table.get("Effect")
+        {
+            assert_eq!(info.tag, 1, "Effect should be tag 1");
+            assert_eq!(info.fields.len(), 1, "Effect has 1 field");
+            assert_eq!(info.fields[0].name.as_ref(), "thunk");
+            assert!(!info.internal, "Effect is not internal");
+            assert_eq!(scheme.vars.len(), 1, "Effect should have 1 quantified var");
+            // Effect :: forall [a]. (Fn [a] (IO a))
+            match &scheme.ty {
+                Type::Fn(params, ret) => {
+                    assert_eq!(params.len(), 1);
+                    match ret.as_ref() {
+                        Type::ADT(name, args) => {
+                            assert_eq!(name.as_ref(), "IO");
+                            assert_eq!(args.len(), 1);
+                            assert_eq!(params[0], args[0]);
+                        }
+                        _ => panic!("Effect return should be (IO a)"),
+                    }
+                }
+                _ => panic!("Effect should have Fn type, got {:?}", scheme.ty),
+            }
+        } else {
+            panic!("Effect should be a Constructor entry in primitives module");
+        }
+    }
+
+    // spec: 10-io §10.1 — Bind constructor: tag=2, internal=true, not in symbol table
+    #[test]
+    fn test_bind_constructor_internal() {
+        let tc = TypeChecker::new();
+
+        // Bind should be in TypeDefInfo but NOT in the symbol table.
+        let info = tc.type_defs.get(&TypeName::from("IO")).unwrap();
+        let bind_ctor = &info.constructors[2];
+        assert_eq!(bind_ctor.name.as_ref(), "Bind");
+        assert_eq!(bind_ctor.tag, 2);
+        assert!(bind_ctor.internal, "Bind must be internal");
+        assert_eq!(bind_ctor.fields.len(), 2, "Bind has 2 fields: inner, cont");
+        assert_eq!(bind_ctor.fields[0].name.as_ref(), "inner");
+        assert_eq!(bind_ctor.fields[1].name.as_ref(), "cont");
+
+        // inner :: (IO b)
+        match &bind_ctor.fields[0].ty {
+            Type::ADT(name, args) => {
+                assert_eq!(name.as_ref(), "IO");
+                assert_eq!(args.len(), 1);
+                assert!(matches!(args[0], Type::Var(_)));
+            }
+            _ => panic!("Bind.inner should be (IO b), got {:?}", bind_ctor.fields[0].ty),
+        }
+
+        // cont :: (Fn [b] (IO a))
+        match &bind_ctor.fields[1].ty {
+            Type::Fn(params, ret) => {
+                assert_eq!(params.len(), 1);
+                assert!(matches!(params[0], Type::Var(_)));
+                match ret.as_ref() {
+                    Type::ADT(name, args) => {
+                        assert_eq!(name.as_ref(), "IO");
+                        assert_eq!(args.len(), 1);
+                        assert!(matches!(args[0], Type::Var(_)));
+                    }
+                    _ => panic!("Bind.cont return should be (IO a)"),
+                }
+                // b in cont's param should match b in inner's IO type arg
+                let inner_b = match &bind_ctor.fields[0].ty {
+                    Type::ADT(_, args) => &args[0],
+                    _ => panic!("already checked"),
+                };
+                assert_eq!(&params[0], inner_b, "b should be the same type var in inner and cont");
+            }
+            _ => panic!("Bind.cont should be Fn type, got {:?}", bind_ctor.fields[1].ty),
+        }
+
+        // Bind should NOT be in the primitives symbol table.
+        let primitives_path = ModuleFullPath::from("primitives");
+        let primitives_table = tc.modules.get(&primitives_path).unwrap();
+        assert!(
+            primitives_table.get("Bind").is_none(),
+            "Bind should NOT be in symbol table (it is internal)"
+        );
+
+        // Bind should NOT be in constructor_to_type.
+        assert!(
+            tc.type_defs.constructor_type("Bind").is_none(),
+            "Bind should NOT be in constructor_to_type"
+        );
+    }
+
+    // spec: 10-io §10.1 — Pure and Effect registered as constructors in primitives module
+    #[test]
+    fn test_io_constructors_in_primitives_module() {
+        let tc = TypeChecker::new();
+        let primitives_path = ModuleFullPath::from("primitives");
+        let primitives_table = tc.modules.get(&primitives_path).unwrap();
+
+        assert!(
+            primitives_table.get("Pure").is_some(),
+            "Pure should be in primitives module"
+        );
+        assert!(
+            primitives_table.get("Effect").is_some(),
+            "Effect should be in primitives module"
+        );
+
+        // IO type itself should be registered
+        assert!(
+            primitives_table.get("IO").is_some(),
+            "IO type should be in primitives module"
+        );
+    }
+
+    // spec: 10-io §10.1 — IO constructors accessible from user module
+    #[test]
+    fn test_io_constructors_accessible_from_user() {
+        let tc = TypeChecker::new();
+        // Pure and Effect should be importable via primitives
+        assert!(
+            tc.symbol_table().get("Pure").is_some(),
+            "Pure should be accessible in user module"
+        );
+        assert!(
+            tc.symbol_table().get("Effect").is_some(),
+            "Effect should be accessible in user module"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // bind primitive (Ring 4, design/typecheck/io-types.md §4)
+    // -----------------------------------------------------------------------
+
+    // spec: 10-io §10.2 — bind registered as inline primitive
+    #[test]
+    fn test_bind_primitive_registered() {
+        let tc = TypeChecker::new();
+        let entry = tc.symbol_table().get("bind");
+        assert!(entry.is_some(), "bind should be in user symbol table");
+
+        if let Some(ModuleEntry::Def { scheme, kind, docstring, .. }) = entry {
+            // bind :: forall [a, b]. (Fn [(IO a) (Fn [a] (IO b))] (IO b))
+            assert_eq!(scheme.vars.len(), 2, "bind should have 2 quantified vars (a, b)");
+
+            match &scheme.ty {
+                Type::Fn(params, ret) => {
+                    assert_eq!(params.len(), 2, "bind takes 2 params");
+
+                    // First param: (IO a)
+                    match &params[0] {
+                        Type::ADT(name, args) => {
+                            assert_eq!(name.as_ref(), "IO");
+                            assert_eq!(args.len(), 1);
+                            assert!(matches!(args[0], Type::Var(_)));
+                        }
+                        _ => panic!("bind param[0] should be (IO a), got {:?}", params[0]),
+                    }
+
+                    // Second param: (Fn [a] (IO b))
+                    match &params[1] {
+                        Type::Fn(cont_params, cont_ret) => {
+                            assert_eq!(cont_params.len(), 1);
+                            assert!(matches!(cont_params[0], Type::Var(_)));
+                            match cont_ret.as_ref() {
+                                Type::ADT(name, args) => {
+                                    assert_eq!(name.as_ref(), "IO");
+                                    assert_eq!(args.len(), 1);
+                                    assert!(matches!(args[0], Type::Var(_)));
+                                }
+                                _ => panic!("bind cont return should be (IO b)"),
+                            }
+                            // a in param[0] should match a in cont param
+                            let io_a_var = match &params[0] {
+                                Type::ADT(_, args) => &args[0],
+                                _ => unreachable!(),
+                            };
+                            assert_eq!(
+                                &cont_params[0], io_a_var,
+                                "a in (IO a) should match a in (Fn [a] ...)"
+                            );
+                        }
+                        _ => panic!("bind param[1] should be Fn type"),
+                    }
+
+                    // Return: (IO b)
+                    match ret.as_ref() {
+                        Type::ADT(name, args) => {
+                            assert_eq!(name.as_ref(), "IO");
+                            assert_eq!(args.len(), 1);
+                            // b in return should match b in cont's return
+                            let cont_ret_b = match &params[1] {
+                                Type::Fn(_, cr) => match cr.as_ref() {
+                                    Type::ADT(_, args) => &args[0],
+                                    _ => unreachable!(),
+                                },
+                                _ => unreachable!(),
+                            };
+                            assert_eq!(
+                                &args[0], cont_ret_b,
+                                "b in return (IO b) should match b in cont return"
+                            );
+                        }
+                        _ => panic!("bind return should be (IO b)"),
+                    }
+                }
+                _ => panic!("bind should have Fn type, got {:?}", scheme.ty),
+            }
+
+            assert!(
+                matches!(
+                    kind.as_ref(),
+                    DefKind::Primitive { primitive_kind: PrimitiveKind::Inline, .. }
+                ),
+                "bind should be Primitive::Inline"
+            );
+
+            assert!(docstring.is_some(), "bind should have a docstring");
+        } else {
+            panic!("bind should be a Def entry");
+        }
+    }
+
+    // spec: 10-io §10.2 — bind also in primitives module
+    #[test]
+    fn test_bind_in_primitives_module() {
+        let tc = TypeChecker::new();
+        let primitives_path = ModuleFullPath::from("primitives");
+        let primitives_table = tc.modules.get(&primitives_path).unwrap();
+        assert!(
+            primitives_table.get("bind").is_some(),
+            "bind should be in primitives module"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Builtin docstrings (spec appendix-a-builtins §A.5)
+    // -----------------------------------------------------------------------
+
+    // spec: appendix-a-builtins §A.5 — all Ring 0 primitives have docstrings
+    #[test]
+    fn test_ring0_primitives_have_docstrings() {
+        let tc = TypeChecker::new();
+        for prim in ring0_primitives() {
+            if let Some(ModuleEntry::Def { docstring, .. }) =
+                tc.symbol_table().get(prim.name.as_ref())
+            {
+                assert!(
+                    docstring.is_some(),
+                    "Ring 0 primitive {} should have a docstring",
+                    prim.name
+                );
+            } else {
+                panic!("Ring 0 primitive {} not found", prim.name);
+            }
+        }
+    }
+
+    // spec: appendix-a-builtins §A.5 — all Ring 1 primitives have docstrings
+    #[test]
+    fn test_ring1_primitives_have_docstrings() {
+        let tc = TypeChecker::new();
+        for prim in ring1_primitives() {
+            if let Some(ModuleEntry::Def { docstring, .. }) =
+                tc.symbol_table().get(prim.name.as_ref())
+            {
+                assert!(
+                    docstring.is_some(),
+                    "Ring 1 primitive {} should have a docstring",
+                    prim.name
+                );
+            } else {
+                panic!("Ring 1 primitive {} not found", prim.name);
+            }
+        }
+    }
+
+    // spec: appendix-a-builtins §A.5 — Vec primitives have docstrings
+    #[test]
+    fn test_vec_primitives_have_docstrings() {
+        let tc = TypeChecker::new();
+        for name in &["vec-get", "vec-set", "vec-push", "vec-len"] {
+            if let Some(ModuleEntry::Def { docstring, .. }) = tc.symbol_table().get(*name) {
+                assert!(
+                    docstring.is_some(),
+                    "Vec primitive {name} should have a docstring"
+                );
+            } else {
+                panic!("Vec primitive {name} not found");
+            }
+        }
+    }
+
+    // spec: appendix-a-builtins §A.5 — specific docstring text matches spec
+    #[test]
+    fn test_docstring_text_matches_spec() {
+        let tc = TypeChecker::new();
+
+        let check = |name: &str, expected: &str| {
+            if let Some(ModuleEntry::Def { docstring, .. }) = tc.symbol_table().get(name) {
+                assert_eq!(
+                    docstring.as_deref(),
+                    Some(expected),
+                    "{name} docstring mismatch"
+                );
+            } else {
+                panic!("{name} not found");
+            }
+        };
+
+        check("not", "Boolean negation");
+        check("add-i64", "Add");
+        check("div-i64", "Integer division");
+        check("str-concat", "Concatenate two strings");
+        check("parse-int", "Parse decimal integer; None on failure");
+        check("vec-get", "Index (bounds-checked; panics on out-of-bounds)");
+        check("vec-set", "Return new Vec with element at index replaced");
+        check("vec-push", "Return new Vec with element appended");
+        check("vec-len", "Number of elements");
+        check("quote-sexp", "Convert a runtime Sexp value to constructor source code");
     }
 }

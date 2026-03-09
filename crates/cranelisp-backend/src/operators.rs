@@ -74,6 +74,39 @@ pub fn emit_builtin_op(
     }
 }
 
+/// Check if a name is a known inline builtin primitive.
+///
+/// Returns true for names handled by `emit_builtin_op`. Names not in this
+/// set are assumed to be extern calls (e.g., platform effect functions).
+pub fn is_known_builtin(name: &str) -> bool {
+    matches!(
+        name,
+        "add-i64"
+            | "sub-i64"
+            | "mul-i64"
+            | "div-i64"
+            | "add-f64"
+            | "sub-f64"
+            | "mul-f64"
+            | "div-f64"
+            | "eq-i64"
+            | "lt-i64"
+            | "gt-i64"
+            | "le-i64"
+            | "ge-i64"
+            | "eq-f64"
+            | "lt-f64"
+            | "gt-f64"
+            | "le-f64"
+            | "ge-f64"
+            | "not"
+            | "eq-bool"
+            | "neq-i64"
+            | "neq-f64"
+            | "neq-bool"
+    )
+}
+
 // --- Binary integer helpers ---
 
 /// Emit a binary integer operation. The closure receives the builder and two

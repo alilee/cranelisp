@@ -1,4 +1,4 @@
-# 8. Modules [R3 S10]
+# 8. Modules [Tested]
 
 This section defines the module system of Cranelisp -- how source files map to modules, how names are imported and exported across module boundaries, and how name resolution operates in the presence of multiple modules.
 
@@ -478,7 +478,7 @@ A private name:
 (util/internal 42)         ; error: 'internal' is private
 ```
 
-## 8.8 Prelude [R3 S10]
+## 8.8 Prelude [Tested tests/stdlib::prelude_loads_without_errors, tests/modules::prelude_like_reexport_compiles]
 
 ### 8.8.1 Implicit Import
 
@@ -605,7 +605,7 @@ Lib directory locations are specified externally through:
 
 There is no language-level requirement for the standard library structure.
 
-## 8.12 Macro Interaction [R3 S9]
+## 8.12 Macro Interaction [Tested tests/ring2::neg_private_macro_not_importable, tests/macros::batch_defmacro_simple]
 
 ### 8.12.1 Pre-Expansion Processing
 

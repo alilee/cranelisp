@@ -110,6 +110,10 @@ pub struct ConstructorInfo {
     pub tag: usize,
     pub fields: Vec<FieldInfo>,
     pub docstring: Option<String>,
+    /// If true, the constructor is internal to the compiler — users cannot construct
+    /// or pattern-match on it. Example: `IO.Bind` is constructed only by `bind`.
+    #[serde(default)]
+    pub internal: bool,
 }
 
 /// Information about a constructor field (resolved type, not TypeExpr).

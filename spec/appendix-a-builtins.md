@@ -142,7 +142,7 @@ All primitive functions (§A.3) and special forms (§A.4) MUST have docstrings a
 | `deftype` / `deftype-` | Algebraic data type definition; `deftype-` is module-private | [Tested tests/ring1.rs::parse_int_valid]
 | `deftrait` / `deftrait-` | Trait declaration; `deftrait-` is module-private | [Tested tests/ring2.rs::user_trait_simple]
 | `impl` | Trait implementation | [Tested tests/ring2.rs::trait_plus_int]
-| `defmacro` / `defmacro-` | Macro definition; `defmacro-` is module-private | [R3 S10]
+| `defmacro` / `defmacro-` | Macro definition; `defmacro-` is module-private | [Tested tests/ring3_repl::r3_defmacro_display_single_clause]
 | `let` | Local bindings: `(let [x e1 y e2] body)` | [Tested tests/ring0.rs::nested_let]
 | `if` | Conditional: `(if cond then else)` | [Tested tests/ring0.rs::comparison_operators]
 | `fn` | Lambda expression: `(fn [params] body)` | [Tested tests/ring1.rs::closure_simple_capture]

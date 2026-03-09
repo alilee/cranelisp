@@ -107,18 +107,32 @@ Every sprint follows this sequential flow. `/sprint` drives the process; other s
    ```
    grep -r "FIXME(" --include="*.md" --include="*.rs" .
    ```
-2. **Assess state**: Read `design/arch/roadmap.md`, `sprints/ROADMAP.md`, run tests, survey what exists.
-3. **Propose scope**: Identify the next coherent increment — a subset of ring work that produces a testable result, has clear skill boundaries, and respects dependencies. Write the sprint scope in SPRINT.md as `DRAFT`.
-4. **User approval**: Present the proposed scope to the user. Adjust if needed.
+2. **Prior-ring coverage audit**: Scan all spec files (`spec/*.md`, `repl/spec.md`) for requirements from completed rings that still lack full test coverage annotations. Three kinds of gap, in priority order:
+   - **Coverage gap** (priority): A requirement tagged `[R{N} S{M}]` where ring N is complete — genuinely untested. Must be addressed in this sprint.
+   - **Negative coverage gap**: A MUST/MUST NOT requirement annotated `[Tested ...]` but not `[Tested+Neg ...]` — positive path works but nothing verifies wrong behaviour is absent. Should be addressed, especially for boundary requirements (what appears in output, what is visible/hidden, module boundaries).
+   - **Traceability gap**: Tests exist but the spec annotation wasn't updated from `[R{N} S{M}]` to `[Tested ...]`. Lower priority — clean up alongside nearby work.
+
+   Also check for stale `IGNORED` annotations that reference tests which no longer exist or now pass.
+   ```
+   # Find requirements from completed rings that aren't [Tested] (adjust max ring)
+   grep -rn '\[R[0-3]' --include="*.md" spec/ repl/spec.md
+   # Find stale IGNORED annotations
+   grep -rn 'IGNORED' --include="*.md" spec/ repl/spec.md
+   # Find [Tested ...] without +Neg on MUST/MUST NOT requirements
+   grep -rn '\[Tested [^+]' --include="*.md" spec/ repl/spec.md
+   ```
+3. **Assess state**: Read `design/arch/roadmap.md`, `sprints/ROADMAP.md`, run tests, survey what exists.
+4. **Propose scope**: Identify the next coherent increment — a subset of ring work that produces a testable result, has clear skill boundaries, and respects dependencies. Prior-ring coverage gaps from step 2 are included as priority items. Write the sprint scope in SPRINT.md as `DRAFT`.
+5. **User approval**: Present the proposed scope to the user. Adjust if needed.
 
 ### Phase 2: Architecture Review (driven by `/arch`)
 
-5. **`/arch` reviews the sprint proposal** for:
+6. **`/arch` reviews the sprint proposal** for:
    - Technical coherence — does the scope form a complete, testable increment?
    - No interim architecture — does any task build throwaway infrastructure that a later ring replaces? (Principle 8)
    - Design references — are the relevant design docs, interface types, and protocols highlighted for each compiler skill?
    - Interface gaps — do boundary types need extending before implementation begins?
-6. `/arch` updates `design/arch/` docs if needed and confirms the sprint is sound.
+7. `/arch` updates `design/arch/` docs if needed and confirms the sprint is sound.
 
 ### Phase 3: Design (compiler skills, then all skills)
 
@@ -126,7 +140,7 @@ Every sprint follows this sequential flow. `/sprint` drives the process; other s
 
 **Phase 3a — Design docs (compiler skills)**:
 
-7. **Compiler skills write or update design docs** in `design/{skill}/` for their sprint scope. Each design doc must cover:
+8. **Compiler skills write or update design docs** in `design/{skill}/` for their sprint scope. Each design doc must cover:
    - The problem being solved and key design decisions
    - Data structures, algorithms, or protocols being introduced or changed
    - Interactions with other crates/skills (ownership, calling conventions, data flow)
@@ -135,22 +149,22 @@ Every sprint follows this sequential flow. `/sprint` drives the process; other s
 
    This is NOT optional documentation — it is the prerequisite thinking that informs implementation. A skill that cannot articulate its design in a document is not ready to write code.
 
-8. **`/arch` reviews the design docs** for architectural coherence: correct crate boundaries, no dependency violations, consistent with existing decisions, interactions between skills are sound. `/arch` may request revisions before approving. This review replaces ad-hoc discovery of design issues during implementation.
+9. **`/arch` reviews the design docs** for architectural coherence: correct crate boundaries, no dependency violations, consistent with existing decisions, interactions between skills are sound. `/arch` may request revisions before approving. This review replaces ad-hoc discovery of design issues during implementation.
 
-9. **`/qa` reviews the design docs** to inform test planning: identifies testable invariants, edge cases to cover, interaction boundaries to verify. `/qa` updates the relevant ring test plan (`tests/plan/ring{N}.md`) with test cases derived from the design docs. This ensures tests are designed against the *intended* behavior, not reverse-engineered from the implementation.
+10. **`/qa` reviews the design docs** to inform test planning: identifies testable invariants, edge cases to cover, interaction boundaries to verify. `/qa` updates the relevant ring test plan (`tests/plan/ring{N}.md`) with test cases derived from the design docs. This ensures tests are designed against the *intended* behavior, not reverse-engineered from the implementation.
 
 **Phase 3b — Plan and approach (all skills)**:
 
-10. **All skills update their plan `.md` files** to address:
+11. **All skills update their plan `.md` files** to address:
     - FIXMEs assigned to them (incorporate the change or explicitly defer with rationale)
     - Their sprint assignment (refine their plan section in SPRINT.md with concrete approach)
     - **Approach MUST reference the design doc** — the approach in SPRINT.md summarizes *what* will be done; the design doc in `design/{skill}/` explains *why* and *how*
-11. `/sprint` collects the updated plans, confirms all FIXMEs are resolved or deferred, and verifies that every compiler skill with implementation work has a current design doc that has been reviewed by `/arch`.
+12. `/sprint` collects the updated plans, confirms all FIXMEs are resolved or deferred, and verifies that every compiler skill with implementation work has a current design doc that has been reviewed by `/arch`.
 
 ### Phase 4: Wave Organization (driven by `/sprint`)
 
-12. **`/sprint` reviews dependencies** across the updated skill plans and organizes parallel activities into waves. A wave is a set of skill invocations that can run concurrently because they have no inter-dependencies.
-13. `/sprint` writes the wave structure and task list into SPRINT.md, marks it `ACTIVE`.
+13. **`/sprint` reviews dependencies** across the updated skill plans and organizes parallel activities into waves. A wave is a set of skill invocations that can run concurrently because they have no inter-dependencies.
+14. `/sprint` writes the wave structure and task list into SPRINT.md, marks it `ACTIVE`.
 
 ### Phase 5: Wave Execution (iterative)
 
@@ -159,43 +173,52 @@ Every sprint follows this sequential flow. `/sprint` drives the process; other s
 **Wave ordering principle**: Design precedes implementation precedes showcase. The standard wave sequence is:
 1. **Design wave** — compiler skills write/update design docs in `design/{skill}/`
 2. **Design review wave** — `/arch` reviews design docs for architectural coherence; `/qa` derives test cases from design docs and updates ring test plans
-3. **Implementation wave(s)** — compiler skills write code according to their reviewed design docs
-4. **Verification wave** — `/qa` test verification, `/review` code assessment
+3. **Implementation + test preparation wave(s)** — compiler skills write code; `/qa` writes integration tests for the full spec surface in parallel (see below)
+4. **Build/test/review cycle** — run `cargo test`, fix failures, `/review` code assessment. Iterate until green + clean.
 5. **Showcase wave** — user-proxy skills expose the progress: `/port` builds showcase demos, `/examples` updates learning sequence, `/repl` validates interactive experience, `/docs` updates user-facing docs. This wave produces the `repl/demos/*.demo` files that gate sprint close.
 
 A compiler skill MUST NOT begin implementation until its design doc for the sprint scope exists and has been reviewed by `/arch`. If a design review surfaces issues that change the sprint scope, `/sprint` pauses to re-scope with user approval.
 
 A sprint MUST NOT close until user-proxy skills have demonstrated that the new capabilities are usable. The showcase wave is not optional polish — it is the sprint's acceptance test from the buyer's perspective.
 
-14. **Compiler skill waves**: Only compiler skills (`/frontend`, `/typecheck`, `/backend`, `/qa`, `/platform`) write code. They work according to specs (`spec/`), design docs (`design/`), and their own plans. Each compiler skill completes its wave assignment.
+15. **Implementation + test preparation (parallel)**:
+    - **Compiler skills** (`/frontend`, `/typecheck`, `/backend`, `/platform`) write code according to specs, design docs, and their own plans.
+    - **`/qa` writes integration tests in parallel**, covering the **full spec surface** of the sprint scope — not just the parts that are implemented. Tests are derived from the spec and design docs, not from the implementation. Tests that fail because the implementation is incomplete are committed as `#[ignore]` with a reason string naming the gap. This is the primary mechanism for making implementation gaps visible before the verification wave.
 
-15. **Review after each compiler skill completes**: `/review` inspects each compiler skill's work for code quality, adherence to design docs and architecture, and correctness. Findings are classified as Blocker (B), Important (I), or Suggestion (S).
-    - `/review` and `/qa` raise `FIXME(/skill-name)` comments on the relevant design doc or plan for the compiler skill to fix — they do not fix code themselves.
-    - The compiler skill addresses Blockers and Important findings.
-    - `/review` re-inspects. Iterate until all Blockers and Important findings are resolved (or explicitly deferred with rationale).
+    **Why parallel, not sequential:** When `/qa` runs only after implementation, tests are unconsciously shaped by what exists — testing the code, not the spec. Running `/qa` in parallel forces spec-first test design. Some tests will fail initially; that is expected and correct. The subsequent build/test/review cycle resolves failures. (Sprint 16 lesson: `/qa` ran post-implementation, wrote 25 passing tests that covered only `Pure`/`bind`, missed that `print` — the sprint's headline goal — had no Effect codegen. A parallel `/qa` would have written a `print` test from the spec, gotten `#[ignore]`, and the gap would have been visible before "done" was declared.)
 
-16. **FIXME gate**: Before advancing to the next wave, `/sprint` scans all files produced or modified by the current wave for unresolved `FIXME(/skill-name)` comments. Outstanding FIXMEs block advancement.
+16. **Build/test/review cycle**: After compiler skills complete their implementation:
+    a. `/qa` un-ignores tests that should now pass and runs the full suite.
+    b. Failures are triaged: implementation bug (file FIXME on owning skill) vs test bug (fix test).
+    c. `/review` inspects code for quality, adherence to design docs, and correctness. Findings classified as Blocker (B), Important (I), or Suggestion (S).
+    d. Compiler skills address Blockers and Important findings.
+    e. Iterate: re-test, re-review, until all tests pass and all B+I findings are resolved.
+    f. Any tests still `#[ignore]` at cycle end represent genuine implementation gaps — these block sprint close per the deferral principles (defects are not deferrable).
 
-17. **Repeat**: `/sprint` spawns the next wave. Continue until all waves are complete or user input is required.
+17. **FIXME gate**: Before advancing to the next wave, `/sprint` scans all files produced or modified by the current wave for unresolved `FIXME(/skill-name)` comments. Outstanding FIXMEs block advancement.
+
+18. **Repeat**: `/sprint` spawns the next wave. Continue until all waves are complete or user input is required.
 
 ### Phase 6: Close (driven by `/sprint`)
 
-18. **Sprint close checklist** — every item must pass before marking COMPLETE:
+19. **Sprint close checklist** — every item must pass before marking COMPLETE:
     - [ ] All demos play cleanly (existing ring demos + any new ones)
     - [ ] `/port` (exemplar) demo is current — shows what can be built with features so far
     - [ ] `/stdlib` demo is current — shows available stdlib functionality
     - [ ] All examples compile and run (`cargo run -- --run examples/*.cl`)
     - [ ] All tests pass (`cargo test`) — 0 failures
-    - [ ] Ignored test count documented with justification for each
+    - [ ] Ignored test count is 0 for in-scope features (ignored tests for future-ring features are acceptable with justification)
+    - [ ] `/qa` confirms spec-surface coverage: every spec requirement in sprint scope has a passing test (not just "all tests pass" but "all requirements are tested")
     - [ ] FIXME scan clean (all resolved or explicitly deferred with rationale)
+    - [ ] Prior-ring coverage audit clean — no coverage gaps (`[R{N}]` where N is complete); negative coverage gaps for MUST requirements documented or addressed
     - [ ] ROADMAP.md updated with test count and outcomes
     - [ ] User-proxy skills confirmed showcase adequacy
-19. Write the outcome section in SPRINT.md: delivered, deferred, findings.
-20. Mark SPRINT.md as `COMPLETE`.
-21. Move `sprints/SPRINT.md` to `sprints/archive/sprint-{id}.md`.
-22. Update `sprints/ROADMAP.md` with the completed sprint and its outcomes.
-23. If the ring is not yet complete, begin Phase 1 for the next sprint.
-24. If the ring is complete, note that `/review` should be invoked for ring-gate review.
+20. Write the outcome section in SPRINT.md: delivered, deferred, findings.
+21. Mark SPRINT.md as `COMPLETE`.
+22. Move `sprints/SPRINT.md` to `sprints/archive/sprint-{id}.md`.
+23. Update `sprints/ROADMAP.md` with the completed sprint and its outcomes.
+24. If the ring is not yet complete, begin Phase 1 for the next sprint.
+25. If the ring is complete, note that `/review` should be invoked for ring-gate review.
 
 ### Mid-Sprint Adjustment
 

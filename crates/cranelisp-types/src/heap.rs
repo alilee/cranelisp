@@ -135,6 +135,7 @@ mod tests {
             tag,
             fields: vec![],
             docstring: None,
+            internal: false,
         }
     }
 
@@ -148,6 +149,7 @@ mod tests {
                 ty: Type::Int,
             }],
             docstring: None,
+            internal: false,
         }
     }
 
@@ -278,6 +280,7 @@ mod tests {
                     },
                 ],
                 docstring: None,
+                internal: false,
             }],
         )]);
         let point = Type::ADT(TypeName::from("IPoint"), vec![]);

@@ -2,7 +2,7 @@
 
 Standard library for Cranelisp. Owned by `/stdlib` skill.
 
-## Current State (Sprint 14 Wave 3)
+## Current State (Sprint 16 Wave 4)
 
 The prelude loads successfully and re-exports from domain modules. Threading macros
 (`->`, `->>`) moved to `fn/threading.cl`. Ring 2 modules (string, int, float, list,
@@ -37,8 +37,9 @@ stdlib/
   collections/vec.cl      ; Vec utility functions: vec-map, vec-filter, etc.
   testing.cl              ; shell: (mod assertions)
   testing/assertions.cl   ; assert-eq, assert-true, assert-false
-  core.cl                 ; shell for core.syntax (macro authors)
+  core.cl                 ; shell for core.syntax + core.io
   core/syntax.cl          ; SList helpers (standalone, not prelude dep)
+  core/io.cl              ; IO combinators: pure, >>, map-io, when-io, unless-io, sequence-io
   derive.cl               ; derive macro: derive-Eq, derive-Ord, derive-Display
   plan-stdlib.md          ; normative module tree and delivery plan
 ```
@@ -61,11 +62,17 @@ stdlib/
 - List type (recursive ADT) with operations (fold, map-list, filter-list, reverse, etc.)
 - Derive macro (derive-Eq, derive-Ord, derive-Display) ported from sketch
 - All macros (do, cond, str, case, def, def-, const, vec, when, bind!) in prelude
+- IO combinators (pure, >>, map-io, when-io, unless-io, sequence-io) in core/io.cl
 
 ### Known blockers
 
 - **No floor/ceil/round**: Float operations limited to what can be built from
   existing Ring 0 primitives. Need runtime extern functions for IEEE 754 rounding.
+- **IO combinators untested**: `core/io.cl` is written but cannot be tested
+  until the backend IO trampoline (I2) and platform DLL loading (I3) are complete.
+- **`do` semantics transition**: Prelude `do` uses `let [_ ...]` (pure sequencing).
+  Spec 10.4 says `do` should expand to `bind` (IO-specific). Transition deferred
+  until IO pipeline is operational. FIXME filed in prelude.cl.
 
 ### What is NOT in prelude (requires explicit import)
 
@@ -81,11 +88,13 @@ stdlib/
 - `text.string`: blank?, repeat-str, index-of, reverse-str, pad-left, pad-right
 - `testing.assertions`: assert-eq, assert-true, assert-false
 - `derive`: derive, derive-Eq, derive-Ord, derive-Display
+- `core.io`: >>, map-io, when-io, unless-io, sequence-io
 
 ### Prelude re-exports
 
 Traits: Eq, Ord, Num, Display (with =, !=, <, >, <=, >=, +, -, *, /, show)
 Types: Option (None, Some), Result (Ok, Err), List (Nil, Cons, empty?)
+Functions: pure
 Macros: ->, ->>, vec, when, const, const-, do, cond, list, str, case, def, def-, bind!
 
 ## Conventions

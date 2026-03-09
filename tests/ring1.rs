@@ -1929,3 +1929,61 @@ fn error_quality_match_arm_type_mismatch() {
     assert_type_error(src, "Int");
     assert_type_error(src, "String");
 }
+
+// =============================================================================
+// D5: P5-MED Negative Coverage — Pattern Matching Restrictions (Sprint 16)
+// =============================================================================
+
+// spec: 06-pattern-matching §6.6.1 — nested pattern rejected (neg test)
+// Companion to existing error_nested_pattern above — verifies error message.
+#[test]
+fn neg_nested_pattern_rejected() {
+    let src = r#"
+(deftype (Option a) None (Some [:a val]))
+(deftype Point [:Int x :Int y])
+(defn bad [opt]
+  (match opt
+    [(Some (Point x y)) (add-i64 x y)
+     None 0]))
+(defn main [] (bad None))
+"#;
+    let result = cranelisp::pipeline::compile_and_run(src, cranelisp_types::CompileMode::Batch);
+    assert!(
+        result.is_err(),
+        "nested constructor pattern MUST be rejected"
+    );
+}
+
+// spec: 06-pattern-matching §6.2.1 — constructor pattern with too few bindings
+#[test]
+fn neg_pattern_wrong_binding_count() {
+    // Point has 2 fields (x, y) but pattern only binds 1.
+    let src = r#"
+(deftype Point [:Int x :Int y])
+(defn main []
+  (match (Point 3 4)
+    [(Point x) x]))
+"#;
+    let result = cranelisp::pipeline::compile_and_run(src, cranelisp_types::CompileMode::Batch);
+    assert!(
+        result.is_err(),
+        "constructor pattern with too few bindings MUST be rejected"
+    );
+}
+
+// spec: 06-pattern-matching §6.2.1 — constructor pattern with too many bindings
+#[test]
+fn neg_pattern_too_many_bindings() {
+    // Point has 2 fields but pattern tries to bind 3.
+    let src = r#"
+(deftype Point [:Int x :Int y])
+(defn main []
+  (match (Point 3 4)
+    [(Point a b c) a]))
+"#;
+    let result = cranelisp::pipeline::compile_and_run(src, cranelisp_types::CompileMode::Batch);
+    assert!(
+        result.is_err(),
+        "constructor pattern with too many bindings MUST be rejected"
+    );
+}

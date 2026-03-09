@@ -143,6 +143,28 @@ If a test passes but uses a name or convention that doesn't match the spec, **th
 
 **When reviewing test output from other skills or agents**, `/qa` MUST spot-check names, types, and behaviors against the spec. Don't assume other skills got the spec details right.
 
+## Spec-Scope Test Coverage (the "failing tests first" rule)
+
+**CRITICAL — When a sprint scopes a feature, `/qa` MUST write tests for the FULL spec surface of that feature, not just the parts the implementation covers.** Tests that the implementation cannot yet pass are written as `#[ignore]` with a reason string naming the gap. This is the primary mechanism for making implementation gaps visible.
+
+**Why this is non-negotiable:** Sprint 16 scoped `(print "hello")` as its goal. `/qa` wrote 25 tests that all passed — but they only tested `Pure` and `bind` (pure IO computation). No test exercised platform effects (the actual `print`), because the Effect codegen path didn't exist. Result: the sprint's headline deliverable was broken, but the test suite was green. If `/qa` had written a test for `(print "hello")` — even as `#[ignore]` — the gap would have been visible from Wave 3 onward.
+
+**The rule:**
+
+1. **At the start of a QA wave**, read the sprint scope and the relevant spec sections. Enumerate every spec requirement that falls within scope.
+2. **Write a test for every requirement**, even if the implementation is known to be incomplete. Tests that fail become `#[ignore]` with a reason string that names the missing implementation.
+3. **Never skip a requirement because the implementation isn't ready.** An `#[ignore]` test is a visible gap. A missing test is an invisible gap. Invisible gaps are how sprints close with broken features.
+4. **Treat "0 ignored" with suspicion, not celebration.** If a sprint delivers a new feature and all tests pass on the first try, ask: "Did I test the full spec surface, or only what I knew would pass?" A green suite with ignored tests is honest. A green suite that avoids hard tests is dishonest.
+5. **The QA wave is not done when all tests pass — it is done when all spec requirements have tests.** Some of those tests may be `#[ignore]`, which creates visible work items for compiler skills.
+
+**Operational checklist for every QA wave:**
+
+- [ ] Read the sprint scope (SPRINT.md) and the relevant spec sections
+- [ ] List every spec requirement in scope (not just the ones that are implemented)
+- [ ] For each requirement: write a test, run it, mark `#[ignore]` if it fails
+- [ ] Report the ignore count and what each ignored test reveals about implementation gaps
+- [ ] File FIXME on the owning skill for each gap discovered via failing tests
+
 ## Ring Discipline
 
 Integration and E2E tests must only exercise features that belong to the current ring. Tests that rely on mechanisms from a later ring are "getting ahead" and create throwaway test infrastructure that must be rewritten when the proper mechanism arrives.

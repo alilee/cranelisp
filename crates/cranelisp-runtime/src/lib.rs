@@ -20,6 +20,7 @@
 //! - `panic` — runtime panic handler for JIT code
 
 pub mod alloc;
+pub mod io;
 pub mod rc;
 pub mod string;
 pub mod vec;
@@ -31,7 +32,7 @@ pub mod marshal;
 // pointer, not by symbol name — see src/CLAUDE.md §"JIT Symbol Names".
 
 // Runtime infrastructure (registered as runtime/alloc, runtime/dealloc, etc.)
-pub use alloc::{heap_alloc, heap_dealloc};
+pub use alloc::{heap_alloc, heap_alloc_payload, heap_dealloc};
 pub use panic::runtime_panic;
 pub use rc::rc_underflow_check;
 
@@ -54,6 +55,11 @@ pub use primitives::bool::bool_to_string;
 
 // Marshal primitives (registered by spec name: sconcat, quote-sexp)
 pub use marshal::{sconcat, quote_sexp};
+
+// IO trampoline (registered as runtime/run_io for JIT calls;
+// run_io_trampoline for direct Rust calls from REPL loop)
+pub use io::cranelisp_run_io;
+pub use io::run_io_trampoline;
 
 // Re-export public Rust API for use by /qa integration tests and binary crate.
 pub use alloc::{

@@ -114,6 +114,12 @@ fn register_intrinsics(builder: &mut JITBuilder) {
     // Marshal primitives (macros module + primitives module)
     builder.symbol("sconcat", cranelisp_runtime::sconcat as *const u8);
     builder.symbol("quote-sexp", cranelisp_runtime::quote_sexp as *const u8);
+
+    // IO trampoline (Ring 4: runtime/run_io)
+    builder.symbol(
+        "runtime/run_io",
+        cranelisp_runtime::cranelisp_run_io as *const u8,
+    );
 }
 
 /// JIT module wrapper. Owns the Cranelift JIT module and provides

@@ -15,3 +15,6 @@ profile.json.gz
 .claude-role
 repl/demos/runs/
 tests/e2e/.runs/
+# Platform DLL symlinks (build artifacts)
+examples/platforms/
+*.dylib

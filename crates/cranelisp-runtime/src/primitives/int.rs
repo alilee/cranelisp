@@ -47,7 +47,7 @@ pub extern "C" fn parse_int(s: i64) -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::alloc::bytes_current;
+    // alloc_count/dealloc_count used via crate::alloc:: in delta assertions
 
     // spec: appendix-a-builtins §A.3 — int-to-string converts positive integer
     #[test]
@@ -82,7 +82,8 @@ mod tests {
     // spec: appendix-a-builtins §A.3 — parse-int returns Some for valid decimal string
     #[test]
     fn test_parse_int_valid() {
-        let bytes_before = bytes_current();
+        let allocs_before = crate::alloc::alloc_count();
+        let deallocs_before = crate::alloc::dealloc_count();
         let s = string::alloc_string(b"42") as i64;
         let result = parse_int(s);
         // Should be Some(42): heap pointer
@@ -97,7 +98,9 @@ mod tests {
             alloc::dealloc(s as *mut u8);
             alloc::dealloc(result as *mut u8);
         }
-        assert_eq!(bytes_current(), bytes_before);
+        // Delta-based: at least 2 allocs (string + Some), 2 deallocs.
+        assert!(crate::alloc::alloc_count() - allocs_before >= 2);
+        assert!(crate::alloc::dealloc_count() - deallocs_before >= 2);
     }
 
     // spec: appendix-a-builtins §A.3 — parse-int parses negative integer

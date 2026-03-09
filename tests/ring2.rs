@@ -1943,3 +1943,237 @@ fn import_nonexistent_name_errors() {
         "error should mention the missing name, got: {msg}"
     );
 }
+
+// =============================================================================
+// D5: P1-HIGH Negative Coverage — Module Boundaries (Sprint 16)
+// =============================================================================
+
+// spec: 08-modules §8.7.3 — glob export MUST NOT include private names
+#[test]
+fn neg_glob_export_excludes_private() {
+    // Module B has a public function and a private function.
+    // Module A glob-imports from B. The private function MUST NOT be accessible.
+    let dir = create_test_project(&[
+        ("main.cl", "(mod util)\n(import [main.util [*]])\n(defn main [] (secret))"),
+        ("util.cl", "(defn helper [] 42)\n(defn- secret [] 99)"),
+    ]);
+    let result = cranelisp::pipeline::compile_module_graph(
+        &dir.path().join("main.cl"),
+        &[],
+    );
+    assert!(
+        result.is_err(),
+        "glob import MUST NOT include private names — 'secret' should not be accessible"
+    );
+}
+
+// spec: 08-modules §8.7.3 — glob export DOES include public names (companion positive)
+#[test]
+fn neg_glob_export_includes_public() {
+    // Companion test: public name IS accessible via glob import.
+    let dir = create_test_project(&[
+        ("main.cl", "(mod util)\n(import [main.util [*]])\n(defn main [] (helper))"),
+        ("util.cl", "(defn helper [] 42)\n(defn- secret [] 99)"),
+    ]);
+    let result = cranelisp::pipeline::compile_module_graph(
+        &dir.path().join("main.cl"),
+        &[],
+    ).unwrap();
+    assert_eq!(result.value, 42);
+}
+
+// spec: 08-modules §8.10.2 — circular module dependency MUST error
+#[test]
+fn neg_circular_module_dependency() {
+    // Module A imports from B, module B imports from A — circular dependency.
+    let dir = create_test_project(&[
+        ("main.cl", "(mod a)\n(import [main.a [a-fn]])\n(defn main [] (a-fn))"),
+        ("a.cl", "(import [main.b [b-fn]])\n(defn a-fn [] (b-fn))"),
+        ("b.cl", "(import [main.a [a-fn]])\n(defn b-fn [] (a-fn))"),
+    ]);
+    let result = cranelisp::pipeline::compile_module_graph(
+        &dir.path().join("main.cl"),
+        &[],
+    );
+    assert!(
+        result.is_err(),
+        "circular module dependency MUST produce an error"
+    );
+}
+
+// spec: 08-modules §8.3.6 — super in root module MUST error
+#[test]
+fn neg_super_in_root_module_errors() {
+    // Using (import [super [...]]) in the root module should error —
+    // root has no parent.
+    let dir = create_test_project(&[
+        ("main.cl", "(import [super [thing]])\n(defn main [] (thing))"),
+    ]);
+    let result = cranelisp::pipeline::compile_module_graph(
+        &dir.path().join("main.cl"),
+        &[],
+    );
+    assert!(
+        result.is_err(),
+        "import [super ...] in root module MUST error"
+    );
+}
+
+// spec: 08-modules §8.7.3 — private name not accessible via qualified ref after glob import
+#[test]
+fn neg_glob_import_private_not_via_qualified() {
+    // After glob-importing from util, private names MUST NOT be accessible
+    // via qualified ref (main.util/secret) either.
+    let dir = create_test_project(&[
+        ("main.cl", "(mod util)\n(import [main.util [*]])\n(defn main [] (main.util/secret))"),
+        ("util.cl", "(defn helper [] 42)\n(defn- secret [] 99)"),
+    ]);
+    let result = cranelisp::pipeline::compile_module_graph(
+        &dir.path().join("main.cl"),
+        &[],
+    );
+    assert!(
+        result.is_err(),
+        "private name MUST NOT be accessible via qualified ref"
+    );
+}
+
+// spec: 08-modules §8.7.3 — private macro not importable
+#[test]
+fn neg_private_macro_not_importable() {
+    // A private defmacro (defmacro- name ...) MUST NOT be importable.
+    let dir = create_test_project(&[
+        ("main.cl", "(mod util)\n(import [main.util [secret-mac]])\n(defn main [] (secret-mac 1))"),
+        ("util.cl", "(defmacro- secret-mac [x] x)\n(defn helper [] 42)"),
+    ]);
+    let result = cranelisp::pipeline::compile_module_graph(
+        &dir.path().join("main.cl"),
+        &[],
+    );
+    assert!(
+        result.is_err(),
+        "private macro MUST NOT be importable"
+    );
+}
+
+// =============================================================================
+// D5: P2-HIGH Negative Coverage — Type System Invariants (Sprint 16)
+// =============================================================================
+
+// spec: 03-types §3.8.2 — occurs check prevents infinite types
+#[test]
+fn neg_occurs_check_infinite_type() {
+    // Attempting to create an infinite type should fail with a type error.
+    // Classic example: (defn f [x] (f (f x))) leads to x : a, f : a -> b,
+    // then b ~ (a -> b), causing infinite type.
+    // More directly: (let [f (fn [x] (x x))] (f f)) — self-application.
+    let src = r#"
+(defn apply-self [x] (x x))
+(defn main [] (apply-self apply-self))
+"#;
+    let result = cranelisp::pipeline::compile_and_run(src, cranelisp_types::CompileMode::Batch);
+    assert!(
+        result.is_err(),
+        "infinite type (occurs check) MUST produce a type error"
+    );
+}
+
+// spec: 03-types §3.6.6 — constrained fn MUST NOT be captured in a closure
+#[test]
+fn neg_constrained_fn_in_closure() {
+    // A constrained polymorphic function (e.g., one that uses trait-dispatched +)
+    // MUST NOT be used as a first-class value / captured in a closure.
+    let src = &format!(
+        "{}\n{}",
+        num_trait_prelude(),
+        r#"
+(defn add [x y] (+ x y))
+(defn main [] (let [f add] (f 1 2)))
+"#
+    );
+    let result = cranelisp::pipeline::compile_and_run(src, cranelisp_types::CompileMode::Batch);
+    // This may either error at typecheck (cannot use constrained fn as value)
+    // or at codegen. Either way, it must not succeed silently.
+    assert!(
+        result.is_err(),
+        "constrained fn captured in let binding MUST NOT compile"
+    );
+}
+
+// spec: 03-types §3.7.4, 07-traits §7.2.3 — primitive types rejected as HKT impl targets
+#[test]
+fn neg_hkt_impl_primitive_type_rejected() {
+    // Implementing a higher-kinded trait on a primitive type should fail.
+    // Primitive types (Int, Bool, etc.) are not type constructors.
+    let src = r#"
+(deftrait (Functor f)
+  (fmap [(Fn [a] b) (f a)] (f b)))
+(impl Functor Int
+  (defn fmap [f x] x))
+(defn main [] 1)
+"#;
+    let result = cranelisp::pipeline::compile_and_run(src, cranelisp_types::CompileMode::Batch);
+    assert!(
+        result.is_err(),
+        "implementing HKT trait on primitive type MUST be rejected"
+    );
+}
+
+// spec: 07-traits §7.3.1 — impl with missing method MUST error
+#[test]
+fn neg_impl_missing_method_errors() {
+    // An impl block that doesn't implement all required methods should error.
+    let src = r#"
+(deftrait (Sizeable a)
+  (size [a] Int)
+  (weight [a] Int))
+(deftype Box [:Int val])
+(impl Sizeable Box
+  (defn size [b] 1))
+(defn main [] (size (Box 42)))
+"#;
+    let result = cranelisp::pipeline::compile_and_run(src, cranelisp_types::CompileMode::Batch);
+    assert!(
+        result.is_err(),
+        "impl block missing required method MUST produce an error"
+    );
+}
+
+// spec: 03-types §3.8.6 — type mismatch Int vs Bool
+#[test]
+fn neg_type_mismatch_int_bool() {
+    // Passing Bool where Int is expected must error.
+    assert_type_error("(defn main [] (add-i64 true 1))", "Int");
+}
+
+// spec: 03-types §3.8.3 — function arity mismatch
+#[test]
+fn neg_type_mismatch_fn_arity() {
+    // Calling a function with wrong number of args must error.
+    let src = r#"
+(defn f [x y] (add-i64 x y))
+(defn main [] (f 1 2 3))
+"#;
+    let result = cranelisp::pipeline::compile_and_run(src, cranelisp_types::CompileMode::Batch);
+    assert!(
+        result.is_err(),
+        "calling function with wrong number of args MUST error"
+    );
+}
+
+// spec: 04-expressions §4.6.3 — multi-sig bare value is compile error
+#[test]
+fn neg_multi_sig_bare_value_errors() {
+    // Multi-sig function used as a bare value (not called) should error.
+    let src = r#"
+(defn choose
+  ([:Int x] x)
+  ([:Int x :Int y] (add-i64 x y)))
+(defn main [] (let [f choose] (f 1)))
+"#;
+    let result = cranelisp::pipeline::compile_and_run(src, cranelisp_types::CompileMode::Batch);
+    assert!(
+        result.is_err(),
+        "multi-sig function used as bare value MUST error"
+    );
+}

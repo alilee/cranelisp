@@ -429,7 +429,21 @@ pub fn compile_expr_with_got(
     mode: CompileMode,
     got_state: Option<&mut got::ModuleCodegenState>,
 ) -> Result<CompiledExpr, CranelispError> {
-    let mut jit = Jit::new()?;
+    compile_expr_with_got_and_symbols(expr, check, mode, got_state, &[])
+}
+
+/// Compile an expression using GOT-indirect calls, with extra JIT symbols.
+///
+/// Same as `compile_expr_with_got` but accepts additional symbols (e.g.,
+/// platform function pointers) to register in the JIT.
+pub fn compile_expr_with_got_and_symbols(
+    expr: &Expr,
+    check: &CheckResult,
+    mode: CompileMode,
+    got_state: Option<&mut got::ModuleCodegenState>,
+    extra_symbols: &[(&str, *const u8)],
+) -> Result<CompiledExpr, CranelispError> {
+    let mut jit = Jit::new_with_symbols(extra_symbols)?;
 
     // Declare runtime intrinsics (Ring 1 heap infrastructure).
     jit.declare_intrinsics()?;
@@ -728,6 +742,7 @@ mod tests {
                         tag: 0,
                         fields: vec![],
                         docstring: None,
+                        internal: false,
                     },
                     ConstructorInfo {
                         name: Symbol::from("Some"),
@@ -737,6 +752,7 @@ mod tests {
                             ty: Type::Int,
                         }],
                         docstring: None,
+                        internal: false,
                     },
                 ],
                 docstring: None,
@@ -810,6 +826,7 @@ mod tests {
                         tag: 0,
                         fields: vec![],
                         docstring: None,
+                        internal: false,
                     },
                     ConstructorInfo {
                         name: Symbol::from("Some"),
@@ -819,6 +836,7 @@ mod tests {
                             ty: Type::Int,
                         }],
                         docstring: None,
+                        internal: false,
                     },
                 ],
                 docstring: None,

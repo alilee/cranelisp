@@ -41,6 +41,23 @@ impl TypeDefRegistry {
         self.constructor_to_type.get(ctor_name)
     }
 
+    /// Check whether a constructor is marked as internal (not user-constructable).
+    ///
+    /// Returns `true` if the constructor exists in the type registry and has
+    /// `internal: true`. Returns `false` if the constructor is not internal
+    /// or doesn't exist in the registry.
+    pub fn is_internal_constructor(&self, ctor_name: &str) -> bool {
+        if let Some(type_name) = self.constructor_to_type.get(ctor_name) {
+            if let Some(type_def) = self.type_defs.get(type_name) {
+                return type_def
+                    .constructors
+                    .iter()
+                    .any(|c| c.name.as_ref() == ctor_name && c.internal);
+            }
+        }
+        false
+    }
+
     /// Build a map of known type names with their type parameter counts.
     /// Used by `resolve_type_expr` for ADT lookup and arity validation.
     pub fn known_types(&self) -> crate::resolve::KnownTypes {
@@ -207,6 +224,7 @@ impl TypeChecker {
             tag,
             fields,
             docstring: ctor.docstring.clone(),
+            internal: false,
         })
     }
 
@@ -316,9 +334,12 @@ impl TypeChecker {
             }
         })?;
 
+        // Exclude internal constructors from exhaustiveness — user code cannot
+        // and need not cover them (design/typecheck/io-types.md §1).
         let all_ctors: std::collections::HashSet<&str> = type_def
             .constructors
             .iter()
+            .filter(|c| !c.internal)
             .map(|c| c.name.as_ref())
             .collect();
 
@@ -847,6 +868,7 @@ mod tests {
             tag: 0,
             fields: vec![],
             docstring: None,
+            internal: false,
         };
         let adt_type = Type::ADT(TypeName::from("Color"), vec![]);
         let scheme = build_constructor_scheme(&ctor, &adt_type, &[]);
@@ -866,6 +888,7 @@ mod tests {
                 FieldInfo { name: Symbol::from("y"), ty: Type::Int },
             ],
             docstring: None,
+            internal: false,
         };
         let adt_type = Type::ADT(TypeName::from("Point"), vec![]);
         let scheme = build_constructor_scheme(&ctor, &adt_type, &[]);
@@ -890,6 +913,7 @@ mod tests {
                 FieldInfo { name: Symbol::from("val"), ty: Type::Var(42) },
             ],
             docstring: None,
+            internal: false,
         };
         let adt_type = Type::ADT(TypeName::from("Option"), vec![Type::Var(42)]);
         let scheme = build_constructor_scheme(&ctor, &adt_type, &[42]);
@@ -902,5 +926,43 @@ mod tests {
                 Box::new(Type::ADT(TypeName::from("Option"), vec![Type::Var(42)]))
             )
         );
+    }
+
+    // spec: 10-io §10.1 — is_internal_constructor returns true for internal ctors
+    #[test]
+    fn test_is_internal_constructor() {
+        let tc = TypeChecker::new();
+        // Bind is internal but NOT registered in constructor_to_type,
+        // so this returns false (enforcement is name-resolution-based).
+        // If Bind were in constructor_to_type, this would return true.
+        assert!(!tc.type_defs.is_internal_constructor("Bind"));
+        // Non-internal constructors return false.
+        assert!(!tc.type_defs.is_internal_constructor("Pure"));
+        assert!(!tc.type_defs.is_internal_constructor("Effect"));
+        // Unknown constructors return false.
+        assert!(!tc.type_defs.is_internal_constructor("NoSuchCtor"));
+    }
+
+    // spec: 10-io §10.1 — exhaustiveness excludes internal constructors
+    #[test]
+    fn test_exhaustiveness_excludes_internal_constructors() {
+        let tc = TypeChecker::new();
+        // IO has Pure (tag=0), Effect (tag=1), Bind (tag=2, internal).
+        // Exhaustiveness should only require Pure and Effect.
+        let covered = vec![Symbol::from("Pure"), Symbol::from("Effect")];
+        assert!(tc
+            .check_exhaustiveness(&TypeName::from("IO"), &covered, false, Span::SYNTHETIC)
+            .is_ok(),
+            "matching Pure + Effect should be exhaustive (Bind is internal)"
+        );
+
+        // Missing Effect should fail.
+        let covered = vec![Symbol::from("Pure")];
+        let err = tc
+            .check_exhaustiveness(&TypeName::from("IO"), &covered, false, Span::SYNTHETIC)
+            .unwrap_err();
+        assert!(err.message().contains("Effect"), "should report missing Effect, got: {}", err.message());
+        // Should NOT mention Bind.
+        assert!(!err.message().contains("Bind"), "should not mention internal Bind");
     }
 }

@@ -27,6 +27,7 @@
 (import [fn.result [Result Ok Err]])
 (import [fn.threading [-> ->>]])
 (import [collections.list [List Nil Cons empty?]])
+(import [core.io [pure]])
 
 ;; ── Macro dependencies ─────────────────────────────────────────────────
 
@@ -101,9 +102,19 @@
          (defmacro- ~name [] (macros/SexpList (macros/SCons ~(quote-sexp impl-name) macros/SNil)))))
      _ name]))
 
-;; ── Group F: Deferred to Ring 4 (IO model needed for testing) ──────────
+;; ── Group F: IO combinators (Ring 4) ─────────────────────────────────
 
+;; pure is in core.io (imported above)
+
+;; bind! remains inline — bracket destructuring validated at Ring 3.
 (defmacro bind! "Monadic bind sugar"
   ([[] body] body)
   ([[name expr &more] body]
     `(bind ~expr (fn [~name] (bind! [~@more] ~body)))))
+
+;; FIXME(/stdlib): When the IO trampoline is operational and all pure `do`
+;; uses are migrated to `let [_ ...]`, replace the Group C `do` macro
+;; (which uses `let`) with the IO-specific version (expanding to `bind`
+;; calls per spec 10.4). The IO `do` is available at `core.io` but not
+;; re-exported yet to avoid breaking existing pure-sequencing uses.
+;; See plan-stdlib.md §4 Ring 4 Additions.

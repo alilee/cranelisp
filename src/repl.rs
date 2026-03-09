@@ -62,6 +62,15 @@ pub struct ReplSession {
     type_defs: HashMap<TypeName, TypeDefInfo>,
     /// Maps type names to the module they were defined in (for qualified display).
     type_modules: HashMap<TypeName, ModuleFullPath>,
+    /// Platform function pointers for JIT symbol registration.
+    /// Each entry is (jit_name, function_pointer). These are passed to
+    /// `Jit::new_with_symbols()` when creating JIT instances for compilation
+    /// so that platform function calls can be resolved.
+    platform_symbols: Vec<(String, *const u8)>,
+    /// Loaded platform DLLs — must stay alive for the process lifetime.
+    loaded_platforms: Vec<crate::platform::LoadedPlatform>,
+    /// Project root directory (for platform path resolution).
+    pub project_root: std::path::PathBuf,
 }
 
 impl ReplSession {
@@ -74,6 +83,9 @@ impl ReplSession {
             jit_modules: Vec::new(),
             type_defs: HashMap::new(),
             type_modules: HashMap::new(),
+            platform_symbols: Vec::new(),
+            loaded_platforms: Vec::new(),
+            project_root: std::env::current_dir().unwrap_or_default(),
         }
     }
 
@@ -88,6 +100,7 @@ impl ReplSession {
         lib_dirs: &[std::path::PathBuf],
     ) -> Result<Self, CranelispError> {
         let mut session = Self::new();
+        session.project_root = project_root.to_path_buf();
 
         // We need a temporary JIT for prelude compilation.
         let mut jit = Jit::new()?;
@@ -189,6 +202,13 @@ impl ReplSession {
         // before AST construction. In the REPL, imports are entered interactively.
         if is_import_form(&sexp) {
             return self.eval_import(sexp);
+        }
+
+        // Step 1c: Check for platform — load DLL and register functions.
+        // Platform declarations must be intercepted before AST building
+        // because the AST builder rejects (platform ...) forms.
+        if crate::platform::is_platform_form(&sexp) {
+            return self.eval_platform(sexp);
         }
 
         // Step 1c: Check for bare symbols that need introspection display.
@@ -394,6 +414,48 @@ impl ReplSession {
         })
     }
 
+    /// Handle a `(platform name)` form: load the platform DLL and register
+    /// its functions in the typechecker.
+    ///
+    /// Platform function pointers are stored in `self.platform_symbols` so
+    /// that subsequent JIT instances (created for each function compilation)
+    /// can resolve calls to platform functions.
+    fn eval_platform(&mut self, sexp: Sexp) -> Result<ReplResult, CranelispError> {
+        let (name, span) = crate::platform::extract_platform_name(&sexp).ok_or_else(|| {
+            CranelispError::ParseError {
+                message: "invalid platform declaration".into(),
+                span: cranelisp_types::Span::SYNTHETIC,
+            }
+        })?;
+
+        let (platform, jit_syms) = crate::platform::load_and_register_platform(
+            &mut self.tc,
+            &name,
+            &self.project_root,
+            span,
+        )?;
+
+        let fn_count = platform.descriptors.len();
+        let version = platform.version.clone();
+
+        self.platform_symbols.extend(jit_syms);
+        self.loaded_platforms.push(platform);
+
+        let display = format!(
+            "; loaded platform: {} v{} ({} functions)\n; use (import [platform.{} [*]]) to bring into scope",
+            name, version, fn_count, name
+        );
+
+        Ok(ReplResult {
+            value: 0,
+            ty: Type::Int,
+            is_definition: true,
+            warnings: Vec::new(),
+            definition_display: Some(display),
+            eval_duration: Duration::ZERO,
+        })
+    }
+
     /// Compile and execute a checked REPL input.
     fn compile_and_execute(
         &mut self,
@@ -425,11 +487,18 @@ impl ReplSession {
         // the expression (Gap 4: REPL constrained-poly path).
         self.compile_mono_defns(check_result)?;
 
-        let compiled = cranelisp_backend::compile_expr_with_got(
+        // Build extra symbols for platform function resolution.
+        let extra_symbols: Vec<(&str, *const u8)> = self
+            .platform_symbols
+            .iter()
+            .map(|(name, ptr)| (name.as_str(), *ptr))
+            .collect();
+        let compiled = cranelisp_backend::compile_expr_with_got_and_symbols(
             expr,
             &check,
             CompileMode::Interactive,
             Some(&mut self.got_state),
+            &extra_symbols,
         )?;
 
         // Time the actual evaluation (function call) separately from compilation.
@@ -631,7 +700,13 @@ impl ReplSession {
         defn: &cranelisp_types::Defn,
         check: &cranelisp_types::CheckResult,
     ) -> Result<(), CranelispError> {
-        let mut jit = Jit::new()?;
+        // Create JIT with platform symbols registered (if any platforms loaded).
+        let extra_symbols: Vec<(&str, *const u8)> = self
+            .platform_symbols
+            .iter()
+            .map(|(name, ptr)| (name.as_str(), *ptr))
+            .collect();
+        let mut jit = Jit::new_with_symbols(&extra_symbols)?;
 
         // Declare runtime intrinsics (Ring 1 heap infrastructure).
         jit.declare_intrinsics()?;
@@ -808,6 +883,92 @@ fn format_type_qualified_inner(
 /// use `format_result_value` which accepts `type_defs`.
 pub fn format_result(value: i64, ty: &Type) -> String {
     format_result_value(value, ty, &HashMap::new(), &HashMap::new())
+}
+
+/// Force an IO tree via the trampoline and format the inner result.
+///
+/// Side effects (printing, etc.) execute during the trampoline run and are
+/// flushed to stdout before this function returns the display string.
+/// The trampoline is wrapped in `catch_unwind` so a malformed IO tree
+/// does not crash the REPL session.
+///
+/// Returns a display string for the inner value with the full IO type
+/// annotation, e.g. `:(primitives/IO primitives/Int) 0`.
+fn force_io_and_format(
+    io_value: i64,
+    io_ty: &Type,
+    type_defs: &HashMap<TypeName, TypeDefInfo>,
+    type_modules: &HashMap<TypeName, ModuleFullPath>,
+    stdout: &mut impl Write,
+) -> String {
+    // Flush stdout before trampolining so any prior output appears first,
+    // and side-effect output (e.g., print) appears in order.
+    let _ = stdout.flush();
+
+    let trampoline_result = std::panic::catch_unwind(|| {
+        // SAFETY: io_value is a valid IO tree pointer produced by JIT code.
+        // The IO tree remains live because the caller holds the ReplResult
+        // which owns the i64 value, and the trampoline processes it
+        // synchronously before returning.
+        cranelisp_runtime::run_io_trampoline(io_value)
+    });
+
+    let inner_ty = io_ty.io_inner_type();
+    let type_str = format_type_qualified(io_ty, type_modules);
+
+    match trampoline_result {
+        Ok(inner_val) => {
+            let val_str = format_value_only(inner_val, &inner_ty, type_defs, type_modules);
+            format!(":{type_str} {val_str}")
+        }
+        Err(_) => {
+            format!(":{type_str} <IO trampoline panicked>")
+        }
+    }
+}
+
+/// Format just the value portion (without the leading `:Type` prefix).
+///
+/// This is used by `force_io_and_format` where the outer IO type is shown
+/// separately and we only need the inner value's textual representation.
+fn format_value_only(
+    value: i64,
+    ty: &Type,
+    type_defs: &HashMap<TypeName, TypeDefInfo>,
+    type_modules: &HashMap<TypeName, ModuleFullPath>,
+) -> String {
+    match ty {
+        Type::Bool => {
+            if value != 0 { "true".to_string() } else { "false".to_string() }
+        }
+        Type::Float => {
+            let f = f64::from_bits(value as u64);
+            let s = format!("{f}");
+            if s.contains('.') { s } else { format!("{s}.0") }
+        }
+        Type::Int => format!("{value}"),
+        Type::String => {
+            if value == 0 || (value as usize) < NULLARY_TAG_THRESHOLD {
+                format!("<invalid:{value}>")
+            } else {
+                let s = unsafe { cranelisp_runtime::read_string_as_str(value) };
+                format!("\"{s}\"")
+            }
+        }
+        Type::Fn(_, _) => "<closure>".to_string(),
+        Type::ADT(type_name, type_args) => {
+            // For nested ADTs, reuse the full format (it includes `:Type` prefix)
+            // and strip the prefix. This is simpler than duplicating ADT formatting.
+            let full = format_adt_value(value, type_name, type_args, type_defs, type_modules);
+            // format_adt_value returns `:Type value` — strip the `:Type ` prefix.
+            if let Some(pos) = full.find(' ') {
+                full[pos + 1..].to_string()
+            } else {
+                full
+            }
+        }
+        _ => format!("{value}"),
+    }
 }
 
 /// Format a constrained function's scheme for REPL display (spec §1.3).
@@ -1442,6 +1603,17 @@ fn eval_and_display(
             }
             let display = if let Some(ref def_display) = result.definition_display {
                 def_display.clone()
+            } else if result.ty.is_io() {
+                // IO expression: force the IO tree via trampoline, then
+                // display the inner result value. Side effects (prints, etc.)
+                // happen during the trampoline run.
+                force_io_and_format(
+                    result.value,
+                    &result.ty,
+                    session.type_defs(),
+                    session.type_modules(),
+                    stdout,
+                )
             } else {
                 format_result_value(
                     result.value,
@@ -2246,7 +2418,12 @@ fn format_entry_signature(
                 let type_str = format_type_qualified(&scheme.ty, &session.type_modules);
                 format!(":{type_str} {module}/{name}")
             };
-            let base = format!("{base} ; defn");
+            let classification = if matches!(kind.as_ref(), DefKind::Primitive { .. }) {
+                "primitive"
+            } else {
+                "defn"
+            };
+            let base = format!("{base} ; {classification}");
             append_docstring_comment(base, docstring.as_deref())
         }
         ModuleEntry::Constructor {
@@ -2634,18 +2811,21 @@ mod tests {
                         tag: 0,
                         fields: vec![],
                         docstring: None,
+                        internal: false,
                     },
                     ConstructorInfo {
                         name: Symbol::from("Green"),
                         tag: 1,
                         fields: vec![],
                         docstring: None,
+                        internal: false,
                     },
                     ConstructorInfo {
                         name: Symbol::from("Blue"),
                         tag: 2,
                         fields: vec![],
                         docstring: None,
+                        internal: false,
                     },
                 ],
                 docstring: None,
@@ -2685,6 +2865,7 @@ mod tests {
                         tag: 0,
                         fields: vec![],
                         docstring: None,
+                        internal: false,
                     },
                     ConstructorInfo {
                         name: Symbol::from("Some"),
@@ -2694,6 +2875,7 @@ mod tests {
                             ty: Type::Int,
                         }],
                         docstring: None,
+                        internal: false,
                     },
                 ],
                 docstring: None,
@@ -3088,6 +3270,7 @@ mod tests {
                         tag: 1,
                         fields: vec![],
                         docstring: None,
+                        internal: false,
                     },
                     scheme: Scheme { vars: vec![], constraints: HashMap::new(), ty: Type::Int },
                     visibility: Visibility::Public,
@@ -3153,5 +3336,57 @@ mod tests {
             classify_import(&session, &source),
             ImportClass::Fn
         ));
+    }
+
+    // IO type detection tests moved to cranelisp-types (Type::is_io, Type::io_inner_type)
+
+    // spec: 10-io §10.8.1 — force_io_and_format with Pure node
+    #[test]
+    fn test_force_io_and_format_pure_int() {
+        // Build a Pure(42) IO node manually.
+        let base = cranelisp_runtime::alloc_with_rc(16); // tag + value
+        unsafe {
+            *((base as isize + 16) as *mut i64) = cranelisp_platform::IO_TAG_PURE;
+            *((base as isize + 24) as *mut i64) = 42;
+        }
+        let io_ty = Type::ADT(TypeName::from("IO"), vec![Type::Int]);
+        let type_defs = HashMap::new();
+        let type_modules = HashMap::new();
+        let mut buf: Vec<u8> = Vec::new();
+
+        let display = force_io_and_format(
+            base as i64,
+            &io_ty,
+            &type_defs,
+            &type_modules,
+            &mut buf,
+        );
+        assert_eq!(display, ":(IO primitives/Int) 42");
+        cranelisp_runtime::heap_dealloc(base as i64);
+    }
+
+    // spec: 10-io §10.8.1 — force_io_and_format handles panic gracefully
+    #[test]
+    fn test_force_io_and_format_panic_recovery() {
+        // Build a node with an invalid tag.
+        let base = cranelisp_runtime::alloc_with_rc(16);
+        unsafe {
+            *((base as isize + 16) as *mut i64) = 99; // invalid tag
+            *((base as isize + 24) as *mut i64) = 0;
+        }
+        let io_ty = Type::ADT(TypeName::from("IO"), vec![Type::Int]);
+        let type_defs = HashMap::new();
+        let type_modules = HashMap::new();
+        let mut buf: Vec<u8> = Vec::new();
+
+        let display = force_io_and_format(
+            base as i64,
+            &io_ty,
+            &type_defs,
+            &type_modules,
+            &mut buf,
+        );
+        assert_eq!(display, ":(IO primitives/Int) <IO trampoline panicked>");
+        cranelisp_runtime::heap_dealloc(base as i64);
     }
 }

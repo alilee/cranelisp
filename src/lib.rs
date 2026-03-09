@@ -6,4 +6,5 @@
 pub mod expander;
 pub mod marshal;
 pub mod pipeline;
+pub mod platform;
 pub mod repl;

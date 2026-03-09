@@ -1,4 +1,4 @@
-# 3. Type System [R3 S9]
+# 3. Type System [Tested]
 
 This section defines the type system of Cranelisp: the set of types, the type inference algorithm, and the rules for type checking programs.
 
@@ -406,7 +406,7 @@ If a constrained function calls another constrained function, the inner call gen
 
 - **No constrained closures**: Closures that capture constrained functions are not supported.
 
-## 3.7 Higher-Kinded Types [R3 S9]
+## 3.7 Higher-Kinded Types [R3 S17]
 
 Cranelisp supports **type constructor parameters** in trait declarations. This enables abstractions over type constructors -- types that take type arguments to produce concrete types (e.g., `Option`, `List`).
 

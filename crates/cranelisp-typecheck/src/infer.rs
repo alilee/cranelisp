@@ -107,6 +107,39 @@ impl TypeChecker {
             });
         }
 
+        // Reject internal constructors (e.g. Bind) — they cannot be
+        // constructed by user code, only by compiler-generated primitives.
+        if self.is_internal_constructor(name) {
+            return Err(CranelispError::TypeError {
+                message: format!(
+                    "cannot construct internal type constructor '{name}'"
+                ),
+                span,
+            });
+        }
+
+        // Constrained polymorphic functions cannot be used as bare values
+        // (spec §3.6.6). They must be called with arguments so concrete
+        // types can be determined for monomorphisation.
+        if !self.in_call_position {
+            if let Some(entry) = self.resolve_entry_in_current_module(name) {
+                if let ModuleEntry::Def { kind, .. } = entry
+                    && matches!(
+                        kind.as_ref(),
+                        cranelisp_types::DefKind::UserFn { constrained_fn: Some(_) }
+                    )
+                {
+                    return Err(CranelispError::TypeError {
+                        message: format!(
+                            "constrained function '{name}' cannot be used as a value \
+                             — it must be called with arguments"
+                        ),
+                        span,
+                    });
+                }
+            }
+        }
+
         let ty = self.instantiate(&scheme);
         let resolved = self.apply_subst(&ty);
         self.record_expr_type(span, resolved.clone());
@@ -199,12 +232,25 @@ impl TypeChecker {
         args: &[Expr],
         span: Span,
     ) -> Result<Type, CranelispError> {
-        let callee_ty = self.infer_expr(callee)?;
+        // Mark callee as in call position so constrained fn references are allowed.
+        // Save/restore is stack-based: each nesting level preserves the outer value.
+        let prev_call_position = self.in_call_position;
+        self.in_call_position = true;
+        let callee_ty = self.infer_expr(callee);
+        self.in_call_position = prev_call_position;
+        let callee_ty = callee_ty?;
 
+        // Arguments are NOT in call position — a constrained fn passed as an
+        // argument (e.g., `(f add)`) must be rejected. Explicitly clear the flag
+        // to handle nested applications like `((f x) add)` where the outer
+        // save/restore leaves `in_call_position` true during inner arg inference.
+        let prev_for_args = self.in_call_position;
+        self.in_call_position = false;
         let mut arg_types = Vec::new();
         for arg in args {
             arg_types.push(self.infer_expr(arg)?);
         }
+        self.in_call_position = prev_for_args;
 
         let ret_ty = self.fresh_var();
 
@@ -259,8 +305,12 @@ impl TypeChecker {
                     if let Some(entry) = table.get(name_part) {
                         let terminal = self.resolve_to_terminal_entry(entry, 0)?;
                         if let ModuleEntry::Def { kind, .. } = terminal {
+                            // Return the JIT symbol name if specified (platform effects),
+                            // otherwise return the bare name.
+                            if let DefKind::Primitive { jit_name: Some(jit), .. } = kind.as_ref() {
+                                return Some(Symbol::from(jit.as_ref()));
+                            }
                             if matches!(kind.as_ref(), DefKind::Primitive { .. }) {
-                                // Return the bare name (JIT symbol), not the qualified form
                                 return Some(Symbol::from(name_part));
                             }
                         }
@@ -273,6 +323,11 @@ impl TypeChecker {
         // Unqualified name: resolve in current module
         let entry = self.resolve_entry_in_current_module(name)?;
         if let ModuleEntry::Def { kind, .. } = entry {
+            // Return the JIT symbol name if specified (platform effects),
+            // otherwise return the bare name.
+            if let DefKind::Primitive { jit_name: Some(jit), .. } = kind.as_ref() {
+                return Some(Symbol::from(jit.as_ref()));
+            }
             if matches!(kind.as_ref(), DefKind::Primitive { .. }) {
                 return Some(Symbol::from(name));
             }
@@ -428,6 +483,17 @@ impl TypeChecker {
         scrutinee_ty: &Type,
         span: Span,
     ) -> Result<(), CranelispError> {
+        // Reject internal constructors (e.g. Bind) in pattern matching.
+        // Internal constructors are implementation details not meant for user code.
+        if self.is_internal_constructor(name) {
+            return Err(CranelispError::TypeError {
+                message: format!(
+                    "cannot match on internal type constructor '{name}'"
+                ),
+                span,
+            });
+        }
+
         // Look up the constructor's scheme from the symbol table
         let ctor_scheme = self.lookup_constructor_scheme(name, span)?;
 
@@ -2071,5 +2137,118 @@ mod tests {
         let tc = tc();
         let result = tc.resolve_primitive_jit_name("quote-sexp");
         assert_eq!(result.as_deref(), Some("quote-sexp"));
+    }
+
+    // -----------------------------------------------------------------------
+    // B2: in_call_position scoping — args must NOT be in call position
+    // -----------------------------------------------------------------------
+
+    /// Register a constrained function "cfn" in the current module for testing.
+    fn register_constrained_fn(tc: &mut TypeChecker) {
+        use cranelisp_types::{ConstrainedFn, Defn};
+
+        let a_var = tc.fresh_var();
+        let a_id = match &a_var { Type::Var(id) => *id, _ => unreachable!() };
+        let fn_ty = Type::Fn(vec![a_var.clone(), a_var.clone()], Box::new(a_var));
+        let scheme = Scheme {
+            vars: vec![a_id],
+            constraints: {
+                let mut c = HashMap::new();
+                c.insert(a_id, vec![cranelisp_types::TraitName::from("Num")]);
+                c
+            },
+            ty: fn_ty,
+        };
+
+        // Bind in scope so infer_var finds it
+        tc.bind_local(Symbol::from("cfn"), scheme.clone());
+
+        // Register in module so the constrained_fn check finds it
+        tc.current_symbol_table_mut().insert(
+            Symbol::from("cfn"),
+            ModuleEntry::Def {
+                scheme: scheme.clone(),
+                visibility: Visibility::Public,
+                docstring: None,
+                param_names: vec![Symbol::from("x"), Symbol::from("y")],
+                kind: Box::new(cranelisp_types::DefKind::UserFn {
+                    constrained_fn: Some(Box::new(ConstrainedFn {
+                        defn: Defn {
+                            name: Symbol::from("cfn"),
+                            docstring: None,
+                            params: vec![Symbol::from("x"), Symbol::from("y")],
+                            param_annotations: vec![None, None],
+                            body: Expr::IntLit { value: 0, span: Span::SYNTHETIC },
+                            visibility: Visibility::Public,
+                            span: Span::SYNTHETIC,
+                        },
+                        scheme: scheme.clone(),
+                    })),
+                }),
+            },
+        );
+    }
+
+    // spec: 03-types §3.6.6 — constrained fn as argument in nested apply is rejected
+    #[test]
+    fn test_constrained_fn_rejected_as_arg_in_nested_apply() {
+        let mut tc = tc();
+        register_constrained_fn(&mut tc);
+
+        // Set up: (fn [f] f) as an identity function
+        tc.bind_local(
+            Symbol::from("id"),
+            Scheme {
+                vars: vec![],
+                ty: Type::Fn(
+                    vec![Type::Fn(vec![Type::Int, Type::Int], Box::new(Type::Int))],
+                    Box::new(Type::Fn(vec![Type::Int, Type::Int], Box::new(Type::Int))),
+                ),
+                constraints: HashMap::new(),
+            },
+        );
+
+        // (id cfn) — cfn is an argument, NOT in call position → should error
+        let expr = Expr::Apply {
+            callee: Box::new(Expr::Var {
+                name: Symbol::from("id"),
+                span: span(3000, 3002),
+            }),
+            args: vec![Expr::Var {
+                name: Symbol::from("cfn"),
+                span: span(3003, 3006),
+            }],
+            span: span(2999, 3007),
+        };
+
+        let err = tc.infer_expr(&expr).unwrap_err();
+        assert!(
+            err.message().contains("constrained function"),
+            "should reject constrained fn as argument, got: {}",
+            err.message()
+        );
+    }
+
+    // spec: 03-types §3.6.6 — constrained fn in call position of nested apply is allowed
+    #[test]
+    fn test_constrained_fn_allowed_in_call_position() {
+        let mut tc = tc();
+        register_constrained_fn(&mut tc);
+
+        // (cfn 1 2) — cfn is in call position → should succeed
+        let expr = Expr::Apply {
+            callee: Box::new(Expr::Var {
+                name: Symbol::from("cfn"),
+                span: span(3100, 3103),
+            }),
+            args: vec![
+                Expr::IntLit { value: 1, span: span(3104, 3105) },
+                Expr::IntLit { value: 2, span: span(3106, 3107) },
+            ],
+            span: span(3099, 3108),
+        };
+
+        // Should succeed (constrained fn in call position is allowed)
+        assert!(tc.infer_expr(&expr).is_ok());
     }
 }

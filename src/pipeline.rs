@@ -919,6 +919,22 @@ fn inject_prelude_import(
     tc.register_imports(&[import_spec])
 }
 
+/// Determine the process exit code from the already-unwrapped inner value.
+///
+/// The caller is responsible for extracting the inner value from any IO wrapper
+/// (via the trampoline) before calling this function. This function receives
+/// the unwrapped inner type, not the IO-wrapped type.
+///
+/// Per spec section 10.6.1:
+/// - If the inner type is `Int`, use the integer value as the exit code.
+/// - Otherwise, exit code is 0.
+pub fn determine_exit_code(value: i64, inner_ty: &Type) -> i32 {
+    match inner_ty {
+        Type::Int => value as i32,
+        _ => 0,
+    }
+}
+
 /// Compile a multi-file module graph and execute the entry point.
 ///
 /// Pipeline:
@@ -940,7 +956,32 @@ pub fn compile_module_graph(
     let mut tc = cranelisp_typecheck::TypeChecker::new();
     let mut expander = CraneliftExpander::new();
     let mut macro_jit_modules: Vec<cranelisp_backend::jit::Jit> = Vec::new();
-    let mut jit = cranelisp_backend::jit::Jit::new()?;
+
+    // Pre-scan entry module for (platform ...) declarations.
+    // Platform DLLs must be loaded before JIT creation so their function
+    // pointers are available as JIT symbols during compilation.
+    let mut loaded_platforms: Vec<crate::platform::LoadedPlatform> = Vec::new();
+    let mut platform_jit_symbols: Vec<(String, *const u8)> = Vec::new();
+
+    let entry_node = &graph.nodes[&graph.entry];
+    let platform_names = scan_for_platform_decls(entry_node)?;
+    for (name, span) in &platform_names {
+        let (platform, jit_syms) = crate::platform::load_and_register_platform(
+            &mut tc,
+            name,
+            &graph.project_root,
+            *span,
+        )?;
+        platform_jit_symbols.extend(jit_syms);
+        loaded_platforms.push(platform);
+    }
+
+    // Create the JIT with platform symbols registered (if any).
+    let extra_symbols: Vec<(&str, *const u8)> = platform_jit_symbols
+        .iter()
+        .map(|(name, ptr)| (name.as_str(), *ptr))
+        .collect();
+    let mut jit = cranelisp_backend::jit::Jit::new_with_symbols(&extra_symbols)?;
     jit.declare_intrinsics()?;
 
     let mut all_func_sigs: Vec<(cranelisp_types::Symbol, usize)> = Vec::new();
@@ -983,6 +1024,10 @@ pub fn compile_module_graph(
         if !structure.import_specs.is_empty() {
             tc.register_imports(&structure.import_specs)?;
         }
+
+        // Filter out (platform ...) forms — they were handled during pre-scan.
+        // The AST builder rejects platform forms, so they must be removed.
+        let remaining_sexps = filter_platform_forms(remaining_sexps);
 
         // Phase 3: Process forms (defmacro compilation happens here, needs imports).
         let program = process_forms_sequentially(
@@ -1033,8 +1078,18 @@ pub fn compile_module_graph(
         let entry_ptr = jit.get_ptr_by_name(name, 0)?;
         // SAFETY: compiled code was just generated and finalized by our JIT.
         let func: extern "C" fn() -> i64 = unsafe { std::mem::transmute(entry_ptr) };
-        let value = func();
-        (value, entry_result_type)
+        let raw_value = func();
+
+        if entry_result_type.is_io() {
+            // Force the IO tree via the runtime trampoline.
+            // SAFETY: raw_value is a valid IO tree pointer (Pure/Effect/Bind node).
+            // The tree remains live because raw_value holds the reference.
+            let inner_value = cranelisp_runtime::run_io_trampoline(raw_value);
+            let inner_type = entry_result_type.io_inner_type();
+            (inner_value, inner_type)
+        } else {
+            (raw_value, entry_result_type)
+        }
     } else {
         (0, Type::Int)
     };
@@ -1057,6 +1112,47 @@ fn has_compilable_defns(program: &[cranelisp_types::TopLevel]) -> bool {
     program.iter().any(|tl| matches!(tl, TopLevel::Defn(_) | TopLevel::DefnMulti { .. } | TopLevel::TraitImpl(_)))
 }
 
+/// Scan a module node's source for `(platform name)` declarations.
+///
+/// Parses the source file and returns all platform declaration names
+/// with their spans. These are extracted at the pipeline level (not
+/// the frontend's `extract_module_declarations`) to keep platform
+/// loading in the integration layer.
+fn scan_for_platform_decls(
+    node: &ModuleNode,
+) -> Result<Vec<(String, Span)>, CranelispError> {
+    let source = std::fs::read_to_string(&node.file_path).map_err(|e| {
+        CranelispError::ModuleError {
+            message: format!("cannot read '{}': {}", node.file_path.display(), e),
+            file: Some(node.file_path.clone()),
+            span: Span::SYNTHETIC,
+        }
+    })?;
+
+    let sexps = cranelisp_frontend::parse(&source)?;
+    let mut platform_decls = Vec::new();
+
+    for sexp in &sexps {
+        if let Some((name, span)) = crate::platform::extract_platform_name(sexp) {
+            platform_decls.push((name, span));
+        }
+    }
+
+    Ok(platform_decls)
+}
+
+/// Filter out `(platform ...)` forms from a list of sexps.
+///
+/// Platform declarations are processed during pre-scan, before the
+/// compilation loop. The remaining sexps must not contain them since
+/// the AST builder rejects `(platform ...)`.
+fn filter_platform_forms(sexps: Vec<Sexp>) -> Vec<Sexp> {
+    sexps
+        .into_iter()
+        .filter(|s| !crate::platform::is_platform_form(s))
+        .collect()
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -1064,6 +1160,23 @@ fn has_compilable_defns(program: &[cranelisp_types::TopLevel]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // --- IO type detection (now on Type methods, tested in cranelisp-types) ---
+
+    // spec: 10-io §10.6.1 — determine_exit_code for Int result
+    #[test]
+    fn test_determine_exit_code_int() {
+        assert_eq!(determine_exit_code(0, &Type::Int), 0);
+        assert_eq!(determine_exit_code(42, &Type::Int), 42);
+        assert_eq!(determine_exit_code(1, &Type::Int), 1);
+    }
+
+    // spec: 10-io §10.6.1 — determine_exit_code for non-Int result
+    #[test]
+    fn test_determine_exit_code_non_int() {
+        assert_eq!(determine_exit_code(42, &Type::String), 0);
+        assert_eq!(determine_exit_code(42, &Type::Bool), 0);
+    }
 
     // --- Single-file pipeline tests (existing) ---
 
