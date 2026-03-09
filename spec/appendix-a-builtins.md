@@ -94,15 +94,20 @@ Extern primitives are called via the foreign function interface.
 | Function | Type | Description |
 |---|---|---|
 | `str-concat` | `(Fn [String String] String)` | Concatenate two strings | [Tested tests/ring1.rs::string_concat]
+| `str-eq` | `(Fn [String String] Bool)` | String equality (byte-wise) | [Tested tests/ring1.rs::string_eq_true]
+| `str-len` | `(Fn [String] Int)` | String length in bytes | [Tested tests/ring1.rs::string_len]
 | `parse-int` | `(Fn [String] (Option Int))` | Parse decimal integer; `None` on failure | [Tested tests/ring1.rs::parse_int_valid]
-
-<!-- FIXME(/spec): U1.1 — DEFERRED. 11 additional string primitives needed for stdlib
-     text/string.cl: substring, char-at, split, join, replace, trim, starts-with?,
-     ends-with?, contains?, to-upper, to-lower. These are straightforward extern primitives
-     wrapping Rust str methods, but text/string.cl is not yet scheduled in any sprint.
-     Add to this table with appropriate ring/sprint annotations when text/string.cl is
-     scheduled for implementation. Source: /stdlib plan-stdlib.md §14.
-     Deferred: Sprint 12 (3x deferred from S9). -->
+| `substring` | `(Fn [String Int Int] String)` | Extract substring from start (inclusive) to end (exclusive); clamps out-of-bounds indices | [R3 S14]
+| `char-at` | `(Fn [String Int] String)` | Character at byte index as single-character string; empty string if out of bounds | [R3 S14]
+| `split` | `(Fn [String String] (Vec String))` | Split string by separator | [R3 S14]
+| `join` | `(Fn [String (Vec String)] String)` | Join strings with separator | [R3 S14]
+| `replace` | `(Fn [String String String] String)` | Replace all occurrences of `from` with `to` | [R3 S14]
+| `trim` | `(Fn [String] String)` | Trim leading and trailing whitespace | [R3 S14]
+| `starts-with?` | `(Fn [String String] Bool)` | Test if string starts with prefix | [R3 S14]
+| `ends-with?` | `(Fn [String String] Bool)` | Test if string ends with suffix | [R3 S14]
+| `contains?` | `(Fn [String String] Bool)` | Test if string contains substring | [R3 S14]
+| `to-upper` | `(Fn [String] String)` | Convert to uppercase | [R3 S14]
+| `to-lower` | `(Fn [String] String)` | Convert to lowercase | [R3 S14]
 
 **Macro support**:
 

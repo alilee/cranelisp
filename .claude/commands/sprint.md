@@ -68,9 +68,23 @@ You are NOT a technical authority. `/arch` decides how to build things. `/qa` de
 When `/sprint` identifies that a file needs changing, the correct action is to:
 1. Record the finding in SPRINT.md Notes
 2. Create or update a task assigning the change to the owning skill
-3. Recommend the user invoke the owning skill
+3. Recommend the user invoke the owning skill — OR delegate via subagent (see below)
 
-Even when the change seems trivial or mechanical, `/sprint` delegates — it does not execute.
+Even when the change seems trivial or mechanical, `/sprint` delegates — it does not execute directly.
+
+### Minor FIXME Delegation via Subagent
+
+For well-defined, mechanical FIXMEs that would otherwise block sprint close (e.g. "add these entries to a spec table", "remove stale FIXME comments from test files"), `/sprint` MAY delegate resolution to a subagent running under the owning skill's authority. This avoids requiring the user to manually invoke each skill for minor cleanups.
+
+**When to delegate**: The FIXME is (a) well-scoped — the exact change needed is clear, (b) mechanical — no design judgment required, (c) owned by a single skill, and (d) blocking sprint close or creating stale debt.
+
+**How to delegate**: Use the Agent tool to spawn a subagent. The prompt MUST:
+1. State the skill role the subagent operates under (e.g. "You are `/spec`")
+2. Reference the skill definition file so the subagent reads and adopts the role
+3. Describe the specific FIXME and the exact change needed
+4. Instruct the subagent to read the target file, make the change, and remove the FIXME comment
+
+**When NOT to delegate**: The change requires design judgment, affects multiple files across skill boundaries, or the owning skill might reasonably disagree with the proposed resolution. In these cases, recommend user invocation as before.
 
 ## Early Engagement
 
