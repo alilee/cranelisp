@@ -1,124 +1,39 @@
 ;; prelude.cl — Standard prelude for Cranelisp
 ;;
-;; Loaded implicitly for all non-prelude modules. Provides:
-;; - Core types (Option)
-;; - Core traits (Num, Eq, Ord, Display) with impls for primitive types
-;; - Convenience macros (do, cond, list, str, case, ->, ->>, def, bind!, etc.)
+;; Loaded implicitly for all non-prelude modules. Re-exports from domain
+;; modules plus convenience macros defined inline.
 ;;
-;; The prelude is self-contained — no external module dependencies — to avoid
-;; a pipeline limitation where submodules cannot access primitives during
-;; prelude loading.
+;; Domain modules (traits, types, macros):
+;;   compare.eq     — Eq trait + impls
+;;   compare.ord    — Ord trait + impls
+;;   num.num        — Num trait + impls
+;;   text.display   — Display trait + impls
+;;   fn.option      — Option type
+;;   fn.result      — Result type
+;;   fn.threading   — ->, ->> macros
+;;
+;; Most macros remain inline because they are small or used by the prelude
+;; itself. Larger macros (threading) are in dedicated modules.
 ;;
 ;; Spec references: 07-traits.md §7.1-7.4, 09-macros.md §9.5, §9.6, §9.10
 
-;; FIXME(/int): Three pipeline bugs prevent full prelude functionality:
-;;
-;; 1. SUBMODULE PRIMITIVE SEEDING: Modules created during load_prelude don't
-;;    get primitives seeded from `user`. set_current_module works correctly in
-;;    compile_module_graph but not in load_prelude. Until fixed, the prelude
-;;    must be a single file with no submodule dependencies.
-;;
-;; 2. PRELUDE IMPORT TARGET: load_prelude's register_imports (prelude [*]) runs
-;;    while tc.current_module is "prelude" (last module in toposort), not "user".
-;;    The import goes into prelude (self-import, no-op) instead of user. Prelude
-;;    symbols never reach the user module. Fix: switch tc.current_module to "user"
-;;    before the register_imports call in load_prelude, or do the import in the
-;;    caller (new_with_prelude / compile_module_graph) after switching to user.
-;;
-;; 3. RECURSIVE TYPES: (deftype (List a) Nil (Cons [:a head :(List a) tail]))
-;;    fails with "unknown type: List" — the type name isn't registered before
-;;    constructor fields are resolved. Until fixed, List is omitted from prelude.
+;; ── Domain module imports (traits + types + macros) ────────────────────
+
+(import [compare.eq [Eq = !=]])
+(import [compare.ord [Ord < > <= >=]])
+(import [num.num [Num + - * /]])
+(import [text.display [Display show]])
+(import [fn.option [Option Some None]])
+(import [fn.result [Result Ok Err]])
+(import [fn.threading [-> ->>]])
+(import [collections.list [List Nil Cons empty?]])
+
+;; ── Macro dependencies ─────────────────────────────────────────────────
 
 (import [macros [SexpSym SexpStr SexpInt SexpFloat SexpBool SexpList SexpBracket
                  SCons SNil Sexp SList]])
 
-;; ── Core types ───────────────────────────────────────────────────────────
-
-(deftype (Option a) None (Some [:a val]))
-
-;; List omitted — blocked by recursive type bug (see FIXME 3 above).
-;; (deftype (List a) Nil (Cons [:a head :(List a) tail]))
-
-;; ── Traits: Num ──────────────────────────────────────────────────────────
-
-(deftrait Num
-  (+ [self self] self)
-  (- [self self] self)
-  (* [self self] self)
-  (/ [self self] self))
-
-(impl Num Int
-  (defn + [a b] (add-i64 a b))
-  (defn - [a b] (sub-i64 a b))
-  (defn * [a b] (mul-i64 a b))
-  (defn / [a b] (div-i64 a b)))
-
-(impl Num Float
-  (defn + [a b] (add-f64 a b))
-  (defn - [a b] (sub-f64 a b))
-  (defn * [a b] (mul-f64 a b))
-  (defn / [a b] (div-f64 a b)))
-
-;; ── Traits: Eq ───────────────────────────────────────────────────────────
-
-(deftrait Eq
-  (= [self self] Bool)
-  (!= [self self] Bool))
-
-(impl Eq Int
-  (defn = [a b] (eq-i64 a b))
-  (defn != [a b] (not (eq-i64 a b))))
-
-(impl Eq Float
-  (defn = [a b] (eq-f64 a b))
-  (defn != [a b] (not (eq-f64 a b))))
-
-(impl Eq Bool
-  (defn = [a b] (eq-bool a b))
-  (defn != [a b] (not (eq-bool a b))))
-
-(impl Eq String
-  (defn = [a b] (str-eq a b))
-  (defn != [a b] (not (str-eq a b))))
-
-;; ── Traits: Ord ──────────────────────────────────────────────────────────
-
-(deftrait Ord
-  (< [self self] Bool)
-  (> [self self] Bool)
-  (<= [self self] Bool)
-  (>= [self self] Bool))
-
-(impl Ord Int
-  (defn < [a b] (lt-i64 a b))
-  (defn > [a b] (gt-i64 a b))
-  (defn <= [a b] (le-i64 a b))
-  (defn >= [a b] (ge-i64 a b)))
-
-(impl Ord Float
-  (defn < [a b] (lt-f64 a b))
-  (defn > [a b] (gt-f64 a b))
-  (defn <= [a b] (le-f64 a b))
-  (defn >= [a b] (ge-f64 a b)))
-
-;; ── Traits: Display ──────────────────────────────────────────────────────
-
-(deftrait Display
-  (show [self] String))
-
-(impl Display Int
-  (defn show [x] (int-to-string x)))
-
-(impl Display Float
-  (defn show [x] (float-to-string x)))
-
-(impl Display Bool
-  (defn show [x] (bool-to-string x)))
-
-(impl Display String
-  (defn show [x] x))
-
-;; ── Group A: No helper dependencies ──────────────────────────────────────
+;; ── Group A: No helper dependencies ────────────────────────────────────
 
 (defmacro vec "Construct a vec from elements" [&elems]
   (SexpBracket elems))
@@ -126,7 +41,7 @@
 (defmacro when "Conditional with implicit None else branch" [test body]
   `(if ~test ~body None))
 
-;; ── Group B: Need quote-sexp primitive ───────────────────────────────────
+;; ── Group B: Need quote-sexp primitive ─────────────────────────────────
 
 (defmacro const "Define a named constant (bare symbol expansion)" [name value]
   `(defmacro ~name [] ~(quote-sexp value)))
@@ -134,7 +49,7 @@
 (defmacro const- "Define a private named constant" [name value]
   `(defmacro- ~name [] ~(quote-sexp value)))
 
-;; ── Group C: Need sconcat (via ~@), multi-clause dispatch ────────────────
+;; ── Group C: Need sconcat (via ~@), multi-clause dispatch ──────────────
 
 (defmacro do "Sequence expressions, return last value"
   ([x] x)
@@ -144,39 +59,25 @@
   ([x] x)
   ([x body &rest] `(if ~x ~body (cond ~@rest))))
 
-;; list macro omitted — blocked by recursive type bug (see FIXME 3 above).
-;; (defmacro list ([] `Nil) ([x &rest] `(Cons ~x (list ~@rest))))
+(defmacro list "Construct a list from elements"
+  ([] `Nil)
+  ([x &rest] `(Cons ~x (list ~@rest))))
 
 (defmacro str "Concatenate string representations of all arguments"
   ([] (SexpStr ""))
   ([x] `(show ~x))
   ([x &rest] `(str-concat (show ~x) (str ~@rest))))
 
-;; ── Group D: Need sconcat + manual Sexp construction ─────────────────────
+;; ── Group D: Need sconcat + manual Sexp construction ───────────────────
 
 (defmacro case "Dispatch on value equality with mandatory default"
   ([expr x] `(let [__case__ ~expr] ~x))
   ([expr x body &rest]
     `(let [__case__ ~expr] (if (= __case__ ~x) ~body (case __case__ ~@rest)))))
 
-(defmacro -> "Thread value through forms as first argument"
-  ([x] x)
-  ([x form &rest]
-    (match form
-      [(SexpList items)
-         (match items
-           [(SCons hd tl) `(-> ~(SexpList (SCons hd (SCons x tl))) ~@rest)
-            SNil `(-> ~x ~@rest)])
-       _ `(-> ~(SexpList (SCons form (SCons x SNil))) ~@rest)])))
+;; -> and ->> threading macros are in fn.threading (imported above)
 
-(defmacro ->> "Thread value through forms as last argument"
-  ([x] x)
-  ([x form &rest]
-    (match form
-      [(SexpList items) `(->> ~(SexpList (macros/sconcat items (SCons x SNil))) ~@rest)
-       _ `(->> ~(SexpList (SCons form (SCons x SNil))) ~@rest)])))
-
-;; ── Group E: Need begin splicing + defmacro-in-results ───────────────────
+;; ── Group E: Need begin splicing + defmacro-in-results ─────────────────
 
 ;; def and def- inline the name-mangling (append "-def" to symbol name)
 ;; rather than calling a separate make-def-name helper, because defn-defined
@@ -200,7 +101,7 @@
          (defmacro- ~name [] (macros/SexpList (macros/SCons ~(quote-sexp impl-name) macros/SNil)))))
      _ name]))
 
-;; ── Group F: Deferred to Ring 4 (IO model needed for testing) ────────────
+;; ── Group F: Deferred to Ring 4 (IO model needed for testing) ──────────
 
 (defmacro bind! "Monadic bind sugar"
   ([[] body] body)

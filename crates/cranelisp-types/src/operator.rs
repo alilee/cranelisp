@@ -228,6 +228,79 @@ pub fn ring1_primitives() -> Vec<PrimitiveDef> {
             cranelift_op: "parse-int",
             param_names: vec![Symbol::from("s")],
         },
+        // --- Ring 1 extended string primitives ---
+        PrimitiveDef {
+            name: Symbol::from("substring"),
+            ty: Type::Fn(vec![Type::String, Type::Int, Type::Int], Box::new(Type::String)),
+            cranelift_op: "substring",
+            param_names: vec![Symbol::from("s"), Symbol::from("start"), Symbol::from("end")],
+        },
+        PrimitiveDef {
+            name: Symbol::from("char-at"),
+            ty: Type::Fn(vec![Type::String, Type::Int], Box::new(Type::String)),
+            cranelift_op: "char-at",
+            param_names: vec![Symbol::from("s"), Symbol::from("idx")],
+        },
+        PrimitiveDef {
+            name: Symbol::from("split"),
+            ty: Type::Fn(
+                vec![Type::String, Type::String],
+                Box::new(Type::ADT(TypeName::from("Vec"), vec![Type::String])),
+            ),
+            cranelift_op: "split",
+            param_names: vec![Symbol::from("s"), Symbol::from("sep")],
+        },
+        PrimitiveDef {
+            name: Symbol::from("join"),
+            ty: Type::Fn(
+                vec![Type::String, Type::ADT(TypeName::from("Vec"), vec![Type::String])],
+                Box::new(Type::String),
+            ),
+            cranelift_op: "join",
+            param_names: vec![Symbol::from("sep"), Symbol::from("parts")],
+        },
+        PrimitiveDef {
+            name: Symbol::from("replace"),
+            ty: Type::Fn(vec![Type::String, Type::String, Type::String], Box::new(Type::String)),
+            cranelift_op: "replace",
+            param_names: vec![Symbol::from("s"), Symbol::from("from"), Symbol::from("to")],
+        },
+        PrimitiveDef {
+            name: Symbol::from("trim"),
+            ty: Type::Fn(vec![Type::String], Box::new(Type::String)),
+            cranelift_op: "trim",
+            param_names: vec![Symbol::from("s")],
+        },
+        PrimitiveDef {
+            name: Symbol::from("starts-with?"),
+            ty: Type::Fn(vec![Type::String, Type::String], Box::new(Type::Bool)),
+            cranelift_op: "starts-with?",
+            param_names: vec![Symbol::from("s"), Symbol::from("prefix")],
+        },
+        PrimitiveDef {
+            name: Symbol::from("ends-with?"),
+            ty: Type::Fn(vec![Type::String, Type::String], Box::new(Type::Bool)),
+            cranelift_op: "ends-with?",
+            param_names: vec![Symbol::from("s"), Symbol::from("suffix")],
+        },
+        PrimitiveDef {
+            name: Symbol::from("contains?"),
+            ty: Type::Fn(vec![Type::String, Type::String], Box::new(Type::Bool)),
+            cranelift_op: "contains?",
+            param_names: vec![Symbol::from("s"), Symbol::from("needle")],
+        },
+        PrimitiveDef {
+            name: Symbol::from("to-upper"),
+            ty: Type::Fn(vec![Type::String], Box::new(Type::String)),
+            cranelift_op: "to-upper",
+            param_names: vec![Symbol::from("s")],
+        },
+        PrimitiveDef {
+            name: Symbol::from("to-lower"),
+            ty: Type::Fn(vec![Type::String], Box::new(Type::String)),
+            cranelift_op: "to-lower",
+            param_names: vec![Symbol::from("s")],
+        },
     ]
 }
 

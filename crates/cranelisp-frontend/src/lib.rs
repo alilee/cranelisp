@@ -17,7 +17,7 @@ pub mod defmacro;
 use cranelisp_types::{CranelispError, MacroExpander, Program, ReplInput, Sexp};
 
 pub use module_extract::extract_module_declarations;
-pub use quasiquote::expand_quasiquotes;
+pub use quasiquote::{expand_quasiquotes, next_synthetic_span};
 pub use defmacro::{
     is_defmacro, is_begin, flatten_begin, parse_defmacro, parse_macro_params,
     synthesize_macro_clause_defn, DefmacroInfo, MacroClause,

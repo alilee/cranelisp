@@ -82,10 +82,11 @@ The REPL process `chdir`s into this directory, so `.cache` artifacts and any oth
 | `first-session.demo` | 0–3 | Learner progression: evaluate, define, inspect, mistakes, recover |
 | `ring0.demo` | 0 | Arithmetic, booleans, let, if, defn, recursion, TCO |
 | `ring1.demo` | 1 | Strings, ADTs, pattern matching, closures, higher-order, Vecs |
-| `ring2a.demo` | 2A | Trait-dispatched operators, float dispatch, deftrait, constrained polymorphism, default methods |
-| `ring2b.demo` | 2B | String equality, Display trait, user-defined impls, constrained polymorphism |
-| `ring3.demo` | 3 | Macros: defmacro, quasiquote, multi-clause, splice, prelude macros, /expand |
-<!-- FIXME(/repl): Add exemplar-progress.demo and stdlib-progress.demo to this table. exemplar-progress.demo: Ring 3, "Exemplar progress: Sudoku domain ADTs, backtracking solver, Display trait, grid display". stdlib-progress.demo: check its content and add appropriate description. -->
+| `ring2a.demo` | 2A | Prelude discovery, trait-dispatched operators, float dispatch, docstrings, deftrait/impl, constrained polymorphism |
+| `ring2b.demo` | 2B | Display trait, string equality, user-defined types + Display impl, constrained polymorphism across traits |
+| `ring3.demo` | 3 | Macros & metaprogramming: defmacro with docstrings, multi-clause macros, prelude macros (case/cond/str), string primitives, threading macros with /expand |
+| `exemplar-progress.demo` | 3 | Exemplar: Sudoku domain types (ADTs), grid geometry, 4x4 backtracking solver with formatted output |
+| `stdlib-progress.demo` | 3 | Prelude vocabulary: trait-dispatched operators, constrained polymorphism, Option/Result matching, string ops, compose, threading |
 
 Each sprint, `/repl` extends this library:
 - **Ring 4**: IO, platforms, full REPL experience (slash commands, trace, run-tests)
@@ -104,6 +105,6 @@ Decision 17 (eliminating bespoke compiler-seeded trait registration) was resolve
 
 - Keep demos short (20–40 lines of input) — they should be watchable in 2–3 minutes
 - Build a narrative: introduce a concept, show it, combine with previous concepts
-- Use comments to set up each section — the viewer should understand what's coming
+- **Use REPL discoverability to introduce new features.** When a demo uses a feature for the first time, let the viewer discover it through the REPL — type the name, see its type/description, then use it. For example, ring2a introduces `+` which comes from the prelude: run `/l` to see what's available, type `+` to see it's `Num.+`, type `Num` to see the trait. The REPL's self-documenting output sets up each section, not the demo author's comments. Comments are section breaks at most.
 - End with something satisfying — a composition of features that feels powerful
 - Each ring's demo should be self-contained (doesn't depend on previous demos)

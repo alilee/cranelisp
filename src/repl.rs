@@ -8,9 +8,44 @@
 // pre-input snapshot so the session remains usable.
 //
 // No `unwrap()` in this module -- all errors use `?`.
+//
+// FIXME(/int): Universal output format (repl/spec.md §1.1, S14) — major rework needed:
+//
+// 1. special_form_feedback(): Add classification comment suffix to ALL outputs:
+//    - Functions: `:Type module/name ; defn - docstring`
+//    - Constructors: `:Type module/Type.Ctor ; deftype`
+//    - Types: `:module/Type ; deftype` + related symbols (match: ctors, impl: traits)
+//    - Traits: `:module/Trait ; deftrait` + related symbols (defn: methods, impl: types)
+//    - Special forms: `:Type name ; special form - description`
+//    - Macros: `:module/name ; defmacro` + clause signatures (`; [params] -> Sexp`)
+//    - Primitives: currently skipped (DefKind::Primitive returns None) — MUST show as defn
+//    - Trait methods: use `Trait.method` dot notation (e.g. `core.num/Num.+`)
+//    - Builtin types (Int, Bool, Float, String): `:primitives/Type ; type` + impl: section
+//
+// 2. handle_list(): Align with spec §3.3:
+//    - Remove special_forms category (belongs on /imports)
+//    - Remove imports category (belongs on /imports)
+//    - Include constructors in Types category
+//    - Print `(no definitions)` for empty module
+//    - Change filter from substring to prefix match (case-insensitive)
+//    - Category order: Modules, Macros, Traits, Types, Fns
+//
+// 3. handle_imports(): Align with spec §3.4:
+//    - ADD special forms category (always present)
+//    - Include Reexport entries (not just Import)
+//    - Per-source-module filter: `/imports modulename` → `From module:` groups
+//    - Unfiltered: organize by category (Macros, Traits, Types, Fns)
+//
+// 4. /exports: New command (spec §3.5) — resolve module, list public symbols by category
+//
+// 5. Macro display: Replace `name :: macro` format with universal format:
+//    `:module/name ; defmacro` + `; [params] -> Sexp` clause lines
+//    Affects: defmacro definition response, /info, /sig, /doc, bare symbol lookup
+//
 
 use std::collections::HashMap;
 use std::io::{self, BufRead, Write};
+use std::time::{Duration, Instant};
 
 use cranelisp_backend::got::ModuleCodegenState;
 use cranelisp_backend::heap::{HeapAdt, HeapVec};
@@ -37,6 +72,9 @@ pub struct ReplResult {
     /// Override display string for definitions (deftrait, impl, constrained fn).
     /// When present, `format_repl_display` uses this instead of `format_result_value`.
     pub definition_display: Option<String>,
+    /// Time spent executing the compiled function pointer (excludes compilation).
+    /// The caller can compute compile time as `total_elapsed - eval_duration`.
+    pub eval_duration: Duration,
 }
 
 /// Persistent REPL session state.
@@ -136,6 +174,7 @@ impl ReplSession {
                 is_definition: true,
                 warnings: Vec::new(),
                 definition_display: None,
+                eval_duration: Duration::ZERO,
             });
         }
 
@@ -174,6 +213,22 @@ impl ReplSession {
             return self.eval_defmacro(&sexp);
         }
 
+        // Step 1b: Check for import — intercept before AST building.
+        // Import forms must be handled here because the AST builder does not
+        // accept (import ...) — it expects module declarations to be extracted
+        // before AST construction. In the REPL, imports are entered interactively.
+        if is_import_form(&sexp) {
+            return self.eval_import(sexp);
+        }
+
+        // Step 1c: Check for bare symbols that need introspection display.
+        // Non-zero-arg macro names show their signature (instead of failing
+        // with "no matching clause"). Special forms show their description
+        // (instead of erroring in the typechecker).
+        if let Some(result) = self.check_bare_symbol_introspection(&sexp) {
+            return Ok(result);
+        }
+
         // Step 2: Expand macros in the sexp.
         let expanded = self.expander.expand_sexp(sexp)?;
 
@@ -196,6 +251,10 @@ impl ReplSession {
         for form in forms {
             if cranelisp_frontend::is_defmacro(&form) {
                 last_result = Some(self.eval_defmacro(&form)?);
+                continue;
+            }
+            if is_import_form(&form) {
+                last_result = Some(self.eval_import(form)?);
                 continue;
             }
 
@@ -263,6 +322,101 @@ impl ReplSession {
             is_definition: true,
             warnings: Vec::new(),
             definition_display: Some(display),
+            eval_duration: Duration::ZERO,
+        })
+    }
+
+    /// Check if a sexp is a bare symbol that should show introspection info
+    /// instead of being evaluated.
+    ///
+    /// Intercepts:
+    /// - Non-zero-arg macros: show signature (zero-arg macros expand normally)
+    /// - Special forms: show description (they have no value semantics)
+    ///
+    /// Does NOT intercept:
+    /// - Constructors, functions, imports: these have value semantics
+    /// - Zero-arg macros: the expander handles these
+    fn check_bare_symbol_introspection(&self, sexp: &Sexp) -> Option<ReplResult> {
+        let name = match sexp {
+            Sexp::Symbol(name, _) => name,
+            _ => return None,
+        };
+
+        // Look up the symbol in the current module's symbol table.
+        let entry = self.tc.symbol_table().get(name.as_str())?;
+        match entry {
+            ModuleEntry::Macro { clauses, .. } => {
+                // Check if any clause accepts zero args — if so, let the
+                // expander handle it (it's a valid zero-arg macro call).
+                let has_zero_arg_clause = clauses.iter().any(|c| {
+                    c.params.is_empty() && c.rest_param.is_none()
+                });
+                if has_zero_arg_clause {
+                    return None; // Let expander handle zero-arg expansion.
+                }
+                // Non-zero-arg macro: show signature info.
+                let display = format_macro_signature(name, clauses);
+                Some(ReplResult {
+                    value: 0,
+                    ty: Type::Int,
+                    is_definition: true,
+                    warnings: Vec::new(),
+                    definition_display: Some(display),
+                    eval_duration: Duration::ZERO,
+                })
+            }
+            ModuleEntry::Def { kind, .. } => {
+                // Special forms have no value semantics — show description.
+                if let DefKind::SpecialForm { description } = kind.as_ref() {
+                    let display = format_special_form_display(name, description);
+                    Some(ReplResult {
+                        value: 0,
+                        ty: Type::Int,
+                        is_definition: true,
+                        warnings: Vec::new(),
+                        definition_display: Some(display),
+                        eval_duration: Duration::ZERO,
+                    })
+                } else {
+                    None // Regular function — let it evaluate normally.
+                }
+            }
+            _ => None,
+        }
+    }
+
+    /// Process an import form in the REPL.
+    ///
+    /// Parses the import sexp using `extract_module_declarations` and registers
+    /// the resulting import specs in the typechecker's symbol table.
+    fn eval_import(&mut self, sexp: Sexp) -> Result<ReplResult, CranelispError> {
+        let module = self.tc.current_module_path().clone();
+        let (structure, _remaining) =
+            cranelisp_frontend::extract_module_declarations(module, None, vec![sexp])?;
+
+        if !structure.import_specs.is_empty() {
+            self.tc.register_imports(&structure.import_specs)?;
+        }
+
+        // Build display: "imported N names from module1, module2, ..."
+        let mod_names: Vec<String> = structure
+            .import_specs
+            .iter()
+            .map(|s| s.module_path.to_string())
+            .collect();
+        let display = if mod_names.is_empty() {
+            "import: no names".to_string()
+        } else {
+            format!("imported from {}", mod_names.join(", "))
+        };
+
+        Ok(ReplResult {
+            value: 0,
+            ty: Type::Int,
+            is_definition: true,
+            warnings: Vec::new(),
+            definition_display: Some(display),
+            eval_duration: Duration::ZERO,
         })
     }
 
@@ -297,18 +451,25 @@ impl ReplSession {
         // the expression (Gap 4: REPL constrained-poly path).
         self.compile_mono_defns(check_result)?;
 
-        let value = cranelisp_backend::compile_and_run_expr_with_got(
+        let compiled = cranelisp_backend::compile_expr_with_got(
             expr,
             &check,
             CompileMode::Interactive,
             Some(&mut self.got_state),
         )?;
+
+        // Time the actual evaluation (function call) separately from compilation.
+        let eval_start = Instant::now();
+        let value = compiled.execute();
+        let eval_duration = eval_start.elapsed();
+
         Ok(ReplResult {
             value,
             ty: check_result.ty.clone(),
             is_definition: false,
             warnings: check_result.warnings.clone(),
             definition_display: None,
+            eval_duration,
         })
     }
 
@@ -331,7 +492,8 @@ impl ReplSession {
         }
 
         // For defn, execute if it's zero-arg, otherwise return 0.
-        let value = if defn.params.is_empty() && !is_constrained {
+        // Time the execution separately from compilation.
+        let (value, eval_duration) = if defn.params.is_empty() && !is_constrained {
             let entry = self.got_state.def_codegen.get(defn.name.as_ref());
             let code_ptr = entry
                 .and_then(|e| e.code_ptr)
@@ -340,9 +502,11 @@ impl ReplSession {
                     span: cranelisp_types::Span::SYNTHETIC,
                 })?;
             let func: extern "C" fn() -> i64 = unsafe { std::mem::transmute(code_ptr) };
-            func()
+            let eval_start = Instant::now();
+            let result = func();
+            (result, eval_start.elapsed())
         } else {
-            0
+            (0, Duration::ZERO)
         };
 
         // Build definition display with qualified name (spec §1.3).
@@ -364,6 +528,7 @@ impl ReplSession {
             is_definition: true,
             warnings: check_result.warnings.clone(),
             definition_display,
+            eval_duration,
         })
     }
 
@@ -393,6 +558,7 @@ impl ReplSession {
             is_definition: true,
             warnings: check_result.warnings.clone(),
             definition_display: Some(display),
+            eval_duration: Duration::ZERO,
         })
     }
 
@@ -420,6 +586,7 @@ impl ReplSession {
             is_definition: true,
             warnings: check_result.warnings.clone(),
             definition_display: Some(display),
+            eval_duration: Duration::ZERO,
         })
     }
 
@@ -456,6 +623,7 @@ impl ReplSession {
             is_definition: true,
             warnings: check_result.warnings.clone(),
             definition_display: Some(display),
+            eval_duration: Duration::ZERO,
         })
     }
 
@@ -858,10 +1026,34 @@ fn format_string_value(value: i64) -> String {
     format!(":primitives/String \"{s}\"")
 }
 
+/// Check whether a type has exactly one constructor whose name matches the type name.
+///
+/// Single-constructor product types like `(deftype Point [:Int x :Int y])` have
+/// a redundant `Type.Constructor` display (`Point.Point`). For these types we
+/// suppress the `Type.` prefix and show just the constructor name.
+fn is_single_matching_constructor(type_name: &TypeName, type_info: &TypeDefInfo) -> bool {
+    type_info.constructors.len() == 1 && type_info.constructors[0].name.0 == type_name.0
+}
+
+/// Format the constructor display name for an ADT value.
+///
+/// For single-constructor types where the constructor name matches the type name,
+/// returns just the constructor name (e.g., `Point`). For multi-constructor types,
+/// returns `Type.Constructor` (e.g., `Color.Red`, `Option.Some`).
+fn format_ctor_display(type_name: &TypeName, ctor_name: &str, type_info: &TypeDefInfo) -> String {
+    if is_single_matching_constructor(type_name, type_info) {
+        ctor_name.to_string()
+    } else {
+        format!("{type_name}.{ctor_name}")
+    }
+}
+
 /// Format an ADT value with constructor name lookup and dot notation (spec §1.5).
 ///
 /// Nullary constructors display as `Type.Ctor` (e.g., `Color.Red`).
 /// Data constructors display as `(Type.Ctor field1 field2)` (e.g., `(Option.Some 42)`).
+/// Single-constructor product types where the constructor name matches the type name
+/// suppress the `Type.` prefix (e.g., `(Point 3 4)` not `(Point.Point 3 4)`).
 /// Type names in the `:Type` prefix are fully qualified.
 fn format_adt_value(
     value: i64,
@@ -889,8 +1081,8 @@ fn format_adt_value(
         // Nullary constructor: value is the tag directly.
         let tag = value as usize;
         let ctor_name = find_constructor_by_tag(type_info, tag);
-        // Dot notation: Type.Constructor (spec §1.5).
-        format!(":{type_display} {type_name}.{ctor_name}")
+        let ctor_display = format_ctor_display(type_name, &ctor_name, type_info);
+        format!(":{type_display} {ctor_display}")
     } else {
         // Data constructor: read tag and fields from heap.
         format_adt_heap_value(value, &type_display, type_name, type_info, type_args, type_defs, type_modules)
@@ -930,7 +1122,9 @@ fn find_constructor_by_tag(type_info: &TypeDefInfo, tag: usize) -> String {
 ///
 /// Reads tag from HeapAdt::TAG_OFFSET (16), fields from HeapAdt::field_offset(i).
 /// Recursively formats field values using their declared types.
-/// Uses `Type.Constructor` dot notation per spec §1.5.
+/// Uses `Type.Constructor` dot notation per spec §1.5, suppressing the `Type.`
+/// prefix for single-constructor product types where the constructor name matches
+/// the type name.
 ///
 /// For polymorphic ADTs (e.g., `(Option Int)`), substitutes the concrete type_args
 /// into field types before formatting. Without this, fields with type variables
@@ -955,8 +1149,8 @@ fn format_adt_heap_value(
 
     if ctor.fields.is_empty() {
         // Nullary constructor stored on heap (shouldn't happen, but handle gracefully).
-        // Dot notation: Type.Constructor (spec §1.5).
-        return format!(":{type_display} {type_name}.{}", ctor.name);
+        let ctor_display = format_ctor_display(type_name, &ctor.name, type_info);
+        return format!(":{type_display} {ctor_display}");
     }
 
     // Build substitution from type_params to type_args for polymorphic ADTs.
@@ -974,8 +1168,8 @@ fn format_adt_heap_value(
     }
 
     let fields_display = field_strs.join(" ");
-    // Dot notation: (Type.Constructor fields...) (spec §1.5).
-    format!(":{type_display} ({type_name}.{} {fields_display})", ctor.name)
+    let ctor_display = format_ctor_display(type_name, &ctor.name, type_info);
+    format!(":{type_display} ({ctor_display} {fields_display})")
 }
 
 /// Build a type substitution from a TypeDefInfo's type_params and concrete type_args.
@@ -1113,8 +1307,7 @@ fn format_field_value(
                 if (value as usize) < NULLARY_TAG_THRESHOLD {
                     let tag = value as usize;
                     let ctor_name = find_constructor_by_tag(info, tag);
-                    // Dot notation: Type.Constructor (spec §1.5).
-                    format!("{name}.{ctor_name}")
+                    format_ctor_display(name, &ctor_name, info)
                 } else {
                     // Recursive heap ADT -- format with parens and dot notation.
                     let inner = format_adt_heap_value(
@@ -1258,11 +1451,14 @@ fn eval_and_display(
     input: &str,
     stdout: &mut impl Write,
 ) -> (u64, u64) {
-    let compile_start = std::time::Instant::now();
+    let total_start = Instant::now();
     match session.eval(input) {
         Ok(result) => {
-            let compile_elapsed = compile_start.elapsed();
-            let compile_ms = compile_elapsed.as_millis() as u64;
+            let total_elapsed = total_start.elapsed();
+            // Compile time = total time minus the eval (function call) time.
+            let compile_duration = total_elapsed.saturating_sub(result.eval_duration);
+            let compile_ms = compile_duration.as_millis() as u64;
+            let eval_ms = result.eval_duration.as_millis() as u64;
 
             for w in &result.warnings {
                 let _ = writeln!(stdout, "warning: {}", w.message);
@@ -1278,11 +1474,11 @@ fn eval_and_display(
                 )
             };
             let _ = writeln!(stdout, "{display}");
-            (compile_ms, 0)
+            (compile_ms, eval_ms)
         }
         Err(e) => {
-            let compile_elapsed = compile_start.elapsed();
-            let compile_ms = compile_elapsed.as_millis() as u64;
+            let total_elapsed = total_start.elapsed();
+            let compile_ms = total_elapsed.as_millis() as u64;
             let _ = writeln!(stdout, "error: {e}");
             (compile_ms, 0)
         }
@@ -1386,6 +1582,14 @@ pub fn run_repl() {
     }
 
     let _ = writeln!(stdout);
+}
+
+/// Check if a Sexp is an `(import ...)` form.
+///
+/// Returns true if the sexp is a list whose head is the symbol `import`.
+fn is_import_form(sexp: &Sexp) -> bool {
+    matches!(sexp, Sexp::List(elems, _)
+        if !elems.is_empty() && matches!(&elems[0], Sexp::Symbol(name, _) if name == "import"))
 }
 
 /// Check if the input consists only of comments (lines starting with `;`).
@@ -1640,7 +1844,10 @@ fn classify_symbols(session: &ReplSession, filter: &str) -> ListCategories {
                 }
                 DefKind::Primitive { .. } => {} // skip — belongs in primitives module
                 _ => {
-                    cats.functions.push(format!("{module}/{name}"));
+                    // Skip internal macro implementation functions (e.g. __macro_twice_clause_0)
+                    if !name.starts_with("__macro_") {
+                        cats.functions.push(format!("{module}/{name}"));
+                    }
                 }
             },
             _ => {}
@@ -1702,10 +1909,14 @@ fn handle_time(
     if expr_src.is_empty() {
         return Ok("usage: /time <expr>".to_string());
     }
-    let compile_start = std::time::Instant::now();
+    let total_start = Instant::now();
     let result = session.eval(expr_src)?;
-    let compile_elapsed = compile_start.elapsed();
-    let compile_ms = compile_elapsed.as_millis();
+    let total_elapsed = total_start.elapsed();
+
+    // Compile time = total minus eval (function call) time.
+    let compile_duration = total_elapsed.saturating_sub(result.eval_duration);
+    let compile_ms = compile_duration.as_millis();
+    let eval_ms = result.eval_duration.as_millis();
 
     // Format the result value.
     let display = if let Some(ref def_display) = result.definition_display {
@@ -1718,7 +1929,7 @@ fn handle_time(
             session.type_modules(),
         )
     };
-    Ok(format!("{display} (compile: {compile_ms}ms, eval: 0ms)"))
+    Ok(format!("{display} (compile: {compile_ms}ms, eval: {eval_ms}ms)"))
 }
 
 /// Handle `/expand <form>` — macro-expand a form without evaluating (spec §11.1).
@@ -1896,7 +2107,13 @@ fn format_entry_signature(
             type_name, scheme, ..
         } => {
             let type_str = format_type_qualified(&scheme.ty, type_modules);
-            format!(":{type_str} {module}/{type_name}.{name}")
+            let tn = TypeName::from(type_name.0.as_str());
+            let ctor_display = if let Some(info) = tc.type_def_registry().get(&tn) {
+                format_ctor_display(&tn, name, info)
+            } else {
+                format!("{type_name}.{name}")
+            };
+            format!(":{type_str} {module}/{ctor_display}")
         }
         ModuleEntry::TypeDef { info, .. } => {
             let qname = qualify_type_name(&info.name, type_modules);
@@ -1983,6 +2200,9 @@ fn format_special_form_display(name: &str, description: &str) -> String {
 /// Handles special forms, primitive types, functions, constructors, traits,
 /// and macros (spec §4.1, §11.4). Returns `Some(display_string)` if the
 /// input matches a known symbol, `None` otherwise.
+///
+/// When a symbol has a docstring, the first line is appended as a comment
+/// (spec §4.1): `:(Fn [Int] Int) user/double ; Multiply by 2`
 fn special_form_feedback(input: &str, session: &ReplSession) -> Option<String> {
     let trimmed = input.trim();
     // Must be a single bare identifier (no parens, no spaces, no brackets).
@@ -2003,13 +2223,14 @@ fn special_form_feedback(input: &str, session: &ReplSession) -> Option<String> {
     let module = session.tc.current_module_path();
     let entry = session.tc.symbol_table().get(trimmed)?;
     match entry {
-        ModuleEntry::Def { kind, scheme, .. } => {
+        ModuleEntry::Def { kind, scheme, docstring, .. } => {
             if let DefKind::SpecialForm { description } = kind.as_ref() {
                 Some(format_special_form_display(trimmed, description))
             } else {
                 // Regular function/primitive: show `:TypeScheme module/name`
                 let type_str = format_type_qualified(&scheme.ty, &session.type_modules);
-                Some(format!(":{type_str} {module}/{trimmed}"))
+                let base = format!(":{type_str} {module}/{trimmed}");
+                Some(append_docstring_comment(base, docstring.as_deref()))
             }
         }
         ModuleEntry::TypeDef { .. } => {
@@ -2023,16 +2244,43 @@ fn special_form_feedback(input: &str, session: &ReplSession) -> Option<String> {
         }
         ModuleEntry::Constructor { type_name, scheme, .. } => {
             // Bare constructor: show `:QualifiedType module/Type.Ctor`
+            // For single-constructor types where ctor name matches type name,
+            // suppress the `Type.` prefix: `module/Ctor` instead of `module/Type.Ctor`.
             let type_str = format_type_qualified(&scheme.ty, &session.type_modules);
-            Some(format!(":{type_str} {module}/{type_name}.{trimmed}"))
+            let tn = TypeName::from(type_name.0.as_str());
+            let ctor_display = if let Some(info) = session.type_defs().get(&tn) {
+                format_ctor_display(&tn, trimmed, info)
+            } else {
+                format!("{type_name}.{trimmed}")
+            };
+            Some(format!(":{type_str} {module}/{ctor_display}"))
         }
-        ModuleEntry::Macro { clauses, .. } => {
+        ModuleEntry::Macro { clauses, docstring, .. } => {
             // Bare macro name: show clause signatures (spec §11.4).
             // Zero-arg macros expand immediately via bare-symbol expansion,
             // so they won't reach here (the expander handles them first).
-            Some(format_macro_signature(trimmed, clauses))
+            let base = format_macro_signature(trimmed, clauses);
+            Some(append_docstring_comment(base, docstring.as_deref()))
         }
         _ => None,
+    }
+}
+
+/// Append the first line of a docstring as a ` ; comment` suffix.
+///
+/// Used by bare symbol display (spec §4.1) to show a brief description
+/// after the type/name display.
+fn append_docstring_comment(base: String, docstring: Option<&str>) -> String {
+    match docstring {
+        Some(doc) if !doc.is_empty() => {
+            let first_line = doc.lines().next().unwrap_or("");
+            if first_line.is_empty() {
+                base
+            } else {
+                format!("{base} ; {first_line}")
+            }
+        }
+        _ => base,
     }
 }
 

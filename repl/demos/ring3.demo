@@ -1,56 +1,53 @@
 ; Cranelisp Ring 3 — Macros & Metaprogramming
-; Macros transform code at compile time using quasiquote
 
-; === Defining a macro ===
+; What is defmacro?
+
+defmacro
+
+; Define a macro — quasiquote rewrites code at compile time
 
 (defmacro twice "Evaluate and double" [x] `(+ ~x ~x))
+/info twice
 (twice 21)
-/expand (twice 21)
-/doc twice
+/expand (twice (+ 1 2))
 
-; === Multi-clause macros — dispatch on argument count ===
+; Multi-clause macros — dispatch on argument count
 
-(defmacro add "Variadic add" ([x] x) ([x y] `(+ ~x ~y)) ([x y z] `(+ ~x (+ ~y ~z))))
-(add 5)
-(add 3 4)
-(add 1 2 3)
-/sig add
-/expand (add 1 2 3)
+(defmacro my-add "Variadic addition" ([x] x) ([x y] `(+ ~x ~y)) ([x y z] `(+ ~x (+ ~y ~z))))
+/info my-add
+(my-add 5)
+(my-add 3 4)
+(my-add 1 2 3)
 
-; === Splice with ~@ ===
+; Prelude macros — case, cond, do, str
 
-(defmacro my-vec "Build a vec from elements" [&elems] `[~@elems])
-(my-vec 10 20 30)
-/expand (my-vec 10 20 30)
+(case 3 1 "one" 2 "two" 3 "three" "other")
+(cond (> 10 20) "big" (> 10 5) "medium" "small")
+(str "2 + 3 = " (+ 2 3))
+(str (to-upper "hello") " " (to-lower "WORLD"))
 
-; === Prelude macros — do sequences expressions ===
+; String primitives
 
-(do (+ 1 2) (+ 3 4))
-/expand (do (+ 1 2) (+ 3 4))
+(split "one,two,three" ",")
+(join " + " (split "one,two,three" ","))
+(replace "hello world" "world" "cranelisp")
+(trim "  padded  ")
+(starts-with? "cranelisp" "crane")
 
-; === Prelude macros — cond for multi-way branches ===
-
-(cond false "a" true "b" "default")
-/expand (cond false "a" true "b" "default")
-
-; === Prelude macros — const and def ===
-
-(const MAX 100)
-(+ MAX 1)
-/expand MAX
-
-(def answer (* 6 7))
-(+ answer 1)
-
-; === Thread-first and thread-last ===
+; Threading macros — pipeline style
 
 (defn inc [x] (+ x 1))
 (defn double [x] (* x 2))
-(-> 5 inc double)
-/expand (-> 5 inc double)
+(-> 5 inc double inc)
+/expand (-> 5 inc double inc)
 (-> 10 (- 3))
 (->> 10 (- 3))
+/expand (-> 10 (- 3))
+/expand (->> 10 (- 3))
 
-; === Inspect your environment ===
+; Constrained polymorphism — one def, many types
 
-/list
+(defn describe [x] (str "the answer is " x))
+(describe 42)
+(describe 3.14)
+(describe "everything")

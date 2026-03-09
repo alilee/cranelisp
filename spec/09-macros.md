@@ -298,7 +298,6 @@ Within a quasiquoted form:
 - **Unquote** `~expr` evaluates `expr` in the current scope. The result MUST be of type `Sexp` and is spliced into the template at that position.
 - **Unquote-splicing** `~@expr` evaluates `expr` in the current scope. The result MUST be of type `(SList Sexp)`. Each element of the list is spliced into the surrounding list. Unquote-splicing MUST only appear inside a list or bracket form.
 
-<!-- FIXME(/frontend): Quasiquote triple-unquote bug — when the same `~x` parameter appears in all three positions of an `if` form (condition, then-branch, else-branch), batch mode produces incorrect results. E.g. `(defmacro my-abs [x] \`(if (lt-i64 ~x 0) (sub-i64 0 ~x) ~x))` then `(my-abs 5)` returns -5 instead of 5. Likely a span collision issue in the macro expander. Discovered Sprint 12 by /examples. -->
 
 ### 9.4.3 Examples
 

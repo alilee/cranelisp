@@ -23,11 +23,11 @@ use crate::alloc as heap_alloc_mod;
 // ---------------------------------------------------------------------------
 
 /// Offset of `len` field from base pointer.
-const LEN_OFFSET: usize = 16;
+pub(crate) const LEN_OFFSET: usize = 16;
 /// Offset of `cap` field from base pointer.
-const CAP_OFFSET: usize = 24;
+pub(crate) const CAP_OFFSET: usize = 24;
 /// Offset of `data_ptr` field from base pointer.
-const DATA_PTR_OFFSET: usize = 32;
+pub(crate) const DATA_PTR_OFFSET: usize = 32;
 /// Payload size after HeapHeader: len + cap + data_ptr = 24 bytes.
 const VEC_PAYLOAD_SIZE: usize = 24;
 

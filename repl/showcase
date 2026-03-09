@@ -128,6 +128,9 @@ def parse_repl_output(demo_text, raw_output):
     parts = prompt_re.split(raw_output)
 
     # parts alternates: [before_first_prompt, prompt1, result1, prompt2, result2, ...]
+    # Preserve the banner (before first prompt) for display.
+    banner = parts[0].strip() if parts else ""
+
     # Extract prompts and results as parallel lists.
     prompts = []
     segments = []
@@ -148,7 +151,7 @@ def parse_repl_output(demo_text, raw_output):
                 result = content
         triples.append((prompt, input_line, result))
 
-    return triples
+    return banner, triples
 
 
 def check_key():
@@ -253,6 +256,13 @@ def play_demo(demo_path, repl_binary):
     run_dir = RUNS_DIR / f"{timestamp}_{demo_name}"
     run_dir.mkdir()
 
+    # Show a copyable run command so the viewer can reproduce the session.
+    prelude_file = REPL_DIR / "demos" / "lib" / "prelude.cl"
+    if prelude_file.exists():
+        lib_rel = str(prelude_file.parent.relative_to(PROJECT_ROOT))
+        print(f"{DIM}; CRANELISP_LIB={lib_rel} cargo run{RESET}")
+    else:
+        print(f"{DIM}; cargo run{RESET}")
     print(f"{DIM}; run dir: {run_dir}{RESET}")
     if not FAST and sys.stdin.isatty():
         print(f"{DIM}; [space] pause/unpause, [q] quit{RESET}")
@@ -266,7 +276,9 @@ def play_demo(demo_path, repl_binary):
     raw_output = run_demo(demo_path, repl_binary, run_dir)
 
     # Phase 2: parse and replay with typing effects.
-    triples = parse_repl_output(demo_text, raw_output)
+    banner, triples = parse_repl_output(demo_text, raw_output)
+    if banner:
+        print(banner)
     replay(triples)
 
     print(f"\n{DIM}; [demo complete]{RESET}")

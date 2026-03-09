@@ -420,7 +420,7 @@ fn repl_adt_product() {
     let mut session = repl_session();
     repl_eval(&mut session, "(deftype Point [:Int x :Int y])");
     let display = repl_eval_display(&mut session, "(Point 3 4)");
-    assert_eq!(display, ":user/Point (Point.Point 3 4)");
+    assert_eq!(display, ":user/Point (Point 3 4)");
 }
 
 // spec: 05-definitions §5.2.2 — sum type Some in REPL

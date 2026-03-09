@@ -569,11 +569,7 @@ A working 4x4 mini-Sudoku solver was implemented entirely in the REPL, exercisin
 | Constrained poly GOT slots in REPL | Minor | `/backend` | Second call to a constrained polymorphic function in the same REPL session sometimes fails with "no GOT slot". Workaround: use monomorphic versions. |
 | IO / platform system | Blocking | Ring 4 | Web platform DLL and IO model not yet available. |
 
-<!-- FIXME(/backend): Vec in polymorphic ADT — display shows empty Vec when a Vec is stored as a field in a polymorphic ADT constructor. The data is preserved (extractable via match), but `format_adt_value` renders it as `[]`. Likely an RC/display issue with how the Vec pointer is read from the ADT heap layout. -->
 
-<!-- FIXME(/backend): Trait-dispatched operators (`+`, `*`, `=`, etc.) fail inside anonymous closures with "no GOT slot for function: *". They work in `defn` bodies because those are monomorphised at call sites, but closures capture them differently. This blocks using higher-order patterns like `(vec-fold v 0 (fn [acc x] (+ acc x)) 0)` — must use `add-i64` instead. -->
-
-<!-- FIXME(/frontend): `!=` operator — the `!` character is rejected by the sexp parser's operator_char pattern. Either add `!` to operator chars, or define `!=` as a named symbol. The prelude's `!=` default method exists but is unreachable from the parser. -->
 
 **Revised gap table (Sprint 12)**:
 

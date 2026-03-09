@@ -21,7 +21,7 @@ static SYNTHETIC_SPAN_COUNTER: AtomicU32 = AtomicU32::new(1_000_000);
 /// Allocate a fresh synthetic span with a unique value.
 ///
 /// Public within the crate so defmacro can share the same counter.
-pub(crate) fn next_synthetic_span() -> Span {
+pub fn next_synthetic_span() -> Span {
     let v = SYNTHETIC_SPAN_COUNTER.fetch_add(1, Ordering::Relaxed);
     Span::new(v, v)
 }

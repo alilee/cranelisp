@@ -170,6 +170,141 @@ pub extern "C" fn string_read(s: i64, out_ptr: *mut *const u8, out_len: *mut i64
     }
 }
 
+/// Extract a substring from `start` (inclusive) to `end` (exclusive), clamping
+/// out-of-bounds indices. Returns a new heap string (rc=1).
+#[unsafe(no_mangle)]
+pub extern "C" fn str_substring(s: i64, start: i64, end: i64) -> i64 {
+    let src = unsafe { read_str(s as *const u8) };
+    let len = src.len() as i64;
+    let start = start.clamp(0, len) as usize;
+    let end = end.clamp(0, len) as usize;
+    let end = end.max(start);
+    let slice = &src[start..end];
+    alloc_string(slice.as_bytes()) as i64
+}
+
+/// Return the character at byte index `idx` as a single-character string.
+/// Returns an empty string if `idx` is out of bounds.
+#[unsafe(no_mangle)]
+pub extern "C" fn str_char_at(s: i64, idx: i64) -> i64 {
+    let src = unsafe { read_str(s as *const u8) };
+    let idx = idx as usize;
+    match src.get(idx..) {
+        Some(rest) => match rest.chars().next() {
+            Some(ch) => {
+                let mut buf = [0u8; 4];
+                let encoded = ch.encode_utf8(&mut buf);
+                alloc_string(encoded.as_bytes()) as i64
+            }
+            None => alloc_string(b"") as i64,
+        },
+        None => alloc_string(b"") as i64,
+    }
+}
+
+/// Split a string by a separator. Returns a Vec of heap strings.
+#[unsafe(no_mangle)]
+pub extern "C" fn str_split(s: i64, sep: i64) -> i64 {
+    let src = unsafe { read_str(s as *const u8) };
+    let sep_str = unsafe { read_str(sep as *const u8) };
+
+    let parts: Vec<&str> = src.split(sep_str).collect();
+    let count = parts.len() as i64;
+
+    // Allocate a Vec to hold the results.
+    let vec_base = crate::vec::vec_new(count);
+
+    unsafe {
+        let data_ptr = *((vec_base as *const u8).add(crate::vec::DATA_PTR_OFFSET) as *const *mut i64);
+        for (i, part) in parts.iter().enumerate() {
+            let heap_str = alloc_string(part.as_bytes()) as i64;
+            *data_ptr.add(i) = heap_str;
+        }
+        // Set len.
+        *((vec_base as *mut u8).add(crate::vec::LEN_OFFSET) as *mut i64) = count;
+    }
+
+    vec_base
+}
+
+/// Join a Vec of strings with a separator. Separator is the first argument.
+#[unsafe(no_mangle)]
+pub extern "C" fn str_join(sep: i64, vec: i64) -> i64 {
+    let sep_str = unsafe { read_str(sep as *const u8) };
+
+    let base = vec as *const u8;
+    let len = unsafe { *(base.add(crate::vec::LEN_OFFSET) as *const i64) } as usize;
+    let data_ptr = unsafe { *(base.add(crate::vec::DATA_PTR_OFFSET) as *const i64) as *const i64 };
+
+    let mut parts = Vec::with_capacity(len);
+    for i in 0..len {
+        let elem = unsafe { *data_ptr.add(i) };
+        let s = unsafe { read_str(elem as *const u8) };
+        parts.push(s);
+    }
+
+    let joined = parts.join(sep_str);
+    alloc_string(joined.as_bytes()) as i64
+}
+
+/// Replace all occurrences of `from` with `to` in `s`. Returns a new string.
+#[unsafe(no_mangle)]
+pub extern "C" fn str_replace(s: i64, from: i64, to: i64) -> i64 {
+    let src = unsafe { read_str(s as *const u8) };
+    let from_str = unsafe { read_str(from as *const u8) };
+    let to_str = unsafe { read_str(to as *const u8) };
+    let result = src.replace(from_str, to_str);
+    alloc_string(result.as_bytes()) as i64
+}
+
+/// Trim leading and trailing whitespace. Returns a new string.
+#[unsafe(no_mangle)]
+pub extern "C" fn str_trim(s: i64) -> i64 {
+    let src = unsafe { read_str(s as *const u8) };
+    let trimmed = src.trim();
+    alloc_string(trimmed.as_bytes()) as i64
+}
+
+/// Returns 1 if `s` starts with `prefix`, 0 otherwise.
+#[unsafe(no_mangle)]
+pub extern "C" fn str_starts_with(s: i64, prefix: i64) -> i64 {
+    let src = unsafe { read_str(s as *const u8) };
+    let prefix_str = unsafe { read_str(prefix as *const u8) };
+    if src.starts_with(prefix_str) { 1 } else { 0 }
+}
+
+/// Returns 1 if `s` ends with `suffix`, 0 otherwise.
+#[unsafe(no_mangle)]
+pub extern "C" fn str_ends_with(s: i64, suffix: i64) -> i64 {
+    let src = unsafe { read_str(s as *const u8) };
+    let suffix_str = unsafe { read_str(suffix as *const u8) };
+    if src.ends_with(suffix_str) { 1 } else { 0 }
+}
+
+/// Returns 1 if `s` contains `needle`, 0 otherwise.
+#[unsafe(no_mangle)]
+pub extern "C" fn str_contains(s: i64, needle: i64) -> i64 {
+    let src = unsafe { read_str(s as *const u8) };
+    let needle_str = unsafe { read_str(needle as *const u8) };
+    if src.contains(needle_str) { 1 } else { 0 }
+}
+
+/// Convert string to uppercase. Returns a new string.
+#[unsafe(no_mangle)]
+pub extern "C" fn str_to_upper(s: i64) -> i64 {
+    let src = unsafe { read_str(s as *const u8) };
+    let upper = src.to_uppercase();
+    alloc_string(upper.as_bytes()) as i64
+}
+
+/// Convert string to lowercase. Returns a new string.
+#[unsafe(no_mangle)]
+pub extern "C" fn str_to_lower(s: i64) -> i64 {
+    let src = unsafe { read_str(s as *const u8) };
+    let lower = src.to_lowercase();
+    alloc_string(lower.as_bytes()) as i64
+}
+
 // ---------------------------------------------------------------------------
 // Public Rust API
 // ---------------------------------------------------------------------------

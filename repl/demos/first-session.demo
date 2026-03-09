@@ -1,45 +1,30 @@
 ; Cranelisp — Your first session
-; Values have types. The REPL shows both.
+
+/help
+
+/l
 
 3
+Int
+3.0
 true
 "hello"
 
-; === Arithmetic just works ===
-
 (+ 1 2)
 (* 6 7)
-(- 100 58)
+(+ 1.5 2.5)
 
-; === Comparisons return booleans ===
-
-(= 3 3)
-(< 1 2)
+if
 (if (< 1 2) "yes" "no")
 
-; === Define a function ===
+let
+(let [x 10 y 20] (+ x y))
 
+defn
 (defn double [x] (* x 2))
 (double 21)
-/sig double
-
-; === Type errors are caught ===
-
 (double "oops")
 (double 7)
-
-; === Algebraic data types ===
-
-(deftype Color Red Green Blue)
-Red
-(match Green [Red "r" Green "g" Blue "b"])
-
-; === Closures and higher-order functions ===
-
-(defn apply-twice [f x] (f (f x)))
-(apply-twice double 5)
-
-; === Putting it together ===
 
 (defn factorial [n] (if (= n 0) 1 (* n (factorial (- n 1)))))
 (factorial 10)

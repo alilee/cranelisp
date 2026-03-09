@@ -102,7 +102,7 @@ pub fn parse_macro_params(
 
 /// Parse param items from a slice (used for both top-level and bracket patterns).
 ///
-/// The reader parses `& rest` as a single symbol `"&rest"` (ampersand prefix),
+/// The reader parses `&rest` or `& rest` as a single symbol `"&rest"` (ampersand prefix),
 /// so rest params appear as symbols starting with `&`.
 fn parse_param_items(
     items: &[Sexp],
@@ -144,8 +144,8 @@ fn parse_param_items(
 
 /// Parse a bracket destructuring pattern's inner items.
 ///
-/// The reader parses `& rest` as `"&rest"`, so rest params appear as symbols
-/// starting with `&`.
+/// The reader parses `&rest` or `& rest` as `"&rest"`, so rest params appear as
+/// symbols starting with `&`.
 fn parse_bracket_pattern(
     inner: &[Sexp],
 ) -> Result<(Vec<Symbol>, Option<Symbol>), CranelispError> {
@@ -759,14 +759,35 @@ mod tests {
         assert!(info.clauses[1].rest_param.is_some());
     }
 
-    // spec: 09-macros.md section 9.2.2 -- rest parameter parse
+    // spec: 09-macros.md section 9.2.2 -- rest parameter parse (no space)
     #[test]
     fn parse_rest_param() {
-        // Note: reimplemented reader parses `&args` as a single symbol "&args"
+        // Reader parses `&args` as a single symbol "&args"
         let sexp = parse_one("(defmacro my-add [&args] `(+ ~@args))");
         let info = parse_defmacro(&sexp).unwrap();
         assert_eq!(info.clauses[0].fixed_params.len(), 0);
         assert_eq!(info.clauses[0].rest_param.as_ref().unwrap().as_ref(), "args");
+    }
+
+    // spec: 09-macros.md section 9.2.2 -- rest parameter parse (with space)
+    #[test]
+    fn parse_rest_param_with_space() {
+        // Reader now accepts `& args` (with space) — Clojure convention
+        let sexp = parse_one("(defmacro my-add [& args] `(+ ~@args))");
+        let info = parse_defmacro(&sexp).unwrap();
+        assert_eq!(info.clauses[0].fixed_params.len(), 0);
+        assert_eq!(info.clauses[0].rest_param.as_ref().unwrap().as_ref(), "args");
+    }
+
+    // spec: 09-macros.md section 9.2.3 -- variadic multi-clause with & rest (with space)
+    #[test]
+    fn parse_multi_clause_rest_with_space() {
+        let sexp = parse_one("(defmacro my-cond ([x] x) ([x body & rest] `(if ~x ~body (my-cond ~@rest))))");
+        let info = parse_defmacro(&sexp).unwrap();
+        assert_eq!(info.clauses.len(), 2);
+        assert_eq!(info.clauses[1].fixed_params.len(), 2);
+        assert!(info.clauses[1].rest_param.is_some());
+        assert_eq!(info.clauses[1].rest_param.as_ref().unwrap().as_ref(), "rest");
     }
 
     // spec: 09-macros.md section 9.2.4 -- docstring extraction

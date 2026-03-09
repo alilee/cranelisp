@@ -2,7 +2,8 @@
 //
 // Public API:
 // - compile_program: batch compilation of a full program
-// - compile_and_run_expr_with_got: compile and execute a single expression (REPL)
+// - compile_expr_with_got: compile a single expression, returning CompiledExpr (REPL)
+// - compile_and_run_expr_with_got: compile and execute a single expression (REPL, convenience)
 // - Jit, ModuleCodegenState: exposed for REPL session management
 
 pub mod codegen_types;
@@ -51,6 +52,30 @@ impl CompiledProgram {
     pub unsafe fn execute(&self) -> Result<i64, CranelispError> {
         let func: extern "C" fn() -> i64 = unsafe { std::mem::transmute(self.entry_ptr) };
         Ok(func())
+    }
+}
+
+/// Result of compiling a single REPL expression. Holds the JIT alive so
+/// the caller can execute the compiled function pointer at its leisure.
+/// This enables the caller to separately time compilation and evaluation.
+pub struct CompiledExpr {
+    // Kept alive so the compiled function pointer remains valid.
+    #[allow(dead_code)]
+    jit: Jit,
+    func_ptr: *const u8,
+}
+
+impl CompiledExpr {
+    /// Execute the compiled expression and return the i64 result.
+    ///
+    /// # Safety
+    ///
+    /// The func_ptr must point to valid JIT-compiled code with the signature
+    /// `extern "C" fn() -> i64`. This is guaranteed when CompiledExpr was
+    /// produced by `compile_expr_with_got`.
+    pub fn execute(&self) -> i64 {
+        let func: extern "C" fn() -> i64 = unsafe { std::mem::transmute(self.func_ptr) };
+        func()
     }
 }
 
@@ -391,18 +416,19 @@ pub fn compile_module_program(
     })
 }
 
-/// Compile and execute a single expression in Interactive mode.
+/// Compile a single expression into a `CompiledExpr` without executing it.
 ///
-/// Wraps the expression in a synthetic zero-arg function, compiles it,
-/// executes it, and returns the i64 result.
+/// Wraps the expression in a synthetic zero-arg function and compiles it.
+/// The caller can then call `CompiledExpr::execute()` to run it. This
+/// separation enables the caller to time compilation and evaluation independently.
 ///
 /// If `got_state` is provided, GOT-indirect calls are used.
-pub fn compile_and_run_expr_with_got(
+pub fn compile_expr_with_got(
     expr: &Expr,
     check: &CheckResult,
     mode: CompileMode,
     got_state: Option<&mut got::ModuleCodegenState>,
-) -> Result<i64, CranelispError> {
+) -> Result<CompiledExpr, CranelispError> {
     let mut jit = Jit::new()?;
 
     // Declare runtime intrinsics (Ring 1 heap infrastructure).
@@ -454,9 +480,26 @@ pub fn compile_and_run_expr_with_got(
 
     let code_ptr = jit.finalize_and_get_ptr(&wrapper_name, 0)?;
 
-    // SAFETY: code_ptr points to a just-compiled zero-arg function returning i64.
-    let func: extern "C" fn() -> i64 = unsafe { std::mem::transmute(code_ptr) };
-    Ok(func())
+    Ok(CompiledExpr {
+        jit,
+        func_ptr: code_ptr,
+    })
+}
+
+/// Compile and execute a single expression in Interactive mode (convenience wrapper).
+///
+/// Wraps the expression in a synthetic zero-arg function, compiles it,
+/// executes it, and returns the i64 result.
+///
+/// If `got_state` is provided, GOT-indirect calls are used.
+pub fn compile_and_run_expr_with_got(
+    expr: &Expr,
+    check: &CheckResult,
+    mode: CompileMode,
+    got_state: Option<&mut got::ModuleCodegenState>,
+) -> Result<i64, CranelispError> {
+    let compiled = compile_expr_with_got(expr, check, mode, got_state)?;
+    Ok(compiled.execute())
 }
 
 #[cfg(test)]

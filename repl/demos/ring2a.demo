@@ -1,82 +1,51 @@
 ; Cranelisp Ring 2A — Traits & Operator Dispatch
-; Operators are now trait methods, not named primitives
 
-; === Operators via traits ===
+; What did the prelude give us?
 
+/l
+
+; Operators are trait methods
+
+/t +
+/t <
 (+ 1 2)
-(- 10 3)
 (* 4 5)
-(/ 10 2)
 
-; === Comparison operators ===
+; Same operators work on floats
+
+3.0
+(+ 1.0 2.0)
+
+; Comparisons return Bool
 
 (= 5 5)
-(= 5 3)
 (< 1 2)
-(< 5 3)
 
-; === Float operators — same syntax, different dispatch ===
+; Constrained polymorphism — one definition, both types
 
-(+ 1.0 2.0)
-(* 3.0 4.0)
-(= 1.0 1.0)
-(< 1.0 2.0)
-
-; === Named primitives still work ===
-
-(add-i64 10 20)
-(eq-i64 3 3)
-
-; === Functions using operators ===
-
-(defn times-two [x] (* x 2))
-(times-two 21)
-
-(defn sum-to [n] (if (= n 0) 0 (+ n (sum-to (- n 1)))))
-(sum-to 100)
-
-; === Factorial with operators ===
-
-(defn factorial [n] (if (= n 0) 1 (* n (factorial (- n 1)))))
-(factorial 10)
-
-; === Operators in compound expressions ===
-
-(let [x 10 y 3] (+ x y))
-(if (< 1 2) (+ 10 20) 0)
-(+ (* 3 4) (- 10 5))
-
-; === ADTs with operators ===
-
-(deftype (Option a) None (Some [:a val]))
-(defn add-opt [o] (match o [None 0 (Some x) (+ x 1)]))
-(add-opt (Some 41))
-(add-opt None)
-
-; === Polymorphic type display ===
-
-(defn id [x] x)
-(defn konst [x y] x)
-(defn compose [f g] (fn [x] (f (g x))))
-
-; === Trait declarations ===
-
-(deftrait (Sizeable a) (size [:a] :Int))
-
-; === Constrained polymorphism — one definition, multiple types ===
-
-(defn double [x] (+ x x))
+(defn double "Multiply by 2" [x] (+ x x))
+/t double
+/d double
 (double 5)
 (double 2.5)
 
-; === Default method operators ===
+; Recursive with operators
 
-(defn clamp [x lo hi] (if (< x lo) lo (if (> x hi) hi x)))
+(defn sum-to "Sum 1 to n" [n] (if (= n 0) 0 (+ n (sum-to (- n 1)))))
+(sum-to 100)
+
+; Define your own traits
+
+deftrait
+(deftrait (Sizeable a) (size [:a] :Int))
+(deftype Box (MkBox [:Int width :Int height]))
+impl
+(impl Sizeable Box (defn size [b] (match b [(MkBox w h) (* w h)])))
+(size (MkBox 3 4))
+
+; Constrained across Ord
+
+(defn clamp "Clamp x between lo and hi" [x lo hi] (if (< x lo) lo (if (> x hi) hi x)))
+/t clamp
 (clamp 15 0 10)
 (clamp -3 0 10)
-(clamp 5 0 10)
-
-; === Putting it together ===
-
-(defn dist-sq [:Int x1 :Int y1 :Int x2 :Int y2] (+ (* (- x2 x1) (- x2 x1)) (* (- y2 y1) (- y2 y1))))
-(dist-sq 0 0 3 4)

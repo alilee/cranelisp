@@ -246,13 +246,12 @@ fn invoke_clause(
     // Package all args as an (SList Sexp).
     let args_slist = marshal::build_runtime_slist(&marshalled);
 
-    // Invoke the compiled function.
-    // SAFETY: func_ptr was produced by JIT compilation of a function with
-    // signature extern "C" fn(i64) -> i64. The args_slist is a valid
-    // runtime (SList Sexp) value.
-    let func: extern "C" fn(i64) -> i64 =
-        unsafe { std::mem::transmute(clause.func_ptr) };
-    let result_i64 = func(args_slist);
+    // Invoke the compiled function with signal protection.
+    // JIT code may trigger hardware traps (e.g., division by zero -> SIGFPE,
+    // illegal instruction -> SIGILL). We install temporary signal handlers
+    // that convert these signals to Rust panics, then use catch_unwind
+    // to turn them into clean CranelispError results.
+    let result_i64 = invoke_jit_protected(clause.func_ptr, args_slist, span)?;
 
     // Validate the result is a heap pointer (all Sexp constructors are data).
     if result_i64 < NULLARY_TAG_THRESHOLD as i64 {
@@ -268,23 +267,175 @@ fn invoke_clause(
     Ok(marshal::runtime_to_sexp(result_i64))
 }
 
+/// Invoke a JIT function pointer with crash protection.
+///
+/// Uses `catch_unwind` to catch Rust panics from `runtime_panic`. Also
+/// installs signal handlers for SIGFPE/SIGILL/SIGBUS that use
+/// `sigsetjmp`/`siglongjmp` to recover from hardware traps without
+/// unwinding through the JIT code frames.
+///
+/// On macOS/aarch64, division by zero in JIT code raises SIGFPE. The signal
+/// handler `siglongjmp`s back to the recovery point, avoiding the problem
+/// of unwinding through `extern "C"` frames.
+fn invoke_jit_protected(
+    func_ptr: *const u8,
+    args_slist: i64,
+    span: Span,
+) -> Result<i64, CranelispError> {
+    use std::panic::{catch_unwind, AssertUnwindSafe};
+
+    // catch_unwind handles Rust panics from runtime_panic.
+    let result = catch_unwind(AssertUnwindSafe(|| {
+        // SAFETY: We use sigsetjmp/siglongjmp (declared below via raw FFI)
+        // to recover from hardware traps. sigsetjmp saves the execution
+        // context; if a signal handler calls siglongjmp, control returns
+        // to the sigsetjmp call with a non-zero value (the signal number).
+        unsafe {
+            // Set up the jump buffer for signal recovery.
+            let sig = sigsetjmp(JMP_BUF.with(|buf| buf.get()), 1);
+            if sig != 0 {
+                // Got here via siglongjmp from signal handler.
+                return Err(sig);
+            }
+
+            // Install signal handlers that siglongjmp back on trap.
+            let old_handlers = install_signal_handlers();
+
+            let func: extern "C" fn(i64) -> i64 = std::mem::transmute(func_ptr);
+            let result_i64 = func(args_slist);
+
+            // Restore original signal handlers.
+            restore_signal_handlers(old_handlers);
+
+            Ok(result_i64)
+        }
+    }));
+
+    match result {
+        Ok(Ok(val)) => Ok(val),
+        Ok(Err(sig)) => {
+            // Signal caught via siglongjmp.
+            let message = match sig {
+                libc::SIGFPE => "runtime error during macro expansion: arithmetic exception (division by zero)".to_string(),
+                libc::SIGILL => "runtime error during macro expansion: illegal instruction".to_string(),
+                libc::SIGBUS => "runtime error during macro expansion: bus error".to_string(),
+                _ => format!("runtime error during macro expansion: signal {sig}"),
+            };
+            Err(CranelispError::MacroError { message, span })
+        }
+        Err(panic_payload) => {
+            // Rust panic caught (e.g., from runtime_panic).
+            let message = if let Some(s) = panic_payload.downcast_ref::<String>() {
+                s.clone()
+            } else if let Some(s) = panic_payload.downcast_ref::<&str>() {
+                (*s).to_string()
+            } else {
+                "unknown runtime error during macro expansion".to_string()
+            };
+            Err(CranelispError::MacroError { message, span })
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// sigsetjmp/siglongjmp FFI (not in the `libc` crate)
+// ---------------------------------------------------------------------------
+
+// On macOS/aarch64, sigjmp_buf is 196 bytes (jmp_buf + signal mask).
+// We use a conservatively sized array. The exact layout is opaque.
+#[cfg(target_os = "macos")]
+type SigJmpBuf = [u8; 196];
+
+#[cfg(not(target_os = "macos"))]
+type SigJmpBuf = [u8; 256]; // Conservative fallback for other platforms
+
+unsafe extern "C" {
+    /// POSIX sigsetjmp: save execution context and optionally signal mask.
+    /// Returns 0 on direct call, non-zero value (from siglongjmp) on return.
+    fn sigsetjmp(env: *mut SigJmpBuf, savesigs: libc::c_int) -> libc::c_int;
+
+    /// POSIX siglongjmp: restore execution context saved by sigsetjmp.
+    fn siglongjmp(env: *mut SigJmpBuf, val: libc::c_int) -> !;
+}
+
+// Thread-local jump buffer for signal recovery during JIT macro execution.
+// Only accessed by the signal handler and invoke_jit_protected on the same
+// thread. Signal delivery for SIGFPE/SIGILL/SIGBUS is synchronous (delivered
+// to the thread that caused the trap).
+std::thread_local! {
+    static JMP_BUF: std::cell::UnsafeCell<SigJmpBuf> =
+        std::cell::UnsafeCell::new([0u8; std::mem::size_of::<SigJmpBuf>()]);
+}
+
+/// Signal handler for SIGFPE/SIGILL/SIGBUS during JIT macro execution.
+///
+/// Uses siglongjmp to jump back to the sigsetjmp point, bypassing the
+/// JIT code frames entirely. This avoids the problem of unwinding through
+/// `extern "C"` frames (which would be UB).
+extern "C" fn signal_handler_longjmp(sig: libc::c_int) {
+    unsafe {
+        // Reset to default handler to prevent infinite signal loops.
+        libc::signal(sig, libc::SIG_DFL);
+        // Jump back to sigsetjmp, passing the signal number.
+        siglongjmp(JMP_BUF.with(|buf| buf.get() as *mut SigJmpBuf), sig);
+    }
+}
+
+/// Saved signal handler state for restoration after JIT call.
+struct SavedSignalHandlers {
+    fpe: libc::sighandler_t,
+    ill: libc::sighandler_t,
+    bus: libc::sighandler_t,
+}
+
+/// Install signal handlers that siglongjmp on SIGFPE/SIGILL/SIGBUS.
+/// Returns the previously installed handlers for later restoration.
+fn install_signal_handlers() -> SavedSignalHandlers {
+    unsafe {
+        let handler = signal_handler_longjmp as *const () as libc::sighandler_t;
+        let fpe = libc::signal(libc::SIGFPE, handler);
+        let ill = libc::signal(libc::SIGILL, handler);
+        let bus = libc::signal(libc::SIGBUS, handler);
+        SavedSignalHandlers { fpe, ill, bus }
+    }
+}
+
+/// Restore previously saved signal handlers.
+fn restore_signal_handlers(saved: SavedSignalHandlers) {
+    unsafe {
+        libc::signal(libc::SIGFPE, saved.fpe);
+        libc::signal(libc::SIGILL, saved.ill);
+        libc::signal(libc::SIGBUS, saved.bus);
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Span rewriting
 // ---------------------------------------------------------------------------
 
-/// Recursively replace all spans in a Sexp tree with the given span.
-fn rewrite_spans(sexp: &mut Sexp, span: Span) {
+/// Recursively replace all spans in a Sexp tree with unique synthetic spans.
+///
+/// Each node gets a fresh span from the global synthetic span counter. This
+/// prevents span collisions when the same macro parameter appears multiple
+/// times in the expansion — downstream maps keyed by span (expr_types,
+/// method_resolutions, last_uses) would otherwise overwrite each other.
+fn rewrite_spans(sexp: &mut Sexp, _call_site_span: Span) {
+    rewrite_spans_unique(sexp);
+}
+
+/// Assign a unique synthetic span to every node in the Sexp tree.
+fn rewrite_spans_unique(sexp: &mut Sexp) {
     match sexp {
         Sexp::Symbol(_, s)
         | Sexp::Int(_, s)
         | Sexp::Float(_, s)
         | Sexp::Bool(_, s)
-        | Sexp::Str(_, s) => *s = span,
+        | Sexp::Str(_, s) => *s = cranelisp_frontend::next_synthetic_span(),
         Sexp::List(children, s) | Sexp::Bracket(children, s) => {
-            *s = span;
             for child in children {
-                rewrite_spans(child, span);
+                rewrite_spans_unique(child);
             }
+            *s = cranelisp_frontend::next_synthetic_span();
         }
     }
 }

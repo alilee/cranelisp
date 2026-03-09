@@ -1,23 +1,14 @@
-<!-- FIXME RESOLVED (Sprint 12 Wave 3):
+<!-- FIXME RESOLVED (Sprint 14 Wave 2):
 
-     1. DONE — lib/ references updated to stdlib/ throughout §3.2.
+     All items resolved. The prelude is now a re-export shell importing from
+     domain modules per §3.2. Submodule primitive seeding works correctly
+     (the FIXME(/int) was stale). Pipeline fix: modules with only type/trait
+     definitions skip codegen after typechecking.
 
-     2. ACKNOWLEDGED — prelude.cl remains a monolith rather than re-exporting from
-        domain modules. Three pipeline bugs prevent the planned modular structure:
-        (a) Submodules can't access primitives during load_prelude (FIXME(/int) filed).
-        (b) load_prelude imports into "prelude" module instead of "user" (FIXME(/int) filed).
-        (c) Recursive types (List) fail with "unknown type" (FIXME(/int) filed).
-        The prelude contains definitions directly until these bugs are resolved. Once
-        fixed, definitions should move to domain modules per §3.2 and prelude becomes
-        a re-export shell.
-
-     3. DONE — Num, Eq, Ord, Display traits with impls for all primitive types are now
-        defined directly in prelude.cl. Macros (do, cond, str, case, ->, ->>, def, etc.)
-        also present. List type and list macro omitted (blocked by recursive type bug).
-
-     4. ACKNOWLEDGED — stdlib separation invariant is already documented in project
-        CLAUDE.md. Tests and examples MUST NOT depend on stdlib/. Only exemplar and
-        production binary may.
+     Ring 2 Phase 1-3 modules implemented: compare/eq, compare/ord, num/num,
+     text/display, fn/option, fn/result, fn/compose, default, collections/pair,
+     collections/either, testing/assertions. List type still blocked by
+     recursive type support not yet exercised in prelude.
      -->
 
 # Standard Library Plan

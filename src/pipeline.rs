@@ -10,8 +10,8 @@ use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 
 use cranelisp_types::{
-    CheckResult, CompileMode, CranelispError, ModuleFullPath, ModuleStructure, Program, Sexp, Span,
-    Type, Warning,
+    CheckResult, CompileMode, CranelispError, MacroClauseInfo, ModuleEntry, ModuleFullPath,
+    ModuleStructure, Program, Sexp, Span, Type, Visibility, Warning,
 };
 
 use crate::expander::CraneliftExpander;
@@ -184,6 +184,36 @@ fn compile_and_register_macro(
 
     // Keep JIT alive so macro function pointers remain valid.
     jit_modules.push(jit);
+
+    // Register macro in the current module's symbol table so it is visible
+    // to cross-module imports (e.g., `(import [fn.threading [-> ->>]])`).
+    // Without this, macros are only in the expander's MacroEnv and cannot
+    // be found by the typechecker's module resolution.
+    let clause_infos: Vec<MacroClauseInfo> = info
+        .clauses
+        .iter()
+        .map(|c| MacroClauseInfo {
+            params: c.fixed_params.clone(),
+            rest_param: c.rest_param.clone(),
+            source: None,
+        })
+        .collect();
+    let visibility = if info.is_private {
+        Visibility::Private
+    } else {
+        Visibility::Public
+    };
+    tc.symbol_table_mut().insert(
+        info.name.clone(),
+        ModuleEntry::Macro {
+            name: info.name.clone(),
+            clauses: clause_infos,
+            docstring: info.docstring.clone(),
+            visibility,
+            sexp: Some(sexp.clone()),
+            source: None,
+        },
+    );
 
     Ok(())
 }
@@ -457,8 +487,18 @@ fn discover_import_dependencies(
             }
         };
 
-        // Skip if already discovered (via mod_decls or prior import).
-        if nodes.contains_key(&candidate_path) || dependencies.contains(&candidate_path) {
+        // Always record the dependency edge (even if the module was already
+        // discovered by another path). Without this, the toposort may place
+        // the depended-on module AFTER the dependent module.
+        if dependencies.contains(&candidate_path) {
+            // Already in this module's dependency list — skip.
+            continue;
+        }
+
+        if nodes.contains_key(&candidate_path) {
+            // Module already discovered by another path — record the
+            // dependency edge but don't re-discover.
+            dependencies.push(candidate_path.clone());
             continue;
         }
 
@@ -665,14 +705,26 @@ fn accumulate_func_sigs(
     for (name, arity) in func_signatures {
         all_func_sigs.push((name.clone(), *arity));
 
-        // For submodule functions, register qualified aliases.
-        // E.g., module "main.util" function "helper" gets alias "util/helper"
-        // so that module "main" can call (util/helper).
+        // For submodule functions, register qualified aliases at every suffix
+        // of the dotted module path. E.g., module "main.mid.leaf" function
+        // "value" gets aliases:
+        //   "leaf/value"          — last component (child-relative ref)
+        //   "mid.leaf/value"      — two-component suffix
+        //   "main.mid.leaf/value" — full absolute path
+        // This allows both child-relative refs like (leaf/value) and
+        // fully-qualified refs like (main.mid.leaf/value) to resolve at
+        // codegen time (spec §8.5.1).
         let mod_str: &str = module_path.as_ref();
-        if let Some(dot_pos) = mod_str.rfind('.') {
-            let last_component = &mod_str[dot_pos + 1..];
+        for (idx, _) in mod_str.match_indices('.') {
+            let suffix = &mod_str[idx + 1..];
             let qualified =
-                cranelisp_types::Symbol::from(format!("{}/{}", last_component, name));
+                cranelisp_types::Symbol::from(format!("{}/{}", suffix, name));
+            all_func_sigs.push((qualified, *arity));
+        }
+        // Also register the full module path as an alias (for absolute refs).
+        if mod_str.contains('.') {
+            let qualified =
+                cranelisp_types::Symbol::from(format!("{}/{}", mod_str, name));
             all_func_sigs.push((qualified, *arity));
         }
     }
@@ -805,15 +857,20 @@ pub fn load_prelude(
 
         let check = tc.check_program(&program)?;
 
-        let module_info = cranelisp_backend::compile_module_program(
-            &program,
-            &check,
-            CompileMode::Batch,
-            jit,
-            all_func_sigs,
-        )?;
+        // Skip codegen for modules with no compilable definitions (e.g.,
+        // type-only or trait-only modules). Typechecking still registers
+        // types and traits in the TC.
+        if has_compilable_defns(&program) {
+            let module_info = cranelisp_backend::compile_module_program(
+                &program,
+                &check,
+                CompileMode::Batch,
+                jit,
+                all_func_sigs,
+            )?;
 
-        accumulate_func_sigs(module_path, &module_info.func_signatures, all_func_sigs);
+            accumulate_func_sigs(module_path, &module_info.func_signatures, all_func_sigs);
+        }
     }
 
     // Inject implicit (import [prelude [*]]) into the "user" module.
@@ -833,6 +890,34 @@ pub fn load_prelude(
     tc.register_imports(&[import_spec])?;
 
     Ok(macro_jit_modules)
+}
+
+/// Inject an implicit `(import [prelude [*]])` into the typechecker's current
+/// module, unless the current module IS "prelude" (to avoid self-import).
+///
+/// Per spec §8.8.1, all non-prelude modules receive this implicit import so
+/// that prelude-defined traits and macros are available without explicit import.
+fn inject_prelude_import(
+    tc: &mut cranelisp_typecheck::TypeChecker,
+) -> Result<(), CranelispError> {
+    let prelude_path = ModuleFullPath::from("prelude");
+
+    // Don't self-import prelude into itself.
+    if tc.current_module_path() == &prelude_path {
+        return Ok(());
+    }
+
+    // Register the implicit glob import. Duplicate same-source imports are
+    // silently deduplicated by insert_imports_detecting_ambiguity, so this
+    // is safe to call even if the module already has a prelude import
+    // (e.g., "user" which received one from load_prelude).
+    let import_spec = cranelisp_types::ImportSpec {
+        module_path: prelude_path,
+        alias: None,
+        names: cranelisp_types::ImportNames::Glob,
+        span: Span::SYNTHETIC,
+    };
+    tc.register_imports(&[import_spec])
 }
 
 /// Compile a multi-file module graph and execute the entry point.
@@ -875,6 +960,10 @@ pub fn compile_module_graph(
     let mut entry_defn_name: Option<cranelisp_types::Symbol> = None;
     let mut entry_result_type = Type::Int;
 
+    // Check whether a prelude was loaded so we can inject implicit imports
+    // into each module in the graph (spec §8.8.1).
+    let prelude_loaded = tc.has_module(&ModuleFullPath::from("prelude"));
+
     for module_path in &order {
         let node = &graph.nodes[module_path];
 
@@ -883,6 +972,15 @@ pub fn compile_module_graph(
 
         // Phase 2: Set up module context BEFORE processing forms.
         tc.set_current_module(module_path.clone());
+
+        // Inject implicit (import [prelude [*]]) for non-prelude modules
+        // (spec §8.8.1). load_prelude() already injects into "user", but
+        // batch entry modules have a different path (e.g. "main" for main.cl)
+        // and need it too for prelude traits to resolve.
+        if prelude_loaded {
+            inject_prelude_import(&mut tc)?;
+        }
+
         if !structure.import_specs.is_empty() {
             tc.register_imports(&structure.import_specs)?;
         }
@@ -905,16 +1003,20 @@ pub fn compile_module_graph(
 
         let result_type = infer_result_type(&program, &check);
 
-        let module_info = cranelisp_backend::compile_module_program(
-            &program,
-            &check,
-            CompileMode::Batch,
-            &mut jit,
-            &all_func_sigs,
-        )?;
-        all_warnings.extend(module_info.warnings);
+        // Skip codegen for modules with no compilable definitions (e.g.,
+        // type-only or trait-only modules like fn/option.cl).
+        if has_compilable_defns(&program) {
+            let module_info = cranelisp_backend::compile_module_program(
+                &program,
+                &check,
+                CompileMode::Batch,
+                &mut jit,
+                &all_func_sigs,
+            )?;
+            all_warnings.extend(module_info.warnings);
 
-        accumulate_func_sigs(module_path, &module_info.func_signatures, &mut all_func_sigs);
+            accumulate_func_sigs(module_path, &module_info.func_signatures, &mut all_func_sigs);
+        }
 
         if module_path == &graph.entry
             && let Some(name) = find_entry_defn(&program)
@@ -943,6 +1045,17 @@ pub fn compile_module_graph(
         ty,
         warnings: all_warnings,
     })
+}
+
+/// Check whether a program has any definitions that require codegen.
+///
+/// Modules with only type definitions or trait declarations (no function
+/// bodies) should skip codegen — the typechecker has already registered
+/// their types/traits. This avoids "no function definitions in program"
+/// errors from the backend.
+fn has_compilable_defns(program: &[cranelisp_types::TopLevel]) -> bool {
+    use cranelisp_types::TopLevel;
+    program.iter().any(|tl| matches!(tl, TopLevel::Defn(_) | TopLevel::DefnMulti { .. } | TopLevel::TraitImpl(_)))
 }
 
 // ---------------------------------------------------------------------------

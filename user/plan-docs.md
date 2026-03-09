@@ -171,7 +171,7 @@ Sections 26 and 27 of the curriculum ("organizing" and "importing") cover module
 
 #### 2. File Resolution Rules
 - `(mod util)` looks for `util.cl` in the same directory as the declaring file
-- Root modules resolve from the project root or `lib/` directory
+- Root modules resolve from the project root or `stdlib/` directory
 - Submodules use directory nesting: `(mod core.math)` resolves to `core/math.cl`
 
 #### 3. Importing with `(import [...])`

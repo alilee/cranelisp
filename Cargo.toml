@@ -23,6 +23,9 @@ cranelisp-backend = { path = "crates/cranelisp-backend" }
 cranelisp-runtime = { path = "crates/cranelisp-runtime" }
 cranelisp-platform = { path = "crates/cranelisp-platform" }
 
+[dependencies.libc]
+version = "0.2"
+
 [dev-dependencies]
 serial_test = "3"
 tempfile = "3"

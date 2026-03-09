@@ -98,6 +98,19 @@ fn register_intrinsics(builder: &mut JITBuilder) {
     builder.symbol("bool-to-string", cranelisp_runtime::bool_to_string as *const u8);
     builder.symbol("parse-int", cranelisp_runtime::parse_int as *const u8);
 
+    // Extended string primitives
+    builder.symbol("substring", cranelisp_runtime::str_substring as *const u8);
+    builder.symbol("char-at", cranelisp_runtime::str_char_at as *const u8);
+    builder.symbol("split", cranelisp_runtime::str_split as *const u8);
+    builder.symbol("join", cranelisp_runtime::str_join as *const u8);
+    builder.symbol("replace", cranelisp_runtime::str_replace as *const u8);
+    builder.symbol("trim", cranelisp_runtime::str_trim as *const u8);
+    builder.symbol("starts-with?", cranelisp_runtime::str_starts_with as *const u8);
+    builder.symbol("ends-with?", cranelisp_runtime::str_ends_with as *const u8);
+    builder.symbol("contains?", cranelisp_runtime::str_contains as *const u8);
+    builder.symbol("to-upper", cranelisp_runtime::str_to_upper as *const u8);
+    builder.symbol("to-lower", cranelisp_runtime::str_to_lower as *const u8);
+
     // Marshal primitives (macros module + primitives module)
     builder.symbol("sconcat", cranelisp_runtime::sconcat as *const u8);
     builder.symbol("quote-sexp", cranelisp_runtime::quote_sexp as *const u8);

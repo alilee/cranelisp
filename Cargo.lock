@@ -232,6 +232,7 @@ dependencies = [
  "cranelisp-runtime",
  "cranelisp-typecheck",
  "cranelisp-types",
+ "libc",
  "serial_test",
  "tempfile",
 ]

@@ -105,7 +105,7 @@ This is different from the `function(argument1, argument2)` notation you might s
 
 ### Integer Arithmetic
 
-Cranelisp's arithmetic functions have explicit names like `add-i64` rather than symbols like `+`. This is because the language currently provides monomorphic primitives — each function works with exactly one type. A future version will introduce `+` as a polymorphic operator that automatically selects `add-i64` for integers and `add-f64` for floats. For now, the explicit names make the types unambiguous.
+Cranelisp provides both polymorphic operators like `+` and explicit monomorphic primitives like `add-i64`. The operators dispatch through the trait system — `+` calls `add-i64` for integers and `add-f64` for floats automatically. The explicit primitives are still available when you want to be unambiguous about types.
 
 Cranelisp provides named functions for integer arithmetic:
 

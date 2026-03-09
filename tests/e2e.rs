@@ -726,7 +726,7 @@ fn e2e_ring1_adt_product() {
         "r1_product",
     );
     assert_success(&o);
-    assert_result(&o, ":user/Point (Point.Point 3 4)");
+    assert_result(&o, ":user/Point (Point 3 4)");
 }
 
 // spec: 05-definitions §5.2.2 — sum type construction
@@ -1044,5 +1044,200 @@ fn e2e_isolation_no_shared_state() {
     assert!(
         all.contains("error:"),
         "second session should not see 'secret' from first\n---\n{all}"
+    );
+}
+
+// ===========================================================================
+// Ring 3: /expand command (repl/spec.md §11.1)
+// ===========================================================================
+
+// spec: repl/spec.md §11.1 — /expand with a single macro shows expanded form
+#[test]
+fn e2e_s11_1_expand_single_macro() {
+    let input = "(defmacro double [x] `(add-i64 ~x ~x))\n/expand (double 21)\n";
+    let o = run_repl(input, "expand_single");
+    assert_success(&o);
+    let out = stdout_str(&o);
+    // The expanded form should contain add-i64 with the argument substituted.
+    assert!(
+        out.contains("add-i64") && out.contains("21"),
+        "/expand should show expanded form with add-i64 and 21, got:\n{out}"
+    );
+}
+
+// spec: repl/spec.md §11.1 — /expand with nested macros expands recursively
+#[test]
+fn e2e_s11_1_expand_nested_macros() {
+    let input = "(defmacro inc [x] `(add-i64 ~x 1))\n\
+                 (defmacro double-inc [x] `(inc (inc ~x)))\n\
+                 /expand (double-inc 5)\n";
+    let o = run_repl(input, "expand_nested");
+    assert_success(&o);
+    let results = result_lines(&o);
+    // The /expand output line should contain add-i64 (fully expanded).
+    let expand_line = results.iter().find(|r| r.contains("add-i64"));
+    assert!(
+        expand_line.is_some(),
+        "/expand should recursively expand to add-i64, got results: {results:?}"
+    );
+    // The expansion result itself should not contain 'inc' — fully expanded.
+    let line = expand_line.unwrap();
+    assert!(
+        !line.contains("inc"),
+        "/expand should fully expand (no 'inc' in expansion), got: {line}"
+    );
+}
+
+// spec: repl/spec.md §11.1 — /expand with no macro calls shows input unchanged
+#[test]
+fn e2e_s11_1_expand_no_macro() {
+    let input = "/expand (add-i64 1 2)\n";
+    let o = run_repl(input, "expand_no_macro");
+    assert_success(&o);
+    let out = stdout_str(&o);
+    assert!(
+        out.contains("add-i64") && out.contains("1") && out.contains("2"),
+        "/expand should display form unchanged, got:\n{out}"
+    );
+}
+
+// spec: repl/spec.md §11.1 — /expand on non-macro form displays input unchanged (negative)
+#[test]
+fn e2e_s11_1_neg_expand_non_macro_unchanged() {
+    let input = "/expand (add-i64 1 2)\n";
+    let o = run_repl(input, "expand_neg_nonmacro");
+    assert_success(&o);
+    let out = stdout_str(&o);
+    // Should NOT contain "error" — just display the form.
+    assert!(
+        !out.contains("error:"),
+        "/expand on non-macro should not error, got:\n{out}"
+    );
+}
+
+// ===========================================================================
+// Ring 3: /doc on macro (repl/spec.md §11.2.4)
+// ===========================================================================
+
+// spec: repl/spec.md §11.2.4 — /doc on macro with no docstring
+#[test]
+fn e2e_s11_2_4_doc_macro_no_docstring() {
+    let input = "(defmacro my-mac [x] x)\n/doc my-mac\n";
+    let o = run_repl(input, "doc_macro_nodoc");
+    assert_success(&o);
+    let out = stdout_str(&o);
+    // Should show something about the macro, even without docstring.
+    assert!(
+        out.contains("my-mac"),
+        "/doc should mention the macro name, got:\n{out}"
+    );
+}
+
+// spec: repl/spec.md §11.2.4 — /doc on macro with docstring
+#[test]
+fn e2e_s11_2_4_doc_macro_with_docstring() {
+    let input = "(defmacro my-inc \"Increment by one\" [x] `(add-i64 ~x 1))\n/doc my-inc\n";
+    let o = run_repl(input, "doc_macro_withdoc");
+    assert_success(&o);
+    let out = stdout_str(&o);
+    assert!(
+        out.contains("Increment by one"),
+        "/doc should show docstring, got:\n{out}"
+    );
+}
+
+// ===========================================================================
+// Ring 3: /imports command (repl/spec.md §3.4)
+// ===========================================================================
+
+// spec: repl/spec.md §3.4 — /imports with no explicit imports
+#[test]
+fn e2e_s3_4_imports_empty() {
+    let input = "/imports\n";
+    let o = run_repl(input, "imports_empty");
+    assert_success(&o);
+    // Should not error — empty or shows prelude imports.
+    let out = stdout_str(&o);
+    assert!(
+        !out.contains("error:"),
+        "/imports should not error on empty session, got:\n{out}"
+    );
+}
+
+// spec: repl/spec.md §3.4 — /imports after explicit import
+#[test]
+fn e2e_s3_4_imports_after_import() {
+    let input = "(import [primitives [add-i64 sub-i64]])\n/imports\n";
+    let o = run_repl(input, "imports_after");
+    assert_success(&o);
+    let out = stdout_str(&o);
+    assert!(
+        out.contains("add-i64"),
+        "/imports should show imported names, got:\n{out}"
+    );
+}
+
+// spec: repl/spec.md §3.4 — /imports <module> filters to one module
+#[test]
+fn e2e_s3_4_imports_filter_by_module() {
+    let input = "(import [primitives [add-i64]])\n/imports primitives\n";
+    let o = run_repl(input, "imports_filter");
+    assert_success(&o);
+    let out = stdout_str(&o);
+    assert!(
+        out.contains("add-i64"),
+        "/imports primitives should show primitives imports, got:\n{out}"
+    );
+}
+
+// spec: repl/spec.md §3.4 — /imports <nonexistent> is empty, not error (negative)
+#[test]
+fn e2e_s3_4_neg_imports_nonexistent_not_error() {
+    let input = "/imports nonexistent\n";
+    let o = run_repl(input, "imports_neg_nonexist");
+    assert_success(&o);
+    let out = stdout_str(&o);
+    assert!(
+        !out.contains("error:"),
+        "/imports nonexistent should not error, got:\n{out}"
+    );
+}
+
+// ===========================================================================
+// Ring 3: defmacro special form (repl/spec.md §4.2)
+// ===========================================================================
+
+// spec: 09-macros.md §9.9.4 — runtime error during expansion reported as error, not crash
+// FIXME(/int): div-by-zero during macro expansion causes SIGILL instead of clean error
+#[test]
+fn e2e_s9_9_4_runtime_error_during_expansion() {
+    // Define a macro whose body triggers division by zero during expansion.
+    let input = "(defmacro boom [x] (let [_ (div-i64 1 0)] x))\n(boom 42)\n";
+    let o = run_repl(input, "macro_runtime_error");
+    // The process should not crash (exit 0 with error message on stdout).
+    // Currently this causes SIGILL — the test documents the gap.
+    assert!(
+        o.status.success(),
+        "runtime error during macro expansion should produce clean error, not crash (exit {:?})",
+        o.status.code()
+    );
+    let out = stdout_str(&o);
+    assert!(
+        out.contains("error"),
+        "runtime error during expansion should report error, got:\n{out}"
+    );
+}
+
+// spec: repl/spec.md §4.2 — bare 'defmacro' shows special form signature
+#[test]
+fn e2e_s4_2_special_form_defmacro() {
+    let input = "defmacro\n";
+    let o = run_repl(input, "sf_defmacro");
+    assert_success(&o);
+    let out = stdout_str(&o);
+    // Should show special form info, not "undefined variable" error.
+    assert!(
+        !out.contains("undefined variable"),
+        "bare 'defmacro' should produce feedback, not 'undefined variable', got:\n{out}"
     );
 }

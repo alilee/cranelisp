@@ -1,52 +1,45 @@
-; Cranelisp Ring 2B — Strings, Display & User Traits
+; Cranelisp Ring 2B — Display, User Traits, Modules
 
-; === String equality ===
+; Explore the Display trait
 
-(= "hello" "hello")
-(= "hello" "world")
-
-; === The Display trait — converting values to strings ===
-
+/t show
 (show 42)
 (show true)
 (show "already a string")
-/sig show
 
-; === Constrained polymorphism with Display ===
+; String equality via the Eq trait
 
-(defn describe [x] (str-concat "value is " (show x)))
-(describe 42)
-(describe true)
-/sig describe
+/t =
+(= "hello" "hello")
+(= "hello" "world")
 
-; === User-defined ADTs ===
+; User-defined types
 
+deftype
 (deftype Color Red Green Blue)
 Color
 Red
 (match Green [Red "r" Green "g" Blue "b"])
 
-; === Implementing Display for a user type ===
+; Implement Display for our type
 
+impl
 (impl Display Color (defn show [c] (match c [Red "Red" Green "Green" Blue "Blue"])))
 (show Red)
 (show Green)
 
-; === The payoff — describe works on user types too ===
+; Constrained polymorphism — describe works on any Display type
 
+(defn describe "Show a value as a string" [x] (str-concat "value is " (show x)))
+/t describe
+/d describe
+(describe 42)
+(describe true)
 (describe Red)
-(describe Blue)
 
-; === Self-documenting types and traits ===
+; Constrained across Num — square works on Int and Float
 
-Int
-Bool
-/info Num
-/info Display
-
-; === Constrained polymorphism across types ===
-
-(defn square [x] (* x x))
+(defn square "Square a number" [x] (* x x))
+/t square
 (square 7)
 (square 3.0)
-/sig square

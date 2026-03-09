@@ -45,24 +45,58 @@ Output uses the `:Type value` format — the same colon-prefixed type annotation
 
 ## 1. Display Format
 
-### 1.1 Output Categories [Tested]
-<!-- All table rows below have [Tested] annotations -->
+### 1.1 Universal Output Format [R3 S14]
 
-<!-- RESOLVED: Sprint 9 — bare type name lookup implemented. Type::from_name() check
-     added to special_form_feedback() before symbol table lookup. Int, Bool, Float, String
-     now produce `:primitives/{name}` output. Tests: e2e.rs::e2e_s1_1_bare_type_int,
-     e2e_s1_1_bare_type_bool, e2e_s1_1_bare_type_float, e2e_s1_1_bare_type_string. -->
+All REPL output uses a unified format that mirrors Cranelisp type annotation syntax. The primary line is always:
 
-REPL output falls into three categories. The format mirrors Cranelisp type annotation syntax (`:Type expr`).
+```
+:Type {value|name} ; {classification} - {docstring first line}
+```
 
-| Input kind | Format | Example | Test |
-|---|---|---|---|
-| Expression result | `:QualifiedType value` | `:primitives/Int 3` | [Tested tests/e2e::e2e_s1_2_int_display_qualified] |
-| Function definition | `:TypeScheme qualified-name` | `:(Fn [a] primitives/Int) user/foo` | [Tested tests/e2e::e2e_s1_3_defn_shows_qualified_name] |
-| Type definition | `:qualified/TypeName` | `:user/Color` | [Tested tests/e2e::e2e_s1_1_bare_type_user_defined] |
-| Symbol lookup | `:TypeScheme qualified-name` | `:(Fn [a] a) user/id` | [Tested tests/e2e::e2e_s4_1_bare_symbol_lookup] |
-| Constructor lookup | `:QualifiedType Type.Constructor` | `:user/Color user/Color.Red` | [Tested tests/e2e::e2e_s1_1_constructor_lookup] |
-| Special form lookup | `:signature name` | `:(Fn [primitives/Bool a a] a) if` | [Tested tests/e2e::e2e_s4_2_special_form_feedback] |
+Where:
+- `:Type` — the fully-qualified type (per §1.4), always present
+- `{value|name}` — either a runtime value (for expression results) or a fully-qualified name (for definitions and lookups)
+- `; {classification} - {docstring}` — optional comment suffix. The classification is the name of the defining special form (`defn`, `deftype`, `deftrait`, `defmacro`, `special form`, `impl`). The docstring is the first line of the symbol's documentation. If the symbol has no docstring, only the classification appears. If there is no classification (literal values), the comment is omitted entirely.
+
+**Related symbols** appear as comment lines below the primary line. Each section names a relationship using language syntax, followed by unqualified symbol names (bare names, since these are in-scope symbols):
+
+```
+; {relationship}:
+;  {symbol} {symbol} ...
+```
+
+Related symbol lists use the same line-breaking algorithm as `/list` categories (§3.3). Within each section, locally-defined symbols appear before imported symbols.
+
+**Examples:**
+
+```
+user> 42
+:primitives/Int 42
+
+user> double
+:(Fn [primitives/Int] primitives/Int) user/double ; defn - Multiply by 2
+
+user> Display
+:core.str/Display ; deftrait - Format as string
+; defn:
+;  show
+; impl:
+;  Point
+;  Bool Float Int List Vec
+
+user> Color
+:user/Color ; deftype
+; match:
+;  Red Green Blue
+
+user> if
+:(Fn [primitives/Bool a a] a) if ; special form - Conditional branch
+
+user> +
+:(Fn [:core.num/Num a :a] a) core.num/Num.+ ; deftrait - Addition operator
+```
+
+Not every symbol class has related symbols. Functions, constructors, literals, and primitives have only the primary line (plus optional docstring). Types, traits, macros, and modules have related symbol sections.
 
 ### 1.2 Expression Results [Tested]
 
@@ -93,14 +127,27 @@ Examples:
 
 ### 1.3 Definition Results [Tested]
 
-A function definition MUST display its inferred type scheme and fully-qualified name. It MUST NOT display `<closure>` — the user defined a *named* function, not an anonymous closure:
+When the user enters a definition form, the REPL confirms the definition using the universal format (§1.1). The response follows the same per-class rules as bare symbol lookup (§4.1) — a definition is immediately followed by its lookup display.
 
 ```
-:(Fn [a] a) user/id
-:(Fn [primitives/Int] primitives/Int) user/double
+user> (defn double "Multiply by 2" [x] (* x 2))
+:(Fn [primitives/Int] primitives/Int) user/double ; defn - Multiply by 2
+
+user> (deftype Color Red Green Blue)
+:user/Color ; deftype
+; match:
+;  Red Green Blue
+
+user> (deftrait (Sizeable a) (size [:a] :Int))
+:user/Sizeable ; deftrait
+; defn:
+;  size
+
+user> (impl Sizeable Circle (defn size [c] ...))
+impl user/Sizeable for user/Circle
 ```
 
-Note: `<closure>` is reserved for anonymous function *values* (§1.2, §1.5). When the user writes `(defn double [x] (* x 2))`, the response shows the name `user/double`. Only `(fn [x] (* x 2))` evaluated as an expression produces `<closure>`.
+A function definition MUST NOT display `<closure>` — the user defined a *named* function, not an anonymous closure. `<closure>` is reserved for anonymous function *values* (§1.2, §1.5).
 
 | Requirement | Test |
 |---|---|
@@ -110,37 +157,10 @@ Note: `<closure>` is reserved for anonymous function *values* (§1.2, §1.5). Wh
 | deftrait shows trait name | [Tested tests/ring2::repl_deftrait_display] |
 | impl shows `impl Trait for Type` | [Tested tests/ring2::repl_impl_display] |
 | constrained fn shows inline constraints | [Tested tests/ring2::repl_constrained_fn_display] |
-| overloaded fn shows all variants | [R3 S8] |
-
-A type definition MUST display the fully-qualified type name:
-
-```
-:user/Color
-:user/Option
-```
-
-A trait declaration MUST display the trait name:
-
-```
-:user/Sizeable
-```
-
-A trait implementation MUST confirm the trait and type:
-
-```
-impl user/Sizeable for user/Circle
-```
-
-A constrained function definition MUST display its constraints inline on the first occurrence of each constrained type variable:
-
-```
-:(Fn [:core.numerics/Num a :a] a) user/double
-```
-
-An overloaded function definition MUST display all variant signatures.
+| overloaded fn shows all variants | [R3 S14] |
 
 **Ring 0**: function definitions, type definitions.
-**Ring 2**: trait declarations, trait implementations, constrained functions, overloaded functions.
+**Ring 2**: trait declarations, trait implementations, constrained functions.
 **Ring 3**: macros.
 
 ### 1.4 Type Display [Tested]
@@ -176,7 +196,9 @@ Values are runtime results and have no module scope. They are displayed bare.
 | `Float` | decimal float (e.g., `3.14`) | 0 | [Tested tests/repl_experience::display_float_result] |
 | `String` | `"contents"` with escapes | 1 | [Tested tests/repl_experience::r1_display_string_literal] |
 | Nullary constructor | `Type.Ctor` (e.g., `Color.Red`, `Option.None`) | 0 | [Tested tests/e2e::e2e_s1_5_nullary_ctor_dot_notation] |
-| Data constructor | `(Type.Ctor field1 field2 ...)` (e.g., `(Option.Some 42)`) | 1 | [Tested tests/e2e::e2e_s1_5_data_ctor_dot_notation] |
+| Data constructor (multi-ctor) | `(Type.Ctor field1 field2 ...)` (e.g., `(Option.Some 42)`) | 1 | [Tested tests/e2e::e2e_s1_5_data_ctor_dot_notation] |
+| Data constructor (single-ctor, name matches type) | `(Ctor field1 field2 ...)` (e.g., `(Point 3 4)`) | 1 | [Tested tests/e2e::e2e_ring1_adt_product] |
+
 | Closure | `<closure>` | 1 | [Tested tests/repl_experience::r1_display_closure_format] |
 | Vec | `[elem1 elem2 ...]` (empty: `[]`) | 1 | [Tested tests/repl_experience::r1_display_vec_int] |
 | List | `(list elem1 elem2 ...)` (empty: `List.Nil`) | 1 | [R3 S8] |
@@ -200,6 +222,7 @@ Where:
 - `module` — current module name (default: `user`)
 
 On startup (before any expression), the timing SHOULD be `0+0ms`.
+
 
 **Ring 0**: timing and prompt display.
 **Ring 2**: module name changes when `/mod` switches namespace.
@@ -245,11 +268,12 @@ Slash commands provide introspection and navigation. All commands start with `/`
 | `/ast <name>` | — | Show AST | 0 | [R4 S10] |
 | `/clif <name>` | — | Show Cranelift IR | 0 | [R4 S10] |
 | `/disasm <name>` | — | Show disassembled native code | 0 | [R4 S10] |
-| `/list [filter]` | `/l` | List symbols in current module | 0 | [Tested tests/e2e::e2e_s3_3_list] |
+| `/list [prefix]` | `/l` | List definitions in current module | 0 | [Tested tests/e2e::e2e_s3_3_list] |
 | `/time <expr>` | — | Evaluate with timing breakdown | 0 | [Tested tests/e2e::e2e_s3_1_time] |
 | `/expand <form>` | `/e` | Macro-expand a form | 3 | [R3 S11 — tests/ring3_repl::r3_expand_single_macro IGNORED] |
 | `/mod [name]` | — | Switch module namespace | 2 | [R4 S10] |
-| `/imports` | — | Show imports in current module with source | 2 | [R3 S11 — tests/ring3_repl::r3_imports_empty IGNORED] |
+| `/imports [module]` | — | Show imports and special forms; filter by source module | 0 | [R3 S14] |
+| `/exports <module>` | — | List a module's importable public symbols | 2 | [R3 S14] |
 | `/reload [name]` | `/r` | Reload module from file | 2 | [R4 S10] |
 | `/mem [expr]` | `/m` | Show allocation statistics | 1 | [R4 S10] |
 | `/run-tests` | — | Discover and run test functions | 4 | [R4 S10] |
@@ -269,41 +293,34 @@ Available commands:
 
 Commands not yet available (due to ring) SHOULD be omitted or marked as unavailable.
 
-### 3.3 `/list` Categories [R4 S10]
-<!-- Section-level: Modules and Imports categories not yet implemented -->
+### 3.3 `/list` — Module Definitions [R3 S14]
 
-`/list` MUST organize symbols into categories. Names MUST be fully qualified.
+`/list` shows symbols **defined in the current module** — the user's own work. It does NOT show imports or special forms (those belong on `/imports`). Constructors are included alongside other symbols alphabetically.
+
+**Scope rule:** `/list` MUST show only names created by definitions in the current module: `defn`, `deftype`, `deftrait`, `impl` (trait method definitions), `defmacro`. Imported names MUST NOT appear. Special forms MUST NOT appear (they are always available and shown by `/imports`). Primitives (`add-i64`, etc.) MUST NOT appear when the current module is `user`.
+
+**Categories:**
 
 | Category | Contents | Ring | Test |
 |---|---|---|---|
-| Types | User-defined types (`deftype`) | 0 | [Tested tests/e2e::e2e_s3_3_list] |
-| Special forms | `if`, `let`, `fn`, `defn`, `deftype`, `match` | 0 | [Tested tests/e2e::e2e_s3_3_list_special_forms] |
-| Functions | User-defined functions | 0 | [Tested tests/e2e::e2e_s3_3_list] |
-| Traits | Trait declarations | 2 | [Tested tests/e2e::e2e_s3_3_list_traits] |
-| Macros | Macro definitions | 3 | [Tested+Neg tests/ring3_repl::r3_list_macros_category_via_symbol_table, tests/ring3_repl::r3_neg_non_macros_absent_from_macros] |
-| Modules | Declared submodules | 2 | [R4 S10] |
-| Imports | Count of imported names by source module | 2 | [R3 S11] |
+| Modules | Declared submodules | 2 | [R4 S15] |
+| Macros | Macro definitions (`defmacro`) | 3 | [Tested+Neg tests/ring3_repl::r3_list_macros_category_via_symbol_table, tests/ring3_repl::r3_neg_non_macros_absent_from_macros] |
+| Traits | Trait declarations (`deftrait`) | 2 | [Tested tests/e2e::e2e_s3_3_list_traits] |
+| Types | User-defined types and constructors (`deftype`) | 0 | [Tested tests/e2e::e2e_s3_3_list] |
+| Fns | User-defined functions and trait method implementations | 0 | [Tested tests/e2e::e2e_s3_3_list] |
 
-**`/list` scope rule:** `/list` MUST show only names **defined in** the current module. Imported names appear in the Imports category as a summary (count per source module), not individually mixed into other categories. Primitives (`add-i64`, `eq-i64`, etc.) are defined in the `primitives` module — they MUST NOT appear in `/list` when the current module is `user`. Trait methods (`+`, `show`, etc.) are either user-defined (appear under Functions) or imported (appear under Imports).
+Category order: Modules, Macros, Traits, Types, Fns. Empty categories are omitted.
 
-**`/list` Imports category format:**
+**Empty module:** When no definitions exist in the current module, `/list` MUST print `(no definitions)`. This distinguishes "command worked on empty module" from a failed command.
 
-```
-Imports:
-  primitives (3 names)
-  math (2 names: foo, bar)
-```
+**Negative requirements** (what MUST NOT appear):
 
-The Imports category shows which modules have been imported and how many names came from each. For small imports (≤5 names), the names are listed inline. For glob imports or large counts, only the count is shown. This gives the user a quick overview; `/imports` provides full detail.
+- No category should contain imported names (those belong on `/imports`)
+- No category should contain special forms (those belong on `/imports`)
+- No category should contain compiler-internal symbols (`__macro_*`, `$`-mangled names)
+- Constructors MUST appear in Types, not in Fns
 
-**`/list` negative requirements** (what MUST NOT appear):
-
-- Functions category MUST NOT contain names from other modules (primitives, imports)
-- Types category MUST NOT contain types from other modules unless imported
-- No category should contain compiler-internal symbols not in the spec
-- In a fresh `user` session with no definitions, `/list` MUST show only Special forms (no Functions, no Types, no Traits — until the user defines them or loads a prelude)
-
-**Filter argument:** `/list <text>` performs a case-insensitive substring match on symbol names across all categories, showing matching symbols with full type info (like `/sig`). `/list <module-name>` (when the argument matches a loaded module name) shows that module's public definitions. `/list <module-name> <text>` combines both: searches within a specific module.
+**Filter argument:** `/list <text>` performs a case-insensitive prefix match on symbol names across all categories, showing matching symbols with full type info. `/list` with no argument shows all definitions.
 
 **Large category display:** When a category contains 7 or more names, the display SHOULD use the following layout algorithm:
 
@@ -325,39 +342,76 @@ Fns:
   ...
 ```
 
-In this example: operators get their own line(s). Then A-group (abs, add) and C-group (ceil, concat) fit together on one row (4 items). D-group (double, drop) would push to 6+ so starts a new row. E-group (empty?, even?) and F-group (filter, floor, fold) fit together (5 items). G-group (get) starts a new row since adding it to the previous row would exceed 6.
+### 3.4 `/imports` — Imports and Special Forms [R3 S14]
 
-### 3.4 `/imports` — Import Detail [R3 S11 — tests/ring3_repl::r3_imports_empty IGNORED]
+`/imports` shows everything available in the current module that was NOT defined here: imported names and language special forms. This is the complement of `/list` — together they cover all symbols in scope.
 
-`/imports` MUST show all imports active in the current module, grouped by source module, with the individual names listed. This is the detailed companion to `/list`'s summary Imports category.
+**Categories:**
+
+| Category | Contents | Ring | Test |
+|---|---|---|---|
+| Special forms | `if`, `let`, `fn`, `defn`, `deftype`, `match`, etc. | 0 | [Tested tests/e2e::e2e_s3_3_list_special_forms] |
+| Macros | Imported macro definitions | 3 | [R3 S14] |
+| Traits | Imported trait declarations | 2 | [R3 S14] |
+| Types | Imported types and constructors | 0 | [R3 S14] |
+| Fns | Imported functions and trait methods | 0 | [R3 S14] |
+
+Category order: Special forms, Macros, Traits, Types, Fns. Empty categories are omitted (except Special forms, which are always present).
+
+**Format:** Each category lists names using the same layout algorithm as `/list` (§3.3) — names only, no type signatures. Type the symbol name for more detail.
+
+**Source module filter:** `/imports <module-name>` filters to show only imports from that source module (exact match). Names are grouped under `From <module>:` and sorted alphabetically. Source modules sorted alphabetically.
 
 ```
-user> /imports
-From primitives:
-  add-i64 :: (Fn [primitives/Int primitives/Int] primitives/Int)
-  eq-i64  :: (Fn [primitives/Int primitives/Int] primitives/Bool)
-  sub-i64 :: (Fn [primitives/Int primitives/Int] primitives/Int)
-From math:
-  bar :: (Fn [primitives/Int primitives/Int] primitives/Int)
-  foo :: (Fn [primitives/Int] primitives/Int)
+user> /imports prelude
+From prelude:
+  + - * / < > <= >= != =
+  case cond
+  show str
+  ...
 ```
 
-**Format:** Each imported name shows its type signature using fully-qualified type names (per §1.4). Names are grouped by **immediate source module** (the module named in the `import` form, not the ultimate origin) and sorted alphabetically within each group. Source modules are sorted alphabetically.
+**Unfiltered mode:** `/imports` with no argument shows all imports organized by category (not by source module). This gives a quick overview of what's available. Use `/imports <module>` for per-module detail.
 
-**Re-export provenance:** When the user writes `(import [prelude [*]])` and the prelude re-exports `+` from `core.numerics`, `/imports` shows `From prelude:` — because that is the module the user imported from. The user's mental model is "I imported from prelude." The ultimate origin is available via `/info +` (which shows the defining module per §3.5).
+**Re-export provenance:** When the user writes `(import [prelude [*]])` and the prelude re-exports `+` from `core.numerics`, `/imports prelude` shows `+` under `From prelude:` — because that is the module the user imported from. The ultimate origin is available via `/info +` (§3.6).
+
+**Reexport entries:** Both `Import` and `Reexport` module entries MUST be included. A symbol re-exported through the prelude is still an import from the user's perspective.
 
 **Glob imports:** When `(import [mod [*]])` was used, `/imports` MUST show the individual names that were imported (the expansion of `*` at the time the import was evaluated), not just `*`.
 
-**Implicit prelude import (Ring 3+):** The compiler injects an implicit `(import [prelude [*]])` for all non-prelude modules (spec §8.8.1). This implicit import IS visible in `/imports` — the user needs to discover what the prelude provides. `/imports prelude` filters to show only names from that source module (exact module name match).
+**Implicit prelude import (Ring 3+):** The compiler injects an implicit `(import [prelude [*]])` for all non-prelude modules (spec §8.8.1). This implicit import IS visible in `/imports` — the user needs to discover what the prelude provides.
 
-**No imports:** In a fresh session with no explicit `(import ...)` and no prelude, `/imports` MUST show nothing (empty output, silent re-prompt). The `primitives` module's implicit availability is via the module resolution fallback, NOT via import — so it does not appear in `/imports` unless the user explicitly writes `(import [primitives [add-i64]])`.
-
-**Filter argument:** `/imports <module-name>` filters to a single source module (exact match on the module name). This is useful when prelude imports are large — `/imports prelude` shows only prelude imports. `/imports` with no argument shows all imports.
+**No imports:** In a fresh session with no explicit `(import ...)` and no prelude, `/imports` MUST show only Special forms. The `primitives` module's implicit availability is via the module resolution fallback, NOT via import — so primitives do not appear in `/imports` unless explicitly imported.
 
 **Error cases:**
 - `/imports nonexistent` — no imports from that module; silent re-prompt (not an error)
 
-### 3.5 `/info` Output [Tested tests/e2e::e2e_s3_4_info]
+### 3.5 `/exports <module>` — Module Public API [R3 S14]
+
+`/exports <module>` resolves a module and lists its importable (public) symbols. This answers "what can I import from this module?" before writing an `(import ...)` form.
+
+**Argument:** The module name is required. `/exports` with no argument MUST print a usage hint: `Usage: /exports <module-name>`.
+
+**Module resolution:** The argument is resolved using the same resolution logic as `(import [module [...]])` — submodule paths, root modules, and stdlib modules. If the module is not yet loaded, it SHOULD be resolved and loaded (same as an import would trigger). If the module cannot be found, print an error: `Module '<name>' not found`.
+
+**Output format:** Public symbols listed by category — names only, no type signatures. Type the symbol name for more detail.
+
+```
+user> /exports math
+Module 'math':
+Fns:
+  bar foo
+```
+
+Categories follow the same order as `/list`: Modules, Macros, Traits, Types, Fns. Names sorted alphabetically within categories.
+
+**What counts as public:** Definitions with public visibility — `Def`, `Constructor`, `TraitDecl`, `TypeDef`, `Macro`. Import and Reexport entries in the target module are NOT shown (those are the module's own imports, not its exports).
+
+**Empty module:** If the module has no public symbols, print `Module '<name>' has no public symbols`.
+
+**Filter argument:** `/exports <module> <prefix>` performs a case-insensitive prefix match within the module's exports.
+
+### 3.6 `/info` Output [Tested tests/e2e::e2e_s3_4_info]
 
 `/info <name>` MUST display multi-line details using the `:Type name` format:
 
@@ -373,48 +427,134 @@ For overloaded functions, all variants MUST be listed. For constrained functions
 
 Every valid language construct entered at the REPL MUST produce useful feedback. This is the **self-documentation principle** from the project's design principles. All output reinforces the language syntax.
 
-### 4.1 Bare Symbol Lookup [R3 S10]
+### 4.1 Symbol Lookup — Per-Class Specification [R3 S14]
 
-Entering a symbol name without arguments MUST produce its type and fully-qualified name:
+Entering a bare symbol name at the REPL MUST produce output following the universal format (§1.1). Every symbol class has a defined response. No valid name MUST produce an opaque error. If a name is unbound, the error MUST say so clearly. [Tested tests/repl_experience::unbound_symbol_clear_error]
 
-| Symbol kind | Response | Test |
-|---|---|---|
-| Function | `:TypeScheme module/name` | [Tested tests/e2e::e2e_s4_1_bare_symbol_lookup] |
-| Constructor | `:QualifiedType module/Type.Ctor` | [Tested tests/e2e::e2e_s1_1_constructor_lookup] |
-| Type | Type definition display | [Tested tests/e2e::e2e_s1_1_bare_type_int, tests/e2e::e2e_s1_1_bare_type_bool, tests/e2e::e2e_s1_1_bare_type_float, tests/e2e::e2e_s1_1_bare_type_string] |
-| Special form | `:signature name` | [Tested tests/e2e::e2e_s4_2_special_form_feedback] |
-| Macro | Clause signatures | [R3 S11 — tests/ring3_repl::r3_bare_macro_lookup IGNORED] |
-| Trait | Method signatures | [Tested tests/e2e::e2e_s4_1_bare_trait_lookup] |
+#### 4.1.1 Functions (defn) [Tested tests/e2e::e2e_s4_1_bare_symbol_lookup]
 
-If the symbol has a docstring (per spec §5.2), the **first line** of the docstring SHOULD be appended as a comment after the type display:
+Primary line only. Classification `defn`. Docstring appended if present.
 
 ```
-:TypeScheme module/name ; first line of docstring
+user> double
+:(Fn [primitives/Int] primitives/Int) user/double ; defn - Multiply by 2
+
+user> id
+:(Fn [a] a) user/id ; defn
 ```
 
-This provides inline documentation without requiring a separate `/doc` command, reinforcing discoverability.
-
-Examples:
+Constrained functions show inline constraints per §1.4:
 
 ```
-0+0ms; user> id
-:(Fn [a] a) user/id
-0+0ms; user> double
-:(Fn [primitives/Int] primitives/Int) user/double ; Multiply by 2
-0+0ms; user> Red
-:user/Color user/Color.Red
-0+0ms; user> +
-:(Fn [:core.numerics/Num a :a] a) core.numerics/+
+user> add
+:(Fn [:Num a :a] a) user/add ; defn - Add two numbers
 ```
 
-No valid name MUST produce an opaque error. If a name is unbound, the error MUST say so clearly. [Tested tests/repl_experience::unbound_symbol_clear_error]
+Overloaded functions show all variant signatures, one per line:
 
-**Ring 0**: type + qualified name display.
-**Ring 2**: docstring display (requires docstrings, which depend on the module system for stored metadata).
+```
+user> map
+:(Fn [(Fn [a] b) (user/Vec a)] (user/Vec b)) user/map ; defn - Transform elements
+:(Fn [(Fn [a] b) (user/List a)] (user/List b)) user/map
+```
 
-### 4.2 Special Form Feedback [R3 S9]
+| Requirement | Test |
+|---|---|
+| function shows type + name | [Tested tests/e2e::e2e_s4_1_bare_symbol_lookup] |
+| constrained fn shows constraints | [Tested tests/ring2::repl_constrained_fn_display] |
+| overloaded fn shows all variants | [R3 S14] |
 
-Special form keywords (`if`, `let`, `fn`, `defn`, `deftype`, `match`, `defmacro`) entered bare MUST produce a function-like type signature, NOT an opaque error. Special forms are not regular functions but displaying their shape teaches the user their syntax.
+#### 4.1.2 Constructors [Tested tests/e2e::e2e_s1_1_constructor_lookup]
+
+Primary line only. Classification `deftype` (constructors are created by `deftype`). Nullary constructors have no function type — just the ADT type.
+
+```
+user> Some
+:(Fn [a] (user/Option a)) user/Option.Some ; deftype
+
+user> Red
+:user/Color user/Color.Red ; deftype
+```
+
+For single-constructor types where the constructor name matches the type name, the `Type.` prefix is suppressed:
+
+```
+user> Point
+:(Fn [primitives/Int primitives/Int] user/Point) user/Point ; deftype
+```
+
+#### 4.1.3 Types (deftype) [Tested tests/e2e::e2e_s1_1_bare_type_int]
+
+Primary line plus related symbols. Classification `deftype` for user types, `type` for builtin types. Related symbols show constructors under `match:` (the language construct used with them) and trait implementations under `impl:`.
+
+```
+user> Color
+:user/Color ; deftype
+; match:
+;  Red Green Blue
+
+user> Option
+:user/Option ; deftype
+; match:
+;  None Some
+; impl:
+;  Display Eq
+
+user> Int
+:primitives/Int ; type
+; impl:
+;  Display Eq Num Ord
+```
+
+Constructor names under `match:` are unqualified bare names. Trait names under `impl:` are unqualified. Within `impl:`, locally-defined traits appear first, then imported traits.
+
+| Requirement | Test |
+|---|---|
+| builtin types (Int, Bool, Float, String) | [Tested tests/e2e::e2e_s1_1_bare_type_int, tests/e2e::e2e_s1_1_bare_type_bool, tests/e2e::e2e_s1_1_bare_type_float, tests/e2e::e2e_s1_1_bare_type_string] |
+| user-defined type | [Tested tests/e2e::e2e_s1_1_bare_type_user_defined] |
+| related constructors | [R3 S14] |
+| related trait impls | [R3 S14] |
+
+#### 4.1.4 Traits (deftrait) [Tested tests/e2e::e2e_s4_1_bare_trait_lookup]
+
+Primary line plus related symbols. Classification `deftrait`. Related symbols show method names under `defn:` and implementing types under `impl:`.
+
+```
+user> Display
+:core.str/Display ; deftrait - Format as string
+; defn:
+;  show
+; impl:
+;  Point
+;  Bool Float Int List Vec
+
+user> Num
+:core.numerics/Num ; deftrait - Numeric operations
+; defn:
+;  + - * /
+; impl:
+;  Float Int
+```
+
+Within `impl:`, locally-defined types appear first, then imported types. Method names under `defn:` are unqualified.
+
+#### 4.1.5 Special Forms [Tested tests/e2e::e2e_s4_2_special_form_feedback]
+
+Primary line only. Classification `special form`. Special forms display a function-like type signature that teaches their syntax shape.
+
+```
+user> if
+:(Fn [primitives/Bool a a] a) if ; special form - Conditional branch
+
+user> let
+:(Fn [bindings body] a) let ; special form - Local bindings
+
+user> defn
+:(Fn [name params body] function) defn ; special form - Define function
+
+user> defmacro
+:(Fn [name docstring? params body] macro) defmacro ; special form - Define macro
+```
 
 | Form | Test |
 |---|---|
@@ -424,31 +564,83 @@ Special form keywords (`if`, `let`, `fn`, `defn`, `deftype`, `match`, `defmacro`
 | `defn` | [Tested tests/e2e::e2e_s4_2_special_form_defn] |
 | `deftype` | [Tested tests/e2e::e2e_s4_2_special_form_deftype] |
 | `match` | [Tested tests/e2e::e2e_s4_2_special_form_match] |
-| `defmacro` | [R3 S11 — tests/ring3_repl::r3_special_form_defmacro IGNORED] |
+| `defmacro` | [R3 S14 — tests/ring3_repl::r3_special_form_defmacro] |
 
-Examples:
+#### 4.1.6 Macros (defmacro) [R3 S14]
 
-```
-0+0ms; user> if
-:(Fn [primitives/Bool a a] a) if
-0+0ms; user> let
-:(Fn [bindings body] a) let
-0+0ms; user> defn
-:(Fn [name params body] function) defn
-```
-
-### 4.3 Operator Feedback [Tested tests/e2e::e2e_s4_3_operator_plus_feedback]
-
-Operators (`+`, `-`, `*`, `/`, `=`, `<`, `>`) are stdlib functions, not builtins. Entering them bare MUST display their type scheme and fully-qualified name showing their stdlib home.
+Primary line plus clause signatures. Classification `defmacro`. Each clause shows its parameter list on a separate comment line.
 
 ```
-0+0ms; user> +
-:(Fn [:core.numerics/Num a :a] a) core.numerics/+
-0+0ms; user> =
-:(Fn [:core.numerics/Eq a :a] primitives/Bool) core.numerics/=
+user> twice
+:user/twice ; defmacro - Evaluate and double
+; [x] -> Sexp
+
+user> my-add
+:user/my-add ; defmacro - Variadic addition
+; [x] -> Sexp
+; [x y] -> Sexp
+; [x y z] -> Sexp
 ```
 
-In Ring 0 (before traits), the display SHOULD still show the operator's conceptual stdlib home. The implementation-level builtin is a temporary shortcut, not the truth.
+Zero-arg macros expand immediately — they do not reach the lookup path.
+
+| Requirement | Test |
+|---|---|
+| macro shows clause signatures | [R3 S14 — tests/ring3_repl::r3_bare_macro_lookup] |
+| multi-clause macro | [R3 S14 — tests/ring3_repl::r3_bare_macro_lookup_multi_clause] |
+
+#### 4.1.7 Primitive Functions [R3 S14]
+
+Primary line only. Classification `defn` (primitives are functions). Primitives are defined in the `primitives` module.
+
+```
+user> add-i64
+:(Fn [primitives/Int primitives/Int] primitives/Int) primitives/add-i64 ; defn
+
+user> str-concat
+:(Fn [primitives/String primitives/String] primitives/String) primitives/str-concat ; defn
+```
+
+**Current gap**: The implementation skips primitives (`DefKind::Primitive` returns `None`). They MUST be shown like any other function.
+
+#### 4.1.8 Trait Methods (including operators) [Tested tests/e2e::e2e_s4_3_operator_plus_feedback]
+
+Trait methods use `Trait.method` dot notation in the name position, fully qualified with the defining module. Classification `deftrait` (methods are declared by `deftrait`).
+
+```
+user> +
+:(Fn [:core.num/Num a :a] a) core.num/Num.+ ; deftrait - Addition operator
+
+user> show
+:(Fn [:core.str/Display a] primitives/String) core.str/Display.show ; deftrait - Format as string
+
+user> =
+:(Fn [:core.cmp/Eq a :a] primitives/Bool) core.cmp/Eq.= ; deftrait
+```
+
+This applies to all trait methods, not just operators. The `Trait.method` notation is valid input syntax (per spec §1.4.4), reinforcing discoverability.
+
+#### 4.1.9 Modules [R4]
+
+Primary line plus related symbols. Classification `mod`. Related symbols show the module's public exports under `exports:`.
+
+```
+user> math
+:math ; mod
+; exports:
+;  foo bar
+```
+
+Module lookup is Ring 4 scope.
+
+#### 4.1.10 Unbound Names [Tested tests/repl_experience::unbound_symbol_clear_error]
+
+An unbound name MUST produce a clear error message, not an opaque internal error. The session MUST continue.
+
+```
+user> xyz
+error: unbound symbol 'xyz'
+```
 
 ## 5. Error Presentation [Tested]
 
@@ -518,7 +710,7 @@ The user defines a function. The REPL shows the inferred type scheme and qualifi
 
 **Phase 4: Introspection** (`/sig`, `/list`, `/info`)
 
-The user wants to see what they've defined. `/list` shows everything in scope. `/sig` shows a function's type. `/info` shows full details. They discover that the REPL knows about everything they've defined and can explain it. *(Ring 0)*
+The user wants to see what they've defined. `/list` shows their definitions. `/imports` shows what's available from elsewhere (including special forms). `/sig` shows a function's type. `/info` shows full details. They discover that the REPL knows about everything and can explain it. *(Ring 0)*
 
 **Phase 5: Making mistakes** (error → recovery)
 
@@ -596,31 +788,35 @@ user> math/foo
 ```
 Without importing, any symbol can be accessed via its qualified path.
 
-**Scenario 5: `/list` shows module symbols only**
+**Scenario 5: `/list` shows only definitions**
 ```
 math> /list
-Functions:
-  math/foo
+Fns:
+  foo
 ```
-The `/list` command in a module shows only that module's own definitions, not imported or global symbols. After switching back to `user` and importing:
+The `/list` command shows only that module's own definitions — not imports, not special forms. Names are unqualified (they belong to the current module). After switching back to `user` with no definitions:
+```
+user> /list
+(no definitions)
+```
+`/list` is empty because the user hasn't defined anything yet. Imports and special forms are on `/imports`.
+
+**Scenario 5b: `/imports` shows imports and special forms**
 ```
 user> (import [math [foo]])
-user> /list
-Special forms:
-  defn, deftype, ...
-Imports:
-  math (1 name)
-```
-The imported `foo` appears under Imports (summary), not under Functions.
-
-**Scenario 5b: `/imports` shows detail**
-```
 user> /imports
-From math:
-  foo :: (Fn [primitives/Int] primitives/Int)
+Special forms:
+  defn deftype fn if let match
+Fns:
+  foo
 ```
-The imported `foo` appears with its full type signature. The source module is `math` (the module named in the `import` form).
-The `/imports` command shows exactly what was imported and from where. The user can see the type signature of each imported name.
+Special forms always appear in `/imports` (they're available but not user-defined). The imported `foo` appears under Fns. For detail on where imports came from:
+```
+user> /imports math
+From math:
+  foo
+```
+The source module filter groups names by source. Type `foo` for its type signature.
 
 **Scenario 6: `/mod` shows current module**
 ```
@@ -637,6 +833,12 @@ Error: Module 'nonexistent' not found. Use /mod <name> to create a new module.
 The error message is actionable — it tells the user what to do next.
 
 ## 10. Terminal Styling [R4 S11]
+
+<!-- FIXME(/repl): Terminal styling is specced at Ring 4 but should be reconsidered
+for earlier delivery. At minimum, prompt, comments, and output type annotations
+should be visually distinct. The demos look flat and hard to parse without any
+colour differentiation. Consider pulling basic ANSI colour (prompt dim, type cyan,
+errors red) into Ring 3 scope — the full palette can remain Ring 4. -->
 
 When connected to a colour-capable terminal (detected via `isatty()` and `TERM`/`NO_COLOR`), the REPL SHOULD apply ANSI colour to distinguish output categories. Styling MUST be suppressed in piped/batch mode and when `NO_COLOR` is set (per https://no-color.org).
 
@@ -677,7 +879,7 @@ The showcase player (`repl/showcase`) MAY apply the same colour palette during r
 | `/help` | yes | | | | |
 | `/sig`, `/doc`, `/type`, `/info` | yes | | | | |
 | `/source`, `/sexp`, `/ast`, `/clif`, `/disasm` | yes | | | | |
-| `/list` | Types, Special forms, Fns | | + Traits, Modules, Imports | + Macros | |
+| `/list` | Types, Fns | | + Traits, Modules | + Macros | |
 | `/time` | yes | | | | |
 | `/expand` | | | | yes | |
 | `/mod`, `/reload` | | | yes | | |
@@ -718,49 +920,48 @@ Macros MUST appear in existing REPL introspection commands alongside functions a
 
 #### 11.2.1 `/list` — Macros Category [Tested+Neg tests/ring3_repl::r3_list_macros_category_via_symbol_table, tests/ring3_repl::r3_list_neg_macros_not_in_functions, tests/ring3_repl::r3_neg_non_macros_absent_from_macros]
 
-`/list` MUST include a "Macros" category listing all macros defined or imported in the current module. Macros MUST be listed by their unqualified name within the current module scope.
+`/list` MUST include a "Macros" category listing all macros defined in the current module (per §3.3). Macros MUST be listed by their unqualified name.
 
 ```
 user> /list
-Macros: double-list, when
-Fns: ...
-Types: ...
+Macros:
+  double-list when
+Fns:
+  ...
 ```
 
 #### 11.2.2 `/info` — Macro Details [Tested tests/ring3_repl::r3_info_macro_clause_count, tests/ring3_repl::r3_info_macro_docstring]
 
-`/info <name>` for a macro MUST display:
-- The macro's classification as `macro`
-- The number of clauses (if multi-clause)
-- The docstring (if present)
+`/info <name>` for a macro MUST display the universal format (§1.1) with classification `defmacro`, clause signatures, and docstring.
 
 ```
 user> /info cond
-cond :: macro (2 clauses)
-  "Multi-way conditional with mandatory default"
+:user/cond ; defmacro - Multi-way conditional with mandatory default
+; [x] -> Sexp
+; [x body & rest] -> Sexp
+  2 clauses
 user> /info when
-when :: macro
+:user/when ; defmacro
+; [cond body] -> Sexp
 ```
 
 #### 11.2.3 `/sig` — Macro Signature [Tested tests/ring3_repl::r3_sig_macro_params — variadic IGNORED]
 
-`/sig <name>` for a macro MUST display the parameter signature of each clause, using `& rest` syntax for variadic parameters and bracket notation for bracket destructuring parameters.
+`/sig <name>` for a macro MUST display the clause signatures using the universal format (§1.1, §4.1.6), with `& rest` syntax for variadic parameters and bracket notation for bracket destructuring.
 
 ```
 user> /sig cond
-cond :: macro
-  [x]
-  [x body & rest]
+:user/cond ; defmacro
+; [x] -> Sexp
+; [x body & rest] -> Sexp
+
 user> /sig bind!
-bind! :: macro
-  [[name expr & bindings] body]
-```
+:prelude/bind! ; defmacro
+; [[name expr & bindings] body] -> Sexp
 
-For single-clause macros, the clause signature MAY be displayed on the same line:
-
-```
 user> /sig when
-when :: macro [cond body]
+:user/when ; defmacro
+; [cond body] -> Sexp
 ```
 
 #### 11.2.4 `/doc` — Macro Docstring [R3 S11 — tests/ring3_repl::r3_doc_macro_no_docstring IGNORED]
@@ -769,47 +970,43 @@ when :: macro [cond body]
 
 ```
 user> /doc list
-list: "Construct a list from elements"
+:prelude/list ; defmacro - Construct a list from elements
+
 user> /doc my-macro
-my-macro: no docstring
+:user/my-macro ; defmacro
+  no docstring
 ```
 
 ### 11.3 `defmacro` Display [Tested tests/ring3_repl::r3_defmacro_display_single_clause, tests/ring3_repl::r3_defmacro_display_multi_clause, tests/macros::repl_defmacro_display_single_clause, tests/macros::repl_defmacro_display_multi_clause]
 
-When the user defines a macro at the REPL, the display MUST confirm the definition using the format:
-
-```
-name :: macro
-```
-
-For multi-clause macros, the clause count SHOULD be shown:
-
-```
-name :: macro (N clauses)
-```
-
-Examples:
+When the user defines a macro at the REPL, the display MUST confirm the definition using the universal format (§1.1, §4.1.6):
 
 ```
 user> (defmacro double [x] `(+ ~x ~x))
-double :: macro
+:user/double ; defmacro
+; [x] -> Sexp
+
 user> (defmacro cond ([x] x) ([x body & rest] `(if ~x ~body (cond ~@rest))))
-cond :: macro (2 clauses)
+:user/cond ; defmacro
+; [x] -> Sexp
+; [x body & rest] -> Sexp
 ```
 
 This mirrors the definition display pattern established for functions (Section 1.3) and types, keeping the REPL output self-documenting.
 
 ### 11.4 Bare Macro Lookup [R3 S11 — tests/ring3_repl::r3_bare_macro_lookup IGNORED]
 
-Entering a macro name as a bare symbol (without arguments) MUST produce its clause signatures, consistent with the self-documentation contract (Section 4.1). Zero-argument macros are an exception: they expand immediately via bare-symbol expansion (spec Section 9.5) rather than displaying introspection.
+Entering a macro name as a bare symbol (without arguments) MUST produce output per the universal format (§1.1, §4.1.6). Zero-argument macros are an exception: they expand immediately via bare-symbol expansion (spec Section 9.5) rather than displaying introspection.
 
 ```
 user> double
-double :: macro [x]
+:user/double ; defmacro
+; [x] -> Sexp
+
 user> cond
-cond :: macro
-  [x]
-  [x body & rest]
+:prelude/cond ; defmacro
+; [x] -> Sexp
+; [x body & rest] -> Sexp
 ```
 
 ### 11.5 Sprint 11 Test Scenarios [R3 S11]
@@ -822,7 +1019,7 @@ The following test scenarios validate the Ring 3 REPL macro experience. Each MUS
 | 2 | `/expand` with nested macros | Displays fully expanded form (recursive to fixed point) | §11.1, §9.3.3 | [R3 S11 — tests/ring3_repl::r3_expand_nested_macros IGNORED] |
 | 3 | `/expand` with no macro calls | Displays input unchanged | §11.1 | [R3 S11 — tests/ring3_repl::r3_expand_no_macro IGNORED] |
 | 4 | `/list` after `defmacro` | Macro appears under "Macros" category | §11.2.1, §3.3 | [Tested tests/ring3_repl::r3_list_macros_category_via_symbol_table] |
-| 5 | `/info` on a multi-clause macro | Shows clause count and docstring | §11.2.2 | [Tested tests/ring3_repl::r3_info_macro_clause_count] |
-| 6 | `/sig` on a variadic macro | Shows parameter signature with `& rest` | §11.2.3 | [Tested tests/ring3_repl::r3_sig_macro_params — variadic IGNORED] |
-| 7 | `defmacro` display at REPL | Shows `name :: macro` confirmation | §11.3, §9.13 | [Tested tests/ring3_repl::r3_defmacro_display_single_clause] |
-| 8 | Bare macro name lookup | Shows clause signatures (non-zero-arg macros) | §11.4, §4.1 | [R3 S11 — tests/ring3_repl::r3_bare_macro_lookup IGNORED] |
+| 5 | `/info` on a multi-clause macro | Shows universal format with clause signatures and docstring | §11.2.2 | [Tested tests/ring3_repl::r3_info_macro_clause_count] |
+| 6 | `/sig` on a variadic macro | Shows universal format with `& rest` clause signature | §11.2.3 | [Tested tests/ring3_repl::r3_sig_macro_params — variadic IGNORED] |
+| 7 | `defmacro` display at REPL | Shows universal format `:module/name ; defmacro` with clause signatures | §11.3, §9.13 | [Tested tests/ring3_repl::r3_defmacro_display_single_clause] |
+| 8 | Bare macro name lookup | Shows universal format with clause signatures (non-zero-arg macros) | §11.4, §4.1.6 | [R3 S11 — tests/ring3_repl::r3_bare_macro_lookup IGNORED] |

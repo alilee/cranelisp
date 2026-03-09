@@ -725,13 +725,38 @@ fn insert_imports_detecting_ambiguity(
                 continue;
             }
 
-            // Both are Import entries from different sources: mark
-            // ambiguous (spec §8.6.4).
+            // Both are Import entries from different sources. Check
+            // whether the existing one is a seeded builtin (source module
+            // is "user" or "primitives"). Seeded builtins are copied into
+            // every module by set_current_module — they are canonical
+            // definitions, not intentional imports. A prelude glob import
+            // that brings in the same name via a different chain (e.g.,
+            // "prelude/add-i64" vs "user/add-i64") is NOT ambiguous.
             let both_imports = matches!(
                 (existing, &new_entry),
                 (ModuleEntry::Import { .. }, ModuleEntry::Import { .. })
             );
             if both_imports {
+                // If either source is from "user" or "primitives" (builtin
+                // seeding), prefer the existing entry — it's canonical.
+                let existing_is_seeded = matches!(existing,
+                    ModuleEntry::Import { source } if {
+                        let m: &str = source.module.as_ref();
+                        m == "user" || m == "primitives"
+                    }
+                );
+                let new_is_seeded = matches!(&new_entry,
+                    ModuleEntry::Import { source } if {
+                        let m: &str = source.module.as_ref();
+                        m == "user" || m == "primitives"
+                    }
+                );
+                if existing_is_seeded || new_is_seeded {
+                    // One is a seeded builtin — keep existing, skip new.
+                    continue;
+                }
+
+                // Both from non-builtin different sources: ambiguous (spec §8.6.4).
                 table.insert(name, ModuleEntry::Ambiguous);
                 continue;
             }

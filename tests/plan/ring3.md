@@ -275,9 +275,9 @@ Test cases derived from `design/frontend/macro-plan.md` Phases 5-7, `design/arch
 - `defmacro_in_results_repl` — Same as above but at the REPL; subsequent REPL input can use the nested macro [R3 S11]
 - `def_macro_produces_defmacro_in_begin` — The `def` prelude macro expands to a `begin` containing both a `defn` and a `defmacro`; both are functional after expansion [R3 S11]
 
-#### REPL defmacro display (spec: repl/spec.md §11.3) [R3 S11]
-- `repl_defmacro_display_single_clause` — Defining a single-clause macro at the REPL displays `name :: macro` [R3 S11]
-- `repl_defmacro_display_multi_clause` — Defining a multi-clause macro at the REPL displays `name :: macro (N clauses)` [R3 S11]
+#### REPL defmacro display (spec: repl/spec.md §11.3) [R3 S14]
+- `repl_defmacro_display_single_clause` — Defining a single-clause macro at the REPL displays `:module/name ; defmacro` + `; [params] -> Sexp` [R3 S14]
+- `repl_defmacro_display_multi_clause` — Defining a multi-clause macro at the REPL displays `:module/name ; defmacro` + multiple `; [params] -> Sexp` lines [R3 S14]
 
 #### Error recovery [R3 S11]
 - `repl_failed_macro_compilation_no_corrupt` — A `defmacro` with a type error in its body produces an error message but does not corrupt the session; subsequent valid expressions still work [R3 S11]
@@ -366,37 +366,73 @@ Test cases derived from `design/frontend/macro-plan.md` Phases 5-7, `design/arch
 - `repl_expand_error_no_corrupt` — `/expand` on a form with expansion error (e.g., arity mismatch) displays error without corrupting session [R3 S11]
 - `repl_expand_alias` — `/e (macro-name arg)` works as alias for `/expand` [R3 S11]
 
-#### /imports command (spec: repl/spec.md §3.4) [R3 S11]
-- `repl_imports_shows_grouped` — `/imports` shows all imports grouped by source module with type signatures [R3 S11]
-- `repl_imports_alphabetical_names` — Names within each source module group are sorted alphabetically [R3 S11]
-- `repl_imports_alphabetical_modules` — Source module groups are sorted alphabetically [R3 S11]
-- `repl_imports_shows_individual_names_from_glob` — After `(import [mod [*]])`, `/imports` shows the individual names that were imported, not just `*` [R3 S11]
-- `repl_imports_immediate_source` — For re-exported names, `/imports` shows the immediate source module (the module in the import form), not the ultimate origin [R3 S11]
-- `repl_imports_filter_by_module` — `/imports prelude` filters to show only names imported from `prelude` [R3 S11]
-- `repl_imports_implicit_prelude_visible` — The implicit `(import [prelude [*]])` IS visible in `/imports` output [R3 S11]
-- `repl_imports_no_imports_empty` — In a fresh session with no imports and no prelude, `/imports` shows empty output (silent re-prompt, not error) [R3 S11]
-- `repl_imports_nonexistent_module` — `/imports nonexistent` shows empty output (silent re-prompt, not error) [R3 S11]
+<!-- FIXME(/qa): Sprint 14 spec rewrite — the test items below need updating to match
+     repl/spec.md §1.1 (universal output format), §3.3 (/list), §3.4 (/imports), §3.5 (/exports),
+     §4.1 (per-class symbol lookup), §11 (macro display).
+     Key changes:
+     - /list: NO special forms, NO imports category, INCLUDES constructors in Types, `(no definitions)` for empty
+     - /imports: ADD special forms (always present), organize by category (unfiltered) or by source module (filtered)
+     - /exports: NEW command — resolve module, list public symbols by category
+     - Macro display: `:module/name ; defmacro` + `; [params] -> Sexp` clause lines (not `name :: macro`)
+     - All bare symbol output: `:Type name ; classification - docstring` with optional related symbol lines
+     - Primitive lookup: DefKind::Primitive must be shown (currently skipped)
+     - Trait methods: `Trait.method` dot notation (e.g. `core.num/Num.+`)
+     - Builtin types: `:primitives/Int ; type` with `; impl:` section
+     Rewrite test descriptions below to match the new spec formats. -->
 
-#### /list Macros category (spec: repl/spec.md §11.2.1, §3.3) [R3 S11]
+#### /imports command (spec: repl/spec.md §3.4) [R3 S14]
+- `repl_imports_unfiltered_by_category` — `/imports` shows all imports organized by category (Special forms, Macros, Traits, Types, Fns); names only, no type sigs [R3 S14]
+- `repl_imports_special_forms_always_present` — `/imports` always shows Special forms category even with no explicit imports [R3 S14]
+- `repl_imports_alphabetical_names` — Names within each category are sorted alphabetically [R3 S14]
+- `repl_imports_shows_individual_names_from_glob` — After `(import [mod [*]])`, `/imports` shows the individual names that were imported, not just `*` [R3 S14]
+- `repl_imports_filter_by_module` — `/imports prelude` filters to show only names from `prelude`, grouped under `From prelude:` [R3 S14]
+- `repl_imports_immediate_source` — For re-exported names, `/imports` shows the immediate source module, not the ultimate origin [R3 S14]
+- `repl_imports_implicit_prelude_visible` — The implicit `(import [prelude [*]])` IS visible in `/imports` output [R3 S14]
+- `repl_imports_no_imports_shows_special_forms` — In a fresh session with no imports and no prelude, `/imports` shows only Special forms [R3 S14]
+- `repl_imports_nonexistent_module` — `/imports nonexistent` shows empty output (silent re-prompt, not error) [R3 S14]
+- `repl_imports_includes_reexports` — Both Import and Reexport module entries are included [R3 S14]
+
+#### /exports command (spec: repl/spec.md §3.5) [R3 S14]
+- `repl_exports_shows_public_symbols` — `/exports mod` lists public symbols by category (Modules, Macros, Traits, Types, Fns) [R3 S14]
+- `repl_exports_no_arg_shows_usage` — `/exports` with no argument prints usage hint [R3 S14]
+- `repl_exports_not_found` — `/exports nonexistent` prints module not found error [R3 S14]
+- `repl_exports_empty_module` — `/exports mod` on module with no public symbols prints appropriate message [R3 S14]
+- `repl_exports_excludes_imports` — `/exports mod` does NOT show the module's own imports/reexports [R3 S14]
+
+#### /list — module definitions (spec: repl/spec.md §3.3) [R3 S14]
 - `repl_list_macros_category_present` — After defining a macro, `/list` includes a "Macros" category listing the macro name [R3 S11]
 - `repl_list_macros_multiple` — Multiple defined macros all appear under the Macros category [R3 S11]
-- `repl_list_macros_prelude` — Prelude macros (e.g., `list`, `cond`) appear under Macros category after prelude loading [R3 S11]
+- `repl_list_no_special_forms` — `/list` MUST NOT show special forms (they belong on `/imports`) [R3 S14]
+- `repl_list_no_imports` — `/list` MUST NOT show imported names [R3 S14]
+- `repl_list_empty_shows_no_definitions` — `/list` on empty module prints `(no definitions)` [R3 S14]
+- `repl_list_constructors_in_types` — Constructors appear in Types category alongside their type [R3 S14]
+- `repl_list_prefix_filter` — `/list <prefix>` performs case-insensitive prefix match [R3 S14]
 
-#### /list Imports category (spec: repl/spec.md §3.3) [R3 S11]
-- `repl_list_imports_summary` — After importing, the Imports category shows a count of imported names per source module [R3 S11]
-- `repl_list_imports_small_inline` — For small imports (<=5 names), the names are listed inline after the count [R3 S11]
-- `repl_list_imports_large_count_only` — For large imports (>5 names), only the count is shown [R3 S11]
+#### Macro introspection — universal format (spec: repl/spec.md §11.2.2-11.2.4, §11.4, §4.1.6) [R3 S14]
+- `repl_info_macro_universal_format` — `/info name` for a macro shows `:module/name ; defmacro` with clause signatures [R3 S14]
+- `repl_info_macro_docstring` — `/info name` for a macro with a docstring shows docstring in classification comment [R3 S14]
+- `repl_sig_macro_universal_format` — `/sig name` for a macro shows `:module/name ; defmacro` with clause signatures [R3 S14]
+- `repl_sig_macro_variadic` — `/sig name` for a variadic macro shows `& rest` in clause signature [R3 S14]
+- `repl_sig_macro_bracket` — `/sig name` for a bracket-destructuring macro shows bracket notation [R3 S14]
+- `repl_doc_macro_present` — `/doc name` for a macro with docstring shows `:module/name ; defmacro - docstring` [R3 S14]
+- `repl_doc_macro_absent` — `/doc name` for a macro without docstring shows `no docstring` message [R3 S14]
+- `repl_bare_macro_lookup` — Entering a macro name bare shows `:module/name ; defmacro` + clause signatures [R3 S14]
 
-#### Macro introspection (spec: repl/spec.md §11.2.2-11.2.4, §11.4) [R3 S11]
-- `repl_info_macro_single_clause` — `/info name` for a single-clause macro shows `name :: macro` [R3 S11]
-- `repl_info_macro_multi_clause` — `/info name` for a multi-clause macro shows `name :: macro (N clauses)` and clause count [R3 S11]
-- `repl_info_macro_docstring` — `/info name` for a macro with a docstring shows the docstring [R3 S11]
-- `repl_sig_macro_variadic` — `/sig name` for a variadic macro shows parameter signature with `& rest` [R3 S11]
-- `repl_sig_macro_bracket` — `/sig name` for a bracket-destructuring macro shows bracket notation in signature [R3 S11]
-- `repl_sig_macro_multi_clause` — `/sig name` for a multi-clause macro shows each clause's parameter list [R3 S11]
-- `repl_doc_macro_present` — `/doc name` for a macro with docstring shows the docstring [R3 S11]
-- `repl_doc_macro_absent` — `/doc name` for a macro without docstring shows "no docstring" message [R3 S11]
-- `repl_bare_macro_lookup` — Entering a macro name bare (non-zero-arg) displays clause signatures per self-documentation contract [R3 S11]
+#### Universal output format — bare symbol lookup (spec: repl/spec.md §1.1, §4.1) [R3 S14]
+- `repl_bare_fn_classification` — Bare function name shows `; defn` classification suffix [R3 S14]
+- `repl_bare_fn_docstring` — Bare function with docstring shows `; defn - docstring` [R3 S14]
+- `repl_bare_ctor_classification` — Bare constructor shows `; deftype` classification suffix [R3 S14]
+- `repl_bare_type_related_ctors` — Bare type name shows `; match:` section with constructors [R3 S14]
+- `repl_bare_type_related_impls` — Bare type name shows `; impl:` section with trait names [R3 S14]
+- `repl_bare_trait_related_methods` — Bare trait name shows `; defn:` section with method names [R3 S14]
+- `repl_bare_trait_related_impls` — Bare trait name shows `; impl:` section with implementing types [R3 S14]
+- `repl_bare_trait_method_dot_notation` — Bare operator shows `Trait.method` notation (e.g. `core.num/Num.+`) [R3 S14]
+- `repl_bare_primitive_lookup` — Bare primitive name (e.g. `add-i64`) shows `:Type primitives/name ; defn` [R3 S14]
+- `repl_bare_builtin_type_impl` — Bare builtin type (e.g. `Int`) shows `:primitives/Int ; type` with `; impl:` section [R3 S14]
+- `repl_bare_special_form_classification` — Bare special form shows `; special form - description` [R3 S14]
+- `repl_defn_response_classification` — `(defn ...)` response includes `; defn` classification [R3 S14]
+- `repl_deftype_response_related` — `(deftype ...)` response includes `; match:` section [R3 S14]
+- `repl_deftrait_response_related` — `(deftrait ...)` response includes `; defn:` section with method names [R3 S14]
 
 #### List value display (spec: repl/spec.md §1.5) [R3 S11]
 - `repl_list_value_display` — `(list 1 2 3)` displays as `:... (list 1 2 3)` using the `(list ...)` format [R3 S11]

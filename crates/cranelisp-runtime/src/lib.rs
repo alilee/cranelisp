@@ -42,7 +42,12 @@ pub use string::{heap_alloc_string, string_read};
 pub use vec::{vec_new, vec_len, vec_set_copy, vec_push_copy, vec_push_grow, vec_drop};
 
 // Extern primitives (registered by spec name: str-concat, str-eq, etc.)
-pub use string::{str_concat, str_eq, str_len, string_identity};
+pub use string::{
+    str_concat, str_eq, str_len, string_identity,
+    str_substring, str_char_at, str_split, str_join, str_replace,
+    str_trim, str_starts_with, str_ends_with, str_contains,
+    str_to_upper, str_to_lower,
+};
 pub use primitives::int::{int_to_string, parse_int};
 pub use primitives::float::float_to_string;
 pub use primitives::bool::bool_to_string;

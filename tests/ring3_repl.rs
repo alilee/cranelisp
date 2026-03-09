@@ -191,27 +191,31 @@ fn r3_sig_macro_params() {
 
 // spec: repl/spec.md §11.2.3 — variadic macro clause with & rest
 #[test]
-#[ignore = "Ring 3, Sprint 11: parse error on '& rest' syntax in defmacro params"]
 fn r3_sig_macro_variadic() {
     let mut s = repl_session();
-    repl_eval_display(
-        &mut s,
+    let result = s.eval(
         "(defmacro my-cond ([x] x) ([x body & rest] `(if ~x ~body (my-cond ~@rest))))",
     );
 
-    let entry = s.tc.symbol_table().get("my-cond");
-    match entry {
-        Some(cranelisp_types::ModuleEntry::Macro { clauses, .. }) => {
-            assert_eq!(clauses.len(), 2, "expected 2 clauses");
-            // Second clause should have rest_param.
-            let clause2 = &clauses[1];
-            assert!(
-                clause2.rest_param.is_some(),
-                "second clause should have a rest param"
-            );
+    match result {
+        Ok(_) => {
+            let entry = s.tc.symbol_table().get("my-cond");
+            match entry {
+                Some(cranelisp_types::ModuleEntry::Macro { clauses, .. }) => {
+                    assert_eq!(clauses.len(), 2, "expected 2 clauses");
+                    let clause2 = &clauses[1];
+                    assert!(
+                        clause2.rest_param.is_some(),
+                        "second clause should have a rest param"
+                    );
+                }
+                other => {
+                    panic!("expected Macro entry for 'my-cond', got: {other:?}");
+                }
+            }
         }
-        other => {
-            panic!("expected Macro entry for 'my-cond', got: {other:?}");
+        Err(e) => {
+            panic!("variadic macro definition should succeed, got: {e}");
         }
     }
 }
@@ -221,11 +225,8 @@ fn r3_sig_macro_variadic() {
 // =============================================================================
 
 // spec: repl/spec.md §11.4 — bare macro name shows clause signatures
-// NOTE: Bare macro names currently trigger zero-arg expansion dispatch rather
-// than introspection. The spec says non-zero-arg macros should show signatures;
-// zero-arg macros expand immediately.
+// FIXME(/int): bare non-zero-arg macro names should show clause signatures, not dispatch
 #[test]
-#[ignore = "Ring 3, Sprint 11: bare macro name triggers expansion dispatch, not introspection"]
 fn r3_bare_macro_lookup() {
     let mut s = repl_session();
     repl_eval_display(&mut s, "(defmacro double [x] `(add-i64 ~x ~x))");
@@ -248,7 +249,6 @@ fn r3_bare_macro_lookup() {
 
 // spec: repl/spec.md §11.4 — multi-clause macro bare lookup shows all clause signatures
 #[test]
-#[ignore = "Ring 3, Sprint 11: bare macro name triggers expansion dispatch, not introspection"]
 fn r3_bare_macro_lookup_multi_clause() {
     let mut s = repl_session();
     repl_eval_display(
@@ -271,93 +271,11 @@ fn r3_bare_macro_lookup_multi_clause() {
     }
 }
 
-// =============================================================================
-// §11.5 Scenarios 1-3: /expand command (§11.1)
-// These need E2E tests because /expand is a slash command processed by the
-// REPL input loop, not by session.eval(). Stubs pending binary integration.
-// =============================================================================
-
-// spec: repl/spec.md §11.1 — /expand with a single macro shows expanded form
-#[test]
-#[ignore = "Ring 3, Sprint 11: /expand requires E2E test via binary subprocess"]
-fn r3_expand_single_macro() {
-    // TODO: E2E test. Define a macro, then /expand (macro-name arg).
-    // Expected: displays expanded form without evaluation.
-}
-
-// spec: repl/spec.md §11.1 — /expand with nested macros expands recursively
-#[test]
-#[ignore = "Ring 3, Sprint 11: /expand requires E2E test via binary subprocess"]
-fn r3_expand_nested_macros() {
-    // TODO: E2E test. Define two macros where one calls the other.
-    // /expand should recursively expand to fixed point.
-}
-
-// spec: repl/spec.md §11.1 — /expand with no macro calls shows input unchanged
-#[test]
-#[ignore = "Ring 3, Sprint 11: /expand requires E2E test via binary subprocess"]
-fn r3_expand_no_macro() {
-    // TODO: E2E test. /expand (add-i64 1 2) should display (add-i64 1 2) unchanged.
-}
-
-// =============================================================================
-// §11.2.4 /doc on macro (spec §11.2.4)
-// =============================================================================
-
-// spec: repl/spec.md §11.2.4 — /doc on macro with no docstring
-#[test]
-#[ignore = "Ring 3, Sprint 11: /doc requires E2E test via binary subprocess"]
-fn r3_doc_macro_no_docstring() {
-    // TODO: E2E test. /doc my-macro should show "my-macro: no docstring".
-}
-
-// =============================================================================
-// §3.4 /imports command
-// =============================================================================
-
-// spec: repl/spec.md §3.4 — /imports with no imports shows nothing
-#[test]
-#[ignore = "Ring 3, Sprint 11: /imports requires E2E test via binary subprocess"]
-fn r3_imports_empty() {
-    // In a fresh session with no explicit imports, /imports should produce
-    // empty output (silent re-prompt).
-}
-
-// spec: repl/spec.md §3.4 — /imports <module> for nonexistent module
-#[test]
-#[ignore = "Ring 3, Sprint 11: /imports requires E2E test via binary subprocess"]
-fn r3_imports_nonexistent_module() {
-    // /imports nonexistent should produce empty output, not an error.
-}
-
-// spec: repl/spec.md §3.4 — /imports shows imports grouped by source module
-#[test]
-#[ignore = "Ring 3, Sprint 11: /imports requires E2E test via binary subprocess"]
-fn r3_imports_grouped_by_module() {
-    // After explicit (import [primitives [add-i64 sub-i64]]),
-    // /imports should show:
-    // From primitives:
-    //   add-i64 :: (Fn [primitives/Int primitives/Int] primitives/Int)
-    //   sub-i64 :: (Fn [primitives/Int primitives/Int] primitives/Int)
-}
-
-// spec: repl/spec.md §3.4 — /imports <module> filters to one module
-#[test]
-#[ignore = "Ring 3, Sprint 11: /imports requires E2E test via binary subprocess"]
-fn r3_imports_filter_by_module() {
-    // /imports primitives should show only primitives imports.
-}
-
-// =============================================================================
-// §4.2 Special form feedback for defmacro
-// =============================================================================
-
 // spec: repl/spec.md §4.2 — bare 'defmacro' shows special form signature
+// FIXME(/typecheck): register 'defmacro' in special_forms list (builtins.rs:253)
 #[test]
-#[ignore = "Ring 3, Sprint 11: defmacro not registered as special form in builtins"]
 fn r3_special_form_defmacro() {
     let mut s = repl_session();
-    // Entering 'defmacro' bare should show its syntax, not an error.
     let result = s.eval("defmacro");
     match result {
         Ok(r) => {
@@ -373,6 +291,103 @@ fn r3_special_form_defmacro() {
         }
     }
 }
+
+// =============================================================================
+// §9.2.4 Macro docstrings
+// =============================================================================
+
+// spec: 09-macros.md §9.2.4 — macro with docstring stores it
+#[test]
+fn r3_macro_docstring_stored() {
+    let mut s = repl_session();
+    repl_eval_display(
+        &mut s,
+        "(defmacro my-inc \"Increment by one\" [x] `(add-i64 ~x 1))",
+    );
+
+    let entry = s.tc.symbol_table().get("my-inc");
+    match entry {
+        Some(cranelisp_types::ModuleEntry::Macro { docstring, .. }) => {
+            assert_eq!(
+                docstring.as_deref(),
+                Some("Increment by one"),
+                "macro docstring should be stored"
+            );
+        }
+        other => {
+            panic!("expected Macro entry for 'my-inc', got: {other:?}");
+        }
+    }
+}
+
+// spec: 09-macros.md §9.2.4 — macro without docstring has None
+#[test]
+fn r3_macro_no_docstring() {
+    let mut s = repl_session();
+    repl_eval_display(&mut s, "(defmacro simple [x] x)");
+
+    let entry = s.tc.symbol_table().get("simple");
+    match entry {
+        Some(cranelisp_types::ModuleEntry::Macro { docstring, .. }) => {
+            assert!(
+                docstring.is_none(),
+                "macro without docstring should have None, got: {docstring:?}"
+            );
+        }
+        other => {
+            panic!("expected Macro entry for 'simple', got: {other:?}");
+        }
+    }
+}
+
+// =============================================================================
+// §9.3.4 Define-before-use
+// =============================================================================
+
+// spec: 09-macros.md §9.3.4 — macro defined before use works
+#[test]
+fn r3_define_before_use_works() {
+    let mut s = repl_session();
+    repl_eval_display(&mut s, "(defmacro inc [x] `(add-i64 ~x 1))");
+    let val = repl_eval(&mut s, "(inc 41)");
+    assert_eq!(val, 42, "macro defined before use should work");
+}
+
+// spec: 09-macros.md §9.3.4 — forward reference to undefined macro is not expanded
+#[test]
+fn r3_neg_forward_reference_not_expanded() {
+    let mut s = repl_session();
+    // Call a macro name before defining it — should be treated as a function call, not expansion.
+    let result = s.eval("(not-yet-defined 42)");
+    assert!(
+        result.is_err(),
+        "forward reference to undefined macro should error"
+    );
+}
+
+// =============================================================================
+// §9.8.1 Auto-gensym hygiene
+// =============================================================================
+
+// spec: 09-macros.md §9.8.1 — auto-gensym prevents variable capture
+#[test]
+fn r3_auto_gensym_prevents_capture() {
+    let mut s = repl_session();
+    // Define a macro that introduces a binding using gensym (x#).
+    // The outer 'x' should not be captured.
+    repl_eval_display(&mut s, "(defmacro my-let [v body] `(let [x# ~v] ~body))");
+    let val = repl_eval(&mut s, "(let [x 100] (my-let 42 (add-i64 x 1)))");
+    // x refers to outer binding (100), not the macro's x# (42).
+    assert_eq!(val, 101, "auto-gensym should prevent capture: x should be 100, not 42");
+}
+
+// =============================================================================
+// §9.9.4 Runtime error during expansion
+// =============================================================================
+
+// spec: 09-macros.md §9.9.4 — runtime error during expansion
+// Moved to E2E test: e2e_s9_9_4_runtime_error_during_expansion
+// Runtime errors (div-by-zero) cause SIGILL, so must test in subprocess.
 
 // =============================================================================
 // Negative tests: Ring 3 REPL
@@ -408,12 +423,7 @@ fn r3_neg_non_macros_absent_from_macros() {
     );
 }
 
-// spec: repl/spec.md §11.1 — /expand on non-macro form displays input unchanged
-#[test]
-#[ignore = "Ring 3, Sprint 11: /expand requires E2E test via binary subprocess"]
-fn r3_neg_expand_non_macro_unchanged() {
-    // /expand (add-i64 1 2) should display (add-i64 1 2) unchanged when add-i64 is not a macro.
-}
+// /expand neg coverage moved to E2E tests: e2e_s11_1_neg_expand_non_macro_unchanged
 
 // spec: 09-macros.md §9.14 — malformed macro call: clear error, not crash
 #[test]
@@ -502,19 +512,7 @@ fn r3_neg_defmacro_missing_body() {
     assert_eq!(val, 42);
 }
 
-// spec: repl/spec.md §3.4 — /imports with no imports is empty, not error
-#[test]
-#[ignore = "Ring 3, Sprint 11: /imports requires E2E test via binary subprocess"]
-fn r3_neg_imports_no_imports_not_error() {
-    // In fresh session, /imports should produce empty output, not an error.
-}
-
-// spec: repl/spec.md §3.4 — /imports nonexistent is empty, not error
-#[test]
-#[ignore = "Ring 3, Sprint 11: /imports requires E2E test via binary subprocess"]
-fn r3_neg_imports_nonexistent_not_error() {
-    // /imports nonexistent should produce empty output, not an error.
-}
+// /imports neg coverage moved to E2E tests: e2e_s3_4_imports_empty, e2e_s3_4_neg_imports_nonexistent_not_error
 
 // =============================================================================
 // Edge cases: expansion depth, nested macro errors
@@ -544,16 +542,26 @@ fn r3_macro_body_type_error_recovery() {
     assert_eq!(val, 30);
 }
 
-// spec: 09-macros.md §9.2 — macro that expands to a simple literal
-// NOTE: macro bodies must return Sexp, not bare Int. A macro returning a bare
-// integer literal would need to produce (quote 42) or similar.
+// spec: 09-macros.md §9.2 — macro body must return Sexp, not bare Int
+// Negative test: a macro returning bare Int is a type error.
 #[test]
-#[ignore = "Ring 3, Sprint 11: macro body must return Sexp (bare literal 42 produces type error)"]
-fn r3_macro_expands_to_literal() {
+fn r3_neg_macro_body_must_return_sexp() {
     let mut s = repl_session();
-    repl_eval_display(&mut s, "(defmacro always-42 [x] 42)");
-    let val = repl_eval(&mut s, "(always-42 ignored)");
-    assert_eq!(val, 42, "macro should expand to literal 42");
+    let result = s.eval("(defmacro always-42 [x] 42)");
+    assert!(
+        result.is_err(),
+        "macro body returning bare Int should be a type error"
+    );
+    if let Err(e) = result {
+        let msg = e.message();
+        assert!(
+            msg.contains("Sexp") || msg.contains("type mismatch"),
+            "error should mention Sexp type requirement, got: {msg}"
+        );
+    }
+    // Session should still work after the error.
+    let val = repl_eval(&mut s, "(add-i64 1 2)");
+    assert_eq!(val, 3);
 }
 
 // spec: 09-macros.md §9.2 — macro using add-i64 in body
@@ -621,7 +629,6 @@ fn r3_macro_error_preserves_existing_macros() {
 
 // spec: 09-macros.md §9.2 — macro used in function body (batch)
 #[test]
-#[ignore = "Ring 3, Sprint 11: nested macro expansion in defn body causes marshal assertion failure"]
 fn r3_batch_macro_in_function_body() {
     use cranelisp::pipeline;
     use cranelisp_types::CompileMode;

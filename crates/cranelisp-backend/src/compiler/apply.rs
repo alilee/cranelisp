@@ -582,6 +582,17 @@ fn is_extern_primitive(name: &str) -> bool {
             | "parse-int"
             | "sconcat"
             | "quote-sexp"
+            | "substring"
+            | "char-at"
+            | "split"
+            | "join"
+            | "replace"
+            | "trim"
+            | "starts-with?"
+            | "ends-with?"
+            | "contains?"
+            | "to-upper"
+            | "to-lower"
     )
 }
 

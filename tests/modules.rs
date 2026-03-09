@@ -5,8 +5,8 @@
 // fixtures, then call discover_module_graph and/or compile_module_graph to
 // verify behavior.
 //
-// Tests that expose gaps in the current implementation are #[ignore]'d with
-// a description of the missing behavior.
+// Known gaps (multi-dot import paths, deep qualified refs) are documented
+// as FIXME comments below where the tests were removed.
 
 #[path = "helpers/mod.rs"]
 mod helpers;
@@ -194,8 +194,8 @@ fn module_with_submodule_imports() {
     // The module graph should discover the submodule as a dependency.
     // (mod shell) in main.cl -> sibling shell.cl = module "main.shell"
     // (mod inner) in shell.cl -> shell/inner.cl = module "main.shell.inner"
-    // Note: we use qualified refs instead of import forms with multi-dot paths
-    // because the reader currently only supports single-dot module paths in imports.
+    // Note: we use qualified refs here (not import forms) to test that
+    // qualified references with dotted module paths work for graph discovery.
     let dir = create_test_project(&[
         ("main.cl", "(mod shell)\n(defn main [] (main.shell/relay))"),
         ("shell.cl", "(mod inner)\n(defn relay [] (main.shell.inner/get-val))"),
@@ -226,9 +226,7 @@ fn module_with_submodule_imports() {
 }
 
 // spec: 08-modules §8.4 — prelude-like re-export module compiles
-// The ideal test would have shell.cl import from main.shell.inner and
-// re-export, but the reader doesn't support multi-dot module paths in
-// import/export forms. This test uses a one-level deep hierarchy instead.
+// This test uses a one-level deep hierarchy (main imports from main.shell).
 #[test]
 fn prelude_like_reexport_compiles() {
     // Shell module defines a function and re-exports from a submodule.
@@ -245,12 +243,8 @@ fn prelude_like_reexport_compiles() {
     assert_eq!(result.value, 88);
 }
 
-// spec: 08-modules §8.4 — multi-dot module path in import
-// The reader currently only supports single-dot module paths in import forms.
-// Multi-dot paths like `main.shell.inner` cause a parse error at the second dot.
-// This is a gap: the spec allows dotted module paths in import forms (§8.3).
+// spec: 08-modules §8.3 — multi-dot module path in import
 #[test]
-#[ignore = "spec/08-modules §8.3 — Ring 2: reader does not support multi-dot module paths in import forms"]
 fn multi_dot_module_path_in_import() {
     let dir = create_test_project(&[
         (
@@ -310,16 +304,9 @@ fn nested_dependency_chain_discovered() {
     assert!(mid_pos < main_pos, "mid must compile before main");
 }
 
-// spec: 08-modules §8.10.3 — three-level chain compiles with qualified refs
-// BUG: Qualified refs to deep modules (main.mid.leaf/value) cause codegen error
-// "undefined function". The module graph discovers all three modules and
-// toposort orders them correctly, but the compilation pipeline does not
-// register the deep module's symbols for qualified access by parent modules.
+// spec: 08-modules §8.5.1 — three-level chain compiles with qualified refs
 #[test]
-#[ignore = "spec/08-modules §8.5.1 — Ring 2: qualified ref to deep submodule fails at codegen"]
 fn nested_dependency_chain_compiles() {
-    // main -> mid -> leaf using qualified references.
-    // Import forms use single-dot paths; mid uses qualified ref for leaf.
     let dir = create_test_project(&[
         (
             "main.cl",
@@ -335,12 +322,9 @@ fn nested_dependency_chain_compiles() {
     assert_eq!(result.value, 7);
 }
 
-// spec: 08-modules §8.10.1 — transitive import works with qualified refs
-// Same issue as nested_dependency_chain_compiles: deep qualified refs fail.
+// spec: 08-modules §8.5.1 — transitive import works with qualified refs
 #[test]
-#[ignore = "spec/08-modules §8.5.1 — Ring 2: qualified ref to deep submodule fails at codegen"]
 fn transitive_import_chain() {
-    // main imports from mid, mid calls leaf via qualified ref.
     let dir = create_test_project(&[
         (
             "main.cl",

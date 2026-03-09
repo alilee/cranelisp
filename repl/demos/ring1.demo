@@ -1,69 +1,44 @@
 ; Cranelisp Ring 1 — Heap Types
-; Strings, algebraic data types, closures
-
-; === Strings ===
 
 "hello, world"
-(str-len "cranelisp")
+str-concat
 (str-concat "hello" " world")
-(int-to-string 42)
-(str-eq "abc" "abc")
 
-; === Defining types with fields ===
+; Algebraic data types
 
+deftype
 (deftype Point [:Int x :Int y])
 (Point 3 4)
-
 (deftype (Option a) None (Some [:a val]))
 (Some 42)
-None
 
-; === Pattern matching ===
+; Pattern matching
 
-(defn get-or-zero [o] (match o [None 0 (Some x) x]))
+match
+(defn get-or-zero "Extract or default to zero" [o] (match o [None 0 (Some x) x]))
+get-or-zero
 (get-or-zero (Some 99))
 (get-or-zero None)
 
-(defn sum-point [p] (match p [(Point a b) (add-i64 a b)]))
-(sum-point (Point 3 4))
+; Closures and higher-order functions
 
-; === Closures ===
-
-(let [add-five (fn [x] (add-i64 x 5))] (add-five 10))
-
-(defn make-adder [n] (fn [x] (add-i64 n x)))
+fn
+(defn make-adder "Return a fn that adds n" [n] (fn [x] (add-i64 n x)))
+make-adder
 (let [add-ten (make-adder 10)] (add-ten 25))
+(defn apply-twice "Apply f to x twice" [f x] (f (f x)))
+apply-twice
+(apply-twice (make-adder 1) 5)
 
-; === Higher-order functions ===
+; Vecs
 
-(defn apply-twice [f x] (f (f x)))
-(defn inc [n] (add-i64 n 1))
-(apply-twice inc 5)
-
-(defn compose [f g] (fn [x] (f (g x))))
-(let [double (fn [x] (mul-i64 x 2))] (let [inc-then-double (compose double inc)] (inc-then-double 4)))
-
-; === Vecs — growable arrays ===
-
+vec-push
 [1 2 3]
-[10 20 30 40 50]
-[]
-
-(vec-len [10 20 30])
-(vec-get [10 20 30] 1)
-(vec-set [10 20 30] 1 99)
 (vec-push [1 2] 3)
 
-; Building a Vec step by step
-(vec-push (vec-push (vec-push [] 1) 2) 3)
+; Composing it all
 
-; === Putting it together ===
-
-; Combining ADTs, closures, and higher-order functions
-(defn transform [f opt] (match opt [None None (Some x) (Some (f x))]))
-(transform inc (Some 41))
-(transform inc None)
-
-; Vecs in ADTs
-(deftype (Pair a b) (MkPair [:a fst :b snd]))
-(MkPair [10 20 30] "hello")
+(defn transform "Apply f inside Some, pass through None" [f opt] (match opt [None None (Some x) (Some (f x))]))
+transform
+(transform (make-adder 1) (Some 41))
+(transform (make-adder 1) None)

@@ -233,6 +233,19 @@ impl TypeChecker {
                 },
             );
         }
+
+        // Register Vec as a known type with 1 type parameter (no constructors).
+        // This allows `split` to return `(Vec String)` without the typechecker
+        // complaining about an unknown type.
+        self.type_defs.type_defs.insert(
+            TypeName::from("Vec"),
+            TypeDefInfo {
+                name: TypeName::from("Vec"),
+                type_params: vec![Symbol::from("a")],
+                constructors: vec![],
+                docstring: None,
+            },
+        );
     }
 
     /// Register special form entries for REPL introspection.
@@ -246,6 +259,7 @@ impl TypeChecker {
             ("match", "pattern matching: (match expr [pat body] ...)"),
             ("deftrait", "trait declaration: (deftrait (TraitName a) (method [a ...] ret) ...)"),
             ("impl", "trait implementation: (impl TraitName Type (method [params] body) ...)"),
+            ("defmacro", "macro definition: (defmacro name [params] body)"),
         ];
 
         for (name, desc) in special_forms {

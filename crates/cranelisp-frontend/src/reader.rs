@@ -521,7 +521,15 @@ fn read_symbol_or_keyword(r: &mut Reader) -> Result<Sexp, CranelispError> {
             return Ok(Sexp::Symbol(full, Span::new(start, end)));
         }
 
-        // Not a dotted module path — reset and try dotted symbol
+        // No '/' found — if we collected multiple dot-separated segments,
+        // return the whole dotted path as a symbol (e.g. `main.shell.inner`
+        // in import forms). Otherwise fall back to single-dot symbol parsing.
+        if module.contains('.') {
+            let end = r.pos as u32;
+            return Ok(Sexp::Symbol(module, Span::new(start, end)));
+        }
+
+        // Single segment after first_part — reset and try dotted symbol
         r.pos = saved_pos;
         return read_dotted_symbol(r, first_part, start);
     }
@@ -748,10 +756,14 @@ fn read_gensym(r: &mut Reader) -> Result<Sexp, CranelispError> {
     }
 }
 
-/// `&name` -> `Sexp::Symbol("&name")`
+/// `&name` or `& name` -> `Sexp::Symbol("&name")`
+///
+/// Whitespace between `&` and the name is allowed (Clojure convention).
 fn read_ampersand(r: &mut Reader) -> Result<Sexp, CranelispError> {
     let start = r.pos as u32;
     r.advance(1); // skip '&'
+    // Skip optional whitespace between '&' and the name.
+    skip_whitespace_and_comments(r);
     if let Some(b) = r.peek()
         && is_symbol_start(b)
     {
@@ -1486,10 +1498,29 @@ mod tests {
 
     // -- Ampersand --
 
-    // spec: 01-lexical §1.4.8 — ampersand with rest parameter name
+    // spec: 01-lexical §1.4.8 — ampersand with rest parameter name (no space)
     #[test]
     fn test_parse_ampersand() {
         assert_symbol(&parse_one("&rest"), "&rest");
+    }
+
+    // spec: 01-lexical §1.4.8 — ampersand with rest parameter name (with space)
+    #[test]
+    fn test_parse_ampersand_with_space() {
+        assert_symbol(&parse_one("& rest"), "&rest");
+    }
+
+    // spec: 01-lexical §1.4.8 — & rest in bracket context produces &rest symbol
+    #[test]
+    fn test_parse_ampersand_in_bracket() {
+        let sexp = parse_one("[x & rest]");
+        if let Sexp::Bracket(items, _) = &sexp {
+            assert_eq!(items.len(), 2);
+            assert_symbol(&items[0], "x");
+            assert_symbol(&items[1], "&rest");
+        } else {
+            panic!("expected bracket, got: {sexp:?}");
+        }
     }
 
     // spec: 01-lexical §1.4.8 — bare & without name is an error

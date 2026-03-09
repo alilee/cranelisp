@@ -1690,7 +1690,7 @@ fn ring1_adt_product_display() {
     let mut session = repl_session();
     repl_eval(&mut session, "(deftype Point [:Int x :Int y])");
     let display = repl_eval_display(&mut session, "(Point 3 4)");
-    assert_eq!(display, ":user/Point (Point.Point 3 4)");
+    assert_eq!(display, ":user/Point (Point 3 4)");
 }
 
 // spec: repl/spec.md §1.5 — sum ADT Some display
@@ -1778,7 +1778,7 @@ fn ring1_adt_monomorphic_string_field_display() {
     let mut session = repl_session();
     repl_eval(&mut session, "(deftype Named [:String name])");
     let display = repl_eval_display(&mut session, "(Named \"alice\")");
-    assert_eq!(display, ":user/Named (Named.Named \"alice\")");
+    assert_eq!(display, ":user/Named (Named \"alice\")");
 }
 
 // spec: repl/spec.md §1.5 — ADT enum display with type defs
@@ -1972,7 +1972,7 @@ fn ring1_error_constructor_wrong_arg_count() {
     }
     // Session recovery: correct usage still works.
     let display = repl_eval_display(&mut session, "(Point 1 2)");
-    assert_eq!(display, ":user/Point (Point.Point 1 2)");
+    assert_eq!(display, ":user/Point (Point 1 2)");
 }
 
 // spec: repl/spec.md §5.3 — constructor wrong type

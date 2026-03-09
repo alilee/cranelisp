@@ -1,54 +1,52 @@
-; Cranelisp Stdlib Progress — Prelude in Action
+; Cranelisp Stdlib — What the Prelude Provides
+; Traits, types, macros, and string ops from 27 stdlib modules
 
-; === Arithmetic via Num — Int and Float dispatch ===
+; === Traits power the operators — Num, Eq, Ord, Display ===
+
+/sig +
 (+ 1 2)
-(* 4 5)
-(+ 1.5 2.5)
-(* 3.0 0.5)
-
-; === Comparison via Eq and Ord ===
-(= 1 1)
+(+ 1.0 2.5)
+(= 3 3)
 (< 1 2)
-(!= "hello" "world")
-
-; === Display trait — show converts values to String ===
 (show 42)
 (show 3.14)
-(str-concat "value: " (show true))
 
 ; === Constrained polymorphism — one definition, many types ===
-(defn describe [x] (str-concat "value is " (show x)))
+
+(defn describe [x] (str "value is " x))
 (describe 42)
 (describe 3.14)
+(describe "hello")
 
-; === Option type — safe handling of missing values ===
-(Some 42)
-None
-(defn get-or [opt default] (match opt [None default (Some x) x]))
+; === Option and Result — safe handling via pattern matching ===
+
+(defn get-or [opt default] (match opt [(None) default (Some x) x]))
 (get-or (Some 99) 0)
 (get-or None 0)
+(match (Some 5) [(Some x) (str "got " x) (None) "nothing"])
+(defn unwrap-or [default r] (match r [(Ok v) v (Err _) default]))
+(unwrap-or 0 (Ok 42))
+(unwrap-or 0 (Err "failed"))
 
-; === Macros: do, cond, def ===
-(do (+ 1 2) (* 3 4))
-(cond (= 1 1) 42 (= 1 2) 99 0)
-(def answer 42)
-(+ answer 1)
+; === str macro — build strings from any Display type ===
 
-; === Threading macro — pipeline style ===
+(str "name: " "Alice" ", age: " 30)
+(str "2 + 3 = " (+ 2 3))
+
+; === String primitives — text manipulation ===
+
+(to-upper "hello cranelisp")
+(split "alice,bob,carol" ",")
+(join " and " (split "alice,bob,carol" ","))
+(replace "the quick fox" "quick" "lazy")
+(trim "  whitespace  ")
+(contains? "cranelisp" "lisp")
+
+; === Compose and pipeline ===
+
 (defn inc [x] (+ x 1))
 (defn double [x] (* x 2))
-(-> 5 inc double)
-/expand (-> 5 inc double)
-
-; === Putting it all together ===
-(defn square [x] (* x x))
-(square 7)
-(square 3.0)
-(defn max [a b] (if (> a b) a b))
-(max 10 20)
-(max 3.14 2.72)
-(defn factorial [n] (if (= n 0) 1 (* n (factorial (- n 1)))))
-(factorial 10)
-
-; 50 prelude names ready — traits, types, and macros
-/list
+(defn compose [f g] (fn [x] (f (g x))))
+(let [inc-then-double (compose double inc)] (inc-then-double 5))
+(-> 5 inc double inc)
+(join ", " (-> "hello world" (split " ")))

@@ -595,6 +595,7 @@ impl<'a> FnCompiler<'a> {
     /// Build a standalone inc function: `(val: i64) -> i64`.
     ///
     /// If `guarded` is true, guards against bare nullary tags.
+    /// Returns a cached FuncId if this function was already built.
     fn build_elem_inc_fn(
         &mut self,
         guarded: bool,
@@ -602,6 +603,16 @@ impl<'a> FnCompiler<'a> {
     ) -> Result<cranelift_module::FuncId, CranelispError> {
         let suffix = if guarded { "mixed" } else { "heap" };
         let name = format!("runtime/vec_elem_inc_{suffix}");
+
+        // Check if this function was already built (e.g., by a previous module).
+        // declare_function is idempotent — it returns the existing FuncId if the
+        // signature matches. We only need to skip define_function to avoid the
+        // DuplicateDefinition error from Cranelift.
+        if let Some(cranelift_module::FuncOrDataId::Func(existing_id)) =
+            self.module.get_name(&name)
+        {
+            return Ok(existing_id);
+        }
 
         let mut sig = self.module.make_signature();
         sig.params.push(AbiParam::new(types::I64));
@@ -666,12 +677,27 @@ impl<'a> FnCompiler<'a> {
     /// If `elem_type` is an ADT with heap-typed fields, a drop glue function
     /// is built and passed to `emit_rc_dec_guarded` so that fields are dec'd
     /// before the ADT itself is freed.
+    /// Returns a cached FuncId if this function was already built.
     fn build_elem_dec_fn(
         &mut self,
         guarded: bool,
         elem_type: &Type,
         span: Span,
     ) -> Result<cranelift_module::FuncId, CranelispError> {
+        let suffix = if guarded { "mixed" } else { "heap" };
+        let type_suffix = match elem_type {
+            Type::ADT(name, _) => format!("_{name}"),
+            _ => String::new(),
+        };
+        let name = format!("runtime/vec_elem_dec_{suffix}{type_suffix}");
+
+        // Check if this function was already built (e.g., by a previous module).
+        if let Some(cranelift_module::FuncOrDataId::Func(existing_id)) =
+            self.module.get_name(&name)
+        {
+            return Ok(existing_id);
+        }
+
         let dealloc_id = self.ctx.dealloc_func_id.ok_or_else(|| {
             CranelispError::CodegenError {
                 message: "runtime/dealloc not declared".into(),
@@ -681,13 +707,6 @@ impl<'a> FnCompiler<'a> {
 
         // Build drop glue for ADT element types with heap fields.
         let drop_glue_id = self.build_adt_drop_glue_fn(elem_type, dealloc_id, span)?;
-
-        let suffix = if guarded { "mixed" } else { "heap" };
-        let type_suffix = match elem_type {
-            Type::ADT(name, _) => format!("_{name}"),
-            _ => String::new(),
-        };
-        let name = format!("runtime/vec_elem_dec_{suffix}{type_suffix}");
 
         let mut sig = self.module.make_signature();
         sig.params.push(AbiParam::new(types::I64));
@@ -802,6 +821,13 @@ impl<'a> FnCompiler<'a> {
 
         // Build the drop glue function.
         let glue_name = format!("runtime/drop_glue_{type_name}");
+
+        // Check if this drop glue was already built (e.g., by a previous module).
+        if let Some(cranelift_module::FuncOrDataId::Func(existing_id)) =
+            self.module.get_name(&glue_name)
+        {
+            return Ok(Some(existing_id));
+        }
 
         let mut sig = self.module.make_signature();
         sig.params.push(AbiParam::new(types::I64)); // ptr
