@@ -82,7 +82,17 @@ def build_binary():
     return str(binary)
 
 
-def run_demo(demo_path, repl_binary, run_dir):
+def make_demo_env():
+    """Build the environment for running the REPL in demo mode."""
+    env = os.environ.copy()
+    # Use real stdlib for prelude and domain modules.
+    env["CRANELISP_LIB"] = str(PROJECT_ROOT / "stdlib")
+    # Platform DLLs live in target/debug/ during development.
+    env["CRANELISP_PLATFORM_PATH"] = str(PROJECT_ROOT / "target" / "debug")
+    return env
+
+
+def run_demo(demo_path, repl_binary, run_dir, env):
     """Send the entire .demo file to the REPL and capture raw output.
 
     Returns the raw stdout from the REPL process. No filtering, no
@@ -91,9 +101,6 @@ def run_demo(demo_path, repl_binary, run_dir):
     """
     with open(demo_path) as f:
         demo_text = f.read()
-
-    env = os.environ.copy()
-    env["CRANELISP_LIB"] = str(REPL_DIR / "demos" / "lib")
 
     result = subprocess.run(
         [repl_binary],
@@ -261,13 +268,12 @@ def play_demo(demo_path, repl_binary):
     run_dir = RUNS_DIR / f"{timestamp}_{demo_name}"
     run_dir.mkdir()
 
+    env = make_demo_env()
+
     # Show a copyable run command so the viewer can reproduce the session.
-    prelude_file = REPL_DIR / "demos" / "lib" / "prelude.cl"
-    if prelude_file.exists():
-        lib_rel = str(prelude_file.parent.relative_to(PROJECT_ROOT))
-        print(f"{DIM}; CRANELISP_LIB={lib_rel} cargo run{RESET}")
-    else:
-        print(f"{DIM}; cargo run{RESET}")
+    lib_rel = str(Path(env["CRANELISP_LIB"]).relative_to(PROJECT_ROOT))
+    platform_rel = str(Path(env["CRANELISP_PLATFORM_PATH"]).relative_to(PROJECT_ROOT))
+    print(f"{DIM}; CRANELISP_LIB={lib_rel} CRANELISP_PLATFORM_PATH={platform_rel} cargo run{RESET}")
     print(f"{DIM}; run dir: {run_dir}{RESET}")
     if not FAST and sys.stdin.isatty():
         print(f"{DIM}; [space] pause/unpause, [q] quit{RESET}")
@@ -278,7 +284,7 @@ def play_demo(demo_path, repl_binary):
     with open(demo_path) as f:
         demo_text = f.read()
 
-    raw_output = run_demo(demo_path, repl_binary, run_dir)
+    raw_output = run_demo(demo_path, repl_binary, run_dir, env)
 
     # Phase 2: parse and replay with typing effects.
     banner, triples = parse_repl_output(demo_text, raw_output)

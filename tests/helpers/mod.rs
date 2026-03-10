@@ -3,6 +3,8 @@
 // These helpers wire the full pipeline (parse -> build -> typecheck -> codegen -> execute)
 // so integration tests only need to provide source text.
 
+#![allow(dead_code)]
+
 use cranelisp::pipeline;
 use cranelisp::repl::{format_result_value, ReplSession};
 use cranelisp_types::{CompileMode, CranelispError, Type};
@@ -166,6 +168,110 @@ pub fn assert_rc_balanced(src: &str) {
         "Leaked {} bytes for: {src}",
         bytes_after - bytes_before
     );
+}
+
+// =============================================================================
+// Platform-aware test helpers (test-capture DLL)
+// =============================================================================
+
+/// Wrapper for the test-capture platform DLL's utility functions.
+///
+/// Provides access to `test_capture_reset`, `test_capture_get_output`, and
+/// `test_capture_free_output` via `libloading`. The test-capture platform
+/// captures print output in-memory and provides scripted read-line input,
+/// enabling IO integration tests without real stdout/stdin.
+///
+/// The test-capture DLL must be built before running these tests:
+///   cargo build -p cranelisp-test-capture
+pub struct TestCapture {
+    _lib: libloading::Library,
+    reset_fn: unsafe extern "C" fn(),
+    get_output_fn: unsafe extern "C" fn(*mut *const u8, *mut usize),
+    free_output_fn: unsafe extern "C" fn(*mut u8, usize),
+    set_input_fn: unsafe extern "C" fn(*const *const u8, *const usize, usize),
+}
+
+impl TestCapture {
+    /// Load the test-capture DLL from the project's Cargo build output.
+    ///
+    /// Returns None if the DLL is not built.
+    pub fn load() -> Option<Self> {
+        let project_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let dll_path = cranelisp::platform::resolve_platform_path("test-capture", project_root)?;
+
+        let lib = unsafe { libloading::Library::new(&dll_path).ok()? };
+
+        let reset_fn: libloading::Symbol<unsafe extern "C" fn()> =
+            unsafe { lib.get(b"test_capture_reset").ok()? };
+        let get_output_fn: libloading::Symbol<unsafe extern "C" fn(*mut *const u8, *mut usize)> =
+            unsafe { lib.get(b"test_capture_get_output").ok()? };
+        let free_output_fn: libloading::Symbol<unsafe extern "C" fn(*mut u8, usize)> =
+            unsafe { lib.get(b"test_capture_free_output").ok()? };
+        let set_input_fn: libloading::Symbol<
+            unsafe extern "C" fn(*const *const u8, *const usize, usize),
+        > = unsafe { lib.get(b"test_capture_set_input").ok()? };
+
+        Some(TestCapture {
+            reset_fn: *reset_fn,
+            get_output_fn: *get_output_fn,
+            free_output_fn: *free_output_fn,
+            set_input_fn: *set_input_fn,
+            _lib: lib,
+        })
+    }
+
+    /// Reset captured output and input queue.
+    pub fn reset(&self) {
+        unsafe { (self.reset_fn)() }
+    }
+
+    /// Get all captured print output as a string.
+    pub fn get_output(&self) -> String {
+        let mut ptr: *const u8 = std::ptr::null();
+        let mut len: usize = 0;
+        unsafe {
+            (self.get_output_fn)(&mut ptr, &mut len);
+            if ptr.is_null() || len == 0 {
+                return String::new();
+            }
+            let bytes = std::slice::from_raw_parts(ptr, len);
+            let result = String::from_utf8_lossy(bytes).into_owned();
+            (self.free_output_fn)(ptr as *mut u8, len);
+            result
+        }
+    }
+
+    /// Set scripted input lines for read-line.
+    pub fn set_input(&self, lines: &[&str]) {
+        let ptrs: Vec<*const u8> = lines.iter().map(|s| s.as_ptr()).collect();
+        let lens: Vec<usize> = lines.iter().map(|s| s.len()).collect();
+        unsafe {
+            (self.set_input_fn)(ptrs.as_ptr(), lens.as_ptr(), lines.len());
+        }
+    }
+}
+
+/// Create a REPL session with the test-capture platform loaded and imported.
+///
+/// Returns (session, test_capture) or None if the DLL is not built.
+pub fn repl_session_with_test_capture() -> Option<(ReplSession, TestCapture)> {
+    let capture = TestCapture::load()?;
+    capture.reset();
+
+    let project_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let stdlib_dir = project_root.join("stdlib");
+    let mut session = ReplSession::new_with_prelude(project_root, &[stdlib_dir])
+        .unwrap_or_else(|e| panic!("failed to load prelude: {e}"));
+    // Load the test-capture platform.
+    session
+        .eval("(platform test-capture)")
+        .unwrap_or_else(|e| panic!("failed to load test-capture platform: {e}"));
+    // Import all platform functions (print, read-line).
+    session
+        .eval("(import [platform.test-capture [print read-line]])")
+        .unwrap_or_else(|e| panic!("failed to import test-capture functions: {e}"));
+
+    Some((session, capture))
 }
 
 /// Evaluate in REPL and return the formatted display string with ADT context.

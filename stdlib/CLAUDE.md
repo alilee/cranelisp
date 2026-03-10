@@ -2,18 +2,21 @@
 
 Standard library for Cranelisp. Owned by `/stdlib` skill.
 
-## Current State (Sprint 16 Wave 4)
+## Current State (Sprint 17 Wave 2)
 
-The prelude loads successfully and re-exports from domain modules. Threading macros
-(`->`, `->>`) moved to `fn/threading.cl`. Ring 2 modules (string, int, float, list,
-vec) implemented. Derive macro ported from sketch. Pipeline fixed to register macros
-in symbol table for cross-module import.
+The prelude is now a **pure re-export shell** — zero inline definitions. All macros
+have been moved to their plan-designated domain modules. The `do` macro uses IO
+semantics (bind-based) per spec §10.4. Module discovery extended to process
+`(export ...)` forms so the prelude can reference root-level domain modules
+without import statements.
 
 ### Module Tree (implemented)
 
 ```
 stdlib/
-  prelude.cl              ; re-export shell + inline macros
+  prelude.cl              ; pure re-export shell (export only, no defmacro)
+  control.cl              ; when, unless, cond, case macros
+  defs.cl                 ; const, const-, def, def- macros
   compare.cl              ; shell: (mod eq) (mod ord)
   compare/eq.cl           ; Eq trait + primitive impls
   compare/ord.cl          ; Ord trait + primitive impls
@@ -23,30 +26,32 @@ stdlib/
   num/float.cl            ; Float operations: abs-float, sign-float, etc.
   text.cl                 ; shell: (mod display) (mod string)
   text/display.cl         ; Display trait + primitive impls
-  text/string.cl          ; String operations: blank?, repeat-str, index-of, etc.
+  text/string.cl          ; str macro + string operations
   fn.cl                   ; shell: (mod option) (mod result) (mod compose) (mod threading)
   fn/option.cl            ; Option type: None, Some
   fn/result.cl            ; Result type: Ok, Err + operations
   fn/compose.cl           ; compose, pipe, identity, flip
-  fn/threading.cl         ; ->, ->> macros (imported by prelude)
+  fn/threading.cl         ; ->, ->> macros
   default.cl              ; Default trait + primitive impls
   collections.cl          ; shell: (mod pair) (mod either) (mod list) (mod vec)
   collections/pair.cl     ; Pair type + first, second, swap
   collections/either.cl   ; Either type: Left, Right + operations
-  collections/list.cl     ; List type (recursive ADT) + operations
-  collections/vec.cl      ; Vec utility functions: vec-map, vec-filter, etc.
+  collections/list.cl     ; List type + list macro + operations
+  collections/vec.cl      ; vec macro + Vec utility functions
   testing.cl              ; shell: (mod assertions)
   testing/assertions.cl   ; assert-eq, assert-true, assert-false
-  core.cl                 ; shell for core.syntax + core.io
+  core.cl                 ; shell for core.syntax + core.io (+ re-exports)
   core/syntax.cl          ; SList helpers (standalone, not prelude dep)
   core/io.cl              ; IO combinators: pure, >>, map-io, when-io, unless-io, sequence-io
+  io.cl                   ; shell: (mod monad)
+  io/monad.cl             ; pure, do (IO bind-based), bind! macros
   derive.cl               ; derive macro: derive-Eq, derive-Ord, derive-Display
   plan-stdlib.md          ; normative module tree and delivery plan
 ```
 
 ### What works
 
-- `prelude.cl` loads without errors via multi-file module discovery
+- `prelude.cl` is a pure re-export shell using only `(export ...)` forms
 - Domain modules compiled in dependency order (toposorted)
 - Traits (Num, Eq, Ord, Display) defined in domain modules, re-exported through prelude
 - Option and Result types in separate modules
@@ -54,15 +59,18 @@ stdlib/
 - Default trait with primitive impls
 - Pair and Either types with operations
 - Testing assertions (assert-eq, assert-true, assert-false)
-- Threading macros (`->`, `->>`) in `fn/threading.cl`, imported by prelude
-- String operations (blank?, repeat-str, index-of, reverse-str, pad-left, pad-right)
+- Threading macros (`->`, `->>`) in `fn/threading.cl`
+- String operations + `str` macro in `text/string.cl`
 - Int operations (rem, abs, sign, negate, even?, odd?, min-int, max-int, clamp)
 - Float operations (abs-float, sign-float, negate-float, min-float, max-float, clamp-float)
-- Vec utilities (vec-map, vec-filter, vec-reduce, vec-reverse, vec-any?, vec-all?, etc.)
-- List type (recursive ADT) with operations (fold, map-list, filter-list, reverse, etc.)
+- Vec utilities + `vec` macro in `collections/vec.cl`
+- List type + `list` macro in `collections/list.cl` with operations
+- Control flow macros (when, unless, cond, case) in `control.cl`
+- Definition macros (const, const-, def, def-) in `defs.cl`
+- IO monadic interface (pure, do, bind!) in `io/monad.cl`
+- `do` macro uses IO semantics (bind-based) per spec §10.4
+- IO combinators (>>, map-io, when-io, unless-io, sequence-io) in `core/io.cl`
 - Derive macro (derive-Eq, derive-Ord, derive-Display) ported from sketch
-- All macros (do, cond, str, case, def, def-, const, vec, when, bind!) in prelude
-- IO combinators (pure, >>, map-io, when-io, unless-io, sequence-io) in core/io.cl
 
 ### Known blockers
 
@@ -70,9 +78,6 @@ stdlib/
   existing Ring 0 primitives. Need runtime extern functions for IEEE 754 rounding.
 - **IO combinators untested**: `core/io.cl` is written but cannot be tested
   until the backend IO trampoline (I2) and platform DLL loading (I3) are complete.
-- **`do` semantics transition**: Prelude `do` uses `let [_ ...]` (pure sequencing).
-  Spec 10.4 says `do` should expand to `bind` (IO-specific). Transition deferred
-  until IO pipeline is operational. FIXME filed in prelude.cl.
 
 ### What is NOT in prelude (requires explicit import)
 
@@ -95,7 +100,7 @@ stdlib/
 Traits: Eq, Ord, Num, Display (with =, !=, <, >, <=, >=, +, -, *, /, show)
 Types: Option (None, Some), Result (Ok, Err), List (Nil, Cons, empty?)
 Functions: pure
-Macros: ->, ->>, vec, when, const, const-, do, cond, list, str, case, def, def-, bind!
+Macros: ->, ->>, vec, when, unless, const, const-, do, cond, list, str, case, def, def-, bind!
 
 ## Conventions
 
@@ -105,11 +110,22 @@ Macros: ->, ->>, vec, when, const, const-, do, cond, list, str, case, def, def-,
   (because defn forms are Phase 4, macros are Phase 3)
 - Domain modules use `(import [...])` to declare dependencies
 - Shell modules (compare.cl, num.cl, etc.) contain only `(mod ...)` declarations
-- Prelude imports specific names from domain modules (not globs)
+- Prelude uses only `(export ...)` forms — pure re-export shell
 - Modules outside prelude graph (derive.cl) use primitives directly, not trait operators
 - Macros in submodules are registered in both expander AND symbol table (pipeline fix)
 
-## Pipeline Fix (Sprint 14 Wave 3)
+## Pipeline Changes
+
+### Sprint 17 Wave 2: Export-based module discovery
+
+`discover_import_dependencies` in `src/pipeline.rs` was extended to also process
+`(export ...)` specs during module graph discovery. Previously, exports were
+excluded because they referenced submodules already discovered via `(mod ...)`
+declarations. With the prelude converted to a pure re-export shell, exports now
+reference root-level domain modules that need discovery. The function iterates
+over both `import_specs` and `export_specs` module paths.
+
+### Sprint 14 Wave 3: Macro symbol table registration
 
 `compile_and_register_macro` in `src/pipeline.rs` was updated to register macros
 in the current module's symbol table (as `ModuleEntry::Macro`), not just in the
@@ -120,10 +136,10 @@ imported by other modules via `(import [module [macro-name]])`. The REPL's
 ## Key Architecture Finding
 
 The `load_prelude` function already supports multi-file module discovery.
-It calls `discover_module_graph` on `prelude.cl`, which follows both `(mod ...)`
-declarations and `(import [...])` references to discover and toposort all
-dependent modules. The FIXME about "submodule primitive seeding" was stale --
-`set_current_module` correctly seeds new modules with primitives from `user`.
+It calls `discover_module_graph` on `prelude.cl`, which follows `(mod ...)`,
+`(import [...])`, and `(export [...])` references to discover and toposort all
+dependent modules. `set_current_module` correctly seeds new modules with
+primitives from `user`.
 
 A pipeline fix was needed: modules with only type definitions (e.g., fn/option.cl)
 or only trait declarations have no function definitions for codegen. The pipeline

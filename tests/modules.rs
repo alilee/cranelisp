@@ -391,3 +391,116 @@ fn glob_import_excludes_private() {
         "glob import should not include private names; calling 'secret' should fail"
     );
 }
+
+// =============================================================================
+// 7. Export re-export chains (spec: 08-modules §8.4)
+// =============================================================================
+
+// spec: 08-modules §8.4.1 — specific re-export makes name available to importer
+#[test]
+fn export_specific_reexport() {
+    // inner.cl defines `val`. shell.cl re-exports `val` from inner.
+    // main.cl imports `val` from shell — it arrives via the re-export.
+    let dir = create_test_project(&[
+        (
+            "main.cl",
+            "(mod shell)\n(import [main.shell [val]])\n(defn main [] (val))",
+        ),
+        (
+            "shell.cl",
+            "(mod inner)\n(import [main.shell.inner [val]])\n(export [main.shell.inner [val]])",
+        ),
+        ("shell/inner.cl", "(defn val [] 42)"),
+    ]);
+    let result = compile_module_graph(&dir.path().join("main.cl"), &[]).unwrap();
+    assert_eq!(result.value, 42, "re-exported val should be callable");
+}
+
+// spec: 08-modules §8.4.2 — glob re-export exports all public names
+#[test]
+fn export_glob_reexport() {
+    // inner.cl defines `a` and `b`. shell.cl glob re-exports from inner.
+    // main.cl imports specific names from shell.
+    let dir = create_test_project(&[
+        (
+            "main.cl",
+            "(mod shell)\n(import [main.shell [a b]])\n(defn main [] (add-i64 (a) (b)))",
+        ),
+        (
+            "shell.cl",
+            "(mod inner)\n(import [main.shell.inner [*]])\n(export [main.shell.inner [*]])",
+        ),
+        ("shell/inner.cl", "(defn a [] 10)\n(defn b [] 20)"),
+    ]);
+    let result = compile_module_graph(&dir.path().join("main.cl"), &[]).unwrap();
+    assert_eq!(result.value, 30, "glob re-exported names should be callable");
+}
+
+// spec: 08-modules §8.4.4 — re-export chain: A re-exports from B which re-exports from C
+#[test]
+fn export_transitive_reexport_chain() {
+    // Three-level re-export: leaf -> mid -> shell -> main
+    let dir = create_test_project(&[
+        (
+            "main.cl",
+            "(mod shell)\n(import [main.shell [deep-val]])\n(defn main [] (deep-val))",
+        ),
+        (
+            "shell.cl",
+            "(mod mid)\n(import [main.shell.mid [deep-val]])\n(export [main.shell.mid [deep-val]])",
+        ),
+        (
+            "shell/mid.cl",
+            "(mod leaf)\n(import [main.shell.mid.leaf [deep-val]])\n(export [main.shell.mid.leaf [deep-val]])",
+        ),
+        ("shell/mid/leaf.cl", "(defn deep-val [] 77)"),
+    ]);
+    let result = compile_module_graph(&dir.path().join("main.cl"), &[]).unwrap();
+    assert_eq!(
+        result.value, 77,
+        "transitive re-export chain should resolve"
+    );
+}
+
+// spec: 08-modules §8.4.3 — multiple module re-export
+#[test]
+fn export_multiple_modules() {
+    // shell.cl re-exports from two different submodules.
+    let dir = create_test_project(&[
+        (
+            "main.cl",
+            "(mod shell)\n(import [main.shell [alpha beta]])\n(defn main [] (add-i64 (alpha) (beta)))",
+        ),
+        (
+            "shell.cl",
+            "(mod a)\n(mod b)\n(import [main.shell.a [alpha]])\n(import [main.shell.b [beta]])\n(export [main.shell.a [alpha]\n         main.shell.b [beta]])",
+        ),
+        ("shell/a.cl", "(defn alpha [] 3)"),
+        ("shell/b.cl", "(defn beta [] 7)"),
+    ]);
+    let result = compile_module_graph(&dir.path().join("main.cl"), &[]).unwrap();
+    assert_eq!(result.value, 10, "multi-module re-export should work");
+}
+
+// spec: 08-modules §8.4.4 — re-exported private name is NOT accessible
+#[test]
+fn export_private_name_not_reexported() {
+    // inner.cl has private `secret`. shell.cl tries to re-export it.
+    // This should fail because private names cannot be re-exported.
+    let dir = create_test_project(&[
+        (
+            "main.cl",
+            "(mod shell)\n(import [main.shell [secret]])\n(defn main [] (secret))",
+        ),
+        (
+            "shell.cl",
+            "(mod inner)\n(import [main.shell.inner [*]])\n(export [main.shell.inner [secret]])",
+        ),
+        ("shell/inner.cl", "(defn- secret [] 42)\n(defn public-fn [] 1)"),
+    ]);
+    let result = compile_module_graph(&dir.path().join("main.cl"), &[]);
+    assert!(
+        result.is_err(),
+        "private names should not be re-exportable"
+    );
+}

@@ -3,12 +3,16 @@
 ;; A recursive algebraic data type providing a classic functional list.
 ;; Constructors: Nil (empty list), Cons (head element + tail list).
 ;;
-;; The `list` macro for convenient construction is defined in the prelude
-;; (it needs the macros module for Sexp manipulation).
+;; Also provides the `list` construction macro.
 ;;
 ;; Spec: 06-adt.md §6.1, plan-stdlib.md §3.3
 
 (import [fn.option [Option Some None]])
+(import [macros [SexpSym SexpList SCons SNil Sexp SList]])
+
+(defmacro list "Construct a list from elements"
+  ([] `Nil)
+  ([x &rest] `(Cons ~x (list ~@rest))))
 
 (deftype (List a) Nil (Cons [:a head :(List a) tail]))
 

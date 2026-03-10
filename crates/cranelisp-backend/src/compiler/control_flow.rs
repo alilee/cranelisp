@@ -424,16 +424,42 @@ impl<'a> FnCompiler<'a> {
         }
 
         // Bind lambda parameters from function params (after env_ptr).
+        // Add params to scope_stack and variable_types so that
+        // pop_scope_with_cleanup will emit rc_dec for heap-typed params.
+        // This implements the consuming calling convention for closure bodies:
+        // the closure owns its parameters and must dec them at exit.
+        // Without this, unused params (e.g., `_` in `(fn [_] b)`) leak.
         for (i, param_name) in params.iter().enumerate() {
             let val = block_params[i + 1]; // skip env_ptr
             let var = inner_compiler.fresh_variable();
             inner_compiler.builder.declare_var(var, types::I64);
             inner_compiler.builder.def_var(var, val);
             inner_compiler.variables.insert(param_name.clone(), var);
+            inner_compiler
+                .scope_stack
+                .last_mut()
+                .unwrap_or_else(|| unreachable!("invariant: scope_stack non-empty"))
+                .push(param_name.clone());
+
+            // Derive parameter type from expr_types via last_uses.
+            if let Some(ty) = inner_compiler.derive_param_type(param_name) {
+                inner_compiler.variable_types.insert(param_name.clone(), ty);
+            }
         }
 
-        // Compile the body.
+        // Mark captured variables so they are not eligible for last-use transfer.
+        for cap_name in captures {
+            inner_compiler.captured_vars.insert(cap_name.clone());
+        }
+
+        // Compile the body with scope cleanup for parameters.
+        // This mirrors compile_body: identify the return value variable (if any),
+        // protect it from scope cleanup, then dec all other heap-typed params.
+        let skip_var = FnCompiler::return_var_in_scope(body, inner_compiler.scope_stack.last());
         let result = inner_compiler.compile_expr(body)?;
+        inner_compiler.protect_return_value(&skip_var, result, body);
+        inner_compiler.pop_scope_with_cleanup(skip_var.as_ref());
+
         inner_compiler.builder.ins().return_(&[result]);
         inner_compiler.builder.seal_all_blocks();
         inner_compiler.builder.finalize();

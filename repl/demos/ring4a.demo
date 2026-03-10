@@ -24,21 +24,28 @@ double-io
 
 ; Nested bind chains — threading values through a pipeline
 
-(bind (Pure 1)
-      (fn [a] (bind (Pure (add-i64 a 10))
-                    (fn [b] (Pure (add-i64 b 100))))))
+(bind (Pure 1) (fn [a] (bind (Pure (add-i64 a 10)) (fn [b] (Pure (add-i64 b 100))))))
 
 ; IO in conditionals — both branches must agree on IO
 
 (if true (Pure 1) (Pure 2))
 (if (> 10 5) (Pure "yes") (Pure "no"))
 
-; Combining two IO values
+; Load the stdio platform — gives us print and read-line
 
-(defn io-add [a b]
-  (bind a (fn [x] (bind b (fn [y] (Pure (add-i64 x y)))))))
-(io-add (Pure 3) (Pure 4))
+(platform stdio)
+(import [platform.stdio [print read-line]])
+print
 
-; IO wraps any expression
+; The moment of truth — real side effects
 
-(Pure (str "IO " "works"))
+(print "hello, world")
+
+; bind composes IO effects
+
+(bind (print "step 1") (fn [_] (print "step 2")))
+
+; A function that prints is inferred as IO
+
+(defn greet [name] (print (str "hello, " name)))
+(greet "cranelisp")

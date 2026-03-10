@@ -226,12 +226,15 @@ fn option_none_exists() {
 // i. Macros: do, when
 // =============================================================================
 
-// spec: spec/09-macros.md §9.5 — do macro sequences expressions
+// spec: spec/10-io.md §10.4 — do macro sequences IO actions via bind
 #[test]
 fn macro_do_returns_last() {
-    let (val, ty) = eval("(do 1 2 3)");
-    assert_eq!(val, 3);
-    assert_eq!(ty, Type::Int);
+    // do now expands to bind chains (IO semantics).
+    // (do (Pure 1) (Pure 2) (Pure 3)) sequences IO actions, returns last.
+    let (val, ty) = eval("(do (Pure 1) (Pure 2) (Pure 3))");
+    assert!(ty.is_io(), "do should return IO type, got: {:?}", ty);
+    let inner = cranelisp_runtime::run_io_trampoline(val);
+    assert_eq!(inner, 3);
 }
 
 // spec: spec/09-macros.md §9.5 — when macro with true condition
@@ -430,23 +433,26 @@ fn macro_case_default() {
 }
 
 // =============================================================================
-// r. Prelude macros: do
+// r. Prelude macros: do (IO semantics)
 // =============================================================================
 
-// spec: spec/09-macros.md §9.5 — do single expression
+// spec: spec/10-io.md §10.4 — do single expression passes through
 #[test]
 fn macro_do_single() {
+    // Single-expression do returns the expression as-is (no bind).
     let (val, ty) = eval("(do 42)");
     assert_eq!(val, 42);
     assert_eq!(ty, Type::Int);
 }
 
-// spec: spec/09-macros.md §9.5 — do multi expression returns last
+// spec: spec/10-io.md §10.4 — do multi-expression sequences IO actions
 #[test]
 fn macro_do_multi() {
-    let (val, ty) = eval("(do 1 2 3 42)");
-    assert_eq!(val, 42);
-    assert_eq!(ty, Type::Int);
+    // do with multiple expressions expands to nested bind calls.
+    let (val, ty) = eval("(do (Pure 1) (Pure 2) (Pure 3) (Pure 42))");
+    assert!(ty.is_io(), "do should return IO type, got: {:?}", ty);
+    let inner = cranelisp_runtime::run_io_trampoline(val);
+    assert_eq!(inner, 42);
 }
 
 // =============================================================================

@@ -69,9 +69,17 @@ pub fn resolve_platform_path(name: &str, project_root: &Path) -> Option<PathBuf>
     // Tier 1: CRANELISP_PLATFORM_PATH env var.
     if let Ok(env_val) = std::env::var("CRANELISP_PLATFORM_PATH") {
         for dir in env_val.split(':').filter(|s| !s.is_empty()) {
-            let candidate = PathBuf::from(dir).join(format!("{name}.{PLATFORM_EXT}"));
+            let dir_path = PathBuf::from(dir);
+            // Try plain name first: {name}.{ext}
+            let candidate = dir_path.join(format!("{name}.{PLATFORM_EXT}"));
             if candidate.is_file() {
                 return Some(candidate);
+            }
+            // Try Cargo library naming: libcranelisp_{name}.{ext}
+            let crate_name = format!("cranelisp_{}", name.replace('-', "_"));
+            let cargo_candidate = dir_path.join(format!("lib{crate_name}.{PLATFORM_EXT}"));
+            if cargo_candidate.is_file() {
+                return Some(cargo_candidate);
             }
         }
     }

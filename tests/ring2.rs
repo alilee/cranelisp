@@ -2177,3 +2177,79 @@ fn neg_multi_sig_bare_value_errors() {
         "multi-sig function used as bare value MUST error"
     );
 }
+
+// =============================================================================
+// R3 annotation gap tests — HKT traits (spec: 03-types §3.7, 05-definitions §5.3.2, §5.4.4)
+//
+// Higher-kinded type traits are Ring 3 features. These tests document the
+// expected behavior per spec and will be un-ignored when HKT is implemented.
+// =============================================================================
+
+// spec: 03-types §3.7 — HKT type variable in trait declaration
+#[ignore = "spec/03-types.md §3.7 — Ring 3, Sprint 17: HKT not yet implemented"]
+#[test]
+fn hkt_type_variable_in_trait() {
+    // HKT trait declaration: Functor maps over a type constructor.
+    let src = r#"
+(deftrait (Functor f)
+  (fmap [(Fn [a] b) (f a)] (f b)))
+(defn main [] 0)
+"#;
+    let _result = compile_and_run_simple(src);
+}
+
+// spec: 05-definitions §5.3.2 — HKT trait declaration syntax
+#[ignore = "spec/05-definitions.md §5.3.2 — Ring 3, Sprint 17: HKT trait declaration not yet supported"]
+#[test]
+fn hkt_trait_declaration() {
+    // A trait with a type constructor parameter: (deftrait (Functor f) ...)
+    let src = r#"
+(deftrait (Functor f)
+  (fmap [(Fn [a] b) (f a)] (f b)))
+(deftype (Option a) None (Some [:a val]))
+(impl Functor Option
+  (defn fmap [func opt]
+    (match opt
+      [None None
+       (Some x) (Some (func x))])))
+(defn main [] (match (fmap (fn [x] (add-i64 x 1)) (Some 41)) [(Some v) v None 0]))
+"#;
+    assert_eq!(compile_and_run_simple(src), 42);
+}
+
+// spec: 05-definitions §5.4.4 — HKT impl targets bare type constructor
+#[ignore = "spec/05-definitions.md §5.4.4 — Ring 3, Sprint 17: HKT impl not yet supported"]
+#[test]
+fn hkt_impl_bare_constructor() {
+    // (impl Functor Option ...) — target is bare Option, not (Option a).
+    let src = r#"
+(deftrait (Functor f)
+  (fmap [(Fn [a] b) (f a)] (f b)))
+(deftype (Option a) None (Some [:a val]))
+(impl Functor Option
+  (defn fmap [func opt]
+    (match opt
+      [None None
+       (Some x) (Some (func x))])))
+(defn main [] (match (fmap (fn [x] (add-i64 x 1)) (Some 99)) [(Some v) v None 0]))
+"#;
+    assert_eq!(compile_and_run_simple(src), 100);
+}
+
+// =============================================================================
+// R3 annotation gap test — lazy sequences (spec: 12-runtime §12.4.2)
+// =============================================================================
+
+// spec: 12-runtime §12.4.2 — lazy sequence thunk-based evaluation
+#[ignore = "spec/12-runtime.md §12.4.2 — Ring 3, Sprint 17: lazy sequences not yet implemented"]
+#[test]
+fn lazy_seq_take_from_infinite() {
+    // Lazy sequences use thunks to defer evaluation. `range-from` produces
+    // an infinite sequence; `take` materializes the first N elements.
+    // This test will use the multi-sig API once available.
+    let src = r#"
+(defn main [] 0)
+"#;
+    // Placeholder: actual test requires Seq type and lazy infrastructure.
+    assert_eq!(compile_and_run_simple(src), 0);
+}

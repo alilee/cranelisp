@@ -1513,7 +1513,7 @@ fn e2e_s1_3_deftrait_defn_section() {
 #[test]
 fn e2e_s4_1_bare_fn_classification() {
     let o = run_repl("(defn inc [n] (add-i64 n 1))\ninc\n", "s4_1_fn_class");
-    let s = stdout_str(&o);
+    let _s = stdout_str(&o);
     // The second result line (bare lookup) should contain '; defn'
     let results = result_lines(&o);
     assert!(

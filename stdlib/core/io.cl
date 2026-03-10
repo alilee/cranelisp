@@ -1,14 +1,12 @@
 ;; core/io.cl — IO combinators
 ;;
-;; Functions and macros for composing IO computations. The IO type is
-;; compiler-seeded (Pure, Effect, Bind constructors in `primitives`).
-;; `bind` is an inline primitive. This module provides the standard
-;; library surface: `pure`, `>>`, and higher-order combinators.
+;; Functions for composing IO computations. The IO type is compiler-seeded
+;; (Pure, Effect, Bind constructors in `primitives`). `bind` is an inline
+;; primitive. This module provides higher-order combinators: >>, map-io,
+;; when-io, unless-io, sequence-io.
 ;;
-;; Macros `do` (IO sequencing) and `bind!` (monadic bind sugar) are
-;; defined in prelude.cl because they are prelude-level conveniences.
-;; The IO-specific `do` that expands to `bind` calls will replace the
-;; pure-sequencing `do` once the IO trampoline is operational.
+;; The monadic interface (pure, do, bind!) lives in io/monad.cl and is
+;; re-exported through the prelude.
 ;;
 ;; Spec: 10-io.md §10.2-10.5
 ;; Plan: plan-stdlib.md §3.3 io/, §5.5
@@ -17,10 +15,6 @@
 ;; entries in `user` (not seeded into new modules). Explicit import needed.
 (import [primitives [Pure]])
 (import [collections.list [List Nil Cons]])
-
-;; ── Functions ────────────────────────────────────────────────────────
-
-(defn pure "Lift a value into IO" [x] (Pure x))
 
 (defn >> "Sequence two IO actions, discarding the first result"
   [a b]

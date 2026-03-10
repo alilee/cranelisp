@@ -442,12 +442,16 @@ fn discover_module_recursive(
 /// Synthetic modules seeded by the compiler (no corresponding files).
 const SYNTHETIC_MODULES: &[&str] = &["primitives", "macros"];
 
-/// Discover modules referenced by import specs that aren't already in the graph.
+/// Discover modules referenced by import and export specs that aren't already in the graph.
 ///
-/// Import specs reference modules by their full dotted path (e.g., "util",
+/// Import and export specs reference modules by their full dotted path (e.g., "util",
 /// "core.option"). This function resolves the root module name and discovers
 /// it if not already known. Synthetic modules (`primitives`, `macros`) and
 /// `super` references are skipped — they have no files.
+///
+/// Export specs are included in discovery so that re-export-only modules
+/// (like the prelude) can reference root-level domain modules without
+/// needing separate import declarations.
 fn discover_import_dependencies(
     structure: &ModuleStructure,
     module_path: &ModuleFullPath,
@@ -458,29 +462,37 @@ fn discover_import_dependencies(
     visiting: &mut Vec<ModuleFullPath>,
     dependencies: &mut Vec<ModuleFullPath>,
 ) -> Result<(), CranelispError> {
-    for import_spec in &structure.import_specs {
-        let import_path: &str = import_spec.module_path.as_ref();
+    // Discover modules referenced by import and export specs.
+    // Both are included so that re-export-only modules (like the prelude)
+    // trigger discovery of their referenced domain modules.
+    let all_module_paths = structure
+        .import_specs
+        .iter()
+        .map(|s| &s.module_path)
+        .chain(structure.export_specs.iter().map(|s| &s.module_path));
+    for ref_module_path in all_module_paths {
+        let ref_path: &str = ref_module_path.as_ref();
 
         // Skip synthetic modules — they are compiler-seeded with no files.
-        if is_synthetic_or_special(import_path) {
+        if is_synthetic_or_special(ref_path) {
             continue;
         }
 
         // Extract the root module name (first component before any dot).
         // E.g., "core.option" -> "core", "util" -> "util".
-        let root_name = import_path.split('.').next().unwrap_or(import_path);
+        let root_name = ref_path.split('.').next().unwrap_or(ref_path);
 
-        // The import path may be relative (bare name) or prefixed with the
+        // The path may be relative (bare name) or prefixed with the
         // current module path (e.g., "main.util" when current is "main").
-        // Check both the bare import path and a child-qualified version.
+        // Check both the bare path and a child-qualified version.
         let candidate_path = if module_path.0.is_empty() {
             ModuleFullPath::from(root_name)
         } else {
-            // Check if the import path already starts with the module path prefix.
+            // Check if the path already starts with the module path prefix.
             let mod_prefix = format!("{}.", module_path);
-            if import_path.starts_with(&mod_prefix) {
+            if ref_path.starts_with(&mod_prefix) {
                 // Already fully qualified relative to this module — use as-is.
-                import_spec.module_path.clone()
+                ref_module_path.clone()
             } else {
                 // Bare name — resolve as a root-level module.
                 ModuleFullPath::from(root_name)
@@ -844,6 +856,9 @@ pub fn load_prelude(
         if !structure.import_specs.is_empty() {
             tc.register_imports(&structure.import_specs)?;
         }
+        if !structure.export_specs.is_empty() {
+            tc.register_exports(&structure.export_specs)?;
+        }
 
         // Phase 3: Process forms (defmacro compilation happens here, needs imports).
         let program =
@@ -1023,6 +1038,9 @@ pub fn compile_module_graph(
 
         if !structure.import_specs.is_empty() {
             tc.register_imports(&structure.import_specs)?;
+        }
+        if !structure.export_specs.is_empty() {
+            tc.register_exports(&structure.export_specs)?;
         }
 
         // Filter out (platform ...) forms — they were handled during pre-scan.

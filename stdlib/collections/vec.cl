@@ -1,9 +1,16 @@
-;; collections/vec.cl — Vec utility functions
+;; collections/vec.cl — Vec utility functions and construction macro
 ;;
 ;; Higher-level operations on Vec, built on the primitives:
 ;;   vec-len, vec-get, vec-set, vec-push
 ;;
+;; Also provides the `vec` construction macro.
+;;
 ;; Spec: plan-stdlib.md §3.3
+
+(import [macros [SexpBracket SList]])
+
+(defmacro vec "Construct a vec from elements" [&elems]
+  (SexpBracket elems))
 
 (defn vec-map "Apply a function to each element of a Vec"
   [f v]

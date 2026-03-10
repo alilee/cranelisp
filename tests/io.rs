@@ -15,6 +15,7 @@ mod helpers;
 
 use helpers::*;
 use cranelisp_types::Type;
+use serial_test::serial;
 
 // =============================================================================
 // Pure constructor through pipeline (spec: 10-io §10.1, §10.2)
@@ -408,45 +409,52 @@ fn io_triple_bind_chain() {
 // Platform effect tests (spec: 10-io §10.9, §10.10)
 //
 // These tests exercise the full IO path including Effect nodes and platform
-// DLL loading. Most are #[ignore] because the Effect codegen path and/or
-// platform DLL loading are not yet complete in Sprint 16.
+// DLL loading. They use the test-capture platform to intercept print output
+// in-memory, avoiding real stdout side effects.
+//
+// Requires: cargo build -p cranelisp-test-capture
 // =============================================================================
 
-// spec: 10-io §10.9 — (platform stdio) loads DLL and makes print available
-#[ignore = "spec/10-io.md §10.9 — Ring 4, Sprint 17: needs platform-aware test helper"]
+// spec: 10-io §10.9 — (platform test-capture) loads DLL and makes print available
 #[test]
+#[serial(test_capture)]
 fn io_platform_print_hello_world() {
-    // The simplest IO program: print a string.
-    // This requires: platform DLL loading, Effect codegen, trampoline Effect dispatch.
-    let src = r#"
-        (platform stdio)
-        (import [platform.stdio [print]])
-        (defn main [] (print "hello"))
-    "#;
-    let result = cranelisp::pipeline::compile_and_run(src, cranelisp_types::CompileMode::Batch);
-    match result {
-        Ok(res) => {
-            // If this succeeds, the type must be IO Int per spec §10.9.2.
-            assert!(res.ty.is_io(), "print should return IO Int, got: {:?}", res.ty);
-            assert_eq!(res.ty.io_inner_type(), Type::Int);
+    // The simplest IO program: print a string via test-capture platform.
+    // Uses REPL session which supports (platform ...) loading.
+    let (mut session, capture) = match repl_session_with_test_capture() {
+        Some(pair) => pair,
+        None => {
+            eprintln!("skipping test: test-capture platform DLL not built");
+            return;
         }
-        Err(e) => {
-            panic!("platform print should compile and run: {e}");
-        }
-    }
+    };
+
+    capture.reset();
+    let (value, ty) = repl_eval_typed(&mut session, r#"(print "hello")"#);
+    assert!(ty.is_io(), "print should return IO type, got: {:?}", ty);
+
+    // Force the IO tree to execute the effect.
+    let _inner = cranelisp_runtime::run_io_trampoline(value);
+
+    // Verify captured output.
+    let output = capture.get_output();
+    assert_eq!(output, "hello", "captured output should be 'hello', got: '{output}'");
 }
 
 // spec: 10-io §10.9.2 — print returns (IO Int)
-#[ignore = "spec/10-io.md §10.9.2 — Ring 4, Sprint 17: needs platform-aware test helper"]
 #[test]
+#[serial(test_capture)]
 fn io_print_returns_io_int() {
     // print :: (Fn [String] (IO Int)) per spec §10.9.2
-    let src = r#"
-        (platform stdio)
-        (import [platform.stdio [print]])
-        (defn main [] (print "x"))
-    "#;
-    let (_, ty) = compile_and_run_typed(src);
+    let (mut session, _capture) = match repl_session_with_test_capture() {
+        Some(pair) => pair,
+        None => {
+            eprintln!("skipping test: test-capture platform DLL not built");
+            return;
+        }
+    };
+
+    let (_, ty) = repl_eval_typed(&mut session, r#"(print "x")"#);
     assert!(ty.is_io(), "expected IO type, got: {:?}", ty);
     match &ty {
         Type::ADT(name, args) => {
@@ -459,47 +467,181 @@ fn io_print_returns_io_int() {
 }
 
 // spec: 10-io §10.3.3 — bind chains platform effects
-#[ignore = "spec/10-io.md §10.3.3 — Ring 4, Sprint 17: needs platform-aware test helper"]
 #[test]
+#[serial(test_capture)]
 fn io_bind_print_sequence() {
     // Sequence two prints: (bind (print "a") (fn [_] (print "b")))
-    let src = r#"
-        (platform stdio)
-        (import [platform.stdio [print]])
-        (defn main []
-          (bind (print "a") (fn [_] (print "b"))))
-    "#;
-    let result = cranelisp::pipeline::compile_and_run(src, cranelisp_types::CompileMode::Batch);
-    match result {
-        Ok(res) => {
-            assert!(res.ty.is_io(), "bind of prints should return IO Int");
+    let (mut session, capture) = match repl_session_with_test_capture() {
+        Some(pair) => pair,
+        None => {
+            eprintln!("skipping test: test-capture platform DLL not built");
+            return;
         }
-        Err(e) => {
-            panic!("bind with print should compile and run: {e}");
-        }
-    }
+    };
+
+    capture.reset();
+    let (value, ty) = repl_eval_typed(
+        &mut session,
+        r#"(bind (print "a") (fn [_] (print "b")))"#,
+    );
+    assert!(ty.is_io(), "bind of prints should return IO type, got: {:?}", ty);
+
+    // Force the IO tree to execute both effects.
+    let _inner = cranelisp_runtime::run_io_trampoline(value);
+
+    // Verify both prints were captured in order.
+    let output = capture.get_output();
+    assert_eq!(output, "a\nb", "captured output should be 'a\\nb', got: '{output}'");
 }
 
 // spec: 10-io §10.7.1 — IO propagates through call graph
-#[ignore = "spec/10-io.md §10.7.1 — Ring 4, Sprint 17: needs platform-aware test helper"]
 #[test]
+#[serial(test_capture)]
 fn io_effect_propagation_through_functions() {
     // A function that calls print inherits IO in its return type.
-    let src = r#"
-        (platform stdio)
-        (import [platform.stdio [print]])
-        (defn greet [name] (print name))
-        (defn main [] (greet "world"))
-    "#;
-    let result = cranelisp::pipeline::compile_and_run(src, cranelisp_types::CompileMode::Batch);
-    match result {
-        Ok(res) => {
-            assert!(res.ty.is_io(), "greet should propagate IO, got: {:?}", res.ty);
+    let (mut session, capture) = match repl_session_with_test_capture() {
+        Some(pair) => pair,
+        None => {
+            eprintln!("skipping test: test-capture platform DLL not built");
+            return;
         }
-        Err(e) => {
-            panic!("IO propagation through functions should work: {e}");
+    };
+
+    session
+        .eval("(defn greet [name] (print name))")
+        .unwrap_or_else(|e| panic!("defn greet failed: {e}"));
+
+    capture.reset();
+    let (value, ty) = repl_eval_typed(&mut session, r#"(greet "world")"#);
+    assert!(ty.is_io(), "greet should propagate IO, got: {:?}", ty);
+
+    // Force the IO tree to execute the effect.
+    let _inner = cranelisp_runtime::run_io_trampoline(value);
+
+    // Verify output.
+    let output = capture.get_output();
+    assert_eq!(output, "world", "captured output should be 'world', got: '{output}'");
+}
+
+// =============================================================================
+// read-line end-to-end tests (spec: 10-io §10.9)
+//
+// Uses test-capture platform with scripted input.
+// =============================================================================
+
+// spec: 10-io §10.9 — read-line returns (IO String) with scripted input
+#[test]
+#[serial(test_capture)]
+fn io_read_line_returns_io_string() {
+    let (mut session, capture) = match repl_session_with_test_capture() {
+        Some(pair) => pair,
+        None => {
+            eprintln!("skipping test: test-capture platform DLL not built");
+            return;
         }
-    }
+    };
+
+    capture.set_input(&["hello from input"]);
+    let (value, ty) = repl_eval_typed(&mut session, "(read-line)");
+    assert!(ty.is_io(), "read-line should return IO type, got: {:?}", ty);
+    assert_eq!(
+        ty.io_inner_type(),
+        Type::String,
+        "read-line inner type should be String"
+    );
+
+    // Force the IO tree to get the string value.
+    let inner = cranelisp_runtime::run_io_trampoline(value);
+    let s = unsafe { cranelisp_runtime::read_string_as_str(inner) };
+    assert_eq!(s, "hello from input");
+}
+
+// spec: 10-io §10.9, §10.3 — read-line chained with bind to print (echo)
+#[test]
+#[serial(test_capture)]
+fn io_read_line_bind_print_echo() {
+    let (mut session, capture) = match repl_session_with_test_capture() {
+        Some(pair) => pair,
+        None => {
+            eprintln!("skipping test: test-capture platform DLL not built");
+            return;
+        }
+    };
+
+    capture.set_input(&["echo me"]);
+    capture.reset();
+    capture.set_input(&["echo me"]);
+    let (value, ty) =
+        repl_eval_typed(&mut session, "(bind (read-line) (fn [line] (print line)))");
+    assert!(ty.is_io(), "bind chain should return IO type, got: {:?}", ty);
+
+    // Force the IO tree to execute effects.
+    let _inner = cranelisp_runtime::run_io_trampoline(value);
+
+    let output = capture.get_output();
+    assert_eq!(
+        output, "echo me",
+        "echo program should print the input line"
+    );
+}
+
+// =============================================================================
+// IO `do` macro semantics tests (spec: 10-io §10.4)
+//
+// `do` is a library macro that sequences IO expressions via bind.
+// These tests verify the desugared form (nested bind with _) since the
+// macro itself comes from stdlib (which tests must not depend on).
+//
+// The `do`-as-macro tests are #[ignore] until the macro is available in
+// the test environment (Sprint 17 Wave 2 scope).
+// =============================================================================
+
+// spec: 10-io §10.4.1 — do with platform effects: sequenced prints
+#[test]
+#[serial(test_capture)]
+fn io_do_macro_sequenced_prints() {
+    // This test requires the `do` macro from stdlib or defmacro.
+    // When available: (do (print "a") (print "b") (print "c"))
+    // For now, manual desugaring tested in io_do_desugared_three_exprs above.
+    let (mut session, capture) = match repl_session_with_test_capture() {
+        Some(pair) => pair,
+        None => {
+            eprintln!("skipping test: test-capture platform DLL not built");
+            return;
+        }
+    };
+
+    capture.reset();
+    // Using do macro (requires stdlib/prelude):
+    let (value, ty) = repl_eval_typed(
+        &mut session,
+        r#"(do (print "a") (print "b") (print "c"))"#,
+    );
+    assert!(ty.is_io(), "do should return IO type, got: {:?}", ty);
+    let _inner = cranelisp_runtime::run_io_trampoline(value);
+    let output = capture.get_output();
+    assert_eq!(output, "a\nb\nc", "do should sequence prints in order");
+}
+
+// spec: 10-io §10.4.2 — do type is the type of the last expression
+#[test]
+#[serial(test_capture)]
+fn io_do_macro_type_is_last_expression() {
+    let (mut session, _capture) = match repl_session_with_test_capture() {
+        Some(pair) => pair,
+        None => {
+            eprintln!("skipping test: test-capture platform DLL not built");
+            return;
+        }
+    };
+
+    // (do (print "x") (Pure true)) — last expr is IO Bool
+    let (_, ty) = repl_eval_typed(
+        &mut session,
+        r#"(do (print "x") (Pure true))"#,
+    );
+    assert!(ty.is_io(), "do should return IO type, got: {:?}", ty);
+    assert_eq!(ty.io_inner_type(), Type::Bool, "do type should be IO Bool");
 }
 
 // =============================================================================
@@ -935,6 +1077,98 @@ fn io_bind_continuation_captures_scope() {
 }
 
 // =============================================================================
+// then combinator / discard pattern RC tests (spec: 10-io §10.4, §10.3)
+//
+// The `>>` combinator (then) uses `(bind a (fn [_] b))` — the `_` discard
+// pattern must correctly dec the unused parameter to avoid memory leaks.
+// These tests verify the discard pattern works with both heap and non-heap
+// inner values.
+// =============================================================================
+
+// spec: 10-io §10.4.1 — then combinator: discard Int result (NeverHeap)
+#[test]
+fn io_then_combinator_discard_int() {
+    // (bind (Pure 999) (fn [_] (Pure 42))) — discard 999, keep 42
+    let src = r#"
+        (defn main []
+          (bind (Pure 999) (fn [_] (Pure 42))))
+    "#;
+    let (value, ty) = compile_and_run_typed(src);
+    assert!(ty.is_io());
+    let inner = cranelisp_runtime::run_io_trampoline(value);
+    assert_eq!(inner, 42);
+    cranelisp_runtime::heap_dealloc(value);
+}
+
+// spec: 10-io §10.4.1 — then combinator: discard String result (AlwaysHeap)
+// Regression test for Sprint 16 X1: the `_` parameter must be dec'd in the
+// lambda body to avoid leaking the discarded String.
+// NOTE: Cannot use assert_rc_balanced here because IO tree nodes (Pure, Bind)
+// are heap-allocated and not freed by compile_and_run (needs IO-aware RC helper).
+#[test]
+fn io_then_combinator_discard_string() {
+    let src = r#"
+        (defn main []
+          (bind (Pure "discarded") (fn [_] (Pure 42))))
+    "#;
+    let (value, ty) = compile_and_run_typed(src);
+    assert!(ty.is_io());
+    let inner = cranelisp_runtime::run_io_trampoline(value);
+    assert_eq!(inner, 42);
+    cranelisp_runtime::heap_dealloc(value);
+}
+
+// spec: 10-io §10.4.1 — then combinator: discard ADT result (Mixed heap)
+// Tests the discard pattern with a Mixed heap type (ADT with nullary + data ctors).
+#[test]
+fn io_then_combinator_discard_adt() {
+    let src = r#"
+        (deftype (Option a) None (Some [:a val]))
+        (defn main []
+          (bind (Pure (Some 99)) (fn [_] (Pure 42))))
+    "#;
+    let (value, ty) = compile_and_run_typed(src);
+    assert!(ty.is_io());
+    let inner = cranelisp_runtime::run_io_trampoline(value);
+    assert_eq!(inner, 42);
+    cranelisp_runtime::heap_dealloc(value);
+}
+
+// spec: 10-io §10.4.1 — chained then: two discards in sequence
+// (bind (Pure "a") (fn [_] (bind (Pure "b") (fn [_] (Pure 0)))))
+#[test]
+fn io_then_combinator_chained_discards() {
+    let src = r#"
+        (defn main []
+          (bind (Pure "first")
+                (fn [_]
+                  (bind (Pure "second")
+                        (fn [_] (Pure 0))))))
+    "#;
+    let (value, ty) = compile_and_run_typed(src);
+    assert!(ty.is_io());
+    let inner = cranelisp_runtime::run_io_trampoline(value);
+    assert_eq!(inner, 0);
+    cranelisp_runtime::heap_dealloc(value);
+}
+
+// spec: 10-io §10.3 — lambda with unused heap param (non-discard name)
+// Same RC issue as `_` but with a named parameter that happens to be unused.
+// NOTE: Cannot use assert_rc_balanced — IO nodes leak (needs IO-aware RC helper).
+#[test]
+fn io_bind_unused_heap_param() {
+    let src = r#"
+        (defn main []
+          (bind (Pure "unused") (fn [x] (Pure 77))))
+    "#;
+    let (value, ty) = compile_and_run_typed(src);
+    assert!(ty.is_io());
+    let inner = cranelisp_runtime::run_io_trampoline(value);
+    assert_eq!(inner, 77);
+    cranelisp_runtime::heap_dealloc(value);
+}
+
+// =============================================================================
 // REPL IO display (spec: 10-io §10.6.2)
 // =============================================================================
 
@@ -1025,7 +1259,7 @@ fn io_neg_type_mismatch_io_int_vs_io_bool() {
 // =============================================================================
 
 // spec: 04-expressions — auto-currying: calling with fewer args returns closure
-#[ignore = "spec/04-expressions.md — Ring 3: auto-curry requires overload resolution pipeline (not available in simple compile_and_run)"]
+#[ignore = "spec/04-expressions.md §4.6.3 — Ring 3, Sprint 17: auto-currying not yet implemented"]
 #[test]
 fn auto_curry_two_param_partial_apply() {
     let src = r#"
@@ -1038,7 +1272,7 @@ fn auto_curry_two_param_partial_apply() {
 }
 
 // spec: 04-expressions — auto-currying: partial application of 3-param function
-#[ignore = "spec/04-expressions.md — Ring 3: auto-curry requires overload resolution pipeline (not available in simple compile_and_run)"]
+#[ignore = "spec/04-expressions.md §4.6.3 — Ring 3, Sprint 17: auto-currying not yet implemented"]
 #[test]
 fn auto_curry_three_param_partial_apply() {
     let src = r#"
@@ -1051,7 +1285,7 @@ fn auto_curry_three_param_partial_apply() {
 }
 
 // spec: 04-expressions — auto-currying: curried function used as higher-order
-#[ignore = "spec/04-expressions.md — Ring 3: auto-curry requires overload resolution pipeline (not available in simple compile_and_run)"]
+#[ignore = "spec/04-expressions.md §4.6.3 — Ring 3, Sprint 17: auto-currying not yet implemented"]
 #[test]
 fn auto_curry_higher_order_usage() {
     let src = r#"
@@ -1064,7 +1298,7 @@ fn auto_curry_higher_order_usage() {
 }
 
 // spec: 04-expressions — auto-currying in REPL
-#[ignore = "spec/04-expressions.md — Ring 3: auto-curry requires overload resolution pipeline (not available in REPL simple eval)"]
+#[ignore = "spec/04-expressions.md §4.6.3 — Ring 3, Sprint 17: auto-currying not yet implemented"]
 #[test]
 fn auto_curry_repl() {
     let mut session = repl_session();

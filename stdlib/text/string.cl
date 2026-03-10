@@ -1,4 +1,4 @@
-;; text/string.cl — String operations
+;; text/string.cl — String operations and str macro
 ;;
 ;; Higher-level string functions built on the Ring 1 string primitives.
 ;; The 11 primitives (substring, char-at, split, join, replace, trim,
@@ -6,7 +6,16 @@
 ;; str-len, str-concat, str-eq are auto-available from the primitives
 ;; module. This module provides additional convenience functions.
 ;;
+;; Also provides the `str` macro for concatenating string representations.
+;;
 ;; Spec: plan-stdlib.md §3.3
+
+(import [macros [SexpSym SexpStr SexpList SCons SNil Sexp SList]])
+
+(defmacro str "Concatenate string representations of all arguments"
+  ([] (SexpStr ""))
+  ([x] `(show ~x))
+  ([x &rest] `(str-concat (show ~x) (str ~@rest))))
 
 (defn blank? "Test if a string is empty or contains only whitespace"
   [:String s] :Bool

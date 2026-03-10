@@ -6,7 +6,7 @@
 use std::collections::HashMap;
 
 use cranelisp_types::{
-    ConstructorInfo, CranelispError, FQSymbol, ImportNames, ImportSpec,
+    ConstructorInfo, CranelispError, ExportSpec, FQSymbol, ImportNames, ImportSpec,
     MethodResolutions, ModuleEntry, ModuleFullPath, ReplSnapshot, Scheme, Span,
     Subst, Symbol, SymbolTable, TraitName, Type, TypeId, TypeName, Warning,
     apply,
@@ -477,10 +477,11 @@ impl TypeChecker {
     /// Clear transient inference state (expr_types, method_resolutions,
     /// active_constraints) accumulated during type-checking.
     ///
-    /// Called after inline trait registration (e.g., from prelude loading or
-    /// test setup) to prevent stale entries from leaking into subsequent
-    /// program checking. Does NOT clear `subst` because unification results
-    /// from registration are harmless (all concrete).
+    /// Called after inline trait registration (e.g., from test setup) to
+    /// prevent stale entries from leaking into subsequent program checking.
+    /// Does NOT clear `subst` because unification results from registration
+    /// are harmless (all concrete).
+    #[cfg(test)]
     pub(crate) fn clear_transient_state(&mut self) {
         self.expr_types.clear();
         self.method_resolutions.clear();
@@ -560,6 +561,166 @@ impl TypeChecker {
             );
         }
         Ok(())
+    }
+
+    /// Register export (re-export) specs for the current module.
+    ///
+    /// For each `ExportSpec`, looks up the source module and creates
+    /// `ModuleEntry::Reexport` entries in the current module's symbol table.
+    /// Follows the same pattern as `register_imports` but creates Reexport
+    /// entries instead of Import entries.
+    pub fn register_exports(
+        &mut self,
+        specs: &[ExportSpec],
+    ) -> Result<(), CranelispError> {
+        for spec in specs {
+            // Resolve the module path: try as-is first, then as a child
+            // of the current module (e.g., "syntax" -> "core.syntax"
+            // when current module is "core").
+            let resolved_path = if self.modules.contains_key(&spec.module_path) {
+                spec.module_path.clone()
+            } else {
+                let child_path = ModuleFullPath::from(format!(
+                    "{}.{}",
+                    self.current_module, spec.module_path
+                ));
+                if self.modules.contains_key(&child_path) {
+                    child_path
+                } else {
+                    return Err(CranelispError::TypeError {
+                        message: format!(
+                            "unknown module '{}' in export",
+                            spec.module_path
+                        ),
+                        span: spec.span,
+                    });
+                }
+            };
+
+            let source_table = match self.modules.get(&resolved_path) {
+                Some(t) => t,
+                None => unreachable!("module existence verified above"),
+            };
+
+            // Collect names to re-export (collect first to avoid borrowing
+            // self.modules while mutating current symbol table).
+            let reexports: Vec<(Symbol, ModuleEntry)> = match &spec.names {
+                ImportNames::Glob => {
+                    collect_glob_reexports(source_table, &resolved_path)
+                }
+                ImportNames::Specific(names) => {
+                    self.collect_specific_reexports(
+                        source_table, names, &resolved_path, spec.span,
+                    )?
+                }
+                ImportNames::MemberGlob(parent) => {
+                    self.collect_member_glob_reexports(
+                        source_table, parent, &resolved_path,
+                    )
+                }
+                ImportNames::None => {
+                    // No names to re-export.
+                    Vec::new()
+                }
+            };
+
+            // Insert into current symbol table, detecting ambiguities.
+            insert_imports_detecting_ambiguity(
+                self.current_symbol_table_mut(),
+                reexports,
+            );
+        }
+        Ok(())
+    }
+
+    /// Collect specific named re-exports from a source module, checking
+    /// visibility and existence.
+    fn collect_specific_reexports(
+        &self,
+        source_table: &SymbolTable,
+        names: &[Symbol],
+        module_path: &ModuleFullPath,
+        span: Span,
+    ) -> Result<Vec<(Symbol, ModuleEntry)>, CranelispError> {
+        let mut result = Vec::new();
+        for name in names {
+            match source_table.get(name.as_ref()) {
+                Some(entry) => {
+                    if !entry.is_public()
+                        && !self.is_in_subtree(
+                            &self.current_module,
+                            module_path,
+                        )
+                    {
+                        return Err(CranelispError::TypeError {
+                            message: format!(
+                                "'{}' is not public in '{}'",
+                                name, module_path
+                            ),
+                            span,
+                        });
+                    }
+                    let fq = FQSymbol {
+                        module: module_path.clone(),
+                        symbol: name.clone(),
+                    };
+                    result.push((
+                        name.clone(),
+                        ModuleEntry::Reexport { source: fq },
+                    ));
+                }
+                None => {
+                    return Err(CranelispError::TypeError {
+                        message: format!(
+                            "'{}' not found in module '{}'",
+                            name, module_path
+                        ),
+                        span,
+                    });
+                }
+            }
+        }
+        Ok(result)
+    }
+
+    /// Collect all constructors of a type or all methods of a trait from a
+    /// source module for re-export (member glob).
+    fn collect_member_glob_reexports(
+        &self,
+        source_table: &SymbolTable,
+        parent: &Symbol,
+        module_path: &ModuleFullPath,
+    ) -> Vec<(Symbol, ModuleEntry)> {
+        let trait_name = cranelisp_types::TraitName::from(parent.as_ref());
+        let mut result = Vec::new();
+        for (name, entry) in source_table.public_symbols() {
+            let is_member = match entry {
+                ModuleEntry::Constructor { type_name, .. } => {
+                    type_name.as_ref() == parent.as_ref()
+                }
+                ModuleEntry::Def { kind, .. } => {
+                    matches!(
+                        kind.as_ref(),
+                        cranelisp_types::DefKind::Primitive { .. }
+                            | cranelisp_types::DefKind::UserFn { .. }
+                    ) && self
+                        .trait_registry
+                        .method_belongs_to_trait(name, &trait_name)
+                }
+                _ => false,
+            };
+            if is_member {
+                let fq = FQSymbol {
+                    module: module_path.clone(),
+                    symbol: name.clone(),
+                };
+                result.push((
+                    name.clone(),
+                    ModuleEntry::Reexport { source: fq },
+                ));
+            }
+        }
+        result
     }
 
     /// Collect specific named imports from a source module, checking
@@ -783,6 +944,23 @@ fn collect_glob_imports(
         .collect()
 }
 
+/// Collect all public names from a module as Reexport entries (glob re-export).
+fn collect_glob_reexports(
+    source_table: &SymbolTable,
+    module_path: &ModuleFullPath,
+) -> Vec<(Symbol, ModuleEntry)> {
+    source_table
+        .public_symbols()
+        .map(|(name, _entry)| {
+            let fq = FQSymbol {
+                module: module_path.clone(),
+                symbol: name.clone(),
+            };
+            (name.clone(), ModuleEntry::Reexport { source: fq })
+        })
+        .collect()
+}
+
 /// Insert import entries into a symbol table, marking same-name entries from
 /// different sources as ambiguous (spec §8.6.4). Same-source duplicates are
 /// allowed and silently deduplicated.
@@ -796,6 +974,18 @@ fn insert_imports_detecting_ambiguity(
             let is_same_source = match (existing, &new_entry) {
                 (
                     ModuleEntry::Import { source: s1 },
+                    ModuleEntry::Import { source: s2 },
+                )
+                | (
+                    ModuleEntry::Reexport { source: s1 },
+                    ModuleEntry::Reexport { source: s2 },
+                )
+                | (
+                    ModuleEntry::Import { source: s1 },
+                    ModuleEntry::Reexport { source: s2 },
+                )
+                | (
+                    ModuleEntry::Reexport { source: s1 },
                     ModuleEntry::Import { source: s2 },
                 ) => s1 == s2,
                 _ => false,
@@ -812,25 +1002,26 @@ fn insert_imports_detecting_ambiguity(
             // definitions, not intentional imports. A prelude glob import
             // that brings in the same name via a different chain (e.g.,
             // "prelude/add-i64" vs "user/add-i64") is NOT ambiguous.
-            let both_imports = matches!(
+            let both_indirect = matches!(
                 (existing, &new_entry),
-                (ModuleEntry::Import { .. }, ModuleEntry::Import { .. })
+                (ModuleEntry::Import { .. } | ModuleEntry::Reexport { .. },
+                 ModuleEntry::Import { .. } | ModuleEntry::Reexport { .. })
             );
-            if both_imports {
+            if both_indirect {
                 // If either source is from "user" or "primitives" (builtin
                 // seeding), prefer the existing entry — it's canonical.
-                let existing_is_seeded = matches!(existing,
-                    ModuleEntry::Import { source } if {
-                        let m: &str = source.module.as_ref();
-                        m == "user" || m == "primitives"
+                let is_seeded_source = |entry: &ModuleEntry| -> bool {
+                    match entry {
+                        ModuleEntry::Import { source }
+                        | ModuleEntry::Reexport { source } => {
+                            let m: &str = source.module.as_ref();
+                            m == "user" || m == "primitives"
+                        }
+                        _ => false,
                     }
-                );
-                let new_is_seeded = matches!(&new_entry,
-                    ModuleEntry::Import { source } if {
-                        let m: &str = source.module.as_ref();
-                        m == "user" || m == "primitives"
-                    }
-                );
+                };
+                let existing_is_seeded = is_seeded_source(existing);
+                let new_is_seeded = is_seeded_source(&new_entry);
                 if existing_is_seeded || new_is_seeded {
                     // One is a seeded builtin — keep existing, skip new.
                     continue;
