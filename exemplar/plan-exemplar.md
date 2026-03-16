@@ -850,6 +850,18 @@ Module-level macro dependency matrix, refined from the Sprint 9 readiness assess
 
 ---
 
+## Current Status (Sprint 17)
+
+**Exemplar fails in reimplementation with**: `error: parse error at 1328..1349: unknown top-level form: const`
+
+**Root cause**: `run_file()` in `src/main.rs` sets `project_root` to `file_path.parent()`. When the entry file is `exemplar/solver.cl`, project_root becomes `exemplar/`, so `assemble_lib_dirs` looks for `exemplar/stdlib/` (doesn't exist) and `resolve_prelude` looks for `exemplar/prelude.cl` (doesn't exist). The prelude is never loaded, and `(const full-mask 511)` in `grid.cl` — a prelude macro — fails as an unrecognized form. The REPL uses `cwd` as project_root, which works correctly.
+
+**FIXME filed**: `FIXME(/int)` on `src/main.rs` line 58 — batch mode project_root derivation must use cwd (or equivalent) rather than entry file's parent, so prelude/stdlib resolution works for files in subdirectories.
+
+**Pure core status in sketch**: grid.cl, solver.cl, html.cl, form.cl all work in the prototype compiler. The reimplementation has the pipeline machinery (module graph, prelude loading, macro expansion) but the project_root bug prevents any stdlib-dependent file in a subdirectory from loading the prelude.
+
+---
+
 ## Next Skills
 
 - `/stdlib` — String primitives (`char-at`, `str-split`, `str-contains`, `str-sub`) remain the critical path for the exemplar (U1.1). Also: `mod`/`rem`, `vec-filter`, `vec-map`, `vec-fold`. Consider a variadic `str` function for string building ergonomics (U1.11).

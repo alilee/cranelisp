@@ -104,6 +104,25 @@ pub fn repl_session() -> ReplSession {
     ReplSession::new()
 }
 
+/// Path to the test fixtures directory (tests/fixtures/).
+pub fn test_fixtures_dir() -> std::path::PathBuf {
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join("fixtures")
+}
+
+/// Create a REPL session with the test prelude loaded.
+///
+/// Uses `tests/fixtures/prelude.cl` — a QA-owned, stable fixture that provides
+/// Option, Result, Num, Eq, Ord types and traits. NOT the real stdlib.
+/// See `tests/plan/strategy.md` §"Prelude & Stdlib Test Isolation".
+pub fn repl_session_with_test_prelude() -> ReplSession {
+    let project_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let fixtures_dir = test_fixtures_dir();
+    ReplSession::new_with_prelude(project_root, &[fixtures_dir])
+        .unwrap_or_else(|e| panic!("failed to load test prelude: {e}"))
+}
+
 /// Evaluate one input in a REPL session, returning the i64 result.
 pub fn repl_eval(session: &mut ReplSession, src: &str) -> i64 {
     let result = session

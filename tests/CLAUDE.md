@@ -99,8 +99,39 @@ tests/
   helpers/
     mod.rs               — shared test helpers
   fixtures/
-    test_prelude.cl      — trimmed prelude for test fixtures
+    prelude.cl           — QA-owned test prelude (Option, Result, Num, Eq, Ord)
 ```
+
+## Test Isolation Strategy (Prelude & Stdlib)
+
+Tests MUST NOT depend on `stdlib/`. Only the exemplar (`exemplar/`) and production binary (`src/main.rs`) may use the standard library. The test suite uses its own QA-owned fixtures to validate language features independently.
+
+### Test Prelude Fixture
+
+`tests/fixtures/prelude.cl` is a QA-owned, stable fixture providing:
+- **ADTs**: `Option` (None, Some), `Result` (Ok, Err)
+- **Traits**: `Num` (+, -, *, /), `Eq` (=, !=), `Ord` (<, >, <=, >=)
+- **Impls**: Int, Float for Num/Ord; Int, Float, Bool, String for Eq
+
+This is NOT a copy of `stdlib/prelude.cl` — it is a minimal, stable subset that tests can depend on without coupling to stdlib evolution.
+
+### E2E Test Isolation
+
+E2E tests use two helpers depending on whether they need the prelude:
+
+- **`run_repl(input, label)`** — bare REPL, no prelude loaded. Use for tests of core language features, slash commands, and error handling that don't need operators or ADTs.
+- **`run_repl_with_test_prelude(input, label)`** — sets `CRANELISP_LIB=tests/fixtures/` so the binary loads `tests/fixtures/prelude.cl` as the prelude. Use for tests requiring operators (+, -, etc.), Option/Result types, or trait dispatch.
+
+### Integration Test Isolation
+
+Integration tests use two helpers:
+
+- **`repl_session()`** — bare REPL session via Rust API, no prelude.
+- **`repl_session_with_test_prelude()`** — REPL session with `tests/fixtures/prelude.cl` loaded via `ReplSession::new_with_prelude()`. Uses the same fixture as E2E tests.
+
+### Inline Trait Preludes (Legacy)
+
+Some older E2E tests define traits inline using constants (`NUM_TRAIT_PRELUDE`, `EQ_TRAIT_PRELUDE`, `ORD_TRAIT_PRELUDE`) at the top of `e2e.rs`. These are still valid but new tests should prefer `run_repl_with_test_prelude()` for consistency and to avoid duplicating trait definitions across tests.
 
 ## Test Helpers
 
@@ -109,11 +140,15 @@ tests/
 | `compile_and_run_simple(src)` | Integration | No macros. Full pipeline. | Ring 0 |
 | `compile_and_run(src)` | Integration | Shared prelude session with macros. | Ring 3 |
 | `compile_and_run_with_macros(src)` | Integration | Shared session + user defmacro. | Ring 3 |
-| `repl_session()` | Integration | Creates a REPL session. | Ring 0 |
+| `repl_session()` | Integration | Creates a bare REPL session (no prelude). | Ring 0 |
+| `repl_session_with_test_prelude()` | Integration | REPL session with test prelude (Option, traits). | Ring 3 |
+| `test_fixtures_dir()` | Both | Path to `tests/fixtures/` directory. | Ring 3 |
 | `compile_both(src)` | Integration | Batch + REPL, assert identical. | Ring 0 |
 | `assert_type_error(src, msg)` | Integration | Assert type error with substring. | Ring 0 |
 | `assert_parse_error(src, msg)` | Integration | Assert parse error with substring. | Ring 0 |
 | `assert_rc_balanced(src)` | Integration | Compile + run with RC tracing. | Ring 1 |
+| `run_repl(input, label)` | E2E | Invoke REPL binary with piped stdin (no prelude). | Ring 0 |
+| `run_repl_with_test_prelude(input, label)` | E2E | Invoke REPL binary with test prelude loaded. | Ring 3 |
 | `run_binary(args, stdin)` | E2E | Invoke `cranelisp` subprocess. | Ring 0 |
 | `assert_output(case_dir)` | E2E | Check stdout/stderr/exit against expected. | Ring 0 |
 

@@ -1609,12 +1609,265 @@ The named primitives below work with specific types. They are available alongsid
 | `vec-set` | `(Fn [(Vec a) Int a] (Vec a))` | Return new Vec with element replaced |
 | `vec-push` | `(Fn [(Vec a) a] (Vec a))` | Return new Vec with element appended |
 
+## Input and Output
+
+Every program you have written so far has been pure -- it computes a result but does not interact with the outside world. To print text to the screen or read input from the user, you need **IO**.
+
+Cranelisp tracks side effects through the type system. A function that performs IO returns `(IO a)` instead of plain `a`, where `a` is the type of the result. This makes effects visible in the function's type -- you can tell at a glance whether a function is pure or performs IO.
+
+### Why IO is a Type
+
+In many languages, any function can print to the screen or read from the keyboard at any time. In Cranelisp, IO operations return values of type `(IO a)` -- a description of an effect to perform. The effect does not happen immediately. Instead, the runtime collects these descriptions and executes them when the program finishes (or when the REPL displays the result).
+
+This means:
+
+- A function with no `IO` in its return type is guaranteed pure -- it cannot have performed any side effects.
+- You can see from a function's type signature whether it does IO.
+- IO operations compose predictably using `do` and `bind!` (introduced below).
+
+### Printing with `print`
+
+The `print` function takes a `String` and returns `(IO Int)`. The side effect (writing to the screen) happens when the runtime forces the IO value. The integer result is always `0`.
+
+```
+> (print "hello")
+hello
+:(IO Int) 0
+```
+
+The REPL shows two things: first the side effect (`hello` printed to the screen), then the IO result (type `(IO Int)`, inner value `0`).
+
+You can print any string:
+
+```
+> (print "hello, world!")
+hello, world!
+:(IO Int) 0
+
+> (print (int-to-string 42))
+42
+:(IO Int) 0
+```
+
+### Lifting Values with `pure`
+
+The `pure` function wraps any value in IO without performing a side effect:
+
+```
+> (pure 42)
+:(IO Int) 42
+
+> (pure "hello")
+:(IO String) "hello"
+
+> (pure true)
+:(IO Bool) true
+```
+
+Why would you want this? When both branches of an `if` must have the same type. If one branch performs IO, the other must also return an IO type:
+
+```clojure
+;; ERROR: one branch is (IO Int), the other is plain Int
+(if (> x 0)
+  (print (int-to-string x))
+  0)
+
+;; OK: both branches return (IO Int)
+(if (> x 0)
+  (print (int-to-string x))
+  (pure 0))
+```
+
+### Sequencing with `do`
+
+The `do` macro sequences multiple IO actions. Each action runs in order, and the result of the last action is returned:
+
+```
+> (do (print "hello") (print "world"))
+hello
+world
+:(IO Int) 0
+```
+
+Every expression inside `do` must have an IO type. Intermediate results are discarded -- `do` is for sequencing effects when you do not need the results of earlier actions.
+
+You can put as many actions as you like inside a `do`:
+
+```
+> (do
+    (print "one")
+    (print "two")
+    (print "three"))
+one
+two
+three
+:(IO Int) 0
+```
+
+### Binding Results with `bind!`
+
+When you need the result of an IO action for use in a later action, use `bind!`. It binds the inner value of an IO action to a name:
+
+```
+(bind! [name io-expr
+        ...]
+  body)
+```
+
+Each pair `name io-expr` runs the IO expression, extracts its inner value, and makes it available as `name` in subsequent bindings and the body.
+
+```
+> (bind! [x (pure 10)
+          y (pure 20)]
+    (pure (+ x y)))
+:(IO Int) 30
+```
+
+Here, `x` gets the value `10` from `(pure 10)`, and `y` gets `20` from `(pure 20)`. The body computes their sum and wraps it in `pure`.
+
+The difference between `do` and `bind!` is simple: `do` discards intermediate results (use it for sequencing effects), while `bind!` names intermediate results (use it when you need them).
+
+### Reading Input with `read-line`
+
+The `read-line` function reads one line of text from the user:
+
+```
+read-line :: (Fn [] (IO String))
+```
+
+It takes no arguments and returns `(IO String)`. Use `bind!` to get the string value:
+
+```
+> (bind! [input (read-line)]
+    (print (str-concat "you said: " input)))
+```
+
+When this runs, the program waits for you to type a line. After you press Enter, it prints your input back with the prefix "you said: ".
+
+You can chain multiple reads:
+
+```
+> (bind! [name (read-line)
+          age (read-line)]
+    (print (str-concat "hello " (str-concat name (str-concat ", age " age)))))
+```
+
+### Platform Declarations
+
+IO operations come from a **platform** -- a library that provides functions like `print` and `read-line`. In batch programs, you declare which platform to use with `(platform stdio)` at the top of the file:
+
+```clojure
+(platform stdio)
+```
+
+This must appear in the entry module (the file you run), before any platform function calls. The `stdio` platform provides standard console IO.
+
+In the REPL, the platform is loaded automatically when you use platform functions, so you do not need a platform declaration.
+
+### Writing Batch Programs with IO
+
+Batch programs that perform IO must define a `main` function that returns an IO type. The inner value of `main`'s return is used as the program's exit code.
+
+Here is a complete hello-world program. Create a file called `hello.cl`:
+
+```clojure
+; hello.cl -- hello world with IO
+
+(platform stdio)
+(import [primitives [Pure bind]])
+(import [platform.stdio [print]])
+
+(defn main []
+  (print "hello, world!"))
+```
+
+Run it with:
+
+```
+cargo run -- --run hello.cl
+```
+
+This prints `hello, world!` to the screen.
+
+Here is a program that sequences multiple prints using `bind`:
+
+```clojure
+; greeting.cl -- sequencing IO with bind
+
+(platform stdio)
+(import [primitives [Pure bind]])
+(import [platform.stdio [print]])
+
+(defn main []
+  (bind (print "hello")
+    (fn [_]
+      (bind (print "world")
+        (fn [_] (Pure 0))))))
+```
+
+The nested `bind` calls ensure the prints happen in order: first "hello", then "world". The final `(Pure 0)` sets the exit code to 0.
+
+With the prelude loaded, this becomes much simpler using `do`:
+
+```clojure
+; greeting.cl -- sequencing IO with do
+
+(platform stdio)
+(import [platform.stdio [print]])
+
+(defn main []
+  (do
+    (print "hello")
+    (print "world")
+    (pure 0)))
+```
+
+The `do` macro handles the bind chaining for you. The `pure` function (lowercase, from the prelude) lifts `0` into IO for the exit code.
+
+### Try It Yourself
+
+1. At the REPL, try `(print "your name here")` and observe both the side effect and the result.
+
+2. Use `do` to print three lines in sequence.
+
+3. Use `bind!` to read a line with `read-line` and print it back with a greeting prefix.
+
+4. Write a batch program that prints a countdown from 3 to "go!":
+
+   ```clojure
+   (platform stdio)
+   (import [primitives [Pure bind]])
+   (import [platform.stdio [print]])
+
+   (defn countdown [n]
+     (if (= n 0)
+       (print "go!")
+       (bind (print (int-to-string n))
+         (fn [_] (countdown (- n 1))))))
+
+   (defn main [] (countdown 3))
+   ```
+
+   This prints `3`, `2`, `1`, `go!` on separate lines.
+
+For more IO examples, see `examples/21-hello-io.cl` through `examples/24-io-echo.cl` in the repository.
+
+### IO Summary
+
+| Function | Type | Description |
+|----------|------|-------------|
+| `print` | `(Fn [String] (IO Int))` | Print a string to the screen |
+| `read-line` | `(Fn [] (IO String))` | Read one line of text from the user |
+| `pure` | `(Fn [a] (IO a))` | Lift a value into IO (no side effect) |
+| `bind` | `(Fn [(IO a) (Fn [a] (IO b))] (IO b))` | Chain IO actions (primitive) |
+| `do` | macro | Sequence IO actions, discard intermediate results |
+| `bind!` | macro | Sequence IO actions, name intermediate results |
+
 ## What is Next
 
-This guide covers Ring 0 (core expressions, functions, enums, pattern matching), Ring 1 (strings, data types with fields, closures, higher-order functions, Vec collections), and Ring 2A (traits, operators, constrained polymorphism). As the language grows, you will gain access to:
+This guide covers Ring 0 (core expressions, functions, enums, pattern matching), Ring 1 (strings, data types with fields, closures, higher-order functions, Vec collections), Ring 2A (traits, operators, constrained polymorphism), and Ring 4 (IO -- reading input and writing output). As the language grows, you will gain access to:
 
 - **Modules** -- organizing code across multiple files
 - **Macros** -- programs that write programs
-- **IO** -- reading input and writing output
 
-Experiment in the REPL. Define your own traits and implement them for your types. Write polymorphic functions that work across numeric types. Combine operators with pattern matching and closures. The more you experiment, the more fluent you will become.
+Experiment in the REPL. Try printing and reading input. Write batch programs that combine IO with pattern matching and recursion. Define your own traits and implement them for your types. The more you experiment, the more fluent you will become.

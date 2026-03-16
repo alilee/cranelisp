@@ -276,6 +276,18 @@ impl<'a> FnCompiler<'a> {
             pending_closure_drop_glue: None,
         };
 
+        // Look up the defn's inferred type to get authoritative parameter types.
+        // This is essential for unused parameters: derive_param_type scans
+        // use sites, so unused params (e.g., `_s` in `(defn f [:String _s] 42)`)
+        // would have no type recorded and scope cleanup would skip their RC dec.
+        let defn_param_types: Vec<Option<Type>> = if let Some(Type::Fn(param_types, _)) =
+            compiler.ctx.expr_types.get(&defn.span)
+        {
+            param_types.iter().map(|t| Some(t.clone())).collect()
+        } else {
+            vec![None; defn.params.len()]
+        };
+
         // Bind function parameters from loop header block params (not entry block).
         // Also record parameter types in variable_types so scope cleanup
         // can emit rc_dec for heap-typed parameters at function exit.
@@ -291,9 +303,12 @@ impl<'a> FnCompiler<'a> {
                 .unwrap_or_else(|| unreachable!("invariant: scope_stack non-empty"))
                 .push(param_name.clone());
 
-            // Derive parameter type from expr_types via last_uses.
-            // Any use site of this parameter in the body has the same type.
-            if let Some(ty) = compiler.derive_param_type(param_name) {
+            // Use the defn's inferred param type (from expr_types) first.
+            // Fall back to derive_param_type (use-site inference) if the
+            // defn type isn't available.
+            if let Some(Some(ty)) = defn_param_types.get(i) {
+                compiler.variable_types.insert(param_name.clone(), ty.clone());
+            } else if let Some(ty) = compiler.derive_param_type(param_name) {
                 compiler.variable_types.insert(param_name.clone(), ty);
             }
         }

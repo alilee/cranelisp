@@ -40,6 +40,17 @@ pub fn build_program(
     ast_builder::build_program(sexps, expander)
 }
 
+/// Build REPL input from a sequence of S-expressions.
+///
+/// Handles top-level annotation expressions where `:Type expr` parses as
+/// two separate sexps. Falls through to single-sexp handling otherwise.
+pub fn build_repl_input_from_sexps(
+    sexps: &[Sexp],
+    expander: &mut dyn MacroExpander,
+) -> Result<ReplInput, CranelispError> {
+    ast_builder::build_repl_input_from_sexps(sexps, expander)
+}
+
 /// Build REPL input from a single S-expression.
 ///
 /// Accepts top-level forms and bare expressions.

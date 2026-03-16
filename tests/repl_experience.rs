@@ -2811,6 +2811,49 @@ fn display_adt_nested_adt_field() {
     );
 }
 
+// =============================================================================
+// U1.10 — Imported ADT display (prelude Option)
+//
+// When an ADT type is imported from another module (e.g., Option from prelude),
+// format_adt_value must still be able to look up the type definition to format
+// the value with constructor dot notation, not as a raw heap pointer.
+//
+// Root cause: type_defs lookup uses the bare type name but the imported type's
+// definition lives in the source module's CompiledModule, not the user module.
+// =============================================================================
+
+// spec: repl/spec.md §1.5 — imported Option (Some 42) displays as constructor, not raw pointer
+#[test]
+// BUG: imported Option shows raw pointer for data ctors
+fn display_imported_option_some_formatted() {
+    let mut session = repl_session_with_test_prelude();
+    let display = repl_eval_display(&mut session, "(Some 42)");
+    assert!(
+        display.contains("(Option.Some 42)"),
+        "expected '(Option.Some 42)' for imported Option, got: {display}"
+    );
+    // Negative: must not contain a raw heap pointer
+    let has_large_num = display
+        .split_whitespace()
+        .any(|w| w.parse::<u64>().map_or(false, |n| n > 1_000_000));
+    assert!(
+        !has_large_num,
+        "display should not contain raw heap pointer: {display}"
+    );
+}
+
+// spec: repl/spec.md §1.5 — imported Option None displays with dot notation
+#[test]
+// BUG: imported Option None shows raw tag instead of dot notation
+fn display_imported_option_none_formatted() {
+    let mut session = repl_session_with_test_prelude();
+    let display = repl_eval_display(&mut session, "None");
+    assert!(
+        display.contains("Option.None"),
+        "expected 'Option.None' for imported None, got: {display}"
+    );
+}
+
 // spec: repl/spec.md §1.5 — product ADT with string field displays contents
 #[test]
 fn display_product_adt_string_field() {

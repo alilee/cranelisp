@@ -131,6 +131,30 @@ pub fn build_program(
     sexps.iter().map(|s| build_top_level(s, expander)).collect()
 }
 
+/// Build REPL input from a sequence of S-expressions.
+///
+/// Handles top-level annotation expressions where `:Type expr` or `:(T a) expr`
+/// parses as two separate sexps that must be combined into a single `Expr::Annotate`.
+/// Falls through to single-sexp handling for all other cases.
+pub fn build_repl_input_from_sexps(
+    sexps: &[Sexp],
+    expander: &mut dyn MacroExpander,
+) -> Result<ReplInput, CranelispError> {
+    if sexps.is_empty() {
+        return Err(parse_err("expected expression", Span::SYNTHETIC));
+    }
+    // Handle top-level annotation: `:Type expr` or `:(T a) expr`
+    if sexps.len() > 1 {
+        let args = build_args_with_annotations(sexps, expander)?;
+        if args.len() == 1 {
+            return Ok(ReplInput::Expr(args.into_iter().next().unwrap()));
+        }
+        // Multiple non-annotation sexps — error (expected single expression)
+        return Err(parse_err("expected single expression", sexps[1].span()));
+    }
+    build_repl_input(&sexps[0], expander)
+}
+
 /// Build REPL input from a single S-expression.
 ///
 /// Accepts top-level forms and bare expressions.

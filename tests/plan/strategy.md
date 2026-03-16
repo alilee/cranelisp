@@ -218,6 +218,82 @@ Skill          /qa Demands                       /qa Provides Back
 
 ---
 
+## Prelude & Stdlib Test Isolation
+
+Tests MUST be self-contained. They MUST NOT depend on `stdlib/prelude.cl` for type definitions, trait implementations, or macro availability. The stdlib is a moving target — if it adds a field to `Option` or renames a trait method, tests that depend on its exact shape break for reasons unrelated to the compiler.
+
+### Three prelude tiers
+
+| Tier | What it provides | When to use | Infrastructure |
+|------|-----------------|-------------|----------------|
+| **Bare** | No imports, no types, no traits | Core language tests (Ring 0-1), parser, type inference | `repl_session()`, `compile_and_run_simple()` |
+| **Test prelude** | Test-owned types + traits that simulate the stdlib surface | REPL display tests, imported-type tests, use-case scenarios | `repl_session_with_test_prelude()`, `run_repl_with_test_prelude()` |
+| **Real stdlib** | Full `stdlib/prelude.cl` | Stdlib conformance tests only (`tests/stdlib.rs`) | `ReplSession::new_with_prelude(project_root, &[stdlib_dir])` |
+
+### Test prelude design
+
+The test prelude lives in `tests/fixtures/prelude.cl`. It is a `.cl` file that tests load via `CRANELISP_LIB` or `new_with_prelude()`. It is NOT a copy of `stdlib/prelude.cl` — it is a minimal, stable fixture that defines the types and traits needed by tests:
+
+```clojure
+;; tests/fixtures/prelude.cl — test-owned prelude
+;; This is NOT stdlib. Changes here require QA review.
+
+;; Core types that REPL display tests need
+(deftype (Option a) None (Some [:a val]))
+(deftype (Result a b) (Ok [:a val]) (Err [:b err]))
+
+;; Core traits that operator tests need
+(deftrait Num (+ [self self] self) (- [self self] self)
+              (* [self self] self) (/ [self self] self))
+(impl Num Int
+  (defn + [a b] (add-i64 a b)) (defn - [a b] (sub-i64 a b))
+  (defn * [a b] (mul-i64 a b)) (defn / [a b] (div-i64 a b)))
+(impl Num Float
+  (defn + [a b] (add-f64 a b)) (defn - [a b] (sub-f64 a b))
+  (defn * [a b] (mul-f64 a b)) (defn / [a b] (div-f64 a b)))
+
+(deftrait Eq (= [self self] Bool) (!= [self self] Bool))
+(impl Eq Int  (defn = [a b] (eq-i64 a b))  (defn != [a b] (not (eq-i64 a b))))
+(impl Eq Float (defn = [a b] (eq-f64 a b)) (defn != [a b] (not (eq-f64 a b))))
+(impl Eq Bool (defn = [a b] (eq-bool a b)) (defn != [a b] (not (eq-bool a b))))
+(impl Eq String (defn = [a b] (str-eq a b)) (defn != [a b] (not (str-eq a b))))
+
+(deftrait Ord (< [self self] Bool) (> [self self] Bool)
+              (<= [self self] Bool) (>= [self self] Bool))
+(impl Ord Int
+  (defn < [a b] (lt-i64 a b)) (defn > [a b] (gt-i64 a b))
+  (defn <= [a b] (le-i64 a b)) (defn >= [a b] (ge-i64 a b)))
+(impl Ord Float
+  (defn < [a b] (lt-f64 a b)) (defn > [a b] (gt-f64 a b))
+  (defn <= [a b] (le-f64 a b)) (defn >= [a b] (ge-f64 a b)))
+```
+
+**Key properties:**
+- **Stable**: changes require QA review; tests depend on exact type shapes
+- **Minimal**: only what tests actually need — no stdlib convenience macros
+- **Self-contained**: defines everything from primitives, no `(import [...])`
+- **Exercises the import path**: loaded via the same prelude auto-import mechanism that stdlib uses, so tests validate that imported types display correctly
+
+### Why test-defined types are NOT duplication
+
+The test `Option` and the stdlib `Option` serve different purposes:
+- **stdlib `Option`** is a library type that may evolve (gain methods, change module path, add derives)
+- **test `Option`** is a test fixture that must be stable for test assertions to be meaningful
+
+If the stdlib adds `(defn unwrap [opt] ...)` to Option, no test should break. If the test prelude's `Option` changes shape, that's a deliberate QA decision with test updates.
+
+### What tier to use
+
+- **Testing core language semantics** (arithmetic, let binding, pattern matching, closures, RC): **Bare**. No prelude needed.
+- **Testing REPL display of imported types** (§1.1 use-case scenarios, §1.5 ADT display): **Test prelude**. Tests need `Option`, `Result` etc. but from a controlled source.
+- **Testing operator dispatch** (`+`, `-`, `*`, `/`, `=`, `<`): **Test prelude** (or inline trait definitions for narrow tests).
+- **Testing that the real stdlib loads and works**: **Real stdlib** (`tests/stdlib.rs` only).
+- **Testing prelude auto-import mechanism itself**: **Test prelude**. The mechanism should work with any prelude, not just stdlib's.
+
+### Migration plan
+
+The inline trait definitions scattered across `e2e.rs` (as `const` strings) and `ring2.rs` (as functions) should be consolidated into the test prelude fixture. This eliminates duplication while maintaining isolation. Tests that currently build `"{NUM_TRAIT_PRELUDE}\n{src}"` strings would instead use a session loaded with the test prelude.
+
 ## Pipeline Wiring Responsibility
 
 `/qa` owns the pipeline orchestration — wiring frontend, typecheck, and backend into a working compiler:

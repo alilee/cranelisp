@@ -101,6 +101,39 @@ fn run_repl(input: &str, label: &str) -> Output {
     child.wait_with_output().expect("failed to read output")
 }
 
+/// Run the REPL binary with the test prelude loaded.
+///
+/// Sets CRANELISP_LIB to `tests/fixtures/` which contains a QA-owned
+/// `prelude.cl` fixture. NOT the real stdlib — see strategy.md
+/// §"Prelude & Stdlib Test Isolation".
+fn run_repl_with_test_prelude(input: &str, label: &str) -> Output {
+    let binary = binary_path();
+    assert!(
+        binary.exists(),
+        "cranelisp binary not found at {binary:?} — run `cargo build` first"
+    );
+    let dir = test_dir(label);
+    let fixtures = project_root().join("tests").join("fixtures");
+
+    let mut child = Command::new(&binary)
+        .current_dir(&dir)
+        .env("CRANELISP_LIB", fixtures.as_os_str())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("failed to start cranelisp binary");
+
+    {
+        use std::io::Write;
+        let stdin = child.stdin.as_mut().expect("failed to open stdin");
+        stdin
+            .write_all(input.as_bytes())
+            .expect("failed to write input");
+    }
+    child.wait_with_output().expect("failed to read output")
+}
+
 fn stdout_str(o: &Output) -> String {
     String::from_utf8_lossy(&o.stdout).into_owned()
 }
@@ -217,6 +250,90 @@ fn e2e_s1_5_data_ctor_dot_notation() {
         "s1_5_data",
     );
     assert_stdout_contains(&o, "(Option.Some 42)");
+}
+
+// spec: repl/spec.md §1.5 — prelude Option data ctor displays formatted value, not raw pointer
+#[test]
+// BUG: prelude Option (Some 42) shows raw pointer instead of (Option.Some 42)
+fn e2e_s1_5_prelude_option_some_display() {
+    let o = run_repl_with_test_prelude("(Some 42)\n", "s1_5_prelude_some");
+    let s = stdout_str(&o);
+    assert!(
+        s.contains("(Option.Some 42)"),
+        "expected '(Option.Some 42)' in output, got:\n{s}"
+    );
+    // Negative: must NOT contain a raw heap pointer in the value position
+    assert!(
+        !s.lines().any(|l| {
+            l.contains("Option") && l.chars().filter(|c| c.is_ascii_digit()).count() > 5
+                && !l.contains("(Option.Some 42)")
+        }),
+        "result should not contain raw heap pointer:\n{s}"
+    );
+}
+
+// spec: repl/spec.md §1.5 — prelude Option None displays as value, not definition
+#[test]
+// BUG: prelude None shows definition display instead of value display
+fn e2e_s1_5_prelude_option_none_display() {
+    let o = run_repl_with_test_prelude("None\n", "s1_5_prelude_none");
+    let s = stdout_str(&o);
+    // Should display as a value: :(Option a) Option.None
+    // Must NOT show definition metadata ("; deftype") or module-qualified ctor name
+    assert!(
+        s.contains("Option.None"),
+        "expected 'Option.None' in output, got:\n{s}"
+    );
+    assert!(
+        !s.contains("; deftype"),
+        "None evaluation should show value display, not definition display:\n{s}"
+    );
+    assert!(
+        !s.contains("fn.option/"),
+        "None value should not show module-qualified constructor path:\n{s}"
+    );
+}
+
+// spec: repl/spec.md §1.5 — prelude Option (Some "hello") displays string contents, not pointer
+#[test]
+// BUG: prelude Option (Some string) shows raw pointer instead of formatted value
+fn e2e_s1_5_prelude_option_some_string_display() {
+    let o = run_repl_with_test_prelude("(Some \"hello\")\n", "s1_5_prelude_some_str");
+    let s = stdout_str(&o);
+    assert!(
+        s.contains("\"hello\""),
+        "expected string contents in Option display, got:\n{s}"
+    );
+    assert!(
+        s.contains("Option.Some"),
+        "expected 'Option.Some' constructor notation, got:\n{s}"
+    );
+}
+
+// spec: spec/02-grammar.md §2.3.8 — type annotation as standalone expression
+#[test]
+fn e2e_s2_3_8_annotation_expr_simple() {
+    let o = run_repl(":Int 42\n", "s2_3_8_annot_int");
+    assert_result(&o, ":primitives/Int 42");
+}
+
+// spec: spec/02-grammar.md §2.3.8 — applied type annotation constrains polymorphic constructor
+#[test]
+fn e2e_s2_3_8_annotation_expr_applied_type() {
+    let o = run_repl_with_test_prelude(":(Option Int) None\n", "s2_3_8_annot_option");
+    assert_stdout_contains(&o, "Option.None");
+}
+
+// spec: spec/02-grammar.md §2.3.8 — neg: type annotation is not parsed as variable lookup
+#[test]
+fn e2e_s2_3_8_annotation_neg_not_variable_error() {
+    // :Int 42 must NOT produce "undefined variable: :" or "undefined variable: :Int"
+    let o = run_repl(":Int 42\n", "s2_3_8_neg_var");
+    let s = stdout_str(&o);
+    assert!(
+        !s.contains("undefined variable"),
+        "type annotation should not produce 'undefined variable' error:\n{s}"
+    );
 }
 
 // ===========================================================================
@@ -1642,6 +1759,276 @@ fn e2e_s3_3_list_neg_ctors_not_in_fns() {
     assert!(
         !s.contains("Fns:"),
         "expected no 'Fns:' category when only deftype defined\n---\n{s}"
+    );
+}
+
+// ===========================================================================
+// Sprint 18 C3: Slash command tests — /doc, /source, /sexp, /ast, /clif,
+// /disasm, /mod (repl/spec.md §3.1)
+// ===========================================================================
+
+// --- /doc (repl/spec.md §3.1 row: /doc <name>) ---
+
+// spec: repl/spec.md §3.1 — /doc on user-defined function with docstring
+#[test]
+fn e2e_s3_1_doc_user_fn_with_docstring() {
+    let input = "(defn greet \"Says hello\" [x] x)\n/doc greet\n";
+    let o = run_repl(input, "s3_1_doc_fn_docstring");
+    let s = stdout_str(&o);
+    assert!(
+        s.contains("Says hello"),
+        "/doc should show docstring, got:\n{s}"
+    );
+}
+
+// spec: repl/spec.md §3.1 — /doc on user-defined function without docstring
+#[test]
+fn e2e_s3_1_doc_user_fn_no_docstring() {
+    let input = "(defn greet [x] x)\n/doc greet\n";
+    let o = run_repl(input, "s3_1_doc_fn_no_docstring");
+    let s = stdout_str(&o);
+    assert!(
+        s.contains("no docstring") || s.contains("greet"),
+        "/doc on fn without docstring should mention name or 'no docstring', got:\n{s}"
+    );
+}
+
+// spec: repl/spec.md §3.1 — /doc on builtin primitive shows docstring
+#[test]
+fn e2e_s3_1_doc_builtin() {
+    let input = "/doc add-i64\n";
+    let o = run_repl(input, "s3_1_doc_builtin");
+    let s = stdout_str(&o);
+    // Builtins have docstrings per spec/appendix-a-builtins.md §A.5
+    assert!(
+        s.contains("add-i64"),
+        "/doc on builtin should mention the name, got:\n{s}"
+    );
+    assert!(
+        !s.contains("unknown"),
+        "/doc on builtin should not produce 'unknown' error, got:\n{s}"
+    );
+}
+
+// spec: repl/spec.md §3.1 — /doc on nonexistent symbol gives error
+#[test]
+fn e2e_s3_1_doc_neg_nonexistent() {
+    let input = "/doc nonexistent_sym\n";
+    let o = run_repl(input, "s3_1_doc_neg_nonexistent");
+    let s = stdout_str(&o);
+    assert!(
+        s.contains("unknown") || s.contains("error") || s.contains("not found"),
+        "/doc on nonexistent symbol should produce error, got:\n{s}"
+    );
+}
+
+// spec: repl/spec.md §3.1 — /doc with no argument gives usage message
+#[test]
+fn e2e_s3_1_doc_neg_no_arg() {
+    let input = "/doc\n";
+    let o = run_repl(input, "s3_1_doc_neg_no_arg");
+    let s = stdout_str(&o);
+    assert!(
+        s.contains("usage") || s.contains("/doc"),
+        "/doc with no arg should show usage, got:\n{s}"
+    );
+}
+
+// --- /source (repl/spec.md §3.1 row: /source <name>) ---
+
+// spec: repl/spec.md §3.1 — /source shows original source text
+#[test]
+#[ignore = "repl/spec.md §3.1 — Ring 4, Sprint 18: /source not yet implemented"]
+fn e2e_s3_1_source_user_fn() {
+    let input = "(defn double [x] (add-i64 x x))\n/source double\n";
+    let o = run_repl(input, "s3_1_source_fn");
+    let s = stdout_str(&o);
+    assert!(
+        s.contains("defn double") || s.contains("(defn double"),
+        "/source should show original source, got:\n{s}"
+    );
+}
+
+// spec: repl/spec.md §3.1 — /source on nonexistent symbol gives error
+#[test]
+#[ignore = "repl/spec.md §3.1 — Ring 4, Sprint 18: /source not yet implemented"]
+fn e2e_s3_1_source_neg_nonexistent() {
+    let input = "/source nonexistent_sym\n";
+    let o = run_repl(input, "s3_1_source_neg_nonexistent");
+    let s = stdout_str(&o);
+    assert!(
+        s.contains("unknown") || s.contains("error") || s.contains("not found"),
+        "/source on nonexistent should produce error, got:\n{s}"
+    );
+}
+
+// --- /sexp (repl/spec.md §3.1 row: /sexp <name>) ---
+
+// spec: repl/spec.md §3.1 — /sexp shows parsed S-expression
+#[test]
+#[ignore = "repl/spec.md §3.1 — Ring 4, Sprint 18: /sexp not yet implemented"]
+fn e2e_s3_1_sexp_user_fn() {
+    let input = "(defn double [x] (add-i64 x x))\n/sexp double\n";
+    let o = run_repl(input, "s3_1_sexp_fn");
+    let s = stdout_str(&o);
+    // /sexp should display the parsed S-expression tree (not an error)
+    assert!(
+        !s.contains("unknown command"),
+        "/sexp should be a recognized command, got:\n{s}"
+    );
+    assert!(
+        s.contains("double") || s.contains("defn"),
+        "/sexp should show sexp structure mentioning the definition, got:\n{s}"
+    );
+}
+
+// spec: repl/spec.md §3.1 — /sexp on nonexistent symbol gives error
+#[test]
+#[ignore = "repl/spec.md §3.1 — Ring 4, Sprint 18: /sexp not yet implemented"]
+fn e2e_s3_1_sexp_neg_nonexistent() {
+    let input = "/sexp nonexistent_sym\n";
+    let o = run_repl(input, "s3_1_sexp_neg_nonexistent");
+    let s = stdout_str(&o);
+    assert!(
+        s.contains("unknown") || s.contains("error") || s.contains("not found"),
+        "/sexp on nonexistent should produce error, got:\n{s}"
+    );
+}
+
+// --- /ast (repl/spec.md §3.1 row: /ast <name>) ---
+
+// spec: repl/spec.md §3.1 — /ast shows AST
+#[test]
+#[ignore = "repl/spec.md §3.1 — Ring 4, Sprint 18: /ast not yet implemented"]
+fn e2e_s3_1_ast_user_fn() {
+    let input = "(defn double [x] (add-i64 x x))\n/ast double\n";
+    let o = run_repl(input, "s3_1_ast_fn");
+    let s = stdout_str(&o);
+    assert!(
+        !s.contains("unknown command"),
+        "/ast should be a recognized command, got:\n{s}"
+    );
+    assert!(
+        s.contains("double") || s.contains("Defn") || s.contains("defn"),
+        "/ast should show AST structure, got:\n{s}"
+    );
+}
+
+// spec: repl/spec.md §3.1 — /ast on nonexistent symbol gives error
+#[test]
+#[ignore = "repl/spec.md §3.1 — Ring 4, Sprint 18: /ast not yet implemented"]
+fn e2e_s3_1_ast_neg_nonexistent() {
+    let input = "/ast nonexistent_sym\n";
+    let o = run_repl(input, "s3_1_ast_neg_nonexistent");
+    let s = stdout_str(&o);
+    assert!(
+        s.contains("unknown") || s.contains("error") || s.contains("not found"),
+        "/ast on nonexistent should produce error, got:\n{s}"
+    );
+}
+
+// --- /clif (repl/spec.md §3.1 row: /clif <name>) ---
+
+// spec: repl/spec.md §3.1 — /clif shows Cranelift IR
+#[test]
+#[ignore = "repl/spec.md §3.1 — Ring 4, Sprint 18: /clif not yet implemented"]
+fn e2e_s3_1_clif_user_fn() {
+    let input = "(defn double [x] (add-i64 x x))\n/clif double\n";
+    let o = run_repl(input, "s3_1_clif_fn");
+    let s = stdout_str(&o);
+    assert!(
+        !s.contains("unknown command"),
+        "/clif should be a recognized command, got:\n{s}"
+    );
+    // Cranelift IR typically contains 'block' or 'function' keywords
+    assert!(
+        s.contains("block") || s.contains("function") || s.contains("v"),
+        "/clif should show Cranelift IR, got:\n{s}"
+    );
+}
+
+// spec: repl/spec.md §3.1 — /clif on nonexistent symbol gives error
+#[test]
+#[ignore = "repl/spec.md §3.1 — Ring 4, Sprint 18: /clif not yet implemented"]
+fn e2e_s3_1_clif_neg_nonexistent() {
+    let input = "/clif nonexistent_sym\n";
+    let o = run_repl(input, "s3_1_clif_neg_nonexistent");
+    let s = stdout_str(&o);
+    assert!(
+        s.contains("unknown") || s.contains("error") || s.contains("not found"),
+        "/clif on nonexistent should produce error, got:\n{s}"
+    );
+}
+
+// --- /disasm (repl/spec.md §3.1 row: /disasm <name>) ---
+
+// spec: repl/spec.md §3.1 — /disasm shows disassembled native code
+#[test]
+#[ignore = "repl/spec.md §3.1 — Ring 4, Sprint 18: /disasm not yet implemented"]
+fn e2e_s3_1_disasm_user_fn() {
+    let input = "(defn double [x] (add-i64 x x))\n/disasm double\n";
+    let o = run_repl(input, "s3_1_disasm_fn");
+    let s = stdout_str(&o);
+    assert!(
+        !s.contains("unknown command"),
+        "/disasm should be a recognized command, got:\n{s}"
+    );
+}
+
+// spec: repl/spec.md §3.1 — /disasm on nonexistent symbol gives error
+#[test]
+#[ignore = "repl/spec.md §3.1 — Ring 4, Sprint 18: /disasm not yet implemented"]
+fn e2e_s3_1_disasm_neg_nonexistent() {
+    let input = "/disasm nonexistent_sym\n";
+    let o = run_repl(input, "s3_1_disasm_neg_nonexistent");
+    let s = stdout_str(&o);
+    assert!(
+        s.contains("unknown") || s.contains("error") || s.contains("not found"),
+        "/disasm on nonexistent should produce error, got:\n{s}"
+    );
+}
+
+// --- /mod (repl/spec.md §8 — Module Demo Scenarios) ---
+
+// spec: repl/spec.md §8 Scenario 1 — /mod <name> switches namespace
+#[test]
+#[ignore = "repl/spec.md §8 — Ring 4, Sprint 18: /mod not yet implemented"]
+fn e2e_s8_mod_switch_namespace() {
+    let input = "/mod math\n";
+    let o = run_repl(input, "s8_mod_switch");
+    let s = stdout_str(&o);
+    // After /mod math, prompt should change to math>
+    assert!(
+        s.contains("math>"),
+        "/mod math should switch prompt to 'math>', got:\n{s}"
+    );
+}
+
+// spec: repl/spec.md §8 Scenario 6 — bare /mod shows current module
+#[test]
+#[ignore = "repl/spec.md §8 — Ring 4, Sprint 18: /mod not yet implemented"]
+fn e2e_s8_mod_show_current() {
+    let input = "/mod\n";
+    let o = run_repl(input, "s8_mod_show_current");
+    let s = stdout_str(&o);
+    // Bare /mod should display the current module name (default: user)
+    assert!(
+        s.contains("user"),
+        "bare /mod should show current module 'user', got:\n{s}"
+    );
+}
+
+// spec: repl/spec.md §8 Scenario 2 — /mod user switches back
+#[test]
+#[ignore = "repl/spec.md §8 — Ring 4, Sprint 18: /mod not yet implemented"]
+fn e2e_s8_mod_switch_back() {
+    let input = "/mod math\n/mod user\n";
+    let o = run_repl(input, "s8_mod_switch_back");
+    let s = stdout_str(&o);
+    // Should have math> at some point, then user> again
+    assert!(
+        s.contains("math>") && s.contains("user>"),
+        "/mod should switch to math> then back to user>, got:\n{s}"
     );
 }
 

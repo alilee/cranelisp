@@ -1142,3 +1142,50 @@ fn rc_u1_5_closure_captures_pair_with_strings() {
     "#;
     assert_rc_balanced(src);
 }
+
+// ── Lambda unused heap param RC tests (D3 / Sprint 18) ───────────────
+
+// spec: spec/12-runtime.md — consuming convention: callee owns heap params
+#[test]
+#[serial]
+fn rc_lambda_unused_string_param_freed() {
+    let src = r#"
+        (defn main []
+          (let [f (fn [:String _s] 42)] (f "hello")))
+    "#;
+    assert_rc_balanced(src);
+}
+
+// spec: spec/12-runtime.md — consuming convention: callee owns heap params
+#[test]
+#[serial]
+fn rc_lambda_unused_adt_param_freed() {
+    let src = r#"
+        (deftype (Option a) None (Some [:a val]))
+        (defn main []
+          (let [f (fn [:(Option Int) _opt] 0)] (f (Some 99))))
+    "#;
+    assert_rc_balanced(src);
+}
+
+// spec: spec/12-runtime.md — consuming convention: callee owns heap params
+#[test]
+#[serial]
+fn rc_lambda_multiple_unused_heap_params_freed() {
+    let src = r#"
+        (defn main []
+          (let [f (fn [:String _a :String _b] 0)] (f "x" "y")))
+    "#;
+    assert_rc_balanced(src);
+}
+
+// spec: spec/12-runtime.md — consuming convention: callee owns heap params
+#[test]
+#[serial]
+fn rc_defn_unused_string_param_freed() {
+    let src = r#"
+        (defn f [:String _s] 42)
+        (defn main [] (f "hello"))
+    "#;
+    assert_rc_balanced(src);
+}

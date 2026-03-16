@@ -177,6 +177,8 @@ In batch mode, a program MUST define a function named `main` with no parameters 
 
 ## 12.7 Error Model [Tested]
 
+Cranelisp distinguishes two error categories: **compile-time errors** (detected before execution) and **runtime panics** (detected during execution). There is no exception mechanism, no user-exposed `try`/`catch`, and no `Result`-based error propagation for runtime faults. Runtime panics are **fatal to the current evaluation** but the execution environment (REPL session) survives.
+
 ### 12.7.1 Compile-Time Errors [Tested]
 
 The following are compile-time errors:
@@ -187,19 +189,145 @@ The following are compile-time errors:
 - Ambiguous name resolution [Tested crates/cranelisp-typecheck/src/checker.rs::test_import_ambiguity]
 - Macro expansion errors (non-Sexp return type, expansion limit exceeded) [Tested tests/macros::neg_macro_non_sexp_return_type_batch, tests/macros::neg_macro_expansion_depth_limit_exceeded]
 
-### 12.7.2 Runtime Errors [Tested]
+### 12.7.2 Runtime Panics [Tested]
 
-The following cause runtime errors (program termination):
+A **runtime panic** terminates the current evaluation. It does NOT terminate the process in REPL mode (see §12.7.4). There is no mechanism for user code to catch or recover from a runtime panic — it is unconditionally fatal to the expression being evaluated.
 
-| Error | Behavior |
-|---|---|
-| Non-exhaustive match | Runtime panic with "match failed" message [Tested tests/ring0.rs::error_non_exhaustive_match_runtime] |
-| Division by zero | Implementation-defined (trap, panic, or error value) [R4 S10] |
-| Vec out-of-bounds access | Implementation-defined [R4 S10] |
-| Stack overflow | Implementation-defined [R4 S10] |
-| Integer overflow | Silent wraparound (two's complement) — NOT an error [Tested tests/ring0.rs::integer_overflow_wraps] |
+#### 12.7.2.1 Panic Sources [Tested]
 
-Note: Integer overflow silently wraps. This is specified behavior, not an error. `Int` values are 64-bit two's complement integers and arithmetic operations wrap on overflow.
+The following conditions cause a runtime panic:
+
+| Condition | Message | Notes |
+|---|---|---|
+| Non-exhaustive match | `"match failed"` | All match arms tested, none matched [Tested tests/ring0.rs::error_non_exhaustive_match_runtime] |
+| Integer division by zero | `"division by zero"` | `div-i64` with zero divisor [R4 S18] |
+| Vec index out of bounds | `"vec-get: index out of bounds"` | `vec-get` or `vec-set` with index < 0 or >= length [R4 S18] |
+| Stack overflow | Implementation-defined message | Exhaustion of the call stack (e.g., unbounded recursion without TCO) [R4 S18] |
+
+#### 12.7.2.2 Conditions That Are NOT Panics
+
+| Condition | Behavior | Rationale |
+|---|---|---|
+| Integer overflow | Silent wraparound (two's complement) | Specified behavior, not an error. `Int` values are 64-bit two's complement; `add-i64`, `sub-i64`, `mul-i64` wrap on overflow. [Tested tests/ring0.rs::integer_overflow_wraps] |
+| Float division by zero | IEEE 754 result (`Inf`, `-Inf`, or `NaN`) | Follows IEEE 754 semantics. NOT a panic. [R4 S18] |
+| `parse-int` with invalid input | Returns `None` | Parsing failure is a normal `Option` result, not an error. [Tested tests/ring1.rs::parse_int_valid] |
+| IO operation failure | Platform-defined `IO` result | See §12.7.6. |
+
+### 12.7.3 Arithmetic Policy [R4 S18]
+
+Cranelisp uses **unchecked (wrapping) integer arithmetic** and **checked integer division**:
+
+- **Integer addition, subtraction, multiplication**: Use two's complement wrapping. No overflow detection. This matches the `Int` type definition (signed 64-bit two's complement, §12.1.1). Programs that need overflow detection MUST implement it in user code (e.g., checking operand signs and comparing with the result).
+
+- **Integer division** (`div-i64`): A divisor of zero causes a runtime panic. Division of `Int.MIN` by `-1` (which would overflow) also causes a runtime panic. All other integer divisions truncate toward zero.
+
+- **Float arithmetic**: Follows IEEE 754 semantics throughout. Division by zero produces `Inf`, `-Inf`, or `NaN` depending on the operands. Float operations NEVER panic.
+
+- **Modulo/remainder**: If provided, follows the same policy as integer division — zero divisor causes a runtime panic.
+
+### 12.7.4 REPL vs Batch Error Behavior [R4 S18]
+
+The execution environment determines what happens after a runtime panic:
+
+#### 12.7.4.1 REPL Mode [R4 S18]
+
+In REPL mode, a runtime panic terminates the current expression evaluation but MUST NOT terminate the REPL session. The REPL MUST:
+
+1. Display the panic message to the user (see §12.7.5).
+2. Preserve all session state: previously defined functions, types, imports, and module context remain available.
+3. Return to the input prompt, ready for the next expression.
+
+```
+user> (match 42 [(Some x) x])
+error: runtime panic: match failed
+user> (+ 1 2)
+3 :: Int
+```
+
+Heap allocations from the panicking evaluation MAY be leaked. This is acceptable because the REPL session continues and leaked memory is bounded by the size of the single failed evaluation.
+
+#### 12.7.4.2 Batch Mode [R4 S18]
+
+In batch mode (`cranelisp --run file.cl`), a runtime panic terminates the process with a non-zero exit code. The implementation MUST print the panic message to stderr before exiting.
+
+### 12.7.5 Error Message Format [R4 S18]
+
+Runtime panic messages MUST be displayed with a consistent prefix that distinguishes them from normal output:
+
+**REPL mode**:
+
+```
+error: runtime panic: <message>
+```
+
+**Batch mode** (to stderr):
+
+```
+error: runtime panic: <message>
+```
+
+The `<message>` is the panic source's descriptive string (e.g., `"match failed"`, `"division by zero"`, `"vec-get: index out of bounds"`).
+
+Implementations SHOULD include source location information (file and line) when available. The format for source-located panics is:
+
+```
+error: runtime panic at <file>:<line>: <message>
+```
+
+### 12.7.6 Interaction with IO Model [R4 S18]
+
+Runtime panics and the IO model (§10) interact as follows:
+
+**Panics during IO trampoline execution**: When a runtime panic occurs inside an `Effect` thunk (i.e., during execution of a platform operation's closure), the panic propagates up through the trampoline and terminates the current IO evaluation. The trampoline does NOT catch panics from individual effects — a panic in any effect aborts the entire IO tree evaluation.
+
+**Platform operation failures**: Platform operations (e.g., file I/O, network) that encounter recoverable errors (file not found, connection refused) SHOULD return an error-indicating value within the IO type rather than panicking. The recommended pattern is to return `IO (Option a)` or a platform-specific error ADT:
+
+```clojure
+;; Platform operation that may fail — returns None on failure
+(defn read-file [path] ...)   ; :: (Fn [String] (IO (Option String)))
+
+;; User code handles the failure case explicitly
+(bind! [contents (read-file "data.txt")]
+  (match contents
+    [(Some text) (print text)]
+    [None (print "file not found")]))
+```
+
+Platform operations MUST NOT panic for expected failure modes (file not found, permission denied, network timeout). Panics from platform code are reserved for **contract violations** (null pointers, corrupted state) that indicate programming errors rather than environmental conditions.
+
+**Panics during `Par` execution** (§10.12): If any branch of a `Par` node panics during concurrent execution, the panic propagates to the parent trampoline. Other concurrently executing branches MAY or MAY NOT complete before the panic is observed. The implementation is NOT required to cancel in-flight branches.
+
+### 12.7.7 No User-Exposed Panic Mechanism [R4 S18]
+
+There is no `panic`, `error`, `throw`, or `raise` special form or function available to user code. User code cannot deliberately trigger a runtime panic. Runtime panics originate only from the conditions listed in §12.7.2.1.
+
+Programs that need to signal error conditions MUST use the type system:
+
+```clojure
+;; Use Option for "might not have a value"
+(defn safe-div [:Int x :Int y]
+  (if (= y 0) None (Some (/ x y))))
+
+;; Use a custom error ADT for richer error information
+(deftype (Result a e) (Ok [:a val]) (Err [:e err]))
+
+(defn parse-config [:String s]
+  (match (parse-int s)
+    [(Some n) (if (> n 0) (Ok n) (Err "must be positive"))]
+    [None (Err "not a number")]))
+```
+
+This design keeps the runtime simple (no unwinding machinery beyond the panic boundary) and encourages programs to make error conditions visible in their types.
+
+### 12.7.8 Implementation Requirements [R4 S18]
+
+A conforming implementation MUST satisfy:
+
+1. **Panic boundary**: The implementation MUST catch runtime panics at the boundary between the runtime and JIT-compiled code. Panics MUST NOT propagate as uncaught signals or cause undefined behavior. [R4 S18]
+2. **REPL survival**: The REPL MUST continue operating after a runtime panic, with all prior session state intact. [R4 S18]
+3. **Batch exit**: In batch mode, a runtime panic MUST cause a non-zero process exit code and a message on stderr. [R4 S18]
+4. **No UB on panic**: A runtime panic MUST NOT cause undefined behavior, even if it occurs during heap allocation, closure invocation, or IO trampoline execution. Heap leaks are acceptable; use-after-free and double-free are not. [R4 S18]
+5. **Deterministic panics**: Given the same inputs, the same panic condition MUST be triggered. The implementation MUST NOT silently suppress panics or convert them to arbitrary values (except for integer overflow, which is specified as wrapping). [R4 S18]
 
 ## 12.8 Platform ABI [R4 S10]
 

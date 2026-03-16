@@ -423,6 +423,18 @@ impl<'a> FnCompiler<'a> {
             inner_compiler.variables.insert(cap_name.clone(), var);
         }
 
+        // Look up the lambda's inferred type to get parameter types.
+        // This is essential for unused parameters: derive_param_type scans
+        // use sites, so unused params (e.g., `_s` in `(fn [_s] 42)`) would
+        // have no type recorded and scope cleanup would skip their RC dec.
+        let lambda_param_types: Vec<Option<Type>> = if let Some(Type::Fn(param_types, _)) =
+            inner_compiler.ctx.expr_types.get(&span)
+        {
+            param_types.iter().map(|t| Some(t.clone())).collect()
+        } else {
+            vec![None; params.len()]
+        };
+
         // Bind lambda parameters from function params (after env_ptr).
         // Add params to scope_stack and variable_types so that
         // pop_scope_with_cleanup will emit rc_dec for heap-typed params.
@@ -441,8 +453,12 @@ impl<'a> FnCompiler<'a> {
                 .unwrap_or_else(|| unreachable!("invariant: scope_stack non-empty"))
                 .push(param_name.clone());
 
-            // Derive parameter type from expr_types via last_uses.
-            if let Some(ty) = inner_compiler.derive_param_type(param_name) {
+            // Use the lambda's inferred param type (from expr_types) first.
+            // Fall back to derive_param_type (use-site inference) if the
+            // lambda type isn't available.
+            if let Some(Some(ty)) = lambda_param_types.get(i) {
+                inner_compiler.variable_types.insert(param_name.clone(), ty.clone());
+            } else if let Some(ty) = inner_compiler.derive_param_type(param_name) {
                 inner_compiler.variable_types.insert(param_name.clone(), ty);
             }
         }

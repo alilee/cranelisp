@@ -388,6 +388,17 @@ impl TypeChecker {
         self.unify(&body_ty, ret_ty, defn.span)?;
 
         self.pop_scope();
+
+        // Record the defn's Fn type in expr_types so the backend can look up
+        // authoritative parameter types. Without this, unused params (e.g.,
+        // `_s` in `(defn f [:String _s] 42)`) have no type recorded and
+        // scope cleanup skips their RC dec, causing leaks.
+        let resolved_fn_type = Type::Fn(
+            param_types.iter().map(|t| self.apply_subst(t)).collect(),
+            Box::new(self.apply_subst(ret_ty)),
+        );
+        self.record_expr_type(defn.span, resolved_fn_type);
+
         Ok(())
     }
 

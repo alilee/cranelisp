@@ -58,6 +58,12 @@ impl TypeDefRegistry {
         false
     }
 
+    /// Iterate over all type definitions.
+    /// Used by the REPL to sync type definitions for ADT value display.
+    pub fn iter(&self) -> impl Iterator<Item = (&TypeName, &TypeDefInfo)> {
+        self.type_defs.iter()
+    }
+
     /// Build a map of known type names with their type parameter counts.
     /// Used by `resolve_type_expr` for ADT lookup and arity validation.
     pub fn known_types(&self) -> crate::resolve::KnownTypes {

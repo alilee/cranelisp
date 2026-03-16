@@ -121,6 +121,13 @@ impl ReplSession {
         // The main JIT for prelude code also needs to stay alive.
         session.jit_modules.push(jit);
 
+        // Sync type definitions from prelude modules for ADT value display.
+        // Without this, prelude ADT values (e.g. Option.None) display as raw
+        // i64 tags because format_result_value lacks the constructor metadata.
+        for (name, info) in session.tc.type_def_registry().iter() {
+            session.type_defs.insert(name.clone(), info.clone());
+        }
+
         // Switch back to user module for REPL input.
         session.tc.set_current_module(ModuleFullPath::from("user"));
 
@@ -162,7 +169,7 @@ impl ReplSession {
         }
 
         // Parse the source into sexps.
-        let mut sexps = cranelisp_frontend::parse(source)?;
+        let sexps = cranelisp_frontend::parse(source)?;
 
         if sexps.is_empty() {
             return Err(CranelispError::ParseError {
@@ -171,19 +178,38 @@ impl ReplSession {
             });
         }
 
-        // Take the first sexp for evaluation.
-        let first_sexp = sexps.swap_remove(0);
-
         // Snapshot for error recovery (covers macro compilation too).
         let snapshot = self.tc.snapshot();
 
-        match self.eval_sexp(first_sexp) {
+        // Handle multi-sexp annotation expressions (`:Type expr` parses as two sexps).
+        // For single sexps, take the first and evaluate normally.
+        let result = if sexps.len() > 1 && is_annotation_prefix(&sexps[0]) {
+            self.eval_annotation_expr(sexps)
+        } else {
+            let first_sexp = sexps.into_iter().next().unwrap();
+            self.eval_sexp(first_sexp)
+        };
+
+        match result {
             Ok(result) => Ok(result),
             Err(e) => {
                 self.tc.restore(snapshot);
                 Err(e)
             }
         }
+    }
+
+    /// Evaluate a type annotation expression (`:Type expr` parsed as multiple sexps).
+    ///
+    /// Uses `build_repl_input_from_sexps` to combine the annotation and expression
+    /// into a single `Expr::Annotate`, then typechecks and executes.
+    fn eval_annotation_expr(&mut self, sexps: Vec<Sexp>) -> Result<ReplResult, CranelispError> {
+        let input = cranelisp_frontend::build_repl_input_from_sexps(
+            &sexps,
+            &mut self.expander,
+        )?;
+        let check_result = self.tc.check_repl_input(&input)?;
+        self.compile_and_execute(&input, &check_result)
     }
 
     /// Evaluate a single Sexp with defmacro interception and macro expansion.
@@ -1746,6 +1772,11 @@ fn is_import_form(sexp: &Sexp) -> bool {
 /// Returns true if every non-empty line in the input starts with `;`
 /// (ignoring leading whitespace). This prevents comment-only input
 /// from reaching the parser and producing an "empty input" error.
+/// Check if a Sexp is a type annotation prefix (`:Type` or bare `:`).
+fn is_annotation_prefix(sexp: &Sexp) -> bool {
+    matches!(sexp, Sexp::Symbol(s, _) if s.starts_with(':') && !s.contains('/'))
+}
+
 fn is_comment_only(input: &str) -> bool {
     input.lines().all(|line| {
         let trimmed = line.trim();
@@ -2538,6 +2569,15 @@ fn special_form_feedback(input: &str, session: &ReplSession) -> Option<String> {
     // This allows bare-symbol display for imported special forms, macros, etc.
     let (resolved_entry, resolved_module) =
         resolve_entry_for_display(entry, &module, session);
+    // Nullary constructors (zero fields) have value semantics — they evaluate
+    // to a value, so let them pass through to eval instead of showing definition
+    // metadata. Non-nullary constructors need arguments and can't be evaluated
+    // bare, so they show introspection display (spec §4.1).
+    if let ModuleEntry::Constructor { info, .. } = resolved_entry
+        && info.fields.is_empty()
+    {
+        return None;
+    }
     Some(format_entry_signature(resolved_entry, trimmed, resolved_module, session))
 }
 
