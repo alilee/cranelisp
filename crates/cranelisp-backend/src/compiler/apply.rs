@@ -155,7 +155,10 @@ impl<'a> FnCompiler<'a> {
                 let arg_vals = self.compile_arg_list(args)?;
                 self.in_tail_position = saved_tail;
                 let result =
-                    operators::emit_builtin_op(&mut self.builder, op_name, &arg_vals, span)?;
+                    operators::emit_builtin_op(
+                        &mut self.builder, op_name, &arg_vals, span,
+                        self.module, self.ctx.panic_func_id,
+                    )?;
                 self.dec_temporary_args(args, &arg_vals);
                 Ok(result)
             }
@@ -192,6 +195,7 @@ impl<'a> FnCompiler<'a> {
                     self.in_tail_position = saved_tail;
                     let result = operators::emit_builtin_op(
                         &mut self.builder, prim_name, &arg_vals, span,
+                        self.module, self.ctx.panic_func_id,
                     )?;
                     self.dec_temporary_args(args, &arg_vals);
                     return Ok(result);

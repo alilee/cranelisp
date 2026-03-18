@@ -42,13 +42,13 @@
 ;; ── Tag helpers ──────────────────────────────────────────────────────
 
 ;; Wrap content in an HTML tag: <tag>content</tag>
-(defn wrap-tag [:String tag :String content]
+(defn wrap-tag [tag content]
   (str-concat (str-concat (str-concat "<" tag) ">")
     (str-concat content
       (str-concat (str-concat "</" tag) ">"))))
 
 ;; Table cell with CSS class: <td class="cls">content</td>
-(defn td [:String cls :String content]
+(defn td [cls content]
   (str-concat
     (str-concat (str-concat "<td class=\"" cls) "\">")
     (str-concat content "</td>")))
@@ -57,23 +57,23 @@
 
 ;; Build a single <input> field for cell at (row, col).
 ;; Field name is cRC where R=row, C=col (e.g. c00, c35, c88).
-(defn input-field [:Int row :Int col]
+(defn input-field [row col]
   (let [name (str-concat "c" (str-concat (int-to-string row) (int-to-string col)))]
     (str-concat
       (str-concat "<td><input type=\"text\" name=\"" name)
       "\" maxlength=\"1\" size=\"1\"></td>")))
 
 ;; Build one row of input fields (9 cells).
-(defn form-row-helper [:Int row :Int col :String acc]
+(defn form-row-helper [row col acc]
   (if (eq-i64 col 9) acc
     (form-row-helper row (add-i64 col 1)
       (str-concat acc (input-field row col)))))
 
-(defn form-row [:Int row]
+(defn form-row [row]
   (wrap-tag "tr" (form-row-helper row 0 "")))
 
 ;; Build all 9 rows of the input grid.
-(defn form-rows-helper [:Int row :String acc]
+(defn form-rows-helper [row acc]
   (if (eq-i64 row 9) acc
     (form-rows-helper (add-i64 row 1)
       (str-concat acc (form-row row)))))
@@ -96,7 +96,7 @@
 
 ;; Render a single cell of the solution.
 ;; original is the pre-solve grid — Given cells are styled differently from Solved.
-(defn solution-cell [:Grid original :Grid solved :Int idx]
+(defn solution-cell [original solved idx]
   (let [orig-cell (cell-at original idx)
         solved-cell (cell-at solved idx)
         digit (int-to-string (cell-value solved-cell))]
@@ -105,28 +105,28 @@
        _ (td "solved" digit)])))
 
 ;; Build one row of the solution table (9 cells).
-(defn solution-row-helper [:Grid original :Grid solved :Int row :Int col :String acc]
+(defn solution-row-helper [original solved row col acc]
   (if (eq-i64 col 9) acc
     (let [idx (add-i64 (mul-i64 row 9) col)]
       (solution-row-helper original solved row (add-i64 col 1)
         (str-concat acc (solution-cell original solved idx))))))
 
-(defn solution-row [:Grid original :Grid solved :Int row]
+(defn solution-row [original solved row]
   (wrap-tag "tr" (solution-row-helper original solved row 0 "")))
 
 ;; Build all 9 rows of the solution table.
-(defn solution-rows-helper [:Grid original :Grid solved :Int row :String acc]
+(defn solution-rows-helper [original solved row acc]
   (if (eq-i64 row 9) acc
     (solution-rows-helper original solved (add-i64 row 1)
       (str-concat acc (solution-row original solved row)))))
 
-(defn solution-rows [:Grid original :Grid solved]
+(defn solution-rows [original solved]
   (solution-rows-helper original solved 0 ""))
 
 ;; Full HTML page displaying the solved grid.
 ;; solved: the completed grid.
 ;; original: the grid as entered (for distinguishing Given vs Solved).
-(defn solution-page [:Grid solved :Grid original]
+(defn solution-page [solved original]
   (str-concat "<!DOCTYPE html><html><head><style>"
     (str-concat (css)
       (str-concat "</style><title>Solution</title></head><body>"
@@ -138,7 +138,7 @@
 ;; ── Error page ───────────────────────────────────────────────────────
 
 ;; Display an error message with a link back to the form.
-(defn error-page [:String message]
+(defn error-page [message]
   (str-concat "<!DOCTYPE html><html><head><style>"
     (str-concat (css)
       (str-concat "</style><title>Error</title></head><body>"
@@ -150,7 +150,7 @@
 
 (mod test
   (import [super [*]])
-  (import [grid [*]])
+  (import [grid [Grid Cell Given Solved Candidates cell-at cell-value]])
 
   ;; Test that form-page contains <input elements
   (defn test-form-page-has-inputs []
@@ -186,7 +186,7 @@
 
   ;; Test that solution-page contains digit strings
   ;; Build a fully-given grid (all 1s) and render it
-  (defn make-all-ones-grid-helper [:Int i :Vec cells]
+  (defn make-all-ones-grid-helper [i cells]
     (if (eq-i64 i 81) (Grid cells)
       (make-all-ones-grid-helper (add-i64 i 1) (vec-push cells (Given 1)))))
 
@@ -201,7 +201,7 @@
 
   ;; Test that solution-page distinguishes Given vs Solved
   ;; Build a grid where cell 0 is Given(5) and cell 1 is Solved(3)
-  (defn make-mixed-grid-helper [:Int i :Vec cells]
+  (defn make-mixed-grid-helper [i cells]
     (if (eq-i64 i 81) (Grid cells)
       (if (eq-i64 i 0)
         (make-mixed-grid-helper (add-i64 i 1) (vec-push cells (Given 5)))

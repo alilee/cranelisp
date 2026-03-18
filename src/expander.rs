@@ -302,6 +302,8 @@ fn invoke_jit_protected(
             let old_handlers = install_signal_handlers();
 
             let func: extern "C" fn(i64) -> i64 = std::mem::transmute(func_ptr);
+            // Clear any stale error before the JIT call.
+            let _ = cranelisp_runtime::panic::take_runtime_error();
             let result_i64 = func(args_slist);
 
             // Restore original signal handlers.
@@ -310,6 +312,14 @@ fn invoke_jit_protected(
             Ok(result_i64)
         }
     }));
+
+    // Check thread-local error flag (set by runtime_panic in JIT code).
+    if let Some(msg) = cranelisp_runtime::panic::take_runtime_error() {
+        return Err(CranelispError::MacroError {
+            message: format!("runtime error during macro expansion: {msg}"),
+            span,
+        });
+    }
 
     match result {
         Ok(Ok(val)) => Ok(val),

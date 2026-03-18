@@ -123,7 +123,8 @@ Examples:
 **Ring 1**: `primitives/String`, data ADT constructors, closures, `Vec`, `List`.
 
 
-**Ring 4**: `IO` (trampoline executes; inner value displayed as `:primitives/IO inner_value`).
+**Ring 4**: `IO` (trampoline executes the effect chain; result displayed as `:(IO InnerType) (IO.Pure inner_value)`, e.g. `:(IO primitives/Int) (IO.Pure 42)`). IO is an ADT and MUST follow the same `Type.Constructor` display format as all other ADTs. The trampoline executes side effects (print, read) and the final result is always a `Pure` node — the display shows this explicitly so the user can distinguish IO results from plain values.
+<!-- FIXME(/int): IO display currently strips the Pure constructor, showing `:(IO Int) 42` instead of `:(IO Int) (IO.Pure 42)`. This is inconsistent with other ADTs (Option shows `(Option.Some 42)`, not `42`). Fix format_adt_value or the IO-specific display path to include the constructor. -->
 
 ### 1.3 Definition Results [Tested]
 
@@ -766,7 +767,8 @@ When the module system is fully wired (Ring 2B), these 7 REPL scenarios validate
 user> /mod math
 math>
 ```
-The prompt changes to reflect the active module. Definitions entered now belong to `math`.
+The prompt changes to reflect the active module. Definitions entered now belong to `math`. The `/mod` command MUST NOT print a confirmation message — the prompt change is sufficient feedback.
+<!-- FIXME(/int): `/mod name` currently prints `; switched to module 'name'` — remove this. The prompt change is the only feedback per spec. Also, bare `/mod` should switch to `user` (not display current module name). See Scenario 6. -->
 
 **Scenario 2: `/mod user` switches back**
 ```
@@ -818,12 +820,12 @@ From math:
 ```
 The source module filter groups names by source. Type `foo` for its type signature.
 
-**Scenario 6: `/mod` shows current module**
+**Scenario 6: `/mod` with no argument resets to `user`**
 ```
 math> /mod
-math
+user>
 ```
-Bare `/mod` with no argument displays the name of the current module.
+Bare `/mod` with no argument switches back to the `user` module. The current module is always visible in the prompt, so a "show current" command is redundant. `/mod` is the quickest way home.
 
 **Scenario 7: Unknown module gives clear error**
 ```

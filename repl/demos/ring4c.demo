@@ -1,0 +1,18 @@
+; Cranelisp Ring 4C — REPL Hardening
+
+; Prelude ADT display — Option values show correctly
+
+(Some 42)
+None
+
+; Type annotations constrain expressions
+
+:Int 42
+:(Option Int) None
+:(Option Int) (Some 99)
+
+; Prelude types available immediately — no import needed
+
+(defn safe-div [a b] (if (= b 0) None (Some (/ a b))))
+(safe-div 10 3)
+(safe-div 10 0)

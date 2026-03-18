@@ -275,9 +275,20 @@ impl ReplSession {
             }
 
             // Build and process a normal REPL input.
+            // Capture the form sexp before AST building for /sexp introspection.
+            let form_sexp = form.clone();
             let input = cranelisp_frontend::build_repl_input(&form, &mut self.expander)?;
             let check_result = self.tc.check_repl_input(&input)?;
-            last_result = Some(self.compile_and_execute(&input, &check_result)?);
+            let result = self.compile_and_execute(&input, &check_result)?;
+
+            // Store sexp and source in DefCodegen for introspection commands.
+            if let ReplInput::Defn(defn) = &input {
+                if let Some(dc) = self.got_state.def_codegen.get_mut(&defn.name) {
+                    dc.source = Some(format_sexp(&form_sexp));
+                    dc.sexp = Some(form_sexp);
+                }
+            }
+            last_result = Some(result);
         }
 
         last_result.ok_or_else(|| CranelispError::ParseError {
@@ -528,8 +539,9 @@ impl ReplSession {
         )?;
 
         // Time the actual evaluation (function call) separately from compilation.
+        // Wrap in catch_unwind to recover from runtime panics (spec §12.7.4.1).
         let eval_start = Instant::now();
-        let value = compiled.execute();
+        let value = invoke_jit_eval(|| compiled.execute())?;
         let eval_duration = eval_start.elapsed();
 
         Ok(ReplResult {
@@ -572,7 +584,7 @@ impl ReplSession {
                 })?;
             let func: extern "C" fn() -> i64 = unsafe { std::mem::transmute(code_ptr) };
             let eval_start = Instant::now();
-            let result = func();
+            let result = invoke_jit_eval(|| func())?;
             (result, eval_start.elapsed())
         } else {
             (0, Duration::ZERO)
@@ -721,10 +733,23 @@ impl ReplSession {
     /// Compile a single function definition and register it in the GOT.
     ///
     /// Used by Defn, TraitDecl (default methods), and TraitImpl (impl methods).
+    /// Optionally stores the source text and parsed sexp in DefCodegen
+    /// for `/source` and `/sexp` introspection commands.
     fn compile_and_register_defn(
         &mut self,
         defn: &cranelisp_types::Defn,
         check: &cranelisp_types::CheckResult,
+    ) -> Result<(), CranelispError> {
+        self.compile_and_register_defn_with_context(defn, check, None, None)
+    }
+
+    /// Compile a defn with optional source text and sexp for introspection.
+    fn compile_and_register_defn_with_context(
+        &mut self,
+        defn: &cranelisp_types::Defn,
+        check: &cranelisp_types::CheckResult,
+        source_text: Option<String>,
+        sexp: Option<Sexp>,
     ) -> Result<(), CranelispError> {
         // Create JIT with platform symbols registered (if any platforms loaded).
         let extra_symbols: Vec<(&str, *const u8)> = self
@@ -773,7 +798,7 @@ impl ReplSession {
             Some(got_base),
             None, // No cross-module GOT in single-module REPL yet.
         );
-        let _clif_ir = jit.compile_defn(defn, compile_ctx)?;
+        let clif_ir = jit.compile_defn(defn, compile_ctx)?;
 
         // Finalize and get the code pointer.
         let code_ptr = jit.finalize_and_get_ptr(&defn.name, defn.params.len())?;
@@ -781,11 +806,19 @@ impl ReplSession {
         // Update the GOT slot with the new code pointer.
         self.got_state.update_slot(slot, code_ptr);
 
-        // Record codegen info.
+        // Record codegen info and introspection data.
         let entry = self.got_state.def_codegen.entry(defn.name.clone()).or_default();
         entry.code_ptr = Some(code_ptr);
         entry.got_slot = Some(slot);
         entry.param_count = Some(defn.params.len());
+        entry.clif_ir = Some(clif_ir);
+        entry.defn = Some(defn.clone());
+        if source_text.is_some() {
+            entry.source = source_text;
+        }
+        if sexp.is_some() {
+            entry.sexp = sexp;
+        }
 
         // Keep JIT alive so code pointer remains valid.
         self.jit_modules.push(jit);
@@ -1512,6 +1545,12 @@ enum ReplCommand<'a> {
     Expand(&'a str),
     Imports(&'a str),
     Exports(&'a str),
+    Source(&'a str),
+    SexpCmd(&'a str),
+    Ast(&'a str),
+    Clif(&'a str),
+    Disasm(&'a str),
+    Mod(&'a str),
     Unknown(&'a str),
 }
 
@@ -1540,6 +1579,12 @@ fn parse_slash_command(input: &str) -> Option<ReplCommand<'_>> {
         "/expand" | "/e" => ReplCommand::Expand(arg),
         "/imports" => ReplCommand::Imports(arg),
         "/exports" => ReplCommand::Exports(arg),
+        "/source" => ReplCommand::Source(arg),
+        "/sexp" => ReplCommand::SexpCmd(arg),
+        "/ast" => ReplCommand::Ast(arg),
+        "/clif" => ReplCommand::Clif(arg),
+        "/disasm" => ReplCommand::Disasm(arg),
+        "/mod" => ReplCommand::Mod(arg),
         _ => ReplCommand::Unknown(cmd),
     })
 }
@@ -1553,11 +1598,17 @@ fn print_help(stdout: &mut impl Write) {
     let _ = writeln!(stdout, "  /doc (/d) NAME      Show docstring");
     let _ = writeln!(stdout, "  /type (/t) EXPR     Show type without evaluating");
     let _ = writeln!(stdout, "  /info (/i) NAME     Show full details");
+    let _ = writeln!(stdout, "  /source NAME        Show original source text");
+    let _ = writeln!(stdout, "  /sexp NAME          Show parsed S-expression");
+    let _ = writeln!(stdout, "  /ast NAME           Show AST");
+    let _ = writeln!(stdout, "  /clif NAME          Show Cranelift IR");
+    let _ = writeln!(stdout, "  /disasm NAME        Show disassembled native code");
     let _ = writeln!(stdout, "  /list (/l) [FILTER] List symbols in current module");
     let _ = writeln!(stdout, "  /time EXPR          Evaluate with timing breakdown");
     let _ = writeln!(stdout, "  /expand (/e) FORM   Macro-expand a form");
     let _ = writeln!(stdout, "  /imports [MODULE]   Show imports and special forms");
     let _ = writeln!(stdout, "  /exports MODULE     Show module's public symbols");
+    let _ = writeln!(stdout, "  /mod [NAME]         Show or switch module namespace");
 }
 
 /// Format the REPL prompt with timing and module info.
@@ -1599,6 +1650,12 @@ fn dispatch_slash_command(
         ReplCommand::Expand(form) => handle_expand(session, form, stdout),
         ReplCommand::Imports(filter) => handle_imports(session, filter, stdout),
         ReplCommand::Exports(arg) => handle_exports(session, arg, stdout),
+        ReplCommand::Source(name) => handle_source(session, name, stdout),
+        ReplCommand::SexpCmd(name) => handle_sexp(session, name, stdout),
+        ReplCommand::Ast(name) => handle_ast(session, name, stdout),
+        ReplCommand::Clif(name) => handle_clif(session, name, stdout),
+        ReplCommand::Disasm(name) => handle_disasm(session, name, stdout),
+        ReplCommand::Mod(name) => handle_mod(session, name, stdout),
         ReplCommand::Unknown(cmd) => {
             let _ = writeln!(
                 stdout,
@@ -1702,10 +1759,10 @@ pub fn run_repl() {
 
     let mut last_compile_ms: u64 = 0;
     let mut last_eval_ms: u64 = 0;
-    let module = "user";
 
-    let prompt = format_prompt(last_compile_ms, last_eval_ms, module);
-    write_prompt(&mut stdout, last_compile_ms, last_eval_ms, module);
+    let module = session.tc.current_module_path().to_string();
+    let prompt = format_prompt(last_compile_ms, last_eval_ms, &module);
+    write_prompt(&mut stdout, last_compile_ms, last_eval_ms, &module);
 
     let mut buffer = String::new();
 
@@ -1726,9 +1783,10 @@ pub fn run_repl() {
         }
 
         let input = buffer.trim();
+        let module = session.tc.current_module_path().to_string();
         if input.is_empty() || is_comment_only(input) {
             buffer.clear();
-            write_prompt(&mut stdout, last_compile_ms, last_eval_ms, module);
+            write_prompt(&mut stdout, last_compile_ms, last_eval_ms, &module);
             continue;
         }
 
@@ -1738,14 +1796,15 @@ pub fn run_repl() {
             if should_quit {
                 break;
             }
-            write_prompt(&mut stdout, last_compile_ms, last_eval_ms, module);
+            let module = session.tc.current_module_path().to_string();
+            write_prompt(&mut stdout, last_compile_ms, last_eval_ms, &module);
             continue;
         }
 
         if let Some(display) = special_form_feedback(input, &session) {
             let _ = writeln!(stdout, "{display}");
             buffer.clear();
-            write_prompt(&mut stdout, last_compile_ms, last_eval_ms, module);
+            write_prompt(&mut stdout, last_compile_ms, last_eval_ms, &module);
             continue;
         }
 
@@ -1753,7 +1812,8 @@ pub fn run_repl() {
             eval_and_display(&mut session, input, &mut stdout);
 
         buffer.clear();
-        write_prompt(&mut stdout, last_compile_ms, last_eval_ms, module);
+        let module = session.tc.current_module_path().to_string();
+        write_prompt(&mut stdout, last_compile_ms, last_eval_ms, &module);
     }
 
     let _ = writeln!(stdout);
@@ -2690,6 +2750,144 @@ fn append_docstring_comment(base: String, docstring: Option<&str>) -> String {
             }
         }
         _ => base,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Introspection commands: /source, /sexp, /ast, /clif, /disasm
+// ---------------------------------------------------------------------------
+
+/// Handle `/source <name>` — show original source text of a definition.
+fn handle_source(session: &ReplSession, name: &str, stdout: &mut impl Write) {
+    if name.is_empty() {
+        let _ = writeln!(stdout, "usage: /source <name>");
+        return;
+    }
+    match session.got_state.def_codegen.get(name) {
+        Some(dc) if dc.source.is_some() => {
+            let _ = writeln!(stdout, "; source for {name}");
+            let _ = writeln!(stdout, "{}", dc.source.as_ref().unwrap());
+        }
+        _ => {
+            let _ = writeln!(stdout, "error: no source available for '{name}'");
+        }
+    }
+}
+
+/// Handle `/sexp <name>` — show the parsed S-expression of a definition.
+fn handle_sexp(session: &ReplSession, name: &str, stdout: &mut impl Write) {
+    if name.is_empty() {
+        let _ = writeln!(stdout, "usage: /sexp <name>");
+        return;
+    }
+    match session.got_state.def_codegen.get(name) {
+        Some(dc) if dc.sexp.is_some() => {
+            let _ = writeln!(stdout, "; sexp for {name}");
+            let _ = writeln!(stdout, "{}", format_sexp(dc.sexp.as_ref().unwrap()));
+        }
+        _ => {
+            let _ = writeln!(stdout, "error: no sexp available for '{name}'");
+        }
+    }
+}
+
+/// Handle `/ast <name>` — show the AST (Defn) of a definition.
+fn handle_ast(session: &ReplSession, name: &str, stdout: &mut impl Write) {
+    if name.is_empty() {
+        let _ = writeln!(stdout, "usage: /ast <name>");
+        return;
+    }
+    match session.got_state.def_codegen.get(name) {
+        Some(dc) if dc.defn.is_some() => {
+            let _ = writeln!(stdout, "; ast for {name}");
+            let _ = writeln!(stdout, "{:#?}", dc.defn.as_ref().unwrap());
+        }
+        _ => {
+            let _ = writeln!(stdout, "error: no AST available for '{name}'");
+        }
+    }
+}
+
+/// Handle `/clif <name>` — show the Cranelift IR of a definition.
+fn handle_clif(session: &ReplSession, name: &str, stdout: &mut impl Write) {
+    if name.is_empty() {
+        let _ = writeln!(stdout, "usage: /clif <name>");
+        return;
+    }
+    match session.got_state.def_codegen.get(name) {
+        Some(dc) if dc.clif_ir.is_some() => {
+            let _ = writeln!(stdout, "; clif ir for {name}");
+            let _ = write!(stdout, "{}", dc.clif_ir.as_ref().unwrap());
+        }
+        _ => {
+            let _ = writeln!(stdout, "error: no CLIF IR available for '{name}'");
+        }
+    }
+}
+
+/// Handle `/disasm <name>` — show disassembled native code of a definition.
+fn handle_disasm(session: &ReplSession, name: &str, stdout: &mut impl Write) {
+    if name.is_empty() {
+        let _ = writeln!(stdout, "usage: /disasm <name>");
+        return;
+    }
+    match session.got_state.def_codegen.get(name) {
+        Some(dc) if dc.disasm.is_some() => {
+            let _ = writeln!(stdout, "; disasm for {name}");
+            let _ = writeln!(stdout, "{}", dc.disasm.as_ref().unwrap());
+        }
+        _ => {
+            let _ = writeln!(stdout, "error: no disassembly available for '{name}'");
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// /mod command
+// ---------------------------------------------------------------------------
+
+/// Handle `/mod [name]` — show or switch module namespace (spec §8).
+///
+/// With no argument, shows the current module name.
+/// With an argument, switches to that module namespace (creating it if needed).
+fn handle_mod(session: &mut ReplSession, name: &str, stdout: &mut impl Write) {
+    if name.is_empty() {
+        // Show current module.
+        let module = session.tc.current_module_path();
+        let _ = writeln!(stdout, "{module}");
+        return;
+    }
+
+    // Switch to the named module. set_current_module creates it if needed.
+    let path = ModuleFullPath::from(name);
+    session.tc.set_current_module(path);
+    let _ = writeln!(stdout, "; switched to module '{name}'");
+}
+
+// ---------------------------------------------------------------------------
+// Runtime panic boundary (spec §12.7.4.1)
+// ---------------------------------------------------------------------------
+
+/// Invoke a JIT-compiled function and check for runtime errors.
+///
+/// `runtime_panic` in JIT code stores the error in a thread-local (because
+/// Cranelift JIT frames lack unwind tables, so `catch_unwind` cannot work).
+/// After the JIT call returns, we check `take_runtime_error()` for errors.
+fn invoke_jit_eval<F>(f: F) -> Result<i64, CranelispError>
+where
+    F: FnOnce() -> i64,
+{
+    // Clear any stale error before the JIT call.
+    let _ = cranelisp_runtime::panic::take_runtime_error();
+    let value = f();
+    // Check if runtime_panic was called during execution.
+    if let Some(message) = cranelisp_runtime::panic::take_runtime_error() {
+        Err(CranelispError::CodegenError {
+            message,
+            span: cranelisp_types::Span::SYNTHETIC,
+        })
+    } else {
+        Ok(value)
     }
 }
 

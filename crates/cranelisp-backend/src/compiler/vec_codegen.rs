@@ -1099,10 +1099,10 @@ fn emit_vec_bounds_panic(
     let panic_ref = module.declare_func_in_func(panic_func_id, builder.func);
     builder.ins().call(panic_ref, &[msg_ptr, msg_len]);
 
-    // Panic never returns, but Cranelift needs a terminator.
-    builder.ins().trap(cranelift_codegen::ir::TrapCode::unwrap_user(
-        super::MATCH_EXHAUSTION_TRAP,
-    ));
+    // runtime_panic sets a thread-local error flag and returns.
+    // Return a dummy 0 value — the caller checks take_runtime_error().
+    let dummy = builder.ins().iconst(types::I64, 0);
+    builder.ins().return_(&[dummy]);
 
     Ok(())
 }

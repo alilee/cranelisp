@@ -1,0 +1,22 @@
+; Cranelisp Ring 4D — Developer Tools & Panic Recovery
+
+; Define a function to inspect
+
+(defn factorial [n] (if (= n 0) 1 (* n (factorial (- n 1)))))
+
+; /source shows the original source text
+
+/source factorial
+
+; /clif shows the Cranelift IR — the actual compiled code
+
+/clif factorial
+
+; Runtime errors are now recoverable — no more crashes
+
+(div-i64 1 0)
+
+; The session continues normally after the error
+
+(factorial 6)
+(+ 1 2)

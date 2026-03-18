@@ -41,7 +41,7 @@
 
 ;; Integer remainder: a mod b = a - b * (a / b)
 ;; Needed because there is no mod/rem primitive.
-(defn rem-i64 [:Int a :Int b]
+(defn rem-i64 [a b]
   (sub-i64 a (mul-i64 (div-i64 a b) b)))
 
 ;; ── Bitmask operations ─────────────────────────────────────────────────
@@ -56,12 +56,12 @@
 ;;   (1 << n)    is a power of 2
 ;;
 ;; Helper: compute 2^n for small n (0-8) via repeated multiplication.
-(defn pow2 [:Int n]
+(defn pow2 [n]
   (if (eq-i64 n 0) 1
     (mul-i64 2 (pow2 (sub-i64 n 1)))))
 
 ;; Test if digit d (1-9) is set in bitmask.
-(defn bit-set? [:Int mask :Int d]
+(defn bit-set? [mask d]
   (let [shift (sub-i64 d 1)
         p (pow2 shift)
         shifted (div-i64 mask p)]
@@ -69,50 +69,50 @@
 
 ;; Clear digit d (1-9) from bitmask.
 ;; If the bit is set, subtract 2^(d-1) from mask.
-(defn bit-clear [:Int mask :Int d]
+(defn bit-clear [mask d]
   (if (bit-set? mask d)
     (sub-i64 mask (pow2 (sub-i64 d 1)))
     mask))
 
 ;; Set digit d (1-9) in bitmask.
-(defn bit-set [:Int mask :Int d]
+(defn bit-set [mask d]
   (if (bit-set? mask d)
     mask
     (add-i64 mask (pow2 (sub-i64 d 1)))))
 
 ;; Count number of set bits in a 9-bit mask (popcount).
 ;; Iterate digits 1-9, count those that are set.
-(defn bit-count-helper [:Int mask :Int d :Int acc]
+(defn bit-count-helper [mask d acc]
   (if (gt-i64 d 9) acc
     (if (bit-set? mask d)
       (bit-count-helper mask (add-i64 d 1) (add-i64 acc 1))
       (bit-count-helper mask (add-i64 d 1) acc))))
 
-(defn bit-count [:Int mask]
+(defn bit-count [mask]
   (bit-count-helper mask 1 0))
 
 ;; Return the lowest set digit (1-9) in a bitmask.
 ;; Returns 0 if mask is empty.
-(defn bit-lowest-helper [:Int mask :Int d]
+(defn bit-lowest-helper [mask d]
   (if (gt-i64 d 9) 0
     (if (bit-set? mask d) d
       (bit-lowest-helper mask (add-i64 d 1)))))
 
-(defn bit-lowest [:Int mask]
+(defn bit-lowest [mask]
   (bit-lowest-helper mask 1))
 
 ;; ── Grid index helpers ─────────────────────────────────────────────────
 
 ;; Row index (0-8) from flat index (0-80).
-(defn row-of [:Int idx] (div-i64 idx 9))
+(defn row-of [idx] (div-i64 idx 9))
 
 ;; Column index (0-8) from flat index (0-80).
-(defn col-of [:Int idx] (rem-i64 idx 9))
+(defn col-of [idx] (rem-i64 idx 9))
 
 ;; Box index (0-8) from flat index (0-80).
 ;; Box is a 3x3 region. Box row = row/3, box col = col/3.
 ;; Box index = box_row * 3 + box_col.
-(defn box-of [:Int idx]
+(defn box-of [idx]
   (let [r (row-of idx)
         c (col-of idx)]
     (add-i64 (mul-i64 (div-i64 r 3) 3) (div-i64 c 3))))
@@ -120,11 +120,11 @@
 ;; ── Grid accessors ─────────────────────────────────────────────────────
 
 ;; Access cell at flat index (0-80).
-(defn cell-at [:Grid g :Int idx]
+(defn cell-at [g idx]
   (match g [(Grid cells) (vec-get cells idx)]))
 
 ;; Functional update: return new grid with cell at idx replaced.
-(defn set-cell [:Grid g :Int idx :Cell c]
+(defn set-cell [g idx c]
   (match g [(Grid cells) (Grid (vec-set cells idx c))]))
 
 ;; ── Peer calculation ───────────────────────────────────────────────────
@@ -134,7 +134,7 @@
 ;;
 ;; Strategy: iterate all 81 indices, collect those that share
 ;; row, column, or box with idx (but are not idx itself).
-(defn peers-helper [:Int idx :Int i :Vec acc]
+(defn peers-helper [idx i acc]
   (if (eq-i64 i 81) acc
     (if (eq-i64 i idx)
       (peers-helper idx (add-i64 i 1) acc)
@@ -144,7 +144,7 @@
         (peers-helper idx (add-i64 i 1) (vec-push acc i))
         (peers-helper idx (add-i64 i 1) acc)))))
 
-(defn peers [:Int idx]
+(defn peers [idx]
   (peers-helper idx 0 []))
 
 ;; ── Grid construction ──────────────────────────────────────────────────
@@ -157,7 +157,7 @@
 ;;
 ;; NOTE: This function depends on `char-at` (F2 string primitives).
 ;; `char-at` returns a 1-char String. We compare with str-eq.
-(defn make-grid-helper [:String s :Int i :Vec cells]
+(defn make-grid-helper [s i cells]
   (if (eq-i64 i 81) (Some (Grid cells))
     (let [ch (char-at s i)]
       (if (str-eq ch ".")
@@ -177,7 +177,7 @@
         (if (str-eq ch "0") (make-grid-helper s (add-i64 i 1) (vec-push cells (Candidates full-mask)))
           None))))))))))))))
 
-(defn make-grid [:String s]
+(defn make-grid [s]
   (if (eq-i64 (str-len s) 81)
     (make-grid-helper s 0 [])
     None))
@@ -185,27 +185,27 @@
 ;; ── Grid solved check ──────────────────────────────────────────────────
 
 ;; Check if all cells are determined (Given or Solved).
-(defn is-solved-helper [:Grid g :Int i]
+(defn is-solved-helper [g i]
   (if (eq-i64 i 81) true
     (match (cell-at g i)
       [(Given _) (is-solved-helper g (add-i64 i 1))
        (Solved _) (is-solved-helper g (add-i64 i 1))
        (Candidates _) false])))
 
-(defn is-solved [:Grid g]
+(defn is-solved [g]
   (is-solved-helper g 0))
 
 ;; ── Cell value extraction ──────────────────────────────────────────────
 
 ;; Get the determined value of a cell, or 0 if it's a Candidates cell.
-(defn cell-value [:Cell c]
+(defn cell-value [c]
   (match c
     [(Given v) v
      (Solved v) v
      (Candidates _) 0]))
 
 ;; Check if a cell is determined (Given or Solved).
-(defn cell-determined? [:Cell c]
+(defn cell-determined? [c]
   (match c
     [(Given _) true
      (Solved _) true

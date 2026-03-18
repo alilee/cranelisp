@@ -13,6 +13,7 @@
 //   not
 
 use cranelift::prelude::*;
+use cranelift_module::{FuncId, Module};
 
 use cranelisp_types::{CranelispError, Span, Symbol, TraitName, TypeName};
 
@@ -29,13 +30,15 @@ pub fn emit_builtin_op(
     name: &str,
     args: &[Value],
     span: Span,
+    module: &mut cranelift_jit::JITModule,
+    panic_func_id: Option<FuncId>,
 ) -> Result<Value, CranelispError> {
     match name {
         // Integer arithmetic
         "add-i64" => emit_binary_int(builder, name, args, span, |b, l, r| b.ins().iadd(l, r)),
         "sub-i64" => emit_binary_int(builder, name, args, span, |b, l, r| b.ins().isub(l, r)),
         "mul-i64" => emit_binary_int(builder, name, args, span, |b, l, r| b.ins().imul(l, r)),
-        "div-i64" => emit_binary_int(builder, name, args, span, |b, l, r| b.ins().sdiv(l, r)),
+        "div-i64" => emit_checked_div(builder, name, args, span, module, panic_func_id),
 
         // Float arithmetic
         "add-f64" => emit_binary_float(builder, name, args, span, |b, l, r| b.ins().fadd(l, r)),
@@ -182,6 +185,75 @@ fn emit_not(
     require_args("not", args, 1, span)?;
     let one = builder.ins().iconst(types::I64, 1);
     Ok(builder.ins().bxor(args[0], one))
+}
+
+// --- Checked division ---
+
+/// Emit a checked integer division: branch on zero divisor to a panic block
+/// that calls `runtime_panic("division by zero")`, otherwise emit `sdiv`.
+fn emit_checked_div(
+    builder: &mut FunctionBuilder,
+    name: &str,
+    args: &[Value],
+    span: Span,
+    module: &mut cranelift_jit::JITModule,
+    panic_func_id: Option<FuncId>,
+) -> Result<Value, CranelispError> {
+    require_args(name, args, 2, span)?;
+
+    let panic_id = panic_func_id.ok_or_else(|| CranelispError::CodegenError {
+        message: "runtime/panic not declared".into(),
+        span,
+    })?;
+
+    let rhs = args[1];
+    let zero = builder.ins().iconst(types::I64, 0);
+    let is_zero = builder.ins().icmp(IntCC::Equal, rhs, zero);
+
+    let ok_block = builder.create_block();
+    let panic_block = builder.create_block();
+
+    builder
+        .ins()
+        .brif(is_zero, panic_block, &[], ok_block, &[]);
+
+    // Panic path: call runtime_panic with "division by zero".
+    builder.switch_to_block(panic_block);
+    builder.seal_block(panic_block);
+
+    let msg = b"division by zero";
+    let data_id = module
+        .declare_anonymous_data(false, false)
+        .map_err(|e| CranelispError::CodegenError {
+            message: format!("failed to declare panic data: {e}"),
+            span,
+        })?;
+    let mut desc = cranelift_module::DataDescription::new();
+    desc.define(msg.to_vec().into_boxed_slice());
+    module
+        .define_data(data_id, &desc)
+        .map_err(|e| CranelispError::CodegenError {
+            message: format!("failed to define panic data: {e}"),
+            span,
+        })?;
+
+    let gv = module.declare_data_in_func(data_id, builder.func);
+    let msg_ptr = builder.ins().global_value(types::I64, gv);
+    let msg_len = builder.ins().iconst(types::I64, msg.len() as i64);
+
+    let panic_ref = module.declare_func_in_func(panic_id, builder.func);
+    builder.ins().call(panic_ref, &[msg_ptr, msg_len]);
+
+    // runtime_panic sets a thread-local error flag and returns.
+    // Return a dummy 0 value — the caller checks take_runtime_error().
+    let dummy = builder.ins().iconst(types::I64, 0);
+    builder.ins().return_(&[dummy]);
+
+    // OK path: emit sdiv.
+    builder.switch_to_block(ok_block);
+    builder.seal_block(ok_block);
+
+    Ok(builder.ins().sdiv(args[0], args[1]))
 }
 
 // --- Primitive trait method mapping ---

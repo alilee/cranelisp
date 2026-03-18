@@ -1838,7 +1838,6 @@ fn e2e_s3_1_doc_neg_no_arg() {
 
 // spec: repl/spec.md §3.1 — /source shows original source text
 #[test]
-#[ignore = "repl/spec.md §3.1 — Ring 4, Sprint 18: /source not yet implemented"]
 fn e2e_s3_1_source_user_fn() {
     let input = "(defn double [x] (add-i64 x x))\n/source double\n";
     let o = run_repl(input, "s3_1_source_fn");
@@ -1851,7 +1850,6 @@ fn e2e_s3_1_source_user_fn() {
 
 // spec: repl/spec.md §3.1 — /source on nonexistent symbol gives error
 #[test]
-#[ignore = "repl/spec.md §3.1 — Ring 4, Sprint 18: /source not yet implemented"]
 fn e2e_s3_1_source_neg_nonexistent() {
     let input = "/source nonexistent_sym\n";
     let o = run_repl(input, "s3_1_source_neg_nonexistent");
@@ -1866,7 +1864,6 @@ fn e2e_s3_1_source_neg_nonexistent() {
 
 // spec: repl/spec.md §3.1 — /sexp shows parsed S-expression
 #[test]
-#[ignore = "repl/spec.md §3.1 — Ring 4, Sprint 18: /sexp not yet implemented"]
 fn e2e_s3_1_sexp_user_fn() {
     let input = "(defn double [x] (add-i64 x x))\n/sexp double\n";
     let o = run_repl(input, "s3_1_sexp_fn");
@@ -1884,7 +1881,6 @@ fn e2e_s3_1_sexp_user_fn() {
 
 // spec: repl/spec.md §3.1 — /sexp on nonexistent symbol gives error
 #[test]
-#[ignore = "repl/spec.md §3.1 — Ring 4, Sprint 18: /sexp not yet implemented"]
 fn e2e_s3_1_sexp_neg_nonexistent() {
     let input = "/sexp nonexistent_sym\n";
     let o = run_repl(input, "s3_1_sexp_neg_nonexistent");
@@ -1899,7 +1895,6 @@ fn e2e_s3_1_sexp_neg_nonexistent() {
 
 // spec: repl/spec.md §3.1 — /ast shows AST
 #[test]
-#[ignore = "repl/spec.md §3.1 — Ring 4, Sprint 18: /ast not yet implemented"]
 fn e2e_s3_1_ast_user_fn() {
     let input = "(defn double [x] (add-i64 x x))\n/ast double\n";
     let o = run_repl(input, "s3_1_ast_fn");
@@ -1916,7 +1911,6 @@ fn e2e_s3_1_ast_user_fn() {
 
 // spec: repl/spec.md §3.1 — /ast on nonexistent symbol gives error
 #[test]
-#[ignore = "repl/spec.md §3.1 — Ring 4, Sprint 18: /ast not yet implemented"]
 fn e2e_s3_1_ast_neg_nonexistent() {
     let input = "/ast nonexistent_sym\n";
     let o = run_repl(input, "s3_1_ast_neg_nonexistent");
@@ -1931,7 +1925,6 @@ fn e2e_s3_1_ast_neg_nonexistent() {
 
 // spec: repl/spec.md §3.1 — /clif shows Cranelift IR
 #[test]
-#[ignore = "repl/spec.md §3.1 — Ring 4, Sprint 18: /clif not yet implemented"]
 fn e2e_s3_1_clif_user_fn() {
     let input = "(defn double [x] (add-i64 x x))\n/clif double\n";
     let o = run_repl(input, "s3_1_clif_fn");
@@ -1949,7 +1942,6 @@ fn e2e_s3_1_clif_user_fn() {
 
 // spec: repl/spec.md §3.1 — /clif on nonexistent symbol gives error
 #[test]
-#[ignore = "repl/spec.md §3.1 — Ring 4, Sprint 18: /clif not yet implemented"]
 fn e2e_s3_1_clif_neg_nonexistent() {
     let input = "/clif nonexistent_sym\n";
     let o = run_repl(input, "s3_1_clif_neg_nonexistent");
@@ -1964,7 +1956,6 @@ fn e2e_s3_1_clif_neg_nonexistent() {
 
 // spec: repl/spec.md §3.1 — /disasm shows disassembled native code
 #[test]
-#[ignore = "repl/spec.md §3.1 — Ring 4, Sprint 18: /disasm not yet implemented"]
 fn e2e_s3_1_disasm_user_fn() {
     let input = "(defn double [x] (add-i64 x x))\n/disasm double\n";
     let o = run_repl(input, "s3_1_disasm_fn");
@@ -1977,7 +1968,6 @@ fn e2e_s3_1_disasm_user_fn() {
 
 // spec: repl/spec.md §3.1 — /disasm on nonexistent symbol gives error
 #[test]
-#[ignore = "repl/spec.md §3.1 — Ring 4, Sprint 18: /disasm not yet implemented"]
 fn e2e_s3_1_disasm_neg_nonexistent() {
     let input = "/disasm nonexistent_sym\n";
     let o = run_repl(input, "s3_1_disasm_neg_nonexistent");
@@ -1992,7 +1982,6 @@ fn e2e_s3_1_disasm_neg_nonexistent() {
 
 // spec: repl/spec.md §8 Scenario 1 — /mod <name> switches namespace
 #[test]
-#[ignore = "repl/spec.md §8 — Ring 4, Sprint 18: /mod not yet implemented"]
 fn e2e_s8_mod_switch_namespace() {
     let input = "/mod math\n";
     let o = run_repl(input, "s8_mod_switch");
@@ -2006,7 +1995,6 @@ fn e2e_s8_mod_switch_namespace() {
 
 // spec: repl/spec.md §8 Scenario 6 — bare /mod shows current module
 #[test]
-#[ignore = "repl/spec.md §8 — Ring 4, Sprint 18: /mod not yet implemented"]
 fn e2e_s8_mod_show_current() {
     let input = "/mod\n";
     let o = run_repl(input, "s8_mod_show_current");
@@ -2020,7 +2008,6 @@ fn e2e_s8_mod_show_current() {
 
 // spec: repl/spec.md §8 Scenario 2 — /mod user switches back
 #[test]
-#[ignore = "repl/spec.md §8 — Ring 4, Sprint 18: /mod not yet implemented"]
 fn e2e_s8_mod_switch_back() {
     let input = "/mod math\n/mod user\n";
     let o = run_repl(input, "s8_mod_switch_back");

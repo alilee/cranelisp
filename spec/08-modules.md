@@ -405,6 +405,8 @@ The following conflicts MUST produce compile-time errors:
 
 Same-source duplicates (the same name arriving through two re-export paths from the same original definition) are NOT ambiguous.
 
+<!-- FIXME(/spec): Clarify interaction between explicit glob imports and implicit prelude glob. When `(import [grid [*]])` brings in names like `Some`/`None` that are already provided by the implicit `(import [prelude [*]])`, is this a §8.6.4 duplicate-import error, or does the explicit import silently shadow the prelude? The current implementation silently overwrites prelude bindings, which caused the exemplar to lose access to `Some`/`None` constructors. Either (a) spec that explicit imports shadow prelude imports (making this intentional), or (b) spec that same-name collisions between prelude glob and explicit glob should produce an error or warning. Found during Sprint 19 exemplar adaptation. -->
+
 ### 8.6.5 Ambiguity and Disambiguation
 
 When two sources register the same bare name in a module's symbol table, the name becomes **ambiguous** (poisoned). Attempting to use an ambiguous bare name MUST produce a compile-time error listing the qualified alternatives.
@@ -596,12 +598,22 @@ When resolving a module name to a file, the implementation MUST search in this o
 
 A module in the project root shadows a module with the same name in the stdlib directory. This is intentional -- it allows projects to override library modules on import.
 
-Lib directory locations are specified externally through:
+### 8.11.3 Lib Directory Configuration
 
-1. A project configuration file (implementation-defined; e.g., `Cranelisp.toml`) MAY specify a module search priority list. When present, this takes precedence.
-2. The `CRANELISP_LIB` environment variable, if set.
+Lib directory locations are determined by the first matching source:
 
-### 8.11.3 Standard Library Structure (Reference Implementation)
+1. **Project configuration file** (implementation-defined; e.g., `Cranelisp.toml`) MAY specify a lib directory list. When present, this takes precedence over all other sources.
+2. **`CRANELISP_LIB` environment variable**, if set. A colon-separated list of directory paths. When set (even to empty), it fully controls the lib directory list — no fallback is applied.
+3. **Default fallback**: When neither a project configuration file nor `CRANELISP_LIB` is present, the implementation SHOULD use `{project_root}/stdlib/` as the sole lib directory, if that directory exists.
+
+If none of the above sources yield any lib directories, the lib directory list is empty. No lib modules (including `prelude` and `core`) will be found. The language still functions — primitives and special forms remain available — but no standard library names are in scope.
+
+> **Practical implication.** The project root is the directory containing the entry file. A project at `exemplar/solver.cl` has project root `exemplar/`. If `exemplar/stdlib/` does not exist and `CRANELISP_LIB` is not set, the prelude will not load. To use the standard library from a subdirectory project, either:
+> - Set `CRANELISP_LIB` to point to the stdlib location (e.g., `CRANELISP_LIB=../stdlib`), or
+> - Create a project configuration file that specifies the lib path, or
+> - Symlink or copy `stdlib/` into the project root.
+
+### 8.11.4 Standard Library Structure (Reference Implementation)
 
 There is no language-level requirement for the standard library structure.
 

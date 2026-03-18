@@ -199,10 +199,26 @@ A sprint MUST NOT close until user-proxy skills have demonstrated that the new c
 
 18. **Repeat**: `/sprint` spawns the next wave. Continue until all waves are complete or user input is required.
 
+### Phase 5b: Showcase (mandatory, driven by `/repl`)
+
+Every sprint MUST produce a new demo file (`repl/demos/{ring}{letter}.demo`) before close. This is not optional — even hardening sprints have user-visible changes worth demonstrating. The demo is the buyer's first impression of the sprint's value.
+
+19. **`/repl` creates the sprint demo** in `repl/demos/`. The demo MUST:
+    - Showcase every user-visible feature delivered in the sprint (new commands, new behavior, fixed bugs)
+    - Be self-contained — no dependency on prior demos
+    - Follow the conventions in `repl/demos/CLAUDE.md` (20-40 lines, narrative structure, use REPL discoverability)
+    - For bug-fix sprints: demonstrate the corrected behavior (e.g., ADT display fix → show the correct output; RC fix → use `/mem` to show balanced allocation)
+    - For new commands: show the command in action with realistic input
+
+20. **All existing demos verified.** Run every `.demo` file through the REPL and confirm clean output (no crashes, no unexpected errors). A broken prior demo is a regression.
+
+21. **`/port` and `/stdlib` demos updated** if the sprint changed exemplar or stdlib capabilities.
+
 ### Phase 6: Close (driven by `/sprint`)
 
-19. **Sprint close checklist** — every item must pass before marking COMPLETE:
-    - [ ] All demos play cleanly (existing ring demos + any new ones)
+22. **Sprint close checklist** — every item must pass before marking COMPLETE:
+    - [ ] **New sprint demo created** (`repl/demos/{ring}{letter}.demo`) and plays cleanly
+    - [ ] All prior demos play cleanly (no regressions)
     - [ ] `/port` (exemplar) demo is current — shows what can be built with features so far
     - [ ] `/stdlib` demo is current — shows available stdlib functionality
     - [ ] All examples compile and run (`cargo run -- --run examples/*.cl`)
@@ -213,12 +229,12 @@ A sprint MUST NOT close until user-proxy skills have demonstrated that the new c
     - [ ] Prior-ring coverage audit clean — no coverage gaps (`[R{N}]` where N is complete); negative coverage gaps for MUST requirements documented or addressed
     - [ ] ROADMAP.md updated with test count and outcomes
     - [ ] User-proxy skills confirmed showcase adequacy
-20. Write the outcome section in SPRINT.md: delivered, deferred, findings.
-21. Mark SPRINT.md as `COMPLETE`.
-22. Move `sprints/SPRINT.md` to `sprints/archive/sprint-{id}.md`.
-23. Update `sprints/ROADMAP.md` with the completed sprint and its outcomes.
-24. If the ring is not yet complete, begin Phase 1 for the next sprint.
-25. If the ring is complete, note that `/review` should be invoked for ring-gate review.
+23. Write the outcome section in SPRINT.md: delivered, deferred, findings.
+24. Mark SPRINT.md as `COMPLETE`.
+25. Move `sprints/SPRINT.md` to `sprints/archive/sprint-{id}.md`.
+26. Update `sprints/ROADMAP.md` with the completed sprint and its outcomes.
+27. If the ring is not yet complete, begin Phase 1 for the next sprint.
+28. If the ring is complete, note that `/review` should be invoked for ring-gate review.
 
 ### Mid-Sprint Adjustment
 
@@ -302,7 +318,7 @@ Sprint 0 assignments follow this pattern for each skill:
 **Design refs**: {relevant spec/design docs — highlighted by /arch}
 **Acceptance**: {how to verify the task is done}
 
-{Repeat for every skill. /port and /stdlib MUST include a demo deliverable showing current capabilities — see sprint close checklist.}
+{Repeat for every skill. /repl MUST include a new sprint demo (`repl/demos/{ring}{letter}.demo`). /port and /stdlib MUST include a demo deliverable showing current capabilities. See Phase 5b and sprint close checklist.}
 
 ## Waves
 

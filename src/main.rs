@@ -55,21 +55,10 @@ fn run_file(path: &str) {
         process::exit(1);
     }
 
-    // FIXME(/int): project_root is set to file_path.parent(), which breaks prelude
-    // loading when the entry file is in a subdirectory (e.g. `exemplar/solver.cl`).
-    // For that case, project_root becomes `exemplar/` and assemble_lib_dirs looks
-    // for `exemplar/stdlib/` (doesn't exist), so no prelude is loaded. The `const`
-    // macro (a prelude macro) then fails with "unknown top-level form: const".
-    //
-    // The REPL uses `std::env::current_dir()` which works correctly when run from
-    // the project root. Batch mode should do the same: use cwd as the project root,
-    // or accept an explicit --project-root flag, or walk upward looking for stdlib/.
-    //
-    // compile_module_graph() also independently derives project_root from
-    // entry.parent() (pipeline.rs line ~278), so both sites need fixing.
-    // The entry file's parent should remain the basis for *module resolution*
-    // (finding sibling .cl files), but *lib_dirs* and *prelude resolution* should
-    // use the actual project root (cwd or explicit flag).
+    // Project root = entry file's parent directory (spec §8.11.2).
+    // Lib directories are configured externally via CRANELISP_LIB or
+    // project config (spec §8.11.3). assemble_lib_dirs applies the
+    // SHOULD-level {project_root}/stdlib/ fallback.
     let project_root = file_path.parent().unwrap_or(Path::new("."));
     let lib_dirs = cranelisp::pipeline::assemble_lib_dirs(project_root);
     match cranelisp::pipeline::compile_module_graph(file_path, &lib_dirs) {

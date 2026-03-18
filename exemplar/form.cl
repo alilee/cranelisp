@@ -16,13 +16,13 @@
 ;; Full %XX decoding is not needed because form values are single digits
 ;; or empty. The browser URL-encodes the POST body, but digits and empty
 ;; strings don't need percent-encoding.
-(defn url-decode [:String s]
+(defn url-decode [s]
   (replace s "+" " "))
 
 ;; ── Puzzle string construction ───────────────────────────────────────
 
 ;; Initialize an 81-character string of dots.
-(defn make-dots-helper [:Int i :String acc]
+(defn make-dots-helper [i acc]
   (if (eq-i64 i 81) acc
     (make-dots-helper (add-i64 i 1) (str-concat acc "."))))
 
@@ -30,7 +30,7 @@
   (make-dots-helper 0 ""))
 
 ;; Parse a digit character to its integer value (0-9), or -1 if not a digit.
-(defn parse-digit-char [:String ch]
+(defn parse-digit-char [ch]
   (cond
     (str-eq ch "0") 0
     (str-eq ch "1") 1
@@ -46,7 +46,7 @@
 
 ;; Set a character in an 81-char puzzle string at position idx.
 ;; Rebuilds the string: prefix + ch + suffix.
-(defn set-char-at [:String s :Int idx :String ch]
+(defn set-char-at [s idx ch]
   (str-concat (substring s 0 idx)
     (str-concat ch (substring s (add-i64 idx 1) (str-len s)))))
 
@@ -55,7 +55,7 @@
 ;; Extract row and column from a field name like "c35".
 ;; Returns the flat index (row * 9 + col), or -1 if the name is invalid.
 ;; Expected format: 'c' followed by exactly two digit characters.
-(defn parse-field-index [:String name]
+(defn parse-field-index [name]
   (if (lt-i64 (str-len name) 3) -1
     (if (not (str-eq (char-at name 0) "c")) -1
       (let [row (parse-digit-char (char-at name 1))
@@ -69,7 +69,7 @@
 ;; Process a single key=value pair and update the puzzle string.
 ;; If the value is a digit (1-9), place it at the correct position.
 ;; If the value is empty or not a digit, leave the dot.
-(defn process-pair [:String puzzle :String pair]
+(defn process-pair [puzzle pair]
   (let [parts (split pair "=")]
     (if (lt-i64 (vec-len parts) 1) puzzle
       (let [key (vec-get parts 0)
@@ -86,7 +86,7 @@
                         (set-char-at puzzle idx ch)))))))))))))
 
 ;; Process all key=value pairs from the split body.
-(defn process-pairs-helper [:String puzzle :Vec pairs :Int i]
+(defn process-pairs-helper [puzzle pairs i]
   (if (eq-i64 i (vec-len pairs)) puzzle
     (process-pairs-helper
       (process-pair puzzle (vec-get pairs i))
@@ -96,7 +96,7 @@
 ;; Parse a URL-encoded form body into an 81-character puzzle string.
 ;; The body contains fields c00=X&c01=Y&...&c88=Z where X,Y,Z are
 ;; digits (1-9) or empty. Empty values become dots.
-(defn parse-form-body [:String body]
+(defn parse-form-body [body]
   (let [decoded (url-decode body)
         pairs (split decoded "&")
         puzzle (make-dots)]

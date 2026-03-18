@@ -13,7 +13,9 @@
 ;; through grid.cl's make-grid. The solver logic itself only uses Int
 ;; and Vec operations.
 
-(import [grid [*]])
+(import [grid [Grid Cell Given Solved Candidates SolveResult Success Unsolvable
+               full-mask bit-set? bit-clear bit-count bit-lowest
+               cell-at set-cell peers is-solved cell-determined? make-grid]])
 
 ;; ── Constraint Propagation ─────────────────────────────────────────────
 
@@ -26,7 +28,7 @@
 ;;   - If bitmask becomes 0: contradiction (no candidates left)
 ;;   - If bitmask has exactly 1 bit: cell is determined -> Solved
 ;;   - Otherwise: cell still has multiple candidates
-(defn eliminate [:Grid g :Int idx :Int d]
+(defn eliminate [g idx d]
   (let [cell (cell-at g idx)]
     (match cell
       [(Given _) (Some g)
@@ -48,14 +50,14 @@
 ;; Eliminate a digit from all peers of a given cell.
 ;; Used when a cell becomes determined (Given or Solved with value d).
 ;; Returns (Some grid) on success, None if any elimination causes contradiction.
-(defn eliminate-from-peers-helper [:Grid g :Vec peer-list :Int d :Int i]
+(defn eliminate-from-peers-helper [g peer-list d i]
   (if (eq-i64 i (vec-len peer-list)) (Some g)
     (let [peer-idx (vec-get peer-list i)]
       (match (eliminate g peer-idx d)
         [None None
          (Some g2) (eliminate-from-peers-helper g2 peer-list d (add-i64 i 1))]))))
 
-(defn eliminate-from-peers [:Grid g :Int idx :Int d]
+(defn eliminate-from-peers [g idx d]
   (eliminate-from-peers-helper g (peers idx) d 0))
 
 ;; Single pass of constraint propagation:
@@ -63,7 +65,7 @@
 ;; from all peers' candidates.
 ;;
 ;; Returns (Some grid) with propagated constraints, or None on contradiction.
-(defn propagate-pass-helper [:Grid g :Int i]
+(defn propagate-pass-helper [g i]
   (if (eq-i64 i 81) (Some g)
     (let [cell (cell-at g i)]
       (match cell
@@ -80,7 +82,7 @@
 
 ;; Check if any cell was changed during propagation by comparing
 ;; candidate masks. Returns true if grids differ.
-(defn grids-differ-helper [:Grid g1 :Grid g2 :Int i]
+(defn grids-differ-helper [g1 g2 i]
   (if (eq-i64 i 81) false
     (let [c1 (cell-at g1 i)
           c2 (cell-at g2 i)]
@@ -103,7 +105,7 @@
 
 ;; Propagate constraints to fixpoint.
 ;; Repeatedly applies propagate-pass until no changes occur or contradiction.
-(defn propagate [:Grid g]
+(defn propagate [g]
   (match (propagate-pass-helper g 0)
     [None None
      (Some g2)
@@ -118,7 +120,7 @@
 ;; Find the index of the unfixed cell with the fewest candidates.
 ;; This is the Minimum Remaining Values (MRV) heuristic.
 ;; Returns (Some idx) or None if all cells are determined.
-(defn find-min-helper [:Grid g :Int i :Int best-idx :Int best-count]
+(defn find-min-helper [g i best-idx best-count]
   (if (eq-i64 i 81)
     (if (eq-i64 best-idx -1) None (Some best-idx))
     (let [cell (cell-at g i)]
@@ -131,14 +133,14 @@
          (Given _) (find-min-helper g (add-i64 i 1) best-idx best-count)
          (Solved _) (find-min-helper g (add-i64 i 1) best-idx best-count)]))))
 
-(defn find-min-candidates [:Grid g]
+(defn find-min-candidates [g]
   (find-min-helper g 0 -1 10))
 
 ;; ── Backtracking Solver ────────────────────────────────────────────────
 
 ;; Try each digit d from lo to 9 at the given cell index.
 ;; Returns the first successful solution or Unsolvable.
-(defn try-digits [:Grid g :Int idx :Int mask :Int d]
+(defn try-digits [g idx mask d]
   (if (gt-i64 d 9) Unsolvable
     (if (not (bit-set? mask d))
       ;; Digit not a candidate, skip
@@ -157,7 +159,7 @@
 ;; 3. If all cells determined -> Success
 ;; 4. Otherwise: pick cell with fewest candidates (MRV),
 ;;    try each candidate recursively
-(defn solve [:Grid g]
+(defn solve [g]
   (match (propagate g)
     [None Unsolvable
      (Some g2)
@@ -179,16 +181,18 @@
 
 (mod test
   (import [super [*]])
-  (import [grid [*]])
+  (import [grid [Grid Cell Given Solved Candidates SolveResult Success Unsolvable
+                 full-mask bit-set? bit-clear bit-count bit-lowest
+                 cell-at set-cell peers is-solved cell-determined? make-grid]])
 
   ;; --- Helper to count determined cells ---
-  (defn count-determined-helper [:Grid g :Int i :Int acc]
+  (defn count-determined-helper [g i acc]
     (if (eq-i64 i 81) acc
       (if (cell-determined? (cell-at g i))
         (count-determined-helper g (add-i64 i 1) (add-i64 acc 1))
         (count-determined-helper g (add-i64 i 1) acc))))
 
-  (defn count-determined [:Grid g]
+  (defn count-determined [g]
     (count-determined-helper g 0 0))
 
   ;; --- Elimination tests (don't need make-grid) ---

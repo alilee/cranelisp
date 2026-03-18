@@ -6,12 +6,13 @@
 // mixed nullary/data ADT discrimination.
 
 use cranelift::prelude::*;
+use cranelift_module::Module;
 
 use cranelisp_types::{CranelispError, Expr, HeapCategory, MatchArm, Pattern, Span, Symbol};
 
 use crate::heap::{self, HeapAdt};
 
-use super::{FnCompiler, MatchContext, MATCH_EXHAUSTION_TRAP, bare_ctor_name, collect_var_ids_from_type, substitute_type_inline};
+use super::{FnCompiler, MatchContext, bare_ctor_name, collect_var_ids_from_type, substitute_type_inline};
 
 impl<'a> FnCompiler<'a> {
     // --- Match expression ---
@@ -530,15 +531,47 @@ impl<'a> FnCompiler<'a> {
             .collect()
     }
 
-    /// Emit a trap for non-exhaustive match.
+    /// Emit a runtime panic for non-exhaustive match.
     ///
-    /// The typechecker verifies exhaustiveness at compile time, so this is
-    /// a defensive backstop -- it should never be reached. We emit a Cranelift
-    /// trap rather than calling a runtime function.
+    /// Calls `runtime_panic("match failed")` so that `catch_unwind` at the
+    /// REPL eval boundary can recover, then emits a trailing trap as an
+    /// unreachable terminator (Cranelift requires one).
     fn emit_match_panic(&mut self, _scrut_val: Value) -> Result<(), CranelispError> {
-        self.builder
-            .ins()
-            .trap(TrapCode::unwrap_user(MATCH_EXHAUSTION_TRAP));
+        let panic_id = self.ctx.panic_func_id.ok_or_else(|| {
+            CranelispError::CodegenError {
+                message: "runtime/panic not declared".into(),
+                span: Span::new(0, 0),
+            }
+        })?;
+
+        let msg = b"match failed";
+        let data_id = self
+            .module
+            .declare_anonymous_data(false, false)
+            .map_err(|e| CranelispError::CodegenError {
+                message: format!("failed to declare panic data: {e}"),
+                span: Span::new(0, 0),
+            })?;
+        let mut desc = cranelift_module::DataDescription::new();
+        desc.define(msg.to_vec().into_boxed_slice());
+        self.module
+            .define_data(data_id, &desc)
+            .map_err(|e| CranelispError::CodegenError {
+                message: format!("failed to define panic data: {e}"),
+                span: Span::new(0, 0),
+            })?;
+
+        let gv = self.module.declare_data_in_func(data_id, self.builder.func);
+        let msg_ptr = self.builder.ins().global_value(types::I64, gv);
+        let msg_len = self.builder.ins().iconst(types::I64, msg.len() as i64);
+
+        let panic_ref = self.module.declare_func_in_func(panic_id, self.builder.func);
+        self.builder.ins().call(panic_ref, &[msg_ptr, msg_len]);
+
+        // runtime_panic sets a thread-local error flag and returns.
+        // Return a dummy 0 value — the caller checks take_runtime_error().
+        let dummy = self.builder.ins().iconst(types::I64, 0);
+        self.builder.ins().return_(&[dummy]);
 
         Ok(())
     }
