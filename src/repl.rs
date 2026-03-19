@@ -13,21 +13,92 @@
 // All REPL output uses `:Type {value|name} ; {classification} - {docstring}`
 // with optional related symbol sections for types, traits, and macros.
 
+use std::cell::Cell;
 use std::collections::HashMap;
 use std::io::{self, BufRead, Write};
 use std::time::{Duration, Instant};
 
+use cranelisp_backend::compiler::TracedFnInfo;
+use cranelisp_backend::display;
 use cranelisp_backend::got::ModuleCodegenState;
-use cranelisp_backend::heap::{HeapAdt, HeapVec};
 use cranelisp_backend::jit::Jit;
 use cranelisp_typecheck::TypeChecker;
 use cranelisp_types::{
-    CompileMode, CranelispError, DefKind, MacroClauseInfo, MacroParam,
+    CompileMode, CranelispError, DefKind, Defn, Expr, MacroClauseInfo, MacroParam,
     ModuleEntry, ModuleFullPath, ReplCheckResult, ReplInput, Sexp, Symbol, TraitName, Type,
-    TypeDefInfo, TypeName, Visibility, Warning, NULLARY_TAG_THRESHOLD,
+    TypeDefInfo, TypeName, Visibility, Warning,
 };
 
 use crate::expander::CraneliftExpander;
+
+// ── Trace value formatting ────────────────────────────────────────────────────
+
+/// Display state for trace formatting. Holds references to the type definitions
+/// and type-to-module mappings needed by `format_value`.
+///
+/// SAFETY: The raw pointer is valid for the duration of a single `execute_expr`
+/// call — set before JIT execution and cleared immediately after. The struct it
+/// points to borrows from the ReplSession which does not move during execution.
+struct TraceDisplayState {
+    type_defs: *const HashMap<TypeName, TypeDefInfo>,
+    type_modules: *const HashMap<TypeName, ModuleFullPath>,
+}
+
+// TraceDisplayState is only accessed via a thread-local Cell (never crosses
+// thread boundaries), so Send/Sync are not required.
+
+thread_local! {
+    /// Thread-local pointer to the active display state, used by
+    /// `repl_trace_format`. Set before JIT evaluation, cleared after.
+    static TRACE_DISPLAY_STATE: Cell<*const TraceDisplayState> =
+        const { Cell::new(std::ptr::null()) };
+}
+
+/// Set the trace display state before evaluating a trace expression.
+fn set_trace_display_state(state: &TraceDisplayState) {
+    TRACE_DISPLAY_STATE.with(|c| c.set(state as *const _));
+}
+
+/// Clear the trace display state after evaluation completes.
+fn clear_trace_display_state() {
+    TRACE_DISPLAY_STATE.with(|c| c.set(std::ptr::null()));
+}
+
+/// JIT-callable function: format a runtime value for trace display.
+///
+/// Reads the type pointer (a leaked `Box<Type>`) and the display state
+/// (type_defs, type_modules) from thread-local storage, then calls
+/// `display::format_value` to produce a formatted string.
+///
+/// Falls back to `"?"` if the display state has not been set.
+///
+/// Registered as an extra JIT symbol to override the runtime's fallback
+/// `cranelisp_trace_format` when compiling trace expressions.
+extern "C" fn repl_trace_format(val: i64, type_ptr: i64) -> i64 {
+    TRACE_DISPLAY_STATE.with(|c| {
+        let state_ptr = c.get();
+        let s = if state_ptr.is_null() {
+            "?".to_string()
+        } else {
+            // SAFETY: state_ptr was set by set_trace_display_state and
+            // points to a valid TraceDisplayState on the caller's stack.
+            // The Type pointer was leaked by trace_codegen (valid for program lifetime).
+            let state = unsafe { &*state_ptr };
+            let type_defs = unsafe { &*state.type_defs };
+            let type_modules = unsafe { &*state.type_modules };
+            let ty = unsafe { &*(type_ptr as *const Type) };
+            display::format_value(val, ty, type_defs, type_modules)
+        };
+        cranelisp_runtime::alloc_string(s.as_bytes()) as i64
+    })
+}
+
+// Re-export display functions so that downstream crates (tests/helpers, src/main.rs)
+// can continue to use `cranelisp::repl::format_result_value` etc.
+pub use display::format_result;
+pub use display::format_result_value;
+pub use display::format_type_qualified;
+pub use display::format_value;
 
 /// Result of evaluating one REPL input.
 pub struct ReplResult {
@@ -525,24 +596,62 @@ impl ReplSession {
         self.compile_mono_defns(check_result)?;
 
         // Build extra symbols for platform function resolution.
-        let extra_symbols: Vec<(&str, *const u8)> = self
+        // If the expression contains a (trace ...) form, also override
+        // cranelisp_trace_format with the REPL's proper formatter and
+        // build traced_fns for GOT-swap wrapper generation.
+        let has_trace = expr_contains_trace(expr);
+        let traced_fns = if has_trace {
+            self.build_traced_fns()
+        } else {
+            Vec::new()
+        };
+
+        let mut extra_symbols: Vec<(&str, *const u8)> = self
             .platform_symbols
             .iter()
             .map(|(name, ptr)| (name.as_str(), *ptr))
             .collect();
-        let compiled = cranelisp_backend::compile_expr_with_got_and_symbols(
+
+        // Override the runtime's fallback cranelisp_trace_format with the
+        // REPL's version that uses type_defs/type_modules for proper display.
+        if has_trace {
+            extra_symbols.push((
+                "cranelisp_trace_format",
+                repl_trace_format as *const u8,
+            ));
+        }
+
+        let compiled = compile_expr_with_traced_fns(
             expr,
             &check,
-            CompileMode::Interactive,
             Some(&mut self.got_state),
             &extra_symbols,
+            if has_trace { Some(&traced_fns) } else { None },
         )?;
+
+        // Set trace display state before evaluation so cranelisp_trace_format
+        // can access type_defs and type_modules.
+        let display_state = TraceDisplayState {
+            type_defs: &self.type_defs as *const _,
+            type_modules: &self.type_modules as *const _,
+        };
+        if has_trace {
+            set_trace_display_state(&display_state);
+        }
 
         // Time the actual evaluation (function call) separately from compilation.
         // Wrap in catch_unwind to recover from runtime panics (spec §12.7.4.1).
         let eval_start = Instant::now();
-        let value = invoke_jit_eval(|| compiled.execute())?;
+        let value = invoke_jit_eval(|| compiled.execute());
         let eval_duration = eval_start.elapsed();
+
+        // Always clear trace display state after evaluation.
+        if has_trace {
+            clear_trace_display_state();
+        }
+
+        // Propagate evaluation errors after cleanup.
+        let value = value?;
 
         Ok(ReplResult {
             value,
@@ -594,7 +703,7 @@ impl ReplSession {
         let module = self.tc.current_module_path().clone();
         let definition_display = if is_constrained {
             check_result.scheme.as_ref().map(|s| {
-                let base = format_scheme_display(&defn.name, s, &module, &self.type_modules);
+                let base = display::format_scheme_display(&defn.name, s, &module, &self.type_modules);
                 format!("{base} ; defn")
             })
         } else if !defn.params.is_empty() {
@@ -842,6 +951,53 @@ impl ReplSession {
             constructor_to_type: repl_check.constructor_to_type.clone(),
         }
     }
+
+    /// Build the list of traced function info from the current GOT state.
+    ///
+    /// Iterates all functions with GOT slots and code pointers, extracts their
+    /// type information from the symbol table, and builds `TracedFnInfo` entries
+    /// for the trace codegen to generate wrapper functions.
+    fn build_traced_fns(&mut self) -> Vec<TracedFnInfo> {
+        let got_base = self.got_state.got_base_ptr() as i64;
+        let module = self.tc.current_module_path().clone();
+        let symbol_table = self.tc.symbol_table();
+
+        let mut traced = Vec::new();
+        for (name, dc) in &self.got_state.def_codegen {
+            let (slot, code_ptr, arity) = match (dc.got_slot, dc.code_ptr, dc.param_count) {
+                (Some(s), Some(p), Some(a)) => (s, p, a),
+                _ => continue,
+            };
+
+            // Look up the function's type from the symbol table.
+            let (param_types, result_type) =
+                match symbol_table.get(name.as_ref()) {
+                    Some(ModuleEntry::Def { scheme, .. }) => {
+                        match &scheme.ty {
+                            Type::Fn(params, ret) => (params.clone(), (**ret).clone()),
+                            // Zero-arg function: no params, result type is the type itself
+                            other => (vec![], other.clone()),
+                        }
+                    }
+                    _ => {
+                        // Fallback: use Int for all types (lossy but safe).
+                        (vec![Type::Int; arity], Type::Int)
+                    }
+                };
+
+            let qualified_name = format!("{}/{}", module, name);
+            traced.push(TracedFnInfo {
+                name: qualified_name,
+                got_base,
+                got_slot: slot,
+                arity,
+                code_ptr: code_ptr as i64,
+                param_types,
+                result_type,
+            });
+        }
+        traced
+    }
 }
 
 impl Default for ReplSession {
@@ -850,98 +1006,141 @@ impl Default for ReplSession {
     }
 }
 
-/// Qualify a type name with its module path for REPL display (spec §1.4).
+// ── Trace support helpers ─────────────────────────────────────────────────────
+
+/// Check if an expression tree contains a `(trace ...)` form anywhere.
 ///
-/// Primitives get `primitives/` prefix. User-defined types look up their
-/// defining module in `type_modules`. `Fn` and type variables stay bare.
-fn qualify_type_name(name: &str, type_modules: &HashMap<TypeName, ModuleFullPath>) -> String {
-    if let Some(module) = type_modules.get(name) {
-        format!("{module}/{name}")
+/// Used to decide whether to build traced_fns and set up the trace display
+/// state before compilation. This avoids the overhead for non-trace expressions.
+fn expr_contains_trace(expr: &Expr) -> bool {
+    match expr {
+        Expr::Trace { .. } => true,
+        Expr::Apply { callee, args, .. } => {
+            // trace is a module-scoped special form (arch Principle 10).
+            // It arrives as Apply(Var("trace"), [body]) — detect it here.
+            if let Expr::Var { name, .. } = callee.as_ref() {
+                if &**name == "trace" {
+                    return true;
+                }
+            }
+            expr_contains_trace(callee) || args.iter().any(expr_contains_trace)
+        }
+        Expr::Let { bindings, body, .. } => {
+            bindings.iter().any(|(_, e)| expr_contains_trace(e))
+                || expr_contains_trace(body)
+        }
+        Expr::If { cond, then_branch, else_branch, .. } => {
+            expr_contains_trace(cond)
+                || expr_contains_trace(then_branch)
+                || expr_contains_trace(else_branch)
+        }
+        Expr::Lambda { body, .. } => expr_contains_trace(body),
+        Expr::Match { scrutinee, arms, .. } => {
+            expr_contains_trace(scrutinee)
+                || arms.iter().any(|arm| expr_contains_trace(&arm.body))
+        }
+        Expr::Annotate { expr, .. } => expr_contains_trace(expr),
+        Expr::VecLit { elements, .. } => elements.iter().any(expr_contains_trace),
+        Expr::RunTests { init, pass_fn, fail_fn, .. } => {
+            expr_contains_trace(init)
+                || expr_contains_trace(pass_fn)
+                || expr_contains_trace(fail_fn)
+        }
+        Expr::IntLit { .. }
+        | Expr::BoolLit { .. }
+        | Expr::FloatLit { .. }
+        | Expr::StringLit { .. }
+        | Expr::Var { .. } => false,
+    }
+}
+
+/// Result of compiling a REPL expression with trace support.
+///
+/// Holds the JIT alive so the compiled function pointer remains valid.
+/// This mirrors `cranelisp_backend::CompiledExpr` but can be constructed
+/// from `src/` without needing access to the backend struct's private fields.
+struct TracedCompiledExpr {
+    #[allow(dead_code)]
+    jit: Jit,
+    func_ptr: *const u8,
+}
+
+impl TracedCompiledExpr {
+    /// Execute the compiled expression and return the i64 result.
+    fn execute(&self) -> i64 {
+        let func: extern "C" fn() -> i64 = unsafe { std::mem::transmute(self.func_ptr) };
+        func()
+    }
+}
+
+/// Compile a single REPL expression with optional `traced_fns` for trace support.
+///
+/// This is a variant of `cranelisp_backend::compile_expr_with_got_and_symbols`
+/// that additionally sets `traced_fns` on the `CompileContext`. The backend's
+/// public API does not expose this parameter, so we replicate the compilation
+/// pipeline here with the extra field set.
+fn compile_expr_with_traced_fns(
+    expr: &Expr,
+    check: &cranelisp_types::CheckResult,
+    got_state: Option<&mut ModuleCodegenState>,
+    extra_symbols: &[(&str, *const u8)],
+    traced_fns: Option<&[TracedFnInfo]>,
+) -> Result<TracedCompiledExpr, CranelispError> {
+    let mut jit = Jit::new_with_symbols(extra_symbols)?;
+
+    // Declare runtime intrinsics (Ring 1 heap infrastructure).
+    jit.declare_intrinsics()?;
+
+    // Wrap expression in a synthetic zero-arg function.
+    let wrapper_name = Symbol::from("__repl_expr__");
+    let wrapper_defn = Defn {
+        name: wrapper_name.clone(),
+        params: vec![],
+        param_annotations: vec![],
+        visibility: Visibility::Public,
+        body: expr.clone(),
+        docstring: None,
+        span: expr.span(),
+    };
+
+    let func_ids = jit.declare_functions(&[&wrapper_defn])?;
+
+    // Get GOT info and function arities if available.
+    let (got_slots, got_base_ptr, func_arities) = if let Some(state) = got_state {
+        let mut slots: HashMap<Symbol, usize> = HashMap::new();
+        let mut arities: HashMap<Symbol, usize> = HashMap::new();
+        for (name, dc) in &state.def_codegen {
+            if let Some(slot) = dc.got_slot {
+                slots.insert(name.clone(), slot);
+            }
+            if let Some(pc) = dc.param_count {
+                arities.insert(name.clone(), pc);
+            }
+        }
+        let base = state.got_base_ptr() as i64;
+        (Some(slots), Some(base), arities)
     } else {
-        // Not in type_modules — unqualified (e.g., type vars, unknown types).
-        name.to_string()
-    }
-}
+        (None, None, HashMap::new())
+    };
 
-/// Format a type with fully-qualified names for REPL display (spec §1.4).
-///
-/// Primitive types get `primitives/` prefix, ADT types get their module prefix,
-/// `Fn` keyword and type variables stay unqualified.
-fn format_type_qualified(ty: &Type, type_modules: &HashMap<TypeName, ModuleFullPath>) -> String {
-    // Compute var names from the full type, then use them in the recursive helper.
-    let var_names = cranelisp_types::type_var_names(ty);
-    format_type_qualified_inner(ty, type_modules, &var_names)
-}
+    let mut compile_ctx = jit.build_compile_context(
+        check,
+        CompileMode::Interactive,
+        &func_ids,
+        &func_arities,
+        got_slots.as_ref(),
+        got_base_ptr,
+        None, // No cross-module GOT for single-expression compilation.
+    );
 
-/// Recursive helper for `format_type_qualified` with pre-computed var names.
-fn format_type_qualified_inner(
-    ty: &Type,
-    type_modules: &HashMap<TypeName, ModuleFullPath>,
-    var_names: &HashMap<cranelisp_types::TypeId, String>,
-) -> String {
-    match ty {
-        Type::Int => "primitives/Int".to_string(),
-        Type::Bool => "primitives/Bool".to_string(),
-        Type::String => "primitives/String".to_string(),
-        Type::Float => "primitives/Float".to_string(),
-        Type::Fn(params, ret) => {
-            let parts: Vec<String> = params
-                .iter()
-                .map(|p| format_type_qualified_inner(p, type_modules, var_names))
-                .collect();
-            let ret_s = format_type_qualified_inner(ret, type_modules, var_names);
-            format!("(Fn [{}] {ret_s})", parts.join(" "))
-        }
-        Type::ADT(name, args) => {
-            let qname = qualify_type_name(name, type_modules);
-            if args.is_empty() {
-                qname
-            } else {
-                let arg_strs: Vec<String> = args
-                    .iter()
-                    .map(|a| format_type_qualified_inner(a, type_modules, var_names))
-                    .collect();
-                format!("({qname} {})", arg_strs.join(" "))
-            }
-        }
-        Type::Var(id) => {
-            var_names
-                .get(id)
-                .cloned()
-                .unwrap_or_else(|| format!("t{id}"))
-        }
-        Type::TyConApp(id, args) => {
-            let name = var_names
-                .get(id)
-                .cloned()
-                .unwrap_or_else(|| format!("t{id}"));
-            if args.is_empty() {
-                name
-            } else {
-                let arg_strs: Vec<String> = args
-                    .iter()
-                    .map(|a| format_type_qualified_inner(a, type_modules, var_names))
-                    .collect();
-                format!("({name} {})", arg_strs.join(" "))
-            }
-        }
-    }
-}
+    // Set traced_fns on the compile context for trace codegen support.
+    compile_ctx.traced_fns = traced_fns;
 
-/// Format a result value for REPL display (simple version, no ADT introspection).
-///
-/// Format: `:Type value`
-/// - Bool: `true` / `false`
-/// - Float: reinterpret i64 bits as f64
-/// - Int: decimal integer
-/// - String: reads heap string content, displays as `:String "contents"`
-/// - Fn: displays as `:(Fn [...] ...) <closure>`
-/// - ADT without type_defs: `:TypeName tag` (fallback, no constructor name lookup)
-///
-/// For richer ADT display with constructor names and field values,
-/// use `format_result_value` which accepts `type_defs`.
-pub fn format_result(value: i64, ty: &Type) -> String {
-    format_result_value(value, ty, &HashMap::new(), &HashMap::new())
+    jit.compile_defn(&wrapper_defn, compile_ctx)?;
+
+    let code_ptr = jit.finalize_and_get_ptr(&wrapper_name, 0)?;
+
+    Ok(TracedCompiledExpr { jit, func_ptr: code_ptr })
 }
 
 /// Force an IO tree via the trampoline and format the inner result.
@@ -952,7 +1151,8 @@ pub fn format_result(value: i64, ty: &Type) -> String {
 /// does not crash the REPL session.
 ///
 /// Returns a display string for the inner value with the full IO type
-/// annotation, e.g. `:(primitives/IO primitives/Int) 0`.
+/// annotation, wrapping the formatted value in `(IO.Pure ...)`,
+/// e.g. `:(IO primitives/Int) (IO.Pure 42)`.
 fn force_io_and_format(
     io_value: i64,
     io_ty: &Type,
@@ -973,555 +1173,16 @@ fn force_io_and_format(
     });
 
     let inner_ty = io_ty.io_inner_type();
-    let type_str = format_type_qualified(io_ty, type_modules);
+    let type_str = display::format_type_qualified(io_ty, type_modules);
 
     match trampoline_result {
         Ok(inner_val) => {
-            let val_str = format_value_only(inner_val, &inner_ty, type_defs, type_modules);
-            format!(":{type_str} {val_str}")
+            let val_str = display::format_value(inner_val, &inner_ty, type_defs, type_modules);
+            format!(":{type_str} (IO.Pure {val_str})")
         }
         Err(_) => {
             format!(":{type_str} <IO trampoline panicked>")
         }
-    }
-}
-
-/// Format just the value portion (without the leading `:Type` prefix).
-///
-/// This is used by `force_io_and_format` where the outer IO type is shown
-/// separately and we only need the inner value's textual representation.
-fn format_value_only(
-    value: i64,
-    ty: &Type,
-    type_defs: &HashMap<TypeName, TypeDefInfo>,
-    type_modules: &HashMap<TypeName, ModuleFullPath>,
-) -> String {
-    match ty {
-        Type::Bool => {
-            if value != 0 { "true".to_string() } else { "false".to_string() }
-        }
-        Type::Float => {
-            let f = f64::from_bits(value as u64);
-            let s = format!("{f}");
-            if s.contains('.') { s } else { format!("{s}.0") }
-        }
-        Type::Int => format!("{value}"),
-        Type::String => {
-            if value == 0 || (value as usize) < NULLARY_TAG_THRESHOLD {
-                format!("<invalid:{value}>")
-            } else {
-                let s = unsafe { cranelisp_runtime::read_string_as_str(value) };
-                format!("\"{s}\"")
-            }
-        }
-        Type::Fn(_, _) => "<closure>".to_string(),
-        Type::ADT(type_name, type_args) => {
-            // For nested ADTs, reuse the full format (it includes `:Type` prefix)
-            // and strip the prefix. This is simpler than duplicating ADT formatting.
-            let full = format_adt_value(value, type_name, type_args, type_defs, type_modules);
-            // format_adt_value returns `:Type value` — strip the `:Type ` prefix.
-            if let Some(pos) = full.find(' ') {
-                full[pos + 1..].to_string()
-            } else {
-                full
-            }
-        }
-        _ => format!("{value}"),
-    }
-}
-
-/// Format a constrained function's scheme for REPL display (spec §1.3).
-///
-/// Produces inline-constraint notation:
-///   `:(Fn [:Num a :a] a) user/double`
-///
-/// On first occurrence of a constrained type variable, the constraint trait
-/// is shown as `:TraitName var`. Subsequent occurrences use `:var`.
-/// Unconstrained variables appear bare.
-fn format_scheme_display(
-    name: &str,
-    scheme: &cranelisp_types::Scheme,
-    module: &cranelisp_types::ModuleFullPath,
-    type_modules: &HashMap<TypeName, ModuleFullPath>,
-) -> String {
-    let var_names = cranelisp_types::type_var_names(&scheme.ty);
-
-    // Build a map from TypeId to the constraint traits for quick lookup.
-    // Use sorted trait names for deterministic output.
-    let mut constraint_map: HashMap<cranelisp_types::TypeId, Vec<&str>> = HashMap::new();
-    for (type_id, traits) in &scheme.constraints {
-        let mut trait_strs: Vec<&str> = traits.iter().map(|t| t.as_ref()).collect();
-        trait_strs.sort();
-        constraint_map.insert(*type_id, trait_strs);
-    }
-
-    // Track which constrained vars have been "introduced" (first occurrence shown).
-    let mut introduced: std::collections::HashSet<cranelisp_types::TypeId> =
-        std::collections::HashSet::new();
-
-    let type_str = format_type_with_inline_constraints(
-        &scheme.ty,
-        &var_names,
-        &constraint_map,
-        &mut introduced,
-        false,
-        type_modules,
-    );
-
-    format!(":{type_str} {module}/{name}")
-}
-
-/// Format a type with inline constraint annotations (spec §1.3, §1.4).
-///
-/// Type names are fully qualified. Inside function param lists (`in_params = true`):
-///   first occurrence of constrained var: `:TraitName var`
-///   subsequent occurrences: `:var`
-/// Outside param lists (return type, ADT args): vars are always bare.
-fn format_type_with_inline_constraints(
-    ty: &Type,
-    var_names: &HashMap<cranelisp_types::TypeId, String>,
-    constraints: &HashMap<cranelisp_types::TypeId, Vec<&str>>,
-    introduced: &mut std::collections::HashSet<cranelisp_types::TypeId>,
-    in_params: bool,
-    type_modules: &HashMap<TypeName, ModuleFullPath>,
-) -> String {
-    match ty {
-        Type::Int => "primitives/Int".to_string(),
-        Type::Bool => "primitives/Bool".to_string(),
-        Type::String => "primitives/String".to_string(),
-        Type::Float => "primitives/Float".to_string(),
-        Type::Fn(params, ret) => {
-            let parts: Vec<String> = params
-                .iter()
-                .map(|p| {
-                    format_type_with_inline_constraints(
-                        p, var_names, constraints, introduced, true, type_modules,
-                    )
-                })
-                .collect();
-            let ret_s = format_type_with_inline_constraints(
-                ret, var_names, constraints, introduced, false, type_modules,
-            );
-            format!("(Fn [{}] {ret_s})", parts.join(" "))
-        }
-        Type::ADT(name, args) => {
-            let qname = qualify_type_name(name, type_modules);
-            if args.is_empty() {
-                qname
-            } else {
-                let arg_strs: Vec<String> = args
-                    .iter()
-                    .map(|a| {
-                        format_type_with_inline_constraints(
-                            a, var_names, constraints, introduced, false, type_modules,
-                        )
-                    })
-                    .collect();
-                format!("({qname} {})", arg_strs.join(" "))
-            }
-        }
-        Type::Var(id) => {
-            let var_name = var_names
-                .get(id)
-                .cloned()
-                .unwrap_or_else(|| format!("t{id}"));
-            if in_params {
-                if let Some(traits) = constraints.get(id) {
-                    if !introduced.contains(id) {
-                        // First occurrence in params: show `:TraitName var`
-                        introduced.insert(*id);
-                        let trait_prefix = traits.join(" ");
-                        format!(":{trait_prefix} {var_name}")
-                    } else {
-                        // Subsequent occurrence in params: show `:var`
-                        format!(":{var_name}")
-                    }
-                } else {
-                    // Unconstrained var in params: bare name
-                    var_name
-                }
-            } else {
-                // Outside params (return type, etc.): always bare
-                var_name
-            }
-        }
-        Type::TyConApp(id, args) => {
-            let name = var_names
-                .get(id)
-                .cloned()
-                .unwrap_or_else(|| format!("t{id}"));
-            if args.is_empty() {
-                name
-            } else {
-                let arg_strs: Vec<String> = args
-                    .iter()
-                    .map(|a| {
-                        format_type_with_inline_constraints(
-                            a, var_names, constraints, introduced, false, type_modules,
-                        )
-                    })
-                    .collect();
-                format!("({name} {})", arg_strs.join(" "))
-            }
-        }
-    }
-}
-
-/// Format a result value for REPL display with full type definition context.
-///
-/// When `type_defs` is provided, ADT values are displayed with constructor
-/// names and field values: `:(user/Option primitives/Int) (Option.Some 42)`.
-///
-/// Types are fully qualified per spec §1.4. Constructor values use
-/// `Type.Constructor` dot notation per spec §1.5.
-///
-/// Strings are read from heap memory via `cranelisp_runtime::read_string_as_str`.
-/// Closures display as `:(Fn [...] ...) <closure>`.
-pub fn format_result_value(
-    value: i64,
-    ty: &Type,
-    type_defs: &HashMap<TypeName, TypeDefInfo>,
-    type_modules: &HashMap<TypeName, ModuleFullPath>,
-) -> String {
-    match ty {
-        Type::Bool => {
-            let display_val = if value != 0 { "true" } else { "false" };
-            format!(":primitives/Bool {display_val}")
-        }
-        Type::Float => {
-            let f = f64::from_bits(value as u64);
-            let s = format!("{f}");
-            if s.contains('.') {
-                format!(":primitives/Float {s}")
-            } else {
-                format!(":primitives/Float {s}.0")
-            }
-        }
-        Type::Int => format!(":primitives/Int {value}"),
-        Type::String => format_string_value(value),
-        Type::Fn(_, _) => {
-            let type_str = format_type_qualified(ty, type_modules);
-            format!(":{type_str} <closure>")
-        }
-        Type::ADT(type_name, type_args) => {
-            format_adt_value(value, type_name, type_args, type_defs, type_modules)
-        }
-        other => {
-            let type_str = format_type_qualified(other, type_modules);
-            format!(":{type_str} {value}")
-        }
-    }
-}
-
-/// Format a String heap value as `:primitives/String "contents"`.
-fn format_string_value(value: i64) -> String {
-    if value == 0 || (value as usize) < NULLARY_TAG_THRESHOLD {
-        // Null or small value -- not a valid heap pointer.
-        return format!(":primitives/String <invalid:{value}>");
-    }
-    // SAFETY: value is a heap pointer to a valid HeapString (produced by JIT code).
-    let s = unsafe { cranelisp_runtime::read_string_as_str(value) };
-    format!(":primitives/String \"{s}\"")
-}
-
-/// Check whether a type has exactly one constructor whose name matches the type name.
-///
-/// Single-constructor product types like `(deftype Point [:Int x :Int y])` have
-/// a redundant `Type.Constructor` display (`Point.Point`). For these types we
-/// suppress the `Type.` prefix and show just the constructor name.
-fn is_single_matching_constructor(type_name: &TypeName, type_info: &TypeDefInfo) -> bool {
-    type_info.constructors.len() == 1 && type_info.constructors[0].name.0 == type_name.0
-}
-
-/// Format the constructor display name for an ADT value.
-///
-/// For single-constructor types where the constructor name matches the type name,
-/// returns just the constructor name (e.g., `Point`). For multi-constructor types,
-/// returns `Type.Constructor` (e.g., `Color.Red`, `Option.Some`).
-fn format_ctor_display(type_name: &TypeName, ctor_name: &str, type_info: &TypeDefInfo) -> String {
-    if is_single_matching_constructor(type_name, type_info) {
-        ctor_name.to_string()
-    } else {
-        format!("{type_name}.{ctor_name}")
-    }
-}
-
-/// Format an ADT value with constructor name lookup and dot notation (spec §1.5).
-///
-/// Nullary constructors display as `Type.Ctor` (e.g., `Color.Red`).
-/// Data constructors display as `(Type.Ctor field1 field2)` (e.g., `(Option.Some 42)`).
-/// Single-constructor product types where the constructor name matches the type name
-/// suppress the `Type.` prefix (e.g., `(Point 3 4)` not `(Point.Point 3 4)`).
-/// Type names in the `:Type` prefix are fully qualified.
-fn format_adt_value(
-    value: i64,
-    type_name: &TypeName,
-    type_args: &[Type],
-    type_defs: &HashMap<TypeName, TypeDefInfo>,
-    type_modules: &HashMap<TypeName, ModuleFullPath>,
-) -> String {
-    let type_display = format_adt_type_qualified(type_name, type_args, type_modules);
-
-    // Vec is a built-in type, not in type_defs -- handle it specially.
-    if type_name == "Vec" {
-        let elem_type = type_args.first();
-        let elems = format_vec_elements(value, elem_type, type_defs, type_modules);
-        return format!(":{type_display} {elems}");
-    }
-
-    let Some(type_info) = type_defs.get(type_name) else {
-        // No type def available -- fallback to bare value display.
-        return format!(":{type_display} {value}");
-    };
-
-    // Determine if this is a nullary tag or a heap pointer.
-    if (value as usize) < NULLARY_TAG_THRESHOLD {
-        // Nullary constructor: value is the tag directly.
-        let tag = value as usize;
-        let ctor_name = find_constructor_by_tag(type_info, tag);
-        let ctor_display = format_ctor_display(type_name, &ctor_name, type_info);
-        format!(":{type_display} {ctor_display}")
-    } else {
-        // Data constructor: read tag and fields from heap.
-        format_adt_heap_value(value, &type_display, type_name, type_info, type_args, type_defs, type_modules)
-    }
-}
-
-/// Format the type portion of an ADT display with qualification (spec §1.4).
-/// Simple types: `user/Color`. Parameterized: `(user/Option primitives/Int)`.
-fn format_adt_type_qualified(
-    type_name: &TypeName,
-    type_args: &[Type],
-    type_modules: &HashMap<TypeName, ModuleFullPath>,
-) -> String {
-    let qname = qualify_type_name(type_name, type_modules);
-    if type_args.is_empty() {
-        qname
-    } else {
-        let arg_strs: Vec<String> = type_args
-            .iter()
-            .map(|a| format_type_qualified(a, type_modules))
-            .collect();
-        format!("({qname} {})", arg_strs.join(" "))
-    }
-}
-
-/// Find a constructor name by tag, or return a fallback string.
-fn find_constructor_by_tag(type_info: &TypeDefInfo, tag: usize) -> String {
-    type_info
-        .constructors
-        .iter()
-        .find(|c| c.tag == tag)
-        .map(|c| format!("{}", c.name))
-        .unwrap_or_else(|| format!("<tag:{tag}>"))
-}
-
-/// Format a heap-allocated ADT value (data constructor with fields).
-///
-/// Reads tag from HeapAdt::TAG_OFFSET (16), fields from HeapAdt::field_offset(i).
-/// Recursively formats field values using their declared types.
-/// Uses `Type.Constructor` dot notation per spec §1.5, suppressing the `Type.`
-/// prefix for single-constructor product types where the constructor name matches
-/// the type name.
-///
-/// For polymorphic ADTs (e.g., `(Option Int)`), substitutes the concrete type_args
-/// into field types before formatting. Without this, fields with type variables
-/// would display as raw values instead of properly formatted values.
-fn format_adt_heap_value(
-    value: i64,
-    type_display: &str,
-    type_name: &TypeName,
-    type_info: &TypeDefInfo,
-    type_args: &[Type],
-    type_defs: &HashMap<TypeName, TypeDefInfo>,
-    type_modules: &HashMap<TypeName, ModuleFullPath>,
-) -> String {
-    // SAFETY: value is a heap pointer to a valid HeapAdt (produced by JIT code).
-    let base = value as *const u8;
-    let tag = unsafe { *(base.add(HeapAdt::TAG_OFFSET as usize) as *const i64) } as usize;
-    let ctor = type_info.constructors.iter().find(|c| c.tag == tag);
-
-    let Some(ctor) = ctor else {
-        return format!(":{type_display} <unknown-tag:{tag}>");
-    };
-
-    if ctor.fields.is_empty() {
-        // Nullary constructor stored on heap (shouldn't happen, but handle gracefully).
-        let ctor_display = format_ctor_display(type_name, &ctor.name, type_info);
-        return format!(":{type_display} {ctor_display}");
-    }
-
-    // Build substitution from type_params to type_args for polymorphic ADTs.
-    let subst = build_adt_subst(type_info, type_args);
-
-    // Read and format each field.
-    let mut field_strs = Vec::new();
-    for (i, field_info) in ctor.fields.iter().enumerate() {
-        let field_offset = HeapAdt::field_offset(i) as usize;
-        let field_val = unsafe { *(base.add(field_offset) as *const i64) };
-        // Substitute type args into field type before formatting.
-        let field_ty = substitute_field_type(&field_info.ty, &subst);
-        let field_str = format_field_value(field_val, &field_ty, type_defs, type_modules);
-        field_strs.push(field_str);
-    }
-
-    let fields_display = field_strs.join(" ");
-    let ctor_display = format_ctor_display(type_name, &ctor.name, type_info);
-    format!(":{type_display} ({ctor_display} {fields_display})")
-}
-
-/// Build a type substitution from a TypeDefInfo's type_params and concrete type_args.
-///
-/// The type_params are Symbol names (e.g., "a", "b") but the field types use
-/// Type::Var(TypeId). We need to map from the Var ids used in field types
-/// to the concrete types in type_args.
-fn build_adt_subst(
-    type_info: &TypeDefInfo,
-    type_args: &[Type],
-) -> HashMap<cranelisp_types::TypeId, Type> {
-    let mut subst = HashMap::new();
-    // Collect all Var ids used in constructor fields, in order.
-    let mut var_ids = Vec::new();
-    for ctor in &type_info.constructors {
-        for field in &ctor.fields {
-            collect_var_ids(&field.ty, &mut var_ids);
-        }
-    }
-    // Map each unique Var id to the corresponding type arg.
-    for (i, &id) in var_ids.iter().enumerate() {
-        if i < type_args.len() {
-            subst.insert(id, type_args[i].clone());
-        }
-    }
-    subst
-}
-
-/// Collect unique Var ids from a type in order of first occurrence.
-fn collect_var_ids(ty: &Type, ids: &mut Vec<cranelisp_types::TypeId>) {
-    match ty {
-        Type::Var(id) => {
-            if !ids.contains(id) {
-                ids.push(*id);
-            }
-        }
-        Type::Fn(params, ret) => {
-            for p in params {
-                collect_var_ids(p, ids);
-            }
-            collect_var_ids(ret, ids);
-        }
-        Type::ADT(_, args) | Type::TyConApp(_, args) => {
-            for a in args {
-                collect_var_ids(a, ids);
-            }
-        }
-        Type::Int | Type::Bool | Type::String | Type::Float => {}
-    }
-}
-
-/// Substitute type variables in a field type using the given substitution.
-fn substitute_field_type(
-    ty: &Type,
-    subst: &HashMap<cranelisp_types::TypeId, Type>,
-) -> Type {
-    cranelisp_types::apply(subst, ty)
-}
-
-/// Format Vec elements by reading the heap layout.
-///
-/// HeapVec layout: `[alloc_size(+0) | rc(+8) | len(+16) | cap(+24) | data_ptr(+32)]`
-/// Elements are stored in the data buffer at `data_ptr`, each 8 bytes (i64).
-fn format_vec_elements(
-    value: i64,
-    elem_type: Option<&Type>,
-    type_defs: &HashMap<TypeName, TypeDefInfo>,
-    type_modules: &HashMap<TypeName, ModuleFullPath>,
-) -> String {
-    if value == 0 || (value as usize) < NULLARY_TAG_THRESHOLD {
-        return "[]".to_string();
-    }
-
-    let base = value as *const u8;
-    // SAFETY: value is a heap pointer to a valid HeapVec (produced by JIT code).
-    let len = unsafe { *(base.add(HeapVec::LEN_OFFSET as usize) as *const i64) } as usize;
-    if len == 0 {
-        return "[]".to_string();
-    }
-
-    let data_ptr = unsafe { *(base.add(HeapVec::DATA_PTR_OFFSET as usize) as *const *const i64) };
-    if data_ptr.is_null() {
-        return "[]".to_string();
-    }
-
-    let mut elems = Vec::with_capacity(len);
-    for i in 0..len {
-        let elem_val = unsafe { *data_ptr.add(i) };
-        let formatted = match elem_type {
-            Some(ty) => format_field_value(elem_val, ty, type_defs, type_modules),
-            None => format!("{elem_val}"),
-        };
-        elems.push(formatted);
-    }
-
-    format!("[{}]", elems.join(" "))
-}
-
-/// Format a single field value based on its type.
-///
-/// Field values use `Type.Constructor` dot notation for ADT constructors (spec §1.5).
-fn format_field_value(
-    value: i64,
-    ty: &Type,
-    type_defs: &HashMap<TypeName, TypeDefInfo>,
-    type_modules: &HashMap<TypeName, ModuleFullPath>,
-) -> String {
-    match ty {
-        Type::Int => format!("{value}"),
-        Type::Bool => {
-            if value != 0 { "true".to_string() } else { "false".to_string() }
-        }
-        Type::Float => {
-            let f = f64::from_bits(value as u64);
-            let s = format!("{f}");
-            if s.contains('.') { s } else { format!("{s}.0") }
-        }
-        Type::String => {
-            if value == 0 || (value as usize) < NULLARY_TAG_THRESHOLD {
-                format!("<invalid-string:{value}>")
-            } else {
-                let s = unsafe { cranelisp_runtime::read_string_as_str(value) };
-                format!("\"{s}\"")
-            }
-        }
-        Type::Fn(_, _) => "<closure>".to_string(),
-        Type::ADT(name, args) => {
-            // Vec is built-in, not in type_defs.
-            if name == "Vec" {
-                return format_vec_elements(value, args.first(), type_defs, type_modules);
-            }
-            // Recursive ADT formatting with dot notation.
-            let type_display = format_adt_type_qualified(name, args, type_modules);
-            if let Some(info) = type_defs.get(name) {
-                if (value as usize) < NULLARY_TAG_THRESHOLD {
-                    let tag = value as usize;
-                    let ctor_name = find_constructor_by_tag(info, tag);
-                    format_ctor_display(name, &ctor_name, info)
-                } else {
-                    // Recursive heap ADT -- format with parens and dot notation.
-                    let inner = format_adt_heap_value(
-                        value, &type_display, name, info, args, type_defs, type_modules,
-                    );
-                    // Strip the leading `:Type ` prefix from the recursive call.
-                    inner.split_once(' ').map_or_else(
-                        || inner.clone(),
-                        |(_, rest)| rest.to_string(),
-                    )
-                }
-            } else {
-                format!("{value}")
-            }
-        }
-        _ => format!("{value}"),
     }
 }
 
@@ -1608,7 +1269,7 @@ fn print_help(stdout: &mut impl Write) {
     let _ = writeln!(stdout, "  /expand (/e) FORM   Macro-expand a form");
     let _ = writeln!(stdout, "  /imports [MODULE]   Show imports and special forms");
     let _ = writeln!(stdout, "  /exports MODULE     Show module's public symbols");
-    let _ = writeln!(stdout, "  /mod [NAME]         Show or switch module namespace");
+    let _ = writeln!(stdout, "  /mod [NAME]         Switch module namespace (default: user)");
 }
 
 /// Format the REPL prompt with timing and module info.
@@ -2504,7 +2165,7 @@ fn format_entry_signature(
                 return format_special_form_display(name, description);
             }
             let base = if !scheme.constraints.is_empty() {
-                format_scheme_display(name, scheme, module, &session.type_modules)
+                display::format_scheme_display(name, scheme, module, &session.type_modules)
             } else {
                 let type_str = format_type_qualified(&scheme.ty, &session.type_modules);
                 format!(":{type_str} {module}/{name}")
@@ -2523,7 +2184,7 @@ fn format_entry_signature(
             let type_str = format_type_qualified(&scheme.ty, &session.type_modules);
             let tn = TypeName::from(type_name.0.as_str());
             let ctor_display = if let Some(info) = session.tc.type_def_registry().get(&tn) {
-                format_ctor_display(&tn, name, info)
+                display::format_ctor_display(&tn, name, info)
             } else {
                 format!("{type_name}.{name}")
             };
@@ -2846,22 +2507,14 @@ fn handle_disasm(session: &ReplSession, name: &str, stdout: &mut impl Write) {
 // /mod command
 // ---------------------------------------------------------------------------
 
-/// Handle `/mod [name]` — show or switch module namespace (spec §8).
+/// Handle `/mod [name]` — switch module namespace (spec §8).
 ///
-/// With no argument, shows the current module name.
-/// With an argument, switches to that module namespace (creating it if needed).
-fn handle_mod(session: &mut ReplSession, name: &str, stdout: &mut impl Write) {
-    if name.is_empty() {
-        // Show current module.
-        let module = session.tc.current_module_path();
-        let _ = writeln!(stdout, "{module}");
-        return;
-    }
-
-    // Switch to the named module. set_current_module creates it if needed.
-    let path = ModuleFullPath::from(name);
+/// With no argument, switches to the `user` module (no output).
+/// With an argument, switches to that module namespace (no output, creating it if needed).
+fn handle_mod(session: &mut ReplSession, name: &str, _stdout: &mut impl Write) {
+    let target = if name.is_empty() { "user" } else { name };
+    let path = ModuleFullPath::from(target);
     session.tc.set_current_module(path);
-    let _ = writeln!(stdout, "; switched to module '{name}'");
 }
 
 // ---------------------------------------------------------------------------
@@ -3170,11 +2823,11 @@ mod tests {
     fn test_format_adt_type_qualified() {
         let tm = HashMap::new();
         assert_eq!(
-            format_adt_type_qualified(&TypeName::from("Color"), &[], &tm),
+            display::format_adt_type_qualified(&TypeName::from("Color"), &[], &tm),
             "Color"
         );
         assert_eq!(
-            format_adt_type_qualified(&TypeName::from("Option"), &[Type::Int], &tm),
+            display::format_adt_type_qualified(&TypeName::from("Option"), &[Type::Int], &tm),
             "(Option primitives/Int)"
         );
         // With type_modules, ADT name gets qualified too.
@@ -3184,7 +2837,7 @@ mod tests {
             ModuleFullPath::from("user"),
         );
         assert_eq!(
-            format_adt_type_qualified(&TypeName::from("Color"), &[], &tm2),
+            display::format_adt_type_qualified(&TypeName::from("Color"), &[], &tm2),
             "user/Color"
         );
     }
@@ -3599,7 +3252,7 @@ mod tests {
             &type_modules,
             &mut buf,
         );
-        assert_eq!(display, ":(IO primitives/Int) 42");
+        assert_eq!(display, ":(IO primitives/Int) (IO.Pure 42)");
         cranelisp_runtime::heap_dealloc(base as i64);
     }
 

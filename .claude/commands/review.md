@@ -47,6 +47,7 @@ Review code written by compiler skills for simplicity, adherence to CLAUDE.md co
 For each review session:
 
 1. **Start with design docs.** Read all design document changes for the sprint (in `design/frontend/`, `design/typecheck/`, `design/backend/`, `design/platform/`). Understand the intended solution before reviewing the code. If a skill made code changes without updating or creating a design doc, flag that as a finding.
+   - **Sketch comparison check**: Every design doc for a subsystem that exists in the sketch MUST include a "Sketch comparison" section. If missing, flag as Important. If present but the comparison is superficial (e.g., "sketch uses a similar approach" without explaining what the sketch actually does), flag as Important. The comparison should demonstrate that the author understood the sketch's approach and made a deliberate choice to follow or diverge.
 2. Read the relevant audit file for the modules being reviewed
 3. Check that **HIGH-severity** audit findings are not reintroduced:
    - Duplicate heap classification logic (`audits/codegen.md`)

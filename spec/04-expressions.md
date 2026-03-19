@@ -1,4 +1,4 @@
-# 4. Expressions [R3 S8]
+# 4. Expressions [R4 S21]
 
 This section defines the evaluation semantics for each expression form in Cranelisp. All expressions evaluate to a value of a statically known type. Cranelisp uses strict (eager) evaluation -- sub-expressions are fully evaluated before their results are used.
 
@@ -283,7 +283,7 @@ All lambda bodies are compiled with a closure calling convention: the closure po
   (fn [x] (+ n x)))        ; closure: [code_ptr, 10]
 ```
 
-## 4.6 Function Application [R3 S8]
+## 4.6 Function Application [Tested tests/ring0.rs::chained_function_calls, tests/ring0.rs::repl_chained_calls, tests/ring0.rs::lambda_passed_to_function, tests/ring1.rs::closure_with_higher_order]
 
 ```clojure
 (callee arg1 arg2 ... argN)
@@ -327,7 +327,7 @@ When the callee is an arbitrary expression (variable, lambda, function applicati
 (apply-fn inc 5)                ; f is a closure; indirect call
 ```
 
-### 4.6.3 Auto-Currying [R3 S8]
+### 4.6.3 Auto-Currying [R4 S21 — tests/io.rs::auto_curry_two_param_partial_apply IGNORED]
 
 When a function is called with fewer arguments than it declares parameters, the result is a **closure** capturing the applied arguments. This applies to both named functions and closures.
 
@@ -364,7 +364,7 @@ Auto-currying works at any depth -- supplying k of n arguments returns a functio
 
 **Restriction**: A multi-signature function name MUST NOT be used as a bare value (without any arguments). This is a compile-time error because the reference is ambiguous -- the compiler cannot determine which variant to reference. Use auto-curry with at least one argument, or wrap in a lambda.
 
-## 4.7 Multi-Signature Dispatch [R3 S8]
+## 4.7 Multi-Signature Dispatch [Tested tests/ring2.rs::neg_multi_sig_bare_value_errors]
 
 ```clojure
 (defn name
@@ -640,6 +640,7 @@ Cranelisp uses **strict (eager) evaluation** throughout. All sub-expressions are
 | `(match scrut [p1 b1 ...])` | `scrut`, then first matching `b_i` only |
 | `:T expr` | `expr` only (annotation is compile-time) |
 | `[e1 e2 ... eN]` | `e1`, `e2`, ..., `eN` (left-to-right) |
+| `(trace expr)` | `expr` fully evaluated with instrumentation; result is `Trace` ADT |
 
 **Key properties**:
 
@@ -648,4 +649,163 @@ Cranelisp uses **strict (eager) evaluation** throughout. All sub-expressions are
 - Only the body of the first matching `match` arm is evaluated.
 - Lambda bodies are NOT evaluated at creation time -- only when the closure is called.
 - The `Seq` type provides explicit opt-in laziness via thunks (zero-argument closures). This is a library-level construct, not a change to the evaluation model. See [section 12.4.2](12-runtime.md#1242-lazy-sequences).
+
+## 4.12 Trace Expression [R4 S20]
+
+```clojure
+(trace expr)
+```
+
+A `trace` expression evaluates `expr` while instrumenting function calls, and returns a `Trace` value that records the call tree. The result is a **pure data value** -- not a side effect. The `Trace` ADT is a compiler-seeded type defined in the `primitives` module (see [Section 3.2.4](03-types.md#324-trace-type) and [Appendix A.2](appendix-a-builtins.md#a2-built-in-compound-types)).
+
+### 4.12.1 Type [R4 S20 — tests/ring4_trace::trace_returns_trace_type_int_body IGNORED]
+
+`trace` is a special form. For any expression `expr` of type `T`, `(trace expr)` has type `Trace`:
+
+```
+E |- expr : T
+----------------------------
+E |- (trace expr) : Trace
+```
+
+The type of the traced expression is not preserved in the static type -- the `Trace` ADT captures runtime information as formatted strings. The original expression's value is discarded; only the call tree is returned.
+
+### 4.12.2 Semantics [R4 S20 — tests/ring4_trace::trace_basic_fact IGNORED]
+
+Evaluation proceeds as follows:
+
+1. The implementation activates instrumentation for function calls reachable from `expr`.
+2. `expr` is evaluated in the current environment using normal strict evaluation.
+3. Every call to an instrumented function during the evaluation of `expr` is recorded: the function name, the arguments formatted using the canonical value display format ([§12.9](12-runtime.md#129-value-display-format)), the return value formatted using the same format, the child calls made within that function, and the wall-clock elapsed time in nanoseconds.
+4. On completion, a `Trace` value is constructed from the recorded call tree and returned.
+
+```
+E |- expr => v (with instrumentation active, recording call tree C)
+-----------------------------------------------------------------------
+E |- (trace expr) => TraceCall(root_name, root_params, root_result,
+                               children, elapsed_nanos) : Trace
+```
+
+The expression `expr` is evaluated exactly once. Its value `v` is used only to produce the root trace node's formatted result string -- the value itself is not accessible from the returned `Trace`.
+
+### 4.12.3 What Is Traced [R4 S20 — tests/ring4_trace::trace_user_defined_function IGNORED]
+
+Instrumentation applies to **user-defined named functions** that are compiled with an entry in the implementation's function indirection table. This includes:
+
+- Top-level functions defined with `defn` (including multi-signature variants and monomorphised specializations)
+- Functions imported from other modules
+- Functions defined in the standard library (if loaded)
+
+The following are NOT instrumented:
+
+- **Inline primitives**: Arithmetic, comparison, and boolean operations that compile to inline instructions have no callable entry point and cannot be intercepted.
+- **Extern primitives**: Host-implemented functions called via the foreign function interface are not routed through the indirection table.
+- **Compiler-seeded synthetic module functions**: Functions in the `primitives` and `macros` modules are not instrumented.
+- **Anonymous lambdas**: Closures created by `fn` expressions do not have named entries in the indirection table and are not individually traced. Their effects appear as part of the enclosing traced function's execution.
+
+### 4.12.4 The Trace ADT [R4 S20 — tests/ring4_trace::trace_field_name_returns_string IGNORED]
+
+`Trace` is a compiler-seeded algebraic data type in the `primitives` module with a single constructor:
+
+```clojure
+(deftype Trace
+  (TraceCall [:String          name
+              :(SList String)  params
+              :String          result
+              :(SList Trace)   children
+              :Int             nanos]))
+```
+
+The fields are:
+
+| Field | Type | Description |
+|---|---|---|
+| `name` | `String` | Fully qualified name of the traced function |
+| `params` | `(SList String)` | Arguments formatted using the canonical value display format ([§12.9](12-runtime.md#129-value-display-format)), one String per argument |
+| `result` | `String` | Return value formatted using the canonical value display format ([§12.9](12-runtime.md#129-value-display-format)) |
+| `children` | `(SList Trace)` | Child `Trace` values representing calls made within this function, in call order. Uses the `SList` type from the `macros` module (`SCons`/`SNil`). |
+| `nanos` | `Int` | Wall-clock elapsed time for this function call, in nanoseconds |
+
+The `children` field is a standard `SList` (from the `macros` module). User code traverses it with pattern matching on `SCons`/`SNil`, just like any other `SList` value. The `params` field is likewise an `SList` of formatted argument strings.
+
+`Trace`, `TraceCall`, `trace`, and the field accessors are defined in the `primitives` module but NOT auto-imported. See [Section 3.2.4](03-types.md#324-trace-type) for import requirements.
+
+### 4.12.5 Nested Trace [R4 S20 — tests/ring4_trace::trace_nested_single_trace IGNORED]
+
+When `trace` expressions are nested, only the outermost trace is active:
+
+```clojure
+(trace (trace expr))
+```
+
+The inner `(trace expr)` evaluates `expr` without additional instrumentation -- it does not produce a separate trace tree. The outermost `trace` captures all calls made during the evaluation of the entire expression, including those within the inner `trace`. The result is a single `Trace` value from the outer trace.
+
+An implementation MUST NOT produce nested or duplicated trace trees from nested `trace` expressions.
+
+### 4.12.6 Concurrency [R4 S20]
+
+Only one trace MAY be active at a time within a program. If multiple threads attempt to trace concurrently, at most one succeeds in activating instrumentation. The others evaluate their expressions normally and return a `Trace` value with no recorded children (an empty trace).
+
+### 4.12.7 Composability [R4 S20 — tests/ring4_trace::trace_composability_let_binding IGNORED]
+
+The `Trace` value returned by `(trace expr)` is an ordinary ADT value. It can be bound with `let`, passed to functions, stored in data structures, and pattern-matched:
+
+```clojure
+(import [primitives [trace Trace TraceCall name]])
+
+(let [t (trace (fact 5))]
+  (name t))
+; => "user/fact"
+
+;; Or via pattern matching:
+(let [t (trace (fact 5))]
+  (match t
+    [(TraceCall n p r c ns) n]))
+; => "user/fact"
+```
+
+### 4.12.8 Examples [R4 S20 — tests/ring4_trace::trace_composed_expression IGNORED]
+
+**Basic tracing**:
+
+```clojure
+(import [primitives [trace Trace TraceCall name params result]])
+
+(defn fact [n]
+  (if (= n 0) 1 (* n (fact (- n 1)))))
+
+(trace (fact 5))
+; => TraceCall with name="user/fact", params="5", result="120",
+;    children containing recursive calls, nanos=<elapsed>
+```
+
+**Tracing a composed expression**:
+
+```clojure
+(defn double [x] (* x 2))
+(defn inc-then-double [x] (double (+ x 1)))
+
+(trace (inc-then-double 3))
+; => TraceCall for inc-then-double with child TraceCall for double
+```
+
+**Using stdlib display functions**:
+
+```clojure
+(import [core [trace [*]]])  ; gets trace, Trace, AND display functions
+
+(defn fib [n]
+  (if (< n 2) n (+ (fib (- n 1)) (fib (- n 2)))))
+
+(trace-show-tree (trace (fib 4)))
+; => formatted indented call tree as a String
+```
+
+**Trace is a value, not an effect**:
+
+```clojure
+(let [t (trace (fact 3))]
+  t)
+; => the Trace value -- no side effects occurred
+```
 

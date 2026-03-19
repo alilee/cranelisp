@@ -32,7 +32,7 @@ Design docs in `design/frontend/` are owned deliverables, not post-hoc documenta
 
 1. Read `design/arch/interfaces.md` — understand `Sexp` and `TopLevel` definitions
 2. Read `spec/01-lexical.md` and `spec/02-grammar.md` — this is your primary spec
-3. Read `sketch/src/sexp.rs` as reference for the PEG parser structure (58 KB)
+3. Read `sketch/src/sexp.rs` — study the approach, understand *why* design choices were made (58 KB). When your design diverges, document the divergence and rationale in a "Sketch comparison" section of the design doc.
 4. Create `src/reader/` directory and write `src/reader/CLAUDE.md`:
    - Document the `Sexp` representation
    - Note the PEG parser crate used and key grammar rules

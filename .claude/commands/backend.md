@@ -31,11 +31,23 @@ Design docs in `design/backend/` are owned deliverables, not post-hoc documentat
 - Two-tier strategy: Cranelift JIT for REPL/development (Tier 1), LLVM/C-emission for release (Tier 2, Phase H)
 - Wait for `/arch` to define interface types before implementing
 
+## Sketch Consultation
+
+Before designing or implementing any codegen subsystem, you MUST study the sketch's approach in `sketch/src/codegen.rs`, `sketch/src/codegen/`, and `sketch/docs/`. Understand *why* the sketch works the way it does — not just *what* it does. Key areas where the sketch embodies hard-won design knowledge:
+
+- **RC semantics**: `borrowed_vars`, `consumed_vars`, `unique_vars` — ownership tracking that prevents double-free in pattern matching. See `sketch/src/codegen.rs` lines 176-260.
+- **Scope cleanup**: `pop_scope_for_value` — how it skips dec for borrowed and consumed vars, and auto-upgrades borrowed values returned from a scope.
+- **Drop glue**: Closure drop glue (embedded pointer) vs ADT field cleanup (via RC dec chain at dealloc time, not inline during scope cleanup).
+- **GOT management**: Per-module GOT, swap patterns for trace/run-tests.
+- **Calling conventions**: When to inc (non-last-use), when to transfer (last-use), when to borrow (extern calls).
+
+When your design diverges from the sketch, document the divergence and rationale in the design doc's "Sketch comparison" section. Divergence is expected (the sketch has known debts) — uninformed divergence is not.
+
 ## First Steps (Phase B/C)
 
 1. Read `design/arch/interfaces.md` — understand `CheckResult` and `ModuleSymbolTable`
 2. Read `spec/12-runtime.md` — RC layout and calling conventions
-3. Read `sketch/src/codegen.rs` and `sketch/src/jit.rs` as reference
+3. Read `sketch/src/codegen.rs` and `sketch/src/jit.rs` — study the approach, not just the API
 4. Create `src/codegen/` and write `src/codegen/CLAUDE.md`:
    - Document ISA construction pattern (one ISA, one JIT builder — no duplication)
    - Document the RC header layout and consuming/borrowed calling conventions

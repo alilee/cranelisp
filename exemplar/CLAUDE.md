@@ -2,17 +2,32 @@
 
 Exemplar project for Cranelisp: a Sudoku Solver with Web Platform. Owned by `/port` skill.
 
-## Current State (Sprint 14)
+## Current State (Sprint 19+)
 
-Four pure-core modules implemented:
+Four pure-core modules implemented, solver.cl has IO output:
 
 | File | Purpose | Status |
 |------|---------|--------|
 | `grid.cl` | Grid/Cell types, bitmask ops, index helpers, peers, make-grid, is-solved | Complete |
-| `solver.cl` | eliminate, propagate, find-min-candidates, solve (backtracking) | Complete |
+| `solver.cl` | eliminate, propagate, solve, board formatting, IO main | Complete (IO added) |
 | `html.cl` | HTML generation (form page, solution page, error page) | Complete (10 tests) |
 | `form.cl` | URL-encoded form body parsing | Complete (8 tests) |
 | `main.cl` | Request routing, IO models | Not started (Ring 4) |
+
+## IO Output
+
+`solver.cl` now has a `main` function that uses IO to print a formatted Sudoku board. Run with:
+
+```bash
+CRANELISP_PLATFORM_PATH=target/debug CRANELISP_LIB=stdlib cargo run -- --run exemplar/solver.cl
+```
+
+The puzzle input board displays correctly. The solve step currently segfaults due to deep recursion in constraint propagation (stack overflow on 81-cell grids). This is a pre-existing runtime issue, not an IO issue. The IO plumbing (`platform stdio`, `print`, `bind`, `Pure`) is verified working.
+
+## Known Issues
+
+- **Solver segfault**: `propagate`/`solve` crash on full 81-cell puzzles (likely stack overflow from deep recursive Grid/Vec copying). The elimination unit tests (which use small hand-built grids) work. Full-grid tests crash.
+- **Platform path**: The `CRANELISP_PLATFORM_PATH` env var is needed because `exemplar/` is not the project root where the stdio DLL lives. Without it, `(platform stdio)` fails with "platform not found".
 
 ## Design Decisions
 

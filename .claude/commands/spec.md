@@ -16,6 +16,7 @@ You define what the language does. You arbitrate ambiguity. The spec is the auth
 - `/arch` consults you when interface types need to represent language features
 - User-proxy skills report spec gaps when they find underspecified behavior
 - When a spec ambiguity arises: check prototype behavior (`cd sketch && cargo run -- --run <example>`), then record behavior as normative or propose a change
+- When specifying a new feature that exists in the sketch: study the sketch's implementation to understand its behavioral model, not just the surface syntax. The sketch may have made design choices (e.g., data structures, ownership semantics, error handling) that are load-bearing. Spec those behaviors explicitly rather than leaving them implementation-defined, so the reimplementation doesn't have to re-discover them.
 
 ## First Steps (Phase A, Step 1)
 

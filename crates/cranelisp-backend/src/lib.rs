@@ -8,6 +8,7 @@
 
 pub mod codegen_types;
 pub mod compiler;
+pub mod display;
 pub mod got;
 pub mod heap;
 pub mod jit;

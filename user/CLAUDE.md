@@ -36,4 +36,6 @@ The spec (`spec/`) is precise and normative — written for implementors. User d
 
 **Sprint 6 (Ring 4)**: Complete. Getting-started guide extended with IO section covering: the IO model (why IO is a type), `print`, `pure`, `do`, `bind!`, `read-line`, platform declarations (`(platform stdio)`), batch programs with IO, "Try it yourself" exercises, IO summary table. "What is Next" updated to reflect IO coverage.
 
+**Sprint 20 (D7 IO validation)**: IO guide validated against working batch mode. Fixed: IO REPL display format updated from `:(IO Int) 0` to `:(IO primitives/Int) (IO.Pure 0)` throughout (matches spec §12.9.1 and actual compiler output). Added `CRANELISP_LIB` environment variable documentation for projects outside the stdlib directory. Fixed batch mode run commands from `cargo run -- file.cl` to `cargo run -- --run file.cl`.
+
 **Feedback loop**: Report to compiler skills when error messages are confusing, when REPL output is unhelpful, or when a concept has no good introduction path. File findings as `FIXME(/skill-name)` comments on the relevant spec or design doc.

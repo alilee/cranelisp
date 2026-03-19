@@ -106,7 +106,7 @@ An expression evaluation MUST display the result in the format:
 :QualifiedType value
 ```
 
-Values are runtime results — they have no module scope. The type is always fully qualified.
+The type prefix is always fully qualified. The value portion uses the **canonical value display format** defined in [spec §12.9](../spec/12-runtime.md#129-value-display-format). This includes elision rules for large values — the REPL MUST apply the same elision thresholds as all other contexts that use the canonical format.
 
 Examples:
 
@@ -122,9 +122,9 @@ Examples:
 **Ring 0**: `primitives/Int`, `primitives/Bool`, `primitives/Float`, nullary ADT constructors, non-capturing function values.
 **Ring 1**: `primitives/String`, data ADT constructors, closures, `Vec`, `List`.
 
+**Ring 4**: `IO` (trampoline executes the effect chain; result displayed as `:(IO InnerType) (IO.Pure inner_value)`, e.g. `:(IO primitives/Int) (IO.Pure 42)`). IO is an ADT and MUST follow the same `Type.Constructor` display format as all other ADTs per [spec §12.9](../spec/12-runtime.md#129-value-display-format).
 
-**Ring 4**: `IO` (trampoline executes the effect chain; result displayed as `:(IO InnerType) (IO.Pure inner_value)`, e.g. `:(IO primitives/Int) (IO.Pure 42)`). IO is an ADT and MUST follow the same `Type.Constructor` display format as all other ADTs. The trampoline executes side effects (print, read) and the final result is always a `Pure` node — the display shows this explicitly so the user can distinguish IO results from plain values.
-<!-- FIXME(/int): IO display currently strips the Pure constructor, showing `:(IO Int) 42` instead of `:(IO Int) (IO.Pure 42)`. This is inconsistent with other ADTs (Option shows `(Option.Some 42)`, not `42`). Fix format_adt_value or the IO-specific display path to include the constructor. -->
+**Ring 4**: `Trace` — displayed using the standard ADT format per [spec §12.9](../spec/12-runtime.md#129-value-display-format). The REPL does NOT auto-format trace trees — the raw ADT value is shown. Users who want a human-readable indented call tree SHOULD import `core.trace` and call `trace-show-tree`. [R4 S20]
 
 ### 1.3 Definition Results [Tested]
 
@@ -768,7 +768,6 @@ user> /mod math
 math>
 ```
 The prompt changes to reflect the active module. Definitions entered now belong to `math`. The `/mod` command MUST NOT print a confirmation message — the prompt change is sufficient feedback.
-<!-- FIXME(/int): `/mod name` currently prints `; switched to module 'name'` — remove this. The prompt change is the only feedback per spec. Also, bare `/mod` should switch to `user` (not display current module name). See Scenario 6. -->
 
 **Scenario 2: `/mod user` switches back**
 ```

@@ -307,13 +307,9 @@ pub fn repl_eval_display(session: &mut ReplSession, src: &str) -> String {
         display
     } else if result.ty.is_io() {
         // IO expression: force the IO tree via trampoline, then format the inner
-        // value. This mirrors the REPL's force_io_and_format behavior.
+        // value wrapped in (IO.Pure ...). This mirrors the REPL's force_io_and_format behavior.
         let inner_val = cranelisp_runtime::run_io_trampoline(result.value);
         let inner_ty = result.ty.io_inner_type();
-        // Format the inner value, then extract just the value portion by stripping
-        // the `:Type ` prefix. We parse the prefix robustly: if the type is
-        // parenthesized (starts with `:(`) we find the matching `)`, otherwise
-        // we find the first space after `:`.
         let inner_display = format_result_value(
             inner_val,
             &inner_ty,
@@ -321,13 +317,8 @@ pub fn repl_eval_display(session: &mut ReplSession, src: &str) -> String {
             session.type_modules(),
         );
         let value_part = extract_value_from_display(&inner_display);
-        // Build the IO type annotation from the Type directly, avoiding string surgery.
-        // result.ty is the full IO type, e.g. ADT("IO", [Int]).
-        // inner_ty is the unwrapped inner type.
-        // We use the inner type's qualified display (extracted from format_result_value)
-        // to build the IO wrapper type string.
         let inner_type_str = extract_type_from_display(&inner_display);
-        format!(":(IO {inner_type_str}) {value_part}")
+        format!(":(IO {inner_type_str}) (IO.Pure {value_part})")
     } else {
         format_result_value(result.value, &result.ty, session.type_defs(), session.type_modules())
     }

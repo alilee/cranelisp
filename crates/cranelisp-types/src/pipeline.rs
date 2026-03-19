@@ -65,8 +65,12 @@ pub struct CompileResult {
 }
 
 // --- Backend types that live in cranelisp-backend, documented here for reference ---
-// ModuleCodegenState, DefCodegen, CacheMetadata, GOT_TABLE_SIZE, NULLARY_TAG_THRESHOLD
+// ModuleCodegenState, DefCodegen, CacheMetadata, NULLARY_TAG_THRESHOLD
 // are NOT defined here — they live in cranelisp-backend because they contain runtime state.
+
+/// Named constant for GOT table size. Shared between backend and runtime crates
+/// so that GOT memcpy operations use the same size. Single source of truth.
+pub const GOT_TABLE_SIZE: usize = 1024;
 
 /// Named constant for nullary constructor tag threshold.
 /// Values below this are nullary tags; values above are heap pointers.

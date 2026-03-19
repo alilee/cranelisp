@@ -1,0 +1,46 @@
+; Cranelisp Ring 4E — Trace, IO Display, Module Switching
+
+; Corrected IO display — constructor is now visible
+
+(Pure 42)
+(Pure "hello")
+
+; Import trace primitives and SList for tree traversal
+
+(import [primitives [trace Trace TraceCall name params result children nanos]])
+(import [macros [SCons SNil]])
+
+; Define a recursive function to trace
+
+(defn factorial [n] (if (= n 0) 1 (* n (factorial (- n 1)))))
+(factorial 5)
+
+; trace wraps evaluation and returns a Trace value
+
+(let [t (trace (factorial 4))] t)
+
+; Access trace fields via let binding
+
+(let [t (trace (factorial 3))] (name t))
+
+; Access the first child — the top-level call to factorial
+
+(let [t (trace (factorial 3))] (match (children t) [(SCons first _) (name first) SNil "no calls"]))
+
+; Walk the tree — define helpers for display
+
+(defn show-node [t indent] (match t [(TraceCall n _ r _ _) (str-concat indent (str-concat n (str-concat " => " r)))]))
+
+(defn show-tree [ch indent] (match ch [(SCons h tl) (str-concat (show-node h indent) (str-concat "\n" (str-concat (show-tree (children h) (str-concat indent "  ")) (show-tree tl indent)))) SNil ""]))
+
+; Show the trace tree — the satisfying payoff
+
+(let [t (trace (factorial 4))] (match t [(TraceCall _ _ _ ch _) (show-tree ch "")]))
+
+; /mod — bare goes to user, /mod name switches silently
+
+/mod
+/mod math
+(defn square [x] (mul-i64 x x))
+(square 7)
+/mod user

@@ -39,3 +39,16 @@ Delivery progress for the Cranelisp reimplementation. For technical scope per ri
 | 17 | Ring 4B IO Sequencing — export mechanism, prelude remediation, do/bind! macros, lambda RC fix, showcase infrastructure: 1188 tests, 8 ignored, 0 failures | COMPLETE | `sprints/archive/sprint-17.md` |
 | 18 | Ring 4C REPL Hardening — prelude ADT display, type annotations, lambda+defn RC leak fix, runtime error spec §12.7, slash command tests, IO docs: 1269 tests, 21 ignored, 0 failures | COMPLETE | `sprints/archive/sprint-18.md` |
 | 19 | Ring 4D Developer Tools & Exemplar — 6 slash commands (/source /sexp /ast /clif /disasm /mod), REPL panic boundary (thread-local error flag), spec §8.11 lib dir clarification, exemplar batch mode fix, 2 demos, sprint showcase process: 1218 tests, 8 ignored, 0 failures | COMPLETE | `sprints/archive/sprint-19.md` |
+| 20 | Ring 4E Trace & Debt Clearance — trace special form (spec §4.12, codegen, runtime, stdlib), display format extraction (§12.9), borrowed-var RC fix, IO display fix, /mod conformance, exemplar IO, docs validation, Ring 3 traceability, Principle 10 (module-scoped special forms), sketch consultation: 1241 tests, 8 ignored, 0 failures | COMPLETE | `sprints/archive/sprint-20.md` |
+
+## Forward Plan (Ring 4 Completion)
+
+Remaining Ring 4 features mapped to sprints. Scope is indicative — each sprint's exact scope is confirmed during its Phase 1.
+
+| Sprint | Theme | Key Features | Skills | Dependencies |
+|--------|-------|-------------|--------|--------------|
+| **20** | Trace & Debt | `(trace expr)` special form, trace display stdlib, FIXME clearance (IO display, /mod, glob imports), exemplar IO (D6), docs validation (D7), Ring 3 traceability (~80 annotations), code review S16-19 | /backend, /int, /stdlib, /qa, /spec, /port, /docs, /review | — |
+| **21** | Testing Infrastructure | `(run-tests init pass-fn fail-fn)` special form, `lib/testing.cl` helpers, auto-currying, exemplar test suite | /backend, /int, /stdlib, /qa, /port | Trace (S20) |
+| **22** | Module Caching | CompiledModule serialization, hash-based cache keys, incremental rebuild, cache invalidation | /backend, /qa | — |
+| **23** | Executable & Hot-reload | Standalone executable generation (`--compile`), REPL file watching, `/reload` command | /backend, /int, /qa | Caching (S22) |
+| **24** | Lenient Eval & Auto IO Scheduling | Lenient evaluation (§12.4.3 — dependency analysis, cost model, thread pool), automatic IO scheduling (§10.12 — Par node, trampoline redesign, resource tokens) | /typecheck, /backend, /int, /qa, /platform | IO model (done), caching (S22) |

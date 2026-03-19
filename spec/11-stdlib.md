@@ -4,7 +4,7 @@
 
 The Cranelisp language does not mandate a specific standard library. Any conforming implementation MAY provide a different set of library modules, provided it satisfies the language-level guarantees defined in Sections 1–10 and 12. This section describes those guarantees from the perspective of a standard library author.
 
-## 11.1 Language Guarantees to Library Authors [R3 S9]
+## 11.1 Language Guarantees to Library Authors [Tested tests/stdlib.rs::prelude_loads_without_errors]
 
 The language guarantees the following regardless of which standard library (if any) is provided:
 
@@ -14,9 +14,9 @@ The language guarantees the following regardless of which standard library (if a
 
 - **Implicit prelude injection**: When a module named `prelude` is found on the search path, the compiler injects `(import [prelude [*]])` for all user modules (normatively defined in [Section 8.8](08-modules.md#88-prelude)). An empty prelude is valid — the language does not require the prelude to contain anything.
 
-- **Special forms**: The special forms (`defn`, `deftype`, `deftrait`, `impl`, `defmacro`, `let`, `if`, `fn`, `match`, `mod`, `import`, `export`, `platform`) are always available without import. They live in the root module and are not affected by library contents.
+- **Special forms**: The structural special forms (`defn`, `deftype`, `deftrait`, `impl`, `defmacro`, `let`, `if`, `fn`, `match`, `mod`, `import`, `export`, `platform`) are always available without import — they are parser keywords with distinct syntax. Module-scoped special forms (`trace`) require import from their defining module (see [Section 3.2.4](03-types.md#324-trace-type)).
 
-## 11.2 Compiler-Seeded Types [R3 S9]
+## 11.2 Compiler-Seeded Types [Tested tests/ring4_trace.rs::trace_type_importable_from_primitives, tests/ring4_trace.rs::trace_field_accessors_importable, tests/io.rs::io_pure_int_type]
 
 The following types are seeded by the compiler into synthetic modules. A standard library author does not need to define them — they are always present. They are language-level requirements normatively specified in [Section 3](03-types.md), [Section 8.9](08-modules.md#89-synthetic-modules), and [Section 9.1](09-macros.md#91-sexp-data-model):
 
@@ -25,12 +25,13 @@ The following types are seeded by the compiler into synthetic modules. A standar
 | `primitives` | `Int`, `Bool`, `String`, `Float` | Primitive scalar types |
 | `primitives` | `(Vec a)` | Built-in resizable array |
 | `primitives` | `(IO a)` | Effectful computation (3-constructor ADT: `Pure`, `Effect`, `Bind`) |
+| `primitives` | `Trace` | Execution trace tree (1-constructor ADT: `TraceCall`). NOT auto-imported. |
 | `macros` | `Sexp` | S-expression ADT for macro system |
 | `macros` | `(SList a)` | Cons-list for S-expression manipulation |
 
 Names in these modules are available via qualified reference (`primitives/add-i64`, `macros/SexpSym`) or by importing them (`(import [primitives [*]])`).
 
-## 11.3 Bootstrapping Order [R3 S9]
+## 11.3 Bootstrapping Order [Tested tests/stdlib.rs::prelude_loads_without_errors, tests/macros.rs::macro_uses_another_batch]
 
 A standard library that provides macros must be compiled with care because macro definitions and the types they operate on form a circular dependency. The two-pass bootstrapping order resolves this:
 
@@ -47,7 +48,7 @@ This ordering means a `defmacro` form can reference:
 
 Forward references to macros are not supported — a macro must appear before the code that uses it.
 
-## 11.4 Writing a Standard Library [R3 S9]
+## 11.4 Writing a Standard Library [Tested tests/stdlib.rs::prelude_loads_without_errors]
 
 Practical notes for library authors:
 
@@ -60,3 +61,19 @@ Practical notes for library authors:
 **The `~@` operator**: The unquote-splicing operator (`~@expr`) requires `sconcat` to be resolvable as `core.syntax/sconcat`. A standard library that uses `~@` in macro bodies must provide this qualified path, or the generated expansion code will fail to compile. The reference implementation satisfies this by providing `core.syntax` with a public `sconcat` function.
 
 **Prelude design**: The prelude module is the mechanism by which library names become globally available. A standard library SHOULD provide a `prelude.cl` that re-exports the names it considers universally useful. The prelude itself must not import the prelude (it is excluded from implicit prelude injection).
+
+## 11.5 Trace Support [R4 S20]
+
+The `Trace` ADT, `TraceCall` constructor, `trace` special form, and field accessor functions (`name`, `params`, `result`, `children`, `nanos`) are compiler-seeded in the `primitives` module but NOT auto-imported (see [Section 3.2.4](03-types.md#324-trace-type)). A standard library SHOULD re-export these and provide additional display functions through a `core.trace` module:
+
+```clojure
+;; stdlib/core/trace.cl
+(export [primitives [trace Trace TraceCall name params result children nanos]])
+
+;; Display functions defined here:
+;; trace-show-tree :: Trace -> String  — full indented call tree
+;; trace-show :: Trace -> String       — single-node summary: "(name p1 ...) => result [Xms]"
+;; trace-call-string :: Trace -> String — call signature: "(name p1 p2 ...)"
+```
+
+Users import the combined package: `(import [core [trace [*]]])` brings in the re-exported primitives and the display functions together. These are not part of the prelude because tracing is a developer tool, not a general-purpose facility.

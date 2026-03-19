@@ -317,6 +317,9 @@ impl<'a> FnCompiler<'a> {
     /// Dec temporary (non-variable) heap-typed arguments after a
     /// borrowing call (builtin/extern). Variable arguments are owned
     /// by their scope and will be dec'd by `pop_scope_with_cleanup`.
+    ///
+    /// ADT field cleanup is done inside the dealloc path (RC=0) via
+    /// `emit_rc_dec_with_inline_drop_glue`, not unconditionally.
     fn dec_temporary_args(&mut self, args: &[Expr], arg_vals: &[Value]) {
         let dealloc_id = match self.ctx.dealloc_func_id {
             Some(id) => id,
@@ -329,32 +332,21 @@ impl<'a> FnCompiler<'a> {
                 continue;
             }
             // Check if the expression produces a heap-typed value.
-            if let Some(ty) = self.ctx.expr_types.get(&arg.span()) {
-                let category = HeapCategory::classify(ty, Some(self.ctx.type_defs));
+            if let Some(ty) = self.ctx.expr_types.get(&arg.span()).cloned() {
+                let category = HeapCategory::classify(&ty, Some(self.ctx.type_defs));
                 match category {
                     HeapCategory::AlwaysHeap => {
                         if matches!(ty, cranelisp_types::Type::Fn(_, _)) {
                             self.emit_closure_dec_inline(val, dealloc_id);
                         } else {
-                            self.emit_inline_drop_glue(val, ty, dealloc_id, false);
-                            heap::emit_rc_dec(
-                                &mut self.builder,
-                                self.module,
-                                val,
-                                dealloc_id,
-                                None,
+                            self.emit_rc_dec_with_inline_drop_glue(
+                                val, &ty, dealloc_id, false,
                             );
                         }
                     }
                     HeapCategory::Mixed => {
-                        self.emit_inline_drop_glue(val, ty, dealloc_id, true);
-                        heap::emit_rc_dec_guarded(
-                            &mut self.builder,
-                            self.module,
-                            val,
-                            dealloc_id,
-                            None,
-                            true,
+                        self.emit_rc_dec_with_inline_drop_glue(
+                            val, &ty, dealloc_id, true,
                         );
                     }
                     HeapCategory::NeverHeap => {}
@@ -672,6 +664,9 @@ impl<'a> FnCompiler<'a> {
 }
 
 /// Check if a builtin name is an extern primitive (requires a call, not inline IR).
+///
+/// Extern primitives use borrowing convention: arguments are not consumed.
+/// The caller dec's temporaries after the call via `dec_temporary_args`.
 fn is_extern_primitive(name: &str) -> bool {
     matches!(
         name,
@@ -696,6 +691,13 @@ fn is_extern_primitive(name: &str) -> bool {
             | "contains?"
             | "to-upper"
             | "to-lower"
+            // Trace ADT field accessors: borrowing convention (just read a field).
+            | "cranelisp_trace_name"
+            | "cranelisp_trace_params"
+            | "cranelisp_trace_result"
+            | "cranelisp_trace_children"
+            | "cranelisp_trace_nanos"
+            | "cranelisp_trace_first_child_nanos"
     )
 }
 

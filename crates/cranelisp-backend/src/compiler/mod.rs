@@ -9,6 +9,7 @@ pub mod apply;
 pub mod control_flow;
 pub mod literals;
 pub mod match_codegen;
+pub mod trace_codegen;
 pub mod vec_codegen;
 
 use std::collections::HashMap;
@@ -44,6 +45,29 @@ pub(crate) fn bare_ctor_name(name: &Symbol) -> &str {
 
 /// Cross-module GOT mapping: `(defining_module, function_name)` -> `(got_base_ptr, slot_index)`.
 pub type CrossModuleGot = HashMap<(ModuleFullPath, Symbol), (i64, usize)>;
+
+/// Information about a single function to be traced by `(trace ...)`.
+///
+/// Populated by the integration layer (src/) from the module symbol tables,
+/// then passed into `CompileContext` so the trace codegen can compile wrappers.
+#[derive(Debug, Clone)]
+pub struct TracedFnInfo {
+    /// Fully-qualified function name (e.g., "user/fact").
+    pub name: String,
+    /// GOT base pointer for the module containing this function.
+    pub got_base: i64,
+    /// GOT slot index for this function.
+    pub got_slot: usize,
+    /// Number of parameters.
+    pub arity: usize,
+    /// Code pointer for the ORIGINAL implementation (not the wrapper).
+    /// Embedded as `iconst` in the wrapper so it calls the original, not itself.
+    pub code_ptr: i64,
+    /// Static parameter types (from function's type scheme).
+    pub param_types: Vec<Type>,
+    /// Static return type (from function's type scheme).
+    pub result_type: Type,
+}
 
 /// Shared immutable context for compilation, bundling references that
 /// are threaded through from `compile_body` to all expression compilers.
@@ -83,6 +107,12 @@ pub struct CompileContext<'a> {
     ///
     /// In Batch/Release mode this is None; cross-module calls use Cranelift linking.
     pub cross_module_got: Option<&'a CrossModuleGot>,
+
+    // --- Ring 4 trace context ---
+    /// Functions to instrument when compiling `(trace ...)` expressions.
+    /// Populated by the integration layer from module symbol tables.
+    /// None means trace codegen falls back to "no-swap" path (empty trace).
+    pub traced_fns: Option<&'a [TracedFnInfo]>,
 
     // --- Ring 1 intrinsic FuncIds ---
     /// FuncId for runtime/alloc. None in Ring 0 (no heap).
@@ -170,6 +200,10 @@ pub struct FnCompiler<'a> {
     pub(crate) last_uses: HashMap<(Symbol, Span), bool>,
     /// Set of variables whose ownership has been transferred (consumed).
     pub(crate) consumed_vars: std::collections::HashSet<Symbol>,
+    /// Variables that borrow from a parent (e.g., pattern match field bindings).
+    /// Borrowed vars skip both inc (at extraction) and dec (at scope exit).
+    /// The owner (scrutinee) handles cleanup via its own RC management.
+    pub(crate) borrowed_vars: std::collections::HashSet<Symbol>,
     /// Captured variable names (variables closed over by a lambda).
     /// These are NEVER eligible for last-use transfer.
     pub(crate) captured_vars: std::collections::HashSet<Symbol>,
@@ -179,6 +213,11 @@ pub struct FnCompiler<'a> {
     /// the drop glue function is stored here so that `pop_scope_with_cleanup`
     /// can pass it to `emit_rc_dec` when freeing the closure.
     pub(crate) closure_drop_glue: HashMap<Symbol, FuncId>,
+
+    /// Depth counter for inline drop glue generation.
+    /// Prevents infinite IR for recursive types (e.g., List).
+    /// Allows limited nesting for non-recursive parametric types (e.g., Option(Option(String))).
+    pub(crate) drop_glue_depth: u32,
 
     /// Pending closure drop glue from the last `compile_lambda` call.
     /// Set by `compile_lambda`, consumed by `compile_let` or `compile_body`
@@ -214,8 +253,10 @@ impl<'a> FnCompiler<'a> {
             variable_types: HashMap::new(),
             last_uses,
             consumed_vars: std::collections::HashSet::new(),
+            borrowed_vars: std::collections::HashSet::new(),
             captured_vars: std::collections::HashSet::new(),
             closure_drop_glue: HashMap::new(),
+            drop_glue_depth: 0,
             pending_closure_drop_glue: None,
         }
     }
@@ -271,8 +312,10 @@ impl<'a> FnCompiler<'a> {
             variable_types: HashMap::new(),
             last_uses,
             consumed_vars: std::collections::HashSet::new(),
+            borrowed_vars: std::collections::HashSet::new(),
             captured_vars: std::collections::HashSet::new(),
             closure_drop_glue: HashMap::new(),
+            drop_glue_depth: 0,
             pending_closure_drop_glue: None,
         };
 
@@ -360,7 +403,16 @@ impl<'a> FnCompiler<'a> {
                 callee,
                 args,
                 span,
-            } => self.compile_apply(callee, args, *span),
+            } => {
+                // `trace` is a module-scoped special form (arch Principle 10).
+                // It arrives as Apply(Var("trace"), [body]) — redirect to compile_trace.
+                if let Expr::Var { name, .. } = callee.as_ref() {
+                    if &**name == "trace" && args.len() == 1 {
+                        return self.compile_trace(&[], &args[0], *span);
+                    }
+                }
+                self.compile_apply(callee, args, *span)
+            }
             Expr::Match {
                 scrutinee,
                 arms,
@@ -369,10 +421,11 @@ impl<'a> FnCompiler<'a> {
             } => self.compile_match(scrutinee, arms, *span),
             Expr::Annotate { expr, .. } => self.compile_expr(expr),
             Expr::VecLit { elements, span } => self.compile_vec_lit(elements, *span),
-            Expr::Trace { span, .. } => Err(CranelispError::CodegenError {
-                message: "trace not supported until Ring 4".into(),
-                span: *span,
-            }),
+            Expr::Trace {
+                modules,
+                body,
+                span,
+            } => self.compile_trace(modules, body, *span),
             Expr::RunTests { span, .. } => Err(CranelispError::CodegenError {
                 message: "run-tests not supported until Ring 4".into(),
                 span: *span,
@@ -409,10 +462,14 @@ impl<'a> FnCompiler<'a> {
     /// to the caller as the return value).
     ///
     /// Key invariant: "Scope cleanup emits dec for all heap-typed bindings
-    /// EXCEPT the return value."
+    /// EXCEPT the return value, consumed vars, and borrowed vars."
     ///
-    /// For ADTs with AlwaysHeap fields, inline drop glue is emitted:
-    /// each heap-typed field is dec'd before the ADT itself is freed.
+    /// Borrowed vars (e.g., pattern match field bindings) are skipped entirely —
+    /// they share the owner's (scrutinee's) reference and the owner handles cleanup.
+    ///
+    /// ADT field cleanup happens inside the RC=0 dealloc path (via
+    /// `emit_rc_dec_with_inline_drop_glue`), NOT as a separate step before dec.
+    /// This prevents double-free when fields are independently referenced.
     pub(crate) fn pop_scope_with_cleanup(
         &mut self,
         skip_var: Option<&Symbol>,
@@ -429,6 +486,10 @@ impl<'a> FnCompiler<'a> {
                         }
                     // Skip consumed variables (ownership transferred to callee).
                     if self.consumed_vars.contains(*name) {
+                        return false;
+                    }
+                    // Skip borrowed variables (owner handles cleanup).
+                    if self.borrowed_vars.contains(*name) {
                         return false;
                     }
                     // Check if this binding is heap-typed.
@@ -464,31 +525,12 @@ impl<'a> FnCompiler<'a> {
                             continue;
                         }
 
-                        // For ADTs with known AlwaysHeap fields, emit inline
-                        // drop glue: dec each heap-typed field before dec'ing
-                        // the ADT itself. This prevents field value leaks.
-                        // For Mixed ADTs, the field dec is guarded by a
-                        // heap-pointer check (skip if value is a bare tag).
-                        self.emit_inline_drop_glue(val, ty, dealloc, *needs_guard);
-
-                        if *needs_guard {
-                            heap::emit_rc_dec_guarded(
-                                &mut self.builder,
-                                self.module,
-                                val,
-                                dealloc,
-                                None,
-                                true, // Guard nullary tags
-                            );
-                        } else {
-                            heap::emit_rc_dec(
-                                &mut self.builder,
-                                self.module,
-                                val,
-                                dealloc,
-                                None,
-                            );
-                        }
+                        // For ADTs: emit RC dec with inline drop glue in the
+                        // dealloc path. Field cleanup ONLY happens when RC
+                        // reaches 0 (inside the free branch), not unconditionally.
+                        // This prevents double-free when fields are independently
+                        // referenced (e.g., extracted via pattern match).
+                        self.emit_rc_dec_with_inline_drop_glue(val, ty, dealloc, *needs_guard);
                     }
                 }
             }
@@ -657,6 +699,11 @@ impl<'a> FnCompiler<'a> {
     ///
     /// Used by `emit_inline_drop_glue` for both the single-constructor case
     /// and within each branch of the multi-constructor tag dispatch.
+    ///
+    /// For ADT-typed fields, uses `emit_rc_dec_with_inline_drop_glue` to
+    /// recursively handle nested ADT field cleanup when the field's RC
+    /// reaches 0. For non-ADT heap types (String, closures), uses plain
+    /// `emit_rc_dec` since they have no sub-fields.
     fn emit_field_decs(
         &mut self,
         adt_val: Value,
@@ -676,13 +723,22 @@ impl<'a> FnCompiler<'a> {
                         adt_val,
                         HeapAdt::field_offset(i),
                     );
-                    heap::emit_rc_dec(
-                        &mut self.builder,
-                        self.module,
-                        field_val,
-                        dealloc,
-                        None,
-                    );
+                    // For ADT-typed fields, recursively handle nested field cleanup.
+                    if matches!(resolved_ty, Type::ADT(_, _)) {
+                        self.emit_rc_dec_with_inline_drop_glue(
+                            field_val, &resolved_ty, dealloc, false,
+                        );
+                    } else if matches!(resolved_ty, Type::Fn(_, _)) {
+                        self.emit_closure_dec_inline(field_val, dealloc);
+                    } else {
+                        heap::emit_rc_dec(
+                            &mut self.builder,
+                            self.module,
+                            field_val,
+                            dealloc,
+                            None,
+                        );
+                    }
                 }
                 HeapCategory::Mixed => {
                     let field_val = heap::heap_load(
@@ -690,14 +746,21 @@ impl<'a> FnCompiler<'a> {
                         adt_val,
                         HeapAdt::field_offset(i),
                     );
-                    heap::emit_rc_dec_guarded(
-                        &mut self.builder,
-                        self.module,
-                        field_val,
-                        dealloc,
-                        None,
-                        true,
-                    );
+                    // Mixed fields may be ADTs with nested heap fields.
+                    if matches!(resolved_ty, Type::ADT(_, _)) {
+                        self.emit_rc_dec_with_inline_drop_glue(
+                            field_val, &resolved_ty, dealloc, true,
+                        );
+                    } else {
+                        heap::emit_rc_dec_guarded(
+                            &mut self.builder,
+                            self.module,
+                            field_val,
+                            dealloc,
+                            None,
+                            true,
+                        );
+                    }
                 }
                 HeapCategory::NeverHeap => {}
             }
@@ -894,6 +957,125 @@ impl<'a> FnCompiler<'a> {
         // Continue.
         self.builder.switch_to_block(cont_block);
         self.builder.seal_block(cont_block);
+    }
+
+    /// Emit RC dec for an ADT value with inline drop glue in the dealloc path.
+    ///
+    /// Unlike the old `emit_inline_drop_glue` + `emit_rc_dec` pattern (which
+    /// dec'd fields unconditionally before dec'ing the ADT), this method
+    /// only dec's fields inside the "RC reached 0" branch. This prevents
+    /// double-free when fields have independent references (e.g., extracted
+    /// via pattern match binding).
+    ///
+    /// Flow:
+    /// ```text
+    /// if needs_guard && val < NULLARY_THRESHOLD: skip (bare tag)
+    /// old_rc = atomic_sub(val.rc, 1)
+    /// if old_rc == 1:
+    ///     fence()
+    ///     emit_inline_drop_glue(val)   // dec heap-typed fields
+    ///     dealloc(val)
+    /// ```
+    pub(crate) fn emit_rc_dec_with_inline_drop_glue(
+        &mut self,
+        val: Value,
+        ty: &Type,
+        dealloc: FuncId,
+        needs_guard: bool,
+    ) {
+        use cranelisp_types::HeapHeader;
+        use cranelift_codegen::ir::AtomicRmwOp;
+
+        // Depth limit for inline drop glue: prevents infinite IR for
+        // recursive types (e.g., List contains List). Allows several
+        // levels of nesting for non-recursive parametric types like
+        // Option(Option(String)). Beyond the limit, fall back to plain
+        // dec (fields leak — known limitation of inline drop glue,
+        // to be replaced by proper drop-glue functions later).
+        const MAX_DROP_GLUE_DEPTH: u32 = 4;
+        if self.drop_glue_depth >= MAX_DROP_GLUE_DEPTH {
+            if needs_guard {
+                heap::emit_rc_dec_guarded(
+                    &mut self.builder, self.module, val, dealloc, None, true,
+                );
+            } else {
+                heap::emit_rc_dec(
+                    &mut self.builder, self.module, val, dealloc, None,
+                );
+            }
+            return;
+        }
+        self.drop_glue_depth += 1;
+
+        let cont_block = self.builder.create_block();
+
+        // Guard: if value is a bare nullary tag, skip the dec entirely.
+        if needs_guard {
+            let threshold = self
+                .builder
+                .ins()
+                .iconst(types::I64, heap::NULLARY_THRESHOLD_I64);
+            let is_tag = self.builder.ins().icmp(
+                IntCC::UnsignedLessThan,
+                val,
+                threshold,
+            );
+            let dec_block = self.builder.create_block();
+            self.builder
+                .ins()
+                .brif(is_tag, cont_block, &[], dec_block, &[]);
+            self.builder.switch_to_block(dec_block);
+            self.builder.seal_block(dec_block);
+        }
+
+        // Atomic dec RC.
+        let rc_addr = self
+            .builder
+            .ins()
+            .iadd_imm(val, i64::from(HeapHeader::RC_OFFSET));
+        let one = self.builder.ins().iconst(types::I64, 1);
+        let old_rc = self.builder.ins().atomic_rmw(
+            types::I64,
+            MemFlags::trusted(),
+            AtomicRmwOp::Sub,
+            rc_addr,
+            one,
+        );
+
+        // Branch: if old_rc == 1 (last reference), free the object.
+        let cmp = self.builder.ins().icmp(IntCC::Equal, old_rc, one);
+        let free_block = self.builder.create_block();
+        self.builder
+            .ins()
+            .brif(cmp, free_block, &[], cont_block, &[]);
+
+        // Free path: Acquire fence, drop glue for fields, then dealloc.
+        self.builder.switch_to_block(free_block);
+        self.builder.seal_block(free_block);
+        self.builder.ins().fence();
+
+        // Emit inline drop glue for ADT fields (only in the dealloc path).
+        // This is safe because RC==0 means we are the sole owner.
+        self.emit_inline_drop_glue(val, ty, dealloc, false);
+
+        // Call runtime/dealloc.
+        let dealloc_ref = self
+            .module
+            .declare_func_in_func(dealloc, self.builder.func);
+        self.builder.ins().call(dealloc_ref, &[val]);
+        self.builder.ins().jump(cont_block, &[]);
+
+        // Continue path.
+        self.builder.switch_to_block(cont_block);
+        self.builder.seal_block(cont_block);
+
+        // Restore depth counter.
+        self.drop_glue_depth -= 1;
+    }
+
+    /// Mark a variable as borrowed (skip scope-exit dec — owner handles cleanup).
+    pub(crate) fn mark_borrowed(&mut self, name: &Symbol) {
+        self.borrowed_vars.insert(name.clone());
     }
 }
 

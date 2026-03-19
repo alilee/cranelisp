@@ -1,4 +1,4 @@
-# 7. Traits [R3 S9]
+# 7. Traits [R4 S21]
 
 This section defines the trait system of Cranelisp -- the mechanism for ad-hoc polymorphism. Traits declare method signatures parameterized over a type (or type constructor). Implementations provide concrete method bodies for specific types. All trait method calls are resolved at compile time via static dispatch.
 
@@ -130,7 +130,7 @@ Method signatures MAY use any valid type expression:
   (map-val [(Fn [a] b) self] self))
 ```
 
-## 7.2 Higher-Kinded Traits [R3 S9]
+## 7.2 Higher-Kinded Traits [R3 S9 — tests/ring2.rs::hkt_trait_declaration IGNORED]
 
 A higher-kinded trait abstracts over type constructors (kind `* -> *`) rather than concrete types (kind `*`).
 
@@ -259,7 +259,7 @@ The implementation MUST search for matching impls in the following order:
 1. Concrete impls (exact type match)
 2. Polymorphic impls (with constraint satisfaction)
 
-### 7.3.4 Higher-Kinded Implementation [R3 S9]
+### 7.3.4 Higher-Kinded Implementation [R3 S9 — tests/ring2.rs::hkt_impl_option IGNORED]
 
 An HKT impl targets a bare type constructor name:
 
@@ -385,7 +385,7 @@ Operator symbols (`+`, `-`, `*`, `/`, `=`, `<`, `>`, `<=`, `>=`) have no special
 
 An implementation SHOULD compile operator trait methods for `Int` and `Float` to inline machine instructions (integer add, float multiply, etc.) rather than function calls, so that the trait system imposes zero overhead for primitive arithmetic and comparisons.
 
-## 7.6 Operators as First-Class Values [R3 S8]
+## 7.6 Operators as First-Class Values [R4 S21]
 
 Trait method names, including operators, are ordinary symbols. They MAY be bound to variables and passed as arguments to higher-order functions.
 
@@ -560,7 +560,7 @@ String conversion for human-readable output.
 (show 3.14)     ; → "3.14"
 ```
 
-### 7.7.5 Functor [R3 S9]
+### 7.7.5 Functor [R3 S9 — tests/ring2.rs::hkt_trait_declaration IGNORED]
 
 Maps a function over a type constructor. This is a higher-kinded trait (see 7.2).
 
@@ -732,7 +732,7 @@ Trait declarations and implementations participate in the module system (see sec
 
 Note: There is no mechanism for disambiguating same-named methods from different traits at a call site. Users SHOULD choose distinct method names across traits, or use qualified references (`module/method`) to avoid ambiguity.
 
-## 7.12 Restrictions and Future Extensions [R3 S9]
+## 7.12 Restrictions and Future Extensions [Tested]
 
 ### 7.12.1 Current Restrictions
 
@@ -753,7 +753,7 @@ Note: There is no mechanism for disambiguating same-named methods from different
 | Monad / Applicative | HKT traits for monadic sequencing and applicative composition |
 | Multi-parameter HKT | Traits like `(deftrait (Bifunctor f) ...)` for arity-2 constructors |
 
-## 7.13 Deriving [R3 S9]
+## 7.13 Deriving [R4 S21]
 
 The `derive` macro automatically generates trait implementations for user-defined algebraic data types by structural recursion over constructors. It is a prelude macro, not a special form.
 

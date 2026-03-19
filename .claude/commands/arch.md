@@ -81,6 +81,16 @@ When reviewing sprint scope (Phase 2), `/arch` MUST weigh technical debt and unr
 
 **Why this matters**: The prototype's 59 audit findings (15 HIGH) accumulated because each feature addition was "more important" than cleanup. The reimplementation exists to avoid repeating that pattern. `/arch` is the skill best positioned to see when structural quality is eroding — and the skill most responsible for preventing it.
 
+## Sketch Consultation
+
+When reviewing design docs or sprint proposals, `/arch` MUST verify that the sketch's approach to the same problem has been studied. Specifically:
+
+- **Design docs**: Every design doc for a subsystem that exists in the sketch MUST include a "Sketch comparison" section. `/arch` rejects design docs that lack this section. The comparison should cover: how the sketch handles it, whether the reimplementation follows or diverges, and the rationale for divergence.
+- **Sprint review**: When a sprint introduces a mechanism that the sketch also implements (e.g., RC semantics, match field ownership, GOT management), `/arch` checks that the sketch's approach was considered and any divergence is justified.
+- **Divergence is fine** when the sketch's approach has known structural debts (documented in `sketch/audits/`). Divergence without justification is not.
+
+**Why this matters**: The sketch embodies solutions to problems discovered during prototyping. The RC double-free bug in Sprint 20 was caused by reimplementing match field ownership without studying the sketch's `borrowed_vars` mechanism — a pattern that prevented exactly this class of bug. The cost of studying the sketch is low; the cost of re-discovering solved problems is high.
+
 ## Ongoing Workflow
 
 - When a compiler skill needs an interface change: receive proposal, evaluate impact, update `design/arch/interfaces.md`, notify affected skills

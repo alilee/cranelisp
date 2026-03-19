@@ -1,4 +1,4 @@
-# 2. Grammar [R3 S8]
+# 2. Grammar [R4 S10]
 
 This section defines the syntactic grammar of Cranelisp -- how S-expression trees (as defined in [1. Lexical Structure](01-lexical.md)) are interpreted as language constructs. The lexical grammar produces a tree of forms (atoms, lists, brackets); the syntactic grammar assigns meaning to those trees.
 
@@ -33,7 +33,7 @@ In batch mode (`--run`), the program MUST define a function named `main` that ta
 
 In interactive mode (REPL), top-level expressions are permitted in addition to definitions. Each expression is evaluated and its type and value are displayed. See [12. Runtime Model](12-runtime.md) for REPL semantics.
 
-## 2.2 Top-Level Forms [R3 S8]
+## 2.2 Top-Level Forms [Tested tests/ring0.rs::hello, tests/ring1.rs::adt_sum_nested_match, tests/ring2.rs::trait_plus_int, tests/macros.rs::macro_basic_repl]
 
 ```ebnf
 top_level    = defn_form
@@ -276,7 +276,7 @@ The `impl` form provides method bodies for a trait on a specific type. There is 
 
 Methods within an `impl` block MUST use the `defn` keyword (not `defn-`). They are always public. Each method's name MUST correspond to a method declared in the trait being implemented.
 
-### 2.2.5 `defmacro` -- Macro Definition [R3 S9]
+### 2.2.5 `defmacro` -- Macro Definition [Tested tests/macros.rs::macro_basic_repl, tests/macros.rs::macro_multi_clause_repl, tests/macros.rs::macro_basic_batch]
 
 ```ebnf
 defmacro_form = '(' defmacro_kw name docstring? macro_params expr ')'
@@ -521,7 +521,7 @@ apply_expr   = '(' expr expr* ')'
 
 A parenthesized list whose head is not a special-form keyword is a function application. The first element (callee) MUST evaluate to a function. The remaining elements are arguments. Arguments are evaluated left to right.
 
-If the callee is a keyword (`let`, `if`, `fn`, `match`, `vec`), the form is parsed as the corresponding special form instead.
+If the callee is a keyword (`let`, `if`, `fn`, `match`, `vec`), the form is parsed as the corresponding special form instead. Forms with regular call syntax (`trace`) are parsed as function applications and resolved through the module system.
 
 ```clojure
 (inc 5)                       ; named function call
@@ -595,6 +595,24 @@ The `(vec ...)` form is an alternative syntax with identical semantics.
 []                            ; empty Vec (type inferred)
 (vec 1 2 3)                   ; same as [1 2 3]
 ```
+
+### 2.3.10 `trace` -- Execution Trace [R4 S20]
+
+```ebnf
+trace_expr   = '(' 'trace' expr ')'
+```
+
+The `trace` form evaluates `expr` with function call instrumentation active and returns a `Trace` ADT value capturing the call tree. The body MUST be exactly one expression. The result type is always `Trace`, regardless of the type of `expr`.
+
+Unlike structural special forms (`let`, `if`, `fn`, `match`), `trace` has regular call syntax — its argument is an ordinary expression. It is parsed as a function application and resolved through the module system. `trace` is defined in the `primitives` module and requires explicit import (see [Section 3.2.4](03-types.md#324-trace-type)).
+
+```clojure
+(import [primitives [trace]])
+(trace (fact 5))              ; trace the execution of (fact 5)
+(let [t (trace (f x))] t)    ; bind the trace value
+```
+
+See [Section 4.12](04-expressions.md#412-trace-expression) for the full evaluation semantics.
 
 ## 2.4 Type Expressions [Tested tests/ring2.rs::annotation_concrete_type_int]
 

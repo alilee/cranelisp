@@ -586,7 +586,7 @@ In addition to the REPL, you can write Cranelisp programs in files and run them 
 Run it with:
 
 ```
-cargo run -- factorial.cl
+cargo run -- --run factorial.cl
 ```
 
 In batch mode, Cranelisp compiles and executes the entire file. The program must define a `main` function that takes no parameters. The result of `main` is the program's output.
@@ -622,7 +622,7 @@ Here is a more complete example. Create a file called `classify.cl`:
 Run it:
 
 ```
-cargo run -- classify.cl
+cargo run -- --run classify.cl
 ```
 
 The result is `1`, because 42 is positive.
@@ -1632,21 +1632,21 @@ The `print` function takes a `String` and returns `(IO Int)`. The side effect (w
 ```
 > (print "hello")
 hello
-:(IO Int) 0
+:(IO primitives/Int) (IO.Pure 0)
 ```
 
-The REPL shows two things: first the side effect (`hello` printed to the screen), then the IO result (type `(IO Int)`, inner value `0`).
+The REPL shows two things: first the side effect (`hello` printed to the screen), then the IO result. The type is `(IO primitives/Int)` and the value is displayed as `(IO.Pure 0)` -- the `IO.Pure` wrapper shows that the IO action completed successfully with the inner value `0`.
 
 You can print any string:
 
 ```
 > (print "hello, world!")
 hello, world!
-:(IO Int) 0
+:(IO primitives/Int) (IO.Pure 0)
 
 > (print (int-to-string 42))
 42
-:(IO Int) 0
+:(IO primitives/Int) (IO.Pure 0)
 ```
 
 ### Lifting Values with `pure`
@@ -1655,16 +1655,16 @@ The `pure` function wraps any value in IO without performing a side effect:
 
 ```
 > (pure 42)
-:(IO Int) 42
+:(IO primitives/Int) (IO.Pure 42)
 
 > (pure "hello")
-:(IO String) "hello"
+:(IO primitives/String) (IO.Pure "hello")
 
 > (pure true)
-:(IO Bool) true
+:(IO primitives/Bool) (IO.Pure true)
 ```
 
-Why would you want this? When both branches of an `if` must have the same type. If one branch performs IO, the other must also return an IO type:
+Why would you want this? Both branches of an `if` must have the same type. If one branch performs IO, the other must also return an IO type:
 
 ```clojure
 ;; ERROR: one branch is (IO Int), the other is plain Int
@@ -1686,7 +1686,7 @@ The `do` macro sequences multiple IO actions. Each action runs in order, and the
 > (do (print "hello") (print "world"))
 hello
 world
-:(IO Int) 0
+:(IO primitives/Int) (IO.Pure 0)
 ```
 
 Every expression inside `do` must have an IO type. Intermediate results are discarded -- `do` is for sequencing effects when you do not need the results of earlier actions.
@@ -1701,7 +1701,7 @@ You can put as many actions as you like inside a `do`:
 one
 two
 three
-:(IO Int) 0
+:(IO primitives/Int) (IO.Pure 0)
 ```
 
 ### Binding Results with `bind!`
@@ -1720,7 +1720,7 @@ Each pair `name io-expr` runs the IO expression, extracts its inner value, and m
 > (bind! [x (pure 10)
           y (pure 20)]
     (pure (+ x y)))
-:(IO Int) 30
+:(IO primitives/Int) (IO.Pure 30)
 ```
 
 Here, `x` gets the value `10` from `(pure 10)`, and `y` gets `20` from `(pure 20)`. The body computes their sum and wraps it in `pure`.
@@ -1763,6 +1763,24 @@ IO operations come from a **platform** -- a library that provides functions like
 This must appear in the entry module (the file you run), before any platform function calls. The `stdio` platform provides standard console IO.
 
 In the REPL, the platform is loaded automatically when you use platform functions, so you do not need a platform declaration.
+
+### Library Search Path
+
+When Cranelisp loads modules (like the prelude or standard library), it looks for files in specific directories. By default, it searches `stdlib/` inside the project root. If your project lives outside the Cranelisp source tree, the compiler will not find the standard library automatically.
+
+Set the `CRANELISP_LIB` environment variable to tell the compiler where to find library files:
+
+```
+CRANELISP_LIB=/path/to/cranelisp/stdlib cargo run -- --run myproject/main.cl
+```
+
+You can specify multiple directories separated by colons:
+
+```
+CRANELISP_LIB=/path/to/cranelisp/stdlib:/path/to/my/libs cargo run -- --run main.cl
+```
+
+When `CRANELISP_LIB` is set (even to an empty string), the default `stdlib/` fallback is not used -- only the directories you specify are searched. If you set `CRANELISP_LIB=""`, no library directories are searched at all.
 
 ### Writing Batch Programs with IO
 

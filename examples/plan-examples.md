@@ -62,7 +62,7 @@ Examples are numbered `01` through `30` (approximately). Each maps to one ring a
 
 ### Complete Learning Sequence
 
-**Numbering note**: The delivered file numbering is contiguous (01-18 so far). Ring 0 was delivered as examples 01-08. Ring 1 continues as 09-14. Ring 2 is 15-17 (traits, modules, display). Ring 3 begins at 18 (macros). Constrained polymorphism is covered within 15-traits.cl. Multi-signature and auto-currying are deferred (batch mode issues). Future examples continue from 19.
+**Numbering note**: The delivered file numbering is contiguous (01-24). Ring 0 was delivered as examples 01-08. Ring 1 continues as 09-14. Ring 2 is 15-17 (traits, modules, display) and 20 (ADT traits). Ring 3 is 18-19 (macros, threading). Ring 4 is 21-24 (IO). Constrained polymorphism is covered within 15-traits.cl. Multi-signature and auto-currying are deferred (batch mode issues). Future examples continue from 25.
 
 | # | File | Ring | Concept | Status |
 |---|------|------|---------|--------|
@@ -84,14 +84,16 @@ Examples are numbered `01` through `30` (approximately). Each maps to one ring a
 | 16 | `16-modules/` | 2 | Multi-file programs with modules | delivered |
 | 17 | `17-display.cl` | 2 | User-defined traits and Display | delivered |
 | 18 | `18-macros.cl` | 3 | Macros: defmacro, quasiquote, multi-clause | delivered |
-| 19 | Multi-Signature | 2 | Function overloading by type | planned (batch mode blocked) |
-| 20 | Auto-Currying | 2 | Partial application | planned (batch mode blocked) |
-| 21 | Threading Macros | 3 | Data pipeline composition | planned |
-| 22 | Derive | 3 | Auto-generated trait impls | planned |
-| 23 | Hello World | 4 | IO model and print | planned |
-| 24 | IO Sequencing | 4 | do and bind! | planned |
-| 25 | Interactive IO | 4 | User input | planned |
-| 26 | Testing | 4 | Inline test modules | planned |
+| 19 | `19-threading.cl` | 3 | Data pipelines with threading macros | delivered |
+| 20 | `20-adt-traits.cl` | 2 | Implementing traits for ADTs (Eq, Display) | delivered |
+| 21 | `21-hello-io.cl` | 4 | Introduction to the IO model | delivered |
+| 22 | `22-io-hello.cl` | 4 | IO hello world and sequencing | delivered |
+| 23 | `23-io-sequence.cl` | 4 | IO sequencing with do and bind! | delivered |
+| 24 | `24-io-echo.cl` | 4 | IO echo and interaction patterns | delivered |
+| 25 | Trace | 4 | Execution tracing | deferred (REPL-only; batch mode lacks formatted trace fields) |
+| 26 | Multi-Signature | 2 | Function overloading by type | planned (batch mode blocked) |
+| 27 | Auto-Currying | 2 | Partial application | planned (batch mode blocked) |
+| 28 | Testing | 4 | Inline test modules | planned |
 
 ### Feature Coverage Verification
 
@@ -891,14 +893,16 @@ examples/
   16-modules/           — delivered (Ring 2, Sprint 12, multi-file)
   17-display.cl         — delivered (Ring 2, Sprint 12)
   18-macros.cl          — delivered (Ring 3, Sprint 12)
-  19-multi-sig.cl       — planned (Ring 2, blocked: batch mode)
-  20-auto-curry.cl      — planned (Ring 2, blocked: batch mode)
-  21-threading.cl       — planned (Ring 3)
-  22-derive.cl          — planned (Ring 3)
-  23-hello-world.cl     — planned (Ring 4)
-  24-io-sequencing.cl   — planned (Ring 4)
-  25-interactive-io.cl  — planned (Ring 4)
-  26-testing/           — planned (Ring 4, multi-file)
+  19-threading.cl       — delivered (Ring 3)
+  20-adt-traits.cl      — delivered (Ring 2)
+  21-hello-io.cl        — delivered (Ring 4)
+  22-io-hello.cl        — delivered (Ring 4)
+  23-io-sequence.cl     — delivered (Ring 4)
+  24-io-echo.cl         — delivered (Ring 4)
+  25-trace.cl           — deferred (trace formatting is REPL-only)
+  26-multi-sig.cl       — planned (Ring 2, blocked: batch mode)
+  27-auto-curry.cl      — planned (Ring 2, blocked: batch mode)
+  28-testing/           — planned (Ring 4, multi-file)
 ```
 
 ## 10. Ring 3 Readiness Assessment (Sprint 9)

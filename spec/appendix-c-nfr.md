@@ -52,7 +52,7 @@ When a heap value's reference count reaches zero, the implementation MUST invoke
 
 **Activation**: Ring 1 (heap introduction).
 
-## C.2 Data Structure Strategies [R3 S9]
+## C.2 Data Structure Strategies [R4 S24]
 
 ### C.2.1 Persistent Vec (RRB Tree) [Tested tests/ring1.rs::vec_get_first]
 
@@ -66,7 +66,7 @@ The implementation MUST NOT commit to a flat-array Vec representation in a way t
 
 **Activation**: Post-Ring 4. The flat-array representation is acceptable through the ring sequence. RRB upgrade is a runtime-only change that does not affect language semantics.
 
-### C.2.2 Persistent Map (HAMT) [R3 S9]
+### C.2.2 Persistent Map (HAMT) [R4 S24]
 
 When the `Map` type is introduced, the implementation SHOULD use a Hash Array Mapped Trie (HAMT) as the backing data structure. HAMTs provide O(log₃₂ n) lookup, insert, and delete with structural sharing.
 
@@ -91,7 +91,7 @@ The implementation MUST NOT commit to a flat byte-array String representation in
 
 **Activation**: Post-Ring 4. The flat representation is acceptable through the ring sequence.
 
-### C.2.4 Collection Extensibility [R3 S9]
+### C.2.4 Collection Extensibility [R4 S24]
 
 The standard library SHOULD be able to provide alternative collection implementations alongside the built-in primitives. Users SHOULD be able to choose the collection type that best fits their use case, and write code that works generically across collection types via traits.
 

@@ -70,7 +70,28 @@ IO(A)
 
 Operations such as `pure` and `bind` can be defined as ordinary library functions to compose IO values (see [Section 10](10-io.md) for details).
 
-### 3.2.4 Vec Type [Tested tests/ring1.rs::vec_literal_int]
+### 3.2.4 Trace Type [R4 S20]
+
+```
+Trace
+```
+
+`Trace` is a compiler-seeded algebraic data type representing a recorded execution call tree:
+
+```clojure
+(deftype Trace
+  (TraceCall [:String          name
+              :(SList String)  params
+              :String          result
+              :(SList Trace)   children
+              :Int             nanos]))
+```
+
+`Trace` is defined in the `primitives` module and participates in the type system as an ordinary ADT. It is the result type of the `trace` special form (see [Section 4.12](04-expressions.md#412-trace-expression)). Unlike most ADTs, `Trace` is not parameterized -- it captures runtime information as formatted strings using the canonical value display format (see [Section 12.9](12-runtime.md#129-value-display-format)). The `params` and `children` fields use `SList` (from the `macros` module) for list structure, enabling pattern-matching traversal with `SCons`/`SNil`.
+
+`Trace`, `TraceCall`, `trace`, and the field accessor functions (`name`, `params`, `result`, `children`, `nanos`) are defined in the `primitives` module but are NOT auto-imported into user scope. User code must import them explicitly (e.g., `(import [primitives [trace Trace TraceCall]])`) or use qualified names (e.g., `primitives/trace`). A standard library MAY re-export these through a convenience module (e.g., `core.trace`) using the `export` mechanism (see [Section 8.4](08-modules.md#84-export)).
+
+### 3.2.5 Vec Type [Tested tests/ring1.rs::vec_literal_int]
 
 ```
 Vec(A)
@@ -301,6 +322,16 @@ Pattern checking rules:
 - **Constructor pattern** `(Ctor x y ...)`: The constructor's type MUST unify with the scrutinee type. Each binding variable gets the type of the corresponding field.
 - **Variable pattern** `x`: Binds `x` to the scrutinee type.
 - **Wildcard pattern** `_`: Matches anything, introduces no bindings.
+
+#### Trace Expression [R4 S20]
+
+```
+G |- expr : T
+---------------------------------------
+G |- (trace expr) : Trace
+```
+
+The body expression `expr` is inferred normally. The result type of `(trace expr)` is always `Trace`, regardless of the type of `expr`. The type `T` is not preserved in the result type — trace captures runtime information as formatted strings. See [Section 4.12](04-expressions.md#412-trace-expression) for the full evaluation semantics.
 
 ### 3.5.4 Worked Example
 

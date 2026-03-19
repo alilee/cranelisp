@@ -78,7 +78,12 @@ impl TypeChecker {
         self.register_io_type();
         self.register_bind_primitive();
 
+        // Ring 4: Trace ADT (TraceCall) + field accessors in `primitives`.
+        // NOT auto-imported — users must explicitly (import [primitives [Trace TraceCall ...]]).
+        self.register_trace_type();
+
         // Copy entries from `primitives` into `user` module (quote-sexp, IO, bind, etc.).
+        // Trace-related names are excluded — per spec §3.2.4 they require explicit import.
         self.import_primitives_into_user(&primitives_path);
     }
 
@@ -107,9 +112,21 @@ impl TypeChecker {
             })
             .unwrap_or_default();
 
+        // Names from the Trace ADT that are NOT auto-imported into `user`.
+        // Per spec §3.2.4 and §4.12.4, users must explicitly import these.
+        const TRACE_NO_AUTO_IMPORT: &[&str] = &[
+            "trace", "Trace", "TraceCall",
+            // Field accessor functions — generic names that would pollute user scope.
+            "name", "params", "result", "children", "nanos",
+        ];
+
         // Insert copies into user module.
         if let Some(user_table) = self.modules.get_mut(&user_path) {
             for (name, entry) in entries_to_copy {
+                // Trace-related names require explicit import (spec §3.2.4).
+                if TRACE_NO_AUTO_IMPORT.contains(&name.as_ref()) {
+                    continue;
+                }
                 // Don't overwrite existing entries (e.g. primitives already in user).
                 if user_table.get(name.as_ref()).is_none() {
                     // TypeDef and Constructor entries become Import entries so
@@ -691,6 +708,166 @@ impl TypeChecker {
         );
     }
 
+    /// Register the Trace ADT and field accessors in the `primitives` module.
+    ///
+    /// Trace is a monomorphic ADT (no type parameters) with a single constructor:
+    ///
+    /// ```clojure
+    /// (deftype Trace
+    ///   (TraceCall [:String name
+    ///               :String params
+    ///               :String result
+    ///               :Int    children
+    ///               :Int    nanos]))
+    /// ```
+    ///
+    /// Per spec §3.2.4 and §4.12.4, Trace, TraceCall, and field accessors are
+    /// NOT auto-imported into user scope. Users must explicitly import them:
+    ///   `(import [primitives [Trace TraceCall name params result children nanos]])`
+    ///
+    /// Field accessors are registered as monomorphic Def entries:
+    ///   name     :: (Fn [Trace] String)
+    ///   params   :: (Fn [Trace] String)
+    ///   result   :: (Fn [Trace] String)
+    ///   children :: (Fn [Trace] Int)
+    ///   nanos    :: (Fn [Trace] Int)
+    fn register_trace_type(&mut self) {
+        // Switch to the synthetic `primitives` module.
+        let saved_module = self.current_module_path().clone();
+        let primitives_path = ModuleFullPath::from("primitives");
+        self.set_current_module(primitives_path);
+
+        // Define the TraceCall constructor via the normal registration path.
+        let trace_ctors = vec![ConstructorDef {
+            name: Symbol::from("TraceCall"),
+            docstring: Some("Trace call tree node".to_string()),
+            fields: vec![
+                FieldDef {
+                    name: Symbol::from("name"),
+                    type_expr: TypeExpr::Named(TypeName::from("String")),
+                },
+                FieldDef {
+                    name: Symbol::from("params"),
+                    type_expr: TypeExpr::Applied(
+                        TypeName::from("SList"),
+                        vec![TypeExpr::Named(TypeName::from("String"))],
+                    ),
+                },
+                FieldDef {
+                    name: Symbol::from("result"),
+                    type_expr: TypeExpr::Named(TypeName::from("String")),
+                },
+                FieldDef {
+                    name: Symbol::from("children"),
+                    type_expr: TypeExpr::Applied(
+                        TypeName::from("SList"),
+                        vec![TypeExpr::Named(TypeName::from("Trace"))],
+                    ),
+                },
+                FieldDef {
+                    name: Symbol::from("nanos"),
+                    type_expr: TypeExpr::Named(TypeName::from("Int")),
+                },
+            ],
+            span: Span::SYNTHETIC,
+        }];
+
+        self.register_type_def(
+            &TypeName::from("Trace"),
+            &Some("Recorded execution call tree from (trace expr)".to_string()),
+            &[], // monomorphic — no type parameters
+            &trace_ctors,
+            Visibility::Public,
+            Span::SYNTHETIC,
+        )
+        .unwrap_or_else(|e| {
+            unreachable!("invariant: Trace type registration failed: {e}")
+        });
+
+        // Register field accessor functions as monomorphic Def entries.
+        // These allow destructuring via function application rather than match.
+        let trace_type = Type::ADT(TypeName::from("Trace"), vec![]);
+
+        let accessor_defs: Vec<(&str, &str, Type)> = vec![
+            (
+                "name",
+                "Fully qualified function name from trace call",
+                Type::String,
+            ),
+            (
+                "params",
+                "Formatted parameter values from trace call",
+                Type::ADT(TypeName::from("SList"), vec![Type::String]),
+            ),
+            (
+                "result",
+                "Formatted result value from trace call",
+                Type::String,
+            ),
+            (
+                "children",
+                "Child calls in trace node",
+                Type::ADT(
+                    TypeName::from("SList"),
+                    vec![Type::ADT(TypeName::from("Trace"), vec![])],
+                ),
+            ),
+            ("nanos", "Wall-clock nanoseconds for trace call", Type::Int),
+        ];
+
+        for (field_name, docstring, return_ty) in accessor_defs {
+            let scheme = Scheme {
+                vars: vec![],
+                constraints: HashMap::new(),
+                ty: Type::Fn(vec![trace_type.clone()], Box::new(return_ty)),
+            };
+
+            self.current_symbol_table_mut().insert(
+                Symbol::from(field_name),
+                ModuleEntry::Def {
+                    scheme,
+                    visibility: Visibility::Public,
+                    docstring: Some(docstring.to_string()),
+                    param_names: vec![Symbol::from("t")],
+                    kind: Box::new(DefKind::Primitive {
+                        primitive_kind: PrimitiveKind::Extern,
+                        jit_name: Some(JitSymbol::from(
+                            format!("cranelisp_trace_{field_name}").as_str(),
+                        )),
+                    }),
+                },
+            );
+        }
+
+        // Register `trace` as a module-scoped special form in `primitives`.
+        // Unlike parser keywords (let, if, fn), `trace` has regular call syntax
+        // and is resolved through the module system (arch Principle 10).
+        self.current_symbol_table_mut().insert(
+            Symbol::from("trace"),
+            ModuleEntry::Def {
+                scheme: Scheme {
+                    vars: vec![],
+                    constraints: HashMap::new(),
+                    ty: Type::Fn(
+                        vec![Type::Var(0)], // any expression type
+                        Box::new(Type::ADT(TypeName::from("Trace"), vec![])),
+                    ),
+                },
+                visibility: Visibility::Public,
+                docstring: Some(
+                    "Execution trace: (trace expr) — evaluates expr with call instrumentation, returns Trace ADT"
+                        .to_string(),
+                ),
+                param_names: vec![Symbol::from("expr")],
+                kind: Box::new(DefKind::SpecialForm {
+                    description: "Execution trace: (trace expr) — evaluates expr with call instrumentation, returns Trace ADT".to_string(),
+                }),
+            },
+        );
+
+        // Restore the original module context.
+        self.set_current_module(saved_module);
+    }
 }
 
 /// Look up the spec-mandated docstring for a builtin primitive.
@@ -1802,5 +1979,153 @@ mod tests {
         check("vec-push", "Return new Vec with element appended");
         check("vec-len", "Number of elements");
         check("quote-sexp", "Convert a runtime Sexp value to constructor source code");
+    }
+
+    // -----------------------------------------------------------------------
+    // Trace ADT (Ring 4, spec §3.2.4 / §4.12)
+    // -----------------------------------------------------------------------
+
+    // spec: 03-types §3.2.4 — Trace type registered as monomorphic ADT
+    #[test]
+    fn test_trace_type_registered() {
+        let tc = TypeChecker::new();
+        let info = tc.type_defs.get(&TypeName::from("Trace"));
+        assert!(info.is_some(), "Trace type should be registered");
+        let info = info.unwrap();
+        assert!(info.type_params.is_empty(), "Trace has no type parameters (monomorphic)");
+        assert_eq!(info.constructors.len(), 1, "Trace has 1 constructor: TraceCall");
+        assert_eq!(
+            info.docstring.as_deref(),
+            Some("Recorded execution call tree from (trace expr)")
+        );
+    }
+
+    // spec: 03-types §3.2.4 — TraceCall constructor with 5 fields
+    #[test]
+    fn test_trace_call_constructor() {
+        let tc = TypeChecker::new();
+        let primitives_path = ModuleFullPath::from("primitives");
+        let primitives_table = tc.modules.get(&primitives_path).unwrap();
+
+        if let Some(ModuleEntry::Constructor { info, scheme, .. }) =
+            primitives_table.get("TraceCall")
+        {
+            assert_eq!(info.tag, 0, "TraceCall should be tag 0");
+            assert_eq!(info.fields.len(), 5, "TraceCall has 5 fields");
+            assert_eq!(info.fields[0].name.as_ref(), "name");
+            assert_eq!(info.fields[1].name.as_ref(), "params");
+            assert_eq!(info.fields[2].name.as_ref(), "result");
+            assert_eq!(info.fields[3].name.as_ref(), "children");
+            assert_eq!(info.fields[4].name.as_ref(), "nanos");
+
+            // Field types: String, (SList String), String, (SList Trace), Int
+            let slist_string = Type::ADT(TypeName::from("SList"), vec![Type::String]);
+            let slist_trace = Type::ADT(
+                TypeName::from("SList"),
+                vec![Type::ADT(TypeName::from("Trace"), vec![])],
+            );
+            assert_eq!(info.fields[0].ty, Type::String);
+            assert_eq!(info.fields[1].ty, slist_string); // params: SList of String
+            assert_eq!(info.fields[2].ty, Type::String);
+            assert_eq!(info.fields[3].ty, slist_trace); // children: SList of Trace
+            assert_eq!(info.fields[4].ty, Type::Int);
+
+            // Monomorphic scheme: no quantified vars
+            assert!(scheme.vars.is_empty(), "TraceCall scheme should be monomorphic");
+            // TraceCall :: (Fn [String (SList String) String (SList Trace) Int] Trace)
+            let slist_string = Type::ADT(TypeName::from("SList"), vec![Type::String]);
+            let slist_trace = Type::ADT(
+                TypeName::from("SList"),
+                vec![Type::ADT(TypeName::from("Trace"), vec![])],
+            );
+            match &scheme.ty {
+                Type::Fn(params, ret) => {
+                    assert_eq!(params.len(), 5);
+                    assert_eq!(params[0], Type::String);
+                    assert_eq!(params[1], slist_string);
+                    assert_eq!(params[2], Type::String);
+                    assert_eq!(params[3], slist_trace);
+                    assert_eq!(params[4], Type::Int);
+                    match ret.as_ref() {
+                        Type::ADT(name, args) => {
+                            assert_eq!(name.as_ref(), "Trace");
+                            assert!(args.is_empty());
+                        }
+                        _ => panic!("TraceCall return should be Trace, got {:?}", ret),
+                    }
+                }
+                _ => panic!("TraceCall should have Fn type, got {:?}", scheme.ty),
+            }
+        } else {
+            panic!("TraceCall should be a Constructor entry in primitives module");
+        }
+    }
+
+    // spec: 03-types §3.2.4 — Trace names in primitives module
+    #[test]
+    fn test_trace_in_primitives_module() {
+        let tc = TypeChecker::new();
+        let primitives_path = ModuleFullPath::from("primitives");
+        let primitives_table = tc.modules.get(&primitives_path).unwrap();
+
+        assert!(primitives_table.get("Trace").is_some(), "Trace type in primitives");
+        assert!(primitives_table.get("TraceCall").is_some(), "TraceCall constructor in primitives");
+        // Field accessors
+        assert!(primitives_table.get("name").is_some(), "name accessor in primitives");
+        assert!(primitives_table.get("params").is_some(), "params accessor in primitives");
+        assert!(primitives_table.get("result").is_some(), "result accessor in primitives");
+        assert!(primitives_table.get("children").is_some(), "children accessor in primitives");
+        assert!(primitives_table.get("nanos").is_some(), "nanos accessor in primitives");
+    }
+
+    // spec: 03-types §3.2.4 — Trace names NOT auto-imported into user module
+    #[test]
+    fn test_trace_not_auto_imported() {
+        let tc = TypeChecker::new();
+        let user_table = tc.symbol_table();
+
+        assert!(user_table.get("Trace").is_none(), "Trace must NOT be auto-imported");
+        assert!(user_table.get("TraceCall").is_none(), "TraceCall must NOT be auto-imported");
+        assert!(user_table.get("name").is_none(), "name accessor must NOT be auto-imported");
+        assert!(user_table.get("params").is_none(), "params accessor must NOT be auto-imported");
+        assert!(user_table.get("result").is_none(), "result accessor must NOT be auto-imported");
+        assert!(user_table.get("children").is_none(), "children accessor must NOT be auto-imported");
+        assert!(user_table.get("nanos").is_none(), "nanos accessor must NOT be auto-imported");
+    }
+
+    // spec: 03-types §3.2.4 — Trace field accessor types
+    #[test]
+    fn test_trace_field_accessors() {
+        let tc = TypeChecker::new();
+        let primitives_path = ModuleFullPath::from("primitives");
+        let primitives_table = tc.modules.get(&primitives_path).unwrap();
+        let trace_type = Type::ADT("Trace".into(), vec![]);
+
+        let check_accessor = |name: &str, expected_ret: &Type| {
+            if let Some(ModuleEntry::Def { scheme, .. }) = primitives_table.get(name) {
+                assert!(scheme.vars.is_empty(), "{name} should be monomorphic");
+                match &scheme.ty {
+                    Type::Fn(params, ret) => {
+                        assert_eq!(params.len(), 1, "{name} takes 1 param");
+                        assert_eq!(&params[0], &trace_type, "{name} param should be Trace");
+                        assert_eq!(ret.as_ref(), expected_ret, "{name} return type mismatch");
+                    }
+                    _ => panic!("{name} should have Fn type"),
+                }
+            } else {
+                panic!("{name} should be a Def entry in primitives");
+            }
+        };
+
+        let slist_string = Type::ADT(TypeName::from("SList"), vec![Type::String]);
+        let slist_trace = Type::ADT(
+            TypeName::from("SList"),
+            vec![Type::ADT(TypeName::from("Trace"), vec![])],
+        );
+        check_accessor("name", &Type::String);
+        check_accessor("params", &slist_string);
+        check_accessor("result", &Type::String);
+        check_accessor("children", &slist_trace);
+        check_accessor("nanos", &Type::Int);
     }
 }

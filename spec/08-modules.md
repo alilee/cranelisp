@@ -405,7 +405,17 @@ The following conflicts MUST produce compile-time errors:
 
 Same-source duplicates (the same name arriving through two re-export paths from the same original definition) are NOT ambiguous.
 
-<!-- FIXME(/spec): Clarify interaction between explicit glob imports and implicit prelude glob. When `(import [grid [*]])` brings in names like `Some`/`None` that are already provided by the implicit `(import [prelude [*]])`, is this a §8.6.4 duplicate-import error, or does the explicit import silently shadow the prelude? The current implementation silently overwrites prelude bindings, which caused the exemplar to lose access to `Some`/`None` constructors. Either (a) spec that explicit imports shadow prelude imports (making this intentional), or (b) spec that same-name collisions between prelude glob and explicit glob should produce an error or warning. Found during Sprint 19 exemplar adaptation. -->
+#### Explicit Imports Shadow the Implicit Prelude [R4 S20]
+
+The implicit prelude glob (`(import [prelude [*]])`, injected per §8.8) is processed **before** any explicit imports in the module. Explicit imports — whether glob (`(import [grid [*]])`) or specific (`(import [grid [solve]])`) — shadow prelude-provided names without producing a duplicate-import error. This is intentional: explicit imports take precedence over the implicit prelude, just as inner `let` bindings shadow outer ones.
+
+When an explicit glob import brings in a name that was already provided by the prelude, the explicit version silently replaces the prelude version. This means the module loses access to the prelude's binding for that bare name. Remediation strategies:
+
+- **Qualified access**: Use `prelude/Some` or `primitives/Some` to reach the shadowed name.
+- **Selective import**: Replace `(import [grid [*]])` with `(import [grid [solve other-fn]])` to avoid importing names that collide.
+- **Explicit prelude re-import**: Add `(import [prelude [Some None]])` after the glob import to restore specific prelude names.
+
+**Practical note**: Glob imports from modules with large public APIs can silently displace prelude bindings (e.g., a module that re-exports `Some`/`None` for convenience). When debugging unexpected type errors after adding a glob import, check whether prelude names have been shadowed.
 
 ### 8.6.5 Ambiguity and Disambiguation
 

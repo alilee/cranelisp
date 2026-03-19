@@ -70,6 +70,8 @@ The criteria `/arch` uses to evaluate every design decision. These are derived f
 
 9. **Rings are accretive.** Each ring adds code, tests, and capabilities — it should not replace or delete work from earlier rings. Earlier-ring tests remain as-is; later rings add new tests for the new mechanism. This provides diagnostic isolation: if `(+ 1 2)` (trait dispatch, Ring 2) fails but `(add-i64 1 2)` (primitive, Ring 0) passes, the bug is in dispatch, not codegen. The same applies to implementation: primitives survive as the foundation that higher-level mechanisms dispatch to.
 
+10. **Parser keywords are for distinct syntax only.** The AST builder recognizes a form as a special form (building a distinct `Expr` variant) only when its syntax differs from a function call — i.e., its arguments cannot be parsed as expressions. `(let [x 1] body)` MUST be a parser keyword because `[x 1]` is a binding vector, not a Vec literal. `(if c t e)` MUST be a parser keyword because it has short-circuit semantics that require a distinct AST node. But forms with regular call syntax — `(trace expr)`, `(platform "name")` — SHOULD flow through the module system as ordinary names that the typechecker or later passes recognize. This keeps the parser small and the module system authoritative: a name is available only if it's in scope. New special forms added in later rings should default to the module-scoped approach unless they genuinely need distinct syntax.
+
 ## String Newtypes
 
 **Hard rule**: All identifier fields in boundary types MUST use the appropriate newtype, never bare `String`. This prevents accidental mixing of identifiers across semantic categories (e.g., passing a module path where a symbol name is expected).

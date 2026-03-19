@@ -23,6 +23,7 @@ pub mod alloc;
 pub mod io;
 pub mod rc;
 pub mod string;
+pub mod trace;
 pub mod vec;
 pub mod primitives;
 pub mod panic;
@@ -60,6 +61,16 @@ pub use marshal::{sconcat, quote_sexp};
 // run_io_trampoline for direct Rust calls from REPL loop)
 pub use io::cranelisp_run_io;
 pub use io::run_io_trampoline;
+
+// Trace runtime (registered as cranelisp_trace_* for JIT calls)
+pub use trace::{
+    cranelisp_trace_swap_got, cranelisp_trace_restore_got,
+    cranelisp_trace_enter, cranelisp_trace_exit,
+    cranelisp_collect_trace, cranelisp_trace_first_child_nanos,
+    cranelisp_trace_format,
+    cranelisp_trace_name, cranelisp_trace_params, cranelisp_trace_result,
+    cranelisp_trace_children, cranelisp_trace_nanos,
+};
 
 // Re-export public Rust API for use by /qa integration tests and binary crate.
 pub use alloc::{

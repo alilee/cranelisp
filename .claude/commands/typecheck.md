@@ -29,7 +29,7 @@ Design docs in `design/typecheck/` are owned deliverables, not post-hoc document
 
 1. Read `design/arch/interfaces.md` — understand the types you consume and produce
 2. Read `spec/03-types.md`, `spec/04-expressions.md` — your primary spec
-3. Read `sketch/src/typechecker.rs` for reference (49 KB)
+3. Read `sketch/src/typechecker.rs` — study the approach, understand *why* design choices were made (49 KB). When your design diverges, document the divergence and rationale in a "Sketch comparison" section of the design doc.
 4. Create `src/typechecker/` and write `src/typechecker/CLAUDE.md`:
    - Document the substitution environment, type variable naming, unification algorithm
    - Document the `Scheme` representation (forall quantification + constraints)

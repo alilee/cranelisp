@@ -31,7 +31,9 @@ This repository is organized for the Cranelisp reimplementation:
 
 We have a prototype compiler as a sketch. 
 
-> **Important** The sketch is a reference point only, not the destination. It's purpose is to de-risk the implementation by informing requirements, design decisions and technical risk assessments. At some point the sketch will be left behind and further development will be on the new system, so new work needs to stand on its own, start from a zero base and first principles - not copy the sketch.     
+> **Important** The sketch is a reference point only, not the destination. It's purpose is to de-risk the implementation by informing requirements, design decisions and technical risk assessments. At some point the sketch will be left behind and further development will be on the new system, so new work needs to stand on its own, start from a zero base and first principles - not copy the sketch.
+
+> **Equally important** The sketch embodies hard-won design knowledge — solutions to problems that were discovered during prototyping. Before designing any subsystem, compiler skills MUST study the sketch's approach to the same problem, understand *why* it works that way, and explicitly decide whether to follow the same approach or diverge. Divergence is fine when justified (cleaner architecture, avoiding known sketch debts), but uninformed divergence — reimplementing from scratch without studying the sketch's solution — risks re-discovering problems the sketch already solved. Design docs MUST include a "Sketch comparison" section documenting: (a) how the sketch handles this, (b) whether the reimplementation follows or diverges, and (c) the rationale for divergence if any.
 
 The prototype compiler lives in `sketch/`. Use it when the spec is ambiguous:
 

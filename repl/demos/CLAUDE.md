@@ -87,9 +87,13 @@ The REPL process `chdir`s into this directory, so `.cache` artifacts and any oth
 | `ring3.demo` | 3 | Macros & metaprogramming: defmacro with docstrings, multi-clause macros, prelude macros (case/cond/str), string primitives, threading macros with /expand |
 | `exemplar-progress.demo` | 3 | Exemplar: Sudoku domain types (ADTs), grid geometry, 4x4 backtracking solver with formatted output |
 | `stdlib-progress.demo` | 3 | Prelude vocabulary: trait-dispatched operators, constrained polymorphism, Option/Result matching, string ops, compose, threading |
+| `ring4a.demo` | 4A | IO foundation: Pure, bind, platform stdio, print, IO composition |
+| `ring4b.demo` | 4B | IO sequencing: do, bind!, named IO results, IO + conditionals |
+| `ring4c.demo` | 4C | REPL hardening: prelude ADT display, type annotations, Option |
+| `ring4d.demo` | 4D | Developer tools: /source, /clif, panic recovery (div-by-zero) |
+| `ring4e.demo` | 4E | Trace special form, corrected IO display, /mod namespace switching |
 
-Each sprint, `/repl` extends this library:
-- **Ring 4**: IO, platforms, full REPL experience (slash commands, trace, run-tests)
+Each sprint, `/repl` extends this library.
 
 ## Prelude and Trait Availability
 

@@ -151,28 +151,22 @@ impl<'a> FnCompiler<'a> {
     /// Emit rc_dec for the scrutinee if it is a heap-typed temporary.
     ///
     /// Variable references are dec'd by their owning scope -- only
-    /// temporaries (non-Var expressions) need dec here. This also emits
-    /// inline drop glue for ADT fields before dec'ing the scrutinee itself.
+    /// temporaries (non-Var expressions) need dec here.
+    ///
+    /// ADT field cleanup is done inside the dealloc path (RC=0) via
+    /// `emit_rc_dec_with_inline_drop_glue`, not unconditionally.
+    /// This prevents double-free when fields are borrowed by pattern bindings.
     fn dec_temporary_scrutinee(&mut self, scrutinee: &Expr, scrut_val: Value) {
         let is_temp = !matches!(scrutinee, Expr::Var { .. });
         if is_temp
-            && let Some(scrut_ty) = self.ctx.expr_types.get(&scrutinee.span()) {
-                let category = HeapCategory::classify(scrut_ty, Some(self.ctx.type_defs));
+            && let Some(scrut_ty) = self.ctx.expr_types.get(&scrutinee.span()).cloned() {
+                let category = HeapCategory::classify(&scrut_ty, Some(self.ctx.type_defs));
                 if let (Some(dealloc), HeapCategory::AlwaysHeap | HeapCategory::Mixed) =
                     (self.ctx.dealloc_func_id, category)
                 {
                     let needs_guard = matches!(category, HeapCategory::Mixed);
-                    // Emit inline drop glue for ADT fields before dec'ing
-                    // the scrutinee itself.
-                    self.emit_inline_drop_glue(scrut_val, scrut_ty, dealloc, needs_guard);
-
-                    heap::emit_rc_dec_guarded(
-                        &mut self.builder,
-                        self.module,
-                        scrut_val,
-                        dealloc,
-                        None,
-                        needs_guard,
+                    self.emit_rc_dec_with_inline_drop_glue(
+                        scrut_val, &scrut_ty, dealloc, needs_guard,
                     );
                 }
             }
@@ -340,7 +334,30 @@ impl<'a> FnCompiler<'a> {
         self.in_tail_position = match_ctx.saved_tail;
         let skip_var = Self::return_var_in_scope(body, self.scope_stack.last());
         let body_val = self.compile_expr(body)?;
-        self.protect_return_value(&skip_var, body_val, body);
+
+        // Auto-upgrade: if the return value is a borrowed var, inc it to
+        // create an owning reference. Borrowed vars share the scrutinee's
+        // reference, but the return value must survive the scrutinee's
+        // eventual dec. This is the sketch's "auto-upgrade borrowed on return".
+        if let Some(ref sv) = skip_var
+            && self.borrowed_vars.contains(sv)
+        {
+            if let Some(ty) = self.variable_types.get(sv).cloned() {
+                let category = HeapCategory::classify(&ty, Some(self.ctx.type_defs));
+                match category {
+                    HeapCategory::AlwaysHeap => {
+                        heap::emit_rc_inc(&mut self.builder, body_val);
+                    }
+                    HeapCategory::Mixed => {
+                        heap::emit_rc_inc_guarded(&mut self.builder, body_val);
+                    }
+                    HeapCategory::NeverHeap => {}
+                }
+            }
+        } else {
+            self.protect_return_value(&skip_var, body_val, body);
+        }
+
         self.pop_scope_with_cleanup(skip_var.as_ref());
         self.builder
             .ins()
@@ -405,10 +422,16 @@ impl<'a> FnCompiler<'a> {
     }
 
     /// Extract fields from a data constructor and bind them as local
-    /// variables, emitting rc_inc for heap-typed fields.
+    /// variables. Field bindings are BORROWED from the scrutinee.
     ///
-    /// Each heap-typed field gets its own RC reference so that when the
-    /// parent ADT is dec'd/freed, the extracted binding survives.
+    /// Borrowed semantics: no inc on extraction, no dec at scope exit.
+    /// The scrutinee's RC management handles field cleanup when the
+    /// scrutinee itself is freed (via drop glue in the dealloc path).
+    ///
+    /// This prevents double-free: if a field is independently passed to
+    /// a consuming function (which inc's/dec's it), the field's RC
+    /// tracks those independent references correctly. The scrutinee's
+    /// eventual dealloc-path drop glue provides the final dec.
     fn bind_data_pattern_fields(
         &mut self,
         bindings: &[Symbol],
@@ -422,23 +445,14 @@ impl<'a> FnCompiler<'a> {
                 HeapAdt::field_offset(i),
             ); // field_i: i64
 
-            // AlwaysHeap: unconditional inc.
-            // Mixed: guarded inc (skip for bare nullary tags).
-            // NeverHeap: no inc needed.
+            // Record the field type for RC classification (needed by
+            // protect_return_value and consuming arg lists).
             if let Some(ft) = field_types.get(i) {
                 let category = HeapCategory::classify(ft, Some(self.ctx.type_defs));
-                match category {
-                    HeapCategory::AlwaysHeap => {
-                        heap::emit_rc_inc(&mut self.builder, field_val);
-                        self.variable_types.insert(binding_name.clone(), ft.clone());
-                    }
-                    HeapCategory::Mixed => {
-                        heap::emit_rc_inc_guarded(&mut self.builder, field_val);
-                        self.variable_types.insert(binding_name.clone(), ft.clone());
-                    }
-                    HeapCategory::NeverHeap => {
-                        // No RC management needed.
-                    }
+                if matches!(category, HeapCategory::AlwaysHeap | HeapCategory::Mixed) {
+                    self.variable_types.insert(binding_name.clone(), ft.clone());
+                    // Mark as borrowed: skip scope-exit dec (owner handles cleanup).
+                    self.mark_borrowed(binding_name);
                 }
             }
 

@@ -4,8 +4,8 @@
 
 use cranelisp_types::{Defn, Sexp};
 
-/// Named constant for GOT table size.
-pub const GOT_TABLE_SIZE: usize = 1024;
+/// Named constant for GOT table size — re-exported from cranelisp-types (single source of truth).
+pub use cranelisp_types::GOT_TABLE_SIZE;
 
 // M-1 resolved: NULLARY_TAG_THRESHOLD imported from cranelisp-types (single source of truth).
 pub use cranelisp_types::NULLARY_TAG_THRESHOLD;

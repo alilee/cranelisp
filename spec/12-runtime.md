@@ -336,3 +336,56 @@ Platform functions (loaded via `(platform "name")`) use the C calling convention
 Platform functions that perform side effects MUST return `IO _`. The implementation MUST provide a mechanism for platform functions to allocate Cranelisp values (strings, IO wrappers) through a host callback interface.
 
 The specific details of the platform loading mechanism and host callback interface are implementation-defined.
+
+## 12.9 Value Display Format [R4 S20]
+
+This section defines the **canonical value display format** — the standard string representation of Cranelisp values. This format is used by the REPL for displaying expression results, by the `trace` special form for formatting traced arguments and return values, and by the `Display` trait's default implementations.
+
+### 12.9.1 Format by Type [R4 S20]
+
+Each type has a defined display representation:
+
+| Type | Format | Examples |
+|---|---|---|
+| `Int` | Decimal integer, with leading `-` for negative | `42`, `-7`, `0` |
+| `Bool` | `true` or `false` | `true`, `false` |
+| `Float` | Decimal float, with leading `-` for negative. Trailing `.0` MUST be included for whole numbers to distinguish from Int. | `3.14`, `-0.5`, `1.0` |
+| `String` | The string contents surrounded by double quotes, with escape sequences for special characters (`\"`, `\\`, `\n`, `\t`) | `"hello"`, `"line1\nline2"` |
+| Nullary ADT constructor | `Type.Constructor` using dot notation | `Color.Red`, `Option.None` |
+| Data ADT constructor | `(Type.Constructor field1 field2 ...)` — constructor in dot notation, fields formatted recursively, space-separated, wrapped in parentheses | `(Option.Some 42)`, `(Cons 1 (Cons 2 Nil))` |
+| `Vec` | `[elem1, elem2, ...]` — elements formatted recursively, comma-separated | `[1, 2, 3]`, `["a", "b"]` |
+| Closure / function value | `<closure>` | `<closure>` |
+| `IO` | Displayed as the ADT value after trampoline execution resolves to `Pure` | `(IO.Pure 42)` |
+| `Trace` | Displayed as the ADT value | `(Trace.TraceCall ...)` |
+
+### 12.9.2 Qualified Names in Display [R4 S20]
+
+Constructor names in display output MUST use the `Type.Constructor` dot notation without module qualification of the type name. Field values are formatted recursively using this same format.
+
+When the display format is used in a context that includes a type prefix (e.g., REPL output), the type prefix carries the module qualification. The value portion uses bare `Type.Constructor` names:
+
+```
+:(user/Option primitives/Int) (Option.Some 42)
+```
+
+Here `user/Option` and `primitives/Int` are in the type prefix; `Option.Some` and `42` are in the value display.
+
+### 12.9.3 Elision [R4 S20]
+
+Implementations SHOULD truncate displayed values that exceed a reasonable size to keep output manageable and trace overhead bounded. Specifically:
+
+- **Collections** (Vec, List): When a collection contains more than an implementation-defined threshold of elements (SHOULD default to approximately 10), the display SHOULD truncate with an ellipsis indicator: `[1, 2, 3, ... (997 more)]`.
+- **Nesting depth**: When ADT values are nested beyond an implementation-defined depth threshold (SHOULD default to approximately 4 levels), inner values SHOULD be replaced with `...`.
+- **String length**: When a string value exceeds an implementation-defined character threshold, the display SHOULD truncate: `"very long str..."`.
+
+Elision is purely a display concern — it does not affect the actual value. The elision thresholds are implementation-defined; the examples above are illustrative, not normative.
+
+Elision applies uniformly: the same rules apply to REPL output, trace parameter/result formatting, and any other use of the canonical value display format.
+
+### 12.9.4 Relationship to REPL Output [R4 S20]
+
+The REPL displays expression results using the format `:QualifiedType value` where `value` follows this canonical display format. See the REPL experience specification for the full REPL output format including type prefixes, definition feedback, and related symbol display.
+
+### 12.9.5 Relationship to Trace [R4 S20]
+
+The `trace` special form (see [Section 4.12](04-expressions.md#412-trace-expression)) captures function arguments and return values as strings using this canonical display format. The `params` and `result` fields of the `TraceCall` constructor contain formatted value strings conforming to this section.

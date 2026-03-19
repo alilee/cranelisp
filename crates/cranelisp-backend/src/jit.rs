@@ -120,6 +120,58 @@ fn register_intrinsics(builder: &mut JITBuilder) {
         "runtime/run_io",
         cranelisp_runtime::cranelisp_run_io as *const u8,
     );
+
+    // Trace runtime symbols (Ring 4: trace special form)
+    builder.symbol(
+        "cranelisp_trace_enter",
+        cranelisp_runtime::cranelisp_trace_enter as *const u8,
+    );
+    builder.symbol(
+        "cranelisp_trace_exit",
+        cranelisp_runtime::cranelisp_trace_exit as *const u8,
+    );
+    builder.symbol(
+        "cranelisp_trace_swap_got",
+        cranelisp_runtime::cranelisp_trace_swap_got as *const u8,
+    );
+    builder.symbol(
+        "cranelisp_trace_restore_got",
+        cranelisp_runtime::cranelisp_trace_restore_got as *const u8,
+    );
+    builder.symbol(
+        "cranelisp_collect_trace",
+        cranelisp_runtime::cranelisp_collect_trace as *const u8,
+    );
+    builder.symbol(
+        "cranelisp_trace_first_child_nanos",
+        cranelisp_runtime::cranelisp_trace_first_child_nanos as *const u8,
+    );
+    builder.symbol(
+        "cranelisp_trace_format",
+        cranelisp_runtime::cranelisp_trace_format as *const u8,
+    );
+
+    // Trace ADT field accessors (extern primitives for tname/tparams/tresult/tchildren/tnanos)
+    builder.symbol(
+        "cranelisp_trace_name",
+        cranelisp_runtime::cranelisp_trace_name as *const u8,
+    );
+    builder.symbol(
+        "cranelisp_trace_params",
+        cranelisp_runtime::cranelisp_trace_params as *const u8,
+    );
+    builder.symbol(
+        "cranelisp_trace_result",
+        cranelisp_runtime::cranelisp_trace_result as *const u8,
+    );
+    builder.symbol(
+        "cranelisp_trace_children",
+        cranelisp_runtime::cranelisp_trace_children as *const u8,
+    );
+    builder.symbol(
+        "cranelisp_trace_nanos",
+        cranelisp_runtime::cranelisp_trace_nanos as *const u8,
+    );
 }
 
 /// JIT module wrapper. Owns the Cranelift JIT module and provides
@@ -343,6 +395,7 @@ impl Jit {
             got_slots,
             got_base_ptr,
             cross_module_got,
+            traced_fns: None,
             alloc_func_id: self.alloc_func_id,
             dealloc_func_id: self.dealloc_func_id,
             alloc_string_func_id: self.alloc_string_func_id,

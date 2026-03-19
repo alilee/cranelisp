@@ -1094,7 +1094,9 @@ fn build_list_expr(
                 ))
             }
             // Non-Ring-0 expression forms
-            "trace" => return Err(parse_err("trace not yet supported (Ring 4)", *head_span)),
+            // NOTE: `trace` is NOT a parser keyword. It has regular call syntax
+            // and flows through the module system as a name in `primitives`.
+            // The typechecker handles it when the callee resolves to a special form.
             "run-tests" => {
                 return Err(parse_err("run-tests not yet supported (Ring 4)", *head_span))
             }
@@ -1331,6 +1333,10 @@ fn build_vec_lit(
     let elements = build_args_with_annotations(children, expander)?;
     Ok(Expr::VecLit { elements, span })
 }
+
+// ---------------------------------------------------------------------------
+// Trace
+// ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
 // Annotation-aware expression building
@@ -2018,11 +2024,21 @@ mod tests {
 
     // -- Rejected forms --
 
-    // spec: 02-grammar §2.3 — trace not yet implemented
+    // spec: spec/04-expressions.md §4.12 — trace parses as regular Apply
+    // trace is NOT a parser keyword — it flows through the module system.
+    // The typechecker handles it when the callee resolves to primitives/trace.
     #[test]
-    fn test_reject_trace() {
-        let err = parse_and_build_expr("(trace 42)").unwrap_err();
-        assert!(err.message().contains("trace not yet supported"));
+    fn test_trace_parses_as_apply() {
+        match parse_and_build_expr("(trace 42)").unwrap() {
+            Expr::Apply { callee, args, .. } => {
+                match *callee {
+                    Expr::Var { ref name, .. } => assert_eq!(name.as_str(), "trace"),
+                    other => panic!("expected Var callee, got {other:?}"),
+                }
+                assert_eq!(args.len(), 1);
+            }
+            other => panic!("expected Apply, got {other:?}"),
+        }
     }
 
     // spec: 02-grammar §2.3.9 — vec keyword form not yet implemented

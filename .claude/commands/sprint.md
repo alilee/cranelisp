@@ -170,29 +170,32 @@ Every sprint follows this sequential flow. `/sprint` drives the process; other s
 
 `/sprint` starts waves sequentially. Within each wave, skills run in parallel.
 
+**Terminology note**: "Review" in step/phase names (e.g., "design review", "build/test/review") means *iterate until settled* — the step repeats until quality criteria are met. This is distinct from the `/review` skill, which is a specific code-quality assessment tool invoked during these iterative steps. When this document means the `/review` skill specifically, it uses the `/review` notation.
+
 **Wave ordering principle**: Design precedes implementation precedes showcase. The standard wave sequence is:
 1. **Design wave** — compiler skills write/update design docs in `design/{skill}/`
-2. **Design review wave** — `/arch` reviews design docs for architectural coherence; `/qa` derives test cases from design docs and updates ring test plans
-3. **Implementation + test preparation wave(s)** — compiler skills write code; `/qa` writes integration tests for the full spec surface in parallel (see below)
-4. **Build/test/review cycle** — run `cargo test`, fix failures, `/review` code assessment. Iterate until green + clean.
+2. **Design review wave** — `/arch` reviews design docs for architectural coherence; `/qa` derives test cases from design docs and updates ring test plans. Iterate: revise docs, re-review, until `/arch` approves.
+3. **Implementation + review wave(s)** — compiler skills write code; `/qa` writes integration tests; `/review` assesses new code for quality — all within the same wave (see below)
+4. **Build/test/review cycle** — run `cargo test`, fix failures, `/review` assesses fixes, iterate until all tests pass and all code quality findings are resolved.
 5. **Showcase wave** — user-proxy skills expose the progress: `/port` builds showcase demos, `/examples` updates learning sequence, `/repl` validates interactive experience, `/docs` updates user-facing docs. This wave produces the `repl/demos/*.demo` files that gate sprint close.
 
 A compiler skill MUST NOT begin implementation until its design doc for the sprint scope exists and has been reviewed by `/arch`. If a design review surfaces issues that change the sprint scope, `/sprint` pauses to re-scope with user approval.
 
 A sprint MUST NOT close until user-proxy skills have demonstrated that the new capabilities are usable. The showcase wave is not optional polish — it is the sprint's acceptance test from the buyer's perspective.
 
-15. **Implementation + test preparation (parallel)**:
+15. **Implementation + test preparation + `/review` (parallel within each wave)**:
     - **Compiler skills** (`/frontend`, `/typecheck`, `/backend`, `/platform`) write code according to specs, design docs, and their own plans.
-    - **`/qa` writes integration tests in parallel**, covering the **full spec surface** of the sprint scope — not just the parts that are implemented. Tests are derived from the spec and design docs, not from the implementation. Tests that fail because the implementation is incomplete are committed as `#[ignore]` with a reason string naming the gap. This is the primary mechanism for making implementation gaps visible before the verification wave.
+    - **`/qa` writes integration tests in parallel**, covering the **full spec surface** of the sprint scope — not just the parts that are implemented. Tests are derived from the spec and design docs, not from the implementation. Tests that fail because the implementation is incomplete are committed as `#[ignore]` with a reason string naming the gap. This is the primary mechanism for making implementation gaps visible before the build/test/review cycle.
+    - **`/review` assesses new code within the same wave** that produced it. `/review` independently inspects code for correctness, adherence to design docs, and structural quality. It runs on new code as part of the implementation wave — not deferred to a later wave. Findings are classified as Blocker (B), Important (I), or Suggestion (S). Every wave that produces code includes `/review`.
 
     **Why parallel, not sequential:** When `/qa` runs only after implementation, tests are unconsciously shaped by what exists — testing the code, not the spec. Running `/qa` in parallel forces spec-first test design. Some tests will fail initially; that is expected and correct. The subsequent build/test/review cycle resolves failures. (Sprint 16 lesson: `/qa` ran post-implementation, wrote 25 passing tests that covered only `Pure`/`bind`, missed that `print` — the sprint's headline goal — had no Effect codegen. A parallel `/qa` would have written a `print` test from the spec, gotten `#[ignore]`, and the gap would have been visible before "done" was declared.)
 
-16. **Build/test/review cycle**: After compiler skills complete their implementation:
+16. **Build/test/review cycle** (iterative until settled):
     a. `/qa` un-ignores tests that should now pass and runs the full suite.
     b. Failures are triaged: implementation bug (file FIXME on owning skill) vs test bug (fix test).
-    c. `/review` inspects code for quality, adherence to design docs, and correctness. Findings classified as Blocker (B), Important (I), or Suggestion (S).
-    d. Compiler skills address Blockers and Important findings.
-    e. Iterate: re-test, re-review, until all tests pass and all B+I findings are resolved.
+    c. Compiler skills address `/review` findings (Blockers and Important) and test failures.
+    d. `/review` assesses any fix code — all code changes get a `/review` pass, including fixes.
+    e. Iterate: re-test, `/review` re-assesses, until all tests pass and all B+I findings are resolved.
     f. Any tests still `#[ignore]` at cycle end represent genuine implementation gaps — these block sprint close per the deferral principles (defects are not deferrable).
 
 17. **FIXME gate**: Before advancing to the next wave, `/sprint` scans all files produced or modified by the current wave for unresolved `FIXME(/skill-name)` comments. Outstanding FIXMEs block advancement.

@@ -13,7 +13,7 @@ Registered in the `primitives` module. Available in all programs via `(import [p
 | `String` | Immutable UTF-8 string | Heap-allocated byte sequence | [Tested tests/ring1.rs::string_concat]
 | `Float` | IEEE 754 double-precision | 64-bit floating point | [Tested tests/ring0.rs::float_arithmetic]
 
-## A.2 Built-in Compound Types [R3 S8]
+## A.2 Built-in Compound Types [Tested tests/ring1.rs::vec_literal_int, tests/io.rs::io_pure_int_type, tests/macros.rs::macro_basic_repl]
 
 Registered in the `primitives` and `macros` synthetic modules.
 
@@ -21,10 +21,11 @@ Registered in the `primitives` and `macros` synthetic modules.
 |---|---|---|---|
 | `(Vec a)` | `primitives` | Built-in | Resizable array, element access via extern primitives | [Tested tests/ring1.rs::vec_len_three]
 | `(IO a)` | `primitives` | Compiler-seeded ADT | Effectful computation; constructors `Pure`, `Effect`, `Bind` | [R4 S9]
-| `Sexp` | `macros` | Compiler-seeded ADT | S-expression value for macro system | [R3 S8]
-| `(SList a)` | `macros` | Compiler-seeded ADT | Cons-list for S-expression manipulation | [R3 S8]
+| `Trace` | `primitives` | Compiler-seeded ADT | Execution trace tree; single constructor `TraceCall` with fields `name` (String), `params` (SList String), `result` (String), `children` (SList Trace), `nanos` (Int). Not auto-imported; requires explicit import. | [Tested tests/ring4_trace.rs::trace_type_importable_from_primitives]
+| `Sexp` | `macros` | Compiler-seeded ADT | S-expression value for macro system | [Tested tests/macros.rs::macro_basic_repl]
+| `(SList a)` | `macros` | Compiler-seeded ADT | Cons-list for S-expression manipulation | [Tested tests/macros.rs::macro_basic_repl]
 
-## A.3 Primitive Functions (Host-Implemented) [R3 S8]
+## A.3 Primitive Functions (Host-Implemented) [Tested tests/ring0.rs::hello, tests/ring1.rs::str_concat, tests/ring1.rs::int_to_string]
 
 Primitive functions are implemented in the host language and registered in the `primitives` module. They are the low-level substrate; standard library functions and trait implementations are built on top of them.
 
@@ -113,7 +114,7 @@ Extern primitives are called via the foreign function interface.
 
 | Function | Type | Description |
 |---|---|---|
-| `quote-sexp` | `(Fn [Sexp] Sexp)` | Convert a runtime `Sexp` value to constructor source code | [R3 S8]
+| `quote-sexp` | `(Fn [Sexp] Sexp)` | Convert a runtime `Sexp` value to constructor source code | [Tested tests/macros.rs::macro_quasiquote_repl]
 
 **Vec operations**:
 
@@ -151,3 +152,4 @@ All primitive functions (§A.3) and special forms (§A.4) MUST have docstrings a
 | `import` | Name import: `(import [module [names]])` | [Tested tests/ring2.rs::import_specific_names]
 | `export` | Name re-export: `(export [module [names]])` | [Tested crates/cranelisp-frontend/src/module_extract.rs::test_export_specific]
 | `platform` | Platform DLL declaration (entry module only): `(platform stdio)` | [R4 S9]
+| `trace` | Execution trace: `(trace expr)` — evaluates `expr` with call instrumentation, returns `Trace` ADT | [R4 S20]

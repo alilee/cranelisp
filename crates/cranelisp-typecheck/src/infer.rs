@@ -43,7 +43,22 @@ impl TypeChecker {
                 callee,
                 args,
                 span,
-            } => self.infer_apply(callee, args, *span),
+            } => {
+                // `trace` is not a parser keyword — it arrives as Apply.
+                // Intercept when callee is the `trace` special form from primitives.
+                if let Expr::Var { name, .. } = callee.as_ref() {
+                    if &**name == "trace" && self.is_trace_in_scope() {
+                        if args.len() != 1 {
+                            return Err(CranelispError::TypeError {
+                                message: "trace requires exactly one expression".into(),
+                                span: *span,
+                            });
+                        }
+                        return self.infer_trace(&args[0], *span);
+                    }
+                }
+                self.infer_apply(callee, args, *span)
+            }
             Expr::Match {
                 scrutinee,
                 arms,
@@ -58,10 +73,7 @@ impl TypeChecker {
 
             Expr::StringLit { span, .. } => self.infer_string_lit(*span),
             Expr::VecLit { elements, span } => self.infer_vec_lit(elements, *span),
-            Expr::Trace { span, .. } => Err(CranelispError::TypeError {
-                message: "trace not supported in Ring 0".into(),
-                span: *span,
-            }),
+            Expr::Trace { body, span, .. } => self.infer_trace(body, *span),
             Expr::RunTests { span, .. } => Err(CranelispError::TypeError {
                 message: "run-tests not supported in Ring 0".into(),
                 span: *span,
@@ -634,6 +646,35 @@ impl TypeChecker {
         let vec_type = Type::ADT("Vec".into(), vec![elem_type]);
         self.record_expr_type(span, vec_type.clone());
         Ok(vec_type)
+    }
+
+    /// Infer the type of `(trace expr)`.
+    ///
+    /// Check whether `trace` is in scope — i.e., imported from `primitives`.
+    /// `trace` is a module-scoped special form, not a parser keyword.
+    fn is_trace_in_scope(&self) -> bool {
+        // Check if `trace` resolves in the current module to the primitives entry.
+        // It could be imported via (import [primitives [trace]]) or qualified primitives/trace.
+        self.lookup(&Symbol::from("trace")).is_some()
+    }
+
+    /// The body expression is inferred normally (for side effects on the type
+    /// environment, e.g. unification constraints), but the result type is
+    /// always `Trace` regardless of the body's type.
+    ///
+    /// See spec §3.2.4 (Trace typing rule) and §4.12.1.
+    fn infer_trace(
+        &mut self,
+        body: &Expr,
+        span: Span,
+    ) -> Result<Type, CranelispError> {
+        // Infer the body — we don't use its type, but inference must run
+        // to propagate constraints and detect errors within the body.
+        let _body_ty = self.infer_expr(body)?;
+
+        let trace_type = Type::ADT("Trace".into(), vec![]);
+        self.record_expr_type(span, trace_type.clone());
+        Ok(trace_type)
     }
 
     fn infer_annotate(
