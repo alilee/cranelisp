@@ -38,8 +38,9 @@ stdlib/
   collections/either.cl   ; Either type: Left, Right + operations
   collections/list.cl     ; List type + list macro + operations
   collections/vec.cl      ; vec macro + Vec utility functions
-  testing.cl              ; shell: (mod assertions)
+  testing.cl              ; shell: (mod assertions) (mod runner)
   testing/assertions.cl   ; assert-eq, assert-true, assert-false
+  testing/runner.cl       ; check macro, run-tests-pass-default, run-tests-fail-default, run-tests-report
   core.cl                 ; shell for core.syntax + core.io (+ re-exports)
   core/syntax.cl          ; SList helpers (standalone, not prelude dep)
   core/io.cl              ; IO combinators: pure, >>, map-io, when-io, unless-io, sequence-io
@@ -59,6 +60,7 @@ stdlib/
 - Default trait with primitive impls
 - Pair and Either types with operations
 - Testing assertions (assert-eq, assert-true, assert-false)
+- Testing runner (check macro, run-tests-pass-default, run-tests-fail-default, run-tests-report)
 - Threading macros (`->`, `->>`) in `fn/threading.cl`
 - String operations + `str` macro in `text/string.cl`
 - Int operations (rem, abs, sign, negate, even?, odd?, min-int, max-int, clamp)
@@ -92,6 +94,7 @@ stdlib/
 - `num.float`: abs-float, sign-float, negate-float, min-float, max-float, clamp-float
 - `text.string`: blank?, repeat-str, index-of, reverse-str, pad-left, pad-right
 - `testing.assertions`: assert-eq, assert-true, assert-false
+- `testing.runner`: check, run-tests-pass-default, run-tests-fail-default, run-tests-report
 - `derive`: derive, derive-Eq, derive-Ord, derive-Display
 - `core.io`: >>, map-io, when-io, unless-io, sequence-io
 
@@ -99,7 +102,7 @@ stdlib/
 
 Traits: Eq, Ord, Num, Display (with =, !=, <, >, <=, >=, +, -, *, /, show)
 Types: Option (None, Some), Result (Ok, Err), List (Nil, Cons, empty?)
-Functions: pure
+Functions: pure, str-eq
 Macros: ->, ->>, vec, when, unless, const, const-, do, cond, list, str, case, def, def-, bind!
 
 ## Conventions

@@ -266,9 +266,47 @@ impl TypeChecker {
 
         let ret_ty = self.fresh_var();
 
-        // Unify callee with Fn(arg_types, ret_ty)
+        // Unify callee with Fn(arg_types, ret_ty).
+        // On failure, try auto-curry: callee may have more params than provided args.
         let expected_fn = Type::Fn(arg_types.clone(), Box::new(ret_ty.clone()));
-        self.unify(&callee_ty, &expected_fn, span)?;
+        let unify_result = self.unify(&callee_ty, &expected_fn, span);
+
+        if let Err(ref _e) = unify_result {
+            if let Some(ty) = self.try_auto_curry(callee, &callee_ty, &arg_types, span)? {
+                // Auto-curry succeeded. If the callee is a trait method or builtin,
+                // resolve it now so the wrapper function can call the concrete
+                // implementation (e.g., "+" → "add-i64" for Int).
+                if let Expr::Var { name, .. } = callee {
+                    // Use the FULL param types from the callee's resolved type
+                    // (not just the applied args) for trait resolution.
+                    let resolved_callee = self.apply_subst(&callee_ty);
+                    if let Type::Fn(full_params, _) = &resolved_callee {
+                        let resolved_params: Vec<Type> = full_params
+                            .iter()
+                            .map(|t| self.apply_subst(t))
+                            .collect();
+                        let resolution = if let Some(r) =
+                            self.try_resolve_trait_method(name, &resolved_params, span)
+                        {
+                            Some(r)
+                        } else {
+                            self.resolve_primitive_jit_name(name)
+                                .map(|jit_name| ResolvedCall::BuiltinFn { name: jit_name })
+                        };
+                        if resolution.is_some() {
+                            // Attach to the last pending_auto_curry entry (the one
+                            // just pushed by try_auto_curry).
+                            if let Some(entry) = self.pending_auto_curry.last_mut() {
+                                entry.5 = resolution;
+                            }
+                        }
+                    }
+                }
+                return Ok(ty);
+            }
+            // Not auto-curryable — propagate original error.
+            unify_result?;
+        }
 
         // Resolve the call: trait method, builtin primitive, or user function.
         if let Expr::Var { name, .. } = callee {
@@ -295,6 +333,63 @@ impl TypeChecker {
         Ok(resolved)
     }
 
+    /// Try auto-curry: if the callee has more params than supplied args,
+    /// unify applied args with the first N params and return the curried
+    /// return type `(Fn [remaining_params...] ret)`.
+    ///
+    /// Returns `Some(curry_type)` on success, `None` if not applicable.
+    /// The caller should propagate the original unification error when None.
+    fn try_auto_curry(
+        &mut self,
+        callee: &Expr,
+        callee_ty: &Type,
+        arg_types: &[Type],
+        span: Span,
+    ) -> Result<Option<Type>, CranelispError> {
+        // Auto-curry requires at least one applied arg (zero args = bare ref, not curry).
+        if arg_types.is_empty() {
+            return Ok(None);
+        }
+
+        // Resolve the callee type through substitution to get concrete Fn type.
+        let resolved_callee = self.apply_subst(callee_ty);
+        let (params, ret) = match &resolved_callee {
+            Type::Fn(params, ret) if arg_types.len() < params.len() => (params, ret),
+            _ => return Ok(None),
+        };
+
+        // Unify each applied arg with the corresponding parameter.
+        for (arg_ty, param_ty) in arg_types.iter().zip(params.iter()) {
+            self.unify(arg_ty, param_ty, span)?;
+        }
+
+        // Build curry return type from remaining params.
+        let remaining: Vec<Type> = params[arg_types.len()..]
+            .iter()
+            .map(|t| self.apply_subst(t))
+            .collect();
+        let curry_ret = Type::Fn(remaining, ret.clone());
+
+        // Record auto-curry resolution for the backend.
+        // The trait_resolution (6th element) starts as None; it is filled in
+        // by infer_apply after try_auto_curry returns (if types are concrete),
+        // or by resolve_auto_curry when draining (if types get pinned later).
+        if let Expr::Var { name, .. } = callee {
+            self.pending_auto_curry.push((
+                span,
+                name.clone(),
+                arg_types.len(),
+                params.len(),
+                callee_ty.clone(),
+                None,
+            ));
+        }
+
+        let ty = self.apply_subst(&curry_ret);
+        self.record_expr_type(span, ty.clone());
+        Ok(Some(ty))
+    }
+
     /// Resolve a name to its JIT-level primitive name, if it is a primitive.
     ///
     /// Handles both unqualified names (looked up in current module) and
@@ -304,7 +399,7 @@ impl TypeChecker {
     ///
     /// This is needed because the quasiquote expander emits `macros/sconcat`
     /// calls with the module prefix.
-    fn resolve_primitive_jit_name(&self, name: &str) -> Option<Symbol> {
+    pub(crate) fn resolve_primitive_jit_name(&self, name: &str) -> Option<Symbol> {
         use cranelisp_types::{DefKind, ModuleFullPath};
 
         // Try qualified name: "module/name" -> look up in target module
@@ -1144,11 +1239,11 @@ mod tests {
         assert!(tc.infer_expr(&expr).is_err(), "add-i64 with float args should fail");
     }
 
-    // spec: 03-types §3.8.3 — wrong arity in function application fails
+    // spec: 04-expressions §4.6.3 — too few args triggers auto-curry
     #[test]
-    fn test_infer_apply_wrong_arity() {
+    fn test_infer_apply_auto_curry() {
         let mut tc = tc();
-        // (add-i64 1) -- too few args
+        // (add-i64 1) -- too few args, auto-curry returns Fn([Int], Int)
         let expr = Expr::Apply {
             callee: Box::new(Expr::Var {
                 name: Symbol::from("add-i64"),
@@ -1159,6 +1254,35 @@ mod tests {
                 span: span(9, 10),
             }],
             span: span(0, 11),
+        };
+        let ty = tc.infer_expr(&expr).expect("auto-curry should succeed");
+        let resolved = tc.apply_subst(&ty);
+        match resolved {
+            Type::Fn(params, ret) => {
+                assert_eq!(params.len(), 1, "curried fn should take 1 remaining arg");
+                assert_eq!(params[0], Type::Int);
+                assert_eq!(*ret, Type::Int);
+            }
+            other => panic!("expected Fn type, got {:?}", other),
+        }
+    }
+
+    // spec: 03-types §3.8.3 — too many args is still an arity error
+    #[test]
+    fn test_infer_apply_too_many_args() {
+        let mut tc = tc();
+        // (add-i64 1 2 3) -- too many args
+        let expr = Expr::Apply {
+            callee: Box::new(Expr::Var {
+                name: Symbol::from("add-i64"),
+                span: span(1, 8),
+            }),
+            args: vec![
+                Expr::IntLit { value: 1, span: span(9, 10) },
+                Expr::IntLit { value: 2, span: span(11, 12) },
+                Expr::IntLit { value: 3, span: span(13, 14) },
+            ],
+            span: span(0, 15),
         };
         assert!(tc.infer_expr(&expr).is_err());
     }

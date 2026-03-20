@@ -2,5 +2,7 @@
 ;;
 ;; Submodules:
 ;;   testing.assertions — assert-eq, assert-true, assert-false
+;;   testing.runner     — check macro, run-tests helpers
 
 (mod assertions)
+(mod runner)

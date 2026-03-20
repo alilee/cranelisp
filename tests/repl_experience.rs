@@ -1030,23 +1030,16 @@ fn wrong_arity_too_many_args() {
     assert_eq!(repl_eval(&mut session, "(one-arg 42)"), 42);
 }
 
-// spec: repl/spec.md §5.1 — wrong arity too few args
+// spec: 04-expressions §4.6.3 — too few args triggers auto-curry in REPL
 #[test]
-fn wrong_arity_too_few_args() {
+fn auto_curry_too_few_args_repl() {
     let mut session = repl_session();
     session
         .eval("(defn two-args [x y] (add-i64 x y))")
         .unwrap();
-    match session.eval("(two-args 1)") {
-        Err(ref e) => {
-            let msg = e.message();
-            assert!(
-                !msg.is_empty(),
-                "arity error should have a message"
-            );
-        }
-        Ok(_) => panic!("expected arity error"),
-    }
+    // With auto-currying, (two-args 1) returns a closure, not an error.
+    session.eval("(two-args 1)").expect("auto-curry should succeed");
+    // Full application still works.
     assert_eq!(repl_eval(&mut session, "(two-args 1 2)"), 3);
 }
 

@@ -388,3 +388,111 @@ fn trace_is_value_not_effect() {
     assert_eq!(ty, Type::ADT("Trace".into(), vec![]));
     assert_ne!(val, 0, "trace value should be a heap pointer");
 }
+
+// =============================================================================
+// (run-tests init pass-fn fail-fn) special form — Ring 4
+//
+// The `(run-tests ...)` special form is defined in the AST (Expr::RunTests)
+// but NOT yet implemented in the frontend AST builder. The frontend currently
+// rejects it with "run-tests not yet supported (Ring 4)".
+//
+// These tests are written against the intended spec behavior and are #[ignore]
+// until the frontend/backend implement the special form.
+//
+// The working `/run-tests` slash command is tested in tests/e2e.rs.
+// =============================================================================
+
+// spec: run-tests special form — basic pass: single passing test, counter increments
+#[test]
+#[ignore = "run-tests special form not yet implemented in frontend AST builder (Ring 4)"]
+fn run_tests_basic_pass() {
+    let mut s = repl_session_with_test_prelude();
+    repl_eval(&mut s, "(import [primitives [trace Trace TraceCall]])");
+    // Define a test function returning None (pass)
+    repl_eval(&mut s, "(defn test-one [] None)");
+    // Run tests with a counter: pass-fn increments, fail-fn increments
+    let result = repl_eval(
+        &mut s,
+        "(run-tests 0 (fn [acc name nanos] (add-i64 acc 1)) (fn [acc name nanos reason trace] (add-i64 acc 100)))",
+    );
+    assert_eq!(result, 1, "one passing test should increment counter by 1");
+}
+
+// spec: run-tests special form — basic fail: single failing test
+#[test]
+#[ignore = "run-tests special form not yet implemented in frontend AST builder (Ring 4)"]
+fn run_tests_basic_fail() {
+    let mut s = repl_session_with_test_prelude();
+    repl_eval(&mut s, "(import [primitives [trace Trace TraceCall]])");
+    // Define a test function returning Some (fail)
+    repl_eval(&mut s, "(defn test-fail [] (Some \"expected failure\"))");
+    // pass-fn adds 1, fail-fn adds 100 — result should be 100
+    let result = repl_eval(
+        &mut s,
+        "(run-tests 0 (fn [acc name nanos] (add-i64 acc 1)) (fn [acc name nanos reason trace] (add-i64 acc 100)))",
+    );
+    assert_eq!(result, 100, "one failing test should invoke fail-fn");
+}
+
+// spec: run-tests special form — multiple tests accumulate correctly
+#[test]
+#[ignore = "run-tests special form not yet implemented in frontend AST builder (Ring 4)"]
+fn run_tests_multiple_tests() {
+    let mut s = repl_session_with_test_prelude();
+    repl_eval(&mut s, "(import [primitives [trace Trace TraceCall]])");
+    // Define 3 passing test functions
+    repl_eval(&mut s, "(defn test-a [] None)");
+    repl_eval(&mut s, "(defn test-b [] None)");
+    repl_eval(&mut s, "(defn test-c [] None)");
+    // Counter should reach 3
+    let result = repl_eval(
+        &mut s,
+        "(run-tests 0 (fn [acc name nanos] (add-i64 acc 1)) (fn [acc name nanos reason trace] (add-i64 acc 1)))",
+    );
+    assert_eq!(result, 3, "three passing tests should increment counter to 3");
+}
+
+// spec: run-tests special form — batch mode returns init unchanged
+#[test]
+#[ignore = "run-tests special form not yet implemented in frontend AST builder (Ring 4)"]
+fn run_tests_batch_returns_init() {
+    // In batch mode, run-tests returns init unchanged (no test discovery)
+    let src = r#"
+        (deftype (Option a) None (Some [:a val]))
+        (defn test-a [] None)
+        (defn main [] (run-tests 42 (fn [acc name nanos] acc) (fn [acc name nanos reason trace] acc)))
+    "#;
+    assert_eq!(compile_and_run_simple(src), 42);
+}
+
+// spec: run-tests special form — no test functions returns init
+#[test]
+#[ignore = "run-tests special form not yet implemented in frontend AST builder (Ring 4)"]
+fn run_tests_empty_no_tests() {
+    let mut s = repl_session_with_test_prelude();
+    repl_eval(&mut s, "(import [primitives [trace Trace TraceCall]])");
+    // No test-* functions defined — should return init (99) unchanged
+    let result = repl_eval(
+        &mut s,
+        "(run-tests 99 (fn [acc name nanos] (add-i64 acc 1)) (fn [acc name nanos reason trace] (add-i64 acc 1)))",
+    );
+    assert_eq!(result, 99, "with no test functions, init should be returned unchanged");
+}
+
+// spec: run-tests special form — mixed pass and fail
+#[test]
+#[ignore = "run-tests special form not yet implemented in frontend AST builder (Ring 4)"]
+fn run_tests_mixed_pass_fail() {
+    let mut s = repl_session_with_test_prelude();
+    repl_eval(&mut s, "(import [primitives [trace Trace TraceCall]])");
+    // 2 passing, 1 failing
+    repl_eval(&mut s, "(defn test-pass-1 [] None)");
+    repl_eval(&mut s, "(defn test-pass-2 [] None)");
+    repl_eval(&mut s, "(defn test-fail-1 [] (Some \"broken\"))");
+    // pass-fn adds 1, fail-fn adds 100
+    let result = repl_eval(
+        &mut s,
+        "(run-tests 0 (fn [acc name nanos] (add-i64 acc 1)) (fn [acc name nanos reason trace] (add-i64 acc 100)))",
+    );
+    assert_eq!(result, 102, "2 passes (2) + 1 fail (100) = 102");
+}

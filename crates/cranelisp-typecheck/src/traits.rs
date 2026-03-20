@@ -726,8 +726,14 @@ impl TypeChecker {
     ) -> Result<(MethodResolutions, HashMap<Span, Type>), CranelispError> {
         let saved_resolutions = std::mem::take(&mut self.method_resolutions);
         let saved_expr_types = std::mem::take(&mut self.expr_types);
+        let saved_pending_auto_curry = std::mem::take(&mut self.pending_auto_curry);
 
         self.check_defn_body_with_types(defn, concrete_param_types, concrete_ret_ty)?;
+
+        // Drain pending auto-curry entries into method_resolutions before
+        // capturing. During re-check, auto-curry sites push to
+        // pending_auto_curry but aren't yet in method_resolutions.
+        self.resolve_auto_curry();
 
         let resolutions = std::mem::take(&mut self.method_resolutions);
         let mono_expr_types: HashMap<Span, Type> = self.expr_types
@@ -737,6 +743,7 @@ impl TypeChecker {
 
         self.method_resolutions = saved_resolutions;
         self.expr_types = saved_expr_types;
+        self.pending_auto_curry = saved_pending_auto_curry;
 
         Ok((resolutions, mono_expr_types))
     }

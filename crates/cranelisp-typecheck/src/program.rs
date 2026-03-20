@@ -50,6 +50,9 @@ impl TypeChecker {
         // Pass 4: monomorphise constrained function call sites
         let mono_defns = self.pass4_monomorphise(&defns, &constrained_fn_names)?;
 
+        // Pass 5: resolve auto-curry sites into method_resolutions
+        self.resolve_auto_curry();
+
         let mut result = self.build_check_result();
         result.constrained_fn_names = constrained_fn_names.clone();
         result.mono_defns = mono_defns;
@@ -68,6 +71,9 @@ impl TypeChecker {
                 let ty = self.infer_expr(expr)?;
                 let resolved = self.apply_subst(&ty);
 
+                // Resolve auto-curry sites before building result.
+                self.resolve_auto_curry();
+
                 // Gap 4: scan for constrained-fn calls, monomorphise on demand
                 let mono_defns = self.monomorphise_expr_calls(expr)?;
 
@@ -78,6 +84,9 @@ impl TypeChecker {
 
             ReplInput::Defn(defn) => {
                 let (ty, scheme) = self.check_single_defn(defn)?;
+
+                // Resolve auto-curry sites before building result.
+                self.resolve_auto_curry();
 
                 // Scan defn body for constrained-fn calls, monomorphise on demand
                 let mono_defns = self.monomorphise_expr_calls(&defn.body)?;
@@ -667,6 +676,46 @@ impl TypeChecker {
     }
 
     // --- Result building ---
+
+    /// Drain pending auto-curry resolutions into method_resolutions.
+    ///
+    /// Each entry in `pending_auto_curry` records a call site where the
+    /// typechecker detected partial application (fewer args than params).
+    /// This converts them to `ResolvedCall::AutoCurry` entries that the
+    /// backend can use for codegen.
+    pub(crate) fn resolve_auto_curry(&mut self) {
+        let pending = std::mem::take(&mut self.pending_auto_curry);
+        for (span, name, applied_count, total_count, callee_ty, mut trait_resolution) in pending {
+            // If the trait resolution wasn't determined earlier (types were
+            // still unresolved vars during try_auto_curry), attempt it now.
+            // Later unifications (e.g., from a call site like `(make-adder 10)`)
+            // may have pinned the type vars to concrete types.
+            if trait_resolution.is_none() {
+                let resolved_callee = self.apply_subst(&callee_ty);
+                if let Type::Fn(full_params, _) = &resolved_callee {
+                    let resolved_params: Vec<Type> = full_params
+                        .iter()
+                        .map(|t| self.apply_subst(t))
+                        .collect();
+                    if let Some(r) = self.try_resolve_trait_method(&name, &resolved_params, span) {
+                        trait_resolution = Some(r);
+                    } else if let Some(jit_name) = self.resolve_primitive_jit_name(&name) {
+                        trait_resolution = Some(ResolvedCall::BuiltinFn { name: jit_name });
+                    }
+                }
+            }
+
+            self.method_resolutions.insert(
+                span,
+                ResolvedCall::AutoCurry {
+                    target_name: name,
+                    applied_count,
+                    total_count,
+                    trait_resolution: trait_resolution.map(Box::new),
+                },
+            );
+        }
+    }
 
     /// Resolve all recorded expr_types through the current substitution.
     fn resolve_expr_types(&self) -> HashMap<Span, Type> {

@@ -1,7 +1,11 @@
-//! Trace form codegen: `compile_trace` method for `FnCompiler`.
+//! Trace form codegen: `compile_trace` and `compile_run_tests` methods for `FnCompiler`.
 //!
 //! Implements `(trace body)` -- GOT-swap wrapper around a body expression,
 //! returning a `Trace` ADT representing the call tree.
+//!
+//! Implements `(run-tests init pass-fn fail-fn)` -- REPL-only special form that
+//! discovers test functions, runs each with GOT-swap tracing, and folds results
+//! via user-supplied pass/fail closures.
 //!
 //! Wrappers format parameter values and return values using
 //! `cranelisp_trace_format` (backed by the REPL's `format_result_value`).
@@ -11,7 +15,9 @@ use cranelift::codegen::ir::{StackSlotData, StackSlotKind};
 use cranelift::prelude::*;
 use cranelift_module::{FuncId, Linkage, Module};
 
-use cranelisp_types::{CompileMode, CranelispError, Expr, Span};
+use cranelisp_types::{CompileMode, CranelispError, Expr, Span, Symbol};
+
+use crate::heap::{self, HeapAdt};
 
 use super::{FnCompiler, TracedFnInfo};
 
@@ -376,4 +382,426 @@ impl<'a> FnCompiler<'a> {
 
         Ok(wrapper_func_id)
     }
+
+    // ── run-tests codegen ─────────────────────────────────────────────────
+
+    /// Compile a `(run-tests init pass-fn fail-fn)` expression.
+    ///
+    /// Discovers all `test-*` zero-arg functions in the traced functions list,
+    /// runs each with full GOT-swap tracing, and folds results:
+    /// - pass: `(pass-fn acc test-name nanos) -> acc`
+    /// - fail: `(fail-fn acc test-name nanos reason trace) -> acc`
+    ///
+    /// Returns the final accumulator value.
+    /// In batch mode (no per-module GOT), returns `init` unchanged.
+    pub(crate) fn compile_run_tests(
+        &mut self,
+        _modules: &[Symbol],
+        init: &Expr,
+        pass_fn: &Expr,
+        fail_fn: &Expr,
+        span: Span,
+    ) -> Result<Value, CranelispError> {
+        // Batch mode: no GOT available, return init unchanged.
+        if matches!(self.ctx.mode, CompileMode::Batch) {
+            return self.compile_expr(init);
+        }
+
+        // Get all traced functions from the compile context.
+        let traced = match self.ctx.traced_fns {
+            Some(fns) if !fns.is_empty() => fns,
+            _ => return self.compile_expr(init),
+        };
+
+        // Declare trace runtime externs.
+        let swap_id = self.declare_trace_extern("cranelisp_trace_swap_got", 4, true, span)?;
+        let restore_id =
+            self.declare_trace_extern("cranelisp_trace_restore_got", 2, false, span)?;
+        let collect_id =
+            self.declare_trace_extern("cranelisp_collect_trace", 0, true, span)?;
+        let nanos_id =
+            self.declare_trace_extern("cranelisp_trace_first_child_nanos", 1, true, span)?;
+
+        // Compile trace wrappers for ALL traced fns (not just test fns).
+        let all_wrappers = self.compile_all_trace_wrappers(traced, span)?;
+
+        // Identify test functions: zero-arg fns whose name starts with "test-".
+        let test_fns: Vec<(String, FuncId)> = all_wrappers
+            .iter()
+            .filter(|(tf, _)| tf.name.starts_with("test-") && tf.arity == 0)
+            .map(|(tf, wrapper_id)| (tf.name.clone(), *wrapper_id))
+            .collect();
+
+        if test_fns.is_empty() {
+            return self.compile_expr(init);
+        }
+
+        // Prepare GOT group data (compile-time arrays + JIT-runtime func_addr stores).
+        let got_group_data = self.prepare_got_groups(&all_wrappers, span)?;
+
+        // Compile fold expressions (not in tail position).
+        let saved_tail = self.in_tail_position;
+        self.in_tail_position = false;
+        let mut current_acc = self.compile_expr(init)?;
+        let pass_fn_val = self.compile_expr(pass_fn)?;
+        let fail_fn_val = self.compile_expr(fail_fn)?;
+        self.in_tail_position = saved_tail;
+
+        // Allocate test name strings (one per test, reused across iterations).
+        let test_name_vals: Vec<Value> = test_fns
+            .iter()
+            .map(|(name, _)| self.compile_string_lit(name, span))
+            .collect::<Result<Vec<_>, _>>()?;
+
+        // Per-test unrolled loop.
+        for (i, (_test_name, test_wrapper_id)) in test_fns.iter().enumerate() {
+            current_acc = self.emit_single_test_iteration(
+                current_acc,
+                pass_fn_val,
+                fail_fn_val,
+                test_name_vals[i],
+                *test_wrapper_id,
+                &got_group_data,
+                swap_id,
+                restore_id,
+                collect_id,
+                nanos_id,
+                span,
+            )?;
+        }
+
+        // Cleanup: dec pass_fn and fail_fn closures (consuming convention).
+        self.emit_closure_dec(pass_fn_val, span);
+        self.emit_closure_dec(fail_fn_val, span);
+
+        // Dec all test name strings (each was inc'd before closure calls,
+        // consuming closure dec'd it back to RC=1; final dec frees it).
+        if let Some(dealloc) = self.ctx.dealloc_func_id {
+            for &tname_val in &test_name_vals {
+                crate::heap::emit_rc_dec(
+                    &mut self.builder,
+                    self.module,
+                    tname_val,
+                    dealloc,
+                    None,
+                );
+            }
+        }
+
+        Ok(current_acc)
+    }
+
+    /// Compile trace wrappers for all traced functions.
+    /// Returns a list of (TracedFnInfo, wrapper FuncId) pairs.
+    fn compile_all_trace_wrappers<'b>(
+        &mut self,
+        traced: &'b [TracedFnInfo],
+        span: Span,
+    ) -> Result<Vec<(&'b TracedFnInfo, FuncId)>, CranelispError> {
+        let mut all_wrappers = Vec::with_capacity(traced.len());
+        for tf in traced {
+            let wrapper_id = self.compile_trace_wrapper_fn(tf, span)?;
+            all_wrappers.push((tf, wrapper_id));
+        }
+        Ok(all_wrappers)
+    }
+
+    /// Prepare GOT group data: group traced fns by GOT base, allocate
+    /// compile-time arrays, and emit JIT-runtime `func_addr` stores.
+    fn prepare_got_groups(
+        &mut self,
+        all_wrappers: &[(&TracedFnInfo, FuncId)],
+        _span: Span,
+    ) -> Result<Vec<GotGroupData>, CranelispError> {
+        // Group wrapper indices by GOT base address.
+        let mut groups: Vec<(i64, Vec<usize>)> = Vec::new();
+        for (idx, (tf, _)) in all_wrappers.iter().enumerate() {
+            if let Some(grp) = groups.iter_mut().find(|(b, _)| *b == tf.got_base) {
+                grp.1.push(idx);
+            } else {
+                groups.push((tf.got_base, vec![idx]));
+            }
+        }
+
+        let mut result = Vec::with_capacity(groups.len());
+        for (got_base, indices) in &groups {
+            let n = indices.len();
+
+            // Leak a u32 slots array (valid for program lifetime).
+            let slots: Box<[u32]> = indices
+                .iter()
+                .map(|&i| all_wrappers[i].0.got_slot as u32)
+                .collect::<Vec<_>>()
+                .into_boxed_slice();
+            let slots_ptr = Box::into_raw(slots) as *mut u32 as i64;
+
+            // Leak a wrappers buffer (filled at JIT runtime via func_addr).
+            let wrappers_buf: Box<[i64]> = vec![0i64; n].into_boxed_slice();
+            let wrappers_buf_ptr = Box::into_raw(wrappers_buf) as *mut i64 as i64;
+
+            // Emit func_addr stores into the wrappers buffer.
+            let buf_addr_val = self.builder.ins().iconst(types::I64, wrappers_buf_ptr);
+            for (j, &idx) in indices.iter().enumerate() {
+                let wrapper_id = all_wrappers[idx].1;
+                let func_ref = self
+                    .module
+                    .declare_func_in_func(wrapper_id, self.builder.func);
+                let wrapper_ptr_val = self.builder.ins().func_addr(types::I64, func_ref);
+                self.builder.ins().store(
+                    MemFlags::trusted(),
+                    wrapper_ptr_val,
+                    buf_addr_val,
+                    (j * 8) as i32,
+                );
+            }
+
+            result.push(GotGroupData {
+                got_base: *got_base,
+                n,
+                slots_ptr,
+                wrappers_buf_ptr,
+            });
+        }
+        Ok(result)
+    }
+
+    /// Emit GOT swaps for all groups, returning saved state for later restore.
+    fn emit_got_swaps(
+        &mut self,
+        groups: &[GotGroupData],
+        swap_id: FuncId,
+    ) -> Vec<(i64, Value)> {
+        let mut saved_vals = Vec::with_capacity(groups.len());
+        for gg in groups {
+            let swap_ref = self
+                .module
+                .declare_func_in_func(swap_id, self.builder.func);
+            let got_base_val = self.builder.ins().iconst(types::I64, gg.got_base);
+            let n_val = self.builder.ins().iconst(types::I64, gg.n as i64);
+            let slots_val = self.builder.ins().iconst(types::I64, gg.slots_ptr);
+            let wrappers_val = self.builder.ins().iconst(types::I64, gg.wrappers_buf_ptr);
+            let call = self.builder.ins().call(
+                swap_ref,
+                &[got_base_val, n_val, slots_val, wrappers_val],
+            );
+            let saved = self.builder.inst_results(call)[0];
+            saved_vals.push((gg.got_base, saved));
+        }
+        saved_vals
+    }
+
+    /// Emit GOT restores in reverse order from saved state.
+    fn emit_got_restores(
+        &mut self,
+        saved_vals: &[(i64, Value)],
+        restore_id: FuncId,
+    ) {
+        let restore_ref = self
+            .module
+            .declare_func_in_func(restore_id, self.builder.func);
+        for (got_base, saved) in saved_vals.iter().rev() {
+            let got_base_val = self.builder.ins().iconst(types::I64, *got_base);
+            self.builder
+                .ins()
+                .call(restore_ref, &[got_base_val, *saved]);
+        }
+    }
+
+    /// Emit IR for a single test iteration within the unrolled run-tests loop.
+    ///
+    /// Performs: GOT swap -> call test wrapper -> GOT restore -> collect trace ->
+    /// extract nanos -> branch on pass/fail -> fold acc via closure call -> merge.
+    #[allow(clippy::too_many_arguments)]
+    fn emit_single_test_iteration(
+        &mut self,
+        current_acc: Value,
+        pass_fn_val: Value,
+        fail_fn_val: Value,
+        tname_val: Value,
+        test_wrapper_id: FuncId,
+        got_groups: &[GotGroupData],
+        swap_id: FuncId,
+        restore_id: FuncId,
+        collect_id: FuncId,
+        nanos_id: FuncId,
+        span: Span,
+    ) -> Result<Value, CranelispError> {
+        // Swap all GOTs.
+        let saved_vals = self.emit_got_swaps(got_groups, swap_id);
+
+        // Call the test wrapper (zero args).
+        let test_ref = self
+            .module
+            .declare_func_in_func(test_wrapper_id, self.builder.func);
+        let test_call = self.builder.ins().call(test_ref, &[]);
+        let raw_result = self.builder.inst_results(test_call)[0];
+
+        // Restore all GOTs in reverse order.
+        self.emit_got_restores(&saved_vals, restore_id);
+
+        // Collect the trace tree.
+        let collect_ref = self
+            .module
+            .declare_func_in_func(collect_id, self.builder.func);
+        let collect_call = self.builder.ins().call(collect_ref, &[]);
+        let trace_adt = self.builder.inst_results(collect_call)[0];
+
+        // Extract timing: nanos of first child of root trace frame.
+        let nanos_ref = self
+            .module
+            .declare_func_in_func(nanos_id, self.builder.func);
+        let nanos_call = self.builder.ins().call(nanos_ref, &[trace_adt]);
+        let nanos = self.builder.inst_results(nanos_call)[0];
+
+        // Branch: None (pass, raw_result == 0) vs Some(reason) (fail).
+        let pass_block = self.builder.create_block();
+        let fail_block = self.builder.create_block();
+        let merge_block = self.builder.create_block();
+        self.builder.append_block_param(merge_block, types::I64);
+
+        let is_none = self.builder.ins().icmp_imm(IntCC::Equal, raw_result, 0);
+        self.builder
+            .ins()
+            .brif(is_none, pass_block, &[], fail_block, &[]);
+
+        // Pass block.
+        self.emit_test_pass_block(
+            pass_block,
+            merge_block,
+            pass_fn_val,
+            current_acc,
+            tname_val,
+            nanos,
+            trace_adt,
+            span,
+        )?;
+
+        // Fail block.
+        self.emit_test_fail_block(
+            fail_block,
+            merge_block,
+            fail_fn_val,
+            current_acc,
+            tname_val,
+            nanos,
+            raw_result,
+            trace_adt,
+            span,
+        )?;
+
+        // Merge block: new acc from whichever branch executed.
+        self.builder.switch_to_block(merge_block);
+        self.builder.seal_block(merge_block);
+        Ok(self.builder.block_params(merge_block)[0])
+    }
+
+    /// Emit the pass block for a single test iteration.
+    ///
+    /// Inc tname (protect from consuming call), dec trace (pass_fn doesn't receive it),
+    /// call pass_fn(acc, tname, nanos), jump to merge.
+    #[allow(clippy::too_many_arguments)]
+    fn emit_test_pass_block(
+        &mut self,
+        pass_block: Block,
+        merge_block: Block,
+        pass_fn_val: Value,
+        current_acc: Value,
+        tname_val: Value,
+        nanos: Value,
+        trace_adt: Value,
+        span: Span,
+    ) -> Result<(), CranelispError> {
+        self.builder.switch_to_block(pass_block);
+        self.builder.seal_block(pass_block);
+
+        // Inc tname: protect from pass_fn's consuming dec.
+        heap::emit_rc_inc(&mut self.builder, tname_val);
+
+        // Dec trace: pass_fn doesn't receive it.
+        if let Some(dealloc) = self.ctx.dealloc_func_id {
+            heap::emit_rc_dec(
+                &mut self.builder,
+                self.module,
+                trace_adt,
+                dealloc,
+                None, // no drop glue; Trace fields are RC'd independently
+            );
+        }
+
+        // Call pass_fn(acc, tname, nanos) via closure call.
+        let pass_acc = self.compile_closure_call(
+            pass_fn_val,
+            &[current_acc, tname_val, nanos],
+            span,
+        )?;
+
+        self.builder.ins().jump(merge_block, &[pass_acc]);
+        Ok(())
+    }
+
+    /// Emit the fail block for a single test iteration.
+    ///
+    /// Extract reason from Some, inc tname and reason (protect from consuming call),
+    /// call fail_fn(acc, tname, nanos, reason, trace), dec the Some shell,
+    /// jump to merge.
+    #[allow(clippy::too_many_arguments)]
+    fn emit_test_fail_block(
+        &mut self,
+        fail_block: Block,
+        merge_block: Block,
+        fail_fn_val: Value,
+        current_acc: Value,
+        tname_val: Value,
+        nanos: Value,
+        raw_result: Value,
+        trace_adt: Value,
+        span: Span,
+    ) -> Result<(), CranelispError> {
+        self.builder.switch_to_block(fail_block);
+        self.builder.seal_block(fail_block);
+
+        // Extract reason string from Some(reason).
+        // Some layout: [rc_header(16) | tag(16) | reason(24)]
+        let reason_str = heap::heap_load(
+            &mut self.builder,
+            raw_result,
+            HeapAdt::field_offset(0), // offset 24: the reason string field
+        );
+
+        // Inc reason (extracted from Some, need own reference for consuming call).
+        heap::emit_rc_inc(&mut self.builder, reason_str);
+
+        // Inc tname: protect from fail_fn's consuming dec.
+        heap::emit_rc_inc(&mut self.builder, tname_val);
+
+        // Call fail_fn(acc, tname, nanos, reason, trace) via closure call.
+        // trace_adt ownership transfers to fail_fn (no dec here).
+        let fail_acc = self.compile_closure_call(
+            fail_fn_val,
+            &[current_acc, tname_val, nanos, reason_str, trace_adt],
+            span,
+        )?;
+
+        // Dec the Some shell (reason was inc'd, so it survives).
+        if let Some(dealloc) = self.ctx.dealloc_func_id {
+            heap::emit_rc_dec(
+                &mut self.builder,
+                self.module,
+                raw_result,
+                dealloc,
+                None,
+            );
+        }
+
+        self.builder.ins().jump(merge_block, &[fail_acc]);
+        Ok(())
+    }
+}
+
+/// Compile-time data for a GOT group (one per module).
+struct GotGroupData {
+    got_base: i64,
+    n: usize,
+    slots_ptr: i64,
+    wrappers_buf_ptr: i64,
 }

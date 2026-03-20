@@ -327,7 +327,10 @@ When the callee is an arbitrary expression (variable, lambda, function applicati
 (apply-fn inc 5)                ; f is a closure; indirect call
 ```
 
-### 4.6.3 Auto-Currying [R4 S21 — tests/io.rs::auto_curry_two_param_partial_apply IGNORED]
+### 4.6.3 Auto-Currying [Tested+Neg tests/io.rs::auto_curry_two_param_partial_apply, auto_curry_three_param_partial_apply, auto_curry_higher_order_usage, auto_curry_repl, auto_curry_too_many_args_error, auto_curry_wrong_type_error]
+
+<!-- FIXME(/qa): Auto-curry of constrained polymorphic functions now works (Sprint 21 fix). Need dedicated test coverage: (1) trait method auto-curry `(+ 5)`, (2) constrained fn returning curried closure `(defn make-adder [n] (+ n))` then `(make-adder 10)`, (3) calling the curried result, (4) other trait ops: `(- 5)`, `(= "hello")`, `(< 3)`. Also: auto-curry of non-Var callees (e.g., `((fn [x y] ...) 1)`) infers correctly but emits no AutoCurry resolution — need a test. See design/review/sprint-21-review.md I2. -->
+<!-- FIXME(/spec): §4.6.3 should explicitly document the constrained polymorphism interaction: auto-currying works with trait-dispatched operators and constrained polymorphic functions. The curried closure is monomorphised at the call site where concrete types become known. Add an example showing `(+ 5)` and `(defn make-adder [n] (+ n))`. -->
 
 When a function is called with fewer arguments than it declares parameters, the result is a **closure** capturing the applied arguments. This applies to both named functions and closures.
 

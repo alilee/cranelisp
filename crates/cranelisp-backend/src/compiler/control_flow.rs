@@ -7,9 +7,10 @@ use std::collections::HashSet;
 use cranelift::prelude::*;
 use cranelift_module::{Linkage, Module};
 
-use cranelisp_types::{CompileMode, CranelispError, Expr, HeapCategory, Span, Symbol, Type};
+use cranelisp_types::{CompileMode, CranelispError, Expr, HeapCategory, ResolvedCall, Span, Symbol, Type};
 
 use crate::heap::{self, HeapClosure};
+use crate::operators;
 
 use super::FnCompiler;
 
@@ -690,6 +691,401 @@ impl<'a> FnCompiler<'a> {
             }
         }
     }
+
+    /// Emit the call to the auto-curry target inside a wrapper function body.
+    ///
+    /// When the target is a trait method or builtin, this emits the appropriate
+    /// inline IR or extern call directly, instead of trying to call by name
+    /// (which fails for inline builtins like `add-i64` that have no JIT symbol).
+    fn emit_curry_target_call(
+        &mut self,
+        builder: &mut FunctionBuilder,
+        target_name: &Symbol,
+        all_args: &[Value],
+        span: Span,
+        trait_resolution: Option<&ResolvedCall>,
+    ) -> Result<Value, CranelispError> {
+        if let Some(resolved) = trait_resolution {
+            match resolved {
+                ResolvedCall::TraitMethod {
+                    trait_name,
+                    method_name,
+                    impl_type,
+                    mangled_name,
+                } => {
+                    // Check if this maps to an inline primitive (e.g., add-i64 → iadd).
+                    if let Some(prim_name) =
+                        operators::primitive_for_trait_method(trait_name, method_name, impl_type)
+                    {
+                        if is_extern_primitive_in_wrapper(prim_name) {
+                            return emit_extern_call_in_wrapper(
+                                builder, self.module, prim_name, all_args, span,
+                            );
+                        }
+
+                        // neq-string: call str-eq (extern) and negate the result.
+                        if prim_name == "neq-string" {
+                            let eq_result = emit_extern_call_in_wrapper(
+                                builder, self.module, "str-eq", all_args, span,
+                            )?;
+                            return Ok(builder.ins().bxor_imm(eq_result, 1));
+                        }
+
+                        // Inline builtin (e.g., add-i64 → iadd).
+                        return operators::emit_builtin_op(
+                            builder, prim_name, all_args, span,
+                            self.module, self.ctx.panic_func_id,
+                        );
+                    }
+
+                    // Not a primitive: user-defined trait method — call by mangled name.
+                    let sym = Symbol::from(mangled_name.as_ref());
+                    return self.emit_wrapper_call(builder, &sym, all_args, span);
+                }
+                ResolvedCall::BuiltinFn { name: jit_name } => {
+                    // Named builtin resolved by the typechecker.
+                    if is_extern_primitive_in_wrapper(jit_name) {
+                        return emit_extern_call_in_wrapper(
+                            builder, self.module, jit_name, all_args, span,
+                        );
+                    }
+                    if operators::is_known_builtin(jit_name) {
+                        return operators::emit_builtin_op(
+                            builder, jit_name, all_args, span,
+                            self.module, self.ctx.panic_func_id,
+                        );
+                    }
+                    // Unknown builtin: treat as extern.
+                    return emit_extern_call_in_wrapper(
+                        builder, self.module, jit_name, all_args, span,
+                    );
+                }
+                _ => {} // SigDispatch, AutoCurry — fall through to emit_wrapper_call
+            }
+        }
+
+        // No trait resolution, or resolution didn't match — call by name.
+        self.emit_wrapper_call(builder, target_name, all_args, span)
+    }
+
+    // --- Auto-curry codegen ---
+
+    /// Compile an auto-curried partial application.
+    ///
+    /// Produces a closure that captures the applied arguments and, when called
+    /// with the remaining arguments, forwards all to the target function.
+    ///
+    /// Layout: `[rc_header | code_ptr | drop_glue_ptr | cap_0 ... cap_n]`
+    pub(crate) fn compile_auto_curry(
+        &mut self,
+        target_name: &Symbol,
+        applied_vals: &[Value],
+        applied_count: usize,
+        total_count: usize,
+        args: &[Expr],
+        span: Span,
+        trait_resolution: Option<&ResolvedCall>,
+    ) -> Result<Value, CranelispError> {
+        let alloc_id =
+            self.ctx
+                .alloc_func_id
+                .ok_or_else(|| CranelispError::CodegenError {
+                    message: "runtime/alloc not declared (need declare_intrinsics)".into(),
+                    span,
+                })?;
+
+        let remaining_count = total_count - applied_count;
+
+        // Classify each applied arg's heap category for RC management.
+        let arg_categories: Vec<HeapCategory> = args
+            .iter()
+            .map(|arg| {
+                self.ctx
+                    .expr_types
+                    .get(&arg.span())
+                    .map(|ty| HeapCategory::classify(ty, Some(self.ctx.type_defs)))
+                    .unwrap_or(HeapCategory::NeverHeap)
+            })
+            .collect();
+
+        // 1. Compile the wrapper function.
+        let wrapper_func_id = self.compile_auto_curry_wrapper(
+            target_name,
+            applied_count,
+            remaining_count,
+            &arg_categories,
+            span,
+            trait_resolution,
+        )?;
+
+        // 2. Build drop glue for heap-typed captures.
+        let drop_glue_id = self.build_auto_curry_drop_glue(
+            &arg_categories,
+            span,
+        )?;
+
+        // 3. Allocate closure env.
+        let payload_size = HeapClosure::payload_size(applied_count) as i64;
+        let base_ptr = heap::emit_alloc(
+            &mut self.builder,
+            self.module,
+            alloc_id,
+            payload_size,
+        );
+
+        // Store wrapper code_ptr at CODE_PTR_OFFSET (16).
+        let wrapper_ref = self
+            .module
+            .declare_func_in_func(wrapper_func_id, self.builder.func);
+        let code_ptr = self.builder.ins().func_addr(types::I64, wrapper_ref);
+        heap::heap_store(
+            &mut self.builder,
+            code_ptr,
+            base_ptr,
+            HeapClosure::CODE_PTR_OFFSET,
+        );
+
+        // Store drop glue pointer at DROP_GLUE_PTR_OFFSET (24).
+        let drop_glue_val = if let Some(glue_id) = drop_glue_id {
+            let glue_ref = self
+                .module
+                .declare_func_in_func(glue_id, self.builder.func);
+            self.builder.ins().func_addr(types::I64, glue_ref)
+        } else {
+            self.builder.ins().iconst(types::I64, 0)
+        };
+        heap::heap_store(
+            &mut self.builder,
+            drop_glue_val,
+            base_ptr,
+            HeapClosure::DROP_GLUE_PTR_OFFSET,
+        );
+
+        // 4. Store applied args as captures, with RC inc for heap-typed values.
+        for (i, &val) in applied_vals.iter().enumerate() {
+            heap::heap_store(
+                &mut self.builder,
+                val,
+                base_ptr,
+                HeapClosure::capture_offset(i),
+            );
+
+            // Inc heap-typed captures: closure env needs its own reference.
+            match arg_categories[i] {
+                HeapCategory::AlwaysHeap => {
+                    heap::emit_rc_inc(&mut self.builder, val);
+                }
+                HeapCategory::Mixed => {
+                    heap::emit_rc_inc_guarded(&mut self.builder, val);
+                }
+                HeapCategory::NeverHeap => {}
+            }
+        }
+
+        Ok(base_ptr)
+    }
+
+    /// Compile the wrapper function for auto-curry.
+    ///
+    /// Signature: `(env_ptr, remaining_0, ..., remaining_k) -> i64`
+    /// Body: load captures from env, inc heap captures, call target with all args.
+    fn compile_auto_curry_wrapper(
+        &mut self,
+        target_name: &Symbol,
+        applied_count: usize,
+        remaining_count: usize,
+        arg_categories: &[HeapCategory],
+        span: Span,
+        trait_resolution: Option<&ResolvedCall>,
+    ) -> Result<cranelift_module::FuncId, CranelispError> {
+        let wrapper_name = format!(
+            "__curry_{target_name}_{}_{}__",
+            span.start, span.end
+        );
+
+        // Signature: (env_ptr, remaining_0..remaining_k) -> i64
+        let param_count = 1 + remaining_count; // env_ptr + remaining args
+        let mut sig = self.module.make_signature();
+        for _ in 0..param_count {
+            sig.params.push(AbiParam::new(types::I64));
+        }
+        sig.returns.push(AbiParam::new(types::I64));
+
+        let wrapper_func_id = self
+            .module
+            .declare_function(&wrapper_name, Linkage::Local, &sig)
+            .map_err(|e| CranelispError::CodegenError {
+                message: format!("failed to declare auto-curry wrapper: {e}"),
+                span,
+            })?;
+
+        // Build the wrapper body in a separate codegen context.
+        let mut ctx = self.module.make_context();
+        let mut func_ctx = FunctionBuilderContext::new();
+        ctx.func.signature = sig;
+
+        let mut builder = FunctionBuilder::new(&mut ctx.func, &mut func_ctx);
+        let entry = builder.create_block();
+        builder.append_block_params_for_function_params(entry);
+        builder.switch_to_block(entry);
+        builder.seal_block(entry);
+
+        let block_params = builder.block_params(entry).to_vec();
+        let env_ptr = block_params[0];
+        let remaining_args: Vec<Value> = block_params[1..].to_vec();
+
+        // Load captured args from env and inc heap-typed captures.
+        // The wrapper must inc before passing to the consuming callee,
+        // so the closure env's reference stays intact across calls.
+        let mut all_args = Vec::with_capacity(applied_count + remaining_count);
+        for i in 0..applied_count {
+            let cap_val = heap::heap_load(
+                &mut builder,
+                env_ptr,
+                HeapClosure::capture_offset(i),
+            );
+            // Inc heap-typed captures before passing to consuming callee.
+            match arg_categories[i] {
+                HeapCategory::AlwaysHeap => {
+                    heap::emit_rc_inc(&mut builder, cap_val);
+                }
+                HeapCategory::Mixed => {
+                    heap::emit_rc_inc_guarded(&mut builder, cap_val);
+                }
+                HeapCategory::NeverHeap => {}
+            }
+            all_args.push(cap_val);
+        }
+        all_args.extend_from_slice(&remaining_args);
+
+        // Call the target function. For trait methods resolved to inline
+        // builtins (e.g., + → add-i64), emit the IR directly in the wrapper.
+        // For extern primitives, emit an extern call. For user functions,
+        // use emit_wrapper_call (handles Batch/Interactive modes).
+        let result = self.emit_curry_target_call(
+            &mut builder,
+            target_name,
+            &all_args,
+            span,
+            trait_resolution,
+        )?;
+
+        builder.ins().return_(&[result]);
+        builder.seal_all_blocks();
+        builder.finalize();
+
+        self.module
+            .define_function(wrapper_func_id, &mut ctx)
+            .map_err(|e| CranelispError::CodegenError {
+                message: format!("failed to define auto-curry wrapper: {e}"),
+                span,
+            })?;
+
+        Ok(wrapper_func_id)
+    }
+
+    /// Build drop glue for an auto-curry closure's captured arguments.
+    ///
+    /// For each heap-typed capture, loads from the closure env at its offset
+    /// and emits `rc_dec`. Returns `None` if no captures are heap-typed.
+    fn build_auto_curry_drop_glue(
+        &mut self,
+        arg_categories: &[HeapCategory],
+        span: Span,
+    ) -> Result<Option<cranelift_module::FuncId>, CranelispError> {
+        let dealloc_id = self.ctx.dealloc_func_id.ok_or_else(|| {
+            CranelispError::CodegenError {
+                message: "runtime/dealloc not declared (need declare_intrinsics)".into(),
+                span,
+            }
+        })?;
+
+        // Collect indices of heap-typed captures.
+        let heap_indices: Vec<(usize, HeapCategory)> = arg_categories
+            .iter()
+            .enumerate()
+            .filter_map(|(i, cat)| match cat {
+                HeapCategory::AlwaysHeap | HeapCategory::Mixed => Some((i, *cat)),
+                HeapCategory::NeverHeap => None,
+            })
+            .collect();
+
+        if heap_indices.is_empty() {
+            return Ok(None);
+        }
+
+        let glue_name = format!(
+            "runtime/curry_drop_glue_{}_{}",
+            span.start, span.end
+        );
+
+        let mut sig = self.module.make_signature();
+        sig.params.push(AbiParam::new(types::I64)); // closure ptr
+
+        let glue_func_id = self
+            .module
+            .declare_function(&glue_name, Linkage::Local, &sig)
+            .map_err(|e| CranelispError::CodegenError {
+                message: format!("failed to declare auto-curry drop glue: {e}"),
+                span,
+            })?;
+
+        let mut ctx = self.module.make_context();
+        let mut func_ctx = FunctionBuilderContext::new();
+        ctx.func.signature = sig;
+
+        let mut builder = FunctionBuilder::new(&mut ctx.func, &mut func_ctx);
+        let entry = builder.create_block();
+        builder.append_block_params_for_function_params(entry);
+        builder.switch_to_block(entry);
+        builder.seal_block(entry);
+
+        let closure_ptr = builder.block_params(entry)[0];
+
+        // For each heap-typed capture, load and dec.
+        for (cap_idx, category) in &heap_indices {
+            let cap_val = heap::heap_load(
+                &mut builder,
+                closure_ptr,
+                HeapClosure::capture_offset(*cap_idx),
+            );
+            match category {
+                HeapCategory::AlwaysHeap => {
+                    heap::emit_rc_dec(
+                        &mut builder,
+                        self.module,
+                        cap_val,
+                        dealloc_id,
+                        None,
+                    );
+                }
+                HeapCategory::Mixed => {
+                    heap::emit_rc_dec_guarded(
+                        &mut builder,
+                        self.module,
+                        cap_val,
+                        dealloc_id,
+                        None,
+                        true,
+                    );
+                }
+                HeapCategory::NeverHeap => {} // unreachable, filtered above
+            }
+        }
+
+        builder.ins().return_(&[]);
+        builder.seal_all_blocks();
+        builder.finalize();
+
+        self.module
+            .define_function(glue_func_id, &mut ctx)
+            .map_err(|e| CranelispError::CodegenError {
+                message: format!("failed to define auto-curry drop glue: {e}"),
+                span,
+            })?;
+
+        Ok(Some(glue_func_id))
+    }
 }
 
 /// Find free variables in an expression (variables not bound by local let/lambda/match).
@@ -780,4 +1176,67 @@ fn collect_free_vars(
         | Expr::FloatLit { .. }
         | Expr::BoolLit { .. } => {}
     }
+}
+
+/// Check if a primitive name is an extern (call-based) primitive,
+/// mirroring the `is_extern_primitive` function in apply.rs.
+/// Used by the auto-curry wrapper which compiles in a separate context.
+fn is_extern_primitive_in_wrapper(name: &str) -> bool {
+    matches!(
+        name,
+        "str-concat"
+            | "str-eq"
+            | "str-len"
+            | "string-identity"
+            | "int-to-string"
+            | "float-to-string"
+            | "bool-to-string"
+            | "parse-int"
+            | "sconcat"
+            | "quote-sexp"
+            | "substring"
+            | "char-at"
+            | "split"
+            | "join"
+            | "replace"
+            | "trim"
+            | "starts-with?"
+            | "ends-with?"
+            | "contains?"
+            | "to-upper"
+            | "to-lower"
+            | "cranelisp_trace_name"
+            | "cranelisp_trace_params"
+            | "cranelisp_trace_result"
+            | "cranelisp_trace_children"
+            | "cranelisp_trace_nanos"
+            | "cranelisp_trace_first_child_nanos"
+    )
+}
+
+/// Emit an extern function call inside a wrapper function body.
+/// Used by auto-curry wrappers to call extern primitives like `str-eq`.
+fn emit_extern_call_in_wrapper(
+    builder: &mut FunctionBuilder,
+    module: &mut dyn Module,
+    name: &str,
+    arg_vals: &[Value],
+    span: Span,
+) -> Result<Value, CranelispError> {
+    let mut sig = module.make_signature();
+    for _ in arg_vals {
+        sig.params.push(AbiParam::new(types::I64));
+    }
+    sig.returns.push(AbiParam::new(types::I64));
+
+    let func_id = module
+        .declare_function(name, Linkage::Import, &sig)
+        .map_err(|e| CranelispError::CodegenError {
+            message: format!("failed to declare extern function '{name}' in wrapper: {e}"),
+            span,
+        })?;
+
+    let local_func = module.declare_func_in_func(func_id, builder.func);
+    let call = builder.ins().call(local_func, arg_vals);
+    Ok(builder.inst_results(call)[0])
 }

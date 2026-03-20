@@ -74,7 +74,7 @@ impl CompiledExpr {
     /// The func_ptr must point to valid JIT-compiled code with the signature
     /// `extern "C" fn() -> i64`. This is guaranteed when CompiledExpr was
     /// produced by `compile_expr_with_got`.
-    pub fn execute(&self) -> i64 {
+    pub unsafe fn execute(&self) -> i64 {
         let func: extern "C" fn() -> i64 = unsafe { std::mem::transmute(self.func_ptr) };
         func()
     }
@@ -514,7 +514,8 @@ pub fn compile_and_run_expr_with_got(
     got_state: Option<&mut got::ModuleCodegenState>,
 ) -> Result<i64, CranelispError> {
     let compiled = compile_expr_with_got(expr, check, mode, got_state)?;
-    Ok(compiled.execute())
+    // SAFETY: compiled was produced by compile_expr_with_got immediately above.
+    Ok(unsafe { compiled.execute() })
 }
 
 #[cfg(test)]

@@ -12,8 +12,20 @@
 // Universal output format (repl/spec.md §1.1, implemented Sprint 15):
 // All REPL output uses `:Type {value|name} ; {classification} - {docstring}`
 // with optional related symbol sections for types, traits, and macros.
+//
+// Module structure:
+//   mod.rs       — ReplSession struct, eval(), public API, REPL loop
+//   commands.rs  — Slash command parsing, dispatch, and all handler functions
+//   display.rs   — Re-exported display functions (format_result_value, etc.)
+//   trace.rs     — TracedCompiledExpr, trace display state, expr_contains_trace
+//   run_tests.rs — /run-tests handler and test discovery/execution
+//   io.rs        — IO trampoline forcing and formatting
 
-use std::cell::Cell;
+mod commands;
+mod io_format;
+mod run_tests;
+mod trace;
+
 use std::collections::HashMap;
 use std::io::{self, BufRead, Write};
 use std::time::{Duration, Instant};
@@ -24,74 +36,28 @@ use cranelisp_backend::got::ModuleCodegenState;
 use cranelisp_backend::jit::Jit;
 use cranelisp_typecheck::TypeChecker;
 use cranelisp_types::{
-    CompileMode, CranelispError, DefKind, Defn, Expr, MacroClauseInfo, MacroParam,
-    ModuleEntry, ModuleFullPath, ReplCheckResult, ReplInput, Sexp, Symbol, TraitName, Type,
+    CompileMode, CranelispError, DefKind, Defn, Expr, MacroClauseInfo,
+    ModuleEntry, ModuleFullPath, ReplCheckResult, ReplInput, Sexp, Symbol, Type,
     TypeDefInfo, TypeName, Visibility, Warning,
 };
 
 use crate::expander::CraneliftExpander;
 
-// ── Trace value formatting ────────────────────────────────────────────────────
-
-/// Display state for trace formatting. Holds references to the type definitions
-/// and type-to-module mappings needed by `format_value`.
-///
-/// SAFETY: The raw pointer is valid for the duration of a single `execute_expr`
-/// call — set before JIT execution and cleared immediately after. The struct it
-/// points to borrows from the ReplSession which does not move during execution.
-struct TraceDisplayState {
-    type_defs: *const HashMap<TypeName, TypeDefInfo>,
-    type_modules: *const HashMap<TypeName, ModuleFullPath>,
-}
-
-// TraceDisplayState is only accessed via a thread-local Cell (never crosses
-// thread boundaries), so Send/Sync are not required.
-
-thread_local! {
-    /// Thread-local pointer to the active display state, used by
-    /// `repl_trace_format`. Set before JIT evaluation, cleared after.
-    static TRACE_DISPLAY_STATE: Cell<*const TraceDisplayState> =
-        const { Cell::new(std::ptr::null()) };
-}
-
-/// Set the trace display state before evaluating a trace expression.
-fn set_trace_display_state(state: &TraceDisplayState) {
-    TRACE_DISPLAY_STATE.with(|c| c.set(state as *const _));
-}
-
-/// Clear the trace display state after evaluation completes.
-fn clear_trace_display_state() {
-    TRACE_DISPLAY_STATE.with(|c| c.set(std::ptr::null()));
-}
-
-/// JIT-callable function: format a runtime value for trace display.
-///
-/// Reads the type pointer (a leaked `Box<Type>`) and the display state
-/// (type_defs, type_modules) from thread-local storage, then calls
-/// `display::format_value` to produce a formatted string.
-///
-/// Falls back to `"?"` if the display state has not been set.
-///
-/// Registered as an extra JIT symbol to override the runtime's fallback
-/// `cranelisp_trace_format` when compiling trace expressions.
-extern "C" fn repl_trace_format(val: i64, type_ptr: i64) -> i64 {
-    TRACE_DISPLAY_STATE.with(|c| {
-        let state_ptr = c.get();
-        let s = if state_ptr.is_null() {
-            "?".to_string()
-        } else {
-            // SAFETY: state_ptr was set by set_trace_display_state and
-            // points to a valid TraceDisplayState on the caller's stack.
-            // The Type pointer was leaked by trace_codegen (valid for program lifetime).
-            let state = unsafe { &*state_ptr };
-            let type_defs = unsafe { &*state.type_defs };
-            let type_modules = unsafe { &*state.type_modules };
-            let ty = unsafe { &*(type_ptr as *const Type) };
-            display::format_value(val, ty, type_defs, type_modules)
-        };
-        cranelisp_runtime::alloc_string(s.as_bytes()) as i64
-    })
-}
+use commands::{
+    format_macro_display_universal, format_sexp, format_special_form_display,
+    format_type_display_universal, format_trait_display_universal,
+    handle_ast, handle_clif, handle_disasm, handle_doc, handle_expand,
+    handle_exports, handle_imports, handle_info, handle_list, handle_mod,
+    handle_sig, handle_source, handle_sexp, handle_time, handle_type,
+    special_form_feedback,
+};
+use io_format::force_io_and_format;
+use run_tests::handle_run_tests;
+use trace::{
+    TraceDisplayState, clear_trace_display_state,
+    compile_expr_with_traced_fns, expr_contains_trace, repl_trace_format,
+    set_trace_display_state,
+};
 
 // Re-export display functions so that downstream crates (tests/helpers, src/main.rs)
 // can continue to use `cranelisp::repl::format_result_value` etc.
@@ -124,21 +90,21 @@ pub struct ReplSession {
     pub tc: TypeChecker,
     /// Backend GOT state (persists across inputs for function redefinition).
     pub got_state: ModuleCodegenState,
-    /// Macro expander (persists across inputs — macros accumulate).
-    expander: CraneliftExpander,
+    /// Macro expander (persists across inputs -- macros accumulate).
+    pub(crate) expander: CraneliftExpander,
     /// JIT instances that must stay alive (their code is referenced via GOT).
     /// Each defn compilation creates a new JIT; we keep them alive here.
     jit_modules: Vec<Jit>,
     /// Accumulated type definitions from all inputs (for ADT value display).
     type_defs: HashMap<TypeName, TypeDefInfo>,
     /// Maps type names to the module they were defined in (for qualified display).
-    type_modules: HashMap<TypeName, ModuleFullPath>,
+    pub(crate) type_modules: HashMap<TypeName, ModuleFullPath>,
     /// Platform function pointers for JIT symbol registration.
     /// Each entry is (jit_name, function_pointer). These are passed to
     /// `Jit::new_with_symbols()` when creating JIT instances for compilation
     /// so that platform function calls can be resolved.
     platform_symbols: Vec<(String, *const u8)>,
-    /// Loaded platform DLLs — must stay alive for the process lifetime.
+    /// Loaded platform DLLs -- must stay alive for the process lifetime.
     loaded_platforms: Vec<crate::platform::LoadedPlatform>,
     /// Project root directory (for platform path resolution).
     pub project_root: std::path::PathBuf,
@@ -288,20 +254,20 @@ impl ReplSession {
     /// This is the core of the REPL eval loop, separated to allow recursive
     /// processing of begin-flattened sub-forms.
     fn eval_sexp(&mut self, sexp: Sexp) -> Result<ReplResult, CranelispError> {
-        // Step 1: Check for defmacro — compile and register the macro.
+        // Step 1: Check for defmacro -- compile and register the macro.
         if cranelisp_frontend::is_defmacro(&sexp) {
             return self.eval_defmacro(&sexp);
         }
 
-        // Step 1b: Check for import — intercept before AST building.
+        // Step 1b: Check for import -- intercept before AST building.
         // Import forms must be handled here because the AST builder does not
-        // accept (import ...) — it expects module declarations to be extracted
+        // accept (import ...) -- it expects module declarations to be extracted
         // before AST construction. In the REPL, imports are entered interactively.
         if is_import_form(&sexp) {
             return self.eval_import(sexp);
         }
 
-        // Step 1c: Check for platform — load DLL and register functions.
+        // Step 1c: Check for platform -- load DLL and register functions.
         // Platform declarations must be intercepted before AST building
         // because the AST builder rejects (platform ...) forms.
         if crate::platform::is_platform_form(&sexp) {
@@ -445,7 +411,7 @@ impl ReplSession {
         let entry = self.tc.symbol_table().get(name.as_str())?;
         match entry {
             ModuleEntry::Macro { clauses, docstring, .. } => {
-                // Check if any clause accepts zero args — if so, let the
+                // Check if any clause accepts zero args -- if so, let the
                 // expander handle it (it's a valid zero-arg macro call).
                 let has_zero_arg_clause = clauses.iter().any(|c| {
                     c.params.is_empty() && c.rest_param.is_none()
@@ -468,7 +434,7 @@ impl ReplSession {
                 })
             }
             ModuleEntry::Def { kind, .. } => {
-                // Special forms have no value semantics — show description.
+                // Special forms have no value semantics -- show description.
                 if let DefKind::SpecialForm { description } = kind.as_ref() {
                     let display = format_special_form_display(name, description);
                     Some(ReplResult {
@@ -480,7 +446,7 @@ impl ReplSession {
                         eval_duration: Duration::ZERO,
                     })
                 } else {
-                    None // Regular function — let it evaluate normally.
+                    None // Regular function -- let it evaluate normally.
                 }
             }
             _ => None,
@@ -586,7 +552,7 @@ impl ReplSession {
     /// Compile and execute an expression input.
     fn execute_expr(
         &mut self,
-        expr: &cranelisp_types::Expr,
+        expr: &Expr,
         check_result: &ReplCheckResult,
     ) -> Result<ReplResult, CranelispError> {
         let check = self.build_check_for_backend(check_result);
@@ -642,7 +608,9 @@ impl ReplSession {
         // Time the actual evaluation (function call) separately from compilation.
         // Wrap in catch_unwind to recover from runtime panics (spec §12.7.4.1).
         let eval_start = Instant::now();
-        let value = invoke_jit_eval(|| compiled.execute());
+        // SAFETY: compiled was produced by compile_expr_with_got, which guarantees
+        // a valid JIT function pointer with extern "C" fn() -> i64 signature.
+        let value = invoke_jit_eval(|| unsafe { compiled.execute() });
         let eval_duration = eval_start.elapsed();
 
         // Always clear trace display state after evaluation.
@@ -666,10 +634,10 @@ impl ReplSession {
     /// Compile and execute a function definition input.
     fn execute_defn(
         &mut self,
-        defn: &cranelisp_types::Defn,
+        defn: &Defn,
         check_result: &ReplCheckResult,
     ) -> Result<ReplResult, CranelispError> {
-        // Skip compiling constrained fn base definitions — they are
+        // Skip compiling constrained fn base definitions -- they are
         // templates that get monomorphised at call sites.
         let is_constrained = check_result
             .scheme
@@ -846,7 +814,7 @@ impl ReplSession {
     /// for `/source` and `/sexp` introspection commands.
     fn compile_and_register_defn(
         &mut self,
-        defn: &cranelisp_types::Defn,
+        defn: &Defn,
         check: &cranelisp_types::CheckResult,
     ) -> Result<(), CranelispError> {
         self.compile_and_register_defn_with_context(defn, check, None, None)
@@ -855,7 +823,7 @@ impl ReplSession {
     /// Compile a defn with optional source text and sexp for introspection.
     fn compile_and_register_defn_with_context(
         &mut self,
-        defn: &cranelisp_types::Defn,
+        defn: &Defn,
         check: &cranelisp_types::CheckResult,
         source_text: Option<String>,
         sexp: Option<Sexp>,
@@ -1006,192 +974,7 @@ impl Default for ReplSession {
     }
 }
 
-// ── Trace support helpers ─────────────────────────────────────────────────────
-
-/// Check if an expression tree contains a `(trace ...)` form anywhere.
-///
-/// Used to decide whether to build traced_fns and set up the trace display
-/// state before compilation. This avoids the overhead for non-trace expressions.
-fn expr_contains_trace(expr: &Expr) -> bool {
-    match expr {
-        Expr::Trace { .. } => true,
-        Expr::Apply { callee, args, .. } => {
-            // trace is a module-scoped special form (arch Principle 10).
-            // It arrives as Apply(Var("trace"), [body]) — detect it here.
-            if let Expr::Var { name, .. } = callee.as_ref() {
-                if &**name == "trace" {
-                    return true;
-                }
-            }
-            expr_contains_trace(callee) || args.iter().any(expr_contains_trace)
-        }
-        Expr::Let { bindings, body, .. } => {
-            bindings.iter().any(|(_, e)| expr_contains_trace(e))
-                || expr_contains_trace(body)
-        }
-        Expr::If { cond, then_branch, else_branch, .. } => {
-            expr_contains_trace(cond)
-                || expr_contains_trace(then_branch)
-                || expr_contains_trace(else_branch)
-        }
-        Expr::Lambda { body, .. } => expr_contains_trace(body),
-        Expr::Match { scrutinee, arms, .. } => {
-            expr_contains_trace(scrutinee)
-                || arms.iter().any(|arm| expr_contains_trace(&arm.body))
-        }
-        Expr::Annotate { expr, .. } => expr_contains_trace(expr),
-        Expr::VecLit { elements, .. } => elements.iter().any(expr_contains_trace),
-        Expr::RunTests { init, pass_fn, fail_fn, .. } => {
-            expr_contains_trace(init)
-                || expr_contains_trace(pass_fn)
-                || expr_contains_trace(fail_fn)
-        }
-        Expr::IntLit { .. }
-        | Expr::BoolLit { .. }
-        | Expr::FloatLit { .. }
-        | Expr::StringLit { .. }
-        | Expr::Var { .. } => false,
-    }
-}
-
-/// Result of compiling a REPL expression with trace support.
-///
-/// Holds the JIT alive so the compiled function pointer remains valid.
-/// This mirrors `cranelisp_backend::CompiledExpr` but can be constructed
-/// from `src/` without needing access to the backend struct's private fields.
-struct TracedCompiledExpr {
-    #[allow(dead_code)]
-    jit: Jit,
-    func_ptr: *const u8,
-}
-
-impl TracedCompiledExpr {
-    /// Execute the compiled expression and return the i64 result.
-    fn execute(&self) -> i64 {
-        let func: extern "C" fn() -> i64 = unsafe { std::mem::transmute(self.func_ptr) };
-        func()
-    }
-}
-
-/// Compile a single REPL expression with optional `traced_fns` for trace support.
-///
-/// This is a variant of `cranelisp_backend::compile_expr_with_got_and_symbols`
-/// that additionally sets `traced_fns` on the `CompileContext`. The backend's
-/// public API does not expose this parameter, so we replicate the compilation
-/// pipeline here with the extra field set.
-fn compile_expr_with_traced_fns(
-    expr: &Expr,
-    check: &cranelisp_types::CheckResult,
-    got_state: Option<&mut ModuleCodegenState>,
-    extra_symbols: &[(&str, *const u8)],
-    traced_fns: Option<&[TracedFnInfo]>,
-) -> Result<TracedCompiledExpr, CranelispError> {
-    let mut jit = Jit::new_with_symbols(extra_symbols)?;
-
-    // Declare runtime intrinsics (Ring 1 heap infrastructure).
-    jit.declare_intrinsics()?;
-
-    // Wrap expression in a synthetic zero-arg function.
-    let wrapper_name = Symbol::from("__repl_expr__");
-    let wrapper_defn = Defn {
-        name: wrapper_name.clone(),
-        params: vec![],
-        param_annotations: vec![],
-        visibility: Visibility::Public,
-        body: expr.clone(),
-        docstring: None,
-        span: expr.span(),
-    };
-
-    let func_ids = jit.declare_functions(&[&wrapper_defn])?;
-
-    // Get GOT info and function arities if available.
-    let (got_slots, got_base_ptr, func_arities) = if let Some(state) = got_state {
-        let mut slots: HashMap<Symbol, usize> = HashMap::new();
-        let mut arities: HashMap<Symbol, usize> = HashMap::new();
-        for (name, dc) in &state.def_codegen {
-            if let Some(slot) = dc.got_slot {
-                slots.insert(name.clone(), slot);
-            }
-            if let Some(pc) = dc.param_count {
-                arities.insert(name.clone(), pc);
-            }
-        }
-        let base = state.got_base_ptr() as i64;
-        (Some(slots), Some(base), arities)
-    } else {
-        (None, None, HashMap::new())
-    };
-
-    let mut compile_ctx = jit.build_compile_context(
-        check,
-        CompileMode::Interactive,
-        &func_ids,
-        &func_arities,
-        got_slots.as_ref(),
-        got_base_ptr,
-        None, // No cross-module GOT for single-expression compilation.
-    );
-
-    // Set traced_fns on the compile context for trace codegen support.
-    compile_ctx.traced_fns = traced_fns;
-
-    jit.compile_defn(&wrapper_defn, compile_ctx)?;
-
-    let code_ptr = jit.finalize_and_get_ptr(&wrapper_name, 0)?;
-
-    Ok(TracedCompiledExpr { jit, func_ptr: code_ptr })
-}
-
-/// Force an IO tree via the trampoline and format the inner result.
-///
-/// Side effects (printing, etc.) execute during the trampoline run and are
-/// flushed to stdout before this function returns the display string.
-/// The trampoline is wrapped in `catch_unwind` so a malformed IO tree
-/// does not crash the REPL session.
-///
-/// Returns a display string for the inner value with the full IO type
-/// annotation, wrapping the formatted value in `(IO.Pure ...)`,
-/// e.g. `:(IO primitives/Int) (IO.Pure 42)`.
-fn force_io_and_format(
-    io_value: i64,
-    io_ty: &Type,
-    type_defs: &HashMap<TypeName, TypeDefInfo>,
-    type_modules: &HashMap<TypeName, ModuleFullPath>,
-    stdout: &mut impl Write,
-) -> String {
-    // Flush stdout before trampolining so any prior output appears first,
-    // and side-effect output (e.g., print) appears in order.
-    let _ = stdout.flush();
-
-    let trampoline_result = std::panic::catch_unwind(|| {
-        // SAFETY: io_value is a valid IO tree pointer produced by JIT code.
-        // The IO tree remains live because the caller holds the ReplResult
-        // which owns the i64 value, and the trampoline processes it
-        // synchronously before returning.
-        cranelisp_runtime::run_io_trampoline(io_value)
-    });
-
-    let inner_ty = io_ty.io_inner_type();
-    let type_str = display::format_type_qualified(io_ty, type_modules);
-
-    match trampoline_result {
-        Ok(inner_val) => {
-            let val_str = display::format_value(inner_val, &inner_ty, type_defs, type_modules);
-            format!(":{type_str} (IO.Pure {val_str})")
-        }
-        Err(_) => {
-            format!(":{type_str} <IO trampoline panicked>")
-        }
-    }
-}
-
-/// Format the REPL display for a defmacro definition (spec §1.1, §11.3).
-///
-/// Uses universal format: `:module/name ; defmacro` + clause signatures.
-fn format_defmacro_display(name: &str, clauses: &[MacroClauseInfo], module: &ModuleFullPath) -> String {
-    format_macro_display_universal(name, clauses, None, module)
-}
+// ── REPL loop and slash command dispatch ──────────────────────────────────────
 
 /// Parsed REPL slash command.
 enum ReplCommand<'a> {
@@ -1212,6 +995,7 @@ enum ReplCommand<'a> {
     Clif(&'a str),
     Disasm(&'a str),
     Mod(&'a str),
+    RunTests(&'a str),
     Unknown(&'a str),
 }
 
@@ -1246,6 +1030,7 @@ fn parse_slash_command(input: &str) -> Option<ReplCommand<'_>> {
         "/clif" => ReplCommand::Clif(arg),
         "/disasm" => ReplCommand::Disasm(arg),
         "/mod" => ReplCommand::Mod(arg),
+        "/run-tests" | "/rt" => ReplCommand::RunTests(arg),
         _ => ReplCommand::Unknown(cmd),
     })
 }
@@ -1270,6 +1055,7 @@ fn print_help(stdout: &mut impl Write) {
     let _ = writeln!(stdout, "  /imports [MODULE]   Show imports and special forms");
     let _ = writeln!(stdout, "  /exports MODULE     Show module's public symbols");
     let _ = writeln!(stdout, "  /mod [NAME]         Switch module namespace (default: user)");
+    let _ = writeln!(stdout, "  /run-tests (/rt)    Discover and run test-* functions");
 }
 
 /// Format the REPL prompt with timing and module info.
@@ -1317,6 +1103,7 @@ fn dispatch_slash_command(
         ReplCommand::Clif(name) => handle_clif(session, name, stdout),
         ReplCommand::Disasm(name) => handle_disasm(session, name, stdout),
         ReplCommand::Mod(name) => handle_mod(session, name, stdout),
+        ReplCommand::RunTests(prefix) => handle_run_tests(session, prefix, stdout),
         ReplCommand::Unknown(cmd) => {
             let _ = writeln!(
                 stdout,
@@ -1480,6 +1267,8 @@ pub fn run_repl() {
     let _ = writeln!(stdout);
 }
 
+// ── Utility functions ─────────────────────────────────────────────────────────
+
 /// Check if a Sexp is an `(import ...)` form.
 ///
 /// Returns true if the sexp is a list whose head is the symbol `import`.
@@ -1488,16 +1277,16 @@ fn is_import_form(sexp: &Sexp) -> bool {
         if !elems.is_empty() && matches!(&elems[0], Sexp::Symbol(name, _) if name == "import"))
 }
 
-/// Check if the input consists only of comments (lines starting with `;`).
-///
-/// Returns true if every non-empty line in the input starts with `;`
-/// (ignoring leading whitespace). This prevents comment-only input
-/// from reaching the parser and producing an "empty input" error.
 /// Check if a Sexp is a type annotation prefix (`:Type` or bare `:`).
 fn is_annotation_prefix(sexp: &Sexp) -> bool {
     matches!(sexp, Sexp::Symbol(s, _) if s.starts_with(':') && !s.contains('/'))
 }
 
+/// Check if the input consists only of comments (lines starting with `;`).
+///
+/// Returns true if every non-empty line in the input starts with `;`
+/// (ignoring leading whitespace). This prevents comment-only input
+/// from reaching the parser and producing an "empty input" error.
 fn is_comment_only(input: &str) -> bool {
     input.lines().all(|line| {
         let trimmed = line.trim();
@@ -1543,983 +1332,14 @@ fn parens_balanced(input: &str) -> bool {
     paren_depth <= 0 && bracket_depth <= 0
 }
 
-// ---------------------------------------------------------------------------
-// Slash command handlers
-// ---------------------------------------------------------------------------
-
-/// Handle `/sig <name>` — show type signature of a symbol.
-fn handle_sig(session: &ReplSession, name: &str, stdout: &mut impl Write) {
-    if name.is_empty() {
-        let _ = writeln!(stdout, "usage: /sig <name>");
-        return;
-    }
-    // Check builtin types first (not in symbol table)
-    if Type::from_name(name).is_some() {
-        let _ = writeln!(stdout, "{}", format_builtin_type_display(name, session));
-        return;
-    }
-    let module = session.tc.current_module_path().clone();
-    match session.tc.symbol_table().get(name) {
-        Some(entry) => {
-            let (resolved_entry, resolved_module) =
-                resolve_entry_for_display(entry, &module, session);
-            let display = format_entry_signature(resolved_entry, name, resolved_module, session);
-            let _ = writeln!(stdout, "{display}");
-        }
-        None => {
-            let _ = writeln!(stdout, "error: unknown symbol '{name}'");
-        }
-    }
-}
-
-/// Handle `/doc <name>` — show docstring of a symbol (spec §11.2.4).
-fn handle_doc(session: &ReplSession, name: &str, stdout: &mut impl Write) {
-    if name.is_empty() {
-        let _ = writeln!(stdout, "usage: /doc <name>");
-        return;
-    }
-    match session.tc.symbol_table().get(name) {
-        Some(ModuleEntry::Macro { docstring, .. }) => {
-            if let Some(doc) = docstring {
-                let _ = writeln!(stdout, "{name}: \"{doc}\"");
-            } else {
-                let _ = writeln!(stdout, "{name}: no docstring");
-            }
-        }
-        Some(ModuleEntry::Def { docstring, .. }) => {
-            if let Some(doc) = docstring {
-                let _ = writeln!(stdout, "{name}: \"{doc}\"");
-            } else {
-                let _ = writeln!(stdout, "{name}: no docstring");
-            }
-        }
-        Some(ModuleEntry::TraitDecl { decl, .. }) => {
-            if let Some(doc) = &decl.docstring {
-                let _ = writeln!(stdout, "{name}: \"{doc}\"");
-            } else {
-                let _ = writeln!(stdout, "{name}: no docstring");
-            }
-        }
-        Some(_) => {
-            let _ = writeln!(stdout, "{name}: no docstring");
-        }
-        None => {
-            let _ = writeln!(stdout, "error: unknown symbol '{name}'");
-        }
-    }
-}
-
-/// Handle `/type <expr>` — show type of expression without evaluating.
-fn handle_type(session: &mut ReplSession, expr_src: &str, stdout: &mut impl Write) {
-    if expr_src.is_empty() {
-        let _ = writeln!(stdout, "usage: /type <expr>");
-        return;
-    }
-    // Parse, build AST, typecheck — but do NOT compile or execute.
-    let snapshot = session.tc.snapshot();
-    let result = typecheck_only(session, expr_src);
-    // Always restore — we don't want /type to have side effects.
-    session.tc.restore(snapshot);
-    match result {
-        Ok(ty) => {
-            let display = format_type_qualified(&ty, &session.type_modules);
-            let _ = writeln!(stdout, ":{display}");
-        }
-        Err(e) => {
-            let _ = writeln!(stdout, "error: {e}");
-        }
-    }
-}
-
-/// Parse, expand, and typecheck an expression without compiling or executing.
-fn typecheck_only(session: &mut ReplSession, expr_src: &str) -> Result<Type, CranelispError> {
-    let sexps = cranelisp_frontend::parse(expr_src)?;
-    if sexps.is_empty() {
-        return Err(CranelispError::ParseError {
-            message: "empty expression".into(),
-            span: cranelisp_types::Span::SYNTHETIC,
-        });
-    }
-    let input = cranelisp_frontend::build_repl_input(&sexps[0], &mut session.expander)?;
-    let check_result = session.tc.check_repl_input(&input)?;
-    Ok(check_result.ty)
-}
-
-/// Handle `/info <name>` — show full details about a symbol (spec §3.6).
-fn handle_info(session: &ReplSession, name: &str, stdout: &mut impl Write) {
-    if name.is_empty() {
-        let _ = writeln!(stdout, "usage: /info <name>");
-        return;
-    }
-    // Check builtin types first (not in symbol table)
-    if Type::from_name(name).is_some() {
-        let _ = writeln!(stdout, "{}", format_builtin_type_display(name, session));
-        return;
-    }
-    let module = session.tc.current_module_path().clone();
-    match session.tc.symbol_table().get(name) {
-        Some(entry) => {
-            let (resolved_entry, resolved_module) =
-                resolve_entry_for_display(entry, &module, session);
-            // Line 1: type signature (same as /sig).
-            let sig = format_entry_signature(resolved_entry, name, resolved_module, session);
-            let _ = writeln!(stdout, "{sig}");
-            // Line 2: for functions, show code info.
-            if !matches!(resolved_entry, ModuleEntry::Macro { .. } | ModuleEntry::TypeDef { .. } | ModuleEntry::TraitDecl { .. }) {
-                if let Some(dc) = session.got_state.def_codegen.get(name) {
-                    let size_str = dc
-                        .code_size
-                        .map(|s| format!("{s} bytes"))
-                        .unwrap_or_else(|| "? bytes".to_string());
-                    let time_str = dc
-                        .compile_duration
-                        .map(|d| format!("{}ms", d.as_millis()))
-                        .unwrap_or_else(|| "?ms".to_string());
-                    let _ = writeln!(stdout, "  {size_str}, {time_str}");
-                }
-            }
-        }
-        None => {
-            let _ = writeln!(stdout, "error: unknown symbol '{name}'");
-        }
-    }
-}
-
-/// Handle `/list [prefix]` — list definitions in the current module (spec §3.3).
+/// Format the REPL display for a defmacro definition (spec §1.1, §11.3).
 ///
-/// Shows only symbols DEFINED in the current module. No imports, no special forms.
-/// Categories: Modules, Macros, Traits, Types (incl constructors), Fns.
-fn handle_list(session: &ReplSession, filter: &str, stdout: &mut impl Write) {
-    let table = session.tc.symbol_table();
-
-    let mut macros: Vec<String> = Vec::new();
-    let mut traits: Vec<String> = Vec::new();
-    let mut types: Vec<String> = Vec::new();
-    let mut fns: Vec<String> = Vec::new();
-
-    for (sym, entry) in table.all_symbols() {
-        let name = sym.to_string();
-
-        // Prefix match filter (case-insensitive)
-        if !filter.is_empty()
-            && !name.to_lowercase().starts_with(&filter.to_lowercase())
-        {
-            continue;
-        }
-
-        match entry {
-            // Skip imports, reexports — belong on /imports
-            ModuleEntry::Import { .. } | ModuleEntry::Reexport { .. } => {}
-            // Types and their constructors in Types category
-            ModuleEntry::TypeDef { .. } => {
-                types.push(name);
-            }
-            ModuleEntry::Constructor { .. } => {
-                types.push(name);
-            }
-            ModuleEntry::TraitDecl { .. } => {
-                traits.push(name);
-            }
-            ModuleEntry::Macro { .. } => {
-                macros.push(name);
-            }
-            ModuleEntry::Def { kind, .. } => {
-                match kind.as_ref() {
-                    // Skip special forms — belong on /imports
-                    DefKind::SpecialForm { .. } => {}
-                    // Skip primitives — belong in primitives module
-                    DefKind::Primitive { .. } => {}
-                    _ => {
-                        fns.push(name);
-                    }
-                }
-            }
-            _ => {}
-        }
-    }
-
-    macros.sort();
-    traits.sort();
-    types.sort();
-    fns.sort();
-
-    let has_any = !macros.is_empty() || !traits.is_empty()
-        || !types.is_empty() || !fns.is_empty();
-
-    if !has_any {
-        let _ = writeln!(stdout, "(no definitions)");
-        return;
-    }
-
-    // Category order: Modules, Macros, Traits, Types, Fns
-    print_name_category("Macros", &macros, stdout);
-    print_name_category("Traits", &traits, stdout);
-    print_name_category("Types", &types, stdout);
-    print_name_category("Fns", &fns, stdout);
+/// Uses universal format: `:module/name ; defmacro` + clause signatures.
+fn format_defmacro_display(name: &str, clauses: &[MacroClauseInfo], module: &ModuleFullPath) -> String {
+    format_macro_display_universal(name, clauses, None, module)
 }
 
-/// Print a category of names for `/list`, `/imports`, `/exports`.
-///
-/// Names are shown compactly: up to 6 per line for categories with 7+ names,
-/// all on one line for smaller categories.
-fn print_name_category(label: &str, names: &[String], stdout: &mut impl Write) {
-    if names.is_empty() {
-        return;
-    }
-    let _ = writeln!(stdout, "{label}:");
-    if names.len() < 7 {
-        let _ = writeln!(stdout, "  {}", names.join(" "));
-    } else {
-        // Compact layout: 6 names per line
-        for chunk in names.chunks(6) {
-            let _ = writeln!(stdout, "  {}", chunk.join(" "));
-        }
-    }
-}
-
-/// Handle `/time <expr>` — evaluate with timing breakdown.
-fn handle_time(
-    session: &mut ReplSession,
-    expr_src: &str,
-) -> Result<String, CranelispError> {
-    if expr_src.is_empty() {
-        return Ok("usage: /time <expr>".to_string());
-    }
-    let total_start = Instant::now();
-    let result = session.eval(expr_src)?;
-    let total_elapsed = total_start.elapsed();
-
-    // Compile time = total minus eval (function call) time.
-    let compile_duration = total_elapsed.saturating_sub(result.eval_duration);
-    let compile_ms = compile_duration.as_millis();
-    let eval_ms = result.eval_duration.as_millis();
-
-    // Format the result value.
-    let display = if let Some(ref def_display) = result.definition_display {
-        def_display.clone()
-    } else {
-        format_result_value(
-            result.value,
-            &result.ty,
-            session.type_defs(),
-            session.type_modules(),
-        )
-    };
-    Ok(format!("{display} (compile: {compile_ms}ms, eval: {eval_ms}ms)"))
-}
-
-/// Handle `/expand <form>` — macro-expand a form without evaluating (spec §11.1).
-fn handle_expand(session: &mut ReplSession, form_src: &str, stdout: &mut impl Write) {
-    if form_src.is_empty() {
-        let _ = writeln!(stdout, "usage: /expand <form>");
-        return;
-    }
-    match expand_form(session, form_src) {
-        Ok(expanded) => {
-            let _ = writeln!(stdout, "{expanded}");
-        }
-        Err(e) => {
-            let _ = writeln!(stdout, "error: {e}");
-        }
-    }
-}
-
-/// Parse and expand a form through the session's macro expander.
-///
-/// Does not evaluate the result. Returns the expanded Sexp as a formatted string.
-fn expand_form(session: &mut ReplSession, form_src: &str) -> Result<String, CranelispError> {
-    let sexps = cranelisp_frontend::parse(form_src)?;
-    if sexps.is_empty() {
-        return Err(CranelispError::ParseError {
-            message: "empty form".into(),
-            span: cranelisp_types::Span::SYNTHETIC,
-        });
-    }
-    let expanded = session.expander.expand_sexp(sexps.into_iter().next().ok_or_else(|| {
-        CranelispError::ParseError {
-            message: "empty form".into(),
-            span: cranelisp_types::Span::SYNTHETIC,
-        }
-    })?)?;
-    Ok(format_sexp(&expanded))
-}
-
-/// Format an S-expression as a readable string.
-///
-/// Produces valid S-expression syntax: symbols, integers, floats, booleans,
-/// strings (quoted), lists (parenthesized), and brackets (square).
-fn format_sexp(sexp: &Sexp) -> String {
-    match sexp {
-        Sexp::Symbol(name, _) => name.clone(),
-        Sexp::Int(n, _) => format!("{n}"),
-        Sexp::Float(v, _) => {
-            let s = format!("{v}");
-            if s.contains('.') { s } else { format!("{s}.0") }
-        }
-        Sexp::Bool(b, _) => format!("{b}"),
-        Sexp::Str(s, _) => format!("\"{s}\""),
-        Sexp::List(children, _) => {
-            let parts: Vec<String> = children.iter().map(format_sexp).collect();
-            format!("({})", parts.join(" "))
-        }
-        Sexp::Bracket(children, _) => {
-            let parts: Vec<String> = children.iter().map(format_sexp).collect();
-            format!("[{}]", parts.join(" "))
-        }
-    }
-}
-
-/// Handle `/imports [module]` — show imports in current module (spec §3.4).
-///
-/// Unfiltered: organize by category (Special forms, Macros, Traits, Types, Fns).
-/// Filtered: `/imports <module>` shows imports from that source module only,
-/// organized as `From <module>:` groups with sorted names.
-/// Names only — no type signatures. Type the name for more detail.
-fn handle_imports(session: &ReplSession, filter: &str, stdout: &mut impl Write) {
-    let table = session.tc.symbol_table();
-
-    if filter.is_empty() {
-        // Unfiltered mode: organize by category (spec §3.4)
-        let mut special_forms: Vec<String> = Vec::new();
-        let mut macros: Vec<String> = Vec::new();
-        let mut traits: Vec<String> = Vec::new();
-        let mut types: Vec<String> = Vec::new();
-        let mut fns: Vec<String> = Vec::new();
-
-        for (sym, entry) in table.all_symbols() {
-            let name = sym.to_string();
-            match entry {
-                ModuleEntry::Def { kind, .. } => {
-                    if let DefKind::SpecialForm { .. } = kind.as_ref() {
-                        special_forms.push(name);
-                    } else if matches!(kind.as_ref(), DefKind::Primitive { .. }) {
-                        // Primitives are NOT shown in /imports (they're via module
-                        // resolution fallback, not import).
-                    } else {
-                        // Skip locally-defined fns (not imports)
-                    }
-                }
-                ModuleEntry::Import { source } | ModuleEntry::Reexport { source } => {
-                    // Skip monomorphised variant names (e.g. add$Int+Int)
-                    if name.contains('$') {
-                        continue;
-                    }
-                    // Classify by looking up the source entry
-                    let classification = classify_import(session, source);
-                    match classification {
-                        ImportClass::Macro => macros.push(name),
-                        ImportClass::Trait => traits.push(name),
-                        ImportClass::Type | ImportClass::Constructor => types.push(name),
-                        ImportClass::Fn => fns.push(name),
-                    }
-                }
-                _ => {} // TypeDef, TraitDecl, Constructor, Macro — locally defined
-            }
-        }
-
-        special_forms.sort();
-        macros.sort();
-        traits.sort();
-        types.sort();
-        fns.sort();
-
-        // Special forms always present (spec §3.4)
-        print_name_category("Special forms", &special_forms, stdout);
-        print_name_category("Macros", &macros, stdout);
-        print_name_category("Traits", &traits, stdout);
-        print_name_category("Types", &types, stdout);
-        print_name_category("Fns", &fns, stdout);
-
-        if special_forms.is_empty() && macros.is_empty() && traits.is_empty()
-            && types.is_empty() && fns.is_empty()
-        {
-            // Shouldn't happen (special forms always present), but just in case
-            let _ = writeln!(stdout, "(no imports)");
-        }
-    } else {
-        // Filtered mode: `/imports <module>` — show imports from that source module
-        let mut names: Vec<String> = Vec::new();
-        for (sym, entry) in table.all_symbols() {
-            let source = match entry {
-                ModuleEntry::Import { source } => source,
-                ModuleEntry::Reexport { source } => source,
-                _ => continue,
-            };
-            let name = sym.to_string();
-            // Skip monomorphised variant names
-            if name.contains('$') {
-                continue;
-            }
-            if source.module.to_string() == filter {
-                names.push(name);
-            }
-        }
-        if names.is_empty() {
-            // Silent re-prompt for no matches (spec §3.4)
-            return;
-        }
-        names.sort();
-        print_name_category(&format!("From {filter}"), &names, stdout);
-    }
-}
-
-/// Handle `/exports <module>` — list a module's public symbols (spec §3.5).
-///
-/// Resolves the module, lists public symbols by category (names only).
-/// Usage hint for no argument. Error for not-found module.
-fn handle_exports(session: &ReplSession, arg: &str, stdout: &mut impl Write) {
-    if arg.is_empty() {
-        let _ = writeln!(stdout, "Usage: /exports <module-name>");
-        return;
-    }
-
-    // Parse: first word is module name, rest is optional prefix filter
-    let mut parts = arg.splitn(2, char::is_whitespace);
-    let mod_name = parts.next().unwrap_or("");
-    let prefix_filter = parts.next().unwrap_or("").trim();
-
-    // Resolve module
-    let module_path = match session.tc.resolve_module_by_name(mod_name) {
-        Some(path) => path,
-        None => {
-            let _ = writeln!(stdout, "Module '{mod_name}' not found");
-            return;
-        }
-    };
-
-    // Get the module's symbol table
-    let table = match session.tc.module_table(&module_path) {
-        Some(t) => t,
-        None => {
-            let _ = writeln!(stdout, "Module '{mod_name}' not found");
-            return;
-        }
-    };
-
-    // Collect public symbols by category
-    let mut macros: Vec<String> = Vec::new();
-    let mut traits: Vec<String> = Vec::new();
-    let mut types: Vec<String> = Vec::new();
-    let mut fns: Vec<String> = Vec::new();
-
-    for (sym, entry) in table.all_symbols() {
-        // Skip imports/reexports — those are the module's own imports, not exports
-        if matches!(entry, ModuleEntry::Import { .. } | ModuleEntry::Reexport { .. }) {
-            continue;
-        }
-        // Skip non-public symbols
-        if !entry.is_public() {
-            continue;
-        }
-        let name = sym.to_string();
-        // Skip monomorphised variant names
-        if name.contains('$') {
-            continue;
-        }
-        // Apply prefix filter if provided
-        if !prefix_filter.is_empty()
-            && !name.to_lowercase().starts_with(&prefix_filter.to_lowercase())
-        {
-            continue;
-        }
-
-        match entry {
-            ModuleEntry::Macro { .. } => macros.push(name),
-            ModuleEntry::TraitDecl { .. } => traits.push(name),
-            ModuleEntry::TypeDef { .. } | ModuleEntry::Constructor { .. } => types.push(name),
-            ModuleEntry::Def { kind, .. } => {
-                if !matches!(kind.as_ref(), DefKind::SpecialForm { .. }) {
-                    fns.push(name);
-                }
-            }
-            _ => {}
-        }
-    }
-
-    macros.sort();
-    traits.sort();
-    types.sort();
-    fns.sort();
-
-    let has_any = !macros.is_empty() || !traits.is_empty()
-        || !types.is_empty() || !fns.is_empty();
-
-    if !has_any {
-        let _ = writeln!(stdout, "Module '{mod_name}' has no public symbols");
-        return;
-    }
-
-    let _ = writeln!(stdout, "Module '{mod_name}':");
-    print_name_category("Macros", &macros, stdout);
-    print_name_category("Traits", &traits, stdout);
-    print_name_category("Types", &types, stdout);
-    print_name_category("Fns", &fns, stdout);
-}
-
-/// Classification of an imported symbol for category-based display.
-enum ImportClass {
-    Macro,
-    Trait,
-    Type,
-    Constructor,
-    Fn,
-}
-
-/// Classify an imported symbol by looking up the source entry.
-///
-/// Follows Import/Reexport chains to the ultimate definition (depth-limited).
-fn classify_import(session: &ReplSession, source: &cranelisp_types::FQSymbol) -> ImportClass {
-    match resolve_to_definition(session, source) {
-        Some(entry) => match entry {
-            ModuleEntry::Macro { .. } => ImportClass::Macro,
-            ModuleEntry::TraitDecl { .. } => ImportClass::Trait,
-            ModuleEntry::TypeDef { .. } => ImportClass::Type,
-            ModuleEntry::Constructor { .. } => ImportClass::Constructor,
-            _ => ImportClass::Fn,
-        },
-        None => ImportClass::Fn, // Default: treat unknown as function
-    }
-}
-
-/// Maximum depth for following Import/Reexport chains to prevent cycles.
-const RESOLVE_DEPTH_LIMIT: usize = 10;
-
-/// Follow Import/Reexport chains to find the ultimate definition entry.
-///
-/// Returns the concrete entry (Def, Macro, TypeDef, TraitDecl, Constructor)
-/// or None if the chain is broken or exceeds the depth limit.
-fn resolve_to_definition<'a>(
-    session: &'a ReplSession,
-    source: &cranelisp_types::FQSymbol,
-) -> Option<&'a ModuleEntry> {
-    let mut current_module = source.module.clone();
-    let mut current_name: String = source.symbol.to_string();
-    for _ in 0..RESOLVE_DEPTH_LIMIT {
-        let table = session.tc.module_table(&current_module)?;
-        let entry = table.get(&current_name)?;
-        match entry {
-            ModuleEntry::Import { source: next } | ModuleEntry::Reexport { source: next } => {
-                current_module = next.module.clone();
-                current_name = next.symbol.to_string();
-            }
-            _ => return Some(entry),
-        }
-    }
-    None // Depth limit exceeded (cycle or very deep chain)
-}
-
-/// Resolve an entry for display: if Import/Reexport, follow the chain to the
-/// definition and return the resolved entry with its defining module.
-///
-/// Returns the original entry and module if not Import/Reexport or if
-/// the chain cannot be resolved.
-fn resolve_entry_for_display<'a>(
-    entry: &'a ModuleEntry,
-    module: &'a ModuleFullPath,
-    session: &'a ReplSession,
-) -> (&'a ModuleEntry, &'a ModuleFullPath) {
-    let source = match entry {
-        ModuleEntry::Import { source } | ModuleEntry::Reexport { source } => source,
-        _ => return (entry, module),
-    };
-    // Follow the chain to the ultimate definition.
-    let mut current_module = &source.module;
-    let mut current_name: String = source.symbol.to_string();
-    for _ in 0..RESOLVE_DEPTH_LIMIT {
-        let table = match session.tc.module_table(current_module) {
-            Some(t) => t,
-            None => return (entry, module),
-        };
-        let resolved = match table.get(&current_name) {
-            Some(e) => e,
-            None => return (entry, module),
-        };
-        match resolved {
-            ModuleEntry::Import { source: next } | ModuleEntry::Reexport { source: next } => {
-                current_module = &next.module;
-                current_name = next.symbol.to_string();
-            }
-            _ => return (resolved, current_module),
-        }
-    }
-    (entry, module) // Depth limit exceeded — return original
-}
-
-/// Format a module entry's type signature for /sig and /info display.
-///
-/// Uses universal output format (spec §1.1).
-fn format_entry_signature(
-    entry: &ModuleEntry,
-    name: &str,
-    module: &ModuleFullPath,
-    session: &ReplSession,
-) -> String {
-    match entry {
-        ModuleEntry::Def {
-            scheme,
-            kind,
-            docstring,
-            ..
-        } => {
-            if let DefKind::SpecialForm { description } = kind.as_ref() {
-                return format_special_form_display(name, description);
-            }
-            let base = if !scheme.constraints.is_empty() {
-                display::format_scheme_display(name, scheme, module, &session.type_modules)
-            } else {
-                let type_str = format_type_qualified(&scheme.ty, &session.type_modules);
-                format!(":{type_str} {module}/{name}")
-            };
-            let classification = if matches!(kind.as_ref(), DefKind::Primitive { .. }) {
-                "primitive"
-            } else {
-                "defn"
-            };
-            let base = format!("{base} ; {classification}");
-            append_docstring_comment(base, docstring.as_deref())
-        }
-        ModuleEntry::Constructor {
-            type_name, scheme, ..
-        } => {
-            let type_str = format_type_qualified(&scheme.ty, &session.type_modules);
-            let tn = TypeName::from(type_name.0.as_str());
-            let ctor_display = if let Some(info) = session.tc.type_def_registry().get(&tn) {
-                display::format_ctor_display(&tn, name, info)
-            } else {
-                format!("{type_name}.{name}")
-            };
-            format!(":{type_str} {module}/{ctor_display} ; deftype")
-        }
-        ModuleEntry::TypeDef { .. } => {
-            format_type_display_universal(name, module, session)
-        }
-        ModuleEntry::TraitDecl { decl, .. } => {
-            format_trait_display_universal(name, decl.docstring.as_deref(), session)
-        }
-        ModuleEntry::Macro { clauses, docstring, .. } => {
-            format_macro_display_universal(name, clauses, docstring.as_deref(), module)
-        }
-        _ => format!("{module}/{name}"),
-    }
-}
-
-/// Format a single macro clause's parameter list.
-///
-/// Uses `& rest` syntax for variadic and bracket notation for destructuring.
-fn format_macro_clause_params(clause: &MacroClauseInfo) -> String {
-    let mut parts = Vec::new();
-    for param in &clause.params {
-        match param {
-            MacroParam::Name(name) => {
-                parts.push(name.to_string());
-            }
-            MacroParam::Bracket { fixed, rest } => {
-                let mut inner = Vec::new();
-                for f in fixed {
-                    inner.push(f.to_string());
-                }
-                if let Some(r) = rest {
-                    inner.push(format!("& {r}"));
-                }
-                parts.push(format!("[{}]", inner.join(" ")));
-            }
-        }
-    }
-    if let Some(rest) = &clause.rest_param {
-        parts.push(format!("& {rest}"));
-    }
-    format!("[{}]", parts.join(" "))
-}
-
-/// Format a special form for display (spec §4.1.5).
-///
-/// Produces a function-like signature with `; special form - description`.
-fn format_special_form_display(name: &str, description: &str) -> String {
-    let type_sig = match name {
-        "if" => ":(Fn [primitives/Bool a a] a)",
-        "let" => ":(Fn [bindings body] a)",
-        "fn" => ":(Fn [params body] function)",
-        "defn" => ":(Fn [name params body] function)",
-        "deftype" => ":(Fn [name ctors...] type)",
-        "match" => ":(Fn [expr [pat body]...] a)",
-        "defmacro" => ":(Fn [name params body] macro)",
-        "deftrait" => ":(Fn [name methods...] trait)",
-        "impl" => ":(Fn [trait type methods...] impl)",
-        "import" => ":(Fn [module names] import)",
-        "do" => ":(Fn [exprs...] a)",
-        _ => "",
-    };
-    if type_sig.is_empty() {
-        format!("{name} ; special form - {description}")
-    } else {
-        format!("{type_sig} {name} ; special form - {description}")
-    }
-}
-
-/// Check if the trimmed input is a bare symbol name and return its display.
-///
-/// Handles special forms, primitive types, functions, constructors, traits,
-/// and macros (spec §4.1, §11.4). Returns `Some(display_string)` if the
-/// input matches a known symbol, `None` otherwise.
-///
-/// Universal output format (spec §1.1):
-///   `:Type {value|name} ; {classification} - {docstring}`
-/// with optional related symbol sections for types, traits, and macros.
-fn special_form_feedback(input: &str, session: &ReplSession) -> Option<String> {
-    let trimmed = input.trim();
-    // Must be a single bare identifier (no parens, no spaces, no brackets).
-    if trimmed.contains(|c: char| c.is_whitespace() || c == '(' || c == ')' || c == '[' || c == ']') {
-        return None;
-    }
-    if trimmed.is_empty() {
-        return None;
-    }
-    // Check primitive type names: Int, Bool, Float, String (spec §4.1.3).
-    // These live in the `primitives` synthetic module but are not bare names
-    // in the user module's symbol table, so we check before the lookup.
-    if Type::from_name(trimmed).is_some() {
-        return Some(format_builtin_type_display(trimmed, session));
-    }
-
-    // Look up in the symbol table (spec §4.1 — bare symbol lookup).
-    // Delegate to format_entry_signature which implements the universal format
-    // for all symbol classes.
-    let module = session.tc.current_module_path().clone();
-    let entry = session.tc.symbol_table().get(trimmed)?;
-    // For Import/Reexport entries, resolve through the chain to the definition.
-    // This allows bare-symbol display for imported special forms, macros, etc.
-    let (resolved_entry, resolved_module) =
-        resolve_entry_for_display(entry, &module, session);
-    // Nullary constructors (zero fields) have value semantics — they evaluate
-    // to a value, so let them pass through to eval instead of showing definition
-    // metadata. Non-nullary constructors need arguments and can't be evaluated
-    // bare, so they show introspection display (spec §4.1).
-    if let ModuleEntry::Constructor { info, .. } = resolved_entry
-        && info.fields.is_empty()
-    {
-        return None;
-    }
-    Some(format_entry_signature(resolved_entry, trimmed, resolved_module, session))
-}
-
-/// Format a builtin type (Int, Bool, Float, String) for bare symbol lookup.
-///
-/// Shows `:primitives/Type ; type` with `; impl:` section listing traits
-/// that have implementations for this type (spec §4.1.3).
-fn format_builtin_type_display(type_name: &str, session: &ReplSession) -> String {
-    let tn = TypeName::from(type_name);
-    let mut result = format!(":primitives/{type_name} ; type");
-    let trait_names = session.tc.get_impls_for_type(&tn);
-    if !trait_names.is_empty() {
-        let names: Vec<&str> = trait_names.iter().map(|t| t.as_ref()).collect();
-        result.push_str(&format_related_section("impl", &names));
-    }
-    result
-}
-
-/// Format a user-defined type for bare symbol lookup (spec §4.1.3).
-///
-/// Shows `:module/TypeName ; deftype` with `; match:` (constructors) and
-/// `; impl:` (trait implementations) related symbol sections.
-fn format_type_display_universal(type_name: &str, module: &ModuleFullPath, session: &ReplSession) -> String {
-    let mut result = format!(":{module}/{type_name} ; deftype");
-    let tn = TypeName::from(type_name);
-    // Related: constructors under `; match:`
-    if let Some(ctors) = session.tc.get_type_constructors(&tn) {
-        if !ctors.is_empty() {
-            let names: Vec<&str> = ctors.iter().map(|c| c.name.as_ref()).collect();
-            result.push_str(&format_related_section("match", &names));
-        }
-    }
-    // Related: trait implementations under `; impl:`
-    let trait_names = session.tc.get_impls_for_type(&tn);
-    if !trait_names.is_empty() {
-        let names: Vec<&str> = trait_names.iter().map(|t| t.as_ref()).collect();
-        result.push_str(&format_related_section("impl", &names));
-    }
-    result
-}
-
-/// Format a trait for bare symbol lookup (spec §4.1.4).
-///
-/// Shows `:defining_module/TraitName ; deftrait` with `; defn:` (methods)
-/// and `; impl:` (implementing types) related symbol sections.
-fn format_trait_display_universal(
-    trait_name: &str,
-    docstring: Option<&str>,
-    session: &ReplSession,
-) -> String {
-    let defining_module = session.tc.defining_module_for(trait_name);
-    let tn = TraitName::from(trait_name);
-    let mut result = format!(":{defining_module}/{trait_name} ; deftrait");
-    result = append_docstring_comment(result, docstring);
-    // Related: methods under `; defn:`
-    if let Some(methods) = session.tc.get_trait_methods(&tn) {
-        if !methods.is_empty() {
-            let names: Vec<&str> = methods.iter().map(|m| m.as_ref()).collect();
-            result.push_str(&format_related_section("defn", &names));
-        }
-    }
-    // Related: implementing types under `; impl:`
-    let impl_types = session.tc.get_implementing_types(&tn);
-    if !impl_types.is_empty() {
-        let names: Vec<&str> = impl_types.iter().map(|t| t.as_ref()).collect();
-        result.push_str(&format_related_section("impl", &names));
-    }
-    result
-}
-
-/// Format a macro for bare symbol lookup (spec §4.1.6, §11.4).
-///
-/// Shows `:module/name ; defmacro` with `; [params] -> Sexp` clause lines.
-fn format_macro_display_universal(
-    name: &str,
-    clauses: &[MacroClauseInfo],
-    docstring: Option<&str>,
-    module: &ModuleFullPath,
-) -> String {
-    let mut result = format!(":{module}/{name} ; defmacro");
-    result = append_docstring_comment(result, docstring);
-    for clause in clauses {
-        let params = format_macro_clause_params(clause);
-        result.push_str(&format!("\n; {params} -> Sexp"));
-    }
-    result
-}
-
-/// Format a related symbols section for universal output (spec §1.1).
-///
-/// Produces `\n; {label}:\n;  name1 name2 ...` with names on one line.
-fn format_related_section(label: &str, names: &[&str]) -> String {
-    let mut result = format!("\n; {label}:");
-    result.push_str(&format!("\n;  {}", names.join(" ")));
-    result
-}
-
-/// Append the first line of a docstring as a ` ; comment` suffix.
-///
-/// Used by bare symbol display (spec §4.1) to show a brief description
-/// after the type/name display.
-fn append_docstring_comment(base: String, docstring: Option<&str>) -> String {
-    match docstring {
-        Some(doc) if !doc.is_empty() => {
-            let first_line = doc.lines().next().unwrap_or("");
-            if first_line.is_empty() {
-                base
-            } else {
-                format!("{base} ; {first_line}")
-            }
-        }
-        _ => base,
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Introspection commands: /source, /sexp, /ast, /clif, /disasm
-// ---------------------------------------------------------------------------
-
-/// Handle `/source <name>` — show original source text of a definition.
-fn handle_source(session: &ReplSession, name: &str, stdout: &mut impl Write) {
-    if name.is_empty() {
-        let _ = writeln!(stdout, "usage: /source <name>");
-        return;
-    }
-    match session.got_state.def_codegen.get(name) {
-        Some(dc) if dc.source.is_some() => {
-            let _ = writeln!(stdout, "; source for {name}");
-            let _ = writeln!(stdout, "{}", dc.source.as_ref().unwrap());
-        }
-        _ => {
-            let _ = writeln!(stdout, "error: no source available for '{name}'");
-        }
-    }
-}
-
-/// Handle `/sexp <name>` — show the parsed S-expression of a definition.
-fn handle_sexp(session: &ReplSession, name: &str, stdout: &mut impl Write) {
-    if name.is_empty() {
-        let _ = writeln!(stdout, "usage: /sexp <name>");
-        return;
-    }
-    match session.got_state.def_codegen.get(name) {
-        Some(dc) if dc.sexp.is_some() => {
-            let _ = writeln!(stdout, "; sexp for {name}");
-            let _ = writeln!(stdout, "{}", format_sexp(dc.sexp.as_ref().unwrap()));
-        }
-        _ => {
-            let _ = writeln!(stdout, "error: no sexp available for '{name}'");
-        }
-    }
-}
-
-/// Handle `/ast <name>` — show the AST (Defn) of a definition.
-fn handle_ast(session: &ReplSession, name: &str, stdout: &mut impl Write) {
-    if name.is_empty() {
-        let _ = writeln!(stdout, "usage: /ast <name>");
-        return;
-    }
-    match session.got_state.def_codegen.get(name) {
-        Some(dc) if dc.defn.is_some() => {
-            let _ = writeln!(stdout, "; ast for {name}");
-            let _ = writeln!(stdout, "{:#?}", dc.defn.as_ref().unwrap());
-        }
-        _ => {
-            let _ = writeln!(stdout, "error: no AST available for '{name}'");
-        }
-    }
-}
-
-/// Handle `/clif <name>` — show the Cranelift IR of a definition.
-fn handle_clif(session: &ReplSession, name: &str, stdout: &mut impl Write) {
-    if name.is_empty() {
-        let _ = writeln!(stdout, "usage: /clif <name>");
-        return;
-    }
-    match session.got_state.def_codegen.get(name) {
-        Some(dc) if dc.clif_ir.is_some() => {
-            let _ = writeln!(stdout, "; clif ir for {name}");
-            let _ = write!(stdout, "{}", dc.clif_ir.as_ref().unwrap());
-        }
-        _ => {
-            let _ = writeln!(stdout, "error: no CLIF IR available for '{name}'");
-        }
-    }
-}
-
-/// Handle `/disasm <name>` — show disassembled native code of a definition.
-fn handle_disasm(session: &ReplSession, name: &str, stdout: &mut impl Write) {
-    if name.is_empty() {
-        let _ = writeln!(stdout, "usage: /disasm <name>");
-        return;
-    }
-    match session.got_state.def_codegen.get(name) {
-        Some(dc) if dc.disasm.is_some() => {
-            let _ = writeln!(stdout, "; disasm for {name}");
-            let _ = writeln!(stdout, "{}", dc.disasm.as_ref().unwrap());
-        }
-        _ => {
-            let _ = writeln!(stdout, "error: no disassembly available for '{name}'");
-        }
-    }
-}
-
-// ---------------------------------------------------------------------------
-// /mod command
-// ---------------------------------------------------------------------------
-
-/// Handle `/mod [name]` — switch module namespace (spec §8).
-///
-/// With no argument, switches to the `user` module (no output).
-/// With an argument, switches to that module namespace (no output, creating it if needed).
-fn handle_mod(session: &mut ReplSession, name: &str, _stdout: &mut impl Write) {
-    let target = if name.is_empty() { "user" } else { name };
-    let path = ModuleFullPath::from(target);
-    session.tc.set_current_module(path);
-}
-
-// ---------------------------------------------------------------------------
-// Runtime panic boundary (spec §12.7.4.1)
-// ---------------------------------------------------------------------------
+// ── Runtime panic boundary (spec §12.7.4.1) ──────────────────────────────────
 
 /// Invoke a JIT-compiled function and check for runtime errors.
 ///
@@ -2547,6 +1367,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use commands::{classify_import, ImportClass};
 
     #[test]
     fn test_format_result_int() {
@@ -2776,7 +1597,7 @@ mod tests {
         let adt = Type::ADT(type_name.clone(), vec![Type::Int]);
         let tm = HashMap::new();
 
-        // Nullary: None (tag 0) — dot notation.
+        // Nullary: None (tag 0) -- dot notation.
         assert_eq!(
             format_result_value(0, &adt, &type_defs, &tm),
             ":(Option primitives/Int) Option.None"
@@ -2790,7 +1611,7 @@ mod tests {
             *(ptr.add(24) as *mut i64) = 42; // field val = 42
         }
 
-        // Data constructor — dot notation: (Option.Some 42).
+        // Data constructor -- dot notation: (Option.Some 42).
         assert_eq!(
             format_result_value(ptr as i64, &adt, &type_defs, &tm),
             ":(Option primitives/Int) (Option.Some 42)"
@@ -2844,7 +1665,7 @@ mod tests {
 
     // --- Macro integration tests ---
 
-    // spec: 09-macros.md §9.2 — defmacro in REPL
+    // spec: 09-macros.md §9.2 -- defmacro in REPL
     #[test]
     fn test_repl_defmacro_and_use() {
         let mut session = ReplSession::new();
@@ -2860,7 +1681,7 @@ mod tests {
         assert_eq!(result.ty, Type::Int);
     }
 
-    // spec: 09-macros.md §9.4.2 — quasiquote macro in REPL
+    // spec: 09-macros.md §9.4.2 -- quasiquote macro in REPL
     #[test]
     fn test_repl_defmacro_quasiquote() {
         let mut session = ReplSession::new();
@@ -2871,7 +1692,7 @@ mod tests {
         assert_eq!(result.value, 42);
     }
 
-    // spec: 09-macros.md §9.2 — macro accumulates across evals
+    // spec: 09-macros.md §9.2 -- macro accumulates across evals
     #[test]
     fn test_repl_macro_persists() {
         let mut session = ReplSession::new();
@@ -2882,12 +1703,12 @@ mod tests {
         let r1 = session.eval("(id 10)").unwrap();
         assert_eq!(r1.value, 10);
 
-        // Second use — macro is still registered.
+        // Second use -- macro is still registered.
         let r2 = session.eval("(id 20)").unwrap();
         assert_eq!(r2.value, 20);
     }
 
-    // spec: 09-macros.md §9.2 — error recovery does not corrupt expander
+    // spec: 09-macros.md §9.2 -- error recovery does not corrupt expander
     #[test]
     fn test_repl_macro_error_recovery() {
         let mut session = ReplSession::new();
@@ -2904,7 +1725,7 @@ mod tests {
         assert_eq!(result.value, 42);
     }
 
-    // spec: 09-macros.md — session without macros still works
+    // spec: 09-macros.md -- session without macros still works
     #[test]
     fn test_repl_no_macros_unchanged() {
         let mut session = ReplSession::new();
@@ -2912,7 +1733,7 @@ mod tests {
         assert_eq!(result.value, 3);
     }
 
-    // spec: 09-macros.md §9.2 — macro in defn body
+    // spec: 09-macros.md §9.2 -- macro in defn body
     #[test]
     fn test_repl_macro_in_defn_body() {
         let mut session = ReplSession::new();
@@ -2927,7 +1748,7 @@ mod tests {
         assert_eq!(result.value, 77);
     }
 
-    // spec: 08-modules.md — REPL prelude loading
+    // spec: 08-modules.md -- REPL prelude loading
     #[test]
     fn test_repl_with_prelude() {
         let dir = tempfile::tempdir().unwrap();
@@ -2951,12 +1772,12 @@ mod tests {
         assert_eq!(result.value, 42);
     }
 
-    // spec: 08-modules.md — REPL without prelude still works
+    // spec: 08-modules.md -- REPL without prelude still works
     #[test]
     fn test_repl_without_prelude() {
         let dir = tempfile::tempdir().unwrap();
 
-        // No prelude.cl anywhere — should succeed with empty prelude.
+        // No prelude.cl anywhere -- should succeed with empty prelude.
         let session = ReplSession::new_with_prelude(
             dir.path(),
             &[],
@@ -2989,10 +1810,10 @@ mod tests {
         session
     }
 
-    // spec: repl/spec.md §3.4 — classify_import resolves direct definition
+    // spec: repl/spec.md §3.4 -- classify_import resolves direct definition
     #[test]
     fn test_classify_import_direct_definition() {
-        use cranelisp_types::{FQSymbol, Scheme};
+        use cranelisp_types::{FQSymbol, Scheme, TraitName};
 
         let mod_path = ModuleFullPath::from("core.num");
         let session = session_with_modules(vec![(
@@ -3045,10 +1866,10 @@ mod tests {
         ));
     }
 
-    // spec: repl/spec.md §3.4 — classify_import follows reexport chain
+    // spec: repl/spec.md §3.4 -- classify_import follows reexport chain
     #[test]
     fn test_classify_import_reexport_chain() {
-        use cranelisp_types::FQSymbol;
+        use cranelisp_types::{FQSymbol, TraitName};
 
         let origin = ModuleFullPath::from("core.num");
         let prelude = ModuleFullPath::from("prelude");
@@ -3097,7 +1918,7 @@ mod tests {
         ));
     }
 
-    // spec: repl/spec.md §3.4 — internal names filtered from /imports
+    // spec: repl/spec.md §3.4 -- internal names filtered from /imports
     #[test]
     fn test_imports_filters_internal_names() {
         // Verify that monomorphised variant names (containing $) are filtered.
@@ -3113,7 +1934,7 @@ mod tests {
         }
     }
 
-    // spec: repl/spec.md §3.4 — classify_import with macro entry
+    // spec: repl/spec.md §3.4 -- classify_import with macro entry
     #[test]
     fn test_classify_import_macro() {
         use cranelisp_types::FQSymbol;
@@ -3144,7 +1965,7 @@ mod tests {
         ));
     }
 
-    // spec: repl/spec.md §3.4 — classify_import with constructor entry
+    // spec: repl/spec.md §3.4 -- classify_import with constructor entry
     #[test]
     fn test_classify_import_constructor() {
         use cranelisp_types::{ConstructorInfo, FQSymbol, Scheme};
@@ -3179,7 +2000,7 @@ mod tests {
         ));
     }
 
-    // spec: repl/spec.md §3.4 — classify_import with type def entry
+    // spec: repl/spec.md §3.4 -- classify_import with type def entry
     #[test]
     fn test_classify_import_typedef() {
         use cranelisp_types::{FQSymbol, TypeDefInfo};
@@ -3213,7 +2034,7 @@ mod tests {
         ));
     }
 
-    // spec: repl/spec.md §3.4 — classify_import unknown symbol defaults to Fn
+    // spec: repl/spec.md §3.4 -- classify_import unknown symbol defaults to Fn
     #[test]
     fn test_classify_import_unknown_defaults_to_fn() {
         use cranelisp_types::FQSymbol;
@@ -3231,7 +2052,7 @@ mod tests {
 
     // IO type detection tests moved to cranelisp-types (Type::is_io, Type::io_inner_type)
 
-    // spec: 10-io §10.8.1 — force_io_and_format with Pure node
+    // spec: 10-io §10.8.1 -- force_io_and_format with Pure node
     #[test]
     fn test_force_io_and_format_pure_int() {
         // Build a Pure(42) IO node manually.
@@ -3256,7 +2077,7 @@ mod tests {
         cranelisp_runtime::heap_dealloc(base as i64);
     }
 
-    // spec: 10-io §10.8.1 — force_io_and_format handles panic gracefully
+    // spec: 10-io §10.8.1 -- force_io_and_format handles panic gracefully
     #[test]
     fn test_force_io_and_format_panic_recovery() {
         // Build a node with an invalid tag.

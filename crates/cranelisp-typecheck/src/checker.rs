@@ -7,7 +7,7 @@ use std::collections::HashMap;
 
 use cranelisp_types::{
     ConstructorInfo, CranelispError, ExportSpec, FQSymbol, ImportNames, ImportSpec,
-    MethodResolutions, ModuleEntry, ModuleFullPath, ReplSnapshot, Scheme, Span,
+    MethodResolutions, ModuleEntry, ModuleFullPath, ResolvedCall, ReplSnapshot, Scheme, Span,
     Subst, Symbol, SymbolTable, TraitName, Type, TypeId, TypeName, Warning,
     apply,
 };
@@ -54,6 +54,12 @@ pub struct TypeChecker {
     /// Transient flag: set true during `infer_apply` when inferring the callee.
     /// Used to suppress the "constrained fn as value" error for direct calls.
     pub(crate) in_call_position: bool,
+    /// Pending auto-curry resolutions for single-arity functions.
+    /// (call_span, function_name, applied_arg_count, total_param_count, callee_type, target_resolution)
+    /// The callee_type stores the callee's type at inference time (may contain vars).
+    /// The optional ResolvedCall is populated when the auto-curried callee is a
+    /// trait method or builtin, so the wrapper can call the concrete implementation.
+    pub(crate) pending_auto_curry: Vec<(Span, Symbol, usize, usize, Type, Option<ResolvedCall>)>,
 }
 
 impl TypeChecker {
@@ -82,6 +88,7 @@ impl TypeChecker {
             active_constraints: ActiveConstraints::default(),
             module_aliases: HashMap::new(),
             in_call_position: false,
+            pending_auto_curry: Vec::new(),
         };
         tc.register_builtins();
         tc
@@ -893,6 +900,7 @@ impl TypeChecker {
         self.expr_types.clear();
         self.method_resolutions.clear();
         self.warnings.clear();
+        self.pending_auto_curry.clear();
         // Remove symbol table entries added after the snapshot was taken.
         self.current_symbol_table_mut()
             .symbols

@@ -1,0 +1,36 @@
+; Cranelisp Ring 4F — Auto-Currying & Testing
+
+; Partial application — call with fewer args, get a function back
+
+(defn make-adder [n] (+ n))
+make-adder
+
+; make-adder returns a closure that adds n to its argument
+
+(make-adder 10)
+(let [add10 (make-adder 10)] (add10 32))
+
+; Any multi-arg function can be partially applied
+
+(defn mul3 [a b c] (mul-i64 a (mul-i64 b c)))
+(mul3 2 3 4)
+(let [double (mul3 2 1)] (double 7))
+
+; Curried functions compose naturally
+
+(defn apply-twice [f x] (f (f x)))
+(let [add5 (make-adder 5)] (apply-twice add5 0))
+(let [add5 (make-adder 5)] (apply-twice add5 100))
+
+; Curried functions as higher-order arguments
+
+(defn sum-with [f x y] (+ (f x) (f y)))
+(sum-with (+ 100) 1 2)
+
+; /run-tests discovers test-* functions and reports pass/fail
+
+(defn test-addition [] (if (= (+ 1 2) 3) None (Some "1+2 should be 3")))
+(defn test-curry [] (let [add5 (+ 5)] (if (= (add5 10) 15) None (Some "curry broken"))))
+(defn test-bad [] (Some "intentional failure"))
+
+/run-tests

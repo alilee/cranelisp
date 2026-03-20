@@ -457,6 +457,105 @@ fn e2e_s3_1_type() {
     assert!(s.contains("Int"), "expected Int type\n---\n{s}");
 }
 
+// spec: repl/spec.md §3 — /run-tests discovers and runs test-* functions
+#[test]
+fn e2e_run_tests_basic_pass() {
+    let input = "(deftype (Option a) None (Some [:a val]))\n\
+                 (defn test-one [] None)\n\
+                 /run-tests\n";
+    let o = run_repl(input, "rt_basic_pass");
+    let s = stdout_str(&o);
+    assert!(
+        s.contains("ok"),
+        "passing test should show 'ok'\n---\n{s}"
+    );
+    assert!(
+        s.contains("1 passed"),
+        "should report 1 passed\n---\n{s}"
+    );
+}
+
+// spec: repl/spec.md §3 — /run-tests reports failing tests
+#[test]
+fn e2e_run_tests_basic_fail() {
+    let input = "(deftype (Option a) None (Some [:a val]))\n\
+                 (defn test-fail [] (Some \"expected\"))\n\
+                 /run-tests\n";
+    let o = run_repl(input, "rt_basic_fail");
+    let s = stdout_str(&o);
+    assert!(
+        s.contains("FAILED"),
+        "failing test should show 'FAILED'\n---\n{s}"
+    );
+    assert!(
+        s.contains("expected"),
+        "failure reason should appear in output\n---\n{s}"
+    );
+}
+
+// spec: repl/spec.md §3 — /run-tests with multiple tests
+#[test]
+fn e2e_run_tests_multiple() {
+    let input = "(deftype (Option a) None (Some [:a val]))\n\
+                 (defn test-a [] None)\n\
+                 (defn test-b [] None)\n\
+                 (defn test-c [] None)\n\
+                 /run-tests\n";
+    let o = run_repl(input, "rt_multiple");
+    let s = stdout_str(&o);
+    assert!(
+        s.contains("3 passed"),
+        "should report 3 passed\n---\n{s}"
+    );
+}
+
+// spec: repl/spec.md §3 — /run-tests with no test functions
+#[test]
+fn e2e_run_tests_empty() {
+    let input = "/run-tests\n";
+    let o = run_repl(input, "rt_empty");
+    let s = stdout_str(&o);
+    assert!(
+        s.contains("No test-* functions found"),
+        "should report no tests found\n---\n{s}"
+    );
+}
+
+// spec: repl/spec.md §3 — /run-tests mixed pass and fail
+#[test]
+fn e2e_run_tests_mixed_pass_fail() {
+    let input = "(deftype (Option a) None (Some [:a val]))\n\
+                 (defn test-pass-1 [] None)\n\
+                 (defn test-pass-2 [] None)\n\
+                 (defn test-fail-1 [] (Some \"broken\"))\n\
+                 /run-tests\n";
+    let o = run_repl(input, "rt_mixed");
+    let s = stdout_str(&o);
+    assert!(
+        s.contains("2 passed") && s.contains("1 failed"),
+        "should report 2 passed, 1 failed\n---\n{s}"
+    );
+}
+
+// spec: repl/spec.md §3 — /run-tests ignores non-test functions
+#[test]
+fn e2e_run_tests_ignores_non_test() {
+    let input = "(deftype (Option a) None (Some [:a val]))\n\
+                 (defn helper [] None)\n\
+                 (defn test-one [] None)\n\
+                 /run-tests\n";
+    let o = run_repl(input, "rt_ignores_non_test");
+    let s = stdout_str(&o);
+    assert!(
+        s.contains("1 passed"),
+        "should only discover test-* functions, not 'helper'\n---\n{s}"
+    );
+    assert!(
+        !s.contains("helper"),
+        "non-test function 'helper' should not appear\n---\n{s}"
+    );
+}
+
 // ===========================================================================
 // §4  Self-documentation
 // ===========================================================================

@@ -556,13 +556,13 @@ fn error_wrong_arity_too_many_args() {
     );
 }
 
-// spec: 04-expressions §4.6 — wrong arity too few
+// spec: 04-expressions §4.6.3 — too few args triggers auto-curry (returns closure)
 #[test]
-fn error_wrong_arity_too_few_args() {
-    assert_error(
-        "(defn add [x y] (add-i64 x y)) (defn main [] (add 1))",
-        "",
-    );
+fn auto_curry_too_few_args_returns_closure() {
+    // With auto-currying, (add 1) returns a closure, not an error.
+    // The closure captures 1 and expects one more arg.
+    let src = "(defn add [x y] (add-i64 x y)) (defn main [] (let [f (add 1)] (f 2)))";
+    assert_eq!(compile_and_run_simple(src), 3);
 }
 
 // =============================================================================

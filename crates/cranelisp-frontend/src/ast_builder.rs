@@ -2032,7 +2032,7 @@ mod tests {
         match parse_and_build_expr("(trace 42)").unwrap() {
             Expr::Apply { callee, args, .. } => {
                 match *callee {
-                    Expr::Var { ref name, .. } => assert_eq!(name.as_str(), "trace"),
+                    Expr::Var { ref name, .. } => assert_eq!(&**name, "trace"),
                     other => panic!("expected Var callee, got {other:?}"),
                 }
                 assert_eq!(args.len(), 1);

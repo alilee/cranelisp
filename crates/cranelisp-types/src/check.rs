@@ -24,6 +24,12 @@ pub enum ResolvedCall {
     AutoCurry {
         target_name: Symbol,
         applied_count: usize,
+        total_count: usize,
+        /// When the auto-curried target is a trait method or builtin,
+        /// this holds the concrete resolution (e.g., TraitMethod → "add-i64").
+        /// The wrapper function uses this to call the resolved target
+        /// instead of the abstract trait method name.
+        trait_resolution: Option<Box<ResolvedCall>>,
     },
     /// Resolved to a builtin function (inline IR emission).
     /// The name uniquely identifies the Cranelift instruction — e.g. `add-i64` → `iadd`.

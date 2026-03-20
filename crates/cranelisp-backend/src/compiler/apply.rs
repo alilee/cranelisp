@@ -214,11 +214,26 @@ impl<'a> FnCompiler<'a> {
                 let sym = Symbol::from(mangled_name.as_ref());
                 self.compile_direct_call(&sym, &arg_vals, span)
             }
-            ResolvedCall::AutoCurry { target_name, .. } => {
-                Err(CranelispError::CodegenError {
-                    message: format!("auto-curry not supported in Ring 1: {target_name}"),
+            ResolvedCall::AutoCurry {
+                ref target_name,
+                applied_count,
+                total_count,
+                ref trait_resolution,
+            } => {
+                // Compile applied args with consuming convention:
+                // the auto-curry closure captures them, and the wrapper
+                // will inc before forwarding to the target function.
+                let arg_vals = self.compile_consuming_arg_list(args)?;
+                self.in_tail_position = saved_tail;
+                self.compile_auto_curry(
+                    target_name,
+                    &arg_vals,
+                    applied_count,
+                    total_count,
+                    args,
                     span,
-                })
+                    trait_resolution.as_deref(),
+                )
             }
         }
     }
@@ -551,7 +566,7 @@ impl<'a> FnCompiler<'a> {
 
     /// Compile a closure call: load code_ptr from the closure, then call_indirect
     /// with the closure pointer as the first argument (env_ptr).
-    fn compile_closure_call(
+    pub(crate) fn compile_closure_call(
         &mut self,
         closure_val: Value,
         arg_vals: &[Value],

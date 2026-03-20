@@ -1831,15 +1831,24 @@ fn error_adt_type_mismatch_includes_type_name() {
     assert_type_error(src, "Option");
 }
 
-// spec: 03-types §3.8 — function arity mismatch error
+// spec: 04-expressions §4.6.3 — too few args triggers auto-curry
 #[test]
-fn error_function_arity_mismatch() {
-    // Calling a function with wrong number of args should produce a clear error.
+fn auto_curry_function_arity_partial() {
+    // With auto-currying, calling with fewer args returns a closure.
     let src = "
         (defn add2 [a b] (add-i64 a b))
-        (defn main [] (add2 1))
+        (defn main [] (let [f (add2 1)] (f 2)))
     ";
-    // Should mention the mismatch in some form
+    assert_eq!(compile_and_run_simple(src), 3);
+}
+
+// spec: 03-types §3.8 — too many args is still an arity error
+#[test]
+fn error_function_arity_too_many() {
+    let src = "
+        (defn add2 [a b] (add-i64 a b))
+        (defn main [] (add2 1 2 3))
+    ";
     assert_error(src, "mismatch");
 }
 

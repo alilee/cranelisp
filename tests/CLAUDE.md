@@ -225,3 +225,86 @@ cd sketch && cargo test --test integration test_name -- --nocapture  # one test
 ```
 
 See `sketch/tests/CLAUDE.md` for prototype test conventions.
+
+## Coverage
+
+Code coverage is measured with `cargo-llvm-cov`, which uses LLVM's source-based instrumentation.
+
+### Installation
+
+```bash
+rustup component add llvm-tools-preview
+cargo install cargo-llvm-cov
+```
+
+### Running Coverage Reports
+
+```bash
+# Combined (all tests, root crate only)
+cargo llvm-cov --html --output-dir coverage/all
+
+# Per-layer reports:
+# Unit (lib tests — inline #[cfg(test)] modules)
+cargo llvm-cov --lib --html --output-dir coverage/unit
+
+# Integration (ring tests, RC, macros, modules, IO, stdlib)
+cargo llvm-cov --test ring0 --test ring1 --test ring2 --test ring3_repl --test ring4_trace --test rc --test macros --test modules --test io --test stdlib --html --output-dir coverage/integration
+
+# API (REPL experience tests)
+cargo llvm-cov --test repl_experience --test repl_negative --html --output-dir coverage/api
+
+# E2E (subprocess tests, examples, exemplar)
+cargo llvm-cov --test e2e --test examples --test exemplar --html --output-dir coverage/e2e
+
+# Text summary (after any of the above)
+cargo llvm-cov report
+```
+
+### Baseline Numbers (2026-03-20, Sprint 21)
+
+**Workspace-wide** (after `str_as_str` fix):
+
+| Metric | Value |
+|---|---|
+| **Total line coverage** | **86.72%** (25,906 lines, 3,420 missed) |
+| **Function coverage** | 86.00% (2,079 functions, 291 missed) |
+| **Tests** | 1241 (8 ignored) |
+
+Per-crate breakdown:
+
+| Crate | Lines | Missed | Coverage |
+|---|---|---|---|
+| cranelisp-types | ~1,070 | ~106 | ~90% |
+| cranelisp-frontend | ~4,450 | ~550 | ~88% |
+| cranelisp-typecheck | ~11,070 | ~590 | ~95% |
+| cranelisp-backend | ~9,550 | ~1,400 | ~85% |
+| cranelisp-runtime | ~800 | ~170 | ~79% |
+| cranelisp-platform | ~70 | ~70 | 0% |
+| platforms (stdio, test-capture) | ~90 | ~90 | 0% |
+| src/ (binary crate) | ~4,450 | ~1,200 | ~73% |
+
+Key file-level gaps:
+
+| File | Coverage | Notes |
+|---|---|---|
+| `src/repl.rs` | 56% | Largest single gap — 832 missed lines, 17 untested slash command handlers |
+| `backend/compiler/builtins.rs` | ~52% | Many primitive implementations untested |
+| `backend/compiler/operators.rs` | ~5% | Trait operator codegen mostly untested |
+| `platform/src/lib.rs` | 0% | DLL boundary — tested indirectly |
+| `src/main.rs` | 0% | Binary entry — tested via E2E subprocess |
+
+See `tests/plan/coverage-gaps.md` for full gap analysis and prioritized remediation plan.
+
+### Known Limitations
+
+1. **JIT code not covered**: Cranelisp compiles user code via Cranelift JIT at runtime. LLVM source-based instrumentation only covers the Rust compiler code, not the generated machine code. Coverage numbers reflect how much of the *compiler* is exercised, not how much of the *language surface* is tested.
+
+2. **JIT code not covered**: Cranelisp compiles user code via Cranelift JIT at runtime. LLVM source-based instrumentation only covers the Rust compiler code, not the generated machine code. Coverage numbers reflect how much of the *compiler* is exercised, not how much of the *language surface* is tested.
+
+3. **E2E subprocess profiling**: E2E tests invoke `cranelisp` as a subprocess. The subprocess binary is not instrumented by `cargo-llvm-cov` unless built with `LLVM_PROFILE_FILE` set. Current E2E coverage numbers only reflect test harness code, not the binary code paths exercised by the subprocess. The low E2E line coverage (27%) is expected for this reason.
+
+4. **`main.rs` at 0%**: The binary entry point is never exercised by integration tests (they use the library API). Only E2E subprocess tests would cover it, but see limitation 3.
+
+5. **Serial test coordination**: RC tests require `--test-threads=1`. Coverage runs all tests in the same invocation, which may cause RC trace contention. If RC coverage numbers look off, run `cargo llvm-cov --test rc --html --output-dir coverage/rc` separately.
+
+6. **`coverage/` is gitignored**: Reports are local-only build artifacts. Regenerate with the commands above.

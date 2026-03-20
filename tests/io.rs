@@ -1258,8 +1258,7 @@ fn io_neg_type_mismatch_io_int_vs_io_bool() {
 // R3 coverage gap tests — auto-currying (spec: 04-expressions)
 // =============================================================================
 
-// spec: 04-expressions — auto-currying: calling with fewer args returns closure
-#[ignore = "spec/04-expressions.md §4.6.3 — Ring 3, Sprint 17: auto-currying not yet implemented"]
+// spec: 04-expressions §4.6.3 — auto-currying: calling with fewer args returns closure
 #[test]
 fn auto_curry_two_param_partial_apply() {
     let src = r#"
@@ -1271,8 +1270,7 @@ fn auto_curry_two_param_partial_apply() {
     assert_eq!(compile_and_run_simple(src), 3);
 }
 
-// spec: 04-expressions — auto-currying: partial application of 3-param function
-#[ignore = "spec/04-expressions.md §4.6.3 — Ring 3, Sprint 17: auto-currying not yet implemented"]
+// spec: 04-expressions §4.6.3 — auto-currying: partial application of 3-param function
 #[test]
 fn auto_curry_three_param_partial_apply() {
     let src = r#"
@@ -1284,8 +1282,7 @@ fn auto_curry_three_param_partial_apply() {
     assert_eq!(compile_and_run_simple(src), 60);
 }
 
-// spec: 04-expressions — auto-currying: curried function used as higher-order
-#[ignore = "spec/04-expressions.md §4.6.3 — Ring 3, Sprint 17: auto-currying not yet implemented"]
+// spec: 04-expressions §4.6.3 — auto-currying: curried function used as higher-order
 #[test]
 fn auto_curry_higher_order_usage() {
     let src = r#"
@@ -1297,12 +1294,31 @@ fn auto_curry_higher_order_usage() {
     assert_eq!(compile_and_run_simple(src), 15);
 }
 
-// spec: 04-expressions — auto-currying in REPL
-#[ignore = "spec/04-expressions.md §4.6.3 — Ring 3, Sprint 17: auto-currying not yet implemented"]
+// spec: 04-expressions §4.6.3 — auto-currying in REPL
 #[test]
 fn auto_curry_repl() {
     let mut session = repl_session();
     repl_eval(&mut session, "(defn add [x y] (add-i64 x y))");
     let result = repl_eval(&mut session, "(let [f (add 1)] (f 2))");
     assert_eq!(result, 3);
+}
+
+// spec: 04-expressions §4.6 — too many args is still an error
+#[test]
+fn auto_curry_too_many_args_error() {
+    let src = r#"
+        (defn add [x y] (add-i64 x y))
+        (defn main [] (add 1 2 3))
+    "#;
+    assert_error(src, "");
+}
+
+// spec: 04-expressions §4.6.3 — auto-curry checks arg types
+#[test]
+fn auto_curry_wrong_type_error() {
+    let src = r#"
+        (defn add [x y] (add-i64 x y))
+        (defn main [] (add true))
+    "#;
+    assert_error(src, "");
 }

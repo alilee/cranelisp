@@ -426,10 +426,13 @@ impl<'a> FnCompiler<'a> {
                 body,
                 span,
             } => self.compile_trace(modules, body, *span),
-            Expr::RunTests { span, .. } => Err(CranelispError::CodegenError {
-                message: "run-tests not supported until Ring 4".into(),
-                span: *span,
-            }),
+            Expr::RunTests {
+                modules,
+                init,
+                pass_fn,
+                fail_fn,
+                span,
+            } => self.compile_run_tests(modules, init, pass_fn, fail_fn, *span),
         }
     }
 
