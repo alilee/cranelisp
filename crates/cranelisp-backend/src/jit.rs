@@ -52,126 +52,94 @@ pub fn build_isa() -> Result<Arc<dyn cranelift::codegen::isa::TargetIsa>, Cranel
         })
 }
 
-/// Register all runtime intrinsics on a JITBuilder by function pointer.
+/// Intrinsic symbol descriptor: JIT name, function pointer, and param count.
+///
+/// This is the authoritative list of runtime and primitive intrinsics.
+/// All consumers (JIT builder, Linker, IntrinsicTable) derive from this.
+pub struct IntrinsicSymbol {
+    /// JIT symbol name (e.g., "runtime/alloc", "str-concat").
+    pub name: &'static str,
+    /// Function pointer to the Rust implementation.
+    pub ptr: *const u8,
+    /// Number of parameters.
+    pub param_count: usize,
+    /// Whether this is a runtime-internal function (true) or user-visible primitive (false).
+    pub is_runtime: bool,
+}
+
+/// Return the authoritative list of all runtime and primitive intrinsic symbols.
 ///
 /// Single source of truth for the JIT name -> function pointer mapping.
-/// Addresses cache audit HIGH-1: one authoritative registry for both
-/// JIT and (future) ObjectModule paths.
+/// Addresses cache audit HIGH-1: one authoritative registry for JIT,
+/// Linker, and ObjectModule paths.
 ///
 /// Convention: runtime infrastructure uses `runtime/name` prefix.
 /// User-visible primitives use spec kebab-case names.
+pub fn intrinsic_symbols() -> Vec<IntrinsicSymbol> {
+    vec![
+        // Runtime infrastructure (internal, not user-callable)
+        IntrinsicSymbol { name: "runtime/alloc", ptr: cranelisp_runtime::heap_alloc as *const u8, param_count: 1, is_runtime: true },
+        IntrinsicSymbol { name: "runtime/dealloc", ptr: cranelisp_runtime::heap_dealloc as *const u8, param_count: 1, is_runtime: true },
+        IntrinsicSymbol { name: "runtime/panic", ptr: cranelisp_runtime::runtime_panic as *const u8, param_count: 2, is_runtime: true },
+        IntrinsicSymbol { name: "runtime/rc_underflow_check", ptr: cranelisp_runtime::rc_underflow_check as *const u8, param_count: 1, is_runtime: true },
+        IntrinsicSymbol { name: "runtime/alloc_string", ptr: cranelisp_runtime::heap_alloc_string as *const u8, param_count: 2, is_runtime: true },
+        IntrinsicSymbol { name: "runtime/string_read", ptr: cranelisp_runtime::string_read as *const u8, param_count: 1, is_runtime: true },
+        IntrinsicSymbol { name: "runtime/vec_new", ptr: cranelisp_runtime::vec_new as *const u8, param_count: 1, is_runtime: true },
+        IntrinsicSymbol { name: "runtime/vec_drop", ptr: cranelisp_runtime::vec_drop as *const u8, param_count: 2, is_runtime: true },
+        IntrinsicSymbol { name: "runtime/run_io", ptr: cranelisp_runtime::cranelisp_run_io as *const u8, param_count: 1, is_runtime: true },
+        // Trace runtime symbols
+        IntrinsicSymbol { name: "cranelisp_trace_enter", ptr: cranelisp_runtime::cranelisp_trace_enter as *const u8, param_count: 3, is_runtime: true },
+        IntrinsicSymbol { name: "cranelisp_trace_exit", ptr: cranelisp_runtime::cranelisp_trace_exit as *const u8, param_count: 2, is_runtime: true },
+        IntrinsicSymbol { name: "cranelisp_trace_swap_got", ptr: cranelisp_runtime::cranelisp_trace_swap_got as *const u8, param_count: 3, is_runtime: true },
+        IntrinsicSymbol { name: "cranelisp_trace_restore_got", ptr: cranelisp_runtime::cranelisp_trace_restore_got as *const u8, param_count: 3, is_runtime: true },
+        IntrinsicSymbol { name: "cranelisp_collect_trace", ptr: cranelisp_runtime::cranelisp_collect_trace as *const u8, param_count: 0, is_runtime: true },
+        IntrinsicSymbol { name: "cranelisp_trace_first_child_nanos", ptr: cranelisp_runtime::cranelisp_trace_first_child_nanos as *const u8, param_count: 1, is_runtime: true },
+        IntrinsicSymbol { name: "cranelisp_trace_format", ptr: cranelisp_runtime::cranelisp_trace_format as *const u8, param_count: 2, is_runtime: true },
+        // Trace ADT field accessors
+        IntrinsicSymbol { name: "cranelisp_trace_name", ptr: cranelisp_runtime::cranelisp_trace_name as *const u8, param_count: 1, is_runtime: true },
+        IntrinsicSymbol { name: "cranelisp_trace_params", ptr: cranelisp_runtime::cranelisp_trace_params as *const u8, param_count: 1, is_runtime: true },
+        IntrinsicSymbol { name: "cranelisp_trace_result", ptr: cranelisp_runtime::cranelisp_trace_result as *const u8, param_count: 1, is_runtime: true },
+        IntrinsicSymbol { name: "cranelisp_trace_children", ptr: cranelisp_runtime::cranelisp_trace_children as *const u8, param_count: 1, is_runtime: true },
+        IntrinsicSymbol { name: "cranelisp_trace_nanos", ptr: cranelisp_runtime::cranelisp_trace_nanos as *const u8, param_count: 1, is_runtime: true },
+        // Vec extern primitives (user-visible and internal)
+        IntrinsicSymbol { name: "vec-len", ptr: cranelisp_runtime::vec_len as *const u8, param_count: 1, is_runtime: false },
+        IntrinsicSymbol { name: "vec-set-copy", ptr: cranelisp_runtime::vec_set_copy as *const u8, param_count: 4, is_runtime: false },
+        IntrinsicSymbol { name: "vec-push-copy", ptr: cranelisp_runtime::vec_push_copy as *const u8, param_count: 3, is_runtime: false },
+        IntrinsicSymbol { name: "vec-push-grow", ptr: cranelisp_runtime::vec_push_grow as *const u8, param_count: 2, is_runtime: false },
+        // Extern primitives (user-visible via primitives module)
+        IntrinsicSymbol { name: "str-concat", ptr: cranelisp_runtime::str_concat as *const u8, param_count: 2, is_runtime: false },
+        IntrinsicSymbol { name: "str-eq", ptr: cranelisp_runtime::str_eq as *const u8, param_count: 2, is_runtime: false },
+        IntrinsicSymbol { name: "str-len", ptr: cranelisp_runtime::str_len as *const u8, param_count: 1, is_runtime: false },
+        IntrinsicSymbol { name: "string-identity", ptr: cranelisp_runtime::string_identity as *const u8, param_count: 1, is_runtime: false },
+        IntrinsicSymbol { name: "int-to-string", ptr: cranelisp_runtime::int_to_string as *const u8, param_count: 1, is_runtime: false },
+        IntrinsicSymbol { name: "float-to-string", ptr: cranelisp_runtime::float_to_string as *const u8, param_count: 1, is_runtime: false },
+        IntrinsicSymbol { name: "bool-to-string", ptr: cranelisp_runtime::bool_to_string as *const u8, param_count: 1, is_runtime: false },
+        IntrinsicSymbol { name: "parse-int", ptr: cranelisp_runtime::parse_int as *const u8, param_count: 1, is_runtime: false },
+        // Extended string primitives
+        IntrinsicSymbol { name: "substring", ptr: cranelisp_runtime::str_substring as *const u8, param_count: 3, is_runtime: false },
+        IntrinsicSymbol { name: "char-at", ptr: cranelisp_runtime::str_char_at as *const u8, param_count: 2, is_runtime: false },
+        IntrinsicSymbol { name: "split", ptr: cranelisp_runtime::str_split as *const u8, param_count: 2, is_runtime: false },
+        IntrinsicSymbol { name: "join", ptr: cranelisp_runtime::str_join as *const u8, param_count: 2, is_runtime: false },
+        IntrinsicSymbol { name: "replace", ptr: cranelisp_runtime::str_replace as *const u8, param_count: 3, is_runtime: false },
+        IntrinsicSymbol { name: "trim", ptr: cranelisp_runtime::str_trim as *const u8, param_count: 1, is_runtime: false },
+        IntrinsicSymbol { name: "starts-with?", ptr: cranelisp_runtime::str_starts_with as *const u8, param_count: 2, is_runtime: false },
+        IntrinsicSymbol { name: "ends-with?", ptr: cranelisp_runtime::str_ends_with as *const u8, param_count: 2, is_runtime: false },
+        IntrinsicSymbol { name: "contains?", ptr: cranelisp_runtime::str_contains as *const u8, param_count: 2, is_runtime: false },
+        IntrinsicSymbol { name: "to-upper", ptr: cranelisp_runtime::str_to_upper as *const u8, param_count: 1, is_runtime: false },
+        IntrinsicSymbol { name: "to-lower", ptr: cranelisp_runtime::str_to_lower as *const u8, param_count: 1, is_runtime: false },
+        // Marshal primitives (macros module + primitives module)
+        IntrinsicSymbol { name: "sconcat", ptr: cranelisp_runtime::sconcat as *const u8, param_count: 2, is_runtime: false },
+        IntrinsicSymbol { name: "quote-sexp", ptr: cranelisp_runtime::quote_sexp as *const u8, param_count: 1, is_runtime: false },
+    ]
+}
+
+/// Register all runtime intrinsics on a JITBuilder by function pointer.
+///
+/// Delegates to `intrinsic_symbols()` — the single source of truth.
 fn register_intrinsics(builder: &mut JITBuilder) {
-    // Runtime infrastructure (internal, not user-callable)
-    builder.symbol("runtime/alloc", cranelisp_runtime::heap_alloc as *const u8);
-    builder.symbol("runtime/dealloc", cranelisp_runtime::heap_dealloc as *const u8);
-    builder.symbol("runtime/panic", cranelisp_runtime::runtime_panic as *const u8);
-    builder.symbol(
-        "runtime/rc_underflow_check",
-        cranelisp_runtime::rc_underflow_check as *const u8,
-    );
-    builder.symbol(
-        "runtime/alloc_string",
-        cranelisp_runtime::heap_alloc_string as *const u8,
-    );
-    builder.symbol(
-        "runtime/string_read",
-        cranelisp_runtime::string_read as *const u8,
-    );
-
-    // Vec runtime infrastructure
-    builder.symbol("runtime/vec_new", cranelisp_runtime::vec_new as *const u8);
-    builder.symbol("runtime/vec_drop", cranelisp_runtime::vec_drop as *const u8);
-
-    // Vec extern primitives (user-visible and internal)
-    builder.symbol("vec-len", cranelisp_runtime::vec_len as *const u8);
-    builder.symbol("vec-set-copy", cranelisp_runtime::vec_set_copy as *const u8);
-    builder.symbol("vec-push-copy", cranelisp_runtime::vec_push_copy as *const u8);
-    builder.symbol("vec-push-grow", cranelisp_runtime::vec_push_grow as *const u8);
-
-    // Extern primitives (user-visible via primitives module)
-    builder.symbol("str-concat", cranelisp_runtime::str_concat as *const u8);
-    builder.symbol("str-eq", cranelisp_runtime::str_eq as *const u8);
-    builder.symbol("str-len", cranelisp_runtime::str_len as *const u8);
-    builder.symbol("string-identity", cranelisp_runtime::string_identity as *const u8);
-    builder.symbol("int-to-string", cranelisp_runtime::int_to_string as *const u8);
-    builder.symbol("float-to-string", cranelisp_runtime::float_to_string as *const u8);
-    builder.symbol("bool-to-string", cranelisp_runtime::bool_to_string as *const u8);
-    builder.symbol("parse-int", cranelisp_runtime::parse_int as *const u8);
-
-    // Extended string primitives
-    builder.symbol("substring", cranelisp_runtime::str_substring as *const u8);
-    builder.symbol("char-at", cranelisp_runtime::str_char_at as *const u8);
-    builder.symbol("split", cranelisp_runtime::str_split as *const u8);
-    builder.symbol("join", cranelisp_runtime::str_join as *const u8);
-    builder.symbol("replace", cranelisp_runtime::str_replace as *const u8);
-    builder.symbol("trim", cranelisp_runtime::str_trim as *const u8);
-    builder.symbol("starts-with?", cranelisp_runtime::str_starts_with as *const u8);
-    builder.symbol("ends-with?", cranelisp_runtime::str_ends_with as *const u8);
-    builder.symbol("contains?", cranelisp_runtime::str_contains as *const u8);
-    builder.symbol("to-upper", cranelisp_runtime::str_to_upper as *const u8);
-    builder.symbol("to-lower", cranelisp_runtime::str_to_lower as *const u8);
-
-    // Marshal primitives (macros module + primitives module)
-    builder.symbol("sconcat", cranelisp_runtime::sconcat as *const u8);
-    builder.symbol("quote-sexp", cranelisp_runtime::quote_sexp as *const u8);
-
-    // IO trampoline (Ring 4: runtime/run_io)
-    builder.symbol(
-        "runtime/run_io",
-        cranelisp_runtime::cranelisp_run_io as *const u8,
-    );
-
-    // Trace runtime symbols (Ring 4: trace special form)
-    builder.symbol(
-        "cranelisp_trace_enter",
-        cranelisp_runtime::cranelisp_trace_enter as *const u8,
-    );
-    builder.symbol(
-        "cranelisp_trace_exit",
-        cranelisp_runtime::cranelisp_trace_exit as *const u8,
-    );
-    builder.symbol(
-        "cranelisp_trace_swap_got",
-        cranelisp_runtime::cranelisp_trace_swap_got as *const u8,
-    );
-    builder.symbol(
-        "cranelisp_trace_restore_got",
-        cranelisp_runtime::cranelisp_trace_restore_got as *const u8,
-    );
-    builder.symbol(
-        "cranelisp_collect_trace",
-        cranelisp_runtime::cranelisp_collect_trace as *const u8,
-    );
-    builder.symbol(
-        "cranelisp_trace_first_child_nanos",
-        cranelisp_runtime::cranelisp_trace_first_child_nanos as *const u8,
-    );
-    builder.symbol(
-        "cranelisp_trace_format",
-        cranelisp_runtime::cranelisp_trace_format as *const u8,
-    );
-
-    // Trace ADT field accessors (extern primitives for tname/tparams/tresult/tchildren/tnanos)
-    builder.symbol(
-        "cranelisp_trace_name",
-        cranelisp_runtime::cranelisp_trace_name as *const u8,
-    );
-    builder.symbol(
-        "cranelisp_trace_params",
-        cranelisp_runtime::cranelisp_trace_params as *const u8,
-    );
-    builder.symbol(
-        "cranelisp_trace_result",
-        cranelisp_runtime::cranelisp_trace_result as *const u8,
-    );
-    builder.symbol(
-        "cranelisp_trace_children",
-        cranelisp_runtime::cranelisp_trace_children as *const u8,
-    );
-    builder.symbol(
-        "cranelisp_trace_nanos",
-        cranelisp_runtime::cranelisp_trace_nanos as *const u8,
-    );
+    for sym in intrinsic_symbols() {
+        builder.symbol(sym.name, sym.ptr);
+    }
 }
 
 /// JIT module wrapper. Owns the Cranelift JIT module and provides

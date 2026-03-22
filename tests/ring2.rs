@@ -2253,3 +2253,104 @@ fn lazy_seq_take_from_infinite() {
     // Placeholder: actual test requires Seq type and lazy infrastructure.
     assert_eq!(compile_and_run_simple(src), 0);
 }
+
+// =============================================================================
+// Constrained auto-curry tests (spec: 04-expressions §4.6.3)
+//
+// Auto-currying of trait-dispatched operators and constrained polymorphic
+// functions. These test the Sprint 21 fix for constrained auto-curry.
+// =============================================================================
+
+// spec: 04-expressions §4.6.3 — (+ 5) produces a curried Int closure
+#[test]
+fn constrained_auto_curry_plus_int() {
+    let mut session = repl_session();
+    load_traits(&mut session);
+    // (+ 5) should produce a closure : (Fn [Int] Int)
+    let (_val, ty) = repl_eval_typed(&mut session, "(+ 5)");
+    assert!(
+        matches!(&ty, Type::Fn(params, ret) if params.len() == 1),
+        "expected (Fn [Int] Int) closure, got: {:?}",
+        ty
+    );
+    // Calling the closure should produce 15
+    assert_eq!(repl_eval(&mut session, "((+ 5) 10)"), 15);
+}
+
+// spec: 04-expressions §4.6.3 — ((+ 5) 10) returns 15
+#[test]
+fn constrained_auto_curry_plus_apply() {
+    let mut session = repl_session();
+    load_traits(&mut session);
+    assert_eq!(repl_eval(&mut session, "((+ 5) 10)"), 15);
+}
+
+// spec: 04-expressions §4.6.3 — (- 5) partial application: (- 5) applied to 10 yields -5
+#[test]
+fn constrained_auto_curry_minus_int() {
+    let mut session = repl_session();
+    load_traits(&mut session);
+    // (- 5) should produce a closure. When applied to 10: 5 - 10 = -5
+    assert_eq!(repl_eval(&mut session, "((- 5) 10)"), -5i64 as i64);
+}
+
+// spec: 04-expressions §4.6.3 — constrained polymorphic auto-curry: make-adder
+#[test]
+fn constrained_auto_curry_make_adder_int() {
+    let mut session = repl_session();
+    load_traits(&mut session);
+    // defn make-adder uses constrained polymorphism: (+ n) auto-curries the trait method
+    repl_eval(&mut session, "(defn make-adder [n] (+ n))");
+    // (make-adder 10) should monomorphise for Int and return (Fn [Int] Int)
+    let (_val, ty) = repl_eval_typed(&mut session, "(make-adder 10)");
+    assert!(
+        matches!(&ty, Type::Fn(params, ret) if params.len() == 1),
+        "expected (Fn [Int] Int) closure from make-adder, got: {:?}",
+        ty
+    );
+    // Applying the result should yield 42
+    assert_eq!(repl_eval(&mut session, "((make-adder 10) 32)"), 42);
+}
+
+// spec: 04-expressions §4.6.3 — constrained auto-curry monomorphises for Float
+#[test]
+fn constrained_auto_curry_make_adder_float() {
+    let mut session = repl_session();
+    load_traits(&mut session);
+    repl_eval(&mut session, "(defn make-adder [n] (+ n))");
+    // (make-adder 1.5) should monomorphise for Float
+    let (_val, ty) = repl_eval_typed(&mut session, "(make-adder 1.5)");
+    assert!(
+        matches!(&ty, Type::Fn(params, ret) if params.len() == 1),
+        "expected (Fn [Float] Float) closure from make-adder with Float, got: {:?}",
+        ty
+    );
+    // ((make-adder 1.5) 2.5) should return 4.0
+    // 4.0 as f64 bits reinterpreted as i64
+    let result = repl_eval(&mut session, "((make-adder 1.5) 2.5)");
+    let float_result = f64::from_bits(result as u64);
+    assert!(
+        (float_result - 4.0).abs() < 1e-10,
+        "expected 4.0, got: {}",
+        float_result
+    );
+}
+
+// spec: 04-expressions §4.6.3 — auto-curry of non-Var callee (lambda) rejected
+#[test]
+fn auto_curry_lambda_partial_apply() {
+    // ((fn [x y] (add-i64 x y)) 1) should be rejected — auto-curry requires a named callee
+    let mut session = repl_session();
+    let result = session.eval("((fn [x y] (add-i64 x y)) 1)");
+    match result {
+        Err(e) => {
+            let err_msg = format!("{}", e);
+            assert!(
+                err_msg.contains("auto-curry requires a named function"),
+                "expected 'auto-curry requires a named function' error, got: {}",
+                err_msg
+            );
+        }
+        Ok(_) => panic!("expected type error for non-Var auto-curry, got Ok"),
+    }
+}

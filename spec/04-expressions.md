@@ -327,12 +327,9 @@ When the callee is an arbitrary expression (variable, lambda, function applicati
 (apply-fn inc 5)                ; f is a closure; indirect call
 ```
 
-### 4.6.3 Auto-Currying [Tested+Neg tests/io.rs::auto_curry_two_param_partial_apply, auto_curry_three_param_partial_apply, auto_curry_higher_order_usage, auto_curry_repl, auto_curry_too_many_args_error, auto_curry_wrong_type_error]
+### 4.6.3 Auto-Currying [Tested+Neg tests/io.rs::auto_curry_two_param_partial_apply, auto_curry_three_param_partial_apply, auto_curry_higher_order_usage, auto_curry_repl, auto_curry_too_many_args_error, auto_curry_wrong_type_error, tests/ring2.rs::constrained_auto_curry_plus_int, constrained_auto_curry_plus_apply, constrained_auto_curry_minus_int, constrained_auto_curry_make_adder_int, constrained_auto_curry_make_adder_float, auto_curry_lambda_partial_apply]
 
-<!-- FIXME(/qa): Auto-curry of constrained polymorphic functions now works (Sprint 21 fix). Need dedicated test coverage: (1) trait method auto-curry `(+ 5)`, (2) constrained fn returning curried closure `(defn make-adder [n] (+ n))` then `(make-adder 10)`, (3) calling the curried result, (4) other trait ops: `(- 5)`, `(= "hello")`, `(< 3)`. Also: auto-curry of non-Var callees (e.g., `((fn [x y] ...) 1)`) infers correctly but emits no AutoCurry resolution — need a test. See design/review/sprint-21-review.md I2. -->
-<!-- FIXME(/spec): §4.6.3 should explicitly document the constrained polymorphism interaction: auto-currying works with trait-dispatched operators and constrained polymorphic functions. The curried closure is monomorphised at the call site where concrete types become known. Add an example showing `(+ 5)` and `(defn make-adder [n] (+ n))`. -->
-
-When a function is called with fewer arguments than it declares parameters, the result is a **closure** capturing the applied arguments. This applies to both named functions and closures.
+When a function is called with fewer arguments than it declares parameters, the result is a **closure** capturing the applied arguments. This applies to named function references and variables bound to closures — the callee MUST be a variable reference. Anonymous lambda expressions (e.g., `((fn [a b] ...) 1)`) MUST be bound to a variable first.
 
 ```
 f : (fn [T1 T2 ... Tn] R)      where n > k
@@ -362,6 +359,31 @@ Auto-currying works at any depth -- supplying k of n arguments returns a functio
   (let [g (f 2)]                ; g : (fn [Int] Int)
     (g 3)))                     ; => 6
 ```
+
+**Constrained polymorphic functions**: Auto-currying applies to trait-dispatched operators and constrained polymorphic functions. When a trait method such as `+` (which has type `(fn [:Num a a] a)`) is called with one argument, the result is a curried closure whose type retains the trait constraint until a concrete type is known:
+
+```clojure
+(+ 5)                           ; => <closure> : (Fn [Int] Int)
+((+ 5) 10)                      ; => 15
+(- 5)                           ; => <closure> : (Fn [Int] Int)
+((- 5) 10)                      ; => -5  (i.e., 5 - 10)
+```
+
+A constrained polymorphic function that returns a curried closure inherits the constraint. The closure is monomorphised at the call site where concrete types become known:
+
+```clojure
+(defn make-adder [n] (+ n))     ; make-adder :: (Fn [:Num a] (Fn [a] a))
+
+(make-adder 10)                 ; => <closure> : (Fn [Int] Int)
+                                ;    monomorphised because 10 : Int
+((make-adder 10) 32)            ; => 42
+
+(make-adder 1.5)                ; => <closure> : (Fn [Float] Float)
+                                ;    monomorphised for Float
+((make-adder 1.5) 2.5)          ; => 4.0
+```
+
+The monomorphisation rules for constrained polymorphic functions are defined in [section 3.6: Constrained Polymorphism](03-types.md#36-constrained-polymorphism). Auto-currying does not change the monomorphisation process -- it produces a closure whose captured values and remaining parameter types are specialised to the concrete types at the call site.
 
 **Multi-signature disambiguation**: For multi-signature functions (see section 4.7), auto-currying uses the expected return type arity to select the correct variant. If the call site expects a function of arity m, only variants with exactly k + m parameters are candidates.
 
@@ -661,7 +683,7 @@ Cranelisp uses **strict (eager) evaluation** throughout. All sub-expressions are
 
 A `trace` expression evaluates `expr` while instrumenting function calls, and returns a `Trace` value that records the call tree. The result is a **pure data value** -- not a side effect. The `Trace` ADT is a compiler-seeded type defined in the `primitives` module (see [Section 3.2.4](03-types.md#324-trace-type) and [Appendix A.2](appendix-a-builtins.md#a2-built-in-compound-types)).
 
-### 4.12.1 Type [R4 S20 — tests/ring4_trace::trace_returns_trace_type_int_body IGNORED]
+### 4.12.1 Type [Tested tests/ring4_trace::trace_returns_trace_type_int_body]
 
 `trace` is a special form. For any expression `expr` of type `T`, `(trace expr)` has type `Trace`:
 
@@ -673,7 +695,7 @@ E |- (trace expr) : Trace
 
 The type of the traced expression is not preserved in the static type -- the `Trace` ADT captures runtime information as formatted strings. The original expression's value is discarded; only the call tree is returned.
 
-### 4.12.2 Semantics [R4 S20 — tests/ring4_trace::trace_basic_fact IGNORED]
+### 4.12.2 Semantics [Tested tests/ring4_trace::trace_basic_fact]
 
 Evaluation proceeds as follows:
 
@@ -691,7 +713,7 @@ E |- (trace expr) => TraceCall(root_name, root_params, root_result,
 
 The expression `expr` is evaluated exactly once. Its value `v` is used only to produce the root trace node's formatted result string -- the value itself is not accessible from the returned `Trace`.
 
-### 4.12.3 What Is Traced [R4 S20 — tests/ring4_trace::trace_user_defined_function IGNORED]
+### 4.12.3 What Is Traced [Tested tests/ring4_trace::trace_user_defined_function]
 
 Instrumentation applies to **user-defined named functions** that are compiled with an entry in the implementation's function indirection table. This includes:
 
@@ -706,7 +728,7 @@ The following are NOT instrumented:
 - **Compiler-seeded synthetic module functions**: Functions in the `primitives` and `macros` modules are not instrumented.
 - **Anonymous lambdas**: Closures created by `fn` expressions do not have named entries in the indirection table and are not individually traced. Their effects appear as part of the enclosing traced function's execution.
 
-### 4.12.4 The Trace ADT [R4 S20 — tests/ring4_trace::trace_field_name_returns_string IGNORED]
+### 4.12.4 The Trace ADT [Tested tests/ring4_trace::trace_field_name_returns_string]
 
 `Trace` is a compiler-seeded algebraic data type in the `primitives` module with a single constructor:
 
@@ -733,7 +755,7 @@ The `children` field is a standard `SList` (from the `macros` module). User code
 
 `Trace`, `TraceCall`, `trace`, and the field accessors are defined in the `primitives` module but NOT auto-imported. See [Section 3.2.4](03-types.md#324-trace-type) for import requirements.
 
-### 4.12.5 Nested Trace [R4 S20 — tests/ring4_trace::trace_nested_single_trace IGNORED]
+### 4.12.5 Nested Trace [Tested tests/ring4_trace::trace_nested_single_trace]
 
 When `trace` expressions are nested, only the outermost trace is active:
 
@@ -749,7 +771,7 @@ An implementation MUST NOT produce nested or duplicated trace trees from nested 
 
 Only one trace MAY be active at a time within a program. If multiple threads attempt to trace concurrently, at most one succeeds in activating instrumentation. The others evaluate their expressions normally and return a `Trace` value with no recorded children (an empty trace).
 
-### 4.12.7 Composability [R4 S20 — tests/ring4_trace::trace_composability_let_binding IGNORED]
+### 4.12.7 Composability [Tested tests/ring4_trace::trace_composability_let_binding]
 
 The `Trace` value returned by `(trace expr)` is an ordinary ADT value. It can be bound with `let`, passed to functions, stored in data structures, and pattern-matched:
 
@@ -767,7 +789,7 @@ The `Trace` value returned by `(trace expr)` is an ordinary ADT value. It can be
 ; => "user/fact"
 ```
 
-### 4.12.8 Examples [R4 S20 — tests/ring4_trace::trace_composed_expression IGNORED]
+### 4.12.8 Examples [Tested tests/ring4_trace::trace_composed_expression]
 
 **Basic tracing**:
 

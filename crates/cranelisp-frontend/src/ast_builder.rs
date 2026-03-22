@@ -1097,9 +1097,7 @@ fn build_list_expr(
             // NOTE: `trace` is NOT a parser keyword. It has regular call syntax
             // and flows through the module system as a name in `primitives`.
             // The typechecker handles it when the callee resolves to a special form.
-            "run-tests" => {
-                return Err(parse_err("run-tests not yet supported (Ring 4)", *head_span))
-            }
+            "run-tests" => return build_run_tests(children, span, expander),
             "vec" => return Err(parse_err("vec literals not yet supported (Ring 1)", *head_span)),
             "par-let" => {
                 return Err(parse_err("par-let not yet supported (Ring 4)", *head_span))
@@ -1116,6 +1114,59 @@ fn build_list_expr(
 
     // Generic Apply
     build_apply(children, span, expander)
+}
+
+// ---------------------------------------------------------------------------
+// run-tests expression
+// ---------------------------------------------------------------------------
+
+fn build_run_tests(
+    children: &[Sexp],
+    span: Span,
+    expander: &mut dyn MacroExpander,
+) -> Result<Expr, CranelispError> {
+    // (run-tests init pass-fn fail-fn)
+    // (run-tests [mod1 mod2] init pass-fn fail-fn)
+    match children.len() {
+        4 => {
+            // (run-tests init pass-fn fail-fn)
+            let init = build_expr(&children[1], expander)?;
+            let pass_fn = build_expr(&children[2], expander)?;
+            let fail_fn = build_expr(&children[3], expander)?;
+            Ok(Expr::RunTests {
+                modules: vec![],
+                init: Box::new(init),
+                pass_fn: Box::new(pass_fn),
+                fail_fn: Box::new(fail_fn),
+                span,
+            })
+        }
+        5 => {
+            // (run-tests [mod1 mod2] init pass-fn fail-fn)
+            let (bracket_items, _) = expect_bracket(&children[1])?;
+            let modules = bracket_items
+                .iter()
+                .map(|s| {
+                    let (name, _) = expect_symbol(s)?;
+                    Ok(Symbol::from(name))
+                })
+                .collect::<Result<Vec<_>, CranelispError>>()?;
+            let init = build_expr(&children[2], expander)?;
+            let pass_fn = build_expr(&children[3], expander)?;
+            let fail_fn = build_expr(&children[4], expander)?;
+            Ok(Expr::RunTests {
+                modules,
+                init: Box::new(init),
+                pass_fn: Box::new(pass_fn),
+                fail_fn: Box::new(fail_fn),
+                span,
+            })
+        }
+        _ => Err(parse_err(
+            "run-tests requires: (run-tests init pass-fn fail-fn) or (run-tests [modules...] init pass-fn fail-fn)",
+            span,
+        )),
+    }
 }
 
 fn build_apply(

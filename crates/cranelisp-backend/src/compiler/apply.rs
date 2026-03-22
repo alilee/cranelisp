@@ -14,7 +14,7 @@ use crate::operators;
 
 use super::FnCompiler;
 
-impl<'a> FnCompiler<'a> {
+impl<'a, M: Module> FnCompiler<'a, M> {
     // --- Function application ---
 
     pub(crate) fn compile_apply(
@@ -440,7 +440,7 @@ impl<'a> FnCompiler<'a> {
     /// 2. Cross-module GOT (`ctx.cross_module_got`) — for imported functions
     ///
     /// Returns `(got_base_ptr_as_i64, slot_index)` or an error if not found.
-    fn resolve_got_entry(
+    pub(crate) fn resolve_got_entry(
         &self,
         name: &Symbol,
         span: Span,

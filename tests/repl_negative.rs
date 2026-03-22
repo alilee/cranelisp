@@ -21,7 +21,7 @@ use helpers::*;
 // =============================================================================
 // /list Scope Boundaries — Negative Tests (spec: repl/spec.md §3.3)
 //
-// The /list command iterates session.tc.symbol_table().all_symbols().
+// The /list command iterates session.core.tc.symbol_table().all_symbols().
 // These tests inspect the same symbol table to verify that the categories
 // that handle_list would produce do NOT contain forbidden entries.
 // =============================================================================
@@ -60,8 +60,8 @@ fn classify_entry(
 fn collect_list_categories(
     session: &cranelisp::repl::ReplSession,
 ) -> (Vec<String>, Vec<String>, Vec<String>, Vec<String>) {
-    let module = session.tc.current_module_path().to_string();
-    let table = session.tc.symbol_table();
+    let module = session.core.tc.current_module_path().to_string();
+    let table = session.core.tc.symbol_table();
 
     let mut types = Vec::new();
     let mut traits = Vec::new();

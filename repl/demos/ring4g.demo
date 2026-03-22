@@ -1,0 +1,39 @@
+; Cranelisp Ring 4G — Module Caching & Operator Sections
+
+; Sprint 22: --no-cache flag, .cranelisp-cache/, trait operator curry
+
+; Trait operators are first-class — curry them like any function
+
+/sig +
+(+ 5)
+
+; Operator sections: (+ n) returns an adder, (* n) a multiplier
+
+/sig *
+(let [add5 (+ 5)] (add5 37))
+(let [double (* 2)] (double 21))
+(let [sub-from-100 (- 100)] (sub-from-100 58))
+
+; Compose operator sections with higher-order functions
+
+(defn apply-twice [f x] (f (f x)))
+(apply-twice (+ 10) 0)
+(apply-twice (* 3) 2)
+
+; Chain operator sections for a transform pipeline
+
+(defn transform [x] ((+ 1) ((* 2) x)))
+(transform 5)
+(transform 10)
+
+; Non-Var auto-curry is now caught with a clear error
+
+((fn [a b] (+ a b)) 1)
+
+; /run-tests validates the operator section behavior
+
+(defn test-add-section [] (if (= ((+ 5) 10) 15) None (Some "add section")))
+(defn test-mul-section [] (if (= ((* 3) 7) 21) None (Some "mul section")))
+(defn test-compose [] (if (= (apply-twice (+ 10) 0) 20) None (Some "compose")))
+
+/run-tests

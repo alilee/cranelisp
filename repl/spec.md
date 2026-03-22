@@ -833,42 +833,111 @@ Error: Module 'nonexistent' not found. Use /mod <name> to create a new module.
 ```
 The error message is actionable — it tells the user what to do next.
 
-## 10. Terminal Styling [R4 S11]
+## 10. Terminal Styling [R4 S22]
 
-<!-- FIXME(/repl): Terminal styling is specced at Ring 4 but should be reconsidered
-for earlier delivery. At minimum, prompt, comments, and output type annotations
-should be visually distinct. The demos look flat and hard to parse without any
-colour differentiation. Consider pulling basic ANSI colour (prompt dim, type cyan,
-errors red) into Ring 3 scope — the full palette can remain Ring 4. -->
+When connected to a colour-capable terminal, the REPL MUST apply ANSI styling to distinguish output categories. Styling makes the `:Type value` format scannable — the type prefix, the value, and the classification comment are visually distinct without requiring the user to parse punctuation.
 
-When connected to a colour-capable terminal (detected via `isatty()` and `TERM`/`NO_COLOR`), the REPL SHOULD apply ANSI colour to distinguish output categories. Styling MUST be suppressed in piped/batch mode and when `NO_COLOR` is set (per https://no-color.org).
+### 10.1 TTY Detection and Suppression [R4 S22]
 
-### 10.1 Colour Palette [R4 S11]
+Colour MUST be enabled by default on capable terminals and suppressed otherwise. The detection logic, in priority order:
 
-| Element | Colour | ANSI | Rationale |
-|---|---|---|---|
-| Prompt (timing + module) | dim/grey | `\033[90m` | Recedes — not the focus |
-| User input (typed text) | white/default | `\033[0m` | Primary focus — what the user is writing |
-| Comment lines (`;`) | green | `\033[32m` | Familiar from editors; clearly non-code |
-| Result type (`:Type`) | cyan | `\033[36m` | Distinct from value; teaches the type system |
-| Result value | white/default | `\033[0m` | Primary content |
-| Error messages | red | `\033[31m` | Immediately noticeable |
-| Warnings | yellow | `\033[33m` | Less urgent than errors |
-| Slash command output | default | `\033[0m` | Informational, no special emphasis |
+1. **`--no-color` flag**: If the `--no-color` CLI flag is present, all ANSI output MUST be suppressed. This flag MUST be accepted alongside other flags (e.g., `cranelisp --no-color`, `cranelisp --run file.cl --no-color`).
+2. **`NO_COLOR` environment variable**: If `NO_COLOR` is set to any non-empty value, all ANSI output MUST be suppressed (per https://no-color.org). The value is irrelevant — `NO_COLOR=1`, `NO_COLOR=true`, and `NO_COLOR=` (empty) all suppress except the empty string case: `NO_COLOR=` (set but empty) does NOT suppress.
+3. **TTY check**: If stdout is not a terminal (`!isatty(stdout)`), all ANSI output MUST be suppressed. This covers piped output (`cranelisp | less`), redirected output (`cranelisp > log.txt`), and batch mode (`--run`).
+4. **Otherwise**: Colour is enabled.
 
-### 10.2 Showcase Styling [R4 S11]
+There is no `--color=force` flag. If a user needs colour in piped output (e.g., for `less -R`), they can use a tool like `unbuffer` or `script`. Keeping the implementation simple is more important than covering this edge case.
 
-The showcase player (`repl/showcase`) MAY apply the same colour palette during replay. Comment section headers SHOULD use the same green as REPL comments. The `[paused]` indicator SHOULD use dim/grey.
+### 10.2 SGR Escape Convention [R4 S22]
 
-### 10.3 Requirements [R4 S11]
+All styling uses ANSI SGR (Select Graphic Rendition) sequences only — no cursor movement, no alternate screen, no 256-colour or truecolor. The palette is restricted to the base 8 colours (30-37) plus bright variants (90-97) and attributes bold (1) and dim (2). This ensures legibility across all terminal emulators, including the macOS default Terminal.app which has limited truecolor support.
 
-- Colour MUST be opt-out, not opt-in (enabled by default on capable terminals)
-- `NO_COLOR` environment variable MUST disable all colour output
-- Piped output (`!isatty(stdout)`) MUST NOT contain ANSI escape sequences
-- Colour choices SHOULD be legible on both light and dark terminal backgrounds
-- The colour scheme SHOULD be consistent between the REPL and the showcase player
+Every styled span MUST be terminated by a reset (`\033[0m`) before any newline or before transitioning to a differently-styled span. Unterminated escape sequences corrupt subsequent output and are a conformance failure.
 
-**Ring 4**: full terminal styling implementation.
+Escape sequences MUST NOT appear inside the value portion of `:Type value` when that value is a String literal — the string content is user data and MUST be printed verbatim.
+
+### 10.3 Colour Palette [R4 S22]
+
+The palette assigns one colour per semantic role. There are no user-configurable themes — the defaults are chosen to work on both light and dark terminal backgrounds using the standard 16-colour ANSI palette.
+
+| Element | Style | SGR Code | Reset | Rationale |
+|---|---|---|---|---|
+| Prompt (timing + module + `>`) | dim | `\033[2m` | `\033[0m` | Recedes from focus; always visible but never competing |
+| Result type (`:Type` prefix) | cyan | `\033[36m` | `\033[0m` | Distinct from value; teaches the type system visually |
+| Result value | default | — | — | Primary content; no styling needed |
+| Classification comment (`; defn`, `; deftrait`, etc.) | dim | `\033[2m` | `\033[0m` | Metadata — present but subordinate to the type+value |
+| Related-symbol comment lines (`; defn:`, `; impl:`, names) | dim | `\033[2m` | `\033[0m` | Secondary information following the primary line |
+| Error keyword (`Error:`) | bold red | `\033[1;31m` | `\033[0m` | Immediately noticeable |
+| Error detail (message body) | red | `\033[31m` | `\033[0m` | Contextually connected to the error keyword |
+| Warning keyword (`Warning:`) | bold yellow | `\033[1;33m` | `\033[0m` | Less urgent than errors, still attention-getting |
+| Warning detail | yellow | `\033[33m` | `\033[0m` | Contextually connected to the warning |
+| Slash command category headers (`Fns:`, `Types:`, etc.) | bold | `\033[1m` | `\033[0m` | Anchors for scanning `/list`, `/imports`, `/exports` |
+| Slash command body (symbol names, info lines) | default | — | — | Dense informational content; styling would add noise |
+| Startup banner | dim | `\033[2m` | `\033[0m` | One-time context; should not dominate |
+
+Notes on specific choices:
+
+- **No green for comments.** The earlier draft used green for `;` comment lines. However, REPL output comment lines (`;`) carry structured information (classifications, related symbols) — they are not "comments" in the source-code sense. Dim is more appropriate: it creates a visual hierarchy (type = cyan, value = default, metadata = dim) without introducing a third saturated colour.
+- **Bold for category headers only.** Bold is reserved for structural anchors (category names in `/list` output, error/warning keywords). Using bold elsewhere dilutes its signal.
+- **No colour on user input.** The line editor controls input styling. The REPL MUST NOT emit escape sequences into the input buffer.
+
+### 10.4 Styled Universal Output Format [R4 S22]
+
+The universal output format (§1.1) with styling applied. Angle brackets show styled spans; actual output uses SGR codes, not brackets.
+
+**Expression result:**
+```
+<cyan>:primitives/Int</cyan> 42
+```
+
+**Definition with classification and docstring:**
+```
+<cyan>:(Fn [primitives/Int] primitives/Int)</cyan> user/double <dim>; defn - Multiply by 2</dim>
+```
+
+**Type with related symbols:**
+```
+<cyan>:user/Color</cyan> <dim>; deftype</dim>
+<dim>; match:</dim>
+<dim>;  Red Green Blue</dim>
+```
+
+**Error:**
+```
+<bold-red>Error:</bold-red> <red>Unbound symbol 'foo'</red>
+```
+
+**Slash command `/list`:**
+```
+<bold>Types:</bold>
+  Color Point
+<bold>Fns:</bold>
+  double area
+```
+
+The reset between the cyan type prefix and the default-styled value is the space character — no visible break, just a colour transition. The classification comment (everything from `; ` onward on the primary line) is a single dim span.
+
+### 10.5 Batch Mode Output [R4 S22]
+
+Batch mode (`--run`) writes to stdout which is typically not a TTY. Per §10.1, ANSI sequences MUST be suppressed. The `:Type value` format is emitted as plain text. Error messages to stderr MUST also be plain text in batch mode (stderr TTY status is checked independently — if stderr is a TTY but stdout is not, errors MAY be styled on stderr).
+
+### 10.6 Showcase Player Styling [R4 S22]
+
+The showcase player (`repl/showcase`) MAY apply the same colour palette during replay. Specifically:
+
+- Prompt lines SHOULD use dim styling, matching the REPL prompt.
+- Simulated user input SHOULD use default (no styling) — matching the visual weight of real typing.
+- Output lines SHOULD be styled using the same rules as §10.3 (cyan for types, dim for comments, red for errors).
+- The `[paused]` indicator SHOULD use dim styling.
+- The showcase player MUST respect `NO_COLOR` and TTY detection using the same logic as the REPL (§10.1), minus the `--no-color` flag (the player has its own invocation interface).
+
+### 10.7 Implementation Notes [R4 S22]
+
+The styling layer SHOULD be implemented as a small module (e.g., `src/style.rs`) that provides a `Style` enum and a `styled(text, style) -> String` function. When colour is disabled, `styled` returns the text unchanged. All REPL output code calls `styled` — there are no raw `\033[` literals scattered through the codebase.
+
+The TTY detection result SHOULD be computed once at startup and stored as a boolean. Checking `isatty()` on every line would be wasteful and could produce inconsistent output if stdout is redirected mid-session (which is not a supported scenario but should not cause crashes).
+
+**Ring 4 Sprint 22**: Full terminal styling specification. Implementation targeted for a subsequent sprint.
 
 ## 9. Ring Testability Matrix
 

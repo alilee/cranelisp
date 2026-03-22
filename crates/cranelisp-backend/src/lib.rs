@@ -6,6 +6,7 @@
 // - compile_and_run_expr_with_got: compile and execute a single expression (REPL, convenience)
 // - Jit, ModuleCodegenState: exposed for REPL session management
 
+pub mod cache;
 pub mod codegen_types;
 pub mod compiler;
 pub mod display;

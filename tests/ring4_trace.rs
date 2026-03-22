@@ -9,12 +9,18 @@
 //
 // Tests MUST NOT depend on stdlib. Uses compiler primitives directly.
 // Inline trait definitions are used where operators (+, -, *, =, <) are needed.
+//
+// IMPORTANT: Tests that invoke `(trace ...)` or `(run-tests ...)` must be
+// serialized because the runtime trace infrastructure uses process-global
+// state (`TRACE_THREAD_ID`, `TRACE_STACK`) that races when tests run in
+// parallel on different threads.
 
 #[path = "helpers/mod.rs"]
 mod helpers;
 
 use helpers::*;
 use cranelisp_types::{Type, TypeName};
+use serial_test::serial;
 
 /// Helper: build REPL session with inline traits and a factorial function,
 /// with trace imported from primitives.
@@ -32,6 +38,7 @@ fn setup_repl_with_fact() -> cranelisp::repl::ReplSession {
 
 // spec: 04-expressions §4.12.1 — trace returns Trace type for Int body
 #[test]
+#[serial(trace)]
 fn trace_returns_trace_type_int_body() {
     let mut s = setup_repl_with_fact();
     let (_val, ty) = repl_eval_typed(&mut s, "(trace (fact 5))");
@@ -45,6 +52,7 @@ fn trace_returns_trace_type_int_body() {
 
 // spec: 04-expressions §4.12.1 — trace returns Trace regardless of body type
 #[test]
+#[serial(trace)]
 fn trace_returns_trace_type_regardless_of_body() {
     let mut s = repl_session();
     repl_eval(&mut s, "(import [primitives [trace Trace TraceCall]])");
@@ -65,6 +73,7 @@ fn trace_returns_trace_type_regardless_of_body() {
 
 // spec: 04-expressions §4.12.2 — tracing a recursive function returns a Trace value
 #[test]
+#[serial(trace)]
 fn trace_basic_fact() {
     let mut s = setup_repl_with_fact();
     // trace (fact 5) should succeed and return a non-zero Trace value
@@ -76,6 +85,7 @@ fn trace_basic_fact() {
 
 // spec: 04-expressions §4.12.2 — tracing an expression with no user-defined calls
 #[test]
+#[serial(trace)]
 fn trace_inline_primitive_no_calls() {
     let mut s = repl_session();
     repl_eval(&mut s, "(import [primitives [trace Trace TraceCall]])");
@@ -91,6 +101,7 @@ fn trace_inline_primitive_no_calls() {
 
 // spec: 04-expressions §4.12.2 — trace of user function has non-empty children (direct subexpr)
 #[test]
+#[serial(trace)]
 fn trace_has_children_subexpr() {
     let mut s = setup_repl_with_fact();
     repl_eval(&mut s, "(import [primitives [children]])");
@@ -104,6 +115,7 @@ fn trace_has_children_subexpr() {
 
 // spec: 04-expressions §4.12.2 — trace children accessible via let binding
 #[test]
+#[serial(trace)]
 fn trace_has_children_via_let() {
     let mut s = setup_repl_with_fact();
     repl_eval(&mut s, "(import [primitives [children]])");
@@ -122,6 +134,7 @@ fn trace_has_children_via_let() {
 // spec: 04-expressions §4.12.3 — user-defined functions are traced
 // The root trace node is always "::trace::" — actual function calls are in children.
 #[test]
+#[serial(trace)]
 fn trace_user_defined_function() {
     let mut s = setup_repl_with_fact();
     repl_eval(&mut s, "(import [primitives [name]])");
@@ -135,6 +148,7 @@ fn trace_user_defined_function() {
 
 // spec: 04-expressions §4.12.3 — name accessor on trace subexpression
 #[test]
+#[serial(trace)]
 fn trace_user_defined_function_subexpr() {
     let mut s = setup_repl_with_fact();
     repl_eval(&mut s, "(import [primitives [name]])");
@@ -151,6 +165,7 @@ fn trace_user_defined_function_subexpr() {
 
 // spec: 04-expressions §4.12.4 — name field returns String
 #[test]
+#[serial(trace)]
 fn trace_field_name_returns_string() {
     let mut s = setup_repl_with_fact();
     repl_eval(&mut s, "(import [primitives [name]])");
@@ -165,6 +180,7 @@ fn trace_field_name_returns_string() {
 
 // spec: 04-expressions §4.12.4 — params field returns (SList String)
 #[test]
+#[serial(trace)]
 fn trace_field_params_returns_slist_string() {
     let mut s = setup_repl_with_fact();
     repl_eval(&mut s, "(import [primitives [params]])");
@@ -180,6 +196,7 @@ fn trace_field_params_returns_slist_string() {
 
 // spec: 04-expressions §4.12.4 — result field returns String
 #[test]
+#[serial(trace)]
 fn trace_field_result_returns_string() {
     let mut s = setup_repl_with_fact();
     repl_eval(&mut s, "(import [primitives [result]])");
@@ -194,6 +211,7 @@ fn trace_field_result_returns_string() {
 
 // spec: 04-expressions §4.12.4 — nanos field returns Int
 #[test]
+#[serial(trace)]
 fn trace_field_nanos_returns_int() {
     let mut s = setup_repl_with_fact();
     repl_eval(&mut s, "(import [primitives [nanos]])");
@@ -208,6 +226,7 @@ fn trace_field_nanos_returns_int() {
 
 // spec: 04-expressions §4.12.4 — children field returns (SList Trace)
 #[test]
+#[serial(trace)]
 fn trace_field_children_returns_slist_trace() {
     let mut s = setup_repl_with_fact();
     repl_eval(&mut s, "(import [primitives [children]])");
@@ -230,6 +249,7 @@ fn trace_field_children_returns_slist_trace() {
 
 // spec: 04-expressions §4.12.5 — nested trace produces single Trace, not nested
 #[test]
+#[serial(trace)]
 fn trace_nested_single_trace() {
     let mut s = setup_repl_with_fact();
     // (trace (trace (fact 3))) should produce a single Trace value
@@ -248,6 +268,7 @@ fn trace_nested_single_trace() {
 
 // spec: 04-expressions §4.12.7 — trace value can be bound with let
 #[test]
+#[serial(trace)]
 fn trace_composability_let_binding() {
     let mut s = setup_repl_with_fact();
     let (_val, ty) = repl_eval_typed(&mut s, "(let [t (trace (fact 3))] t)");
@@ -261,6 +282,7 @@ fn trace_composability_let_binding() {
 
 // spec: 04-expressions §4.12.7 — trace value can be passed to a function
 #[test]
+#[serial(trace)]
 fn trace_composability_pass_to_function() {
     let mut s = setup_repl_with_fact();
     repl_eval(&mut s, "(import [primitives [name]])");
@@ -277,6 +299,7 @@ fn trace_composability_pass_to_function() {
 
 // spec: 04-expressions §4.12.7 — pattern matching on Trace ADT
 #[test]
+#[serial(trace)]
 fn trace_composability_pattern_match() {
     let mut s = setup_repl_with_fact();
     // Pattern match on TraceCall constructor
@@ -364,6 +387,7 @@ fn trace_type_not_auto_imported() {
 // spec: 04-expressions §4.12.8 — composed expression tracing
 // Root trace is always "::trace::" — actual function calls are in children.
 #[test]
+#[serial(trace)]
 fn trace_composed_expression() {
     let mut s = repl_session_with_test_prelude();
     repl_eval(&mut s, "(import [primitives [trace Trace TraceCall name]])");
@@ -381,6 +405,7 @@ fn trace_composed_expression() {
 
 // spec: 04-expressions §4.12.8 — trace is a value, not an effect
 #[test]
+#[serial(trace)]
 fn trace_is_value_not_effect() {
     let mut s = setup_repl_with_fact();
     // (let [t (trace (fact 3))] t) — should just return the Trace, no side effects
@@ -392,19 +417,18 @@ fn trace_is_value_not_effect() {
 // =============================================================================
 // (run-tests init pass-fn fail-fn) special form — Ring 4
 //
-// The `(run-tests ...)` special form is defined in the AST (Expr::RunTests)
-// but NOT yet implemented in the frontend AST builder. The frontend currently
-// rejects it with "run-tests not yet supported (Ring 4)".
+// The `(run-tests ...)` special form is parsed by the AST builder into
+// Expr::RunTests, typechecked with accumulator/pass-fn/fail-fn inference,
+// and compiled by the backend. In REPL mode it discovers and runs test-*
+// functions; in batch mode it returns init unchanged.
 //
-// These tests are written against the intended spec behavior and are #[ignore]
-// until the frontend/backend implement the special form.
-//
-// The working `/run-tests` slash command is tested in tests/e2e.rs.
+// The `/run-tests` slash command (separate from the expression form) is
+// tested in tests/e2e.rs.
 // =============================================================================
 
 // spec: run-tests special form — basic pass: single passing test, counter increments
 #[test]
-#[ignore = "run-tests special form not yet implemented in frontend AST builder (Ring 4)"]
+#[serial(trace)]
 fn run_tests_basic_pass() {
     let mut s = repl_session_with_test_prelude();
     repl_eval(&mut s, "(import [primitives [trace Trace TraceCall]])");
@@ -420,7 +444,7 @@ fn run_tests_basic_pass() {
 
 // spec: run-tests special form — basic fail: single failing test
 #[test]
-#[ignore = "run-tests special form not yet implemented in frontend AST builder (Ring 4)"]
+#[serial(trace)]
 fn run_tests_basic_fail() {
     let mut s = repl_session_with_test_prelude();
     repl_eval(&mut s, "(import [primitives [trace Trace TraceCall]])");
@@ -436,7 +460,7 @@ fn run_tests_basic_fail() {
 
 // spec: run-tests special form — multiple tests accumulate correctly
 #[test]
-#[ignore = "run-tests special form not yet implemented in frontend AST builder (Ring 4)"]
+#[serial(trace)]
 fn run_tests_multiple_tests() {
     let mut s = repl_session_with_test_prelude();
     repl_eval(&mut s, "(import [primitives [trace Trace TraceCall]])");
@@ -454,7 +478,6 @@ fn run_tests_multiple_tests() {
 
 // spec: run-tests special form — batch mode returns init unchanged
 #[test]
-#[ignore = "run-tests special form not yet implemented in frontend AST builder (Ring 4)"]
 fn run_tests_batch_returns_init() {
     // In batch mode, run-tests returns init unchanged (no test discovery)
     let src = r#"
@@ -467,7 +490,7 @@ fn run_tests_batch_returns_init() {
 
 // spec: run-tests special form — no test functions returns init
 #[test]
-#[ignore = "run-tests special form not yet implemented in frontend AST builder (Ring 4)"]
+#[serial(trace)]
 fn run_tests_empty_no_tests() {
     let mut s = repl_session_with_test_prelude();
     repl_eval(&mut s, "(import [primitives [trace Trace TraceCall]])");
@@ -481,7 +504,7 @@ fn run_tests_empty_no_tests() {
 
 // spec: run-tests special form — mixed pass and fail
 #[test]
-#[ignore = "run-tests special form not yet implemented in frontend AST builder (Ring 4)"]
+#[serial(trace)]
 fn run_tests_mixed_pass_fail() {
     let mut s = repl_session_with_test_prelude();
     repl_eval(&mut s, "(import [primitives [trace Trace TraceCall]])");

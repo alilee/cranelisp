@@ -138,6 +138,8 @@ pub fn compile_unit(
 ) -> Result<CompileResult, CranelispError>
 ```
 
+<!-- FIXME(/arch): Update CompileMode to three-variant enum matching interfaces.md: Interactive (GOT-indirect, REPL + multi-module batch), Batch (direct calls, single-file test execution only), Release (LLVM whole-program, no GOT, no caching). The current two-variant definition predates the caching design which clarified that multi-module batch compilation uses Interactive mode (GOT-indirect) so cached .o files are interchangeable. See design/backend/module-caching.md §8. -->
+
 `CompileMode` controls the differences:
 
 ```rust

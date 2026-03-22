@@ -10,7 +10,7 @@ use cranelisp_types::{CranelispError, Span, Symbol};
 
 use super::{FnCompiler, bare_ctor_name};
 
-impl<'a> FnCompiler<'a> {
+impl<'a, M: Module> FnCompiler<'a, M> {
     // --- Literal codegen ---
 
     pub(crate) fn compile_int_lit(&mut self, value: i64) -> Result<Value, CranelispError> {

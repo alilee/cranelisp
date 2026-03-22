@@ -14,7 +14,7 @@ use crate::heap::{self, HeapAdt};
 
 use super::{FnCompiler, MatchContext, bare_ctor_name, collect_var_ids_from_type, substitute_type_inline};
 
-impl<'a> FnCompiler<'a> {
+impl<'a, M: Module> FnCompiler<'a, M> {
     // --- Match expression ---
 
     pub(crate) fn compile_match(

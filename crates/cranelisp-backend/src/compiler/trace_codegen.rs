@@ -21,7 +21,22 @@ use crate::heap::{self, HeapAdt};
 
 use super::{FnCompiler, TracedFnInfo};
 
-impl<'a> FnCompiler<'a> {
+/// Groups trace runtime function IDs used during `run-tests` iteration.
+///
+/// These are extern functions declared once and passed to each test iteration,
+/// handling GOT swap/restore and trace collection.
+struct TraceRuntimeFns {
+    /// `cranelisp_trace_swap_got(got_ptr, originals_ptr, wrappers_ptr, count) -> ()`
+    swap_id: FuncId,
+    /// `cranelisp_trace_restore_got(got_ptr, originals_ptr) -> ()`
+    restore_id: FuncId,
+    /// `cranelisp_collect_trace() -> Trace`
+    collect_id: FuncId,
+    /// `cranelisp_trace_first_child_nanos(trace) -> Int`
+    nanos_id: FuncId,
+}
+
+impl<'a, M: Module> FnCompiler<'a, M> {
     /// Discard a body result by decrementing its RC if it is heap-allocated.
     /// Used by both `compile_trace` and `compile_trace_no_swap` to drop the
     /// body value (the trace result is the Trace ADT, not the body's value).
@@ -414,21 +429,29 @@ impl<'a> FnCompiler<'a> {
         };
 
         // Declare trace runtime externs.
-        let swap_id = self.declare_trace_extern("cranelisp_trace_swap_got", 4, true, span)?;
-        let restore_id =
-            self.declare_trace_extern("cranelisp_trace_restore_got", 2, false, span)?;
-        let collect_id =
-            self.declare_trace_extern("cranelisp_collect_trace", 0, true, span)?;
-        let nanos_id =
-            self.declare_trace_extern("cranelisp_trace_first_child_nanos", 1, true, span)?;
+        let trace_fns = TraceRuntimeFns {
+            swap_id: self
+                .declare_trace_extern("cranelisp_trace_swap_got", 4, true, span)?,
+            restore_id: self
+                .declare_trace_extern("cranelisp_trace_restore_got", 2, false, span)?,
+            collect_id: self
+                .declare_trace_extern("cranelisp_collect_trace", 0, true, span)?,
+            nanos_id: self
+                .declare_trace_extern("cranelisp_trace_first_child_nanos", 1, true, span)?,
+        };
 
         // Compile trace wrappers for ALL traced fns (not just test fns).
         let all_wrappers = self.compile_all_trace_wrappers(traced, span)?;
 
-        // Identify test functions: zero-arg fns whose name starts with "test-".
+        // Identify test functions: zero-arg fns whose bare name starts with "test-".
+        // Names may be module-qualified (e.g. "user/test-one"), so extract the
+        // last segment after any '/' for the prefix check.
         let test_fns: Vec<(String, FuncId)> = all_wrappers
             .iter()
-            .filter(|(tf, _)| tf.name.starts_with("test-") && tf.arity == 0)
+            .filter(|(tf, _)| {
+                let bare = tf.name.rsplit('/').next().unwrap_or(&tf.name);
+                bare.starts_with("test-") && tf.arity == 0
+            })
             .map(|(tf, wrapper_id)| (tf.name.clone(), *wrapper_id))
             .collect();
 
@@ -462,10 +485,7 @@ impl<'a> FnCompiler<'a> {
                 test_name_vals[i],
                 *test_wrapper_id,
                 &got_group_data,
-                swap_id,
-                restore_id,
-                collect_id,
-                nanos_id,
+                &trace_fns,
                 span,
             )?;
         }
@@ -620,14 +640,11 @@ impl<'a> FnCompiler<'a> {
         tname_val: Value,
         test_wrapper_id: FuncId,
         got_groups: &[GotGroupData],
-        swap_id: FuncId,
-        restore_id: FuncId,
-        collect_id: FuncId,
-        nanos_id: FuncId,
+        trace_fns: &TraceRuntimeFns,
         span: Span,
     ) -> Result<Value, CranelispError> {
         // Swap all GOTs.
-        let saved_vals = self.emit_got_swaps(got_groups, swap_id);
+        let saved_vals = self.emit_got_swaps(got_groups, trace_fns.swap_id);
 
         // Call the test wrapper (zero args).
         let test_ref = self
@@ -637,19 +654,19 @@ impl<'a> FnCompiler<'a> {
         let raw_result = self.builder.inst_results(test_call)[0];
 
         // Restore all GOTs in reverse order.
-        self.emit_got_restores(&saved_vals, restore_id);
+        self.emit_got_restores(&saved_vals, trace_fns.restore_id);
 
         // Collect the trace tree.
         let collect_ref = self
             .module
-            .declare_func_in_func(collect_id, self.builder.func);
+            .declare_func_in_func(trace_fns.collect_id, self.builder.func);
         let collect_call = self.builder.ins().call(collect_ref, &[]);
         let trace_adt = self.builder.inst_results(collect_call)[0];
 
         // Extract timing: nanos of first child of root trace frame.
         let nanos_ref = self
             .module
-            .declare_func_in_func(nanos_id, self.builder.func);
+            .declare_func_in_func(trace_fns.nanos_id, self.builder.func);
         let nanos_call = self.builder.ins().call(nanos_ref, &[trace_adt]);
         let nanos = self.builder.inst_results(nanos_call)[0];
 

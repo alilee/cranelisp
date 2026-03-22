@@ -19,7 +19,6 @@ use std::mem::{self, offset_of};
 use cranelift::prelude::*;
 use cranelift_codegen::ir::AtomicRmwOp;
 use cranelift_module::{FuncId, Module};
-use cranelift_jit::JITModule;
 
 use cranelisp_types::{HeapHeader, TypeDefInfo, TypeName};
 
@@ -218,9 +217,9 @@ pub fn emit_rc_inc_guarded(builder: &mut FunctionBuilder, ptr: Value) {
 /// The `dealloc_func_id` is the FuncId for `runtime/dealloc`.
 /// The `drop_glue_id` is Some(FuncId) if the type has heap-typed fields.
 /// If `guard_nullary` is true, emit a check that skips dec for bare tags.
-pub fn emit_rc_dec(
+pub fn emit_rc_dec<M: Module>(
     builder: &mut FunctionBuilder,
-    module: &mut JITModule,
+    module: &mut M,
     ptr: Value,
     dealloc_func_id: FuncId,
     drop_glue_id: Option<FuncId>,
@@ -233,9 +232,9 @@ pub fn emit_rc_dec(
 /// When `guard_nullary` is true, values below `NULLARY_TAG_THRESHOLD` (bare
 /// ADT tags from nullary constructors) are skipped — they are not heap
 /// pointers and have no RC header.
-pub fn emit_rc_dec_guarded(
+pub fn emit_rc_dec_guarded<M: Module>(
     builder: &mut FunctionBuilder,
-    module: &mut JITModule,
+    module: &mut M,
     ptr: Value,
     dealloc_func_id: FuncId,
     drop_glue_id: Option<FuncId>,
@@ -303,9 +302,9 @@ pub fn emit_rc_dec_guarded(
 
 /// Emit a call to `runtime/alloc` with the given payload size (bytes).
 /// Returns the base pointer (i64) to the new allocation (rc=1).
-pub fn emit_alloc(
+pub fn emit_alloc<M: Module>(
     builder: &mut FunctionBuilder,
-    module: &mut JITModule,
+    module: &mut M,
     alloc_func_id: FuncId,
     payload_size: i64,
 ) -> Value {

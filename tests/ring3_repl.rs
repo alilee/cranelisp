@@ -88,7 +88,7 @@ fn r3_list_macros_category_via_symbol_table() {
     repl_eval_display(&mut s, "(defmacro triple [x] `(add-i64 ~x (add-i64 ~x ~x)))");
 
     // Verify macros are in the symbol table as Macro entries.
-    let table = s.tc.symbol_table();
+    let table = s.core.tc.symbol_table();
     let double_entry = table.get("double");
     assert!(
         matches!(double_entry, Some(cranelisp_types::ModuleEntry::Macro { .. })),
@@ -109,7 +109,7 @@ fn r3_list_neg_macros_not_in_functions() {
     s.eval("(defn inc [x] (add-i64 x 1))").unwrap();
 
     // Walk the symbol table and check that 'double' is a Macro, not a Def.
-    let table = s.tc.symbol_table();
+    let table = s.core.tc.symbol_table();
     let double_entry = table.get("double");
     assert!(
         matches!(double_entry, Some(cranelisp_types::ModuleEntry::Macro { .. })),
@@ -136,7 +136,7 @@ fn r3_info_macro_clause_count() {
         "(defmacro mc ([x] x) ([x y] x) ([x y z] z))",
     );
 
-    let entry = s.tc.symbol_table().get("mc");
+    let entry = s.core.tc.symbol_table().get("mc");
     match entry {
         Some(cranelisp_types::ModuleEntry::Macro { clauses, .. }) => {
             assert_eq!(
@@ -158,7 +158,7 @@ fn r3_info_macro_docstring() {
     let mut s = repl_session();
     repl_eval_display(&mut s, "(defmacro id [x] x)");
 
-    let entry = s.tc.symbol_table().get("id");
+    let entry = s.core.tc.symbol_table().get("id");
     match entry {
         Some(cranelisp_types::ModuleEntry::Macro { docstring, .. }) => {
             // Without docstring, should be None.
@@ -183,7 +183,7 @@ fn r3_sig_macro_params() {
     let mut s = repl_session();
     repl_eval_display(&mut s, "(defmacro simple [x y] x)");
 
-    let entry = s.tc.symbol_table().get("simple");
+    let entry = s.core.tc.symbol_table().get("simple");
     match entry {
         Some(cranelisp_types::ModuleEntry::Macro { clauses, .. }) => {
             assert_eq!(clauses.len(), 1, "expected 1 clause");
@@ -207,7 +207,7 @@ fn r3_sig_macro_variadic() {
 
     match result {
         Ok(_) => {
-            let entry = s.tc.symbol_table().get("my-cond");
+            let entry = s.core.tc.symbol_table().get("my-cond");
             match entry {
                 Some(cranelisp_types::ModuleEntry::Macro { clauses, .. }) => {
                     assert_eq!(clauses.len(), 2, "expected 2 clauses");
@@ -311,7 +311,7 @@ fn r3_macro_docstring_stored() {
         "(defmacro my-inc \"Increment by one\" [x] `(add-i64 ~x 1))",
     );
 
-    let entry = s.tc.symbol_table().get("my-inc");
+    let entry = s.core.tc.symbol_table().get("my-inc");
     match entry {
         Some(cranelisp_types::ModuleEntry::Macro { docstring, .. }) => {
             assert_eq!(
@@ -332,7 +332,7 @@ fn r3_macro_no_docstring() {
     let mut s = repl_session();
     repl_eval_display(&mut s, "(defmacro simple [x] x)");
 
-    let entry = s.tc.symbol_table().get("simple");
+    let entry = s.core.tc.symbol_table().get("simple");
     match entry {
         Some(cranelisp_types::ModuleEntry::Macro { docstring, .. }) => {
             assert!(
@@ -408,7 +408,7 @@ fn r3_neg_non_macros_absent_from_macros() {
     repl_eval_display(&mut s, "(defmacro my-mac [x] x)");
 
     // Walk symbol table: non-Macro entries must not be ModuleEntry::Macro.
-    let table = s.tc.symbol_table();
+    let table = s.core.tc.symbol_table();
     // Specifically: 'foo' must not be a Macro.
     let foo_entry = table.get("foo");
     assert!(

@@ -74,10 +74,9 @@ impl TypeChecker {
             Expr::StringLit { span, .. } => self.infer_string_lit(*span),
             Expr::VecLit { elements, span } => self.infer_vec_lit(elements, *span),
             Expr::Trace { body, span, .. } => self.infer_trace(body, *span),
-            Expr::RunTests { span, .. } => Err(CranelispError::TypeError {
-                message: "run-tests not supported in Ring 0".into(),
-                span: *span,
-            }),
+            Expr::RunTests { init, pass_fn, fail_fn, span, .. } => {
+                self.infer_run_tests(init, pass_fn, fail_fn, *span)
+            }
         }
     }
 
@@ -358,6 +357,20 @@ impl TypeChecker {
             _ => return Ok(None),
         };
 
+        // Auto-curry requires a named callee (Expr::Var) so the backend can
+        // emit the AutoCurry resolution. Non-Var callees (lambdas, complex
+        // expressions) would silently produce no resolution, causing miscompilation.
+        // Reject them with a clear error — the user can bind to a variable first.
+        let callee_name = match callee {
+            Expr::Var { name, .. } => name.clone(),
+            _ => {
+                return Err(CranelispError::TypeError {
+                    message: "auto-curry requires a named function; bind this expression to a variable first".to_string(),
+                    span,
+                });
+            }
+        };
+
         // Unify each applied arg with the corresponding parameter.
         for (arg_ty, param_ty) in arg_types.iter().zip(params.iter()) {
             self.unify(arg_ty, param_ty, span)?;
@@ -374,16 +387,14 @@ impl TypeChecker {
         // The trait_resolution (6th element) starts as None; it is filled in
         // by infer_apply after try_auto_curry returns (if types are concrete),
         // or by resolve_auto_curry when draining (if types get pinned later).
-        if let Expr::Var { name, .. } = callee {
-            self.pending_auto_curry.push((
-                span,
-                name.clone(),
-                arg_types.len(),
-                params.len(),
-                callee_ty.clone(),
-                None,
-            ));
-        }
+        self.pending_auto_curry.push((
+            span,
+            callee_name,
+            arg_types.len(),
+            params.len(),
+            callee_ty.clone(),
+            None,
+        ));
 
         let ty = self.apply_subst(&curry_ret);
         self.record_expr_type(span, ty.clone());
@@ -770,6 +781,46 @@ impl TypeChecker {
         let trace_type = Type::ADT("Trace".into(), vec![]);
         self.record_expr_type(span, trace_type.clone());
         Ok(trace_type)
+    }
+
+    /// Infer the type of `(run-tests init pass-fn fail-fn)`.
+    ///
+    /// - `init` determines the accumulator type `:a`
+    /// - `pass_fn :: (Fn [:a String Int] :a)`
+    /// - `fail_fn :: (Fn [:a String Int String Trace] :a)`
+    /// - Result type is `:a` (the accumulator type)
+    fn infer_run_tests(
+        &mut self,
+        init: &Expr,
+        pass_fn: &Expr,
+        fail_fn: &Expr,
+        span: Span,
+    ) -> Result<Type, CranelispError> {
+        // Infer accumulator type from init
+        let acc_ty = self.infer_expr(init)?;
+        let acc_ty = self.apply_subst(&acc_ty);
+
+        // pass_fn :: (Fn [acc_ty String Int] acc_ty)
+        let expected_pass = Type::Fn(
+            vec![acc_ty.clone(), Type::String, Type::Int],
+            Box::new(acc_ty.clone()),
+        );
+        let pass_ty = self.infer_expr(pass_fn)?;
+        self.unify(&pass_ty, &expected_pass, span)?;
+
+        // fail_fn :: (Fn [acc_ty String Int String Trace] acc_ty)
+        let trace_ty = Type::ADT("Trace".into(), vec![]);
+        let expected_fail = Type::Fn(
+            vec![acc_ty.clone(), Type::String, Type::Int, Type::String, trace_ty],
+            Box::new(acc_ty.clone()),
+        );
+        let fail_ty = self.infer_expr(fail_fn)?;
+        self.unify(&fail_ty, &expected_fail, span)?;
+
+        // Result type: acc_ty
+        let result_ty = self.apply_subst(&acc_ty);
+        self.record_expr_type(span, result_ty.clone());
+        Ok(result_ty)
     }
 
     fn infer_annotate(

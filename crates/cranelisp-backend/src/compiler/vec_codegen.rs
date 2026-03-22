@@ -19,7 +19,7 @@ use crate::heap::{self, HeapAdt, HeapVec, NULLARY_THRESHOLD_I64};
 
 use super::{collect_var_ids_from_type, substitute_type_inline, FnCompiler};
 
-impl<'a> FnCompiler<'a> {
+impl<'a, M: Module> FnCompiler<'a, M> {
     /// Compile a Vec literal: `[e1 e2 e3]` → allocate Vec, store elements.
     pub(crate) fn compile_vec_lit(
         &mut self,
@@ -928,7 +928,7 @@ impl<'a> FnCompiler<'a> {
     /// FunctionBuilder without the FnCompiler's scope state.
     fn emit_standalone_field_decs(
         builder: &mut FunctionBuilder,
-        module: &mut cranelift_jit::JITModule,
+        module: &mut M,
         adt_val: Value,
         ctor: &cranelisp_types::ConstructorInfo,
         subst: &std::collections::HashMap<cranelisp_types::TypeId, Type>,
@@ -1068,9 +1068,9 @@ fn emit_guarded_rc_inc(builder: &mut FunctionBuilder, val: Value) {
 }
 
 /// Emit a bounds-check panic for vec-get.
-fn emit_vec_bounds_panic(
+fn emit_vec_bounds_panic<M: Module>(
     builder: &mut FunctionBuilder,
-    module: &mut cranelift_jit::JITModule,
+    module: &mut M,
     panic_func_id: cranelift_module::FuncId,
     span: Span,
 ) -> Result<(), CranelispError> {

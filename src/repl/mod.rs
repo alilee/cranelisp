@@ -32,16 +32,12 @@ use std::time::{Duration, Instant};
 
 use cranelisp_backend::compiler::TracedFnInfo;
 use cranelisp_backend::display;
-use cranelisp_backend::got::ModuleCodegenState;
 use cranelisp_backend::jit::Jit;
-use cranelisp_typecheck::TypeChecker;
 use cranelisp_types::{
     CompileMode, CranelispError, DefKind, Defn, Expr, MacroClauseInfo,
     ModuleEntry, ModuleFullPath, ReplCheckResult, ReplInput, Sexp, Symbol, Type,
     TypeDefInfo, TypeName, Visibility, Warning,
 };
-
-use crate::expander::CraneliftExpander;
 
 use commands::{
     format_macro_display_universal, format_sexp, format_special_form_display,
@@ -85,25 +81,17 @@ pub struct ReplResult {
 }
 
 /// Persistent REPL session state.
+///
+/// Wraps a `CompilationSession` (shared compilation core) and adds
+/// REPL-specific concerns: display metadata, slash commands, trace state,
+/// introspection, platform DLL lifetimes.
 pub struct ReplSession {
-    /// Type checker state (persists across inputs).
-    pub tc: TypeChecker,
-    /// Backend GOT state (persists across inputs for function redefinition).
-    pub got_state: ModuleCodegenState,
-    /// Macro expander (persists across inputs -- macros accumulate).
-    pub(crate) expander: CraneliftExpander,
-    /// JIT instances that must stay alive (their code is referenced via GOT).
-    /// Each defn compilation creates a new JIT; we keep them alive here.
-    jit_modules: Vec<Jit>,
+    /// Shared compilation core (typechecker, GOT, expander, JIT lifetimes).
+    pub core: crate::pipeline::CompilationSession,
     /// Accumulated type definitions from all inputs (for ADT value display).
     type_defs: HashMap<TypeName, TypeDefInfo>,
     /// Maps type names to the module they were defined in (for qualified display).
     pub(crate) type_modules: HashMap<TypeName, ModuleFullPath>,
-    /// Platform function pointers for JIT symbol registration.
-    /// Each entry is (jit_name, function_pointer). These are passed to
-    /// `Jit::new_with_symbols()` when creating JIT instances for compilation
-    /// so that platform function calls can be resolved.
-    platform_symbols: Vec<(String, *const u8)>,
     /// Loaded platform DLLs -- must stay alive for the process lifetime.
     loaded_platforms: Vec<crate::platform::LoadedPlatform>,
     /// Project root directory (for platform path resolution).
@@ -114,17 +102,14 @@ impl ReplSession {
     /// Create a new REPL session without prelude loading.
     pub fn new() -> Self {
         ReplSession {
-            tc: TypeChecker::new(),
-            got_state: ModuleCodegenState::new(),
-            expander: CraneliftExpander::new(),
-            jit_modules: Vec::new(),
+            core: crate::pipeline::CompilationSession::new(),
             type_defs: HashMap::new(),
             type_modules: HashMap::new(),
-            platform_symbols: Vec::new(),
             loaded_platforms: Vec::new(),
             project_root: std::env::current_dir().unwrap_or_default(),
         }
     }
+
 
     /// Create a new REPL session with prelude loading.
     ///
@@ -139,34 +124,24 @@ impl ReplSession {
         let mut session = Self::new();
         session.project_root = project_root.to_path_buf();
 
-        // We need a temporary JIT for prelude compilation.
-        let mut jit = Jit::new()?;
-        jit.declare_intrinsics()?;
-        let mut all_func_sigs: Vec<(Symbol, usize)> = Vec::new();
-
-        let prelude_jits = crate::pipeline::load_prelude(
+        // REPL does not use module caching (yet — future sprint).
+        let mut cache_state = None;
+        crate::pipeline::load_prelude_into_session(
             project_root,
             lib_dirs,
-            &mut session.tc,
-            &mut session.expander,
-            &mut jit,
-            &mut all_func_sigs,
+            &mut session.core,
+            &mut cache_state,
         )?;
-
-        // Store prelude JIT modules to keep code alive.
-        session.jit_modules.extend(prelude_jits);
-        // The main JIT for prelude code also needs to stay alive.
-        session.jit_modules.push(jit);
 
         // Sync type definitions from prelude modules for ADT value display.
         // Without this, prelude ADT values (e.g. Option.None) display as raw
         // i64 tags because format_result_value lacks the constructor metadata.
-        for (name, info) in session.tc.type_def_registry().iter() {
+        for (name, info) in session.core.tc.type_def_registry().iter() {
             session.type_defs.insert(name.clone(), info.clone());
         }
 
         // Switch back to user module for REPL input.
-        session.tc.set_current_module(ModuleFullPath::from("user"));
+        session.core.tc.set_current_module(ModuleFullPath::from("user"));
 
         Ok(session)
     }
@@ -216,7 +191,7 @@ impl ReplSession {
         }
 
         // Snapshot for error recovery (covers macro compilation too).
-        let snapshot = self.tc.snapshot();
+        let snapshot = self.core.tc.snapshot();
 
         // Handle multi-sexp annotation expressions (`:Type expr` parses as two sexps).
         // For single sexps, take the first and evaluate normally.
@@ -230,7 +205,7 @@ impl ReplSession {
         match result {
             Ok(result) => Ok(result),
             Err(e) => {
-                self.tc.restore(snapshot);
+                self.core.tc.restore(snapshot);
                 Err(e)
             }
         }
@@ -243,9 +218,9 @@ impl ReplSession {
     fn eval_annotation_expr(&mut self, sexps: Vec<Sexp>) -> Result<ReplResult, CranelispError> {
         let input = cranelisp_frontend::build_repl_input_from_sexps(
             &sexps,
-            &mut self.expander,
+            &mut self.core.expander,
         )?;
-        let check_result = self.tc.check_repl_input(&input)?;
+        let check_result = self.core.tc.check_repl_input(&input)?;
         self.compile_and_execute(&input, &check_result)
     }
 
@@ -283,7 +258,7 @@ impl ReplSession {
         }
 
         // Step 2: Expand macros in the sexp.
-        let expanded = self.expander.expand_sexp(sexp)?;
+        let expanded = self.core.expander.expand_sexp(sexp)?;
 
         // Step 3: Flatten (begin ...) results and process sub-forms.
         let forms = cranelisp_frontend::flatten_begin(expanded);
@@ -314,13 +289,13 @@ impl ReplSession {
             // Build and process a normal REPL input.
             // Capture the form sexp before AST building for /sexp introspection.
             let form_sexp = form.clone();
-            let input = cranelisp_frontend::build_repl_input(&form, &mut self.expander)?;
-            let check_result = self.tc.check_repl_input(&input)?;
+            let input = cranelisp_frontend::build_repl_input(&form, &mut self.core.expander)?;
+            let check_result = self.core.tc.check_repl_input(&input)?;
             let result = self.compile_and_execute(&input, &check_result)?;
 
             // Store sexp and source in DefCodegen for introspection commands.
             if let ReplInput::Defn(defn) = &input {
-                if let Some(dc) = self.got_state.def_codegen.get_mut(&defn.name) {
+                if let Some(dc) = self.core.got_state.def_codegen.get_mut(&defn.name) {
                     dc.source = Some(format_sexp(&form_sexp));
                     dc.sexp = Some(form_sexp);
                 }
@@ -345,10 +320,10 @@ impl ReplSession {
         let mut jit = Jit::new()?;
         jit.declare_intrinsics()?;
 
-        self.expander.compile_macro(&info, &mut self.tc, &mut jit)?;
+        self.core.expander.compile_macro(&info, &mut self.core.tc, &mut jit)?;
 
         // Keep JIT alive so macro function pointers remain valid.
-        self.jit_modules.push(jit);
+        self.core.jit_modules.push(jit);
 
         // Register macro in the symbol table for introspection (spec §11.2).
         let clause_infos: Vec<MacroClauseInfo> = info
@@ -361,7 +336,7 @@ impl ReplSession {
             })
             .collect();
         // Compute display before moving clause_infos into symbol table.
-        let module = self.tc.current_module_path().clone();
+        let module = self.core.tc.current_module_path().clone();
         let display = format_defmacro_display(&info.name, &clause_infos, &module);
 
         let visibility = if info.is_private {
@@ -369,7 +344,7 @@ impl ReplSession {
         } else {
             Visibility::Public
         };
-        self.tc.symbol_table_mut().insert(
+        self.core.tc.symbol_table_mut().insert(
             info.name.clone(),
             ModuleEntry::Macro {
                 name: info.name.clone(),
@@ -408,7 +383,7 @@ impl ReplSession {
         };
 
         // Look up the symbol in the current module's symbol table.
-        let entry = self.tc.symbol_table().get(name.as_str())?;
+        let entry = self.core.tc.symbol_table().get(name.as_str())?;
         match entry {
             ModuleEntry::Macro { clauses, docstring, .. } => {
                 // Check if any clause accepts zero args -- if so, let the
@@ -420,7 +395,7 @@ impl ReplSession {
                     return None; // Let expander handle zero-arg expansion.
                 }
                 // Non-zero-arg macro: show universal format (spec §4.1.6).
-                let module = self.tc.current_module_path().clone();
+                let module = self.core.tc.current_module_path().clone();
                 let display = format_macro_display_universal(
                     name, clauses, docstring.as_deref(), &module,
                 );
@@ -458,12 +433,12 @@ impl ReplSession {
     /// Parses the import sexp using `extract_module_declarations` and registers
     /// the resulting import specs in the typechecker's symbol table.
     fn eval_import(&mut self, sexp: Sexp) -> Result<ReplResult, CranelispError> {
-        let module = self.tc.current_module_path().clone();
+        let module = self.core.tc.current_module_path().clone();
         let (structure, _remaining) =
             cranelisp_frontend::extract_module_declarations(module, None, vec![sexp])?;
 
         if !structure.import_specs.is_empty() {
-            self.tc.register_imports(&structure.import_specs)?;
+            self.core.tc.register_imports(&structure.import_specs)?;
         }
 
         // Build display: "imported N names from module1, module2, ..."
@@ -503,7 +478,7 @@ impl ReplSession {
         })?;
 
         let (platform, jit_syms) = crate::platform::load_and_register_platform(
-            &mut self.tc,
+            &mut self.core.tc,
             &name,
             &self.project_root,
             span,
@@ -512,7 +487,7 @@ impl ReplSession {
         let fn_count = platform.descriptors.len();
         let version = platform.version.clone();
 
-        self.platform_symbols.extend(jit_syms);
+        self.core.platform_symbols.extend(jit_syms);
         self.loaded_platforms.push(platform);
 
         let display = format!(
@@ -573,7 +548,7 @@ impl ReplSession {
         };
 
         let mut extra_symbols: Vec<(&str, *const u8)> = self
-            .platform_symbols
+            .core.platform_symbols
             .iter()
             .map(|(name, ptr)| (name.as_str(), *ptr))
             .collect();
@@ -590,7 +565,7 @@ impl ReplSession {
         let compiled = compile_expr_with_traced_fns(
             expr,
             &check,
-            Some(&mut self.got_state),
+            Some(&mut self.core.got_state),
             &extra_symbols,
             if has_trace { Some(&traced_fns) } else { None },
         )?;
@@ -652,7 +627,7 @@ impl ReplSession {
         // For defn, execute if it's zero-arg, otherwise return 0.
         // Time the execution separately from compilation.
         let (value, eval_duration) = if defn.params.is_empty() && !is_constrained {
-            let entry = self.got_state.def_codegen.get(defn.name.as_ref());
+            let entry = self.core.got_state.def_codegen.get(defn.name.as_ref());
             let code_ptr = entry
                 .and_then(|e| e.code_ptr)
                 .ok_or_else(|| CranelispError::CodegenError {
@@ -668,7 +643,7 @@ impl ReplSession {
         };
 
         // Build definition display with qualified name (spec §1.1, §1.3).
-        let module = self.tc.current_module_path().clone();
+        let module = self.core.tc.current_module_path().clone();
         let definition_display = if is_constrained {
             check_result.scheme.as_ref().map(|s| {
                 let base = display::format_scheme_display(&defn.name, s, &module, &self.type_modules);
@@ -696,7 +671,7 @@ impl ReplSession {
         &mut self,
         check_result: &ReplCheckResult,
     ) -> Result<ReplResult, CranelispError> {
-        let module = self.tc.current_module_path().clone();
+        let module = self.core.tc.current_module_path().clone();
 
         // Accumulate type definitions for ADT value display.
         for (name, info) in &check_result.type_defs {
@@ -773,7 +748,7 @@ impl ReplSession {
         // Compile any monomorphised definitions generated during checking.
         self.compile_mono_defns(check_result)?;
 
-        let module = self.tc.current_module_path();
+        let module = self.core.tc.current_module_path();
         let display = format!(
             "impl {module}/{} for {module}/{}",
             impl_.trait_name, impl_.target_type
@@ -830,7 +805,7 @@ impl ReplSession {
     ) -> Result<(), CranelispError> {
         // Create JIT with platform symbols registered (if any platforms loaded).
         let extra_symbols: Vec<(&str, *const u8)> = self
-            .platform_symbols
+            .core.platform_symbols
             .iter()
             .map(|(name, ptr)| (name.as_str(), *ptr))
             .collect();
@@ -843,22 +818,22 @@ impl ReplSession {
         let func_ids = jit.declare_functions(&[defn])?;
 
         // Ensure a GOT slot exists for this function.
-        let slot = self.got_state.ensure_slot_for(&defn.name)?;
+        let slot = self.core.got_state.ensure_slot_for(&defn.name)?;
 
         // Build GOT slot map from existing state + this new function.
         let mut got_slots: HashMap<Symbol, usize> = HashMap::new();
-        for (name, dc) in &self.got_state.def_codegen {
+        for (name, dc) in &self.core.got_state.def_codegen {
             if let Some(s) = dc.got_slot {
                 got_slots.insert(name.clone(), s);
             }
         }
         got_slots.insert(defn.name.clone(), slot);
 
-        let got_base = self.got_state.got_base_ptr() as i64;
+        let got_base = self.core.got_state.got_base_ptr() as i64;
 
         // Build function arity map from existing GOT state + this defn.
         let mut func_arities: HashMap<Symbol, usize> = HashMap::new();
-        for (name, dc) in &self.got_state.def_codegen {
+        for (name, dc) in &self.core.got_state.def_codegen {
             if let Some(pc) = dc.param_count {
                 func_arities.insert(name.clone(), pc);
             }
@@ -881,10 +856,10 @@ impl ReplSession {
         let code_ptr = jit.finalize_and_get_ptr(&defn.name, defn.params.len())?;
 
         // Update the GOT slot with the new code pointer.
-        self.got_state.update_slot(slot, code_ptr);
+        self.core.got_state.update_slot(slot, code_ptr);
 
         // Record codegen info and introspection data.
-        let entry = self.got_state.def_codegen.entry(defn.name.clone()).or_default();
+        let entry = self.core.got_state.def_codegen.entry(defn.name.clone()).or_default();
         entry.code_ptr = Some(code_ptr);
         entry.got_slot = Some(slot);
         entry.param_count = Some(defn.params.len());
@@ -898,7 +873,7 @@ impl ReplSession {
         }
 
         // Keep JIT alive so code pointer remains valid.
-        self.jit_modules.push(jit);
+        self.core.jit_modules.push(jit);
 
         Ok(())
     }
@@ -926,12 +901,12 @@ impl ReplSession {
     /// type information from the symbol table, and builds `TracedFnInfo` entries
     /// for the trace codegen to generate wrapper functions.
     fn build_traced_fns(&mut self) -> Vec<TracedFnInfo> {
-        let got_base = self.got_state.got_base_ptr() as i64;
-        let module = self.tc.current_module_path().clone();
-        let symbol_table = self.tc.symbol_table();
+        let got_base = self.core.got_state.got_base_ptr() as i64;
+        let module = self.core.tc.current_module_path().clone();
+        let symbol_table = self.core.tc.symbol_table();
 
         let mut traced = Vec::new();
-        for (name, dc) in &self.got_state.def_codegen {
+        for (name, dc) in &self.core.got_state.def_codegen {
             let (slot, code_ptr, arity) = match (dc.got_slot, dc.code_ptr, dc.param_count) {
                 (Some(s), Some(p), Some(a)) => (s, p, a),
                 _ => continue,
@@ -1208,7 +1183,7 @@ pub fn run_repl() {
     let mut last_compile_ms: u64 = 0;
     let mut last_eval_ms: u64 = 0;
 
-    let module = session.tc.current_module_path().to_string();
+    let module = session.core.tc.current_module_path().to_string();
     let prompt = format_prompt(last_compile_ms, last_eval_ms, &module);
     write_prompt(&mut stdout, last_compile_ms, last_eval_ms, &module);
 
@@ -1231,7 +1206,7 @@ pub fn run_repl() {
         }
 
         let input = buffer.trim();
-        let module = session.tc.current_module_path().to_string();
+        let module = session.core.tc.current_module_path().to_string();
         if input.is_empty() || is_comment_only(input) {
             buffer.clear();
             write_prompt(&mut stdout, last_compile_ms, last_eval_ms, &module);
@@ -1244,7 +1219,7 @@ pub fn run_repl() {
             if should_quit {
                 break;
             }
-            let module = session.tc.current_module_path().to_string();
+            let module = session.core.tc.current_module_path().to_string();
             write_prompt(&mut stdout, last_compile_ms, last_eval_ms, &module);
             continue;
         }
@@ -1260,7 +1235,7 @@ pub fn run_repl() {
             eval_and_display(&mut session, input, &mut stdout);
 
         buffer.clear();
-        let module = session.tc.current_module_path().to_string();
+        let module = session.core.tc.current_module_path().to_string();
         write_prompt(&mut stdout, last_compile_ms, last_eval_ms, &module);
     }
 
@@ -1800,13 +1775,13 @@ mod tests {
     ) -> ReplSession {
         let mut session = ReplSession::new();
         for (path, entries) in modules {
-            session.tc.set_current_module(path);
+            session.core.tc.set_current_module(path);
             for (sym, entry) in entries {
-                session.tc.symbol_table_mut().insert(sym, entry);
+                session.core.tc.symbol_table_mut().insert(sym, entry);
             }
         }
         // Switch back to user module
-        session.tc.set_current_module(ModuleFullPath::from("user"));
+        session.core.tc.set_current_module(ModuleFullPath::from("user"));
         session
     }
 

@@ -881,6 +881,51 @@ impl TypeChecker {
         None
     }
 
+    // --- Cache restoration ---
+
+    /// Restore a module's symbol table from cached metadata.
+    ///
+    /// Installs the given symbol table into the modules map and
+    /// reconstructs type_defs and constructor_to_type entries from
+    /// the table's TypeDef and Constructor entries. This enables
+    /// downstream modules to import from and typecheck against
+    /// the cached module without recompiling it.
+    ///
+    /// Used by the pipeline's cache-hit path (src/pipeline.rs).
+    pub fn restore_cached_module(&mut self, table: SymbolTable) {
+        let path = table.path.clone();
+
+        // Reconstruct type_defs and constructor_to_type from symbol table entries.
+        for (_name, entry) in table.all_symbols() {
+            match entry {
+                ModuleEntry::TypeDef { info, .. } => {
+                    // Register each constructor in constructor_to_type.
+                    for ctor in &info.constructors {
+                        self.type_defs.constructor_to_type.insert(
+                            ctor.name.clone(),
+                            info.name.clone(),
+                        );
+                    }
+                    self.type_defs.type_defs.insert(
+                        info.name.clone(),
+                        info.clone(),
+                    );
+                }
+                ModuleEntry::Constructor { type_name, .. } => {
+                    // Ensure constructor_to_type has this entry too
+                    // (may duplicate the TypeDef loop, but HashMap insert is idempotent).
+                    self.type_defs.constructor_to_type.insert(
+                        _name.clone(),
+                        TypeName::from(type_name.as_ref()),
+                    );
+                }
+                _ => {}
+            }
+        }
+
+        self.modules.insert(path, table);
+    }
+
     // --- REPL snapshot/restore ---
 
     /// Take a snapshot of the current state for REPL error recovery.

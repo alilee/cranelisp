@@ -25,12 +25,12 @@ use cranelisp_types::{CranelispError, Span, Symbol, TraitName, TypeName};
 ///
 /// Returns the result Value. All values are i64 at the Cranelift boundary;
 /// floats are bitcast to/from i64 as needed.
-pub fn emit_builtin_op(
+pub fn emit_builtin_op<M: Module>(
     builder: &mut FunctionBuilder,
     name: &str,
     args: &[Value],
     span: Span,
-    module: &mut cranelift_jit::JITModule,
+    module: &mut M,
     panic_func_id: Option<FuncId>,
 ) -> Result<Value, CranelispError> {
     match name {
@@ -191,12 +191,12 @@ fn emit_not(
 
 /// Emit a checked integer division: branch on zero divisor to a panic block
 /// that calls `runtime_panic("division by zero")`, otherwise emit `sdiv`.
-fn emit_checked_div(
+fn emit_checked_div<M: Module>(
     builder: &mut FunctionBuilder,
     name: &str,
     args: &[Value],
     span: Span,
-    module: &mut cranelift_jit::JITModule,
+    module: &mut M,
     panic_func_id: Option<FuncId>,
 ) -> Result<Value, CranelispError> {
     require_args(name, args, 2, span)?;

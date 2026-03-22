@@ -114,11 +114,9 @@ pub(crate) fn expr_contains_trace(expr: &Expr) -> bool {
         }
         Expr::Annotate { expr, .. } => expr_contains_trace(expr),
         Expr::VecLit { elements, .. } => elements.iter().any(expr_contains_trace),
-        Expr::RunTests { init, pass_fn, fail_fn, .. } => {
-            expr_contains_trace(init)
-                || expr_contains_trace(pass_fn)
-                || expr_contains_trace(fail_fn)
-        }
+        // RunTests itself needs traced_fns for test discovery (GOT-swap tracing),
+        // so it always triggers trace infrastructure, even without a nested (trace ...).
+        Expr::RunTests { .. } => true,
         Expr::IntLit { .. }
         | Expr::BoolLit { .. }
         | Expr::FloatLit { .. }

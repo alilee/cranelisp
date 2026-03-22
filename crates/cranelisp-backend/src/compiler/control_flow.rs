@@ -14,7 +14,7 @@ use crate::operators;
 
 use super::FnCompiler;
 
-impl<'a> FnCompiler<'a> {
+impl<'a, M: Module> FnCompiler<'a, M> {
     // --- Let expression ---
 
     pub(crate) fn compile_let(
@@ -472,7 +472,7 @@ impl<'a> FnCompiler<'a> {
         // Compile the body with scope cleanup for parameters.
         // This mirrors compile_body: identify the return value variable (if any),
         // protect it from scope cleanup, then dec all other heap-typed params.
-        let skip_var = FnCompiler::return_var_in_scope(body, inner_compiler.scope_stack.last());
+        let skip_var = Self::return_var_in_scope(body, inner_compiler.scope_stack.last());
         let result = inner_compiler.compile_expr(body)?;
         inner_compiler.protect_return_value(&skip_var, result, body);
         inner_compiler.pop_scope_with_cleanup(skip_var.as_ref());
@@ -653,26 +653,11 @@ impl<'a> FnCompiler<'a> {
                 Ok(builder.inst_results(call)[0])
             }
             CompileMode::Interactive => {
-                let got_slots = self.ctx.got_slots.ok_or_else(|| {
-                    CranelispError::CodegenError {
-                        message: "Interactive mode requires GOT".into(),
-                        span,
-                    }
-                })?;
-                let got_base = self.ctx.got_base_ptr.ok_or_else(|| {
-                    CranelispError::CodegenError {
-                        message: "Interactive mode requires GOT base".into(),
-                        span,
-                    }
-                })?;
-                let slot = got_slots.get(target_name).ok_or_else(|| {
-                    CranelispError::CodegenError {
-                        message: format!("no GOT slot for: {target_name}"),
-                        span,
-                    }
-                })?;
+                // Use resolve_got_entry to check both local and cross-module GOT,
+                // matching the lookup strategy used by compile_direct_call.
+                let (got_base, slot) = self.resolve_got_entry(target_name, span)?;
 
-                let slot_offset = (*slot * 8) as i64;
+                let slot_offset = (slot * 8) as i64;
                 let base_val = builder.ins().iconst(types::I64, got_base);
                 let slot_addr = builder.ins().iadd_imm(base_val, slot_offset);
                 let func_ptr = builder.ins().load(

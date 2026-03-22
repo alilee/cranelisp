@@ -15,7 +15,6 @@ pub mod vec_codegen;
 use std::collections::HashMap;
 
 use cranelift::prelude::*;
-use cranelift_jit::JITModule;
 use cranelift_module::{FuncId, Module};
 
 use cranelisp_types::{
@@ -145,11 +144,15 @@ pub struct MatchContext {
 }
 
 /// Per-function compilation context.
-pub struct FnCompiler<'a> {
+///
+/// Generic over `M: Module` so the same codegen can target both `JITModule`
+/// (for immediate execution) and `ObjectModule` (for `.o` file generation).
+/// See design/backend/module-caching.md §13.2 for rationale.
+pub struct FnCompiler<'a, M: Module> {
     /// Cranelift function builder.
     pub builder: FunctionBuilder<'a>,
-    /// Reference to the JIT module for declaring functions.
-    pub module: &'a mut JITModule,
+    /// Reference to the compilation module (JITModule or ObjectModule).
+    pub module: &'a mut M,
     /// Local variable bindings (name -> Cranelift Variable).
     pub(crate) variables: HashMap<Symbol, Variable>,
     /// Scope stack: each frame is a list of variable names introduced.
@@ -225,7 +228,7 @@ pub struct FnCompiler<'a> {
     pub(crate) pending_closure_drop_glue: Option<FuncId>,
 }
 
-impl<'a> FnCompiler<'a> {
+impl<'a, M: Module> FnCompiler<'a, M> {
     /// Create an inner `FnCompiler` for lambda bodies, continuations,
     /// or (future) drop glue. This is the single construction point for
     /// inner compilers (ring1-checklist section 5.9).
@@ -234,7 +237,7 @@ impl<'a> FnCompiler<'a> {
     /// no tail loop). The scope and variable maps start fresh.
     pub(crate) fn inner(
         builder: FunctionBuilder<'a>,
-        module: &'a mut JITModule,
+        module: &'a mut M,
         ctx: CompileContext<'a>,
         fn_param_count: usize,
         last_uses: HashMap<(Symbol, Span), bool>,
@@ -270,7 +273,7 @@ impl<'a> FnCompiler<'a> {
         defn: &Defn,
         func: &mut cranelift::codegen::ir::Function,
         func_ctx: &mut FunctionBuilderContext,
-        module: &'a mut JITModule,
+        module: &'a mut M,
         ctx: CompileContext<'a>,
     ) -> Result<(), CranelispError> {
         let mut builder = FunctionBuilder::new(func, func_ctx);
