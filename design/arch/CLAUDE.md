@@ -11,7 +11,7 @@ Architecture deliverables for the Cranelisp reimplementation. Owned and maintain
 
 ## Key Decisions (Phase B)
 
-1. **7-crate DAG**: `cranelisp-types` (data-only), `cranelisp-frontend`, `cranelisp-typecheck`, `cranelisp-backend`, `cranelisp-runtime`, `cranelisp-platform`, `cranelisp` (binary)
+1. **7+1 crate DAG**: 7 pipeline crates (`cranelisp-types`, `cranelisp-frontend`, `cranelisp-typecheck`, `cranelisp-backend`, `cranelisp-runtime`, `cranelisp-platform`, `cranelisp` binary) + 1 build artifact (`cranelisp-exe-bundle` staticlib for `--link`)
 2. **`cranelisp-types` is data-only** — all boundary types, no logic. Every other crate depends on it.
 3. **Span is a struct** — `struct Span { start: u32, end: u32 }`, not `type Span = (usize, usize)`
 4. **TypeId is u32** — narrowed from `usize`, 4 billion type vars sufficient

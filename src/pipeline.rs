@@ -69,7 +69,7 @@ pub struct CacheState {
 
 impl CacheState {
     /// Initialize cache state: load existing manifest or create a new one.
-    fn new(cache_dir: PathBuf) -> Self {
+    pub fn new(cache_dir: PathBuf) -> Self {
         let manifest = cache::read_manifest(&cache_dir)
             .unwrap_or_else(cache::CacheManifest::new_for_host);
         CacheState {
@@ -115,8 +115,13 @@ impl CacheState {
     }
 
     /// Record that a module was recompiled (cache miss).
-    fn record_recompiled(&mut self, module_path: &ModuleFullPath) {
+    pub fn record_recompiled(&mut self, module_path: &ModuleFullPath) {
         self.recompiled.insert(module_path.clone());
+    }
+
+    /// Mutable access to source hashes for external recompilation tracking.
+    pub fn source_hashes_mut(&mut self) -> &mut HashMap<ModuleFullPath, String> {
+        &mut self.source_hashes
     }
 
     /// Build the dependency hash map for a module from its actual dependencies.
@@ -170,6 +175,14 @@ impl CacheState {
             cache::write_manifest(&self.cache_dir, &self.manifest)?;
         }
         Ok(())
+    }
+
+    /// Flush the manifest to disk (public entry point for REPL cache integration).
+    ///
+    /// Writes the manifest if any modules were compiled during this session.
+    /// Silently swallows errors (REPL should not crash on cache write failure).
+    pub fn flush_manifest(&self) {
+        let _ = self.flush();
     }
 }
 
@@ -247,6 +260,42 @@ impl CompilationSession {
             self.process_single_form(sexp, &mut accumulated)?;
         }
         Ok(accumulated)
+    }
+
+    /// Like `process_forms_sequentially` but also returns pre-expansion
+    /// sexps paired with each expanded form.
+    ///
+    /// For forms that don't expand through begin (the common case), the
+    /// original sexp is paired with the expanded form. For begin-expanded
+    /// forms, each sub-form is paired with itself (expanded, since there
+    /// is no single original that maps to each sub-form).
+    ///
+    /// Returns `(expanded_sexps, original_sexps)` where both vecs have
+    /// the same length.
+    pub fn process_forms_with_originals(
+        &mut self,
+        sexps: Vec<Sexp>,
+    ) -> Result<(Vec<Sexp>, Vec<Sexp>), CranelispError> {
+        let mut expanded: Vec<Sexp> = Vec::new();
+        let mut originals: Vec<Sexp> = Vec::new();
+        for sexp in sexps {
+            let original = sexp.clone();
+            let count_before = expanded.len();
+            self.process_single_form(sexp, &mut expanded)?;
+            let count_after = expanded.len();
+            let added = count_after - count_before;
+            if added == 1 {
+                // Single form: pair with original (pre-expansion) sexp.
+                originals.push(original);
+            } else {
+                // Begin-expanded: multiple sub-forms from one original.
+                // Each sub-form uses its own (expanded) sexp as original.
+                for i in count_before..count_after {
+                    originals.push(expanded[i].clone());
+                }
+            }
+        }
+        Ok((expanded, originals))
     }
 
     /// Process sexps and build the AST program in one step.
@@ -965,7 +1014,19 @@ pub struct ModuleGraph {
     pub lib_dirs: Vec<PathBuf>,
 }
 
-/// Result of compiling a multi-file module graph.
+/// Result of compiling a module graph for linking (no execution).
+pub struct LinkCompileResult {
+    /// All module `.o` file paths in the cache, in topological order.
+    pub module_o_paths: Vec<PathBuf>,
+    /// The entry module's symbol table (for `validate_main`).
+    pub entry_symbols: cranelisp_types::SymbolTable,
+    /// Module structures from the graph (for platform rlib discovery).
+    pub module_structures: Vec<(ModuleFullPath, cranelisp_types::ModuleStructure)>,
+    /// Non-fatal warnings accumulated during compilation.
+    pub warnings: Vec<Warning>,
+}
+
+/// Result of compiling a multi-file module graph (compile + execute).
 pub struct CompiledModuleGraph {
     /// The i64 result value from executing the entry module's entry point.
     pub value: i64,
@@ -973,6 +1034,17 @@ pub struct CompiledModuleGraph {
     pub ty: Type,
     /// Non-fatal warnings accumulated during compilation.
     pub warnings: Vec<Warning>,
+}
+
+/// Result of compiling a module graph without executing it.
+///
+/// Contains the compiled session and entry point info needed by callers
+/// that want to execute separately (batch mode) or not at all (cache write).
+struct CompiledGraphSession {
+    session: CompilationSession,
+    entry_defn_name: Option<Symbol>,
+    entry_result_type: Type,
+    warnings: Vec<Warning>,
 }
 
 /// Discover the module dependency graph starting from an entry file.
@@ -1473,6 +1545,16 @@ fn try_restore_from_cache(
     // register_imports/register_exports. The table is a complete snapshot.
     session.tc.restore_cached_module(cached.metadata.symbol_table.clone());
 
+    // Restore trait impl registrations from the codegen state's mangled method
+    // names. During fresh compilation, register_trait_impl populates impl_registry;
+    // on cache restore we reconstruct it from names like "Num.+$Int".
+    let mangled_names: Vec<String> = cached.codegen_state()
+        .got_slots
+        .keys()
+        .map(|s| s.as_ref().to_string())
+        .collect();
+    session.tc.restore_cached_impls(&mangled_names);
+
     // If a valid .o file exists, load it via the Linker and register
     // function pointers for the batch JIT.
     if cached.has_object {
@@ -1485,6 +1567,49 @@ fn try_restore_from_cache(
         .insert(module_path.clone(), source_hash.to_string());
 
     Ok(true)
+}
+
+/// Re-compile defmacro forms from a cached module's source.
+///
+/// When a module is loaded from cache, its symbol table (including
+/// `ModuleEntry::Macro` entries) is restored, but the actual macro
+/// functions are not compiled. Downstream modules that use these macros
+/// (e.g., `str`, `list`, `do`) will fail at expansion time because the
+/// expander has no function pointers for them.
+///
+/// This function re-parses the module source, extracts defmacro forms,
+/// and compiles them into the session's expander. Non-macro forms are
+/// skipped — the module's compiled code is already available from cache.
+fn recompile_macros_for_cached_module(
+    module_path: &ModuleFullPath,
+    node: &ModuleNode,
+    session: &mut CompilationSession,
+) -> Result<(), CranelispError> {
+    let source = read_module_source(node)?;
+    let sexps = cranelisp_frontend::parse(&source)?;
+    if sexps.is_empty() {
+        return Ok(());
+    }
+
+    let (_structure, remaining) = cranelisp_frontend::extract_module_declarations(
+        module_path.clone(),
+        Some(node.file_path.clone()),
+        sexps,
+    )?;
+
+    // Set module context so macro compilation sees the right imports.
+    let saved_module = session.tc.current_module_path().clone();
+    session.tc.set_current_module(module_path.clone());
+
+    // Compile only defmacro forms; skip everything else.
+    for sexp in remaining {
+        if cranelisp_frontend::is_defmacro(&sexp) {
+            session.compile_and_register_macro(&sexp)?;
+        }
+    }
+
+    session.tc.set_current_module(saved_module);
+    Ok(())
 }
 
 /// Load a cached module's `.o` file and register function pointers.
@@ -1536,9 +1661,14 @@ fn load_cached_object_into_session(
         session.func_sigs.push((fn_name.clone(), param_count));
 
         // If we got a code pointer from the .o file, register it as a
-        // cached symbol for the batch JIT.
+        // cached symbol for the batch JIT AND in the GOT for REPL-mode
+        // indirect calls. Without GOT registration, /reset + cache load
+        // fails because REPL-compiled code uses GOT-indirect calls.
         if let Some(code_ptr) = fn_addrs.get(fn_name_str) {
             session.cached_symbols.push((fn_name_str.to_string(), *code_ptr));
+            // Register in GOT so REPL code can call this function.
+            let got_slot = session.got_state.ensure_slot_for(fn_name)?;
+            session.got_state.update_slot(got_slot, *code_ptr);
         }
 
         // Suppress unused variable warning — slot is from the cached
@@ -1564,12 +1694,16 @@ fn load_cached_object_into_session(
         .collect();
     accumulate_func_sigs(module_path, &alias_entries, &mut session.func_sigs);
 
-    // Also register qualified aliases as cached symbols for the JIT.
+    // Also register qualified aliases as cached symbols and GOT slots.
     for (fn_name, _pc) in &alias_entries {
         let fn_name_str: &str = fn_name.as_ref();
         if let Some(code_ptr) = fn_addrs.get(fn_name_str) {
             for alias in generate_module_aliases(mod_str, fn_name_str) {
-                session.cached_symbols.push((alias, *code_ptr));
+                session.cached_symbols.push((alias.clone(), *code_ptr));
+                // Register alias in GOT for REPL-mode indirect calls.
+                let alias_sym = Symbol::from(alias.as_str());
+                let got_slot = session.got_state.ensure_slot_for(&alias_sym)?;
+                session.got_state.update_slot(got_slot, *code_ptr);
             }
         }
     }
@@ -1596,7 +1730,7 @@ fn register_intrinsics_on_linker(linker: &mut cache::Linker) {
 /// `program` and `check` are needed to build the `ObjectCompileInput`
 /// for `.o` compilation. Pass `None` for `program` if the module has
 /// no compilable definitions (empty modules, type-only modules).
-fn write_module_cache(
+pub(crate) fn write_module_cache(
     cache_state: &mut CacheState,
     module_path: &ModuleFullPath,
     source_hash: String,
@@ -1973,6 +2107,110 @@ pub fn assemble_lib_dirs(project_root: &Path) -> Vec<PathBuf> {
     }
 }
 
+/// Load a module (and its transitive dependencies) from disk into an existing
+/// CompilationSession.
+///
+/// Used by the REPL to lazily compile modules referenced by `(import ...)` that
+/// are not already loaded. Discovers the module graph rooted at the given file,
+/// compiles each dependency in topological order using the GOT-based codegen
+/// path (same as REPL per-form compilation), so that functions are callable
+/// from subsequent REPL expressions.
+///
+/// Modules already present in the session's typechecker are skipped (not recompiled).
+pub fn load_module_into_session(
+    module_name: &str,
+    project_root: &Path,
+    lib_dirs: &[PathBuf],
+    session: &mut CompilationSession,
+) -> Result<(), CranelispError> {
+    // Resolve the module file using the same search order as batch mode.
+    let filename = format!("{module_name}.cl");
+
+    // Search order: project root, then lib dirs.
+    let file_path = {
+        let root_file = project_root.join(&filename);
+        if root_file.is_file() {
+            root_file
+        } else {
+            let mut found = None;
+            for lib_dir in lib_dirs {
+                let lib_file = lib_dir.join(&filename);
+                if lib_file.is_file() {
+                    found = Some(lib_file);
+                    break;
+                }
+            }
+            found.ok_or_else(|| CranelispError::ModuleError {
+                message: format!(
+                    "cannot find module '{}' (searched project root '{}' and lib directories)",
+                    module_name, project_root.display()
+                ),
+                file: None,
+                span: Span::SYNTHETIC,
+            })?
+        }
+    };
+
+    // Discover the module graph rooted at this file.
+    let graph = discover_module_graph(&file_path, lib_dirs)?;
+    let order = toposort(&graph)?;
+
+    // Check whether a prelude was loaded so we can inject implicit imports.
+    let prelude_loaded = session.tc.has_module(&ModuleFullPath::from("prelude"));
+
+    // Compile each module in topological order, skipping already-loaded modules.
+    for module_path in &order {
+        if session.tc.has_module(module_path) {
+            continue;
+        }
+
+        let node = &graph.nodes[module_path];
+        let (_source, structure, remaining_sexps) =
+            parse_and_extract_module_with_source(module_path, node)?;
+
+        // Set up module context.
+        session.tc.set_current_module(module_path.clone());
+
+        // Inject implicit prelude import for non-prelude modules.
+        if prelude_loaded {
+            inject_prelude_import(&mut session.tc)?;
+        }
+
+        if !structure.import_specs.is_empty() {
+            session.tc.register_imports(&structure.import_specs)?;
+        }
+        if !structure.export_specs.is_empty() {
+            session.tc.register_exports(&structure.export_specs)?;
+        }
+
+        // Process forms (defmacro compilation happens here).
+        let accumulated = session.process_forms_sequentially(remaining_sexps)?;
+
+        // Build program AST.
+        let program = cranelisp_frontend::build_program(
+            &accumulated,
+            &mut session.expander,
+        )?;
+
+        if program.is_empty() {
+            continue;
+        }
+
+        // Typecheck.
+        let check = session.tc.check_program(&program)?;
+
+        // Compile into the GOT (same path as REPL per-form compilation).
+        // This ensures functions are callable from subsequent REPL expressions
+        // via GOT-indirect calling.
+        session.compile_checked_program(&program, &check)?;
+
+        // Register module-qualified aliases so imports can resolve.
+        session.register_module_aliases(module_path);
+    }
+
+    Ok(())
+}
+
 /// Resolve the prelude module file, if it exists.
 ///
 /// Search order (matching normal module resolution per spec §8.11.2):
@@ -2000,6 +2238,52 @@ pub fn resolve_prelude(
     }
 
     None
+}
+
+/// Build a mapping from canonical file paths to module paths.
+///
+/// Discovers the module graph starting from the prelude file and returns
+/// a mapping for all modules. Used by the REPL file watcher to map
+/// changed files to module paths for recompilation.
+pub fn build_file_to_module_map(
+    project_root: &Path,
+    lib_dirs: &[PathBuf],
+) -> HashMap<PathBuf, ModuleFullPath> {
+    let mut map = HashMap::new();
+    let prelude_file = match resolve_prelude(project_root, lib_dirs) {
+        Some(f) => f,
+        None => return map,
+    };
+    if let Ok(graph) = discover_module_graph(&prelude_file, lib_dirs) {
+        for (module_path, node) in &graph.nodes {
+            if let Ok(canonical) = node.file_path.canonicalize() {
+                map.insert(canonical, module_path.clone());
+            }
+        }
+    }
+    map
+}
+
+/// Build a module dependency map from the module graph discovered during prelude loading.
+///
+/// Returns a map from each module to the modules it depends on (its imports).
+/// This is used by the REPL file watcher to cascade-invalidate dependents when
+/// a module's source changes.
+pub fn build_module_dependency_map(
+    project_root: &Path,
+    lib_dirs: &[PathBuf],
+) -> HashMap<ModuleFullPath, Vec<ModuleFullPath>> {
+    let mut map = HashMap::new();
+    let prelude_file = match resolve_prelude(project_root, lib_dirs) {
+        Some(f) => f,
+        None => return map,
+    };
+    if let Ok(graph) = discover_module_graph(&prelude_file, lib_dirs) {
+        for (module_path, node) in &graph.nodes {
+            map.insert(module_path.clone(), node.dependencies.clone());
+        }
+    }
+    map
 }
 
 /// Load and compile the prelude module into a CompilationSession.
@@ -2046,6 +2330,10 @@ pub fn load_prelude_into_session(
             if let Some(cs) = cache_state.as_mut() {
                 if try_restore_from_cache(cs, module_path, hash, &node.dependencies, session)? {
                     cache_hit = true;
+                    // Re-compile macros from cached modules so the expander
+                    // has function pointers for downstream macro expansion
+                    // (e.g., user.cl using `str`, `list`, `do`, etc.).
+                    recompile_macros_for_cached_module(module_path, node, session)?;
                 } else {
                     cs.record_recompiled(module_path);
                 }
@@ -2088,10 +2376,11 @@ pub fn load_prelude_into_session(
 
         if program.is_empty() {
             if let (Some(cs), Some(hash)) = (cache_state.as_mut(), source_hash) {
-                write_module_cache(
+                // Cache write failures are non-fatal — worst case is no caching.
+                let _ = write_module_cache(
                     cs, &module_path, hash, &node.dependencies, &structure, &session.tc,
                     None, None, &session.func_sigs,
-                )?;
+                );
             }
             continue;
         }
@@ -2103,11 +2392,12 @@ pub fn load_prelude_into_session(
         session.compile_module_batch(&module_path, &program, &check)?;
 
         // Write cache metadata and .o file after successful compilation.
+        // Cache write failures are non-fatal — worst case is no caching.
         if let (Some(cs), Some(hash)) = (cache_state.as_mut(), source_hash) {
-            write_module_cache(
+            let _ = write_module_cache(
                 cs, &module_path, hash, &node.dependencies, &structure, &session.tc,
                 Some(&program), Some(&check), &session.func_sigs,
-            )?;
+            );
         }
     }
 
@@ -2214,6 +2504,9 @@ fn compile_single_module(
         if let Some(hash) = source_hash.as_ref() {
             if let Some(cs) = cache_state.as_mut() {
                 if try_restore_from_cache(cs, module_path, hash, &node.dependencies, session)? {
+                    // Re-compile macros from cached modules so the expander
+                    // has function pointers for downstream macro expansion.
+                    recompile_macros_for_cached_module(module_path, node, session)?;
                     // Cache hit — module restored. Inject prelude import
                     // so downstream modules see prelude symbols through this one.
                     if prelude_loaded {
@@ -2318,9 +2611,12 @@ pub fn compile_module_graph(
     compile_module_graph_cached(entry, lib_dirs, &CacheConfig::Disabled)
 }
 
-/// Compile a multi-file module graph and execute the entry point.
+/// Compile a multi-file module graph without executing it.
 ///
-/// Uses the same per-form compilation path as the REPL (via `CompilationSession`).
+/// This is the core compilation pipeline shared by batch mode, cache writing,
+/// and linking. It compiles all modules, finalizes the JIT, and flushes
+/// the cache, but does NOT execute the entry point.
+///
 /// Pipeline:
 /// 1. Discover module graph from entry file
 /// 2. Topological sort (dependencies first)
@@ -2328,17 +2624,17 @@ pub fn compile_module_graph(
 /// 4. For each module: parse, extract declarations, set up imports,
 ///    sequential form processing (defmacro interception, expansion),
 ///    per-form typecheck + codegen via GOT-indirect calling
-/// 5. Execute the entry module's last zero-arg defn via its GOT slot
+/// 5. Finalize JIT and flush cache
 ///
 /// The `cache_config` parameter controls module caching. When enabled,
 /// the pipeline checks `.cranelisp-cache/` for valid cached metadata
 /// before compiling each module, and writes cache entries after successful
 /// compilation. See `design/backend/module-caching.md` §8.
-pub fn compile_module_graph_cached(
+fn compile_graph_only(
     entry: &Path,
     lib_dirs: &[PathBuf],
     cache_config: &CacheConfig,
-) -> Result<CompiledModuleGraph, CranelispError> {
+) -> Result<CompiledGraphSession, CranelispError> {
     let graph = discover_module_graph(entry, lib_dirs)?;
     let order = toposort(&graph)?;
 
@@ -2411,6 +2707,9 @@ pub fn compile_module_graph_cached(
             let hash = cache::hash_source(&source);
             if try_restore_from_cache(cs, module_path, &hash, &node.dependencies, &mut session)? {
                 cache_hit = true;
+                // Re-compile macros from cached modules so the expander
+                // has function pointers for downstream macro expansion.
+                recompile_macros_for_cached_module(module_path, node, &mut session)?;
                 if prelude_loaded {
                     session.tc.set_current_module(module_path.clone());
                     inject_prelude_import(&mut session.tc)?;
@@ -2454,29 +2753,237 @@ pub fn compile_module_graph_cached(
         cs.flush()?;
     }
 
-    // Execute the entry module's entry point.
-    let (value, ty) = if let Some(ref name) = entry_defn_name {
-        let entry_ptr = session.batch_jit_get_ptr(name, 0)?;
-        // SAFETY: compiled code was just generated and finalized by our JIT.
-        let func: extern "C" fn() -> i64 = unsafe { std::mem::transmute(entry_ptr) };
-        let raw_value = func();
+    Ok(CompiledGraphSession {
+        session,
+        entry_defn_name,
+        entry_result_type,
+        warnings: all_warnings,
+    })
+}
 
-        if entry_result_type.is_io() {
-            let inner_value = cranelisp_runtime::run_io_trampoline(raw_value);
-            let inner_type = entry_result_type.io_inner_type();
-            (inner_value, inner_type)
-        } else {
-            (raw_value, entry_result_type)
-        }
+/// Compile a multi-file module graph and execute the entry point.
+///
+/// Calls `compile_graph_only` to compile, then locates and executes the
+/// entry module's `main` function. Batch mode requires a `main` function
+/// in the entry module (per repl/spec.md §0.2).
+pub fn compile_module_graph_cached(
+    entry: &Path,
+    lib_dirs: &[PathBuf],
+    cache_config: &CacheConfig,
+) -> Result<CompiledModuleGraph, CranelispError> {
+    let mut compiled = compile_graph_only(entry, lib_dirs, cache_config)?;
+
+    // Execute the entry module's entry point.
+    // Per repl/spec.md §0.2, `main` is required in the entry module.
+    let name = compiled.entry_defn_name.ok_or_else(|| CranelispError::ModuleError {
+        message: "entry module has no `main` function — batch mode requires (defn main [] ...)".into(),
+        file: Some(entry.to_path_buf()),
+        span: Span::SYNTHETIC,
+    })?;
+
+    let entry_ptr = compiled.session.batch_jit_get_ptr(&name, 0)?;
+    // SAFETY: compiled code was just generated and finalized by our JIT.
+    let func: extern "C" fn() -> i64 = unsafe { std::mem::transmute(entry_ptr) };
+    let raw_value = func();
+
+    let (value, ty) = if compiled.entry_result_type.is_io() {
+        let inner_value = cranelisp_runtime::run_io_trampoline(raw_value);
+        let inner_type = compiled.entry_result_type.io_inner_type();
+        (inner_value, inner_type)
     } else {
-        (0, Type::Int)
+        (raw_value, compiled.entry_result_type)
     };
 
     Ok(CompiledModuleGraph {
         value,
         ty,
+        warnings: compiled.warnings,
+    })
+}
+
+/// Compile a module graph for caching only, without executing.
+///
+/// Used by the REPL to write cache files for `user.cl` without
+/// triggering execution of any `main` function it may contain.
+pub fn compile_module_graph_for_cache(
+    entry: &Path,
+    lib_dirs: &[PathBuf],
+    cache_config: &CacheConfig,
+) -> Result<(), CranelispError> {
+    let _compiled = compile_graph_only(entry, lib_dirs, cache_config)?;
+    Ok(())
+}
+
+/// Compile a module graph for linking into a standalone executable.
+///
+/// Same as `compile_module_graph_cached` but does NOT execute the entry module.
+/// Instead returns the `.o` file paths and entry module symbol table needed for
+/// `validate_main`, `generate_startup_object`, and `link_executable`.
+///
+/// Caching is always enabled (linking requires `.o` files in the cache).
+pub fn compile_for_link(
+    entry: &Path,
+    lib_dirs: &[PathBuf],
+    cache_dir: &Path,
+) -> Result<LinkCompileResult, CranelispError> {
+    let graph = discover_module_graph(entry, lib_dirs)?;
+    let order = toposort(&graph)?;
+
+    let mut all_warnings: Vec<Warning> = Vec::new();
+    let mut session = CompilationSession::new();
+    let mut cache_state = Some(CacheState::new(cache_dir.to_path_buf()));
+
+    // Pre-scan entry module for (platform ...) declarations.
+    let mut loaded_platforms: Vec<crate::platform::LoadedPlatform> = Vec::new();
+    let entry_node = &graph.nodes[&graph.entry];
+    let platform_names = scan_for_platform_decls(entry_node)?;
+    for (name, span) in &platform_names {
+        let (platform, jit_syms) = crate::platform::load_and_register_platform(
+            &mut session.tc,
+            name,
+            &graph.project_root,
+            *span,
+        )?;
+        session.platform_symbols.extend(jit_syms);
+        loaded_platforms.push(platform);
+    }
+
+    // Load prelude if available.
+    load_prelude_into_session(
+        &graph.project_root,
+        &graph.lib_dirs,
+        &mut session,
+        &mut cache_state,
+    )?;
+
+    let prelude_loaded = session.tc.has_module(&ModuleFullPath::from("prelude"));
+
+    // Two-pass: cache loads then compile misses (same as compile_module_graph_cached).
+    let mut compile_list: Vec<ModuleFullPath> = Vec::new();
+    for module_path in &order {
+        let is_entry = module_path == &graph.entry;
+        let node = &graph.nodes[module_path];
+
+        if is_entry {
+            if let Some(cs) = cache_state.as_mut() {
+                let source = read_module_source(node)?;
+                let hash = cache::hash_source(&source);
+                cs.source_hashes.insert(module_path.clone(), hash);
+                cs.record_recompiled(module_path);
+            }
+            compile_list.push(module_path.clone());
+            continue;
+        }
+
+        let mut cache_hit = false;
+        if let Some(cs) = cache_state.as_mut() {
+            let source = read_module_source(node)?;
+            let hash = cache::hash_source(&source);
+            if try_restore_from_cache(cs, module_path, &hash, &node.dependencies, &mut session)? {
+                cache_hit = true;
+                // Re-compile macros from cached modules so the expander
+                // has function pointers for downstream macro expansion.
+                recompile_macros_for_cached_module(module_path, node, &mut session)?;
+                if prelude_loaded {
+                    session.tc.set_current_module(module_path.clone());
+                    inject_prelude_import(&mut session.tc)?;
+                }
+            } else {
+                cs.record_recompiled(module_path);
+                cs.source_hashes.insert(module_path.clone(), hash);
+            }
+        }
+
+        if !cache_hit {
+            compile_list.push(module_path.clone());
+        }
+    }
+
+    // Compile cache misses.
+    for module_path in &compile_list {
+        let is_entry = module_path == &graph.entry;
+        let result = compile_single_module(
+            module_path,
+            &graph.nodes[module_path],
+            is_entry,
+            prelude_loaded,
+            &mut session,
+            &mut cache_state,
+        )?;
+        all_warnings.extend(result.warnings);
+    }
+
+    // Finalize JIT (needed for cache writing).
+    session.finalize_batch_jit()?;
+
+    // Flush the cache manifest.
+    if let Some(cs) = &cache_state {
+        cs.flush()?;
+    }
+
+    // Collect .o paths from the cache for all modules in the graph.
+    let mut module_o_paths: Vec<PathBuf> = Vec::new();
+    for module_path in &order {
+        let (_meta_path, o_path) = cache::module_cache_path(cache_dir, module_path);
+        if o_path.exists() {
+            module_o_paths.push(o_path);
+        }
+        // Macro-only modules may not have .o files — skip silently.
+    }
+
+    // Also collect .o paths from prelude modules (they're in the cache too).
+    let prelude_modules = collect_prelude_module_paths(&graph.project_root, lib_dirs);
+    for module_path in &prelude_modules {
+        let (_meta_path, o_path) = cache::module_cache_path(cache_dir, module_path);
+        if o_path.exists() && !module_o_paths.contains(&o_path) {
+            module_o_paths.push(o_path);
+        }
+    }
+
+    // Get the entry module's symbol table for validate_main.
+    session.tc.set_current_module(graph.entry.clone());
+    let entry_symbols = session.tc.symbol_table().clone();
+
+    // Collect module structures for platform rlib discovery.
+    let module_structures: Vec<(ModuleFullPath, cranelisp_types::ModuleStructure)> = graph
+        .nodes
+        .iter()
+        .filter_map(|(mp, node)| {
+            let source = std::fs::read_to_string(&node.file_path).ok()?;
+            let sexps = cranelisp_frontend::parse(&source).ok()?;
+            let (structure, _) = cranelisp_frontend::extract_module_declarations(
+                mp.clone(),
+                Some(node.file_path.clone()),
+                sexps,
+            )
+            .ok()?;
+            Some((mp.clone(), structure))
+        })
+        .collect();
+
+    Ok(LinkCompileResult {
+        module_o_paths,
+        entry_symbols,
+        module_structures,
         warnings: all_warnings,
     })
+}
+
+/// Collect module paths for all prelude modules.
+fn collect_prelude_module_paths(
+    project_root: &Path,
+    lib_dirs: &[PathBuf],
+) -> Vec<ModuleFullPath> {
+    let prelude_file = match resolve_prelude(project_root, lib_dirs) {
+        Some(f) => f,
+        None => return Vec::new(),
+    };
+    match discover_module_graph(&prelude_file, lib_dirs) {
+        Ok(graph) => {
+            toposort(&graph).unwrap_or_default()
+        }
+        Err(_) => Vec::new(),
+    }
 }
 
 /// Scan a module node's source for `(platform name)` declarations.
@@ -2573,11 +3080,16 @@ fn accumulate_func_sigs(
 }
 
 /// Find the last zero-arg defn in a program (the entry point).
+/// Find the `main` function in a program for batch mode entry point.
+///
+/// Per repl/spec.md §0.2, `--run` requires a zero-argument `main` function
+/// in the entry module.
 fn find_entry_defn(program: &Program) -> Option<Symbol> {
     use cranelisp_types::TopLevel;
-    program.iter().rev().find_map(|tl| {
+    program.iter().find_map(|tl| {
         if let TopLevel::Defn(defn) = tl
             && defn.params.is_empty()
+            && defn.name.0 == "main"
         {
             return Some(defn.name.clone());
         }

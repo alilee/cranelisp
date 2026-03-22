@@ -1,0 +1,51 @@
+; Cranelisp Ring 4H — Session Persistence, Shell Escape, File Watching
+
+; Sprint 23: session persistence (user.cl), ;#! shell escape, file watching
+
+; Define functions — including string operations via str macro
+
+(defn double [x] (* x 2))
+(defn greet [name] (str "hello, " name "!"))
+(double 21)
+(greet "cranelisp")
+
+; Definitions are saved to user.cl automatically
+
+;#! cat user.cl
+
+; Quit and restart — definitions persist (including str macro usage)
+
+/quit
+
+; Back in a fresh session — str works in restored definitions
+
+(double 7)
+(greet "world")
+(str "double 7 = " (double 7))
+/list
+
+; Shell escape — run OS commands without leaving the REPL
+
+;#! echo "hello from the shell"
+;#! date +%Y-%m-%d
+
+; Create a module file with shell escape, then import it
+
+;#! echo '(defn triple [x] (* x 3))' > helper.cl
+(import [helper [triple]])
+(str "triple of 10 is " (triple 10))
+/sig triple
+
+; Build a standalone executable from user.cl
+
+(defn main [] (double 21))
+;#! cat user.cl
+;#! $CRANELISP_PLATFORM_PATH/cranelisp --link user.cl
+;#! ./user ; echo "exit code: $?"
+
+; Verify the session
+
+(defn test-double [] (if (= (double 5) 10) None (Some "double")))
+(defn test-greet [] (if (= (greet "x") "hello, x!") None (Some "greet")))
+
+/run-tests

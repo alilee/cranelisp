@@ -50,6 +50,9 @@ pub struct Linker {
     defined_symbols: HashMap<String, usize>,
     /// Executable memory regions (kept alive for duration of execution).
     code_regions: Vec<ExecutableRegion>,
+    /// Data memory regions (kept alive so data symbols remain valid).
+    /// Holds constants, string literals, etc. from .o data sections.
+    data_regions: Vec<DataRegion>,
     /// Linker-internal GOT: mmap-backed slots for GOT-load relocations.
     /// Each slot holds a target address; ADRP+LDR loads from here.
     got_slots: HashMap<String, usize>,
@@ -65,6 +68,16 @@ pub struct Linker {
 
 /// An mmap'd region that holds executable code.
 struct ExecutableRegion {
+    #[allow(dead_code)]
+    mmap: memmap2::MmapMut,
+    #[allow(dead_code)]
+    base: usize,
+    #[allow(dead_code)]
+    size: usize,
+}
+
+/// An mmap'd region that holds read-write data (constants, string literals).
+struct DataRegion {
     #[allow(dead_code)]
     mmap: memmap2::MmapMut,
     #[allow(dead_code)]
@@ -92,6 +105,7 @@ impl Linker {
             symbols: HashMap::new(),
             defined_symbols: HashMap::new(),
             code_regions: Vec::new(),
+            data_regions: Vec::new(),
             got_slots: HashMap::new(),
             got_mmap: Some(got_mmap),
             got_mmap_base,
@@ -187,11 +201,17 @@ impl Linker {
         mmap[..text_size].copy_from_slice(text_data);
         let base_addr = mmap.as_ptr() as usize;
 
-        // Collect defined symbols. sym.address() is a virtual address in the object file;
-        // subtract the text section's own VA to get an offset into our mmap'd copy.
+        // Load data sections (.Ldata* symbols live here — string constants, etc.).
+        // These must be loaded before relocation resolution so text-section
+        // relocations that reference data symbols can be resolved.
+        let mut local_symbols: HashMap<String, usize> = HashMap::new();
+        self.load_data_sections(&obj, &mut local_symbols)?;
+
+        // Collect defined text symbols. sym.address() is a virtual address in the
+        // object file; subtract the text section's own VA to get an offset into
+        // our mmap'd copy.
         let text_section_index = text_section.index();
         let text_section_addr = text_section.address();
-        let mut local_symbols: HashMap<String, usize> = HashMap::new();
         for sym in obj.symbols() {
             if sym.kind() != SymbolKind::Text {
                 continue;
@@ -331,6 +351,77 @@ impl Linker {
             base: base_addr,
             size: text_size,
         });
+
+        Ok(())
+    }
+
+    /// Load data sections from an object file and register their symbols.
+    ///
+    /// Cranelift's ObjectModule emits string constants and other data into
+    /// data sections (__data, __const on Mach-O; .data, .rodata on ELF).
+    /// These are referenced by `.Ldata*` symbols from the text section.
+    /// Without loading these, text relocations to data symbols fail.
+    fn load_data_sections(
+        &mut self,
+        obj: &object::File<'_>,
+        local_symbols: &mut HashMap<String, usize>,
+    ) -> Result<(), CranelispError> {
+        use object::{Object, ObjectSection, ObjectSymbol, SectionKind, SymbolKind};
+
+        // Collect all data sections (read-only and read-write).
+        let data_sections: Vec<_> = obj
+            .sections()
+            .filter(|s| matches!(s.kind(), SectionKind::Data | SectionKind::ReadOnlyData))
+            .collect();
+
+        for section in &data_sections {
+            let section_data = section.data().map_err(|e| CranelispError::CodegenError {
+                message: format!("failed to read data section: {e}"),
+                span: Span::SYNTHETIC,
+            })?;
+            if section_data.is_empty() {
+                continue;
+            }
+
+            // Allocate RW memory for this data section.
+            let mut data_mmap = memmap2::MmapMut::map_anon(section_data.len())
+                .map_err(|e| CranelispError::CodegenError {
+                    message: format!("failed to mmap data region: {e}"),
+                    span: Span::SYNTHETIC,
+                })?;
+            data_mmap[..section_data.len()].copy_from_slice(section_data);
+            let data_base = data_mmap.as_ptr() as usize;
+            let section_addr = section.address();
+            let section_index = section.index();
+
+            // Register symbols from this data section.
+            for sym in obj.symbols() {
+                if sym.kind() != SymbolKind::Data {
+                    continue;
+                }
+                if sym.section_index() != Some(section_index) {
+                    continue;
+                }
+                if let Ok(name) = sym.name()
+                    && !name.is_empty()
+                {
+                    let clean_name = name.strip_prefix('_').unwrap_or(name);
+                    let offset = (sym.address() - section_addr) as usize;
+                    let addr = data_base + offset;
+                    if clean_name.starts_with(".L") {
+                        local_symbols.insert(clean_name.to_string(), addr);
+                    } else {
+                        self.defined_symbols.insert(clean_name.to_string(), addr);
+                    }
+                }
+            }
+
+            self.data_regions.push(DataRegion {
+                mmap: data_mmap,
+                base: data_base,
+                size: section_data.len(),
+            });
+        }
 
         Ok(())
     }

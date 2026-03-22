@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
-"""Play Cranelisp REPL .demo scripts with typing effects.
+"""Play Cranelisp REPL .demo scripts with typing effects via a live PTY.
 
 Usage:
     python3 demo-player.py <script.demo> [cranelisp-binary]
 
+    # With explicit run directory (used by showcase):
+    python3 demo-player.py <script.demo> <cranelisp-binary> --run-dir <dir>
+
 The REPL runs in a clean timestamped directory under repl/demos/runs/
-to isolate .cache artifacts. Each run creates a new directory like:
-    runs/2026-03-05T14-30-00_ring1/
+(or a caller-specified directory) to isolate .cache artifacts.
 
 Environment:
     DEMO_TYPING_MS        ms between characters (default: 30)
@@ -84,28 +86,15 @@ def create_run_dir(demo_path):
     return run_dir
 
 
-def play_demo(demo_path, repl_binary):
-    """Play a .demo script through the REPL."""
-    # Read the demo script.
-    with open(demo_path) as f:
-        lines = [line.rstrip("\n") for line in f]
-
-    # Create a clean run directory for cache isolation.
-    run_dir = create_run_dir(demo_path)
-    sys.stdout.write(f"{DIM}; run dir: {run_dir}{RESET}\n")
-    sys.stdout.flush()
-
-    # Resolve binary to absolute path before chdir.
-    repl_binary = shutil.which(repl_binary) or os.path.abspath(repl_binary)
-
-    # Start the REPL with a pty for interactive control.
+def start_repl(repl_binary, run_dir):
+    """Start a REPL process with a PTY. Returns (master_fd, pid)."""
     master_fd, slave_fd = pty.openpty()
     pid = os.fork()
 
     if pid == 0:
         # Child: chdir to run dir, become the REPL process.
         os.close(master_fd)
-        os.chdir(run_dir)
+        os.chdir(str(run_dir))
         os.setsid()
         os.dup2(slave_fd, 0)
         os.dup2(slave_fd, 1)
@@ -115,8 +104,52 @@ def play_demo(demo_path, repl_binary):
         os.execv(repl_binary, [repl_binary])
         sys.exit(1)
 
-    # Parent: drive the demo.
     os.close(slave_fd)
+    return master_fd, pid
+
+
+def stop_repl(master_fd, pid):
+    """Clean up a REPL process."""
+    try:
+        os.write(master_fd, b"\x04")
+    except OSError:
+        pass
+    os.close(master_fd)
+    try:
+        os.waitpid(pid, 0)
+    except ChildProcessError:
+        pass
+
+
+def play_demo(demo_path, repl_binary, run_dir=None):
+    """Play a .demo script through the REPL via a live PTY.
+
+    Supports trampoline: when /quit is encountered in the script,
+    the REPL exits and a new one is started in the same run directory.
+    The demo continues with the remaining lines in the fresh session.
+    This lets demos show session restart (e.g., persistence across /quit).
+
+    Args:
+        demo_path: Path to the .demo script file.
+        repl_binary: Path to the cranelisp binary.
+        run_dir: Working directory for the REPL. If None, creates a
+                 timestamped directory under repl/demos/runs/.
+    """
+    # Read the demo script.
+    with open(demo_path) as f:
+        lines = [line.rstrip("\n") for line in f]
+
+    # Create or use the provided run directory.
+    if run_dir is None:
+        run_dir = create_run_dir(demo_path)
+        sys.stdout.write(f"{DIM}; run dir: {run_dir}{RESET}\n")
+        sys.stdout.flush()
+
+    # Resolve binary to absolute path before chdir.
+    repl_binary = shutil.which(repl_binary) or os.path.abspath(repl_binary)
+
+    # Start the first REPL session.
+    master_fd, pid = start_repl(repl_binary, run_dir)
 
     try:
         # Wait for the initial prompt.
@@ -133,6 +166,22 @@ def play_demo(demo_path, repl_binary):
                 # Blank line — brief pause.
                 time.sleep(COMMENT_PAUSE / 2)
 
+            elif line.strip() in ("/quit", "/q"):
+                # Trampoline: send /quit, wait for exit, start fresh REPL.
+                type_slowly(line, master_fd)
+                drain_output(master_fd, timeout=1.0)
+                time.sleep(LINE_PAUSE)
+                stop_repl(master_fd, pid)
+
+                # Brief pause to show the session ended.
+                sys.stdout.write(f"\n{DIM}; [restarting session]{RESET}\n")
+                sys.stdout.flush()
+                time.sleep(LINE_PAUSE)
+
+                # Start a new REPL in the same run directory.
+                master_fd, pid = start_repl(repl_binary, run_dir)
+                drain_output(master_fd, timeout=2.0)
+
             else:
                 # REPL input — type slowly, then show response.
                 type_slowly(line, master_fd)
@@ -144,31 +193,34 @@ def play_demo(demo_path, repl_binary):
         sys.stdout.flush()
 
     finally:
-        # Send Ctrl-D to exit the REPL, then clean up.
-        try:
-            os.write(master_fd, b"\x04")
-        except OSError:
-            pass
-        os.close(master_fd)
-        try:
-            os.waitpid(pid, 0)
-        except ChildProcessError:
-            pass
+        stop_repl(master_fd, pid)
 
 
 def main():
     if len(sys.argv) < 2:
-        print(f"Usage: {sys.argv[0]} <script.demo> [cranelisp-binary]")
+        print(f"Usage: {sys.argv[0]} <script.demo> [cranelisp-binary] [--run-dir <dir>]")
         sys.exit(1)
 
     demo_path = sys.argv[1]
-    repl_binary = sys.argv[2] if len(sys.argv) > 2 else "cranelisp"
+    repl_binary = "cranelisp"
+    run_dir = None
+
+    # Parse remaining arguments.
+    i = 2
+    while i < len(sys.argv):
+        if sys.argv[i] == "--run-dir" and i + 1 < len(sys.argv):
+            run_dir = Path(sys.argv[i + 1])
+            run_dir.mkdir(parents=True, exist_ok=True)
+            i += 2
+        else:
+            repl_binary = sys.argv[i]
+            i += 1
 
     if not os.path.exists(demo_path):
         print(f"Error: {demo_path} not found")
         sys.exit(1)
 
-    play_demo(demo_path, repl_binary)
+    play_demo(demo_path, repl_binary, run_dir=run_dir)
 
 
 if __name__ == "__main__":

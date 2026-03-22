@@ -41,4 +41,6 @@ The spec (`spec/`) is precise and normative — written for implementors. User d
 
 **Sprint 22 Wave 3**: Created `user/caching.md` documenting module caching feature: automatic `.cranelisp-cache/` directory, cache invalidation rules, `--no-cache` CLI flag, cache clearing, `.gitignore` guidance.
 
+**Sprint 23 Wave 4**: Added "Developer Tools" section to `getting-started.md` covering session persistence (`user.cl`), shell escape (`;#!`), file watching (automatic recompilation, `[updated:]`/`[errors:]` notifications, cascade invalidation, error blocking), and `--link` standalone executable generation. Updated `caching.md` with REPL cache integration, session persistence, and `--link` cache dependency sections.
+
 **Feedback loop**: Report to compiler skills when error messages are confusing, when REPL output is unhelpful, or when a concept has no good introduction path. File findings as `FIXME(/skill-name)` comments on the relevant spec or design doc.

@@ -1881,9 +1881,101 @@ For more IO examples, see `examples/21-hello-io.cl` through `examples/24-io-echo
 | `do` | macro | Sequence IO actions, discard intermediate results |
 | `bind!` | macro | Sequence IO actions, name intermediate results |
 
+## Developer Tools
+
+Cranelisp includes several tools to make the development workflow smoother.
+
+### Session Persistence
+
+Your REPL definitions are automatically saved to a `user.cl` file in the current directory. When you restart the REPL, your previous session is restored -- all definitions, imports, and module switches are available immediately.
+
+```
+> (defn double [x] (* x 2))
+:Int 84
+> (double 42)
+:Int 84
+> /quit
+
+$ cranelisp
+> (double 42)
+:Int 84
+```
+
+The `user.cl` file is a valid Cranelisp source file. You can edit it externally, load it with `--run`, or version-control it alongside your project. To start a completely fresh session, delete `user.cl`.
+
+```
+> ;#! cat user.cl
+(defn double [x] (* x 2))
+```
+
+### Shell Escape
+
+You can run shell commands from the REPL without leaving it. Prefix any shell command with `;#!`:
+
+```
+> ;#! ls examples/
+01-integers.cl
+02-booleans.cl
+...
+
+> ;#! wc -l stdlib/prelude.cl
+  147 stdlib/prelude.cl
+```
+
+The `;` prefix makes the line a comment to the Cranelisp parser, so it never conflicts with valid Cranelisp syntax. The command runs in `/bin/sh` and its output appears directly in the terminal. A non-zero exit code is displayed; a successful command (exit code 0) shows no extra status.
+
+### File Watching
+
+When you are working in the REPL and edit a source file externally, the REPL automatically detects the change and recompiles the affected module. You do not need to manually reload anything.
+
+After each prompt, the REPL checks for file changes. If a file has changed, you see a notification:
+
+```
+[updated: core/math.cl]
+>
+```
+
+If the changed file has errors, the notification tells you:
+
+```
+[errors: core/math.cl]
+  error: type mismatch at 42..56: expected Int, got Bool
+>
+```
+
+While a module has errors, evaluation that depends on it is blocked. When you fix the file and save again, the REPL detects the fix, recompiles, and unblocks evaluation.
+
+Cascade invalidation is automatic -- if module A depends on module B and B changes, both B and A are recompiled.
+
+### Building Standalone Executables
+
+To compile a Cranelisp program into a standalone native executable, use the `--link` flag:
+
+```
+cranelisp --link myprogram.cl
+```
+
+This compiles the module graph, generates a startup stub, and links everything into a native binary. The entry module must define a `main` function that returns either `Int` (exit code) or `IO _` (an IO action).
+
+The `--link` flag uses the module cache -- unchanged modules are not recompiled. The output executable is placed next to the source file with the `.cl` extension removed (e.g., `myprogram.cl` produces `myprogram`).
+
+Requirements:
+- macOS aarch64 (Apple Silicon) is currently the only supported target
+- The `cranelisp-exe-bundle` library must be built first: `cargo build -p cranelisp-exe-bundle`
+- `--link` cannot be combined with `--no-cache` (linking requires cached `.o` files)
+
+### Developer Tools Summary
+
+| Tool | Syntax | Description |
+|------|--------|-------------|
+| Session persistence | (automatic) | Definitions saved to `user.cl`, restored on restart |
+| Shell escape | `;#! <cmd>` | Run a shell command from the REPL |
+| File watching | (automatic) | Detect and recompile changed source files |
+| `--link` | `cranelisp --link file.cl` | Build a standalone native executable |
+
 ## What is Next
 
-This guide covers Ring 0 (core expressions, functions, enums, pattern matching), Ring 1 (strings, data types with fields, closures, higher-order functions, Vec collections), Ring 2A (traits, operators, constrained polymorphism), and Ring 4 (IO -- reading input and writing output). As the language grows, you will gain access to:
+This guide covers Ring 0 (core expressions, functions, enums, pattern matching), Ring 1 (strings, data types with fields, closures, higher-order functions, Vec collections), Ring 2A (traits, operators, constrained polymorphism), Ring 4 (IO -- reading input and writing output), and developer tools (session persistence, shell escape, file watching, `--link`). As the language grows, you will gain access to:
 
 - **Modules** -- organizing code across multiple files
 - **Macros** -- programs that write programs

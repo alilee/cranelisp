@@ -40,7 +40,7 @@ Demo scripts use a format that is almost valid Cranelisp:
 
 ## Running Demos
 
-The top-level `showcase` script builds the binary and pipes the demo straight into the REPL:
+The top-level `showcase` script builds the binary and delegates to `demo-player.py` for live PTY-based playback:
 
 ```bash
 ./repl/showcase ring0          # build + play Ring 0 demo
@@ -48,14 +48,17 @@ The top-level `showcase` script builds the binary and pipes the demo straight in
 ./repl/showcase --list         # list available demos
 ```
 
-### Transparent pipe — no filtering
+### Live PTY playback — no filtering
 
-The showcase sends the **entire** `.demo` file to the REPL as stdin, captures the raw output, then replays it with typing effects. It MUST NOT filter, reorder, or suppress any REPL behavior. If comments produce errors, definitions show `<closure>`, or types are unqualified — that is what the viewer sees. The showcase shows the product as-is.
+The showcase delegates to `demo-player.py` which runs the REPL in a real PTY. Each line is typed character-by-character into the live REPL process, and the REPL's actual output appears in real time. There is no capture-then-replay step — the viewer sees exactly what the REPL produces, when it produces it.
 
-1. **Phase 1** — Send the entire `.demo` file to the REPL process. Capture raw stdout.
-2. **Phase 2** — Parse output by splitting on `"> "` prompts to pair each input line with its result. Replay with typing effects: comments displayed dimmed, expressions typed character-by-character with the REPL's actual result shown instantly.
+This approach supports:
+- **Interactive IO** (`read-line` works because the REPL has a real terminal)
+- **Shell escapes** (`; #!` output appears inline where it occurs)
+- **Session restart** (`/quit` trampoline: the REPL exits, a new one starts in the same run dir, and the demo continues — `; Restored user.cl` appears naturally)
+- **File watching** (timing is real — the REPL sees files when they're created)
 
-If the showcase output looks wrong, the fix goes in the REPL — not in the showcase.
+If the showcase output looks wrong, the fix goes in the REPL — not in the showcase or the player.
 
 ### Run isolation
 
@@ -94,6 +97,7 @@ The REPL process `chdir`s into this directory, so `.cache` artifacts and any oth
 | `ring4e.demo` | 4E | Trace special form, corrected IO display, /mod namespace switching |
 | `ring4f.demo` | 4F | Auto-currying: partial application, curried composition, map with curried fn, /run-tests |
 | `ring4g.demo` | 4G | Module caching (--no-cache), curried trait operators (+ 5), map with curried ops, non-Var rejection error, /run-tests |
+| `ring4h.demo` | 4H | Session persistence (user.cl), shell escape (;#!), shell-driven module creation, file watching, --link standalone executable, /run-tests |
 
 Each sprint, `/repl` extends this library.
 

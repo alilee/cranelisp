@@ -5,9 +5,15 @@
 // - compile_expr_with_got: compile a single expression, returning CompiledExpr (REPL)
 // - compile_and_run_expr_with_got: compile and execute a single expression (REPL, convenience)
 // - Jit, ModuleCodegenState: exposed for REPL session management
+// - build_isa: ISA construction for JIT and ObjectModule (re-exported from cache::object)
 
 pub mod cache;
+
+// Re-export build_isa at the crate root for convenient access.
+// This is the single ISA construction point (architecture decision 7).
+pub use cache::object::build_isa;
 pub mod codegen_types;
+pub mod exe;
 pub mod compiler;
 pub mod display;
 pub mod got;

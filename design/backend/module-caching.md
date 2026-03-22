@@ -75,7 +75,7 @@ The cache audit (`sketch/audits/cache.md`) identified 3 HIGH, 7 MEDIUM, and 5 LO
 | Aspect | Sketch | Reimplementation | Rationale |
 |---|---|---|---|
 | **Crate ownership** | All in one crate | Cache logic in `cranelisp-backend`, pipeline wiring in `cranelisp` binary | Architecture principle 1 (decoupling). Keeps backend testable without pipeline. |
-| **CompiledModule serialization** | Serializes the monolithic `CompiledModule` | Serializes `SymbolTable` + `ModuleStructure` + `CacheMetadata` separately | Architecture decision 9 (CompiledModule decomposition). |
+| **CompiledModule serialization** | Serializes the monolithic `CompiledModule` | Serializes `SymbolTable` + `ModuleStructure` + `CacheCodegenState` + `CacheMetadata` as `.meta.json` + `.o` | Architecture decision 9 (CompiledModule decomposition). `CacheCodegenState` is the serializable subset of `ModuleCodegenState`. |
 | **ISA construction** | 3 separate ISA builds with divergent flags | Single `build_isa(is_pic: bool)` in backend | Addresses HIGH-2. Architecture principle 7 (single source of truth). |
 | **Object compilation API** | 21 positional parameters | `ObjectCompileContext` struct | Addresses HIGH-3. |
 | **Binary fingerprint** | mtime-based | mtime-based (retain sketch approach) | MED-5 considered but mtime is the pragmatic choice: a single `stat()` call vs reading and hashing a multi-MB binary on every startup. The failure mode (mtime preserved across different binaries via `cp -p` or CI caching) is rare and limited to deliberate file copying. Source files use content hashing (marginal cost since we read them anyway), but the compiler binary check must be O(1). |
@@ -125,18 +125,21 @@ All four are stored in `manifest.json` and checked before any per-module lookup.
 
 ### What is serialized
 
-<!-- FIXME(/backend): /arch review I2 — `CacheCodegenState` below is not in the architecture's four decomposed types (SymbolTable, ModuleCodegenState, ModuleStructure, CacheMetadata). Clarify: is it the serializable subset of ModuleCodegenState? A new type? Content that belongs in CacheMetadata? Also update the §2 divergence table to list all serialized components consistently. See SPRINT.md Architecture Review I2. -->
+`CacheCodegenState` is the serializable subset of `ModuleCodegenState`. The architecture's four decomposed types are `SymbolTable`, `ModuleCodegenState`, `ModuleStructure`, and `CacheMetadata`. `ModuleCodegenState` contains runtime state (GOT pointer table, live code pointers) that cannot be serialized. The cache needs the *recoverable* parts of that state — GOT slot assignments, param counts, definition source/sexp/defn for REPL introspection — so that a cache-loaded module can reconstruct its `ModuleCodegenState` after linking the `.o` file.
+
+`CacheCodegenState` is therefore a new type defined in `cranelisp-backend` (where `ModuleCodegenState` lives), deriving `Serialize + Deserialize`. It is constructed from `ModuleCodegenState` at cache-write time and consumed at cache-load time to rebuild `ModuleCodegenState` (with fresh runtime pointers from the linker). It is *not* content in `CacheMetadata` — `CacheMetadata` holds cache-management data (content hashes, dependency hashes) while `CacheCodegenState` holds codegen-recovery data (slot assignments, param counts, introspection artifacts).
 
 The sketch serializes the entire `CompiledModule` as JSON. The reimplementation serializes the decomposed types separately:
 
-| Component | Format | Content |
-|---|---|---|
-| `SymbolTable` | JSON | All `ModuleEntry` variants: Def (scheme, visibility, DefKind), Import, Reexport, TypeDef, TraitDecl, Constructor, Macro |
-| `ModuleStructure` | JSON | File path, mod decls, import specs, export specs, impl sexps, source hash |
-| `CacheCodegenState` | JSON | GOT slot assignments, function param counts, definition source/sexp/defn for REPL introspection |
-| Object file | Binary `.o` | Cranelift `ObjectModule` output -- standard relocatable object |
+| Component | Format | Content | Architecture type |
+|---|---|---|---|
+| `SymbolTable` | JSON | All `ModuleEntry` variants: Def (scheme, visibility, DefKind), Import, Reexport, TypeDef, TraitDecl, Constructor, Macro | `SymbolTable` (in `cranelisp-types`) |
+| `ModuleStructure` | JSON | File path, mod decls, import specs, export specs, impl sexps, source hash | `ModuleStructure` (in `cranelisp-types`) |
+| `CacheCodegenState` | JSON | GOT slot assignments, function param counts, definition source/sexp/defn for REPL introspection | Serializable subset of `ModuleCodegenState` (in `cranelisp-backend`) |
+| `CacheMetadata` | JSON | Content hash, dependency hashes, cache format version | `CacheMetadata` (in `cranelisp-types`) |
+| Object file | Binary `.o` | Cranelift `ObjectModule` output -- standard relocatable object | — |
 
-These are combined into a single `.meta.json` (the three JSON components) and a separate `.o` file.
+The first four are combined into a single `.meta.json` and the object file is a separate `.o` file.
 
 ### Serde strategy
 

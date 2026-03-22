@@ -69,6 +69,14 @@ impl CraneliftExpander {
         }
     }
 
+    /// Remove a macro from the environment.
+    ///
+    /// Used during module hot-reload to clear old macros before
+    /// recompiling the module that defined them.
+    pub fn remove_macro(&mut self, name: &str) {
+        self.env.macros.remove(name);
+    }
+
     /// Compile a macro from a parsed DefmacroInfo and register it.
     ///
     /// For each clause:

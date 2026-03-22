@@ -894,9 +894,12 @@ pub const NULLARY_TAG_THRESHOLD: usize = 1024;
 /// Controls compilation strategy.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CompileMode {
-    /// GOT-indirect calls for hot-reload. Used for REPL and module reloading.
+    /// GOT-indirect calls for hot-reload. Used for REPL and multi-module batch
+    /// compilation. Cached .o files are compiled in this mode so they are
+    /// interchangeable between REPL and batch contexts.
     Interactive,
-    /// Direct function calls, no GOT indirection. Used for batch compilation and testing.
+    /// Direct function calls, no GOT indirection. Used only for single-file
+    /// test execution where no module caching or hot-reload is needed.
     Batch,
     /// Whole-program optimisation, standalone binary. Ring 4+ / Phase H.
     Release,

@@ -338,26 +338,16 @@ The key technical concern with Option A -- forward type references -- is a non-i
 - Phase 2: ~3 hours (rewrite batch entry points, fix test regressions)
 - Phase 3: integrated into cache implementation work
 
-## 5. Exemplar project_root FIXME Status
+## 5. Project Root Resolution (FIXME Resolved)
 
-The FIXME described in `exemplar/plan-exemplar.md:859` states:
+The FIXME described in `exemplar/plan-exemplar.md:859` identified that batch mode derives `project_root` from the entry file's parent directory, which breaks stdlib resolution for files in subdirectories (e.g., `cranelisp --run exemplar/solver.cl` from the project root sets project_root to `exemplar/`, which lacks `stdlib/`).
 
-> FIXME(/int) on src/main.rs line 58 -- batch mode project_root derivation must use cwd (or equivalent) rather than entry file's parent, so prelude/stdlib resolution works for files in subdirectories.
+**Resolution**: Use `std::env::current_dir()` as `project_root` for all modes (batch, REPL, and `--link`). The REPL already uses cwd and works correctly; batch mode must match. The entry file's parent directory is the wrong choice because module resolution needs the project root (where `stdlib/`, `.cranelisp-cache/`, and project configuration live), not the source file's directory.
 
-**Status: Still present.** `src/main.rs` line 62 reads:
-
-```rust
-let project_root = file_path.parent().unwrap_or(Path::new("."));
-```
-
-This derives project_root from the entry file's parent directory. When running `cargo run -- --run exemplar/solver.cl` from the project root, project_root becomes `exemplar/`, which lacks `stdlib/`. The REPL uses `cwd` as project_root and works correctly.
-
-**Fix**: Change `run_file()` to use `std::env::current_dir()` as project_root (matching the REPL's behavior). The entry file's parent is the wrong choice because module resolution needs the project root, not the source file's directory. This is a one-line fix:
+Full design rationale is in `design/int/repl-lifecycle.md` §6. The implementation fix is a one-line change in `src/main.rs`:
 
 ```rust
 let project_root = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
 ```
 
-Note: the actual FIXME comment does not appear in `src/main.rs` -- it was only referenced in the exemplar plan. The bug is real regardless.
-
-**Recommendation**: Fix as part of Phase 2 above, when the batch entry points are rewritten.
+This will be applied during Sprint 23 implementation.

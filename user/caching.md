@@ -18,6 +18,18 @@ The cache automatically detects when recompilation is needed:
 
 You never need to manually invalidate individual modules. The cache is conservative -- when in doubt, it recompiles.
 
+## Caching in the REPL
+
+The REPL also uses the module cache. When you import a module in the REPL, its cached `.o` file is loaded if available, avoiding recompilation.
+
+Session persistence works alongside the cache. Your REPL definitions are saved to `user.cl` in the current directory, and on restart this file is loaded as a module. Previously compiled dependencies (prelude, imported modules) are loaded from the object cache, so session restoration is fast.
+
+When the file watcher detects a source change, the corresponding cache entry is invalidated and the module is recompiled from source. The new compiled result is written back to the cache.
+
+## Caching with `--link`
+
+The `--link` flag (standalone executable generation) relies on cached `.o` files. When you run `cranelisp --link myprogram.cl`, the compiler first compiles the module graph (writing `.o` files to the cache), then links those cached objects into a native binary. For this reason, `--link` cannot be combined with `--no-cache`.
+
 ## Disabling the Cache
 
 To run without caching, pass the `--no-cache` flag:

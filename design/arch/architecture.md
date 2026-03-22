@@ -4,10 +4,10 @@ The Cranelisp reimplementation is a clean-room rebuild from the extracted specif
 
 ## Crate Structure
 
-Seven crates form a strict DAG. Cargo enforces acyclicity at build time.
+Seven pipeline crates form a strict DAG, plus one build-time artifact crate. Cargo enforces acyclicity at build time.
 
 ```
-cranelisp (binary: pipeline orchestration, batch, REPL)
+cranelisp (binary: pipeline orchestration, batch, REPL, executable linking)
   |
   +-- cranelisp-frontend (reader, AST builder, macro expander trait)
   |     |
@@ -17,7 +17,7 @@ cranelisp (binary: pipeline orchestration, batch, REPL)
   |     |
   |     +-- cranelisp-types
   |
-  +-- cranelisp-backend (codegen, JIT, RC emission, linking, caching)
+  +-- cranelisp-backend (codegen, JIT, RC emission, object compilation, caching)
   |     |
   |     +-- cranelisp-types
   |     +-- cranelisp-runtime
@@ -30,6 +30,11 @@ cranelisp (binary: pipeline orchestration, batch, REPL)
   +-- cranelisp-platform (C-ABI contract for platform DLLs)
   |
   +-- cranelisp-types (shared boundary types, no logic)
+
+cranelisp-exe-bundle (staticlib: runtime symbols for standalone executables)
+  |
+  +-- cranelisp-runtime
+  +-- cranelisp-platform
 ```
 
 ### Crate Responsibilities
@@ -72,7 +77,7 @@ Contents:
 
 #### `cranelisp-backend`
 
-Cranelift IR codegen, JIT compilation, reference counting emission, platform call dispatch, caching, linking, and executable generation.
+Cranelift IR codegen, JIT compilation, reference counting emission, platform call dispatch, object compilation, and caching.
 
 Contents:
 - Expression codegen (all `Expr` variants to Cranelift IR)
@@ -81,8 +86,8 @@ Contents:
 - Closure compilation and auto-curry wrappers
 - GOT management (per-module global offset tables)
 - Platform DLL loading and effect dispatch
-- Module caching and linking
-- Standalone executable generation
+- Module caching (`.o` generation, cache metadata, `Linker` loading)
+- `build_isa()` — single ISA construction point shared by JIT and object compilation
 
 #### `cranelisp-runtime`
 
@@ -107,9 +112,18 @@ Contents:
 - `HostCallbacks` — allocation callbacks from host to DLL
 - ABI version constant
 
+#### `cranelisp-exe-bundle` (staticlib)
+
+Bundles `cranelisp-runtime` and `cranelisp-platform` symbols into a static library (`libcranelisp_exe_bundle.a`) for standalone executable generation. Not a pipeline crate — it is a build-time artifact consumed by `--link`. Owned by `/platform`.
+
+Contents:
+- Re-exports all `cranelisp-runtime` extern symbols (alloc, dealloc, panic, intrinsics, IO trampoline)
+- `cranelisp_init_platform` — platform manifest initialisation bridge
+- Rust standard library subset (allocator, process::exit, etc.) — included automatically by `staticlib` crate type
+
 #### `cranelisp` (binary)
 
-Pipeline orchestration. Wires the five library crates into a working compiler. Owns batch mode, REPL, and the `MacroExpander` implementation.
+Pipeline orchestration. Wires the five library crates into a working compiler. Owns batch mode, REPL, the `MacroExpander` implementation, and standalone executable linking.
 
 Contents:
 - `compile_unit()` — single pipeline entry point (batch + REPL share this)
@@ -120,6 +134,7 @@ Contents:
 - `ModuleRegistry` — composes `SymbolTable` (from typecheck) + codegen state (from backend)
 - CLI argument parsing
 - File watcher for hot-reload
+- Executable linking: startup stub generation, system linker invocation, bundle/rlib locators, `main` validation
 
 ## Single Pipeline Principle
 
@@ -138,16 +153,20 @@ pub fn compile_unit(
 ) -> Result<CompileResult, CranelispError>
 ```
 
-<!-- FIXME(/arch): Update CompileMode to three-variant enum matching interfaces.md: Interactive (GOT-indirect, REPL + multi-module batch), Batch (direct calls, single-file test execution only), Release (LLVM whole-program, no GOT, no caching). The current two-variant definition predates the caching design which clarified that multi-module batch compilation uses Interactive mode (GOT-indirect) so cached .o files are interchangeable. See design/backend/module-caching.md §8. -->
-
 `CompileMode` controls the differences:
 
 ```rust
 pub enum CompileMode {
-    /// Direct function calls, no GOT indirection. Used for batch compilation.
-    Batch,
-    /// GOT-indirect calls for hot-reload. Used for REPL and module reloading.
+    /// GOT-indirect calls for hot-reload. Used for REPL and multi-module batch
+    /// compilation. Cached .o files are compiled in this mode so they are
+    /// interchangeable between REPL and batch contexts.
     Interactive,
+    /// Direct function calls, no GOT indirection. Used only for single-file
+    /// test execution where no module caching or hot-reload is needed.
+    Batch,
+    /// Whole-program optimisation, standalone binary. Ring 4+ / Phase H.
+    /// Future LLVM backend target — no GOT, no caching, full LTO.
+    Release,
 }
 ```
 
@@ -282,7 +301,7 @@ The 5 audit files document 59 findings (15 HIGH, 23 MEDIUM, 21 LOW). The archite
 
 4. **Ring 0 defines the full `Type` enum.** All variants (`Int`, `Bool`, `String`, `Float`, `Fn`, `ADT`, `Var`, `TyConApp`) exist from Ring 0. Ring 0 exercises only `Int`, `Bool`, `Float`, and simple `Fn`. This prevents rework when later rings add types.
 
-5. **`CompileMode` replaces dual pipelines.** Batch and REPL share `compile_unit()`. The only difference is GOT indirection.
+5. **`CompileMode` replaces dual pipelines.** Batch and REPL share `compile_unit()`. Three variants — `Interactive` (GOT-indirect; REPL + multi-module batch + caching), `Batch` (direct calls; single-file tests only), `Release` (whole-program optimisation; Phase H) — with `Interactive` as the default for any compilation that produces or consumes cached `.o` files.
 
 6. **`MacroExpander` trait breaks the circular dep.** Frontend defines the trait; binary crate implements it. Before Ring 3, it's a no-op stub.
 

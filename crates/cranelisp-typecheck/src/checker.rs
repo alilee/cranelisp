@@ -881,6 +881,71 @@ impl TypeChecker {
         None
     }
 
+    // --- Module state management ---
+
+    /// Unregister a trait declaration from the trait registry.
+    ///
+    /// Removes the trait from the decls map and all its method-to-trait
+    /// reverse lookups. Used during module hot-reload to clear old state
+    /// before recompilation (repl/spec.md §14.2).
+    pub fn unregister_trait(&mut self, trait_name: &TraitName) {
+        if let Some(decl) = self.trait_registry.decls.remove(trait_name) {
+            for method in &decl.methods {
+                self.trait_registry.method_to_trait.remove(&method.name);
+            }
+            // Also remove impls for this trait to allow re-registration.
+            self.impl_registry.impls.remove(trait_name);
+        }
+    }
+
+    /// Remove a module's symbol table and unregister its types and traits.
+    ///
+    /// Removes the CompiledModule from the modules map and cleans up:
+    /// - Trait declarations (from trait_registry)
+    /// - Type definitions (from type_defs)
+    /// - Constructor-to-type mappings
+    ///
+    /// Returns the removed symbol table, or None if the module was not found.
+    /// Used during module hot-reload (repl/spec.md §14.2).
+    pub fn remove_module(&mut self, module_path: &ModuleFullPath) -> Option<SymbolTable> {
+        let table = self.modules.remove(module_path)?;
+
+        // Unregister traits defined by this module.
+        let traits_to_remove: Vec<TraitName> = table
+            .all_symbols()
+            .filter_map(|(_, entry)| {
+                if let ModuleEntry::TraitDecl { decl, .. } = entry {
+                    Some(decl.name.clone())
+                } else {
+                    None
+                }
+            })
+            .collect();
+        for trait_name in &traits_to_remove {
+            self.unregister_trait(trait_name);
+        }
+
+        // Unregister type definitions defined by this module.
+        for (_, entry) in table.all_symbols() {
+            if let ModuleEntry::TypeDef { info, .. } = entry {
+                self.type_defs.type_defs.remove(&info.name);
+                for ctor in &info.constructors {
+                    self.type_defs.constructor_to_type.remove(&ctor.name);
+                }
+            }
+        }
+
+        Some(table)
+    }
+
+    /// Insert a fresh (empty) module symbol table.
+    ///
+    /// Used after `remove_module` to re-establish the module path before
+    /// recompilation populates it with fresh definitions.
+    pub fn insert_module(&mut self, table: SymbolTable) {
+        self.modules.insert(table.path.clone(), table);
+    }
+
     // --- Cache restoration ---
 
     /// Restore a module's symbol table from cached metadata.
@@ -895,7 +960,8 @@ impl TypeChecker {
     pub fn restore_cached_module(&mut self, table: SymbolTable) {
         let path = table.path.clone();
 
-        // Reconstruct type_defs and constructor_to_type from symbol table entries.
+        // Reconstruct type_defs, constructor_to_type, and trait registries
+        // from symbol table entries.
         for (_name, entry) in table.all_symbols() {
             match entry {
                 ModuleEntry::TypeDef { info, .. } => {
@@ -919,11 +985,118 @@ impl TypeChecker {
                         TypeName::from(type_name.as_ref()),
                     );
                 }
+                ModuleEntry::TraitDecl { decl, .. } => {
+                    // Reconstruct trait_registry from cached TraitDecl entries.
+                    // This populates decls and method_to_trait so trait method
+                    // resolution works after loading from cache.
+                    if !self.trait_registry.decls.contains_key(&decl.name) {
+                        for method in &decl.methods {
+                            self.trait_registry
+                                .method_to_trait
+                                .insert(method.name.clone(), decl.name.clone());
+                        }
+                        self.trait_registry
+                            .decls
+                            .insert(decl.name.clone(), decl.clone());
+                    }
+                }
                 _ => {}
             }
         }
 
+        // Advance next_id past any type variable IDs used in the cached
+        // module's schemes. Without this, instantiate_constrained may create
+        // fresh vars with IDs that collide with vars already in cached schemes,
+        // causing infinite recursion in apply_subst.
+        self.advance_next_id_past_table(&table);
+
         self.modules.insert(path, table);
+    }
+
+    /// Advance `next_id` past the maximum type variable ID found in a symbol table.
+    ///
+    /// Scans all schemes (including constraint vars) in the table and ensures
+    /// `next_id` is strictly greater than any ID found. This prevents ID
+    /// collisions between cached schemes and freshly created type variables.
+    fn advance_next_id_past_table(&mut self, table: &SymbolTable) {
+        let mut max_id: Option<TypeId> = None;
+
+        for (_name, entry) in table.all_symbols() {
+            let scheme = match entry {
+                ModuleEntry::Def { scheme, .. } => Some(scheme),
+                ModuleEntry::Constructor { scheme, .. } => Some(scheme),
+                _ => None,
+            };
+            if let Some(s) = scheme {
+                // Check vars in the scheme's type.
+                if let Some(id) = cranelisp_types::max_type_var_id(&s.ty) {
+                    max_id = Some(max_id.map_or(id, |m: TypeId| m.max(id)));
+                }
+                // Check quantified vars (they may not appear in the type
+                // after substitution, but we reserved those IDs).
+                for &v in &s.vars {
+                    max_id = Some(max_id.map_or(v, |m| m.max(v)));
+                }
+                // Check constraint keys.
+                for &v in s.constraints.keys() {
+                    max_id = Some(max_id.map_or(v, |m| m.max(v)));
+                }
+            }
+        }
+
+        if let Some(id) = max_id {
+            if self.next_id <= id {
+                self.next_id = id + 1;
+            }
+        }
+    }
+
+    /// Restore trait implementation registrations from cached mangled method names.
+    ///
+    /// During fresh compilation, `register_trait_impl` populates `impl_registry`
+    /// with (trait_name, impl_type) pairs. When loading from cache, the impl
+    /// information is reconstructed from the mangled method names in the codegen
+    /// state (e.g., `"Num.+$Int"` → trait=Num, impl_type=Int).
+    ///
+    /// Must be called after `restore_cached_module` so that `trait_registry`
+    /// is already populated.
+    pub fn restore_cached_impls(&mut self, mangled_names: &[String]) {
+        use crate::traits::RegisteredImpl;
+
+        for name in mangled_names {
+            // Parse "Trait.method$Type" pattern.
+            let Some(dot_pos) = name.find('.') else { continue };
+            let Some(dollar_pos) = name.find('$') else { continue };
+            if dollar_pos <= dot_pos { continue; }
+
+            let trait_str = &name[..dot_pos];
+            let method_str = &name[dot_pos + 1..dollar_pos];
+            let impl_type_str = &name[dollar_pos + 1..];
+
+            let trait_name = TraitName::from(trait_str);
+            let impl_type = TypeName::from(impl_type_str);
+            let method_name = Symbol::from(method_str);
+
+            // Skip if this impl is already registered.
+            if self.impl_registry.has_impl(&trait_name, &impl_type) {
+                continue;
+            }
+
+            let mut method_primitives = HashMap::new();
+            method_primitives.insert(method_name.clone(), method_name);
+
+            self.impl_registry.impls
+                .entry(trait_name.clone())
+                .or_default()
+                .insert(
+                    impl_type.clone(),
+                    RegisteredImpl {
+                        trait_name,
+                        impl_type,
+                        method_primitives,
+                    },
+                );
+        }
     }
 
     // --- REPL snapshot/restore ---

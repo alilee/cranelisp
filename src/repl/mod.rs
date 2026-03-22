@@ -24,9 +24,11 @@
 mod commands;
 mod io_format;
 mod run_tests;
+pub mod save;
 mod trace;
+pub mod watch;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::{self, BufRead, Write};
 use std::time::{Duration, Instant};
 
@@ -34,9 +36,9 @@ use cranelisp_backend::compiler::TracedFnInfo;
 use cranelisp_backend::display;
 use cranelisp_backend::jit::Jit;
 use cranelisp_types::{
-    CompileMode, CranelispError, DefKind, Defn, Expr, MacroClauseInfo,
-    ModuleEntry, ModuleFullPath, ReplCheckResult, ReplInput, Sexp, Symbol, Type,
-    TypeDefInfo, TypeName, Visibility, Warning,
+    CompileMode, CranelispError, DefKind, Defn, Expr, ImplSexp, MacroClauseInfo,
+    ModuleEntry, ModuleFullPath, ModuleStructure, ReplCheckResult, ReplInput,
+    Sexp, Symbol, Type, TypeDefInfo, TypeName, Visibility, Warning,
 };
 
 use commands::{
@@ -96,17 +98,59 @@ pub struct ReplSession {
     loaded_platforms: Vec<crate::platform::LoadedPlatform>,
     /// Project root directory (for platform path resolution).
     pub project_root: std::path::PathBuf,
+    /// File watcher for detecting source file changes.
+    /// None if watcher initialization failed or not in interactive mode.
+    pub watcher: Option<watch::FileWatcher>,
+    /// Pending change notifications to display before next prompt.
+    pending_changes: Vec<std::path::PathBuf>,
+    /// Modules that failed recompilation after a file change.
+    /// While non-empty, expression evaluation is blocked (repl/spec.md §14.4).
+    pub error_modules: HashSet<ModuleFullPath>,
+    /// Maps canonical file paths to module paths for file-watching recompilation.
+    /// Populated during prelude loading and module imports.
+    file_to_module: HashMap<std::path::PathBuf, ModuleFullPath>,
+    /// Maps each module to the modules it depends on (imports from).
+    /// Used for cascade invalidation: when module B changes, all modules that
+    /// depend on B must also be recompiled.
+    module_dependencies: HashMap<ModuleFullPath, Vec<ModuleFullPath>>,
+    /// Module structure for the current REPL module (tracks imports, exports,
+    /// impl_sexps as they accumulate interactively). Used by save.rs to
+    /// regenerate the module's `.cl` file.
+    pub(crate) current_module_structure: ModuleStructure,
+    /// Content hash of the last saved `.cl` file. Used by the file watcher
+    /// to suppress self-triggered reloads (design/int/session-persistence.md §4).
+    pub(crate) last_saved_hash: Option<String>,
+    /// True while restoring from user.cl at startup — suppresses save-on-define.
+    restoring: bool,
 }
 
 impl ReplSession {
     /// Create a new REPL session without prelude loading.
     pub fn new() -> Self {
+        let user_module = ModuleFullPath::from("user");
         ReplSession {
             core: crate::pipeline::CompilationSession::new(),
             type_defs: HashMap::new(),
             type_modules: HashMap::new(),
             loaded_platforms: Vec::new(),
             project_root: std::env::current_dir().unwrap_or_default(),
+            watcher: None,
+            pending_changes: Vec::new(),
+            error_modules: HashSet::new(),
+            file_to_module: HashMap::new(),
+            module_dependencies: HashMap::new(),
+            current_module_structure: ModuleStructure {
+                path: user_module,
+                file_path: None,
+                mod_decls: vec![],
+                import_specs: vec![],
+                export_specs: vec![],
+                impl_sexps: vec![],
+                impls: vec![],
+                dll_path: None,
+            },
+            last_saved_hash: None,
+            restoring: false,
         }
     }
 
@@ -117,6 +161,10 @@ impl ReplSession {
     /// it through the normal module graph pipeline, and injects an implicit
     /// `(import [prelude [*]])`. If no prelude is found, the session works
     /// normally without it.
+    ///
+    /// Module caching is enabled: prelude modules are loaded from
+    /// `.cranelisp-cache/` when valid, and newly compiled modules are cached
+    /// for future sessions.
     pub fn new_with_prelude(
         project_root: &std::path::Path,
         lib_dirs: &[std::path::PathBuf],
@@ -124,14 +172,20 @@ impl ReplSession {
         let mut session = Self::new();
         session.project_root = project_root.to_path_buf();
 
-        // REPL does not use module caching (yet — future sprint).
-        let mut cache_state = None;
+        // Enable module caching for REPL prelude loading.
+        let cache_dir = project_root.join(".cranelisp-cache");
+        let mut cache_state = Some(crate::pipeline::CacheState::new(cache_dir));
         crate::pipeline::load_prelude_into_session(
             project_root,
             lib_dirs,
             &mut session.core,
             &mut cache_state,
         )?;
+
+        // Flush the cache manifest if any modules were compiled.
+        if let Some(cs) = cache_state.as_mut() {
+            cs.flush_manifest();
+        }
 
         // Sync type definitions from prelude modules for ADT value display.
         // Without this, prelude ADT values (e.g. Option.None) display as raw
@@ -140,10 +194,274 @@ impl ReplSession {
             session.type_defs.insert(name.clone(), info.clone());
         }
 
+        // Build file-to-module mapping for file watcher recompilation.
+        session.file_to_module =
+            crate::pipeline::build_file_to_module_map(project_root, lib_dirs);
+
+        // Build module dependency map for cascade invalidation.
+        session.module_dependencies =
+            crate::pipeline::build_module_dependency_map(project_root, lib_dirs);
+
         // Switch back to user module for REPL input.
         session.core.tc.set_current_module(ModuleFullPath::from("user"));
 
         Ok(session)
+    }
+
+    /// Enable session persistence by setting the backing file path.
+    ///
+    /// After this call, every definition-like REPL input will save the
+    /// current module to `user.cl` at `project_root`. If `user.cl` already
+    /// exists, its forms are loaded and evaluated to restore the session.
+    ///
+    /// Called only by the interactive REPL startup (not by tests).
+    pub fn enable_persistence(&mut self) -> bool {
+        // Set the backing file path so save_current_module can write to it.
+        let user_cl_path = self.project_root.join("user.cl");
+        self.current_module_structure.file_path = Some(user_cl_path.clone());
+
+        if !user_cl_path.exists() {
+            return false;
+        }
+
+        match self.try_restore_user_module() {
+            Ok(true) => {
+                // Sync type defs from restored user module.
+                for (name, info) in self.core.tc.type_def_registry().iter() {
+                    if !self.type_defs.contains_key(name) {
+                        self.type_defs.insert(name.clone(), info.clone());
+                    }
+                }
+                true
+            }
+            Ok(false) => false,
+            Err(e) => {
+                eprintln!("; Warning: failed to load user.cl: {e}");
+                false
+            }
+        }
+    }
+
+    /// Attempt to restore the user module from `user.cl`.
+    ///
+    /// Uses the whole-program compilation pipeline (same as module graph
+    /// compilation) instead of per-form eval. This handles constrained
+    /// polymorphic functions correctly (check_program sees the whole
+    /// program at once) and produces cache files (.o, .meta.json).
+    ///
+    /// Returns `Ok(true)` if forms were successfully restored,
+    /// `Ok(false)` if the file was empty, and `Err` on failure.
+    fn try_restore_user_module(&mut self) -> Result<bool, CranelispError> {
+        let user_cl_path = self.current_module_structure.file_path.clone()
+            .ok_or_else(|| CranelispError::ParseError {
+                message: "no file path for user module".into(),
+                span: cranelisp_types::Span::SYNTHETIC,
+            })?;
+
+        let source = std::fs::read_to_string(&user_cl_path).map_err(|e| {
+            CranelispError::ParseError {
+                message: format!("failed to read {}: {e}", user_cl_path.display()),
+                span: cranelisp_types::Span::SYNTHETIC,
+            }
+        })?;
+
+        if source.trim().is_empty() {
+            return Ok(false);
+        }
+
+        let source_hash = cranelisp_backend::cache::hash_source(&source);
+        // Store the content hash so the file watcher won't trigger a reload.
+        self.last_saved_hash = Some(source_hash.clone());
+
+        let user_module = ModuleFullPath::from("user");
+
+        // Set current module to user before compilation.
+        self.core.tc.set_current_module(user_module.clone());
+
+        // Parse and extract module declarations (imports, exports, impls).
+        let sexps = cranelisp_frontend::parse(&source)?;
+        if sexps.is_empty() {
+            return Ok(false);
+        }
+
+        let (structure, remaining) = cranelisp_frontend::extract_module_declarations(
+            user_module.clone(),
+            Some(user_cl_path.clone()),
+            sexps,
+        )?;
+
+        // Lazily load any imported modules that aren't already compiled.
+        if !structure.import_specs.is_empty() {
+            let lib_dirs = crate::pipeline::assemble_lib_dirs(&self.project_root);
+            for spec in &structure.import_specs {
+                // Skip if the full module path is already loaded.
+                if self.core.tc.has_module(&spec.module_path) {
+                    continue;
+                }
+                let root_module = spec.module_path.0
+                    .split('.')
+                    .next()
+                    .unwrap_or(&spec.module_path.0)
+                    .to_string();
+                let root_path = ModuleFullPath::from(root_module.as_str());
+                if !self.core.tc.has_module(&root_path) {
+                    let saved_module = self.core.tc.current_module_path().clone();
+                    crate::pipeline::load_module_into_session(
+                        &root_module,
+                        &self.project_root,
+                        &lib_dirs,
+                        &mut self.core,
+                    )?;
+                    self.core.tc.set_current_module(saved_module);
+                }
+            }
+            self.core.tc.register_imports(&structure.import_specs)?;
+        }
+        if !structure.export_specs.is_empty() {
+            self.core.tc.register_exports(&structure.export_specs)?;
+        }
+
+        // Process forms sequentially (handles defmacro interception, expansion).
+        // Track pre-expansion sexps so we store what the user originally wrote
+        // rather than macro-expanded forms (Defect 1 fix for restore path).
+        let (accumulated, originals) =
+            self.core.process_forms_with_originals(remaining)?;
+        if accumulated.is_empty() {
+            // Only had imports/exports/macros, no compilable definitions.
+            self.current_module_structure = structure;
+            return Ok(true);
+        }
+
+        // Build program AST from accumulated (expanded) sexps.
+        let program = cranelisp_frontend::build_program(
+            &accumulated,
+            &mut self.core.expander,
+        )?;
+
+        if program.is_empty() {
+            self.current_module_structure = structure;
+            return Ok(true);
+        }
+
+        // Whole-program typecheck — handles constrained polymorphism,
+        // forward references, and monomorphisation correctly.
+        let check = self.core.tc.check_program(&program)?;
+
+        // Compile using GOT-based codegen (same path as REPL defns).
+        // This registers functions in the GOT so subsequent REPL
+        // expressions can call them via indirect dispatch.
+        self.core.compile_checked_program(&program, &check)?;
+
+        // Store pre-expansion sexps in def_codegen so save_current_module
+        // regenerates the source file with what the user typed, not the
+        // macro-expanded form. The originals vec is aligned with accumulated
+        // (same length), which is aligned with program's TopLevel entries.
+        for (tl, original) in program.iter().zip(originals.iter()) {
+            if let cranelisp_types::TopLevel::Defn(defn) = tl {
+                let dc = self.core.got_state.def_codegen
+                    .entry(defn.name.clone())
+                    .or_default();
+                dc.sexp = Some(original.clone());
+                dc.source = Some(format_sexp(original));
+            }
+        }
+
+        // Register module aliases (user/name -> name) for qualified refs.
+        self.core.register_module_aliases(&user_module);
+
+        // Write cache files (.meta.json + .o) so subsequent restarts
+        // can use the fast cache-load path.
+        let cache_dir = self.project_root.join(".cranelisp-cache");
+        let mut cache_state = crate::pipeline::CacheState::new(cache_dir);
+        cache_state.record_recompiled(&user_module);
+        cache_state.source_hashes_mut()
+            .insert(user_module.clone(), source_hash.clone());
+        // Cache write failures are non-fatal.
+        let _ = crate::pipeline::write_module_cache(
+            &mut cache_state,
+            &user_module,
+            source_hash,
+            &[],  // user module has no module-graph dependencies
+            &structure,
+            &self.core.tc,
+            Some(&program),
+            Some(&check),
+            &self.core.func_sigs,
+        );
+        cache_state.flush_manifest();
+
+        // Populate current_module_structure so subsequent saves include
+        // the restored definitions.
+        self.current_module_structure = structure;
+
+        Ok(true)
+    }
+
+    /// Save the current module's source to its backing `.cl` file.
+    ///
+    /// Regenerates the source from the symbol table and module structure,
+    /// writes atomically, and updates the content hash (for file watcher
+    /// self-write suppression).
+    ///
+    /// Called after each definition-like REPL input (defn, deftype, deftrait,
+    /// impl, defmacro, import, platform). On failure, warns but does not error.
+    pub(crate) fn save_current_module(&mut self) {
+        let file_path = match &self.current_module_structure.file_path {
+            Some(p) => p.clone(),
+            None => return, // No backing file — nothing to save.
+        };
+
+        let sym_table = self.core.tc.symbol_table();
+        let structure = &self.current_module_structure;
+        let def_codegen = &self.core.got_state.def_codegen;
+
+        if let Some(hash) = save::save_module_file(
+            &file_path,
+            sym_table,
+            structure,
+            def_codegen,
+        ) {
+            self.last_saved_hash = Some(hash.clone());
+
+            // Update the file watcher's content hash for user.cl so the
+            // self-triggered file-change event is suppressed.
+            if let Some(ref mut watcher) = self.watcher {
+                if let Ok(canonical) = file_path.canonicalize() {
+                    watcher.update_content_hash(canonical, hash.clone());
+                }
+            }
+
+            // Write cache files (.meta.json + .o) for the saved module so
+            // they exist immediately after the first session, not just after
+            // the second session's restore (Defect 2 fix).
+            self.write_cache_for_saved_module(&file_path);
+        }
+    }
+
+    /// Write cache files (.meta.json + .o) for a saved module file.
+    ///
+    /// Compiles the saved file through the batch module-graph pipeline
+    /// (using a fresh CompilationSession) to produce the cache artifacts.
+    /// This is slightly wasteful (re-compiles what was just compiled in
+    /// the REPL) but is correct and simple — the batch pipeline produces
+    /// the same Program + CheckResult that write_module_cache needs.
+    ///
+    /// Failures are non-fatal: cache files are an optimization, and the
+    /// next session can always fall back to source compilation.
+    fn write_cache_for_saved_module(&self, file_path: &std::path::Path) {
+        let cache_dir = self.project_root.join(".cranelisp-cache");
+        let lib_dirs = crate::pipeline::assemble_lib_dirs(&self.project_root);
+        let cache_config = crate::pipeline::CacheConfig::Enabled {
+            cache_dir,
+        };
+        // Compile user.cl through the module-graph pipeline (compile-only,
+        // no execution). This loads prelude from cache (fast) and compiles
+        // user.cl, writing .meta.json + .o as a side effect.
+        let _ = crate::pipeline::compile_module_graph_for_cache(
+            file_path,
+            &lib_dirs,
+            &cache_config,
+        );
     }
 
     /// Get the accumulated type definitions for value display.
@@ -203,7 +521,15 @@ impl ReplSession {
         };
 
         match result {
-            Ok(result) => Ok(result),
+            Ok(result) => {
+                // Save the module file after each definition-like input.
+                // Skip during startup restore (restoring flag) and for
+                // bare expression evaluations (is_definition = false).
+                if result.is_definition && !self.restoring {
+                    self.save_current_module();
+                }
+                Ok(result)
+            }
             Err(e) => {
                 self.core.tc.restore(snapshot);
                 Err(e)
@@ -257,12 +583,16 @@ impl ReplSession {
             return Ok(result);
         }
 
-        // Step 2: Expand macros in the sexp.
+        // Step 2: Capture original sexp before macro expansion so
+        // session persistence stores what the user typed (Defect 1 fix).
+        let original_sexp = sexp.clone();
+
+        // Expand macros in the sexp.
         let expanded = self.core.expander.expand_sexp(sexp)?;
 
         // Step 3: Flatten (begin ...) results and process sub-forms.
         let forms = cranelisp_frontend::flatten_begin(expanded);
-        self.eval_flattened_forms(forms)
+        self.eval_flattened_forms(forms, Some(original_sexp))
     }
 
     /// Process a sequence of flattened forms, returning the result of the last.
@@ -270,11 +600,23 @@ impl ReplSession {
     /// Each form may itself be a defmacro (defmacro-in-results from macro
     /// expansion). Non-macro, non-type forms are accumulated and compiled
     /// as a batch.
+    ///
+    /// `original_sexp` is the pre-expansion sexp from the user's input.
+    /// When present and `forms` has exactly one compilable form, we store
+    /// the original (not the macro-expanded) sexp for session persistence
+    /// and `/source` display. This ensures `user.cl` contains what the
+    /// user typed, not the expanded form (Defect 1 fix).
     fn eval_flattened_forms(
         &mut self,
         forms: Vec<Sexp>,
+        original_sexp: Option<Sexp>,
     ) -> Result<ReplResult, CranelispError> {
         let mut last_result = None;
+        // Track how many compilable (non-defmacro, non-import) forms we see
+        // to decide whether `original_sexp` applies (only for single-form case).
+        let compilable_count = forms.iter()
+            .filter(|f| !cranelisp_frontend::is_defmacro(f) && !is_import_form(f))
+            .count();
 
         for form in forms {
             if cranelisp_frontend::is_defmacro(&form) {
@@ -287,18 +629,34 @@ impl ReplSession {
             }
 
             // Build and process a normal REPL input.
-            // Capture the form sexp before AST building for /sexp introspection.
-            let form_sexp = form.clone();
+            // Use the pre-expansion sexp for storage when this is the sole
+            // compilable form (common case: user typed one defn/expr).
+            // For begin-expanded multi-forms, fall back to the expanded form.
+            let form_sexp = if compilable_count == 1 {
+                original_sexp.clone().unwrap_or_else(|| form.clone())
+            } else {
+                form.clone()
+            };
             let input = cranelisp_frontend::build_repl_input(&form, &mut self.core.expander)?;
             let check_result = self.core.tc.check_repl_input(&input)?;
             let result = self.compile_and_execute(&input, &check_result)?;
 
-            // Store sexp and source in DefCodegen for introspection commands.
+            // Store sexp and source in DefCodegen for introspection commands
+            // and session persistence. Use entry().or_default() because
+            // constrained poly fns skip compile_and_register_defn (which
+            // normally creates the entry), but still need sexp for save.
             if let ReplInput::Defn(defn) = &input {
-                if let Some(dc) = self.core.got_state.def_codegen.get_mut(&defn.name) {
-                    dc.source = Some(format_sexp(&form_sexp));
-                    dc.sexp = Some(form_sexp);
-                }
+                let dc = self.core.got_state.def_codegen.entry(defn.name.clone()).or_default();
+                dc.source = Some(format_sexp(&form_sexp));
+                dc.sexp = Some(form_sexp.clone());
+            }
+            // Track impl sexps in module structure for session persistence.
+            if let ReplInput::TraitImpl(impl_) = &input {
+                self.current_module_structure.impl_sexps.push(ImplSexp {
+                    trait_name: impl_.trait_name.clone(),
+                    target: impl_.target_type.clone(),
+                    sexp: form_sexp,
+                });
             }
             last_result = Some(result);
         }
@@ -438,7 +796,39 @@ impl ReplSession {
             cranelisp_frontend::extract_module_declarations(module, None, vec![sexp])?;
 
         if !structure.import_specs.is_empty() {
+            // Lazily load any modules that aren't already compiled.
+            // Per spec §8.11.2, module resolution searches project root and lib dirs.
+            let lib_dirs = crate::pipeline::assemble_lib_dirs(&self.project_root);
+            for spec in &structure.import_specs {
+                // Skip if the full module path is already loaded (e.g., "platform.test-capture").
+                if self.core.tc.has_module(&spec.module_path) {
+                    continue;
+                }
+                // Extract the root module name (first segment of dotted path).
+                let root_module = spec.module_path.0
+                    .split('.')
+                    .next()
+                    .unwrap_or(&spec.module_path.0)
+                    .to_string();
+                let root_path = ModuleFullPath::from(root_module.as_str());
+                if !self.core.tc.has_module(&root_path) {
+                    // Save and restore current module context around lazy load.
+                    let saved_module = self.core.tc.current_module_path().clone();
+                    crate::pipeline::load_module_into_session(
+                        &root_module,
+                        &self.project_root,
+                        &lib_dirs,
+                        &mut self.core,
+                    )?;
+                    self.core.tc.set_current_module(saved_module);
+                }
+            }
+
             self.core.tc.register_imports(&structure.import_specs)?;
+            // Track imports in module structure for session persistence.
+            self.current_module_structure
+                .import_specs
+                .extend(structure.import_specs.clone());
         }
 
         // Build display: "imported N names from module1, module2, ..."
@@ -971,6 +1361,7 @@ enum ReplCommand<'a> {
     Disasm(&'a str),
     Mod(&'a str),
     RunTests(&'a str),
+    Reset,
     Unknown(&'a str),
 }
 
@@ -1006,6 +1397,7 @@ fn parse_slash_command(input: &str) -> Option<ReplCommand<'_>> {
         "/disasm" => ReplCommand::Disasm(arg),
         "/mod" => ReplCommand::Mod(arg),
         "/run-tests" | "/rt" => ReplCommand::RunTests(arg),
+        "/reset" => ReplCommand::Reset,
         _ => ReplCommand::Unknown(cmd),
     })
 }
@@ -1031,6 +1423,8 @@ fn print_help(stdout: &mut impl Write) {
     let _ = writeln!(stdout, "  /exports MODULE     Show module's public symbols");
     let _ = writeln!(stdout, "  /mod [NAME]         Switch module namespace (default: user)");
     let _ = writeln!(stdout, "  /run-tests (/rt)    Discover and run test-* functions");
+    let _ = writeln!(stdout, "  /reset              Clear all state and reload prelude");
+    let _ = writeln!(stdout, "  ;#! <cmd>           Run a shell command");
 }
 
 /// Format the REPL prompt with timing and module info.
@@ -1045,15 +1439,29 @@ fn write_prompt(stdout: &mut impl Write, compile_ms: u64, eval_ms: u64, module: 
     let _ = stdout.flush();
 }
 
-/// Dispatch a parsed slash command, returning true if the REPL should quit.
+/// Result of dispatching a slash command.
+struct SlashCommandResult {
+    /// True if the REPL should exit.
+    quit: bool,
+    /// True if timing counters should be reset to 0+0ms.
+    reset_timing: bool,
+}
+
+/// Dispatch a parsed slash command.
 fn dispatch_slash_command(
     cmd: ReplCommand,
     session: &mut ReplSession,
     stdout: &mut impl Write,
-) -> bool {
+) -> SlashCommandResult {
+    let mut result = SlashCommandResult {
+        quit: false,
+        reset_timing: false,
+    };
     match cmd {
         ReplCommand::Help => print_help(stdout),
-        ReplCommand::Quit => return true,
+        ReplCommand::Quit => {
+            result.quit = true;
+        }
         ReplCommand::Sig(name) => handle_sig(session, name, stdout),
         ReplCommand::Doc(name) => handle_doc(session, name, stdout),
         ReplCommand::Type(expr_src) => handle_type(session, expr_src, stdout),
@@ -1079,6 +1487,10 @@ fn dispatch_slash_command(
         ReplCommand::Disasm(name) => handle_disasm(session, name, stdout),
         ReplCommand::Mod(name) => handle_mod(session, name, stdout),
         ReplCommand::RunTests(prefix) => handle_run_tests(session, prefix, stdout),
+        ReplCommand::Reset => {
+            handle_reset(session, stdout);
+            result.reset_timing = true;
+        }
         ReplCommand::Unknown(cmd) => {
             let _ = writeln!(
                 stdout,
@@ -1086,7 +1498,7 @@ fn dispatch_slash_command(
             );
         }
     }
-    false
+    result
 }
 
 /// Evaluate an input and display the result, returning updated timing.
@@ -1148,18 +1560,379 @@ fn eval_and_display(
 fn create_repl_session() -> ReplSession {
     let cwd = std::env::current_dir().ok();
 
-    if let Some(ref project_root) = cwd {
+    let mut session = if let Some(ref project_root) = cwd {
         let lib_dirs = crate::pipeline::assemble_lib_dirs(project_root);
 
         match ReplSession::new_with_prelude(project_root, &lib_dirs) {
-            Ok(session) => return session,
+            Ok(session) => session,
             Err(e) => {
                 eprintln!("warning: prelude loading failed: {e}");
+                ReplSession::new()
+            }
+        }
+    } else {
+        ReplSession::new()
+    };
+
+    // Enable session persistence: set backing file, load user.cl if it exists.
+    // FIXME(/int): This should be println!, not eprintln!. The banner goes to stdout
+    // (line 1557), and "; Restored user.cl" is a user-visible status message — same
+    // category as the banner. The sketch uses println! for its equivalent "; Loaded
+    // user.cl" message. Using stderr causes ordering issues in piped output (showcase).
+    if session.enable_persistence() {
+        eprintln!("; Restored user.cl");
+    }
+
+    // Initialize the file watcher for source change detection.
+    session.watcher = watch::FileWatcher::new();
+    update_watched_paths(&mut session);
+
+    session
+}
+
+/// Update the file watcher to cover directories of actually loaded modules.
+///
+/// Per repl/spec.md §14.1: watches directories of imported modules and
+/// their dependencies, plus the project root. Uses the `file_to_module`
+/// map to find actual source files and record their content hashes for
+/// accurate change detection (not dummy paths).
+fn update_watched_paths(session: &mut ReplSession) {
+    let watcher = match session.watcher.as_mut() {
+        Some(w) => w,
+        None => return,
+    };
+
+    // Watch the project root for user modules.
+    watcher.watch_file(&session.project_root.join("dummy.cl"));
+
+    // Watch every known module source file (records content hash for each).
+    let file_paths: Vec<std::path::PathBuf> = session
+        .file_to_module
+        .keys()
+        .cloned()
+        .collect();
+    for file_path in &file_paths {
+        watcher.watch_file(file_path);
+    }
+}
+
+/// Format a relative file path for display in notifications.
+fn relative_path_str(path: &std::path::Path, project_root: &std::path::Path) -> String {
+    path.strip_prefix(project_root)
+        .unwrap_or(path)
+        .display()
+        .to_string()
+}
+
+/// Poll the file watcher, eagerly recompile changed modules, and display results.
+///
+/// Per repl/spec.md §14.2: eager recompilation on change detection.
+/// Per repl/spec.md §14.3: `[updated: file]` on success, `[errors: file]` on failure.
+/// Per repl/spec.md §14.4: failed modules are added to `error_modules`.
+fn poll_and_notify_changes(session: &mut ReplSession, stdout: &mut impl Write) {
+    if let Some(ref mut watcher) = session.watcher {
+        if let Some(changed) = watcher.poll_changes() {
+            session.pending_changes.extend(changed);
+        }
+    }
+
+    // Eagerly recompile any pending changed modules.
+    if !session.pending_changes.is_empty() {
+        reload_changed_modules(session, stdout);
+    }
+}
+
+/// Eagerly reload modules whose source files have changed on disk.
+///
+/// Per repl/spec.md §14.2: clears old module state, recompiles, notifies result.
+/// Per repl/spec.md §14.4: on failure, adds module to `error_modules` to block
+/// evaluation. On success, removes module from `error_modules`.
+///
+/// Cascade invalidation: after recompiling directly changed modules, finds all
+/// transitive dependents and recompiles them too (per repl/spec.md §14.2).
+fn reload_changed_modules(session: &mut ReplSession, stdout: &mut impl Write) {
+    let pending = std::mem::take(&mut session.pending_changes);
+
+    // Map file paths to module paths.
+    let mut stale_modules: Vec<ModuleFullPath> = Vec::new();
+    for path in &pending {
+        if let Some(module_path) = session.file_to_module.get(path) {
+            if !stale_modules.contains(module_path) {
+                stale_modules.push(module_path.clone());
             }
         }
     }
 
-    ReplSession::new()
+    if stale_modules.is_empty() {
+        return;
+    }
+
+    // Invalidate cache and reload each stale module.
+    let project_root = session.project_root.clone();
+    let lib_dirs = crate::pipeline::assemble_lib_dirs(&project_root);
+    let cache_dir = project_root.join(".cranelisp-cache");
+    let mut cache_state = Some(crate::pipeline::CacheState::new(cache_dir));
+
+    let mut reloaded: Vec<ModuleFullPath> = Vec::new();
+
+    for module_path in &stale_modules {
+        let file_display = module_display_name(session, module_path, &project_root);
+
+        match reload_single_module(
+            session,
+            module_path,
+            &lib_dirs,
+            &mut cache_state,
+        ) {
+            Ok(()) => {
+                session.error_modules.remove(module_path);
+                reloaded.push(module_path.clone());
+                let _ = writeln!(stdout, "[updated: {}]", file_display);
+            }
+            Err(e) => {
+                session.error_modules.insert(module_path.clone());
+                let _ = writeln!(stdout, "[errors: {}]", file_display);
+                let _ = writeln!(stdout, "  {}", e);
+            }
+        }
+    }
+
+    // Cascade: find transitive dependents of successfully reloaded modules
+    // and recompile them in BFS order.
+    let cascade_targets = find_transitive_dependents(
+        &reloaded,
+        &session.module_dependencies,
+    );
+
+    for dep_path in &cascade_targets {
+        // Skip modules already reloaded as direct changes.
+        if reloaded.contains(dep_path) {
+            continue;
+        }
+
+        let file_display = module_display_name(session, dep_path, &project_root);
+
+        match reload_single_module(
+            session,
+            dep_path,
+            &lib_dirs,
+            &mut cache_state,
+        ) {
+            Ok(()) => {
+                session.error_modules.remove(dep_path);
+                let _ = writeln!(stdout, "[updated: {}]", file_display);
+            }
+            Err(e) => {
+                session.error_modules.insert(dep_path.clone());
+                let _ = writeln!(stdout, "[errors: {}]", file_display);
+                let _ = writeln!(stdout, "  {}", e);
+            }
+        }
+    }
+
+    // Flush cache manifest if modules were recompiled.
+    if let Some(cs) = cache_state.as_ref() {
+        cs.flush_manifest();
+    }
+}
+
+/// Get a display name for a module (relative file path or module path).
+fn module_display_name(
+    session: &ReplSession,
+    module_path: &ModuleFullPath,
+    project_root: &std::path::Path,
+) -> String {
+    session
+        .file_to_module
+        .iter()
+        .find(|(_, mp)| *mp == module_path)
+        .map(|(fp, _)| relative_path_str(fp, project_root))
+        .unwrap_or_else(|| module_path.as_ref().to_string())
+}
+
+/// Find all modules that directly depend on the given module.
+///
+/// A module Y depends on module X if X appears in Y's dependency list.
+/// This is the reverse lookup of the module_dependencies map.
+fn find_direct_dependents(
+    module: &ModuleFullPath,
+    dependencies: &HashMap<ModuleFullPath, Vec<ModuleFullPath>>,
+) -> Vec<ModuleFullPath> {
+    let mut dependents = Vec::new();
+    for (mod_path, deps) in dependencies {
+        if mod_path == module {
+            continue;
+        }
+        if deps.iter().any(|d| d == module) {
+            dependents.push(mod_path.clone());
+        }
+    }
+    dependents
+}
+
+/// Find all transitive dependents of the given modules via BFS.
+///
+/// Returns modules in BFS order (direct dependents first, then their
+/// dependents, etc.). Does not include the seed modules themselves.
+fn find_transitive_dependents(
+    changed_modules: &[ModuleFullPath],
+    dependencies: &HashMap<ModuleFullPath, Vec<ModuleFullPath>>,
+) -> Vec<ModuleFullPath> {
+    let mut result = Vec::new();
+    let mut visited: HashSet<ModuleFullPath> = changed_modules.iter().cloned().collect();
+    let mut queue = std::collections::VecDeque::new();
+
+    // Seed with direct dependents of all changed modules.
+    for module in changed_modules {
+        for dep in find_direct_dependents(module, dependencies) {
+            if visited.insert(dep.clone()) {
+                queue.push_back(dep.clone());
+                result.push(dep);
+            }
+        }
+    }
+
+    // BFS to find transitive dependents.
+    while let Some(current) = queue.pop_front() {
+        for dep in find_direct_dependents(&current, dependencies) {
+            if visited.insert(dep.clone()) {
+                queue.push_back(dep.clone());
+                result.push(dep);
+            }
+        }
+    }
+
+    result
+}
+
+/// Reload a single module from its source file.
+///
+/// Per repl/spec.md §14.2: clears old module state (symbol table, trait
+/// declarations, macro env) before recompiling to avoid "duplicate definition"
+/// errors. Uses the REPL's form-by-form compilation (eval_flattened_forms
+/// pattern) with fresh per-function JITs and GOT-based dispatch. On failure,
+/// the old state is NOT restored — the module enters error state and
+/// evaluation is blocked (§14.4).
+fn reload_single_module(
+    session: &mut ReplSession,
+    module_path: &ModuleFullPath,
+    _lib_dirs: &[std::path::PathBuf],
+    cache_state: &mut Option<crate::pipeline::CacheState>,
+) -> Result<(), CranelispError> {
+    // Find the source file for this module.
+    let file_path = session
+        .file_to_module
+        .iter()
+        .find(|(_, mp)| *mp == module_path)
+        .map(|(fp, _)| fp.clone())
+        .ok_or_else(|| CranelispError::ModuleError {
+            message: format!("no source file known for module '{}'", module_path.as_ref()),
+            file: None,
+            span: cranelisp_types::Span::SYNTHETIC,
+        })?;
+
+    // Read and parse the source.
+    let source = std::fs::read_to_string(&file_path).map_err(|e| {
+        CranelispError::ModuleError {
+            message: format!("cannot read '{}': {e}", file_path.display()),
+            file: Some(file_path.clone()),
+            span: cranelisp_types::Span::SYNTHETIC,
+        }
+    })?;
+
+    // --- Phase A: Clear old module state ---
+    // Remove the old symbol table, traits, and macros to avoid duplicates.
+    clear_module_state(session, module_path);
+
+    // --- Phase B: Recompile from source ---
+    // Switch to the module's context for compilation.
+    let prev_module = session.core.tc.current_module_path().clone();
+    session.core.tc.set_current_module(module_path.clone());
+
+    // Parse the source sexps.
+    let sexps = cranelisp_frontend::parse(&source)?;
+    let (structure, remaining) = cranelisp_frontend::extract_module_declarations(
+        module_path.clone(),
+        Some(file_path.clone()),
+        sexps,
+    )?;
+
+    // Re-register imports/exports for the module.
+    if !structure.import_specs.is_empty() {
+        session.core.tc.register_imports(&structure.import_specs)?;
+    }
+    if !structure.export_specs.is_empty() {
+        session.core.tc.register_exports(&structure.export_specs)?;
+    }
+
+    // Process forms using the REPL's form-by-form pattern.
+    // This creates fresh JITs per function and uses GOT-based dispatch,
+    // avoiding "Duplicate definition" errors from the shared batch JIT.
+    let accumulated = session.core.process_forms_sequentially(remaining)?;
+    for form in accumulated {
+        if cranelisp_frontend::is_defmacro(&form) {
+            session.eval_defmacro(&form)?;
+            continue;
+        }
+        let input = cranelisp_frontend::build_repl_input(&form, &mut session.core.expander)?;
+        let check_result = session.core.tc.check_repl_input(&input)?;
+        session.compile_and_execute(&input, &check_result)?;
+    }
+
+    // Register module aliases so downstream references resolve.
+    session.core.register_module_aliases(module_path);
+
+    // Invalidate cache for this module so it gets re-cached.
+    if let Some(cs) = cache_state.as_mut() {
+        let hash = cranelisp_backend::cache::hash_source(&source);
+        cs.record_recompiled(module_path);
+        cs.source_hashes_mut().insert(module_path.clone(), hash);
+    }
+
+    // Restore the previous module context.
+    session.core.tc.set_current_module(prev_module);
+
+    Ok(())
+}
+
+/// Clear a module's state from the session before recompilation.
+///
+/// Uses `TypeChecker::remove_module` to remove the symbol table and unregister
+/// traits/types. Also removes macros from the expander. Then re-inserts an
+/// empty symbol table so the module path remains known during recompilation.
+/// This ensures recompilation does not hit "duplicate definition" errors.
+fn clear_module_state(session: &mut ReplSession, module_path: &ModuleFullPath) {
+    // Collect macro names from the module before removing it.
+    let macro_names: Vec<String> = session
+        .core
+        .tc
+        .module_table(module_path)
+        .map(|table| {
+            table
+                .all_symbols()
+                .filter_map(|(name, entry)| {
+                    if matches!(entry, ModuleEntry::Macro { .. }) {
+                        Some(name.as_ref().to_string())
+                    } else {
+                        None
+                    }
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+
+    // Remove macros from the expander.
+    for mname in &macro_names {
+        session.core.expander.remove_macro(mname);
+    }
+
+    // Remove the module's symbol table, traits, and type definitions.
+    session.core.tc.remove_module(module_path);
+
+    // Re-insert an empty symbol table so the module path is recognized
+    // during recompilation.
+    let fresh_table = cranelisp_types::SymbolTable::new(module_path.clone());
+    session.core.tc.insert_module(fresh_table);
 }
 
 /// Run the interactive REPL loop.
@@ -1185,6 +1958,7 @@ pub fn run_repl() {
 
     let module = session.core.tc.current_module_path().to_string();
     let prompt = format_prompt(last_compile_ms, last_eval_ms, &module);
+    poll_and_notify_changes(&mut session, &mut stdout);
     write_prompt(&mut stdout, last_compile_ms, last_eval_ms, &module);
 
     let mut buffer = String::new();
@@ -1207,19 +1981,40 @@ pub fn run_repl() {
 
         let input = buffer.trim();
         let module = session.core.tc.current_module_path().to_string();
+
+        // Shell escape: intercept `;#!` before comment-only check.
+        // Per repl/spec.md §13, `;#!` lines are run as shell commands.
+        if input.starts_with(";#!") {
+            let cmd = input[3..].trim();
+            run_shell_command(cmd, &mut stdout);
+            // Reset timing — shell commands are not Cranelisp evaluations.
+            last_compile_ms = 0;
+            last_eval_ms = 0;
+            buffer.clear();
+            poll_and_notify_changes(&mut session, &mut stdout);
+            write_prompt(&mut stdout, last_compile_ms, last_eval_ms, &module);
+            continue;
+        }
+
         if input.is_empty() || is_comment_only(input) {
             buffer.clear();
+            poll_and_notify_changes(&mut session, &mut stdout);
             write_prompt(&mut stdout, last_compile_ms, last_eval_ms, &module);
             continue;
         }
 
         if let Some(cmd) = parse_slash_command(input) {
-            let should_quit = dispatch_slash_command(cmd, &mut session, &mut stdout);
+            let cmd_result = dispatch_slash_command(cmd, &mut session, &mut stdout);
             buffer.clear();
-            if should_quit {
+            if cmd_result.quit {
                 break;
             }
+            if cmd_result.reset_timing {
+                last_compile_ms = 0;
+                last_eval_ms = 0;
+            }
             let module = session.core.tc.current_module_path().to_string();
+            poll_and_notify_changes(&mut session, &mut stdout);
             write_prompt(&mut stdout, last_compile_ms, last_eval_ms, &module);
             continue;
         }
@@ -1227,6 +2022,26 @@ pub fn run_repl() {
         if let Some(display) = special_form_feedback(input, &session) {
             let _ = writeln!(stdout, "{display}");
             buffer.clear();
+            poll_and_notify_changes(&mut session, &mut stdout);
+            write_prompt(&mut stdout, last_compile_ms, last_eval_ms, &module);
+            continue;
+        }
+
+        // Error blocking (repl/spec.md §14.4): refuse evaluation when modules
+        // have errors from file watching. Slash commands still work above.
+        if !session.error_modules.is_empty() {
+            let names: Vec<String> = session
+                .error_modules
+                .iter()
+                .map(|mp| mp.as_ref().to_string())
+                .collect();
+            let _ = writeln!(
+                stdout,
+                "Cannot evaluate: module '{}' has errors. Fix the source file and save.",
+                names.join("', '")
+            );
+            buffer.clear();
+            poll_and_notify_changes(&mut session, &mut stdout);
             write_prompt(&mut stdout, last_compile_ms, last_eval_ms, &module);
             continue;
         }
@@ -1236,10 +2051,139 @@ pub fn run_repl() {
 
         buffer.clear();
         let module = session.core.tc.current_module_path().to_string();
+        poll_and_notify_changes(&mut session, &mut stdout);
         write_prompt(&mut stdout, last_compile_ms, last_eval_ms, &module);
     }
 
     let _ = writeln!(stdout);
+}
+
+// ── /reset ────────────────────────────────────────────────────────────────────
+
+/// Handle `/reset` — clear all session state and reload prelude.
+///
+/// Per repl/spec.md §12: clears all user definitions, imports, module switches,
+/// and internal state. Reloads the prelude (from cache if available).
+/// Terminal history is preserved. Object cache on disk is preserved.
+fn handle_reset(session: &mut ReplSession, stdout: &mut impl Write) {
+    let project_root = session.project_root.clone();
+
+    // 0. Delete user.cl so /reset doesn't reload it on next startup.
+    if let Some(ref file_path) = session.current_module_structure.file_path {
+        let _ = std::fs::remove_file(file_path);
+    }
+
+    // 1. Clear all session state by re-creating the compilation core.
+    session.core = crate::pipeline::CompilationSession::new();
+    session.type_defs.clear();
+    session.type_modules.clear();
+    session.pending_changes.clear();
+    session.error_modules.clear();
+    session.file_to_module.clear();
+    // Reset module structure but preserve the file path.
+    let user_cl_path = session.current_module_structure.file_path.clone();
+    session.current_module_structure = ModuleStructure {
+        path: ModuleFullPath::from("user"),
+        file_path: user_cl_path,
+        mod_decls: vec![],
+        import_specs: vec![],
+        export_specs: vec![],
+        impl_sexps: vec![],
+        impls: vec![],
+        dll_path: None,
+    };
+    session.last_saved_hash = None;
+    // Note: loaded_platforms are kept alive — DLL pointers remain valid.
+    // JIT modules from the old session are dropped (code memory may leak;
+    // see design/int/repl-lifecycle.md §2.2).
+
+    // Clear file watcher subscriptions before re-adding after prelude load
+    // (per /arch I-3: avoid stale watches for modules no longer in session).
+    if let Some(ref mut watcher) = session.watcher {
+        watcher.clear_all();
+    }
+
+    // 2. Reload prelude from source (not cache).
+    //
+    // Cache loading is disabled during /reset because the typechecker's
+    // trait and impl registries are not restored from cached symbol tables.
+    // Loading from source ensures check_program registers all traits and
+    // impls needed for method resolution (e.g., Num.+$Int for the + operator).
+    // The performance cost is acceptable — prelude compilation takes <500ms.
+    let lib_dirs = crate::pipeline::assemble_lib_dirs(&project_root);
+    let mut cache_state: Option<crate::pipeline::CacheState> = None;
+    match crate::pipeline::load_prelude_into_session(
+        &project_root,
+        &lib_dirs,
+        &mut session.core,
+        &mut cache_state,
+    ) {
+        Ok(()) => {
+            // Sync type definitions from prelude modules for ADT value display.
+            for (name, info) in session.core.tc.type_def_registry().iter() {
+                session.type_defs.insert(name.clone(), info.clone());
+            }
+            let _ = writeln!(stdout, "Session reset.");
+        }
+        Err(e) => {
+            let _ = writeln!(stdout, "Error: Failed to load prelude: {e}");
+            let _ = writeln!(stdout, "Session reset (no prelude).");
+        }
+    }
+
+    // 3. Rebuild file-to-module mapping and module dependency map.
+    session.file_to_module =
+        crate::pipeline::build_file_to_module_map(&project_root, &lib_dirs);
+    session.module_dependencies =
+        crate::pipeline::build_module_dependency_map(&project_root, &lib_dirs);
+
+    // 4. Reset current module to user.
+    session.core.tc.set_current_module(ModuleFullPath::from("user"));
+
+    // 5. Re-add watched paths for newly loaded prelude modules.
+    update_watched_paths(session);
+}
+
+// ── Shell escape ──────────────────────────────────────────────────────────────
+
+/// Execute a shell command via `/bin/sh -c`.
+///
+/// Per repl/spec.md §13: stdout/stderr are inherited (passthrough),
+/// non-zero exit codes are displayed, empty commands are silently ignored.
+fn run_shell_command(cmd: &str, stdout: &mut impl Write) {
+    if cmd.is_empty() {
+        return; // silently re-prompt per spec §13.6
+    }
+
+    let status = std::process::Command::new("/bin/sh")
+        .arg("-c")
+        .arg(cmd)
+        .stdin(std::process::Stdio::inherit())
+        .stdout(std::process::Stdio::inherit())
+        .stderr(std::process::Stdio::inherit())
+        .status();
+
+    match status {
+        Ok(exit_status) => {
+            if !exit_status.success() {
+                if let Some(code) = exit_status.code() {
+                    let _ = writeln!(stdout, "exit status: {code}");
+                } else {
+                    // Terminated by signal (Unix).
+                    #[cfg(unix)]
+                    {
+                        use std::os::unix::process::ExitStatusExt;
+                        if let Some(sig) = exit_status.signal() {
+                            let _ = writeln!(stdout, "killed by signal: {sig}");
+                        }
+                    }
+                }
+            }
+        }
+        Err(e) => {
+            let _ = writeln!(stdout, "failed to execute command: {e}");
+        }
+    }
 }
 
 // ── Utility functions ─────────────────────────────────────────────────────────

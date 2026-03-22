@@ -19,3 +19,8 @@ tests/e2e/.runs/
 examples/platforms/
 *.dylib
 coverage/
+# REPL session persistence (per-user state, not project source)
+user.cl
+sketch/user.cl
+# Sprint 23 test run artifacts
+tests/sprint23/.runs/

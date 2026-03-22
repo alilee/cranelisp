@@ -70,7 +70,7 @@ Each platform has its own `spec.md` under `platforms/{name}/`. This is the autho
 Consumer skills (`/repl`, `/port`, `/qa`, `/examples`) file requirements on platform specs via the FIXME protocol:
 
 ```html
-<!-- FIXME(/platform): /repl needs `write :: (Fn [String] (IO Int))` for stderr output -->
+<!-- Example: FIXME(/platform): /repl needs `fn-name :: (Fn [ParamType] (IO ReturnType))` for feature X -->
 ```
 
 `/platform` evaluates each FIXME, adds the function to the platform spec and implementation, or responds with rationale for deferral.

@@ -266,6 +266,43 @@ pub fn apply(subst: &Subst, ty: &Type) -> Type {
     }
 }
 
+/// Find the maximum TypeId used in a type (including in Var and TyConApp).
+///
+/// Returns `None` if the type contains no type variables or type constructors.
+/// Used to advance the typechecker's `next_id` past type vars from cached modules
+/// to prevent ID collisions during instantiation.
+pub fn max_type_var_id(ty: &Type) -> Option<TypeId> {
+    let mut max_id: Option<TypeId> = None;
+    collect_max_type_var_id(ty, &mut max_id);
+    max_id
+}
+
+fn collect_max_type_var_id(ty: &Type, max_id: &mut Option<TypeId>) {
+    match ty {
+        Type::Var(id) => {
+            *max_id = Some(max_id.map_or(*id, |m| m.max(*id)));
+        }
+        Type::TyConApp(id, args) => {
+            *max_id = Some(max_id.map_or(*id, |m| m.max(*id)));
+            for a in args {
+                collect_max_type_var_id(a, max_id);
+            }
+        }
+        Type::Fn(params, ret) => {
+            for p in params {
+                collect_max_type_var_id(p, max_id);
+            }
+            collect_max_type_var_id(ret, max_id);
+        }
+        Type::ADT(_, args) => {
+            for a in args {
+                collect_max_type_var_id(a, max_id);
+            }
+        }
+        Type::Int | Type::Bool | Type::String | Type::Float => {}
+    }
+}
+
 /// Collect free (unbound) type variables in a type.
 pub fn free_vars(ty: &Type) -> HashSet<TypeId> {
     let mut result = HashSet::new();

@@ -42,6 +42,7 @@ Delivery progress for the Cranelisp reimplementation. For technical scope per ri
 | 20 | Ring 4E Trace & Debt Clearance — trace special form (spec §4.12, codegen, runtime, stdlib), display format extraction (§12.9), borrowed-var RC fix, IO display fix, /mod conformance, exemplar IO, docs validation, Ring 3 traceability, Principle 10 (module-scoped special forms), sketch consultation: 1241 tests, 8 ignored, 0 failures | COMPLETE | `sprints/archive/sprint-20.md` |
 | 21 | Ring 4F Testing Infrastructure & Auto-Currying — auto-curry (typecheck+codegen+constrained poly fix), /run-tests REPL handler, run-tests codegen, stdlib testing helpers, cargo-llvm-cov coverage tooling (86.72% baseline), crate-vs-sketch audit, code quality review, repl.rs refactoring (5 modules), unsafe blocker fix, coverage gap analysis: 1609 tests, 11 ignored, 0 failures | COMPLETE | `sprints/archive/sprint-21.md` |
 | 22 | Module Caching & Spec Advancement — end-to-end module caching (.o generation + Linker loading + cascade invalidation + --no-cache), CompilationSession pipeline convergence, generic FnCompiler\<M: Module\>, non-Var auto-curry rejection, run-tests parser, trait method GOT fix, terminal styling spec, consolidated intrinsic symbols, flaky trace test fix, caching design addendum §13: 1312 tests, 9 ignored, 0 failures | COMPLETE | `sprints/archive/sprint-22.md` |
+| 23 | Executable, Hot-Reload & REPL Lifecycle — standalone executable (`--link`), file watching (eager recompile, cascade, error blocking), shell escape (`;#!`), session persistence (`user.cl` source regeneration + cache), REPL cache integration (trait/impl restore, macro recompile, TypeId fix), batch `main` requirement, demo trampoline, local file import, 5 FIXMEs resolved, 3 specs rewritten: 1411 tests, 4 ignored, 0 failures | COMPLETE | `sprints/archive/sprint-23.md` |
 
 ## Forward Plan (Ring 4 Completion)
 
@@ -50,5 +51,6 @@ Remaining Ring 4 features mapped to sprints. Scope is indicative — each sprint
 | Sprint | Theme | Key Features | Skills | Dependencies |
 |--------|-------|-------------|--------|--------------|
 | ~~22~~ | ~~Module Caching~~ | ~~Done~~ | | |
-| **23** | Executable & Hot-reload | Standalone executable generation (`--compile`), REPL file watching, `/reload` command | /backend, /int, /qa | Caching (S22) |
-| **24** | Lenient Eval & Auto IO Scheduling | Lenient evaluation (§12.4.3 — dependency analysis, cost model, thread pool), automatic IO scheduling (§10.12 — Par node, trampoline redesign, resource tokens) | /typecheck, /backend, /int, /qa, /platform | IO model (done), caching (S22) |
+| ~~23~~ | ~~Executable, Hot-Reload & REPL Lifecycle~~ | ~~Done~~ | | |
+| **24** | HKT, Lazy Sequences & Terminal Styling | Higher-kinded types (§3.7, §5.3.2, §5.4.4, §7.2), lazy sequences (§12.4.2), terminal styling implementation (spec done S22) — clearing 4 ignored tests | /typecheck, /backend, /int, /qa | Ring 3 complete |
+| **25** | Lenient Eval & Auto IO Scheduling | Lenient evaluation (§12.4.3 — dependency analysis, cost model, thread pool), automatic IO scheduling (§10.12 — Par node, trampoline redesign, resource tokens) | /typecheck, /backend, /int, /qa, /platform | IO model (done), caching (S22) |
