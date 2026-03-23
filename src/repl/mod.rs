@@ -1009,6 +1009,14 @@ impl ReplSession {
             .as_ref()
             .is_some_and(|s| !s.constraints.is_empty());
 
+        // Compile any monomorphised specializations before the defn body.
+        // When a non-constrained defn calls a constrained function (e.g.,
+        // `(defn main [] (countdown 1000000))` where `countdown` is constrained-poly),
+        // the typechecker generates mono_defns (e.g., `countdown$Int`). These must
+        // be compiled and registered in the GOT before the defn body is compiled,
+        // otherwise the GOT lookup for the mangled name will fail.
+        self.compile_mono_defns(check_result)?;
+
         if !is_constrained {
             let check = self.build_check_for_backend(check_result);
             self.compile_and_register_defn(defn, &check)?;
@@ -2604,6 +2612,7 @@ mod tests {
     #[test]
     fn test_repl_defmacro_quasiquote() {
         let mut session = ReplSession::new();
+        session.eval("(import [primitives [add-i64]])").unwrap();
 
         session.eval("(defmacro inc1 [x] `(add-i64 1 ~x))").unwrap();
 
@@ -2631,6 +2640,7 @@ mod tests {
     #[test]
     fn test_repl_macro_error_recovery() {
         let mut session = ReplSession::new();
+        session.eval("(import [primitives [add-i64]])").unwrap();
 
         // Define a macro.
         session.eval("(defmacro id [x] x)").unwrap();
@@ -2648,6 +2658,7 @@ mod tests {
     #[test]
     fn test_repl_no_macros_unchanged() {
         let mut session = ReplSession::new();
+        session.eval("(import [primitives [add-i64]])").unwrap();
         let result = session.eval("(add-i64 1 2)").unwrap();
         assert_eq!(result.value, 3);
     }

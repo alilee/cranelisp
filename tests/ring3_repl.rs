@@ -640,7 +640,7 @@ fn r3_batch_macro_in_function_body() {
     use cranelisp_types::CompileMode;
 
     let src = r#"
-(defmacro inc [x] `(add-i64 ~x 1))
+(defmacro inc [x] `(primitives/add-i64 ~x 1))
 (defn add-two [n] (inc (inc n)))
 (defn main [] (add-two 40))
 "#;
@@ -655,8 +655,8 @@ fn r3_batch_macro_multiple_uses() {
     use cranelisp_types::CompileMode;
 
     let src = r#"
-(defmacro double [x] `(add-i64 ~x ~x))
-(defn main [] (add-i64 (double 10) (double 11)))
+(defmacro double [x] `(primitives/add-i64 ~x ~x))
+(defn main [] (primitives/add-i64 (double 10) (double 11)))
 "#;
     let result = pipeline::compile_and_run(src, CompileMode::Batch).unwrap();
     assert_eq!(result.value, 42);

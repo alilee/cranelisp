@@ -284,13 +284,13 @@ impl TypeChecker {
                             .iter()
                             .map(|t| self.apply_subst(t))
                             .collect();
-                        let resolution = if let Some(r) =
+                        let resolution = match
                             self.try_resolve_trait_method(name, &resolved_params, span)
                         {
-                            Some(r)
-                        } else {
-                            self.resolve_primitive_jit_name(name)
-                                .map(|jit_name| ResolvedCall::BuiltinFn { name: jit_name })
+                            Ok(Some(r)) => Some(r),
+                            Ok(None) => self.resolve_primitive_jit_name(name)
+                                .map(|jit_name| ResolvedCall::BuiltinFn { name: jit_name }),
+                            Err(e) => return Err(e),
                         };
                         if resolution.is_some() {
                             // Attach to the last pending_auto_curry entry (the one
@@ -315,7 +315,7 @@ impl TypeChecker {
                 .collect();
 
             if let Some(resolution) =
-                self.try_resolve_trait_method(name, &resolved_args, span)
+                self.try_resolve_trait_method(name, &resolved_args, span)?
             {
                 // Trait method resolution (Ring 2): operators like +, -, =, <
                 self.method_resolutions.insert(span, resolution);
@@ -476,7 +476,7 @@ impl TypeChecker {
                                 .unwrap_or_else(|| Type::Var(0))
                         })
                         .collect();
-                    if let Some(resolution) =
+                    if let Ok(Some(resolution)) =
                         self.try_resolve_trait_method(name, &resolved_args, *span)
                     {
                         self.method_resolutions.insert(*span, resolution);
@@ -845,15 +845,18 @@ impl TypeChecker {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use cranelisp_types::{ConstructorDef, Span, TypeName, Visibility};
+    use cranelisp_types::{ConstructorDef, ModuleEntry, ModuleFullPath, Span, Symbol, TypeName, Visibility};
 
     fn span(start: u32, end: u32) -> Span {
         Span::new(start, end)
     }
 
     /// Create a TypeChecker with builtins for testing.
+    /// Uses set_current_module to create a "test" module seeded with primitives.
     fn tc() -> TypeChecker {
-        TypeChecker::new()
+        let mut tc = TypeChecker::new();
+        tc.set_current_module(ModuleFullPath::from("test"));
+        tc
     }
 
     /// Register a simple enum type for testing.
@@ -2466,5 +2469,336 @@ mod tests {
 
         // Should succeed (constrained fn in call position is allowed)
         assert!(tc.infer_expr(&expr).is_ok());
+    }
+
+    // -----------------------------------------------------------------------
+    // Trait constraint eagerness: trait methods with wrong types error at call site
+    // -----------------------------------------------------------------------
+
+    /// Set up Num trait with + method (impl for Int, Float only)
+    /// and Ord trait with < method (impl for Int, Float only).
+    fn register_num_and_ord_traits(tc: &mut TypeChecker) {
+        use cranelisp_types::{TraitDecl, TraitImpl, TraitMethodSig, TraitName, TypeExpr, Defn};
+
+        // Num trait: + :: (Fn [a a] a)
+        let num_decl = TraitDecl {
+            name: TraitName::from("Num"),
+            docstring: None,
+            type_params: vec![Symbol::from("a")],
+            methods: vec![TraitMethodSig {
+                name: Symbol::from("+"),
+                docstring: None,
+                params: vec![
+                    TypeExpr::TypeVar(Symbol::from("a")),
+                    TypeExpr::TypeVar(Symbol::from("a")),
+                ],
+                ret_type: TypeExpr::TypeVar(Symbol::from("a")),
+                span: Span::SYNTHETIC,
+                hkt_param_index: None,
+                default_param_names: vec![Symbol::from("lhs"), Symbol::from("rhs")],
+                default_body: None,
+            }],
+            visibility: Visibility::Public,
+            span: Span::SYNTHETIC,
+        };
+        tc.register_trait_decl(&num_decl).unwrap();
+
+        // impl Num for Int
+        let int_impl = TraitImpl {
+            trait_name: TraitName::from("Num"),
+            target_type: TypeName::from("Int"),
+            type_args: vec![],
+            type_constraints: vec![],
+            methods: vec![Defn {
+                name: Symbol::from("+"),
+                docstring: None,
+                params: vec![Symbol::from("x"), Symbol::from("y")],
+                param_annotations: vec![None, None],
+                body: Expr::Apply {
+                    callee: Box::new(Expr::Var {
+                        name: Symbol::from("add-i64"),
+                        span: Span::SYNTHETIC,
+                    }),
+                    args: vec![
+                        Expr::Var { name: Symbol::from("x"), span: Span::SYNTHETIC },
+                        Expr::Var { name: Symbol::from("y"), span: Span::SYNTHETIC },
+                    ],
+                    span: Span::SYNTHETIC,
+                },
+                visibility: Visibility::Public,
+                span: Span::SYNTHETIC,
+            }],
+            span: Span::SYNTHETIC,
+        };
+        tc.register_trait_impl(&int_impl).unwrap();
+
+        // impl Num for Float
+        let float_impl = TraitImpl {
+            trait_name: TraitName::from("Num"),
+            target_type: TypeName::from("Float"),
+            type_args: vec![],
+            type_constraints: vec![],
+            methods: vec![Defn {
+                name: Symbol::from("+"),
+                docstring: None,
+                params: vec![Symbol::from("x"), Symbol::from("y")],
+                param_annotations: vec![None, None],
+                body: Expr::Apply {
+                    callee: Box::new(Expr::Var {
+                        name: Symbol::from("add-f64"),
+                        span: Span::SYNTHETIC,
+                    }),
+                    args: vec![
+                        Expr::Var { name: Symbol::from("x"), span: Span::SYNTHETIC },
+                        Expr::Var { name: Symbol::from("y"), span: Span::SYNTHETIC },
+                    ],
+                    span: Span::SYNTHETIC,
+                },
+                visibility: Visibility::Public,
+                span: Span::SYNTHETIC,
+            }],
+            span: Span::SYNTHETIC,
+        };
+        tc.register_trait_impl(&float_impl).unwrap();
+
+        // Ord trait: < :: (Fn [a a] Bool)
+        let ord_decl = TraitDecl {
+            name: TraitName::from("Ord"),
+            docstring: None,
+            type_params: vec![Symbol::from("a")],
+            methods: vec![TraitMethodSig {
+                name: Symbol::from("<"),
+                docstring: None,
+                params: vec![
+                    TypeExpr::TypeVar(Symbol::from("a")),
+                    TypeExpr::TypeVar(Symbol::from("a")),
+                ],
+                ret_type: TypeExpr::Named(TypeName::from("Bool")),
+                span: Span::SYNTHETIC,
+                hkt_param_index: None,
+                default_param_names: vec![Symbol::from("lhs"), Symbol::from("rhs")],
+                default_body: None,
+            }],
+            visibility: Visibility::Public,
+            span: Span::SYNTHETIC,
+        };
+        tc.register_trait_decl(&ord_decl).unwrap();
+
+        // impl Ord for Int
+        let int_ord_impl = TraitImpl {
+            trait_name: TraitName::from("Ord"),
+            target_type: TypeName::from("Int"),
+            type_args: vec![],
+            type_constraints: vec![],
+            methods: vec![Defn {
+                name: Symbol::from("<"),
+                docstring: None,
+                params: vec![Symbol::from("x"), Symbol::from("y")],
+                param_annotations: vec![None, None],
+                body: Expr::Apply {
+                    callee: Box::new(Expr::Var {
+                        name: Symbol::from("lt-i64"),
+                        span: Span::SYNTHETIC,
+                    }),
+                    args: vec![
+                        Expr::Var { name: Symbol::from("x"), span: Span::SYNTHETIC },
+                        Expr::Var { name: Symbol::from("y"), span: Span::SYNTHETIC },
+                    ],
+                    span: Span::SYNTHETIC,
+                },
+                visibility: Visibility::Public,
+                span: Span::SYNTHETIC,
+            }],
+            span: Span::SYNTHETIC,
+        };
+        tc.register_trait_impl(&int_ord_impl).unwrap();
+
+        tc.clear_transient_state();
+    }
+
+    // spec: 07-traits §7.4.3 — (+ true true) errors: Bool has no Num impl
+    #[test]
+    fn test_trait_method_plus_bool_error() {
+        let mut tc = tc();
+        register_num_and_ord_traits(&mut tc);
+
+        // (+ true true)
+        let expr = Expr::Apply {
+            callee: Box::new(Expr::Var {
+                name: Symbol::from("+"),
+                span: span(4001, 4002),
+            }),
+            args: vec![
+                Expr::BoolLit { value: true, span: span(4003, 4007) },
+                Expr::BoolLit { value: true, span: span(4008, 4012) },
+            ],
+            span: span(4000, 4013),
+        };
+
+        let err = tc.infer_expr(&expr).unwrap_err();
+        assert!(
+            err.message().contains("no impl of trait Num for type Bool"),
+            "expected Num/Bool error, got: {}",
+            err.message()
+        );
+    }
+
+    // spec: 07-traits §7.4.3 — (+ "a" "b") errors: String has no Num impl
+    #[test]
+    fn test_trait_method_plus_string_error() {
+        let mut tc = tc();
+        register_num_and_ord_traits(&mut tc);
+
+        // (+ "a" "b")
+        let expr = Expr::Apply {
+            callee: Box::new(Expr::Var {
+                name: Symbol::from("+"),
+                span: span(4101, 4102),
+            }),
+            args: vec![
+                Expr::StringLit { value: "a".to_string(), span: span(4103, 4106) },
+                Expr::StringLit { value: "b".to_string(), span: span(4107, 4110) },
+            ],
+            span: span(4100, 4111),
+        };
+
+        let err = tc.infer_expr(&expr).unwrap_err();
+        assert!(
+            err.message().contains("no impl of trait Num for type String"),
+            "expected Num/String error, got: {}",
+            err.message()
+        );
+    }
+
+    // spec: 07-traits §7.4.3 — (< true false) errors: Bool has no Ord impl
+    #[test]
+    fn test_trait_method_lt_bool_error() {
+        let mut tc = tc();
+        register_num_and_ord_traits(&mut tc);
+
+        // (< true false)
+        let expr = Expr::Apply {
+            callee: Box::new(Expr::Var {
+                name: Symbol::from("<"),
+                span: span(4201, 4202),
+            }),
+            args: vec![
+                Expr::BoolLit { value: true, span: span(4203, 4207) },
+                Expr::BoolLit { value: false, span: span(4208, 4213) },
+            ],
+            span: span(4200, 4214),
+        };
+
+        let err = tc.infer_expr(&expr).unwrap_err();
+        assert!(
+            err.message().contains("no impl of trait Ord for type Bool"),
+            "expected Ord/Bool error, got: {}",
+            err.message()
+        );
+    }
+
+    // spec: 07-traits §7.4.3 — (< "a" "b") errors: String has no Ord impl
+    #[test]
+    fn test_trait_method_lt_string_error() {
+        let mut tc = tc();
+        register_num_and_ord_traits(&mut tc);
+
+        // (< "a" "b")
+        let expr = Expr::Apply {
+            callee: Box::new(Expr::Var {
+                name: Symbol::from("<"),
+                span: span(4301, 4302),
+            }),
+            args: vec![
+                Expr::StringLit { value: "a".to_string(), span: span(4303, 4306) },
+                Expr::StringLit { value: "b".to_string(), span: span(4307, 4310) },
+            ],
+            span: span(4300, 4311),
+        };
+
+        let err = tc.infer_expr(&expr).unwrap_err();
+        assert!(
+            err.message().contains("no impl of trait Ord for type String"),
+            "expected Ord/String error, got: {}",
+            err.message()
+        );
+    }
+
+    // spec: 07-traits §7.4.3 — (+ 1 true) errors: type mismatch (Int vs Bool)
+    #[test]
+    fn test_trait_method_mixed_types_error() {
+        let mut tc = tc();
+        register_num_and_ord_traits(&mut tc);
+
+        // (+ 1 true) — first arg is Int, second is Bool → unification error
+        let expr = Expr::Apply {
+            callee: Box::new(Expr::Var {
+                name: Symbol::from("+"),
+                span: span(4401, 4402),
+            }),
+            args: vec![
+                Expr::IntLit { value: 1, span: span(4403, 4404) },
+                Expr::BoolLit { value: true, span: span(4405, 4409) },
+            ],
+            span: span(4400, 4410),
+        };
+
+        // Should error: either unification fails (Int vs Bool) or constraint fails
+        assert!(tc.infer_expr(&expr).is_err());
+    }
+
+    // spec: 07-traits §7.4.1 — (+ 1 2) succeeds: Int has Num impl
+    #[test]
+    fn test_trait_method_plus_int_succeeds() {
+        let mut tc = tc();
+        register_num_and_ord_traits(&mut tc);
+
+        // (+ 1 2) -> Int
+        let expr = Expr::Apply {
+            callee: Box::new(Expr::Var {
+                name: Symbol::from("+"),
+                span: span(4501, 4502),
+            }),
+            args: vec![
+                Expr::IntLit { value: 1, span: span(4503, 4504) },
+                Expr::IntLit { value: 2, span: span(4505, 4506) },
+            ],
+            span: span(4500, 4507),
+        };
+
+        let ty = tc.infer_expr(&expr).unwrap();
+        assert_eq!(ty, Type::Int);
+
+        // Check TraitMethod resolution was recorded
+        let resolution = tc.method_resolutions.get(&span(4500, 4507)).unwrap();
+        match resolution {
+            ResolvedCall::TraitMethod { mangled_name, .. } => {
+                assert_eq!(mangled_name.as_ref(), "Num.+$Int");
+            }
+            _ => panic!("expected TraitMethod resolution, got {resolution:?}"),
+        }
+    }
+
+    // spec: 07-traits §7.4.1 — (+ 1.0 2.0) succeeds: Float has Num impl
+    #[test]
+    fn test_trait_method_plus_float_succeeds() {
+        let mut tc = tc();
+        register_num_and_ord_traits(&mut tc);
+
+        // (+ 1.0 2.0) -> Float
+        let expr = Expr::Apply {
+            callee: Box::new(Expr::Var {
+                name: Symbol::from("+"),
+                span: span(4601, 4602),
+            }),
+            args: vec![
+                Expr::FloatLit { value: 1.0, span: span(4603, 4606) },
+                Expr::FloatLit { value: 2.0, span: span(4607, 4610) },
+            ],
+            span: span(4600, 4611),
+        };
+
+        let ty = tc.infer_expr(&expr).unwrap();
+        assert_eq!(ty, Type::Float);
     }
 }

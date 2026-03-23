@@ -322,9 +322,10 @@ fn trace_composability_pattern_match() {
 // spec: 04-expressions §4.12 + 03-types §3.2.4 — trace without import fails
 #[test]
 fn trace_without_import_fails() {
-    let mut s = repl_session();
+    // Use bare session (no primitives import) to test that trace is unavailable
+    let mut s = repl_session_with(None, None);
     // trace is NOT auto-imported; using it without import should error
-    let result = s.eval("(trace (add-i64 1 2))");
+    let result = s.eval("(trace 42)");
     assert!(
         result.is_err(),
         "trace without import should produce an error"

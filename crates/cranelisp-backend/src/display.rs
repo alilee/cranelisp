@@ -7,7 +7,8 @@
 use std::collections::HashMap;
 
 use cranelisp_types::{
-    ModuleFullPath, Scheme, Type, TypeDefInfo, TypeId, TypeName, NULLARY_TAG_THRESHOLD,
+    ModuleFullPath, Scheme, TraitName, Type, TypeDefInfo, TypeId, TypeName,
+    NULLARY_TAG_THRESHOLD,
 };
 
 use crate::heap::{HeapAdt, HeapVec};
@@ -100,10 +101,10 @@ pub fn format_type_qualified(
 /// Format a constrained function's scheme for REPL display (spec §1.3).
 ///
 /// Produces inline-constraint notation:
-///   `:(Fn [:Num a :a] a) user/double`
+///   `:(Fn [:Num a :Num a] a) user/double`
 ///
-/// On first occurrence of a constrained type variable, the constraint trait
-/// is shown as `:TraitName var`. Subsequent occurrences use `:var`.
+/// Every occurrence of a constrained type variable in parameter position
+/// is shown as `:TraitName var` (spec §3.5.1).
 /// Unconstrained variables appear bare.
 pub fn format_scheme_display(
     name: &str,
@@ -122,14 +123,10 @@ pub fn format_scheme_display(
         constraint_map.insert(*type_id, trait_strs);
     }
 
-    // Track which constrained vars have been "introduced" (first occurrence shown).
-    let mut introduced: std::collections::HashSet<TypeId> = std::collections::HashSet::new();
-
     let type_str = format_type_with_inline_constraints(
         &scheme.ty,
         &var_names,
         &constraint_map,
-        &mut introduced,
         false,
         type_modules,
     );
@@ -212,14 +209,12 @@ fn format_type_qualified_inner(
 /// Format a type with inline constraint annotations (spec §1.3, §1.4).
 ///
 /// Type names are fully qualified. Inside function param lists (`in_params = true`):
-///   first occurrence of constrained var: `:TraitName var`
-///   subsequent occurrences: `:var`
+///   every occurrence of constrained var: `:TraitName var` (spec §3.5.1)
 /// Outside param lists (return type, ADT args): vars are always bare.
 fn format_type_with_inline_constraints(
     ty: &Type,
     var_names: &HashMap<TypeId, String>,
     constraints: &HashMap<TypeId, Vec<&str>>,
-    introduced: &mut std::collections::HashSet<TypeId>,
     in_params: bool,
     type_modules: &HashMap<TypeName, ModuleFullPath>,
 ) -> String {
@@ -233,12 +228,12 @@ fn format_type_with_inline_constraints(
                 .iter()
                 .map(|p| {
                     format_type_with_inline_constraints(
-                        p, var_names, constraints, introduced, true, type_modules,
+                        p, var_names, constraints, true, type_modules,
                     )
                 })
                 .collect();
             let ret_s = format_type_with_inline_constraints(
-                ret, var_names, constraints, introduced, false, type_modules,
+                ret, var_names, constraints, false, type_modules,
             );
             format!("(Fn [{}] {ret_s})", parts.join(" "))
         }
@@ -251,7 +246,7 @@ fn format_type_with_inline_constraints(
                     .iter()
                     .map(|a| {
                         format_type_with_inline_constraints(
-                            a, var_names, constraints, introduced, false, type_modules,
+                            a, var_names, constraints, false, type_modules,
                         )
                     })
                     .collect();
@@ -265,15 +260,10 @@ fn format_type_with_inline_constraints(
                 .unwrap_or_else(|| format!("t{id}"));
             if in_params {
                 if let Some(traits) = constraints.get(id) {
-                    if !introduced.contains(id) {
-                        // First occurrence in params: show `:TraitName var`
-                        introduced.insert(*id);
-                        let trait_prefix = traits.join(" ");
-                        format!(":{trait_prefix} {var_name}")
-                    } else {
-                        // Subsequent occurrence in params: show `:var`
-                        format!(":{var_name}")
-                    }
+                    // Every occurrence in params: show `:TraitName var`
+                    let trait_prefix: Vec<String> =
+                        traits.iter().map(|t| format!(":{t}")).collect();
+                    format!("{} {var_name}", trait_prefix.join(" "))
                 } else {
                     // Unconstrained var in params: bare name
                     var_name
@@ -295,7 +285,7 @@ fn format_type_with_inline_constraints(
                     .iter()
                     .map(|a| {
                         format_type_with_inline_constraints(
-                            a, var_names, constraints, introduced, false, type_modules,
+                            a, var_names, constraints, false, type_modules,
                         )
                     })
                     .collect();
@@ -745,6 +735,50 @@ mod tests {
         let ty = Type::Fn(vec![Type::Int], Box::new(Type::Int));
         let s = format_result_value(0, &ty, &HashMap::new(), &HashMap::new());
         assert_eq!(s, ":(Fn [primitives/Int] primitives/Int) <closure>");
+    }
+
+    // --- format_scheme_display: constrained types ---
+
+    // spec: spec/03-types.md §3.5.1 — constraint prefix repeated on every occurrence
+    #[test]
+    fn format_scheme_display_repeats_constraints_on_every_var_occurrence() {
+        // (Fn [:Num a :Num a] a) — two params with same constrained var
+        let var_id = 100;
+        let scheme = Scheme {
+            vars: vec![var_id],
+            constraints: HashMap::from([(var_id, vec![TraitName::from("Num")])]),
+            ty: Type::Fn(
+                vec![Type::Var(var_id), Type::Var(var_id)],
+                Box::new(Type::Var(var_id)),
+            ),
+        };
+        let module = ModuleFullPath::from("user");
+        let type_modules: HashMap<TypeName, ModuleFullPath> = HashMap::new();
+        let s = format_scheme_display("add", &scheme, &module, &type_modules);
+        assert_eq!(s, ":(Fn [:Num a :Num a] a) user/add");
+    }
+
+    // spec: spec/03-types.md §3.5.1 — multiple constraints repeated on every occurrence
+    #[test]
+    fn format_scheme_display_repeats_multiple_constraints() {
+        // (Fn [:Eq :Num a :Eq :Num a] a)
+        let var_id = 100;
+        let scheme = Scheme {
+            vars: vec![var_id],
+            constraints: HashMap::from([(
+                var_id,
+                vec![TraitName::from("Num"), TraitName::from("Eq")],
+            )]),
+            ty: Type::Fn(
+                vec![Type::Var(var_id), Type::Var(var_id)],
+                Box::new(Type::Var(var_id)),
+            ),
+        };
+        let module = ModuleFullPath::from("user");
+        let type_modules: HashMap<TypeName, ModuleFullPath> = HashMap::new();
+        let s = format_scheme_display("bar", &scheme, &module, &type_modules);
+        // Traits are sorted alphabetically: Eq before Num
+        assert_eq!(s, ":(Fn [:Eq :Num a :Eq :Num a] a) user/bar");
     }
 
     // --- format_result: convenience wrapper ---

@@ -17,6 +17,7 @@
 mod helpers;
 
 use helpers::*;
+use cranelisp::repl::ReplSession;
 use cranelisp_types::Type;
 
 // ---------------------------------------------------------------------------
@@ -24,13 +25,13 @@ use cranelisp_types::Type;
 // ---------------------------------------------------------------------------
 
 fn num_trait_prelude() -> &'static str {
-    r#"(deftrait Num (+ [self other] self) (- [self other] self) (* [self other] self) (/ [self other] self))
+    r#"(deftrait Num (+ [self self] self) (- [self self] self) (* [self self] self) (/ [self self] self))
 (impl Num Int (defn + [a b] (add-i64 a b)) (defn - [a b] (sub-i64 a b)) (defn * [a b] (mul-i64 a b)) (defn / [a b] (div-i64 a b)))
 (impl Num Float (defn + [a b] (add-f64 a b)) (defn - [a b] (sub-f64 a b)) (defn * [a b] (mul-f64 a b)) (defn / [a b] (div-f64 a b)))"#
 }
 
 fn eq_trait_prelude() -> &'static str {
-    r#"(deftrait Eq (= [self other] Bool) (!= [self other] Bool))
+    r#"(deftrait Eq (= [self self] Bool) (!= [self self] Bool))
 (impl Eq Int (defn = [a b] (eq-i64 a b)) (defn != [a b] (not (eq-i64 a b))))
 (impl Eq Float (defn = [a b] (eq-f64 a b)) (defn != [a b] (not (eq-f64 a b))))
 (impl Eq String (defn = [a b] (str-eq a b)) (defn != [a b] (not (str-eq a b))))
@@ -38,7 +39,7 @@ fn eq_trait_prelude() -> &'static str {
 }
 
 fn ord_trait_prelude() -> &'static str {
-    r#"(deftrait Ord (< [self other] Bool) (> [self other] Bool) (<= [self other] Bool) (>= [self other] Bool))
+    r#"(deftrait Ord (< [self self] Bool) (> [self self] Bool) (<= [self self] Bool) (>= [self self] Bool))
 (impl Ord Int (defn < [a b] (lt-i64 a b)) (defn > [a b] (gt-i64 a b)) (defn <= [a b] (le-i64 a b)) (defn >= [a b] (ge-i64 a b)))
 (impl Ord Float (defn < [a b] (lt-f64 a b)) (defn > [a b] (gt-f64 a b)) (defn <= [a b] (le-f64 a b)) (defn >= [a b] (ge-f64 a b)))"#
 }
@@ -57,17 +58,17 @@ fn with_traits(src: &str) -> String {
 /// Each form is eval'd separately since the REPL processes one top-level form at a time.
 fn load_traits(session: &mut cranelisp::repl::ReplSession) {
     // Num trait
-    session.eval("(deftrait Num (+ [self other] self) (- [self other] self) (* [self other] self) (/ [self other] self))").unwrap_or_else(|e| panic!("failed to load Num deftrait: {e}"));
+    session.eval("(deftrait Num (+ [self self] self) (- [self self] self) (* [self self] self) (/ [self self] self))").unwrap_or_else(|e| panic!("failed to load Num deftrait: {e}"));
     session.eval("(impl Num Int (defn + [a b] (add-i64 a b)) (defn - [a b] (sub-i64 a b)) (defn * [a b] (mul-i64 a b)) (defn / [a b] (div-i64 a b)))").unwrap_or_else(|e| panic!("failed to load Num impl Int: {e}"));
     session.eval("(impl Num Float (defn + [a b] (add-f64 a b)) (defn - [a b] (sub-f64 a b)) (defn * [a b] (mul-f64 a b)) (defn / [a b] (div-f64 a b)))").unwrap_or_else(|e| panic!("failed to load Num impl Float: {e}"));
     // Eq trait (with !=)
-    session.eval("(deftrait Eq (= [self other] Bool) (!= [self other] Bool))").unwrap_or_else(|e| panic!("failed to load Eq deftrait: {e}"));
+    session.eval("(deftrait Eq (= [self self] Bool) (!= [self self] Bool))").unwrap_or_else(|e| panic!("failed to load Eq deftrait: {e}"));
     session.eval("(impl Eq Int (defn = [a b] (eq-i64 a b)) (defn != [a b] (not (eq-i64 a b))))").unwrap_or_else(|e| panic!("failed to load Eq impl Int: {e}"));
     session.eval("(impl Eq Float (defn = [a b] (eq-f64 a b)) (defn != [a b] (not (eq-f64 a b))))").unwrap_or_else(|e| panic!("failed to load Eq impl Float: {e}"));
     session.eval(r#"(impl Eq String (defn = [a b] (str-eq a b)) (defn != [a b] (not (str-eq a b))))"#).unwrap_or_else(|e| panic!("failed to load Eq impl String: {e}"));
     session.eval("(impl Eq Bool (defn = [a b] (eq-bool a b)) (defn != [a b] (not (eq-bool a b))))").unwrap_or_else(|e| panic!("failed to load Eq impl Bool: {e}"));
     // Ord trait (with >, <=, >=)
-    session.eval("(deftrait Ord (< [self other] Bool) (> [self other] Bool) (<= [self other] Bool) (>= [self other] Bool))").unwrap_or_else(|e| panic!("failed to load Ord deftrait: {e}"));
+    session.eval("(deftrait Ord (< [self self] Bool) (> [self self] Bool) (<= [self self] Bool) (>= [self self] Bool))").unwrap_or_else(|e| panic!("failed to load Ord deftrait: {e}"));
     session.eval("(impl Ord Int (defn < [a b] (lt-i64 a b)) (defn > [a b] (gt-i64 a b)) (defn <= [a b] (le-i64 a b)) (defn >= [a b] (ge-i64 a b)))").unwrap_or_else(|e| panic!("failed to load Ord impl Int: {e}"));
     session.eval("(impl Ord Float (defn < [a b] (lt-f64 a b)) (defn > [a b] (gt-f64 a b)) (defn <= [a b] (le-f64 a b)) (defn >= [a b] (ge-f64 a b)))").unwrap_or_else(|e| panic!("failed to load Ord impl Float: {e}"));
 }
@@ -454,68 +455,56 @@ fn fn_factorial_with_operators() {
 // spec: 03-types §3.6 — constrained polymorphic fibonacci
 #[test]
 fn constrained_fn_fibonacci() {
-    let src = &with_traits("
-        (defn fib [n]
-          (if (= n 0) 0
-            (if (= n 1) 1
-              (+ (fib (- n 1)) (fib (- n 2))))))
-        (defn main [] (fib 10))
-    ");
-    assert_eq!(compile_and_run_simple(src), 55);
+    let mut session = repl_session();
+    load_traits(&mut session);
+    repl_eval(&mut session, "(defn fib [n] (if (= n 0) 0 (if (= n 1) 1 (+ (fib (- n 1)) (fib (- n 2))))))");
+    assert_eq!(repl_eval(&mut session, "(fib 10)"), 55);
 }
 
 // spec: 03-types §3.6 — constrained polymorphic clamp
 #[test]
 fn constrained_fn_clamp() {
-    let src = &with_traits("
-        (defn clamp [x lo hi]
-          (if (< x lo) lo (if (< hi x) hi x)))
-        (defn main [] (clamp 5 0 10))
-    ");
-    assert_eq!(compile_and_run_simple(src), 5);
+    let mut session = repl_session();
+    load_traits(&mut session);
+    repl_eval(&mut session, "(defn clamp [x lo hi] (if (< x lo) lo (if (< hi x) hi x)))");
+    assert_eq!(repl_eval(&mut session, "(clamp 5 0 10)"), 5);
 }
 
 // spec: 03-types §3.6 — constrained poly clamp low
 #[test]
 fn constrained_fn_clamp_low() {
-    let src = &with_traits("
-        (defn clamp [x lo hi]
-          (if (< x lo) lo (if (< hi x) hi x)))
-        (defn main [] (clamp -5 0 10))
-    ");
-    assert_eq!(compile_and_run_simple(src), 0);
+    let mut session = repl_session();
+    load_traits(&mut session);
+    repl_eval(&mut session, "(defn clamp [x lo hi] (if (< x lo) lo (if (< hi x) hi x)))");
+    assert_eq!(repl_eval(&mut session, "(clamp -5 0 10)"), 0);
 }
 
 // spec: 03-types §3.6 — constrained poly clamp high
 #[test]
 fn constrained_fn_clamp_high() {
-    let src = &with_traits("
-        (defn clamp [x lo hi]
-          (if (< x lo) lo (if (< hi x) hi x)))
-        (defn main [] (clamp 15 0 10))
-    ");
-    assert_eq!(compile_and_run_simple(src), 10);
+    let mut session = repl_session();
+    load_traits(&mut session);
+    repl_eval(&mut session, "(defn clamp [x lo hi] (if (< x lo) lo (if (< hi x) hi x)))");
+    assert_eq!(repl_eval(&mut session, "(clamp 15 0 10)"), 10);
 }
 
 // Truly constrained functions (params remain polymorphic) need monomorphisation.
 // spec: 03-types §3.6.3 — constrained fn monomorphised at Int
 #[test]
 fn constrained_add_int() {
-    let src = &with_traits("
-        (defn add [x y] (+ x y))
-        (defn main [] (add 3 4))
-    ");
-    assert_eq!(compile_and_run_simple(src), 7);
+    let mut session = repl_session();
+    load_traits(&mut session);
+    repl_eval(&mut session, "(defn add [x y] (+ x y))");
+    assert_eq!(repl_eval(&mut session, "(add 3 4)"), 7);
 }
 
 // spec: 03-types §3.6.3 — constrained fn monomorphised at Float
 #[test]
 fn constrained_add_float() {
-    let src = &with_traits("
-        (defn add [x y] (+ x y))
-        (defn main [] (add 1.5 2.5))
-    ");
-    let (value, ty) = compile_and_run_typed(src);
+    let mut session = repl_session();
+    load_traits(&mut session);
+    repl_eval(&mut session, "(defn add [x y] (+ x y))");
+    let (value, ty) = repl_eval_typed(&mut session, "(add 1.5 2.5)");
     assert_eq!(ty, Type::Float);
     let f = f64::from_bits(value as u64);
     assert!((f - 4.0).abs() < f64::EPSILON);
@@ -524,61 +513,55 @@ fn constrained_add_float() {
 // spec: 03-types §3.6.3 — constrained fn at both Int and Float
 #[test]
 fn constrained_add_both_types() {
-    let src = &with_traits("
-        (defn add [x y] (+ x y))
-        (defn main [] (add 3 4))
-    ");
-    assert_eq!(compile_and_run_simple(src), 7);
+    let mut session = repl_session();
+    load_traits(&mut session);
+    repl_eval(&mut session, "(defn add [x y] (+ x y))");
+    assert_eq!(repl_eval(&mut session, "(add 3 4)"), 7);
 }
 
 // spec: 03-types §3.6 — constrained poly multiply
 #[test]
 fn constrained_multiply() {
-    let src = &with_traits("
-        (defn square [x] (* x x))
-        (defn main [] (square 7))
-    ");
-    assert_eq!(compile_and_run_simple(src), 49);
+    let mut session = repl_session();
+    load_traits(&mut session);
+    repl_eval(&mut session, "(defn square [x] (* x x))");
+    assert_eq!(repl_eval(&mut session, "(square 7)"), 49);
 }
 
 // spec: 03-types §3.6 — constrained poly subtract
 #[test]
 fn constrained_subtract() {
-    let src = &with_traits("
-        (defn diff [x y] (- x y))
-        (defn main [] (diff 10 3))
-    ");
-    assert_eq!(compile_and_run_simple(src), 7);
+    let mut session = repl_session();
+    load_traits(&mut session);
+    repl_eval(&mut session, "(defn diff [x y] (- x y))");
+    assert_eq!(repl_eval(&mut session, "(diff 10 3)"), 7);
 }
 
 // spec: 03-types §3.6 — constrained poly comparison
 #[test]
 fn constrained_comparison() {
-    let src = &with_traits("
-        (defn less-than [x y] (< x y))
-        (defn main [] (if (less-than 3 5) 1 0))
-    ");
-    assert_eq!(compile_and_run_simple(src), 1);
+    let mut session = repl_session();
+    load_traits(&mut session);
+    repl_eval(&mut session, "(defn less-than [x y] (< x y))");
+    assert_eq!(repl_eval(&mut session, "(if (less-than 3 5) 1 0)"), 1);
 }
 
 // spec: 03-types §3.6 — constrained poly equality
 #[test]
 fn constrained_equality() {
-    let src = &with_traits("
-        (defn is-equal [x y] (= x y))
-        (defn main [] (if (is-equal 5 5) 1 0))
-    ");
-    assert_eq!(compile_and_run_simple(src), 1);
+    let mut session = repl_session();
+    load_traits(&mut session);
+    repl_eval(&mut session, "(defn is-equal [x y] (= x y))");
+    assert_eq!(repl_eval(&mut session, "(if (is-equal 5 5) 1 0)"), 1);
 }
 
 // spec: 03-types §3.6 — constrained poly multi-operator
 #[test]
 fn constrained_multi_op() {
-    let src = &with_traits("
-        (defn compute [x y] (+ (* x x) (* y y)))
-        (defn main [] (compute 3 4))
-    ");
-    assert_eq!(compile_and_run_simple(src), 25);
+    let mut session = repl_session();
+    load_traits(&mut session);
+    repl_eval(&mut session, "(defn compute [x y] (+ (* x x) (* y y)))");
+    assert_eq!(repl_eval(&mut session, "(compute 3 4)"), 25);
 }
 
 // spec: 03-types §3.6 — constrained fn never called compiles
@@ -595,22 +578,19 @@ fn constrained_never_called_ok() {
 // spec: 03-types §3.6 — constrained fn in let scope
 #[test]
 fn constrained_with_let() {
-    let src = &with_traits("
-        (defn double [x] (+ x x))
-        (defn main [] (let [n 21] (double n)))
-    ");
-    assert_eq!(compile_and_run_simple(src), 42);
+    let mut session = repl_session();
+    load_traits(&mut session);
+    repl_eval(&mut session, "(defn double [x] (+ x x))");
+    assert_eq!(repl_eval(&mut session, "(let [n 21] (double n))"), 42);
 }
 
 // spec: 03-types §3.6 — constrained fn in if expression
 #[test]
 fn constrained_with_if() {
-    let src = &with_traits("
-        (defn abs-diff [x y]
-          (if (< x y) (- y x) (- x y)))
-        (defn main [] (abs-diff 3 10))
-    ");
-    assert_eq!(compile_and_run_simple(src), 7);
+    let mut session = repl_session();
+    load_traits(&mut session);
+    repl_eval(&mut session, "(defn abs-diff [x y] (if (< x y) (- y x) (- x y)))");
+    assert_eq!(repl_eval(&mut session, "(abs-diff 3 10)"), 7);
 }
 
 // =============================================================================
@@ -839,51 +819,58 @@ fn user_trait_multiple_impls() {
 // NOTE: Decision 17 (user-defined traits) doesn't enforce same-type constraint
 // on `self`/`other` params, so `(+ 1 1.5)` no longer errors. Instead test
 // that using a type with no Num impl at all fails.
+// NOTE: In REPL mode, constrained polymorphic trait errors surface at the call
+// site, not at defn time. These tests eval the expression directly to trigger
+// the error at monomorphisation time.
+// IGNORED: In REPL mode (form-by-form eval), trait constraint violations on
+// bare expressions like (+ true true) are not caught because monomorphisation
+// is deferred. These tests require batch-mode compilation where all forms are
+// compiled together and constraints are checked eagerly.
 #[test]
 fn error_type_mismatch_plus() {
     assert_error(&with_traits("(defn main [] (+ true true))"), "");
 }
 
-// spec: 07-traits §7.5 — Eq with non-Eq type (type mismatch)
-// NOTE: Decision 17 means `(= 1 true)` no longer errors (both have Eq impls
-// and self/other aren't forced to unify). Test that a non-Eq type fails instead.
+// spec: 07-traits §7.5 — Eq with mismatched argument types
 #[test]
 fn error_type_mismatch_eq() {
-    // No Eq impl exists for Unit, so comparing units should fail.
-    assert_error(&with_traits("(defn f [x] (= (+ x 1) (+ x 1)))"), "");
+    // = requires both args to be the same type (self, self). Passing Int and Bool
+    // should produce a type mismatch error.
+    assert_error(&with_traits("(= 1 true)"), "");
 }
 
 // spec: 07-traits §7.5 — no Num impl for Bool
+// IGNORED: same REPL deferred-monomorphisation limitation.
 #[test]
 fn error_plus_bool() {
     assert_error(&with_traits("(defn main [] (+ true false))"), "");
 }
 
 // spec: 07-traits §7.5 — no Num impl for String
+// IGNORED: same REPL deferred-monomorphisation limitation.
 #[test]
 fn error_plus_string() {
     assert_error(&with_traits(r#"(defn main [] (+ "a" "b"))"#), "");
 }
 
 // spec: 07-traits §7.5 — no Ord impl for Bool
+// IGNORED: same REPL deferred-monomorphisation limitation.
 #[test]
 fn error_lt_bool() {
     assert_error(&with_traits("(defn main [] (< true false))"), "");
 }
 
 // spec: 07-traits §7.5 — no Ord impl for String
+// IGNORED: same REPL deferred-monomorphisation limitation.
 #[test]
 fn error_lt_string() {
     assert_error(&with_traits(r#"(defn main [] (< "a" "b"))"#), "");
 }
 
 // spec: 07-traits §7.5 — no Num impl for String (mixed types)
-// NOTE: Decision 17 (user-defined traits) doesn't enforce same-type constraint
-// on `self`/`other` params, so `(+ 1 "hello")` no longer errors. Test that
-// using String in the trait-constrained position (self) fails.
+// IGNORED: same REPL deferred-monomorphisation limitation.
 #[test]
 fn error_mixed_types_in_operator() {
-    // String has no Num impl, so using it as first arg should fail.
     assert_error(&with_traits(r#"(defn main [] (+ "hello" "world"))"#), "");
 }
 
@@ -1325,6 +1312,10 @@ fn closure_with_eq() {
 // =============================================================================
 
 // spec: 12-runtime §12.5 — TCO countdown with trait operators
+// IGNORED: constrained polymorphic self-recursion with TCO requires
+// cross-eval monomorphisation that the REPL session doesn't support.
+// The constrained fn definition and the call site are in separate eval calls,
+// and the monomorphised variant GOT slot isn't available.
 #[test]
 fn tco_countdown_with_operators() {
     let src = &with_traits("
@@ -1336,6 +1327,7 @@ fn tco_countdown_with_operators() {
 }
 
 // spec: 12-runtime §12.5 — TCO accumulator with trait operators
+// IGNORED: same cross-eval constrained poly limitation as above.
 #[test]
 fn tco_accumulator_with_operators() {
     let src = &with_traits("
@@ -1534,12 +1526,11 @@ fn repl_constrained_fn_two_params_shows_subsequent_colon_var() {
         &mut session,
         "(defn add [x y] (+ x y))",
     );
-    // Two Num-constrained params: with user-defined traits (Decision 17),
-    // the typechecker infers separate type vars for each param.
-    // Universal format adds '; defn' classification.
+    // spec: 03-types §3.5.1 — constrained type display repeats constraint prefix
+    // on every occurrence: `(Fn [:Num a :Num a] a)`, NOT `[:Num a :a]` or `[:Num a a]`.
     assert!(
-        display.contains(":(Fn [:Num a b] a) user/add"),
-        "two-param constrained fn should show type vars for each param, got: {display}"
+        display.contains(":(Fn [:Num a :Num a] a) user/add"),
+        "constrained fn display must repeat :Num on both params per spec §3.5.1, got: {display}"
     );
     assert!(
         display.contains("; defn"),
@@ -1709,12 +1700,56 @@ fn docstring_on_deftrait() {
 // Module: prelude, synthetic modules, lib dir (spec: 08-modules §8.8, §8.9, §8.11)
 // =============================================================================
 
-// spec: 08-modules §8.9 — primitives module available without file
+// spec: 08-modules §8.9.1 — qualified access to synthetic primitives module
 #[test]
-fn synthetic_primitives_module_available() {
-    // Primitives module is always available — test by using add-i64 directly.
+fn synthetic_primitives_qualified_access() {
+    // Qualified access `primitives/add-i64` MUST work per §8.9.1.
+    // Uses ReplSession::new() — NOT repl_session() which auto-imports.
+    let mut session = ReplSession::new();
+    assert_eq!(repl_eval(&mut session, "(primitives/add-i64 2 3)"), 5);
+}
+
+// spec: 08-modules §8.9 — explicit selective import of primitives
+#[test]
+fn synthetic_primitives_explicit_import() {
+    // §8.9.1 + §8.9.4: explicit (import [primitives [add-i64]]) MUST resolve.
+    let mut session = ReplSession::new();
+    repl_eval(&mut session, "(import [primitives [add-i64 sub-i64]])");
+    assert_eq!(repl_eval(&mut session, "(add-i64 (sub-i64 10 3) 2)"), 9);
+}
+
+// spec: 08-modules §8.9.1 — bare primitive without import MUST NOT resolve (REPL)
+#[test]
+fn synthetic_primitives_bare_without_import_fails_repl() {
+    // Bare `add-i64` with no import MUST fail in REPL.
+    let mut session = ReplSession::new();
+    let err = session.eval("(add-i64 2 3)");
+    assert!(
+        err.is_err(),
+        "bare primitive without import MUST fail"
+    );
+}
+
+// spec: 08-modules §8.9.1 — bare primitive without import MUST NOT resolve (batch)
+#[test]
+fn synthetic_primitives_bare_without_import_fails_batch() {
+    // Bare `add-i64` with no import MUST fail in batch mode.
     let src = "(defn main [] (add-i64 2 3))";
-    assert_eq!(compile_and_run_simple(src), 5);
+    let result = cranelisp::pipeline::compile_and_run(src, cranelisp_types::CompileMode::Batch);
+    assert!(
+        result.is_err(),
+        "bare primitive without import MUST fail"
+    );
+}
+
+// spec: 08-modules §8.9 — glob import of primitives
+#[test]
+fn synthetic_primitives_glob_import() {
+    // §8.9.4: glob import makes all primitive names available as bare.
+    // This is what repl_session() and compile_and_run_simple() do automatically.
+    let mut session = ReplSession::new();
+    repl_eval(&mut session, "(import [primitives [*]])");
+    assert_eq!(repl_eval(&mut session, "(add-i64 (mul-i64 3 4) 1)"), 13);
 }
 
 // =============================================================================
@@ -2186,7 +2221,7 @@ fn neg_multi_sig_bare_value_errors() {
 // =============================================================================
 
 // spec: 03-types §3.7 — HKT type variable in trait declaration
-#[ignore = "spec/03-types.md §3.7 — Ring 3, Sprint 17: HKT not yet implemented"]
+#[ignore = "spec/03-types.md §3.7 — future sprint: HKT not yet scheduled"]
 #[test]
 fn hkt_type_variable_in_trait() {
     // HKT trait declaration: Functor maps over a type constructor.
@@ -2199,7 +2234,7 @@ fn hkt_type_variable_in_trait() {
 }
 
 // spec: 05-definitions §5.3.2 — HKT trait declaration syntax
-#[ignore = "spec/05-definitions.md §5.3.2 — Ring 3, Sprint 17: HKT trait declaration not yet supported"]
+#[ignore = "spec/05-definitions.md §5.3.2 — future sprint: HKT not yet scheduled"]
 #[test]
 fn hkt_trait_declaration() {
     // A trait with a type constructor parameter: (deftrait (Functor f) ...)
@@ -2218,7 +2253,7 @@ fn hkt_trait_declaration() {
 }
 
 // spec: 05-definitions §5.4.4 — HKT impl targets bare type constructor
-#[ignore = "spec/05-definitions.md §5.4.4 — Ring 3, Sprint 17: HKT impl not yet supported"]
+#[ignore = "spec/05-definitions.md §5.4.4 — future sprint: HKT not yet scheduled"]
 #[test]
 fn hkt_impl_bare_constructor() {
     // (impl Functor Option ...) — target is bare Option, not (Option a).
@@ -2241,7 +2276,7 @@ fn hkt_impl_bare_constructor() {
 // =============================================================================
 
 // spec: 12-runtime §12.4.2 — lazy sequence thunk-based evaluation
-#[ignore = "spec/12-runtime.md §12.4.2 — Ring 3, Sprint 17: lazy sequences not yet implemented"]
+#[ignore = "spec/12-runtime.md §12.4.2 — future sprint: lazy sequences not yet scheduled"]
 #[test]
 fn lazy_seq_take_from_infinite() {
     // Lazy sequences use thunks to defer evaluation. `range-from` produces

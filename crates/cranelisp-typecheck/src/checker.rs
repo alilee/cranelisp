@@ -115,26 +115,42 @@ impl TypeChecker {
     pub fn set_current_module(&mut self, path: ModuleFullPath) {
         if !self.modules.contains_key(&path) {
             let mut table = SymbolTable::new(path.clone());
-            // Seed new modules with imports from "user" module's builtins so
-            // that primitives (if, add-i64, quote-sexp, etc.) are accessible
-            // everywhere. Also copies any trait decls and trait methods that
-            // were loaded from prelude .cl files into `user`.
+
+            // Seed new modules with imports from `primitives` module so that
+            // named primitives (add-i64, str-concat, quote-sexp, etc.) and
+            // constructors (Pure, Effect) are accessible everywhere.
+            // Note: the `user` module is NOT seeded — it requires explicit
+            // imports per spec §8.9.1.
+            let primitives_path = ModuleFullPath::from("primitives");
+            if let Some(prims_table) = self.modules.get(&primitives_path) {
+                for (name, _entry) in prims_table.all_symbols() {
+                    table.insert(
+                        name.clone(),
+                        ModuleEntry::Import {
+                            source: FQSymbol {
+                                module: primitives_path.clone(),
+                                symbol: name.clone(),
+                            },
+                        },
+                    );
+                }
+            }
+
+            // Seed from `user` module: special forms, trait decls,
+            // constrained defs, constructors, and type defs.
             let user_path = ModuleFullPath::from("user");
             if let Some(user_table) = self.modules.get(&user_path) {
                 for (name, entry) in user_table.all_symbols() {
-                    // Copy builtins: primitives, special forms, trait method
-                    // entries, trait decls, constructors, and type defs.
-                    let is_builtin = matches!(entry, ModuleEntry::Def { kind, .. }
+                    let is_seedable = matches!(entry, ModuleEntry::Def { kind, .. }
                         if matches!(kind.as_ref(),
-                            cranelisp_types::DefKind::Primitive { .. }
-                            | cranelisp_types::DefKind::SpecialForm { .. }
+                            cranelisp_types::DefKind::SpecialForm { .. }
                         )
                     ) || matches!(entry, ModuleEntry::Def { scheme, .. }
                         if !scheme.constraints.is_empty()
                     ) || matches!(entry, ModuleEntry::Constructor { .. })
                       || matches!(entry, ModuleEntry::TypeDef { .. })
                       || matches!(entry, ModuleEntry::TraitDecl { .. });
-                    if is_builtin {
+                    if is_seedable {
                         table.insert(
                             name.clone(),
                             ModuleEntry::Import {
@@ -147,6 +163,7 @@ impl TypeChecker {
                     }
                 }
             }
+
             self.modules.insert(path.clone(), table);
         }
         self.current_module = path;
@@ -1290,16 +1307,22 @@ mod tests {
         assert_eq!(tc.current_module_path().as_ref(), "user");
     }
 
-    // spec: 08-modules §8.9 — builtins accessible in user module via primitives synthetic module
+    // spec: 08-modules §8.9.1 — named primitives NOT in user module; special forms ARE
     #[test]
     fn test_builtins_in_user_module() {
         let tc = TypeChecker::new();
-        // Named primitives and special forms should be accessible
-        assert!(tc.symbol_table().get("add-i64").is_some());
+        // Per spec §8.9.1, named primitives are NOT bare in user module
+        assert!(tc.symbol_table().get("add-i64").is_none());
+        assert!(tc.symbol_table().get("quote-sexp").is_none());
+        // Special forms ARE in user module
         assert!(tc.symbol_table().get("if").is_some());
-        assert!(tc.symbol_table().get("quote-sexp").is_some());
         // Operators (+, =, etc.) are NOT registered at startup — they come from prelude
         assert!(tc.symbol_table().get("+").is_none());
+        // Named primitives ARE in the primitives synthetic module
+        let prims_path = ModuleFullPath::from("primitives");
+        let prims_table = tc.modules.get(&prims_path).unwrap();
+        assert!(prims_table.get("add-i64").is_some());
+        assert!(prims_table.get("quote-sexp").is_some());
     }
 
     // spec: 08-modules §8.9 — new modules are seeded with builtin imports
@@ -1308,8 +1331,9 @@ mod tests {
         let mut tc = TypeChecker::new();
         tc.set_current_module(ModuleFullPath::from("math"));
         assert_eq!(tc.current_module_path().as_ref(), "math");
-        // New modules are seeded with builtin imports from "user"
+        // New modules are seeded with primitive imports from `primitives`
         assert!(tc.symbol_table().get("add-i64").is_some());
+        // Special forms from `user`
         assert!(tc.symbol_table().get("if").is_some());
         // Operators come from prelude, NOT compiler builtins
         assert!(tc.symbol_table().get("+").is_none());
@@ -1323,7 +1347,10 @@ mod tests {
         let mut tc = TypeChecker::new();
         tc.set_current_module(ModuleFullPath::from("other"));
         tc.set_current_module(ModuleFullPath::from("user"));
-        assert!(tc.symbol_table().get("add-i64").is_some());
+        // Special forms preserved in user
+        assert!(tc.symbol_table().get("if").is_some());
+        // Named primitives NOT in user (spec §8.9.1)
+        assert!(tc.symbol_table().get("add-i64").is_none());
     }
 
     // spec: 08-modules §8.6 — modules have independent symbol tables

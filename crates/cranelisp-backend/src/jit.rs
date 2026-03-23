@@ -257,6 +257,37 @@ impl Jit {
         Ok(func_ids)
     }
 
+    /// Declare functions with a module prefix to avoid name collisions in a
+    /// shared JIT.
+    ///
+    /// Each function is declared as `"{prefix}/{name}"` in the JIT. The
+    /// returned `func_ids` maps **bare** names to FuncIds (for codegen
+    /// within the current module), and `jit_names` maps bare names to
+    /// the qualified JIT symbol name (for downstream reference).
+    #[allow(clippy::type_complexity)]
+    pub fn declare_functions_prefixed(
+        &mut self,
+        defns: &[&Defn],
+        prefix: &str,
+    ) -> Result<(HashMap<Symbol, FuncId>, HashMap<Symbol, Symbol>), CranelispError> {
+        let mut func_ids = HashMap::new();
+        let mut jit_names = HashMap::new();
+        for defn in defns {
+            let qualified_name = format!("{prefix}/{}", defn.name);
+            let sig = self.build_sig(defn.params.len());
+            let func_id = self
+                .module
+                .declare_function(&qualified_name, Linkage::Export, &sig)
+                .map_err(|e| CranelispError::CodegenError {
+                    message: format!("failed to declare function '{}': {e}", defn.name),
+                    span: defn.span,
+                })?;
+            func_ids.insert(defn.name.clone(), func_id);
+            jit_names.insert(defn.name.clone(), Symbol::from(qualified_name));
+        }
+        Ok((func_ids, jit_names))
+    }
+
     /// Declare imported functions in the JIT module for cross-module linking.
     ///
     /// In Batch mode, when a module calls functions from other modules, those

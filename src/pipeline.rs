@@ -673,6 +673,7 @@ impl CompilationSession {
             CompileMode::Batch,
             &mut jit,
             &self.func_sigs,
+            module_path.as_ref(),
         )?;
         self.batch_jit = Some(jit);
 
@@ -2739,7 +2740,15 @@ fn compile_graph_only(
         all_warnings.extend(result.warnings);
         if is_entry {
             if let Some((name, ty)) = result.entry_info {
-                entry_defn_name = Some(name);
+                // Qualify the entry name with the module path to match the
+                // JIT symbol name (all functions are prefixed with their
+                // module path in the shared JIT).
+                let qualified = Symbol::from(format!(
+                    "{}/{}",
+                    module_path.as_ref(),
+                    name.as_ref()
+                ));
+                entry_defn_name = Some(qualified);
                 entry_result_type = ty;
             }
         }
@@ -3072,9 +3081,23 @@ fn accumulate_func_sigs(
 ) {
     let mod_str: &str = module_path.as_ref();
     for (name, arity) in func_signatures {
+        // Push the JIT-visible name (may be module-qualified if there was a
+        // collision, or bare if no collision).
         all_func_sigs.push((name.clone(), *arity));
-        for alias in generate_module_aliases(mod_str, name.as_ref()) {
-            all_func_sigs.push((Symbol::from(alias), *arity));
+
+        // Extract the bare function name for alias generation.
+        // If the name is already qualified ("module/fn"), extract the fn part.
+        let bare_name = if let Some(slash_pos) = name.as_ref().rfind('/') {
+            &name.as_ref()[slash_pos + 1..]
+        } else {
+            name.as_ref()
+        };
+        for alias in generate_module_aliases(mod_str, bare_name) {
+            // Skip aliases that match the primary JIT name (already pushed).
+            let alias_sym = Symbol::from(alias.as_str());
+            if alias_sym != *name {
+                all_func_sigs.push((alias_sym, *arity));
+            }
         }
     }
 }
@@ -3480,7 +3503,7 @@ mod tests {
     #[test]
     fn test_batch_defmacro_quasiquote() {
         let source = r#"
-            (defmacro inc1 [x] `(add-i64 1 ~x))
+            (defmacro inc1 [x] `(primitives/add-i64 1 ~x))
             (defn main [] (inc1 41))
         "#;
         let result = compile_and_run(source, CompileMode::Batch).unwrap();
@@ -3513,7 +3536,7 @@ mod tests {
     // spec: 09-macros.md — no macros: pipeline still works
     #[test]
     fn test_batch_no_macros_unchanged() {
-        let source = "(defn main [] (add-i64 1 2))";
+        let source = "(defn main [] (primitives/add-i64 1 2))";
         let result = compile_and_run(source, CompileMode::Batch).unwrap();
         assert_eq!(result.value, 3);
     }

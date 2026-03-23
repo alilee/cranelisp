@@ -752,6 +752,7 @@ fn shell_escape_neg_no_env_propagation() {
 /// Minimal prelude content: defines Num trait with + for Int.
 /// Tests that need operators use this as the prelude.
 const WATCH_PRELUDE: &str = "\
+(import [primitives [*]])\n\
 (deftrait Num (+ [self self] self) (- [self self] self) (* [self self] self) (/ [self self] self))\n\
 (impl Num Int \
   (defn + [a b] (add-i64 a b)) \
@@ -1643,6 +1644,7 @@ fn persist_user_cl_is_valid_source() {
 
     // Session 1: define A, then B which calls A
     let input = "\
+(import [primitives [*]])
 (defn double [:Int x] (add-i64 x x))
 (defn quad [:Int x] (double (double x)))
 (quad 3)
@@ -1676,6 +1678,7 @@ fn persist_user_cl_is_valid_source() {
     // Verify the source can be imported from another REPL session
     // (validates the file is valid module source).
     let input2 = "\
+(import [primitives [*]])
 (import [user [quad]])
 (quad 5)
 /quit
@@ -1700,6 +1703,7 @@ fn persist_cache_speeds_restart() {
 
     // Session 1: define functions to create some compilation work
     let input1 = "\
+(import [primitives [*]])
 (defn alpha [] 1)
 (defn beta [] (add-i64 (alpha) 1))
 (defn gamma [] (add-i64 (beta) 1))

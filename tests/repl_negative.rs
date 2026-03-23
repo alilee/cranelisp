@@ -14,7 +14,7 @@
 #[path = "helpers/mod.rs"]
 mod helpers;
 
-use cranelisp::repl::format_result;
+use cranelisp::repl::{format_result, ReplSession};
 use cranelisp_types::{CranelispError, DefKind, ModuleEntry, Type, TypeName};
 use helpers::*;
 
@@ -642,59 +642,54 @@ fn error_neg_multiple_errors_no_accumulation() {
 // Module Resolution — Negative Tests (spec: repl/spec.md §4.1)
 // =============================================================================
 
-// spec: repl/spec.md §4.1 — Unimported primitive MUST produce unbound error
+// spec: 08-modules §8.9.1 — Bare primitive MUST NOT resolve without import
 #[test]
 fn module_neg_unimported_primitive_unbound() {
-    // Entering a name that exists in `primitives` but is not imported into
-    // `user` MUST produce an "unbound" error, not silently resolve.
+    // Spec §8.9.1: "Names in `primitives` are stored in qualified form only
+    // (`primitives/add-i64`). They are NOT available as bare names unless
+    // imported through the prelude chain."
     //
-    // Note: In the current implementation, named primitives like add-i64 ARE
-    // registered directly in the user module's symbol table (they are not
-    // imported — they are Def entries with DefKind::Primitive). This is the
-    // Ring 0 bootstrapping approach.
-    //
-    // This test checks a name that is TRULY not in the user module: a
-    // hypothetical primitive-module-only name. We test with a name that
-    // looks like it could be a primitive but isn't defined anywhere.
-    let mut session = repl_session();
+    // Bare `add-i64` in a module with no import MUST produce an "unbound" error.
+    // Uses ReplSession::new() directly — NOT repl_session() which auto-imports primitives.
+    let mut session = ReplSession::new();
 
-    // "nonexistent-primitive" should produce an unbound error.
-    let err = session.eval("nonexistent-primitive");
+    let err = session.eval("(add-i64 2 3)");
     assert!(
         err.is_err(),
-        "name not in user module MUST produce an error"
+        "bare primitive `add-i64` without import MUST produce an error"
     );
-    match &err {
-        Err(e) => {
-            let msg = e.message();
-            assert!(
-                msg.contains("unbound") || msg.contains("undefined")
-                    || msg.contains("not found") || msg.contains("unknown"),
-                "error should indicate unbound, got: {msg}"
-            );
-        }
+    let msg = match &err {
+        Err(e) => e.message(),
         _ => unreachable!(),
-    }
+    };
+    assert!(
+        msg.contains("unbound") || msg.contains("undefined")
+            || msg.contains("not found") || msg.contains("unknown"),
+        "error should indicate unbound, got: {msg}"
+    );
 }
 
-// spec: repl/spec.md §4.1 — Qualified access works, bare access does not for primitives-only names
+// spec: 08-modules §8.9.1 — Qualified primitive access works; bare does not
 #[test]
 fn module_neg_primitive_module_scoping() {
-    // Names accessible via primitives/ prefix should not leak into user namespace
-    // unless explicitly registered or imported.
-    // We verify that a fresh session does NOT have access to arbitrary names
-    // without going through the proper resolution path.
-    let mut session = repl_session();
+    // Spec §8.9.1: Primitives are qualified-only. Bare `sub-i64` MUST NOT
+    // resolve. Qualified `primitives/sub-i64` MUST work.
+    // Uses ReplSession::new() directly — NOT repl_session() which auto-imports primitives.
+    let mut session = ReplSession::new();
 
-    // A completely unknown name MUST error.
-    let err = session.eval("definitely-not-a-real-name");
+    // Bare access MUST fail.
+    let err = session.eval("(sub-i64 5 3)");
     assert!(
         err.is_err(),
-        "unknown name MUST produce error, not silently succeed"
+        "bare `sub-i64` without import MUST produce an error"
     );
 
-    // The session must continue working after the error.
-    assert_eq!(repl_eval(&mut session, "42"), 42);
+    // Qualified access MUST succeed.
+    assert_eq!(repl_eval(&mut session, "(primitives/sub-i64 5 3)"), 2);
+
+    // Explicit import MUST make bare access work.
+    repl_eval(&mut session, "(import [primitives [sub-i64]])");
+    assert_eq!(repl_eval(&mut session, "(sub-i64 10 4)"), 6);
 }
 
 // spec: repl/spec.md §4.1 — Type name in wrong position MUST error appropriately

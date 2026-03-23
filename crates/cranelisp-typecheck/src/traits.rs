@@ -519,21 +519,38 @@ impl TypeChecker {
         &mut self,
         callee_name: &Symbol,
         arg_types: &[Type],
-        _span: Span,
-    ) -> Option<ResolvedCall> {
+        span: Span,
+    ) -> Result<Option<ResolvedCall>, CranelispError> {
         // Check if this name is a trait method
-        let trait_name =
-            self.trait_registry.method_to_trait.get(callee_name)?.clone();
+        let trait_name = match self.trait_registry.method_to_trait.get(callee_name) {
+            Some(tn) => tn.clone(),
+            None => return Ok(None),
+        };
 
         // Resolve the first argument's type to find the impl type
-        let first_arg = arg_types.first()?;
+        let first_arg = match arg_types.first() {
+            Some(a) => a,
+            None => return Ok(None),
+        };
         let resolved_arg = self.apply_subst(first_arg);
 
-        let impl_type_name = concrete_type_name(&resolved_arg)?;
+        let impl_type_name = match concrete_type_name(&resolved_arg) {
+            Some(tn) => tn,
+            // Type is still a variable — defer resolution (batch mode will
+            // catch this during monomorphisation).
+            None => return Ok(None),
+        };
 
-        // Check if an impl exists
+        // Check if an impl exists — if the name IS a trait method and the
+        // type IS concrete but the impl DOESN'T exist, that's a type error.
         if !self.impl_registry.has_impl(&trait_name, &impl_type_name) {
-            return None;
+            return Err(CranelispError::TypeError {
+                message: format!(
+                    "no impl of trait {} for type {}",
+                    trait_name, impl_type_name
+                ),
+                span,
+            });
         }
 
         let mangled = format!(
@@ -541,12 +558,12 @@ impl TypeChecker {
             trait_name, callee_name, impl_type_name
         );
 
-        Some(ResolvedCall::TraitMethod {
+        Ok(Some(ResolvedCall::TraitMethod {
             trait_name,
             method_name: callee_name.clone(),
             impl_type: impl_type_name,
             mangled_name: JitSymbol::from(mangled.as_str()),
-        })
+        }))
     }
 
     /// Check if a callee name is a trait method (has constraints in its scheme).
@@ -968,9 +985,16 @@ mod tests {
     use super::*;
     use crate::checker::TypeChecker;
     use cranelisp_types::{
-        Defn, ModuleEntry, Sexp, Span, TraitDecl, TraitImpl, TraitMethodSig,
-        TypeExpr, Visibility,
+        Defn, FQSymbol, ModuleEntry, ModuleFullPath, Sexp, Span, TraitDecl, TraitImpl,
+        TraitMethodSig, TypeExpr, Visibility,
     };
+
+    /// Create a TypeChecker with all primitives available in the current module.
+    fn tc_with_prims() -> TypeChecker {
+        let mut tc = TypeChecker::new();
+        tc.set_current_module(ModuleFullPath::from("test"));
+        tc
+    }
 
     /// Make a test-only trait decl (not conflicting with builtins).
     fn make_test_trait_decl() -> TraitDecl {
@@ -1165,7 +1189,7 @@ mod tests {
     // spec: 07-traits §7.3.1 — register concrete trait implementation
     #[test]
     fn test_register_trait_impl() {
-        let mut tc = TypeChecker::new();
+        let mut tc = tc_with_prims();
         let decl = make_test_trait_decl();
         tc.register_trait_decl(&decl).unwrap();
 
@@ -1208,7 +1232,7 @@ mod tests {
     // spec: 07-traits §7.4.1 — resolve trait method to concrete impl mangled name
     #[test]
     fn test_try_resolve_trait_method_success() {
-        let mut tc = TypeChecker::new();
+        let mut tc = tc_with_prims();
         let decl = make_test_trait_decl();
         tc.register_trait_decl(&decl).unwrap();
 
@@ -1245,6 +1269,7 @@ mod tests {
             &[Type::Int, Type::Int],
             Span::SYNTHETIC,
         );
+        let result = result.expect("should not error");
         assert!(result.is_some());
         if let Some(ResolvedCall::TraitMethod {
             trait_name,
@@ -1260,7 +1285,7 @@ mod tests {
         }
     }
 
-    // spec: 07-traits §7.4.3 — no matching impl returns None
+    // spec: 07-traits §7.4.3 — no matching impl returns TypeError
     #[test]
     fn test_try_resolve_trait_method_no_impl() {
         let mut tc = TypeChecker::new();
@@ -1273,7 +1298,14 @@ mod tests {
             &[Type::Bool, Type::Bool],
             Span::SYNTHETIC,
         );
-        assert!(result.is_none());
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        match err {
+            CranelispError::TypeError { message, .. } => {
+                assert!(message.contains("no impl of trait TestTrait for type Bool"), "{message}");
+            }
+            other => panic!("expected TypeError, got {other:?}"),
+        }
     }
 
     // spec: 07-traits §7.4.1 — non-trait-method name returns None
@@ -1285,7 +1317,7 @@ mod tests {
             &[Type::Int, Type::Int],
             Span::SYNTHETIC,
         );
-        assert!(result.is_none());
+        assert!(matches!(result, Ok(None)));
     }
 
     // spec: 07-traits §7.4.3 — impl registry tracks trait-type pairs
@@ -1435,7 +1467,7 @@ mod tests {
     // spec: 07-traits §7.4.2 — trait method resolution works with inline trait definitions
     #[test]
     fn test_try_resolve_with_inline_trait() {
-        let mut tc = TypeChecker::new();
+        let mut tc = tc_with_prims();
         // Register Num trait inline (as prelude would)
         let num_decl = TraitDecl {
             name: TraitName::from("Num"),
@@ -1493,7 +1525,7 @@ mod tests {
             &Symbol::from("+"),
             &[Type::Int, Type::Int],
             Span::SYNTHETIC,
-        );
+        ).expect("should not error");
         assert!(result.is_some());
         if let Some(ResolvedCall::TraitMethod { mangled_name, .. }) = result {
             assert_eq!(mangled_name.as_ref(), "Num.+$Int");

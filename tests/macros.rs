@@ -191,7 +191,7 @@ fn batch_defmacro_simple() {
     use cranelisp_types::CompileMode;
 
     let src = r#"
-(defmacro double [x] `(add-i64 ~x ~x))
+(defmacro double [x] `(primitives/add-i64 ~x ~x))
 (defn main [] (double 21))
 "#;
     let result = pipeline::compile_and_run(src, CompileMode::Batch).unwrap();
@@ -205,7 +205,7 @@ fn batch_defmacro_quasiquote() {
     use cranelisp_types::CompileMode;
 
     let src = r#"
-(defmacro inc [x] `(add-i64 ~x 1))
+(defmacro inc [x] `(primitives/add-i64 ~x 1))
 (defn main [] (inc 41))
 "#;
     let result = pipeline::compile_and_run(src, CompileMode::Batch).unwrap();
@@ -219,7 +219,7 @@ fn batch_defmacro_multi_clause() {
     use cranelisp_types::CompileMode;
 
     let src = r#"
-(defmacro choose ([x] x) ([x y] `(add-i64 ~x ~y)))
+(defmacro choose ([x] x) ([x y] `(primitives/add-i64 ~x ~y)))
 (defn main [] (choose 20 22))
 "#;
     let result = pipeline::compile_and_run(src, CompileMode::Batch).unwrap();
@@ -235,7 +235,7 @@ fn batch_defmacro_begin_splicing() {
     let src = r#"
 (defmacro define-pair [name a b]
   `(begin
-     (defn ~name [] (add-i64 ~a ~b))))
+     (defn ~name [] (primitives/add-i64 ~a ~b))))
 (define-pair add-them 20 22)
 (defn main [] (add-them))
 "#;
@@ -250,7 +250,7 @@ fn batch_macro_uses_earlier_macro() {
     use cranelisp_types::CompileMode;
 
     let src = r#"
-(defmacro inc [x] `(add-i64 ~x 1))
+(defmacro inc [x] `(primitives/add-i64 ~x 1))
 (defmacro inc2 [x] `(inc (inc ~x)))
 (defn main [] (inc2 40))
 "#;

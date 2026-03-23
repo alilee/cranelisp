@@ -179,4 +179,61 @@ mod tests {
         assert_eq!(state.get_slot(slot), Some(fake_ptr));
         assert_eq!(state.def_codegen.get(&name).unwrap().code_ptr, Some(fake_ptr));
     }
+
+    // spec: 12-runtime §12.2 — cross-eval GOT: mono defn slot visible to subsequent defns
+    //
+    // Simulates the REPL scenario: a constrained-poly function (`countdown`)
+    // is defined in eval 1, then called in eval 2 (`main`). The monomorphised
+    // specialization (`countdown$Int`) must get a GOT slot that is visible
+    // when compiling the calling defn.
+    #[test]
+    fn test_mono_defn_got_slot_visible_across_evals() {
+        let mut state = ModuleCodegenState::new();
+
+        // Eval 1: register the base constrained fn (no codegen, just template).
+        let countdown = Symbol::from("countdown");
+        let _base_slot = state.ensure_slot_for(&countdown).unwrap();
+
+        // Eval 2: monomorphisation produces `countdown$Int`.
+        // The backend compiles it and registers a GOT slot.
+        let mono_name = Symbol::from("countdown$Int");
+        let mono_slot = state.ensure_slot_for(&mono_name).unwrap();
+        let fake_ptr = 0x4242usize as *const u8;
+        state.update_def(&mono_name, fake_ptr);
+
+        // Now compile `main` which calls `countdown$Int`.
+        // Build got_slots from def_codegen (as compile_and_register_defn does).
+        let mut got_slots: std::collections::HashMap<Symbol, usize> = std::collections::HashMap::new();
+        for (name, dc) in &state.def_codegen {
+            if let Some(s) = dc.got_slot {
+                got_slots.insert(name.clone(), s);
+            }
+        }
+
+        // The mono defn's GOT slot must be visible.
+        assert!(
+            got_slots.contains_key(&mono_name),
+            "countdown$Int must be in got_slots for main's compilation"
+        );
+        assert_eq!(got_slots[&mono_name], mono_slot);
+        assert_eq!(state.get_slot(mono_slot), Some(fake_ptr));
+    }
+
+    // spec: 12-runtime §12.2 — multiple mono specializations get distinct GOT slots
+    #[test]
+    fn test_multiple_mono_specializations_distinct_slots() {
+        let mut state = ModuleCodegenState::new();
+
+        let add_int = Symbol::from("add$Int+Int");
+        let add_float = Symbol::from("add$Float+Float");
+
+        let slot_int = state.ensure_slot_for(&add_int).unwrap();
+        let slot_float = state.ensure_slot_for(&add_float).unwrap();
+
+        assert_ne!(slot_int, slot_float, "distinct specializations need distinct slots");
+
+        // Verify both are retrievable from def_codegen.
+        assert_eq!(state.def_codegen.get(&add_int).unwrap().got_slot, Some(slot_int));
+        assert_eq!(state.def_codegen.get(&add_float).unwrap().got_slot, Some(slot_float));
+    }
 }

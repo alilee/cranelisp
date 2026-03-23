@@ -697,7 +697,7 @@ impl TypeChecker {
                         .iter()
                         .map(|t| self.apply_subst(t))
                         .collect();
-                    if let Some(r) = self.try_resolve_trait_method(&name, &resolved_params, span) {
+                    if let Ok(Some(r)) = self.try_resolve_trait_method(&name, &resolved_params, span) {
                         trait_resolution = Some(r);
                     } else if let Some(jit_name) = self.resolve_primitive_jit_name(&name) {
                         trait_resolution = Some(ResolvedCall::BuiltinFn { name: jit_name });
@@ -783,12 +783,20 @@ impl TypeChecker {
 mod tests {
     use super::*;
     use cranelisp_types::{
-        Expr, ReplInput, TraitDecl, TraitImpl, TraitMethodSig, TraitName, TypeExpr,
-        TypeName, Visibility,
+        Expr, FQSymbol, ModuleFullPath, ReplInput, Symbol, TraitDecl, TraitImpl,
+        TraitMethodSig, TraitName, TypeExpr, TypeName, Visibility,
     };
 
     fn span(start: u32, end: u32) -> Span {
         Span::new(start, end)
+    }
+
+    /// Create a TypeChecker with all primitives available in the current module.
+    /// Uses set_current_module to create a "test" module seeded with primitives.
+    fn tc_with_prims() -> TypeChecker {
+        let mut tc = TypeChecker::new();
+        tc.set_current_module(ModuleFullPath::from("test"));
+        tc
     }
 
     /// Register a minimal Num trait with `+` method, plus an impl for Int,
@@ -850,7 +858,7 @@ mod tests {
     // spec: 05-definitions §5.1 — defn registers function with inferred type
     #[test]
     fn test_check_program_simple_defn() {
-        let mut tc = TypeChecker::new();
+        let mut tc = tc_with_prims();
         // (defn add-one [x] (add-i64 x 1))
         let program = vec![TopLevel::Defn(Defn {
             name: Symbol::from("add-one"),
@@ -894,7 +902,7 @@ mod tests {
     // spec: 03-types §3.4 — identity function generalized to polymorphic scheme
     #[test]
     fn test_check_program_identity_is_polymorphic() {
-        let mut tc = TypeChecker::new();
+        let mut tc = tc_with_prims();
         // (defn id [x] x)
         let program = vec![TopLevel::Defn(Defn {
             name: Symbol::from("id"),
@@ -929,7 +937,7 @@ mod tests {
     // spec: 03-types §3.5.1 — recursive function inferred as monomorphic via self-reference
     #[test]
     fn test_check_program_recursive_function() {
-        let mut tc = TypeChecker::new();
+        let mut tc = tc_with_prims();
         // (defn fact [n] (if (eq-i64 n 0) 1 (mul-i64 n (fact (sub-i64 n 1)))))
         let program = vec![TopLevel::Defn(Defn {
             name: Symbol::from("fact"),
@@ -1020,7 +1028,7 @@ mod tests {
     // spec: 05-definitions §5.2 — deftype registers constructors and enables match
     #[test]
     fn test_check_program_with_typedef() {
-        let mut tc = TypeChecker::new();
+        let mut tc = tc_with_prims();
         let program = vec![
             TopLevel::TypeDef {
                 name: TypeName::from("Color"),
@@ -1107,7 +1115,7 @@ mod tests {
     // spec: 03-types §3.8 — unification failure produces type error
     #[test]
     fn test_check_program_type_error() {
-        let mut tc = TypeChecker::new();
+        let mut tc = tc_with_prims();
         // (defn bad [x] (add-i64 x true)) -- type error: Bool arg to monomorphic Int primitive
         let program = vec![TopLevel::Defn(Defn {
             name: Symbol::from("bad"),
@@ -1144,7 +1152,7 @@ mod tests {
     // spec: 03-types §3.5.1 — all expression types fully resolved after inference
     #[test]
     fn test_check_program_expr_types_resolved() {
-        let mut tc = TypeChecker::new();
+        let mut tc = tc_with_prims();
         // (defn inc [x] (add-i64 x 1))
         let program = vec![TopLevel::Defn(Defn {
             name: Symbol::from("inc"),
@@ -1185,7 +1193,7 @@ mod tests {
     // spec: 03-types §3.1 — REPL expression inferred as literal type
     #[test]
     fn test_check_repl_expression() {
-        let mut tc = TypeChecker::new();
+        let mut tc = tc_with_prims();
         let input = ReplInput::Expr(Expr::IntLit {
             value: 42,
             span: span(0, 2),
@@ -1198,7 +1206,7 @@ mod tests {
     // spec: 03-types §3.4 — REPL defn produces polymorphic scheme
     #[test]
     fn test_check_repl_defn() {
-        let mut tc = TypeChecker::new();
+        let mut tc = tc_with_prims();
         let input = ReplInput::Defn(Defn {
             name: Symbol::from("id"),
             docstring: None,
@@ -1221,7 +1229,7 @@ mod tests {
     // spec: 05-definitions §5.2 — REPL typedef registers type and constructors
     #[test]
     fn test_check_repl_typedef() {
-        let mut tc = TypeChecker::new();
+        let mut tc = tc_with_prims();
         let input = ReplInput::TypeDef {
             name: TypeName::from("Dir"),
             docstring: None,
@@ -1251,7 +1259,7 @@ mod tests {
     // spec: 03-types §3.5.1 — forward references resolved via two-pass inference
     #[test]
     fn test_check_program_forward_reference() {
-        let mut tc = TypeChecker::new();
+        let mut tc = tc_with_prims();
         // Two functions where the first calls the second
         // (defn double [x] (add-self x))
         // (defn add-self [y] (add-i64 y y))
@@ -1341,7 +1349,7 @@ mod tests {
     // spec: 03-types §3.9 — type annotation pins parameter type in forward reference
     #[test]
     fn test_check_program_forward_reference_pinned() {
-        let mut tc = TypeChecker::new();
+        let mut tc = tc_with_prims();
         // (defn double [:Int x] (add-self x))
         // (defn add-self [y] (add-i64 y y))
         // Both are monomorphic: add-i64 pins y to Int, and annotation pins x to Int.
@@ -1418,7 +1426,7 @@ mod tests {
     // spec: 07-traits §7.5 — builtin function call resolved as BuiltinFn in method resolutions
     #[test]
     fn test_check_program_check_result_has_builtin_resolutions() {
-        let mut tc = TypeChecker::new();
+        let mut tc = tc_with_prims();
         // (defn inc [x] (add-i64 x 1))
         let program = vec![TopLevel::Defn(Defn {
             name: Symbol::from("inc"),
@@ -1464,7 +1472,7 @@ mod tests {
     // spec: 05-definitions §5.2.2 — polymorphic typedef registers constructors with type params
     #[test]
     fn test_check_program_polymorphic_typedef() {
-        let mut tc = TypeChecker::new();
+        let mut tc = tc_with_prims();
         // (deftype (Option a) None (Some [:a val]))
         // (defn unwrap-or [opt default] (match opt [(Some x) x (None default)]))
         let program = vec![
@@ -1503,7 +1511,7 @@ mod tests {
     // spec: 05-definitions §5.2.2 — REPL polymorphic typedef registers type defs
     #[test]
     fn test_check_repl_polymorphic_typedef() {
-        let mut tc = TypeChecker::new();
+        let mut tc = tc_with_prims();
         let input = ReplInput::TypeDef {
             name: TypeName::from("Option"),
             docstring: None,
@@ -1535,7 +1543,7 @@ mod tests {
     // spec: 03-types §3.1 — string literal inferred as String type
     #[test]
     fn test_check_repl_string_expression() {
-        let mut tc = TypeChecker::new();
+        let mut tc = tc_with_prims();
         let input = ReplInput::Expr(Expr::StringLit {
             value: "hello".to_string(),
             span: span(0, 7),
@@ -1547,7 +1555,7 @@ mod tests {
     // spec: 03-types §3.1 — function returning string literal has String return type
     #[test]
     fn test_check_program_string_in_function() {
-        let mut tc = TypeChecker::new();
+        let mut tc = tc_with_prims();
         // (defn greet [] "hello")
         let program = vec![TopLevel::Defn(Defn {
             name: Symbol::from("greet"),
@@ -1700,7 +1708,7 @@ mod tests {
     // spec: 03-types §3.6 — batch mode monomorphises constrained fn at concrete call site
     #[test]
     fn test_batch_monomorphise_generates_mono_defn() {
-        let mut tc = TypeChecker::new();
+        let mut tc = tc_with_prims();
         register_num_trait_inline(&mut tc);
         // Program: (defn add [x y] (+ x y))  -- constrained via +
         //          (defn main [] (add 3 4))   -- concrete Int call site
@@ -1780,7 +1788,7 @@ mod tests {
     // spec: 03-types §3.6 — constrained fn without callers detected and registered
     #[test]
     fn test_batch_constrained_fn_alone_detected() {
-        let mut tc = TypeChecker::new();
+        let mut tc = tc_with_prims();
         register_num_trait_inline(&mut tc);
         // (defn add [x y] (+ x y))  -- alone, no callers; should be constrained
         let program = vec![TopLevel::Defn(Defn {
@@ -1830,7 +1838,7 @@ mod tests {
     // spec: 03-types §3.6 — REPL expression monomorphises constrained fn on demand
     #[test]
     fn test_repl_expr_monomorphise() {
-        let mut tc = TypeChecker::new();
+        let mut tc = tc_with_prims();
         register_num_trait_inline(&mut tc);
 
         // First, define a constrained fn: (defn add [x y] (+ x y))
@@ -1883,7 +1891,7 @@ mod tests {
     // spec: 03-types §3.6 — REPL defn body triggers monomorphisation of constrained calls
     #[test]
     fn test_repl_defn_body_monomorphise() {
-        let mut tc = TypeChecker::new();
+        let mut tc = tc_with_prims();
         register_num_trait_inline(&mut tc);
 
         // Define a constrained fn: (defn add [x y] (+ x y))
@@ -1944,7 +1952,7 @@ mod tests {
     // spec: 03-types §3.6 — program without constrained fns produces empty mono results
     #[test]
     fn test_batch_mono_no_constrained_fns_produces_empty() {
-        let mut tc = TypeChecker::new();
+        let mut tc = tc_with_prims();
         // (defn inc [x] (add-i64 x 1)) — no constrained fns, all monomorphic
         let program = vec![TopLevel::Defn(Defn {
             name: Symbol::from("inc"),

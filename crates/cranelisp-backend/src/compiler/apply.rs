@@ -34,6 +34,29 @@ impl<'a, M: Module> FnCompiler<'a, M> {
             return self.compile_tail_self_call(args);
         }
 
+        // TCO check for monomorphised constrained-poly self-recursion:
+        // When compiling `countdown$Int`, the body's recursive call is
+        // `(countdown ...)` which the typechecker resolves to
+        // `SigDispatch { mangled_name: "countdown$Int" }`. The callee
+        // AST name ("countdown") doesn't match the current fn name
+        // ("countdown$Int"), so the check above misses it. We detect
+        // this case by checking whether the resolved call's mangled name
+        // matches the current function.
+        if self.in_tail_position
+            && self.tail_loop_block.is_some()
+            && args.len() == self.fn_param_count
+        {
+            if let Some(resolved) = self.ctx.method_resolutions.get(&span) {
+                if let ResolvedCall::SigDispatch { mangled_name } = resolved {
+                    if let Some(ref fn_name) = self.current_fn_name {
+                        if Symbol::from(mangled_name.as_ref()) == *fn_name {
+                            return self.compile_tail_self_call(args);
+                        }
+                    }
+                }
+            }
+        }
+
         // CRITICAL: Args are never in tail position.
         let saved_tail = self.in_tail_position;
         self.in_tail_position = false;

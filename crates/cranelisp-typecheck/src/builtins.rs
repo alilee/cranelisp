@@ -82,23 +82,39 @@ impl TypeChecker {
         // NOT auto-imported — users must explicitly (import [primitives [Trace TraceCall ...]]).
         self.register_trace_type();
 
-        // Copy entries from `primitives` into `user` module (quote-sexp, IO, bind, etc.).
-        // Trace-related names are excluded — per spec §3.2.4 they require explicit import.
-        self.import_primitives_into_user(&primitives_path);
+        // Copy NON-primitive entries from `primitives` into `user` module:
+        // constructors (Pure, Effect, TraceCall), types (IO, Trace), and
+        // non-primitive defs (bind). Per spec §8.9.1, named primitives
+        // (add-i64, str-concat, etc.) are NOT auto-imported — they require
+        // explicit import or qualified access.
+        self.import_non_primitives_into_user(&primitives_path);
     }
 
-    /// Copy all entries from the `primitives` module into the `user` module.
+    /// Copy non-named-primitive entries from the `primitives` module into `user`.
     ///
-    /// Makes named primitives (add-i64, str-concat, quote-sexp, etc.), types
-    /// (IO, Pure, Effect), and special forms visible in `user` as Import entries.
-    /// Does NOT copy entries from `macros` — those are accessed via qualified
-    /// names (`macros/sconcat`) or explicit import.
+    /// Copies constructors (Pure, Effect), types (IO), inline defs (bind,
+    /// quote-sexp), and other non-named-primitive entries as Import entries.
+    /// Per spec §8.9.1, named primitives from Ring 0/1/Vec tables (add-i64,
+    /// str-concat, vec-get, etc.) are NOT auto-imported — they live only in
+    /// the `primitives` synthetic module and require explicit import or
+    /// qualified access.
     ///
     /// TypeDef and Constructor entries are converted to Import entries so that
     /// `/list` (which shows only user definitions) does not display them, while
     /// `/imports` correctly shows them as available from `primitives`.
-    fn import_primitives_into_user(&mut self, primitives_path: &ModuleFullPath) {
+    fn import_non_primitives_into_user(&mut self, primitives_path: &ModuleFullPath) {
         let user_path = ModuleFullPath::from("user");
+
+        // Build the set of named primitive names to exclude from auto-import.
+        let named_primitives: std::collections::HashSet<String> = ring0_primitives()
+            .iter()
+            .chain(ring1_primitives().iter())
+            .chain(ring3_primitives().iter())
+            .map(|p| p.name.to_string())
+            .collect();
+
+        // Vec primitive names (not in the tables above).
+        let vec_prim_names: [&str; 4] = ["vec-get", "vec-set", "vec-push", "vec-len"];
 
         // Collect entries to copy (avoid borrowing self.modules while mutating).
         let entries_to_copy: Vec<(Symbol, ModuleEntry)> = self
@@ -127,7 +143,13 @@ impl TypeChecker {
                 if TRACE_NO_AUTO_IMPORT.contains(&name.as_ref()) {
                     continue;
                 }
-                // Don't overwrite existing entries (e.g. primitives already in user).
+                // Skip named primitives from Ring 0/1/Vec tables (spec §8.9.1).
+                if named_primitives.contains(name.as_ref())
+                    || vec_prim_names.contains(&name.as_ref())
+                {
+                    continue;
+                }
+                // Don't overwrite existing entries.
                 if user_table.get(name.as_ref()).is_none() {
                     // TypeDef and Constructor entries become Import entries so
                     // they are accessible but don't appear as user definitions.
@@ -156,11 +178,17 @@ impl TypeChecker {
     ///
     /// Docstrings are taken from spec appendix-a-builtins.md §A.3.
     fn register_primitives(&mut self) {
+        let primitives_path = ModuleFullPath::from("primitives");
+        let primitives_table = self
+            .modules
+            .get_mut(&primitives_path)
+            .unwrap_or_else(|| unreachable!("invariant: primitives module should exist"));
+
         for prim in ring0_primitives() {
             let scheme = mono(prim.ty.clone());
             let docstring = builtin_docstring(prim.name.as_ref());
 
-            self.current_symbol_table_mut().insert(
+            primitives_table.insert(
                 prim.name.clone(),
                 ModuleEntry::Def {
                     scheme,
@@ -183,11 +211,17 @@ impl TypeChecker {
     ///
     /// Docstrings are taken from spec appendix-a-builtins.md §A.3.
     fn register_ring1_primitives(&mut self) {
+        let primitives_path = ModuleFullPath::from("primitives");
+        let primitives_table = self
+            .modules
+            .get_mut(&primitives_path)
+            .unwrap_or_else(|| unreachable!("invariant: primitives module should exist"));
+
         for prim in ring1_primitives() {
             let scheme = mono(prim.ty.clone());
             let docstring = builtin_docstring(prim.name.as_ref());
 
-            self.current_symbol_table_mut().insert(
+            primitives_table.insert(
                 prim.name.clone(),
                 ModuleEntry::Def {
                     scheme,
@@ -267,9 +301,15 @@ impl TypeChecker {
             ),
         ];
 
+        let primitives_path = ModuleFullPath::from("primitives");
+        let primitives_table = self
+            .modules
+            .get_mut(&primitives_path)
+            .unwrap_or_else(|| unreachable!("invariant: primitives module should exist"));
+
         for (name, param_names, scheme) in vec_prims {
             let docstring = builtin_docstring(name);
-            self.current_symbol_table_mut().insert(
+            primitives_table.insert(
                 Symbol::from(name),
                 ModuleEntry::Def {
                     scheme,
@@ -944,15 +984,24 @@ mod tests {
     use super::*;
     use cranelisp_types::{ring0_primitives, ModuleEntry, Type};
 
-    // spec: appendix-a-builtins §A.2 — all ring-0 primitives registered in symbol table
+    /// Helper: get the `primitives` module's symbol table from a TypeChecker.
+    fn primitives_table(tc: &TypeChecker) -> &cranelisp_types::SymbolTable {
+        let path = ModuleFullPath::from("primitives");
+        tc.modules
+            .get(&path)
+            .expect("primitives module should exist")
+    }
+
+    // spec: appendix-a-builtins §A.2 — all ring-0 primitives registered in primitives module
     #[test]
     fn test_primitives_registered() {
         let tc = TypeChecker::new();
-        // All 20 primitives should be in the symbol table
+        let pt = primitives_table(&tc);
+        // All 20 primitives should be in the primitives module
         for prim in ring0_primitives() {
             assert!(
-                tc.symbol_table().get(prim.name.as_ref()).is_some(),
-                "primitive {} should be in symbol table",
+                pt.get(prim.name.as_ref()).is_some(),
+                "primitive {} should be in primitives module",
                 prim.name
             );
         }
@@ -962,7 +1011,7 @@ mod tests {
     #[test]
     fn test_add_i64_scheme() {
         let tc = TypeChecker::new();
-        if let Some(ModuleEntry::Def { scheme, .. }) = tc.symbol_table().get("add-i64") {
+        if let Some(ModuleEntry::Def { scheme, .. }) = primitives_table(&tc).get("add-i64") {
             // Monomorphic: no quantified vars
             assert!(scheme.vars.is_empty(), "add-i64 should have no quantified vars");
             assert_eq!(
@@ -979,7 +1028,7 @@ mod tests {
     #[test]
     fn test_add_f64_scheme() {
         let tc = TypeChecker::new();
-        if let Some(ModuleEntry::Def { scheme, .. }) = tc.symbol_table().get("add-f64") {
+        if let Some(ModuleEntry::Def { scheme, .. }) = primitives_table(&tc).get("add-f64") {
             assert!(scheme.vars.is_empty(), "add-f64 should have no quantified vars");
             assert_eq!(
                 scheme.ty,
@@ -995,7 +1044,7 @@ mod tests {
     #[test]
     fn test_eq_i64_scheme() {
         let tc = TypeChecker::new();
-        if let Some(ModuleEntry::Def { scheme, .. }) = tc.symbol_table().get("eq-i64") {
+        if let Some(ModuleEntry::Def { scheme, .. }) = primitives_table(&tc).get("eq-i64") {
             assert!(scheme.vars.is_empty(), "eq-i64 should have no quantified vars");
             assert_eq!(
                 scheme.ty,
@@ -1011,7 +1060,7 @@ mod tests {
     #[test]
     fn test_not_scheme() {
         let tc = TypeChecker::new();
-        if let Some(ModuleEntry::Def { scheme, .. }) = tc.symbol_table().get("not") {
+        if let Some(ModuleEntry::Def { scheme, .. }) = primitives_table(&tc).get("not") {
             assert!(scheme.vars.is_empty(), "not should have no quantified vars");
             assert_eq!(
                 scheme.ty,
@@ -1027,7 +1076,7 @@ mod tests {
     #[test]
     fn test_primitives_are_inline_kind() {
         let tc = TypeChecker::new();
-        if let Some(ModuleEntry::Def { kind, .. }) = tc.symbol_table().get("add-i64") {
+        if let Some(ModuleEntry::Def { kind, .. }) = primitives_table(&tc).get("add-i64") {
             assert!(
                 matches!(
                     kind.as_ref(),
@@ -1106,11 +1155,12 @@ mod tests {
     #[test]
     fn test_vec_primitives_registered() {
         let tc = TypeChecker::new();
+        let pt = primitives_table(&tc);
         let vec_ops = ["vec-get", "vec-set", "vec-push", "vec-len"];
         for name in vec_ops {
             assert!(
-                tc.symbol_table().get(name).is_some(),
-                "Vec primitive {name} should be in symbol table"
+                pt.get(name).is_some(),
+                "Vec primitive {name} should be in primitives module"
             );
         }
     }
@@ -1119,7 +1169,7 @@ mod tests {
     #[test]
     fn test_vec_get_scheme_is_polymorphic() {
         let tc = TypeChecker::new();
-        if let Some(ModuleEntry::Def { scheme, kind, .. }) = tc.symbol_table().get("vec-get") {
+        if let Some(ModuleEntry::Def { scheme, kind, .. }) = primitives_table(&tc).get("vec-get") {
             assert_eq!(scheme.vars.len(), 1, "vec-get should have 1 quantified var");
             // Type: (Fn [(Vec a) Int] a)
             if let Type::Fn(params, ret) = &scheme.ty {
@@ -1143,7 +1193,7 @@ mod tests {
     #[test]
     fn test_vec_set_scheme_is_polymorphic() {
         let tc = TypeChecker::new();
-        if let Some(ModuleEntry::Def { scheme, .. }) = tc.symbol_table().get("vec-set") {
+        if let Some(ModuleEntry::Def { scheme, .. }) = primitives_table(&tc).get("vec-set") {
             assert_eq!(scheme.vars.len(), 1, "vec-set should have 1 quantified var");
             if let Type::Fn(params, ret) = &scheme.ty {
                 assert_eq!(params.len(), 3, "vec-set takes (Vec a), Int, a");
@@ -1163,7 +1213,7 @@ mod tests {
     #[test]
     fn test_vec_push_scheme_is_polymorphic() {
         let tc = TypeChecker::new();
-        if let Some(ModuleEntry::Def { scheme, .. }) = tc.symbol_table().get("vec-push") {
+        if let Some(ModuleEntry::Def { scheme, .. }) = primitives_table(&tc).get("vec-push") {
             assert_eq!(scheme.vars.len(), 1, "vec-push should have 1 quantified var");
             if let Type::Fn(params, ret) = &scheme.ty {
                 assert_eq!(params.len(), 2, "vec-push takes (Vec a), a");
@@ -1180,7 +1230,7 @@ mod tests {
     #[test]
     fn test_vec_len_scheme_is_polymorphic() {
         let tc = TypeChecker::new();
-        if let Some(ModuleEntry::Def { scheme, .. }) = tc.symbol_table().get("vec-len") {
+        if let Some(ModuleEntry::Def { scheme, .. }) = primitives_table(&tc).get("vec-len") {
             assert_eq!(scheme.vars.len(), 1, "vec-len should have 1 quantified var");
             if let Type::Fn(params, ret) = &scheme.ty {
                 assert_eq!(params.len(), 1, "vec-len takes (Vec a)");
@@ -1530,8 +1580,8 @@ mod tests {
     #[test]
     fn test_quote_sexp_registered() {
         let tc = TypeChecker::new();
-        let entry = tc.symbol_table().get("quote-sexp");
-        assert!(entry.is_some(), "quote-sexp should be in user symbol table (imported from primitives)");
+        let entry = primitives_table(&tc).get("quote-sexp");
+        assert!(entry.is_some(), "quote-sexp should be in primitives module");
 
         if let Some(ModuleEntry::Def { scheme, kind, .. }) = entry {
             let sexp_type = Type::ADT(TypeName::from("Sexp"), vec![]);
@@ -1584,7 +1634,7 @@ mod tests {
 
         // Verify quote-sexp has the correct type referencing Sexp (proves ordering)
         let sexp_type = Type::ADT(TypeName::from("Sexp"), vec![]);
-        if let Some(ModuleEntry::Def { scheme, .. }) = tc.symbol_table().get("quote-sexp") {
+        if let Some(ModuleEntry::Def { scheme, .. }) = primitives_table(&tc).get("quote-sexp") {
             assert_eq!(
                 scheme.ty,
                 Type::Fn(vec![sexp_type.clone()], Box::new(sexp_type)),
@@ -1902,9 +1952,10 @@ mod tests {
     #[test]
     fn test_ring0_primitives_have_docstrings() {
         let tc = TypeChecker::new();
+        let pt = primitives_table(&tc);
         for prim in ring0_primitives() {
             if let Some(ModuleEntry::Def { docstring, .. }) =
-                tc.symbol_table().get(prim.name.as_ref())
+                pt.get(prim.name.as_ref())
             {
                 assert!(
                     docstring.is_some(),
@@ -1921,9 +1972,10 @@ mod tests {
     #[test]
     fn test_ring1_primitives_have_docstrings() {
         let tc = TypeChecker::new();
+        let pt = primitives_table(&tc);
         for prim in ring1_primitives() {
             if let Some(ModuleEntry::Def { docstring, .. }) =
-                tc.symbol_table().get(prim.name.as_ref())
+                pt.get(prim.name.as_ref())
             {
                 assert!(
                     docstring.is_some(),
@@ -1940,8 +1992,9 @@ mod tests {
     #[test]
     fn test_vec_primitives_have_docstrings() {
         let tc = TypeChecker::new();
+        let pt = primitives_table(&tc);
         for name in &["vec-get", "vec-set", "vec-push", "vec-len"] {
-            if let Some(ModuleEntry::Def { docstring, .. }) = tc.symbol_table().get(*name) {
+            if let Some(ModuleEntry::Def { docstring, .. }) = pt.get(*name) {
                 assert!(
                     docstring.is_some(),
                     "Vec primitive {name} should have a docstring"
@@ -1956,9 +2009,10 @@ mod tests {
     #[test]
     fn test_docstring_text_matches_spec() {
         let tc = TypeChecker::new();
+        let pt = primitives_table(&tc);
 
         let check = |name: &str, expected: &str| {
-            if let Some(ModuleEntry::Def { docstring, .. }) = tc.symbol_table().get(name) {
+            if let Some(ModuleEntry::Def { docstring, .. }) = pt.get(name) {
                 assert_eq!(
                     docstring.as_deref(),
                     Some(expected),

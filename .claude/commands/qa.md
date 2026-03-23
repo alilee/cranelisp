@@ -52,8 +52,9 @@ Test plans in `tests/plan/` are owned deliverables, not afterthoughts. They must
 
 When `/qa` discovers a bug or gap, the correct action is to:
 1. Write a failing test that demonstrates the issue (in `tests/`)
-2. File a `FIXME(/skill-name)` comment on the relevant spec or design doc
-3. Report to `/sprint` for task assignment to the owning skill
+2. The failing test IS the signal — no FIXME is needed when a test already fails
+
+FIXMEs are for cross-skill communication about issues that *aren't* captured by a test (spec ambiguities, design questions). A failing test is louder and more actionable than any FIXME.
 
 Even "obvious one-line fixes" in source code are delegated — `/qa` validates, it does not implement.
 
@@ -93,42 +94,37 @@ Even "obvious one-line fixes" in source code are delegated — `/qa` validates, 
 
 | Tier | Scope | Target | When |
 |------|-------|--------|------|
-| Fast | All non-`#[ignore]` tests | < 10s total | Every change |
-| Perf | `#[ignore]` stress/benchmark tests | < 60s total | After fast suite passes, before ring gate |
+| All | All tests (including known-failing) | < 10s total | Every change |
+| Perf | `#[ignore]` stress/benchmark tests (compile-gated only) | < 60s total | Before ring gate |
 
-**Reporting**: Include test suite runtime in wave completion notes in SPRINT.md (e.g., "286 tests in 1.2s"). Flag regressions.
+**Reporting**: Include test suite runtime and failure count in wave completion notes in SPRINT.md (e.g., "286 tests, 6 failures in 1.2s"). Flag regressions in both runtime and failure count.
 
 ## Requirement Coverage
 
-**Every spec requirement in scope (current ring and all prior rings) MUST have a test.** If the implementation can't pass it yet, the test is `#[ignore]` with a comment naming the gap. An ignored test is visible debt. An untested requirement is invisible debt — and invisible debt is how sprints pass their gate while the binary doesn't work.
+**Every spec requirement in scope (current ring and all prior rings) MUST have a test.** `/qa`'s deliverable is tests that cover the spec — including tests that fail because the implementation doesn't conform yet. A failing test is the strongest possible signal that work is needed. An untested requirement is invisible debt.
+
+**Failing tests are the primary deliverable.** `/qa` writes tests for the spec. If the implementation doesn't match the spec, the test fails. That failure is not `/qa`'s problem to fix — it is the owning compiler skill's problem. `/qa` does not hide spec violations behind `#[ignore]`. A red test suite with clear failure messages tells every developer exactly what needs fixing.
+
+**`#[ignore]` is for future-sprint requirements only.** If a spec requirement is tagged for a future sprint that hasn't been scheduled yet, `#[ignore]` is valid — the work isn't in scope.
+
+Everything in scope (current or past sprint) should fail visibly — including compilation failures. If the API surface doesn't exist yet, the test won't compile, and `cargo test` itself fails. That's a valid and loud signal — louder than `#[ignore]`. This is standard TDD: write the test first, watch it fail (even at compile time), then make it pass.
+
+| Situation | Action |
+|---|---|
+| In-scope, wrong result | **Let it fail** |
+| In-scope, panics | **Let it fail** |
+| In-scope, API doesn't exist (won't compile) | **Let it fail to compile** |
+| Future-sprint requirement | `#[ignore]` with spec ref |
+
+When `#[ignore]` is used, it MUST use the `#[ignore = "reason"]` syntax with the spec reference.
 
 **On every sprint:**
 
-1. **Scan FIXMEs addressed to `/qa`**: Every `FIXME(/qa)` in spec, design, or plan files represents a test gap. For each one, either write the test (passing or `#[ignore]`'d) or explicitly defer with rationale in SPRINT.md.
-2. **Scan `repl/spec.md` for the current ring**: Every requirement tagged with the current ring or earlier MUST have a corresponding test in `tests/`. If the implementation doesn't conform, write an `#[ignore]` test documenting the expected vs actual behavior.
-3. **Verify before approving a sprint**: Before marking a QA wave as done, confirm that every in-scope spec requirement has test coverage. "All tests pass" is necessary but not sufficient — "all requirements are tested" is the actual gate.
+1. **Scan FIXMEs addressed to `/qa`**: Every `FIXME(/qa)` in spec, design, or plan files represents a test gap. Write the test.
+2. **Scan spec sections for the current ring**: Every requirement tagged with the current ring or earlier MUST have a corresponding test in `tests/`.
+3. **Verify before approving a sprint**: Every in-scope spec requirement has test coverage. Some of those tests may fail — that is expected and healthy. "All requirements are tested" is the gate, not "all tests pass."
 
-**Why `#[ignore]` over no test:** An ignored test shows up in the test count (`142 passed; 5 ignored`). It's grep-able. It has a comment explaining what's wrong. It gets un-ignored when the fix lands. A requirement with no test is invisible — it passes every gate silently until someone tries to use the feature and discovers it doesn't work.
-
-**`#[ignore]` annotation format:** Every ignored test MUST use the `#[ignore = "reason"]` syntax (not a comment) with: (1) the spec reference, (2) the target ring, and (3) the target sprint (if known). The reason string shows up in `cargo test` output, making ignored tests self-documenting and grep-able for sprint planning.
-
-```rust
-#[ignore = "repl/spec.md §1.2 — Ring 2, Sprint 6: requires module-qualified type display"]
-#[ignore = "spec/12-runtime — Ring 2, Sprint 7: scope-level dec for heap temporaries"]
-#[ignore = "repl/spec.md §3.1 — Ring 4: slash commands require REPL command parser"]
-```
-
-When the target sprint is not yet determined, use the ring only: `Ring 4: reason`. When a sprint starts, `/qa` must scan all `#[ignore]` annotations targeting that sprint and add them to the sprint's acceptance criteria. When a sprint completes, zero `#[ignore]` tests should reference that sprint — they are either un-ignored (passing) or re-targeted to a later sprint with rationale.
-
-**Audit existing ignores on sprint rollover:** At the start of every sprint, `/qa` runs:
-```bash
-grep -rn '#\[ignore' tests/ --include="*.rs"
-```
-and verifies that (a) every ignored test has a ring/sprint target in its reason string, and (b) any tests targeting the current sprint are included in the sprint's QA acceptance criteria. Tests with stale targets (referencing completed sprints) are bugs — they should have been un-ignored or re-targeted.
-
-**Test naming for traceability:** Tests trace to spec sections via name and comment. Use `// spec: 07-traits §1.3` or similar. No separate traceability matrix — the tests ARE the traceability.
-
-**Source document annotations:** When a spec or plan section is covered by tests, annotate the section heading with its ring and sprint status — e.g., `[R2 S5]` for "covered in Ring 2, Sprint 5", or `[Done]` when fully tested. This makes coverage visible from both directions: tests trace forward to spec sections, and spec sections show which ring/sprint delivered their coverage. Annotations live on section headings in `spec/`, `repl/spec.md`, and `tests/plan/` files. `/qa` adds annotations when writing tests; other skills add annotations when delivering features against spec requirements.
+**Test naming for traceability:** Tests trace to spec sections via `// spec:` comments. Use `// spec: 07-traits §1.3` or similar. The `// spec:` comment IS the traceability — no separate matrix, no annotations on spec files, no FIXMEs needed. The test references the spec; the spec doesn't need to reference the test back.
 
 ## Spec-First Testing
 
@@ -145,25 +141,26 @@ If a test passes but uses a name or convention that doesn't match the spec, **th
 
 ## Spec-Scope Test Coverage (the "failing tests first" rule)
 
-**CRITICAL — When a sprint scopes a feature, `/qa` MUST write tests for the FULL spec surface of that feature, not just the parts the implementation covers.** Tests that the implementation cannot yet pass are written as `#[ignore]` with a reason string naming the gap. This is the primary mechanism for making implementation gaps visible.
+**CRITICAL — When a sprint scopes a feature, `/qa` MUST write tests for the FULL spec surface of that feature, not just the parts the implementation covers.** Tests that the implementation cannot pass yet will fail. Those failures are the deliverable — they tell dev skills exactly what needs fixing.
 
-**Why this is non-negotiable:** Sprint 16 scoped `(print "hello")` as its goal. `/qa` wrote 25 tests that all passed — but they only tested `Pure` and `bind` (pure IO computation). No test exercised platform effects (the actual `print`), because the Effect codegen path didn't exist. Result: the sprint's headline deliverable was broken, but the test suite was green. If `/qa` had written a test for `(print "hello")` — even as `#[ignore]` — the gap would have been visible from Wave 3 onward.
+**Why this is non-negotiable:** Sprint 16 scoped `(print "hello")` as its goal. `/qa` wrote 25 tests that all passed — but they only tested `Pure` and `bind` (pure IO computation). No test exercised platform effects (the actual `print`), because the Effect codegen path didn't exist. Result: the sprint's headline deliverable was broken, but the test suite was green. If `/qa` had written a failing test for `(print "hello")`, the gap would have been visible immediately.
 
 **The rule:**
 
 1. **At the start of a QA wave**, read the sprint scope and the relevant spec sections. Enumerate every spec requirement that falls within scope.
-2. **Write a test for every requirement**, even if the implementation is known to be incomplete. Tests that fail become `#[ignore]` with a reason string that names the missing implementation.
-3. **Never skip a requirement because the implementation isn't ready.** An `#[ignore]` test is a visible gap. A missing test is an invisible gap. Invisible gaps are how sprints close with broken features.
-4. **Treat "0 ignored" with suspicion, not celebration.** If a sprint delivers a new feature and all tests pass on the first try, ask: "Did I test the full spec surface, or only what I knew would pass?" A green suite with ignored tests is honest. A green suite that avoids hard tests is dishonest.
-5. **The QA wave is not done when all tests pass — it is done when all spec requirements have tests.** Some of those tests may be `#[ignore]`, which creates visible work items for compiler skills.
+2. **Write a test for every requirement**, even if the implementation is known to be incomplete. If the test fails, that's the correct outcome — it exposes the gap.
+3. **Never skip a requirement because the implementation isn't ready.** A failing test is a visible gap. A missing test is an invisible gap. Invisible gaps are how sprints close with broken features.
+4. **Treat "0 failures" with suspicion, not celebration.** If a sprint delivers a new feature and all tests pass on the first try, ask: "Did I test the full spec surface, or only what I knew would pass?" A red suite with clear failure messages is honest. A green suite that avoids hard tests is dishonest.
+5. **The QA wave is not done when all tests pass — it is done when all spec requirements have tests.** Some of those tests will fail. Making them pass is the dev skills' job, not `/qa`'s.
+
+**`/qa`'s relationship to a green build:** `/qa` does NOT own the green build. `/qa` writes correct tests. Dev skills (`/int`, `/frontend`, `/typecheck`, `/backend`) make them pass. A test that fails because the compiler violates the spec is a CORRECT test — it would be wrong to hide it behind `#[ignore]` just to keep the build green.
 
 **Operational checklist for every QA wave:**
 
 - [ ] Read the sprint scope (SPRINT.md) and the relevant spec sections
 - [ ] List every spec requirement in scope (not just the ones that are implemented)
-- [ ] For each requirement: write a test, run it, mark `#[ignore]` if it fails
-- [ ] Report the ignore count and what each ignored test reveals about implementation gaps
-- [ ] File FIXME on the owning skill for each gap discovered via failing tests
+- [ ] For each requirement: write a test, run it
+- [ ] Report the failure count and what each failing test reveals about implementation gaps
 
 ## Ring Discipline
 
@@ -177,12 +174,10 @@ Example: Ring 0 provides named primitives (`add-i64`, `sub-i64`). Ring 2 adds tr
 
 At every sprint rollover, `/qa` MUST:
 
-1. **Audit all `#[ignore]` tests** — run `grep -rn '#\[ignore\]' tests/ --include="*.rs"` and verify every ignored test has a ring/sprint target annotation.
-2. **Identify tests targeting the new sprint** — these become sprint acceptance criteria. Add them to the sprint's QA task.
-3. **Re-target stale ignores** — any test targeting a completed sprint that is still ignored is a bug. Either the feature landed (un-ignore it) or it didn't (re-target to the sprint that will deliver it, with rationale).
-4. **Scan FIXMEs addressed to `/qa`** — every `FIXME(/qa)` in spec, design, or plan files. Write the test or defer with rationale.
-5. **Report the ignore inventory** in SPRINT.md Notes: total ignored, how many target this sprint, how many are untargeted.
-6. **Audit negative coverage gaps** — scan spec and repl/spec.md for `[Tested` annotations that lack `+Neg`. For each, assess whether negative tests are needed (most MUST requirements need them). Prioritize sections where the absence of negative tests has allowed spec violations to pass undetected (e.g., `/list` showing non-spec items, wrong module qualification). Add neg coverage tasks to the sprint plan. See root `CLAUDE.md` §"Annotation Convention" for the `[Tested+Neg]` notation.
+1. **Audit all `#[ignore]` tests** — run `grep -rn '#\[ignore\]' tests/ --include="*.rs"`. Every ignored test should be rare (only for tests that can't compile). If a test can compile but is ignored, remove the `#[ignore]` and let it fail.
+2. **Audit failing tests** — run `cargo test` and review which tests fail. These are the sprint's visible debt. Report the failure count and categories.
+3. **Scan FIXMEs addressed to `/qa`** — every `FIXME(/qa)` in spec, design, or plan files. Write the test.
+4. **Audit negative coverage gaps** — scan for spec MUST requirements that lack negative tests. Prioritize boundaries where implementation shortcuts can silently violate the spec. Write the tests — they may fail, and that's the point.
 
 ### Negative Test Guidance
 

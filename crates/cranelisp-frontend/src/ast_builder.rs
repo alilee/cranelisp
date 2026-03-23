@@ -7,6 +7,8 @@
 //! Non-Ring-0 forms are rejected with clear error messages indicating which
 //! ring they belong to.
 
+use std::collections::HashSet;
+
 use cranelisp_types::{
     CranelispError, ConstructorDef, Defn, DefnVariant, Expr, FieldDef, MacroExpander, MatchArm,
     Pattern, Program, ReplInput, Sexp, Span, Symbol, TopLevel, TraitDecl, TraitImpl,
@@ -1508,6 +1510,17 @@ fn build_annotated_params(
         }
     }
 
+    // Check for duplicate parameter names (spec §5 — defn params must be distinct)
+    let mut seen = HashSet::new();
+    for name in &names {
+        if !seen.insert(name.as_ref()) {
+            return Err(parse_err(
+                &format!("duplicate parameter name '{}'", name),
+                sexp.span(),
+            ));
+        }
+    }
+
     let has_any = annotations.iter().any(|a| a.is_some());
     Ok((names, if has_any { annotations } else { vec![] }))
 }
@@ -2932,5 +2945,37 @@ mod tests {
             }
             other => panic!("expected Apply, got {other:?}"),
         }
+    }
+
+    // -- Duplicate parameter names --
+
+    // spec: 05-definitions §5 — duplicate param names rejected in defn (batch)
+    #[test]
+    fn test_duplicate_param_names_defn_batch() {
+        let err = parse_and_build_program("(defn bad [x x] (add-i64 x x))").unwrap_err();
+        let msg = format!("{err}");
+        assert!(msg.contains("duplicate parameter name 'x'"), "got: {msg}");
+    }
+
+    // spec: 05-definitions §5 — duplicate param names rejected in defn (REPL)
+    #[test]
+    fn test_duplicate_param_names_defn_repl() {
+        let err = parse_and_build_repl("(defn bad [x x] (add-i64 x x))").unwrap_err();
+        let msg = format!("{err}");
+        assert!(msg.contains("duplicate parameter name 'x'"), "got: {msg}");
+    }
+
+    // spec: 04-expressions §4 — duplicate param names rejected in lambda
+    #[test]
+    fn test_duplicate_param_names_lambda() {
+        let err = parse_and_build_expr("(fn [a a] a)").unwrap_err();
+        let msg = format!("{err}");
+        assert!(msg.contains("duplicate parameter name 'a'"), "got: {msg}");
+    }
+
+    // spec: 05-definitions §5 — distinct param names accepted
+    #[test]
+    fn test_distinct_param_names_ok() {
+        assert!(parse_and_build_program("(defn good [x y] (add-i64 x y))").is_ok());
     }
 }

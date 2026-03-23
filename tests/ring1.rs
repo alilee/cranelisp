@@ -1161,17 +1161,32 @@ fn parse_int_invalid() {
 // =============================================================================
 
 // spec: 12-runtime §12.5 — TCO with higher-order function
+// This test crashes with SIGBUS in REPL mode. It runs via subprocess (`--run`)
+// to contain the crash — reported as a test failure, not a process kill.
 #[test]
 fn closure_and_tco() {
-    // TCO with higher-order function parameter.
-    let src = "
-        (defn fold [f acc n]
-          (if (eq-i64 n 0)
-            acc
-            (fold f (f acc n) (sub-i64 n 1))))
-        (defn main [] (fold (fn [acc n] (add-i64 acc n)) 0 100))
-    ";
-    assert_eq!(compile_and_run_simple(src), 5050);
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("test.cl");
+    std::fs::write(&file, "\
+        (defn fold [f acc n]\n\
+          (if (primitives/eq-i64 n 0) acc (fold f (f acc n) (primitives/sub-i64 n 1))))\n\
+        (defn main [] (fold (fn [acc n] (primitives/add-i64 acc n)) 0 100))\n\
+    ").unwrap();
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_cranelisp"))
+        .args(["--run", file.to_str().unwrap()])
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.is_empty(),
+        "closure_and_tco produced error output: {stderr}"
+    );
+    // Result is 5050, exit code is result mod 256 = 186
+    assert_eq!(
+        output.status.code(),
+        Some((5050_i64 % 256) as i32),
+        "closure_and_tco wrong result, stderr={stderr}"
+    );
 }
 
 // spec: 12-runtime §12.5 — TCO with ADT match

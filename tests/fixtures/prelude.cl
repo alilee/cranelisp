@@ -9,6 +9,8 @@
 ;;
 ;; See tests/plan/strategy.md §"Prelude & Stdlib Test Isolation" for rationale.
 
+(import [primitives [*]])
+
 ;; --- Core ADTs ---
 
 (deftype (Option a) None (Some [:a val]))

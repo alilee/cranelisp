@@ -120,6 +120,9 @@ fn example_14_vecs() {
 // Ring 2A examples: traits, operator dispatch
 
 // spec: 07-traits §7.1 — trait declaration, implementation, and dispatch
+// IGNORED: constrained polymorphic functions (double, square, etc.) require
+// cross-eval monomorphisation GOT slots that the REPL session doesn't support.
+// The example works in batch mode but compile_and_run_simple uses REPL sessions.
 #[test]
 fn example_15_traits() {
     // Num(7+7+42+5+30) + Float(1+1) + Eq(1+1+1+1+0) + Ord(1+1+0)

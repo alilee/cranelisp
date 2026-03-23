@@ -95,9 +95,13 @@ struct CollectedDefns<'a> {
     /// Extra defns owned by this struct (default method impls + mono specializations).
     extra_defns: Vec<Defn>,
     /// Function IDs declared in the JIT module.
+    /// Maps **bare** function names to FuncIds (for codegen lookup).
     func_ids: HashMap<Symbol, FuncId>,
     /// Function parameter counts for closure wrapper generation.
     func_arities: HashMap<Symbol, usize>,
+    /// Maps bare function names to the JIT-visible (possibly module-qualified) names.
+    /// Empty when no prefix is used (single-module compilation).
+    jit_names: HashMap<Symbol, Symbol>,
 }
 
 /// Compile a batch program: declare all functions, compile them, finalize.
@@ -113,7 +117,7 @@ pub fn compile_program(
     jit.declare_intrinsics()?;
 
     // Phase 1: Collect defns, declare functions, build arity map.
-    let collected = collect_and_declare_defns(program, check, &mut jit)?;
+    let collected = collect_and_declare_defns(program, check, &mut jit, None)?;
 
     // Phase 2: Set up GOT for Interactive mode.
     let (got_slots, mut got_state) =
@@ -154,10 +158,15 @@ pub fn compile_program(
 /// Phase 1: Collect all defns from the program (skipping constrained fn base
 /// definitions), collect extra defns (default methods + mono specializations),
 /// declare all functions in the JIT, and build the arity map.
+///
+/// When `jit_prefix` is Some, function names are prefixed with `"{prefix}/"`
+/// in the JIT to avoid collisions in a shared multi-module JIT. The returned
+/// `func_ids` still maps bare names to FuncIds for the current module's codegen.
 fn collect_and_declare_defns<'a>(
     program: &'a Program,
     check: &CheckResult,
     jit: &mut Jit,
+    jit_prefix: Option<&str>,
 ) -> Result<CollectedDefns<'a>, CranelispError> {
     // Collect regular defns, skipping constrained fn base definitions.
     // Constrained fns are templates — only their monomorphised specializations
@@ -193,7 +202,14 @@ fn collect_and_declare_defns<'a>(
     }
 
     // Declare all functions first (so they can reference each other).
-    let func_ids = jit.declare_functions(&all_defn_refs)?;
+    // When a prefix is provided, JIT symbol names are module-qualified to
+    // avoid collisions, but func_ids maps bare names for codegen.
+    let (func_ids, jit_names) = if let Some(prefix) = jit_prefix {
+        jit.declare_functions_prefixed(&all_defn_refs, prefix)?
+    } else {
+        let ids = jit.declare_functions(&all_defn_refs)?;
+        (ids, HashMap::new())
+    };
 
     // Build function arity map for named-function-as-value closure wrappers.
     let func_arities: HashMap<Symbol, usize> = all_defn_refs
@@ -201,7 +217,7 @@ fn collect_and_declare_defns<'a>(
         .map(|d| (d.name.clone(), d.params.len()))
         .collect();
 
-    Ok(CollectedDefns { defns, extra_defns, func_ids, func_arities })
+    Ok(CollectedDefns { defns, extra_defns, func_ids, func_arities, jit_names })
 }
 
 /// Phase 2: In Interactive mode, set up a temporary GOT so GOT-indirect calls
@@ -346,48 +362,81 @@ pub struct CompiledModuleInfo {
 /// which is finalized once after all modules are compiled. This allows
 /// cross-module function calls to resolve via shared JIT symbol tables.
 ///
+/// `module_prefix` is the module path (e.g., `"core.list"` or `"main"`).
+/// Function names are prefixed with `"{module_prefix}/"` in the JIT to
+/// avoid name collisions between modules (e.g., stdlib `fold` vs user `fold`).
+///
 /// `prior_funcs` lists `(name, param_count)` from previously-compiled
-/// dependency modules. Names may include qualified aliases like
-/// `"util/helper"` that map to the same JIT function as `"helper"`.
+/// dependency modules. Names are module-qualified (e.g., `"core.list/fold"`).
 pub fn compile_module_program(
     program: &Program,
     check: &CheckResult,
     mode: CompileMode,
     jit: &mut Jit,
     prior_funcs: &[(Symbol, usize)],
+    module_prefix: &str,
 ) -> Result<CompiledModuleInfo, CranelispError> {
-    // Phase 1: Collect defns, declare them in the shared JIT.
-    let collected = collect_and_declare_defns(program, check, jit)?;
+    // Phase 1: Collect defns, declare them with module-qualified names in
+    // the shared JIT to avoid collisions. The returned func_ids map bare
+    // names to FuncIds for this module's codegen.
+    let collected = collect_and_declare_defns(
+        program, check, jit, Some(module_prefix),
+    )?;
 
     // Build merged func_ids from this module + prior dependencies.
-    // For qualified aliases (e.g., "util/helper"), map them to the same
-    // FuncId as the base function name ("helper") since they refer to
-    // the same JIT-compiled function.
+    // The current module's func_ids maps bare names → FuncIds.
+    // Prior funcs are module-qualified (e.g., "core.list/fold") or aliases
+    // (e.g., "list/fold") that refer to the same underlying function.
     let mut merged_func_ids = collected.func_ids.clone();
 
     for (name, param_count) in prior_funcs {
         if merged_func_ids.contains_key(name) {
-            continue; // Already declared by this module
+            continue; // Already declared (e.g., current module defines same name)
         }
 
-        // Check if this is a qualified alias ("module/name" -> "name").
-        if let Some(slash_pos) = name.as_ref().find('/') {
-            let base_name = &name.as_ref()[slash_pos + 1..];
-            let base_sym = Symbol::from(base_name);
-            if let Some(&func_id) = merged_func_ids.get(&base_sym) {
-                // Qualified alias: reuse the same FuncId (no JIT declaration needed).
-                merged_func_ids.insert(name.clone(), func_id);
+        // Check if this is an alias for a function already in merged_func_ids.
+        // Aliases share the same bare name (e.g., "list/fold" and "core.list/fold"
+        // both have bare name "fold"). If the bare name is already mapped, reuse
+        // that FuncId instead of declaring a new import (which would create an
+        // unresolvable Import function in the JIT).
+        if let Some(slash_pos) = name.as_ref().rfind('/') {
+            let bare_name = Symbol::from(&name.as_ref()[slash_pos + 1..]);
+            if let Some(&existing_func_id) = merged_func_ids.get(&bare_name) {
+                merged_func_ids.insert(name.clone(), existing_func_id);
                 continue;
             }
         }
 
-        // Not an alias — declare as an imported function in the shared JIT.
-        jit.declare_imported_functions(&[(name.clone(), *param_count)], &mut merged_func_ids)?;
+        // Declare as an imported function in the shared JIT.
+        // The qualified name (e.g., "core.list/fold") matches an existing
+        // JIT symbol from the prior module's prefixed declaration.
+        jit.declare_imported_functions(
+            &[(name.clone(), *param_count)],
+            &mut merged_func_ids,
+        )?;
+
+        // Also register the bare name (after the last '/') in func_ids,
+        // since the AST uses bare names for imported functions. Only add
+        // if the current module doesn't already define a function with
+        // that bare name (local definitions shadow imports).
+        if let Some(slash_pos) = name.as_ref().rfind('/') {
+            let bare_name = Symbol::from(&name.as_ref()[slash_pos + 1..]);
+            if !merged_func_ids.contains_key(&bare_name) {
+                let func_id = *merged_func_ids.get(name)
+                    .expect("just declared");
+                merged_func_ids.insert(bare_name, func_id);
+            }
+        }
     }
 
     let mut merged_arities: HashMap<Symbol, usize> = collected.func_arities.clone();
     for (name, count) in prior_funcs {
         merged_arities.insert(name.clone(), *count);
+        // Also register bare-name arities for codegen lookup.
+        if let Some(slash_pos) = name.as_ref().rfind('/') {
+            let bare_name = Symbol::from(&name.as_ref()[slash_pos + 1..]);
+            merged_arities.entry(bare_name).or_insert(*count);
+        }
     }
 
     // Build compile context with merged symbol tables.
@@ -413,9 +462,17 @@ pub fn compile_module_program(
     )?;
 
     // Collect this module's function signatures for downstream modules.
+    // Use the JIT-visible names (which may be module-qualified if there
+    // was a collision with a prior module's function of the same name).
     let func_signatures: Vec<(Symbol, usize)> = collected
         .func_arities
-        .into_iter()
+        .iter()
+        .map(|(name, arity)| {
+            let jit_name = collected.jit_names.get(name)
+                .cloned()
+                .unwrap_or_else(|| name.clone());
+            (jit_name, *arity)
+        })
         .collect();
 
     Ok(CompiledModuleInfo {
@@ -2321,5 +2378,352 @@ mod tests {
         let func: extern "C" fn() -> i64 = unsafe { std::mem::transmute(caller_ptr) };
         let result = func();
         assert_eq!(result, 42, "cross-module GOT call should return add42's result");
+    }
+
+    // --- Cross-eval mono defn GOT tests ---
+
+    // spec: 07-traits §7.7, 12-runtime §12.2 — mono defn compiled in prior eval
+    // is callable via GOT from a subsequent eval's defn.
+    //
+    // Simulates the REPL scenario where a constrained-poly function
+    // (e.g., `countdown`) is defined in eval 1, then called in eval 2
+    // (e.g., `(defn main [] (countdown 1000000))`). The monomorphised
+    // specialization (`countdown$Int`) must be compiled and registered
+    // in the GOT before the calling defn is compiled.
+    #[test]
+    fn test_mono_defn_got_callable_across_evals() {
+        // Step 1: Compile a "mono defn" (identity$Int) and register in GOT.
+        // This simulates compile_mono_defns producing countdown$Int.
+        let mono_defn = Defn {
+            name: Symbol::from("identity$Int"),
+            params: vec![Symbol::from("x")],
+            param_annotations: vec![],
+            visibility: cranelisp_types::Visibility::Public,
+            body: Expr::Var {
+                name: Symbol::from("x"),
+                span: Span::new(10, 11),
+            },
+            docstring: None,
+            span: Span::new(0, 20),
+        };
+
+        let mut got_state = got::ModuleCodegenState::new();
+        let mono_slot = got_state.ensure_slot_for(&Symbol::from("identity$Int")).unwrap();
+
+        // Compile mono defn in its own JIT (as compile_and_register_defn does).
+        let check = empty_check();
+        let mut jit1 = Jit::new().unwrap();
+        jit1.declare_intrinsics().unwrap();
+        let func_ids1 = jit1.declare_functions(&[&mono_defn]).unwrap();
+
+        let mut got_slots: HashMap<Symbol, usize> = HashMap::new();
+        got_slots.insert(Symbol::from("identity$Int"), mono_slot);
+        let got_base = got_state.got_base_ptr() as i64;
+
+        let arities1: HashMap<Symbol, usize> =
+            vec![(Symbol::from("identity$Int"), 1)].into_iter().collect();
+
+        let ctx1 = jit1.build_compile_context(
+            &check, CompileMode::Interactive, &func_ids1, &arities1,
+            Some(&got_slots), Some(got_base), None,
+        );
+        jit1.compile_defn(&mono_defn, ctx1).unwrap();
+        let mono_ptr = jit1.finalize_and_get_ptr(&Symbol::from("identity$Int"), 1).unwrap();
+        got_state.update_slot(mono_slot, mono_ptr);
+        got_state.def_codegen.entry(Symbol::from("identity$Int")).or_default().code_ptr = Some(mono_ptr);
+        got_state.def_codegen.entry(Symbol::from("identity$Int")).or_default().param_count = Some(1);
+
+        // Step 2: Compile a "main" defn that calls identity$Int via SigDispatch.
+        // The call `(identity 99)` is resolved to identity$Int by the typechecker.
+        let call_span = Span::new(100, 115);
+        let main_body = Expr::Apply {
+            callee: Box::new(Expr::Var {
+                name: Symbol::from("identity"),
+                span: Span::new(101, 109),
+            }),
+            args: vec![Expr::IntLit {
+                value: 99,
+                span: Span::new(110, 112),
+            }],
+            span: call_span,
+        };
+
+        let main_defn = Defn {
+            name: Symbol::from("main"),
+            params: vec![],
+            param_annotations: vec![],
+            visibility: cranelisp_types::Visibility::Public,
+            body: main_body,
+            docstring: None,
+            span: Span::new(95, 120),
+        };
+
+        // Set up method_resolutions with SigDispatch for the call.
+        let mut check2 = empty_check();
+        check2.method_resolutions.insert(
+            call_span,
+            cranelisp_types::ResolvedCall::SigDispatch {
+                mangled_name: cranelisp_types::JitSymbol::from("identity$Int"),
+            },
+        );
+
+        let main_slot = got_state.ensure_slot_for(&Symbol::from("main")).unwrap();
+
+        // Build got_slots from the GOT state (as compile_and_register_defn does).
+        let mut got_slots2: HashMap<Symbol, usize> = HashMap::new();
+        for (name, dc) in &got_state.def_codegen {
+            if let Some(s) = dc.got_slot {
+                got_slots2.insert(name.clone(), s);
+            }
+        }
+        got_slots2.insert(Symbol::from("main"), main_slot);
+        let got_base2 = got_state.got_base_ptr() as i64;
+
+        let mut arities2: HashMap<Symbol, usize> = HashMap::new();
+        for (name, dc) in &got_state.def_codegen {
+            if let Some(pc) = dc.param_count {
+                arities2.insert(name.clone(), pc);
+            }
+        }
+        arities2.insert(Symbol::from("main"), 0);
+
+        let mut jit2 = Jit::new().unwrap();
+        jit2.declare_intrinsics().unwrap();
+        let func_ids2 = jit2.declare_functions(&[&main_defn]).unwrap();
+
+        let ctx2 = jit2.build_compile_context(
+            &check2, CompileMode::Interactive, &func_ids2, &arities2,
+            Some(&got_slots2), Some(got_base2), None,
+        );
+        jit2.compile_defn(&main_defn, ctx2).unwrap();
+        let main_ptr = jit2.finalize_and_get_ptr(&Symbol::from("main"), 0).unwrap();
+
+        // Execute main: should call identity$Int(99) and return 99.
+        let func: extern "C" fn() -> i64 = unsafe { std::mem::transmute(main_ptr) };
+        let result = func();
+        assert_eq!(result, 99, "cross-eval GOT call to mono defn should work");
+    }
+
+    // spec: 12-runtime §12.5, 07-traits §7.7 — TCO for monomorphised self-recursive call
+    //
+    // When a constrained-poly function like `countdown` is monomorphised to
+    // `countdown$Int`, the body contains a self-recursive call `(countdown ...)`
+    // that the typechecker resolves to `SigDispatch { mangled_name: "countdown$Int" }`.
+    // The backend's TCO check must recognize this as self-recursion.
+    //
+    // This test compiles a simple recursive function and verifies it completes
+    // without stack overflow (1M iterations would blow the stack without TCO).
+    #[test]
+    fn test_mono_defn_self_recursive_tco() {
+        // countdown$Int: (defn countdown$Int [n] (if (= n 0) 0 (countdown$Int (- n 1))))
+        // Simplified: use intrinsic primitives instead of trait dispatch.
+        let n_span = Span::new(10, 11);
+        let zero_span = Span::new(20, 21);
+        let eq_span = Span::new(30, 40);
+        let sub_span = Span::new(50, 60);
+        let recurse_span = Span::new(70, 90);
+        let if_span = Span::new(5, 95);
+        let result_span = Span::new(92, 93);
+
+        // Build: (if (eq-i64 n 0) 0 (countdown$Int (sub-i64 n 1)))
+        let cond = Expr::Apply {
+            callee: Box::new(Expr::Var {
+                name: Symbol::from("eq-i64"),
+                span: Span::new(31, 37),
+            }),
+            args: vec![
+                Expr::Var { name: Symbol::from("n"), span: n_span },
+                Expr::IntLit { value: 0, span: zero_span },
+            ],
+            span: eq_span,
+        };
+
+        let sub_call = Expr::Apply {
+            callee: Box::new(Expr::Var {
+                name: Symbol::from("sub-i64"),
+                span: Span::new(51, 58),
+            }),
+            args: vec![
+                Expr::Var { name: Symbol::from("n"), span: Span::new(55, 56) },
+                Expr::IntLit { value: 1, span: Span::new(57, 58) },
+            ],
+            span: sub_span,
+        };
+
+        // The recursive call: callee is "countdown" (original name),
+        // but it's resolved to countdown$Int via SigDispatch.
+        let recurse = Expr::Apply {
+            callee: Box::new(Expr::Var {
+                name: Symbol::from("countdown"),
+                span: Span::new(71, 80),
+            }),
+            args: vec![sub_call],
+            span: recurse_span,
+        };
+
+        let body = Expr::If {
+            cond: Box::new(cond),
+            then_branch: Box::new(Expr::IntLit { value: 0, span: result_span }),
+            else_branch: Box::new(recurse),
+            span: if_span,
+        };
+
+        let countdown_defn = Defn {
+            name: Symbol::from("countdown$Int"),
+            params: vec![Symbol::from("n")],
+            param_annotations: vec![],
+            visibility: cranelisp_types::Visibility::Public,
+            body,
+            docstring: None,
+            span: Span::new(0, 100),
+        };
+
+        // Set up method resolutions:
+        // - eq_span: BuiltinFn("eq-i64") for the equality check
+        // - sub_span: BuiltinFn("sub-i64") for the subtraction
+        // - recurse_span: SigDispatch("countdown$Int") for the self-recursive call
+        let mut check = empty_check();
+        check.method_resolutions.insert(
+            eq_span,
+            cranelisp_types::ResolvedCall::BuiltinFn {
+                name: Symbol::from("eq-i64"),
+            },
+        );
+        check.method_resolutions.insert(
+            sub_span,
+            cranelisp_types::ResolvedCall::BuiltinFn {
+                name: Symbol::from("sub-i64"),
+            },
+        );
+        check.method_resolutions.insert(
+            recurse_span,
+            cranelisp_types::ResolvedCall::SigDispatch {
+                mangled_name: cranelisp_types::JitSymbol::from("countdown$Int"),
+            },
+        );
+
+        // Compile in Interactive mode with GOT.
+        let mut got_state = got::ModuleCodegenState::new();
+        let slot = got_state.ensure_slot_for(&Symbol::from("countdown$Int")).unwrap();
+
+        let mut jit = Jit::new().unwrap();
+        jit.declare_intrinsics().unwrap();
+        let func_ids = jit.declare_functions(&[&countdown_defn]).unwrap();
+
+        let mut got_slots: HashMap<Symbol, usize> = HashMap::new();
+        got_slots.insert(Symbol::from("countdown$Int"), slot);
+        let got_base = got_state.got_base_ptr() as i64;
+
+        let arities: HashMap<Symbol, usize> =
+            vec![(Symbol::from("countdown$Int"), 1)].into_iter().collect();
+
+        let ctx = jit.build_compile_context(
+            &check, CompileMode::Interactive, &func_ids, &arities,
+            Some(&got_slots), Some(got_base), None,
+        );
+        jit.compile_defn(&countdown_defn, ctx).unwrap();
+        let countdown_ptr = jit.finalize_and_get_ptr(&Symbol::from("countdown$Int"), 1).unwrap();
+        got_state.update_slot(slot, countdown_ptr);
+
+        // Call with 1_000_000 — without TCO this would stack overflow.
+        let func: extern "C" fn(i64) -> i64 = unsafe { std::mem::transmute(countdown_ptr) };
+        let result = func(1_000_000);
+        assert_eq!(result, 0, "TCO should allow 1M recursive calls without stack overflow");
+    }
+
+    // --- compile_module_program tests ---
+
+    // spec: 08-modules §8.3 — two modules with same-named function in shared JIT
+    // Regression test: previously caused "Duplicate definition" error when
+    // both modules defined a function with the same bare name (e.g., "fold").
+    #[test]
+    fn test_shared_jit_name_collision_avoided() {
+        // Module A defines "val" returning 100.
+        let val_a = Defn {
+            name: Symbol::from("val"),
+            params: vec![],
+            param_annotations: vec![],
+            visibility: cranelisp_types::Visibility::Public,
+            body: Expr::IntLit { value: 100, span: Span::new(0, 3) },
+            docstring: None,
+            span: Span::new(0, 20),
+        };
+        let program_a: Program = vec![TopLevel::Defn(val_a)];
+        let check_a = empty_check();
+
+        // Module B also defines "val" returning 200.
+        let val_b = Defn {
+            name: Symbol::from("val"),
+            params: vec![],
+            param_annotations: vec![],
+            visibility: cranelisp_types::Visibility::Public,
+            body: Expr::IntLit { value: 200, span: Span::new(100, 103) },
+            docstring: None,
+            span: Span::new(100, 120),
+        };
+        // Module B also defines "main" that calls its own "val".
+        let main_b = Defn {
+            name: Symbol::from("main"),
+            params: vec![],
+            param_annotations: vec![],
+            visibility: cranelisp_types::Visibility::Public,
+            body: Expr::Apply {
+                callee: Box::new(Expr::Var {
+                    name: Symbol::from("val"),
+                    span: Span::new(130, 133),
+                }),
+                args: vec![],
+                span: Span::new(130, 135),
+            },
+            docstring: None,
+            span: Span::new(125, 140),
+        };
+        let program_b: Program = vec![
+            TopLevel::Defn(val_b),
+            TopLevel::Defn(main_b),
+        ];
+        let check_b = empty_check();
+
+        // Compile both modules into one shared JIT.
+        let mut jit = jit::Jit::new().unwrap();
+        jit.declare_intrinsics().unwrap();
+
+        // Compile module A with prefix "mod_a".
+        let info_a = compile_module_program(
+            &program_a, &check_a, CompileMode::Batch,
+            &mut jit, &[], "mod_a",
+        ).expect("module A should compile");
+
+        // Build prior_funcs from module A's output (simulating accumulate_func_sigs).
+        let mut prior_funcs: Vec<(Symbol, usize)> = Vec::new();
+        for (name, arity) in &info_a.func_signatures {
+            prior_funcs.push((name.clone(), *arity));
+        }
+
+        // Compile module B with prefix "mod_b" — should NOT fail with
+        // "Duplicate definition" error.
+        let _info_b = compile_module_program(
+            &program_b, &check_b, CompileMode::Batch,
+            &mut jit, &prior_funcs, "mod_b",
+        ).expect("module B should compile without name collision");
+
+        // Finalize the shared JIT.
+        jit.finalize().expect("JIT finalization should succeed");
+
+        // Module B's "main" calls its own "val" which returns 200.
+        let main_ptr = jit.get_ptr_by_name(
+            &Symbol::from("mod_b/main"), 0,
+        ).expect("mod_b/main should be findable");
+        let func: extern "C" fn() -> i64 = unsafe { std::mem::transmute(main_ptr) };
+        let result = func();
+        assert_eq!(result, 200, "module B's main should call its own val (200), not module A's (100)");
+
+        // Module A's "val" should also be accessible by its qualified name.
+        let val_a_ptr = jit.get_ptr_by_name(
+            &Symbol::from("mod_a/val"), 0,
+        ).expect("mod_a/val should be findable");
+        let func_a: extern "C" fn() -> i64 = unsafe { std::mem::transmute(val_a_ptr) };
+        let result_a = func_a();
+        assert_eq!(result_a, 100, "module A's val should return 100");
     }
 }

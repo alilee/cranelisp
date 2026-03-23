@@ -19,6 +19,10 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 // Trait prelude for tests that use operators (+, -, *, /, =, <)
 // ---------------------------------------------------------------------------
 
+/// Import all primitives as bare names — needed by any E2E test that uses
+/// bare primitive calls (add-i64, str-concat, etc.) via `run_repl`.
+const PRIMS: &str = "(import [primitives [*]])\n";
+
 const NUM_TRAIT_PRELUDE: &str = "(deftrait Num (+ [self self] self) (- [self self] self) (* [self self] self) (/ [self self] self))\n\
 (impl Num Int (defn + [a b] (add-i64 a b)) (defn - [a b] (sub-i64 a b)) (defn * [a b] (mul-i64 a b)) (defn / [a b] (div-i64 a b)))\n\
 (impl Num Float (defn + [a b] (add-f64 a b)) (defn - [a b] (sub-f64 a b)) (defn * [a b] (mul-f64 a b)) (defn / [a b] (div-f64 a b)))\n";
@@ -201,7 +205,7 @@ fn e2e_binary_starts_and_exits() {
 // spec: repl/spec.md §1.2 — expression display format
 #[test]
 fn e2e_single_expression() {
-    let o = run_repl("(add-i64 2 3)\n", "smoke_expr");
+    let o = run_repl(&format!("{PRIMS}(add-i64 2 3)\n"), "smoke_expr");
     assert_success(&o);
     assert_result(&o, ":primitives/Int 5");
 }
@@ -214,14 +218,14 @@ fn e2e_single_expression() {
 // spec: repl/spec.md §1.2 — fully qualified type names in display
 #[test]
 fn e2e_s1_2_int_display_qualified() {
-    let o = run_repl("(add-i64 2 3)\n", "s1_2_int");
+    let o = run_repl(&format!("{PRIMS}(add-i64 2 3)\n"), "s1_2_int");
     assert_result(&o, ":primitives/Int 5");
 }
 
 // spec: repl/spec.md §1.2 — fully qualified Bool type display
 #[test]
 fn e2e_s1_2_bool_display_qualified() {
-    let o = run_repl("(eq-i64 3 3)\n", "s1_2_bool");
+    let o = run_repl(&format!("{PRIMS}(eq-i64 3 3)\n"), "s1_2_bool");
     assert_result(&o, ":primitives/Bool true");
 }
 
@@ -378,7 +382,7 @@ fn e2e_s2_1_prompt_format() {
 #[test]
 fn e2e_s2_2_continuation_prompt() {
     // Open paren without close — should show continuation prompt.
-    let o = run_repl("(add-i64\n  2 3)\n", "s2_2_cont");
+    let o = run_repl(&format!("{PRIMS}(add-i64\n  2 3)\n"), "s2_2_cont");
     let s = stdout_str(&o);
     assert!(s.contains("..."), "expected '...' continuation\n---\n{s}");
     assert_result(&o, ":primitives/Int 5");
@@ -421,7 +425,7 @@ fn e2e_s3_3_list() {
 // spec: repl/spec.md §3.1 — /sig slash command
 #[test]
 fn e2e_s3_1_sig() {
-    let o = run_repl("(defn double [x] (mul-i64 x 2))\n/sig double\n", "s3_sig");
+    let o = run_repl(&format!("{PRIMS}(defn double [x] (mul-i64 x 2))\n/sig double\n"), "s3_sig");
     let s = stdout_str(&o);
     assert!(
         s.contains("Fn") && s.contains("Int"),
@@ -433,7 +437,7 @@ fn e2e_s3_1_sig() {
 #[test]
 fn e2e_s3_4_info() {
     let o = run_repl(
-        "(defn double [x] (mul-i64 x 2))\n/info double\n",
+        &format!("{PRIMS}(defn double [x] (mul-i64 x 2))\n/info double\n"),
         "s3_info",
     );
     let s = stdout_str(&o);
@@ -444,7 +448,7 @@ fn e2e_s3_4_info() {
 // spec: repl/spec.md §3.1 — /time slash command
 #[test]
 fn e2e_s3_1_time() {
-    let o = run_repl("/time (add-i64 1 2)\n", "s3_time");
+    let o = run_repl(&format!("{PRIMS}/time (add-i64 1 2)\n"), "s3_time");
     let s = stdout_str(&o);
     assert!(s.contains("ms"), "expected timing in output\n---\n{s}");
 }
@@ -452,7 +456,7 @@ fn e2e_s3_1_time() {
 // spec: repl/spec.md §3.1 — /type slash command
 #[test]
 fn e2e_s3_1_type() {
-    let o = run_repl("/type (add-i64 1 2)\n", "s3_type");
+    let o = run_repl(&format!("{PRIMS}/type (add-i64 1 2)\n"), "s3_type");
     let s = stdout_str(&o);
     assert!(s.contains("Int"), "expected Int type\n---\n{s}");
 }
@@ -672,7 +676,7 @@ fn e2e_s1_1_bare_type_user_defined() {
 fn e2e_s4_1_bare_symbol_lookup() {
     // repl/spec.md §4.1: entering a function name shows its type.
     // Currently works (shows type + <closure>) though not fully qualified.
-    let o = run_repl("(defn inc [n] (add-i64 n 1))\ninc\n", "s4_1_bare");
+    let o = run_repl(&format!("{PRIMS}(defn inc [n] (add-i64 n 1))\ninc\n"), "s4_1_bare");
     assert_success(&o);
     let results = result_lines(&o);
     assert!(results.len() >= 2, "expected defn result + lookup result");
@@ -691,7 +695,7 @@ fn e2e_s4_1_bare_symbol_lookup() {
 // spec: repl/spec.md §5.1 — errors visible in stdout (part of REPL conversation)
 #[test]
 fn e2e_s5_1_errors_on_stdout() {
-    let o = run_repl("(add-i64 2 true)\n", "s5_1_stdout");
+    let o = run_repl(&format!("{PRIMS}(add-i64 2 true)\n"), "s5_1_stdout");
     let out = stdout_str(&o);
     assert!(
         out.contains("error:") || out.contains("type mismatch"),
@@ -704,7 +708,7 @@ fn e2e_s5_1_errors_on_stdout() {
 #[test]
 fn e2e_s5_1_error_contains_category_and_location() {
     // repl/spec.md §5.1: errors show category + source location + message.
-    let o = run_repl("(add-i64 2 true)\n", "s5_1_format");
+    let o = run_repl(&format!("{PRIMS}(add-i64 2 true)\n"), "s5_1_format");
     assert_success(&o);
     // Currently errors go to stdout — check there.
     let all = format!("{}{}", stdout_str(&o), stderr_str(&o));
@@ -716,7 +720,7 @@ fn e2e_s5_1_error_contains_category_and_location() {
 #[test]
 fn e2e_s5_2_error_recovery() {
     // repl/spec.md §5.2: after an error, REPL continues and accepts new input.
-    let o = run_repl("(add-i64 2 true)\n(add-i64 1 2)\n", "s5_2_recovery");
+    let o = run_repl(&format!("{PRIMS}(add-i64 2 true)\n(add-i64 1 2)\n"), "s5_2_recovery");
     assert_success(&o);
     let all = format!("{}{}", stdout_str(&o), stderr_str(&o));
     assert!(all.contains("error:"), "first expr should error");
@@ -728,9 +732,9 @@ fn e2e_s5_2_error_recovery() {
 fn e2e_s5_2_session_state_survives_error() {
     // repl/spec.md §5.2: definitions before an error remain usable after.
     let o = run_repl(
-        "(defn inc [n] (add-i64 n 1))\n\
+        &format!("{PRIMS}(defn inc [n] (add-i64 n 1))\n\
          (add-i64 2 true)\n\
-         (inc 5)\n",
+         (inc 5)\n"),
         "s5_2_state",
     );
     assert_success(&o);
@@ -741,7 +745,7 @@ fn e2e_s5_2_session_state_survives_error() {
 #[test]
 fn e2e_s5_3_type_error_shows_expected_actual() {
     // repl/spec.md §5.3: type errors include expected and actual types.
-    let o = run_repl("(add-i64 2 true)\n", "s5_3_types");
+    let o = run_repl(&format!("{PRIMS}(add-i64 2 true)\n"), "s5_3_types");
     let all = format!("{}{}", stdout_str(&o), stderr_str(&o));
     assert!(
         all.contains("Int") && all.contains("Bool"),
@@ -793,7 +797,7 @@ fn e2e_s7_2_simple_eval_under_50ms() {
     // repl/spec.md §7.2: simple eval within 50ms of Enter.
     // We measure the full run (startup + eval + exit) and check it's fast.
     let start = std::time::Instant::now();
-    let o = run_repl("(add-i64 1 2)\n", "s7_2_eval");
+    let o = run_repl(&format!("{PRIMS}(add-i64 1 2)\n"), "s7_2_eval");
     let elapsed = start.elapsed();
     assert_success(&o);
     assert_result(&o, ":primitives/Int 3");
@@ -814,11 +818,11 @@ fn e2e_s7_2_simple_eval_under_50ms() {
 #[test]
 fn e2e_ring0_arithmetic() {
     let o = run_repl(
-        "(add-i64 2 3)\n(sub-i64 10 4)\n(mul-i64 6 7)\n",
+        &format!("{PRIMS}(add-i64 2 3)\n(sub-i64 10 4)\n(mul-i64 6 7)\n"),
         "r0_arith",
     );
     assert_success(&o);
-    let r = result_lines(&o);
+    let r: Vec<_> = result_lines(&o).into_iter().filter(|l| !l.contains("imported from")).collect();
     assert_eq!(r, vec![":primitives/Int 5", ":primitives/Int 6", ":primitives/Int 42"]);
 }
 
@@ -826,11 +830,11 @@ fn e2e_ring0_arithmetic() {
 #[test]
 fn e2e_ring0_booleans() {
     let o = run_repl(
-        "(eq-i64 3 3)\n(lt-i64 2 5)\n(not true)\n",
+        &format!("{PRIMS}(eq-i64 3 3)\n(lt-i64 2 5)\n(not true)\n"),
         "r0_bool",
     );
     assert_success(&o);
-    let r = result_lines(&o);
+    let r: Vec<_> = result_lines(&o).into_iter().filter(|l| !l.contains("imported from")).collect();
     assert_eq!(r, vec![":primitives/Bool true", ":primitives/Bool true", ":primitives/Bool false"]);
 }
 
@@ -838,7 +842,7 @@ fn e2e_ring0_booleans() {
 #[test]
 fn e2e_ring0_let_binding() {
     let o = run_repl(
-        "(let [x 10] (let [y 20] (add-i64 x y)))\n",
+        &format!("{PRIMS}(let [x 10] (let [y 20] (add-i64 x y)))\n"),
         "r0_let",
     );
     assert_success(&o);
@@ -849,11 +853,11 @@ fn e2e_ring0_let_binding() {
 #[test]
 fn e2e_ring0_defn_and_call() {
     let o = run_repl(
-        "(defn double [x] (mul-i64 x 2))\n(double 21)\n",
+        &format!("{PRIMS}(defn double [x] (mul-i64 x 2))\n(double 21)\n"),
         "r0_defn",
     );
     assert_success(&o);
-    let r = result_lines(&o);
+    let r: Vec<_> = result_lines(&o).into_iter().filter(|l| !l.contains("imported from")).collect();
     assert_eq!(r.len(), 2);
     assert!(r[0].contains("(Fn [primitives/Int] primitives/Int)"), "defn type: {:?}", r[0]);
     assert_eq!(r[1], ":primitives/Int 42");
@@ -863,8 +867,8 @@ fn e2e_ring0_defn_and_call() {
 #[test]
 fn e2e_ring0_recursion_factorial() {
     let o = run_repl(
-        "(defn factorial [n] (if (eq-i64 n 0) 1 (mul-i64 n (factorial (sub-i64 n 1)))))\n\
-         (factorial 10)\n",
+        &format!("{PRIMS}(defn factorial [n] (if (eq-i64 n 0) 1 (mul-i64 n (factorial (sub-i64 n 1)))))\n\
+         (factorial 10)\n"),
         "r0_fact",
     );
     assert_success(&o);
@@ -875,8 +879,8 @@ fn e2e_ring0_recursion_factorial() {
 #[test]
 fn e2e_ring0_conditional() {
     let o = run_repl(
-        "(defn abs [n] (if (lt-i64 n 0) (sub-i64 0 n) n))\n\
-         (abs -42)\n(abs 7)\n",
+        &format!("{PRIMS}(defn abs [n] (if (lt-i64 n 0) (sub-i64 0 n) n))\n\
+         (abs -42)\n(abs 7)\n"),
         "r0_cond",
     );
     assert_success(&o);
@@ -888,7 +892,7 @@ fn e2e_ring0_conditional() {
 // spec: 12-runtime §12.7.1 — compile-time type error
 #[test]
 fn e2e_ring0_type_error() {
-    let o = run_repl("(add-i64 2 true)\n", "r0_tyerr");
+    let o = run_repl(&format!("{PRIMS}(add-i64 2 true)\n"), "r0_tyerr");
     assert_success(&o); // REPL continues
     let all = format!("{}{}", stdout_str(&o), stderr_str(&o));
     assert!(all.contains("error:"));
@@ -920,14 +924,14 @@ fn e2e_ring1_string_literal() {
 #[test]
 fn e2e_ring1_string_primitives() {
     let o = run_repl(
-        "(str-len \"cranelisp\")\n\
+        &format!("{PRIMS}(str-len \"cranelisp\")\n\
          (str-concat \"hello\" \" world\")\n\
          (int-to-string 42)\n\
-         (str-eq \"abc\" \"abc\")\n",
+         (str-eq \"abc\" \"abc\")\n"),
         "r1_strops",
     );
     assert_success(&o);
-    let r = result_lines(&o);
+    let r: Vec<_> = result_lines(&o).into_iter().filter(|l| !l.contains("imported from")).collect();
     assert_eq!(
         r,
         vec![":primitives/Int 9", ":primitives/String \"hello world\"", ":primitives/String \"42\"", ":primitives/Bool true"]
@@ -977,7 +981,7 @@ fn e2e_ring1_pattern_matching() {
 #[test]
 fn e2e_ring1_closure() {
     let o = run_repl(
-        "(let [add-five (fn [x] (add-i64 x 5))] (add-five 10))\n",
+        &format!("{PRIMS}(let [add-five (fn [x] (add-i64 x 5))] (add-five 10))\n"),
         "r1_closure",
     );
     assert_success(&o);
@@ -988,8 +992,8 @@ fn e2e_ring1_closure() {
 #[test]
 fn e2e_ring1_closure_capture() {
     let o = run_repl(
-        "(defn make-adder [n] (fn [x] (add-i64 n x)))\n\
-         (let [add-ten (make-adder 10)] (add-ten 25))\n",
+        &format!("{PRIMS}(defn make-adder [n] (fn [x] (add-i64 n x)))\n\
+         (let [add-ten (make-adder 10)] (add-ten 25))\n"),
         "r1_capture",
     );
     assert_success(&o);
@@ -1000,9 +1004,9 @@ fn e2e_ring1_closure_capture() {
 #[test]
 fn e2e_ring1_higher_order() {
     let o = run_repl(
-        "(defn apply-twice [f x] (f (f x)))\n\
+        &format!("{PRIMS}(defn apply-twice [f x] (f (f x)))\n\
          (defn inc [n] (add-i64 n 1))\n\
-         (apply-twice inc 5)\n",
+         (apply-twice inc 5)\n"),
         "r1_hof",
     );
     assert_success(&o);
@@ -1017,11 +1021,11 @@ fn e2e_ring1_higher_order() {
 #[test]
 fn e2e_session_ring0_full() {
     let o = run_repl(
-        "(defn square [n] (mul-i64 n n))\n\
+        &format!("{PRIMS}(defn square [n] (mul-i64 n n))\n\
          (defn sum-to [n] (if (eq-i64 n 0) 0 (add-i64 n (sum-to (sub-i64 n 1)))))\n\
          (square 8)\n\
          (sum-to 100)\n\
-         (square (sum-to 10))\n",
+         (square (sum-to 10))\n"),
         "session_r0",
     );
     assert_success(&o);
@@ -1035,11 +1039,11 @@ fn e2e_session_ring0_full() {
 #[test]
 fn e2e_session_ring1_adt_workflow() {
     let o = run_repl(
-        "(deftype (Option a) None (Some [:a val]))\n\
+        &format!("{PRIMS}(deftype (Option a) None (Some [:a val]))\n\
          (defn map-opt [f opt] (match opt [None None (Some x) (Some (f x))]))\n\
          (defn inc [n] (add-i64 n 1))\n\
          (map-opt inc (Some 41))\n\
-         (map-opt inc None)\n",
+         (map-opt inc None)\n"),
         "session_r1",
     );
     assert_success(&o);
@@ -1123,7 +1127,7 @@ fn e2e_s4_2_special_form_match() {
 // spec: repl/spec.md §4.3 — bare + operator shows type
 #[test]
 fn e2e_s4_3_operator_plus_feedback() {
-    let input = format!("{NUM_TRAIT_PRELUDE}+\n");
+    let input = format!("{PRIMS}{NUM_TRAIT_PRELUDE}+\n");
     let o = run_repl(&input, "s4_3_plus");
     let s = stdout_str(&o);
     assert!(
@@ -1139,7 +1143,7 @@ fn e2e_s4_3_operator_plus_feedback() {
 // spec: repl/spec.md §4.3 — bare = operator shows type
 #[test]
 fn e2e_s4_3_operator_eq_feedback() {
-    let input = format!("{EQ_TRAIT_PRELUDE}=\n");
+    let input = format!("{PRIMS}{EQ_TRAIT_PRELUDE}=\n");
     let o = run_repl(&input, "s4_3_eq");
     let s = stdout_str(&o);
     assert!(
@@ -1155,7 +1159,7 @@ fn e2e_s4_3_operator_eq_feedback() {
 // spec: repl/spec.md §4.3 — bare < operator shows type
 #[test]
 fn e2e_s4_3_operator_lt_feedback() {
-    let input = format!("{ORD_TRAIT_PRELUDE}<\n");
+    let input = format!("{PRIMS}{ORD_TRAIT_PRELUDE}<\n");
     let o = run_repl(&input, "s4_3_lt");
     let s = stdout_str(&o);
     assert!(
@@ -1212,7 +1216,7 @@ fn e2e_s3_4_imports_special_forms() {
 // spec: repl/spec.md §3.3 — /list shows Traits category
 #[test]
 fn e2e_s3_3_list_traits() {
-    let input = format!("{NUM_TRAIT_PRELUDE}/list\n");
+    let input = format!("{PRIMS}{NUM_TRAIT_PRELUDE}/list\n");
     let o = run_repl(&input, "s3_3_traits");
     let s = stdout_str(&o);
     assert!(
@@ -1251,7 +1255,7 @@ fn e2e_s4_1_bare_trait_lookup() {
 #[test]
 fn e2e_isolation_no_shared_state() {
     // Two independent sessions should not see each other's definitions.
-    let o1 = run_repl("(defn secret [x] (mul-i64 x 99))\n", "iso_a");
+    let o1 = run_repl(&format!("{PRIMS}(defn secret [x] (mul-i64 x 99))\n"), "iso_a");
     assert_success(&o1);
 
     let o2 = run_repl("(secret 1)\n", "iso_b");
@@ -1665,7 +1669,7 @@ fn e2e_s3_5_exports_lists_symbols() {
 // spec: repl/spec.md §1.3 — defn response includes `; defn` classification
 #[test]
 fn e2e_s1_3_defn_classification() {
-    let o = run_repl("(defn double [x] (mul-i64 x 2))\n", "s1_3_defn_class");
+    let o = run_repl(&format!("{PRIMS}(defn double [x] (mul-i64 x 2))\n"), "s1_3_defn_class");
     let s = stdout_str(&o);
     assert!(
         s.contains("; defn"),
@@ -1728,7 +1732,7 @@ fn e2e_s1_3_deftrait_defn_section() {
 // spec: repl/spec.md §4.1.1 — bare function shows `; defn` classification
 #[test]
 fn e2e_s4_1_bare_fn_classification() {
-    let o = run_repl("(defn inc [n] (add-i64 n 1))\ninc\n", "s4_1_fn_class");
+    let o = run_repl(&format!("{PRIMS}(defn inc [n] (add-i64 n 1))\ninc\n"), "s4_1_fn_class");
     let _s = stdout_str(&o);
     // The second result line (bare lookup) should contain '; defn'
     let results = result_lines(&o);
@@ -1895,8 +1899,8 @@ fn e2e_s3_1_doc_user_fn_no_docstring() {
 // spec: repl/spec.md §3.1 — /doc on builtin primitive shows docstring
 #[test]
 fn e2e_s3_1_doc_builtin() {
-    let input = "/doc add-i64\n";
-    let o = run_repl(input, "s3_1_doc_builtin");
+    let input = format!("{PRIMS}/doc add-i64\n");
+    let o = run_repl(&input, "s3_1_doc_builtin");
     let s = stdout_str(&o);
     // Builtins have docstrings per spec/appendix-a-builtins.md §A.5
     assert!(
@@ -1938,8 +1942,8 @@ fn e2e_s3_1_doc_neg_no_arg() {
 // spec: repl/spec.md §3.1 — /source shows original source text
 #[test]
 fn e2e_s3_1_source_user_fn() {
-    let input = "(defn double [x] (add-i64 x x))\n/source double\n";
-    let o = run_repl(input, "s3_1_source_fn");
+    let input = format!("{PRIMS}(defn double [x] (add-i64 x x))\n/source double\n");
+    let o = run_repl(&input, "s3_1_source_fn");
     let s = stdout_str(&o);
     assert!(
         s.contains("defn double") || s.contains("(defn double"),
@@ -1964,8 +1968,8 @@ fn e2e_s3_1_source_neg_nonexistent() {
 // spec: repl/spec.md §3.1 — /sexp shows parsed S-expression
 #[test]
 fn e2e_s3_1_sexp_user_fn() {
-    let input = "(defn double [x] (add-i64 x x))\n/sexp double\n";
-    let o = run_repl(input, "s3_1_sexp_fn");
+    let input = format!("{PRIMS}(defn double [x] (add-i64 x x))\n/sexp double\n");
+    let o = run_repl(&input, "s3_1_sexp_fn");
     let s = stdout_str(&o);
     // /sexp should display the parsed S-expression tree (not an error)
     assert!(
@@ -1995,8 +1999,8 @@ fn e2e_s3_1_sexp_neg_nonexistent() {
 // spec: repl/spec.md §3.1 — /ast shows AST
 #[test]
 fn e2e_s3_1_ast_user_fn() {
-    let input = "(defn double [x] (add-i64 x x))\n/ast double\n";
-    let o = run_repl(input, "s3_1_ast_fn");
+    let input = format!("{PRIMS}(defn double [x] (add-i64 x x))\n/ast double\n");
+    let o = run_repl(&input, "s3_1_ast_fn");
     let s = stdout_str(&o);
     assert!(
         !s.contains("unknown command"),
@@ -2025,8 +2029,8 @@ fn e2e_s3_1_ast_neg_nonexistent() {
 // spec: repl/spec.md §3.1 — /clif shows Cranelift IR
 #[test]
 fn e2e_s3_1_clif_user_fn() {
-    let input = "(defn double [x] (add-i64 x x))\n/clif double\n";
-    let o = run_repl(input, "s3_1_clif_fn");
+    let input = format!("{PRIMS}(defn double [x] (add-i64 x x))\n/clif double\n");
+    let o = run_repl(&input, "s3_1_clif_fn");
     let s = stdout_str(&o);
     assert!(
         !s.contains("unknown command"),
@@ -2056,8 +2060,8 @@ fn e2e_s3_1_clif_neg_nonexistent() {
 // spec: repl/spec.md §3.1 — /disasm shows disassembled native code
 #[test]
 fn e2e_s3_1_disasm_user_fn() {
-    let input = "(defn double [x] (add-i64 x x))\n/disasm double\n";
-    let o = run_repl(input, "s3_1_disasm_fn");
+    let input = format!("{PRIMS}(defn double [x] (add-i64 x x))\n/disasm double\n");
+    let o = run_repl(&input, "s3_1_disasm_fn");
     let s = stdout_str(&o);
     assert!(
         !s.contains("unknown command"),
