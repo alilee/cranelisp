@@ -675,7 +675,7 @@ Cranelisp uses **strict (eager) evaluation** throughout. All sub-expressions are
 - Lambda bodies are NOT evaluated at creation time -- only when the closure is called.
 - The `Seq` type provides explicit opt-in laziness via thunks (zero-argument closures). This is a library-level construct, not a change to the evaluation model. See [section 12.4.2](12-runtime.md#1242-lazy-sequences).
 
-## 4.12 Trace Expression [R4 S20]
+## 4.12 Trace Expression [Tested tests/ring4_trace.rs::trace_returns_trace_type_int]
 
 ```clojure
 (trace expr)

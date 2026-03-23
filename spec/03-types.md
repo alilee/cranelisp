@@ -70,7 +70,7 @@ IO(A)
 
 Operations such as `pure` and `bind` can be defined as ordinary library functions to compose IO values (see [Section 10](10-io.md) for details).
 
-### 3.2.4 Trace Type [R4 S20]
+### 3.2.4 Trace Type [Tested tests/ring4_trace.rs::trace_returns_trace_type_int]
 
 ```
 Trace

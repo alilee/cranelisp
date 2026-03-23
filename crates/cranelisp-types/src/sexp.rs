@@ -19,6 +19,8 @@ pub enum Sexp {
     List(Vec<Sexp>, Span),
     /// Bracketed list: `[a b c]`, `[:Int x :Int y]`
     Bracket(Vec<Sexp>, Span),
+    /// Comment: `; some text` — preserved only in comment-preserving reader mode
+    Comment(String, Span),
 }
 
 impl Sexp {
@@ -31,7 +33,8 @@ impl Sexp {
             | Sexp::Bool(_, s)
             | Sexp::Str(_, s)
             | Sexp::List(_, s)
-            | Sexp::Bracket(_, s) => *s,
+            | Sexp::Bracket(_, s)
+            | Sexp::Comment(_, s) => *s,
         }
     }
 
@@ -61,6 +64,13 @@ impl Sexp {
                 let parts: Vec<String> = children.iter().map(|c| c.format_flat()).collect();
                 format!("[{}]", parts.join(" "))
             }
+            Sexp::Comment(text, _) => {
+                if text.is_empty() {
+                    ";".to_string()
+                } else {
+                    format!("; {text}")
+                }
+            }
         }
     }
 
@@ -69,6 +79,10 @@ impl Sexp {
     /// Short forms (<=60 chars flat) are kept on one line.
     /// Longer forms are broken across lines with 2-space indentation.
     pub fn format_indented(&self, indent: usize) -> String {
+        // Comments are always single-line; skip the length check.
+        if matches!(self, Sexp::Comment(_, _)) {
+            return self.format_flat();
+        }
         let flat = self.format_flat();
         if flat.len() <= 60 {
             return flat;

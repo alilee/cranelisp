@@ -8,4 +8,6 @@ pub mod expander;
 pub mod marshal;
 pub mod pipeline;
 pub mod platform;
+pub mod pretty;
 pub mod repl;
+pub mod style;

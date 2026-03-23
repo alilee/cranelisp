@@ -130,7 +130,11 @@ pub fn build_program(
     sexps: &[Sexp],
     expander: &mut dyn MacroExpander,
 ) -> Result<Program, CranelispError> {
-    sexps.iter().map(|s| build_top_level(s, expander)).collect()
+    sexps
+        .iter()
+        .filter(|s| !matches!(s, Sexp::Comment(_, _)))
+        .map(|s| build_top_level(s, expander))
+        .collect()
 }
 
 /// Build REPL input from a sequence of S-expressions.
@@ -1054,6 +1058,10 @@ fn build_expr(sexp: &Sexp, expander: &mut dyn MacroExpander) -> Result<Expr, Cra
         }
         Sexp::List(children, span) => build_list_expr(children, *span, expander),
         Sexp::Bracket(children, span) => build_vec_lit(children, *span, expander),
+        Sexp::Comment(_, span) => Err(CranelispError::ParseError {
+            message: "unexpected comment in expression position".to_string(),
+            span: *span,
+        }),
     }
 }
 

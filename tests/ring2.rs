@@ -2221,7 +2221,6 @@ fn neg_multi_sig_bare_value_errors() {
 // =============================================================================
 
 // spec: 03-types §3.7 — HKT type variable in trait declaration
-#[ignore = "spec/03-types.md §3.7 — future sprint: HKT not yet scheduled"]
 #[test]
 fn hkt_type_variable_in_trait() {
     // HKT trait declaration: Functor maps over a type constructor.
@@ -2234,7 +2233,6 @@ fn hkt_type_variable_in_trait() {
 }
 
 // spec: 05-definitions §5.3.2 — HKT trait declaration syntax
-#[ignore = "spec/05-definitions.md §5.3.2 — future sprint: HKT not yet scheduled"]
 #[test]
 fn hkt_trait_declaration() {
     // A trait with a type constructor parameter: (deftrait (Functor f) ...)
@@ -2253,7 +2251,6 @@ fn hkt_trait_declaration() {
 }
 
 // spec: 05-definitions §5.4.4 — HKT impl targets bare type constructor
-#[ignore = "spec/05-definitions.md §5.4.4 — future sprint: HKT not yet scheduled"]
 #[test]
 fn hkt_impl_bare_constructor() {
     // (impl Functor Option ...) — target is bare Option, not (Option a).
@@ -2276,7 +2273,6 @@ fn hkt_impl_bare_constructor() {
 // =============================================================================
 
 // spec: 12-runtime §12.4.2 — lazy sequence thunk-based evaluation
-#[ignore = "spec/12-runtime.md §12.4.2 — future sprint: lazy sequences not yet scheduled"]
 #[test]
 fn lazy_seq_take_from_infinite() {
     // Lazy sequences use thunks to defer evaluation. `range-from` produces

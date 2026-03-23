@@ -571,7 +571,7 @@ fn e2e_s4_2_special_form_feedback() {
     let s = stdout_str(&o);
     // Must NOT be an error; must show a signature.
     assert!(
-        !s.contains("error:"),
+        !s.contains("Error:"),
         "bare 'if' should produce a signature, not an error\n---\n{s}"
     );
     assert!(
@@ -586,7 +586,7 @@ fn e2e_s4_2_special_form_let() {
     let o = run_repl("let\n", "s4_2_let");
     let s = stdout_str(&o);
     assert!(
-        !s.contains("error:"),
+        !s.contains("Error:"),
         "bare 'let' should produce a signature, not an error\n---\n{s}"
     );
 }
@@ -602,7 +602,7 @@ fn e2e_s1_1_bare_type_int() {
     assert_success(&o);
     let s = stdout_str(&o);
     assert!(
-        !s.contains("error:"),
+        !s.contains("Error:"),
         "bare 'Int' should show type info, not error\n---\n{s}"
     );
     assert!(
@@ -618,7 +618,7 @@ fn e2e_s1_1_bare_type_bool() {
     assert_success(&o);
     let s = stdout_str(&o);
     assert!(
-        !s.contains("error:"),
+        !s.contains("Error:"),
         "bare 'Bool' should show type info, not error\n---\n{s}"
     );
 }
@@ -630,7 +630,7 @@ fn e2e_s1_1_bare_type_float() {
     assert_success(&o);
     let s = stdout_str(&o);
     assert!(
-        !s.contains("error:"),
+        !s.contains("Error:"),
         "bare 'Float' should show type info, not error\n---\n{s}"
     );
     assert!(
@@ -646,7 +646,7 @@ fn e2e_s1_1_bare_type_string() {
     assert_success(&o);
     let s = stdout_str(&o);
     assert!(
-        !s.contains("error:"),
+        !s.contains("Error:"),
         "bare 'String' should show type info, not error\n---\n{s}"
     );
     assert!(
@@ -662,7 +662,7 @@ fn e2e_s1_1_bare_type_user_defined() {
     assert_success(&o);
     let s = stdout_str(&o);
     assert!(
-        !s.contains("error:"),
+        !s.contains("Error:"),
         "bare 'Color' should show type info, not error\n---\n{s}"
     );
     assert!(
@@ -698,7 +698,7 @@ fn e2e_s5_1_errors_on_stdout() {
     let o = run_repl(&format!("{PRIMS}(add-i64 2 true)\n"), "s5_1_stdout");
     let out = stdout_str(&o);
     assert!(
-        out.contains("error:") || out.contains("type mismatch"),
+        out.contains("Error:") || out.contains("type mismatch"),
         "error should be on stdout\nstdout: {out}\nstderr: {}",
         stderr_str(&o)
     );
@@ -712,7 +712,7 @@ fn e2e_s5_1_error_contains_category_and_location() {
     assert_success(&o);
     // Currently errors go to stdout — check there.
     let all = format!("{}{}", stdout_str(&o), stderr_str(&o));
-    assert!(all.contains("error:"), "missing error category");
+    assert!(all.contains("Error:"), "missing error category");
     assert!(all.contains("type mismatch"), "missing error message");
 }
 
@@ -723,7 +723,7 @@ fn e2e_s5_2_error_recovery() {
     let o = run_repl(&format!("{PRIMS}(add-i64 2 true)\n(add-i64 1 2)\n"), "s5_2_recovery");
     assert_success(&o);
     let all = format!("{}{}", stdout_str(&o), stderr_str(&o));
-    assert!(all.contains("error:"), "first expr should error");
+    assert!(all.contains("Error:"), "first expr should error");
     assert_result(&o, ":primitives/Int 3");
 }
 
@@ -895,7 +895,7 @@ fn e2e_ring0_type_error() {
     let o = run_repl(&format!("{PRIMS}(add-i64 2 true)\n"), "r0_tyerr");
     assert_success(&o); // REPL continues
     let all = format!("{}{}", stdout_str(&o), stderr_str(&o));
-    assert!(all.contains("error:"));
+    assert!(all.contains("Error:"));
     assert!(all.contains("type mismatch"));
 }
 
@@ -905,7 +905,7 @@ fn e2e_ring0_unbound_name() {
     let o = run_repl("(nonexistent 1 2)\n", "r0_unbound");
     assert_success(&o);
     let all = format!("{}{}", stdout_str(&o), stderr_str(&o));
-    assert!(all.contains("error:"));
+    assert!(all.contains("Error:"));
 }
 
 // ===========================================================================
@@ -1066,7 +1066,7 @@ fn e2e_s4_2_special_form_fn() {
     let o = run_repl("fn\n", "s4_2_fn");
     let s = stdout_str(&o);
     assert!(
-        !s.contains("error:"),
+        !s.contains("Error:"),
         "bare 'fn' should produce a signature, not an error\n---\n{s}"
     );
     assert!(
@@ -1081,7 +1081,7 @@ fn e2e_s4_2_special_form_defn() {
     let o = run_repl("defn\n", "s4_2_defn");
     let s = stdout_str(&o);
     assert!(
-        !s.contains("error:"),
+        !s.contains("Error:"),
         "bare 'defn' should produce a signature, not an error\n---\n{s}"
     );
     assert!(
@@ -1096,7 +1096,7 @@ fn e2e_s4_2_special_form_deftype() {
     let o = run_repl("deftype\n", "s4_2_deftype");
     let s = stdout_str(&o);
     assert!(
-        !s.contains("error:"),
+        !s.contains("Error:"),
         "bare 'deftype' should produce a signature, not an error\n---\n{s}"
     );
     assert!(
@@ -1111,7 +1111,7 @@ fn e2e_s4_2_special_form_match() {
     let o = run_repl("match\n", "s4_2_match");
     let s = stdout_str(&o);
     assert!(
-        !s.contains("error:"),
+        !s.contains("Error:"),
         "bare 'match' should produce a signature, not an error\n---\n{s}"
     );
     assert!(
@@ -1131,7 +1131,7 @@ fn e2e_s4_3_operator_plus_feedback() {
     let o = run_repl(&input, "s4_3_plus");
     let s = stdout_str(&o);
     assert!(
-        !s.contains("error:"),
+        !s.contains("Error:"),
         "bare '+' should produce type info, not an error\n---\n{s}"
     );
     assert!(
@@ -1147,7 +1147,7 @@ fn e2e_s4_3_operator_eq_feedback() {
     let o = run_repl(&input, "s4_3_eq");
     let s = stdout_str(&o);
     assert!(
-        !s.contains("error:"),
+        !s.contains("Error:"),
         "bare '=' should produce type info, not an error\n---\n{s}"
     );
     assert!(
@@ -1163,7 +1163,7 @@ fn e2e_s4_3_operator_lt_feedback() {
     let o = run_repl(&input, "s4_3_lt");
     let s = stdout_str(&o);
     assert!(
-        !s.contains("error:"),
+        !s.contains("Error:"),
         "bare '<' should produce type info, not an error\n---\n{s}"
     );
     assert!(
@@ -1242,7 +1242,7 @@ fn e2e_s4_1_bare_trait_lookup() {
         "bare trait name should show trait info\n---\n{s}"
     );
     assert!(
-        !s.contains("error:"),
+        !s.contains("Error:"),
         "bare trait name should not error\n---\n{s}"
     );
 }
@@ -1262,7 +1262,7 @@ fn e2e_isolation_no_shared_state() {
     assert_success(&o2);
     let all = format!("{}{}", stdout_str(&o2), stderr_str(&o2));
     assert!(
-        all.contains("error:"),
+        all.contains("Error:"),
         "second session should not see 'secret' from first\n---\n{all}"
     );
 }
@@ -1330,7 +1330,7 @@ fn e2e_s11_1_neg_expand_non_macro_unchanged() {
     let out = stdout_str(&o);
     // Should NOT contain "error" — just display the form.
     assert!(
-        !out.contains("error:"),
+        !out.contains("Error:"),
         "/expand on non-macro should not error, got:\n{out}"
     );
 }
@@ -1379,7 +1379,7 @@ fn e2e_s3_4_imports_empty() {
     // Should not error — empty or shows prelude imports.
     let out = stdout_str(&o);
     assert!(
-        !out.contains("error:"),
+        !out.contains("Error:"),
         "/imports should not error on empty session, got:\n{out}"
     );
 }
@@ -1418,7 +1418,7 @@ fn e2e_s3_4_neg_imports_nonexistent_not_error() {
     assert_success(&o);
     let out = stdout_str(&o);
     assert!(
-        !out.contains("error:"),
+        !out.contains("Error:"),
         "/imports nonexistent should not error, got:\n{out}"
     );
 }
@@ -1616,7 +1616,7 @@ fn e2e_s3_4_neg_imports_nonexistent_silent() {
     assert_success(&o);
     let s = stdout_str(&o);
     assert!(
-        !s.contains("error:"),
+        !s.contains("Error:"),
         "/imports nonexistent should not produce an error\n---\n{s}"
     );
     // The next expression should still work
@@ -1920,7 +1920,7 @@ fn e2e_s3_1_doc_neg_nonexistent() {
     let o = run_repl(input, "s3_1_doc_neg_nonexistent");
     let s = stdout_str(&o);
     assert!(
-        s.contains("unknown") || s.contains("error") || s.contains("not found"),
+        s.contains("unknown") || s.contains("Error") || s.contains("not found"),
         "/doc on nonexistent symbol should produce error, got:\n{s}"
     );
 }
@@ -1958,7 +1958,7 @@ fn e2e_s3_1_source_neg_nonexistent() {
     let o = run_repl(input, "s3_1_source_neg_nonexistent");
     let s = stdout_str(&o);
     assert!(
-        s.contains("unknown") || s.contains("error") || s.contains("not found"),
+        s.contains("unknown") || s.contains("Error") || s.contains("not found"),
         "/source on nonexistent should produce error, got:\n{s}"
     );
 }
@@ -1989,7 +1989,7 @@ fn e2e_s3_1_sexp_neg_nonexistent() {
     let o = run_repl(input, "s3_1_sexp_neg_nonexistent");
     let s = stdout_str(&o);
     assert!(
-        s.contains("unknown") || s.contains("error") || s.contains("not found"),
+        s.contains("unknown") || s.contains("Error") || s.contains("not found"),
         "/sexp on nonexistent should produce error, got:\n{s}"
     );
 }
@@ -2019,7 +2019,7 @@ fn e2e_s3_1_ast_neg_nonexistent() {
     let o = run_repl(input, "s3_1_ast_neg_nonexistent");
     let s = stdout_str(&o);
     assert!(
-        s.contains("unknown") || s.contains("error") || s.contains("not found"),
+        s.contains("unknown") || s.contains("Error") || s.contains("not found"),
         "/ast on nonexistent should produce error, got:\n{s}"
     );
 }
@@ -2050,7 +2050,7 @@ fn e2e_s3_1_clif_neg_nonexistent() {
     let o = run_repl(input, "s3_1_clif_neg_nonexistent");
     let s = stdout_str(&o);
     assert!(
-        s.contains("unknown") || s.contains("error") || s.contains("not found"),
+        s.contains("unknown") || s.contains("Error") || s.contains("not found"),
         "/clif on nonexistent should produce error, got:\n{s}"
     );
 }
@@ -2076,7 +2076,7 @@ fn e2e_s3_1_disasm_neg_nonexistent() {
     let o = run_repl(input, "s3_1_disasm_neg_nonexistent");
     let s = stdout_str(&o);
     assert!(
-        s.contains("unknown") || s.contains("error") || s.contains("not found"),
+        s.contains("unknown") || s.contains("Error") || s.contains("not found"),
         "/disasm on nonexistent should produce error, got:\n{s}"
     );
 }
@@ -2139,5 +2139,24 @@ fn e2e_s3_3_list_neg_empty_categories_omitted() {
     assert!(
         !s.contains("Macros:"),
         "expected no 'Macros:' when no macros defined\n---\n{s}"
+    );
+}
+
+// spec: 08-modules §8.3 — imported function as higher-order argument in REPL
+// An imported function should be usable as a value (passed to higher-order fns).
+// Bug: REPL codegen fails with "undefined variable" when an imported function
+// is passed as an argument to a higher-order function.
+#[test]
+fn e2e_imported_fn_as_higher_order_arg_repl() {
+    let input = "(import [num.int [even?]])\n(defn apply-fn [f x] (f x))\n(apply-fn even? 4)\n";
+    let o = run_repl_with_test_prelude(input, "imported_fn_higher_order");
+    let out = stdout_str(&o);
+    assert!(
+        !out.contains("Error:") && !out.contains("error:"),
+        "imported fn as higher-order arg should not error in REPL:\n{out}"
+    );
+    assert!(
+        out.contains("true"),
+        "expected (apply-fn even? 4) = true, got:\n{out}"
     );
 }

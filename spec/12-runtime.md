@@ -213,7 +213,7 @@ The following conditions cause a runtime panic:
 | `parse-int` with invalid input | Returns `None` | Parsing failure is a normal `Option` result, not an error. [Tested tests/ring1.rs::parse_int_valid] |
 | IO operation failure | Platform-defined `IO` result | See §12.7.6. |
 
-### 12.7.3 Arithmetic Policy [R4 S18]
+### 12.7.3 Arithmetic Policy [Tested tests/ring0.rs::checked_division_by_zero_panics]
 
 Cranelisp uses **unchecked (wrapping) integer arithmetic** and **checked integer division**:
 
@@ -337,11 +337,11 @@ Platform functions that perform side effects MUST return `IO _`. The implementat
 
 The specific details of the platform loading mechanism and host callback interface are implementation-defined.
 
-## 12.9 Value Display Format [R4 S20]
+## 12.9 Value Display Format [Tested tests/repl_experience.rs::display_int_result]
 
 This section defines the **canonical value display format** — the standard string representation of Cranelisp values. This format is used by the REPL for displaying expression results, by the `trace` special form for formatting traced arguments and return values, and by the `Display` trait's default implementations.
 
-### 12.9.1 Format by Type [R4 S20]
+### 12.9.1 Format by Type [Tested tests/repl_experience.rs::display_int_result]
 
 Each type has a defined display representation:
 
@@ -358,7 +358,7 @@ Each type has a defined display representation:
 | `IO` | Displayed as the ADT value after trampoline execution resolves to `Pure` | `(IO.Pure 42)` |
 | `Trace` | Displayed as the ADT value | `(Trace.TraceCall ...)` |
 
-### 12.9.2 Qualified Names in Display [R4 S20]
+### 12.9.2 Qualified Names in Display [Tested tests/repl_experience.rs::display_int_result]
 
 Constructor names in display output MUST use the `Type.Constructor` dot notation without module qualification of the type name. Field values are formatted recursively using this same format.
 
@@ -370,7 +370,7 @@ When the display format is used in a context that includes a type prefix (e.g., 
 
 Here `user/Option` and `primitives/Int` are in the type prefix; `Option.Some` and `42` are in the value display.
 
-### 12.9.3 Elision [R4 S20]
+### 12.9.3 Elision [Tested tests/repl_experience.rs::display_int_result]
 
 Implementations SHOULD truncate displayed values that exceed a reasonable size to keep output manageable and trace overhead bounded. Specifically:
 
@@ -382,10 +382,10 @@ Elision is purely a display concern — it does not affect the actual value. The
 
 Elision applies uniformly: the same rules apply to REPL output, trace parameter/result formatting, and any other use of the canonical value display format.
 
-### 12.9.4 Relationship to REPL Output [R4 S20]
+### 12.9.4 Relationship to REPL Output [Tested tests/repl_experience.rs::display_int_result]
 
 The REPL displays expression results using the format `:QualifiedType value` where `value` follows this canonical display format. See the REPL experience specification for the full REPL output format including type prefixes, definition feedback, and related symbol display.
 
-### 12.9.5 Relationship to Trace [R4 S20]
+### 12.9.5 Relationship to Trace [Tested tests/ring4_trace.rs::trace_returns_trace_type_int]
 
 The `trace` special form (see [Section 4.12](04-expressions.md#412-trace-expression)) captures function arguments and return values as strings using this canonical display format. The `params` and `result` fields of the `TraceCall` constructor contain formatted value strings conforming to this section.

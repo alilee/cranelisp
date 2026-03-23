@@ -199,6 +199,7 @@ pub fn expand_quasiquotes(sexp: &Sexp) -> Result<Sexp, CranelispError> {
                 .collect::<Result<Vec<_>, _>>()?;
             Ok(Sexp::Bracket(expanded, *span))
         }
+        Sexp::Comment(_, _) => Ok(sexp.clone()),
         other => Ok(other.clone()),
     }
 }
@@ -226,6 +227,8 @@ pub fn expand_quote_template(template: &Sexp) -> Sexp {
             let expanded: Vec<Sexp> = children.iter().map(expand_quote_template).collect();
             make_sexp_container("macros/SexpBracket", make_slist(expanded))
         }
+        // Comments are not meaningful in quoted forms; pass through as-is.
+        Sexp::Comment(_, _) => template.clone(),
     }
 }
 
@@ -271,6 +274,9 @@ fn expand_qq_template(
         Sexp::Bracket(children, span) => {
             expand_qq_list(children, depth, *span, "macros/SexpBracket", gensym_map)
         }
+
+        // Comments are not meaningful in quasiquoted forms; pass through as-is.
+        Sexp::Comment(_, _) => Ok(template.clone()),
     }
 }
 

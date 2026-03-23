@@ -216,7 +216,11 @@ pub struct CompilationSession {
     /// Created lazily when `compile_module_batch` is first called.
     pub batch_jit: Option<cranelisp_backend::jit::Jit>,
     /// Accumulated function signatures for cross-module resolution in batch mode.
+    /// Includes both primary JIT names and module-qualified aliases.
     pub func_sigs: Vec<(Symbol, usize)>,
+    /// Primary JIT-compiled function names from batch mode (no aliases).
+    /// Used by `bridge_batch_to_got` to look up code pointers safely.
+    batch_compiled_fns: Vec<(Symbol, usize)>,
     /// Function pointers loaded from cached `.o` files via the Linker.
     /// These are registered as extra symbols when the batch JIT is created,
     /// so downstream modules can call cached functions via direct calls.
@@ -237,6 +241,7 @@ impl CompilationSession {
             platform_symbols: Vec::new(),
             batch_jit: None,
             func_sigs: Vec::new(),
+            batch_compiled_fns: Vec::new(),
             cached_symbols: Vec::new(),
             linker: None,
         }
@@ -677,6 +682,9 @@ impl CompilationSession {
         )?;
         self.batch_jit = Some(jit);
 
+        // Store primary JIT names for GOT bridging (before aliases are added).
+        self.batch_compiled_fns.extend(module_info.func_signatures.iter().cloned());
+
         accumulate_func_sigs(module_path, &module_info.func_signatures, &mut self.func_sigs);
 
         Ok(module_info.warnings)
@@ -690,6 +698,89 @@ impl CompilationSession {
         if let Some(ref mut jit) = self.batch_jit {
             jit.finalize()?;
         }
+        Ok(())
+    }
+
+    /// Bridge batch-compiled functions into the GOT so the REPL can access them.
+    ///
+    /// After `finalize_batch_jit()`, batch-compiled functions have code pointers
+    /// in the batch JIT but no GOT entries. The REPL's expression compiler
+    /// builds `got_slots` and `func_arities` from `got_state.def_codegen`, so
+    /// batch functions are invisible unless we create GOT entries for them.
+    ///
+    /// This iterates `batch_compiled_fns` (primary JIT names only, no aliases),
+    /// looks up each function's code pointer from the finalized batch JIT, and
+    /// creates GOT slot + `def_codegen` entries for the primary name and all
+    /// module-qualified aliases (matching `accumulate_func_sigs` alias logic).
+    pub fn bridge_batch_to_got(&mut self) -> Result<(), CranelispError> {
+        // Snapshot to avoid borrow conflict with batch_jit and got_state.
+        let compiled: Vec<(Symbol, usize)> = self.batch_compiled_fns.clone();
+
+        let jit = match self.batch_jit.as_mut() {
+            Some(j) => j,
+            None => return Ok(()), // No batch JIT — nothing to bridge.
+        };
+
+        // Phase 1: Look up code pointers for all primary JIT names.
+        let mut resolved: Vec<(Symbol, usize, *const u8)> = Vec::new();
+        for (name, param_count) in &compiled {
+            let code_ptr = match jit.get_ptr_by_name(name, *param_count) {
+                Ok(ptr) if !ptr.is_null() => ptr,
+                _ => continue,
+            };
+            resolved.push((name.clone(), *param_count, code_ptr));
+        }
+
+        // Phase 2: Register GOT entries for primary names and aliases.
+        for (name, param_count, code_ptr) in &resolved {
+            // Register the primary name (the JIT-visible name).
+            self.register_batch_got_entry(name, *param_count, *code_ptr)?;
+
+            // Register bare name (after the last '/'). The REPL uses bare names
+            // after `(import [module [name]])`.
+            if let Some(slash_pos) = name.as_ref().rfind('/') {
+                let bare = Symbol::from(&name.as_ref()[slash_pos + 1..]);
+                self.register_batch_got_entry(&bare, *param_count, *code_ptr)?;
+            }
+
+            // Register module-qualified aliases (e.g., "int/even?" for "num.int/even?").
+            let bare_name = if let Some(slash_pos) = name.as_ref().rfind('/') {
+                &name.as_ref()[slash_pos + 1..]
+            } else {
+                name.as_ref()
+            };
+            // Extract module prefix from the JIT name (before the '/').
+            if let Some(slash_pos) = name.as_ref().rfind('/') {
+                let mod_str = &name.as_ref()[..slash_pos];
+                for alias in generate_module_aliases(mod_str, bare_name) {
+                    let alias_sym = Symbol::from(alias.as_str());
+                    self.register_batch_got_entry(&alias_sym, *param_count, *code_ptr)?;
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Register a single GOT entry for a batch-compiled function.
+    ///
+    /// Skips if the name already has a GOT slot (e.g., from cache).
+    fn register_batch_got_entry(
+        &mut self,
+        name: &Symbol,
+        param_count: usize,
+        code_ptr: *const u8,
+    ) -> Result<(), CranelispError> {
+        if let Some(dc) = self.got_state.def_codegen.get(name) {
+            if dc.got_slot.is_some() {
+                return Ok(());
+            }
+        }
+        let slot = self.got_state.ensure_slot_for(name)?;
+        self.got_state.update_slot(slot, code_ptr);
+        let dc = self.got_state.def_codegen.entry(name.clone()).or_default();
+        dc.code_ptr = Some(code_ptr);
+        dc.param_count = Some(param_count);
         Ok(())
     }
 
@@ -2404,6 +2495,10 @@ pub fn load_prelude_into_session(
 
     // Finalize the shared batch JIT (resolves all cross-references).
     session.finalize_batch_jit()?;
+
+    // Bridge batch-compiled functions into the GOT so REPL code can call
+    // them via indirect calls and reference them as values.
+    session.bridge_batch_to_got()?;
 
     // Inject implicit (import [prelude [*]]) into the "user" module.
     let user_module = ModuleFullPath::from("user");

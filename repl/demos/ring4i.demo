@@ -1,0 +1,61 @@
+; Cranelisp Ring 4I — HKT, Lazy Sequences, Terminal Styling
+
+; Sprint 24: higher-kinded types, lazy seqs, styled output, checked division
+
+; Higher-kinded types — traits parameterised by type constructors
+
+(deftrait (Functor f) (fmap [(Fn [a] b) (f a)] (f b)))
+
+; Implement Functor for Option — fmap over the value inside
+
+(impl Functor Option (defn fmap [func opt] (match opt [None None (Some x) (Some (func x))])))
+
+; fmap dispatches through the trait, just like + dispatches through Num
+
+(fmap (+ 1) (Some 41))
+(fmap (* 10) None)
+(fmap (+ 1) (fmap (* 10) (Some 5)))
+
+; Lazy sequences — infinite streams via thunks
+
+(import [seq.lazy [range-from iterate take seq-map seq-filter]])
+(import [num.int [even?]])
+
+; range-from produces an infinite sequence: 1, 2, 3, ...
+; take materialises the first N elements into a Vec
+
+(take 5 (range-from 1))
+
+; iterate applies a function repeatedly: x, f(x), f(f(x)), ...
+
+(take 6 (iterate (* 2) 1))
+
+; Filter and map compose lazily — nothing computed until take forces it
+
+(take 5 (seq-filter even? (range-from 1)))
+(take 5 (seq-map (* 10) (seq-filter even? (range-from 1))))
+
+; Pretty-printed output — /source shows indented, syntax-highlighted S-expressions
+
+/source fmap
+
+; Terminal styling: head position bold, types cyan, literals yellow, strings green
+; Use --no-color or set NO_COLOR=1 to disable
+
+; Checked division — division by zero panics safely
+
+(div-i64 10 3)
+(div-i64 10 0)
+
+; The REPL recovers — the session is still alive
+
+(fmap (+ 100) (Some 0))
+
+; Verify the sprint
+
+(defn test-fmap-some [] (if (= (match (fmap (+ 1) (Some 41)) [(Some v) v None 0]) 42) None (Some "fmap Some")))
+(defn test-fmap-none [] (if (= (match (fmap (+ 1) None) [(Some _) false None true]) true) None (Some "fmap None")))
+(defn test-lazy-take [] (if (= (vec-get (take 3 (range-from 10)) 0) 10) None (Some "lazy take")))
+(defn test-lazy-filter [] (if (= (vec-get (take 1 (seq-filter even? (range-from 1))) 0) 2) None (Some "lazy filter")))
+
+/run-tests

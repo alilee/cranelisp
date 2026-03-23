@@ -258,8 +258,20 @@ pub fn apply(subst: &Subst, ty: &Type) -> Type {
             Type::ADT(name.clone(), args)
         }
         Type::TyConApp(id, args) => {
-            let args = args.iter().map(|a| apply(subst, a)).collect();
-            Type::TyConApp(*id, args)
+            let applied_args: Vec<Type> = args.iter().map(|a| apply(subst, a)).collect();
+            // If the constructor variable is in the substitution, remap:
+            // - subst[id] = ADT(name, []) → ADT(name, applied_args)
+            // - subst[id] = Var(other_id) → TyConApp(other_id, applied_args)
+            if let Some(mapped) = subst.get(id) {
+                let resolved = apply(subst, mapped);
+                match resolved {
+                    Type::ADT(name, _) => Type::ADT(name, applied_args),
+                    Type::Var(other_id) => Type::TyConApp(other_id, applied_args),
+                    _ => Type::TyConApp(*id, applied_args),
+                }
+            } else {
+                Type::TyConApp(*id, applied_args)
+            }
         }
         // Primitive types are not affected by substitution.
         Type::Int | Type::Bool | Type::String | Type::Float => ty.clone(),
@@ -321,7 +333,14 @@ fn collect_free_vars(ty: &Type, result: &mut HashSet<TypeId>) {
             }
             collect_free_vars(ret, result);
         }
-        Type::ADT(_, args) | Type::TyConApp(_, args) => {
+        Type::ADT(_, args) => {
+            for a in args {
+                collect_free_vars(a, result);
+            }
+        }
+        Type::TyConApp(con_id, args) => {
+            // The constructor ID itself is a type variable for occurs-check purposes
+            result.insert(*con_id);
             for a in args {
                 collect_free_vars(a, result);
             }

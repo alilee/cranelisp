@@ -157,6 +157,18 @@ impl TypeChecker {
             });
         }
 
+        // If trait has type_params used in Applied position, use HKT registration path
+        if !decl.type_params.is_empty()
+            && decl.methods.iter().any(|m| {
+                m.params
+                    .iter()
+                    .any(|p| type_expr_uses_con_var(p, &decl.type_params))
+                    || type_expr_uses_con_var(&m.ret_type, &decl.type_params)
+            })
+        {
+            return self.register_hkt_trait(decl);
+        }
+
         // Allocate a fresh type variable for the trait's type parameter
         let (_, type_var_id) = self.fresh_var_id();
 
@@ -181,6 +193,95 @@ impl TypeChecker {
             Symbol::from(decl.name.as_ref()),
             cranelisp_types::ModuleEntry::TraitDecl {
                 decl: decl.clone(),
+                visibility: decl.visibility,
+                sexp: None,
+            },
+        );
+
+        Ok(())
+    }
+
+    /// Register an HKT trait where type_params are type constructor variables.
+    /// E.g., `(deftrait (Functor f) (fmap [(Fn [a] b) (f a)] (f b)))`
+    fn register_hkt_trait(
+        &mut self,
+        decl: &TraitDecl,
+    ) -> Result<(), CranelispError> {
+        // Create fresh type var IDs for each constructor param
+        let mut con_var_map: HashMap<Symbol, TypeId> = HashMap::new();
+        for param_name in &decl.type_params {
+            let (_, id) = self.fresh_var_id();
+            con_var_map.insert(param_name.clone(), id);
+        }
+
+        // Build a modified decl with hkt_param_index set on each method
+        let mut modified_decl = decl.clone();
+
+        for (mi, method) in decl.methods.iter().enumerate() {
+            // Determine which param index carries the type constructor
+            let param_idx = find_hkt_param_index(&method.params, &decl.type_params);
+            modified_decl.methods[mi].hkt_param_index = Some(param_idx);
+
+            // Create fresh regular type vars for any type variables in the signature
+            // that are NOT constructor params
+            let mut type_var_map: HashMap<Symbol, TypeId> = HashMap::new();
+
+            let param_tys: Vec<Type> = method
+                .params
+                .iter()
+                .map(|p| resolve_type_expr_hkt(p, &con_var_map, &mut type_var_map, &mut self.next_id, decl.span))
+                .collect::<Result<Vec<_>, _>>()?;
+            let ret_ty =
+                resolve_type_expr_hkt(&method.ret_type, &con_var_map, &mut type_var_map, &mut self.next_id, decl.span)?;
+
+            // Collect all var IDs (constructor + regular)
+            let mut all_vars: Vec<TypeId> = con_var_map.values().copied().collect();
+            all_vars.extend(type_var_map.values());
+            all_vars.sort();
+            all_vars.dedup();
+
+            // Add trait constraint to constructor vars
+            let mut constraints: HashMap<TypeId, Vec<TraitName>> = HashMap::new();
+            for &con_id in con_var_map.values() {
+                constraints.insert(con_id, vec![decl.name.clone()]);
+            }
+
+            let method_scheme = Scheme {
+                vars: all_vars,
+                constraints,
+                ty: Type::Fn(param_tys, Box::new(ret_ty)),
+            };
+
+            // Register the method name as a symbol
+            self.current_symbol_table_mut().insert(
+                method.name.clone(),
+                cranelisp_types::ModuleEntry::Def {
+                    scheme: method_scheme,
+                    visibility: Visibility::Public,
+                    docstring: method.docstring.clone(),
+                    param_names: method.default_param_names.clone(),
+                    kind: Box::new(cranelisp_types::DefKind::UserFn {
+                        constrained_fn: None,
+                    }),
+                },
+            );
+
+            // Register reverse lookup
+            self.trait_registry
+                .method_to_trait
+                .insert(method.name.clone(), decl.name.clone());
+        }
+
+        // Store the modified declaration (with hkt_param_index set)
+        self.trait_registry
+            .decls
+            .insert(decl.name.clone(), modified_decl.clone());
+
+        // Register in symbol table as TraitDecl entry (with hkt_param_index)
+        self.current_symbol_table_mut().insert(
+            Symbol::from(decl.name.as_ref()),
+            cranelisp_types::ModuleEntry::TraitDecl {
+                decl: modified_decl,
                 visibility: decl.visibility,
                 sexp: None,
             },
@@ -285,6 +386,53 @@ impl TypeChecker {
                 span: impl_.span,
             })?
             .clone();
+
+        // HKT arity validation: if the trait has constructor variables,
+        // verify the impl target is a type constructor with matching arity.
+        if !decl.type_params.is_empty() {
+            let is_hkt = decl.methods.iter().any(|m| {
+                m.params
+                    .iter()
+                    .any(|p| type_expr_uses_con_var(p, &decl.type_params))
+                    || type_expr_uses_con_var(&m.ret_type, &decl.type_params)
+            });
+            if is_hkt {
+                for con_name in &decl.type_params {
+                    if let Some(expected_arity) = con_var_arity(&decl, con_name) {
+                        // Check if impl target is a primitive type
+                        if expected_arity > 0 {
+                            match impl_.target_type.as_ref() {
+                                "Int" | "Bool" | "String" | "Float" => {
+                                    return Err(CranelispError::TypeError {
+                                        message: format!(
+                                            "{} is not a type constructor (trait {} expects arity {})",
+                                            impl_.target_type, impl_.trait_name, expected_arity
+                                        ),
+                                        span: impl_.span,
+                                    });
+                                }
+                                _ => {}
+                            }
+                        }
+                        // Check arity of known ADT types
+                        if let Some(td) = self.type_defs.get(&impl_.target_type) {
+                            if td.type_params.len() != expected_arity {
+                                return Err(CranelispError::TypeError {
+                                    message: format!(
+                                        "{} has {} type parameters, but trait {} expects a constructor with arity {}",
+                                        impl_.target_type,
+                                        td.type_params.len(),
+                                        impl_.trait_name,
+                                        expected_arity
+                                    ),
+                                    span: impl_.span,
+                                });
+                            }
+                        }
+                    }
+                }
+            }
+        }
 
         // Check all required methods are present (that don't have defaults)
         self.check_impl_methods_present(&decl, impl_)?;
@@ -392,6 +540,19 @@ impl TypeChecker {
                 span: method_defn.span,
             })?;
 
+        // Check if this is an HKT trait (constructor variables used in Applied position)
+        let is_hkt = !decl.type_params.is_empty()
+            && decl.methods.iter().any(|m| {
+                m.params
+                    .iter()
+                    .any(|p| type_expr_uses_con_var(p, &decl.type_params))
+                    || type_expr_uses_con_var(&m.ret_type, &decl.type_params)
+            });
+
+        if is_hkt {
+            return self.check_hkt_impl_method(decl, impl_, method_defn, method_sig);
+        }
+
         // Resolve the concrete type for Self
         let concrete_self = Type::from_name(impl_.target_type.as_ref())
             .unwrap_or_else(|| {
@@ -418,6 +579,74 @@ impl TypeChecker {
             &mut var_map,
             &mut self.next_id,
         )?;
+
+        // Check the body
+        self.check_defn_body_with_types(method_defn, &param_types, &ret_ty)?;
+
+        Ok(())
+    }
+
+    /// Type-check an HKT impl method.
+    ///
+    /// For `(impl Functor Option (defn fmap [func opt] ...))`:
+    /// - The constructor variable `f` maps to the impl target `Option`
+    /// - `(f a)` in the signature resolves to `(Option a)` via ADT application
+    fn check_hkt_impl_method(
+        &mut self,
+        decl: &TraitDecl,
+        impl_: &TraitImpl,
+        method_defn: &Defn,
+        method_sig: &TraitMethodSig,
+    ) -> Result<(), CranelispError> {
+        // Build con_var_map: constructor variable name -> resolve to ADT name
+        // For HKT impls, we substitute constructor vars with the target ADT.
+        // Use resolve_type_expr_hkt_impl which produces concrete ADT types.
+        let mut type_var_map: HashMap<Symbol, TypeId> = HashMap::new();
+
+        // Determine the arity of the constructor from the trait signature
+        let arity = decl.type_params.iter().find_map(|p| {
+            con_var_arity(decl, p)
+        }).expect("invariant: HKT trait must use constructor param in Applied position");
+
+        // Build the concrete self type: ADT(target, [fresh_vars...])
+        let type_arg_vars: Vec<Type> = (0..arity)
+            .map(|_| {
+                let (ty, _) = crate::unify::fresh_var_id(&mut self.next_id);
+                ty
+            })
+            .collect();
+        let concrete_self = Type::ADT(impl_.target_type.clone(), type_arg_vars);
+
+        // Build param types using HKT-aware resolution that substitutes
+        // constructor variable applications with concrete ADT applications
+        let param_types: Vec<Type> = method_sig
+            .params
+            .iter()
+            .map(|p| resolve_type_expr_hkt_impl(
+                p,
+                &decl.type_params,
+                &impl_.target_type,
+                &mut type_var_map,
+                &mut self.next_id,
+                impl_.span,
+            ))
+            .collect::<Result<Vec<_>, _>>()?;
+
+        let ret_ty = resolve_type_expr_hkt_impl(
+            &method_sig.ret_type,
+            &decl.type_params,
+            &impl_.target_type,
+            &mut type_var_map,
+            &mut self.next_id,
+            impl_.span,
+        )?;
+
+        // Pre-unify the dispatch parameter with the concrete self type
+        if let Some(param_idx) = method_sig.hkt_param_index {
+            if let Some(param_ty) = param_types.get(param_idx) {
+                self.unify(param_ty, &concrete_self, method_defn.span)?;
+            }
+        }
 
         // Check the body
         self.check_defn_body_with_types(method_defn, &param_types, &ret_ty)?;
@@ -527,12 +756,13 @@ impl TypeChecker {
             None => return Ok(None),
         };
 
-        // Resolve the first argument's type to find the impl type
-        let first_arg = match arg_types.first() {
+        // Use hkt_param_index for dispatch argument selection (defaults to 0)
+        let param_idx = self.hkt_param_idx_for_method(callee_name);
+        let dispatch_arg = match arg_types.get(param_idx) {
             Some(a) => a,
             None => return Ok(None),
         };
-        let resolved_arg = self.apply_subst(first_arg);
+        let resolved_arg = self.apply_subst(dispatch_arg);
 
         let impl_type_name = match concrete_type_name(&resolved_arg) {
             Some(tn) => tn,
@@ -965,14 +1195,241 @@ fn resolve_trait_type_expr(
             let r = resolve_trait_type_expr(ret, self_type, span, var_map, next_id)?;
             Ok(Type::Fn(ps, Box::new(r)))
         }
-        TypeExpr::Applied(name, _args) => {
+        TypeExpr::Applied(name, args) => {
+            // Regular ADT application: (Option Int), (List :a)
+            let resolved_args: Vec<Type> = args
+                .iter()
+                .map(|a| resolve_trait_type_expr(a, self_type, span, var_map, next_id))
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok(Type::ADT(name.clone(), resolved_args))
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// HKT Helpers (free functions)
+// ---------------------------------------------------------------------------
+
+/// Resolve a TypeExpr in HKT context, producing TyConApp for constructor variable applications.
+fn resolve_type_expr_hkt(
+    texpr: &cranelisp_types::TypeExpr,
+    con_var_map: &HashMap<Symbol, TypeId>,
+    type_var_map: &mut HashMap<Symbol, TypeId>,
+    next_id: &mut TypeId,
+    span: Span,
+) -> Result<Type, CranelispError> {
+    use cranelisp_types::TypeExpr;
+
+    match texpr {
+        TypeExpr::Applied(name, args) => {
+            let name_sym = Symbol::from(name.as_ref());
+            if let Some(&con_id) = con_var_map.get(&name_sym) {
+                // Constructor variable application: (f a) -> TyConApp(f_id, [a])
+                let resolved_args: Vec<Type> = args
+                    .iter()
+                    .map(|a| resolve_type_expr_hkt(a, con_var_map, type_var_map, next_id, span))
+                    .collect::<Result<Vec<_>, _>>()?;
+                Ok(Type::TyConApp(con_id, resolved_args))
+            } else {
+                // Regular ADT application: (Option Int)
+                let resolved_args: Vec<Type> = args
+                    .iter()
+                    .map(|a| resolve_type_expr_hkt(a, con_var_map, type_var_map, next_id, span))
+                    .collect::<Result<Vec<_>, _>>()?;
+                Ok(Type::ADT(name.clone(), resolved_args))
+            }
+        }
+        TypeExpr::TypeVar(name) => {
+            if let Some(&con_id) = con_var_map.get(name) {
+                // Bare constructor variable used as a type
+                Ok(Type::Var(con_id))
+            } else if let Some(&id) = type_var_map.get(name) {
+                Ok(Type::Var(id))
+            } else {
+                let (ty, id) = crate::unify::fresh_var_id(next_id);
+                type_var_map.insert(name.clone(), id);
+                Ok(ty)
+            }
+        }
+        TypeExpr::Named(name) => {
+            Ok(Type::from_name(name.as_ref()).unwrap_or_else(|| Type::ADT(name.clone(), vec![])))
+        }
+        TypeExpr::SelfType => {
             Err(CranelispError::TypeError {
-                message: format!(
-                    "applied types in trait methods not yet supported: {name}"
-                ),
+                message: "Self is not allowed in HKT trait signatures".to_string(),
                 span,
             })
         }
+        TypeExpr::FnType(params, ret) => {
+            let param_tys: Vec<Type> = params
+                .iter()
+                .map(|p| resolve_type_expr_hkt(p, con_var_map, type_var_map, next_id, span))
+                .collect::<Result<Vec<_>, _>>()?;
+            let ret_ty = resolve_type_expr_hkt(ret, con_var_map, type_var_map, next_id, span)?;
+            Ok(Type::Fn(param_tys, Box::new(ret_ty)))
+        }
+    }
+}
+
+/// Resolve a TypeExpr for an HKT impl method.
+/// Constructor variable applications are resolved to concrete ADT applications.
+/// E.g., for `(impl Functor Option ...)`, `(f a)` becomes `(Option a)`.
+fn resolve_type_expr_hkt_impl(
+    texpr: &cranelisp_types::TypeExpr,
+    con_var_names: &[Symbol],
+    target_type: &TypeName,
+    type_var_map: &mut HashMap<Symbol, TypeId>,
+    next_id: &mut TypeId,
+    span: Span,
+) -> Result<Type, CranelispError> {
+    use cranelisp_types::TypeExpr;
+
+    match texpr {
+        TypeExpr::Applied(name, args) => {
+            let name_sym = Symbol::from(name.as_ref());
+            let resolved_name: TypeName = if con_var_names.contains(&name_sym) {
+                target_type.clone()
+            } else {
+                name.clone()
+            };
+            let resolved_args: Vec<Type> = args
+                .iter()
+                .map(|a| resolve_type_expr_hkt_impl(a, con_var_names, target_type, type_var_map, next_id, span))
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok(Type::ADT(resolved_name, resolved_args))
+        }
+        TypeExpr::TypeVar(name) => {
+            if let Some(&id) = type_var_map.get(name) {
+                Ok(Type::Var(id))
+            } else {
+                let (ty, id) = crate::unify::fresh_var_id(next_id);
+                type_var_map.insert(name.clone(), id);
+                Ok(ty)
+            }
+        }
+        TypeExpr::Named(name) => {
+            Ok(Type::from_name(name.as_ref()).unwrap_or_else(|| Type::ADT(name.clone(), vec![])))
+        }
+        TypeExpr::SelfType => {
+            Err(CranelispError::TypeError {
+                message: "Self is not allowed in HKT trait signatures".to_string(),
+                span,
+            })
+        }
+        TypeExpr::FnType(params, ret) => {
+            let param_tys: Vec<Type> = params
+                .iter()
+                .map(|p| resolve_type_expr_hkt_impl(p, con_var_names, target_type, type_var_map, next_id, span))
+                .collect::<Result<Vec<_>, _>>()?;
+            let ret_ty = resolve_type_expr_hkt_impl(ret, con_var_names, target_type, type_var_map, next_id, span)?;
+            Ok(Type::Fn(param_tys, Box::new(ret_ty)))
+        }
+    }
+}
+
+/// Check if a TypeExpr uses any of the constructor variable names in Applied position.
+fn type_expr_uses_con_var(texpr: &cranelisp_types::TypeExpr, con_names: &[Symbol]) -> bool {
+    use cranelisp_types::TypeExpr;
+
+    match texpr {
+        TypeExpr::Applied(name, args) => {
+            let name_sym = Symbol::from(name.as_ref());
+            con_names.contains(&name_sym)
+                || args.iter().any(|a| type_expr_uses_con_var(a, con_names))
+        }
+        TypeExpr::FnType(params, ret) => {
+            params.iter().any(|p| type_expr_uses_con_var(p, con_names))
+                || type_expr_uses_con_var(ret, con_names)
+        }
+        _ => false,
+    }
+}
+
+/// Find the first parameter index that uses a constructor variable in Applied position.
+fn find_hkt_param_index(params: &[cranelisp_types::TypeExpr], type_params: &[Symbol]) -> usize {
+    for (idx, param) in params.iter().enumerate() {
+        if type_expr_uses_con_var(param, type_params) {
+            return idx;
+        }
+    }
+    0 // fallback to first param
+}
+
+/// Determine the arity (number of type args) of a constructor variable in a trait declaration.
+fn con_var_arity(decl: &TraitDecl, con_name: &Symbol) -> Option<usize> {
+    for method in &decl.methods {
+        for param in &method.params {
+            if let Some(arity) = find_applied_arity(param, con_name) {
+                return Some(arity);
+            }
+        }
+        if let Some(arity) = find_applied_arity(&method.ret_type, con_name) {
+            return Some(arity);
+        }
+    }
+    None
+}
+
+/// Find the arity of a constructor variable name in a TypeExpr tree.
+fn find_applied_arity(texpr: &cranelisp_types::TypeExpr, con_name: &Symbol) -> Option<usize> {
+    use cranelisp_types::TypeExpr;
+
+    match texpr {
+        TypeExpr::Applied(name, args) => {
+            let name_sym = Symbol::from(name.as_ref());
+            if &name_sym == con_name {
+                Some(args.len())
+            } else {
+                args.iter().find_map(|a| find_applied_arity(a, con_name))
+            }
+        }
+        TypeExpr::FnType(params, ret) => {
+            params.iter().find_map(|p| find_applied_arity(p, con_name))
+                .or_else(|| find_applied_arity(ret, con_name))
+        }
+        _ => None,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// HKT Method Resolution Helpers (on TypeChecker)
+// ---------------------------------------------------------------------------
+
+impl TypeChecker {
+    /// Get the HKT param index for a method name, defaulting to 0.
+    /// For mangled names like "Functor.fmap$Option", extracts the base method name first.
+    fn hkt_param_idx_for_method(&self, name: &Symbol) -> usize {
+        let name_str = name.as_ref();
+        // Try direct lookup
+        if let Some(idx) = self.find_hkt_param_index_in_registry(name_str) {
+            return idx;
+        }
+        // For mangled names like "Functor.fmap$Option", extract the method name
+        if let Some(dollar_pos) = name_str.find('$') {
+            let prefix = &name_str[..dollar_pos];
+            // Handle trait-qualified names: "Trait.method" -> "method"
+            let base = if let Some(dot_pos) = prefix.rfind('.') {
+                &prefix[dot_pos + 1..]
+            } else {
+                prefix
+            };
+            if let Some(idx) = self.find_hkt_param_index_in_registry(base) {
+                return idx;
+            }
+        }
+        0
+    }
+
+    /// Walk trait declarations in the registry to find a method's hkt_param_index.
+    fn find_hkt_param_index_in_registry(&self, method_name: &str) -> Option<usize> {
+        for decl in self.trait_registry.decls.values() {
+            for method in &decl.methods {
+                if method.name.as_ref() == method_name {
+                    return method.hkt_param_index;
+                }
+            }
+        }
+        None
     }
 }
 

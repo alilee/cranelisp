@@ -16,11 +16,16 @@ use cranelisp_types::{CranelispError, Sexp, Span};
 struct Reader<'a> {
     src: &'a str,
     pos: usize,
+    preserve_comments: bool,
 }
 
 impl<'a> Reader<'a> {
     fn new(src: &'a str) -> Self {
-        Reader { src, pos: 0 }
+        Reader { src, pos: 0, preserve_comments: false }
+    }
+
+    fn new_preserving_comments(src: &'a str) -> Self {
+        Reader { src, pos: 0, preserve_comments: true }
     }
 
     /// Remaining source text from current position.
@@ -79,6 +84,20 @@ pub fn parse(source: &str) -> Result<Vec<Sexp>, CranelispError> {
     Ok(sexps)
 }
 
+/// Parse source text, preserving comments as `Sexp::Comment` nodes.
+#[must_use = "parsing produces a result that should be checked for errors"]
+pub fn parse_preserving_comments(source: &str) -> Result<Vec<Sexp>, CranelispError> {
+    let mut reader = Reader::new_preserving_comments(source);
+    let mut sexps = Vec::new();
+    skip_ws_collect_comments(&mut reader, &mut sexps);
+    while !reader.at_end() {
+        let sexp = read_form(&mut reader)?;
+        sexps.push(sexp);
+        skip_ws_collect_comments(&mut reader, &mut sexps);
+    }
+    Ok(sexps)
+}
+
 // ---------------------------------------------------------------------------
 // Whitespace & comments
 // ---------------------------------------------------------------------------
@@ -105,6 +124,73 @@ fn skip_whitespace_and_comments(r: &mut Reader) {
                     break;
                 }
             }
+        } else {
+            break;
+        }
+    }
+}
+
+/// Dispatch: when preserving comments, collect them; otherwise discard.
+fn skip_ws_or_comments(r: &mut Reader, children: &mut Vec<Sexp>) {
+    if r.preserve_comments {
+        skip_ws_collect_comments(r, children);
+    } else {
+        skip_whitespace_and_comments(r);
+    }
+}
+
+/// Skip whitespace only (no comments).
+fn skip_whitespace(r: &mut Reader) {
+    while let Some(b) = r.peek() {
+        if is_whitespace(b) {
+            r.advance(1);
+        } else {
+            break;
+        }
+    }
+}
+
+/// If positioned at `;`, read the comment text and return a `Sexp::Comment`.
+/// Strips the `;` and one leading space if present.
+fn try_read_comment(r: &mut Reader) -> Option<Sexp> {
+    if r.peek() != Some(b';') {
+        return None;
+    }
+    let start = r.pos as u32;
+    r.advance(1); // skip ';'
+
+    // Strip one leading space if present
+    if r.peek() == Some(b' ') {
+        r.advance(1);
+    }
+
+    let text_start = r.pos;
+    // Advance until newline or EOF
+    while let Some(b) = r.peek() {
+        if b == b'\n' {
+            break;
+        }
+        r.advance(1);
+    }
+    let text_end = r.pos;
+    let end = r.pos as u32;
+
+    // Advance past newline if present
+    if r.peek() == Some(b'\n') {
+        r.advance(1);
+    }
+
+    let text = r.src[text_start..text_end].to_string();
+    Some(Sexp::Comment(text, Span::new(start, end)))
+}
+
+/// Skip whitespace and collect any comments as `Sexp::Comment` nodes.
+/// Used by the comment-preserving parse path.
+fn skip_ws_collect_comments(r: &mut Reader, comments: &mut Vec<Sexp>) {
+    loop {
+        skip_whitespace(r);
+        if let Some(comment) = try_read_comment(r) {
+            comments.push(comment);
         } else {
             break;
         }
@@ -166,13 +252,13 @@ fn read_list(r: &mut Reader) -> Result<Sexp, CranelispError> {
     let start = r.pos as u32;
     r.advance(1); // skip '('
     let mut children = Vec::new();
-    skip_whitespace_and_comments(r);
+    skip_ws_or_comments(r, &mut children);
     while r.peek() != Some(b')') {
         if r.at_end() {
             return Err(r.error_at("unclosed '('", start, r.pos as u32));
         }
         children.push(read_form(r)?);
-        skip_whitespace_and_comments(r);
+        skip_ws_or_comments(r, &mut children);
     }
     r.advance(1); // skip ')'
     let end = r.pos as u32;
@@ -183,13 +269,13 @@ fn read_bracket(r: &mut Reader) -> Result<Sexp, CranelispError> {
     let start = r.pos as u32;
     r.advance(1); // skip '['
     let mut children = Vec::new();
-    skip_whitespace_and_comments(r);
+    skip_ws_or_comments(r, &mut children);
     while r.peek() != Some(b']') {
         if r.at_end() {
             return Err(r.error_at("unclosed '['", start, r.pos as u32));
         }
         children.push(read_form(r)?);
-        skip_whitespace_and_comments(r);
+        skip_ws_or_comments(r, &mut children);
     }
     r.advance(1); // skip ']'
     let end = r.pos as u32;

@@ -1087,6 +1087,36 @@ fn integer_underflow_wraps() {
     assert_eq!(compile_and_run_simple(src), i64::MAX);
 }
 
+// spec: 12-runtime §12.7.3 — integer division by zero panics
+#[test]
+fn checked_division_by_zero_panics() {
+    // div-i64 with zero divisor must panic (not trap or crash).
+    let src = "(defn main [] (div-i64 42 0))";
+    let result = std::panic::catch_unwind(|| {
+        compile_and_run_simple(src)
+    });
+    assert!(result.is_err(), "division by zero should panic");
+}
+
+// spec: 12-runtime §12.7.3 — i64::MIN / -1 overflow panics
+#[test]
+fn checked_div_min_neg1_panics() {
+    // i64::MIN / -1 would overflow (result is i64::MAX + 1). Must panic.
+    let src = "(defn main [] (div-i64 -9223372036854775808 -1))";
+    let result = std::panic::catch_unwind(|| {
+        compile_and_run_simple(src)
+    });
+    assert!(result.is_err(), "i64::MIN / -1 should panic (overflow)");
+}
+
+// spec: 12-runtime §12.7.3 — normal integer division works
+#[test]
+fn checked_division_normal() {
+    // Normal division should work without panicking.
+    let src = "(defn main [] (div-i64 100 7))";
+    assert_eq!(compile_and_run_simple(src), 14); // truncates toward zero
+}
+
 // spec: 01-lexical §1.1 — source encoding is UTF-8
 #[test]
 fn source_encoding_utf8() {

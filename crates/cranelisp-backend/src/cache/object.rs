@@ -435,6 +435,10 @@ fn declare_intrinsic_imports(
 }
 
 /// Declare all module functions as exports (Pass 1: get FuncIds before compilation).
+///
+/// Uses bare function names (e.g., `add-one`) as the linker symbol, matching
+/// how the JIT cache-load path registers symbols. Cross-module import
+/// declarations strip the module prefix to match (see `compile_all_functions`).
 fn declare_module_functions(
     obj_module: &mut ObjectModule,
     defns: &[(Defn, Scheme)],
@@ -600,23 +604,35 @@ fn compile_all_functions(
     // Declare cross-module functions as imports so that FnCompiler can resolve
     // calls to functions from dependency modules (both qualified "mod/fn" and
     // bare imported names). The linker resolves these symbols when loading the .o.
+    //
+    // IMPORTANT: Import declarations use BARE names (e.g., "add-one" not
+    // "helper/add-one") because the exporting module's .o file uses bare names.
+    // The system linker and the custom cache linker both match by symbol name.
+    // The func_ids map registers BOTH qualified and bare forms so FnCompiler
+    // can resolve either form.
     for (name, param_count) in &input.cross_module_fns {
         if func_ids.contains_key(name) {
             continue; // Already declared (e.g., intrinsic or local defn)
         }
 
-        // For qualified aliases ("module/name"), check if the base name is
-        // already declared and reuse the same FuncId.
-        if let Some(slash_pos) = name.as_ref().find('/') {
-            let base_name = &name.as_ref()[slash_pos + 1..];
-            let base_sym = Symbol::from(base_name);
-            if let Some(&existing_fid) = func_ids.get(&base_sym) {
-                func_ids.insert(name.clone(), existing_fid);
-                continue;
-            }
+        // For qualified names ("module/name"), extract the bare function name
+        // for the ObjectModule import declaration. The .o file exports bare names.
+        let (import_name, bare_name) = if let Some(slash_pos) = name.as_ref().find('/') {
+            let bare = &name.as_ref()[slash_pos + 1..];
+            (bare.to_string(), Some(Symbol::from(bare)))
+        } else {
+            (name.as_ref().to_string(), None)
+        };
+
+        // Check if the bare name is already declared and reuse the same FuncId.
+        if let Some(bn) = &bare_name
+            && let Some(&existing_fid) = func_ids.get(bn)
+        {
+            func_ids.insert(name.clone(), existing_fid);
+            continue;
         }
 
-        // Declare as an imported function in the ObjectModule.
+        // Declare as an imported function in the ObjectModule using the bare name.
         let mut sig = obj_module.make_signature();
         for _ in 0..*param_count {
             sig.params.push(AbiParam::new(types::I64));
@@ -624,7 +640,7 @@ fn compile_all_functions(
         sig.returns.push(AbiParam::new(types::I64));
 
         let func_id = obj_module
-            .declare_function(name.as_ref(), Linkage::Import, &sig)
+            .declare_function(&import_name, Linkage::Import, &sig)
             .map_err(|e| CranelispError::CodegenError {
                 message: format!(
                     "failed to declare cross-module function '{}': {e}",
@@ -632,16 +648,11 @@ fn compile_all_functions(
                 ),
                 span: Span::SYNTHETIC,
             })?;
-        func_ids.insert(name.clone(), func_id);
 
-        // For bare names, also check if there's a qualified form and alias it.
-        // For qualified names ("mod/fn"), also register the bare name if not taken.
-        if let Some(slash_pos) = name.as_ref().find('/') {
-            let bare = Symbol::from(&name.as_ref()[slash_pos + 1..]);
-            func_ids.entry(bare).or_insert(func_id);
-        } else {
-            // Bare name — check if any qualified form exists in cross_module_fns
-            // and register it (handled when the qualified form is processed).
+        // Register in func_ids under both qualified and bare forms.
+        func_ids.insert(name.clone(), func_id);
+        if let Some(bn) = bare_name {
+            func_ids.entry(bn).or_insert(func_id);
         }
     }
 

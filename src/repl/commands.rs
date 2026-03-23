@@ -14,6 +14,9 @@ use cranelisp_types::{
     Sexp, TraitName, Type, TypeName,
 };
 
+use crate::pretty::{pretty_print, pretty_print_str};
+use crate::style::{Style, styled};
+
 use super::ReplSession;
 use super::format_result_value;
 
@@ -99,10 +102,10 @@ pub(crate) fn handle_type(session: &mut ReplSession, expr_src: &str, stdout: &mu
     match result {
         Ok(ty) => {
             let display = display::format_type_qualified(&ty, &session.type_modules);
-            let _ = writeln!(stdout, ":{display}");
+            let _ = writeln!(stdout, "{}", pretty_print_str(&format!(":{display}")));
         }
         Err(e) => {
-            let _ = writeln!(stdout, "error: {e}");
+            let _ = writeln!(stdout, "{} {}", styled("Error:", Style::BoldRed), styled(&e.to_string(), Style::Red));
         }
     }
 }
@@ -131,7 +134,8 @@ pub(crate) fn handle_info(session: &ReplSession, name: &str, stdout: &mut impl W
     }
     // Check builtin types first (not in symbol table)
     if Type::from_name(name).is_some() {
-        let _ = writeln!(stdout, "{}", format_builtin_type_display(name, session));
+        let display = format_builtin_type_display(name, session);
+        let _ = writeln!(stdout, "{}", pretty_print_str(&display));
         return;
     }
     let module = session.core.tc.current_module_path().clone();
@@ -141,7 +145,7 @@ pub(crate) fn handle_info(session: &ReplSession, name: &str, stdout: &mut impl W
                 resolve_entry_for_display(entry, &module, session);
             // Line 1: type signature (same as /sig).
             let sig = format_entry_signature(resolved_entry, name, resolved_module, session);
-            let _ = writeln!(stdout, "{sig}");
+            let _ = writeln!(stdout, "{}", pretty_print_str(&sig));
             // Line 2: for functions, show code info.
             if !matches!(resolved_entry, ModuleEntry::Macro { .. } | ModuleEntry::TypeDef { .. } | ModuleEntry::TraitDecl { .. }) {
                 if let Some(dc) = session.core.got_state.def_codegen.get(name) {
@@ -268,7 +272,8 @@ pub(crate) fn handle_time(
             session.type_modules(),
         )
     };
-    Ok(format!("{display} (compile: {compile_ms}ms, eval: {eval_ms}ms)"))
+    let styled_display = pretty_print_str(&display);
+    Ok(format!("{styled_display} (compile: {compile_ms}ms, eval: {eval_ms}ms)"))
 }
 
 // ── /expand ───────────────────────────────────────────────────────────────────
@@ -279,12 +284,12 @@ pub(crate) fn handle_expand(session: &mut ReplSession, form_src: &str, stdout: &
         let _ = writeln!(stdout, "usage: /expand <form>");
         return;
     }
-    match expand_form(session, form_src) {
-        Ok(expanded) => {
-            let _ = writeln!(stdout, "{expanded}");
+    match expand_form_sexp(session, form_src) {
+        Ok(ref expanded) => {
+            let _ = writeln!(stdout, "{}", pretty_print(expanded));
         }
         Err(e) => {
-            let _ = writeln!(stdout, "error: {e}");
+            let _ = writeln!(stdout, "{} {}", styled("Error:", Style::BoldRed), styled(&e.to_string(), Style::Red));
         }
     }
 }
@@ -293,6 +298,11 @@ pub(crate) fn handle_expand(session: &mut ReplSession, form_src: &str, stdout: &
 ///
 /// Does not evaluate the result. Returns the expanded Sexp as a formatted string.
 fn expand_form(session: &mut ReplSession, form_src: &str) -> Result<String, CranelispError> {
+    let expanded = expand_form_sexp(session, form_src)?;
+    Ok(format_sexp(&expanded))
+}
+
+fn expand_form_sexp(session: &mut ReplSession, form_src: &str) -> Result<Sexp, CranelispError> {
     let sexps = cranelisp_frontend::parse(form_src)?;
     if sexps.is_empty() {
         return Err(CranelispError::ParseError {
@@ -306,7 +316,7 @@ fn expand_form(session: &mut ReplSession, form_src: &str) -> Result<String, Cran
             span: cranelisp_types::Span::SYNTHETIC,
         }
     })?)?;
-    Ok(format_sexp(&expanded))
+    Ok(expanded)
 }
 
 // ── /imports ──────────────────────────────────────────────────────────────────
@@ -510,11 +520,11 @@ pub(crate) fn handle_source(session: &ReplSession, name: &str, stdout: &mut impl
     }
     match session.core.got_state.def_codegen.get(name) {
         Some(dc) if dc.source.is_some() => {
-            let _ = writeln!(stdout, "; source for {name}");
-            let _ = writeln!(stdout, "{}", dc.source.as_ref().unwrap());
+            let _ = writeln!(stdout, "{}", styled(&format!("; source for {name}"), Style::Italic));
+            let _ = writeln!(stdout, "{}", pretty_print_str(dc.source.as_ref().unwrap()));
         }
         _ => {
-            let _ = writeln!(stdout, "error: no source available for '{name}'");
+            let _ = writeln!(stdout, "{} no source available for '{name}'", styled("Error:", Style::BoldRed));
         }
     }
 }
@@ -531,7 +541,7 @@ pub(crate) fn handle_sexp(session: &ReplSession, name: &str, stdout: &mut impl W
             let _ = writeln!(stdout, "{}", format_sexp(dc.sexp.as_ref().unwrap()));
         }
         _ => {
-            let _ = writeln!(stdout, "error: no sexp available for '{name}'");
+            let _ = writeln!(stdout, "{} no sexp available for '{name}'", styled("Error:", Style::BoldRed));
         }
     }
 }
@@ -548,7 +558,7 @@ pub(crate) fn handle_ast(session: &ReplSession, name: &str, stdout: &mut impl Wr
             let _ = writeln!(stdout, "{:#?}", dc.defn.as_ref().unwrap());
         }
         _ => {
-            let _ = writeln!(stdout, "error: no AST available for '{name}'");
+            let _ = writeln!(stdout, "{} no AST available for '{name}'", styled("Error:", Style::BoldRed));
         }
     }
 }
@@ -565,7 +575,7 @@ pub(crate) fn handle_clif(session: &ReplSession, name: &str, stdout: &mut impl W
             let _ = write!(stdout, "{}", dc.clif_ir.as_ref().unwrap());
         }
         _ => {
-            let _ = writeln!(stdout, "error: no CLIF IR available for '{name}'");
+            let _ = writeln!(stdout, "{} no CLIF IR available for '{name}'", styled("Error:", Style::BoldRed));
         }
     }
 }
@@ -582,7 +592,7 @@ pub(crate) fn handle_disasm(session: &ReplSession, name: &str, stdout: &mut impl
             let _ = writeln!(stdout, "{}", dc.disasm.as_ref().unwrap());
         }
         _ => {
-            let _ = writeln!(stdout, "error: no disassembly available for '{name}'");
+            let _ = writeln!(stdout, "{} no disassembly available for '{name}'", styled("Error:", Style::BoldRed));
         }
     }
 }
@@ -967,7 +977,7 @@ pub(super) fn print_name_category(label: &str, names: &[String], stdout: &mut im
     if names.is_empty() {
         return;
     }
-    let _ = writeln!(stdout, "{label}:");
+    let _ = writeln!(stdout, "{}:", styled(label, Style::Bold));
     if names.len() < 7 {
         let _ = writeln!(stdout, "  {}", names.join(" "));
     } else {
@@ -999,6 +1009,13 @@ pub(super) fn format_sexp(sexp: &Sexp) -> String {
         Sexp::Bracket(children, _) => {
             let parts: Vec<String> = children.iter().map(format_sexp).collect();
             format!("[{}]", parts.join(" "))
+        }
+        Sexp::Comment(text, _) => {
+            if text.is_empty() {
+                ";".to_string()
+            } else {
+                format!("; {text}")
+            }
         }
     }
 }

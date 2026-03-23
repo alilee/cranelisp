@@ -29,6 +29,12 @@ pub fn parse(source: &str) -> Result<Vec<Sexp>, CranelispError> {
     reader::parse(source)
 }
 
+/// Parse source text, preserving comments as `Sexp::Comment` nodes.
+#[must_use = "parsing produces a result that should be checked for errors"]
+pub fn parse_preserving_comments(source: &str) -> Result<Vec<Sexp>, CranelispError> {
+    reader::parse_preserving_comments(source)
+}
+
 /// Build a batch program from parsed S-expressions.
 ///
 /// Each sexp must be a top-level form (defn, deftype, etc.).

@@ -455,6 +455,7 @@ fn rewrite_spans_unique(sexp: &mut Sexp) {
             }
             *s = cranelisp_frontend::next_synthetic_span();
         }
+        Sexp::Comment(_, s) => *s = cranelisp_frontend::next_synthetic_span(),
     }
 }
 

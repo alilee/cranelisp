@@ -67,6 +67,51 @@ pub fn unify(subst: &mut Subst, t1: &Type, t2: &Type) -> Result<(), CranelispErr
             Ok(())
         }
 
+        // TyConApp(f, args) vs ADT(name, args2): bind f -> ADT(name, []), unify args
+        (Type::TyConApp(f_id, args1), Type::ADT(name, args2))
+        | (Type::ADT(name, args2), Type::TyConApp(f_id, args1)) => {
+            let f_id = *f_id;
+            if args1.len() != args2.len() {
+                return Err(CranelispError::TypeError {
+                    message: format!(
+                        "type constructor arity mismatch: expected {} args, got {}",
+                        args1.len(),
+                        args2.len()
+                    ),
+                    span: Span::SYNTHETIC,
+                });
+            }
+            // Bind constructor variable to bare ADT constructor
+            bind_var(subst, f_id, &Type::ADT(name.clone(), vec![]))?;
+            for (a1, a2) in args1.iter().zip(args2.iter()) {
+                unify(subst, a1, a2)?;
+            }
+            Ok(())
+        }
+
+        // TyConApp(f1, args1) vs TyConApp(f2, args2): bind f1 -> Var(f2), unify args
+        (Type::TyConApp(f1, args1), Type::TyConApp(f2, args2)) => {
+            let f1 = *f1;
+            let f2 = *f2;
+            if args1.len() != args2.len() {
+                return Err(CranelispError::TypeError {
+                    message: format!(
+                        "type constructor arity mismatch: expected {} args, got {}",
+                        args1.len(),
+                        args2.len()
+                    ),
+                    span: Span::SYNTHETIC,
+                });
+            }
+            if f1 != f2 {
+                bind_var(subst, f1, &Type::Var(f2))?;
+            }
+            for (a1, a2) in args1.iter().zip(args2.iter()) {
+                unify(subst, a1, a2)?;
+            }
+            Ok(())
+        }
+
         // Everything else is a type mismatch
         _ => Err(CranelispError::TypeError {
             message: format!("type mismatch: expected {t1}, got {t2}"),

@@ -385,7 +385,7 @@ Operator symbols (`+`, `-`, `*`, `/`, `=`, `<`, `>`, `<=`, `>=`) have no special
 
 An implementation SHOULD compile operator trait methods for `Int` and `Float` to inline machine instructions (integer add, float multiply, etc.) rather than function calls, so that the trait system imposes zero overhead for primitive arithmetic and comparisons.
 
-## 7.6 Operators as First-Class Values [R4 S21]
+## 7.6 Operators as First-Class Values [R4 S21] <!-- FIXME(/qa): Spec violation — trait methods cannot be passed as values. `(fmap show (Some 42))` fails with "undefined variable: show" even though §7.6 says trait methods MAY be passed to higher-order functions. When the concrete type is inferrable from context (here Int from `Some 42`), the implementation should monomorphise to `show$Int` and wrap in a closure. Write a failing test: `(let [f show] (f 42))` and `(fmap show (Some 42))`. Assign to /backend or /typecheck for resolution. -->
 
 Trait method names, including operators, are ordinary symbols. They MAY be bound to variables and passed as arguments to higher-order functions.
 

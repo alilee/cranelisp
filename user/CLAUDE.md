@@ -43,4 +43,6 @@ The spec (`spec/`) is precise and normative — written for implementors. User d
 
 **Sprint 23 Wave 4**: Added "Developer Tools" section to `getting-started.md` covering session persistence (`user.cl`), shell escape (`;#!`), file watching (automatic recompilation, `[updated:]`/`[errors:]` notifications, cascade invalidation, error blocking), and `--link` standalone executable generation. Updated `caching.md` with REPL cache integration, session persistence, and `--link` cache dependency sections.
 
+**Sprint 24**: Added Sprint 24 features to `getting-started.md`: ANSI terminal styling with `--no-color` flag and `NO_COLOR` env var (Starting the REPL section + Developer Tools Summary table), checked division panic note (Integer Arithmetic + Named Primitives table), Higher-Kinded Traits subsection under Traits (Functor pattern with `deftrait`/`impl` examples), lazy sequences mention in "What is Next". Pretty-printer not yet user-documented (internal formatting improvement).
+
 **Feedback loop**: Report to compiler skills when error messages are confusing, when REPL output is unhelpful, or when a concept has no good introduction path. File findings as `FIXME(/skill-name)` comments on the relevant spec or design doc.

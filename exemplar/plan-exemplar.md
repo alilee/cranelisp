@@ -2,6 +2,40 @@
 
 Selected exemplar project for the Cranelisp reimplementation. This document is owned by the `/port` skill, updated from the Sprint 0 candidate evaluation.
 
+## Sprint 24 HKT/Lazy Evaluation: Exemplar Impact Assessment
+
+Assessment by `/port` — 2026-03-23. Evaluates whether Sprint 24's HKT (Functor/Monad)
+and lazy sequences would benefit the Sudoku solver exemplar.
+
+**Functor/fmap over Option**: Moderate benefit. The solver has ~15 `match` expressions
+on `(Option Grid)` that extract a value, transform it, and re-wrap. For example,
+`eliminate` and `propagate-pass-helper` both match `(Some g2)` just to call the next
+step. With `fmap`, some of these could become `(fmap next-step result)`. However, many
+of the Option matches also handle `None` with distinct logic (contradiction detection),
+so they cannot be replaced by fmap — they need the full match. Estimate: 3-5 matches
+could simplify, the rest must stay.
+
+**Monad/bind over Option**: Stronger benefit. The solver chains Option-returning
+operations: eliminate -> eliminate-from-peers -> propagate. Each step matches
+`[None None, (Some g2) (next-step g2)]` — this is exactly monadic bind (`>>=`).
+`eliminate-from-peers-helper` is a fold over peers with Option short-circuiting,
+which is `foldM`. If `(Option a)` had a Monad instance, several helper functions
+could shrink significantly. The IO `main` already uses `bind` for IO chaining, so
+the pattern is familiar to the codebase.
+
+**Lazy sequences**: Minimal benefit. The solver operates on a fixed 81-cell Vec with
+index arithmetic — there are no list traversals, stream processing, or unbounded
+iteration that would benefit from laziness. The HTML and form modules iterate over
+fixed ranges (0-8 rows, 0-8 cols) via tail-recursive helpers, which are already
+efficient. Lazy sequences would add overhead without improving clarity or performance.
+
+**Verdict**: Option Monad would be the single most impactful addition — it would
+eliminate ~40 lines of mechanical `match [None None, (Some x) ...]` boilerplate
+in solver.cl. Functor alone is less useful because most Option matches need the
+None branch. Lazy sequences are not applicable to this problem domain. No changes
+recommended until Monad for Option is available; when it is, solver.cl should be
+the first adoption target.
+
 ## Decision
 
 **Selected**: Sudoku Solver with a custom web platform (HTTP server).

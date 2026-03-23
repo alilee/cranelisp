@@ -38,6 +38,18 @@ You will see a prompt:
 
 This is where you type expressions. After you type something and press Enter, Cranelisp reads what you wrote, checks it, compiles it, runs it, and shows you the result. If something is wrong, it shows you an error message and waits for your next input -- it does not crash.
 
+By default, the REPL uses ANSI colors to syntax-highlight output -- types, values, and errors are styled for readability. To disable colors, pass the `--no-color` flag:
+
+```
+cargo run -- --no-color
+```
+
+The `NO_COLOR` environment variable is also respected. If `NO_COLOR` is set (to any value), color output is suppressed:
+
+```
+NO_COLOR=1 cargo run
+```
+
 ## Values and Types
 
 Every value in Cranelisp has a **type** -- the kind of thing it is. The REPL shows both the type and the value in its output, using the format `:Type value`.
@@ -126,7 +138,7 @@ Cranelisp provides named functions for integer arithmetic:
 - `add-i64` adds two integers
 - `sub-i64` subtracts the second from the first
 - `mul-i64` multiplies two integers
-- `div-i64` divides the first by the second (integer division, no remainder)
+- `div-i64` divides the first by the second (integer division, no remainder). Division by zero causes a runtime panic, as does dividing the minimum integer by -1 (which would overflow)
 
 You can **nest** calls -- use the result of one call as an argument to another:
 
@@ -1475,6 +1487,41 @@ You already know that type annotations use a colon before a type name, like `:In
 
 This says: `x` can be any type, as long as it implements `Num`. The effect is the same as writing `(defn double [x] (+ x x))` -- Cranelisp would infer the constraint anyway -- but the annotation makes the requirement explicit and serves as documentation.
 
+### Higher-Kinded Traits
+
+The traits you have seen so far operate on concrete types like `Int` or `Shape`. **Higher-kinded traits** operate on type constructors -- types that themselves take a type parameter. This lets you express patterns like "any container that supports mapping over its elements."
+
+The classic example is `Functor`, which describes types that support `fmap` -- applying a function to the value(s) inside a container:
+
+```clojure
+(deftrait (Functor f)
+  (fmap [(Fn [a] b) (f a)] (f b)))
+```
+
+Here, `f` is not a concrete type -- it is a **type constructor** like `Option` or `List`. The trait says: for any type constructor `f`, if you can provide a function from `a` to `b` and a value of type `(f a)`, then `fmap` produces a value of type `(f b)`.
+
+You implement a higher-kinded trait by naming the type constructor (without its type parameter):
+
+```clojure
+(impl Functor Option
+  (defn fmap [func opt]
+    (match opt
+      [None       None
+       (Some val) (Some (func val))])))
+```
+
+Now you can map over `Option` values:
+
+```
+> (fmap (fn [x] (+ x 1)) (Some 10))
+:(Option Int) (Some 11)
+
+> (fmap (fn [x] (+ x 1)) None)
+:(Option Int) None
+```
+
+The key difference from regular traits is in the `deftrait` declaration: `(Functor f)` has the type constructor parameter `f` next to the trait name, and the method signatures use `(f a)` to express "the container `f` holding values of type `a`."
+
 ## Putting It Together
 
 You now have all of Ring 0 and Ring 1 at your disposal, plus Vec collections and traits. Here is an example that combines several features -- types with fields, pattern matching, closures, and higher-order functions:
@@ -1562,7 +1609,7 @@ The named primitives below work with specific types. They are available alongsid
 | `add-i64` | `(Fn [Int Int] Int)` | Add two integers |
 | `sub-i64` | `(Fn [Int Int] Int)` | Subtract second from first |
 | `mul-i64` | `(Fn [Int Int] Int)` | Multiply two integers |
-| `div-i64` | `(Fn [Int Int] Int)` | Integer division |
+| `div-i64` | `(Fn [Int Int] Int)` | Integer division (panics on zero or overflow) |
 | `eq-i64` | `(Fn [Int Int] Bool)` | Equal? |
 | `lt-i64` | `(Fn [Int Int] Bool)` | Less than? |
 | `gt-i64` | `(Fn [Int Int] Bool)` | Greater than? |
@@ -1972,12 +2019,14 @@ Requirements:
 | Shell escape | `;#! <cmd>` | Run a shell command from the REPL |
 | File watching | (automatic) | Detect and recompile changed source files |
 | `--link` | `cranelisp --link file.cl` | Build a standalone native executable |
+| `--no-color` | `cranelisp --no-color` | Disable ANSI color output (also: `NO_COLOR` env var) |
 
 ## What is Next
 
-This guide covers Ring 0 (core expressions, functions, enums, pattern matching), Ring 1 (strings, data types with fields, closures, higher-order functions, Vec collections), Ring 2A (traits, operators, constrained polymorphism), Ring 4 (IO -- reading input and writing output), and developer tools (session persistence, shell escape, file watching, `--link`). As the language grows, you will gain access to:
+This guide covers Ring 0 (core expressions, functions, enums, pattern matching), Ring 1 (strings, data types with fields, closures, higher-order functions, Vec collections), Ring 2A (traits, operators, constrained polymorphism, higher-kinded traits), Ring 4 (IO -- reading input and writing output), and developer tools (session persistence, shell escape, file watching, `--link`, `--no-color`). As the language grows, you will gain access to:
 
 - **Modules** -- organizing code across multiple files
 - **Macros** -- programs that write programs
+- **Lazy sequences** -- the `stdlib/seq/` module provides a `Seq` type for lazy, on-demand sequence processing with producers like `range-from`, `iterate`, and `repeat`, and consumers like `take`, `drop`, `map`, and `filter`
 
-Experiment in the REPL. Try printing and reading input. Write batch programs that combine IO with pattern matching and recursion. Define your own traits and implement them for your types. The more you experiment, the more fluent you will become.
+Experiment in the REPL. Try printing and reading input. Write batch programs that combine IO with pattern matching and recursion. Define your own traits and implement them for your types. Use higher-kinded traits like `Functor` to write generic code over containers. The more you experiment, the more fluent you will become.

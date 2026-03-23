@@ -64,7 +64,7 @@ A multi-signature function definition provides multiple variants with different 
 - Variants MAY have different numbers of parameters.
 - The mangled name for each variant is the function name followed by `$` and the parameter types joined by `+`. For example, `size` with a `Vec` parameter becomes `size$Vec`.
 
-### 5.1.3 Auto-Currying [R3 S17]
+### 5.1.3 Auto-Currying [Tested tests/ring0.rs::auto_curry_too_few_args]
 
 When any function (single or multi-signature) is called with fewer arguments than it declares, the call returns a closure that captures the provided arguments and accepts the remaining ones. This is auto-currying.
 

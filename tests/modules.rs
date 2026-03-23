@@ -504,3 +504,23 @@ fn export_private_name_not_reexported() {
         "private names should not be re-exportable"
     );
 }
+
+// spec: 08-modules §8.3 — imported function used as higher-order argument (batch)
+// Batch pipeline handles this correctly.
+#[test]
+fn imported_function_as_higher_order_argument() {
+    let dir = create_test_project(&[
+        (
+            "main.cl",
+            "(mod helper)\n(import [main.helper [double]])\n(defn apply-fn [f x] (f x))\n(defn main [] (apply-fn double 21))",
+        ),
+        (
+            "helper.cl",
+            "(defn double [x] (add-i64 x x))",
+        ),
+    ]);
+    let result = compile_module_graph(&dir.path().join("main.cl"), &[]);
+    assert!(result.is_ok(), "imported fn as higher-order arg should compile: {}",
+        result.as_ref().err().map(|e| format!("{e}")).unwrap_or_default());
+    assert_eq!(result.unwrap().value, 42);
+}

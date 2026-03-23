@@ -98,6 +98,7 @@ The REPL process `chdir`s into this directory, so `.cache` artifacts and any oth
 | `ring4f.demo` | 4F | Auto-currying: partial application, curried composition, map with curried fn, /run-tests |
 | `ring4g.demo` | 4G | Module caching (--no-cache), curried trait operators (+ 5), map with curried ops, non-Var rejection error, /run-tests |
 | `ring4h.demo` | 4H | Session persistence (user.cl), shell escape (;#!), shell-driven module creation, file watching, --link standalone executable, /run-tests |
+| `ring4i.demo` | 4I | Higher-kinded types (Functor/fmap), lazy sequences (range-from/iterate/take), terminal styling narrative, checked division panic + recovery, /run-tests |
 
 Each sprint, `/repl` extends this library.
 

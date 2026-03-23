@@ -51,6 +51,9 @@ pub fn sexp_to_runtime(sexp: &Sexp) -> i64 {
             let slist = marshal_children_to_slist(children);
             alloc_sexp_cell(TAG_SEXP_BRACKET, slist)
         }
+        Sexp::Comment(_, _) => {
+            unreachable!("invariant: Comment nodes should not reach marshal (compiler pipeline uses non-preserving reader)")
+        }
     }
 }
 

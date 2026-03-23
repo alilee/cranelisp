@@ -189,8 +189,12 @@ fn emit_not(
 
 // --- Checked division ---
 
-/// Emit a checked integer division: branch on zero divisor to a panic block
-/// that calls `runtime_panic("division by zero")`, otherwise emit `sdiv`.
+/// Emit a checked integer division with two guards:
+///
+/// 1. Zero divisor -- panic "division by zero"
+/// 2. `i64::MIN / -1` -- panic "division by zero" (overflow)
+///
+/// Otherwise emit `sdiv`. See spec 12.7.3 and `design/backend/hkt-codegen.md` SS2.
 fn emit_checked_div<M: Module>(
     builder: &mut FunctionBuilder,
     name: &str,
@@ -206,22 +210,65 @@ fn emit_checked_div<M: Module>(
         span,
     })?;
 
+    let lhs = args[0];
     let rhs = args[1];
+
+    // Check 1: division by zero
     let zero = builder.ins().iconst(types::I64, 0);
     let is_zero = builder.ins().icmp(IntCC::Equal, rhs, zero);
 
-    let ok_block = builder.create_block();
-    let panic_block = builder.create_block();
+    let check_overflow_block = builder.create_block();
+    let panic_divzero_block = builder.create_block();
 
     builder
         .ins()
-        .brif(is_zero, panic_block, &[], ok_block, &[]);
+        .brif(is_zero, panic_divzero_block, &[], check_overflow_block, &[]);
 
-    // Panic path: call runtime_panic with "division by zero".
-    builder.switch_to_block(panic_block);
-    builder.seal_block(panic_block);
+    // Panic path (division by zero): call runtime_panic.
+    builder.switch_to_block(panic_divzero_block);
+    builder.seal_block(panic_divzero_block);
+    emit_panic_return(builder, module, panic_id, b"division by zero", span)?;
 
-    let msg = b"division by zero";
+    // Check 2: i64::MIN / -1 overflow
+    builder.switch_to_block(check_overflow_block);
+    builder.seal_block(check_overflow_block);
+
+    let min_val = builder.ins().iconst(types::I64, i64::MIN);
+    let neg1 = builder.ins().iconst(types::I64, -1i64);
+    let is_min = builder.ins().icmp(IntCC::Equal, lhs, min_val);
+    let is_neg1 = builder.ins().icmp(IntCC::Equal, rhs, neg1);
+    let both = builder.ins().band(is_min, is_neg1);
+
+    let ok_block = builder.create_block();
+    let panic_overflow_block = builder.create_block();
+
+    builder
+        .ins()
+        .brif(both, panic_overflow_block, &[], ok_block, &[]);
+
+    // Panic path (MIN / -1 overflow): call runtime_panic.
+    builder.switch_to_block(panic_overflow_block);
+    builder.seal_block(panic_overflow_block);
+    emit_panic_return(builder, module, panic_id, b"division by zero", span)?;
+
+    // OK path: emit sdiv.
+    builder.switch_to_block(ok_block);
+    builder.seal_block(ok_block);
+
+    Ok(builder.ins().sdiv(lhs, rhs))
+}
+
+/// Emit a panic call with a message and return a dummy 0 value.
+///
+/// Helper for checked division panic blocks. Declares an anonymous data
+/// section for the message string, calls runtime_panic, and returns 0.
+fn emit_panic_return<M: Module>(
+    builder: &mut FunctionBuilder,
+    module: &mut M,
+    panic_func_id: FuncId,
+    msg: &[u8],
+    span: Span,
+) -> Result<(), CranelispError> {
     let data_id = module
         .declare_anonymous_data(false, false)
         .map_err(|e| CranelispError::CodegenError {
@@ -241,7 +288,7 @@ fn emit_checked_div<M: Module>(
     let msg_ptr = builder.ins().global_value(types::I64, gv);
     let msg_len = builder.ins().iconst(types::I64, msg.len() as i64);
 
-    let panic_ref = module.declare_func_in_func(panic_id, builder.func);
+    let panic_ref = module.declare_func_in_func(panic_func_id, builder.func);
     builder.ins().call(panic_ref, &[msg_ptr, msg_len]);
 
     // runtime_panic sets a thread-local error flag and returns.
@@ -249,11 +296,7 @@ fn emit_checked_div<M: Module>(
     let dummy = builder.ins().iconst(types::I64, 0);
     builder.ins().return_(&[dummy]);
 
-    // OK path: emit sdiv.
-    builder.switch_to_block(ok_block);
-    builder.seal_block(ok_block);
-
-    Ok(builder.ins().sdiv(args[0], args[1]))
+    Ok(())
 }
 
 // --- Primitive trait method mapping ---

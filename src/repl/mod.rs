@@ -49,6 +49,8 @@ use commands::{
     handle_sig, handle_source, handle_sexp, handle_time, handle_type,
     special_form_feedback,
 };
+use crate::pretty::pretty_print_str;
+use crate::style::{Style, styled};
 use io_format::force_io_and_format;
 use run_tests::handle_run_tests;
 use trace::{
@@ -1437,7 +1439,7 @@ fn print_help(stdout: &mut impl Write) {
 
 /// Format the REPL prompt with timing and module info.
 fn format_prompt(compile_ms: u64, eval_ms: u64, module: &str) -> String {
-    format!("{compile_ms}+{eval_ms}ms; {module}> ")
+    styled(&format!("{compile_ms}+{eval_ms}ms; {module}> "), Style::Dim)
 }
 
 /// Write the prompt string to stdout and flush.
@@ -1481,7 +1483,11 @@ fn dispatch_slash_command(
                     let _ = writeln!(stdout, "{display}");
                 }
                 Err(e) => {
-                    let _ = writeln!(stdout, "error: {e}");
+                    let _ = writeln!(
+                        stdout, "{} {}",
+                        styled("Error:", Style::BoldRed),
+                        styled(&e.to_string(), Style::Red),
+                    );
                 }
             }
         }
@@ -1525,7 +1531,11 @@ fn eval_and_display(
             let eval_ms = result.eval_duration.as_millis() as u64;
 
             for w in &result.warnings {
-                let _ = writeln!(stdout, "warning: {}", w.message);
+                let _ = writeln!(
+                    stdout, "{} {}",
+                    styled("Warning:", Style::BoldYellow),
+                    styled(&w.message, Style::Yellow),
+                );
             }
             let display = if let Some(ref def_display) = result.definition_display {
                 def_display.clone()
@@ -1548,13 +1558,17 @@ fn eval_and_display(
                     session.type_modules(),
                 )
             };
-            let _ = writeln!(stdout, "{display}");
+            let _ = writeln!(stdout, "{}", pretty_print_str(&display));
             (compile_ms, eval_ms)
         }
         Err(e) => {
             let total_elapsed = total_start.elapsed();
             let compile_ms = total_elapsed.as_millis() as u64;
-            let _ = writeln!(stdout, "error: {e}");
+            let _ = writeln!(
+                stdout, "{} {}",
+                styled("Error:", Style::BoldRed),
+                styled(&e.to_string(), Style::Red),
+            );
             (compile_ms, 0)
         }
     }
@@ -1699,7 +1713,7 @@ fn reload_changed_modules(session: &mut ReplSession, stdout: &mut impl Write) {
             }
             Err(e) => {
                 session.error_modules.insert(module_path.clone());
-                let _ = writeln!(stdout, "[errors: {}]", file_display);
+                let _ = writeln!(stdout, "{}", styled(&format!("[errors: {}]", file_display), Style::Red));
                 let _ = writeln!(stdout, "  {}", e);
             }
         }
@@ -1732,7 +1746,7 @@ fn reload_changed_modules(session: &mut ReplSession, stdout: &mut impl Write) {
             }
             Err(e) => {
                 session.error_modules.insert(dep_path.clone());
-                let _ = writeln!(stdout, "[errors: {}]", file_display);
+                let _ = writeln!(stdout, "{}", styled(&format!("[errors: {}]", file_display), Style::Red));
                 let _ = writeln!(stdout, "  {}", e);
             }
         }
@@ -1957,9 +1971,14 @@ pub fn run_repl() {
     let stdout = io::stdout();
     let mut stdout = stdout.lock();
 
-    // Startup banner.
-    let _ = writeln!(stdout, "Cranelisp v0.1.0");
-    let _ = writeln!(stdout, "Type /help for commands, /quit to exit.");
+    // Startup banner (dim).
+    let _ = writeln!(stdout, "{}", styled("Cranelisp v0.1.0", Style::Dim));
+    let _ = writeln!(stdout, "{}", styled("Type /help for commands, /quit to exit.", Style::Dim));
+
+    // Session persistence (after banner, before prompt).
+    if session.enable_persistence() {
+        let _ = writeln!(stdout, "{}", styled("; Restored user.cl", Style::Dim));
+    }
 
     let mut last_compile_ms: u64 = 0;
     let mut last_eval_ms: u64 = 0;
@@ -2028,7 +2047,7 @@ pub fn run_repl() {
         }
 
         if let Some(display) = special_form_feedback(input, &session) {
-            let _ = writeln!(stdout, "{display}");
+            let _ = writeln!(stdout, "{}", pretty_print_str(&display));
             buffer.clear();
             poll_and_notify_changes(&mut session, &mut stdout);
             write_prompt(&mut stdout, last_compile_ms, last_eval_ms, &module);
