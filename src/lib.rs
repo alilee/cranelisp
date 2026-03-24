@@ -3,6 +3,7 @@
 // Exposes the pipeline and REPL modules so that integration tests
 // can use them directly.
 
+pub mod bind_chain_analysis;
 pub mod exe;
 pub mod expander;
 pub mod marshal;

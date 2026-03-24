@@ -147,18 +147,18 @@ pub(crate) fn handle_info(session: &ReplSession, name: &str, stdout: &mut impl W
             let sig = format_entry_signature(resolved_entry, name, resolved_module, session);
             let _ = writeln!(stdout, "{}", pretty_print_str(&sig));
             // Line 2: for functions, show code info.
-            if !matches!(resolved_entry, ModuleEntry::Macro { .. } | ModuleEntry::TypeDef { .. } | ModuleEntry::TraitDecl { .. }) {
-                if let Some(dc) = session.core.got_state.def_codegen.get(name) {
-                    let size_str = dc
-                        .code_size
-                        .map(|s| format!("{s} bytes"))
-                        .unwrap_or_else(|| "? bytes".to_string());
-                    let time_str = dc
-                        .compile_duration
-                        .map(|d| format!("{}ms", d.as_millis()))
-                        .unwrap_or_else(|| "?ms".to_string());
-                    let _ = writeln!(stdout, "  {size_str}, {time_str}");
-                }
+            if !matches!(resolved_entry, ModuleEntry::Macro { .. } | ModuleEntry::TypeDef { .. } | ModuleEntry::TraitDecl { .. })
+                && let Some(dc) = session.core.got_state.def_codegen.get(name)
+            {
+                let size_str = dc
+                    .code_size
+                    .map(|s| format!("{s} bytes"))
+                    .unwrap_or_else(|| "? bytes".to_string());
+                let time_str = dc
+                    .compile_duration
+                    .map(|d| format!("{}ms", d.as_millis()))
+                    .unwrap_or_else(|| "?ms".to_string());
+                let _ = writeln!(stdout, "  {size_str}, {time_str}");
             }
         }
         None => {
@@ -297,6 +297,7 @@ pub(crate) fn handle_expand(session: &mut ReplSession, form_src: &str, stdout: &
 /// Parse and expand a form through the session's macro expander.
 ///
 /// Does not evaluate the result. Returns the expanded Sexp as a formatted string.
+#[allow(dead_code)] // Available for future REPL /expand command use
 fn expand_form(session: &mut ReplSession, form_src: &str) -> Result<String, CranelispError> {
     let expanded = expand_form_sexp(session, form_src)?;
     Ok(format_sexp(&expanded))
@@ -402,7 +403,7 @@ pub(crate) fn handle_imports(session: &ReplSession, filter: &str, stdout: &mut i
             if name.contains('$') {
                 continue;
             }
-            if source.module.to_string() == filter {
+            if *source.module == *filter {
                 names.push(name);
             }
         }
@@ -481,10 +482,9 @@ pub(crate) fn handle_exports(session: &ReplSession, arg: &str, stdout: &mut impl
             ModuleEntry::Macro { .. } => macros.push(name),
             ModuleEntry::TraitDecl { .. } => traits.push(name),
             ModuleEntry::TypeDef { .. } | ModuleEntry::Constructor { .. } => types.push(name),
-            ModuleEntry::Def { kind, .. } => {
-                if !matches!(kind.as_ref(), DefKind::SpecialForm { .. }) {
+            ModuleEntry::Def { kind, .. }
+                if !matches!(kind.as_ref(), DefKind::SpecialForm { .. }) => {
                     fns.push(name);
-                }
             }
             _ => {}
         }
@@ -880,11 +880,11 @@ pub(super) fn format_type_display_universal(type_name: &str, module: &ModuleFull
     let mut result = format!(":{module}/{type_name} ; deftype");
     let tn = TypeName::from(type_name);
     // Related: constructors under `; match:`
-    if let Some(ctors) = session.core.tc.get_type_constructors(&tn) {
-        if !ctors.is_empty() {
-            let names: Vec<&str> = ctors.iter().map(|c| c.name.as_ref()).collect();
-            result.push_str(&format_related_section("match", &names));
-        }
+    if let Some(ctors) = session.core.tc.get_type_constructors(&tn)
+        && !ctors.is_empty()
+    {
+        let names: Vec<&str> = ctors.iter().map(|c| c.name.as_ref()).collect();
+        result.push_str(&format_related_section("match", &names));
     }
     // Related: trait implementations under `; impl:`
     let trait_names = session.core.tc.get_impls_for_type(&tn);
@@ -909,11 +909,11 @@ pub(super) fn format_trait_display_universal(
     let mut result = format!(":{defining_module}/{trait_name} ; deftrait");
     result = append_docstring_comment(result, docstring);
     // Related: methods under `; defn:`
-    if let Some(methods) = session.core.tc.get_trait_methods(&tn) {
-        if !methods.is_empty() {
-            let names: Vec<&str> = methods.iter().map(|m| m.as_ref()).collect();
-            result.push_str(&format_related_section("defn", &names));
-        }
+    if let Some(methods) = session.core.tc.get_trait_methods(&tn)
+        && !methods.is_empty()
+    {
+        let names: Vec<&str> = methods.iter().map(|m| m.as_ref()).collect();
+        result.push_str(&format_related_section("defn", &names));
     }
     // Related: implementing types under `; impl:`
     let impl_types = session.core.tc.get_implementing_types(&tn);

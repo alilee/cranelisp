@@ -134,48 +134,11 @@ This is a **cross-module symbol export** issue in the ObjectModule path. The fun
 
 This is a genuine bug, not a test issue. It should be fixed as part of Sprint 24 debt clearance.
 
-## 4. FIXME Resolution: CompileMode Enum Consistency
+## 4. FIXME Resolution: CompileMode Enum Consistency [RESOLVED]
 
-### 4.1 The FIXME
+**Status**: Resolved in Sprint 25. The FIXME comment has been removed from `design/backend/module-caching.md:422` and the table row updated to accurately reflect the current state: REPL uses `CompileMode::Interactive`, batch uses `CompileMode::Batch`, object files are not interchangeable between modes, `CompileMode::Release` is reserved for LLVM whole-program compilation.
 
-`design/backend/module-caching.md:422` contains:
-
-> `CompileMode::Interactive` (GOT-indirect) in both modes so that `.o` files are interchangeable. `CompileMode::Release` (direct calls) is reserved for LLVM whole-program compilation where no caching occurs.
->
-> <!-- FIXME(/backend): /arch review I1 — this row previously said `CompileMode::Batch` which contradicts the rename in §8. Fixed inline but verify consistency with the final CompileMode enum. -->
-
-### 4.2 Current CompileMode Enum
-
-From `crates/cranelisp-types/src/pipeline.rs`:
-
-```rust
-pub enum CompileMode {
-    Interactive,  // GOT-indirect calls for hot-reload
-    Batch,        // Direct function calls, no GOT indirection
-    Release,      // Whole-program optimisation, standalone binary
-}
-```
-
-### 4.3 Assessment
-
-The enum has three variants: `Interactive`, `Batch`, `Release`. The design doc text at line 422 says both REPL and batch use `Interactive` (GOT-indirect) for cache interchangeability, with `Release` reserved for LLVM.
-
-The actual code in `src/pipeline.rs` uses:
-- `CompileMode::Interactive` for REPL module compilation (line 420, 581)
-- `CompileMode::Batch` for batch entry point compilation (line 673)
-
-This means the design doc's claim that "both use `CompileMode::Interactive`" is **not currently true** — batch uses `CompileMode::Batch`. The FIXME is asking whether this is intentional or whether batch should also use `Interactive` for cache interoperability.
-
-### 4.4 Resolution
-
-The design doc's §8 path-unification strategy says `.o` files should be interchangeable between REPL and batch. If `Batch` mode produces different object code (direct calls instead of GOT-indirect), cached `.o` files from batch aren't reusable in REPL mode, violating the interchangeability goal.
-
-**Recommended fix**: Update the design doc text to accurately reflect the current state. The three-variant enum is correct as-is. Batch and Interactive produce different calling patterns by design — batch doesn't need hot-reload. Cache interchangeability was an aspiration documented in §8 but the current implementation does not achieve it, and that's acceptable at this stage. The FIXME should be resolved by:
-
-1. Updating the table row at line 422 to say: "Module compilation uses `CompileMode::Interactive` in REPL and `CompileMode::Batch` in batch. Object files are not currently interchangeable between modes. `CompileMode::Release` is reserved for LLVM whole-program compilation."
-2. Removing the FIXME comment.
-
-If cache interchangeability becomes a goal, that's a separate design decision for `/arch` to make.
+The three-variant `CompileMode` enum is correct as-is. Cache interchangeability between REPL and batch modes was an aspiration that the current implementation does not achieve, and that is acceptable.
 
 ## 5. Sketch Comparison
 

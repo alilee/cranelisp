@@ -45,16 +45,11 @@ impl<'a, M: Module> FnCompiler<'a, M> {
         if self.in_tail_position
             && self.tail_loop_block.is_some()
             && args.len() == self.fn_param_count
+            && let Some(ResolvedCall::SigDispatch { mangled_name }) = self.ctx.method_resolutions.get(&span)
+            && let Some(ref fn_name) = self.current_fn_name
+            && fn_name.as_ref() == mangled_name.as_ref()
         {
-            if let Some(resolved) = self.ctx.method_resolutions.get(&span) {
-                if let ResolvedCall::SigDispatch { mangled_name } = resolved {
-                    if let Some(ref fn_name) = self.current_fn_name {
-                        if Symbol::from(mangled_name.as_ref()) == *fn_name {
-                            return self.compile_tail_self_call(args);
-                        }
-                    }
-                }
-            }
+            return self.compile_tail_self_call(args);
         }
 
         // CRITICAL: Args are never in tail position.

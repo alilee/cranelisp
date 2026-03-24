@@ -2385,3 +2385,43 @@ fn auto_curry_lambda_partial_apply() {
         Ok(_) => panic!("expected type error for non-Var auto-curry, got Ok"),
     }
 }
+
+// =============================================================================
+// §7.6 Operators as First-Class Values (spec: 07-traits §7.6)
+//
+// Trait method names, including operators, are ordinary symbols. They MAY be
+// bound to variables and passed as arguments to higher-order functions.
+// Currently FAILS — trait methods cannot be used as values.
+// =============================================================================
+
+// spec: 07-traits §7.6 — operator bound to variable and called
+#[test]
+fn trait_method_as_value_operator() {
+    // Per §7.6: (let [f +] (f 1 2)) should produce 3.
+    // Currently fails with "undefined variable" or similar error because
+    // trait methods cannot be used as first-class values.
+    let mut session = repl_session_with_test_prelude();
+    let result = session.eval("(let [f +] (f 1 2))");
+    match result {
+        Ok(r) => assert_eq!(r.value, 3, "expected (let [f +] (f 1 2)) = 3"),
+        Err(e) => panic!(
+            "SPEC VIOLATION §7.6: trait method '+' cannot be used as a value. \
+             Expected (let [f +] (f 1 2)) = 3 but got error: {e}"
+        ),
+    }
+}
+
+// spec: 07-traits §7.6 — comparison operator as value
+#[test]
+fn trait_method_as_value_comparison() {
+    // Per §7.6: (let [cmp <] (cmp 3 4)) should produce true.
+    let mut session = repl_session_with_test_prelude();
+    let result = session.eval("(let [cmp <] (cmp 3 4))");
+    match result {
+        Ok(r) => assert_eq!(r.value, 1, "expected (let [cmp <] (cmp 3 4)) = true"),
+        Err(e) => panic!(
+            "SPEC VIOLATION §7.6: trait method '<' cannot be used as a value. \
+             Expected (let [cmp <] (cmp 3 4)) = true but got error: {e}"
+        ),
+    }
+}

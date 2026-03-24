@@ -100,10 +100,8 @@ impl CacheState {
             return false;
         }
         let dep_hashes = self.dependency_hashes_for(dependencies);
-        match cache::check_manifest(&self.manifest, module_path, source_hash, &dep_hashes) {
-            Ok(valid) => valid,
-            Err(_reason) => false, // Global invalidation — treat as miss
-        }
+        cache::check_manifest(&self.manifest, module_path, source_hash, &dep_hashes)
+            .unwrap_or_default() // Global invalidation — treat as miss
     }
 
     /// Check whether any of this module's direct dependencies was recompiled.
@@ -228,6 +226,10 @@ pub struct CompilationSession {
     /// Linker for loading cached `.o` files. Must stay alive so that
     /// mmap'd code regions remain valid for the duration of execution.
     pub linker: Option<cache::Linker>,
+    /// Scheduling class registry for bind chain independence analysis.
+    /// Maps platform function names to their SchedulingClass.
+    /// Populated during platform DLL loading; empty when no platforms loaded.
+    pub scheduling_registry: crate::bind_chain_analysis::SchedulingRegistry,
 }
 
 impl CompilationSession {
@@ -244,6 +246,7 @@ impl CompilationSession {
             batch_compiled_fns: Vec::new(),
             cached_symbols: Vec::new(),
             linker: None,
+            scheduling_registry: crate::bind_chain_analysis::SchedulingRegistry::new(),
         }
     }
 
@@ -295,8 +298,8 @@ impl CompilationSession {
             } else {
                 // Begin-expanded: multiple sub-forms from one original.
                 // Each sub-form uses its own (expanded) sexp as original.
-                for i in count_before..count_after {
-                    originals.push(expanded[i].clone());
+                for item in expanded.iter().take(count_after).skip(count_before) {
+                    originals.push(item.clone());
                 }
             }
         }
@@ -771,10 +774,10 @@ impl CompilationSession {
         param_count: usize,
         code_ptr: *const u8,
     ) -> Result<(), CranelispError> {
-        if let Some(dc) = self.got_state.def_codegen.get(name) {
-            if dc.got_slot.is_some() {
-                return Ok(());
-            }
+        if let Some(dc) = self.got_state.def_codegen.get(name)
+            && dc.got_slot.is_some()
+        {
+            return Ok(());
         }
         let slot = self.got_state.ensure_slot_for(name)?;
         self.got_state.update_slot(slot, code_ptr);
@@ -1030,7 +1033,15 @@ pub fn compile_and_run(
 
     // Stage 2: Process forms through CompilationSession (macro expansion).
     let mut session = CompilationSession::new();
-    let program = session.process_and_build_program(sexps)?;
+    let mut program = session.process_and_build_program(sexps)?;
+
+    // Stage 2b: Bind chain independence analysis (auto IO scheduling).
+    // Transforms eligible bind chains into ParBind nodes.
+    if !session.scheduling_registry.is_empty()
+        && std::env::var("CRANELISP_NO_IO_SCHEDULE").is_err()
+    {
+        apply_bind_chain_analysis(&mut program, &session.scheduling_registry);
+    }
 
     // Stage 3: Whole-program type check (handles forward refs, TCO detection).
     let check = session.tc.check_program(&program)?;
@@ -1335,6 +1346,7 @@ const SYNTHETIC_MODULES: &[&str] = &["primitives", "macros"];
 /// Export specs are included in discovery so that re-export-only modules
 /// (like the prelude) can reference root-level domain modules without
 /// needing separate import declarations.
+#[allow(clippy::too_many_arguments)] // Module graph discovery needs full context
 fn discover_import_dependencies(
     structure: &ModuleStructure,
     module_path: &ModuleFullPath,
@@ -1822,6 +1834,7 @@ fn register_intrinsics_on_linker(linker: &mut cache::Linker) {
 /// `program` and `check` are needed to build the `ObjectCompileInput`
 /// for `.o` compilation. Pass `None` for `program` if the module has
 /// no compilable definitions (empty modules, type-only modules).
+#[allow(clippy::too_many_arguments)] // Cache writing requires full compilation context
 pub(crate) fn write_module_cache(
     cache_state: &mut CacheState,
     module_path: &ModuleFullPath,
@@ -1898,10 +1911,10 @@ fn build_codegen_state_for_cache(
         for tl in prog.iter() {
             if let TopLevel::Defn(defn) = tl {
                 // Skip constrained fn base definitions.
-                if let Some(ch) = check {
-                    if ch.constrained_fn_names.contains(&defn.name) {
-                        continue;
-                    }
+                if let Some(ch) = check
+                    && ch.constrained_fn_names.contains(&defn.name)
+                {
+                    continue;
                 }
                 let slot = next_slot;
                 next_slot += 1;
@@ -1987,32 +2000,29 @@ fn collect_defns_for_cache(
     };
 
     for tl in prog.iter() {
-        match tl {
-            TopLevel::Defn(defn) => {
-                // Skip constrained fn base definitions.
-                if let Some(ch) = check {
-                    if ch.constrained_fn_names.contains(&defn.name) {
-                        continue;
-                    }
-                }
-                let scheme = scheme_for_defn(defn, check);
-                let slot = next_slot;
-                next_slot += 1;
-                fn_slot_assignments.insert(
-                    defn.name.clone(),
-                    cache::object::FnSlotInfo {
-                        slot,
-                        param_count: defn.params.len(),
-                    },
-                );
-                defns.push((defn.clone(), scheme));
+        if let TopLevel::Defn(defn) = tl {
+            // Skip constrained fn base definitions.
+            if let Some(ch) = check
+                && ch.constrained_fn_names.contains(&defn.name)
+            {
+                continue;
             }
-            // TraitImpl methods have unmangled names (e.g., "+"). The mangled
-            // versions ("Num.+$Int") are in check.default_method_defns and are
-            // collected below. Skipping TraitImpl here avoids DuplicateDefinition
-            // errors in the object compilation path.
-            _ => {}
+            let scheme = scheme_for_defn(defn, check);
+            let slot = next_slot;
+            next_slot += 1;
+            fn_slot_assignments.insert(
+                defn.name.clone(),
+                cache::object::FnSlotInfo {
+                    slot,
+                    param_count: defn.params.len(),
+                },
+            );
+            defns.push((defn.clone(), scheme));
         }
+        // TraitImpl methods have unmangled names (e.g., "+"). The mangled
+        // versions ("Num.+$Int") are in check.default_method_defns and are
+        // collected below. Skipping TraitImpl here avoids DuplicateDefinition
+        // errors in the object compilation path.
     }
 
     // Also include monomorphised specializations and default methods.
@@ -2279,10 +2289,17 @@ pub fn load_module_into_session(
         let accumulated = session.process_forms_sequentially(remaining_sexps)?;
 
         // Build program AST.
-        let program = cranelisp_frontend::build_program(
+        let mut program = cranelisp_frontend::build_program(
             &accumulated,
             &mut session.expander,
         )?;
+
+        // Bind chain independence analysis (auto IO scheduling).
+        if !session.scheduling_registry.is_empty()
+            && std::env::var("CRANELISP_NO_IO_SCHEDULE").is_err()
+        {
+            apply_bind_chain_analysis(&mut program, &session.scheduling_registry);
+        }
 
         if program.is_empty() {
             continue;
@@ -2418,17 +2435,17 @@ pub fn load_prelude_into_session(
 
         // Cache-hit path: try to restore from cache before parsing.
         let mut cache_hit = false;
-        if let Some(hash) = source_hash.as_ref() {
-            if let Some(cs) = cache_state.as_mut() {
-                if try_restore_from_cache(cs, module_path, hash, &node.dependencies, session)? {
-                    cache_hit = true;
-                    // Re-compile macros from cached modules so the expander
-                    // has function pointers for downstream macro expansion
-                    // (e.g., user.cl using `str`, `list`, `do`, etc.).
-                    recompile_macros_for_cached_module(module_path, node, session)?;
-                } else {
-                    cs.record_recompiled(module_path);
-                }
+        if let Some(hash) = source_hash.as_ref()
+            && let Some(cs) = cache_state.as_mut()
+        {
+            if try_restore_from_cache(cs, module_path, hash, &node.dependencies, session)? {
+                cache_hit = true;
+                // Re-compile macros from cached modules so the expander
+                // has function pointers for downstream macro expansion
+                // (e.g., user.cl using `str`, `list`, `do`, etc.).
+                recompile_macros_for_cached_module(module_path, node, session)?;
+            } else {
+                cs.record_recompiled(module_path);
             }
         }
 
@@ -2461,10 +2478,17 @@ pub fn load_prelude_into_session(
         let accumulated = session.process_forms_sequentially(remaining_sexps)?;
 
         // Build program AST from accumulated sexps.
-        let program = cranelisp_frontend::build_program(
+        let mut program = cranelisp_frontend::build_program(
             &accumulated,
             &mut session.expander,
         )?;
+
+        // Bind chain independence analysis (auto IO scheduling).
+        if !session.scheduling_registry.is_empty()
+            && std::env::var("CRANELISP_NO_IO_SCHEDULE").is_err()
+        {
+            apply_bind_chain_analysis(&mut program, &session.scheduling_registry);
+        }
 
         if program.is_empty() {
             if let (Some(cs), Some(hash)) = (cache_state.as_mut(), source_hash) {
@@ -2597,30 +2621,30 @@ fn compile_single_module(
     // Note: entry module is never restored from cache — it must
     // always be compiled so its entry point is in the JIT.
     if !is_entry {
-        if let Some(hash) = source_hash.as_ref() {
-            if let Some(cs) = cache_state.as_mut() {
-                if try_restore_from_cache(cs, module_path, hash, &node.dependencies, session)? {
-                    // Re-compile macros from cached modules so the expander
-                    // has function pointers for downstream macro expansion.
-                    recompile_macros_for_cached_module(module_path, node, session)?;
-                    // Cache hit — module restored. Inject prelude import
-                    // so downstream modules see prelude symbols through this one.
-                    if prelude_loaded {
-                        session.tc.set_current_module(module_path.clone());
-                        inject_prelude_import(&mut session.tc)?;
-                    }
-                    return Ok(SingleModuleResult { warnings, entry_info: None });
+        if let Some(hash) = source_hash.as_ref()
+            && let Some(cs) = cache_state.as_mut()
+        {
+            if try_restore_from_cache(cs, module_path, hash, &node.dependencies, session)? {
+                // Re-compile macros from cached modules so the expander
+                // has function pointers for downstream macro expansion.
+                recompile_macros_for_cached_module(module_path, node, session)?;
+                // Cache hit — module restored. Inject prelude import
+                // so downstream modules see prelude symbols through this one.
+                if prelude_loaded {
+                    session.tc.set_current_module(module_path.clone());
+                    inject_prelude_import(&mut session.tc)?;
                 }
-                // Cache miss — fall through to full compilation.
-                cs.record_recompiled(module_path);
+                return Ok(SingleModuleResult { warnings, entry_info: None });
             }
-        }
-    } else if let Some(hash) = source_hash.as_ref() {
-        if let Some(cs) = cache_state.as_mut() {
-            // Entry module: record source hash but always recompile.
-            cs.source_hashes.insert(module_path.clone(), hash.clone());
+            // Cache miss — fall through to full compilation.
             cs.record_recompiled(module_path);
         }
+    } else if let Some(hash) = source_hash.as_ref()
+        && let Some(cs) = cache_state.as_mut()
+    {
+        // Entry module: record source hash but always recompile.
+        cs.source_hashes.insert(module_path.clone(), hash.clone());
+        cs.record_recompiled(module_path);
     }
 
     // Cache miss: full compilation path.
@@ -2654,10 +2678,17 @@ fn compile_single_module(
     let accumulated = session.process_forms_sequentially(remaining_sexps)?;
 
     // Phase 4: Build program AST from accumulated sexps.
-    let program = cranelisp_frontend::build_program(
+    let mut program = cranelisp_frontend::build_program(
         &accumulated,
         &mut session.expander,
     )?;
+
+    // Phase 4b: Bind chain independence analysis (auto IO scheduling).
+    if !session.scheduling_registry.is_empty()
+        && std::env::var("CRANELISP_NO_IO_SCHEDULE").is_err()
+    {
+        apply_bind_chain_analysis(&mut program, &session.scheduling_registry);
+    }
 
     if program.is_empty() {
         // Write cache for empty modules (dependency tracking).
@@ -2756,6 +2787,13 @@ fn compile_graph_only(
             &graph.project_root,
             *span,
         )?;
+        // Populate scheduling registry for bind chain independence analysis.
+        for desc in &platform.descriptors {
+            session.scheduling_registry.insert(
+                Symbol::from(desc.name.as_str()),
+                desc.scheduling_class,
+            );
+        }
         session.platform_symbols.extend(jit_syms);
         loaded_platforms.push(platform);
     }
@@ -2833,19 +2871,19 @@ fn compile_graph_only(
             &mut cache_state,
         )?;
         all_warnings.extend(result.warnings);
-        if is_entry {
-            if let Some((name, ty)) = result.entry_info {
-                // Qualify the entry name with the module path to match the
-                // JIT symbol name (all functions are prefixed with their
-                // module path in the shared JIT).
-                let qualified = Symbol::from(format!(
-                    "{}/{}",
-                    module_path.as_ref(),
-                    name.as_ref()
-                ));
-                entry_defn_name = Some(qualified);
-                entry_result_type = ty;
-            }
+        if is_entry
+            && let Some((name, ty)) = result.entry_info
+        {
+            // Qualify the entry name with the module path to match the
+            // JIT symbol name (all functions are prefixed with their
+            // module path in the shared JIT).
+            let qualified = Symbol::from(format!(
+                "{}/{}",
+                module_path.as_ref(),
+                name.as_ref()
+            ));
+            entry_defn_name = Some(qualified);
+            entry_result_type = ty;
         }
     }
 
@@ -2948,6 +2986,13 @@ pub fn compile_for_link(
             &graph.project_root,
             *span,
         )?;
+        // Populate scheduling registry for bind chain independence analysis.
+        for desc in &platform.descriptors {
+            session.scheduling_registry.insert(
+                Symbol::from(desc.name.as_str()),
+                desc.scheduling_class,
+            );
+        }
         session.platform_symbols.extend(jit_syms);
         loaded_platforms.push(platform);
     }
@@ -3219,6 +3264,47 @@ fn find_entry_defn(program: &Program) -> Option<Symbol> {
 fn has_compilable_defns(program: &[cranelisp_types::TopLevel]) -> bool {
     use cranelisp_types::TopLevel;
     program.iter().any(|tl| matches!(tl, TopLevel::Defn(_) | TopLevel::DefnMulti { .. } | TopLevel::TraitImpl(_)))
+}
+
+// ---------------------------------------------------------------------------
+// Bind chain independence analysis integration
+// ---------------------------------------------------------------------------
+
+/// Apply bind chain independence analysis to all defn bodies in a program.
+///
+/// Transforms eligible bind chains into `Expr::ParBind` nodes for automatic
+/// IO scheduling. Only called when the scheduling registry is non-empty
+/// (i.e., platform DLLs have been loaded) and `CRANELISP_NO_IO_SCHEDULE`
+/// is not set.
+fn apply_bind_chain_analysis(
+    program: &mut Program,
+    registry: &crate::bind_chain_analysis::SchedulingRegistry,
+) {
+    use cranelisp_types::TopLevel;
+    for item in program.iter_mut() {
+        match item {
+            TopLevel::Defn(defn) => {
+                crate::bind_chain_analysis::auto_schedule_defn(defn, registry);
+            }
+            TopLevel::DefnMulti { variants, .. } => {
+                // Multi-sig variants may also contain bind chains.
+                for variant in variants.iter_mut() {
+                    let body = std::mem::replace(
+                        &mut variant.body,
+                        cranelisp_types::Expr::BoolLit { value: false, span: variant.span },
+                    );
+                    variant.body = crate::bind_chain_analysis::auto_schedule_expr_owned(body, registry);
+                }
+            }
+            // TraitImpl methods are also defns — transform their bodies too.
+            TopLevel::TraitImpl(impl_) => {
+                for method in impl_.methods.iter_mut() {
+                    crate::bind_chain_analysis::auto_schedule_defn(method, registry);
+                }
+            }
+            TopLevel::TraitDecl(_) | TopLevel::TypeDef { .. } => {}
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------

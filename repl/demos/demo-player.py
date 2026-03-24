@@ -10,6 +10,10 @@ Usage:
 The REPL runs in a clean timestamped directory under repl/demos/runs/
 (or a caller-specified directory) to isolate .cache artifacts.
 
+Interactive controls (when stdin is a TTY):
+    space   pause / unpause playback
+    q       quit playback immediately
+
 Environment:
     DEMO_TYPING_MS        ms between characters (default: 30)
     DEMO_LINE_PAUSE_MS    ms after REPL response (default: 1500)
@@ -22,7 +26,9 @@ import pty
 import select
 import shutil
 import sys
+import termios
 import time
+import tty
 from datetime import datetime
 from pathlib import Path
 
@@ -42,12 +48,87 @@ DIM = "\033[90m"
 RESET = "\033[0m"
 
 
-def drain_output(master_fd, timeout=0.5):
-    """Read and display REPL output until no more data arrives."""
+class KeyboardController:
+    """Non-blocking keyboard input for pause/quit during demo playback."""
+
+    def __init__(self):
+        self.active = sys.stdin.isatty() and not os.environ.get("DEMO_FAST")
+        self.paused = False
+        self.quit_requested = False
+        self._old_settings = None
+
+    def __enter__(self):
+        if self.active:
+            self._old_settings = termios.tcgetattr(sys.stdin)
+            tty.setcbreak(sys.stdin.fileno())
+        return self
+
+    def __exit__(self, *args):
+        if self._old_settings is not None:
+            termios.tcsetattr(sys.stdin, termios.TCSADRAIN, self._old_settings)
+
+    def check(self):
+        """Poll for keyboard input. Call frequently during delays."""
+        if not self.active:
+            return
+        while True:
+            ready, _, _ = select.select([sys.stdin], [], [], 0)
+            if not ready:
+                break
+            ch = sys.stdin.read(1)
+            if ch == ' ':
+                self.paused = not self.paused
+                if self.paused:
+                    sys.stdout.write(f"\n{DIM}; [paused — space to resume, q to quit]{RESET}")
+                    sys.stdout.flush()
+                else:
+                    sys.stdout.write(f"\r\033[K")  # clear the paused message
+                    sys.stdout.flush()
+            elif ch in ('q', 'Q'):
+                self.quit_requested = True
+                return
+
+    def wait(self, seconds):
+        """Sleep for the given duration, checking for pause/quit periodically."""
+        if seconds <= 0:
+            return
+        end = time.monotonic() + seconds
+        while time.monotonic() < end:
+            self.check()
+            if self.quit_requested:
+                return
+            while self.paused and not self.quit_requested:
+                self.check()
+                time.sleep(0.05)
+            if self.quit_requested:
+                return
+            remaining = end - time.monotonic()
+            time.sleep(min(0.05, max(0, remaining)))
+
+
+def drain_output(master_fd, timeout=0.5, wait_for_prompt=False):
+    """Read and display REPL output until no more data arrives.
+
+    If wait_for_prompt is True, keeps reading until the output ends with
+    the REPL prompt pattern (text ending with '> '). This prevents the
+    prompt from being lost when REPL response arrives in multiple chunks.
+    """
     output = []
+    deadline = time.monotonic() + timeout
     while True:
-        ready, _, _ = select.select([master_fd], [], [], timeout)
+        remaining = deadline - time.monotonic()
+        if remaining <= 0 and not wait_for_prompt:
+            break
+        wait_time = min(remaining, 0.1) if remaining > 0 else 0.1
+        ready, _, _ = select.select([master_fd], [], [], wait_time)
         if not ready:
+            if wait_for_prompt and time.monotonic() < deadline + 5.0:
+                # Check if we already have the prompt.
+                joined = "".join(output)
+                if joined.rstrip().endswith(">") or "> " in joined[joined.rfind("\n") + 1:] if "\n" in joined else "> " in joined:
+                    break
+                # Extend deadline slightly to wait for prompt.
+                continue
             break
         try:
             data = os.read(master_fd, 4096)
@@ -59,16 +140,29 @@ def drain_output(master_fd, timeout=0.5):
         output.append(text)
         sys.stdout.write(text)
         sys.stdout.flush()
-        # After first chunk, use shorter timeout for remaining data.
-        timeout = 0.1
+        # Reset deadline after receiving data — more may follow.
+        deadline = time.monotonic() + 0.2
+        if wait_for_prompt:
+            # Check if prompt has appeared.
+            joined = "".join(output)
+            # The REPL prompt ends with "> " (with timing info before it).
+            last_line = joined[joined.rfind("\n") + 1:] if "\n" in joined else joined
+            if "> " in last_line and not last_line.strip().startswith(";"):
+                break
     return "".join(output)
 
 
-def type_slowly(text, master_fd):
+def type_slowly(text, master_fd, kb):
     """Send text to REPL character by character with delays."""
     for char in text:
+        kb.check()
+        if kb.quit_requested:
+            return
+        while kb.paused and not kb.quit_requested:
+            kb.check()
+            time.sleep(0.05)
         os.write(master_fd, char.encode())
-        time.sleep(TYPING_DELAY)
+        kb.wait(TYPING_DELAY)
     os.write(master_fd, b"\n")
 
 
@@ -129,6 +223,10 @@ def play_demo(demo_path, repl_binary, run_dir=None):
     The demo continues with the remaining lines in the fresh session.
     This lets demos show session restart (e.g., persistence across /quit).
 
+    Interactive controls (when stdin is a TTY):
+        space   pause / unpause playback
+        q       quit playback immediately
+
     Args:
         demo_path: Path to the .demo script file.
         repl_binary: Path to the cranelisp binary.
@@ -151,49 +249,64 @@ def play_demo(demo_path, repl_binary, run_dir=None):
     # Start the first REPL session.
     master_fd, pid = start_repl(repl_binary, run_dir)
 
-    try:
-        # Wait for the initial prompt.
-        drain_output(master_fd, timeout=2.0)
+    with KeyboardController() as kb:
+        try:
+            # Wait for the initial prompt (banner + prompt).
+            drain_output(master_fd, timeout=2.0, wait_for_prompt=True)
 
-        for line in lines:
-            if line.startswith(";"):
-                # Comment line — display as dimmed section header.
-                sys.stdout.write(f"\n{DIM}{line}{RESET}\n")
-                sys.stdout.flush()
-                time.sleep(COMMENT_PAUSE)
+            for line in lines:
+                kb.check()
+                if kb.quit_requested:
+                    break
 
-            elif line.strip() == "":
-                # Blank line — brief pause.
-                time.sleep(COMMENT_PAUSE / 2)
+                if line.strip() in ("/quit", "/q"):
+                    # Trampoline: send /quit, wait for exit, start fresh REPL.
+                    type_slowly(line, master_fd, kb)
+                    if kb.quit_requested:
+                        break
+                    drain_output(master_fd, timeout=1.0)
+                    kb.wait(LINE_PAUSE)
+                    stop_repl(master_fd, pid)
 
-            elif line.strip() in ("/quit", "/q"):
-                # Trampoline: send /quit, wait for exit, start fresh REPL.
-                type_slowly(line, master_fd)
-                drain_output(master_fd, timeout=1.0)
-                time.sleep(LINE_PAUSE)
+                    # Brief pause to show the session ended.
+                    sys.stdout.write(f"\n{DIM}; [restarting session]{RESET}\n")
+                    sys.stdout.flush()
+                    kb.wait(LINE_PAUSE)
+                    if kb.quit_requested:
+                        # Don't start a new REPL if quitting.
+                        master_fd, pid = None, None
+                        break
+
+                    # Start a new REPL in the same run directory.
+                    master_fd, pid = start_repl(repl_binary, run_dir)
+                    drain_output(master_fd, timeout=2.0, wait_for_prompt=True)
+
+                elif line.startswith(";"):
+                    # Comment line — visual structure for the viewer, not REPL input.
+                    # Display as dimmed section header above the waiting prompt.
+                    sys.stdout.write(f"\n{DIM}{line}{RESET}\n")
+                    sys.stdout.flush()
+                    kb.wait(COMMENT_PAUSE)
+
+                elif line.strip() == "":
+                    # Blank line — visual pause for the viewer.
+                    kb.wait(COMMENT_PAUSE / 2)
+
+                else:
+                    # REPL input — type slowly, then show response + prompt.
+                    type_slowly(line, master_fd, kb)
+                    if kb.quit_requested:
+                        break
+                    drain_output(master_fd, timeout=1.0, wait_for_prompt=True)
+                    kb.wait(LINE_PAUSE)
+
+            # Clean exit.
+            sys.stdout.write(f"\n{DIM}; [demo complete]{RESET}\n")
+            sys.stdout.flush()
+
+        finally:
+            if master_fd is not None and pid is not None:
                 stop_repl(master_fd, pid)
-
-                # Brief pause to show the session ended.
-                sys.stdout.write(f"\n{DIM}; [restarting session]{RESET}\n")
-                sys.stdout.flush()
-                time.sleep(LINE_PAUSE)
-
-                # Start a new REPL in the same run directory.
-                master_fd, pid = start_repl(repl_binary, run_dir)
-                drain_output(master_fd, timeout=2.0)
-
-            else:
-                # REPL input — type slowly, then show response.
-                type_slowly(line, master_fd)
-                drain_output(master_fd, timeout=1.0)
-                time.sleep(LINE_PAUSE)
-
-        # Clean exit.
-        sys.stdout.write(f"\n{DIM}; [demo complete]{RESET}\n")
-        sys.stdout.flush()
-
-    finally:
-        stop_repl(master_fd, pid)
 
 
 def main():

@@ -405,28 +405,24 @@ fn parse_io_type(elems: &[Sexp], fn_name: &str) -> Result<Type, CranelispError> 
 
 /// Check if a Sexp is a `(platform name)` form.
 pub fn is_platform_form(sexp: &Sexp) -> bool {
-    if let Sexp::List(elems, _) = sexp {
-        if elems.len() == 2 {
-            if let Sexp::Symbol(head, _) = &elems[0] {
-                return head.as_str() == "platform";
-            }
-        }
+    if let Sexp::List(elems, _) = sexp
+        && elems.len() == 2
+        && let Sexp::Symbol(head, _) = &elems[0]
+    {
+        return head.as_str() == "platform";
     }
     false
 }
 
 /// Extract the platform name from a `(platform name)` form.
 pub fn extract_platform_name(sexp: &Sexp) -> Option<(String, Span)> {
-    if let Sexp::List(elems, span) = sexp {
-        if elems.len() == 2 {
-            if let Sexp::Symbol(head, _) = &elems[0] {
-                if head.as_str() == "platform" {
-                    if let Sexp::Symbol(name, _) = &elems[1] {
-                        return Some((name.to_string(), *span));
-                    }
-                }
-            }
-        }
+    if let Sexp::List(elems, span) = sexp
+        && elems.len() == 2
+        && let Sexp::Symbol(head, _) = &elems[0]
+        && head.as_str() == "platform"
+        && let Sexp::Symbol(name, _) = &elems[1]
+    {
+        return Some((name.to_string(), *span));
     }
     None
 }
@@ -435,6 +431,7 @@ pub fn extract_platform_name(sexp: &Sexp) -> Option<(String, Span)> {
 /// register in typechecker.
 ///
 /// Returns the loaded platform (must be kept alive) and JIT symbols to register.
+#[allow(clippy::type_complexity)] // Return type encapsulates platform + JIT symbols
 pub fn load_and_register_platform(
     tc: &mut cranelisp_typecheck::TypeChecker,
     platform_name: &str,

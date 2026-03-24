@@ -4,11 +4,12 @@
 // compile_var
 
 use cranelift::prelude::*;
-use cranelift_module::Module;
+use cranelift_module::{Linkage, Module};
 
 use cranelisp_types::{CranelispError, Span, Symbol};
 
 use super::{FnCompiler, bare_ctor_name};
+use crate::heap::{self, HeapClosure};
 
 impl<'a, M: Module> FnCompiler<'a, M> {
     // --- Literal codegen ---
@@ -120,6 +121,12 @@ impl<'a, M: Module> FnCompiler<'a, M> {
             return self.compile_fn_as_value(name, span);
         }
 
+        // Operator symbol as value: wrap the operator extern function in a closure.
+        // This implements spec §7.6 — trait methods (operators) as first-class values.
+        if let Some(op_extern_name) = Self::operator_extern_name(name) {
+            return self.compile_operator_as_value(op_extern_name, span);
+        }
+
         Err(CranelispError::CodegenError {
             message: format!("undefined variable: {name}"),
             span,
@@ -159,5 +166,150 @@ impl<'a, M: Module> FnCompiler<'a, M> {
         } else {
             Some((ctor.tag, ctor.fields.len()))
         }
+    }
+
+    // --- Operator-as-value support (spec §7.6) ---
+
+    /// Map an operator symbol to its extern "C" wrapper function name.
+    /// Returns None if the symbol is not a known operator.
+    fn operator_extern_name(name: &Symbol) -> Option<&'static str> {
+        match name.as_ref() {
+            "+" => Some("cranelisp_op_add"),
+            "-" => Some("cranelisp_op_sub"),
+            "*" => Some("cranelisp_op_mul"),
+            "/" => Some("cranelisp_op_div"),
+            "=" => Some("cranelisp_op_eq"),
+            "!=" => Some("cranelisp_op_neq"),
+            "<" => Some("cranelisp_op_lt"),
+            ">" => Some("cranelisp_op_gt"),
+            "<=" => Some("cranelisp_op_le"),
+            ">=" => Some("cranelisp_op_ge"),
+            _ => None,
+        }
+    }
+
+    /// Wrap an operator extern "C" function as a zero-capture closure.
+    ///
+    /// Declares the extern function in the JIT module, creates a wrapper
+    /// function with signature `(env_ptr, a, b) -> i64` that ignores env_ptr
+    /// and forwards to the operator, then allocates a HeapClosure pointing
+    /// to the wrapper.
+    fn compile_operator_as_value(
+        &mut self,
+        op_extern_name: &str,
+        span: Span,
+    ) -> Result<Value, CranelispError> {
+        let alloc_id =
+            self.ctx
+                .alloc_func_id
+                .ok_or_else(|| CranelispError::CodegenError {
+                    message: "runtime/alloc not declared (need declare_intrinsics)".into(),
+                    span,
+                })?;
+
+        // Declare the operator extern function: (i64, i64) -> i64
+        let mut op_sig = self.module.make_signature();
+        op_sig.params.push(AbiParam::new(types::I64));
+        op_sig.params.push(AbiParam::new(types::I64));
+        op_sig.returns.push(AbiParam::new(types::I64));
+
+        let op_func_id = self
+            .module
+            .declare_function(op_extern_name, Linkage::Import, &op_sig)
+            .map_err(|e| CranelispError::CodegenError {
+                message: format!("failed to declare operator '{op_extern_name}': {e}"),
+                span,
+            })?;
+
+        // Create a wrapper function: (env_ptr, a, b) -> i64
+        // The wrapper ignores env_ptr and calls the operator function.
+        let wrapper_name = format!("__wrap_op_{op_extern_name}_{}_{}__", span.start, span.end);
+        let mut wrapper_sig = self.module.make_signature();
+        wrapper_sig.params.push(AbiParam::new(types::I64)); // env_ptr (ignored)
+        wrapper_sig.params.push(AbiParam::new(types::I64)); // a
+        wrapper_sig.params.push(AbiParam::new(types::I64)); // b
+        wrapper_sig.returns.push(AbiParam::new(types::I64));
+
+        let wrapper_func_id = self
+            .module
+            .declare_function(&wrapper_name, Linkage::Local, &wrapper_sig)
+            .map_err(|e| CranelispError::CodegenError {
+                message: format!("failed to declare operator wrapper: {e}"),
+                span,
+            })?;
+
+        // Compile wrapper body: ignore env_ptr, forward (a, b) to operator.
+        {
+            let mut inner_ctx = self.module.make_context();
+            let mut inner_func_ctx = FunctionBuilderContext::new();
+
+            // Signature: (env_ptr, a, b) -> i64
+            for _ in 0..3 {
+                inner_ctx.func.signature.params.push(AbiParam::new(types::I64));
+            }
+            inner_ctx.func.signature.returns.push(AbiParam::new(types::I64));
+
+            let mut builder =
+                FunctionBuilder::new(&mut inner_ctx.func, &mut inner_func_ctx);
+
+            let entry_block = builder.create_block();
+            builder.append_block_params_for_function_params(entry_block);
+            builder.switch_to_block(entry_block);
+            builder.seal_block(entry_block);
+
+            let block_params = builder.block_params(entry_block).to_vec();
+            // block_params[0] = env_ptr (ignored), [1] = a, [2] = b
+            let a = block_params[1];
+            let b = block_params[2];
+
+            let op_ref = self
+                .module
+                .declare_func_in_func(op_func_id, builder.func);
+            let call = builder.ins().call(op_ref, &[a, b]);
+            let result = builder.inst_results(call)[0];
+
+            builder.ins().return_(&[result]);
+            builder.seal_all_blocks();
+            builder.finalize();
+
+            self.module
+                .define_function(wrapper_func_id, &mut inner_ctx)
+                .map_err(|e| CranelispError::CodegenError {
+                    message: format!("failed to define operator wrapper: {e}"),
+                    span,
+                })?;
+        }
+
+        // Allocate a closure with zero captures: [header | code_ptr | drop_glue_ptr(0)].
+        let payload_size = HeapClosure::payload_size(0) as i64;
+        let base_ptr = heap::emit_alloc(
+            &mut self.builder,
+            self.module,
+            alloc_id,
+            payload_size,
+        );
+
+        // Store the wrapper function pointer.
+        let wrapper_ref = self
+            .module
+            .declare_func_in_func(wrapper_func_id, self.builder.func);
+        let code_ptr = self.builder.ins().func_addr(types::I64, wrapper_ref);
+        heap::heap_store(
+            &mut self.builder,
+            code_ptr,
+            base_ptr,
+            HeapClosure::CODE_PTR_OFFSET,
+        );
+
+        // Store zero drop glue pointer (no captures).
+        let zero = self.builder.ins().iconst(types::I64, 0);
+        heap::heap_store(
+            &mut self.builder,
+            zero,
+            base_ptr,
+            HeapClosure::DROP_GLUE_PTR_OFFSET,
+        );
+
+        Ok(base_ptr)
     }
 }

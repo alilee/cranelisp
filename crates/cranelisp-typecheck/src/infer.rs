@@ -46,16 +46,16 @@ impl TypeChecker {
             } => {
                 // `trace` is not a parser keyword — it arrives as Apply.
                 // Intercept when callee is the `trace` special form from primitives.
-                if let Expr::Var { name, .. } = callee.as_ref() {
-                    if &**name == "trace" && self.is_trace_in_scope() {
-                        if args.len() != 1 {
-                            return Err(CranelispError::TypeError {
-                                message: "trace requires exactly one expression".into(),
-                                span: *span,
-                            });
-                        }
-                        return self.infer_trace(&args[0], *span);
+                if let Expr::Var { name, .. } = callee.as_ref()
+                    && &**name == "trace" && self.is_trace_in_scope()
+                {
+                    if args.len() != 1 {
+                        return Err(CranelispError::TypeError {
+                            message: "trace requires exactly one expression".into(),
+                            span: *span,
+                        });
                     }
+                    return self.infer_trace(&args[0], *span);
                 }
                 self.infer_apply(callee, args, *span)
             }
@@ -77,6 +77,13 @@ impl TypeChecker {
             Expr::RunTests { init, pass_fn, fail_fn, span, .. } => {
                 self.infer_run_tests(init, pass_fn, fail_fn, *span)
             }
+            // ParBind is semantically identical to Let for type-checking;
+            // parallel execution is a codegen concern.
+            Expr::ParBind {
+                bindings,
+                body,
+                span,
+            } => self.infer_let(bindings, body, *span),
         }
     }
 
@@ -132,23 +139,21 @@ impl TypeChecker {
         // Constrained polymorphic functions cannot be used as bare values
         // (spec §3.6.6). They must be called with arguments so concrete
         // types can be determined for monomorphisation.
-        if !self.in_call_position {
-            if let Some(entry) = self.resolve_entry_in_current_module(name) {
-                if let ModuleEntry::Def { kind, .. } = entry
-                    && matches!(
-                        kind.as_ref(),
-                        cranelisp_types::DefKind::UserFn { constrained_fn: Some(_) }
-                    )
-                {
-                    return Err(CranelispError::TypeError {
-                        message: format!(
-                            "constrained function '{name}' cannot be used as a value \
-                             — it must be called with arguments"
-                        ),
-                        span,
-                    });
-                }
-            }
+        if !self.in_call_position
+            && let Some(entry) = self.resolve_entry_in_current_module(name)
+            && let ModuleEntry::Def { kind, .. } = entry
+            && matches!(
+                kind.as_ref(),
+                cranelisp_types::DefKind::UserFn { constrained_fn: Some(_) }
+            )
+        {
+            return Err(CranelispError::TypeError {
+                message: format!(
+                    "constrained function '{name}' cannot be used as a value \
+                     — it must be called with arguments"
+                ),
+                span,
+            });
         }
 
         let ty = self.instantiate(&scheme);
@@ -419,18 +424,18 @@ impl TypeChecker {
             let name_part = &name[slash_pos + 1..];
             if !module_part.is_empty() && !name_part.is_empty() {
                 let module_path = ModuleFullPath::from(module_part);
-                if let Some(table) = self.modules.get(&module_path) {
-                    if let Some(entry) = table.get(name_part) {
-                        let terminal = self.resolve_to_terminal_entry(entry, 0)?;
-                        if let ModuleEntry::Def { kind, .. } = terminal {
-                            // Return the JIT symbol name if specified (platform effects),
-                            // otherwise return the bare name.
-                            if let DefKind::Primitive { jit_name: Some(jit), .. } = kind.as_ref() {
-                                return Some(Symbol::from(jit.as_ref()));
-                            }
-                            if matches!(kind.as_ref(), DefKind::Primitive { .. }) {
-                                return Some(Symbol::from(name_part));
-                            }
+                if let Some(table) = self.modules.get(&module_path)
+                    && let Some(entry) = table.get(name_part)
+                {
+                    let terminal = self.resolve_to_terminal_entry(entry, 0)?;
+                    if let ModuleEntry::Def { kind, .. } = terminal {
+                        // Return the JIT symbol name if specified (platform effects),
+                        // otherwise return the bare name.
+                        if let DefKind::Primitive { jit_name: Some(jit), .. } = kind.as_ref() {
+                            return Some(Symbol::from(jit.as_ref()));
+                        }
+                        if matches!(kind.as_ref(), DefKind::Primitive { .. }) {
+                            return Some(Symbol::from(name_part));
                         }
                     }
                 }
@@ -517,6 +522,12 @@ impl TypeChecker {
                 }
             }
             Expr::Trace { body, .. } => {
+                self.resolve_deferred_trait_calls(body);
+            }
+            Expr::ParBind { bindings, body, .. } => {
+                for (_, binding_expr) in bindings {
+                    self.resolve_deferred_trait_calls(binding_expr);
+                }
                 self.resolve_deferred_trait_calls(body);
             }
             _ => {}

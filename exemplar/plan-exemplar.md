@@ -2,6 +2,130 @@
 
 Selected exemplar project for the Cranelisp reimplementation. This document is owned by the `/port` skill, updated from the Sprint 0 candidate evaluation.
 
+## Wave 4 Parallelism Opportunities Assessment
+
+Assessment by `/port` — 2026-03-24. Evaluates the Sudoku solver exemplar for
+parallelism opportunities: lenient evaluation, commutative IO, and operators
+as values.
+
+### 1. Lenient Evaluation (Independent Let Bindings)
+
+**Finding: minimal benefit for hot paths; some benefit in formatting/IO code.**
+
+The solver's hot path is `propagate` -> `eliminate` -> `eliminate-from-peers`.
+These functions are fundamentally sequential — each step depends on the grid
+state produced by the previous step. Specifically:
+
+- `eliminate` (solver.cl:35): The `let` binding `[cell (cell-at g idx)]` is a
+  single binding — nothing to parallelize. The nested `let [new-mask ...]` depends
+  on `cell`, so it is also sequential.
+- `eliminate-from-peers-helper` (solver.cl:57): Iterates peers one at a time;
+  each iteration's grid `g2` feeds the next. Inherently sequential.
+- `propagate-pass-helper` (solver.cl:72): Same pattern — cell-by-cell iteration
+  where each step may modify the grid.
+- `find-min-helper` (solver.cl:127): Scans all 81 cells maintaining `best-idx`
+  and `best-count` — sequential fold with carried state.
+
+The formatting code has marginally better candidates:
+
+- `build-output` (solver.cl:265): `[header ..., input-board ..., solution-str ...]`
+  — `header` is a constant, `input-board` depends only on `puzzle-str`, and
+  `solution-str` depends only on `puzzle-str`. So `input-board` and `solution-str`
+  are independent and could be evaluated in parallel. However, `solution-str`
+  dominates the cost (it runs the solver), while `input-board` is trivial string
+  formatting. A cost heuristic would correctly identify only `solution-str` as
+  expensive enough to warrant parallelization, but since nothing else is similarly
+  expensive, there is no beneficial parallel pair.
+- `parse-field-index` (form.cl:58): `[row ..., col ...]` — `row` and `col` are
+  independent (`char-at` on different indices). But they are trivially cheap
+  (single character lookup each). A cost heuristic should correctly skip these.
+
+**Verdict**: Lenient evaluation would not measurably improve solver performance.
+The algorithm's data-flow is inherently sequential — each constraint propagation
+step depends on the previous grid state. The formatting/IO code has independent
+bindings but they are either too cheap to parallelize or asymmetrically costly.
+This is a useful *negative* finding for the exemplar: it demonstrates that
+lenient evaluation is not a universal win, and that the cost heuristic matters.
+
+### 2. Commutative IO Scheduling
+
+**Finding: no current opportunities; Model B callback provides concurrency instead.**
+
+The exemplar's IO usage in `main` (solver.cl:287) is a linear `bind` chain:
+print puzzle, then solve, then print solution. These `print` calls are
+`Sequential` (they must appear in order on stdout). There are no data-independent
+IO pairs.
+
+Looking ahead to the web platform (main.cl, not yet implemented):
+
+- **Model A** (explicit loop): `accept` -> `handle` -> `send` is inherently
+  sequential per request. No commutative pairs.
+- **Model B** (callback): Concurrency comes from the platform's thread pool
+  calling the pure handler in parallel. This is not IO scheduling — it is the
+  platform managing threads. The compiler does not need to detect parallelism
+  because the handler is pure and the platform does the dispatch.
+
+The one hypothetical commutative opportunity would be if the exemplar made
+multiple independent platform calls per request (e.g., fetching data from two
+sources). The Sudoku solver does not — it is a self-contained computation with
+no external dependencies per request.
+
+**Verdict**: No commutative IO opportunities exist in the exemplar. This is
+expected for a compute-bound application. The exemplar demonstrates concurrency
+through platform-level parallelism (Model B) rather than through automatic IO
+scheduling. This is a valid architectural pattern: not every application needs
+the compiler to find parallelism in IO.
+
+### 3. Operators as Values
+
+**Finding: not currently used; limited natural opportunities.**
+
+The exemplar exclusively uses monomorphic named primitives (`add-i64`, `eq-i64`,
+`mul-i64`, etc.) rather than trait-dispatched operators (`+`, `=`, `*`). This
+is a deliberate design choice documented in `exemplar/CLAUDE.md` — avoiding
+trait dispatch overhead in tight loops.
+
+Places where operators-as-values could apply:
+
+- `bit-count-helper` (grid.cl:85): Counts set bits by iterating digits 1-9 and
+  incrementing `acc` with `add-i64`. This is essentially `fold` with `+`, but
+  the function already works and using operator values would add trait dispatch
+  overhead without improving clarity.
+- `count-determined-helper` (solver.cl:310, test module): Counts cells matching
+  a predicate. Could use `filter` + `count` with operators if collection
+  operations existed over the grid, but the grid is a Vec accessed by index.
+- The test `main` functions sum test results via nested `add-i64` — this is
+  boilerplate that `reduce` with `+` would clean up, but these are test-only
+  functions, not production code.
+
+The deeper issue is that the exemplar operates on `Vec Int` via index arithmetic,
+not on sequences via higher-order traversals. Operators-as-values shine when
+passed to `map`, `filter`, `reduce` — functions that abstract iteration. The
+exemplar's tail-recursive-with-accumulator style does not create demand for
+operator values.
+
+**Verdict**: Operators as values would not improve the exemplar in its current
+form. The exemplar intentionally uses monomorphic primitives for performance.
+If the grid were refactored to use collection-level operations (map over cells,
+fold over peers), operator values would become relevant, but that refactoring
+is not motivated by the current architecture.
+
+### Summary
+
+| Feature | Applicable? | Impact | Notes |
+|---|---|---|---|
+| Lenient evaluation | Marginal | None measurable | Algorithm is inherently sequential |
+| Commutative IO | No | None | Compute-bound; concurrency via Model B |
+| Operators as values | No | None | Uses monomorphic primitives by design |
+
+The exemplar is a useful *counterexample* for Wave 4 parallelism features: it
+shows a realistic application where these features provide no benefit. Not every
+program has exploitable parallelism, and the Sudoku solver's value lies in
+demonstrating algorithmic expressiveness (ADTs, pattern matching, recursion)
+rather than parallel execution. The exemplar validates that the cost heuristic
+for lenient evaluation must be conservative — blindly parallelizing all
+independent let bindings would add overhead for no gain here.
+
 ## Sprint 24 HKT/Lazy Evaluation: Exemplar Impact Assessment
 
 Assessment by `/port` — 2026-03-23. Evaluates whether Sprint 24's HKT (Functor/Monad)
@@ -888,11 +1012,11 @@ Module-level macro dependency matrix, refined from the Sprint 9 readiness assess
 
 **Exemplar fails in reimplementation with**: `error: parse error at 1328..1349: unknown top-level form: const`
 
-**Root cause**: `run_file()` in `src/main.rs` sets `project_root` to `file_path.parent()`. When the entry file is `exemplar/solver.cl`, project_root becomes `exemplar/`, so `assemble_lib_dirs` looks for `exemplar/stdlib/` (doesn't exist) and `resolve_prelude` looks for `exemplar/prelude.cl` (doesn't exist). The prelude is never loaded, and `(const full-mask 511)` in `grid.cl` — a prelude macro — fails as an unrecognized form. The REPL uses `cwd` as project_root, which works correctly.
+**Root cause**: `run_file()` in `src/main.rs` previously set `project_root` to `file_path.parent()`. When the entry file is `exemplar/solver.cl`, project_root became `exemplar/`, so `assemble_lib_dirs` looked for `exemplar/stdlib/` (doesn't exist) and `resolve_prelude` looked for `exemplar/prelude.cl` (doesn't exist). The prelude was never loaded, and `(const full-mask 511)` in `grid.cl` — a prelude macro — failed as an unrecognized form.
 
-**FIXME filed**: `FIXME(/int)` on `src/main.rs` line 58 — batch mode project_root derivation must use cwd (or equivalent) rather than entry file's parent, so prelude/stdlib resolution works for files in subdirectories.
+**FIXME resolved (Sprint 25)**: `run_file()` in `src/main.rs` now uses `std::env::current_dir()` for `project_root`, matching the REPL's behavior. This ensures prelude/stdlib resolution works correctly for files in subdirectories.
 
-**Pure core status in sketch**: grid.cl, solver.cl, html.cl, form.cl all work in the prototype compiler. The reimplementation has the pipeline machinery (module graph, prelude loading, macro expansion) but the project_root bug prevents any stdlib-dependent file in a subdirectory from loading the prelude.
+**Pure core status in sketch**: grid.cl, solver.cl, html.cl, form.cl all work in the prototype compiler. The reimplementation has the pipeline machinery (module graph, prelude loading, macro expansion) and the project_root derivation is now correct.
 
 ---
 

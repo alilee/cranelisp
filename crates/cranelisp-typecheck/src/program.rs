@@ -666,6 +666,12 @@ impl TypeChecker {
                 Self::collect_constrained_calls(pass_fn, constrained_fn_names, out);
                 Self::collect_constrained_calls(fail_fn, constrained_fn_names, out);
             }
+            Expr::ParBind { bindings, body, .. } => {
+                for (_, binding_expr) in bindings {
+                    Self::collect_constrained_calls(binding_expr, constrained_fn_names, out);
+                }
+                Self::collect_constrained_calls(body, constrained_fn_names, out);
+            }
             // Leaf nodes: no children to recurse into
             Expr::IntLit { .. }
             | Expr::FloatLit { .. }

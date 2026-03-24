@@ -44,6 +44,70 @@ pub extern "C" fn parse_int(s: i64) -> i64 {
     }
 }
 
+// ── Operator wrapper functions ────────────────────────────────────────
+// Used when operators are passed as first-class values (e.g., `(let [f +] (f 1 2))`).
+// These are extern "C" functions that the JIT can wrap in closures.
+// Follows the sketch's approach in sketch/cranelisp-runtime/src/primitives/int.rs.
+
+#[unsafe(no_mangle)]
+pub extern "C" fn cranelisp_op_add(a: i64, b: i64) -> i64 {
+    a.wrapping_add(b)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn cranelisp_op_sub(a: i64, b: i64) -> i64 {
+    a.wrapping_sub(b)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn cranelisp_op_mul(a: i64, b: i64) -> i64 {
+    a.wrapping_mul(b)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn cranelisp_op_div(a: i64, b: i64) -> i64 {
+    if b == 0 {
+        eprintln!("panic: integer division by zero");
+        std::process::exit(1);
+    }
+    // Guard against Int.MIN / -1 overflow.
+    if a == i64::MIN && b == -1 {
+        eprintln!("panic: integer overflow in /");
+        std::process::exit(1);
+    }
+    a / b
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn cranelisp_op_eq(a: i64, b: i64) -> i64 {
+    if a == b { 1 } else { 0 }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn cranelisp_op_neq(a: i64, b: i64) -> i64 {
+    if a != b { 1 } else { 0 }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn cranelisp_op_lt(a: i64, b: i64) -> i64 {
+    if a < b { 1 } else { 0 }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn cranelisp_op_gt(a: i64, b: i64) -> i64 {
+    if a > b { 1 } else { 0 }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn cranelisp_op_le(a: i64, b: i64) -> i64 {
+    if a <= b { 1 } else { 0 }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn cranelisp_op_ge(a: i64, b: i64) -> i64 {
+    if a >= b { 1 } else { 0 }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

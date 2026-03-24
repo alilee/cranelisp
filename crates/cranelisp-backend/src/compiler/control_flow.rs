@@ -21,6 +21,33 @@ impl<'a, M: Module> FnCompiler<'a, M> {
         &mut self,
         bindings: &[(Symbol, Expr)],
         body: &Expr,
+        span: Span,
+    ) -> Result<Value, CranelispError> {
+        // Check if lenient evaluation applies.
+        // Skip sparkability analysis inside trace bodies — trace must
+        // execute sequentially to produce deterministic trace trees.
+        if !*LENIENT_DISABLED && !self.in_trace_body {
+            // Collect known constructor names to exclude from sparking.
+            let constructors: HashSet<Symbol> = self
+                .ctx
+                .constructor_to_type
+                .keys()
+                .cloned()
+                .collect();
+            let sparkable = find_sparkable_bindings(bindings, &constructors);
+            if sparkable.len() >= 2 {
+                return self.compile_let_lenient(bindings, body, &sparkable, span);
+            }
+        }
+
+        self.compile_let_sequential(bindings, body, span)
+    }
+
+    /// Compile a let expression sequentially (no lenient evaluation).
+    fn compile_let_sequential(
+        &mut self,
+        bindings: &[(Symbol, Expr)],
+        body: &Expr,
         _span: Span,
     ) -> Result<Value, CranelispError> {
         // Push a new scope frame.
@@ -71,6 +98,201 @@ impl<'a, M: Module> FnCompiler<'a, M> {
         self.pop_scope_with_cleanup(skip_var.as_ref());
 
         Ok(result)
+    }
+
+    /// Compile a let expression with lenient evaluation (parallel sparkable bindings).
+    ///
+    /// See design/backend/lenient-eval.md §4.2 for the algorithm.
+    fn compile_let_lenient(
+        &mut self,
+        bindings: &[(Symbol, Expr)],
+        body: &Expr,
+        sparkable: &[usize],
+        span: Span,
+    ) -> Result<Value, CranelispError> {
+        let sparkable_set: HashSet<usize> = sparkable.iter().copied().collect();
+
+        self.push_scope();
+        let saved_tail = self.in_tail_position;
+        self.in_tail_position = false;
+
+        // Phase 1: Create and spark IVars for sparkable bindings.
+        let mut ivar_map: std::collections::HashMap<usize, Value> = std::collections::HashMap::new();
+
+        for &idx in sparkable {
+            let (_name, val_expr) = &bindings[idx];
+
+            // Wrap the value expression in a zero-arg lambda (thunk).
+            let thunk_expr = Expr::Lambda {
+                params: vec![],
+                param_annotations: vec![],
+                body: Box::new(val_expr.clone()),
+                span: val_expr.span(),
+            };
+            let thunk_val = self.compile_expr(&thunk_expr)?;
+
+            // Call cranelisp_ivar_create(thunk_ptr) -> ivar_ptr
+            let ivar_val = self.emit_extern_call_1(
+                "cranelisp_ivar_create", thunk_val, span,
+            )?;
+
+            // Call cranelisp_ivar_spark(ivar_ptr)
+            let _spark_result = self.emit_extern_call_1(
+                "cranelisp_ivar_spark", ivar_val, span,
+            )?;
+
+            ivar_map.insert(idx, ivar_val);
+        }
+
+        // Phase 2: Process all bindings in order.
+        for (i, (name, val_expr)) in bindings.iter().enumerate() {
+            if let Some(ty) = self.ctx.expr_types.get(&val_expr.span()) {
+                self.variable_types.insert(name.clone(), ty.clone());
+            }
+
+            let val = if sparkable_set.contains(&i) {
+                // Force the IVar and dec our reference.
+                let ivar_val = ivar_map[&i];
+                let forced_val = self.emit_extern_call_1(
+                    "cranelisp_ivar_force", ivar_val, span,
+                )?;
+
+                // Dec the IVar (main thread's reference).
+                // The IVar has atomic RC; the spark task also dec's.
+                self.emit_rc_dec_for_ivar(ivar_val, span)?;
+
+                forced_val
+            } else {
+                // Non-sparkable: compile normally.
+                self.compile_expr(val_expr)?
+            };
+
+            if let Some(glue_id) = self.pending_closure_drop_glue.take() {
+                self.closure_drop_glue.insert(name.clone(), glue_id);
+            }
+
+            let var = self.fresh_variable();
+            self.builder.declare_var(var, types::I64);
+            self.builder.def_var(var, val);
+            self.variables.insert(name.clone(), var);
+            self.scope_stack
+                .last_mut()
+                .unwrap_or_else(|| unreachable!("invariant: scope_stack non-empty"))
+                .push(name.clone());
+        }
+
+        // Phase 3: Compile body.
+        self.in_tail_position = saved_tail;
+        let skip_var = Self::return_var_in_scope(body, self.scope_stack.last());
+        let result = self.compile_expr(body)?;
+        self.protect_return_value(&skip_var, result, body);
+        self.pop_scope_with_cleanup(skip_var.as_ref());
+
+        Ok(result)
+    }
+
+    /// Emit a call to an extern "C" function with one i64 argument, returning i64.
+    fn emit_extern_call_1(
+        &mut self,
+        name: &str,
+        arg: Value,
+        span: Span,
+    ) -> Result<Value, CranelispError> {
+        let mut sig = self.module.make_signature();
+        sig.params.push(AbiParam::new(types::I64));
+        sig.returns.push(AbiParam::new(types::I64));
+
+        let func_id = self
+            .module
+            .declare_function(name, Linkage::Import, &sig)
+            .map_err(|e| CranelispError::CodegenError {
+                message: format!("failed to declare extern function '{name}': {e}"),
+                span,
+            })?;
+
+        let local_func = self
+            .module
+            .declare_func_in_func(func_id, self.builder.func);
+        let call = self.builder.ins().call(local_func, &[arg]);
+        Ok(self.builder.inst_results(call)[0])
+    }
+
+    /// Emit an inline RC dec for an IVar pointer.
+    ///
+    /// IVars use atomic RC at offset +8. When dec brings RC to 0,
+    /// call heap_dealloc to free. This is a simplified version of
+    /// the general emit_rc_dec that doesn't need drop glue (IVars
+    /// have no recursive heap fields to clean up).
+    fn emit_rc_dec_for_ivar(&mut self, ivar_val: Value, span: Span) -> Result<(), CranelispError> {
+        // Load current RC from ivar + 8
+        let rc_offset = self.builder.ins().iconst(types::I64, 8);
+        let rc_addr = self.builder.ins().iadd(ivar_val, rc_offset);
+
+        // atomic_rmw sub 1 -> old_rc
+        let one = self.builder.ins().iconst(types::I64, 1);
+        let old_rc = self.builder.ins().atomic_rmw(
+            types::I64,
+            MemFlags::new(),
+            cranelift::codegen::ir::AtomicRmwOp::Sub,
+            rc_addr,
+            one,
+        );
+
+        // If old_rc == 1, free the IVar.
+        let free_block = self.builder.create_block();
+        let cont_block = self.builder.create_block();
+
+        let one_val = self.builder.ins().iconst(types::I64, 1);
+        let is_last = self.builder.ins().icmp(IntCC::Equal, old_rc, one_val);
+        self.builder
+            .ins()
+            .brif(is_last, free_block, &[], cont_block, &[]);
+
+        // Free block: call heap_dealloc(ivar_ptr).
+        self.builder.switch_to_block(free_block);
+        self.builder.seal_block(free_block);
+
+        // Acquire fence before reading object fields (not needed here since
+        // we don't read fields, but consistent with Decision 13).
+        self.builder.ins().fence();
+
+        let _dealloc_result = self
+            .emit_extern_call_1("runtime/dealloc", ivar_val, span)?;
+        self.builder.ins().jump(cont_block, &[]);
+
+        // Continue.
+        self.builder.switch_to_block(cont_block);
+        self.builder.seal_block(cont_block);
+
+        Ok(())
+    }
+
+    /// Compile an `Expr::ParBind` — sequential fallback until continuation
+    /// closure infrastructure is ready.
+    ///
+    /// ParBind bindings are semantically independent (no binding references
+    /// another), but true parallel IO dispatch requires a continuation closure
+    /// that receives results from the trampoline. Until that infrastructure
+    /// exists, we compile ParBind identically to a sequential let.
+    ///
+    /// The previous implementation (Sprint 25 Wave 3) emitted a Par node
+    /// (heap allocation with tag/count/branches) but had no continuation to
+    /// consume it, causing a leak. Removed per review finding B1+I1.
+    ///
+    /// TODO(Sprint 26): Compile a proper continuation closure that receives
+    /// results_ptr from the trampoline, enabling full IO-level parallelism
+    /// end-to-end. At that point, re-introduce Par node emission here.
+    ///
+    /// See design/backend/io-scheduling.md §4 for the target algorithm.
+    pub(crate) fn compile_par_bind(
+        &mut self,
+        bindings: &[(Symbol, Expr)],
+        body: &Expr,
+        span: Span,
+    ) -> Result<Value, CranelispError> {
+        // Delegate to sequential compilation. ParBind bindings are independent
+        // so sequential order is safe (just not yet parallel).
+        self.compile_let_sequential(bindings, body, span)
     }
 
     // --- If expression ---
@@ -761,6 +983,7 @@ impl<'a, M: Module> FnCompiler<'a, M> {
     /// with the remaining arguments, forwards all to the target function.
     ///
     /// Layout: `[rc_header | code_ptr | drop_glue_ptr | cap_0 ... cap_n]`
+    #[allow(clippy::too_many_arguments)] // Curry context requires all parameters
     pub(crate) fn compile_auto_curry(
         &mut self,
         target_name: &Symbol,
@@ -923,14 +1146,14 @@ impl<'a, M: Module> FnCompiler<'a, M> {
         // The wrapper must inc before passing to the consuming callee,
         // so the closure env's reference stays intact across calls.
         let mut all_args = Vec::with_capacity(applied_count + remaining_count);
-        for i in 0..applied_count {
+        for (i, category) in arg_categories.iter().enumerate().take(applied_count) {
             let cap_val = heap::heap_load(
                 &mut builder,
                 env_ptr,
                 HeapClosure::capture_offset(i),
             );
             // Inc heap-typed captures before passing to consuming callee.
-            match arg_categories[i] {
+            match category {
                 HeapCategory::AlwaysHeap => {
                     heap::emit_rc_inc(&mut builder, cap_val);
                 }
@@ -1156,6 +1379,15 @@ fn collect_free_vars(
             collect_free_vars(pass_fn, bound, free, seen);
             collect_free_vars(fail_fn, bound, free, seen);
         }
+        Expr::ParBind { bindings, body, .. } => {
+            // Same as Let: each binding may reference earlier ones
+            let mut extended = bound.clone();
+            for (name, val_expr) in bindings {
+                collect_free_vars(val_expr, &extended, free, seen);
+                extended.insert(name.clone());
+            }
+            collect_free_vars(body, &extended, free, seen);
+        }
         Expr::StringLit { .. }
         | Expr::IntLit { .. }
         | Expr::FloatLit { .. }
@@ -1224,4 +1456,81 @@ fn emit_extern_call_in_wrapper(
     let local_func = module.declare_func_in_func(func_id, builder.func);
     let call = builder.ins().call(local_func, arg_vals);
     Ok(builder.inst_results(call)[0])
+}
+
+// --- Sparkability analysis for lenient evaluation ---
+//
+// See design/backend/lenient-eval.md §2 for the algorithm.
+
+/// Whether lenient evaluation is disabled via CRANELISP_NO_LENIENT=1.
+static LENIENT_DISABLED: std::sync::LazyLock<bool> =
+    std::sync::LazyLock::new(|| {
+        std::env::var("CRANELISP_NO_LENIENT").is_ok_and(|v| v == "1")
+    });
+
+/// Known-cheap builtins that are not worth sparking.
+/// Single-instruction or near-single-instruction at the hardware level.
+const CHEAP_BUILTINS: &[&str] = &[
+    "+", "-", "*", "/", "=", "<", ">", "<=", ">=", "not", "and", "or",
+];
+
+/// Find indices of sparkable bindings in a `let` block.
+///
+/// A binding is sparkable if:
+/// 1. Its free variables do not reference any earlier binding in the same block.
+/// 2. It is a non-trivial function call (not a cheap builtin, literal,
+///    constructor, or var ref).
+///
+/// `constructors` is the set of known ADT constructor names.
+///
+/// Returns an empty vec if fewer than 2 sparkable bindings are found.
+pub(crate) fn find_sparkable_bindings(
+    bindings: &[(Symbol, Expr)],
+    constructors: &HashSet<Symbol>,
+) -> Vec<usize> {
+    let mut bound_names: HashSet<Symbol> = HashSet::new();
+    let mut sparkable: Vec<usize> = Vec::new();
+
+    // Use the canonical free_vars_expr from cranelisp-types (I4 review finding:
+    // eliminates duplicate free-variable traversal).
+    let empty_globals = HashSet::new();
+    for (i, (name, val_expr)) in bindings.iter().enumerate() {
+        let fv = cranelisp_types::free_vars_expr(val_expr, &empty_globals);
+        // Filter to only those free vars that are bound by earlier bindings
+        // in this let block (not globals or outer scope).
+        let depends_on_earlier = fv.iter().any(|v| bound_names.contains(v));
+
+        if !depends_on_earlier && is_worth_sparking(val_expr, constructors) {
+            sparkable.push(i);
+        }
+
+        bound_names.insert(name.clone());
+    }
+
+    if sparkable.len() < 2 {
+        Vec::new()
+    } else {
+        sparkable
+    }
+}
+
+/// Check if an expression is worth sparking (non-trivial function call).
+///
+/// Excludes: cheap builtins (+, -, etc.), data constructors (Some, Cons),
+/// literals, variable references.
+fn is_worth_sparking(expr: &Expr, constructors: &HashSet<Symbol>) -> bool {
+    match expr {
+        Expr::Apply { callee, .. } => {
+            if let Expr::Var { name, .. } = callee.as_ref() {
+                // Cheap builtins and constructors are not worth sparking.
+                !CHEAP_BUILTINS.contains(&name.as_ref())
+                    && !constructors.contains(name)
+            } else {
+                // Non-variable callee (computed function) — conservatively spark.
+                true
+            }
+        }
+        // Non-Apply expressions are not worth sparking.
+        _ => false,
+    }
 }

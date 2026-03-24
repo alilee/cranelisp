@@ -1522,6 +1522,42 @@ Now you can map over `Option` values:
 
 The key difference from regular traits is in the `deftrait` declaration: `(Functor f)` has the type constructor parameter `f` next to the trait name, and the method signatures use `(f a)` to express "the container `f` holding values of type `a`."
 
+### Operators as Values
+
+Trait methods -- including operators like `+`, `-`, `<`, and `=` -- are ordinary values. You can bind them to variables, pass them to higher-order functions, and store them in data structures, just like any other function.
+
+```
+> (let [f +] (f 1 2))
+:Int 3
+```
+
+Here, `+` is bound to the name `f`, and then called through `f`. The compiler wraps the operator in a closure so it can be used wherever a function value is expected.
+
+This is especially useful with higher-order functions. For example, you can pass `+` directly to a fold:
+
+```clojure
+(defn fold-vec [v init f]
+  (defn go [i acc]
+    (if (= i (vec-len v))
+      acc
+      (go (+ i 1) (f acc (vec-get v i)))))
+  (go 0 init))
+
+(defn main []
+  (fold-vec [1 2 3 4 5] 0 +))
+```
+
+Running this produces `15` -- the sum of all elements, using `+` as the combining function passed to `fold-vec`.
+
+Comparison operators work the same way:
+
+```
+> (let [cmp <] (cmp 3 4))
+:Bool true
+```
+
+Note that constrained polymorphic functions (like a user-defined `(defn add [x y] (+ x y))`) cannot be used as values -- the compiler needs to know the concrete type at the call site in order to generate specialized code. Trait methods like `+` can be used as values because the concrete type is determined where the closure is actually called.
+
 ## Putting It Together
 
 You now have all of Ring 0 and Ring 1 at your disposal, plus Vec collections and traits. Here is an example that combines several features -- types with fields, pattern matching, closures, and higher-order functions:
@@ -1799,6 +1835,35 @@ You can chain multiple reads:
     (print (str-concat "hello " (str-concat name (str-concat ", age " age)))))
 ```
 
+### Automatic IO Scheduling
+
+When you write a `bind!` with multiple independent bindings, the compiler can automatically run them in parallel. Two bindings are independent when neither uses a name defined by the other. The compiler also checks that the platform functions involved are safe to reorder -- functions like `print` must stay in order (you do not want your output lines shuffled), but functions like `http-get` can safely run concurrently because they do not depend on each other's results.
+
+```clojure
+;; These two HTTP requests run in parallel automatically
+(bind! [response1 (http-get "https://api.example.com/users")
+        response2 (http-get "https://api.example.com/posts")]
+  (pure (process response1 response2)))
+```
+
+The compiler sees that `response1` and `response2` are independent (neither name appears in the other's expression) and that `http-get` is a commutative platform function (safe to reorder). It inserts a parallel node so both requests execute concurrently on a thread pool.
+
+Sequential functions are never reordered:
+
+```clojure
+;; These reads stay in order -- read-line is sequential
+(bind! [line1 (read-line)
+        line2 (read-line)]
+  (pure (str-concat line1 line2)))
+;; line1 is always the first line read, line2 the second
+```
+
+This optimization is semantically transparent -- your program produces the same result whether the compiler parallelizes or not. The only observable difference is speed. To disable automatic IO scheduling (for debugging or profiling), set the environment variable:
+
+```
+CRANELISP_NO_IO_SCHEDULE=1 cargo run -- --run myprogram.cl
+```
+
 ### Platform Declarations
 
 IO operations come from a **platform** -- a library that provides functions like `print` and `read-line`. In batch programs, you declare which platform to use with `(platform stdio)` at the top of the file:
@@ -1928,6 +1993,47 @@ For more IO examples, see `examples/21-hello-io.cl` through `examples/24-io-echo
 | `do` | macro | Sequence IO actions, discard intermediate results |
 | `bind!` | macro | Sequence IO actions, name intermediate results |
 
+## Automatic Parallelism
+
+Cranelisp is a pure functional language -- functions cannot have hidden side effects. The compiler uses this guarantee to automatically parallelize your code in two places: `let` bindings and IO scheduling.
+
+### Lenient Evaluation
+
+When you write a `let` with multiple bindings, the compiler checks whether the bindings depend on each other. If they do not, it evaluates them in parallel automatically.
+
+```
+> (let [a (expensive-computation 1)
+        b (expensive-computation 2)
+        c (expensive-computation 3)]
+    (+ a (+ b c)))
+```
+
+Here, `a`, `b`, and `c` are independent -- none of them references another. The compiler can evaluate all three concurrently. The result is the same as sequential evaluation, because all three expressions are pure.
+
+A binding is independent if its expression does not mention any name bound earlier in the same `let`. When bindings do depend on each other, the compiler preserves the necessary ordering:
+
+```
+> (let [x 10
+        y (+ x 5)
+        z (+ x 1)]
+    (+ y z))
+:Int 26
+```
+
+Here, `y` depends on `x` and `z` depends on `x`, so `x` must be computed first. But `y` and `z` are independent of each other, so they can be computed in parallel after `x` is ready.
+
+The compiler applies a cost heuristic -- it does not bother parallelizing trivially cheap bindings like arithmetic or variable references, since the overhead of spawning parallel work would outweigh the benefit. Only bindings whose estimated cost exceeds a threshold are candidates.
+
+Lenient evaluation is semantically transparent. Your program behaves the same whether the compiler parallelizes or not. To disable it (for debugging or profiling), set the environment variable:
+
+```
+CRANELISP_NO_LENIENT=1 cargo run -- --run myprogram.cl
+```
+
+### IO Scheduling
+
+Automatic IO scheduling (described in the IO section above) is the effectful counterpart to lenient evaluation. While lenient evaluation parallelizes pure `let` bindings, IO scheduling parallelizes independent `bind!` bindings that use commutative platform functions. Together, they mean that Cranelisp programs can exploit parallelism without any special syntax or annotations from the programmer.
+
 ## Developer Tools
 
 Cranelisp includes several tools to make the development workflow smoother.
@@ -2020,10 +2126,12 @@ Requirements:
 | File watching | (automatic) | Detect and recompile changed source files |
 | `--link` | `cranelisp --link file.cl` | Build a standalone native executable |
 | `--no-color` | `cranelisp --no-color` | Disable ANSI color output (also: `NO_COLOR` env var) |
+| `CRANELISP_NO_LENIENT` | `CRANELISP_NO_LENIENT=1` | Disable automatic let-binding parallelism |
+| `CRANELISP_NO_IO_SCHEDULE` | `CRANELISP_NO_IO_SCHEDULE=1` | Disable automatic IO scheduling parallelism |
 
 ## What is Next
 
-This guide covers Ring 0 (core expressions, functions, enums, pattern matching), Ring 1 (strings, data types with fields, closures, higher-order functions, Vec collections), Ring 2A (traits, operators, constrained polymorphism, higher-kinded traits), Ring 4 (IO -- reading input and writing output), and developer tools (session persistence, shell escape, file watching, `--link`, `--no-color`). As the language grows, you will gain access to:
+This guide covers Ring 0 (core expressions, functions, enums, pattern matching), Ring 1 (strings, data types with fields, closures, higher-order functions, Vec collections), Ring 2A (traits, operators, constrained polymorphism, higher-kinded traits, operators as first-class values), Ring 4 (IO -- reading input, writing output, automatic IO scheduling), automatic parallelism (lenient evaluation, IO scheduling), and developer tools (session persistence, shell escape, file watching, `--link`, `--no-color`). As the language grows, you will gain access to:
 
 - **Modules** -- organizing code across multiple files
 - **Macros** -- programs that write programs

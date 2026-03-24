@@ -64,11 +64,11 @@ impl FileWatcher {
         };
 
         // Record the initial content hash if we can read the file.
-        if let Ok(canonical) = path.canonicalize() {
-            if let Ok(content) = std::fs::read_to_string(&canonical) {
-                let hash = cranelisp_backend::cache::hash_source(&content);
-                self.content_hashes.insert(canonical, hash);
-            }
+        if let Ok(canonical) = path.canonicalize()
+            && let Ok(content) = std::fs::read_to_string(&canonical)
+        {
+            let hash = cranelisp_backend::cache::hash_source(&content);
+            self.content_hashes.insert(canonical, hash);
         }
 
         if self.watched_dirs.contains(dir) {

@@ -105,7 +105,7 @@ pub struct Warning {
 Produced by `cranelisp-frontend`, consumed by `cranelisp-frontend` (AST builder) and stored for introspection.
 
 ```rust
-/// S-expression: the reader's output. 7 variants covering all syntactic forms.
+/// S-expression: the reader's output. 8 variants covering all syntactic forms.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Sexp {
     /// Symbol: `foo`, `+`, `defn`, `core/map`
@@ -122,6 +122,8 @@ pub enum Sexp {
     List(Vec<Sexp>, Span),
     /// Bracketed list: `[a b c]`, `[:Int x :Int y]`
     Bracket(Vec<Sexp>, Span),
+    /// Comment: `; some text` — preserved only in comment-preserving reader mode
+    Comment(String, Span),
 }
 
 impl Sexp {
@@ -153,10 +155,11 @@ Produced by `cranelisp-frontend`, consumed by `cranelisp-typecheck` and `craneli
 ///   VecLit — spec §4.10 (Vec Literal)
 ///   Trace — spec §12 (Runtime Model, implementation extension)
 ///   RunTests — REPL-only special form (no spec section)
+///   ParBind — spec §10.12 (Automatic IO Scheduling)
 ///
 /// Ring 0: IntLit, FloatLit, BoolLit, Var, Let, If, Lambda, Apply, Match, Annotate
 /// Ring 1: StringLit, VecLit (heap-allocated)
-/// Ring 4: Trace, RunTests (effects)
+/// Ring 4: Trace, RunTests, ParBind (effects)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Expr {
     IntLit {
@@ -227,6 +230,15 @@ pub enum Expr {
         init: Box<Expr>,
         pass_fn: Box<Expr>,
         fail_fn: Box<Expr>,
+        span: Span,
+    },
+    /// Parallel bind chain: produced by the bind! independence analysis pass.
+    /// Semantically identical to a sequential `Let` for type-checking purposes,
+    /// but codegen emits parallel IO dispatch via `IO_TAG_PAR`.
+    /// spec: §10.12 (Automatic IO Scheduling)
+    ParBind {
+        bindings: Vec<(Symbol, Expr)>,
+        body: Box<Expr>,
         span: Span,
     },
 }
@@ -914,6 +926,18 @@ pub struct CompileResult {
     /// Accumulated warnings
     pub warnings: Vec<Warning>,
 }
+```
+
+## IO Tag Constants (in `cranelisp-platform`)
+
+IO task tree tags shared between platform DLLs and the host trampoline. Each IO node carries a tag at offset 0 that identifies its kind.
+
+```rust
+pub const IO_TAG_PURE: i64 = 0;    // Pure value wrapper: [tag | value]
+pub const IO_TAG_EFFECT: i64 = 1;  // Side effect thunk: [tag | thunk_ptr | resource_token]
+pub const IO_TAG_BIND: i64 = 2;    // Sequential chain: [tag | io_expr | continuation]
+pub const IO_TAG_PAR: i64 = 3;     // Parallel dispatch: branches run concurrently
+                                    // with resource token serialization (§10.12)
 ```
 
 ## Module Graph (in binary crate)

@@ -427,10 +427,10 @@ impl ReplSession {
 
             // Update the file watcher's content hash for user.cl so the
             // self-triggered file-change event is suppressed.
-            if let Some(ref mut watcher) = self.watcher {
-                if let Ok(canonical) = file_path.canonicalize() {
-                    watcher.update_content_hash(canonical, hash.clone());
-                }
+            if let Some(ref mut watcher) = self.watcher
+                && let Ok(canonical) = file_path.canonicalize()
+            {
+                watcher.update_content_hash(canonical, hash.clone());
             }
 
             // Write cache files (.meta.json + .o) for the saved module so
@@ -639,7 +639,34 @@ impl ReplSession {
             } else {
                 form.clone()
             };
-            let input = cranelisp_frontend::build_repl_input(&form, &mut self.core.expander)?;
+            let mut input = cranelisp_frontend::build_repl_input(&form, &mut self.core.expander)?;
+
+            // Bind chain independence analysis (auto IO scheduling).
+            if !self.core.scheduling_registry.is_empty()
+                && std::env::var("CRANELISP_NO_IO_SCHEDULE").is_err()
+            {
+                match &mut input {
+                    ReplInput::Defn(defn) => {
+                        crate::bind_chain_analysis::auto_schedule_defn(
+                            defn, &self.core.scheduling_registry,
+                        );
+                    }
+                    ReplInput::Expr(expr) => {
+                        crate::bind_chain_analysis::auto_schedule_expr(
+                            expr, &self.core.scheduling_registry,
+                        );
+                    }
+                    ReplInput::TraitImpl(impl_) => {
+                        for method in impl_.methods.iter_mut() {
+                            crate::bind_chain_analysis::auto_schedule_defn(
+                                method, &self.core.scheduling_registry,
+                            );
+                        }
+                    }
+                    _ => {}
+                }
+            }
+
             let check_result = self.core.tc.check_repl_input(&input)?;
             let result = self.compile_and_execute(&input, &check_result)?;
 
@@ -879,6 +906,13 @@ impl ReplSession {
         let fn_count = platform.descriptors.len();
         let version = platform.version.clone();
 
+        // Populate scheduling registry for bind chain independence analysis.
+        for desc in &platform.descriptors {
+            self.core.scheduling_registry.insert(
+                cranelisp_types::Symbol::from(desc.name.as_str()),
+                desc.scheduling_class,
+            );
+        }
         self.core.platform_symbols.extend(jit_syms);
         self.loaded_platforms.push(platform);
 
@@ -1597,12 +1631,11 @@ fn create_repl_session() -> ReplSession {
     };
 
     // Enable session persistence: set backing file, load user.cl if it exists.
-    // FIXME(/int): This should be println!, not eprintln!. The banner goes to stdout
-    // (line 1557), and "; Restored user.cl" is a user-visible status message — same
-    // category as the banner. The sketch uses println! for its equivalent "; Loaded
-    // user.cl" message. Using stderr causes ordering issues in piped output (showcase).
+    // The banner goes to stdout, and this is a user-visible status message
+    // in the same category. Using stdout ensures consistent ordering in
+    // piped output (showcase).
     if session.enable_persistence() {
-        eprintln!("; Restored user.cl");
+        println!("; Restored user.cl");
     }
 
     // Initialize the file watcher for source change detection.
@@ -1652,10 +1685,10 @@ fn relative_path_str(path: &std::path::Path, project_root: &std::path::Path) -> 
 /// Per repl/spec.md §14.3: `[updated: file]` on success, `[errors: file]` on failure.
 /// Per repl/spec.md §14.4: failed modules are added to `error_modules`.
 fn poll_and_notify_changes(session: &mut ReplSession, stdout: &mut impl Write) {
-    if let Some(ref mut watcher) = session.watcher {
-        if let Some(changed) = watcher.poll_changes() {
-            session.pending_changes.extend(changed);
-        }
+    if let Some(ref mut watcher) = session.watcher
+        && let Some(changed) = watcher.poll_changes()
+    {
+        session.pending_changes.extend(changed);
     }
 
     // Eagerly recompile any pending changed modules.
@@ -1678,10 +1711,10 @@ fn reload_changed_modules(session: &mut ReplSession, stdout: &mut impl Write) {
     // Map file paths to module paths.
     let mut stale_modules: Vec<ModuleFullPath> = Vec::new();
     for path in &pending {
-        if let Some(module_path) = session.file_to_module.get(path) {
-            if !stale_modules.contains(module_path) {
-                stale_modules.push(module_path.clone());
-            }
+        if let Some(module_path) = session.file_to_module.get(path)
+            && !stale_modules.contains(module_path)
+        {
+            stale_modules.push(module_path.clone());
         }
     }
 
@@ -2011,8 +2044,8 @@ pub fn run_repl() {
 
         // Shell escape: intercept `;#!` before comment-only check.
         // Per repl/spec.md §13, `;#!` lines are run as shell commands.
-        if input.starts_with(";#!") {
-            let cmd = input[3..].trim();
+        if let Some(stripped) = input.strip_prefix(";#!") {
+            let cmd = stripped.trim();
             run_shell_command(cmd, &mut stdout);
             // Reset timing — shell commands are not Cranelisp evaluations.
             last_compile_ms = 0;

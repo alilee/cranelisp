@@ -7,7 +7,7 @@
 //!
 //! See `design/backend/io-trampoline.md` for the full design.
 
-use cranelisp_platform::{IO_TAG_BIND, IO_TAG_EFFECT, IO_TAG_PURE};
+use cranelisp_platform::{IO_TAG_BIND, IO_TAG_EFFECT, IO_TAG_PAR, IO_TAG_PURE};
 use cranelisp_types::HeapHeader;
 
 /// Byte offset of the tag field from the base pointer.
@@ -76,6 +76,36 @@ pub fn run_io_trampoline(io_ptr: i64) -> i64 {
                 cont_stack.push(cont);
                 current = inner;
             }
+            t if t == IO_TAG_PAR => {
+                // Par node layout: [header(16) | tag(8) | count(8) | branch_0(8) | ...]
+                let count = unsafe {
+                    *((current as isize + FIELD_0_OFFSET) as *const i64)
+                } as usize;
+
+                // Read branch IO pointers (at offsets 32, 40, 48, ...)
+                let branch_ptrs: Vec<i64> = (0..count)
+                    .map(|i| unsafe {
+                        *((current as isize + FIELD_1_OFFSET + (i as isize) * 8) as *const i64)
+                    })
+                    .collect();
+
+                // Dispatch branches with resource token serialization
+                let results = dispatch_par_branches(&branch_ptrs);
+
+                // Build transient results buffer (raw Vec, no RC — short-lived).
+                // Use Vec::into_raw_parts to get a thin pointer (not a fat slice ptr).
+                let mut results_buf = results;
+                let results_ptr = results_buf.as_mut_ptr() as i64;
+                std::mem::forget(results_buf); // ownership transferred to continuation
+
+                // Pop continuation and call with results array pointer
+                match cont_stack.pop() {
+                    Some(cont_ptr) => {
+                        current = call_continuation(cont_ptr, results_ptr);
+                    }
+                    None => return results_ptr,
+                }
+            }
             _ => {
                 panic!("cranelisp_run_io: unknown IO tag {tag}");
             }
@@ -95,6 +125,92 @@ fn call_continuation(cont_ptr: i64, val: i64) -> i64 {
     let call: extern "C" fn(i64, i64) -> i64 =
         unsafe { std::mem::transmute(code_ptr as *const ()) };
     call(cont_ptr, val)
+}
+
+// --- Par dispatch with resource token serialization ---
+
+/// Read the resource token from an IO node.
+///
+/// Effect nodes store the token at FIELD_1_OFFSET (offset 32).
+/// Non-Effect nodes (Pure, Bind, Par) return 0 (unrestricted).
+fn read_resource_token(io_ptr: i64) -> i64 {
+    let tag = unsafe { *((io_ptr as isize + TAG_OFFSET) as *const i64) };
+    if tag == IO_TAG_EFFECT {
+        unsafe { *((io_ptr as isize + FIELD_1_OFFSET) as *const i64) }
+    } else {
+        0
+    }
+}
+
+/// Work item for Par dispatch.
+enum WorkItem {
+    /// A single branch to run independently (token=0).
+    Single(usize, i64),
+    /// A group of branches to run sequentially (same non-zero resource token).
+    SerialGroup(Vec<(usize, i64)>),
+}
+
+/// Dispatch Par branches with resource token serialization.
+///
+/// - Token=0 branches: each dispatched independently to rayon
+/// - Same non-zero token: grouped and run sequentially as a single work item
+/// - Results are placed in original binding order
+///
+/// See design/backend/io-scheduling.md §5.2 for the algorithm.
+fn dispatch_par_branches(branch_ptrs: &[i64]) -> Vec<i64> {
+    use rayon::prelude::*;
+    use std::collections::HashMap;
+
+    // Group branches by resource token.
+    let mut token_groups: HashMap<i64, Vec<(usize, i64)>> = HashMap::new();
+    for (i, &io_ptr) in branch_ptrs.iter().enumerate() {
+        let token = read_resource_token(io_ptr);
+        token_groups.entry(token).or_default().push((i, io_ptr));
+    }
+
+    // Build work items.
+    let mut work_items: Vec<WorkItem> = Vec::new();
+    for (&token, entries) in &token_groups {
+        if token == 0 {
+            // Each unrestricted branch is independent.
+            for &(idx, io_ptr) in entries {
+                work_items.push(WorkItem::Single(idx, io_ptr));
+            }
+        } else {
+            // Same non-zero token: run sequentially as one work item.
+            work_items.push(WorkItem::SerialGroup(entries.clone()));
+        }
+    }
+
+    // Dispatch via rayon and collect results.
+    let item_results: Vec<Vec<(usize, i64)>> = work_items
+        .into_par_iter()
+        .map(|item| match item {
+            WorkItem::Single(idx, io_ptr) => {
+                let result = run_io_trampoline(io_ptr);
+                vec![(idx, result)]
+            }
+            WorkItem::SerialGroup(entries) => {
+                entries
+                    .into_iter()
+                    .map(|(idx, io_ptr)| {
+                        let result = run_io_trampoline(io_ptr);
+                        (idx, result)
+                    })
+                    .collect()
+            }
+        })
+        .collect();
+
+    // Place results in correct positions.
+    let mut results = vec![0i64; branch_ptrs.len()];
+    for batch in item_results {
+        for (idx, val) in batch {
+            results[idx] = val;
+        }
+    }
+
+    results
 }
 
 #[cfg(test)]
@@ -280,5 +396,146 @@ mod tests {
             *((base as isize + FIELD_0_OFFSET) as *mut i64) = 0;
         }
         run_io_trampoline(base as i64);
+    }
+
+    // --- Par node tests ---
+
+    /// Helper: allocate a Par node with the given branch IO pointers.
+    /// Layout: [header(16) | tag=3(8) | count(8) | branch_0(8) | branch_1(8) | ...]
+    fn make_par_node(branches: &[i64]) -> i64 {
+        let payload_size = 8 + 8 + branches.len() * 8; // tag + count + N branches
+        let base = alloc_with_rc(payload_size);
+        unsafe {
+            *((base as isize + TAG_OFFSET) as *mut i64) = IO_TAG_PAR;
+            *((base as isize + FIELD_0_OFFSET) as *mut i64) = branches.len() as i64;
+            for (i, &branch) in branches.iter().enumerate() {
+                *((base as isize + FIELD_1_OFFSET + (i as isize) * 8) as *mut i64) = branch;
+            }
+        }
+        base as i64
+    }
+
+    /// Helper: allocate a continuation that reads N results from a results_ptr
+    /// and returns a Pure node wrapping their sum.
+    fn make_sum_results_closure(count: usize) -> i64 {
+        extern "C" fn sum_results(env_ptr: i64, results_ptr: i64) -> i64 {
+            let count = unsafe { *((env_ptr as isize + 32) as *const i64) } as usize;
+            let mut sum = 0i64;
+            for i in 0..count {
+                sum += unsafe { *((results_ptr as isize + (i as isize) * 8) as *const i64) };
+            }
+            // Free the results buffer (it was allocated as a boxed slice).
+            let _ = unsafe {
+                Box::from_raw(std::slice::from_raw_parts_mut(
+                    results_ptr as *mut i64,
+                    count,
+                ))
+            };
+            make_pure_node_inline(sum)
+        }
+
+        let base = alloc_with_rc(24); // code_ptr + drop_glue_ptr + 1 capture
+        unsafe {
+            *((base as isize + 16) as *mut i64) = sum_results as *const () as i64;
+            *((base as isize + 24) as *mut i64) = 0;
+            *((base as isize + 32) as *mut i64) = count as i64;
+        }
+        base as i64
+    }
+
+    // spec: 10-io §10.12 — Par node dispatches branches and collects results
+    #[test]
+    fn test_run_io_par_with_bind() {
+        // Par [Pure(10), Pure(20)] -> continuation sums results -> Pure(30)
+        let b0 = make_pure_node(10);
+        let b1 = make_pure_node(20);
+        let par = make_par_node(&[b0, b1]);
+        let cont = make_sum_results_closure(2);
+        let io = make_bind_node(par, cont);
+        let result = run_io_trampoline(io);
+        assert_eq!(result, 30);
+    }
+
+    // spec: 10-io §10.12 — Par with three branches
+    #[test]
+    fn test_run_io_par_three_branches() {
+        let b0 = make_pure_node(100);
+        let b1 = make_pure_node(200);
+        let b2 = make_pure_node(300);
+        let par = make_par_node(&[b0, b1, b2]);
+        let cont = make_sum_results_closure(3);
+        let io = make_bind_node(par, cont);
+        let result = run_io_trampoline(io);
+        assert_eq!(result, 600);
+    }
+
+    // spec: 10-io §10.12.4 — resource token serialization preserves ordering
+    #[test]
+    fn test_run_io_par_with_effects() {
+        use std::sync::{Arc, Mutex};
+
+        // Create Effect nodes with different resource tokens.
+        // Two effects share token=1 (must run sequentially).
+        // One effect has token=0 (independent).
+        let order = Arc::new(Mutex::new(Vec::new()));
+
+        let order_clone = order.clone();
+        let make_tracking_effect = |id: i64, token: i64| -> i64 {
+            let order = order_clone.clone();
+            let thunk: Box<Box<dyn FnOnce() -> i64>> =
+                Box::new(Box::new(move || {
+                    order.lock().unwrap().push(id);
+                    id
+                }));
+            let thunk_ptr = Box::into_raw(thunk) as i64;
+
+            let base = alloc_with_rc(24);
+            unsafe {
+                *((base as isize + TAG_OFFSET) as *mut i64) = IO_TAG_EFFECT;
+                *((base as isize + FIELD_0_OFFSET) as *mut i64) = thunk_ptr;
+                *((base as isize + FIELD_1_OFFSET) as *mut i64) = token;
+            }
+            base as i64
+        };
+
+        let e0 = make_tracking_effect(1, 0);  // token=0, independent
+        let e1 = make_tracking_effect(2, 1);  // token=1, serial group
+        let e2 = make_tracking_effect(3, 1);  // token=1, serial group
+
+        let par = make_par_node(&[e0, e1, e2]);
+        let cont = make_sum_results_closure(3);
+        let io = make_bind_node(par, cont);
+        let result = run_io_trampoline(io);
+
+        // Results should be placed in original order regardless of dispatch order.
+        assert_eq!(result, 6); // 1 + 2 + 3
+
+        // Token=1 effects should have run sequentially (2 before 3).
+        let executed = order.lock().unwrap();
+        let pos_2 = executed.iter().position(|&x| x == 2).unwrap();
+        let pos_3 = executed.iter().position(|&x| x == 3).unwrap();
+        assert!(pos_2 < pos_3, "Token=1 effects should run in order: {executed:?}");
+    }
+
+    // spec: 10-io §10.12 — read_resource_token returns 0 for non-Effect nodes
+    #[test]
+    fn test_read_resource_token() {
+        let pure = make_pure_node(42);
+        assert_eq!(read_resource_token(pure), 0);
+
+        // Effect with token=5
+        let effect = {
+            let thunk: Box<Box<dyn FnOnce() -> i64>> =
+                Box::new(Box::new(|| 0));
+            let thunk_ptr = Box::into_raw(thunk) as i64;
+            let base = alloc_with_rc(24);
+            unsafe {
+                *((base as isize + TAG_OFFSET) as *mut i64) = IO_TAG_EFFECT;
+                *((base as isize + FIELD_0_OFFSET) as *mut i64) = thunk_ptr;
+                *((base as isize + FIELD_1_OFFSET) as *mut i64) = 5;
+            }
+            base as i64
+        };
+        assert_eq!(read_resource_token(effect), 5);
     }
 }

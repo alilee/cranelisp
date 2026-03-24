@@ -130,7 +130,7 @@ Method signatures MAY use any valid type expression:
   (map-val [(Fn [a] b) self] self))
 ```
 
-## 7.2 Higher-Kinded Traits [R3 S9 — tests/ring2.rs::hkt_trait_declaration IGNORED]
+## 7.2 Higher-Kinded Traits [Tested tests/ring2.rs::hkt_trait_declaration]
 
 A higher-kinded trait abstracts over type constructors (kind `* -> *`) rather than concrete types (kind `*`).
 
@@ -259,7 +259,7 @@ The implementation MUST search for matching impls in the following order:
 1. Concrete impls (exact type match)
 2. Polymorphic impls (with constraint satisfaction)
 
-### 7.3.4 Higher-Kinded Implementation [R3 S9 — tests/ring2.rs::hkt_impl_option IGNORED]
+### 7.3.4 Higher-Kinded Implementation [Tested tests/ring2.rs::hkt_impl_bare_constructor]
 
 An HKT impl targets a bare type constructor name:
 
@@ -385,7 +385,7 @@ Operator symbols (`+`, `-`, `*`, `/`, `=`, `<`, `>`, `<=`, `>=`) have no special
 
 An implementation SHOULD compile operator trait methods for `Int` and `Float` to inline machine instructions (integer add, float multiply, etc.) rather than function calls, so that the trait system imposes zero overhead for primitive arithmetic and comparisons.
 
-## 7.6 Operators as First-Class Values [R4 S21] <!-- FIXME(/qa): Spec violation — trait methods cannot be passed as values. `(fmap show (Some 42))` fails with "undefined variable: show" even though §7.6 says trait methods MAY be passed to higher-order functions. When the concrete type is inferrable from context (here Int from `Some 42`), the implementation should monomorphise to `show$Int` and wrap in a closure. Write a failing test: `(let [f show] (f 42))` and `(fmap show (Some 42))`. Assign to /backend or /typecheck for resolution. -->
+## 7.6 Operators as First-Class Values [Tested tests/ring2.rs::trait_method_as_value_operator]
 
 Trait method names, including operators, are ordinary symbols. They MAY be bound to variables and passed as arguments to higher-order functions.
 
@@ -560,7 +560,7 @@ String conversion for human-readable output.
 (show 3.14)     ; → "3.14"
 ```
 
-### 7.7.5 Functor [R3 S9 — tests/ring2.rs::hkt_trait_declaration IGNORED]
+### 7.7.5 Functor [Tested tests/ring2.rs::hkt_trait_declaration]
 
 Maps a function over a type constructor. This is a higher-kinded trait (see 7.2).
 

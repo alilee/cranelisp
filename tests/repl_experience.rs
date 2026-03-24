@@ -306,6 +306,21 @@ fn defn_zero_param_reports_thunk_type() {
     );
 }
 
+// spec: repl/spec.md §1.3 — "A function definition MUST NOT display `<closure>`"
+#[test]
+fn defn_zero_param_displays_name_not_closure() {
+    // repl/spec.md §1.3 line 171: "A function definition MUST NOT display
+    // `<closure>` — the user defined a *named* function, not an anonymous
+    // closure. `<closure>` is reserved for anonymous function *values*."
+    let mut session = repl_session();
+    let result = session.eval("(defn always-42 [] 42)").unwrap();
+    let display = cranelisp::repl::format_result(result.value, &result.ty);
+    assert!(
+        display.contains("always-42"),
+        "repl/spec.md §1.3 violation: zero-arg defn MUST NOT display <closure>, got: {display}"
+    );
+}
+
 // spec: repl/spec.md §1.3 — deftype reports ADT type
 #[test]
 fn deftype_reports_adt_type() {

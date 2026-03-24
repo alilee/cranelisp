@@ -7,7 +7,7 @@
 use std::collections::HashMap;
 
 use cranelisp_types::{
-    ModuleFullPath, Scheme, TraitName, Type, TypeDefInfo, TypeId, TypeName,
+    ModuleFullPath, Scheme, Type, TypeDefInfo, TypeId, TypeName,
     NULLARY_TAG_THRESHOLD,
 };
 

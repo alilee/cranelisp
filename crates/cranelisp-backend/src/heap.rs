@@ -414,6 +414,12 @@ fn collect_var_uses(
             collect_var_uses(pass_fn, uses);
             collect_var_uses(fail_fn, uses);
         }
+        Expr::ParBind { bindings, body, .. } => {
+            for (_, val_expr) in bindings {
+                collect_var_uses(val_expr, uses);
+            }
+            collect_var_uses(body, uses);
+        }
         // Literals have no variable references.
         Expr::IntLit { .. }
         | Expr::FloatLit { .. }

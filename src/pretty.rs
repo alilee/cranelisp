@@ -166,6 +166,31 @@ fn style_tokens(code: &str) -> String {
         } else if code[i..].starts_with("false") && !code.as_bytes().get(i + 5).is_some_and(|b| b.is_ascii_alphanumeric()) {
             result.push_str(&styled("false", Style::Yellow));
             for _ in 0..5 { chars.next(); }
+        } else if ch == '(' {
+            // Opening paren — peek ahead to see if the next token is a
+            // capitalized name (constructor/type in head position) and bold it.
+            result.push('(');
+            chars.next();
+            // Skip whitespace after '('.
+            while let Some(&(_, ws)) = chars.peek() {
+                if ws == ' ' || ws == '\t' {
+                    result.push(ws);
+                    chars.next();
+                } else {
+                    break;
+                }
+            }
+            // Check if next token starts with uppercase (ADT constructor).
+            if let Some(&(head_start, head_ch)) = chars.peek()
+                && head_ch.is_ascii_uppercase()
+            {
+                // Consume the head symbol and bold it.
+                let head_span = consume_symbol(code, head_start);
+                result.push_str(&styled(&code[head_start..head_start + head_span], Style::Bold));
+                for _ in 0..head_span {
+                    chars.next();
+                }
+            }
         } else {
             result.push(ch);
             chars.next();
@@ -234,6 +259,22 @@ fn consume_number(code: &str, start: usize) -> usize {
     }
     while pos < bytes.len() && (bytes[pos].is_ascii_digit() || bytes[pos] == b'.') {
         pos += 1;
+    }
+    pos - start
+}
+
+/// Consume a symbol token (alphanumeric, `.`, `/`, `-`, `_`, `?`, `!`).
+/// Returns the byte length of the symbol.
+fn consume_symbol(code: &str, start: usize) -> usize {
+    let bytes = code.as_bytes();
+    let mut pos = start;
+    while pos < bytes.len() {
+        let b = bytes[pos];
+        if b.is_ascii_alphanumeric() || b == b'.' || b == b'/' || b == b'-' || b == b'_' || b == b'?' || b == b'!' {
+            pos += 1;
+        } else {
+            break;
+        }
     }
     pos - start
 }

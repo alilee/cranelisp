@@ -23,6 +23,9 @@ These are registered with the JIT via `declare_platform!` and are visible to Cra
 |---|---|---|---|---|
 | `print` | `(Fn [String] (IO Int))` | Sequential | `cranelisp_print` | Append the string to the captured output buffer (no console output). Returns `(IO Int)` with value 0. |
 | `read-line` | `(Fn [] (IO String))` | Sequential | `cranelisp_read_line` | Pop and return the first queued input line. Returns empty string if the queue is empty. |
+| `commutative-noop` | `(Fn [] (IO Int))` | Commutative | `cranelisp_commutative_noop` | No-op that returns 0. Enables testing that the compiler correctly identifies commutative pairs and inserts Par nodes. |
+| `commutative-sleep-ms` | `(Fn [Int] (IO Int))` | Commutative | `cranelisp_commutative_sleep_ms` | Sleep for the specified milliseconds and return the duration. Enables timing-based parallelism verification. |
+| `resource-serial-noop` | `(Fn [Int] (IO Int))` | ResourceSerial | `cranelisp_resource_serial_noop` | No-op that sets the resource token on its Effect node. Enables testing resource token serialization. |
 
 ### Heap Parameter Ownership
 
@@ -68,10 +71,12 @@ A typical test sequence:
 
 ## Conformance
 
-test-capture conforms to the stdio platform interface:
+test-capture conforms to the stdio platform interface for core IO:
 
 1. Exports `print` with signature `(Fn [String] (IO Int))` -- same as stdio
 2. Exports `read-line` with signature `(Fn [] (IO String))` -- same as stdio
-3. Uses the same scheduling classes (Sequential for both)
+3. Uses the same scheduling classes for stdio-compatible functions (Sequential for both)
 4. Respects the capture-RC protocol for heap parameters
 5. Substitutable for stdio in any program that does not depend on console I/O behavior
+
+Additionally, test-capture provides scheduling-class test functions (`commutative-noop`, `commutative-sleep-ms`, `resource-serial-noop`) that are not part of the stdio interface. These exist solely for testing auto IO scheduling and are not expected to be present in other platforms.

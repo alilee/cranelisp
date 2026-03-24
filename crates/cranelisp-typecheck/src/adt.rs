@@ -47,13 +47,13 @@ impl TypeDefRegistry {
     /// `internal: true`. Returns `false` if the constructor is not internal
     /// or doesn't exist in the registry.
     pub fn is_internal_constructor(&self, ctor_name: &str) -> bool {
-        if let Some(type_name) = self.constructor_to_type.get(ctor_name) {
-            if let Some(type_def) = self.type_defs.get(type_name) {
-                return type_def
-                    .constructors
-                    .iter()
-                    .any(|c| c.name.as_ref() == ctor_name && c.internal);
-            }
+        if let Some(type_name) = self.constructor_to_type.get(ctor_name)
+            && let Some(type_def) = self.type_defs.get(type_name)
+        {
+            return type_def
+                .constructors
+                .iter()
+                .any(|c| c.name.as_ref() == ctor_name && c.internal);
         }
         false
     }

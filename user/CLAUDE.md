@@ -12,7 +12,7 @@ This directory contains documentation written for Cranelisp users, not implement
 
 ## Structure
 
-- `getting-started.md` — Installation, REPL basics, Ring 0 + Ring 1 + Ring 2A + Ring 4 (IO) features
+- `getting-started.md` — Installation, REPL basics, Ring 0 + Ring 1 + Ring 2A + Ring 4 (IO) + automatic parallelism features
 - `caching.md` — Module caching: `.cranelisp-cache/`, `--no-cache`, invalidation, `.gitignore`
 - `tutorial/` — Progressive introduction; curriculum data for the `/learn` engine
   - `curriculum.md` — Section/prompt/trigger/answer definitions (Ring 1: sections 14-18, 21)
@@ -44,5 +44,7 @@ The spec (`spec/`) is precise and normative — written for implementors. User d
 **Sprint 23 Wave 4**: Added "Developer Tools" section to `getting-started.md` covering session persistence (`user.cl`), shell escape (`;#!`), file watching (automatic recompilation, `[updated:]`/`[errors:]` notifications, cascade invalidation, error blocking), and `--link` standalone executable generation. Updated `caching.md` with REPL cache integration, session persistence, and `--link` cache dependency sections.
 
 **Sprint 24**: Added Sprint 24 features to `getting-started.md`: ANSI terminal styling with `--no-color` flag and `NO_COLOR` env var (Starting the REPL section + Developer Tools Summary table), checked division panic note (Integer Arithmetic + Named Primitives table), Higher-Kinded Traits subsection under Traits (Functor pattern with `deftrait`/`impl` examples), lazy sequences mention in "What is Next". Pretty-printer not yet user-documented (internal formatting improvement).
+
+**Sprint 25 Wave 4**: Added three new feature sections to `getting-started.md`: (1) "Operators as Values" subsection under Traits -- binding `+`, `-`, `<` to variables, passing to higher-order functions, with fold example and constrained-poly caveat; (2) "Automatic IO Scheduling" subsection in IO section -- parallel `bind!` for commutative platform functions, sequential ordering for `print`/`read-line`, `CRANELISP_NO_IO_SCHEDULE=1` opt-out; (3) "Automatic Parallelism" top-level section before Developer Tools -- lenient evaluation of independent `let` bindings, cost heuristic, `CRANELISP_NO_LENIENT=1` opt-out, cross-reference to IO scheduling. Developer Tools Summary table updated with two new environment variables. "What is Next" summary updated.
 
 **Feedback loop**: Report to compiler skills when error messages are confusing, when REPL output is unhelpful, or when a concept has no good introduction path. File findings as `FIXME(/skill-name)` comments on the relevant spec or design doc.

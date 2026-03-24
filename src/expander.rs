@@ -382,7 +382,7 @@ unsafe extern "C" {
 // to the thread that caused the trap).
 std::thread_local! {
     static JMP_BUF: std::cell::UnsafeCell<SigJmpBuf> =
-        std::cell::UnsafeCell::new([0u8; std::mem::size_of::<SigJmpBuf>()]);
+        const { std::cell::UnsafeCell::new([0u8; std::mem::size_of::<SigJmpBuf>()]) };
 }
 
 /// Signal handler for SIGFPE/SIGILL/SIGBUS during JIT macro execution.

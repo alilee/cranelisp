@@ -4,6 +4,11 @@
 //! - `print`: appends to a captured output buffer instead of printing to stdout
 //! - `read-line`: returns pre-configured input strings instead of reading from stdin
 //!
+//! Also provides scheduling-class test functions:
+//! - `commutative-noop`: Commutative, takes no args, returns `(IO Int)` with `Pure 0`
+//! - `commutative-sleep-ms`: Commutative, takes Int ms, sleeps then returns the duration
+//! - `resource-serial-noop`: ResourceSerial, takes Int token, sets resource token, returns 0
+//!
 //! Also exports test utility functions (NOT platform functions) for setup/teardown:
 //! - `test_capture_set_input`: queue input lines for read-line
 //! - `test_capture_get_output`: retrieve all captured print output
@@ -52,6 +57,32 @@ pub extern "C" fn scripted_read_line() -> CLIO<CLString> {
     })
 }
 
+/// Commutative no-op: does nothing, returns Pure 0. Marked Commutative so the
+/// compiler can identify commutative pairs and insert Par nodes.
+#[unsafe(export_name = "cranelisp_commutative_noop")]
+pub extern "C" fn commutative_noop() -> CLIO<CLInt> {
+    CLIO::effect(|| CLInt::from(0i64))
+}
+
+/// Commutative sleep: sleeps for `ms` milliseconds and returns the duration.
+/// Marked Commutative for parallelism verification tests (timing-based).
+#[unsafe(export_name = "cranelisp_commutative_sleep_ms")]
+pub extern "C" fn commutative_sleep_ms(ms: CLInt) -> CLIO<CLInt> {
+    let duration = i64::from(ms);
+    CLIO::effect(move || {
+        std::thread::sleep(std::time::Duration::from_millis(duration as u64));
+        CLInt::from(duration)
+    })
+}
+
+/// Resource-serial no-op: sets the resource token on the Effect node and returns 0.
+/// Marked ResourceSerial for testing resource token serialization.
+#[unsafe(export_name = "cranelisp_resource_serial_noop")]
+pub extern "C" fn resource_serial_noop(token: CLInt) -> CLIO<CLInt> {
+    let resource_token = i64::from(token);
+    CLIO::effect_on_resource(resource_token, || CLInt::from(0i64))
+}
+
 declare_platform! {
     name: "test-capture",
     version: "0.1.0",
@@ -70,6 +101,27 @@ declare_platform! {
             doc: "Read a line from scripted input (for testing)",
             params: [],
             scheduling: SchedulingClass::Sequential,
+        },
+        commutative_noop {
+            cl_name: "commutative-noop",
+            sig: "(Fn [] (IO Int))",
+            doc: "No-op (Commutative scheduling class, for testing)",
+            params: [],
+            scheduling: SchedulingClass::Commutative,
+        },
+        commutative_sleep_ms {
+            cl_name: "commutative-sleep-ms",
+            sig: "(Fn [Int] (IO Int))",
+            doc: "Sleep for ms milliseconds and return the duration (Commutative, for testing)",
+            params: [ms],
+            scheduling: SchedulingClass::Commutative,
+        },
+        resource_serial_noop {
+            cl_name: "resource-serial-noop",
+            sig: "(Fn [Int] (IO Int))",
+            doc: "No-op with resource token (ResourceSerial scheduling class, for testing)",
+            params: [token],
+            scheduling: SchedulingClass::ResourceSerial,
         },
     ]
 }

@@ -226,6 +226,11 @@ pub struct FnCompiler<'a, M: Module> {
     /// Set by `compile_lambda`, consumed by `compile_let` or `compile_body`
     /// when binding the closure value to a variable name.
     pub(crate) pending_closure_drop_glue: Option<FuncId>,
+
+    /// Whether we are compiling inside a `(trace ...)` body.
+    /// When true, sparkability analysis is disabled — trace bodies must
+    /// execute sequentially to produce deterministic trace trees.
+    pub(crate) in_trace_body: bool,
 }
 
 impl<'a, M: Module> FnCompiler<'a, M> {
@@ -261,6 +266,7 @@ impl<'a, M: Module> FnCompiler<'a, M> {
             closure_drop_glue: HashMap::new(),
             drop_glue_depth: 0,
             pending_closure_drop_glue: None,
+            in_trace_body: false,
         }
     }
 
@@ -320,6 +326,7 @@ impl<'a, M: Module> FnCompiler<'a, M> {
             closure_drop_glue: HashMap::new(),
             drop_glue_depth: 0,
             pending_closure_drop_glue: None,
+            in_trace_body: false,
         };
 
         // Look up the defn's inferred type to get authoritative parameter types.
@@ -409,10 +416,10 @@ impl<'a, M: Module> FnCompiler<'a, M> {
             } => {
                 // `trace` is a module-scoped special form (arch Principle 10).
                 // It arrives as Apply(Var("trace"), [body]) — redirect to compile_trace.
-                if let Expr::Var { name, .. } = callee.as_ref() {
-                    if &**name == "trace" && args.len() == 1 {
-                        return self.compile_trace(&[], &args[0], *span);
-                    }
+                if let Expr::Var { name, .. } = callee.as_ref()
+                    && &**name == "trace" && args.len() == 1
+                {
+                    return self.compile_trace(&[], &args[0], *span);
                 }
                 self.compile_apply(callee, args, *span)
             }
@@ -436,6 +443,11 @@ impl<'a, M: Module> FnCompiler<'a, M> {
                 fail_fn,
                 span,
             } => self.compile_run_tests(modules, init, pass_fn, fail_fn, *span),
+            Expr::ParBind {
+                bindings,
+                body,
+                span,
+            } => self.compile_par_bind(bindings, body, *span),
         }
     }
 

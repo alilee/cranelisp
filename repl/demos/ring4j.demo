@@ -1,0 +1,60 @@
+; Cranelisp Ring 4J — Lenient Evaluation, Auto IO Scheduling, First-Class Operators
+
+; Sprint 25: parallelism for pure let bindings and IO chains, trait methods as values
+
+; Lenient evaluation — independent let bindings run in parallel automatically
+
+(defn fib [n] (if (< n 2) n (+ (fib (- n 1)) (fib (- n 2)))))
+
+; These bindings are independent — the compiler sparks them in parallel
+
+(let [a (fib 25) b (fib 26)] (+ a b))
+
+; Dependent bindings stay sequential — b uses a
+
+(let [a (fib 20) b (+ a 1)] b)
+
+; Cheap bindings are not worth parallelizing — cost heuristic skips them
+
+(let [x (+ 1 2) y (+ 3 4)] (+ x y))
+
+; CRANELISP_NO_LENIENT=1 disables automatic sparking for debugging
+
+; Auto IO scheduling — commutative bind! chains run in parallel
+
+(platform stdio)
+(import [platform.stdio [print]])
+
+; These prints are Sequential — the compiler preserves source order
+
+(do (print "first") (print "second") (Pure 0))
+
+; Trait methods as first-class values — operators are ordinary symbols
+
+/sig +
+
+; Bind an operator to a variable, then call it
+
+(let [f +] (f 1 2))
+(let [cmp <] (cmp 3 4))
+
+; Pass operators to higher-order functions
+
+(defn apply-both [f x y] (+ (f x 10) (f y 10)))
+(apply-both + 1 2)
+(apply-both * 3 4)
+
+; Syntax highlighting — /source shows bold heads, cyan types, yellow literals, green strings
+
+(defn greet [:String name :Int times] (if (> times 0) (str-concat "Hello " (str-concat name (str-concat "! x" (int-to-string times)))) "none"))
+
+/source greet
+(greet "world" 3)
+
+; Verify the sprint
+
+(defn test-lenient [] (if (= (let [a (fib 10) b (fib 11)] (+ a b)) 144) None (Some "lenient")))
+(defn test-first-class-op [] (if (= (let [f +] (f 10 20)) 30) None (Some "first-class op")))
+(defn test-op-passthru [] (if (= (apply-both * 3 4) 70) None (Some "op passthru")))
+
+/run-tests

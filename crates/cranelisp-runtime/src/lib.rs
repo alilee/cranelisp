@@ -21,6 +21,7 @@
 
 pub mod alloc;
 pub mod io;
+pub mod ivar;
 pub mod rc;
 pub mod string;
 pub mod trace;
@@ -51,6 +52,11 @@ pub use string::{
     str_to_upper, str_to_lower,
 };
 pub use primitives::int::{int_to_string, parse_int};
+pub use primitives::int::{
+    cranelisp_op_add, cranelisp_op_sub, cranelisp_op_mul, cranelisp_op_div,
+    cranelisp_op_eq, cranelisp_op_neq, cranelisp_op_lt, cranelisp_op_gt,
+    cranelisp_op_le, cranelisp_op_ge,
+};
 pub use primitives::float::float_to_string;
 pub use primitives::bool::bool_to_string;
 
@@ -61,6 +67,9 @@ pub use marshal::{sconcat, quote_sexp};
 // run_io_trampoline for direct Rust calls from REPL loop)
 pub use io::cranelisp_run_io;
 pub use io::run_io_trampoline;
+
+// IVar intrinsics for lenient evaluation (registered as cranelisp_ivar_*)
+pub use ivar::{ivar_create, ivar_spark, ivar_force};
 
 // Trace runtime (registered as cranelisp_trace_* for JIT calls)
 pub use trace::{

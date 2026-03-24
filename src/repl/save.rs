@@ -285,10 +285,10 @@ fn generate_fns_and_macros(
                 if matches!(kind.as_ref(), DefKind::UserFn { .. }) {
                     // Look up the sexp in def_codegen (separate from symbol table
                     // in the reimplementation's decomposed architecture).
-                    if let Some(dc) = def_codegen.get(name) {
-                        if let Some(sexp) = &dc.sexp {
-                            items.push((name.as_ref().to_string(), sexp.clone()));
-                        }
+                    if let Some(dc) = def_codegen.get(name)
+                        && let Some(sexp) = &dc.sexp
+                    {
+                        items.push((name.as_ref().to_string(), sexp.clone()));
                     }
                 }
             }
@@ -397,11 +397,10 @@ fn dependency_sort(items: Vec<(String, Sexp)>) -> Vec<(String, Sexp)> {
 /// Collect all symbol names referenced in a sexp tree.
 fn collect_symbol_refs(sexp: &Sexp, refs: &mut HashSet<String>) {
     match sexp {
-        Sexp::Symbol(name, _) => {
+        Sexp::Symbol(name, _)
             // Skip type annotations (colon-prefixed), keywords, etc.
-            if !name.starts_with(':') && name != "&" {
+            if !name.starts_with(':') && name != "&" => {
                 refs.insert(name.clone());
-            }
         }
         Sexp::List(children, _) | Sexp::Bracket(children, _) => {
             for child in children {

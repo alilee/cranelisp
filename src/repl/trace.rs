@@ -91,10 +91,10 @@ pub(crate) fn expr_contains_trace(expr: &Expr) -> bool {
         Expr::Apply { callee, args, .. } => {
             // trace is a module-scoped special form (arch Principle 10).
             // It arrives as Apply(Var("trace"), [body]) -- detect it here.
-            if let Expr::Var { name, .. } = callee.as_ref() {
-                if &**name == "trace" {
-                    return true;
-                }
+            if let Expr::Var { name, .. } = callee.as_ref()
+                && &**name == "trace"
+            {
+                return true;
             }
             expr_contains_trace(callee) || args.iter().any(expr_contains_trace)
         }
@@ -114,6 +114,11 @@ pub(crate) fn expr_contains_trace(expr: &Expr) -> bool {
         }
         Expr::Annotate { expr, .. } => expr_contains_trace(expr),
         Expr::VecLit { elements, .. } => elements.iter().any(expr_contains_trace),
+        // ParBind is semantically like Let — check bindings and body for trace.
+        Expr::ParBind { bindings, body, .. } => {
+            bindings.iter().any(|(_, e)| expr_contains_trace(e))
+                || expr_contains_trace(body)
+        }
         // RunTests itself needs traced_fns for test discovery (GOT-swap tracing),
         // so it always triggers trace infrastructure, even without a nested (trace ...).
         Expr::RunTests { .. } => true,

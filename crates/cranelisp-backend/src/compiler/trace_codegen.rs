@@ -143,11 +143,15 @@ impl<'a, M: Module> FnCompiler<'a, M> {
         }
 
         // Compile the body expression.
-        // TODO: set in_trace_body flag when lenient eval is implemented.
+        // Disable sparkability analysis inside trace bodies — trace must
+        // execute sequentially to produce deterministic trace trees.
+        let saved_trace = self.in_trace_body;
+        self.in_trace_body = true;
         let saved_tail = self.in_tail_position;
         self.in_tail_position = false;
         let body_result = self.compile_expr(body)?;
         self.in_tail_position = saved_tail;
+        self.in_trace_body = saved_trace;
 
         // Discard body result (dec RC if it is heap-allocated).
         // The trace result is the Trace ADT, not the body's value.

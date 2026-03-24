@@ -415,19 +415,19 @@ impl TypeChecker {
                             }
                         }
                         // Check arity of known ADT types
-                        if let Some(td) = self.type_defs.get(&impl_.target_type) {
-                            if td.type_params.len() != expected_arity {
-                                return Err(CranelispError::TypeError {
-                                    message: format!(
-                                        "{} has {} type parameters, but trait {} expects a constructor with arity {}",
-                                        impl_.target_type,
-                                        td.type_params.len(),
-                                        impl_.trait_name,
-                                        expected_arity
-                                    ),
-                                    span: impl_.span,
-                                });
-                            }
+                        if let Some(td) = self.type_defs.get(&impl_.target_type)
+                            && td.type_params.len() != expected_arity
+                        {
+                            return Err(CranelispError::TypeError {
+                                message: format!(
+                                    "{} has {} type parameters, but trait {} expects a constructor with arity {}",
+                                    impl_.target_type,
+                                    td.type_params.len(),
+                                    impl_.trait_name,
+                                    expected_arity
+                                ),
+                                span: impl_.span,
+                            });
                         }
                     }
                 }
@@ -642,10 +642,10 @@ impl TypeChecker {
         )?;
 
         // Pre-unify the dispatch parameter with the concrete self type
-        if let Some(param_idx) = method_sig.hkt_param_index {
-            if let Some(param_ty) = param_types.get(param_idx) {
-                self.unify(param_ty, &concrete_self, method_defn.span)?;
-            }
+        if let Some(param_idx) = method_sig.hkt_param_index
+            && let Some(param_ty) = param_types.get(param_idx)
+        {
+            self.unify(param_ty, &concrete_self, method_defn.span)?;
         }
 
         // Check the body

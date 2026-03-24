@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 use serde::{Deserialize, Serialize};
 
 use crate::{Sexp, Span, Symbol, TraitName, TypeName};
@@ -138,6 +140,16 @@ pub enum Expr {
         fail_fn: Box<Expr>,
         span: Span,
     },
+
+    /// Parallel bind chain: produced by the bind! independence analysis pass.
+    /// Semantically identical to a sequential `Let` for type-checking purposes,
+    /// but codegen emits parallel IO dispatch via `IO_TAG_PAR`.
+    /// spec: §10.12 (Automatic IO Scheduling)
+    ParBind {
+        bindings: Vec<(Symbol, Expr)>,
+        body: Box<Expr>,
+        span: Span,
+    },
 }
 
 impl Expr {
@@ -157,7 +169,8 @@ impl Expr {
             | Expr::VecLit { span, .. }
             | Expr::Annotate { span, .. }
             | Expr::Trace { span, .. }
-            | Expr::RunTests { span, .. } => *span,
+            | Expr::RunTests { span, .. }
+            | Expr::ParBind { span, .. } => *span,
         }
     }
 }
@@ -267,6 +280,137 @@ pub enum TopLevel {
 
 /// A complete compilation unit: all top-level forms from one module.
 pub type Program = Vec<TopLevel>;
+
+// ---------------------------------------------------------------------------
+// Free variable analysis for Expr (used by bind chain independence analysis)
+// ---------------------------------------------------------------------------
+
+/// Compute the set of free variables in an expression.
+///
+/// Variables listed in `globals` (top-level functions, builtins) are excluded.
+/// Dotted names (e.g., `Type.Constructor`, `Trait.method`) are always treated
+/// as global references and excluded.
+///
+/// This is a pure AST traversal with no external dependencies, suitable for
+/// pre-typecheck analysis passes.
+pub fn free_vars_expr(expr: &Expr, globals: &HashSet<Symbol>) -> HashSet<Symbol> {
+    match expr {
+        Expr::IntLit { .. }
+        | Expr::FloatLit { .. }
+        | Expr::BoolLit { .. }
+        | Expr::StringLit { .. } => HashSet::new(),
+
+        Expr::Var { name, .. } => {
+            // Dotted names are always global references.
+            if globals.contains(name) || name.contains('.') {
+                HashSet::new()
+            } else {
+                let mut s = HashSet::new();
+                s.insert(name.clone());
+                s
+            }
+        }
+
+        Expr::Let { bindings, body, .. } => {
+            let mut fv = HashSet::new();
+            let mut bound = HashSet::new();
+            for (name, val_expr) in bindings {
+                let val_fv = free_vars_expr(val_expr, globals);
+                for v in val_fv {
+                    if !bound.contains(&v) {
+                        fv.insert(v);
+                    }
+                }
+                bound.insert(name.clone());
+            }
+            let body_fv = free_vars_expr(body, globals);
+            for v in body_fv {
+                if !bound.contains(&v) {
+                    fv.insert(v);
+                }
+            }
+            fv
+        }
+
+        Expr::If { cond, then_branch, else_branch, .. } => {
+            let mut fv = free_vars_expr(cond, globals);
+            fv.extend(free_vars_expr(then_branch, globals));
+            fv.extend(free_vars_expr(else_branch, globals));
+            fv
+        }
+
+        Expr::Lambda { params, body, .. } => {
+            let body_fv = free_vars_expr(body, globals);
+            let param_set: HashSet<Symbol> = params.iter().cloned().collect();
+            body_fv.into_iter().filter(|v| !param_set.contains(v)).collect()
+        }
+
+        Expr::Apply { callee, args, .. } => {
+            let mut fv = free_vars_expr(callee, globals);
+            for arg in args {
+                fv.extend(free_vars_expr(arg, globals));
+            }
+            fv
+        }
+
+        Expr::Match { scrutinee, arms, .. } => {
+            let mut fv = free_vars_expr(scrutinee, globals);
+            for arm in arms {
+                let arm_fv = free_vars_expr(&arm.body, globals);
+                let bound: HashSet<Symbol> = match &arm.pattern {
+                    Pattern::Constructor { bindings, .. } => bindings.iter().cloned().collect(),
+                    Pattern::Var { name, .. } => {
+                        let mut s = HashSet::new();
+                        s.insert(name.clone());
+                        s
+                    }
+                    Pattern::Wildcard { .. } => HashSet::new(),
+                };
+                for v in arm_fv {
+                    if !bound.contains(&v) {
+                        fv.insert(v);
+                    }
+                }
+            }
+            fv
+        }
+
+        Expr::Annotate { expr, .. } => free_vars_expr(expr, globals),
+
+        Expr::VecLit { elements, .. } => {
+            let mut fv = HashSet::new();
+            for elem in elements {
+                fv.extend(free_vars_expr(elem, globals));
+            }
+            fv
+        }
+
+        Expr::ParBind { bindings, body, .. } => {
+            // ParBind bindings are independent (no binding references another).
+            let mut fv = HashSet::new();
+            for (_, val_expr) in bindings {
+                fv.extend(free_vars_expr(val_expr, globals));
+            }
+            let bound: HashSet<Symbol> = bindings.iter().map(|(n, _)| n.clone()).collect();
+            let body_fv = free_vars_expr(body, globals);
+            for v in body_fv {
+                if !bound.contains(&v) {
+                    fv.insert(v);
+                }
+            }
+            fv
+        }
+
+        Expr::Trace { body, .. } => free_vars_expr(body, globals),
+
+        Expr::RunTests { init, pass_fn, fail_fn, .. } => {
+            let mut fv = free_vars_expr(init, globals);
+            fv.extend(free_vars_expr(pass_fn, globals));
+            fv.extend(free_vars_expr(fail_fn, globals));
+            fv
+        }
+    }
+}
 
 /// REPL-specific input: wraps TopLevel forms plus bare expressions.
 #[derive(Debug, Clone)]

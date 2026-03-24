@@ -45,14 +45,13 @@ Delivery progress for the Cranelisp reimplementation. For technical scope per ri
 | 23 | Executable, Hot-Reload & REPL Lifecycle — standalone executable (`--link`), file watching (eager recompile, cascade, error blocking), shell escape (`;#!`), session persistence (`user.cl` source regeneration + cache), REPL cache integration (trait/impl restore, macro recompile, TypeId fix), batch `main` requirement, demo trampoline, local file import, 5 FIXMEs resolved, 3 specs rewritten: 1411 tests, 4 ignored, 0 failures | COMPLETE | `sprints/archive/sprint-23.md` |
 | 23a | UAT Findings — primitive name scoping §8.9.1 (3 compiler bugs), duplicate param rejection, REPL trait constraint eagerness, cross-eval mono GOT, multi-module JIT name collisions, constrained type display §3.5.1, test infrastructure redesign (prelude/preamble fixtures, single-pipeline helpers), QA process overhaul (failing tests > #[ignore]): 1211 tests, 4 ignored, 0 failures | COMPLETE | `sprints/archive/sprint-23a.md` |
 | 24 | HKT, Lazy Sequences & Terminal Styling — higher-kinded types (TyConApp unification, HKT traits/impls, method resolution), lazy sequences (Seq ADT, 4 producers, 9 consumers), S-expression pretty-printer (syntax highlighting, Lisp indentation), checked division (§12.7.3), batch→GOT bridge (stdlib fn-as-value fix), comment preservation (Sexp::Comment), --no-color flag, 2 examples, ring4i demo, 6 review findings fixed: 1441 tests, 0 ignored, 0 failures | COMPLETE | `sprints/archive/sprint-24.md` |
+| 25 | Lenient Eval, Auto IO Scheduling & First-Class Operators — lenient evaluation (IVar runtime, sparkability analysis, barrier-force codegen, rayon thread pool), auto IO scheduling (bind-chain independence analysis, Expr::ParBind, trampoline Par handler with resource token serialization), trait methods as first-class values (§7.6 — operator closure wrapping), pretty-printer bold for constructors, demo player interactive controls, 61 clippy warnings fixed, 6 FIXMEs resolved (2 were 2x deferred), 2B+4I review findings fixed: 1475 tests (1474 passed, 1 failed), 0 ignored, 0 clippy | COMPLETE | `sprints/archive/sprint-25.md` |
 
-## Forward Plan (Ring 4 Completion)
-
-Remaining Ring 4 features mapped to sprints. Scope is indicative — each sprint's exact scope is confirmed during its Phase 1.
+## Forward Plan
 
 | Sprint | Theme | Key Features | Skills | Dependencies |
 |--------|-------|-------------|--------|--------------|
 | ~~22~~ | ~~Module Caching~~ | ~~Done~~ | | |
 | ~~23~~ | ~~Executable, Hot-Reload & REPL Lifecycle~~ | ~~Done~~ | | |
 | ~~24~~ | ~~HKT, Lazy Sequences & Terminal Styling~~ | ~~Done~~ | | |
-| **25** | Lenient Eval & Auto IO Scheduling | Lenient evaluation (§12.4.3 — dependency analysis, cost model, thread pool), automatic IO scheduling (§10.12 — Par node, trampoline redesign, resource tokens) | /typecheck, /backend, /int, /qa, /platform | IO model (done), caching (S22) |
+| ~~25~~ | ~~Lenient Eval, Auto IO Scheduling & First-Class Operators~~ | ~~Done~~ | | |

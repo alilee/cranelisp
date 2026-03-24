@@ -73,10 +73,10 @@ fn detect_color(no_color_flag: bool) -> bool {
         return false;
     }
     // 2. NO_COLOR env var (any non-empty value suppresses).
-    if let Ok(val) = std::env::var("NO_COLOR") {
-        if !val.is_empty() {
-            return false;
-        }
+    if let Ok(val) = std::env::var("NO_COLOR")
+        && !val.is_empty()
+    {
+        return false;
     }
     // 3. TTY check on stdout.
     use std::io::IsTerminal;

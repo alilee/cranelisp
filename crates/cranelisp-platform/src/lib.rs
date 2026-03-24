@@ -19,8 +19,9 @@ pub const ABI_VERSION: u32 = 1;
 pub const IO_TAG_PURE: i64 = 0;
 pub const IO_TAG_EFFECT: i64 = 1;
 pub const IO_TAG_BIND: i64 = 2;
-// IO_TAG_PAR (tag 3) is NOT included in ABI version 1.
-// It will be added when automatic IO scheduling lands (Ring 4 later sprint).
+/// Parallel IO dispatch: branches run concurrently with resource token serialization.
+/// See spec §10.12 (Automatic IO Scheduling).
+pub const IO_TAG_PAR: i64 = 3;
 
 /// Byte offset of the resource token within an Effect node payload.
 /// Effect layout: [tag i64][thunk_ptr i64][resource_token i64] -- 24 bytes.

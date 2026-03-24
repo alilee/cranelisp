@@ -1002,11 +1002,11 @@ impl TypeChecker {
                         TypeName::from(type_name.as_ref()),
                     );
                 }
-                ModuleEntry::TraitDecl { decl, .. } => {
+                ModuleEntry::TraitDecl { decl, .. }
                     // Reconstruct trait_registry from cached TraitDecl entries.
                     // This populates decls and method_to_trait so trait method
                     // resolution works after loading from cache.
-                    if !self.trait_registry.decls.contains_key(&decl.name) {
+                    if !self.trait_registry.decls.contains_key(&decl.name) => {
                         for method in &decl.methods {
                             self.trait_registry
                                 .method_to_trait
@@ -1015,7 +1015,6 @@ impl TypeChecker {
                         self.trait_registry
                             .decls
                             .insert(decl.name.clone(), decl.clone());
-                    }
                 }
                 _ => {}
             }
@@ -1061,10 +1060,10 @@ impl TypeChecker {
             }
         }
 
-        if let Some(id) = max_id {
-            if self.next_id <= id {
-                self.next_id = id + 1;
-            }
+        if let Some(id) = max_id
+            && self.next_id <= id
+        {
+            self.next_id = id + 1;
         }
     }
 
