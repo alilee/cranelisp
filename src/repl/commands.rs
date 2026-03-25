@@ -120,8 +120,9 @@ fn typecheck_only(session: &mut ReplSession, expr_src: &str) -> Result<Type, Cra
         });
     }
     let input = cranelisp_frontend::build_repl_input(&sexps[0], &mut session.core.expander)?;
-    let check_result = session.core.tc.check_repl_input(&input)?;
-    Ok(check_result.ty)
+    let ctx = session.build_repl_compile_context();
+    let check_result = session.core.tc.check(&[input], &ctx)?;
+    Ok(check_result.display.as_ref().unwrap().ty.clone())
 }
 
 // ── /info ─────────────────────────────────────────────────────────────────────

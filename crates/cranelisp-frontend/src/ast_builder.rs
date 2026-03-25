@@ -1,5 +1,5 @@
 //! AST builder: converts S-expressions (`Vec<Sexp>`) into typed AST nodes
-//! (`Vec<TopLevel>` for batch, `ReplInput` for REPL).
+//! (`Vec<TopLevel>` for both batch and REPL).
 //!
 //! Ring 0 forms: `defn`, `deftype`, `let`, `if`, `fn`/`lambda`, `match`,
 //! type annotations (`:Type expr`).
@@ -11,50 +11,10 @@ use std::collections::HashSet;
 
 use cranelisp_types::{
     CranelispError, ConstructorDef, Defn, DefnVariant, Expr, FieldDef, MacroExpander, MatchArm,
-    Pattern, Program, ReplInput, Sexp, Span, Symbol, TopLevel, TraitDecl, TraitImpl,
+    Pattern, Program, Sexp, Span, Symbol, TopLevel, TraitDecl, TraitImpl,
     TraitMethodSig, TraitName, TypeExpr, TypeName, Visibility,
 };
 
-// ---------------------------------------------------------------------------
-// TopLevel -> ReplInput conversion
-// ---------------------------------------------------------------------------
-
-/// Convert a TopLevel form to a ReplInput, avoiding field-by-field destructuring.
-fn toplevel_to_repl_input(tl: TopLevel) -> ReplInput {
-    match tl {
-        TopLevel::Defn(defn) => ReplInput::Defn(defn),
-        TopLevel::DefnMulti {
-            name,
-            docstring,
-            variants,
-            visibility,
-            span,
-        } => ReplInput::DefnMulti {
-            name,
-            docstring,
-            variants,
-            visibility,
-            span,
-        },
-        TopLevel::TraitDecl(decl) => ReplInput::TraitDecl(decl),
-        TopLevel::TraitImpl(imp) => ReplInput::TraitImpl(imp),
-        TopLevel::TypeDef {
-            name,
-            docstring,
-            type_params,
-            constructors,
-            visibility,
-            span,
-        } => ReplInput::TypeDef {
-            name,
-            docstring,
-            type_params,
-            constructors,
-            visibility,
-            span,
-        },
-    }
-}
 
 // ---------------------------------------------------------------------------
 // Error helpers
@@ -140,12 +100,12 @@ pub fn build_program(
 /// Build REPL input from a sequence of S-expressions.
 ///
 /// Handles top-level annotation expressions where `:Type expr` or `:(T a) expr`
-/// parses as two separate sexps that must be combined into a single `Expr::Annotate`.
+/// parses as two separate sexps that must be combined into a single `TopLevel::Expr(Expr::Annotate)`.
 /// Falls through to single-sexp handling for all other cases.
 pub fn build_repl_input_from_sexps(
     sexps: &[Sexp],
     expander: &mut dyn MacroExpander,
-) -> Result<ReplInput, CranelispError> {
+) -> Result<TopLevel, CranelispError> {
     if sexps.is_empty() {
         return Err(parse_err("expected expression", Span::SYNTHETIC));
     }
@@ -153,7 +113,7 @@ pub fn build_repl_input_from_sexps(
     if sexps.len() > 1 {
         let args = build_args_with_annotations(sexps, expander)?;
         if args.len() == 1 {
-            return Ok(ReplInput::Expr(args.into_iter().next().unwrap()));
+            return Ok(TopLevel::Expr(args.into_iter().next().unwrap()));
         }
         // Multiple non-annotation sexps — error (expected single expression)
         return Err(parse_err("expected single expression", sexps[1].span()));
@@ -163,11 +123,11 @@ pub fn build_repl_input_from_sexps(
 
 /// Build REPL input from a single S-expression.
 ///
-/// Accepts top-level forms and bare expressions.
+/// Accepts top-level forms and bare expressions (returns `TopLevel::Expr` for the latter).
 pub fn build_repl_input(
     sexp: &Sexp,
     expander: &mut dyn MacroExpander,
-) -> Result<ReplInput, CranelispError> {
+) -> Result<TopLevel, CranelispError> {
     // Try top-level forms first, fall back to expression
     match sexp {
         Sexp::List(children, span) if !children.is_empty() => {
@@ -180,8 +140,7 @@ pub fn build_repl_input(
 
                 // impl has no private variant
                 if head == "impl" {
-                    let tl = build_trait_impl(children, *span, expander)?;
-                    return Ok(toplevel_to_repl_input(tl));
+                    return build_trait_impl(children, *span, expander);
                 }
 
                 // Check if head is a macro (I3: match what build_top_level does)
@@ -194,15 +153,9 @@ pub fn build_repl_input(
                 // Check for definition forms with visibility
                 if let Some((base, vis)) = parse_def_visibility(head) {
                     return match base {
-                        "defn" => build_defn_as_repl(children, *span, vis, expander),
-                        "deftype" => {
-                            let tl = build_deftype(children, *span, vis)?;
-                            Ok(toplevel_to_repl_input(tl))
-                        }
-                        "deftrait" => {
-                            let tl = build_deftrait(children, *span, vis)?;
-                            Ok(toplevel_to_repl_input(tl))
-                        }
+                        "defn" => build_defn(children, *span, vis, expander),
+                        "deftype" => build_deftype(children, *span, vis),
+                        "deftrait" => build_deftrait(children, *span, vis),
                         _ => unreachable!("invariant: parse_def_visibility returns known base"),
                     };
                 }
@@ -212,7 +165,7 @@ pub fn build_repl_input(
     }
     // Fall through to expression
     let expr = build_expr(sexp, expander)?;
-    Ok(ReplInput::Expr(expr))
+    Ok(TopLevel::Expr(expr))
 }
 
 // ---------------------------------------------------------------------------
@@ -290,106 +243,55 @@ fn build_top_level(
     sexp: &Sexp,
     expander: &mut dyn MacroExpander,
 ) -> Result<TopLevel, CranelispError> {
-    let (children, span) = expect_list(sexp)?;
-    if children.is_empty() {
-        return Err(parse_err("empty top-level form", span));
+    match sexp {
+        Sexp::List(children, span) if !children.is_empty() => {
+            if let Sexp::Symbol(head, head_span) = &children[0] {
+                // Reject forms handled by earlier pipeline stages
+                reject_pre_ast_forms(head, *span)?;
+
+                // Reject non-Ring-0 top-level forms
+                reject_non_ring0_toplevel(head, *head_span)?;
+
+                // Check if head is a macro
+                if expander.is_macro(head) {
+                    let expanded = expander.expand(
+                        &head.as_str().into(),
+                        &children[1..],
+                        *span,
+                    )?;
+                    return build_top_level(&expanded, expander);
+                }
+
+                // Check for definition forms with visibility
+                if let Some((base, vis)) = parse_def_visibility(head) {
+                    return match base {
+                        "defn" => build_defn(children, *span, vis, expander),
+                        "deftype" => build_deftype(children, *span, vis),
+                        "deftrait" => build_deftrait(children, *span, vis),
+                        _ => unreachable!("invariant: parse_def_visibility returns known base"),
+                    };
+                }
+
+                // impl has no private variant
+                if head == "impl" {
+                    return build_trait_impl(children, *span, expander);
+                }
+            }
+            // Fall through to expression for unknown list forms
+            let expr = build_expr(sexp, expander)?;
+            Ok(TopLevel::Expr(expr))
+        }
+        _ => {
+            // Non-list sexp: treat as expression
+            let expr = build_expr(sexp, expander)?;
+            Ok(TopLevel::Expr(expr))
+        }
     }
-    let (head, head_span) = expect_symbol(&children[0])?;
-
-    // Reject forms handled by earlier pipeline stages
-    reject_pre_ast_forms(head, span)?;
-
-    // Reject non-Ring-0 top-level forms
-    reject_non_ring0_toplevel(head, head_span)?;
-
-    // Check if head is a macro
-    if expander.is_macro(head) {
-        let expanded = expander.expand(
-            &head.into(),
-            &children[1..],
-            span,
-        )?;
-        return build_top_level(&expanded, expander);
-    }
-
-    // Check for definition forms with visibility
-    if let Some((base, vis)) = parse_def_visibility(head) {
-        return match base {
-            "defn" => build_defn(children, span, vis, expander),
-            "deftype" => build_deftype(children, span, vis),
-            "deftrait" => build_deftrait(children, span, vis),
-            _ => unreachable!("invariant: parse_def_visibility returns known base"),
-        };
-    }
-
-    // impl has no private variant
-    if head == "impl" {
-        return build_trait_impl(children, span, expander);
-    }
-
-    Err(parse_err(
-        &format!("unknown top-level form: {head}"),
-        span,
-    ))
 }
 
 // ---------------------------------------------------------------------------
 // defn builder
 // ---------------------------------------------------------------------------
-
-/// Parsed defn result before wrapping into TopLevel or ReplInput.
-enum DefnInner {
-    Single(Defn),
-    Multi {
-        name: Symbol,
-        docstring: Option<String>,
-        variants: Vec<DefnVariant>,
-        visibility: Visibility,
-        span: Span,
-    },
-}
-
-impl From<DefnInner> for TopLevel {
-    fn from(inner: DefnInner) -> Self {
-        match inner {
-            DefnInner::Single(defn) => TopLevel::Defn(defn),
-            DefnInner::Multi {
-                name,
-                docstring,
-                variants,
-                visibility,
-                span,
-            } => TopLevel::DefnMulti {
-                name,
-                docstring,
-                variants,
-                visibility,
-                span,
-            },
-        }
-    }
-}
-
-impl From<DefnInner> for ReplInput {
-    fn from(inner: DefnInner) -> Self {
-        match inner {
-            DefnInner::Single(defn) => ReplInput::Defn(defn),
-            DefnInner::Multi {
-                name,
-                docstring,
-                variants,
-                visibility,
-                span,
-            } => ReplInput::DefnMulti {
-                name,
-                docstring,
-                variants,
-                visibility,
-                span,
-            },
-        }
-    }
-}
 
 fn build_defn(
     children: &[Sexp],
@@ -397,25 +299,6 @@ fn build_defn(
     visibility: Visibility,
     expander: &mut dyn MacroExpander,
 ) -> Result<TopLevel, CranelispError> {
-    build_defn_inner(children, span, visibility, expander).map(Into::into)
-}
-
-fn build_defn_as_repl(
-    children: &[Sexp],
-    span: Span,
-    visibility: Visibility,
-    expander: &mut dyn MacroExpander,
-) -> Result<ReplInput, CranelispError> {
-    build_defn_inner(children, span, visibility, expander).map(Into::into)
-}
-
-/// Shared defn parsing logic for both batch and REPL paths.
-fn build_defn_inner(
-    children: &[Sexp],
-    span: Span,
-    visibility: Visibility,
-    expander: &mut dyn MacroExpander,
-) -> Result<DefnInner, CranelispError> {
     // (defn name "doc"? [params] body)      -- single
     // (defn name "doc"? ([p] b) ([p] b))    -- multi
     if children.len() < 3 {
@@ -430,7 +313,7 @@ fn build_defn_inner(
     }
 
     // Detect single vs multi: Bracket -> single, List -> multi
-    match &children[next] {
+    let variants = match &children[next] {
         Sexp::Bracket(..) => {
             let (params, param_annotations) = build_annotated_params(&children[next])?;
             let body_start = next + 1;
@@ -441,34 +324,32 @@ fn build_defn_inner(
             if body_start + consumed != children.len() {
                 return Err(parse_err("defn has extra forms after body", span));
             }
-            Ok(DefnInner::Single(Defn {
-                name,
-                docstring,
+            vec![DefnVariant {
                 params,
                 param_annotations,
                 body,
-                visibility,
                 span,
-            }))
+            }]
         }
         Sexp::List(..) => {
-            let variants = children[next..]
+            children[next..]
                 .iter()
                 .map(|s| build_defn_variant(s, expander))
-                .collect::<Result<Vec<_>, _>>()?;
-            Ok(DefnInner::Multi {
-                name,
-                docstring,
-                variants,
-                visibility,
-                span,
-            })
+                .collect::<Result<Vec<_>, _>>()?
         }
-        _ => Err(parse_err(
+        _ => return Err(parse_err(
             "defn: expected params [...] or variant (...)",
             children[next].span(),
         )),
-    }
+    };
+
+    Ok(TopLevel::Defn(Defn {
+        name,
+        docstring,
+        variants,
+        visibility,
+        span,
+    }))
 }
 
 fn get_defn_name(sexp: &Sexp) -> Result<Symbol, CranelispError> {
@@ -1019,9 +900,12 @@ fn build_impl_method(
     Ok(Defn {
         name,
         docstring: None,
-        params,
-        param_annotations,
-        body,
+        variants: vec![DefnVariant {
+            params,
+            param_annotations,
+            body,
+            span,
+        }],
         visibility: Visibility::Public,
         span,
     })
@@ -1602,7 +1486,7 @@ mod tests {
         build_program(&sexps, &mut expander)
     }
 
-    fn parse_and_build_repl(input: &str) -> Result<ReplInput, CranelispError> {
+    fn parse_and_build_repl(input: &str) -> Result<TopLevel, CranelispError> {
         let sexps = crate::reader::parse(input)?;
         assert!(!sexps.is_empty(), "expected at least one sexp");
         let mut expander = NoOpExpander;
@@ -1920,7 +1804,7 @@ mod tests {
         match &prog[0] {
             TopLevel::Defn(defn) => {
                 assert_eq!(defn.name, "add");
-                assert_eq!(defn.params.len(), 2);
+                assert_eq!(defn.params().len(), 2);
                 assert_eq!(defn.visibility, Visibility::Public);
             }
             other => panic!("expected Defn, got {other:?}"),
@@ -1957,13 +1841,14 @@ mod tests {
     fn test_build_defn_multi() {
         let prog = parse_and_build_program("(defn f ([x] x) ([x y] (+ x y)))").unwrap();
         match &prog[0] {
-            TopLevel::DefnMulti { name, variants, .. } => {
-                assert_eq!(name, "f");
-                assert_eq!(variants.len(), 2);
-                assert_eq!(variants[0].params.len(), 1);
-                assert_eq!(variants[1].params.len(), 2);
+            TopLevel::Defn(defn) => {
+                assert_eq!(defn.name, "f");
+                assert!(defn.is_multi_sig());
+                assert_eq!(defn.variants.len(), 2);
+                assert_eq!(defn.variants[0].params.len(), 1);
+                assert_eq!(defn.variants[1].params.len(), 2);
             }
-            other => panic!("expected DefnMulti, got {other:?}"),
+            other => panic!("expected Defn (multi-sig), got {other:?}"),
         }
     }
 
@@ -2071,7 +1956,7 @@ mod tests {
     #[test]
     fn test_repl_expression() {
         match parse_and_build_repl("42").unwrap() {
-            ReplInput::Expr(Expr::IntLit { value, .. }) => assert_eq!(value, 42),
+            TopLevel::Expr(Expr::IntLit { value, .. }) => assert_eq!(value, 42),
             other => panic!("expected Expr(IntLit), got {other:?}"),
         }
     }
@@ -2080,7 +1965,7 @@ mod tests {
     #[test]
     fn test_repl_defn() {
         match parse_and_build_repl("(defn f [x] x)").unwrap() {
-            ReplInput::Defn(defn) => assert_eq!(defn.name, "f"),
+            TopLevel::Defn(defn) => assert_eq!(defn.name, "f"),
             other => panic!("expected Defn, got {other:?}"),
         }
     }
@@ -2089,7 +1974,7 @@ mod tests {
     #[test]
     fn test_repl_deftype() {
         match parse_and_build_repl("(deftype Color Red Green Blue)").unwrap() {
-            ReplInput::TypeDef { name, .. } => assert_eq!(name, "Color"),
+            TopLevel::TypeDef { name, .. } => assert_eq!(name, "Color"),
             other => panic!("expected TypeDef, got {other:?}"),
         }
     }
@@ -2250,7 +2135,7 @@ mod tests {
                 assert!(imp.type_constraints.is_empty());
                 assert_eq!(imp.methods.len(), 1);
                 assert_eq!(imp.methods[0].name, "show");
-                assert_eq!(imp.methods[0].params.len(), 1);
+                assert_eq!(imp.methods[0].params().len(), 1);
             }
             other => panic!("expected TraitImpl, got {other:?}"),
         }
@@ -2298,7 +2183,7 @@ mod tests {
         match parse_and_build_repl(
             "(impl Eq Int (defn = [x y] (eq-i64 x y)))",
         ).unwrap() {
-            ReplInput::TraitImpl(imp) => {
+            TopLevel::TraitImpl(imp) => {
                 assert_eq!(imp.trait_name, "Eq");
                 assert_eq!(imp.target_type, "Int");
             }
@@ -2312,7 +2197,7 @@ mod tests {
         match parse_and_build_repl(
             "(deftrait Showable (show [self] String))",
         ).unwrap() {
-            ReplInput::TraitDecl(decl) => {
+            TopLevel::TraitDecl(decl) => {
                 assert_eq!(decl.name, "Showable");
             }
             other => panic!("expected TraitDecl, got {other:?}"),
@@ -2618,8 +2503,8 @@ mod tests {
         match &prog[0] {
             TopLevel::Defn(defn) => {
                 assert_eq!(defn.docstring.as_deref(), Some("docstring"));
-                assert_eq!(defn.params.len(), 1);
-                assert_eq!(defn.params[0], "x");
+                assert_eq!(defn.params().len(), 1);
+                assert_eq!(defn.params()[0], "x");
             }
             other => panic!("expected Defn, got {other:?}"),
         }
@@ -2834,7 +2719,7 @@ mod tests {
     #[test]
     fn test_repl_string_literal() {
         match parse_and_build_repl("\"hello\"").unwrap() {
-            ReplInput::Expr(Expr::StringLit { value, .. }) => {
+            TopLevel::Expr(Expr::StringLit { value, .. }) => {
                 assert_eq!(value, "hello");
             }
             other => panic!("expected Expr(StringLit), got {other:?}"),
@@ -2915,8 +2800,8 @@ mod tests {
         match parse_and_build_program("(defn foo [x] x)").unwrap().as_slice() {
             [TopLevel::Defn(defn)] => {
                 assert_eq!(defn.name, "foo");
-                assert_eq!(defn.params.len(), 1);
-                assert_eq!(defn.params[0], "x");
+                assert_eq!(defn.params().len(), 1);
+                assert_eq!(defn.params()[0], "x");
             }
             other => panic!("expected single Defn, got {other:?}"),
         }

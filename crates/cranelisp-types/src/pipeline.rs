@@ -1,4 +1,8 @@
-use crate::{CranelispError, Sexp, Span, Symbol};
+use std::collections::HashMap;
+
+use serde::{Deserialize, Serialize};
+
+use crate::{CranelispError, ModuleFullPath, Sexp, Span, Symbol};
 
 /// Controls compilation strategy.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -76,3 +80,50 @@ pub const GOT_TABLE_SIZE: usize = 1024;
 /// Values below this are nullary tags; values above are heap pointers.
 /// Shared between typechecker (for ADT validation) and backend (for codegen).
 pub const NULLARY_TAG_THRESHOLD: usize = 1024;
+
+// --- Module strategy and compile context ---
+
+/// How definitions from a compilation unit integrate with existing module state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ModuleStrategy {
+    /// REPL mode: add to existing module state (definitions accumulate).
+    Additive,
+    /// File load mode: these forms ARE the module (replace prior state).
+    Replace,
+}
+
+/// Context for a compilation unit — tells the pipeline which module definitions
+/// land in, how they integrate, and what codegen strategy to use.
+#[derive(Debug, Clone)]
+pub struct CompileContext {
+    /// Target module for definitions.
+    pub module: ModuleFullPath,
+    /// Whether to add to or replace existing module state.
+    pub strategy: ModuleStrategy,
+    /// Codegen strategy (GOT-indirect vs direct calls).
+    pub compile_mode: CompileMode,
+}
+
+// --- Call graph types ---
+
+/// An edge in the call graph from one function to another.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CallEdge {
+    /// Name of the called function.
+    pub callee: Symbol,
+    /// Whether this call is in tail position.
+    pub tail_position: bool,
+    /// Source location of the call site.
+    pub span: Span,
+}
+
+/// Call information for a single function.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CallInfo {
+    /// Outgoing call edges from this function.
+    pub edges: Vec<CallEdge>,
+}
+
+/// Map from function name to its call information.
+/// Populated during typecheck, consumed by codegen and analysis passes.
+pub type CallGraph = HashMap<Symbol, CallInfo>;

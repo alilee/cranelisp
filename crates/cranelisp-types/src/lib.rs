@@ -19,12 +19,12 @@ pub use span::Span;
 pub use error::{CranelispError, Warning, WarningKind};
 pub use sexp::Sexp;
 pub use ast::{
-    ConstructorDef, Defn, DefnVariant, Expr, FieldDef, MatchArm, Pattern, Program, ReplInput,
+    ConstructorDef, Defn, DefnVariant, Expr, FieldDef, MatchArm, Pattern, Program,
     TopLevel, TraitDecl, TraitImpl, TraitMethodSig, TypeExpr, Visibility, free_vars_expr,
 };
 pub use types::{Scheme, Subst, Type, TypeId, apply, free_vars, max_type_var_id, format_type_display, format_type_with_vars, type_var_names};
 pub use check::{
-    CheckResult, ConstructorInfo, FieldInfo, MethodResolutions, MonoDefn, ReplCheckResult,
+    CheckResult, ConstructorInfo, DisplayInfo, FieldInfo, MethodResolutions, MonoDefn,
     ReplSnapshot, ResolvedCall, TypeDefInfo,
 };
 pub use module::{
@@ -32,7 +32,10 @@ pub use module::{
     MacroParam, ModDecl, ModuleEntry, ModuleStructure, OverloadVariant, PrimitiveKind, SymbolTable,
 };
 pub use heap::{HeapCategory, HeapHeader};
-pub use pipeline::{CompileMode, CompileResult, GOT_TABLE_SIZE, MacroExpander, NoOpExpander, NULLARY_TAG_THRESHOLD};
+pub use pipeline::{
+    CallEdge, CallGraph, CallInfo, CompileContext, CompileMode, CompileResult,
+    GOT_TABLE_SIZE, MacroExpander, ModuleStrategy, NoOpExpander, NULLARY_TAG_THRESHOLD,
+};
 pub use operator::{ring0_primitives, ring1_primitives, ring3_primitives, PrimitiveDef};
 pub use marshal::{
     TAG_SNIL, TAG_SCONS,

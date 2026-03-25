@@ -292,7 +292,7 @@ impl<'a, M: Module> FnCompiler<'a, M> {
 
         // Create loop header block for TCO: one i64 block param per function param.
         let loop_header = builder.create_block();
-        for _ in &defn.params {
+        for _ in defn.params() {
             builder.append_block_param(loop_header, types::I64);
         }
 
@@ -305,7 +305,7 @@ impl<'a, M: Module> FnCompiler<'a, M> {
         builder.switch_to_block(loop_header);
 
         // Compute last-use info for the body.
-        let last_uses = heap::compute_last_uses(&defn.body);
+        let last_uses = heap::compute_last_uses(defn.body());
 
         let mut compiler = FnCompiler {
             builder,
@@ -317,7 +317,7 @@ impl<'a, M: Module> FnCompiler<'a, M> {
             current_fn_name: Some(defn.name.clone()),
             tail_loop_block: Some(loop_header),
             in_tail_position: true,
-            fn_param_count: defn.params.len(),
+            fn_param_count: defn.params().len(),
             variable_types: HashMap::new(),
             last_uses,
             consumed_vars: std::collections::HashSet::new(),
@@ -338,13 +338,13 @@ impl<'a, M: Module> FnCompiler<'a, M> {
         {
             param_types.iter().map(|t| Some(t.clone())).collect()
         } else {
-            vec![None; defn.params.len()]
+            vec![None; defn.params().len()]
         };
 
         // Bind function parameters from loop header block params (not entry block).
         // Also record parameter types in variable_types so scope cleanup
         // can emit rc_dec for heap-typed parameters at function exit.
-        for (i, param_name) in defn.params.iter().enumerate() {
+        for (i, param_name) in defn.params().iter().enumerate() {
             let val = compiler.builder.block_params(loop_header)[i];
             let var = compiler.fresh_variable();
             compiler.builder.declare_var(var, types::I64);
@@ -370,9 +370,9 @@ impl<'a, M: Module> FnCompiler<'a, M> {
         // This implements the consuming calling convention: the callee owns
         // heap-typed parameters and dec's them at exit. The caller inc's
         // variable arguments before the call.
-        let skip_var = Self::return_var_in_scope(&defn.body, compiler.scope_stack.last());
-        let result = compiler.compile_expr(&defn.body)?;
-        compiler.protect_return_value(&skip_var, result, &defn.body);
+        let skip_var = Self::return_var_in_scope(defn.body(), compiler.scope_stack.last());
+        let result = compiler.compile_expr(defn.body())?;
+        compiler.protect_return_value(&skip_var, result, defn.body());
         compiler.pop_scope_with_cleanup(skip_var.as_ref());
 
         // Return the result.

@@ -13,9 +13,9 @@ use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 
 use cranelisp_types::{
-    CheckResult, CompileMode, CranelispError, Defn, MacroClauseInfo, ModuleEntry, ModuleFullPath,
-    ModuleStructure, Program, ReplCheckResult, ReplInput, Sexp, Span, Symbol, Type, Visibility,
-    Warning,
+    CheckResult, CompileContext, CompileMode, CranelispError, Defn, MacroClauseInfo, ModuleEntry,
+    ModuleFullPath, ModuleStrategy, ModuleStructure, Program, Sexp, Span, Symbol, TopLevel,
+    Type, Visibility, Warning,
 };
 
 use cranelisp_backend::cache;
@@ -409,11 +409,16 @@ impl CompilationSession {
         form: &Sexp,
     ) -> Result<FormResult, CranelispError> {
         let input = cranelisp_frontend::build_repl_input(form, &mut self.expander)?;
-        let check_result = self.tc.check_repl_input(&input)?;
+        let ctx = CompileContext {
+            module: self.tc.current_module_path().clone(),
+            strategy: ModuleStrategy::Additive,
+            compile_mode: CompileMode::Interactive,
+        };
+        let check_result = self.tc.check(&[input.clone()], &ctx)?;
         let warnings = check_result.warnings.clone();
 
         match &input {
-            ReplInput::Expr(expr) => {
+            TopLevel::Expr(expr) => {
                 // Compile mono defns first (constrained poly path).
                 self.compile_mono_defns(&check_result)?;
 
@@ -435,17 +440,17 @@ impl CompilationSession {
 
                 Ok(FormResult {
                     value,
-                    ty: check_result.ty.clone(),
+                    ty: check_result.display.as_ref().unwrap().ty.clone(),
                     is_definition: false,
                     warnings,
                 })
             }
-            ReplInput::Defn(defn) => {
+            TopLevel::Defn(defn) => {
                 // Skip compiling constrained fn base definitions -- they are
                 // templates that get monomorphised at call sites.
                 let is_constrained = check_result
-                    .scheme
-                    .as_ref()
+                    .display.as_ref()
+                    .and_then(|d| d.scheme.as_ref())
                     .is_some_and(|s| !s.constraints.is_empty());
 
                 // Compile monomorphised specializations BEFORE the defn body,
@@ -459,7 +464,7 @@ impl CompilationSession {
                 }
 
                 // Execute zero-arg defns and return the body's result type.
-                let (value, result_ty) = if defn.params.is_empty() && !is_constrained {
+                let (value, result_ty) = if defn.params().is_empty() && !is_constrained {
                     let entry = self.got_state.def_codegen.get(defn.name.as_ref());
                     let code_ptr = entry
                         .and_then(|e| e.code_ptr)
@@ -474,13 +479,13 @@ impl CompilationSession {
                         unsafe { std::mem::transmute(code_ptr) };
                     // For zero-arg defns, the result type is the return type,
                     // not the function type (Fn [] T -> T).
-                    let ret_ty = match &check_result.ty {
+                    let ret_ty = match &check_result.display.as_ref().unwrap().ty {
                         Type::Fn(_, ret) => (**ret).clone(),
                         other => other.clone(),
                     };
                     (func(), ret_ty)
                 } else {
-                    (0, check_result.ty.clone())
+                    (0, check_result.display.as_ref().unwrap().ty.clone())
                 };
 
                 Ok(FormResult {
@@ -490,19 +495,15 @@ impl CompilationSession {
                     warnings,
                 })
             }
-            ReplInput::TypeDef { .. } => {
+            TopLevel::TypeDef { .. } => {
                 Ok(FormResult {
                     value: 0,
-                    ty: check_result.ty.clone(),
+                    ty: check_result.display.as_ref().unwrap().ty.clone(),
                     is_definition: true,
                     warnings,
                 })
             }
-            ReplInput::DefnMulti { span, .. } => Err(CranelispError::TypeError {
-                message: "multi-signature functions not supported in Ring 0".into(),
-                span: *span,
-            }),
-            ReplInput::TraitDecl(_decl) => {
+            TopLevel::TraitDecl(_decl) => {
                 // Compile default method bodies.
                 if !check_result.default_method_defns.is_empty() {
                     let check = build_check_for_backend(&check_result);
@@ -513,12 +514,12 @@ impl CompilationSession {
 
                 Ok(FormResult {
                     value: 0,
-                    ty: check_result.ty.clone(),
+                    ty: check_result.display.as_ref().unwrap().ty.clone(),
                     is_definition: true,
                     warnings,
                 })
             }
-            ReplInput::TraitImpl(impl_) => {
+            TopLevel::TraitImpl(impl_) => {
                 let check = build_check_for_backend(&check_result);
 
                 // Compile impl methods.
@@ -536,7 +537,7 @@ impl CompilationSession {
 
                 Ok(FormResult {
                     value: 0,
-                    ty: check_result.ty.clone(),
+                    ty: check_result.display.as_ref().unwrap().ty.clone(),
                     is_definition: true,
                     warnings,
                 })
@@ -581,7 +582,7 @@ impl CompilationSession {
                 func_arities.insert(name.clone(), pc);
             }
         }
-        func_arities.insert(defn.name.clone(), defn.params.len());
+        func_arities.insert(defn.name.clone(), defn.params().len());
 
         // Compile the function with awareness of existing GOT.
         let compile_ctx = jit.build_compile_context(
@@ -596,7 +597,7 @@ impl CompilationSession {
         let _clif_ir = jit.compile_defn(defn, compile_ctx)?;
 
         // Finalize and get the code pointer.
-        let code_ptr = jit.finalize_and_get_ptr(&defn.name, defn.params.len())?;
+        let code_ptr = jit.finalize_and_get_ptr(&defn.name, defn.params().len())?;
 
         // Update the GOT slot with the new code pointer.
         self.got_state.update_slot(slot, code_ptr);
@@ -605,7 +606,7 @@ impl CompilationSession {
         let entry = self.got_state.def_codegen.entry(defn.name.clone()).or_default();
         entry.code_ptr = Some(code_ptr);
         entry.got_slot = Some(slot);
-        entry.param_count = Some(defn.params.len());
+        entry.param_count = Some(defn.params().len());
         entry.defn = Some(defn.clone());
 
         // Keep JIT alive so code pointer remains valid.
@@ -617,7 +618,7 @@ impl CompilationSession {
     /// Compile monomorphised specializations from a check result.
     fn compile_mono_defns(
         &mut self,
-        check_result: &ReplCheckResult,
+        check_result: &CheckResult,
     ) -> Result<(), CranelispError> {
         for mono in &check_result.mono_defns {
             let mut mono_check = build_check_for_backend(check_result);
@@ -849,7 +850,7 @@ impl CompilationSession {
 
     /// Compile a whole-program check result into the GOT, one defn at a time.
     ///
-    /// Used for module compilation where `check_program` handles forward
+    /// Used for module compilation where `check()` handles forward
     /// references via its two-pass approach, then we compile each defn
     /// individually into the GOT (unified codegen path).
     pub fn compile_checked_program(
@@ -899,6 +900,7 @@ impl CompilationSession {
                 warnings: Vec::new(),
                 type_defs: check.type_defs.clone(),
                 constructor_to_type: check.constructor_to_type.clone(),
+                display: None,
             };
             self.compile_and_register_defn(&mono.defn, &mono_check)?;
         }
@@ -913,7 +915,7 @@ impl CompilationSession {
                     self.compile_and_register_defn(defn, check)?;
 
                     // Execute zero-arg defns.
-                    let (value, result_ty) = if defn.params.is_empty() {
+                    let (value, result_ty) = if defn.params().is_empty() {
                         let entry = self.got_state.def_codegen.get(defn.name.as_ref());
                         let code_ptr = entry
                             .and_then(|e| e.code_ptr)
@@ -929,7 +931,7 @@ impl CompilationSession {
                         // Determine return type from expr_types.
                         let ret_ty = check
                             .expr_types
-                            .get(&defn.body.span())
+                            .get(&defn.body().span())
                             .cloned()
                             .unwrap_or(Type::Int);
                         (func(), ret_ty)
@@ -984,8 +986,8 @@ pub struct FormResult {
     pub warnings: Vec<Warning>,
 }
 
-/// Build a CheckResult suitable for the backend from a ReplCheckResult.
-pub fn build_check_for_backend(repl_check: &ReplCheckResult) -> CheckResult {
+/// Build a CheckResult suitable for the backend from a CheckResult (strips display info).
+pub fn build_check_for_backend(repl_check: &CheckResult) -> CheckResult {
     CheckResult {
         method_resolutions: repl_check.method_resolutions.clone(),
         constrained_fn_names: repl_check.constrained_fn_names.clone(),
@@ -995,6 +997,7 @@ pub fn build_check_for_backend(repl_check: &ReplCheckResult) -> CheckResult {
         warnings: repl_check.warnings.clone(),
         type_defs: repl_check.type_defs.clone(),
         constructor_to_type: repl_check.constructor_to_type.clone(),
+        display: None,
     }
 }
 
@@ -1044,7 +1047,12 @@ pub fn compile_and_run(
     }
 
     // Stage 3: Whole-program type check (handles forward refs, TCO detection).
-    let check = session.tc.check_program(&program)?;
+    let ctx = CompileContext {
+        module: session.tc.current_module_path().clone(),
+        strategy: ModuleStrategy::Additive,
+        compile_mode: mode,
+    };
+    let check = session.tc.check(&program, &ctx)?;
 
     // Determine the result type from the last defn's return type.
     let result_type = infer_result_type(&program, &check);
@@ -1074,13 +1082,13 @@ fn infer_result_type(program: &Program, check: &CheckResult) -> Type {
 
     // Find the last zero-arg defn (same logic as backend entry_fn).
     let last_nullary = program.iter().rev().find_map(|tl| match tl {
-        TopLevel::Defn(defn) if defn.params.is_empty() => Some(defn),
+        TopLevel::Defn(defn) if defn.params().is_empty() => Some(defn),
         _ => None,
     });
 
     if let Some(defn) = last_nullary {
         // Look up the resolved return type from expr_types or method_resolutions.
-        if let Some(ty) = check.expr_types.get(&defn.body.span()) {
+        if let Some(ty) = check.expr_types.get(&defn.body().span()) {
             return ty.clone();
         }
     }
@@ -1926,7 +1934,7 @@ fn build_codegen_state_for_cache(
                         source: None,
                         sexp: None,
                         defn: Some(defn.clone()),
-                        param_count: Some(defn.params.len()),
+                        param_count: Some(defn.params().len()),
                     },
                 );
             }
@@ -1947,7 +1955,7 @@ fn build_codegen_state_for_cache(
                         source: None,
                         sexp: None,
                         defn: Some(mono.defn.clone()),
-                        param_count: Some(mono.defn.params.len()),
+                        param_count: Some(mono.defn.params().len()),
                     },
                 );
             }
@@ -1962,7 +1970,7 @@ fn build_codegen_state_for_cache(
                         source: None,
                         sexp: None,
                         defn: Some(defn.clone()),
-                        param_count: Some(defn.params.len()),
+                        param_count: Some(defn.params().len()),
                     },
                 );
             }
@@ -2014,7 +2022,7 @@ fn collect_defns_for_cache(
                 defn.name.clone(),
                 cache::object::FnSlotInfo {
                     slot,
-                    param_count: defn.params.len(),
+                    param_count: defn.params().len(),
                 },
             );
             defns.push((defn.clone(), scheme));
@@ -2035,7 +2043,7 @@ fn collect_defns_for_cache(
                 mono.defn.name.clone(),
                 cache::object::FnSlotInfo {
                     slot,
-                    param_count: mono.defn.params.len(),
+                    param_count: mono.defn.params().len(),
                 },
             );
             defns.push((mono.defn.clone(), scheme));
@@ -2048,7 +2056,7 @@ fn collect_defns_for_cache(
                 defn.name.clone(),
                 cache::object::FnSlotInfo {
                     slot,
-                    param_count: defn.params.len(),
+                    param_count: defn.params().len(),
                 },
             );
             defns.push((defn.clone(), scheme));
@@ -2071,7 +2079,7 @@ fn scheme_for_defn(defn: &Defn, check: Option<&CheckResult>) -> cranelisp_types:
         .unwrap_or_else(|| {
             // Fallback: construct a placeholder Fn type.
             Type::Fn(
-                defn.params.iter().map(|_| Type::Int).collect(),
+                defn.params().iter().map(|_| Type::Int).collect(),
                 Box::new(Type::Int),
             )
         });
@@ -2305,8 +2313,14 @@ pub fn load_module_into_session(
             continue;
         }
 
-        // Typecheck.
-        let check = session.tc.check_program(&program)?;
+        // Typecheck. Use Additive because imports/exports are already
+        // registered in the module's symbol table before this point.
+        let ctx = CompileContext {
+            module: module_path.clone(),
+            strategy: ModuleStrategy::Additive,
+            compile_mode: CompileMode::Interactive,
+        };
+        let check = session.tc.check(&program, &ctx)?;
 
         // Compile into the GOT (same path as REPL per-form compilation).
         // This ensures functions are callable from subsequent REPL expressions
@@ -2502,7 +2516,13 @@ pub fn load_prelude_into_session(
         }
 
         // Typecheck (whole-program, handles forward references).
-        let check = session.tc.check_program(&program)?;
+        // Use Additive because imports/exports are already registered.
+        let ctx = CompileContext {
+            module: module_path.clone(),
+            strategy: ModuleStrategy::Additive,
+            compile_mode: CompileMode::Batch,
+        };
+        let check = session.tc.check(&program, &ctx)?;
 
         // Compile module using batch codegen (direct calls, TCO).
         session.compile_module_batch(&module_path, &program, &check)?;
@@ -2702,7 +2722,13 @@ fn compile_single_module(
     }
 
     // Phase 5: Typecheck (whole-program, handles forward references).
-    let check = session.tc.check_program(&program)?;
+    // Use Additive because imports/exports are already registered.
+    let ctx = CompileContext {
+        module: module_path.clone(),
+        strategy: ModuleStrategy::Additive,
+        compile_mode: CompileMode::Batch,
+    };
+    let check = session.tc.check(&program, &ctx)?;
     warnings.extend(check.warnings.iter().cloned());
 
     // Phase 6: Compile module using batch codegen (direct calls, TCO).
@@ -3251,7 +3277,7 @@ fn find_entry_defn(program: &Program) -> Option<Symbol> {
     use cranelisp_types::TopLevel;
     program.iter().find_map(|tl| {
         if let TopLevel::Defn(defn) = tl
-            && defn.params.is_empty()
+            && defn.params().is_empty()
             && defn.name.0 == "main"
         {
             return Some(defn.name.clone());
@@ -3263,7 +3289,7 @@ fn find_entry_defn(program: &Program) -> Option<Symbol> {
 /// Check whether a program has any defns or trait impls that need codegen.
 fn has_compilable_defns(program: &[cranelisp_types::TopLevel]) -> bool {
     use cranelisp_types::TopLevel;
-    program.iter().any(|tl| matches!(tl, TopLevel::Defn(_) | TopLevel::DefnMulti { .. } | TopLevel::TraitImpl(_)))
+    program.iter().any(|tl| matches!(tl, TopLevel::Defn(_) | TopLevel::TraitImpl(_)))
 }
 
 // ---------------------------------------------------------------------------
@@ -3286,23 +3312,13 @@ fn apply_bind_chain_analysis(
             TopLevel::Defn(defn) => {
                 crate::bind_chain_analysis::auto_schedule_defn(defn, registry);
             }
-            TopLevel::DefnMulti { variants, .. } => {
-                // Multi-sig variants may also contain bind chains.
-                for variant in variants.iter_mut() {
-                    let body = std::mem::replace(
-                        &mut variant.body,
-                        cranelisp_types::Expr::BoolLit { value: false, span: variant.span },
-                    );
-                    variant.body = crate::bind_chain_analysis::auto_schedule_expr_owned(body, registry);
-                }
-            }
             // TraitImpl methods are also defns — transform their bodies too.
             TopLevel::TraitImpl(impl_) => {
                 for method in impl_.methods.iter_mut() {
                     crate::bind_chain_analysis::auto_schedule_defn(method, registry);
                 }
             }
-            TopLevel::TraitDecl(_) | TopLevel::TypeDef { .. } => {}
+            TopLevel::TraitDecl(_) | TopLevel::TypeDef { .. } | TopLevel::Expr(_) => {}
         }
     }
 }

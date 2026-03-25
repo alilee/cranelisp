@@ -3,7 +3,7 @@
 //! Three-phase pipeline:
 //!   1. Reader: source text -> Vec<Sexp>
 //!   2. Macro expansion: quasiquote desugaring, defmacro parsing (Ring 3)
-//!   3. AST builder: Vec<Sexp> -> Vec<TopLevel> (batch) or ReplInput (REPL)
+//!   3. AST builder: Vec<Sexp> -> Vec<TopLevel> (both batch and REPL)
 //!
 //! The macro expander trait is defined in cranelisp-types for dependency inversion.
 //! Ring 0 uses NoOpExpander (no macros).
@@ -14,7 +14,7 @@ pub mod module_extract;
 pub mod quasiquote;
 pub mod defmacro;
 
-use cranelisp_types::{CranelispError, MacroExpander, Program, ReplInput, Sexp};
+use cranelisp_types::{CranelispError, MacroExpander, Program, Sexp, TopLevel};
 
 pub use module_extract::extract_module_declarations;
 pub use quasiquote::{expand_quasiquotes, next_synthetic_span};
@@ -53,7 +53,7 @@ pub fn build_program(
 pub fn build_repl_input_from_sexps(
     sexps: &[Sexp],
     expander: &mut dyn MacroExpander,
-) -> Result<ReplInput, CranelispError> {
+) -> Result<TopLevel, CranelispError> {
     ast_builder::build_repl_input_from_sexps(sexps, expander)
 }
 
@@ -64,6 +64,6 @@ pub fn build_repl_input_from_sexps(
 pub fn build_repl_input(
     sexp: &Sexp,
     expander: &mut dyn MacroExpander,
-) -> Result<ReplInput, CranelispError> {
+) -> Result<TopLevel, CranelispError> {
     ast_builder::build_repl_input(sexp, expander)
 }

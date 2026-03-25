@@ -1,26 +1,618 @@
-//! Two-pass batch checking and REPL input checking.
+//! Multi-pass type checking pipeline.
 //!
-//! `check_program` orchestrates Pass 1 (registration) and Pass 2 (checking).
-//! Each phase is a named private method. Addresses audit HIGH-2.
+//! `check()` is the unified entry point: it processes any `&[TopLevel]` slice
+//! through a multi-pass pipeline (register → check → constrained → mono → curry).
+//! A REPL line is a one-element slice; a batch program is a multi-element slice.
+//! The passes work identically regardless of slice length.
+//!
+//! `check_program` and `check_repl_input` are deprecated. All production callers
+//! now use `check()`. The old methods are retained only for typecheck crate tests.
 
 use std::collections::{HashMap, HashSet};
 
 use cranelisp_types::{
-    CheckResult, ConstrainedFn, CranelispError, Defn, DefKind, Expr, JitSymbol,
-    ModuleEntry, MonoDefn, ReplCheckResult, ReplInput, ResolvedCall, Scheme, Span,
-    Symbol, TopLevel, Type, apply,
+    CheckResult, CompileContext, ConstrainedFn, CranelispError, Defn, DefKind, DefnVariant,
+    DisplayInfo, Expr, JitSymbol, ModuleEntry, ModuleStrategy, MonoDefn, ResolvedCall, Scheme,
+    Span, Symbol, TopLevel, Type, Visibility, apply,
 };
 
 use crate::checker::TypeChecker;
 use crate::resolve::resolve_type_expr;
 use crate::scheme::mono;
 
+// --- Name mangling for multi-sig overload dispatch ---
+
+/// Mangle a function name with its parameter type signature.
+/// e.g., `mangle_sig("foo", &[Type::Int, Type::Bool])` → `"foo$Int+Bool"`.
+fn mangle_sig(name: &str, param_types: &[Type]) -> Symbol {
+    if param_types.is_empty() {
+        Symbol::from(format!("{}$", name))
+    } else {
+        let parts: Vec<String> = param_types.iter().map(mangle_type).collect();
+        Symbol::from(format!("{}${}", name, parts.join("+")))
+    }
+}
+
+/// Mangle a single type for name mangling.
+fn mangle_type(ty: &Type) -> String {
+    match ty {
+        Type::Int => "Int".to_string(),
+        Type::Bool => "Bool".to_string(),
+        Type::String => "String".to_string(),
+        Type::Float => "Float".to_string(),
+        Type::Fn(_, _) => "Fn".to_string(),
+        Type::ADT(name, args) => {
+            if args.is_empty() {
+                name.to_string()
+            } else {
+                let arg_parts: Vec<String> = args.iter().map(mangle_type).collect();
+                format!("{}${}", name, arg_parts.join("+"))
+            }
+        }
+        Type::Var(_) => "Var".to_string(),
+        Type::TyConApp(id, _) => format!("TyCon{id}"),
+    }
+}
+
+/// Check if two concrete types are compatible (for overload resolution).
+fn types_compatible(a: &Type, b: &Type) -> bool {
+    match (a, b) {
+        (Type::Int, Type::Int)
+        | (Type::Bool, Type::Bool)
+        | (Type::String, Type::String)
+        | (Type::Float, Type::Float) => true,
+        (Type::Fn(p1, r1), Type::Fn(p2, r2)) => {
+            p1.len() == p2.len()
+                && p1
+                    .iter()
+                    .zip(p2.iter())
+                    .all(|(a, b)| types_compatible(a, b))
+                && types_compatible(r1, r2)
+        }
+        (Type::ADT(n1, a1), Type::ADT(n2, a2)) => {
+            n1 == n2
+                && a1.len() == a2.len()
+                && a1
+                    .iter()
+                    .zip(a2.iter())
+                    .all(|(a, b)| types_compatible(a, b))
+        }
+        (Type::TyConApp(id1, a1), Type::TyConApp(id2, a2)) => {
+            id1 == id2
+                && a1.len() == a2.len()
+                && a1.iter().zip(a2.iter()).all(|(a, b)| types_compatible(a, b))
+        }
+        (Type::Var(_), _) | (_, Type::Var(_)) => true, // Unresolved — assume compatible
+        _ => false,
+    }
+}
+
 impl TypeChecker {
+    /// Unified type-checking entry point.
+    ///
+    /// Processes a slice of `TopLevel` forms through the multi-pass pipeline:
+    /// 1. Register type definitions, trait declarations, trait implementations,
+    ///    and function signatures (with fresh type variables).
+    /// 2. Check function bodies and generalize types.
+    /// 3. Detect constrained polymorphic functions.
+    /// 4. Monomorphise constrained function call sites.
+    /// 5. Resolve auto-curry sites.
+    ///
+    /// A REPL line is a one-element slice; a batch program is a multi-element
+    /// slice. The pipeline degenerates correctly on single-element input.
+    ///
+    /// `Expr` variants are wrapped in a synthetic zero-arg `Defn` named `__expr`
+    /// so they flow through the same passes as regular definitions.
+    #[must_use = "check result contains expr_types and method_resolutions needed by codegen"]
+    pub fn check(
+        &mut self,
+        program: &[TopLevel],
+        ctx: &CompileContext,
+    ) -> Result<CheckResult, CranelispError> {
+        // Set active module from context.
+        self.set_current_module(ctx.module.clone());
+
+        // If Replace strategy, clear existing module state so that removed
+        // definitions don't persist as stale entries.
+        if ctx.strategy == ModuleStrategy::Replace {
+            self.clear_module_for_replace();
+        }
+
+        // Build a working copy of the program with Expr variants wrapped
+        // as synthetic zero-arg Defns.
+        let mut working_program: Vec<TopLevel> = Vec::with_capacity(program.len());
+        let mut expr_synthetic_spans: Vec<Span> = Vec::new();
+
+        for top in program {
+            match top {
+                TopLevel::Expr(expr) => {
+                    let span = expr.span();
+                    // Use a distinct defn-level span so check_defn_body's
+                    // record_expr_type(defn.span, Fn_type) does not overwrite
+                    // the body expression's type in expr_types. For real defns
+                    // this is never a problem because defn.span covers the
+                    // whole `(defn ...)` form, which differs from the body span.
+                    // The synthetic wrapper has no source form of its own, so
+                    // we offset by 1 to avoid colliding with the body span.
+                    let wrapper_span = Span::new(
+                        span.start.saturating_sub(1),
+                        span.end.saturating_add(1),
+                    );
+                    let synthetic_defn = Defn {
+                        name: Symbol::from("__expr"),
+                        docstring: None,
+                        variants: vec![DefnVariant {
+                            params: vec![],
+                            param_annotations: vec![],
+                            body: expr.clone(),
+                            span,
+                        }],
+                        visibility: Visibility::Public,
+                        span: wrapper_span,
+                    };
+                    expr_synthetic_spans.push(span);
+                    working_program.push(TopLevel::Defn(synthetic_defn));
+                }
+                other => {
+                    working_program.push(other.clone());
+                }
+            }
+        }
+
+        // Pass 1: register type definitions
+        self.register_type_defs_from_program(&working_program)?;
+
+        // Pass 1: register trait declarations
+        self.register_trait_decls_from_program(&working_program)?;
+
+        // Pass 1: register trait implementations
+        let default_defns =
+            self.register_trait_impls_from_program(&working_program)?;
+
+        // Expand multi-sig defns into synthetic single-variant defns with
+        // internal names (e.g., `add__v0`, `add__v1`). The originals are
+        // removed from the working set so pass1/pass2 never see multi-sig.
+        let multi_internal_defns = self.expand_multi_sig_defns(&working_program);
+
+        // Pass 1: register function signatures with fresh type variables.
+        // Single-sig defns from the working program + expanded multi-sig variants.
+        let single_sig_defns = Self::collect_single_sig_defns(&working_program);
+        let mut all_defn_refs: Vec<&Defn> = Vec::new();
+        for d in &single_sig_defns {
+            all_defn_refs.push(d);
+        }
+        for d in &multi_internal_defns {
+            all_defn_refs.push(d);
+        }
+        let defn_type_vars = self.pass1_register_signatures(&all_defn_refs)?;
+
+        // Pass 2: check function bodies and generalize
+        self.pass2_check_bodies(&all_defn_refs, &defn_type_vars)?;
+
+        // Pass 2.5: resolve multi-sig overloads — build mangled names from
+        // concrete types now that pass 2 has unified type variables.
+        let multi_sig_defns = self.resolve_multi_sig_overloads(
+            &working_program,
+            &defn_type_vars,
+        )?;
+
+        // Pass 3: detect constrained polymorphic functions
+        // Only scan single-sig defns (multi-sig variants have internal names,
+        // not user-visible names that callers would reference).
+        let mut constrained_fn_names =
+            self.detect_constrained_fns(&single_sig_defns);
+
+        // Also include constrained fns already registered in the symbol table
+        // from prior REPL evaluations. In batch mode this adds nothing (all
+        // defns are in the current slice), but in interactive/additive mode
+        // constrained fns from earlier evals must be recognized at call sites.
+        if ctx.strategy == ModuleStrategy::Additive {
+            for (name, entry) in self.current_symbol_table().all_symbols() {
+                if let ModuleEntry::Def { kind, .. } = entry
+                    && let DefKind::UserFn { constrained_fn: Some(_) } = kind.as_ref()
+                {
+                    constrained_fn_names.insert(name.clone());
+                }
+            }
+        }
+
+        // Pass 4: monomorphise constrained function call sites
+        // Scan ALL defn bodies (including synthetic __expr) — this fixes the
+        // v1 batch-path gap where bare Expr forms were not scanned.
+        let mono_defns = self.pass4_monomorphise(&single_sig_defns, &constrained_fn_names)?;
+
+        // Pass 5: resolve pending overload dispatch + auto-curry
+        self.resolve_pending_overloads()?;
+        self.resolve_auto_curry();
+
+        // Build result
+        let mut result = self.build_check_result();
+        result.constrained_fn_names = constrained_fn_names;
+        result.mono_defns = mono_defns;
+        let mut all_default_defns = default_defns;
+        all_default_defns.extend(multi_sig_defns);
+        result.default_method_defns = all_default_defns;
+
+        // Populate display info: if the last form is an Expr or Defn and the
+        // input is small (REPL-like), provide DisplayInfo for interactive output.
+        result.display = self.compute_display_info(program, &defn_type_vars);
+
+        Ok(result)
+    }
+
+    /// Compute DisplayInfo from the last form in the program.
+    ///
+    /// Populated when the input has 1-2 elements (REPL-like input).
+    /// For batch programs (many forms), returns None.
+    fn compute_display_info(
+        &self,
+        original_program: &[TopLevel],
+        defn_type_vars: &HashMap<Symbol, (Vec<Type>, Type)>,
+    ) -> Option<DisplayInfo> {
+        if original_program.len() > 2 {
+            return None;
+        }
+
+        let last = original_program.last()?;
+        match last {
+            TopLevel::Expr(_expr) => {
+                // The synthetic __expr defn was registered — look up its type.
+                if let Some((_param_tys, ret_ty)) = defn_type_vars.get(&Symbol::from("__expr")) {
+                    let resolved = self.apply_subst(ret_ty);
+                    Some(DisplayInfo {
+                        ty: resolved,
+                        scheme: None,
+                    })
+                } else {
+                    None
+                }
+            }
+            TopLevel::Defn(defn) => {
+                // Look up the defn's generalized scheme from the symbol table.
+                if let Some(ModuleEntry::Def { scheme, .. }) =
+                    self.current_symbol_table().get(defn.name.as_ref())
+                {
+                    Some(DisplayInfo {
+                        ty: scheme.ty.clone(),
+                        scheme: Some(scheme.clone()),
+                    })
+                } else {
+                    None
+                }
+            }
+            TopLevel::TypeDef { name, .. } => {
+                let ty = Type::ADT(name.clone(), vec![]);
+                Some(DisplayInfo { ty, scheme: None })
+            }
+            TopLevel::TraitDecl(_) => {
+                Some(DisplayInfo { ty: Type::Bool, scheme: None })
+            }
+            TopLevel::TraitImpl(_) => {
+                Some(DisplayInfo { ty: Type::Bool, scheme: None })
+            }
+        }
+    }
+
+    /// Clear module state for Replace strategy.
+    ///
+    /// Removes all symbol table entries, type defs, trait decls, and trait
+    /// impls for the current module. Called at the start of `check()` when
+    /// `ctx.strategy == ModuleStrategy::Replace`.
+    fn clear_module_for_replace(&mut self) {
+        // Clear symbol table entries for the current module
+        self.current_symbol_table_mut().symbols.clear();
+
+        // Note: type_defs, trait_registry, and impl_registry are shared
+        // across modules in the current design. Full per-module clearing
+        // would require tracking which registrations belong to which module.
+        // For now, clearing the symbol table is sufficient for the Replace
+        // semantics needed by file reloading.
+    }
+
+    /// Collect only single-sig Defn entries (skip multi-sig).
+    fn collect_single_sig_defns(program: &[TopLevel]) -> Vec<&Defn> {
+        program
+            .iter()
+            .filter_map(|top| {
+                if let TopLevel::Defn(defn) = top {
+                    if defn.is_multi_sig() {
+                        None
+                    } else {
+                        Some(defn)
+                    }
+                } else {
+                    None
+                }
+            })
+            .collect()
+    }
+
+    /// Expand multi-sig defns into synthetic single-variant defns with
+    /// internal names (`name__v0`, `name__v1`, ...).
+    ///
+    /// Also populates `self.overloads` with the base name → internal name
+    /// mapping for later overload resolution.
+    ///
+    /// Returns owned `Vec<Defn>` — the caller holds references into this vec
+    /// alongside the single-sig defn references from the program.
+    fn expand_multi_sig_defns(&mut self, program: &[TopLevel]) -> Vec<Defn> {
+        let mut internal_defns = Vec::new();
+
+        for top in program {
+            if let TopLevel::Defn(defn) = top {
+                if !defn.is_multi_sig() {
+                    continue;
+                }
+
+                let mut overload_entries = Vec::new();
+                for (i, variant) in defn.variants.iter().enumerate() {
+                    let internal_name = Symbol::from(format!("{}__v{}", defn.name, i));
+                    overload_entries.push((internal_name.clone(), variant.params.len()));
+
+                    internal_defns.push(Defn {
+                        name: internal_name,
+                        docstring: defn.docstring.clone(),
+                        variants: vec![DefnVariant {
+                            params: variant.params.clone(),
+                            param_annotations: variant.param_annotations.clone(),
+                            body: variant.body.clone(),
+                            span: variant.span,
+                        }],
+                        visibility: defn.visibility,
+                        span: variant.span,
+                    });
+                }
+                self.overloads.insert(defn.name.clone(), overload_entries);
+
+                // Register a placeholder for the base name so `infer_var`
+                // can find it during pass 2. The placeholder uses a fresh
+                // type variable — the actual type is determined during
+                // overload resolution after pass 2.
+                let placeholder_ty = self.fresh_var();
+                let placeholder_scheme = mono(placeholder_ty);
+                self.current_symbol_table_mut().insert(
+                    defn.name.clone(),
+                    ModuleEntry::Def {
+                        scheme: placeholder_scheme,
+                        visibility: defn.visibility,
+                        docstring: defn.docstring.clone(),
+                        param_names: vec![],
+                        kind: Box::new(DefKind::Overloaded { variants: vec![] }),
+                    },
+                );
+            }
+        }
+
+        internal_defns
+    }
+
+    /// Resolve multi-sig overloads after pass 2: build mangled names from
+    /// concrete types, check for duplicates, register mangled names in symbol
+    /// table, and populate `resolved_overloads`.
+    ///
+    /// Returns a list of mangled Defn objects that the backend should compile.
+    fn resolve_multi_sig_overloads(
+        &mut self,
+        program: &[TopLevel],
+        type_vars: &HashMap<Symbol, (Vec<Type>, Type)>,
+    ) -> Result<Vec<Defn>, CranelispError> {
+        let mut result_defns = Vec::new();
+
+        for top in program {
+            if let TopLevel::Defn(defn) = top {
+                if !defn.is_multi_sig() {
+                    continue;
+                }
+
+                let mut resolved = Vec::new();
+                let mut sig_set: Vec<Vec<Type>> = Vec::new();
+
+                for (i, variant) in defn.variants.iter().enumerate() {
+                    let internal_name = Symbol::from(format!("{}__v{}", defn.name, i));
+
+                    let (param_tys, ret_ty) = type_vars
+                        .get(&internal_name)
+                        .ok_or_else(|| CranelispError::TypeError {
+                            message: format!(
+                                "internal: missing type vars for multi-sig variant {}",
+                                internal_name
+                            ),
+                            span: variant.span,
+                        })?;
+
+                    let concrete_params: Vec<Type> = param_tys
+                        .iter()
+                        .map(|t| self.apply_subst(t))
+                        .collect();
+                    let concrete_ret = self.apply_subst(ret_ty);
+                    let mangled = mangle_sig(defn.name.as_ref(), &concrete_params);
+
+                    // Check for duplicate signatures
+                    if sig_set.iter().any(|s| s == &concrete_params) {
+                        return Err(CranelispError::TypeError {
+                            message: format!(
+                                "duplicate signature for '{}': ({})",
+                                defn.name,
+                                concrete_params
+                                    .iter()
+                                    .map(|t| format!("{t}"))
+                                    .collect::<Vec<_>>()
+                                    .join(", ")
+                            ),
+                            span: variant.span,
+                        });
+                    }
+                    sig_set.push(concrete_params.clone());
+
+                    let fn_ty = Type::Fn(
+                        concrete_params.clone(),
+                        Box::new(concrete_ret.clone()),
+                    );
+                    let scheme = self.generalize(&fn_ty);
+
+                    // Remove internal name, register mangled name
+                    self.current_symbol_table_mut()
+                        .symbols
+                        .remove(internal_name.as_ref());
+                    self.current_symbol_table_mut().insert(
+                        mangled.clone(),
+                        ModuleEntry::Def {
+                            scheme: scheme.clone(),
+                            visibility: defn.visibility,
+                            docstring: defn.docstring.clone(),
+                            param_names: variant.params.clone(),
+                            kind: Box::new(DefKind::UserFn {
+                                constrained_fn: None,
+                            }),
+                        },
+                    );
+
+                    // Build the mangled defn for the backend
+                    result_defns.push(Defn {
+                        name: mangled.clone(),
+                        docstring: defn.docstring.clone(),
+                        variants: vec![DefnVariant {
+                            params: variant.params.clone(),
+                            param_annotations: variant.param_annotations.clone(),
+                            body: variant.body.clone(),
+                            span: variant.span,
+                        }],
+                        visibility: defn.visibility,
+                        span: variant.span,
+                    });
+
+                    resolved.push((concrete_params, concrete_ret, mangled));
+                }
+
+                // Register the base name as Overloaded in the symbol table
+                let overload_variants = resolved
+                    .iter()
+                    .map(|(params, ret, mangled)| {
+                        cranelisp_types::OverloadVariant {
+                            param_types: params.clone(),
+                            ret_type: ret.clone(),
+                            mangled_name: mangled.clone(),
+                        }
+                    })
+                    .collect();
+
+                // Build a union scheme for the base name — use first variant's
+                // scheme for now. The base name is registered as Overloaded so
+                // `infer_apply` detects it and records a pending overload.
+                let first_fn_ty = Type::Fn(
+                    resolved[0].0.clone(),
+                    Box::new(resolved[0].1.clone()),
+                );
+                let base_scheme = self.generalize(&first_fn_ty);
+
+                self.current_symbol_table_mut().insert(
+                    defn.name.clone(),
+                    ModuleEntry::Def {
+                        scheme: base_scheme,
+                        visibility: defn.visibility,
+                        docstring: defn.docstring.clone(),
+                        param_names: vec![],
+                        kind: Box::new(DefKind::Overloaded {
+                            variants: overload_variants,
+                        }),
+                    },
+                );
+
+                self.resolved_overloads.insert(
+                    defn.name.clone(),
+                    resolved,
+                );
+            }
+        }
+
+        Ok(result_defns)
+    }
+
+    /// Resolve pending overload dispatch resolutions.
+    ///
+    /// For each pending `(span, base_name, arg_types, ret_type_var)`, find
+    /// the matching variant and record `SigDispatch` in method_resolutions.
+    fn resolve_pending_overloads(&mut self) -> Result<(), CranelispError> {
+        let pending = std::mem::take(&mut self.pending_overload_resolutions);
+
+        for (span, base_name, arg_types, ret_type_var) in &pending {
+            let concrete_args: Vec<Type> = arg_types
+                .iter()
+                .map(|t| apply(&self.subst, t))
+                .collect();
+
+            let variants = self
+                .resolved_overloads
+                .get(base_name)
+                .ok_or_else(|| CranelispError::TypeError {
+                    message: format!("no overloaded function: {}", base_name),
+                    span: *span,
+                })?
+                .clone();
+
+            // Find exact arity + type matches
+            let mut exact_matches: Vec<&(Vec<Type>, Type, Symbol)> = Vec::new();
+
+            for variant in &variants {
+                let (param_types, _ret_ty, _mangled) = variant;
+                if param_types.len() == concrete_args.len() {
+                    let compatible = param_types
+                        .iter()
+                        .zip(concrete_args.iter())
+                        .all(|(p, a)| types_compatible(p, a));
+                    if compatible {
+                        exact_matches.push(variant);
+                    }
+                }
+            }
+
+            if exact_matches.len() == 1 {
+                let (param_types, ret_ty, mangled_name) = exact_matches[0];
+                // Unify to bind type variables
+                for (p, a) in param_types.iter().zip(concrete_args.iter()) {
+                    self.unify(p, a, *span)?;
+                }
+                self.unify(ret_type_var, ret_ty, *span)?;
+                self.method_resolutions.insert(
+                    *span,
+                    ResolvedCall::SigDispatch {
+                        mangled_name: JitSymbol::from(mangled_name.as_ref()),
+                    },
+                );
+            } else if exact_matches.len() > 1 {
+                return Err(CranelispError::TypeError {
+                    message: format!(
+                        "ambiguous call to '{}' — {} matching signatures",
+                        base_name,
+                        exact_matches.len()
+                    ),
+                    span: *span,
+                });
+            } else {
+                return Err(CranelispError::TypeError {
+                    message: format!(
+                        "no matching signature for '{}' with arg types ({})",
+                        base_name,
+                        concrete_args
+                            .iter()
+                            .map(|t| format!("{t}"))
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    ),
+                    span: *span,
+                });
+            }
+        }
+
+        Ok(())
+    }
+
     /// Check a complete program (batch mode).
     ///
     /// Two-pass pipeline:
     /// 1. Register type definitions and function signatures.
     /// 2. Check function bodies, generalize types.
+    #[deprecated(note = "use check() instead — unified pipeline entry point")]
     #[must_use = "check result contains expr_types and method_resolutions needed by codegen"]
     pub fn check_program(
         &mut self,
@@ -61,13 +653,14 @@ impl TypeChecker {
     }
 
     /// Check a single REPL input incrementally.
+    #[deprecated(note = "use check() instead — unified pipeline entry point")]
     #[must_use = "check result contains type and expr_types needed by codegen"]
     pub fn check_repl_input(
         &mut self,
-        input: &ReplInput,
-    ) -> Result<ReplCheckResult, CranelispError> {
+        input: &TopLevel,
+    ) -> Result<CheckResult, CranelispError> {
         match input {
-            ReplInput::Expr(expr) => {
+            TopLevel::Expr(expr) => {
                 let ty = self.infer_expr(expr)?;
                 let resolved = self.apply_subst(&ty);
 
@@ -82,21 +675,28 @@ impl TypeChecker {
                 Ok(result)
             }
 
-            ReplInput::Defn(defn) => {
+            TopLevel::Defn(defn) if defn.is_multi_sig() => {
+                Err(CranelispError::TypeError {
+                    message: "multi-signature functions not supported in Ring 0".into(),
+                    span: defn.span,
+                })
+            }
+
+            TopLevel::Defn(defn) => {
                 let (ty, scheme) = self.check_single_defn(defn)?;
 
                 // Resolve auto-curry sites before building result.
                 self.resolve_auto_curry();
 
                 // Scan defn body for constrained-fn calls, monomorphise on demand
-                let mono_defns = self.monomorphise_expr_calls(&defn.body)?;
+                let mono_defns = self.monomorphise_expr_calls(defn.body())?;
 
                 let mut result = self.build_repl_result(ty, Some(scheme));
                 result.mono_defns = mono_defns;
                 Ok(result)
             }
 
-            ReplInput::TypeDef {
+            TopLevel::TypeDef {
                 name,
                 docstring,
                 type_params,
@@ -109,19 +709,13 @@ impl TypeChecker {
                 Ok(self.build_repl_result(ty, None))
             }
 
-            // Not supported in Ring 0
-            ReplInput::DefnMulti { span, .. } => Err(CranelispError::TypeError {
-                message: "multi-signature functions not supported in Ring 0".into(),
-                span: *span,
-            }),
-
-            ReplInput::TraitDecl(decl) => {
+            TopLevel::TraitDecl(decl) => {
                 self.register_trait_decl(decl)?;
                 let ty = Type::Bool; // Placeholder return type for trait decl
                 Ok(self.build_repl_result(ty, None))
             }
 
-            ReplInput::TraitImpl(impl_) => {
+            TopLevel::TraitImpl(impl_) => {
                 let default_defns = self.register_trait_impl(impl_)?;
                 let ty = Type::Bool; // Placeholder return type for trait impl
                 let mut result = self.build_repl_result(ty, None);
@@ -220,7 +814,12 @@ impl TypeChecker {
             .iter()
             .filter_map(|top| {
                 if let TopLevel::Defn(defn) = top {
-                    Some(defn)
+                    // Skip multi-sig defns — not supported in Ring 0 batch path
+                    if defn.is_multi_sig() {
+                        None
+                    } else {
+                        Some(defn)
+                    }
                 } else {
                     None
                 }
@@ -239,8 +838,8 @@ impl TypeChecker {
         defn: &Defn,
     ) -> Result<(Vec<Type>, Type), CranelispError> {
         let mut param_types = Vec::new();
-        for (i, _param) in defn.params.iter().enumerate() {
-            let param_ty = if let Some(Some(ann)) = defn.param_annotations.get(i) {
+        for (i, _param) in defn.params().iter().enumerate() {
+            let param_ty = if let Some(Some(ann)) = defn.param_annotations().get(i) {
                 let known = self.known_type_names();
                 let var_map = HashMap::new();
                 resolve_type_expr(ann, &var_map, &known, defn.span)?
@@ -260,7 +859,7 @@ impl TypeChecker {
                 scheme,
                 visibility: defn.visibility,
                 docstring: defn.docstring.clone(),
-                param_names: defn.params.clone(),
+                param_names: defn.params().to_vec(),
                 kind: Box::new(DefKind::UserFn {
                     constrained_fn: None,
                 }),
@@ -313,7 +912,7 @@ impl TypeChecker {
                 })?;
 
             self.check_defn_body(defn, param_types, ret_ty)?;
-            self.resolve_deferred_trait_calls(&defn.body);
+            self.resolve_deferred_trait_calls(&defn.body());
 
             // Eagerly detect if this function is constrained.
             // Must happen now, before later call sites resolve its type vars.
@@ -366,7 +965,7 @@ impl TypeChecker {
         // resolved because arg types were still unresolved vars. After Phase 2,
         // later call sites may have pinned those vars to concrete types.
         for defn in defns {
-            self.resolve_deferred_trait_calls(&defn.body);
+            self.resolve_deferred_trait_calls(&defn.body());
         }
 
         Ok(())
@@ -382,7 +981,7 @@ impl TypeChecker {
         self.push_scope();
 
         // Bind parameters
-        for (param_name, param_ty) in defn.params.iter().zip(param_types.iter()) {
+        for (param_name, param_ty) in defn.params().iter().zip(param_types.iter()) {
             self.bind_local(param_name.clone(), mono(param_ty.clone()));
         }
 
@@ -391,7 +990,7 @@ impl TypeChecker {
         self.bind_local(defn.name.clone(), mono(fn_type));
 
         // Infer body type
-        let body_ty = self.infer_expr(&defn.body)?;
+        let body_ty = self.infer_expr(&defn.body())?;
 
         // Unify body type with return type variable
         self.unify(&body_ty, ret_ty, defn.span)?;
@@ -422,7 +1021,7 @@ impl TypeChecker {
         self.check_defn_body(defn, &param_types, &ret_ty)?;
 
         // Post-inference deferred trait resolution
-        self.resolve_deferred_trait_calls(&defn.body);
+        self.resolve_deferred_trait_calls(&defn.body());
 
         // Generalize (propagates active constraints)
         let resolved_fn_type = Type::Fn(
@@ -474,7 +1073,7 @@ impl TypeChecker {
                 continue;
             }
             Self::collect_constrained_calls(
-                &defn.body,
+                defn.body(),
                 constrained_fn_names,
                 &mut call_sites,
             );
@@ -756,11 +1355,12 @@ impl TypeChecker {
             warnings: std::mem::take(&mut self.warnings),
             type_defs: self.type_defs.type_defs.clone(),
             constructor_to_type: self.type_defs.constructor_to_type.clone(),
+            display: None,
         }
     }
 
-    /// Build a ReplCheckResult from the current state.
-    fn build_repl_result(&mut self, ty: Type, scheme: Option<Scheme>) -> ReplCheckResult {
+    /// Build a CheckResult with display info from the current state (REPL path).
+    fn build_repl_result(&mut self, ty: Type, scheme: Option<Scheme>) -> CheckResult {
         let resolved_expr_types = self.resolve_expr_types();
 
         // See build_check_result comment: assertion deferred to Ring 2.
@@ -770,9 +1370,7 @@ impl TypeChecker {
         //     "build_repl_result: unresolved Type::Var in expr_types"
         // );
 
-        ReplCheckResult {
-            ty,
-            scheme,
+        CheckResult {
             method_resolutions: std::mem::take(&mut self.method_resolutions),
             expr_types: resolved_expr_types,
             warnings: std::mem::take(&mut self.warnings),
@@ -781,6 +1379,7 @@ impl TypeChecker {
             constrained_fn_names: HashSet::new(),
             mono_defns: Vec::new(),
             default_method_defns: Vec::new(),
+            display: Some(DisplayInfo { ty, scheme }),
         }
     }
 }
@@ -789,12 +1388,35 @@ impl TypeChecker {
 mod tests {
     use super::*;
     use cranelisp_types::{
-        Expr, FQSymbol, ModuleFullPath, ReplInput, Symbol, TraitDecl, TraitImpl,
-        TraitMethodSig, TraitName, TypeExpr, TypeName, Visibility,
+        CompileContext, DefnVariant, Expr, FQSymbol, ModuleFullPath, Symbol, TraitDecl,
+        TraitImpl, TraitMethodSig, TraitName, TypeExpr, TypeName, Visibility,
     };
 
     fn span(start: u32, end: u32) -> Span {
         Span::new(start, end)
+    }
+
+    /// Create a single-sig Defn (convenience for tests).
+    fn make_defn(
+        name: &str,
+        params: Vec<Symbol>,
+        param_annotations: Vec<Option<TypeExpr>>,
+        body: Expr,
+        visibility: Visibility,
+        span: Span,
+    ) -> Defn {
+        Defn {
+            name: Symbol::from(name),
+            docstring: None,
+            variants: vec![DefnVariant {
+                params,
+                param_annotations,
+                body,
+                span,
+            }],
+            visibility,
+            span,
+        }
     }
 
     /// Create a TypeChecker with all primitives available in the current module.
@@ -839,19 +1461,22 @@ mod tests {
             methods: vec![Defn {
                 name: Symbol::from("+"),
                 docstring: None,
-                params: vec![Symbol::from("x"), Symbol::from("y")],
-                param_annotations: vec![None, None],
-                body: Expr::Apply {
-                    callee: Box::new(Expr::Var {
-                        name: Symbol::from("add-i64"),
+                variants: vec![DefnVariant {
+                    params: vec![Symbol::from("x"), Symbol::from("y")],
+                    param_annotations: vec![None, None],
+                    body: Expr::Apply {
+                        callee: Box::new(Expr::Var {
+                            name: Symbol::from("add-i64"),
+                            span: Span::SYNTHETIC,
+                        }),
+                        args: vec![
+                            Expr::Var { name: Symbol::from("x"), span: Span::SYNTHETIC },
+                            Expr::Var { name: Symbol::from("y"), span: Span::SYNTHETIC },
+                        ],
                         span: Span::SYNTHETIC,
-                    }),
-                    args: vec![
-                        Expr::Var { name: Symbol::from("x"), span: Span::SYNTHETIC },
-                        Expr::Var { name: Symbol::from("y"), span: Span::SYNTHETIC },
-                    ],
+                    },
                     span: Span::SYNTHETIC,
-                },
+                }],
                 visibility: Visibility::Public,
                 span: Span::SYNTHETIC,
             }],
@@ -869,25 +1494,28 @@ mod tests {
         let program = vec![TopLevel::Defn(Defn {
             name: Symbol::from("add-one"),
             docstring: None,
-            params: vec![Symbol::from("x")],
-            param_annotations: vec![None],
-            body: Expr::Apply {
-                callee: Box::new(Expr::Var {
-                    name: Symbol::from("add-i64"),
-                    span: span(20, 27),
-                }),
-                args: vec![
-                    Expr::Var {
-                        name: Symbol::from("x"),
-                        span: span(28, 29),
-                    },
-                    Expr::IntLit {
-                        value: 1,
-                        span: span(30, 31),
-                    },
-                ],
-                span: span(19, 32),
-            },
+            variants: vec![DefnVariant {
+                params: vec![Symbol::from("x")],
+                param_annotations: vec![None],
+                body: Expr::Apply {
+                    callee: Box::new(Expr::Var {
+                        name: Symbol::from("add-i64"),
+                        span: span(20, 27),
+                    }),
+                    args: vec![
+                        Expr::Var {
+                            name: Symbol::from("x"),
+                            span: span(28, 29),
+                        },
+                        Expr::IntLit {
+                            value: 1,
+                            span: span(30, 31),
+                        },
+                    ],
+                    span: span(19, 32),
+                },
+                span: span(0, 33),
+            }],
             visibility: Visibility::Public,
             span: span(0, 33),
         })];
@@ -913,12 +1541,15 @@ mod tests {
         let program = vec![TopLevel::Defn(Defn {
             name: Symbol::from("id"),
             docstring: None,
-            params: vec![Symbol::from("x")],
-            param_annotations: vec![None],
-            body: Expr::Var {
-                name: Symbol::from("x"),
-                span: span(14, 15),
-            },
+            variants: vec![DefnVariant {
+                params: vec![Symbol::from("x")],
+                param_annotations: vec![None],
+                body: Expr::Var {
+                    name: Symbol::from("x"),
+                    span: span(14, 15),
+                },
+                span: span(0, 16),
+            }],
             visibility: Visibility::Public,
             span: span(0, 16),
         })];
@@ -948,69 +1579,72 @@ mod tests {
         let program = vec![TopLevel::Defn(Defn {
             name: Symbol::from("fact"),
             docstring: None,
-            params: vec![Symbol::from("n")],
-            param_annotations: vec![None],
-            body: Expr::If {
-                cond: Box::new(Expr::Apply {
-                    callee: Box::new(Expr::Var {
-                        name: Symbol::from("eq-i64"),
-                        span: span(20, 26),
+            variants: vec![DefnVariant {
+                params: vec![Symbol::from("n")],
+                param_annotations: vec![None],
+                body: Expr::If {
+                    cond: Box::new(Expr::Apply {
+                        callee: Box::new(Expr::Var {
+                            name: Symbol::from("eq-i64"),
+                            span: span(20, 26),
+                        }),
+                        args: vec![
+                            Expr::Var {
+                                name: Symbol::from("n"),
+                                span: span(27, 28),
+                            },
+                            Expr::IntLit {
+                                value: 0,
+                                span: span(29, 30),
+                            },
+                        ],
+                        span: span(19, 31),
                     }),
-                    args: vec![
-                        Expr::Var {
-                            name: Symbol::from("n"),
-                            span: span(27, 28),
-                        },
-                        Expr::IntLit {
-                            value: 0,
-                            span: span(29, 30),
-                        },
-                    ],
-                    span: span(19, 31),
-                }),
-                then_branch: Box::new(Expr::IntLit {
-                    value: 1,
-                    span: span(33, 34),
-                }),
-                else_branch: Box::new(Expr::Apply {
-                    callee: Box::new(Expr::Var {
-                        name: Symbol::from("mul-i64"),
-                        span: span(36, 43),
+                    then_branch: Box::new(Expr::IntLit {
+                        value: 1,
+                        span: span(33, 34),
                     }),
-                    args: vec![
-                        Expr::Var {
-                            name: Symbol::from("n"),
-                            span: span(44, 45),
-                        },
-                        Expr::Apply {
-                            callee: Box::new(Expr::Var {
-                                name: Symbol::from("fact"),
-                                span: span(47, 51),
-                            }),
-                            args: vec![Expr::Apply {
+                    else_branch: Box::new(Expr::Apply {
+                        callee: Box::new(Expr::Var {
+                            name: Symbol::from("mul-i64"),
+                            span: span(36, 43),
+                        }),
+                        args: vec![
+                            Expr::Var {
+                                name: Symbol::from("n"),
+                                span: span(44, 45),
+                            },
+                            Expr::Apply {
                                 callee: Box::new(Expr::Var {
-                                    name: Symbol::from("sub-i64"),
-                                    span: span(53, 60),
+                                    name: Symbol::from("fact"),
+                                    span: span(47, 51),
                                 }),
-                                args: vec![
-                                    Expr::Var {
-                                        name: Symbol::from("n"),
-                                        span: span(61, 62),
-                                    },
-                                    Expr::IntLit {
-                                        value: 1,
-                                        span: span(63, 64),
-                                    },
-                                ],
-                                span: span(52, 65),
-                            }],
-                            span: span(46, 66),
-                        },
-                    ],
-                    span: span(35, 67),
-                }),
-                span: span(15, 68),
-            },
+                                args: vec![Expr::Apply {
+                                    callee: Box::new(Expr::Var {
+                                        name: Symbol::from("sub-i64"),
+                                        span: span(53, 60),
+                                    }),
+                                    args: vec![
+                                        Expr::Var {
+                                            name: Symbol::from("n"),
+                                            span: span(61, 62),
+                                        },
+                                        Expr::IntLit {
+                                            value: 1,
+                                            span: span(63, 64),
+                                        },
+                                    ],
+                                    span: span(52, 65),
+                                }],
+                                span: span(46, 66),
+                            },
+                        ],
+                        span: span(35, 67),
+                    }),
+                    span: span(15, 68),
+                },
+                span: span(0, 69),
+            }],
             visibility: Visibility::Public,
             span: span(0, 69),
         })];
@@ -1060,40 +1694,43 @@ mod tests {
             TopLevel::Defn(Defn {
                 name: Symbol::from("is-red"),
                 docstring: None,
-                params: vec![Symbol::from("c")],
-                param_annotations: vec![None],
-                body: Expr::Match {
-                    scrutinee: Box::new(Expr::Var {
-                        name: Symbol::from("c"),
-                        span: span(30, 31),
-                    }),
-                    arms: vec![
-                        cranelisp_types::MatchArm {
-                            pattern: cranelisp_types::Pattern::Constructor {
-                                name: Symbol::from("Red"),
-                                bindings: vec![],
-                                span: span(33, 36),
+                variants: vec![DefnVariant {
+                    params: vec![Symbol::from("c")],
+                    param_annotations: vec![None],
+                    body: Expr::Match {
+                        scrutinee: Box::new(Expr::Var {
+                            name: Symbol::from("c"),
+                            span: span(30, 31),
+                        }),
+                        arms: vec![
+                            cranelisp_types::MatchArm {
+                                pattern: cranelisp_types::Pattern::Constructor {
+                                    name: Symbol::from("Red"),
+                                    bindings: vec![],
+                                    span: span(33, 36),
+                                },
+                                body: Expr::BoolLit {
+                                    value: true,
+                                    span: span(37, 41),
+                                },
+                                span: span(33, 41),
                             },
-                            body: Expr::BoolLit {
-                                value: true,
-                                span: span(37, 41),
+                            cranelisp_types::MatchArm {
+                                pattern: cranelisp_types::Pattern::Wildcard {
+                                    span: span(42, 43),
+                                },
+                                body: Expr::BoolLit {
+                                    value: false,
+                                    span: span(44, 49),
+                                },
+                                span: span(42, 49),
                             },
-                            span: span(33, 41),
-                        },
-                        cranelisp_types::MatchArm {
-                            pattern: cranelisp_types::Pattern::Wildcard {
-                                span: span(42, 43),
-                            },
-                            body: Expr::BoolLit {
-                                value: false,
-                                span: span(44, 49),
-                            },
-                            span: span(42, 49),
-                        },
-                    ],
-                    span: span(24, 50),
-                    compiler_generated: false,
-                },
+                        ],
+                        span: span(24, 50),
+                        compiler_generated: false,
+                    },
+                    span: span(0, 51),
+                }],
                 visibility: Visibility::Public,
                 span: span(0, 51),
             }),
@@ -1126,25 +1763,28 @@ mod tests {
         let program = vec![TopLevel::Defn(Defn {
             name: Symbol::from("bad"),
             docstring: None,
-            params: vec![Symbol::from("x")],
-            param_annotations: vec![None],
-            body: Expr::Apply {
-                callee: Box::new(Expr::Var {
-                    name: Symbol::from("add-i64"),
-                    span: span(16, 23),
-                }),
-                args: vec![
-                    Expr::Var {
-                        name: Symbol::from("x"),
-                        span: span(24, 25),
-                    },
-                    Expr::BoolLit {
-                        value: true,
-                        span: span(26, 30),
-                    },
-                ],
-                span: span(15, 31),
-            },
+            variants: vec![DefnVariant {
+                params: vec![Symbol::from("x")],
+                param_annotations: vec![None],
+                body: Expr::Apply {
+                    callee: Box::new(Expr::Var {
+                        name: Symbol::from("add-i64"),
+                        span: span(16, 23),
+                    }),
+                    args: vec![
+                        Expr::Var {
+                            name: Symbol::from("x"),
+                            span: span(24, 25),
+                        },
+                        Expr::BoolLit {
+                            value: true,
+                            span: span(26, 30),
+                        },
+                    ],
+                    span: span(15, 31),
+                },
+                span: span(0, 32),
+            }],
             visibility: Visibility::Public,
             span: span(0, 32),
         })];
@@ -1163,25 +1803,28 @@ mod tests {
         let program = vec![TopLevel::Defn(Defn {
             name: Symbol::from("inc"),
             docstring: None,
-            params: vec![Symbol::from("x")],
-            param_annotations: vec![None],
-            body: Expr::Apply {
-                callee: Box::new(Expr::Var {
-                    name: Symbol::from("add-i64"),
-                    span: span(16, 23),
-                }),
-                args: vec![
-                    Expr::Var {
-                        name: Symbol::from("x"),
-                        span: span(24, 25),
-                    },
-                    Expr::IntLit {
-                        value: 1,
-                        span: span(26, 27),
-                    },
-                ],
-                span: span(15, 28),
-            },
+            variants: vec![DefnVariant {
+                params: vec![Symbol::from("x")],
+                param_annotations: vec![None],
+                body: Expr::Apply {
+                    callee: Box::new(Expr::Var {
+                        name: Symbol::from("add-i64"),
+                        span: span(16, 23),
+                    }),
+                    args: vec![
+                        Expr::Var {
+                            name: Symbol::from("x"),
+                            span: span(24, 25),
+                        },
+                        Expr::IntLit {
+                            value: 1,
+                            span: span(26, 27),
+                        },
+                    ],
+                    span: span(15, 28),
+                },
+                span: span(0, 29),
+            }],
             visibility: Visibility::Public,
             span: span(0, 29),
         })];
@@ -1200,35 +1843,38 @@ mod tests {
     #[test]
     fn test_check_repl_expression() {
         let mut tc = tc_with_prims();
-        let input = ReplInput::Expr(Expr::IntLit {
+        let input = TopLevel::Expr(Expr::IntLit {
             value: 42,
             span: span(0, 2),
         });
         let result = tc.check_repl_input(&input).unwrap();
-        assert_eq!(result.ty, Type::Int);
-        assert!(result.scheme.is_none());
+        assert_eq!(result.display.as_ref().unwrap().ty, Type::Int);
+        assert!(result.display.as_ref().unwrap().scheme.is_none());
     }
 
     // spec: 03-types §3.4 — REPL defn produces polymorphic scheme
     #[test]
     fn test_check_repl_defn() {
         let mut tc = tc_with_prims();
-        let input = ReplInput::Defn(Defn {
+        let input = TopLevel::Defn(Defn {
             name: Symbol::from("id"),
             docstring: None,
-            params: vec![Symbol::from("x")],
-            param_annotations: vec![None],
-            body: Expr::Var {
-                name: Symbol::from("x"),
-                span: span(14, 15),
-            },
+            variants: vec![DefnVariant {
+                params: vec![Symbol::from("x")],
+                param_annotations: vec![None],
+                body: Expr::Var {
+                    name: Symbol::from("x"),
+                    span: span(14, 15),
+                },
+                span: span(0, 16),
+            }],
             visibility: Visibility::Public,
             span: span(0, 16),
         });
         let result = tc.check_repl_input(&input).unwrap();
 
         // The scheme should be polymorphic
-        let scheme = result.scheme.unwrap();
+        let scheme = result.display.as_ref().unwrap().scheme.clone().unwrap();
         assert_eq!(scheme.vars.len(), 1);
     }
 
@@ -1236,7 +1882,7 @@ mod tests {
     #[test]
     fn test_check_repl_typedef() {
         let mut tc = tc_with_prims();
-        let input = ReplInput::TypeDef {
+        let input = TopLevel::TypeDef {
             name: TypeName::from("Dir"),
             docstring: None,
             type_params: vec![],
@@ -1258,7 +1904,7 @@ mod tests {
             span: Span::SYNTHETIC,
         };
         let result = tc.check_repl_input(&input).unwrap();
-        assert_eq!(result.ty, Type::ADT(TypeName::from("Dir"), vec![]));
+        assert_eq!(result.display.as_ref().unwrap().ty, Type::ADT(TypeName::from("Dir"), vec![]));
         assert!(result.type_defs.contains_key(&TypeName::from("Dir")));
     }
 
@@ -1276,44 +1922,50 @@ mod tests {
             TopLevel::Defn(Defn {
                 name: Symbol::from("double"),
                 docstring: None,
-                params: vec![Symbol::from("x")],
-                param_annotations: vec![None],
-                body: Expr::Apply {
-                    callee: Box::new(Expr::Var {
-                        name: Symbol::from("add-self"),
-                        span: span(18, 26),
-                    }),
-                    args: vec![Expr::Var {
-                        name: Symbol::from("x"),
-                        span: span(27, 28),
-                    }],
-                    span: span(17, 29),
-                },
+                variants: vec![DefnVariant {
+                    params: vec![Symbol::from("x")],
+                    param_annotations: vec![None],
+                    body: Expr::Apply {
+                        callee: Box::new(Expr::Var {
+                            name: Symbol::from("add-self"),
+                            span: span(18, 26),
+                        }),
+                        args: vec![Expr::Var {
+                            name: Symbol::from("x"),
+                            span: span(27, 28),
+                        }],
+                        span: span(17, 29),
+                    },
+                    span: span(0, 30),
+                }],
                 visibility: Visibility::Public,
                 span: span(0, 30),
             }),
             TopLevel::Defn(Defn {
                 name: Symbol::from("add-self"),
                 docstring: None,
-                params: vec![Symbol::from("y")],
-                param_annotations: vec![None],
-                body: Expr::Apply {
-                    callee: Box::new(Expr::Var {
-                        name: Symbol::from("add-i64"),
-                        span: span(48, 55),
-                    }),
-                    args: vec![
-                        Expr::Var {
-                            name: Symbol::from("y"),
-                            span: span(56, 57),
-                        },
-                        Expr::Var {
-                            name: Symbol::from("y"),
-                            span: span(58, 59),
-                        },
-                    ],
-                    span: span(47, 60),
-                },
+                variants: vec![DefnVariant {
+                    params: vec![Symbol::from("y")],
+                    param_annotations: vec![None],
+                    body: Expr::Apply {
+                        callee: Box::new(Expr::Var {
+                            name: Symbol::from("add-i64"),
+                            span: span(48, 55),
+                        }),
+                        args: vec![
+                            Expr::Var {
+                                name: Symbol::from("y"),
+                                span: span(56, 57),
+                            },
+                            Expr::Var {
+                                name: Symbol::from("y"),
+                                span: span(58, 59),
+                            },
+                        ],
+                        span: span(47, 60),
+                    },
+                    span: span(31, 61),
+                }],
                 visibility: Visibility::Public,
                 span: span(31, 61),
             }),
@@ -1363,44 +2015,50 @@ mod tests {
             TopLevel::Defn(Defn {
                 name: Symbol::from("double"),
                 docstring: None,
-                params: vec![Symbol::from("x")],
-                param_annotations: vec![Some(cranelisp_types::TypeExpr::Named(TypeName::from("Int")))],
-                body: Expr::Apply {
-                    callee: Box::new(Expr::Var {
-                        name: Symbol::from("add-self"),
-                        span: span(118, 126),
-                    }),
-                    args: vec![Expr::Var {
-                        name: Symbol::from("x"),
-                        span: span(127, 128),
-                    }],
-                    span: span(117, 129),
-                },
+                variants: vec![DefnVariant {
+                    params: vec![Symbol::from("x")],
+                    param_annotations: vec![Some(cranelisp_types::TypeExpr::Named(TypeName::from("Int")))],
+                    body: Expr::Apply {
+                        callee: Box::new(Expr::Var {
+                            name: Symbol::from("add-self"),
+                            span: span(118, 126),
+                        }),
+                        args: vec![Expr::Var {
+                            name: Symbol::from("x"),
+                            span: span(127, 128),
+                        }],
+                        span: span(117, 129),
+                    },
+                    span: span(100, 130),
+                }],
                 visibility: Visibility::Public,
                 span: span(100, 130),
             }),
             TopLevel::Defn(Defn {
                 name: Symbol::from("add-self"),
                 docstring: None,
-                params: vec![Symbol::from("y")],
-                param_annotations: vec![None],
-                body: Expr::Apply {
-                    callee: Box::new(Expr::Var {
-                        name: Symbol::from("add-i64"),
-                        span: span(148, 155),
-                    }),
-                    args: vec![
-                        Expr::Var {
-                            name: Symbol::from("y"),
-                            span: span(156, 157),
-                        },
-                        Expr::Var {
-                            name: Symbol::from("y"),
-                            span: span(158, 159),
-                        },
-                    ],
-                    span: span(147, 160),
-                },
+                variants: vec![DefnVariant {
+                    params: vec![Symbol::from("y")],
+                    param_annotations: vec![None],
+                    body: Expr::Apply {
+                        callee: Box::new(Expr::Var {
+                            name: Symbol::from("add-i64"),
+                            span: span(148, 155),
+                        }),
+                        args: vec![
+                            Expr::Var {
+                                name: Symbol::from("y"),
+                                span: span(156, 157),
+                            },
+                            Expr::Var {
+                                name: Symbol::from("y"),
+                                span: span(158, 159),
+                            },
+                        ],
+                        span: span(147, 160),
+                    },
+                    span: span(131, 161),
+                }],
                 visibility: Visibility::Public,
                 span: span(131, 161),
             }),
@@ -1437,25 +2095,28 @@ mod tests {
         let program = vec![TopLevel::Defn(Defn {
             name: Symbol::from("inc"),
             docstring: None,
-            params: vec![Symbol::from("x")],
-            param_annotations: vec![None],
-            body: Expr::Apply {
-                callee: Box::new(Expr::Var {
-                    name: Symbol::from("add-i64"),
-                    span: span(16, 23),
-                }),
-                args: vec![
-                    Expr::Var {
-                        name: Symbol::from("x"),
-                        span: span(24, 25),
-                    },
-                    Expr::IntLit {
-                        value: 1,
-                        span: span(26, 27),
-                    },
-                ],
-                span: span(15, 28),
-            },
+            variants: vec![DefnVariant {
+                params: vec![Symbol::from("x")],
+                param_annotations: vec![None],
+                body: Expr::Apply {
+                    callee: Box::new(Expr::Var {
+                        name: Symbol::from("add-i64"),
+                        span: span(16, 23),
+                    }),
+                    args: vec![
+                        Expr::Var {
+                            name: Symbol::from("x"),
+                            span: span(24, 25),
+                        },
+                        Expr::IntLit {
+                            value: 1,
+                            span: span(26, 27),
+                        },
+                    ],
+                    span: span(15, 28),
+                },
+                span: span(0, 29),
+            }],
             visibility: Visibility::Public,
             span: span(0, 29),
         })];
@@ -1518,7 +2179,7 @@ mod tests {
     #[test]
     fn test_check_repl_polymorphic_typedef() {
         let mut tc = tc_with_prims();
-        let input = ReplInput::TypeDef {
+        let input = TopLevel::TypeDef {
             name: TypeName::from("Option"),
             docstring: None,
             type_params: vec![Symbol::from("a")],
@@ -1550,12 +2211,12 @@ mod tests {
     #[test]
     fn test_check_repl_string_expression() {
         let mut tc = tc_with_prims();
-        let input = ReplInput::Expr(Expr::StringLit {
+        let input = TopLevel::Expr(Expr::StringLit {
             value: "hello".to_string(),
             span: span(0, 7),
         });
         let result = tc.check_repl_input(&input).unwrap();
-        assert_eq!(result.ty, Type::String);
+        assert_eq!(result.display.as_ref().unwrap().ty, Type::String);
     }
 
     // spec: 03-types §3.1 — function returning string literal has String return type
@@ -1566,12 +2227,15 @@ mod tests {
         let program = vec![TopLevel::Defn(Defn {
             name: Symbol::from("greet"),
             docstring: None,
-            params: vec![],
-            param_annotations: vec![],
-            body: Expr::StringLit {
-                value: "hello".to_string(),
-                span: span(16, 23),
-            },
+            variants: vec![DefnVariant {
+                params: vec![],
+                param_annotations: vec![],
+                body: Expr::StringLit {
+                    value: "hello".to_string(),
+                    span: span(16, 23),
+                },
+                span: span(0, 24),
+            }],
             visibility: Visibility::Public,
             span: span(0, 24),
         })];
@@ -1722,38 +2386,44 @@ mod tests {
             TopLevel::Defn(Defn {
                 name: Symbol::from("add"),
                 docstring: None,
-                params: vec![Symbol::from("x"), Symbol::from("y")],
-                param_annotations: vec![None, None],
-                body: Expr::Apply {
-                    callee: Box::new(Expr::Var {
-                        name: Symbol::from("+"),
-                        span: span(18, 19),
-                    }),
-                    args: vec![
-                        Expr::Var { name: Symbol::from("x"), span: span(20, 21) },
-                        Expr::Var { name: Symbol::from("y"), span: span(22, 23) },
-                    ],
-                    span: span(17, 24),
-                },
+                variants: vec![DefnVariant {
+                    params: vec![Symbol::from("x"), Symbol::from("y")],
+                    param_annotations: vec![None, None],
+                    body: Expr::Apply {
+                        callee: Box::new(Expr::Var {
+                            name: Symbol::from("+"),
+                            span: span(18, 19),
+                        }),
+                        args: vec![
+                            Expr::Var { name: Symbol::from("x"), span: span(20, 21) },
+                            Expr::Var { name: Symbol::from("y"), span: span(22, 23) },
+                        ],
+                        span: span(17, 24),
+                    },
+                    span: span(0, 25),
+                }],
                 visibility: Visibility::Public,
                 span: span(0, 25),
             }),
             TopLevel::Defn(Defn {
                 name: Symbol::from("main"),
                 docstring: None,
-                params: vec![],
-                param_annotations: vec![],
-                body: Expr::Apply {
-                    callee: Box::new(Expr::Var {
-                        name: Symbol::from("add"),
-                        span: span(40, 43),
-                    }),
-                    args: vec![
-                        Expr::IntLit { value: 3, span: span(44, 45) },
-                        Expr::IntLit { value: 4, span: span(46, 47) },
-                    ],
-                    span: span(39, 48),
-                },
+                variants: vec![DefnVariant {
+                    params: vec![],
+                    param_annotations: vec![],
+                    body: Expr::Apply {
+                        callee: Box::new(Expr::Var {
+                            name: Symbol::from("add"),
+                            span: span(40, 43),
+                        }),
+                        args: vec![
+                            Expr::IntLit { value: 3, span: span(44, 45) },
+                            Expr::IntLit { value: 4, span: span(46, 47) },
+                        ],
+                        span: span(39, 48),
+                    },
+                    span: span(26, 49),
+                }],
                 visibility: Visibility::Public,
                 span: span(26, 49),
             }),
@@ -1800,19 +2470,22 @@ mod tests {
         let program = vec![TopLevel::Defn(Defn {
             name: Symbol::from("add"),
             docstring: None,
-            params: vec![Symbol::from("x"), Symbol::from("y")],
-            param_annotations: vec![None, None],
-            body: Expr::Apply {
-                callee: Box::new(Expr::Var {
-                    name: Symbol::from("+"),
-                    span: span(18, 19),
-                }),
-                args: vec![
-                    Expr::Var { name: Symbol::from("x"), span: span(20, 21) },
-                    Expr::Var { name: Symbol::from("y"), span: span(22, 23) },
-                ],
-                span: span(17, 24),
-            },
+            variants: vec![DefnVariant {
+                params: vec![Symbol::from("x"), Symbol::from("y")],
+                param_annotations: vec![None, None],
+                body: Expr::Apply {
+                    callee: Box::new(Expr::Var {
+                        name: Symbol::from("+"),
+                        span: span(18, 19),
+                    }),
+                    args: vec![
+                        Expr::Var { name: Symbol::from("x"), span: span(20, 21) },
+                        Expr::Var { name: Symbol::from("y"), span: span(22, 23) },
+                    ],
+                    span: span(17, 24),
+                },
+                span: span(0, 25),
+            }],
             visibility: Visibility::Public,
             span: span(0, 25),
         })];
@@ -1848,29 +2521,32 @@ mod tests {
         register_num_trait_inline(&mut tc);
 
         // First, define a constrained fn: (defn add [x y] (+ x y))
-        let defn_input = ReplInput::Defn(Defn {
+        let defn_input = TopLevel::Defn(Defn {
             name: Symbol::from("add"),
             docstring: None,
-            params: vec![Symbol::from("x"), Symbol::from("y")],
-            param_annotations: vec![None, None],
-            body: Expr::Apply {
-                callee: Box::new(Expr::Var {
-                    name: Symbol::from("+"),
-                    span: span(18, 19),
-                }),
-                args: vec![
-                    Expr::Var { name: Symbol::from("x"), span: span(20, 21) },
-                    Expr::Var { name: Symbol::from("y"), span: span(22, 23) },
-                ],
-                span: span(17, 24),
-            },
+            variants: vec![DefnVariant {
+                params: vec![Symbol::from("x"), Symbol::from("y")],
+                param_annotations: vec![None, None],
+                body: Expr::Apply {
+                    callee: Box::new(Expr::Var {
+                        name: Symbol::from("+"),
+                        span: span(18, 19),
+                    }),
+                    args: vec![
+                        Expr::Var { name: Symbol::from("x"), span: span(20, 21) },
+                        Expr::Var { name: Symbol::from("y"), span: span(22, 23) },
+                    ],
+                    span: span(17, 24),
+                },
+                span: span(0, 25),
+            }],
             visibility: Visibility::Public,
             span: span(0, 25),
         });
         let _ = tc.check_repl_input(&defn_input).unwrap();
 
         // Now evaluate an expression that calls the constrained fn: (add 3 4)
-        let expr_input = ReplInput::Expr(Expr::Apply {
+        let expr_input = TopLevel::Expr(Expr::Apply {
             callee: Box::new(Expr::Var {
                 name: Symbol::from("add"),
                 span: span(100, 103),
@@ -1901,44 +2577,50 @@ mod tests {
         register_num_trait_inline(&mut tc);
 
         // Define a constrained fn: (defn add [x y] (+ x y))
-        let defn_input = ReplInput::Defn(Defn {
+        let defn_input = TopLevel::Defn(Defn {
             name: Symbol::from("add"),
             docstring: None,
-            params: vec![Symbol::from("x"), Symbol::from("y")],
-            param_annotations: vec![None, None],
-            body: Expr::Apply {
-                callee: Box::new(Expr::Var {
-                    name: Symbol::from("+"),
-                    span: span(18, 19),
-                }),
-                args: vec![
-                    Expr::Var { name: Symbol::from("x"), span: span(20, 21) },
-                    Expr::Var { name: Symbol::from("y"), span: span(22, 23) },
-                ],
-                span: span(17, 24),
-            },
+            variants: vec![DefnVariant {
+                params: vec![Symbol::from("x"), Symbol::from("y")],
+                param_annotations: vec![None, None],
+                body: Expr::Apply {
+                    callee: Box::new(Expr::Var {
+                        name: Symbol::from("+"),
+                        span: span(18, 19),
+                    }),
+                    args: vec![
+                        Expr::Var { name: Symbol::from("x"), span: span(20, 21) },
+                        Expr::Var { name: Symbol::from("y"), span: span(22, 23) },
+                    ],
+                    span: span(17, 24),
+                },
+                span: span(0, 25),
+            }],
             visibility: Visibility::Public,
             span: span(0, 25),
         });
         let _ = tc.check_repl_input(&defn_input).unwrap();
 
         // Define a function that calls the constrained fn: (defn main [] (add 1 2))
-        let main_input = ReplInput::Defn(Defn {
+        let main_input = TopLevel::Defn(Defn {
             name: Symbol::from("main"),
             docstring: None,
-            params: vec![],
-            param_annotations: vec![],
-            body: Expr::Apply {
-                callee: Box::new(Expr::Var {
-                    name: Symbol::from("add"),
-                    span: span(200, 203),
-                }),
-                args: vec![
-                    Expr::IntLit { value: 1, span: span(204, 205) },
-                    Expr::IntLit { value: 2, span: span(206, 207) },
-                ],
-                span: span(199, 208),
-            },
+            variants: vec![DefnVariant {
+                params: vec![],
+                param_annotations: vec![],
+                body: Expr::Apply {
+                    callee: Box::new(Expr::Var {
+                        name: Symbol::from("add"),
+                        span: span(200, 203),
+                    }),
+                    args: vec![
+                        Expr::IntLit { value: 1, span: span(204, 205) },
+                        Expr::IntLit { value: 2, span: span(206, 207) },
+                    ],
+                    span: span(199, 208),
+                },
+                span: span(180, 209),
+            }],
             visibility: Visibility::Public,
             span: span(180, 209),
         });
@@ -1963,19 +2645,22 @@ mod tests {
         let program = vec![TopLevel::Defn(Defn {
             name: Symbol::from("inc"),
             docstring: None,
-            params: vec![Symbol::from("x")],
-            param_annotations: vec![None],
-            body: Expr::Apply {
-                callee: Box::new(Expr::Var {
-                    name: Symbol::from("add-i64"),
-                    span: span(16, 23),
-                }),
-                args: vec![
-                    Expr::Var { name: Symbol::from("x"), span: span(24, 25) },
-                    Expr::IntLit { value: 1, span: span(26, 27) },
-                ],
-                span: span(15, 28),
-            },
+            variants: vec![DefnVariant {
+                params: vec![Symbol::from("x")],
+                param_annotations: vec![None],
+                body: Expr::Apply {
+                    callee: Box::new(Expr::Var {
+                        name: Symbol::from("add-i64"),
+                        span: span(16, 23),
+                    }),
+                    args: vec![
+                        Expr::Var { name: Symbol::from("x"), span: span(24, 25) },
+                        Expr::IntLit { value: 1, span: span(26, 27) },
+                    ],
+                    span: span(15, 28),
+                },
+                span: span(0, 29),
+            }],
             visibility: Visibility::Public,
             span: span(0, 29),
         })];
@@ -1984,5 +2669,344 @@ mod tests {
 
         assert!(result.constrained_fn_names.is_empty());
         assert!(result.mono_defns.is_empty());
+    }
+
+    // --- Multi-sig defn tests ---
+
+    /// Helper to build a CompileContext for test module.
+    fn test_ctx() -> CompileContext {
+        CompileContext {
+            module: ModuleFullPath::from("test"),
+            strategy: cranelisp_types::ModuleStrategy::Additive,
+            compile_mode: cranelisp_types::CompileMode::Batch,
+        }
+    }
+
+    /// Helper to build a multi-sig Defn.
+    fn make_multi_defn(
+        name: &str,
+        variants: Vec<DefnVariant>,
+        span: Span,
+    ) -> Defn {
+        Defn {
+            name: Symbol::from(name),
+            docstring: None,
+            variants,
+            visibility: Visibility::Public,
+            span,
+        }
+    }
+
+    // spec: 05-definitions §5.1.2 — multi-sig defn with different arities
+    #[test]
+    fn test_multi_sig_different_arities() {
+        let mut tc = tc_with_prims();
+
+        // (defn add
+        //   ([x y] (add-i64 x y))
+        //   ([x y z] (add-i64 x (add-i64 y z))))
+        let program = vec![TopLevel::Defn(make_multi_defn(
+            "add",
+            vec![
+                DefnVariant {
+                    params: vec![Symbol::from("x"), Symbol::from("y")],
+                    param_annotations: vec![None, None],
+                    body: Expr::Apply {
+                        callee: Box::new(Expr::Var {
+                            name: Symbol::from("add-i64"),
+                            span: span(10, 17),
+                        }),
+                        args: vec![
+                            Expr::Var { name: Symbol::from("x"), span: span(18, 19) },
+                            Expr::Var { name: Symbol::from("y"), span: span(20, 21) },
+                        ],
+                        span: span(9, 22),
+                    },
+                    span: span(5, 23),
+                },
+                DefnVariant {
+                    params: vec![
+                        Symbol::from("x"),
+                        Symbol::from("y"),
+                        Symbol::from("z"),
+                    ],
+                    param_annotations: vec![None, None, None],
+                    body: Expr::Apply {
+                        callee: Box::new(Expr::Var {
+                            name: Symbol::from("add-i64"),
+                            span: span(30, 37),
+                        }),
+                        args: vec![
+                            Expr::Var { name: Symbol::from("x"), span: span(38, 39) },
+                            Expr::Apply {
+                                callee: Box::new(Expr::Var {
+                                    name: Symbol::from("add-i64"),
+                                    span: span(41, 48),
+                                }),
+                                args: vec![
+                                    Expr::Var { name: Symbol::from("y"), span: span(49, 50) },
+                                    Expr::Var { name: Symbol::from("z"), span: span(51, 52) },
+                                ],
+                                span: span(40, 53),
+                            },
+                        ],
+                        span: span(29, 54),
+                    },
+                    span: span(25, 55),
+                },
+            ],
+            span(0, 56),
+        ))];
+
+        let result = tc.check(&program, &test_ctx()).unwrap();
+
+        // The base name "add" should be registered as Overloaded
+        let entry = tc.current_symbol_table().get("add");
+        assert!(entry.is_some(), "base name 'add' should be registered");
+        if let Some(ModuleEntry::Def { kind, .. }) = entry {
+            assert!(
+                matches!(kind.as_ref(), DefKind::Overloaded { variants } if variants.len() == 2),
+                "add should be Overloaded with 2 variants"
+            );
+        } else {
+            panic!("add should be a Def entry");
+        }
+
+        // Mangled names should be registered: add$Int+Int and add$Int+Int+Int
+        assert!(
+            tc.current_symbol_table().get("add$Int+Int").is_some(),
+            "add$Int+Int should be registered"
+        );
+        assert!(
+            tc.current_symbol_table().get("add$Int+Int+Int").is_some(),
+            "add$Int+Int+Int should be registered"
+        );
+
+        // The multi-sig defns should appear in default_method_defns
+        // (currently piggybacking on that field)
+        assert_eq!(
+            result.default_method_defns.len(), 2,
+            "should produce 2 mangled defns for the backend"
+        );
+    }
+
+    // spec: 05-definitions §5.1.2 — multi-sig with same arity but different types
+    #[test]
+    fn test_multi_sig_same_arity_different_types() {
+        let mut tc = tc_with_prims();
+
+        // (defn process
+        //   ([:Int x] (add-i64 x 1))
+        //   ([:Bool x] (if x 1 0)))
+        let program = vec![TopLevel::Defn(make_multi_defn(
+            "process",
+            vec![
+                DefnVariant {
+                    params: vec![Symbol::from("x")],
+                    param_annotations: vec![Some(TypeExpr::Named(TypeName::from("Int")))],
+                    body: Expr::Apply {
+                        callee: Box::new(Expr::Var {
+                            name: Symbol::from("add-i64"),
+                            span: span(110, 117),
+                        }),
+                        args: vec![
+                            Expr::Var { name: Symbol::from("x"), span: span(118, 119) },
+                            Expr::IntLit { value: 1, span: span(120, 121) },
+                        ],
+                        span: span(109, 122),
+                    },
+                    span: span(105, 123),
+                },
+                DefnVariant {
+                    params: vec![Symbol::from("x")],
+                    param_annotations: vec![Some(TypeExpr::Named(TypeName::from("Bool")))],
+                    body: Expr::If {
+                        cond: Box::new(Expr::Var {
+                            name: Symbol::from("x"),
+                            span: span(130, 131),
+                        }),
+                        then_branch: Box::new(Expr::IntLit { value: 1, span: span(132, 133) }),
+                        else_branch: Box::new(Expr::IntLit { value: 0, span: span(134, 135) }),
+                        span: span(127, 136),
+                    },
+                    span: span(125, 137),
+                },
+            ],
+            span(100, 138),
+        ))];
+
+        let result = tc.check(&program, &test_ctx()).unwrap();
+
+        // Mangled names should be different: process$Int vs process$Bool
+        assert!(
+            tc.current_symbol_table().get("process$Int").is_some(),
+            "process$Int should be registered"
+        );
+        assert!(
+            tc.current_symbol_table().get("process$Bool").is_some(),
+            "process$Bool should be registered"
+        );
+
+        // 2 mangled defns produced
+        assert_eq!(result.default_method_defns.len(), 2);
+    }
+
+    // spec: 05-definitions §5.1.2 — duplicate signatures produce an error
+    #[test]
+    fn test_multi_sig_duplicate_signatures_error() {
+        let mut tc = tc_with_prims();
+
+        // (defn dup
+        //   ([:Int x] (add-i64 x 1))
+        //   ([:Int y] (add-i64 y 2)))
+        // Both variants have the same signature (Int) -> Int — should error.
+        let program = vec![TopLevel::Defn(make_multi_defn(
+            "dup",
+            vec![
+                DefnVariant {
+                    params: vec![Symbol::from("x")],
+                    param_annotations: vec![Some(TypeExpr::Named(TypeName::from("Int")))],
+                    body: Expr::Apply {
+                        callee: Box::new(Expr::Var {
+                            name: Symbol::from("add-i64"),
+                            span: span(210, 217),
+                        }),
+                        args: vec![
+                            Expr::Var { name: Symbol::from("x"), span: span(218, 219) },
+                            Expr::IntLit { value: 1, span: span(220, 221) },
+                        ],
+                        span: span(209, 222),
+                    },
+                    span: span(205, 223),
+                },
+                DefnVariant {
+                    params: vec![Symbol::from("y")],
+                    param_annotations: vec![Some(TypeExpr::Named(TypeName::from("Int")))],
+                    body: Expr::Apply {
+                        callee: Box::new(Expr::Var {
+                            name: Symbol::from("add-i64"),
+                            span: span(230, 237),
+                        }),
+                        args: vec![
+                            Expr::Var { name: Symbol::from("y"), span: span(238, 239) },
+                            Expr::IntLit { value: 2, span: span(240, 241) },
+                        ],
+                        span: span(229, 242),
+                    },
+                    span: span(225, 243),
+                },
+            ],
+            span(200, 244),
+        ))];
+
+        let err = tc.check(&program, &test_ctx());
+        assert!(err.is_err(), "duplicate signatures should produce an error");
+        let msg = format!("{}", err.unwrap_err());
+        assert!(
+            msg.contains("duplicate signature"),
+            "error should mention 'duplicate signature', got: {msg}"
+        );
+    }
+
+    // spec: 05-definitions §5.1.2 — call site resolves to correct variant
+    #[test]
+    fn test_multi_sig_call_site_resolution() {
+        let mut tc = tc_with_prims();
+
+        // Define multi-sig:
+        // (defn add
+        //   ([:Int x :Int y] (add-i64 x y))
+        //   ([:Int x :Int y :Int z] (add-i64 x (add-i64 y z))))
+        //
+        // Then call it:
+        // (add 1 2)  -- should resolve to add$Int+Int
+
+        let multi_defn = TopLevel::Defn(make_multi_defn(
+            "add",
+            vec![
+                DefnVariant {
+                    params: vec![Symbol::from("x"), Symbol::from("y")],
+                    param_annotations: vec![None, None],
+                    body: Expr::Apply {
+                        callee: Box::new(Expr::Var {
+                            name: Symbol::from("add-i64"),
+                            span: span(310, 317),
+                        }),
+                        args: vec![
+                            Expr::Var { name: Symbol::from("x"), span: span(318, 319) },
+                            Expr::Var { name: Symbol::from("y"), span: span(320, 321) },
+                        ],
+                        span: span(309, 322),
+                    },
+                    span: span(305, 323),
+                },
+                DefnVariant {
+                    params: vec![
+                        Symbol::from("x"),
+                        Symbol::from("y"),
+                        Symbol::from("z"),
+                    ],
+                    param_annotations: vec![None, None, None],
+                    body: Expr::Apply {
+                        callee: Box::new(Expr::Var {
+                            name: Symbol::from("add-i64"),
+                            span: span(330, 337),
+                        }),
+                        args: vec![
+                            Expr::Var { name: Symbol::from("x"), span: span(338, 339) },
+                            Expr::Apply {
+                                callee: Box::new(Expr::Var {
+                                    name: Symbol::from("add-i64"),
+                                    span: span(341, 348),
+                                }),
+                                args: vec![
+                                    Expr::Var { name: Symbol::from("y"), span: span(349, 350) },
+                                    Expr::Var { name: Symbol::from("z"), span: span(351, 352) },
+                                ],
+                                span: span(340, 353),
+                            },
+                        ],
+                        span: span(329, 354),
+                    },
+                    span: span(325, 355),
+                },
+            ],
+            span(300, 356),
+        ));
+
+        // Expression that calls add with 2 args: (add 1 2)
+        let call_span = span(400, 410);
+        let call_expr = TopLevel::Expr(Expr::Apply {
+            callee: Box::new(Expr::Var {
+                name: Symbol::from("add"),
+                span: span(401, 404),
+            }),
+            args: vec![
+                Expr::IntLit { value: 1, span: span(405, 406) },
+                Expr::IntLit { value: 2, span: span(407, 408) },
+            ],
+            span: call_span,
+        });
+
+        let program = vec![multi_defn, call_expr];
+        let result = tc.check(&program, &test_ctx()).unwrap();
+
+        // The call site should have a SigDispatch resolution to "add$Int+Int"
+        let resolution = result.method_resolutions.get(&call_span);
+        assert!(
+            resolution.is_some(),
+            "call site should have a resolution"
+        );
+        match resolution.unwrap() {
+            ResolvedCall::SigDispatch { mangled_name } => {
+                assert_eq!(
+                    mangled_name.as_ref(), "add$Int+Int",
+                    "should dispatch to add$Int+Int"
+                );
+            }
+            other => {
+                panic!("expected SigDispatch, got {:?}", other);
+            }
+        }
     }
 }

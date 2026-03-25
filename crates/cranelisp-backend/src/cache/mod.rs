@@ -443,19 +443,22 @@ mod tests {
     // spec: design/backend/module-caching.md §13 — end-to-end: compile .o, load via linker, execute
     #[test]
     fn test_compile_load_and_execute_cached_module() {
-        use cranelisp_types::{Defn, Expr, Scheme, Span, Symbol, Visibility};
+        use cranelisp_types::{Defn, DefnVariant, Expr, Scheme, Span, Symbol, Visibility};
         use super::object::{ObjectCompileInput, IntrinsicTable};
 
         // Step 1: Create a minimal module with (defn answer [] 42)
         let defn = Defn {
             name: Symbol::from("answer"),
             docstring: None,
-            params: vec![],
-            param_annotations: vec![],
-            body: Expr::IntLit {
-                value: 42,
-                span: Span::new(10, 12),
-            },
+            variants: vec![DefnVariant {
+                params: vec![],
+                param_annotations: vec![],
+                body: Expr::IntLit {
+                    value: 42,
+                    span: Span::new(10, 12),
+                },
+                span: Span::new(0, 20),
+            }],
             visibility: Visibility::Public,
             span: Span::new(0, 20),
         };

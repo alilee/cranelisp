@@ -8,6 +8,7 @@ pub mod exe;
 pub mod expander;
 pub mod marshal;
 pub mod pipeline;
+pub mod pipeline_v2;
 pub mod platform;
 pub mod pretty;
 pub mod repl;

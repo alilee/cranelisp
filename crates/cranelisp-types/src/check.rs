@@ -49,8 +49,20 @@ pub struct MonoDefn {
     pub expr_types: HashMap<Span, Type>,
 }
 
-/// Result of type checking a batch compilation unit.
-/// Primary boundary type between typecheck and backend.
+/// Display information for REPL output (inferred type and optional scheme).
+/// Present in CheckResult only when processing REPL input that should display a result.
+#[derive(Debug, Clone)]
+pub struct DisplayInfo {
+    /// Inferred type of the expression or definition
+    pub ty: Type,
+    /// Generalized scheme for defn display (None for bare expressions)
+    pub scheme: Option<Scheme>,
+}
+
+/// Result of type checking a compilation unit.
+/// Unified boundary type between typecheck and backend — used for both
+/// batch programs and REPL inputs. REPL inputs set `display` to carry
+/// the inferred type/scheme for interactive output.
 #[derive(Debug)]
 pub struct CheckResult {
     /// How each call site was resolved (trait dispatch, overload, auto-curry, builtin)
@@ -71,33 +83,8 @@ pub struct CheckResult {
     /// Map from constructor name to its parent type name.
     /// Backend needs this to look up tag values during match codegen.
     pub constructor_to_type: HashMap<Symbol, TypeName>,
-}
-
-/// Result of type checking a single REPL input.
-/// Distinct from CheckResult because REPL processes one form at a time
-/// and needs the inferred type/scheme for display.
-#[derive(Debug)]
-pub struct ReplCheckResult {
-    /// Inferred type of the expression or definition
-    pub ty: Type,
-    /// Generalized scheme for defn display (None for bare expressions)
-    pub scheme: Option<Scheme>,
-    /// How each call site was resolved
-    pub method_resolutions: MethodResolutions,
-    /// Type of every subexpression
-    pub expr_types: HashMap<Span, Type>,
-    /// Warnings from this input
-    pub warnings: Vec<Warning>,
-    /// Type definitions registered by this input (for deftype)
-    pub type_defs: HashMap<TypeName, TypeDefInfo>,
-    /// Constructor-to-type mappings registered by this input
-    pub constructor_to_type: HashMap<Symbol, TypeName>,
-    /// Names of constrained polymorphic functions requiring monomorphisation (Ring 2)
-    pub constrained_fn_names: HashSet<Symbol>,
-    /// Monomorphised function definitions generated during checking (Ring 2)
-    pub mono_defns: Vec<MonoDefn>,
-    /// Default trait method implementations expanded during checking (Ring 2)
-    pub default_method_defns: Vec<Defn>,
+    /// Display info for REPL output (None in batch mode).
+    pub display: Option<DisplayInfo>,
 }
 
 /// Information about a user-defined type.

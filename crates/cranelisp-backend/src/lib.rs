@@ -26,8 +26,8 @@ use std::collections::HashMap;
 use cranelift_module::FuncId;
 
 use cranelisp_types::{
-    CheckResult, CompileMode, CranelispError, Defn, Expr, Program, Span, Symbol, TopLevel,
-    Warning,
+    CheckResult, CompileMode, CranelispError, Defn, DefnVariant, Expr, Program, Span, Symbol,
+    TopLevel, Type, TypeName, Warning,
 };
 
 use crate::jit::Jit;
@@ -90,10 +90,14 @@ impl CompiledExpr {
 /// Collected defn references and their metadata, produced by the first phase
 /// of `compile_program`.
 struct CollectedDefns<'a> {
-    /// Regular (non-constrained) defns from the program.
+    /// Regular (non-constrained, non-multi-sig) defns from the program.
     defns: Vec<&'a Defn>,
     /// Extra defns owned by this struct (default method impls + mono specializations).
+    /// These are declared but compiled via their own dedicated loops.
     extra_defns: Vec<Defn>,
+    /// Expanded multi-sig variant defns, each with a mangled name.
+    /// These are compiled alongside regular defns.
+    multi_sig_defns: Vec<Defn>,
     /// Function IDs declared in the JIT module.
     /// Maps **bare** function names to FuncIds (for codegen lookup).
     func_ids: HashMap<Symbol, FuncId>,
@@ -137,6 +141,11 @@ pub fn compile_program(
         jit.compile_defn(defn, compile_ctx)?;
     }
 
+    // Compile expanded multi-sig variant defns.
+    for defn in &collected.multi_sig_defns {
+        jit.compile_defn(defn, compile_ctx)?;
+    }
+
     // Compile default method defns with the main resolutions.
     for defn in &check.default_method_defns {
         jit.compile_defn(defn, compile_ctx)?;
@@ -155,6 +164,86 @@ pub fn compile_program(
     )
 }
 
+/// Extract the concrete type name from a resolved type, for mangled name construction.
+///
+/// Mirrors `concrete_type_name` in the typecheck crate. Returns `None` for
+/// unresolved type variables — those cannot appear in multi-sig dispatch
+/// (all variants must have concrete parameter types).
+fn concrete_type_name(ty: &Type) -> Option<TypeName> {
+    match ty {
+        Type::Int => Some(TypeName::from("Int")),
+        Type::Float => Some(TypeName::from("Float")),
+        Type::Bool => Some(TypeName::from("Bool")),
+        Type::String => Some(TypeName::from("String")),
+        Type::ADT(name, _) => Some(name.clone()),
+        _ => None,
+    }
+}
+
+/// Build a mangled function name from a base name and concrete parameter types.
+///
+/// Follows the convention `name$Type1+Type2` (spec §5.1.2). Mirrors
+/// `build_mangled_name` in the typecheck crate to ensure the backend and
+/// typechecker agree on mangled names.
+fn build_mangled_name(fn_name: &Symbol, param_types: &[Type]) -> String {
+    let type_names: Vec<String> = param_types
+        .iter()
+        .filter_map(|t| concrete_type_name(t).map(|tn| tn.to_string()))
+        .collect();
+    format!("{}${}", fn_name, type_names.join("+"))
+}
+
+/// Expand a multi-sig defn into individual single-variant defns with mangled names.
+///
+/// For each variant, looks up its function type in `expr_types` (keyed by the
+/// variant's span) to determine the concrete parameter types, then builds a
+/// mangled name using `build_mangled_name`.
+///
+/// Returns the expanded defns. The base multi-sig defn should not be compiled
+/// directly — callers use `ResolvedCall::SigDispatch` to call specific variants.
+fn expand_multi_sig_defn(
+    defn: &Defn,
+    expr_types: &HashMap<Span, Type>,
+) -> Result<Vec<Defn>, CranelispError> {
+    let mut expanded = Vec::new();
+
+    for variant in &defn.variants {
+        // Look up the function type for this variant's span.
+        let param_types = match expr_types.get(&variant.span) {
+            Some(Type::Fn(params, _)) => params.clone(),
+            _ => {
+                // Fall back: try the defn-level span (some typecheckers register there).
+                match expr_types.get(&defn.span) {
+                    Some(Type::Fn(params, _)) if params.len() == variant.params.len() => {
+                        params.clone()
+                    }
+                    _ => {
+                        return Err(CranelispError::CodegenError {
+                            message: format!(
+                                "multi-sig variant of '{}' missing type info at span {:?}",
+                                defn.name, variant.span
+                            ),
+                            span: variant.span,
+                        });
+                    }
+                }
+            }
+        };
+
+        let mangled_name = build_mangled_name(&defn.name, &param_types);
+
+        expanded.push(Defn {
+            name: Symbol::from(mangled_name),
+            docstring: defn.docstring.clone(),
+            variants: vec![variant.clone()],
+            visibility: defn.visibility,
+            span: variant.span,
+        });
+    }
+
+    Ok(expanded)
+}
+
 /// Phase 1: Collect all defns from the program (skipping constrained fn base
 /// definitions), collect extra defns (default methods + mono specializations),
 /// declare all functions in the JIT, and build the arity map.
@@ -168,15 +257,18 @@ fn collect_and_declare_defns<'a>(
     jit: &mut Jit,
     jit_prefix: Option<&str>,
 ) -> Result<CollectedDefns<'a>, CranelispError> {
-    // Collect regular defns, skipping constrained fn base definitions.
+    // Collect regular defns, skipping constrained fn base definitions
+    // and multi-sig defns (which are expanded into individual variants below).
     // Constrained fns are templates — only their monomorphised specializations
     // (in check.mono_defns) are compiled.
     let defns: Vec<&Defn> = program
         .iter()
         .filter_map(|tl| match tl {
             TopLevel::Defn(defn) => {
-                if check.constrained_fn_names.contains(&defn.name) {
-                    None // Skip constrained fn base defs — templates only
+                // Skip constrained fn base defs (templates only) and
+                // multi-sig defns (expanded into individual variants below).
+                if check.constrained_fn_names.contains(&defn.name) || defn.is_multi_sig() {
+                    None
                 } else {
                     Some(defn)
                 }
@@ -188,7 +280,21 @@ fn collect_and_declare_defns<'a>(
     // Collect additional defns: default method impls and mono specializations.
     let extra_defns = collect_extra_defns(check);
 
-    if defns.is_empty() && extra_defns.is_empty() {
+    // Expand multi-sig defns into individual variant defns with mangled names.
+    // Each variant becomes a separate function (e.g., `add$Int+Int`, `add$Int+Int+Int`).
+    // Call sites are resolved to the specific variant via SigDispatch.
+    let mut multi_sig_defns = Vec::new();
+    for tl in program {
+        if let TopLevel::Defn(defn) = tl
+            && defn.is_multi_sig()
+            && !check.constrained_fn_names.contains(&defn.name)
+        {
+            let expanded = expand_multi_sig_defn(defn, &check.expr_types)?;
+            multi_sig_defns.extend(expanded);
+        }
+    }
+
+    if defns.is_empty() && extra_defns.is_empty() && multi_sig_defns.is_empty() {
         return Err(CranelispError::CodegenError {
             message: "no function definitions in program".into(),
             span: Span::SYNTHETIC,
@@ -196,8 +302,12 @@ fn collect_and_declare_defns<'a>(
     }
 
     // Build full list of defn references for declaration.
+    // All defns at this point are single-variant (multi-sig defns have been expanded).
     let mut all_defn_refs: Vec<&Defn> = defns.clone();
     for d in &extra_defns {
+        all_defn_refs.push(d);
+    }
+    for d in &multi_sig_defns {
         all_defn_refs.push(d);
     }
 
@@ -212,12 +322,13 @@ fn collect_and_declare_defns<'a>(
     };
 
     // Build function arity map for named-function-as-value closure wrappers.
+    // All defns are single-variant at this point so .params() is safe.
     let func_arities: HashMap<Symbol, usize> = all_defn_refs
         .iter()
-        .map(|d| (d.name.clone(), d.params.len()))
+        .map(|d| (d.name.clone(), d.params().len()))
         .collect();
 
-    Ok(CollectedDefns { defns, extra_defns, func_ids, func_arities, jit_names })
+    Ok(CollectedDefns { defns, extra_defns, multi_sig_defns, func_ids, func_arities, jit_names })
 }
 
 /// Phase 2: In Interactive mode, set up a temporary GOT so GOT-indirect calls
@@ -230,9 +341,10 @@ fn setup_interactive_got(
         let mut state = got::ModuleCodegenState::new();
         let mut slots = HashMap::new();
 
-        // Build the combined iterator over regular + extra defns.
+        // Build the combined iterator over regular + extra + multi-sig defns.
         let all_names = collected.defns.iter().map(|d| &d.name)
-            .chain(collected.extra_defns.iter().map(|d| &d.name));
+            .chain(collected.extra_defns.iter().map(|d| &d.name))
+            .chain(collected.multi_sig_defns.iter().map(|d| &d.name));
 
         for name in all_names {
             let slot = state.ensure_slot_for(name)?;
@@ -257,7 +369,7 @@ fn find_entry_and_finalize(
     let entry_defn = defns
         .iter()
         .rev()
-        .find(|d| d.params.is_empty())
+        .find(|d| d.params().is_empty())
         .ok_or_else(|| CranelispError::CodegenError {
             message: "no zero-arg function to use as entry point".into(),
             span: Span::SYNTHETIC,
@@ -335,6 +447,7 @@ fn compile_mono_defns(
             warnings: Vec::new(),
             type_defs: check.type_defs.clone(),
             constructor_to_type: check.constructor_to_type.clone(),
+            display: None,
         };
 
         let ctx = jit.build_compile_context(
@@ -450,6 +563,11 @@ pub fn compile_module_program(
         jit.compile_defn(defn, compile_ctx)?;
     }
 
+    // Compile expanded multi-sig variant defns.
+    for defn in &collected.multi_sig_defns {
+        jit.compile_defn(defn, compile_ctx)?;
+    }
+
     // Compile default method defns.
     for defn in &check.default_method_defns {
         jit.compile_defn(defn, compile_ctx)?;
@@ -517,11 +635,14 @@ pub fn compile_expr_with_got_and_symbols(
     let wrapper_name = Symbol::from("__repl_expr__");
     let wrapper_defn = Defn {
         name: wrapper_name.clone(),
-        params: vec![],
-        param_annotations: vec![],
-        visibility: cranelisp_types::Visibility::Public,
-        body: expr.clone(),
         docstring: None,
+        variants: vec![DefnVariant {
+            params: vec![],
+            param_annotations: vec![],
+            body: expr.clone(),
+            span: expr.span(),
+        }],
+        visibility: cranelisp_types::Visibility::Public,
         span: expr.span(),
     };
 
@@ -586,7 +707,7 @@ pub fn compile_and_run_expr_with_got(
 mod tests {
     use super::*;
     use cranelisp_types::{
-        CheckResult, CompileMode, Defn, Expr, Span, Symbol, TopLevel,
+        CheckResult, CompileMode, Defn, DefnVariant, Expr, Span, Symbol, TopLevel,
     };
     use std::collections::{HashMap, HashSet};
 
@@ -600,6 +721,7 @@ mod tests {
             warnings: Vec::new(),
             type_defs: HashMap::new(),
             constructor_to_type: HashMap::new(),
+        display: None,
         }
     }
 
@@ -608,14 +730,17 @@ mod tests {
     fn test_compile_program_simple() {
         let defn = Defn {
             name: Symbol::from("main"),
-            params: vec![],
-            param_annotations: vec![],
-            visibility: cranelisp_types::Visibility::Public,
-            body: Expr::IntLit {
-                value: 42,
-                span: Span::new(0, 2),
-            },
             docstring: None,
+            variants: vec![DefnVariant {
+                params: vec![],
+                param_annotations: vec![],
+                body: Expr::IntLit {
+                    value: 42,
+                    span: Span::new(0, 2),
+                },
+                span: Span::new(0, 20),
+            }],
+            visibility: cranelisp_types::Visibility::Public,
             span: Span::new(0, 20),
         };
 
@@ -655,14 +780,17 @@ mod tests {
     fn test_compile_program_interactive_mode() {
         let defn = Defn {
             name: Symbol::from("main"),
-            params: vec![],
-            param_annotations: vec![],
-            visibility: cranelisp_types::Visibility::Public,
-            body: Expr::IntLit {
+            docstring: None,
+            variants: vec![DefnVariant {
+                params: vec![],
+                param_annotations: vec![],
+                body: Expr::IntLit {
                 value: 7,
                 span: Span::new(0, 1),
-            },
-            docstring: None,
+                },
+                span: Span::new(0, 20),
+            }],
+            visibility: cranelisp_types::Visibility::Public,
             span: Span::new(0, 20),
         };
 
@@ -699,27 +827,33 @@ mod tests {
         // Two functions: helper and main. Main returns 100.
         let helper = Defn {
             name: Symbol::from("helper"),
-            params: vec![Symbol::from("x")],
-            param_annotations: vec![],
-            visibility: cranelisp_types::Visibility::Public,
-            body: Expr::Var {
+            docstring: None,
+            variants: vec![DefnVariant {
+                params: vec![Symbol::from("x")],
+                param_annotations: vec![],
+                body: Expr::Var {
                 name: Symbol::from("x"),
                 span: Span::new(20, 21),
-            },
-            docstring: None,
+                },
+                span: Span::new(10, 30),
+            }],
+            visibility: cranelisp_types::Visibility::Public,
             span: Span::new(10, 30),
         };
 
         let main_defn = Defn {
             name: Symbol::from("main"),
-            params: vec![],
-            param_annotations: vec![],
-            visibility: cranelisp_types::Visibility::Public,
-            body: Expr::IntLit {
+            docstring: None,
+            variants: vec![DefnVariant {
+                params: vec![],
+                param_annotations: vec![],
+                body: Expr::IntLit {
                 value: 100,
                 span: Span::new(40, 43),
-            },
-            docstring: None,
+                },
+                span: Span::new(35, 50),
+            }],
+            visibility: cranelisp_types::Visibility::Public,
             span: Span::new(35, 50),
         };
 
@@ -852,6 +986,7 @@ mod tests {
             warnings: Vec::new(),
             type_defs,
             constructor_to_type,
+        display: None,
         };
 
         let result = compile_and_run_expr_with_got(&expr, &check, CompileMode::Batch, None);
@@ -969,6 +1104,7 @@ mod tests {
             warnings: Vec::new(),
             type_defs,
             constructor_to_type,
+        display: None,
         };
 
         let result = compile_and_run_expr_with_got(&expr, &check, CompileMode::Batch, None);
@@ -1041,6 +1177,7 @@ mod tests {
             warnings: Vec::new(),
             type_defs: HashMap::new(),
             constructor_to_type: HashMap::new(),
+        display: None,
         };
 
         let result = compile_and_run_expr_with_got(&expr, &check, CompileMode::Batch, None);
@@ -1200,6 +1337,7 @@ mod tests {
             warnings: Vec::new(),
             type_defs: HashMap::new(),
             constructor_to_type: HashMap::new(),
+        display: None,
         };
 
         let result = compile_and_run_expr_with_got(&expr, &check, CompileMode::Batch, None);
@@ -1262,6 +1400,7 @@ mod tests {
             warnings: Vec::new(),
             type_defs: HashMap::new(),
             constructor_to_type: HashMap::new(),
+        display: None,
         };
 
         let result = compile_and_run_expr_with_got(&expr, &check, CompileMode::Batch, None);
@@ -1322,6 +1461,7 @@ mod tests {
             warnings: Vec::new(),
             type_defs: HashMap::new(),
             constructor_to_type: HashMap::new(),
+        display: None,
         };
 
         let result = compile_and_run_expr_with_got(&expr, &check, CompileMode::Batch, None);
@@ -1383,6 +1523,7 @@ mod tests {
             warnings: Vec::new(),
             type_defs: HashMap::new(),
             constructor_to_type: HashMap::new(),
+        display: None,
         };
 
         let result = compile_and_run_expr_with_got(&expr, &check, CompileMode::Batch, None);
@@ -1461,6 +1602,7 @@ mod tests {
             warnings: Vec::new(),
             type_defs: HashMap::new(),
             constructor_to_type: HashMap::new(),
+        display: None,
         };
 
         let result = compile_and_run_expr_with_got(&expr, &check, CompileMode::Batch, None);
@@ -1527,6 +1669,7 @@ mod tests {
             warnings: Vec::new(),
             type_defs: HashMap::new(),
             constructor_to_type: HashMap::new(),
+        display: None,
         };
 
         let result = compile_and_run_expr_with_got(&expr, &check, CompileMode::Batch, None);
@@ -1587,6 +1730,7 @@ mod tests {
             warnings: Vec::new(),
             type_defs: HashMap::new(),
             constructor_to_type: HashMap::new(),
+        display: None,
         };
 
         let result = compile_and_run_expr_with_got(&expr, &check, CompileMode::Batch, None);
@@ -1638,6 +1782,7 @@ mod tests {
             warnings: Vec::new(),
             type_defs: HashMap::new(),
             constructor_to_type: HashMap::new(),
+        display: None,
         };
 
         let result = compile_and_run_expr_with_got(&expr, &check, CompileMode::Batch, None);
@@ -1663,18 +1808,21 @@ mod tests {
         // Returns a Vec literal.
         let defn = Defn {
             name: Symbol::from("make-vec"),
-            params: vec![],
-            param_annotations: vec![],
-            visibility: cranelisp_types::Visibility::Public,
-            body: Expr::VecLit {
+            docstring: None,
+            variants: vec![DefnVariant {
+                params: vec![],
+                param_annotations: vec![],
+                body: Expr::VecLit {
                 elements: vec![
-                    Expr::IntLit { value: 1, span: Span::new(701, 702) },
-                    Expr::IntLit { value: 2, span: Span::new(703, 704) },
-                    Expr::IntLit { value: 3, span: Span::new(705, 706) },
+                Expr::IntLit { value: 1, span: Span::new(701, 702) },
+                Expr::IntLit { value: 2, span: Span::new(703, 704) },
+                Expr::IntLit { value: 3, span: Span::new(705, 706) },
                 ],
                 span: Span::new(700, 707),
-            },
-            docstring: None,
+                },
+                span: Span::new(700, 710),
+            }],
+            visibility: cranelisp_types::Visibility::Public,
             span: Span::new(700, 710),
         };
 
@@ -1744,6 +1892,7 @@ mod tests {
             warnings: Vec::new(),
             type_defs: HashMap::new(),
             constructor_to_type: HashMap::new(),
+        display: None,
         };
 
         let result = compile_and_run_expr_with_got(&expr, &check, CompileMode::Batch, None);
@@ -1809,6 +1958,7 @@ mod tests {
             warnings: Vec::new(),
             type_defs: HashMap::new(),
             constructor_to_type: HashMap::new(),
+        display: None,
         };
 
         let result = compile_and_run_expr_with_got(&expr, &check, CompileMode::Batch, None);
@@ -1876,6 +2026,7 @@ mod tests {
             warnings: Vec::new(),
             type_defs: HashMap::new(),
             constructor_to_type: HashMap::new(),
+        display: None,
         };
 
         let result = compile_and_run_expr_with_got(&expr, &check, CompileMode::Batch, None);
@@ -1944,6 +2095,7 @@ mod tests {
             warnings: Vec::new(),
             type_defs: HashMap::new(),
             constructor_to_type: HashMap::new(),
+        display: None,
         };
 
         let result = compile_and_run_expr_with_got(&expr, &check, CompileMode::Batch, None);
@@ -2006,6 +2158,7 @@ mod tests {
             warnings: Vec::new(),
             type_defs: HashMap::new(),
             constructor_to_type: HashMap::new(),
+        display: None,
         };
 
         let result = compile_and_run_expr_with_got(&expr, &check, CompileMode::Batch, None);
@@ -2049,6 +2202,7 @@ mod tests {
             warnings: Vec::new(),
             type_defs: HashMap::new(),
             constructor_to_type: HashMap::new(),
+        display: None,
         };
 
         let result = compile_and_run_expr_with_got(&expr, &check, CompileMode::Batch, None);
@@ -2213,21 +2367,27 @@ mod tests {
         // A constrained fn should be skipped (not compiled).
         let defn = Defn {
             name: Symbol::from("add"),
-            params: vec![Symbol::from("x"), Symbol::from("y")],
-            param_annotations: vec![],
-            visibility: cranelisp_types::Visibility::Public,
-            body: Expr::IntLit { value: 0, span: Span::new(10, 11) },
             docstring: None,
+            variants: vec![DefnVariant {
+                params: vec![Symbol::from("x"), Symbol::from("y")],
+                param_annotations: vec![],
+                body: Expr::IntLit { value: 0, span: Span::new(10, 11) },
+                span: Span::new(0, 20),
+            }],
+            visibility: cranelisp_types::Visibility::Public,
             span: Span::new(0, 20),
         };
 
         let main_defn = Defn {
             name: Symbol::from("main"),
-            params: vec![],
-            param_annotations: vec![],
-            visibility: cranelisp_types::Visibility::Public,
-            body: Expr::IntLit { value: 42, span: Span::new(30, 32) },
             docstring: None,
+            variants: vec![DefnVariant {
+                params: vec![],
+                param_annotations: vec![],
+                body: Expr::IntLit { value: 42, span: Span::new(30, 32) },
+                span: Span::new(25, 40),
+            }],
+            visibility: cranelisp_types::Visibility::Public,
             span: Span::new(25, 40),
         };
 
@@ -2260,11 +2420,14 @@ mod tests {
         let mut check = empty_check();
         check.default_method_defns.push(Defn {
             name: Symbol::from("!="),
-            params: vec![Symbol::from("x"), Symbol::from("y")],
-            param_annotations: vec![],
-            visibility: cranelisp_types::Visibility::Public,
-            body: Expr::IntLit { value: 0, span: Span::new(0, 1) },
             docstring: None,
+            variants: vec![DefnVariant {
+                params: vec![Symbol::from("x"), Symbol::from("y")],
+                param_annotations: vec![],
+                body: Expr::IntLit { value: 0, span: Span::new(0, 1) },
+                span: Span::new(0, 10),
+            }],
+            visibility: cranelisp_types::Visibility::Public,
             span: Span::new(0, 10),
         });
 
@@ -2283,14 +2446,17 @@ mod tests {
         // Step 1: Compile a function "add42" in module A's GOT.
         let add42_defn = Defn {
             name: Symbol::from("add42"),
-            params: vec![Symbol::from("x")],
-            param_annotations: vec![],
-            visibility: cranelisp_types::Visibility::Public,
-            body: Expr::IntLit {
+            docstring: None,
+            variants: vec![DefnVariant {
+                params: vec![Symbol::from("x")],
+                param_annotations: vec![],
+                body: Expr::IntLit {
                 value: 42,
                 span: Span::new(0, 2),
-            },
-            docstring: None,
+                },
+                span: Span::new(0, 20),
+            }],
+            visibility: cranelisp_types::Visibility::Public,
             span: Span::new(0, 20),
         };
 
@@ -2344,11 +2510,14 @@ mod tests {
         let wrapper_name = Symbol::from("__test_caller__");
         let wrapper_defn = Defn {
             name: wrapper_name.clone(),
-            params: vec![],
-            param_annotations: vec![],
-            visibility: cranelisp_types::Visibility::Public,
-            body: caller_expr,
             docstring: None,
+            variants: vec![DefnVariant {
+                params: vec![],
+                param_annotations: vec![],
+                body: caller_expr,
+                span: Span::new(100, 120),
+            }],
+            visibility: cranelisp_types::Visibility::Public,
             span: Span::new(100, 120),
         };
 
@@ -2396,14 +2565,17 @@ mod tests {
         // This simulates compile_mono_defns producing countdown$Int.
         let mono_defn = Defn {
             name: Symbol::from("identity$Int"),
-            params: vec![Symbol::from("x")],
-            param_annotations: vec![],
-            visibility: cranelisp_types::Visibility::Public,
-            body: Expr::Var {
+            docstring: None,
+            variants: vec![DefnVariant {
+                params: vec![Symbol::from("x")],
+                param_annotations: vec![],
+                body: Expr::Var {
                 name: Symbol::from("x"),
                 span: Span::new(10, 11),
-            },
-            docstring: None,
+                },
+                span: Span::new(0, 20),
+            }],
+            visibility: cranelisp_types::Visibility::Public,
             span: Span::new(0, 20),
         };
 
@@ -2450,11 +2622,14 @@ mod tests {
 
         let main_defn = Defn {
             name: Symbol::from("main"),
-            params: vec![],
-            param_annotations: vec![],
-            visibility: cranelisp_types::Visibility::Public,
-            body: main_body,
             docstring: None,
+            variants: vec![DefnVariant {
+                params: vec![],
+                param_annotations: vec![],
+                body: main_body,
+                span: Span::new(95, 120),
+            }],
+            visibility: cranelisp_types::Visibility::Public,
             span: Span::new(95, 120),
         };
 
@@ -2570,11 +2745,14 @@ mod tests {
 
         let countdown_defn = Defn {
             name: Symbol::from("countdown$Int"),
-            params: vec![Symbol::from("n")],
-            param_annotations: vec![],
-            visibility: cranelisp_types::Visibility::Public,
-            body,
             docstring: None,
+            variants: vec![DefnVariant {
+                params: vec![Symbol::from("n")],
+                param_annotations: vec![],
+                body,
+                span: Span::new(0, 100),
+            }],
+            visibility: cranelisp_types::Visibility::Public,
             span: Span::new(0, 100),
         };
 
@@ -2641,11 +2819,14 @@ mod tests {
         // Module A defines "val" returning 100.
         let val_a = Defn {
             name: Symbol::from("val"),
-            params: vec![],
-            param_annotations: vec![],
-            visibility: cranelisp_types::Visibility::Public,
-            body: Expr::IntLit { value: 100, span: Span::new(0, 3) },
             docstring: None,
+            variants: vec![DefnVariant {
+                params: vec![],
+                param_annotations: vec![],
+                body: Expr::IntLit { value: 100, span: Span::new(0, 3) },
+                span: Span::new(0, 20),
+            }],
+            visibility: cranelisp_types::Visibility::Public,
             span: Span::new(0, 20),
         };
         let program_a: Program = vec![TopLevel::Defn(val_a)];
@@ -2654,28 +2835,34 @@ mod tests {
         // Module B also defines "val" returning 200.
         let val_b = Defn {
             name: Symbol::from("val"),
-            params: vec![],
-            param_annotations: vec![],
-            visibility: cranelisp_types::Visibility::Public,
-            body: Expr::IntLit { value: 200, span: Span::new(100, 103) },
             docstring: None,
+            variants: vec![DefnVariant {
+                params: vec![],
+                param_annotations: vec![],
+                body: Expr::IntLit { value: 200, span: Span::new(100, 103) },
+                span: Span::new(100, 120),
+            }],
+            visibility: cranelisp_types::Visibility::Public,
             span: Span::new(100, 120),
         };
         // Module B also defines "main" that calls its own "val".
         let main_b = Defn {
             name: Symbol::from("main"),
-            params: vec![],
-            param_annotations: vec![],
-            visibility: cranelisp_types::Visibility::Public,
-            body: Expr::Apply {
+            docstring: None,
+            variants: vec![DefnVariant {
+                params: vec![],
+                param_annotations: vec![],
+                body: Expr::Apply {
                 callee: Box::new(Expr::Var {
-                    name: Symbol::from("val"),
-                    span: Span::new(130, 133),
+                name: Symbol::from("val"),
+                span: Span::new(130, 133),
                 }),
                 args: vec![],
                 span: Span::new(130, 135),
-            },
-            docstring: None,
+                },
+                span: Span::new(125, 140),
+            }],
+            visibility: cranelisp_types::Visibility::Public,
             span: Span::new(125, 140),
         };
         let program_b: Program = vec![
@@ -2725,5 +2912,255 @@ mod tests {
         let func_a: extern "C" fn() -> i64 = unsafe { std::mem::transmute(val_a_ptr) };
         let result_a = func_a();
         assert_eq!(result_a, 100, "module A's val should return 100");
+    }
+
+    // --- multi-sig defn tests ---
+
+    // spec: 05-definitions §5.1.2 — mangled name construction
+    #[test]
+    fn test_build_mangled_name_single_param() {
+        let name = Symbol::from("identity");
+        let mangled = build_mangled_name(&name, &[Type::Int]);
+        assert_eq!(mangled, "identity$Int");
+    }
+
+    // spec: 05-definitions §5.1.2 — mangled name with multiple params
+    #[test]
+    fn test_build_mangled_name_multiple_params() {
+        let name = Symbol::from("add");
+        let mangled = build_mangled_name(&name, &[Type::Int, Type::Int]);
+        assert_eq!(mangled, "add$Int+Int");
+    }
+
+    // spec: 05-definitions §5.1.2 — mangled name with mixed types
+    #[test]
+    fn test_build_mangled_name_mixed_types() {
+        let name = Symbol::from("convert");
+        let mangled = build_mangled_name(&name, &[Type::Float, Type::Bool]);
+        assert_eq!(mangled, "convert$Float+Bool");
+    }
+
+    // spec: 05-definitions §5.1.2 — expand multi-sig defn into variant defns
+    #[test]
+    fn test_expand_multi_sig_defn() {
+        let variant1_span = Span::new(10, 30);
+        let variant2_span = Span::new(40, 60);
+
+        let defn = Defn {
+            name: Symbol::from("f"),
+            docstring: None,
+            variants: vec![
+                DefnVariant {
+                    params: vec![Symbol::from("x")],
+                    param_annotations: vec![],
+                    body: Expr::Var { name: Symbol::from("x"), span: Span::new(15, 16) },
+                    span: variant1_span,
+                },
+                DefnVariant {
+                    params: vec![Symbol::from("a"), Symbol::from("b")],
+                    param_annotations: vec![],
+                    body: Expr::Var { name: Symbol::from("a"), span: Span::new(45, 46) },
+                    span: variant2_span,
+                },
+            ],
+            visibility: cranelisp_types::Visibility::Public,
+            span: Span::new(0, 70),
+        };
+
+        // Set up expr_types: variant1 is (Fn [Int] Int), variant2 is (Fn [Bool Bool] Bool)
+        let mut expr_types: HashMap<Span, Type> = HashMap::new();
+        expr_types.insert(variant1_span, Type::Fn(vec![Type::Int], Box::new(Type::Int)));
+        expr_types.insert(variant2_span, Type::Fn(vec![Type::Bool, Type::Bool], Box::new(Type::Bool)));
+
+        let expanded = expand_multi_sig_defn(&defn, &expr_types).unwrap();
+        assert_eq!(expanded.len(), 2);
+        assert_eq!(expanded[0].name, Symbol::from("f$Int"));
+        assert_eq!(expanded[1].name, Symbol::from("f$Bool+Bool"));
+        assert_eq!(expanded[0].params().len(), 1);
+        assert_eq!(expanded[1].params().len(), 2);
+    }
+
+    // spec: 05-definitions §5.1.2 — multi-sig defn compiles and dispatches correctly
+    //
+    // Defines a multi-sig function `f` with two variants:
+    //   (defn f ([x] x) ([a b] a))      — identity on 1 arg, first on 2 args
+    // Then defines main that calls the first variant via SigDispatch.
+    #[test]
+    fn test_compile_multi_sig_defn_end_to_end() {
+        let variant1_span = Span::new(10, 30);
+        let variant2_span = Span::new(40, 60);
+
+        let multi_defn = Defn {
+            name: Symbol::from("f"),
+            docstring: None,
+            variants: vec![
+                DefnVariant {
+                    params: vec![Symbol::from("x")],
+                    param_annotations: vec![],
+                    body: Expr::Var { name: Symbol::from("x"), span: Span::new(15, 16) },
+                    span: variant1_span,
+                },
+                DefnVariant {
+                    params: vec![Symbol::from("a"), Symbol::from("b")],
+                    param_annotations: vec![],
+                    body: Expr::Var { name: Symbol::from("a"), span: Span::new(45, 46) },
+                    span: variant2_span,
+                },
+            ],
+            visibility: cranelisp_types::Visibility::Public,
+            span: Span::new(0, 70),
+        };
+
+        // main calls f$Int(42)
+        let call_span = Span::new(100, 120);
+        let main_defn = Defn {
+            name: Symbol::from("main"),
+            docstring: None,
+            variants: vec![DefnVariant {
+                params: vec![],
+                param_annotations: vec![],
+                body: Expr::Apply {
+                    callee: Box::new(Expr::Var {
+                        name: Symbol::from("f"),
+                        span: Span::new(101, 102),
+                    }),
+                    args: vec![Expr::IntLit { value: 42, span: Span::new(103, 105) }],
+                    span: call_span,
+                },
+                span: Span::new(95, 125),
+            }],
+            visibility: cranelisp_types::Visibility::Public,
+            span: Span::new(95, 125),
+        };
+
+        let program: Program = vec![
+            TopLevel::Defn(multi_defn),
+            TopLevel::Defn(main_defn),
+        ];
+
+        let mut check = empty_check();
+        // Register variant types so expand_multi_sig_defn can compute mangled names.
+        check.expr_types.insert(variant1_span, Type::Fn(vec![Type::Int], Box::new(Type::Int)));
+        check.expr_types.insert(variant2_span, Type::Fn(vec![Type::Int, Type::Int], Box::new(Type::Int)));
+        // Register SigDispatch for the call site.
+        check.method_resolutions.insert(
+            call_span,
+            cranelisp_types::ResolvedCall::SigDispatch {
+                mangled_name: cranelisp_types::JitSymbol::from("f$Int"),
+            },
+        );
+
+        let compiled = compile_program(&program, &check, CompileMode::Batch)
+            .expect("multi-sig program should compile");
+        let result = unsafe { compiled.execute().unwrap() };
+        assert_eq!(result, 42, "should dispatch to f$Int and return 42");
+    }
+
+    // spec: 05-definitions §5.1.2 — multi-sig dispatch to second variant
+    #[test]
+    fn test_compile_multi_sig_second_variant() {
+        let variant1_span = Span::new(10, 30);
+        let variant2_span = Span::new(40, 60);
+
+        let multi_defn = Defn {
+            name: Symbol::from("g"),
+            docstring: None,
+            variants: vec![
+                DefnVariant {
+                    params: vec![Symbol::from("x")],
+                    param_annotations: vec![],
+                    body: Expr::Var { name: Symbol::from("x"), span: Span::new(15, 16) },
+                    span: variant1_span,
+                },
+                DefnVariant {
+                    params: vec![Symbol::from("a"), Symbol::from("b")],
+                    param_annotations: vec![],
+                    // Return b (second param) to prove we dispatched to the right variant.
+                    body: Expr::Var { name: Symbol::from("b"), span: Span::new(45, 46) },
+                    span: variant2_span,
+                },
+            ],
+            visibility: cranelisp_types::Visibility::Public,
+            span: Span::new(0, 70),
+        };
+
+        // main calls g$Int+Int(10, 99) — should return 99 (the second arg)
+        let call_span = Span::new(100, 120);
+        let main_defn = Defn {
+            name: Symbol::from("main"),
+            docstring: None,
+            variants: vec![DefnVariant {
+                params: vec![],
+                param_annotations: vec![],
+                body: Expr::Apply {
+                    callee: Box::new(Expr::Var {
+                        name: Symbol::from("g"),
+                        span: Span::new(101, 102),
+                    }),
+                    args: vec![
+                        Expr::IntLit { value: 10, span: Span::new(103, 105) },
+                        Expr::IntLit { value: 99, span: Span::new(106, 108) },
+                    ],
+                    span: call_span,
+                },
+                span: Span::new(95, 125),
+            }],
+            visibility: cranelisp_types::Visibility::Public,
+            span: Span::new(95, 125),
+        };
+
+        let program: Program = vec![
+            TopLevel::Defn(multi_defn),
+            TopLevel::Defn(main_defn),
+        ];
+
+        let mut check = empty_check();
+        check.expr_types.insert(variant1_span, Type::Fn(vec![Type::Int], Box::new(Type::Int)));
+        check.expr_types.insert(variant2_span, Type::Fn(vec![Type::Int, Type::Int], Box::new(Type::Int)));
+        check.method_resolutions.insert(
+            call_span,
+            cranelisp_types::ResolvedCall::SigDispatch {
+                mangled_name: cranelisp_types::JitSymbol::from("g$Int+Int"),
+            },
+        );
+
+        let compiled = compile_program(&program, &check, CompileMode::Batch)
+            .expect("multi-sig program should compile");
+        let result = unsafe { compiled.execute().unwrap() };
+        assert_eq!(result, 99, "should dispatch to g$Int+Int and return second arg (99)");
+    }
+
+    // spec: 05-definitions §5.1.2 — multi-sig defn with missing type info errors
+    #[test]
+    fn test_expand_multi_sig_missing_type_info() {
+        let defn = Defn {
+            name: Symbol::from("f"),
+            docstring: None,
+            variants: vec![
+                DefnVariant {
+                    params: vec![Symbol::from("x")],
+                    param_annotations: vec![],
+                    body: Expr::IntLit { value: 1, span: Span::new(15, 16) },
+                    span: Span::new(10, 30),
+                },
+            ],
+            visibility: cranelisp_types::Visibility::Public,
+            span: Span::new(0, 40),
+        };
+
+        // No expr_types registered — should error.
+        let expr_types: HashMap<Span, Type> = HashMap::new();
+        let result = expand_multi_sig_defn(&defn, &expr_types);
+        assert!(result.is_err(), "should error when type info is missing");
+    }
+
+    // spec: 05-definitions §5.1.2 — concrete_type_name covers all primitive types
+    #[test]
+    fn test_concrete_type_name_all_primitives() {
+        assert_eq!(concrete_type_name(&Type::Int).unwrap().as_ref(), "Int");
+        assert_eq!(concrete_type_name(&Type::Float).unwrap().as_ref(), "Float");
+        assert_eq!(concrete_type_name(&Type::Bool).unwrap().as_ref(), "Bool");
+        assert_eq!(concrete_type_name(&Type::String).unwrap().as_ref(), "String");
+        assert!(concrete_type_name(&Type::Var(0)).is_none());
     }
 }

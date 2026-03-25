@@ -36,9 +36,10 @@ use cranelisp_backend::compiler::TracedFnInfo;
 use cranelisp_backend::display;
 use cranelisp_backend::jit::Jit;
 use cranelisp_types::{
-    CompileMode, CranelispError, DefKind, Defn, Expr, ImplSexp, MacroClauseInfo,
-    ModuleEntry, ModuleFullPath, ModuleStructure, ReplCheckResult, ReplInput,
-    Sexp, Symbol, Type, TypeDefInfo, TypeName, Visibility, Warning,
+    CheckResult, CompileContext, CompileMode, CranelispError, DefKind, Defn, Expr,
+    ImplSexp, MacroClauseInfo, ModuleEntry, ModuleFullPath, ModuleStrategy,
+    ModuleStructure, Sexp, Symbol, TopLevel, Type, TypeDefInfo, TypeName,
+    Visibility, Warning,
 };
 
 use commands::{
@@ -248,7 +249,7 @@ impl ReplSession {
     ///
     /// Uses the whole-program compilation pipeline (same as module graph
     /// compilation) instead of per-form eval. This handles constrained
-    /// polymorphic functions correctly (check_program sees the whole
+    /// polymorphic functions correctly (check() sees the whole
     /// program at once) and produces cache files (.o, .meta.json).
     ///
     /// Returns `Ok(true)` if forms were successfully restored,
@@ -347,7 +348,12 @@ impl ReplSession {
 
         // Whole-program typecheck — handles constrained polymorphism,
         // forward references, and monomorphisation correctly.
-        let check = self.core.tc.check_program(&program)?;
+        let ctx = CompileContext {
+            module: self.core.tc.current_module_path().clone(),
+            strategy: ModuleStrategy::Additive,
+            compile_mode: CompileMode::Interactive,
+        };
+        let check = self.core.tc.check(&program, &ctx)?;
 
         // Compile using GOT-based codegen (same path as REPL defns).
         // This registers functions in the GOT so subsequent REPL
@@ -548,7 +554,8 @@ impl ReplSession {
             &sexps,
             &mut self.core.expander,
         )?;
-        let check_result = self.core.tc.check_repl_input(&input)?;
+        let ctx = self.build_repl_compile_context();
+        let check_result = self.core.tc.check(&[input.clone()], &ctx)?;
         self.compile_and_execute(&input, &check_result)
     }
 
@@ -646,17 +653,17 @@ impl ReplSession {
                 && std::env::var("CRANELISP_NO_IO_SCHEDULE").is_err()
             {
                 match &mut input {
-                    ReplInput::Defn(defn) => {
+                    TopLevel::Defn(defn) => {
                         crate::bind_chain_analysis::auto_schedule_defn(
                             defn, &self.core.scheduling_registry,
                         );
                     }
-                    ReplInput::Expr(expr) => {
+                    TopLevel::Expr(expr) => {
                         crate::bind_chain_analysis::auto_schedule_expr(
                             expr, &self.core.scheduling_registry,
                         );
                     }
-                    ReplInput::TraitImpl(impl_) => {
+                    TopLevel::TraitImpl(impl_) => {
                         for method in impl_.methods.iter_mut() {
                             crate::bind_chain_analysis::auto_schedule_defn(
                                 method, &self.core.scheduling_registry,
@@ -667,20 +674,21 @@ impl ReplSession {
                 }
             }
 
-            let check_result = self.core.tc.check_repl_input(&input)?;
+            let ctx = self.build_repl_compile_context();
+            let check_result = self.core.tc.check(&[input.clone()], &ctx)?;
             let result = self.compile_and_execute(&input, &check_result)?;
 
             // Store sexp and source in DefCodegen for introspection commands
             // and session persistence. Use entry().or_default() because
             // constrained poly fns skip compile_and_register_defn (which
             // normally creates the entry), but still need sexp for save.
-            if let ReplInput::Defn(defn) = &input {
+            if let TopLevel::Defn(defn) = &input {
                 let dc = self.core.got_state.def_codegen.entry(defn.name.clone()).or_default();
                 dc.source = Some(format_sexp(&form_sexp));
                 dc.sexp = Some(form_sexp.clone());
             }
             // Track impl sexps in module structure for session persistence.
-            if let ReplInput::TraitImpl(impl_) = &input {
+            if let TopLevel::TraitImpl(impl_) = &input {
                 self.current_module_structure.impl_sexps.push(ImplSexp {
                     trait_name: impl_.trait_name.clone(),
                     target: impl_.target_type.clone(),
@@ -934,19 +942,15 @@ impl ReplSession {
     /// Compile and execute a checked REPL input.
     fn compile_and_execute(
         &mut self,
-        input: &ReplInput,
-        check_result: &ReplCheckResult,
+        input: &TopLevel,
+        check_result: &CheckResult,
     ) -> Result<ReplResult, CranelispError> {
         match input {
-            ReplInput::Expr(expr) => self.execute_expr(expr, check_result),
-            ReplInput::Defn(defn) => self.execute_defn(defn, check_result),
-            ReplInput::TypeDef { .. } => self.execute_typedef(check_result),
-            ReplInput::DefnMulti { span, .. } => Err(CranelispError::TypeError {
-                message: "multi-signature functions not supported in Ring 0".into(),
-                span: *span,
-            }),
-            ReplInput::TraitDecl(decl) => self.execute_trait_decl(decl, check_result),
-            ReplInput::TraitImpl(impl_) => self.execute_trait_impl(impl_, check_result),
+            TopLevel::Expr(expr) => self.execute_expr(expr, check_result),
+            TopLevel::Defn(defn) => self.execute_defn(defn, check_result),
+            TopLevel::TypeDef { .. } => self.execute_typedef(check_result),
+            TopLevel::TraitDecl(decl) => self.execute_trait_decl(decl, check_result),
+            TopLevel::TraitImpl(impl_) => self.execute_trait_impl(impl_, check_result),
         }
     }
 
@@ -954,7 +958,7 @@ impl ReplSession {
     fn execute_expr(
         &mut self,
         expr: &Expr,
-        check_result: &ReplCheckResult,
+        check_result: &CheckResult,
     ) -> Result<ReplResult, CranelispError> {
         let check = self.build_check_for_backend(check_result);
 
@@ -1024,7 +1028,7 @@ impl ReplSession {
 
         Ok(ReplResult {
             value,
-            ty: check_result.ty.clone(),
+            ty: check_result.display.as_ref().unwrap().ty.clone(),
             is_definition: false,
             warnings: check_result.warnings.clone(),
             definition_display: None,
@@ -1036,13 +1040,13 @@ impl ReplSession {
     fn execute_defn(
         &mut self,
         defn: &Defn,
-        check_result: &ReplCheckResult,
+        check_result: &CheckResult,
     ) -> Result<ReplResult, CranelispError> {
         // Skip compiling constrained fn base definitions -- they are
         // templates that get monomorphised at call sites.
         let is_constrained = check_result
-            .scheme
-            .as_ref()
+            .display.as_ref()
+            .and_then(|d| d.scheme.as_ref())
             .is_some_and(|s| !s.constraints.is_empty());
 
         // Compile any monomorphised specializations before the defn body.
@@ -1060,7 +1064,7 @@ impl ReplSession {
 
         // For defn, execute if it's zero-arg, otherwise return 0.
         // Time the execution separately from compilation.
-        let (value, eval_duration) = if defn.params.is_empty() && !is_constrained {
+        let (value, eval_duration) = if defn.params().is_empty() && !is_constrained {
             let entry = self.core.got_state.def_codegen.get(defn.name.as_ref());
             let code_ptr = entry
                 .and_then(|e| e.code_ptr)
@@ -1078,21 +1082,20 @@ impl ReplSession {
 
         // Build definition display with qualified name (spec §1.1, §1.3).
         let module = self.core.tc.current_module_path().clone();
+        let disp = check_result.display.as_ref().unwrap();
         let definition_display = if is_constrained {
-            check_result.scheme.as_ref().map(|s| {
+            disp.scheme.as_ref().map(|s| {
                 let base = display::format_scheme_display(&defn.name, s, &module, &self.type_modules);
                 format!("{base} ; defn")
             })
-        } else if !defn.params.is_empty() {
-            let type_str = format_type_qualified(&check_result.ty, &self.type_modules);
-            Some(format!(":{type_str} {module}/{} ; defn", defn.name))
         } else {
-            None
+            let type_str = format_type_qualified(&disp.ty, &self.type_modules);
+            Some(format!(":{type_str} {module}/{} ; defn", defn.name))
         };
 
         Ok(ReplResult {
             value,
-            ty: check_result.ty.clone(),
+            ty: check_result.display.as_ref().unwrap().ty.clone(),
             is_definition: true,
             warnings: check_result.warnings.clone(),
             definition_display,
@@ -1103,7 +1106,7 @@ impl ReplSession {
     /// Execute a type definition input.
     fn execute_typedef(
         &mut self,
-        check_result: &ReplCheckResult,
+        check_result: &CheckResult,
     ) -> Result<ReplResult, CranelispError> {
         let module = self.core.tc.current_module_path().clone();
 
@@ -1114,7 +1117,7 @@ impl ReplSession {
         }
 
         // Build qualified display: `:module/TypeName ; deftype` + related symbols
-        let type_name = match &check_result.ty {
+        let type_name = match &check_result.display.as_ref().unwrap().ty {
             Type::ADT(name, _) => name.to_string(),
             _ => "?".to_string(),
         };
@@ -1122,7 +1125,7 @@ impl ReplSession {
 
         Ok(ReplResult {
             value: 0,
-            ty: check_result.ty.clone(),
+            ty: check_result.display.as_ref().unwrap().ty.clone(),
             is_definition: true,
             warnings: check_result.warnings.clone(),
             definition_display: Some(display),
@@ -1134,9 +1137,9 @@ impl ReplSession {
     fn execute_trait_decl(
         &mut self,
         decl: &cranelisp_types::TraitDecl,
-        check_result: &ReplCheckResult,
+        check_result: &CheckResult,
     ) -> Result<ReplResult, CranelispError> {
-        // Trait registration is already done by check_repl_input.
+        // Trait registration is already done by check().
         // Compile any default method bodies generated by the typechecker.
         if !check_result.default_method_defns.is_empty() {
             let check = self.build_check_for_backend(check_result);
@@ -1153,7 +1156,7 @@ impl ReplSession {
 
         Ok(ReplResult {
             value: 0,
-            ty: check_result.ty.clone(),
+            ty: check_result.display.as_ref().unwrap().ty.clone(),
             is_definition: true,
             warnings: check_result.warnings.clone(),
             definition_display: Some(display),
@@ -1165,7 +1168,7 @@ impl ReplSession {
     fn execute_trait_impl(
         &mut self,
         impl_: &cranelisp_types::TraitImpl,
-        check_result: &ReplCheckResult,
+        check_result: &CheckResult,
     ) -> Result<ReplResult, CranelispError> {
         let check = self.build_check_for_backend(check_result);
 
@@ -1190,7 +1193,7 @@ impl ReplSession {
 
         Ok(ReplResult {
             value: 0,
-            ty: check_result.ty.clone(),
+            ty: check_result.display.as_ref().unwrap().ty.clone(),
             is_definition: true,
             warnings: check_result.warnings.clone(),
             definition_display: Some(display),
@@ -1203,7 +1206,7 @@ impl ReplSession {
     /// Used by both expression and trait impl execution paths.
     fn compile_mono_defns(
         &mut self,
-        check_result: &ReplCheckResult,
+        check_result: &CheckResult,
     ) -> Result<(), CranelispError> {
         for mono in &check_result.mono_defns {
             let mut mono_check = self.build_check_for_backend(check_result);
@@ -1272,7 +1275,7 @@ impl ReplSession {
                 func_arities.insert(name.clone(), pc);
             }
         }
-        func_arities.insert(defn.name.clone(), defn.params.len());
+        func_arities.insert(defn.name.clone(), defn.params().len());
 
         // Compile the function with awareness of existing GOT.
         let compile_ctx = jit.build_compile_context(
@@ -1287,7 +1290,7 @@ impl ReplSession {
         let clif_ir = jit.compile_defn(defn, compile_ctx)?;
 
         // Finalize and get the code pointer.
-        let code_ptr = jit.finalize_and_get_ptr(&defn.name, defn.params.len())?;
+        let code_ptr = jit.finalize_and_get_ptr(&defn.name, defn.params().len())?;
 
         // Update the GOT slot with the new code pointer.
         self.core.got_state.update_slot(slot, code_ptr);
@@ -1296,7 +1299,7 @@ impl ReplSession {
         let entry = self.core.got_state.def_codegen.entry(defn.name.clone()).or_default();
         entry.code_ptr = Some(code_ptr);
         entry.got_slot = Some(slot);
-        entry.param_count = Some(defn.params.len());
+        entry.param_count = Some(defn.params().len());
         entry.clif_ir = Some(clif_ir);
         entry.defn = Some(defn.clone());
         if source_text.is_some() {
@@ -1312,10 +1315,21 @@ impl ReplSession {
         Ok(())
     }
 
-    /// Build a CheckResult suitable for the backend from a ReplCheckResult.
+    /// Build a CompileContext for REPL evaluation.
+    ///
+    /// Uses the session's current module with Additive strategy and Interactive mode.
+    fn build_repl_compile_context(&self) -> CompileContext {
+        CompileContext {
+            module: self.core.tc.current_module_path().clone(),
+            strategy: ModuleStrategy::Additive,
+            compile_mode: CompileMode::Interactive,
+        }
+    }
+
+    /// Build a CheckResult suitable for the backend from a CheckResult.
     fn build_check_for_backend(
         &self,
-        repl_check: &ReplCheckResult,
+        repl_check: &CheckResult,
     ) -> cranelisp_types::CheckResult {
         cranelisp_types::CheckResult {
             method_resolutions: repl_check.method_resolutions.clone(),
@@ -1326,6 +1340,7 @@ impl ReplSession {
             warnings: repl_check.warnings.clone(),
             type_defs: repl_check.type_defs.clone(),
             constructor_to_type: repl_check.constructor_to_type.clone(),
+            display: None,
         }
     }
 
@@ -1930,7 +1945,8 @@ fn reload_single_module(
             continue;
         }
         let input = cranelisp_frontend::build_repl_input(&form, &mut session.core.expander)?;
-        let check_result = session.core.tc.check_repl_input(&input)?;
+        let ctx = session.build_repl_compile_context();
+        let check_result = session.core.tc.check(&[input.clone()], &ctx)?;
         session.compile_and_execute(&input, &check_result)?;
     }
 
@@ -2167,7 +2183,7 @@ fn handle_reset(session: &mut ReplSession, stdout: &mut impl Write) {
     //
     // Cache loading is disabled during /reset because the typechecker's
     // trait and impl registries are not restored from cached symbol tables.
-    // Loading from source ensures check_program registers all traits and
+    // Loading from source ensures check() registers all traits and
     // impls needed for method resolution (e.g., Num.+$Int for the + operator).
     // The performance cost is acceptable — prelude compilation takes <500ms.
     let lib_dirs = crate::pipeline::assemble_lib_dirs(&project_root);

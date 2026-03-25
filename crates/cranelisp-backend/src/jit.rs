@@ -259,7 +259,7 @@ impl Jit {
     ) -> Result<HashMap<Symbol, FuncId>, CranelispError> {
         let mut func_ids = HashMap::new();
         for defn in defns {
-            let sig = self.build_sig(defn.params.len());
+            let sig = self.build_sig(defn.params().len());
             let func_id = self
                 .module
                 .declare_function(&defn.name, Linkage::Export, &sig)
@@ -289,7 +289,7 @@ impl Jit {
         let mut jit_names = HashMap::new();
         for defn in defns {
             let qualified_name = format!("{prefix}/{}", defn.name);
-            let sig = self.build_sig(defn.params.len());
+            let sig = self.build_sig(defn.params().len());
             let func_id = self
                 .module
                 .declare_function(&qualified_name, Linkage::Export, &sig)
@@ -346,7 +346,7 @@ impl Jit {
         defn: &Defn,
         compile_ctx: CompileContext<'_>,
     ) -> Result<String, CranelispError> {
-        self.ctx.func.signature = self.build_sig(defn.params.len());
+        self.ctx.func.signature = self.build_sig(defn.params().len());
         self.ctx.func.name =
             cranelift::codegen::ir::UserFuncName::testcase(defn.name.as_bytes());
 
@@ -568,7 +568,7 @@ pub struct IntrinsicIds {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use cranelisp_types::ModuleFullPath;
+    use cranelisp_types::{DefnVariant, ModuleFullPath};
 
     // spec: 12-runtime §12.1 — ISA construction for host platform
     #[test]
@@ -617,14 +617,17 @@ mod tests {
         // Declare a local function first.
         let defn = Defn {
             name: Symbol::from("local_fn"),
-            params: vec![Symbol::from("x")],
-            param_annotations: vec![],
-            visibility: cranelisp_types::Visibility::Public,
-            body: cranelisp_types::Expr::Var {
-                name: Symbol::from("x"),
-                span: Span::new(0, 1),
-            },
             docstring: None,
+            variants: vec![DefnVariant {
+                params: vec![Symbol::from("x")],
+                param_annotations: vec![],
+                body: cranelisp_types::Expr::Var {
+                    name: Symbol::from("x"),
+                    span: Span::new(0, 1),
+                },
+                span: Span::new(0, 10),
+            }],
+            visibility: cranelisp_types::Visibility::Public,
             span: Span::new(0, 10),
         };
         let mut func_ids = jit.declare_functions(&[&defn]).unwrap();
@@ -670,6 +673,7 @@ mod tests {
             warnings: Vec::new(),
             type_defs: HashMap::new(),
             constructor_to_type: HashMap::new(),
+            display: None,
         };
         let func_ids = HashMap::new();
         let func_arities = HashMap::new();

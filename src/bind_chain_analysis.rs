@@ -35,11 +35,13 @@ pub type SchedulingRegistry = HashMap<Symbol, SchedulingClass>;
 /// Takes ownership of the body via `std::mem::replace` with a dummy expression,
 /// transforms it, and puts the result back. The dummy is never observed.
 pub fn auto_schedule_defn(defn: &mut Defn, registry: &SchedulingRegistry) {
+    // Single-sig only (multi-sig functions are not auto-scheduled)
+    assert!(!defn.is_multi_sig(), "auto_schedule_defn called on multi-sig defn");
     let body = std::mem::replace(
-        &mut defn.body,
+        &mut defn.variants[0].body,
         Expr::BoolLit { value: false, span: defn.span },
     );
-    defn.body = transform_expr(body, registry);
+    defn.variants[0].body = transform_expr(body, registry);
 }
 
 /// Transform bind chains in a standalone expression (REPL eval path).

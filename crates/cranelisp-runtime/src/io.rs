@@ -10,6 +10,8 @@
 use cranelisp_platform::{IO_TAG_BIND, IO_TAG_EFFECT, IO_TAG_PAR, IO_TAG_PURE};
 use cranelisp_types::HeapHeader;
 
+use crate::alloc_with_rc;
+
 /// Byte offset of the tag field from the base pointer.
 const TAG_OFFSET: isize = HeapHeader::SIZE as isize; // 16
 
@@ -92,11 +94,17 @@ pub fn run_io_trampoline(io_ptr: i64) -> i64 {
                 // Dispatch branches with resource token serialization
                 let results = dispatch_par_branches(&branch_ptrs);
 
-                // Build transient results buffer (raw Vec, no RC — short-lived).
-                // Use Vec::into_raw_parts to get a thin pointer (not a fat slice ptr).
-                let mut results_buf = results;
-                let results_ptr = results_buf.as_mut_ptr() as i64;
-                std::mem::forget(results_buf); // ownership transferred to continuation
+                // Allocate results buffer via alloc_with_rc so the continuation
+                // can dec it when done. Results stored at FIELD_0_OFFSET + i*8
+                // (offsets 24, 32, 40, ...) matching HeapAdt::field_offset(i).
+                let results_buf = alloc_with_rc(8 + count * 8) as i64; // payload: padding(8) + N*8
+                for (i, &val) in results.iter().enumerate() {
+                    unsafe {
+                        *((results_buf as isize + FIELD_0_OFFSET + (i as isize) * 8) as *mut i64) =
+                            val;
+                    }
+                }
+                let results_ptr = results_buf;
 
                 // Pop continuation and call with results array pointer
                 match cont_stack.pop() {
@@ -416,21 +424,20 @@ mod tests {
     }
 
     /// Helper: allocate a continuation that reads N results from a results_ptr
-    /// and returns a Pure node wrapping their sum.
+    /// (an alloc_with_rc buffer) and returns a Pure node wrapping their sum.
     fn make_sum_results_closure(count: usize) -> i64 {
         extern "C" fn sum_results(env_ptr: i64, results_ptr: i64) -> i64 {
             let count = unsafe { *((env_ptr as isize + 32) as *const i64) } as usize;
             let mut sum = 0i64;
             for i in 0..count {
-                sum += unsafe { *((results_ptr as isize + (i as isize) * 8) as *const i64) };
+                // Results are at FIELD_0_OFFSET + i*8 (offsets 24, 32, 40, ...)
+                sum += unsafe {
+                    *((results_ptr as isize + FIELD_0_OFFSET + (i as isize) * 8) as *const i64)
+                };
             }
-            // Free the results buffer (it was allocated as a boxed slice).
-            let _ = unsafe {
-                Box::from_raw(std::slice::from_raw_parts_mut(
-                    results_ptr as *mut i64,
-                    count,
-                ))
-            };
+            // Dec the results buffer (alloc_with_rc allocation, rc=1).
+            // Dealloc directly since the test continuation is the sole owner.
+            crate::alloc::heap_dealloc(results_ptr);
             make_pure_node_inline(sum)
         }
 

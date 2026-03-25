@@ -270,6 +270,27 @@ impl TypeChecker {
 
         let ret_ty = self.fresh_var();
 
+        // Multi-sig overload dispatch: if the callee is a Var whose name is
+        // in the overloads table, defer resolution to the overload pass.
+        // We don't unify here because the base name's scheme may not match
+        // the actual call site arity/types.
+        if let Expr::Var { name, .. } = callee
+            && self.overloads.contains_key(name)
+        {
+            self.pending_overload_resolutions.push((
+                span,
+                name.clone(),
+                arg_types.clone(),
+                ret_ty.clone(),
+            ));
+            // Record arg types in expr_types for each arg
+            for (arg, arg_ty) in args.iter().zip(arg_types.iter()) {
+                self.record_expr_type(arg.span(), self.apply_subst(arg_ty));
+            }
+            self.record_expr_type(span, ret_ty.clone());
+            return Ok(ret_ty);
+        }
+
         // Unify callee with Fn(arg_types, ret_ty).
         // On failure, try auto-curry: callee may have more params than provided args.
         let expected_fn = Type::Fn(arg_types.clone(), Box::new(ret_ty.clone()));
@@ -2375,7 +2396,7 @@ mod tests {
 
     /// Register a constrained function "cfn" in the current module for testing.
     fn register_constrained_fn(tc: &mut TypeChecker) {
-        use cranelisp_types::{ConstrainedFn, Defn};
+        use cranelisp_types::{ConstrainedFn, Defn, DefnVariant};
 
         let a_var = tc.fresh_var();
         let a_id = match &a_var { Type::Var(id) => *id, _ => unreachable!() };
@@ -2406,9 +2427,12 @@ mod tests {
                         defn: Defn {
                             name: Symbol::from("cfn"),
                             docstring: None,
-                            params: vec![Symbol::from("x"), Symbol::from("y")],
-                            param_annotations: vec![None, None],
-                            body: Expr::IntLit { value: 0, span: Span::SYNTHETIC },
+                            variants: vec![DefnVariant {
+                                params: vec![Symbol::from("x"), Symbol::from("y")],
+                                param_annotations: vec![None, None],
+                                body: Expr::IntLit { value: 0, span: Span::SYNTHETIC },
+                                span: Span::SYNTHETIC,
+                            }],
                             visibility: Visibility::Public,
                             span: Span::SYNTHETIC,
                         },
@@ -2489,7 +2513,7 @@ mod tests {
     /// Set up Num trait with + method (impl for Int, Float only)
     /// and Ord trait with < method (impl for Int, Float only).
     fn register_num_and_ord_traits(tc: &mut TypeChecker) {
-        use cranelisp_types::{TraitDecl, TraitImpl, TraitMethodSig, TraitName, TypeExpr, Defn};
+        use cranelisp_types::{DefnVariant, TraitDecl, TraitImpl, TraitMethodSig, TraitName, TypeExpr, Defn};
 
         // Num trait: + :: (Fn [a a] a)
         let num_decl = TraitDecl {
@@ -2523,19 +2547,22 @@ mod tests {
             methods: vec![Defn {
                 name: Symbol::from("+"),
                 docstring: None,
-                params: vec![Symbol::from("x"), Symbol::from("y")],
-                param_annotations: vec![None, None],
-                body: Expr::Apply {
-                    callee: Box::new(Expr::Var {
-                        name: Symbol::from("add-i64"),
+                variants: vec![DefnVariant {
+                    params: vec![Symbol::from("x"), Symbol::from("y")],
+                    param_annotations: vec![None, None],
+                    body: Expr::Apply {
+                        callee: Box::new(Expr::Var {
+                            name: Symbol::from("add-i64"),
+                            span: Span::SYNTHETIC,
+                        }),
+                        args: vec![
+                            Expr::Var { name: Symbol::from("x"), span: Span::SYNTHETIC },
+                            Expr::Var { name: Symbol::from("y"), span: Span::SYNTHETIC },
+                        ],
                         span: Span::SYNTHETIC,
-                    }),
-                    args: vec![
-                        Expr::Var { name: Symbol::from("x"), span: Span::SYNTHETIC },
-                        Expr::Var { name: Symbol::from("y"), span: Span::SYNTHETIC },
-                    ],
+                    },
                     span: Span::SYNTHETIC,
-                },
+                }],
                 visibility: Visibility::Public,
                 span: Span::SYNTHETIC,
             }],
@@ -2552,19 +2579,22 @@ mod tests {
             methods: vec![Defn {
                 name: Symbol::from("+"),
                 docstring: None,
-                params: vec![Symbol::from("x"), Symbol::from("y")],
-                param_annotations: vec![None, None],
-                body: Expr::Apply {
-                    callee: Box::new(Expr::Var {
-                        name: Symbol::from("add-f64"),
+                variants: vec![DefnVariant {
+                    params: vec![Symbol::from("x"), Symbol::from("y")],
+                    param_annotations: vec![None, None],
+                    body: Expr::Apply {
+                        callee: Box::new(Expr::Var {
+                            name: Symbol::from("add-f64"),
+                            span: Span::SYNTHETIC,
+                        }),
+                        args: vec![
+                            Expr::Var { name: Symbol::from("x"), span: Span::SYNTHETIC },
+                            Expr::Var { name: Symbol::from("y"), span: Span::SYNTHETIC },
+                        ],
                         span: Span::SYNTHETIC,
-                    }),
-                    args: vec![
-                        Expr::Var { name: Symbol::from("x"), span: Span::SYNTHETIC },
-                        Expr::Var { name: Symbol::from("y"), span: Span::SYNTHETIC },
-                    ],
+                    },
                     span: Span::SYNTHETIC,
-                },
+                }],
                 visibility: Visibility::Public,
                 span: Span::SYNTHETIC,
             }],
@@ -2604,19 +2634,22 @@ mod tests {
             methods: vec![Defn {
                 name: Symbol::from("<"),
                 docstring: None,
-                params: vec![Symbol::from("x"), Symbol::from("y")],
-                param_annotations: vec![None, None],
-                body: Expr::Apply {
-                    callee: Box::new(Expr::Var {
-                        name: Symbol::from("lt-i64"),
+                variants: vec![DefnVariant {
+                    params: vec![Symbol::from("x"), Symbol::from("y")],
+                    param_annotations: vec![None, None],
+                    body: Expr::Apply {
+                        callee: Box::new(Expr::Var {
+                            name: Symbol::from("lt-i64"),
+                            span: Span::SYNTHETIC,
+                        }),
+                        args: vec![
+                            Expr::Var { name: Symbol::from("x"), span: Span::SYNTHETIC },
+                            Expr::Var { name: Symbol::from("y"), span: Span::SYNTHETIC },
+                        ],
                         span: Span::SYNTHETIC,
-                    }),
-                    args: vec![
-                        Expr::Var { name: Symbol::from("x"), span: Span::SYNTHETIC },
-                        Expr::Var { name: Symbol::from("y"), span: Span::SYNTHETIC },
-                    ],
+                    },
                     span: Span::SYNTHETIC,
-                },
+                }],
                 visibility: Visibility::Public,
                 span: Span::SYNTHETIC,
             }],

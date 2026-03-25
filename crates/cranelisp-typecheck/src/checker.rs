@@ -60,6 +60,15 @@ pub struct TypeChecker {
     /// The optional ResolvedCall is populated when the auto-curried callee is a
     /// trait method or builtin, so the wrapper can call the concrete implementation.
     pub(crate) pending_auto_curry: Vec<(Span, Symbol, usize, usize, Type, Option<ResolvedCall>)>,
+    /// Multi-sig overload table: base name → [(internal_name, arity)].
+    /// Populated during pass 1 when a `Defn` has multiple variants.
+    pub(crate) overloads: HashMap<Symbol, Vec<(Symbol, usize)>>,
+    /// Resolved overloads: base name → [(param_types, ret_type, mangled_name)].
+    /// Built during overload resolution after pass 2.
+    pub(crate) resolved_overloads: HashMap<Symbol, Vec<(Vec<Type>, Type, Symbol)>>,
+    /// Pending overload dispatch resolutions from call sites.
+    /// (call_span, base_name, arg_types, ret_type_var)
+    pub(crate) pending_overload_resolutions: Vec<(Span, Symbol, Vec<Type>, Type)>,
 }
 
 impl TypeChecker {
@@ -89,6 +98,9 @@ impl TypeChecker {
             module_aliases: HashMap::new(),
             in_call_position: false,
             pending_auto_curry: Vec::new(),
+            overloads: HashMap::new(),
+            resolved_overloads: HashMap::new(),
+            pending_overload_resolutions: Vec::new(),
         };
         tc.register_builtins();
         tc

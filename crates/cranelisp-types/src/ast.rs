@@ -184,15 +184,57 @@ pub enum Visibility {
 }
 
 /// Function definition.
+///
+/// Unified representation for both single-sig and multi-sig functions.
+/// Single-sig `(defn name [params] body)` has one variant in `variants`.
+/// Multi-sig `(defn name ([p1] b1) ([p2] b2))` has multiple variants.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Defn {
     pub name: Symbol,
     pub docstring: Option<String>,
-    pub params: Vec<Symbol>,
-    pub param_annotations: Vec<Option<TypeExpr>>,
-    pub body: Expr,
+    pub variants: Vec<DefnVariant>,
     pub visibility: Visibility,
     pub span: Span,
+}
+
+impl Defn {
+    /// Returns the params of a single-sig defn. Panics if multi-sig.
+    pub fn params(&self) -> &[Symbol] {
+        assert!(
+            self.variants.len() == 1,
+            "Defn::params() called on multi-sig defn '{}' with {} variants",
+            self.name,
+            self.variants.len()
+        );
+        &self.variants[0].params
+    }
+
+    /// Returns the body of a single-sig defn. Panics if multi-sig.
+    pub fn body(&self) -> &Expr {
+        assert!(
+            self.variants.len() == 1,
+            "Defn::body() called on multi-sig defn '{}' with {} variants",
+            self.name,
+            self.variants.len()
+        );
+        &self.variants[0].body
+    }
+
+    /// Returns the param annotations of a single-sig defn. Panics if multi-sig.
+    pub fn param_annotations(&self) -> &[Option<TypeExpr>] {
+        assert!(
+            self.variants.len() == 1,
+            "Defn::param_annotations() called on multi-sig defn '{}' with {} variants",
+            self.name,
+            self.variants.len()
+        );
+        &self.variants[0].param_annotations
+    }
+
+    /// Returns true if this defn has multiple signature variants.
+    pub fn is_multi_sig(&self) -> bool {
+        self.variants.len() > 1
+    }
 }
 
 /// One variant of a multi-signature function.
@@ -259,13 +301,7 @@ pub struct TraitImpl {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum TopLevel {
     Defn(Defn),
-    DefnMulti {
-        name: Symbol,
-        docstring: Option<String>,
-        variants: Vec<DefnVariant>,
-        visibility: Visibility,
-        span: Span,
-    },
+    Expr(Expr),
     TraitDecl(TraitDecl),
     TraitImpl(TraitImpl),
     TypeDef {
@@ -412,26 +448,3 @@ pub fn free_vars_expr(expr: &Expr, globals: &HashSet<Symbol>) -> HashSet<Symbol>
     }
 }
 
-/// REPL-specific input: wraps TopLevel forms plus bare expressions.
-#[derive(Debug, Clone)]
-pub enum ReplInput {
-    Defn(Defn),
-    DefnMulti {
-        name: Symbol,
-        docstring: Option<String>,
-        variants: Vec<DefnVariant>,
-        visibility: Visibility,
-        span: Span,
-    },
-    Expr(Expr),
-    TraitDecl(TraitDecl),
-    TraitImpl(TraitImpl),
-    TypeDef {
-        name: TypeName,
-        docstring: Option<String>,
-        type_params: Vec<Symbol>,
-        constructors: Vec<ConstructorDef>,
-        visibility: Visibility,
-        span: Span,
-    },
-}

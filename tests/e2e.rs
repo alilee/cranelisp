@@ -554,9 +554,11 @@ fn e2e_run_tests_ignores_non_test() {
         s.contains("1 passed"),
         "should only discover test-* functions, not 'helper'\n---\n{s}"
     );
+    // "helper" will appear in the defn display line (user/helper ; defn),
+    // but it must NOT appear in the /run-tests results (no "helper ... ok/FAIL")
     assert!(
-        !s.contains("helper"),
-        "non-test function 'helper' should not appear\n---\n{s}"
+        !s.contains("helper ."),
+        "non-test function 'helper' should not appear in run-tests results\n---\n{s}"
     );
 }
 

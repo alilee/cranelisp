@@ -13,8 +13,8 @@ use cranelisp_backend::display;
 use cranelisp_backend::got::ModuleCodegenState;
 use cranelisp_backend::jit::Jit;
 use cranelisp_types::{
-    CompileMode, CranelispError, Defn, Expr, ModuleFullPath, Symbol, Type, TypeDefInfo,
-    TypeName, Visibility,
+    CompileMode, CranelispError, Defn, DefnVariant, Expr, ModuleFullPath, Symbol, Type,
+    TypeDefInfo, TypeName, Visibility,
 };
 
 // ── Trace value formatting ────────────────────────────────────────────────────
@@ -178,11 +178,14 @@ pub(crate) fn compile_expr_with_traced_fns(
     let wrapper_name = Symbol::from("__repl_expr__");
     let wrapper_defn = Defn {
         name: wrapper_name.clone(),
-        params: vec![],
-        param_annotations: vec![],
-        visibility: Visibility::Public,
-        body: expr.clone(),
         docstring: None,
+        variants: vec![DefnVariant {
+            params: vec![],
+            param_annotations: vec![],
+            body: expr.clone(),
+            span: expr.span(),
+        }],
+        visibility: Visibility::Public,
         span: expr.span(),
     };
 

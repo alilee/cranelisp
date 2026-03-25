@@ -78,8 +78,7 @@ io_{N-1} = compile_expr(e_{N-1})
 
 // Phase 2: Allocate Par node
 payload_size = 8 + 8 + N*8          // tag + count + N branches
-total_size = 16 + payload_size      // header + payload
-par_ptr = call emit_alloc(total_size)
+par_ptr = call emit_alloc(payload_size)
 
 // Store fields
 store IO_TAG_PAR (3)  at par_ptr + 16   // tag
@@ -88,25 +87,24 @@ store io_0            at par_ptr + 32   // branch_0
 store io_1            at par_ptr + 40   // branch_1
 ...
 
-// Inc each branch (Par node holds references)
-emit_rc_inc(io_0)
-emit_rc_inc(io_1)
-...
+// No RC inc — ownership transfer (constructor convention, Decision 20).
+// IO expressions at rc=1 transfer directly into Par node slots.
 
 // Phase 3: Build continuation closure
 // Signature: (env_ptr: i64, results_ptr: i64) -> i64
-// The continuation loads N values from results_ptr, binds to x0..xN-1,
-// compiles body B.
+// The continuation loads N values from results_ptr (alloc_with_rc buffer)
+// at FIELD_0_OFFSET + i*8 (offsets 24, 32, 40, ...), binds to x0..xN-1,
+// compiles body B, then dec's the results_ptr buffer.
 cont_ptr = compile_par_bind_continuation(bindings, body, span)
 
 // Phase 4: Allocate Bind node
-bind_ptr = call emit_alloc(40)      // 16 header + 24 payload (tag + inner + cont)
+bind_ptr = call emit_alloc(24)      // payload: tag + inner + cont
 store IO_TAG_BIND (2)  at bind_ptr + 16
 store par_ptr          at bind_ptr + 24
 store cont_ptr         at bind_ptr + 32
 
-emit_rc_inc(par_ptr)
-emit_rc_inc(cont_ptr)
+// No RC inc — ownership transfer (constructor convention, Decision 20).
+// Par node and continuation at rc=1 transfer directly into Bind node.
 
 return bind_ptr
 ```
@@ -116,10 +114,11 @@ return bind_ptr
 The continuation closure has signature `extern "C" fn(env_ptr: i64, results_ptr: i64) -> i64`.
 
 It is compiled as an anonymous function that:
-1. Loads N result values from `results_ptr` at offsets `0, 8, 16, ...` (these are the results of forcing each Par branch).
+1. Loads N result values from `results_ptr` (an `alloc_with_rc` buffer) at offsets `FIELD_0_OFFSET + i*8` (24, 32, 40, ...).
 2. Binds each result to the corresponding name `x0, x1, ..., xN-1`.
 3. Compiles the body `B` in this extended scope.
-4. Returns the body result (which is an IO tree pointer).
+4. Dec's the `results_ptr` buffer (it's an `alloc_with_rc` allocation with rc=1).
+5. Returns the body result (which is an IO tree pointer).
 
 The continuation captures any free variables of the body that are not among the binding names and are in scope in the enclosing function. These captures are stored in the closure struct at offset 32+ (after header, code_ptr, and drop_glue_ptr per Decision 11).
 
@@ -145,28 +144,26 @@ t if t == IO_TAG_PAR => {
         *((current as isize + FIELD_0_OFFSET) as *const i64)
     } as usize;
 
-    // Read branch IO pointers
+    // Read branch IO pointers (at offsets 32, 40, 48, ...)
     let branch_ptrs: Vec<i64> = (0..count)
         .map(|i| unsafe {
-            *((current as isize + FIELD_0_OFFSET + 8 + (i as isize) * 8) as *const i64)
+            *((current as isize + FIELD_1_OFFSET + (i as isize) * 8) as *const i64)
         })
         .collect();
 
     // Dispatch with resource token serialization
     let results = dispatch_par_branches(&branch_ptrs);
 
-    // Allocate a transient results array (raw, no RC — short-lived buffer).
-    // We use a Vec<i64> rather than alloc_with_rc because:
-    // (a) the buffer has no RC semantics — it is filled, passed to the
-    //     continuation, and freed immediately after;
-    // (b) alloc_with_rc returns a base pointer whose first 16 bytes are
-    //     the HeapHeader — writing results at offset 0 would clobber it.
-    let mut results_buf: Vec<i64> = vec![0i64; count];
+    // Allocate results buffer via alloc_with_rc so the continuation
+    // can dec it when done. Results stored at FIELD_0_OFFSET + i*8
+    // (offsets 24, 32, 40, ...) matching HeapAdt::field_offset(i).
+    let results_buf = alloc_with_rc(8 + count * 8) as i64;
     for (i, &val) in results.iter().enumerate() {
-        results_buf[i] = val;
+        unsafe {
+            *((results_buf as isize + FIELD_0_OFFSET + (i as isize) * 8) as *mut i64) = val;
+        }
     }
-    let results_ptr = results_buf.as_ptr() as i64;
-    std::mem::forget(results_buf); // ownership transferred to continuation
+    let results_ptr = results_buf;
 
     // Pop continuation and call with results array
     match cont_stack.pop() {
@@ -178,7 +175,7 @@ t if t == IO_TAG_PAR => {
 }
 ```
 
-Note: `FIELD_0_OFFSET` is `TAG_OFFSET + 8` = 24, which is where `branch_count` lives. The branch pointers start at `FIELD_0_OFFSET + 8` = 32.
+Note: `FIELD_0_OFFSET` is `TAG_OFFSET + 8` = 24, which is where `branch_count` lives. The branch pointers start at `FIELD_1_OFFSET` = 32. The results buffer uses `alloc_with_rc(8 + N*8)` — the 8-byte padding at offset 16 aligns results to `FIELD_0_OFFSET + i*8` (24, 32, 40, ...) matching `HeapAdt::field_offset(i)`. The continuation emits `emit_rc_dec` on the buffer when done.
 
 ### 5.2 Resource Token Serialization
 
@@ -301,11 +298,11 @@ Per spec §10.12.4:
 
 ### 5.3 Continuation Calling Convention
 
-After dispatch, the results array is allocated as a raw `Vec<i64>` buffer (no RC header). The continuation receives it as a single i64 pointer argument and loads individual results at offsets `0, 8, 16, ...` directly from the pointer. The continuation is responsible for freeing the buffer (via `Vec::from_raw_parts`) after extracting all values.
+After dispatch, the results array is allocated via `alloc_with_rc(8 + N*8)` — an RC-managed buffer with results stored at `FIELD_0_OFFSET + i*8` (offsets 24, 32, 40, ...) matching `HeapAdt::field_offset(i)`. The 8-byte padding at offset 16 (where the tag would be in a normal ADT) is unused. The continuation receives the buffer pointer as its second argument, loads results at the field offsets, and emits `emit_rc_dec` on the buffer when done (which frees it since rc=1).
 
-The continuation is a closure with signature `extern "C" fn(env_ptr: i64, results_ptr: i64) -> i64`. It loads result values from the results array at offsets `0, 8, 16, ...` and binds them to the corresponding names.
+The continuation is a closure with signature `extern "C" fn(env_ptr: i64, results_ptr: i64) -> i64`. It loads result values from the results buffer at `FIELD_0_OFFSET + i*8` and binds them to the corresponding names.
 
-Par-Bind continuations receive a `results_ptr` (pointer to an array of N i64 result values) as their second argument, unlike regular Bind continuations which receive a single i64 value. This divergence is structurally safe because the Par handler directly calls the continuation rather than going through the normal trampoline result-passing flow — the continuation is compiled specifically for the ParBind codegen path.
+Par-Bind continuations receive a `results_ptr` (pointer to an `alloc_with_rc` buffer of N i64 result values) as their second argument, unlike regular Bind continuations which receive a single i64 value. This divergence is structurally safe because the Par handler directly calls the continuation rather than going through the normal trampoline result-passing flow — the continuation is compiled specifically for the ParBind codegen path.
 
 ## 6. Integration Points
 

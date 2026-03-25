@@ -6,7 +6,7 @@
 use std::collections::{HashMap, HashSet};
 
 use cranelisp_types::{
-    ConstrainedFn, CranelispError, DefKind, Defn, JitSymbol, MethodResolutions,
+    ConstrainedFn, CranelispError, DefKind, Defn, DefnVariant, JitSymbol, MethodResolutions,
     ModuleEntry, MonoDefn, ResolvedCall, Scheme, Span, Symbol, TraitDecl,
     TraitImpl, TraitMethodSig, TraitName, Type, TypeId, TypeName, Visibility,
     apply,
@@ -478,9 +478,12 @@ impl TypeChecker {
             all_defns.push(Defn {
                 name: Symbol::from(mangled.as_str()),
                 docstring: method_defn.docstring.clone(),
-                params: method_defn.params.clone(),
-                param_annotations: method_defn.param_annotations.clone(),
-                body: method_defn.body.clone(),
+                variants: vec![DefnVariant {
+                    params: method_defn.params().to_vec(),
+                    param_annotations: method_defn.param_annotations().to_vec(),
+                    body: method_defn.body().clone(),
+                    span: method_defn.span,
+                }],
                 visibility: Visibility::Public,
                 span: method_defn.span,
             });
@@ -665,7 +668,7 @@ impl TypeChecker {
         self.push_scope();
 
         for (param_name, param_ty) in
-            defn.params.iter().zip(param_types.iter())
+            defn.params().iter().zip(param_types.iter())
         {
             self.bind_local(
                 param_name.clone(),
@@ -673,11 +676,11 @@ impl TypeChecker {
             );
         }
 
-        let body_ty = self.infer_expr(&defn.body)?;
+        let body_ty = self.infer_expr(defn.body())?;
         self.unify(&body_ty, ret_ty, defn.span)?;
 
         // Post-inference deferred trait resolution
-        self.resolve_deferred_trait_calls(&defn.body);
+        self.resolve_deferred_trait_calls(defn.body());
 
         self.pop_scope();
         Ok(())
@@ -721,9 +724,12 @@ impl TypeChecker {
             defaults.push(Defn {
                 name: Symbol::from(mangled.as_str()),
                 docstring: None,
-                params: method_sig.default_param_names.clone(),
-                param_annotations: vec![None; method_sig.default_param_names.len()],
-                body,
+                variants: vec![DefnVariant {
+                    params: method_sig.default_param_names.clone(),
+                    param_annotations: vec![None; method_sig.default_param_names.len()],
+                    body,
+                    span,
+                }],
                 visibility: Visibility::Public,
                 span,
             });
@@ -901,9 +907,12 @@ impl TypeChecker {
             defn: Defn {
                 name: Symbol::from(mangled_name.as_str()),
                 docstring: defn.docstring.clone(),
-                params: defn.params.clone(),
-                param_annotations: defn.param_annotations.clone(),
-                body: defn.body.clone(),
+                variants: vec![DefnVariant {
+                    params: defn.params().to_vec(),
+                    param_annotations: defn.param_annotations().to_vec(),
+                    body: defn.body().clone(),
+                    span: defn.span,
+                }],
                 visibility: defn.visibility,
                 span: defn.span,
             },
@@ -1015,7 +1024,7 @@ impl TypeChecker {
             })
             .collect();
         let mut inner_calls = Vec::new();
-        Self::collect_constrained_calls(&defn.body, &constrained_fn_names, &mut inner_calls);
+        Self::collect_constrained_calls(defn.body(), &constrained_fn_names, &mut inner_calls);
         for (inner_fn_name, arg_spans, inner_call_span) in &inner_calls {
             if resolutions.contains_key(inner_call_span) {
                 continue; // already resolved (e.g. as a trait method)
@@ -1442,8 +1451,8 @@ mod tests {
     use super::*;
     use crate::checker::TypeChecker;
     use cranelisp_types::{
-        Defn, FQSymbol, ModuleEntry, ModuleFullPath, Sexp, Span, TraitDecl, TraitImpl,
-        TraitMethodSig, TypeExpr, Visibility,
+        Defn, DefnVariant, FQSymbol, ModuleEntry, ModuleFullPath, Sexp, Span, TraitDecl,
+        TraitImpl, TraitMethodSig, TypeExpr, Visibility,
     };
 
     /// Create a TypeChecker with all primitives available in the current module.
@@ -1658,19 +1667,22 @@ mod tests {
             methods: vec![Defn {
                 name: Symbol::from("test-op"),
                 docstring: None,
-                params: vec![Symbol::from("lhs"), Symbol::from("rhs")],
-                param_annotations: vec![None, None],
-                body: cranelisp_types::Expr::Apply {
-                    callee: Box::new(cranelisp_types::Expr::Var {
-                        name: Symbol::from("add-i64"),
+                variants: vec![DefnVariant {
+                    params: vec![Symbol::from("lhs"), Symbol::from("rhs")],
+                    param_annotations: vec![None, None],
+                    body: cranelisp_types::Expr::Apply {
+                        callee: Box::new(cranelisp_types::Expr::Var {
+                            name: Symbol::from("add-i64"),
+                            span: Span::SYNTHETIC,
+                        }),
+                        args: vec![
+                            cranelisp_types::Expr::Var { name: Symbol::from("lhs"), span: Span::SYNTHETIC },
+                            cranelisp_types::Expr::Var { name: Symbol::from("rhs"), span: Span::SYNTHETIC },
+                        ],
                         span: Span::SYNTHETIC,
-                    }),
-                    args: vec![
-                        cranelisp_types::Expr::Var { name: Symbol::from("lhs"), span: Span::SYNTHETIC },
-                        cranelisp_types::Expr::Var { name: Symbol::from("rhs"), span: Span::SYNTHETIC },
-                    ],
+                    },
                     span: Span::SYNTHETIC,
-                },
+                }],
                 visibility: Visibility::Public,
                 span: Span::SYNTHETIC,
             }],
@@ -1701,19 +1713,22 @@ mod tests {
             methods: vec![Defn {
                 name: Symbol::from("test-op"),
                 docstring: None,
-                params: vec![Symbol::from("lhs"), Symbol::from("rhs")],
-                param_annotations: vec![None, None],
-                body: cranelisp_types::Expr::Apply {
-                    callee: Box::new(cranelisp_types::Expr::Var {
-                        name: Symbol::from("add-i64"),
+                variants: vec![DefnVariant {
+                    params: vec![Symbol::from("lhs"), Symbol::from("rhs")],
+                    param_annotations: vec![None, None],
+                    body: cranelisp_types::Expr::Apply {
+                        callee: Box::new(cranelisp_types::Expr::Var {
+                            name: Symbol::from("add-i64"),
+                            span: Span::SYNTHETIC,
+                        }),
+                        args: vec![
+                            cranelisp_types::Expr::Var { name: Symbol::from("lhs"), span: Span::SYNTHETIC },
+                            cranelisp_types::Expr::Var { name: Symbol::from("rhs"), span: Span::SYNTHETIC },
+                        ],
                         span: Span::SYNTHETIC,
-                    }),
-                    args: vec![
-                        cranelisp_types::Expr::Var { name: Symbol::from("lhs"), span: Span::SYNTHETIC },
-                        cranelisp_types::Expr::Var { name: Symbol::from("rhs"), span: Span::SYNTHETIC },
-                    ],
+                    },
                     span: Span::SYNTHETIC,
-                },
+                }],
                 visibility: Visibility::Public,
                 span: Span::SYNTHETIC,
             }],
@@ -1957,19 +1972,22 @@ mod tests {
             methods: vec![Defn {
                 name: Symbol::from("+"),
                 docstring: None,
-                params: vec![Symbol::from("x"), Symbol::from("y")],
-                param_annotations: vec![None, None],
-                body: Expr::Apply {
-                    callee: Box::new(Expr::Var {
-                        name: Symbol::from("add-i64"),
+                variants: vec![DefnVariant {
+                    params: vec![Symbol::from("x"), Symbol::from("y")],
+                    param_annotations: vec![None, None],
+                    body: Expr::Apply {
+                        callee: Box::new(Expr::Var {
+                            name: Symbol::from("add-i64"),
+                            span: Span::SYNTHETIC,
+                        }),
+                        args: vec![
+                            Expr::Var { name: Symbol::from("x"), span: Span::SYNTHETIC },
+                            Expr::Var { name: Symbol::from("y"), span: Span::SYNTHETIC },
+                        ],
                         span: Span::SYNTHETIC,
-                    }),
-                    args: vec![
-                        Expr::Var { name: Symbol::from("x"), span: Span::SYNTHETIC },
-                        Expr::Var { name: Symbol::from("y"), span: Span::SYNTHETIC },
-                    ],
+                    },
                     span: Span::SYNTHETIC,
-                },
+                }],
                 visibility: Visibility::Public,
                 span: Span::SYNTHETIC,
             }],
@@ -2176,9 +2194,12 @@ mod tests {
             methods: vec![Defn {
                 name: Symbol::from("="),
                 docstring: None,
-                params: vec![Symbol::from("lhs"), Symbol::from("rhs")],
-                param_annotations: vec![None, None],
-                body: Expr::BoolLit { value: true, span: Span::SYNTHETIC },
+                variants: vec![DefnVariant {
+                    params: vec![Symbol::from("lhs"), Symbol::from("rhs")],
+                    param_annotations: vec![None, None],
+                    body: Expr::BoolLit { value: true, span: Span::SYNTHETIC },
+                    span: Span::SYNTHETIC,
+                }],
                 visibility: Visibility::Public,
                 span: Span::SYNTHETIC,
             }],
@@ -2194,9 +2215,9 @@ mod tests {
         assert_eq!(defaults.len(), 1, "should generate 1 default method (!=)");
         let neq = &defaults[0];
         assert_eq!(neq.name.as_ref(), "Eq.!=$Int");
-        assert_eq!(neq.params.len(), 2);
+        assert_eq!(neq.params().len(), 2);
 
         // Body should be (not (= x y)), not IntLit 0
-        assert_apply_callee(&neq.body, "not");
+        assert_apply_callee(neq.body(), "not");
     }
 }

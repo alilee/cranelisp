@@ -24,5 +24,5 @@ pub use checker::TypeChecker;
 
 // Re-export boundary types that callers need
 pub use cranelisp_types::{
-    CheckResult, CranelispError, ReplCheckResult, ReplInput, ReplSnapshot, TopLevel,
+    CheckResult, CranelispError, ReplSnapshot, TopLevel,
 };

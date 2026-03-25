@@ -314,7 +314,12 @@ fn defn_zero_param_displays_name_not_closure() {
     // closure. `<closure>` is reserved for anonymous function *values*."
     let mut session = repl_session();
     let result = session.eval("(defn always-42 [] 42)").unwrap();
-    let display = cranelisp::repl::format_result(result.value, &result.ty);
+    // The REPL loop uses definition_display (not format_result) for definitions.
+    // Zero-arg defns must set definition_display with the qualified name.
+    let display = result
+        .definition_display
+        .as_ref()
+        .expect("repl/spec.md §1.3 violation: zero-arg defn must have definition_display set");
     assert!(
         display.contains("always-42"),
         "repl/spec.md §1.3 violation: zero-arg defn MUST NOT display <closure>, got: {display}"

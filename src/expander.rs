@@ -588,7 +588,12 @@ fn compile_single_clause(
     let program = cranelisp_frontend::build_program(&[expanded_sexp], expander)?;
 
     // Step 4: Typecheck.
-    let check = tc.check_program(&program)?;
+    let ctx = cranelisp_types::CompileContext {
+        module: tc.current_module_path().clone(),
+        strategy: cranelisp_types::ModuleStrategy::Additive,
+        compile_mode: cranelisp_types::CompileMode::Batch,
+    };
+    let check = tc.check(&program, &ctx)?;
 
     // Step 5: Compile.
     // Extract the single defn from the program.
@@ -606,7 +611,7 @@ fn compile_single_clause(
     // Declare the function in the JIT.
     let func_ids = jit.declare_functions(&[defn])?;
     let func_arities: HashMap<Symbol, usize> =
-        func_ids.keys().map(|n| (n.clone(), defn.params.len())).collect();
+        func_ids.keys().map(|n| (n.clone(), defn.params().len())).collect();
 
     // Build compile context and compile.
     // Disable dealloc so no rc_dec is emitted: macro functions build
@@ -628,7 +633,7 @@ fn compile_single_clause(
     jit.compile_defn(defn, compile_ctx)?;
 
     // Finalize and get the function pointer.
-    let ptr = jit.finalize_and_get_ptr(&defn.name, defn.params.len())?;
+    let ptr = jit.finalize_and_get_ptr(&defn.name, defn.params().len())?;
 
     Ok(ptr)
 }

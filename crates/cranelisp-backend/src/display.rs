@@ -616,6 +616,7 @@ fn format_field_value(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use cranelisp_types::TraitName;
 
     // --- format_value: scalar types ---
 

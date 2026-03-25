@@ -4,22 +4,39 @@ Architecture deliverables for the Cranelisp reimplementation. Owned and maintain
 
 ## Files
 
-- `architecture.md` — Overall architecture: 7-crate DAG, single pipeline principle, CompiledModule decomposition, macro mini-pipeline resolution, audit findings addressed
-- `interfaces.md` — Complete Rust type signatures for all pipeline boundary types (the design book)
-- `roadmap.md` — Ring-by-ring phased progression roadmap with per-skill deliverables and acceptance criteria
-- `design-space.md` — Forward-looking analysis in two parts: Part 1 (§1–9) analyzes Ring 1 decisions against NFRs; Part 2 (§10–14) examines beyond-ring resilience: three-mode compilation, WASM/target portability, collection extensibility, concurrent channels, peer language patterns
+### Active (target architecture)
 
-## Key Decisions (Phase B)
+- `CLAUDE.md` — this file: principles, key decisions, conventions
+- `pipeline-convergence-review.md` — Sprint 26 architectural review: dual-pipeline defect analysis, root cause, convergence proposal, decision record
+- `roadmap.md` — Delivery tracking (phases, rings, sprints)
+- `interfaces.md` — v2 pipeline boundary types designed for full spec surface (replaces `v1/interfaces.md`)
+- `pipeline-v2.md` — v2 pipeline design: stages, data flow, unified multi-pass check, call graph, migration strategy
 
-1. **7+1 crate DAG**: 7 pipeline crates (`cranelisp-types`, `cranelisp-frontend`, `cranelisp-typecheck`, `cranelisp-backend`, `cranelisp-runtime`, `cranelisp-platform`, `cranelisp` binary) + 1 build artifact (`cranelisp-exe-bundle` staticlib for `--link`)
-2. **`cranelisp-types` is data-only** — all boundary types, no logic. Every other crate depends on it.
-3. **Span is a struct** — `struct Span { start: u32, end: u32 }`, not `type Span = (usize, usize)`
-4. **TypeId is u32** — narrowed from `usize`, 4 billion type vars sufficient
-5. **No `meta: Option<SymbolMeta>`** on `ModuleEntry::Def` — `DefKind` is the sole classification
-6. **`Type::from_name()` / `type_name()`** — centralizes 9 duplicate primitive-name mappings
-7. **`CompileMode` enum** — batch and REPL share `compile_unit()`, no dual pipelines
-8. **`MacroExpander` trait** — dependency inversion breaks frontend->backend circular dep
-9. **CompiledModule decomposed** into `SymbolTable` + `ModuleCodegenState` + `ModuleStructure` + `CacheMetadata`
+### Legacy reference (`v1/`)
+
+These describe the v1 architecture being replaced. Reference for understanding existing code during transition — not the target design.
+
+- `v1/architecture.md` — v1 overall architecture: 7-crate DAG, CompiledModule decomposition
+- `v1/interfaces.md` — v1 boundary types (includes `ReplInput`, `ReplCheckResult` — the duplicated types being eliminated)
+- `v1/design-space.md` — Forward-looking NFR analysis (still relevant for target portability, collection extensibility)
+- `v1/macro-pipeline.md` — Macro expansion pipeline design (implementation details survive into v2)
+- `v1/pipeline-orchestration.md` — v1 pipeline orchestration (being replaced by unified pipeline)
+- `v1/ring0-interfaces.md` — Ring 0 interface snapshot
+- `v1/sketch-audit.md` — Sketch audit findings (still relevant — debts to avoid)
+
+## Key Decisions (Phase B) — Under Review
+
+Decisions 1–9 established the current architecture. The pipeline convergence review (Sprint 26) found that Decision 7 was never implemented and the crate structure may change during the pipeline spike. Decisions marked *(surviving)* are confirmed correct. Decisions marked *(under review)* may change.
+
+1. *(under review)* **7+1 crate DAG**: 7 pipeline crates + 1 build artifact. Crate boundaries may be reorganised during the pipeline spike.
+2. *(surviving)* **`cranelisp-types` is data-only** — all boundary types, no logic.
+3. *(surviving)* **Span is a struct** — `struct Span { start: u32, end: u32 }`
+4. *(surviving)* **TypeId is u32**
+5. *(surviving)* **No `meta: Option<SymbolMeta>`** on `ModuleEntry::Def`
+6. *(surviving)* **`Type::from_name()` / `type_name()`**
+7. *(failed — see pipeline-convergence-review.md)* **`CompileMode` enum** — intended to ensure batch/REPL share `compile_unit()`. In practice, `compile_unit()` was never implemented. Three parallel pipelines emerged with duplicated types (`TopLevel`/`ReplInput`, `CheckResult`/`ReplCheckResult`). `DefnMulti` broken in all paths. Being replaced by: single `TopLevel` (with `Expr` variant), single `CheckResult` (with optional display), unified multi-pass `check()` with no mode parameter (see `pipeline-v2.md` §5).
+8. *(surviving)* **`MacroExpander` trait** — dependency inversion breaks frontend->backend circular dep
+9. *(surviving)* **CompiledModule decomposed** into `SymbolTable` + `ModuleCodegenState` + `ModuleStructure` + `CacheMetadata`
 
 ## Key Decisions (Ring 1)
 
@@ -46,7 +63,8 @@ Architecture deliverables for the Cranelisp reimplementation. Owned and maintain
 - `sprints/reimplementation.md` — Full strategy: skill definitions, ring model decision, phase sequence, risk analysis
 - `src/CLAUDE.md` — Cross-cutting source conventions (error handling, code structure, naming)
 - `sketch/audits/*.md` — Structural debts to avoid (59 findings: 15 HIGH, 23 MEDIUM, 21 LOW)
-- `sketch/src/` — Prototype source as reference oracle
+- `sketch/src/` — Prototype source as reference oracle (solutions to language problems, NOT pipeline structure — the sketch has the same dual-pipeline debt)
+- `design/arch/pipeline-convergence-review.md` — Dual-pipeline defect analysis and convergence plan
 
 ## Architectural Principles
 
@@ -71,6 +89,12 @@ The criteria `/arch` uses to evaluate every design decision. These are derived f
 9. **Rings are accretive.** Each ring adds code, tests, and capabilities — it should not replace or delete work from earlier rings. Earlier-ring tests remain as-is; later rings add new tests for the new mechanism. This provides diagnostic isolation: if `(+ 1 2)` (trait dispatch, Ring 2) fails but `(add-i64 1 2)` (primitive, Ring 0) passes, the bug is in dispatch, not codegen. The same applies to implementation: primitives survive as the foundation that higher-level mechanisms dispatch to.
 
 10. **Parser keywords are for distinct syntax only.** The AST builder recognizes a form as a special form (building a distinct `Expr` variant) only when its syntax differs from a function call — i.e., its arguments cannot be parsed as expressions. `(let [x 1] body)` MUST be a parser keyword because `[x 1]` is a binding vector, not a Vec literal. `(if c t e)` MUST be a parser keyword because it has short-circuit semantics that require a distinct AST node. But forms with regular call syntax — `(trace expr)`, `(platform "name")` — SHOULD flow through the module system as ordinary names that the typechecker or later passes recognize. This keeps the parser small and the module system authoritative: a name is available only if it's in scope. New special forms added in later rings should default to the module-scoped approach unless they genuinely need distinct syntax.
+
+11. **Single pipeline, mode parameters.** There is one compilation pipeline. Batch, REPL, and module-loading all flow through the same stages with the same types. Where modes genuinely differ (direct vs GOT-indirect calls), the difference is a parameter on a shared function, not a separate function or a separate type. Duplicate types at a pipeline boundary (e.g., `TopLevel`/`ReplInput`) and adapter functions between them (e.g., `build_check_for_backend`) are architectural violations. Note: type-checking does NOT differ by mode — the multi-pass pipeline (register all signatures, then check all bodies) works identically on any input size (see `pipeline-v2.md` §5). *(Added Sprint 26 — see `pipeline-convergence-review.md` for the defect that motivated this.)*
+
+12. **Design for the full spec surface.** Pipeline stage interfaces are designed against all language features the spec defines, not against the current sprint's needs. Every variant of a boundary type that the spec requires should exist from the start, with `todo!()` bodies if not yet implemented. This prevents accretive growth where each sprint adds variants and match arms to whichever function is closest, eventually producing parallel paths nobody designed. A `todo!()` is visible and compiler-enforced; a missing arm in a parallel function is silent. *(Added Sprint 26 — the ring model's accretive delivery pattern caused the dual-pipeline defect.)*
+
+13. **`interfaces.md` is auditable.** The design book must be validated against architectural principles, not merely documented. If `interfaces.md` contains structurally identical types, adapter functions, or parallel pipeline entry points, that is an architectural violation — not a feature to document. Every gate review must include an `interfaces.md` coherence check. *(Added Sprint 26 — `interfaces.md` enshrined the `TopLevel`/`ReplInput` duplication as legitimate architecture for 25 sprints.)*
 
 ## String Newtypes
 

@@ -446,7 +446,7 @@ fn declare_module_functions(
     let mut func_ids = Vec::with_capacity(defns.len());
     for (defn, _scheme) in defns {
         let mut sig = obj_module.make_signature();
-        for _ in &defn.params {
+        for _ in defn.params() {
             sig.params.push(AbiParam::new(types::I64));
         }
         sig.returns.push(AbiParam::new(types::I64));
@@ -660,7 +660,7 @@ fn compile_all_functions(
     let mut func_arities: HashMap<Symbol, usize> = input
         .defns
         .iter()
-        .map(|(defn, _)| (defn.name.clone(), defn.params.len()))
+        .map(|(defn, _)| (defn.name.clone(), defn.params().len()))
         .collect();
     for (name, param_count) in &input.cross_module_fns {
         func_arities.entry(name.clone()).or_insert(*param_count);
@@ -683,7 +683,7 @@ fn compile_all_functions(
 
     for ((defn, _scheme), &func_id) in input.defns.iter().zip(declared_func_ids.iter()) {
         let mut sig = obj_module.make_signature();
-        for _ in &defn.params {
+        for _ in defn.params() {
             sig.params.push(AbiParam::new(types::I64));
         }
         sig.returns.push(AbiParam::new(types::I64));
@@ -917,18 +917,21 @@ mod tests {
     // spec: design/backend/module-caching.md §13.2 — compile simple module to .o
     #[test]
     fn test_compile_module_to_object_simple() {
-        use cranelisp_types::{Defn, Expr, Scheme, Visibility};
+        use cranelisp_types::{Defn, DefnVariant, Expr, Scheme, Visibility};
 
         // Create a minimal module with one function: (defn answer [] 42)
         let defn = Defn {
             name: Symbol::from("answer"),
             docstring: None,
-            params: vec![],
-            param_annotations: vec![],
-            body: Expr::IntLit {
-                value: 42,
-                span: Span::new(10, 12),
-            },
+            variants: vec![DefnVariant {
+                params: vec![],
+                param_annotations: vec![],
+                body: Expr::IntLit {
+                    value: 42,
+                    span: Span::new(10, 12),
+                },
+                span: Span::new(0, 20),
+            }],
             visibility: Visibility::Public,
             span: Span::new(0, 20),
         };
@@ -977,18 +980,21 @@ mod tests {
     // spec: design/backend/module-caching.md §13.2 — compile module with params
     #[test]
     fn test_compile_module_to_object_with_params() {
-        use cranelisp_types::{Defn, Expr, Scheme, Visibility};
+        use cranelisp_types::{Defn, DefnVariant, Expr, Scheme, Visibility};
 
         // Create: (defn identity [x] x)
         let defn = Defn {
             name: Symbol::from("identity"),
             docstring: None,
-            params: vec![Symbol::from("x")],
-            param_annotations: vec![None],
-            body: Expr::Var {
-                name: Symbol::from("x"),
-                span: Span::new(20, 21),
-            },
+            variants: vec![DefnVariant {
+                params: vec![Symbol::from("x")],
+                param_annotations: vec![None],
+                body: Expr::Var {
+                    name: Symbol::from("x"),
+                    span: Span::new(20, 21),
+                },
+                span: Span::new(0, 25),
+            }],
             visibility: Visibility::Public,
             span: Span::new(0, 25),
         };
@@ -1025,7 +1031,7 @@ mod tests {
     // spec: design/backend/module-caching.md §13 — process_cache_packet writes .o file
     #[test]
     fn test_process_cache_packet_writes_object_file() {
-        use cranelisp_types::{Defn, Expr, Scheme, Visibility};
+        use cranelisp_types::{Defn, DefnVariant, Expr, Scheme, Visibility};
 
         let dir = tempfile::tempdir().unwrap();
         let mp = ModuleFullPath::from("user");
@@ -1051,12 +1057,15 @@ mod tests {
         let defn = Defn {
             name: Symbol::from("main"),
             docstring: None,
-            params: vec![],
-            param_annotations: vec![],
-            body: Expr::IntLit {
-                value: 0,
-                span: Span::new(10, 11),
-            },
+            variants: vec![DefnVariant {
+                params: vec![],
+                param_annotations: vec![],
+                body: Expr::IntLit {
+                    value: 0,
+                    span: Span::new(10, 11),
+                },
+                span: Span::new(0, 15),
+            }],
             visibility: Visibility::Public,
             span: Span::new(0, 15),
         };
