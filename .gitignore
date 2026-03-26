@@ -24,3 +24,4 @@ user.cl
 sketch/user.cl
 # Sprint 23 test run artifacts
 tests/sprint23/.runs/
+__pycache__/
