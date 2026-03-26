@@ -926,12 +926,16 @@ pub fn compile_and_run(
         compile_mode: mode,
         codegen_target: cranelisp_types::CodegenTarget::JitAndCache,
     };
-    let result = crate::pipeline_v2::compile_unit(&mut session, source, &ctx)?;
+    let unit_result = crate::pipeline_v2::compile_unit(&mut session, source, &ctx)?;
+    let codegen_result = crate::pipeline_v2::codegen_and_execute(&mut session, &unit_result, &ctx)?;
+
+    let mut warnings = unit_result.warnings;
+    warnings.extend(codegen_result.warnings);
 
     Ok(PipelineResult {
-        value: result.value.unwrap_or(0),
-        ty: result.result_type.unwrap_or(Type::Int),
-        warnings: result.warnings,
+        value: codegen_result.value.unwrap_or(0),
+        ty: codegen_result.result_type.unwrap_or(Type::Int),
+        warnings,
     })
 }
 

@@ -21,7 +21,7 @@ mod helpers;
 
 use helpers::*;
 use cranelisp::pipeline::CompilationSession;
-use cranelisp::pipeline_v2::compile_unit;
+use cranelisp::pipeline_v2::{compile_unit, codegen_and_execute};
 use cranelisp_types::{
     CompileContext, CompileMode, ImportNames, ImportSpec, ModuleFullPath,
     ModuleStrategy, Span,
@@ -57,9 +57,11 @@ fn compile_v2_batch(src: &str) -> i64 {
         compile_mode: CompileMode::Batch,
         codegen_target: cranelisp_types::CodegenTarget::JitAndCache,
     };
-    let result = compile_unit(&mut session, src, &ctx)
+    let unit_result = compile_unit(&mut session, src, &ctx)
         .expect("v2 compile_unit failed");
-    result.value.expect("v2 produced no value")
+    let codegen_result = codegen_and_execute(&mut session, &unit_result, &ctx)
+        .expect("v2 codegen_and_execute failed");
+    codegen_result.value.expect("v2 produced no value")
 }
 
 /// Run source through v2 interactive pipeline, return the i64 result.
@@ -71,9 +73,11 @@ fn compile_v2_interactive(src: &str) -> i64 {
         compile_mode: CompileMode::Interactive,
         codegen_target: cranelisp_types::CodegenTarget::JitAndCache,
     };
-    let result = compile_unit(&mut session, src, &ctx)
+    let unit_result = compile_unit(&mut session, src, &ctx)
         .expect("v2 compile_unit failed");
-    result.value.expect("v2 produced no value")
+    let codegen_result = codegen_and_execute(&mut session, &unit_result, &ctx)
+        .expect("v2 codegen_and_execute failed");
+    codegen_result.value.expect("v2 produced no value")
 }
 
 /// Run a program through both v1 and v2 and assert identical i64 results.

@@ -31,15 +31,35 @@ use crate::pipeline::CompilationSession;
 // Result types
 // ---------------------------------------------------------------------------
 
-/// Result of compiling a unit through the v2 pipeline.
+/// Result of compiling a unit through stages 1-5 of the v2 pipeline.
 ///
-/// Carries everything the caller needs: typecheck results, execution
-/// outcome, and accumulated warnings.
+/// Contains the typechecked program and module structure, ready for
+/// codegen via `codegen_and_execute()`. Does NOT contain execution
+/// results — those come from `CodegenResult`.
 pub struct CompileUnitResult {
+    /// The built program (Vec<TopLevel>) from stage 4.
+    pub program: Vec<cranelisp_types::TopLevel>,
+
+    /// Module structure extracted at stage 2 (imports, exports, submodules).
+    pub module_structure: cranelisp_types::ModuleStructure,
+
     /// The typecheck result (method resolutions, expr_types, display info, etc.).
     /// Needed by callers for display formatting and introspection.
     pub check_result: CheckResult,
 
+    /// Source text that was compiled. Needed by `codegen_and_execute()`
+    /// for background cache writes.
+    pub source: String,
+
+    /// All warnings accumulated during stages 1-5.
+    pub warnings: Vec<Warning>,
+}
+
+/// Result of codegen + execution (stages 6-7).
+///
+/// Produced by `codegen_and_execute()` after compiling and optionally
+/// executing the program from a `CompileUnitResult`.
+pub struct CodegenResult {
     /// If execution occurred, the raw i64 result value.
     /// None when the unit was a module load (no execution) or contained
     /// only type/trait definitions with no entry point.
@@ -49,8 +69,23 @@ pub struct CompileUnitResult {
     /// None when no execution occurred.
     pub result_type: Option<Type>,
 
-    /// All warnings accumulated across typecheck and codegen.
+    /// Warnings accumulated during codegen.
     pub warnings: Vec<Warning>,
+}
+
+/// Construct an empty `CheckResult` for modules with no compilable forms.
+fn empty_check_result() -> CheckResult {
+    CheckResult {
+        method_resolutions: Default::default(),
+        constrained_fn_names: Default::default(),
+        mono_defns: Vec::new(),
+        expr_types: Default::default(),
+        default_method_defns: Vec::new(),
+        warnings: Vec::new(),
+        type_defs: Default::default(),
+        constructor_to_type: Default::default(),
+        display: None,
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -105,16 +140,6 @@ fn compile_unit_inner(
     source: &str,
     ctx: &CompileContext,
 ) -> Result<CompileUnitResult, CranelispError> {
-    // Snapshot pre-existing GOT entries so that register_module_aliases
-    // only aliases new entries from this module (not all entries from
-    // previously loaded modules — that causes exponential alias growth).
-    let pre_existing: std::collections::HashSet<cranelisp_types::Symbol> = session
-        .got_state
-        .def_codegen
-        .keys()
-        .cloned()
-        .collect();
-
     // Stage 1: Parse source text into sexps.
     let sexps = cranelisp_frontend::parse(source)?;
 
@@ -164,21 +189,11 @@ fn compile_unit_inner(
     // after extraction and expansion — all forms were module declarations
     // or defmacros).
     if accumulated.is_empty() {
-        let empty_check = CheckResult {
-            method_resolutions: Default::default(),
-            constrained_fn_names: Default::default(),
-            mono_defns: Vec::new(),
-            expr_types: Default::default(),
-            default_method_defns: Vec::new(),
-            warnings: Vec::new(),
-            type_defs: Default::default(),
-            constructor_to_type: Default::default(),
-            display: None,
-        };
         return Ok(CompileUnitResult {
-            check_result: empty_check,
-            value: None,
-            result_type: None,
+            program: Vec::new(),
+            module_structure: structure,
+            check_result: empty_check_result(),
+            source: source.to_string(),
             warnings: Vec::new(),
         });
     }
@@ -211,19 +226,71 @@ fn compile_unit_inner(
     };
     let check_result = session.tc.check(&program, &check_ctx)?;
 
-    let mut all_warnings: Vec<Warning> = check_result.warnings.clone();
+    let all_warnings: Vec<Warning> = check_result.warnings.clone();
+
+    Ok(CompileUnitResult {
+        program,
+        module_structure: structure,
+        check_result,
+        source: source.to_string(),
+        warnings: all_warnings,
+    })
+}
+
+// ---------------------------------------------------------------------------
+// Codegen + execute (stages 6-7)
+// ---------------------------------------------------------------------------
+
+/// Execute codegen and optional execution for a compiled unit.
+///
+/// Takes a `CompileUnitResult` from `compile_unit()` (stages 1-5) and
+/// performs stages 6-7: codegen dispatch, module alias registration,
+/// background cache write, module structure recording, and func_sigs
+/// accumulation.
+///
+/// This function borrows `CompileUnitResult` — it does not consume it,
+/// so callers can inspect `check_result` and `warnings` afterward.
+pub fn codegen_and_execute(
+    session: &mut CompilationSession,
+    unit_result: &CompileUnitResult,
+    ctx: &CompileContext,
+) -> Result<CodegenResult, CranelispError> {
+    // Early return for empty programs (no codegen needed).
+    if unit_result.program.is_empty() {
+        return Ok(CodegenResult {
+            value: None,
+            result_type: None,
+            warnings: Vec::new(),
+        });
+    }
+
+    // Snapshot pre-existing GOT entries so that register_module_aliases
+    // only aliases new entries from this module (not all entries from
+    // previously loaded modules — that causes exponential alias growth).
+    let pre_existing: std::collections::HashSet<cranelisp_types::Symbol> = session
+        .got_state
+        .def_codegen
+        .keys()
+        .cloned()
+        .collect();
+
+    let mut codegen_warnings: Vec<Warning> = Vec::new();
 
     // Stages 6-7: Codegen and execute, mode-dependent.
     let (value, result_type) = match ctx.compile_mode {
         CompileMode::Batch => {
-            compile_and_execute_batch(&program, &check_result, &mut all_warnings)?
+            compile_and_execute_batch(
+                &unit_result.program,
+                &unit_result.check_result,
+                &mut codegen_warnings,
+            )?
         }
         CompileMode::Interactive => {
             compile_and_execute_interactive(
                 session,
-                &program,
-                &check_result,
-                &mut all_warnings,
+                &unit_result.program,
+                &unit_result.check_result,
+                &mut codegen_warnings,
             )?
         }
         CompileMode::Release => {
@@ -235,129 +302,39 @@ fn compile_unit_inner(
     };
 
     // Register module aliases after successful Interactive-mode compilation.
-    // Use the filtered variant to only alias functions defined in this module,
-    // not all existing GOT entries (which would cause exponential alias growth
-    // when loading many modules sequentially).
     if ctx.compile_mode == CompileMode::Interactive {
         session.register_module_aliases_filtered(&ctx.module, Some(&pre_existing));
     }
 
     // Stage 6b: Background .o + .meta.json write (JitAndCache only).
-    // See design/arch/pipeline-v2.md §16.2, §16.12.
     if ctx.codegen_target == CodegenTarget::JitAndCache {
-        queue_background_cache_write(session, source, &ctx.module, &structure, &program, &check_result);
+        queue_background_cache_write(
+            session,
+            &unit_result.source,
+            &ctx.module,
+            &unit_result.module_structure,
+            &unit_result.program,
+            &unit_result.check_result,
+        );
     }
 
     // Record module structure for --link (both targets).
-    session.compiled_module_structures.push((ctx.module.clone(), structure));
+    session
+        .compiled_module_structures
+        .push((ctx.module.clone(), unit_result.module_structure.clone()));
 
     // Accumulate cross-module func_sigs from this module's definitions.
-    accumulate_func_sigs_from_program(&ctx.module, &program, &check_result, &mut session.cross_module_func_sigs);
+    accumulate_func_sigs_from_program(
+        &ctx.module,
+        &unit_result.program,
+        &unit_result.check_result,
+        &mut session.cross_module_func_sigs,
+    );
 
-    Ok(CompileUnitResult {
-        check_result,
+    Ok(CodegenResult {
         value,
         result_type,
-        warnings: all_warnings,
-    })
-}
-
-/// Compile pre-parsed, pre-expanded sexps through stages 4-7 of the pipeline.
-///
-/// Transitional entry point for callers that have already parsed and expanded
-/// their input (e.g., the REPL during the v1→v2 migration). Takes `&[Sexp]`
-/// instead of source text, skipping stages 1-3 (parse, extract, expand).
-///
-/// Will be removed when all callers switch to `compile_unit()` (Step 4b).
-pub fn compile_unit_from_sexps(
-    session: &mut CompilationSession,
-    sexps: &[cranelisp_types::Sexp],
-    ctx: &CompileContext,
-) -> Result<CompileUnitResult, CranelispError> {
-    // Stage 4: Build AST from expanded sexps.
-    let mut program = cranelisp_frontend::build_program(sexps, &mut session.expander)?;
-
-    // Stage 4b: Bind chain analysis (auto IO scheduling).
-    if !session.scheduling_registry.is_empty()
-        && std::env::var("CRANELISP_NO_IO_SCHEDULE").is_err()
-    {
-        crate::pipeline::apply_bind_chain_analysis(&mut program, &session.scheduling_registry);
-    }
-
-    // Stage 5: Unified multi-pass typecheck.
-    let check_result = session.tc.check(&program, ctx)?;
-
-    let mut all_warnings: Vec<Warning> = check_result.warnings.clone();
-
-    // Stages 6-7: Codegen and execute, mode-dependent.
-    let (value, result_type) = match ctx.compile_mode {
-        CompileMode::Batch => {
-            compile_and_execute_batch(&program, &check_result, &mut all_warnings)?
-        }
-        CompileMode::Interactive => {
-            compile_and_execute_interactive(
-                session,
-                &program,
-                &check_result,
-                &mut all_warnings,
-            )?
-        }
-        CompileMode::Release => {
-            return Err(CranelispError::CodegenError {
-                message: "Release compile mode not yet implemented".into(),
-                span: Span::SYNTHETIC,
-            });
-        }
-    };
-
-    Ok(CompileUnitResult {
-        check_result,
-        value,
-        result_type,
-        warnings: all_warnings,
-    })
-}
-
-/// Compile a pre-built program through the v2 pipeline (typecheck -> codegen -> execute).
-///
-/// Like `compile_unit` but skips the parse/build stage — takes a pre-built
-/// `Program` (Vec<TopLevel>) instead of source text. Used for annotation expressions
-/// where the caller has already combined multiple sexps into a single TopLevel.
-pub fn compile_unit_from_program(
-    session: &mut CompilationSession,
-    program: &[cranelisp_types::TopLevel],
-    ctx: &CompileContext,
-) -> Result<CompileUnitResult, CranelispError> {
-    let check_result = session.tc.check(program, ctx)?;
-
-    let mut all_warnings: Vec<Warning> = check_result.warnings.clone();
-
-    let program_vec: Vec<cranelisp_types::TopLevel> = program.to_vec();
-    let (value, result_type) = match ctx.compile_mode {
-        CompileMode::Batch => {
-            compile_and_execute_batch(&program_vec, &check_result, &mut all_warnings)?
-        }
-        CompileMode::Interactive => {
-            compile_and_execute_interactive(
-                session,
-                &program_vec,
-                &check_result,
-                &mut all_warnings,
-            )?
-        }
-        CompileMode::Release => {
-            return Err(CranelispError::CodegenError {
-                message: "Release compile mode not yet implemented".into(),
-                span: Span::SYNTHETIC,
-            });
-        }
-    };
-
-    Ok(CompileUnitResult {
-        check_result,
-        value,
-        result_type,
-        warnings: all_warnings,
+        warnings: codegen_warnings,
     })
 }
 
@@ -437,7 +414,8 @@ fn load_dependencies(
             };
 
             // Recursive call — cycle detection happens inside compile_unit().
-            compile_unit(session, &dep_source, &dep_ctx)?;
+            let unit_result = compile_unit(session, &dep_source, &dep_ctx)?;
+            codegen_and_execute(session, &unit_result, &dep_ctx)?;
         }
         // If resolve returns None: import will fail during typecheck
         // (unresolved symbol). This is the test-mode path when lib_dirs is empty.
@@ -837,7 +815,8 @@ pub fn run_batch_v2(
                     compile_mode: CompileMode::Interactive,
                     codegen_target: CodegenTarget::JitAndCache,
                 };
-                compile_unit(&mut session, &dep_source, &dep_ctx)?;
+                let dep_result = compile_unit(&mut session, &dep_source, &dep_ctx)?;
+                codegen_and_execute(&mut session, &dep_result, &dep_ctx)?;
             }
         }
 
@@ -848,7 +827,8 @@ pub fn run_batch_v2(
             codegen_target: CodegenTarget::JitAndCache,
         };
 
-        compile_unit(&mut session, &prelude_source, &prelude_ctx)?;
+        let prelude_result = compile_unit(&mut session, &prelude_source, &prelude_ctx)?;
+        codegen_and_execute(&mut session, &prelude_result, &prelude_ctx)?;
     }
 
     // Step 5: Load entry file via compile_unit.
@@ -859,7 +839,8 @@ pub fn run_batch_v2(
         codegen_target: CodegenTarget::JitAndCache,
     };
 
-    let result = compile_unit(&mut session, &entry_source, &entry_ctx)?;
+    let unit_result = compile_unit(&mut session, &entry_source, &entry_ctx)?;
+    let result = codegen_and_execute(&mut session, &unit_result, &entry_ctx)?;
 
     // Step 6: Verify `main` exists in the GOT.
     // compile_unit in Interactive mode auto-executes zero-arg defns, so
@@ -881,7 +862,7 @@ pub fn run_batch_v2(
         });
     }
 
-    // The value and type come from compile_unit's result (which executed
+    // The value and type come from codegen_and_execute's result (which executed
     // all zero-arg defns including main via Interactive mode).
     let raw_value = result.value.ok_or_else(|| CranelispError::ModuleError {
         message: "entry module produced no result value".into(),
@@ -900,10 +881,14 @@ pub fn run_batch_v2(
         (raw_value, result_type)
     };
 
+    // Combine warnings from typecheck (unit_result) and codegen (result).
+    let mut all_warnings = unit_result.warnings;
+    all_warnings.extend(result.warnings);
+
     Ok(crate::pipeline::CompiledModuleGraph {
         value,
         ty,
-        warnings: result.warnings,
+        warnings: all_warnings,
     })
 }
 
@@ -1027,8 +1012,10 @@ pub fn compile_for_link_v2(
             codegen_target: CodegenTarget::JitAndCache,
         };
 
-        let result = compile_unit(&mut session, &source, &ctx)?;
-        all_warnings.extend(result.warnings);
+        let unit_result = compile_unit(&mut session, &source, &ctx)?;
+        let codegen_result = codegen_and_execute(&mut session, &unit_result, &ctx)?;
+        all_warnings.extend(unit_result.warnings);
+        all_warnings.extend(codegen_result.warnings);
     }
 
     // Step 6: Flush background .o writes to ensure all files are on disk.
@@ -1097,8 +1084,10 @@ fn load_prelude_for_link(
                 compile_mode: CompileMode::Interactive,
                 codegen_target: CodegenTarget::JitAndCache,
             };
-            let result = compile_unit(session, &dep_source, &dep_ctx)?;
-            all_warnings.extend(result.warnings);
+            let unit_result = compile_unit(session, &dep_source, &dep_ctx)?;
+            let codegen_result = codegen_and_execute(session, &unit_result, &dep_ctx)?;
+            all_warnings.extend(unit_result.warnings);
+            all_warnings.extend(codegen_result.warnings);
         }
     }
 
@@ -1109,8 +1098,10 @@ fn load_prelude_for_link(
         compile_mode: CompileMode::Interactive,
         codegen_target: CodegenTarget::JitAndCache,
     };
-    let prelude_result = compile_unit(session, &prelude_source, &prelude_ctx)?;
-    all_warnings.extend(prelude_result.warnings);
+    let prelude_unit = compile_unit(session, &prelude_source, &prelude_ctx)?;
+    let prelude_codegen = codegen_and_execute(session, &prelude_unit, &prelude_ctx)?;
+    all_warnings.extend(prelude_unit.warnings);
+    all_warnings.extend(prelude_codegen.warnings);
 
     Ok(())
 }
@@ -1359,20 +1350,26 @@ mod tests {
     #[test]
     fn batch_defn_main_returns_value() {
         let mut session = CompilationSession::new();
-        let result = compile_unit(&mut session, "(defn main [] (if true 3 0))", &batch_ctx())
+        let ctx = batch_ctx();
+        let unit_result = compile_unit(&mut session, "(defn main [] (if true 3 0))", &ctx)
             .expect("compile_unit failed");
+        let codegen_result = codegen_and_execute(&mut session, &unit_result, &ctx)
+            .expect("codegen_and_execute failed");
 
-        assert_eq!(result.value, Some(3));
+        assert_eq!(codegen_result.value, Some(3));
     }
 
     // spec: design/arch/pipeline-v2.md §5.5 — Expr handling via synthetic defn
     #[test]
     fn additive_bare_expression() {
         let mut session = CompilationSession::new();
-        let result = compile_unit(&mut session, "(if true 3 0)", &additive_ctx())
+        let ctx = additive_ctx();
+        let unit_result = compile_unit(&mut session, "(if true 3 0)", &ctx)
             .expect("compile_unit failed");
+        let codegen_result = codegen_and_execute(&mut session, &unit_result, &ctx)
+            .expect("codegen_and_execute failed");
 
-        assert_eq!(result.value, Some(3));
+        assert_eq!(codegen_result.value, Some(3));
     }
 
     // spec: design/arch/pipeline-v2.md §8.7 — defmacro in source followed by usage
@@ -1384,10 +1381,13 @@ mod tests {
             (defn main [] (wrap 41))
         "#;
         let mut session = CompilationSession::new();
-        let result = compile_unit(&mut session, source, &batch_ctx())
+        let ctx = batch_ctx();
+        let unit_result = compile_unit(&mut session, source, &ctx)
             .expect("compile_unit failed");
+        let codegen_result = codegen_and_execute(&mut session, &unit_result, &ctx)
+            .expect("codegen_and_execute failed");
 
-        assert_eq!(result.value, Some(42));
+        assert_eq!(codegen_result.value, Some(42));
     }
 
     // spec: design/arch/pipeline-v2.md §8.3 — cycle detection
