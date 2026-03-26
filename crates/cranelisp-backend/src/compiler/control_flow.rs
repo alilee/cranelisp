@@ -7,7 +7,7 @@ use std::collections::HashSet;
 use cranelift::prelude::*;
 use cranelift_module::{Linkage, Module};
 
-use cranelisp_types::{CompileMode, CranelispError, Expr, HeapCategory, ResolvedCall, Span, Symbol, Type};
+use cranelisp_types::{CranelispError, Expr, HeapCategory, ResolvedCall, Span, Symbol, Type};
 
 use crate::heap::{self, HeapAdt, HeapClosure};
 use crate::operators;
@@ -1173,42 +1173,40 @@ impl<'a, M: Module> FnCompiler<'a, M> {
         user_params: &[Value],
         span: Span,
     ) -> Result<Value, CranelispError> {
-        match self.ctx.mode {
-            CompileMode::Batch | CompileMode::Release => {
-                let target_id =
-                    self.ctx.func_ids.get(target_name).ok_or_else(|| {
-                        CranelispError::CodegenError {
-                            message: format!("undefined function: {target_name}"),
-                            span,
-                        }
-                    })?;
-                let target_ref =
-                    self.module.declare_func_in_func(*target_id, builder.func);
-                let call = builder.ins().call(target_ref, user_params);
-                Ok(builder.inst_results(call)[0])
+        if self.ctx.got_slots.is_some() {
+            // GOT-indirect call: use resolve_got_entry to check both local
+            // and cross-module GOT, matching compile_direct_call.
+            let (got_base, slot) = self.resolve_got_entry(target_name, span)?;
+
+            let slot_offset = (slot * 8) as i64;
+            let base_val = builder.ins().iconst(types::I64, got_base);
+            let slot_addr = builder.ins().iadd_imm(base_val, slot_offset);
+            let func_ptr = builder.ins().load(
+                types::I64, MemFlags::trusted(), slot_addr, 0,
+            );
+
+            let mut sig = self.module.make_signature();
+            for _ in user_params {
+                sig.params.push(AbiParam::new(types::I64));
             }
-            CompileMode::Interactive => {
-                // Use resolve_got_entry to check both local and cross-module GOT,
-                // matching the lookup strategy used by compile_direct_call.
-                let (got_base, slot) = self.resolve_got_entry(target_name, span)?;
+            sig.returns.push(AbiParam::new(types::I64));
+            let sig_ref = builder.import_signature(sig);
 
-                let slot_offset = (slot * 8) as i64;
-                let base_val = builder.ins().iconst(types::I64, got_base);
-                let slot_addr = builder.ins().iadd_imm(base_val, slot_offset);
-                let func_ptr = builder.ins().load(
-                    types::I64, MemFlags::trusted(), slot_addr, 0,
-                );
-
-                let mut sig = self.module.make_signature();
-                for _ in user_params {
-                    sig.params.push(AbiParam::new(types::I64));
-                }
-                sig.returns.push(AbiParam::new(types::I64));
-                let sig_ref = builder.import_signature(sig);
-
-                let call = builder.ins().call_indirect(sig_ref, func_ptr, user_params);
-                Ok(builder.inst_results(call)[0])
-            }
+            let call = builder.ins().call_indirect(sig_ref, func_ptr, user_params);
+            Ok(builder.inst_results(call)[0])
+        } else {
+            // Direct call via FuncId.
+            let target_id =
+                self.ctx.func_ids.get(target_name).ok_or_else(|| {
+                    CranelispError::CodegenError {
+                        message: format!("undefined function: {target_name}"),
+                        span,
+                    }
+                })?;
+            let target_ref =
+                self.module.declare_func_in_func(*target_id, builder.func);
+            let call = builder.ins().call(target_ref, user_params);
+            Ok(builder.inst_results(call)[0])
         }
     }
 

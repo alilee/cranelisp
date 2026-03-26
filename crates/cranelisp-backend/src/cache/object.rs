@@ -23,7 +23,7 @@ use cranelift_object::{ObjectBuilder, ObjectModule};
 use serde::{Deserialize, Serialize};
 
 use cranelisp_types::{
-    CompileMode, CranelispError, Defn, MethodResolutions, ModuleFullPath,
+    CranelispError, Defn, MethodResolutions, ModuleFullPath,
     Scheme, Span, Symbol, Type, TypeDefInfo, TypeName,
 };
 
@@ -709,7 +709,7 @@ fn compile_all_functions(
             expr_types: &input.expr_types,
             func_ids: &func_ids,
             func_arities: &func_arities,
-            mode: CompileMode::Batch,
+            // No GOT for object file compilation — direct calls.
             type_defs: &input.type_defs,
             constructor_to_type: &input.constructor_to_type,
             got_slots: None,
@@ -795,6 +795,7 @@ mod tests {
                 mod_decls: vec![],
                 import_specs: vec![],
                 export_specs: vec![],
+                platform_specs: vec![],
                 impl_sexps: vec![],
                 impls: vec![],
                 dll_path: None,
@@ -850,6 +851,7 @@ mod tests {
                 mod_decls: vec![],
                 import_specs: vec![],
                 export_specs: vec![],
+                platform_specs: vec![],
                 impl_sexps: vec![],
                 impls: vec![],
                 dll_path: None,
@@ -1043,6 +1045,7 @@ mod tests {
                 mod_decls: vec![],
                 import_specs: vec![],
                 export_specs: vec![],
+                platform_specs: vec![],
                 impl_sexps: vec![],
                 impls: vec![],
                 dll_path: None,
@@ -1126,6 +1129,7 @@ mod tests {
                 mod_decls: vec![],
                 import_specs: vec![],
                 export_specs: vec![],
+                platform_specs: vec![],
                 impl_sexps: vec![],
                 impls: vec![],
                 dll_path: None,

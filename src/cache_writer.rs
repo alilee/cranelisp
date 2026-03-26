@@ -92,8 +92,8 @@ impl CacheWriterHandle {
     /// Block until all pending writes have completed.
     ///
     /// Called by:
-    /// - `compile_for_link_v2()` to flush prelude-phase background writes
-    ///   before collecting .o paths.
+    /// - `link_file_inner()` in main.rs to flush background writes before
+    ///   collecting .o paths for the linker.
     /// - Session persistence (REPL save) to ensure the latest .o is on disk.
     pub fn flush(&self) {
         let (done_tx, done_rx) = mpsc::channel();

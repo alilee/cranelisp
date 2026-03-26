@@ -6,7 +6,7 @@
 use std::collections::HashMap;
 
 use cranelisp_types::{
-    CompileMode, CranelispError, MacroExpander, MacroParam, Sexp, Span, Symbol,
+    CranelispError, MacroExpander, MacroParam, Sexp, Span, Symbol,
     NULLARY_TAG_THRESHOLD,
 };
 
@@ -591,7 +591,6 @@ fn compile_single_clause(
     let ctx = cranelisp_types::CompileContext {
         module: tc.current_module_path().clone(),
         strategy: cranelisp_types::ModuleStrategy::Additive,
-        compile_mode: cranelisp_types::CompileMode::Batch,
         codegen_target: cranelisp_types::CodegenTarget::JitAndCache,
     };
     let check = tc.check(&program, &ctx)?;
@@ -623,7 +622,6 @@ fn compile_single_clause(
     // causing use-after-free on unmarshal.
     let mut compile_ctx = jit.build_compile_context(
         &check,
-        CompileMode::Batch,
         &func_ids,
         &func_arities,
         None,

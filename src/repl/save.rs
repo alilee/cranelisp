@@ -617,6 +617,7 @@ mod tests {
             mod_decls: vec![],
             import_specs: vec![],
             export_specs: vec![],
+            platform_specs: vec![],
             impl_sexps: vec![],
             impls: vec![],
             dll_path: None,

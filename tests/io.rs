@@ -58,23 +58,16 @@ fn io_pure_string() {
     cranelisp_runtime::heap_dealloc(value);
 }
 
-// spec: 10-io §10.1 — Pure in both batch and interactive modes
+// spec: 10-io §10.1 — Pure in batch mode
 #[test]
 fn io_pure_both_modes() {
     let src = "(defn main [] (Pure 99))";
-    let batch = cranelisp::pipeline::compile_and_run(src, cranelisp_types::CompileMode::Batch)
+    let result = cranelisp::pipeline::compile_and_run(src)
         .unwrap_or_else(|e| panic!("batch failed: {e}"));
-    assert!(batch.ty.is_io());
-    let batch_inner = cranelisp_runtime::run_io_trampoline(batch.value);
-    assert_eq!(batch_inner, 99);
-    cranelisp_runtime::heap_dealloc(batch.value);
-
-    let interactive = cranelisp::pipeline::compile_and_run(src, cranelisp_types::CompileMode::Interactive)
-        .unwrap_or_else(|e| panic!("interactive failed: {e}"));
-    assert!(interactive.ty.is_io());
-    let interactive_inner = cranelisp_runtime::run_io_trampoline(interactive.value);
-    assert_eq!(interactive_inner, 99);
-    cranelisp_runtime::heap_dealloc(interactive.value);
+    assert!(result.ty.is_io());
+    let inner = cranelisp_runtime::run_io_trampoline(result.value);
+    assert_eq!(inner, 99);
+    cranelisp_runtime::heap_dealloc(result.value);
 }
 
 // =============================================================================
@@ -308,7 +301,6 @@ fn io_neg_bind_not_constructable() {
     // Verify that Bind produces an error, not a value.
     let result = cranelisp::pipeline::compile_and_run(
         "(defn main [] (Bind (Pure 1) (fn [x] (Pure x))))",
-        cranelisp_types::CompileMode::Batch,
     );
     assert!(result.is_err(), "Bind constructor should be rejected");
     let err = result.err().unwrap();
@@ -326,7 +318,6 @@ fn io_neg_bind_not_matchable() {
         r#"(defn main []
           (let [io (Pure 42)]
             (match io [(Bind i c) 0 (Pure x) x])))"#,
-        cranelisp_types::CompileMode::Batch,
     );
     assert!(result.is_err(), "matching on Bind should be rejected");
     let err = result.err().unwrap();
@@ -676,7 +667,7 @@ fn io_platform_nonexistent_error() {
         (platform nonexistent_platform_xyz)
         (defn main [] (Pure 0))
     "#;
-    let result = cranelisp::pipeline::compile_and_run(src, cranelisp_types::CompileMode::Batch);
+    let result = cranelisp::pipeline::compile_and_run(src);
     assert!(result.is_err(), "platform form in simple pipeline should produce an error");
 }
 
@@ -688,7 +679,7 @@ fn io_platform_missing_name_error() {
         (platform)
         (defn main [] (Pure 0))
     "#;
-    let result = cranelisp::pipeline::compile_and_run(src, cranelisp_types::CompileMode::Batch);
+    let result = cranelisp::pipeline::compile_and_run(src);
     // This should either be silently ignored (no platform loaded) or produce an error.
     // Per the spec, platform takes a bare symbol name, so no-arg is invalid.
     // The actual behavior depends on whether scan_for_platform_decls rejects it.
@@ -724,7 +715,7 @@ fn io_platform_non_entry_module_error() {
         (mod sub (platform stdio))
         (defn main [] (Pure 0))
     "#;
-    let result = cranelisp::pipeline::compile_and_run(src, cranelisp_types::CompileMode::Batch);
+    let result = cranelisp::pipeline::compile_and_run(src);
     // With the v2 pipeline, (mod sub ...) is extracted in Stage 2.
     // The inline content is not compiled (no file for sub module).
     // main compiles and returns Pure(0) = 0.
@@ -739,7 +730,7 @@ fn io_platform_non_entry_module_error() {
 #[test]
 fn io_batch_main_returns_io() {
     let src = "(defn main [] (Pure 42))";
-    let result = cranelisp::pipeline::compile_and_run(src, cranelisp_types::CompileMode::Batch)
+    let result = cranelisp::pipeline::compile_and_run(src)
         .unwrap_or_else(|e| panic!("batch IO main failed: {e}"));
     assert!(result.ty.is_io(), "main should return IO type");
 }
@@ -748,7 +739,7 @@ fn io_batch_main_returns_io() {
 #[test]
 fn io_batch_exit_code_from_pure() {
     let src = "(defn main [] (Pure 0))";
-    let result = cranelisp::pipeline::compile_and_run(src, cranelisp_types::CompileMode::Batch)
+    let result = cranelisp::pipeline::compile_and_run(src)
         .unwrap_or_else(|e| panic!("batch failed: {e}"));
     let exit_code = cranelisp_runtime::run_io_trampoline(result.value);
     assert_eq!(exit_code, 0);
@@ -759,7 +750,7 @@ fn io_batch_exit_code_from_pure() {
 #[test]
 fn io_batch_exit_code_nonzero() {
     let src = "(defn main [] (Pure 1))";
-    let result = cranelisp::pipeline::compile_and_run(src, cranelisp_types::CompileMode::Batch)
+    let result = cranelisp::pipeline::compile_and_run(src)
         .unwrap_or_else(|e| panic!("batch failed: {e}"));
     let exit_code = cranelisp_runtime::run_io_trampoline(result.value);
     assert_eq!(exit_code, 1);
@@ -773,7 +764,7 @@ fn io_batch_exit_code_from_bind() {
         (defn main []
           (bind (Pure 10) (fn [x] (Pure (primitives/add-i64 x 32)))))
     "#;
-    let result = cranelisp::pipeline::compile_and_run(src, cranelisp_types::CompileMode::Batch)
+    let result = cranelisp::pipeline::compile_and_run(src)
         .unwrap_or_else(|e| panic!("batch failed: {e}"));
     let exit_code = cranelisp_runtime::run_io_trampoline(result.value);
     assert_eq!(exit_code, 42);
@@ -1243,7 +1234,7 @@ fn io_neg_pure_function_cannot_call_io() {
         (defn main [] (add-i64 (bad) 1))
     "#;
     // bad returns IO Int, add-i64 expects Int — type mismatch.
-    let result = cranelisp::pipeline::compile_and_run(src, cranelisp_types::CompileMode::Batch);
+    let result = cranelisp::pipeline::compile_and_run(src);
     assert!(result.is_err(), "mixing IO and pure should be a type error");
 }
 
@@ -1254,7 +1245,7 @@ fn io_neg_bind_first_arg_must_be_io() {
     let src = r#"
         (defn main [] (bind 42 (fn [x] (Pure x))))
     "#;
-    let result = cranelisp::pipeline::compile_and_run(src, cranelisp_types::CompileMode::Batch);
+    let result = cranelisp::pipeline::compile_and_run(src);
     assert!(result.is_err(), "bind with non-IO first arg should be a type error");
 }
 
@@ -1264,7 +1255,7 @@ fn io_neg_bind_second_arg_must_be_function() {
     let src = r#"
         (defn main [] (bind (Pure 42) 99))
     "#;
-    let result = cranelisp::pipeline::compile_and_run(src, cranelisp_types::CompileMode::Batch);
+    let result = cranelisp::pipeline::compile_and_run(src);
     assert!(result.is_err(), "bind with non-function second arg should be a type error");
 }
 
@@ -1275,7 +1266,7 @@ fn io_neg_bind_continuation_must_return_io() {
     let src = r#"
         (defn main [] (bind (Pure 42) (fn [x] x)))
     "#;
-    let result = cranelisp::pipeline::compile_and_run(src, cranelisp_types::CompileMode::Batch);
+    let result = cranelisp::pipeline::compile_and_run(src);
     assert!(result.is_err(), "bind continuation returning non-IO should be a type error");
 }
 

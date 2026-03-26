@@ -15,7 +15,7 @@ use cranelift_jit::{JITBuilder, JITModule};
 use cranelift_module::{FuncId, Linkage, Module};
 
 use cranelisp_types::{
-    CheckResult, CompileMode, CranelispError, Defn, Span, Symbol,
+    CheckResult, CranelispError, Defn, Span, Symbol,
 };
 
 use crate::compiler::{CompileContext, CrossModuleGot, FnCompiler};
@@ -391,7 +391,6 @@ impl Jit {
     pub fn build_compile_context<'a>(
         &self,
         check: &'a CheckResult,
-        mode: CompileMode,
         func_ids: &'a HashMap<Symbol, FuncId>,
         func_arities: &'a HashMap<Symbol, usize>,
         got_slots: Option<&'a HashMap<Symbol, usize>>,
@@ -403,7 +402,6 @@ impl Jit {
             expr_types: &check.expr_types,
             func_ids,
             func_arities,
-            mode,
             type_defs: &check.type_defs,
             constructor_to_type: &check.constructor_to_type,
             got_slots,
@@ -687,7 +685,6 @@ mod tests {
 
         let ctx = jit.build_compile_context(
             &check,
-            CompileMode::Interactive,
             &func_ids,
             &func_arities,
             None,
@@ -699,7 +696,6 @@ mod tests {
         // Build without cross-module GOT.
         let ctx2 = jit.build_compile_context(
             &check,
-            CompileMode::Batch,
             &func_ids,
             &func_arities,
             None,

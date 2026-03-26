@@ -1790,7 +1790,7 @@ fn error_nested_pattern() {
         (defn main [] (bad None))
     ";
     // Should fail during compilation — nested patterns aren't supported.
-    let result = cranelisp::pipeline::compile_and_run(src, cranelisp_types::CompileMode::Batch);
+    let result = cranelisp::pipeline::compile_and_run(src);
     assert!(result.is_err(), "nested pattern should be rejected");
 }
 
@@ -1971,7 +1971,7 @@ fn neg_nested_pattern_rejected() {
      None 0]))
 (defn main [] (bad None))
 "#;
-    let result = cranelisp::pipeline::compile_and_run(src, cranelisp_types::CompileMode::Batch);
+    let result = cranelisp::pipeline::compile_and_run(src);
     assert!(
         result.is_err(),
         "nested constructor pattern MUST be rejected"
@@ -1988,7 +1988,7 @@ fn neg_pattern_wrong_binding_count() {
   (match (Point 3 4)
     [(Point x) x]))
 "#;
-    let result = cranelisp::pipeline::compile_and_run(src, cranelisp_types::CompileMode::Batch);
+    let result = cranelisp::pipeline::compile_and_run(src);
     assert!(
         result.is_err(),
         "constructor pattern with too few bindings MUST be rejected"
@@ -2005,7 +2005,7 @@ fn neg_pattern_too_many_bindings() {
   (match (Point 3 4)
     [(Point a b c) a]))
 "#;
-    let result = cranelisp::pipeline::compile_and_run(src, cranelisp_types::CompileMode::Batch);
+    let result = cranelisp::pipeline::compile_and_run(src);
     assert!(
         result.is_err(),
         "constructor pattern with too many bindings MUST be rejected"

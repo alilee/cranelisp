@@ -8,7 +8,7 @@ use std::path::PathBuf;
 
 use cranelisp_types::{
     CranelispError, ExportSpec, ImportNames, ImportSpec, ModDecl, ModuleFullPath, ModuleName,
-    ModuleStructure, Sexp, Span,
+    ModuleStructure, PlatformSpec, Sexp, Span,
 };
 
 /// Extract module declarations from top-level S-expressions.
@@ -25,6 +25,7 @@ pub fn extract_module_declarations(
     let mut mod_decls = Vec::new();
     let mut import_specs = Vec::new();
     let mut export_specs = Vec::new();
+    let mut platform_specs = Vec::new();
     let mut remaining = Vec::new();
 
     for sexp in sexps {
@@ -47,6 +48,11 @@ pub fn extract_module_declarations(
                             export_specs.extend(specs);
                             continue;
                         }
+                        "platform" => {
+                            let spec = parse_platform(elems, *span)?;
+                            platform_specs.push(spec);
+                            continue;
+                        }
                         _ => {}
                     }
                 }
@@ -62,6 +68,7 @@ pub fn extract_module_declarations(
         mod_decls,
         import_specs,
         export_specs,
+        platform_specs,
         impl_sexps: Vec::new(),
         impls: Vec::new(),
         dll_path: None,
@@ -297,6 +304,25 @@ fn parse_export_entries(items: &[Sexp], form_span: Span) -> Result<Vec<ExportSpe
     }
 
     Ok(specs)
+}
+
+// ---------------------------------------------------------------------------
+// platform parsing
+// ---------------------------------------------------------------------------
+
+/// Parse `(platform name)` into a `PlatformSpec`.
+fn parse_platform(elems: &[Sexp], span: Span) -> Result<PlatformSpec, CranelispError> {
+    if elems.len() != 2 {
+        return Err(CranelispError::ModuleError {
+            message: "platform declaration requires exactly one name argument".to_string(),
+            file: None,
+            span,
+        });
+    }
+
+    let name = expect_symbol(&elems[1], "platform declaration name")?;
+
+    Ok(PlatformSpec { name, span })
 }
 
 // ---------------------------------------------------------------------------
@@ -598,5 +624,62 @@ mod tests {
         assert_eq!(ms.import_specs.len(), 2);
         assert_eq!(&*ms.import_specs[0].module_path, "core.option");
         assert_eq!(&*ms.import_specs[1].module_path, "core.math");
+    }
+
+    // -- platform declarations --
+
+    // spec: 10-io §10.9.1 — platform declaration extracted from top-level forms
+    #[test]
+    fn test_platform_extracted() {
+        let (ms, remaining) = extract("(platform stdio)");
+        assert_eq!(ms.platform_specs.len(), 1);
+        assert_eq!(ms.platform_specs[0].name, "stdio");
+        assert!(remaining.is_empty());
+    }
+
+    // spec: 10-io §10.9.1 — multiple platform declarations accumulate
+    #[test]
+    fn test_multiple_platforms() {
+        let src = r#"
+            (platform stdio)
+            (platform network)
+            (defn main [] 42)
+        "#;
+        let (ms, remaining) = extract(src);
+        assert_eq!(ms.platform_specs.len(), 2);
+        assert_eq!(ms.platform_specs[0].name, "stdio");
+        assert_eq!(ms.platform_specs[1].name, "network");
+        assert_eq!(remaining.len(), 1); // defn passes through
+    }
+
+    // spec: 10-io §10.9.1 — platform with wrong arity is an error
+    #[test]
+    fn test_platform_wrong_arity() {
+        let sexps = parse("(platform)");
+        let result = extract_module_declarations(
+            ModuleFullPath::from("test"),
+            None,
+            sexps,
+        );
+        assert!(result.is_err());
+    }
+
+    // spec: 10-io §10.9.1 — platform forms don't appear in remaining sexps
+    #[test]
+    fn test_platform_not_in_remaining() {
+        let src = "(platform stdio) (defn main [] 42)";
+        let (ms, remaining) = extract(src);
+        assert_eq!(ms.platform_specs.len(), 1);
+        assert_eq!(remaining.len(), 1);
+        // Verify the remaining form is the defn, not the platform
+        if let Sexp::List(elems, _) = &remaining[0] {
+            if let Sexp::Symbol(head, _) = &elems[0] {
+                assert_eq!(head.as_str(), "defn");
+            } else {
+                panic!("expected defn symbol");
+            }
+        } else {
+            panic!("expected list form");
+        }
     }
 }

@@ -13,7 +13,7 @@ use cranelisp_backend::display;
 use cranelisp_backend::got::ModuleCodegenState;
 use cranelisp_backend::jit::Jit;
 use cranelisp_types::{
-    CompileMode, CranelispError, Defn, DefnVariant, Expr, ModuleFullPath, Symbol, Type,
+    CranelispError, Defn, DefnVariant, Expr, ModuleFullPath, Symbol, Type,
     TypeDefInfo, TypeName, Visibility,
 };
 
@@ -211,7 +211,6 @@ pub(crate) fn compile_expr_with_traced_fns(
 
     let mut compile_ctx = jit.build_compile_context(
         check,
-        CompileMode::Interactive,
         &func_ids,
         &func_arities,
         got_slots.as_ref(),

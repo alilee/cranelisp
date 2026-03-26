@@ -13,7 +13,7 @@ use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 
 use cranelisp_types::{
-    CheckResult, CompileContext, CompileMode, CranelispError, Defn, MacroClauseInfo, ModuleEntry,
+    CheckResult, CompileContext, CranelispError, Defn, MacroClauseInfo, ModuleEntry,
     ModuleFullPath, ModuleStrategy, ModuleStructure, Program, Sexp, Span, Symbol,
     Type, Visibility, Warning,
 };
@@ -274,6 +274,16 @@ pub struct CompilationSession {
     /// Queue of compilation units awaiting object-file codegen (.o emission).
     /// Drained synchronously by `flush_object_queue()`.
     pub object_queue: Vec<crate::pipeline_v2::CodegenItem>,
+    /// Whether this session uses GOT-indirect calls (interactive/REPL mode).
+    /// When false, codegen uses direct calls (batch mode).
+    /// Set by callers that need GOT-based compilation (REPL, --run).
+    pub interactive: bool,
+    /// Project root directory for platform DLL path resolution.
+    /// Set by callers (batch, link, REPL) before compilation.
+    pub project_root: PathBuf,
+    /// Loaded platform DLL handles. Must remain alive for the process lifetime
+    /// so that function pointers into the DLL code segments stay valid.
+    pub loaded_platforms: Vec<crate::platform::LoadedPlatform>,
 }
 
 impl CompilationSession {
@@ -302,6 +312,9 @@ impl CompilationSession {
             cross_module_func_sigs: Vec::new(),
             inmem_queue: Vec::new(),
             object_queue: Vec::new(),
+            interactive: false,
+            project_root: PathBuf::from("."),
+            loaded_platforms: Vec::new(),
         }
     }
 
@@ -544,7 +557,6 @@ impl CompilationSession {
         // Compile the function with awareness of existing GOT.
         let compile_ctx = jit.build_compile_context(
             check,
-            CompileMode::Interactive,
             &func_ids,
             &func_arities,
             Some(&got_slots),
@@ -620,7 +632,6 @@ impl CompilationSession {
         let module_info = cranelisp_backend::compile_module_program(
             program,
             check,
-            CompileMode::Batch,
             &mut jit,
             &self.func_sigs,
             module_path.as_ref(),
@@ -969,13 +980,11 @@ pub struct PipelineResult {
 /// interface used by 449+ test call sites. Creates a fresh session per call.
 pub fn compile_and_run(
     source: &str,
-    mode: CompileMode,
 ) -> Result<PipelineResult, CranelispError> {
     let mut session = CompilationSession::new();
     let ctx = CompileContext {
         module: ModuleFullPath::from("user"),
         strategy: ModuleStrategy::Additive,
-        compile_mode: mode,
         codegen_target: cranelisp_types::CodegenTarget::JitAndCache,
     };
     let unit_result = crate::pipeline_v2::compile_unit(&mut session, source, &ctx)?;
@@ -1048,18 +1057,6 @@ pub struct ModuleGraph {
     pub project_root: PathBuf,
     /// Library directories for module resolution (searched in order after project root).
     pub lib_dirs: Vec<PathBuf>,
-}
-
-/// Result of compiling a module graph for linking (no execution).
-pub struct LinkCompileResult {
-    /// All module `.o` file paths in the cache, in topological order.
-    pub module_o_paths: Vec<PathBuf>,
-    /// The entry module's symbol table (for `validate_main`).
-    pub entry_symbols: cranelisp_types::SymbolTable,
-    /// Module structures from the graph (for platform rlib discovery).
-    pub module_structures: Vec<(ModuleFullPath, cranelisp_types::ModuleStructure)>,
-    /// Non-fatal warnings accumulated during compilation.
-    pub warnings: Vec<Warning>,
 }
 
 /// Result of compiling a multi-file module graph (compile + execute).
@@ -2243,7 +2240,6 @@ pub fn load_module_into_session(
         let ctx = CompileContext {
             module: module_path.clone(),
             strategy: ModuleStrategy::Additive,
-            compile_mode: CompileMode::Interactive,
             codegen_target: cranelisp_types::CodegenTarget::JitAndCache,
         };
         let check = session.tc.check(&program, &ctx)?;
@@ -2446,7 +2442,6 @@ pub fn load_prelude_into_session(
         let ctx = CompileContext {
             module: module_path.clone(),
             strategy: ModuleStrategy::Additive,
-            compile_mode: CompileMode::Batch,
             codegen_target: cranelisp_types::CodegenTarget::JitAndCache,
         };
         let check = session.tc.check(&program, &ctx)?;
@@ -2653,7 +2648,6 @@ fn compile_single_module(
     let ctx = CompileContext {
         module: module_path.clone(),
         strategy: ModuleStrategy::Additive,
-        compile_mode: CompileMode::Batch,
         codegen_target: cranelisp_types::CodegenTarget::JitAndCache,
     };
     let check = session.tc.check(&program, &ctx)?;
@@ -3101,27 +3095,29 @@ mod tests {
 
     #[test]
     fn test_pipeline_simple_int() {
-        let result = compile_and_run("(defn main [] 42)", CompileMode::Batch).unwrap();
+        let result = compile_and_run("(defn main [] 42)").unwrap();
         assert_eq!(result.value, 42);
         assert_eq!(result.ty, Type::Int);
     }
 
     #[test]
     fn test_pipeline_bool_true() {
-        let result = compile_and_run("(defn main [] true)", CompileMode::Batch).unwrap();
+        let result = compile_and_run("(defn main [] true)").unwrap();
         assert_eq!(result.value, 1);
         assert_eq!(result.ty, Type::Bool);
     }
 
     #[test]
     fn test_pipeline_parse_error() {
-        let result = compile_and_run("(defn main [] ", CompileMode::Batch);
+        let result = compile_and_run("(defn main [] ");
         assert!(result.is_err());
     }
 
     #[test]
-    fn test_pipeline_interactive_mode() {
-        let result = compile_and_run("(defn main [] 42)", CompileMode::Interactive).unwrap();
+    fn test_pipeline_returns_correct_value() {
+        // Previously tested CompileMode::Interactive; after CompileMode removal
+        // compile_and_run always uses batch codegen (direct calls, no GOT).
+        let result = compile_and_run("(defn main [] 42)").unwrap();
         assert_eq!(result.value, 42);
     }
 
@@ -3441,7 +3437,7 @@ mod tests {
             (defmacro id [x] x)
             (defn main [] (id 42))
         "#;
-        let result = compile_and_run(source, CompileMode::Batch).unwrap();
+        let result = compile_and_run(source).unwrap();
         assert_eq!(result.value, 42);
     }
 
@@ -3452,7 +3448,7 @@ mod tests {
             (defmacro inc1 [x] `(primitives/add-i64 1 ~x))
             (defn main [] (inc1 41))
         "#;
-        let result = compile_and_run(source, CompileMode::Batch).unwrap();
+        let result = compile_and_run(source).unwrap();
         assert_eq!(result.value, 42);
     }
 
@@ -3464,7 +3460,7 @@ mod tests {
             (defmacro id2 [x] (id x))
             (defn main [] (id2 99))
         "#;
-        let result = compile_and_run(source, CompileMode::Batch).unwrap();
+        let result = compile_and_run(source).unwrap();
         assert_eq!(result.value, 99);
     }
 
@@ -3475,7 +3471,7 @@ mod tests {
             (defmacro pick ([x] x) ([x y] x))
             (defn main [] (pick 77))
         "#;
-        let result = compile_and_run(source, CompileMode::Batch).unwrap();
+        let result = compile_and_run(source).unwrap();
         assert_eq!(result.value, 77);
     }
 
@@ -3483,7 +3479,7 @@ mod tests {
     #[test]
     fn test_batch_no_macros_unchanged() {
         let source = "(defn main [] (primitives/add-i64 1 2))";
-        let result = compile_and_run(source, CompileMode::Batch).unwrap();
+        let result = compile_and_run(source).unwrap();
         assert_eq!(result.value, 3);
     }
 

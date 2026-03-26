@@ -2678,7 +2678,6 @@ mod tests {
         CompileContext {
             module: ModuleFullPath::from("test"),
             strategy: cranelisp_types::ModuleStrategy::Additive,
-            compile_mode: cranelisp_types::CompileMode::Batch,
             codegen_target: cranelisp_types::CodegenTarget::JitAndCache,
         }
     }

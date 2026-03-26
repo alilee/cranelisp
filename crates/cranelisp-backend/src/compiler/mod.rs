@@ -18,7 +18,7 @@ use cranelift::prelude::*;
 use cranelift_module::{FuncId, Module};
 
 use cranelisp_types::{
-    CompileMode, ConstructorInfo, CranelispError, Defn, Expr, HeapCategory, ModuleFullPath,
+    ConstructorInfo, CranelispError, Defn, Expr, HeapCategory, ModuleFullPath,
     ResolvedCall, Span, Symbol, Type, TypeDefInfo, TypeName,
 };
 
@@ -84,8 +84,6 @@ pub struct CompileContext<'a> {
     pub func_ids: &'a HashMap<Symbol, FuncId>,
     /// Function parameter counts, for generating closure wrappers.
     pub func_arities: &'a HashMap<Symbol, usize>,
-    /// Compilation mode (Batch or Interactive).
-    pub mode: CompileMode,
     /// Type definitions for ADT codegen.
     pub type_defs: &'a HashMap<TypeName, TypeDefInfo>,
     /// Constructor name -> parent type name mapping.

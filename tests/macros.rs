@@ -188,13 +188,12 @@ fn repl_error_recovery_no_partial_macro() {
 #[test]
 fn batch_defmacro_simple() {
     use cranelisp::pipeline;
-    use cranelisp_types::CompileMode;
 
     let src = r#"
 (defmacro double [x] `(primitives/add-i64 ~x ~x))
 (defn main [] (double 21))
 "#;
-    let result = pipeline::compile_and_run(src, CompileMode::Batch).unwrap();
+    let result = pipeline::compile_and_run(src).unwrap();
     assert_eq!(result.value, 42);
 }
 
@@ -202,13 +201,12 @@ fn batch_defmacro_simple() {
 #[test]
 fn batch_defmacro_quasiquote() {
     use cranelisp::pipeline;
-    use cranelisp_types::CompileMode;
 
     let src = r#"
 (defmacro inc [x] `(primitives/add-i64 ~x 1))
 (defn main [] (inc 41))
 "#;
-    let result = pipeline::compile_and_run(src, CompileMode::Batch).unwrap();
+    let result = pipeline::compile_and_run(src).unwrap();
     assert_eq!(result.value, 42);
 }
 
@@ -216,13 +214,12 @@ fn batch_defmacro_quasiquote() {
 #[test]
 fn batch_defmacro_multi_clause() {
     use cranelisp::pipeline;
-    use cranelisp_types::CompileMode;
 
     let src = r#"
 (defmacro choose ([x] x) ([x y] `(primitives/add-i64 ~x ~y)))
 (defn main [] (choose 20 22))
 "#;
-    let result = pipeline::compile_and_run(src, CompileMode::Batch).unwrap();
+    let result = pipeline::compile_and_run(src).unwrap();
     assert_eq!(result.value, 42);
 }
 
@@ -230,7 +227,6 @@ fn batch_defmacro_multi_clause() {
 #[test]
 fn batch_defmacro_begin_splicing() {
     use cranelisp::pipeline;
-    use cranelisp_types::CompileMode;
 
     let src = r#"
 (defmacro define-pair [name a b]
@@ -239,7 +235,7 @@ fn batch_defmacro_begin_splicing() {
 (define-pair add-them 20 22)
 (defn main [] (add-them))
 "#;
-    let result = pipeline::compile_and_run(src, CompileMode::Batch).unwrap();
+    let result = pipeline::compile_and_run(src).unwrap();
     assert_eq!(result.value, 42);
 }
 
@@ -247,14 +243,13 @@ fn batch_defmacro_begin_splicing() {
 #[test]
 fn batch_macro_uses_earlier_macro() {
     use cranelisp::pipeline;
-    use cranelisp_types::CompileMode;
 
     let src = r#"
 (defmacro inc [x] `(primitives/add-i64 ~x 1))
 (defmacro inc2 [x] `(inc (inc ~x)))
 (defn main [] (inc2 40))
 "#;
-    let result = pipeline::compile_and_run(src, CompileMode::Batch).unwrap();
+    let result = pipeline::compile_and_run(src).unwrap();
     assert_eq!(result.value, 42);
 }
 
@@ -262,13 +257,12 @@ fn batch_macro_uses_earlier_macro() {
 #[test]
 fn batch_defmacro_identity() {
     use cranelisp::pipeline;
-    use cranelisp_types::CompileMode;
 
     let src = r#"
 (defmacro id [x] x)
 (defn main [] (id 42))
 "#;
-    let result = pipeline::compile_and_run(src, CompileMode::Batch).unwrap();
+    let result = pipeline::compile_and_run(src).unwrap();
     assert_eq!(result.value, 42);
 }
 
@@ -320,9 +314,8 @@ fn repl_multiple_macros_sequential() {
 #[test]
 fn batch_defmacro_parse_error() {
     use cranelisp::pipeline;
-    use cranelisp_types::CompileMode;
 
-    let result = pipeline::compile_and_run("(defmacro bad)", CompileMode::Batch);
+    let result = pipeline::compile_and_run("(defmacro bad)");
     assert!(result.is_err());
 }
 
@@ -330,9 +323,8 @@ fn batch_defmacro_parse_error() {
 #[test]
 fn batch_defmacro_name_error() {
     use cranelisp::pipeline;
-    use cranelisp_types::CompileMode;
 
-    let result = pipeline::compile_and_run("(defmacro 42 [x] x)", CompileMode::Batch);
+    let result = pipeline::compile_and_run("(defmacro 42 [x] x)");
     assert!(result.is_err());
 }
 
@@ -346,14 +338,13 @@ fn batch_defmacro_name_error() {
 #[test]
 fn neg_macro_non_sexp_return_type_batch() {
     use cranelisp::pipeline;
-    use cranelisp_types::CompileMode;
 
     // Macro body returns Int (42) instead of Sexp — should fail at typecheck.
     let src = r#"
 (defmacro bad [x] 42)
 (defn main [] (bad 1))
 "#;
-    let result = pipeline::compile_and_run(src, CompileMode::Batch);
+    let result = pipeline::compile_and_run(src);
     assert!(
         result.is_err(),
         "macro returning non-Sexp should produce a compile error"
@@ -376,14 +367,13 @@ fn neg_macro_non_sexp_return_type_repl() {
 #[test]
 fn neg_macro_non_sexp_return_bool_batch() {
     use cranelisp::pipeline;
-    use cranelisp_types::CompileMode;
 
     // Macro body returns Bool — not Sexp.
     let src = r#"
 (defmacro bad [x] true)
 (defn main [] (bad 1))
 "#;
-    let result = pipeline::compile_and_run(src, CompileMode::Batch);
+    let result = pipeline::compile_and_run(src);
     assert!(
         result.is_err(),
         "macro returning Bool should produce a compile error"

@@ -15,7 +15,7 @@ use cranelift::codegen::ir::{StackSlotData, StackSlotKind};
 use cranelift::prelude::*;
 use cranelift_module::{FuncId, Linkage, Module};
 
-use cranelisp_types::{CompileMode, CranelispError, Expr, Span, Symbol};
+use cranelisp_types::{CranelispError, Expr, Span, Symbol};
 
 use crate::heap::{self, HeapAdt};
 
@@ -66,7 +66,7 @@ impl<'a, M: Module> FnCompiler<'a, M> {
     ) -> Result<Value, CranelispError> {
         // In batch mode there is no per-module GOT, so tracing is unavailable.
         // Fall back to evaluating the body and returning an empty TraceCall.
-        if matches!(self.ctx.mode, CompileMode::Batch) {
+        if self.ctx.got_slots.is_none() {
             return self.compile_trace_no_swap(body, span);
         }
 
@@ -422,7 +422,7 @@ impl<'a, M: Module> FnCompiler<'a, M> {
         span: Span,
     ) -> Result<Value, CranelispError> {
         // Batch mode: no GOT available, return init unchanged.
-        if matches!(self.ctx.mode, CompileMode::Batch) {
+        if self.ctx.got_slots.is_none() {
             return self.compile_expr(init);
         }
 

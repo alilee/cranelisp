@@ -1735,7 +1735,7 @@ fn synthetic_primitives_bare_without_import_fails_repl() {
 fn synthetic_primitives_bare_without_import_fails_batch() {
     // Bare `add-i64` with no import MUST fail in batch mode.
     let src = "(defn main [] (add-i64 2 3))";
-    let result = cranelisp::pipeline::compile_and_run(src, cranelisp_types::CompileMode::Batch);
+    let result = cranelisp::pipeline::compile_and_run(src);
     assert!(
         result.is_err(),
         "bare primitive without import MUST fail"
@@ -2106,7 +2106,7 @@ fn neg_occurs_check_infinite_type() {
 (defn apply-self [x] (x x))
 (defn main [] (apply-self apply-self))
 "#;
-    let result = cranelisp::pipeline::compile_and_run(src, cranelisp_types::CompileMode::Batch);
+    let result = cranelisp::pipeline::compile_and_run(src);
     assert!(
         result.is_err(),
         "infinite type (occurs check) MUST produce a type error"
@@ -2126,7 +2126,7 @@ fn neg_constrained_fn_in_closure() {
 (defn main [] (let [f add] (f 1 2)))
 "#
     );
-    let result = cranelisp::pipeline::compile_and_run(src, cranelisp_types::CompileMode::Batch);
+    let result = cranelisp::pipeline::compile_and_run(src);
     // This may either error at typecheck (cannot use constrained fn as value)
     // or at codegen. Either way, it must not succeed silently.
     assert!(
@@ -2147,7 +2147,7 @@ fn neg_hkt_impl_primitive_type_rejected() {
   (defn fmap [f x] x))
 (defn main [] 1)
 "#;
-    let result = cranelisp::pipeline::compile_and_run(src, cranelisp_types::CompileMode::Batch);
+    let result = cranelisp::pipeline::compile_and_run(src);
     assert!(
         result.is_err(),
         "implementing HKT trait on primitive type MUST be rejected"
@@ -2167,7 +2167,7 @@ fn neg_impl_missing_method_errors() {
   (defn size [b] 1))
 (defn main [] (size (Box 42)))
 "#;
-    let result = cranelisp::pipeline::compile_and_run(src, cranelisp_types::CompileMode::Batch);
+    let result = cranelisp::pipeline::compile_and_run(src);
     assert!(
         result.is_err(),
         "impl block missing required method MUST produce an error"
@@ -2189,7 +2189,7 @@ fn neg_type_mismatch_fn_arity() {
 (defn f [x y] (add-i64 x y))
 (defn main [] (f 1 2 3))
 "#;
-    let result = cranelisp::pipeline::compile_and_run(src, cranelisp_types::CompileMode::Batch);
+    let result = cranelisp::pipeline::compile_and_run(src);
     assert!(
         result.is_err(),
         "calling function with wrong number of args MUST error"
@@ -2206,7 +2206,7 @@ fn neg_multi_sig_bare_value_errors() {
   ([:Int x :Int y] (add-i64 x y)))
 (defn main [] (let [f choose] (f 1)))
 "#;
-    let result = cranelisp::pipeline::compile_and_run(src, cranelisp_types::CompileMode::Batch);
+    let result = cranelisp::pipeline::compile_and_run(src);
     assert!(
         result.is_err(),
         "multi-sig function used as bare value MUST error"

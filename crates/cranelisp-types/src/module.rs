@@ -220,6 +220,15 @@ pub struct ImplSexp {
     pub sexp: Sexp,
 }
 
+// --- Platform Declarations ---
+
+/// A `(platform name)` declaration extracted from top-level forms.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PlatformSpec {
+    pub name: String,
+    pub span: Span,
+}
+
 // --- Module Declarations ---
 
 /// A parsed `(mod name)` or `(mod- name)` declaration.
@@ -241,6 +250,7 @@ pub struct ModuleStructure {
     pub mod_decls: Vec<ModDecl>,
     pub import_specs: Vec<ImportSpec>,
     pub export_specs: Vec<ExportSpec>,
+    pub platform_specs: Vec<PlatformSpec>,
     pub impl_sexps: Vec<ImplSexp>,
     pub impls: Vec<TraitImpl>,
     pub dll_path: Option<PathBuf>,

@@ -29,11 +29,12 @@ pub use check::{
 };
 pub use module::{
     ConstrainedFn, DefKind, ExportSpec, ImplSexp, ImportNames, ImportSpec, MacroClauseInfo,
-    MacroParam, ModDecl, ModuleEntry, ModuleStructure, OverloadVariant, PrimitiveKind, SymbolTable,
+    MacroParam, ModDecl, ModuleEntry, ModuleStructure, OverloadVariant, PlatformSpec, PrimitiveKind,
+    SymbolTable,
 };
 pub use heap::{HeapCategory, HeapHeader};
 pub use pipeline::{
-    CallEdge, CallGraph, CallInfo, CodegenTarget, CompileContext, CompileMode, CompileResult,
+    CallEdge, CallGraph, CallInfo, CodegenTarget, CompileContext, CompileResult,
     GOT_TABLE_SIZE, MacroExpander, ModuleStrategy, NoOpExpander, NULLARY_TAG_THRESHOLD,
 };
 pub use operator::{ring0_primitives, ring1_primitives, ring3_primitives, PrimitiveDef};

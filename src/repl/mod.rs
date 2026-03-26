@@ -36,7 +36,7 @@ use cranelisp_backend::compiler::TracedFnInfo;
 use cranelisp_backend::display;
 use cranelisp_backend::jit::Jit;
 use cranelisp_types::{
-    CheckResult, CompileContext, CompileMode, CranelispError, DefKind, Defn, Expr,
+    CheckResult, CompileContext, CranelispError, DefKind, Defn, Expr,
     ImplSexp, MacroClauseInfo, ModuleEntry, ModuleFullPath, ModuleStrategy,
     ModuleStructure, Sexp, Symbol, TopLevel, Type, TypeDefInfo, TypeName,
     Visibility, Warning,
@@ -131,8 +131,10 @@ impl ReplSession {
     /// Create a new REPL session without prelude loading.
     pub fn new() -> Self {
         let user_module = ModuleFullPath::from("user");
+        let mut core = crate::pipeline::CompilationSession::new();
+        core.interactive = true;
         ReplSession {
-            core: crate::pipeline::CompilationSession::new(),
+            core,
             type_defs: HashMap::new(),
             type_modules: HashMap::new(),
             loaded_platforms: Vec::new(),
@@ -148,6 +150,7 @@ impl ReplSession {
                 mod_decls: vec![],
                 import_specs: vec![],
                 export_specs: vec![],
+                platform_specs: vec![],
                 impl_sexps: vec![],
                 impls: vec![],
                 dll_path: None,
@@ -351,7 +354,6 @@ impl ReplSession {
         let ctx = CompileContext {
             module: self.core.tc.current_module_path().clone(),
             strategy: ModuleStrategy::Additive,
-            compile_mode: CompileMode::Interactive,
             codegen_target: cranelisp_types::CodegenTarget::JitAndCache,
         };
         let check = self.core.tc.check(&program, &ctx)?;
@@ -1281,7 +1283,6 @@ impl ReplSession {
         // Compile the function with awareness of existing GOT.
         let compile_ctx = jit.build_compile_context(
             check,
-            CompileMode::Interactive,
             &func_ids,
             &func_arities,
             Some(&got_slots),
@@ -1323,7 +1324,6 @@ impl ReplSession {
         CompileContext {
             module: self.core.tc.current_module_path().clone(),
             strategy: ModuleStrategy::Additive,
-            compile_mode: CompileMode::Interactive,
             codegen_target: cranelisp_types::CodegenTarget::JitAndCache,
         }
     }
@@ -2152,7 +2152,9 @@ fn handle_reset(session: &mut ReplSession, stdout: &mut impl Write) {
     }
 
     // 1. Clear all session state by re-creating the compilation core.
-    session.core = crate::pipeline::CompilationSession::new();
+    let mut new_core = crate::pipeline::CompilationSession::new();
+    new_core.interactive = true;
+    session.core = new_core;
     session.type_defs.clear();
     session.type_modules.clear();
     session.pending_changes.clear();
@@ -2166,6 +2168,7 @@ fn handle_reset(session: &mut ReplSession, stdout: &mut impl Write) {
         mod_decls: vec![],
         import_specs: vec![],
         export_specs: vec![],
+        platform_specs: vec![],
         impl_sexps: vec![],
         impls: vec![],
         dll_path: None,

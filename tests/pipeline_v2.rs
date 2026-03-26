@@ -23,7 +23,7 @@ use helpers::*;
 use cranelisp::pipeline::CompilationSession;
 use cranelisp::pipeline_v2::{compile_unit, codegen_and_execute};
 use cranelisp_types::{
-    CompileContext, CompileMode, ImportNames, ImportSpec, ModuleFullPath,
+    CompileContext, ImportNames, ImportSpec, ModuleFullPath,
     ModuleStrategy, Span,
 };
 
@@ -54,7 +54,6 @@ fn compile_v2_batch(src: &str) -> i64 {
     let ctx = CompileContext {
         module: ModuleFullPath::from("user"),
         strategy: ModuleStrategy::Additive,
-        compile_mode: CompileMode::Batch,
         codegen_target: cranelisp_types::CodegenTarget::JitAndCache,
     };
     let unit_result = compile_unit(&mut session, src, &ctx)
@@ -65,12 +64,15 @@ fn compile_v2_batch(src: &str) -> i64 {
 }
 
 /// Run source through v2 interactive pipeline, return the i64 result.
+///
+/// Uses the same pipeline as batch — `codegen_and_execute` decides
+/// batch vs interactive based on GOT state, not CompileMode.
 fn compile_v2_interactive(src: &str) -> i64 {
     let mut session = v2_session_with_primitives();
+    session.interactive = true;
     let ctx = CompileContext {
         module: ModuleFullPath::from("user"),
         strategy: ModuleStrategy::Additive,
-        compile_mode: CompileMode::Interactive,
         codegen_target: cranelisp_types::CodegenTarget::JitAndCache,
     };
     let unit_result = compile_unit(&mut session, src, &ctx)

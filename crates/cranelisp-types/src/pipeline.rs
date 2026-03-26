@@ -4,17 +4,6 @@ use serde::{Deserialize, Serialize};
 
 use crate::{CranelispError, ModuleFullPath, Sexp, Span, Symbol};
 
-/// Controls compilation strategy.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CompileMode {
-    /// GOT-indirect calls for hot-reload. Used for REPL and module reloading.
-    Interactive,
-    /// Direct function calls, no GOT indirection. Used for batch compilation and testing.
-    Batch,
-    /// Whole-program optimisation, standalone binary. Ring 4+ / Phase H.
-    Release,
-}
-
 /// What codegen produces in Pass 2. Carried inside `CompileContext`.
 ///
 /// See design/arch/pipeline-v2.md §8.4 for the full design rationale.
@@ -119,8 +108,6 @@ pub struct CompileContext {
     pub module: ModuleFullPath,
     /// Whether to add to or replace existing module state.
     pub strategy: ModuleStrategy,
-    /// Codegen strategy (GOT-indirect vs direct calls).
-    pub compile_mode: CompileMode,
     /// Codegen output target (JIT+cache vs object-only).
     /// Controls what stage 6 produces. See §8.4.
     pub codegen_target: CodegenTarget,

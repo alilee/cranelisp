@@ -7,10 +7,12 @@
 //
 // Stages:
 //   1. Parse:       &str -> Vec<Sexp>
-//   2. Extract:     Vec<Sexp> -> (ModuleStructure, Vec<Sexp>)
-//   2b. Recursive module loading for unresolved imports
-//   2c. Prelude import injection + register imports/exports
-//   2d. Filter platform forms
+//   2a. Extract:    Vec<Sexp> -> (ModuleStructure, Vec<Sexp>)
+//   2b. Auto-prelude trigger (recursive compile_unit for prelude if needed)
+//   2c. Recursive module loading for unresolved imports + exports
+//   2d. (unused — reserved)
+//   2e. Prelude import injection + register imports/exports
+//   2f. Load platform DLLs from module declarations
 //   3. Expand:      Vec<Sexp> -> Vec<Sexp>  (defmacro interception + macro expansion)
 //   4. Build AST:   Vec<Sexp> -> Vec<TopLevel>
 //   4b. Bind chain analysis (auto IO scheduling)
@@ -21,8 +23,8 @@
 use std::path::PathBuf;
 
 use cranelisp_types::{
-    CheckResult, CodegenTarget, CompileContext, CompileMode, CranelispError, ModuleFullPath,
-    ModuleStrategy, Span, Type, Warning,
+    CheckResult, CodegenTarget, CompileContext, CranelispError, ModuleFullPath,
+    ModuleStrategy, Span, Symbol, Type, Warning,
 };
 
 use crate::pipeline::CompilationSession;
@@ -79,7 +81,7 @@ pub struct CodegenResult {
 /// compilation unit. Callers push items to the session's `inmem_queue` or
 /// `object_queue`, then call the corresponding flush method.
 pub struct CodegenItem {
-    /// The compile context (module, strategy, compile mode, codegen target).
+    /// The compile context (module, strategy, codegen target).
     pub ctx: CompileContext,
     /// The stages 1-5 result, ready for codegen.
     pub unit_result: CompileUnitResult,
@@ -162,17 +164,50 @@ fn compile_unit_inner(
         sexps,
     )?;
 
-    // Stage 2b: Recursive module loading for unresolved imports.
-    load_dependencies(session, &structure.import_specs, ctx.compile_mode, ctx.codegen_target)?;
+    // Stage 2b: Auto-load prelude if needed.
+    // When a non-prelude module is compiled and the prelude hasn't been loaded
+    // yet, resolve and compile it recursively. The prelude's own
+    // load_dependencies call (inside its recursive compile_unit) handles
+    // loading its export-target modules (core.numerics, core.formats, etc.)
+    // because load_dependencies now covers both imports and exports.
+    let prelude_path = ModuleFullPath::from("prelude");
+    let needs_prelude = !session.tc.has_module(&prelude_path)
+        && ctx.module != prelude_path
+        && !session.compile_stack.contains(&prelude_path)
+        && !session.lib_dirs.is_empty();
+    if let Some(prelude_file) =
+        needs_prelude.then(|| crate::pipeline::resolve_prelude(&session.project_root, &session.lib_dirs)).flatten()
+    {
+        let prelude_source = std::fs::read_to_string(&prelude_file).map_err(|e| {
+            CranelispError::ModuleError {
+                message: format!(
+                    "cannot read prelude '{}': {}",
+                    prelude_file.display(),
+                    e
+                ),
+                file: Some(prelude_file.clone()),
+                span: Span::SYNTHETIC,
+            }
+        })?;
+        let prelude_ctx = CompileContext {
+            module: ModuleFullPath::from("prelude"),
+            strategy: ModuleStrategy::Replace,
+            codegen_target: ctx.codegen_target, // inherit caller's target
+        };
+        let prelude_result = compile_unit(session, &prelude_source, &prelude_ctx)?;
+        codegen_and_execute(session, &prelude_result, &prelude_ctx)?;
+    }
 
-    // Stage 2c: Prelude import injection + register imports/exports.
+    // Stage 2c: Recursive module loading for unresolved imports and exports.
+    load_dependencies(session, &structure, ctx.codegen_target)?;
+
+    // Stage 2e: Prelude import injection + register imports/exports.
     // Set the current module BEFORE registering imports so that
     // inject_prelude_import and register_imports target the correct module.
     // This is needed when compile_unit is called recursively for a dependency
     // (e.g., loading num.int from REPL context where current_module is "user").
     session.tc.set_current_module(ctx.module.clone());
 
-    let prelude_path = ModuleFullPath::from("prelude");
     if session.tc.has_module(&prelude_path) && ctx.module != prelude_path {
         crate::pipeline::inject_prelude_import(&mut session.tc)?;
     }
@@ -183,16 +218,25 @@ fn compile_unit_inner(
         session.tc.register_exports(&structure.export_specs)?;
     }
 
-    // Stage 2d: Filter platform forms from the remaining sexps.
-    // Only filter when platform loading has been configured (non-empty
-    // platform_symbols). In test mode (compile_and_run with no platform
-    // setup), platform forms flow through to the AST builder where they
-    // produce proper error messages.
-    let remaining = if !session.platform_symbols.is_empty() {
-        crate::pipeline::filter_platform_forms(remaining)
-    } else {
-        remaining
-    };
+    // Stage 2f: Load platform DLLs declared in this module.
+    // Platform forms are extracted by extract_module_declarations (not in
+    // `remaining`), so no filtering is needed.
+    for platform_spec in &structure.platform_specs {
+        let (platform, jit_syms) = crate::platform::load_and_register_platform(
+            &mut session.tc,
+            &platform_spec.name,
+            &session.project_root,
+            platform_spec.span,
+        )?;
+        for desc in &platform.descriptors {
+            session.scheduling_registry.insert(
+                Symbol::from(desc.name.as_str()),
+                desc.scheduling_class,
+            );
+        }
+        session.platform_symbols.extend(jit_syms);
+        session.loaded_platforms.push(platform);
+    }
 
     // Stage 3: Expand (defmacro interception + macro expansion + begin-flatten).
     let accumulated = session.process_forms_sequentially(remaining)?;
@@ -230,7 +274,6 @@ fn compile_unit_inner(
         CompileContext {
             module: ctx.module.clone(),
             strategy: ModuleStrategy::Additive,
-            compile_mode: ctx.compile_mode,
             codegen_target: ctx.codegen_target,
         }
     } else {
@@ -288,33 +331,25 @@ pub fn codegen_and_execute(
 
     let mut codegen_warnings: Vec<Warning> = Vec::new();
 
-    // Stages 6-7: Codegen and execute, mode-dependent.
-    let (value, result_type) = match ctx.compile_mode {
-        CompileMode::Batch => {
-            compile_and_execute_batch(
-                &unit_result.program,
-                &unit_result.check_result,
-                &mut codegen_warnings,
-            )?
-        }
-        CompileMode::Interactive => {
-            compile_and_execute_interactive(
-                session,
-                &unit_result.program,
-                &unit_result.check_result,
-                &mut codegen_warnings,
-            )?
-        }
-        CompileMode::Release => {
-            return Err(CranelispError::CodegenError {
-                message: "Release compile mode not yet implemented".into(),
-                span: Span::SYNTHETIC,
-            });
-        }
+    // Stages 6-7: Codegen and execute.
+    // Session's `interactive` flag decides GOT-indirect vs direct calls.
+    let (value, result_type) = if session.interactive {
+        compile_and_execute_interactive(
+            session,
+            &unit_result.program,
+            &unit_result.check_result,
+            &mut codegen_warnings,
+        )?
+    } else {
+        compile_and_execute_batch(
+            &unit_result.program,
+            &unit_result.check_result,
+            &mut codegen_warnings,
+        )?
     };
 
-    // Register module aliases after successful Interactive-mode compilation.
-    if ctx.compile_mode == CompileMode::Interactive {
+    // Register module aliases after successful interactive-mode compilation.
+    if session.interactive {
         session.register_module_aliases_filtered(&ctx.module, Some(&pre_existing));
     }
 
@@ -382,22 +417,30 @@ fn check_cycle(
 // Recursive module loading
 // ---------------------------------------------------------------------------
 
-/// Load all uncompiled dependencies for a module's import list.
+/// Load all uncompiled dependencies for a module's imports and exports.
 ///
-/// For each import, if the module is not yet compiled, resolve its source
-/// file via `session.lib_dirs`, read it, and compile it recursively via
-/// `compile_unit()`. If lib_dirs is empty (test mode), unresolved imports
-/// are silently skipped — they will fail during typecheck with a proper
-/// "unresolved symbol" error.
+/// Iterates the union of import and export module paths. For each, if the
+/// module is not yet compiled, resolve its source file via `session.lib_dirs`,
+/// read it, and compile it recursively via `compile_unit()`. Export targets
+/// are included because re-export shells (like prelude) need their target
+/// modules compiled before exports can be registered.
+///
+/// If lib_dirs is empty (test mode), unresolved deps are silently skipped —
+/// they will fail during typecheck with a proper "unresolved symbol" error.
 fn load_dependencies(
     session: &mut CompilationSession,
-    import_specs: &[cranelisp_types::ImportSpec],
-    compile_mode: CompileMode,
+    structure: &cranelisp_types::ModuleStructure,
     codegen_target: CodegenTarget,
 ) -> Result<(), CranelispError> {
-    for spec in import_specs {
-        let dep_module = &spec.module_path;
+    // Collect module paths from both imports and exports (duplicates filtered by has_module check).
+    let dep_modules: Vec<ModuleFullPath> = structure
+        .import_specs
+        .iter()
+        .map(|s| s.module_path.clone())
+        .chain(structure.export_specs.iter().map(|s| s.module_path.clone()))
+        .collect();
 
+    for dep_module in &dep_modules {
         // Skip if already compiled or is a builtin module.
         if session.tc.has_module(dep_module) {
             continue;
@@ -421,7 +464,6 @@ fn load_dependencies(
             let dep_ctx = CompileContext {
                 module: dep_module.clone(),
                 strategy: ModuleStrategy::Replace,
-                compile_mode,
                 codegen_target,
             };
 
@@ -481,7 +523,7 @@ fn compile_and_execute_batch(
     check: &CheckResult,
     warnings: &mut Vec<Warning>,
 ) -> Result<(Option<i64>, Option<Type>), CranelispError> {
-    let compiled = cranelisp_backend::compile_program(program, check, CompileMode::Batch)?;
+    let compiled = cranelisp_backend::compile_program(program, check, false)?;
     warnings.extend(compiled.warnings.iter().cloned());
 
     // Determine the result type from the last zero-arg defn.
@@ -576,7 +618,6 @@ fn compile_and_execute_expr(
         let compiled = cranelisp_backend::compile_expr_with_got_and_symbols(
             expr,
             check,
-            CompileMode::Interactive,
             Some(&mut session.got_state),
             &extra_syms,
         )?;
@@ -689,7 +730,6 @@ fn compile_and_execute_expr_with_trace(
 
     let mut compile_ctx = jit.build_compile_context(
         check,
-        CompileMode::Interactive,
         &func_ids,
         &func_arities,
         Some(&got_slots),
@@ -710,449 +750,6 @@ fn compile_and_execute_expr_with_trace(
     Ok(value)
 }
 
-// ---------------------------------------------------------------------------
-// Batch mode: run a file via compile_unit()
-// ---------------------------------------------------------------------------
-
-/// Run a batch program through the v2 pipeline (compile_unit for everything).
-///
-/// All compilation — prelude, dependencies, and entry file — goes through
-/// `compile_unit()`. No v1 batch paths are used.
-///
-/// # Steps
-/// 1. Canonicalize entry path, derive module name
-/// 2. Create session, set lib_dirs
-/// 3. Pre-scan entry file for platform declarations
-/// 4. Load prelude via compile_unit
-/// 5. Load entry file via compile_unit
-/// 6. Verify `main` exists, handle IO trampoline
-/// 7. Return CompiledModuleGraph
-pub fn run_batch_v2(
-    entry: &std::path::Path,
-    lib_dirs: &[PathBuf],
-) -> Result<crate::pipeline::CompiledModuleGraph, CranelispError> {
-    use cranelisp_types::Symbol;
-
-    // Step 1: Canonicalize entry path, derive module name from file stem.
-    let entry_path = entry.canonicalize().map_err(|e| CranelispError::ModuleError {
-        message: format!("cannot canonicalize '{}': {}", entry.display(), e),
-        file: Some(entry.to_path_buf()),
-        span: Span::SYNTHETIC,
-    })?;
-
-    let module_name = entry_path
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .unwrap_or("main");
-    let entry_module = ModuleFullPath::from(module_name);
-
-    // Step 2: Create session, set lib_dirs (entry parent dir + provided dirs).
-    let mut session = crate::pipeline::CompilationSession::new();
-    let entry_dir = entry_path.parent().map(|p| p.to_path_buf());
-    let mut all_lib_dirs: Vec<PathBuf> = Vec::new();
-    if let Some(dir) = &entry_dir {
-        all_lib_dirs.push(dir.clone());
-    }
-    all_lib_dirs.extend(lib_dirs.iter().cloned());
-    session.lib_dirs = all_lib_dirs;
-
-    // Derive project_root from entry file's parent directory.
-    let project_root = entry_dir.unwrap_or_else(|| PathBuf::from("."));
-
-    // Step 3: Pre-scan entry file for (platform ...) declarations.
-    let entry_source = std::fs::read_to_string(&entry_path).map_err(|e| {
-        CranelispError::ModuleError {
-            message: format!("cannot read '{}': {}", entry_path.display(), e),
-            file: Some(entry_path.clone()),
-            span: Span::SYNTHETIC,
-        }
-    })?;
-
-    let prescan_sexps = cranelisp_frontend::parse(&entry_source)?;
-    for sexp in &prescan_sexps {
-        if let Some((name, span)) = crate::platform::extract_platform_name(sexp) {
-            let (platform, jit_syms) = crate::platform::load_and_register_platform(
-                &mut session.tc,
-                &name,
-                &project_root,
-                span,
-            )?;
-            for desc in &platform.descriptors {
-                session.scheduling_registry.insert(
-                    Symbol::from(desc.name.as_str()),
-                    desc.scheduling_class,
-                );
-            }
-            session.platform_symbols.extend(jit_syms);
-        }
-    }
-
-    // Step 4: Load prelude via compile_unit.
-    if let Some(prelude_path) = crate::pipeline::resolve_prelude(&project_root, &session.lib_dirs)
-    {
-        let prelude_source =
-            std::fs::read_to_string(&prelude_path).map_err(|e| CranelispError::ModuleError {
-                message: format!("cannot read prelude '{}': {}", prelude_path.display(), e),
-                file: Some(prelude_path.clone()),
-                span: Span::SYNTHETIC,
-            })?;
-
-        // The prelude is a pure re-export shell: it has (export ...) forms
-        // referencing domain modules (compare.eq, num.num, etc.) that must
-        // be loaded before the prelude's exports can be registered. Pre-load
-        // all export target modules via compile_unit.
-        let prelude_sexps = cranelisp_frontend::parse(&prelude_source)?;
-        let (prelude_structure, _) = cranelisp_frontend::extract_module_declarations(
-            ModuleFullPath::from("prelude"),
-            None,
-            prelude_sexps,
-        )?;
-
-        for export_spec in &prelude_structure.export_specs {
-            let dep_module = &export_spec.module_path;
-            if session.tc.has_module(dep_module) {
-                continue;
-            }
-            if let Some(dep_path) = resolve_module_file(dep_module, &session.lib_dirs) {
-                let dep_source = std::fs::read_to_string(&dep_path).map_err(|e| {
-                    CranelispError::ModuleError {
-                        message: format!("cannot read '{}': {}", dep_path.display(), e),
-                        file: Some(dep_path.clone()),
-                        span: Span::SYNTHETIC,
-                    }
-                })?;
-                let dep_ctx = CompileContext {
-                    module: dep_module.clone(),
-                    strategy: ModuleStrategy::Replace,
-                    compile_mode: CompileMode::Interactive,
-                    codegen_target: CodegenTarget::JitAndCache,
-                };
-                let dep_result = compile_unit(&mut session, &dep_source, &dep_ctx)?;
-                session.inmem_queue.push(CodegenItem {
-                    ctx: dep_ctx,
-                    unit_result: dep_result,
-                });
-                session.flush_inmem_queue()?;
-            }
-        }
-
-        let prelude_ctx = CompileContext {
-            module: ModuleFullPath::from("prelude"),
-            strategy: ModuleStrategy::Replace,
-            compile_mode: CompileMode::Interactive,
-            codegen_target: CodegenTarget::JitAndCache,
-        };
-
-        let prelude_result = compile_unit(&mut session, &prelude_source, &prelude_ctx)?;
-        session.inmem_queue.push(CodegenItem {
-            ctx: prelude_ctx,
-            unit_result: prelude_result,
-        });
-        session.flush_inmem_queue()?;
-    }
-
-    // Step 5: Load entry file via compile_unit.
-    let entry_ctx = CompileContext {
-        module: entry_module.clone(),
-        strategy: ModuleStrategy::Additive,
-        compile_mode: CompileMode::Interactive,
-        codegen_target: CodegenTarget::JitAndCache,
-    };
-
-    let unit_result = compile_unit(&mut session, &entry_source, &entry_ctx)?;
-    let unit_warnings = unit_result.warnings.clone();
-    session.inmem_queue.push(CodegenItem {
-        ctx: entry_ctx,
-        unit_result,
-    });
-    let mut codegen_results = session.flush_inmem_queue()?;
-    // Safety: we pushed exactly one item, so flush returns exactly one result.
-    let result = match codegen_results.pop() {
-        Some(r) => r,
-        None => unreachable!("invariant: flush_inmem_queue must return one result per queued item"),
-    };
-
-    // Step 6: Verify `main` exists in the GOT.
-    // compile_unit in Interactive mode auto-executes zero-arg defns, so
-    // `main` has already been called. We need to verify it exists and
-    // get its return value/type.
-    let main_sym = Symbol::from("main");
-    let qualified_main = Symbol::from(format!("{}/main", module_name));
-
-    let main_exists = session.got_state.def_codegen.contains_key(&main_sym)
-        || session.got_state.def_codegen.contains_key(&qualified_main);
-
-    if !main_exists {
-        return Err(CranelispError::ModuleError {
-            message:
-                "entry module has no `main` function — batch mode requires (defn main [] ...)"
-                    .into(),
-            file: Some(entry_path),
-            span: Span::SYNTHETIC,
-        });
-    }
-
-    // The value and type come from codegen_and_execute's result (which executed
-    // all zero-arg defns including main via Interactive mode).
-    let raw_value = result.value.ok_or_else(|| CranelispError::ModuleError {
-        message: "entry module produced no result value".into(),
-        file: Some(entry_path.clone()),
-        span: Span::SYNTHETIC,
-    })?;
-
-    let result_type = result.result_type.unwrap_or(Type::Int);
-
-    // Step 7: If main returns IO, run the IO trampoline.
-    let (value, ty) = if result_type.is_io() {
-        let inner_value = cranelisp_runtime::run_io_trampoline(raw_value);
-        let inner_type = result_type.io_inner_type();
-        (inner_value, inner_type)
-    } else {
-        (raw_value, result_type)
-    };
-
-    // Combine warnings from typecheck (unit_result) and codegen (result).
-    let mut all_warnings = unit_warnings;
-    all_warnings.extend(result.warnings);
-
-    Ok(crate::pipeline::CompiledModuleGraph {
-        value,
-        ty,
-        warnings: all_warnings,
-    })
-}
-
-// ---------------------------------------------------------------------------
-// Link mode: compile via compile_unit() with background .o generation
-// ---------------------------------------------------------------------------
-
-/// Compile a project for linking via the v2 pipeline.
-///
-/// All compilation goes through `compile_unit()` with caching enabled.
-/// Each module's `.o` file is written via stage 6b (background cache writer).
-/// After all modules are compiled, the cache writer is flushed to ensure
-/// all `.o` files are on disk before the system linker is invoked.
-///
-/// See design/arch/pipeline-v2.md §16.4.3.
-///
-/// # Steps
-/// 1. Discover module graph from entry file, topological sort
-/// 2. Create session with cache, set lib_dirs
-/// 3. Pre-scan entry file for platform declarations
-/// 4. Load prelude and its dependencies via compile_unit (JitAndCache)
-/// 5. Load each module in topo order via compile_unit (JitAndCache)
-/// 6. Flush background .o writes, collect paths
-/// 7. Return LinkCompileResult for link_file()
-pub fn compile_for_link_v2(
-    entry: &std::path::Path,
-    lib_dirs: &[std::path::PathBuf],
-    cache_dir: &std::path::Path,
-) -> Result<crate::pipeline::LinkCompileResult, CranelispError> {
-    use cranelisp_types::Symbol;
-    use std::path::PathBuf;
-
-    // Step 1: Discover module graph from entry file.
-    let graph = crate::pipeline::discover_module_graph(entry, lib_dirs)?;
-    let order = crate::pipeline::toposort(&graph)?;
-
-    // Step 2: Create session with caching enabled.
-    let entry_path = entry.canonicalize().map_err(|e| CranelispError::ModuleError {
-        message: format!("cannot canonicalize '{}': {}", entry.display(), e),
-        file: Some(entry.to_path_buf()),
-        span: Span::SYNTHETIC,
-    })?;
-
-    std::fs::create_dir_all(cache_dir).map_err(|e| CranelispError::ModuleError {
-        message: format!("cannot create cache dir '{}': {}", cache_dir.display(), e),
-        file: None,
-        span: Span::SYNTHETIC,
-    })?;
-
-    let mut session = crate::pipeline::CompilationSession::new_with_cache(cache_dir.to_path_buf());
-    let entry_dir = entry_path.parent().map(|p| p.to_path_buf());
-    let mut all_lib_dirs: Vec<PathBuf> = Vec::new();
-    if let Some(dir) = &entry_dir {
-        all_lib_dirs.push(dir.clone());
-    }
-    all_lib_dirs.extend(lib_dirs.iter().cloned());
-    session.lib_dirs = all_lib_dirs;
-
-    let project_root = entry_dir.unwrap_or_else(|| PathBuf::from("."));
-
-    // Step 3: Pre-scan entry file for (platform ...) declarations.
-    let entry_source = std::fs::read_to_string(&entry_path).map_err(|e| {
-        CranelispError::ModuleError {
-            message: format!("cannot read '{}': {}", entry_path.display(), e),
-            file: Some(entry_path.clone()),
-            span: Span::SYNTHETIC,
-        }
-    })?;
-
-    let prescan_sexps = cranelisp_frontend::parse(&entry_source)?;
-    for sexp in &prescan_sexps {
-        if let Some((name, span)) = crate::platform::extract_platform_name(sexp) {
-            let (platform, jit_syms) = crate::platform::load_and_register_platform(
-                &mut session.tc,
-                &name,
-                &project_root,
-                span,
-            )?;
-            for desc in &platform.descriptors {
-                session.scheduling_registry.insert(
-                    Symbol::from(desc.name.as_str()),
-                    desc.scheduling_class,
-                );
-            }
-            session.platform_symbols.extend(jit_syms);
-        }
-    }
-
-    let mut all_warnings: Vec<Warning> = Vec::new();
-
-    // Step 4: Load prelude and its dependencies via compile_unit (JitAndCache).
-    // The prelude is compiled in Interactive+JitAndCache mode so its functions
-    // are JIT-compiled and .o files are queued in the background.
-    load_prelude_for_link(
-        &project_root,
-        &session.lib_dirs.clone(),
-        &mut session,
-        &mut all_warnings,
-    )?;
-
-    // Step 5: Load each module in topo order via compile_unit (JitAndCache).
-    // Since we process in topological order, all dependencies are loaded
-    // before the module that depends on them, so compile_unit won't
-    // recurse for already-loaded deps.
-    // Using JitAndCache mode: compile_unit() JIT-compiles (stage 6a) and
-    // queues background .o writes (stage 6b) for each module.
-    for module_path in &order {
-        let node = &graph.nodes[module_path];
-        let source = std::fs::read_to_string(&node.file_path).map_err(|e| {
-            CranelispError::ModuleError {
-                message: format!("cannot read '{}': {}", node.file_path.display(), e),
-                file: Some(node.file_path.clone()),
-                span: Span::SYNTHETIC,
-            }
-        })?;
-
-        let ctx = CompileContext {
-            module: module_path.clone(),
-            strategy: ModuleStrategy::Replace,
-            compile_mode: CompileMode::Interactive,
-            codegen_target: CodegenTarget::JitAndCache,
-        };
-
-        let unit_result = compile_unit(&mut session, &source, &ctx)?;
-        all_warnings.extend(unit_result.warnings.clone());
-        session.object_queue.push(CodegenItem {
-            ctx,
-            unit_result,
-        });
-        let codegen_results = session.flush_object_queue()?;
-        for codegen_result in codegen_results {
-            all_warnings.extend(codegen_result.warnings);
-        }
-    }
-
-    // Step 6: Flush background .o writes to ensure all files are on disk.
-    session.flush_cache_writes();
-
-    // Collect .o paths written during compilation.
-    let module_o_paths = session.compiled_o_paths.clone();
-
-    // Step 7: Collect entry module's symbol table and module structures.
-    session.tc.set_current_module(graph.entry.clone());
-    let entry_symbols = session.tc.symbol_table().clone();
-
-    let module_structures = session.compiled_module_structures.clone();
-
-    Ok(crate::pipeline::LinkCompileResult {
-        module_o_paths,
-        entry_symbols,
-        module_structures,
-        warnings: all_warnings,
-    })
-}
-
-/// Load prelude and its dependencies via compile_unit for --link.
-fn load_prelude_for_link(
-    project_root: &std::path::Path,
-    lib_dirs: &[std::path::PathBuf],
-    session: &mut CompilationSession,
-    all_warnings: &mut Vec<Warning>,
-) -> Result<(), CranelispError> {
-    let prelude_path = match crate::pipeline::resolve_prelude(project_root, lib_dirs) {
-        Some(f) => f,
-        None => return Ok(()),
-    };
-
-    let prelude_source =
-        std::fs::read_to_string(&prelude_path).map_err(|e| CranelispError::ModuleError {
-            message: format!("cannot read prelude '{}': {}", prelude_path.display(), e),
-            file: Some(prelude_path.clone()),
-            span: Span::SYNTHETIC,
-        })?;
-
-    // Pre-load all prelude export target modules via compile_unit.
-    let prelude_sexps = cranelisp_frontend::parse(&prelude_source)?;
-    let (prelude_structure, _) = cranelisp_frontend::extract_module_declarations(
-        ModuleFullPath::from("prelude"),
-        None,
-        prelude_sexps,
-    )?;
-
-    for export_spec in &prelude_structure.export_specs {
-        let dep_module = &export_spec.module_path;
-        if session.tc.has_module(dep_module) {
-            continue;
-        }
-        if let Some(dep_path) = resolve_module_file(dep_module, lib_dirs) {
-            let dep_source = std::fs::read_to_string(&dep_path).map_err(|e| {
-                CranelispError::ModuleError {
-                    message: format!("cannot read '{}': {}", dep_path.display(), e),
-                    file: Some(dep_path.clone()),
-                    span: Span::SYNTHETIC,
-                }
-            })?;
-            let dep_ctx = CompileContext {
-                module: dep_module.clone(),
-                strategy: ModuleStrategy::Replace,
-                compile_mode: CompileMode::Interactive,
-                codegen_target: CodegenTarget::JitAndCache,
-            };
-            let unit_result = compile_unit(session, &dep_source, &dep_ctx)?;
-            all_warnings.extend(unit_result.warnings.clone());
-            session.object_queue.push(CodegenItem {
-                ctx: dep_ctx,
-                unit_result,
-            });
-            let codegen_results = session.flush_object_queue()?;
-            for codegen_result in codegen_results {
-                all_warnings.extend(codegen_result.warnings);
-            }
-        }
-    }
-
-    // Compile the prelude itself.
-    let prelude_ctx = CompileContext {
-        module: ModuleFullPath::from("prelude"),
-        strategy: ModuleStrategy::Replace,
-        compile_mode: CompileMode::Interactive,
-        codegen_target: CodegenTarget::JitAndCache,
-    };
-    let prelude_unit = compile_unit(session, &prelude_source, &prelude_ctx)?;
-    all_warnings.extend(prelude_unit.warnings.clone());
-    session.object_queue.push(CodegenItem {
-        ctx: prelude_ctx,
-        unit_result: prelude_unit,
-    });
-    let prelude_codegen_results = session.flush_object_queue()?;
-    for codegen_result in prelude_codegen_results {
-        all_warnings.extend(codegen_result.warnings);
-    }
-
-    Ok(())
-}
 
 // ---------------------------------------------------------------------------
 // Stage 6b: Background .o writer integration
@@ -1369,7 +966,7 @@ fn accumulate_func_sigs_from_program(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use cranelisp_types::{CompileContext, CompileMode, ModuleFullPath, ModuleStrategy};
+    use cranelisp_types::{CompileContext, ModuleFullPath, ModuleStrategy};
 
     /// Helper: build a batch compile context targeting the "user" module.
     ///
@@ -1379,7 +976,6 @@ mod tests {
         CompileContext {
             module: ModuleFullPath::from("user"),
             strategy: ModuleStrategy::Additive,
-            compile_mode: CompileMode::Batch,
             codegen_target: CodegenTarget::JitAndCache,
         }
     }
@@ -1389,7 +985,6 @@ mod tests {
         CompileContext {
             module: ModuleFullPath::from("user"),
             strategy: ModuleStrategy::Additive,
-            compile_mode: CompileMode::Interactive,
             codegen_target: CodegenTarget::JitAndCache,
         }
     }
@@ -1411,6 +1006,7 @@ mod tests {
     #[test]
     fn additive_bare_expression() {
         let mut session = CompilationSession::new();
+        session.interactive = true;
         let ctx = additive_ctx();
         let unit_result = compile_unit(&mut session, "(if true 3 0)", &ctx)
             .expect("compile_unit failed");

@@ -7,7 +7,7 @@
 use cranelift::prelude::*;
 use cranelift_module::Module;
 
-use cranelisp_types::{CompileMode, CranelispError, Expr, HeapCategory, ResolvedCall, Span, Symbol};
+use cranelisp_types::{CranelispError, Expr, HeapCategory, ResolvedCall, Span, Symbol};
 
 use crate::heap::{self, HeapAdt, HeapClosure};
 use crate::operators;
@@ -390,64 +390,61 @@ impl<'a, M: Module> FnCompiler<'a, M> {
 
     /// Compile a call to a named function.
     ///
-    /// In Batch/Release mode: emits a direct `call` instruction.
-    /// In Interactive mode: loads the function pointer from the GOT slot
+    /// When GOT slots are present: loads the function pointer from the GOT slot
     /// and emits a `call_indirect` instruction.
+    /// Otherwise: emits a direct `call` instruction via FuncId.
     pub(crate) fn compile_direct_call(
         &mut self,
         name: &Symbol,
         arg_vals: &[Value],
         span: Span,
     ) -> Result<Value, CranelispError> {
-        match self.ctx.mode {
-            CompileMode::Batch | CompileMode::Release => {
-                // Direct call: look up FuncId and emit `call`.
-                let func_id = self.ctx.func_ids.get(name).ok_or_else(|| {
-                    CranelispError::CodegenError {
-                        message: format!("undefined function: {name}"),
-                        span,
-                    }
-                })?;
+        if self.ctx.got_slots.is_some() {
+            // GOT-indirect call: load function pointer from GOT slot.
+            //
+            // First try the local module's GOT. If the function isn't found
+            // locally, fall back to the cross-module GOT which maps imported
+            // functions to their defining module's GOT base and slot.
+            let (got_base, slot) = self.resolve_got_entry(name, span)?;
 
-                let local_func = self
-                    .module
-                    .declare_func_in_func(*func_id, self.builder.func);
-                let call = self.builder.ins().call(local_func, arg_vals);
-                Ok(self.builder.inst_results(call)[0])
+            // Compute the address of the GOT slot: got_base + slot * 8
+            let slot_offset = (slot * 8) as i64;
+            let base_val = self.builder.ins().iconst(types::I64, got_base);
+            let slot_addr = self.builder.ins().iadd_imm(base_val, slot_offset);
+
+            // Load the function pointer from the GOT slot.
+            let func_ptr = self.builder.ins().load(
+                types::I64,
+                MemFlags::trusted(),
+                slot_addr,
+                0,
+            );
+
+            // Build the signature for call_indirect: all params and return are i64.
+            let mut sig = self.module.make_signature();
+            for _ in arg_vals {
+                sig.params.push(AbiParam::new(types::I64));
             }
-            CompileMode::Interactive => {
-                // GOT-indirect call: load function pointer from GOT slot.
-                //
-                // First try the local module's GOT. If the function isn't found
-                // locally, fall back to the cross-module GOT which maps imported
-                // functions to their defining module's GOT base and slot.
-                let (got_base, slot) = self.resolve_got_entry(name, span)?;
+            sig.returns.push(AbiParam::new(types::I64));
+            let sig_ref = self.builder.import_signature(sig);
 
-                // Compute the address of the GOT slot: got_base + slot * 8
-                let slot_offset = (slot * 8) as i64;
-                let base_val = self.builder.ins().iconst(types::I64, got_base);
-                let slot_addr = self.builder.ins().iadd_imm(base_val, slot_offset);
-
-                // Load the function pointer from the GOT slot.
-                let func_ptr = self.builder.ins().load(
-                    types::I64,
-                    MemFlags::trusted(),
-                    slot_addr,
-                    0,
-                );
-
-                // Build the signature for call_indirect: all params and return are i64.
-                let mut sig = self.module.make_signature();
-                for _ in arg_vals {
-                    sig.params.push(AbiParam::new(types::I64));
+            // Emit call_indirect.
+            let call = self.builder.ins().call_indirect(sig_ref, func_ptr, arg_vals);
+            Ok(self.builder.inst_results(call)[0])
+        } else {
+            // Direct call: look up FuncId and emit `call`.
+            let func_id = self.ctx.func_ids.get(name).ok_or_else(|| {
+                CranelispError::CodegenError {
+                    message: format!("undefined function: {name}"),
+                    span,
                 }
-                sig.returns.push(AbiParam::new(types::I64));
-                let sig_ref = self.builder.import_signature(sig);
+            })?;
 
-                // Emit call_indirect.
-                let call = self.builder.ins().call_indirect(sig_ref, func_ptr, arg_vals);
-                Ok(self.builder.inst_results(call)[0])
-            }
+            let local_func = self
+                .module
+                .declare_func_in_func(*func_id, self.builder.func);
+            let call = self.builder.ins().call(local_func, arg_vals);
+            Ok(self.builder.inst_results(call)[0])
         }
     }
 

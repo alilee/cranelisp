@@ -26,7 +26,7 @@ use std::collections::HashMap;
 use cranelift_module::FuncId;
 
 use cranelisp_types::{
-    CheckResult, CompileMode, CranelispError, Defn, DefnVariant, Expr, Program, Span, Symbol,
+    CheckResult, CranelispError, Defn, DefnVariant, Expr, Program, Span, Symbol,
     TopLevel, Type, TypeName, Warning,
 };
 
@@ -112,10 +112,13 @@ struct CollectedDefns<'a> {
 ///
 /// The last zero-arg function in the program is the entry point.
 /// Returns a CompiledProgram that can be executed.
+///
+/// If `use_got` is true, GOT-indirect calls are set up (interactive mode).
+/// If false, direct function calls are used (batch mode).
 pub fn compile_program(
     program: &Program,
     check: &CheckResult,
-    mode: CompileMode,
+    use_got: bool,
 ) -> Result<CompiledProgram, CranelispError> {
     let mut jit = Jit::new()?;
     jit.declare_intrinsics()?;
@@ -123,16 +126,16 @@ pub fn compile_program(
     // Phase 1: Collect defns, declare functions, build arity map.
     let collected = collect_and_declare_defns(program, check, &mut jit, None)?;
 
-    // Phase 2: Set up GOT for Interactive mode.
+    // Phase 2: Set up GOT if requested.
     let (got_slots, mut got_state) =
-        setup_interactive_got(&collected, mode)?;
+        setup_interactive_got(&collected, use_got)?;
 
     let got_base_ptr = got_state.as_mut().map(|s| s.got_base_ptr() as i64);
 
     // Build the compilation context once for all functions.
     // No cross-module GOT for single-module compile_program.
     let compile_ctx = jit.build_compile_context(
-        check, mode, &collected.func_ids, &collected.func_arities,
+        check, &collected.func_ids, &collected.func_arities,
         got_slots.as_ref(), got_base_ptr, None,
     );
 
@@ -153,7 +156,7 @@ pub fn compile_program(
 
     // Compile mono specializations with their per-specialization resolutions.
     compile_mono_defns(
-        &mut jit, check, mode, &collected.func_ids, &collected.func_arities,
+        &mut jit, check, &collected.func_ids, &collected.func_arities,
         got_slots.as_ref(), got_base_ptr,
     )?;
 
@@ -331,13 +334,13 @@ fn collect_and_declare_defns<'a>(
     Ok(CollectedDefns { defns, extra_defns, multi_sig_defns, func_ids, func_arities, jit_names })
 }
 
-/// Phase 2: In Interactive mode, set up a temporary GOT so GOT-indirect calls
-/// work. In Batch/Release mode, returns (None, None).
+/// Phase 2: Set up a temporary GOT so GOT-indirect calls work.
+/// When `use_got` is false, returns (None, None).
 fn setup_interactive_got(
     collected: &CollectedDefns<'_>,
-    mode: CompileMode,
+    use_got: bool,
 ) -> Result<InteractiveGotResult, CranelispError> {
-    if mode == CompileMode::Interactive {
+    if use_got {
         let mut state = got::ModuleCodegenState::new();
         let mut slots = HashMap::new();
 
@@ -418,7 +421,6 @@ fn collect_extra_defns(check: &CheckResult) -> Vec<Defn> {
 fn compile_mono_defns(
     jit: &mut Jit,
     check: &CheckResult,
-    mode: CompileMode,
     func_ids: &HashMap<Symbol, FuncId>,
     func_arities: &HashMap<Symbol, usize>,
     got_slots: Option<&HashMap<Symbol, usize>>,
@@ -451,7 +453,7 @@ fn compile_mono_defns(
         };
 
         let ctx = jit.build_compile_context(
-            &mono_check, mode, func_ids, func_arities, got_slots, got_base_ptr, None,
+            &mono_check, func_ids, func_arities, got_slots, got_base_ptr, None,
         );
         jit.compile_defn(&mono.defn, ctx)?;
     }
@@ -474,6 +476,7 @@ pub struct CompiledModuleInfo {
 /// Used by the multi-module pipeline: all modules compile into one JIT,
 /// which is finalized once after all modules are compiled. This allows
 /// cross-module function calls to resolve via shared JIT symbol tables.
+/// Uses direct calls (no GOT) since all modules share one JIT.
 ///
 /// `module_prefix` is the module path (e.g., `"core.list"` or `"main"`).
 /// Function names are prefixed with `"{module_prefix}/"` in the JIT to
@@ -484,7 +487,6 @@ pub struct CompiledModuleInfo {
 pub fn compile_module_program(
     program: &Program,
     check: &CheckResult,
-    mode: CompileMode,
     jit: &mut Jit,
     prior_funcs: &[(Symbol, usize)],
     module_prefix: &str,
@@ -553,8 +555,9 @@ pub fn compile_module_program(
     }
 
     // Build compile context with merged symbol tables.
+    // No GOT for shared-JIT module compilation — direct calls.
     let compile_ctx = jit.build_compile_context(
-        check, mode, &merged_func_ids, &merged_arities,
+        check, &merged_func_ids, &merged_arities,
         None, None, None,
     );
 
@@ -575,7 +578,7 @@ pub fn compile_module_program(
 
     // Compile mono specializations.
     compile_mono_defns(
-        jit, check, mode, &merged_func_ids, &merged_arities,
+        jit, check, &merged_func_ids, &merged_arities,
         None, None,
     )?;
 
@@ -609,10 +612,9 @@ pub fn compile_module_program(
 pub fn compile_expr_with_got(
     expr: &Expr,
     check: &CheckResult,
-    mode: CompileMode,
     got_state: Option<&mut got::ModuleCodegenState>,
 ) -> Result<CompiledExpr, CranelispError> {
-    compile_expr_with_got_and_symbols(expr, check, mode, got_state, &[])
+    compile_expr_with_got_and_symbols(expr, check, got_state, &[])
 }
 
 /// Compile an expression using GOT-indirect calls, with extra JIT symbols.
@@ -622,7 +624,6 @@ pub fn compile_expr_with_got(
 pub fn compile_expr_with_got_and_symbols(
     expr: &Expr,
     check: &CheckResult,
-    mode: CompileMode,
     got_state: Option<&mut got::ModuleCodegenState>,
     extra_symbols: &[(&str, *const u8)],
 ) -> Result<CompiledExpr, CranelispError> {
@@ -668,7 +669,6 @@ pub fn compile_expr_with_got_and_symbols(
 
     let compile_ctx = jit.build_compile_context(
         check,
-        mode,
         &func_ids,
         &func_arities,
         got_slots.as_ref(),
@@ -695,10 +695,9 @@ pub fn compile_expr_with_got_and_symbols(
 pub fn compile_and_run_expr_with_got(
     expr: &Expr,
     check: &CheckResult,
-    mode: CompileMode,
     got_state: Option<&mut got::ModuleCodegenState>,
 ) -> Result<i64, CranelispError> {
-    let compiled = compile_expr_with_got(expr, check, mode, got_state)?;
+    let compiled = compile_expr_with_got(expr, check, got_state)?;
     // SAFETY: compiled was produced by compile_expr_with_got immediately above.
     Ok(unsafe { compiled.execute() })
 }
@@ -707,7 +706,7 @@ pub fn compile_and_run_expr_with_got(
 mod tests {
     use super::*;
     use cranelisp_types::{
-        CheckResult, CompileMode, Defn, DefnVariant, Expr, Span, Symbol, TopLevel,
+        CheckResult, Defn, DefnVariant, Expr, Span, Symbol, TopLevel,
     };
     use std::collections::{HashMap, HashSet};
 
@@ -747,7 +746,7 @@ mod tests {
         let program: Program = vec![TopLevel::Defn(defn)];
         let check = empty_check();
 
-        let compiled = compile_program(&program, &check, CompileMode::Batch).unwrap();
+        let compiled = compile_program(&program, &check, false).unwrap();
         let value = unsafe { compiled.execute().unwrap() };
         assert_eq!(value, 42);
     }
@@ -758,7 +757,7 @@ mod tests {
         let program: Program = vec![];
         let check = empty_check();
 
-        let result = compile_program(&program, &check, CompileMode::Batch);
+        let result = compile_program(&program, &check, false);
         assert!(result.is_err());
     }
 
@@ -771,7 +770,7 @@ mod tests {
         };
         let check = empty_check();
 
-        let value = compile_and_run_expr_with_got(&expr, &check, CompileMode::Batch, None).unwrap();
+        let value = compile_and_run_expr_with_got(&expr, &check, None).unwrap();
         assert_eq!(value, 99);
     }
 
@@ -797,7 +796,7 @@ mod tests {
         let program: Program = vec![TopLevel::Defn(defn)];
         let check = empty_check();
 
-        let compiled = compile_program(&program, &check, CompileMode::Interactive).unwrap();
+        let compiled = compile_program(&program, &check, true).unwrap();
         let value = unsafe { compiled.execute().unwrap() };
         assert_eq!(value, 7);
     }
@@ -815,7 +814,6 @@ mod tests {
         let value = compile_and_run_expr_with_got(
             &expr,
             &check,
-            CompileMode::Interactive,
             Some(&mut got),
         ).unwrap();
         assert_eq!(value, 55);
@@ -860,7 +858,7 @@ mod tests {
         let program: Program = vec![TopLevel::Defn(helper), TopLevel::Defn(main_defn)];
         let check = empty_check();
 
-        let compiled = compile_program(&program, &check, CompileMode::Batch).unwrap();
+        let compiled = compile_program(&program, &check, false).unwrap();
         let value = unsafe { compiled.execute().unwrap() };
         assert_eq!(value, 100);
     }
@@ -874,7 +872,7 @@ mod tests {
         };
         let check = empty_check();
 
-        let value = compile_and_run_expr_with_got(&expr, &check, CompileMode::Batch, None).unwrap();
+        let value = compile_and_run_expr_with_got(&expr, &check, None).unwrap();
         assert_eq!(value, 1);
     }
 
@@ -889,7 +887,7 @@ mod tests {
         };
         let check = empty_check();
 
-        let result = compile_and_run_expr_with_got(&expr, &check, CompileMode::Batch, None);
+        let result = compile_and_run_expr_with_got(&expr, &check, None);
         assert!(result.is_ok(), "string literal should compile: {result:?}");
         let ptr = result.unwrap();
         // ptr should be a heap pointer (> NULLARY_TAG_THRESHOLD)
@@ -912,7 +910,7 @@ mod tests {
         };
         let check = empty_check();
 
-        let result = compile_and_run_expr_with_got(&expr, &check, CompileMode::Batch, None);
+        let result = compile_and_run_expr_with_got(&expr, &check, None);
         assert!(result.is_ok(), "empty string should compile: {result:?}");
         let ptr = result.unwrap();
         assert!(ptr > 1024, "expected heap pointer, got {ptr}");
@@ -989,7 +987,7 @@ mod tests {
         display: None,
         };
 
-        let result = compile_and_run_expr_with_got(&expr, &check, CompileMode::Batch, None);
+        let result = compile_and_run_expr_with_got(&expr, &check, None);
         assert!(result.is_ok(), "ADT constructor should compile: {result:?}");
         let ptr = result.unwrap();
         assert!(ptr > 1024, "expected heap pointer, got {ptr}");
@@ -1107,7 +1105,7 @@ mod tests {
         display: None,
         };
 
-        let result = compile_and_run_expr_with_got(&expr, &check, CompileMode::Batch, None);
+        let result = compile_and_run_expr_with_got(&expr, &check, None);
         assert!(result.is_ok(), "match with fields should compile: {result:?}");
         assert_eq!(result.unwrap(), 99, "match should extract field value");
     }
@@ -1180,7 +1178,7 @@ mod tests {
         display: None,
         };
 
-        let result = compile_and_run_expr_with_got(&expr, &check, CompileMode::Batch, None);
+        let result = compile_and_run_expr_with_got(&expr, &check, None);
         assert!(result.is_ok(), "closure should compile: {result:?}");
         assert_eq!(result.unwrap(), 15, "5 + 10 = 15");
     }
@@ -1196,7 +1194,7 @@ mod tests {
         };
         let check = empty_check();
 
-        let result = compile_and_run_expr_with_got(&expr, &check, CompileMode::Batch, None);
+        let result = compile_and_run_expr_with_got(&expr, &check, None);
         assert!(result.is_ok(), "empty vec literal should compile: {result:?}");
         let ptr = result.unwrap();
         // ptr should be a heap pointer (> NULLARY_TAG_THRESHOLD)
@@ -1222,7 +1220,7 @@ mod tests {
         };
         let check = empty_check();
 
-        let result = compile_and_run_expr_with_got(&expr, &check, CompileMode::Batch, None);
+        let result = compile_and_run_expr_with_got(&expr, &check, None);
         assert!(result.is_ok(), "vec literal should compile: {result:?}");
         let ptr = result.unwrap();
         assert!(ptr > 1024, "expected heap pointer, got {ptr}");
@@ -1253,7 +1251,7 @@ mod tests {
         };
         let check = empty_check();
 
-        let result = compile_and_run_expr_with_got(&expr, &check, CompileMode::Batch, None);
+        let result = compile_and_run_expr_with_got(&expr, &check, None);
         assert!(result.is_ok(), "single-element vec should compile: {result:?}");
         let ptr = result.unwrap();
 
@@ -1280,7 +1278,7 @@ mod tests {
         };
         let check = empty_check();
 
-        let result = compile_and_run_expr_with_got(&expr, &check, CompileMode::Batch, None);
+        let result = compile_and_run_expr_with_got(&expr, &check, None);
         assert!(result.is_ok(), "bool vec should compile: {result:?}");
         let ptr = result.unwrap();
         assert_eq!(cranelisp_runtime::vec_len(ptr), 2);
@@ -1340,7 +1338,7 @@ mod tests {
         display: None,
         };
 
-        let result = compile_and_run_expr_with_got(&expr, &check, CompileMode::Batch, None);
+        let result = compile_and_run_expr_with_got(&expr, &check, None);
         assert!(result.is_ok(), "vec-len should compile: {result:?}");
         assert_eq!(result.unwrap(), 3);
     }
@@ -1403,7 +1401,7 @@ mod tests {
         display: None,
         };
 
-        let result = compile_and_run_expr_with_got(&expr, &check, CompileMode::Batch, None);
+        let result = compile_and_run_expr_with_got(&expr, &check, None);
         assert!(result.is_ok(), "vec-get should compile: {result:?}");
         assert_eq!(result.unwrap(), 20);
     }
@@ -1464,7 +1462,7 @@ mod tests {
         display: None,
         };
 
-        let result = compile_and_run_expr_with_got(&expr, &check, CompileMode::Batch, None);
+        let result = compile_and_run_expr_with_got(&expr, &check, None);
         assert!(result.is_ok(), "vec-get index 0 should work: {result:?}");
         assert_eq!(result.unwrap(), 100);
     }
@@ -1526,7 +1524,7 @@ mod tests {
         display: None,
         };
 
-        let result = compile_and_run_expr_with_got(&expr, &check, CompileMode::Batch, None);
+        let result = compile_and_run_expr_with_got(&expr, &check, None);
         assert!(result.is_ok(), "vec-get last index should work: {result:?}");
         assert_eq!(result.unwrap(), 3);
     }
@@ -1605,7 +1603,7 @@ mod tests {
         display: None,
         };
 
-        let result = compile_and_run_expr_with_got(&expr, &check, CompileMode::Batch, None);
+        let result = compile_and_run_expr_with_got(&expr, &check, None);
         assert!(result.is_ok(), "vec-set should compile: {result:?}");
         // vec-set returns a new Vec with same length.
         assert_eq!(result.unwrap(), 3);
@@ -1672,7 +1670,7 @@ mod tests {
         display: None,
         };
 
-        let result = compile_and_run_expr_with_got(&expr, &check, CompileMode::Batch, None);
+        let result = compile_and_run_expr_with_got(&expr, &check, None);
         assert!(result.is_ok(), "vec-push should compile: {result:?}");
         // [10 20] pushed 30 -> len 3
         assert_eq!(result.unwrap(), 3);
@@ -1733,7 +1731,7 @@ mod tests {
         display: None,
         };
 
-        let result = compile_and_run_expr_with_got(&expr, &check, CompileMode::Batch, None);
+        let result = compile_and_run_expr_with_got(&expr, &check, None);
         assert!(result.is_ok(), "vec in let should compile: {result:?}");
         assert_eq!(result.unwrap(), 3);
     }
@@ -1785,7 +1783,7 @@ mod tests {
         display: None,
         };
 
-        let result = compile_and_run_expr_with_got(&expr, &check, CompileMode::Batch, None);
+        let result = compile_and_run_expr_with_got(&expr, &check, None);
         assert!(result.is_ok(), "vec with computed elements should compile: {result:?}");
         let ptr = result.unwrap();
 
@@ -1829,7 +1827,7 @@ mod tests {
         let program: Program = vec![TopLevel::Defn(defn)];
         let check = empty_check();
 
-        let compiled = compile_program(&program, &check, CompileMode::Batch).unwrap();
+        let compiled = compile_program(&program, &check, false).unwrap();
         let ptr = unsafe { compiled.execute().unwrap() };
         assert!(ptr > 1024, "expected heap pointer, got {ptr}");
         assert_eq!(cranelisp_runtime::vec_len(ptr), 3);
@@ -1895,7 +1893,7 @@ mod tests {
         display: None,
         };
 
-        let result = compile_and_run_expr_with_got(&expr, &check, CompileMode::Batch, None);
+        let result = compile_and_run_expr_with_got(&expr, &check, None);
         assert!(result.is_ok(), "vec-get value should compile: {result:?}");
         assert_eq!(result.unwrap(), 300);
     }
@@ -1961,7 +1959,7 @@ mod tests {
         display: None,
         };
 
-        let result = compile_and_run_expr_with_got(&expr, &check, CompileMode::Batch, None);
+        let result = compile_and_run_expr_with_got(&expr, &check, None);
         assert!(result.is_ok(), "vec-push on temp should compile: {result:?}");
         assert_eq!(result.unwrap(), 2);
     }
@@ -2029,7 +2027,7 @@ mod tests {
         display: None,
         };
 
-        let result = compile_and_run_expr_with_got(&expr, &check, CompileMode::Batch, None);
+        let result = compile_and_run_expr_with_got(&expr, &check, None);
         assert!(result.is_ok(), "vec-set on temp should compile: {result:?}");
         assert_eq!(result.unwrap(), 3);
     }
@@ -2047,7 +2045,7 @@ mod tests {
         let mut got = got::ModuleCodegenState::new();
 
         let result = compile_and_run_expr_with_got(
-            &expr, &check, CompileMode::Interactive, Some(&mut got),
+            &expr, &check, Some(&mut got),
         );
         assert!(result.is_ok(), "vec in interactive mode should compile: {result:?}");
         let ptr = result.unwrap();
@@ -2098,7 +2096,7 @@ mod tests {
         display: None,
         };
 
-        let result = compile_and_run_expr_with_got(&expr, &check, CompileMode::Batch, None);
+        let result = compile_and_run_expr_with_got(&expr, &check, None);
         assert!(result.is_ok(), "empty vec len should compile: {result:?}");
         assert_eq!(result.unwrap(), 0);
     }
@@ -2161,7 +2159,7 @@ mod tests {
         display: None,
         };
 
-        let result = compile_and_run_expr_with_got(&expr, &check, CompileMode::Batch, None);
+        let result = compile_and_run_expr_with_got(&expr, &check, None);
         assert!(result.is_ok(), "push to empty vec should compile: {result:?}");
         assert_eq!(result.unwrap(), 1);
     }
@@ -2205,7 +2203,7 @@ mod tests {
         display: None,
         };
 
-        let result = compile_and_run_expr_with_got(&expr, &check, CompileMode::Batch, None);
+        let result = compile_and_run_expr_with_got(&expr, &check, None);
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), 0);
     }
@@ -2235,7 +2233,7 @@ mod tests {
         };
         let check = empty_check();
 
-        let result = compile_and_run_expr_with_got(&expr, &check, CompileMode::Batch, None);
+        let result = compile_and_run_expr_with_got(&expr, &check, None);
         assert!(result.is_ok(), "nested vec should compile: {result:?}");
         let outer_ptr = result.unwrap();
         assert!(outer_ptr > 1024);
@@ -2277,7 +2275,7 @@ mod tests {
         };
         let check = empty_check();
 
-        let result = compile_and_run_expr_with_got(&expr, &check, CompileMode::Batch, None);
+        let result = compile_and_run_expr_with_got(&expr, &check, None);
         assert!(result.is_ok(), "large vec should compile: {result:?}");
         let ptr = result.unwrap();
         assert_eq!(cranelisp_runtime::vec_len(ptr), 10);
@@ -2323,7 +2321,7 @@ mod tests {
             },
         );
 
-        let value = compile_and_run_expr_with_got(&expr, &check, CompileMode::Batch, None)
+        let value = compile_and_run_expr_with_got(&expr, &check, None)
             .expect("TraitMethod inline add should compile");
         assert_eq!(value, 7);
     }
@@ -2356,7 +2354,7 @@ mod tests {
             },
         );
 
-        let value = compile_and_run_expr_with_got(&expr, &check, CompileMode::Batch, None)
+        let value = compile_and_run_expr_with_got(&expr, &check, None)
             .expect("TraitMethod eq-bool should compile");
         assert_eq!(value, 1); // true == true → true (1)
     }
@@ -2400,7 +2398,7 @@ mod tests {
         // Mark "add" as constrained — should be skipped during compilation.
         check.constrained_fn_names.insert(Symbol::from("add"));
 
-        let compiled = compile_program(&program, &check, CompileMode::Batch)
+        let compiled = compile_program(&program, &check, false)
             .expect("should compile with constrained fn skipped");
         let value = unsafe { compiled.execute().unwrap() };
         assert_eq!(value, 42);
@@ -2478,7 +2476,7 @@ mod tests {
         slots_a.insert(Symbol::from("add42"), add42_slot);
         let got_base_a = mod_a_got.got_base_ptr() as i64;
         let ctx_a = jit_a.build_compile_context(
-            &check, CompileMode::Interactive, &func_ids_a, &arities_a,
+            &check, &func_ids_a, &arities_a,
             Some(&slots_a), Some(got_base_a), None,
         );
         jit_a.compile_defn(&add42_defn, ctx_a).unwrap();
@@ -2537,7 +2535,7 @@ mod tests {
         let got_base_b = local_got.got_base_ptr() as i64;
 
         let ctx_b = jit_b.build_compile_context(
-            &check, CompileMode::Interactive, &func_ids_b, &arities_b,
+            &check, &func_ids_b, &arities_b,
             Some(&local_slots), Some(got_base_b), Some(&xmod_got),
         );
         jit_b.compile_defn(&wrapper_defn, ctx_b).unwrap();
@@ -2596,7 +2594,7 @@ mod tests {
             vec![(Symbol::from("identity$Int"), 1)].into_iter().collect();
 
         let ctx1 = jit1.build_compile_context(
-            &check, CompileMode::Interactive, &func_ids1, &arities1,
+            &check, &func_ids1, &arities1,
             Some(&got_slots), Some(got_base), None,
         );
         jit1.compile_defn(&mono_defn, ctx1).unwrap();
@@ -2667,7 +2665,7 @@ mod tests {
         let func_ids2 = jit2.declare_functions(&[&main_defn]).unwrap();
 
         let ctx2 = jit2.build_compile_context(
-            &check2, CompileMode::Interactive, &func_ids2, &arities2,
+            &check2, &func_ids2, &arities2,
             Some(&got_slots2), Some(got_base2), None,
         );
         jit2.compile_defn(&main_defn, ctx2).unwrap();
@@ -2796,7 +2794,7 @@ mod tests {
             vec![(Symbol::from("countdown$Int"), 1)].into_iter().collect();
 
         let ctx = jit.build_compile_context(
-            &check, CompileMode::Interactive, &func_ids, &arities,
+            &check, &func_ids, &arities,
             Some(&got_slots), Some(got_base), None,
         );
         jit.compile_defn(&countdown_defn, ctx).unwrap();
@@ -2877,7 +2875,7 @@ mod tests {
 
         // Compile module A with prefix "mod_a".
         let info_a = compile_module_program(
-            &program_a, &check_a, CompileMode::Batch,
+            &program_a, &check_a,
             &mut jit, &[], "mod_a",
         ).expect("module A should compile");
 
@@ -2890,7 +2888,7 @@ mod tests {
         // Compile module B with prefix "mod_b" — should NOT fail with
         // "Duplicate definition" error.
         let _info_b = compile_module_program(
-            &program_b, &check_b, CompileMode::Batch,
+            &program_b, &check_b,
             &mut jit, &prior_funcs, "mod_b",
         ).expect("module B should compile without name collision");
 
@@ -3050,7 +3048,7 @@ mod tests {
             },
         );
 
-        let compiled = compile_program(&program, &check, CompileMode::Batch)
+        let compiled = compile_program(&program, &check, false)
             .expect("multi-sig program should compile");
         let result = unsafe { compiled.execute().unwrap() };
         assert_eq!(result, 42, "should dispatch to f$Int and return 42");
@@ -3124,7 +3122,7 @@ mod tests {
             },
         );
 
-        let compiled = compile_program(&program, &check, CompileMode::Batch)
+        let compiled = compile_program(&program, &check, false)
             .expect("multi-sig program should compile");
         let result = unsafe { compiled.execute().unwrap() };
         assert_eq!(result, 99, "should dispatch to g$Int+Int and return second arg (99)");
