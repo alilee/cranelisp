@@ -164,6 +164,15 @@ fn compile_unit_inner(
         sexps,
     )?;
 
+    // Stage 2a-post: Register file→module mapping for the current module.
+    // Only for file-backed modules (resolve via lib_dirs). Inline test
+    // sources won't resolve and are skipped.
+    if let Some(resolved) = resolve_module_path(&ctx.module, &session.lib_dirs) {
+        if let Ok(canonical) = resolved.canonicalize() {
+            session.module_deps.register_file(canonical, ctx.module.clone());
+        }
+    }
+
     // Stage 2b: Auto-load prelude if needed.
     // When a non-prelude module is compiled and the prelude hasn't been loaded
     // yet, resolve and compile it recursively. The prelude's own
@@ -196,6 +205,9 @@ fn compile_unit_inner(
         };
         let prelude_result = compile_unit(session, &prelude_source, &prelude_ctx)?;
         codegen_and_execute(session, &prelude_result, &prelude_ctx)?;
+
+        // Register prelude dependency edge for the current module.
+        session.module_deps.register_edge(&ctx.module, &prelude_path);
     }
 
     // Stage 2c: Recursive module loading for unresolved imports and exports.
@@ -323,6 +335,7 @@ pub fn codegen_and_execute(
     // only aliases new entries from this module (not all entries from
     // previously loaded modules — that causes exponential alias growth).
     let pre_existing: std::collections::HashSet<cranelisp_types::Symbol> = session
+        .inmem_worker
         .got_state
         .def_codegen
         .keys()
@@ -367,6 +380,7 @@ pub fn codegen_and_execute(
 
     // Record module structure for --link (both targets).
     session
+        .object_worker
         .compiled_module_structures
         .push((ctx.module.clone(), unit_result.module_structure.clone()));
 
@@ -375,7 +389,7 @@ pub fn codegen_and_execute(
         &ctx.module,
         &unit_result.program,
         &unit_result.check_result,
-        &mut session.cross_module_func_sigs,
+        &mut session.object_worker.cross_module_func_sigs,
     );
 
     Ok(CodegenResult {
@@ -440,14 +454,24 @@ fn load_dependencies(
         .chain(structure.export_specs.iter().map(|s| s.module_path.clone()))
         .collect();
 
+    let parent_module = &structure.path;
+
     for dep_module in &dep_modules {
-        // Skip if already compiled or is a builtin module.
+        // Register the dependency edge (even for already-compiled modules).
+        session.module_deps.register_edge(parent_module, dep_module);
+
+        // Skip compilation if already compiled or is a builtin module.
         if session.tc.has_module(dep_module) {
             continue;
         }
 
         // Try to resolve the module source file.
         if let Some(dep_source_path) = resolve_module_path(dep_module, &session.lib_dirs) {
+            // Register file→module mapping (canonical path when possible).
+            if let Ok(canonical) = dep_source_path.canonicalize() {
+                session.module_deps.register_file(canonical, dep_module.clone());
+            }
+
             let dep_source =
                 std::fs::read_to_string(&dep_source_path).map_err(|e| {
                     CranelispError::ModuleError {
@@ -608,7 +632,7 @@ fn compile_and_execute_expr(
         .or_else(|| check.expr_types.get(&expr.span()).cloned())
         .unwrap_or(Type::Int);
 
-    if session.traced_fns.is_empty() {
+    if session.inmem_worker.traced_fns.is_empty() {
         // Normal (non-trace) path.
         let extra_syms: Vec<(&str, *const u8)> = session.platform_symbols
             .iter()
@@ -618,7 +642,7 @@ fn compile_and_execute_expr(
         let compiled = cranelisp_backend::compile_expr_with_got_and_symbols(
             expr,
             check,
-            Some(&mut session.got_state),
+            Some(&mut session.inmem_worker.got_state),
             &extra_syms,
         )?;
 
@@ -693,7 +717,7 @@ fn compile_and_execute_expr_with_trace(
         .iter()
         .map(|(name, ptr)| (name.as_str(), *ptr))
         .collect();
-    for (name, ptr) in &session.trace_extra_symbols {
+    for (name, ptr) in &session.inmem_worker.trace_extra_symbols {
         extra_syms.push((name.as_str(), *ptr));
     }
 
@@ -718,7 +742,7 @@ fn compile_and_execute_expr_with_trace(
 
     let mut got_slots: HashMap<Symbol, usize> = HashMap::new();
     let mut func_arities: HashMap<Symbol, usize> = HashMap::new();
-    for (name, dc) in &session.got_state.def_codegen {
+    for (name, dc) in &session.inmem_worker.got_state.def_codegen {
         if let Some(slot) = dc.got_slot {
             got_slots.insert(name.clone(), slot);
         }
@@ -726,7 +750,7 @@ fn compile_and_execute_expr_with_trace(
             func_arities.insert(name.clone(), pc);
         }
     }
-    let got_base = session.got_state.got_base_ptr() as i64;
+    let got_base = session.inmem_worker.got_state.got_base_ptr() as i64;
 
     let mut compile_ctx = jit.build_compile_context(
         check,
@@ -737,7 +761,7 @@ fn compile_and_execute_expr_with_trace(
         None,
     );
 
-    compile_ctx.traced_fns = Some(&session.traced_fns);
+    compile_ctx.traced_fns = Some(&session.inmem_worker.traced_fns);
 
     jit.compile_defn(&wrapper_defn, compile_ctx)?;
     let code_ptr = jit.finalize_and_get_ptr(&wrapper_name, 0)?;
@@ -745,7 +769,7 @@ fn compile_and_execute_expr_with_trace(
     let func: extern "C" fn() -> i64 = unsafe { std::mem::transmute(code_ptr) };
     let value = func();
 
-    session.jit_modules.push(jit);
+    session.inmem_worker.jit_modules.push(jit);
 
     Ok(value)
 }
@@ -774,7 +798,7 @@ fn queue_background_cache_write(
     use std::collections::HashMap;
 
     // Only write if caching is enabled (cache_state + cache_writer both present).
-    let (cache_state, cache_writer) = match (&session.cache_state, &mut session.cache_writer) {
+    let (cache_state, cache_writer) = match (&session.object_worker.cache_state, &mut session.object_worker.cache_writer) {
         (Some(cs), Some(cw)) => (cs, cw),
         _ => return,
     };
@@ -789,7 +813,7 @@ fn queue_background_cache_write(
         module_path,
         Some(program),
         Some(check_result),
-        &session.cross_module_func_sigs,
+        &session.object_worker.cross_module_func_sigs,
     );
 
     // Build CacheCodegenState from the program.
@@ -832,7 +856,7 @@ fn queue_background_cache_write(
 
     // Deterministic .o path for recording.
     let (_meta_path, o_path) = cache::module_cache_path(&cache_state.cache_dir(), module_path);
-    session.compiled_o_paths.push(o_path);
+    session.object_worker.compiled_o_paths.push(o_path);
 
     // Queue the write on the background thread.
     cache_writer.queue_write(module_path.clone(), packet);

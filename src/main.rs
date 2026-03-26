@@ -133,8 +133,8 @@ fn run_file_inner(path: &str) -> Result<(), CranelispError> {
     // Step 5: Verify `main` exists in the GOT.
     let main_sym = Symbol::from("main");
     let qualified_main = Symbol::from(format!("{}/main", module_name));
-    let main_exists = session.got_state.def_codegen.contains_key(&main_sym)
-        || session.got_state.def_codegen.contains_key(&qualified_main);
+    let main_exists = session.inmem_worker.got_state.def_codegen.contains_key(&main_sym)
+        || session.inmem_worker.got_state.def_codegen.contains_key(&qualified_main);
     if !main_exists {
         return Err(CranelispError::ModuleError {
             message:
@@ -260,12 +260,12 @@ fn link_file_inner(path: &str) -> Result<(), CranelispError> {
 
     // Step 4: Flush background .o writes to ensure all files are on disk.
     session.flush_cache_writes();
-    let module_o_paths = session.compiled_o_paths.clone();
+    let module_o_paths = session.object_worker.compiled_o_paths.clone();
 
     // Step 5: Collect entry module's symbol table and module structures.
     session.tc.set_current_module(graph.entry.clone());
     let entry_symbols = session.tc.symbol_table().clone();
-    let module_structures = session.compiled_module_structures.clone();
+    let module_structures = session.object_worker.compiled_module_structures.clone();
 
     // Display warnings.
     for w in &all_warnings {

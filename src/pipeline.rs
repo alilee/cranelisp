@@ -9,7 +9,7 @@
 //
 // No `unwrap()` in this module -- all errors use `?`.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 
 use cranelisp_types::{
@@ -190,51 +190,21 @@ impl CacheState {
 }
 
 // ---------------------------------------------------------------------------
-// CompilationSession: shared compilation core for both batch and REPL
+// Worker sub-structs: group fields by pipeline role
 // ---------------------------------------------------------------------------
 
-/// Shared compilation state that both batch and REPL paths use.
+/// In-memory codegen worker state: GOT, JIT lifetimes, trace support.
 ///
-/// Holds the persistent state needed to compile forms one at a time:
-/// the typechecker, macro expander, GOT state, JIT lifetime management,
-/// and platform symbols.
-///
-/// `ReplSession` wraps a `CompilationSession` and adds REPL-specific
-/// concerns (display metadata, slash commands, trace state, introspection).
-pub struct CompilationSession {
-    /// Type checker state (persists across forms).
-    pub tc: cranelisp_typecheck::TypeChecker,
+/// Fields used by `codegen_and_execute()` and the REPL for GOT-indirect
+/// compilation, JIT module lifetime management, and trace instrumentation.
+/// Separated from `CompilationSession` for clarity and preparation for
+/// concurrent codegen (Step 11).
+pub struct InMemWorkerState {
     /// Backend GOT state (persists across forms for function redefinition).
     pub got_state: cranelisp_backend::got::ModuleCodegenState,
-    /// Macro expander (persists across forms — macros accumulate).
-    pub expander: CraneliftExpander,
     /// JIT instances that must stay alive (their code is referenced via GOT).
     /// Each defn/macro compilation creates a new JIT; we keep them alive here.
     pub jit_modules: Vec<cranelisp_backend::jit::Jit>,
-    /// Platform function pointers for JIT symbol registration.
-    /// Each entry is (jit_name, function_pointer). Passed to
-    /// `Jit::new_with_symbols()` when creating JIT instances.
-    pub platform_symbols: Vec<(String, *const u8)>,
-    /// Shared JIT for batch module compilation (direct calls, TCO).
-    /// Created lazily when `compile_module_batch` is first called.
-    pub batch_jit: Option<cranelisp_backend::jit::Jit>,
-    /// Accumulated function signatures for cross-module resolution in batch mode.
-    /// Includes both primary JIT names and module-qualified aliases.
-    pub func_sigs: Vec<(Symbol, usize)>,
-    /// Primary JIT-compiled function names from batch mode (no aliases).
-    /// Used by `bridge_batch_to_got` to look up code pointers safely.
-    batch_compiled_fns: Vec<(Symbol, usize)>,
-    /// Function pointers loaded from cached `.o` files via the Linker.
-    /// These are registered as extra symbols when the batch JIT is created,
-    /// so downstream modules can call cached functions via direct calls.
-    pub cached_symbols: Vec<(String, *const u8)>,
-    /// Linker for loading cached `.o` files. Must stay alive so that
-    /// mmap'd code regions remain valid for the duration of execution.
-    pub linker: Option<cache::Linker>,
-    /// Scheduling class registry for bind chain independence analysis.
-    /// Maps platform function names to their SchedulingClass.
-    /// Populated during platform DLL loading; empty when no platforms loaded.
-    pub scheduling_registry: crate::bind_chain_analysis::SchedulingRegistry,
     /// Traced function info for `(trace ...)` expression compilation.
     /// Set by the REPL before calling compile_unit when trace support is needed.
     /// Empty when no trace is active (the common case).
@@ -243,12 +213,25 @@ pub struct CompilationSession {
     /// Set by the REPL to override `cranelisp_trace_format` with the REPL's
     /// version that has access to type_defs/type_modules for proper ADT display.
     pub trace_extra_symbols: Vec<(String, *const u8)>,
-    /// Modules currently being compiled (on the call stack).
-    /// Used by `compile_unit()` for circular dependency detection.
-    pub compile_stack: Vec<ModuleFullPath>,
-    /// Directories to search when resolving module imports.
-    /// Empty in test mode (imports unresolvable → self-contained tests).
-    pub lib_dirs: Vec<PathBuf>,
+}
+
+impl InMemWorkerState {
+    fn new() -> Self {
+        InMemWorkerState {
+            got_state: cranelisp_backend::got::ModuleCodegenState::new(),
+            jit_modules: Vec::new(),
+            traced_fns: Vec::new(),
+            trace_extra_symbols: Vec::new(),
+        }
+    }
+}
+
+/// Object-file codegen worker state: cache writing, .o paths, module structures.
+///
+/// Fields used by `codegen_and_execute()` for background .o emission and
+/// manifest tracking. Separated from `CompilationSession` for clarity and
+/// preparation for concurrent codegen (Step 11).
+pub struct ObjectWorkerState {
     /// Cache state for .o and .meta.json writing. None = caching disabled.
     /// Initialized by production callers (--run, --link, REPL with prelude).
     /// Left as None by test helpers.
@@ -268,6 +251,171 @@ pub struct CompilationSession {
     /// module completes stage 6. Used as `ObjectCompileInput.cross_module_fns`
     /// for subsequent modules.
     pub cross_module_func_sigs: Vec<(Symbol, usize)>,
+}
+
+impl ObjectWorkerState {
+    fn new() -> Self {
+        ObjectWorkerState {
+            cache_state: None,
+            cache_writer: None,
+            compiled_o_paths: Vec::new(),
+            compiled_module_structures: Vec::new(),
+            cross_module_func_sigs: Vec::new(),
+        }
+    }
+
+    fn new_with_cache(cache_dir: PathBuf) -> Self {
+        ObjectWorkerState {
+            cache_state: Some(CacheState::new(cache_dir)),
+            cache_writer: Some(crate::cache_writer::CacheWriterHandle::new()),
+            compiled_o_paths: Vec::new(),
+            compiled_module_structures: Vec::new(),
+            cross_module_func_sigs: Vec::new(),
+        }
+    }
+}
+
+/// V1 pipeline state: batch JIT, cross-module func_sigs, cached .o loading.
+///
+/// Fields used only by v1 pipeline functions (`compile_module_batch`,
+/// `load_prelude_into_session`, `bridge_batch_to_got`). Not accessed by
+/// `compile_unit_inner` or `load_dependencies`. Will be removed when v1
+/// is fully retired.
+pub struct V1State {
+    /// Shared JIT for batch module compilation (direct calls, TCO).
+    /// Created lazily when `compile_module_batch` is first called.
+    pub batch_jit: Option<cranelisp_backend::jit::Jit>,
+    /// Accumulated function signatures for cross-module resolution in batch mode.
+    /// Includes both primary JIT names and module-qualified aliases.
+    pub func_sigs: Vec<(Symbol, usize)>,
+    /// Primary JIT-compiled function names from batch mode (no aliases).
+    /// Used by `bridge_batch_to_got` to look up code pointers safely.
+    pub batch_compiled_fns: Vec<(Symbol, usize)>,
+    /// Function pointers loaded from cached `.o` files via the Linker.
+    /// These are registered as extra symbols when the batch JIT is created,
+    /// so downstream modules can call cached functions via direct calls.
+    pub cached_symbols: Vec<(String, *const u8)>,
+    /// Linker for loading cached `.o` files. Must stay alive so that
+    /// mmap'd code regions remain valid for the duration of execution.
+    pub linker: Option<cache::Linker>,
+}
+
+impl V1State {
+    fn new() -> Self {
+        V1State {
+            batch_jit: None,
+            func_sigs: Vec::new(),
+            batch_compiled_fns: Vec::new(),
+            cached_symbols: Vec::new(),
+            linker: None,
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// ModuleDependencyGraph: incremental module dependency tracking
+// ---------------------------------------------------------------------------
+
+/// Tracks module dependency edges and file-to-module mappings.
+///
+/// Populated incrementally during `compile_unit` / `load_dependencies` as
+/// modules are compiled.  Replaces the upfront `build_file_to_module_map`
+/// and `build_module_dependency_map` calls that the REPL previously used.
+pub struct ModuleDependencyGraph {
+    /// Forward edges: module -> modules it depends on (imports + exports).
+    pub imports: HashMap<ModuleFullPath, HashSet<ModuleFullPath>>,
+    /// Reverse edges: module -> modules that depend on it.
+    pub dependents: HashMap<ModuleFullPath, HashSet<ModuleFullPath>>,
+    /// Filesystem path -> module name mapping (canonical paths).
+    pub file_to_module: HashMap<PathBuf, ModuleFullPath>,
+}
+
+impl Default for ModuleDependencyGraph {
+    fn default() -> Self {
+        ModuleDependencyGraph {
+            imports: HashMap::new(),
+            dependents: HashMap::new(),
+            file_to_module: HashMap::new(),
+        }
+    }
+}
+
+impl ModuleDependencyGraph {
+    /// Create an empty dependency graph.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Register an import/export dependency edge from `parent` to `dep`.
+    ///
+    /// Adds `dep` to `parent`'s forward set and `parent` to `dep`'s reverse set.
+    /// Duplicate edges are deduplicated automatically (HashSet).
+    pub fn register_edge(&mut self, parent: &ModuleFullPath, dep: &ModuleFullPath) {
+        self.imports
+            .entry(parent.clone())
+            .or_default()
+            .insert(dep.clone());
+        self.dependents
+            .entry(dep.clone())
+            .or_default()
+            .insert(parent.clone());
+    }
+
+    /// Register a filesystem path -> module mapping.
+    ///
+    /// Only call with canonical paths to avoid duplicate entries for the
+    /// same file under different relative forms.
+    pub fn register_file(&mut self, path: PathBuf, module: ModuleFullPath) {
+        self.file_to_module.insert(path, module);
+    }
+
+    /// Clear all edges and mappings (used by REPL `/reset`).
+    pub fn clear(&mut self) {
+        self.imports.clear();
+        self.dependents.clear();
+        self.file_to_module.clear();
+    }
+}
+
+// ---------------------------------------------------------------------------
+// CompilationSession: shared compilation core for both batch and REPL
+// ---------------------------------------------------------------------------
+
+/// Shared compilation state that both batch and REPL paths use.
+///
+/// Holds the persistent state needed to compile forms one at a time:
+/// the typechecker, macro expander, GOT state, JIT lifetime management,
+/// and platform symbols.
+///
+/// Fields are grouped into sub-structs by pipeline role:
+/// - `inmem_worker`: GOT state, JIT lifetimes, trace support (codegen path)
+/// - `object_worker`: cache writing, .o paths, module structures (codegen path)
+/// - `v1_state`: batch JIT, func_sigs, cached .o loading (v1 pipeline only)
+///
+/// `ReplSession` wraps a `CompilationSession` and adds REPL-specific
+/// concerns (display metadata, slash commands, trace state, introspection).
+pub struct CompilationSession {
+    /// Type checker state (persists across forms).
+    pub tc: cranelisp_typecheck::TypeChecker,
+    /// Macro expander (persists across forms — macros accumulate).
+    pub expander: CraneliftExpander,
+    /// Platform function pointers for JIT symbol registration.
+    /// Each entry is (jit_name, function_pointer). Passed to
+    /// `Jit::new_with_symbols()` when creating JIT instances.
+    pub platform_symbols: Vec<(String, *const u8)>,
+    /// Scheduling class registry for bind chain independence analysis.
+    /// Maps platform function names to their SchedulingClass.
+    /// Populated during platform DLL loading; empty when no platforms loaded.
+    pub scheduling_registry: crate::bind_chain_analysis::SchedulingRegistry,
+    /// Modules currently being compiled (on the call stack).
+    /// Used by `compile_unit()` for circular dependency detection.
+    pub compile_stack: Vec<ModuleFullPath>,
+    /// Directories to search when resolving module imports.
+    /// Empty in test mode (imports unresolvable → self-contained tests).
+    pub lib_dirs: Vec<PathBuf>,
+    /// Module dependency graph: forward/reverse edges + file→module mapping.
+    /// Populated incrementally by `compile_unit` and `load_dependencies`.
+    pub module_deps: ModuleDependencyGraph,
     /// Queue of compilation units awaiting in-memory codegen (JIT execution).
     /// Drained synchronously by `flush_inmem_queue()`.
     pub inmem_queue: Vec<crate::pipeline_v2::CodegenItem>,
@@ -284,6 +432,12 @@ pub struct CompilationSession {
     /// Loaded platform DLL handles. Must remain alive for the process lifetime
     /// so that function pointers into the DLL code segments stay valid.
     pub loaded_platforms: Vec<crate::platform::LoadedPlatform>,
+    /// In-memory codegen worker state (GOT, JIT lifetimes, trace).
+    pub inmem_worker: InMemWorkerState,
+    /// Object-file codegen worker state (cache, .o paths, module structures).
+    pub object_worker: ObjectWorkerState,
+    /// V1 pipeline state (batch JIT, func_sigs, cached .o loading).
+    pub v1_state: V1State,
 }
 
 impl CompilationSession {
@@ -291,30 +445,20 @@ impl CompilationSession {
     pub fn new() -> Self {
         CompilationSession {
             tc: cranelisp_typecheck::TypeChecker::new(),
-            got_state: cranelisp_backend::got::ModuleCodegenState::new(),
             expander: CraneliftExpander::new(),
-            jit_modules: Vec::new(),
             platform_symbols: Vec::new(),
-            batch_jit: None,
-            func_sigs: Vec::new(),
-            batch_compiled_fns: Vec::new(),
-            cached_symbols: Vec::new(),
-            linker: None,
             scheduling_registry: crate::bind_chain_analysis::SchedulingRegistry::new(),
-            traced_fns: Vec::new(),
-            trace_extra_symbols: Vec::new(),
             compile_stack: Vec::new(),
             lib_dirs: Vec::new(),
-            cache_state: None,
-            cache_writer: None,
-            compiled_o_paths: Vec::new(),
-            compiled_module_structures: Vec::new(),
-            cross_module_func_sigs: Vec::new(),
+            module_deps: ModuleDependencyGraph::new(),
             inmem_queue: Vec::new(),
             object_queue: Vec::new(),
             interactive: false,
             project_root: PathBuf::from("."),
             loaded_platforms: Vec::new(),
+            inmem_worker: InMemWorkerState::new(),
+            object_worker: ObjectWorkerState::new(),
+            v1_state: V1State::new(),
         }
     }
 
@@ -322,15 +466,14 @@ impl CompilationSession {
     /// Initializes cache state and spawns the background cache writer thread.
     pub fn new_with_cache(cache_dir: PathBuf) -> Self {
         let mut session = Self::new();
-        session.cache_state = Some(CacheState::new(cache_dir));
-        session.cache_writer = Some(crate::cache_writer::CacheWriterHandle::new());
+        session.object_worker = ObjectWorkerState::new_with_cache(cache_dir);
         session
     }
 
     /// Flush all pending background cache writes.
     /// Blocks until the cache writer thread has completed all queued writes.
     pub fn flush_cache_writes(&self) {
-        if let Some(ref writer) = self.cache_writer {
+        if let Some(ref writer) = self.object_worker.cache_writer {
             writer.flush();
         }
     }
@@ -482,7 +625,7 @@ impl CompilationSession {
         self.expander.compile_macro(&info, &mut self.tc, &mut jit)?;
 
         // Keep JIT alive so macro function pointers remain valid.
-        self.jit_modules.push(jit);
+        self.inmem_worker.jit_modules.push(jit);
 
         // Register macro in the current module's symbol table so it is visible
         // to cross-module imports (e.g., `(import [fn.threading [-> ->>]])`).
@@ -532,22 +675,22 @@ impl CompilationSession {
         let func_ids = jit.declare_functions(&[defn])?;
 
         // Ensure a GOT slot exists for this function.
-        let slot = self.got_state.ensure_slot_for(&defn.name)?;
+        let slot = self.inmem_worker.got_state.ensure_slot_for(&defn.name)?;
 
         // Build GOT slot map from existing state + this new function.
         let mut got_slots: HashMap<Symbol, usize> = HashMap::new();
-        for (name, dc) in &self.got_state.def_codegen {
+        for (name, dc) in &self.inmem_worker.got_state.def_codegen {
             if let Some(s) = dc.got_slot {
                 got_slots.insert(name.clone(), s);
             }
         }
         got_slots.insert(defn.name.clone(), slot);
 
-        let got_base = self.got_state.got_base_ptr() as i64;
+        let got_base = self.inmem_worker.got_state.got_base_ptr() as i64;
 
         // Build function arity map from existing GOT state + this defn.
         let mut func_arities: HashMap<Symbol, usize> = HashMap::new();
-        for (name, dc) in &self.got_state.def_codegen {
+        for (name, dc) in &self.inmem_worker.got_state.def_codegen {
             if let Some(pc) = dc.param_count {
                 func_arities.insert(name.clone(), pc);
             }
@@ -569,17 +712,17 @@ impl CompilationSession {
         let code_ptr = jit.finalize_and_get_ptr(&defn.name, defn.params().len())?;
 
         // Update the GOT slot with the new code pointer.
-        self.got_state.update_slot(slot, code_ptr);
+        self.inmem_worker.got_state.update_slot(slot, code_ptr);
 
         // Record codegen info.
-        let entry = self.got_state.def_codegen.entry(defn.name.clone()).or_default();
+        let entry = self.inmem_worker.got_state.def_codegen.entry(defn.name.clone()).or_default();
         entry.code_ptr = Some(code_ptr);
         entry.got_slot = Some(slot);
         entry.param_count = Some(defn.params().len());
         entry.defn = Some(defn.clone());
 
         // Keep JIT alive so code pointer remains valid.
-        self.jit_modules.push(jit);
+        self.inmem_worker.jit_modules.push(jit);
 
         Ok(())
     }
@@ -589,11 +732,12 @@ impl CompilationSession {
     /// Creates it lazily with platform symbols and intrinsics. Called before
     /// any batch module compilation.
     pub fn ensure_batch_jit(&mut self) -> Result<(), CranelispError> {
-        if self.batch_jit.is_none() {
+        if self.v1_state.batch_jit.is_none() {
             let mut extra_symbols = self.extra_symbols_slice();
             // Include function pointers from cached .o files so the JIT
             // can resolve cross-module calls to cached functions.
             let cached_refs: Vec<(&str, *const u8)> = self
+                .v1_state
                 .cached_symbols
                 .iter()
                 .map(|(name, ptr)| (name.as_str(), *ptr))
@@ -601,7 +745,7 @@ impl CompilationSession {
             extra_symbols.extend(cached_refs);
             let mut jit = cranelisp_backend::jit::Jit::new_with_symbols(&extra_symbols)?;
             jit.declare_intrinsics()?;
-            self.batch_jit = Some(jit);
+            self.v1_state.batch_jit = Some(jit);
         }
         Ok(())
     }
@@ -627,21 +771,21 @@ impl CompilationSession {
         }
 
         // Take the JIT out temporarily to avoid borrow conflict with func_sigs.
-        let mut jit = self.batch_jit.take()
+        let mut jit = self.v1_state.batch_jit.take()
             .unwrap_or_else(|| unreachable!("invariant: batch_jit set by ensure_batch_jit"));
         let module_info = cranelisp_backend::compile_module_program(
             program,
             check,
             &mut jit,
-            &self.func_sigs,
+            &self.v1_state.func_sigs,
             module_path.as_ref(),
         )?;
-        self.batch_jit = Some(jit);
+        self.v1_state.batch_jit = Some(jit);
 
         // Store primary JIT names for GOT bridging (before aliases are added).
-        self.batch_compiled_fns.extend(module_info.func_signatures.iter().cloned());
+        self.v1_state.batch_compiled_fns.extend(module_info.func_signatures.iter().cloned());
 
-        accumulate_func_sigs(module_path, &module_info.func_signatures, &mut self.func_sigs);
+        accumulate_func_sigs(module_path, &module_info.func_signatures, &mut self.v1_state.func_sigs);
 
         Ok(module_info.warnings)
     }
@@ -651,7 +795,7 @@ impl CompilationSession {
     /// Must be called after all `compile_module_batch` calls and before
     /// executing any compiled code.
     pub fn finalize_batch_jit(&mut self) -> Result<(), CranelispError> {
-        if let Some(ref mut jit) = self.batch_jit {
+        if let Some(ref mut jit) = self.v1_state.batch_jit {
             jit.finalize()?;
         }
         Ok(())
@@ -670,9 +814,9 @@ impl CompilationSession {
     /// module-qualified aliases (matching `accumulate_func_sigs` alias logic).
     pub fn bridge_batch_to_got(&mut self) -> Result<(), CranelispError> {
         // Snapshot to avoid borrow conflict with batch_jit and got_state.
-        let compiled: Vec<(Symbol, usize)> = self.batch_compiled_fns.clone();
+        let compiled: Vec<(Symbol, usize)> = self.v1_state.batch_compiled_fns.clone();
 
-        let jit = match self.batch_jit.as_mut() {
+        let jit = match self.v1_state.batch_jit.as_mut() {
             Some(j) => j,
             None => return Ok(()), // No batch JIT — nothing to bridge.
         };
@@ -727,14 +871,14 @@ impl CompilationSession {
         param_count: usize,
         code_ptr: *const u8,
     ) -> Result<(), CranelispError> {
-        if let Some(dc) = self.got_state.def_codegen.get(name)
+        if let Some(dc) = self.inmem_worker.got_state.def_codegen.get(name)
             && dc.got_slot.is_some()
         {
             return Ok(());
         }
-        let slot = self.got_state.ensure_slot_for(name)?;
-        self.got_state.update_slot(slot, code_ptr);
-        let dc = self.got_state.def_codegen.entry(name.clone()).or_default();
+        let slot = self.inmem_worker.got_state.ensure_slot_for(name)?;
+        self.inmem_worker.got_state.update_slot(slot, code_ptr);
+        let dc = self.inmem_worker.got_state.def_codegen.entry(name.clone()).or_default();
         dc.code_ptr = Some(code_ptr);
         dc.param_count = Some(param_count);
         Ok(())
@@ -746,7 +890,7 @@ impl CompilationSession {
         name: &Symbol,
         param_count: usize,
     ) -> Result<*const u8, CranelispError> {
-        let jit = self.batch_jit.as_mut().ok_or_else(|| CranelispError::CodegenError {
+        let jit = self.v1_state.batch_jit.as_mut().ok_or_else(|| CranelispError::CodegenError {
             message: "batch JIT not initialized".into(),
             span: Span::SYNTHETIC,
         })?;
@@ -776,6 +920,7 @@ impl CompilationSession {
 
         // Collect existing (name, slot, param_count) entries first to avoid borrow issues.
         let entries: Vec<(Symbol, usize, Option<usize>)> = self
+            .inmem_worker
             .got_state
             .def_codegen
             .iter()
@@ -791,7 +936,7 @@ impl CompilationSession {
             .collect();
 
         for (name, slot, param_count) in &entries {
-            let code_ptr = self.got_state.get_slot(*slot).unwrap_or(std::ptr::null());
+            let code_ptr = self.inmem_worker.got_state.get_slot(*slot).unwrap_or(std::ptr::null());
 
             for alias_str in generate_module_aliases(mod_str, name.as_ref()) {
                 let qualified = Symbol::from(alias_str);
@@ -809,10 +954,10 @@ impl CompilationSession {
         param_count: Option<usize>,
     ) {
         // Only register if the alias doesn't already exist.
-        if self.got_state.def_codegen.contains_key(alias.as_ref()) {
+        if self.inmem_worker.got_state.def_codegen.contains_key(alias.as_ref()) {
             return;
         }
-        let entry = self.got_state.def_codegen.entry(alias.clone()).or_default();
+        let entry = self.inmem_worker.got_state.def_codegen.entry(alias.clone()).or_default();
         entry.got_slot = Some(slot);
         entry.code_ptr = if !code_ptr.is_null() { Some(code_ptr) } else { None };
         entry.param_count = param_count;
@@ -836,11 +981,11 @@ impl CompilationSession {
         for tl in program.iter() {
             match tl {
                 TopLevel::Defn(defn) => {
-                    self.got_state.ensure_slot_for(&defn.name)?;
+                    self.inmem_worker.got_state.ensure_slot_for(&defn.name)?;
                 }
                 TopLevel::TraitImpl(impl_) => {
                     for method in &impl_.methods {
-                        self.got_state.ensure_slot_for(&method.name)?;
+                        self.inmem_worker.got_state.ensure_slot_for(&method.name)?;
                     }
                 }
                 _ => {}
@@ -886,7 +1031,7 @@ impl CompilationSession {
 
                     // Execute zero-arg defns.
                     let (value, result_ty) = if defn.params().is_empty() {
-                        let entry = self.got_state.def_codegen.get(defn.name.as_ref());
+                        let entry = self.inmem_worker.got_state.def_codegen.get(defn.name.as_ref());
                         let code_ptr = entry
                             .and_then(|e| e.code_ptr)
                             .ok_or_else(|| CranelispError::CodegenError {
@@ -1659,21 +1804,21 @@ fn load_cached_object_into_session(
     session: &mut CompilationSession,
 ) -> Result<(), CranelispError> {
     // Initialize the Linker on first use and register all intrinsic symbols.
-    if session.linker.is_none() {
+    if session.v1_state.linker.is_none() {
         let mut linker = cache::Linker::new()?;
         register_intrinsics_on_linker(&mut linker);
         // Register platform symbols (DLL functions).
         for (name, ptr) in &session.platform_symbols {
             linker.register_symbol(name, *ptr);
         }
-        session.linker = Some(linker);
+        session.v1_state.linker = Some(linker);
     }
 
     // Register any previously-loaded cached function symbols so this
     // module's .o can call functions from earlier cached modules.
-    let linker = session.linker.as_mut()
+    let linker = session.v1_state.linker.as_mut()
         .unwrap_or_else(|| unreachable!("invariant: linker just initialized"));
-    for (name, ptr) in &session.cached_symbols {
+    for (name, ptr) in &session.v1_state.cached_symbols {
         linker.register_symbol(name, *ptr);
     }
 
@@ -1692,17 +1837,17 @@ fn load_cached_object_into_session(
             .unwrap_or(0);
 
         // Register in func_sigs for batch JIT cross-module resolution.
-        session.func_sigs.push((fn_name.clone(), param_count));
+        session.v1_state.func_sigs.push((fn_name.clone(), param_count));
 
         // If we got a code pointer from the .o file, register it as a
         // cached symbol for the batch JIT AND in the GOT for REPL-mode
         // indirect calls. Without GOT registration, /reset + cache load
         // fails because REPL-compiled code uses GOT-indirect calls.
         if let Some(code_ptr) = fn_addrs.get(fn_name_str) {
-            session.cached_symbols.push((fn_name_str.to_string(), *code_ptr));
+            session.v1_state.cached_symbols.push((fn_name_str.to_string(), *code_ptr));
             // Register in GOT so REPL code can call this function.
-            let got_slot = session.got_state.ensure_slot_for(fn_name)?;
-            session.got_state.update_slot(got_slot, *code_ptr);
+            let got_slot = session.inmem_worker.got_state.ensure_slot_for(fn_name)?;
+            session.inmem_worker.got_state.update_slot(got_slot, *code_ptr);
         }
 
         // Suppress unused variable warning — slot is from the cached
@@ -1726,18 +1871,18 @@ fn load_cached_object_into_session(
             (fn_name.clone(), pc)
         })
         .collect();
-    accumulate_func_sigs(module_path, &alias_entries, &mut session.func_sigs);
+    accumulate_func_sigs(module_path, &alias_entries, &mut session.v1_state.func_sigs);
 
     // Also register qualified aliases as cached symbols and GOT slots.
     for (fn_name, _pc) in &alias_entries {
         let fn_name_str: &str = fn_name.as_ref();
         if let Some(code_ptr) = fn_addrs.get(fn_name_str) {
             for alias in generate_module_aliases(mod_str, fn_name_str) {
-                session.cached_symbols.push((alias.clone(), *code_ptr));
+                session.v1_state.cached_symbols.push((alias.clone(), *code_ptr));
                 // Register alias in GOT for REPL-mode indirect calls.
                 let alias_sym = Symbol::from(alias.as_str());
-                let got_slot = session.got_state.ensure_slot_for(&alias_sym)?;
-                session.got_state.update_slot(got_slot, *code_ptr);
+                let got_slot = session.inmem_worker.got_state.ensure_slot_for(&alias_sym)?;
+                session.inmem_worker.got_state.update_slot(got_slot, *code_ptr);
             }
         }
     }
@@ -2287,50 +2432,6 @@ pub fn resolve_prelude(
 
 /// Build a mapping from canonical file paths to module paths.
 ///
-/// Discovers the module graph starting from the prelude file and returns
-/// a mapping for all modules. Used by the REPL file watcher to map
-/// changed files to module paths for recompilation.
-pub fn build_file_to_module_map(
-    project_root: &Path,
-    lib_dirs: &[PathBuf],
-) -> HashMap<PathBuf, ModuleFullPath> {
-    let mut map = HashMap::new();
-    let prelude_file = match resolve_prelude(project_root, lib_dirs) {
-        Some(f) => f,
-        None => return map,
-    };
-    if let Ok(graph) = discover_module_graph(&prelude_file, lib_dirs) {
-        for (module_path, node) in &graph.nodes {
-            if let Ok(canonical) = node.file_path.canonicalize() {
-                map.insert(canonical, module_path.clone());
-            }
-        }
-    }
-    map
-}
-
-/// Build a module dependency map from the module graph discovered during prelude loading.
-///
-/// Returns a map from each module to the modules it depends on (its imports).
-/// This is used by the REPL file watcher to cascade-invalidate dependents when
-/// a module's source changes.
-pub fn build_module_dependency_map(
-    project_root: &Path,
-    lib_dirs: &[PathBuf],
-) -> HashMap<ModuleFullPath, Vec<ModuleFullPath>> {
-    let mut map = HashMap::new();
-    let prelude_file = match resolve_prelude(project_root, lib_dirs) {
-        Some(f) => f,
-        None => return map,
-    };
-    if let Ok(graph) = discover_module_graph(&prelude_file, lib_dirs) {
-        for (module_path, node) in &graph.nodes {
-            map.insert(module_path.clone(), node.dependencies.clone());
-        }
-    }
-    map
-}
-
 /// Load and compile the prelude module into a CompilationSession.
 ///
 /// Discovers the prelude module graph, compiles each module through the
@@ -2431,7 +2532,7 @@ pub fn load_prelude_into_session(
                 // Cache write failures are non-fatal — worst case is no caching.
                 let _ = write_module_cache(
                     cs, &module_path, hash, &node.dependencies, &structure, &session.tc,
-                    None, None, &session.func_sigs,
+                    None, None, &session.v1_state.func_sigs,
                 );
             }
             continue;
@@ -2454,7 +2555,7 @@ pub fn load_prelude_into_session(
         if let (Some(cs), Some(hash)) = (cache_state.as_mut(), source_hash) {
             let _ = write_module_cache(
                 cs, &module_path, hash, &node.dependencies, &structure, &session.tc,
-                Some(&program), Some(&check), &session.func_sigs,
+                Some(&program), Some(&check), &session.v1_state.func_sigs,
             );
         }
     }
@@ -2637,7 +2738,7 @@ fn compile_single_module(
         if let (Some(cs), Some(hash)) = (cache_state.as_mut(), source_hash) {
             write_module_cache(
                 cs, module_path, hash, &node.dependencies, &structure, &session.tc,
-                None, None, &session.func_sigs,
+                None, None, &session.v1_state.func_sigs,
             )?;
         }
         return Ok(SingleModuleResult { warnings, entry_info: None });
@@ -2661,7 +2762,7 @@ fn compile_single_module(
     if let (Some(cs), Some(hash)) = (cache_state.as_mut(), source_hash) {
         write_module_cache(
             cs, module_path, hash, &node.dependencies, &structure, &session.tc,
-            Some(&program), Some(&check), &session.func_sigs,
+            Some(&program), Some(&check), &session.v1_state.func_sigs,
         )?;
     }
 

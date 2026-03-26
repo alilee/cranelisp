@@ -149,7 +149,7 @@ pub(crate) fn handle_info(session: &ReplSession, name: &str, stdout: &mut impl W
             let _ = writeln!(stdout, "{}", pretty_print_str(&sig));
             // Line 2: for functions, show code info.
             if !matches!(resolved_entry, ModuleEntry::Macro { .. } | ModuleEntry::TypeDef { .. } | ModuleEntry::TraitDecl { .. })
-                && let Some(dc) = session.core.got_state.def_codegen.get(name)
+                && let Some(dc) = session.core.inmem_worker.got_state.def_codegen.get(name)
             {
                 let size_str = dc
                     .code_size
@@ -519,7 +519,7 @@ pub(crate) fn handle_source(session: &ReplSession, name: &str, stdout: &mut impl
         let _ = writeln!(stdout, "usage: /source <name>");
         return;
     }
-    match session.core.got_state.def_codegen.get(name) {
+    match session.core.inmem_worker.got_state.def_codegen.get(name) {
         Some(dc) if dc.source.is_some() => {
             let _ = writeln!(stdout, "{}", styled(&format!("; source for {name}"), Style::Italic));
             let _ = writeln!(stdout, "{}", pretty_print_str(dc.source.as_ref().unwrap()));
@@ -536,7 +536,7 @@ pub(crate) fn handle_sexp(session: &ReplSession, name: &str, stdout: &mut impl W
         let _ = writeln!(stdout, "usage: /sexp <name>");
         return;
     }
-    match session.core.got_state.def_codegen.get(name) {
+    match session.core.inmem_worker.got_state.def_codegen.get(name) {
         Some(dc) if dc.sexp.is_some() => {
             let _ = writeln!(stdout, "; sexp for {name}");
             let _ = writeln!(stdout, "{}", format_sexp(dc.sexp.as_ref().unwrap()));
@@ -553,7 +553,7 @@ pub(crate) fn handle_ast(session: &ReplSession, name: &str, stdout: &mut impl Wr
         let _ = writeln!(stdout, "usage: /ast <name>");
         return;
     }
-    match session.core.got_state.def_codegen.get(name) {
+    match session.core.inmem_worker.got_state.def_codegen.get(name) {
         Some(dc) if dc.defn.is_some() => {
             let _ = writeln!(stdout, "; ast for {name}");
             let _ = writeln!(stdout, "{:#?}", dc.defn.as_ref().unwrap());
@@ -570,7 +570,7 @@ pub(crate) fn handle_clif(session: &ReplSession, name: &str, stdout: &mut impl W
         let _ = writeln!(stdout, "usage: /clif <name>");
         return;
     }
-    match session.core.got_state.def_codegen.get(name) {
+    match session.core.inmem_worker.got_state.def_codegen.get(name) {
         Some(dc) if dc.clif_ir.is_some() => {
             let _ = writeln!(stdout, "; clif ir for {name}");
             let _ = write!(stdout, "{}", dc.clif_ir.as_ref().unwrap());
@@ -587,7 +587,7 @@ pub(crate) fn handle_disasm(session: &ReplSession, name: &str, stdout: &mut impl
         let _ = writeln!(stdout, "usage: /disasm <name>");
         return;
     }
-    match session.core.got_state.def_codegen.get(name) {
+    match session.core.inmem_worker.got_state.def_codegen.get(name) {
         Some(dc) if dc.disasm.is_some() => {
             let _ = writeln!(stdout, "; disasm for {name}");
             let _ = writeln!(stdout, "{}", dc.disasm.as_ref().unwrap());

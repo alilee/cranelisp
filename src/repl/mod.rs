@@ -109,13 +109,9 @@ pub struct ReplSession {
     /// Modules that failed recompilation after a file change.
     /// While non-empty, expression evaluation is blocked (repl/spec.md §14.4).
     pub error_modules: HashSet<ModuleFullPath>,
-    /// Maps canonical file paths to module paths for file-watching recompilation.
-    /// Populated during prelude loading and module imports.
-    file_to_module: HashMap<std::path::PathBuf, ModuleFullPath>,
-    /// Maps each module to the modules it depends on (imports from).
-    /// Used for cascade invalidation: when module B changes, all modules that
-    /// depend on B must also be recompiled.
-    module_dependencies: HashMap<ModuleFullPath, Vec<ModuleFullPath>>,
+    // Module dependency tracking (file→module map, forward/reverse edges)
+    // has moved to `self.core.module_deps` (ModuleDependencyGraph) and is
+    // populated incrementally during compile_unit / load_dependencies.
     /// Module structure for the current REPL module (tracks imports, exports,
     /// impl_sexps as they accumulate interactively). Used by save.rs to
     /// regenerate the module's `.cl` file.
@@ -142,8 +138,6 @@ impl ReplSession {
             watcher: None,
             pending_changes: Vec::new(),
             error_modules: HashSet::new(),
-            file_to_module: HashMap::new(),
-            module_dependencies: HashMap::new(),
             current_module_structure: ModuleStructure {
                 path: user_module,
                 file_path: None,
@@ -200,13 +194,8 @@ impl ReplSession {
             session.type_defs.insert(name.clone(), info.clone());
         }
 
-        // Build file-to-module mapping for file watcher recompilation.
-        session.file_to_module =
-            crate::pipeline::build_file_to_module_map(project_root, lib_dirs);
-
-        // Build module dependency map for cascade invalidation.
-        session.module_dependencies =
-            crate::pipeline::build_module_dependency_map(project_root, lib_dirs);
+        // File-to-module and dependency maps are now populated incrementally
+        // by compile_unit / load_dependencies into session.core.module_deps.
 
         // Switch back to user module for REPL input.
         session.core.tc.set_current_module(ModuleFullPath::from("user"));
@@ -369,7 +358,7 @@ impl ReplSession {
         // (same length), which is aligned with program's TopLevel entries.
         for (tl, original) in program.iter().zip(originals.iter()) {
             if let cranelisp_types::TopLevel::Defn(defn) = tl {
-                let dc = self.core.got_state.def_codegen
+                let dc = self.core.inmem_worker.got_state.def_codegen
                     .entry(defn.name.clone())
                     .or_default();
                 dc.sexp = Some(original.clone());
@@ -397,7 +386,7 @@ impl ReplSession {
             &self.core.tc,
             Some(&program),
             Some(&check),
-            &self.core.func_sigs,
+            &self.core.v1_state.func_sigs,
         );
         cache_state.flush_manifest();
 
@@ -424,7 +413,7 @@ impl ReplSession {
 
         let sym_table = self.core.tc.symbol_table();
         let structure = &self.current_module_structure;
-        let def_codegen = &self.core.got_state.def_codegen;
+        let def_codegen = &self.core.inmem_worker.got_state.def_codegen;
 
         if let Some(hash) = save::save_module_file(
             &file_path,
@@ -686,7 +675,7 @@ impl ReplSession {
             // constrained poly fns skip compile_and_register_defn (which
             // normally creates the entry), but still need sexp for save.
             if let TopLevel::Defn(defn) = &input {
-                let dc = self.core.got_state.def_codegen.entry(defn.name.clone()).or_default();
+                let dc = self.core.inmem_worker.got_state.def_codegen.entry(defn.name.clone()).or_default();
                 dc.source = Some(format_sexp(&form_sexp));
                 dc.sexp = Some(form_sexp.clone());
             }
@@ -721,7 +710,7 @@ impl ReplSession {
         self.core.expander.compile_macro(&info, &mut self.core.tc, &mut jit)?;
 
         // Keep JIT alive so macro function pointers remain valid.
-        self.core.jit_modules.push(jit);
+        self.core.inmem_worker.jit_modules.push(jit);
 
         // Register macro in the symbol table for introspection (spec §11.2).
         let clause_infos: Vec<MacroClauseInfo> = info
@@ -998,7 +987,7 @@ impl ReplSession {
         let compiled = compile_expr_with_traced_fns(
             expr,
             &check,
-            Some(&mut self.core.got_state),
+            Some(&mut self.core.inmem_worker.got_state),
             &extra_symbols,
             if has_trace { Some(&traced_fns) } else { None },
         )?;
@@ -1068,7 +1057,7 @@ impl ReplSession {
         // For defn, execute if it's zero-arg, otherwise return 0.
         // Time the execution separately from compilation.
         let (value, eval_duration) = if defn.params().is_empty() && !is_constrained {
-            let entry = self.core.got_state.def_codegen.get(defn.name.as_ref());
+            let entry = self.core.inmem_worker.got_state.def_codegen.get(defn.name.as_ref());
             let code_ptr = entry
                 .and_then(|e| e.code_ptr)
                 .ok_or_else(|| CranelispError::CodegenError {
@@ -1258,22 +1247,22 @@ impl ReplSession {
         let func_ids = jit.declare_functions(&[defn])?;
 
         // Ensure a GOT slot exists for this function.
-        let slot = self.core.got_state.ensure_slot_for(&defn.name)?;
+        let slot = self.core.inmem_worker.got_state.ensure_slot_for(&defn.name)?;
 
         // Build GOT slot map from existing state + this new function.
         let mut got_slots: HashMap<Symbol, usize> = HashMap::new();
-        for (name, dc) in &self.core.got_state.def_codegen {
+        for (name, dc) in &self.core.inmem_worker.got_state.def_codegen {
             if let Some(s) = dc.got_slot {
                 got_slots.insert(name.clone(), s);
             }
         }
         got_slots.insert(defn.name.clone(), slot);
 
-        let got_base = self.core.got_state.got_base_ptr() as i64;
+        let got_base = self.core.inmem_worker.got_state.got_base_ptr() as i64;
 
         // Build function arity map from existing GOT state + this defn.
         let mut func_arities: HashMap<Symbol, usize> = HashMap::new();
-        for (name, dc) in &self.core.got_state.def_codegen {
+        for (name, dc) in &self.core.inmem_worker.got_state.def_codegen {
             if let Some(pc) = dc.param_count {
                 func_arities.insert(name.clone(), pc);
             }
@@ -1295,10 +1284,10 @@ impl ReplSession {
         let code_ptr = jit.finalize_and_get_ptr(&defn.name, defn.params().len())?;
 
         // Update the GOT slot with the new code pointer.
-        self.core.got_state.update_slot(slot, code_ptr);
+        self.core.inmem_worker.got_state.update_slot(slot, code_ptr);
 
         // Record codegen info and introspection data.
-        let entry = self.core.got_state.def_codegen.entry(defn.name.clone()).or_default();
+        let entry = self.core.inmem_worker.got_state.def_codegen.entry(defn.name.clone()).or_default();
         entry.code_ptr = Some(code_ptr);
         entry.got_slot = Some(slot);
         entry.param_count = Some(defn.params().len());
@@ -1312,7 +1301,7 @@ impl ReplSession {
         }
 
         // Keep JIT alive so code pointer remains valid.
-        self.core.jit_modules.push(jit);
+        self.core.inmem_worker.jit_modules.push(jit);
 
         Ok(())
     }
@@ -1352,12 +1341,12 @@ impl ReplSession {
     /// type information from the symbol table, and builds `TracedFnInfo` entries
     /// for the trace codegen to generate wrapper functions.
     fn build_traced_fns(&mut self) -> Vec<TracedFnInfo> {
-        let got_base = self.core.got_state.got_base_ptr() as i64;
+        let got_base = self.core.inmem_worker.got_state.got_base_ptr() as i64;
         let module = self.core.tc.current_module_path().clone();
         let symbol_table = self.core.tc.symbol_table();
 
         let mut traced = Vec::new();
-        for (name, dc) in &self.core.got_state.def_codegen {
+        for (name, dc) in &self.core.inmem_worker.got_state.def_codegen {
             let (slot, code_ptr, arity) = match (dc.got_slot, dc.code_ptr, dc.param_count) {
                 (Some(s), Some(p), Some(a)) => (s, p, a),
                 _ => continue,
@@ -1679,6 +1668,8 @@ fn update_watched_paths(session: &mut ReplSession) {
 
     // Watch every known module source file (records content hash for each).
     let file_paths: Vec<std::path::PathBuf> = session
+        .core
+        .module_deps
         .file_to_module
         .keys()
         .cloned()
@@ -1728,7 +1719,7 @@ fn reload_changed_modules(session: &mut ReplSession, stdout: &mut impl Write) {
     // Map file paths to module paths.
     let mut stale_modules: Vec<ModuleFullPath> = Vec::new();
     for path in &pending {
-        if let Some(module_path) = session.file_to_module.get(path)
+        if let Some(module_path) = session.core.module_deps.file_to_module.get(path)
             && !stale_modules.contains(module_path)
         {
             stale_modules.push(module_path.clone());
@@ -1773,7 +1764,7 @@ fn reload_changed_modules(session: &mut ReplSession, stdout: &mut impl Write) {
     // and recompile them in BFS order.
     let cascade_targets = find_transitive_dependents(
         &reloaded,
-        &session.module_dependencies,
+        &session.core.module_deps.dependents,
     );
 
     for dep_path in &cascade_targets {
@@ -1815,6 +1806,8 @@ fn module_display_name(
     project_root: &std::path::Path,
 ) -> String {
     session
+        .core
+        .module_deps
         .file_to_module
         .iter()
         .find(|(_, mp)| *mp == module_path)
@@ -1822,33 +1815,14 @@ fn module_display_name(
         .unwrap_or_else(|| module_path.as_ref().to_string())
 }
 
-/// Find all modules that directly depend on the given module.
-///
-/// A module Y depends on module X if X appears in Y's dependency list.
-/// This is the reverse lookup of the module_dependencies map.
-fn find_direct_dependents(
-    module: &ModuleFullPath,
-    dependencies: &HashMap<ModuleFullPath, Vec<ModuleFullPath>>,
-) -> Vec<ModuleFullPath> {
-    let mut dependents = Vec::new();
-    for (mod_path, deps) in dependencies {
-        if mod_path == module {
-            continue;
-        }
-        if deps.iter().any(|d| d == module) {
-            dependents.push(mod_path.clone());
-        }
-    }
-    dependents
-}
-
 /// Find all transitive dependents of the given modules via BFS.
 ///
-/// Returns modules in BFS order (direct dependents first, then their
-/// dependents, etc.). Does not include the seed modules themselves.
+/// Uses the reverse dependency map (`dependents`: module -> set of modules
+/// that depend on it). Returns modules in BFS order (direct dependents
+/// first, then their dependents, etc.). Does not include the seed modules.
 fn find_transitive_dependents(
     changed_modules: &[ModuleFullPath],
-    dependencies: &HashMap<ModuleFullPath, Vec<ModuleFullPath>>,
+    dependents: &std::collections::HashMap<ModuleFullPath, std::collections::HashSet<ModuleFullPath>>,
 ) -> Vec<ModuleFullPath> {
     let mut result = Vec::new();
     let mut visited: HashSet<ModuleFullPath> = changed_modules.iter().cloned().collect();
@@ -1856,20 +1830,24 @@ fn find_transitive_dependents(
 
     // Seed with direct dependents of all changed modules.
     for module in changed_modules {
-        for dep in find_direct_dependents(module, dependencies) {
-            if visited.insert(dep.clone()) {
-                queue.push_back(dep.clone());
-                result.push(dep);
+        if let Some(deps) = dependents.get(module) {
+            for dep in deps {
+                if visited.insert(dep.clone()) {
+                    queue.push_back(dep.clone());
+                    result.push(dep.clone());
+                }
             }
         }
     }
 
     // BFS to find transitive dependents.
     while let Some(current) = queue.pop_front() {
-        for dep in find_direct_dependents(&current, dependencies) {
-            if visited.insert(dep.clone()) {
-                queue.push_back(dep.clone());
-                result.push(dep);
+        if let Some(deps) = dependents.get(&current) {
+            for dep in deps {
+                if visited.insert(dep.clone()) {
+                    queue.push_back(dep.clone());
+                    result.push(dep.clone());
+                }
             }
         }
     }
@@ -1893,6 +1871,8 @@ fn reload_single_module(
 ) -> Result<(), CranelispError> {
     // Find the source file for this module.
     let file_path = session
+        .core
+        .module_deps
         .file_to_module
         .iter()
         .find(|(_, mp)| *mp == module_path)
@@ -2159,7 +2139,7 @@ fn handle_reset(session: &mut ReplSession, stdout: &mut impl Write) {
     session.type_modules.clear();
     session.pending_changes.clear();
     session.error_modules.clear();
-    session.file_to_module.clear();
+    // module_deps is cleared by CompilationSession::new() above.
     // Reset module structure but preserve the file path.
     let user_cl_path = session.current_module_structure.file_path.clone();
     session.current_module_structure = ModuleStructure {
@@ -2212,11 +2192,9 @@ fn handle_reset(session: &mut ReplSession, stdout: &mut impl Write) {
         }
     }
 
-    // 3. Rebuild file-to-module mapping and module dependency map.
-    session.file_to_module =
-        crate::pipeline::build_file_to_module_map(&project_root, &lib_dirs);
-    session.module_dependencies =
-        crate::pipeline::build_module_dependency_map(&project_root, &lib_dirs);
+    // 3. File-to-module and dependency maps are now populated incrementally
+    // by compile_unit / load_dependencies into session.core.module_deps
+    // during the prelude reload above.
 
     // 4. Reset current module to user.
     session.core.tc.set_current_module(ModuleFullPath::from("user"));
