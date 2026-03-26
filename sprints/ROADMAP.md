@@ -50,6 +50,7 @@ Delivery progress for the Cranelisp reimplementation. For technical scope per ri
 | 27 | Pipeline Switchover Design — §8 rewritten (two-caller model, recursive compile_unit, PipelineDepth), §15 added (5 remaining v1 paths). Design-only. | COMPLETE | `sprints/archive/sprint-27.md` |
 | 28 | Pipeline Switchover Implementation — compile_unit() owns all 7 stages, --run + --link + test helper through compile_unit(), CodegenTarget enum, CacheWriter background .o, ~650 lines deleted. REPL deferred. | COMPLETE | `sprints/archive/sprint-28.md` |
 | 29 | Pipeline v3 Step 1 — Decouple codegen from compile_unit: compile_unit() returns after stage 5, new codegen_and_execute() for stages 6-7, CompileUnitResult/CodegenResult split, 13 call sites updated, 2 dead transitional functions deleted, /review I1 fixed: 1533 tests, 11 pre-existing sketch_port failures, 0 ignored, 0 warnings | COMPLETE | `sprints/archive/sprint-29.md` |
+| 30 | Pipeline v3 Step 2 — CodegenItem queues: CodegenItem struct, inmem_queue/object_queue on CompilationSession, flush_inmem_queue()/flush_object_queue(), all v2 call sites converted (run_batch_v2, compile_for_link_v2, load_prelude_for_link, compile_and_run), Step 1.5 dead code cleanup dropped (functions not dead), /review 0B 3I 4S (I1+S2 fixed): 1533 passed, 11 pre-existing sketch_port failures, 0 ignored, 9 pre-existing clippy warnings | COMPLETE | `sprints/archive/sprint-30.md` |
 
 ## Forward Plan
 

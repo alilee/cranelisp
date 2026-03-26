@@ -73,6 +73,18 @@ pub struct CodegenResult {
     pub warnings: Vec<Warning>,
 }
 
+/// An item queued for codegen (stages 6-7).
+///
+/// Captures everything needed to call `codegen_and_execute()` for a single
+/// compilation unit. Callers push items to the session's `inmem_queue` or
+/// `object_queue`, then call the corresponding flush method.
+pub struct CodegenItem {
+    /// The compile context (module, strategy, compile mode, codegen target).
+    pub ctx: CompileContext,
+    /// The stages 1-5 result, ready for codegen.
+    pub unit_result: CompileUnitResult,
+}
+
 /// Construct an empty `CheckResult` for modules with no compilable forms.
 fn empty_check_result() -> CheckResult {
     CheckResult {
@@ -816,7 +828,11 @@ pub fn run_batch_v2(
                     codegen_target: CodegenTarget::JitAndCache,
                 };
                 let dep_result = compile_unit(&mut session, &dep_source, &dep_ctx)?;
-                codegen_and_execute(&mut session, &dep_result, &dep_ctx)?;
+                session.inmem_queue.push(CodegenItem {
+                    ctx: dep_ctx,
+                    unit_result: dep_result,
+                });
+                session.flush_inmem_queue()?;
             }
         }
 
@@ -828,7 +844,11 @@ pub fn run_batch_v2(
         };
 
         let prelude_result = compile_unit(&mut session, &prelude_source, &prelude_ctx)?;
-        codegen_and_execute(&mut session, &prelude_result, &prelude_ctx)?;
+        session.inmem_queue.push(CodegenItem {
+            ctx: prelude_ctx,
+            unit_result: prelude_result,
+        });
+        session.flush_inmem_queue()?;
     }
 
     // Step 5: Load entry file via compile_unit.
@@ -840,7 +860,17 @@ pub fn run_batch_v2(
     };
 
     let unit_result = compile_unit(&mut session, &entry_source, &entry_ctx)?;
-    let result = codegen_and_execute(&mut session, &unit_result, &entry_ctx)?;
+    let unit_warnings = unit_result.warnings.clone();
+    session.inmem_queue.push(CodegenItem {
+        ctx: entry_ctx,
+        unit_result,
+    });
+    let mut codegen_results = session.flush_inmem_queue()?;
+    // Safety: we pushed exactly one item, so flush returns exactly one result.
+    let result = match codegen_results.pop() {
+        Some(r) => r,
+        None => unreachable!("invariant: flush_inmem_queue must return one result per queued item"),
+    };
 
     // Step 6: Verify `main` exists in the GOT.
     // compile_unit in Interactive mode auto-executes zero-arg defns, so
@@ -882,7 +912,7 @@ pub fn run_batch_v2(
     };
 
     // Combine warnings from typecheck (unit_result) and codegen (result).
-    let mut all_warnings = unit_result.warnings;
+    let mut all_warnings = unit_warnings;
     all_warnings.extend(result.warnings);
 
     Ok(crate::pipeline::CompiledModuleGraph {
@@ -1013,9 +1043,15 @@ pub fn compile_for_link_v2(
         };
 
         let unit_result = compile_unit(&mut session, &source, &ctx)?;
-        let codegen_result = codegen_and_execute(&mut session, &unit_result, &ctx)?;
-        all_warnings.extend(unit_result.warnings);
-        all_warnings.extend(codegen_result.warnings);
+        all_warnings.extend(unit_result.warnings.clone());
+        session.object_queue.push(CodegenItem {
+            ctx,
+            unit_result,
+        });
+        let codegen_results = session.flush_object_queue()?;
+        for codegen_result in codegen_results {
+            all_warnings.extend(codegen_result.warnings);
+        }
     }
 
     // Step 6: Flush background .o writes to ensure all files are on disk.
@@ -1085,9 +1121,15 @@ fn load_prelude_for_link(
                 codegen_target: CodegenTarget::JitAndCache,
             };
             let unit_result = compile_unit(session, &dep_source, &dep_ctx)?;
-            let codegen_result = codegen_and_execute(session, &unit_result, &dep_ctx)?;
-            all_warnings.extend(unit_result.warnings);
-            all_warnings.extend(codegen_result.warnings);
+            all_warnings.extend(unit_result.warnings.clone());
+            session.object_queue.push(CodegenItem {
+                ctx: dep_ctx,
+                unit_result,
+            });
+            let codegen_results = session.flush_object_queue()?;
+            for codegen_result in codegen_results {
+                all_warnings.extend(codegen_result.warnings);
+            }
         }
     }
 
@@ -1099,9 +1141,15 @@ fn load_prelude_for_link(
         codegen_target: CodegenTarget::JitAndCache,
     };
     let prelude_unit = compile_unit(session, &prelude_source, &prelude_ctx)?;
-    let prelude_codegen = codegen_and_execute(session, &prelude_unit, &prelude_ctx)?;
-    all_warnings.extend(prelude_unit.warnings);
-    all_warnings.extend(prelude_codegen.warnings);
+    all_warnings.extend(prelude_unit.warnings.clone());
+    session.object_queue.push(CodegenItem {
+        ctx: prelude_ctx,
+        unit_result: prelude_unit,
+    });
+    let prelude_codegen_results = session.flush_object_queue()?;
+    for codegen_result in prelude_codegen_results {
+        all_warnings.extend(codegen_result.warnings);
+    }
 
     Ok(())
 }

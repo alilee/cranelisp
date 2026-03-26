@@ -268,6 +268,12 @@ pub struct CompilationSession {
     /// module completes stage 6. Used as `ObjectCompileInput.cross_module_fns`
     /// for subsequent modules.
     pub cross_module_func_sigs: Vec<(Symbol, usize)>,
+    /// Queue of compilation units awaiting in-memory codegen (JIT execution).
+    /// Drained synchronously by `flush_inmem_queue()`.
+    pub inmem_queue: Vec<crate::pipeline_v2::CodegenItem>,
+    /// Queue of compilation units awaiting object-file codegen (.o emission).
+    /// Drained synchronously by `flush_object_queue()`.
+    pub object_queue: Vec<crate::pipeline_v2::CodegenItem>,
 }
 
 impl CompilationSession {
@@ -294,6 +300,8 @@ impl CompilationSession {
             compiled_o_paths: Vec::new(),
             compiled_module_structures: Vec::new(),
             cross_module_func_sigs: Vec::new(),
+            inmem_queue: Vec::new(),
+            object_queue: Vec::new(),
         }
     }
 
@@ -312,6 +320,50 @@ impl CompilationSession {
         if let Some(ref writer) = self.cache_writer {
             writer.flush();
         }
+    }
+
+    /// Drain the in-memory codegen queue, calling `codegen_and_execute()` for
+    /// each item. Returns all `CodegenResult`s in queue order.
+    ///
+    /// Currently synchronous — items are processed sequentially. Step 11 will
+    /// replace this with `spawn_hot_inmem_codegen` using worker threads at
+    /// normal priority for JIT compilation.
+    ///
+    /// Intentionally separate from `flush_object_queue` despite identical
+    /// current logic — the two queues will diverge at Step 11 (hot JIT workers
+    /// vs nice .o writers).
+    pub fn flush_inmem_queue(
+        &mut self,
+    ) -> Result<Vec<crate::pipeline_v2::CodegenResult>, CranelispError> {
+        let items = std::mem::take(&mut self.inmem_queue);
+        let mut results = Vec::with_capacity(items.len());
+        for item in items {
+            let codegen_result =
+                crate::pipeline_v2::codegen_and_execute(self, &item.unit_result, &item.ctx)?;
+            results.push(codegen_result);
+        }
+        Ok(results)
+    }
+
+    /// Drain the object codegen queue, calling `codegen_and_execute()` for
+    /// each item. Returns all `CodegenResult`s in queue order.
+    ///
+    /// Currently synchronous — items are processed sequentially. Step 11 will
+    /// replace this with `spawn_nice_object_codegen` using worker threads at
+    /// nice priority for .o file emission.
+    ///
+    /// Intentionally separate from `flush_inmem_queue` — see above.
+    pub fn flush_object_queue(
+        &mut self,
+    ) -> Result<Vec<crate::pipeline_v2::CodegenResult>, CranelispError> {
+        let items = std::mem::take(&mut self.object_queue);
+        let mut results = Vec::with_capacity(items.len());
+        for item in items {
+            let codegen_result =
+                crate::pipeline_v2::codegen_and_execute(self, &item.unit_result, &item.ctx)?;
+            results.push(codegen_result);
+        }
+        Ok(results)
     }
 
     /// Process sexps sequentially with defmacro interception and macro expansion.
@@ -927,9 +979,18 @@ pub fn compile_and_run(
         codegen_target: cranelisp_types::CodegenTarget::JitAndCache,
     };
     let unit_result = crate::pipeline_v2::compile_unit(&mut session, source, &ctx)?;
-    let codegen_result = crate::pipeline_v2::codegen_and_execute(&mut session, &unit_result, &ctx)?;
+    let warnings_from_unit = unit_result.warnings.clone();
+    session.inmem_queue.push(crate::pipeline_v2::CodegenItem {
+        ctx,
+        unit_result,
+    });
+    let mut codegen_results = session.flush_inmem_queue()?;
+    let codegen_result = match codegen_results.pop() {
+        Some(r) => r,
+        None => unreachable!("invariant: flush_inmem_queue must return one result per queued item"),
+    };
 
-    let mut warnings = unit_result.warnings;
+    let mut warnings = warnings_from_unit;
     warnings.extend(codegen_result.warnings);
 
     Ok(PipelineResult {
