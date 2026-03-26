@@ -33,7 +33,7 @@ pub use module::{
 };
 pub use heap::{HeapCategory, HeapHeader};
 pub use pipeline::{
-    CallEdge, CallGraph, CallInfo, CompileContext, CompileMode, CompileResult,
+    CallEdge, CallGraph, CallInfo, CodegenTarget, CompileContext, CompileMode, CompileResult,
     GOT_TABLE_SIZE, MacroExpander, ModuleStrategy, NoOpExpander, NULLARY_TAG_THRESHOLD,
 };
 pub use operator::{ring0_primitives, ring1_primitives, ring3_primitives, PrimitiveDef};

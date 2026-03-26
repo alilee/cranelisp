@@ -592,6 +592,7 @@ fn compile_single_clause(
         module: tc.current_module_path().clone(),
         strategy: cranelisp_types::ModuleStrategy::Additive,
         compile_mode: cranelisp_types::CompileMode::Batch,
+        codegen_target: cranelisp_types::CodegenTarget::JitAndCache,
     };
     let check = tc.check(&program, &ctx)?;
 

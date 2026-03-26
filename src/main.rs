@@ -49,13 +49,13 @@ fn parse_args(args: &[String]) -> (RunMode, bool) {
     (mode, no_color)
 }
 
-fn run_file(path: &str, no_cache: bool) {
+fn run_file(path: &str, _no_cache: bool) {
     let file_path = Path::new(path);
     if !file_path.exists() { eprintln!("error: file not found: {path}"); process::exit(1); }
     let project_root = &std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
     let lib_dirs = cranelisp::pipeline::assemble_lib_dirs(project_root);
-    let cache_config = if no_cache { cranelisp::pipeline::CacheConfig::Disabled } else { cranelisp::pipeline::CacheConfig::Enabled { cache_dir: project_root.join(".cranelisp-cache") } };
-    match cranelisp::pipeline::compile_module_graph_cached(file_path, &lib_dirs, &cache_config) {
+
+    match cranelisp::pipeline_v2::run_batch_v2(file_path, &lib_dirs) {
         Ok(result) => {
             for w in &result.warnings { eprintln!("warning: {}", w.message); }
             let display = cranelisp::repl::format_result(result.value, &result.ty);
@@ -73,7 +73,7 @@ fn link_file(path: &str) {
     let project_root = &std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
     let lib_dirs = cranelisp::pipeline::assemble_lib_dirs(project_root);
     let cache_dir = project_root.join(".cranelisp-cache");
-    let compile_result = match cranelisp::pipeline::compile_for_link(file_path, &lib_dirs, &cache_dir) { Ok(r) => r, Err(e) => { eprintln!("error: {e}"); process::exit(1); } };
+    let compile_result = match cranelisp::pipeline_v2::compile_for_link_v2(file_path, &lib_dirs, &cache_dir) { Ok(r) => r, Err(e) => { eprintln!("error: {e}"); process::exit(1); } };
     for w in &compile_result.warnings { eprintln!("warning: {}", w.message); }
     let main_return = match cranelisp::exe::validate_main(&compile_result.entry_symbols) { Ok(kind) => kind, Err(e) => { eprintln!("error: {e}"); process::exit(1); } };
     let platform_manifest_names = cranelisp::exe::collect_platform_manifest_names(&compile_result.module_structures);

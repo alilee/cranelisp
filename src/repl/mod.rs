@@ -352,6 +352,7 @@ impl ReplSession {
             module: self.core.tc.current_module_path().clone(),
             strategy: ModuleStrategy::Additive,
             compile_mode: CompileMode::Interactive,
+            codegen_target: cranelisp_types::CodegenTarget::JitAndCache,
         };
         let check = self.core.tc.check(&program, &ctx)?;
 
@@ -1323,6 +1324,7 @@ impl ReplSession {
             module: self.core.tc.current_module_path().clone(),
             strategy: ModuleStrategy::Additive,
             compile_mode: CompileMode::Interactive,
+            codegen_target: cranelisp_types::CodegenTarget::JitAndCache,
         }
     }
 

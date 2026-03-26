@@ -15,6 +15,23 @@ pub enum CompileMode {
     Release,
 }
 
+/// What codegen produces in Pass 2. Carried inside `CompileContext`.
+///
+/// See design/arch/pipeline-v2.md §8.4 for the full design rationale.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CodegenTarget {
+    /// JIT to memory (hot) + .o to disk (background, nice priority).
+    /// Used by REPL and --run. Stage 6a produces live function pointers
+    /// in the GOT; stage 6b queues a background .o write via the
+    /// CacheWriter (§16.12). The user is never blocked by .o generation.
+    JitAndCache,
+
+    /// ObjectModule to .o file (hot). No JIT, no execution.
+    /// Used by --link. Stage 6 compiles directly to a relocatable .o
+    /// via Cranelift's ObjectModule backend. No GOT pointers are produced.
+    ObjectOnly,
+}
+
 /// Trait for expanding macros during AST building.
 /// Defined in cranelisp-types (not cranelisp-frontend) for dependency inversion:
 /// frontend depends on this trait, binary crate implements it.
@@ -94,6 +111,8 @@ pub enum ModuleStrategy {
 
 /// Context for a compilation unit — tells the pipeline which module definitions
 /// land in, how they integrate, and what codegen strategy to use.
+///
+/// See design/arch/pipeline-v2.md §14 for the full design.
 #[derive(Debug, Clone)]
 pub struct CompileContext {
     /// Target module for definitions.
@@ -102,6 +121,9 @@ pub struct CompileContext {
     pub strategy: ModuleStrategy,
     /// Codegen strategy (GOT-indirect vs direct calls).
     pub compile_mode: CompileMode,
+    /// Codegen output target (JIT+cache vs object-only).
+    /// Controls what stage 6 produces. See §8.4.
+    pub codegen_target: CodegenTarget,
 }
 
 // --- Call graph types ---

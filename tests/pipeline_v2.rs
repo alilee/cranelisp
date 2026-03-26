@@ -48,30 +48,30 @@ fn v2_session_with_primitives() -> CompilationSession {
     session
 }
 
-/// Parse source, run through v2 batch pipeline, return the i64 result.
+/// Run source through v2 batch pipeline, return the i64 result.
 fn compile_v2_batch(src: &str) -> i64 {
-    let sexps = cranelisp_frontend::parse(src).expect("v2 parse failed");
     let mut session = v2_session_with_primitives();
     let ctx = CompileContext {
         module: ModuleFullPath::from("user"),
         strategy: ModuleStrategy::Additive,
         compile_mode: CompileMode::Batch,
+        codegen_target: cranelisp_types::CodegenTarget::JitAndCache,
     };
-    let result = compile_unit(&mut session, &sexps, &ctx)
+    let result = compile_unit(&mut session, src, &ctx)
         .expect("v2 compile_unit failed");
     result.value.expect("v2 produced no value")
 }
 
-/// Parse source, run through v2 interactive pipeline, return the i64 result.
+/// Run source through v2 interactive pipeline, return the i64 result.
 fn compile_v2_interactive(src: &str) -> i64 {
-    let sexps = cranelisp_frontend::parse(src).expect("v2 parse failed");
     let mut session = v2_session_with_primitives();
     let ctx = CompileContext {
         module: ModuleFullPath::from("user"),
         strategy: ModuleStrategy::Additive,
         compile_mode: CompileMode::Interactive,
+        codegen_target: cranelisp_types::CodegenTarget::JitAndCache,
     };
-    let result = compile_unit(&mut session, &sexps, &ctx)
+    let result = compile_unit(&mut session, src, &ctx)
         .expect("v2 compile_unit failed");
     result.value.expect("v2 produced no value")
 }
