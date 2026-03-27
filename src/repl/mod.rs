@@ -1435,6 +1435,9 @@ fn poll_and_notify_changes(session: &mut ReplSession, stdout: &mut impl Write) {
 ///
 /// Cascade invalidation: after recompiling directly changed modules, finds all
 /// transitive dependents and recompiles them too (per repl/spec.md §14.2).
+///
+/// Delegates the actual recompilation to `CompilationSession::recompile_module_and_dependents`.
+/// This function handles the REPL-specific display and error_modules tracking.
 fn reload_changed_modules(session: &mut ReplSession, stdout: &mut impl Write) {
     let pending = std::mem::take(&mut session.pending_changes);
 
@@ -1452,72 +1455,34 @@ fn reload_changed_modules(session: &mut ReplSession, stdout: &mut impl Write) {
         return;
     }
 
-    // Invalidate cache and reload each stale module.
     let project_root = session.project_root.clone();
-    let lib_dirs = crate::pipeline::assemble_lib_dirs(&project_root);
     let cache_dir = project_root.join(".cranelisp-cache");
     let mut cache_state = Some(crate::pipeline::CacheState::new(cache_dir));
 
-    let mut reloaded: Vec<ModuleFullPath> = Vec::new();
+    // Delegate recompilation + cascade to CompilationSession.
+    let results =
+        session
+            .core
+            .recompile_module_and_dependents(&stale_modules, &mut cache_state);
 
-    for module_path in &stale_modules {
-        let file_display = module_display_name(session, module_path, &project_root);
-
-        match reload_single_module(
-            session,
-            module_path,
-            &lib_dirs,
-            &mut cache_state,
-        ) {
+    // Display results and update REPL-specific error_modules tracking.
+    for (module_path, result) in results {
+        let file_display = module_display_name(session, &module_path, &project_root);
+        match result {
             Ok(()) => {
-                session.error_modules.remove(module_path);
-                reloaded.push(module_path.clone());
+                session.error_modules.remove(&module_path);
                 let _ = writeln!(stdout, "[updated: {}]", file_display);
             }
             Err(e) => {
-                session.error_modules.insert(module_path.clone());
-                let _ = writeln!(stdout, "{}", styled(&format!("[errors: {}]", file_display), Style::Red));
+                session.error_modules.insert(module_path);
+                let _ = writeln!(
+                    stdout,
+                    "{}",
+                    styled(&format!("[errors: {}]", file_display), Style::Red)
+                );
                 let _ = writeln!(stdout, "  {}", e);
             }
         }
-    }
-
-    // Cascade: find transitive dependents of successfully reloaded modules
-    // and recompile them in BFS order.
-    let cascade_targets = find_transitive_dependents(
-        &reloaded,
-        &session.core.module_deps.dependents,
-    );
-
-    for dep_path in &cascade_targets {
-        // Skip modules already reloaded as direct changes.
-        if reloaded.contains(dep_path) {
-            continue;
-        }
-
-        let file_display = module_display_name(session, dep_path, &project_root);
-
-        match reload_single_module(
-            session,
-            dep_path,
-            &lib_dirs,
-            &mut cache_state,
-        ) {
-            Ok(()) => {
-                session.error_modules.remove(dep_path);
-                let _ = writeln!(stdout, "[updated: {}]", file_display);
-            }
-            Err(e) => {
-                session.error_modules.insert(dep_path.clone());
-                let _ = writeln!(stdout, "{}", styled(&format!("[errors: {}]", file_display), Style::Red));
-                let _ = writeln!(stdout, "  {}", e);
-            }
-        }
-    }
-
-    // Flush cache manifest if modules were recompiled.
-    if let Some(cs) = cache_state.as_ref() {
-        cs.flush_manifest();
     }
 }
 
@@ -1537,165 +1502,9 @@ fn module_display_name(
         .unwrap_or_else(|| module_path.as_ref().to_string())
 }
 
-/// Find all transitive dependents of the given modules via BFS.
-///
-/// Uses the reverse dependency map (`dependents`: module -> set of modules
-/// that depend on it). Returns modules in BFS order (direct dependents
-/// first, then their dependents, etc.). Does not include the seed modules.
-fn find_transitive_dependents(
-    changed_modules: &[ModuleFullPath],
-    dependents: &std::collections::HashMap<ModuleFullPath, std::collections::HashSet<ModuleFullPath>>,
-) -> Vec<ModuleFullPath> {
-    let mut result = Vec::new();
-    let mut visited: HashSet<ModuleFullPath> = changed_modules.iter().cloned().collect();
-    let mut queue = std::collections::VecDeque::new();
-
-    // Seed with direct dependents of all changed modules.
-    for module in changed_modules {
-        if let Some(deps) = dependents.get(module) {
-            for dep in deps {
-                if visited.insert(dep.clone()) {
-                    queue.push_back(dep.clone());
-                    result.push(dep.clone());
-                }
-            }
-        }
-    }
-
-    // BFS to find transitive dependents.
-    while let Some(current) = queue.pop_front() {
-        if let Some(deps) = dependents.get(&current) {
-            for dep in deps {
-                if visited.insert(dep.clone()) {
-                    queue.push_back(dep.clone());
-                    result.push(dep.clone());
-                }
-            }
-        }
-    }
-
-    result
-}
-
-/// Reload a single module from its source file.
-///
-/// Per repl/spec.md §14.2: clears old module state (symbol table, trait
-/// declarations, macro env) before recompiling to avoid "duplicate definition"
-/// errors. Routes through compile_unit + codegen_and_execute (v3 pipeline).
-/// On failure, the old state is NOT restored — the module enters error state
-/// and evaluation is blocked (§14.4).
-fn reload_single_module(
-    session: &mut ReplSession,
-    module_path: &ModuleFullPath,
-    _lib_dirs: &[std::path::PathBuf],
-    cache_state: &mut Option<crate::pipeline::CacheState>,
-) -> Result<(), CranelispError> {
-    // Find the source file for this module.
-    let file_path = session
-        .core
-        .module_deps
-        .file_to_module
-        .iter()
-        .find(|(_, mp)| *mp == module_path)
-        .map(|(fp, _)| fp.clone())
-        .ok_or_else(|| CranelispError::ModuleError {
-            message: format!("no source file known for module '{}'", module_path.as_ref()),
-            file: None,
-            span: cranelisp_types::Span::SYNTHETIC,
-        })?;
-
-    // Read and parse the source.
-    let source = std::fs::read_to_string(&file_path).map_err(|e| {
-        CranelispError::ModuleError {
-            message: format!("cannot read '{}': {e}", file_path.display()),
-            file: Some(file_path.clone()),
-            span: cranelisp_types::Span::SYNTHETIC,
-        }
-    })?;
-
-    // --- Phase A: Clear old module state ---
-    // Remove the old symbol table, traits, and macros to avoid duplicates.
-    clear_module_state(session, module_path);
-
-    // --- Phase B: Recompile from source via compile_unit + codegen_and_execute ---
-    let prev_module = session.core.tc.current_module_path().clone();
-    session.core.tc.set_current_module(module_path.clone());
-
-    let ctx = CompileContext {
-        module: module_path.clone(),
-        strategy: ModuleStrategy::Additive,
-        codegen_target: cranelisp_types::CodegenTarget::JitAndCache,
-    };
-
-    let unit_result = crate::pipeline_v2::compile_unit(
-        &mut session.core,
-        &source,
-        &ctx,
-    )?;
-
-    if !unit_result.program.is_empty() {
-        crate::pipeline_v2::codegen_and_execute(
-            &mut session.core,
-            &unit_result,
-            &ctx,
-        )?;
-    }
-
-    // Register module aliases so downstream references resolve.
-    session.core.register_module_aliases(module_path);
-
-    // Invalidate cache for this module so it gets re-cached.
-    if let Some(cs) = cache_state.as_mut() {
-        let hash = cranelisp_backend::cache::hash_source(&source);
-        cs.record_recompiled(module_path);
-        cs.source_hashes_mut().insert(module_path.clone(), hash);
-    }
-
-    // Restore the previous module context.
-    session.core.tc.set_current_module(prev_module);
-
-    Ok(())
-}
-
-/// Clear a module's state from the session before recompilation.
-///
-/// Uses `TypeChecker::remove_module` to remove the symbol table and unregister
-/// traits/types. Also removes macros from the expander. Then re-inserts an
-/// empty symbol table so the module path remains known during recompilation.
-/// This ensures recompilation does not hit "duplicate definition" errors.
-fn clear_module_state(session: &mut ReplSession, module_path: &ModuleFullPath) {
-    // Collect macro names from the module before removing it.
-    let macro_names: Vec<String> = session
-        .core
-        .tc
-        .module_table(module_path)
-        .map(|table| {
-            table
-                .all_symbols()
-                .filter_map(|(name, entry)| {
-                    if matches!(entry, ModuleEntry::Macro { .. }) {
-                        Some(name.as_ref().to_string())
-                    } else {
-                        None
-                    }
-                })
-                .collect()
-        })
-        .unwrap_or_default();
-
-    // Remove macros from the expander.
-    for mname in &macro_names {
-        session.core.expander.remove_macro(mname);
-    }
-
-    // Remove the module's symbol table, traits, and type definitions.
-    session.core.tc.remove_module(module_path);
-
-    // Re-insert an empty symbol table so the module path is recognized
-    // during recompilation.
-    let fresh_table = cranelisp_types::SymbolTable::new(module_path.clone());
-    session.core.tc.insert_module(fresh_table);
-}
+// find_transitive_dependents — moved to ModuleDependencyGraph::transitive_dependents
+// reload_single_module — absorbed into CompilationSession::recompile_module
+// clear_module_state — moved to CompilationSession::clear_module_state
 
 /// Run the interactive REPL loop.
 ///

@@ -375,6 +375,53 @@ impl ModuleDependencyGraph {
         self.dependents.clear();
         self.file_to_module.clear();
     }
+
+    /// Find all modules transitively dependent on the given root modules (BFS).
+    ///
+    /// Uses the reverse dependency map (`dependents`) to walk outward from
+    /// `roots`. Returns modules in BFS order (direct dependents first, then
+    /// their dependents, etc.). Does not include the root modules themselves.
+    pub fn transitive_dependents(&self, roots: &[ModuleFullPath]) -> Vec<ModuleFullPath> {
+        let mut result = Vec::new();
+        let mut visited: HashSet<ModuleFullPath> = roots.iter().cloned().collect();
+        let mut queue = VecDeque::new();
+
+        // Seed with direct dependents of all root modules.
+        for module in roots {
+            if let Some(deps) = self.dependents.get(module) {
+                for dep in deps {
+                    if visited.insert(dep.clone()) {
+                        queue.push_back(dep.clone());
+                        result.push(dep.clone());
+                    }
+                }
+            }
+        }
+
+        // BFS to find transitive dependents.
+        while let Some(current) = queue.pop_front() {
+            if let Some(deps) = self.dependents.get(&current) {
+                for dep in deps {
+                    if visited.insert(dep.clone()) {
+                        queue.push_back(dep.clone());
+                        result.push(dep.clone());
+                    }
+                }
+            }
+        }
+
+        result
+    }
+
+    /// Look up the source file path for a given module.
+    ///
+    /// Returns `None` if no file is registered for the module.
+    pub fn file_for_module(&self, module: &ModuleFullPath) -> Option<PathBuf> {
+        self.file_to_module
+            .iter()
+            .find(|(_, mp)| *mp == module)
+            .map(|(fp, _)| fp.clone())
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1080,6 +1127,166 @@ impl CompilationSession {
             .iter()
             .map(|(name, ptr)| (name.as_str(), *ptr))
             .collect()
+    }
+
+    // -----------------------------------------------------------------------
+    // Module reload / cascade recompilation
+    // -----------------------------------------------------------------------
+
+    /// Clear a module's state before recompilation (symbol table, traits, macros).
+    ///
+    /// Removes the old symbol table and unregisters traits/types via
+    /// `TypeChecker::remove_module`. Also removes macros from the expander.
+    /// Then re-inserts an empty symbol table so the module path remains
+    /// known during recompilation. This ensures recompilation does not hit
+    /// "duplicate definition" errors.
+    pub fn clear_module_state(&mut self, module_path: &ModuleFullPath) {
+        // Collect macro names from the module before removing it.
+        let macro_names: Vec<String> = self
+            .tc
+            .module_table(module_path)
+            .map(|table| {
+                table
+                    .all_symbols()
+                    .filter_map(|(name, entry)| {
+                        if matches!(entry, ModuleEntry::Macro { .. }) {
+                            Some(name.as_ref().to_string())
+                        } else {
+                            None
+                        }
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        // Remove macros from the expander.
+        for mname in &macro_names {
+            self.expander.remove_macro(mname);
+        }
+
+        // Remove the module's symbol table, traits, and type definitions.
+        self.tc.remove_module(module_path);
+
+        // Re-insert an empty symbol table so the module path is recognized
+        // during recompilation.
+        let fresh_table = cranelisp_types::SymbolTable::new(module_path.clone());
+        self.tc.insert_module(fresh_table);
+    }
+
+    /// Reload a single module from its source file.
+    ///
+    /// Clears old module state, recompiles from source via `compile_unit` +
+    /// `codegen_and_execute` (Additive strategy), registers module aliases,
+    /// and optionally invalidates the cache entry.
+    ///
+    /// On failure, the old state is NOT restored — the module enters error
+    /// state and the caller decides how to handle it.
+    pub fn recompile_module(
+        &mut self,
+        module_path: &ModuleFullPath,
+        cache_state: &mut Option<CacheState>,
+    ) -> Result<(), CranelispError> {
+        // Find the source file for this module.
+        let file_path = self
+            .module_deps
+            .file_for_module(module_path)
+            .ok_or_else(|| CranelispError::ModuleError {
+                message: format!(
+                    "no source file known for module '{}'",
+                    module_path.as_ref()
+                ),
+                file: None,
+                span: Span::SYNTHETIC,
+            })?;
+
+        // Read the source.
+        let source = std::fs::read_to_string(&file_path).map_err(|e| {
+            CranelispError::ModuleError {
+                message: format!("cannot read '{}': {e}", file_path.display()),
+                file: Some(file_path.clone()),
+                span: Span::SYNTHETIC,
+            }
+        })?;
+
+        // Phase A: Clear old module state.
+        self.clear_module_state(module_path);
+
+        // Phase B: Recompile from source via compile_unit + codegen_and_execute.
+        let prev_module = self.tc.current_module_path().clone();
+        self.tc.set_current_module(module_path.clone());
+
+        let ctx = CompileContext {
+            module: module_path.clone(),
+            strategy: ModuleStrategy::Additive,
+            codegen_target: cranelisp_types::CodegenTarget::JitAndCache,
+        };
+
+        let unit_result = crate::pipeline_v2::compile_unit(self, &source, &ctx)?;
+
+        if !unit_result.program.is_empty() {
+            crate::pipeline_v2::codegen_and_execute(self, &unit_result, &ctx)?;
+        }
+
+        // Register module aliases so downstream references resolve.
+        self.register_module_aliases(module_path);
+
+        // Invalidate cache for this module so it gets re-cached.
+        if let Some(cs) = cache_state.as_mut() {
+            let hash = cranelisp_backend::cache::hash_source(&source);
+            cs.record_recompiled(module_path);
+            cs.source_hashes_mut().insert(module_path.clone(), hash);
+        }
+
+        // Restore the previous module context.
+        self.tc.set_current_module(prev_module);
+
+        Ok(())
+    }
+
+    /// Recompile the given modules and all their transitive dependents.
+    ///
+    /// 1. Recompile each directly-changed module.
+    /// 2. Find transitive dependents via BFS.
+    /// 3. Recompile each dependent (skipping already-recompiled modules).
+    /// 4. Flush the cache manifest if any modules were recompiled.
+    ///
+    /// Returns per-module results in compilation order.
+    pub fn recompile_module_and_dependents(
+        &mut self,
+        modules: &[ModuleFullPath],
+        cache_state: &mut Option<CacheState>,
+    ) -> Vec<(ModuleFullPath, Result<(), CranelispError>)> {
+        let mut results = Vec::new();
+        let mut reloaded = Vec::new();
+
+        // Phase 1: Recompile directly-changed modules.
+        for module_path in modules {
+            let result = self.recompile_module(module_path, cache_state);
+            if result.is_ok() {
+                reloaded.push(module_path.clone());
+            }
+            results.push((module_path.clone(), result));
+        }
+
+        // Phase 2: Find and recompile transitive dependents.
+        let cascade_targets = self.module_deps.transitive_dependents(&reloaded);
+
+        for dep_path in &cascade_targets {
+            // Skip modules already recompiled as direct changes.
+            if reloaded.contains(dep_path) {
+                continue;
+            }
+
+            let result = self.recompile_module(dep_path, cache_state);
+            results.push((dep_path.clone(), result));
+        }
+
+        // Flush cache manifest if modules were recompiled.
+        if let Some(cs) = cache_state.as_ref() {
+            cs.flush_manifest();
+        }
+
+        results
     }
 }
 
