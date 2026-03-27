@@ -62,9 +62,48 @@ Delivery progress for the Cranelisp reimplementation. For technical scope per ri
 
 ## Forward Plan
 
-| Sprint | Theme | Key Features | Skills | Dependencies |
-|--------|-------|-------------|--------|--------------|
-| ~~22~~ | ~~Module Caching~~ | ~~Done~~ | | |
-| ~~23~~ | ~~Executable, Hot-Reload & REPL Lifecycle~~ | ~~Done~~ | | |
-| ~~24~~ | ~~HKT, Lazy Sequences & Terminal Styling~~ | ~~Done~~ | | |
-| ~~25~~ | ~~Lenient Eval, Auto IO Scheduling & First-Class Operators~~ | ~~Done~~ | | |
+### Pipeline v3 migration — COMPLETE (Sprints 29-38)
+
+Steps 1-10 + 14 delivered. Single-pipeline invariant established. ~2,100 lines of v1 code deleted. Steps 11-13 (concurrency) deferred indefinitely. Step 15 (new main.rs) retired — substantially delivered by Step 6. See `design/arch/pipeline-v3-roadmap.md` §Post-Migration for full assessment.
+
+### Recommended sprint sequence
+
+| Sprint | Theme | Scope | Skills |
+|--------|-------|-------|--------|
+| 39 | Cache-Hit Loading | v2 cache-hit early return in compile_unit (read .meta.json, validate source hash, load .o, register types/symbols/JIT), un-ignore 4 cache tests, stale doc cleanup (interfaces.md, pipeline-v2.md remove CompileMode refs) | `/int`, `/qa`, `/arch` |
+| 40 | REPL Restore + Code Quality | Migrate restore_user_cl to compile_unit, extract create_session_for_file helper (deduplicate run_file_inner/link_file_inner), compile_checked_program signature cleanup, review finding sweep | `/int`, `/review` |
+| 41+ | Ring 4 Completion | Resume feature delivery — see Ring 4 acceptance criteria gap analysis below | All skills |
+
+### Ring 4 acceptance criteria gap analysis
+
+Ring 4 acceptance criteria from `design/arch/roadmap.md` vs current state:
+
+| Criterion | Status | Sprint |
+|-----------|--------|--------|
+| `(print "hello")` produces IO effect | DONE (S16) | |
+| `(do ...)` chains IO effects | DONE (S17) | |
+| Lenient evaluation parallelises independent bindings | DONE (S25) | |
+| Platform DLLs load and function | DONE (S16) | |
+| Module caching: second compilation hits cache | **GAP** — writes cache, does not load from cache | 39 |
+| Standalone executable generation (`--link`) | DONE (S23) | |
+| REPL: all slash commands work | DONE (S19-21) | |
+| Hot-reload: file changes auto-reload in REPL | DONE (S23, migrated S37) | |
+| `(trace (fib 5))` execution tracing | DONE (S20) | |
+| `(run-tests ...)` test runner | DONE (S21) | |
+| All ~470 portable integration tests from prototype pass | **GAP** — 23 pre-existing sketch_port failures, needs triage | 41+ |
+| All E2E transcript tests pass | Partial — 1643 passing, 23 failures | 41+ |
+| Performance within 2x of prototype | **NOT MEASURED** — needs benchmarking after cache-hit | 41+ |
+| REPL experience test suite passes | Partial — core experience works, coverage gaps in edge cases | 41+ |
+| Exemplar project compiles, runs, passes tests | **GAP** — exemplar exists but not fully validated | 41+ |
+| `cargo clippy` clean across all crates | DONE (maintained since S9) | |
+
+### Phase G (Ring 4) remaining work after Sprint 40
+
+The pipeline rebuild is done. The remaining Ring 4 work is feature completion and validation:
+1. Cache-hit loading (Sprint 39) closes the biggest functional gap
+2. REPL cleanup (Sprint 40) closes the last structural debt
+3. Sketch-port test triage (23 failures) — determine which are real gaps vs sketch-specific behaviors
+4. Performance benchmarking — establish baseline, compare to sketch
+5. Exemplar validation — full end-to-end run of the Sudoku solver exemplar
+6. REPL experience edge cases — coverage gaps in spec conformance
+7. Ring 4 gate review — formal review before advancing to Phase H

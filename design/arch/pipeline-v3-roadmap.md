@@ -257,3 +257,72 @@ Step 7-8 are structural reorganisation.
 Step 9 is the highest-risk step (REPL migration).
 Steps 10-13 add concurrency.
 Steps 14-15 are cleanup.
+
+## Post-Migration Assessment (Sprint 38 Complete)
+
+Steps 1-10 and 14 are complete (Sprints 29-38). Steps 11-13 (concurrency) deferred indefinitely as premature optimization. The single-pipeline invariant is established: all compilation flows through `compile_unit`.
+
+### Step 15 Assessment: Mostly Delivered
+
+Step 15 as written ("New main.rs") is substantially delivered by Step 6 (Sprint 33). The current `main.rs` (306 lines) is clean, well-structured, and uses `compile_unit` exclusively. What remains from the Step 15 spec:
+
+- **Positional entry module**: Not implemented. `--run <file>` is required; bare `cranelisp file.cl` does not work. Low priority — the `--run` flag is clear and unambiguous.
+- **Entry module defaults to `cwd/user.cl`**: Not implemented. The REPL starts when no file is given. Could be useful but is not blocking.
+- **`--release` flag**: Not relevant until Phase H (Tier 2 backend).
+- **`--lib_search` flag**: Not implemented. `CRANELISP_LIB` env var and `assemble_lib_dirs` serve this role already.
+- **`cranelisp.toml` settings**: Not implemented. No user demand yet. Premature to add a config file format before the language is stable.
+- **Delete `main_new.rs`**: Already done (Sprint 33).
+
+**Decision**: Step 15 is retired. The remaining items are minor CLI polish that can land as part of feature sprints when motivated by user need. No dedicated sprint.
+
+### Remaining Structural Debt
+
+Four categories of deferred work remain from the v3 migration:
+
+#### 1. Cache-Hit Loading (4 ignored tests)
+
+The v2 pipeline writes `.o` and `.meta.json` files via `queue_background_cache_write` but never loads from cache. The v1 `try_restore_from_cache` was deleted in Sprint 38. Four tests in `tests/cache.rs` are `#[ignore]` awaiting reimplementation.
+
+**Impact**: Every REPL startup and `--link` rebuild recompiles all modules from source. For the stdlib prelude (27 modules), this is the dominant cost. Cache-hit loading is the single highest-impact performance improvement available.
+
+**Scope**: Read `.meta.json` manifest, compare source hash, load `.o` if valid, register types/symbols in tc, register JIT symbols in GOT. The v2 `compile_unit` needs a cache-check early return path (after stage 2a module resolution, before stage 3 expansion).
+
+#### 2. REPL restore_user_cl Bypass
+
+The REPL's session restoration path (`repl/mod.rs` lines ~362-396) still calls `process_forms_with_originals`, `tc.check`, and `compile_checked_program` directly instead of routing through `compile_unit`. This is a pipeline invariant violation — the last one.
+
+**Impact**: Low risk in practice (restore only runs on REPL startup with a saved user.cl). But it means the restore path does not get platform prescan, bind-chain analysis, or any future compile_unit stages for free. It is also the last call site for `compile_checked_program`.
+
+**Scope**: Small — rewrite the restore path to build source text from saved sexps, then call `compile_unit` + `codegen_and_execute`. The tricky part is preserving the original-sexp tracking for round-trip fidelity.
+
+#### 3. REPL Direct tc.check Calls
+
+Two additional sites call `tc.check` directly:
+- `eval_annotation_expr` (`repl/mod.rs` ~988) — constructs a `CompileUnitResult` manually
+- `handle_type` (`repl/commands.rs` ~124) — uses `tc.check` for `/type` command
+
+These are not full pipeline bypasses (they handle single expressions, not module-level compilation), but they manually construct `CompileUnitResult` and `CompileContext` instead of flowing through `compile_unit`. The annotation path is defensible (it synthesizes an `Expr::Annotate` that has no source text). The `/type` command is read-only (no codegen).
+
+**Decision**: Accept as-is. These are leaf-node uses for REPL-specific expression evaluation, not alternative compilation pipelines. They do not violate the single-pipeline invariant because they are not compiling modules.
+
+#### 4. Code Quality (Deferred Review Findings)
+
+From accumulated `/review` findings across Sprints 29-38:
+- `compile_unit_inner` is ~153 lines (guideline: 100). Not egregious; the stages are linear and well-commented. Decompose into stage helpers if it grows further.
+- `run_file_inner` / `link_file_inner` are ~108 / ~116 lines with duplicated session setup. Extract a `create_session_for_file` helper.
+- `compile_checked_program` signature should take `&mut InMemWorkerState` (not full session). Blocked until restore_user_cl is migrated (it is the last caller that needs full session access).
+- `file_for_module` uses linear scan on `file_to_module` HashMap values. Acceptable for current module counts (<100). Add reverse index if profiling shows a hotspot.
+- Stale design docs: `interfaces.md` and `pipeline-v2.md` reference `CompileMode` which no longer exists. Need a doc cleanup pass.
+
+### Forward Priority Order
+
+1. **Cache-hit loading** — highest user-visible impact (REPL startup time, --link speed). One sprint.
+2. **REPL restore bypass + code quality** — clean up the last pipeline invariant violation and address accumulated review findings. One sprint, combinable with cache work if cache sprint is undersized.
+3. **Stale doc cleanup** — update `interfaces.md`, `pipeline-v2.md` to reflect post-v3 state. Can be folded into any sprint as a wave-0 task.
+4. **Steps 11-13 (concurrency)** — remain deferred. Only revisit with profiling data showing multi-module compilation as a bottleneck *after* cache-hit loading is implemented.
+
+### Steps 11-13: Concurrency (Deferred Indefinitely)
+
+Per `/arch` review (Sprint 38): concurrency in the compilation pipeline is premature optimization. The single-threaded pipeline compiles the full stdlib (27 modules) in under 2 seconds. Cache-hit loading (item 1 above) will reduce this to near-zero for warm starts. Concurrent codegen, per-module locks, and parallel dependency typechecking add substantial complexity (shared mutable state, lock ordering, thread-safety requirements on TypeChecker) for a workload that is not bottlenecked on compilation throughput.
+
+If profiling after cache-hit loading shows compilation time as a user-visible bottleneck, revisit Steps 11-13 at that point with concrete data.

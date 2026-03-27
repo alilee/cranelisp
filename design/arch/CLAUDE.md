@@ -11,6 +11,7 @@ Architecture deliverables for the Cranelisp reimplementation. Owned and maintain
 - `roadmap.md` — Delivery tracking (phases, rings, sprints)
 - `interfaces.md` — v2 pipeline boundary types designed for full spec surface (replaces `v1/interfaces.md`)
 - `pipeline-v2.md` — v2 pipeline design: stages, data flow, unified multi-pass check, call graph, migration strategy
+- `pipeline-v3-roadmap.md` — v3 migration roadmap (Steps 1-14 complete) + post-migration assessment and forward plan
 
 ### Legacy reference (`v1/`)
 
