@@ -17,7 +17,7 @@
 //   mod.rs       — ReplSession struct, eval(), public API, REPL loop
 //   commands.rs  — Slash command parsing, dispatch, and all handler functions
 //   display.rs   — Re-exported display functions (format_result_value, etc.)
-//   trace.rs     — TracedCompiledExpr, trace display state, expr_contains_trace
+//   trace.rs     — trace display state, expr_contains_trace
 //   run_tests.rs — /run-tests handler and test discovery/execution
 //   io.rs        — IO trampoline forcing and formatting
 
@@ -34,12 +34,11 @@ use std::time::{Duration, Instant};
 
 use cranelisp_backend::compiler::TracedFnInfo;
 use cranelisp_backend::display;
-use cranelisp_backend::jit::Jit;
 use cranelisp_types::{
-    CheckResult, CompileContext, CranelispError, DefKind, Defn, Expr,
+    CheckResult, CompileContext, CranelispError, DefKind,
     ImplSexp, MacroClauseInfo, ModuleEntry, ModuleFullPath, ModuleStrategy,
     ModuleStructure, Sexp, Symbol, TopLevel, Type, TypeDefInfo, TypeName,
-    Visibility, Warning,
+    Warning,
 };
 
 use commands::{
@@ -56,7 +55,7 @@ use io_format::force_io_and_format;
 use run_tests::handle_run_tests;
 use trace::{
     TraceDisplayState, clear_trace_display_state,
-    compile_expr_with_traced_fns, expr_contains_trace, repl_trace_format,
+    expr_contains_trace, repl_trace_format,
     set_trace_display_state,
 };
 
@@ -97,8 +96,6 @@ pub struct ReplSession {
     type_defs: HashMap<TypeName, TypeDefInfo>,
     /// Maps type names to the module they were defined in (for qualified display).
     pub(crate) type_modules: HashMap<TypeName, ModuleFullPath>,
-    /// Loaded platform DLLs -- must stay alive for the process lifetime.
-    loaded_platforms: Vec<crate::platform::LoadedPlatform>,
     /// Project root directory (for platform path resolution).
     pub project_root: std::path::PathBuf,
     /// File watcher for detecting source file changes.
@@ -133,7 +130,6 @@ impl ReplSession {
             core,
             type_defs: HashMap::new(),
             type_modules: HashMap::new(),
-            loaded_platforms: Vec::new(),
             project_root: std::env::current_dir().unwrap_or_default(),
             watcher: None,
             pending_changes: Vec::new(),
@@ -171,6 +167,10 @@ impl ReplSession {
     ) -> Result<Self, CranelispError> {
         let mut session = Self::new();
         session.project_root = project_root.to_path_buf();
+        // Store lib_dirs and project_root on the CompilationSession so
+        // compile_unit can resolve module imports and platform DLLs.
+        session.core.lib_dirs = lib_dirs.to_vec();
+        session.core.project_root = project_root.to_path_buf();
 
         // Enable module caching for REPL prelude loading.
         let cache_dir = project_root.join(".cranelisp-cache");
@@ -476,16 +476,19 @@ impl ReplSession {
 
     /// Evaluate a single source input, returning the result.
     ///
-    /// Pipeline:
-    /// 1. Parse source -> sexps
-    /// 2. Check for defmacro -> compile + register, return display
-    /// 3. Expand through CraneliftExpander
-    /// 4. Flatten (begin ...) results, process sub-forms
-    /// 5. Build REPL input -> typecheck -> compile -> execute
+    /// Pipeline (v3 — routes through compile_unit):
+    /// 1. Skip blank/comment
+    /// 2. Parse source -> sexps (for annotation/introspection detection)
+    /// 3. TC snapshot for error recovery
+    /// 4. Check annotation -> handle via eval_annotation_expr (return early)
+    /// 5. Check bare symbol introspection -> return early
+    /// 6. Call compile_unit + codegen_and_execute
+    /// 7. Bridge CodegenResult to ReplResult
+    /// 8. Store DefCodegen, merge module_structure, session persistence
     ///
     /// On error, restores the TypeChecker to its pre-input state.
     pub fn eval(&mut self, source: &str) -> Result<ReplResult, CranelispError> {
-        // Skip blank and comment-only input before it reaches the parser.
+        // Step 1: Skip blank and comment-only input before it reaches the parser.
         let trimmed = source.trim();
         if trimmed.is_empty() || is_comment_only(trimmed) {
             return Ok(ReplResult {
@@ -498,7 +501,7 @@ impl ReplSession {
             });
         }
 
-        // Parse the source into sexps.
+        // Step 2: Parse the source into sexps (for annotation/introspection checks).
         let sexps = cranelisp_frontend::parse(source)?;
 
         if sexps.is_empty() {
@@ -508,17 +511,33 @@ impl ReplSession {
             });
         }
 
-        // Snapshot for error recovery (covers macro compilation too).
+        // Step 3: Snapshot for error recovery (covers macro compilation too).
         let snapshot = self.core.tc.snapshot();
 
-        // Handle multi-sexp annotation expressions (`:Type expr` parses as two sexps).
-        // For single sexps, take the first and evaluate normally.
-        let result = if sexps.len() > 1 && is_annotation_prefix(&sexps[0]) {
-            self.eval_annotation_expr(sexps)
-        } else {
-            let first_sexp = sexps.into_iter().next().unwrap();
-            self.eval_sexp(first_sexp)
-        };
+        // Step 4: Handle multi-sexp annotation expressions (`:Type expr` parses as two sexps).
+        if sexps.len() > 1 && is_annotation_prefix(&sexps[0]) {
+            let result = self.eval_annotation_expr(sexps);
+            return match result {
+                Ok(result) => {
+                    if result.is_definition && !self.restoring {
+                        self.save_current_module();
+                    }
+                    Ok(result)
+                }
+                Err(e) => {
+                    self.core.tc.restore(snapshot);
+                    Err(e)
+                }
+            };
+        }
+
+        // Step 5: Check bare symbol introspection (non-zero-arg macros, special forms).
+        if let Some(result) = self.check_bare_symbol_introspection(&sexps[0]) {
+            return Ok(result);
+        }
+
+        // Step 6-8: Route through compile_unit + codegen_and_execute.
+        let result = self.eval_via_compile_unit(source, &sexps);
 
         match result {
             Ok(result) => {
@@ -537,219 +556,431 @@ impl ReplSession {
         }
     }
 
+    /// Evaluate input by routing through compile_unit + codegen_and_execute.
+    ///
+    /// This is the main compilation path for normal REPL input (not annotations,
+    /// not bare-symbol introspection). Defmacro, import, and platform forms are
+    /// handled internally by compile_unit's process_forms_sequentially and
+    /// extract_module_declarations stages.
+    fn eval_via_compile_unit(
+        &mut self,
+        source: &str,
+        original_sexps: &[Sexp],
+    ) -> Result<ReplResult, CranelispError> {
+        let eval_start = Instant::now();
+
+        // Build the compile context for the current REPL module.
+        let repl_ctx = self.build_repl_compile_context();
+
+        // Compile through stages 1-5 (parse, extract, expand, build AST, typecheck).
+        let unit_result = crate::pipeline_v2::compile_unit(
+            &mut self.core,
+            source,
+            &repl_ctx,
+        )?;
+
+        // Set up trace infrastructure if the program contains (trace ...).
+        let has_trace = unit_result.program.iter().any(|tl| match tl {
+            TopLevel::Expr(e) => expr_contains_trace(e),
+            _ => false,
+        });
+        if has_trace {
+            self.core.inmem_worker.traced_fns = self.build_traced_fns();
+            self.core.inmem_worker.trace_extra_symbols = vec![
+                (
+                    "cranelisp_trace_format".to_string(),
+                    repl_trace_format as *const u8,
+                ),
+            ];
+        }
+
+        // Set trace display state before execution so cranelisp_trace_format
+        // can access type_defs and type_modules.
+        let display_state = TraceDisplayState {
+            type_defs: &self.type_defs as *const _,
+            type_modules: &self.type_modules as *const _,
+        };
+        if has_trace {
+            set_trace_display_state(&display_state);
+        }
+
+        // Snapshot GOT keys before codegen (codegen_and_execute creates
+        // module-qualified aliases like "user/foo" that the old REPL path
+        // never created; we remove them after to match the old behavior and
+        // prevent double-counting in test discovery).
+        let pre_codegen_keys: HashSet<Symbol> = self.core.inmem_worker
+            .got_state
+            .def_codegen
+            .keys()
+            .cloned()
+            .collect();
+
+        // Codegen + execute (stages 6-7).
+        let codegen_result = crate::pipeline_v2::codegen_and_execute(
+            &mut self.core,
+            &unit_result,
+            &repl_ctx,
+        );
+
+        // Always clear trace state after execution, even on error.
+        if has_trace {
+            clear_trace_display_state();
+            self.core.inmem_worker.traced_fns.clear();
+            self.core.inmem_worker.trace_extra_symbols.clear();
+        }
+
+        // Remove module-qualified alias entries that codegen_and_execute
+        // created for the current REPL module. The old REPL path never
+        // registered aliases for the interactive module — only for loaded
+        // dependency modules (prelude, core.*, etc.).
+        let new_aliases: Vec<Symbol> = self.core.inmem_worker
+            .got_state
+            .def_codegen
+            .keys()
+            .filter(|k| !pre_codegen_keys.contains(*k) && k.as_ref().contains('/'))
+            .cloned()
+            .collect();
+        for alias in &new_aliases {
+            self.core.inmem_worker.got_state.def_codegen.remove(alias);
+        }
+
+        let codegen_result = codegen_result?;
+
+        let eval_duration = eval_start.elapsed();
+
+        // Accumulate type definitions for ADT value display.
+        let module = self.core.tc.current_module_path().clone();
+        for (name, info) in &unit_result.check_result.type_defs {
+            self.type_defs.insert(name.clone(), info.clone());
+            self.type_modules.insert(name.clone(), module.clone());
+        }
+
+        // Build ReplResult from compile_unit + codegen results.
+        let repl_result = self.build_repl_result(
+            &unit_result,
+            &codegen_result,
+            original_sexps,
+            eval_duration,
+        )?;
+
+        // Store DefCodegen (sexp/source) for definitions — for introspection
+        // commands (/source, /sexp) and session persistence.
+        self.store_def_codegen(&unit_result.program, original_sexps);
+
+        // Track impl sexps in module structure for session persistence.
+        self.track_impl_sexps(&unit_result.program, original_sexps);
+
+        // Merge module_structure imports/platforms into current_module_structure.
+        self.merge_module_structure(&unit_result.module_structure);
+
+        Ok(repl_result)
+    }
+
+    /// Build a ReplResult from compile_unit + codegen_and_execute results.
+    ///
+    /// Inspects the program items to determine is_definition and build
+    /// the definition_display string.
+    fn build_repl_result(
+        &self,
+        unit_result: &crate::pipeline_v2::CompileUnitResult,
+        codegen_result: &crate::pipeline_v2::CodegenResult,
+        original_sexps: &[Sexp],
+        eval_duration: Duration,
+    ) -> Result<ReplResult, CranelispError> {
+        let module = self.core.tc.current_module_path().clone();
+        let mut all_warnings: Vec<Warning> = unit_result.warnings.clone();
+        all_warnings.extend(codegen_result.warnings.clone());
+
+        // Empty program: defmacro-only, import-only, or platform-only input.
+        if unit_result.program.is_empty() {
+            return self.build_empty_program_result(
+                unit_result, original_sexps, all_warnings, eval_duration,
+            );
+        }
+
+        // Determine if the program is all definitions (no bare expressions).
+        let is_definition = unit_result.program.iter().all(|tl| {
+            !matches!(tl, TopLevel::Expr(_))
+        });
+
+        let definition_display = if is_definition {
+            self.build_definition_display(&unit_result.program, &unit_result.check_result, &module)
+        } else {
+            None
+        };
+
+        // Result value comes from codegen; type comes from check_result's
+        // display info (which is the function/expression type, not the
+        // execution result type).
+        let value = codegen_result.value.unwrap_or(0);
+        let ty = unit_result.check_result.display.as_ref()
+            .map(|d| d.ty.clone())
+            .or_else(|| codegen_result.result_type.clone())
+            .unwrap_or(Type::Int);
+
+        Ok(ReplResult {
+            value,
+            ty,
+            is_definition,
+            warnings: all_warnings,
+            definition_display,
+            eval_duration,
+        })
+    }
+
+    /// Build a ReplResult for an empty program (defmacro, import, or platform only).
+    fn build_empty_program_result(
+        &self,
+        unit_result: &crate::pipeline_v2::CompileUnitResult,
+        original_sexps: &[Sexp],
+        warnings: Vec<Warning>,
+        eval_duration: Duration,
+    ) -> Result<ReplResult, CranelispError> {
+        let module = self.core.tc.current_module_path().clone();
+
+        // Check if the original input was a defmacro — look up newly registered macro.
+        if let Some(sexp) = original_sexps.first()
+            && cranelisp_frontend::is_defmacro(sexp)
+        {
+            if let Ok(info) = cranelisp_frontend::parse_defmacro(sexp) {
+                let clause_infos: Vec<MacroClauseInfo> = info
+                    .clauses
+                    .iter()
+                    .map(|c| MacroClauseInfo {
+                        params: c.fixed_params.clone(),
+                        rest_param: c.rest_param.clone(),
+                        source: None,
+                    })
+                    .collect();
+                let display = format_defmacro_display(&info.name, &clause_infos, &module);
+                return Ok(ReplResult {
+                    value: 0,
+                    ty: Type::Int,
+                    is_definition: true,
+                    warnings,
+                    definition_display: Some(display),
+                    eval_duration,
+                });
+            }
+        }
+
+        // Check if imports were processed.
+        if !unit_result.module_structure.import_specs.is_empty() {
+            let mod_names: Vec<String> = unit_result.module_structure
+                .import_specs
+                .iter()
+                .map(|s| s.module_path.to_string())
+                .collect();
+            let display = format!("imported from {}", mod_names.join(", "));
+            return Ok(ReplResult {
+                value: 0,
+                ty: Type::Int,
+                is_definition: true,
+                warnings,
+                definition_display: Some(display),
+                eval_duration,
+            });
+        }
+
+        // Check if platforms were loaded.
+        if !unit_result.module_structure.platform_specs.is_empty() {
+            let name = &unit_result.module_structure.platform_specs[0].name;
+            let display = format!(
+                "; loaded platform: {name}\n; use (import [platform.{name} [*]]) to bring into scope"
+            );
+            return Ok(ReplResult {
+                value: 0,
+                ty: Type::Int,
+                is_definition: true,
+                warnings,
+                definition_display: Some(display),
+                eval_duration,
+            });
+        }
+
+        // Fallback for truly empty input after expansion.
+        Ok(ReplResult {
+            value: 0,
+            ty: Type::Int,
+            is_definition: true,
+            warnings,
+            definition_display: None,
+            eval_duration,
+        })
+    }
+
+    /// Build definition_display for a program containing only definitions.
+    ///
+    /// Inspects the last item in the program to build the display string.
+    /// For multi-item programs (e.g., begin-expanded), uses the last item.
+    fn build_definition_display(
+        &self,
+        program: &[TopLevel],
+        check_result: &CheckResult,
+        module: &ModuleFullPath,
+    ) -> Option<String> {
+        let last = program.last()?;
+        match last {
+            TopLevel::Defn(defn) => {
+                let is_constrained = check_result
+                    .display.as_ref()
+                    .and_then(|d| d.scheme.as_ref())
+                    .is_some_and(|s| !s.constraints.is_empty());
+                if is_constrained {
+                    check_result.display.as_ref()
+                        .and_then(|d| d.scheme.as_ref())
+                        .map(|s| {
+                            let base = display::format_scheme_display(
+                                &defn.name, s, module, &self.type_modules,
+                            );
+                            format!("{base} ; defn")
+                        })
+                } else {
+                    let disp = check_result.display.as_ref()?;
+                    let type_str = format_type_qualified(&disp.ty, &self.type_modules);
+                    Some(format!(":{type_str} {module}/{} ; defn", defn.name))
+                }
+            }
+            TopLevel::TypeDef { .. } => {
+                let type_name = match &check_result.display.as_ref()?.ty {
+                    Type::ADT(name, _) => name.to_string(),
+                    _ => "?".to_string(),
+                };
+                Some(format_type_display_universal(&type_name, module, self))
+            }
+            TopLevel::TraitDecl(decl) => {
+                Some(format_trait_display_universal(
+                    decl.name.as_ref(),
+                    decl.docstring.as_deref(),
+                    self,
+                ))
+            }
+            TopLevel::TraitImpl(impl_) => {
+                Some(format!(
+                    "impl {module}/{} for {module}/{}",
+                    impl_.trait_name, impl_.target_type
+                ))
+            }
+            TopLevel::Expr(_) => None, // Not a definition.
+        }
+    }
+
+    /// Store sexp and source in DefCodegen for definitions.
+    ///
+    /// Uses original (pre-expansion) sexps for session persistence (Defect 1 fix).
+    fn store_def_codegen(&mut self, program: &[TopLevel], original_sexps: &[Sexp]) {
+        // For single-form input, use the original sexp. For multi-form,
+        // fall back to the expanded sexp from the program.
+        let use_original = original_sexps.len() == 1;
+
+        for (i, tl) in program.iter().enumerate() {
+            if let TopLevel::Defn(defn) = tl {
+                let sexp = if use_original {
+                    original_sexps[0].clone()
+                } else if i < original_sexps.len() {
+                    original_sexps[i].clone()
+                } else {
+                    continue;
+                };
+                let dc = self.core.inmem_worker.got_state.def_codegen
+                    .entry(defn.name.clone())
+                    .or_default();
+                dc.source = Some(format_sexp(&sexp));
+                dc.sexp = Some(sexp);
+            }
+        }
+    }
+
+    /// Track impl sexps in module structure for session persistence.
+    fn track_impl_sexps(&mut self, program: &[TopLevel], original_sexps: &[Sexp]) {
+        let use_original = original_sexps.len() == 1;
+
+        for (i, tl) in program.iter().enumerate() {
+            if let TopLevel::TraitImpl(impl_) = tl {
+                let sexp = if use_original {
+                    original_sexps[0].clone()
+                } else if i < original_sexps.len() {
+                    original_sexps[i].clone()
+                } else {
+                    continue;
+                };
+                self.current_module_structure.impl_sexps.push(ImplSexp {
+                    trait_name: impl_.trait_name.clone(),
+                    target: impl_.target_type.clone(),
+                    sexp,
+                });
+            }
+        }
+    }
+
+    /// Merge import and platform specs from a compile_unit result into the
+    /// current REPL module structure (for session persistence).
+    fn merge_module_structure(&mut self, structure: &ModuleStructure) {
+        self.current_module_structure
+            .import_specs
+            .extend(structure.import_specs.clone());
+        self.current_module_structure
+            .platform_specs
+            .extend(structure.platform_specs.clone());
+    }
+
     /// Evaluate a type annotation expression (`:Type expr` parsed as multiple sexps).
     ///
     /// Uses `build_repl_input_from_sexps` to combine the annotation and expression
-    /// into a single `Expr::Annotate`, then typechecks and executes.
+    /// into a single `Expr::Annotate`, then typechecks and executes via codegen_and_execute.
     fn eval_annotation_expr(&mut self, sexps: Vec<Sexp>) -> Result<ReplResult, CranelispError> {
+        let eval_start = Instant::now();
         let input = cranelisp_frontend::build_repl_input_from_sexps(
             &sexps,
             &mut self.core.expander,
         )?;
         let ctx = self.build_repl_compile_context();
-        let check_result = self.core.tc.check(&[input.clone()], &ctx)?;
-        self.compile_and_execute(&input, &check_result)
-    }
+        let check_result = self.core.tc.check(std::slice::from_ref(&input), &ctx)?;
 
-    /// Evaluate a single Sexp with defmacro interception and macro expansion.
-    ///
-    /// This is the core of the REPL eval loop, separated to allow recursive
-    /// processing of begin-flattened sub-forms.
-    fn eval_sexp(&mut self, sexp: Sexp) -> Result<ReplResult, CranelispError> {
-        // Step 1: Check for defmacro -- compile and register the macro.
-        if cranelisp_frontend::is_defmacro(&sexp) {
-            return self.eval_defmacro(&sexp);
-        }
-
-        // Step 1b: Check for import -- intercept before AST building.
-        // Import forms must be handled here because the AST builder does not
-        // accept (import ...) -- it expects module declarations to be extracted
-        // before AST construction. In the REPL, imports are entered interactively.
-        if is_import_form(&sexp) {
-            return self.eval_import(sexp);
-        }
-
-        // Step 1c: Check for platform -- load DLL and register functions.
-        // Platform declarations must be intercepted before AST building
-        // because the AST builder rejects (platform ...) forms.
-        if crate::platform::is_platform_form(&sexp) {
-            return self.eval_platform(sexp);
-        }
-
-        // Step 1c: Check for bare symbols that need introspection display.
-        // Non-zero-arg macro names show their signature (instead of failing
-        // with "no matching clause"). Special forms show their description
-        // (instead of erroring in the typechecker).
-        if let Some(result) = self.check_bare_symbol_introspection(&sexp) {
-            return Ok(result);
-        }
-
-        // Step 2: Capture original sexp before macro expansion so
-        // session persistence stores what the user typed (Defect 1 fix).
-        let original_sexp = sexp.clone();
-
-        // Expand macros in the sexp.
-        let expanded = self.core.expander.expand_sexp(sexp)?;
-
-        // Step 3: Flatten (begin ...) results and process sub-forms.
-        let forms = cranelisp_frontend::flatten_begin(expanded);
-        self.eval_flattened_forms(forms, Some(original_sexp))
-    }
-
-    /// Process a sequence of flattened forms, returning the result of the last.
-    ///
-    /// Each form may itself be a defmacro (defmacro-in-results from macro
-    /// expansion). Non-macro, non-type forms are accumulated and compiled
-    /// as a batch.
-    ///
-    /// `original_sexp` is the pre-expansion sexp from the user's input.
-    /// When present and `forms` has exactly one compilable form, we store
-    /// the original (not the macro-expanded) sexp for session persistence
-    /// and `/source` display. This ensures `user.cl` contains what the
-    /// user typed, not the expanded form (Defect 1 fix).
-    fn eval_flattened_forms(
-        &mut self,
-        forms: Vec<Sexp>,
-        original_sexp: Option<Sexp>,
-    ) -> Result<ReplResult, CranelispError> {
-        let mut last_result = None;
-        // Track how many compilable (non-defmacro, non-import) forms we see
-        // to decide whether `original_sexp` applies (only for single-form case).
-        let compilable_count = forms.iter()
-            .filter(|f| !cranelisp_frontend::is_defmacro(f) && !is_import_form(f))
-            .count();
-
-        for form in forms {
-            if cranelisp_frontend::is_defmacro(&form) {
-                last_result = Some(self.eval_defmacro(&form)?);
-                continue;
-            }
-            if is_import_form(&form) {
-                last_result = Some(self.eval_import(form)?);
-                continue;
-            }
-
-            // Build and process a normal REPL input.
-            // Use the pre-expansion sexp for storage when this is the sole
-            // compilable form (common case: user typed one defn/expr).
-            // For begin-expanded multi-forms, fall back to the expanded form.
-            let form_sexp = if compilable_count == 1 {
-                original_sexp.clone().unwrap_or_else(|| form.clone())
-            } else {
-                form.clone()
-            };
-            let mut input = cranelisp_frontend::build_repl_input(&form, &mut self.core.expander)?;
-
-            // Bind chain independence analysis (auto IO scheduling).
-            if !self.core.scheduling_registry.is_empty()
-                && std::env::var("CRANELISP_NO_IO_SCHEDULE").is_err()
-            {
-                match &mut input {
-                    TopLevel::Defn(defn) => {
-                        crate::bind_chain_analysis::auto_schedule_defn(
-                            defn, &self.core.scheduling_registry,
-                        );
-                    }
-                    TopLevel::Expr(expr) => {
-                        crate::bind_chain_analysis::auto_schedule_expr(
-                            expr, &self.core.scheduling_registry,
-                        );
-                    }
-                    TopLevel::TraitImpl(impl_) => {
-                        for method in impl_.methods.iter_mut() {
-                            crate::bind_chain_analysis::auto_schedule_defn(
-                                method, &self.core.scheduling_registry,
-                            );
-                        }
-                    }
-                    _ => {}
-                }
-            }
-
-            let ctx = self.build_repl_compile_context();
-            let check_result = self.core.tc.check(&[input.clone()], &ctx)?;
-            let result = self.compile_and_execute(&input, &check_result)?;
-
-            // Store sexp and source in DefCodegen for introspection commands
-            // and session persistence. Use entry().or_default() because
-            // constrained poly fns skip compile_and_register_defn (which
-            // normally creates the entry), but still need sexp for save.
-            if let TopLevel::Defn(defn) = &input {
-                let dc = self.core.inmem_worker.got_state.def_codegen.entry(defn.name.clone()).or_default();
-                dc.source = Some(format_sexp(&form_sexp));
-                dc.sexp = Some(form_sexp.clone());
-            }
-            // Track impl sexps in module structure for session persistence.
-            if let TopLevel::TraitImpl(impl_) = &input {
-                self.current_module_structure.impl_sexps.push(ImplSexp {
-                    trait_name: impl_.trait_name.clone(),
-                    target: impl_.target_type.clone(),
-                    sexp: form_sexp,
-                });
-            }
-            last_result = Some(result);
-        }
-
-        last_result.ok_or_else(|| CranelispError::ParseError {
-            message: "empty input after expansion".into(),
-            span: cranelisp_types::Span::SYNTHETIC,
-        })
-    }
-
-    /// Compile a defmacro form and register it in the expander and symbol table.
-    ///
-    /// Creates a fresh JIT for the macro clause compilation, keeps it alive
-    /// so the compiled function pointer remains valid. Registers the macro
-    /// in the TC's symbol table as `ModuleEntry::Macro` for introspection.
-    fn eval_defmacro(&mut self, sexp: &Sexp) -> Result<ReplResult, CranelispError> {
-        let info = cranelisp_frontend::parse_defmacro(sexp)?;
-
-        let mut jit = Jit::new()?;
-        jit.declare_intrinsics()?;
-
-        self.core.expander.compile_macro(&info, &mut self.core.tc, &mut jit)?;
-
-        // Keep JIT alive so macro function pointers remain valid.
-        self.core.inmem_worker.jit_modules.push(jit);
-
-        // Register macro in the symbol table for introspection (spec §11.2).
-        let clause_infos: Vec<MacroClauseInfo> = info
-            .clauses
-            .iter()
-            .map(|c| MacroClauseInfo {
-                params: c.fixed_params.clone(),
-                rest_param: c.rest_param.clone(),
-                source: None,
-            })
-            .collect();
-        // Compute display before moving clause_infos into symbol table.
-        let module = self.core.tc.current_module_path().clone();
-        let display = format_defmacro_display(&info.name, &clause_infos, &module);
-
-        let visibility = if info.is_private {
-            Visibility::Private
-        } else {
-            Visibility::Public
-        };
-        self.core.tc.symbol_table_mut().insert(
-            info.name.clone(),
-            ModuleEntry::Macro {
-                name: info.name.clone(),
-                clauses: clause_infos,
-                docstring: info.docstring.clone(),
-                visibility,
-                sexp: Some(sexp.clone()),
-                source: None,
+        // Build a CompileUnitResult to pass to codegen_and_execute.
+        let unit_result = crate::pipeline_v2::CompileUnitResult {
+            program: vec![input],
+            module_structure: ModuleStructure {
+                path: ctx.module.clone(),
+                file_path: None,
+                mod_decls: vec![],
+                import_specs: vec![],
+                export_specs: vec![],
+                platform_specs: vec![],
+                impl_sexps: vec![],
+                impls: vec![],
+                dll_path: None,
             },
-        );
+            check_result,
+            source: String::new(),
+            warnings: Vec::new(),
+        };
+
+        let codegen_result = crate::pipeline_v2::codegen_and_execute(
+            &mut self.core,
+            &unit_result,
+            &ctx,
+        )?;
+
+        let eval_duration = eval_start.elapsed();
+
+        // Build ReplResult from codegen output.
+        let value = codegen_result.value.unwrap_or(0);
+        let ty = unit_result.check_result.display.as_ref()
+            .map(|d| d.ty.clone())
+            .or_else(|| codegen_result.result_type.clone())
+            .unwrap_or(Type::Int);
+        let is_definition = unit_result.program.iter().all(|tl| {
+            !matches!(tl, TopLevel::Expr(_))
+        });
 
         Ok(ReplResult {
-            value: 0,
-            ty: Type::Int,
-            is_definition: true,
-            warnings: Vec::new(),
-            definition_display: Some(display),
-            eval_duration: Duration::ZERO,
+            value,
+            ty,
+            is_definition,
+            warnings: unit_result.warnings.clone(),
+            definition_display: None,
+            eval_duration,
         })
     }
 
@@ -815,497 +1046,6 @@ impl ReplSession {
         }
     }
 
-    /// Process an import form in the REPL.
-    ///
-    /// Parses the import sexp using `extract_module_declarations` and registers
-    /// the resulting import specs in the typechecker's symbol table.
-    fn eval_import(&mut self, sexp: Sexp) -> Result<ReplResult, CranelispError> {
-        let module = self.core.tc.current_module_path().clone();
-        let (structure, _remaining) =
-            cranelisp_frontend::extract_module_declarations(module, None, vec![sexp])?;
-
-        if !structure.import_specs.is_empty() {
-            // Lazily load any modules that aren't already compiled.
-            // Per spec §8.11.2, module resolution searches project root and lib dirs.
-            let lib_dirs = crate::pipeline::assemble_lib_dirs(&self.project_root);
-            for spec in &structure.import_specs {
-                // Skip if the full module path is already loaded (e.g., "platform.test-capture").
-                if self.core.tc.has_module(&spec.module_path) {
-                    continue;
-                }
-                // Extract the root module name (first segment of dotted path).
-                let root_module = spec.module_path.0
-                    .split('.')
-                    .next()
-                    .unwrap_or(&spec.module_path.0)
-                    .to_string();
-                let root_path = ModuleFullPath::from(root_module.as_str());
-                if !self.core.tc.has_module(&root_path) {
-                    // Save and restore current module context around lazy load.
-                    let saved_module = self.core.tc.current_module_path().clone();
-                    crate::pipeline::load_module_into_session(
-                        &root_module,
-                        &self.project_root,
-                        &lib_dirs,
-                        &mut self.core,
-                    )?;
-                    self.core.tc.set_current_module(saved_module);
-                }
-            }
-
-            self.core.tc.register_imports(&structure.import_specs)?;
-            // Track imports in module structure for session persistence.
-            self.current_module_structure
-                .import_specs
-                .extend(structure.import_specs.clone());
-        }
-
-        // Build display: "imported N names from module1, module2, ..."
-        let mod_names: Vec<String> = structure
-            .import_specs
-            .iter()
-            .map(|s| s.module_path.to_string())
-            .collect();
-        let display = if mod_names.is_empty() {
-            "import: no names".to_string()
-        } else {
-            format!("imported from {}", mod_names.join(", "))
-        };
-
-        Ok(ReplResult {
-            value: 0,
-            ty: Type::Int,
-            is_definition: true,
-            warnings: Vec::new(),
-            definition_display: Some(display),
-            eval_duration: Duration::ZERO,
-        })
-    }
-
-    /// Handle a `(platform name)` form: load the platform DLL and register
-    /// its functions in the typechecker.
-    ///
-    /// Platform function pointers are stored in `self.platform_symbols` so
-    /// that subsequent JIT instances (created for each function compilation)
-    /// can resolve calls to platform functions.
-    fn eval_platform(&mut self, sexp: Sexp) -> Result<ReplResult, CranelispError> {
-        let (name, span) = crate::platform::extract_platform_name(&sexp).ok_or_else(|| {
-            CranelispError::ParseError {
-                message: "invalid platform declaration".into(),
-                span: cranelisp_types::Span::SYNTHETIC,
-            }
-        })?;
-
-        let (platform, jit_syms) = crate::platform::load_and_register_platform(
-            &mut self.core.tc,
-            &name,
-            &self.project_root,
-            span,
-        )?;
-
-        let fn_count = platform.descriptors.len();
-        let version = platform.version.clone();
-
-        // Populate scheduling registry for bind chain independence analysis.
-        for desc in &platform.descriptors {
-            self.core.scheduling_registry.insert(
-                cranelisp_types::Symbol::from(desc.name.as_str()),
-                desc.scheduling_class,
-            );
-        }
-        self.core.platform_symbols.extend(jit_syms);
-        self.loaded_platforms.push(platform);
-
-        let display = format!(
-            "; loaded platform: {} v{} ({} functions)\n; use (import [platform.{} [*]]) to bring into scope",
-            name, version, fn_count, name
-        );
-
-        Ok(ReplResult {
-            value: 0,
-            ty: Type::Int,
-            is_definition: true,
-            warnings: Vec::new(),
-            definition_display: Some(display),
-            eval_duration: Duration::ZERO,
-        })
-    }
-
-    /// Compile and execute a checked REPL input.
-    fn compile_and_execute(
-        &mut self,
-        input: &TopLevel,
-        check_result: &CheckResult,
-    ) -> Result<ReplResult, CranelispError> {
-        match input {
-            TopLevel::Expr(expr) => self.execute_expr(expr, check_result),
-            TopLevel::Defn(defn) => self.execute_defn(defn, check_result),
-            TopLevel::TypeDef { .. } => self.execute_typedef(check_result),
-            TopLevel::TraitDecl(decl) => self.execute_trait_decl(decl, check_result),
-            TopLevel::TraitImpl(impl_) => self.execute_trait_impl(impl_, check_result),
-        }
-    }
-
-    /// Compile and execute an expression input.
-    fn execute_expr(
-        &mut self,
-        expr: &Expr,
-        check_result: &CheckResult,
-    ) -> Result<ReplResult, CranelispError> {
-        let check = self.build_check_for_backend(check_result);
-
-        // Compile any monomorphised specializations before executing
-        // the expression (Gap 4: REPL constrained-poly path).
-        self.compile_mono_defns(check_result)?;
-
-        // Build extra symbols for platform function resolution.
-        // If the expression contains a (trace ...) form, also override
-        // cranelisp_trace_format with the REPL's proper formatter and
-        // build traced_fns for GOT-swap wrapper generation.
-        let has_trace = expr_contains_trace(expr);
-        let traced_fns = if has_trace {
-            self.build_traced_fns()
-        } else {
-            Vec::new()
-        };
-
-        let mut extra_symbols: Vec<(&str, *const u8)> = self
-            .core.platform_symbols
-            .iter()
-            .map(|(name, ptr)| (name.as_str(), *ptr))
-            .collect();
-
-        // Override the runtime's fallback cranelisp_trace_format with the
-        // REPL's version that uses type_defs/type_modules for proper display.
-        if has_trace {
-            extra_symbols.push((
-                "cranelisp_trace_format",
-                repl_trace_format as *const u8,
-            ));
-        }
-
-        let compiled = compile_expr_with_traced_fns(
-            expr,
-            &check,
-            Some(&mut self.core.inmem_worker.got_state),
-            &extra_symbols,
-            if has_trace { Some(&traced_fns) } else { None },
-        )?;
-
-        // Set trace display state before evaluation so cranelisp_trace_format
-        // can access type_defs and type_modules.
-        let display_state = TraceDisplayState {
-            type_defs: &self.type_defs as *const _,
-            type_modules: &self.type_modules as *const _,
-        };
-        if has_trace {
-            set_trace_display_state(&display_state);
-        }
-
-        // Time the actual evaluation (function call) separately from compilation.
-        // Wrap in catch_unwind to recover from runtime panics (spec §12.7.4.1).
-        let eval_start = Instant::now();
-        // SAFETY: compiled was produced by compile_expr_with_got, which guarantees
-        // a valid JIT function pointer with extern "C" fn() -> i64 signature.
-        let value = invoke_jit_eval(|| unsafe { compiled.execute() });
-        let eval_duration = eval_start.elapsed();
-
-        // Always clear trace display state after evaluation.
-        if has_trace {
-            clear_trace_display_state();
-        }
-
-        // Propagate evaluation errors after cleanup.
-        let value = value?;
-
-        Ok(ReplResult {
-            value,
-            ty: check_result.display.as_ref().unwrap().ty.clone(),
-            is_definition: false,
-            warnings: check_result.warnings.clone(),
-            definition_display: None,
-            eval_duration,
-        })
-    }
-
-    /// Compile and execute a function definition input.
-    fn execute_defn(
-        &mut self,
-        defn: &Defn,
-        check_result: &CheckResult,
-    ) -> Result<ReplResult, CranelispError> {
-        // Skip compiling constrained fn base definitions -- they are
-        // templates that get monomorphised at call sites.
-        let is_constrained = check_result
-            .display.as_ref()
-            .and_then(|d| d.scheme.as_ref())
-            .is_some_and(|s| !s.constraints.is_empty());
-
-        // Compile any monomorphised specializations before the defn body.
-        // When a non-constrained defn calls a constrained function (e.g.,
-        // `(defn main [] (countdown 1000000))` where `countdown` is constrained-poly),
-        // the typechecker generates mono_defns (e.g., `countdown$Int`). These must
-        // be compiled and registered in the GOT before the defn body is compiled,
-        // otherwise the GOT lookup for the mangled name will fail.
-        self.compile_mono_defns(check_result)?;
-
-        if !is_constrained {
-            let check = self.build_check_for_backend(check_result);
-            self.compile_and_register_defn(defn, &check)?;
-        }
-
-        // For defn, execute if it's zero-arg, otherwise return 0.
-        // Time the execution separately from compilation.
-        let (value, eval_duration) = if defn.params().is_empty() && !is_constrained {
-            let entry = self.core.inmem_worker.got_state.def_codegen.get(defn.name.as_ref());
-            let code_ptr = entry
-                .and_then(|e| e.code_ptr)
-                .ok_or_else(|| CranelispError::CodegenError {
-                    message: format!("no code pointer after compiling defn '{}'", defn.name),
-                    span: cranelisp_types::Span::SYNTHETIC,
-                })?;
-            let func: extern "C" fn() -> i64 = unsafe { std::mem::transmute(code_ptr) };
-            let eval_start = Instant::now();
-            let result = invoke_jit_eval(|| func())?;
-            (result, eval_start.elapsed())
-        } else {
-            (0, Duration::ZERO)
-        };
-
-        // Build definition display with qualified name (spec §1.1, §1.3).
-        let module = self.core.tc.current_module_path().clone();
-        let disp = check_result.display.as_ref().unwrap();
-        let definition_display = if is_constrained {
-            disp.scheme.as_ref().map(|s| {
-                let base = display::format_scheme_display(&defn.name, s, &module, &self.type_modules);
-                format!("{base} ; defn")
-            })
-        } else {
-            let type_str = format_type_qualified(&disp.ty, &self.type_modules);
-            Some(format!(":{type_str} {module}/{} ; defn", defn.name))
-        };
-
-        Ok(ReplResult {
-            value,
-            ty: check_result.display.as_ref().unwrap().ty.clone(),
-            is_definition: true,
-            warnings: check_result.warnings.clone(),
-            definition_display,
-            eval_duration,
-        })
-    }
-
-    /// Execute a type definition input.
-    fn execute_typedef(
-        &mut self,
-        check_result: &CheckResult,
-    ) -> Result<ReplResult, CranelispError> {
-        let module = self.core.tc.current_module_path().clone();
-
-        // Accumulate type definitions for ADT value display.
-        for (name, info) in &check_result.type_defs {
-            self.type_defs.insert(name.clone(), info.clone());
-            self.type_modules.insert(name.clone(), module.clone());
-        }
-
-        // Build qualified display: `:module/TypeName ; deftype` + related symbols
-        let type_name = match &check_result.display.as_ref().unwrap().ty {
-            Type::ADT(name, _) => name.to_string(),
-            _ => "?".to_string(),
-        };
-        let display = format_type_display_universal(&type_name, &module, self);
-
-        Ok(ReplResult {
-            value: 0,
-            ty: check_result.display.as_ref().unwrap().ty.clone(),
-            is_definition: true,
-            warnings: check_result.warnings.clone(),
-            definition_display: Some(display),
-            eval_duration: Duration::ZERO,
-        })
-    }
-
-    /// Execute a trait declaration input.
-    fn execute_trait_decl(
-        &mut self,
-        decl: &cranelisp_types::TraitDecl,
-        check_result: &CheckResult,
-    ) -> Result<ReplResult, CranelispError> {
-        // Trait registration is already done by check().
-        // Compile any default method bodies generated by the typechecker.
-        if !check_result.default_method_defns.is_empty() {
-            let check = self.build_check_for_backend(check_result);
-            for defn in &check_result.default_method_defns {
-                self.compile_and_register_defn(defn, &check)?;
-            }
-        }
-
-        let display = format_trait_display_universal(
-            decl.name.as_ref(),
-            decl.docstring.as_deref(),
-            self,
-        );
-
-        Ok(ReplResult {
-            value: 0,
-            ty: check_result.display.as_ref().unwrap().ty.clone(),
-            is_definition: true,
-            warnings: check_result.warnings.clone(),
-            definition_display: Some(display),
-            eval_duration: Duration::ZERO,
-        })
-    }
-
-    /// Execute a trait implementation input.
-    fn execute_trait_impl(
-        &mut self,
-        impl_: &cranelisp_types::TraitImpl,
-        check_result: &CheckResult,
-    ) -> Result<ReplResult, CranelispError> {
-        let check = self.build_check_for_backend(check_result);
-
-        // Compile the impl methods.
-        for defn in &impl_.methods {
-            self.compile_and_register_defn(defn, &check)?;
-        }
-
-        // Compile any default method bodies generated by the typechecker.
-        for defn in &check_result.default_method_defns {
-            self.compile_and_register_defn(defn, &check)?;
-        }
-
-        // Compile any monomorphised definitions generated during checking.
-        self.compile_mono_defns(check_result)?;
-
-        let module = self.core.tc.current_module_path();
-        let display = format!(
-            "impl {module}/{} for {module}/{}",
-            impl_.trait_name, impl_.target_type
-        );
-
-        Ok(ReplResult {
-            value: 0,
-            ty: check_result.display.as_ref().unwrap().ty.clone(),
-            is_definition: true,
-            warnings: check_result.warnings.clone(),
-            definition_display: Some(display),
-            eval_duration: Duration::ZERO,
-        })
-    }
-
-    /// Compile monomorphised specializations from a check result.
-    ///
-    /// Used by both expression and trait impl execution paths.
-    fn compile_mono_defns(
-        &mut self,
-        check_result: &CheckResult,
-    ) -> Result<(), CranelispError> {
-        for mono in &check_result.mono_defns {
-            let mut mono_check = self.build_check_for_backend(check_result);
-            mono_check.method_resolutions.extend(mono.resolutions.clone());
-            if !mono.expr_types.is_empty() {
-                mono_check.expr_types = mono.expr_types.clone();
-            }
-            self.compile_and_register_defn(&mono.defn, &mono_check)?;
-        }
-        Ok(())
-    }
-
-    /// Compile a single function definition and register it in the GOT.
-    ///
-    /// Used by Defn, TraitDecl (default methods), and TraitImpl (impl methods).
-    /// Optionally stores the source text and parsed sexp in DefCodegen
-    /// for `/source` and `/sexp` introspection commands.
-    fn compile_and_register_defn(
-        &mut self,
-        defn: &Defn,
-        check: &cranelisp_types::CheckResult,
-    ) -> Result<(), CranelispError> {
-        self.compile_and_register_defn_with_context(defn, check, None, None)
-    }
-
-    /// Compile a defn with optional source text and sexp for introspection.
-    fn compile_and_register_defn_with_context(
-        &mut self,
-        defn: &Defn,
-        check: &cranelisp_types::CheckResult,
-        source_text: Option<String>,
-        sexp: Option<Sexp>,
-    ) -> Result<(), CranelispError> {
-        // Create JIT with platform symbols registered (if any platforms loaded).
-        let extra_symbols: Vec<(&str, *const u8)> = self
-            .core.platform_symbols
-            .iter()
-            .map(|(name, ptr)| (name.as_str(), *ptr))
-            .collect();
-        let mut jit = Jit::new_with_symbols(&extra_symbols)?;
-
-        // Declare runtime intrinsics (Ring 1 heap infrastructure).
-        jit.declare_intrinsics()?;
-
-        // Declare just this function.
-        let func_ids = jit.declare_functions(&[defn])?;
-
-        // Ensure a GOT slot exists for this function.
-        let slot = self.core.inmem_worker.got_state.ensure_slot_for(&defn.name)?;
-
-        // Build GOT slot map from existing state + this new function.
-        let mut got_slots: HashMap<Symbol, usize> = HashMap::new();
-        for (name, dc) in &self.core.inmem_worker.got_state.def_codegen {
-            if let Some(s) = dc.got_slot {
-                got_slots.insert(name.clone(), s);
-            }
-        }
-        got_slots.insert(defn.name.clone(), slot);
-
-        let got_base = self.core.inmem_worker.got_state.got_base_ptr() as i64;
-
-        // Build function arity map from existing GOT state + this defn.
-        let mut func_arities: HashMap<Symbol, usize> = HashMap::new();
-        for (name, dc) in &self.core.inmem_worker.got_state.def_codegen {
-            if let Some(pc) = dc.param_count {
-                func_arities.insert(name.clone(), pc);
-            }
-        }
-        func_arities.insert(defn.name.clone(), defn.params().len());
-
-        // Compile the function with awareness of existing GOT.
-        let compile_ctx = jit.build_compile_context(
-            check,
-            &func_ids,
-            &func_arities,
-            Some(&got_slots),
-            Some(got_base),
-            None, // No cross-module GOT in single-module REPL yet.
-        );
-        let clif_ir = jit.compile_defn(defn, compile_ctx)?;
-
-        // Finalize and get the code pointer.
-        let code_ptr = jit.finalize_and_get_ptr(&defn.name, defn.params().len())?;
-
-        // Update the GOT slot with the new code pointer.
-        self.core.inmem_worker.got_state.update_slot(slot, code_ptr);
-
-        // Record codegen info and introspection data.
-        let entry = self.core.inmem_worker.got_state.def_codegen.entry(defn.name.clone()).or_default();
-        entry.code_ptr = Some(code_ptr);
-        entry.got_slot = Some(slot);
-        entry.param_count = Some(defn.params().len());
-        entry.clif_ir = Some(clif_ir);
-        entry.defn = Some(defn.clone());
-        if source_text.is_some() {
-            entry.source = source_text;
-        }
-        if sexp.is_some() {
-            entry.sexp = sexp;
-        }
-
-        // Keep JIT alive so code pointer remains valid.
-        self.core.inmem_worker.jit_modules.push(jit);
-
-        Ok(())
-    }
-
     /// Build a CompileContext for REPL evaluation.
     ///
     /// Uses the session's current module with Additive strategy and Interactive mode.
@@ -1314,24 +1054,6 @@ impl ReplSession {
             module: self.core.tc.current_module_path().clone(),
             strategy: ModuleStrategy::Additive,
             codegen_target: cranelisp_types::CodegenTarget::JitAndCache,
-        }
-    }
-
-    /// Build a CheckResult suitable for the backend from a CheckResult.
-    fn build_check_for_backend(
-        &self,
-        repl_check: &CheckResult,
-    ) -> cranelisp_types::CheckResult {
-        cranelisp_types::CheckResult {
-            method_resolutions: repl_check.method_resolutions.clone(),
-            constrained_fn_names: repl_check.constrained_fn_names.clone(),
-            mono_defns: Vec::new(), // MonoDefn is not Clone; backend handles mono
-            expr_types: repl_check.expr_types.clone(),
-            default_method_defns: repl_check.default_method_defns.clone(),
-            warnings: repl_check.warnings.clone(),
-            type_defs: repl_check.type_defs.clone(),
-            constructor_to_type: repl_check.constructor_to_type.clone(),
-            display: None,
         }
     }
 
@@ -1859,10 +1581,9 @@ fn find_transitive_dependents(
 ///
 /// Per repl/spec.md §14.2: clears old module state (symbol table, trait
 /// declarations, macro env) before recompiling to avoid "duplicate definition"
-/// errors. Uses the REPL's form-by-form compilation (eval_flattened_forms
-/// pattern) with fresh per-function JITs and GOT-based dispatch. On failure,
-/// the old state is NOT restored — the module enters error state and
-/// evaluation is blocked (§14.4).
+/// errors. Routes through compile_unit + codegen_and_execute (v3 pipeline).
+/// On failure, the old state is NOT restored — the module enters error state
+/// and evaluation is blocked (§14.4).
 fn reload_single_module(
     session: &mut ReplSession,
     module_path: &ModuleFullPath,
@@ -1896,40 +1617,28 @@ fn reload_single_module(
     // Remove the old symbol table, traits, and macros to avoid duplicates.
     clear_module_state(session, module_path);
 
-    // --- Phase B: Recompile from source ---
-    // Switch to the module's context for compilation.
+    // --- Phase B: Recompile from source via compile_unit + codegen_and_execute ---
     let prev_module = session.core.tc.current_module_path().clone();
     session.core.tc.set_current_module(module_path.clone());
 
-    // Parse the source sexps.
-    let sexps = cranelisp_frontend::parse(&source)?;
-    let (structure, remaining) = cranelisp_frontend::extract_module_declarations(
-        module_path.clone(),
-        Some(file_path.clone()),
-        sexps,
+    let ctx = CompileContext {
+        module: module_path.clone(),
+        strategy: ModuleStrategy::Additive,
+        codegen_target: cranelisp_types::CodegenTarget::JitAndCache,
+    };
+
+    let unit_result = crate::pipeline_v2::compile_unit(
+        &mut session.core,
+        &source,
+        &ctx,
     )?;
 
-    // Re-register imports/exports for the module.
-    if !structure.import_specs.is_empty() {
-        session.core.tc.register_imports(&structure.import_specs)?;
-    }
-    if !structure.export_specs.is_empty() {
-        session.core.tc.register_exports(&structure.export_specs)?;
-    }
-
-    // Process forms using the REPL's form-by-form pattern.
-    // This creates fresh JITs per function and uses GOT-based dispatch,
-    // avoiding "Duplicate definition" errors from the shared batch JIT.
-    let accumulated = session.core.process_forms_sequentially(remaining)?;
-    for form in accumulated {
-        if cranelisp_frontend::is_defmacro(&form) {
-            session.eval_defmacro(&form)?;
-            continue;
-        }
-        let input = cranelisp_frontend::build_repl_input(&form, &mut session.core.expander)?;
-        let ctx = session.build_repl_compile_context();
-        let check_result = session.core.tc.check(&[input.clone()], &ctx)?;
-        session.compile_and_execute(&input, &check_result)?;
+    if !unit_result.program.is_empty() {
+        crate::pipeline_v2::codegen_and_execute(
+            &mut session.core,
+            &unit_result,
+            &ctx,
+        )?;
     }
 
     // Register module aliases so downstream references resolve.
@@ -2154,8 +1863,9 @@ fn handle_reset(session: &mut ReplSession, stdout: &mut impl Write) {
         dll_path: None,
     };
     session.last_saved_hash = None;
-    // Note: loaded_platforms are kept alive — DLL pointers remain valid.
-    // JIT modules from the old session are dropped (code memory may leak;
+    // Note: loaded_platforms on the old CompilationSession are dropped, but
+    // platform DLL pointers remain valid via session.core.loaded_platforms on
+    // the new session. JIT modules are dropped (code memory may leak;
     // see design/int/repl-lifecycle.md §2.2).
 
     // Clear file watcher subscriptions before re-adding after prelude load
@@ -2247,14 +1957,6 @@ fn run_shell_command(cmd: &str, stdout: &mut impl Write) {
 
 // ── Utility functions ─────────────────────────────────────────────────────────
 
-/// Check if a Sexp is an `(import ...)` form.
-///
-/// Returns true if the sexp is a list whose head is the symbol `import`.
-fn is_import_form(sexp: &Sexp) -> bool {
-    matches!(sexp, Sexp::List(elems, _)
-        if !elems.is_empty() && matches!(&elems[0], Sexp::Symbol(name, _) if name == "import"))
-}
-
 /// Check if a Sexp is a type annotation prefix (`:Type` or bare `:`).
 fn is_annotation_prefix(sexp: &Sexp) -> bool {
     matches!(sexp, Sexp::Symbol(s, _) if s.starts_with(':') && !s.contains('/'))
@@ -2317,34 +2019,10 @@ fn format_defmacro_display(name: &str, clauses: &[MacroClauseInfo], module: &Mod
     format_macro_display_universal(name, clauses, None, module)
 }
 
-// ── Runtime panic boundary (spec §12.7.4.1) ──────────────────────────────────
-
-/// Invoke a JIT-compiled function and check for runtime errors.
-///
-/// `runtime_panic` in JIT code stores the error in a thread-local (because
-/// Cranelift JIT frames lack unwind tables, so `catch_unwind` cannot work).
-/// After the JIT call returns, we check `take_runtime_error()` for errors.
-fn invoke_jit_eval<F>(f: F) -> Result<i64, CranelispError>
-where
-    F: FnOnce() -> i64,
-{
-    // Clear any stale error before the JIT call.
-    let _ = cranelisp_runtime::panic::take_runtime_error();
-    let value = f();
-    // Check if runtime_panic was called during execution.
-    if let Some(message) = cranelisp_runtime::panic::take_runtime_error() {
-        Err(CranelispError::CodegenError {
-            message,
-            span: cranelisp_types::Span::SYNTHETIC,
-        })
-    } else {
-        Ok(value)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use cranelisp_types::Visibility;
     use commands::{classify_import, ImportClass};
 
     #[test]

@@ -8,13 +8,9 @@
 use std::cell::Cell;
 use std::collections::HashMap;
 
-use cranelisp_backend::compiler::TracedFnInfo;
 use cranelisp_backend::display;
-use cranelisp_backend::got::ModuleCodegenState;
-use cranelisp_backend::jit::Jit;
 use cranelisp_types::{
-    CranelispError, Defn, DefnVariant, Expr, ModuleFullPath, Symbol, Type,
-    TypeDefInfo, TypeName, Visibility,
+    Expr, ModuleFullPath, Type, TypeDefInfo, TypeName,
 };
 
 // ── Trace value formatting ────────────────────────────────────────────────────
@@ -130,100 +126,3 @@ pub(crate) fn expr_contains_trace(expr: &Expr) -> bool {
     }
 }
 
-// ── Trace compilation ─────────────────────────────────────────────────────────
-
-/// Result of compiling a REPL expression with trace support.
-///
-/// Holds the JIT alive so the compiled function pointer remains valid.
-/// This mirrors `cranelisp_backend::CompiledExpr` but can be constructed
-/// from `src/` without needing access to the backend struct's private fields.
-pub(crate) struct TracedCompiledExpr {
-    #[allow(dead_code)]
-    jit: Jit,
-    func_ptr: *const u8,
-}
-
-impl TracedCompiledExpr {
-    /// Execute the compiled expression and return the i64 result.
-    ///
-    /// # Safety
-    ///
-    /// The func_ptr must point to valid JIT-compiled code with the signature
-    /// `extern "C" fn() -> i64`.
-    pub(crate) unsafe fn execute(&self) -> i64 {
-        let func: extern "C" fn() -> i64 = unsafe { std::mem::transmute(self.func_ptr) };
-        func()
-    }
-}
-
-/// Compile a single REPL expression with optional `traced_fns` for trace support.
-///
-/// This is a variant of `cranelisp_backend::compile_expr_with_got_and_symbols`
-/// that additionally sets `traced_fns` on the `CompileContext`. The backend's
-/// public API does not expose this parameter, so we replicate the compilation
-/// pipeline here with the extra field set.
-pub(crate) fn compile_expr_with_traced_fns(
-    expr: &Expr,
-    check: &cranelisp_types::CheckResult,
-    got_state: Option<&mut ModuleCodegenState>,
-    extra_symbols: &[(&str, *const u8)],
-    traced_fns: Option<&[TracedFnInfo]>,
-) -> Result<TracedCompiledExpr, CranelispError> {
-    let mut jit = Jit::new_with_symbols(extra_symbols)?;
-
-    // Declare runtime intrinsics (Ring 1 heap infrastructure).
-    jit.declare_intrinsics()?;
-
-    // Wrap expression in a synthetic zero-arg function.
-    let wrapper_name = Symbol::from("__repl_expr__");
-    let wrapper_defn = Defn {
-        name: wrapper_name.clone(),
-        docstring: None,
-        variants: vec![DefnVariant {
-            params: vec![],
-            param_annotations: vec![],
-            body: expr.clone(),
-            span: expr.span(),
-        }],
-        visibility: Visibility::Public,
-        span: expr.span(),
-    };
-
-    let func_ids = jit.declare_functions(&[&wrapper_defn])?;
-
-    // Get GOT info and function arities if available.
-    let (got_slots, got_base_ptr, func_arities) = if let Some(state) = got_state {
-        let mut slots: HashMap<Symbol, usize> = HashMap::new();
-        let mut arities: HashMap<Symbol, usize> = HashMap::new();
-        for (name, dc) in &state.def_codegen {
-            if let Some(slot) = dc.got_slot {
-                slots.insert(name.clone(), slot);
-            }
-            if let Some(pc) = dc.param_count {
-                arities.insert(name.clone(), pc);
-            }
-        }
-        let base = state.got_base_ptr() as i64;
-        (Some(slots), Some(base), arities)
-    } else {
-        (None, None, HashMap::new())
-    };
-
-    let mut compile_ctx = jit.build_compile_context(
-        check,
-        &func_ids,
-        &func_arities,
-        got_slots.as_ref(),
-        got_base_ptr,
-        None, // No cross-module GOT for single-expression compilation.
-    );
-
-    // Set traced_fns on the compile context for trace codegen support.
-    compile_ctx.traced_fns = traced_fns;
-
-    jit.compile_defn(&wrapper_defn, compile_ctx)?;
-
-    let code_ptr = jit.finalize_and_get_ptr(&wrapper_name, 0)?;
-
-    Ok(TracedCompiledExpr { jit, func_ptr: code_ptr })
-}
