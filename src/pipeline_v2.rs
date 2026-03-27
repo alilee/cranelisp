@@ -204,7 +204,7 @@ fn compile_unit_inner(
             codegen_target: ctx.codegen_target, // inherit caller's target
         };
         let prelude_result = compile_unit(session, &prelude_source, &prelude_ctx)?;
-        codegen_and_execute(session, &prelude_result, &prelude_ctx)?;
+        codegen_and_execute_via_session(session, &prelude_result, &prelude_ctx)?;
 
         // Register prelude dependency edge for the current module.
         session.module_deps.register_edge(&ctx.module, &prelude_path);
@@ -308,6 +308,29 @@ fn compile_unit_inner(
 // Codegen + execute (stages 6-7)
 // ---------------------------------------------------------------------------
 
+/// Everything codegen needs, extracted from CompilationSession at the call site.
+///
+/// Must be Send so it can move to the codegen worker thread (Step 11 async mode).
+/// The symbol_table is pre-cloned from the TypeChecker because tc is not Send.
+pub struct CodegenPacket {
+    /// The compile context (module, strategy, codegen target).
+    pub ctx: CompileContext,
+    /// The stages 1-5 result, ready for codegen.
+    pub unit_result: CompileUnitResult,
+    /// Whether to use GOT-indirect calls (interactive/REPL mode).
+    pub interactive: bool,
+    /// Platform function pointers for JIT symbol registration.
+    pub platform_symbols: Vec<(String, *const u8)>,
+    /// Pre-cloned symbol table for the module (used by cache writes).
+    /// Cloned from tc at the call site because tc is not Send.
+    pub symbol_table: cranelisp_types::SymbolTable,
+}
+
+// SAFETY: CodegenPacket contains raw *const u8 pointers (in platform_symbols)
+// that are function pointers into loaded DLLs. These pointers are valid for
+// the process lifetime and are only read (never written) by the codegen path.
+unsafe impl Send for CodegenPacket {}
+
 /// Execute codegen and optional execution for a compiled unit.
 ///
 /// Takes a `CompileUnitResult` from `compile_unit()` (stages 1-5) and
@@ -315,10 +338,64 @@ fn compile_unit_inner(
 /// background cache write, module structure recording, and func_sigs
 /// accumulation.
 ///
-/// This function borrows `CompileUnitResult` — it does not consume it,
-/// so callers can inspect `check_result` and `warnings` afterward.
+/// This is the free-function form that takes decomposed worker state
+/// instead of `&mut CompilationSession`. Used by both the synchronous
+/// fallback path and the async codegen worker thread.
+/// Execute codegen via a pre-built `CodegenPacket`.
+///
+/// Used by the codegen worker thread (async mode) where all data has been
+/// pre-cloned into a Send-able packet. For synchronous callers, prefer
+/// `codegen_and_execute_via_session` which avoids cloning.
 pub fn codegen_and_execute(
+    inmem_worker: &mut crate::pipeline::InMemWorkerState,
+    object_worker: &mut crate::pipeline::ObjectWorkerState,
+    packet: &CodegenPacket,
+) -> Result<CodegenResult, CranelispError> {
+    codegen_and_execute_decomposed(
+        inmem_worker,
+        object_worker,
+        &packet.platform_symbols,
+        packet.interactive,
+        &packet.symbol_table,
+        &packet.unit_result,
+        &packet.ctx,
+    )
+}
+
+/// Convenience wrapper: call `codegen_and_execute` using session fields.
+///
+/// Decomposes `CompilationSession` into its constituent parts and calls
+/// the free-function form. No cloning — borrows session fields directly.
+pub fn codegen_and_execute_via_session(
     session: &mut CompilationSession,
+    unit_result: &CompileUnitResult,
+    ctx: &CompileContext,
+) -> Result<CodegenResult, CranelispError> {
+    let symbol_table = session.tc.module_table(&ctx.module)
+        .cloned()
+        .unwrap_or_else(|| cranelisp_types::SymbolTable::new(ctx.module.clone()));
+
+    codegen_and_execute_decomposed(
+        &mut session.inmem_worker,
+        &mut session.object_worker,
+        &session.platform_symbols,
+        session.interactive,
+        &symbol_table,
+        unit_result,
+        ctx,
+    )
+}
+
+/// Execute codegen using decomposed session fields (no packet cloning).
+///
+/// This is the core implementation shared by `codegen_and_execute_via_session`
+/// (synchronous) and the codegen worker thread (async, via `CodegenPacket`).
+fn codegen_and_execute_decomposed(
+    inmem_worker: &mut crate::pipeline::InMemWorkerState,
+    object_worker: &mut crate::pipeline::ObjectWorkerState,
+    platform_symbols: &[(String, *const u8)],
+    interactive: bool,
+    symbol_table: &cranelisp_types::SymbolTable,
     unit_result: &CompileUnitResult,
     ctx: &CompileContext,
 ) -> Result<CodegenResult, CranelispError> {
@@ -334,8 +411,7 @@ pub fn codegen_and_execute(
     // Snapshot pre-existing GOT entries so that register_module_aliases
     // only aliases new entries from this module (not all entries from
     // previously loaded modules — that causes exponential alias growth).
-    let pre_existing: std::collections::HashSet<cranelisp_types::Symbol> = session
-        .inmem_worker
+    let pre_existing: std::collections::HashSet<cranelisp_types::Symbol> = inmem_worker
         .got_state
         .def_codegen
         .keys()
@@ -345,10 +421,10 @@ pub fn codegen_and_execute(
     let mut codegen_warnings: Vec<Warning> = Vec::new();
 
     // Stages 6-7: Codegen and execute.
-    // Session's `interactive` flag decides GOT-indirect vs direct calls.
-    let (value, result_type) = if session.interactive {
+    let (value, result_type) = if interactive {
         compile_and_execute_interactive(
-            session,
+            inmem_worker,
+            platform_symbols,
             &unit_result.program,
             &unit_result.check_result,
             &mut codegen_warnings,
@@ -362,14 +438,19 @@ pub fn codegen_and_execute(
     };
 
     // Register module aliases after successful interactive-mode compilation.
-    if session.interactive {
-        session.register_module_aliases_filtered(&ctx.module, Some(&pre_existing));
+    if interactive {
+        crate::pipeline::register_module_aliases_filtered(
+            inmem_worker,
+            &ctx.module,
+            Some(&pre_existing),
+        );
     }
 
     // Stage 6b: Background .o + .meta.json write (JitAndCache only).
     if ctx.codegen_target == CodegenTarget::JitAndCache {
         queue_background_cache_write(
-            session,
+            object_worker,
+            symbol_table,
             &unit_result.source,
             &ctx.module,
             &unit_result.module_structure,
@@ -379,8 +460,7 @@ pub fn codegen_and_execute(
     }
 
     // Record module structure for --link (both targets).
-    session
-        .object_worker
+    object_worker
         .compiled_module_structures
         .push((ctx.module.clone(), unit_result.module_structure.clone()));
 
@@ -389,7 +469,7 @@ pub fn codegen_and_execute(
         &ctx.module,
         &unit_result.program,
         &unit_result.check_result,
-        &mut session.object_worker.cross_module_func_sigs,
+        &mut object_worker.cross_module_func_sigs,
     );
 
     Ok(CodegenResult {
@@ -493,11 +573,18 @@ fn load_dependencies(
 
             // Recursive call — cycle detection happens inside compile_unit().
             let unit_result = compile_unit(session, &dep_source, &dep_ctx)?;
-            codegen_and_execute(session, &unit_result, &dep_ctx)?;
+            // Queue codegen for this dependency. In async mode (Step 11),
+            // codegen runs on a worker thread overlapping with the next
+            // compile_unit call. In sync mode, it buffers until flush.
+            session.send_codegen(unit_result, dep_ctx);
         }
         // If resolve returns None: import will fail during typecheck
         // (unresolved symbol). This is the test-mode path when lib_dirs is empty.
     }
+    // Flush all queued codegen. In async mode, this blocks until the
+    // worker thread has processed all items. In sync mode, it executes
+    // them sequentially now.
+    session.flush_codegen()?;
     Ok(())
 }
 
@@ -565,12 +652,13 @@ fn compile_and_execute_batch(
 
 /// Compile and execute in interactive mode (GOT-indirect calls).
 ///
-/// Compiles definitions via the session's GOT state and compiles/executes
+/// Compiles definitions via the GOT state and compiles/executes
 /// any bare expressions.
 ///
 /// Returns `(Option<value>, Option<result_type>)`.
 fn compile_and_execute_interactive(
-    session: &mut CompilationSession,
+    inmem_worker: &mut crate::pipeline::InMemWorkerState,
+    platform_symbols: &[(String, *const u8)],
     program: &cranelisp_types::Program,
     check: &CheckResult,
     warnings: &mut Vec<Warning>,
@@ -585,7 +673,7 @@ fn compile_and_execute_interactive(
     let _ = cranelisp_runtime::panic::take_runtime_error();
 
     // Compile definitions first (GOT registration, mono defns, etc.).
-    let form_result = session.compile_checked_program(program, check)?;
+    let form_result = compile_checked_program(inmem_worker, platform_symbols, program, check)?;
 
     // Check for runtime panics (e.g., checked division by zero in zero-arg defns).
     check_runtime_panic()?;
@@ -596,7 +684,7 @@ fn compile_and_execute_interactive(
 
     // If there are bare expressions, compile and execute them.
     if has_expr {
-        let (value, ty) = compile_and_execute_expr(session, program, check)?;
+        let (value, ty) = compile_and_execute_expr(inmem_worker, platform_symbols, program, check)?;
         // Check for runtime panics from expression execution.
         check_runtime_panic()?;
         return Ok((Some(value), Some(ty)));
@@ -612,7 +700,8 @@ fn compile_and_execute_interactive(
 /// Finds the last `TopLevel::Expr` in the program, compiles it via
 /// `compile_expr_with_got_and_symbols`, and executes it.
 fn compile_and_execute_expr(
-    session: &mut CompilationSession,
+    inmem_worker: &mut crate::pipeline::InMemWorkerState,
+    platform_symbols: &[(String, *const u8)],
     program: &cranelisp_types::Program,
     check: &CheckResult,
 ) -> Result<(i64, Type), CranelispError> {
@@ -632,9 +721,9 @@ fn compile_and_execute_expr(
         .or_else(|| check.expr_types.get(&expr.span()).cloned())
         .unwrap_or(Type::Int);
 
-    if session.inmem_worker.traced_fns.is_empty() {
+    if inmem_worker.traced_fns.is_empty() {
         // Normal (non-trace) path.
-        let extra_syms: Vec<(&str, *const u8)> = session.platform_symbols
+        let extra_syms: Vec<(&str, *const u8)> = platform_symbols
             .iter()
             .map(|(name, ptr)| (name.as_str(), *ptr))
             .collect();
@@ -642,7 +731,7 @@ fn compile_and_execute_expr(
         let compiled = cranelisp_backend::compile_expr_with_got_and_symbols(
             expr,
             check,
-            Some(&mut session.inmem_worker.got_state),
+            Some(&mut inmem_worker.got_state),
             &extra_syms,
         )?;
 
@@ -651,7 +740,7 @@ fn compile_and_execute_expr(
         Ok((value, ty))
     } else {
         // Trace-aware path.
-        let value = compile_and_execute_expr_with_trace(session, expr, check)?;
+        let value = compile_and_execute_expr_with_trace(inmem_worker, platform_symbols, expr, check)?;
         Ok((value, ty))
     }
 }
@@ -703,21 +792,22 @@ fn check_runtime_panic() -> Result<(), CranelispError> {
 /// Compile and execute an expression with trace support.
 ///
 /// Sets traced_fns on the compile context so that trace forms
-/// can generate GOT-swap wrappers. The JIT is kept alive in the session's
+/// can generate GOT-swap wrappers. The JIT is kept alive in the
 /// jit_modules so wrapper code pointers remain valid.
 fn compile_and_execute_expr_with_trace(
-    session: &mut CompilationSession,
+    inmem_worker: &mut crate::pipeline::InMemWorkerState,
+    platform_symbols: &[(String, *const u8)],
     expr: &cranelisp_types::Expr,
     check: &CheckResult,
 ) -> Result<i64, CranelispError> {
     use cranelisp_types::{Defn, DefnVariant, Symbol, Visibility};
     use std::collections::HashMap;
 
-    let mut extra_syms: Vec<(&str, *const u8)> = session.platform_symbols
+    let mut extra_syms: Vec<(&str, *const u8)> = platform_symbols
         .iter()
         .map(|(name, ptr)| (name.as_str(), *ptr))
         .collect();
-    for (name, ptr) in &session.inmem_worker.trace_extra_symbols {
+    for (name, ptr) in &inmem_worker.trace_extra_symbols {
         extra_syms.push((name.as_str(), *ptr));
     }
 
@@ -742,7 +832,7 @@ fn compile_and_execute_expr_with_trace(
 
     let mut got_slots: HashMap<Symbol, usize> = HashMap::new();
     let mut func_arities: HashMap<Symbol, usize> = HashMap::new();
-    for (name, dc) in &session.inmem_worker.got_state.def_codegen {
+    for (name, dc) in &inmem_worker.got_state.def_codegen {
         if let Some(slot) = dc.got_slot {
             got_slots.insert(name.clone(), slot);
         }
@@ -750,7 +840,7 @@ fn compile_and_execute_expr_with_trace(
             func_arities.insert(name.clone(), pc);
         }
     }
-    let got_base = session.inmem_worker.got_state.got_base_ptr() as i64;
+    let got_base = inmem_worker.got_state.got_base_ptr() as i64;
 
     let mut compile_ctx = jit.build_compile_context(
         check,
@@ -761,7 +851,7 @@ fn compile_and_execute_expr_with_trace(
         None,
     );
 
-    compile_ctx.traced_fns = Some(&session.inmem_worker.traced_fns);
+    compile_ctx.traced_fns = Some(&inmem_worker.traced_fns);
 
     jit.compile_defn(&wrapper_defn, compile_ctx)?;
     let code_ptr = jit.finalize_and_get_ptr(&wrapper_name, 0)?;
@@ -769,11 +859,204 @@ fn compile_and_execute_expr_with_trace(
     let func: extern "C" fn() -> i64 = unsafe { std::mem::transmute(code_ptr) };
     let value = func();
 
-    session.inmem_worker.jit_modules.push(jit);
+    inmem_worker.jit_modules.push(jit);
 
     Ok(value)
 }
 
+// ---------------------------------------------------------------------------
+// Interactive mode: GOT-based per-defn compilation (free functions)
+// ---------------------------------------------------------------------------
+
+/// Compile a whole-program check result into the GOT, one defn at a time.
+///
+/// Free-function form of `CompilationSession::compile_checked_program`.
+/// Takes `InMemWorkerState` and `platform_symbols` directly so it can
+/// run on the codegen worker thread.
+pub fn compile_checked_program(
+    inmem_worker: &mut crate::pipeline::InMemWorkerState,
+    platform_symbols: &[(String, *const u8)],
+    program: &cranelisp_types::Program,
+    check: &CheckResult,
+) -> Result<Option<crate::pipeline::FormResult>, CranelispError> {
+    use cranelisp_types::TopLevel;
+
+    let mut last_result: Option<crate::pipeline::FormResult> = None;
+
+    // Pre-register all defn names in GOT for forward references.
+    for tl in program.iter() {
+        match tl {
+            TopLevel::Defn(defn) => {
+                inmem_worker.got_state.ensure_slot_for(&defn.name)?;
+            }
+            TopLevel::TraitImpl(impl_) => {
+                for method in &impl_.methods {
+                    inmem_worker.got_state.ensure_slot_for(&method.name)?;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    // Compile default method bodies.
+    for defn in &check.default_method_defns {
+        compile_and_register_defn(inmem_worker, platform_symbols, defn, check)?;
+    }
+
+    // Compile mono specializations with per-specialization resolutions.
+    for mono in &check.mono_defns {
+        let mut merged = check.method_resolutions.clone();
+        merged.extend(mono.resolutions.clone());
+        let expr_types = if mono.expr_types.is_empty() {
+            check.expr_types.clone()
+        } else {
+            mono.expr_types.clone()
+        };
+        let mono_check = CheckResult {
+            method_resolutions: merged,
+            constrained_fn_names: check.constrained_fn_names.clone(),
+            mono_defns: Vec::new(),
+            expr_types,
+            default_method_defns: Vec::new(),
+            warnings: Vec::new(),
+            type_defs: check.type_defs.clone(),
+            constructor_to_type: check.constructor_to_type.clone(),
+            display: None,
+        };
+        compile_and_register_defn(inmem_worker, platform_symbols, &mono.defn, &mono_check)?;
+    }
+
+    // Compile each regular defn (skipping constrained fn base definitions).
+    for tl in program.iter() {
+        match tl {
+            TopLevel::Defn(defn) => {
+                if check.constrained_fn_names.contains(&defn.name) {
+                    continue; // Skip constrained fn base defs — templates only
+                }
+                compile_and_register_defn(inmem_worker, platform_symbols, defn, check)?;
+
+                // Execute zero-arg defns.
+                let (value, result_ty) = if defn.params().is_empty() {
+                    let entry = inmem_worker.got_state.def_codegen.get(defn.name.as_ref());
+                    let code_ptr = entry
+                        .and_then(|e| e.code_ptr)
+                        .ok_or_else(|| CranelispError::CodegenError {
+                            message: format!(
+                                "no code pointer after compiling defn '{}'",
+                                defn.name
+                            ),
+                            span: Span::SYNTHETIC,
+                        })?;
+                    let func: extern "C" fn() -> i64 =
+                        unsafe { std::mem::transmute(code_ptr) };
+                    // Determine return type from expr_types.
+                    let ret_ty = check
+                        .expr_types
+                        .get(&defn.body().span())
+                        .cloned()
+                        .unwrap_or(Type::Int);
+                    (func(), ret_ty)
+                } else {
+                    (0, Type::Int)
+                };
+                last_result = Some(crate::pipeline::FormResult {
+                    value,
+                    ty: result_ty,
+                    is_definition: true,
+                    warnings: Vec::new(),
+                });
+            }
+            TopLevel::TraitImpl(impl_) => {
+                for method in &impl_.methods {
+                    compile_and_register_defn(inmem_worker, platform_symbols, method, check)?;
+                }
+            }
+            _ => {
+                // TypeDef, TraitDecl — handled by typechecker, no codegen needed.
+            }
+        }
+    }
+
+    Ok(last_result)
+}
+
+/// Compile a single function definition and register it in the GOT.
+///
+/// Free-function form of `CompilationSession::compile_and_register_defn`.
+/// Takes `InMemWorkerState` and `platform_symbols` directly.
+pub fn compile_and_register_defn(
+    inmem_worker: &mut crate::pipeline::InMemWorkerState,
+    platform_symbols: &[(String, *const u8)],
+    defn: &cranelisp_types::Defn,
+    check: &CheckResult,
+) -> Result<(), CranelispError> {
+    use std::collections::HashMap;
+
+    // Create JIT with platform symbols registered (if any).
+    let extra_symbols: Vec<(&str, *const u8)> = platform_symbols
+        .iter()
+        .map(|(name, ptr)| (name.as_str(), *ptr))
+        .collect();
+    let mut jit = cranelisp_backend::jit::Jit::new_with_symbols(&extra_symbols)?;
+
+    // Declare runtime intrinsics (Ring 1 heap infrastructure).
+    jit.declare_intrinsics()?;
+
+    // Declare just this function.
+    let func_ids = jit.declare_functions(&[defn])?;
+
+    // Ensure a GOT slot exists for this function.
+    let slot = inmem_worker.got_state.ensure_slot_for(&defn.name)?;
+
+    // Build GOT slot map from existing state + this new function.
+    let mut got_slots: HashMap<Symbol, usize> = HashMap::new();
+    for (name, dc) in &inmem_worker.got_state.def_codegen {
+        if let Some(s) = dc.got_slot {
+            got_slots.insert(name.clone(), s);
+        }
+    }
+    got_slots.insert(defn.name.clone(), slot);
+
+    let got_base = inmem_worker.got_state.got_base_ptr() as i64;
+
+    // Build function arity map from existing GOT state + this defn.
+    let mut func_arities: HashMap<Symbol, usize> = HashMap::new();
+    for (name, dc) in &inmem_worker.got_state.def_codegen {
+        if let Some(pc) = dc.param_count {
+            func_arities.insert(name.clone(), pc);
+        }
+    }
+    func_arities.insert(defn.name.clone(), defn.params().len());
+
+    // Compile the function with awareness of existing GOT.
+    let compile_ctx = jit.build_compile_context(
+        check,
+        &func_ids,
+        &func_arities,
+        Some(&got_slots),
+        Some(got_base),
+        None,
+    );
+    let _clif_ir = jit.compile_defn(defn, compile_ctx)?;
+
+    // Finalize and get the code pointer.
+    let code_ptr = jit.finalize_and_get_ptr(&defn.name, defn.params().len())?;
+
+    // Update the GOT slot with the new code pointer.
+    inmem_worker.got_state.update_slot(slot, code_ptr);
+
+    // Record codegen info.
+    let entry = inmem_worker.got_state.def_codegen.entry(defn.name.clone()).or_default();
+    entry.code_ptr = Some(code_ptr);
+    entry.got_slot = Some(slot);
+    entry.param_count = Some(defn.params().len());
+    entry.defn = Some(defn.clone());
+
+    // Keep JIT alive so code pointer remains valid.
+    inmem_worker.jit_modules.push(jit);
+
+    Ok(())
+}
 
 // ---------------------------------------------------------------------------
 // Stage 6b: Background .o writer integration
@@ -785,9 +1068,13 @@ fn compile_and_execute_expr_with_trace(
 /// to the `CacheWriter` background thread. Non-blocking — `compile_unit()`
 /// returns immediately without waiting for the write.
 ///
+/// Takes decomposed worker state and a pre-cloned symbol table instead of
+/// `&mut CompilationSession`, so it can run on the codegen worker thread.
+///
 /// See design/arch/pipeline-v2.md §16.2, §16.4.1, §16.12.
 pub fn queue_background_cache_write(
-    session: &mut CompilationSession,
+    object_worker: &mut crate::pipeline::ObjectWorkerState,
+    symbol_table: &cranelisp_types::SymbolTable,
     source: &str,
     module_path: &ModuleFullPath,
     structure: &cranelisp_types::ModuleStructure,
@@ -798,7 +1085,7 @@ pub fn queue_background_cache_write(
     use std::collections::HashMap;
 
     // Only write if caching is enabled (cache_state + cache_writer both present).
-    if session.object_worker.cache_state.is_none() || session.object_worker.cache_writer.is_none() {
+    if object_worker.cache_state.is_none() || object_worker.cache_writer.is_none() {
         return;
     }
 
@@ -807,24 +1094,20 @@ pub fn queue_background_cache_write(
         return;
     }
 
-    // Build ObjectCompileInput from program + check_result + session state.
+    // Build ObjectCompileInput from program + check_result + worker state.
     let object_input = crate::pipeline::build_object_compile_input(
         module_path,
         Some(program),
         Some(check_result),
-        &session.object_worker.cross_module_func_sigs,
+        &object_worker.cross_module_func_sigs,
     );
 
     // Build CacheCodegenState from the program.
     let codegen_state = build_codegen_state_for_cache(program, check_result);
 
-    // Build CacheMetadata.
-    let symbol_table = session.tc.module_table(module_path)
-        .cloned()
-        .unwrap_or_else(|| cranelisp_types::SymbolTable::new(module_path.clone()));
-
+    // Build CacheMetadata using the pre-cloned symbol table.
     let metadata = cache::CacheMetadata {
-        symbol_table,
+        symbol_table: symbol_table.clone(),
         module_structure: structure.clone(),
         codegen_state,
     };
@@ -836,7 +1119,7 @@ pub fn queue_background_cache_write(
     let dep_hashes: HashMap<String, String> = HashMap::new();
 
     // Get cache_dir from cache_state (existence already verified above).
-    let cache_dir = session.object_worker.cache_state.as_ref()
+    let cache_dir = object_worker.cache_state.as_ref()
         .expect("invariant: cache_state checked above")
         .cache_dir()
         .to_path_buf();
@@ -861,15 +1144,15 @@ pub fn queue_background_cache_write(
 
     // Deterministic .o path for recording.
     let (_meta_path, o_path) = cache::module_cache_path(&cache_dir, module_path);
-    session.object_worker.compiled_o_paths.push(o_path);
+    object_worker.compiled_o_paths.push(o_path);
 
     // Update cache manifest with source hash for this module.
-    if let Some(cs) = session.object_worker.cache_state.as_mut() {
+    if let Some(cs) = object_worker.cache_state.as_mut() {
         cs.record_module(module_path, source_hash, dep_hashes);
     }
 
     // Queue the write on the background thread.
-    session.object_worker.cache_writer.as_mut()
+    object_worker.cache_writer.as_mut()
         .expect("invariant: cache_writer checked above")
         .queue_write(module_path.clone(), packet);
 }
@@ -1004,6 +1287,24 @@ mod tests {
     use super::*;
     use cranelisp_types::{CompileContext, ModuleFullPath, ModuleStrategy};
 
+    // Compile-time Send assertions (Step 11: concurrent codegen worker).
+    // These verify that the types we need to send to the worker thread
+    // actually implement Send. A compilation failure here means a field
+    // was added that contains a non-Send type (e.g., Rc, raw pointer
+    // without unsafe impl Send).
+    fn _assert_send<T: Send>() {}
+
+    #[allow(dead_code)]
+    fn _send_assertions() {
+        _assert_send::<CodegenPacket>();
+        _assert_send::<CompileUnitResult>();
+        _assert_send::<CompileContext>();
+        _assert_send::<CheckResult>();
+        _assert_send::<CodegenResult>();
+        _assert_send::<crate::pipeline::InMemWorkerState>();
+        _assert_send::<crate::pipeline::ObjectWorkerState>();
+    }
+
     /// Helper: build a batch compile context targeting the "user" module.
     ///
     /// Uses Additive strategy because the "user" module is pre-populated
@@ -1032,7 +1333,7 @@ mod tests {
         let ctx = batch_ctx();
         let unit_result = compile_unit(&mut session, "(defn main [] (if true 3 0))", &ctx)
             .expect("compile_unit failed");
-        let codegen_result = codegen_and_execute(&mut session, &unit_result, &ctx)
+        let codegen_result = codegen_and_execute_via_session(&mut session, &unit_result, &ctx)
             .expect("codegen_and_execute failed");
 
         assert_eq!(codegen_result.value, Some(3));
@@ -1046,7 +1347,7 @@ mod tests {
         let ctx = additive_ctx();
         let unit_result = compile_unit(&mut session, "(if true 3 0)", &ctx)
             .expect("compile_unit failed");
-        let codegen_result = codegen_and_execute(&mut session, &unit_result, &ctx)
+        let codegen_result = codegen_and_execute_via_session(&mut session, &unit_result, &ctx)
             .expect("codegen_and_execute failed");
 
         assert_eq!(codegen_result.value, Some(3));
@@ -1064,7 +1365,7 @@ mod tests {
         let ctx = batch_ctx();
         let unit_result = compile_unit(&mut session, source, &ctx)
             .expect("compile_unit failed");
-        let codegen_result = codegen_and_execute(&mut session, &unit_result, &ctx)
+        let codegen_result = codegen_and_execute_via_session(&mut session, &unit_result, &ctx)
             .expect("codegen_and_execute failed");
 
         assert_eq!(codegen_result.value, Some(42));

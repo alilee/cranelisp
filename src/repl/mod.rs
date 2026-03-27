@@ -193,7 +193,7 @@ impl ReplSession {
             "",
             &user_ctx,
         )?;
-        crate::pipeline_v2::codegen_and_execute(
+        crate::pipeline_v2::codegen_and_execute_via_session(
             &mut session.core,
             &unit_result,
             &user_ctx,
@@ -344,7 +344,7 @@ impl ReplSession {
                             &dep_source,
                             &dep_ctx,
                         )?;
-                        crate::pipeline_v2::codegen_and_execute(
+                        crate::pipeline_v2::codegen_and_execute_via_session(
                             &mut self.core,
                             &unit_result,
                             &dep_ctx,
@@ -415,8 +415,12 @@ impl ReplSession {
         // Queue background cache write (.meta.json + .o) via v2 pipeline.
         // Uses the session's cache_state (set up by new_with_prelude).
         // Non-fatal — cache files are an optimization.
+        let symbol_table = self.core.tc.module_table(&user_module)
+            .cloned()
+            .unwrap_or_else(|| cranelisp_types::SymbolTable::new(user_module.clone()));
         crate::pipeline_v2::queue_background_cache_write(
-            &mut self.core,
+            &mut self.core.object_worker,
+            &symbol_table,
             &source,
             &user_module,
             &structure,
@@ -506,7 +510,7 @@ impl ReplSession {
         };
         let result = crate::pipeline_v2::compile_unit(&mut fresh, &source, &user_ctx)
             .and_then(|unit_result| {
-                crate::pipeline_v2::codegen_and_execute(&mut fresh, &unit_result, &user_ctx)
+                crate::pipeline_v2::codegen_and_execute_via_session(&mut fresh, &unit_result, &user_ctx)
             });
         // Flush queued cache writes before dropping the fresh session.
         fresh.flush_cache_writes();
@@ -666,7 +670,7 @@ impl ReplSession {
             .collect();
 
         // Codegen + execute (stages 6-7).
-        let codegen_result = crate::pipeline_v2::codegen_and_execute(
+        let codegen_result = crate::pipeline_v2::codegen_and_execute_via_session(
             &mut self.core,
             &unit_result,
             &repl_ctx,
@@ -1006,7 +1010,7 @@ impl ReplSession {
             warnings: Vec::new(),
         };
 
-        let codegen_result = crate::pipeline_v2::codegen_and_execute(
+        let codegen_result = crate::pipeline_v2::codegen_and_execute_via_session(
             &mut self.core,
             &unit_result,
             &ctx,
@@ -1756,7 +1760,7 @@ fn handle_reset(session: &mut ReplSession, stdout: &mut impl Write) {
     };
     match crate::pipeline_v2::compile_unit(&mut session.core, "", &user_ctx)
         .and_then(|unit_result| {
-            crate::pipeline_v2::codegen_and_execute(
+            crate::pipeline_v2::codegen_and_execute_via_session(
                 &mut session.core,
                 &unit_result,
                 &user_ctx,

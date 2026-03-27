@@ -9,7 +9,7 @@ use cranelisp_types::{
 };
 
 use cranelisp::pipeline::CompilationSession;
-use cranelisp::pipeline_v2::{compile_unit, CodegenItem};
+use cranelisp::pipeline_v2::compile_unit;
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
@@ -91,8 +91,8 @@ fn run_file_inner(path: &str) -> Result<(), CranelispError> {
         .unwrap_or("main");
     let entry_module = ModuleFullPath::from(module_name);
 
-    // Step 2: Create session, set lib_dirs (entry parent dir + provided dirs).
-    let mut session = CompilationSession::new();
+    // Step 2: Create session with async codegen, set lib_dirs.
+    let mut session = CompilationSession::new_async();
     session.interactive = true;
     let entry_dir = entry_path.parent().map(|p| p.to_path_buf());
     let mut all_lib_dirs: Vec<PathBuf> = Vec::new();
@@ -120,14 +120,14 @@ fn run_file_inner(path: &str) -> Result<(), CranelispError> {
     };
     let unit_result = compile_unit(&mut session, &entry_source, &entry_ctx)?;
     let unit_warnings = unit_result.warnings.clone();
-    session.inmem_queue.push(CodegenItem {
-        ctx: entry_ctx,
-        unit_result,
-    });
-    let mut codegen_results = session.flush_inmem_queue()?;
+    session.send_codegen(unit_result, entry_ctx);
+    let mut codegen_results = session.flush_codegen()?;
+    // Shut down the async worker and retrieve its state (GOT, .o paths)
+    // so we can inspect them for the main-exists check below.
+    session.shutdown_codegen();
     let result = match codegen_results.pop() {
         Some(r) => r,
-        None => unreachable!("invariant: flush_inmem_queue must return one result per queued item"),
+        None => unreachable!("invariant: flush_codegen must return one result per queued item"),
     };
 
     // Step 5: Verify `main` exists in the GOT.
@@ -216,7 +216,7 @@ fn link_file_inner(path: &str) -> Result<(), CranelispError> {
         span: Span::SYNTHETIC,
     })?;
 
-    let mut session = CompilationSession::new_with_cache(cache_dir.clone());
+    let mut session = CompilationSession::new_async_with_cache(cache_dir.clone());
     session.interactive = true;
     let entry_dir = entry_path.parent().map(|p| p.to_path_buf());
     let mut all_lib_dirs: Vec<PathBuf> = Vec::new();
@@ -248,17 +248,15 @@ fn link_file_inner(path: &str) -> Result<(), CranelispError> {
 
         let unit_result = compile_unit(&mut session, &source, &ctx)?;
         all_warnings.extend(unit_result.warnings.clone());
-        session.object_queue.push(CodegenItem {
-            ctx,
-            unit_result,
-        });
-        let codegen_results = session.flush_object_queue()?;
+        session.send_codegen(unit_result, ctx);
+        let codegen_results = session.flush_codegen()?;
         for codegen_result in codegen_results {
             all_warnings.extend(codegen_result.warnings);
         }
     }
 
-    // Step 4: Flush background .o writes to ensure all files are on disk.
+    // Step 4: Shut down async worker, flush .o writes, collect paths.
+    session.shutdown_codegen();
     session.flush_cache_writes();
     let module_o_paths = session.object_worker.compiled_o_paths.clone();
 

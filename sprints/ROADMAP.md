@@ -58,7 +58,8 @@ Delivery progress for the Cranelisp reimplementation. For technical scope per ri
 | 35 | Pipeline v3 Step 8 — ModuleDependencyGraph: imports/dependents/file_to_module on CompilationSession, edges registered incrementally in compile_unit (3 sites), REPL file_to_module/module_dependencies migrated, find_transitive_dependents simplified (reverse map), build_file_to_module_map + build_module_dependency_map deleted, /review 2B fixed 1I 2S: 1533 passed, 11 pre-existing sketch_port failures, 0 ignored | COMPLETE | `sprints/archive/sprint-35.md` |
 | 36 | Pipeline v3 Step 9 — REPL migration to compile_unit: eval routes through compile_unit + codegen_and_execute, ~815 lines of v1 REPL pipeline deleted (eval_sexp, eval_flattened_forms, eval_defmacro, eval_import, eval_platform, compile_and_execute, execute_*, TracedCompiledExpr), eval_annotation_expr + reload_single_module refactored to v3, all 8 architectural invariants verified, /review 0B 0I 6S: 1533 passed, 11 pre-existing sketch_port failures, 0 ignored | COMPLETE | `sprints/archive/sprint-36.md` |
 | 37 | Pipeline v3 Step 10 — File watcher cascade: transitive_dependents on ModuleDependencyGraph, clear_module_state/recompile_module/recompile_module_and_dependents on CompilationSession, reload_changed_modules simplified to delegation, reload_single_module/find_transitive_dependents/clear_module_state deleted from REPL, /review 0B 0I 3S (behavioral equivalence verified): 1533 passed, 11 pre-existing sketch_port failures, 0 ignored | COMPLETE | `sprints/archive/sprint-37.md` |
-| 38 | Pipeline v3 Step 14 — Delete v1 dead code: compile_module_graph/compile_module_graph_cached rewritten to compile_unit (53 test sites), 5 REPL v1 callers migrated, 1,293 lines deleted from pipeline.rs (4,055→2,762), V1State + 17 functions + 3 structs deleted, single-pipeline invariant fully established, Steps 11-13 deferred (/arch: premature), 4 cache-hit tests ignored (v2 cache-hit loading not yet implemented): 1643 passed, 23 pre-existing failures, 4 ignored | COMPLETE | `sprints/archive/sprint-38.md` |
+| 38 | Pipeline v3 Step 14 — Delete v1 dead code: compile_module_graph/compile_module_graph_cached rewritten to compile_unit (53 test sites), 5 REPL v1 callers migrated, 1,293 lines deleted from pipeline.rs (4,055→2,762), V1State + 17 functions + 3 structs deleted, single-pipeline invariant fully established, 4 cache-hit tests ignored (v2 cache-hit loading not yet implemented): 1643 passed, 23 pre-existing failures, 4 ignored | COMPLETE | `sprints/archive/sprint-38.md` |
+| 39 | Pipeline v3 Step 11 foundation — codegen decoupled from CompilationSession: codegen_and_execute + 6 helpers refactored to free functions taking worker state params, CodegenPacket Send-safe, send_codegen/flush_codegen API, CodegenMode enum (Sync/Async), single async worker thread as proof of concept. Full N-core pools deferred to Sprint 40: 1643 passed, 23 pre-existing failures, 4 ignored | COMPLETE | `sprints/archive/sprint-39.md` |
 
 ## Forward Plan
 
@@ -70,9 +71,10 @@ Steps 1-10 + 14 delivered. Single-pipeline invariant established. ~2,100 lines o
 
 | Sprint | Theme | Scope | Skills |
 |--------|-------|-------|--------|
-| 39 | Cache-Hit Loading | v2 cache-hit early return in compile_unit (read .meta.json, validate source hash, load .o, register types/symbols/JIT), un-ignore 4 cache tests, stale doc cleanup (interfaces.md, pipeline-v2.md remove CompileMode refs) | `/int`, `/qa`, `/arch` |
-| 40 | REPL Restore + Code Quality | Migrate restore_user_cl to compile_unit, extract create_session_for_file helper (deduplicate run_file_inner/link_file_inner), compile_checked_program signature cleanup, review finding sweep | `/int`, `/review` |
-| 41+ | Ring 4 Completion | Resume feature delivery — see Ring 4 acceptance criteria gap analysis below | All skills |
+| 40 | Pipeline v3 Step 11 complete — N-core codegen pools | N-core in-mem codegen pool (normal priority), N-core object codegen pool (nice priority), atomic GOT writes, thread-local JIT per worker, hot_flush semantics, design for 200+ modules | `/int`, `/arch`, `/qa` |
+| 41 | Pipeline v3 Steps 12-13 — parallel typechecking | Per-module locks on TypeChecker, parallel compile_unit for independent deps, level partitioning | `/int`, `/typecheck`, `/qa` |
+| 42 | Cache-hit loading + cleanup | v2 cache-hit early return, un-ignore 4 cache tests, REPL restore bypass, stale doc cleanup | `/int`, `/qa` |
+| 43+ | Ring 4 Completion | Resume feature delivery — see Ring 4 acceptance criteria gap analysis below | All skills |
 
 ### Ring 4 acceptance criteria gap analysis
 

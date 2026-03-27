@@ -21,7 +21,7 @@ mod helpers;
 
 use helpers::*;
 use cranelisp::pipeline::CompilationSession;
-use cranelisp::pipeline_v2::{compile_unit, codegen_and_execute};
+use cranelisp::pipeline_v2::{compile_unit, codegen_and_execute_via_session};
 use cranelisp_types::{
     CompileContext, ImportNames, ImportSpec, ModuleFullPath,
     ModuleStrategy, Span,
@@ -58,7 +58,7 @@ fn compile_v2_batch(src: &str) -> i64 {
     };
     let unit_result = compile_unit(&mut session, src, &ctx)
         .expect("v2 compile_unit failed");
-    let codegen_result = codegen_and_execute(&mut session, &unit_result, &ctx)
+    let codegen_result = codegen_and_execute_via_session(&mut session, &unit_result, &ctx)
         .expect("v2 codegen_and_execute failed");
     codegen_result.value.expect("v2 produced no value")
 }
@@ -77,7 +77,7 @@ fn compile_v2_interactive(src: &str) -> i64 {
     };
     let unit_result = compile_unit(&mut session, src, &ctx)
         .expect("v2 compile_unit failed");
-    let codegen_result = codegen_and_execute(&mut session, &unit_result, &ctx)
+    let codegen_result = codegen_and_execute_via_session(&mut session, &unit_result, &ctx)
         .expect("v2 codegen_and_execute failed");
     codegen_result.value.expect("v2 produced no value")
 }
@@ -556,4 +556,107 @@ fn v2_mutual_recursion() {
     ";
     let result = compile_v2_batch(src);
     assert_eq!(result, 1);
+}
+
+// =============================================================================
+// Async codegen worker (Step 11)
+// =============================================================================
+
+/// Create an async session with primitives imported, for testing the
+/// async codegen worker thread path.
+fn v2_async_session_with_primitives() -> CompilationSession {
+    let mut session = CompilationSession::new_async();
+    let import_spec = ImportSpec {
+        module_path: ModuleFullPath::from("primitives"),
+        alias: None,
+        names: ImportNames::Glob,
+        span: Span::SYNTHETIC,
+    };
+    session
+        .tc
+        .register_imports(&[import_spec])
+        .expect("failed to import primitives for async v2 session");
+    session
+}
+
+// spec: pipeline-v3 Step 11 — async codegen produces same result as sync
+#[test]
+fn v2_async_codegen_integer_literal() {
+    let mut session = v2_async_session_with_primitives();
+    session.interactive = true;
+    let ctx = CompileContext {
+        module: ModuleFullPath::from("user"),
+        strategy: ModuleStrategy::Additive,
+        codegen_target: cranelisp_types::CodegenTarget::JitAndCache,
+    };
+    let src = "(defn main [] 42)";
+    let unit_result = compile_unit(&mut session, src, &ctx)
+        .expect("async v2 compile_unit failed");
+    session.send_codegen(unit_result, ctx);
+    let mut results = session.flush_codegen()
+        .expect("async v2 flush_codegen failed");
+    session.shutdown_codegen();
+    let result = results.pop().expect("no codegen result");
+    assert_eq!(result.value.expect("no value"), 42);
+}
+
+// spec: pipeline-v3 Step 11 — async codegen handles send-flush-send-flush pattern
+#[test]
+fn v2_async_codegen_send_flush_twice() {
+    let mut session = v2_async_session_with_primitives();
+    session.interactive = true;
+
+    // First compilation unit: send + flush.
+    let ctx1 = CompileContext {
+        module: ModuleFullPath::from("user"),
+        strategy: ModuleStrategy::Additive,
+        codegen_target: cranelisp_types::CodegenTarget::JitAndCache,
+    };
+    let unit1 = compile_unit(&mut session, "(defn foo [] 10)", &ctx1)
+        .expect("compile_unit 1 failed");
+    session.send_codegen(unit1, ctx1);
+    let results1 = session.flush_codegen()
+        .expect("flush_codegen 1 failed");
+    assert_eq!(results1.len(), 1);
+    assert_eq!(results1[0].value.expect("no value 1"), 10);
+
+    // Second compilation unit: send + flush (same module, additive).
+    let ctx2 = CompileContext {
+        module: ModuleFullPath::from("user"),
+        strategy: ModuleStrategy::Additive,
+        codegen_target: cranelisp_types::CodegenTarget::JitAndCache,
+    };
+    let unit2 = compile_unit(&mut session, "(defn main [] 99)", &ctx2)
+        .expect("compile_unit 2 failed");
+    session.send_codegen(unit2, ctx2);
+    let results2 = session.flush_codegen()
+        .expect("flush_codegen 2 failed");
+    assert_eq!(results2.len(), 1);
+    assert_eq!(results2[0].value.expect("no value 2"), 99);
+
+    session.shutdown_codegen();
+}
+
+// spec: pipeline-v3 Step 11 — async codegen shutdown returns worker state
+#[test]
+fn v2_async_codegen_shutdown_returns_state() {
+    let mut session = v2_async_session_with_primitives();
+    session.interactive = true;
+    let ctx = CompileContext {
+        module: ModuleFullPath::from("user"),
+        strategy: ModuleStrategy::Additive,
+        codegen_target: cranelisp_types::CodegenTarget::JitAndCache,
+    };
+    let unit_result = compile_unit(&mut session, "(defn main [] 7)", &ctx)
+        .expect("compile_unit failed");
+    session.send_codegen(unit_result, ctx);
+    session.flush_codegen().expect("flush_codegen failed");
+
+    // Before shutdown, inmem_worker on the session is the dummy.
+    // After shutdown, it should have the real GOT state.
+    session.shutdown_codegen();
+    assert!(
+        !session.inmem_worker.got_state.def_codegen.is_empty(),
+        "GOT state should be populated after shutdown"
+    );
 }

@@ -260,7 +260,7 @@ Steps 14-15 are cleanup.
 
 ## Post-Migration Assessment (Sprint 38 Complete)
 
-Steps 1-10 and 14 are complete (Sprints 29-38). Steps 11-13 (concurrency) deferred indefinitely as premature optimization. The single-pipeline invariant is established: all compilation flows through `compile_unit`.
+Steps 1-10 and 14 are complete (Sprints 29-38). Steps 11-13 (concurrency) planned for Sprint 39. The single-pipeline invariant is established: all compilation flows through `compile_unit`.
 
 ### Step 15 Assessment: Mostly Delivered
 
@@ -319,10 +319,13 @@ From accumulated `/review` findings across Sprints 29-38:
 1. **Cache-hit loading** — highest user-visible impact (REPL startup time, --link speed). One sprint.
 2. **REPL restore bypass + code quality** — clean up the last pipeline invariant violation and address accumulated review findings. One sprint, combinable with cache work if cache sprint is undersized.
 3. **Stale doc cleanup** — update `interfaces.md`, `pipeline-v2.md` to reflect post-v3 state. Can be folded into any sprint as a wave-0 task.
-4. **Steps 11-13 (concurrency)** — remain deferred. Only revisit with profiling data showing multi-module compilation as a bottleneck *after* cache-hit loading is implemented.
+4. **Steps 11-13 (concurrency)** — Sprint 39. Pragmatic approach: codegen overlap + parallel file I/O. TypeChecker remains single-threaded.
 
-### Steps 11-13: Concurrency (Deferred Indefinitely)
+### Steps 11-13: Concurrency (Sprint 39)
 
-Per `/arch` review (Sprint 38): concurrency in the compilation pipeline is premature optimization. The single-threaded pipeline compiles the full stdlib (27 modules) in under 2 seconds. Cache-hit loading (item 1 above) will reduce this to near-zero for warm starts. Concurrent codegen, per-module locks, and parallel dependency typechecking add substantial complexity (shared mutable state, lock ordering, thread-safety requirements on TypeChecker) for a workload that is not bottlenecked on compilation throughput.
+Reactivated for Sprint 39. The approach avoids making TypeChecker thread-safe by using a pragmatic design:
+- **Step 11**: Codegen worker thread overlaps codegen(N) with typecheck(N+1). TypeChecker stays single-threaded.
+- **Step 12**: Coarse `RwLock` on `tc.modules` (preparatory — no actual concurrency yet).
+- **Step 13**: Dependency-level partitioning with parallel file I/O via rayon. TypeChecker still single-threaded; parallelism is in file reads + codegen overlap.
 
-If profiling after cache-hit loading shows compilation time as a user-visible bottleneck, revisit Steps 11-13 at that point with concrete data.
+See `sprints/SPRINT.md` (Sprint 39) for the full implementation plan.
