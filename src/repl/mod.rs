@@ -173,17 +173,35 @@ impl ReplSession {
         session.core.project_root = project_root.to_path_buf();
 
         // Enable module caching for REPL prelude loading.
+        // Ensure the cache directory exists before the background writer
+        // tries to write files into it.
         let cache_dir = project_root.join(".cranelisp-cache");
-        let mut cache_state = Some(crate::pipeline::CacheState::new(cache_dir));
-        crate::pipeline::load_prelude_into_session(
-            project_root,
-            lib_dirs,
+        let _ = std::fs::create_dir_all(&cache_dir);
+        session.core.object_worker =
+            crate::pipeline::ObjectWorkerState::new_with_cache(cache_dir);
+
+        // Compile an empty source for the user module. The auto-prelude
+        // trigger in compile_unit (stage 2b) detects that the prelude is
+        // not yet loaded and recursively compiles it from lib_dirs.
+        let user_ctx = CompileContext {
+            module: ModuleFullPath::from("user"),
+            strategy: ModuleStrategy::Additive,
+            codegen_target: cranelisp_types::CodegenTarget::JitAndCache,
+        };
+        let unit_result = crate::pipeline_v2::compile_unit(
             &mut session.core,
-            &mut cache_state,
+            "",
+            &user_ctx,
+        )?;
+        crate::pipeline_v2::codegen_and_execute(
+            &mut session.core,
+            &unit_result,
+            &user_ctx,
         )?;
 
-        // Flush the cache manifest if any modules were compiled.
-        if let Some(cs) = cache_state.as_mut() {
+        // Flush any queued background cache writes and write cache manifest.
+        session.core.flush_cache_writes();
+        if let Some(cs) = &session.core.object_worker.cache_state {
             cs.flush_manifest();
         }
 
@@ -286,8 +304,9 @@ impl ReplSession {
         )?;
 
         // Lazily load any imported modules that aren't already compiled.
+        // Uses compile_unit (v2 pipeline) which handles recursive dependency
+        // loading via load_dependencies.
         if !structure.import_specs.is_empty() {
-            let lib_dirs = crate::pipeline::assemble_lib_dirs(&self.project_root);
             for spec in &structure.import_specs {
                 // Skip if the full module path is already loaded.
                 if self.core.tc.has_module(&spec.module_path) {
@@ -300,14 +319,38 @@ impl ReplSession {
                     .to_string();
                 let root_path = ModuleFullPath::from(root_module.as_str());
                 if !self.core.tc.has_module(&root_path) {
-                    let saved_module = self.core.tc.current_module_path().clone();
-                    crate::pipeline::load_module_into_session(
-                        &root_module,
-                        &self.project_root,
-                        &lib_dirs,
-                        &mut self.core,
-                    )?;
-                    self.core.tc.set_current_module(saved_module);
+                    // Resolve and compile the root module via compile_unit.
+                    // compile_unit handles recursive dependency loading internally.
+                    if let Some(source_path) =
+                        crate::pipeline_v2::resolve_module_file(&root_path, &self.core.lib_dirs)
+                    {
+                        let dep_source = std::fs::read_to_string(&source_path)
+                            .map_err(|e| CranelispError::ModuleError {
+                                message: format!(
+                                    "cannot read '{}': {}",
+                                    source_path.display(), e
+                                ),
+                                file: Some(source_path.clone()),
+                                span: cranelisp_types::Span::SYNTHETIC,
+                            })?;
+                        let saved_module = self.core.tc.current_module_path().clone();
+                        let dep_ctx = CompileContext {
+                            module: root_path,
+                            strategy: ModuleStrategy::Replace,
+                            codegen_target: cranelisp_types::CodegenTarget::JitAndCache,
+                        };
+                        let unit_result = crate::pipeline_v2::compile_unit(
+                            &mut self.core,
+                            &dep_source,
+                            &dep_ctx,
+                        )?;
+                        crate::pipeline_v2::codegen_and_execute(
+                            &mut self.core,
+                            &unit_result,
+                            &dep_ctx,
+                        )?;
+                        self.core.tc.set_current_module(saved_module);
+                    }
                 }
             }
             self.core.tc.register_imports(&structure.import_specs)?;
@@ -369,26 +412,18 @@ impl ReplSession {
         // Register module aliases (user/name -> name) for qualified refs.
         self.core.register_module_aliases(&user_module);
 
-        // Write cache files (.meta.json + .o) so subsequent restarts
-        // can use the fast cache-load path.
-        let cache_dir = self.project_root.join(".cranelisp-cache");
-        let mut cache_state = crate::pipeline::CacheState::new(cache_dir);
-        cache_state.record_recompiled(&user_module);
-        cache_state.source_hashes_mut()
-            .insert(user_module.clone(), source_hash.clone());
-        // Cache write failures are non-fatal.
-        let _ = crate::pipeline::write_module_cache(
-            &mut cache_state,
+        // Queue background cache write (.meta.json + .o) via v2 pipeline.
+        // Uses the session's cache_state (set up by new_with_prelude).
+        // Non-fatal — cache files are an optimization.
+        crate::pipeline_v2::queue_background_cache_write(
+            &mut self.core,
+            &source,
             &user_module,
-            source_hash,
-            &[],  // user module has no module-graph dependencies
             &structure,
-            &self.core.tc,
-            Some(&program),
-            Some(&check),
-            &self.core.v1_state.func_sigs,
+            &program,
+            &check,
         );
-        cache_state.flush_manifest();
+        self.core.flush_cache_writes();
 
         // Populate current_module_structure so subsequent saves include
         // the restored definitions.
@@ -440,28 +475,43 @@ impl ReplSession {
 
     /// Write cache files (.meta.json + .o) for a saved module file.
     ///
-    /// Compiles the saved file through the batch module-graph pipeline
-    /// (using a fresh CompilationSession) to produce the cache artifacts.
-    /// This is slightly wasteful (re-compiles what was just compiled in
-    /// the REPL) but is correct and simple — the batch pipeline produces
-    /// the same Program + CheckResult that write_module_cache needs.
+    /// Compiles the saved file through compile_unit (v2 pipeline) using a
+    /// fresh CompilationSession to produce cache artifacts as a side effect
+    /// of JitAndCache codegen. This is slightly wasteful (re-compiles what
+    /// was just compiled in the REPL) but is correct and simple.
     ///
     /// Failures are non-fatal: cache files are an optimization, and the
     /// next session can always fall back to source compilation.
     fn write_cache_for_saved_module(&self, file_path: &std::path::Path) {
         let cache_dir = self.project_root.join(".cranelisp-cache");
         let lib_dirs = crate::pipeline::assemble_lib_dirs(&self.project_root);
-        let cache_config = crate::pipeline::CacheConfig::Enabled {
-            cache_dir,
+
+        // Read the saved file.
+        let source = match std::fs::read_to_string(file_path) {
+            Ok(s) => s,
+            Err(_) => return, // Non-fatal.
         };
-        // Compile user.cl through the module-graph pipeline (compile-only,
-        // no execution). This loads prelude from cache (fast) and compiles
-        // user.cl, writing .meta.json + .o as a side effect.
-        let _ = crate::pipeline::compile_module_graph_for_cache(
-            file_path,
-            &lib_dirs,
-            &cache_config,
-        );
+
+        // Create a fresh session with caching enabled. compile_unit's
+        // auto-prelude trigger and codegen_and_execute's background cache
+        // write produce .meta.json + .o as side effects.
+        let mut fresh = crate::pipeline::CompilationSession::new_with_cache(cache_dir);
+        fresh.lib_dirs = lib_dirs;
+        fresh.project_root = self.project_root.clone();
+
+        let user_ctx = CompileContext {
+            module: ModuleFullPath::from("user"),
+            strategy: ModuleStrategy::Replace,
+            codegen_target: cranelisp_types::CodegenTarget::JitAndCache,
+        };
+        let result = crate::pipeline_v2::compile_unit(&mut fresh, &source, &user_ctx)
+            .and_then(|unit_result| {
+                crate::pipeline_v2::codegen_and_execute(&mut fresh, &unit_result, &user_ctx)
+            });
+        // Flush queued cache writes before dropping the fresh session.
+        fresh.flush_cache_writes();
+        // Failures are non-fatal.
+        let _ = result;
     }
 
     /// Get the accumulated type definitions for value display.
@@ -1683,22 +1733,37 @@ fn handle_reset(session: &mut ReplSession, stdout: &mut impl Write) {
         watcher.clear_all();
     }
 
-    // 2. Reload prelude from source (not cache).
+    // 2. Reload prelude from source (not cache) via compile_unit.
     //
     // Cache loading is disabled during /reset because the typechecker's
     // trait and impl registries are not restored from cached symbol tables.
     // Loading from source ensures check() registers all traits and
     // impls needed for method resolution (e.g., Num.+$Int for the + operator).
     // The performance cost is acceptable — prelude compilation takes <500ms.
+    //
+    // We set lib_dirs and project_root on the new core, then compile an
+    // empty source for the user module. compile_unit's auto-prelude
+    // trigger (stage 2b) detects the prelude is missing and recursively
+    // compiles it. No cache_state is set on object_worker, so
+    // queue_background_cache_write skips cache writes (intentional).
     let lib_dirs = crate::pipeline::assemble_lib_dirs(&project_root);
-    let mut cache_state: Option<crate::pipeline::CacheState> = None;
-    match crate::pipeline::load_prelude_into_session(
-        &project_root,
-        &lib_dirs,
-        &mut session.core,
-        &mut cache_state,
-    ) {
-        Ok(()) => {
+    session.core.lib_dirs = lib_dirs;
+    session.core.project_root = project_root.clone();
+    let user_ctx = CompileContext {
+        module: ModuleFullPath::from("user"),
+        strategy: ModuleStrategy::Additive,
+        codegen_target: cranelisp_types::CodegenTarget::JitAndCache,
+    };
+    match crate::pipeline_v2::compile_unit(&mut session.core, "", &user_ctx)
+        .and_then(|unit_result| {
+            crate::pipeline_v2::codegen_and_execute(
+                &mut session.core,
+                &unit_result,
+                &user_ctx,
+            )
+        })
+    {
+        Ok(_) => {
             // Sync type definitions from prelude modules for ADT value display.
             for (name, info) in session.core.tc.type_def_registry().iter() {
                 session.type_defs.insert(name.clone(), info.clone());

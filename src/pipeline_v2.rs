@@ -786,7 +786,7 @@ fn compile_and_execute_expr_with_trace(
 /// returns immediately without waiting for the write.
 ///
 /// See design/arch/pipeline-v2.md §16.2, §16.4.1, §16.12.
-fn queue_background_cache_write(
+pub fn queue_background_cache_write(
     session: &mut CompilationSession,
     source: &str,
     module_path: &ModuleFullPath,
@@ -798,10 +798,9 @@ fn queue_background_cache_write(
     use std::collections::HashMap;
 
     // Only write if caching is enabled (cache_state + cache_writer both present).
-    let (cache_state, cache_writer) = match (&session.object_worker.cache_state, &mut session.object_worker.cache_writer) {
-        (Some(cs), Some(cw)) => (cs, cw),
-        _ => return,
-    };
+    if session.object_worker.cache_state.is_none() || session.object_worker.cache_writer.is_none() {
+        return;
+    }
 
     // Skip if program has no compilable definitions.
     if !crate::pipeline::has_compilable_defns(program) {
@@ -836,13 +835,19 @@ fn queue_background_cache_write(
     // Dependency hashes (empty for now — full dependency tracking is a follow-up).
     let dep_hashes: HashMap<String, String> = HashMap::new();
 
+    // Get cache_dir from cache_state (existence already verified above).
+    let cache_dir = session.object_worker.cache_state.as_ref()
+        .expect("invariant: cache_state checked above")
+        .cache_dir()
+        .to_path_buf();
+
     // Build the cache packet.
     let packet = match cache::build_cache_packet(
-        &cache_state.cache_dir(),
+        &cache_dir,
         module_path,
         &source_hash,
         false, // is_stdlib
-        dep_hashes,
+        dep_hashes.clone(),
         &metadata,
         object_input,
     ) {
@@ -855,11 +860,18 @@ fn queue_background_cache_write(
     };
 
     // Deterministic .o path for recording.
-    let (_meta_path, o_path) = cache::module_cache_path(&cache_state.cache_dir(), module_path);
+    let (_meta_path, o_path) = cache::module_cache_path(&cache_dir, module_path);
     session.object_worker.compiled_o_paths.push(o_path);
 
+    // Update cache manifest with source hash for this module.
+    if let Some(cs) = session.object_worker.cache_state.as_mut() {
+        cs.record_module(module_path, source_hash, dep_hashes);
+    }
+
     // Queue the write on the background thread.
-    cache_writer.queue_write(module_path.clone(), packet);
+    session.object_worker.cache_writer.as_mut()
+        .expect("invariant: cache_writer checked above")
+        .queue_write(module_path.clone(), packet);
 }
 
 /// Build `CacheCodegenState` from a program's definitions.
