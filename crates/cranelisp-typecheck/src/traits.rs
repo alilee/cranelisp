@@ -1692,11 +1692,9 @@ mod tests {
         };
         tc.register_trait_impl(&impl_).unwrap();
 
-        assert!(tc
-            .impl_registry
+        assert!(tc.impl_registry.read().unwrap()
             .has_impl(&TraitName::from("TestTrait"), &TypeName::from("Int")));
-        assert!(!tc
-            .impl_registry
+        assert!(!tc.impl_registry.read().unwrap()
             .has_impl(&TraitName::from("TestTrait"), &TypeName::from("Bool")));
     }
 
@@ -2208,7 +2206,8 @@ mod tests {
             span: Span::SYNTHETIC,
         };
 
-        let decl = tc.trait_registry.read().unwrap().decls
+        let _tr = tc.trait_registry.read().unwrap();
+        let decl = _tr.decls
             .get(&TraitName::from("Eq"))
             .unwrap()
             .clone();

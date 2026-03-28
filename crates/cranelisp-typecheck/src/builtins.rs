@@ -1249,11 +1249,11 @@ mod tests {
     fn test_no_traits_at_startup() {
         let tc = TypeChecker::new();
         assert!(
-            tc.trait_registry.decls.is_empty(),
+            tc.trait_registry.read().unwrap().decls.is_empty(),
             "no traits should be registered at startup (Decision 17 eliminated)"
         );
         assert!(
-            tc.impl_registry.impls.is_empty(),
+            tc.impl_registry.read().unwrap().impls.is_empty(),
             "no impls should be registered at startup"
         );
     }
@@ -1291,7 +1291,8 @@ mod tests {
     #[test]
     fn test_slist_type_registered() {
         let tc = TypeChecker::new();
-        let info = tc.type_defs.get(&TypeName::from("SList"));
+        let _td = tc.type_defs.read().unwrap();
+        let info = _td.get(&TypeName::from("SList"));
         assert!(info.is_some(), "SList type should be registered");
         let info = info.unwrap();
         assert_eq!(info.type_params.len(), 1, "SList has 1 type parameter");
@@ -1374,7 +1375,8 @@ mod tests {
     #[test]
     fn test_sexp_type_registered() {
         let tc = TypeChecker::new();
-        let info = tc.type_defs.get(&TypeName::from("Sexp"));
+        let _td = tc.type_defs.read().unwrap();
+        let info = _td.get(&TypeName::from("Sexp"));
         assert!(info.is_some(), "Sexp type should be registered");
         let info = info.unwrap();
         assert!(info.type_params.is_empty(), "Sexp has 0 type parameters");
@@ -1581,7 +1583,8 @@ mod tests {
     #[test]
     fn test_quote_sexp_registered() {
         let tc = TypeChecker::new();
-        let entry = primitives_table(&tc).get("quote-sexp");
+        let pt = primitives_table(&tc);
+        let entry = pt.get("quote-sexp");
         assert!(entry.is_some(), "quote-sexp should be in primitives module");
 
         if let Some(ModuleEntry::Def { scheme, kind, .. }) = entry {
@@ -1654,7 +1657,8 @@ mod tests {
     #[test]
     fn test_io_type_registered() {
         let tc = TypeChecker::new();
-        let info = tc.type_defs.get(&TypeName::from("IO"));
+        let _td = tc.type_defs.read().unwrap();
+        let info = _td.get(&TypeName::from("IO"));
         assert!(info.is_some(), "IO type should be registered");
         let info = info.unwrap();
         assert_eq!(info.type_params.len(), 1, "IO has 1 type parameter");
@@ -1748,7 +1752,8 @@ mod tests {
         let tc = TypeChecker::new();
 
         // Bind should be in TypeDefInfo but NOT in the symbol table.
-        let info = tc.type_defs.get(&TypeName::from("IO")).unwrap();
+        let _td = tc.type_defs.read().unwrap();
+        let info = _td.get(&TypeName::from("IO")).unwrap();
         let bind_ctor = &info.constructors[2];
         assert_eq!(bind_ctor.name.as_ref(), "Bind");
         assert_eq!(bind_ctor.tag, 2);
@@ -1801,7 +1806,7 @@ mod tests {
 
         // Bind should NOT be in constructor_to_type.
         assert!(
-            tc.type_defs.constructor_type("Bind").is_none(),
+            tc.type_defs.read().unwrap().constructor_type("Bind").is_none(),
             "Bind should NOT be in constructor_to_type"
         );
     }
@@ -2051,7 +2056,8 @@ mod tests {
     #[test]
     fn test_trace_type_registered() {
         let tc = TypeChecker::new();
-        let info = tc.type_defs.get(&TypeName::from("Trace"));
+        let _td = tc.type_defs.read().unwrap();
+        let info = _td.get(&TypeName::from("Trace"));
         assert!(info.is_some(), "Trace type should be registered");
         let info = info.unwrap();
         assert!(info.type_params.is_empty(), "Trace has no type parameters (monomorphic)");

@@ -411,8 +411,9 @@ mod tests {
         assert!(_st.get("Blue").is_some());
 
         // Constructor type lookup
+        let _td = tc.type_defs.read().unwrap();
         assert_eq!(
-            tc.type_defs.read().unwrap().constructor_type("Red"),
+            _td.constructor_type("Red"),
             Some(&TypeName::from("Color"))
         );
     }
@@ -545,7 +546,8 @@ mod tests {
         }
 
         // TypeDefInfo should have the fields recorded
-        let info = tc.type_defs.read().unwrap().get(&TypeName::from("Pair")).unwrap();
+        let _td = tc.type_defs.read().unwrap();
+        let info = _td.get(&TypeName::from("Pair")).unwrap();
         assert_eq!(info.constructors.len(), 1);
         assert_eq!(info.constructors[0].fields.len(), 2);
         assert_eq!(info.constructors[0].fields[0].name.as_ref(), "x");
@@ -638,7 +640,8 @@ mod tests {
         )
         .unwrap();
 
-        let info = tc.type_defs.read().unwrap().get(&TypeName::from("Dir")).unwrap();
+        let _td = tc.type_defs.read().unwrap();
+        let info = _td.get(&TypeName::from("Dir")).unwrap();
         assert_eq!(info.constructors[0].tag, 0);
         assert_eq!(info.constructors[1].tag, 1);
         assert_eq!(info.constructors[2].tag, 2);
@@ -677,7 +680,8 @@ mod tests {
         let mut tc = TypeChecker::new();
         register_option(&mut tc);
 
-        let info = tc.type_defs.read().unwrap().get(&TypeName::from("Option")).unwrap();
+        let _td = tc.type_defs.read().unwrap();
+        let info = _td.get(&TypeName::from("Option")).unwrap();
         assert_eq!(info.type_params.len(), 1);
         assert_eq!(info.type_params[0].as_ref(), "a");
     }
@@ -688,7 +692,8 @@ mod tests {
         let mut tc = TypeChecker::new();
         register_option(&mut tc);
 
-        let info = tc.type_defs.read().unwrap().get(&TypeName::from("Option")).unwrap();
+        let _td = tc.type_defs.read().unwrap();
+        let info = _td.get(&TypeName::from("Option")).unwrap();
         assert_eq!(info.constructors[0].name.as_ref(), "None");
         assert_eq!(info.constructors[0].tag, 0);
         assert_eq!(info.constructors[1].name.as_ref(), "Some");
@@ -701,7 +706,8 @@ mod tests {
         let mut tc = TypeChecker::new();
         register_option(&mut tc);
 
-        let info = tc.type_defs.read().unwrap().get(&TypeName::from("Option")).unwrap();
+        let _td = tc.type_defs.read().unwrap();
+        let info = _td.get(&TypeName::from("Option")).unwrap();
         let some_ctor = &info.constructors[1];
         assert_eq!(some_ctor.fields.len(), 1);
         assert_eq!(some_ctor.fields[0].name.as_ref(), "val");
@@ -838,7 +844,8 @@ mod tests {
         )
         .unwrap();
 
-        let info = tc.type_defs.read().unwrap().get(&TypeName::from("Either")).unwrap();
+        let _td = tc.type_defs.read().unwrap();
+        let info = _td.get(&TypeName::from("Either")).unwrap();
         assert_eq!(info.type_params.len(), 2);
         assert_eq!(info.constructors.len(), 2);
 
@@ -945,12 +952,16 @@ mod tests {
         // Bind is internal but NOT registered in constructor_to_type,
         // so this returns false (enforcement is name-resolution-based).
         // If Bind were in constructor_to_type, this would return true.
-        assert!(!tc.type_defs.read().unwrap().is_internal_constructor("Bind"));
+        let _td = tc.type_defs.read().unwrap();
+        assert!(!_td.is_internal_constructor("Bind"));
         // Non-internal constructors return false.
-        assert!(!tc.type_defs.read().unwrap().is_internal_constructor("Pure"));
-        assert!(!tc.type_defs.read().unwrap().is_internal_constructor("Effect"));
+        let _td = tc.type_defs.read().unwrap();
+        assert!(!_td.is_internal_constructor("Pure"));
+        let _td = tc.type_defs.read().unwrap();
+        assert!(!_td.is_internal_constructor("Effect"));
         // Unknown constructors return false.
-        assert!(!tc.type_defs.read().unwrap().is_internal_constructor("NoSuchCtor"));
+        let _td = tc.type_defs.read().unwrap();
+        assert!(!_td.is_internal_constructor("NoSuchCtor"));
     }
 
     // spec: 10-io §10.1 — exhaustiveness excludes internal constructors

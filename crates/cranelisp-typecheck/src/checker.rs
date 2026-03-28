@@ -1630,13 +1630,17 @@ mod tests {
 
         // Switch to another module — shouldn't see user-only
         tc.set_current_module(ModuleFullPath::from("other"));
-        let _st = tc.symbol_table();
-        assert!(_st.get("user-only").is_none());
+        {
+            let st = tc.symbol_table();
+            assert!(st.get("user-only").is_none());
+        }
 
         // Switch back — should see it again
         tc.set_current_module(ModuleFullPath::from("user"));
-        let _st = tc.symbol_table();
-        assert!(_st.get("user-only").is_some());
+        {
+            let st = tc.symbol_table();
+            assert!(st.get("user-only").is_some());
+        }
     }
 
     // --- Cross-module name resolution ---
