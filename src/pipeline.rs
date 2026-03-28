@@ -171,19 +171,32 @@ impl CompilationSession {
     /// Returns `CranelispError` for parse, type, or codegen errors.
     /// Non-fatal diagnostics are accumulated in `CompileUnitResult::warnings`.
     pub fn compile_unit(
-        &mut self,
+        &self,
         source: &str,
         ctx: &CompileContext,
         strategy: ModuleStrategy,
     ) -> Result<CompileUnitResult, CranelispError> {
-        // Cycle detection: check if this module is already on the compile stack.
-        check_cycle(self, &ctx.module)?;
-        self.compile_stack.push(ctx.module.clone());
+        let mut compile_stack = Vec::new();
+        self.compile_unit_with_stack(source, ctx, strategy, &mut compile_stack)
+    }
 
-        let result = compile_unit_inner(self, source, ctx, strategy);
+    /// Internal compile_unit that takes compile_stack as a parameter for
+    /// recursive dependency loading (cycle detection across calls).
+    pub(crate) fn compile_unit_with_stack(
+        &self,
+        source: &str,
+        ctx: &CompileContext,
+        strategy: ModuleStrategy,
+        compile_stack: &mut Vec<ModuleFullPath>,
+    ) -> Result<CompileUnitResult, CranelispError> {
+        // Cycle detection: check if this module is already on the compile stack.
+        check_cycle_stack(compile_stack, &ctx.module)?;
+        compile_stack.push(ctx.module.clone());
+
+        let result = compile_unit_inner(self, source, ctx, strategy, compile_stack);
 
         // Always pop the compile stack, even on error.
-        self.compile_stack.pop();
+        compile_stack.pop();
 
         result
     }
@@ -192,10 +205,11 @@ impl CompilationSession {
 /// Inner implementation of `compile_unit()`, separated so the compile_stack
 /// pop happens in the outer function regardless of success/failure.
 fn compile_unit_inner(
-    session: &mut CompilationSession,
+    session: &CompilationSession,
     source: &str,
     ctx: &CompileContext,
     strategy: ModuleStrategy,
+    compile_stack: &mut Vec<ModuleFullPath>,
 ) -> Result<CompileUnitResult, CranelispError> {
     // Stage 1: Parse source text into sexps.
     let sexps = cranelisp_frontend::parse(source)?;
@@ -210,15 +224,15 @@ fn compile_unit_inner(
     // Stage 2a-post: Register file→module mapping for the current module.
     if let Some(resolved) = resolve_module_path(&ctx.module, &session.lib_dirs) {
         if let Ok(canonical) = resolved.canonicalize() {
-            session.module_deps.register_file(canonical, ctx.module.clone());
+            session.module_deps.lock().unwrap().register_file(canonical, ctx.module.clone());
         }
     }
 
     // Stage 2b: Auto-load prelude if needed.
     let prelude_path = ModuleFullPath::from("prelude");
-    let needs_prelude = !session.tc.has_module(&prelude_path)
+    let needs_prelude = !session.tc.lock().unwrap().has_module(&prelude_path)
         && ctx.module != prelude_path
-        && !session.compile_stack.contains(&prelude_path)
+        && !compile_stack.contains(&prelude_path)
         && !session.lib_dirs.is_empty();
     if let Some(prelude_file) =
         needs_prelude.then(|| crate::session::resolve_prelude(&session.project_root, &session.lib_dirs)).flatten()
@@ -242,46 +256,46 @@ fn compile_unit_inner(
                 module: ModuleFullPath::from("prelude"),
                 codegen: ctx.codegen, // inherit caller's codegen behaviour
             };
-            let prelude_result = session.compile_unit(&prelude_source, &prelude_ctx, ModuleStrategy::Replace)?;
+            let prelude_result = session.compile_unit_with_stack(&prelude_source, &prelude_ctx, ModuleStrategy::Replace, compile_stack)?;
             codegen_and_execute_via_session(session, &prelude_result, &prelude_ctx)?;
         }
 
         // Register prelude dependency edge for the current module.
-        session.module_deps.register_edge(&ctx.module, &prelude_path);
+        session.module_deps.lock().unwrap().register_edge(&ctx.module, &prelude_path);
     }
 
     // Stage 2c: Recursive module loading for unresolved imports and exports.
-    load_dependencies(session, &structure, ctx.codegen)?;
+    load_dependencies(session, &structure, ctx.codegen, compile_stack)?;
 
     // Stage 2e: Prelude import injection + register imports/exports.
-    session.tc.set_current_module(ctx.module.clone());
+    session.tc.lock().unwrap().set_current_module(ctx.module.clone());
 
-    if session.tc.has_module(&prelude_path) && ctx.module != prelude_path {
-        crate::session::inject_prelude_import(&mut session.tc)?;
+    if session.tc.lock().unwrap().has_module(&prelude_path) && ctx.module != prelude_path {
+        crate::session::inject_prelude_import(&mut *session.tc.lock().unwrap())?;
     }
     if !structure.import_specs.is_empty() {
-        session.tc.register_imports(&structure.import_specs)?;
+        session.tc.lock().unwrap().register_imports(&structure.import_specs)?;
     }
     if !structure.export_specs.is_empty() {
-        session.tc.register_exports(&structure.export_specs)?;
+        session.tc.lock().unwrap().register_exports(&structure.export_specs)?;
     }
 
     // Stage 2f: Load platform DLLs declared in this module.
     for platform_spec in &structure.platform_specs {
         let (platform, jit_syms) = crate::platform::load_and_register_platform(
-            &mut session.tc,
+            &mut *session.tc.lock().unwrap(),
             &platform_spec.name,
             &session.project_root,
             platform_spec.span,
         )?;
         for desc in &platform.descriptors {
-            session.scheduling_registry.insert(
+            session.scheduling_registry.lock().unwrap().insert(
                 Symbol::from(desc.name.as_str()),
                 desc.scheduling_class,
             );
         }
-        session.platform_symbols.extend(jit_syms);
-        session.loaded_platforms.push(platform);
+        session.platform_symbols.write().unwrap().extend(jit_syms);
+        session.loaded_platforms.lock().unwrap().push(platform);
     }
 
     // Stage 3: Expand (defmacro interception + macro expansion + begin-flatten).
@@ -303,10 +317,13 @@ fn compile_unit_inner(
     let mut program = cranelisp_frontend::build_program(&accumulated, &session.expander)?;
 
     // Stage 4b: Bind chain analysis (auto IO scheduling).
-    if !session.scheduling_registry.is_empty()
-        && std::env::var("CRANELISP_NO_IO_SCHEDULE").is_err()
     {
-        crate::session::apply_bind_chain_analysis(&mut program, &session.scheduling_registry);
+        let sched = session.scheduling_registry.lock().unwrap();
+        if !sched.is_empty()
+            && std::env::var("CRANELISP_NO_IO_SCHEDULE").is_err()
+        {
+            crate::session::apply_bind_chain_analysis(&mut program, &sched);
+        }
     }
 
     // Stage 5: Unified multi-pass typecheck.
@@ -315,7 +332,7 @@ fn compile_unit_inner(
     } else {
         strategy
     };
-    let check_result = session.tc.check(&program, ctx, check_strategy)?;
+    let check_result = session.tc.lock().unwrap().check(&program, ctx, check_strategy)?;
 
     let all_warnings: Vec<Warning> = check_result.warnings.clone();
 
@@ -333,13 +350,12 @@ fn compile_unit_inner(
 // ---------------------------------------------------------------------------
 
 /// Check if a module is already on the compile stack (circular dependency).
-fn check_cycle(
-    session: &CompilationSession,
+fn check_cycle_stack(
+    compile_stack: &[ModuleFullPath],
     module: &ModuleFullPath,
 ) -> Result<(), CranelispError> {
-    if session.compile_stack.contains(module) {
-        let cycle: Vec<String> = session
-            .compile_stack
+    if compile_stack.contains(module) {
+        let cycle: Vec<String> = compile_stack
             .iter()
             .map(|m| m.to_string())
             .collect();
@@ -362,9 +378,10 @@ fn check_cycle(
 
 /// Load all uncompiled dependencies for a module's imports and exports.
 fn load_dependencies(
-    session: &mut CompilationSession,
+    session: &CompilationSession,
     structure: &ModuleStructure,
     codegen: CodegenBehaviour,
+    compile_stack: &mut Vec<ModuleFullPath>,
 ) -> Result<(), CranelispError> {
     let dep_modules: Vec<ModuleFullPath> = structure
         .import_specs
@@ -376,16 +393,16 @@ fn load_dependencies(
     let parent_module = &structure.path;
 
     for dep_module in &dep_modules {
-        session.module_deps.register_edge(parent_module, dep_module);
+        session.module_deps.lock().unwrap().register_edge(parent_module, dep_module);
 
         // 1. Already loaded — skip.
-        if session.tc.has_module(dep_module) {
+        if session.tc.lock().unwrap().has_module(dep_module) {
             continue;
         }
 
         if let Some(dep_source_path) = resolve_module_path(dep_module, &session.lib_dirs) {
             if let Ok(canonical) = dep_source_path.canonicalize() {
-                session.module_deps.register_file(canonical, dep_module.clone());
+                session.module_deps.lock().unwrap().register_file(canonical, dep_module.clone());
             }
 
             // 2. Cache hit — restore from cache, skip compile_unit.
@@ -412,7 +429,7 @@ fn load_dependencies(
                 codegen,
             };
 
-            let unit_result = session.compile_unit(&dep_source, &dep_ctx, ModuleStrategy::Replace)?;
+            let unit_result = session.compile_unit_with_stack(&dep_source, &dep_ctx, ModuleStrategy::Replace, compile_stack)?;
             session.send_codegen(unit_result, dep_ctx);
         }
     }
@@ -458,14 +475,17 @@ pub fn resolve_module_file(
 /// Returns `true` if the module was successfully loaded from cache
 /// (caller should skip compile_unit). Returns `false` on cache miss.
 fn try_cache_hit_load(
-    session: &mut CompilationSession,
+    session: &CompilationSession,
     dep_module: &ModuleFullPath,
     dep_source_path: &Path,
 ) -> bool {
-    // Check if caching is enabled.
-    let cache_dir = match session.object_worker.cache_state.as_ref() {
-        Some(cs) => cs.cache_dir().to_path_buf(),
-        None => return false,
+    // Check if caching is enabled. Brief lock on object_worker.
+    let cache_dir = {
+        let ow = session.object_worker.lock().unwrap();
+        match ow.cache_state.as_ref() {
+            Some(cs) => cs.cache_dir().to_path_buf(),
+            None => return false,
+        }
     };
 
     // Read the source to compute its hash.
@@ -475,16 +495,14 @@ fn try_cache_hit_load(
     };
     let source_hash = cache::hash_source(&dep_source);
 
-    // Collect current dependency hashes from the session's cache state.
-    // For cache validity, we need the hashes of this module's own deps.
-    // Since we don't know them yet (we haven't parsed this module),
-    // we pass empty and rely on source hash only for now.
-    // This is the "start with source hash" approach per the task spec.
     let dep_hashes: HashMap<ModuleFullPath, String> = HashMap::new();
 
-    let is_valid = match session.object_worker.cache_state.as_ref() {
-        Some(cs) => cs.is_cache_valid(dep_module, &source_hash, &dep_hashes),
-        None => return false,
+    let is_valid = {
+        let ow = session.object_worker.lock().unwrap();
+        match ow.cache_state.as_ref() {
+            Some(cs) => cs.is_cache_valid(dep_module, &source_hash, &dep_hashes),
+            None => return false,
+        }
     };
     if !is_valid {
         return false;
@@ -496,53 +514,52 @@ fn try_cache_hit_load(
         _ => return false,
     };
 
-    // The .o file must exist for a full cache hit (code loading).
     if !cached.has_object {
         return false;
     }
 
     // Load the .o file via the Linker to get executable code pointers.
-    // The Linker must be kept alive — it owns the mmap'd executable memory.
-    let (linker, fn_addrs) = match load_cached_object_via_linker(
-        &mut session.inmem_worker,
-        &session.platform_symbols,
-        &cached,
-    ) {
-        Ok(result) => result,
-        Err(_) => return false,
+    let platform_syms = session.platform_symbols.read().unwrap().clone();
+    let (linker, fn_addrs) = {
+        let mut iw = session.inmem_worker.lock().unwrap();
+        match load_cached_object_via_linker(&mut iw, &platform_syms, &cached) {
+            Ok(result) => result,
+            Err(_) => return false,
+        }
     };
 
     // Store the Linker to keep its executable memory alive.
-    session.inmem_worker.cache_linkers.push(linker);
+    session.inmem_worker.lock().unwrap().cache_linkers.push(linker);
 
     // Restore the symbol table into the TypeChecker.
     let symbol_table = cached.metadata.symbol_table.clone();
-    session.tc.restore_cached_module(symbol_table);
+    session.tc.lock().unwrap().restore_cached_module(symbol_table);
 
     // Restore trait impl registrations from cached codegen state.
     let mangled_names: Vec<String> = cached.codegen_state().got_slots
         .keys()
         .map(|s| s.as_ref().to_string())
         .collect();
-    session.tc.restore_cached_impls(&mangled_names);
+    session.tc.lock().unwrap().restore_cached_impls(&mangled_names);
 
     // Wire code pointers into the GOT.
-    wire_cached_code_into_got(
-        &mut session.inmem_worker,
-        &cached,
-        &fn_addrs,
-    );
+    {
+        let mut iw = session.inmem_worker.lock().unwrap();
+        wire_cached_code_into_got(&mut iw, &cached, &fn_addrs);
+    }
 
     // Register module aliases (qualified names) for the loaded module.
-    crate::session::register_module_aliases_filtered(
-        &mut session.inmem_worker,
-        dep_module,
-        None,
-    );
+    {
+        let mut iw = session.inmem_worker.lock().unwrap();
+        crate::session::register_module_aliases_filtered(&mut iw, dep_module, None);
+    }
 
     // Record the source hash so downstream modules can check deps.
-    if let Some(cs) = session.object_worker.cache_state.as_mut() {
-        cs.record_cache_hit(dep_module, source_hash);
+    {
+        let mut ow = session.object_worker.lock().unwrap();
+        if let Some(cs) = ow.cache_state.as_mut() {
+            cs.record_cache_hit(dep_module, source_hash);
+        }
     }
 
     true
@@ -650,18 +667,19 @@ pub fn codegen_and_execute(
 
 /// Convenience wrapper: call `codegen_and_execute` using session fields.
 pub fn codegen_and_execute_via_session(
-    session: &mut CompilationSession,
+    session: &CompilationSession,
     unit_result: &CompileUnitResult,
     ctx: &CompileContext,
 ) -> Result<CodegenResult, CranelispError> {
-    let symbol_table = session.tc.module_table(&ctx.module)
-        .cloned()
+    let symbol_table = session.tc.lock().unwrap().module_table(&ctx.module)
+        .map(|r| r.clone())
         .unwrap_or_else(|| cranelisp_types::SymbolTable::new(ctx.module.clone()));
+    let platform_syms = session.platform_symbols.read().unwrap().clone();
 
     codegen_and_execute_decomposed(
-        &mut session.inmem_worker,
-        &mut session.object_worker,
-        &session.platform_symbols,
+        &mut session.inmem_worker.lock().unwrap(),
+        &mut session.object_worker.lock().unwrap(),
+        &platform_syms,
         session.interactive,
         &symbol_table,
         unit_result,
@@ -1347,7 +1365,7 @@ pub fn compile_and_run(
     };
     let unit_result = session.compile_unit(source, &ctx, ModuleStrategy::Additive)?;
     let warnings_from_unit = unit_result.warnings.clone();
-    session.inmem_queue.push(CodegenItem {
+    session.inmem_queue.lock().unwrap().push(CodegenItem {
         ctx,
         unit_result,
     });
@@ -1812,7 +1830,7 @@ pub fn compile_module_graph_cached(
         let source_hash = cache::hash_source(&source);
         let unit_result = session.compile_unit(&source, &ctx, ModuleStrategy::Additive)?;
         all_warnings.extend(unit_result.warnings.clone());
-        session.inmem_queue.push(CodegenItem {
+        session.inmem_queue.lock().unwrap().push(CodegenItem {
             ctx,
             unit_result,
         });
@@ -1824,7 +1842,7 @@ pub fn compile_module_graph_cached(
             all_warnings.extend(codegen_result.warnings);
         }
 
-        if let Some(cs) = session.object_worker.cache_state.as_mut() {
+        if let Some(cs) = session.object_worker.lock().unwrap().cache_state.as_mut() {
             let node = &graph.nodes[module_path];
             let dep_hashes: HashMap<String, String> = node
                 .dependencies
@@ -1840,7 +1858,7 @@ pub fn compile_module_graph_cached(
     }
 
     session.flush_cache_writes();
-    if let Some(cs) = &session.object_worker.cache_state {
+    if let Some(cs) = &session.object_worker.lock().unwrap().cache_state {
         let _ = cs.flush();
     }
 
@@ -1853,7 +1871,7 @@ pub fn compile_module_graph_cached(
 
     let main_sym = Symbol::from("main");
     let qualified_main = Symbol::from(format!("{}/main", graph.entry.as_ref()));
-    let got = &session.inmem_worker.got_state;
+    let got = &session.inmem_worker.lock().unwrap().got_state;
     let main_exists = got.def_codegen.contains_key(&main_sym)
         || got.def_codegen.contains_key(&qualified_main);
     if !main_exists {
@@ -2134,11 +2152,10 @@ mod tests {
     // spec: design/arch/pipeline-v2.md §8.3 — cycle detection
     #[test]
     fn cycle_detection_reports_error() {
-        let mut session = CompilationSession::new();
         let module = ModuleFullPath::from("alpha");
-        session.compile_stack.push(module.clone());
+        let compile_stack = vec![module.clone()];
 
-        let err = check_cycle(&session, &module);
+        let err = check_cycle_stack(&compile_stack, &module);
         assert!(err.is_err(), "expected circular dependency error");
         let msg = err.unwrap_err().message().to_string();
         assert!(
@@ -2150,10 +2167,9 @@ mod tests {
     // spec: design/arch/pipeline-v2.md §8.3 — non-cyclic no false positive
     #[test]
     fn non_cyclic_no_false_positive() {
-        let mut session = CompilationSession::new();
-        session.compile_stack.push(ModuleFullPath::from("alpha"));
+        let compile_stack = vec![ModuleFullPath::from("alpha")];
 
-        let result = check_cycle(&session, &ModuleFullPath::from("beta"));
+        let result = check_cycle_stack(&compile_stack, &ModuleFullPath::from("beta"));
         assert!(result.is_ok(), "should not report cycle for different module");
     }
 

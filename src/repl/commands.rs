@@ -33,12 +33,12 @@ pub(crate) fn handle_sig(session: &ReplSession, name: &str, stdout: &mut impl Wr
         let _ = writeln!(stdout, "{}", format_builtin_type_display(name, session));
         return;
     }
-    let module = session.core.tc.current_module_path().clone();
-    match session.core.tc.symbol_table().get(name) {
+    let module = session.core.tc.lock().unwrap().current_module_path().clone();
+    match session.core.tc.lock().unwrap().symbol_table().get(name) {
         Some(entry) => {
             let (resolved_entry, resolved_module) =
                 resolve_entry_for_display(entry, &module, session);
-            let display = format_entry_signature(resolved_entry, name, resolved_module, session);
+            let display = format_entry_signature(&resolved_entry, name, &resolved_module, session);
             let _ = writeln!(stdout, "{display}");
         }
         None => {
@@ -55,7 +55,7 @@ pub(crate) fn handle_doc(session: &ReplSession, name: &str, stdout: &mut impl Wr
         let _ = writeln!(stdout, "usage: /doc <name>");
         return;
     }
-    match session.core.tc.symbol_table().get(name) {
+    match session.core.tc.lock().unwrap().symbol_table().get(name) {
         Some(ModuleEntry::Macro { docstring, .. }) => {
             if let Some(doc) = docstring {
                 let _ = writeln!(stdout, "{name}: \"{doc}\"");
@@ -95,10 +95,10 @@ pub(crate) fn handle_type(session: &mut ReplSession, expr_src: &str, stdout: &mu
         return;
     }
     // Parse, build AST, typecheck -- but do NOT compile or execute.
-    let snapshot = session.core.tc.snapshot();
+    let snapshot = session.core.tc.lock().unwrap().snapshot();
     let result = typecheck_only(session, expr_src);
     // Always restore -- we don't want /type to have side effects.
-    session.core.tc.restore(snapshot);
+    session.core.tc.lock().unwrap().restore(snapshot);
     match result {
         Ok(ty) => {
             let display = display::format_type_qualified(&ty, &session.type_modules);
@@ -121,7 +121,7 @@ fn typecheck_only(session: &mut ReplSession, expr_src: &str) -> Result<Type, Cra
     }
     let input = cranelisp_frontend::build_repl_input(&sexps[0], &session.core.expander)?;
     let ctx = session.build_repl_compile_context();
-    let check_result = session.core.tc.check(&[input], &ctx, cranelisp_types::ModuleStrategy::Additive)?;
+    let check_result = session.core.tc.lock().unwrap().check(&[input], &ctx, cranelisp_types::ModuleStrategy::Additive)?;
     Ok(check_result.display.as_ref().unwrap().ty.clone())
 }
 
@@ -139,17 +139,17 @@ pub(crate) fn handle_info(session: &ReplSession, name: &str, stdout: &mut impl W
         let _ = writeln!(stdout, "{}", pretty_print_str(&display));
         return;
     }
-    let module = session.core.tc.current_module_path().clone();
-    match session.core.tc.symbol_table().get(name) {
+    let module = session.core.tc.lock().unwrap().current_module_path().clone();
+    match session.core.tc.lock().unwrap().symbol_table().get(name) {
         Some(entry) => {
             let (resolved_entry, resolved_module) =
                 resolve_entry_for_display(entry, &module, session);
             // Line 1: type signature (same as /sig).
-            let sig = format_entry_signature(resolved_entry, name, resolved_module, session);
+            let sig = format_entry_signature(&resolved_entry, name, &resolved_module, session);
             let _ = writeln!(stdout, "{}", pretty_print_str(&sig));
             // Line 2: for functions, show code info.
             if !matches!(resolved_entry, ModuleEntry::Macro { .. } | ModuleEntry::TypeDef { .. } | ModuleEntry::TraitDecl { .. })
-                && let Some(dc) = session.core.inmem_worker.got_state.def_codegen.get(name)
+                && let Some(dc) = session.core.inmem_worker.lock().unwrap().got_state.def_codegen.get(name)
             {
                 let size_str = dc
                     .code_size
@@ -175,7 +175,8 @@ pub(crate) fn handle_info(session: &ReplSession, name: &str, stdout: &mut impl W
 /// Shows only symbols DEFINED in the current module. No imports, no special forms.
 /// Categories: Modules, Macros, Traits, Types (incl constructors), Fns.
 pub(crate) fn handle_list(session: &ReplSession, filter: &str, stdout: &mut impl Write) {
-    let table = session.core.tc.symbol_table();
+    let tc_guard = session.core.tc.lock().unwrap();
+    let table = tc_guard.symbol_table();
 
     let mut macros: Vec<String> = Vec::new();
     let mut traits: Vec<String> = Vec::new();
@@ -330,7 +331,8 @@ fn expand_form_sexp(session: &mut ReplSession, form_src: &str) -> Result<Sexp, C
 /// organized as `From <module>:` groups with sorted names.
 /// Names only -- no type signatures. Type the name for more detail.
 pub(crate) fn handle_imports(session: &ReplSession, filter: &str, stdout: &mut impl Write) {
-    let table = session.core.tc.symbol_table();
+    let tc_guard = session.core.tc.lock().unwrap();
+    let table = tc_guard.symbol_table();
 
     if filter.is_empty() {
         // Unfiltered mode: organize by category (spec section 3.4)
@@ -435,7 +437,7 @@ pub(crate) fn handle_exports(session: &ReplSession, arg: &str, stdout: &mut impl
     let prefix_filter = parts.next().unwrap_or("").trim();
 
     // Resolve module
-    let module_path = match session.core.tc.resolve_module_by_name(mod_name) {
+    let module_path = match session.core.tc.lock().unwrap().resolve_module_by_name(mod_name) {
         Some(path) => path,
         None => {
             let _ = writeln!(stdout, "Module '{mod_name}' not found");
@@ -444,7 +446,8 @@ pub(crate) fn handle_exports(session: &ReplSession, arg: &str, stdout: &mut impl
     };
 
     // Get the module's symbol table
-    let table = match session.core.tc.module_table(&module_path) {
+    let tc_guard = session.core.tc.lock().unwrap();
+    let table = match tc_guard.module_table(&module_path) {
         Some(t) => t,
         None => {
             let _ = writeln!(stdout, "Module '{mod_name}' not found");
@@ -519,7 +522,7 @@ pub(crate) fn handle_source(session: &ReplSession, name: &str, stdout: &mut impl
         let _ = writeln!(stdout, "usage: /source <name>");
         return;
     }
-    match session.core.inmem_worker.got_state.def_codegen.get(name) {
+    match session.core.inmem_worker.lock().unwrap().got_state.def_codegen.get(name) {
         Some(dc) if dc.source.is_some() => {
             let _ = writeln!(stdout, "{}", styled(&format!("; source for {name}"), Style::Italic));
             let _ = writeln!(stdout, "{}", pretty_print_str(dc.source.as_ref().unwrap()));
@@ -536,7 +539,7 @@ pub(crate) fn handle_sexp(session: &ReplSession, name: &str, stdout: &mut impl W
         let _ = writeln!(stdout, "usage: /sexp <name>");
         return;
     }
-    match session.core.inmem_worker.got_state.def_codegen.get(name) {
+    match session.core.inmem_worker.lock().unwrap().got_state.def_codegen.get(name) {
         Some(dc) if dc.sexp.is_some() => {
             let _ = writeln!(stdout, "; sexp for {name}");
             let _ = writeln!(stdout, "{}", format_sexp(dc.sexp.as_ref().unwrap()));
@@ -553,7 +556,7 @@ pub(crate) fn handle_ast(session: &ReplSession, name: &str, stdout: &mut impl Wr
         let _ = writeln!(stdout, "usage: /ast <name>");
         return;
     }
-    match session.core.inmem_worker.got_state.def_codegen.get(name) {
+    match session.core.inmem_worker.lock().unwrap().got_state.def_codegen.get(name) {
         Some(dc) if dc.defn.is_some() => {
             let _ = writeln!(stdout, "; ast for {name}");
             let _ = writeln!(stdout, "{:#?}", dc.defn.as_ref().unwrap());
@@ -570,7 +573,7 @@ pub(crate) fn handle_clif(session: &ReplSession, name: &str, stdout: &mut impl W
         let _ = writeln!(stdout, "usage: /clif <name>");
         return;
     }
-    match session.core.inmem_worker.got_state.def_codegen.get(name) {
+    match session.core.inmem_worker.lock().unwrap().got_state.def_codegen.get(name) {
         Some(dc) if dc.clif_ir.is_some() => {
             let _ = writeln!(stdout, "; clif ir for {name}");
             let _ = write!(stdout, "{}", dc.clif_ir.as_ref().unwrap());
@@ -587,7 +590,7 @@ pub(crate) fn handle_disasm(session: &ReplSession, name: &str, stdout: &mut impl
         let _ = writeln!(stdout, "usage: /disasm <name>");
         return;
     }
-    match session.core.inmem_worker.got_state.def_codegen.get(name) {
+    match session.core.inmem_worker.lock().unwrap().got_state.def_codegen.get(name) {
         Some(dc) if dc.disasm.is_some() => {
             let _ = writeln!(stdout, "; disasm for {name}");
             let _ = writeln!(stdout, "{}", dc.disasm.as_ref().unwrap());
@@ -607,7 +610,7 @@ pub(crate) fn handle_disasm(session: &ReplSession, name: &str, stdout: &mut impl
 pub(crate) fn handle_mod(session: &mut ReplSession, name: &str, _stdout: &mut impl Write) {
     let target = if name.is_empty() { "user" } else { name };
     let path = ModuleFullPath::from(target);
-    session.core.tc.set_current_module(path);
+    session.core.tc.lock().unwrap().set_current_module(path);
 }
 
 // ── Formatting helpers ────────────────────────────────────────────────────────
@@ -644,16 +647,17 @@ const RESOLVE_DEPTH_LIMIT: usize = 10;
 ///
 /// Returns the concrete entry (Def, Macro, TypeDef, TraitDecl, Constructor)
 /// or None if the chain is broken or exceeds the depth limit.
-pub(super) fn resolve_to_definition<'a>(
-    session: &'a ReplSession,
+pub(super) fn resolve_to_definition(
+    session: &ReplSession,
     source: &cranelisp_types::FQSymbol,
-) -> Option<&'a ModuleEntry> {
+) -> Option<ModuleEntry> {
     let mut current_module = source.module.clone();
     let mut current_name: String = source.symbol.to_string();
     for _ in 0..RESOLVE_DEPTH_LIMIT {
-        let table = session.core.tc.module_table(&current_module)?;
-        let entry = table.get(&current_name)?;
-        match entry {
+        let tc_guard = session.core.tc.lock().unwrap();
+        let table = tc_guard.module_table(&current_module)?;
+        let entry = table.get(&current_name)?.clone();
+        match &entry {
             ModuleEntry::Import { source: next } | ModuleEntry::Reexport { source: next } => {
                 current_module = next.module.clone();
                 current_name = next.symbol.to_string();
@@ -669,36 +673,37 @@ pub(super) fn resolve_to_definition<'a>(
 ///
 /// Returns the original entry and module if not Import/Reexport or if
 /// the chain cannot be resolved.
-pub(super) fn resolve_entry_for_display<'a>(
-    entry: &'a ModuleEntry,
-    module: &'a ModuleFullPath,
-    session: &'a ReplSession,
-) -> (&'a ModuleEntry, &'a ModuleFullPath) {
+pub(super) fn resolve_entry_for_display(
+    entry: &ModuleEntry,
+    module: &ModuleFullPath,
+    session: &ReplSession,
+) -> (ModuleEntry, ModuleFullPath) {
     let source = match entry {
         ModuleEntry::Import { source } | ModuleEntry::Reexport { source } => source,
-        _ => return (entry, module),
+        _ => return (entry.clone(), module.clone()),
     };
     // Follow the chain to the ultimate definition.
-    let mut current_module = &source.module;
+    let mut current_module = source.module.clone();
     let mut current_name: String = source.symbol.to_string();
     for _ in 0..RESOLVE_DEPTH_LIMIT {
-        let table = match session.core.tc.module_table(current_module) {
+        let tc_guard = session.core.tc.lock().unwrap();
+    let table = match tc_guard.module_table(&current_module) {
             Some(t) => t,
-            None => return (entry, module),
+            None => return (entry.clone(), module.clone()),
         };
         let resolved = match table.get(&current_name) {
-            Some(e) => e,
-            None => return (entry, module),
+            Some(e) => e.clone(),
+            None => return (entry.clone(), module.clone()),
         };
-        match resolved {
+        match &resolved {
             ModuleEntry::Import { source: next } | ModuleEntry::Reexport { source: next } => {
-                current_module = &next.module;
+                current_module = next.module.clone();
                 current_name = next.symbol.to_string();
             }
             _ => return (resolved, current_module),
         }
     }
-    (entry, module) // Depth limit exceeded -- return original
+    (entry.clone(), module.clone()) // Depth limit exceeded -- return original
 }
 
 /// Format a module entry's type signature for /sig and /info display.
@@ -739,7 +744,7 @@ pub(super) fn format_entry_signature(
         } => {
             let type_str = display::format_type_qualified(&scheme.ty, &session.type_modules);
             let tn = TypeName::from(type_name.0.as_str());
-            let ctor_display = if let Some(info) = session.core.tc.type_def_registry().get(&tn) {
+            let ctor_display = if let Some(info) = session.core.tc.lock().unwrap().type_def_registry().get(&tn) {
                 display::format_ctor_display(&tn, name, info)
             } else {
                 format!("{type_name}.{name}")
@@ -840,8 +845,9 @@ pub(crate) fn special_form_feedback(input: &str, session: &ReplSession) -> Optio
     // Look up in the symbol table (spec section 4.1 -- bare symbol lookup).
     // Delegate to format_entry_signature which implements the universal format
     // for all symbol classes.
-    let module = session.core.tc.current_module_path().clone();
-    let entry = session.core.tc.symbol_table().get(trimmed)?;
+    let module = session.core.tc.lock().unwrap().current_module_path().clone();
+    let tc_guard = session.core.tc.lock().unwrap(); let sym_table = tc_guard.symbol_table();
+    let entry = sym_table.get(trimmed)?;
     // For Import/Reexport entries, resolve through the chain to the definition.
     // This allows bare-symbol display for imported special forms, macros, etc.
     let (resolved_entry, resolved_module) =
@@ -850,12 +856,12 @@ pub(crate) fn special_form_feedback(input: &str, session: &ReplSession) -> Optio
     // to a value, so let them pass through to eval instead of showing definition
     // metadata. Non-nullary constructors need arguments and can't be evaluated
     // bare, so they show introspection display (spec section 4.1).
-    if let ModuleEntry::Constructor { info, .. } = resolved_entry
+    if let ModuleEntry::Constructor { info, .. } = &resolved_entry
         && info.fields.is_empty()
     {
         return None;
     }
-    Some(format_entry_signature(resolved_entry, trimmed, resolved_module, session))
+    Some(format_entry_signature(&resolved_entry, trimmed, &resolved_module, session))
 }
 
 /// Format a builtin type (Int, Bool, Float, String) for bare symbol lookup.
@@ -865,7 +871,7 @@ pub(crate) fn special_form_feedback(input: &str, session: &ReplSession) -> Optio
 fn format_builtin_type_display(type_name: &str, session: &ReplSession) -> String {
     let tn = TypeName::from(type_name);
     let mut result = format!(":primitives/{type_name} ; type");
-    let trait_names = session.core.tc.get_impls_for_type(&tn);
+    let trait_names = session.core.tc.lock().unwrap().get_impls_for_type(&tn);
     if !trait_names.is_empty() {
         let names: Vec<&str> = trait_names.iter().map(|t| t.as_ref()).collect();
         result.push_str(&format_related_section("impl", &names));
@@ -881,14 +887,14 @@ pub(super) fn format_type_display_universal(type_name: &str, module: &ModuleFull
     let mut result = format!(":{module}/{type_name} ; deftype");
     let tn = TypeName::from(type_name);
     // Related: constructors under `; match:`
-    if let Some(ctors) = session.core.tc.get_type_constructors(&tn)
+    if let Some(ctors) = session.core.tc.lock().unwrap().get_type_constructors(&tn)
         && !ctors.is_empty()
     {
         let names: Vec<&str> = ctors.iter().map(|c| c.name.as_ref()).collect();
         result.push_str(&format_related_section("match", &names));
     }
     // Related: trait implementations under `; impl:`
-    let trait_names = session.core.tc.get_impls_for_type(&tn);
+    let trait_names = session.core.tc.lock().unwrap().get_impls_for_type(&tn);
     if !trait_names.is_empty() {
         let names: Vec<&str> = trait_names.iter().map(|t| t.as_ref()).collect();
         result.push_str(&format_related_section("impl", &names));
@@ -905,19 +911,19 @@ pub(super) fn format_trait_display_universal(
     docstring: Option<&str>,
     session: &ReplSession,
 ) -> String {
-    let defining_module = session.core.tc.defining_module_for(trait_name);
+    let defining_module = session.core.tc.lock().unwrap().defining_module_for(trait_name);
     let tn = TraitName::from(trait_name);
     let mut result = format!(":{defining_module}/{trait_name} ; deftrait");
     result = append_docstring_comment(result, docstring);
     // Related: methods under `; defn:`
-    if let Some(methods) = session.core.tc.get_trait_methods(&tn)
+    if let Some(methods) = session.core.tc.lock().unwrap().get_trait_methods(&tn)
         && !methods.is_empty()
     {
         let names: Vec<&str> = methods.iter().map(|m| m.as_ref()).collect();
         result.push_str(&format_related_section("defn", &names));
     }
     // Related: implementing types under `; impl:`
-    let impl_types = session.core.tc.get_implementing_types(&tn);
+    let impl_types = session.core.tc.lock().unwrap().get_implementing_types(&tn);
     if !impl_types.is_empty() {
         let names: Vec<&str> = impl_types.iter().map(|t| t.as_ref()).collect();
         result.push_str(&format_related_section("impl", &names));

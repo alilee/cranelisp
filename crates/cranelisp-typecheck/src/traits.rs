@@ -1051,14 +1051,15 @@ impl TypeChecker {
     fn get_constrained_fn(
         &self,
         name: &Symbol,
-    ) -> Option<&ConstrainedFn> {
+    ) -> Option<ConstrainedFn> {
         use cranelisp_types::{DefKind, ModuleEntry};
 
-        match self.current_symbol_table().get(name.as_ref())? {
+        let sym_table = self.current_symbol_table();
+        match sym_table.get(name.as_ref())? {
             ModuleEntry::Def { kind, .. } => match kind.as_ref() {
                 DefKind::UserFn {
                     constrained_fn: Some(cf),
-                } => Some(cf),
+                } => Some(*cf.clone()),
                 _ => None,
             },
             _ => None,
@@ -1607,15 +1608,16 @@ mod tests {
         tc.register_trait_decl(&decl).unwrap();
 
         // Trait should be in the registry
-        assert!(tc.trait_registry.decls.contains_key(&TraitName::from("TestTrait")));
+        assert!(tc.trait_registry.read().unwrap().decls.contains_key(&TraitName::from("TestTrait")));
         // Method should be reverse-mapped
         assert_eq!(
-            tc.trait_registry.method_to_trait.get(&Symbol::from("test-op")),
+            tc.trait_registry.read().unwrap().method_to_trait.get(&Symbol::from("test-op")),
             Some(&TraitName::from("TestTrait"))
         );
         // Trait should be in symbol table
+        let _st = tc.symbol_table();
         assert!(matches!(
-            tc.symbol_table().get("TestTrait"),
+            _st.get("TestTrait"),
             Some(ModuleEntry::TraitDecl { .. })
         ));
     }
@@ -1917,9 +1919,9 @@ mod tests {
     fn test_no_core_traits_at_startup() {
         let tc = TypeChecker::new();
         // Traits come from prelude .cl files, NOT compiler builtins
-        assert!(tc.trait_registry.decls.is_empty(),
+        assert!(tc.trait_registry.read().unwrap().decls.is_empty(),
             "no traits should be registered at startup");
-        assert!(tc.impl_registry.impls.is_empty(),
+        assert!(tc.impl_registry.read().unwrap().impls.is_empty(),
             "no impls should be registered at startup");
     }
 
@@ -2206,7 +2208,7 @@ mod tests {
             span: Span::SYNTHETIC,
         };
 
-        let decl = tc.trait_registry.decls
+        let decl = tc.trait_registry.read().unwrap().decls
             .get(&TraitName::from("Eq"))
             .unwrap()
             .clone();

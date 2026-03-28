@@ -42,7 +42,7 @@ fn v2_session_with_primitives() -> CompilationSession {
         span: Span::SYNTHETIC,
     };
     session
-        .tc
+        .tc.lock().unwrap()
         .register_imports(&[import_spec])
         .expect("failed to import primitives for v2 session");
     session
@@ -57,7 +57,7 @@ fn compile_v2_batch(src: &str) -> i64 {
     };
     let unit_result = session.compile_unit(src, &ctx, ModuleStrategy::Additive)
         .expect("v2 compile_unit failed");
-    let codegen_result = codegen_and_execute_via_session(&mut session, &unit_result, &ctx)
+    let codegen_result = codegen_and_execute_via_session(&session, &unit_result, &ctx)
         .expect("v2 codegen_and_execute failed");
     codegen_result.value.expect("v2 produced no value")
 }
@@ -75,7 +75,7 @@ fn compile_v2_interactive(src: &str) -> i64 {
     };
     let unit_result = session.compile_unit(src, &ctx, ModuleStrategy::Additive)
         .expect("v2 compile_unit failed");
-    let codegen_result = codegen_and_execute_via_session(&mut session, &unit_result, &ctx)
+    let codegen_result = codegen_and_execute_via_session(&session, &unit_result, &ctx)
         .expect("v2 codegen_and_execute failed");
     codegen_result.value.expect("v2 produced no value")
 }
@@ -571,7 +571,7 @@ fn v2_async_session_with_primitives() -> CompilationSession {
         span: Span::SYNTHETIC,
     };
     session
-        .tc
+        .tc.lock().unwrap()
         .register_imports(&[import_spec])
         .expect("failed to import primitives for async v2 session");
     session
@@ -650,7 +650,7 @@ fn v2_async_codegen_shutdown_returns_state() {
     // After shutdown, it should have the real GOT state.
     session.shutdown_codegen();
     assert!(
-        !session.inmem_worker.got_state.def_codegen.is_empty(),
+        !session.inmem_worker.lock().unwrap().got_state.def_codegen.is_empty(),
         "GOT state should be populated after shutdown"
     );
 }

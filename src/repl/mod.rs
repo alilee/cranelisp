@@ -177,7 +177,7 @@ impl ReplSession {
         // tries to write files into it.
         let cache_dir = project_root.join(".cranelisp-cache");
         let _ = std::fs::create_dir_all(&cache_dir);
-        session.core.object_worker =
+        *session.core.object_worker.lock().unwrap() =
             crate::session::ObjectWorkerState::new_with_cache(cache_dir);
 
         // Compile an empty source for the user module. The auto-prelude
@@ -200,14 +200,14 @@ impl ReplSession {
 
         // Flush any queued background cache writes and write cache manifest.
         session.core.flush_cache_writes();
-        if let Some(cs) = &session.core.object_worker.cache_state {
+        if let Some(cs) = &session.core.object_worker.lock().unwrap().cache_state {
             cs.flush_manifest();
         }
 
         // Sync type definitions from prelude modules for ADT value display.
         // Without this, prelude ADT values (e.g. Option.None) display as raw
         // i64 tags because format_result_value lacks the constructor metadata.
-        for (name, info) in session.core.tc.type_def_registry().iter() {
+        for (name, info) in session.core.tc.lock().unwrap().type_def_registry().iter() {
             session.type_defs.insert(name.clone(), info.clone());
         }
 
@@ -215,7 +215,7 @@ impl ReplSession {
         // by compile_unit / load_dependencies into session.core.module_deps.
 
         // Switch back to user module for REPL input.
-        session.core.tc.set_current_module(ModuleFullPath::from("user"));
+        session.core.tc.lock().unwrap().set_current_module(ModuleFullPath::from("user"));
 
         Ok(session)
     }
@@ -239,7 +239,7 @@ impl ReplSession {
         match self.try_restore_user_module() {
             Ok(true) => {
                 // Sync type defs from restored user module.
-                for (name, info) in self.core.tc.type_def_registry().iter() {
+                for (name, info) in self.core.tc.lock().unwrap().type_def_registry().iter() {
                     if !self.type_defs.contains_key(name) {
                         self.type_defs.insert(name.clone(), info.clone());
                     }
@@ -288,7 +288,7 @@ impl ReplSession {
         let user_module = ModuleFullPath::from("user");
 
         // Set current module to user before compilation.
-        self.core.tc.set_current_module(user_module.clone());
+        self.core.tc.lock().unwrap().set_current_module(user_module.clone());
 
         // Parse and extract module declarations (imports, exports, impls).
         let sexps = cranelisp_frontend::parse(&source)?;
@@ -308,7 +308,7 @@ impl ReplSession {
         if !structure.import_specs.is_empty() {
             for spec in &structure.import_specs {
                 // Skip if the full module path is already loaded.
-                if self.core.tc.has_module(&spec.module_path) {
+                if self.core.tc.lock().unwrap().has_module(&spec.module_path) {
                     continue;
                 }
                 let root_module = spec.module_path.0
@@ -317,7 +317,7 @@ impl ReplSession {
                     .unwrap_or(&spec.module_path.0)
                     .to_string();
                 let root_path = ModuleFullPath::from(root_module.as_str());
-                if !self.core.tc.has_module(&root_path) {
+                if !self.core.tc.lock().unwrap().has_module(&root_path) {
                     // Resolve and compile the root module via compile_unit.
                     // compile_unit handles recursive dependency loading internally.
                     if let Some(source_path) =
@@ -332,7 +332,7 @@ impl ReplSession {
                                 file: Some(source_path.clone()),
                                 span: cranelisp_types::Span::SYNTHETIC,
                             })?;
-                        let saved_module = self.core.tc.current_module_path().clone();
+                        let saved_module = self.core.tc.lock().unwrap().current_module_path().clone();
                         let dep_ctx = CompileContext {
                             module: root_path,
                             codegen: cranelisp_types::CodegenBehaviour::InMemoryAndObject,
@@ -347,14 +347,14 @@ impl ReplSession {
                             &unit_result,
                             &dep_ctx,
                         )?;
-                        self.core.tc.set_current_module(saved_module);
+                        self.core.tc.lock().unwrap().set_current_module(saved_module);
                     }
                 }
             }
-            self.core.tc.register_imports(&structure.import_specs)?;
+            self.core.tc.lock().unwrap().register_imports(&structure.import_specs)?;
         }
         if !structure.export_specs.is_empty() {
-            self.core.tc.register_exports(&structure.export_specs)?;
+            self.core.tc.lock().unwrap().register_exports(&structure.export_specs)?;
         }
 
         // Process forms sequentially (handles defmacro interception, expansion).
@@ -382,10 +382,10 @@ impl ReplSession {
         // Whole-program typecheck — handles constrained polymorphism,
         // forward references, and monomorphisation correctly.
         let ctx = CompileContext {
-            module: self.core.tc.current_module_path().clone(),
+            module: self.core.tc.lock().unwrap().current_module_path().clone(),
             codegen: cranelisp_types::CodegenBehaviour::InMemoryAndObject,
         };
-        let check = self.core.tc.check(&program, &ctx, ModuleStrategy::Additive)?;
+        let check = self.core.tc.lock().unwrap().check(&program, &ctx, ModuleStrategy::Additive)?;
 
         // Compile using GOT-based codegen (same path as REPL defns).
         // This registers functions in the GOT so subsequent REPL
@@ -398,7 +398,8 @@ impl ReplSession {
         // (same length), which is aligned with program's TopLevel entries.
         for (tl, original) in program.iter().zip(originals.iter()) {
             if let cranelisp_types::TopLevel::Defn(defn) = tl {
-                let dc = self.core.inmem_worker.got_state.def_codegen
+                let mut iw_guard = self.core.inmem_worker.lock().unwrap();
+                let dc = iw_guard.got_state.def_codegen
                     .entry(defn.name.clone())
                     .or_default();
                 dc.sexp = Some(original.clone());
@@ -412,11 +413,11 @@ impl ReplSession {
         // Queue background cache write (.meta.json + .o) via v2 pipeline.
         // Uses the session's cache_state (set up by new_with_prelude).
         // Non-fatal — cache files are an optimization.
-        let symbol_table = self.core.tc.module_table(&user_module)
-            .cloned()
+        let symbol_table = self.core.tc.lock().unwrap().module_table(&user_module)
+            .map(|r| r.clone())
             .unwrap_or_else(|| cranelisp_types::SymbolTable::new(user_module.clone()));
         crate::pipeline::queue_background_cache_write(
-            &mut self.core.object_worker,
+            &mut *self.core.object_worker.lock().unwrap(),
             &symbol_table,
             &source,
             &user_module,
@@ -447,13 +448,13 @@ impl ReplSession {
             None => return, // No backing file — nothing to save.
         };
 
-        let sym_table = self.core.tc.symbol_table();
+        let tc_guard = self.core.tc.lock().unwrap(); let sym_table = tc_guard.symbol_table();
         let structure = &self.current_module_structure;
-        let def_codegen = &self.core.inmem_worker.got_state.def_codegen;
+        let iw_guard = self.core.inmem_worker.lock().unwrap(); let def_codegen = &iw_guard.got_state.def_codegen;
 
         if let Some(hash) = save::save_module_file(
             &file_path,
-            sym_table,
+            &sym_table,
             structure,
             def_codegen,
         ) {
@@ -521,7 +522,7 @@ impl ReplSession {
         }
 
         // Step 3: Snapshot for error recovery (covers macro compilation too).
-        let snapshot = self.core.tc.snapshot();
+        let snapshot = self.core.tc.lock().unwrap().snapshot();
 
         // Step 4: Handle multi-sexp annotation expressions (`:Type expr` parses as two sexps).
         if sexps.len() > 1 && is_annotation_prefix(&sexps[0]) {
@@ -534,7 +535,7 @@ impl ReplSession {
                     Ok(result)
                 }
                 Err(e) => {
-                    self.core.tc.restore(snapshot);
+                    self.core.tc.lock().unwrap().restore(snapshot);
                     Err(e)
                 }
             };
@@ -559,7 +560,7 @@ impl ReplSession {
                 Ok(result)
             }
             Err(e) => {
-                self.core.tc.restore(snapshot);
+                self.core.tc.lock().unwrap().restore(snapshot);
                 Err(e)
             }
         }
@@ -594,8 +595,8 @@ impl ReplSession {
             _ => false,
         });
         if has_trace {
-            self.core.inmem_worker.traced_fns = self.build_traced_fns();
-            self.core.inmem_worker.trace_extra_symbols = vec![
+            self.core.inmem_worker.lock().unwrap().traced_fns = self.build_traced_fns();
+            self.core.inmem_worker.lock().unwrap().trace_extra_symbols = vec![
                 (
                     "cranelisp_trace_format".to_string(),
                     repl_trace_format as *const u8,
@@ -617,7 +618,7 @@ impl ReplSession {
         // module-qualified aliases like "user/foo" that the old REPL path
         // never created; we remove them after to match the old behavior and
         // prevent double-counting in test discovery).
-        let pre_codegen_keys: HashSet<Symbol> = self.core.inmem_worker
+        let pre_codegen_keys: HashSet<Symbol> = self.core.inmem_worker.lock().unwrap()
             .got_state
             .def_codegen
             .keys()
@@ -626,7 +627,7 @@ impl ReplSession {
 
         // Codegen + execute (stages 6-7).
         let codegen_result = crate::pipeline::codegen_and_execute_via_session(
-            &mut self.core,
+            &self.core,
             &unit_result,
             &repl_ctx,
         );
@@ -634,15 +635,15 @@ impl ReplSession {
         // Always clear trace state after execution, even on error.
         if has_trace {
             clear_trace_display_state();
-            self.core.inmem_worker.traced_fns.clear();
-            self.core.inmem_worker.trace_extra_symbols.clear();
+            self.core.inmem_worker.lock().unwrap().traced_fns.clear();
+            self.core.inmem_worker.lock().unwrap().trace_extra_symbols.clear();
         }
 
         // Remove module-qualified alias entries that codegen_and_execute
         // created for the current REPL module. The old REPL path never
         // registered aliases for the interactive module — only for loaded
         // dependency modules (prelude, core.*, etc.).
-        let new_aliases: Vec<Symbol> = self.core.inmem_worker
+        let new_aliases: Vec<Symbol> = self.core.inmem_worker.lock().unwrap()
             .got_state
             .def_codegen
             .keys()
@@ -650,7 +651,7 @@ impl ReplSession {
             .cloned()
             .collect();
         for alias in &new_aliases {
-            self.core.inmem_worker.got_state.def_codegen.remove(alias);
+            self.core.inmem_worker.lock().unwrap().got_state.def_codegen.remove(alias);
         }
 
         let codegen_result = codegen_result?;
@@ -658,7 +659,7 @@ impl ReplSession {
         let eval_duration = eval_start.elapsed();
 
         // Accumulate type definitions for ADT value display.
-        let module = self.core.tc.current_module_path().clone();
+        let module = self.core.tc.lock().unwrap().current_module_path().clone();
         for (name, info) in &unit_result.check_result.type_defs {
             self.type_defs.insert(name.clone(), info.clone());
             self.type_modules.insert(name.clone(), module.clone());
@@ -696,7 +697,7 @@ impl ReplSession {
         original_sexps: &[Sexp],
         eval_duration: Duration,
     ) -> Result<ReplResult, CranelispError> {
-        let module = self.core.tc.current_module_path().clone();
+        let module = self.core.tc.lock().unwrap().current_module_path().clone();
         let mut all_warnings: Vec<Warning> = unit_result.warnings.clone();
         all_warnings.extend(codegen_result.warnings.clone());
 
@@ -745,7 +746,7 @@ impl ReplSession {
         warnings: Vec<Warning>,
         eval_duration: Duration,
     ) -> Result<ReplResult, CranelispError> {
-        let module = self.core.tc.current_module_path().clone();
+        let module = self.core.tc.lock().unwrap().current_module_path().clone();
 
         // Check if the original input was a defmacro — look up newly registered macro.
         if let Some(sexp) = original_sexps.first()
@@ -891,7 +892,8 @@ impl ReplSession {
                 } else {
                     continue;
                 };
-                let dc = self.core.inmem_worker.got_state.def_codegen
+                let mut iw_guard = self.core.inmem_worker.lock().unwrap();
+                let dc = iw_guard.got_state.def_codegen
                     .entry(defn.name.clone())
                     .or_default();
                 dc.source = Some(format_sexp(&sexp));
@@ -944,7 +946,7 @@ impl ReplSession {
             &self.core.expander,
         )?;
         let ctx = self.build_repl_compile_context();
-        let check_result = self.core.tc.check(std::slice::from_ref(&input), &ctx, ModuleStrategy::Additive)?;
+        let check_result = self.core.tc.lock().unwrap().check(std::slice::from_ref(&input), &ctx, ModuleStrategy::Additive)?;
 
         // Build a CompileUnitResult to pass to codegen_and_execute.
         let unit_result = crate::pipeline::CompileUnitResult {
@@ -1010,7 +1012,8 @@ impl ReplSession {
         };
 
         // Look up the symbol in the current module's symbol table.
-        let entry = self.core.tc.symbol_table().get(name.as_str())?;
+        let tc_guard = self.core.tc.lock().unwrap(); let sym_table = tc_guard.symbol_table();
+        let entry = sym_table.get(name.as_str())?;
         match entry {
             ModuleEntry::Macro { clauses, docstring, .. } => {
                 // Check if any clause accepts zero args -- if so, let the
@@ -1022,7 +1025,7 @@ impl ReplSession {
                     return None; // Let expander handle zero-arg expansion.
                 }
                 // Non-zero-arg macro: show universal format (spec §4.1.6).
-                let module = self.core.tc.current_module_path().clone();
+                let module = self.core.tc.lock().unwrap().current_module_path().clone();
                 let display = format_macro_display_universal(
                     name, clauses, docstring.as_deref(), &module,
                 );
@@ -1060,7 +1063,7 @@ impl ReplSession {
     /// Uses the session's current module with InMemoryAndObject codegen.
     fn build_repl_compile_context(&self) -> CompileContext {
         CompileContext {
-            module: self.core.tc.current_module_path().clone(),
+            module: self.core.tc.lock().unwrap().current_module_path().clone(),
             codegen: cranelisp_types::CodegenBehaviour::InMemoryAndObject,
         }
     }
@@ -1071,12 +1074,12 @@ impl ReplSession {
     /// type information from the symbol table, and builds `TracedFnInfo` entries
     /// for the trace codegen to generate wrapper functions.
     fn build_traced_fns(&mut self) -> Vec<TracedFnInfo> {
-        let got_base = self.core.inmem_worker.got_state.got_base_ptr() as i64;
-        let module = self.core.tc.current_module_path().clone();
-        let symbol_table = self.core.tc.symbol_table();
+        let got_base = self.core.inmem_worker.lock().unwrap().got_state.got_base_ptr() as i64;
+        let module = self.core.tc.lock().unwrap().current_module_path().clone();
+        let tc_guard = self.core.tc.lock().unwrap(); let symbol_table = tc_guard.symbol_table();
 
         let mut traced = Vec::new();
-        for (name, dc) in &self.core.inmem_worker.got_state.def_codegen {
+        for (name, dc) in &self.core.inmem_worker.lock().unwrap().got_state.def_codegen {
             let (slot, code_ptr, arity) = match (dc.got_slot, dc.code_ptr, dc.param_count) {
                 (Some(s), Some(p), Some(a)) => (s, p, a),
                 _ => continue,
@@ -1399,7 +1402,7 @@ fn update_watched_paths(session: &mut ReplSession) {
     // Watch every known module source file (records content hash for each).
     let file_paths: Vec<std::path::PathBuf> = session
         .core
-        .module_deps
+        .module_deps.lock().unwrap()
         .file_to_module
         .keys()
         .cloned()
@@ -1452,7 +1455,7 @@ fn reload_changed_modules(session: &mut ReplSession, stdout: &mut impl Write) {
     // Map file paths to module paths.
     let mut stale_modules: Vec<ModuleFullPath> = Vec::new();
     for path in &pending {
-        if let Some(module_path) = session.core.module_deps.file_to_module.get(path)
+        if let Some(module_path) = session.core.module_deps.lock().unwrap().file_to_module.get(path)
             && !stale_modules.contains(module_path)
         {
             stale_modules.push(module_path.clone());
@@ -1502,7 +1505,7 @@ fn module_display_name(
 ) -> String {
     session
         .core
-        .module_deps
+        .module_deps.lock().unwrap()
         .file_to_module
         .iter()
         .find(|(_, mp)| *mp == module_path)
@@ -1540,7 +1543,7 @@ pub fn run_repl() {
     let mut last_compile_ms: u64 = 0;
     let mut last_eval_ms: u64 = 0;
 
-    let module = session.core.tc.current_module_path().to_string();
+    let module = session.core.tc.lock().unwrap().current_module_path().to_string();
     let prompt = format_prompt(last_compile_ms, last_eval_ms, &module);
     poll_and_notify_changes(&mut session, &mut stdout);
     write_prompt(&mut stdout, last_compile_ms, last_eval_ms, &module);
@@ -1564,7 +1567,7 @@ pub fn run_repl() {
         }
 
         let input = buffer.trim();
-        let module = session.core.tc.current_module_path().to_string();
+        let module = session.core.tc.lock().unwrap().current_module_path().to_string();
 
         // Shell escape: intercept `;#!` before comment-only check.
         // Per repl/spec.md §13, `;#!` lines are run as shell commands.
@@ -1597,7 +1600,7 @@ pub fn run_repl() {
                 last_compile_ms = 0;
                 last_eval_ms = 0;
             }
-            let module = session.core.tc.current_module_path().to_string();
+            let module = session.core.tc.lock().unwrap().current_module_path().to_string();
             poll_and_notify_changes(&mut session, &mut stdout);
             write_prompt(&mut stdout, last_compile_ms, last_eval_ms, &module);
             continue;
@@ -1634,7 +1637,7 @@ pub fn run_repl() {
             eval_and_display(&mut session, input, &mut stdout);
 
         buffer.clear();
-        let module = session.core.tc.current_module_path().to_string();
+        let module = session.core.tc.lock().unwrap().current_module_path().to_string();
         poll_and_notify_changes(&mut session, &mut stdout);
         write_prompt(&mut stdout, last_compile_ms, last_eval_ms, &module);
     }
@@ -1722,7 +1725,7 @@ fn handle_reset(session: &mut ReplSession, stdout: &mut impl Write) {
     {
         Ok(_) => {
             // Sync type definitions from prelude modules for ADT value display.
-            for (name, info) in session.core.tc.type_def_registry().iter() {
+            for (name, info) in session.core.tc.lock().unwrap().type_def_registry().iter() {
                 session.type_defs.insert(name.clone(), info.clone());
             }
             let _ = writeln!(stdout, "Session reset.");
@@ -1738,7 +1741,7 @@ fn handle_reset(session: &mut ReplSession, stdout: &mut impl Write) {
     // during the prelude reload above.
 
     // 4. Reset current module to user.
-    session.core.tc.set_current_module(ModuleFullPath::from("user"));
+    session.core.tc.lock().unwrap().set_current_module(ModuleFullPath::from("user"));
 
     // 5. Re-add watched paths for newly loaded prelude modules.
     update_watched_paths(session);
@@ -2290,13 +2293,13 @@ mod tests {
     ) -> ReplSession {
         let mut session = ReplSession::new();
         for (path, entries) in modules {
-            session.core.tc.set_current_module(path);
+            session.core.tc.lock().unwrap().set_current_module(path);
             for (sym, entry) in entries {
-                session.core.tc.symbol_table_mut().insert(sym, entry);
+                session.core.tc.lock().unwrap().symbol_table_mut().insert(sym, entry);
             }
         }
         // Switch back to user module
-        session.core.tc.set_current_module(ModuleFullPath::from("user"));
+        session.core.tc.lock().unwrap().set_current_module(ModuleFullPath::from("user"));
         session
     }
 

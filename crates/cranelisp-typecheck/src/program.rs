@@ -2805,7 +2805,8 @@ mod tests {
         let result = tc.check(&program, &test_ctx(), cranelisp_types::ModuleStrategy::Additive).unwrap();
 
         // The base name "add" should be registered as Overloaded
-        let entry = tc.current_symbol_table().get("add");
+        let _table = tc.current_symbol_table();
+        let entry = _table.get("add");
         assert!(entry.is_some(), "base name 'add' should be registered");
         if let Some(ModuleEntry::Def { kind, .. }) = entry {
             assert!(

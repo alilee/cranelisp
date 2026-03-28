@@ -84,7 +84,7 @@ impl CraneliftExpander {
     ///
     /// Used during module hot-reload to clear old macros before
     /// recompiling the module that defined them.
-    pub fn remove_macro(&mut self, name: &str) {
+    pub fn remove_macro(&self, name: &str) {
         self.env.macros.write()
             .expect("macro env write lock poisoned")
             .remove(name);
@@ -100,7 +100,7 @@ impl CraneliftExpander {
     /// 5. Compile via backend and extract the function pointer
     /// 6. Store the compiled clause in the MacroEnv
     pub fn compile_macro(
-        &mut self,
+        &self,
         info: &cranelisp_frontend::DefmacroInfo,
         tc: &mut cranelisp_typecheck::TypeChecker,
         jit: &mut cranelisp_backend::jit::Jit,

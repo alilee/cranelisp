@@ -204,12 +204,12 @@ impl NorthStarMethods for CompilationSession {
         let main_sym = Symbol::from("main");
         let qualified_main = Symbol::from(format!("{module_name}/main"));
         let main_exists = self
-            .inmem_worker
+            .inmem_worker.lock().unwrap()
             .got_state
             .def_codegen
             .contains_key(&main_sym)
             || self
-                .inmem_worker
+                .inmem_worker.lock().unwrap()
                 .got_state
                 .def_codegen
                 .contains_key(&qualified_main);

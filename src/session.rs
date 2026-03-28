@@ -10,7 +10,7 @@
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
-use std::sync::mpsc;
+use std::sync::{mpsc, Mutex, RwLock};
 
 use cranelisp_types::{
     CheckResult, CompileContext, CranelispError, Defn, MacroClauseInfo, ModuleEntry,
@@ -536,76 +536,83 @@ impl ModuleDependencyGraph {
 /// `ReplSession` wraps a `CompilationSession` and adds REPL-specific
 /// concerns (display metadata, slash commands, trace state, introspection).
 pub struct CompilationSession {
+    // --- Read-only after construction ---
     /// Type checker state (persists across forms).
-    pub tc: cranelisp_typecheck::TypeChecker,
-    /// Macro expander (persists across forms — macros accumulate).
+    /// Behind `Mutex` so `compile_unit` (which takes `&self`) can acquire
+    /// `&mut TypeChecker` for `check()` and registration methods.
+    /// Lock is held briefly for each TC method call, never across recursive
+    /// `compile_unit` invocations.
+    pub tc: Mutex<cranelisp_typecheck::TypeChecker>,
+    /// Macro expander (persists across forms — macros accumulate). Internal RwLock.
     pub expander: CraneliftExpander,
-    /// Platform function pointers for JIT symbol registration.
-    /// Each entry is (jit_name, function_pointer). Passed to
-    /// `Jit::new_with_symbols()` when creating JIT instances.
-    pub platform_symbols: Vec<(String, *const u8)>,
-    /// Scheduling class registry for bind chain independence analysis.
-    /// Maps platform function names to their SchedulingClass.
-    /// Populated during platform DLL loading; empty when no platforms loaded.
-    pub scheduling_registry: crate::bind_chain_analysis::SchedulingRegistry,
-    /// Modules currently being compiled (on the call stack).
-    /// Used by `compile_unit()` for circular dependency detection.
-    pub compile_stack: Vec<ModuleFullPath>,
     /// Directories to search when resolving module imports.
     /// Empty in test mode (imports unresolvable → self-contained tests).
     pub lib_dirs: Vec<PathBuf>,
-    /// Module dependency graph: forward/reverse edges + file→module mapping.
-    /// Populated incrementally by `compile_unit` and `load_dependencies`.
-    pub module_deps: ModuleDependencyGraph,
-    /// Queue of compilation units awaiting in-memory codegen (JIT execution).
-    /// Drained synchronously by `flush_inmem_queue()`.
-    pub inmem_queue: Vec<crate::pipeline::CodegenItem>,
-    /// Queue of compilation units awaiting object-file codegen (.o emission).
-    /// Drained synchronously by `flush_object_queue()`.
-    pub object_queue: Vec<crate::pipeline::CodegenItem>,
+    /// Project root directory for platform DLL path resolution.
+    /// Set by callers (batch, link, REPL) before compilation.
+    pub project_root: PathBuf,
     /// Whether this session uses GOT-indirect calls (interactive/REPL mode).
     /// When false, codegen uses direct calls (batch mode).
     /// Set by callers that need GOT-based compilation (REPL, --run).
     pub interactive: bool,
-    /// Project root directory for platform DLL path resolution.
-    /// Set by callers (batch, link, REPL) before compilation.
-    pub project_root: PathBuf,
-    /// Loaded platform DLL handles. Must remain alive for the process lifetime
-    /// so that function pointers into the DLL code segments stay valid.
-    pub loaded_platforms: Vec<crate::platform::LoadedPlatform>,
-    /// In-memory codegen worker state (GOT, JIT lifetimes, trace).
-    /// Only present in Sync mode; in Async mode, the worker thread owns this.
-    pub inmem_worker: InMemWorkerState,
-    /// Object-file codegen worker state (cache, .o paths, module structures).
-    /// Only present in Sync mode; in Async mode, the worker thread owns this.
-    pub object_worker: ObjectWorkerState,
-    /// Codegen execution mode: synchronous or async worker thread.
-    pub codegen_mode: CodegenMode,
     /// Shared ISA for N-core codegen workers. Built once at session creation,
     /// cloned per worker via `Jit::new_with_isa`. None in sync mode.
     pub shared_isa: Option<std::sync::Arc<dyn cranelisp_backend::TargetIsa>>,
+
+    // --- Shared mutable (behind Mutex/RwLock) ---
+    /// Module dependency graph: forward/reverse edges + file→module mapping.
+    /// Populated incrementally by `compile_unit` and `load_dependencies`.
+    pub module_deps: Mutex<ModuleDependencyGraph>,
+    /// Scheduling class registry for bind chain independence analysis.
+    /// Maps platform function names to their SchedulingClass.
+    /// Populated during platform DLL loading; empty when no platforms loaded.
+    pub scheduling_registry: Mutex<crate::bind_chain_analysis::SchedulingRegistry>,
+    /// Platform function pointers for JIT symbol registration.
+    /// Each entry is (jit_name, function_pointer). Passed to
+    /// `Jit::new_with_symbols()` when creating JIT instances.
+    pub platform_symbols: RwLock<Vec<(String, *const u8)>>,
+    /// Loaded platform DLL handles. Must remain alive for the process lifetime
+    /// so that function pointers into the DLL code segments stay valid.
+    pub loaded_platforms: Mutex<Vec<crate::platform::LoadedPlatform>>,
+
+    // --- Worker state ---
+    /// In-memory codegen worker state (GOT, JIT lifetimes, trace).
+    /// Only present in Sync mode; in Async mode, the worker thread owns this.
+    pub inmem_worker: Mutex<InMemWorkerState>,
+    /// Object-file codegen worker state (cache, .o paths, module structures).
+    /// Only present in Sync mode; in Async mode, the worker thread owns this.
+    pub object_worker: Mutex<ObjectWorkerState>,
+
+    // --- Codegen dispatch ---
+    /// Queue of compilation units awaiting in-memory codegen (JIT execution).
+    /// Drained synchronously by `flush_inmem_queue()`.
+    pub inmem_queue: Mutex<Vec<crate::pipeline::CodegenItem>>,
+    /// Queue of compilation units awaiting object-file codegen (.o emission).
+    /// Drained synchronously by `flush_object_queue()`.
+    pub object_queue: Mutex<Vec<crate::pipeline::CodegenItem>>,
+    /// Codegen execution mode: synchronous or async worker thread.
+    pub codegen_mode: CodegenMode,
 }
 
 impl CompilationSession {
     /// Create a new compilation session with default (synchronous) state.
     pub fn new() -> Self {
         CompilationSession {
-            tc: cranelisp_typecheck::TypeChecker::new(),
+            tc: Mutex::new(cranelisp_typecheck::TypeChecker::new()),
             expander: CraneliftExpander::new(),
-            platform_symbols: Vec::new(),
-            scheduling_registry: crate::bind_chain_analysis::SchedulingRegistry::new(),
-            compile_stack: Vec::new(),
             lib_dirs: Vec::new(),
-            module_deps: ModuleDependencyGraph::new(),
-            inmem_queue: Vec::new(),
-            object_queue: Vec::new(),
-            interactive: false,
             project_root: PathBuf::from("."),
-            loaded_platforms: Vec::new(),
-            inmem_worker: InMemWorkerState::new(),
-            object_worker: ObjectWorkerState::new(),
-            codegen_mode: CodegenMode::Sync,
+            interactive: false,
             shared_isa: None,
+            module_deps: Mutex::new(ModuleDependencyGraph::new()),
+            scheduling_registry: Mutex::new(crate::bind_chain_analysis::SchedulingRegistry::new()),
+            platform_symbols: RwLock::new(Vec::new()),
+            loaded_platforms: Mutex::new(Vec::new()),
+            inmem_worker: Mutex::new(InMemWorkerState::new()),
+            object_worker: Mutex::new(ObjectWorkerState::new()),
+            inmem_queue: Mutex::new(Vec::new()),
+            object_queue: Mutex::new(Vec::new()),
+            codegen_mode: CodegenMode::Sync,
         }
     }
 
@@ -624,21 +631,20 @@ impl CompilationSession {
         // Build shared ISA once for all codegen workers.
         let shared_isa = cranelisp_backend::jit::Jit::build_shared_isa().ok();
         CompilationSession {
-            tc: cranelisp_typecheck::TypeChecker::new(),
+            tc: Mutex::new(cranelisp_typecheck::TypeChecker::new()),
             expander: CraneliftExpander::new(),
-            platform_symbols: Vec::new(),
-            scheduling_registry: crate::bind_chain_analysis::SchedulingRegistry::new(),
-            compile_stack: Vec::new(),
             lib_dirs: Vec::new(),
-            module_deps: ModuleDependencyGraph::new(),
-            inmem_queue: Vec::new(),
-            object_queue: Vec::new(),
-            interactive: false,
             project_root: PathBuf::from("."),
-            loaded_platforms: Vec::new(),
+            interactive: false,
+            module_deps: Mutex::new(ModuleDependencyGraph::new()),
+            scheduling_registry: Mutex::new(crate::bind_chain_analysis::SchedulingRegistry::new()),
+            platform_symbols: RwLock::new(Vec::new()),
+            loaded_platforms: Mutex::new(Vec::new()),
+            inmem_queue: Mutex::new(Vec::new()),
+            object_queue: Mutex::new(Vec::new()),
             // Dummy state — the real state is on the worker thread.
-            inmem_worker: InMemWorkerState::new(),
-            object_worker: ObjectWorkerState::new(),
+            inmem_worker: Mutex::new(InMemWorkerState::new()),
+            object_worker: Mutex::new(ObjectWorkerState::new()),
             codegen_mode: CodegenMode::Async {
                 sender,
                 worker: Some(handle),
@@ -657,21 +663,20 @@ impl CompilationSession {
         let (sender, handle) = spawn_codegen_worker(inmem_worker, object_worker);
         let shared_isa = cranelisp_backend::jit::Jit::build_shared_isa().ok();
         CompilationSession {
-            tc: cranelisp_typecheck::TypeChecker::new(),
+            tc: Mutex::new(cranelisp_typecheck::TypeChecker::new()),
             expander: CraneliftExpander::new(),
-            platform_symbols: Vec::new(),
-            scheduling_registry: crate::bind_chain_analysis::SchedulingRegistry::new(),
-            compile_stack: Vec::new(),
             lib_dirs: Vec::new(),
-            module_deps: ModuleDependencyGraph::new(),
-            inmem_queue: Vec::new(),
-            object_queue: Vec::new(),
-            interactive: false,
             project_root: PathBuf::from("."),
-            loaded_platforms: Vec::new(),
+            interactive: false,
+            module_deps: Mutex::new(ModuleDependencyGraph::new()),
+            scheduling_registry: Mutex::new(crate::bind_chain_analysis::SchedulingRegistry::new()),
+            platform_symbols: RwLock::new(Vec::new()),
+            loaded_platforms: Mutex::new(Vec::new()),
+            inmem_queue: Mutex::new(Vec::new()),
+            object_queue: Mutex::new(Vec::new()),
             // Dummy state — the real state is on the worker thread.
-            inmem_worker: InMemWorkerState::new(),
-            object_worker: ObjectWorkerState::new(),
+            inmem_worker: Mutex::new(InMemWorkerState::new()),
+            object_worker: Mutex::new(ObjectWorkerState::new()),
             codegen_mode: CodegenMode::Async {
                 sender,
                 worker: Some(handle),
@@ -692,8 +697,8 @@ impl CompilationSession {
             let (reply_tx, reply_rx) = mpsc::sync_channel(1);
             let _ = sender.send(CodegenWorkerMsg::Shutdown(reply_tx));
             if let Ok((inmem, object)) = reply_rx.recv() {
-                self.inmem_worker = inmem;
-                self.object_worker = object;
+                *self.inmem_worker.lock().unwrap() = inmem;
+                *self.object_worker.lock().unwrap() = object;
             }
             let _ = handle.join();
         }
@@ -703,14 +708,15 @@ impl CompilationSession {
     /// Initializes cache state and spawns the background cache writer thread.
     pub fn new_with_cache(cache_dir: PathBuf) -> Self {
         let mut session = Self::new();
-        session.object_worker = ObjectWorkerState::new_with_cache(cache_dir);
+        *session.object_worker.lock().unwrap() = ObjectWorkerState::new_with_cache(cache_dir);
         session
     }
 
     /// Flush all pending background cache writes.
     /// Blocks until the cache writer thread has completed all queued writes.
     pub fn flush_cache_writes(&self) {
-        if let Some(ref writer) = self.object_worker.cache_writer {
+        let ow = self.object_worker.lock().unwrap();
+        if let Some(ref writer) = ow.cache_writer {
             writer.flush();
         }
     }
@@ -723,20 +729,20 @@ impl CompilationSession {
     ///
     /// Non-blocking. Errors are deferred to `flush_codegen()`.
     pub fn send_codegen(
-        &mut self,
+        &self,
         unit_result: crate::pipeline::CompileUnitResult,
         ctx: CompileContext,
     ) {
         match &self.codegen_mode {
             CodegenMode::Sync => {
-                self.inmem_queue.push(crate::pipeline::CodegenItem {
+                self.inmem_queue.lock().unwrap().push(crate::pipeline::CodegenItem {
                     ctx,
                     unit_result,
                 });
             }
             CodegenMode::Async { sender, .. } => {
-                let symbol_table = self.tc.module_table(&ctx.module)
-                    .cloned()
+                let symbol_table = self.tc.lock().unwrap().module_table(&ctx.module)
+                    .map(|r| r.clone())
                     .unwrap_or_else(|| cranelisp_types::SymbolTable::new(ctx.module.clone()));
                 // Snapshot GOT slot map and func arities from main thread's
                 // inmem_worker. In async mode this is the dummy state that
@@ -744,17 +750,19 @@ impl CompilationSession {
                 // For the existing single-worker async path, the worker's own
                 // state is authoritative. These fields are used by N-core pool
                 // (Wave 2) where the main thread pre-assigns slots.
-                let got_slot_map = self.inmem_worker.got_state.def_codegen.iter()
+                let iw = self.inmem_worker.lock().unwrap();
+                let got_slot_map = iw.got_state.def_codegen.iter()
                     .filter_map(|(name, dc)| dc.got_slot.map(|s| (name.clone(), s)))
                     .collect();
-                let func_arities = self.inmem_worker.got_state.def_codegen.iter()
+                let func_arities = iw.got_state.def_codegen.iter()
                     .filter_map(|(name, dc)| dc.param_count.map(|pc| (name.clone(), pc)))
                     .collect();
+                drop(iw);
                 let packet = Box::new(crate::pipeline::CodegenPacket {
                     ctx,
                     unit_result,
                     interactive: self.interactive,
-                    platform_symbols: self.platform_symbols.clone(),
+                    platform_symbols: self.platform_symbols.read().unwrap().clone(),
                     symbol_table,
                     got_slot_map,
                     func_arities,
@@ -774,11 +782,14 @@ impl CompilationSession {
     ///
     /// Returns all `CodegenResult`s in queue order.
     pub fn flush_codegen(
-        &mut self,
+        &self,
     ) -> Result<Vec<crate::pipeline::CodegenResult>, CranelispError> {
         match &self.codegen_mode {
             CodegenMode::Sync => {
-                let items = std::mem::take(&mut self.inmem_queue);
+                let items: Vec<crate::pipeline::CodegenItem> = {
+                    let mut q = self.inmem_queue.lock().unwrap();
+                    std::mem::take(&mut *q)
+                };
                 let mut results = Vec::with_capacity(items.len());
                 for item in items {
                     let codegen_result =
@@ -806,7 +817,7 @@ impl CompilationSession {
     ///
     /// Legacy API — prefer `send_codegen` + `flush_codegen` for new code.
     pub fn flush_inmem_queue(
-        &mut self,
+        &self,
     ) -> Result<Vec<crate::pipeline::CodegenResult>, CranelispError> {
         self.flush_codegen()
     }
@@ -816,10 +827,13 @@ impl CompilationSession {
     ///
     /// Legacy API — uses the same underlying codegen path as `flush_codegen`.
     pub fn flush_object_queue(
-        &mut self,
+        &self,
     ) -> Result<Vec<crate::pipeline::CodegenResult>, CranelispError> {
         // Object queue items go through the same codegen path.
-        let items = std::mem::take(&mut self.object_queue);
+        let items: Vec<crate::pipeline::CodegenItem> = {
+            let mut q = self.object_queue.lock().unwrap();
+            std::mem::take(&mut *q)
+        };
         let mut results = Vec::with_capacity(items.len());
         for item in items {
             let codegen_result =
@@ -834,12 +848,12 @@ impl CompilationSession {
     /// Synchronous mode: calls `codegen_and_execute` directly using the
     /// session's `inmem_worker` and `object_worker`.
     pub fn dispatch_codegen_packet(
-        &mut self,
+        &self,
         packet: &crate::pipeline::CodegenPacket,
     ) -> Result<crate::pipeline::CodegenResult, CranelispError> {
         crate::pipeline::codegen_and_execute(
-            &mut self.inmem_worker,
-            &mut self.object_worker,
+            &mut self.inmem_worker.lock().unwrap(),
+            &mut self.object_worker.lock().unwrap(),
             packet,
         )
     }
@@ -854,7 +868,7 @@ impl CompilationSession {
     ///
     /// Returns the accumulated sexps ready for AST building.
     pub fn process_forms_sequentially(
-        &mut self,
+        &self,
         sexps: Vec<Sexp>,
     ) -> Result<Vec<Sexp>, CranelispError> {
         let mut accumulated: Vec<Sexp> = Vec::new();
@@ -875,7 +889,7 @@ impl CompilationSession {
     /// Returns `(expanded_sexps, original_sexps)` where both vecs have
     /// the same length.
     pub fn process_forms_with_originals(
-        &mut self,
+        &self,
         sexps: Vec<Sexp>,
     ) -> Result<(Vec<Sexp>, Vec<Sexp>), CranelispError> {
         let mut expanded: Vec<Sexp> = Vec::new();
@@ -904,7 +918,7 @@ impl CompilationSession {
     ///
     /// Accumulated non-macro forms are pushed to `out`.
     fn process_single_form(
-        &mut self,
+        &self,
         sexp: Sexp,
         out: &mut Vec<Sexp>,
     ) -> Result<(), CranelispError> {
@@ -936,7 +950,7 @@ impl CompilationSession {
     /// Creates a fresh JIT for each macro compilation. The JIT is stored in
     /// `jit_modules` to keep the compiled function pointers alive.
     pub fn compile_and_register_macro(
-        &mut self,
+        &self,
         sexp: &Sexp,
     ) -> Result<(), CranelispError> {
         let info = cranelisp_frontend::parse_defmacro(sexp)?;
@@ -944,10 +958,10 @@ impl CompilationSession {
         let mut jit = cranelisp_backend::jit::Jit::new()?;
         jit.declare_intrinsics()?;
 
-        self.expander.compile_macro(&info, &mut self.tc, &mut jit)?;
+        self.expander.compile_macro(&info, &mut *self.tc.lock().unwrap(), &mut jit)?;
 
         // Keep JIT alive so macro function pointers remain valid.
-        self.inmem_worker.jit_modules.push(jit);
+        self.inmem_worker.lock().unwrap().jit_modules.push(jit);
 
         // Register macro in the current module's symbol table so it is visible
         // to cross-module imports (e.g., `(import [fn.threading [-> ->>]])`).
@@ -965,7 +979,7 @@ impl CompilationSession {
         } else {
             Visibility::Public
         };
-        self.tc.symbol_table_mut().insert(
+        self.tc.lock().unwrap().symbol_table_mut().insert(
             info.name.clone(),
             ModuleEntry::Macro {
                 name: info.name.clone(),
@@ -984,13 +998,14 @@ impl CompilationSession {
     ///
     /// Delegates to `crate::pipeline::compile_and_register_defn`.
     pub fn compile_and_register_defn(
-        &mut self,
+        &self,
         defn: &Defn,
         check: &CheckResult,
     ) -> Result<(), CranelispError> {
+        let platform_syms = self.platform_symbols.read().unwrap().clone();
         crate::pipeline::compile_and_register_defn(
-            &mut self.inmem_worker,
-            &self.platform_symbols,
+            &mut self.inmem_worker.lock().unwrap(),
+            &platform_syms,
             defn,
             check,
         )
@@ -1002,32 +1017,33 @@ impl CompilationSession {
     /// downstream modules can reference functions via module-qualified names
     /// like `helper/val` or `main.helper/val`. Each alias points to the same
     /// GOT slot as the bare function name.
-    pub fn register_module_aliases(&mut self, module_path: &ModuleFullPath) {
-        register_module_aliases_filtered(&mut self.inmem_worker, module_path, None);
+    pub fn register_module_aliases(&self, module_path: &ModuleFullPath) {
+        register_module_aliases_filtered(&mut self.inmem_worker.lock().unwrap(), module_path, None);
     }
 
     /// Register module-qualified aliases for functions defined in the current module.
     ///
     /// Delegates to the free function `register_module_aliases_filtered`.
     pub fn register_module_aliases_filtered(
-        &mut self,
+        &self,
         module_path: &ModuleFullPath,
         pre_existing: Option<&HashSet<Symbol>>,
     ) {
-        register_module_aliases_filtered(&mut self.inmem_worker, module_path, pre_existing);
+        register_module_aliases_filtered(&mut self.inmem_worker.lock().unwrap(), module_path, pre_existing);
     }
 
     /// Compile a whole-program check result into the GOT, one defn at a time.
     ///
     /// Delegates to the free function `crate::pipeline::compile_checked_program`.
     pub fn compile_checked_program(
-        &mut self,
+        &self,
         program: &Program,
         check: &CheckResult,
     ) -> Result<Option<FormResult>, CranelispError> {
+        let platform_syms = self.platform_symbols.read().unwrap().clone();
         crate::pipeline::compile_checked_program(
-            &mut self.inmem_worker,
-            &self.platform_symbols,
+            &mut self.inmem_worker.lock().unwrap(),
+            &platform_syms,
             program,
             check,
         )
@@ -1044,10 +1060,10 @@ impl CompilationSession {
     /// Then re-inserts an empty symbol table so the module path remains
     /// known during recompilation. This ensures recompilation does not hit
     /// "duplicate definition" errors.
-    pub fn clear_module_state(&mut self, module_path: &ModuleFullPath) {
+    pub fn clear_module_state(&self, module_path: &ModuleFullPath) {
         // Collect macro names from the module before removing it.
         let macro_names: Vec<String> = self
-            .tc
+            .tc.lock().unwrap()
             .module_table(module_path)
             .map(|table| {
                 table
@@ -1069,12 +1085,12 @@ impl CompilationSession {
         }
 
         // Remove the module's symbol table, traits, and type definitions.
-        self.tc.remove_module(module_path);
+        self.tc.lock().unwrap().remove_module(module_path);
 
         // Re-insert an empty symbol table so the module path is recognized
         // during recompilation.
         let fresh_table = cranelisp_types::SymbolTable::new(module_path.clone());
-        self.tc.insert_module(fresh_table);
+        self.tc.lock().unwrap().insert_module(fresh_table);
     }
 
     /// Reload a single module from its source file.
@@ -1086,13 +1102,13 @@ impl CompilationSession {
     /// On failure, the old state is NOT restored — the module enters error
     /// state and the caller decides how to handle it.
     pub fn recompile_module(
-        &mut self,
+        &self,
         module_path: &ModuleFullPath,
         cache_state: &mut Option<CacheState>,
     ) -> Result<(), CranelispError> {
         // Find the source file for this module.
         let file_path = self
-            .module_deps
+            .module_deps.lock().unwrap()
             .file_for_module(module_path)
             .ok_or_else(|| CranelispError::ModuleError {
                 message: format!(
@@ -1116,8 +1132,8 @@ impl CompilationSession {
         self.clear_module_state(module_path);
 
         // Phase B: Recompile from source via compile_unit + codegen_and_execute.
-        let prev_module = self.tc.current_module_path().clone();
-        self.tc.set_current_module(module_path.clone());
+        let prev_module = self.tc.lock().unwrap().current_module_path().clone();
+        self.tc.lock().unwrap().set_current_module(module_path.clone());
 
         let ctx = CompileContext {
             module: module_path.clone(),
@@ -1141,7 +1157,7 @@ impl CompilationSession {
         }
 
         // Restore the previous module context.
-        self.tc.set_current_module(prev_module);
+        self.tc.lock().unwrap().set_current_module(prev_module);
 
         Ok(())
     }
@@ -1155,7 +1171,7 @@ impl CompilationSession {
     ///
     /// Returns per-module results in compilation order.
     pub fn recompile_module_and_dependents(
-        &mut self,
+        &self,
         modules: &[ModuleFullPath],
         cache_state: &mut Option<CacheState>,
     ) -> Vec<(ModuleFullPath, Result<(), CranelispError>)> {
@@ -1172,7 +1188,7 @@ impl CompilationSession {
         }
 
         // Phase 2: Find and recompile transitive dependents.
-        let cascade_targets = self.module_deps.transitive_dependents(&reloaded);
+        let cascade_targets = self.module_deps.lock().unwrap().transitive_dependents(&reloaded);
 
         for dep_path in &cascade_targets {
             // Skip modules already recompiled as direct changes.
@@ -1203,7 +1219,7 @@ impl CompilationSession {
     /// coordinator handles in-mem codegen as items arrive via `send_codegen`.
     ///
     /// In sync mode, codegen runs during `flush_codegen` on the main thread.
-    pub fn spawn_hot_inmem_codegen(&mut self) -> Result<(), String> {
+    pub fn spawn_hot_inmem_codegen(&self) -> Result<(), String> {
         // The coordinator thread is already running in async mode.
         // In sync mode, codegen runs on the main thread during flush.
         Ok(())
@@ -1217,7 +1233,7 @@ impl CompilationSession {
     ///
     /// Nice priority for object workers will be implemented when the object
     /// codegen path is separated from the in-mem path (Wave 3+).
-    pub fn spawn_nice_object_codegen(&mut self) -> Result<(), String> {
+    pub fn spawn_nice_object_codegen(&self) -> Result<(), String> {
         // Object codegen runs as part of the coordinator's codegen_and_execute.
         // The cache_writer thread handles background .o file writes.
         Ok(())
@@ -1229,7 +1245,7 @@ impl CompilationSession {
     /// After this returns, all function pointers are in the GOT and code
     /// can be executed via the trampoline.
     pub fn hot_flush_in_mem_queue(
-        &mut self,
+        &self,
     ) -> Result<Vec<crate::pipeline::CodegenResult>, CranelispError> {
         self.flush_codegen()
     }
@@ -1239,7 +1255,7 @@ impl CompilationSession {
     /// In production builds, promotes object worker priority from nice to
     /// normal (§6.3 priority model). Blocks until all `.o` and `.meta.json`
     /// files are written.
-    pub fn hot_flush_object_queue(&mut self) -> Result<(), CranelispError> {
+    pub fn hot_flush_object_queue(&self) -> Result<(), CranelispError> {
         self.flush_cache_writes();
         Ok(())
     }
@@ -1438,7 +1454,7 @@ pub(crate) fn inject_prelude_import(
     let prelude_path = ModuleFullPath::from("prelude");
 
     // Don't self-import prelude into itself.
-    if tc.current_module_path() == &prelude_path {
+    if *tc.current_module_path() == prelude_path {
         return Ok(());
     }
 
