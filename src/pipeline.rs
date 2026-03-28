@@ -80,14 +80,49 @@ pub struct CodegenResult {
 
 /// An item queued for codegen (stages 6-7).
 ///
-/// Captures everything needed to call `codegen_and_execute()` for a single
-/// compilation unit. Callers push items to the session's `inmem_queue` or
-/// `object_queue`, then call the corresponding flush method.
-pub struct CodegenItem {
-    /// The compile context (module, codegen behaviour).
-    pub ctx: CompileContext,
-    /// The stages 1-5 result, ready for codegen.
-    pub unit_result: CompileUnitResult,
+/// Two variants: `FromSource` for freshly typechecked programs (stages 1-5 output),
+/// and `FromCache` for cached `.o` files that need loading via Linker.
+/// Workers handle both variants: `FromSource` creates a JIT and compiles,
+/// `FromCache` loads the `.o` via Linker and wires GOT slots.
+pub enum CodegenItem {
+    /// Freshly typechecked source, ready for JIT compilation.
+    FromSource {
+        /// The compile context (module, codegen behaviour).
+        ctx: CompileContext,
+        /// The stages 1-5 result, ready for codegen.
+        unit_result: CompileUnitResult,
+    },
+    /// Cached `.o` file, ready for Linker loading.
+    FromCache {
+        /// The compile context (module, codegen behaviour).
+        ctx: CompileContext,
+        /// Path to the cached `.o` file.
+        object_path: PathBuf,
+        /// Module this cache entry belongs to.
+        module: ModuleFullPath,
+        /// GOT slot map from cached metadata (symbol -> old slot index).
+        got_slot_map: HashMap<Symbol, usize>,
+        /// Cached module data needed for Linker symbol registration.
+        cached_module: cache::CachedModule,
+    },
+}
+
+impl CodegenItem {
+    /// Get the module this item belongs to.
+    pub fn module(&self) -> &ModuleFullPath {
+        match self {
+            CodegenItem::FromSource { ctx, .. } => &ctx.module,
+            CodegenItem::FromCache { module, .. } => module,
+        }
+    }
+
+    /// Get the compile context.
+    pub fn ctx(&self) -> &CompileContext {
+        match self {
+            CodegenItem::FromSource { ctx, .. } => ctx,
+            CodegenItem::FromCache { ctx, .. } => ctx,
+        }
+    }
 }
 
 /// Everything codegen needs, extracted from CompilationSession at the call site.
@@ -572,7 +607,7 @@ fn try_cache_hit_load(
 /// module code pointers as external symbols, then loads the .o file.
 /// The Linker must be kept alive for as long as the code pointers are used
 /// (its code_regions hold the mmap'd executable memory).
-fn load_cached_object_via_linker(
+pub(crate) fn load_cached_object_via_linker(
     inmem_worker: &mut InMemWorkerState,
     platform_symbols: &[(String, *const u8)],
     cached: &cache::CachedModule,
@@ -611,7 +646,7 @@ fn load_cached_object_via_linker(
 ///
 /// For each function in the cached module's GOT slot map, allocates
 /// a GOT slot, stores the code pointer, and registers a DefCodegen entry.
-fn wire_cached_code_into_got(
+pub(crate) fn wire_cached_code_into_got(
     inmem_worker: &mut InMemWorkerState,
     cached: &cache::CachedModule,
     fn_addrs: &HashMap<String, *const u8>,
@@ -688,7 +723,7 @@ pub fn codegen_and_execute_via_session(
 }
 
 /// Execute codegen using decomposed session fields (no packet cloning).
-fn codegen_and_execute_decomposed(
+pub(crate) fn codegen_and_execute_decomposed(
     inmem_worker: &mut InMemWorkerState,
     object_worker: &mut ObjectWorkerState,
     platform_symbols: &[(String, *const u8)],
@@ -1358,14 +1393,14 @@ pub struct PipelineResult {
 pub fn compile_and_run(
     source: &str,
 ) -> Result<PipelineResult, CranelispError> {
-    let mut session = CompilationSession::new();
+    let session = CompilationSession::new();
     let ctx = CompileContext {
         module: ModuleFullPath::from("user"),
         codegen: CodegenBehaviour::InMemoryAndObject,
     };
     let unit_result = session.compile_unit(source, &ctx, ModuleStrategy::Additive)?;
     let warnings_from_unit = unit_result.warnings.clone();
-    session.inmem_queue.lock().unwrap().push(CodegenItem {
+    session.inmem_queue.lock().unwrap().push(CodegenItem::FromSource {
         ctx,
         unit_result,
     });
@@ -1830,7 +1865,7 @@ pub fn compile_module_graph_cached(
         let source_hash = cache::hash_source(&source);
         let unit_result = session.compile_unit(&source, &ctx, ModuleStrategy::Additive)?;
         all_warnings.extend(unit_result.warnings.clone());
-        session.inmem_queue.lock().unwrap().push(CodegenItem {
+        session.inmem_queue.lock().unwrap().push(CodegenItem::FromSource {
             ctx,
             unit_result,
         });
