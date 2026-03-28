@@ -4,20 +4,18 @@ use serde::{Deserialize, Serialize};
 
 use crate::{CranelispError, ModuleFullPath, Sexp, Span, Symbol};
 
-/// What codegen produces in Pass 2. Carried inside `CompileContext`.
+/// Which codegen queues receive work from `compile_unit`.
 ///
-/// See design/arch/pipeline-v2.md §8.4 for the full design rationale.
+/// See design/arch/pipeline-v3.md §4 for the full design rationale.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CodegenTarget {
-    /// JIT to memory (hot) + .o to disk (background, nice priority).
-    /// Used by REPL and --run. Stage 6a produces live function pointers
-    /// in the GOT; stage 6b queues a background .o write via the
-    /// CacheWriter (§16.12). The user is never blocked by .o generation.
-    JitAndCache,
+pub enum CodegenBehaviour {
+    /// Enqueue to both in-memory (JIT) and object (.o) queues.
+    /// Used by REPL and --run. In-mem produces live function pointers
+    /// in the GOT; object queue writes .o files in the background.
+    InMemoryAndObject,
 
-    /// ObjectModule to .o file (hot). No JIT, no execution.
-    /// Used by --link. Stage 6 compiles directly to a relocatable .o
-    /// via Cranelift's ObjectModule backend. No GOT pointers are produced.
+    /// Enqueue to object queue only. No JIT, no execution.
+    /// Used by --link. Compiles directly to relocatable .o files.
     ObjectOnly,
 }
 
@@ -30,7 +28,7 @@ pub enum CodegenTarget {
 pub trait MacroExpander {
     /// Expand a macro invocation, returning the expanded Sexp.
     fn expand(
-        &mut self,
+        &self,
         name: &Symbol,
         args: &[Sexp],
         span: Span,
@@ -46,7 +44,7 @@ pub struct NoOpExpander;
 
 impl MacroExpander for NoOpExpander {
     fn expand(
-        &mut self,
+        &self,
         _name: &Symbol,
         _args: &[Sexp],
         span: Span,
@@ -99,18 +97,17 @@ pub enum ModuleStrategy {
 }
 
 /// Context for a compilation unit — tells the pipeline which module definitions
-/// land in, how they integrate, and what codegen strategy to use.
+/// land in and what codegen behaviour to use.
 ///
-/// See design/arch/pipeline-v2.md §14 for the full design.
+/// Per pipeline-v3.md §4, `ModuleStrategy` is a parameter on `compile_unit`,
+/// not a field here, because the same context (same module, same codegen
+/// behaviour) may be used with different strategies.
 #[derive(Debug, Clone)]
 pub struct CompileContext {
     /// Target module for definitions.
     pub module: ModuleFullPath,
-    /// Whether to add to or replace existing module state.
-    pub strategy: ModuleStrategy,
-    /// Codegen output target (JIT+cache vs object-only).
-    /// Controls what stage 6 produces. See §8.4.
-    pub codegen_target: CodegenTarget,
+    /// Which codegen queues receive work (in-mem+object vs object-only).
+    pub codegen: CodegenBehaviour,
 }
 
 // --- Call graph types ---

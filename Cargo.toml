@@ -35,6 +35,10 @@ version = "0.8"
 [dependencies.notify]
 version = "7"
 
+[[bin]]
+name = "cranelisp"
+path = "src/main.rs"
+
 [dev-dependencies]
 serial_test = "3"
 tempfile = "3"

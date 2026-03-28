@@ -91,7 +91,7 @@ pub struct ReplResult {
 /// introspection, platform DLL lifetimes.
 pub struct ReplSession {
     /// Shared compilation core (typechecker, GOT, expander, JIT lifetimes).
-    pub core: crate::pipeline::CompilationSession,
+    pub core: crate::session::CompilationSession,
     /// Accumulated type definitions from all inputs (for ADT value display).
     type_defs: HashMap<TypeName, TypeDefInfo>,
     /// Maps type names to the module they were defined in (for qualified display).
@@ -124,7 +124,7 @@ impl ReplSession {
     /// Create a new REPL session without prelude loading.
     pub fn new() -> Self {
         let user_module = ModuleFullPath::from("user");
-        let mut core = crate::pipeline::CompilationSession::new();
+        let mut core = crate::session::CompilationSession::new();
         core.interactive = true;
         ReplSession {
             core,
@@ -178,22 +178,21 @@ impl ReplSession {
         let cache_dir = project_root.join(".cranelisp-cache");
         let _ = std::fs::create_dir_all(&cache_dir);
         session.core.object_worker =
-            crate::pipeline::ObjectWorkerState::new_with_cache(cache_dir);
+            crate::session::ObjectWorkerState::new_with_cache(cache_dir);
 
         // Compile an empty source for the user module. The auto-prelude
         // trigger in compile_unit (stage 2b) detects that the prelude is
         // not yet loaded and recursively compiles it from lib_dirs.
         let user_ctx = CompileContext {
             module: ModuleFullPath::from("user"),
-            strategy: ModuleStrategy::Additive,
-            codegen_target: cranelisp_types::CodegenTarget::JitAndCache,
+            codegen: cranelisp_types::CodegenBehaviour::InMemoryAndObject,
         };
-        let unit_result = crate::pipeline_v2::compile_unit(
-            &mut session.core,
+        let unit_result = session.core.compile_unit(
             "",
             &user_ctx,
+            ModuleStrategy::Additive,
         )?;
-        crate::pipeline_v2::codegen_and_execute_via_session(
+        crate::pipeline::codegen_and_execute_via_session(
             &mut session.core,
             &unit_result,
             &user_ctx,
@@ -322,7 +321,7 @@ impl ReplSession {
                     // Resolve and compile the root module via compile_unit.
                     // compile_unit handles recursive dependency loading internally.
                     if let Some(source_path) =
-                        crate::pipeline_v2::resolve_module_file(&root_path, &self.core.lib_dirs)
+                        crate::pipeline::resolve_module_file(&root_path, &self.core.lib_dirs)
                     {
                         let dep_source = std::fs::read_to_string(&source_path)
                             .map_err(|e| CranelispError::ModuleError {
@@ -336,15 +335,14 @@ impl ReplSession {
                         let saved_module = self.core.tc.current_module_path().clone();
                         let dep_ctx = CompileContext {
                             module: root_path,
-                            strategy: ModuleStrategy::Replace,
-                            codegen_target: cranelisp_types::CodegenTarget::JitAndCache,
+                            codegen: cranelisp_types::CodegenBehaviour::InMemoryAndObject,
                         };
-                        let unit_result = crate::pipeline_v2::compile_unit(
-                            &mut self.core,
+                        let unit_result = self.core.compile_unit(
                             &dep_source,
                             &dep_ctx,
+                            ModuleStrategy::Replace,
                         )?;
-                        crate::pipeline_v2::codegen_and_execute_via_session(
+                        crate::pipeline::codegen_and_execute_via_session(
                             &mut self.core,
                             &unit_result,
                             &dep_ctx,
@@ -373,7 +371,7 @@ impl ReplSession {
         // Build program AST from accumulated (expanded) sexps.
         let program = cranelisp_frontend::build_program(
             &accumulated,
-            &mut self.core.expander,
+            &self.core.expander,
         )?;
 
         if program.is_empty() {
@@ -385,10 +383,9 @@ impl ReplSession {
         // forward references, and monomorphisation correctly.
         let ctx = CompileContext {
             module: self.core.tc.current_module_path().clone(),
-            strategy: ModuleStrategy::Additive,
-            codegen_target: cranelisp_types::CodegenTarget::JitAndCache,
+            codegen: cranelisp_types::CodegenBehaviour::InMemoryAndObject,
         };
-        let check = self.core.tc.check(&program, &ctx)?;
+        let check = self.core.tc.check(&program, &ctx, ModuleStrategy::Additive)?;
 
         // Compile using GOT-based codegen (same path as REPL defns).
         // This registers functions in the GOT so subsequent REPL
@@ -418,7 +415,7 @@ impl ReplSession {
         let symbol_table = self.core.tc.module_table(&user_module)
             .cloned()
             .unwrap_or_else(|| cranelisp_types::SymbolTable::new(user_module.clone()));
-        crate::pipeline_v2::queue_background_cache_write(
+        crate::pipeline::queue_background_cache_write(
             &mut self.core.object_worker,
             &symbol_table,
             &source,
@@ -470,52 +467,10 @@ impl ReplSession {
                 watcher.update_content_hash(canonical, hash.clone());
             }
 
-            // Write cache files (.meta.json + .o) for the saved module so
-            // they exist immediately after the first session, not just after
-            // the second session's restore (Defect 2 fix).
-            self.write_cache_for_saved_module(&file_path);
+            // Cache files (.meta.json + .o) are produced naturally by the
+            // codegen queue when compile_unit runs on REPL startup. No need
+            // to spawn a fresh session to re-compile the saved file.
         }
-    }
-
-    /// Write cache files (.meta.json + .o) for a saved module file.
-    ///
-    /// Compiles the saved file through compile_unit (v2 pipeline) using a
-    /// fresh CompilationSession to produce cache artifacts as a side effect
-    /// of JitAndCache codegen. This is slightly wasteful (re-compiles what
-    /// was just compiled in the REPL) but is correct and simple.
-    ///
-    /// Failures are non-fatal: cache files are an optimization, and the
-    /// next session can always fall back to source compilation.
-    fn write_cache_for_saved_module(&self, file_path: &std::path::Path) {
-        let cache_dir = self.project_root.join(".cranelisp-cache");
-        let lib_dirs = crate::pipeline::assemble_lib_dirs(&self.project_root);
-
-        // Read the saved file.
-        let source = match std::fs::read_to_string(file_path) {
-            Ok(s) => s,
-            Err(_) => return, // Non-fatal.
-        };
-
-        // Create a fresh session with caching enabled. compile_unit's
-        // auto-prelude trigger and codegen_and_execute's background cache
-        // write produce .meta.json + .o as side effects.
-        let mut fresh = crate::pipeline::CompilationSession::new_with_cache(cache_dir);
-        fresh.lib_dirs = lib_dirs;
-        fresh.project_root = self.project_root.clone();
-
-        let user_ctx = CompileContext {
-            module: ModuleFullPath::from("user"),
-            strategy: ModuleStrategy::Replace,
-            codegen_target: cranelisp_types::CodegenTarget::JitAndCache,
-        };
-        let result = crate::pipeline_v2::compile_unit(&mut fresh, &source, &user_ctx)
-            .and_then(|unit_result| {
-                crate::pipeline_v2::codegen_and_execute_via_session(&mut fresh, &unit_result, &user_ctx)
-            });
-        // Flush queued cache writes before dropping the fresh session.
-        fresh.flush_cache_writes();
-        // Failures are non-fatal.
-        let _ = result;
     }
 
     /// Get the accumulated type definitions for value display.
@@ -627,10 +582,10 @@ impl ReplSession {
         let repl_ctx = self.build_repl_compile_context();
 
         // Compile through stages 1-5 (parse, extract, expand, build AST, typecheck).
-        let unit_result = crate::pipeline_v2::compile_unit(
-            &mut self.core,
+        let unit_result = self.core.compile_unit(
             source,
             &repl_ctx,
+            ModuleStrategy::Additive,
         )?;
 
         // Set up trace infrastructure if the program contains (trace ...).
@@ -670,7 +625,7 @@ impl ReplSession {
             .collect();
 
         // Codegen + execute (stages 6-7).
-        let codegen_result = crate::pipeline_v2::codegen_and_execute_via_session(
+        let codegen_result = crate::pipeline::codegen_and_execute_via_session(
             &mut self.core,
             &unit_result,
             &repl_ctx,
@@ -736,8 +691,8 @@ impl ReplSession {
     /// the definition_display string.
     fn build_repl_result(
         &self,
-        unit_result: &crate::pipeline_v2::CompileUnitResult,
-        codegen_result: &crate::pipeline_v2::CodegenResult,
+        unit_result: &crate::pipeline::CompileUnitResult,
+        codegen_result: &crate::pipeline::CodegenResult,
         original_sexps: &[Sexp],
         eval_duration: Duration,
     ) -> Result<ReplResult, CranelispError> {
@@ -785,7 +740,7 @@ impl ReplSession {
     /// Build a ReplResult for an empty program (defmacro, import, or platform only).
     fn build_empty_program_result(
         &self,
-        unit_result: &crate::pipeline_v2::CompileUnitResult,
+        unit_result: &crate::pipeline::CompileUnitResult,
         original_sexps: &[Sexp],
         warnings: Vec<Warning>,
         eval_duration: Duration,
@@ -986,13 +941,13 @@ impl ReplSession {
         let eval_start = Instant::now();
         let input = cranelisp_frontend::build_repl_input_from_sexps(
             &sexps,
-            &mut self.core.expander,
+            &self.core.expander,
         )?;
         let ctx = self.build_repl_compile_context();
-        let check_result = self.core.tc.check(std::slice::from_ref(&input), &ctx)?;
+        let check_result = self.core.tc.check(std::slice::from_ref(&input), &ctx, ModuleStrategy::Additive)?;
 
         // Build a CompileUnitResult to pass to codegen_and_execute.
-        let unit_result = crate::pipeline_v2::CompileUnitResult {
+        let unit_result = crate::pipeline::CompileUnitResult {
             program: vec![input],
             module_structure: ModuleStructure {
                 path: ctx.module.clone(),
@@ -1010,7 +965,7 @@ impl ReplSession {
             warnings: Vec::new(),
         };
 
-        let codegen_result = crate::pipeline_v2::codegen_and_execute_via_session(
+        let codegen_result = crate::pipeline::codegen_and_execute_via_session(
             &mut self.core,
             &unit_result,
             &ctx,
@@ -1102,12 +1057,11 @@ impl ReplSession {
 
     /// Build a CompileContext for REPL evaluation.
     ///
-    /// Uses the session's current module with Additive strategy and Interactive mode.
+    /// Uses the session's current module with InMemoryAndObject codegen.
     fn build_repl_compile_context(&self) -> CompileContext {
         CompileContext {
             module: self.core.tc.current_module_path().clone(),
-            strategy: ModuleStrategy::Additive,
-            codegen_target: cranelisp_types::CodegenTarget::JitAndCache,
+            codegen: cranelisp_types::CodegenBehaviour::InMemoryAndObject,
         }
     }
 
@@ -1399,7 +1353,7 @@ fn create_repl_session() -> ReplSession {
     let cwd = std::env::current_dir().ok();
 
     let mut session = if let Some(ref project_root) = cwd {
-        let lib_dirs = crate::pipeline::assemble_lib_dirs(project_root);
+        let lib_dirs = crate::session::assemble_lib_dirs(project_root);
 
         match ReplSession::new_with_prelude(project_root, &lib_dirs) {
             Ok(session) => session,
@@ -1511,7 +1465,7 @@ fn reload_changed_modules(session: &mut ReplSession, stdout: &mut impl Write) {
 
     let project_root = session.project_root.clone();
     let cache_dir = project_root.join(".cranelisp-cache");
-    let mut cache_state = Some(crate::pipeline::CacheState::new(cache_dir));
+    let mut cache_state = Some(crate::session::CacheState::new(cache_dir));
 
     // Delegate recompilation + cascade to CompilationSession.
     let results =
@@ -1704,7 +1658,7 @@ fn handle_reset(session: &mut ReplSession, stdout: &mut impl Write) {
     }
 
     // 1. Clear all session state by re-creating the compilation core.
-    let mut new_core = crate::pipeline::CompilationSession::new();
+    let mut new_core = crate::session::CompilationSession::new();
     new_core.interactive = true;
     session.core = new_core;
     session.type_defs.clear();
@@ -1750,17 +1704,16 @@ fn handle_reset(session: &mut ReplSession, stdout: &mut impl Write) {
     // trigger (stage 2b) detects the prelude is missing and recursively
     // compiles it. No cache_state is set on object_worker, so
     // queue_background_cache_write skips cache writes (intentional).
-    let lib_dirs = crate::pipeline::assemble_lib_dirs(&project_root);
+    let lib_dirs = crate::session::assemble_lib_dirs(&project_root);
     session.core.lib_dirs = lib_dirs;
     session.core.project_root = project_root.clone();
     let user_ctx = CompileContext {
         module: ModuleFullPath::from("user"),
-        strategy: ModuleStrategy::Additive,
-        codegen_target: cranelisp_types::CodegenTarget::JitAndCache,
+        codegen: cranelisp_types::CodegenBehaviour::InMemoryAndObject,
     };
-    match crate::pipeline_v2::compile_unit(&mut session.core, "", &user_ctx)
+    match session.core.compile_unit("", &user_ctx, ModuleStrategy::Additive)
         .and_then(|unit_result| {
-            crate::pipeline_v2::codegen_and_execute_via_session(
+            crate::pipeline::codegen_and_execute_via_session(
                 &mut session.core,
                 &unit_result,
                 &user_ctx,

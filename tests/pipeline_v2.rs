@@ -20,8 +20,8 @@
 mod helpers;
 
 use helpers::*;
-use cranelisp::pipeline::CompilationSession;
-use cranelisp::pipeline_v2::{compile_unit, codegen_and_execute_via_session};
+use cranelisp::session::CompilationSession;
+use cranelisp::pipeline::codegen_and_execute_via_session;
 use cranelisp_types::{
     CompileContext, ImportNames, ImportSpec, ModuleFullPath,
     ModuleStrategy, Span,
@@ -53,10 +53,9 @@ fn compile_v2_batch(src: &str) -> i64 {
     let mut session = v2_session_with_primitives();
     let ctx = CompileContext {
         module: ModuleFullPath::from("user"),
-        strategy: ModuleStrategy::Additive,
-        codegen_target: cranelisp_types::CodegenTarget::JitAndCache,
+        codegen: cranelisp_types::CodegenBehaviour::InMemoryAndObject,
     };
-    let unit_result = compile_unit(&mut session, src, &ctx)
+    let unit_result = session.compile_unit(src, &ctx, ModuleStrategy::Additive)
         .expect("v2 compile_unit failed");
     let codegen_result = codegen_and_execute_via_session(&mut session, &unit_result, &ctx)
         .expect("v2 codegen_and_execute failed");
@@ -72,10 +71,9 @@ fn compile_v2_interactive(src: &str) -> i64 {
     session.interactive = true;
     let ctx = CompileContext {
         module: ModuleFullPath::from("user"),
-        strategy: ModuleStrategy::Additive,
-        codegen_target: cranelisp_types::CodegenTarget::JitAndCache,
+        codegen: cranelisp_types::CodegenBehaviour::InMemoryAndObject,
     };
-    let unit_result = compile_unit(&mut session, src, &ctx)
+    let unit_result = session.compile_unit(src, &ctx, ModuleStrategy::Additive)
         .expect("v2 compile_unit failed");
     let codegen_result = codegen_and_execute_via_session(&mut session, &unit_result, &ctx)
         .expect("v2 codegen_and_execute failed");
@@ -586,11 +584,10 @@ fn v2_async_codegen_integer_literal() {
     session.interactive = true;
     let ctx = CompileContext {
         module: ModuleFullPath::from("user"),
-        strategy: ModuleStrategy::Additive,
-        codegen_target: cranelisp_types::CodegenTarget::JitAndCache,
+        codegen: cranelisp_types::CodegenBehaviour::InMemoryAndObject,
     };
     let src = "(defn main [] 42)";
-    let unit_result = compile_unit(&mut session, src, &ctx)
+    let unit_result = session.compile_unit(src, &ctx, ModuleStrategy::Additive)
         .expect("async v2 compile_unit failed");
     session.send_codegen(unit_result, ctx);
     let mut results = session.flush_codegen()
@@ -609,10 +606,9 @@ fn v2_async_codegen_send_flush_twice() {
     // First compilation unit: send + flush.
     let ctx1 = CompileContext {
         module: ModuleFullPath::from("user"),
-        strategy: ModuleStrategy::Additive,
-        codegen_target: cranelisp_types::CodegenTarget::JitAndCache,
+        codegen: cranelisp_types::CodegenBehaviour::InMemoryAndObject,
     };
-    let unit1 = compile_unit(&mut session, "(defn foo [] 10)", &ctx1)
+    let unit1 = session.compile_unit("(defn foo [] 10)", &ctx1, ModuleStrategy::Additive)
         .expect("compile_unit 1 failed");
     session.send_codegen(unit1, ctx1);
     let results1 = session.flush_codegen()
@@ -623,10 +619,9 @@ fn v2_async_codegen_send_flush_twice() {
     // Second compilation unit: send + flush (same module, additive).
     let ctx2 = CompileContext {
         module: ModuleFullPath::from("user"),
-        strategy: ModuleStrategy::Additive,
-        codegen_target: cranelisp_types::CodegenTarget::JitAndCache,
+        codegen: cranelisp_types::CodegenBehaviour::InMemoryAndObject,
     };
-    let unit2 = compile_unit(&mut session, "(defn main [] 99)", &ctx2)
+    let unit2 = session.compile_unit("(defn main [] 99)", &ctx2, ModuleStrategy::Additive)
         .expect("compile_unit 2 failed");
     session.send_codegen(unit2, ctx2);
     let results2 = session.flush_codegen()
@@ -644,10 +639,9 @@ fn v2_async_codegen_shutdown_returns_state() {
     session.interactive = true;
     let ctx = CompileContext {
         module: ModuleFullPath::from("user"),
-        strategy: ModuleStrategy::Additive,
-        codegen_target: cranelisp_types::CodegenTarget::JitAndCache,
+        codegen: cranelisp_types::CodegenBehaviour::InMemoryAndObject,
     };
-    let unit_result = compile_unit(&mut session, "(defn main [] 7)", &ctx)
+    let unit_result = session.compile_unit("(defn main [] 7)", &ctx, ModuleStrategy::Additive)
         .expect("compile_unit failed");
     session.send_codegen(unit_result, ctx);
     session.flush_codegen().expect("flush_codegen failed");

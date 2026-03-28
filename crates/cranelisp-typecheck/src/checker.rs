@@ -2,8 +2,47 @@
 //!
 //! Scope operations, fresh variable generation, and expr_type recording.
 //! Other modules extend TypeChecker via `impl TypeChecker` blocks.
+//!
+//! ## Concurrency preparation (Sprint 40)
+//!
+//! State is split between:
+//! - **`TypeChecker`** — persistent state that survives across `check()` calls
+//!   (module tables, type/trait registries, TypeId counter).
+//! - **`CheckState`** — per-check transient state created/consumed by each
+//!   `check()` invocation (substitution, scope stack, resolutions, warnings).
+//!
+//! **Phase 1** (Wave 1): extracted `CheckState` from `TypeChecker`.
+//!
+//! **Phase 2** (Wave 2): added concurrency primitives to persistent state:
+//! - `next_id: AtomicU32` — lock-free TypeId allocation via `fetch_add`.
+//! - `module_locks: HashMap<ModuleFullPath, Arc<AtomicBool>>` — per-module
+//!   compilation exclusion via `try_lock_module()` / `ModuleGuard` RAII guard.
+//!
+//! **Phase 3** (Wave 3): shared registries behind `RwLock`:
+//! - `type_defs: RwLock<TypeDefRegistry>` — read during constructor lookups,
+//!   written during type definition registration.
+//! - `trait_registry: RwLock<TraitRegistry>` — read during method resolution,
+//!   written during trait declaration registration.
+//! - `impl_registry: RwLock<ImplRegistry>` — read during impl lookup,
+//!   written during impl registration.
+//!
+//! Methods with `&mut self` use `get_mut().unwrap()` for zero-overhead access
+//! (no actual locking — `&mut` guarantees exclusivity). Methods with `&self`
+//! acquire `read().unwrap()` or `write().unwrap()` as needed.
+//!
+//! **`check()` remains `&mut self`** because `CheckState` is stored on
+//! `TypeChecker` (field `self.state`) for REPL additive mode, where state
+//! persists across evaluations. Converting `check()` to `&self` requires
+//! either: (a) making `state` an `Option` that is temporarily taken and
+//! restored, or (b) passing `CheckState` as a separate parameter to all
+//! ~30 internal helper methods. Both are invasive changes deferred until
+//! the parallel pipeline actually calls `check()` concurrently.
+//! The `RwLock` wrapping is the primary Phase 3 deliverable — it ensures
+//! the registries are safe for concurrent access when that conversion happens.
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::{Arc, RwLock, RwLockReadGuard};
 
 use cranelisp_types::{
     ConstructorInfo, CranelispError, ExportSpec, FQSymbol, ImportNames, ImportSpec,
@@ -20,13 +59,15 @@ use crate::traits::{ActiveConstraints, ImplRegistry, TraitRegistry};
 /// Maximum depth for following Import/Reexport chains (spec §8.6.2).
 const IMPORT_CHAIN_DEPTH_LIMIT: usize = 10;
 
-/// Central state for Hindley-Milner type inference.
+/// Per-check transient state for type inference.
 ///
-/// Fields are pub(crate) so that `impl TypeChecker` blocks in other modules
-/// can access them directly (borrow-splitting pattern).
-pub struct TypeChecker {
-    /// Monotonic counter for fresh type variable IDs.
-    pub(crate) next_id: TypeId,
+/// Created or reused by each `check()` call. Contains all state that is
+/// accumulated during checking and either drained into `CheckResult` or
+/// carried forward for the next REPL evaluation.
+///
+/// In the future parallel model, each concurrent `check()` will have its own
+/// `CheckState` on the stack, enabling `&self` on `TypeChecker`.
+pub struct CheckState {
     /// Global substitution (unification bindings).
     pub(crate) subst: Subst,
     /// Lexical scope stack.
@@ -37,16 +78,6 @@ pub struct TypeChecker {
     pub(crate) method_resolutions: MethodResolutions,
     /// Non-fatal warnings accumulated during checking.
     pub(crate) warnings: Vec<Warning>,
-    /// Per-module symbol tables, keyed by module full path.
-    pub(crate) modules: HashMap<ModuleFullPath, SymbolTable>,
-    /// The currently active module path.
-    pub(crate) current_module: ModuleFullPath,
-    /// Registered type definitions (ADTs).
-    pub(crate) type_defs: TypeDefRegistry,
-    /// Registered trait declarations (Ring 2).
-    pub(crate) trait_registry: TraitRegistry,
-    /// Registered trait implementations (Ring 2).
-    pub(crate) impl_registry: ImplRegistry,
     /// Active type variable constraints during body checking (Ring 2).
     pub(crate) active_constraints: ActiveConstraints,
     /// Module aliases: alias name -> full module path (from aliased imports).
@@ -56,9 +87,6 @@ pub struct TypeChecker {
     pub(crate) in_call_position: bool,
     /// Pending auto-curry resolutions for single-arity functions.
     /// (call_span, function_name, applied_arg_count, total_param_count, callee_type, target_resolution)
-    /// The callee_type stores the callee's type at inference time (may contain vars).
-    /// The optional ResolvedCall is populated when the auto-curried callee is a
-    /// trait method or builtin, so the wrapper can call the concrete implementation.
     pub(crate) pending_auto_curry: Vec<(Span, Symbol, usize, usize, Type, Option<ResolvedCall>)>,
     /// Multi-sig overload table: base name → [(internal_name, arity)].
     /// Populated during pass 1 when a `Defn` has multiple variants.
@@ -69,6 +97,92 @@ pub struct TypeChecker {
     /// Pending overload dispatch resolutions from call sites.
     /// (call_span, base_name, arg_types, ret_type_var)
     pub(crate) pending_overload_resolutions: Vec<(Span, Symbol, Vec<Type>, Type)>,
+    /// The currently active module path for this check.
+    pub(crate) current_module: ModuleFullPath,
+}
+
+impl CheckState {
+    /// Create a new empty CheckState for the given module.
+    pub(crate) fn new(module: ModuleFullPath) -> Self {
+        CheckState {
+            subst: Subst::new(),
+            env: ScopeStack::new(),
+            expr_types: HashMap::new(),
+            method_resolutions: HashMap::new(),
+            warnings: Vec::new(),
+            active_constraints: ActiveConstraints::default(),
+            module_aliases: HashMap::new(),
+            in_call_position: false,
+            pending_auto_curry: Vec::new(),
+            overloads: HashMap::new(),
+            resolved_overloads: HashMap::new(),
+            pending_overload_resolutions: Vec::new(),
+            current_module: module,
+        }
+    }
+}
+
+/// RAII guard that releases a module's compilation lock on drop.
+///
+/// Returned by `TypeChecker::try_lock_module()`. Holding this guard
+/// guarantees exclusive compilation rights for the named module.
+/// The lock is released automatically when the guard goes out of scope.
+#[derive(Debug)]
+pub struct ModuleGuard {
+    /// The locked flag — shared with the TypeChecker's `module_locks` map.
+    flag: Arc<AtomicBool>,
+    /// The module path, retained for diagnostics / logging.
+    #[allow(dead_code)]
+    module: ModuleFullPath,
+}
+
+impl Drop for ModuleGuard {
+    fn drop(&mut self) {
+        self.flag.store(false, Ordering::Release);
+    }
+}
+
+/// Central persistent state for Hindley-Milner type inference.
+///
+/// Fields are pub(crate) so that `impl TypeChecker` blocks in other modules
+/// can access them directly (borrow-splitting pattern).
+///
+/// Persistent state survives across `check()` calls. Per-check transient
+/// state lives in `CheckState` (stored in `self.state`).
+pub struct TypeChecker {
+    /// Monotonic counter for fresh type variable IDs.
+    ///
+    /// `AtomicU32` enables lock-free allocation from concurrent `check()` calls
+    /// in Phase 3. In the current serial model, `&mut self` methods can use
+    /// `get_mut()` for zero-overhead access.
+    pub(crate) next_id: AtomicU32,
+    /// Per-module symbol tables, keyed by module full path.
+    pub(crate) modules: HashMap<ModuleFullPath, SymbolTable>,
+    /// Registered type definitions (ADTs).
+    ///
+    /// Behind `RwLock` for Phase 3 parallel `check()`. Methods with `&mut self`
+    /// use `get_mut()` (zero overhead); `&self` methods acquire read/write locks.
+    pub(crate) type_defs: RwLock<TypeDefRegistry>,
+    /// Registered trait declarations (Ring 2).
+    ///
+    /// Behind `RwLock` for Phase 3 parallel `check()`. Same access pattern as `type_defs`.
+    pub(crate) trait_registry: RwLock<TraitRegistry>,
+    /// Registered trait implementations (Ring 2).
+    ///
+    /// Behind `RwLock` for Phase 3 parallel `check()`. Same access pattern as `type_defs`.
+    pub(crate) impl_registry: RwLock<ImplRegistry>,
+    /// Per-module compilation locks. Each entry is `true` when a `compile_unit`
+    /// is actively building that module, `false` otherwise. `try_lock_module()`
+    /// uses compare-and-swap to claim exclusive access; the RAII `ModuleGuard`
+    /// releases the flag on drop.
+    ///
+    /// Entries are `Arc<AtomicBool>` so the guard can outlive the borrow of the
+    /// HashMap (the guard holds an Arc clone, not a reference into the map).
+    module_locks: HashMap<ModuleFullPath, Arc<AtomicBool>>,
+    /// Per-check transient state. Stored here for serial REPL reuse;
+    /// parallel `check()` will use stack-local `CheckState` once `check()`
+    /// is converted to `&self` (see module-level doc for blockers).
+    pub(crate) state: CheckState,
 }
 
 impl TypeChecker {
@@ -83,24 +197,13 @@ impl TypeChecker {
             SymbolTable::new(current_module.clone()),
         );
         let mut tc = TypeChecker {
-            next_id: 0,
-            subst: Subst::new(),
-            env: ScopeStack::new(),
-            expr_types: HashMap::new(),
-            method_resolutions: HashMap::new(),
-            warnings: Vec::new(),
+            next_id: AtomicU32::new(0),
             modules,
-            current_module,
-            type_defs: TypeDefRegistry::new(),
-            trait_registry: TraitRegistry::default(),
-            impl_registry: ImplRegistry::default(),
-            active_constraints: ActiveConstraints::default(),
-            module_aliases: HashMap::new(),
-            in_call_position: false,
-            pending_auto_curry: Vec::new(),
-            overloads: HashMap::new(),
-            resolved_overloads: HashMap::new(),
-            pending_overload_resolutions: Vec::new(),
+            type_defs: RwLock::new(TypeDefRegistry::new()),
+            trait_registry: RwLock::new(TraitRegistry::default()),
+            impl_registry: RwLock::new(ImplRegistry::default()),
+            module_locks: HashMap::new(),
+            state: CheckState::new(current_module),
         };
         tc.register_builtins();
         tc
@@ -111,14 +214,14 @@ impl TypeChecker {
     /// Get a reference to the current module's symbol table.
     pub(crate) fn current_symbol_table(&self) -> &SymbolTable {
         self.modules
-            .get(&self.current_module)
+            .get(&self.state.current_module)
             .unwrap_or_else(|| unreachable!("invariant: current_module always exists in modules map"))
     }
 
     /// Get a mutable reference to the current module's symbol table.
     pub(crate) fn current_symbol_table_mut(&mut self) -> &mut SymbolTable {
         self.modules
-            .get_mut(&self.current_module)
+            .get_mut(&self.state.current_module)
             .unwrap_or_else(|| unreachable!("invariant: current_module always exists in modules map"))
     }
 
@@ -178,17 +281,71 @@ impl TypeChecker {
 
             self.modules.insert(path.clone(), table);
         }
-        self.current_module = path;
+        self.state.current_module = path;
     }
 
     /// Get the current module path.
     pub fn current_module_path(&self) -> &ModuleFullPath {
-        &self.current_module
+        &self.state.current_module
     }
 
     /// Check whether a module has been registered.
     pub fn has_module(&self, path: &ModuleFullPath) -> bool {
         self.modules.contains_key(path)
+    }
+
+    // --- Module compilation locks ---
+
+    /// Attempt to acquire exclusive compilation rights for a module.
+    ///
+    /// Returns a RAII `ModuleGuard` that releases the lock on drop.
+    /// If the module is already being compiled (lock held), returns an
+    /// error immediately — non-blocking, deadlock-free.
+    ///
+    /// Used by the pipeline to prevent concurrent compilation of the same
+    /// module. Callers acquire the lock before stages 1-5 and let the guard
+    /// drop on return.
+    pub fn try_lock_module(
+        &mut self,
+        module: &ModuleFullPath,
+    ) -> Result<ModuleGuard, CranelispError> {
+        let flag = self
+            .module_locks
+            .entry(module.clone())
+            .or_insert_with(|| Arc::new(AtomicBool::new(false)));
+
+        // Attempt to flip false → true atomically.
+        let was_locked = flag.compare_exchange(
+            false,
+            true,
+            Ordering::Acquire,
+            Ordering::Relaxed,
+        );
+
+        match was_locked {
+            Ok(_) => Ok(ModuleGuard {
+                flag: Arc::clone(flag),
+                module: module.clone(),
+            }),
+            Err(_) => Err(CranelispError::TypeError {
+                message: format!(
+                    "module '{}' is already being compiled",
+                    module
+                ),
+                span: Span::SYNTHETIC,
+            }),
+        }
+    }
+
+    /// Check whether a module is currently locked for compilation.
+    ///
+    /// Returns `true` if a `ModuleGuard` is held for this module.
+    /// Useful for diagnostics and testing.
+    pub fn is_module_locked(&self, module: &ModuleFullPath) -> bool {
+        self.module_locks
+            .get(module)
+            .map(|flag| flag.load(Ordering::Acquire))
+            .unwrap_or(false)
     }
 
     /// Convenience accessor for the current module's symbol table (public).
@@ -205,8 +362,11 @@ impl TypeChecker {
 
     /// Public accessor for the type definition registry.
     /// Used by prelude loading to copy type defs into the REPL session.
-    pub fn type_def_registry(&self) -> &TypeDefRegistry {
-        &self.type_defs
+    ///
+    /// Returns a `RwLockReadGuard` that derefs to `TypeDefRegistry`.
+    /// Callers use `.iter()`, `.get()` etc. transparently via `Deref`.
+    pub fn type_def_registry(&self) -> RwLockReadGuard<'_, TypeDefRegistry> {
+        self.type_defs.read().unwrap()
     }
 
     /// Look up a specific module's symbol table by path.
@@ -224,24 +384,24 @@ impl TypeChecker {
         {
             return primitives_path;
         }
-        self.current_module.clone()
+        self.state.current_module.clone()
     }
 
-    // --- Scope operations (delegate to ScopeStack) ---
+    // --- Scope operations (delegate to CheckState.env) ---
 
     /// Push a new scope frame.
     pub(crate) fn push_scope(&mut self) {
-        self.env.push_scope();
+        self.state.env.push_scope();
     }
 
     /// Pop the topmost scope frame.
     pub(crate) fn pop_scope(&mut self) {
-        self.env.pop_scope();
+        self.state.env.pop_scope();
     }
 
     /// Bind a name in the current scope with a type scheme.
     pub(crate) fn bind_local(&mut self, name: Symbol, scheme: Scheme) {
-        self.env.bind(name, scheme);
+        self.state.env.bind(name, scheme);
     }
 
     /// Look up a name in scope stack, falling back to current module's symbol table.
@@ -253,7 +413,7 @@ impl TypeChecker {
     ///    via `resolve_qualified` (spec §8.6.6)
     pub(crate) fn lookup(&self, name: &str) -> Option<Scheme> {
         // Check local scope stack first
-        if let Some(scheme) = self.env.lookup(name) {
+        if let Some(scheme) = self.state.env.lookup(name) {
             return Some(scheme.clone());
         }
 
@@ -270,7 +430,7 @@ impl TypeChecker {
                 // Try child-of-current-module first: "util" in module "main"
                 // resolves to "main.util" (submodule reference).
                 let child_path = ModuleFullPath::from(
-                    format!("{}.{}", self.current_module, module_part),
+                    format!("{}.{}", self.state.current_module, module_part),
                 );
                 if let Ok(Some(scheme)) = self.resolve_qualified(&child_path, name_part) {
                     return Some(scheme);
@@ -371,6 +531,7 @@ impl TypeChecker {
         // Resolve the module: check if the first path component is an alias
         let first_component = module_path.as_ref().split('.').next().unwrap_or(module_path.as_ref());
         let resolved_path = self
+            .state
             .module_aliases
             .get(&Symbol::from(first_component))
             .cloned()
@@ -388,7 +549,7 @@ impl TypeChecker {
 
         // Visibility check: private names are only accessible within the
         // defining module's subtree
-        if !entry.is_public() && !self.is_in_subtree(&self.current_module, &resolved_path) {
+        if !entry.is_public() && !self.is_in_subtree(&self.state.current_module, &resolved_path) {
             return Err(CranelispError::TypeError {
                 message: format!(
                     "'{}' is private in module '{}'",
@@ -415,19 +576,25 @@ impl TypeChecker {
     // --- Fresh variable generation ---
 
     /// Generate a fresh type variable.
+    ///
+    /// Uses `fetch_add` on the atomic counter — already safe for `&self`.
     pub(crate) fn fresh_var(&mut self) -> Type {
-        crate::unify::fresh_var(&mut self.next_id)
+        let id = self.next_id.fetch_add(1, Ordering::Relaxed);
+        Type::Var(id)
     }
 
     /// Generate a fresh type variable and return both the type and ID.
     /// Used by ADT registration to allocate type parameter variables.
+    ///
+    /// Uses `fetch_add` on the atomic counter — already safe for `&self`.
     pub(crate) fn fresh_var_id(&mut self) -> (Type, TypeId) {
-        crate::unify::fresh_var_id(&mut self.next_id)
+        let id = self.next_id.fetch_add(1, Ordering::Relaxed);
+        (Type::Var(id), id)
     }
 
     // --- Unification (delegate to unify module, borrow-splitting) ---
 
-    /// Unify two types. Wraps the free function with self's subst.
+    /// Unify two types. Wraps the free function with state's subst.
     /// `span` is used for error context.
     pub(crate) fn unify(
         &mut self,
@@ -435,7 +602,7 @@ impl TypeChecker {
         t2: &Type,
         span: Span,
     ) -> Result<(), CranelispError> {
-        crate::unify::unify(&mut self.subst, t1, t2).map_err(|e| {
+        crate::unify::unify(&mut self.state.subst, t1, t2).map_err(|e| {
             // Re-wrap with the caller's span if the error has SYNTHETIC span
             if e.span() == Span::SYNTHETIC {
                 CranelispError::TypeError {
@@ -456,7 +623,7 @@ impl TypeChecker {
     /// in `self.active_constraints` for later propagation during generalize.
     pub(crate) fn instantiate(&mut self, s: &Scheme) -> Type {
         if s.constraints.is_empty() {
-            scheme::instantiate(s, &mut self.next_id)
+            scheme::instantiate(s, self.next_id.get_mut())
         } else {
             self.instantiate_constrained(s)
         }
@@ -471,8 +638,8 @@ impl TypeChecker {
     /// `instantiate_constrained` records a constraint on a fresh var that
     /// gets unified with a different var during type checking.
     pub(crate) fn generalize(&self, ty: &Type) -> Scheme {
-        let env_fv = self.env.free_vars_in_env();
-        let mut scheme = scheme::generalize(&self.subst, ty, &env_fv);
+        let env_fv = self.state.env.free_vars_in_env();
+        let mut scheme = scheme::generalize(&self.state.subst, ty, &env_fv);
 
         // Build a set of scheme vars for fast lookup
         let scheme_var_set: std::collections::HashSet<TypeId> =
@@ -483,9 +650,9 @@ impl TypeChecker {
         let mut constraints: std::collections::HashMap<TypeId, Vec<_>> =
             std::collections::HashMap::new();
 
-        for (constrained_var, traits) in self.active_constraints.all() {
+        for (constrained_var, traits) in self.state.active_constraints.all() {
             // Resolve the constrained var through the substitution
-            let resolved = apply(&self.subst, &Type::Var(*constrained_var));
+            let resolved = apply(&self.state.subst, &Type::Var(*constrained_var));
             if let Type::Var(resolved_id) = resolved
                 && scheme_var_set.contains(&resolved_id)
             {
@@ -507,7 +674,7 @@ impl TypeChecker {
 
     /// Record the inferred type for an expression (keyed by span).
     pub(crate) fn record_expr_type(&mut self, span: Span, ty: Type) {
-        self.expr_types.insert(span, ty);
+        self.state.expr_types.insert(span, ty);
     }
 
     /// Clear transient inference state (expr_types, method_resolutions,
@@ -519,14 +686,14 @@ impl TypeChecker {
     /// are harmless (all concrete).
     #[cfg(test)]
     pub(crate) fn clear_transient_state(&mut self) {
-        self.expr_types.clear();
-        self.method_resolutions.clear();
-        self.active_constraints = ActiveConstraints::default();
+        self.state.expr_types.clear();
+        self.state.method_resolutions.clear();
+        self.state.active_constraints = ActiveConstraints::default();
     }
 
     /// Apply the current substitution to a type.
     pub(crate) fn apply_subst(&self, ty: &Type) -> Type {
-        apply(&self.subst, ty)
+        apply(&self.state.subst, ty)
     }
 
     // --- Import processing (spec §8.3) ---
@@ -549,7 +716,7 @@ impl TypeChecker {
         for spec in specs {
             // Register alias if present
             if let Some(alias) = &spec.alias {
-                self.module_aliases.insert(
+                self.state.module_aliases.insert(
                     Symbol::from(alias.as_ref()),
                     spec.module_path.clone(),
                 );
@@ -618,7 +785,7 @@ impl TypeChecker {
             } else {
                 let child_path = ModuleFullPath::from(format!(
                     "{}.{}",
-                    self.current_module, spec.module_path
+                    self.state.current_module, spec.module_path
                 ));
                 if self.modules.contains_key(&child_path) {
                     child_path
@@ -684,7 +851,7 @@ impl TypeChecker {
                 Some(entry) => {
                     if !entry.is_public()
                         && !self.is_in_subtree(
-                            &self.current_module,
+                            &self.state.current_module,
                             module_path,
                         )
                     {
@@ -728,6 +895,7 @@ impl TypeChecker {
         module_path: &ModuleFullPath,
     ) -> Vec<(Symbol, ModuleEntry)> {
         let trait_name = cranelisp_types::TraitName::from(parent.as_ref());
+        let trait_reg = self.trait_registry.read().unwrap();
         let mut result = Vec::new();
         for (name, entry) in source_table.public_symbols() {
             let is_member = match entry {
@@ -739,8 +907,7 @@ impl TypeChecker {
                         kind.as_ref(),
                         cranelisp_types::DefKind::Primitive { .. }
                             | cranelisp_types::DefKind::UserFn { .. }
-                    ) && self
-                        .trait_registry
+                    ) && trait_reg
                         .method_belongs_to_trait(name, &trait_name)
                 }
                 _ => false,
@@ -774,7 +941,7 @@ impl TypeChecker {
                 Some(entry) => {
                     if !entry.is_public()
                         && !self.is_in_subtree(
-                            &self.current_module,
+                            &self.state.current_module,
                             module_path,
                         )
                     {
@@ -818,6 +985,7 @@ impl TypeChecker {
         module_path: &ModuleFullPath,
     ) -> Vec<(Symbol, ModuleEntry)> {
         let trait_name = cranelisp_types::TraitName::from(parent.as_ref());
+        let trait_reg = self.trait_registry.read().unwrap();
         let mut result = Vec::new();
         for (name, entry) in source_table.public_symbols() {
             let is_member = match entry {
@@ -829,8 +997,7 @@ impl TypeChecker {
                         kind.as_ref(),
                         cranelisp_types::DefKind::Primitive { .. }
                             | cranelisp_types::DefKind::UserFn { .. }
-                    ) && self
-                        .trait_registry
+                    ) && trait_reg
                         .method_belongs_to_trait(name, &trait_name)
                 }
                 _ => false,
@@ -853,7 +1020,7 @@ impl TypeChecker {
 
     /// Look up a type definition and return its constructors.
     pub fn get_type_constructors(&self, type_name: &TypeName) -> Option<Vec<ConstructorInfo>> {
-        self.type_defs
+        self.type_defs.read().unwrap()
             .get(type_name)
             .map(|info| info.constructors.clone())
     }
@@ -861,8 +1028,8 @@ impl TypeChecker {
     /// Return all trait names that have an impl registered for `type_name`.
     /// Results are sorted alphabetically.
     pub fn get_impls_for_type(&self, type_name: &TypeName) -> Vec<TraitName> {
-        let mut traits: Vec<TraitName> = self
-            .impl_registry
+        let impl_reg = self.impl_registry.read().unwrap();
+        let mut traits: Vec<TraitName> = impl_reg
             .impls
             .iter()
             .filter(|(_, type_map)| type_map.contains_key(type_name))
@@ -874,7 +1041,7 @@ impl TypeChecker {
 
     /// Return the method names declared in a trait.
     pub fn get_trait_methods(&self, trait_name: &TraitName) -> Option<Vec<Symbol>> {
-        self.trait_registry
+        self.trait_registry.read().unwrap()
             .decls
             .get(trait_name)
             .map(|decl| decl.methods.iter().map(|m| m.name.clone()).collect())
@@ -883,8 +1050,8 @@ impl TypeChecker {
     /// Return all type names that implement a given trait.
     /// Results are sorted alphabetically.
     pub fn get_implementing_types(&self, trait_name: &TraitName) -> Vec<TypeName> {
-        let mut types: Vec<TypeName> = self
-            .impl_registry
+        let impl_reg = self.impl_registry.read().unwrap();
+        let mut types: Vec<TypeName> = impl_reg
             .impls
             .get(trait_name)
             .map(|type_map| type_map.keys().cloned().collect())
@@ -898,7 +1065,7 @@ impl TypeChecker {
     pub fn resolve_module_by_name(&self, name: &str) -> Option<ModuleFullPath> {
         // Try as child of current module (e.g., "user.foo" when current is "user")
         let child_path =
-            ModuleFullPath::from(format!("{}.{}", self.current_module, name));
+            ModuleFullPath::from(format!("{}.{}", self.state.current_module, name));
         if self.has_module(&child_path) {
             return Some(child_path);
         }
@@ -918,12 +1085,13 @@ impl TypeChecker {
     /// reverse lookups. Used during module hot-reload to clear old state
     /// before recompilation (repl/spec.md §14.2).
     pub fn unregister_trait(&mut self, trait_name: &TraitName) {
-        if let Some(decl) = self.trait_registry.decls.remove(trait_name) {
+        let trait_reg = self.trait_registry.get_mut().unwrap();
+        if let Some(decl) = trait_reg.decls.remove(trait_name) {
             for method in &decl.methods {
-                self.trait_registry.method_to_trait.remove(&method.name);
+                trait_reg.method_to_trait.remove(&method.name);
             }
             // Also remove impls for this trait to allow re-registration.
-            self.impl_registry.impls.remove(trait_name);
+            self.impl_registry.get_mut().unwrap().impls.remove(trait_name);
         }
     }
 
@@ -955,11 +1123,12 @@ impl TypeChecker {
         }
 
         // Unregister type definitions defined by this module.
+        let td = self.type_defs.get_mut().unwrap();
         for (_, entry) in table.all_symbols() {
             if let ModuleEntry::TypeDef { info, .. } = entry {
-                self.type_defs.type_defs.remove(&info.name);
+                td.type_defs.remove(&info.name);
                 for ctor in &info.constructors {
-                    self.type_defs.constructor_to_type.remove(&ctor.name);
+                    td.constructor_to_type.remove(&ctor.name);
                 }
             }
         }
@@ -991,17 +1160,19 @@ impl TypeChecker {
 
         // Reconstruct type_defs, constructor_to_type, and trait registries
         // from symbol table entries.
+        let td = self.type_defs.get_mut().unwrap();
+        let tr = self.trait_registry.get_mut().unwrap();
         for (_name, entry) in table.all_symbols() {
             match entry {
                 ModuleEntry::TypeDef { info, .. } => {
                     // Register each constructor in constructor_to_type.
                     for ctor in &info.constructors {
-                        self.type_defs.constructor_to_type.insert(
+                        td.constructor_to_type.insert(
                             ctor.name.clone(),
                             info.name.clone(),
                         );
                     }
-                    self.type_defs.type_defs.insert(
+                    td.type_defs.insert(
                         info.name.clone(),
                         info.clone(),
                     );
@@ -1009,7 +1180,7 @@ impl TypeChecker {
                 ModuleEntry::Constructor { type_name, .. } => {
                     // Ensure constructor_to_type has this entry too
                     // (may duplicate the TypeDef loop, but HashMap insert is idempotent).
-                    self.type_defs.constructor_to_type.insert(
+                    td.constructor_to_type.insert(
                         _name.clone(),
                         TypeName::from(type_name.as_ref()),
                     );
@@ -1018,14 +1189,12 @@ impl TypeChecker {
                     // Reconstruct trait_registry from cached TraitDecl entries.
                     // This populates decls and method_to_trait so trait method
                     // resolution works after loading from cache.
-                    if !self.trait_registry.decls.contains_key(&decl.name) => {
+                    if !tr.decls.contains_key(&decl.name) => {
                         for method in &decl.methods {
-                            self.trait_registry
-                                .method_to_trait
+                            tr.method_to_trait
                                 .insert(method.name.clone(), decl.name.clone());
                         }
-                        self.trait_registry
-                            .decls
+                        tr.decls
                             .insert(decl.name.clone(), decl.clone());
                 }
                 _ => {}
@@ -1073,9 +1242,9 @@ impl TypeChecker {
         }
 
         if let Some(id) = max_id
-            && self.next_id <= id
+            && *self.next_id.get_mut() <= id
         {
-            self.next_id = id + 1;
+            *self.next_id.get_mut() = id + 1;
         }
     }
 
@@ -1091,6 +1260,7 @@ impl TypeChecker {
     pub fn restore_cached_impls(&mut self, mangled_names: &[String]) {
         use crate::traits::RegisteredImpl;
 
+        let impl_reg = self.impl_registry.get_mut().unwrap();
         for name in mangled_names {
             // Parse "Trait.method$Type" pattern.
             let Some(dot_pos) = name.find('.') else { continue };
@@ -1106,14 +1276,14 @@ impl TypeChecker {
             let method_name = Symbol::from(method_str);
 
             // Skip if this impl is already registered.
-            if self.impl_registry.has_impl(&trait_name, &impl_type) {
+            if impl_reg.has_impl(&trait_name, &impl_type) {
                 continue;
             }
 
             let mut method_primitives = HashMap::new();
             method_primitives.insert(method_name.clone(), method_name);
 
-            self.impl_registry.impls
+            impl_reg.impls
                 .entry(trait_name.clone())
                 .or_default()
                 .insert(
@@ -1132,34 +1302,34 @@ impl TypeChecker {
     /// Take a snapshot of the current state for REPL error recovery.
     pub fn snapshot(&self) -> ReplSnapshot {
         ReplSnapshot {
-            next_type_id: self.next_id,
+            next_type_id: self.next_id.load(Ordering::Relaxed),
             symbol_keys: self.current_symbol_table().symbols.keys().cloned().collect(),
-            subst_len: self.subst.len(),
-            scope_depth: self.env.depth(),
+            subst_len: self.state.subst.len(),
+            scope_depth: self.state.env.depth(),
         }
     }
 
     /// Restore state from a snapshot (on REPL error).
     pub fn restore(&mut self, snapshot: ReplSnapshot) {
-        self.next_id = snapshot.next_type_id;
-        self.subst.retain(|id, _| *id < snapshot.next_type_id);
-        self.expr_types.clear();
-        self.method_resolutions.clear();
-        self.warnings.clear();
-        self.pending_auto_curry.clear();
+        *self.next_id.get_mut() = snapshot.next_type_id;
+        self.state.subst.retain(|id, _| *id < snapshot.next_type_id);
+        self.state.expr_types.clear();
+        self.state.method_resolutions.clear();
+        self.state.warnings.clear();
+        self.state.pending_auto_curry.clear();
         // Remove symbol table entries added after the snapshot was taken.
         self.current_symbol_table_mut()
             .symbols
             .retain(|key, _| snapshot.symbol_keys.contains(key));
         // Restore scope stack depth (pop frames left by failed check_defn_body).
-        self.env.truncate_to(snapshot.scope_depth);
+        self.state.env.truncate_to(snapshot.scope_depth);
     }
 
     // --- Known types lookup (for resolve_type_expr) ---
 
     /// Build a map of known type names for type expression resolution.
     pub(crate) fn known_type_names(&self) -> crate::resolve::KnownTypes {
-        self.type_defs.known_types()
+        self.type_defs.read().unwrap().known_types()
     }
 
     /// Check whether a constructor name refers to an internal constructor.
@@ -1173,7 +1343,7 @@ impl TypeChecker {
         } else {
             name.as_ref()
         };
-        self.type_defs.is_internal_constructor(bare_name)
+        self.type_defs.read().unwrap().is_internal_constructor(bare_name)
     }
 }
 
@@ -1704,7 +1874,7 @@ mod tests {
         // No bare names imported
         assert!(tc.symbol_table().get("Some").is_none());
         // Alias registered
-        assert!(tc.module_aliases.contains_key(&Symbol::from("opt")));
+        assert!(tc.state.module_aliases.contains_key(&Symbol::from("opt")));
     }
 
     // --- is_in_subtree ---
@@ -1774,7 +1944,7 @@ mod tests {
         tc.set_current_module(ModuleFullPath::from("main"));
 
         // Register alias: "opt" -> "core.option"
-        tc.module_aliases.insert(
+        tc.state.module_aliases.insert(
             Symbol::from("opt"),
             ModuleFullPath::from("core.option"),
         );
@@ -1821,5 +1991,110 @@ mod tests {
             matches!(entry.unwrap(), ModuleEntry::Import { .. }),
             "builtin in new module should be an Import entry"
         );
+    }
+
+    // --- Concurrency primitives (Phase 2) ---
+
+    // spec: pipeline-v3.md §3.4.3 — AtomicU32 TypeId allocation is monotonic
+    #[test]
+    fn test_fresh_var_ids_are_monotonic() {
+        let mut tc = TypeChecker::new();
+        let (_, id1) = tc.fresh_var_id();
+        let (_, id2) = tc.fresh_var_id();
+        let (_, id3) = tc.fresh_var_id();
+        assert!(id1 < id2);
+        assert!(id2 < id3);
+    }
+
+    // spec: pipeline-v3.md §3.4.3 — fresh_var returns unique Var types
+    #[test]
+    fn test_fresh_var_returns_unique_vars() {
+        let mut tc = TypeChecker::new();
+        let v1 = tc.fresh_var();
+        let v2 = tc.fresh_var();
+        assert_ne!(v1, v2);
+        assert!(matches!(v1, Type::Var(_)));
+        assert!(matches!(v2, Type::Var(_)));
+    }
+
+    // spec: pipeline-v3.md §3.4.3 — try_lock_module succeeds on unlocked module
+    #[test]
+    fn test_try_lock_module_succeeds() {
+        let mut tc = TypeChecker::new();
+        let module = ModuleFullPath::from("test.mod");
+        assert!(!tc.is_module_locked(&module));
+        let guard = tc.try_lock_module(&module);
+        assert!(guard.is_ok());
+        assert!(tc.is_module_locked(&module));
+        drop(guard);
+        assert!(!tc.is_module_locked(&module));
+    }
+
+    // spec: pipeline-v3.md §3.4.3 — try_lock_module fails on already-locked module
+    #[test]
+    fn test_try_lock_module_fails_when_locked() {
+        let mut tc = TypeChecker::new();
+        let module = ModuleFullPath::from("test.mod");
+        let _guard = tc.try_lock_module(&module).unwrap();
+        // Second lock attempt must fail immediately
+        let result = tc.try_lock_module(&module);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            err.message().contains("already being compiled"),
+            "expected 'already being compiled' error, got: {}",
+            err.message()
+        );
+    }
+
+    // spec: pipeline-v3.md §3.4.3 — ModuleGuard releases lock on drop (RAII)
+    #[test]
+    fn test_module_guard_releases_on_drop() {
+        let mut tc = TypeChecker::new();
+        let module = ModuleFullPath::from("test.mod");
+        {
+            let _guard = tc.try_lock_module(&module).unwrap();
+            assert!(tc.is_module_locked(&module));
+        }
+        // Guard dropped — lock must be released
+        assert!(!tc.is_module_locked(&module));
+        // Can re-acquire
+        let guard2 = tc.try_lock_module(&module);
+        assert!(guard2.is_ok());
+    }
+
+    // spec: pipeline-v3.md §3.4.3 — independent modules can be locked simultaneously
+    #[test]
+    fn test_independent_modules_lock_simultaneously() {
+        let mut tc = TypeChecker::new();
+        let mod_a = ModuleFullPath::from("mod.a");
+        let mod_b = ModuleFullPath::from("mod.b");
+        let _guard_a = tc.try_lock_module(&mod_a).unwrap();
+        let guard_b = tc.try_lock_module(&mod_b);
+        assert!(guard_b.is_ok(), "independent modules should lock independently");
+        assert!(tc.is_module_locked(&mod_a));
+        assert!(tc.is_module_locked(&mod_b));
+    }
+
+    // spec: pipeline-v3.md §3.4.3 — snapshot/restore works with atomic next_id
+    #[test]
+    fn test_snapshot_restore_with_atomic_next_id() {
+        let mut tc = TypeChecker::new();
+        // Generate some type vars
+        let _ = tc.fresh_var();
+        let _ = tc.fresh_var();
+        let snap = tc.snapshot();
+        let snap_id = snap.next_type_id;
+        // Generate more after snapshot
+        let _ = tc.fresh_var();
+        let _ = tc.fresh_var();
+        // Counter should have advanced past snapshot
+        assert_eq!(*tc.next_id.get_mut(), snap_id + 2);
+        // Restore should reset the counter
+        tc.restore(snap);
+        assert_eq!(*tc.next_id.get_mut(), snap_id);
+        // Next fresh var should use the snapshot's next_id
+        let (_, id_after_restore) = tc.fresh_var_id();
+        assert_eq!(id_after_restore, snap_id);
     }
 }

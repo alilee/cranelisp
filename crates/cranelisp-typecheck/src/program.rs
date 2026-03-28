@@ -108,13 +108,14 @@ impl TypeChecker {
         &mut self,
         program: &[TopLevel],
         ctx: &CompileContext,
+        strategy: ModuleStrategy,
     ) -> Result<CheckResult, CranelispError> {
         // Set active module from context.
         self.set_current_module(ctx.module.clone());
 
         // If Replace strategy, clear existing module state so that removed
         // definitions don't persist as stale entries.
-        if ctx.strategy == ModuleStrategy::Replace {
+        if strategy == ModuleStrategy::Replace {
             self.clear_module_for_replace();
         }
 
@@ -206,7 +207,7 @@ impl TypeChecker {
         // from prior REPL evaluations. In batch mode this adds nothing (all
         // defns are in the current slice), but in interactive/additive mode
         // constrained fns from earlier evals must be recognized at call sites.
-        if ctx.strategy == ModuleStrategy::Additive {
+        if strategy == ModuleStrategy::Additive {
             for (name, entry) in self.current_symbol_table().all_symbols() {
                 if let ModuleEntry::Def { kind, .. } = entry
                     && let DefKind::UserFn { constrained_fn: Some(_) } = kind.as_ref()
@@ -362,7 +363,7 @@ impl TypeChecker {
                         span: variant.span,
                     });
                 }
-                self.overloads.insert(defn.name.clone(), overload_entries);
+                self.state.overloads.insert(defn.name.clone(), overload_entries);
 
                 // Register a placeholder for the base name so `infer_var`
                 // can find it during pass 2. The placeholder uses a fresh
@@ -518,7 +519,7 @@ impl TypeChecker {
                     },
                 );
 
-                self.resolved_overloads.insert(
+                self.state.resolved_overloads.insert(
                     defn.name.clone(),
                     resolved,
                 );
@@ -533,15 +534,15 @@ impl TypeChecker {
     /// For each pending `(span, base_name, arg_types, ret_type_var)`, find
     /// the matching variant and record `SigDispatch` in method_resolutions.
     fn resolve_pending_overloads(&mut self) -> Result<(), CranelispError> {
-        let pending = std::mem::take(&mut self.pending_overload_resolutions);
+        let pending = std::mem::take(&mut self.state.pending_overload_resolutions);
 
         for (span, base_name, arg_types, ret_type_var) in &pending {
             let concrete_args: Vec<Type> = arg_types
                 .iter()
-                .map(|t| apply(&self.subst, t))
+                .map(|t| apply(&self.state.subst, t))
                 .collect();
 
-            let variants = self
+            let variants = self.state
                 .resolved_overloads
                 .get(base_name)
                 .ok_or_else(|| CranelispError::TypeError {
@@ -573,7 +574,7 @@ impl TypeChecker {
                     self.unify(p, a, *span)?;
                 }
                 self.unify(ret_type_var, ret_ty, *span)?;
-                self.method_resolutions.insert(
+                self.state.method_resolutions.insert(
                     *span,
                     ResolvedCall::SigDispatch {
                         mangled_name: JitSymbol::from(mangled_name.as_ref()),
@@ -1106,7 +1107,7 @@ impl TypeChecker {
 
             if let Some(mangled) = seen.get(&key) {
                 // Already generated this specialization — just record dispatch
-                self.method_resolutions.insert(
+                self.state.method_resolutions.insert(
                     *call_span,
                     ResolvedCall::SigDispatch { mangled_name: mangled.clone() },
                 );
@@ -1116,7 +1117,7 @@ impl TypeChecker {
             if let Some(mono) = self.monomorphise_call(fn_name, &arg_types, *call_span)? {
                 let mangled = JitSymbol::from(mono.defn.name.as_ref());
                 // Record dispatch for this call site
-                self.method_resolutions.insert(
+                self.state.method_resolutions.insert(
                     *call_span,
                     ResolvedCall::SigDispatch { mangled_name: mangled.clone() },
                 );
@@ -1181,7 +1182,7 @@ impl TypeChecker {
                 .join("+"));
 
             if let Some(mangled) = seen.get(&key) {
-                self.method_resolutions.insert(
+                self.state.method_resolutions.insert(
                     *call_span,
                     ResolvedCall::SigDispatch { mangled_name: mangled.clone() },
                 );
@@ -1190,7 +1191,7 @@ impl TypeChecker {
 
             if let Some(mono) = self.monomorphise_call(fn_name, &arg_types, *call_span)? {
                 let mangled = JitSymbol::from(mono.defn.name.as_ref());
-                self.method_resolutions.insert(
+                self.state.method_resolutions.insert(
                     *call_span,
                     ResolvedCall::SigDispatch { mangled_name: mangled.clone() },
                 );
@@ -1289,7 +1290,7 @@ impl TypeChecker {
     /// This converts them to `ResolvedCall::AutoCurry` entries that the
     /// backend can use for codegen.
     pub(crate) fn resolve_auto_curry(&mut self) {
-        let pending = std::mem::take(&mut self.pending_auto_curry);
+        let pending = std::mem::take(&mut self.state.pending_auto_curry);
         for (span, name, applied_count, total_count, callee_ty, mut trait_resolution) in pending {
             // If the trait resolution wasn't determined earlier (types were
             // still unresolved vars during try_auto_curry), attempt it now.
@@ -1310,7 +1311,7 @@ impl TypeChecker {
                 }
             }
 
-            self.method_resolutions.insert(
+            self.state.method_resolutions.insert(
                 span,
                 ResolvedCall::AutoCurry {
                     target_name: name,
@@ -1324,9 +1325,9 @@ impl TypeChecker {
 
     /// Resolve all recorded expr_types through the current substitution.
     fn resolve_expr_types(&self) -> HashMap<Span, Type> {
-        self.expr_types
+        self.state.expr_types
             .iter()
-            .map(|(span, ty)| (*span, apply(&self.subst, ty)))
+            .map(|(span, ty)| (*span, apply(&self.state.subst, ty)))
             .collect()
     }
 
@@ -1347,14 +1348,14 @@ impl TypeChecker {
         // );
 
         CheckResult {
-            method_resolutions: std::mem::take(&mut self.method_resolutions),
+            method_resolutions: std::mem::take(&mut self.state.method_resolutions),
             constrained_fn_names: HashSet::new(),
             mono_defns: Vec::new(),
             expr_types: resolved_expr_types,
             default_method_defns: Vec::new(),
-            warnings: std::mem::take(&mut self.warnings),
-            type_defs: self.type_defs.type_defs.clone(),
-            constructor_to_type: self.type_defs.constructor_to_type.clone(),
+            warnings: std::mem::take(&mut self.state.warnings),
+            type_defs: self.type_defs.get_mut().unwrap().type_defs.clone(),
+            constructor_to_type: self.type_defs.get_mut().unwrap().constructor_to_type.clone(),
             display: None,
         }
     }
@@ -1371,11 +1372,11 @@ impl TypeChecker {
         // );
 
         CheckResult {
-            method_resolutions: std::mem::take(&mut self.method_resolutions),
+            method_resolutions: std::mem::take(&mut self.state.method_resolutions),
             expr_types: resolved_expr_types,
-            warnings: std::mem::take(&mut self.warnings),
-            type_defs: self.type_defs.type_defs.clone(),
-            constructor_to_type: self.type_defs.constructor_to_type.clone(),
+            warnings: std::mem::take(&mut self.state.warnings),
+            type_defs: self.type_defs.get_mut().unwrap().type_defs.clone(),
+            constructor_to_type: self.type_defs.get_mut().unwrap().constructor_to_type.clone(),
             constrained_fn_names: HashSet::new(),
             mono_defns: Vec::new(),
             default_method_defns: Vec::new(),
@@ -2677,8 +2678,7 @@ mod tests {
     fn test_ctx() -> CompileContext {
         CompileContext {
             module: ModuleFullPath::from("test"),
-            strategy: cranelisp_types::ModuleStrategy::Additive,
-            codegen_target: cranelisp_types::CodegenTarget::JitAndCache,
+            codegen: cranelisp_types::CodegenBehaviour::InMemoryAndObject,
         }
     }
 
@@ -2758,7 +2758,7 @@ mod tests {
             span(0, 56),
         ))];
 
-        let result = tc.check(&program, &test_ctx()).unwrap();
+        let result = tc.check(&program, &test_ctx(), cranelisp_types::ModuleStrategy::Additive).unwrap();
 
         // The base name "add" should be registered as Overloaded
         let entry = tc.current_symbol_table().get("add");
@@ -2835,7 +2835,7 @@ mod tests {
             span(100, 138),
         ))];
 
-        let result = tc.check(&program, &test_ctx()).unwrap();
+        let result = tc.check(&program, &test_ctx(), cranelisp_types::ModuleStrategy::Additive).unwrap();
 
         // Mangled names should be different: process$Int vs process$Bool
         assert!(
@@ -2899,7 +2899,7 @@ mod tests {
             span(200, 244),
         ))];
 
-        let err = tc.check(&program, &test_ctx());
+        let err = tc.check(&program, &test_ctx(), cranelisp_types::ModuleStrategy::Additive);
         assert!(err.is_err(), "duplicate signatures should produce an error");
         let msg = format!("{}", err.unwrap_err());
         assert!(
@@ -2989,7 +2989,7 @@ mod tests {
         });
 
         let program = vec![multi_defn, call_expr];
-        let result = tc.check(&program, &test_ctx()).unwrap();
+        let result = tc.check(&program, &test_ctx(), cranelisp_types::ModuleStrategy::Additive).unwrap();
 
         // The call site should have a SigDispatch resolution to "add$Int+Int"
         let resolution = result.method_resolutions.get(&call_span);

@@ -1,6 +1,6 @@
 // Background cache writer thread for .o + .meta.json generation.
 //
-// When `CodegenTarget::JitAndCache` is active, stage 6b queues background
+// When `CodegenBehaviour::InMemoryAndObject` is active, stage 6b queues background
 // .o writes via this writer so the pipeline is never blocked by cache I/O.
 //
 // See design/arch/pipeline-v2.md §16.12 for the full design.

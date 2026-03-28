@@ -7,18 +7,10 @@
 //
 // Tests are organized into two groups:
 // 1. Cache API tests — exercise the backend cache types directly
-//    (manifest, metadata, packet building). These work NOW.
-// 2. Pipeline integration tests — require /int to wire caching into
-//    the compilation pipeline. These are #[ignore] until wired.
-//
-// NOTE: The root crate (cranelisp) has in-progress compilation errors
-// from /int cache wiring work. Once those are resolved, these tests
-// will compile and the non-ignored ones will pass. The cache backend
-// API (cranelisp-backend) compiles and its 33 unit tests pass.
-//
-// NOTE: Pipeline caching is not yet wired (src/pipeline.rs has no
-// cache references as of Sprint 22). Tests that need compile_and_run
-// to go through the cache path are marked accordingly.
+//    (manifest, metadata, packet building).
+// 2. Pipeline integration tests — exercise the full cache-hit path
+//    via compile_module_graph_cached, including cross-module calls,
+//    prelude caching, and cache invalidation.
 
 #[path = "helpers/mod.rs"]
 mod helpers;
@@ -970,7 +962,8 @@ fn cache_neg_corrupt_metadata_does_not_succeed() {
 // Pipeline integration tests — cache wiring via compile_module_graph_cached
 // =============================================================================
 
-use cranelisp::pipeline::{CacheConfig, compile_module_graph_cached};
+use cranelisp::session::CacheConfig;
+use cranelisp::pipeline::compile_module_graph_cached;
 use tempfile::TempDir;
 
 /// Create a temporary project directory with the given source files.
@@ -1411,7 +1404,6 @@ fn cache_multi_module_invalidation_dependency_change() {
 
 // spec: design/backend/module-caching.md §6 — unchanged dependency stays cached
 #[test]
-#[ignore = "v2 pipeline does not yet support cache-hit loading (try_restore_from_cache deleted in Sprint 38)"]
 fn cache_multi_module_unchanged_dep_stays_cached() {
     // Module main imports from util. Both compile. Change only main's source.
     // Util should remain cached (unchanged), main recompiles.
@@ -1529,7 +1521,6 @@ fn cache_multi_module_two_deps() {
 
 // spec: design/backend/module-caching.md §10 — prelude caching: stdlib prelude modules cached
 #[test]
-#[ignore = "v2 pipeline does not yet support cache-hit loading (try_restore_from_cache deleted in Sprint 38)"]
 fn cache_prelude_modules_cached() {
     // Create a project with a minimal prelude. Compile twice with caching.
     // Second compile should cache-hit on prelude.
@@ -1664,7 +1655,6 @@ fn cache_repl_write_is_non_blocking() {
 
 /// spec: design/backend/module-caching.md §10 — REPL restart cache hit
 #[test]
-#[ignore = "v2 pipeline does not yet support cache-hit loading (try_restore_from_cache deleted in Sprint 38)"]
 fn cache_repl_restart_cache_hit() {
     // Compile twice — second compile should use cached .o files (cache hit).
     // This is the same as REPL restart: prelude and modules cached on first
@@ -1747,7 +1737,6 @@ fn cache_repl_incremental_monomorphisation() {
 
 /// spec: design/backend/module-caching.md §11 — quick build links cached .o files
 #[test]
-#[ignore = "v2 pipeline does not yet support cache-hit loading (try_restore_from_cache deleted in Sprint 38)"]
 fn cache_quick_build_links_cached_objects() {
     // --link uses cached .o files. Compile a project, verify cache files exist,
     // then compile again — the .o files should be reused (not recompiled).

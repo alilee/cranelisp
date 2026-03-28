@@ -3,26 +3,105 @@
 // In Interactive mode, function calls go through a GOT slot so that
 // redefining a function updates all call sites. In Batch mode, calls
 // are direct and the GOT is not used.
+//
+// The GOT uses AtomicPtr<u8> slots so that concurrent codegen workers
+// can write code pointers to disjoint slots without data races.
+// JIT-generated code reads slots via raw pointer loads (got_base + slot * 8)
+// which is safe because AtomicPtr has the same layout as *const u8.
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicPtr, Ordering};
+use std::sync::Arc;
 
 use cranelisp_types::{CranelispError, Span, Symbol};
 
 use crate::codegen_types::{DefCodegen, GOT_TABLE_SIZE};
 
+/// Shared GOT table: array of atomic function pointers.
+///
+/// Shared between the main thread and codegen worker threads via `Arc`.
+/// Workers write to pre-assigned disjoint slots using `store(Release)`.
+/// The main thread reads after `hot_flush` barrier ensures happens-before.
+/// JIT code reads via raw pointer loads at `got_base + slot * 8`.
+pub struct GotTable {
+    slots: Box<[AtomicPtr<u8>; GOT_TABLE_SIZE]>,
+}
+
+// SAFETY: GotTable contains AtomicPtr which is inherently Send+Sync.
+// The raw pointer values stored point to JIT code pages that remain
+// valid for the process lifetime (Cranelift leaks code memory on drop).
+unsafe impl Send for GotTable {}
+unsafe impl Sync for GotTable {}
+
+impl GotTable {
+    /// Create a new GOT table with all slots initialized to null.
+    pub fn new() -> Self {
+        // Initialize all slots to null. AtomicPtr::new is const, but
+        // we need a boxed array, so use a Vec and convert.
+        let mut slots = Vec::with_capacity(GOT_TABLE_SIZE);
+        for _ in 0..GOT_TABLE_SIZE {
+            slots.push(AtomicPtr::new(std::ptr::null_mut()));
+        }
+        let boxed: Box<[AtomicPtr<u8>; GOT_TABLE_SIZE]> = slots
+            .into_boxed_slice()
+            .try_into()
+            .unwrap_or_else(|_| unreachable!("invariant: vec has GOT_TABLE_SIZE elements"));
+        GotTable { slots: boxed }
+    }
+
+    /// Get the base address of the GOT table.
+    ///
+    /// Returns a raw pointer suitable for use as the `got_base_ptr` constant
+    /// in JIT-generated code. The pointer is stable for the lifetime of the
+    /// `Arc<GotTable>`.
+    pub fn base_ptr(&self) -> *const u8 {
+        self.slots.as_ptr() as *const u8
+    }
+
+    /// Atomically write a code pointer to a GOT slot.
+    ///
+    /// Uses `Release` ordering so that after a flush barrier (thread join
+    /// or channel recv), the main thread sees all writes.
+    pub fn store_slot(&self, slot: usize, ptr: *const u8) {
+        debug_assert!(
+            slot < GOT_TABLE_SIZE,
+            "invariant: GOT slot {slot} out of range"
+        );
+        self.slots[slot].store(ptr as *mut u8, Ordering::Release);
+    }
+
+    /// Read a code pointer from a GOT slot.
+    ///
+    /// Uses `Acquire` ordering to pair with worker `Release` stores.
+    pub fn load_slot(&self, slot: usize) -> *const u8 {
+        debug_assert!(
+            slot < GOT_TABLE_SIZE,
+            "invariant: GOT slot {slot} out of range"
+        );
+        self.slots[slot].load(Ordering::Acquire) as *const u8
+    }
+}
+
+impl Default for GotTable {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// Per-module codegen state. Owns the GOT and per-definition artifacts.
 pub struct ModuleCodegenState {
-    /// Global offset table: array of function pointers for indirect calls.
-    /// Lazily allocated on first use.
-    got_table: Option<Box<[*const u8; GOT_TABLE_SIZE]>>,
+    /// Shared GOT table: array of atomic function pointers.
+    /// Lazily allocated on first use. Shared with codegen workers via Arc.
+    got_table: Option<Arc<GotTable>>,
     /// Next available GOT slot index.
     next_got_slot: usize,
     /// Per-definition codegen artifacts.
     pub def_codegen: HashMap<Symbol, DefCodegen>,
 }
 
-// SAFETY: GOT contains raw pointers that are only dereferenced from the JIT
-// execution thread. The ModuleCodegenState is not shared across threads.
+// SAFETY: ModuleCodegenState contains an Arc<GotTable> (Send+Sync) and
+// a HashMap of DefCodegen (Send+Sync). Raw pointers in DefCodegen point
+// to JIT code pages that are valid for the process lifetime.
 unsafe impl Send for ModuleCodegenState {}
 unsafe impl Sync for ModuleCodegenState {}
 
@@ -36,20 +115,40 @@ impl ModuleCodegenState {
         }
     }
 
-    /// Ensure the GOT table is allocated, returning a mutable reference.
-    fn ensure_got(&mut self) -> &mut [*const u8; GOT_TABLE_SIZE] {
+    /// Ensure the GOT table is allocated, returning a reference to the Arc.
+    fn ensure_got(&mut self) -> &Arc<GotTable> {
         if self.got_table.is_none() {
-            self.got_table = Some(Box::new([std::ptr::null(); GOT_TABLE_SIZE]));
+            self.got_table = Some(Arc::new(GotTable::new()));
         }
         self.got_table
-            .as_mut()
+            .as_ref()
             .unwrap_or_else(|| unreachable!("invariant: GOT just allocated"))
+    }
+
+    /// Set the GOT table to a pre-existing shared table.
+    ///
+    /// Used by N-core codegen workers that share a GOT table with the main
+    /// thread. The worker writes code pointers atomically to pre-assigned slots.
+    pub fn set_shared_got(&mut self, got: Arc<GotTable>) {
+        self.got_table = Some(got);
     }
 
     /// Get the base address of the GOT table, allocating if needed.
     pub fn got_base_ptr(&mut self) -> *const u8 {
-        let got = self.ensure_got();
-        got.as_ptr() as *const u8
+        self.ensure_got().base_ptr()
+    }
+
+    /// Get a shared reference to the GOT table for concurrent access.
+    ///
+    /// Allocates the GOT table if not already allocated. Returns an
+    /// `Arc<GotTable>` that can be cloned for codegen worker threads.
+    pub fn shared_got(&mut self) -> Arc<GotTable> {
+        self.ensure_got();
+        Arc::clone(
+            self.got_table
+                .as_ref()
+                .unwrap_or_else(|| unreachable!("invariant: GOT just allocated")),
+        )
     }
 
     /// Allocate a new GOT slot for a function, returning the slot index.
@@ -72,18 +171,14 @@ impl ModuleCodegenState {
     /// Update the function pointer at a GOT slot.
     pub fn update_slot(&mut self, slot: usize, ptr: *const u8) {
         let got = self.ensure_got();
-        debug_assert!(
-            slot < GOT_TABLE_SIZE,
-            "invariant: GOT slot {slot} out of range"
-        );
-        got[slot] = ptr;
+        got.store_slot(slot, ptr);
     }
 
     /// Get the function pointer at a GOT slot.
     pub fn get_slot(&self, slot: usize) -> Option<*const u8> {
         self.got_table
             .as_ref()
-            .map(|got| got[slot])
+            .map(|got| got.load_slot(slot))
     }
 
     /// Allocate a GOT slot for a definition and record it in def_codegen.
@@ -235,5 +330,34 @@ mod tests {
         // Verify both are retrievable from def_codegen.
         assert_eq!(state.def_codegen.get(&add_int).unwrap().got_slot, Some(slot_int));
         assert_eq!(state.def_codegen.get(&add_float).unwrap().got_slot, Some(slot_float));
+    }
+
+    // spec: 12-runtime §12.2 — atomic GOT: concurrent writes to disjoint slots
+    #[test]
+    fn test_atomic_got_concurrent_writes() {
+        let got = Arc::new(GotTable::new());
+        let got2 = Arc::clone(&got);
+
+        // Simulate two workers writing to disjoint slots.
+        let t1 = std::thread::spawn(move || {
+            let ptr = 0x1111usize as *const u8;
+            got2.store_slot(0, ptr);
+        });
+        let ptr2 = 0x2222usize as *const u8;
+        got.store_slot(1, ptr2);
+        t1.join().unwrap();
+
+        // After join (happens-before), both writes are visible.
+        assert_eq!(got.load_slot(0), 0x1111usize as *const u8);
+        assert_eq!(got.load_slot(1), 0x2222usize as *const u8);
+    }
+
+    // spec: 12-runtime §12.2 — shared_got returns Arc sharing same memory
+    #[test]
+    fn test_shared_got_same_base() {
+        let mut state = ModuleCodegenState::new();
+        let base1 = state.got_base_ptr();
+        let shared = state.shared_got();
+        assert_eq!(base1, shared.base_ptr(), "shared GOT must have same base address");
     }
 }

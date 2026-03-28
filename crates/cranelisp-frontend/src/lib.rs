@@ -41,7 +41,7 @@ pub fn parse_preserving_comments(source: &str) -> Result<Vec<Sexp>, CranelispErr
 /// The expander is consulted for macro calls; Ring 0 passes `NoOpExpander`.
 pub fn build_program(
     sexps: &[Sexp],
-    expander: &mut dyn MacroExpander,
+    expander: &dyn MacroExpander,
 ) -> Result<Program, CranelispError> {
     ast_builder::build_program(sexps, expander)
 }
@@ -52,7 +52,7 @@ pub fn build_program(
 /// two separate sexps. Falls through to single-sexp handling otherwise.
 pub fn build_repl_input_from_sexps(
     sexps: &[Sexp],
-    expander: &mut dyn MacroExpander,
+    expander: &dyn MacroExpander,
 ) -> Result<TopLevel, CranelispError> {
     ast_builder::build_repl_input_from_sexps(sexps, expander)
 }
@@ -63,7 +63,7 @@ pub fn build_repl_input_from_sexps(
 /// The expander is consulted for macro calls; Ring 0 passes `NoOpExpander`.
 pub fn build_repl_input(
     sexp: &Sexp,
-    expander: &mut dyn MacroExpander,
+    expander: &dyn MacroExpander,
 ) -> Result<TopLevel, CranelispError> {
     ast_builder::build_repl_input(sexp, expander)
 }

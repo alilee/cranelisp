@@ -327,7 +327,7 @@ impl TypeChecker {
         // Register Vec as a known type with 1 type parameter (no constructors).
         // This allows `split` to return `(Vec String)` without the typechecker
         // complaining about an unknown type.
-        self.type_defs.type_defs.insert(
+        self.type_defs.get_mut().unwrap().type_defs.insert(
             TypeName::from("Vec"),
             TypeDefInfo {
                 name: TypeName::from("Vec"),
@@ -475,7 +475,7 @@ impl TypeChecker {
     /// Register `(deftype (SList a) SNil (SCons [:a shead :(SList a) stail]))`.
     fn register_slist_type(&mut self) {
         // Pre-seed SList in type_defs so SCons's self-referential stail field resolves.
-        self.type_defs.type_defs.insert(
+        self.type_defs.get_mut().unwrap().type_defs.insert(
             TypeName::from("SList"),
             TypeDefInfo {
                 name: TypeName::from("SList"),
@@ -530,7 +530,7 @@ impl TypeChecker {
     /// Register the Sexp type with 7 data constructors (SexpInt through SexpBracket).
     fn register_sexp_type(&mut self) {
         // Pre-seed Sexp so SexpList/SexpBracket's :(SList Sexp) fields resolve.
-        self.type_defs.type_defs.insert(
+        self.type_defs.get_mut().unwrap().type_defs.insert(
             TypeName::from("Sexp"),
             TypeDefInfo {
                 name: TypeName::from("Sexp"),
@@ -688,7 +688,7 @@ impl TypeChecker {
 
         // Append Bind to the IO TypeDefInfo.
         let io_type_def = self
-            .type_defs
+            .type_defs.get_mut().unwrap()
             .type_defs
             .get_mut(&TypeName::from("IO"))
             .unwrap_or_else(|| unreachable!("invariant: IO type should be registered before adding Bind"));

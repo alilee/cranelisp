@@ -106,7 +106,7 @@ impl TypeChecker {
         // `:(List a) tail` inside a `(deftype (List a) ...)`) can resolve
         // the type during `build_constructor_infos`. The full TypeDefInfo
         // replaces this placeholder below.
-        self.type_defs.type_defs.insert(
+        self.type_defs.get_mut().unwrap().type_defs.insert(
             name.clone(),
             TypeDefInfo {
                 name: name.clone(),
@@ -124,7 +124,7 @@ impl TypeChecker {
         ) {
             Ok(infos) => infos,
             Err(e) => {
-                self.type_defs.type_defs.remove(name);
+                self.type_defs.get_mut().unwrap().type_defs.remove(name);
                 return Err(e);
             }
         };
@@ -137,7 +137,7 @@ impl TypeChecker {
         };
 
         // Register the type definition
-        self.type_defs
+        self.type_defs.get_mut().unwrap()
             .type_defs
             .insert(name.clone(), type_def_info.clone());
 
@@ -274,7 +274,7 @@ impl TypeChecker {
                 },
             );
 
-            self.type_defs
+            self.type_defs.get_mut().unwrap()
                 .constructor_to_type
                 .insert(ctor_info.name.clone(), name.clone());
         }
@@ -333,7 +333,8 @@ impl TypeChecker {
             return Ok(());
         }
 
-        let type_def = self.type_defs.get(type_name).ok_or_else(|| {
+        let td = self.type_defs.read().unwrap();
+        let type_def = td.get(type_name).ok_or_else(|| {
             CranelispError::TypeError {
                 message: format!("unknown type in match: {type_name}"),
                 span,

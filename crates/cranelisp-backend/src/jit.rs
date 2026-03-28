@@ -194,7 +194,36 @@ impl Jit {
         extra_symbols: &[(&str, *const u8)],
     ) -> Result<Self, CranelispError> {
         let isa = build_isa()?;
+        Self::from_isa(isa, extra_symbols)
+    }
 
+    /// Build a shared ISA for the current host architecture.
+    ///
+    /// Returns an `Arc<dyn TargetIsa>` that can be cloned and passed to
+    /// multiple `Jit` instances via `new_with_isa()`. This avoids
+    /// re-probing CPU features when creating many JIT instances (e.g.,
+    /// one per codegen worker in N-core parallel compilation).
+    pub fn build_shared_isa() -> Result<Arc<dyn cranelift::codegen::isa::TargetIsa>, CranelispError> {
+        build_isa()
+    }
+
+    /// Create a new JIT instance using a pre-built ISA.
+    ///
+    /// Accepts extra symbol registrations, same as `new_with_symbols`.
+    /// Use `Jit::build_shared_isa()` to construct the ISA once, then
+    /// `Arc::clone` it for each worker's `Jit`.
+    pub fn new_with_isa(
+        isa: Arc<dyn cranelift::codegen::isa::TargetIsa>,
+        extra_symbols: &[(&str, *const u8)],
+    ) -> Result<Self, CranelispError> {
+        Self::from_isa(isa, extra_symbols)
+    }
+
+    /// Internal constructor: build a Jit from an ISA and extra symbols.
+    fn from_isa(
+        isa: Arc<dyn cranelift::codegen::isa::TargetIsa>,
+        extra_symbols: &[(&str, *const u8)],
+    ) -> Result<Self, CranelispError> {
         let mut builder = JITBuilder::with_isa(isa, cranelift_module::default_libcall_names());
         register_intrinsics(&mut builder);
 

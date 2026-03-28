@@ -4,6 +4,7 @@
 //! Lives in the binary crate because it wires typecheck + backend.
 
 use std::collections::HashMap;
+use std::sync::RwLock;
 
 use cranelisp_types::{
     CranelispError, MacroExpander, MacroParam, Sexp, Span, Symbol,
@@ -38,14 +39,24 @@ struct MacroEntry {
 }
 
 /// Macro environment: name -> compiled macro.
+///
+/// Wrapped in `RwLock` internally so that concurrent `compile_unit` calls
+/// can expand macros (read lock) while `compile_macro` takes a write lock.
 pub struct MacroEnv {
-    macros: HashMap<Symbol, MacroEntry>,
+    macros: RwLock<HashMap<Symbol, MacroEntry>>,
 }
+
+// SAFETY: MacroEntry contains *const u8 (JIT function pointers) which are
+// valid for the lifetime of the Jit instance. These pointers are only read
+// (called) during macro expansion, never mutated. The RwLock provides the
+// necessary synchronization for concurrent access to the HashMap.
+unsafe impl Send for MacroEnv {}
+unsafe impl Sync for MacroEnv {}
 
 impl MacroEnv {
     fn new() -> Self {
         MacroEnv {
-            macros: HashMap::new(),
+            macros: RwLock::new(HashMap::new()),
         }
     }
 }
@@ -74,7 +85,9 @@ impl CraneliftExpander {
     /// Used during module hot-reload to clear old macros before
     /// recompiling the module that defined them.
     pub fn remove_macro(&mut self, name: &str) {
-        self.env.macros.remove(name);
+        self.env.macros.write()
+            .expect("macro env write lock poisoned")
+            .remove(name);
     }
 
     /// Compile a macro from a parsed DefmacroInfo and register it.
@@ -112,13 +125,15 @@ impl CraneliftExpander {
             });
         }
 
-        self.env.macros.insert(
-            info.name.clone(),
-            MacroEntry {
-                clauses: compiled_clauses,
-                docstring: info.docstring.clone(),
-            },
-        );
+        self.env.macros.write()
+            .expect("macro env write lock poisoned")
+            .insert(
+                info.name.clone(),
+                MacroEntry {
+                    clauses: compiled_clauses,
+                    docstring: info.docstring.clone(),
+                },
+            );
 
         Ok(())
     }
@@ -128,8 +143,10 @@ impl CraneliftExpander {
     /// Walks the tree looking for list forms whose head is a known macro name.
     /// Also handles bare symbols that are zero-arg macros.
     /// Depth limit prevents infinite expansion.
-    pub fn expand_sexp(&mut self, sexp: Sexp) -> Result<Sexp, CranelispError> {
-        expand_sexp_recursive(sexp, &mut self.env, 0)
+    pub fn expand_sexp(&self, sexp: Sexp) -> Result<Sexp, CranelispError> {
+        let macros = self.env.macros.read()
+            .expect("macro env read lock poisoned");
+        expand_sexp_recursive(sexp, &macros, 0)
     }
 }
 
@@ -139,12 +156,15 @@ impl MacroExpander for CraneliftExpander {
     /// Called by the AST builder when it encounters a list form whose head
     /// is a registered macro name.
     fn expand(
-        &mut self,
+        &self,
         name: &Symbol,
         args: &[Sexp],
         span: Span,
     ) -> Result<Sexp, CranelispError> {
-        let entry = self.env.macros.get(name).ok_or_else(|| {
+        let macros = self.env.macros.read()
+            .expect("macro env read lock poisoned");
+
+        let entry = macros.get(name).ok_or_else(|| {
             CranelispError::MacroError {
                 message: format!("unknown macro '{name}'"),
                 span,
@@ -170,11 +190,13 @@ impl MacroExpander for CraneliftExpander {
         rewrite_spans(&mut rewritten, span);
 
         // Re-expand the result in case it contains macro calls.
-        expand_sexp_recursive(rewritten, &mut self.env, 0)
+        expand_sexp_recursive(rewritten, &macros, 0)
     }
 
     fn is_macro(&self, name: &str) -> bool {
-        self.env.macros.contains_key(name)
+        self.env.macros.read()
+            .expect("macro env read lock poisoned")
+            .contains_key(name)
     }
 }
 
@@ -471,7 +493,7 @@ fn rewrite_spans_unique(sexp: &mut Sexp) {
 /// - Recursive children expansion
 fn expand_sexp_recursive(
     sexp: Sexp,
-    env: &mut MacroEnv,
+    macros: &HashMap<Symbol, MacroEntry>,
     depth: usize,
 ) -> Result<Sexp, CranelispError> {
     if depth > EXPANSION_DEPTH_LIMIT {
@@ -487,10 +509,10 @@ fn expand_sexp_recursive(
         Sexp::List(ref children, span) if !children.is_empty() => {
             // Check if head is a macro name.
             if let Sexp::Symbol(ref name, _) = children[0]
-                && env.macros.contains_key(name.as_str())
+                && macros.contains_key(name.as_str())
             {
                 let args = &children[1..];
-                return expand_macro_call(name, args, span, env, depth);
+                return expand_macro_call(name, args, span, macros, depth);
             }
             // Not a macro call — recurse into children.
             let Sexp::List(children, span) = sexp else {
@@ -498,21 +520,21 @@ fn expand_sexp_recursive(
             };
             let expanded: Vec<Sexp> = children
                 .into_iter()
-                .map(|c| expand_sexp_recursive(c, env, depth))
+                .map(|c| expand_sexp_recursive(c, macros, depth))
                 .collect::<Result<Vec<_>, _>>()?;
             Ok(Sexp::List(expanded, span))
         }
         Sexp::Symbol(ref name, span) => {
             // Bare symbol: check for zero-arg macro.
-            if env.macros.contains_key(name.as_str()) {
-                return expand_macro_call(name, &[], span, env, depth);
+            if macros.contains_key(name.as_str()) {
+                return expand_macro_call(name, &[], span, macros, depth);
             }
             Ok(sexp)
         }
         Sexp::Bracket(children, span) => {
             let expanded: Vec<Sexp> = children
                 .into_iter()
-                .map(|c| expand_sexp_recursive(c, env, depth))
+                .map(|c| expand_sexp_recursive(c, macros, depth))
                 .collect::<Result<Vec<_>, _>>()?;
             Ok(Sexp::Bracket(expanded, span))
         }
@@ -525,10 +547,10 @@ fn expand_macro_call(
     name: &str,
     args: &[Sexp],
     span: Span,
-    env: &mut MacroEnv,
+    macros: &HashMap<Symbol, MacroEntry>,
     depth: usize,
 ) -> Result<Sexp, CranelispError> {
-    let entry = env.macros.get(name).ok_or_else(|| {
+    let entry = macros.get(name).ok_or_else(|| {
         CranelispError::MacroError {
             message: format!("unknown macro '{name}'"),
             span,
@@ -549,7 +571,7 @@ fn expand_macro_call(
     rewrite_spans(&mut result, span);
 
     // Re-expand the result.
-    expand_sexp_recursive(result, env, depth + 1)
+    expand_sexp_recursive(result, macros, depth + 1)
 }
 
 // ---------------------------------------------------------------------------
@@ -568,7 +590,7 @@ fn compile_single_clause(
     clause_idx: usize,
     clause: &cranelisp_frontend::MacroClause,
     span: Span,
-    expander: &mut CraneliftExpander,
+    expander: &CraneliftExpander,
     tc: &mut cranelisp_typecheck::TypeChecker,
     jit: &mut cranelisp_backend::jit::Jit,
 ) -> Result<*const u8, CranelispError> {
@@ -590,10 +612,9 @@ fn compile_single_clause(
     // Step 4: Typecheck.
     let ctx = cranelisp_types::CompileContext {
         module: tc.current_module_path().clone(),
-        strategy: cranelisp_types::ModuleStrategy::Additive,
-        codegen_target: cranelisp_types::CodegenTarget::JitAndCache,
+        codegen: cranelisp_types::CodegenBehaviour::InMemoryAndObject,
     };
-    let check = tc.check(&program, &ctx)?;
+    let check = tc.check(&program, &ctx, cranelisp_types::ModuleStrategy::Additive)?;
 
     // Step 5: Compile.
     // Extract the single defn from the program.

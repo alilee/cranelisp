@@ -1,159 +1,147 @@
-// cranelisp: pipeline orchestration, batch mode, REPL.
+// cranelisp main: pipeline-v3.md §2.2 structure.
+//
+// Three modes: Run (--run), Link (--link), Repl (default).
+// Run and Link compile an entry file; Repl delegates to run_repl().
 
 use std::path::{Path, PathBuf};
 use std::process;
 
 use cranelisp_types::{
-    CodegenTarget, CompileContext, CranelispError, ModuleFullPath, ModuleStrategy, Span, Symbol,
+    CodegenBehaviour, CompileContext, CranelispError, ModuleFullPath, ModuleStrategy, Span,
     Type, Warning,
 };
 
-use cranelisp::pipeline::CompilationSession;
-use cranelisp::pipeline_v2::compile_unit;
+use cranelisp::session::CompilationSession;
+
+// ---------------------------------------------------------------------------
+// Action enum (pipeline-v3.md §2.1)
+// ---------------------------------------------------------------------------
+
+enum Action {
+    Run,
+    Link,
+    Repl,
+}
+
+// ---------------------------------------------------------------------------
+// Settings (pipeline-v3.md §11)
+// ---------------------------------------------------------------------------
+
+struct Settings {
+    no_color: bool,
+    #[allow(dead_code)] // Wave 3: cache-hit loading uses this
+    no_cache: bool,
+}
+
+// ---------------------------------------------------------------------------
+// Main (pipeline-v3.md §2.2)
+// ---------------------------------------------------------------------------
 
 fn main() {
-    let args: Vec<String> = std::env::args().collect();
-    let (mode, no_color) = parse_args(&args);
-    cranelisp::style::init_color(no_color);
-    match mode {
-        RunMode::Repl => cranelisp::repl::run_repl(),
-        RunMode::RunFile { path, no_cache } => run_file(&path, no_cache),
-        RunMode::Link { path } => link_file(&path),
-        RunMode::Error(msg) => {
-            eprintln!("error: {msg}");
-            eprintln!("usage: cranelisp [--run <file.cl>] [--link <file.cl>] [--no-color]");
-            process::exit(1);
+    let (action, entry_module_path, settings) = parse_args();
+    cranelisp::style::init_color(settings.no_color);
+
+    // Link and REPL modes have their own session and compilation flow.
+    match action {
+        Action::Link => {
+            if let Err(e) = link_mode(&entry_module_path) {
+                eprintln!("error: {e}");
+                process::exit(1);
+            }
+            return;
         }
-    }
-}
-
-enum RunMode { Repl, RunFile { path: String, no_cache: bool }, Link { path: String }, Error(String) }
-
-fn parse_args(args: &[String]) -> (RunMode, bool) {
-    let mut no_cache = false;
-    let mut no_color = false;
-    let mut run_file: Option<String> = None;
-    let mut link_file: Option<String> = None;
-    let mut i = 1;
-    while i < args.len() {
-        match args[i].as_str() {
-            "--no-cache" => { no_cache = true; i += 1; }
-            "--no-color" => { no_color = true; i += 1; }
-            "--run" => { if i+1 < args.len() { run_file = Some(args[i+1].clone()); i += 2; } else { return (RunMode::Error("--run requires a file argument".into()), no_color); } }
-            "--link" => { if i+1 < args.len() { link_file = Some(args[i+1].clone()); i += 2; } else { return (RunMode::Error("--link requires a file argument".into()), no_color); } }
-            other => { return (RunMode::Error(format!("unexpected argument: {other}")), no_color); }
+        Action::Repl => {
+            // REPL creates its own session with prelude loading and
+            // persistence (user.cl restore). See repl/mod.rs run_repl().
+            cranelisp::repl::run_repl();
+            return;
         }
+        Action::Run => {} // fall through to batch compilation below
     }
-    if run_file.is_some() && link_file.is_some() { return (RunMode::Error("--run and --link cannot be used together".into()), no_color); }
-    if let Some(path) = link_file {
-        if no_cache { return (RunMode::Error("--no-cache is not supported with --link".into()), no_color); }
-        return (RunMode::Link { path }, no_color);
-    }
-    let mode = match run_file {
-        Some(path) => RunMode::RunFile { path, no_cache },
-        None if no_cache => RunMode::Error("--no-cache requires --run <file>".into()),
-        None => RunMode::Repl,
-    };
-    (mode, no_color)
-}
 
-fn run_file(path: &str, _no_cache: bool) {
-    match run_file_inner(path) {
-        Ok(()) => {}
+    // --- Batch (Run) mode ---
+
+    let entry_module_name = slug(&entry_module_path);
+    let project_root = base_dir(&entry_module_path);
+
+    let mut s = new_session(&project_root, &entry_module_path);
+
+    let src = match read_file(&entry_module_path) {
+        Ok(src) => src,
         Err(e) => {
             eprintln!("error: {e}");
             process::exit(1);
         }
+    };
+
+    let ctx = CompileContext {
+        module: ModuleFullPath::from(entry_module_name.as_str()),
+        codegen: CodegenBehaviour::InMemoryAndObject,
+    };
+
+    let unit_result = match s.compile_unit(&src, &ctx, ModuleStrategy::Replace) {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("error: {e}");
+            process::exit(1);
+        }
+    };
+    let unit_warnings = unit_result.warnings.clone();
+    s.send_codegen(unit_result, ctx.clone());
+
+    s.spawn_hot_inmem_codegen();
+    s.spawn_nice_object_codegen();
+
+    if let Err(e) = run_mode(&mut s, &ctx, unit_warnings) {
+        eprintln!("error: {e}");
+        process::exit(1);
     }
 }
 
-fn run_file_inner(path: &str) -> Result<(), CranelispError> {
-    let file_path = Path::new(path);
-    if !file_path.exists() {
-        return Err(CranelispError::ModuleError {
-            message: format!("file not found: {path}"),
-            file: Some(file_path.to_path_buf()),
-            span: Span::SYNTHETIC,
-        });
-    }
-    let project_root = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-    let lib_dirs = cranelisp::pipeline::assemble_lib_dirs(&project_root);
+// ---------------------------------------------------------------------------
+// Run mode (pipeline-v3.md §8)
+// ---------------------------------------------------------------------------
 
-    // Step 1: Canonicalize entry path, derive module name.
-    let entry_path = file_path.canonicalize().map_err(|e| CranelispError::ModuleError {
-        message: format!("cannot canonicalize '{}': {}", file_path.display(), e),
-        file: Some(file_path.to_path_buf()),
-        span: Span::SYNTHETIC,
-    })?;
-    let module_name = entry_path
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .unwrap_or("main");
-    let entry_module = ModuleFullPath::from(module_name);
+fn run_mode(
+    s: &mut CompilationSession,
+    ctx: &CompileContext,
+    unit_warnings: Vec<Warning>,
+) -> Result<(), CranelispError> {
+    // hot_flush_in_mem_queue: blocks until all GOT slots populated.
+    let codegen_results = s.hot_flush_in_mem_queue()?;
+    s.shutdown_codegen();
 
-    // Step 2: Create session with async codegen, set lib_dirs.
-    let mut session = CompilationSession::new_async();
-    session.interactive = true;
-    let entry_dir = entry_path.parent().map(|p| p.to_path_buf());
-    let mut all_lib_dirs: Vec<PathBuf> = Vec::new();
-    if let Some(dir) = &entry_dir {
-        all_lib_dirs.push(dir.clone());
-    }
-    all_lib_dirs.extend(lib_dirs.iter().cloned());
-    session.lib_dirs = all_lib_dirs;
-    session.project_root = entry_dir.unwrap_or_else(|| PathBuf::from("."));
-
-    // Step 3: Read entry file source.
-    let entry_source = std::fs::read_to_string(&entry_path).map_err(|e| {
-        CranelispError::ModuleError {
-            message: format!("cannot read '{}': {}", entry_path.display(), e),
-            file: Some(entry_path.clone()),
-            span: Span::SYNTHETIC,
-        }
-    })?;
-
-    // Step 4: Compile via compile_unit (prelude auto-loaded inside).
-    let entry_ctx = CompileContext {
-        module: entry_module,
-        strategy: ModuleStrategy::Additive,
-        codegen_target: CodegenTarget::JitAndCache,
-    };
-    let unit_result = compile_unit(&mut session, &entry_source, &entry_ctx)?;
-    let unit_warnings = unit_result.warnings.clone();
-    session.send_codegen(unit_result, entry_ctx);
-    let mut codegen_results = session.flush_codegen()?;
-    // Shut down the async worker and retrieve its state (GOT, .o paths)
-    // so we can inspect them for the main-exists check below.
-    session.shutdown_codegen();
-    let result = match codegen_results.pop() {
+    let result = match codegen_results.into_iter().last() {
         Some(r) => r,
-        None => unreachable!("invariant: flush_codegen must return one result per queued item"),
+        None => return Err(CranelispError::ModuleError {
+            message: "no codegen result".into(),
+            file: None,
+            span: Span::SYNTHETIC,
+        }),
     };
 
-    // Step 5: Verify `main` exists in the GOT.
-    let main_sym = Symbol::from("main");
-    let qualified_main = Symbol::from(format!("{}/main", module_name));
-    let main_exists = session.inmem_worker.got_state.def_codegen.contains_key(&main_sym)
-        || session.inmem_worker.got_state.def_codegen.contains_key(&qualified_main);
+    // Verify main exists.
+    let module_name = ctx.module.as_ref();
+    let main_sym = cranelisp_types::Symbol::from("main");
+    let qualified_main = cranelisp_types::Symbol::from(format!("{}/main", module_name));
+    let main_exists = s.inmem_worker.got_state.def_codegen.contains_key(&main_sym)
+        || s.inmem_worker.got_state.def_codegen.contains_key(&qualified_main);
     if !main_exists {
         return Err(CranelispError::ModuleError {
-            message:
-                "entry module has no `main` function — batch mode requires (defn main [] ...)"
-                    .into(),
-            file: Some(entry_path),
+            message: "entry module has no `main` function — batch mode requires (defn main [] ...)".into(),
+            file: None,
             span: Span::SYNTHETIC,
         });
     }
 
-    // Step 6: Extract result value.
     let raw_value = result.value.ok_or_else(|| CranelispError::ModuleError {
         message: "entry module produced no result value".into(),
-        file: Some(entry_path.clone()),
+        file: None,
         span: Span::SYNTHETIC,
     })?;
     let result_type = result.result_type.unwrap_or(Type::Int);
 
-    // Step 7: If main returns IO, run the IO trampoline.
+    // IO trampoline.
     let (value, ty) = if result_type.is_io() {
         let inner_value = cranelisp_runtime::run_io_trampoline(raw_value);
         let inner_type = result_type.io_inner_type();
@@ -161,6 +149,9 @@ fn run_file_inner(path: &str) -> Result<(), CranelispError> {
     } else {
         (raw_value, result_type)
     };
+
+    // hot_flush_object_queue: blocks until all .o written.
+    s.hot_flush_object_queue()?;
 
     // Display warnings and result.
     let mut all_warnings = unit_warnings;
@@ -170,44 +161,157 @@ fn run_file_inner(path: &str) -> Result<(), CranelispError> {
     }
     let display = cranelisp::repl::format_result(value, &ty);
     println!("{display}");
-    let exit_code = cranelisp::pipeline::determine_exit_code(value, &ty);
+
+    let exit_code = cranelisp::session::determine_exit_code(value, &ty);
     if exit_code != 0 {
         process::exit(exit_code);
     }
     Ok(())
 }
 
-fn link_file(path: &str) {
-    match link_file_inner(path) {
-        Ok(()) => {}
-        Err(e) => {
-            eprintln!("error: {e}");
-            process::exit(1);
+// Concurrent codegen stubs (spawn_hot_inmem_codegen, spawn_nice_object_codegen,
+// hot_flush_in_mem_queue, hot_flush_object_queue) live in session.rs as methods
+// on CompilationSession. Wave 2 replaces them with real thread pool implementations.
+
+// ---------------------------------------------------------------------------
+// Argument parsing
+// ---------------------------------------------------------------------------
+
+fn parse_args() -> (Action, PathBuf, Settings) {
+    let args: Vec<String> = std::env::args().collect();
+    let mut no_color = false;
+    let mut no_cache = false;
+    let mut run_file: Option<String> = None;
+    let mut link_file: Option<String> = None;
+    let mut i = 1;
+
+    while i < args.len() {
+        match args[i].as_str() {
+            "--no-cache" => { no_cache = true; i += 1; }
+            "--no-color" => { no_color = true; i += 1; }
+            "--run" => {
+                if i + 1 < args.len() {
+                    run_file = Some(args[i + 1].clone());
+                    i += 2;
+                } else {
+                    eprintln!("error: --run requires a file argument");
+                    process::exit(1);
+                }
+            }
+            "--link" => {
+                if i + 1 < args.len() {
+                    link_file = Some(args[i + 1].clone());
+                    i += 2;
+                } else {
+                    eprintln!("error: --link requires a file argument");
+                    process::exit(1);
+                }
+            }
+            other => {
+                eprintln!("error: unexpected argument: {other}");
+                eprintln!("usage: cranelisp [--run <file.cl>] [--link <file.cl>] [--no-color]");
+                process::exit(1);
+            }
         }
+    }
+
+    let settings = Settings { no_color, no_cache };
+
+    if run_file.is_some() && link_file.is_some() {
+        eprintln!("error: --run and --link cannot be used together");
+        process::exit(1);
+    }
+
+    if let Some(path) = link_file {
+        return (Action::Link, PathBuf::from(path), settings);
+    }
+
+    match run_file {
+        Some(path) => (Action::Run, PathBuf::from(path), settings),
+        None => (Action::Repl, PathBuf::from("user.cl"), settings),
     }
 }
 
-fn link_file_inner(path: &str) -> Result<(), CranelispError> {
-    let file_path = Path::new(path);
-    if !file_path.exists() {
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+/// Derive module name from file path (file stem).
+fn slug(path: &Path) -> String {
+    path.file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("main")
+        .to_string()
+}
+
+/// Derive project root from file path (parent directory).
+fn base_dir(path: &Path) -> PathBuf {
+    path.parent()
+        .map(|p| p.to_path_buf())
+        .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")))
+}
+
+/// Read source file.
+fn read_file(path: &Path) -> Result<String, CranelispError> {
+    if !path.exists() {
         return Err(CranelispError::ModuleError {
-            message: format!("file not found: {path}"),
-            file: Some(file_path.to_path_buf()),
+            message: format!("file not found: {}", path.display()),
+            file: Some(path.to_path_buf()),
             span: Span::SYNTHETIC,
         });
     }
+    std::fs::read_to_string(path).map_err(|e| CranelispError::ModuleError {
+        message: format!("cannot read '{}': {}", path.display(), e),
+        file: Some(path.to_path_buf()),
+        span: Span::SYNTHETIC,
+    })
+}
+
+/// Create a new compilation session with lib_dirs set up.
+fn new_session(project_root: &Path, entry_path: &Path) -> CompilationSession {
+    let lib_dirs = cranelisp::session::assemble_lib_dirs(project_root);
+
+    let mut session = CompilationSession::new_async();
+    session.interactive = true;
+
+    let entry_dir = entry_path
+        .canonicalize()
+        .ok()
+        .and_then(|p| p.parent().map(|d| d.to_path_buf()));
+
+    let mut all_lib_dirs: Vec<PathBuf> = Vec::new();
+    if let Some(dir) = &entry_dir {
+        all_lib_dirs.push(dir.clone());
+    }
+    all_lib_dirs.extend(lib_dirs.iter().cloned());
+    session.lib_dirs = all_lib_dirs;
+    session.project_root = entry_dir.unwrap_or_else(|| project_root.to_path_buf());
+
+    session
+}
+
+/// Link mode: compile all modules in dependency order, then link to executable.
+///
+/// Uses the module graph discovery + topo sort from pipeline.rs, then
+/// compiles each module via compile_unit + send_codegen + flush_codegen
+/// (reusing the existing link path logic). The object worker generates
+/// .o files; the linker assembles them into an executable.
+fn link_mode(entry_path: &Path) -> Result<(), CranelispError> {
+    use cranelisp::session::CompilationSession;
+    use cranelisp_types::{CodegenBehaviour, CompileContext, ModuleStrategy, Warning};
+
     let project_root = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-    let lib_dirs = cranelisp::pipeline::assemble_lib_dirs(&project_root);
+    let lib_dirs = cranelisp::session::assemble_lib_dirs(&project_root);
     let cache_dir = project_root.join(".cranelisp-cache");
 
-    // Step 1: Discover module graph from entry file, topological sort.
-    let graph = cranelisp::pipeline::discover_module_graph(file_path, &lib_dirs)?;
+    // Step 1: Discover module graph and topological sort.
+    let graph = cranelisp::pipeline::discover_module_graph(entry_path, &lib_dirs)?;
     let order = cranelisp::pipeline::toposort(&graph)?;
 
-    // Step 2: Canonicalize entry path, create session with caching.
-    let entry_path = file_path.canonicalize().map_err(|e| CranelispError::ModuleError {
-        message: format!("cannot canonicalize '{}': {}", file_path.display(), e),
-        file: Some(file_path.to_path_buf()),
+    // Step 2: Create async session with caching.
+    let canonical_entry = entry_path.canonicalize().map_err(|e| CranelispError::ModuleError {
+        message: format!("cannot canonicalize '{}': {}", entry_path.display(), e),
+        file: Some(entry_path.to_path_buf()),
         span: Span::SYNTHETIC,
     })?;
     std::fs::create_dir_all(&cache_dir).map_err(|e| CranelispError::ModuleError {
@@ -218,18 +322,11 @@ fn link_file_inner(path: &str) -> Result<(), CranelispError> {
 
     let mut session = CompilationSession::new_async_with_cache(cache_dir.clone());
     session.interactive = true;
-    let entry_dir = entry_path.parent().map(|p| p.to_path_buf());
-    let mut all_lib_dirs: Vec<PathBuf> = Vec::new();
-    if let Some(dir) = &entry_dir {
-        all_lib_dirs.push(dir.clone());
-    }
-    all_lib_dirs.extend(lib_dirs.iter().cloned());
-    session.lib_dirs = all_lib_dirs;
-    session.project_root = entry_dir.unwrap_or_else(|| PathBuf::from("."));
+    setup_lib_dirs(&mut session, &canonical_entry, &lib_dirs);
 
     let mut all_warnings: Vec<Warning> = Vec::new();
 
-    // Step 3: Compile each module in topo order via compile_unit.
+    // Step 3: Compile each module in topo order.
     for module_path in &order {
         let node = &graph.nodes[module_path];
         let source = std::fs::read_to_string(&node.file_path).map_err(|e| {
@@ -242,11 +339,10 @@ fn link_file_inner(path: &str) -> Result<(), CranelispError> {
 
         let ctx = CompileContext {
             module: module_path.clone(),
-            strategy: ModuleStrategy::Replace,
-            codegen_target: CodegenTarget::JitAndCache,
+            codegen: CodegenBehaviour::InMemoryAndObject,
         };
 
-        let unit_result = compile_unit(&mut session, &source, &ctx)?;
+        let unit_result = session.compile_unit(&source, &ctx, ModuleStrategy::Replace)?;
         all_warnings.extend(unit_result.warnings.clone());
         session.send_codegen(unit_result, ctx);
         let codegen_results = session.flush_codegen()?;
@@ -255,34 +351,25 @@ fn link_file_inner(path: &str) -> Result<(), CranelispError> {
         }
     }
 
-    // Step 4: Shut down async worker, flush .o writes, collect paths.
+    // Step 4: Shut down workers, flush .o writes.
     session.shutdown_codegen();
     session.flush_cache_writes();
     let module_o_paths = session.object_worker.compiled_o_paths.clone();
 
-    // Step 5: Collect entry module's symbol table and module structures.
+    // Step 5: Validate main, generate startup, link executable.
     session.tc.set_current_module(graph.entry.clone());
     let entry_symbols = session.tc.symbol_table().clone();
     let module_structures = session.object_worker.compiled_module_structures.clone();
 
-    // Display warnings.
     for w in &all_warnings {
         eprintln!("warning: {}", w.message);
     }
 
-    // Step 6: Validate main, generate startup, link executable.
     let main_return = cranelisp::exe::validate_main(&entry_symbols)?;
-    let platform_manifest_names =
-        cranelisp::exe::collect_platform_manifest_names(&module_structures);
+    let platform_names = cranelisp::exe::collect_platform_manifest_names(&module_structures);
     let main_returns_io = main_return == cranelisp::exe::MainReturnKind::Io;
-    let startup_bytes =
-        cranelisp::exe::generate_startup_object(&platform_manifest_names, main_returns_io)?;
+    let startup_bytes = cranelisp::exe::generate_startup_object(&platform_names, main_returns_io)?;
     let startup_o_path = cache_dir.join("_startup.o");
-    std::fs::create_dir_all(&cache_dir).map_err(|e| CranelispError::ModuleError {
-        message: format!("cannot create cache dir '{}': {}", cache_dir.display(), e),
-        file: None,
-        span: Span::SYNTHETIC,
-    })?;
     std::fs::write(&startup_o_path, &startup_bytes).map_err(|e| CranelispError::ModuleError {
         message: format!("cannot write startup object: {}", e),
         file: Some(startup_o_path.clone()),
@@ -290,8 +377,11 @@ fn link_file_inner(path: &str) -> Result<(), CranelispError> {
     })?;
     let bundle_lib = cranelisp::exe::find_bundle_lib()?;
     let platform_rlibs = cranelisp::exe::find_platform_rlibs(&module_structures);
-    let output_path =
-        PathBuf::from(file_path.file_stem().unwrap_or(std::ffi::OsStr::new("a.out")));
+    let output_path = PathBuf::from(
+        entry_path
+            .file_stem()
+            .unwrap_or(std::ffi::OsStr::new("a.out")),
+    );
     cranelisp::exe::link_executable(
         &output_path,
         &module_o_paths,
@@ -301,4 +391,20 @@ fn link_file_inner(path: &str) -> Result<(), CranelispError> {
     )?;
     eprintln!("; Linked: {}", output_path.display());
     Ok(())
+}
+
+/// Set up lib_dirs on a session from an entry path and base lib_dirs.
+fn setup_lib_dirs(
+    session: &mut cranelisp::session::CompilationSession,
+    canonical_entry: &Path,
+    lib_dirs: &[PathBuf],
+) {
+    let entry_dir = canonical_entry.parent().map(|p| p.to_path_buf());
+    let mut all_lib_dirs: Vec<PathBuf> = Vec::new();
+    if let Some(dir) = &entry_dir {
+        all_lib_dirs.push(dir.clone());
+    }
+    all_lib_dirs.extend(lib_dirs.iter().cloned());
+    session.lib_dirs = all_lib_dirs;
+    session.project_root = entry_dir.unwrap_or_else(|| PathBuf::from("."));
 }

@@ -119,9 +119,9 @@ fn typecheck_only(session: &mut ReplSession, expr_src: &str) -> Result<Type, Cra
             span: cranelisp_types::Span::SYNTHETIC,
         });
     }
-    let input = cranelisp_frontend::build_repl_input(&sexps[0], &mut session.core.expander)?;
+    let input = cranelisp_frontend::build_repl_input(&sexps[0], &session.core.expander)?;
     let ctx = session.build_repl_compile_context();
-    let check_result = session.core.tc.check(&[input], &ctx)?;
+    let check_result = session.core.tc.check(&[input], &ctx, cranelisp_types::ModuleStrategy::Additive)?;
     Ok(check_result.display.as_ref().unwrap().ty.clone())
 }
 

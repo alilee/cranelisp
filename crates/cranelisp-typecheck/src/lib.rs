@@ -7,6 +7,14 @@
 // Architecture: TypeChecker struct with borrow-splitting pattern -- hot-path
 // functions (unify, fresh_var) take explicit &mut Subst / &mut TypeId parameters
 // to avoid &mut self conflicts.
+//
+// Concurrency (Sprint 40):
+// - Phase 1: per-check transient state extracted into `CheckState`
+// - Phase 2: `AtomicU32` for TypeId allocation, per-module compilation locks
+//   via `try_lock_module()` / `ModuleGuard` RAII guard
+// - Phase 3: shared registries (type_defs, trait_registry, impl_registry)
+//   behind `RwLock` for parallel-safe access. `check()` remains `&mut self`
+//   until the pipeline needs concurrent calls (see checker.rs module doc).
 
 mod adt;
 mod builtins;
@@ -20,7 +28,7 @@ mod traits;
 mod unify;
 
 // Public API
-pub use checker::TypeChecker;
+pub use checker::{ModuleGuard, TypeChecker};
 
 // Re-export boundary types that callers need
 pub use cranelisp_types::{

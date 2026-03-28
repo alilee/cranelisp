@@ -50,18 +50,12 @@ fn main() {
     }
     s.spawn_nice_object_codegen();
 
-    if let Repl = action {
-        s.spawn_file_watcher(|s, file_path| {
-            if let Some((module, src)) = s.read_module(file_path) {
-                s.recompile_module_and_dependents(module, src);
-            }
-        });
-    }
-
     match action {
         Repl => {
+            s.spawn_file_watcher();
             loop {
                 let src = read_line();
+                s.pause_watcher_codegen();
                 s.hot_flush_in_mem_queue();
                 if let Some(form) = match s.process_commands(&src) {
                     Nothing => None,
@@ -70,6 +64,7 @@ fn main() {
                 } {
                     pretty_print_form(form);
                 }
+                s.resume_watcher_codegen();
             }
             s.hot_flush_object_queue();
         }
@@ -145,9 +140,9 @@ For each unresolved import module:
 1. **Already loaded.** The typechecker already has the module's symbol table (from an earlier `compile_unit` call in this session). Nothing to do.
 
 2. **Cache hit.** A valid `.o` + `.meta.json` exists on disk and the source hasn't changed (hash match). Load from cache:
-   - Read `.meta.json` → restore `SymbolTable`, `ModuleStructure`, and type registrations into the typechecker. This gives stage 5 everything it needs to resolve imports from this dependency.
-   - Read `.o` → link into the GOT (in-mem path: load code pointers into GOT slots) or collect the `.o` path (link path: pass to system linker later).
-   - No `compile_unit` call. No codegen enqueued. The dependency is fully loaded from artifacts.
+   - Read `.meta.json` → restore `SymbolTable`, `ModuleStructure`, and type registrations into the typechecker. This gives stage 5 everything it needs to resolve imports from this dependency. Register dependency edges in `module_deps`.
+   - Enqueue a `FromCache` codegen item carrying the `.o` path to the codegen queue. The worker pool loads the `.o` and JITs it (or collects the path for the system linker). Cache-hit loading does NOT JIT inside `compile_unit` — like source compilation, it enqueues and returns.
+   - No `compile_unit` call. The dependency's symbols are fully available for typechecking; its code is loaded asynchronously by workers.
 
 3. **Cache miss.** No cache, or source has changed. Compile from source:
    - Resolve the module source file via `lib_dirs`.
@@ -305,16 +300,23 @@ struct ObjectWorkerState {
 ### 6.1 `CodegenItem`
 
 ```rust
-pub struct CodegenItem {
-    pub module: ModuleFullPath,
-    pub program: Vec<TopLevel>,
-    pub check_result: CheckResult,
-    pub module_structure: ModuleStructure,
-    pub source: String,
+pub enum CodegenItem {
+    FromSource {
+        module: ModuleFullPath,
+        program: Vec<TopLevel>,
+        check_result: CheckResult,
+        module_structure: ModuleStructure,
+        source: String,
+    },
+    FromCache {
+        module: ModuleFullPath,
+        object_path: PathBuf,
+        got_slot_map: HashMap<Symbol, usize>,
+    },
 }
 ```
 
-Owns all data. No borrows from the call stack. `compile_unit` builds this after stage 5 and pushes to one or both queues based on `CodegenBehaviour`.
+Owns all data. No borrows from the call stack. `compile_unit` builds `FromSource` after stage 5 and pushes to one or both queues based on `CodegenBehaviour`. Cache hits (§3.4.1) push `FromCache` with the `.o` path. Workers handle both: `FromSource` JIT-compiles from IR; `FromCache` loads the cached object via `Linker`.
 
 ### 6.2 Queue Operations
 
@@ -364,6 +366,12 @@ This works because:
 - **`hot_flush` is a barrier.** It blocks until all in-flight workers complete.
 - **In-mem and object queues run in parallel.** Both are being drained concurrently — in-mem at full priority, object at nice.
 
+### 6.5 Producer-Consumer Clarification
+
+The codegen system is a classic **producer-consumer** pattern with a shared concurrent queue — not a coordinator pattern, not request-response, not message passing between named threads.
+
+`compile_unit` is a **producer**: it pushes `CodegenItem`s to the shared queues and returns immediately. It does not wait for codegen, does not know how many workers exist, and does not care whether any worker has started. The in-mem and object worker pools are **consumers**: N threads, spawned once, continuously draining their respective queues. Workers are always running once spawned — they loop on try-pop, compile whatever they find, and park (condvar wait) when the queue is empty. There is no coordinator thread, no batch accumulation, no dispatch step. The queue IS the communication mechanism. `hot_flush` is a **barrier**, not a dispatcher: it signals "no more items coming" and blocks until the queue is empty and all in-flight compilations complete. It does not assign work to threads — workers are already draining. When parallel `compile_unit` calls run (from `load_dependencies`), each producer thread pushes to the same shared queue. Workers drain items regardless of which producer enqueued them.
+
 ## 7. REPL
 
 ### 7.1 `process_commands`
@@ -411,12 +419,10 @@ TC snapshot/restore wraps the `Compile` path. On error, the typechecker rolls ba
 The file watcher recompiles changed modules immediately — it does not defer work to the REPL prompt. The user may be editing in their IDE without touching the REPL; compilation should happen in the background as files are saved.
 
 ```rust
-s.spawn_file_watcher(|s, file_path| {
-    if let Some((module, src)) = s.read_module(file_path) {
-        s.recompile_module_and_dependents(module, src);
-    }
-});
+s.spawn_file_watcher();
 ```
+
+`spawn_file_watcher` starts a background thread that watches `project_root` for `.cl` file changes. On each change notification, it calls `s.recompile_module_and_dependents(module, src)` (see §7.4.1). The watcher thread uses `compile_unit` (which is `&self`) and enqueues codegen to the shared queue — workers JIT the recompiled modules in the background.
 
 #### 7.4.1 Recompilation with Cascade
 
@@ -450,6 +456,8 @@ Populated during stage 2 (extract) of every `compile_unit` call. The forward edg
 The file watcher runs on its own thread. Recompilation and codegen enqueuing happen concurrently with the user typing at the REPL. The in-mem codegen workers JIT the recompiled modules in the background.
 
 When the user presses enter, `hot_flush_in_mem_queue` is a barrier — it waits for any in-flight recompilations and JIT work to complete before evaluating the user's expression. If the file watcher finished before the user pressed enter, the flush is instant. The user only waits if recompilation is still in flight.
+
+**GOT stability during evaluation.** During REPL expression evaluation (from `hot_flush_in_mem_queue` through execution to result display), watcher-triggered codegen must not write to the GOT. The pattern: `pause_watcher_enqueue` before `hot_flush`, `resume_watcher_enqueue` after evaluation completes. This ensures the GOT is stable during execution — a function mid-execution always sees consistent code pointers for its callees. Watcher `compile_unit` calls (stages 1-5) can continue during this window — only codegen enqueuing is paused. This keeps typecheck latency low while protecting execution consistency.
 
 #### 7.4.4 Coalescing
 

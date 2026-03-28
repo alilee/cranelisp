@@ -12,6 +12,8 @@ pub mod cache;
 // Re-export build_isa at the crate root for convenient access.
 // This is the single ISA construction point (architecture decision 7).
 pub use cache::object::build_isa;
+// Re-export TargetIsa for shared ISA in N-core codegen (pipeline-v3.md §6).
+pub use cranelift::codegen::isa::TargetIsa;
 pub mod codegen_types;
 pub mod exe;
 pub mod compiler;

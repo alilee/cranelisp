@@ -88,7 +88,7 @@ fn parse_def_visibility(head: &str) -> Option<(&str, Visibility)> {
 /// Each sexp must be a top-level form (`defn`, `deftype`, `deftrait`, `impl`).
 pub fn build_program(
     sexps: &[Sexp],
-    expander: &mut dyn MacroExpander,
+    expander: &dyn MacroExpander,
 ) -> Result<Program, CranelispError> {
     sexps
         .iter()
@@ -104,7 +104,7 @@ pub fn build_program(
 /// Falls through to single-sexp handling for all other cases.
 pub fn build_repl_input_from_sexps(
     sexps: &[Sexp],
-    expander: &mut dyn MacroExpander,
+    expander: &dyn MacroExpander,
 ) -> Result<TopLevel, CranelispError> {
     if sexps.is_empty() {
         return Err(parse_err("expected expression", Span::SYNTHETIC));
@@ -126,7 +126,7 @@ pub fn build_repl_input_from_sexps(
 /// Accepts top-level forms and bare expressions (returns `TopLevel::Expr` for the latter).
 pub fn build_repl_input(
     sexp: &Sexp,
-    expander: &mut dyn MacroExpander,
+    expander: &dyn MacroExpander,
 ) -> Result<TopLevel, CranelispError> {
     // Try top-level forms first, fall back to expression
     match sexp {
@@ -241,7 +241,7 @@ fn reject_non_ring0_symbol(name: &str, span: Span) -> Result<(), CranelispError>
 
 fn build_top_level(
     sexp: &Sexp,
-    expander: &mut dyn MacroExpander,
+    expander: &dyn MacroExpander,
 ) -> Result<TopLevel, CranelispError> {
     match sexp {
         Sexp::List(children, span) if !children.is_empty() => {
@@ -297,7 +297,7 @@ fn build_defn(
     children: &[Sexp],
     span: Span,
     visibility: Visibility,
-    expander: &mut dyn MacroExpander,
+    expander: &dyn MacroExpander,
 ) -> Result<TopLevel, CranelispError> {
     // (defn name "doc"? [params] body)      -- single
     // (defn name "doc"? ([p] b) ([p] b))    -- multi
@@ -361,7 +361,7 @@ fn get_defn_name(sexp: &Sexp) -> Result<Symbol, CranelispError> {
 
 fn build_defn_variant(
     sexp: &Sexp,
-    expander: &mut dyn MacroExpander,
+    expander: &dyn MacroExpander,
 ) -> Result<DefnVariant, CranelispError> {
     let (children, span) = expect_list(sexp)?;
     if children.len() != 2 {
@@ -772,7 +772,7 @@ fn build_method_sig(
 fn build_trait_impl(
     children: &[Sexp],
     span: Span,
-    expander: &mut dyn MacroExpander,
+    expander: &dyn MacroExpander,
 ) -> Result<TopLevel, CranelispError> {
     // (impl TraitName impl_target method_def+)
     // impl_target = Type | (Type :Constraint var ...)
@@ -877,7 +877,7 @@ fn build_impl_target(
 /// (defn method_name [params] body)
 fn build_impl_method(
     sexp: &Sexp,
-    expander: &mut dyn MacroExpander,
+    expander: &dyn MacroExpander,
 ) -> Result<Defn, CranelispError> {
     let (children, span) = expect_list(sexp)?;
     if children.is_empty() {
@@ -915,7 +915,7 @@ fn build_impl_method(
 // Expression builders
 // ---------------------------------------------------------------------------
 
-fn build_expr(sexp: &Sexp, expander: &mut dyn MacroExpander) -> Result<Expr, CranelispError> {
+fn build_expr(sexp: &Sexp, expander: &dyn MacroExpander) -> Result<Expr, CranelispError> {
     match sexp {
         Sexp::Int(v, span) => Ok(Expr::IntLit {
             value: *v,
@@ -952,7 +952,7 @@ fn build_expr(sexp: &Sexp, expander: &mut dyn MacroExpander) -> Result<Expr, Cra
 fn build_list_expr(
     children: &[Sexp],
     span: Span,
-    expander: &mut dyn MacroExpander,
+    expander: &dyn MacroExpander,
 ) -> Result<Expr, CranelispError> {
     if children.is_empty() {
         return Err(parse_err("empty application", span));
@@ -1017,7 +1017,7 @@ fn build_list_expr(
 fn build_run_tests(
     children: &[Sexp],
     span: Span,
-    expander: &mut dyn MacroExpander,
+    expander: &dyn MacroExpander,
 ) -> Result<Expr, CranelispError> {
     // (run-tests init pass-fn fail-fn)
     // (run-tests [mod1 mod2] init pass-fn fail-fn)
@@ -1066,7 +1066,7 @@ fn build_run_tests(
 fn build_apply(
     children: &[Sexp],
     span: Span,
-    expander: &mut dyn MacroExpander,
+    expander: &dyn MacroExpander,
 ) -> Result<Expr, CranelispError> {
     let callee = build_expr(&children[0], expander)?;
     let args = build_args_with_annotations(&children[1..], expander)?;
@@ -1084,7 +1084,7 @@ fn build_apply(
 fn build_let(
     children: &[Sexp],
     span: Span,
-    expander: &mut dyn MacroExpander,
+    expander: &dyn MacroExpander,
 ) -> Result<Expr, CranelispError> {
     // (let [name val name val ...] body)
     if children.len() != 3 {
@@ -1102,7 +1102,7 @@ fn build_let(
 
 fn build_let_bindings(
     items: &[Sexp],
-    expander: &mut dyn MacroExpander,
+    expander: &dyn MacroExpander,
 ) -> Result<Vec<(cranelisp_types::Symbol, Expr)>, CranelispError> {
     let mut bindings = Vec::new();
     let mut i = 0;
@@ -1126,7 +1126,7 @@ fn build_let_bindings(
 fn build_if(
     children: &[Sexp],
     span: Span,
-    expander: &mut dyn MacroExpander,
+    expander: &dyn MacroExpander,
 ) -> Result<Expr, CranelispError> {
     // (if cond then else)
     if children.len() != 4 {
@@ -1153,7 +1153,7 @@ fn build_if(
 fn build_fn(
     children: &[Sexp],
     span: Span,
-    expander: &mut dyn MacroExpander,
+    expander: &dyn MacroExpander,
 ) -> Result<Expr, CranelispError> {
     // (fn [params] body) or (lambda [params] body)
     if children.len() != 3 {
@@ -1176,7 +1176,7 @@ fn build_fn(
 fn build_match(
     children: &[Sexp],
     span: Span,
-    expander: &mut dyn MacroExpander,
+    expander: &dyn MacroExpander,
 ) -> Result<Expr, CranelispError> {
     // (match scrutinee [pattern body pattern body ...])
     if children.len() != 3 {
@@ -1201,7 +1201,7 @@ fn build_match(
 
 fn build_match_arms(
     items: &[Sexp],
-    expander: &mut dyn MacroExpander,
+    expander: &dyn MacroExpander,
 ) -> Result<Vec<MatchArm>, CranelispError> {
     let mut arms = Vec::new();
     let mut i = 0;
@@ -1273,7 +1273,7 @@ fn build_pattern(sexp: &Sexp) -> Result<Pattern, CranelispError> {
 fn build_vec_lit(
     children: &[Sexp],
     span: Span,
-    expander: &mut dyn MacroExpander,
+    expander: &dyn MacroExpander,
 ) -> Result<Expr, CranelispError> {
     let elements = build_args_with_annotations(children, expander)?;
     Ok(Expr::VecLit { elements, span })
@@ -1328,7 +1328,7 @@ fn parse_annotation_name(name: &str) -> TypeExpr {
 fn build_one_expr_at(
     items: &[Sexp],
     pos: usize,
-    expander: &mut dyn MacroExpander,
+    expander: &dyn MacroExpander,
 ) -> Result<(Expr, usize), CranelispError> {
     if let Some((annotation, consumed)) = try_consume_annotation(items, pos) {
         let expr_pos = pos + consumed;
@@ -1354,7 +1354,7 @@ fn build_one_expr_at(
 /// Build argument list, handling inline annotations (`:Type expr` -> `Annotate`).
 fn build_args_with_annotations(
     items: &[Sexp],
-    expander: &mut dyn MacroExpander,
+    expander: &dyn MacroExpander,
 ) -> Result<Vec<Expr>, CranelispError> {
     let mut args = Vec::new();
     let mut i = 0;

@@ -1,45 +1,109 @@
-# Sprint 39: Pipeline v3 Step 11 — Codegen Decoupled from Session (Foundation)
+# Sprint 40a: Pipeline v3 — Parallel compile_unit and N-Core Codegen
 
-**Status**: COMPLETE
+**Status**: DRAFT
 **Ring**: — (structural / performance)
-**Goal**: Decouple codegen functions from `CompilationSession` so they can run on worker threads. Add `send_codegen`/`flush_codegen` API and single async worker as proof of concept.
+**Goal**: Complete the pipeline v3 vision: parallel `compile_unit` (`&self`), producer-consumer codegen queues with N-core worker pools, dissolve `ReplSession`, north-star `main.rs` matching pipeline-v3.md §2.2 verbatim.
 
-## Delivered
+## Context
 
-### Codegen decoupled from CompilationSession
-- `codegen_and_execute` is now a free function taking `(&mut InMemWorkerState, &mut ObjectWorkerState, &CodegenPacket)` — no longer takes `&mut CompilationSession`
-- `compile_checked_program`, `compile_and_register_defn`, `compile_and_execute_interactive`, `compile_and_execute_expr`, `compile_and_execute_expr_with_trace` all refactored to take worker state params
-- `queue_background_cache_write` takes `(&mut ObjectWorkerState, &SymbolTable, ...)`
-- `register_module_aliases_filtered` and `register_got_alias` extracted as free functions
+Sprint 40 delivered the structural foundation — file consolidation, API alignment, atomic GOT, shared ISA, cache-hit loading, module locks, RwLock registries, one `main.rs`. Two capabilities were deferred because `compile_unit` requires `&mut self`:
 
-### Send verification
-- `CodegenPacket` struct with `unsafe impl Send` — carries all data needed for codegen across thread boundary
-- Compile-time `Send` assertions for `CodegenPacket`, `CompileUnitResult`, `CompileContext`, `CheckResult`, `CodegenResult`, `InMemWorkerState`, `ObjectWorkerState`
+1. **Parallel dependency typechecking** — independent deps can't fork because Rust's borrow checker prevents multiple `&mut CompilationSession`
+2. **N-core codegen dispatch** — infrastructure ready (atomic GOT, shared ISA, CodegenPacket) but actual dispatch still uses a single coordinator thread
 
-### send_codegen / flush_codegen API
-- `CodegenMode` enum: `Sync` (tests) and `Async` (production)
-- `send_codegen()`: Sync buffers, Async sends to worker
-- `flush_codegen()`: Sync drains buffer, Async sends flush and blocks
-- `shutdown_codegen()`: retrieves worker state back to session
+The root cause is `compile_unit` taking `&mut self`. The fix requires two refactorings: `check()` on TypeChecker becomes `&self` (CheckState as local), then `compile_unit` becomes `&self` (Mutex/RwLock on shared session fields). With `&self`, parallel calls and producer-consumer queues become possible.
 
-### Async worker (single thread — needs upgrade in Sprint 40)
-- Single dedicated worker thread owns InMemWorkerState + ObjectWorkerState
-- Processes CodegenPackets sequentially
-- Shutdown returns state to session for introspection
+**All skills MUST read these documents:**
+- `design/arch/pipeline-v3.md` — the target (especially §2.2 main, §6 queues, §6.5 producer-consumer, §7.4 watcher)
+- `design/arch/sprint-40a-design.md` — the detailed implementation design for this sprint
 
-## Not delivered — Sprint 40 scope
+## Scope
 
-The roadmap (`design/arch/pipeline-v3-roadmap.md` Step 11) specifies:
-- **N worker threads (one per core)** for in-mem codegen at normal priority
-- **N worker threads at nice priority** for object codegen
-- **Atomic GOT writes** so multiple workers can write concurrently
-- **Thread-local JIT state** per worker
-- **`hot_flush_object_queue`** promotes nice→normal priority on flush
+### A. North-Star main.rs
 
-Sprint 39 delivered a single worker thread. Sprint 40 must upgrade to the full N-core model.
+Rewrite `src/main.rs` to match pipeline-v3.md §2.2 **verbatim**. Methods not yet implemented get `todo!()` bodies. Each wave fills in a `todo!()`. This is the structural test — if the control flow doesn't compile, the design has a gap.
 
-## Tests
-1643 passed, 23 pre-existing failures, 4 ignored (cache-hit)
+### B. check() becomes &self
+
+Remove `state: CheckState` field from TypeChecker. `check()` creates `CheckState` as a stack local, passes it through all internal methods. `set_current_module` eliminated — replaced by `ensure_module_exists` + module identity in `CheckState`. REPL additive overloads reconstructed from symbol table.
+
+### C. compile_unit becomes &self
+
+Wrap `CompilationSession` shared fields in Mutex/RwLock. Move `compile_stack` to a parameter. `compile_unit` takes `&self`. All internal functions (`compile_unit_inner`, `load_dependencies`, `try_cache_hit_load`) take `&CompilationSession`.
+
+### D. Producer-consumer codegen
+
+Replace the coordinator+channel pattern with shared concurrent queues and N-core worker pools. `compile_unit` pushes `CodegenItem` to queues and returns. Workers drain continuously. `hot_flush` is a barrier. See sprint-40a-design.md Part 2.
+
+Cache-hit loading enqueues `CodegenItem::FromCache` — workers load `.o` files, not `compile_unit`.
+
+### E. Parallel dependency loading
+
+In `load_dependencies`, independent cache-miss deps fork into parallel `compile_unit` calls via `std::thread::scope`. Each thread pushes codegen items to the shared queue. Workers drain concurrently.
+
+### F. Dissolve ReplSession
+
+Move `process_commands`, `spawn_file_watcher`, `trampoline`, `link`, `pretty_print_form` to `CompilerSession`. Delete `ReplSession` wrapper. REPL loop inlines in main per §2.2. Delete `enable_persistence`, `try_restore_user_module`.
+
+Watcher codegen exclusion: `pause_watcher_codegen` / `resume_watcher_codegen` around the REPL eval window ensures GOT stability during execution.
+
+## Design Reference
+
+All implementation details are in `design/arch/sprint-40a-design.md`. Skills must read it.
+
+## Waves
+
+### Wave 0: North-star main.rs
+| Skill | Task | Status | Notes |
+|-------|------|--------|-------|
+| /int | Rewrite main.rs to match §2.2 verbatim. `todo!()` for unimplemented methods. | pending | |
+
+**Acceptance**: `cargo build` succeeds. main.rs matches §2.2 structurally. `todo!()`s are explicit.
+
+### Wave 1: check() becomes &self
+| Skill | Task | Status | Notes |
+|-------|------|--------|-------|
+| /typecheck | Remove `state` field. `check()` creates local CheckState. All ~30 methods get `cs: &mut CheckState`. `ensure_module_exists` replaces `set_current_module`. REPL additive overloads from symbol table. `check()` → `&self`. | pending | Largest wave |
+
+**Acceptance**: `cargo test` passes. `check()` takes `&self`. REPL additive works.
+
+### Wave 2: compile_unit becomes &self
+| Skill | Task | Status | Notes |
+|-------|------|--------|-------|
+| /int | Wrap session fields in Mutex/RwLock per design §1.5. `compile_stack` → parameter. `compile_unit` → `&self`. All internal functions → `&CompilationSession`. | pending | |
+
+**Acceptance**: `cargo test` passes. `compile_unit` takes `&self`.
+
+### Wave 3: Producer-consumer codegen + parallel deps
+| Skill | Task | Status | Notes |
+|-------|------|--------|-------|
+| /int | Implement `CodegenQueue` (Mutex+Condvar+AtomicBool+AtomicUsize). `CodegenItem` enum (FromSource/FromCache). Worker pools (`spawn_hot_inmem_codegen`, `spawn_nice_object_codegen`). `enqueue_codegen` replaces `send_codegen`. `hot_flush_*` as barriers. Delete coordinator. Parallel fork in `load_dependencies`. `pause_watcher_codegen`/`resume_watcher_codegen`. | pending | |
+| /backend | Verify `Jit::new_with_isa` works correctly in worker threads. Advise on `Linker` thread safety for `FromCache` path. | pending | |
+
+**Acceptance**: `cargo test` passes. Multi-module compilation uses parallel codegen. Workers drain queue continuously. `--run`, `--link` work.
+
+### Wave 4: Dissolve ReplSession
+| Skill | Task | Status | Notes |
+|-------|------|--------|-------|
+| /int | Move `process_commands`, `spawn_file_watcher`, `trampoline`, `link`, `pretty_print_form` to CompilerSession. Delete ReplSession. Delete `enable_persistence`, `try_restore_user_module`. REPL loop inline in main. Fill in remaining `todo!()`s. | pending | |
+
+**Acceptance**: `cargo test` passes. No `ReplSession`. REPL works via inline loop. `main.rs` has no `todo!()`s. All 13 v3 invariants hold.
+
+### Wave 5: Verification + showcase
+| Skill | Task | Status | Notes |
+|-------|------|--------|-------|
+| /qa | Tests for parallel compile_unit, concurrent queue, lock contention. | pending | |
+| /review | Thread safety review of all concurrent code. | pending | |
+| /arch | Update pipeline-v3-roadmap.md. Archive pipeline-v2.md. | pending | |
+| /repl | Sprint demo. | pending | |
+| /stdlib | Validate 27 modules with parallel pipeline. | pending | |
+| /examples | Validate all examples. | pending | |
+| /port | Validate exemplar. | pending | |
+
+## Notes
+
+This sprint completes the pipeline v3 vision. At completion: one `main.rs` matching §2.2, no `ReplSession`, `compile_unit` takes `&self`, N-core producer-consumer codegen, parallel dependency loading, GOT-stable REPL evaluation.
 
 ## Outcome
-Foundation for concurrent codegen is solid — all codegen functions are decoupled from the session, Send bounds verified, channel-based API works. Sprint 40 builds the actual thread pools on this foundation.
+
+_To be filled at sprint close._

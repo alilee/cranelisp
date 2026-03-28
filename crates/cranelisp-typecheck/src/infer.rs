@@ -139,7 +139,7 @@ impl TypeChecker {
         // Constrained polymorphic functions cannot be used as bare values
         // (spec §3.6.6). They must be called with arguments so concrete
         // types can be determined for monomorphisation.
-        if !self.in_call_position
+        if !self.state.in_call_position
             && let Some(entry) = self.resolve_entry_in_current_module(name)
             && let ModuleEntry::Def { kind, .. } = entry
             && matches!(
@@ -250,23 +250,23 @@ impl TypeChecker {
     ) -> Result<Type, CranelispError> {
         // Mark callee as in call position so constrained fn references are allowed.
         // Save/restore is stack-based: each nesting level preserves the outer value.
-        let prev_call_position = self.in_call_position;
-        self.in_call_position = true;
+        let prev_call_position = self.state.in_call_position;
+        self.state.in_call_position = true;
         let callee_ty = self.infer_expr(callee);
-        self.in_call_position = prev_call_position;
+        self.state.in_call_position = prev_call_position;
         let callee_ty = callee_ty?;
 
         // Arguments are NOT in call position — a constrained fn passed as an
         // argument (e.g., `(f add)`) must be rejected. Explicitly clear the flag
         // to handle nested applications like `((f x) add)` where the outer
         // save/restore leaves `in_call_position` true during inner arg inference.
-        let prev_for_args = self.in_call_position;
-        self.in_call_position = false;
+        let prev_for_args = self.state.in_call_position;
+        self.state.in_call_position = false;
         let mut arg_types = Vec::new();
         for arg in args {
             arg_types.push(self.infer_expr(arg)?);
         }
-        self.in_call_position = prev_for_args;
+        self.state.in_call_position = prev_for_args;
 
         let ret_ty = self.fresh_var();
 
@@ -275,9 +275,9 @@ impl TypeChecker {
         // We don't unify here because the base name's scheme may not match
         // the actual call site arity/types.
         if let Expr::Var { name, .. } = callee
-            && self.overloads.contains_key(name)
+            && self.state.overloads.contains_key(name)
         {
-            self.pending_overload_resolutions.push((
+            self.state.pending_overload_resolutions.push((
                 span,
                 name.clone(),
                 arg_types.clone(),
@@ -321,7 +321,7 @@ impl TypeChecker {
                         if resolution.is_some() {
                             // Attach to the last pending_auto_curry entry (the one
                             // just pushed by try_auto_curry).
-                            if let Some(entry) = self.pending_auto_curry.last_mut() {
+                            if let Some(entry) = self.state.pending_auto_curry.last_mut() {
                                 entry.5 = resolution;
                             }
                         }
@@ -344,11 +344,11 @@ impl TypeChecker {
                 self.try_resolve_trait_method(name, &resolved_args, span)?
             {
                 // Trait method resolution (Ring 2): operators like +, -, =, <
-                self.method_resolutions.insert(span, resolution);
+                self.state.method_resolutions.insert(span, resolution);
             } else if let Some(jit_name) = self.resolve_primitive_jit_name(name) {
                 // Named primitive resolution (Ring 0-3): add-i64, str-concat,
                 // macros/sconcat, quote-sexp, etc.
-                self.method_resolutions
+                self.state.method_resolutions
                     .insert(span, ResolvedCall::BuiltinFn { name: jit_name });
             }
         }
@@ -413,7 +413,7 @@ impl TypeChecker {
         // The trait_resolution (6th element) starts as None; it is filled in
         // by infer_apply after try_auto_curry returns (if types are concrete),
         // or by resolve_auto_curry when draining (if types get pinned later).
-        self.pending_auto_curry.push((
+        self.state.pending_auto_curry.push((
             span,
             callee_name,
             arg_types.len(),
@@ -489,14 +489,14 @@ impl TypeChecker {
         match expr {
             Expr::Apply { callee, args, span } => {
                 // Try to resolve this Apply if it's not already resolved
-                if !self.method_resolutions.contains_key(span)
+                if !self.state.method_resolutions.contains_key(span)
                     && let Expr::Var { name, .. } = callee.as_ref()
                     && self.is_trait_method(name)
                 {
                     let resolved_args: Vec<Type> = args
                         .iter()
                         .map(|a| {
-                            self.expr_types
+                            self.state.expr_types
                                 .get(&a.span())
                                 .map(|t| self.apply_subst(t))
                                 .unwrap_or_else(|| Type::Var(0))
@@ -505,7 +505,7 @@ impl TypeChecker {
                     if let Ok(Some(resolution)) =
                         self.try_resolve_trait_method(name, &resolved_args, *span)
                     {
-                        self.method_resolutions.insert(*span, resolution);
+                        self.state.method_resolutions.insert(*span, resolution);
                     }
                 }
                 // Recurse
@@ -675,13 +675,15 @@ impl TypeChecker {
         };
 
         // Verify the constructor exists in the type registry
-        let _type_name = self
-            .type_defs
+        if self.type_defs.read().unwrap()
             .constructor_type(bare_name)
-            .ok_or_else(|| CranelispError::TypeError {
+            .is_none()
+        {
+            return Err(CranelispError::TypeError {
                 message: format!("unknown constructor in pattern: {name}"),
                 span,
-            })?;
+            });
+        }
 
         // Get the scheme from the symbol table (handles qualified names via lookup)
         self.lookup(name).ok_or_else(|| CranelispError::TypeError {
@@ -1206,7 +1208,7 @@ mod tests {
         assert_eq!(tc.infer_expr(&expr).unwrap(), Type::Int);
 
         // Check that a BuiltinFn resolution was recorded
-        let resolution = tc.method_resolutions.get(&span(0, 13)).unwrap();
+        let resolution = tc.state.method_resolutions.get(&span(0, 13)).unwrap();
         match resolution {
             ResolvedCall::BuiltinFn { name } => {
                 assert_eq!(name.as_ref(), "add-i64");
@@ -1239,7 +1241,7 @@ mod tests {
         };
         assert_eq!(tc.infer_expr(&expr).unwrap(), Type::Float);
 
-        let resolution = tc.method_resolutions.get(&span(0, 17)).unwrap();
+        let resolution = tc.state.method_resolutions.get(&span(0, 17)).unwrap();
         match resolution {
             ResolvedCall::BuiltinFn { name } => {
                 assert_eq!(name.as_ref(), "add-f64");
@@ -1291,7 +1293,7 @@ mod tests {
         };
         assert_eq!(tc.infer_expr(&expr).unwrap(), Type::Bool);
 
-        let resolution = tc.method_resolutions.get(&span(0, 10)).unwrap();
+        let resolution = tc.state.method_resolutions.get(&span(0, 10)).unwrap();
         match resolution {
             ResolvedCall::BuiltinFn { name } => {
                 assert_eq!(name.as_ref(), "not");
@@ -1576,7 +1578,7 @@ mod tests {
         let s = span(0, 2);
         let expr = Expr::IntLit { value: 42, span: s };
         tc.infer_expr(&expr).unwrap();
-        assert_eq!(tc.expr_types.get(&s), Some(&Type::Int));
+        assert_eq!(tc.state.expr_types.get(&s), Some(&Type::Int));
     }
 
     // --- Nested expression tests ---
@@ -1643,7 +1645,7 @@ mod tests {
             span: s,
         };
         tc.infer_expr(&expr).unwrap();
-        assert_eq!(tc.expr_types.get(&s), Some(&Type::String));
+        assert_eq!(tc.state.expr_types.get(&s), Some(&Type::String));
     }
 
     // --- Data constructor pattern tests (Ring 1) ---
@@ -1866,7 +1868,7 @@ mod tests {
         tc.infer_expr(&expr).unwrap();
 
         // Lambda should record a Fn type in expr_types
-        let recorded = tc.expr_types.get(&s).unwrap();
+        let recorded = tc.state.expr_types.get(&s).unwrap();
         assert!(matches!(recorded, Type::Fn(_, _)));
     }
 
@@ -2292,7 +2294,7 @@ mod tests {
         };
         tc.infer_expr(&expr).unwrap();
         assert_eq!(
-            tc.expr_types.get(&s),
+            tc.state.expr_types.get(&s),
             Some(&Type::ADT(TypeName::from("Vec"), vec![Type::Int]))
         );
     }
@@ -2814,7 +2816,7 @@ mod tests {
         assert_eq!(ty, Type::Int);
 
         // Check TraitMethod resolution was recorded
-        let resolution = tc.method_resolutions.get(&span(4500, 4507)).unwrap();
+        let resolution = tc.state.method_resolutions.get(&span(4500, 4507)).unwrap();
         match resolution {
             ResolvedCall::TraitMethod { mangled_name, .. } => {
                 assert_eq!(mangled_name.as_ref(), "Num.+$Int");
