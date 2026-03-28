@@ -468,7 +468,7 @@ If multiple notifications arrive in quick succession (e.g., IDE save-all), natur
 
 ### 7.5 Session Persistence
 
-After a successful `Compile` that defines something (defn, deftype, deftrait, impl), the REPL saves the accumulated module to `{project_root}/{module}.cl`. This is a post-compilation side effect in the REPL loop, not inside `compile_unit`.
+After a successful `compile_unit` call with `Additive` strategy that contains definitions (defn, deftype, deftrait, impl), `compile_unit` saves the accumulated module to `{project_root}/{module}.cl`. This is a side effect inside `compile_unit` — the caller does not need to check or trigger the save. Pure expressions (no definitions) do not trigger a save.
 
 ## 8. Run Mode
 

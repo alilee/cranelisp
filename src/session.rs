@@ -1203,9 +1203,10 @@ impl CompilationSession {
     /// coordinator handles in-mem codegen as items arrive via `send_codegen`.
     ///
     /// In sync mode, codegen runs during `flush_codegen` on the main thread.
-    pub fn spawn_hot_inmem_codegen(&mut self) {
+    pub fn spawn_hot_inmem_codegen(&mut self) -> Result<(), String> {
         // The coordinator thread is already running in async mode.
         // In sync mode, codegen runs on the main thread during flush.
+        Ok(())
     }
 
     /// Spawn N-core object codegen pool at nice priority.
@@ -1216,9 +1217,10 @@ impl CompilationSession {
     ///
     /// Nice priority for object workers will be implemented when the object
     /// codegen path is separated from the in-mem path (Wave 3+).
-    pub fn spawn_nice_object_codegen(&mut self) {
+    pub fn spawn_nice_object_codegen(&mut self) -> Result<(), String> {
         // Object codegen runs as part of the coordinator's codegen_and_execute.
         // The cache_writer thread handles background .o file writes.
+        Ok(())
     }
 
     /// Block until all in-mem codegen items are JIT-compiled and GOT slots
