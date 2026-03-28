@@ -13,8 +13,13 @@
 // - Phase 2: `AtomicU32` for TypeId allocation, per-module compilation locks
 //   via `try_lock_module()` / `ModuleGuard` RAII guard
 // - Phase 3: shared registries (type_defs, trait_registry, impl_registry)
-//   behind `RwLock` for parallel-safe access. `check()` remains `&mut self`
-//   until the pipeline needs concurrent calls (see checker.rs module doc).
+//   behind `RwLock` for parallel-safe access.
+//
+// Sprint 40a Wave 1: `check()` creates a fresh `CheckState` per invocation.
+// Transient state does not persist across calls. REPL additive overloads
+// are reconstructed from symbol table `DefKind::Overloaded` entries.
+// `check()` remains `&mut self` because registration methods mutate
+// persistent state; `&self` conversion requires RwLock (Wave 2).
 
 mod adt;
 mod builtins;
@@ -28,7 +33,7 @@ mod traits;
 mod unify;
 
 // Public API
-pub use checker::{ModuleGuard, TypeChecker};
+pub use checker::{CheckState, ModuleGuard, TypeChecker};
 
 // Re-export boundary types that callers need
 pub use cranelisp_types::{

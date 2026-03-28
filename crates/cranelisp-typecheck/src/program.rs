@@ -16,7 +16,7 @@ use cranelisp_types::{
     Span, Symbol, TopLevel, Type, Visibility, apply,
 };
 
-use crate::checker::TypeChecker;
+use crate::checker::{CheckState, TypeChecker};
 use crate::resolve::resolve_type_expr;
 use crate::scheme::mono;
 
@@ -112,6 +112,18 @@ impl TypeChecker {
     ) -> Result<CheckResult, CranelispError> {
         // Set active module from context.
         self.set_current_module(ctx.module.clone());
+
+        // Create a fresh CheckState for this check invocation.
+        // All transient inference state lives here, not carried over from
+        // prior calls. This is the key refactoring enabling future parallel
+        // check() calls (each gets its own CheckState).
+        self.state = CheckState::new(ctx.module.clone());
+
+        // For REPL additive mode, reconstruct overloads from the symbol
+        // table so previously defined multi-sig functions are recognized.
+        if strategy == ModuleStrategy::Additive {
+            self.reconstruct_overloads_from_symbol_table();
+        }
 
         // If Replace strategy, clear existing module state so that removed
         // definitions don't persist as stale entries.
@@ -291,6 +303,38 @@ impl TypeChecker {
             TopLevel::TraitImpl(_) => {
                 Some(DisplayInfo { ty: Type::Bool, scheme: None })
             }
+        }
+    }
+
+    /// Reconstruct overloads and resolved_overloads from the symbol table.
+    ///
+    /// In REPL additive mode, overloads from prior check() calls need to
+    /// be available for the new check(). Since CheckState is now fresh for
+    /// each call, we reconstruct from DefKind::Overloaded entries.
+    fn reconstruct_overloads_from_symbol_table(&mut self) {
+        // Collect overloads first to avoid borrowing self immutably (via
+        // current_symbol_table) and mutably (via state) at the same time.
+        let overloads_to_insert: Vec<(Symbol, Vec<(Vec<Type>, Type, Symbol)>)> = self
+            .current_symbol_table()
+            .all_symbols()
+            .filter_map(|(name, entry)| {
+                if let ModuleEntry::Def { kind, .. } = entry {
+                    if let DefKind::Overloaded { variants } = kind.as_ref() {
+                        let resolved: Vec<(Vec<Type>, Type, Symbol)> = variants
+                            .iter()
+                            .map(|v| {
+                                (v.param_types.clone(), v.ret_type.clone(), v.mangled_name.clone())
+                            })
+                            .collect();
+                        return Some((name.clone(), resolved));
+                    }
+                }
+                None
+            })
+            .collect();
+
+        for (name, resolved) in overloads_to_insert {
+            self.state.resolved_overloads.insert(name, resolved);
         }
     }
 

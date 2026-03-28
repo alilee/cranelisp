@@ -30,15 +30,15 @@
 //! (no actual locking — `&mut` guarantees exclusivity). Methods with `&self`
 //! acquire `read().unwrap()` or `write().unwrap()` as needed.
 //!
-//! **`check()` remains `&mut self`** because `CheckState` is stored on
-//! `TypeChecker` (field `self.state`) for REPL additive mode, where state
-//! persists across evaluations. Converting `check()` to `&self` requires
-//! either: (a) making `state` an `Option` that is temporarily taken and
-//! restored, or (b) passing `CheckState` as a separate parameter to all
-//! ~30 internal helper methods. Both are invasive changes deferred until
-//! the parallel pipeline actually calls `check()` concurrently.
-//! The `RwLock` wrapping is the primary Phase 3 deliverable — it ensures
-//! the registries are safe for concurrent access when that conversion happens.
+//! **`check()` creates a fresh `CheckState`** (Sprint 40a Wave 1) at the start
+//! of each invocation. All transient inference state (substitution, scope stack,
+//! method resolutions, expr_types, warnings) lives in the local `CheckState`
+//! and does not persist across calls. For REPL additive mode, overloads are
+//! reconstructed from `DefKind::Overloaded` entries in the symbol table.
+//!
+//! `check()` remains `&mut self` because registration methods (type defs, trait
+//! decls, trait impls) mutate persistent state (modules, registries). Converting
+//! to `&self` requires `RwLock` on those structures (Wave 2).
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
@@ -61,12 +61,13 @@ const IMPORT_CHAIN_DEPTH_LIMIT: usize = 10;
 
 /// Per-check transient state for type inference.
 ///
-/// Created or reused by each `check()` call. Contains all state that is
-/// accumulated during checking and either drained into `CheckResult` or
-/// carried forward for the next REPL evaluation.
+/// Created fresh by each `check()` call. Contains all state that is
+/// accumulated during checking and drained into `CheckResult` on return.
+/// State does NOT carry forward between check() calls — REPL additive
+/// overloads are reconstructed from the symbol table.
 ///
-/// In the future parallel model, each concurrent `check()` will have its own
-/// `CheckState` on the stack, enabling `&self` on `TypeChecker`.
+/// In the future parallel model (Wave 2), each concurrent `check()` will
+/// have its own `CheckState` passed as a parameter, enabling `&self`.
 pub struct CheckState {
     /// Global substitution (unification bindings).
     pub(crate) subst: Subst,
@@ -179,9 +180,11 @@ pub struct TypeChecker {
     /// Entries are `Arc<AtomicBool>` so the guard can outlive the borrow of the
     /// HashMap (the guard holds an Arc clone, not a reference into the map).
     module_locks: HashMap<ModuleFullPath, Arc<AtomicBool>>,
-    /// Per-check transient state. Stored here for serial REPL reuse;
-    /// parallel `check()` will use stack-local `CheckState` once `check()`
-    /// is converted to `&self` (see module-level doc for blockers).
+    /// Per-check transient state. `check()` replaces this with a fresh
+    /// `CheckState` at the start of each invocation. Stored on the struct
+    /// (rather than a local) to avoid changing ~30 internal method signatures
+    /// from `&mut self` to `&self, cs: &mut CheckState`. Wave 2 will
+    /// complete the parameter-passing approach when `check()` becomes `&self`.
     pub(crate) state: CheckState,
 }
 
@@ -223,6 +226,21 @@ impl TypeChecker {
         self.modules
             .get_mut(&self.state.current_module)
             .unwrap_or_else(|| unreachable!("invariant: current_module always exists in modules map"))
+    }
+
+    /// Ensure a module exists in the modules map, creating it if needed.
+    ///
+    /// This is the module-creation portion of `set_current_module`, extracted
+    /// so callers can ensure a module exists without changing the active module.
+    /// Called by the pipeline before `check()`.
+    pub fn ensure_module_exists(&mut self, path: &ModuleFullPath) {
+        if self.modules.contains_key(path) {
+            return;
+        }
+        // Delegate to set_current_module logic but save/restore active module.
+        let saved = self.state.current_module.clone();
+        self.set_current_module(path.clone());
+        self.state.current_module = saved;
     }
 
     /// Switch the active module. Creates the module's symbol table if it
@@ -1300,29 +1318,36 @@ impl TypeChecker {
     // --- REPL snapshot/restore ---
 
     /// Take a snapshot of the current state for REPL error recovery.
+    ///
+    /// Since check() now creates a fresh CheckState each time, transient
+    /// state (subst, env, expr_types) does not persist across check() calls.
+    /// On error, check() returns Err and the local CheckState is dropped.
+    /// Snapshot only needs to capture persistent state that check() may
+    /// have mutated before the error: TypeId counter and symbol table keys.
     pub fn snapshot(&self) -> ReplSnapshot {
         ReplSnapshot {
             next_type_id: self.next_id.load(Ordering::Relaxed),
             symbol_keys: self.current_symbol_table().symbols.keys().cloned().collect(),
-            subst_len: self.state.subst.len(),
-            scope_depth: self.state.env.depth(),
+            subst_len: 0,     // Unused: CheckState is local to check()
+            scope_depth: 0,   // Unused: CheckState is local to check()
         }
     }
 
     /// Restore state from a snapshot (on REPL error).
+    ///
+    /// Only restores persistent state: TypeId counter and symbol table.
+    /// Transient state (subst, env, etc.) was in the local CheckState
+    /// which was already dropped when check() returned Err.
     pub fn restore(&mut self, snapshot: ReplSnapshot) {
         *self.next_id.get_mut() = snapshot.next_type_id;
-        self.state.subst.retain(|id, _| *id < snapshot.next_type_id);
-        self.state.expr_types.clear();
-        self.state.method_resolutions.clear();
-        self.state.warnings.clear();
-        self.state.pending_auto_curry.clear();
         // Remove symbol table entries added after the snapshot was taken.
         self.current_symbol_table_mut()
             .symbols
             .retain(|key, _| snapshot.symbol_keys.contains(key));
-        // Restore scope stack depth (pop frames left by failed check_defn_body).
-        self.state.env.truncate_to(snapshot.scope_depth);
+        // Reset CheckState to clean — prevents stale state from leaking
+        // into the next check() call (which creates its own fresh state
+        // anyway, but be explicit).
+        self.state = CheckState::new(self.state.current_module.clone());
     }
 
     // --- Known types lookup (for resolve_type_expr) ---
