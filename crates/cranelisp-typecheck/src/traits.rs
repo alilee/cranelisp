@@ -1051,15 +1051,14 @@ impl TypeChecker {
     fn get_constrained_fn(
         &self,
         name: &Symbol,
-    ) -> Option<ConstrainedFn> {
+    ) -> Option<&ConstrainedFn> {
         use cranelisp_types::{DefKind, ModuleEntry};
 
-        let sym_table = self.current_symbol_table();
-        match sym_table.get(name.as_ref())? {
+        match self.current_symbol_table().get(name.as_ref())? {
             ModuleEntry::Def { kind, .. } => match kind.as_ref() {
                 DefKind::UserFn {
                     constrained_fn: Some(cf),
-                } => Some(*cf.clone()),
+                } => Some(cf),
                 _ => None,
             },
             _ => None,
@@ -1615,9 +1614,8 @@ mod tests {
             Some(&TraitName::from("TestTrait"))
         );
         // Trait should be in symbol table
-        let _st = tc.symbol_table();
         assert!(matches!(
-            _st.get("TestTrait"),
+            tc.symbol_table().get("TestTrait"),
             Some(ModuleEntry::TraitDecl { .. })
         ));
     }
@@ -1692,9 +1690,13 @@ mod tests {
         };
         tc.register_trait_impl(&impl_).unwrap();
 
-        assert!(tc.impl_registry.read().unwrap()
+        assert!(tc
+            .impl_registry
+            .read().unwrap()
             .has_impl(&TraitName::from("TestTrait"), &TypeName::from("Int")));
-        assert!(!tc.impl_registry.read().unwrap()
+        assert!(!tc
+            .impl_registry
+            .read().unwrap()
             .has_impl(&TraitName::from("TestTrait"), &TypeName::from("Bool")));
     }
 
@@ -2206,8 +2208,7 @@ mod tests {
             span: Span::SYNTHETIC,
         };
 
-        let _tr = tc.trait_registry.read().unwrap();
-        let decl = _tr.decls
+        let decl = tc.trait_registry.read().unwrap().decls
             .get(&TraitName::from("Eq"))
             .unwrap()
             .clone();

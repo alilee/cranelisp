@@ -5,6 +5,18 @@
 //! A REPL line is a one-element slice; a batch program is a multi-element slice.
 //! The passes work identically regardless of slice length.
 //!
+//! ## Per-Form API (v4 Pipeline)
+//!
+//! `check_form()` processes a single `TopLevel` form through one pass at a time.
+//! The caller drives two-pass iteration:
+//! - Pass 1 (`CheckPass::Register`): register type defs, traits, signatures.
+//! - Pass 2 (`CheckPass::CheckBody`): check function bodies, detect constraints.
+//!
+//! `merge_form_result()` accumulates per-form results into a `ModuleCheckAccumulator`.
+//! `finalize_check_result()` runs post-passes and drains the accumulator into `CheckResult`.
+//!
+//! `check()` internally uses `check_form()` in two passes — existing callers unchanged.
+//!
 //! `check_program` and `check_repl_input` are deprecated. All production callers
 //! now use `check()`. The old methods are retained only for typecheck crate tests.
 
@@ -12,13 +24,126 @@ use std::collections::{HashMap, HashSet};
 
 use cranelisp_types::{
     CheckResult, CompileContext, ConstrainedFn, CranelispError, Defn, DefKind, DefnVariant,
-    DisplayInfo, Expr, JitSymbol, ModuleEntry, ModuleStrategy, MonoDefn, ResolvedCall, Scheme,
-    Span, Symbol, TopLevel, Type, Visibility, apply,
+    DisplayInfo, Expr, JitSymbol, ModuleEntry, ModuleFullPath, ModuleStrategy, MonoDefn,
+    ResolvedCall, Scheme, Span, Symbol, TopLevel, Type, Visibility, Warning, apply,
 };
 
-use crate::checker::{CheckState, TypeChecker};
+use crate::checker::TypeChecker;
 use crate::resolve::resolve_type_expr;
 use crate::scheme::mono;
+
+// --- Per-Form Typecheck API types ---
+
+/// Pass indicator for `check_form()`.
+///
+/// The two-pass structure (register all signatures, then check all bodies) is
+/// fundamental to Algorithm W with mutual recursion. The caller drives the
+/// iteration; `check_form` does the right thing for each (form, pass) pair.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CheckPass {
+    /// Pass 1: register type/trait/signature.
+    /// For Defn: registers signature only. For TypeDef/TraitDecl/TraitImpl: full registration.
+    Register,
+    /// Pass 2: check function body, generalize, detect constraints.
+    /// Only meaningful for Defn forms. Other form kinds return an empty result.
+    CheckBody,
+}
+
+/// Per-form typecheck result.
+///
+/// Returned by `check_form()` for each (form, pass) invocation. The caller
+/// feeds this to `merge_form_result()` to accumulate into module-level state.
+/// In v4, the scheduler also uses these fields for per-symbol codegen readiness.
+#[derive(Debug)]
+pub struct FormCheckResult {
+    /// Method resolutions discovered while checking this form.
+    /// In Pass 1: empty (registration produces no resolutions).
+    /// In Pass 2: resolutions from the body of this defn.
+    pub method_resolutions: HashMap<Span, ResolvedCall>,
+
+    /// Expression types for this form's AST nodes.
+    /// In Pass 1: may contain constructor types for TypeDef forms.
+    /// In Pass 2: contains all expr types from the defn body + the defn's Fn type.
+    pub expr_types: HashMap<Span, Type>,
+
+    /// If this form defines a constrained polymorphic function (Pass 2 only),
+    /// the function name. Used by the caller to build the constrained_fn_names set.
+    pub constrained_fn: Option<Symbol>,
+
+    /// Monomorphised definitions generated from this form's call sites (Pass 2 only).
+    pub mono_defns: Vec<MonoDefn>,
+
+    /// Default method definitions expanded from trait impls in this form (Pass 1 only).
+    /// Produced when a TraitImpl form triggers default method synthesis.
+    pub default_method_defns: Vec<Defn>,
+
+    /// Multi-sig mangled definitions produced during overload resolution.
+    /// Populated when a multi-sig DefnMulti's variants are resolved after Pass 2.
+    pub multi_sig_defns: Vec<Defn>,
+
+    /// Warnings emitted during checking this form.
+    pub warnings: Vec<Warning>,
+
+    /// Call graph edges discovered during this form's checking.
+    /// Each entry is (caller_symbol, callee_symbol). Accumulated for the
+    /// module's call graph, used by the scheduler for macro dependency walks.
+    pub call_graph_edges: Vec<(Symbol, Symbol)>,
+}
+
+impl FormCheckResult {
+    /// Create an empty FormCheckResult (used for no-op passes).
+    fn empty() -> Self {
+        FormCheckResult {
+            method_resolutions: HashMap::new(),
+            expr_types: HashMap::new(),
+            constrained_fn: None,
+            mono_defns: Vec::new(),
+            default_method_defns: Vec::new(),
+            multi_sig_defns: Vec::new(),
+            warnings: Vec::new(),
+            call_graph_edges: Vec::new(),
+        }
+    }
+}
+
+/// Per-module accumulator for form-by-form typecheck results.
+///
+/// One accumulator per module. Created before Pass 1, consumed by
+/// `finalize_check_result()`. No concurrent access — a single worker
+/// processes one module's forms sequentially (Invariant 5).
+// FIXME(/typecheck): I-2 — method_resolutions, expr_types, warnings are collected here but
+// never consumed during finalization (authoritative data stays in self.state). Step 3 scheduler
+// should clarify which source is canonical to avoid design confusion.
+pub struct ModuleCheckAccumulator {
+    pub method_resolutions: HashMap<Span, ResolvedCall>,
+    pub expr_types: HashMap<Span, Type>,
+    pub constrained_fn_names: HashSet<Symbol>,
+    pub mono_defns: Vec<MonoDefn>,
+    pub default_method_defns: Vec<Defn>,
+    pub multi_sig_defns: Vec<Defn>,
+    pub warnings: Vec<Warning>,
+    pub call_graph_edges: Vec<(Symbol, Symbol)>,
+    /// Type vars from pass 1 registration, keyed by defn name.
+    /// Needed by pass 2 to check bodies against registered signatures.
+    pub defn_type_vars: HashMap<Symbol, (Vec<Type>, Type)>,
+}
+
+impl ModuleCheckAccumulator {
+    /// Create a new empty accumulator for a module.
+    pub fn new() -> Self {
+        ModuleCheckAccumulator {
+            method_resolutions: HashMap::new(),
+            expr_types: HashMap::new(),
+            constrained_fn_names: HashSet::new(),
+            mono_defns: Vec::new(),
+            default_method_defns: Vec::new(),
+            multi_sig_defns: Vec::new(),
+            warnings: Vec::new(),
+            call_graph_edges: Vec::new(),
+            defn_type_vars: HashMap::new(),
+        }
+    }
+}
 
 // --- Name mangling for multi-sig overload dispatch ---
 
@@ -88,18 +213,458 @@ fn types_compatible(a: &Type, b: &Type) -> bool {
 }
 
 impl TypeChecker {
+    // =================================================================
+    // Per-Form Typecheck API (v4 pipeline)
+    // =================================================================
+
+    /// Check a single `TopLevel` form through one pass.
+    ///
+    /// The caller drives the two-pass iteration:
+    /// - Pass 1 (`CheckPass::Register`): call for every form in source order.
+    /// - Pass 2 (`CheckPass::CheckBody`): call for every form in source order.
+    ///
+    /// Returns a `FormCheckResult` that the caller feeds to `merge_form_result()`.
+    ///
+    /// ## Invariants
+    /// - All signatures must be registered (Pass 1) before any body is checked (Pass 2).
+    /// - Source order within Pass 1 must respect: TypeDef < TraitDecl < TraitImpl < Defn.
+    /// - One `ModuleCheckAccumulator` per module, no concurrent access.
+    pub fn check_form(
+        &mut self,
+        _module: &ModuleFullPath,
+        form: &TopLevel,
+        pass: CheckPass,
+        accumulator: &mut ModuleCheckAccumulator,
+    ) -> Result<FormCheckResult, CranelispError> {
+        match pass {
+            CheckPass::Register => self.check_form_register(form, accumulator),
+            CheckPass::CheckBody => self.check_form_body(form, accumulator),
+        }
+    }
+
+    /// Pass 1 (Register) dispatch: register type defs, trait decls/impls, signatures.
+    fn check_form_register(
+        &mut self,
+        form: &TopLevel,
+        accumulator: &mut ModuleCheckAccumulator,
+    ) -> Result<FormCheckResult, CranelispError> {
+        match form {
+            TopLevel::TypeDef {
+                name,
+                docstring,
+                type_params,
+                constructors,
+                visibility,
+                span,
+            } => {
+                self.register_type_def(
+                    name, docstring, type_params, constructors, *visibility, *span,
+                )?;
+                Ok(FormCheckResult::empty())
+            }
+            TopLevel::TraitDecl(decl) => {
+                self.register_trait_decl(decl)?;
+                Ok(FormCheckResult::empty())
+            }
+            TopLevel::TraitImpl(impl_) => {
+                let defaults = self.register_trait_impl(impl_)?;
+                let mut result = FormCheckResult::empty();
+                result.default_method_defns = defaults;
+                Ok(result)
+            }
+            TopLevel::Defn(defn) => {
+                if defn.is_multi_sig() {
+                    self.check_form_register_multi_sig(defn, accumulator)
+                } else {
+                    self.check_form_register_single_defn(defn, accumulator)
+                }
+            }
+            TopLevel::Expr(_) => {
+                // Expr forms should be wrapped as synthetic Defn before reaching here.
+                // If they somehow arrive unwrapped, treat as no-op.
+                Ok(FormCheckResult::empty())
+            }
+        }
+    }
+
+    /// Register a single-sig defn's signature (Pass 1).
+    fn check_form_register_single_defn(
+        &mut self,
+        defn: &Defn,
+        accumulator: &mut ModuleCheckAccumulator,
+    ) -> Result<FormCheckResult, CranelispError> {
+        let (param_types, ret_ty) = self.register_defn_signature(defn)?;
+        accumulator.defn_type_vars.insert(defn.name.clone(), (param_types, ret_ty));
+        Ok(FormCheckResult::empty())
+    }
+
+    /// Register a multi-sig defn: expand variants, register each, register base as Overloaded.
+    fn check_form_register_multi_sig(
+        &mut self,
+        defn: &Defn,
+        accumulator: &mut ModuleCheckAccumulator,
+    ) -> Result<FormCheckResult, CranelispError> {
+        let mut overload_entries = Vec::new();
+        for (i, variant) in defn.variants.iter().enumerate() {
+            let internal_name = Symbol::from(format!("{}__v{}", defn.name, i));
+            overload_entries.push((internal_name.clone(), variant.params.len()));
+
+            let internal_defn = Defn {
+                name: internal_name.clone(),
+                docstring: defn.docstring.clone(),
+                variants: vec![DefnVariant {
+                    params: variant.params.clone(),
+                    param_annotations: variant.param_annotations.clone(),
+                    body: variant.body.clone(),
+                    span: variant.span,
+                }],
+                visibility: defn.visibility,
+                span: variant.span,
+            };
+            // Register each variant's signature
+            let (param_types, ret_ty) = self.register_defn_signature(&internal_defn)?;
+            accumulator.defn_type_vars.insert(internal_name, (param_types, ret_ty));
+        }
+        self.state.overloads.insert(defn.name.clone(), overload_entries);
+
+        // Register a placeholder for the base name
+        let placeholder_ty = self.fresh_var();
+        let placeholder_scheme = mono(placeholder_ty);
+        self.current_symbol_table_mut().insert(
+            defn.name.clone(),
+            ModuleEntry::Def {
+                scheme: placeholder_scheme,
+                visibility: defn.visibility,
+                docstring: defn.docstring.clone(),
+                param_names: vec![],
+                kind: Box::new(DefKind::Overloaded { variants: vec![] }),
+            },
+        );
+
+        Ok(FormCheckResult::empty())
+    }
+
+    /// Pass 2 (CheckBody) dispatch: check function bodies, generalize, detect constraints.
+    fn check_form_body(
+        &mut self,
+        form: &TopLevel,
+        accumulator: &mut ModuleCheckAccumulator,
+    ) -> Result<FormCheckResult, CranelispError> {
+        match form {
+            TopLevel::Defn(defn) => {
+                if defn.is_multi_sig() {
+                    self.check_form_body_multi_sig(defn, accumulator)
+                } else {
+                    self.check_form_body_single_defn(defn, accumulator)
+                }
+            }
+            // Non-Defn forms are no-ops in CheckBody pass.
+            _ => Ok(FormCheckResult::empty()),
+        }
+    }
+
+    /// Check a single-sig defn body (Pass 2).
+    ///
+    /// Checks the body, does eager constrained-fn detection, and scans
+    /// for monomorphisation call sites.
+    fn check_form_body_single_defn(
+        &mut self,
+        defn: &Defn,
+        accumulator: &ModuleCheckAccumulator,
+    ) -> Result<FormCheckResult, CranelispError> {
+        let (param_types, ret_ty) = accumulator
+            .defn_type_vars
+            .get(&defn.name)
+            .ok_or_else(|| CranelispError::TypeError {
+                message: format!("internal: missing type vars for {}", defn.name),
+                span: defn.span,
+            })?;
+
+        // Snapshot method_resolutions and expr_types sizes so we can extract
+        // just the new entries added during this form's checking.
+        let mr_before: HashSet<Span> = self.state.method_resolutions.keys().copied().collect();
+        let et_before: HashSet<Span> = self.state.expr_types.keys().copied().collect();
+
+        self.check_defn_body(defn, param_types, ret_ty)?;
+        self.resolve_deferred_trait_calls(&defn.body());
+
+        // Eager constrained-fn detection
+        let fn_type = Type::Fn(
+            param_types.iter().map(|t| self.apply_subst(t)).collect(),
+            Box::new(self.apply_subst(ret_ty)),
+        );
+        let trial_scheme = self.generalize(&fn_type);
+        let constrained_fn = if !trial_scheme.constraints.is_empty() {
+            if let Some(ModuleEntry::Def { kind, .. }) =
+                self.current_symbol_table_mut().symbols.get_mut(&defn.name)
+            {
+                let cf = ConstrainedFn {
+                    defn: defn.clone(),
+                    scheme: trial_scheme,
+                };
+                **kind = DefKind::UserFn {
+                    constrained_fn: Some(Box::new(cf)),
+                };
+            }
+            Some(defn.name.clone())
+        } else {
+            None
+        };
+
+        // Extract new method resolutions and expr types added during this form
+        let mut form_mr = HashMap::new();
+        for (span, res) in &self.state.method_resolutions {
+            if !mr_before.contains(span) {
+                form_mr.insert(*span, res.clone());
+            }
+        }
+        let mut form_et = HashMap::new();
+        for (span, ty) in &self.state.expr_types {
+            if !et_before.contains(span) {
+                form_et.insert(*span, ty.clone());
+            }
+        }
+
+        let warnings = std::mem::take(&mut self.state.warnings);
+
+        Ok(FormCheckResult {
+            method_resolutions: form_mr,
+            expr_types: form_et,
+            constrained_fn,
+            mono_defns: Vec::new(),
+            default_method_defns: Vec::new(),
+            multi_sig_defns: Vec::new(),
+            warnings,
+            call_graph_edges: Vec::new(),
+        })
+    }
+
+    /// Check a multi-sig defn's variant bodies (Pass 2).
+    fn check_form_body_multi_sig(
+        &mut self,
+        defn: &Defn,
+        accumulator: &ModuleCheckAccumulator,
+    ) -> Result<FormCheckResult, CranelispError> {
+        let mr_before: HashSet<Span> = self.state.method_resolutions.keys().copied().collect();
+        let et_before: HashSet<Span> = self.state.expr_types.keys().copied().collect();
+
+        // Check each variant body
+        for (i, variant) in defn.variants.iter().enumerate() {
+            let internal_name = Symbol::from(format!("{}__v{}", defn.name, i));
+            let (param_types, ret_ty) = accumulator
+                .defn_type_vars
+                .get(&internal_name)
+                .ok_or_else(|| CranelispError::TypeError {
+                    message: format!(
+                        "internal: missing type vars for multi-sig variant {}",
+                        internal_name
+                    ),
+                    span: variant.span,
+                })?;
+
+            // Build a temporary single-variant defn for body checking
+            let internal_defn = Defn {
+                name: internal_name.clone(),
+                docstring: defn.docstring.clone(),
+                variants: vec![DefnVariant {
+                    params: variant.params.clone(),
+                    param_annotations: variant.param_annotations.clone(),
+                    body: variant.body.clone(),
+                    span: variant.span,
+                }],
+                visibility: defn.visibility,
+                span: variant.span,
+            };
+
+            self.check_defn_body(&internal_defn, param_types, ret_ty)?;
+            self.resolve_deferred_trait_calls(&internal_defn.body());
+
+            // Eager constrained-fn detection for variant
+            let fn_type = Type::Fn(
+                param_types.iter().map(|t| self.apply_subst(t)).collect(),
+                Box::new(self.apply_subst(ret_ty)),
+            );
+            let trial_scheme = self.generalize(&fn_type);
+            if !trial_scheme.constraints.is_empty() {
+                if let Some(ModuleEntry::Def { kind, .. }) =
+                    self.current_symbol_table_mut().symbols.get_mut(&internal_name)
+                {
+                    let cf = ConstrainedFn {
+                        defn: internal_defn,
+                        scheme: trial_scheme,
+                    };
+                    **kind = DefKind::UserFn {
+                        constrained_fn: Some(Box::new(cf)),
+                    };
+                }
+            }
+        }
+
+        // Extract new method resolutions and expr types
+        let mut form_mr = HashMap::new();
+        for (span, res) in &self.state.method_resolutions {
+            if !mr_before.contains(span) {
+                form_mr.insert(*span, res.clone());
+            }
+        }
+        let mut form_et = HashMap::new();
+        for (span, ty) in &self.state.expr_types {
+            if !et_before.contains(span) {
+                form_et.insert(*span, ty.clone());
+            }
+        }
+
+        let warnings = std::mem::take(&mut self.state.warnings);
+
+        Ok(FormCheckResult {
+            method_resolutions: form_mr,
+            expr_types: form_et,
+            constrained_fn: None,
+            mono_defns: Vec::new(),
+            default_method_defns: Vec::new(),
+            multi_sig_defns: Vec::new(),
+            warnings,
+            call_graph_edges: Vec::new(),
+        })
+    }
+
+    /// Merge a `FormCheckResult` into the module's accumulator.
+    ///
+    /// Called after each `check_form()` to accumulate per-form results
+    /// into the module-level state.
+    pub fn merge_form_result(
+        &mut self,
+        _module: &ModuleFullPath,
+        accumulator: &mut ModuleCheckAccumulator,
+        result: FormCheckResult,
+    ) {
+        accumulator.method_resolutions.extend(result.method_resolutions);
+        accumulator.expr_types.extend(result.expr_types);
+        if let Some(name) = result.constrained_fn {
+            accumulator.constrained_fn_names.insert(name);
+        }
+        accumulator.mono_defns.extend(result.mono_defns);
+        accumulator.default_method_defns.extend(result.default_method_defns);
+        accumulator.multi_sig_defns.extend(result.multi_sig_defns);
+        accumulator.warnings.extend(result.warnings);
+        accumulator.call_graph_edges.extend(result.call_graph_edges);
+    }
+
+    /// Finalize typecheck for a module: run post-passes and drain accumulator into `CheckResult`.
+    ///
+    /// Runs:
+    /// 1. Phase 2 generalization (apply final substitution, clear false-positive constrained markers)
+    /// 2. Phase 3 re-resolve deferred trait calls
+    /// 3. Multi-sig overload resolution (pass 2.5)
+    /// 4. Constrained-fn detection and monomorphisation (passes 3-4)
+    /// 5. Pending overload + auto-curry resolution (pass 5)
+    /// 6. Build `CheckResult` from accumulated state
+    ///
+    /// Note: `type_defs` and `constructor_to_type` are read from the TypeChecker's
+    /// module tables, not from the accumulator — TypeDef registration writes
+    /// directly into the module's type_defs registry during Pass 1.
+    pub fn finalize_check_result(
+        &mut self,
+        _module: &ModuleFullPath,
+        accumulator: &mut ModuleCheckAccumulator,
+        working_program: &[TopLevel],
+        strategy: ModuleStrategy,
+    ) -> Result<CheckResult, CranelispError> {
+        // Phase 2: generalize all functions (matching pass2_check_bodies Phase 2).
+        // Clear false-positive constrained markers.
+        for (name, (param_types, ret_ty)) in &accumulator.defn_type_vars {
+            let fn_type = Type::Fn(
+                param_types.iter().map(|t| self.apply_subst(t)).collect(),
+                Box::new(self.apply_subst(ret_ty)),
+            );
+            let scheme = self.generalize(&fn_type);
+            if let Some(ModuleEntry::Def { scheme: s, kind, .. }) =
+                self.current_symbol_table_mut().symbols.get_mut(name)
+            {
+                *s = scheme.clone();
+                if scheme.constraints.is_empty()
+                    && let DefKind::UserFn { constrained_fn: Some(_) } = kind.as_ref()
+                {
+                    **kind = DefKind::UserFn { constrained_fn: None };
+                }
+            }
+        }
+
+        // Phase 3: re-resolve deferred trait calls with final types
+        for top in working_program {
+            if let TopLevel::Defn(defn) = top {
+                if defn.is_multi_sig() {
+                    for (i, variant) in defn.variants.iter().enumerate() {
+                        let internal_name = Symbol::from(format!("{}__v{}", defn.name, i));
+                        let internal_defn = Defn {
+                            name: internal_name,
+                            docstring: defn.docstring.clone(),
+                            variants: vec![DefnVariant {
+                                params: variant.params.clone(),
+                                param_annotations: variant.param_annotations.clone(),
+                                body: variant.body.clone(),
+                                span: variant.span,
+                            }],
+                            visibility: defn.visibility,
+                            span: variant.span,
+                        };
+                        self.resolve_deferred_trait_calls(&internal_defn.body());
+                    }
+                } else {
+                    self.resolve_deferred_trait_calls(&defn.body());
+                }
+            }
+        }
+
+        // Pass 2.5: resolve multi-sig overloads
+        let multi_sig_defns = self.resolve_multi_sig_overloads(
+            working_program,
+            &accumulator.defn_type_vars,
+        )?;
+
+        // Pass 3: detect constrained polymorphic functions
+        let single_sig_defns = Self::collect_single_sig_defns(working_program);
+        let mut constrained_fn_names = self.detect_constrained_fns(&single_sig_defns);
+
+        // Add previously-accumulated constrained fns and those from prior REPL evals
+        constrained_fn_names.extend(accumulator.constrained_fn_names.drain());
+
+        if strategy == ModuleStrategy::Additive {
+            for (name, entry) in self.current_symbol_table().all_symbols() {
+                if let ModuleEntry::Def { kind, .. } = entry
+                    && let DefKind::UserFn { constrained_fn: Some(_) } = kind.as_ref()
+                {
+                    constrained_fn_names.insert(name.clone());
+                }
+            }
+        }
+
+        // Pass 4: monomorphise constrained function call sites
+        let mono_defns = self.pass4_monomorphise(&single_sig_defns, &constrained_fn_names)?;
+
+        // Pass 5: resolve pending overload dispatch + auto-curry
+        self.resolve_pending_overloads()?;
+        self.resolve_auto_curry();
+
+        // Build result
+        let mut result = self.build_check_result();
+        result.constrained_fn_names = constrained_fn_names;
+        result.mono_defns = mono_defns;
+        let mut all_default_defns = std::mem::take(&mut accumulator.default_method_defns);
+        all_default_defns.extend(multi_sig_defns);
+        result.default_method_defns = all_default_defns;
+
+        Ok(result)
+    }
+
+    // =================================================================
+    // Unified check() entry point — uses check_form internally
+    // =================================================================
+
     /// Unified type-checking entry point.
     ///
-    /// Processes a slice of `TopLevel` forms through the multi-pass pipeline:
-    /// 1. Register type definitions, trait declarations, trait implementations,
-    ///    and function signatures (with fresh type variables).
-    /// 2. Check function bodies and generalize types.
-    /// 3. Detect constrained polymorphic functions.
-    /// 4. Monomorphise constrained function call sites.
-    /// 5. Resolve auto-curry sites.
-    ///
-    /// A REPL line is a one-element slice; a batch program is a multi-element
-    /// slice. The pipeline degenerates correctly on single-element input.
+    /// Processes a slice of `TopLevel` forms through the multi-pass pipeline
+    /// using `check_form()` internally. Existing callers see identical results.
     ///
     /// `Expr` variants are wrapped in a synthetic zero-arg `Defn` named `__expr`
     /// so they flow through the same passes as regular definitions.
@@ -113,18 +678,6 @@ impl TypeChecker {
         // Set active module from context.
         self.set_current_module(ctx.module.clone());
 
-        // Create a fresh CheckState for this check invocation.
-        // All transient inference state lives here, not carried over from
-        // prior calls. This is the key refactoring enabling future parallel
-        // check() calls (each gets its own CheckState).
-        self.state = CheckState::new(ctx.module.clone());
-
-        // For REPL additive mode, reconstruct overloads from the symbol
-        // table so previously defined multi-sig functions are recognized.
-        if strategy == ModuleStrategy::Additive {
-            self.reconstruct_overloads_from_symbol_table();
-        }
-
         // If Replace strategy, clear existing module state so that removed
         // definitions don't persist as stale entries.
         if strategy == ModuleStrategy::Replace {
@@ -133,20 +686,61 @@ impl TypeChecker {
 
         // Build a working copy of the program with Expr variants wrapped
         // as synthetic zero-arg Defns.
-        let mut working_program: Vec<TopLevel> = Vec::with_capacity(program.len());
-        let mut expr_synthetic_spans: Vec<Span> = Vec::new();
+        let working_program = Self::wrap_exprs_as_defns(program);
 
+        // Create per-module accumulator
+        let mut accumulator = ModuleCheckAccumulator::new();
+
+        // Pass 1: Register all forms in source order
+        for form in &working_program {
+            let result = self.check_form(&ctx.module, form, CheckPass::Register, &mut accumulator)?;
+            self.merge_form_result(&ctx.module, &mut accumulator, result);
+        }
+
+        // Register default method defns generated during Pass 1 TraitImpl processing.
+        // These need Pass 1 signature registration too.
+        let defaults: Vec<Defn> = std::mem::take(&mut accumulator.default_method_defns);
+        for defn in &defaults {
+            let form = TopLevel::Defn(defn.clone());
+            let result = self.check_form(&ctx.module, &form, CheckPass::Register, &mut accumulator)?;
+            self.merge_form_result(&ctx.module, &mut accumulator, result);
+        }
+        // Put defaults back so finalize knows about them
+        accumulator.default_method_defns = defaults;
+
+        // Pass 2: Check bodies for all forms
+        for form in &working_program {
+            let result = self.check_form(&ctx.module, form, CheckPass::CheckBody, &mut accumulator)?;
+            self.merge_form_result(&ctx.module, &mut accumulator, result);
+        }
+
+        // Check bodies of default method defns too.
+        let defaults_for_body: Vec<Defn> = accumulator.default_method_defns.clone();
+        for defn in &defaults_for_body {
+            let form = TopLevel::Defn(defn.clone());
+            let result = self.check_form(&ctx.module, &form, CheckPass::CheckBody, &mut accumulator)?;
+            self.merge_form_result(&ctx.module, &mut accumulator, result);
+        }
+
+        // Finalize: run post-passes (generalization, overload resolution, monomorphisation,
+        // auto-curry) and build CheckResult.
+        let mut result = self.finalize_check_result(
+            &ctx.module, &mut accumulator, &working_program, strategy,
+        )?;
+
+        // Populate display info
+        result.display = self.compute_display_info(program, &accumulator.defn_type_vars);
+
+        Ok(result)
+    }
+
+    /// Wrap `Expr` variants as synthetic zero-arg `Defn` named `__expr`.
+    fn wrap_exprs_as_defns(program: &[TopLevel]) -> Vec<TopLevel> {
+        let mut working_program = Vec::with_capacity(program.len());
         for top in program {
             match top {
                 TopLevel::Expr(expr) => {
                     let span = expr.span();
-                    // Use a distinct defn-level span so check_defn_body's
-                    // record_expr_type(defn.span, Fn_type) does not overwrite
-                    // the body expression's type in expr_types. For real defns
-                    // this is never a problem because defn.span covers the
-                    // whole `(defn ...)` form, which differs from the body span.
-                    // The synthetic wrapper has no source form of its own, so
-                    // we offset by 1 to avoid colliding with the body span.
                     let wrapper_span = Span::new(
                         span.start.saturating_sub(1),
                         span.end.saturating_add(1),
@@ -163,7 +757,6 @@ impl TypeChecker {
                         visibility: Visibility::Public,
                         span: wrapper_span,
                     };
-                    expr_synthetic_spans.push(span);
                     working_program.push(TopLevel::Defn(synthetic_defn));
                 }
                 other => {
@@ -171,86 +764,7 @@ impl TypeChecker {
                 }
             }
         }
-
-        // Pass 1: register type definitions
-        self.register_type_defs_from_program(&working_program)?;
-
-        // Pass 1: register trait declarations
-        self.register_trait_decls_from_program(&working_program)?;
-
-        // Pass 1: register trait implementations
-        let default_defns =
-            self.register_trait_impls_from_program(&working_program)?;
-
-        // Expand multi-sig defns into synthetic single-variant defns with
-        // internal names (e.g., `add__v0`, `add__v1`). The originals are
-        // removed from the working set so pass1/pass2 never see multi-sig.
-        let multi_internal_defns = self.expand_multi_sig_defns(&working_program);
-
-        // Pass 1: register function signatures with fresh type variables.
-        // Single-sig defns from the working program + expanded multi-sig variants.
-        let single_sig_defns = Self::collect_single_sig_defns(&working_program);
-        let mut all_defn_refs: Vec<&Defn> = Vec::new();
-        for d in &single_sig_defns {
-            all_defn_refs.push(d);
-        }
-        for d in &multi_internal_defns {
-            all_defn_refs.push(d);
-        }
-        let defn_type_vars = self.pass1_register_signatures(&all_defn_refs)?;
-
-        // Pass 2: check function bodies and generalize
-        self.pass2_check_bodies(&all_defn_refs, &defn_type_vars)?;
-
-        // Pass 2.5: resolve multi-sig overloads — build mangled names from
-        // concrete types now that pass 2 has unified type variables.
-        let multi_sig_defns = self.resolve_multi_sig_overloads(
-            &working_program,
-            &defn_type_vars,
-        )?;
-
-        // Pass 3: detect constrained polymorphic functions
-        // Only scan single-sig defns (multi-sig variants have internal names,
-        // not user-visible names that callers would reference).
-        let mut constrained_fn_names =
-            self.detect_constrained_fns(&single_sig_defns);
-
-        // Also include constrained fns already registered in the symbol table
-        // from prior REPL evaluations. In batch mode this adds nothing (all
-        // defns are in the current slice), but in interactive/additive mode
-        // constrained fns from earlier evals must be recognized at call sites.
-        if strategy == ModuleStrategy::Additive {
-            for (name, entry) in self.current_symbol_table().all_symbols() {
-                if let ModuleEntry::Def { kind, .. } = entry
-                    && let DefKind::UserFn { constrained_fn: Some(_) } = kind.as_ref()
-                {
-                    constrained_fn_names.insert(name.clone());
-                }
-            }
-        }
-
-        // Pass 4: monomorphise constrained function call sites
-        // Scan ALL defn bodies (including synthetic __expr) — this fixes the
-        // v1 batch-path gap where bare Expr forms were not scanned.
-        let mono_defns = self.pass4_monomorphise(&single_sig_defns, &constrained_fn_names)?;
-
-        // Pass 5: resolve pending overload dispatch + auto-curry
-        self.resolve_pending_overloads()?;
-        self.resolve_auto_curry();
-
-        // Build result
-        let mut result = self.build_check_result();
-        result.constrained_fn_names = constrained_fn_names;
-        result.mono_defns = mono_defns;
-        let mut all_default_defns = default_defns;
-        all_default_defns.extend(multi_sig_defns);
-        result.default_method_defns = all_default_defns;
-
-        // Populate display info: if the last form is an Expr or Defn and the
-        // input is small (REPL-like), provide DisplayInfo for interactive output.
-        result.display = self.compute_display_info(program, &defn_type_vars);
-
-        Ok(result)
+        working_program
     }
 
     /// Compute DisplayInfo from the last form in the program.
@@ -306,38 +820,6 @@ impl TypeChecker {
         }
     }
 
-    /// Reconstruct overloads and resolved_overloads from the symbol table.
-    ///
-    /// In REPL additive mode, overloads from prior check() calls need to
-    /// be available for the new check(). Since CheckState is now fresh for
-    /// each call, we reconstruct from DefKind::Overloaded entries.
-    fn reconstruct_overloads_from_symbol_table(&mut self) {
-        // Collect overloads first to avoid borrowing self immutably (via
-        // current_symbol_table) and mutably (via state) at the same time.
-        let overloads_to_insert: Vec<(Symbol, Vec<(Vec<Type>, Type, Symbol)>)> = self
-            .current_symbol_table()
-            .all_symbols()
-            .filter_map(|(name, entry)| {
-                if let ModuleEntry::Def { kind, .. } = entry {
-                    if let DefKind::Overloaded { variants } = kind.as_ref() {
-                        let resolved: Vec<(Vec<Type>, Type, Symbol)> = variants
-                            .iter()
-                            .map(|v| {
-                                (v.param_types.clone(), v.ret_type.clone(), v.mangled_name.clone())
-                            })
-                            .collect();
-                        return Some((name.clone(), resolved));
-                    }
-                }
-                None
-            })
-            .collect();
-
-        for (name, resolved) in overloads_to_insert {
-            self.state.resolved_overloads.insert(name, resolved);
-        }
-    }
-
     /// Clear module state for Replace strategy.
     ///
     /// Removes all symbol table entries, type defs, trait decls, and trait
@@ -380,6 +862,10 @@ impl TypeChecker {
     ///
     /// Returns owned `Vec<Defn>` — the caller holds references into this vec
     /// alongside the single-sig defn references from the program.
+    ///
+    /// Note: Superseded by `check_form_register_multi_sig` for the `check()` path.
+    /// Retained for the deprecated `check_program` path used in tests.
+    #[allow(dead_code)]
     fn expand_multi_sig_defns(&mut self, program: &[TopLevel]) -> Vec<Defn> {
         let mut internal_defns = Vec::new();
 
@@ -436,6 +922,7 @@ impl TypeChecker {
     /// table, and populate `resolved_overloads`.
     ///
     /// Returns a list of mangled Defn objects that the backend should compile.
+    // FIXME(/typecheck): I-1 — this function is 135 lines, exceeds 100-line limit. Decompose.
     fn resolve_multi_sig_overloads(
         &mut self,
         program: &[TopLevel],
@@ -2805,8 +3292,7 @@ mod tests {
         let result = tc.check(&program, &test_ctx(), cranelisp_types::ModuleStrategy::Additive).unwrap();
 
         // The base name "add" should be registered as Overloaded
-        let _table = tc.current_symbol_table();
-        let entry = _table.get("add");
+        let entry = tc.current_symbol_table().get("add");
         assert!(entry.is_some(), "base name 'add' should be registered");
         if let Some(ModuleEntry::Def { kind, .. }) = entry {
             assert!(
@@ -3053,5 +3539,1297 @@ mod tests {
                 panic!("expected SigDispatch, got {:?}", other);
             }
         }
+    }
+
+    // =========================================================================
+    // Per-Form Typecheck API tests (Sprint 40 Wave 2)
+    // =========================================================================
+    //
+    // These tests exercise the new check_form / merge_form_result / finalize_check_result
+    // API introduced for the v4 pipeline. They validate:
+    // 1. Behavioral identity: check() via check_form produces same results
+    // 2. Per-form basics: individual forms through check_form
+    // 3. Two-pass correctness: register-then-check ordering
+    // 4. Multi-form programs with interactions
+    // 5. Edge cases from the design doc
+    // 6. Negative tests (error cases)
+
+    /// Helper: create a CompileContext for the "test" module (check_form tests).
+    fn cf_test_ctx() -> CompileContext {
+        CompileContext {
+            module: ModuleFullPath::from("test"),
+            codegen: cranelisp_types::CodegenBehaviour::InMemoryAndObject,
+        }
+    }
+
+    /// Helper: build an "inc" defn: (defn inc [x] (add-i64 x 1))
+    fn make_inc_defn() -> Defn {
+        make_defn(
+            "inc",
+            vec![Symbol::from("x")],
+            vec![None],
+            Expr::Apply {
+                callee: Box::new(Expr::Var {
+                    name: Symbol::from("add-i64"),
+                    span: span(16, 23),
+                }),
+                args: vec![
+                    Expr::Var {
+                        name: Symbol::from("x"),
+                        span: span(24, 25),
+                    },
+                    Expr::IntLit {
+                        value: 1,
+                        span: span(26, 27),
+                    },
+                ],
+                span: span(15, 28),
+            },
+            Visibility::Public,
+            span(0, 29),
+        )
+    }
+
+    /// Helper: build a Color typedef with Red and Green constructors.
+    fn make_color_typedef() -> TopLevel {
+        TopLevel::TypeDef {
+            name: TypeName::from("Color"),
+            docstring: None,
+            type_params: vec![],
+            constructors: vec![
+                cranelisp_types::ConstructorDef {
+                    name: Symbol::from("Red"),
+                    docstring: None,
+                    fields: vec![],
+                    span: span(200, 203),
+                },
+                cranelisp_types::ConstructorDef {
+                    name: Symbol::from("Green"),
+                    docstring: None,
+                    fields: vec![],
+                    span: span(204, 209),
+                },
+            ],
+            visibility: Visibility::Public,
+            span: span(190, 210),
+        }
+    }
+
+    /// Helper: build an is-red defn that matches on Color.
+    fn make_is_red_defn() -> Defn {
+        Defn {
+            name: Symbol::from("is-red"),
+            docstring: None,
+            variants: vec![DefnVariant {
+                params: vec![Symbol::from("c")],
+                param_annotations: vec![None],
+                body: Expr::Match {
+                    scrutinee: Box::new(Expr::Var {
+                        name: Symbol::from("c"),
+                        span: span(230, 231),
+                    }),
+                    arms: vec![
+                        cranelisp_types::MatchArm {
+                            pattern: cranelisp_types::Pattern::Constructor {
+                                name: Symbol::from("Red"),
+                                bindings: vec![],
+                                span: span(233, 236),
+                            },
+                            body: Expr::BoolLit {
+                                value: true,
+                                span: span(237, 241),
+                            },
+                            span: span(233, 241),
+                        },
+                        cranelisp_types::MatchArm {
+                            pattern: cranelisp_types::Pattern::Wildcard {
+                                span: span(242, 243),
+                            },
+                            body: Expr::BoolLit {
+                                value: false,
+                                span: span(244, 249),
+                            },
+                            span: span(242, 249),
+                        },
+                    ],
+                    span: span(224, 250),
+                    compiler_generated: false,
+                },
+                span: span(211, 251),
+            }],
+            visibility: Visibility::Public,
+            span: span(211, 251),
+        }
+    }
+
+    /// Helper: build the forward-reference program (double calls add-self).
+    fn make_forward_ref_program() -> Vec<TopLevel> {
+        vec![
+            TopLevel::Defn(Defn {
+                name: Symbol::from("double"),
+                docstring: None,
+                variants: vec![DefnVariant {
+                    params: vec![Symbol::from("x")],
+                    param_annotations: vec![None],
+                    body: Expr::Apply {
+                        callee: Box::new(Expr::Var {
+                            name: Symbol::from("add-self"),
+                            span: span(318, 326),
+                        }),
+                        args: vec![Expr::Var {
+                            name: Symbol::from("x"),
+                            span: span(327, 328),
+                        }],
+                        span: span(317, 329),
+                    },
+                    span: span(300, 330),
+                }],
+                visibility: Visibility::Public,
+                span: span(300, 330),
+            }),
+            TopLevel::Defn(Defn {
+                name: Symbol::from("add-self"),
+                docstring: None,
+                variants: vec![DefnVariant {
+                    params: vec![Symbol::from("y")],
+                    param_annotations: vec![None],
+                    body: Expr::Apply {
+                        callee: Box::new(Expr::Var {
+                            name: Symbol::from("add-i64"),
+                            span: span(348, 355),
+                        }),
+                        args: vec![
+                            Expr::Var {
+                                name: Symbol::from("y"),
+                                span: span(356, 357),
+                            },
+                            Expr::Var {
+                                name: Symbol::from("y"),
+                                span: span(358, 359),
+                            },
+                        ],
+                        span: span(347, 360),
+                    },
+                    span: span(331, 361),
+                }],
+                visibility: Visibility::Public,
+                span: span(331, 361),
+            }),
+        ]
+    }
+
+    // ---- Category 1: Behavioral Identity ----
+
+    // spec: design/typecheck/check-form-api.md — check() via check_form produces identical CheckResult
+    #[test]
+    fn test_check_form_identity_simple_defn() {
+        // Run a simple defn program through check() and verify the result matches expectations.
+        // Since check() now internally uses check_form(), this tests behavioral identity.
+        let mut tc = tc_with_prims();
+        let ctx = cf_test_ctx();
+        let program = vec![TopLevel::Defn(make_inc_defn())];
+
+        let result = tc.check(&program, &ctx, ModuleStrategy::Additive).unwrap();
+
+        // Verify the function was registered with correct type
+        if let Some(ModuleEntry::Def { scheme, .. }) = tc.symbol_table().get("inc") {
+            assert_eq!(
+                scheme.ty,
+                Type::Fn(vec![Type::Int], Box::new(Type::Int)),
+                "inc should be (Fn [Int] Int)"
+            );
+        } else {
+            panic!("inc not found in symbol table after check()");
+        }
+
+        // Verify expr_types populated (body expressions should be typed)
+        assert!(!result.expr_types.is_empty(), "expr_types should be populated");
+
+        // All expr_types should be resolved (no Var types)
+        for (_span, ty) in &result.expr_types {
+            if let Type::Var(_) = ty {
+                panic!("unresolved Var in expr_types");
+            }
+        }
+
+        // Verify method_resolutions populated (add-i64 call site resolved)
+        assert!(!result.method_resolutions.is_empty(), "method_resolutions should have add-i64 call site");
+    }
+
+    // spec: design/typecheck/check-form-api.md — typedef + defn identity
+    #[test]
+    fn test_check_form_identity_typedef_plus_defn() {
+        let mut tc = tc_with_prims();
+        let ctx = cf_test_ctx();
+        let program = vec![
+            make_color_typedef(),
+            TopLevel::Defn(make_is_red_defn()),
+        ];
+
+        let result = tc.check(&program, &ctx, ModuleStrategy::Additive).unwrap();
+
+        // type_defs and constructor_to_type should be populated
+        assert!(result.type_defs.contains_key(&TypeName::from("Color")));
+        assert!(result.constructor_to_type.contains_key("Red"));
+        assert!(result.constructor_to_type.contains_key("Green"));
+
+        // is-red should have correct type
+        if let Some(ModuleEntry::Def { scheme, .. }) = tc.symbol_table().get("is-red") {
+            assert_eq!(
+                scheme.ty,
+                Type::Fn(
+                    vec![Type::ADT(TypeName::from("Color"), vec![])],
+                    Box::new(Type::Bool)
+                )
+            );
+        } else {
+            panic!("is-red not found in symbol table");
+        }
+
+        // expr_types should be populated
+        assert!(!result.expr_types.is_empty());
+    }
+
+    // spec: design/typecheck/check-form-api.md — forward reference identity
+    #[test]
+    fn test_check_form_identity_forward_reference() {
+        let mut tc = tc_with_prims();
+        let ctx = cf_test_ctx();
+        let program = make_forward_ref_program();
+
+        let result = tc.check(&program, &ctx, ModuleStrategy::Additive).unwrap();
+
+        // Both should be monomorphic Int -> Int
+        if let Some(ModuleEntry::Def { scheme, .. }) = tc.symbol_table().get("double") {
+            assert_eq!(
+                scheme.ty,
+                Type::Fn(vec![Type::Int], Box::new(Type::Int)),
+            );
+        } else {
+            panic!("double not found");
+        }
+
+        if let Some(ModuleEntry::Def { scheme, .. }) = tc.symbol_table().get("add-self") {
+            assert_eq!(
+                scheme.ty,
+                Type::Fn(vec![Type::Int], Box::new(Type::Int)),
+            );
+        } else {
+            panic!("add-self not found");
+        }
+
+        assert!(!result.expr_types.is_empty());
+    }
+
+    // spec: design/typecheck/check-form-api.md — constrained fn identity
+    #[test]
+    fn test_check_form_identity_constrained_fn() {
+        let mut tc = tc_with_prims();
+        register_num_trait_inline(&mut tc);
+        let ctx = cf_test_ctx();
+
+        // (defn add [x y] (+ x y)) — constrained by Num trait
+        let program = vec![TopLevel::Defn(make_defn(
+            "add",
+            vec![Symbol::from("x"), Symbol::from("y")],
+            vec![None, None],
+            Expr::Apply {
+                callee: Box::new(Expr::Var {
+                    name: Symbol::from("+"),
+                    span: span(400, 401),
+                }),
+                args: vec![
+                    Expr::Var { name: Symbol::from("x"), span: span(402, 403) },
+                    Expr::Var { name: Symbol::from("y"), span: span(404, 405) },
+                ],
+                span: span(399, 406),
+            },
+            Visibility::Public,
+            span(390, 407),
+        ))];
+
+        let result = tc.check(&program, &ctx, ModuleStrategy::Additive).unwrap();
+
+        // Should be detected as constrained polymorphic
+        assert!(
+            result.constrained_fn_names.contains(&Symbol::from("add")),
+            "add should be detected as constrained polymorphic"
+        );
+    }
+
+    // spec: design/typecheck/check-form-api.md — expression-only identity
+    #[test]
+    fn test_check_form_identity_expr() {
+        let mut tc = tc_with_prims();
+        let ctx = cf_test_ctx();
+        let program = vec![TopLevel::Expr(Expr::IntLit {
+            value: 42,
+            span: span(500, 502),
+        })];
+
+        let result = tc.check(&program, &ctx, ModuleStrategy::Additive).unwrap();
+
+        // Display info should show Int type
+        assert!(result.display.is_some());
+        assert_eq!(result.display.as_ref().unwrap().ty, Type::Int);
+
+        // expr_types should contain the literal's type
+        assert!(!result.expr_types.is_empty());
+    }
+
+    // spec: design/typecheck/check-form-api.md — multi-sig defn identity
+    #[test]
+    fn test_check_form_identity_multi_sig() {
+        let mut tc = tc_with_prims();
+        let ctx = cf_test_ctx();
+
+        // Multi-sig: (defn add ([x] (add-i64 x 1)) ([x y] (add-i64 x y)))
+        let program = vec![TopLevel::Defn(Defn {
+            name: Symbol::from("add"),
+            docstring: None,
+            variants: vec![
+                DefnVariant {
+                    params: vec![Symbol::from("x")],
+                    param_annotations: vec![None],
+                    body: Expr::Apply {
+                        callee: Box::new(Expr::Var {
+                            name: Symbol::from("add-i64"),
+                            span: span(610, 617),
+                        }),
+                        args: vec![
+                            Expr::Var { name: Symbol::from("x"), span: span(618, 619) },
+                            Expr::IntLit { value: 1, span: span(620, 621) },
+                        ],
+                        span: span(609, 622),
+                    },
+                    span: span(600, 623),
+                },
+                DefnVariant {
+                    params: vec![Symbol::from("x"), Symbol::from("y")],
+                    param_annotations: vec![None, None],
+                    body: Expr::Apply {
+                        callee: Box::new(Expr::Var {
+                            name: Symbol::from("add-i64"),
+                            span: span(640, 647),
+                        }),
+                        args: vec![
+                            Expr::Var { name: Symbol::from("x"), span: span(648, 649) },
+                            Expr::Var { name: Symbol::from("y"), span: span(650, 651) },
+                        ],
+                        span: span(639, 652),
+                    },
+                    span: span(630, 653),
+                },
+            ],
+            visibility: Visibility::Public,
+            span: span(590, 654),
+        })];
+
+        let result = tc.check(&program, &ctx, ModuleStrategy::Additive).unwrap();
+
+        // The base name should be Overloaded in symbol table
+        if let Some(ModuleEntry::Def { kind, .. }) = tc.symbol_table().get("add") {
+            match kind.as_ref() {
+                DefKind::Overloaded { variants } => {
+                    assert_eq!(variants.len(), 2, "should have 2 overload variants");
+                }
+                other => panic!("expected Overloaded, got {:?}", other),
+            }
+        } else {
+            panic!("add not found in symbol table");
+        }
+
+        // expr_types should be populated from both variant bodies
+        assert!(!result.expr_types.is_empty());
+    }
+
+    // ---- Category 2: Per-Form Basics ----
+
+    // spec: design/typecheck/check-form-api.md §check_form — single defn Register pass
+    #[test]
+    fn test_check_form_single_defn_register() {
+        let mut tc = tc_with_prims();
+        let module = ModuleFullPath::from("test");
+        let mut accumulator = ModuleCheckAccumulator::new();
+
+        let defn = make_inc_defn();
+        let form = TopLevel::Defn(defn);
+        let result = tc.check_form(&module, &form, CheckPass::Register, &mut accumulator).unwrap();
+
+        // Register pass should produce empty method_resolutions and expr_types
+        assert!(result.method_resolutions.is_empty(), "Register pass produces no method resolutions");
+        assert!(result.expr_types.is_empty(), "Register pass produces no expr types");
+        assert!(result.constrained_fn.is_none(), "Register pass has no constrained fn");
+        assert!(result.mono_defns.is_empty(), "Register pass has no mono defns");
+
+        // Signature should be registered in the accumulator's defn_type_vars
+        assert!(
+            accumulator.defn_type_vars.contains_key(&Symbol::from("inc")),
+            "defn_type_vars should contain 'inc' after Register pass"
+        );
+
+        // Signature should be registered in symbol table
+        assert!(
+            tc.symbol_table().get("inc").is_some(),
+            "inc should be in symbol table after Register pass"
+        );
+    }
+
+    // spec: design/typecheck/check-form-api.md §check_form — single defn CheckBody pass
+    #[test]
+    fn test_check_form_single_defn_check_body() {
+        let mut tc = tc_with_prims();
+        let module = ModuleFullPath::from("test");
+        let mut accumulator = ModuleCheckAccumulator::new();
+
+        let defn = make_inc_defn();
+        let form = TopLevel::Defn(defn);
+
+        // Must register first
+        let reg_result = tc.check_form(&module, &form, CheckPass::Register, &mut accumulator).unwrap();
+        tc.merge_form_result(&module, &mut accumulator, reg_result);
+
+        // Now check body
+        let body_result = tc.check_form(&module, &form, CheckPass::CheckBody, &mut accumulator).unwrap();
+
+        // CheckBody pass should produce expr_types (body expressions typed)
+        assert!(
+            !body_result.expr_types.is_empty(),
+            "CheckBody should produce expr_types for body expressions"
+        );
+
+        // CheckBody pass should produce method_resolutions for add-i64 call
+        assert!(
+            !body_result.method_resolutions.is_empty(),
+            "CheckBody should have method resolution for add-i64 call"
+        );
+
+        // No constrained fn (inc is monomorphic)
+        assert!(body_result.constrained_fn.is_none());
+    }
+
+    // spec: design/typecheck/check-form-api.md §check_form — TypeDef Register pass
+    #[test]
+    fn test_check_form_typedef_register() {
+        let mut tc = tc_with_prims();
+        let module = ModuleFullPath::from("test");
+        let mut accumulator = ModuleCheckAccumulator::new();
+
+        let form = make_color_typedef();
+        let result = tc.check_form(&module, &form, CheckPass::Register, &mut accumulator).unwrap();
+
+        // Registration should be mostly empty result (type is registered internally)
+        assert!(result.default_method_defns.is_empty());
+
+        // Constructors should be registered in symbol table
+        assert!(
+            tc.symbol_table().get("Red").is_some(),
+            "Red constructor should be in symbol table"
+        );
+        assert!(
+            tc.symbol_table().get("Green").is_some(),
+            "Green constructor should be in symbol table"
+        );
+    }
+
+    // spec: design/typecheck/check-form-api.md §check_form — TypeDef CheckBody is no-op
+    #[test]
+    fn test_check_form_typedef_check_body_noop() {
+        let mut tc = tc_with_prims();
+        let module = ModuleFullPath::from("test");
+        let mut accumulator = ModuleCheckAccumulator::new();
+
+        let form = make_color_typedef();
+        // Register first
+        let _ = tc.check_form(&module, &form, CheckPass::Register, &mut accumulator).unwrap();
+
+        // CheckBody on TypeDef should be a no-op
+        let result = tc.check_form(&module, &form, CheckPass::CheckBody, &mut accumulator).unwrap();
+        assert!(result.method_resolutions.is_empty());
+        assert!(result.expr_types.is_empty());
+        assert!(result.constrained_fn.is_none());
+        assert!(result.mono_defns.is_empty());
+    }
+
+    // spec: design/typecheck/check-form-api.md §check_form — TraitDecl Register pass
+    #[test]
+    fn test_check_form_trait_decl_register() {
+        let mut tc = tc_with_prims();
+        let module = ModuleFullPath::from("test");
+        let mut accumulator = ModuleCheckAccumulator::new();
+
+        let decl = TraitDecl {
+            name: TraitName::from("Eq"),
+            docstring: None,
+            type_params: vec![Symbol::from("a")],
+            methods: vec![TraitMethodSig {
+                name: Symbol::from("eq"),
+                docstring: None,
+                params: vec![
+                    TypeExpr::TypeVar(Symbol::from("a")),
+                    TypeExpr::TypeVar(Symbol::from("a")),
+                ],
+                ret_type: TypeExpr::Named(TypeName::from("Bool")),
+                span: Span::SYNTHETIC,
+                hkt_param_index: None,
+                default_param_names: vec![Symbol::from("lhs"), Symbol::from("rhs")],
+                default_body: None,
+            }],
+            visibility: Visibility::Public,
+            span: Span::SYNTHETIC,
+        };
+        let form = TopLevel::TraitDecl(decl);
+        let result = tc.check_form(&module, &form, CheckPass::Register, &mut accumulator).unwrap();
+
+        // Should produce an empty result (registration is internal)
+        assert!(result.method_resolutions.is_empty());
+        assert!(result.expr_types.is_empty());
+        assert!(result.default_method_defns.is_empty());
+    }
+
+    // spec: design/typecheck/check-form-api.md §check_form — TraitDecl CheckBody is no-op
+    #[test]
+    fn test_check_form_trait_decl_check_body_noop() {
+        let mut tc = tc_with_prims();
+        let module = ModuleFullPath::from("test");
+        let mut accumulator = ModuleCheckAccumulator::new();
+
+        let decl = TraitDecl {
+            name: TraitName::from("Show"),
+            docstring: None,
+            type_params: vec![Symbol::from("a")],
+            methods: vec![TraitMethodSig {
+                name: Symbol::from("show"),
+                docstring: None,
+                params: vec![TypeExpr::TypeVar(Symbol::from("a"))],
+                ret_type: TypeExpr::Named(TypeName::from("String")),
+                span: Span::SYNTHETIC,
+                hkt_param_index: None,
+                default_param_names: vec![Symbol::from("x")],
+                default_body: None,
+            }],
+            visibility: Visibility::Public,
+            span: Span::SYNTHETIC,
+        };
+        let form = TopLevel::TraitDecl(decl);
+
+        // Register first
+        let _ = tc.check_form(&module, &form, CheckPass::Register, &mut accumulator).unwrap();
+
+        // CheckBody should be no-op
+        let result = tc.check_form(&module, &form, CheckPass::CheckBody, &mut accumulator).unwrap();
+        assert!(result.method_resolutions.is_empty());
+        assert!(result.expr_types.is_empty());
+    }
+
+    // spec: design/typecheck/check-form-api.md §check_form — TraitImpl Register pass
+    #[test]
+    fn test_check_form_trait_impl_register() {
+        let mut tc = tc_with_prims();
+        register_num_trait_inline(&mut tc);
+        let module = ModuleFullPath::from("test");
+        let mut accumulator = ModuleCheckAccumulator::new();
+
+        // Register a new trait (Eq) then impl it for Int
+        let decl = TraitDecl {
+            name: TraitName::from("Eq"),
+            docstring: None,
+            type_params: vec![Symbol::from("a")],
+            methods: vec![TraitMethodSig {
+                name: Symbol::from("eq"),
+                docstring: None,
+                params: vec![
+                    TypeExpr::TypeVar(Symbol::from("a")),
+                    TypeExpr::TypeVar(Symbol::from("a")),
+                ],
+                ret_type: TypeExpr::Named(TypeName::from("Bool")),
+                span: Span::SYNTHETIC,
+                hkt_param_index: None,
+                default_param_names: vec![Symbol::from("a"), Symbol::from("b")],
+                default_body: None,
+            }],
+            visibility: Visibility::Public,
+            span: Span::SYNTHETIC,
+        };
+        let decl_form = TopLevel::TraitDecl(decl);
+        let _ = tc.check_form(&module, &decl_form, CheckPass::Register, &mut accumulator).unwrap();
+
+        // Now impl Eq for Int
+        let impl_ = TraitImpl {
+            trait_name: TraitName::from("Eq"),
+            target_type: TypeName::from("Int"),
+            type_args: vec![],
+            type_constraints: vec![],
+            methods: vec![Defn {
+                name: Symbol::from("eq"),
+                docstring: None,
+                variants: vec![DefnVariant {
+                    params: vec![Symbol::from("a"), Symbol::from("b")],
+                    param_annotations: vec![None, None],
+                    body: Expr::Apply {
+                        callee: Box::new(Expr::Var {
+                            name: Symbol::from("eq-i64"),
+                            span: Span::SYNTHETIC,
+                        }),
+                        args: vec![
+                            Expr::Var { name: Symbol::from("a"), span: Span::SYNTHETIC },
+                            Expr::Var { name: Symbol::from("b"), span: Span::SYNTHETIC },
+                        ],
+                        span: Span::SYNTHETIC,
+                    },
+                    span: Span::SYNTHETIC,
+                }],
+                visibility: Visibility::Public,
+                span: Span::SYNTHETIC,
+            }],
+            span: Span::SYNTHETIC,
+        };
+        let impl_form = TopLevel::TraitImpl(impl_);
+        let result = tc.check_form(&module, &impl_form, CheckPass::Register, &mut accumulator).unwrap();
+
+        // Impl registration should succeed (no error).
+        // default_method_defns contains mangled-name defns for each impl method
+        // (e.g., "Eq.eq$Int") that need signature registration and body checking.
+        assert!(
+            !result.default_method_defns.is_empty(),
+            "impl should produce mangled method defns for backend compilation"
+        );
+        // The mangled defn name should follow the pattern Trait.method$Type
+        assert!(
+            result.default_method_defns.iter().any(|d| d.name.as_ref().contains("Eq.eq$Int")),
+            "should contain Eq.eq$Int mangled defn"
+        );
+    }
+
+    // spec: design/typecheck/check-form-api.md §check_form — Expr wrapped as __expr
+    #[test]
+    fn test_check_form_expr_register_and_check() {
+        let mut tc = tc_with_prims();
+        let module = ModuleFullPath::from("test");
+        let mut accumulator = ModuleCheckAccumulator::new();
+
+        // Wrap expr as synthetic defn (matching what check() does internally)
+        let expr = Expr::IntLit { value: 42, span: span(700, 702) };
+        let synthetic_defn = Defn {
+            name: Symbol::from("__expr"),
+            docstring: None,
+            variants: vec![DefnVariant {
+                params: vec![],
+                param_annotations: vec![],
+                body: expr,
+                span: span(700, 702),
+            }],
+            visibility: Visibility::Public,
+            span: span(699, 703),
+        };
+        let form = TopLevel::Defn(synthetic_defn);
+
+        // Register pass
+        let reg_result = tc.check_form(&module, &form, CheckPass::Register, &mut accumulator).unwrap();
+        tc.merge_form_result(&module, &mut accumulator, reg_result);
+
+        assert!(accumulator.defn_type_vars.contains_key(&Symbol::from("__expr")));
+
+        // CheckBody pass
+        let body_result = tc.check_form(&module, &form, CheckPass::CheckBody, &mut accumulator).unwrap();
+
+        // expr_types should contain the literal's type
+        assert!(
+            !body_result.expr_types.is_empty(),
+            "CheckBody should produce expr_types for the expression"
+        );
+    }
+
+    // ---- Category 3: Two-Pass Correctness ----
+
+    // spec: design/typecheck/check-form-api.md §Invariant 1 — forward reference resolves via two-pass
+    #[test]
+    fn test_check_form_two_pass_mutual_reference() {
+        let mut tc = tc_with_prims();
+        let module = ModuleFullPath::from("test");
+        let mut accumulator = ModuleCheckAccumulator::new();
+
+        let program = make_forward_ref_program();
+
+        // Pass 1: Register both defns
+        for form in &program {
+            let result = tc.check_form(&module, form, CheckPass::Register, &mut accumulator).unwrap();
+            tc.merge_form_result(&module, &mut accumulator, result);
+        }
+
+        // Both signatures should be registered
+        assert!(accumulator.defn_type_vars.contains_key(&Symbol::from("double")));
+        assert!(accumulator.defn_type_vars.contains_key(&Symbol::from("add-self")));
+
+        // Pass 2: Check bodies of both
+        for form in &program {
+            let result = tc.check_form(&module, form, CheckPass::CheckBody, &mut accumulator).unwrap();
+            tc.merge_form_result(&module, &mut accumulator, result);
+        }
+
+        // Both should have produced expr_types
+        assert!(!accumulator.expr_types.is_empty(), "accumulated expr_types should be non-empty");
+
+        // Finalize to get final types
+        let result = tc.finalize_check_result(
+            &module, &mut accumulator, &program, ModuleStrategy::Replace,
+        ).unwrap();
+
+        // After finalization, all expr_types should be resolved
+        for (_span, ty) in &result.expr_types {
+            if let Type::Var(_) = ty {
+                panic!("unresolved Var in expr_types after finalize");
+            }
+        }
+    }
+
+    // spec: design/typecheck/check-form-api.md §Invariant 1 — CheckBody before Register errors
+    #[test]
+    fn test_check_form_check_body_before_register_errors() {
+        let mut tc = tc_with_prims();
+        let module = ModuleFullPath::from("test");
+        let mut accumulator = ModuleCheckAccumulator::new();
+
+        let defn = make_inc_defn();
+        let form = TopLevel::Defn(defn);
+
+        // Try CheckBody without registering first — should error
+        let result = tc.check_form(&module, &form, CheckPass::CheckBody, &mut accumulator);
+        assert!(
+            result.is_err(),
+            "CheckBody before Register should produce an error"
+        );
+    }
+
+    // spec: design/typecheck/check-form-api.md §Invariant 1 — Register populates defn_type_vars
+    #[test]
+    fn test_check_form_register_populates_defn_type_vars() {
+        let mut tc = tc_with_prims();
+        let module = ModuleFullPath::from("test");
+        let mut accumulator = ModuleCheckAccumulator::new();
+
+        let defn = make_inc_defn();
+        let form = TopLevel::Defn(defn);
+
+        let _ = tc.check_form(&module, &form, CheckPass::Register, &mut accumulator).unwrap();
+
+        // defn_type_vars should contain the defn's name with type vars
+        let (param_types, _ret_ty) = accumulator.defn_type_vars.get(&Symbol::from("inc"))
+            .expect("inc should be in defn_type_vars");
+
+        // inc has 1 parameter
+        assert_eq!(param_types.len(), 1, "inc has 1 parameter");
+    }
+
+    // spec: design/typecheck/check-form-api.md §Invariant 2 — TypeDef before defn using constructors
+    #[test]
+    fn test_check_form_typedef_before_defn() {
+        let mut tc = tc_with_prims();
+        let module = ModuleFullPath::from("test");
+        let mut accumulator = ModuleCheckAccumulator::new();
+
+        // Register TypeDef(Color) first
+        let typedef_form = make_color_typedef();
+        let result = tc.check_form(&module, &typedef_form, CheckPass::Register, &mut accumulator).unwrap();
+        tc.merge_form_result(&module, &mut accumulator, result);
+
+        // Then register Defn(is-red) which uses Color constructors
+        let defn_form = TopLevel::Defn(make_is_red_defn());
+        let result = tc.check_form(&module, &defn_form, CheckPass::Register, &mut accumulator).unwrap();
+        tc.merge_form_result(&module, &mut accumulator, result);
+
+        // Pass 2: check body — should resolve constructor types correctly
+        // TypeDef is no-op in CheckBody
+        let _ = tc.check_form(&module, &typedef_form, CheckPass::CheckBody, &mut accumulator).unwrap();
+
+        let body_result = tc.check_form(&module, &defn_form, CheckPass::CheckBody, &mut accumulator).unwrap();
+
+        // Should succeed and produce expr_types
+        assert!(!body_result.expr_types.is_empty(), "is-red body should have expr_types");
+    }
+
+    // spec: design/typecheck/check-form-api.md §Invariant 2 — TraitDecl before TraitImpl
+    #[test]
+    fn test_check_form_trait_decl_before_impl() {
+        let mut tc = tc_with_prims();
+        let module = ModuleFullPath::from("test");
+        let mut accumulator = ModuleCheckAccumulator::new();
+
+        // Register TraitDecl(Eq) first
+        let decl = TraitDecl {
+            name: TraitName::from("Eq"),
+            docstring: None,
+            type_params: vec![Symbol::from("a")],
+            methods: vec![TraitMethodSig {
+                name: Symbol::from("eq"),
+                docstring: None,
+                params: vec![
+                    TypeExpr::TypeVar(Symbol::from("a")),
+                    TypeExpr::TypeVar(Symbol::from("a")),
+                ],
+                ret_type: TypeExpr::Named(TypeName::from("Bool")),
+                span: Span::SYNTHETIC,
+                hkt_param_index: None,
+                default_param_names: vec![Symbol::from("a"), Symbol::from("b")],
+                default_body: None,
+            }],
+            visibility: Visibility::Public,
+            span: Span::SYNTHETIC,
+        };
+        let decl_form = TopLevel::TraitDecl(decl);
+        let result = tc.check_form(&module, &decl_form, CheckPass::Register, &mut accumulator).unwrap();
+        tc.merge_form_result(&module, &mut accumulator, result);
+
+        // Then register TraitImpl(Eq for Int) — should succeed because decl was registered first
+        let impl_ = TraitImpl {
+            trait_name: TraitName::from("Eq"),
+            target_type: TypeName::from("Int"),
+            type_args: vec![],
+            type_constraints: vec![],
+            methods: vec![Defn {
+                name: Symbol::from("eq"),
+                docstring: None,
+                variants: vec![DefnVariant {
+                    params: vec![Symbol::from("a"), Symbol::from("b")],
+                    param_annotations: vec![None, None],
+                    body: Expr::Apply {
+                        callee: Box::new(Expr::Var {
+                            name: Symbol::from("eq-i64"),
+                            span: Span::SYNTHETIC,
+                        }),
+                        args: vec![
+                            Expr::Var { name: Symbol::from("a"), span: Span::SYNTHETIC },
+                            Expr::Var { name: Symbol::from("b"), span: Span::SYNTHETIC },
+                        ],
+                        span: Span::SYNTHETIC,
+                    },
+                    span: Span::SYNTHETIC,
+                }],
+                visibility: Visibility::Public,
+                span: Span::SYNTHETIC,
+            }],
+            span: Span::SYNTHETIC,
+        };
+        let impl_form = TopLevel::TraitImpl(impl_);
+        let result = tc.check_form(&module, &impl_form, CheckPass::Register, &mut accumulator);
+
+        // Should succeed — no error
+        assert!(result.is_ok(), "TraitImpl after TraitDecl should succeed");
+    }
+
+    // ---- Category 4: Multi-Form Programs ----
+
+    // spec: design/typecheck/check-form-api.md §Invariant 3 — shared substitution
+    #[test]
+    fn test_check_form_multi_defn_shared_substitution() {
+        let mut tc = tc_with_prims();
+        let module = ModuleFullPath::from("test");
+        let mut accumulator = ModuleCheckAccumulator::new();
+
+        // Three defns: h uses add-i64 (pins to Int), g calls h, f calls g
+        let h = TopLevel::Defn(make_defn(
+            "h",
+            vec![Symbol::from("x"), Symbol::from("y")],
+            vec![None, None],
+            Expr::Apply {
+                callee: Box::new(Expr::Var { name: Symbol::from("add-i64"), span: span(800, 807) }),
+                args: vec![
+                    Expr::Var { name: Symbol::from("x"), span: span(808, 809) },
+                    Expr::Var { name: Symbol::from("y"), span: span(810, 811) },
+                ],
+                span: span(799, 812),
+            },
+            Visibility::Public,
+            span(790, 813),
+        ));
+        let g = TopLevel::Defn(make_defn(
+            "g",
+            vec![Symbol::from("a")],
+            vec![None],
+            Expr::Apply {
+                callee: Box::new(Expr::Var { name: Symbol::from("h"), span: span(830, 831) }),
+                args: vec![
+                    Expr::Var { name: Symbol::from("a"), span: span(832, 833) },
+                    Expr::Var { name: Symbol::from("a"), span: span(834, 835) },
+                ],
+                span: span(829, 836),
+            },
+            Visibility::Public,
+            span(820, 837),
+        ));
+        let f = TopLevel::Defn(make_defn(
+            "f",
+            vec![Symbol::from("z")],
+            vec![None],
+            Expr::Apply {
+                callee: Box::new(Expr::Var { name: Symbol::from("g"), span: span(860, 861) }),
+                args: vec![
+                    Expr::Var { name: Symbol::from("z"), span: span(862, 863) },
+                ],
+                span: span(859, 864),
+            },
+            Visibility::Public,
+            span(850, 865),
+        ));
+
+        let program = vec![f, g, h];
+
+        // Pass 1: Register all
+        for form in &program {
+            let result = tc.check_form(&module, form, CheckPass::Register, &mut accumulator).unwrap();
+            tc.merge_form_result(&module, &mut accumulator, result);
+        }
+
+        // Pass 2: Check all bodies
+        for form in &program {
+            let result = tc.check_form(&module, form, CheckPass::CheckBody, &mut accumulator).unwrap();
+            tc.merge_form_result(&module, &mut accumulator, result);
+        }
+
+        // Finalize
+        let _result = tc.finalize_check_result(
+            &module, &mut accumulator, &program, ModuleStrategy::Replace,
+        ).unwrap();
+
+        // All three should be monomorphic Int via shared substitution
+        for name in &["f", "g", "h"] {
+            if let Some(ModuleEntry::Def { scheme, .. }) = tc.symbol_table().get(*name) {
+                assert!(
+                    scheme.vars.is_empty(),
+                    "{} should be monomorphic (pinned to Int via shared substitution)", name
+                );
+            } else {
+                panic!("{} not found in symbol table", name);
+            }
+        }
+    }
+
+    // spec: design/typecheck/check-form-api.md — accumulator merge grows with each form
+    #[test]
+    fn test_check_form_accumulator_merge() {
+        let mut tc = tc_with_prims();
+        let module = ModuleFullPath::from("test");
+        let mut accumulator = ModuleCheckAccumulator::new();
+
+        let program = make_forward_ref_program();
+
+        // Pass 1: Register all
+        for form in &program {
+            let result = tc.check_form(&module, form, CheckPass::Register, &mut accumulator).unwrap();
+            tc.merge_form_result(&module, &mut accumulator, result);
+        }
+
+        // Pass 2: Check bodies and verify accumulator grows
+        let et_before_first = accumulator.expr_types.len();
+        let form0_result = tc.check_form(&module, &program[0], CheckPass::CheckBody, &mut accumulator).unwrap();
+        let form0_et = form0_result.expr_types.len();
+        tc.merge_form_result(&module, &mut accumulator, form0_result);
+        let et_after_first = accumulator.expr_types.len();
+
+        assert!(
+            et_after_first > et_before_first,
+            "accumulator should grow after first form's CheckBody"
+        );
+
+        let form1_result = tc.check_form(&module, &program[1], CheckPass::CheckBody, &mut accumulator).unwrap();
+        let form1_et = form1_result.expr_types.len();
+        tc.merge_form_result(&module, &mut accumulator, form1_result);
+        let et_after_second = accumulator.expr_types.len();
+
+        assert!(
+            et_after_second > et_after_first,
+            "accumulator should grow after second form's CheckBody"
+        );
+        assert_eq!(
+            et_after_second,
+            et_before_first + form0_et + form1_et,
+            "total expr_types should be sum of per-form contributions"
+        );
+    }
+
+    // spec: design/typecheck/check-form-api.md — finalize resolves pending and produces complete result
+    #[test]
+    fn test_check_form_finalize_produces_complete_result() {
+        let mut tc = tc_with_prims();
+        let module = ModuleFullPath::from("test");
+        let mut accumulator = ModuleCheckAccumulator::new();
+
+        let program = vec![TopLevel::Defn(make_inc_defn())];
+
+        // Full two-pass processing
+        for form in &program {
+            let result = tc.check_form(&module, form, CheckPass::Register, &mut accumulator).unwrap();
+            tc.merge_form_result(&module, &mut accumulator, result);
+        }
+        for form in &program {
+            let result = tc.check_form(&module, form, CheckPass::CheckBody, &mut accumulator).unwrap();
+            tc.merge_form_result(&module, &mut accumulator, result);
+        }
+
+        let result = tc.finalize_check_result(
+            &module, &mut accumulator, &program, ModuleStrategy::Replace,
+        ).unwrap();
+
+        // finalize should produce a complete CheckResult
+        assert!(!result.expr_types.is_empty(), "finalized result should have expr_types");
+        assert!(!result.method_resolutions.is_empty(), "finalized result should have method_resolutions");
+
+        // All expr_types should be fully resolved
+        for (_span, ty) in &result.expr_types {
+            if let Type::Var(_) = ty {
+                panic!("unresolved Var in finalized expr_types");
+            }
+        }
+    }
+
+    // ---- Category 5: Edge Cases ----
+
+    // spec: design/typecheck/check-form-api.md §DefnMulti — multi-sig Register
+    #[test]
+    fn test_check_form_defn_multi_register() {
+        let mut tc = tc_with_prims();
+        let module = ModuleFullPath::from("test");
+        let mut accumulator = ModuleCheckAccumulator::new();
+
+        // Multi-sig defn: two variants
+        let multi = TopLevel::Defn(Defn {
+            name: Symbol::from("add"),
+            docstring: None,
+            variants: vec![
+                DefnVariant {
+                    params: vec![Symbol::from("x")],
+                    param_annotations: vec![None],
+                    body: Expr::Apply {
+                        callee: Box::new(Expr::Var { name: Symbol::from("add-i64"), span: span(1010, 1017) }),
+                        args: vec![
+                            Expr::Var { name: Symbol::from("x"), span: span(1018, 1019) },
+                            Expr::IntLit { value: 1, span: span(1020, 1021) },
+                        ],
+                        span: span(1009, 1022),
+                    },
+                    span: span(1000, 1023),
+                },
+                DefnVariant {
+                    params: vec![Symbol::from("x"), Symbol::from("y")],
+                    param_annotations: vec![None, None],
+                    body: Expr::Apply {
+                        callee: Box::new(Expr::Var { name: Symbol::from("add-i64"), span: span(1040, 1047) }),
+                        args: vec![
+                            Expr::Var { name: Symbol::from("x"), span: span(1048, 1049) },
+                            Expr::Var { name: Symbol::from("y"), span: span(1050, 1051) },
+                        ],
+                        span: span(1039, 1052),
+                    },
+                    span: span(1030, 1053),
+                },
+            ],
+            visibility: Visibility::Public,
+            span: span(990, 1054),
+        });
+
+        let result = tc.check_form(&module, &multi, CheckPass::Register, &mut accumulator).unwrap();
+        tc.merge_form_result(&module, &mut accumulator, result);
+
+        // Internal variant defns should be in defn_type_vars
+        assert!(
+            accumulator.defn_type_vars.contains_key(&Symbol::from("add__v0")),
+            "add__v0 should be in defn_type_vars"
+        );
+        assert!(
+            accumulator.defn_type_vars.contains_key(&Symbol::from("add__v1")),
+            "add__v1 should be in defn_type_vars"
+        );
+
+        // Base name should be in symbol table as Overloaded placeholder
+        if let Some(ModuleEntry::Def { kind, .. }) = tc.symbol_table().get("add") {
+            match kind.as_ref() {
+                DefKind::Overloaded { .. } => {} // expected
+                other => panic!("expected Overloaded placeholder, got {:?}", other),
+            }
+        } else {
+            panic!("add base name not found in symbol table");
+        }
+    }
+
+    // spec: design/typecheck/check-form-api.md §Constrained polymorphism — detection
+    #[test]
+    fn test_check_form_constrained_fn_detection() {
+        let mut tc = tc_with_prims();
+        register_num_trait_inline(&mut tc);
+        let module = ModuleFullPath::from("test");
+        let mut accumulator = ModuleCheckAccumulator::new();
+
+        // (defn add [x y] (+ x y)) — constrained by Num
+        let defn_form = TopLevel::Defn(make_defn(
+            "add",
+            vec![Symbol::from("x"), Symbol::from("y")],
+            vec![None, None],
+            Expr::Apply {
+                callee: Box::new(Expr::Var { name: Symbol::from("+"), span: span(1100, 1101) }),
+                args: vec![
+                    Expr::Var { name: Symbol::from("x"), span: span(1102, 1103) },
+                    Expr::Var { name: Symbol::from("y"), span: span(1104, 1105) },
+                ],
+                span: span(1099, 1106),
+            },
+            Visibility::Public,
+            span(1090, 1107),
+        ));
+
+        // Register
+        let reg = tc.check_form(&module, &defn_form, CheckPass::Register, &mut accumulator).unwrap();
+        tc.merge_form_result(&module, &mut accumulator, reg);
+
+        // Check body
+        let body = tc.check_form(&module, &defn_form, CheckPass::CheckBody, &mut accumulator).unwrap();
+
+        // Should detect constrained fn
+        assert!(
+            body.constrained_fn.is_some(),
+            "add should be detected as constrained"
+        );
+        assert_eq!(
+            body.constrained_fn.as_ref().unwrap().as_ref(),
+            "add",
+        );
+    }
+
+    // spec: design/typecheck/check-form-api.md — expr_types fully resolved after finalize
+    #[test]
+    fn test_check_form_expr_types_no_unresolved_vars() {
+        let mut tc = tc_with_prims();
+        let ctx = cf_test_ctx();
+
+        // Use a polymorphic identity function called with Int to test resolution
+        let program = vec![
+            TopLevel::Defn(make_defn(
+                "id",
+                vec![Symbol::from("x")],
+                vec![None],
+                Expr::Var { name: Symbol::from("x"), span: span(1214, 1215) },
+                Visibility::Public,
+                span(1200, 1216),
+            )),
+            TopLevel::Defn(make_defn(
+                "use-id",
+                vec![Symbol::from("y")],
+                vec![None],
+                Expr::Apply {
+                    callee: Box::new(Expr::Var { name: Symbol::from("id"), span: span(1230, 1232) }),
+                    args: vec![Expr::Apply {
+                        callee: Box::new(Expr::Var { name: Symbol::from("add-i64"), span: span(1234, 1241) }),
+                        args: vec![
+                            Expr::Var { name: Symbol::from("y"), span: span(1242, 1243) },
+                            Expr::IntLit { value: 1, span: span(1244, 1245) },
+                        ],
+                        span: span(1233, 1246),
+                    }],
+                    span: span(1229, 1247),
+                },
+                Visibility::Public,
+                span(1220, 1248),
+            )),
+        ];
+
+        let result = tc.check(&program, &ctx, ModuleStrategy::Additive).unwrap();
+
+        // All expr_types should be fully resolved
+        for (_span, ty) in &result.expr_types {
+            if let Type::Var(_) = ty {
+                panic!("unresolved Var in expr_types after check()");
+            }
+        }
+    }
+
+    // spec: design/typecheck/check-form-api.md — warnings accumulated across forms
+    #[test]
+    fn test_check_form_warnings_accumulated() {
+        // This tests that the merge mechanism for warnings works.
+        // We verify structurally that warnings from FormCheckResult are collected.
+        let mut accumulator = ModuleCheckAccumulator::new();
+        assert!(accumulator.warnings.is_empty());
+
+        // Simulate a FormCheckResult with a warning
+        let result_with_warning = FormCheckResult {
+            method_resolutions: HashMap::new(),
+            expr_types: HashMap::new(),
+            constrained_fn: None,
+            mono_defns: Vec::new(),
+            default_method_defns: Vec::new(),
+            multi_sig_defns: Vec::new(),
+            warnings: vec![Warning {
+                kind: cranelisp_types::WarningKind::Other,
+                message: "test warning".to_string(),
+                span: Span::SYNTHETIC,
+            }],
+            call_graph_edges: Vec::new(),
+        };
+
+        let mut tc = tc_with_prims();
+        let module = ModuleFullPath::from("test");
+        tc.merge_form_result(&module, &mut accumulator, result_with_warning);
+
+        assert_eq!(accumulator.warnings.len(), 1);
+        assert_eq!(accumulator.warnings[0].message, "test warning");
+    }
+
+    // ---- Negative Tests ----
+
+    // spec: design/typecheck/check-form-api.md — type error propagates from CheckBody
+    #[test]
+    fn test_check_form_type_error_propagates() {
+        let mut tc = tc_with_prims();
+        let module = ModuleFullPath::from("test");
+        let mut accumulator = ModuleCheckAccumulator::new();
+
+        // (defn bad [x] (add-i64 x true)) — type error
+        let bad_defn = TopLevel::Defn(make_defn(
+            "bad",
+            vec![Symbol::from("x")],
+            vec![None],
+            Expr::Apply {
+                callee: Box::new(Expr::Var {
+                    name: Symbol::from("add-i64"),
+                    span: span(1316, 1323),
+                }),
+                args: vec![
+                    Expr::Var { name: Symbol::from("x"), span: span(1324, 1325) },
+                    Expr::BoolLit { value: true, span: span(1326, 1330) },
+                ],
+                span: span(1315, 1331),
+            },
+            Visibility::Public,
+            span(1300, 1332),
+        ));
+
+        // Register should succeed
+        let reg = tc.check_form(&module, &bad_defn, CheckPass::Register, &mut accumulator).unwrap();
+        tc.merge_form_result(&module, &mut accumulator, reg);
+
+        // CheckBody should produce an error
+        let result = tc.check_form(&module, &bad_defn, CheckPass::CheckBody, &mut accumulator);
+        assert!(result.is_err(), "type error in body should propagate as Err");
+    }
+
+    // spec: design/typecheck/check-form-api.md — unknown trait in TraitImpl errors
+    #[test]
+    fn test_check_form_trait_impl_unknown_trait_error() {
+        let mut tc = tc_with_prims();
+        let module = ModuleFullPath::from("test");
+        let mut accumulator = ModuleCheckAccumulator::new();
+
+        // TraitImpl referencing undeclared trait
+        let impl_ = TraitImpl {
+            trait_name: TraitName::from("NonexistentTrait"),
+            target_type: TypeName::from("Int"),
+            type_args: vec![],
+            type_constraints: vec![],
+            methods: vec![],
+            span: Span::SYNTHETIC,
+        };
+        let form = TopLevel::TraitImpl(impl_);
+        let result = tc.check_form(&module, &form, CheckPass::Register, &mut accumulator);
+
+        assert!(result.is_err(), "TraitImpl for undeclared trait should error");
     }
 }

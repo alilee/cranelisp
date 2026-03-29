@@ -61,6 +61,7 @@ Delivery progress for the Cranelisp reimplementation. For technical scope per ri
 | 38 | Pipeline v3 Step 14 — Delete v1 dead code: compile_module_graph/compile_module_graph_cached rewritten to compile_unit (53 test sites), 5 REPL v1 callers migrated, 1,293 lines deleted from pipeline.rs (4,055→2,762), V1State + 17 functions + 3 structs deleted, single-pipeline invariant fully established, 4 cache-hit tests ignored (v2 cache-hit loading not yet implemented): 1643 passed, 23 pre-existing failures, 4 ignored | COMPLETE | `sprints/archive/sprint-38.md` |
 | 39 | Pipeline v3 Step 11 foundation — codegen decoupled from CompilationSession: codegen_and_execute + 6 helpers refactored to free functions taking worker state params, CodegenPacket Send-safe, send_codegen/flush_codegen API, CodegenMode enum (Sync/Async), single async worker thread as proof of concept. Full N-core pools deferred to Sprint 40: 1643 passed, 23 pre-existing failures, 4 ignored | COMPLETE | `sprints/archive/sprint-39.md` |
 | 40a | Pipeline v3 — Parallel compile_unit and N-Core Codegen: CANCELLED. Partial waves 1-3 (check &self, compile_unit &self, CodegenQueue). Build broken. | CANCELLED | `sprints/archive/sprint-40a.md` |
+| 40 | Pipeline v4 Steps 0+1 — Build recovery, v4 CompilerSession skeleton (`--v4` flag), per-form typecheck API (`check_form`/`FormCheckResult`/`ModuleCheckAccumulator`), 28 new tests, design doc: 1733 passed, 11 pre-existing sketch_port failures, 0 ignored | COMPLETE | `sprints/archive/sprint-40.md` |
 
 ## Forward Plan
 
@@ -68,14 +69,18 @@ Delivery progress for the Cranelisp reimplementation. For technical scope per ri
 
 Steps 1-10 + 14 delivered. Single-pipeline invariant established. ~2,100 lines of v1 code deleted. Steps 11-13 (concurrency) deferred indefinitely. Step 15 (new main.rs) retired — substantially delivered by Step 6. See `design/arch/pipeline-v3-roadmap.md` §Post-Migration for full assessment.
 
-### Recommended sprint sequence
+### Pipeline v4 migration — IN PROGRESS (Sprint 40+)
+
+Scheduler-driven concurrent compilation. See `design/arch/pipeline-v4-roadmap.md` for the 15-step migration plan.
 
 | Sprint | Theme | Scope | Skills |
 |--------|-------|-------|--------|
-| 40 | Pipeline v3 Step 11 complete — N-core codegen pools | N-core in-mem codegen pool (normal priority), N-core object codegen pool (nice priority), atomic GOT writes, thread-local JIT per worker, hot_flush semantics, design for 200+ modules | `/int`, `/arch`, `/qa` |
-| 41 | Pipeline v3 Steps 12-13 — parallel typechecking | Per-module locks on TypeChecker, parallel compile_unit for independent deps, level partitioning | `/int`, `/typecheck`, `/qa` |
-| 42 | Cache-hit loading + cleanup | v2 cache-hit early return, un-ignore 4 cache tests, REPL restore bypass, stale doc cleanup | `/int`, `/qa` |
-| 43+ | Ring 4 Completion | Resume feature delivery — see Ring 4 acceptance criteria gap analysis below | All skills |
+| 40 | v4 Steps 0+1 — skeleton + per-form typecheck | Build recovery, CompilerSession wrapper, --v4 flag, check_form API | `/int`, `/typecheck`, `/qa` |
+| 41 | v4 Steps 2+3 — scheduler + worker loop | CompileScheduler, module lifecycle, form-by-form worker loop | `/int`, `/arch`, `/qa` |
+| 42 | v4 Step 4 — macro expansion blocking | Priority codegen queue for macro dependencies | `/int`, `/frontend`, `/qa` |
+| 43 | v4 Steps 5-6 — lazy deps + expander cleanup | Lazy dependency discovery, MacroExpander trait removal | `/int`, `/frontend`, `/qa` |
+| 44 | v4 Step 7 — REPL eval with persistent JIT | Highest risk — REPL eval separation from scheduler | `/int`, `/qa` |
+| 45+ | v4 Steps 8-15 — concurrency + cleanup | Platform registry, error cascade, nice workers, multi-thread, DashMap, cache, watcher, legacy delete | All skills |
 
 ### Ring 4 acceptance criteria gap analysis
 

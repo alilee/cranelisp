@@ -54,7 +54,7 @@ fn discover_test_functions(
 ) -> Vec<(String, *const u8)> {
     let mut tests = Vec::new();
 
-    for (name, dc) in &session.core.inmem_worker.lock().unwrap().got_state.def_codegen {
+    for (name, dc) in &session.core.inmem_worker.got_state.def_codegen {
         let name_str = name.as_ref();
         // Must be a test-* function.
         if !name_str.starts_with("test-") {

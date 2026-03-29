@@ -30,19 +30,19 @@
 //! (no actual locking — `&mut` guarantees exclusivity). Methods with `&self`
 //! acquire `read().unwrap()` or `write().unwrap()` as needed.
 //!
-//! **`check()` creates a fresh `CheckState`** (Sprint 40a Wave 1) at the start
-//! of each invocation. All transient inference state (substitution, scope stack,
-//! method resolutions, expr_types, warnings) lives in the local `CheckState`
-//! and does not persist across calls. For REPL additive mode, overloads are
-//! reconstructed from `DefKind::Overloaded` entries in the symbol table.
-//!
-//! `check()` remains `&mut self` because registration methods (type defs, trait
-//! decls, trait impls) mutate persistent state (modules, registries). Converting
-//! to `&self` requires `RwLock` on those structures (Wave 2).
+//! **`check()` remains `&mut self`** because `CheckState` is stored on
+//! `TypeChecker` (field `self.state`) for REPL additive mode, where state
+//! persists across evaluations. Converting `check()` to `&self` requires
+//! either: (a) making `state` an `Option` that is temporarily taken and
+//! restored, or (b) passing `CheckState` as a separate parameter to all
+//! ~30 internal helper methods. Both are invasive changes deferred until
+//! the parallel pipeline actually calls `check()` concurrently.
+//! The `RwLock` wrapping is the primary Phase 3 deliverable — it ensures
+//! the registries are safe for concurrent access when that conversion happens.
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
-use std::sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard};
+use std::sync::{Arc, RwLock, RwLockReadGuard};
 
 use cranelisp_types::{
     ConstructorInfo, CranelispError, ExportSpec, FQSymbol, ImportNames, ImportSpec,
@@ -61,13 +61,12 @@ const IMPORT_CHAIN_DEPTH_LIMIT: usize = 10;
 
 /// Per-check transient state for type inference.
 ///
-/// Created fresh by each `check()` call. Contains all state that is
-/// accumulated during checking and drained into `CheckResult` on return.
-/// State does NOT carry forward between check() calls — REPL additive
-/// overloads are reconstructed from the symbol table.
+/// Created or reused by each `check()` call. Contains all state that is
+/// accumulated during checking and either drained into `CheckResult` or
+/// carried forward for the next REPL evaluation.
 ///
-/// In the future parallel model (Wave 2), each concurrent `check()` will
-/// have its own `CheckState` passed as a parameter, enabling `&self`.
+/// In the future parallel model, each concurrent `check()` will have its own
+/// `CheckState` on the stack, enabling `&self` on `TypeChecker`.
 pub struct CheckState {
     /// Global substitution (unification bindings).
     pub(crate) subst: Subst,
@@ -143,32 +142,6 @@ impl Drop for ModuleGuard {
     }
 }
 
-pub struct ModuleReadGuard<'a> {
-    pub(crate) guard: RwLockReadGuard<'a, HashMap<ModuleFullPath, SymbolTable>>,
-    pub(crate) path: ModuleFullPath,
-}
-impl std::ops::Deref for ModuleReadGuard<'_> {
-    type Target = SymbolTable;
-    fn deref(&self) -> &SymbolTable {
-        self.guard.get(&self.path).unwrap_or_else(|| unreachable!("invariant: module always exists"))
-    }
-}
-pub(crate) struct ModuleWriteGuard<'a> {
-    guard: RwLockWriteGuard<'a, HashMap<ModuleFullPath, SymbolTable>>,
-    path: ModuleFullPath,
-}
-impl std::ops::Deref for ModuleWriteGuard<'_> {
-    type Target = SymbolTable;
-    fn deref(&self) -> &SymbolTable {
-        self.guard.get(&self.path).unwrap_or_else(|| unreachable!("invariant: module always exists"))
-    }
-}
-impl std::ops::DerefMut for ModuleWriteGuard<'_> {
-    fn deref_mut(&mut self) -> &mut SymbolTable {
-        self.guard.get_mut(&self.path).unwrap_or_else(|| unreachable!("invariant: module always exists"))
-    }
-}
-
 /// Central persistent state for Hindley-Milner type inference.
 ///
 /// Fields are pub(crate) so that `impl TypeChecker` blocks in other modules
@@ -184,7 +157,7 @@ pub struct TypeChecker {
     /// `get_mut()` for zero-overhead access.
     pub(crate) next_id: AtomicU32,
     /// Per-module symbol tables, keyed by module full path.
-    pub(crate) modules: RwLock<HashMap<ModuleFullPath, SymbolTable>>,
+    pub(crate) modules: HashMap<ModuleFullPath, SymbolTable>,
     /// Registered type definitions (ADTs).
     ///
     /// Behind `RwLock` for Phase 3 parallel `check()`. Methods with `&mut self`
@@ -206,11 +179,9 @@ pub struct TypeChecker {
     /// Entries are `Arc<AtomicBool>` so the guard can outlive the borrow of the
     /// HashMap (the guard holds an Arc clone, not a reference into the map).
     module_locks: HashMap<ModuleFullPath, Arc<AtomicBool>>,
-    /// Per-check transient state. `check()` replaces this with a fresh
-    /// `CheckState` at the start of each invocation. Stored on the struct
-    /// (rather than a local) to avoid changing ~30 internal method signatures
-    /// from `&mut self` to `&self, cs: &mut CheckState`. Wave 2 will
-    /// complete the parameter-passing approach when `check()` becomes `&self`.
+    /// Per-check transient state. Stored here for serial REPL reuse;
+    /// parallel `check()` will use stack-local `CheckState` once `check()`
+    /// is converted to `&self` (see module-level doc for blockers).
     pub(crate) state: CheckState,
 }
 
@@ -227,7 +198,7 @@ impl TypeChecker {
         );
         let mut tc = TypeChecker {
             next_id: AtomicU32::new(0),
-            modules: RwLock::new(modules),
+            modules,
             type_defs: RwLock::new(TypeDefRegistry::new()),
             trait_registry: RwLock::new(TraitRegistry::default()),
             impl_registry: RwLock::new(ImplRegistry::default()),
@@ -241,40 +212,23 @@ impl TypeChecker {
     // --- Module-scoped symbol table accessors ---
 
     /// Get a reference to the current module's symbol table.
-    pub(crate) fn current_symbol_table(&self) -> ModuleReadGuard<'_> {
-        ModuleReadGuard {
-            guard: self.modules.read().unwrap(),
-            path: self.state.current_module.clone(),
-        }
+    pub(crate) fn current_symbol_table(&self) -> &SymbolTable {
+        self.modules
+            .get(&self.state.current_module)
+            .unwrap_or_else(|| unreachable!("invariant: current_module always exists in modules map"))
     }
 
     /// Get a mutable reference to the current module's symbol table.
     pub(crate) fn current_symbol_table_mut(&mut self) -> &mut SymbolTable {
-        self.modules.get_mut().unwrap()
+        self.modules
             .get_mut(&self.state.current_module)
             .unwrap_or_else(|| unreachable!("invariant: current_module always exists in modules map"))
-    }
-
-    /// Ensure a module exists in the modules map, creating it if needed.
-    ///
-    /// This is the module-creation portion of `set_current_module`, extracted
-    /// so callers can ensure a module exists without changing the active module.
-    /// Called by the pipeline before `check()`.
-    pub fn ensure_module_exists(&mut self, path: &ModuleFullPath) {
-        if self.modules.get_mut().unwrap().contains_key(path) {
-            return;
-        }
-        // Delegate to set_current_module logic but save/restore active module.
-        let saved = self.state.current_module.clone();
-        self.set_current_module(path.clone());
-        self.state.current_module = saved;
     }
 
     /// Switch the active module. Creates the module's symbol table if it
     /// doesn't already exist.
     pub fn set_current_module(&mut self, path: ModuleFullPath) {
-        let modules = self.modules.get_mut().unwrap();
-        if !modules.contains_key(&path) {
+        if !self.modules.contains_key(&path) {
             let mut table = SymbolTable::new(path.clone());
 
             // Seed new modules with imports from `primitives` module so that
@@ -283,7 +237,7 @@ impl TypeChecker {
             // Note: the `user` module is NOT seeded — it requires explicit
             // imports per spec §8.9.1.
             let primitives_path = ModuleFullPath::from("primitives");
-            if let Some(prims_table) = modules.get(&primitives_path) {
+            if let Some(prims_table) = self.modules.get(&primitives_path) {
                 for (name, _entry) in prims_table.all_symbols() {
                     table.insert(
                         name.clone(),
@@ -300,7 +254,7 @@ impl TypeChecker {
             // Seed from `user` module: special forms, trait decls,
             // constrained defs, constructors, and type defs.
             let user_path = ModuleFullPath::from("user");
-            if let Some(user_table) = modules.get(&user_path) {
+            if let Some(user_table) = self.modules.get(&user_path) {
                 for (name, entry) in user_table.all_symbols() {
                     let is_seedable = matches!(entry, ModuleEntry::Def { kind, .. }
                         if matches!(kind.as_ref(),
@@ -325,7 +279,7 @@ impl TypeChecker {
                 }
             }
 
-            modules.insert(path.clone(), table);
+            self.modules.insert(path.clone(), table);
         }
         self.state.current_module = path;
     }
@@ -337,7 +291,7 @@ impl TypeChecker {
 
     /// Check whether a module has been registered.
     pub fn has_module(&self, path: &ModuleFullPath) -> bool {
-        self.modules.read().unwrap().contains_key(path)
+        self.modules.contains_key(path)
     }
 
     // --- Module compilation locks ---
@@ -396,7 +350,7 @@ impl TypeChecker {
 
     /// Convenience accessor for the current module's symbol table (public).
     /// Used by tests and external code that needs to inspect symbols.
-    pub fn symbol_table(&self) -> ModuleReadGuard<'_> {
+    pub fn symbol_table(&self) -> &SymbolTable {
         self.current_symbol_table()
     }
 
@@ -417,21 +371,15 @@ impl TypeChecker {
 
     /// Look up a specific module's symbol table by path.
     /// Used by `/imports` to resolve type signatures of imported symbols.
-    pub fn module_table(&self, path: &ModuleFullPath) -> Option<ModuleReadGuard<'_>> {
-        let modules = self.modules.read().unwrap();
-        if modules.contains_key(path) {
-            Some(ModuleReadGuard { guard: modules, path: path.clone() })
-        } else {
-            None
-        }
+    pub fn module_table(&self, path: &ModuleFullPath) -> Option<&SymbolTable> {
+        self.modules.get(path)
     }
 
     /// Look up the defining module for a symbol. Checks the `primitives` module
     /// first (for core traits and builtins), then falls back to the current module.
     pub fn defining_module_for(&self, name: &str) -> ModuleFullPath {
         let primitives_path = ModuleFullPath::from("primitives");
-        let modules = self.modules.read().unwrap();
-        if let Some(table) = modules.get(&primitives_path)
+        if let Some(table) = self.modules.get(&primitives_path)
             && table.get(name).is_some()
         {
             return primitives_path;
@@ -504,8 +452,7 @@ impl TypeChecker {
     /// Look up a name in the current module's symbol table, following
     /// Import/Reexport chains to their source definitions.
     fn lookup_in_current_module(&self, name: &str) -> Option<Scheme> {
-        let table = self.current_symbol_table();
-        let entry = table.get(name)?;
+        let entry = self.current_symbol_table().get(name)?;
         self.extract_scheme_from_entry(entry, 0)
     }
 
@@ -541,38 +488,34 @@ impl TypeChecker {
     /// Resolve a fully-qualified symbol reference by looking up the source
     /// module's symbol table.
     fn resolve_fq_symbol(&self, fq: &FQSymbol, depth: usize) -> Option<Scheme> {
-        let modules = self.modules.read().unwrap();
-        let source_table = modules.get(&fq.module)?;
+        let source_table = self.modules.get(&fq.module)?;
         let entry = source_table.get(fq.symbol.as_ref())?;
         self.extract_scheme_from_entry(entry, depth)
     }
 
     /// Resolve a name in the current module to its terminal `ModuleEntry`,
     /// following Import/Reexport chains.
-    pub(crate) fn resolve_entry_in_current_module(&self, name: &str) -> Option<ModuleEntry> {
-        let _table = self.current_symbol_table();
-        let entry = _table.get(name)?.clone();
-        self.resolve_to_terminal_entry(&entry, 0)
+    pub(crate) fn resolve_entry_in_current_module(&self, name: &str) -> Option<&ModuleEntry> {
+        let entry = self.current_symbol_table().get(name)?;
+        self.resolve_to_terminal_entry(entry, 0)
     }
 
     /// Follow Import/Reexport chains to the terminal `ModuleEntry`.
-    pub(crate) fn resolve_to_terminal_entry(
-        &self,
-        entry: &ModuleEntry,
+    pub(crate) fn resolve_to_terminal_entry<'a>(
+        &'a self,
+        entry: &'a ModuleEntry,
         depth: usize,
-    ) -> Option<ModuleEntry> {
+    ) -> Option<&'a ModuleEntry> {
         if depth > IMPORT_CHAIN_DEPTH_LIMIT {
             return None;
         }
         match entry {
             ModuleEntry::Import { source } | ModuleEntry::Reexport { source } => {
-                let modules = self.modules.read().unwrap();
-                let source_table = modules.get(&source.module)?;
-                let target = source_table.get(source.symbol.as_ref())?.clone();
-                drop(modules);
-                self.resolve_to_terminal_entry(&target, depth + 1)
+                let source_table = self.modules.get(&source.module)?;
+                let target = source_table.get(source.symbol.as_ref())?;
+                self.resolve_to_terminal_entry(target, depth + 1)
             }
-            other => Some(other.clone()),
+            other => Some(other),
         }
     }
 
@@ -594,8 +537,7 @@ impl TypeChecker {
             .cloned()
             .unwrap_or_else(|| module_path.clone());
 
-        let modules_guard = self.modules.read().unwrap();
-        let table = match modules_guard.get(&resolved_path) {
+        let table = match self.modules.get(&resolved_path) {
             Some(t) => t,
             None => return Ok(None), // Module not loaded
         };
@@ -780,22 +722,22 @@ impl TypeChecker {
                 );
             }
 
-            let imports_to_add: Vec<(Symbol, ModuleEntry)> = {
-                let modules = self.modules.read().unwrap();
-                let source_table = match modules.get(&spec.module_path) {
-                    Some(t) => t,
-                    None => {
-                        return Err(CranelispError::TypeError {
-                            message: format!(
-                                "unknown module '{}' in import",
-                                spec.module_path
-                            ),
-                            span: spec.span,
-                        });
-                    }
-                };
+            let source_table = match self.modules.get(&spec.module_path) {
+                Some(t) => t,
+                None => {
+                    return Err(CranelispError::TypeError {
+                        message: format!(
+                            "unknown module '{}' in import",
+                            spec.module_path
+                        ),
+                        span: spec.span,
+                    });
+                }
+            };
 
-                match &spec.names {
+            // Collect names to import (collect first to avoid borrowing
+            // self.modules while mutating current symbol table)
+            let imports_to_add: Vec<(Symbol, ModuleEntry)> = match &spec.names {
                 ImportNames::Glob => {
                     collect_glob_imports(source_table, &spec.module_path)
                 }
@@ -812,7 +754,6 @@ impl TypeChecker {
                 ImportNames::None => {
                     // Alias-only import — no bare names
                     Vec::new()
-                }
                 }
             };
 
@@ -839,14 +780,14 @@ impl TypeChecker {
             // Resolve the module path: try as-is first, then as a child
             // of the current module (e.g., "syntax" -> "core.syntax"
             // when current module is "core").
-            let resolved_path = if self.modules.read().unwrap().contains_key(&spec.module_path) {
+            let resolved_path = if self.modules.contains_key(&spec.module_path) {
                 spec.module_path.clone()
             } else {
                 let child_path = ModuleFullPath::from(format!(
                     "{}.{}",
                     self.state.current_module, spec.module_path
                 ));
-                if self.modules.read().unwrap().contains_key(&child_path) {
+                if self.modules.contains_key(&child_path) {
                     child_path
                 } else {
                     return Err(CranelispError::TypeError {
@@ -859,14 +800,14 @@ impl TypeChecker {
                 }
             };
 
-            let reexports: Vec<(Symbol, ModuleEntry)> = {
-                let modules = self.modules.read().unwrap();
-                let source_table = match modules.get(&resolved_path) {
-                    Some(t) => t,
-                    None => unreachable!("module existence verified above"),
-                };
+            let source_table = match self.modules.get(&resolved_path) {
+                Some(t) => t,
+                None => unreachable!("module existence verified above"),
+            };
 
-                match &spec.names {
+            // Collect names to re-export (collect first to avoid borrowing
+            // self.modules while mutating current symbol table).
+            let reexports: Vec<(Symbol, ModuleEntry)> = match &spec.names {
                 ImportNames::Glob => {
                     collect_glob_reexports(source_table, &resolved_path)
                 }
@@ -883,7 +824,6 @@ impl TypeChecker {
                 ImportNames::None => {
                     // No names to re-export.
                     Vec::new()
-                }
                 }
             };
 
@@ -1165,7 +1105,7 @@ impl TypeChecker {
     /// Returns the removed symbol table, or None if the module was not found.
     /// Used during module hot-reload (repl/spec.md §14.2).
     pub fn remove_module(&mut self, module_path: &ModuleFullPath) -> Option<SymbolTable> {
-        let table = self.modules.get_mut().unwrap().remove(module_path)?;
+        let table = self.modules.remove(module_path)?;
 
         // Unregister traits defined by this module.
         let traits_to_remove: Vec<TraitName> = table
@@ -1201,7 +1141,7 @@ impl TypeChecker {
     /// Used after `remove_module` to re-establish the module path before
     /// recompilation populates it with fresh definitions.
     pub fn insert_module(&mut self, table: SymbolTable) {
-        self.modules.get_mut().unwrap().insert(table.path.clone(), table);
+        self.modules.insert(table.path.clone(), table);
     }
 
     // --- Cache restoration ---
@@ -1267,7 +1207,7 @@ impl TypeChecker {
         // causing infinite recursion in apply_subst.
         self.advance_next_id_past_table(&table);
 
-        self.modules.get_mut().unwrap().insert(path, table);
+        self.modules.insert(path, table);
     }
 
     /// Advance `next_id` past the maximum type variable ID found in a symbol table.
@@ -1360,36 +1300,29 @@ impl TypeChecker {
     // --- REPL snapshot/restore ---
 
     /// Take a snapshot of the current state for REPL error recovery.
-    ///
-    /// Since check() now creates a fresh CheckState each time, transient
-    /// state (subst, env, expr_types) does not persist across check() calls.
-    /// On error, check() returns Err and the local CheckState is dropped.
-    /// Snapshot only needs to capture persistent state that check() may
-    /// have mutated before the error: TypeId counter and symbol table keys.
     pub fn snapshot(&self) -> ReplSnapshot {
         ReplSnapshot {
             next_type_id: self.next_id.load(Ordering::Relaxed),
             symbol_keys: self.current_symbol_table().symbols.keys().cloned().collect(),
-            subst_len: 0,     // Unused: CheckState is local to check()
-            scope_depth: 0,   // Unused: CheckState is local to check()
+            subst_len: self.state.subst.len(),
+            scope_depth: self.state.env.depth(),
         }
     }
 
     /// Restore state from a snapshot (on REPL error).
-    ///
-    /// Only restores persistent state: TypeId counter and symbol table.
-    /// Transient state (subst, env, etc.) was in the local CheckState
-    /// which was already dropped when check() returned Err.
     pub fn restore(&mut self, snapshot: ReplSnapshot) {
         *self.next_id.get_mut() = snapshot.next_type_id;
+        self.state.subst.retain(|id, _| *id < snapshot.next_type_id);
+        self.state.expr_types.clear();
+        self.state.method_resolutions.clear();
+        self.state.warnings.clear();
+        self.state.pending_auto_curry.clear();
         // Remove symbol table entries added after the snapshot was taken.
         self.current_symbol_table_mut()
             .symbols
             .retain(|key, _| snapshot.symbol_keys.contains(key));
-        // Reset CheckState to clean — prevents stale state from leaking
-        // into the next check() call (which creates its own fresh state
-        // anyway, but be explicit).
-        self.state = CheckState::new(self.state.current_module.clone());
+        // Restore scope stack depth (pop frames left by failed check_defn_body).
+        self.state.env.truncate_to(snapshot.scope_depth);
     }
 
     // --- Known types lookup (for resolve_type_expr) ---
@@ -1560,20 +1493,15 @@ mod tests {
     fn test_builtins_in_user_module() {
         let tc = TypeChecker::new();
         // Per spec §8.9.1, named primitives are NOT bare in user module
-        let _st = tc.symbol_table();
-        assert!(_st.get("add-i64").is_none());
-        let _st = tc.symbol_table();
-        assert!(_st.get("quote-sexp").is_none());
+        assert!(tc.symbol_table().get("add-i64").is_none());
+        assert!(tc.symbol_table().get("quote-sexp").is_none());
         // Special forms ARE in user module
-        let _st = tc.symbol_table();
-        assert!(_st.get("if").is_some());
+        assert!(tc.symbol_table().get("if").is_some());
         // Operators (+, =, etc.) are NOT registered at startup — they come from prelude
-        let _st = tc.symbol_table();
-        assert!(_st.get("+").is_none());
+        assert!(tc.symbol_table().get("+").is_none());
         // Named primitives ARE in the primitives synthetic module
         let prims_path = ModuleFullPath::from("primitives");
-        let modules = tc.modules.read().unwrap();
-        let prims_table = modules.get(&prims_path).unwrap();
+        let prims_table = tc.modules.get(&prims_path).unwrap();
         assert!(prims_table.get("add-i64").is_some());
         assert!(prims_table.get("quote-sexp").is_some());
     }
@@ -1585,17 +1513,13 @@ mod tests {
         tc.set_current_module(ModuleFullPath::from("math"));
         assert_eq!(tc.current_module_path().as_ref(), "math");
         // New modules are seeded with primitive imports from `primitives`
-        let _st = tc.symbol_table();
-        assert!(_st.get("add-i64").is_some());
+        assert!(tc.symbol_table().get("add-i64").is_some());
         // Special forms from `user`
-        let _st = tc.symbol_table();
-        assert!(_st.get("if").is_some());
+        assert!(tc.symbol_table().get("if").is_some());
         // Operators come from prelude, NOT compiler builtins
-        let _st = tc.symbol_table();
-        assert!(_st.get("+").is_none());
+        assert!(tc.symbol_table().get("+").is_none());
         // User-defined names are NOT copied
-        let _st = tc.symbol_table();
-        assert!(_st.get("user-only").is_none());
+        assert!(tc.symbol_table().get("user-only").is_none());
     }
 
     // spec: 08-modules §8.6 — switching modules preserves existing module state
@@ -1605,11 +1529,9 @@ mod tests {
         tc.set_current_module(ModuleFullPath::from("other"));
         tc.set_current_module(ModuleFullPath::from("user"));
         // Special forms preserved in user
-        let _st = tc.symbol_table();
-        assert!(_st.get("if").is_some());
+        assert!(tc.symbol_table().get("if").is_some());
         // Named primitives NOT in user (spec §8.9.1)
-        let _st = tc.symbol_table();
-        assert!(_st.get("add-i64").is_none());
+        assert!(tc.symbol_table().get("add-i64").is_none());
     }
 
     // spec: 08-modules §8.6 — modules have independent symbol tables
@@ -1630,17 +1552,11 @@ mod tests {
 
         // Switch to another module — shouldn't see user-only
         tc.set_current_module(ModuleFullPath::from("other"));
-        {
-            let st = tc.symbol_table();
-            assert!(st.get("user-only").is_none());
-        }
+        assert!(tc.symbol_table().get("user-only").is_none());
 
         // Switch back — should see it again
         tc.set_current_module(ModuleFullPath::from("user"));
-        {
-            let st = tc.symbol_table();
-            assert!(st.get("user-only").is_some());
-        }
+        assert!(tc.symbol_table().get("user-only").is_some());
     }
 
     // --- Cross-module name resolution ---
@@ -1756,13 +1672,10 @@ mod tests {
         .unwrap();
 
         // Public names imported
-        let _st = tc.symbol_table();
-        assert!(_st.get("add").is_some());
-        let _st = tc.symbol_table();
-        assert!(_st.get("sub").is_some());
+        assert!(tc.symbol_table().get("add").is_some());
+        assert!(tc.symbol_table().get("sub").is_some());
         // Private names NOT imported
-        let _st = tc.symbol_table();
-        assert!(_st.get("internal").is_none());
+        assert!(tc.symbol_table().get("internal").is_none());
     }
 
     // spec: 08-modules §8.3 — specific import brings only named symbols into scope
@@ -1787,10 +1700,8 @@ mod tests {
         }])
         .unwrap();
 
-        let _st = tc.symbol_table();
-        assert!(_st.get("add").is_some());
-        let _st = tc.symbol_table();
-        assert!(_st.get("sub").is_none());
+        assert!(tc.symbol_table().get("add").is_some());
+        assert!(tc.symbol_table().get("sub").is_none());
     }
 
     // spec: 08-modules §8.7 — importing private symbol by name produces error
@@ -1906,9 +1817,8 @@ mod tests {
         .unwrap();
 
         // The name should be marked Ambiguous
-        let _st = tc.symbol_table();
         assert!(matches!(
-            _st.get("clash"),
+            tc.symbol_table().get("clash"),
             Some(ModuleEntry::Ambiguous)
         ));
         // Lookup should return None for ambiguous names
@@ -1940,9 +1850,8 @@ mod tests {
         .unwrap();
 
         // Should NOT be ambiguous (same source)
-        let _st = tc.symbol_table();
         assert!(matches!(
-            _st.get("add"),
+            tc.symbol_table().get("add"),
             Some(ModuleEntry::Import { .. })
         ));
     }
@@ -1963,8 +1872,7 @@ mod tests {
         .unwrap();
 
         // No bare names imported
-        let _st = tc.symbol_table();
-        assert!(_st.get("Some").is_none());
+        assert!(tc.symbol_table().get("Some").is_none());
         // Alias registered
         assert!(tc.state.module_aliases.contains_key(&Symbol::from("opt")));
     }
@@ -2077,8 +1985,7 @@ mod tests {
         let mut tc = TypeChecker::new();
         tc.set_current_module(ModuleFullPath::from("mymod"));
         // Builtins should be accessible as imports
-        let _table = tc.symbol_table();
-        let entry = _table.get("add-i64");
+        let entry = tc.symbol_table().get("add-i64");
         assert!(entry.is_some(), "new module should have add-i64 from builtins");
         assert!(
             matches!(entry.unwrap(), ModuleEntry::Import { .. }),

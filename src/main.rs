@@ -1,14 +1,14 @@
-// cranelisp main — pipeline-v3.md §2.2 north star.
+// cranelisp main: pipeline-v3.md §2.2 structure.
 //
-// The control flow matches the target architecture exactly. Methods
-// marked todo!() are filled in by subsequent waves of Sprint 40a.
-// Methods with real implementations preserve current functionality.
+// Three modes: Run (--run), Link (--link), Repl (default).
+// Run and Link compile an entry file; Repl delegates to run_repl().
 
 use std::path::{Path, PathBuf};
 use std::process;
 
 use cranelisp_types::{
-    CodegenBehaviour, CompileContext, ModuleFullPath, ModuleStrategy, Symbol, Type,
+    CodegenBehaviour, CompileContext, CranelispError, ModuleFullPath, ModuleStrategy, Span,
+    Type, Warning,
 };
 
 use cranelisp::session::CompilationSession;
@@ -17,11 +17,9 @@ use cranelisp::session::CompilationSession;
 // Action enum (pipeline-v3.md §2.1)
 // ---------------------------------------------------------------------------
 
-#[allow(dead_code)]
 enum Action {
     Run,
     Link,
-    Release,
     Repl,
 }
 
@@ -29,10 +27,12 @@ enum Action {
 // Settings (pipeline-v3.md §11)
 // ---------------------------------------------------------------------------
 
-#[allow(dead_code)]
 struct Settings {
     no_color: bool,
+    #[allow(dead_code)] // Wave 3: cache-hit loading uses this
     no_cache: bool,
+    /// When true, use the v4 CompilerSession path (pipeline-v4-roadmap Step 0).
+    v4: bool,
 }
 
 // ---------------------------------------------------------------------------
@@ -40,288 +40,253 @@ struct Settings {
 // ---------------------------------------------------------------------------
 
 fn main() {
-    match run() {
-        Ok(code) => process::exit(code),
+    let (action, entry_module_path, settings) = parse_args();
+    cranelisp::style::init_color(settings.no_color);
+
+    // v4 pipeline path (pipeline-v4-roadmap Step 0).
+    if settings.v4 {
+        if let Err(e) = v4_main(action, &entry_module_path, &settings) {
+            eprintln!("error: {e}");
+            process::exit(1);
+        }
+        return;
+    }
+
+    // Link and REPL modes have their own session and compilation flow.
+    match action {
+        Action::Link => {
+            if let Err(e) = link_mode(&entry_module_path) {
+                eprintln!("error: {e}");
+                process::exit(1);
+            }
+            return;
+        }
+        Action::Repl => {
+            // REPL creates its own session with prelude loading and
+            // persistence (user.cl restore). See repl/mod.rs run_repl().
+            cranelisp::repl::run_repl();
+            return;
+        }
+        Action::Run => {} // fall through to batch compilation below
+    }
+
+    // --- Batch (Run) mode ---
+
+    let entry_module_name = slug(&entry_module_path);
+    let project_root = base_dir(&entry_module_path);
+
+    let mut s = new_session(&project_root, &entry_module_path);
+
+    let src = match read_file(&entry_module_path) {
+        Ok(src) => src,
         Err(e) => {
             eprintln!("error: {e}");
             process::exit(1);
         }
+    };
+
+    let ctx = CompileContext {
+        module: ModuleFullPath::from(entry_module_name.as_str()),
+        codegen: CodegenBehaviour::InMemoryAndObject,
+    };
+
+    let unit_result = match s.compile_unit(&src, &ctx, ModuleStrategy::Replace) {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("error: {e}");
+            process::exit(1);
+        }
+    };
+    let unit_warnings = unit_result.warnings.clone();
+    s.send_codegen(unit_result, ctx.clone());
+
+    s.spawn_hot_inmem_codegen();
+    s.spawn_nice_object_codegen();
+
+    if let Err(e) = run_mode(&mut s, &ctx, unit_warnings) {
+        eprintln!("error: {e}");
+        process::exit(1);
     }
 }
 
-fn run() -> Result<i32, String> {
-    let (action, entry_module_path, settings) = parse_args()?;
+// ---------------------------------------------------------------------------
+// Run mode (pipeline-v3.md §8)
+// ---------------------------------------------------------------------------
 
-    cranelisp::style::init_color(settings.no_color);
+fn run_mode(
+    s: &mut CompilationSession,
+    ctx: &CompileContext,
+    unit_warnings: Vec<Warning>,
+) -> Result<(), CranelispError> {
+    // hot_flush_in_mem_queue: blocks until all GOT slots populated.
+    let codegen_results = s.hot_flush_in_mem_queue()?;
+    s.shutdown_codegen();
 
-    let project_root = entry_module_path
-        .parent()
-        .ok_or("entry module path has no parent")?
-        .to_path_buf();
-    let mut s = CompilationSession::new_async();
-    s.new_placeholder(&project_root, &settings)?;
+    let result = match codegen_results.into_iter().last() {
+        Some(r) => r,
+        None => return Err(CranelispError::ModuleError {
+            message: "no codegen result".into(),
+            file: None,
+            span: Span::SYNTHETIC,
+        }),
+    };
 
-    if let Action::Release = action {
-        s.build_release(&entry_module_path)
+    // Verify main exists.
+    let module_name = ctx.module.as_ref();
+    let main_sym = cranelisp_types::Symbol::from("main");
+    let qualified_main = cranelisp_types::Symbol::from(format!("{}/main", module_name));
+    let main_exists = s.inmem_worker.got_state.def_codegen.contains_key(&main_sym)
+        || s.inmem_worker.got_state.def_codegen.contains_key(&qualified_main);
+    if !main_exists {
+        return Err(CranelispError::ModuleError {
+            message: "entry module has no `main` function — batch mode requires (defn main [] ...)".into(),
+            file: None,
+            span: Span::SYNTHETIC,
+        });
+    }
+
+    let raw_value = result.value.ok_or_else(|| CranelispError::ModuleError {
+        message: "entry module produced no result value".into(),
+        file: None,
+        span: Span::SYNTHETIC,
+    })?;
+    let result_type = result.result_type.unwrap_or(Type::Int);
+
+    // IO trampoline.
+    let (value, ty) = if result_type.is_io() {
+        let inner_value = cranelisp_runtime::run_io_trampoline(raw_value);
+        let inner_type = result_type.io_inner_type();
+        (inner_value, inner_type)
     } else {
-        let src = read_file(&entry_module_path)?;
+        (raw_value, result_type)
+    };
 
-        let ctx = CompileContext {
-            module: ModuleFullPath::derive_from(entry_module_path, project_root),
-            codegen: (&action).into(),
-        };
+    // hot_flush_object_queue: blocks until all .o written.
+    s.hot_flush_object_queue()?;
 
-        s.compile_unit(&src, &ctx, ModuleStrategy::Replace).e()?;
+    // Display warnings and result.
+    let mut all_warnings = unit_warnings;
+    all_warnings.extend(result.warnings);
+    for w in &all_warnings {
+        eprintln!("warning: {}", w.message);
+    }
+    let display = cranelisp::repl::format_result(value, &ty);
+    println!("{display}");
 
-        match action {
-            Action::Run | Action::Repl => s.spawn_hot_inmem_codegen()?,
-            _ => {}
+    let exit_code = cranelisp::session::determine_exit_code(value, &ty);
+    if exit_code != 0 {
+        process::exit(exit_code);
+    }
+    Ok(())
+}
+
+// Concurrent codegen stubs (spawn_hot_inmem_codegen, spawn_nice_object_codegen,
+// hot_flush_in_mem_queue, hot_flush_object_queue) live in session.rs as methods
+// on CompilationSession. Wave 2 replaces them with real thread pool implementations.
+
+// ---------------------------------------------------------------------------
+// v4 pipeline main (pipeline-v4-roadmap Step 0)
+// ---------------------------------------------------------------------------
+
+/// The v4 main flow, delegating through CompilerSession to the old path.
+///
+/// Reachable via `--v4` CLI flag. Produces identical output to the old main
+/// for all modes (Run, Link, Repl).
+fn v4_main(
+    action: Action,
+    entry_module_path: &Path,
+    settings: &Settings,
+) -> Result<(), CranelispError> {
+    match action {
+        Action::Repl => {
+            // REPL: delegate directly to the existing run_repl().
+            // The REPL's session management is tightly coupled to ReplSession,
+            // not CompilerSession. Full REPL migration happens in Step 7+.
+            cranelisp::repl::run_repl();
+            Ok(())
         }
-        s.spawn_nice_object_codegen()?;
-
-        match action {
-            Action::Repl => {
-                s.spawn_file_watcher()?;
-                loop {
-                    let src = read_line()?;
-                    s.pause_watcher_codegen()?;
-                    s.hot_flush_in_mem_queue().e()?;
-                    if let Some(form) = match s.process_commands(&src)? {
-                        CommandResult::Quit => break,
-                        CommandResult::Nothing => None,
-                        CommandResult::Final(form) => Some(form),
-                        CommandResult::Compile(src) => {
-                        match s.compile_unit(&src, &ctx, ModuleStrategy::Additive) {
-                            Ok(_result) => todo!("convert CompileUnitResult to Form"),
-                            Err(e) => { eprintln!("{e}"); None }
-                        }
-                    }
-                    } {
-                        pretty_print_form(form);
-                    }
-                    s.resume_watcher_codegen()?;
-                }
-                s.hot_flush_object_queue().e()?;
-                Ok(0)
-            }
-            Action::Run => {
-                s.hot_flush_in_mem_queue().e()?;
-                let result = s.trampoline(&ctx);
-                s.hot_flush_object_queue().e()?;
-                result
-            }
-            Action::Link => {
-                s.hot_flush_object_queue().e()?;
-                s.link(&ctx)
-            }
-            Action::Release => unreachable!(),
+        Action::Link => {
+            let project_root =
+                std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+            let cache_dir = project_root.join(".cranelisp-cache");
+            let mut s = cranelisp::session_v4::CompilerSession::new_for_link(
+                project_root,
+                entry_module_path,
+                cache_dir,
+            )?;
+            // spawn_priority_workers and spawn_nice_workers are todo!() —
+            // the old path handles codegen via the async coordinator thread.
+            // For Step 0, we skip spawning and let the inner session's async
+            // codegen handle everything.
+            s.link(entry_module_path)?;
+            s.shutdown();
+            Ok(())
         }
-    }
-}
+        Action::Run => {
+            let entry_module_name = slug(entry_module_path);
+            let project_root = base_dir(entry_module_path);
 
-// ---------------------------------------------------------------------------
-// Command result (pipeline-v3.md §7.1)
-// ---------------------------------------------------------------------------
-
-pub enum CommandResult {
-    Quit,
-    Nothing,
-    Final(Form),
-    Compile(String),
-}
-
-pub struct Form {
-    // TODO: value, type, display metadata, source sexp
-}
-
-// ---------------------------------------------------------------------------
-// Stub methods on CompilationSession — filled in by later waves.
-//
-// These are declared here temporarily. As each wave lands, the real
-// implementations move to session.rs / pipeline.rs and these stubs are
-// deleted.
-// ---------------------------------------------------------------------------
-
-// ---------------------------------------------------------------------------
-// North-star methods on CompilationSession.
-//
-// Methods with real implementations preserve current functionality.
-// Methods with todo!() are filled in by later waves.
-// As waves land, these move to session.rs / pipeline.rs.
-// ---------------------------------------------------------------------------
-
-trait NorthStarMethods {
-    fn new_placeholder(&mut self, project_root: &Path, settings: &Settings) -> Result<(), String>;
-    fn spawn_file_watcher(&mut self) -> Result<(), String>;
-    fn pause_watcher_codegen(&self) -> Result<(), String>;
-    fn resume_watcher_codegen(&self) -> Result<(), String>;
-    fn process_commands(&mut self, input: &str) -> Result<CommandResult, String>;
-    fn trampoline(&mut self, ctx: &CompileContext) -> Result<i32, String>;
-    fn link(&mut self, ctx: &CompileContext) -> Result<i32, String>;
-    fn build_release(&mut self, entry_module_path: &Path) -> Result<i32, String>;
-}
-
-impl NorthStarMethods for CompilationSession {
-    fn new_placeholder(&mut self, project_root: &Path, settings: &Settings) -> Result<(), String> {
-        self.interactive = true;
-        let lib_dirs = cranelisp::session::assemble_lib_dirs(project_root);
-        let mut all_lib_dirs = vec![project_root.to_path_buf()];
-        all_lib_dirs.extend(lib_dirs);
-        self.lib_dirs = all_lib_dirs;
-        self.project_root = project_root.to_path_buf();
-        Ok(())
-    }
-
-    fn spawn_file_watcher(&mut self) -> Result<(), String> {
-        todo!("Wave 4: move file watcher from ReplSession to CompilerSession")
-    }
-
-    fn pause_watcher_codegen(&self) -> Result<(), String> {
-        // TODO Wave 3: pause watcher codegen enqueuing for GOT stability.
-        Ok(())
-    }
-
-    fn resume_watcher_codegen(&self) -> Result<(), String> {
-        // TODO Wave 3: resume watcher codegen enqueuing.
-        Ok(())
-    }
-
-    fn process_commands(&mut self, _input: &str) -> Result<CommandResult, String> {
-        todo!("Wave 4: move process_commands from ReplSession to CompilerSession")
-    }
-
-    fn trampoline(&mut self, ctx: &CompileContext) -> Result<i32, String> {
-        let codegen_results = self.hot_flush_in_mem_queue().map_err(|e| format!("{e}"))?;
-        self.shutdown_codegen();
-
-        let result = codegen_results
-            .into_iter()
-            .last()
-            .ok_or("no codegen result")?;
-
-        // Verify main exists.
-        let module_name = ctx.module.as_ref();
-        let main_sym = Symbol::from("main");
-        let qualified_main = Symbol::from(format!("{module_name}/main"));
-        let main_exists = self
-            .inmem_worker.lock().unwrap()
-            .got_state
-            .def_codegen
-            .contains_key(&main_sym)
-            || self
-                .inmem_worker.lock().unwrap()
-                .got_state
-                .def_codegen
-                .contains_key(&qualified_main);
-        if !main_exists {
-            return Err(
-                "entry module has no `main` function — batch mode requires (defn main [] ...)"
-                    .into(),
+            let mut s = cranelisp::session_v4::CompilerSession::new(
+                settings.no_color,
+                project_root,
+                entry_module_path,
             );
-        }
 
-        let raw_value = result
-            .value
-            .ok_or("entry module produced no result value")?;
-        let result_type = result.result_type.unwrap_or(Type::Int);
+            let src = read_file(entry_module_path)?;
 
-        // IO trampoline.
-        let (value, ty) = if result_type.is_io() {
-            (
-                cranelisp_runtime::run_io_trampoline(raw_value),
-                result_type.io_inner_type(),
-            )
-        } else {
-            (raw_value, result_type)
-        };
+            let (_, unit_warnings) =
+                s.register_module(&entry_module_name, &src, entry_module_path)?;
 
-        // Display warnings and result.
-        for w in &result.warnings {
-            eprintln!("warning: {}", w.message);
-        }
-        let display = cranelisp::repl::format_result(value, &ty);
-        println!("{display}");
+            // wait_inmem_complete is a no-op (old path is synchronous within flush).
+            s.scheduler.wait_inmem_complete()?;
 
-        Ok(cranelisp::session::determine_exit_code(value, &ty))
-    }
+            let (value, ty) = s.trampoline(&entry_module_name)?;
 
-    fn link(&mut self, _ctx: &CompileContext) -> Result<i32, String> {
-        todo!("Wave 4: collect .o paths, generate startup, invoke system linker")
-    }
+            // wait_object_complete is a no-op.
+            s.scheduler.wait_object_complete()?;
 
-    fn build_release(&mut self, _entry_module_path: &Path) -> Result<i32, String> {
-        Err("not implemented: build_release".into())
-    }
-}
+            // Display warnings and result.
+            for w in &unit_warnings {
+                eprintln!("warning: {}", w.message);
+            }
+            let display = cranelisp::repl::format_result(value, &ty);
+            println!("{display}");
 
-fn pretty_print_form(_form: Form) {
-    todo!("Wave 4: universal output format from repl/spec.md")
-}
-
-fn read_line() -> Result<String, String> {
-    todo!("Wave 4: line editor integration")
-}
-
-// ---------------------------------------------------------------------------
-// Conversions
-// ---------------------------------------------------------------------------
-
-impl From<&Action> for CodegenBehaviour {
-    fn from(action: &Action) -> Self {
-        match action {
-            Action::Link => CodegenBehaviour::ObjectOnly,
-            _ => CodegenBehaviour::InMemoryAndObject,
+            let exit_code = cranelisp::session::determine_exit_code(value, &ty);
+            s.shutdown();
+            if exit_code != 0 {
+                process::exit(exit_code);
+            }
+            Ok(())
         }
     }
-}
-
-/// Extension trait to map CranelispError to String for `?` in run().
-trait MapErrStr<T> {
-    fn e(self) -> Result<T, String>;
-}
-
-impl<T> MapErrStr<T> for Result<T, cranelisp_types::CranelispError> {
-    fn e(self) -> Result<T, String> {
-        self.map_err(|e| format!("{e}"))
-    }
-}
-
-fn read_file(path: &Path) -> Result<String, String> {
-    if !path.exists() {
-        // For REPL with no user.cl, empty source is valid.
-        return Ok(String::new());
-    }
-    std::fs::read_to_string(path).map_err(|e| format!("cannot read '{}': {}", path.display(), e))
 }
 
 // ---------------------------------------------------------------------------
 // Argument parsing
 // ---------------------------------------------------------------------------
 
-fn parse_args() -> Result<(Action, PathBuf, Settings), String> {
+fn parse_args() -> (Action, PathBuf, Settings) {
     let args: Vec<String> = std::env::args().collect();
     let mut no_color = false;
     let mut no_cache = false;
+    let mut v4 = false;
     let mut run_file: Option<String> = None;
     let mut link_file: Option<String> = None;
     let mut i = 1;
 
     while i < args.len() {
         match args[i].as_str() {
-            "--no-cache" => {
-                no_cache = true;
-                i += 1;
-            }
-            "--no-color" => {
-                no_color = true;
-                i += 1;
-            }
+            "--no-cache" => { no_cache = true; i += 1; }
+            "--no-color" => { no_color = true; i += 1; }
+            "--v4" => { v4 = true; i += 1; }
             "--run" => {
                 if i + 1 < args.len() {
                     run_file = Some(args[i + 1].clone());
                     i += 2;
                 } else {
-                    return Err("--run requires a file argument".into());
+                    eprintln!("error: --run requires a file argument");
+                    process::exit(1);
                 }
             }
             "--link" => {
@@ -329,33 +294,208 @@ fn parse_args() -> Result<(Action, PathBuf, Settings), String> {
                     link_file = Some(args[i + 1].clone());
                     i += 2;
                 } else {
-                    return Err("--link requires a file argument".into());
+                    eprintln!("error: --link requires a file argument");
+                    process::exit(1);
                 }
             }
             other => {
-                return Err(format!(
-                    "unexpected argument: {other}\nusage: cranelisp [--run <file.cl>] [--link <file.cl>] [--no-color]"
-                ));
+                eprintln!("error: unexpected argument: {other}");
+                eprintln!("usage: cranelisp [--run <file.cl>] [--link <file.cl>] [--no-color] [--v4]");
+                process::exit(1);
             }
         }
     }
 
-    if run_file.is_some() && link_file.is_some() {
-        return Err("--run and --link cannot be used together".into());
-    }
+    let settings = Settings { no_color, no_cache, v4 };
 
-    let settings = Settings { no_color, no_cache };
-    let cwd = std::env::current_dir().map_err(|e| format!("cannot get cwd: {e}"))?;
+    if run_file.is_some() && link_file.is_some() {
+        eprintln!("error: --run and --link cannot be used together");
+        process::exit(1);
+    }
 
     if let Some(path) = link_file {
-        let full = cwd.join(&path);
-        return Ok((Action::Link, full, settings));
-    }
-    if let Some(path) = run_file {
-        let full = cwd.join(&path);
-        return Ok((Action::Run, full, settings));
+        return (Action::Link, PathBuf::from(path), settings);
     }
 
-    // REPL default: user.cl in cwd (may not exist yet).
-    Ok((Action::Repl, cwd.join("user.cl"), settings))
+    match run_file {
+        Some(path) => (Action::Run, PathBuf::from(path), settings),
+        None => (Action::Repl, PathBuf::from("user.cl"), settings),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+/// Derive module name from file path (file stem).
+fn slug(path: &Path) -> String {
+    path.file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("main")
+        .to_string()
+}
+
+/// Derive project root from file path (parent directory).
+fn base_dir(path: &Path) -> PathBuf {
+    path.parent()
+        .map(|p| p.to_path_buf())
+        .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")))
+}
+
+/// Read source file.
+fn read_file(path: &Path) -> Result<String, CranelispError> {
+    if !path.exists() {
+        return Err(CranelispError::ModuleError {
+            message: format!("file not found: {}", path.display()),
+            file: Some(path.to_path_buf()),
+            span: Span::SYNTHETIC,
+        });
+    }
+    std::fs::read_to_string(path).map_err(|e| CranelispError::ModuleError {
+        message: format!("cannot read '{}': {}", path.display(), e),
+        file: Some(path.to_path_buf()),
+        span: Span::SYNTHETIC,
+    })
+}
+
+/// Create a new compilation session with lib_dirs set up.
+fn new_session(project_root: &Path, entry_path: &Path) -> CompilationSession {
+    let lib_dirs = cranelisp::session::assemble_lib_dirs(project_root);
+
+    let mut session = CompilationSession::new_async();
+    session.interactive = true;
+
+    let entry_dir = entry_path
+        .canonicalize()
+        .ok()
+        .and_then(|p| p.parent().map(|d| d.to_path_buf()));
+
+    let mut all_lib_dirs: Vec<PathBuf> = Vec::new();
+    if let Some(dir) = &entry_dir {
+        all_lib_dirs.push(dir.clone());
+    }
+    all_lib_dirs.extend(lib_dirs.iter().cloned());
+    session.lib_dirs = all_lib_dirs;
+    session.project_root = entry_dir.unwrap_or_else(|| project_root.to_path_buf());
+
+    session
+}
+
+/// Link mode: compile all modules in dependency order, then link to executable.
+///
+/// Uses the module graph discovery + topo sort from pipeline.rs, then
+/// compiles each module via compile_unit + send_codegen + flush_codegen
+/// (reusing the existing link path logic). The object worker generates
+/// .o files; the linker assembles them into an executable.
+fn link_mode(entry_path: &Path) -> Result<(), CranelispError> {
+    use cranelisp::session::CompilationSession;
+    use cranelisp_types::{CodegenBehaviour, CompileContext, ModuleStrategy, Warning};
+
+    let project_root = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let lib_dirs = cranelisp::session::assemble_lib_dirs(&project_root);
+    let cache_dir = project_root.join(".cranelisp-cache");
+
+    // Step 1: Discover module graph and topological sort.
+    let graph = cranelisp::pipeline::discover_module_graph(entry_path, &lib_dirs)?;
+    let order = cranelisp::pipeline::toposort(&graph)?;
+
+    // Step 2: Create async session with caching.
+    let canonical_entry = entry_path.canonicalize().map_err(|e| CranelispError::ModuleError {
+        message: format!("cannot canonicalize '{}': {}", entry_path.display(), e),
+        file: Some(entry_path.to_path_buf()),
+        span: Span::SYNTHETIC,
+    })?;
+    std::fs::create_dir_all(&cache_dir).map_err(|e| CranelispError::ModuleError {
+        message: format!("cannot create cache dir '{}': {}", cache_dir.display(), e),
+        file: None,
+        span: Span::SYNTHETIC,
+    })?;
+
+    let mut session = CompilationSession::new_async_with_cache(cache_dir.clone());
+    session.interactive = true;
+    setup_lib_dirs(&mut session, &canonical_entry, &lib_dirs);
+
+    let mut all_warnings: Vec<Warning> = Vec::new();
+
+    // Step 3: Compile each module in topo order.
+    for module_path in &order {
+        let node = &graph.nodes[module_path];
+        let source = std::fs::read_to_string(&node.file_path).map_err(|e| {
+            CranelispError::ModuleError {
+                message: format!("cannot read '{}': {}", node.file_path.display(), e),
+                file: Some(node.file_path.clone()),
+                span: Span::SYNTHETIC,
+            }
+        })?;
+
+        let ctx = CompileContext {
+            module: module_path.clone(),
+            codegen: CodegenBehaviour::InMemoryAndObject,
+        };
+
+        let unit_result = session.compile_unit(&source, &ctx, ModuleStrategy::Replace)?;
+        all_warnings.extend(unit_result.warnings.clone());
+        session.send_codegen(unit_result, ctx);
+        let codegen_results = session.flush_codegen()?;
+        for codegen_result in codegen_results {
+            all_warnings.extend(codegen_result.warnings);
+        }
+    }
+
+    // Step 4: Shut down workers, flush .o writes.
+    session.shutdown_codegen();
+    session.flush_cache_writes();
+    let module_o_paths = session.object_worker.compiled_o_paths.clone();
+
+    // Step 5: Validate main, generate startup, link executable.
+    session.tc.set_current_module(graph.entry.clone());
+    let entry_symbols = session.tc.symbol_table().clone();
+    let module_structures = session.object_worker.compiled_module_structures.clone();
+
+    for w in &all_warnings {
+        eprintln!("warning: {}", w.message);
+    }
+
+    let main_return = cranelisp::exe::validate_main(&entry_symbols)?;
+    let platform_names = cranelisp::exe::collect_platform_manifest_names(&module_structures);
+    let main_returns_io = main_return == cranelisp::exe::MainReturnKind::Io;
+    let startup_bytes = cranelisp::exe::generate_startup_object(&platform_names, main_returns_io)?;
+    let startup_o_path = cache_dir.join("_startup.o");
+    std::fs::write(&startup_o_path, &startup_bytes).map_err(|e| CranelispError::ModuleError {
+        message: format!("cannot write startup object: {}", e),
+        file: Some(startup_o_path.clone()),
+        span: Span::SYNTHETIC,
+    })?;
+    let bundle_lib = cranelisp::exe::find_bundle_lib()?;
+    let platform_rlibs = cranelisp::exe::find_platform_rlibs(&module_structures);
+    let output_path = PathBuf::from(
+        entry_path
+            .file_stem()
+            .unwrap_or(std::ffi::OsStr::new("a.out")),
+    );
+    cranelisp::exe::link_executable(
+        &output_path,
+        &module_o_paths,
+        &startup_o_path,
+        &bundle_lib,
+        &platform_rlibs,
+    )?;
+    eprintln!("; Linked: {}", output_path.display());
+    Ok(())
+}
+
+/// Set up lib_dirs on a session from an entry path and base lib_dirs.
+fn setup_lib_dirs(
+    session: &mut cranelisp::session::CompilationSession,
+    canonical_entry: &Path,
+    lib_dirs: &[PathBuf],
+) {
+    let entry_dir = canonical_entry.parent().map(|p| p.to_path_buf());
+    let mut all_lib_dirs: Vec<PathBuf> = Vec::new();
+    if let Some(dir) = &entry_dir {
+        all_lib_dirs.push(dir.clone());
+    }
+    all_lib_dirs.extend(lib_dirs.iter().cloned());
+    session.lib_dirs = all_lib_dirs;
+    session.project_root = entry_dir.unwrap_or_else(|| PathBuf::from("."));
 }

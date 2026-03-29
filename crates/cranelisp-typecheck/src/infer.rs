@@ -445,7 +445,7 @@ impl TypeChecker {
             let name_part = &name[slash_pos + 1..];
             if !module_part.is_empty() && !name_part.is_empty() {
                 let module_path = ModuleFullPath::from(module_part);
-                if let Some(table) = self.modules.read().unwrap().get(&module_path)
+                if let Some(table) = self.modules.get(&module_path)
                     && let Some(entry) = table.get(name_part)
                 {
                     let terminal = self.resolve_to_terminal_entry(entry, 0)?;

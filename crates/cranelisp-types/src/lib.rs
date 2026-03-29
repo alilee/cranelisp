@@ -24,8 +24,8 @@ pub use ast::{
 };
 pub use types::{Scheme, Subst, Type, TypeId, apply, free_vars, max_type_var_id, format_type_display, format_type_with_vars, type_var_names};
 pub use check::{
-    CheckResult, CompileUnitV3Result, ConstructorInfo, DisplayInfo, EvalResult, FieldInfo,
-    MethodResolutions, MonoDefn, ReplSnapshot, ResolvedCall, TypeDefInfo,
+    CheckResult, ConstructorInfo, DisplayInfo, FieldInfo, MethodResolutions, MonoDefn,
+    ReplSnapshot, ResolvedCall, TypeDefInfo,
 };
 pub use module::{
     ConstrainedFn, DefKind, ExportSpec, ImplSexp, ImportNames, ImportSpec, MacroClauseInfo,
