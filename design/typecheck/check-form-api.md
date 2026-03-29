@@ -180,21 +180,32 @@ pub(crate) struct ModuleCheckAccumulator {
 }
 ```
 
-After all forms are processed, `finalize_check_result()` drains the accumulator into a `CheckResult`:
+After all forms are processed, `finalize_check_result()` runs post-passes, sweeps their outputs into the accumulator, and builds `CheckResult` exclusively from the accumulator:
 
 ```rust
 impl TypeChecker {
     pub fn finalize_check_result(
         &mut self,
         module: &ModuleFullPath,
-    ) -> CheckResult {
-        // Resolve pending overloads and auto-curry (pass 5).
-        // Apply final substitution to all accumulated expr_types.
-        // Build CheckResult from accumulator.
-        // Compute DisplayInfo if applicable.
+        accumulator: &mut ModuleCheckAccumulator,
+        working_program: &[TopLevel],
+        strategy: ModuleStrategy,
+    ) -> Result<CheckResult, CranelispError> {
+        // Run post-passes (generalization, deferred trait resolution,
+        // multi-sig overloads, constrained fn detection, monomorphisation,
+        // pending overloads, auto-curry).
+        //
+        // Post-passes write new method_resolutions into self.state.
+        // After post-passes complete, sweep self.state.method_resolutions,
+        // self.state.expr_types, and self.state.warnings into the accumulator.
+        // Then build CheckResult from the accumulator (authoritative source).
+        // type_defs and constructor_to_type are read from TypeChecker module
+        // tables, not from the accumulator.
     }
 }
 ```
+
+**Data flow**: During per-form checking, `merge_form_result()` collects method_resolutions, expr_types, and warnings into the accumulator. Post-passes in `finalize_check_result()` write additional resolutions into `self.state.method_resolutions` (the working scratch space). After all post-passes complete, these are swept into the accumulator. The `CheckResult` is built exclusively from the accumulator. `self.state` is working scratch; the accumulator is the authoritative record.
 
 ### `check_form()` implementation
 

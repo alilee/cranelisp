@@ -7,14 +7,16 @@
 // All methods that will eventually be replaced with scheduler-driven logic
 // are marked with comments indicating which roadmap step replaces them.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use cranelisp_types::{
     CodegenBehaviour, CompileContext, CranelispError, ModuleFullPath, ModuleStrategy,
-    ModuleStructure, Span, Type, Warning,
+    Sexp, Span, Symbol, Type, Warning,
 };
 
-use crate::pipeline::{CodegenResult, CompileUnitResult};
+use crate::pipeline::CodegenResult;
+use crate::scheduler::CompileScheduler;
 use crate::session::CompilationSession;
 
 // ---------------------------------------------------------------------------
@@ -35,32 +37,62 @@ pub enum CommandResult {
 }
 
 // ---------------------------------------------------------------------------
-// Scheduler stub (pipeline-v4.md §5 — replaced in Step 3+)
+// C2 filter: detect programs that qualify for the scheduler path (Step 3)
 // ---------------------------------------------------------------------------
 
-/// Placeholder scheduler that provides no-op wait methods.
+/// Check if parsed sexps qualify for the v4 scheduler path.
 ///
-/// The real `CompileScheduler` (Steps 3-5) tracks module lifecycle, priority
-/// codegen queues, and worker coordination. This stub lets the v4 main flow
-/// compile without the scheduler infrastructure.
-pub struct SchedulerStub;
-
-impl SchedulerStub {
-    /// Wait for all in-memory (JIT) codegen to complete.
-    ///
-    /// No-op: the old path runs codegen synchronously before returning.
-    /// Replaced by real scheduler in Step 3.
-    pub fn wait_inmem_complete(&self) -> Result<(), CranelispError> {
-        Ok(())
+/// A program qualifies if and only if:
+/// - No `(import ...)` forms
+/// - No operator syntax (`+`, `-`, `*`, `/`, `=`, `<`, `>`, `!`)
+/// - All top-level forms are special forms or primitive calls
+///
+/// Programs that fail this filter fall back to the old delegation path.
+fn qualifies_for_scheduler(sexps: &[Sexp]) -> bool {
+    for sexp in sexps {
+        if !sexp_qualifies(sexp) {
+            return false;
+        }
     }
+    true
+}
 
-    /// Wait for all object-file (.o) codegen to complete.
-    ///
-    /// No-op: the old path flushes cache writes synchronously.
-    /// Replaced by real scheduler in Step 3.
-    pub fn wait_object_complete(&self) -> Result<(), CranelispError> {
-        Ok(())
+/// Check a single sexp for scheduler qualification.
+fn sexp_qualifies(sexp: &Sexp) -> bool {
+    match sexp {
+        Sexp::List(items, _) => {
+            if let Some(Sexp::Symbol(name, _)) = items.first() {
+                // Reject import/export/mod/platform forms (cross-module deps).
+                if name == "import" || name == "export" || name == "mod" || name == "platform" {
+                    return false;
+                }
+                // Reject macro-related forms.
+                if name == "defmacro" {
+                    return false;
+                }
+            }
+            // Check all sub-expressions recursively.
+            items.iter().all(sexp_qualifies)
+        }
+        Sexp::Symbol(name, _) => {
+            // Reject operator symbols that require prelude trait dispatch.
+            !is_operator_symbol(name)
+        }
+        Sexp::Bracket(items, _) => items.iter().all(sexp_qualifies),
+        // Literals and other atoms are fine.
+        _ => true,
     }
+}
+
+/// Check if a symbol name is an operator requiring prelude trait dispatch.
+fn is_operator_symbol(name: &str) -> bool {
+    if name.is_empty() {
+        return false;
+    }
+    // Operator symbols are sequences of operator chars.
+    // But named primitives like "add-i64" contain '-' which is also an op char.
+    // Only flag pure-operator symbols (all chars are operator chars).
+    name.chars().all(|c| "+-*/<>=!".contains(c))
 }
 
 // ---------------------------------------------------------------------------
@@ -77,8 +109,9 @@ pub struct CompilerSession {
     /// The wrapped old-path session. Removed when all delegation is replaced.
     inner: CompilationSession,
 
-    /// Placeholder scheduler (replaced in Steps 3-5).
-    pub scheduler: SchedulerStub,
+    /// Compilation scheduler (Step 2+). Tracks module lifecycle and
+    /// coordinates work items for the priority worker loop.
+    pub scheduler: CompileScheduler,
 
     /// Project root directory (read-only after construction).
     pub project_root: PathBuf,
@@ -96,7 +129,9 @@ impl CompilerSession {
     ) -> Self {
         let lib_dirs = crate::session::assemble_lib_dirs(&project_root);
 
-        let mut inner = CompilationSession::new_async();
+        // Use sync mode so the v4 worker loop can write directly to
+        // inmem_worker's GOT state (async mode puts a dummy on the session).
+        let mut inner = CompilationSession::new();
         inner.interactive = true;
 
         let entry_dir = entry_path
@@ -114,7 +149,7 @@ impl CompilerSession {
 
         CompilerSession {
             inner,
-            scheduler: SchedulerStub,
+            scheduler: CompileScheduler::new(),
             project_root,
         }
     }
@@ -155,26 +190,93 @@ impl CompilerSession {
 
         Ok(CompilerSession {
             inner,
-            scheduler: SchedulerStub,
+            scheduler: CompileScheduler::new(),
             project_root,
         })
     }
 
     /// Register a module for compilation.
     ///
-    /// Delegates to the old path: reads the source file, calls `compile_unit`
-    /// + `send_codegen`. In v4, this will register the module with the
-    /// scheduler for worker-driven processing (Step 3).
+    /// For qualifying programs (C2: no imports, no macros, no operators):
+    /// uses the v4 scheduler-driven path. Non-qualifying programs fall back
+    /// to the old delegation path.
+    ///
+    /// Returns warnings from compilation. Codegen results are available
+    /// via GOT after `scheduler.wait_inmem_complete()`.
     pub fn register_module(
         &mut self,
         module_name: &str,
         source: &str,
         _entry_module_path: &Path,
-    ) -> Result<(CompileUnitResult, Vec<Warning>), CranelispError> {
+    ) -> Result<Vec<Warning>, CranelispError> {
         let module_full_path = ModuleFullPath::from(module_name);
 
+        // Parse once — used for C2 qualification check and passed to the
+        // worker loop to avoid double-parsing.
+        let sexps = cranelisp_frontend::parse(source)?;
+
+        if qualifies_for_scheduler(&sexps) {
+            // V4 scheduler path (C2 qualified, C3 no prelude injection).
+            self.register_module_v4(module_full_path, sexps)
+        } else {
+            // Fall back to old delegation path.
+            self.register_module_old(module_full_path, source)
+        }
+    }
+
+    /// V4 scheduler-driven path for qualifying programs.
+    ///
+    /// No prelude injection (C3). Drives typecheck + codegen through
+    /// the scheduler and worker loop. Accepts pre-parsed sexps to avoid
+    /// redundant parsing (already parsed for C2 qualification check).
+    fn register_module_v4(
+        &mut self,
+        module: ModuleFullPath,
+        sexps: Vec<Sexp>,
+    ) -> Result<Vec<Warning>, CranelispError> {
+        // Register module with scheduler (not delaying others for Step 3).
+        self.scheduler.register_module(module.clone(), false);
+
+        // Build pre-parsed sexp map for the worker loop.
+        let mut module_sexps = HashMap::new();
+        module_sexps.insert(module.clone(), sexps);
+
+        // Run the priority worker loop inline (single-threaded).
+        crate::worker::priority_worker_loop(
+            &mut self.inner.tc,
+            &mut self.inner.inmem_worker,
+            &self.inner.platform_symbols,
+            &mut self.scheduler,
+            &mut module_sexps,
+        )?;
+
+        // Check scheduler completion.
+        self.scheduler.wait_inmem_complete().map_err(|e| {
+            CranelispError::ModuleError {
+                message: e.to_string(),
+                file: None,
+                span: Span::SYNTHETIC,
+            }
+        })?;
+
+        // Register module aliases for GOT lookup by unqualified name.
+        crate::session::register_module_aliases_filtered(
+            &mut self.inner.inmem_worker,
+            &module,
+            None,
+        );
+
+        Ok(Vec::new())
+    }
+
+    /// Old delegation path for non-qualifying programs.
+    fn register_module_old(
+        &mut self,
+        module: ModuleFullPath,
+        source: &str,
+    ) -> Result<Vec<Warning>, CranelispError> {
         let ctx = CompileContext {
-            module: module_full_path,
+            module,
             codegen: CodegenBehaviour::InMemoryAndObject,
         };
 
@@ -182,43 +284,9 @@ impl CompilerSession {
             .inner
             .compile_unit(source, &ctx, ModuleStrategy::Replace)?;
         let warnings = unit_result.warnings.clone();
-        self.inner.send_codegen(unit_result, ctx.clone());
+        self.inner.send_codegen(unit_result, ctx);
 
-        // Re-read the unit_result for the caller by compiling again? No —
-        // we need to return something useful. The old main.rs kept unit_result
-        // before sending codegen. Restructure: compile, clone warnings, send,
-        // then return a synthetic result for the caller.
-        //
-        // Actually, the caller only needs the warnings and to know the module
-        // was registered. Return the warnings.
-        //
-        // For run_mode, the caller needs the codegen results from flush.
-        // That comes from wait_inmem_complete / flush_codegen.
-
-        // FIXME(/int): I-3 — returns synthetic empty CompileUnitResult with ModuleFullPath::from("").
-        // Misleading return type when only warnings are used. Step 3 replaces this delegation path.
-        // Return empty CompileUnitResult — the real data was sent to codegen.
-        // Callers that need codegen results use wait_inmem_complete().
-        Ok((
-            CompileUnitResult {
-                program: Vec::new(),
-                module_structure: ModuleStructure {
-                    path: ModuleFullPath::from(""),
-                    file_path: None,
-                    mod_decls: Vec::new(),
-                    import_specs: Vec::new(),
-                    export_specs: Vec::new(),
-                    platform_specs: Vec::new(),
-                    impl_sexps: Vec::new(),
-                    impls: Vec::new(),
-                    dll_path: None,
-                },
-                check_result: empty_check_result(),
-                source: String::new(),
-                warnings: Vec::new(),
-            },
-            warnings,
-        ))
+        Ok(warnings)
     }
 
     /// Evaluate source text (REPL input).
@@ -256,56 +324,46 @@ impl CompilerSession {
 
     /// Execute the entry module's main function via the trampoline.
     ///
-    /// Delegates to the old path: looks up `main` in the GOT, calls it,
-    /// and runs the IO trampoline if the return type is IO.
+    /// For the v4 scheduler path: GOT is already populated by the worker
+    /// loop. For the old path: flushes codegen queue first.
+    ///
+    /// Looks up `main` in the GOT, calls it, and runs the IO trampoline
+    /// if the return type is IO.
     pub fn trampoline(
         &mut self,
         module_name: &str,
     ) -> Result<(i64, Type), CranelispError> {
-        // Flush codegen first to populate GOT slots.
-        let codegen_results = self.inner.hot_flush_in_mem_queue()?;
+        // Flush old-path codegen queue (no-op if queue is empty, i.e. v4 path).
+        let _ = self.inner.hot_flush_in_mem_queue()?;
         self.inner.shutdown_codegen();
 
-        let result = codegen_results.into_iter().last().ok_or_else(|| {
-            CranelispError::ModuleError {
-                message: "no codegen result".into(),
-                file: None,
-                span: Span::SYNTHETIC,
-            }
-        })?;
-
-        // Verify main exists.
+        // Look up main in GOT.
         let main_sym = cranelisp_types::Symbol::from("main");
         let qualified_main =
             cranelisp_types::Symbol::from(format!("{}/main", module_name));
-        let main_exists = self
-            .inner
-            .inmem_worker
-            .got_state
-            .def_codegen
-            .contains_key(&main_sym)
-            || self
-                .inner
-                .inmem_worker
-                .got_state
-                .def_codegen
-                .contains_key(&qualified_main);
 
-        if !main_exists {
-            return Err(CranelispError::ModuleError {
-                message: "entry module has no `main` function — batch mode requires (defn main [] ...)"
-                    .into(),
-                file: None,
+        let code_ptr = self.lookup_main_code_ptr(&main_sym, &qualified_main)?;
+        let result_type = self.lookup_main_return_type(module_name);
+
+        // Clear any stale runtime error.
+        let _ = cranelisp_runtime::panic::take_runtime_error();
+
+        // Call main.
+        // SAFETY: `code_ptr` is non-null — returned from `lookup_main_code_ptr`
+        // which errors on None. It points to finalized JIT code compiled by
+        // Cranelift via `compile_and_register_defn`. The compiled function uses
+        // the `extern "C" fn() -> i64` calling convention (zero-arg defn with
+        // i64 return), matching the transmute target type.
+        let func: extern "C" fn() -> i64 = unsafe { std::mem::transmute(code_ptr) };
+        let raw_value = func();
+
+        // Check for runtime panics.
+        if let Some(err) = cranelisp_runtime::panic::take_runtime_error() {
+            return Err(CranelispError::CodegenError {
+                message: format!("runtime panic: {}", err),
                 span: Span::SYNTHETIC,
             });
         }
-
-        let raw_value = result.value.ok_or_else(|| CranelispError::ModuleError {
-            message: "entry module produced no result value".into(),
-            file: None,
-            span: Span::SYNTHETIC,
-        })?;
-        let result_type = result.result_type.unwrap_or(Type::Int);
 
         // IO trampoline.
         if result_type.is_io() {
@@ -315,6 +373,51 @@ impl CompilerSession {
         } else {
             Ok((raw_value, result_type))
         }
+    }
+
+    /// Look up the code pointer for `main` in the GOT.
+    fn lookup_main_code_ptr(
+        &self,
+        main_sym: &cranelisp_types::Symbol,
+        qualified_main: &cranelisp_types::Symbol,
+    ) -> Result<*const u8, CranelispError> {
+        let got = &self.inner.inmem_worker.got_state;
+
+        // Try unqualified name first, then qualified.
+        if let Some(entry) = got.def_codegen.get(main_sym) {
+            if let Some(ptr) = entry.code_ptr {
+                return Ok(ptr);
+            }
+        }
+        if let Some(entry) = got.def_codegen.get(qualified_main) {
+            if let Some(ptr) = entry.code_ptr {
+                return Ok(ptr);
+            }
+        }
+
+        Err(CranelispError::ModuleError {
+            message: "entry module has no `main` function — batch mode requires (defn main [] ...)"
+                .into(),
+            file: None,
+            span: Span::SYNTHETIC,
+        })
+    }
+
+    /// Look up the return type of `main` from the typechecker.
+    fn lookup_main_return_type(&self, module_name: &str) -> Type {
+        let module_path = ModuleFullPath::from(module_name);
+        let main_sym = Symbol::from("main");
+
+        if let Some(table) = self.inner.tc.module_table(&module_path) {
+            if let Some(cranelisp_types::ModuleEntry::Def { scheme, .. }) =
+                table.get(main_sym.as_ref())
+            {
+                if let Type::Fn(_, ret) = &scheme.ty {
+                    return *ret.clone();
+                }
+            }
+        }
+        Type::Int
     }
 
     /// Link all compiled modules into an executable.
@@ -411,16 +514,17 @@ impl CompilerSession {
 
     /// Spawn priority worker threads for typecheck + JIT codegen.
     ///
-    /// Not yet implemented — will be filled in Step 3 (scheduler).
+    /// No-op for Step 3: the worker loop runs inline on the calling thread.
+    /// Replaced by real thread spawning in Step 11.
     pub fn spawn_priority_workers(&self, _n: usize) {
-        todo!("Step 3: spawn priority workers for typecheck + JIT codegen")
+        // Step 3: worker loop runs inline via priority_worker_loop().
     }
 
     /// Spawn nice (low-priority) worker threads for object file codegen.
     ///
-    /// Not yet implemented — will be filled in Step 3 (scheduler).
+    /// No-op for Step 3: object codegen deferred to Step 10.
     pub fn spawn_nice_workers(&self, _n: usize) {
-        todo!("Step 3: spawn nice workers for .o codegen")
+        // Step 10: nice workers for .o codegen.
     }
 
     /// Shut down the session: stop workers, flush caches.
@@ -432,17 +536,3 @@ impl CompilerSession {
     }
 }
 
-/// Construct an empty CheckResult (used by register_module's synthetic return).
-fn empty_check_result() -> cranelisp_types::CheckResult {
-    cranelisp_types::CheckResult {
-        method_resolutions: Default::default(),
-        constrained_fn_names: Default::default(),
-        mono_defns: Vec::new(),
-        expr_types: Default::default(),
-        default_method_defns: Vec::new(),
-        warnings: Vec::new(),
-        type_defs: Default::default(),
-        constructor_to_type: Default::default(),
-        display: None,
-    }
-}

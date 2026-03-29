@@ -234,16 +234,10 @@ fn v4_main(
 
             let src = read_file(entry_module_path)?;
 
-            let (_, unit_warnings) =
+            let unit_warnings =
                 s.register_module(&entry_module_name, &src, entry_module_path)?;
 
-            // wait_inmem_complete is a no-op (old path is synchronous within flush).
-            s.scheduler.wait_inmem_complete()?;
-
             let (value, ty) = s.trampoline(&entry_module_name)?;
-
-            // wait_object_complete is a no-op.
-            s.scheduler.wait_object_complete()?;
 
             // Display warnings and result.
             for w in &unit_warnings {

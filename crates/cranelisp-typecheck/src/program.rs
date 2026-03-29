@@ -111,9 +111,12 @@ impl FormCheckResult {
 /// One accumulator per module. Created before Pass 1, consumed by
 /// `finalize_check_result()`. No concurrent access — a single worker
 /// processes one module's forms sequentially (Invariant 5).
-// FIXME(/typecheck): I-2 — method_resolutions, expr_types, warnings are collected here but
-// never consumed during finalization (authoritative data stays in self.state). Step 3 scheduler
-// should clarify which source is canonical to avoid design confusion.
+/// The accumulator is the **authoritative source** for method_resolutions, expr_types,
+/// and warnings in the final `CheckResult`. During per-form checking, `merge_form_result()`
+/// collects these from each `FormCheckResult`. After post-passes run in
+/// `finalize_check_result()`, any additional resolutions/warnings produced by those passes
+/// are swept from `self.state` into the accumulator, and the `CheckResult` is built
+/// exclusively from the accumulator.
 pub struct ModuleCheckAccumulator {
     pub method_resolutions: HashMap<Span, ResolvedCall>,
     pub expr_types: HashMap<Span, Type>,
@@ -646,13 +649,43 @@ impl TypeChecker {
         self.resolve_pending_overloads()?;
         self.resolve_auto_curry();
 
-        // Build result
-        let mut result = self.build_check_result();
-        result.constrained_fn_names = constrained_fn_names;
-        result.mono_defns = mono_defns;
+        // Sweep post-pass outputs from self.state into the accumulator.
+        // Post-passes (resolve_deferred_trait_calls, pass4_monomorphise,
+        // resolve_pending_overloads, resolve_auto_curry) write new method
+        // resolutions into self.state.method_resolutions. Merge these into
+        // the accumulator so it becomes the single authoritative source.
+        accumulator.method_resolutions.extend(
+            std::mem::take(&mut self.state.method_resolutions),
+        );
+        accumulator.expr_types.extend(
+            std::mem::take(&mut self.state.expr_types),
+        );
+        accumulator.warnings.extend(
+            std::mem::take(&mut self.state.warnings),
+        );
+
+        // Resolve all accumulated expr_types through the final substitution.
+        let resolved_expr_types: HashMap<Span, Type> = accumulator
+            .expr_types
+            .iter()
+            .map(|(span, ty)| (*span, apply(&self.state.subst, ty)))
+            .collect();
+
+        // Build CheckResult from the accumulator (authoritative source).
         let mut all_default_defns = std::mem::take(&mut accumulator.default_method_defns);
         all_default_defns.extend(multi_sig_defns);
-        result.default_method_defns = all_default_defns;
+
+        let result = CheckResult {
+            method_resolutions: std::mem::take(&mut accumulator.method_resolutions),
+            expr_types: resolved_expr_types,
+            warnings: std::mem::take(&mut accumulator.warnings),
+            type_defs: self.type_defs.get_mut().unwrap().type_defs.clone(),
+            constructor_to_type: self.type_defs.get_mut().unwrap().constructor_to_type.clone(),
+            constrained_fn_names,
+            mono_defns,
+            default_method_defns: all_default_defns,
+            display: None,
+        };
 
         Ok(result)
     }
@@ -820,6 +853,20 @@ impl TypeChecker {
         }
     }
 
+    /// Public wrapper for `clear_module_for_replace` (used by v4 worker).
+    pub fn clear_module_for_replace_public(&mut self) {
+        self.clear_module_for_replace();
+    }
+
+    /// Public wrapper for `compute_display_info` (used by v4 worker).
+    pub fn compute_display_info_public(
+        &self,
+        original_program: &[TopLevel],
+        defn_type_vars: &HashMap<Symbol, (Vec<Type>, Type)>,
+    ) -> Option<DisplayInfo> {
+        self.compute_display_info(original_program, defn_type_vars)
+    }
+
     /// Clear module state for Replace strategy.
     ///
     /// Removes all symbol table entries, type defs, trait decls, and trait
@@ -922,7 +969,6 @@ impl TypeChecker {
     /// table, and populate `resolved_overloads`.
     ///
     /// Returns a list of mangled Defn objects that the backend should compile.
-    // FIXME(/typecheck): I-1 — this function is 135 lines, exceeds 100-line limit. Decompose.
     fn resolve_multi_sig_overloads(
         &mut self,
         program: &[TopLevel],
@@ -936,128 +982,177 @@ impl TypeChecker {
                     continue;
                 }
 
-                let mut resolved = Vec::new();
-                let mut sig_set: Vec<Vec<Type>> = Vec::new();
-
-                for (i, variant) in defn.variants.iter().enumerate() {
-                    let internal_name = Symbol::from(format!("{}__v{}", defn.name, i));
-
-                    let (param_tys, ret_ty) = type_vars
-                        .get(&internal_name)
-                        .ok_or_else(|| CranelispError::TypeError {
-                            message: format!(
-                                "internal: missing type vars for multi-sig variant {}",
-                                internal_name
-                            ),
-                            span: variant.span,
-                        })?;
-
-                    let concrete_params: Vec<Type> = param_tys
-                        .iter()
-                        .map(|t| self.apply_subst(t))
-                        .collect();
-                    let concrete_ret = self.apply_subst(ret_ty);
-                    let mangled = mangle_sig(defn.name.as_ref(), &concrete_params);
-
-                    // Check for duplicate signatures
-                    if sig_set.iter().any(|s| s == &concrete_params) {
-                        return Err(CranelispError::TypeError {
-                            message: format!(
-                                "duplicate signature for '{}': ({})",
-                                defn.name,
-                                concrete_params
-                                    .iter()
-                                    .map(|t| format!("{t}"))
-                                    .collect::<Vec<_>>()
-                                    .join(", ")
-                            ),
-                            span: variant.span,
-                        });
-                    }
-                    sig_set.push(concrete_params.clone());
-
-                    let fn_ty = Type::Fn(
-                        concrete_params.clone(),
-                        Box::new(concrete_ret.clone()),
-                    );
-                    let scheme = self.generalize(&fn_ty);
-
-                    // Remove internal name, register mangled name
-                    self.current_symbol_table_mut()
-                        .symbols
-                        .remove(internal_name.as_ref());
-                    self.current_symbol_table_mut().insert(
-                        mangled.clone(),
-                        ModuleEntry::Def {
-                            scheme: scheme.clone(),
-                            visibility: defn.visibility,
-                            docstring: defn.docstring.clone(),
-                            param_names: variant.params.clone(),
-                            kind: Box::new(DefKind::UserFn {
-                                constrained_fn: None,
-                            }),
-                        },
-                    );
-
-                    // Build the mangled defn for the backend
-                    result_defns.push(Defn {
-                        name: mangled.clone(),
-                        docstring: defn.docstring.clone(),
-                        variants: vec![DefnVariant {
-                            params: variant.params.clone(),
-                            param_annotations: variant.param_annotations.clone(),
-                            body: variant.body.clone(),
-                            span: variant.span,
-                        }],
-                        visibility: defn.visibility,
-                        span: variant.span,
-                    });
-
-                    resolved.push((concrete_params, concrete_ret, mangled));
-                }
-
-                // Register the base name as Overloaded in the symbol table
-                let overload_variants = resolved
-                    .iter()
-                    .map(|(params, ret, mangled)| {
-                        cranelisp_types::OverloadVariant {
-                            param_types: params.clone(),
-                            ret_type: ret.clone(),
-                            mangled_name: mangled.clone(),
-                        }
-                    })
-                    .collect();
-
-                // Build a union scheme for the base name — use first variant's
-                // scheme for now. The base name is registered as Overloaded so
-                // `infer_apply` detects it and records a pending overload.
-                let first_fn_ty = Type::Fn(
-                    resolved[0].0.clone(),
-                    Box::new(resolved[0].1.clone()),
-                );
-                let base_scheme = self.generalize(&first_fn_ty);
-
-                self.current_symbol_table_mut().insert(
-                    defn.name.clone(),
-                    ModuleEntry::Def {
-                        scheme: base_scheme,
-                        visibility: defn.visibility,
-                        docstring: defn.docstring.clone(),
-                        param_names: vec![],
-                        kind: Box::new(DefKind::Overloaded {
-                            variants: overload_variants,
-                        }),
-                    },
-                );
-
-                self.state.resolved_overloads.insert(
-                    defn.name.clone(),
-                    resolved,
-                );
+                let resolved = self.resolve_variant_types(defn, type_vars)?;
+                let (mangled_defns, resolved_info) =
+                    self.register_mangled_variants(defn, &resolved);
+                result_defns.extend(mangled_defns);
+                self.register_overloaded_base(defn, resolved_info);
             }
         }
 
         Ok(result_defns)
+    }
+
+    /// For a single multi-sig defn, resolve each variant's concrete param/return
+    /// types by applying substitution, and check for duplicate signatures.
+    ///
+    /// Returns a vec of `(concrete_params, concrete_ret, internal_name, variant_index)`
+    /// for each variant.
+    fn resolve_variant_types(
+        &self,
+        defn: &Defn,
+        type_vars: &HashMap<Symbol, (Vec<Type>, Type)>,
+    ) -> Result<Vec<(Vec<Type>, Type, Symbol, usize)>, CranelispError> {
+        let mut resolved = Vec::new();
+        let mut sig_set: Vec<Vec<Type>> = Vec::new();
+
+        for (i, variant) in defn.variants.iter().enumerate() {
+            let internal_name = Symbol::from(format!("{}__v{}", defn.name, i));
+
+            let (param_tys, ret_ty) = type_vars
+                .get(&internal_name)
+                .ok_or_else(|| CranelispError::TypeError {
+                    message: format!(
+                        "internal: missing type vars for multi-sig variant {}",
+                        internal_name
+                    ),
+                    span: variant.span,
+                })?;
+
+            let concrete_params: Vec<Type> = param_tys
+                .iter()
+                .map(|t| self.apply_subst(t))
+                .collect();
+            let concrete_ret = self.apply_subst(ret_ty);
+
+            // Check for duplicate signatures
+            if sig_set.iter().any(|s| s == &concrete_params) {
+                return Err(CranelispError::TypeError {
+                    message: format!(
+                        "duplicate signature for '{}': ({})",
+                        defn.name,
+                        concrete_params
+                            .iter()
+                            .map(|t| format!("{t}"))
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    ),
+                    span: variant.span,
+                });
+            }
+            sig_set.push(concrete_params.clone());
+
+            resolved.push((concrete_params, concrete_ret, internal_name, i));
+        }
+
+        Ok(resolved)
+    }
+
+    /// For each resolved variant, compute the mangled name, update the symbol
+    /// table (remove internal name, register mangled name), and build the
+    /// mangled `Defn` for the backend.
+    ///
+    /// Returns `(mangled_defns, resolved_info)` where `resolved_info` is
+    /// `(concrete_params, concrete_ret, mangled_name)` per variant.
+    fn register_mangled_variants(
+        &mut self,
+        defn: &Defn,
+        resolved: &[(Vec<Type>, Type, Symbol, usize)],
+    ) -> (Vec<Defn>, Vec<(Vec<Type>, Type, Symbol)>) {
+        let mut mangled_defns = Vec::new();
+        let mut resolved_info = Vec::new();
+
+        for (concrete_params, concrete_ret, internal_name, idx) in resolved {
+            let variant = &defn.variants[*idx];
+            let mangled = mangle_sig(defn.name.as_ref(), concrete_params);
+
+            let fn_ty = Type::Fn(
+                concrete_params.clone(),
+                Box::new(concrete_ret.clone()),
+            );
+            let scheme = self.generalize(&fn_ty);
+
+            // Remove internal name, register mangled name
+            self.current_symbol_table_mut()
+                .symbols
+                .remove(internal_name.as_ref());
+            self.current_symbol_table_mut().insert(
+                mangled.clone(),
+                ModuleEntry::Def {
+                    scheme: scheme.clone(),
+                    visibility: defn.visibility,
+                    docstring: defn.docstring.clone(),
+                    param_names: variant.params.clone(),
+                    kind: Box::new(DefKind::UserFn {
+                        constrained_fn: None,
+                    }),
+                },
+            );
+
+            // Build the mangled defn for the backend
+            mangled_defns.push(Defn {
+                name: mangled.clone(),
+                docstring: defn.docstring.clone(),
+                variants: vec![DefnVariant {
+                    params: variant.params.clone(),
+                    param_annotations: variant.param_annotations.clone(),
+                    body: variant.body.clone(),
+                    span: variant.span,
+                }],
+                visibility: defn.visibility,
+                span: variant.span,
+            });
+
+            resolved_info.push((concrete_params.clone(), concrete_ret.clone(), mangled));
+        }
+
+        (mangled_defns, resolved_info)
+    }
+
+    /// Build `OverloadVariant` entries, register the base name as `Overloaded`
+    /// in the symbol table, and record resolved overloads in state.
+    fn register_overloaded_base(
+        &mut self,
+        defn: &Defn,
+        resolved: Vec<(Vec<Type>, Type, Symbol)>,
+    ) {
+        let overload_variants = resolved
+            .iter()
+            .map(|(params, ret, mangled)| {
+                cranelisp_types::OverloadVariant {
+                    param_types: params.clone(),
+                    ret_type: ret.clone(),
+                    mangled_name: mangled.clone(),
+                }
+            })
+            .collect();
+
+        // Build a union scheme for the base name — use first variant's
+        // scheme for now. The base name is registered as Overloaded so
+        // `infer_apply` detects it and records a pending overload.
+        let first_fn_ty = Type::Fn(
+            resolved[0].0.clone(),
+            Box::new(resolved[0].1.clone()),
+        );
+        let base_scheme = self.generalize(&first_fn_ty);
+
+        self.current_symbol_table_mut().insert(
+            defn.name.clone(),
+            ModuleEntry::Def {
+                scheme: base_scheme,
+                visibility: defn.visibility,
+                docstring: defn.docstring.clone(),
+                param_names: vec![],
+                kind: Box::new(DefKind::Overloaded {
+                    variants: overload_variants,
+                }),
+            },
+        );
+
+        self.state.resolved_overloads.insert(
+            defn.name.clone(),
+            resolved,
+        );
     }
 
     /// Resolve pending overload dispatch resolutions.
@@ -1177,11 +1272,18 @@ impl TypeChecker {
         // Pass 5: resolve auto-curry sites into method_resolutions
         self.resolve_auto_curry();
 
-        let mut result = self.build_check_result();
-        result.constrained_fn_names = constrained_fn_names.clone();
-        result.mono_defns = mono_defns;
-        result.default_method_defns = default_defns;
-        Ok(result)
+        let resolved_expr_types = self.resolve_expr_types();
+        Ok(CheckResult {
+            method_resolutions: std::mem::take(&mut self.state.method_resolutions),
+            constrained_fn_names: constrained_fn_names.clone(),
+            mono_defns,
+            expr_types: resolved_expr_types,
+            default_method_defns: default_defns,
+            warnings: std::mem::take(&mut self.state.warnings),
+            type_defs: self.type_defs.get_mut().unwrap().type_defs.clone(),
+            constructor_to_type: self.type_defs.get_mut().unwrap().constructor_to_type.clone(),
+            display: None,
+        })
     }
 
     /// Check a single REPL input incrementally.
@@ -1862,45 +1964,9 @@ impl TypeChecker {
             .collect()
     }
 
-    /// Build the final CheckResult from accumulated state.
-    fn build_check_result(&mut self) -> CheckResult {
-        let resolved_expr_types = self.resolve_expr_types();
-
-        // Invariant: after monomorphisation (Ring 2+), no Type::Var should remain
-        // in expr_types. In Ring 0-1, polymorphic function bodies legitimately
-        // contain Var entries (e.g., `(defn id [x] x)` where x has a quantified
-        // type variable). This assertion activates in Ring 2 when monomorphisation
-        // resolves all type variables before codegen.
-        //
-        // TODO(Ring 2): uncomment when monomorphisation is implemented
-        // debug_assert!(
-        //     !resolved_expr_types.values().any(|ty| ty.contains_var()),
-        //     "build_check_result: unresolved Type::Var in expr_types"
-        // );
-
-        CheckResult {
-            method_resolutions: std::mem::take(&mut self.state.method_resolutions),
-            constrained_fn_names: HashSet::new(),
-            mono_defns: Vec::new(),
-            expr_types: resolved_expr_types,
-            default_method_defns: Vec::new(),
-            warnings: std::mem::take(&mut self.state.warnings),
-            type_defs: self.type_defs.get_mut().unwrap().type_defs.clone(),
-            constructor_to_type: self.type_defs.get_mut().unwrap().constructor_to_type.clone(),
-            display: None,
-        }
-    }
-
     /// Build a CheckResult with display info from the current state (REPL path).
     fn build_repl_result(&mut self, ty: Type, scheme: Option<Scheme>) -> CheckResult {
         let resolved_expr_types = self.resolve_expr_types();
-
-        // See build_check_result comment: assertion deferred to Ring 2.
-        // TODO(Ring 2): uncomment when monomorphisation is implemented
-        // debug_assert!(
-        //     !resolved_expr_types.values().any(|ty| ty.contains_var()),
-        //     "build_repl_result: unresolved Type::Var in expr_types"
-        // );
 
         CheckResult {
             method_resolutions: std::mem::take(&mut self.state.method_resolutions),

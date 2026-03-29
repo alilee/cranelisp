@@ -14,4 +14,6 @@ pub mod pipeline;
 pub mod platform;
 pub mod pretty;
 pub mod repl;
+pub mod scheduler;
 pub mod style;
+pub mod worker;

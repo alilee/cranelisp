@@ -1,0 +1,37 @@
+; Pipeline v4b — scheduler-driven compilation
+; Sprint 41 delivers the CompileScheduler and form-by-form worker
+; loop. Programs using only primitives now compile through the new
+; scheduler path. --v4 --run proves it end-to-end.
+
+; Primitive arithmetic through the scheduler
+(add-i64 1 2)
+
+; Boolean primitives
+(lt-i64 3 5)
+
+; Define a function — two-pass typecheck, scheduler lifecycle
+(defn double [x] (mul-i64 x 2))
+(double 21)
+
+; Compose multiple definitions
+(defn square [n] (mul-i64 n n))
+(square 7)
+
+; Local bindings
+(let [x (mul-i64 6 7)] x)
+
+; Conditionals with primitive predicates
+(if (lt-i64 10 20) 1 0)
+
+; Combine everything — a small computation
+(defn abs [x]
+  (if (lt-i64 x 0) (sub-i64 0 x) x))
+(abs (sub-i64 3 10))
+
+; Introspect what we built
+/sig double
+/sig abs
+
+; The scheduler path handles primitive-only programs.
+; Programs needing the prelude (operators, macros, imports)
+; fall back to the old pipeline automatically.
