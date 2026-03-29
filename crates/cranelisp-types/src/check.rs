@@ -2,7 +2,8 @@ use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 
 use crate::{
-    Defn, JitSymbol, Scheme, Span, Symbol, TraitName, Type, TypeId, TypeName, Warning,
+    Defn, FQSymbol, JitSymbol, ModuleFullPath, Scheme, Span, Symbol, TraitName, Type, TypeId,
+    TypeName, Warning,
 };
 
 /// Map from call site span to how that call was resolved.
@@ -57,6 +58,51 @@ pub struct DisplayInfo {
     pub ty: Type,
     /// Generalized scheme for defn display (None for bare expressions)
     pub scheme: Option<Scheme>,
+}
+
+/// Result of compile_unit_v3 — what the caller needs for display.
+///
+/// The pipeline has already enqueued codegen. The caller uses this to
+/// decide what to show the user. The pretty-printer can introspect the
+/// CompilerSession using the symbols/modules returned here.
+#[derive(Debug)]
+pub enum EvalResult {
+    /// An expression was evaluated. Value will be available after hot_flush.
+    /// The type is known from typechecking; the value comes from execution.
+    Expr {
+        ty: Type,
+        scheme: Option<Scheme>,
+    },
+    /// A function (or multi-sig function) was defined.
+    Defn(FQSymbol),
+    /// A type was defined.
+    DefType(TypeName),
+    /// A trait was declared.
+    DefTrait(TraitName),
+    /// A trait implementation was registered.
+    Impl {
+        trait_name: TraitName,
+        target_type: TypeName,
+    },
+    /// A module was loaded or declared.
+    Module(ModuleFullPath),
+    /// Imports were registered.
+    Import,
+    /// Exports were registered.
+    Export,
+    /// A macro was defined.
+    DefMacro(Symbol),
+    /// Nothing to display (empty input, comments).
+    Nothing,
+}
+
+/// Result of compile_unit_v3 — display results plus warnings.
+#[derive(Debug)]
+pub struct CompileUnitV3Result {
+    /// What happened — drives the pretty-printer.
+    pub results: Vec<EvalResult>,
+    /// Warnings accumulated during stages 1-5.
+    pub warnings: Vec<Warning>,
 }
 
 /// Result of type checking a compilation unit.

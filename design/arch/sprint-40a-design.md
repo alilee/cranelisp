@@ -430,36 +430,58 @@ Remove from `session.rs`:
 
 **Acceptance**: `cargo test` passes. `compile_unit` takes `&self`.
 
+### Wave 2.5: Per-module GOT (prerequisite for parallel codegen)
+
+Migrate the JIT path from a single flat GOT to per-module GOTs, matching the object path's existing model. See `design/backend/per-module-got.md` for the full design.
+
+Phase 1 — Internal restructuring (no behavior change):
+10a. Add `ModuleGotRegistry` to `got.rs`
+10b. Add `got_base_ptr_readonly()` to `ModuleCodegenState`
+10c. Replace `InMemWorkerState.got_state` with `got_registry: ModuleGotRegistry`
+10d. Route all GOT operations through `got_registry.ensure_module(&ctx.module)` — single module entry, behavior identical to flat GOT
+
+Phase 2 — Cross-module GOT population:
+10e. Build `fn_to_module` map in `codegen_and_execute` from symbol table imports
+10f. Call `got_registry.build_compilation_maps()` for `local_slots`, `local_base`, `cross_module_got`
+10g. Pass `cross_module_got` through to backend `CompileContext` (currently always `None`)
+
+Phase 3 — Per-module slot namespaces:
+10h. Each module gets independent slot counter and `GotTable` allocation
+10i. Cache-hit loading creates per-module `GotTable` instances
+
+**Acceptance**: `cargo test` passes. Multi-module programs call imported functions via the owning module's GOT. GOT capacity is per-module, not globally shared. `cross_module_got` is populated (no longer `None`).
+
 ### Wave 3: Producer-consumer codegen
 
-10. Implement `CodegenQueue` (§2.1)
-11. Replace `CodegenMode::Async` channel pattern with shared queue + worker pool (§2.2, §2.5)
-12. `send_codegen` → `enqueue_codegen` (§2.3)
-13. `hot_flush_in_mem_queue` / `hot_flush_object_queue` as barriers (§2.4)
-14. Delete coordinator infrastructure (§2.8)
-15. Parallel fork in `load_dependencies` for independent cache-miss deps (§2.7)
-16. Implement `pause_watcher_codegen()` / `resume_watcher_codegen()` for GOT stability during REPL eval
+11. Implement `CodegenQueue` (§2.1)
+12. Replace `CodegenMode::Async` channel pattern with shared queue + worker pool (§2.2, §2.5)
+13. `send_codegen` → `enqueue_codegen` (§2.3)
+14. `hot_flush_in_mem_queue` / `hot_flush_object_queue` as barriers (§2.4)
+15. Delete coordinator infrastructure (§2.8)
+16. `CodegenPacket` carries per-module GOT info: `local_got_slots`, `local_got_base`, `cross_module_got`, module-specific `Arc<GotTable>` (see `design/backend/per-module-got.md` §3.5)
+17. Parallel fork in `load_dependencies` for independent cache-miss deps (§2.7)
+18. Implement `pause_watcher_codegen()` / `resume_watcher_codegen()` for GOT stability during REPL eval
 
-**Acceptance**: `cargo test` passes. Multi-module compilation uses parallel codegen. `--run`, `--link`, REPL all work. Watcher enqueue exclusion prevents GOT mutation during REPL evaluation.
+**Acceptance**: `cargo test` passes. Multi-module compilation uses parallel codegen with per-module GOTs (no contention between workers). `--run`, `--link`, REPL all work. Watcher enqueue exclusion prevents GOT mutation during REPL evaluation.
 
 ### Wave 4: Dissolve ReplSession
 
-17. Move `process_commands` from `ReplSession` to `CompilerSession`
-18. Move file watcher from `ReplSession` to `CompilerSession`
-19. Implement `trampoline(&ctx)` — verify main, execute, IO trampoline
-20. Implement `link(&ctx)` — link mode logic as a method
-21. Implement `pretty_print_form(form)`
-22. Fill in remaining `todo!()` stubs from Wave 0
-23. Delete `ReplSession` wrapper
+19. Move `process_commands` from `ReplSession` to `CompilerSession`
+20. Move file watcher from `ReplSession` to `CompilerSession`
+21. Implement `trampoline(&ctx)` — verify main, execute, IO trampoline
+22. Implement `link(&ctx)` — link mode logic as a method
+23. Implement `pretty_print_form(form)`
+24. Fill in remaining `todo!()` stubs from Wave 0
+25. Delete `ReplSession` wrapper
 
 **Acceptance**: `cargo test` passes. `ReplSession` is deleted. All modes (REPL, `--run`, `--link`) work through `CompilerSession` methods. `main.rs` has no `todo!()` stubs for implemented features.
 
 ### Wave 5: Verification + Cleanup
 
-24. Tests for parallel compile_unit, concurrent queue producers, lock contention
-25. Performance measurement: stdlib compile time before vs after
-26. REPL, --run, --link verification
-27. Cleanup dead code
+26. Tests for parallel compile_unit, concurrent queue producers, lock contention
+27. Performance measurement: stdlib compile time before vs after
+28. REPL, --run, --link verification
+29. Cleanup dead code
 
 ## Risk Analysis
 

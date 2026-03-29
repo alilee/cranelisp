@@ -24,8 +24,9 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use cranelisp_types::{
-    CheckResult, CodegenBehaviour, CompileContext, CranelispError, Defn, ModuleFullPath,
-    ModuleStrategy, ModuleStructure, Program, Span, Symbol, Type, Warning,
+    CheckResult, CodegenBehaviour, CompileContext, CompileUnitV3Result, CranelispError, Defn,
+    DisplayInfo, EvalResult, FQSymbol, ModuleFullPath, ModuleStrategy, ModuleStructure,
+    Program, Span, Symbol, TopLevel, TraitName, Type, TypeName, Warning,
 };
 
 use cranelisp_backend::cache;
@@ -235,6 +236,175 @@ impl CompilationSession {
 
         result
     }
+}
+
+// ---------------------------------------------------------------------------
+// compile_unit_v3 — pipeline-v3.md §3 target
+//
+// Differences from current compile_unit:
+// - Enqueues codegen internally (caller doesn't call send_codegen)
+// - For Additive with definitions, saves the module file (§7.5)
+// - Returns Option<Form> (display info), not CompileUnitResult
+// - Cache-hit dependencies enqueue FromCache (no inline JIT)
+//
+// This coexists with compile_unit until all callers are migrated,
+// then compile_unit is deleted and this is renamed.
+// ---------------------------------------------------------------------------
+
+impl CompilationSession {
+}
+
+// ---------------------------------------------------------------------------
+// compile_unit on CompilerSessionV3 — pipeline-v3.md §3
+// ---------------------------------------------------------------------------
+
+impl crate::session::CompilerSessionV3 {
+    /// Pipeline v3 compile_unit (pipeline-v3.md §3).
+    ///
+    /// Stages 1-5 on the calling thread. Enqueues codegen to the worker
+    /// pool internally. Does not JIT, does not execute.
+    ///
+    /// Returns EvalResults for display + warnings. Codegen is already
+    /// enqueued — the caller does not call send/enqueue_codegen.
+    ///
+    /// For Additive strategy with definitions, saves the accumulated module
+    /// to `{project_root}/{module}.cl` as a side effect (§7.5).
+    pub fn compile_unit(
+        &self,
+        source: &str,
+        ctx: &CompileContext,
+        strategy: ModuleStrategy,
+    ) -> Result<CompileUnitV3Result, CranelispError> {
+        let mut compile_stack = Vec::new();
+        self.compile_unit_with_stack(source, ctx, strategy, &mut compile_stack)
+    }
+
+    fn compile_unit_with_stack(
+        &self,
+        source: &str,
+        ctx: &CompileContext,
+        strategy: ModuleStrategy,
+        compile_stack: &mut Vec<ModuleFullPath>,
+    ) -> Result<CompileUnitV3Result, CranelispError> {
+        check_cycle_stack(compile_stack, &ctx.module)?;
+        compile_stack.push(ctx.module.clone());
+        let result = self.compile_unit_inner(source, ctx, strategy, compile_stack);
+        compile_stack.pop();
+        result
+    }
+
+    fn compile_unit_inner(
+        &self,
+        source: &str,
+        ctx: &CompileContext,
+        strategy: ModuleStrategy,
+        compile_stack: &mut Vec<ModuleFullPath>,
+    ) -> Result<CompileUnitV3Result, CranelispError> {
+        // --- Stage 1: Parse ---
+        let sexps = cranelisp_frontend::parse(source)?;
+
+        // --- Stagthjie 2: Extract module declarations ---
+        let (structure, remaining) = cranelisp_frontend::extract_module_declarations(
+            ctx.module.clone(),
+            None,
+            sexps,
+        )?;
+
+        for each of the dependencies in when
+
+
+        // --- Stage 2a: Platform loading (pipeline-v3.md §3.3) ---
+        // Platforms are loaded as synthetic modules in the typechecker
+        // (like `primitives`). Must happen before dependency loading.
+        for platform_spec in &structure.platform_specs {
+            todo!("load platform as synthetic module in tc");
+        }
+
+        // --- Stage 2b: Dependency graph ---
+        // Register import edges in module_deps (even if later stages fail).
+        // This is essential for file watcher cascade recompilation.
+        {
+            let mut deps = self.module_deps.lock().unwrap();
+            for import_spec in &structure.import_specs {
+                deps.register_edge(&ctx.module, &import_spec.module_path);
+            }
+            // Register file→module mapping.
+            // TODO: resolve file path for this module and register.
+        }
+
+        // --- Stage 2c: Dependency loading ---
+        // For each unresolved import: already loaded → skip,
+        // cache hit → enqueue FromCache, cache miss → recursive compile_unit.
+        // Prelude is just another dependency — loaded here if not present.
+        todo!("load_dependencies_v3");
+
+        // --- Stage 2d: Import/export registration ---
+        if !structure.import_specs.is_empty() {
+            self.tc.register_imports(&structure.import_specs)?;
+        }
+        if !structure.export_specs.is_empty() {
+            self.tc.register_exports(&structure.export_specs)?;
+        }
+
+        // --- Stage 2e: Prelude injection ---
+        let prelude_path = ModuleFullPath::from("prelude");
+        if self.tc.has_module(&prelude_path) && ctx.module != prelude_path {
+            todo!("inject_prelude_import on tc");
+        }
+
+        // --- Stage 3: Expand ---
+        // defmacro interception, macro expansion, begin-flatten.
+        todo!("process_forms_sequentially equivalent");
+
+        // --- Stage 4: Build AST ---
+        // let program = cranelisp_frontend::build_program(&accumulated, &self.expander)?;
+
+        // Stage 4b: Bind chain analysis.
+        // apply_bind_chain_analysis if scheduling_registry non-empty.
+
+        // --- Stage 5: Typecheck ---
+        // let check_result = self.tc.check(&program, ctx, strategy)?;
+
+        // --- Enqueue codegen (pipeline-v3.md §3.2) ---
+        // self.watcher_gate.wait_if_paused();
+        // self.inmem_queue.push(CodegenItem::FromSource { ... });
+
+        // --- Build EvalResults ---
+        // let eval_results = build_eval_results(&program, &ctx.module, &check_result.display);
+
+        // --- §7.5: Session persistence ---
+        // if strategy == Additive && has_definitions { save module file }
+
+        // Ok(CompileUnitV3Result { results: eval_results, warnings })
+    }
+}
+
+/// Build EvalResult entries from the program's top-level forms.
+/// Called before the program is moved into the CodegenItem.
+fn build_eval_results(
+    program: &[TopLevel],
+    module: &ModuleFullPath,
+    display: &Option<DisplayInfo>,
+) -> Vec<EvalResult> {
+    program.iter().map(|tl| match tl {
+        TopLevel::Defn(defn) => EvalResult::Defn(FQSymbol {
+            module: module.clone(),
+            symbol: defn.name.clone(),
+        }),
+        TopLevel::TypeDef { name, .. } => EvalResult::DefType(name.clone()),
+        TopLevel::TraitDecl(td) => EvalResult::DefTrait(td.name.clone()),
+        TopLevel::TraitImpl(ti) => EvalResult::Impl {
+            trait_name: ti.trait_name.clone(),
+            target_type: ti.target_type.clone(),
+        },
+        TopLevel::Expr(_) => {
+            if let Some(di) = display {
+                EvalResult::Expr { ty: di.ty.clone(), scheme: di.scheme.clone() }
+            } else {
+                EvalResult::Nothing
+            }
+        }
+    }).collect()
 }
 
 /// Inner implementation of `compile_unit()`, separated so the compile_stack

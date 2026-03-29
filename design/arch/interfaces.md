@@ -1041,15 +1041,76 @@ pub const NULLARY_TAG_THRESHOLD: usize = 1024;
 
 No changes from v1.
 
+### Per-Module GOT Registry (new — see `design/backend/per-module-got.md`)
+
+```rust
+/// Identifies a function's GOT location: which module's GOT and which slot.
+///
+/// Used in CodegenItem/CodegenPacket and cache metadata to communicate
+/// GOT assignments from the integration layer to codegen workers.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FnSlotEntry {
+    /// The module that owns the GOT containing this function's slot.
+    pub module: ModuleFullPath,
+    /// Slot index within that module's GOT.
+    pub slot_index: usize,
+}
+
+/// Registry of per-module GOT tables for the JIT path.
+///
+/// Each module gets its own `ModuleCodegenState` with its own `GotTable`.
+/// Slot indices are local to each module — slot 0 in module A is
+/// independent of slot 0 in module B.
+///
+/// Lives on `InMemWorkerState` (replaces the flat `got_state` field).
+pub struct ModuleGotRegistry {
+    module_gots: HashMap<ModuleFullPath, ModuleCodegenState>,
+}
+```
+
+`InMemWorkerState.got_state: ModuleCodegenState` becomes `InMemWorkerState.got_registry: ModuleGotRegistry`.
+
 ### GOT as persistent session state
 
-`ModuleCodegenState` is persistent session state, not a pipeline output. GOT slot assignments live in `def_codegen: HashMap<Symbol, DefCodegen>` and are assigned when functions are first registered (during typecheck or when a new definition is encountered). By the time codegen runs, all slot indices are stable — compiled code has the slot index hardcoded as an immediate offset from the GOT base pointer.
+Each `ModuleCodegenState` is persistent session state for one module. GOT slot assignments live in `def_codegen: HashMap<Symbol, DefCodegen>` and are assigned when functions are first registered. Slot indices are **local to the module** — slot 0 in module A and slot 0 in module B are in different `GotTable` allocations.
 
-The `ensure_slot_for(name)` method reuses existing slots and allocates new ones at the end. Slots never move. This stability invariant enables both parallel codegen (multiple modules read stable slot indices concurrently) and incremental recompilation (recompiled function gets the same slot, new code pointer written in, all GOT-indirect callers see it automatically).
+The `ensure_slot_for(name)` method reuses existing slots and allocates new ones at the end. Slots never move. This stability invariant enables both parallel codegen (each module's GOT is independent, no contention) and incremental recompilation (recompiled function gets the same slot, new code pointer written in, all GOT-indirect callers see it automatically).
 
-There is no separate `GotSlotMap` type — the GOT slot information is `ModuleCodegenState` itself. See `pipeline-v2.md` §12.5 for how this enables parallel codegen.
+### Cross-module GOT references
 
-**Thread safety for parallel codegen (future):** See `pipeline-v2.md` §12.5.3 for the thread safety analysis. The key types shared during parallel codegen are `CheckResult` and `Program` (both `Send + Sync` automatic, read-only). Each codegen task creates its own `Jit` instance. Code pointer writes into `ModuleCodegenState` happen sequentially after all codegen finishes.
+When compiling module B that imports function `f` from module A, the compiler needs `(got_base_ptr_of_A, slot_index_of_f_in_A)`. This is provided via `CrossModuleGot`:
+
+```rust
+/// Cross-module GOT mapping: (defining_module, function_name) -> (got_base_ptr, slot_index).
+pub type CrossModuleGot = HashMap<(ModuleFullPath, Symbol), (i64, usize)>;
+```
+
+This type already exists in `compiler/mod.rs` and is already handled by `CompileContext.cross_module_got` and `resolve_got_entry()` in `apply.rs`. The per-module GOT change populates it (currently always `None`).
+
+### `CodegenPacket` GOT fields (updated)
+
+```rust
+pub struct CodegenPacket {
+    // ... other fields unchanged ...
+
+    /// GOT slot map for this module's own functions.
+    /// Maps function name -> slot index within this module's GOT.
+    pub local_got_slots: HashMap<Symbol, usize>,
+
+    /// GOT base pointer for this module's own GOT table.
+    pub local_got_base: i64,
+
+    /// Cross-module GOT for imported functions.
+    pub cross_module_got: CrossModuleGot,
+
+    /// Shared GOT table for THIS MODULE's atomic code pointer writes.
+    pub shared_got: Option<Arc<GotTable>>,
+
+    // REMOVED: got_slot_map: HashMap<Symbol, usize>  (was flat across all modules)
+}
+```
+
+**Thread safety for parallel codegen:** Each codegen worker receives its module's `Arc<GotTable>` and writes code pointers atomically to its own module's slots. No contention between workers compiling different modules. `CheckResult` and `Program` are `Send + Sync` (read-only). Each worker creates its own `Jit` instance. See `design/backend/per-module-got.md` for full design.
 
 ---
 
@@ -1249,6 +1310,8 @@ impl TypeChecker {
 - `CompileContext` — explicit compilation context (module target, strategy, compile mode)
 - `ModuleStrategy` — additive vs replacement module compilation
 - ~~`GotSlotMap`~~ — removed. GOT slot assignments are persistent session state in `ModuleCodegenState`, not a pipeline output. See `pipeline-v2.md` §12.5.
+- `FnSlotEntry { module: ModuleFullPath, slot_index: usize }` — identifies a function's GOT location (which module's GOT, which slot). See `design/backend/per-module-got.md`.
+- `ModuleGotRegistry` — per-module GOT table registry, replaces flat `InMemWorkerState.got_state`. Lives in `cranelisp-backend`.
 
 ### Types NOT added
 - ~~`CheckMode`~~ — eliminated during design review. The multi-pass pipeline works identically on any input size. See `pipeline-v2.md` §5.

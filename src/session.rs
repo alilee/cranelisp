@@ -567,6 +567,118 @@ impl ModuleDependencyGraph {
 /// the typechecker, macro expander, GOT state, JIT lifetime management,
 /// and platform symbols.
 ///
+// ---------------------------------------------------------------------------
+// CompilerSessionV3 — pipeline-v3.md §5 target
+//
+// Coexists with CompilationSession until all callers are migrated.
+// compile_unit_v3 builds against this struct.
+// ---------------------------------------------------------------------------
+
+/// Pipeline v3 session (pipeline-v3.md §5.1).
+///
+/// compile_unit touches only pipeline core + queues.
+/// Workers own their state ��� session never touches it.
+/// Platforms are modules in the typechecker (like `primitives`).
+pub struct CompilerSessionV3 {
+    // --- Pipeline core (stages 1-5) ---
+    // compile_unit reads/writes only these fields.
+
+    /// Type checker. Owns all module symbol tables, type defs, trait registries.
+    /// Platforms are loaded as synthetic modules (like `primitives`).
+    /// `check()` takes `&self` — internal RwLocks on persistent fields.
+    pub tc: cranelisp_typecheck::TypeChecker,
+
+    /// Macro expander. Internal RwLock — expand is &self, compile_macro is &self+write lock.
+    pub expander: CraneliftExpander,
+
+    /// Module dependency graph: forward/reverse edges + file→module mapping.
+    /// Populated at stage 2b of every compile_unit call.
+    pub module_deps: Mutex<ModuleDependencyGraph>,
+
+    /// Scheduling class registry for bind chain independence analysis.
+    /// Populated during platform module loading.
+    pub scheduling_registry: Mutex<crate::bind_chain_analysis::SchedulingRegistry>,
+
+    // --- Codegen queues ---
+    // compile_unit pushes; workers drain. Producer-consumer via CodegenQueue.
+
+    /// In-memory codegen queue. Workers pop, JIT-compile, write to module GOTs.
+    pub inmem_queue: CodegenQueue,
+
+    /// Object-file codegen queue. Workers pop, compile to .o, write to disk.
+    pub object_queue: CodegenQueue,
+
+    // --- Watcher control ---
+    // Pauses codegen enqueuing during REPL eval for GOT stability.
+
+    /// When set, compile_unit defers enqueuing — items held until resumed.
+    /// Uses Condvar so resume wakes blocked compile_unit calls (no busy-wait).
+    watcher_gate: WatcherGate,
+
+    // --- Session config (read-only after construction) ---
+
+    pub settings: Settings,
+
+    /// Project root directory. Derived from entry module path.
+    pub project_root: PathBuf,
+
+    /// Directories to search when resolving module imports.
+    pub lib_dirs: Vec<PathBuf>,
+
+    /// Shared ISA for codegen workers. Built once, Arc::clone per worker.
+    pub shared_isa: std::sync::Arc<dyn cranelisp_backend::TargetIsa>,
+}
+
+/// Session settings (pipeline-v3.md §11).
+#[allow(dead_code)]
+pub struct Settings {
+    pub no_color: bool,
+    pub no_cache: bool,
+}
+
+/// Watcher gate — controls codegen enqueuing pause/resume without busy-wait.
+///
+/// When paused, compile_unit's enqueue step blocks on the condvar until
+/// resumed. resume wakes all blocked enqueue calls.
+pub struct WatcherGate {
+    paused: Mutex<bool>,
+    condvar: Condvar,
+}
+
+impl WatcherGate {
+    pub fn new() -> Self {
+        WatcherGate {
+            paused: Mutex::new(false),
+            condvar: Condvar::new(),
+        }
+    }
+
+    /// Pause codegen enqueuing. Blocks any enqueue call until resumed.
+    pub fn pause(&self) {
+        *self.paused.lock().unwrap() = true;
+    }
+
+    /// Resume codegen enqueuing. Wakes all blocked enqueue calls.
+    pub fn resume(&self) {
+        *self.paused.lock().unwrap() = false;
+        self.condvar.notify_all();
+    }
+
+    /// Wait until not paused, then return. Non-blocking if already unpaused.
+    pub fn wait_if_paused(&self) {
+        let guard = self.paused.lock().unwrap();
+        if *guard {
+            let _guard = self.condvar.wait_while(guard, |paused| *paused).unwrap();
+        }
+    }
+}
+
+// No worker state on the session. Workers own their state:
+// - InMemWorkerState (GOT per module, Jit instances) — owned by inmem worker threads
+// - ObjectWorkerState (cache dir, .o paths) — owned by object worker threads
+// Worker threads are spawned by spawn_hot_inmem_codegen / spawn_nice_object_codegen
+// and joined by hot_flush / shutdown.
+
 /// Fields are grouped into sub-structs by pipeline role:
 /// - `inmem_worker`: GOT state, JIT lifetimes, trace support (codegen path)
 /// - `object_worker`: cache writing, .o paths, module structures (codegen path)
