@@ -90,7 +90,7 @@ pub struct ReplResult {
 /// REPL-specific concerns: display metadata, slash commands, trace state,
 /// introspection, platform DLL lifetimes.
 pub struct ReplSession {
-    /// Shared compilation core (typechecker, GOT, expander, JIT lifetimes).
+    /// Shared compilation core (typechecker, GOT, macro env, JIT lifetimes).
     pub core: crate::session::CompilationSession,
     /// Accumulated type definitions from all inputs (for ADT value display).
     type_defs: HashMap<TypeName, TypeDefInfo>,
@@ -369,10 +369,7 @@ impl ReplSession {
         }
 
         // Build program AST from accumulated (expanded) sexps.
-        let program = cranelisp_frontend::build_program(
-            &accumulated,
-            &self.core.expander,
-        )?;
+        let program = cranelisp_frontend::build_program(&accumulated)?;
 
         if program.is_empty() {
             self.current_module_structure = structure;
@@ -939,10 +936,7 @@ impl ReplSession {
     /// into a single `Expr::Annotate`, then typechecks and executes via codegen_and_execute.
     fn eval_annotation_expr(&mut self, sexps: Vec<Sexp>) -> Result<ReplResult, CranelispError> {
         let eval_start = Instant::now();
-        let input = cranelisp_frontend::build_repl_input_from_sexps(
-            &sexps,
-            &self.core.expander,
-        )?;
+        let input = cranelisp_frontend::build_repl_input_from_sexps(&sexps)?;
         let ctx = self.build_repl_compile_context();
         let check_result = self.core.tc.check(std::slice::from_ref(&input), &ctx, ModuleStrategy::Additive)?;
 

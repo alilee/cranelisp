@@ -10,7 +10,7 @@
 use std::collections::HashSet;
 
 use cranelisp_types::{
-    CranelispError, ConstructorDef, Defn, DefnVariant, Expr, FieldDef, MacroExpander, MatchArm,
+    CranelispError, ConstructorDef, Defn, DefnVariant, Expr, FieldDef, MatchArm,
     Pattern, Program, Sexp, Span, Symbol, TopLevel, TraitDecl, TraitImpl,
     TraitMethodSig, TraitName, TypeExpr, TypeName, Visibility,
 };
@@ -88,12 +88,11 @@ fn parse_def_visibility(head: &str) -> Option<(&str, Visibility)> {
 /// Each sexp must be a top-level form (`defn`, `deftype`, `deftrait`, `impl`).
 pub fn build_program(
     sexps: &[Sexp],
-    expander: &dyn MacroExpander,
 ) -> Result<Program, CranelispError> {
     sexps
         .iter()
         .filter(|s| !matches!(s, Sexp::Comment(_, _)))
-        .map(|s| build_top_level(s, expander))
+        .map(build_top_level)
         .collect()
 }
 
@@ -104,21 +103,20 @@ pub fn build_program(
 /// Falls through to single-sexp handling for all other cases.
 pub fn build_repl_input_from_sexps(
     sexps: &[Sexp],
-    expander: &dyn MacroExpander,
 ) -> Result<TopLevel, CranelispError> {
     if sexps.is_empty() {
         return Err(parse_err("expected expression", Span::SYNTHETIC));
     }
     // Handle top-level annotation: `:Type expr` or `:(T a) expr`
     if sexps.len() > 1 {
-        let args = build_args_with_annotations(sexps, expander)?;
+        let args = build_args_with_annotations(sexps)?;
         if args.len() == 1 {
             return Ok(TopLevel::Expr(args.into_iter().next().unwrap()));
         }
         // Multiple non-annotation sexps — error (expected single expression)
         return Err(parse_err("expected single expression", sexps[1].span()));
     }
-    build_repl_input(&sexps[0], expander)
+    build_repl_input(&sexps[0])
 }
 
 /// Build REPL input from a single S-expression.
@@ -126,7 +124,6 @@ pub fn build_repl_input_from_sexps(
 /// Accepts top-level forms and bare expressions (returns `TopLevel::Expr` for the latter).
 pub fn build_repl_input(
     sexp: &Sexp,
-    expander: &dyn MacroExpander,
 ) -> Result<TopLevel, CranelispError> {
     // Try top-level forms first, fall back to expression
     match sexp {
@@ -140,20 +137,13 @@ pub fn build_repl_input(
 
                 // impl has no private variant
                 if head == "impl" {
-                    return build_trait_impl(children, *span, expander);
-                }
-
-                // Check if head is a macro (I3: match what build_top_level does)
-                if expander.is_macro(head) {
-                    let expanded =
-                        expander.expand(&head.as_str().into(), &children[1..], *span)?;
-                    return build_repl_input(&expanded, expander);
+                    return build_trait_impl(children, *span);
                 }
 
                 // Check for definition forms with visibility
                 if let Some((base, vis)) = parse_def_visibility(head) {
                     return match base {
-                        "defn" => build_defn(children, *span, vis, expander),
+                        "defn" => build_defn(children, *span, vis),
                         "deftype" => build_deftype(children, *span, vis),
                         "deftrait" => build_deftrait(children, *span, vis),
                         _ => unreachable!("invariant: parse_def_visibility returns known base"),
@@ -164,7 +154,7 @@ pub fn build_repl_input(
         _ => {}
     }
     // Fall through to expression
-    let expr = build_expr(sexp, expander)?;
+    let expr = build_expr(sexp)?;
     Ok(TopLevel::Expr(expr))
 }
 
@@ -241,7 +231,6 @@ fn reject_non_ring0_symbol(name: &str, span: Span) -> Result<(), CranelispError>
 
 fn build_top_level(
     sexp: &Sexp,
-    expander: &dyn MacroExpander,
 ) -> Result<TopLevel, CranelispError> {
     match sexp {
         Sexp::List(children, span) if !children.is_empty() => {
@@ -252,20 +241,10 @@ fn build_top_level(
                 // Reject non-Ring-0 top-level forms
                 reject_non_ring0_toplevel(head, *head_span)?;
 
-                // Check if head is a macro
-                if expander.is_macro(head) {
-                    let expanded = expander.expand(
-                        &head.as_str().into(),
-                        &children[1..],
-                        *span,
-                    )?;
-                    return build_top_level(&expanded, expander);
-                }
-
                 // Check for definition forms with visibility
                 if let Some((base, vis)) = parse_def_visibility(head) {
                     return match base {
-                        "defn" => build_defn(children, *span, vis, expander),
+                        "defn" => build_defn(children, *span, vis),
                         "deftype" => build_deftype(children, *span, vis),
                         "deftrait" => build_deftrait(children, *span, vis),
                         _ => unreachable!("invariant: parse_def_visibility returns known base"),
@@ -274,16 +253,16 @@ fn build_top_level(
 
                 // impl has no private variant
                 if head == "impl" {
-                    return build_trait_impl(children, *span, expander);
+                    return build_trait_impl(children, *span);
                 }
             }
             // Fall through to expression for unknown list forms
-            let expr = build_expr(sexp, expander)?;
+            let expr = build_expr(sexp)?;
             Ok(TopLevel::Expr(expr))
         }
         _ => {
             // Non-list sexp: treat as expression
-            let expr = build_expr(sexp, expander)?;
+            let expr = build_expr(sexp)?;
             Ok(TopLevel::Expr(expr))
         }
     }
@@ -297,7 +276,6 @@ fn build_defn(
     children: &[Sexp],
     span: Span,
     visibility: Visibility,
-    expander: &dyn MacroExpander,
 ) -> Result<TopLevel, CranelispError> {
     // (defn name "doc"? [params] body)      -- single
     // (defn name "doc"? ([p] b) ([p] b))    -- multi
@@ -320,7 +298,7 @@ fn build_defn(
             if body_start >= children.len() {
                 return Err(parse_err("defn missing body", span));
             }
-            let (body, consumed) = build_one_expr_at(children, body_start, expander)?;
+            let (body, consumed) = build_one_expr_at(children, body_start)?;
             if body_start + consumed != children.len() {
                 return Err(parse_err("defn has extra forms after body", span));
             }
@@ -334,7 +312,7 @@ fn build_defn(
         Sexp::List(..) => {
             children[next..]
                 .iter()
-                .map(|s| build_defn_variant(s, expander))
+                .map(build_defn_variant)
                 .collect::<Result<Vec<_>, _>>()?
         }
         _ => return Err(parse_err(
@@ -361,14 +339,13 @@ fn get_defn_name(sexp: &Sexp) -> Result<Symbol, CranelispError> {
 
 fn build_defn_variant(
     sexp: &Sexp,
-    expander: &dyn MacroExpander,
 ) -> Result<DefnVariant, CranelispError> {
     let (children, span) = expect_list(sexp)?;
     if children.len() != 2 {
         return Err(parse_err("defn variant requires params and body", span));
     }
     let (params, param_annotations) = build_annotated_params(&children[0])?;
-    let body = build_expr(&children[1], expander)?;
+    let body = build_expr(&children[1])?;
     Ok(DefnVariant {
         params,
         param_annotations,
@@ -772,7 +749,6 @@ fn build_method_sig(
 fn build_trait_impl(
     children: &[Sexp],
     span: Span,
-    expander: &dyn MacroExpander,
 ) -> Result<TopLevel, CranelispError> {
     // (impl TraitName impl_target method_def+)
     // impl_target = Type | (Type :Constraint var ...)
@@ -792,7 +768,7 @@ fn build_trait_impl(
 
     let methods = children[3..]
         .iter()
-        .map(|s| build_impl_method(s, expander))
+        .map(build_impl_method)
         .collect::<Result<Vec<_>, _>>()?;
 
     Ok(TopLevel::TraitImpl(TraitImpl {
@@ -877,7 +853,6 @@ fn build_impl_target(
 /// (defn method_name [params] body)
 fn build_impl_method(
     sexp: &Sexp,
-    expander: &dyn MacroExpander,
 ) -> Result<Defn, CranelispError> {
     let (children, span) = expect_list(sexp)?;
     if children.is_empty() {
@@ -895,7 +870,7 @@ fn build_impl_method(
     }
     let name = get_defn_name(&children[1])?;
     let (params, param_annotations) = build_annotated_params(&children[2])?;
-    let body = build_expr(&children[3], expander)?;
+    let body = build_expr(&children[3])?;
 
     Ok(Defn {
         name,
@@ -915,7 +890,7 @@ fn build_impl_method(
 // Expression builders
 // ---------------------------------------------------------------------------
 
-fn build_expr(sexp: &Sexp, expander: &dyn MacroExpander) -> Result<Expr, CranelispError> {
+fn build_expr(sexp: &Sexp) -> Result<Expr, CranelispError> {
     match sexp {
         Sexp::Int(v, span) => Ok(Expr::IntLit {
             value: *v,
@@ -940,8 +915,8 @@ fn build_expr(sexp: &Sexp, expander: &dyn MacroExpander) -> Result<Expr, Craneli
                 span: *span,
             })
         }
-        Sexp::List(children, span) => build_list_expr(children, *span, expander),
-        Sexp::Bracket(children, span) => build_vec_lit(children, *span, expander),
+        Sexp::List(children, span) => build_list_expr(children, *span),
+        Sexp::Bracket(children, span) => build_vec_lit(children, *span),
         Sexp::Comment(_, span) => Err(CranelispError::ParseError {
             message: "unexpected comment in expression position".to_string(),
             span: *span,
@@ -952,7 +927,6 @@ fn build_expr(sexp: &Sexp, expander: &dyn MacroExpander) -> Result<Expr, Craneli
 fn build_list_expr(
     children: &[Sexp],
     span: Span,
-    expander: &dyn MacroExpander,
 ) -> Result<Expr, CranelispError> {
     if children.is_empty() {
         return Err(parse_err("empty application", span));
@@ -961,10 +935,10 @@ fn build_list_expr(
     // Check if first child is a keyword symbol
     if let Sexp::Symbol(head, head_span) = &children[0] {
         match head.as_str() {
-            "let" => return build_let(children, span, expander),
-            "if" => return build_if(children, span, expander),
-            "fn" | "lambda" => return build_fn(children, span, expander),
-            "match" => return build_match(children, span, expander),
+            "let" => return build_let(children, span),
+            "if" => return build_if(children, span),
+            "fn" | "lambda" => return build_fn(children, span),
+            "match" => return build_match(children, span),
             // Reader-macro forms — should be handled by the expander before reaching AST builder
             "quote" => {
                 return Err(parse_err("unexpected quote form — should have been expanded", *head_span))
@@ -991,23 +965,20 @@ fn build_list_expr(
             // NOTE: `trace` is NOT a parser keyword. It has regular call syntax
             // and flows through the module system as a name in `primitives`.
             // The typechecker handles it when the callee resolves to a special form.
-            "run-tests" => return build_run_tests(children, span, expander),
+            "run-tests" => return build_run_tests(children, span),
             "vec" => return Err(parse_err("vec literals not yet supported (Ring 1)", *head_span)),
             "par-let" => {
                 return Err(parse_err("par-let not yet supported (Ring 4)", *head_span))
             }
-            _ => {
-                // Check for macros
-                if expander.is_macro(head) {
-                    let expanded = expander.expand(&head.as_str().into(), &children[1..], span)?;
-                    return build_expr(&expanded, expander);
-                }
-            }
+            // If an unexpanded macro call reaches here, it will be treated as a
+            // regular function application and fail at typecheck. All callers
+            // should expand macros before calling the AST builder.
+            _ => {}
         }
     }
 
     // Generic Apply
-    build_apply(children, span, expander)
+    build_apply(children, span)
 }
 
 // ---------------------------------------------------------------------------
@@ -1017,16 +988,15 @@ fn build_list_expr(
 fn build_run_tests(
     children: &[Sexp],
     span: Span,
-    expander: &dyn MacroExpander,
 ) -> Result<Expr, CranelispError> {
     // (run-tests init pass-fn fail-fn)
     // (run-tests [mod1 mod2] init pass-fn fail-fn)
     match children.len() {
         4 => {
             // (run-tests init pass-fn fail-fn)
-            let init = build_expr(&children[1], expander)?;
-            let pass_fn = build_expr(&children[2], expander)?;
-            let fail_fn = build_expr(&children[3], expander)?;
+            let init = build_expr(&children[1])?;
+            let pass_fn = build_expr(&children[2])?;
+            let fail_fn = build_expr(&children[3])?;
             Ok(Expr::RunTests {
                 modules: vec![],
                 init: Box::new(init),
@@ -1045,9 +1015,9 @@ fn build_run_tests(
                     Ok(Symbol::from(name))
                 })
                 .collect::<Result<Vec<_>, CranelispError>>()?;
-            let init = build_expr(&children[2], expander)?;
-            let pass_fn = build_expr(&children[3], expander)?;
-            let fail_fn = build_expr(&children[4], expander)?;
+            let init = build_expr(&children[2])?;
+            let pass_fn = build_expr(&children[3])?;
+            let fail_fn = build_expr(&children[4])?;
             Ok(Expr::RunTests {
                 modules,
                 init: Box::new(init),
@@ -1066,10 +1036,9 @@ fn build_run_tests(
 fn build_apply(
     children: &[Sexp],
     span: Span,
-    expander: &dyn MacroExpander,
 ) -> Result<Expr, CranelispError> {
-    let callee = build_expr(&children[0], expander)?;
-    let args = build_args_with_annotations(&children[1..], expander)?;
+    let callee = build_expr(&children[0])?;
+    let args = build_args_with_annotations(&children[1..])?;
     Ok(Expr::Apply {
         callee: Box::new(callee),
         args,
@@ -1084,15 +1053,14 @@ fn build_apply(
 fn build_let(
     children: &[Sexp],
     span: Span,
-    expander: &dyn MacroExpander,
 ) -> Result<Expr, CranelispError> {
     // (let [name val name val ...] body)
     if children.len() != 3 {
         return Err(parse_err("let requires bindings and body", span));
     }
     let (bracket_items, _) = expect_bracket(&children[1])?;
-    let bindings = build_let_bindings(bracket_items, expander)?;
-    let body = build_expr(&children[2], expander)?;
+    let bindings = build_let_bindings(bracket_items)?;
+    let body = build_expr(&children[2])?;
     Ok(Expr::Let {
         bindings,
         body: Box::new(body),
@@ -1102,7 +1070,6 @@ fn build_let(
 
 fn build_let_bindings(
     items: &[Sexp],
-    expander: &dyn MacroExpander,
 ) -> Result<Vec<(cranelisp_types::Symbol, Expr)>, CranelispError> {
     let mut bindings = Vec::new();
     let mut i = 0;
@@ -1112,7 +1079,7 @@ fn build_let_bindings(
         if i >= items.len() {
             return Err(parse_err("let binding missing value", items[i - 1].span()));
         }
-        let (value, consumed) = build_one_expr_at(items, i, expander)?;
+        let (value, consumed) = build_one_expr_at(items, i)?;
         i += consumed;
         bindings.push((name.into(), value));
     }
@@ -1126,7 +1093,6 @@ fn build_let_bindings(
 fn build_if(
     children: &[Sexp],
     span: Span,
-    expander: &dyn MacroExpander,
 ) -> Result<Expr, CranelispError> {
     // (if cond then else)
     if children.len() != 4 {
@@ -1135,9 +1101,9 @@ fn build_if(
             span,
         ));
     }
-    let cond = build_expr(&children[1], expander)?;
-    let then_branch = build_expr(&children[2], expander)?;
-    let else_branch = build_expr(&children[3], expander)?;
+    let cond = build_expr(&children[1])?;
+    let then_branch = build_expr(&children[2])?;
+    let else_branch = build_expr(&children[3])?;
     Ok(Expr::If {
         cond: Box::new(cond),
         then_branch: Box::new(then_branch),
@@ -1153,14 +1119,13 @@ fn build_if(
 fn build_fn(
     children: &[Sexp],
     span: Span,
-    expander: &dyn MacroExpander,
 ) -> Result<Expr, CranelispError> {
     // (fn [params] body) or (lambda [params] body)
     if children.len() != 3 {
         return Err(parse_err("fn requires param list and body", span));
     }
     let (params, param_annotations) = build_annotated_params(&children[1])?;
-    let body = build_expr(&children[2], expander)?;
+    let body = build_expr(&children[2])?;
     Ok(Expr::Lambda {
         params,
         param_annotations,
@@ -1176,13 +1141,12 @@ fn build_fn(
 fn build_match(
     children: &[Sexp],
     span: Span,
-    expander: &dyn MacroExpander,
 ) -> Result<Expr, CranelispError> {
     // (match scrutinee [pattern body pattern body ...])
     if children.len() != 3 {
         return Err(parse_err("match requires scrutinee and arms", span));
     }
-    let scrutinee = build_expr(&children[1], expander)?;
+    let scrutinee = build_expr(&children[1])?;
     let (bracket_items, bracket_span) = expect_bracket(&children[2])?;
     if bracket_items.len() % 2 != 0 {
         return Err(parse_err(
@@ -1190,7 +1154,7 @@ fn build_match(
             bracket_span,
         ));
     }
-    let arms = build_match_arms(bracket_items, expander)?;
+    let arms = build_match_arms(bracket_items)?;
     Ok(Expr::Match {
         scrutinee: Box::new(scrutinee),
         arms,
@@ -1201,7 +1165,6 @@ fn build_match(
 
 fn build_match_arms(
     items: &[Sexp],
-    expander: &dyn MacroExpander,
 ) -> Result<Vec<MatchArm>, CranelispError> {
     let mut arms = Vec::new();
     let mut i = 0;
@@ -1212,7 +1175,7 @@ fn build_match_arms(
         if i >= items.len() {
             return Err(parse_err("match arm missing body", pat_span));
         }
-        let body = build_expr(&items[i], expander)?;
+        let body = build_expr(&items[i])?;
         let arm_span = Span::new(pat_span.start, items[i].span().end);
         i += 1;
         arms.push(MatchArm {
@@ -1273,9 +1236,8 @@ fn build_pattern(sexp: &Sexp) -> Result<Pattern, CranelispError> {
 fn build_vec_lit(
     children: &[Sexp],
     span: Span,
-    expander: &dyn MacroExpander,
 ) -> Result<Expr, CranelispError> {
-    let elements = build_args_with_annotations(children, expander)?;
+    let elements = build_args_with_annotations(children)?;
     Ok(Expr::VecLit { elements, span })
 }
 
@@ -1328,14 +1290,13 @@ fn parse_annotation_name(name: &str) -> TypeExpr {
 fn build_one_expr_at(
     items: &[Sexp],
     pos: usize,
-    expander: &dyn MacroExpander,
 ) -> Result<(Expr, usize), CranelispError> {
     if let Some((annotation, consumed)) = try_consume_annotation(items, pos) {
         let expr_pos = pos + consumed;
         if expr_pos >= items.len() {
             return Err(parse_err("annotation missing expression", items[pos].span()));
         }
-        let inner = build_expr(&items[expr_pos], expander)?;
+        let inner = build_expr(&items[expr_pos])?;
         let span = Span::new(items[pos].span().start, items[expr_pos].span().end);
         Ok((
             Expr::Annotate {
@@ -1346,7 +1307,7 @@ fn build_one_expr_at(
             consumed + 1,
         ))
     } else {
-        let expr = build_expr(&items[pos], expander)?;
+        let expr = build_expr(&items[pos])?;
         Ok((expr, 1))
     }
 }
@@ -1354,12 +1315,11 @@ fn build_one_expr_at(
 /// Build argument list, handling inline annotations (`:Type expr` -> `Annotate`).
 fn build_args_with_annotations(
     items: &[Sexp],
-    expander: &dyn MacroExpander,
 ) -> Result<Vec<Expr>, CranelispError> {
     let mut args = Vec::new();
     let mut i = 0;
     while i < items.len() {
-        let (expr, consumed) = build_one_expr_at(items, i, expander)?;
+        let (expr, consumed) = build_one_expr_at(items, i)?;
         args.push(expr);
         i += consumed;
     }
@@ -1478,26 +1438,22 @@ fn build_type_expr_from_list(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use cranelisp_types::NoOpExpander;
 
     fn parse_and_build_program(input: &str) -> Result<Program, CranelispError> {
         let sexps = crate::reader::parse(input)?;
-        let mut expander = NoOpExpander;
-        build_program(&sexps, &mut expander)
+        build_program(&sexps)
     }
 
     fn parse_and_build_repl(input: &str) -> Result<TopLevel, CranelispError> {
         let sexps = crate::reader::parse(input)?;
         assert!(!sexps.is_empty(), "expected at least one sexp");
-        let mut expander = NoOpExpander;
-        build_repl_input(&sexps[0], &mut expander)
+        build_repl_input(&sexps[0])
     }
 
     fn parse_and_build_expr(input: &str) -> Result<Expr, CranelispError> {
         let sexps = crate::reader::parse(input)?;
         assert!(!sexps.is_empty(), "expected at least one sexp");
-        let mut expander = NoOpExpander;
-        build_expr(&sexps[0], &mut expander)
+        build_expr(&sexps[0])
     }
 
     // -- Literals --

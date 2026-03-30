@@ -47,6 +47,15 @@ pub struct ModuleState {
 
     /// Error that caused this module to fail, if any.
     pub error: Option<CranelispError>,
+
+    /// Form index to resume from when unblocked.
+    /// None = start from the beginning (fresh module).
+    pub resume_from_form: Option<usize>,
+
+    /// Module this module is currently blocked on (forward edge).
+    /// Set when entering TypecheckBlocked, cleared when unblocked.
+    /// Used for cycle detection.
+    pub blocked_on: Option<ModuleFullPath>,
 }
 
 impl ModuleState {
@@ -58,6 +67,8 @@ impl ModuleState {
             inmem_done: false,
             object_done: false,
             error: None,
+            resume_from_form: None,
+            blocked_on: None,
         }
     }
 
@@ -73,6 +84,8 @@ impl ModuleState {
             inmem_done: false,
             object_done: true,
             error: None,
+            resume_from_form: None,
+            blocked_on: None,
         }
     }
 }
@@ -210,11 +223,20 @@ impl CompileScheduler {
 
     /// Add a module to the scheduler.
     /// Enters TypecheckFirst if `delays_other` is true, otherwise TypecheckNext.
+    ///
+    /// Idempotent: if the module is already registered, this is a no-op.
+    /// This handles the case where multiple import specs reference the
+    /// same dependency module (F2 fix).
     pub fn register_module(
         &mut self,
         module: ModuleFullPath,
         delays_other: bool,
     ) {
+        // Idempotent: skip if already registered.
+        if self.state.modules.contains_key(&module) {
+            return;
+        }
+
         let pool = if delays_other {
             ModulePool::TypecheckFirst
         } else {
@@ -302,17 +324,47 @@ impl CompileScheduler {
     /// Typechecking needs a symbol from another module that hasn't
     /// been typechecked yet. Moves the current module to TypecheckBlocked.
     /// Adds a WaitKind::Typecheck waiter on the target symbol.
+    /// Sets `blocked_on` for cycle detection.
+    ///
+    /// Returns Err if a circular dependency is detected.
     pub fn block_for_typecheck(
         &mut self,
         module: &ModuleFullPath,
         needed_module: &ModuleFullPath,
         needed_symbol: &Symbol,
-    ) {
+    ) -> Result<(), CranelispError> {
         self.set_pool(module, ModulePool::TypecheckBlocked);
+
+        // Record the forward edge for cycle detection.
+        if let Some(ms) = self.state.modules.get_mut(module) {
+            ms.blocked_on = Some(needed_module.clone());
+        }
+
+        // Check for cycles before adding the waiter.
+        if let Some(cycle) = self.detect_cycle(module) {
+            let cycle_str = cycle.iter()
+                .map(|m| m.to_string())
+                .collect::<Vec<_>>()
+                .join(" -> ");
+            let msg = format!("circular dependency detected: {}", cycle_str);
+            // Fail the module in the scheduler.
+            self.notify_module_failed(module, CranelispError::ModuleError {
+                message: msg.clone(),
+                file: None,
+                span: Span::SYNTHETIC,
+            });
+            return Err(CranelispError::ModuleError {
+                message: msg,
+                file: None,
+                span: Span::SYNTHETIC,
+            });
+        }
+
         self.add_waiter(needed_module, needed_symbol, Waiter {
             module: module.clone(),
             need: WaitKind::Typecheck,
         });
+        Ok(())
     }
 
     /// Typechecking hit a macro expansion that needs codegenned symbols.
@@ -341,9 +393,40 @@ impl CompileScheduler {
 
     /// All forms in the module have been typechecked.
     /// Moves module from TypecheckWorking to TypecheckDone.
+    ///
+    /// Sweeps all remaining WaitKind::Typecheck waiters on this module
+    /// and unblocks them. This handles glob imports where the waiter
+    /// blocked on "*" and needs the whole module done.
     pub fn notify_typecheck_done(&mut self, module: &ModuleFullPath) {
         self.set_pool(module, ModulePool::TypecheckDone);
         self.state.typecheck_done.push_back(module.clone());
+
+        // Sweep: collect all modules waiting for typecheck on any symbol
+        // in this module, then clear those waiters and unblock.
+        let all_waiters: Vec<ModuleFullPath> = if let Some(ms) = self.state.modules.get_mut(module) {
+            let waiters: Vec<ModuleFullPath> = ms.waiters
+                .values()
+                .flat_map(|ws| ws.iter())
+                .filter(|w| w.need == WaitKind::Typecheck)
+                .map(|w| w.module.clone())
+                .collect();
+            // Remove typecheck waiters (keep codegen waiters).
+            ms.waiters.retain(|_, ws| {
+                ws.retain(|w| w.need != WaitKind::Typecheck);
+                !ws.is_empty()
+            });
+            waiters
+        } else {
+            Vec::new()
+        };
+
+        // Unblock each waiting module and clear its blocked_on edge.
+        for waiter_module in all_waiters {
+            if let Some(ws) = self.state.modules.get_mut(&waiter_module) {
+                ws.blocked_on = None;
+            }
+            self.try_unblock(&waiter_module);
+        }
     }
 
     /// A module has failed (parse, type, macro, or codegen error).
@@ -517,6 +600,11 @@ impl CompileScheduler {
         self.state.modules.get(module)
     }
 
+    /// Get mutable module state for a module, if registered.
+    pub fn module_state_mut(&mut self, module: &ModuleFullPath) -> Option<&mut ModuleState> {
+        self.state.modules.get_mut(module)
+    }
+
     /// Check if the scheduler is in shutdown state.
     pub fn is_shutdown(&self) -> bool {
         self.state.shutdown
@@ -667,6 +755,36 @@ impl CompileScheduler {
             }
         }
         result
+    }
+
+    /// Detect a cycle in the blocked_on graph starting from `start`.
+    ///
+    /// Walks the `blocked_on` linked list from `start`. If it revisits
+    /// `start`, a cycle exists. Returns the cycle path if found.
+    fn detect_cycle(&self, start: &ModuleFullPath) -> Option<Vec<ModuleFullPath>> {
+        let mut path = vec![start.clone()];
+        let mut current = start.clone();
+
+        loop {
+            let next = self.state.modules.get(&current)
+                .and_then(|ms| ms.blocked_on.clone());
+            match next {
+                None => return None, // chain ends, no cycle
+                Some(next_mod) => {
+                    if next_mod == *start {
+                        path.push(next_mod);
+                        return Some(path);
+                    }
+                    if path.contains(&next_mod) {
+                        // Cycle not including start — shouldn't happen since
+                        // we only check after blocking start.
+                        return None;
+                    }
+                    path.push(next_mod.clone());
+                    current = next_mod;
+                }
+            }
+        }
     }
 
     /// Move module to Complete if inmem_done and object_done.

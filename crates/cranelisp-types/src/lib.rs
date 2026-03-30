@@ -35,7 +35,7 @@ pub use module::{
 pub use heap::{HeapCategory, HeapHeader};
 pub use pipeline::{
     CallEdge, CallGraph, CallInfo, CodegenBehaviour, CompileContext, CompileResult,
-    GOT_TABLE_SIZE, MacroExpander, ModuleStrategy, NoOpExpander, NULLARY_TAG_THRESHOLD,
+    GOT_TABLE_SIZE, ModuleStrategy, NULLARY_TAG_THRESHOLD,
 };
 pub use operator::{ring0_primitives, ring1_primitives, ring3_primitives, PrimitiveDef};
 pub use marshal::{

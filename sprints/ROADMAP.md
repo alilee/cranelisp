@@ -64,6 +64,7 @@ Delivery progress for the Cranelisp reimplementation. For technical scope per ri
 | 40 | Pipeline v4 Steps 0+1 — Build recovery, v4 CompilerSession skeleton (`--v4` flag), per-form typecheck API (`check_form`/`FormCheckResult`/`ModuleCheckAccumulator`), 28 new tests, design doc: 1733 passed, 11 pre-existing sketch_port failures, 0 ignored | COMPLETE | `sprints/archive/sprint-40.md` |
 | 41 | Pipeline v4 Steps 2+3 — CompileScheduler (module lifecycle, priority ladder, waiter/unblock, 17 API methods), form-by-form worker loop (two-pass typecheck, post-typecheck codegen sweep), `--v4 --run` for primitive-only programs, Sprint 40 I-1/I-2/I-3 debt resolved, /review 0B 3I 5S (all I fixed): 1574 passed, 11 pre-existing sketch_port failures, 0 ignored | COMPLETE | `sprints/archive/sprint-41.md` |
 | 42 | Pipeline v4 Step 4 — Macro expansion blocking: per-sexp Pass 2 with inline macro compilation, Decision 21 (TC-sourced call graph, `callees: Vec<FQSymbol>` on ModuleEntry), C2 filter relaxation, begin-splicing, spec clarification (macro availability vs compilation), 10 new macro parity tests, /review 0B 4I 6S (all I fixed): 1684 passed, 11 pre-existing sketch_port failures, 0 ignored | COMPLETE | `sprints/archive/sprint-42.md` |
+| 43 | Pipeline v4 Steps 5+6 — Lazy dependency discovery + MacroExpander removal: WorkerContext, FormKind/classify_form, handle_import/export/mod/platform, prelude injection (uniform lazy path), cycle detection (blocked_on walk), C2 filter deleted, MacroExpander trait + CraneliftExpander + NoOpExpander deleted, frontend API cleaned (24 functions), MacroEnv standalone, 11 new v4 parity tests, /review 0B 2I 5S (all fixed): 31 v4 pipeline tests, 11 pre-existing sketch_port failures, 0 ignored | COMPLETE | `sprints/archive/sprint-43.md` |
 
 ## Forward Plan
 
@@ -79,9 +80,9 @@ Scheduler-driven concurrent compilation. See `design/arch/pipeline-v4-roadmap.md
 |--------|-------|-------|--------|
 | 40 | v4 Steps 0+1 — skeleton + per-form typecheck | Build recovery, CompilerSession wrapper, --v4 flag, check_form API | `/int`, `/typecheck`, `/qa` |
 | 41 | v4 Steps 2+3 — scheduler + worker loop | CompileScheduler, form-by-form worker loop, --v4 --run for primitives | `/int`, `/typecheck`, `/arch`, `/qa`, `/review` |
-| **42** | **v4 Step 4 — macro expansion blocking** | **Per-sexp expansion, inline compile-and-continue, Decision 21 call graph, C2 filter** | **`/int`, `/typecheck`, `/arch`, `/qa`, `/review`, `/spec`** |
-| 43 | v4 Steps 5-6 — lazy deps + expander cleanup | Lazy dependency discovery, MacroExpander trait removal | `/int`, `/frontend`, `/qa` |
-| 44 | v4 Step 7 — REPL eval with persistent JIT | Highest risk — REPL eval separation from scheduler | `/int`, `/qa` |
+| 42 | v4 Step 4 — macro expansion blocking | Per-sexp expansion, inline compile-and-continue, Decision 21 call graph, C2 filter | `/int`, `/typecheck`, `/arch`, `/qa`, `/review`, `/spec` |
+| 43 | v4 Steps 5+6 — lazy deps + expander cleanup | Lazy dependency discovery, MacroExpander trait removal, C2 filter deleted | `/int`, `/frontend`, `/arch`, `/qa`, `/review` |
+| **44** | **v4 Step 7 — REPL eval with persistent JIT** | **Highest risk — REPL eval separation from scheduler** | **`/int`, `/qa`** |
 | 45+ | v4 Steps 8-15 — concurrency + cleanup | Platform registry, error cascade, nice workers, multi-thread, DashMap, cache, watcher, legacy delete | All skills |
 
 ### Ring 4 acceptance criteria gap analysis

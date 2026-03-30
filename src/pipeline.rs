@@ -300,7 +300,7 @@ fn compile_unit_inner(
     }
 
     // Stage 4: Build AST from expanded sexps.
-    let mut program = cranelisp_frontend::build_program(&accumulated, &session.expander)?;
+    let mut program = cranelisp_frontend::build_program(&accumulated)?;
 
     // Stage 4b: Bind chain analysis (auto IO scheduling).
     if !session.scheduling_registry.is_empty()

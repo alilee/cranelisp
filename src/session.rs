@@ -20,7 +20,7 @@ use cranelisp_types::{
 
 use cranelisp_backend::cache;
 
-use crate::expander::CraneliftExpander;
+use crate::expander::MacroEnv;
 
 // ---------------------------------------------------------------------------
 // Cache configuration
@@ -538,8 +538,11 @@ impl ModuleDependencyGraph {
 pub struct CompilationSession {
     /// Type checker state (persists across forms).
     pub tc: cranelisp_typecheck::TypeChecker,
-    /// Macro expander (persists across forms — macros accumulate).
-    pub expander: CraneliftExpander,
+    /// Macro environment (persists across forms — macros accumulate).
+    /// Standalone MacroEnv replaces the former CraneliftExpander struct.
+    /// The REPL old path calls MacroEnv methods directly; the v4 worker
+    /// uses the free expansion functions from src/expander.rs.
+    pub macro_env: MacroEnv,
     /// Platform function pointers for JIT symbol registration.
     /// Each entry is (jit_name, function_pointer). Passed to
     /// `Jit::new_with_symbols()` when creating JIT instances.
@@ -591,7 +594,7 @@ impl CompilationSession {
     pub fn new() -> Self {
         CompilationSession {
             tc: cranelisp_typecheck::TypeChecker::new(),
-            expander: CraneliftExpander::new(),
+            macro_env: MacroEnv::new(),
             platform_symbols: Vec::new(),
             scheduling_registry: crate::bind_chain_analysis::SchedulingRegistry::new(),
             compile_stack: Vec::new(),
@@ -625,7 +628,7 @@ impl CompilationSession {
         let shared_isa = cranelisp_backend::jit::Jit::build_shared_isa().ok();
         CompilationSession {
             tc: cranelisp_typecheck::TypeChecker::new(),
-            expander: CraneliftExpander::new(),
+            macro_env: MacroEnv::new(),
             platform_symbols: Vec::new(),
             scheduling_registry: crate::bind_chain_analysis::SchedulingRegistry::new(),
             compile_stack: Vec::new(),
@@ -658,7 +661,7 @@ impl CompilationSession {
         let shared_isa = cranelisp_backend::jit::Jit::build_shared_isa().ok();
         CompilationSession {
             tc: cranelisp_typecheck::TypeChecker::new(),
-            expander: CraneliftExpander::new(),
+            macro_env: MacroEnv::new(),
             platform_symbols: Vec::new(),
             scheduling_registry: crate::bind_chain_analysis::SchedulingRegistry::new(),
             compile_stack: Vec::new(),
@@ -915,7 +918,7 @@ impl CompilationSession {
         }
 
         // Expand macros in the sexp.
-        let expanded = self.expander.expand_sexp(sexp)?;
+        let expanded = self.macro_env.expand_sexp(sexp)?;
 
         // Flatten (begin ...) results and process each sub-form.
         let forms = cranelisp_frontend::flatten_begin(expanded);
@@ -944,7 +947,7 @@ impl CompilationSession {
         let mut jit = cranelisp_backend::jit::Jit::new()?;
         jit.declare_intrinsics()?;
 
-        self.expander.compile_macro(&info, &mut self.tc, &mut jit)?;
+        self.macro_env.compile_macro(&info, &mut self.tc, &mut jit)?;
 
         // Keep JIT alive so macro function pointers remain valid.
         self.inmem_worker.jit_modules.push(jit);
@@ -1066,7 +1069,7 @@ impl CompilationSession {
 
         // Remove macros from the expander.
         for mname in &macro_names {
-            self.expander.remove_macro(mname);
+            self.macro_env.remove_macro(mname);
         }
 
         // Remove the module's symbol table, traits, and type definitions.

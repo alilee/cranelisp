@@ -119,7 +119,7 @@ fn typecheck_only(session: &mut ReplSession, expr_src: &str) -> Result<Type, Cra
             span: cranelisp_types::Span::SYNTHETIC,
         });
     }
-    let input = cranelisp_frontend::build_repl_input(&sexps[0], &session.core.expander)?;
+    let input = cranelisp_frontend::build_repl_input(&sexps[0])?;
     let ctx = session.build_repl_compile_context();
     let check_result = session.core.tc.check(&[input], &ctx, cranelisp_types::ModuleStrategy::Additive)?;
     Ok(check_result.display.as_ref().unwrap().ty.clone())
@@ -312,7 +312,7 @@ fn expand_form_sexp(session: &mut ReplSession, form_src: &str) -> Result<Sexp, C
             span: cranelisp_types::Span::SYNTHETIC,
         });
     }
-    let expanded = session.core.expander.expand_sexp(sexps.into_iter().next().ok_or_else(|| {
+    let expanded = session.core.macro_env.expand_sexp(sexps.into_iter().next().ok_or_else(|| {
         CranelispError::ParseError {
             message: "empty form".into(),
             span: cranelisp_types::Span::SYNTHETIC,

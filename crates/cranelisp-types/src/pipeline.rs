@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
-use crate::{CranelispError, ModuleFullPath, Sexp, Span, Symbol};
+use crate::{ModuleFullPath, Span, Symbol};
 
 /// Which codegen queues receive work from `compile_unit`.
 ///
@@ -17,48 +17,6 @@ pub enum CodegenBehaviour {
     /// Enqueue to object queue only. No JIT, no execution.
     /// Used by --link. Compiles directly to relocatable .o files.
     ObjectOnly,
-}
-
-/// Trait for expanding macros during AST building.
-/// Defined in cranelisp-types (not cranelisp-frontend) for dependency inversion:
-/// frontend depends on this trait, binary crate implements it.
-///
-/// Wave 1 decision: lives in cranelisp-types because it's used across crate boundaries
-/// (frontend references the trait, binary crate provides the implementation).
-pub trait MacroExpander {
-    /// Expand a macro invocation, returning the expanded Sexp.
-    fn expand(
-        &self,
-        name: &Symbol,
-        args: &[Sexp],
-        span: Span,
-    ) -> Result<Sexp, CranelispError>;
-
-    /// Check whether a name is a known macro.
-    fn is_macro(&self, name: &str) -> bool;
-}
-
-/// No-op macro expander for Ring 0 (no macros).
-/// Binary crate uses this until Ring 3 macro support is implemented.
-pub struct NoOpExpander;
-
-impl MacroExpander for NoOpExpander {
-    fn expand(
-        &self,
-        _name: &Symbol,
-        _args: &[Sexp],
-        span: Span,
-    ) -> Result<Sexp, CranelispError> {
-        Err(CranelispError::ModuleError {
-            message: "macros not available".into(),
-            file: None,
-            span,
-        })
-    }
-
-    fn is_macro(&self, _name: &str) -> bool {
-        false
-    }
 }
 
 /// Result of compiling a single unit (returned by binary crate pipeline).

@@ -326,6 +326,78 @@ fn parse_platform(elems: &[Sexp], span: Span) -> Result<PlatformSpec, CranelispE
 }
 
 // ---------------------------------------------------------------------------
+// Public sexp-level parsing wrappers (for v4 worker per-form classification)
+// ---------------------------------------------------------------------------
+
+/// Parse a single `(import ...)` sexp into import specs.
+///
+/// The sexp must be a `(import [...])` list form. Used by the v4 worker's
+/// `classify_form` to parse imports during per-form processing.
+pub fn parse_import_sexp(sexp: &Sexp) -> Result<Vec<ImportSpec>, CranelispError> {
+    match sexp {
+        Sexp::List(elems, span) if !elems.is_empty() => {
+            parse_import(elems, *span)
+        }
+        _ => Err(CranelispError::ModuleError {
+            message: "expected (import [...]) form".to_string(),
+            file: None,
+            span: sexp.span(),
+        }),
+    }
+}
+
+/// Parse a single `(export ...)` sexp into export specs.
+pub fn parse_export_sexp(sexp: &Sexp) -> Result<Vec<ExportSpec>, CranelispError> {
+    match sexp {
+        Sexp::List(elems, span) if !elems.is_empty() => {
+            parse_export(elems, *span)
+        }
+        _ => Err(CranelispError::ModuleError {
+            message: "expected (export [...]) form".to_string(),
+            file: None,
+            span: sexp.span(),
+        }),
+    }
+}
+
+/// Parse a single `(mod ...)` or `(mod- ...)` sexp into a `ModDecl`.
+pub fn parse_mod_sexp(sexp: &Sexp) -> Result<ModDecl, CranelispError> {
+    match sexp {
+        Sexp::List(elems, span) if !elems.is_empty() => {
+            if let Sexp::Symbol(head, _) = &elems[0] {
+                let is_private = head == "mod-";
+                parse_mod_decl(elems, *span, is_private)
+            } else {
+                Err(CranelispError::ModuleError {
+                    message: "expected (mod ...) or (mod- ...) form".to_string(),
+                    file: None,
+                    span: *span,
+                })
+            }
+        }
+        _ => Err(CranelispError::ModuleError {
+            message: "expected (mod ...) or (mod- ...) form".to_string(),
+            file: None,
+            span: sexp.span(),
+        }),
+    }
+}
+
+/// Parse a single `(platform ...)` sexp into a `PlatformSpec`.
+pub fn parse_platform_sexp(sexp: &Sexp) -> Result<PlatformSpec, CranelispError> {
+    match sexp {
+        Sexp::List(elems, span) if !elems.is_empty() => {
+            parse_platform(elems, *span)
+        }
+        _ => Err(CranelispError::ModuleError {
+            message: "expected (platform ...) form".to_string(),
+            file: None,
+            span: sexp.span(),
+        }),
+    }
+}
+
+// ---------------------------------------------------------------------------
 // helpers
 // ---------------------------------------------------------------------------
 

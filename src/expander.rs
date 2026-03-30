@@ -1,4 +1,4 @@
-//! CraneliftExpander: the real MacroExpander for Ring 3+.
+//! Macro expansion environment and free functions.
 //!
 //! Owns compiled macro function pointers and performs expansion.
 //! Lives in the binary crate because it wires typecheck + backend.
@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use std::sync::RwLock;
 
 use cranelisp_types::{
-    CranelispError, MacroExpander, MacroParam, Sexp, Span, Symbol,
+    CranelispError, MacroParam, Sexp, Span, Symbol,
     NULLARY_TAG_THRESHOLD,
 };
 
@@ -34,7 +34,7 @@ pub(crate) struct MacroClauseEntry {
 /// A registered macro with all its compiled clauses.
 pub(crate) struct MacroEntry {
     pub(crate) clauses: Vec<MacroClauseEntry>,
-    #[allow(dead_code)]
+    #[allow(dead_code)] // Reserved for REPL introspection (/doc command)
     pub(crate) docstring: Option<String>,
 }
 
@@ -54,29 +54,10 @@ unsafe impl Send for MacroEnv {}
 unsafe impl Sync for MacroEnv {}
 
 impl MacroEnv {
-    fn new() -> Self {
+    /// Create a new macro environment with no registered macros.
+    pub fn new() -> Self {
         MacroEnv {
             macros: RwLock::new(HashMap::new()),
-        }
-    }
-}
-
-/// The real MacroExpander implementation.
-pub struct CraneliftExpander {
-    env: MacroEnv,
-}
-
-impl Default for CraneliftExpander {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl CraneliftExpander {
-    /// Create a new expander with an empty macro environment.
-    pub fn new() -> Self {
-        CraneliftExpander {
-            env: MacroEnv::new(),
         }
     }
 
@@ -85,9 +66,16 @@ impl CraneliftExpander {
     /// Used during module hot-reload to clear old macros before
     /// recompiling the module that defined them.
     pub fn remove_macro(&mut self, name: &str) {
-        self.env.macros.write()
+        self.macros.write()
             .expect("macro env write lock poisoned")
             .remove(name);
+    }
+
+    /// Check whether a name is a known macro.
+    pub fn is_macro(&self, name: &str) -> bool {
+        self.macros.read()
+            .expect("macro env read lock poisoned")
+            .contains_key(name)
     }
 
     /// Compile a macro from a parsed DefmacroInfo and register it.
@@ -125,7 +113,7 @@ impl CraneliftExpander {
             });
         }
 
-        self.env.macros.write()
+        self.macros.write()
             .expect("macro env write lock poisoned")
             .insert(
                 info.name.clone(),
@@ -144,59 +132,15 @@ impl CraneliftExpander {
     /// Also handles bare symbols that are zero-arg macros.
     /// Depth limit prevents infinite expansion.
     pub fn expand_sexp(&self, sexp: Sexp) -> Result<Sexp, CranelispError> {
-        let macros = self.env.macros.read()
+        let macros = self.macros.read()
             .expect("macro env read lock poisoned");
         expand_sexp_recursive(sexp, &macros, 0)
     }
 }
 
-impl MacroExpander for CraneliftExpander {
-    /// Expand a macro invocation.
-    ///
-    /// Called by the AST builder when it encounters a list form whose head
-    /// is a registered macro name.
-    fn expand(
-        &self,
-        name: &Symbol,
-        args: &[Sexp],
-        span: Span,
-    ) -> Result<Sexp, CranelispError> {
-        let macros = self.env.macros.read()
-            .expect("macro env read lock poisoned");
-
-        let entry = macros.get(name).ok_or_else(|| {
-            CranelispError::MacroError {
-                message: format!("unknown macro '{name}'"),
-                span,
-            }
-        })?;
-
-        // Find matching clause.
-        let clause = find_matching_clause(&entry.clauses, args).ok_or_else(|| {
-            CranelispError::MacroError {
-                message: format!(
-                    "no matching clause for macro '{name}' with {} arguments",
-                    args.len()
-                ),
-                span,
-            }
-        })?;
-
-        // Marshal args and invoke.
-        let result = invoke_clause(clause, args, span)?;
-
-        // Rewrite spans in the result to the call-site span.
-        let mut rewritten = result;
-        rewrite_spans(&mut rewritten, span);
-
-        // Re-expand the result in case it contains macro calls.
-        expand_sexp_recursive(rewritten, &macros, 0)
-    }
-
-    fn is_macro(&self, name: &str) -> bool {
-        self.env.macros.read()
-            .expect("macro env read lock poisoned")
-            .contains_key(name)
+impl Default for MacroEnv {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -590,7 +534,7 @@ pub(crate) fn compile_single_clause(
     clause_idx: usize,
     clause: &cranelisp_frontend::MacroClause,
     span: Span,
-    expander: &CraneliftExpander,
+    macro_env: &MacroEnv,
     tc: &mut cranelisp_typecheck::TypeChecker,
     jit: &mut cranelisp_backend::jit::Jit,
 ) -> Result<*const u8, CranelispError> {
@@ -605,9 +549,14 @@ pub(crate) fn compile_single_clause(
     // Step 2: Expand quasiquotes in the synthesized Sexp.
     let expanded_sexp = cranelisp_frontend::expand_quasiquotes(&synth_sexp)?;
 
-    // Step 3: Build AST. Use the current expander so earlier macros in the
-    // body can be expanded.
-    let program = cranelisp_frontend::build_program(&[expanded_sexp], expander)?;
+    // Step 2b: Expand any macro calls in the body (e.g., a macro clause
+    // that uses an earlier macro like `(defmacro id2 [x] (id x))`).
+    // Previously the CraneliftExpander was passed to build_program for
+    // inline expansion; now we expand at the Sexp level before AST building.
+    let expanded_sexp = macro_env.expand_sexp(expanded_sexp)?;
+
+    // Step 3: Build AST from the fully-expanded sexp.
+    let program = cranelisp_frontend::build_program(&[expanded_sexp])?;
 
     // Step 4: Typecheck.
     let ctx = cranelisp_types::CompileContext {
@@ -686,16 +635,16 @@ mod tests {
     #[test]
     fn test_identity_macro() {
         let (mut tc, mut jit) = setup();
-        let mut expander = CraneliftExpander::new();
+        let mut macro_env = MacroEnv::new();
 
         // Parse and compile: (defmacro id [x] x)
         let sexp = parse_one("(defmacro id [x] x)");
         let info = cranelisp_frontend::parse_defmacro(&sexp).unwrap();
-        expander.compile_macro(&info, &mut tc, &mut jit).unwrap();
+        macro_env.compile_macro(&info, &mut tc, &mut jit).unwrap();
 
         // Expand: (id 42) should produce 42
         let call_sexp = parse_one("(id 42)");
-        let result = expander.expand_sexp(call_sexp).unwrap();
+        let result = macro_env.expand_sexp(call_sexp).unwrap();
         assert!(
             matches!(result, Sexp::Int(42, _)),
             "expected Int(42), got {:?}",
@@ -707,16 +656,16 @@ mod tests {
     #[test]
     fn test_quasiquote_macro() {
         let (mut tc, mut jit) = setup();
-        let mut expander = CraneliftExpander::new();
+        let mut macro_env = MacroEnv::new();
 
         // Parse and compile: (defmacro wrap [x] `(+ 1 ~x))
         let sexp = parse_one("(defmacro wrap [x] `(+ 1 ~x))");
         let info = cranelisp_frontend::parse_defmacro(&sexp).unwrap();
-        expander.compile_macro(&info, &mut tc, &mut jit).unwrap();
+        macro_env.compile_macro(&info, &mut tc, &mut jit).unwrap();
 
         // Expand: (wrap 42) should produce (+ 1 42)
         let call_sexp = parse_one("(wrap 42)");
-        let result = expander.expand_sexp(call_sexp).unwrap();
+        let result = macro_env.expand_sexp(call_sexp).unwrap();
         if let Sexp::List(children, _) = &result {
             assert_eq!(children.len(), 3, "expected 3 children in (+ 1 42)");
             assert!(matches!(&children[0], Sexp::Symbol(s, _) if s == "+"));
@@ -731,18 +680,18 @@ mod tests {
     #[test]
     fn test_multi_clause_dispatch() {
         let (mut tc, mut jit) = setup();
-        let mut expander = CraneliftExpander::new();
+        let mut macro_env = MacroEnv::new();
 
         // Two clauses: 1-arg returns arg, 2-arg returns first arg
         let sexp = parse_one(
             "(defmacro pick ([x] x) ([x y] x))"
         );
         let info = cranelisp_frontend::parse_defmacro(&sexp).unwrap();
-        expander.compile_macro(&info, &mut tc, &mut jit).unwrap();
+        macro_env.compile_macro(&info, &mut tc, &mut jit).unwrap();
 
         // 1-arg call
         let call1 = parse_one("(pick 42)");
-        let result1 = expander.expand_sexp(call1).unwrap();
+        let result1 = macro_env.expand_sexp(call1).unwrap();
         assert!(
             matches!(result1, Sexp::Int(42, _)),
             "1-arg: expected Int(42), got {:?}",
@@ -751,7 +700,7 @@ mod tests {
 
         // 2-arg call should return first arg
         let call2 = parse_one("(pick 10 20)");
-        let result2 = expander.expand_sexp(call2).unwrap();
+        let result2 = macro_env.expand_sexp(call2).unwrap();
         assert!(
             matches!(result2, Sexp::Int(10, _)),
             "2-arg: expected Int(10), got {:?}",
@@ -763,16 +712,16 @@ mod tests {
     #[test]
     fn test_is_macro_predicate() {
         let (mut tc, mut jit) = setup();
-        let mut expander = CraneliftExpander::new();
+        let mut macro_env = MacroEnv::new();
 
-        assert!(!expander.is_macro("id"));
+        assert!(!macro_env.is_macro("id"));
 
         let sexp = parse_one("(defmacro id [x] x)");
         let info = cranelisp_frontend::parse_defmacro(&sexp).unwrap();
-        expander.compile_macro(&info, &mut tc, &mut jit).unwrap();
+        macro_env.compile_macro(&info, &mut tc, &mut jit).unwrap();
 
-        assert!(expander.is_macro("id"));
-        assert!(!expander.is_macro("nonexistent"));
+        assert!(macro_env.is_macro("id"));
+        assert!(!macro_env.is_macro("nonexistent"));
     }
 
     // spec: 09-macros.md section 9.7 — marshal round-trip via expand
@@ -823,16 +772,16 @@ mod tests {
     #[test]
     fn test_quasiquote_bracket_macro() {
         let (mut tc, mut jit) = setup();
-        let mut expander = CraneliftExpander::new();
+        let mut macro_env = MacroEnv::new();
 
         // Parse and compile: (defmacro my-let [n v body] `(let [~n ~v] ~body))
         let sexp = parse_one("(defmacro my-let [n v body] `(let [~n ~v] ~body))");
         let info = cranelisp_frontend::parse_defmacro(&sexp).unwrap();
-        expander.compile_macro(&info, &mut tc, &mut jit).unwrap();
+        macro_env.compile_macro(&info, &mut tc, &mut jit).unwrap();
 
         // Expand: (my-let x 10 (add-i64 x 5))
         let call_sexp = parse_one("(my-let x 10 (add-i64 x 5))");
-        let result = expander.expand_sexp(call_sexp).unwrap();
+        let result = macro_env.expand_sexp(call_sexp).unwrap();
         // Should produce (let [x 10] (add-i64 x 5))
         if let Sexp::List(children, _) = &result {
             assert_eq!(children.len(), 3, "expected 3 children: let, bracket, body");

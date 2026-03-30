@@ -1,23 +1,21 @@
-// CompilerSession: v4 pipeline session skeleton (pipeline-v4.md §5, roadmap Step 0).
+// CompilerSession: v4 pipeline session (pipeline-v4.md §5, roadmap Steps 0-5).
 //
-// Wraps the existing CompilationSession, delegating all methods to the old
-// path. This is the permanent v4 session type — it starts as pure delegation
-// and progressively replaces internals across Steps 1-15 of the roadmap.
-//
-// All methods that will eventually be replaced with scheduler-driven logic
-// are marked with comments indicating which roadmap step replaces them.
+// Wraps the existing CompilationSession, delegating REPL eval to the old path.
+// Batch compilation goes through the v4 scheduler-driven path with lazy
+// dependency discovery (Step 5).
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use cranelisp_types::{
     CodegenBehaviour, CompileContext, CranelispError, ModuleFullPath, ModuleStrategy,
-    Sexp, Span, Symbol, Type, Warning,
+    Span, Symbol, Type, Warning,
 };
 
 use crate::pipeline::CodegenResult;
 use crate::scheduler::CompileScheduler;
 use crate::session::CompilationSession;
+use crate::worker::WorkerContext;
 
 // ---------------------------------------------------------------------------
 // CommandResult (pipeline-v4.md §6.1)
@@ -34,63 +32,6 @@ pub enum CommandResult {
     Final(String),
     /// Raw source text to submit for compilation.
     Compile(String),
-}
-
-// ---------------------------------------------------------------------------
-// C2 filter: detect programs that qualify for the scheduler path (Step 3)
-// ---------------------------------------------------------------------------
-
-/// Check if parsed sexps qualify for the v4 scheduler path.
-///
-/// A program qualifies if and only if:
-/// - No `(import ...)` forms
-/// - No operator syntax (`+`, `-`, `*`, `/`, `=`, `<`, `>`, `!`)
-/// - All top-level forms are special forms or primitive calls
-///
-/// Programs that fail this filter fall back to the old delegation path.
-fn qualifies_for_scheduler(sexps: &[Sexp]) -> bool {
-    for sexp in sexps {
-        if !sexp_qualifies(sexp) {
-            return false;
-        }
-    }
-    true
-}
-
-/// Check a single sexp for scheduler qualification.
-fn sexp_qualifies(sexp: &Sexp) -> bool {
-    match sexp {
-        Sexp::List(items, _) => {
-            if let Some(Sexp::Symbol(name, _)) = items.first() {
-                // Reject import/export/mod/platform forms (cross-module deps).
-                if name == "import" || name == "export" || name == "mod" || name == "platform" {
-                    return false;
-                }
-                // Step 4: defmacro is now handled by the v4 path.
-                // Macro calls are expanded per-sexp in Pass 2.
-            }
-            // Check all sub-expressions recursively.
-            items.iter().all(sexp_qualifies)
-        }
-        Sexp::Symbol(name, _) => {
-            // Reject operator symbols that require prelude trait dispatch.
-            !is_operator_symbol(name)
-        }
-        Sexp::Bracket(items, _) => items.iter().all(sexp_qualifies),
-        // Literals and other atoms are fine.
-        _ => true,
-    }
-}
-
-/// Check if a symbol name is an operator requiring prelude trait dispatch.
-fn is_operator_symbol(name: &str) -> bool {
-    if name.is_empty() {
-        return false;
-    }
-    // Operator symbols are sequences of operator chars.
-    // But named primitives like "add-i64" contain '-' which is also an op char.
-    // Only flag pure-operator symbols (all chars are operator chars).
-    name.chars().all(|c| "+-*/<>=!".contains(c))
 }
 
 // ---------------------------------------------------------------------------
@@ -193,11 +134,10 @@ impl CompilerSession {
         })
     }
 
-    /// Register a module for compilation.
+    /// Register a module for compilation via the v4 scheduler-driven path.
     ///
-    /// For qualifying programs (C2: no imports, no macros, no operators):
-    /// uses the v4 scheduler-driven path. Non-qualifying programs fall back
-    /// to the old delegation path.
+    /// All programs go through the v4 path with lazy dependency discovery.
+    /// The C2 filter and old delegation path are deleted (Step 5).
     ///
     /// Returns warnings from compilation. Codegen results are available
     /// via GOT after `scheduler.wait_inmem_complete()`.
@@ -207,44 +147,29 @@ impl CompilerSession {
         source: &str,
         _entry_module_path: &Path,
     ) -> Result<Vec<Warning>, CranelispError> {
-        let module_full_path = ModuleFullPath::from(module_name);
-
-        // Parse once — used for C2 qualification check and passed to the
-        // worker loop to avoid double-parsing.
+        let module = ModuleFullPath::from(module_name);
         let sexps = cranelisp_frontend::parse(source)?;
 
-        if qualifies_for_scheduler(&sexps) {
-            // V4 scheduler path (C2 qualified, C3 no prelude injection).
-            self.register_module_v4(module_full_path, sexps)
-        } else {
-            // Fall back to old delegation path.
-            self.register_module_old(module_full_path, source)
-        }
-    }
-
-    /// V4 scheduler-driven path for qualifying programs.
-    ///
-    /// No prelude injection (C3). Drives typecheck + codegen through
-    /// the scheduler and worker loop. Accepts pre-parsed sexps to avoid
-    /// redundant parsing (already parsed for C2 qualification check).
-    fn register_module_v4(
-        &mut self,
-        module: ModuleFullPath,
-        sexps: Vec<Sexp>,
-    ) -> Result<Vec<Warning>, CranelispError> {
-        // Register module with scheduler (not delaying others for Step 3).
+        // Register module with scheduler (entry module, not delaying others).
         self.scheduler.register_module(module.clone(), false);
 
-        // Build pre-parsed sexp map for the worker loop.
+        // Build sexp map for the worker loop.
         let mut module_sexps = HashMap::new();
         module_sexps.insert(module.clone(), sexps);
 
+        // Build WorkerContext bundling all worker parameters.
+        let mut ctx = WorkerContext {
+            tc: &mut self.inner.tc,
+            scheduler: &mut self.scheduler,
+            inmem_worker: &mut self.inner.inmem_worker,
+            platform_symbols: &mut self.inner.platform_symbols,
+            lib_dirs: &self.inner.lib_dirs,
+            project_root: &self.inner.project_root,
+        };
+
         // Run the priority worker loop inline (single-threaded).
         crate::worker::priority_worker_loop(
-            &mut self.inner.tc,
-            &mut self.inner.inmem_worker,
-            &self.inner.platform_symbols,
-            &mut self.scheduler,
+            &mut ctx,
             &mut module_sexps,
         )?;
 
@@ -265,26 +190,6 @@ impl CompilerSession {
         );
 
         Ok(Vec::new())
-    }
-
-    /// Old delegation path for non-qualifying programs.
-    fn register_module_old(
-        &mut self,
-        module: ModuleFullPath,
-        source: &str,
-    ) -> Result<Vec<Warning>, CranelispError> {
-        let ctx = CompileContext {
-            module,
-            codegen: CodegenBehaviour::InMemoryAndObject,
-        };
-
-        let unit_result = self
-            .inner
-            .compile_unit(source, &ctx, ModuleStrategy::Replace)?;
-        let warnings = unit_result.warnings.clone();
-        self.inner.send_codegen(unit_result, ctx);
-
-        Ok(warnings)
     }
 
     /// Evaluate source text (REPL input).

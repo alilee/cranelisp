@@ -1,6 +1,6 @@
 //! Marshal: convert between compiler Sexp and runtime Sexp ADT values.
 //!
-//! Used by the CraneliftExpander to pass arguments to and receive results
+//! Used by the MacroEnv to pass arguments to and receive results
 //! from compiled macro functions. Marshalled values are "leaked" -- their
 //! RC is never decremented, since they exist only during compilation.
 //!

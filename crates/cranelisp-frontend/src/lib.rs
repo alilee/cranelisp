@@ -5,8 +5,9 @@
 //!   2. Macro expansion: quasiquote desugaring, defmacro parsing (Ring 3)
 //!   3. AST builder: Vec<Sexp> -> Vec<TopLevel> (both batch and REPL)
 //!
-//! The macro expander trait is defined in cranelisp-types for dependency inversion.
-//! Ring 0 uses NoOpExpander (no macros).
+//! Macro expansion must happen BEFORE calling the AST builder. If an unexpanded
+//! macro call reaches the AST builder, it is treated as a regular function
+//! application (which will fail at typecheck).
 
 pub mod reader;
 pub mod ast_builder;
@@ -14,9 +15,12 @@ pub mod module_extract;
 pub mod quasiquote;
 pub mod defmacro;
 
-use cranelisp_types::{CranelispError, MacroExpander, Program, Sexp, TopLevel};
+use cranelisp_types::{CranelispError, Program, Sexp, TopLevel};
 
 pub use module_extract::extract_module_declarations;
+pub use module_extract::{
+    parse_import_sexp, parse_export_sexp, parse_mod_sexp, parse_platform_sexp,
+};
 pub use quasiquote::{expand_quasiquotes, next_synthetic_span};
 pub use defmacro::{
     is_defmacro, is_begin, flatten_begin, parse_defmacro, parse_macro_params,
@@ -38,32 +42,30 @@ pub fn parse_preserving_comments(source: &str) -> Result<Vec<Sexp>, CranelispErr
 /// Build a batch program from parsed S-expressions.
 ///
 /// Each sexp must be a top-level form (defn, deftype, etc.).
-/// The expander is consulted for macro calls; Ring 0 passes `NoOpExpander`.
+/// Callers must expand macros before calling this function.
 pub fn build_program(
     sexps: &[Sexp],
-    expander: &dyn MacroExpander,
 ) -> Result<Program, CranelispError> {
-    ast_builder::build_program(sexps, expander)
+    ast_builder::build_program(sexps)
 }
 
 /// Build REPL input from a sequence of S-expressions.
 ///
 /// Handles top-level annotation expressions where `:Type expr` parses as
 /// two separate sexps. Falls through to single-sexp handling otherwise.
+/// Callers must expand macros before calling this function.
 pub fn build_repl_input_from_sexps(
     sexps: &[Sexp],
-    expander: &dyn MacroExpander,
 ) -> Result<TopLevel, CranelispError> {
-    ast_builder::build_repl_input_from_sexps(sexps, expander)
+    ast_builder::build_repl_input_from_sexps(sexps)
 }
 
 /// Build REPL input from a single S-expression.
 ///
 /// Accepts top-level forms and bare expressions.
-/// The expander is consulted for macro calls; Ring 0 passes `NoOpExpander`.
+/// Callers must expand macros before calling this function.
 pub fn build_repl_input(
     sexp: &Sexp,
-    expander: &dyn MacroExpander,
 ) -> Result<TopLevel, CranelispError> {
-    ast_builder::build_repl_input(sexp, expander)
+    ast_builder::build_repl_input(sexp)
 }
