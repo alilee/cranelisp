@@ -59,6 +59,10 @@ Decisions 1–9 established the current architecture. The pipeline convergence r
 
 20. **Split calling convention for RC** — User functions use consuming convention (callee owns heap params, dec's them at scope exit; caller inc's variable args before the call). Builtins/externs use borrowing convention (caller dec's temporaries after the call; callee has no RC responsibility). Data constructors use plain arg lists (field values stored directly into the ADT; ADT drop glue handles recursive field dec at destruction time). The convention is determined statically at each call site based on the callee's `ResolvedCall` classification. The typecheck crate is entirely unaware of calling conventions — this is a backend-only concern. See `design/backend/ring2-rc.md` §3 for the full decision table.
 
+## Key Decisions (Pipeline v4)
+
+21. **TC-sourced call graph with per-symbol persistence on ModuleEntry** — The per-symbol call graph (callee list) is extracted during typechecking from method resolutions and stored persistently on `ModuleEntry`. `ModuleEntry::Def` and `ModuleEntry::Macro` each gain `callees: Vec<FQSymbol>`. `FormCheckResult.call_graph_edges` carries `Vec<(Symbol, FQSymbol)>` (caller is local, callee is fully qualified). `finalize_check_result()` groups edges by caller and writes to `ModuleEntry` in the `SymbolTable`. Cross-module queries use the existing `tc.symbol_table(module).get(name)` path — same as type resolution. `CheckResult` also carries a transient `call_graph: CallGraph` (rich, with tail-position/span) for within-module codegen/analysis. Codegen-sourced call graph rejected: the scheduler needs pre-codegen callee visibility for parallel macro dep compilation (§3.2 of `pipeline-v4.md`); codegen doesn't discover callees typechecking didn't resolve (Principle 7); building codegen-sourced now and replacing later violates Principle 8.
+
 ## Cross-References
 
 - `sprints/reimplementation.md` — Full strategy: skill definitions, ring model decision, phase sequence, risk analysis

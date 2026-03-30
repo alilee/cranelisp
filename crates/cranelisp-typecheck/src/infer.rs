@@ -2441,6 +2441,7 @@ mod tests {
                         scheme: scheme.clone(),
                     })),
                 }),
+                callees: Vec::new(),
             },
         );
     }

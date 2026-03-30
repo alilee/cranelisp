@@ -2332,6 +2332,7 @@ mod tests {
                         docstring: None,
                         param_names: vec![],
                         kind: Box::new(DefKind::UserFn { constrained_fn: None }),
+                        callees: Vec::new(),
                     },
                 ),
             ],
@@ -2441,6 +2442,7 @@ mod tests {
                     visibility: Visibility::Public,
                     sexp: None,
                     source: None,
+                    callees: Vec::new(),
                 },
             )],
         )]);

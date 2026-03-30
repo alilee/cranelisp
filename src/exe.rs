@@ -419,6 +419,7 @@ mod tests {
             docstring: None,
             param_names: vec![],
             kind: Box::new(DefKind::UserFn { constrained_fn: None }),
+            callees: Vec::new(),
         }
     }
 

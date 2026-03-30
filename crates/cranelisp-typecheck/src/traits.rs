@@ -263,6 +263,7 @@ impl TypeChecker {
                     kind: Box::new(cranelisp_types::DefKind::UserFn {
                         constrained_fn: None,
                     }),
+                    callees: Vec::new(),
                 },
             );
 
@@ -322,6 +323,7 @@ impl TypeChecker {
                 kind: Box::new(cranelisp_types::DefKind::UserFn {
                     constrained_fn: None,
                 }),
+                callees: Vec::new(),
             },
         );
 

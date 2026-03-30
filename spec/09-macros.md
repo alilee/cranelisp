@@ -259,7 +259,7 @@ Implementations SHOULD limit the number of expansion iterations to prevent infin
 
 Macros MUST be defined before they are referenced. A macro call to a name that has not yet been defined as a macro is NOT expanded — it passes through to the AST builder as a regular function call.
 
-Within a source file, top-level forms are processed sequentially. A `defmacro` form is compiled and registered immediately when encountered. All subsequent forms in the file may use that macro.
+Within a source file, top-level forms are processed sequentially. A `defmacro` form MUST make its macro available for expansion by all subsequent forms in the same file. An implementation MAY defer compilation of the macro body until first use, provided the macro is available when a subsequent form references it.
 
 A `defmacro` body MAY reference any function or macro that was defined before it. Forward references to macros are NOT supported.
 

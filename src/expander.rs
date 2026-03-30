@@ -14,28 +14,28 @@ use cranelisp_types::{
 use crate::marshal;
 
 /// Maximum recursion depth for macro expansion.
-const EXPANSION_DEPTH_LIMIT: usize = 100;
+pub(crate) const EXPANSION_DEPTH_LIMIT: usize = 100;
 
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
 
 /// A compiled macro clause with its function pointer.
-struct MacroClauseEntry {
+pub(crate) struct MacroClauseEntry {
     /// JIT-compiled function: extern "C" fn(i64) -> i64.
     /// The i64 parameter is a pointer to an (SList Sexp) of marshalled args.
-    func_ptr: *const u8,
+    pub(crate) func_ptr: *const u8,
     /// Fixed parameter patterns (for clause matching).
-    params: Vec<MacroParam>,
+    pub(crate) params: Vec<MacroParam>,
     /// Rest parameter name, if variadic.
-    rest_param: Option<Symbol>,
+    pub(crate) rest_param: Option<Symbol>,
 }
 
 /// A registered macro with all its compiled clauses.
-struct MacroEntry {
-    clauses: Vec<MacroClauseEntry>,
+pub(crate) struct MacroEntry {
+    pub(crate) clauses: Vec<MacroClauseEntry>,
     #[allow(dead_code)]
-    docstring: Option<String>,
+    pub(crate) docstring: Option<String>,
 }
 
 /// Macro environment: name -> compiled macro.
@@ -209,7 +209,7 @@ impl MacroExpander for CraneliftExpander {
 /// - If clause has rest_param: args.len() >= clause.params.len()
 /// - If no rest_param: args.len() == clause.params.len()
 /// - Bracket params must receive Sexp::Bracket arguments
-fn clause_matches(clause: &MacroClauseEntry, args: &[Sexp]) -> bool {
+pub(crate) fn clause_matches(clause: &MacroClauseEntry, args: &[Sexp]) -> bool {
     let fixed_count = clause.params.len();
     if clause.rest_param.is_some() {
         if args.len() < fixed_count {
@@ -244,7 +244,7 @@ fn clause_matches(clause: &MacroClauseEntry, args: &[Sexp]) -> bool {
 }
 
 /// Find the first matching clause for the given arguments.
-fn find_matching_clause<'a>(
+pub(crate) fn find_matching_clause<'a>(
     clauses: &'a [MacroClauseEntry],
     args: &[Sexp],
 ) -> Option<&'a MacroClauseEntry> {
@@ -256,7 +256,7 @@ fn find_matching_clause<'a>(
 // ---------------------------------------------------------------------------
 
 /// Marshal arguments, invoke a clause's function pointer, and unmarshal the result.
-fn invoke_clause(
+pub(crate) fn invoke_clause(
     clause: &MacroClauseEntry,
     args: &[Sexp],
     span: Span,
@@ -459,7 +459,7 @@ fn restore_signal_handlers(saved: SavedSignalHandlers) {
 /// prevents span collisions when the same macro parameter appears multiple
 /// times in the expansion — downstream maps keyed by span (expr_types,
 /// method_resolutions, last_uses) would otherwise overwrite each other.
-fn rewrite_spans(sexp: &mut Sexp, _call_site_span: Span) {
+pub(crate) fn rewrite_spans(sexp: &mut Sexp, _call_site_span: Span) {
     rewrite_spans_unique(sexp);
 }
 
@@ -491,7 +491,7 @@ fn rewrite_spans_unique(sexp: &mut Sexp) {
 /// - List forms where head is a known macro -> dispatch and re-expand result
 /// - Bare symbols that are zero-arg macros
 /// - Recursive children expansion
-fn expand_sexp_recursive(
+pub(crate) fn expand_sexp_recursive(
     sexp: Sexp,
     macros: &HashMap<Symbol, MacroEntry>,
     depth: usize,
@@ -543,7 +543,7 @@ fn expand_sexp_recursive(
 }
 
 /// Expand a single macro call, then re-expand the result.
-fn expand_macro_call(
+pub(crate) fn expand_macro_call(
     name: &str,
     args: &[Sexp],
     span: Span,
@@ -585,7 +585,7 @@ fn expand_macro_call(
 /// 3. Build AST via the frontend (using the current expander for inner macro calls)
 /// 4. Typecheck the resulting program
 /// 5. Compile and extract the function pointer
-fn compile_single_clause(
+pub(crate) fn compile_single_clause(
     macro_name: &Symbol,
     clause_idx: usize,
     clause: &cranelisp_frontend::MacroClause,

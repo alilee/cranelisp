@@ -974,6 +974,7 @@ impl CompilationSession {
                 visibility,
                 sexp: Some(sexp.clone()),
                 source: None,
+                callees: Vec::new(),
             },
         );
 

@@ -55,6 +55,11 @@ pub enum ModuleEntry {
         docstring: Option<String>,
         param_names: Vec<Symbol>,
         kind: Box<DefKind>,
+        /// Fully-qualified callees discovered during typechecking (Decision 21).
+        /// Populated by `finalize_check_result()` for user-defined functions.
+        /// Empty for primitives, special forms, and entries not yet body-checked.
+        #[serde(default)]
+        callees: Vec<FQSymbol>,
     },
     /// An imported name from another module (Ring 2).
     Import { source: FQSymbol },
@@ -88,6 +93,10 @@ pub enum ModuleEntry {
         visibility: Visibility,
         sexp: Option<Sexp>,
         source: Option<String>,
+        /// Fully-qualified callees discovered during typechecking (Decision 21).
+        /// Populated by `finalize_check_result()` for macro clause bodies.
+        #[serde(default)]
+        callees: Vec<FQSymbol>,
     },
     /// A platform DLL declaration (Ring 4).
     PlatformDecl {
@@ -99,6 +108,17 @@ pub enum ModuleEntry {
 }
 
 impl ModuleEntry {
+    /// Returns the callees for this entry, or an empty slice for variants without callees.
+    ///
+    /// Supports the `tc.symbol_table(module).get(name).callees()` dot-access pattern
+    /// from the call graph design (Decision 21).
+    pub fn callees(&self) -> &[FQSymbol] {
+        match self {
+            ModuleEntry::Def { callees, .. } | ModuleEntry::Macro { callees, .. } => callees,
+            _ => &[],
+        }
+    }
+
     /// Returns true if this entry is publicly visible.
     pub fn is_public(&self) -> bool {
         match self {

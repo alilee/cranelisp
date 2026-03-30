@@ -24,13 +24,51 @@ use std::collections::{HashMap, HashSet};
 
 use cranelisp_types::{
     CheckResult, CompileContext, ConstrainedFn, CranelispError, Defn, DefKind, DefnVariant,
-    DisplayInfo, Expr, JitSymbol, ModuleEntry, ModuleFullPath, ModuleStrategy, MonoDefn,
-    ResolvedCall, Scheme, Span, Symbol, TopLevel, Type, Visibility, Warning, apply,
+    DisplayInfo, Expr, FQSymbol, JitSymbol, ModuleEntry, ModuleFullPath, ModuleStrategy, MonoDefn,
+    ResolvedCall, Scheme, Span, Symbol, SymbolTable, TopLevel, Type, Visibility, Warning, apply,
 };
 
 use crate::checker::TypeChecker;
 use crate::resolve::resolve_type_expr;
 use crate::scheme::mono;
+
+// --- Callee write helper (Decision 21) ---
+
+/// Group call graph edges by caller, sort + deduplicate, and write to `ModuleEntry`.
+///
+/// Used by both `merge_form_result` (eager write so the scheduler can read callees
+/// immediately) and `finalize_check_result` (canonical final write that includes
+/// any edges from post-passes).
+fn write_callees_to_module_entries(
+    sym_table: &mut SymbolTable,
+    edges: &[(Symbol, FQSymbol)],
+) {
+    let mut by_caller: HashMap<Symbol, Vec<FQSymbol>> = HashMap::new();
+    for (caller, callee) in edges {
+        by_caller
+            .entry(caller.clone())
+            .or_default()
+            .push(callee.clone());
+    }
+    for (caller, mut callees) in by_caller {
+        callees.sort_by(|a, b| {
+            a.module
+                .as_ref()
+                .cmp(b.module.as_ref())
+                .then(a.symbol.as_ref().cmp(b.symbol.as_ref()))
+        });
+        callees.dedup();
+        if let Some(entry) = sym_table.symbols.get_mut(&caller) {
+            match entry {
+                ModuleEntry::Def { callees: c, .. }
+                | ModuleEntry::Macro { callees: c, .. } => {
+                    *c = callees;
+                }
+                _ => {} // Constructors, imports, etc. don't have callees
+            }
+        }
+    }
+}
 
 // --- Per-Form Typecheck API types ---
 
@@ -85,9 +123,11 @@ pub struct FormCheckResult {
     pub warnings: Vec<Warning>,
 
     /// Call graph edges discovered during this form's checking.
-    /// Each entry is (caller_symbol, callee_symbol). Accumulated for the
-    /// module's call graph, used by the scheduler for macro dependency walks.
-    pub call_graph_edges: Vec<(Symbol, Symbol)>,
+    /// Each entry is (caller_symbol, callee_fqsymbol). The caller is local to
+    /// the current module; the callee is fully qualified (may be cross-module).
+    /// Accumulated for the module's call graph, used by the scheduler for
+    /// macro dependency walks.
+    pub call_graph_edges: Vec<(Symbol, FQSymbol)>,
 }
 
 impl FormCheckResult {
@@ -125,7 +165,7 @@ pub struct ModuleCheckAccumulator {
     pub default_method_defns: Vec<Defn>,
     pub multi_sig_defns: Vec<Defn>,
     pub warnings: Vec<Warning>,
-    pub call_graph_edges: Vec<(Symbol, Symbol)>,
+    pub call_graph_edges: Vec<(Symbol, FQSymbol)>,
     /// Type vars from pass 1 registration, keyed by defn name.
     /// Needed by pass 2 to check bodies against registered signatures.
     pub defn_type_vars: HashMap<Symbol, (Vec<Type>, Type)>,
@@ -219,6 +259,70 @@ impl TypeChecker {
     // =================================================================
     // Per-Form Typecheck API (v4 pipeline)
     // =================================================================
+
+    /// Extract call graph edges from method resolutions for a given caller.
+    ///
+    /// For each `ResolvedCall` in the provided map, derives the callee as an
+    /// `FQSymbol`. `BuiltinFn` resolutions are skipped (always available).
+    /// The caller symbol is the defn whose body produced these resolutions.
+    fn extract_call_graph_edges(
+        &self,
+        caller: &Symbol,
+        method_resolutions: &HashMap<Span, ResolvedCall>,
+    ) -> Vec<(Symbol, FQSymbol)> {
+        let current_module = self.current_module_path().clone();
+        let mut edges = Vec::new();
+
+        for resolved in method_resolutions.values() {
+            if let Some(callee) = self.resolved_call_to_fqsymbol(resolved, &current_module) {
+                edges.push((caller.clone(), callee));
+            }
+        }
+
+        edges
+    }
+
+    /// Derive the callee `FQSymbol` from a `ResolvedCall`, if it represents
+    /// a user-defined dependency (not a builtin).
+    fn resolved_call_to_fqsymbol(
+        &self,
+        resolved: &ResolvedCall,
+        current_module: &ModuleFullPath,
+    ) -> Option<FQSymbol> {
+        match resolved {
+            ResolvedCall::TraitMethod { mangled_name, .. } => {
+                // The impl method lives in the current module for now (Step 4).
+                // Step 5 will look up the impl's defining module from the trait registry.
+                Some(FQSymbol {
+                    module: current_module.clone(),
+                    symbol: Symbol::from(mangled_name.as_ref()),
+                })
+            }
+            ResolvedCall::SigDispatch { mangled_name } => {
+                // Multi-sig variants are always local to the current module.
+                Some(FQSymbol {
+                    module: current_module.clone(),
+                    symbol: Symbol::from(mangled_name.as_ref()),
+                })
+            }
+            ResolvedCall::AutoCurry { target_name, trait_resolution, .. } => {
+                // If there's an inner trait resolution, derive the edge from it.
+                if let Some(inner) = trait_resolution {
+                    self.resolved_call_to_fqsymbol(inner, current_module)
+                } else {
+                    // Plain function curry — target is in current module.
+                    Some(FQSymbol {
+                        module: current_module.clone(),
+                        symbol: target_name.clone(),
+                    })
+                }
+            }
+            ResolvedCall::BuiltinFn { .. } => {
+                // Builtins are always available — no codegen dependency.
+                None
+            }
+        }
+    }
 
     /// Check a single `TopLevel` form through one pass.
     ///
@@ -341,6 +445,7 @@ impl TypeChecker {
                 docstring: defn.docstring.clone(),
                 param_names: vec![],
                 kind: Box::new(DefKind::Overloaded { variants: vec![] }),
+                callees: Vec::new(),
             },
         );
 
@@ -428,6 +533,9 @@ impl TypeChecker {
             }
         }
 
+        // Extract call graph edges from method resolutions (Decision 21).
+        let call_graph_edges = self.extract_call_graph_edges(&defn.name, &form_mr);
+
         let warnings = std::mem::take(&mut self.state.warnings);
 
         Ok(FormCheckResult {
@@ -438,7 +546,7 @@ impl TypeChecker {
             default_method_defns: Vec::new(),
             multi_sig_defns: Vec::new(),
             warnings,
-            call_graph_edges: Vec::new(),
+            call_graph_edges,
         })
     }
 
@@ -517,6 +625,11 @@ impl TypeChecker {
             }
         }
 
+        // Extract call graph edges for each variant (Decision 21).
+        // Multi-sig variant edges are attributed to the base defn name since
+        // the mangled names aren't known until overload resolution in finalize.
+        let call_graph_edges = self.extract_call_graph_edges(&defn.name, &form_mr);
+
         let warnings = std::mem::take(&mut self.state.warnings);
 
         Ok(FormCheckResult {
@@ -527,20 +640,31 @@ impl TypeChecker {
             default_method_defns: Vec::new(),
             multi_sig_defns: Vec::new(),
             warnings,
-            call_graph_edges: Vec::new(),
+            call_graph_edges,
         })
     }
 
     /// Merge a `FormCheckResult` into the module's accumulator.
     ///
     /// Called after each `check_form()` to accumulate per-form results
-    /// into the module-level state.
+    /// into the module-level state. Also eagerly writes callees to
+    /// `ModuleEntry` in the symbol table (Decision 21) so that the
+    /// scheduler can read them immediately without waiting for
+    /// `finalize_check_result`.
     pub fn merge_form_result(
         &mut self,
         _module: &ModuleFullPath,
         accumulator: &mut ModuleCheckAccumulator,
         result: FormCheckResult,
     ) {
+        // Write callees to ModuleEntry eagerly (Decision 21).
+        if !result.call_graph_edges.is_empty() {
+            write_callees_to_module_entries(
+                self.current_symbol_table_mut(),
+                &result.call_graph_edges,
+            );
+        }
+
         accumulator.method_resolutions.extend(result.method_resolutions);
         accumulator.expr_types.extend(result.expr_types);
         if let Some(name) = result.constrained_fn {
@@ -663,6 +787,16 @@ impl TypeChecker {
         accumulator.warnings.extend(
             std::mem::take(&mut self.state.warnings),
         );
+
+        // Final callee write (Decision 21): overwrite the eager writes from
+        // merge_form_result with the final canonical version that includes any
+        // edges from post-passes.
+        if !accumulator.call_graph_edges.is_empty() {
+            write_callees_to_module_entries(
+                self.current_symbol_table_mut(),
+                &accumulator.call_graph_edges,
+            );
+        }
 
         // Resolve all accumulated expr_types through the final substitution.
         let resolved_expr_types: HashMap<Span, Type> = accumulator
@@ -956,6 +1090,7 @@ impl TypeChecker {
                         docstring: defn.docstring.clone(),
                         param_names: vec![],
                         kind: Box::new(DefKind::Overloaded { variants: vec![] }),
+                        callees: Vec::new(),
                     },
                 );
             }
@@ -1086,6 +1221,7 @@ impl TypeChecker {
                     kind: Box::new(DefKind::UserFn {
                         constrained_fn: None,
                     }),
+                    callees: Vec::new(),
                 },
             );
 
@@ -1146,6 +1282,7 @@ impl TypeChecker {
                 kind: Box::new(DefKind::Overloaded {
                     variants: overload_variants,
                 }),
+                callees: Vec::new(),
             },
         );
 
@@ -1497,6 +1634,7 @@ impl TypeChecker {
                 kind: Box::new(DefKind::UserFn {
                     constrained_fn: None,
                 }),
+                callees: Vec::new(),
             },
         );
 

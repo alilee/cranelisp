@@ -66,10 +66,8 @@ fn sexp_qualifies(sexp: &Sexp) -> bool {
                 if name == "import" || name == "export" || name == "mod" || name == "platform" {
                     return false;
                 }
-                // Reject macro-related forms.
-                if name == "defmacro" {
-                    return false;
-                }
+                // Step 4: defmacro is now handled by the v4 path.
+                // Macro calls are expanded per-sexp in Pass 2.
             }
             // Check all sub-expressions recursively.
             items.iter().all(sexp_qualifies)

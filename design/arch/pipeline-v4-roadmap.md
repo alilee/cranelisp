@@ -66,7 +66,7 @@ The v3 pipeline is caller-driven: callers call `compile_unit`, wait for it to re
 **Goal**: TypeChecker gains a `check_form()` method that typechecks one form and returns per-form results, accumulating into the module's state.
 
 **Changes**:
-- Add `tc.check_form(module: &ModuleFullPath, form: &TopLevel) -> Result<FormCheckResult, CranelispError>` to `cranelisp-typecheck`. `FormCheckResult` contains: method resolutions, expr_types, constraints, and warnings for this form's symbols.
+- Add `tc.check_form(module: &ModuleFullPath, form: &TopLevel) -> Result<FormCheckResult, CranelispError>` to `cranelisp-typecheck`. `FormCheckResult` contains: method resolutions, expr_types, constraints, warnings, and `call_graph_edges: Vec<(Symbol, FQSymbol)>` for this form's symbols (see `interfaces.md` §FormCheckResult and Decision 21).
 - `FormCheckResult` accumulates into the module's typecheck state via `tc.merge_form_result(module, form_result)`.
 - Rewrite `tc.check()` to iterate forms and call `check_form()` internally — existing callers are unchanged.
 - The multi-pass structure (register all signatures, then check all bodies) must still work. `check_form` for a `defn` registers the signature; a second pass calls `check_form` for the body. This means `check()` calls `check_form` in two passes, matching the current multi-pass design.

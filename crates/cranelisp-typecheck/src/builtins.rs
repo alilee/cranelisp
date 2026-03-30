@@ -199,6 +199,7 @@ impl TypeChecker {
                         primitive_kind: PrimitiveKind::Inline,
                         jit_name: None,
                     }),
+                    callees: Vec::new(),
                 },
             );
         }
@@ -232,6 +233,7 @@ impl TypeChecker {
                         primitive_kind: PrimitiveKind::Extern,
                         jit_name: Some(JitSymbol::from(prim.name.as_ref())),
                     }),
+                    callees: Vec::new(),
                 },
             );
         }
@@ -320,6 +322,7 @@ impl TypeChecker {
                         primitive_kind: PrimitiveKind::Extern,
                         jit_name: Some(JitSymbol::from(name)),
                     }),
+                    callees: Vec::new(),
                 },
             );
         }
@@ -365,6 +368,7 @@ impl TypeChecker {
                     kind: Box::new(DefKind::SpecialForm {
                         description: desc.to_string(),
                     }),
+                    callees: Vec::new(),
                 },
             );
         }
@@ -399,6 +403,7 @@ impl TypeChecker {
                         primitive_kind: PrimitiveKind::Extern,
                         jit_name: Some(JitSymbol::from(prim.name.as_ref())),
                     }),
+                    callees: Vec::new(),
                 },
             );
         }
@@ -468,6 +473,7 @@ impl TypeChecker {
                     primitive_kind: PrimitiveKind::Extern,
                     jit_name: Some(JitSymbol::from("sconcat")),
                 }),
+                callees: Vec::new(),
             },
         );
     }
@@ -744,6 +750,7 @@ impl TypeChecker {
                     primitive_kind: PrimitiveKind::Inline,
                     jit_name: None,
                 }),
+                callees: Vec::new(),
             },
         );
     }
@@ -875,6 +882,7 @@ impl TypeChecker {
                             format!("cranelisp_trace_{field_name}").as_str(),
                         )),
                     }),
+                    callees: Vec::new(),
                 },
             );
         }
@@ -902,6 +910,7 @@ impl TypeChecker {
                 kind: Box::new(DefKind::SpecialForm {
                     description: "Execution trace: (trace expr) — evaluates expr with call instrumentation, returns Trace ADT".to_string(),
                 }),
+                callees: Vec::new(),
             },
         );
 

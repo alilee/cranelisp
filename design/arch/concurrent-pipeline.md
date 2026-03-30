@@ -226,7 +226,7 @@ enum PriorityStatus {
 
 ### 4.1 Queue Ordering
 
-New entries are pushed to the **front** of the queue. When `block_for_macro_codegen` is called, the caller walks the call graph breadth-first, pushing each uncompiled dependency to the front. This naturally produces a topo-sort: leaf dependencies end up at the front, the macro function itself ends up deepest.
+New entries are pushed to the **front** of the queue. When `block_for_macro_codegen` is called, the caller walks the macro's `ModuleEntry.callees` (a `Vec<FQSymbol>` populated during typecheck — see Decision 21) breadth-first via `tc.symbol_table(module).get(name)`, pushing each uncompiled dependency to the front. This naturally produces a topo-sort: leaf dependencies end up at the front, the macro function itself ends up deepest.
 
 Priority workers scan from the front and claim the first Ready entry. Dependencies tend to compile before their consumers. If a dependency is further back in the queue (because it was added by an earlier request), a worker eventually reaches it — the Waiting mechanism handles the resolution. Correctness does not depend on ordering.
 
@@ -313,7 +313,7 @@ When a priority worker claims a typecheck module (from level 1 or 3), it process
 1. **Expand** the form. If it is a macro call:
    - Look up the macro in the module table.
    - If the macro's function pointer and its call-graph dependencies are all compiled: expand (call the function pointer with marshalled sexp args), continue with the expanded sexp.
-   - If not: walk the macro's call graph, call `block_for_macro_codegen`. The worker releases the module (moves to TypecheckBlocked) and returns to the priority ladder. When dependencies are compiled, the module unblocks and a worker resumes from this form.
+   - If not: walk the macro's `ModuleEntry.callees` (a `Vec<FQSymbol>`, populated during typecheck per Decision 21) to collect transitive uncompiled deps via `tc.symbol_table(module).get(name)`, then call `block_for_macro_codegen`. The worker releases the module (moves to TypecheckBlocked) and returns to the priority ladder. When dependencies are compiled, the module unblocks and a worker resumes from this form.
 2. **Build AST** from the (possibly expanded) sexp.
 3. **Typecheck** the form. Register the symbol's type information.
 4. Call `notify_symbol_typechecked` — this may unblock other modules.

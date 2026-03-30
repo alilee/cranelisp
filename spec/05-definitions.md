@@ -561,7 +561,7 @@ This means a function may call another function defined later in the file, and a
 
 ### 5.13.2 Macros [Tested tests/ring3_repl::r3_neg_forward_reference_not_expanded, tests/macros::batch_defmacro_simple]
 
-Macros MUST be defined before use. A macro cannot be forward-referenced. This is because macro expansion occurs in a single pass, and each `defmacro` is compiled immediately when encountered. A reference to a macro that has not yet been defined is an error.
+Macros MUST be defined before use. A `defmacro` form MUST make its macro available for expansion by all subsequent forms in the same file. A reference to a macro that has not yet been defined is an error. An implementation MAY defer compilation of the macro body until first use, provided the macro is available when a subsequent form references it.
 
 ```clojure
 ;; CORRECT: macro defined before use

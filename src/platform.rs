@@ -250,6 +250,7 @@ pub fn register_platform_in_tc(
                     primitive_kind: PrimitiveKind::PlatformEffect,
                     jit_name: Some(JitSymbol::from(desc.jit_name.as_str())),
                 }),
+                callees: Vec::new(),
             },
         );
 

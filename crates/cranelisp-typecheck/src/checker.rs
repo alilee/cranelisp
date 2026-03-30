@@ -47,7 +47,7 @@ use std::sync::{Arc, RwLock, RwLockReadGuard};
 use cranelisp_types::{
     ConstructorInfo, CranelispError, ExportSpec, FQSymbol, ImportNames, ImportSpec,
     MethodResolutions, ModuleEntry, ModuleFullPath, ResolvedCall, ReplSnapshot, Scheme, Span,
-    Subst, Symbol, SymbolTable, TraitName, Type, TypeId, TypeName, Warning,
+    Subst, Symbol, SymbolTable, TraitName, Type, TypeDefInfo, TypeId, TypeName, Warning,
     apply,
 };
 
@@ -367,6 +367,23 @@ impl TypeChecker {
     /// Callers use `.iter()`, `.get()` etc. transparently via `Deref`.
     pub fn type_def_registry(&self) -> RwLockReadGuard<'_, TypeDefRegistry> {
         self.type_defs.read().unwrap()
+    }
+
+    /// Build type_defs and constructor_to_type maps from the registry.
+    ///
+    /// Used by the worker to build partial `CheckResult` for inline
+    /// macro compilation without going through `finalize_check_result`.
+    pub fn snapshot_type_defs(&self) -> (HashMap<TypeName, TypeDefInfo>, HashMap<Symbol, TypeName>) {
+        let registry = self.type_defs.read().unwrap();
+        let type_defs: HashMap<TypeName, TypeDefInfo> = registry.iter()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
+        let constructor_to_type: HashMap<Symbol, TypeName> = type_defs.iter()
+            .flat_map(|(type_name, info)| {
+                info.constructors.iter().map(move |c| (c.name.clone(), type_name.clone()))
+            })
+            .collect();
+        (type_defs, constructor_to_type)
     }
 
     /// Look up a specific module's symbol table by path.
@@ -1547,6 +1564,7 @@ mod tests {
                 docstring: None,
                 param_names: vec![],
                 kind: Box::new(DefKind::UserFn { constrained_fn: None }),
+                callees: Vec::new(),
             },
         );
 
@@ -1572,6 +1590,7 @@ mod tests {
                     docstring: None,
                     param_names: vec![],
                     kind: Box::new(DefKind::UserFn { constrained_fn: None }),
+                    callees: Vec::new(),
                 },
             );
         }

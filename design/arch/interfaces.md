@@ -738,11 +738,18 @@ pub struct CallInfo {
     pub callees: Vec<CallEdge>,
 }
 
-/// Program-wide call graph. Adjacency list representation.
+/// Transient within-module call graph. Adjacency list representation.
+/// Rich edges with tail-position and span for codegen/analysis.
 ///
-/// Populated during typecheck (Stage 5). Consumed by:
+/// Populated during typecheck (Stage 5). Carried on `CheckResult`.
+/// Consumed by:
 /// - Analysis passes (SCC detection, recursion warnings)
-/// - Incremental recompilation (callee -> caller reverse index)
+/// - Codegen (tail call optimization decisions)
+///
+/// For cross-module / persistent call graph queries, use the per-symbol
+/// `callees: Vec<FQSymbol>` on `ModuleEntry::Def` and `ModuleEntry::Macro`.
+/// That representation is populated by `finalize_check_result()` and
+/// queryable via `tc.symbol_table(module).get(name)`. See Decision 21.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct CallGraph {
     /// Forward edges: caller -> list of callees.
@@ -769,6 +776,30 @@ impl CallGraph {
 
     /// Find self-recursive calls not in tail position.
     pub fn non_tail_self_recursion(&self) -> Vec<(Symbol, Span)> { ... }
+}
+```
+
+### FormCheckResult (NEW)
+
+Per-form typecheck output, returned by `tc.check_form()`. Accumulated into the module's full `CheckResult` via `tc.merge_form_result()`.
+
+```rust
+/// Per-form typecheck result. Accumulated into module-level CheckResult.
+#[derive(Debug)]
+pub struct FormCheckResult {
+    /// Method resolutions for this form's call sites.
+    pub method_resolutions: MethodResolutions,
+    /// Expression types for this form.
+    pub expr_types: HashMap<Span, Type>,
+    /// Constraints discovered for this form's symbols.
+    pub constrained_fn_names: HashSet<Symbol>,
+    /// Warnings produced during checking this form.
+    pub warnings: Vec<Warning>,
+    /// Call graph edges: (local caller, fully qualified callee).
+    /// `finalize_check_result()` groups these by caller and writes
+    /// `callees: Vec<FQSymbol>` to each caller's `ModuleEntry`.
+    /// See Decision 21.
+    pub call_graph_edges: Vec<(Symbol, FQSymbol)>,
 }
 ```
 
@@ -853,6 +884,10 @@ pub enum ModuleEntry {
         docstring: Option<String>,
         param_names: Vec<Symbol>,
         kind: DefKind,
+        /// Fully qualified callees, populated by finalize_check_result()
+        /// from TC-sourced call graph edges. Used by scheduler for
+        /// transitive macro dep discovery. See Decision 21.
+        callees: Vec<FQSymbol>,
     },
     Import { source: FQSymbol },
     Reexport { source: FQSymbol },
@@ -880,6 +915,10 @@ pub enum ModuleEntry {
         visibility: Visibility,
         sexp: Option<Sexp>,
         source: Option<String>,
+        /// Fully qualified callees, populated by finalize_check_result()
+        /// from TC-sourced call graph edges. Used by scheduler for
+        /// transitive macro dep discovery. See Decision 21.
+        callees: Vec<FQSymbol>,
     },
     PlatformDecl {
         dll_path: PathBuf,
@@ -1305,7 +1344,9 @@ impl TypeChecker {
 ### Types added
 - `TopLevel::Expr(Expr)` variant
 - `DisplayInfo` — REPL display payload
-- `CallGraph`, `CallEdge`, `CallInfo` — program-wide call graph
+- `CallGraph`, `CallEdge`, `CallInfo` — transient within-module call graph (rich, with tail-position/span)
+- `FormCheckResult` — per-form typecheck output with `call_graph_edges: Vec<(Symbol, FQSymbol)>`
+- `ModuleEntry::Def.callees`, `ModuleEntry::Macro.callees` — persistent per-symbol `Vec<FQSymbol>` for cross-module call graph queries (Decision 21)
 - `WarningKind::NonTailRecursion` — new warning category
 - `CompileContext` — explicit compilation context (module target, strategy, compile mode)
 - `ModuleStrategy` — additive vs replacement module compilation
