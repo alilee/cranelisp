@@ -118,6 +118,8 @@ pub struct ReplSession {
     pub(crate) last_saved_hash: Option<String>,
     /// True while restoring from user.cl at startup — suppresses save-on-define.
     restoring: bool,
+    /// v4 scheduler for additive REPL eval (Step 7). None when using old path.
+    scheduler: Option<crate::scheduler::CompileScheduler>,
 }
 
 impl ReplSession {
@@ -147,9 +149,15 @@ impl ReplSession {
             },
             last_saved_hash: None,
             restoring: false,
+            scheduler: None,
         }
     }
 
+    /// Enable v4 eval path: REPL eval routes through the v4 scheduler
+    /// and `process_module_forms(Additive)` instead of `compile_unit`.
+    pub fn enable_v4(&mut self) {
+        self.scheduler = Some(crate::scheduler::CompileScheduler::new());
+    }
 
     /// Create a new REPL session with prelude loading.
     ///
@@ -494,6 +502,329 @@ impl ReplSession {
     ///
     /// On error, restores the TypeChecker to its pre-input state.
     pub fn eval(&mut self, source: &str) -> Result<ReplResult, CranelispError> {
+        if self.scheduler.is_some() {
+            return self.eval_v4(source);
+        }
+        self.eval_old(source)
+    }
+
+    /// v4 eval path: serial per-form processing through the v4 worker.
+    ///
+    /// Each sexp is processed individually through `process_module_forms(Additive)`,
+    /// with TC snapshot/restore for error recovery. This replaces the old
+    /// `compile_unit` delegation (Step 7).
+    fn eval_v4(&mut self, source: &str) -> Result<ReplResult, CranelispError> {
+        let trimmed = source.trim();
+        if trimmed.is_empty() || is_comment_only(trimmed) {
+            return Ok(ReplResult {
+                value: 0,
+                ty: Type::Int,
+                is_definition: true,
+                warnings: Vec::new(),
+                definition_display: None,
+                eval_duration: Duration::ZERO,
+            });
+        }
+
+        let sexps = cranelisp_frontend::parse(source)?;
+        if sexps.is_empty() {
+            return Ok(ReplResult {
+                value: 0,
+                ty: Type::Int,
+                is_definition: true,
+                warnings: Vec::new(),
+                definition_display: None,
+                eval_duration: Duration::ZERO,
+            });
+        }
+
+        let total_start = Instant::now();
+        let mut last_result: Option<ReplResult> = None;
+        let mut all_warnings = Vec::new();
+        let mut had_definitions = false;
+
+        for sexp in &sexps {
+            match self.eval_one_form_v4(sexp) {
+                Ok(result) => {
+                    all_warnings.extend(result.warnings.clone());
+                    if result.is_definition {
+                        had_definitions = true;
+                    }
+                    last_result = Some(result);
+                }
+                Err(e) => {
+                    // Per-form error: if this is the only/last form, return error.
+                    // Otherwise, continue to next form (error already recovered by
+                    // eval_one_form_v4 via TC snapshot/restore).
+                    if sexps.len() == 1 {
+                        return Err(e);
+                    }
+                    // For multi-form input, the error is reported but processing
+                    // continues. Store a synthetic result for the error.
+                    last_result = Some(ReplResult {
+                        value: 0,
+                        ty: Type::Int,
+                        is_definition: false,
+                        warnings: Vec::new(),
+                        definition_display: Some(format!("Error: {}", e)),
+                        eval_duration: Duration::ZERO,
+                    });
+                }
+            }
+        }
+
+        // Session persistence: save after definitions.
+        if had_definitions && !self.restoring {
+            self.save_current_module();
+        }
+
+        // Sync type definitions for ADT value display.
+        self.sync_type_defs();
+
+        let total_elapsed = total_start.elapsed();
+        match last_result {
+            Some(mut r) => {
+                r.warnings = all_warnings;
+                r.eval_duration = total_elapsed;
+                Ok(r)
+            }
+            None => Ok(ReplResult {
+                value: 0,
+                ty: Type::Int,
+                is_definition: true,
+                warnings: all_warnings,
+                definition_display: None,
+                eval_duration: Duration::ZERO,
+            }),
+        }
+    }
+
+    /// Evaluate a single sexp via the v4 worker path with TC snapshot/restore.
+    fn eval_one_form_v4(&mut self, sexp: &Sexp) -> Result<ReplResult, CranelispError> {
+        // Bare symbol check — introspect macros and special forms.
+        if let Some(result) = self.check_bare_symbol_introspection(sexp) {
+            return Ok(result);
+        }
+
+        // TC snapshot for error recovery.
+        let snapshot = self.core.tc.snapshot();
+
+        let result = self.process_single_form_v4(sexp);
+        match result {
+            Ok(r) => Ok(r),
+            Err(e) => {
+                self.core.tc.restore(snapshot);
+                Err(e)
+            }
+        }
+    }
+
+    /// Process a single sexp through `process_module_forms(Additive)` then codegen.
+    ///
+    /// Uses a loop with a max retry counter to resolve Blocked dependencies
+    /// instead of unbounded recursion.
+    fn process_single_form_v4(&mut self, sexp: &Sexp) -> Result<ReplResult, CranelispError> {
+        use crate::worker::{self, ProcessResult, WorkerContext};
+        use cranelisp_typecheck::ModuleCheckAccumulator;
+
+        const MAX_DEP_RETRIES: usize = 100;
+
+        for retry in 0..MAX_DEP_RETRIES {
+            let module = self.core.tc.current_module_path().clone();
+            let mut accumulator = ModuleCheckAccumulator::new();
+            let mut expanded_program = Vec::new();
+            let single_sexp = [sexp.clone()];
+
+            let scheduler = self.scheduler.as_mut()
+                .ok_or_else(|| CranelispError::ModuleError {
+                    message: "v4 scheduler not initialized".into(),
+                    file: None,
+                    span: cranelisp_types::Span::SYNTHETIC,
+                })?;
+
+            let result = {
+                let mut wctx = WorkerContext {
+                    tc: &mut self.core.tc,
+                    scheduler,
+                    inmem_worker: &mut self.core.inmem_worker,
+                    platform_symbols: &mut self.core.platform_symbols,
+                    lib_dirs: &self.core.lib_dirs,
+                    project_root: &self.core.project_root,
+                };
+
+                worker::process_module_forms(
+                    &mut wctx,
+                    &module,
+                    &single_sexp,
+                    0,
+                    &mut accumulator,
+                    &mut expanded_program,
+                    ModuleStrategy::Additive,
+                )?
+            };
+
+            match result {
+                ProcessResult::Complete { check_result, program } => {
+                    return self.codegen_and_execute_v4(&module, &program, &check_result);
+                }
+                ProcessResult::Blocked { dep_module, dep_sexps, .. } => {
+                    // Compile the dependency inline then retry.
+                    self.compile_dep_inline_v4(&dep_module, &dep_sexps)?;
+                    // Loop continues to retry with the resolved dependency.
+                    if retry == MAX_DEP_RETRIES - 1 {
+                        return Err(CranelispError::ModuleError {
+                            message: format!(
+                                "dependency chain too deep (>{} retries) while resolving '{}'",
+                                MAX_DEP_RETRIES, dep_module,
+                            ),
+                            file: None,
+                            span: cranelisp_types::Span::SYNTHETIC,
+                        });
+                    }
+                }
+            }
+        }
+
+        // Unreachable: the loop either returns or errors on the last iteration.
+        unreachable!("invariant: loop always returns or errors before exhausting iterations")
+    }
+
+    /// Run codegen for definitions, then execute if there is an expression.
+    fn codegen_and_execute_v4(
+        &mut self,
+        module: &ModuleFullPath,
+        program: &[TopLevel],
+        check: &CheckResult,
+    ) -> Result<ReplResult, CranelispError> {
+        let scheduler = self.scheduler.as_mut()
+            .ok_or_else(|| CranelispError::ModuleError {
+                message: "v4 scheduler not initialized".into(),
+                file: None,
+                span: cranelisp_types::Span::SYNTHETIC,
+            })?;
+
+        // Codegen: compile definitions, register in GOT.
+        crate::worker::codegen_module_symbols(
+            &mut self.core.inmem_worker,
+            &self.core.platform_symbols,
+            scheduler,
+            module,
+            program,
+            check,
+        )?;
+
+        let has_expr = program.iter().any(|tl| matches!(tl, TopLevel::Expr(_)));
+
+        if has_expr {
+            let program_vec = program.to_vec();
+            let eval_start = Instant::now();
+            let (value, ty) = crate::pipeline::compile_and_execute_expr(
+                &mut self.core.inmem_worker,
+                &self.core.platform_symbols,
+                &program_vec,
+                check,
+            )?;
+            let eval_duration = eval_start.elapsed();
+
+            Ok(ReplResult {
+                value,
+                ty,
+                is_definition: false,
+                warnings: check.warnings.clone(),
+                definition_display: None,
+                eval_duration,
+            })
+        } else {
+            // Definition-only: build display text from CheckResult.
+            let display = check.display.as_ref().and_then(|d| {
+                d.scheme.as_ref().map(|s| {
+                    format!(":{} ; defined", s.ty)
+                })
+            });
+
+            let ty = check.display.as_ref()
+                .map(|d| d.ty.clone())
+                .unwrap_or(Type::Int);
+
+            Ok(ReplResult {
+                value: 0,
+                ty,
+                is_definition: true,
+                warnings: check.warnings.clone(),
+                definition_display: display,
+                eval_duration: Duration::ZERO,
+            })
+        }
+    }
+
+    /// Compile a dependency module inline (for blocked REPL eval).
+    fn compile_dep_inline_v4(
+        &mut self,
+        dep_module: &ModuleFullPath,
+        dep_sexps: &[Sexp],
+    ) -> Result<(), CranelispError> {
+        let scheduler = self.scheduler.as_mut()
+            .ok_or_else(|| CranelispError::ModuleError {
+                message: "v4 scheduler not initialized".into(),
+                file: None,
+                span: cranelisp_types::Span::SYNTHETIC,
+            })?;
+
+        scheduler.register_module(dep_module.clone(), false);
+
+        let mut module_sexps = HashMap::new();
+        module_sexps.insert(dep_module.clone(), dep_sexps.to_vec());
+
+        let mut ctx = crate::worker::WorkerContext {
+            tc: &mut self.core.tc,
+            scheduler,
+            inmem_worker: &mut self.core.inmem_worker,
+            platform_symbols: &mut self.core.platform_symbols,
+            lib_dirs: &self.core.lib_dirs,
+            project_root: &self.core.project_root,
+        };
+
+        crate::worker::priority_worker_loop(&mut ctx, &mut module_sexps)?;
+
+        let scheduler = self.scheduler.as_mut()
+            .ok_or_else(|| CranelispError::ModuleError {
+                message: "v4 scheduler not initialized".into(),
+                file: None,
+                span: cranelisp_types::Span::SYNTHETIC,
+            })?;
+
+        scheduler.wait_inmem_complete().map_err(|e| {
+            CranelispError::ModuleError {
+                message: e.to_string(),
+                file: None,
+                span: cranelisp_types::Span::SYNTHETIC,
+            }
+        })?;
+
+        Ok(())
+    }
+
+    /// Sync type definitions from the typechecker for ADT value display.
+    fn sync_type_defs(&mut self) {
+        for (name, info) in self.core.tc.type_def_registry().iter() {
+            self.type_defs.insert(name.clone(), info.clone());
+        }
+    }
+
+    /// Old eval path (v3): routes through compile_unit + codegen_and_execute.
+    ///
+    /// Pipeline:
+    /// 1. Skip blank/comment
+    /// 2. Parse source -> sexps (for annotation/introspection detection)
+    /// 3. TC snapshot for error recovery
+    /// 4. Check annotation -> handle via eval_annotation_expr (return early)
+    /// 5. Check bare symbol introspection -> return early
+    /// 6. Call compile_unit + codegen_and_execute
+    /// 7. Bridge CodegenResult to ReplResult
+    /// 8. Store DefCodegen, merge module_structure, session persistence
+    ///
+    /// On error, restores the TypeChecker to its pre-input state.
+    fn eval_old(&mut self, source: &str) -> Result<ReplResult, CranelispError> {
         // Step 1: Skip blank and comment-only input before it reaches the parser.
         let trimmed = source.trim();
         if trimmed.is_empty() || is_comment_only(trimmed) {
@@ -1517,7 +1848,22 @@ fn module_display_name(
 /// `stdlib/` directory in the current directory. If prelude loading fails,
 /// starts without it and prints a warning.
 pub fn run_repl() {
+    let session = create_repl_session();
+    run_repl_inner(session);
+}
+
+/// Start the REPL with the v4 scheduler-driven eval path.
+///
+/// Same REPL experience as `run_repl()` — slash commands, display, line editing
+/// — but eval routes through `process_module_forms(Additive)` instead of
+/// `compile_unit`. Activated by the `--v4` CLI flag.
+pub fn run_repl_v4() {
     let mut session = create_repl_session();
+    session.enable_v4();
+    run_repl_inner(session);
+}
+
+fn run_repl_inner(mut session: ReplSession) {
     let stdin = io::stdin();
     let stdout = io::stdout();
     let mut stdout = stdout.lock();
@@ -2586,5 +2932,92 @@ mod tests {
         );
         assert_eq!(display, ":(IO primitives/Int) <IO trampoline panicked>");
         cranelisp_runtime::heap_dealloc(base as i64);
+    }
+
+    // --- v4 eval path tests (Step 7) ---
+
+    /// Create a ReplSession with v4 eval enabled (no prelude).
+    fn v4_session() -> ReplSession {
+        let mut session = ReplSession::new();
+        session.enable_v4();
+        session
+    }
+
+    // spec: design/int/step7-repl-eval.md §4 — simple expression via v4
+    #[test]
+    fn test_v4_eval_int() {
+        let mut session = v4_session();
+        let result = session.eval("42").unwrap();
+        assert_eq!(result.value, 42);
+        assert_eq!(result.ty, Type::Int);
+        assert!(!result.is_definition);
+    }
+
+    // spec: design/int/step7-repl-eval.md §4 — boolean via v4
+    #[test]
+    fn test_v4_eval_bool() {
+        let mut session = v4_session();
+        let result = session.eval("true").unwrap();
+        assert_eq!(result.value, 1);
+        assert_eq!(result.ty, Type::Bool);
+    }
+
+    // spec: design/int/step7-repl-eval.md §7 — error recovery via v4
+    #[test]
+    fn test_v4_error_recovery() {
+        let mut session = v4_session();
+        // Parse error.
+        let err = session.eval("(+ 1");
+        assert!(err.is_err());
+        // Session should still work after error.
+        let result = session.eval("42").unwrap();
+        assert_eq!(result.value, 42);
+    }
+
+    // spec: design/int/step7-repl-eval.md §3 — additive: defn then call
+    #[test]
+    fn test_v4_defn_then_call() {
+        let mut session = v4_session();
+        // Import primitives for add-i64.
+        session.eval("(import [primitives [add-i64]])").unwrap();
+        // Define a function.
+        let def_result = session.eval("(defn inc [n] (add-i64 n 1))").unwrap();
+        assert!(def_result.is_definition);
+        // Call it.
+        let call_result = session.eval("(inc 5)").unwrap();
+        assert_eq!(call_result.value, 6);
+        assert_eq!(call_result.ty, Type::Int);
+    }
+
+    // spec: design/int/step7-repl-eval.md §4.6 — bare symbol introspection
+    #[test]
+    fn test_v4_bare_symbol_special_form() {
+        let mut session = v4_session();
+        let result = session.eval("defn").unwrap();
+        // Should produce introspection display, not an error.
+        assert!(result.definition_display.is_some());
+        let display = result.definition_display.unwrap();
+        assert!(display.contains("defn"), "expected 'defn' in display: {}", display);
+    }
+
+    // spec: design/int/step7-repl-eval.md §3 — multi-eval persistence
+    #[test]
+    fn test_v4_multi_eval_persistence() {
+        let mut session = v4_session();
+        session.eval("(import [primitives [add-i64 sub-i64]])").unwrap();
+        session.eval("(defn inc [n] (add-i64 n 1))").unwrap();
+        session.eval("(defn dec [n] (sub-i64 n 1))").unwrap();
+        let result = session.eval("(inc (dec 10))").unwrap();
+        assert_eq!(result.value, 10);
+    }
+
+    // spec: design/int/step7-repl-eval.md §2 — blank/comment input
+    #[test]
+    fn test_v4_blank_and_comment() {
+        let mut session = v4_session();
+        let result = session.eval("").unwrap();
+        assert!(result.is_definition); // blank returns definition-like no-op
+        let result = session.eval("; just a comment").unwrap();
+        assert!(result.is_definition);
     }
 }

@@ -153,10 +153,11 @@ pub fn process_module_forms(
     start_form_index: usize,
     accumulator: &mut ModuleCheckAccumulator,
     expanded_program: &mut Vec<TopLevel>,
+    strategy: ModuleStrategy,
 ) -> Result<ProcessResult, CranelispError> {
     let is_fresh = start_form_index == 0;
 
-    if is_fresh {
+    if is_fresh && strategy == ModuleStrategy::Replace {
         // Set active module and clear for replace.
         ctx.tc.set_current_module(module.clone());
         ctx.tc.clear_module_for_replace_public();
@@ -169,6 +170,10 @@ pub fn process_module_forms(
         if let Some(result) = inject_prelude_if_needed(ctx, module)? {
             return Ok(result);
         }
+    } else if is_fresh && strategy == ModuleStrategy::Additive {
+        // Additive: just set the active module. Module state persists
+        // from previous evals — no clear, no re-injection.
+        ctx.tc.set_current_module(module.clone());
     } else {
         // Resume: set active module (may have been changed by dep processing).
         ctx.tc.set_current_module(module.clone());
@@ -200,7 +205,7 @@ pub fn process_module_forms(
 
     match pass2_result {
         Pass2Result::Complete => {
-            finalize_module(ctx, module, expanded_program, accumulator)
+            finalize_module(ctx, module, expanded_program, accumulator, strategy)
         }
         Pass2Result::Blocked {
             form_index,
@@ -249,6 +254,7 @@ fn finalize_module(
     module: &ModuleFullPath,
     expanded_program: &[TopLevel],
     accumulator: &mut ModuleCheckAccumulator,
+    strategy: ModuleStrategy,
 ) -> Result<ProcessResult, CranelispError> {
     let final_working = wrap_exprs_as_defns(expanded_program);
 
@@ -264,7 +270,7 @@ fn finalize_module(
         module,
         accumulator,
         &final_working,
-        ModuleStrategy::Replace,
+        strategy,
     )?;
 
     check_result.display =
@@ -1451,6 +1457,7 @@ pub fn priority_worker_loop(
                     ctx, &module, &sexps, start_idx,
                     &mut state.accumulator,
                     &mut state.expanded_program,
+                    ModuleStrategy::Replace,
                 ) {
                     Ok(ProcessResult::Complete { check_result, program }) => {
                         // Post-typecheck codegen sweep (W2).

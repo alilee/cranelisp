@@ -398,6 +398,12 @@ impl CompileScheduler {
     /// and unblocks them. This handles glob imports where the waiter
     /// blocked on "*" and needs the whole module done.
     pub fn notify_typecheck_done(&mut self, module: &ModuleFullPath) {
+        // Skip modules not registered with the scheduler (e.g., the REPL
+        // "user" module in Additive mode). Without this guard the
+        // typecheck_done deque grows unbounded.
+        if !self.state.modules.contains_key(module) {
+            return;
+        }
         self.set_pool(module, ModulePool::TypecheckDone);
         self.state.typecheck_done.push_back(module.clone());
 

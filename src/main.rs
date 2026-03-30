@@ -199,10 +199,10 @@ fn v4_main(
 ) -> Result<(), CranelispError> {
     match action {
         Action::Repl => {
-            // REPL: delegate directly to the existing run_repl().
-            // The REPL's session management is tightly coupled to ReplSession,
-            // not CompilerSession. Full REPL migration happens in Step 7+.
-            cranelisp::repl::run_repl();
+            // REPL with v4 eval: same REPL experience (slash commands, display,
+            // line editing) but eval routes through process_module_forms(Additive)
+            // instead of compile_unit (Step 7).
+            cranelisp::repl::run_repl_v4();
             Ok(())
         }
         Action::Link => {

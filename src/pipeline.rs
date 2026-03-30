@@ -818,7 +818,7 @@ fn compile_and_execute_interactive(
     Ok((value, result_type))
 }
 
-fn compile_and_execute_expr(
+pub fn compile_and_execute_expr(
     inmem_worker: &mut InMemWorkerState,
     platform_symbols: &[(String, *const u8)],
     program: &Program,

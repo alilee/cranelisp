@@ -1,18 +1,19 @@
-// CompilerSession: v4 pipeline session (pipeline-v4.md §5, roadmap Steps 0-5).
+// CompilerSession: v4 pipeline session (pipeline-v4.md §5, roadmap Steps 0-7).
 //
-// Wraps the existing CompilationSession, delegating REPL eval to the old path.
-// Batch compilation goes through the v4 scheduler-driven path with lazy
-// dependency discovery (Step 5).
+// Wraps the existing CompilationSession. Batch compilation goes through the v4
+// scheduler-driven path with lazy dependency discovery (Step 5). REPL eval
+// routes through process_module_forms(Additive) with serial per-form processing
+// (Step 7).
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use cranelisp_types::{
-    CodegenBehaviour, CompileContext, CranelispError, ModuleFullPath, ModuleStrategy,
-    Span, Symbol, Type, Warning,
+    CodegenBehaviour, CompileContext, CranelispError,
+    ModuleFullPath, ModuleStrategy, Span, Symbol,
+    Type, Warning,
 };
 
-use crate::pipeline::CodegenResult;
 use crate::scheduler::CompileScheduler;
 use crate::session::CompilationSession;
 use crate::worker::WorkerContext;
@@ -190,26 +191,6 @@ impl CompilerSession {
         );
 
         Ok(Vec::new())
-    }
-
-    /// Evaluate source text (REPL input).
-    ///
-    /// Delegates to the old path: `compile_unit` + `codegen_and_execute`.
-    /// In v4, this will submit forms to the scheduler with Additive strategy
-    /// and compile the trailing expression as a temporary closure (Step 7).
-    pub fn eval(&mut self, source: &str) -> Result<Option<CodegenResult>, CranelispError> {
-        let module = self.inner.tc.current_module_path().clone();
-        let ctx = CompileContext {
-            module,
-            codegen: CodegenBehaviour::InMemoryAndObject,
-        };
-
-        let unit_result = self
-            .inner
-            .compile_unit(source, &ctx, ModuleStrategy::Additive)?;
-        self.inner.send_codegen(unit_result, ctx);
-        let results = self.inner.flush_codegen()?;
-        Ok(results.into_iter().last())
     }
 
     /// Process REPL slash commands and blank/comment detection.
