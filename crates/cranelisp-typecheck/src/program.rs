@@ -28,7 +28,7 @@ use cranelisp_types::{
     ResolvedCall, Scheme, Span, Symbol, SymbolTable, TopLevel, Type, Visibility, Warning, apply,
 };
 
-use crate::checker::TypeChecker;
+use crate::checker::{CheckState, TypeChecker};
 use crate::resolve::resolve_type_expr;
 use crate::scheme::mono;
 
@@ -267,6 +267,7 @@ impl TypeChecker {
     /// The caller symbol is the defn whose body produced these resolutions.
     fn extract_call_graph_edges(
         &self,
+        state: &CheckState,
         caller: &Symbol,
         method_resolutions: &HashMap<Span, ResolvedCall>,
     ) -> Vec<(Symbol, FQSymbol)> {
@@ -343,15 +344,19 @@ impl TypeChecker {
         pass: CheckPass,
         accumulator: &mut ModuleCheckAccumulator,
     ) -> Result<FormCheckResult, CranelispError> {
-        match pass {
-            CheckPass::Register => self.check_form_register(form, accumulator),
-            CheckPass::CheckBody => self.check_form_body(form, accumulator),
-        }
+        let mut state = std::mem::replace(&mut self.state, CheckState::new(ModuleFullPath::from("")));
+        let result = match pass {
+            CheckPass::Register => self.check_form_register(&mut state, form, accumulator),
+            CheckPass::CheckBody => self.check_form_body(&mut state, form, accumulator),
+        };
+        self.state = state;
+        result
     }
 
     /// Pass 1 (Register) dispatch: register type defs, trait decls/impls, signatures.
     fn check_form_register(
         &mut self,
+        state: &mut CheckState,
         form: &TopLevel,
         accumulator: &mut ModuleCheckAccumulator,
     ) -> Result<FormCheckResult, CranelispError> {
@@ -365,25 +370,25 @@ impl TypeChecker {
                 span,
             } => {
                 self.register_type_def(
-                    name, docstring, type_params, constructors, *visibility, *span,
+                    state, name, docstring, type_params, constructors, *visibility, *span,
                 )?;
                 Ok(FormCheckResult::empty())
             }
             TopLevel::TraitDecl(decl) => {
-                self.register_trait_decl(decl)?;
+                self.register_trait_decl(state, decl)?;
                 Ok(FormCheckResult::empty())
             }
             TopLevel::TraitImpl(impl_) => {
-                let defaults = self.register_trait_impl(impl_)?;
+                let defaults = self.register_trait_impl(state, impl_)?;
                 let mut result = FormCheckResult::empty();
                 result.default_method_defns = defaults;
                 Ok(result)
             }
             TopLevel::Defn(defn) => {
                 if defn.is_multi_sig() {
-                    self.check_form_register_multi_sig(defn, accumulator)
+                    self.check_form_register_multi_sig(state, defn, accumulator)
                 } else {
-                    self.check_form_register_single_defn(defn, accumulator)
+                    self.check_form_register_single_defn(state, defn, accumulator)
                 }
             }
             TopLevel::Expr(_) => {
@@ -397,10 +402,11 @@ impl TypeChecker {
     /// Register a single-sig defn's signature (Pass 1).
     fn check_form_register_single_defn(
         &mut self,
+        state: &mut CheckState,
         defn: &Defn,
         accumulator: &mut ModuleCheckAccumulator,
     ) -> Result<FormCheckResult, CranelispError> {
-        let (param_types, ret_ty) = self.register_defn_signature(defn)?;
+        let (param_types, ret_ty) = self.register_defn_signature(state, defn)?;
         accumulator.defn_type_vars.insert(defn.name.clone(), (param_types, ret_ty));
         Ok(FormCheckResult::empty())
     }
@@ -408,6 +414,7 @@ impl TypeChecker {
     /// Register a multi-sig defn: expand variants, register each, register base as Overloaded.
     fn check_form_register_multi_sig(
         &mut self,
+        state: &mut CheckState,
         defn: &Defn,
         accumulator: &mut ModuleCheckAccumulator,
     ) -> Result<FormCheckResult, CranelispError> {
@@ -429,15 +436,15 @@ impl TypeChecker {
                 span: variant.span,
             };
             // Register each variant's signature
-            let (param_types, ret_ty) = self.register_defn_signature(&internal_defn)?;
+            let (param_types, ret_ty) = self.register_defn_signature(state, &internal_defn)?;
             accumulator.defn_type_vars.insert(internal_name, (param_types, ret_ty));
         }
-        self.state.overloads.insert(defn.name.clone(), overload_entries);
+        state.overloads.insert(defn.name.clone(), overload_entries);
 
         // Register a placeholder for the base name
         let placeholder_ty = self.fresh_var();
         let placeholder_scheme = mono(placeholder_ty);
-        self.current_symbol_table_mut().insert(
+        self.current_symbol_table_mut_with_state(state).insert(
             defn.name.clone(),
             ModuleEntry::Def {
                 scheme: placeholder_scheme,
@@ -455,15 +462,16 @@ impl TypeChecker {
     /// Pass 2 (CheckBody) dispatch: check function bodies, generalize, detect constraints.
     fn check_form_body(
         &mut self,
+        state: &mut CheckState,
         form: &TopLevel,
         accumulator: &mut ModuleCheckAccumulator,
     ) -> Result<FormCheckResult, CranelispError> {
         match form {
             TopLevel::Defn(defn) => {
                 if defn.is_multi_sig() {
-                    self.check_form_body_multi_sig(defn, accumulator)
+                    self.check_form_body_multi_sig(state, defn, accumulator)
                 } else {
-                    self.check_form_body_single_defn(defn, accumulator)
+                    self.check_form_body_single_defn(state, defn, accumulator)
                 }
             }
             // Non-Defn forms are no-ops in CheckBody pass.
@@ -477,6 +485,7 @@ impl TypeChecker {
     /// for monomorphisation call sites.
     fn check_form_body_single_defn(
         &mut self,
+        state: &mut CheckState,
         defn: &Defn,
         accumulator: &ModuleCheckAccumulator,
     ) -> Result<FormCheckResult, CranelispError> {
@@ -490,21 +499,21 @@ impl TypeChecker {
 
         // Snapshot method_resolutions and expr_types sizes so we can extract
         // just the new entries added during this form's checking.
-        let mr_before: HashSet<Span> = self.state.method_resolutions.keys().copied().collect();
-        let et_before: HashSet<Span> = self.state.expr_types.keys().copied().collect();
+        let mr_before: HashSet<Span> = state.method_resolutions.keys().copied().collect();
+        let et_before: HashSet<Span> = state.expr_types.keys().copied().collect();
 
-        self.check_defn_body(defn, param_types, ret_ty)?;
-        self.resolve_deferred_trait_calls(&defn.body());
+        self.check_defn_body(state, defn, param_types, ret_ty)?;
+        self.resolve_deferred_trait_calls(state, &defn.body());
 
         // Eager constrained-fn detection
         let fn_type = Type::Fn(
-            param_types.iter().map(|t| self.apply_subst(t)).collect(),
-            Box::new(self.apply_subst(ret_ty)),
+            param_types.iter().map(|t| self.apply_subst(state, t)).collect(),
+            Box::new(self.apply_subst(state, ret_ty)),
         );
-        let trial_scheme = self.generalize(&fn_type);
+        let trial_scheme = self.generalize(state, &fn_type);
         let constrained_fn = if !trial_scheme.constraints.is_empty() {
             if let Some(ModuleEntry::Def { kind, .. }) =
-                self.current_symbol_table_mut().symbols.get_mut(&defn.name)
+                self.current_symbol_table_mut_with_state(state).symbols.get_mut(&defn.name)
             {
                 let cf = ConstrainedFn {
                     defn: defn.clone(),
@@ -521,22 +530,22 @@ impl TypeChecker {
 
         // Extract new method resolutions and expr types added during this form
         let mut form_mr = HashMap::new();
-        for (span, res) in &self.state.method_resolutions {
+        for (span, res) in &state.method_resolutions {
             if !mr_before.contains(span) {
                 form_mr.insert(*span, res.clone());
             }
         }
         let mut form_et = HashMap::new();
-        for (span, ty) in &self.state.expr_types {
+        for (span, ty) in &state.expr_types {
             if !et_before.contains(span) {
                 form_et.insert(*span, ty.clone());
             }
         }
 
         // Extract call graph edges from method resolutions (Decision 21).
-        let call_graph_edges = self.extract_call_graph_edges(&defn.name, &form_mr);
+        let call_graph_edges = self.extract_call_graph_edges(state, &defn.name, &form_mr);
 
-        let warnings = std::mem::take(&mut self.state.warnings);
+        let warnings = std::mem::take(&mut state.warnings);
 
         Ok(FormCheckResult {
             method_resolutions: form_mr,
@@ -553,11 +562,12 @@ impl TypeChecker {
     /// Check a multi-sig defn's variant bodies (Pass 2).
     fn check_form_body_multi_sig(
         &mut self,
+        state: &mut CheckState,
         defn: &Defn,
         accumulator: &ModuleCheckAccumulator,
     ) -> Result<FormCheckResult, CranelispError> {
-        let mr_before: HashSet<Span> = self.state.method_resolutions.keys().copied().collect();
-        let et_before: HashSet<Span> = self.state.expr_types.keys().copied().collect();
+        let mr_before: HashSet<Span> = state.method_resolutions.keys().copied().collect();
+        let et_before: HashSet<Span> = state.expr_types.keys().copied().collect();
 
         // Check each variant body
         for (i, variant) in defn.variants.iter().enumerate() {
@@ -587,18 +597,18 @@ impl TypeChecker {
                 span: variant.span,
             };
 
-            self.check_defn_body(&internal_defn, param_types, ret_ty)?;
-            self.resolve_deferred_trait_calls(&internal_defn.body());
+            self.check_defn_body(state, &internal_defn, param_types, ret_ty)?;
+            self.resolve_deferred_trait_calls(state, &internal_defn.body());
 
             // Eager constrained-fn detection for variant
             let fn_type = Type::Fn(
-                param_types.iter().map(|t| self.apply_subst(t)).collect(),
-                Box::new(self.apply_subst(ret_ty)),
+                param_types.iter().map(|t| self.apply_subst(state, t)).collect(),
+                Box::new(self.apply_subst(state, ret_ty)),
             );
-            let trial_scheme = self.generalize(&fn_type);
+            let trial_scheme = self.generalize(state, &fn_type);
             if !trial_scheme.constraints.is_empty() {
                 if let Some(ModuleEntry::Def { kind, .. }) =
-                    self.current_symbol_table_mut().symbols.get_mut(&internal_name)
+                    self.current_symbol_table_mut_with_state(state).symbols.get_mut(&internal_name)
                 {
                     let cf = ConstrainedFn {
                         defn: internal_defn,
@@ -613,13 +623,13 @@ impl TypeChecker {
 
         // Extract new method resolutions and expr types
         let mut form_mr = HashMap::new();
-        for (span, res) in &self.state.method_resolutions {
+        for (span, res) in &state.method_resolutions {
             if !mr_before.contains(span) {
                 form_mr.insert(*span, res.clone());
             }
         }
         let mut form_et = HashMap::new();
-        for (span, ty) in &self.state.expr_types {
+        for (span, ty) in &state.expr_types {
             if !et_before.contains(span) {
                 form_et.insert(*span, ty.clone());
             }
@@ -628,9 +638,9 @@ impl TypeChecker {
         // Extract call graph edges for each variant (Decision 21).
         // Multi-sig variant edges are attributed to the base defn name since
         // the mangled names aren't known until overload resolution in finalize.
-        let call_graph_edges = self.extract_call_graph_edges(&defn.name, &form_mr);
+        let call_graph_edges = self.extract_call_graph_edges(state, &defn.name, &form_mr);
 
-        let warnings = std::mem::take(&mut self.state.warnings);
+        let warnings = std::mem::take(&mut state.warnings);
 
         Ok(FormCheckResult {
             method_resolutions: form_mr,
@@ -657,10 +667,23 @@ impl TypeChecker {
         accumulator: &mut ModuleCheckAccumulator,
         result: FormCheckResult,
     ) {
+        // merge_form_result uses current_symbol_table_mut which needs current_module
+        // from self.state. No take-and-restore needed since we don't call state-threaded methods.
+        let mut state = std::mem::replace(&mut self.state, CheckState::new(ModuleFullPath::from("")));
+        self.merge_form_result_inner(&mut state, accumulator, result);
+        self.state = state;
+    }
+
+    fn merge_form_result_inner(
+        &mut self,
+        state: &mut CheckState,
+        accumulator: &mut ModuleCheckAccumulator,
+        result: FormCheckResult,
+    ) {
         // Write callees to ModuleEntry eagerly (Decision 21).
         if !result.call_graph_edges.is_empty() {
             write_callees_to_module_entries(
-                self.current_symbol_table_mut(),
+                self.current_symbol_table_mut_with_state(state),
                 &result.call_graph_edges,
             );
         }
@@ -697,16 +720,29 @@ impl TypeChecker {
         working_program: &[TopLevel],
         strategy: ModuleStrategy,
     ) -> Result<CheckResult, CranelispError> {
+        let mut state = std::mem::replace(&mut self.state, CheckState::new(ModuleFullPath::from("")));
+        let result = self.finalize_check_result_inner(&mut state, accumulator, working_program, strategy);
+        self.state = state;
+        return result;
+    }
+
+    fn finalize_check_result_inner(
+        &mut self,
+        state: &mut CheckState,
+        accumulator: &mut ModuleCheckAccumulator,
+        working_program: &[TopLevel],
+        strategy: ModuleStrategy,
+    ) -> Result<CheckResult, CranelispError> {
         // Phase 2: generalize all functions (matching pass2_check_bodies Phase 2).
         // Clear false-positive constrained markers.
         for (name, (param_types, ret_ty)) in &accumulator.defn_type_vars {
             let fn_type = Type::Fn(
-                param_types.iter().map(|t| self.apply_subst(t)).collect(),
-                Box::new(self.apply_subst(ret_ty)),
+                param_types.iter().map(|t| self.apply_subst(state, t)).collect(),
+                Box::new(self.apply_subst(state, ret_ty)),
             );
-            let scheme = self.generalize(&fn_type);
+            let scheme = self.generalize(state, &fn_type);
             if let Some(ModuleEntry::Def { scheme: s, kind, .. }) =
-                self.current_symbol_table_mut().symbols.get_mut(name)
+                self.current_symbol_table_mut_with_state(state).symbols.get_mut(name)
             {
                 *s = scheme.clone();
                 if scheme.constraints.is_empty()
@@ -735,29 +771,29 @@ impl TypeChecker {
                             visibility: defn.visibility,
                             span: variant.span,
                         };
-                        self.resolve_deferred_trait_calls(&internal_defn.body());
+                        self.resolve_deferred_trait_calls(state, &internal_defn.body());
                     }
                 } else {
-                    self.resolve_deferred_trait_calls(&defn.body());
+                    self.resolve_deferred_trait_calls(state, &defn.body());
                 }
             }
         }
 
         // Pass 2.5: resolve multi-sig overloads
-        let multi_sig_defns = self.resolve_multi_sig_overloads(
+        let multi_sig_defns = self.resolve_multi_sig_overloads(state, 
             working_program,
             &accumulator.defn_type_vars,
         )?;
 
         // Pass 3: detect constrained polymorphic functions
         let single_sig_defns = Self::collect_single_sig_defns(working_program);
-        let mut constrained_fn_names = self.detect_constrained_fns(&single_sig_defns);
+        let mut constrained_fn_names = self.detect_constrained_fns(state, &single_sig_defns);
 
         // Add previously-accumulated constrained fns and those from prior REPL evals
         constrained_fn_names.extend(accumulator.constrained_fn_names.drain());
 
         if strategy == ModuleStrategy::Additive {
-            for (name, entry) in self.current_symbol_table().all_symbols() {
+            for (name, entry) in self.current_symbol_table_with_state(state).all_symbols() {
                 if let ModuleEntry::Def { kind, .. } = entry
                     && let DefKind::UserFn { constrained_fn: Some(_) } = kind.as_ref()
                 {
@@ -767,25 +803,25 @@ impl TypeChecker {
         }
 
         // Pass 4: monomorphise constrained function call sites
-        let mono_defns = self.pass4_monomorphise(&single_sig_defns, &constrained_fn_names)?;
+        let mono_defns = self.pass4_monomorphise(state, &single_sig_defns, &constrained_fn_names)?;
 
         // Pass 5: resolve pending overload dispatch + auto-curry
-        self.resolve_pending_overloads()?;
-        self.resolve_auto_curry();
+        self.resolve_pending_overloads(state)?;
+        self.resolve_auto_curry(state);
 
         // Sweep post-pass outputs from self.state into the accumulator.
         // Post-passes (resolve_deferred_trait_calls, pass4_monomorphise,
         // resolve_pending_overloads, resolve_auto_curry) write new method
-        // resolutions into self.state.method_resolutions. Merge these into
+        // resolutions into state.method_resolutions. Merge these into
         // the accumulator so it becomes the single authoritative source.
         accumulator.method_resolutions.extend(
-            std::mem::take(&mut self.state.method_resolutions),
+            std::mem::take(&mut state.method_resolutions),
         );
         accumulator.expr_types.extend(
-            std::mem::take(&mut self.state.expr_types),
+            std::mem::take(&mut state.expr_types),
         );
         accumulator.warnings.extend(
-            std::mem::take(&mut self.state.warnings),
+            std::mem::take(&mut state.warnings),
         );
 
         // Final callee write (Decision 21): overwrite the eager writes from
@@ -793,7 +829,7 @@ impl TypeChecker {
         // edges from post-passes.
         if !accumulator.call_graph_edges.is_empty() {
             write_callees_to_module_entries(
-                self.current_symbol_table_mut(),
+                self.current_symbol_table_mut_with_state(state),
                 &accumulator.call_graph_edges,
             );
         }
@@ -802,7 +838,7 @@ impl TypeChecker {
         let resolved_expr_types: HashMap<Span, Type> = accumulator
             .expr_types
             .iter()
-            .map(|(span, ty)| (*span, apply(&self.state.subst, ty)))
+            .map(|(span, ty)| (*span, apply(&state.subst, ty)))
             .collect();
 
         // Build CheckResult from the accumulator (authoritative source).
@@ -845,10 +881,24 @@ impl TypeChecker {
         // Set active module from context.
         self.set_current_module(ctx.module.clone());
 
+        // Take state for threading through internal methods.
+        // MUST restore on both success and error (error recovery relies on self.state).
+        let mut state = std::mem::replace(&mut self.state, CheckState::new(ModuleFullPath::from("")));
+        let result = self.check_inner(&mut state, program, strategy);
+        self.state = state;
+        result
+    }
+
+    fn check_inner(
+        &mut self,
+        state: &mut CheckState,
+        program: &[TopLevel],
+        strategy: ModuleStrategy,
+    ) -> Result<CheckResult, CranelispError> {
         // If Replace strategy, clear existing module state so that removed
         // definitions don't persist as stale entries.
         if strategy == ModuleStrategy::Replace {
-            self.clear_module_for_replace();
+            self.clear_module_for_replace(state);
         }
 
         // Build a working copy of the program with Expr variants wrapped
@@ -860,8 +910,8 @@ impl TypeChecker {
 
         // Pass 1: Register all forms in source order
         for form in &working_program {
-            let result = self.check_form(&ctx.module, form, CheckPass::Register, &mut accumulator)?;
-            self.merge_form_result(&ctx.module, &mut accumulator, result);
+            let result = self.check_form_register(state, form, &mut accumulator)?;
+            self.merge_form_result_inner(state, &mut accumulator, result);
         }
 
         // Register default method defns generated during Pass 1 TraitImpl processing.
@@ -869,34 +919,34 @@ impl TypeChecker {
         let defaults: Vec<Defn> = std::mem::take(&mut accumulator.default_method_defns);
         for defn in &defaults {
             let form = TopLevel::Defn(defn.clone());
-            let result = self.check_form(&ctx.module, &form, CheckPass::Register, &mut accumulator)?;
-            self.merge_form_result(&ctx.module, &mut accumulator, result);
+            let result = self.check_form_register(state, &form, &mut accumulator)?;
+            self.merge_form_result_inner(state, &mut accumulator, result);
         }
         // Put defaults back so finalize knows about them
         accumulator.default_method_defns = defaults;
 
         // Pass 2: Check bodies for all forms
         for form in &working_program {
-            let result = self.check_form(&ctx.module, form, CheckPass::CheckBody, &mut accumulator)?;
-            self.merge_form_result(&ctx.module, &mut accumulator, result);
+            let result = self.check_form_body(state, form, &mut accumulator)?;
+            self.merge_form_result_inner(state, &mut accumulator, result);
         }
 
         // Check bodies of default method defns too.
         let defaults_for_body: Vec<Defn> = accumulator.default_method_defns.clone();
         for defn in &defaults_for_body {
             let form = TopLevel::Defn(defn.clone());
-            let result = self.check_form(&ctx.module, &form, CheckPass::CheckBody, &mut accumulator)?;
-            self.merge_form_result(&ctx.module, &mut accumulator, result);
+            let result = self.check_form_body(state, &form, &mut accumulator)?;
+            self.merge_form_result_inner(state, &mut accumulator, result);
         }
 
         // Finalize: run post-passes (generalization, overload resolution, monomorphisation,
         // auto-curry) and build CheckResult.
-        let mut result = self.finalize_check_result(
-            &ctx.module, &mut accumulator, &working_program, strategy,
+        let mut result = self.finalize_check_result_inner(
+            state, &mut accumulator, &working_program, strategy,
         )?;
 
         // Populate display info
-        result.display = self.compute_display_info(program, &accumulator.defn_type_vars);
+        result.display = self.compute_display_info(state, program, &accumulator.defn_type_vars);
 
         Ok(result)
     }
@@ -940,6 +990,7 @@ impl TypeChecker {
     /// For batch programs (many forms), returns None.
     fn compute_display_info(
         &self,
+        state: &CheckState,
         original_program: &[TopLevel],
         defn_type_vars: &HashMap<Symbol, (Vec<Type>, Type)>,
     ) -> Option<DisplayInfo> {
@@ -952,7 +1003,7 @@ impl TypeChecker {
             TopLevel::Expr(_expr) => {
                 // The synthetic __expr defn was registered — look up its type.
                 if let Some((_param_tys, ret_ty)) = defn_type_vars.get(&Symbol::from("__expr")) {
-                    let resolved = self.apply_subst(ret_ty);
+                    let resolved = self.apply_subst(state, ret_ty);
                     Some(DisplayInfo {
                         ty: resolved,
                         scheme: None,
@@ -964,7 +1015,7 @@ impl TypeChecker {
             TopLevel::Defn(defn) => {
                 // Look up the defn's generalized scheme from the symbol table.
                 if let Some(ModuleEntry::Def { scheme, .. }) =
-                    self.current_symbol_table().get(defn.name.as_ref())
+                    self.current_symbol_table_with_state(state).get(defn.name.as_ref())
                 {
                     Some(DisplayInfo {
                         ty: scheme.ty.clone(),
@@ -989,7 +1040,9 @@ impl TypeChecker {
 
     /// Public wrapper for `clear_module_for_replace` (used by v4 worker).
     pub fn clear_module_for_replace_public(&mut self) {
-        self.clear_module_for_replace();
+        let mut state = std::mem::replace(&mut self.state, CheckState::new(ModuleFullPath::from("")));
+        self.clear_module_for_replace(&mut state);
+        self.state = state;
     }
 
     /// Public wrapper for `compute_display_info` (used by v4 worker).
@@ -998,7 +1051,10 @@ impl TypeChecker {
         original_program: &[TopLevel],
         defn_type_vars: &HashMap<Symbol, (Vec<Type>, Type)>,
     ) -> Option<DisplayInfo> {
-        self.compute_display_info(original_program, defn_type_vars)
+        {
+            let state = &self.state;
+            self.compute_display_info(state, original_program, defn_type_vars)
+        }
     }
 
     /// Clear module state for Replace strategy.
@@ -1006,9 +1062,9 @@ impl TypeChecker {
     /// Removes all symbol table entries, type defs, trait decls, and trait
     /// impls for the current module. Called at the start of `check()` when
     /// `ctx.strategy == ModuleStrategy::Replace`.
-    fn clear_module_for_replace(&mut self) {
+    fn clear_module_for_replace(&mut self, state: &mut CheckState) {
         // Clear symbol table entries for the current module
-        self.current_symbol_table_mut().symbols.clear();
+        self.current_symbol_table_mut_with_state(state).symbols.clear();
 
         // Note: type_defs, trait_registry, and impl_registry are shared
         // across modules in the current design. Full per-module clearing
@@ -1047,7 +1103,8 @@ impl TypeChecker {
     /// Note: Superseded by `check_form_register_multi_sig` for the `check()` path.
     /// Retained for the deprecated `check_program` path used in tests.
     #[allow(dead_code)]
-    fn expand_multi_sig_defns(&mut self, program: &[TopLevel]) -> Vec<Defn> {
+    fn expand_multi_sig_defns(&mut self,
+        state: &mut CheckState, program: &[TopLevel]) -> Vec<Defn> {
         let mut internal_defns = Vec::new();
 
         for top in program {
@@ -1074,7 +1131,7 @@ impl TypeChecker {
                         span: variant.span,
                     });
                 }
-                self.state.overloads.insert(defn.name.clone(), overload_entries);
+                state.overloads.insert(defn.name.clone(), overload_entries);
 
                 // Register a placeholder for the base name so `infer_var`
                 // can find it during pass 2. The placeholder uses a fresh
@@ -1082,7 +1139,7 @@ impl TypeChecker {
                 // overload resolution after pass 2.
                 let placeholder_ty = self.fresh_var();
                 let placeholder_scheme = mono(placeholder_ty);
-                self.current_symbol_table_mut().insert(
+                self.current_symbol_table_mut_with_state(state).insert(
                     defn.name.clone(),
                     ModuleEntry::Def {
                         scheme: placeholder_scheme,
@@ -1106,6 +1163,7 @@ impl TypeChecker {
     /// Returns a list of mangled Defn objects that the backend should compile.
     fn resolve_multi_sig_overloads(
         &mut self,
+        state: &mut CheckState,
         program: &[TopLevel],
         type_vars: &HashMap<Symbol, (Vec<Type>, Type)>,
     ) -> Result<Vec<Defn>, CranelispError> {
@@ -1117,11 +1175,11 @@ impl TypeChecker {
                     continue;
                 }
 
-                let resolved = self.resolve_variant_types(defn, type_vars)?;
+                let resolved = self.resolve_variant_types(state, defn, type_vars)?;
                 let (mangled_defns, resolved_info) =
-                    self.register_mangled_variants(defn, &resolved);
+                    self.register_mangled_variants(state, defn, &resolved);
                 result_defns.extend(mangled_defns);
-                self.register_overloaded_base(defn, resolved_info);
+                self.register_overloaded_base(state, defn, resolved_info);
             }
         }
 
@@ -1135,6 +1193,7 @@ impl TypeChecker {
     /// for each variant.
     fn resolve_variant_types(
         &self,
+        state: &CheckState,
         defn: &Defn,
         type_vars: &HashMap<Symbol, (Vec<Type>, Type)>,
     ) -> Result<Vec<(Vec<Type>, Type, Symbol, usize)>, CranelispError> {
@@ -1156,9 +1215,9 @@ impl TypeChecker {
 
             let concrete_params: Vec<Type> = param_tys
                 .iter()
-                .map(|t| self.apply_subst(t))
+                .map(|t| self.apply_subst(state, t))
                 .collect();
-            let concrete_ret = self.apply_subst(ret_ty);
+            let concrete_ret = self.apply_subst(state, ret_ty);
 
             // Check for duplicate signatures
             if sig_set.iter().any(|s| s == &concrete_params) {
@@ -1191,6 +1250,7 @@ impl TypeChecker {
     /// `(concrete_params, concrete_ret, mangled_name)` per variant.
     fn register_mangled_variants(
         &mut self,
+        state: &mut CheckState,
         defn: &Defn,
         resolved: &[(Vec<Type>, Type, Symbol, usize)],
     ) -> (Vec<Defn>, Vec<(Vec<Type>, Type, Symbol)>) {
@@ -1205,13 +1265,13 @@ impl TypeChecker {
                 concrete_params.clone(),
                 Box::new(concrete_ret.clone()),
             );
-            let scheme = self.generalize(&fn_ty);
+            let scheme = self.generalize(state, &fn_ty);
 
             // Remove internal name, register mangled name
-            self.current_symbol_table_mut()
+            self.current_symbol_table_mut_with_state(state)
                 .symbols
                 .remove(internal_name.as_ref());
-            self.current_symbol_table_mut().insert(
+            self.current_symbol_table_mut_with_state(state).insert(
                 mangled.clone(),
                 ModuleEntry::Def {
                     scheme: scheme.clone(),
@@ -1249,6 +1309,7 @@ impl TypeChecker {
     /// in the symbol table, and record resolved overloads in state.
     fn register_overloaded_base(
         &mut self,
+        state: &mut CheckState,
         defn: &Defn,
         resolved: Vec<(Vec<Type>, Type, Symbol)>,
     ) {
@@ -1270,9 +1331,9 @@ impl TypeChecker {
             resolved[0].0.clone(),
             Box::new(resolved[0].1.clone()),
         );
-        let base_scheme = self.generalize(&first_fn_ty);
+        let base_scheme = self.generalize(state, &first_fn_ty);
 
-        self.current_symbol_table_mut().insert(
+        self.current_symbol_table_mut_with_state(state).insert(
             defn.name.clone(),
             ModuleEntry::Def {
                 scheme: base_scheme,
@@ -1286,7 +1347,7 @@ impl TypeChecker {
             },
         );
 
-        self.state.resolved_overloads.insert(
+        state.resolved_overloads.insert(
             defn.name.clone(),
             resolved,
         );
@@ -1296,16 +1357,16 @@ impl TypeChecker {
     ///
     /// For each pending `(span, base_name, arg_types, ret_type_var)`, find
     /// the matching variant and record `SigDispatch` in method_resolutions.
-    fn resolve_pending_overloads(&mut self) -> Result<(), CranelispError> {
-        let pending = std::mem::take(&mut self.state.pending_overload_resolutions);
+    fn resolve_pending_overloads(&mut self, state: &mut CheckState) -> Result<(), CranelispError> {
+        let pending = std::mem::take(&mut state.pending_overload_resolutions);
 
         for (span, base_name, arg_types, ret_type_var) in &pending {
             let concrete_args: Vec<Type> = arg_types
                 .iter()
-                .map(|t| apply(&self.state.subst, t))
+                .map(|t| apply(&state.subst, t))
                 .collect();
 
-            let variants = self.state
+            let variants = state
                 .resolved_overloads
                 .get(base_name)
                 .ok_or_else(|| CranelispError::TypeError {
@@ -1334,10 +1395,10 @@ impl TypeChecker {
                 let (param_types, ret_ty, mangled_name) = exact_matches[0];
                 // Unify to bind type variables
                 for (p, a) in param_types.iter().zip(concrete_args.iter()) {
-                    self.unify(p, a, *span)?;
+                    self.unify(state, p, a, *span)?;
                 }
-                self.unify(ret_type_var, ret_ty, *span)?;
-                self.state.method_resolutions.insert(
+                self.unify(state, ret_type_var, ret_ty, *span)?;
+                state.method_resolutions.insert(
                     *span,
                     ResolvedCall::SigDispatch {
                         mangled_name: JitSymbol::from(mangled_name.as_ref()),
@@ -1382,41 +1443,52 @@ impl TypeChecker {
         &mut self,
         program: &[TopLevel],
     ) -> Result<CheckResult, CranelispError> {
+        let mut state = std::mem::replace(&mut self.state, CheckState::new(ModuleFullPath::from("")));
+        let result = self.check_program_inner(&mut state, program);
+        self.state = state;
+        result
+    }
+
+    fn check_program_inner(
+        &mut self,
+        state: &mut CheckState,
+        program: &[TopLevel],
+    ) -> Result<CheckResult, CranelispError> {
         // Pass 1: register type definitions
-        self.register_type_defs_from_program(program)?;
+        self.register_type_defs_from_program(state, program)?;
 
         // Pass 1: register trait declarations
-        self.register_trait_decls_from_program(program)?;
+        self.register_trait_decls_from_program(state, program)?;
 
         // Pass 1: register trait implementations
         let default_defns =
-            self.register_trait_impls_from_program(program)?;
+            self.register_trait_impls_from_program(state, program)?;
 
         // Pass 1: register function signatures with fresh type variables
         let defns = Self::collect_defns(program);
-        let defn_type_vars = self.pass1_register_signatures(&defns)?;
+        let defn_type_vars = self.pass1_register_signatures(state, &defns)?;
 
         // Pass 2: check function bodies and generalize
-        self.pass2_check_bodies(&defns, &defn_type_vars)?;
+        self.pass2_check_bodies(state, &defns, &defn_type_vars)?;
 
         // Pass 3: detect constrained polymorphic functions
         let constrained_fn_names =
-            self.detect_constrained_fns(&defns);
+            self.detect_constrained_fns(state, &defns);
 
         // Pass 4: monomorphise constrained function call sites
-        let mono_defns = self.pass4_monomorphise(&defns, &constrained_fn_names)?;
+        let mono_defns = self.pass4_monomorphise(state, &defns, &constrained_fn_names)?;
 
         // Pass 5: resolve auto-curry sites into method_resolutions
-        self.resolve_auto_curry();
+        self.resolve_auto_curry(state);
 
-        let resolved_expr_types = self.resolve_expr_types();
+        let resolved_expr_types = self.resolve_expr_types(state);
         Ok(CheckResult {
-            method_resolutions: std::mem::take(&mut self.state.method_resolutions),
+            method_resolutions: std::mem::take(&mut state.method_resolutions),
             constrained_fn_names: constrained_fn_names.clone(),
             mono_defns,
             expr_types: resolved_expr_types,
             default_method_defns: default_defns,
-            warnings: std::mem::take(&mut self.state.warnings),
+            warnings: std::mem::take(&mut state.warnings),
             type_defs: self.type_defs.get_mut().unwrap().type_defs.clone(),
             constructor_to_type: self.type_defs.get_mut().unwrap().constructor_to_type.clone(),
             display: None,
@@ -1430,18 +1502,29 @@ impl TypeChecker {
         &mut self,
         input: &TopLevel,
     ) -> Result<CheckResult, CranelispError> {
+        let mut state = std::mem::replace(&mut self.state, CheckState::new(ModuleFullPath::from("")));
+        let result = self.check_repl_input_inner(&mut state, input);
+        self.state = state;
+        result
+    }
+
+    fn check_repl_input_inner(
+        &mut self,
+        state: &mut CheckState,
+        input: &TopLevel,
+    ) -> Result<CheckResult, CranelispError> {
         match input {
             TopLevel::Expr(expr) => {
-                let ty = self.infer_expr(expr)?;
-                let resolved = self.apply_subst(&ty);
+                let ty = self.infer_expr(state, expr)?;
+                let resolved = self.apply_subst(state, &ty);
 
                 // Resolve auto-curry sites before building result.
-                self.resolve_auto_curry();
+                self.resolve_auto_curry(state);
 
                 // Gap 4: scan for constrained-fn calls, monomorphise on demand
-                let mono_defns = self.monomorphise_expr_calls(expr)?;
+                let mono_defns = self.monomorphise_expr_calls(state, expr)?;
 
-                let mut result = self.build_repl_result(resolved, None);
+                let mut result = self.build_repl_result(state, resolved, None);
                 result.mono_defns = mono_defns;
                 Ok(result)
             }
@@ -1454,15 +1537,15 @@ impl TypeChecker {
             }
 
             TopLevel::Defn(defn) => {
-                let (ty, scheme) = self.check_single_defn(defn)?;
+                let (ty, scheme) = self.check_single_defn(state, defn)?;
 
                 // Resolve auto-curry sites before building result.
-                self.resolve_auto_curry();
+                self.resolve_auto_curry(state);
 
                 // Scan defn body for constrained-fn calls, monomorphise on demand
-                let mono_defns = self.monomorphise_expr_calls(defn.body())?;
+                let mono_defns = self.monomorphise_expr_calls(state, defn.body())?;
 
-                let mut result = self.build_repl_result(ty, Some(scheme));
+                let mut result = self.build_repl_result(state, ty, Some(scheme));
                 result.mono_defns = mono_defns;
                 Ok(result)
             }
@@ -1475,21 +1558,21 @@ impl TypeChecker {
                 visibility,
                 span,
             } => {
-                self.register_type_def(name, docstring, type_params, constructors, *visibility, *span)?;
+                self.register_type_def(state, name, docstring, type_params, constructors, *visibility, *span)?;
                 let ty = Type::ADT(name.clone(), vec![]);
-                Ok(self.build_repl_result(ty, None))
+                Ok(self.build_repl_result(state, ty, None))
             }
 
             TopLevel::TraitDecl(decl) => {
-                self.register_trait_decl(decl)?;
+                self.register_trait_decl(state, decl)?;
                 let ty = Type::Bool; // Placeholder return type for trait decl
-                Ok(self.build_repl_result(ty, None))
+                Ok(self.build_repl_result(state, ty, None))
             }
 
             TopLevel::TraitImpl(impl_) => {
-                let default_defns = self.register_trait_impl(impl_)?;
+                let default_defns = self.register_trait_impl(state, impl_)?;
                 let ty = Type::Bool; // Placeholder return type for trait impl
-                let mut result = self.build_repl_result(ty, None);
+                let mut result = self.build_repl_result(state, ty, None);
                 result.default_method_defns = default_defns;
                 Ok(result)
             }
@@ -1501,6 +1584,7 @@ impl TypeChecker {
     /// Register all TypeDef entries from the program.
     fn register_type_defs_from_program(
         &mut self,
+        state: &mut CheckState,
         program: &[TopLevel],
     ) -> Result<(), CranelispError> {
         for top in program {
@@ -1514,6 +1598,7 @@ impl TypeChecker {
             } = top
             {
                 self.register_type_def(
+                    state,
                     name,
                     docstring,
                     type_params,
@@ -1529,11 +1614,12 @@ impl TypeChecker {
     /// Register all TraitDecl entries from the program.
     fn register_trait_decls_from_program(
         &mut self,
+        state: &mut CheckState,
         program: &[TopLevel],
     ) -> Result<(), CranelispError> {
         for top in program {
             if let TopLevel::TraitDecl(decl) = top {
-                self.register_trait_decl(decl)?;
+                self.register_trait_decl(state, decl)?;
             }
         }
         Ok(())
@@ -1543,12 +1629,13 @@ impl TypeChecker {
     /// Returns default method definitions generated.
     fn register_trait_impls_from_program(
         &mut self,
+        state: &mut CheckState,
         program: &[TopLevel],
     ) -> Result<Vec<Defn>, CranelispError> {
         let mut default_defns = Vec::new();
         for top in program {
             if let TopLevel::TraitImpl(impl_) = top {
-                let defaults = self.register_trait_impl(impl_)?;
+                let defaults = self.register_trait_impl(state, impl_)?;
                 default_defns.extend(defaults);
             }
         }
@@ -1561,6 +1648,7 @@ impl TypeChecker {
     /// These functions are stored with `ConstrainedFn` in their DefKind.
     fn detect_constrained_fns(
         &mut self,
+        state: &mut CheckState,
         defns: &[&Defn],
     ) -> HashSet<Symbol> {
         // Constrained functions are eagerly marked in pass2_check_bodies
@@ -1569,7 +1657,7 @@ impl TypeChecker {
 
         for defn in defns {
             if let Some(ModuleEntry::Def { kind, .. }) =
-                self.current_symbol_table().get(defn.name.as_ref())
+                self.current_symbol_table_with_state(state).get(defn.name.as_ref())
                 && let DefKind::UserFn { constrained_fn: Some(_) } = kind.as_ref()
             {
                 names.insert(defn.name.clone());
@@ -1606,6 +1694,7 @@ impl TypeChecker {
     /// to prevent the two paths from diverging as rings add complexity.
     fn register_defn_signature(
         &mut self,
+        state: &mut CheckState,
         defn: &Defn,
     ) -> Result<(Vec<Type>, Type), CranelispError> {
         let mut param_types = Vec::new();
@@ -1624,7 +1713,7 @@ impl TypeChecker {
         let fn_type = Type::Fn(param_types.clone(), Box::new(ret_ty.clone()));
         let scheme = mono(fn_type);
 
-        self.current_symbol_table_mut().insert(
+        self.current_symbol_table_mut_with_state(state).insert(
             defn.name.clone(),
             ModuleEntry::Def {
                 scheme,
@@ -1647,12 +1736,13 @@ impl TypeChecker {
     /// for use in Pass 2.
     fn pass1_register_signatures(
         &mut self,
+        state: &mut CheckState,
         defns: &[&Defn],
     ) -> Result<HashMap<Symbol, (Vec<Type>, Type)>, CranelispError> {
         let mut type_vars = HashMap::new();
 
         for defn in defns {
-            let (param_types, ret_ty) = self.register_defn_signature(defn)?;
+            let (param_types, ret_ty) = self.register_defn_signature(state, defn)?;
             type_vars.insert(defn.name.clone(), (param_types, ret_ty));
         }
 
@@ -1670,6 +1760,7 @@ impl TypeChecker {
     /// to concrete types through the shared substitution.
     fn pass2_check_bodies(
         &mut self,
+        state: &mut CheckState,
         defns: &[&Defn],
         type_vars: &HashMap<Symbol, (Vec<Type>, Type)>,
     ) -> Result<(), CranelispError> {
@@ -1683,20 +1774,20 @@ impl TypeChecker {
                     span: defn.span,
                 })?;
 
-            self.check_defn_body(defn, param_types, ret_ty)?;
-            self.resolve_deferred_trait_calls(&defn.body());
+            self.check_defn_body(state, defn, param_types, ret_ty)?;
+            self.resolve_deferred_trait_calls(state, &defn.body());
 
             // Eagerly detect if this function is constrained.
             // Must happen now, before later call sites resolve its type vars.
             let fn_type = Type::Fn(
-                param_types.iter().map(|t| self.apply_subst(t)).collect(),
-                Box::new(self.apply_subst(ret_ty)),
+                param_types.iter().map(|t| self.apply_subst(state, t)).collect(),
+                Box::new(self.apply_subst(state, ret_ty)),
             );
-            let trial_scheme = self.generalize(&fn_type);
+            let trial_scheme = self.generalize(state, &fn_type);
             if !trial_scheme.constraints.is_empty() {
                 // Mark as constrained immediately
                 if let Some(ModuleEntry::Def { kind, .. }) =
-                    self.current_symbol_table_mut().symbols.get_mut(&defn.name)
+                    self.current_symbol_table_mut_with_state(state).symbols.get_mut(&defn.name)
                 {
                     let cf = ConstrainedFn {
                         defn: (*defn).clone(),
@@ -1715,12 +1806,12 @@ impl TypeChecker {
         for defn in defns {
             let (param_types, ret_ty) = type_vars.get(&defn.name).unwrap();
             let fn_type = Type::Fn(
-                param_types.iter().map(|t| self.apply_subst(t)).collect(),
-                Box::new(self.apply_subst(ret_ty)),
+                param_types.iter().map(|t| self.apply_subst(state, t)).collect(),
+                Box::new(self.apply_subst(state, ret_ty)),
             );
-            let scheme = self.generalize(&fn_type);
+            let scheme = self.generalize(state, &fn_type);
             if let Some(ModuleEntry::Def { scheme: s, kind, .. }) =
-                self.current_symbol_table_mut().symbols.get_mut(&defn.name)
+                self.current_symbol_table_mut_with_state(state).symbols.get_mut(&defn.name)
             {
                 *s = scheme.clone();
                 // Clear eager constrained marker if final scheme is unconstrained
@@ -1737,7 +1828,7 @@ impl TypeChecker {
         // resolved because arg types were still unresolved vars. After Phase 2,
         // later call sites may have pinned those vars to concrete types.
         for defn in defns {
-            self.resolve_deferred_trait_calls(&defn.body());
+            self.resolve_deferred_trait_calls(state, &defn.body());
         }
 
         Ok(())
@@ -1746,38 +1837,39 @@ impl TypeChecker {
     /// Check a single function definition body.
     fn check_defn_body(
         &mut self,
+        state: &mut CheckState,
         defn: &Defn,
         param_types: &[Type],
         ret_ty: &Type,
     ) -> Result<(), CranelispError> {
-        self.push_scope();
+        self.push_scope(state);
 
         // Bind parameters
         for (param_name, param_ty) in defn.params().iter().zip(param_types.iter()) {
-            self.bind_local(param_name.clone(), mono(param_ty.clone()));
+            self.bind_local(state, param_name.clone(), mono(param_ty.clone()));
         }
 
         // Bind the function name for recursion
         let fn_type = Type::Fn(param_types.to_vec(), Box::new(ret_ty.clone()));
-        self.bind_local(defn.name.clone(), mono(fn_type));
+        self.bind_local(state, defn.name.clone(), mono(fn_type));
 
         // Infer body type
-        let body_ty = self.infer_expr(&defn.body())?;
+        let body_ty = self.infer_expr(state, &defn.body())?;
 
         // Unify body type with return type variable
-        self.unify(&body_ty, ret_ty, defn.span)?;
+        self.unify(state, &body_ty, ret_ty, defn.span)?;
 
-        self.pop_scope();
+        self.pop_scope(state);
 
         // Record the defn's Fn type in expr_types so the backend can look up
         // authoritative parameter types. Without this, unused params (e.g.,
         // `_s` in `(defn f [:String _s] 42)`) have no type recorded and
         // scope cleanup skips their RC dec, causing leaks.
         let resolved_fn_type = Type::Fn(
-            param_types.iter().map(|t| self.apply_subst(t)).collect(),
-            Box::new(self.apply_subst(ret_ty)),
+            param_types.iter().map(|t| self.apply_subst(state, t)).collect(),
+            Box::new(self.apply_subst(state, ret_ty)),
         );
-        self.record_expr_type(defn.span, resolved_fn_type);
+        self.record_expr_type(state, defn.span, resolved_fn_type);
 
         Ok(())
     }
@@ -1785,27 +1877,28 @@ impl TypeChecker {
     /// Check a single defn for REPL (register, check, generalize in one step).
     fn check_single_defn(
         &mut self,
+        state: &mut CheckState,
         defn: &Defn,
     ) -> Result<(Type, Scheme), CranelispError> {
-        let (param_types, ret_ty) = self.register_defn_signature(defn)?;
+        let (param_types, ret_ty) = self.register_defn_signature(state, defn)?;
 
         // Check body
-        self.check_defn_body(defn, &param_types, &ret_ty)?;
+        self.check_defn_body(state, defn, &param_types, &ret_ty)?;
 
         // Post-inference deferred trait resolution
-        self.resolve_deferred_trait_calls(&defn.body());
+        self.resolve_deferred_trait_calls(state, &defn.body());
 
         // Generalize (propagates active constraints)
         let resolved_fn_type = Type::Fn(
-            param_types.iter().map(|t| self.apply_subst(t)).collect(),
-            Box::new(self.apply_subst(&ret_ty)),
+            param_types.iter().map(|t| self.apply_subst(state, t)).collect(),
+            Box::new(self.apply_subst(state, &ret_ty)),
         );
-        let scheme = self.generalize(&resolved_fn_type);
+        let scheme = self.generalize(state, &resolved_fn_type);
 
         // Update symbol table with generalized scheme
         // If constrained, also store as ConstrainedFn
         if let Some(ModuleEntry::Def { scheme: s, kind, .. }) =
-            self.current_symbol_table_mut().symbols.get_mut(&defn.name)
+            self.current_symbol_table_mut_with_state(state).symbols.get_mut(&defn.name)
         {
             *s = scheme.clone();
 
@@ -1829,6 +1922,7 @@ impl TypeChecker {
     /// and generate monomorphised specializations.
     fn pass4_monomorphise(
         &mut self,
+        state: &mut CheckState,
         defns: &[&Defn],
         constrained_fn_names: &HashSet<Symbol>,
     ) -> Result<Vec<MonoDefn>, CranelispError> {
@@ -1852,7 +1946,7 @@ impl TypeChecker {
         }
 
         // Resolve expr_types so we can look up concrete arg types
-        let resolved_expr_types = self.resolve_expr_types();
+        let resolved_expr_types = self.resolve_expr_types(state);
 
         // Monomorphise each call site and record dispatch mappings
         let mut mono_defns = Vec::new();
@@ -1878,17 +1972,17 @@ impl TypeChecker {
 
             if let Some(mangled) = seen.get(&key) {
                 // Already generated this specialization — just record dispatch
-                self.state.method_resolutions.insert(
+                state.method_resolutions.insert(
                     *call_span,
                     ResolvedCall::SigDispatch { mangled_name: mangled.clone() },
                 );
                 continue;
             }
 
-            if let Some(mono) = self.monomorphise_call(fn_name, &arg_types, *call_span)? {
+            if let Some(mono) = self.monomorphise_call(state, fn_name, &arg_types, *call_span)? {
                 let mangled = JitSymbol::from(mono.defn.name.as_ref());
                 // Record dispatch for this call site
-                self.state.method_resolutions.insert(
+                state.method_resolutions.insert(
                     *call_span,
                     ResolvedCall::SigDispatch { mangled_name: mangled.clone() },
                 );
@@ -1906,10 +2000,11 @@ impl TypeChecker {
     /// for each. Used by both `check_repl_input(Expr)` and `check_repl_input(Defn)`.
     fn monomorphise_expr_calls(
         &mut self,
+        state: &mut CheckState,
         expr: &Expr,
     ) -> Result<Vec<MonoDefn>, CranelispError> {
         // Build the set of constrained fn names from the symbol table
-        let constrained_fn_names: HashSet<Symbol> = self.current_symbol_table().symbols
+        let constrained_fn_names: HashSet<Symbol> = self.current_symbol_table_with_state(state).symbols
             .iter()
             .filter_map(|(name, entry)| {
                 if let ModuleEntry::Def { kind, .. } = entry
@@ -1932,7 +2027,7 @@ impl TypeChecker {
             return Ok(Vec::new());
         }
 
-        let resolved_expr_types = self.resolve_expr_types();
+        let resolved_expr_types = self.resolve_expr_types(state);
 
         let mut mono_defns = Vec::new();
         let mut seen: HashMap<String, JitSymbol> = HashMap::new();
@@ -1953,16 +2048,16 @@ impl TypeChecker {
                 .join("+"));
 
             if let Some(mangled) = seen.get(&key) {
-                self.state.method_resolutions.insert(
+                state.method_resolutions.insert(
                     *call_span,
                     ResolvedCall::SigDispatch { mangled_name: mangled.clone() },
                 );
                 continue;
             }
 
-            if let Some(mono) = self.monomorphise_call(fn_name, &arg_types, *call_span)? {
+            if let Some(mono) = self.monomorphise_call(state, fn_name, &arg_types, *call_span)? {
                 let mangled = JitSymbol::from(mono.defn.name.as_ref());
-                self.state.method_resolutions.insert(
+                state.method_resolutions.insert(
                     *call_span,
                     ResolvedCall::SigDispatch { mangled_name: mangled.clone() },
                 );
@@ -2060,29 +2155,29 @@ impl TypeChecker {
     /// typechecker detected partial application (fewer args than params).
     /// This converts them to `ResolvedCall::AutoCurry` entries that the
     /// backend can use for codegen.
-    pub(crate) fn resolve_auto_curry(&mut self) {
-        let pending = std::mem::take(&mut self.state.pending_auto_curry);
+    pub(crate) fn resolve_auto_curry(&mut self, state: &mut CheckState) {
+        let pending = std::mem::take(&mut state.pending_auto_curry);
         for (span, name, applied_count, total_count, callee_ty, mut trait_resolution) in pending {
             // If the trait resolution wasn't determined earlier (types were
             // still unresolved vars during try_auto_curry), attempt it now.
             // Later unifications (e.g., from a call site like `(make-adder 10)`)
             // may have pinned the type vars to concrete types.
             if trait_resolution.is_none() {
-                let resolved_callee = self.apply_subst(&callee_ty);
+                let resolved_callee = self.apply_subst(state, &callee_ty);
                 if let Type::Fn(full_params, _) = &resolved_callee {
                     let resolved_params: Vec<Type> = full_params
                         .iter()
-                        .map(|t| self.apply_subst(t))
+                        .map(|t| self.apply_subst(state, t))
                         .collect();
-                    if let Ok(Some(r)) = self.try_resolve_trait_method(&name, &resolved_params, span) {
+                    if let Ok(Some(r)) = self.try_resolve_trait_method(state, &name, &resolved_params, span) {
                         trait_resolution = Some(r);
-                    } else if let Some(jit_name) = self.resolve_primitive_jit_name(&name) {
+                    } else if let Some(jit_name) = self.resolve_primitive_jit_name(state, &name) {
                         trait_resolution = Some(ResolvedCall::BuiltinFn { name: jit_name });
                     }
                 }
             }
 
-            self.state.method_resolutions.insert(
+            state.method_resolutions.insert(
                 span,
                 ResolvedCall::AutoCurry {
                     target_name: name,
@@ -2095,21 +2190,22 @@ impl TypeChecker {
     }
 
     /// Resolve all recorded expr_types through the current substitution.
-    fn resolve_expr_types(&self) -> HashMap<Span, Type> {
-        self.state.expr_types
+    fn resolve_expr_types(&self, state: &CheckState) -> HashMap<Span, Type> {
+        state.expr_types
             .iter()
-            .map(|(span, ty)| (*span, apply(&self.state.subst, ty)))
+            .map(|(span, ty)| (*span, apply(&state.subst, ty)))
             .collect()
     }
 
     /// Build a CheckResult with display info from the current state (REPL path).
-    fn build_repl_result(&mut self, ty: Type, scheme: Option<Scheme>) -> CheckResult {
-        let resolved_expr_types = self.resolve_expr_types();
+    fn build_repl_result(&mut self,
+        state: &mut CheckState, ty: Type, scheme: Option<Scheme>) -> CheckResult {
+        let resolved_expr_types = self.resolve_expr_types(state);
 
         CheckResult {
-            method_resolutions: std::mem::take(&mut self.state.method_resolutions),
+            method_resolutions: std::mem::take(&mut state.method_resolutions),
             expr_types: resolved_expr_types,
-            warnings: std::mem::take(&mut self.state.warnings),
+            warnings: std::mem::take(&mut state.warnings),
             type_defs: self.type_defs.get_mut().unwrap().type_defs.clone(),
             constructor_to_type: self.type_defs.get_mut().unwrap().constructor_to_type.clone(),
             constrained_fn_names: HashSet::new(),
@@ -2186,7 +2282,7 @@ mod tests {
             visibility: Visibility::Public,
             span: Span::SYNTHETIC,
         };
-        tc.register_trait_decl(&num_decl).unwrap();
+        tc.register_trait_decl_self(&num_decl).unwrap();
 
         // impl Num for Int: + → add-i64
         let impl_ = TraitImpl {
@@ -2218,7 +2314,7 @@ mod tests {
             }],
             span: Span::SYNTHETIC,
         };
-        tc.register_trait_impl(&impl_).unwrap();
+        tc.register_trait_impl_self(&impl_).unwrap();
         tc.clear_transient_state();
     }
 
@@ -2256,7 +2352,7 @@ mod tests {
             span: span(0, 33),
         })];
 
-        let _result = tc.check_program(&program).unwrap();
+        let _result = tc.check_program_self(&program).unwrap();
 
         // Check the function was registered with correct type: Fn([Int], Int)
         if let Some(ModuleEntry::Def { scheme, .. }) = tc.symbol_table().get("add-one") {
@@ -2290,7 +2386,7 @@ mod tests {
             span: span(0, 16),
         })];
 
-        tc.check_program(&program).unwrap();
+        tc.check_program_self(&program).unwrap();
 
         if let Some(ModuleEntry::Def { scheme, .. }) = tc.symbol_table().get("id") {
             // Should be forall [a]. Fn([a], a)
@@ -2385,7 +2481,7 @@ mod tests {
             span: span(0, 69),
         })];
 
-        tc.check_program(&program).unwrap();
+        tc.check_program_self(&program).unwrap();
 
         if let Some(ModuleEntry::Def { scheme, .. }) = tc.symbol_table().get("fact") {
             assert!(
@@ -2472,7 +2568,7 @@ mod tests {
             }),
         ];
 
-        let result = tc.check_program(&program).unwrap();
+        let result = tc.check_program_self(&program).unwrap();
 
         if let Some(ModuleEntry::Def { scheme, .. }) = tc.symbol_table().get("is-red") {
             assert_eq!(
@@ -2527,7 +2623,7 @@ mod tests {
 
         // add-i64 has monomorphic type (Fn [Int Int] Int) so (add-i64 x true) is a
         // type error: Bool cannot unify with Int.
-        let result = tc.check_program(&program);
+        let result = tc.check_program_self(&program);
         assert!(result.is_err());
     }
 
@@ -2565,7 +2661,7 @@ mod tests {
             span: span(0, 29),
         })];
 
-        let result = tc.check_program(&program).unwrap();
+        let result = tc.check_program_self(&program).unwrap();
 
         // All expr_types should be resolved (no Var types)
         for (span, ty) in &result.expr_types {
@@ -2583,7 +2679,7 @@ mod tests {
             value: 42,
             span: span(0, 2),
         });
-        let result = tc.check_repl_input(&input).unwrap();
+        let result = tc.check_repl_input_self(&input).unwrap();
         assert_eq!(result.display.as_ref().unwrap().ty, Type::Int);
         assert!(result.display.as_ref().unwrap().scheme.is_none());
     }
@@ -2607,7 +2703,7 @@ mod tests {
             visibility: Visibility::Public,
             span: span(0, 16),
         });
-        let result = tc.check_repl_input(&input).unwrap();
+        let result = tc.check_repl_input_self(&input).unwrap();
 
         // The scheme should be polymorphic
         let scheme = result.display.as_ref().unwrap().scheme.clone().unwrap();
@@ -2639,7 +2735,7 @@ mod tests {
             visibility: Visibility::Public,
             span: Span::SYNTHETIC,
         };
-        let result = tc.check_repl_input(&input).unwrap();
+        let result = tc.check_repl_input_self(&input).unwrap();
         assert_eq!(result.display.as_ref().unwrap().ty, Type::ADT(TypeName::from("Dir"), vec![]));
         assert!(result.type_defs.contains_key(&TypeName::from("Dir")));
     }
@@ -2707,7 +2803,7 @@ mod tests {
             }),
         ];
 
-        tc.check_program(&program).unwrap();
+        tc.check_program_self(&program).unwrap();
 
         // add-self is monomorphic: Fn([Int], Int) — add-i64 pins y to Int
         if let Some(ModuleEntry::Def { scheme, .. }) = tc.symbol_table().get("add-self") {
@@ -2800,7 +2896,7 @@ mod tests {
             }),
         ];
 
-        tc.check_program(&program).unwrap();
+        tc.check_program_self(&program).unwrap();
 
         // double is pinned: Fn([Int], Int) — annotation + add-i64 both constrain to Int
         if let Some(ModuleEntry::Def { scheme, .. }) = tc.symbol_table().get("double") {
@@ -2857,7 +2953,7 @@ mod tests {
             span: span(0, 29),
         })];
 
-        let result = tc.check_program(&program).unwrap();
+        let result = tc.check_program_self(&program).unwrap();
 
         // The add-i64 call site should have a BuiltinFn resolution
         assert!(!result.method_resolutions.is_empty());
@@ -2905,7 +3001,7 @@ mod tests {
             },
         ];
 
-        let result = tc.check_program(&program).unwrap();
+        let result = tc.check_program_self(&program).unwrap();
         assert!(result.type_defs.contains_key(&TypeName::from("Option")));
         assert!(result.constructor_to_type.contains_key("Some"));
         assert!(result.constructor_to_type.contains_key("None"));
@@ -2939,7 +3035,7 @@ mod tests {
             visibility: Visibility::Public,
             span: Span::SYNTHETIC,
         };
-        let result = tc.check_repl_input(&input).unwrap();
+        let result = tc.check_repl_input_self(&input).unwrap();
         assert!(result.type_defs.contains_key(&TypeName::from("Option")));
     }
 
@@ -2951,7 +3047,7 @@ mod tests {
             value: "hello".to_string(),
             span: span(0, 7),
         });
-        let result = tc.check_repl_input(&input).unwrap();
+        let result = tc.check_repl_input_self(&input).unwrap();
         assert_eq!(result.display.as_ref().unwrap().ty, Type::String);
     }
 
@@ -2976,7 +3072,7 @@ mod tests {
             span: span(0, 24),
         })];
 
-        tc.check_program(&program).unwrap();
+        tc.check_program_self(&program).unwrap();
 
         if let Some(ModuleEntry::Def { scheme, .. }) = tc.symbol_table().get("greet") {
             assert_eq!(
@@ -3165,7 +3261,7 @@ mod tests {
             }),
         ];
 
-        let result = tc.check_program(&program).unwrap();
+        let result = tc.check_program_self(&program).unwrap();
 
         // In batch mode, add and main share a substitution during Pass 2.
         // main's (add 3 4) pins add's type vars to Int before generalization.
@@ -3226,7 +3322,7 @@ mod tests {
             span: span(0, 25),
         })];
 
-        let result = tc.check_program(&program).unwrap();
+        let result = tc.check_program_self(&program).unwrap();
 
         assert!(
             result.constrained_fn_names.contains(&Symbol::from("add")),
@@ -3279,7 +3375,7 @@ mod tests {
             visibility: Visibility::Public,
             span: span(0, 25),
         });
-        let _ = tc.check_repl_input(&defn_input).unwrap();
+        let _ = tc.check_repl_input_self(&defn_input).unwrap();
 
         // Now evaluate an expression that calls the constrained fn: (add 3 4)
         let expr_input = TopLevel::Expr(Expr::Apply {
@@ -3293,7 +3389,7 @@ mod tests {
             ],
             span: span(99, 108),
         });
-        let result = tc.check_repl_input(&expr_input).unwrap();
+        let result = tc.check_repl_input_self(&expr_input).unwrap();
 
         // Should have mono_defns populated
         assert!(
@@ -3335,7 +3431,7 @@ mod tests {
             visibility: Visibility::Public,
             span: span(0, 25),
         });
-        let _ = tc.check_repl_input(&defn_input).unwrap();
+        let _ = tc.check_repl_input_self(&defn_input).unwrap();
 
         // Define a function that calls the constrained fn: (defn main [] (add 1 2))
         let main_input = TopLevel::Defn(Defn {
@@ -3360,7 +3456,7 @@ mod tests {
             visibility: Visibility::Public,
             span: span(180, 209),
         });
-        let result = tc.check_repl_input(&main_input).unwrap();
+        let result = tc.check_repl_input_self(&main_input).unwrap();
 
         // Should have mono_defns from the defn body scan
         assert!(
@@ -3401,7 +3497,7 @@ mod tests {
             span: span(0, 29),
         })];
 
-        let result = tc.check_program(&program).unwrap();
+        let result = tc.check_program_self(&program).unwrap();
 
         assert!(result.constrained_fn_names.is_empty());
         assert!(result.mono_defns.is_empty());

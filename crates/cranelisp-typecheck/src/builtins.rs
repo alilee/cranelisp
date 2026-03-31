@@ -435,7 +435,7 @@ impl TypeChecker {
     /// (`macros/SexpSym`, `macros/SCons`, `macros/sconcat`, etc.) or explicit import.
     fn register_macros_module(&mut self) {
         // Switch to the synthetic `macros` module.
-        let saved_module = self.current_module_path().clone();
+        let saved_module = self.state.current_module.clone();
         let macros_path = ModuleFullPath::from("macros");
         self.set_current_module(macros_path);
 
@@ -520,7 +520,7 @@ impl TypeChecker {
             },
         ];
 
-        self.register_type_def(
+        self.register_type_def_self(
             &TypeName::from("SList"),
             &None,
             &[Symbol::from("a")],
@@ -561,7 +561,7 @@ impl TypeChecker {
             Self::sexp_ctor("SexpBracket", "sitems", slist_sexp),
         ];
 
-        self.register_type_def(
+        self.register_type_def_self(
             &TypeName::from("Sexp"),
             &None,
             &[],
@@ -601,9 +601,12 @@ impl TypeChecker {
     ///
     /// See `design/typecheck/io-types.md` §2-3 for the full design rationale.
     fn register_io_type(&mut self) {
-        // Switch to the synthetic `primitives` module.
-        let saved_module = self.current_module_path().clone();
+        // Switch to the synthetic `primitives` module via state.
+        let saved_module = self.state.current_module.clone();
         let primitives_path = ModuleFullPath::from("primitives");
+        if !self.modules.contains_key(&primitives_path) {
+            self.modules.insert(primitives_path.clone(), cranelisp_types::SymbolTable::new(primitives_path.clone()));
+        }
         self.set_current_module(primitives_path);
 
         // Define Pure and Effect constructors via the normal registration path.
@@ -630,7 +633,7 @@ impl TypeChecker {
             },
         ];
 
-        self.register_type_def(
+        self.register_type_def_self(
             &TypeName::from("IO"),
             &Some("Deferred IO computation tree".to_string()),
             &[Symbol::from("a")],
@@ -780,9 +783,9 @@ impl TypeChecker {
     ///   nanos    :: (Fn [Trace] Int)
     fn register_trace_type(&mut self) {
         // Switch to the synthetic `primitives` module.
-        let saved_module = self.current_module_path().clone();
+        let saved_module = self.state.current_module.clone();
         let primitives_path = ModuleFullPath::from("primitives");
-        self.set_current_module(primitives_path);
+        self.set_current_module(primitives_path.clone());
 
         // Define the TraceCall constructor via the normal registration path.
         let trace_ctors = vec![ConstructorDef {
@@ -819,7 +822,7 @@ impl TypeChecker {
             span: Span::SYNTHETIC,
         }];
 
-        self.register_type_def(
+        self.register_type_def_self(
             &TypeName::from("Trace"),
             &Some("Recorded execution call tree from (trace expr)".to_string()),
             &[], // monomorphic — no type parameters
@@ -1499,7 +1502,7 @@ mod tests {
         let tc = TypeChecker::new();
         // The TypeChecker's current module is "user" by default.
         // Qualified lookup: "macros/SexpSym" should resolve.
-        let scheme = tc.lookup("macros/SexpSym");
+        let scheme = tc.lookup_self("macros/SexpSym");
         assert!(
             scheme.is_some(),
             "macros/SexpSym should be resolvable from user module"
@@ -1516,11 +1519,11 @@ mod tests {
 
         // Also check qualified access to SCons and SNil
         assert!(
-            tc.lookup("macros/SCons").is_some(),
+            tc.lookup_self("macros/SCons").is_some(),
             "macros/SCons should be resolvable"
         );
         assert!(
-            tc.lookup("macros/SNil").is_some(),
+            tc.lookup_self("macros/SNil").is_some(),
             "macros/SNil should be resolvable"
         );
     }
@@ -1566,7 +1569,7 @@ mod tests {
     #[test]
     fn test_sconcat_qualified_access() {
         let tc = TypeChecker::new();
-        let scheme = tc.lookup("macros/sconcat");
+        let scheme = tc.lookup_self("macros/sconcat");
         assert!(
             scheme.is_some(),
             "macros/sconcat should be resolvable from user module"

@@ -11,7 +11,7 @@ use cranelisp_types::{
     Scheme, Span, Symbol, Type, TypeDefInfo, TypeId, TypeName, Visibility,
 };
 
-use crate::checker::TypeChecker;
+use crate::checker::{CheckState, TypeChecker};
 use crate::resolve::resolve_type_expr;
 
 /// Registry of user-defined type definitions.
@@ -88,6 +88,7 @@ impl TypeChecker {
     /// resolves field types, and produces polymorphic constructor schemes.
     pub(crate) fn register_type_def(
         &mut self,
+        state: &mut CheckState,
         name: &TypeName,
         docstring: &Option<String>,
         type_params: &[Symbol],
@@ -142,16 +143,16 @@ impl TypeChecker {
             .insert(name.clone(), type_def_info.clone());
 
         // Register each constructor with its scheme
-        self.register_constructors(
+        self.register_constructors(state, 
             name, &type_def_info, &adt_type, &type_var_ids, visibility,
         );
 
         // If a single constructor has the same name as the type (product type),
         // store its scheme so lookups find the constructor through the TypeDef.
-        let ctor_scheme = self.find_same_name_constructor_scheme(name);
+        let ctor_scheme = self.find_same_name_constructor_scheme(state, name);
 
         // Register the type in the symbol table
-        self.current_symbol_table_mut().insert(
+        self.current_symbol_table_mut_with_state(state).insert(
             Symbol::from(name.as_ref()),
             ModuleEntry::TypeDef {
                 info: type_def_info,
@@ -238,11 +239,12 @@ impl TypeChecker {
     /// This supports product-type syntax like `(deftype Point [:Int x :Int y])`.
     fn find_same_name_constructor_scheme(
         &self,
+        state: &CheckState,
         type_name: &TypeName,
     ) -> Option<Scheme> {
         let ctor_sym = Symbol::from(type_name.as_ref());
         if let Some(ModuleEntry::Constructor { scheme, .. }) =
-            self.current_symbol_table().get(ctor_sym.as_ref())
+            self.current_symbol_table_with_state(state).get(ctor_sym.as_ref())
         {
             Some(scheme.clone())
         } else {
@@ -253,6 +255,7 @@ impl TypeChecker {
     /// Register constructors in symbol table and constructor_to_type map.
     fn register_constructors(
         &mut self,
+        state: &mut CheckState,
         name: &TypeName,
         type_def_info: &TypeDefInfo,
         adt_type: &Type,
@@ -264,7 +267,7 @@ impl TypeChecker {
                 ctor_info, adt_type, type_var_ids,
             );
 
-            self.current_symbol_table_mut().insert(
+            self.current_symbol_table_mut_with_state(state).insert(
                 ctor_info.name.clone(),
                 ModuleEntry::Constructor {
                     type_name: Symbol::from(name.as_ref()),
@@ -389,7 +392,7 @@ mod tests {
     #[test]
     fn test_register_enum_type() {
         let mut tc = TypeChecker::new();
-        tc.register_type_def(
+        tc.register_type_def_self(
             &TypeName::from("Color"),
             &None,
             &[],
@@ -418,7 +421,7 @@ mod tests {
     #[test]
     fn test_constructor_scheme_is_adt_type() {
         let mut tc = TypeChecker::new();
-        tc.register_type_def(
+        tc.register_type_def_self(
             &TypeName::from("Bool2"),
             &None,
             &[],
@@ -439,7 +442,7 @@ mod tests {
     #[test]
     fn test_register_polymorphic_option() {
         let mut tc = TypeChecker::new();
-        tc.register_type_def(
+        tc.register_type_def_self(
             &TypeName::from("Option"),
             &None,
             &[Symbol::from("a")],
@@ -503,7 +506,7 @@ mod tests {
     #[test]
     fn test_register_product_type_with_fields() {
         let mut tc = TypeChecker::new();
-        tc.register_type_def(
+        tc.register_type_def_self(
             &TypeName::from("Pair"),
             &None,
             &[],
@@ -556,7 +559,7 @@ mod tests {
     #[test]
     fn test_exhaustiveness_all_covered() {
         let mut tc = TypeChecker::new();
-        tc.register_type_def(
+        tc.register_type_def_self(
             &TypeName::from("Color"),
             &None,
             &[],
@@ -580,7 +583,7 @@ mod tests {
     #[test]
     fn test_exhaustiveness_missing_constructor() {
         let mut tc = TypeChecker::new();
-        tc.register_type_def(
+        tc.register_type_def_self(
             &TypeName::from("Color"),
             &None,
             &[],
@@ -601,7 +604,7 @@ mod tests {
     #[test]
     fn test_exhaustiveness_wildcard_covers_all() {
         let mut tc = TypeChecker::new();
-        tc.register_type_def(
+        tc.register_type_def_self(
             &TypeName::from("Color"),
             &None,
             &[],
@@ -621,7 +624,7 @@ mod tests {
     #[test]
     fn test_constructor_tags() {
         let mut tc = TypeChecker::new();
-        tc.register_type_def(
+        tc.register_type_def_self(
             &TypeName::from("Dir"),
             &None,
             &[],
@@ -648,7 +651,7 @@ mod tests {
 
     /// Helper: register (Option a) with None and Some[:a val].
     fn register_option(tc: &mut TypeChecker) {
-        tc.register_type_def(
+        tc.register_type_def_self(
             &TypeName::from("Option"),
             &None,
             &[Symbol::from("a")],
@@ -758,7 +761,7 @@ mod tests {
     fn test_shortcut_product_type() {
         // (deftype Pair [first second]) -- bare field names with type vars
         let mut tc = TypeChecker::new();
-        tc.register_type_def(
+        tc.register_type_def_self(
             &TypeName::from("Pair"),
             &None,
             &[Symbol::from("a"), Symbol::from("b")],
@@ -811,7 +814,7 @@ mod tests {
     fn test_register_multi_param_type() {
         // (deftype (Either a b) (Left [:a val]) (Right [:b val]))
         let mut tc = TypeChecker::new();
-        tc.register_type_def(
+        tc.register_type_def_self(
             &TypeName::from("Either"),
             &None,
             &[Symbol::from("a"), Symbol::from("b")],
@@ -858,7 +861,7 @@ mod tests {
     fn test_known_types_includes_param_count() {
         let mut tc = TypeChecker::new();
         register_option(&mut tc);
-        tc.register_type_def(
+        tc.register_type_def_self(
             &TypeName::from("Color"),
             &None,
             &[],

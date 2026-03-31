@@ -212,6 +212,18 @@ impl TypeChecker {
     // --- Module-scoped symbol table accessors ---
 
     /// Get a reference to the current module's symbol table.
+    pub(crate) fn current_symbol_table_with_state(&self, state: &CheckState) -> &SymbolTable {
+        self.modules
+            .get(&state.current_module)
+            .unwrap_or_else(|| unreachable!("invariant: current_module always exists in modules map"))
+    }
+
+    pub(crate) fn current_symbol_table_mut_with_state(&mut self, state: &CheckState) -> &mut SymbolTable {
+        self.modules
+            .get_mut(&state.current_module)
+            .unwrap_or_else(|| unreachable!("invariant: current_module always exists in modules map"))
+    }
+
     pub(crate) fn current_symbol_table(&self) -> &SymbolTable {
         self.modules
             .get(&self.state.current_module)
@@ -407,18 +419,18 @@ impl TypeChecker {
     // --- Scope operations (delegate to CheckState.env) ---
 
     /// Push a new scope frame.
-    pub(crate) fn push_scope(&mut self) {
-        self.state.env.push_scope();
+    pub(crate) fn push_scope(&mut self, state: &mut CheckState) {
+        state.env.push_scope();
     }
 
     /// Pop the topmost scope frame.
-    pub(crate) fn pop_scope(&mut self) {
-        self.state.env.pop_scope();
+    pub(crate) fn pop_scope(&mut self, state: &mut CheckState) {
+        state.env.pop_scope();
     }
 
     /// Bind a name in the current scope with a type scheme.
-    pub(crate) fn bind_local(&mut self, name: Symbol, scheme: Scheme) {
-        self.state.env.bind(name, scheme);
+    pub(crate) fn bind_local(&mut self, state: &mut CheckState, name: Symbol, scheme: Scheme) {
+        state.env.bind(name, scheme);
     }
 
     /// Look up a name in scope stack, falling back to current module's symbol table.
@@ -428,14 +440,14 @@ impl TypeChecker {
     /// 2. Module scope (current module's defs + imports, following chains)
     /// 3. Qualified name resolution: `module/name` splits on `/` and resolves
     ///    via `resolve_qualified` (spec §8.6.6)
-    pub(crate) fn lookup(&self, name: &str) -> Option<Scheme> {
+    pub(crate) fn lookup(&self, state: &CheckState, name: &str) -> Option<Scheme> {
         // Check local scope stack first
-        if let Some(scheme) = self.state.env.lookup(name) {
+        if let Some(scheme) = state.env.lookup(name) {
             return Some(scheme.clone());
         }
 
         // Fall back to current module's symbol table (following import chains)
-        if let Some(scheme) = self.lookup_in_current_module(name) {
+        if let Some(scheme) = self.lookup_in_current_module(state, name) {
             return Some(scheme);
         }
 
@@ -447,15 +459,15 @@ impl TypeChecker {
                 // Try child-of-current-module first: "util" in module "main"
                 // resolves to "main.util" (submodule reference).
                 let child_path = ModuleFullPath::from(
-                    format!("{}.{}", self.state.current_module, module_part),
+                    format!("{}.{}", state.current_module, module_part),
                 );
-                if let Ok(Some(scheme)) = self.resolve_qualified(&child_path, name_part) {
+                if let Ok(Some(scheme)) = self.resolve_qualified(state, &child_path, name_part) {
                     return Some(scheme);
                 }
 
                 // Fall back to absolute module path.
                 let abs_path = ModuleFullPath::from(module_part);
-                if let Ok(Some(scheme)) = self.resolve_qualified(&abs_path, name_part) {
+                if let Ok(Some(scheme)) = self.resolve_qualified(state, &abs_path, name_part) {
                     return Some(scheme);
                 }
 
@@ -468,8 +480,8 @@ impl TypeChecker {
 
     /// Look up a name in the current module's symbol table, following
     /// Import/Reexport chains to their source definitions.
-    fn lookup_in_current_module(&self, name: &str) -> Option<Scheme> {
-        let entry = self.current_symbol_table().get(name)?;
+    fn lookup_in_current_module(&self, state: &CheckState, name: &str) -> Option<Scheme> {
+        let entry = self.modules.get(&state.current_module)?.get(name)?;
         self.extract_scheme_from_entry(entry, 0)
     }
 
@@ -512,8 +524,8 @@ impl TypeChecker {
 
     /// Resolve a name in the current module to its terminal `ModuleEntry`,
     /// following Import/Reexport chains.
-    pub(crate) fn resolve_entry_in_current_module(&self, name: &str) -> Option<&ModuleEntry> {
-        let entry = self.current_symbol_table().get(name)?;
+    pub(crate) fn resolve_entry_in_current_module(&self, state: &CheckState, name: &str) -> Option<&ModuleEntry> {
+        let entry = self.modules.get(&state.current_module)?.get(name)?;
         self.resolve_to_terminal_entry(entry, 0)
     }
 
@@ -540,15 +552,15 @@ impl TypeChecker {
     ///
     /// Bypasses local scope. Checks visibility — private names are inaccessible
     /// from outside the defining module's subtree (spec §8.7.3).
-    pub fn resolve_qualified(
+    pub(crate) fn resolve_qualified(
         &self,
+        state: &CheckState,
         module_path: &ModuleFullPath,
         name: &str,
     ) -> Result<Option<Scheme>, CranelispError> {
         // Resolve the module: check if the first path component is an alias
         let first_component = module_path.as_ref().split('.').next().unwrap_or(module_path.as_ref());
-        let resolved_path = self
-            .state
+        let resolved_path = state
             .module_aliases
             .get(&Symbol::from(first_component))
             .cloned()
@@ -566,7 +578,7 @@ impl TypeChecker {
 
         // Visibility check: private names are only accessible within the
         // defining module's subtree
-        if !entry.is_public() && !self.is_in_subtree(&self.state.current_module, &resolved_path) {
+        if !entry.is_public() && !self.is_in_subtree(&state.current_module, &resolved_path) {
             return Err(CranelispError::TypeError {
                 message: format!(
                     "'{}' is private in module '{}'",
@@ -615,11 +627,12 @@ impl TypeChecker {
     /// `span` is used for error context.
     pub(crate) fn unify(
         &mut self,
+        state: &mut CheckState,
         t1: &Type,
         t2: &Type,
         span: Span,
     ) -> Result<(), CranelispError> {
-        crate::unify::unify(&mut self.state.subst, t1, t2).map_err(|e| {
+        crate::unify::unify(&mut state.subst, t1, t2).map_err(|e| {
             // Re-wrap with the caller's span if the error has SYNTHETIC span
             if e.span() == Span::SYNTHETIC {
                 CranelispError::TypeError {
@@ -638,11 +651,11 @@ impl TypeChecker {
     ///
     /// If the scheme has constraints, they are tracked on the fresh variables
     /// in `self.active_constraints` for later propagation during generalize.
-    pub(crate) fn instantiate(&mut self, s: &Scheme) -> Type {
+    pub(crate) fn instantiate(&mut self, state: &mut CheckState, s: &Scheme) -> Type {
         if s.constraints.is_empty() {
             scheme::instantiate(s, self.next_id.get_mut())
         } else {
-            self.instantiate_constrained(s)
+            self.instantiate_constrained(state, s)
         }
     }
 
@@ -654,9 +667,9 @@ impl TypeChecker {
     /// the constraint attaches to Y. This handles the case where
     /// `instantiate_constrained` records a constraint on a fresh var that
     /// gets unified with a different var during type checking.
-    pub(crate) fn generalize(&self, ty: &Type) -> Scheme {
-        let env_fv = self.state.env.free_vars_in_env();
-        let mut scheme = scheme::generalize(&self.state.subst, ty, &env_fv);
+    pub(crate) fn generalize(&self, state: &CheckState, ty: &Type) -> Scheme {
+        let env_fv = state.env.free_vars_in_env();
+        let mut scheme = scheme::generalize(&state.subst, ty, &env_fv);
 
         // Build a set of scheme vars for fast lookup
         let scheme_var_set: std::collections::HashSet<TypeId> =
@@ -667,9 +680,9 @@ impl TypeChecker {
         let mut constraints: std::collections::HashMap<TypeId, Vec<_>> =
             std::collections::HashMap::new();
 
-        for (constrained_var, traits) in self.state.active_constraints.all() {
+        for (constrained_var, traits) in state.active_constraints.all() {
             // Resolve the constrained var through the substitution
-            let resolved = apply(&self.state.subst, &Type::Var(*constrained_var));
+            let resolved = apply(&state.subst, &Type::Var(*constrained_var));
             if let Type::Var(resolved_id) = resolved
                 && scheme_var_set.contains(&resolved_id)
             {
@@ -690,8 +703,8 @@ impl TypeChecker {
     // --- Expression type recording ---
 
     /// Record the inferred type for an expression (keyed by span).
-    pub(crate) fn record_expr_type(&mut self, span: Span, ty: Type) {
-        self.state.expr_types.insert(span, ty);
+    pub(crate) fn record_expr_type(&mut self, state: &mut CheckState, span: Span, ty: Type) {
+        state.expr_types.insert(span, ty);
     }
 
     /// Clear transient inference state (expr_types, method_resolutions,
@@ -709,8 +722,8 @@ impl TypeChecker {
     }
 
     /// Apply the current substitution to a type.
-    pub(crate) fn apply_subst(&self, ty: &Type) -> Type {
-        apply(&self.state.subst, ty)
+    pub(crate) fn apply_subst(&self, state: &CheckState, ty: &Type) -> Type {
+        apply(&state.subst, ty)
     }
 
     // --- Import processing (spec §8.3) ---
@@ -730,10 +743,21 @@ impl TypeChecker {
         &mut self,
         specs: &[ImportSpec],
     ) -> Result<(), CranelispError> {
+        let mut state = std::mem::replace(&mut self.state, CheckState::new(ModuleFullPath::from("")));
+        let result = self.register_imports_with_state(&mut state, specs);
+        self.state = state;
+        result
+    }
+
+    pub(crate) fn register_imports_with_state(
+        &mut self,
+        state: &mut CheckState,
+        specs: &[ImportSpec],
+    ) -> Result<(), CranelispError> {
         for spec in specs {
             // Register alias if present
             if let Some(alias) = &spec.alias {
-                self.state.module_aliases.insert(
+                state.module_aliases.insert(
                     Symbol::from(alias.as_ref()),
                     spec.module_path.clone(),
                 );
@@ -760,7 +784,7 @@ impl TypeChecker {
                 }
                 ImportNames::Specific(names) => {
                     self.collect_specific_imports(
-                        source_table, names, &spec.module_path, spec.span,
+                        state, source_table, names, &spec.module_path, spec.span,
                     )?
                 }
                 ImportNames::MemberGlob(parent) => {
@@ -776,7 +800,7 @@ impl TypeChecker {
 
             // Insert into current symbol table, detecting ambiguities
             insert_imports_detecting_ambiguity(
-                self.current_symbol_table_mut(),
+                self.current_symbol_table_mut_with_state(state),
                 imports_to_add,
             );
         }
@@ -793,6 +817,17 @@ impl TypeChecker {
         &mut self,
         specs: &[ExportSpec],
     ) -> Result<(), CranelispError> {
+        let mut state = std::mem::replace(&mut self.state, CheckState::new(ModuleFullPath::from("")));
+        let result = self.register_exports_with_state(&mut state, specs);
+        self.state = state;
+        result
+    }
+
+    pub(crate) fn register_exports_with_state(
+        &mut self,
+        state: &mut CheckState,
+        specs: &[ExportSpec],
+    ) -> Result<(), CranelispError> {
         for spec in specs {
             // Resolve the module path: try as-is first, then as a child
             // of the current module (e.g., "syntax" -> "core.syntax"
@@ -802,7 +837,7 @@ impl TypeChecker {
             } else {
                 let child_path = ModuleFullPath::from(format!(
                     "{}.{}",
-                    self.state.current_module, spec.module_path
+                    state.current_module, spec.module_path
                 ));
                 if self.modules.contains_key(&child_path) {
                     child_path
@@ -830,7 +865,7 @@ impl TypeChecker {
                 }
                 ImportNames::Specific(names) => {
                     self.collect_specific_reexports(
-                        source_table, names, &resolved_path, spec.span,
+                        state, source_table, names, &resolved_path, spec.span,
                     )?
                 }
                 ImportNames::MemberGlob(parent) => {
@@ -846,7 +881,7 @@ impl TypeChecker {
 
             // Insert into current symbol table, detecting ambiguities.
             insert_imports_detecting_ambiguity(
-                self.current_symbol_table_mut(),
+                self.current_symbol_table_mut_with_state(state),
                 reexports,
             );
         }
@@ -857,6 +892,7 @@ impl TypeChecker {
     /// visibility and existence.
     fn collect_specific_reexports(
         &self,
+        state: &CheckState,
         source_table: &SymbolTable,
         names: &[Symbol],
         module_path: &ModuleFullPath,
@@ -868,7 +904,7 @@ impl TypeChecker {
                 Some(entry) => {
                     if !entry.is_public()
                         && !self.is_in_subtree(
-                            &self.state.current_module,
+                            &state.current_module,
                             module_path,
                         )
                     {
@@ -947,6 +983,7 @@ impl TypeChecker {
     /// visibility and existence (spec §8.3).
     fn collect_specific_imports(
         &self,
+        state: &CheckState,
         source_table: &SymbolTable,
         names: &[Symbol],
         module_path: &ModuleFullPath,
@@ -958,7 +995,7 @@ impl TypeChecker {
                 Some(entry) => {
                     if !entry.is_public()
                         && !self.is_in_subtree(
-                            &self.state.current_module,
+                            &state.current_module,
                             module_path,
                         )
                     {
@@ -1362,6 +1399,113 @@ impl TypeChecker {
         };
         self.type_defs.read().unwrap().is_internal_constructor(bare_name)
     }
+
+    // --- Test convenience methods (take-and-restore pattern) ---
+
+    /// Lookup using self.state (test convenience).
+    #[cfg(test)]
+    pub(crate) fn lookup_self(&self, name: &str) -> Option<Scheme> {
+        self.lookup(&self.state, name)
+    }
+
+    /// Resolve qualified using self.state (test convenience).
+    #[cfg(test)]
+    pub(crate) fn resolve_qualified_self(
+        &self,
+        module_path: &ModuleFullPath,
+        name: &str,
+    ) -> Result<Option<Scheme>, CranelispError> {
+        self.resolve_qualified(&self.state, module_path, name)
+    }
+
+    /// Bind local using self.state (test convenience).
+    #[cfg(test)]
+    pub(crate) fn bind_local_self(&mut self, name: Symbol, scheme: Scheme) {
+        self.state.env.bind(name, scheme);
+    }
+
+    /// Apply subst using self.state (test convenience).
+    #[cfg(test)]
+    pub(crate) fn apply_subst_self(&self, ty: &Type) -> Type {
+        apply(&self.state.subst, ty)
+    }
+
+
+    /// Register trait decl using self.state (test/external convenience).
+    pub(crate) fn register_trait_decl_self(
+        &mut self,
+        decl: &cranelisp_types::TraitDecl,
+    ) -> Result<(), CranelispError> {
+        let mut state = std::mem::replace(&mut self.state, CheckState::new(ModuleFullPath::from("")));
+        let result = self.register_trait_decl(&mut state, decl);
+        self.state = state;
+        result
+    }
+
+    /// Register trait impl using self.state (test convenience).
+    pub(crate) fn register_trait_impl_self(
+        &mut self,
+        impl_: &cranelisp_types::TraitImpl,
+    ) -> Result<Vec<cranelisp_types::Defn>, CranelispError> {
+        let mut state = std::mem::replace(&mut self.state, CheckState::new(ModuleFullPath::from("")));
+        let result = self.register_trait_impl(&mut state, impl_);
+        self.state = state;
+        result
+    }
+
+    /// Try resolve trait method using self.state (test convenience).
+    pub(crate) fn try_resolve_trait_method_self(
+        &mut self,
+        name: &Symbol,
+        arg_types: &[Type],
+        span: Span,
+    ) -> Result<Option<cranelisp_types::ResolvedCall>, CranelispError> {
+        let mut state = std::mem::replace(&mut self.state, CheckState::new(ModuleFullPath::from("")));
+        let result = self.try_resolve_trait_method(&mut state, name, arg_types, span);
+        self.state = state;
+        result
+    }
+
+    /// Check program using self.state (test convenience, deprecated).
+    pub(crate) fn check_program_self(
+        &mut self,
+        program: &[cranelisp_types::TopLevel],
+    ) -> Result<cranelisp_types::CheckResult, CranelispError> {
+        #[allow(deprecated)]
+        self.check_program(program)
+    }
+
+    /// Check REPL input using self.state (test convenience, deprecated).
+    pub(crate) fn check_repl_input_self(
+        &mut self,
+        input: &cranelisp_types::TopLevel,
+    ) -> Result<cranelisp_types::CheckResult, CranelispError> {
+        #[allow(deprecated)]
+        self.check_repl_input(input)
+    }
+
+
+    /// Register type def using self.state (test/external convenience).
+    pub(crate) fn register_type_def_self(
+        &mut self,
+        name: &cranelisp_types::TypeName,
+        docstring: &Option<String>,
+        type_params: &[Symbol],
+        constructors: &[cranelisp_types::ConstructorDef],
+        visibility: cranelisp_types::Visibility,
+        span: Span,
+    ) -> Result<(), CranelispError> {
+        let mut state = std::mem::replace(&mut self.state, CheckState::new(ModuleFullPath::from("")));
+        let result = self.register_type_def(&mut state, name, docstring, type_params, constructors, visibility, span);
+        self.state = state;
+        result
+    }
+
+    /// Resolve primitive JIT name using self.state (test convenience).
+    pub(crate) fn resolve_primitive_jit_name_self(&self, name: &str) -> Option<Symbol> {
+        self.resolve_primitive_jit_name(&self.state, name)
+    }
+
 }
 
 // ---------------------------------------------------------------------------
@@ -1604,7 +1748,7 @@ mod tests {
         tc.set_current_module(ModuleFullPath::from("user"));
 
         let result = tc
-            .resolve_qualified(&ModuleFullPath::from("math"), "add")
+            .resolve_qualified_self(&ModuleFullPath::from("math"), "add")
             .unwrap();
         assert!(result.is_some());
     }
@@ -1616,7 +1760,7 @@ mod tests {
         seed_module(&mut tc, "math", vec![("internal", Visibility::Private)]);
         tc.set_current_module(ModuleFullPath::from("user"));
 
-        let result = tc.resolve_qualified(
+        let result = tc.resolve_qualified_self(
             &ModuleFullPath::from("math"),
             "internal",
         );
@@ -1637,7 +1781,7 @@ mod tests {
         tc.set_current_module(ModuleFullPath::from("math.test"));
 
         let result = tc
-            .resolve_qualified(&ModuleFullPath::from("math"), "internal")
+            .resolve_qualified_self(&ModuleFullPath::from("math"), "internal")
             .unwrap();
         assert!(result.is_some());
     }
@@ -1650,7 +1794,7 @@ mod tests {
         tc.set_current_module(ModuleFullPath::from("user"));
 
         let result = tc
-            .resolve_qualified(&ModuleFullPath::from("math"), "nonexistent")
+            .resolve_qualified_self(&ModuleFullPath::from("math"), "nonexistent")
             .unwrap();
         assert!(result.is_none());
     }
@@ -1660,7 +1804,7 @@ mod tests {
     fn test_resolve_qualified_unknown_module() {
         let tc = TypeChecker::new();
         let result = tc
-            .resolve_qualified(&ModuleFullPath::from("unknown"), "foo")
+            .resolve_qualified_self(&ModuleFullPath::from("unknown"), "foo")
             .unwrap();
         assert!(result.is_none());
     }
@@ -1807,7 +1951,7 @@ mod tests {
         .unwrap();
 
         // Should be able to look up "helper" in main — follows the chain
-        let scheme = tc.lookup("helper");
+        let scheme = tc.lookup_self("helper");
         assert!(scheme.is_some());
     }
 
@@ -1841,7 +1985,7 @@ mod tests {
             Some(ModuleEntry::Ambiguous)
         ));
         // Lookup should return None for ambiguous names
-        assert!(tc.lookup("clash").is_none());
+        assert!(tc.lookup_self("clash").is_none());
     }
 
     // spec: 08-modules §8.6 — duplicate import from same source is not ambiguous
@@ -1970,7 +2114,7 @@ mod tests {
 
         // resolve_qualified with alias module path should find the symbol
         let result = tc
-            .resolve_qualified(&ModuleFullPath::from("opt"), "Some")
+            .resolve_qualified_self(&ModuleFullPath::from("opt"), "Some")
             .unwrap();
         assert!(
             result.is_some(),
@@ -1991,7 +2135,7 @@ mod tests {
 
         // No alias — direct path should still work
         let result = tc
-            .resolve_qualified(&ModuleFullPath::from("math"), "add")
+            .resolve_qualified_self(&ModuleFullPath::from("math"), "add")
             .unwrap();
         assert!(result.is_some());
     }

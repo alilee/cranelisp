@@ -12,7 +12,7 @@ use cranelisp_types::{
     apply,
 };
 
-use crate::checker::TypeChecker;
+use crate::checker::{CheckState, TypeChecker};
 use crate::scheme;
 
 // ---------------------------------------------------------------------------
@@ -147,6 +147,7 @@ impl TypeChecker {
     /// - Registers the trait name in the symbol table as TraitDecl
     pub(crate) fn register_trait_decl(
         &mut self,
+        state: &mut CheckState,
         decl: &TraitDecl,
     ) -> Result<(), CranelispError> {
         // Check for duplicate trait name
@@ -166,7 +167,7 @@ impl TypeChecker {
                     || type_expr_uses_con_var(&m.ret_type, &decl.type_params)
             })
         {
-            return self.register_hkt_trait(decl);
+            return self.register_hkt_trait(state, decl);
         }
 
         // Allocate a fresh type variable for the trait's type parameter
@@ -174,7 +175,7 @@ impl TypeChecker {
 
         // Register each method with a constrained polymorphic scheme
         for method in &decl.methods {
-            self.register_trait_method(
+            self.register_trait_method(state, 
                 &decl.name,
                 method,
                 type_var_id,
@@ -189,7 +190,7 @@ impl TypeChecker {
             .insert(decl.name.clone(), decl.clone());
 
         // Register in symbol table as TraitDecl entry
-        self.current_symbol_table_mut().insert(
+        self.current_symbol_table_mut_with_state(state).insert(
             Symbol::from(decl.name.as_ref()),
             cranelisp_types::ModuleEntry::TraitDecl {
                 decl: decl.clone(),
@@ -205,6 +206,7 @@ impl TypeChecker {
     /// E.g., `(deftrait (Functor f) (fmap [(Fn [a] b) (f a)] (f b)))`
     fn register_hkt_trait(
         &mut self,
+        state: &mut CheckState,
         decl: &TraitDecl,
     ) -> Result<(), CranelispError> {
         // Create fresh type var IDs for each constructor param
@@ -253,7 +255,7 @@ impl TypeChecker {
             };
 
             // Register the method name as a symbol
-            self.current_symbol_table_mut().insert(
+            self.current_symbol_table_mut_with_state(state).insert(
                 method.name.clone(),
                 cranelisp_types::ModuleEntry::Def {
                     scheme: method_scheme,
@@ -279,7 +281,7 @@ impl TypeChecker {
             .insert(decl.name.clone(), modified_decl.clone());
 
         // Register in symbol table as TraitDecl entry (with hkt_param_index)
-        self.current_symbol_table_mut().insert(
+        self.current_symbol_table_mut_with_state(state).insert(
             Symbol::from(decl.name.as_ref()),
             cranelisp_types::ModuleEntry::TraitDecl {
                 decl: modified_decl,
@@ -294,6 +296,7 @@ impl TypeChecker {
     /// Register a single trait method with its constrained polymorphic scheme.
     fn register_trait_method(
         &mut self,
+        state: &mut CheckState,
         trait_name: &TraitName,
         method: &TraitMethodSig,
         type_var_id: TypeId,
@@ -313,7 +316,7 @@ impl TypeChecker {
         };
 
         // Register the method name as a symbol
-        self.current_symbol_table_mut().insert(
+        self.current_symbol_table_mut_with_state(state).insert(
             method.name.clone(),
             cranelisp_types::ModuleEntry::Def {
                 scheme: method_scheme,
@@ -376,6 +379,7 @@ impl TypeChecker {
     /// Register and validate a trait implementation.
     pub(crate) fn register_trait_impl(
         &mut self,
+        state: &mut CheckState,
         impl_: &TraitImpl,
     ) -> Result<Vec<Defn>, CranelispError> {
         // Look up the trait declaration
@@ -437,11 +441,11 @@ impl TypeChecker {
         }
 
         // Check all required methods are present (that don't have defaults)
-        self.check_impl_methods_present(&decl, impl_)?;
+        self.check_impl_methods_present(state, &decl, impl_)?;
 
         // Generate default method implementations for missing methods
         let default_defns =
-            self.generate_default_methods(&decl, impl_)?;
+            self.generate_default_methods(state, &decl, impl_)?;
 
         // Register the impl
         let mut method_primitives = HashMap::new();
@@ -467,6 +471,7 @@ impl TypeChecker {
         let mut all_defns = default_defns;
         for method_defn in &impl_.methods {
             self.check_impl_method(
+                state,
                 &decl,
                 impl_,
                 method_defn,
@@ -497,6 +502,7 @@ impl TypeChecker {
     /// Check that all required methods are provided in the impl.
     fn check_impl_methods_present(
         &self,
+        _state: &CheckState,
         decl: &TraitDecl,
         impl_: &TraitImpl,
     ) -> Result<(), CranelispError> {
@@ -528,6 +534,7 @@ impl TypeChecker {
     /// Type-check a single impl method.
     fn check_impl_method(
         &mut self,
+        state: &mut CheckState,
         decl: &TraitDecl,
         impl_: &TraitImpl,
         method_defn: &Defn,
@@ -555,7 +562,7 @@ impl TypeChecker {
             });
 
         if is_hkt {
-            return self.check_hkt_impl_method(decl, impl_, method_defn, method_sig);
+            return self.check_hkt_impl_method(state, decl, impl_, method_defn, method_sig);
         }
 
         // Resolve the concrete type for Self
@@ -586,7 +593,7 @@ impl TypeChecker {
         )?;
 
         // Check the body
-        self.check_defn_body_with_types(method_defn, &param_types, &ret_ty)?;
+        self.check_defn_body_with_types(state, method_defn, &param_types, &ret_ty)?;
 
         Ok(())
     }
@@ -598,6 +605,7 @@ impl TypeChecker {
     /// - `(f a)` in the signature resolves to `(Option a)` via ADT application
     fn check_hkt_impl_method(
         &mut self,
+        state: &mut CheckState,
         decl: &TraitDecl,
         impl_: &TraitImpl,
         method_defn: &Defn,
@@ -650,11 +658,11 @@ impl TypeChecker {
         if let Some(param_idx) = method_sig.hkt_param_index
             && let Some(param_ty) = param_types.get(param_idx)
         {
-            self.unify(param_ty, &concrete_self, method_defn.span)?;
+            self.unify(state, param_ty, &concrete_self, method_defn.span)?;
         }
 
         // Check the body
-        self.check_defn_body_with_types(method_defn, &param_types, &ret_ty)?;
+        self.check_defn_body_with_types(state, method_defn, &param_types, &ret_ty)?;
 
         Ok(())
     }
@@ -663,34 +671,37 @@ impl TypeChecker {
     /// Shared helper for impl method checking.
     pub(crate) fn check_defn_body_with_types(
         &mut self,
+        state: &mut CheckState,
         defn: &Defn,
         param_types: &[Type],
         ret_ty: &Type,
     ) -> Result<(), CranelispError> {
-        self.push_scope();
+        self.push_scope(state);
 
         for (param_name, param_ty) in
             defn.params().iter().zip(param_types.iter())
         {
             self.bind_local(
+                state,
                 param_name.clone(),
                 scheme::mono(param_ty.clone()),
             );
         }
 
-        let body_ty = self.infer_expr(defn.body())?;
-        self.unify(&body_ty, ret_ty, defn.span)?;
+        let body_ty = self.infer_expr(state, defn.body())?;
+        self.unify(state, &body_ty, ret_ty, defn.span)?;
 
         // Post-inference deferred trait resolution
-        self.resolve_deferred_trait_calls(defn.body());
+        self.resolve_deferred_trait_calls(state, defn.body());
 
-        self.pop_scope();
+        self.pop_scope(state);
         Ok(())
     }
 
     /// Generate default method implementations for methods not provided in the impl.
     fn generate_default_methods(
         &self,
+        _state: &CheckState,
         decl: &TraitDecl,
         impl_: &TraitImpl,
     ) -> Result<Vec<Defn>, CranelispError> {
@@ -754,6 +765,7 @@ impl TypeChecker {
     /// Returns None if the callee is not a trait method.
     pub(crate) fn try_resolve_trait_method(
         &mut self,
+        state: &mut CheckState,
         callee_name: &Symbol,
         arg_types: &[Type],
         span: Span,
@@ -770,7 +782,7 @@ impl TypeChecker {
             Some(a) => a,
             None => return Ok(None),
         };
-        let resolved_arg = self.apply_subst(dispatch_arg);
+        let resolved_arg = self.apply_subst(state, dispatch_arg);
 
         let impl_type_name = match concrete_type_name(&resolved_arg) {
             Some(tn) => tn,
@@ -822,6 +834,7 @@ impl TypeChecker {
     /// `self.state.active_constraints`.
     pub(crate) fn instantiate_constrained(
         &mut self,
+        state: &mut CheckState,
         scheme: &Scheme,
     ) -> Type {
         if scheme.vars.is_empty() {
@@ -841,7 +854,7 @@ impl TypeChecker {
         for (old_var, traits) in &scheme.constraints {
             if let Some(&new_var) = var_mapping.get(old_var) {
                 for t in traits {
-                    self.state.active_constraints.add(new_var, t.clone());
+                    state.active_constraints.add(new_var, t.clone());
                 }
             }
         }
@@ -861,12 +874,13 @@ impl TypeChecker {
     #[allow(dead_code)]
     pub(crate) fn monomorphise_call(
         &mut self,
+        state: &mut CheckState,
         fn_name: &Symbol,
         arg_types: &[Type],
         call_span: Span,
     ) -> Result<Option<MonoDefn>, CranelispError> {
         // Look up the constrained fn
-        let constrained_fn = match self.get_constrained_fn(fn_name) {
+        let constrained_fn = match self.get_constrained_fn(state, fn_name) {
             Some(cf) => cf,
             None => return Ok(None),
         };
@@ -875,7 +889,7 @@ impl TypeChecker {
         let defn = constrained_fn.defn.clone();
 
         // Instantiate, unify with arg types, and resolve concrete types
-        let resolved = self.instantiate_and_resolve(&scheme, arg_types, call_span)?;
+        let resolved = self.instantiate_and_resolve(state, &scheme, arg_types, call_span)?;
 
         let concrete_param_types = if let Type::Fn(pts, _) = &resolved {
             pts.clone()
@@ -886,7 +900,7 @@ impl TypeChecker {
         let mangled_name = build_mangled_name(fn_name, &concrete_param_types);
 
         // Check constraints are satisfied
-        self.verify_constraints(&scheme, call_span)?;
+        self.verify_constraints(state, &scheme, call_span)?;
 
         // Re-check the body with concrete types and harvest resolutions
         let concrete_ret_ty = if let Type::Fn(_, ret) = &resolved {
@@ -896,10 +910,11 @@ impl TypeChecker {
         };
 
         let (mut resolutions, mono_expr_types) =
-            self.recheck_body_for_mono(&defn, &concrete_param_types, &concrete_ret_ty)?;
+            self.recheck_body_for_mono(state, &defn, &concrete_param_types, &concrete_ret_ty)?;
 
         // Add SigDispatch entries for inner constrained fn calls
         self.resolve_inner_constrained_calls(
+            state,
             &defn,
             &mono_expr_types,
             &mut resolutions,
@@ -929,6 +944,7 @@ impl TypeChecker {
     /// argument types, and return the fully-resolved function type.
     fn instantiate_and_resolve(
         &mut self,
+        state: &mut CheckState,
         scheme: &Scheme,
         arg_types: &[Type],
         call_span: Span,
@@ -937,22 +953,23 @@ impl TypeChecker {
 
         if let Type::Fn(param_types, _) = &inst_type {
             for (pt, at) in param_types.iter().zip(arg_types.iter()) {
-                self.unify(pt, at, call_span)?;
+                self.unify(state, pt, at, call_span)?;
             }
         }
 
-        Ok(self.apply_subst(&inst_type))
+        Ok(self.apply_subst(state, &inst_type))
     }
 
     /// Verify that all trait constraints in the scheme are satisfied by
     /// the concrete types determined during unification.
     fn verify_constraints(
         &self,
+        state: &CheckState,
         scheme: &Scheme,
         call_span: Span,
     ) -> Result<(), CranelispError> {
         for (var_id, traits) in &scheme.constraints {
-            let resolved_var = apply(&self.state.subst, &Type::Var(*var_id));
+            let resolved_var = apply(&state.subst, &Type::Var(*var_id));
             let impl_type = match concrete_type_name(&resolved_var) {
                 Some(tn) => tn,
                 None => continue,
@@ -978,30 +995,31 @@ impl TypeChecker {
     /// Returns the per-specialization method resolutions and expression types.
     fn recheck_body_for_mono(
         &mut self,
+        state: &mut CheckState,
         defn: &Defn,
         concrete_param_types: &[Type],
         concrete_ret_ty: &Type,
     ) -> Result<(MethodResolutions, HashMap<Span, Type>), CranelispError> {
-        let saved_resolutions = std::mem::take(&mut self.state.method_resolutions);
-        let saved_expr_types = std::mem::take(&mut self.state.expr_types);
-        let saved_pending_auto_curry = std::mem::take(&mut self.state.pending_auto_curry);
+        let saved_resolutions = std::mem::take(&mut state.method_resolutions);
+        let saved_expr_types = std::mem::take(&mut state.expr_types);
+        let saved_pending_auto_curry = std::mem::take(&mut state.pending_auto_curry);
 
-        self.check_defn_body_with_types(defn, concrete_param_types, concrete_ret_ty)?;
+        self.check_defn_body_with_types(state, defn, concrete_param_types, concrete_ret_ty)?;
 
         // Drain pending auto-curry entries into method_resolutions before
         // capturing. During re-check, auto-curry sites push to
         // pending_auto_curry but aren't yet in method_resolutions.
-        self.resolve_auto_curry();
+        self.resolve_auto_curry(state);
 
-        let resolutions = std::mem::take(&mut self.state.method_resolutions);
-        let mono_expr_types: HashMap<Span, Type> = self.state.expr_types
+        let resolutions = std::mem::take(&mut state.method_resolutions);
+        let mono_expr_types: HashMap<Span, Type> = state.expr_types
             .iter()
-            .map(|(span, ty)| (*span, apply(&self.state.subst, ty)))
+            .map(|(span, ty)| (*span, apply(&state.subst, ty)))
             .collect();
 
-        self.state.method_resolutions = saved_resolutions;
-        self.state.expr_types = saved_expr_types;
-        self.state.pending_auto_curry = saved_pending_auto_curry;
+        state.method_resolutions = saved_resolutions;
+        state.expr_types = saved_expr_types;
+        state.pending_auto_curry = saved_pending_auto_curry;
 
         Ok((resolutions, mono_expr_types))
     }
@@ -1010,11 +1028,12 @@ impl TypeChecker {
     /// calls) and add SigDispatch entries so the backend can find them.
     fn resolve_inner_constrained_calls(
         &self,
+        state: &CheckState,
         defn: &Defn,
         mono_expr_types: &HashMap<Span, Type>,
         resolutions: &mut MethodResolutions,
     ) {
-        let constrained_fn_names: HashSet<Symbol> = self.current_symbol_table().symbols
+        let constrained_fn_names: HashSet<Symbol> = self.current_symbol_table_with_state(state).symbols
             .iter()
             .filter_map(|(name, entry)| {
                 if let ModuleEntry::Def { kind, .. } = entry
@@ -1052,11 +1071,12 @@ impl TypeChecker {
     #[allow(dead_code)]
     fn get_constrained_fn(
         &self,
+        state: &CheckState,
         name: &Symbol,
     ) -> Option<&ConstrainedFn> {
         use cranelisp_types::{DefKind, ModuleEntry};
 
-        match self.current_symbol_table().get(name.as_ref())? {
+        match self.current_symbol_table_with_state(state).get(name.as_ref())? {
             ModuleEntry::Def { kind, .. } => match kind.as_ref() {
                 DefKind::UserFn {
                     constrained_fn: Some(cf),
@@ -1451,7 +1471,7 @@ impl TypeChecker {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::checker::TypeChecker;
+    use crate::checker::{CheckState, TypeChecker};
     use cranelisp_types::{
         Defn, DefnVariant, FQSymbol, ModuleEntry, ModuleFullPath, Sexp, Span, TraitDecl,
         TraitImpl, TraitMethodSig, TypeExpr, Visibility,
@@ -1606,7 +1626,7 @@ mod tests {
     fn test_register_trait_decl() {
         let mut tc = TypeChecker::new();
         let decl = make_test_trait_decl();
-        tc.register_trait_decl(&decl).unwrap();
+        tc.register_trait_decl_self(&decl).unwrap();
 
         // Trait should be in the registry
         assert!(tc.trait_registry.read().unwrap().decls.contains_key(&TraitName::from("TestTrait")));
@@ -1627,8 +1647,8 @@ mod tests {
     fn test_register_duplicate_trait_fails() {
         let mut tc = TypeChecker::new();
         let decl = make_test_trait_decl();
-        tc.register_trait_decl(&decl).unwrap();
-        let err = tc.register_trait_decl(&decl).unwrap_err();
+        tc.register_trait_decl_self(&decl).unwrap();
+        let err = tc.register_trait_decl_self(&decl).unwrap_err();
         assert!(err.message().contains("already defined"));
     }
 
@@ -1637,7 +1657,7 @@ mod tests {
     fn test_trait_method_has_constrained_scheme() {
         let mut tc = TypeChecker::new();
         let decl = make_test_trait_decl();
-        tc.register_trait_decl(&decl).unwrap();
+        tc.register_trait_decl_self(&decl).unwrap();
 
         if let Some(ModuleEntry::Def { scheme, .. }) = tc.symbol_table().get("test-op") {
             assert_eq!(scheme.vars.len(), 1, "test-op should have 1 quantified var");
@@ -1659,7 +1679,7 @@ mod tests {
     fn test_register_trait_impl() {
         let mut tc = tc_with_prims();
         let decl = make_test_trait_decl();
-        tc.register_trait_decl(&decl).unwrap();
+        tc.register_trait_decl_self(&decl).unwrap();
 
         let impl_ = TraitImpl {
             trait_name: TraitName::from("TestTrait"),
@@ -1690,7 +1710,7 @@ mod tests {
             }],
             span: Span::SYNTHETIC,
         };
-        tc.register_trait_impl(&impl_).unwrap();
+        tc.register_trait_impl_self(&impl_).unwrap();
 
         assert!(tc
             .impl_registry
@@ -1707,7 +1727,7 @@ mod tests {
     fn test_try_resolve_trait_method_success() {
         let mut tc = tc_with_prims();
         let decl = make_test_trait_decl();
-        tc.register_trait_decl(&decl).unwrap();
+        tc.register_trait_decl_self(&decl).unwrap();
 
         let impl_ = TraitImpl {
             trait_name: TraitName::from("TestTrait"),
@@ -1738,9 +1758,9 @@ mod tests {
             }],
             span: Span::SYNTHETIC,
         };
-        tc.register_trait_impl(&impl_).unwrap();
+        tc.register_trait_impl_self(&impl_).unwrap();
 
-        let result = tc.try_resolve_trait_method(
+        let result = tc.try_resolve_trait_method_self(
             &Symbol::from("test-op"),
             &[Type::Int, Type::Int],
             Span::SYNTHETIC,
@@ -1766,10 +1786,10 @@ mod tests {
     fn test_try_resolve_trait_method_no_impl() {
         let mut tc = TypeChecker::new();
         let decl = make_test_trait_decl();
-        tc.register_trait_decl(&decl).unwrap();
+        tc.register_trait_decl_self(&decl).unwrap();
         // No impl registered for Bool under TestTrait
 
-        let result = tc.try_resolve_trait_method(
+        let result = tc.try_resolve_trait_method_self(
             &Symbol::from("test-op"),
             &[Type::Bool, Type::Bool],
             Span::SYNTHETIC,
@@ -1788,7 +1808,7 @@ mod tests {
     #[test]
     fn test_try_resolve_non_trait_method() {
         let mut tc = TypeChecker::new();
-        let result = tc.try_resolve_trait_method(
+        let result = tc.try_resolve_trait_method_self(
             &Symbol::from("add-i64"),
             &[Type::Int, Type::Int],
             Span::SYNTHETIC,
@@ -1820,7 +1840,7 @@ mod tests {
     fn test_is_trait_method() {
         let mut tc = TypeChecker::new();
         let decl = make_test_trait_decl();
-        tc.register_trait_decl(&decl).unwrap();
+        tc.register_trait_decl_self(&decl).unwrap();
 
         assert!(tc.is_trait_method(&Symbol::from("test-op")));
         assert!(!tc.is_trait_method(&Symbol::from("add-i64")));
@@ -1965,7 +1985,7 @@ mod tests {
             visibility: Visibility::Public,
             span: Span::SYNTHETIC,
         };
-        tc.register_trait_decl(&num_decl).unwrap();
+        tc.register_trait_decl_self(&num_decl).unwrap();
 
         // Register impl Num for Int
         let impl_ = TraitImpl {
@@ -1997,10 +2017,10 @@ mod tests {
             }],
             span: Span::SYNTHETIC,
         };
-        tc.register_trait_impl(&impl_).unwrap();
+        tc.register_trait_impl_self(&impl_).unwrap();
         tc.clear_transient_state();
 
-        let result = tc.try_resolve_trait_method(
+        let result = tc.try_resolve_trait_method_self(
             &Symbol::from("+"),
             &[Type::Int, Type::Int],
             Span::SYNTHETIC,
@@ -2188,7 +2208,7 @@ mod tests {
             visibility: Visibility::Public,
             span: Span::SYNTHETIC,
         };
-        tc.register_trait_decl(&eq_decl).unwrap();
+        tc.register_trait_decl_self(&eq_decl).unwrap();
 
         let impl_ = TraitImpl {
             trait_name: TraitName::from("Eq"),
@@ -2214,7 +2234,7 @@ mod tests {
             .get(&TraitName::from("Eq"))
             .unwrap()
             .clone();
-        let defaults = tc.generate_default_methods(&decl, &impl_).unwrap();
+        let defaults = tc.generate_default_methods(&tc.state, &decl, &impl_).unwrap();
 
         assert_eq!(defaults.len(), 1, "should generate 1 default method (!=)");
         let neq = &defaults[0];

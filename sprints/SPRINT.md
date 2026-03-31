@@ -1,70 +1,59 @@
-# Sprint 46: Pipeline v4 Step 10 — Nice Workers for Object Codegen
+# Sprint 47: Pipeline v4 Steps 11+12 — Multi-Threaded Priority Workers + Concurrent TypeChecker
 
-**Status**: COMPLETE
+**Status**: ACTIVE
 **Ring**: — (structural / pipeline v4 migration)
-**Goal**: Nice worker threads compile modules to `.o` files at low OS priority, enabling background cache file generation during `--run` and blocking cache completion before `--link`.
+**Goal**: Multiple priority worker threads typecheck and codegen modules in parallel, with DashMap-backed TypeChecker enabling concurrent module table access.
 
 ## Context
 
-Sprint 45 delivered Steps 8+9: PlatformRegistry and error cascade. The single-threaded v4 pipeline is now robust — all compilation paths (batch `--run`, `--link`, REPL eval) route through the scheduler with proper error handling and REPL recovery. The next step introduces the first real threading into the v4 pipeline: nice workers for object file codegen.
+Sprint 46 delivered Step 10: nice worker threads for background `.o` compilation. The scheduler has `Mutex<SchedulerState>` + condvars, and nice workers run in scoped threads via `Arc<SharedState>`. The priority worker loop still runs inline on the calling thread.
 
-Step 10 is the first concurrency step. It spawns background threads at nice (low) OS priority that compile modules to relocatable `.o` files + `.meta.json` cache metadata. This is architecturally significant because:
+Steps 11 and 12 are combined into one sprint because they are tightly coupled:
+- **Step 11** spawns multiple priority worker threads running `priority_worker_loop`.
+- **Step 12** replaces `Mutex<TypeChecker>` with DashMap-backed concurrent module tables.
 
-1. It introduces the **nice worker pool** — a new thread pool separate from the (still inline) priority worker loop.
-2. It makes `spawn_nice_workers()` and `wait_object_complete()` functional on `CompilerSession`.
-3. It enables **background caching** during `--run` — object files are written while the program executes.
-4. It provides the **blocking barrier** for `--link` — all `.o` files must be written before the system linker runs.
+Without Step 12, multiple priority workers would serialize on `Mutex<TypeChecker>` — no parallelism gain. Without Step 11, DashMap adds complexity with no benefit. They must ship together.
+
+**The key challenge**: `WorkerContext` currently holds `&mut TypeChecker` and `&mut InMemWorkerState`. Multiple workers need either:
+1. `TypeChecker` behind DashMap with `&self` API (Step 12), and
+2. Per-worker JIT instances instead of shared `InMemWorkerState` (per `pipeline-v4.md` §5.2).
 
 **All skills MUST read:**
-- `design/arch/pipeline-v4-roadmap.md` — Step 10 specification
-- `design/arch/concurrent-pipeline.md` §5.3 (Nice Workers), §5.4 (Priority Escalation), §6.3 (Nice Worker Interface)
-- `design/arch/pipeline-v4.md` §4.3 (Object Codegen), §5 (CompilerSession)
-- `src/session_v4.rs` — v4 CompilerSession (`spawn_nice_workers` is currently a no-op)
-- `src/scheduler.rs` — CompileScheduler (`take_object_codegen`, `notify_object_codegen_complete` exist)
-- `src/session.rs` — ObjectWorkerState, CacheState, CacheWriterHandle
+- `design/arch/pipeline-v4-roadmap.md` — Steps 11 and 12 specifications
+- `design/arch/concurrent-pipeline.md` §5.1 (Priority Workers), §5.2 (Typecheck Form Processing), §7 (Lock Granularity)
+- `design/arch/pipeline-v4.md` §5 (CompilerSession — no worker state on session)
+- `src/worker.rs` — WorkerContext struct (the `&mut` problem)
+- `src/scheduler.rs` — `take_priority_work` needs condvar parking
+- `src/session_v4.rs` — `spawn_priority_workers` is currently a no-op
+- `crates/cranelisp-typecheck/` — TypeChecker internal structure (HashMap-based module tables)
 
 ## Scope
 
-### Step 10: Nice Workers for Object Codegen
+### Step 11: Multi-Threaded Priority Workers
 
-Implement `nice_worker_loop()` and wire it into `spawn_nice_workers()` on `CompilerSession`. Nice workers:
+1. `spawn_priority_workers(n)` spawns N threads running `priority_worker_loop`.
+2. `take_priority_work` parks on `priority_work_available` condvar when no work. Woken by module registration, unblocking, typecheck completion.
+3. Workers own thread-local JIT instances — no shared `InMemWorkerState`.
+4. GOT writes use atomic stores to pre-assigned slots.
+5. The calling thread no longer runs the worker loop inline — it just waits.
 
-1. Call `scheduler.take_object_codegen()` to claim a TypecheckDone module with `object_done == false`.
-2. Compile all the module's symbols to a single `.o` file using Cranelift's object backend.
-3. Write `.meta.json` cache metadata (symbol table, module structure, source hash).
-4. Call `scheduler.notify_object_codegen_complete()`.
-5. Loop until shutdown.
+### Step 12: Concurrent TypeChecker Maps (DashMap)
 
-**Threading model:**
-- `spawn_nice_workers(n)` spawns N threads. Each runs `nice_worker_loop`.
-- Threads run at nice priority (lower OS scheduling priority than the main/priority worker thread).
-- `take_object_codegen` parks on a condvar when no work is available. Woken by `notify_typecheck_done` or `shutdown`.
-- `wait_object_complete` blocks until all modules have `object_done == true` (or are Failed).
-- Before `--link`, nice workers are promoted to normal priority via `promote_object_codegen` (hot flush).
+1. Replace TypeChecker's internal `HashMap<ModuleFullPath, CompiledModule>` with `DashMap`.
+2. Per-shard locking: one worker writing its module doesn't block another reading a different module.
+3. `tc.check_form()` takes `&self`. Internal mutation via DashMap per-shard locks.
+4. Add `dashmap` dependency to `cranelisp-typecheck`.
+5. WorkerContext changes from `&mut TypeChecker` to `&TypeChecker`.
 
-**Scheduler changes:**
-- `take_object_codegen` needs condvar support (currently returns None immediately — single-threaded design).
-- Add `object_work_available: Condvar` to `CompileScheduler` (per `concurrent-pipeline.md` §6).
-- `notify_typecheck_done` and `register_module_cached` wake the `object_work_available` condvar.
-- `wait_object_complete` blocks on a `completion` condvar.
-- `shutdown` wakes all condvars.
+### Combined changes
 
-**Session changes:**
-- `CompilerSession` gains `nice_worker_handles: Vec<JoinHandle<()>>` for thread management.
-- `spawn_nice_workers(n)` spawns threads and stores handles.
-- `shutdown()` joins nice worker threads.
-- Object codegen needs: ISA, TypeChecker (read-only for symbol tables), ObjectWorkerState (cache config, .o paths).
-
-**Key design consideration:** The nice worker needs access to session state (TypeChecker module tables, ISA, cache config) across thread boundaries. Currently `CompilationSession` is not `Send` (it contains `*const u8` function pointers). The nice worker needs either:
-- A shared reference model (`Arc<CompilerSession>` with internal `Mutex` on mutable fields), or
-- Pre-cloned/pre-extracted data passed to each worker thread (matching the `CodegenPacket` pattern from v3).
-
-The `concurrent-pipeline.md` design says "Workers own their JIT state" and session maps are concurrent. For Step 10 (nice workers only), the simplest correct approach is likely: nice workers receive a reference to the session (via `Arc` or scoped threads) and read TypeChecker state through the existing `Mutex<TypeChecker>`. Object worker state (cache dir, .o paths) is per-worker — each nice worker creates its own `ObjectWorkerState` and results are collected at shutdown.
+- `WorkerContext` becomes `Send`-safe: `&TypeChecker` (not `&mut`), per-worker JIT, `&CompileScheduler`.
+- `InMemWorkerState` (GOT, JIT) becomes per-worker thread-local state.
+- GOT must be thread-safe: pre-assigned slots with atomic stores, or a concurrent map.
+- `CompilerSession` moves TypeChecker to `SharedState` (behind `Arc`), enabling worker access.
 
 ### Not in scope
 
-- Step 11 (multi-threaded priority workers) — priority worker still runs inline on calling thread
-- Step 12 (DashMap / concurrent TypeChecker) — `Mutex<TypeChecker>` suffices for read-only access
 - Step 13 (cache-hit loading via register_module_cached)
 - Step 14 (file watcher integration)
 - Step 15 (legacy code deletion)
@@ -74,202 +63,316 @@ The `concurrent-pipeline.md` design says "Workers own their JIT state" and sessi
 
 | File | Owning Skill | Issue | Resolution |
 |------|-------------|-------|------------|
-| `spec/09-macros.md:147` | /spec | §9.2.5 cross-module macro helper calls not explicitly specified | From S45. Spec clarification — not blocking implementation. Carry with rationale: spec-only, no code impact. |
-
-No code-level FIXMEs in `src/`. The spec FIXME is on its 1st carry (filed in S45) and is spec-only — it doesn't block Step 10 implementation.
+| `spec/09-macros.md:147` | /spec | §9.2.5 macro bodies may call imported functions | 2nd carry from S45. Spec-only, filed for /spec. Must resolve this sprint or escalate. |
 
 ## Architecture Review
 
 **Verdict: PASS WITH RECOMMENDATIONS**
 
-### Technical Coherence
+The sprint combines two tightly coupled steps (11+12) into a coherent increment. Combining them is the right call — Step 11 without Step 12 serialises on `Mutex<TypeChecker>`, and Step 12 without Step 11 adds complexity with no benefit. The scope is well-defined, testable, and the code will survive into Steps 13-15.
 
-The scope forms a complete, testable increment. Step 10 introduces exactly one new capability (background `.o` generation by nice worker threads) with clear entry/exit criteria: `spawn_nice_workers(n)` goes from no-op to real threads, `--run` produces cache files, `--link` blocks on `.o` completion. The scheduler already has `take_object_codegen` and `notify_object_codegen_complete` — they just need condvar support for parking. The existing `build_object_compile_input` + `cache::ObjectCompileInput` pipeline in `pipeline.rs` provides the object codegen logic to call from the new worker loop. This is the right granularity for a sprint.
+### Answers to Key Questions
 
-The sprint correctly excludes Steps 11-15 from scope. Nice workers are the simplest concurrency step because they are readers of session state (TypeChecker symbol tables, ISA) and writers of independent files (one `.o` per module). No contention with the still-inline priority worker loop.
+**1. DashMap scope: Which TypeChecker maps need DashMap?**
 
-### Principle 8 Assessment (No Interim Architecture)
+Only `modules: HashMap<ModuleFullPath, SymbolTable>` needs DashMap. Rationale:
 
-**Pass.** The code introduced in Step 10 survives into Steps 11-15:
+- **`modules`**: Multiple workers concurrently read (import resolution, macro lookup) and write (one writer per module). This is the core contention point. DashMap's per-shard locking gives fine-grained concurrent access. Replace with `DashMap<ModuleFullPath, SymbolTable>`.
+- **`next_id`**: Already `AtomicU32` — no change needed. Lock-free allocation is correct.
+- **`type_defs`, `trait_registry`, `impl_registry`**: Already behind `RwLock` (Sprint 40 Phase 3). These registries are written during Pass 1 (register) and read during Pass 2 (check body). Since the scheduler guarantees no two workers typecheck the same module, and cross-module reads use `RwLock::read()`, the existing `RwLock` wrapping is sufficient. DashMap is overkill here — the access pattern is "rare writes, many reads" which `RwLock` handles well.
+- **`module_locks`**: Already `HashMap<ModuleFullPath, Arc<AtomicBool>>`. This map is mutated only during module registration (which happens on one thread at a time via the scheduler mutex). The `AtomicBool` values are accessed concurrently but are already atomic. No change needed. If `/typecheck` encounters contention during registration, it could be wrapped in a small `Mutex`, but this is unlikely given the scheduler serialises module registration.
+- **`state: CheckState`**: This is the per-check transient state. For multi-threaded workers, each worker MUST have its own `CheckState` on the stack (not shared). The `check_form()` call must take `CheckState` as a parameter or create it internally, NOT use `self.state`. This is the key API change: `check_form()` changes from `&mut self` to `&self` by taking an explicit `&mut CheckState` parameter (or the `ModuleCheckAccumulator` already serves this purpose — the accumulator carries per-module transient state and is already per-worker in `ModuleSuspendState`).
+- **`overloads`, `resolved_overloads`**: These are on `CheckState`, not `TypeChecker`. They are per-check transient state. No concurrency concern — each worker has its own accumulator.
 
-- The `nice_worker_loop` function is the permanent nice worker entry point. Step 11 (multi-threaded priority workers) does not change it.
-- The `Mutex<SchedulerState>` + condvars added here are the permanent scheduler locking model from `concurrent-pipeline.md` section 6. Step 11 uses the same `Mutex` — it just adds more callers (`take_priority_work` parks on `priority_work_available` condvar). Step 12 (DashMap) replaces TypeChecker locking, not scheduler locking.
-- Per-worker `ObjectWorkerState` is the target design ("workers own their JIT state" — `pipeline-v4.md` section 5.2). No interim shared state to unpick later.
-- The `set_nice_priority()` function already exists in `src/cache_writer.rs` and can be extracted/reused. No throwaway priority infrastructure.
+**Recommendation for /typecheck**: The migration path is:
+1. Change `self.modules` from `HashMap` to `DashMap`.
+2. All methods that access `self.modules` must change from `.get()/.get_mut()` to DashMap's `.get()/.get_mut()` (returns `Ref`/`RefMut` guard types — beware of holding multiple guards simultaneously, which can deadlock on same-shard keys).
+3. `check_form()` signature becomes `fn check_form(&self, module: &ModuleFullPath, form: &TopLevel, pass: CheckPass, acc: &mut ModuleCheckAccumulator) -> Result<FormCheckResult, CranelispError>`. The accumulator already exists and is per-worker.
+4. Methods that currently access `self.state` for transient inference state must instead receive it via the accumulator or a new `&mut CheckState` parameter.
 
-### Thread Model Recommendation: Scoped Threads
+**Critical DashMap hazard**: `current_symbol_table()` and `current_symbol_table_mut()` return `&SymbolTable` / `&mut SymbolTable` by borrowing directly from the `HashMap`. With `DashMap`, these return guard types (`Ref<K,V>` / `RefMut<K,V>`) that hold a shard lock. Any method that calls `current_symbol_table()` and then tries to access a different module's table will deadlock if both keys hash to the same shard. `/typecheck` must audit all call sites for this pattern and restructure to drop guards before acquiring new ones.
 
-**Use `std::thread::scope` (Rust 1.63+), not `Arc<CompilerSession>`.**
+**2. GOT concurrency model: Pre-assigned slots with atomic stores.**
 
-Rationale:
+The current `GotTable` already uses `AtomicPtr<u8>` slots with `Release`/`Acquire` ordering — it is already correct for concurrent writes to disjoint slots. The concurrency model is:
 
-1. **`CompilerSession` is not `Send`.** It contains `CompilationSession` which holds `*const u8` function pointers, `MacroEnv` with raw pointers, and other non-Send fields. Wrapping in `Arc` would require either (a) making `CompilerSession: Send + Sync` (major refactor touching inner session, not justified for Step 10), or (b) unsafe `impl Send` (unsound unless all access is synchronized — hard to verify with the legacy `CompilationSession` wrapper still present).
+- **Slot assignment** (the `next_got_slot` counter and `def_codegen` map on `ModuleCodegenState`): This must be centralised and thread-safe. Currently `ModuleCodegenState.allocate_slot()` uses a plain counter and `HashMap` — neither is thread-safe.
+- **Slot writes** (`GotTable.store_slot`): Already atomic. Correct.
 
-2. **Scoped threads match the v4 ownership model.** The v4 main owns `CompilerSession` for the program's lifetime. `std::thread::scope` guarantees spawned threads complete before the scope exits, so threads can borrow `&CompilerSession` safely. This is exactly the pattern `concurrent-pipeline.md` section 6.4 shows: `fn nice_worker(session: &CompilerSession)`.
+**Recommendation**: Split `ModuleCodegenState` into:
+- **Shared GOT coordinator** (`Arc<GotCoordinator>`): owns the `GotTable`, the `AtomicUsize` slot counter, and a `DashMap<Symbol, DefCodegen>` for the `def_codegen` map. `ensure_slot_for()` uses `def_codegen.entry().or_insert_with(|| allocate_slot())` with atomic slot allocation.
+- **Per-worker JIT state**: owns `jit_modules`, `cache_linkers`, trace state. Not shared.
 
-3. **Step 11 compatibility.** When Step 11 adds priority worker threads, they also use scoped threads from the same scope. The scope lives in `main()` — session is created, scope is entered, workers are spawned, scope exits at shutdown. The `JoinHandle` storage on `CompilerSession` (mentioned in the sprint proposal) is not needed with scoped threads — the scope itself handles join-on-exit. This is cleaner.
+The `GotCoordinator` replaces the current `ModuleCodegenState` as the shared session field. Workers get `&GotCoordinator` (read-write via atomics and DashMap) plus their own per-worker JIT state.
 
-4. **Scoped thread caveat.** The scope blocks at exit until all spawned threads finish. This means `shutdown()` must signal workers (set `shutdown` flag, wake condvars) and then the scope exit handles the join. The `nice_worker_handles: Vec<JoinHandle<()>>` field proposed in the sprint is unnecessary — remove it. Instead, `spawn_nice_workers` takes a `&std::thread::Scope` parameter (or the spawning happens directly in `main()` inside the scope block).
+Alternatively, slot assignment could be pre-assigned during typecheck: when a symbol is typechecked, assign its GOT slot. This keeps slot assignment single-writer (the typechecking worker for that module) and avoids contention on the slot counter. Workers doing codegen look up the pre-assigned slot by symbol name. This is cleaner but requires a typecheck-to-codegen handoff of slot assignments. Given the current code already calls `ensure_slot_for` during `pre_register_got_slots` (which runs per-module before codegen), pre-assigning during that phase is natural — just make the counter atomic.
 
-**Implementation pattern:**
+**Chosen model**: `Arc<GotTable>` (already exists) + `AtomicUsize` for `next_got_slot` + `DashMap<Symbol, DefCodegen>` for `def_codegen`. This is the minimum change that makes the GOT concurrent-safe.
 
+**3. Per-worker JIT: How do function pointers remain valid after JIT drop?**
+
+Cranelift's `JITModule::finish()` leaks the code memory intentionally — the memory is never freed. After `finish()`, the JIT module can be dropped without invalidating code pointers. This is Cranelift's documented behaviour (see `cranelift_jit::JITModule::finish` docs).
+
+However, the current code stores JIT instances in `InMemWorkerState.jit_modules: Vec<Jit>` to keep them alive. This suggests the codebase may NOT be calling `finish()` — it may be relying on the JIT instance staying alive to keep code memory valid.
+
+**Recommendation for /int and /backend**: Audit `cranelisp_backend::jit::Jit` to determine whether `finish()` is called. If it is, JIT instances can be dropped after codegen — no need to keep them alive, and per-worker JIT instances are safe to create and drop. If `finish()` is NOT called, either:
+- (a) Start calling `finish()` on the JIT after extracting code pointers. This is the clean solution. Code memory is leaked (by design), pointers remain valid, JIT is dropped.
+- (b) Keep per-worker JIT instances alive by collecting them into a session-level `Mutex<Vec<Jit>>` at the end of each codegen operation. Workers push their finished JITs to the shared vec before moving on.
+
+Option (a) is strongly preferred — it makes the lifetime model explicit and removes the need to keep JIT instances alive.
+
+For **Linker instances** (`cache_linkers`), the same analysis applies: they own executable memory mapped by the loader. These MUST be kept alive (Linker code regions are mmapped, not leaked). Collect them into a session-level `Mutex<Vec<Linker>>`.
+
+**4. MacroEnv thread safety**
+
+The `MacroEnv` struct in `src/expander.rs` already wraps its `HashMap<Symbol, MacroEntry>` in an `RwLock`. Multiple concurrent readers (macro expansion) are safe. Write access (registering new macros via `compile_macro`) acquires a write lock.
+
+However, macro expansion calls function pointers (`invoke_clause`). The function pointers themselves are raw `*const u8` — they point to JIT-compiled code in memory. Calling a function pointer from multiple threads concurrently is safe as long as:
+- The code is read-only (it is — JIT code pages are marked executable, not writable).
+- The function itself has no shared mutable state (macro functions are pure — they take an SList and return an Sexp, no side effects).
+
+**Assessment**: `MacroEnv` is safe for concurrent reads. The existing `RwLock` is sufficient. No changes needed.
+
+**Note**: In the current v4 pipeline, macros are stored as `ModuleEntry::Macro` in the TypeChecker's module tables, NOT in the standalone `MacroEnv`. The `MacroEnv` is part of the old `CompilationSession`. The v4 path looks up macros via `tc.symbol_table(module).get(name)` and calls function pointers stored on the `MacroClauseEntry`. Once `modules` is behind DashMap, macro lookup acquires a DashMap read guard, extracts the function pointer, drops the guard, then calls the pointer. This is safe — the function pointer is a plain value copied out of the guard, not a reference into the map.
+
+**5. `InMemWorkerState` decomposition**
+
+Current `InMemWorkerState` fields and their disposition:
+
+| Field | Disposition | Rationale |
+|-------|-------------|-----------|
+| `got_state: ModuleCodegenState` | **Shared** — becomes `Arc<GotCoordinator>` | All workers write to the same GOT and need slot assignment. See Q2. |
+| `jit_modules: Vec<Jit>` | **Per-worker**, then drained to shared | Each worker creates JIT instances. If `finish()` is called, these can be dropped. Otherwise drain to shared `Mutex<Vec<Jit>>`. |
+| `traced_fns: Vec<TracedFnInfo>` | **Per-worker** (REPL-only) | Trace is a REPL feature. Only the eval path uses it. Not relevant for parallel batch workers. |
+| `trace_extra_symbols: Vec<(String, *const u8)>` | **Per-worker** (REPL-only) | Same as `traced_fns`. |
+| `cache_linkers: Vec<Linker>` | **Per-worker**, then drained to shared | Workers that load cached `.o` via Linker must keep the Linker alive. Drain to session-level `Mutex<Vec<Linker>>`. |
+
+**Concrete decomposition**:
 ```rust
-// In main() or equivalent:
-let session = CompilerSession::new(...);
-std::thread::scope(|scope| {
-    for _ in 0..n {
-        scope.spawn(|| nice_worker_loop(&session));
-    }
-    session.register_module(...);
-    session.scheduler.wait_inmem_complete()?;
-    session.trampoline(...);
-    session.scheduler.wait_object_complete()?;
-    // scope exit joins all nice workers
-});
-```
+// Shared (on CompilerSession, behind Arc):
+struct SharedCodegenState {
+    got_table: Arc<GotTable>,
+    next_got_slot: AtomicUsize,
+    def_codegen: DashMap<Symbol, DefCodegen>,
+    kept_jits: Mutex<Vec<Jit>>,         // if finish() not used
+    kept_linkers: Mutex<Vec<Linker>>,
+}
 
-This eliminates the `Arc`/`Send` problem entirely and is the permanent pattern for Steps 11-15.
-
-### ObjectWorkerState: Per-Worker, Merge at Completion
-
-**Per-worker is correct.** Each nice worker creates its own Cranelift `ObjectModule` for the module it is compiling. The outputs (`.o` path, module structure) are collected at the end.
-
-**Recommendation**: Do not use the existing `ObjectWorkerState` struct from `session.rs`. That struct carries `cache_state`, `cache_writer`, `cross_module_func_sigs`, and `compiled_o_paths` — most of which are legacy v3 state management. Instead, the nice worker loop should:
-
-1. Read the module's `CheckResult` and symbol table from the TypeChecker (via `Mutex<TypeChecker>` lock).
-2. Build the `ObjectCompileInput` using `build_object_compile_input` (or an extracted equivalent).
-3. Compile to `.o` bytes using `cranelisp_backend::cache::compile_object`.
-4. Write `.o` and `.meta.json` to the cache directory (from `session.settings` or `session.project_root`).
-5. Record the `.o` path in a thread-safe collector (a `Mutex<Vec<PathBuf>>` on the session, or returned through the scheduler notification).
-
-This keeps nice workers self-contained and avoids coupling to the legacy `ObjectWorkerState`.
-
-### Scheduler Locking
-
-**Confirmed: `Mutex<SchedulerState>` + 3 condvars matches `concurrent-pipeline.md` section 6 exactly.**
-
-The current `CompileScheduler` has `state: SchedulerState` (no Mutex). Step 10 changes this to:
-
-```rust
-pub struct CompileScheduler {
-    state: Mutex<SchedulerState>,
-    priority_work_available: Condvar,  // for Step 11
-    object_work_available: Condvar,    // for Step 10
-    completion: Condvar,               // for Step 10
+// Per-worker (stack-local in worker thread):
+struct WorkerJitState {
+    jit_modules: Vec<Jit>,              // drained to shared on completion
+    cache_linkers: Vec<Linker>,         // drained to shared on completion
+    traced_fns: Vec<TracedFnInfo>,      // REPL-only, empty for batch workers
+    trace_extra_symbols: Vec<(String, *const u8)>,
 }
 ```
 
-All existing scheduler methods (`register_module`, `take_priority_work`, `notify_*`, etc.) change from `&mut self` to `&self` with internal `self.state.lock()`. This is a mechanical refactor. The priority worker loop (still inline on the calling thread in Step 10) will not park — it continues to return `None` immediately when no work is available (the `Mutex` does not change the single-threaded priority worker's behavior; only nice workers park on `object_work_available`).
+Workers build a `WorkerJitState` at thread start, use it for codegen, and drain `jit_modules` + `cache_linkers` to the shared state before exiting (or at module completion).
 
-**Key interaction to verify**: `notify_typecheck_done` must wake `object_work_available` (a new TypecheckDone module is potential object work). `shutdown` must wake all condvars. `notify_object_codegen_complete` must wake `completion` (for `wait_object_complete` callers).
+### Technical Coherence Assessment
 
-**`&mut self` to `&self` migration**: All scheduler methods currently take `&mut self` because there is no internal Mutex. Adding the Mutex means they can take `&self`. This also changes `WorkerContext` — the scheduler field can become `&CompileScheduler` instead of `&mut CompileScheduler`, which is necessary for scoped threads (multiple threads need `&CompileScheduler` concurrently). `/int` should make this signature change as part of the Mutex addition.
+The sprint forms a complete, testable increment:
+- **Step 11** is testable by verifying that `spawn_priority_workers(n)` spawns real threads and multi-module programs compile with parallelism.
+- **Step 12** is testable by verifying `cargo test` passes and thread sanitizer is clean (`RUSTFLAGS="-Z sanitizer=thread"`).
+- The combined change is testable by compiling multi-module programs and confirming parallel typecheck + codegen. Correctness is verified by existing test suite (same results, no data races).
 
-### Nice Priority: Reuse `set_nice_priority` from `cache_writer.rs`
+The scope is well-bounded: no new language features, no new pipeline stages, just concurrency enablement on the existing single-threaded path. This is the right granularity.
 
-The `set_nice_priority()` function in `src/cache_writer.rs` already does the right thing: `libc::setpriority(PRIO_PROCESS, 0, 10)` on Unix, no-op on other platforms. Extract it to a shared utility (e.g., `src/thread_util.rs` or `src/util.rs`) so both `cache_writer` and `nice_worker_loop` can call it.
+**One gap**: The sprint proposal says "the calling thread no longer runs the worker loop inline — it just waits." This means `register_module` must change its flow: instead of calling `priority_worker_loop` inline, it registers the module with the scheduler and blocks on `wait_inmem_complete`. The worker threads (spawned by `spawn_priority_workers`) do the actual work. This is a significant change to `session_v4.rs::register_module()` that should be called out explicitly in the /int plan.
 
-**macOS/Linux notes**: `setpriority(PRIO_PROCESS, 0, nice_value)` sets the calling thread's nice value. Nice value 10 (out of range -20 to 19) is appropriate — noticeably lower priority than default (0) but not the absolute minimum (19). Raising priority back to 0 for the hot flush (`promote_object_codegen`) uses the same API with nice value 0. On macOS, lowering nice value (raising priority) back to 0 requires no special privileges if the process started at nice 0 — the kernel tracks per-thread nice values and allows restoration to the original level.
+### Principle 8 Assessment (No Interim Architecture)
 
-**Promote pattern for `wait_object_complete`**: Before blocking, iterate the nice worker thread IDs and call `setpriority(PRIO_PROCESS, tid, 0)`. With scoped threads, thread IDs are not directly accessible, so the recommended pattern is: each nice worker checks a shared `AtomicBool promoted` flag on each loop iteration and calls `set_normal_priority()` on itself when promoted. `wait_object_complete` sets the flag and wakes `object_work_available`. Workers self-promote on their next iteration.
+**PASS.** All code introduced in this sprint survives into Steps 13-15:
+- `DashMap`-backed `TypeChecker.modules` is the permanent concurrent data structure.
+- `Arc<GotTable>` with atomic slot assignment is the permanent GOT model.
+- Per-worker JIT instances are the permanent worker state model.
+- `spawn_priority_workers(n)` is the permanent thread spawning mechanism.
+- The scheduler condvar parking for `take_priority_work` is the permanent work selection mechanism.
+
+No throwaway infrastructure is introduced. The current single-threaded inline worker loop (`priority_worker_loop` called by `register_module`) is being replaced, not extended — this is replacement, not interim scaffolding.
+
+### Thread Safety Analysis
+
+**Safe patterns**:
+- `CompileScheduler` uses `Mutex<SchedulerState>` + condvars. Workers hold the mutex briefly for O(1) operations. All compilation happens outside the lock. Correct.
+- `GotTable` uses `AtomicPtr` with `Release`/`Acquire` ordering. Disjoint slot writes are safe. Correct.
+- `TypeChecker.next_id` is `AtomicU32`. Lock-free allocation. Correct.
+- `TypeChecker.type_defs/trait_registry/impl_registry` are behind `RwLock`. Correct for the "rare writes, many reads" pattern.
+
+**Hazards requiring attention**:
+1. **DashMap guard lifetime**: Methods that hold a DashMap `Ref` guard while trying to access another entry risk deadlock if both keys hash to the same shard. `/typecheck` must audit all cross-module lookup paths.
+2. **`CheckState` on `TypeChecker`**: The `self.state` field is NOT safe for concurrent access. Workers must use stack-local `CheckState` (via `ModuleCheckAccumulator`). The `state` field should be gated behind a `cfg(test)` or REPL-only accessor, not used by worker code paths.
+3. **GOT slot allocation**: `ModuleCodegenState.next_got_slot` is currently a plain `usize`. Must become `AtomicUsize` or equivalent. The `def_codegen` `HashMap` must become concurrent (`DashMap`).
+4. **`WorkerContext` borrows**: Currently `WorkerContext` holds `&mut TypeChecker` and `&mut InMemWorkerState`. Multi-threaded workers cannot hold `&mut` to shared state. `WorkerContext` must change to `&TypeChecker` + `&SharedCodegenState` + per-worker `WorkerJitState`. This is a significant refactor of `WorkerContext` and all its callers.
 
 ### Interface Gaps
 
-1. **`CompileScheduler` signature migration (`&mut self` to `&self`)**: This is a prerequisite for scoped threads. All scheduler methods and `WorkerContext` must work with shared references. This is the largest mechanical change in the sprint.
+1. **`WorkerContext` struct** (`src/worker.rs`): Needs redesign. Current:
+   ```rust
+   pub struct WorkerContext<'a> {
+       pub tc: &'a mut TypeChecker,
+       pub inmem_worker: &'a mut InMemWorkerState,
+       ...
+   }
+   ```
+   Target:
+   ```rust
+   pub struct WorkerContext<'a> {
+       pub tc: &'a TypeChecker,            // shared, &self
+       pub shared_codegen: &'a SharedCodegenState,  // shared, concurrent
+       pub worker_jit: WorkerJitState,      // owned, per-worker
+       ...
+   }
+   ```
 
-2. **Cache directory access**: Nice workers need the cache directory path. Currently this lives on `ObjectWorkerState.cache_state`. In the v4 model, the cache dir should be on `CompilerSession` directly (it already has `project_root`; add `cache_dir: Option<PathBuf>`). The `new_for_link` constructor already receives `cache_dir`.
+2. **`compile_and_register_defn`** (`src/pipeline.rs`): Currently takes `&mut InMemWorkerState`. Must be refactored to take `&SharedCodegenState` + `&mut WorkerJitState`. This function is the primary codegen entry point and touches GOT slot assignment, JIT compilation, and code pointer registration.
 
-3. **ISA for object codegen**: Nice workers need a `TargetIsa` for Cranelift object compilation. `concurrent-pipeline.md` section 5 specifies `shared_isa: Arc<dyn TargetIsa>` on the session. The v4 `CompilerSession` does not yet have this field — it delegates to `inner.inmem_worker` which owns the ISA implicitly through JIT instances. `/int` should add `shared_isa: Arc<dyn TargetIsa>` to `CompilerSession` and build it once during construction.
+3. **`codegen_module_symbols`** (`src/worker.rs`): Same refactor as above — takes `&mut InMemWorkerState` today, needs split references.
 
-4. **`.o` path collection for `--link`**: After nice workers write `.o` files, `link()` needs to collect all `.o` paths. Add a `Mutex<Vec<PathBuf>>` field (e.g., `compiled_o_paths`) to `CompilerSession`. Each nice worker appends its `.o` path after writing. `link()` reads the collected paths.
+4. **`TypeChecker::check_form`**: Currently takes `&mut self`. Must become `&self` with explicit `CheckState`/accumulator threading. The `ModuleCheckAccumulator` already carries most per-check state but may need to absorb remaining `CheckState` fields (subst, env, scope stack).
 
-### Design References for /int
+### Design References
 
-- `design/arch/concurrent-pipeline.md` — sections 5.3 (nice workers), 5.4 (priority escalation), 6.3 (nice worker interface), 6.5 (lifecycle), 7.3 (lock granularity)
-- `design/arch/pipeline-v4.md` — sections 4.3 (object codegen), 5 (CompilerSession fields), 5.2 (no worker state on session)
-- `design/arch/pipeline-v4-roadmap.md` — Step 10 specification
-- `src/cache_writer.rs` — `set_nice_priority()` function to extract
-- `src/pipeline.rs` — `build_object_compile_input()` function and object compilation logic (around line 1185 and 2018)
-- `src/scheduler.rs` — all methods need `&mut self` to `&self` migration with internal Mutex
-- `src/worker.rs` — `WorkerContext` struct needs scheduler reference change
+- **For /int**: `design/arch/pipeline-v4.md` §5 (CompilerSession — no worker state on session), `design/arch/concurrent-pipeline.md` §5.1 (priority workers), §7 (lock granularity). Key: the decomposition of `InMemWorkerState` and the `WorkerContext` refactor are the primary /int deliverables.
+- **For /typecheck**: `design/arch/concurrent-pipeline.md` §7.3 (session concurrent maps). Key: DashMap migration of `modules`, `check_form` signature change to `&self`, audit of guard lifetimes across cross-module lookups.
+- **For /backend**: `crates/cranelisp-backend/src/got.rs` — the `ModuleCodegenState` decomposition. Verify `Jit::finish()` behaviour. Ensure `compile_function` and friends can work with `&SharedCodegenState`.
 
-### Carried Debt
+### FIXME Debt
 
-The spec FIXME on `spec/09-macros.md:147` (1st carry, filed S45) is spec-only and does not affect Step 10. Carry is justified.
+The `spec/09-macros.md:147` FIXME is on its 2nd carry. Per the sprint proposal, it must ship this sprint or be escalated. This is a spec-only item with no implementation coupling to Steps 11+12, so there is no technical reason to defer it further.
 
-No code-level debt items. The sprint is clean.
+### Recommendations Summary
 
-### Summary of Recommendations
+1. **Audit `Jit::finish()` before implementing** — determines whether JIT instances need to be kept alive.
+2. **DashMap guard audit** — `/typecheck` must map all code paths that hold a DashMap guard and access another entry.
+3. **`WorkerContext` refactor** — the `&mut` to `&` transition is the largest mechanical change. Plan it as the first wave.
+4. **Pre-assign GOT slots during typecheck** — avoids contention on the slot counter during parallel codegen. The `pre_register_got_slots` function already runs per-module; making the counter atomic is sufficient.
+5. **Thread sanitizer CI** — add `RUSTFLAGS="-Z sanitizer=thread" cargo test` to the acceptance criteria. This is the primary safety net for concurrency bugs.
 
-1. **Use `std::thread::scope`** instead of `Arc<CompilerSession>`. Drop the `nice_worker_handles` field.
-2. **Migrate scheduler to `&self` + internal `Mutex`** as the first sub-task (prerequisite for threading).
-3. **Extract `set_nice_priority()`** to a shared utility module.
-4. **Add `shared_isa: Arc<dyn TargetIsa>`** and `cache_dir: Option<PathBuf>` to `CompilerSession`.
-5. **Add `compiled_o_paths: Mutex<Vec<PathBuf>>`** to `CompilerSession` for `--link` support.
-6. **Self-promote pattern** for nice workers during hot flush (check `AtomicBool`, call `setpriority(0)` on self).
+### Phase 3 Design Doc Review
+
+Review of `design/typecheck/dashmap-migration.md` and `design/int/concurrent-workers.md`.
+
+**Overall: PASS for both docs.** Both are thorough, well-reasoned, and aligned with the architecture review. No blockers. Several points requiring attention before implementation.
+
+#### `design/typecheck/dashmap-migration.md` — PASS
+
+The doc is comprehensive. The guard lifetime audit (section 4) addresses the primary DashMap hazard identified in the arch review. The clone-and-drop discipline is the right invariant. The migration steps (A-F) are well-ordered and each produces a compilable, passing state.
+
+Findings:
+
+1. **`check_form` signature: aligned with arch review.** The doc proposes `check_form(&self, module, form, pass, state, accumulator)` with explicit `&mut CheckState`. The arch review suggested either explicit `CheckState` or absorbing it into `ModuleCheckAccumulator`. The doc chose explicit `CheckState` as a separate parameter, which is cleaner — `CheckState` carries inference transient state (subst, env, scope stack) while `ModuleCheckAccumulator` carries cross-form results. Good separation of concerns.
+
+2. **`module_locks` wrapping.** The doc chooses `Mutex<HashMap>` (option 1). The arch review noted this map is "mutated only during module registration (serialised by the scheduler)" and suggested no change unless contention is found. The `Mutex` is a safe conservative choice and acceptable.
+
+3. **`self.state` retention for REPL.** The doc retains `self.state` for REPL `snapshot()`/`restore()` and proposes a `check_with_state()` overload. This is acceptable for the current sprint but accumulates surface area. Note for future cleanup: the REPL should own its persistent `CheckState` in `ReplSession`, not on `TypeChecker`.
+
+4. **Missing: interaction with `RwLock` fields under concurrent load.** Section 7.3 says "the audit found no methods that hold both an RwLock write guard and a DashMap guard simultaneously" but this claim needs verification during implementation. `register_trait_impl()` writes to `impl_registry` (RwLock) and may read `modules` (DashMap) for visibility checks. If this pattern exists, apply the same clone-and-drop.
+
+5. **No `FIXME(/typecheck)` needed** — the doc is owned by `/typecheck` and self-consistent.
+
+#### `design/int/concurrent-workers.md` — PASS
+
+The doc is thorough and the `SharedCodegenState` / `WorkerJitState` split matches the arch review's recommended decomposition exactly. The migration waves are well-structured.
+
+Findings:
+
+1. **JIT lifecycle: drain-to-shared is sound.** The doc correctly identifies that `finish()` is NOT called, audits the consequence (JIT instances must be kept alive), and chooses the conservative drain-to-shared approach. The `FIXME(/backend)` is the right action — `/backend` can add `finish()` later to simplify lifetimes. No architectural concern with the current approach.
+
+2. **Single scope for both worker pools (Option B).** Good decision. Avoids nested lifetime complexity. The `run_with_workers` API is clean.
+
+3. **`Mutex<TypeChecker>` interim in Wave 3 step 4.** The doc notes that if Step 12 is not ready, `Mutex<TypeChecker>` is used as a fallback. Since the sprint combines Steps 11+12, this interim should be brief. However, there is a risk: if `/typecheck` Step B (threading `CheckState` through ~40 methods) takes longer than expected, `/int` could be blocked. The migration ordering recommendation below addresses this.
+
+4. **`WorkerContext` is not `Send`.** The doc correctly notes this and uses `std::thread::scope` so each worker constructs its own `WorkerContext`. This is the right pattern.
+
+5. **Trace state omitted from `WorkerJitState`.** Correct — batch workers do not need trace state. The REPL eval path runs inline and handles its own trace context.
+
+6. **DashMap iteration snapshot concern (section 6, "GOT Reads During Codegen").** The doc acknowledges that iterating `def_codegen` during concurrent insertions may see a partial view, and correctly argues this is acceptable because `ensure_slot_for` handles missing entries on demand. Sound reasoning.
+
+#### Cross-Skill Consistency
+
+The two docs agree on:
+- `check_form` changes from `&mut self` to `&self` -- aligned.
+- `WorkerContext.tc` changes from `&mut TypeChecker` to `&TypeChecker` -- aligned.
+- `CheckState` is stack-local per worker, threaded explicitly -- aligned.
+- `ModuleCheckAccumulator` remains per-worker, per-module -- aligned.
+
+One minor inconsistency:
+- **/typecheck doc** §5.2 says workers call `tc.check_form(&self, module, form, pass, &mut state, &mut acc)` -- the `&self` in the argument list is clearly a typo (should be just `tc.check_form(module, form, pass, &mut state, &mut acc)` since `tc` is `&TypeChecker`). Cosmetic, not a design conflict.
+- **/int doc** §10 Wave 3 step 4 mentions `&Mutex<TypeChecker>` as an interim. The `/typecheck` doc does not mention this interim because its migration (Steps A-F) assumes the two land together. No conflict — the interim is `/int`'s fallback plan, not `/typecheck`'s responsibility.
+
+#### Hazards
+
+1. **Guard + RwLock interaction (repeated from above).** The `/typecheck` doc's section 7.3 assertion that no method holds both an `RwLock` write guard and a DashMap guard needs active verification during implementation. The risk is real but manageable with the clone-and-drop discipline.
+
+2. **`set_current_module` under DashMap.** Section 4.7 shows `set_current_module` reading from `primitives` and `user` modules to seed a new module. After DashMap, this becomes `&self` (interior mutation). But it is also listed in section 3.4 as remaining `&mut self`. The doc resolves this in Step E (change to `&self`), but the path through Steps C-D where it remains `&mut self` while other methods are `&self` needs care — callers of `set_current_module` must still hold `&mut TypeChecker` during those intermediate steps.
+
+3. **No deadlock from condvar + DashMap interaction.** The `/int` doc's condvar parking (section 8) uses the scheduler's `Mutex<SchedulerState>`, which is completely separate from the TypeChecker's DashMap shards. Workers release the scheduler mutex before calling any TypeChecker method. No cross-lock deadlock possible. Sound.
+
+4. **Memory ordering on GOT slot assignment.** The `/int` doc uses `AcqRel` on `fetch_add` for `next_got_slot` and `Release/Acquire` on `AtomicPtr` stores/loads for GOT slots. This is correct — `AcqRel` on the counter ensures the slot number is visible before the DashMap entry is written, and `Release` on the GOT slot store ensures the code pointer is visible before the condvar notification unblocks waiters.
+
+#### Recommended Migration Ordering
+
+The two docs propose compatible but independent migration sequences. The recommended combined ordering:
+
+1. **/typecheck Step B first**: Thread `CheckState` through all internal methods. This is the largest mechanical change (~40 method signatures) but is purely internal — no API change visible to `/int`. All methods remain `&mut self`. Tests pass.
+
+2. **/int Wave 1 second**: Extract `SharedCodegenState` and `WorkerJitState`. Refactor `compile_and_register_defn` and callers. Still single-threaded. Tests pass.
+
+3. **/typecheck Steps C+D**: Change worker-called methods to `&self`, switch `modules` to `DashMap`. Tests pass.
+
+4. **/typecheck Step E + /int Wave 2**: Change `check()` to `&self`. Add condvar parking to `take_priority_work`. Tests pass.
+
+5. **/int Wave 3**: Spawn worker threads, wire `&TypeChecker`, move sexps and suspend states to shared maps. Thread sanitizer validation.
+
+6. **/int Wave 4 + /typecheck Step F**: Cleanup (`InMemWorkerState` deletion, `WorkerContext` finalized).
+
+This ordering ensures `/typecheck` finishes the internal `CheckState` threading before `/int` needs the `&self` API, and `/int`'s data structure extraction can proceed in parallel with `/typecheck`'s internal refactor (steps 1 and 2 are independent).
 
 ## Skill Plans
 
 ### /arch
-**Task**: Review sprint proposal for technical coherence, confirm thread model, approve scheduler locking design.
-**Design doc**: `design/arch/concurrent-pipeline.md` (existing — §5.3, §5.4, §6.3 cover nice workers)
-**Approach**: Evaluate scoped threads vs Arc, per-worker ObjectWorkerState, Mutex addition to scheduler.
-**Design refs**: `design/arch/pipeline-v4.md` §4.3, §5; `concurrent-pipeline.md` §5.3, §6
-**Acceptance**: Architecture review section filled, thread model confirmed.
+**Task**: Review sprint proposal, confirm DashMap scope, GOT concurrency model, per-worker JIT lifecycle.
+**Design doc**: `design/arch/concurrent-pipeline.md` (existing)
+**Acceptance**: Architecture review filled, concurrency model confirmed.
 
 ### /int
-**Task**: Implement nice worker loop, scheduler condvar support, spawn/shutdown on CompilerSession.
-**Design doc**: `design/arch/concurrent-pipeline.md` §5.3 + §6.3 (existing design)
-**Approach**:
-1. Add `Mutex<SchedulerState>` + `Condvar` fields to `CompileScheduler`. Update all scheduler methods to lock/unlock.
-2. Implement `nice_worker_loop(session)` — loops calling `take_object_codegen`, compiles to .o, notifies completion.
-3. Wire `spawn_nice_workers(n)` to spawn threads running `nice_worker_loop`.
-4. Implement `wait_object_complete` with condvar blocking.
-5. Wire `shutdown()` to wake workers and join threads.
-6. Verify `--run` produces .o cache files in background; `--link` waits for .o completion.
-**Design refs**: `concurrent-pipeline.md` §5.3, §5.4, §6.3; `pipeline-v4-roadmap.md` Step 10
-**Acceptance**: `spawn_nice_workers(n)` spawns real threads. `--run` produces cache files. `--link` waits for .o files. All existing tests pass.
+**Task**: Implement multi-threaded priority workers, wire DashMap TypeChecker, per-worker JIT, concurrent GOT.
+**Design doc**: `design/int/concurrent-workers.md` — PASS (Phase 3 review)
+**Acceptance**: `spawn_priority_workers(n)` spawns real threads. Multi-module programs compile with parallelism. All tests pass.
+
+### /typecheck
+**Task**: Migrate TypeChecker internal maps to DashMap. Change `check_form` from `&mut self` to `&self`.
+**Design doc**: `design/typecheck/dashmap-migration.md` — PASS (Phase 3 review)
+**Acceptance**: `cargo test` passes. TypeChecker API takes `&self` for all worker-called methods.
 
 ### /qa
-**Task**: Write tests for nice worker functionality — .o file generation, cache validity, shutdown correctness.
-**Design doc**: N/A (test design)
-**Approach**: Tests verifying: (A) `--run` produces .o + .meta.json cache files, (B) `--link` waits for .o completion before linking, (C) shutdown joins worker threads cleanly, (D) error in object codegen propagates correctly.
-**Design refs**: `pipeline-v4-roadmap.md` Step 10 verification criteria
-**Acceptance**: Tests cover cache file generation and link-mode blocking.
+**Task**: Write concurrency tests — parallel compilation correctness, data race detection.
+**Acceptance**: Tests verify multi-module parallel compilation produces correct results.
 
 ### /review
-**Task**: Review nice worker implementation for thread safety, resource cleanup, and adherence to concurrent-pipeline.md design.
-**Design doc**: N/A
-**Approach**: Assess thread safety (no data races, proper Mutex usage), resource cleanup (thread join on shutdown/drop), adherence to §5.3 nice worker spec.
-**Design refs**: `concurrent-pipeline.md` §5.3, §5.4
+**Task**: Review implementation for thread safety, data races, correct DashMap usage.
 **Acceptance**: 0 blockers, all important findings resolved.
 
 ### /frontend
 **Task**: No implementation work this sprint.
 **Acceptance**: N/A
 
-### /typecheck
-**Task**: No implementation work this sprint. Verify TypeChecker read-safety for concurrent nice workers.
-**Acceptance**: Confirm `Mutex<TypeChecker>` provides safe read access for object codegen workers.
-
 ### /backend
-**Task**: Verify object codegen functions are thread-safe when called from nice worker threads.
-**Design doc**: N/A
-**Approach**: Review object compilation code paths for thread-local state assumptions.
-**Acceptance**: Object codegen callable from worker threads without data races.
+**Task**: Verify codegen functions are safe with per-worker JIT instances. Assess GOT atomic write safety.
+**Acceptance**: Codegen callable from multiple worker threads.
 
 ### /platform
 **Task**: No implementation work this sprint.
 **Acceptance**: N/A
 
 ### /spec
-**Task**: Evaluate FIXME on §9.2.5 (cross-module macro helper calls). Resolve or defer with rationale.
-**Design refs**: `spec/09-macros.md` §9.2.5
-**Acceptance**: FIXME resolved or explicitly deferred.
+**Task**: Resolve FIXME on §9.2.5 (2nd carry — must ship this sprint).
+**Acceptance**: FIXME removed, spec updated.
 
 ### /stdlib
-**Task**: No implementation work this sprint. Verify stdlib modules cache correctly via nice workers.
-**Acceptance**: Stdlib .o files generated correctly.
+**Task**: No implementation work this sprint.
+**Acceptance**: N/A
 
 ### /examples
 **Task**: No implementation work this sprint.
@@ -280,64 +383,50 @@ No code-level debt items. The sprint is clean.
 **Acceptance**: N/A
 
 ### /repl
-**Task**: No implementation work this sprint. Verify REPL session produces .o files in background.
+**Task**: No implementation work this sprint. Verify REPL works with multi-threaded compilation.
 **Acceptance**: Demo files play cleanly.
 
 ### /port
-**Task**: No implementation work this sprint. Verify exemplar produces .o files.
-**Acceptance**: Exemplar compiles with cache file generation.
+**Task**: No implementation work this sprint.
+**Acceptance**: N/A
 
 ## Waves
 
-*To be filled during Phase 4 after architecture review and skill plans.*
+Per the Phase 3 design doc review recommended ordering:
 
-### Proposed wave structure (draft):
-
-**Wave 1: Architecture review**
+### Wave 1: Internal refactors (parallel, no API changes)
 | Skill | Task | Status | Notes |
 |-------|------|--------|-------|
-| /arch | Review sprint proposal, confirm thread model | done | PASS WITH RECOMMENDATIONS: scoped threads, Arc<SharedState>, scheduler Mutex+condvars |
+| /typecheck | Step B: Thread `CheckState` through ~40 internal methods | pending | Largest mechanical change. All methods remain `&mut self`. No API visible to /int. |
+| /int | Wave 1: Extract `SharedCodegenState` + `WorkerJitState` from `InMemWorkerState`. Refactor `compile_and_register_defn`. | pending | Still single-threaded. |
+| /qa | Write concurrency test plan (spec-first, before implementation) | pending | |
 
-**Wave 2: Implementation + tests + review**
+### Wave 2: API changes (sequential: /typecheck then /int)
 | Skill | Task | Status | Notes |
 |-------|------|--------|-------|
-| /int | Scheduler Mutex+condvar, nice_worker_loop, spawn/shutdown | done | Arc<SharedState>, object_working flag, ObjectCodegenInput stash, .o compilation wired |
-| /qa | Nice worker tests (.o generation, link blocking, shutdown) | done | 6 scheduler unit tests |
-| /review | Review implementation | done | 2B+6I+5S. Both blockers fixed (double-claim race, unsafe aliasing). All I findings resolved. |
+| /typecheck | Steps C+D: Change worker-called methods to `&self`, switch `modules` to DashMap | pending | Guard lifetime audit applies here |
+| /typecheck | Step E: Change `check()` to `&self` | pending | |
+| /int | Wave 2: Add condvar parking to `take_priority_work`. Wire `&TypeChecker` in WorkerContext. | pending | Depends on /typecheck Steps C-E |
 
-**Wave 3: Bug fixes**
+### Wave 3: Thread spawning
 | Skill | Task | Status | Notes |
 |-------|------|--------|-------|
-| /int | Fix review blockers B1+B2, wire actual .o compilation | done | object_working flag, Arc<SharedState>, stash-before-notify race fix, cache_dir in all modes |
+| /int | Wave 3: Spawn priority worker threads, shared sexp map, run_with_workers | pending | |
+| /qa | Concurrency tests, thread sanitizer validation | pending | |
+| /review | Review all new code for thread safety | pending | |
+
+### Wave 4: Cleanup
+| Skill | Task | Status | Notes |
+|-------|------|--------|-------|
+| /int | Wave 4: Delete `InMemWorkerState`, finalize `WorkerContext` | pending | |
+| /typecheck | Step F: Remove `self.state` field, cleanup | pending | |
 
 ## Notes
-
-- /arch recommended `std::thread::scope` but implementation used `Arc<SharedState>` instead — `CompilationSession` is not `Send`, and `Arc<SharedState>` avoids aliasing issues while keeping the session fields accessible to both workers and the main thread.
-- /review found 2 blockers: (B1) `take_object_codegen` double-claim race (no `object_working` flag), (B2) unsafe field-splitting creating UB. Both fixed in Wave 3.
-- Nice worker initially stubbed .o compilation (marking modules done without writing files). Extended to wire actual .o compilation via `ObjectCodegenInput` stash pattern.
-- Race condition discovered: `notify_typecheck_done` (inside `process_module_forms`) woke nice workers before stash was populated. Fixed by moving `notify_typecheck_done` to the caller (priority worker loop) after stashing.
-- `cache_dir` was initially `None` in `new()` constructor (only set in `new_for_link`). Fixed: all modes produce .o files so `--link` gets cache hits.
-- spec FIXME on §9.2.5 carried (2nd carry) — spec-only, no code impact.
 
 ## Outcome
 
 ### Delivered
-- **Scheduler Mutex + condvars**: `CompileScheduler` migrated from `&mut self` to `&self` with internal `Mutex<SchedulerState>` + 3 condvars (`priority_work_available`, `object_work_available`, `completion`). All scheduler methods and `WorkerContext` updated.
-- **Nice worker loop**: `nice_worker_loop()` runs at low OS priority, parks on condvar, claims TypecheckDone modules, compiles to `.o` via `build_object_compile_input` + `compile_module_to_object`, writes to `.cranelisp-cache/`.
-- **`Arc<SharedState>`**: Thread-safe shared state (scheduler, cache_dir, compiled_o_paths, promote flag, object codegen stash) accessible by nice workers via `Arc::clone`.
-- **`ObjectCodegenInput` stash**: Priority worker stashes `CheckResult` + `Program` after codegen; nice worker consumes it for `.o` compilation. Stash-before-notify ordering prevents race.
-- **`run_with_nice_workers`**: Scoped thread spawning with `wait_object_complete` before shutdown.
-- **`object_working` flag**: Prevents double-claim by concurrent nice workers.
-- **`thread_util.rs`**: Extracted `set_nice_priority()` / `set_normal_priority()` from `cache_writer.rs`.
-- **Self-promote pattern**: `AtomicBool` flag for hot flush priority escalation.
-- **Cache in all modes**: `--run`, `--link`, and REPL all produce `.o` files.
-- **6 scheduler unit tests**: shutdown, double-claim prevention, object_working lifecycle, wait_object_complete, failure propagation, spawn/shutdown lifecycle.
 
 ### Deferred
-- **spec FIXME on §9.2.5** (2nd carry): cross-module macro helper calls not explicitly specified. Spec-only, no code impact.
-- ~~**`.meta.json` writing**~~: Resolved. Nice workers now write `.meta.json` alongside `.o` files. `ObjectCodegenInput` stash extended with `symbol_table` and `module_structure`; `compile_module_object` builds `CacheMetadata` and calls `write_cached_metadata`. `build_codegen_state_for_cache` made `pub` in `pipeline.rs`.
-- ~~**`shared_isa`**~~: Resolved — not needed. `compile_module_to_object` creates its own PIC-mode ISA internally via `build_isa(true)`. No shared ISA field required on the session.
 
 ### Findings
-- **Stash-before-notify ordering is critical**: `notify_typecheck_done` wakes nice workers. If the stash isn't populated before notification, nice workers find no data and skip .o compilation. This is a general pattern for any future worker interaction.
-- **`process_module_forms` no longer calls `notify_typecheck_done`**: Callers are now responsible. This affects the priority worker loop and REPL dep compilation (REPL doesn't need notification — it compiles deps inline).

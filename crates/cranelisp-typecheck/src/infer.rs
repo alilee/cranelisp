@@ -10,35 +10,46 @@ use cranelisp_types::{
     Type, TypeExpr,
 };
 
-use crate::checker::TypeChecker;
+use crate::checker::{CheckState, TypeChecker};
 use crate::resolve::resolve_type_expr;
 use crate::scheme::mono;
 
 impl TypeChecker {
+
+    /// Convenience wrapper for tests — creates a temporary CheckState from self.state.
+    /// Used by test code that doesn't want to manage state explicitly.
+    #[cfg(test)]
+    pub(crate) fn infer_expr_for_test(&mut self, expr: &Expr) -> Result<Type, CranelispError> {
+        let mut state = std::mem::replace(&mut self.state, CheckState::new(cranelisp_types::ModuleFullPath::from("")));
+        let result = self.infer_expr(&mut state, expr);
+        self.state = state;
+        result
+    }
+
     /// Infer the type of an expression. Main dispatch method.
-    pub(crate) fn infer_expr(&mut self, expr: &Expr) -> Result<Type, CranelispError> {
+    pub(crate) fn infer_expr(&mut self, state: &mut CheckState, expr: &Expr) -> Result<Type, CranelispError> {
         match expr {
-            Expr::IntLit { span, .. } => self.infer_int_lit(*span),
-            Expr::FloatLit { span, .. } => self.infer_float_lit(*span),
-            Expr::BoolLit { span, .. } => self.infer_bool_lit(*span),
-            Expr::Var { name, span } => self.infer_var(name, *span),
+            Expr::IntLit { span, .. } => self.infer_int_lit(state, *span),
+            Expr::FloatLit { span, .. } => self.infer_float_lit(state, *span),
+            Expr::BoolLit { span, .. } => self.infer_bool_lit(state, *span),
+            Expr::Var { name, span } => self.infer_var(state, name, *span),
             Expr::Let {
                 bindings,
                 body,
                 span,
-            } => self.infer_let(bindings, body, *span),
+            } => self.infer_let(state, bindings, body, *span),
             Expr::If {
                 cond,
                 then_branch,
                 else_branch,
                 span,
-            } => self.infer_if(cond, then_branch, else_branch, *span),
+            } => self.infer_if(state, cond, then_branch, else_branch, *span),
             Expr::Lambda {
                 params,
                 param_annotations,
                 body,
                 span,
-            } => self.infer_lambda(params, param_annotations, body, *span),
+            } => self.infer_lambda(state, params, param_annotations, body, *span),
             Expr::Apply {
                 callee,
                 args,
@@ -47,7 +58,7 @@ impl TypeChecker {
                 // `trace` is not a parser keyword — it arrives as Apply.
                 // Intercept when callee is the `trace` special form from primitives.
                 if let Expr::Var { name, .. } = callee.as_ref()
-                    && &**name == "trace" && self.is_trace_in_scope()
+                    && &**name == "trace" && self.is_trace_in_scope(state)
                 {
                     if args.len() != 1 {
                         return Err(CranelispError::TypeError {
@@ -55,27 +66,27 @@ impl TypeChecker {
                             span: *span,
                         });
                     }
-                    return self.infer_trace(&args[0], *span);
+                    return self.infer_trace(state, &args[0], *span);
                 }
-                self.infer_apply(callee, args, *span)
+                self.infer_apply(state, callee, args, *span)
             }
             Expr::Match {
                 scrutinee,
                 arms,
                 span,
                 ..
-            } => self.infer_match(scrutinee, arms, *span),
+            } => self.infer_match(state, scrutinee, arms, *span),
             Expr::Annotate {
                 annotation,
                 expr,
                 span,
-            } => self.infer_annotate(annotation, expr, *span),
+            } => self.infer_annotate(state, annotation, expr, *span),
 
-            Expr::StringLit { span, .. } => self.infer_string_lit(*span),
-            Expr::VecLit { elements, span } => self.infer_vec_lit(elements, *span),
-            Expr::Trace { body, span, .. } => self.infer_trace(body, *span),
+            Expr::StringLit { span, .. } => self.infer_string_lit(state, *span),
+            Expr::VecLit { elements, span } => self.infer_vec_lit(state, elements, *span),
+            Expr::Trace { body, span, .. } => self.infer_trace(state, body, *span),
             Expr::RunTests { init, pass_fn, fail_fn, span, .. } => {
-                self.infer_run_tests(init, pass_fn, fail_fn, *span)
+                self.infer_run_tests(state, init, pass_fn, fail_fn, *span)
             }
             // ParBind is semantically identical to Let for type-checking;
             // parallel execution is a codegen concern.
@@ -83,40 +94,40 @@ impl TypeChecker {
                 bindings,
                 body,
                 span,
-            } => self.infer_let(bindings, body, *span),
+            } => self.infer_let(state, bindings, body, *span),
         }
     }
 
     // --- Per-variant inference methods ---
 
-    fn infer_int_lit(&mut self, span: Span) -> Result<Type, CranelispError> {
-        self.record_expr_type(span, Type::Int);
+    fn infer_int_lit(&mut self, state: &mut CheckState, span: Span) -> Result<Type, CranelispError> {
+        self.record_expr_type(state, span, Type::Int);
         Ok(Type::Int)
     }
 
-    fn infer_string_lit(&mut self, span: Span) -> Result<Type, CranelispError> {
-        self.record_expr_type(span, Type::String);
+    fn infer_string_lit(&mut self, state: &mut CheckState, span: Span) -> Result<Type, CranelispError> {
+        self.record_expr_type(state, span, Type::String);
         Ok(Type::String)
     }
 
-    fn infer_float_lit(&mut self, span: Span) -> Result<Type, CranelispError> {
-        self.record_expr_type(span, Type::Float);
+    fn infer_float_lit(&mut self, state: &mut CheckState, span: Span) -> Result<Type, CranelispError> {
+        self.record_expr_type(state, span, Type::Float);
         Ok(Type::Float)
     }
 
-    fn infer_bool_lit(&mut self, span: Span) -> Result<Type, CranelispError> {
-        self.record_expr_type(span, Type::Bool);
+    fn infer_bool_lit(&mut self, state: &mut CheckState, span: Span) -> Result<Type, CranelispError> {
+        self.record_expr_type(state, span, Type::Bool);
         Ok(Type::Bool)
     }
 
-    fn infer_var(&mut self, name: &Symbol, span: Span) -> Result<Type, CranelispError> {
-        let scheme = self.lookup(name).ok_or_else(|| CranelispError::TypeError {
+    fn infer_var(&mut self, state: &mut CheckState, name: &Symbol, span: Span) -> Result<Type, CranelispError> {
+        let scheme = self.lookup(state, name).ok_or_else(|| CranelispError::TypeError {
             message: format!("undefined variable: {name}"),
             span,
         })?;
 
         // Don't instantiate special forms -- they are not callable as values
-        if let Some(ModuleEntry::Def { kind, .. }) = self.current_symbol_table().get(name)
+        if let Some(ModuleEntry::Def { kind, .. }) = self.current_symbol_table_with_state(state).get(name)
             && matches!(kind.as_ref(), cranelisp_types::DefKind::SpecialForm { .. })
         {
             return Err(CranelispError::TypeError {
@@ -139,8 +150,8 @@ impl TypeChecker {
         // Constrained polymorphic functions cannot be used as bare values
         // (spec §3.6.6). They must be called with arguments so concrete
         // types can be determined for monomorphisation.
-        if !self.state.in_call_position
-            && let Some(entry) = self.resolve_entry_in_current_module(name)
+        if !state.in_call_position
+            && let Some(entry) = self.resolve_entry_in_current_module(state, name)
             && let ModuleEntry::Def { kind, .. } = entry
             && matches!(
                 kind.as_ref(),
@@ -156,9 +167,9 @@ impl TypeChecker {
             });
         }
 
-        let ty = self.instantiate(&scheme);
-        let resolved = self.apply_subst(&ty);
-        self.record_expr_type(span, resolved.clone());
+        let ty = self.instantiate(state, &scheme);
+        let resolved = self.apply_subst(state, &ty);
+        self.record_expr_type(state, span, resolved.clone());
         Ok(resolved)
     }
 
@@ -166,54 +177,54 @@ impl TypeChecker {
     // into enclosing scope. This deviates from plan section 2.3 but is strictly
     // better behavior.
     fn infer_let(
-        &mut self,
+        &mut self, state: &mut CheckState,
         bindings: &[(Symbol, Expr)],
         body: &Expr,
         span: Span,
     ) -> Result<Type, CranelispError> {
-        self.push_scope();
+        self.push_scope(state);
 
         for (name, binding_expr) in bindings {
-            let binding_ty = self.infer_expr(binding_expr)?;
+            let binding_ty = self.infer_expr(state, binding_expr)?;
             // Let bindings are monomorphic (spec 3.5.3)
-            self.bind_local(name.clone(), mono(binding_ty));
+            self.bind_local(state, name.clone(), mono(binding_ty));
         }
 
-        let body_ty = self.infer_expr(body)?;
-        self.pop_scope();
+        let body_ty = self.infer_expr(state, body)?;
+        self.pop_scope(state);
 
-        let resolved = self.apply_subst(&body_ty);
-        self.record_expr_type(span, resolved.clone());
+        let resolved = self.apply_subst(state, &body_ty);
+        self.record_expr_type(state, span, resolved.clone());
         Ok(resolved)
     }
 
     fn infer_if(
-        &mut self,
+        &mut self, state: &mut CheckState,
         cond: &Expr,
         then_branch: &Expr,
         else_branch: &Expr,
         span: Span,
     ) -> Result<Type, CranelispError> {
-        let cond_ty = self.infer_expr(cond)?;
-        self.unify(&cond_ty, &Type::Bool, cond.span())?;
+        let cond_ty = self.infer_expr(state, cond)?;
+        self.unify(state, &cond_ty, &Type::Bool, cond.span())?;
 
-        let then_ty = self.infer_expr(then_branch)?;
-        let else_ty = self.infer_expr(else_branch)?;
-        self.unify(&then_ty, &else_ty, span)?;
+        let then_ty = self.infer_expr(state, then_branch)?;
+        let else_ty = self.infer_expr(state, else_branch)?;
+        self.unify(state, &then_ty, &else_ty, span)?;
 
-        let resolved = self.apply_subst(&then_ty);
-        self.record_expr_type(span, resolved.clone());
+        let resolved = self.apply_subst(state, &then_ty);
+        self.record_expr_type(state, span, resolved.clone());
         Ok(resolved)
     }
 
     fn infer_lambda(
-        &mut self,
+        &mut self, state: &mut CheckState,
         params: &[Symbol],
         param_annotations: &[Option<TypeExpr>],
         body: &Expr,
         span: Span,
     ) -> Result<Type, CranelispError> {
-        self.push_scope();
+        self.push_scope(state);
 
         let mut param_types = Vec::new();
         for (i, param_name) in params.iter().enumerate() {
@@ -225,48 +236,48 @@ impl TypeChecker {
                 self.fresh_var()
             };
             param_types.push(param_ty.clone());
-            self.bind_local(param_name.clone(), mono(param_ty));
+            self.bind_local(state, param_name.clone(), mono(param_ty));
         }
 
-        let body_ty = self.infer_expr(body)?;
-        self.pop_scope();
+        let body_ty = self.infer_expr(state, body)?;
+        self.pop_scope(state);
 
         let fn_type = Type::Fn(
             param_types
                 .iter()
-                .map(|t| self.apply_subst(t))
+                .map(|t| self.apply_subst(state, t))
                 .collect(),
-            Box::new(self.apply_subst(&body_ty)),
+            Box::new(self.apply_subst(state, &body_ty)),
         );
-        self.record_expr_type(span, fn_type.clone());
+        self.record_expr_type(state, span, fn_type.clone());
         Ok(fn_type)
     }
 
     fn infer_apply(
-        &mut self,
+        &mut self, state: &mut CheckState,
         callee: &Expr,
         args: &[Expr],
         span: Span,
     ) -> Result<Type, CranelispError> {
         // Mark callee as in call position so constrained fn references are allowed.
         // Save/restore is stack-based: each nesting level preserves the outer value.
-        let prev_call_position = self.state.in_call_position;
-        self.state.in_call_position = true;
-        let callee_ty = self.infer_expr(callee);
-        self.state.in_call_position = prev_call_position;
+        let prev_call_position = state.in_call_position;
+        state.in_call_position = true;
+        let callee_ty = self.infer_expr(state, callee);
+        state.in_call_position = prev_call_position;
         let callee_ty = callee_ty?;
 
         // Arguments are NOT in call position — a constrained fn passed as an
         // argument (e.g., `(f add)`) must be rejected. Explicitly clear the flag
         // to handle nested applications like `((f x) add)` where the outer
         // save/restore leaves `in_call_position` true during inner arg inference.
-        let prev_for_args = self.state.in_call_position;
-        self.state.in_call_position = false;
+        let prev_for_args = state.in_call_position;
+        state.in_call_position = false;
         let mut arg_types = Vec::new();
         for arg in args {
-            arg_types.push(self.infer_expr(arg)?);
+            arg_types.push(self.infer_expr(state, arg)?);
         }
-        self.state.in_call_position = prev_for_args;
+        state.in_call_position = prev_for_args;
 
         let ret_ty = self.fresh_var();
 
@@ -275,9 +286,9 @@ impl TypeChecker {
         // We don't unify here because the base name's scheme may not match
         // the actual call site arity/types.
         if let Expr::Var { name, .. } = callee
-            && self.state.overloads.contains_key(name)
+            && state.overloads.contains_key(name)
         {
-            self.state.pending_overload_resolutions.push((
+            state.pending_overload_resolutions.push((
                 span,
                 name.clone(),
                 arg_types.clone(),
@@ -285,43 +296,43 @@ impl TypeChecker {
             ));
             // Record arg types in expr_types for each arg
             for (arg, arg_ty) in args.iter().zip(arg_types.iter()) {
-                self.record_expr_type(arg.span(), self.apply_subst(arg_ty));
+                self.record_expr_type(state, arg.span(), self.apply_subst(state, arg_ty));
             }
-            self.record_expr_type(span, ret_ty.clone());
+            self.record_expr_type(state, span, ret_ty.clone());
             return Ok(ret_ty);
         }
 
         // Unify callee with Fn(arg_types, ret_ty).
         // On failure, try auto-curry: callee may have more params than provided args.
         let expected_fn = Type::Fn(arg_types.clone(), Box::new(ret_ty.clone()));
-        let unify_result = self.unify(&callee_ty, &expected_fn, span);
+        let unify_result = self.unify(state, &callee_ty, &expected_fn, span);
 
         if let Err(ref _e) = unify_result {
-            if let Some(ty) = self.try_auto_curry(callee, &callee_ty, &arg_types, span)? {
+            if let Some(ty) = self.try_auto_curry(state, callee, &callee_ty, &arg_types, span)? {
                 // Auto-curry succeeded. If the callee is a trait method or builtin,
                 // resolve it now so the wrapper function can call the concrete
                 // implementation (e.g., "+" → "add-i64" for Int).
                 if let Expr::Var { name, .. } = callee {
                     // Use the FULL param types from the callee's resolved type
                     // (not just the applied args) for trait resolution.
-                    let resolved_callee = self.apply_subst(&callee_ty);
+                    let resolved_callee = self.apply_subst(state, &callee_ty);
                     if let Type::Fn(full_params, _) = &resolved_callee {
                         let resolved_params: Vec<Type> = full_params
                             .iter()
-                            .map(|t| self.apply_subst(t))
+                            .map(|t| self.apply_subst(state, t))
                             .collect();
                         let resolution = match
-                            self.try_resolve_trait_method(name, &resolved_params, span)
+                            self.try_resolve_trait_method(state, name, &resolved_params, span)
                         {
                             Ok(Some(r)) => Some(r),
-                            Ok(None) => self.resolve_primitive_jit_name(name)
+                            Ok(None) => self.resolve_primitive_jit_name(state, name)
                                 .map(|jit_name| ResolvedCall::BuiltinFn { name: jit_name }),
                             Err(e) => return Err(e),
                         };
                         if resolution.is_some() {
                             // Attach to the last pending_auto_curry entry (the one
                             // just pushed by try_auto_curry).
-                            if let Some(entry) = self.state.pending_auto_curry.last_mut() {
+                            if let Some(entry) = state.pending_auto_curry.last_mut() {
                                 entry.5 = resolution;
                             }
                         }
@@ -337,24 +348,24 @@ impl TypeChecker {
         if let Expr::Var { name, .. } = callee {
             let resolved_args: Vec<Type> = arg_types
                 .iter()
-                .map(|t| self.apply_subst(t))
+                .map(|t| self.apply_subst(state, t))
                 .collect();
 
             if let Some(resolution) =
-                self.try_resolve_trait_method(name, &resolved_args, span)?
+                self.try_resolve_trait_method(state, name, &resolved_args, span)?
             {
                 // Trait method resolution (Ring 2): operators like +, -, =, <
-                self.state.method_resolutions.insert(span, resolution);
-            } else if let Some(jit_name) = self.resolve_primitive_jit_name(name) {
+                state.method_resolutions.insert(span, resolution);
+            } else if let Some(jit_name) = self.resolve_primitive_jit_name(state, name) {
                 // Named primitive resolution (Ring 0-3): add-i64, str-concat,
                 // macros/sconcat, quote-sexp, etc.
-                self.state.method_resolutions
+                state.method_resolutions
                     .insert(span, ResolvedCall::BuiltinFn { name: jit_name });
             }
         }
 
-        let resolved = self.apply_subst(&ret_ty);
-        self.record_expr_type(span, resolved.clone());
+        let resolved = self.apply_subst(state, &ret_ty);
+        self.record_expr_type(state, span, resolved.clone());
         Ok(resolved)
     }
 
@@ -365,7 +376,7 @@ impl TypeChecker {
     /// Returns `Some(curry_type)` on success, `None` if not applicable.
     /// The caller should propagate the original unification error when None.
     fn try_auto_curry(
-        &mut self,
+        &mut self, state: &mut CheckState,
         callee: &Expr,
         callee_ty: &Type,
         arg_types: &[Type],
@@ -377,7 +388,7 @@ impl TypeChecker {
         }
 
         // Resolve the callee type through substitution to get concrete Fn type.
-        let resolved_callee = self.apply_subst(callee_ty);
+        let resolved_callee = self.apply_subst(state, callee_ty);
         let (params, ret) = match &resolved_callee {
             Type::Fn(params, ret) if arg_types.len() < params.len() => (params, ret),
             _ => return Ok(None),
@@ -399,13 +410,13 @@ impl TypeChecker {
 
         // Unify each applied arg with the corresponding parameter.
         for (arg_ty, param_ty) in arg_types.iter().zip(params.iter()) {
-            self.unify(arg_ty, param_ty, span)?;
+            self.unify(state, arg_ty, param_ty, span)?;
         }
 
         // Build curry return type from remaining params.
         let remaining: Vec<Type> = params[arg_types.len()..]
             .iter()
-            .map(|t| self.apply_subst(t))
+            .map(|t| self.apply_subst(state, t))
             .collect();
         let curry_ret = Type::Fn(remaining, ret.clone());
 
@@ -413,7 +424,7 @@ impl TypeChecker {
         // The trait_resolution (6th element) starts as None; it is filled in
         // by infer_apply after try_auto_curry returns (if types are concrete),
         // or by resolve_auto_curry when draining (if types get pinned later).
-        self.state.pending_auto_curry.push((
+        state.pending_auto_curry.push((
             span,
             callee_name,
             arg_types.len(),
@@ -422,8 +433,8 @@ impl TypeChecker {
             None,
         ));
 
-        let ty = self.apply_subst(&curry_ret);
-        self.record_expr_type(span, ty.clone());
+        let ty = self.apply_subst(state, &curry_ret);
+        self.record_expr_type(state, span, ty.clone());
         Ok(Some(ty))
     }
 
@@ -436,7 +447,7 @@ impl TypeChecker {
     ///
     /// This is needed because the quasiquote expander emits `macros/sconcat`
     /// calls with the module prefix.
-    pub(crate) fn resolve_primitive_jit_name(&self, name: &str) -> Option<Symbol> {
+    pub(crate) fn resolve_primitive_jit_name(&self, state: &CheckState, name: &str) -> Option<Symbol> {
         use cranelisp_types::{DefKind, ModuleFullPath};
 
         // Try qualified name: "module/name" -> look up in target module
@@ -465,7 +476,7 @@ impl TypeChecker {
         }
 
         // Unqualified name: resolve in current module
-        let entry = self.resolve_entry_in_current_module(name)?;
+        let entry = self.resolve_entry_in_current_module(state, name)?;
         if let ModuleEntry::Def { kind, .. } = entry {
             // Return the JIT symbol name if specified (platform effects),
             // otherwise return the bare name.
@@ -485,78 +496,78 @@ impl TypeChecker {
     /// Called after a function body is fully checked and all substitutions are
     /// established. Walks the expression tree, finds Apply nodes whose callee is
     /// a known trait method but has no entry in method_resolutions, and resolves them.
-    pub(crate) fn resolve_deferred_trait_calls(&mut self, expr: &Expr) {
+    pub(crate) fn resolve_deferred_trait_calls(&mut self, state: &mut CheckState, expr: &Expr) {
         match expr {
             Expr::Apply { callee, args, span } => {
                 // Try to resolve this Apply if it's not already resolved
-                if !self.state.method_resolutions.contains_key(span)
+                if !state.method_resolutions.contains_key(span)
                     && let Expr::Var { name, .. } = callee.as_ref()
                     && self.is_trait_method(name)
                 {
                     let resolved_args: Vec<Type> = args
                         .iter()
                         .map(|a| {
-                            self.state.expr_types
+                            state.expr_types
                                 .get(&a.span())
-                                .map(|t| self.apply_subst(t))
+                                .map(|t| self.apply_subst(state, t))
                                 .unwrap_or_else(|| Type::Var(0))
                         })
                         .collect();
                     if let Ok(Some(resolution)) =
-                        self.try_resolve_trait_method(name, &resolved_args, *span)
+                        self.try_resolve_trait_method(state, name, &resolved_args, *span)
                     {
-                        self.state.method_resolutions.insert(*span, resolution);
+                        state.method_resolutions.insert(*span, resolution);
                     }
                 }
                 // Recurse
-                self.resolve_deferred_trait_calls(callee);
+                self.resolve_deferred_trait_calls(state, callee);
                 for arg in args {
-                    self.resolve_deferred_trait_calls(arg);
+                    self.resolve_deferred_trait_calls(state, arg);
                 }
             }
             Expr::Let { bindings, body, .. } => {
                 for (_, binding_expr) in bindings {
-                    self.resolve_deferred_trait_calls(binding_expr);
+                    self.resolve_deferred_trait_calls(state, binding_expr);
                 }
-                self.resolve_deferred_trait_calls(body);
+                self.resolve_deferred_trait_calls(state, body);
             }
             Expr::If { cond, then_branch, else_branch, .. } => {
-                self.resolve_deferred_trait_calls(cond);
-                self.resolve_deferred_trait_calls(then_branch);
-                self.resolve_deferred_trait_calls(else_branch);
+                self.resolve_deferred_trait_calls(state, cond);
+                self.resolve_deferred_trait_calls(state, then_branch);
+                self.resolve_deferred_trait_calls(state, else_branch);
             }
             Expr::Lambda { body, .. } => {
-                self.resolve_deferred_trait_calls(body);
+                self.resolve_deferred_trait_calls(state, body);
             }
             Expr::Match { scrutinee, arms, .. } => {
-                self.resolve_deferred_trait_calls(scrutinee);
+                self.resolve_deferred_trait_calls(state, scrutinee);
                 for arm in arms {
-                    self.resolve_deferred_trait_calls(&arm.body);
+                    self.resolve_deferred_trait_calls(state, &arm.body);
                 }
             }
             Expr::Annotate { expr: inner, .. } => {
-                self.resolve_deferred_trait_calls(inner);
+                self.resolve_deferred_trait_calls(state, inner);
             }
             Expr::VecLit { elements, .. } => {
                 for elem in elements {
-                    self.resolve_deferred_trait_calls(elem);
+                    self.resolve_deferred_trait_calls(state, elem);
                 }
             }
             Expr::Trace { body, .. } => {
-                self.resolve_deferred_trait_calls(body);
+                self.resolve_deferred_trait_calls(state, body);
             }
             Expr::ParBind { bindings, body, .. } => {
                 for (_, binding_expr) in bindings {
-                    self.resolve_deferred_trait_calls(binding_expr);
+                    self.resolve_deferred_trait_calls(state, binding_expr);
                 }
-                self.resolve_deferred_trait_calls(body);
+                self.resolve_deferred_trait_calls(state, body);
             }
             _ => {}
         }
     }
 
     fn infer_match(
-        &mut self,
+        &mut self, state: &mut CheckState,
         scrutinee: &Expr,
         arms: &[MatchArm],
         span: Span,
@@ -568,14 +579,14 @@ impl TypeChecker {
             });
         }
 
-        let scrutinee_ty = self.infer_expr(scrutinee)?;
+        let scrutinee_ty = self.infer_expr(state, scrutinee)?;
         let result_ty = self.fresh_var();
 
         let mut covered_ctors: Vec<Symbol> = Vec::new();
         let mut has_wildcard = false;
 
         for arm in arms {
-            self.push_scope();
+            self.push_scope(state);
 
             match &arm.pattern {
                 Pattern::Constructor {
@@ -583,7 +594,7 @@ impl TypeChecker {
                     bindings,
                     span: pat_span,
                 } => {
-                    self.check_constructor_pattern(
+                    self.check_constructor_pattern(state, 
                         name,
                         bindings,
                         &scrutinee_ty,
@@ -599,24 +610,24 @@ impl TypeChecker {
                     ..
                 } => {
                     has_wildcard = true;
-                    self.bind_local(name.clone(), mono(self.apply_subst(&scrutinee_ty)));
+                    self.bind_local(state, name.clone(), mono(self.apply_subst(state, &scrutinee_ty)));
                 }
             }
 
-            let arm_ty = self.infer_expr(&arm.body)?;
-            self.unify(&arm_ty, &result_ty, arm.span)?;
+            let arm_ty = self.infer_expr(state, &arm.body)?;
+            self.unify(state, &arm_ty, &result_ty, arm.span)?;
 
-            self.pop_scope();
+            self.pop_scope(state);
         }
 
         // Check exhaustiveness for concrete ADT scrutinees
-        let resolved_scrutinee = self.apply_subst(&scrutinee_ty);
+        let resolved_scrutinee = self.apply_subst(state, &scrutinee_ty);
         if let Type::ADT(type_name, _) = &resolved_scrutinee {
             self.check_exhaustiveness(type_name, &covered_ctors, has_wildcard, span)?;
         }
 
-        let resolved = self.apply_subst(&result_ty);
-        self.record_expr_type(span, resolved.clone());
+        let resolved = self.apply_subst(state, &result_ty);
+        self.record_expr_type(state, span, resolved.clone());
         Ok(resolved)
     }
 
@@ -627,7 +638,7 @@ impl TypeChecker {
     /// unifies the result type with the scrutinee, and binds pattern variables
     /// to the instantiated field types.
     fn check_constructor_pattern(
-        &mut self,
+        &mut self, state: &mut CheckState,
         name: &Symbol,
         bindings: &[Symbol],
         scrutinee_ty: &Type,
@@ -645,13 +656,13 @@ impl TypeChecker {
         }
 
         // Look up the constructor's scheme from the symbol table
-        let ctor_scheme = self.lookup_constructor_scheme(name, span)?;
+        let ctor_scheme = self.lookup_constructor_scheme(state, name, span)?;
 
         // Instantiate the scheme with fresh type variables
-        let instantiated = self.instantiate(&ctor_scheme);
+        let instantiated = self.instantiate(state, &ctor_scheme);
 
         // Unify and bind depending on whether the constructor has fields
-        self.unify_pattern_with_scrutinee(
+        self.unify_pattern_with_scrutinee(state, 
             name, bindings, &instantiated, scrutinee_ty, span,
         )
     }
@@ -662,7 +673,7 @@ impl TypeChecker {
     /// prefix for the `constructor_to_type` registry lookup, then uses the full
     /// qualified name for scheme resolution (which already handles `/`).
     fn lookup_constructor_scheme(
-        &self,
+        &self, state: &CheckState,
         name: &Symbol,
         span: Span,
     ) -> Result<Scheme, CranelispError> {
@@ -686,7 +697,7 @@ impl TypeChecker {
         }
 
         // Get the scheme from the symbol table (handles qualified names via lookup)
-        self.lookup(name).ok_or_else(|| CranelispError::TypeError {
+        self.lookup(state, name).ok_or_else(|| CranelispError::TypeError {
             message: format!("constructor {name} has no type scheme"),
             span,
         })
@@ -694,7 +705,7 @@ impl TypeChecker {
 
     /// Unify an instantiated constructor type with the scrutinee and bind variables.
     fn unify_pattern_with_scrutinee(
-        &mut self,
+        &mut self, state: &mut CheckState,
         name: &Symbol,
         bindings: &[Symbol],
         instantiated: &Type,
@@ -713,12 +724,12 @@ impl TypeChecker {
                         span,
                     });
                 }
-                self.unify(scrutinee_ty, instantiated, span)
+                self.unify(state, scrutinee_ty, instantiated, span)
             }
 
             // Data constructor: type is Fn([field_types], adt_type)
             Type::Fn(field_types, ret_type) => {
-                self.bind_data_ctor_pattern(
+                self.bind_data_ctor_pattern(state, 
                     name, bindings, field_types, ret_type, scrutinee_ty, span,
                 )
             }
@@ -734,7 +745,7 @@ impl TypeChecker {
 
     /// Bind pattern variables for a data constructor with fields.
     fn bind_data_ctor_pattern(
-        &mut self,
+        &mut self, state: &mut CheckState,
         name: &Symbol,
         bindings: &[Symbol],
         field_types: &[Type],
@@ -754,19 +765,19 @@ impl TypeChecker {
         }
 
         // Unify the constructor's result type with the scrutinee
-        self.unify(scrutinee_ty, ret_type, span)?;
+        self.unify(state, scrutinee_ty, ret_type, span)?;
 
         // Bind each pattern variable to the resolved field type
         for (binding_name, field_ty) in bindings.iter().zip(field_types.iter()) {
-            let resolved = self.apply_subst(field_ty);
-            self.bind_local(binding_name.clone(), mono(resolved));
+            let resolved = self.apply_subst(state, field_ty);
+            self.bind_local(state, binding_name.clone(), mono(resolved));
         }
 
         Ok(())
     }
 
     fn infer_vec_lit(
-        &mut self,
+        &mut self, state: &mut CheckState,
         elements: &[Expr],
         span: Span,
     ) -> Result<Type, CranelispError> {
@@ -775,16 +786,16 @@ impl TypeChecker {
             self.fresh_var()
         } else {
             // Non-empty vec: infer first element, unify all others with it
-            let first_ty = self.infer_expr(&elements[0])?;
+            let first_ty = self.infer_expr(state, &elements[0])?;
             for elem in &elements[1..] {
-                let elem_ty = self.infer_expr(elem)?;
-                self.unify(&first_ty, &elem_ty, elem.span())?;
+                let elem_ty = self.infer_expr(state, elem)?;
+                self.unify(state, &first_ty, &elem_ty, elem.span())?;
             }
-            self.apply_subst(&first_ty)
+            self.apply_subst(state, &first_ty)
         };
 
         let vec_type = Type::ADT("Vec".into(), vec![elem_type]);
-        self.record_expr_type(span, vec_type.clone());
+        self.record_expr_type(state, span, vec_type.clone());
         Ok(vec_type)
     }
 
@@ -792,10 +803,10 @@ impl TypeChecker {
     ///
     /// Check whether `trace` is in scope — i.e., imported from `primitives`.
     /// `trace` is a module-scoped special form, not a parser keyword.
-    fn is_trace_in_scope(&self) -> bool {
+    fn is_trace_in_scope(&self, state: &CheckState) -> bool {
         // Check if `trace` resolves in the current module to the primitives entry.
         // It could be imported via (import [primitives [trace]]) or qualified primitives/trace.
-        self.lookup(&Symbol::from("trace")).is_some()
+        self.lookup(state, &Symbol::from("trace")).is_some()
     }
 
     /// The body expression is inferred normally (for side effects on the type
@@ -804,16 +815,16 @@ impl TypeChecker {
     ///
     /// See spec §3.2.4 (Trace typing rule) and §4.12.1.
     fn infer_trace(
-        &mut self,
+        &mut self, state: &mut CheckState,
         body: &Expr,
         span: Span,
     ) -> Result<Type, CranelispError> {
         // Infer the body — we don't use its type, but inference must run
         // to propagate constraints and detect errors within the body.
-        let _body_ty = self.infer_expr(body)?;
+        let _body_ty = self.infer_expr(state, body)?;
 
         let trace_type = Type::ADT("Trace".into(), vec![]);
-        self.record_expr_type(span, trace_type.clone());
+        self.record_expr_type(state, span, trace_type.clone());
         Ok(trace_type)
     }
 
@@ -824,23 +835,23 @@ impl TypeChecker {
     /// - `fail_fn :: (Fn [:a String Int String Trace] :a)`
     /// - Result type is `:a` (the accumulator type)
     fn infer_run_tests(
-        &mut self,
+        &mut self, state: &mut CheckState,
         init: &Expr,
         pass_fn: &Expr,
         fail_fn: &Expr,
         span: Span,
     ) -> Result<Type, CranelispError> {
         // Infer accumulator type from init
-        let acc_ty = self.infer_expr(init)?;
-        let acc_ty = self.apply_subst(&acc_ty);
+        let acc_ty = self.infer_expr(state, init)?;
+        let acc_ty = self.apply_subst(state, &acc_ty);
 
         // pass_fn :: (Fn [acc_ty String Int] acc_ty)
         let expected_pass = Type::Fn(
             vec![acc_ty.clone(), Type::String, Type::Int],
             Box::new(acc_ty.clone()),
         );
-        let pass_ty = self.infer_expr(pass_fn)?;
-        self.unify(&pass_ty, &expected_pass, span)?;
+        let pass_ty = self.infer_expr(state, pass_fn)?;
+        self.unify(state, &pass_ty, &expected_pass, span)?;
 
         // fail_fn :: (Fn [acc_ty String Int String Trace] acc_ty)
         let trace_ty = Type::ADT("Trace".into(), vec![]);
@@ -848,17 +859,17 @@ impl TypeChecker {
             vec![acc_ty.clone(), Type::String, Type::Int, Type::String, trace_ty],
             Box::new(acc_ty.clone()),
         );
-        let fail_ty = self.infer_expr(fail_fn)?;
-        self.unify(&fail_ty, &expected_fail, span)?;
+        let fail_ty = self.infer_expr(state, fail_fn)?;
+        self.unify(state, &fail_ty, &expected_fail, span)?;
 
         // Result type: acc_ty
-        let result_ty = self.apply_subst(&acc_ty);
-        self.record_expr_type(span, result_ty.clone());
+        let result_ty = self.apply_subst(state, &acc_ty);
+        self.record_expr_type(state, span, result_ty.clone());
         Ok(result_ty)
     }
 
     fn infer_annotate(
-        &mut self,
+        &mut self, state: &mut CheckState,
         annotation: &TypeExpr,
         expr: &Expr,
         span: Span,
@@ -867,11 +878,11 @@ impl TypeChecker {
         let var_map = HashMap::new();
         let ann_type = resolve_type_expr(annotation, &var_map, &known, span)?;
 
-        let expr_ty = self.infer_expr(expr)?;
-        self.unify(&expr_ty, &ann_type, span)?;
+        let expr_ty = self.infer_expr(state, expr)?;
+        self.unify(state, &expr_ty, &ann_type, span)?;
 
-        let resolved = self.apply_subst(&ann_type);
-        self.record_expr_type(span, resolved.clone());
+        let resolved = self.apply_subst(state, &ann_type);
+        self.record_expr_type(state, span, resolved.clone());
         Ok(resolved)
     }
 }
@@ -895,7 +906,7 @@ mod tests {
 
     /// Register a simple enum type for testing.
     fn register_color(tc: &mut TypeChecker) {
-        tc.register_type_def(
+        tc.register_type_def_self(
             &TypeName::from("Color"),
             &None,
             &[],
@@ -935,7 +946,7 @@ mod tests {
             value: 42,
             span: span(0, 2),
         };
-        assert_eq!(tc.infer_expr(&expr).unwrap(), Type::Int);
+        assert_eq!(tc.infer_expr_for_test(&expr).unwrap(), Type::Int);
     }
 
     // spec: 03-types §3.5.3 — float literal infers to Float
@@ -946,7 +957,7 @@ mod tests {
             value: 2.72,
             span: span(0, 4),
         };
-        assert_eq!(tc.infer_expr(&expr).unwrap(), Type::Float);
+        assert_eq!(tc.infer_expr_for_test(&expr).unwrap(), Type::Float);
     }
 
     // spec: 03-types §3.5.3 — boolean literal infers to Bool
@@ -957,7 +968,7 @@ mod tests {
             value: true,
             span: span(0, 4),
         };
-        assert_eq!(tc.infer_expr(&expr).unwrap(), Type::Bool);
+        assert_eq!(tc.infer_expr_for_test(&expr).unwrap(), Type::Bool);
     }
 
     // --- Var tests ---
@@ -966,12 +977,12 @@ mod tests {
     #[test]
     fn test_infer_var_defined() {
         let mut tc = tc();
-        tc.bind_local(Symbol::from("x"), mono(Type::Int));
+        tc.bind_local_self(Symbol::from("x"), mono(Type::Int));
         let expr = Expr::Var {
             name: Symbol::from("x"),
             span: span(0, 1),
         };
-        assert_eq!(tc.infer_expr(&expr).unwrap(), Type::Int);
+        assert_eq!(tc.infer_expr_for_test(&expr).unwrap(), Type::Int);
     }
 
     // spec: 03-types §3.5.3 — undefined variable reference is a type error
@@ -982,7 +993,7 @@ mod tests {
             name: Symbol::from("x"),
             span: span(0, 1),
         };
-        assert!(tc.infer_expr(&expr).is_err());
+        assert!(tc.infer_expr_for_test(&expr).is_err());
     }
 
     // --- Let tests ---
@@ -1006,7 +1017,7 @@ mod tests {
             }),
             span: span(0, 12),
         };
-        assert_eq!(tc.infer_expr(&expr).unwrap(), Type::Int);
+        assert_eq!(tc.infer_expr_for_test(&expr).unwrap(), Type::Int);
     }
 
     // spec: 03-types §3.5.3 — let sequential bindings: later bindings see earlier ones
@@ -1037,7 +1048,7 @@ mod tests {
             }),
             span: span(0, 16),
         };
-        assert_eq!(tc.infer_expr(&expr).unwrap(), Type::Int);
+        assert_eq!(tc.infer_expr_for_test(&expr).unwrap(), Type::Int);
     }
 
     // --- If tests ---
@@ -1062,7 +1073,7 @@ mod tests {
             }),
             span: span(0, 13),
         };
-        assert_eq!(tc.infer_expr(&expr).unwrap(), Type::Int);
+        assert_eq!(tc.infer_expr_for_test(&expr).unwrap(), Type::Int);
     }
 
     // spec: 03-types §3.5.3 — if condition must unify with Bool
@@ -1085,7 +1096,7 @@ mod tests {
             }),
             span: span(0, 11),
         };
-        let err = tc.infer_expr(&expr).unwrap_err();
+        let err = tc.infer_expr_for_test(&expr).unwrap_err();
         assert!(err.message().contains("type mismatch"));
     }
 
@@ -1109,7 +1120,7 @@ mod tests {
             }),
             span: span(0, 16),
         };
-        assert!(tc.infer_expr(&expr).is_err());
+        assert!(tc.infer_expr_for_test(&expr).is_err());
     }
 
     // --- Lambda tests ---
@@ -1128,7 +1139,7 @@ mod tests {
             }),
             span: span(0, 10),
         };
-        let ty = tc.infer_expr(&expr).unwrap();
+        let ty = tc.infer_expr_for_test(&expr).unwrap();
         // Should be Fn([tN], tN) for some N
         match ty {
             Type::Fn(params, ret) => {
@@ -1153,7 +1164,7 @@ mod tests {
             }),
             span: span(0, 15),
         };
-        let ty = tc.infer_expr(&expr).unwrap();
+        let ty = tc.infer_expr_for_test(&expr).unwrap();
         assert_eq!(ty, Type::Fn(vec![Type::Int], Box::new(Type::Int)));
     }
 
@@ -1180,7 +1191,7 @@ mod tests {
             }],
             span: span(0, 14),
         };
-        assert_eq!(tc.infer_expr(&expr).unwrap(), Type::Int);
+        assert_eq!(tc.infer_expr_for_test(&expr).unwrap(), Type::Int);
     }
 
     // spec: 03-types §3.5.3 — apply primitive add-i64 records BuiltinFn resolution
@@ -1205,7 +1216,7 @@ mod tests {
             ],
             span: span(0, 13),
         };
-        assert_eq!(tc.infer_expr(&expr).unwrap(), Type::Int);
+        assert_eq!(tc.infer_expr_for_test(&expr).unwrap(), Type::Int);
 
         // Check that a BuiltinFn resolution was recorded
         let resolution = tc.state.method_resolutions.get(&span(0, 13)).unwrap();
@@ -1239,7 +1250,7 @@ mod tests {
             ],
             span: span(0, 17),
         };
-        assert_eq!(tc.infer_expr(&expr).unwrap(), Type::Float);
+        assert_eq!(tc.infer_expr_for_test(&expr).unwrap(), Type::Float);
 
         let resolution = tc.state.method_resolutions.get(&span(0, 17)).unwrap();
         match resolution {
@@ -1272,7 +1283,7 @@ mod tests {
             ],
             span: span(0, 12),
         };
-        assert_eq!(tc.infer_expr(&expr).unwrap(), Type::Bool);
+        assert_eq!(tc.infer_expr_for_test(&expr).unwrap(), Type::Bool);
     }
 
     // spec: appendix-a-builtins §A.3 — not primitive: Bool -> Bool
@@ -1291,7 +1302,7 @@ mod tests {
             }],
             span: span(0, 10),
         };
-        assert_eq!(tc.infer_expr(&expr).unwrap(), Type::Bool);
+        assert_eq!(tc.infer_expr_for_test(&expr).unwrap(), Type::Bool);
 
         let resolution = tc.state.method_resolutions.get(&span(0, 10)).unwrap();
         match resolution {
@@ -1324,7 +1335,7 @@ mod tests {
             ],
             span: span(0, 17),
         };
-        assert!(tc.infer_expr(&expr).is_err(), "add-i64 with float args should fail");
+        assert!(tc.infer_expr_for_test(&expr).is_err(), "add-i64 with float args should fail");
     }
 
     // spec: 04-expressions §4.6.3 — too few args triggers auto-curry
@@ -1343,8 +1354,8 @@ mod tests {
             }],
             span: span(0, 11),
         };
-        let ty = tc.infer_expr(&expr).expect("auto-curry should succeed");
-        let resolved = tc.apply_subst(&ty);
+        let ty = tc.infer_expr_for_test(&expr).expect("auto-curry should succeed");
+        let resolved = tc.apply_subst_self(&ty);
         match resolved {
             Type::Fn(params, ret) => {
                 assert_eq!(params.len(), 1, "curried fn should take 1 remaining arg");
@@ -1372,7 +1383,7 @@ mod tests {
             ],
             span: span(0, 15),
         };
-        assert!(tc.infer_expr(&expr).is_err());
+        assert!(tc.infer_expr_for_test(&expr).is_err());
     }
 
     // --- Match tests ---
@@ -1430,7 +1441,7 @@ mod tests {
             span: span(0, 33),
             compiler_generated: false,
         };
-        assert_eq!(tc.infer_expr(&expr).unwrap(), Type::Int);
+        assert_eq!(tc.infer_expr_for_test(&expr).unwrap(), Type::Int);
     }
 
     // spec: 06-pattern-matching §6.5.1 — non-exhaustive match on ADT is compile error
@@ -1460,7 +1471,7 @@ mod tests {
             span: span(0, 18),
             compiler_generated: false,
         };
-        let err = tc.infer_expr(&expr).unwrap_err();
+        let err = tc.infer_expr_for_test(&expr).unwrap_err();
         assert!(err.message().contains("non-exhaustive"));
     }
 
@@ -1503,7 +1514,7 @@ mod tests {
             span: span(0, 22),
             compiler_generated: false,
         };
-        assert_eq!(tc.infer_expr(&expr).unwrap(), Type::Int);
+        assert_eq!(tc.infer_expr_for_test(&expr).unwrap(), Type::Int);
     }
 
     // spec: 06-pattern-matching §6.2.4 — variable pattern binds scrutinee value
@@ -1532,7 +1543,7 @@ mod tests {
             span: span(0, 16),
             compiler_generated: false,
         };
-        assert_eq!(tc.infer_expr(&expr).unwrap(), Type::Int);
+        assert_eq!(tc.infer_expr_for_test(&expr).unwrap(), Type::Int);
     }
 
     // --- Annotate tests ---
@@ -1550,7 +1561,7 @@ mod tests {
             }),
             span: span(0, 8),
         };
-        assert_eq!(tc.infer_expr(&expr).unwrap(), Type::Int);
+        assert_eq!(tc.infer_expr_for_test(&expr).unwrap(), Type::Int);
     }
 
     // spec: 03-types §3.9.1 — annotation mismatching inferred type fails
@@ -1566,7 +1577,7 @@ mod tests {
             }),
             span: span(0, 9),
         };
-        assert!(tc.infer_expr(&expr).is_err());
+        assert!(tc.infer_expr_for_test(&expr).is_err());
     }
 
     // --- expr_types recording tests ---
@@ -1577,7 +1588,7 @@ mod tests {
         let mut tc = tc();
         let s = span(0, 2);
         let expr = Expr::IntLit { value: 42, span: s };
-        tc.infer_expr(&expr).unwrap();
+        tc.infer_expr_for_test(&expr).unwrap();
         assert_eq!(tc.state.expr_types.get(&s), Some(&Type::Int));
     }
 
@@ -1619,7 +1630,7 @@ mod tests {
             ],
             span: span(0, 25),
         };
-        assert_eq!(tc.infer_expr(&expr).unwrap(), Type::Int);
+        assert_eq!(tc.infer_expr_for_test(&expr).unwrap(), Type::Int);
     }
 
     // --- String literal tests (Ring 1) ---
@@ -1632,7 +1643,7 @@ mod tests {
             value: "hello".to_string(),
             span: span(0, 7),
         };
-        assert_eq!(tc.infer_expr(&expr).unwrap(), Type::String);
+        assert_eq!(tc.infer_expr_for_test(&expr).unwrap(), Type::String);
     }
 
     // spec: 03-types §3.5.1 — string literal records String in expr_types
@@ -1644,7 +1655,7 @@ mod tests {
             value: "hello".to_string(),
             span: s,
         };
-        tc.infer_expr(&expr).unwrap();
+        tc.infer_expr_for_test(&expr).unwrap();
         assert_eq!(tc.state.expr_types.get(&s), Some(&Type::String));
     }
 
@@ -1652,7 +1663,7 @@ mod tests {
 
     /// Register (Option a) with None and Some[:a val].
     fn register_option(tc: &mut TypeChecker) {
-        tc.register_type_def(
+        tc.register_type_def_self(
             &TypeName::from("Option"),
             &None,
             &[Symbol::from("a")],
@@ -1729,7 +1740,7 @@ mod tests {
         };
 
         // Should infer result type Int (x : Int from Some pattern, 0 : Int)
-        assert_eq!(tc.infer_expr(&expr).unwrap(), Type::Int);
+        assert_eq!(tc.infer_expr_for_test(&expr).unwrap(), Type::Int);
     }
 
     // spec: 06-pattern-matching §6.2.1 — wrong binding count in constructor pattern is error
@@ -1767,7 +1778,7 @@ mod tests {
             compiler_generated: false,
         };
 
-        let err = tc.infer_expr(&expr).unwrap_err();
+        let err = tc.infer_expr_for_test(&expr).unwrap_err();
         assert!(err.message().contains("expects 1 field"));
     }
 
@@ -1806,7 +1817,7 @@ mod tests {
             compiler_generated: false,
         };
 
-        let err = tc.infer_expr(&expr).unwrap_err();
+        let err = tc.infer_expr_for_test(&expr).unwrap_err();
         assert!(err.message().contains("takes no arguments"));
     }
 
@@ -1845,7 +1856,7 @@ mod tests {
             compiler_generated: false,
         };
 
-        let err = tc.infer_expr(&expr).unwrap_err();
+        let err = tc.infer_expr_for_test(&expr).unwrap_err();
         assert!(err.message().contains("None"));
     }
 
@@ -1865,7 +1876,7 @@ mod tests {
             }),
             span: s,
         };
-        tc.infer_expr(&expr).unwrap();
+        tc.infer_expr_for_test(&expr).unwrap();
 
         // Lambda should record a Fn type in expr_types
         let recorded = tc.state.expr_types.get(&s).unwrap();
@@ -1900,7 +1911,7 @@ mod tests {
             span: span(400, 427),
         };
 
-        let ty = tc.infer_expr(&annotate_expr).unwrap();
+        let ty = tc.infer_expr_for_test(&annotate_expr).unwrap();
         assert_eq!(
             ty,
             Type::ADT(TypeName::from("Option"), vec![Type::Int])
@@ -1914,7 +1925,7 @@ mod tests {
     fn test_infer_match_product_type() {
         let mut tc = tc();
         // (deftype Point [:Int x :Int y])
-        tc.register_type_def(
+        tc.register_type_def_self(
             &TypeName::from("Point"),
             &None,
             &[],
@@ -1986,7 +1997,7 @@ mod tests {
             compiler_generated: false,
         };
 
-        assert_eq!(tc.infer_expr(&expr).unwrap(), Type::Int);
+        assert_eq!(tc.infer_expr_for_test(&expr).unwrap(), Type::Int);
     }
 
     // spec: 05-definitions §5.2.7 — data constructor applied as function
@@ -2008,7 +2019,7 @@ mod tests {
             span: span(600, 609),
         };
 
-        let ty = tc.infer_expr(&expr).unwrap();
+        let ty = tc.infer_expr_for_test(&expr).unwrap();
         assert_eq!(
             ty,
             Type::ADT(TypeName::from("Option"), vec![Type::Int])
@@ -2027,7 +2038,7 @@ mod tests {
             span: span(700, 704),
         };
 
-        let ty = tc.infer_expr(&expr).unwrap();
+        let ty = tc.infer_expr_for_test(&expr).unwrap();
         match &ty {
             Type::ADT(name, args) => {
                 assert_eq!(name.as_ref(), "Option");
@@ -2059,7 +2070,7 @@ mod tests {
             }),
             span: span(800, 825),
         };
-        assert_eq!(tc.infer_expr(&expr).unwrap(), Type::String);
+        assert_eq!(tc.infer_expr_for_test(&expr).unwrap(), Type::String);
     }
 
     // spec: 03-types §3.5.3 — let binding with String value
@@ -2081,7 +2092,7 @@ mod tests {
             }),
             span: span(900, 917),
         };
-        assert_eq!(tc.infer_expr(&expr).unwrap(), Type::String);
+        assert_eq!(tc.infer_expr_for_test(&expr).unwrap(), Type::String);
     }
 
     // --- Vec literal tests (Sprint 3) ---
@@ -2100,7 +2111,7 @@ mod tests {
             span: span(1000, 1007),
         };
         assert_eq!(
-            tc.infer_expr(&expr).unwrap(),
+            tc.infer_expr_for_test(&expr).unwrap(),
             Type::ADT(TypeName::from("Vec"), vec![Type::Int])
         );
     }
@@ -2118,7 +2129,7 @@ mod tests {
             span: span(1100, 1109),
         };
         assert_eq!(
-            tc.infer_expr(&expr).unwrap(),
+            tc.infer_expr_for_test(&expr).unwrap(),
             Type::ADT(TypeName::from("Vec"), vec![Type::String])
         );
     }
@@ -2132,7 +2143,7 @@ mod tests {
             elements: vec![],
             span: span(1200, 1202),
         };
-        let ty = tc.infer_expr(&expr).unwrap();
+        let ty = tc.infer_expr_for_test(&expr).unwrap();
         match &ty {
             Type::ADT(name, args) => {
                 assert_eq!(name.as_ref(), "Vec");
@@ -2156,7 +2167,7 @@ mod tests {
             ],
             span: span(1300, 1311),
         };
-        let err = tc.infer_expr(&expr).unwrap_err();
+        let err = tc.infer_expr_for_test(&expr).unwrap_err();
         assert!(err.message().contains("mismatch"), "expected type mismatch error, got: {}", err.message());
     }
 
@@ -2173,7 +2184,7 @@ mod tests {
             span: span(1400, 1412),
         };
         assert_eq!(
-            tc.infer_expr(&expr).unwrap(),
+            tc.infer_expr_for_test(&expr).unwrap(),
             Type::ADT(TypeName::from("Vec"), vec![Type::Bool])
         );
     }
@@ -2202,7 +2213,7 @@ mod tests {
             span: span(1500, 1519),
         };
         assert_eq!(
-            tc.infer_expr(&expr).unwrap(),
+            tc.infer_expr_for_test(&expr).unwrap(),
             Type::ADT(TypeName::from("Vec"), vec![Type::Int])
         );
     }
@@ -2212,7 +2223,7 @@ mod tests {
     fn test_infer_vec_lit_as_function_arg() {
         let mut tc = tc();
         // Define a function that takes (Vec Int) -> Int
-        tc.bind_local(
+        tc.bind_local_self(
             Symbol::from("vec-len"),
             mono(Type::Fn(
                 vec![Type::ADT(TypeName::from("Vec"), vec![Type::Int])],
@@ -2235,7 +2246,7 @@ mod tests {
             }],
             span: span(1600, 1617),
         };
-        assert_eq!(tc.infer_expr(&expr).unwrap(), Type::Int);
+        assert_eq!(tc.infer_expr_for_test(&expr).unwrap(), Type::Int);
     }
 
     // spec: 03-types §3.5.3 — lambda returning Vec infers (Fn [Int] (Vec Int))
@@ -2255,7 +2266,7 @@ mod tests {
             }),
             span: span(1700, 1713),
         };
-        let ty = tc.infer_expr(&expr).unwrap();
+        let ty = tc.infer_expr_for_test(&expr).unwrap();
         assert_eq!(
             ty,
             Type::Fn(
@@ -2275,7 +2286,7 @@ mod tests {
             span: span(1800, 1804),
         };
         assert_eq!(
-            tc.infer_expr(&expr).unwrap(),
+            tc.infer_expr_for_test(&expr).unwrap(),
             Type::ADT(TypeName::from("Vec"), vec![Type::Int])
         );
     }
@@ -2292,7 +2303,7 @@ mod tests {
             ],
             span: s,
         };
-        tc.infer_expr(&expr).unwrap();
+        tc.infer_expr_for_test(&expr).unwrap();
         assert_eq!(
             tc.state.expr_types.get(&s),
             Some(&Type::ADT(TypeName::from("Vec"), vec![Type::Int]))
@@ -2313,7 +2324,7 @@ mod tests {
             span: span(2000, 2013),
         };
         assert_eq!(
-            tc.infer_expr(&expr).unwrap(),
+            tc.infer_expr_for_test(&expr).unwrap(),
             Type::ADT(TypeName::from("Vec"), vec![Type::Float])
         );
     }
@@ -2326,7 +2337,7 @@ mod tests {
     #[test]
     fn test_resolve_primitive_unqualified() {
         let tc = tc();
-        let result = tc.resolve_primitive_jit_name("add-i64");
+        let result = tc.resolve_primitive_jit_name_self("add-i64");
         assert_eq!(result.as_deref(), Some("add-i64"));
     }
 
@@ -2334,7 +2345,7 @@ mod tests {
     #[test]
     fn test_resolve_primitive_non_primitive() {
         let tc = tc();
-        let result = tc.resolve_primitive_jit_name("if");
+        let result = tc.resolve_primitive_jit_name_self("if");
         // "if" is a SpecialForm, not a Primitive
         assert!(result.is_none(), "special forms should not resolve as primitives");
     }
@@ -2343,7 +2354,7 @@ mod tests {
     #[test]
     fn test_resolve_primitive_unknown() {
         let tc = tc();
-        let result = tc.resolve_primitive_jit_name("nonexistent");
+        let result = tc.resolve_primitive_jit_name_self("nonexistent");
         assert!(result.is_none());
     }
 
@@ -2351,7 +2362,7 @@ mod tests {
     #[test]
     fn test_resolve_primitive_qualified_sconcat() {
         let tc = tc();
-        let result = tc.resolve_primitive_jit_name("macros/sconcat");
+        let result = tc.resolve_primitive_jit_name_self("macros/sconcat");
         assert_eq!(
             result.as_deref(),
             Some("sconcat"),
@@ -2364,7 +2375,7 @@ mod tests {
     fn test_resolve_primitive_qualified_non_primitive() {
         let tc = tc();
         // macros/SNil is a Constructor, not a Primitive
-        let result = tc.resolve_primitive_jit_name("macros/SNil");
+        let result = tc.resolve_primitive_jit_name_self("macros/SNil");
         assert!(result.is_none(), "constructors should not resolve as primitives");
     }
 
@@ -2372,7 +2383,7 @@ mod tests {
     #[test]
     fn test_resolve_primitive_qualified_unknown_module() {
         let tc = tc();
-        let result = tc.resolve_primitive_jit_name("unknown/foo");
+        let result = tc.resolve_primitive_jit_name_self("unknown/foo");
         assert!(result.is_none());
     }
 
@@ -2380,7 +2391,7 @@ mod tests {
     #[test]
     fn test_resolve_primitive_extern() {
         let tc = tc();
-        let result = tc.resolve_primitive_jit_name("str-concat");
+        let result = tc.resolve_primitive_jit_name_self("str-concat");
         assert_eq!(result.as_deref(), Some("str-concat"));
     }
 
@@ -2388,7 +2399,7 @@ mod tests {
     #[test]
     fn test_resolve_primitive_quote_sexp() {
         let tc = tc();
-        let result = tc.resolve_primitive_jit_name("quote-sexp");
+        let result = tc.resolve_primitive_jit_name_self("quote-sexp");
         assert_eq!(result.as_deref(), Some("quote-sexp"));
     }
 
@@ -2414,7 +2425,7 @@ mod tests {
         };
 
         // Bind in scope so infer_var finds it
-        tc.bind_local(Symbol::from("cfn"), scheme.clone());
+        tc.bind_local_self(Symbol::from("cfn"), scheme.clone());
 
         // Register in module so the constrained_fn check finds it
         tc.current_symbol_table_mut().insert(
@@ -2453,7 +2464,7 @@ mod tests {
         register_constrained_fn(&mut tc);
 
         // Set up: (fn [f] f) as an identity function
-        tc.bind_local(
+        tc.bind_local_self(
             Symbol::from("id"),
             Scheme {
                 vars: vec![],
@@ -2478,7 +2489,7 @@ mod tests {
             span: span(2999, 3007),
         };
 
-        let err = tc.infer_expr(&expr).unwrap_err();
+        let err = tc.infer_expr_for_test(&expr).unwrap_err();
         assert!(
             err.message().contains("constrained function"),
             "should reject constrained fn as argument, got: {}",
@@ -2506,7 +2517,7 @@ mod tests {
         };
 
         // Should succeed (constrained fn in call position is allowed)
-        assert!(tc.infer_expr(&expr).is_ok());
+        assert!(tc.infer_expr_for_test(&expr).is_ok());
     }
 
     // -----------------------------------------------------------------------
@@ -2539,7 +2550,7 @@ mod tests {
             visibility: Visibility::Public,
             span: Span::SYNTHETIC,
         };
-        tc.register_trait_decl(&num_decl).unwrap();
+        tc.register_trait_decl_self(&num_decl).unwrap();
 
         // impl Num for Int
         let int_impl = TraitImpl {
@@ -2571,7 +2582,7 @@ mod tests {
             }],
             span: Span::SYNTHETIC,
         };
-        tc.register_trait_impl(&int_impl).unwrap();
+        tc.register_trait_impl_self(&int_impl).unwrap();
 
         // impl Num for Float
         let float_impl = TraitImpl {
@@ -2603,7 +2614,7 @@ mod tests {
             }],
             span: Span::SYNTHETIC,
         };
-        tc.register_trait_impl(&float_impl).unwrap();
+        tc.register_trait_impl_self(&float_impl).unwrap();
 
         // Ord trait: < :: (Fn [a a] Bool)
         let ord_decl = TraitDecl {
@@ -2626,7 +2637,7 @@ mod tests {
             visibility: Visibility::Public,
             span: Span::SYNTHETIC,
         };
-        tc.register_trait_decl(&ord_decl).unwrap();
+        tc.register_trait_decl_self(&ord_decl).unwrap();
 
         // impl Ord for Int
         let int_ord_impl = TraitImpl {
@@ -2658,7 +2669,7 @@ mod tests {
             }],
             span: Span::SYNTHETIC,
         };
-        tc.register_trait_impl(&int_ord_impl).unwrap();
+        tc.register_trait_impl_self(&int_ord_impl).unwrap();
 
         tc.clear_transient_state();
     }
@@ -2682,7 +2693,7 @@ mod tests {
             span: span(4000, 4013),
         };
 
-        let err = tc.infer_expr(&expr).unwrap_err();
+        let err = tc.infer_expr_for_test(&expr).unwrap_err();
         assert!(
             err.message().contains("no impl of trait Num for type Bool"),
             "expected Num/Bool error, got: {}",
@@ -2709,7 +2720,7 @@ mod tests {
             span: span(4100, 4111),
         };
 
-        let err = tc.infer_expr(&expr).unwrap_err();
+        let err = tc.infer_expr_for_test(&expr).unwrap_err();
         assert!(
             err.message().contains("no impl of trait Num for type String"),
             "expected Num/String error, got: {}",
@@ -2736,7 +2747,7 @@ mod tests {
             span: span(4200, 4214),
         };
 
-        let err = tc.infer_expr(&expr).unwrap_err();
+        let err = tc.infer_expr_for_test(&expr).unwrap_err();
         assert!(
             err.message().contains("no impl of trait Ord for type Bool"),
             "expected Ord/Bool error, got: {}",
@@ -2763,7 +2774,7 @@ mod tests {
             span: span(4300, 4311),
         };
 
-        let err = tc.infer_expr(&expr).unwrap_err();
+        let err = tc.infer_expr_for_test(&expr).unwrap_err();
         assert!(
             err.message().contains("no impl of trait Ord for type String"),
             "expected Ord/String error, got: {}",
@@ -2791,7 +2802,7 @@ mod tests {
         };
 
         // Should error: either unification fails (Int vs Bool) or constraint fails
-        assert!(tc.infer_expr(&expr).is_err());
+        assert!(tc.infer_expr_for_test(&expr).is_err());
     }
 
     // spec: 07-traits §7.4.1 — (+ 1 2) succeeds: Int has Num impl
@@ -2813,7 +2824,7 @@ mod tests {
             span: span(4500, 4507),
         };
 
-        let ty = tc.infer_expr(&expr).unwrap();
+        let ty = tc.infer_expr_for_test(&expr).unwrap();
         assert_eq!(ty, Type::Int);
 
         // Check TraitMethod resolution was recorded
@@ -2845,7 +2856,7 @@ mod tests {
             span: span(4600, 4611),
         };
 
-        let ty = tc.infer_expr(&expr).unwrap();
+        let ty = tc.infer_expr_for_test(&expr).unwrap();
         assert_eq!(ty, Type::Float);
     }
 }
