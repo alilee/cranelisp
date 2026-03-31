@@ -593,6 +593,57 @@ impl CompileScheduler {
     }
 
     // -----------------------------------------------------------------------
+    // REPL Recovery (Step 9)
+    // -----------------------------------------------------------------------
+
+    /// Reset a module from Failed back to an unregistered state.
+    ///
+    /// Used by the REPL after a failed dependency compilation. Removes
+    /// the module from the scheduler entirely so it can be re-registered
+    /// and recompiled on the next attempt.
+    ///
+    /// Preconditions:
+    /// - Module must be in the Failed pool.
+    /// - TC state for the module has already been rolled back by the caller.
+    ///
+    /// Postconditions:
+    /// - Module is removed from `state.modules`.
+    /// - Module is removed from all deques.
+    /// - Any priority queue entries for this module are removed.
+    pub fn reset_module(&mut self, module: &ModuleFullPath) {
+        let Some(ms) = self.state.modules.get(module) else { return };
+        if ms.pool != ModulePool::Failed {
+            return; // Only reset Failed modules.
+        }
+
+        self.state.modules.remove(module);
+
+        // Clean deques (defensive — Failed modules should not be in deques,
+        // but guard against inconsistency).
+        self.state.typecheck_first.retain(|m| m != module);
+        self.state.typecheck_next.retain(|m| m != module);
+        self.state.typecheck_done.retain(|m| m != module);
+
+        // Remove any priority queue entries for this module.
+        self.state.priority_queue.retain(|e| &e.module != module);
+    }
+
+    /// Reset all Failed modules, removing them from the scheduler.
+    ///
+    /// Used by the REPL after a cascaded dependency failure. Scans all
+    /// registered modules and resets any in the Failed pool.
+    pub fn reset_all_failed_modules(&mut self) {
+        let failed: Vec<ModuleFullPath> = self.state.modules
+            .iter()
+            .filter(|(_, ms)| ms.pool == ModulePool::Failed)
+            .map(|(path, _)| path.clone())
+            .collect();
+        for m in failed {
+            self.reset_module(&m);
+        }
+    }
+
+    // -----------------------------------------------------------------------
     // Query methods (for tests and diagnostics)
     // -----------------------------------------------------------------------
 
@@ -614,6 +665,11 @@ impl CompileScheduler {
     /// Check if the scheduler is in shutdown state.
     pub fn is_shutdown(&self) -> bool {
         self.state.shutdown
+    }
+
+    /// Iterate over all registered module paths.
+    pub fn all_modules(&self) -> impl Iterator<Item = &ModuleFullPath> {
+        self.state.modules.keys()
     }
 
     /// Number of registered modules.
@@ -730,14 +786,21 @@ impl CompileScheduler {
         // failed module, then cascade-fail them.
         let waiting_modules = self.collect_waiters_for_module(failed_module);
 
+        // Retrieve the original error message for chaining.
+        let original_error_msg = self.state.modules.get(failed_module)
+            .and_then(|ms| ms.error.as_ref())
+            .map(|e| e.to_string())
+            .unwrap_or_else(|| "unknown error".to_string());
+
         for waiter_module in waiting_modules {
             let error = CranelispError::ModuleError {
                 message: format!(
-                    "dependency '{}' failed",
-                    failed_module
+                    "dependency '{}' failed: {}",
+                    failed_module,
+                    original_error_msg,
                 ),
                 file: None,
-                span: Span { start: 0, end: 0 },
+                span: Span::SYNTHETIC,
             };
             // Recursive cascade.
             self.notify_module_failed(&waiter_module, error);
@@ -1020,3 +1083,35 @@ impl std::fmt::Display for SchedulerError {
 }
 
 impl std::error::Error for SchedulerError {}
+
+impl From<SchedulerError> for CranelispError {
+    fn from(e: SchedulerError) -> Self {
+        match e {
+            SchedulerError::ModuleFailed { module, message } => {
+                CranelispError::ModuleError {
+                    message: format!("module '{}' failed: {}", module, message),
+                    file: None,
+                    span: Span::SYNTHETIC,
+                }
+            }
+            SchedulerError::InmemIncomplete { module } => {
+                CranelispError::ModuleError {
+                    message: format!(
+                        "in-memory codegen incomplete for '{}'", module
+                    ),
+                    file: None,
+                    span: Span::SYNTHETIC,
+                }
+            }
+            SchedulerError::ObjectIncomplete { module } => {
+                CranelispError::ModuleError {
+                    message: format!(
+                        "object codegen incomplete for '{}'", module
+                    ),
+                    file: None,
+                    span: Span::SYNTHETIC,
+                }
+            }
+        }
+    }
+}

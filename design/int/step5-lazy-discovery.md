@@ -376,25 +376,21 @@ Exports are metadata — they mark which symbols are public. No blocking, no dep
 fn handle_mod(
     ctx: &mut WorkerContext,
     module: &ModuleFullPath,
-    name: ModuleName,
-    body: Option<Vec<Sexp>>,
-) -> Result<BlockAction, CranelispError> {
+    decl: &ModDecl,
+) -> Result<(), CranelispError> {
     // If inline body: write to disk as {module_dir}/{name}.cl
-    if let Some(body_sexps) = body {
-        write_inline_mod_to_disk(module, &name, &body_sexps, ctx.project_root)?;
+    if let Some(body_sexps) = &decl.inline_body {
+        write_inline_mod_to_disk(module, &decl.name, body_sexps, ctx.project_root)?;
     }
 
-    // Register submodule for later import resolution.
-    // The submodule is not immediately loaded — it will be discovered
-    // lazily when another module imports from it.
-    let sub_path = ModuleFullPath::from(format!("{}.{}", module, name));
-    ctx.tc.register_submodule(module, &sub_path);
-
-    Ok(BlockAction::Continue)
+    // No explicit submodule registration needed. The submodule is discovered
+    // lazily via file-system resolution when another module imports from it.
+    // The import handler resolves the file path using lib_dirs and project_root.
+    Ok(())
 }
 ```
 
-`(mod name)` without inline body just registers the submodule relationship. The submodule file is resolved when imported.
+`(mod name)` without inline body is a no-op beyond file writes. The submodule is discovered lazily via file-system resolution when another module imports from it (the import handler resolves the file path using `lib_dirs` and `project_root`). No explicit `register_submodule` call is needed — the original design proposed one but the implementation correctly relies on implicit discovery, which is simpler and matches the sketch's approach.
 
 ## 8. Platform Handling
 

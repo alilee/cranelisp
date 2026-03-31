@@ -21,6 +21,7 @@ use crate::expander::{
     self, MacroClauseEntry, MacroEntry,
 };
 use crate::pipeline::compile_and_register_defn;
+use crate::platform_registry::PlatformRegistry;
 use crate::scheduler::{CompileScheduler, PriorityWork};
 use crate::session::InMemWorkerState;
 
@@ -35,7 +36,7 @@ pub struct WorkerContext<'a> {
     pub tc: &'a mut cranelisp_typecheck::TypeChecker,
     pub scheduler: &'a mut CompileScheduler,
     pub inmem_worker: &'a mut InMemWorkerState,
-    pub platform_symbols: &'a mut Vec<(String, *const u8)>,
+    pub platform_registry: &'a mut PlatformRegistry,
     pub lib_dirs: &'a [PathBuf],
     pub project_root: &'a Path,
 }
@@ -548,9 +549,8 @@ fn handle_mod(
         write_inline_mod_to_disk(module, &decl.name, body_sexps, ctx.project_root)?;
     }
 
-    // FIXME(/int): design doc §7.2 specifies ctx.tc.register_submodule(module, &sub_path)
-    // but implementation relies on implicit file-system discovery. Reconcile design doc
-    // with implementation — either add explicit registration or update the design doc.
+    // No explicit submodule registration needed — the submodule is discovered
+    // lazily via file-system resolution when another module imports from it.
     Ok(())
 }
 
@@ -562,18 +562,31 @@ fn handle_platform(
     ctx: &mut WorkerContext,
     spec: &PlatformSpec,
 ) -> Result<(), CranelispError> {
-    let (_platform, jit_syms) = crate::platform::load_and_register_platform(
+    let (platform, _jit_syms) = crate::platform::load_and_register_platform(
         ctx.tc,
         &spec.name,
         ctx.project_root,
         spec.span,
     )?;
 
-    // Register platform function pointers for codegen.
-    ctx.platform_symbols.extend(jit_syms);
+    // Register each function in the unified platform registry (Step 8).
+    let module_path = ModuleFullPath::from(format!("platform.{}", platform.name));
+    for desc in &platform.descriptors {
+        let fq = cranelisp_types::FQSymbol {
+            module: module_path.clone(),
+            symbol: Symbol::from(desc.name.as_str()),
+        };
+        ctx.platform_registry.register(
+            fq,
+            crate::platform_registry::PlatformFunction {
+                jit_name: cranelisp_types::JitSymbol::from(desc.jit_name.clone()),
+                fn_ptr: desc.ptr,
+                scheduling_class: desc.scheduling_class,
+            },
+        );
+    }
 
     // Platform DLLs are leaked (kept alive for process lifetime).
-    // This is known debt tracked for Step 8.
     Ok(())
 }
 
@@ -758,14 +771,15 @@ fn compile_macro_if_needed(
     let uncompiled_deps = collect_transitive_uncompiled_deps(
         ctx.tc, ctx.inmem_worker, module, &info.name,
     );
-    for (_dep_module, dep_symbol) in &uncompiled_deps {
-        // FIXME(/int): dep_module is ignored — assumes macro deps are in the same module.
-        // Cross-module macro deps (Step 11+) will need dep_module passed to compile_dep_symbol_inline.
+    // Compute platform JIT symbols once, outside the dep compilation loop.
+    let platform_symbols = ctx.platform_registry.jit_symbols_owned();
+    let current_module = ctx.tc.current_module_path().clone();
+    for (dep_module, dep_symbol) in &uncompiled_deps {
         compile_dep_symbol_inline(
-            ctx.tc, ctx.inmem_worker, ctx.platform_symbols,
-            dep_symbol, accumulator,
+            ctx.tc, ctx.inmem_worker, &platform_symbols,
+            dep_module, dep_symbol, &current_module, accumulator,
         )?;
-        ctx.scheduler.notify_inmem_codegen_complete(module, dep_symbol, false);
+        ctx.scheduler.notify_inmem_codegen_complete(dep_module, dep_symbol, false);
     }
 
     // Compile each clause that is not yet compiled.
@@ -841,33 +855,36 @@ fn collect_transitive_uncompiled_deps(
 
 /// Compile a dependency symbol inline using the accumulated check state.
 ///
-/// Looks up the defn from the accumulated data (it has been typechecked
+/// Looks up the defn from the GOT state (it has been typechecked
 /// in Pass 2 already since deps are defined before the macro) and
 /// compiles it via `compile_and_register_defn`.
+///
+/// For same-module deps, uses the current module's accumulator to build
+/// the CheckResult (method_resolutions, expr_types). For cross-module
+/// deps, builds a CheckResult with empty resolutions — the dep module's
+/// transient check state has already been consumed. Type defs and
+/// constructor_to_type come from the TC's global registry in both cases.
 fn compile_dep_symbol_inline(
     tc: &cranelisp_typecheck::TypeChecker,
     inmem_worker: &mut InMemWorkerState,
     platform_symbols: &[(String, *const u8)],
+    module: &ModuleFullPath,
     symbol: &Symbol,
+    current_module: &ModuleFullPath,
     accumulator: &ModuleCheckAccumulator,
 ) -> Result<(), CranelispError> {
-    // Build a partial CheckResult from the accumulator for codegen.
-    let check = build_check_from_accumulator(tc, accumulator);
-
-    // Look up the defn from the symbol table.
-    let table = tc.symbol_table();
-    let entry = table.get(symbol.as_ref()).ok_or_else(|| CranelispError::MacroError {
-        message: format!("inline compile: symbol '{}' not found in module table", symbol),
-        span: Span::SYNTHETIC,
-    })?;
-
-    // For Def entries, we need the defn AST. But the symbol table only stores
-    // the scheme, not the AST. The defn should be available from the program
-    // forms being processed. For now, this handles the case where the defn is
-    // available from got_state (already registered but not yet compiled).
-    // In practice, macro deps are typically compiled via the codegen sweep,
-    // and this path handles rare cases of forward-referenced helpers.
-    let _ = entry;
+    // Build the CheckResult from the appropriate source.
+    let check = if module == current_module {
+        // Same module: accumulator has the method_resolutions and expr_types.
+        build_check_from_accumulator(tc, accumulator)
+    } else {
+        // Cross-module: the dep module's transient check state was consumed
+        // when it was finalized. Build a minimal CheckResult with type defs
+        // from the TC's global registry. Method resolutions and expr_types
+        // are empty — cross-module macro helpers are expected to be simple
+        // functions without trait dispatch.
+        build_empty_check_from_tc(tc)
+    };
 
     // The defn was already typechecked; we need its AST for compilation.
     // Look it up from the GOT state's stored defns.
@@ -885,6 +902,27 @@ fn compile_dep_symbol_inline(
     // that is always available — nothing to compile.
 
     Ok(())
+}
+
+/// Build an empty CheckResult with only type defs from the TC.
+///
+/// Used for cross-module deps where the dep module's transient check state
+/// (method_resolutions, expr_types) has already been consumed.
+fn build_empty_check_from_tc(
+    tc: &cranelisp_typecheck::TypeChecker,
+) -> CheckResult {
+    let (type_defs, constructor_to_type) = tc.snapshot_type_defs();
+    CheckResult {
+        method_resolutions: std::collections::HashMap::new(),
+        constrained_fn_names: std::collections::HashSet::new(),
+        mono_defns: Vec::new(),
+        expr_types: std::collections::HashMap::new(),
+        default_method_defns: Vec::new(),
+        warnings: Vec::new(),
+        type_defs,
+        constructor_to_type,
+        display: None,
+    }
 }
 
 /// Build a CheckResult from the accumulator's current state.
@@ -970,7 +1008,7 @@ fn compile_macro_clause_inline(
         })?;
 
     // Compile using a special JIT that disables dealloc for macro code.
-    compile_macro_defn_no_dealloc(ctx.inmem_worker, ctx.platform_symbols, defn, &check)?;
+    compile_macro_defn_no_dealloc(ctx.inmem_worker, ctx.platform_registry, defn, &check)?;
 
     Ok(())
 }
@@ -981,14 +1019,11 @@ fn compile_macro_clause_inline(
 /// the compiler. Disabling dealloc prevents use-after-free on unmarshal.
 fn compile_macro_defn_no_dealloc(
     inmem_worker: &mut InMemWorkerState,
-    platform_symbols: &[(String, *const u8)],
+    platform_registry: &PlatformRegistry,
     defn: &Defn,
     check: &CheckResult,
 ) -> Result<(), CranelispError> {
-    let extra_symbols: Vec<(&str, *const u8)> = platform_symbols
-        .iter()
-        .map(|(name, ptr)| (name.as_str(), *ptr))
-        .collect();
+    let extra_symbols = platform_registry.jit_symbols();
     let mut jit = cranelisp_backend::jit::Jit::new_with_symbols(&extra_symbols)?;
     jit.declare_intrinsics()?;
 
@@ -1275,25 +1310,28 @@ fn wrap_exprs_as_defns(program: &[TopLevel]) -> Vec<TopLevel> {
 /// zero-arg defns like `main`).
 pub fn codegen_module_symbols(
     inmem_worker: &mut InMemWorkerState,
-    platform_symbols: &[(String, *const u8)],
+    platform_registry: &PlatformRegistry,
     scheduler: &mut CompileScheduler,
     module: &ModuleFullPath,
     program: &[TopLevel],
     check: &CheckResult,
 ) -> Result<(), CranelispError> {
+    // Convert platform registry to owned JIT symbols once for the codegen sweep.
+    let platform_symbols = platform_registry.jit_symbols_owned();
+
     // Pre-register all defn names in GOT for forward references.
     pre_register_got_slots(inmem_worker, program)?;
 
     // Compile default method bodies.
     for defn in &check.default_method_defns {
-        compile_and_register_defn(inmem_worker, platform_symbols, defn, check)?;
+        compile_and_register_defn(inmem_worker, &platform_symbols, defn, check)?;
     }
 
     // Compile mono specializations with per-specialization resolutions.
-    compile_mono_defns(inmem_worker, platform_symbols, check)?;
+    compile_mono_defns(inmem_worker, &platform_symbols, check)?;
 
     // Compile each regular defn.
-    let defn_names = compile_regular_defns(inmem_worker, platform_symbols, program, check)?;
+    let defn_names = compile_regular_defns(inmem_worker, &platform_symbols, program, check)?;
 
     // Notify scheduler for each compiled symbol.
     let total = defn_names.len();
@@ -1463,7 +1501,7 @@ pub fn priority_worker_loop(
                         // Post-typecheck codegen sweep (W2).
                         codegen_module_symbols(
                             ctx.inmem_worker,
-                            ctx.platform_symbols,
+                            ctx.platform_registry,
                             ctx.scheduler,
                             &module,
                             &program,

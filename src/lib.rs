@@ -12,6 +12,7 @@ pub mod session;
 pub mod session_v4;
 pub mod pipeline;
 pub mod platform;
+pub mod platform_registry;
 pub mod pretty;
 pub mod repl;
 pub mod scheduler;

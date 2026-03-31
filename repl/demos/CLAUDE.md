@@ -102,6 +102,7 @@ The REPL process `chdir`s into this directory, so `.cache` artifacts and any oth
 | `ring4j.demo` | 4J | Lenient evaluation (parallel independent let bindings, cost heuristic), auto IO scheduling (commutative bind! chains), trait methods as first-class values (§7.6), /run-tests |
 | `v4a.demo` | — | Pipeline v4 skeleton — --v4 delegates to old pipeline, identical results |
 | `v4b.demo` | — | Pipeline v4 scheduler — primitive-only programs compile through scheduler-driven path |
+| `v4c.demo` | — | Pipeline v4 robust — error recovery (type error + undefined var), platform IO (print, bind), PlatformRegistry |
 
 Each sprint, `/repl` extends this library.
 

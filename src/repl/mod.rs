@@ -120,6 +120,9 @@ pub struct ReplSession {
     restoring: bool,
     /// v4 scheduler for additive REPL eval (Step 7). None when using old path.
     scheduler: Option<crate::scheduler::CompileScheduler>,
+    /// Unified platform function registry (Step 8).
+    /// Populated during platform loading, read-only during codegen.
+    platform_registry: crate::platform_registry::PlatformRegistry,
 }
 
 impl ReplSession {
@@ -150,6 +153,7 @@ impl ReplSession {
             last_saved_hash: None,
             restoring: false,
             scheduler: None,
+            platform_registry: crate::platform_registry::PlatformRegistry::new(),
         }
     }
 
@@ -647,7 +651,7 @@ impl ReplSession {
                     tc: &mut self.core.tc,
                     scheduler,
                     inmem_worker: &mut self.core.inmem_worker,
-                    platform_symbols: &mut self.core.platform_symbols,
+                    platform_registry: &mut self.platform_registry,
                     lib_dirs: &self.core.lib_dirs,
                     project_root: &self.core.project_root,
                 };
@@ -706,7 +710,7 @@ impl ReplSession {
         // Codegen: compile definitions, register in GOT.
         crate::worker::codegen_module_symbols(
             &mut self.core.inmem_worker,
-            &self.core.platform_symbols,
+            &self.platform_registry,
             scheduler,
             module,
             program,
@@ -718,9 +722,10 @@ impl ReplSession {
         if has_expr {
             let program_vec = program.to_vec();
             let eval_start = Instant::now();
+            let ps = self.platform_registry.jit_symbols_owned();
             let (value, ty) = crate::pipeline::compile_and_execute_expr(
                 &mut self.core.inmem_worker,
-                &self.core.platform_symbols,
+                &ps,
                 &program_vec,
                 check,
             )?;
@@ -779,7 +784,7 @@ impl ReplSession {
             tc: &mut self.core.tc,
             scheduler,
             inmem_worker: &mut self.core.inmem_worker,
-            platform_symbols: &mut self.core.platform_symbols,
+            platform_registry: &mut self.platform_registry,
             lib_dirs: &self.core.lib_dirs,
             project_root: &self.core.project_root,
         };
@@ -793,15 +798,15 @@ impl ReplSession {
                 span: cranelisp_types::Span::SYNTHETIC,
             })?;
 
-        scheduler.wait_inmem_complete().map_err(|e| {
-            CranelispError::ModuleError {
-                message: e.to_string(),
-                file: None,
-                span: cranelisp_types::Span::SYNTHETIC,
+        match scheduler.wait_inmem_complete() {
+            Ok(()) => Ok(()),
+            Err(e) => {
+                // Reset all failed modules so the next eval attempt can
+                // re-register and retry (Step 9 REPL recovery).
+                scheduler.reset_all_failed_modules();
+                Err(CranelispError::from(e))
             }
-        })?;
-
-        Ok(())
+        }
     }
 
     /// Sync type definitions from the typechecker for ADT value display.

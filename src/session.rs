@@ -546,11 +546,13 @@ pub struct CompilationSession {
     /// Platform function pointers for JIT symbol registration.
     /// Each entry is (jit_name, function_pointer). Passed to
     /// `Jit::new_with_symbols()` when creating JIT instances.
+    // Step 15: delete — replaced by PlatformRegistry on CompilerSession.
     pub platform_symbols: Vec<(String, *const u8)>,
     /// Scheduling class registry for bind chain independence analysis.
     /// Maps platform function names to their SchedulingClass.
     /// Populated during platform DLL loading; empty when no platforms loaded.
-    pub scheduling_registry: crate::bind_chain_analysis::SchedulingRegistry,
+    // Step 15: delete — replaced by PlatformRegistry on CompilerSession.
+    pub scheduling_registry: HashMap<Symbol, cranelisp_platform::SchedulingClass>,
     /// Modules currently being compiled (on the call stack).
     /// Used by `compile_unit()` for circular dependency detection.
     pub compile_stack: Vec<ModuleFullPath>,
@@ -596,7 +598,7 @@ impl CompilationSession {
             tc: cranelisp_typecheck::TypeChecker::new(),
             macro_env: MacroEnv::new(),
             platform_symbols: Vec::new(),
-            scheduling_registry: crate::bind_chain_analysis::SchedulingRegistry::new(),
+            scheduling_registry: HashMap::new(),
             compile_stack: Vec::new(),
             lib_dirs: Vec::new(),
             module_deps: ModuleDependencyGraph::new(),
@@ -630,7 +632,7 @@ impl CompilationSession {
             tc: cranelisp_typecheck::TypeChecker::new(),
             macro_env: MacroEnv::new(),
             platform_symbols: Vec::new(),
-            scheduling_registry: crate::bind_chain_analysis::SchedulingRegistry::new(),
+            scheduling_registry: HashMap::new(),
             compile_stack: Vec::new(),
             lib_dirs: Vec::new(),
             module_deps: ModuleDependencyGraph::new(),
@@ -663,7 +665,7 @@ impl CompilationSession {
             tc: cranelisp_typecheck::TypeChecker::new(),
             macro_env: MacroEnv::new(),
             platform_symbols: Vec::new(),
-            scheduling_registry: crate::bind_chain_analysis::SchedulingRegistry::new(),
+            scheduling_registry: HashMap::new(),
             compile_stack: Vec::new(),
             lib_dirs: Vec::new(),
             module_deps: ModuleDependencyGraph::new(),
@@ -1462,7 +1464,7 @@ pub(crate) fn has_compilable_defns(program: &[cranelisp_types::TopLevel]) -> boo
 /// Apply bind chain independence analysis to all defn bodies in a program.
 pub(crate) fn apply_bind_chain_analysis(
     program: &mut Program,
-    registry: &crate::bind_chain_analysis::SchedulingRegistry,
+    registry: &crate::platform_registry::PlatformRegistry,
 ) {
     use cranelisp_types::TopLevel;
     for item in program.iter_mut() {

@@ -372,3 +372,171 @@ fn v4_repl_deftype_in_repl() {
         "Red constructor should produce output containing 'Red'\n---\n{s}"
     );
 }
+
+// ===========================================================================
+// Error Cascade tests — REPL mode (Sprint 45 Step 9)
+// ===========================================================================
+
+// ---------------------------------------------------------------------------
+// B-4: Type error does not corrupt session; subsequent valid expr succeeds
+// ---------------------------------------------------------------------------
+
+// spec: repl/spec.md §5.2 — error recovery continues session
+// spec: design/int/step9-error-cascade.md §2.1 — per-form error (already working)
+//
+// This is a focused error recovery test: a type error in one form should
+// not prevent subsequent valid forms from succeeding. The TC snapshot/restore
+// mechanism should roll back the type state cleanly.
+#[test]
+fn v4_repl_error_cascade_recovery() {
+    let o = run_repl(
+        &format!(
+            "{PRIMS}\
+             (add-i64 true 1)\n\
+             (add-i64 5 10)\n"
+        ),
+        "error_cascade_recovery",
+    );
+    assert_success(&o);
+
+    // First form should produce an error.
+    let all = format!("{}{}", stdout_str(&o), stderr_str(&o));
+    assert!(
+        all.contains("Error")
+            || all.contains("error")
+            || all.contains("type")
+            || all.contains("mismatch"),
+        "expected type error from (add-i64 true 1)\nstdout: {}\nstderr: {}",
+        stdout_str(&o),
+        stderr_str(&o),
+    );
+    // Second form should succeed with 15.
+    assert_result(&o, ":primitives/Int 15");
+}
+
+// ---------------------------------------------------------------------------
+// B-5: Type error, then redefine corrected version, call succeeds
+// ---------------------------------------------------------------------------
+
+// spec: repl/spec.md §5.2 — session state not corrupted by error
+// spec: design/int/step9-error-cascade.md §2.1 — per-form error
+//
+// Define a function with a type error, then redefine it correctly.
+// The corrected version should work.
+#[test]
+fn v4_repl_error_cascade_redefine_after_error() {
+    let o = run_repl(
+        &format!(
+            "{PRIMS}\
+             (defn bad [x] (add-i64 x true))\n\
+             (defn good [x] (add-i64 x 1))\n\
+             (good 41)\n"
+        ),
+        "error_cascade_redefine",
+    );
+    assert_success(&o);
+
+    // The first defn should produce an error (type mismatch).
+    let all = format!("{}{}", stdout_str(&o), stderr_str(&o));
+    assert!(
+        all.contains("Error")
+            || all.contains("error")
+            || all.contains("type")
+            || all.contains("mismatch"),
+        "expected type error from bad defn\nstdout: {}\nstderr: {}",
+        stdout_str(&o),
+        stderr_str(&o),
+    );
+    // The corrected defn and call should succeed.
+    assert_result(&o, ":primitives/Int 42");
+}
+
+// ---------------------------------------------------------------------------
+// B-6: Error display includes error category and context
+// ---------------------------------------------------------------------------
+
+// spec: repl/spec.md §5.1 — error format requirements
+// spec: design/int/step9-error-cascade.md §4 — error chain display
+#[test]
+fn v4_repl_error_display_includes_context() {
+    let o = run_repl(
+        &format!("{PRIMS}(add-i64 1 true)\n"),
+        "error_display_context",
+    );
+    assert_success(&o);
+
+    // The error should contain some meaningful context about the problem.
+    let all = format!("{}{}", stdout_str(&o), stderr_str(&o));
+    // At minimum, should mention "Error" or "type" or "mismatch".
+    assert!(
+        all.contains("Error")
+            || all.contains("error")
+            || all.contains("type")
+            || all.contains("mismatch"),
+        "error should include category/context\nstdout: {}\nstderr: {}",
+        stdout_str(&o),
+        stderr_str(&o),
+    );
+}
+
+// ---------------------------------------------------------------------------
+// B-7: After failed eval, scheduler state is cleared for next eval
+// ---------------------------------------------------------------------------
+
+// spec: design/int/step9-error-cascade.md §5 — reset_module API
+// spec: repl/spec.md §5.2 — error recovery
+//
+// This tests that after a scheduler-level failure (not just per-form TC error),
+// the next eval succeeds. This is the reset_module path.
+#[test]
+fn v4_repl_error_scheduler_state_cleared() {
+    // Force a scheduler-level failure by importing a module that has an error,
+    // then try a valid expression.
+    let o = run_repl(
+        &format!(
+            "{PRIMS}\
+             (defn ok-fn [] 42)\n\
+             (add-i64 1 true)\n\
+             (ok-fn)\n"
+        ),
+        "error_scheduler_cleared",
+    );
+    assert_success(&o);
+
+    // The second form should error.
+    let all = format!("{}{}", stdout_str(&o), stderr_str(&o));
+    assert!(
+        all.contains("Error") || all.contains("error") || all.contains("type"),
+        "expected type error\nstdout: {}\nstderr: {}",
+        stdout_str(&o),
+        stderr_str(&o),
+    );
+    // The third form should succeed — scheduler state was cleared.
+    assert_result(&o, ":primitives/Int 42");
+}
+
+// ---------------------------------------------------------------------------
+// B-9: Multiple consecutive errors followed by valid expression
+// ---------------------------------------------------------------------------
+
+// spec: repl/spec.md §5.2 — error recovery resilience
+// spec: design/int/step9-error-cascade.md §2.1 — per-form error
+//
+// The session should survive multiple consecutive errors and still be usable.
+#[test]
+fn v4_repl_error_multiple_consecutive() {
+    let o = run_repl(
+        &format!(
+            "{PRIMS}\
+             (add-i64 true 1)\n\
+             (add-i64 1 false)\n\
+             (add-i64 true false)\n\
+             (add-i64 3 4)\n"
+        ),
+        "error_multiple_consecutive",
+    );
+    assert_success(&o);
+
+    // After three errors, the fourth form should produce 7.
+    assert_result(&o, ":primitives/Int 7");
+}

@@ -66,6 +66,7 @@ Delivery progress for the Cranelisp reimplementation. For technical scope per ri
 | 42 | Pipeline v4 Step 4 — Macro expansion blocking: per-sexp Pass 2 with inline macro compilation, Decision 21 (TC-sourced call graph, `callees: Vec<FQSymbol>` on ModuleEntry), C2 filter relaxation, begin-splicing, spec clarification (macro availability vs compilation), 10 new macro parity tests, /review 0B 4I 6S (all I fixed): 1684 passed, 11 pre-existing sketch_port failures, 0 ignored | COMPLETE | `sprints/archive/sprint-42.md` |
 | 43 | Pipeline v4 Steps 5+6 — Lazy dependency discovery + MacroExpander removal: WorkerContext, FormKind/classify_form, handle_import/export/mod/platform, prelude injection (uniform lazy path), cycle detection (blocked_on walk), C2 filter deleted, MacroExpander trait + CraneliftExpander + NoOpExpander deleted, frontend API cleaned (24 functions), MacroEnv standalone, 11 new v4 parity tests, /review 0B 2I 5S (all fixed): 31 v4 pipeline tests, 11 pre-existing sketch_port failures, 0 ignored | COMPLETE | `sprints/archive/sprint-43.md` |
 | 44 | Pipeline v4 Step 7 — REPL eval via scheduler: serial per-form processing, ModuleStrategy::Additive on process_module_forms, eval_v4/run_repl_v4, bare-symbol introspection, no interceptions (annotations/trace/macros handled by language machinery), ~250 lines dead code deleted, scheduler leak fix, 8 E2E REPL tests + 7 unit tests, /review 0B 3I 4S (all I fixed): 11 pre-existing sketch_port failures, 0 ignored | COMPLETE | `sprints/archive/sprint-44.md` |
+| 45 | Pipeline v4 Steps 8+9 — PlatformRegistry (FQSymbol keys, unified fn_ptr+scheduling_class, bind_chain_analysis migration) + Error Cascade (reset_module/reset_all_failed_modules, cascade embeds original error, impl From, REPL recovery) + cross-module macro dep fix (compile_dep_symbol_inline uses dep module path/table/CheckResult) + 2 FIXMEs resolved, /review 0B 2I 4S (R1-R4 fixed, R5 deferred), 21 new tests, FIXME(/spec) on §9.2.5: 11 pre-existing sketch_port failures, 1 ignored | COMPLETE | `sprints/archive/sprint-45.md` |
 
 ## Forward Plan
 
@@ -84,7 +85,8 @@ Scheduler-driven concurrent compilation. See `design/arch/pipeline-v4-roadmap.md
 | 42 | v4 Step 4 — macro expansion blocking | Per-sexp expansion, inline compile-and-continue, Decision 21 call graph, C2 filter | `/int`, `/typecheck`, `/arch`, `/qa`, `/review`, `/spec` |
 | 43 | v4 Steps 5+6 — lazy deps + expander cleanup | Lazy dependency discovery, MacroExpander trait removal, C2 filter deleted | `/int`, `/frontend`, `/arch`, `/qa`, `/review` |
 | 44 | v4 Step 7 — REPL eval via scheduler | Serial per-form eval, additive strategy, bare-symbol introspection, no interceptions | `/int`, `/qa`, `/review` |
-| 45+ | v4 Steps 8-15 — concurrency + cleanup | Platform registry, error cascade, nice workers, multi-thread, DashMap, cache, watcher, legacy delete | All skills |
+| 45 | v4 Steps 8+9 — platform registry + error cascade | PlatformRegistry, error cascade, reset_module, cross-module macro dep fix | `/int`, `/qa`, `/review`, `/arch` |
+| 46+ | v4 Steps 10-15 — concurrency + cleanup | Nice workers, multi-thread, DashMap, cache, watcher, legacy delete | All skills |
 
 ### Ring 4 acceptance criteria gap analysis
 

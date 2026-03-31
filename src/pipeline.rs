@@ -303,10 +303,27 @@ fn compile_unit_inner(
     let mut program = cranelisp_frontend::build_program(&accumulated)?;
 
     // Stage 4b: Bind chain analysis (auto IO scheduling).
+    // Build a temporary PlatformRegistry from the old scheduling_registry
+    // for the old compile_unit path. Step 15 deletes this path entirely.
     if !session.scheduling_registry.is_empty()
         && std::env::var("CRANELISP_NO_IO_SCHEDULE").is_err()
     {
-        crate::session::apply_bind_chain_analysis(&mut program, &session.scheduling_registry);
+        let temp_registry = {
+            let mut reg = crate::platform_registry::PlatformRegistry::new();
+            for (sym, sc) in &session.scheduling_registry {
+                let fq = cranelisp_types::FQSymbol {
+                    module: cranelisp_types::ModuleFullPath::from("platform._compat"),
+                    symbol: sym.clone(),
+                };
+                reg.register(fq, crate::platform_registry::PlatformFunction {
+                    jit_name: cranelisp_types::JitSymbol::from(""),
+                    fn_ptr: std::ptr::null(),
+                    scheduling_class: *sc,
+                });
+            }
+            reg
+        };
+        crate::session::apply_bind_chain_analysis(&mut program, &temp_registry);
     }
 
     // Stage 5: Unified multi-pass typecheck.

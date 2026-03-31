@@ -11,20 +11,12 @@
 //! 4. Group data-independent, non-Sequential steps into `ParBind` nodes.
 //! 5. Rebuild the nested expression from the grouped segments.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 
 use cranelisp_platform::SchedulingClass;
 use cranelisp_types::{Defn, Expr, MatchArm, Span, Symbol, TypeExpr, free_vars_expr};
 
-// ---------------------------------------------------------------------------
-// Scheduling registry type
-// ---------------------------------------------------------------------------
-
-/// Registry mapping platform function names to their scheduling class.
-///
-/// Populated during platform DLL loading. Passed to the bind chain analysis
-/// pass as a read-only reference.
-pub type SchedulingRegistry = HashMap<Symbol, SchedulingClass>;
+use crate::platform_registry::PlatformRegistry;
 
 // ---------------------------------------------------------------------------
 // Public entry point
@@ -34,7 +26,7 @@ pub type SchedulingRegistry = HashMap<Symbol, SchedulingClass>;
 ///
 /// Takes ownership of the body via `std::mem::replace` with a dummy expression,
 /// transforms it, and puts the result back. The dummy is never observed.
-pub fn auto_schedule_defn(defn: &mut Defn, registry: &SchedulingRegistry) {
+pub fn auto_schedule_defn(defn: &mut Defn, registry: &PlatformRegistry) {
     // Single-sig only (multi-sig functions are not auto-scheduled)
     assert!(!defn.is_multi_sig(), "auto_schedule_defn called on multi-sig defn");
     let body = std::mem::replace(
@@ -45,7 +37,7 @@ pub fn auto_schedule_defn(defn: &mut Defn, registry: &SchedulingRegistry) {
 }
 
 /// Transform bind chains in a standalone expression (REPL eval path).
-pub fn auto_schedule_expr(expr: &mut Expr, registry: &SchedulingRegistry) {
+pub fn auto_schedule_expr(expr: &mut Expr, registry: &PlatformRegistry) {
     let owned = std::mem::replace(
         expr,
         Expr::BoolLit { value: false, span: Span::SYNTHETIC },
@@ -54,7 +46,7 @@ pub fn auto_schedule_expr(expr: &mut Expr, registry: &SchedulingRegistry) {
 }
 
 /// Transform bind chains in an owned expression (for DefnVariant bodies).
-pub fn auto_schedule_expr_owned(expr: Expr, registry: &SchedulingRegistry) -> Expr {
+pub fn auto_schedule_expr_owned(expr: Expr, registry: &PlatformRegistry) -> Expr {
     transform_expr(expr, registry)
 }
 
@@ -63,7 +55,7 @@ pub fn auto_schedule_expr_owned(expr: Expr, registry: &SchedulingRegistry) -> Ex
 // ---------------------------------------------------------------------------
 
 /// Recursively transform an expression, optimizing bind chains into ParBind.
-fn transform_expr(expr: Expr, registry: &SchedulingRegistry) -> Expr {
+fn transform_expr(expr: Expr, registry: &PlatformRegistry) -> Expr {
     if is_bind_chain_start(&expr) {
         let (chain, final_body) = collect_bind_chain(expr);
         rebuild_chain(chain, final_body, registry)
@@ -142,21 +134,21 @@ fn collect_bind_chain(expr: Expr) -> (Vec<BindStep>, Expr) {
 /// Falls back to `Sequential` for anything other than a direct platform call.
 /// Only direct calls to platform functions are eligible — wrapper functions
 /// that call platform functions are conservatively treated as sequential.
-fn classify_expr(expr: &Expr, registry: &SchedulingRegistry) -> SchedulingClass {
+fn classify_expr(expr: &Expr, registry: &PlatformRegistry) -> SchedulingClass {
     if let Expr::Apply { callee, .. } = expr
         && let Expr::Var { name, .. } = callee.as_ref()
     {
-        // Direct lookup (bare name after import, e.g. "print").
-        if let Some(sc) = registry.get(name)
-            && *sc != SchedulingClass::Sequential
+        // Direct lookup via PlatformRegistry (bare name match across entries).
+        if let Some(sc) = registry.scheduling_class(name)
+            && sc != SchedulingClass::Sequential
         {
-            return *sc;
+            return sc;
         }
         // Qualified name fallback: "platform.stdio/print" → "print".
         if let Some(pos) = name.rfind('/') {
             let bare = Symbol::from(&name[pos + 1..]);
-            if let Some(sc) = registry.get(&bare) {
-                return *sc;
+            if let Some(sc) = registry.scheduling_class(&bare) {
+                return sc;
             }
         }
     }
@@ -215,7 +207,7 @@ fn flush_par_group(
 fn rebuild_chain(
     chain: Vec<BindStep>,
     final_body: Expr,
-    registry: &SchedulingRegistry,
+    registry: &PlatformRegistry,
 ) -> Expr {
     let mut segments: Vec<Segment> = Vec::new();
     let mut current_par: Vec<BindStep> = Vec::new();
@@ -308,7 +300,7 @@ fn make_bind(
 /// Recurse into sub-expressions without touching this node's structure.
 ///
 /// Called for any expression that is not itself a bind chain start.
-fn recurse_children(expr: Expr, registry: &SchedulingRegistry) -> Expr {
+fn recurse_children(expr: Expr, registry: &PlatformRegistry) -> Expr {
     match expr {
         Expr::Let { bindings, body, span } => Expr::Let {
             bindings: bindings
@@ -388,18 +380,18 @@ fn recurse_children(expr: Expr, registry: &SchedulingRegistry) -> Expr {
 ///
 /// Tries direct lookup first, then strips module qualifiers as a fallback
 /// (e.g., "platform.stdio/print" -> "print").
-pub fn scheduling_of(registry: &SchedulingRegistry, name: &str) -> SchedulingClass {
+pub fn scheduling_of(registry: &PlatformRegistry, name: &str) -> SchedulingClass {
     let sym = Symbol::from(name);
-    if let Some(sc) = registry.get(&sym)
-        && *sc != SchedulingClass::Sequential
+    if let Some(sc) = registry.scheduling_class(&sym)
+        && sc != SchedulingClass::Sequential
     {
-        return *sc;
+        return sc;
     }
     // Qualified name fallback.
     if let Some(pos) = name.rfind('/') {
         let bare = Symbol::from(&name[pos + 1..]);
-        if let Some(sc) = registry.get(&bare) {
-            return *sc;
+        if let Some(sc) = registry.scheduling_class(&bare) {
+            return sc;
         }
     }
     SchedulingClass::Sequential
@@ -446,12 +438,13 @@ mod tests {
         }
     }
 
-    fn commutative_registry() -> SchedulingRegistry {
-        let mut reg = SchedulingRegistry::new();
-        reg.insert(Symbol::from("get-time"), SchedulingClass::Commutative);
-        reg.insert(Symbol::from("http-get"), SchedulingClass::Commutative);
-        reg.insert(Symbol::from("print"), SchedulingClass::Sequential);
-        reg
+    fn commutative_registry() -> PlatformRegistry {
+        use cranelisp_types::{FQSymbol, ModuleFullPath};
+        PlatformRegistry::with_test_entries(vec![
+            (FQSymbol { module: ModuleFullPath::from("platform.test"), symbol: Symbol::from("get-time") }, SchedulingClass::Commutative),
+            (FQSymbol { module: ModuleFullPath::from("platform.test"), symbol: Symbol::from("http-get") }, SchedulingClass::Commutative),
+            (FQSymbol { module: ModuleFullPath::from("platform.test"), symbol: Symbol::from("print") }, SchedulingClass::Sequential),
+        ])
     }
 
     // spec: 10-io §10.12.1 — pattern recognition
@@ -616,7 +609,7 @@ mod tests {
     // spec: 10-io §10.12 — empty registry skips analysis
     #[test]
     fn test_empty_registry_no_transform() {
-        let registry = SchedulingRegistry::new();
+        let registry = PlatformRegistry::new();
         let inner = make_bind_expr(
             make_apply("get-time", vec![]),
             "t2",

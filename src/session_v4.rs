@@ -14,6 +14,7 @@ use cranelisp_types::{
     Type, Warning,
 };
 
+use crate::platform_registry::PlatformRegistry;
 use crate::scheduler::CompileScheduler;
 use crate::session::CompilationSession;
 use crate::worker::WorkerContext;
@@ -55,6 +56,10 @@ pub struct CompilerSession {
 
     /// Project root directory (read-only after construction).
     pub project_root: PathBuf,
+
+    /// Unified platform function registry (Step 8).
+    /// Populated during platform loading, read-only during codegen.
+    pub platform_registry: PlatformRegistry,
 }
 
 impl CompilerSession {
@@ -91,6 +96,7 @@ impl CompilerSession {
             inner,
             scheduler: CompileScheduler::new(),
             project_root,
+            platform_registry: PlatformRegistry::new(),
         }
     }
 
@@ -132,6 +138,7 @@ impl CompilerSession {
             inner,
             scheduler: CompileScheduler::new(),
             project_root,
+            platform_registry: PlatformRegistry::new(),
         })
     }
 
@@ -163,7 +170,7 @@ impl CompilerSession {
             tc: &mut self.inner.tc,
             scheduler: &mut self.scheduler,
             inmem_worker: &mut self.inner.inmem_worker,
-            platform_symbols: &mut self.inner.platform_symbols,
+            platform_registry: &mut self.platform_registry,
             lib_dirs: &self.inner.lib_dirs,
             project_root: &self.inner.project_root,
         };
@@ -175,13 +182,7 @@ impl CompilerSession {
         )?;
 
         // Check scheduler completion.
-        self.scheduler.wait_inmem_complete().map_err(|e| {
-            CranelispError::ModuleError {
-                message: e.to_string(),
-                file: None,
-                span: Span::SYNTHETIC,
-            }
-        })?;
+        self.scheduler.wait_inmem_complete()?;
 
         // Register module aliases for GOT lookup by unqualified name.
         crate::session::register_module_aliases_filtered(

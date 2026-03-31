@@ -1,0 +1,38 @@
+; Pipeline v4c — robust error recovery and platform IO
+; Sprint 45 delivers PlatformRegistry (Step 8) and error
+; cascade with REPL recovery (Step 9).
+
+; Arithmetic works through the scheduler
+(+ 1 2)
+(* 6 7)
+
+; Define a function
+(defn double [x] (* x 2))
+(double 21)
+
+; Make a mistake — type error
+(+ true 1)
+
+; The REPL recovers — previous definitions still work
+(double 100)
+
+; Another error — undefined name
+(bogus 42)
+
+; Still fine
+(+ 10 20)
+
+; Load the platform — PlatformRegistry wires this
+(platform stdio)
+(import [platform.stdio [print]])
+print
+
+; Real side effects through the v4 pipeline
+(print "hello from v4")
+
+; IO composes with bind
+(bind (print "step 1") (fn [_] (print "step 2")))
+
+; Combine everything — define, fail, recover, print
+(defn greet [name] (print (str-concat "hello, " name)))
+(greet "cranelisp")

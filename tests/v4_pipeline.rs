@@ -679,7 +679,11 @@ fn v4_cache_hit_dependency() {
     );
     // Batch mode exits with the program's return value (mod 256).
     // helper returns 77, so exit code is 77.
-    assert_eq!(run1.status.code(), run2.status.code(), "both runs should have same exit code");
+    assert_eq!(
+        run1.status.code(),
+        run2.status.code(),
+        "both runs should have same exit code"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -773,4 +777,472 @@ fn v4_multiple_imports() {
         ("beta.cl", "(defn get-beta [] 60)"),
     ];
     assert_v4_project_parity(files, "main.cl", "multiple_imports");
+}
+
+// ===========================================================================
+// Platform Registry tests (Sprint 45 Step 8)
+// ===========================================================================
+
+// ---------------------------------------------------------------------------
+// A-1: Platform form with print — stdio platform compiles and runs via v4
+// ---------------------------------------------------------------------------
+
+// spec: spec/08-modules.md §8.9.3 — platform modules
+// spec: design/int/step8-platform-registry.md — PlatformRegistry consolidation
+#[test]
+fn v4_platform_stdio_print() {
+    // A program that loads the stdio platform and calls print.
+    // Verifies PlatformRegistry correctly stores and provides fn pointers.
+    let src = "\
+(platform \"stdio\")
+(defn main [] (print \"hello platform registry\"))";
+    assert_v4_parity(src, "platform_stdio_print");
+}
+
+// ---------------------------------------------------------------------------
+// A-2: IO trampoline — main returns IO Int, trampoline executes effects
+// ---------------------------------------------------------------------------
+
+// spec: repl/spec.md §0.2 — IO return type handling
+// spec: design/int/step8-platform-registry.md — platform fn pointers via registry
+#[test]
+fn v4_platform_io_trampoline() {
+    // Main returns an IO action (print returns IO). The trampoline should
+    // execute the effect and produce output.
+    let src = "\
+(platform \"stdio\")
+(defn main [] (print \"trampoline works\"))";
+    let v4_out = run_v4(src, "platform_io_trampoline_v4");
+    let old_out = run_old(src, "platform_io_trampoline_old");
+
+    // Both should succeed.
+    assert_eq!(v4_out.status.code(), old_out.status.code());
+
+    // Both should produce "trampoline works" in stdout.
+    assert!(
+        stdout_of(&v4_out).contains("trampoline works"),
+        "v4 output should contain 'trampoline works', got: {}",
+        stdout_of(&v4_out),
+    );
+    assert_eq!(stdout_of(&v4_out), stdout_of(&old_out));
+}
+
+// ---------------------------------------------------------------------------
+// A-3: Platform function used through import
+// ---------------------------------------------------------------------------
+
+// spec: spec/08-modules.md §8.3 + §8.9.3 — import from platform module
+// spec: design/int/step8-platform-registry.md — FQSymbol key lookup
+#[test]
+fn v4_platform_import_and_use() {
+    // Import print from the platform.stdio module explicitly, then call it.
+    let src = "\
+(platform \"stdio\")
+(import [platform.stdio [print]])
+(defn main [] (print \"imported print\"))";
+    assert_v4_parity(src, "platform_import_and_use");
+}
+
+// ---------------------------------------------------------------------------
+// A-4: No-platform program — empty registry doesn't break codegen
+// ---------------------------------------------------------------------------
+
+// spec: design/int/step8-platform-registry.md §Registry API is_empty()
+// Negative test: programs without (platform ...) must not be affected
+// by the PlatformRegistry refactor.
+#[test]
+fn v4_platform_empty_registry() {
+    // A program with no platform forms. The empty PlatformRegistry must not
+    // interfere with compilation or execution.
+    let src = "(defn main [] (add-i64 100 200))";
+    let out = run_v4(src, "platform_empty_registry");
+    assert_eq!(stdout_of(&out), ":primitives/Int 300");
+    assert_eq!(out.status.code(), Some(0).or(out.status.code()));
+}
+
+// ---------------------------------------------------------------------------
+// A-5: Platform with multiple function calls
+// ---------------------------------------------------------------------------
+
+// spec: spec/08-modules.md §8.9.3 — platform module naming
+// spec: design/int/step8-platform-registry.md — registry stores multiple entries
+#[test]
+fn v4_platform_multiple_calls() {
+    // A program that uses multiple platform functions from stdio.
+    let src = "\
+(platform \"stdio\")
+(defn main []
+  (do
+    (print \"line one\")
+    (print \"line two\")))";
+    assert_v4_parity(src, "platform_multiple_calls");
+}
+
+// ===========================================================================
+// Error Cascade tests — Batch mode (Sprint 45 Step 9)
+// ===========================================================================
+
+// ---------------------------------------------------------------------------
+// B-1: Type error in entry module — error on stderr, non-zero exit
+// ---------------------------------------------------------------------------
+
+// spec: repl/spec.md §0.2 — compilation failure on stderr, non-zero exit
+// spec: design/int/step9-error-cascade.md §6 — batch error propagation
+#[test]
+fn v4_error_type_error_in_entry() {
+    // A type error in the entry module: add-i64 expects Int, gets Bool.
+    let src = "(defn main [] (add-i64 1 true))";
+    let v4_out = run_v4(src, "error_type_in_entry");
+
+    // Should fail with non-zero exit code.
+    assert_ne!(
+        v4_out.status.code(),
+        Some(0),
+        "type error should produce non-zero exit, got stdout: {}",
+        stdout_of(&v4_out),
+    );
+
+    // Error should appear on stderr (or stdout depending on display path).
+    let all = format!("{}{}", stdout_of(&v4_out), stderr_of(&v4_out));
+    assert!(
+        all.contains("type")
+            || all.contains("Type")
+            || all.contains("mismatch")
+            || all.contains("error")
+            || all.contains("Error"),
+        "error output should mention type error\nstdout: {}\nstderr: {}",
+        stdout_of(&v4_out),
+        stderr_of(&v4_out),
+    );
+}
+
+// ---------------------------------------------------------------------------
+// B-2: Type error in dependency cascades to dependent
+// ---------------------------------------------------------------------------
+
+// spec: design/int/step9-error-cascade.md §4.2 — error chain display
+// spec: design/int/step9-error-cascade.md §4.1 — cascade error construction
+#[test]
+fn v4_error_cascade_from_dependency() {
+    // math.cl has a type error. main.cl imports math.
+    // The error should cascade from math to main, with context about both modules.
+    let files = &[
+        (
+            "main.cl",
+            "(import [math [compute]])\n(defn main [] (compute))",
+        ),
+        (
+            "math.cl",
+            // Type error: add-i64 gets a Bool
+            "(defn compute [] (add-i64 1 true))",
+        ),
+    ];
+    let v4_out = run_v4_project(files, "main.cl", "error_cascade_dep");
+
+    // Should fail.
+    assert_ne!(v4_out.status.code(), Some(0));
+
+    // Error should mention the dependency module name and the root cause.
+    let all = format!("{}{}", stdout_of(&v4_out), stderr_of(&v4_out));
+    assert!(
+        all.contains("math"),
+        "cascade error should mention dependency module 'math'\nstdout: {}\nstderr: {}",
+        stdout_of(&v4_out),
+        stderr_of(&v4_out),
+    );
+}
+
+// ---------------------------------------------------------------------------
+// B-3: Cascade error includes both module name and root type error
+// ---------------------------------------------------------------------------
+
+// spec: design/int/step9-error-cascade.md §4.1 — cascade error construction
+// spec: design/int/step9-error-cascade.md §4.2 — user-visible error messages
+#[test]
+fn v4_error_cascade_includes_root_cause() {
+    // The error for the dependent module should include context about
+    // the original type error, not just "dependency failed".
+    let files = &[
+        (
+            "main.cl",
+            "(import [lib [broken-fn]])\n(defn main [] (broken-fn))",
+        ),
+        ("lib.cl", "(defn broken-fn [] (add-i64 true false))"),
+    ];
+    let v4_out = run_v4_project(files, "main.cl", "error_cascade_root_cause");
+
+    assert_ne!(v4_out.status.code(), Some(0));
+
+    let all = format!("{}{}", stdout_of(&v4_out), stderr_of(&v4_out));
+    // Should include the root cause (type mismatch), not just a generic
+    // "dependency failed" message.
+    assert!(
+        all.contains("type") || all.contains("Type") || all.contains("mismatch") || all.contains("Bool"),
+        "cascade error should include root cause type error, not just 'dependency failed'\nstdout: {}\nstderr: {}",
+        stdout_of(&v4_out),
+        stderr_of(&v4_out),
+    );
+}
+
+// ---------------------------------------------------------------------------
+// B-8: No-error program exits cleanly (regression guard)
+// ---------------------------------------------------------------------------
+
+// spec: repl/spec.md §0.2 — successful compilation
+// Negative test: error path changes must not break the success path.
+#[test]
+fn v4_error_no_error_exits_cleanly() {
+    let src = "(defn main [] (add-i64 10 20))";
+    let v4_out = run_v4(src, "error_clean_exit");
+
+    assert_eq!(stdout_of(&v4_out), ":primitives/Int 30");
+    // stderr should be empty or contain only benign output (no error text).
+    let err = stderr_of(&v4_out);
+    assert!(
+        !err.contains("Error") && !err.contains("failed") && !err.contains("panic"),
+        "clean program should produce no errors on stderr, got: {err}",
+    );
+}
+
+// ---------------------------------------------------------------------------
+// B-10: Cascaded dependency failure does NOT produce duplicate errors
+// ---------------------------------------------------------------------------
+
+// spec: design/int/step9-error-cascade.md §4.2 — user-visible error messages
+// Negative test: one clear error chain, not N separate duplicate error lines.
+#[test]
+fn v4_error_cascade_no_duplicate_output() {
+    // A -> B -> C chain. C has a type error. B and A cascade-fail.
+    // The output should NOT print the same root error 3 times.
+    let files = &[
+        ("main.cl", "(import [mid [relay]])\n(defn main [] (relay))"),
+        (
+            "mid.cl",
+            "(import [leaf [broken]])\n(defn relay [] (broken))",
+        ),
+        ("leaf.cl", "(defn broken [] (add-i64 1 true))"),
+    ];
+    let v4_out = run_v4_project(files, "main.cl", "error_no_dup");
+
+    assert_ne!(v4_out.status.code(), Some(0));
+
+    let all = format!("{}{}", stdout_of(&v4_out), stderr_of(&v4_out));
+    // Count occurrences of "type" or "mismatch" to check for duplicates.
+    // The root cause should appear once, not once per cascaded module.
+    let type_mentions = all.matches("type mismatch").count()
+        + all.matches("Type mismatch").count()
+        + all.matches("type error").count()
+        + all.matches("Type error").count();
+    // Allow 1-2 mentions (root cause + context), but not 3+ (one per module).
+    assert!(
+        type_mentions <= 2,
+        "expected at most 2 type error mentions in cascade chain, got {type_mentions}\noutput: {all}",
+    );
+}
+
+// ===========================================================================
+// Cross-Module Macro Dependency tests (Sprint 45 — worker.rs:762 fix)
+// ===========================================================================
+
+// ---------------------------------------------------------------------------
+// C-1: Macro in module B calls helper from module A
+// ---------------------------------------------------------------------------
+
+// spec: spec/09-macros.md §9.2.5 — macro body capabilities (calls to functions)
+// spec: spec/08-modules.md §8.12.2 — cross-module macro availability
+// Tests the worker.rs:762 fix: compile_dep_symbol_inline must look up deps
+// from the correct module's symbol table, not just the current module.
+#[test]
+fn v4_cross_module_macro_calls_helper() {
+    // Module A defines a helper function.
+    // Module B imports A and defines a macro that calls A's helper.
+    // Module C (main) imports B and uses the macro.
+    let files = &[
+        (
+            "main.cl",
+            "(import [macmod [wrap-seven]])\n(defn main [] (wrap-seven))",
+        ),
+        (
+            "macmod.cl",
+            "\
+(import [helper [make-seven]])
+(defmacro wrap-seven [] `(make-seven))",
+        ),
+        ("helper.cl", "(defn make-seven [] 7)"),
+    ];
+    assert_v4_project_parity(files, "main.cl", "cross_mod_macro_helper");
+}
+
+// ---------------------------------------------------------------------------
+// C-2: Transitive cross-module macro deps (A -> B -> C -> D)
+// ---------------------------------------------------------------------------
+
+// spec: spec/09-macros.md §9.2.5 — macro body capabilities
+// spec: spec/08-modules.md §8.10.1 — dependency graph from import forms
+#[test]
+fn v4_cross_module_macro_transitive() {
+    // A defines helper. B imports A, re-exports. C defines macro calling
+    // helper via B's re-export. D uses macro from C.
+    let files = &[
+        (
+            "main.cl",
+            "(import [macmod [get-val]])\n(defn main [] (get-val))",
+        ),
+        (
+            "macmod.cl",
+            "\
+(import [relay [base-val]])
+(defmacro get-val [] `(base-val))",
+        ),
+        (
+            "relay.cl",
+            "\
+(import [base [base-val]])
+(export [base [base-val]])",
+        ),
+        ("base.cl", "(defn base-val [] 99)"),
+    ];
+    assert_v4_project_parity(files, "main.cl", "cross_mod_macro_transitive");
+}
+
+// ---------------------------------------------------------------------------
+// C-3: Macro body uses quasiquote referencing function by qualified name
+// ---------------------------------------------------------------------------
+
+// spec: spec/09-macros.md §9.4 — quasiquote template-based construction
+// spec: spec/08-modules.md §8.5.1 — qualified name resolution
+#[test]
+#[ignore = "qualified refs in macro-expanded code not resolved in consuming module — pre-existing limitation"]
+fn v4_cross_module_macro_qualified_ref() {
+    // Macro body generates code with a qualified reference to a function
+    // from another module.
+    let files = &[
+        (
+            "main.cl",
+            "\
+(import [macmod [call-util]])
+(defn main [] (call-util))",
+        ),
+        (
+            "macmod.cl",
+            "\
+(import [util [add-ten]])
+(defmacro call-util [] `(util/add-ten 5))",
+        ),
+        ("util.cl", "(defn add-ten [x] (add-i64 x 10))"),
+    ];
+    assert_v4_project_parity(files, "main.cl", "cross_mod_macro_qualified");
+}
+
+// ---------------------------------------------------------------------------
+// C-4: Macro calls imported helper that calls another fn in its own module
+// ---------------------------------------------------------------------------
+
+// spec: spec/09-macros.md §9.2.5 — macro body capabilities
+// Transitive call graph within macro execution: macro -> helper_b -> helper_a.
+// All deps must be compiled before the macro runs.
+#[test]
+fn v4_cross_module_macro_transitive_call_graph() {
+    // helpers.cl: a() and b() where b calls a.
+    // macmod.cl: imports helpers, defines macro that expands to call b().
+    // main.cl: uses the macro.
+    let files = &[
+        (
+            "main.cl",
+            "(import [macmod [get-result]])\n(defn main [] (get-result))",
+        ),
+        (
+            "macmod.cl",
+            "\
+(import [helpers [compute]])
+(defmacro get-result [] `(compute))",
+        ),
+        (
+            "helpers.cl",
+            "\
+(defn base [] 10)
+(defn compute [] (add-i64 (base) 11))",
+        ),
+    ];
+    assert_v4_project_parity(files, "main.cl", "cross_mod_macro_transitive_call");
+}
+
+// ---------------------------------------------------------------------------
+// C-5: Cross-module macro dep with type error — cascade
+// ---------------------------------------------------------------------------
+
+// spec: spec/09-macros.md §9.9 — macro expansion errors
+// spec: design/int/step9-error-cascade.md §4.1 — cascade error construction
+// Negative test: helper module has a type error; error should cascade to
+// the macro-defining module and then to the consuming module.
+#[test]
+fn v4_cross_module_macro_dep_type_error() {
+    let files = &[
+        (
+            "main.cl",
+            "(import [macmod [get-val]])\n(defn main [] (get-val))",
+        ),
+        (
+            "macmod.cl",
+            "\
+(import [broken [bad-fn]])
+(defmacro get-val [] `(bad-fn))",
+        ),
+        (
+            "broken.cl",
+            // Type error: add-i64 expects Int, gets Bool.
+            "(defn bad-fn [] (add-i64 1 true))",
+        ),
+    ];
+    let v4_out = run_v4_project(files, "main.cl", "cross_mod_macro_type_error");
+
+    // Should fail.
+    assert_ne!(
+        v4_out.status.code(),
+        Some(0),
+        "program with type error in macro dep should fail, got stdout: {}",
+        stdout_of(&v4_out),
+    );
+
+    // Error should be reported (not a silent failure).
+    let all = format!("{}{}", stdout_of(&v4_out), stderr_of(&v4_out));
+    assert!(
+        all.contains("error")
+            || all.contains("Error")
+            || all.contains("type")
+            || all.contains("Type"),
+        "should report an error for type error in macro dependency\nstdout: {}\nstderr: {}",
+        stdout_of(&v4_out),
+        stderr_of(&v4_out),
+    );
+}
+
+// ---------------------------------------------------------------------------
+// C-6: Private helper in module A not accessible to macro in module B
+// ---------------------------------------------------------------------------
+
+// spec: spec/08-modules.md §8.7.3 — private name semantics
+// Negative test: defn- in module A should not be importable or callable
+// from a macro defined in module B.
+#[test]
+fn v4_cross_module_macro_private_not_accessible() {
+    let files = &[
+        (
+            "main.cl",
+            "(import [macmod [call-secret]])\n(defn main [] (call-secret))",
+        ),
+        (
+            "macmod.cl",
+            "\
+(import [secret [hidden]])
+(defmacro call-secret [] `(hidden))",
+        ),
+        (
+            "secret.cl",
+            // hidden is private (defn-). Should NOT be importable.
+            "(defn- hidden [] 42)",
+        ),
+    ];
+    // Both paths should produce an error (private fn not importable).
+    assert_v4_project_error_parity(files, "main.cl", "cross_mod_macro_private");
 }

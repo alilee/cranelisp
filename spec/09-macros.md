@@ -144,6 +144,8 @@ Macro bodies are full Cranelisp expressions. They MAY use:
 
 Macro bodies MUST NOT perform IO operations. They are pure functions from `Sexp` to `Sexp`.
 
+<!-- FIXME(/spec): §9.2.5 should explicitly state that macro bodies MAY call any function visible in the macro's defining module scope (including imported functions from other modules). This requires the imported module's codegen to be complete before the macro can execute — a stronger requirement than type-checking availability. Cross-reference §8.10.3 and §8.12.2. -->
+
 ### 9.2.6 Multi-Clause Macros
 
 A `defmacro` form MAY contain multiple clauses. Each clause is a `([params] body)` pair enclosed in parentheses:
