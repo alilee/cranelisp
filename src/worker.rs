@@ -1517,12 +1517,13 @@ pub fn priority_worker_loop(
                             &check_result,
                         )?;
 
-                        // Stash data for nice worker .o compilation, then
+                        // Stash data for nice worker .o + .meta.json, then
                         // notify typecheck_done. Order matters: nice workers
                         // wake on notify_typecheck_done, so the stash must
                         // be populated first.
                         stash_object_codegen_input(
                             ctx.object_codegen_stash,
+                            ctx.tc,
                             &module,
                             check_result,
                             program,
@@ -1568,20 +1569,43 @@ pub fn priority_worker_loop(
     Ok(())
 }
 
-/// Stash module data for nice worker `.o` compilation.
+/// Stash module data for nice worker `.o` and `.meta.json` compilation.
 ///
-/// When the object codegen stash is available, stores the CheckResult and
-/// Program so that nice workers can build ObjectCompileInput and compile
-/// `.o` files without re-accessing the TypeChecker.
+/// When the object codegen stash is available, stores the CheckResult,
+/// Program, SymbolTable, and ModuleStructure so that nice workers can
+/// compile `.o` files and write `.meta.json` without re-accessing the
+/// TypeChecker.
 fn stash_object_codegen_input(
     stash: Option<&std::sync::Mutex<
         HashMap<ModuleFullPath, crate::session_v4::ObjectCodegenInput>,
     >>,
+    tc: &cranelisp_typecheck::TypeChecker,
     module: &ModuleFullPath,
     check_result: CheckResult,
     program: Vec<TopLevel>,
 ) {
     let Some(stash) = stash else { return };
+
+    // Clone symbol table from TypeChecker for .meta.json serialization.
+    let symbol_table = tc.module_table(module)
+        .cloned()
+        .unwrap_or_else(|| cranelisp_types::SymbolTable::new(module.clone()));
+
+    // Build a minimal ModuleStructure. The v4 pipeline handles import/export
+    // declarations inline during process_module_forms rather than extracting
+    // them into a structure upfront. A default structure with the module path
+    // is sufficient for cache metadata — the symbol table carries the real data.
+    let module_structure = cranelisp_types::ModuleStructure {
+        path: module.clone(),
+        file_path: None,
+        mod_decls: Vec::new(),
+        import_specs: Vec::new(),
+        export_specs: Vec::new(),
+        platform_specs: Vec::new(),
+        impl_sexps: Vec::new(),
+        impls: Vec::new(),
+        dll_path: None,
+    };
 
     let input = crate::session_v4::ObjectCodegenInput {
         check_result,
@@ -1592,6 +1616,8 @@ fn stash_object_codegen_input(
         // `.o` file. This is acceptable for now — full cross-module GOT
         // support requires the linker integration (Step 10+).
         cross_module_func_sigs: Vec::new(),
+        symbol_table,
+        module_structure,
     };
 
     if let Ok(mut map) = stash.lock() {

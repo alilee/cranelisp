@@ -335,8 +335,8 @@ No code-level debt items. The sprint is clean.
 
 ### Deferred
 - **spec FIXME on §9.2.5** (2nd carry): cross-module macro helper calls not explicitly specified. Spec-only, no code impact.
-- **`.meta.json` writing**: Nice workers write `.o` but not `.meta.json` cache metadata. Needed for cache-hit loading (Step 13).
-- **`shared_isa`**: `/arch` recommended `shared_isa: Arc<dyn TargetIsa>` on session. Object compilation uses ISA from the backend crate directly — no shared ISA field added yet.
+- ~~**`.meta.json` writing**~~: Resolved. Nice workers now write `.meta.json` alongside `.o` files. `ObjectCodegenInput` stash extended with `symbol_table` and `module_structure`; `compile_module_object` builds `CacheMetadata` and calls `write_cached_metadata`. `build_codegen_state_for_cache` made `pub` in `pipeline.rs`.
+- ~~**`shared_isa`**~~: Resolved — not needed. `compile_module_to_object` creates its own PIC-mode ISA internally via `build_isa(true)`. No shared ISA field required on the session.
 
 ### Findings
 - **Stash-before-notify ordering is critical**: `notify_typecheck_done` wakes nice workers. If the stash isn't populated before notification, nice workers find no data and skip .o compilation. This is a general pattern for any future worker interaction.

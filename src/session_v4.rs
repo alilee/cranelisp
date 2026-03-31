@@ -12,8 +12,8 @@ use std::sync::{Arc, Mutex};
 
 use cranelisp_types::{
     CheckResult, CodegenBehaviour, CompileContext, CranelispError,
-    ModuleFullPath, ModuleStrategy, Span, Symbol,
-    TopLevel, Type, Warning,
+    ModuleFullPath, ModuleStrategy, ModuleStructure, Span, Symbol,
+    SymbolTable, TopLevel, Type, Warning,
 };
 
 use crate::platform_registry::PlatformRegistry;
@@ -50,6 +50,10 @@ pub struct ObjectCodegenInput {
     /// Cross-module function signatures accumulated up to this module.
     /// Each entry is (qualified_name, param_count).
     pub cross_module_func_sigs: Vec<(Symbol, usize)>,
+    /// Cloned symbol table for .meta.json serialization.
+    pub symbol_table: SymbolTable,
+    /// Module structure for .meta.json serialization.
+    pub module_structure: ModuleStructure,
 }
 
 /// Thread-safe state shared between the main thread and nice worker threads.
@@ -601,11 +605,12 @@ fn nice_worker_loop(shared: &SharedState) {
     }
 }
 
-/// Compile a single module to a `.o` file and write it to the cache directory.
+/// Compile a single module to `.o` and `.meta.json` files in the cache directory.
 ///
 /// Retrieves the module's `ObjectCodegenInput` (stashed by the priority worker),
 /// builds an `ObjectCompileInput`, calls `compile_module_to_object()`, writes
-/// the `.o` bytes, and appends the path to `shared.compiled_o_paths`.
+/// the `.o` bytes, builds `CacheMetadata`, and writes `.meta.json`. Appends the
+/// `.o` path to `shared.compiled_o_paths`.
 ///
 /// Errors are logged to stderr and do not halt the worker — the module is still
 /// marked object-complete so the scheduler lifecycle proceeds.
@@ -650,8 +655,8 @@ fn compile_module_object(
         }
     };
 
-    // Write .o file to cache directory.
-    let (_meta_path, o_path) = cache::module_cache_path(cache_dir, module);
+    // Write .o and .meta.json files to cache directory.
+    let (meta_path, o_path) = cache::module_cache_path(cache_dir, module);
 
     // Ensure parent directory exists.
     if let Some(parent) = o_path.parent()
@@ -664,6 +669,21 @@ fn compile_module_object(
     if let Err(e) = std::fs::write(&o_path, &obj_bytes) {
         eprintln!("nice-worker: cannot write '{}': {}", o_path.display(), e);
         return;
+    }
+
+    // Build and write .meta.json for cache-hit restoration.
+    let codegen_state = crate::pipeline::build_codegen_state_for_cache(
+        &input.program,
+        &input.check_result,
+    );
+    let metadata = cache::CacheMetadata {
+        symbol_table: input.symbol_table,
+        module_structure: input.module_structure,
+        codegen_state,
+    };
+    if let Err(e) = cache::write_cached_metadata(&meta_path, &metadata) {
+        eprintln!("nice-worker: .meta.json write failed for {}: {}", module, e.message());
+        // Continue — the .o file was written successfully.
     }
 
     // Append the .o path for the linker.

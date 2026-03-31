@@ -1234,7 +1234,7 @@ pub fn queue_background_cache_write(
         .queue_write(module_path.clone(), packet);
 }
 
-fn build_codegen_state_for_cache(
+pub fn build_codegen_state_for_cache(
     program: &Program,
     check: &CheckResult,
 ) -> cranelisp_backend::cache::CacheCodegenState {
