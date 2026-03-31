@@ -138,13 +138,11 @@ Macro bodies are full Cranelisp expressions. They MAY use:
 - Pattern matching (`match`) on `Sexp` and `SList` values
 - Lambda functions (`fn`)
 - Local bindings (`let`)
-- Calls to any function or macro defined before the current macro
+- Calls to any function or macro visible in the macro's defining module scope — this includes functions defined earlier in the same module and functions imported from other modules (see §8.10.3, §8.12.2)
 - Recursive calls (including via helper functions)
 - All `Sexp` and `SList` constructors
 
 Macro bodies MUST NOT perform IO operations. They are pure functions from `Sexp` to `Sexp`.
-
-<!-- FIXME(/spec): §9.2.5 should explicitly state that macro bodies MAY call any function visible in the macro's defining module scope (including imported functions from other modules). Cross-reference §8.10.3 and §8.12.2. -->
 
 ### 9.2.6 Multi-Clause Macros
 
