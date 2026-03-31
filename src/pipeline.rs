@@ -1094,6 +1094,81 @@ pub fn compile_checked_program(
 }
 
 /// Compile a single function definition and register it in the GOT.
+///
+/// Uses `SharedCodegenState` for GOT slot management and `WorkerJitState`
+/// for per-worker JIT lifetime tracking. This is the primary implementation;
+/// `compile_and_register_defn` delegates to this for old-path callers.
+pub fn compile_and_register_defn_shared(
+    shared_codegen: &mut crate::session::SharedCodegenState,
+    worker_jit: &mut crate::session::WorkerJitState,
+    platform_symbols: &[(String, *const u8)],
+    defn: &Defn,
+    check: &CheckResult,
+) -> Result<(), CranelispError> {
+    use std::collections::HashMap;
+
+    let extra_symbols: Vec<(&str, *const u8)> = platform_symbols
+        .iter()
+        .map(|(name, ptr)| (name.as_str(), *ptr))
+        .collect();
+    let mut jit = cranelisp_backend::jit::Jit::new_with_symbols(&extra_symbols)?;
+
+    jit.declare_intrinsics()?;
+
+    let func_ids = jit.declare_functions(&[defn])?;
+
+    let slot = shared_codegen.ensure_slot_for(&defn.name)?;
+
+    let mut got_slots: HashMap<Symbol, usize> = HashMap::new();
+    for (name, dc) in &shared_codegen.def_codegen {
+        if let Some(s) = dc.got_slot {
+            got_slots.insert(name.clone(), s);
+        }
+    }
+    got_slots.insert(defn.name.clone(), slot);
+
+    let got_base = shared_codegen.got_base_ptr() as i64;
+
+    let mut func_arities: HashMap<Symbol, usize> = HashMap::new();
+    for (name, dc) in &shared_codegen.def_codegen {
+        if let Some(pc) = dc.param_count {
+            func_arities.insert(name.clone(), pc);
+        }
+    }
+    func_arities.insert(defn.name.clone(), defn.params().len());
+
+    let compile_ctx = jit.build_compile_context(
+        check,
+        &func_ids,
+        &func_arities,
+        Some(&got_slots),
+        Some(got_base),
+        None,
+    );
+    let _clif_ir = jit.compile_defn(defn, compile_ctx)?;
+
+    let code_ptr = jit.finalize_and_get_ptr(&defn.name, defn.params().len())?;
+
+    shared_codegen.update_slot(slot, code_ptr);
+
+    let entry = shared_codegen.def_codegen.entry(defn.name.clone()).or_default();
+    entry.code_ptr = Some(code_ptr);
+    entry.got_slot = Some(slot);
+    entry.param_count = Some(defn.params().len());
+    entry.defn = Some(defn.clone());
+
+    worker_jit.jit_modules.push(jit);
+
+    Ok(())
+}
+
+/// Compile a single function definition and register it in the GOT.
+///
+/// Legacy wrapper that bridges `InMemWorkerState` to the new
+/// `SharedCodegenState` + `WorkerJitState` API. Used by the old pipeline
+/// path (REPL eval, codegen_and_execute). Delegates directly to
+/// `compile_and_register_defn_shared` by treating `InMemWorkerState`
+/// fields as the shared+worker state (valid in single-threaded usage).
 pub fn compile_and_register_defn(
     inmem_worker: &mut InMemWorkerState,
     platform_symbols: &[(String, *const u8)],

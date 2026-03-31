@@ -151,6 +151,22 @@ impl ModuleCodegenState {
         )
     }
 
+    /// Get the current next_got_slot counter value.
+    ///
+    /// Used by `SharedCodegenState::extract_from` to capture the slot
+    /// counter when bridging between InMemWorkerState and the new types.
+    pub fn next_got_slot(&self) -> usize {
+        self.next_got_slot
+    }
+
+    /// Set the next_got_slot counter.
+    ///
+    /// Used by `SharedCodegenState::sync_back_to` to restore the slot
+    /// counter after the worker loop completes.
+    pub fn set_next_got_slot(&mut self, slot: usize) {
+        self.next_got_slot = slot;
+    }
+
     /// Allocate a new GOT slot for a function, returning the slot index.
     ///
     /// Returns a `CranelispError::CodegenError` if the GOT is full.

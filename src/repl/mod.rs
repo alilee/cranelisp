@@ -647,17 +647,22 @@ impl ReplSession {
                 })?;
 
             let result = {
+                let mut shared_codegen =
+                    crate::session::SharedCodegenState::extract_from(&mut self.core.inmem_worker);
+                let mut worker_jit = crate::session::WorkerJitState::new();
+
                 let mut wctx = WorkerContext {
                     tc: &mut self.core.tc,
                     scheduler,
-                    inmem_worker: &mut self.core.inmem_worker,
+                    shared_codegen: &mut shared_codegen,
+                    worker_jit: &mut worker_jit,
                     platform_registry: &mut self.platform_registry,
                     lib_dirs: &self.core.lib_dirs,
                     project_root: &self.core.project_root,
                     object_codegen_stash: None,
                 };
 
-                worker::process_module_forms(
+                let r = worker::process_module_forms(
                     &mut wctx,
                     &module,
                     &single_sexp,
@@ -665,7 +670,11 @@ impl ReplSession {
                     &mut accumulator,
                     &mut expanded_program,
                     ModuleStrategy::Additive,
-                )?
+                );
+
+                worker_jit.drain_to_shared(&mut shared_codegen);
+                shared_codegen.sync_back_to(&mut self.core.inmem_worker);
+                r?
             };
 
             match result {
@@ -709,14 +718,23 @@ impl ReplSession {
             })?;
 
         // Codegen: compile definitions, register in GOT.
-        crate::worker::codegen_module_symbols(
-            &mut self.core.inmem_worker,
-            &self.platform_registry,
-            scheduler,
-            module,
-            program,
-            check,
-        )?;
+        {
+            let mut shared_codegen =
+                crate::session::SharedCodegenState::extract_from(&mut self.core.inmem_worker);
+            let mut worker_jit = crate::session::WorkerJitState::new();
+            let result = crate::worker::codegen_module_symbols(
+                &mut shared_codegen,
+                &mut worker_jit,
+                &self.platform_registry,
+                scheduler,
+                module,
+                program,
+                check,
+            );
+            worker_jit.drain_to_shared(&mut shared_codegen);
+            shared_codegen.sync_back_to(&mut self.core.inmem_worker);
+            result?;
+        }
 
         let has_expr = program.iter().any(|tl| matches!(tl, TopLevel::Expr(_)));
 
@@ -781,17 +799,25 @@ impl ReplSession {
         let mut module_sexps = HashMap::new();
         module_sexps.insert(dep_module.clone(), dep_sexps.to_vec());
 
+        let mut shared_codegen =
+            crate::session::SharedCodegenState::extract_from(&mut self.core.inmem_worker);
+        let mut worker_jit = crate::session::WorkerJitState::new();
+
         let mut ctx = crate::worker::WorkerContext {
             tc: &mut self.core.tc,
             scheduler,
-            inmem_worker: &mut self.core.inmem_worker,
+            shared_codegen: &mut shared_codegen,
+            worker_jit: &mut worker_jit,
             platform_registry: &mut self.platform_registry,
             lib_dirs: &self.core.lib_dirs,
             project_root: &self.core.project_root,
             object_codegen_stash: None,
         };
 
-        crate::worker::priority_worker_loop(&mut ctx, &mut module_sexps)?;
+        let loop_result = crate::worker::priority_worker_loop(&mut ctx, &mut module_sexps);
+        worker_jit.drain_to_shared(&mut shared_codegen);
+        shared_codegen.sync_back_to(&mut self.core.inmem_worker);
+        loop_result?;
 
         let scheduler = self.scheduler.as_mut()
             .ok_or_else(|| CranelispError::ModuleError {

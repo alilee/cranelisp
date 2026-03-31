@@ -227,11 +227,19 @@ impl CompilerSession {
         let mut module_sexps = HashMap::new();
         module_sexps.insert(module.clone(), sexps);
 
+        // Extract shared codegen state from InMemWorkerState for the worker loop.
+        // This bridges the old InMemWorkerState with the new SharedCodegenState
+        // + WorkerJitState types. After the loop, state is synced back.
+        let mut shared_codegen =
+            crate::session::SharedCodegenState::extract_from(&mut self.inner.inmem_worker);
+        let mut worker_jit = crate::session::WorkerJitState::new();
+
         // Build WorkerContext bundling all worker parameters.
         let mut ctx = WorkerContext {
             tc: &mut self.inner.tc,
             scheduler: &self.shared.scheduler,
-            inmem_worker: &mut self.inner.inmem_worker,
+            shared_codegen: &mut shared_codegen,
+            worker_jit: &mut worker_jit,
             platform_registry: &mut self.platform_registry,
             lib_dirs: &self.inner.lib_dirs,
             project_root: &self.inner.project_root,
@@ -239,10 +247,19 @@ impl CompilerSession {
         };
 
         // Run the priority worker loop inline (single-threaded).
-        crate::worker::priority_worker_loop(
+        let loop_result = crate::worker::priority_worker_loop(
             &mut ctx,
             &mut module_sexps,
-        )?;
+        );
+
+        // Drain per-worker JIT state to shared before syncing back.
+        worker_jit.drain_to_shared(&mut shared_codegen);
+
+        // Sync shared codegen state back to InMemWorkerState.
+        shared_codegen.sync_back_to(&mut self.inner.inmem_worker);
+
+        // Propagate any error from the worker loop.
+        loop_result?;
 
         // Check scheduler completion.
         self.shared.scheduler.wait_inmem_complete()?;

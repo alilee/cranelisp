@@ -229,6 +229,190 @@ impl InMemWorkerState {
 // No shared mutable state — the worker thread has exclusive ownership.
 unsafe impl Send for InMemWorkerState {}
 
+// ---------------------------------------------------------------------------
+// SharedCodegenState — shared codegen state for concurrent workers (Step 11)
+// ---------------------------------------------------------------------------
+
+/// Shared codegen state accessible by all priority workers.
+///
+/// In Wave 1 (single-threaded), this is constructed from `InMemWorkerState`
+/// at the start of the worker loop and synced back on completion.
+/// In later waves, this will live on `CompilerSession` and use concurrent
+/// data structures (DashMap, AtomicUsize).
+///
+/// For Wave 1, `def_codegen` uses a plain `HashMap` (no DashMap dependency
+/// yet) and `next_got_slot` uses `AtomicUsize` (zero overhead in
+/// single-threaded usage, ready for concurrent access in Wave 3).
+pub struct SharedCodegenState {
+    /// The GOT table. Already uses AtomicPtr slots. Workers write to
+    /// pre-assigned disjoint slots via store(Release).
+    pub got_table: std::sync::Arc<cranelisp_backend::got::GotTable>,
+
+    /// Next available GOT slot index. Uses AtomicUsize for future
+    /// concurrent access; in Wave 1 single-threaded, the atomic is
+    /// effectively a plain counter.
+    pub next_got_slot: std::sync::atomic::AtomicUsize,
+
+    /// Per-definition codegen artifacts (GOT slot, code pointer, param
+    /// count, defn). Plain HashMap in Wave 1; will migrate to DashMap
+    /// in Wave 2 for concurrent access.
+    pub def_codegen: HashMap<Symbol, cranelisp_backend::codegen_types::DefCodegen>,
+
+    /// JIT instances drained here to keep code memory alive. Workers
+    /// drain their per-worker JIT vecs here at module completion.
+    pub kept_jits: std::sync::Mutex<Vec<cranelisp_backend::jit::Jit>>,
+
+    /// Linker instances from cache-hit loads. Must stay alive because
+    /// their code_regions hold executable memory.
+    pub kept_linkers: std::sync::Mutex<Vec<cranelisp_backend::cache::Linker>>,
+}
+
+// SAFETY: SharedCodegenState contains raw pointers inside DefCodegen and
+// kept_jits/kept_linkers. These are JIT code pointers that are:
+// - Stable after JIT finalization (no reallocation)
+// - Valid for process lifetime (JIT instances kept alive in kept_jits)
+// - Read-only after finalization (no mutation of code pages)
+// The Mutex fields provide synchronization for JIT/Linker vecs.
+unsafe impl Send for SharedCodegenState {}
+unsafe impl Sync for SharedCodegenState {}
+
+impl SharedCodegenState {
+    /// Allocate a GOT slot for a definition and record it in def_codegen.
+    /// If the definition already has a slot, reuses it.
+    pub fn ensure_slot_for(&mut self, name: &Symbol) -> Result<usize, CranelispError> {
+        use cranelisp_types::GOT_TABLE_SIZE;
+
+        // Check if we already have a slot.
+        if let Some(dc) = self.def_codegen.get(name)
+            && let Some(slot) = dc.got_slot
+        {
+            return Ok(slot);
+        }
+
+        // Allocate a new slot.
+        let slot = self.next_got_slot.load(std::sync::atomic::Ordering::Acquire);
+        if slot >= GOT_TABLE_SIZE {
+            return Err(CranelispError::CodegenError {
+                message: format!("GOT table full (max {GOT_TABLE_SIZE})"),
+                span: Span::SYNTHETIC,
+            });
+        }
+        self.next_got_slot.store(slot + 1, std::sync::atomic::Ordering::Release);
+
+        let dc = self.def_codegen.entry(name.clone()).or_default();
+        dc.got_slot = Some(slot);
+        Ok(slot)
+    }
+
+    /// Update the function pointer at a GOT slot.
+    pub fn update_slot(&self, slot: usize, ptr: *const u8) {
+        self.got_table.store_slot(slot, ptr);
+    }
+
+    /// Get the base address of the GOT table.
+    pub fn got_base_ptr(&self) -> *const u8 {
+        self.got_table.base_ptr()
+    }
+
+    /// Get the function pointer at a GOT slot.
+    pub fn get_slot(&self, slot: usize) -> Option<*const u8> {
+        Some(self.got_table.load_slot(slot))
+    }
+
+    /// Extract from an `InMemWorkerState`, taking ownership of GOT data.
+    ///
+    /// The `InMemWorkerState`'s `got_state` fields are consumed: the GOT
+    /// table Arc is cloned (shared), and `def_codegen` + `next_got_slot`
+    /// are moved out. JIT modules and cache linkers are also moved.
+    pub fn extract_from(inmem: &mut InMemWorkerState) -> Self {
+        // Ensure the GOT is allocated before extracting.
+        let got_table = inmem.got_state.shared_got();
+        let next_slot = inmem.got_state.next_got_slot();
+        let def_codegen = std::mem::take(&mut inmem.got_state.def_codegen);
+        let jit_modules = std::mem::take(&mut inmem.jit_modules);
+        let cache_linkers = std::mem::take(&mut inmem.cache_linkers);
+
+        SharedCodegenState {
+            got_table,
+            next_got_slot: std::sync::atomic::AtomicUsize::new(next_slot),
+            def_codegen,
+            kept_jits: std::sync::Mutex::new(jit_modules),
+            kept_linkers: std::sync::Mutex::new(cache_linkers),
+        }
+    }
+
+    /// Sync state back to an `InMemWorkerState` after the worker loop.
+    ///
+    /// Moves `def_codegen` and slot counter back, and extends the
+    /// InMemWorkerState's JIT/linker vecs with kept instances.
+    pub fn sync_back_to(self, inmem: &mut InMemWorkerState) {
+        inmem.got_state.def_codegen = self.def_codegen;
+        inmem.got_state.set_next_got_slot(
+            self.next_got_slot.load(std::sync::atomic::Ordering::Acquire),
+        );
+        // The GOT table Arc is already shared — no need to move it back.
+        // But ensure inmem's got_state references the same table.
+        inmem.got_state.set_shared_got(self.got_table);
+
+        let jits = self.kept_jits.into_inner()
+            .unwrap_or_else(|e| e.into_inner());
+        inmem.jit_modules.extend(jits);
+
+        let linkers = self.kept_linkers.into_inner()
+            .unwrap_or_else(|e| e.into_inner());
+        inmem.cache_linkers.extend(linkers);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// WorkerJitState — per-worker JIT state (Step 11)
+// ---------------------------------------------------------------------------
+
+/// Per-worker JIT state. Stack-local in each priority worker thread.
+///
+/// Not shared across threads. Each worker accumulates JIT instances
+/// and linkers during codegen, then drains them to SharedCodegenState
+/// when the module is complete.
+pub struct WorkerJitState {
+    /// JIT instances created by this worker. Drained to
+    /// shared_codegen.kept_jits after each module's codegen sweep.
+    pub jit_modules: Vec<cranelisp_backend::jit::Jit>,
+
+    /// Linker instances from cache-hit loads on this worker. Drained
+    /// to shared_codegen.kept_linkers after each module's codegen.
+    pub cache_linkers: Vec<cranelisp_backend::cache::Linker>,
+}
+
+// SAFETY: WorkerJitState contains Jit and Linker instances which hold
+// raw pointers to JIT code pages. These are per-worker (not shared)
+// and valid for the process lifetime.
+unsafe impl Send for WorkerJitState {}
+
+impl WorkerJitState {
+    /// Create a new empty per-worker JIT state.
+    pub fn new() -> Self {
+        WorkerJitState {
+            jit_modules: Vec::new(),
+            cache_linkers: Vec::new(),
+        }
+    }
+
+    /// Drain accumulated JIT and Linker instances to shared state.
+    /// Called after each module's codegen sweep completes.
+    pub fn drain_to_shared(&mut self, shared: &mut SharedCodegenState) {
+        if !self.jit_modules.is_empty() {
+            let mut kept = shared.kept_jits.lock()
+                .unwrap_or_else(|e| e.into_inner());
+            kept.extend(self.jit_modules.drain(..));
+        }
+        if !self.cache_linkers.is_empty() {
+            let mut kept = shared.kept_linkers.lock()
+                .unwrap_or_else(|e| e.into_inner());
+            kept.extend(self.cache_linkers.drain(..));
+        }
+    }
+}
+
 /// Object-file codegen worker state: cache writing, .o paths, module structures.
 ///
 /// Fields used by `codegen_and_execute()` for background .o emission and
