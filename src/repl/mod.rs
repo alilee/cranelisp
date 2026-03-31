@@ -654,6 +654,7 @@ impl ReplSession {
                     platform_registry: &mut self.platform_registry,
                     lib_dirs: &self.core.lib_dirs,
                     project_root: &self.core.project_root,
+                    object_codegen_stash: None,
                 };
 
                 worker::process_module_forms(
@@ -787,6 +788,7 @@ impl ReplSession {
             platform_registry: &mut self.platform_registry,
             lib_dirs: &self.core.lib_dirs,
             project_root: &self.core.project_root,
+            object_codegen_stash: None,
         };
 
         crate::worker::priority_worker_loop(&mut ctx, &mut module_sexps)?;

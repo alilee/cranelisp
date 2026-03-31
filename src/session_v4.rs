@@ -7,11 +7,13 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::AtomicBool;
+use std::sync::{Arc, Mutex};
 
 use cranelisp_types::{
-    CodegenBehaviour, CompileContext, CranelispError,
+    CheckResult, CodegenBehaviour, CompileContext, CranelispError,
     ModuleFullPath, ModuleStrategy, Span, Symbol,
-    Type, Warning,
+    TopLevel, Type, Warning,
 };
 
 use crate::platform_registry::PlatformRegistry;
@@ -40,6 +42,44 @@ pub enum CommandResult {
 // CompilerSession (pipeline-v4.md §5)
 // ---------------------------------------------------------------------------
 
+/// Snapshot of typecheck + program data for a module, stored by the priority
+/// worker after codegen so that nice workers can compile the `.o` file.
+pub struct ObjectCodegenInput {
+    pub check_result: CheckResult,
+    pub program: Vec<TopLevel>,
+    /// Cross-module function signatures accumulated up to this module.
+    /// Each entry is (qualified_name, param_count).
+    pub cross_module_func_sigs: Vec<(Symbol, usize)>,
+}
+
+/// Thread-safe state shared between the main thread and nice worker threads.
+///
+/// Separated from `CompilerSession` so that nice workers can hold `&SharedState`
+/// while the main thread retains `&mut CompilerSession` for priority worker
+/// operations. All fields are inherently thread-safe (Mutex, AtomicBool,
+/// read-only after construction).
+pub struct SharedState {
+    /// Compilation scheduler. Tracks module lifecycle and coordinates
+    /// work items. Internal Mutex + condvars for thread-safe access.
+    pub scheduler: CompileScheduler,
+
+    /// Cache directory for .o and .meta.json output (Step 10).
+    /// None when caching is disabled (e.g., `--run` without `--link`).
+    pub cache_dir: Option<PathBuf>,
+
+    /// Collected .o file paths written by nice workers (Step 10).
+    /// Used by `--link` to pass all .o files to the system linker.
+    pub compiled_o_paths: Mutex<Vec<PathBuf>>,
+
+    /// Flag for nice worker priority promotion during hot flush (Step 10).
+    /// When set to true, nice workers self-promote to normal OS priority.
+    pub promote_nice_workers: AtomicBool,
+
+    /// Module data for nice worker .o compilation. Populated by the priority
+    /// worker after in-memory codegen completes; consumed by nice workers.
+    pub object_codegen_inputs: Mutex<HashMap<ModuleFullPath, ObjectCodegenInput>>,
+}
+
 /// The v4 compiler session — the permanent session type for scheduler-driven
 /// concurrent compilation.
 ///
@@ -50,9 +90,12 @@ pub struct CompilerSession {
     /// The wrapped old-path session. Removed when all delegation is replaced.
     inner: CompilationSession,
 
-    /// Compilation scheduler (Step 2+). Tracks module lifecycle and
-    /// coordinates work items for the priority worker loop.
-    pub scheduler: CompileScheduler,
+    /// Thread-safe state shared with nice worker threads. Wrapped in Arc
+    /// so workers get an independent clone — no aliasing between `&mut self`
+    /// (used by priority worker operations) and the shared reference held
+    /// by nice workers. All SharedState fields are inherently thread-safe
+    /// (Mutex, AtomicBool, read-only).
+    pub shared: Arc<SharedState>,
 
     /// Project root directory (read-only after construction).
     pub project_root: PathBuf,
@@ -92,9 +135,18 @@ impl CompilerSession {
         inner.lib_dirs = all_lib_dirs;
         inner.project_root = entry_dir.unwrap_or_else(|| project_root.clone());
 
+        let cache_dir = project_root.join(".cranelisp-cache");
+        let _ = std::fs::create_dir_all(&cache_dir);
+
         CompilerSession {
             inner,
-            scheduler: CompileScheduler::new(),
+            shared: Arc::new(SharedState {
+                scheduler: CompileScheduler::new(),
+                cache_dir: Some(cache_dir),
+                compiled_o_paths: Mutex::new(Vec::new()),
+                promote_nice_workers: AtomicBool::new(false),
+                object_codegen_inputs: Mutex::new(HashMap::new()),
+            }),
             project_root,
             platform_registry: PlatformRegistry::new(),
         }
@@ -122,7 +174,7 @@ impl CompilerSession {
             span: Span::SYNTHETIC,
         })?;
 
-        let mut inner = CompilationSession::new_async_with_cache(cache_dir);
+        let mut inner = CompilationSession::new_async_with_cache(cache_dir.clone());
         inner.interactive = true;
 
         let entry_dir = canonical_entry.parent().map(|p| p.to_path_buf());
@@ -136,7 +188,13 @@ impl CompilerSession {
 
         Ok(CompilerSession {
             inner,
-            scheduler: CompileScheduler::new(),
+            shared: Arc::new(SharedState {
+                scheduler: CompileScheduler::new(),
+                cache_dir: Some(cache_dir),
+                compiled_o_paths: Mutex::new(Vec::new()),
+                promote_nice_workers: AtomicBool::new(false),
+                object_codegen_inputs: Mutex::new(HashMap::new()),
+            }),
             project_root,
             platform_registry: PlatformRegistry::new(),
         })
@@ -159,7 +217,7 @@ impl CompilerSession {
         let sexps = cranelisp_frontend::parse(source)?;
 
         // Register module with scheduler (entry module, not delaying others).
-        self.scheduler.register_module(module.clone(), false);
+        self.shared.scheduler.register_module(module.clone(), false);
 
         // Build sexp map for the worker loop.
         let mut module_sexps = HashMap::new();
@@ -168,11 +226,12 @@ impl CompilerSession {
         // Build WorkerContext bundling all worker parameters.
         let mut ctx = WorkerContext {
             tc: &mut self.inner.tc,
-            scheduler: &mut self.scheduler,
+            scheduler: &self.shared.scheduler,
             inmem_worker: &mut self.inner.inmem_worker,
             platform_registry: &mut self.platform_registry,
             lib_dirs: &self.inner.lib_dirs,
             project_root: &self.inner.project_root,
+            object_codegen_stash: Some(&self.shared.object_codegen_inputs),
         };
 
         // Run the priority worker loop inline (single-threaded).
@@ -182,7 +241,7 @@ impl CompilerSession {
         )?;
 
         // Check scheduler completion.
-        self.scheduler.wait_inmem_complete()?;
+        self.shared.scheduler.wait_inmem_complete()?;
 
         // Register module aliases for GOT lookup by unqualified name.
         crate::session::register_module_aliases_filtered(
@@ -405,19 +464,211 @@ impl CompilerSession {
         // Step 3: worker loop runs inline via priority_worker_loop().
     }
 
-    /// Spawn nice (low-priority) worker threads for object file codegen.
+    /// Run a closure with nice worker threads active.
     ///
-    /// No-op for Step 3: object codegen deferred to Step 10.
-    pub fn spawn_nice_workers(&self, _n: usize) {
-        // Step 10: nice workers for .o codegen.
+    /// Spawns `n` nice workers in a scoped thread pool, runs the closure
+    /// on the calling thread, signals shutdown, and joins all workers.
+    ///
+    /// Workers receive an `Arc<SharedState>` clone, eliminating aliasing
+    /// between the workers' shared reference and the `&mut self` used by
+    /// the closure for priority worker operations.
+    pub fn run_with_nice_workers<T>(
+        &mut self,
+        n: usize,
+        f: impl FnOnce(&mut Self) -> Result<T, CranelispError>,
+    ) -> Result<T, CranelispError> {
+        // Clone the Arc for nice workers. Workers hold Arc<SharedState>
+        // independently — no aliasing with &mut self.
+        let shared_arc = Arc::clone(&self.shared);
+
+        std::thread::scope(|scope| {
+            spawn_nice_workers(scope, &shared_arc, n);
+            let result = f(self);
+            // Wait for nice workers to finish .o compilation before shutdown.
+            // Promotes workers to normal priority so object codegen completes
+            // promptly (especially important for --link).
+            let _ = self.wait_object_complete();
+            self.shared.scheduler.shutdown();
+            result
+        })
     }
 
-    /// Shut down the session: stop workers, flush caches.
+    /// Wait until all registered modules have object codegen complete.
     ///
-    /// Currently a no-op — the inner session handles cleanup via Drop.
-    /// In v4, this will signal workers to drain and join (Step 3+).
+    /// Promotes nice workers to normal priority before blocking, ensuring
+    /// object codegen completes promptly (e.g., before linking). Wakes
+    /// the `object_work_available` condvar so workers observe the promotion
+    /// flag on their next loop iteration.
+    pub fn wait_object_complete(
+        &self,
+    ) -> Result<(), crate::scheduler::SchedulerError> {
+        // Promote nice workers so object codegen runs at full speed.
+        self.shared.promote_nice_workers.store(
+            true,
+            std::sync::atomic::Ordering::Release,
+        );
+        // Wake workers so they observe the promotion flag.
+        self.shared.scheduler.wake_object_workers();
+
+        self.shared.scheduler.wait_object_complete()
+    }
+
+    /// Shut down the session: signal workers to drain and exit.
+    ///
+    /// Sets the scheduler shutdown flag and wakes all condvars so nice
+    /// workers observe shutdown and return. Scoped threads are joined
+    /// automatically when the scope exits.
     pub fn shutdown(&mut self) {
-        // Inner session's Drop handles codegen worker shutdown.
+        self.shared.scheduler.shutdown();
+        // Inner session's Drop handles legacy codegen worker shutdown.
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Nice worker spawning + loop (Step 10)
+// ---------------------------------------------------------------------------
+
+/// Spawn nice (low-priority) worker threads inside a `std::thread::scope`.
+///
+/// Takes `&Arc<SharedState>` and clones the Arc for each worker thread.
+/// Workers hold independent Arc references — no aliasing with the caller's
+/// `&mut CompilerSession`.
+///
+/// Workers park on the scheduler's `object_work_available` condvar and wake
+/// when modules reach TypecheckDone or on shutdown. The scope guarantees
+/// all threads join before it exits.
+///
+/// # Panics
+///
+/// Panics if the OS fails to spawn a thread. This is a setup-time
+/// invariant: if the OS cannot create threads, the compiler cannot
+/// function.
+pub fn spawn_nice_workers<'scope, 'env>(
+    scope: &'scope std::thread::Scope<'scope, 'env>,
+    shared: &'env Arc<SharedState>,
+    n: usize,
+) {
+    for i in 0..n {
+        let worker_shared = Arc::clone(shared);
+        std::thread::Builder::new()
+            .name(format!("nice-worker-{}", i))
+            .spawn_scoped(scope, move || {
+                nice_worker_loop(&worker_shared);
+            })
+            .expect("failed to spawn nice worker thread");
+    }
+}
+
+/// Main loop for nice (low-priority) worker threads.
+///
+/// Runs at reduced OS scheduling priority. Claims TypecheckDone modules
+/// from the scheduler, compiles them to `.o` files via Cranelift
+/// ObjectModule, writes the `.o` to the cache directory, and appends
+/// the path to `shared.compiled_o_paths` for the linker.
+///
+/// When caching is disabled (`shared.cache_dir` is None) or no
+/// `ObjectCodegenInput` is available for a module, the worker skips
+/// `.o` compilation and just marks the module as object-complete.
+///
+/// The loop parks on `scheduler.take_object_codegen()` (condvar-based)
+/// when no work is available, and exits on shutdown.
+fn nice_worker_loop(shared: &SharedState) {
+    // Set below-normal OS scheduling priority (best-effort).
+    crate::thread_util::set_nice_priority();
+
+    loop {
+        // Check for priority promotion (hot flush before --link).
+        if shared.promote_nice_workers.load(
+            std::sync::atomic::Ordering::Relaxed,
+        ) {
+            crate::thread_util::set_normal_priority();
+        }
+
+        // Park until a TypecheckDone module with object_done == false
+        // is available, or shutdown is signaled.
+        let module = match shared.scheduler.take_object_codegen() {
+            Some(m) => m,
+            None => return, // Shutdown signaled.
+        };
+
+        // Attempt .o compilation if caching is enabled.
+        if let Some(cache_dir) = &shared.cache_dir {
+            compile_module_object(shared, &module, cache_dir);
+        }
+
+        // Notify scheduler that object codegen is done for this module.
+        shared.scheduler.notify_object_codegen_complete(&module);
+    }
+}
+
+/// Compile a single module to a `.o` file and write it to the cache directory.
+///
+/// Retrieves the module's `ObjectCodegenInput` (stashed by the priority worker),
+/// builds an `ObjectCompileInput`, calls `compile_module_to_object()`, writes
+/// the `.o` bytes, and appends the path to `shared.compiled_o_paths`.
+///
+/// Errors are logged to stderr and do not halt the worker — the module is still
+/// marked object-complete so the scheduler lifecycle proceeds.
+fn compile_module_object(
+    shared: &SharedState,
+    module: &ModuleFullPath,
+    cache_dir: &Path,
+) {
+    use cranelisp_backend::cache;
+
+    // Take the stashed input (lock briefly, remove entry to release memory).
+    let input = {
+        let mut inputs = shared.object_codegen_inputs.lock()
+            .unwrap_or_else(|e| e.into_inner());
+        inputs.remove(module)
+    };
+
+    let Some(input) = input else {
+        // No data stashed — module may have had no compilable defns.
+        return;
+    };
+
+    // Skip modules with no compilable defns (types-only, imports-only).
+    if !crate::session::has_compilable_defns(&input.program) {
+        return;
+    }
+
+    // Build the ObjectCompileInput from the stashed data.
+    let object_input = crate::pipeline::build_object_compile_input(
+        module,
+        Some(&input.program),
+        Some(&input.check_result),
+        &input.cross_module_func_sigs,
+    );
+
+    // Compile to .o bytes via Cranelift ObjectModule.
+    let obj_bytes = match cache::compile_module_to_object(&object_input) {
+        Ok(bytes) => bytes,
+        Err(e) => {
+            eprintln!("nice-worker: .o compilation failed for {}: {}", module, e.message());
+            return;
+        }
+    };
+
+    // Write .o file to cache directory.
+    let (_meta_path, o_path) = cache::module_cache_path(cache_dir, module);
+
+    // Ensure parent directory exists.
+    if let Some(parent) = o_path.parent()
+        && let Err(e) = std::fs::create_dir_all(parent)
+    {
+        eprintln!("nice-worker: cannot create cache dir '{}': {}", parent.display(), e);
+        return;
+    }
+
+    if let Err(e) = std::fs::write(&o_path, &obj_bytes) {
+        eprintln!("nice-worker: cannot write '{}': {}", o_path.display(), e);
+        return;
+    }
+
+    // Append the .o path for the linker.
+    if let Ok(mut paths) = shared.compiled_o_paths.lock() {
+        paths.push(o_path);
     }
 }
 

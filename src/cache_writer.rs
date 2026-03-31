@@ -126,7 +126,7 @@ fn writer_thread_main(receiver: mpsc::Receiver<WriterMessage>) {
     let mut latest_seq: HashMap<ModuleFullPath, u64> = HashMap::new();
 
     // Set nice priority (best-effort — failure is fine).
-    set_nice_priority();
+    crate::thread_util::set_nice_priority();
 
     loop {
         let msg = match receiver.recv() {
@@ -183,19 +183,6 @@ fn process_write_request(
             request.module,
             e.message()
         );
-    }
-}
-
-/// Set the thread's scheduling priority to below-normal.
-/// Best-effort — failure is silently ignored.
-fn set_nice_priority() {
-    #[cfg(unix)]
-    {
-        // SAFETY: setpriority is a standard POSIX API. We're setting our own
-        // thread's priority, which is always permitted.
-        unsafe {
-            libc::setpriority(libc::PRIO_PROCESS, 0, 10);
-        }
     }
 }
 

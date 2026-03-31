@@ -214,12 +214,10 @@ fn v4_main(
                 entry_module_path,
                 cache_dir,
             )?;
-            // spawn_priority_workers and spawn_nice_workers are todo!() —
-            // the old path handles codegen via the async coordinator thread.
-            // For Step 0, we skip spawning and let the inner session's async
-            // codegen handle everything.
-            s.link(entry_module_path)?;
-            s.shutdown();
+            s.run_with_nice_workers(1, |s| {
+                s.link(entry_module_path)?;
+                Ok(())
+            })?;
             Ok(())
         }
         Action::Run => {
@@ -232,12 +230,17 @@ fn v4_main(
                 entry_module_path,
             );
 
-            let src = read_file(entry_module_path)?;
-
-            let unit_warnings =
-                s.register_module(&entry_module_name, &src, entry_module_path)?;
-
-            let (value, ty) = s.trampoline(&entry_module_name)?;
+            let (value, ty, unit_warnings) = s.run_with_nice_workers(
+                1,
+                |s| {
+                    let src = read_file(entry_module_path)?;
+                    let unit_warnings = s.register_module(
+                        &entry_module_name, &src, entry_module_path,
+                    )?;
+                    let (value, ty) = s.trampoline(&entry_module_name)?;
+                    Ok((value, ty, unit_warnings))
+                },
+            )?;
 
             // Display warnings and result.
             for w in &unit_warnings {
@@ -247,7 +250,6 @@ fn v4_main(
             println!("{display}");
 
             let exit_code = cranelisp::session::determine_exit_code(value, &ty);
-            s.shutdown();
             if exit_code != 0 {
                 process::exit(exit_code);
             }

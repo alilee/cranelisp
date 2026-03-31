@@ -1,10 +1,12 @@
 // CompileScheduler — scheduler-driven compilation coordination.
 //
 // Implements the module lifecycle, priority ladder, waiter/unblock logic
-// from design/arch/concurrent-pipeline.md. Single-threaded for now
-// (no condvars — take_priority_work returns immediately).
+// from design/arch/concurrent-pipeline.md. State is behind a Mutex with
+// condvars for nice worker parking (Step 10) and future priority worker
+// parking (Step 11).
 
 use std::collections::{HashMap, HashSet, VecDeque};
+use std::sync::{Condvar, Mutex, MutexGuard};
 
 use cranelisp_types::{CranelispError, ModuleFullPath, Span, Symbol};
 
@@ -42,6 +44,12 @@ pub struct ModuleState {
     /// All in-memory codegen complete for this module.
     pub inmem_done: bool,
 
+    /// A nice worker is currently performing object codegen for this module.
+    /// Set when `take_object_codegen` claims the module; cleared when
+    /// `notify_object_codegen_complete` is called. Prevents double-claim
+    /// when multiple nice workers wake simultaneously.
+    pub object_working: bool,
+
     /// The module's .o file has been written (or existed from cache).
     pub object_done: bool,
 
@@ -65,6 +73,7 @@ impl ModuleState {
             waiters: HashMap::new(),
             jit_reserved: HashSet::new(),
             inmem_done: false,
+            object_working: false,
             object_done: false,
             error: None,
             resume_from_form: None,
@@ -82,6 +91,7 @@ impl ModuleState {
             waiters: HashMap::new(),
             jit_reserved: HashSet::new(),
             inmem_done: false,
+            object_working: false,
             object_done: true,
             error: None,
             resume_from_form: None,
@@ -148,8 +158,7 @@ pub enum PriorityWork {
 }
 
 // ---------------------------------------------------------------------------
-// SchedulerState — all mutable state behind a single logical lock.
-// (No Mutex for now — single-threaded.)
+// SchedulerState — all mutable state behind a Mutex.
 // ---------------------------------------------------------------------------
 
 #[derive(Debug)]
@@ -195,12 +204,29 @@ impl SchedulerState {
 /// logic. Does NOT own compilation data — workers access session tables
 /// for ASTs, CheckResults, and code pointers.
 ///
-/// Currently single-threaded: no Mutex or Condvar. When multi-threaded
-/// workers arrive (Step 11), the state will be wrapped in a Mutex and
-/// condvars will be added for parking.
-#[derive(Debug)]
+/// State is behind a Mutex with condvars for worker parking:
+/// - `priority_work_available` — for Step 11 (priority worker threads)
+/// - `object_work_available` — for Step 10 (nice worker threads)
+/// - `completion` — for `wait_object_complete` callers
 pub struct CompileScheduler {
-    state: SchedulerState,
+    state: Mutex<SchedulerState>,
+    /// Condvar for priority workers (Step 11 — added now, not used yet).
+    #[allow(dead_code)]
+    priority_work_available: Condvar,
+    /// Condvar for nice workers: woken when a TypecheckDone module becomes
+    /// available for object codegen, or on shutdown.
+    object_work_available: Condvar,
+    /// Condvar for `wait_object_complete`: woken when a module's object
+    /// codegen completes, or on shutdown.
+    completion: Condvar,
+}
+
+impl std::fmt::Debug for CompileScheduler {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CompileScheduler")
+            .field("state", &"<Mutex<SchedulerState>>")
+            .finish()
+    }
 }
 
 impl Default for CompileScheduler {
@@ -213,8 +239,19 @@ impl CompileScheduler {
     /// Create a new scheduler with empty state.
     pub fn new() -> Self {
         Self {
-            state: SchedulerState::new(),
+            state: Mutex::new(SchedulerState::new()),
+            priority_work_available: Condvar::new(),
+            object_work_available: Condvar::new(),
+            completion: Condvar::new(),
         }
+    }
+
+    /// Lock the scheduler state. Recovers from mutex poisoning — if a
+    /// worker panicked while holding the lock, the data is still usable
+    /// because scheduler state is pure coordination metadata with no
+    /// complex invariants that a partial update would corrupt.
+    fn lock(&self) -> MutexGuard<'_, SchedulerState> {
+        self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
     // -----------------------------------------------------------------------
@@ -228,12 +265,14 @@ impl CompileScheduler {
     /// This handles the case where multiple import specs reference the
     /// same dependency module (F2 fix).
     pub fn register_module(
-        &mut self,
+        &self,
         module: ModuleFullPath,
         delays_other: bool,
     ) {
+        let mut state = self.lock();
+
         // Idempotent: skip if already registered.
-        if self.state.modules.contains_key(&module) {
+        if state.modules.contains_key(&module) {
             return;
         }
 
@@ -242,11 +281,11 @@ impl CompileScheduler {
         } else {
             ModulePool::TypecheckNext
         };
-        self.state.modules.insert(module.clone(), ModuleState::new(pool));
+        state.modules.insert(module.clone(), ModuleState::new(pool));
         if delays_other {
-            self.state.typecheck_first.push_back(module);
+            state.typecheck_first.push_back(module);
         } else {
-            self.state.typecheck_next.push_back(module);
+            state.typecheck_next.push_back(module);
         }
     }
 
@@ -255,16 +294,24 @@ impl CompileScheduler {
     /// not yet loaded. Object codegen is pre-satisfied.
     /// Satisfies any pending typecheck waiters on this module's symbols.
     pub fn register_module_cached(
-        &mut self,
+        &self,
         module: ModuleFullPath,
         symbols: HashSet<Symbol>,
     ) {
+        let mut state = self.lock();
         let ms = ModuleState::new_cached(symbols.clone());
-        self.state.modules.insert(module.clone(), ms);
-        self.state.typecheck_done.push_back(module.clone());
+        state.modules.insert(module.clone(), ms);
+        state.typecheck_done.push_back(module.clone());
 
         // Satisfy any pending typecheck waiters on symbols from this module.
-        self.satisfy_typecheck_waiters_for_all_symbols(&module, &symbols);
+        Self::satisfy_typecheck_waiters_for_all_symbols_locked(
+            &mut state, &module, &symbols,
+        );
+
+        // Wake nice workers — new TypecheckDone module (already object_done
+        // for cached, but wake anyway for consistency).
+        drop(state);
+        self.object_work_available.notify_all();
     }
 
     // -----------------------------------------------------------------------
@@ -279,26 +326,28 @@ impl CompileScheduler {
     ///   3. Pop from typecheck_next -> Typecheck(module)
     ///   4. (Level 4 — JitCodegen — not implemented in Step 3. Returns None.)
     ///
-    /// Single-threaded: returns None immediately when empty (no condvar park).
-    pub fn take_priority_work(&mut self) -> Option<PriorityWork> {
-        if self.state.shutdown {
+    /// Returns None immediately when empty (priority workers do not park
+    /// in Step 10 — that is Step 11).
+    pub fn take_priority_work(&self) -> Option<PriorityWork> {
+        let mut state = self.lock();
+        if state.shutdown {
             return None;
         }
 
         // Level 1: TypecheckFirst
-        if let Some(module) = self.state.typecheck_first.pop_front() {
-            self.set_pool(&module, ModulePool::TypecheckWorking);
+        if let Some(module) = state.typecheck_first.pop_front() {
+            Self::set_pool_locked(&mut state, &module, ModulePool::TypecheckWorking);
             return Some(PriorityWork::Typecheck(module));
         }
 
         // Level 2: Priority codegen queue — first Ready entry
-        if let Some(work) = self.claim_priority_codegen() {
+        if let Some(work) = Self::claim_priority_codegen_locked(&mut state) {
             return Some(work);
         }
 
         // Level 3: TypecheckNext
-        if let Some(module) = self.state.typecheck_next.pop_front() {
-            self.set_pool(&module, ModulePool::TypecheckWorking);
+        if let Some(module) = state.typecheck_next.pop_front() {
+            Self::set_pool_locked(&mut state, &module, ModulePool::TypecheckWorking);
             return Some(PriorityWork::Typecheck(module));
         }
 
@@ -311,13 +360,16 @@ impl CompileScheduler {
     /// this symbol for WaitKind::Typecheck, removes the waiter and
     /// evaluates whether to unblock the waiting module.
     pub fn notify_symbol_typechecked(
-        &mut self,
+        &self,
         module: &ModuleFullPath,
         symbol: &Symbol,
     ) {
-        let waiters = self.take_waiters_for_symbol(module, symbol, WaitKind::Typecheck);
+        let mut state = self.lock();
+        let waiters = Self::take_waiters_for_symbol_locked(
+            &mut state, module, symbol, WaitKind::Typecheck,
+        );
         for waiter_module in waiters {
-            self.try_unblock(&waiter_module);
+            Self::try_unblock_locked(&mut state, &waiter_module);
         }
     }
 
@@ -328,27 +380,28 @@ impl CompileScheduler {
     ///
     /// Returns Err if a circular dependency is detected.
     pub fn block_for_typecheck(
-        &mut self,
+        &self,
         module: &ModuleFullPath,
         needed_module: &ModuleFullPath,
         needed_symbol: &Symbol,
     ) -> Result<(), CranelispError> {
-        self.set_pool(module, ModulePool::TypecheckBlocked);
+        let mut state = self.lock();
+        Self::set_pool_locked(&mut state, module, ModulePool::TypecheckBlocked);
 
         // Record the forward edge for cycle detection.
-        if let Some(ms) = self.state.modules.get_mut(module) {
+        if let Some(ms) = state.modules.get_mut(module) {
             ms.blocked_on = Some(needed_module.clone());
         }
 
         // Check for cycles before adding the waiter.
-        if let Some(cycle) = self.detect_cycle(module) {
+        if let Some(cycle) = Self::detect_cycle_locked(&state, module) {
             let cycle_str = cycle.iter()
                 .map(|m| m.to_string())
                 .collect::<Vec<_>>()
                 .join(" -> ");
             let msg = format!("circular dependency detected: {}", cycle_str);
             // Fail the module in the scheduler.
-            self.notify_module_failed(module, CranelispError::ModuleError {
+            Self::notify_module_failed_locked(&mut state, module, CranelispError::ModuleError {
                 message: msg.clone(),
                 file: None,
                 span: Span::SYNTHETIC,
@@ -360,7 +413,7 @@ impl CompileScheduler {
             });
         }
 
-        self.add_waiter(needed_module, needed_symbol, Waiter {
+        Self::add_waiter_locked(&mut state, needed_module, needed_symbol, Waiter {
             module: module.clone(),
             need: WaitKind::Typecheck,
         });
@@ -374,11 +427,12 @@ impl CompileScheduler {
     /// macro expansion. Order is a hint (dependencies first via BFS walk).
     /// Each symbol is pushed to the front of the priority codegen queue.
     pub fn block_for_macro_codegen(
-        &mut self,
+        &self,
         module: &ModuleFullPath,
         needed: Vec<(ModuleFullPath, Symbol)>,
     ) {
-        self.set_pool(module, ModulePool::TypecheckBlocked);
+        let mut state = self.lock();
+        Self::set_pool_locked(&mut state, module, ModulePool::TypecheckBlocked);
 
         if needed.is_empty() {
             return;
@@ -388,7 +442,9 @@ impl CompileScheduler {
         // it carries the unblocks for the waiting module.
         let macro_key = needed.last().map(|(m, s)| (m.clone(), s.clone()));
 
-        self.push_priority_entries(module, &needed, macro_key.as_ref());
+        Self::push_priority_entries_locked(
+            &mut state, module, &needed, macro_key.as_ref(),
+        );
     }
 
     /// All forms in the module have been typechecked.
@@ -397,80 +453,90 @@ impl CompileScheduler {
     /// Sweeps all remaining WaitKind::Typecheck waiters on this module
     /// and unblocks them. This handles glob imports where the waiter
     /// blocked on "*" and needs the whole module done.
-    pub fn notify_typecheck_done(&mut self, module: &ModuleFullPath) {
+    pub fn notify_typecheck_done(&self, module: &ModuleFullPath) {
+        let mut state = self.lock();
+
         // Skip modules not registered with the scheduler (e.g., the REPL
         // "user" module in Additive mode). Without this guard the
         // typecheck_done deque grows unbounded.
-        if !self.state.modules.contains_key(module) {
+        if !state.modules.contains_key(module) {
             return;
         }
-        self.set_pool(module, ModulePool::TypecheckDone);
-        self.state.typecheck_done.push_back(module.clone());
+        Self::set_pool_locked(&mut state, module, ModulePool::TypecheckDone);
+        state.typecheck_done.push_back(module.clone());
 
         // Sweep: collect all modules waiting for typecheck on any symbol
         // in this module, then clear those waiters and unblock.
-        let all_waiters: Vec<ModuleFullPath> = if let Some(ms) = self.state.modules.get_mut(module) {
-            let waiters: Vec<ModuleFullPath> = ms.waiters
-                .values()
-                .flat_map(|ws| ws.iter())
-                .filter(|w| w.need == WaitKind::Typecheck)
-                .map(|w| w.module.clone())
-                .collect();
-            // Remove typecheck waiters (keep codegen waiters).
-            ms.waiters.retain(|_, ws| {
-                ws.retain(|w| w.need != WaitKind::Typecheck);
-                !ws.is_empty()
-            });
-            waiters
-        } else {
-            Vec::new()
-        };
+        let all_waiters: Vec<ModuleFullPath> =
+            if let Some(ms) = state.modules.get_mut(module) {
+                let waiters: Vec<ModuleFullPath> = ms.waiters
+                    .values()
+                    .flat_map(|ws| ws.iter())
+                    .filter(|w| w.need == WaitKind::Typecheck)
+                    .map(|w| w.module.clone())
+                    .collect();
+                // Remove typecheck waiters (keep codegen waiters).
+                ms.waiters.retain(|_, ws| {
+                    ws.retain(|w| w.need != WaitKind::Typecheck);
+                    !ws.is_empty()
+                });
+                waiters
+            } else {
+                Vec::new()
+            };
 
         // Unblock each waiting module and clear its blocked_on edge.
         for waiter_module in all_waiters {
-            if let Some(ws) = self.state.modules.get_mut(&waiter_module) {
+            if let Some(ws) = state.modules.get_mut(&waiter_module) {
                 ws.blocked_on = None;
             }
-            self.try_unblock(&waiter_module);
+            Self::try_unblock_locked(&mut state, &waiter_module);
         }
+
+        // Wake nice workers — new TypecheckDone module is potential
+        // object codegen work.
+        drop(state);
+        self.object_work_available.notify_all();
     }
 
     /// A module has failed (parse, type, macro, or codegen error).
     /// Moves module to Failed. Stores the error. Cascades failure
     /// to any modules in TypecheckBlocked waiting on this module's symbols.
     pub fn notify_module_failed(
-        &mut self,
+        &self,
         module: &ModuleFullPath,
         error: CranelispError,
     ) {
-        self.set_pool(module, ModulePool::Failed);
-        if let Some(ms) = self.state.modules.get_mut(module) {
-            ms.error = Some(error);
-        }
-        self.cascade_failure(module);
+        let mut state = self.lock();
+        Self::notify_module_failed_locked(&mut state, module, error);
+
+        // Wake completion condvar — failed modules affect wait_object_complete.
+        drop(state);
+        self.completion.notify_all();
     }
 
     /// Priority codegen of a symbol is complete.
     /// Processes the entry per concurrent-pipeline.md section 4.3.
     pub fn notify_priority_codegen_complete(
-        &mut self,
+        &self,
         module: &ModuleFullPath,
         symbol: &Symbol,
     ) {
+        let mut state = self.lock();
         let key = (module.clone(), symbol.clone());
 
         // Find the entry in the priority queue and update status.
-        let entry_idx = self.find_priority_entry(&key);
+        let entry_idx = Self::find_priority_entry_locked(&state, &key);
         let Some(idx) = entry_idx else { return };
 
-        let deps_empty = self.state.priority_queue[idx].dependencies.is_empty();
+        let deps_empty = state.priority_queue[idx].dependencies.is_empty();
 
         if deps_empty {
             // All dependencies callable — resolve this entry.
-            self.resolve_priority_entry(idx);
+            Self::resolve_priority_entry_locked(&mut state, idx);
         } else {
             // Still has unresolved dependencies — wait.
-            self.state.priority_queue[idx].status = PriorityStatus::Waiting;
+            state.priority_queue[idx].status = PriorityStatus::Waiting;
         }
     }
 
@@ -478,74 +544,115 @@ impl CompileScheduler {
     /// Removes from jit_reserved. If `no_remaining` is true, sets inmem_done.
     /// If inmem_done and object_done, moves module to Complete.
     pub fn notify_inmem_codegen_complete(
-        &mut self,
+        &self,
         module: &ModuleFullPath,
         symbol: &Symbol,
         no_remaining: bool,
     ) {
-        if let Some(ms) = self.state.modules.get_mut(module) {
+        let mut state = self.lock();
+        if let Some(ms) = state.modules.get_mut(module) {
             ms.jit_reserved.remove(symbol);
             if no_remaining {
                 ms.inmem_done = true;
             }
-            self.try_complete(module);
+            Self::try_complete_locked(&mut state, module);
         }
     }
 
     /// Batch-mark multiple symbols as inmem-codegenned.
     /// Used when a Linker load resolves all symbols in a cached .o at once.
     pub fn notify_inmem_codegen_batch_complete(
-        &mut self,
+        &self,
         module: &ModuleFullPath,
         symbols: &[Symbol],
     ) {
-        if let Some(ms) = self.state.modules.get_mut(module) {
+        let mut state = self.lock();
+        if let Some(ms) = state.modules.get_mut(module) {
             for sym in symbols {
                 ms.jit_reserved.remove(sym);
             }
             ms.inmem_done = true;
         }
         // Evaluate waiter satisfaction for codegen waiters.
-        self.satisfy_codegen_waiters_batch(module, symbols);
-        self.try_complete(module);
+        Self::satisfy_codegen_waiters_batch_locked(&mut state, module, symbols);
+        Self::try_complete_locked(&mut state, module);
     }
 
     // -----------------------------------------------------------------------
     // Nice Worker Interface (§6.3)
     // -----------------------------------------------------------------------
 
-    /// Return a TypecheckDone module with `object_done == false`.
-    /// Returns None if no such module exists or on shutdown.
-    pub fn take_object_codegen(&mut self) -> Option<ModuleFullPath> {
-        if self.state.shutdown {
-            return None;
-        }
-        for module in &self.state.typecheck_done {
-            if let Some(ms) = self.state.modules.get(module) && !ms.object_done {
-                return Some(module.clone());
+    /// Return a TypecheckDone module with `object_done == false` and
+    /// `object_working == false`. Marks the returned module as
+    /// `object_working = true` to prevent double-claim by concurrent
+    /// nice workers.
+    ///
+    /// Parks on `object_work_available` condvar when no work is available.
+    /// Returns None on shutdown.
+    pub fn take_object_codegen(&self) -> Option<ModuleFullPath> {
+        let mut state = self.lock();
+        loop {
+            if state.shutdown {
+                return None;
             }
+            // Scan for a TypecheckDone module needing object codegen
+            // that is not already being worked on by another nice worker.
+            let found = state.typecheck_done.iter().find_map(|module| {
+                state.modules.get(module)
+                    .filter(|ms| !ms.object_done && !ms.object_working)
+                    .map(|_| module.clone())
+            });
+            if let Some(module) = found {
+                // Claim the module while holding the lock.
+                if let Some(ms) = state.modules.get_mut(&module) {
+                    ms.object_working = true;
+                }
+                return Some(module);
+            }
+            // No work available — park until woken.
+            state = self.object_work_available.wait(state)
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
         }
-        None
     }
 
     /// Object codegen for a module is complete (.o written).
-    /// Sets `object_done`. If completion condition is met, moves to Complete.
-    pub fn notify_object_codegen_complete(&mut self, module: &ModuleFullPath) {
-        if let Some(ms) = self.state.modules.get_mut(module) {
+    /// Clears `object_working`, sets `object_done`. If completion
+    /// condition is met, moves to Complete.
+    pub fn notify_object_codegen_complete(&self, module: &ModuleFullPath) {
+        let mut state = self.lock();
+        if let Some(ms) = state.modules.get_mut(module) {
+            ms.object_working = false;
             ms.object_done = true;
         }
-        self.try_complete(module);
+        Self::try_complete_locked(&mut state, module);
+
+        // Wake wait_object_complete callers.
+        drop(state);
+        self.completion.notify_all();
     }
 
     // -----------------------------------------------------------------------
     // Lifecycle (§6.5)
     // -----------------------------------------------------------------------
 
-    /// Signal all workers to shut down. In multi-threaded mode this
-    /// would wake all condvars. Single-threaded: sets the flag so
-    /// take_priority_work returns None.
-    pub fn shutdown(&mut self) {
-        self.state.shutdown = true;
+    /// Wake all nice workers parked on the `object_work_available` condvar.
+    ///
+    /// Used by the session to ensure workers observe a promotion flag
+    /// (e.g., before blocking in `wait_object_complete`).
+    pub fn wake_object_workers(&self) {
+        self.object_work_available.notify_all();
+    }
+
+    /// Signal all workers to shut down. Wakes all condvars so parked
+    /// workers can observe the shutdown flag and exit.
+    pub fn shutdown(&self) {
+        let mut state = self.lock();
+        state.shutdown = true;
+        drop(state);
+
+        self.priority_work_available.notify_all();
+        self.object_work_available.notify_all();
+        self.completion.notify_all();
     }
 
     /// Check if all registered modules have inmem_done set.
@@ -553,7 +660,8 @@ impl CompileScheduler {
     /// Returns Err with the first error if any module is Failed.
     /// Does not wait for object codegen.
     pub fn wait_inmem_complete(&self) -> Result<(), SchedulerError> {
-        for (path, ms) in &self.state.modules {
+        let state = self.lock();
+        for (path, ms) in &state.modules {
             if ms.pool == ModulePool::Failed {
                 return Err(SchedulerError::ModuleFailed {
                     module: path.clone(),
@@ -571,25 +679,34 @@ impl CompileScheduler {
         Ok(())
     }
 
-    /// Check if all registered modules have object_done set.
-    /// Returns Ok(()) if all are Complete, or Err if any Failed or incomplete.
+    /// Block until all registered modules have object_done set.
+    /// Returns Ok(()) when all are Complete or have object_done.
+    /// Returns Err if any module is Failed.
     pub fn wait_object_complete(&self) -> Result<(), SchedulerError> {
-        for (path, ms) in &self.state.modules {
-            if ms.pool == ModulePool::Failed {
-                return Err(SchedulerError::ModuleFailed {
-                    module: path.clone(),
-                    message: ms.error.as_ref()
-                        .map(|e| e.to_string())
-                        .unwrap_or_else(|| "unknown error".to_string()),
-                });
+        let mut state = self.lock();
+        loop {
+            let mut all_done = true;
+            for (path, ms) in &state.modules {
+                if ms.pool == ModulePool::Failed {
+                    return Err(SchedulerError::ModuleFailed {
+                        module: path.clone(),
+                        message: ms.error.as_ref()
+                            .map(|e| e.to_string())
+                            .unwrap_or_else(|| "unknown error".to_string()),
+                    });
+                }
+                if !ms.object_done {
+                    all_done = false;
+                    break;
+                }
             }
-            if !ms.object_done {
-                return Err(SchedulerError::ObjectIncomplete {
-                    module: path.clone(),
-                });
+            if all_done || state.shutdown {
+                return Ok(());
             }
+            // Not all done — park until a module completes or shutdown.
+            state = self.completion.wait(state)
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
         }
-        Ok(())
     }
 
     // -----------------------------------------------------------------------
@@ -610,36 +727,43 @@ impl CompileScheduler {
     /// - Module is removed from `state.modules`.
     /// - Module is removed from all deques.
     /// - Any priority queue entries for this module are removed.
-    pub fn reset_module(&mut self, module: &ModuleFullPath) {
-        let Some(ms) = self.state.modules.get(module) else { return };
+    pub fn reset_module(&self, module: &ModuleFullPath) {
+        let mut state = self.lock();
+        let Some(ms) = state.modules.get(module) else { return };
         if ms.pool != ModulePool::Failed {
             return; // Only reset Failed modules.
         }
 
-        self.state.modules.remove(module);
+        state.modules.remove(module);
 
         // Clean deques (defensive — Failed modules should not be in deques,
         // but guard against inconsistency).
-        self.state.typecheck_first.retain(|m| m != module);
-        self.state.typecheck_next.retain(|m| m != module);
-        self.state.typecheck_done.retain(|m| m != module);
+        state.typecheck_first.retain(|m| m != module);
+        state.typecheck_next.retain(|m| m != module);
+        state.typecheck_done.retain(|m| m != module);
 
         // Remove any priority queue entries for this module.
-        self.state.priority_queue.retain(|e| &e.module != module);
+        state.priority_queue.retain(|e| &e.module != module);
     }
 
     /// Reset all Failed modules, removing them from the scheduler.
     ///
     /// Used by the REPL after a cascaded dependency failure. Scans all
     /// registered modules and resets any in the Failed pool.
-    pub fn reset_all_failed_modules(&mut self) {
-        let failed: Vec<ModuleFullPath> = self.state.modules
+    pub fn reset_all_failed_modules(&self) {
+        let mut state = self.lock();
+        let failed: Vec<ModuleFullPath> = state.modules
             .iter()
             .filter(|(_, ms)| ms.pool == ModulePool::Failed)
             .map(|(path, _)| path.clone())
             .collect();
         for m in failed {
-            self.reset_module(&m);
+            // Inline the reset logic to avoid re-locking.
+            state.modules.remove(&m);
+            state.typecheck_first.retain(|x| x != &m);
+            state.typecheck_next.retain(|x| x != &m);
+            state.typecheck_done.retain(|x| x != &m);
+            state.priority_queue.retain(|e| e.module != m);
         }
     }
 
@@ -649,55 +773,78 @@ impl CompileScheduler {
 
     /// Get the current pool for a module, if registered.
     pub fn module_pool(&self, module: &ModuleFullPath) -> Option<ModulePool> {
-        self.state.modules.get(module).map(|ms| ms.pool)
+        let state = self.lock();
+        state.modules.get(module).map(|ms| ms.pool)
     }
 
-    /// Get the module state for a module, if registered.
-    pub fn module_state(&self, module: &ModuleFullPath) -> Option<&ModuleState> {
-        self.state.modules.get(module)
+    /// Get a clone of the module state for a module, if registered.
+    /// Returns pool, resume_from_form, and other coordination metadata.
+    pub fn module_resume_from_form(
+        &self,
+        module: &ModuleFullPath,
+    ) -> Option<Option<usize>> {
+        let state = self.lock();
+        state.modules.get(module).map(|ms| ms.resume_from_form)
     }
 
-    /// Get mutable module state for a module, if registered.
-    pub fn module_state_mut(&mut self, module: &ModuleFullPath) -> Option<&mut ModuleState> {
-        self.state.modules.get_mut(module)
+    /// Set the resume_from_form for a module.
+    pub fn set_resume_from_form(
+        &self,
+        module: &ModuleFullPath,
+        form_index: usize,
+    ) {
+        let mut state = self.lock();
+        if let Some(ms) = state.modules.get_mut(module) {
+            ms.resume_from_form = Some(form_index);
+        }
     }
 
     /// Check if the scheduler is in shutdown state.
     pub fn is_shutdown(&self) -> bool {
-        self.state.shutdown
+        let state = self.lock();
+        state.shutdown
     }
 
-    /// Iterate over all registered module paths.
-    pub fn all_modules(&self) -> impl Iterator<Item = &ModuleFullPath> {
-        self.state.modules.keys()
+    /// Iterate over all registered module paths (cloned).
+    pub fn all_modules(&self) -> Vec<ModuleFullPath> {
+        let state = self.lock();
+        state.modules.keys().cloned().collect()
     }
 
     /// Number of registered modules.
     pub fn module_count(&self) -> usize {
-        self.state.modules.len()
+        let state = self.lock();
+        state.modules.len()
     }
 
     /// Number of entries in the priority codegen queue.
     pub fn priority_queue_len(&self) -> usize {
-        self.state.priority_queue.len()
+        let state = self.lock();
+        state.priority_queue.len()
     }
 
     // -----------------------------------------------------------------------
-    // Internal helpers
+    // Internal helpers (all take &mut SchedulerState to avoid re-locking)
     // -----------------------------------------------------------------------
 
     /// Set a module's pool. Does NOT add/remove from deques — caller
     /// is responsible for deque management.
-    fn set_pool(&mut self, module: &ModuleFullPath, pool: ModulePool) {
-        if let Some(ms) = self.state.modules.get_mut(module) {
+    fn set_pool_locked(
+        state: &mut SchedulerState,
+        module: &ModuleFullPath,
+        pool: ModulePool,
+    ) {
+        if let Some(ms) = state.modules.get_mut(module) {
             ms.pool = pool;
         }
     }
 
     /// Claim the first Ready entry from the priority codegen queue.
     /// Sets its status to Working and returns BlockingJitCodegen.
-    fn claim_priority_codegen(&mut self) -> Option<PriorityWork> {
-        for entry in &mut self.state.priority_queue {
+    fn claim_priority_codegen_locked(
+        state: &mut SchedulerState,
+    ) -> Option<PriorityWork> {
+        for entry in &mut state.priority_queue {
             if entry.status == PriorityStatus::Ready {
                 entry.status = PriorityStatus::Working;
                 return Some(PriorityWork::BlockingJitCodegen(
@@ -711,13 +858,13 @@ impl CompileScheduler {
 
     /// Take waiters for a specific symbol and wait kind from a module's
     /// waiter map. Returns the list of waiting module paths.
-    fn take_waiters_for_symbol(
-        &mut self,
+    fn take_waiters_for_symbol_locked(
+        state: &mut SchedulerState,
         module: &ModuleFullPath,
         symbol: &Symbol,
         kind: WaitKind,
     ) -> Vec<ModuleFullPath> {
-        let Some(ms) = self.state.modules.get_mut(module) else {
+        let Some(ms) = state.modules.get_mut(module) else {
             return Vec::new();
         };
         let Some(waiters) = ms.waiters.get_mut(symbol) else {
@@ -742,13 +889,13 @@ impl CompileScheduler {
     }
 
     /// Add a waiter to a module's waiter map for a specific symbol.
-    fn add_waiter(
-        &mut self,
+    fn add_waiter_locked(
+        state: &mut SchedulerState,
         target_module: &ModuleFullPath,
         target_symbol: &Symbol,
         waiter: Waiter,
     ) {
-        if let Some(ms) = self.state.modules.get_mut(target_module) {
+        if let Some(ms) = state.modules.get_mut(target_module) {
             ms.waiters
                 .entry(target_symbol.clone())
                 .or_default()
@@ -759,35 +906,48 @@ impl CompileScheduler {
     /// Try to unblock a module. If the module is TypecheckBlocked and
     /// has no remaining wait conditions, move it to TypecheckFirst
     /// (if it has waiters itself) or TypecheckNext (if not).
-    fn try_unblock(&mut self, module: &ModuleFullPath) {
-        let Some(ms) = self.state.modules.get(module) else { return };
+    fn try_unblock_locked(
+        state: &mut SchedulerState,
+        module: &ModuleFullPath,
+    ) {
+        let Some(ms) = state.modules.get(module) else { return };
         if ms.pool != ModulePool::TypecheckBlocked {
             return;
         }
 
-        // Check if this module is still listed as a waiter anywhere.
-        // A module is unblocked when its specific wait is satisfied —
-        // the fact that we removed the waiter entry means it is ready.
-        // Move to appropriate ready pool.
         let has_own_waiters = !ms.waiters.is_empty();
         if has_own_waiters {
-            self.set_pool(module, ModulePool::TypecheckFirst);
-            self.state.typecheck_first.push_back(module.clone());
+            Self::set_pool_locked(state, module, ModulePool::TypecheckFirst);
+            state.typecheck_first.push_back(module.clone());
         } else {
-            self.set_pool(module, ModulePool::TypecheckNext);
-            self.state.typecheck_next.push_back(module.clone());
+            Self::set_pool_locked(state, module, ModulePool::TypecheckNext);
+            state.typecheck_next.push_back(module.clone());
         }
+    }
+
+    /// A module has failed — locked internal version.
+    fn notify_module_failed_locked(
+        state: &mut SchedulerState,
+        module: &ModuleFullPath,
+        error: CranelispError,
+    ) {
+        Self::set_pool_locked(state, module, ModulePool::Failed);
+        if let Some(ms) = state.modules.get_mut(module) {
+            ms.error = Some(error);
+        }
+        Self::cascade_failure_locked(state, module);
     }
 
     /// Cascade failure from a failed module to all modules waiting
     /// on any of its symbols.
-    fn cascade_failure(&mut self, failed_module: &ModuleFullPath) {
-        // Collect all modules that are waiting on symbols from the
-        // failed module, then cascade-fail them.
-        let waiting_modules = self.collect_waiters_for_module(failed_module);
+    fn cascade_failure_locked(
+        state: &mut SchedulerState,
+        failed_module: &ModuleFullPath,
+    ) {
+        let waiting_modules =
+            Self::collect_waiters_for_module_locked(state, failed_module);
 
-        // Retrieve the original error message for chaining.
-        let original_error_msg = self.state.modules.get(failed_module)
+        let original_error_msg = state.modules.get(failed_module)
             .and_then(|ms| ms.error.as_ref())
             .map(|e| e.to_string())
             .unwrap_or_else(|| "unknown error".to_string());
@@ -803,16 +963,16 @@ impl CompileScheduler {
                 span: Span::SYNTHETIC,
             };
             // Recursive cascade.
-            self.notify_module_failed(&waiter_module, error);
+            Self::notify_module_failed_locked(state, &waiter_module, error);
         }
     }
 
     /// Collect all modules waiting on any symbol from a given module.
-    fn collect_waiters_for_module(
-        &mut self,
+    fn collect_waiters_for_module_locked(
+        state: &mut SchedulerState,
         module: &ModuleFullPath,
     ) -> Vec<ModuleFullPath> {
-        let Some(ms) = self.state.modules.get_mut(module) else {
+        let Some(ms) = state.modules.get_mut(module) else {
             return Vec::new();
         };
         let mut result = Vec::new();
@@ -827,26 +987,24 @@ impl CompileScheduler {
     }
 
     /// Detect a cycle in the blocked_on graph starting from `start`.
-    ///
-    /// Walks the `blocked_on` linked list from `start`. If it revisits
-    /// `start`, a cycle exists. Returns the cycle path if found.
-    fn detect_cycle(&self, start: &ModuleFullPath) -> Option<Vec<ModuleFullPath>> {
+    fn detect_cycle_locked(
+        state: &SchedulerState,
+        start: &ModuleFullPath,
+    ) -> Option<Vec<ModuleFullPath>> {
         let mut path = vec![start.clone()];
         let mut current = start.clone();
 
         loop {
-            let next = self.state.modules.get(&current)
+            let next = state.modules.get(&current)
                 .and_then(|ms| ms.blocked_on.clone());
             match next {
-                None => return None, // chain ends, no cycle
+                None => return None,
                 Some(next_mod) => {
                     if next_mod == *start {
                         path.push(next_mod);
                         return Some(path);
                     }
                     if path.contains(&next_mod) {
-                        // Cycle not including start — shouldn't happen since
-                        // we only check after blocking start.
                         return None;
                     }
                     path.push(next_mod.clone());
@@ -857,95 +1015,95 @@ impl CompileScheduler {
     }
 
     /// Move module to Complete if inmem_done and object_done.
-    fn try_complete(&mut self, module: &ModuleFullPath) {
-        let Some(ms) = self.state.modules.get(module) else { return };
+    fn try_complete_locked(
+        state: &mut SchedulerState,
+        module: &ModuleFullPath,
+    ) {
+        let Some(ms) = state.modules.get(module) else { return };
         if ms.pool != ModulePool::TypecheckDone {
             return;
         }
         if ms.inmem_done && ms.object_done {
-            self.set_pool(module, ModulePool::Complete);
+            Self::set_pool_locked(state, module, ModulePool::Complete);
             // Remove from typecheck_done deque.
-            self.state.typecheck_done.retain(|m| m != module);
+            state.typecheck_done.retain(|m| m != module);
         }
     }
 
     /// Find a priority entry by (module, symbol) key.
-    fn find_priority_entry(
-        &self,
+    fn find_priority_entry_locked(
+        state: &SchedulerState,
         key: &(ModuleFullPath, Symbol),
     ) -> Option<usize> {
-        self.state.priority_queue.iter().position(|e| {
+        state.priority_queue.iter().position(|e| {
             e.module == key.0 && e.symbol == key.1
         })
     }
 
     /// Resolve a priority entry: unblock waiting modules, propagate
-    /// to dependents, and remove the entry. Per concurrent-pipeline.md §4.3.
-    fn resolve_priority_entry(&mut self, idx: usize) {
-        // Extract the entry's data before mutating.
-        let unblocks = self.state.priority_queue[idx].unblocks.clone();
-        let dependents = self.state.priority_queue[idx].dependents.clone();
+    /// to dependents, and remove the entry.
+    fn resolve_priority_entry_locked(
+        state: &mut SchedulerState,
+        idx: usize,
+    ) {
+        let unblocks = state.priority_queue[idx].unblocks.clone();
+        let dependents = state.priority_queue[idx].dependents.clone();
         let key = (
-            self.state.priority_queue[idx].module.clone(),
-            self.state.priority_queue[idx].symbol.clone(),
+            state.priority_queue[idx].module.clone(),
+            state.priority_queue[idx].symbol.clone(),
         );
 
-        // Unblock the modules waiting on this macro chain.
         for waiter_module in &unblocks {
-            self.try_unblock(waiter_module);
+            Self::try_unblock_locked(state, waiter_module);
         }
 
-        // Walk dependents: remove this symbol from each dependent's
-        // dependencies set.
         let mut newly_resolved = Vec::new();
         for dep_key in &dependents {
-            if let Some(dep_idx) = self.find_priority_entry(dep_key) {
-                self.state.priority_queue[dep_idx]
+            if let Some(dep_idx) = Self::find_priority_entry_locked(state, dep_key)
+            {
+                state.priority_queue[dep_idx]
                     .dependencies
                     .remove(&key);
-                if self.state.priority_queue[dep_idx].dependencies.is_empty()
-                    && self.state.priority_queue[dep_idx].status == PriorityStatus::Waiting
+                if state.priority_queue[dep_idx].dependencies.is_empty()
+                    && state.priority_queue[dep_idx].status
+                        == PriorityStatus::Waiting
                 {
                     newly_resolved.push(dep_idx);
                 }
             }
         }
 
-        // Remove this entry. Mark as Waiting first to indicate resolved
-        // (it will be removed below).
-        self.state.priority_queue[idx].status = PriorityStatus::Waiting;
-
-        // Remove the resolved entry from the queue.
-        self.state.priority_queue.remove(idx);
+        state.priority_queue[idx].status = PriorityStatus::Waiting;
+        state.priority_queue.remove(idx);
 
         // Recursively resolve any newly-resolved dependents.
-        // We must re-find indices since removal shifted them.
         for dep_key in &dependents {
-            if let Some(dep_idx) = self.find_priority_entry(dep_key)
-                && self.state.priority_queue[dep_idx].dependencies.is_empty()
-                && self.state.priority_queue[dep_idx].status == PriorityStatus::Waiting
+            if let Some(dep_idx) = Self::find_priority_entry_locked(state, dep_key)
+                .filter(|&idx| {
+                    state.priority_queue[idx].dependencies.is_empty()
+                        && state.priority_queue[idx].status == PriorityStatus::Waiting
+                })
             {
-                self.resolve_priority_entry(dep_idx);
+                Self::resolve_priority_entry_locked(state, dep_idx);
             }
         }
     }
 
     /// Push priority entries for a macro codegen request.
-    /// Wires forward/reverse edges between entries.
-    fn push_priority_entries(
-        &mut self,
+    fn push_priority_entries_locked(
+        state: &mut SchedulerState,
         waiting_module: &ModuleFullPath,
         needed: &[(ModuleFullPath, Symbol)],
         macro_key: Option<&(ModuleFullPath, Symbol)>,
     ) {
-        // Build the set of new entries to push, skipping duplicates.
         for (mod_path, sym) in needed {
             let key = (mod_path.clone(), sym.clone());
 
-            if let Some(existing_idx) = self.find_priority_entry(&key) {
-                // Already queued — add unblocks if this is the macro entry.
+            if let Some(existing_idx) =
+                Self::find_priority_entry_locked(state, &key)
+            {
                 if Some(&key) == macro_key {
-                    let entry = &mut self.state.priority_queue[existing_idx];
+                    let entry = &mut state.priority_queue[existing_idx];
                     if !entry.unblocks.contains(waiting_module) {
                         entry.unblocks.push(waiting_module.clone());
                     }
@@ -953,7 +1111,6 @@ impl CompileScheduler {
                 continue;
             }
 
-            // Create new entry.
             let unblocks = if Some(&key) == macro_key {
                 vec![waiting_module.clone()]
             } else {
@@ -969,42 +1126,30 @@ impl CompileScheduler {
                 dependents: Vec::new(),
             };
 
-            // Push to front (per §4.1 — new entries go to front).
-            self.state.priority_queue.push_front(entry);
+            state.priority_queue.push_front(entry);
         }
 
-        // Wire forward/reverse edges between entries in `needed`.
-        // needed is ordered dependencies-first (BFS), so entry i may
-        // depend on entries before it.
-        self.wire_priority_edges(needed);
+        Self::wire_priority_edges_locked(state, needed);
     }
 
     /// Wire forward/reverse edges between priority entries.
-    /// For each pair (dep, consumer) where consumer calls dep,
-    /// add dep to consumer's dependencies and consumer to dep's dependents.
-    ///
-    /// The `needed` list is ordered BFS (dependencies first). Each entry
-    /// at position i may be a dependency of entries at positions > i.
-    /// For simplicity, we wire edges based on adjacency: each entry
-    /// depends on all entries before it that it calls. Since we don't
-    /// have the actual call graph edges here, we wire a linear chain
-    /// (each entry depends on all previous entries).
-    fn wire_priority_edges(&mut self, needed: &[(ModuleFullPath, Symbol)]) {
-        // For a correct implementation, the caller should provide
-        // actual call graph edges. For now, we wire a simple chain:
-        // entry[i] depends on entry[i-1] (if both are in the queue).
+    fn wire_priority_edges_locked(
+        state: &mut SchedulerState,
+        needed: &[(ModuleFullPath, Symbol)],
+    ) {
         for i in 1..needed.len() {
             let dep_key = (needed[i - 1].0.clone(), needed[i - 1].1.clone());
             let consumer_key = (needed[i].0.clone(), needed[i].1.clone());
 
-            let dep_idx = self.find_priority_entry(&dep_key);
-            let consumer_idx = self.find_priority_entry(&consumer_key);
+            let dep_idx = Self::find_priority_entry_locked(state, &dep_key);
+            let consumer_idx =
+                Self::find_priority_entry_locked(state, &consumer_key);
 
             if let (Some(d), Some(c)) = (dep_idx, consumer_idx) {
-                self.state.priority_queue[c]
+                state.priority_queue[c]
                     .dependencies
                     .insert(dep_key.clone());
-                self.state.priority_queue[d]
+                state.priority_queue[d]
                     .dependents
                     .push(consumer_key);
             }
@@ -1012,33 +1157,33 @@ impl CompileScheduler {
     }
 
     /// Satisfy typecheck waiters for all symbols of a cached module.
-    fn satisfy_typecheck_waiters_for_all_symbols(
-        &mut self,
+    fn satisfy_typecheck_waiters_for_all_symbols_locked(
+        state: &mut SchedulerState,
         module: &ModuleFullPath,
         symbols: &HashSet<Symbol>,
     ) {
         for symbol in symbols {
-            let waiters = self.take_waiters_for_symbol(
-                module, symbol, WaitKind::Typecheck,
+            let waiters = Self::take_waiters_for_symbol_locked(
+                state, module, symbol, WaitKind::Typecheck,
             );
             for waiter_module in waiters {
-                self.try_unblock(&waiter_module);
+                Self::try_unblock_locked(state, &waiter_module);
             }
         }
     }
 
     /// Satisfy codegen waiters for a batch of symbols.
-    fn satisfy_codegen_waiters_batch(
-        &mut self,
+    fn satisfy_codegen_waiters_batch_locked(
+        state: &mut SchedulerState,
         module: &ModuleFullPath,
         symbols: &[Symbol],
     ) {
         for symbol in symbols {
-            let waiters = self.take_waiters_for_symbol(
-                module, symbol, WaitKind::Codegen,
+            let waiters = Self::take_waiters_for_symbol_locked(
+                state, module, symbol, WaitKind::Codegen,
             );
             for waiter_module in waiters {
-                self.try_unblock(&waiter_module);
+                Self::try_unblock_locked(state, &waiter_module);
             }
         }
     }
@@ -1113,5 +1258,141 @@ impl From<SchedulerError> for CranelispError {
                 }
             }
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::AtomicBool;
+
+    fn mod_path(name: &str) -> ModuleFullPath {
+        ModuleFullPath::from(name)
+    }
+
+    #[test]
+    fn take_object_codegen_returns_none_on_shutdown() {
+        let sched = CompileScheduler::new();
+        sched.shutdown();
+        assert!(sched.take_object_codegen().is_none());
+    }
+
+    #[test]
+    fn take_object_codegen_object_working_prevents_double_claim() {
+        let sched = CompileScheduler::new();
+        let m = mod_path("test.mod");
+        sched.register_module(m.clone(), false);
+        sched.notify_typecheck_done(&m);
+
+        // First claim should succeed and set object_working.
+        let first = sched.take_object_codegen();
+        assert_eq!(first, Some(m.clone()));
+
+        // Verify the module is marked as object_working.
+        {
+            let state = sched.lock();
+            let ms = state.modules.get(&m).unwrap();
+            assert!(ms.object_working);
+            assert!(!ms.object_done);
+        }
+
+        // Shutdown so the second take_object_codegen doesn't block.
+        sched.shutdown();
+
+        // Second call should return None (module is object_working,
+        // and shutdown is set).
+        let second = sched.take_object_codegen();
+        assert!(second.is_none());
+    }
+
+    #[test]
+    fn notify_object_codegen_complete_clears_object_working() {
+        let sched = CompileScheduler::new();
+        let m = mod_path("test.mod");
+        sched.register_module(m.clone(), false);
+        sched.notify_typecheck_done(&m);
+
+        // Claim the module.
+        let claimed = sched.take_object_codegen();
+        assert_eq!(claimed, Some(m.clone()));
+
+        // Complete object codegen.
+        sched.notify_object_codegen_complete(&m);
+
+        // Verify object_working is cleared and object_done is set.
+        let state = sched.lock();
+        let ms = state.modules.get(&m).unwrap();
+        assert!(!ms.object_working);
+        assert!(ms.object_done);
+    }
+
+    #[test]
+    fn wait_object_complete_returns_when_all_done() {
+        let sched = CompileScheduler::new();
+        let m = mod_path("test.mod");
+        sched.register_module(m.clone(), false);
+        sched.notify_typecheck_done(&m);
+
+        // Mark object codegen complete (skip the claim step — direct
+        // notification is valid for testing the wait condition).
+        sched.notify_object_codegen_complete(&m);
+
+        // wait_object_complete should return immediately.
+        let result = sched.wait_object_complete();
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn wait_object_complete_returns_err_on_failed_module() {
+        let sched = CompileScheduler::new();
+        let m = mod_path("test.mod");
+        sched.register_module(m.clone(), false);
+        sched.notify_module_failed(
+            &m,
+            CranelispError::ModuleError {
+                message: "test error".into(),
+                file: None,
+                span: Span::SYNTHETIC,
+            },
+        );
+
+        let result = sched.wait_object_complete();
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn nice_worker_lifecycle_spawn_and_shutdown() {
+        use std::sync::Arc;
+
+        let shared = Arc::new(crate::session_v4::SharedState {
+            scheduler: CompileScheduler::new(),
+            cache_dir: None,
+            compiled_o_paths: Mutex::new(Vec::new()),
+            promote_nice_workers: AtomicBool::new(false),
+            object_codegen_inputs: Mutex::new(std::collections::HashMap::new()),
+        });
+
+        let m = mod_path("test.mod");
+        shared.scheduler.register_module(m.clone(), false);
+        shared.scheduler.notify_typecheck_done(&m);
+
+        // Spawn a nice worker, let it process the module, then shut down.
+        std::thread::scope(|scope| {
+            crate::session_v4::spawn_nice_workers(scope, &shared, 1);
+
+            // The worker calls notify_object_codegen_complete, which
+            // sets object_done = true. Wait for it.
+            let result = shared.scheduler.wait_object_complete();
+            assert!(result.is_ok());
+
+            shared.scheduler.shutdown();
+        });
+
+        // After scope exits, worker threads have joined.
+        assert!(shared.scheduler.is_shutdown());
     }
 }

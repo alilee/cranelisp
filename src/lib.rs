@@ -17,4 +17,5 @@ pub mod pretty;
 pub mod repl;
 pub mod scheduler;
 pub mod style;
+pub mod thread_util;
 pub mod worker;

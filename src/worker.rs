@@ -34,11 +34,17 @@ use crate::session::InMemWorkerState;
 /// tc and inmem_worker which are mutated during compilation.
 pub struct WorkerContext<'a> {
     pub tc: &'a mut cranelisp_typecheck::TypeChecker,
-    pub scheduler: &'a mut CompileScheduler,
+    pub scheduler: &'a CompileScheduler,
     pub inmem_worker: &'a mut InMemWorkerState,
     pub platform_registry: &'a mut PlatformRegistry,
     pub lib_dirs: &'a [PathBuf],
     pub project_root: &'a Path,
+    /// Optional stash for nice workers to pick up object codegen data.
+    /// When Some, the priority worker stores CheckResult + Program after
+    /// in-memory codegen so nice workers can compile `.o` files.
+    pub object_codegen_stash: Option<&'a std::sync::Mutex<
+        HashMap<ModuleFullPath, crate::session_v4::ObjectCodegenInput>,
+    >>,
 }
 
 // ---------------------------------------------------------------------------
@@ -277,7 +283,10 @@ fn finalize_module(
     check_result.display =
         ctx.tc.compute_display_info_public(expanded_program, &accumulator.defn_type_vars);
 
-    ctx.scheduler.notify_typecheck_done(module);
+    // NOTE: notify_typecheck_done is NOT called here. The caller is
+    // responsible for stashing ObjectCodegenInput and calling
+    // notify_typecheck_done AFTER, so that nice workers cannot claim
+    // the module before the stash is populated.
 
     Ok(ProcessResult::Complete {
         check_result,
@@ -1311,7 +1320,7 @@ fn wrap_exprs_as_defns(program: &[TopLevel]) -> Vec<TopLevel> {
 pub fn codegen_module_symbols(
     inmem_worker: &mut InMemWorkerState,
     platform_registry: &PlatformRegistry,
-    scheduler: &mut CompileScheduler,
+    scheduler: &CompileScheduler,
     module: &ModuleFullPath,
     program: &[TopLevel],
     check: &CheckResult,
@@ -1470,8 +1479,8 @@ pub fn priority_worker_loop(
         let work = ctx.scheduler.take_priority_work();
         match work {
             Some(PriorityWork::Typecheck(module)) => {
-                let start_idx = ctx.scheduler.module_state(&module)
-                    .and_then(|ms| ms.resume_from_form)
+                let start_idx = ctx.scheduler.module_resume_from_form(&module)
+                    .flatten()
                     .unwrap_or(0);
 
                 // Clone sexps (don't remove — needed on resume).
@@ -1507,6 +1516,19 @@ pub fn priority_worker_loop(
                             &program,
                             &check_result,
                         )?;
+
+                        // Stash data for nice worker .o compilation, then
+                        // notify typecheck_done. Order matters: nice workers
+                        // wake on notify_typecheck_done, so the stash must
+                        // be populated first.
+                        stash_object_codegen_input(
+                            ctx.object_codegen_stash,
+                            &module,
+                            check_result,
+                            program,
+                        );
+                        ctx.scheduler.notify_typecheck_done(&module);
+
                         // Clean up — module is done.
                         module_sexps.remove(&module);
                         suspend_states.remove(&module);
@@ -1517,9 +1539,7 @@ pub fn priority_worker_loop(
                         dep_sexps,
                     }) => {
                         // Save resume state in scheduler.
-                        if let Some(ms) = ctx.scheduler.module_state_mut(&module) {
-                            ms.resume_from_form = Some(form_index);
-                        }
+                        ctx.scheduler.set_resume_from_form(&module, form_index);
                         // Store dep sexps for the worker loop to pick up.
                         module_sexps.entry(dep_module.clone())
                             .or_insert(dep_sexps);
@@ -1546,4 +1566,35 @@ pub fn priority_worker_loop(
         }
     }
     Ok(())
+}
+
+/// Stash module data for nice worker `.o` compilation.
+///
+/// When the object codegen stash is available, stores the CheckResult and
+/// Program so that nice workers can build ObjectCompileInput and compile
+/// `.o` files without re-accessing the TypeChecker.
+fn stash_object_codegen_input(
+    stash: Option<&std::sync::Mutex<
+        HashMap<ModuleFullPath, crate::session_v4::ObjectCodegenInput>,
+    >>,
+    module: &ModuleFullPath,
+    check_result: CheckResult,
+    program: Vec<TopLevel>,
+) {
+    let Some(stash) = stash else { return };
+
+    let input = crate::session_v4::ObjectCodegenInput {
+        check_result,
+        program,
+        // Cross-module func_sigs are not accumulated in the v4 path yet.
+        // The nice worker will compile with an empty list, which means
+        // cross-module GOT references won't have slot assignments in the
+        // `.o` file. This is acceptable for now — full cross-module GOT
+        // support requires the linker integration (Step 10+).
+        cross_module_func_sigs: Vec::new(),
+    };
+
+    if let Ok(mut map) = stash.lock() {
+        map.insert(module.clone(), input);
+    }
 }
