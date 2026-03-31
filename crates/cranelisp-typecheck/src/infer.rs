@@ -27,7 +27,7 @@ impl TypeChecker {
     }
 
     /// Infer the type of an expression. Main dispatch method.
-    pub(crate) fn infer_expr(&mut self, state: &mut CheckState, expr: &Expr) -> Result<Type, CranelispError> {
+    pub(crate) fn infer_expr(&self, state: &mut CheckState, expr: &Expr) -> Result<Type, CranelispError> {
         match expr {
             Expr::IntLit { span, .. } => self.infer_int_lit(state, *span),
             Expr::FloatLit { span, .. } => self.infer_float_lit(state, *span),
@@ -100,27 +100,27 @@ impl TypeChecker {
 
     // --- Per-variant inference methods ---
 
-    fn infer_int_lit(&mut self, state: &mut CheckState, span: Span) -> Result<Type, CranelispError> {
+    fn infer_int_lit(&self, state: &mut CheckState, span: Span) -> Result<Type, CranelispError> {
         self.record_expr_type(state, span, Type::Int);
         Ok(Type::Int)
     }
 
-    fn infer_string_lit(&mut self, state: &mut CheckState, span: Span) -> Result<Type, CranelispError> {
+    fn infer_string_lit(&self, state: &mut CheckState, span: Span) -> Result<Type, CranelispError> {
         self.record_expr_type(state, span, Type::String);
         Ok(Type::String)
     }
 
-    fn infer_float_lit(&mut self, state: &mut CheckState, span: Span) -> Result<Type, CranelispError> {
+    fn infer_float_lit(&self, state: &mut CheckState, span: Span) -> Result<Type, CranelispError> {
         self.record_expr_type(state, span, Type::Float);
         Ok(Type::Float)
     }
 
-    fn infer_bool_lit(&mut self, state: &mut CheckState, span: Span) -> Result<Type, CranelispError> {
+    fn infer_bool_lit(&self, state: &mut CheckState, span: Span) -> Result<Type, CranelispError> {
         self.record_expr_type(state, span, Type::Bool);
         Ok(Type::Bool)
     }
 
-    fn infer_var(&mut self, state: &mut CheckState, name: &Symbol, span: Span) -> Result<Type, CranelispError> {
+    fn infer_var(&self, state: &mut CheckState, name: &Symbol, span: Span) -> Result<Type, CranelispError> {
         let scheme = self.lookup(state, name).ok_or_else(|| CranelispError::TypeError {
             message: format!("undefined variable: {name}"),
             span,
@@ -177,7 +177,7 @@ impl TypeChecker {
     // into enclosing scope. This deviates from plan section 2.3 but is strictly
     // better behavior.
     fn infer_let(
-        &mut self, state: &mut CheckState,
+        &self, state: &mut CheckState,
         bindings: &[(Symbol, Expr)],
         body: &Expr,
         span: Span,
@@ -199,7 +199,7 @@ impl TypeChecker {
     }
 
     fn infer_if(
-        &mut self, state: &mut CheckState,
+        &self, state: &mut CheckState,
         cond: &Expr,
         then_branch: &Expr,
         else_branch: &Expr,
@@ -218,7 +218,7 @@ impl TypeChecker {
     }
 
     fn infer_lambda(
-        &mut self, state: &mut CheckState,
+        &self, state: &mut CheckState,
         params: &[Symbol],
         param_annotations: &[Option<TypeExpr>],
         body: &Expr,
@@ -254,7 +254,7 @@ impl TypeChecker {
     }
 
     fn infer_apply(
-        &mut self, state: &mut CheckState,
+        &self, state: &mut CheckState,
         callee: &Expr,
         args: &[Expr],
         span: Span,
@@ -376,7 +376,7 @@ impl TypeChecker {
     /// Returns `Some(curry_type)` on success, `None` if not applicable.
     /// The caller should propagate the original unification error when None.
     fn try_auto_curry(
-        &mut self, state: &mut CheckState,
+        &self, state: &mut CheckState,
         callee: &Expr,
         callee_ty: &Type,
         arg_types: &[Type],
@@ -456,11 +456,14 @@ impl TypeChecker {
             let name_part = &name[slash_pos + 1..];
             if !module_part.is_empty() && !name_part.is_empty() {
                 let module_path = ModuleFullPath::from(module_part);
-                if let Some(table) = self.modules.get(&module_path)
-                    && let Some(entry) = table.get(name_part)
-                {
-                    let terminal = self.resolve_to_terminal_entry(entry, 0)?;
-                    if let ModuleEntry::Def { kind, .. } = terminal {
+                // Clone-and-drop: get entry from guard, drop guard, then follow chain
+                let entry = {
+                    let guard = self.modules.get(&module_path);
+                    guard.as_ref().and_then(|g| g.get(name_part).cloned())
+                };
+                if let Some(entry) = entry {
+                    let terminal = self.resolve_to_terminal_entry_owned(&entry, 0)?;
+                    if let ModuleEntry::Def { kind, .. } = &terminal {
                         // Return the JIT symbol name if specified (platform effects),
                         // otherwise return the bare name.
                         if let DefKind::Primitive { jit_name: Some(jit), .. } = kind.as_ref() {
@@ -475,9 +478,9 @@ impl TypeChecker {
             return None;
         }
 
-        // Unqualified name: resolve in current module
+        // Unqualified name: resolve in current module (returns owned entry)
         let entry = self.resolve_entry_in_current_module(state, name)?;
-        if let ModuleEntry::Def { kind, .. } = entry {
+        if let ModuleEntry::Def { kind, .. } = &entry {
             // Return the JIT symbol name if specified (platform effects),
             // otherwise return the bare name.
             if let DefKind::Primitive { jit_name: Some(jit), .. } = kind.as_ref() {
@@ -496,7 +499,7 @@ impl TypeChecker {
     /// Called after a function body is fully checked and all substitutions are
     /// established. Walks the expression tree, finds Apply nodes whose callee is
     /// a known trait method but has no entry in method_resolutions, and resolves them.
-    pub(crate) fn resolve_deferred_trait_calls(&mut self, state: &mut CheckState, expr: &Expr) {
+    pub(crate) fn resolve_deferred_trait_calls(&self, state: &mut CheckState, expr: &Expr) {
         match expr {
             Expr::Apply { callee, args, span } => {
                 // Try to resolve this Apply if it's not already resolved
@@ -567,7 +570,7 @@ impl TypeChecker {
     }
 
     fn infer_match(
-        &mut self, state: &mut CheckState,
+        &self, state: &mut CheckState,
         scrutinee: &Expr,
         arms: &[MatchArm],
         span: Span,
@@ -638,7 +641,7 @@ impl TypeChecker {
     /// unifies the result type with the scrutinee, and binds pattern variables
     /// to the instantiated field types.
     fn check_constructor_pattern(
-        &mut self, state: &mut CheckState,
+        &self, state: &mut CheckState,
         name: &Symbol,
         bindings: &[Symbol],
         scrutinee_ty: &Type,
@@ -705,7 +708,7 @@ impl TypeChecker {
 
     /// Unify an instantiated constructor type with the scrutinee and bind variables.
     fn unify_pattern_with_scrutinee(
-        &mut self, state: &mut CheckState,
+        &self, state: &mut CheckState,
         name: &Symbol,
         bindings: &[Symbol],
         instantiated: &Type,
@@ -745,7 +748,7 @@ impl TypeChecker {
 
     /// Bind pattern variables for a data constructor with fields.
     fn bind_data_ctor_pattern(
-        &mut self, state: &mut CheckState,
+        &self, state: &mut CheckState,
         name: &Symbol,
         bindings: &[Symbol],
         field_types: &[Type],
@@ -777,7 +780,7 @@ impl TypeChecker {
     }
 
     fn infer_vec_lit(
-        &mut self, state: &mut CheckState,
+        &self, state: &mut CheckState,
         elements: &[Expr],
         span: Span,
     ) -> Result<Type, CranelispError> {
@@ -815,7 +818,7 @@ impl TypeChecker {
     ///
     /// See spec §3.2.4 (Trace typing rule) and §4.12.1.
     fn infer_trace(
-        &mut self, state: &mut CheckState,
+        &self, state: &mut CheckState,
         body: &Expr,
         span: Span,
     ) -> Result<Type, CranelispError> {
@@ -835,7 +838,7 @@ impl TypeChecker {
     /// - `fail_fn :: (Fn [:a String Int String Trace] :a)`
     /// - Result type is `:a` (the accumulator type)
     fn infer_run_tests(
-        &mut self, state: &mut CheckState,
+        &self, state: &mut CheckState,
         init: &Expr,
         pass_fn: &Expr,
         fail_fn: &Expr,
@@ -869,7 +872,7 @@ impl TypeChecker {
     }
 
     fn infer_annotate(
-        &mut self, state: &mut CheckState,
+        &self, state: &mut CheckState,
         annotation: &TypeExpr,
         expr: &Expr,
         span: Span,

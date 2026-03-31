@@ -87,7 +87,7 @@ impl TypeChecker {
     /// constructor fields (Ring 1). Allocates fresh type vars for type parameters,
     /// resolves field types, and produces polymorphic constructor schemes.
     pub(crate) fn register_type_def(
-        &mut self,
+        &self,
         state: &mut CheckState,
         name: &TypeName,
         docstring: &Option<String>,
@@ -107,7 +107,7 @@ impl TypeChecker {
         // `:(List a) tail` inside a `(deftype (List a) ...)`) can resolve
         // the type during `build_constructor_infos`. The full TypeDefInfo
         // replaces this placeholder below.
-        self.type_defs.get_mut().unwrap().type_defs.insert(
+        self.type_defs.write().unwrap().type_defs.insert(
             name.clone(),
             TypeDefInfo {
                 name: name.clone(),
@@ -125,7 +125,7 @@ impl TypeChecker {
         ) {
             Ok(infos) => infos,
             Err(e) => {
-                self.type_defs.get_mut().unwrap().type_defs.remove(name);
+                self.type_defs.write().unwrap().type_defs.remove(name);
                 return Err(e);
             }
         };
@@ -138,7 +138,7 @@ impl TypeChecker {
         };
 
         // Register the type definition
-        self.type_defs.get_mut().unwrap()
+        self.type_defs.write().unwrap()
             .type_defs
             .insert(name.clone(), type_def_info.clone());
 
@@ -168,7 +168,7 @@ impl TypeChecker {
     /// Allocate fresh type variables for type parameters.
     /// Returns a var_map (param name -> TypeId) and the ordered list of TypeIds.
     fn allocate_type_params(
-        &mut self,
+        &self,
         type_params: &[Symbol],
     ) -> (HashMap<Symbol, TypeId>, Vec<TypeId>) {
         let mut var_map = HashMap::new();
@@ -254,7 +254,7 @@ impl TypeChecker {
 
     /// Register constructors in symbol table and constructor_to_type map.
     fn register_constructors(
-        &mut self,
+        &self,
         state: &mut CheckState,
         name: &TypeName,
         type_def_info: &TypeDefInfo,
@@ -277,7 +277,7 @@ impl TypeChecker {
                 },
             );
 
-            self.type_defs.get_mut().unwrap()
+            self.type_defs.write().unwrap()
                 .constructor_to_type
                 .insert(ctor_info.name.clone(), name.clone());
         }

@@ -146,12 +146,12 @@ impl TypeChecker {
     /// - Registers each method as a constrained polymorphic symbol
     /// - Registers the trait name in the symbol table as TraitDecl
     pub(crate) fn register_trait_decl(
-        &mut self,
+        &self,
         state: &mut CheckState,
         decl: &TraitDecl,
     ) -> Result<(), CranelispError> {
         // Check for duplicate trait name
-        if self.trait_registry.get_mut().unwrap().decls.contains_key(&decl.name) {
+        if self.trait_registry.write().unwrap().decls.contains_key(&decl.name) {
             return Err(CranelispError::TypeError {
                 message: format!("trait {} already defined", decl.name),
                 span: decl.span,
@@ -185,7 +185,7 @@ impl TypeChecker {
         }
 
         // Store the declaration
-        self.trait_registry.get_mut().unwrap()
+        self.trait_registry.write().unwrap()
             .decls
             .insert(decl.name.clone(), decl.clone());
 
@@ -205,10 +205,11 @@ impl TypeChecker {
     /// Register an HKT trait where type_params are type constructor variables.
     /// E.g., `(deftrait (Functor f) (fmap [(Fn [a] b) (f a)] (f b)))`
     fn register_hkt_trait(
-        &mut self,
+        &self,
         state: &mut CheckState,
         decl: &TraitDecl,
     ) -> Result<(), CranelispError> {
+        let mut local_next_id = self.next_id_snapshot();
         // Create fresh type var IDs for each constructor param
         let mut con_var_map: HashMap<Symbol, TypeId> = HashMap::new();
         for param_name in &decl.type_params {
@@ -231,10 +232,10 @@ impl TypeChecker {
             let param_tys: Vec<Type> = method
                 .params
                 .iter()
-                .map(|p| resolve_type_expr_hkt(p, &con_var_map, &mut type_var_map, self.next_id.get_mut(), decl.span))
+                .map(|p| resolve_type_expr_hkt(p, &con_var_map, &mut type_var_map, &mut local_next_id, decl.span))
                 .collect::<Result<Vec<_>, _>>()?;
             let ret_ty =
-                resolve_type_expr_hkt(&method.ret_type, &con_var_map, &mut type_var_map, self.next_id.get_mut(), decl.span)?;
+                resolve_type_expr_hkt(&method.ret_type, &con_var_map, &mut type_var_map, &mut local_next_id, decl.span)?;
 
             // Collect all var IDs (constructor + regular)
             let mut all_vars: Vec<TypeId> = con_var_map.values().copied().collect();
@@ -270,13 +271,13 @@ impl TypeChecker {
             );
 
             // Register reverse lookup
-            self.trait_registry.get_mut().unwrap()
+            self.trait_registry.write().unwrap()
                 .method_to_trait
                 .insert(method.name.clone(), decl.name.clone());
         }
 
         // Store the modified declaration (with hkt_param_index set)
-        self.trait_registry.get_mut().unwrap()
+        self.trait_registry.write().unwrap()
             .decls
             .insert(decl.name.clone(), modified_decl.clone());
 
@@ -290,12 +291,13 @@ impl TypeChecker {
             },
         );
 
+        self.commit_next_id(local_next_id);
         Ok(())
     }
 
     /// Register a single trait method with its constrained polymorphic scheme.
     fn register_trait_method(
-        &mut self,
+        &self,
         state: &mut CheckState,
         trait_name: &TraitName,
         method: &TraitMethodSig,
@@ -331,7 +333,7 @@ impl TypeChecker {
         );
 
         // Register reverse lookup
-        self.trait_registry.get_mut().unwrap()
+        self.trait_registry.write().unwrap()
             .method_to_trait
             .insert(method.name.clone(), trait_name.clone());
 
@@ -344,12 +346,13 @@ impl TypeChecker {
     /// TypeVars matching the trait's type parameters map to self_type;
     /// other TypeVars get fresh type variables (I3 fix).
     fn build_method_type(
-        &mut self,
+        &self,
         method: &TraitMethodSig,
         type_var_id: TypeId,
         trait_type_params: &[Symbol],
         span: Span,
     ) -> Result<Type, CranelispError> {
+        let mut local_next_id = self.next_id_snapshot();
         let self_type = Type::Var(type_var_id);
 
         // Pre-seed var_map: trait type params map to self_type.
@@ -361,12 +364,13 @@ impl TypeChecker {
         let param_types: Vec<Type> = method
             .params
             .iter()
-            .map(|p| resolve_trait_type_expr(p, &self_type, span, &mut var_map, self.next_id.get_mut()))
+            .map(|p| resolve_trait_type_expr(p, &self_type, span, &mut var_map, &mut local_next_id))
             .collect::<Result<Vec<_>, _>>()?;
 
         let ret_type =
-            resolve_trait_type_expr(&method.ret_type, &self_type, span, &mut var_map, self.next_id.get_mut())?;
+            resolve_trait_type_expr(&method.ret_type, &self_type, span, &mut var_map, &mut local_next_id)?;
 
+        self.commit_next_id(local_next_id);
         Ok(Type::Fn(param_types, Box::new(ret_type)))
     }
 }
@@ -378,13 +382,13 @@ impl TypeChecker {
 impl TypeChecker {
     /// Register and validate a trait implementation.
     pub(crate) fn register_trait_impl(
-        &mut self,
+        &self,
         state: &mut CheckState,
         impl_: &TraitImpl,
     ) -> Result<Vec<Defn>, CranelispError> {
         // Look up the trait declaration
         let decl = self
-            .trait_registry.get_mut().unwrap()
+            .trait_registry.read().unwrap()
             .decls
             .get(&impl_.trait_name)
             .ok_or_else(|| CranelispError::TypeError {
@@ -421,7 +425,7 @@ impl TypeChecker {
                             }
                         }
                         // Check arity of known ADT types
-                        if let Some(td) = self.type_defs.get_mut().unwrap().get(&impl_.target_type)
+                        if let Some(td) = self.type_defs.read().unwrap().get(&impl_.target_type)
                             && td.type_params.len() != expected_arity
                         {
                             return Err(CranelispError::TypeError {
@@ -455,7 +459,7 @@ impl TypeChecker {
                 .insert(method_defn.name.clone(), method_defn.name.clone());
         }
 
-        self.impl_registry.get_mut().unwrap().impls
+        self.impl_registry.write().unwrap().impls
             .entry(impl_.trait_name.clone())
             .or_default()
             .insert(
@@ -533,12 +537,13 @@ impl TypeChecker {
 
     /// Type-check a single impl method.
     fn check_impl_method(
-        &mut self,
+        &self,
         state: &mut CheckState,
         decl: &TraitDecl,
         impl_: &TraitImpl,
         method_defn: &Defn,
     ) -> Result<(), CranelispError> {
+        let mut local_next_id = self.next_id_snapshot();
         // Look up the method signature from the trait
         let method_sig = decl
             .methods
@@ -581,7 +586,7 @@ impl TypeChecker {
         let param_types: Vec<Type> = method_sig
             .params
             .iter()
-            .map(|p| resolve_trait_type_expr(p, &concrete_self, method_defn.span, &mut var_map, self.next_id.get_mut()))
+            .map(|p| resolve_trait_type_expr(p, &concrete_self, method_defn.span, &mut var_map, &mut local_next_id))
             .collect::<Result<Vec<_>, _>>()?;
 
         let ret_ty = resolve_trait_type_expr(
@@ -589,8 +594,10 @@ impl TypeChecker {
             &concrete_self,
             method_defn.span,
             &mut var_map,
-            self.next_id.get_mut(),
+            &mut local_next_id,
         )?;
+
+        self.commit_next_id(local_next_id);
 
         // Check the body
         self.check_defn_body_with_types(state, method_defn, &param_types, &ret_ty)?;
@@ -604,13 +611,14 @@ impl TypeChecker {
     /// - The constructor variable `f` maps to the impl target `Option`
     /// - `(f a)` in the signature resolves to `(Option a)` via ADT application
     fn check_hkt_impl_method(
-        &mut self,
+        &self,
         state: &mut CheckState,
         decl: &TraitDecl,
         impl_: &TraitImpl,
         method_defn: &Defn,
         method_sig: &TraitMethodSig,
     ) -> Result<(), CranelispError> {
+        let mut local_next_id = self.next_id_snapshot();
         // Build con_var_map: constructor variable name -> resolve to ADT name
         // For HKT impls, we substitute constructor vars with the target ADT.
         // Use resolve_type_expr_hkt_impl which produces concrete ADT types.
@@ -624,7 +632,7 @@ impl TypeChecker {
         // Build the concrete self type: ADT(target, [fresh_vars...])
         let type_arg_vars: Vec<Type> = (0..arity)
             .map(|_| {
-                let (ty, _) = crate::unify::fresh_var_id(self.next_id.get_mut());
+                let (ty, _) = crate::unify::fresh_var_id(&mut local_next_id);
                 ty
             })
             .collect();
@@ -640,7 +648,7 @@ impl TypeChecker {
                 &decl.type_params,
                 &impl_.target_type,
                 &mut type_var_map,
-                self.next_id.get_mut(),
+                &mut local_next_id,
                 impl_.span,
             ))
             .collect::<Result<Vec<_>, _>>()?;
@@ -650,7 +658,7 @@ impl TypeChecker {
             &decl.type_params,
             &impl_.target_type,
             &mut type_var_map,
-            self.next_id.get_mut(),
+            &mut local_next_id,
             impl_.span,
         )?;
 
@@ -661,6 +669,8 @@ impl TypeChecker {
             self.unify(state, param_ty, &concrete_self, method_defn.span)?;
         }
 
+        self.commit_next_id(local_next_id);
+
         // Check the body
         self.check_defn_body_with_types(state, method_defn, &param_types, &ret_ty)?;
 
@@ -670,7 +680,7 @@ impl TypeChecker {
     /// Check a function body with explicit parameter types.
     /// Shared helper for impl method checking.
     pub(crate) fn check_defn_body_with_types(
-        &mut self,
+        &self,
         state: &mut CheckState,
         defn: &Defn,
         param_types: &[Type],
@@ -764,14 +774,14 @@ impl TypeChecker {
     /// and the argument types resolve to a concrete impl.
     /// Returns None if the callee is not a trait method.
     pub(crate) fn try_resolve_trait_method(
-        &mut self,
+        &self,
         state: &mut CheckState,
         callee_name: &Symbol,
         arg_types: &[Type],
         span: Span,
     ) -> Result<Option<ResolvedCall>, CranelispError> {
         // Check if this name is a trait method
-        let trait_name = match self.trait_registry.get_mut().unwrap().method_to_trait.get(callee_name) {
+        let trait_name = match self.trait_registry.read().unwrap().method_to_trait.get(callee_name) {
             Some(tn) => tn.clone(),
             None => return Ok(None),
         };
@@ -793,7 +803,7 @@ impl TypeChecker {
 
         // Check if an impl exists — if the name IS a trait method and the
         // type IS concrete but the impl DOESN'T exist, that's a type error.
-        if !self.impl_registry.get_mut().unwrap().has_impl(&trait_name, &impl_type_name) {
+        if !self.impl_registry.read().unwrap().has_impl(&trait_name, &impl_type_name) {
             return Err(CranelispError::TypeError {
                 message: format!(
                     "no impl of trait {} for type {}",
@@ -833,7 +843,7 @@ impl TypeChecker {
     /// Returns the instantiated type. Side effect: adds constraints to
     /// `self.state.active_constraints`.
     pub(crate) fn instantiate_constrained(
-        &mut self,
+        &self,
         state: &mut CheckState,
         scheme: &Scheme,
     ) -> Type {
@@ -873,7 +883,7 @@ impl TypeChecker {
     /// Called when a constrained function is applied with concrete argument types.
     #[allow(dead_code)]
     pub(crate) fn monomorphise_call(
-        &mut self,
+        &self,
         state: &mut CheckState,
         fn_name: &Symbol,
         arg_types: &[Type],
@@ -943,13 +953,13 @@ impl TypeChecker {
     /// Instantiate a scheme with fresh type variables, unify with the given
     /// argument types, and return the fully-resolved function type.
     fn instantiate_and_resolve(
-        &mut self,
+        &self,
         state: &mut CheckState,
         scheme: &Scheme,
         arg_types: &[Type],
         call_span: Span,
     ) -> Result<Type, CranelispError> {
-        let inst_type = scheme::instantiate(scheme, self.next_id.get_mut());
+        let inst_type = self.instantiate_scheme(scheme);
 
         if let Type::Fn(param_types, _) = &inst_type {
             for (pt, at) in param_types.iter().zip(arg_types.iter()) {
@@ -994,7 +1004,7 @@ impl TypeChecker {
     ///
     /// Returns the per-specialization method resolutions and expression types.
     fn recheck_body_for_mono(
-        &mut self,
+        &self,
         state: &mut CheckState,
         defn: &Defn,
         concrete_param_types: &[Type],
@@ -1073,14 +1083,15 @@ impl TypeChecker {
         &self,
         state: &CheckState,
         name: &Symbol,
-    ) -> Option<&ConstrainedFn> {
+    ) -> Option<ConstrainedFn> {
         use cranelisp_types::{DefKind, ModuleEntry};
 
-        match self.current_symbol_table_with_state(state).get(name.as_ref())? {
+        let guard = self.modules.get(&state.current_module)?;
+        match guard.get(name.as_ref())? {
             ModuleEntry::Def { kind, .. } => match kind.as_ref() {
                 DefKind::UserFn {
                     constrained_fn: Some(cf),
-                } => Some(cf),
+                } => Some(cf.as_ref().clone()),
                 _ => None,
             },
             _ => None,

@@ -275,7 +275,8 @@ fn batch_defmacro_identity() {
 fn repl_macro_in_symbol_table() {
     let mut s = repl_session();
     repl_eval_display(&mut s, "(defmacro my-mac [x] x)");
-    let entry = s.core.tc.symbol_table().get("my-mac");
+    let table_guard = s.core.tc.symbol_table();
+    let entry = table_guard.get("my-mac");
     assert!(
         matches!(entry, Some(cranelisp_types::ModuleEntry::Macro { .. })),
         "expected Macro entry in symbol table"

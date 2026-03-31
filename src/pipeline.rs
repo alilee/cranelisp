@@ -671,8 +671,7 @@ pub fn codegen_and_execute_via_session(
     unit_result: &CompileUnitResult,
     ctx: &CompileContext,
 ) -> Result<CodegenResult, CranelispError> {
-    let symbol_table = session.tc.module_table(&ctx.module)
-        .cloned()
+    let symbol_table = session.tc.module_table_cloned(&ctx.module)
         .unwrap_or_else(|| cranelisp_types::SymbolTable::new(ctx.module.clone()));
 
     codegen_and_execute_decomposed(

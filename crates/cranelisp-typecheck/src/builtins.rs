@@ -137,7 +137,7 @@ impl TypeChecker {
         ];
 
         // Insert copies into user module.
-        if let Some(user_table) = self.modules.get_mut(&user_path) {
+        if let Some(mut user_table) = self.modules.get_mut(&user_path) {
             for (name, entry) in entries_to_copy {
                 // Trace-related names require explicit import (spec §3.2.4).
                 if TRACE_NO_AUTO_IMPORT.contains(&name.as_ref()) {
@@ -179,7 +179,7 @@ impl TypeChecker {
     /// Docstrings are taken from spec appendix-a-builtins.md §A.3.
     fn register_primitives(&mut self) {
         let primitives_path = ModuleFullPath::from("primitives");
-        let primitives_table = self
+        let mut primitives_table = self
             .modules
             .get_mut(&primitives_path)
             .unwrap_or_else(|| unreachable!("invariant: primitives module should exist"));
@@ -213,7 +213,7 @@ impl TypeChecker {
     /// Docstrings are taken from spec appendix-a-builtins.md §A.3.
     fn register_ring1_primitives(&mut self) {
         let primitives_path = ModuleFullPath::from("primitives");
-        let primitives_table = self
+        let mut primitives_table = self
             .modules
             .get_mut(&primitives_path)
             .unwrap_or_else(|| unreachable!("invariant: primitives module should exist"));
@@ -304,7 +304,7 @@ impl TypeChecker {
         ];
 
         let primitives_path = ModuleFullPath::from("primitives");
-        let primitives_table = self
+        let mut primitives_table = self
             .modules
             .get_mut(&primitives_path)
             .unwrap_or_else(|| unreachable!("invariant: primitives module should exist"));
@@ -383,7 +383,7 @@ impl TypeChecker {
     /// copies them into `user` alongside Ring 0-1 primitives.
     fn register_ring3_primitives(&mut self) {
         let primitives_path = ModuleFullPath::from("primitives");
-        let primitives_table = self
+        let mut primitives_table = self
             .modules
             .get_mut(&primitives_path)
             .unwrap_or_else(|| unreachable!("invariant: primitives module should exist"));
@@ -734,7 +734,7 @@ impl TypeChecker {
             ty: bind_ty,
         };
 
-        let primitives_table = self
+        let mut primitives_table = self
             .modules
             .get_mut(&primitives_path)
             .unwrap_or_else(|| unreachable!("invariant: primitives module should exist"));
@@ -997,7 +997,7 @@ mod tests {
     use cranelisp_types::{ring0_primitives, ModuleEntry, Type};
 
     /// Helper: get the `primitives` module's symbol table from a TypeChecker.
-    fn primitives_table(tc: &TypeChecker) -> &cranelisp_types::SymbolTable {
+    fn primitives_table(tc: &TypeChecker) -> dashmap::mapref::one::Ref<'_, ModuleFullPath, cranelisp_types::SymbolTable> {
         let path = ModuleFullPath::from("primitives");
         tc.modules
             .get(&path)
@@ -1107,7 +1107,8 @@ mod tests {
         let tc = TypeChecker::new();
         let forms = ["if", "let", "fn", "defn", "deftype", "match", "deftrait", "impl"];
         for name in forms {
-            let entry = tc.symbol_table().get(name);
+            let table_guard = tc.symbol_table();
+            let entry = table_guard.get(name);
             assert!(entry.is_some(), "special form {name} should be registered");
             if let Some(ModuleEntry::Def { kind, .. }) = entry {
                 assert!(
@@ -1594,7 +1595,8 @@ mod tests {
     #[test]
     fn test_quote_sexp_registered() {
         let tc = TypeChecker::new();
-        let entry = primitives_table(&tc).get("quote-sexp");
+        let prims = primitives_table(&tc);
+        let entry = prims.get("quote-sexp");
         assert!(entry.is_some(), "quote-sexp should be in primitives module");
 
         if let Some(ModuleEntry::Def { scheme, kind, .. }) = entry {
@@ -1863,7 +1865,8 @@ mod tests {
     #[test]
     fn test_bind_primitive_registered() {
         let tc = TypeChecker::new();
-        let entry = tc.symbol_table().get("bind");
+        let table_guard = tc.symbol_table();
+        let entry = table_guard.get("bind");
         assert!(entry.is_some(), "bind should be in user symbol table");
 
         if let Some(ModuleEntry::Def { scheme, kind, docstring, .. }) = entry {

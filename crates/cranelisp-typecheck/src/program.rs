@@ -337,6 +337,11 @@ impl TypeChecker {
     /// - All signatures must be registered (Pass 1) before any body is checked (Pass 2).
     /// - Source order within Pass 1 must respect: TypeDef < TraitDecl < TraitImpl < Defn.
     /// - One `ModuleCheckAccumulator` per module, no concurrent access.
+    /// Per-form typecheck entry point.
+    ///
+    /// Backward-compatible wrapper that uses `self.state` for the CheckState.
+    /// Workers should prefer `check_form_with_state` which takes an explicit
+    /// `CheckState` parameter (enabling `&self` on `TypeChecker`).
     pub fn check_form(
         &mut self,
         _module: &ModuleFullPath,
@@ -353,9 +358,24 @@ impl TypeChecker {
         result
     }
 
+    /// Per-form typecheck with explicit state — `&self`-compatible for concurrent use.
+    pub fn check_form_with_state(
+        &self,
+        _module: &ModuleFullPath,
+        form: &TopLevel,
+        pass: CheckPass,
+        state: &mut CheckState,
+        accumulator: &mut ModuleCheckAccumulator,
+    ) -> Result<FormCheckResult, CranelispError> {
+        match pass {
+            CheckPass::Register => self.check_form_register(state, form, accumulator),
+            CheckPass::CheckBody => self.check_form_body(state, form, accumulator),
+        }
+    }
+
     /// Pass 1 (Register) dispatch: register type defs, trait decls/impls, signatures.
     fn check_form_register(
-        &mut self,
+        &self,
         state: &mut CheckState,
         form: &TopLevel,
         accumulator: &mut ModuleCheckAccumulator,
@@ -401,7 +421,7 @@ impl TypeChecker {
 
     /// Register a single-sig defn's signature (Pass 1).
     fn check_form_register_single_defn(
-        &mut self,
+        &self,
         state: &mut CheckState,
         defn: &Defn,
         accumulator: &mut ModuleCheckAccumulator,
@@ -413,7 +433,7 @@ impl TypeChecker {
 
     /// Register a multi-sig defn: expand variants, register each, register base as Overloaded.
     fn check_form_register_multi_sig(
-        &mut self,
+        &self,
         state: &mut CheckState,
         defn: &Defn,
         accumulator: &mut ModuleCheckAccumulator,
@@ -461,7 +481,7 @@ impl TypeChecker {
 
     /// Pass 2 (CheckBody) dispatch: check function bodies, generalize, detect constraints.
     fn check_form_body(
-        &mut self,
+        &self,
         state: &mut CheckState,
         form: &TopLevel,
         accumulator: &mut ModuleCheckAccumulator,
@@ -484,7 +504,7 @@ impl TypeChecker {
     /// Checks the body, does eager constrained-fn detection, and scans
     /// for monomorphisation call sites.
     fn check_form_body_single_defn(
-        &mut self,
+        &self,
         state: &mut CheckState,
         defn: &Defn,
         accumulator: &ModuleCheckAccumulator,
@@ -561,7 +581,7 @@ impl TypeChecker {
 
     /// Check a multi-sig defn's variant bodies (Pass 2).
     fn check_form_body_multi_sig(
-        &mut self,
+        &self,
         state: &mut CheckState,
         defn: &Defn,
         accumulator: &ModuleCheckAccumulator,
@@ -661,21 +681,31 @@ impl TypeChecker {
     /// `ModuleEntry` in the symbol table (Decision 21) so that the
     /// scheduler can read them immediately without waiting for
     /// `finalize_check_result`.
+    /// Backward-compatible merge wrapper using `self.state`.
     pub fn merge_form_result(
         &mut self,
         _module: &ModuleFullPath,
         accumulator: &mut ModuleCheckAccumulator,
         result: FormCheckResult,
     ) {
-        // merge_form_result uses current_symbol_table_mut which needs current_module
-        // from self.state. No take-and-restore needed since we don't call state-threaded methods.
         let mut state = std::mem::replace(&mut self.state, CheckState::new(ModuleFullPath::from("")));
         self.merge_form_result_inner(&mut state, accumulator, result);
         self.state = state;
     }
 
+    /// Merge with explicit state — `&self`-compatible for concurrent use.
+    pub fn merge_form_result_with_state(
+        &self,
+        _module: &ModuleFullPath,
+        state: &mut CheckState,
+        accumulator: &mut ModuleCheckAccumulator,
+        result: FormCheckResult,
+    ) {
+        self.merge_form_result_inner(state, accumulator, result);
+    }
+
     fn merge_form_result_inner(
-        &mut self,
+        &self,
         state: &mut CheckState,
         accumulator: &mut ModuleCheckAccumulator,
         result: FormCheckResult,
@@ -683,7 +713,7 @@ impl TypeChecker {
         // Write callees to ModuleEntry eagerly (Decision 21).
         if !result.call_graph_edges.is_empty() {
             write_callees_to_module_entries(
-                self.current_symbol_table_mut_with_state(state),
+                &mut self.current_symbol_table_mut_with_state(state),
                 &result.call_graph_edges,
             );
         }
@@ -713,6 +743,7 @@ impl TypeChecker {
     /// Note: `type_defs` and `constructor_to_type` are read from the TypeChecker's
     /// module tables, not from the accumulator — TypeDef registration writes
     /// directly into the module's type_defs registry during Pass 1.
+    /// Backward-compatible finalize wrapper using `self.state`.
     pub fn finalize_check_result(
         &mut self,
         _module: &ModuleFullPath,
@@ -723,11 +754,23 @@ impl TypeChecker {
         let mut state = std::mem::replace(&mut self.state, CheckState::new(ModuleFullPath::from("")));
         let result = self.finalize_check_result_inner(&mut state, accumulator, working_program, strategy);
         self.state = state;
-        return result;
+        result
+    }
+
+    /// Finalize with explicit state — `&self`-compatible for concurrent use.
+    pub fn finalize_check_result_with_state(
+        &self,
+        _module: &ModuleFullPath,
+        state: &mut CheckState,
+        accumulator: &mut ModuleCheckAccumulator,
+        working_program: &[TopLevel],
+        strategy: ModuleStrategy,
+    ) -> Result<CheckResult, CranelispError> {
+        self.finalize_check_result_inner(state, accumulator, working_program, strategy)
     }
 
     fn finalize_check_result_inner(
-        &mut self,
+        &self,
         state: &mut CheckState,
         accumulator: &mut ModuleCheckAccumulator,
         working_program: &[TopLevel],
@@ -829,7 +872,7 @@ impl TypeChecker {
         // edges from post-passes.
         if !accumulator.call_graph_edges.is_empty() {
             write_callees_to_module_entries(
-                self.current_symbol_table_mut_with_state(state),
+                &mut self.current_symbol_table_mut_with_state(state),
                 &accumulator.call_graph_edges,
             );
         }
@@ -849,8 +892,8 @@ impl TypeChecker {
             method_resolutions: std::mem::take(&mut accumulator.method_resolutions),
             expr_types: resolved_expr_types,
             warnings: std::mem::take(&mut accumulator.warnings),
-            type_defs: self.type_defs.get_mut().unwrap().type_defs.clone(),
-            constructor_to_type: self.type_defs.get_mut().unwrap().constructor_to_type.clone(),
+            type_defs: self.type_defs.read().unwrap().type_defs.clone(),
+            constructor_to_type: self.type_defs.read().unwrap().constructor_to_type.clone(),
             constrained_fn_names,
             mono_defns,
             default_method_defns: all_default_defns,
@@ -873,24 +916,26 @@ impl TypeChecker {
     /// so they flow through the same passes as regular definitions.
     #[must_use = "check result contains expr_types and method_resolutions needed by codegen"]
     pub fn check(
-        &mut self,
+        &self,
         program: &[TopLevel],
         ctx: &CompileContext,
         strategy: ModuleStrategy,
     ) -> Result<CheckResult, CranelispError> {
-        // Set active module from context.
-        self.set_current_module(ctx.module.clone());
+        // Ensure the module's symbol table exists (DashMap interior mutation).
+        self.ensure_module_exists(&ctx.module);
 
-        // Take state for threading through internal methods.
-        // MUST restore on both success and error (error recovery relies on self.state).
-        let mut state = std::mem::replace(&mut self.state, CheckState::new(ModuleFullPath::from("")));
-        let result = self.check_inner(&mut state, program, strategy);
-        self.state = state;
-        result
+        // Create a stack-local CheckState for this check.
+        // Carry forward module aliases and overload tables from persistent
+        // state (for REPL additive mode where aliases accumulate across evals).
+        let mut state = CheckState::new(ctx.module.clone());
+        state.module_aliases = self.state.module_aliases.clone();
+        state.overloads = self.state.overloads.clone();
+        state.resolved_overloads = self.state.resolved_overloads.clone();
+        self.check_inner(&mut state, program, strategy)
     }
 
     fn check_inner(
-        &mut self,
+        &self,
         state: &mut CheckState,
         program: &[TopLevel],
         strategy: ModuleStrategy,
@@ -1039,10 +1084,9 @@ impl TypeChecker {
     }
 
     /// Public wrapper for `clear_module_for_replace` (used by v4 worker).
-    pub fn clear_module_for_replace_public(&mut self) {
-        let mut state = std::mem::replace(&mut self.state, CheckState::new(ModuleFullPath::from("")));
+    pub fn clear_module_for_replace_public(&self) {
+        let mut state = CheckState::new(self.state.current_module.clone());
         self.clear_module_for_replace(&mut state);
-        self.state = state;
     }
 
     /// Public wrapper for `compute_display_info` (used by v4 worker).
@@ -1062,7 +1106,7 @@ impl TypeChecker {
     /// Removes all symbol table entries, type defs, trait decls, and trait
     /// impls for the current module. Called at the start of `check()` when
     /// `ctx.strategy == ModuleStrategy::Replace`.
-    fn clear_module_for_replace(&mut self, state: &mut CheckState) {
+    fn clear_module_for_replace(&self, state: &mut CheckState) {
         // Clear symbol table entries for the current module
         self.current_symbol_table_mut_with_state(state).symbols.clear();
 
@@ -1103,7 +1147,7 @@ impl TypeChecker {
     /// Note: Superseded by `check_form_register_multi_sig` for the `check()` path.
     /// Retained for the deprecated `check_program` path used in tests.
     #[allow(dead_code)]
-    fn expand_multi_sig_defns(&mut self,
+    fn expand_multi_sig_defns(&self,
         state: &mut CheckState, program: &[TopLevel]) -> Vec<Defn> {
         let mut internal_defns = Vec::new();
 
@@ -1162,7 +1206,7 @@ impl TypeChecker {
     ///
     /// Returns a list of mangled Defn objects that the backend should compile.
     fn resolve_multi_sig_overloads(
-        &mut self,
+        &self,
         state: &mut CheckState,
         program: &[TopLevel],
         type_vars: &HashMap<Symbol, (Vec<Type>, Type)>,
@@ -1249,7 +1293,7 @@ impl TypeChecker {
     /// Returns `(mangled_defns, resolved_info)` where `resolved_info` is
     /// `(concrete_params, concrete_ret, mangled_name)` per variant.
     fn register_mangled_variants(
-        &mut self,
+        &self,
         state: &mut CheckState,
         defn: &Defn,
         resolved: &[(Vec<Type>, Type, Symbol, usize)],
@@ -1308,7 +1352,7 @@ impl TypeChecker {
     /// Build `OverloadVariant` entries, register the base name as `Overloaded`
     /// in the symbol table, and record resolved overloads in state.
     fn register_overloaded_base(
-        &mut self,
+        &self,
         state: &mut CheckState,
         defn: &Defn,
         resolved: Vec<(Vec<Type>, Type, Symbol)>,
@@ -1357,7 +1401,7 @@ impl TypeChecker {
     ///
     /// For each pending `(span, base_name, arg_types, ret_type_var)`, find
     /// the matching variant and record `SigDispatch` in method_resolutions.
-    fn resolve_pending_overloads(&mut self, state: &mut CheckState) -> Result<(), CranelispError> {
+    fn resolve_pending_overloads(&self, state: &mut CheckState) -> Result<(), CranelispError> {
         let pending = std::mem::take(&mut state.pending_overload_resolutions);
 
         for (span, base_name, arg_types, ret_type_var) in &pending {
@@ -1450,7 +1494,7 @@ impl TypeChecker {
     }
 
     fn check_program_inner(
-        &mut self,
+        &self,
         state: &mut CheckState,
         program: &[TopLevel],
     ) -> Result<CheckResult, CranelispError> {
@@ -1489,8 +1533,8 @@ impl TypeChecker {
             expr_types: resolved_expr_types,
             default_method_defns: default_defns,
             warnings: std::mem::take(&mut state.warnings),
-            type_defs: self.type_defs.get_mut().unwrap().type_defs.clone(),
-            constructor_to_type: self.type_defs.get_mut().unwrap().constructor_to_type.clone(),
+            type_defs: self.type_defs.read().unwrap().type_defs.clone(),
+            constructor_to_type: self.type_defs.read().unwrap().constructor_to_type.clone(),
             display: None,
         })
     }
@@ -1509,7 +1553,7 @@ impl TypeChecker {
     }
 
     fn check_repl_input_inner(
-        &mut self,
+        &self,
         state: &mut CheckState,
         input: &TopLevel,
     ) -> Result<CheckResult, CranelispError> {
@@ -1583,7 +1627,7 @@ impl TypeChecker {
 
     /// Register all TypeDef entries from the program.
     fn register_type_defs_from_program(
-        &mut self,
+        &self,
         state: &mut CheckState,
         program: &[TopLevel],
     ) -> Result<(), CranelispError> {
@@ -1613,7 +1657,7 @@ impl TypeChecker {
 
     /// Register all TraitDecl entries from the program.
     fn register_trait_decls_from_program(
-        &mut self,
+        &self,
         state: &mut CheckState,
         program: &[TopLevel],
     ) -> Result<(), CranelispError> {
@@ -1628,7 +1672,7 @@ impl TypeChecker {
     /// Register all TraitImpl entries from the program.
     /// Returns default method definitions generated.
     fn register_trait_impls_from_program(
-        &mut self,
+        &self,
         state: &mut CheckState,
         program: &[TopLevel],
     ) -> Result<Vec<Defn>, CranelispError> {
@@ -1647,7 +1691,7 @@ impl TypeChecker {
     /// A function is constrained if its generalized scheme has non-empty constraints.
     /// These functions are stored with `ConstrainedFn` in their DefKind.
     fn detect_constrained_fns(
-        &mut self,
+        &self,
         state: &mut CheckState,
         defns: &[&Defn],
     ) -> HashSet<Symbol> {
@@ -1693,7 +1737,7 @@ impl TypeChecker {
     /// Shared by `pass1_register_signatures` (batch) and `check_single_defn` (REPL)
     /// to prevent the two paths from diverging as rings add complexity.
     fn register_defn_signature(
-        &mut self,
+        &self,
         state: &mut CheckState,
         defn: &Defn,
     ) -> Result<(Vec<Type>, Type), CranelispError> {
@@ -1735,7 +1779,7 @@ impl TypeChecker {
     /// Returns a map from function name to (param type vars, return type var)
     /// for use in Pass 2.
     fn pass1_register_signatures(
-        &mut self,
+        &self,
         state: &mut CheckState,
         defns: &[&Defn],
     ) -> Result<HashMap<Symbol, (Vec<Type>, Type)>, CranelispError> {
@@ -1759,7 +1803,7 @@ impl TypeChecker {
     /// This must happen before later functions' call sites can pin the vars
     /// to concrete types through the shared substitution.
     fn pass2_check_bodies(
-        &mut self,
+        &self,
         state: &mut CheckState,
         defns: &[&Defn],
         type_vars: &HashMap<Symbol, (Vec<Type>, Type)>,
@@ -1836,7 +1880,7 @@ impl TypeChecker {
 
     /// Check a single function definition body.
     fn check_defn_body(
-        &mut self,
+        &self,
         state: &mut CheckState,
         defn: &Defn,
         param_types: &[Type],
@@ -1876,7 +1920,7 @@ impl TypeChecker {
 
     /// Check a single defn for REPL (register, check, generalize in one step).
     fn check_single_defn(
-        &mut self,
+        &self,
         state: &mut CheckState,
         defn: &Defn,
     ) -> Result<(Type, Scheme), CranelispError> {
@@ -1921,7 +1965,7 @@ impl TypeChecker {
     /// Pass 4 (batch): scan all defn bodies for calls to constrained functions
     /// and generate monomorphised specializations.
     fn pass4_monomorphise(
-        &mut self,
+        &self,
         state: &mut CheckState,
         defns: &[&Defn],
         constrained_fn_names: &HashSet<Symbol>,
@@ -1999,7 +2043,7 @@ impl TypeChecker {
     /// Collects call sites, resolves arg types, and calls `monomorphise_call`
     /// for each. Used by both `check_repl_input(Expr)` and `check_repl_input(Defn)`.
     fn monomorphise_expr_calls(
-        &mut self,
+        &self,
         state: &mut CheckState,
         expr: &Expr,
     ) -> Result<Vec<MonoDefn>, CranelispError> {
@@ -2155,7 +2199,7 @@ impl TypeChecker {
     /// typechecker detected partial application (fewer args than params).
     /// This converts them to `ResolvedCall::AutoCurry` entries that the
     /// backend can use for codegen.
-    pub(crate) fn resolve_auto_curry(&mut self, state: &mut CheckState) {
+    pub(crate) fn resolve_auto_curry(&self, state: &mut CheckState) {
         let pending = std::mem::take(&mut state.pending_auto_curry);
         for (span, name, applied_count, total_count, callee_ty, mut trait_resolution) in pending {
             // If the trait resolution wasn't determined earlier (types were
@@ -2198,7 +2242,7 @@ impl TypeChecker {
     }
 
     /// Build a CheckResult with display info from the current state (REPL path).
-    fn build_repl_result(&mut self,
+    fn build_repl_result(&self,
         state: &mut CheckState, ty: Type, scheme: Option<Scheme>) -> CheckResult {
         let resolved_expr_types = self.resolve_expr_types(state);
 
@@ -2206,8 +2250,8 @@ impl TypeChecker {
             method_resolutions: std::mem::take(&mut state.method_resolutions),
             expr_types: resolved_expr_types,
             warnings: std::mem::take(&mut state.warnings),
-            type_defs: self.type_defs.get_mut().unwrap().type_defs.clone(),
-            constructor_to_type: self.type_defs.get_mut().unwrap().constructor_to_type.clone(),
+            type_defs: self.type_defs.read().unwrap().type_defs.clone(),
+            constructor_to_type: self.type_defs.read().unwrap().constructor_to_type.clone(),
             constrained_fn_names: HashSet::new(),
             mono_defns: Vec::new(),
             default_method_defns: Vec::new(),
@@ -3592,7 +3636,8 @@ mod tests {
         let result = tc.check(&program, &test_ctx(), cranelisp_types::ModuleStrategy::Additive).unwrap();
 
         // The base name "add" should be registered as Overloaded
-        let entry = tc.current_symbol_table().get("add");
+        let table_guard = tc.current_symbol_table();
+        let entry = table_guard.get("add");
         assert!(entry.is_some(), "base name 'add' should be registered");
         if let Some(ModuleEntry::Def { kind, .. }) = entry {
             assert!(

@@ -28,7 +28,7 @@ mod traits;
 mod unify;
 
 // Public API
-pub use checker::{ModuleGuard, TypeChecker};
+pub use checker::{CheckState, ModuleGuard, TypeChecker};
 pub use program::{CheckPass, FormCheckResult, ModuleCheckAccumulator};
 
 // Re-export boundary types that callers need

@@ -421,8 +421,7 @@ impl ReplSession {
         // Queue background cache write (.meta.json + .o) via v2 pipeline.
         // Uses the session's cache_state (set up by new_with_prelude).
         // Non-fatal — cache files are an optimization.
-        let symbol_table = self.core.tc.module_table(&user_module)
-            .cloned()
+        let symbol_table = self.core.tc.module_table_cloned(&user_module)
             .unwrap_or_else(|| cranelisp_types::SymbolTable::new(user_module.clone()));
         crate::pipeline::queue_background_cache_write(
             &mut self.core.object_worker,
@@ -456,13 +455,13 @@ impl ReplSession {
             None => return, // No backing file — nothing to save.
         };
 
-        let sym_table = self.core.tc.symbol_table();
+        let sym_table_guard = self.core.tc.symbol_table();
         let structure = &self.current_module_structure;
         let def_codegen = &self.core.inmem_worker.got_state.def_codegen;
 
         if let Some(hash) = save::save_module_file(
             &file_path,
-            sym_table,
+            &sym_table_guard,
             structure,
             def_codegen,
         ) {
@@ -1368,8 +1367,11 @@ impl ReplSession {
         };
 
         // Look up the symbol in the current module's symbol table.
-        let entry = self.core.tc.symbol_table().get(name.as_str())?;
-        match entry {
+        let entry = {
+            let guard = self.core.tc.symbol_table();
+            guard.get(name.as_str())?.clone()
+        };
+        match &entry {
             ModuleEntry::Macro { clauses, docstring, .. } => {
                 // Check if any clause accepts zero args -- if so, let the
                 // expander handle it (it's a valid zero-arg macro call).

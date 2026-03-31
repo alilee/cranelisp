@@ -1594,8 +1594,7 @@ fn stash_object_codegen_input(
     let Some(stash) = stash else { return };
 
     // Clone symbol table from TypeChecker for .meta.json serialization.
-    let symbol_table = tc.module_table(module)
-        .cloned()
+    let symbol_table = tc.module_table_cloned(module)
         .unwrap_or_else(|| cranelisp_types::SymbolTable::new(module.clone()));
 
     // Build a minimal ModuleStructure. The v4 pipeline handles import/export

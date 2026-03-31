@@ -924,8 +924,7 @@ impl CompilationSession {
                 });
             }
             CodegenMode::Async { sender, .. } => {
-                let symbol_table = self.tc.module_table(&ctx.module)
-                    .cloned()
+                let symbol_table = self.tc.module_table_cloned(&ctx.module)
                     .unwrap_or_else(|| cranelisp_types::SymbolTable::new(ctx.module.clone()));
                 // Snapshot GOT slot map and func arities from main thread's
                 // inmem_worker. In async mode this is the dummy state that

@@ -42,7 +42,9 @@
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
-use std::sync::{Arc, RwLock, RwLockReadGuard};
+use std::sync::{Arc, Mutex, RwLock, RwLockReadGuard};
+
+use dashmap::DashMap;
 
 use cranelisp_types::{
     ConstructorInfo, CranelispError, ExportSpec, FQSymbol, ImportNames, ImportSpec,
@@ -157,7 +159,11 @@ pub struct TypeChecker {
     /// `get_mut()` for zero-overhead access.
     pub(crate) next_id: AtomicU32,
     /// Per-module symbol tables, keyed by module full path.
-    pub(crate) modules: HashMap<ModuleFullPath, SymbolTable>,
+    ///
+    /// Behind `DashMap` for concurrent access from multiple worker threads.
+    /// Each worker typechecks a different module — DashMap's per-shard locking
+    /// allows concurrent reads/writes to different modules without contention.
+    pub(crate) modules: DashMap<ModuleFullPath, SymbolTable>,
     /// Registered type definitions (ADTs).
     ///
     /// Behind `RwLock` for Phase 3 parallel `check()`. Methods with `&mut self`
@@ -178,7 +184,8 @@ pub struct TypeChecker {
     ///
     /// Entries are `Arc<AtomicBool>` so the guard can outlive the borrow of the
     /// HashMap (the guard holds an Arc clone, not a reference into the map).
-    module_locks: HashMap<ModuleFullPath, Arc<AtomicBool>>,
+    /// Wrapped in `Mutex` so `try_lock_module` works with `&self`.
+    module_locks: Mutex<HashMap<ModuleFullPath, Arc<AtomicBool>>>,
     /// Per-check transient state. Stored here for serial REPL reuse;
     /// parallel `check()` will use stack-local `CheckState` once `check()`
     /// is converted to `&self` (see module-level doc for blockers).
@@ -191,7 +198,7 @@ impl TypeChecker {
     /// Seeds the default "user" module as the active module.
     pub fn new() -> Self {
         let current_module = ModuleFullPath::from("user");
-        let mut modules = HashMap::new();
+        let modules = DashMap::new();
         modules.insert(
             current_module.clone(),
             SymbolTable::new(current_module.clone()),
@@ -202,7 +209,7 @@ impl TypeChecker {
             type_defs: RwLock::new(TypeDefRegistry::new()),
             trait_registry: RwLock::new(TraitRegistry::default()),
             impl_registry: RwLock::new(ImplRegistry::default()),
-            module_locks: HashMap::new(),
+            module_locks: Mutex::new(HashMap::new()),
             state: CheckState::new(current_module),
         };
         tc.register_builtins();
@@ -211,27 +218,46 @@ impl TypeChecker {
 
     // --- Module-scoped symbol table accessors ---
 
-    /// Get a reference to the current module's symbol table.
-    pub(crate) fn current_symbol_table_with_state(&self, state: &CheckState) -> &SymbolTable {
+    /// Get a read guard for the current module's symbol table.
+    ///
+    /// Returns a DashMap `Ref` guard that derefs to `SymbolTable`.
+    /// The guard holds a per-shard read lock — drop it before acquiring
+    /// another guard to avoid deadlocks (see design/typecheck/dashmap-migration.md §4.10).
+    pub(crate) fn current_symbol_table_with_state(
+        &self,
+        state: &CheckState,
+    ) -> dashmap::mapref::one::Ref<'_, ModuleFullPath, SymbolTable> {
         self.modules
             .get(&state.current_module)
             .unwrap_or_else(|| unreachable!("invariant: current_module always exists in modules map"))
     }
 
-    pub(crate) fn current_symbol_table_mut_with_state(&mut self, state: &CheckState) -> &mut SymbolTable {
+    /// Get a write guard for the current module's symbol table.
+    ///
+    /// Returns a DashMap `RefMut` guard that derefs mutably to `SymbolTable`.
+    /// Drop before acquiring another guard.
+    pub(crate) fn current_symbol_table_mut_with_state(
+        &self,
+        state: &CheckState,
+    ) -> dashmap::mapref::one::RefMut<'_, ModuleFullPath, SymbolTable> {
         self.modules
             .get_mut(&state.current_module)
             .unwrap_or_else(|| unreachable!("invariant: current_module always exists in modules map"))
     }
 
-    pub(crate) fn current_symbol_table(&self) -> &SymbolTable {
+    /// Get a read guard for the current module's symbol table (using self.state).
+    pub(crate) fn current_symbol_table(
+        &self,
+    ) -> dashmap::mapref::one::Ref<'_, ModuleFullPath, SymbolTable> {
         self.modules
             .get(&self.state.current_module)
             .unwrap_or_else(|| unreachable!("invariant: current_module always exists in modules map"))
     }
 
-    /// Get a mutable reference to the current module's symbol table.
-    pub(crate) fn current_symbol_table_mut(&mut self) -> &mut SymbolTable {
+    /// Get a write guard for the current module's symbol table (using self.state).
+    pub(crate) fn current_symbol_table_mut(
+        &self,
+    ) -> dashmap::mapref::one::RefMut<'_, ModuleFullPath, SymbolTable> {
         self.modules
             .get_mut(&self.state.current_module)
             .unwrap_or_else(|| unreachable!("invariant: current_module always exists in modules map"))
@@ -248,47 +274,57 @@ impl TypeChecker {
             // constructors (Pure, Effect) are accessible everywhere.
             // Note: the `user` module is NOT seeded — it requires explicit
             // imports per spec §8.9.1.
+            //
+            // Clone-and-drop discipline: collect entries, drop guard, then insert.
             let primitives_path = ModuleFullPath::from("primitives");
-            if let Some(prims_table) = self.modules.get(&primitives_path) {
-                for (name, _entry) in prims_table.all_symbols() {
-                    table.insert(
-                        name.clone(),
-                        ModuleEntry::Import {
-                            source: FQSymbol {
-                                module: primitives_path.clone(),
-                                symbol: name.clone(),
-                            },
+            let prim_entries: Vec<Symbol> = self.modules.get(&primitives_path)
+                .map(|guard| guard.all_symbols().map(|(n, _)| n.clone()).collect())
+                .unwrap_or_default();
+            for name in prim_entries {
+                table.insert(
+                    name.clone(),
+                    ModuleEntry::Import {
+                        source: FQSymbol {
+                            module: primitives_path.clone(),
+                            symbol: name,
                         },
-                    );
-                }
+                    },
+                );
             }
 
             // Seed from `user` module: special forms, trait decls,
             // constrained defs, constructors, and type defs.
+            //
+            // Clone-and-drop discipline: collect seedable names, drop guard, then insert.
             let user_path = ModuleFullPath::from("user");
-            if let Some(user_table) = self.modules.get(&user_path) {
-                for (name, entry) in user_table.all_symbols() {
-                    let is_seedable = matches!(entry, ModuleEntry::Def { kind, .. }
-                        if matches!(kind.as_ref(),
-                            cranelisp_types::DefKind::SpecialForm { .. }
-                        )
-                    ) || matches!(entry, ModuleEntry::Def { scheme, .. }
-                        if !scheme.constraints.is_empty()
-                    ) || matches!(entry, ModuleEntry::Constructor { .. })
-                      || matches!(entry, ModuleEntry::TypeDef { .. })
-                      || matches!(entry, ModuleEntry::TraitDecl { .. });
-                    if is_seedable {
-                        table.insert(
-                            name.clone(),
-                            ModuleEntry::Import {
-                                source: FQSymbol {
-                                    module: user_path.clone(),
-                                    symbol: name.clone(),
-                                },
-                            },
-                        );
-                    }
-                }
+            let user_entries: Vec<Symbol> = self.modules.get(&user_path)
+                .map(|guard| {
+                    guard.all_symbols()
+                        .filter_map(|(name, entry)| {
+                            let is_seedable = matches!(entry, ModuleEntry::Def { kind, .. }
+                                if matches!(kind.as_ref(),
+                                    cranelisp_types::DefKind::SpecialForm { .. }
+                                )
+                            ) || matches!(entry, ModuleEntry::Def { scheme, .. }
+                                if !scheme.constraints.is_empty()
+                            ) || matches!(entry, ModuleEntry::Constructor { .. })
+                              || matches!(entry, ModuleEntry::TypeDef { .. })
+                              || matches!(entry, ModuleEntry::TraitDecl { .. });
+                            if is_seedable { Some(name.clone()) } else { None }
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+            for name in user_entries {
+                table.insert(
+                    name.clone(),
+                    ModuleEntry::Import {
+                        source: FQSymbol {
+                            module: user_path.clone(),
+                            symbol: name,
+                        },
+                    },
+                );
             }
 
             self.modules.insert(path.clone(), table);
@@ -299,6 +335,70 @@ impl TypeChecker {
     /// Get the current module path.
     pub fn current_module_path(&self) -> &ModuleFullPath {
         &self.state.current_module
+    }
+
+    /// Ensure a module's symbol table exists, creating it if needed.
+    ///
+    /// Uses DashMap interior mutation — safe with `&self`. Seeds new modules
+    /// with imports from `primitives` and seedable entries from `user`.
+    /// Does NOT set `self.state.current_module` — callers set the module
+    /// on their own `CheckState`.
+    pub fn ensure_module_exists(&self, path: &ModuleFullPath) {
+        if self.modules.contains_key(path) {
+            return;
+        }
+        let mut table = SymbolTable::new(path.clone());
+
+        // Seed from primitives (clone-and-drop discipline)
+        let primitives_path = ModuleFullPath::from("primitives");
+        let prim_entries: Vec<Symbol> = self.modules.get(&primitives_path)
+            .map(|guard| guard.all_symbols().map(|(n, _)| n.clone()).collect())
+            .unwrap_or_default();
+        for name in prim_entries {
+            table.insert(
+                name.clone(),
+                ModuleEntry::Import {
+                    source: FQSymbol {
+                        module: primitives_path.clone(),
+                        symbol: name,
+                    },
+                },
+            );
+        }
+
+        // Seed from user (clone-and-drop discipline)
+        let user_path = ModuleFullPath::from("user");
+        let user_entries: Vec<Symbol> = self.modules.get(&user_path)
+            .map(|guard| {
+                guard.all_symbols()
+                    .filter_map(|(name, entry)| {
+                        let is_seedable = matches!(entry, ModuleEntry::Def { kind, .. }
+                            if matches!(kind.as_ref(),
+                                cranelisp_types::DefKind::SpecialForm { .. }
+                            )
+                        ) || matches!(entry, ModuleEntry::Def { scheme, .. }
+                            if !scheme.constraints.is_empty()
+                        ) || matches!(entry, ModuleEntry::Constructor { .. })
+                          || matches!(entry, ModuleEntry::TypeDef { .. })
+                          || matches!(entry, ModuleEntry::TraitDecl { .. });
+                        if is_seedable { Some(name.clone()) } else { None }
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        for name in user_entries {
+            table.insert(
+                name.clone(),
+                ModuleEntry::Import {
+                    source: FQSymbol {
+                        module: user_path.clone(),
+                        symbol: name,
+                    },
+                },
+            );
+        }
+
+        self.modules.insert(path.clone(), table);
     }
 
     /// Check whether a module has been registered.
@@ -318,13 +418,15 @@ impl TypeChecker {
     /// module. Callers acquire the lock before stages 1-5 and let the guard
     /// drop on return.
     pub fn try_lock_module(
-        &mut self,
+        &self,
         module: &ModuleFullPath,
     ) -> Result<ModuleGuard, CranelispError> {
-        let flag = self
-            .module_locks
-            .entry(module.clone())
-            .or_insert_with(|| Arc::new(AtomicBool::new(false)));
+        let flag = {
+            let mut locks = self.module_locks.lock().unwrap();
+            Arc::clone(locks
+                .entry(module.clone())
+                .or_insert_with(|| Arc::new(AtomicBool::new(false))))
+        };
 
         // Attempt to flip false → true atomically.
         let was_locked = flag.compare_exchange(
@@ -336,7 +438,7 @@ impl TypeChecker {
 
         match was_locked {
             Ok(_) => Ok(ModuleGuard {
-                flag: Arc::clone(flag),
+                flag,
                 module: module.clone(),
             }),
             Err(_) => Err(CranelispError::TypeError {
@@ -354,7 +456,7 @@ impl TypeChecker {
     /// Returns `true` if a `ModuleGuard` is held for this module.
     /// Useful for diagnostics and testing.
     pub fn is_module_locked(&self, module: &ModuleFullPath) -> bool {
-        self.module_locks
+        self.module_locks.lock().unwrap()
             .get(module)
             .map(|flag| flag.load(Ordering::Acquire))
             .unwrap_or(false)
@@ -362,13 +464,13 @@ impl TypeChecker {
 
     /// Convenience accessor for the current module's symbol table (public).
     /// Used by tests and external code that needs to inspect symbols.
-    pub fn symbol_table(&self) -> &SymbolTable {
+    pub fn symbol_table(&self) -> dashmap::mapref::one::Ref<'_, ModuleFullPath, SymbolTable> {
         self.current_symbol_table()
     }
 
     /// Mutable accessor for the current module's symbol table (public).
     /// Used by the pipeline orchestrator to register macro entries.
-    pub fn symbol_table_mut(&mut self) -> &mut SymbolTable {
+    pub fn symbol_table_mut(&self) -> dashmap::mapref::one::RefMut<'_, ModuleFullPath, SymbolTable> {
         self.current_symbol_table_mut()
     }
 
@@ -399,18 +501,26 @@ impl TypeChecker {
     }
 
     /// Look up a specific module's symbol table by path.
+    /// Returns a DashMap read guard that derefs to `SymbolTable`.
     /// Used by `/imports` to resolve type signatures of imported symbols.
-    pub fn module_table(&self, path: &ModuleFullPath) -> Option<&SymbolTable> {
+    pub fn module_table(&self, path: &ModuleFullPath) -> Option<dashmap::mapref::one::Ref<'_, ModuleFullPath, SymbolTable>> {
         self.modules.get(path)
+    }
+
+    /// Look up a specific module's symbol table by path, returning an owned clone.
+    /// Used by callers that need to own the symbol table (e.g., serialization).
+    pub fn module_table_cloned(&self, path: &ModuleFullPath) -> Option<SymbolTable> {
+        self.modules.get(path).map(|guard| guard.clone())
     }
 
     /// Look up the defining module for a symbol. Checks the `primitives` module
     /// first (for core traits and builtins), then falls back to the current module.
     pub fn defining_module_for(&self, name: &str) -> ModuleFullPath {
         let primitives_path = ModuleFullPath::from("primitives");
-        if let Some(table) = self.modules.get(&primitives_path)
-            && table.get(name).is_some()
-        {
+        let found = self.modules.get(&primitives_path)
+            .map(|guard| guard.get(name).is_some())
+            .unwrap_or(false);
+        if found {
             return primitives_path;
         }
         self.state.current_module.clone()
@@ -419,17 +529,17 @@ impl TypeChecker {
     // --- Scope operations (delegate to CheckState.env) ---
 
     /// Push a new scope frame.
-    pub(crate) fn push_scope(&mut self, state: &mut CheckState) {
+    pub(crate) fn push_scope(&self, state: &mut CheckState) {
         state.env.push_scope();
     }
 
     /// Pop the topmost scope frame.
-    pub(crate) fn pop_scope(&mut self, state: &mut CheckState) {
+    pub(crate) fn pop_scope(&self, state: &mut CheckState) {
         state.env.pop_scope();
     }
 
     /// Bind a name in the current scope with a type scheme.
-    pub(crate) fn bind_local(&mut self, state: &mut CheckState, name: Symbol, scheme: Scheme) {
+    pub(crate) fn bind_local(&self, state: &mut CheckState, name: Symbol, scheme: Scheme) {
         state.env.bind(name, scheme);
     }
 
@@ -480,15 +590,23 @@ impl TypeChecker {
 
     /// Look up a name in the current module's symbol table, following
     /// Import/Reexport chains to their source definitions.
+    ///
+    /// Clone-and-drop discipline: clone the entry from the guard, drop the
+    /// guard, then follow import chains (which may access other modules).
     fn lookup_in_current_module(&self, state: &CheckState, name: &str) -> Option<Scheme> {
-        let entry = self.modules.get(&state.current_module)?.get(name)?;
-        self.extract_scheme_from_entry(entry, 0)
+        let entry = {
+            let guard = self.modules.get(&state.current_module)?;
+            guard.get(name)?.clone()
+        };
+        self.extract_scheme_from_entry_owned(&entry, 0)
     }
 
     /// Extract a Scheme from a ModuleEntry, following Import/Reexport chains.
     ///
     /// `depth` tracks recursion to enforce the chain depth limit (spec §8.6.2).
-    fn extract_scheme_from_entry(
+    /// Named `_owned` to emphasise the caller should clone the entry before calling,
+    /// ensuring no DashMap guard is held during chain following.
+    fn extract_scheme_from_entry_owned(
         &self,
         entry: &ModuleEntry,
         depth: usize,
@@ -516,35 +634,46 @@ impl TypeChecker {
 
     /// Resolve a fully-qualified symbol reference by looking up the source
     /// module's symbol table.
+    ///
+    /// Clone-and-drop discipline: clone entry from guard, drop guard,
+    /// then follow chain.
     fn resolve_fq_symbol(&self, fq: &FQSymbol, depth: usize) -> Option<Scheme> {
-        let source_table = self.modules.get(&fq.module)?;
-        let entry = source_table.get(fq.symbol.as_ref())?;
-        self.extract_scheme_from_entry(entry, depth)
+        let entry = {
+            let guard = self.modules.get(&fq.module)?;
+            guard.get(fq.symbol.as_ref())?.clone()
+        };
+        self.extract_scheme_from_entry_owned(&entry, depth)
     }
 
     /// Resolve a name in the current module to its terminal `ModuleEntry`,
-    /// following Import/Reexport chains.
-    pub(crate) fn resolve_entry_in_current_module(&self, state: &CheckState, name: &str) -> Option<&ModuleEntry> {
-        let entry = self.modules.get(&state.current_module)?.get(name)?;
-        self.resolve_to_terminal_entry(entry, 0)
+    /// following Import/Reexport chains. Returns an owned clone.
+    pub(crate) fn resolve_entry_in_current_module(&self, state: &CheckState, name: &str) -> Option<ModuleEntry> {
+        let entry = {
+            let guard = self.modules.get(&state.current_module)?;
+            guard.get(name)?.clone()
+        };
+        self.resolve_to_terminal_entry_owned(&entry, 0)
     }
 
     /// Follow Import/Reexport chains to the terminal `ModuleEntry`.
-    pub(crate) fn resolve_to_terminal_entry<'a>(
-        &'a self,
-        entry: &'a ModuleEntry,
+    /// Returns an owned clone. Clone-and-drop discipline applied at each step.
+    pub(crate) fn resolve_to_terminal_entry_owned(
+        &self,
+        entry: &ModuleEntry,
         depth: usize,
-    ) -> Option<&'a ModuleEntry> {
+    ) -> Option<ModuleEntry> {
         if depth > IMPORT_CHAIN_DEPTH_LIMIT {
             return None;
         }
         match entry {
             ModuleEntry::Import { source } | ModuleEntry::Reexport { source } => {
-                let source_table = self.modules.get(&source.module)?;
-                let target = source_table.get(source.symbol.as_ref())?;
-                self.resolve_to_terminal_entry(target, depth + 1)
+                let target = {
+                    let guard = self.modules.get(&source.module)?;
+                    guard.get(source.symbol.as_ref())?.clone()
+                };
+                self.resolve_to_terminal_entry_owned(&target, depth + 1)
             }
-            other => Some(other),
+            other => Some(other.clone()),
         }
     }
 
@@ -566,14 +695,17 @@ impl TypeChecker {
             .cloned()
             .unwrap_or_else(|| module_path.clone());
 
-        let table = match self.modules.get(&resolved_path) {
-            Some(t) => t,
-            None => return Ok(None), // Module not loaded
-        };
-
-        let entry = match table.get(name) {
-            Some(e) => e,
-            None => return Ok(None),
+        // Clone-and-drop discipline: clone entry from guard, drop guard,
+        // then check visibility and follow chains.
+        let entry = {
+            let guard = match self.modules.get(&resolved_path) {
+                Some(g) => g,
+                None => return Ok(None), // Module not loaded
+            };
+            match guard.get(name) {
+                Some(e) => e.clone(),
+                None => return Ok(None),
+            }
         };
 
         // Visibility check: private names are only accessible within the
@@ -588,7 +720,7 @@ impl TypeChecker {
             });
         }
 
-        Ok(self.extract_scheme_from_entry(entry, 0))
+        Ok(self.extract_scheme_from_entry_owned(&entry, 0))
     }
 
     /// Check if `accessor` is within the subtree of `definer`.
@@ -606,8 +738,8 @@ impl TypeChecker {
 
     /// Generate a fresh type variable.
     ///
-    /// Uses `fetch_add` on the atomic counter — already safe for `&self`.
-    pub(crate) fn fresh_var(&mut self) -> Type {
+    /// Uses `fetch_add` on the atomic counter — safe for `&self`.
+    pub(crate) fn fresh_var(&self) -> Type {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         Type::Var(id)
     }
@@ -615,10 +747,28 @@ impl TypeChecker {
     /// Generate a fresh type variable and return both the type and ID.
     /// Used by ADT registration to allocate type parameter variables.
     ///
-    /// Uses `fetch_add` on the atomic counter — already safe for `&self`.
-    pub(crate) fn fresh_var_id(&mut self) -> (Type, TypeId) {
+    /// Uses `fetch_add` on the atomic counter — safe for `&self`.
+    pub(crate) fn fresh_var_id(&self) -> (Type, TypeId) {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         (Type::Var(id), id)
+    }
+
+    /// Create a temporary mutable counter for functions that need `&mut TypeId`.
+    ///
+    /// Takes a snapshot of the atomic counter, returns a mutable local copy.
+    /// The caller must call `commit_next_id` after using it to advance the
+    /// atomic past any IDs allocated through the local counter.
+    ///
+    /// SAFETY: Only safe when the scheduler guarantees no concurrent allocation
+    /// (e.g., during module registration, which is serialized per module).
+    pub(crate) fn next_id_snapshot(&self) -> TypeId {
+        self.next_id.load(Ordering::Relaxed)
+    }
+
+    /// Advance the atomic counter to at least `new_val`.
+    /// Called after using a local counter from `next_id_snapshot`.
+    pub(crate) fn commit_next_id(&self, new_val: TypeId) {
+        self.next_id.fetch_max(new_val, Ordering::Relaxed);
     }
 
     // --- Unification (delegate to unify module, borrow-splitting) ---
@@ -626,7 +776,7 @@ impl TypeChecker {
     /// Unify two types. Wraps the free function with state's subst.
     /// `span` is used for error context.
     pub(crate) fn unify(
-        &mut self,
+        &self,
         state: &mut CheckState,
         t1: &Type,
         t2: &Type,
@@ -651,12 +801,26 @@ impl TypeChecker {
     ///
     /// If the scheme has constraints, they are tracked on the fresh variables
     /// in `self.active_constraints` for later propagation during generalize.
-    pub(crate) fn instantiate(&mut self, state: &mut CheckState, s: &Scheme) -> Type {
+    pub(crate) fn instantiate(&self, state: &mut CheckState, s: &Scheme) -> Type {
         if s.constraints.is_empty() {
-            scheme::instantiate(s, self.next_id.get_mut())
+            self.instantiate_scheme(s)
         } else {
             self.instantiate_constrained(state, s)
         }
+    }
+
+    /// Instantiate a scheme by replacing each quantified variable with a fresh variable.
+    /// Uses atomic `fresh_var()` — safe for `&self`.
+    pub(crate) fn instantiate_scheme(&self, scheme: &Scheme) -> Type {
+        if scheme.vars.is_empty() {
+            return scheme.ty.clone();
+        }
+        let mut inst_subst = Subst::new();
+        for &var_id in &scheme.vars {
+            let fresh = self.fresh_var();
+            inst_subst.insert(var_id, fresh);
+        }
+        apply(&inst_subst, &scheme.ty)
     }
 
     /// Generalize a type relative to the current environment,
@@ -703,7 +867,7 @@ impl TypeChecker {
     // --- Expression type recording ---
 
     /// Record the inferred type for an expression (keyed by span).
-    pub(crate) fn record_expr_type(&mut self, state: &mut CheckState, span: Span, ty: Type) {
+    pub(crate) fn record_expr_type(&self, state: &mut CheckState, span: Span, ty: Type) {
         state.expr_types.insert(span, ty);
     }
 
@@ -750,7 +914,7 @@ impl TypeChecker {
     }
 
     pub(crate) fn register_imports_with_state(
-        &mut self,
+        &self,
         state: &mut CheckState,
         specs: &[ImportSpec],
     ) -> Result<(), CranelispError> {
@@ -763,44 +927,47 @@ impl TypeChecker {
                 );
             }
 
-            let source_table = match self.modules.get(&spec.module_path) {
-                Some(t) => t,
-                None => {
-                    return Err(CranelispError::TypeError {
-                        message: format!(
-                            "unknown module '{}' in import",
-                            spec.module_path
-                        ),
-                        span: spec.span,
-                    });
+            // Clone-and-drop discipline: collect imports from source guard,
+            // drop it, then acquire write guard on current module.
+            let imports_to_add: Vec<(Symbol, ModuleEntry)> = {
+                let source_guard = match self.modules.get(&spec.module_path) {
+                    Some(g) => g,
+                    None => {
+                        return Err(CranelispError::TypeError {
+                            message: format!(
+                                "unknown module '{}' in import",
+                                spec.module_path
+                            ),
+                            span: spec.span,
+                        });
+                    }
+                };
+
+                match &spec.names {
+                    ImportNames::Glob => {
+                        collect_glob_imports(&source_guard, &spec.module_path)
+                    }
+                    ImportNames::Specific(names) => {
+                        self.collect_specific_imports(
+                            state, &source_guard, names, &spec.module_path, spec.span,
+                        )?
+                    }
+                    ImportNames::MemberGlob(parent) => {
+                        self.collect_member_glob_imports(
+                            &source_guard, parent, &spec.module_path,
+                        )
+                    }
+                    ImportNames::None => {
+                        // Alias-only import — no bare names
+                        Vec::new()
+                    }
                 }
+                // source_guard dropped here
             };
 
-            // Collect names to import (collect first to avoid borrowing
-            // self.modules while mutating current symbol table)
-            let imports_to_add: Vec<(Symbol, ModuleEntry)> = match &spec.names {
-                ImportNames::Glob => {
-                    collect_glob_imports(source_table, &spec.module_path)
-                }
-                ImportNames::Specific(names) => {
-                    self.collect_specific_imports(
-                        state, source_table, names, &spec.module_path, spec.span,
-                    )?
-                }
-                ImportNames::MemberGlob(parent) => {
-                    self.collect_member_glob_imports(
-                        source_table, parent, &spec.module_path,
-                    )
-                }
-                ImportNames::None => {
-                    // Alias-only import — no bare names
-                    Vec::new()
-                }
-            };
-
-            // Insert into current symbol table, detecting ambiguities
+            // Now safe to get write guard on current module
             insert_imports_detecting_ambiguity(
-                self.current_symbol_table_mut_with_state(state),
+                &mut self.current_symbol_table_mut_with_state(state),
                 imports_to_add,
             );
         }
@@ -824,7 +991,7 @@ impl TypeChecker {
     }
 
     pub(crate) fn register_exports_with_state(
-        &mut self,
+        &self,
         state: &mut CheckState,
         specs: &[ExportSpec],
     ) -> Result<(), CranelispError> {
@@ -852,36 +1019,39 @@ impl TypeChecker {
                 }
             };
 
-            let source_table = match self.modules.get(&resolved_path) {
-                Some(t) => t,
-                None => unreachable!("module existence verified above"),
+            // Clone-and-drop discipline: collect reexports from source guard,
+            // drop it, then acquire write guard on current module.
+            let reexports: Vec<(Symbol, ModuleEntry)> = {
+                let source_guard = match self.modules.get(&resolved_path) {
+                    Some(g) => g,
+                    None => unreachable!("module existence verified above"),
+                };
+
+                match &spec.names {
+                    ImportNames::Glob => {
+                        collect_glob_reexports(&source_guard, &resolved_path)
+                    }
+                    ImportNames::Specific(names) => {
+                        self.collect_specific_reexports(
+                            state, &source_guard, names, &resolved_path, spec.span,
+                        )?
+                    }
+                    ImportNames::MemberGlob(parent) => {
+                        self.collect_member_glob_reexports(
+                            &source_guard, parent, &resolved_path,
+                        )
+                    }
+                    ImportNames::None => {
+                        // No names to re-export.
+                        Vec::new()
+                    }
+                }
+                // source_guard dropped here
             };
 
-            // Collect names to re-export (collect first to avoid borrowing
-            // self.modules while mutating current symbol table).
-            let reexports: Vec<(Symbol, ModuleEntry)> = match &spec.names {
-                ImportNames::Glob => {
-                    collect_glob_reexports(source_table, &resolved_path)
-                }
-                ImportNames::Specific(names) => {
-                    self.collect_specific_reexports(
-                        state, source_table, names, &resolved_path, spec.span,
-                    )?
-                }
-                ImportNames::MemberGlob(parent) => {
-                    self.collect_member_glob_reexports(
-                        source_table, parent, &resolved_path,
-                    )
-                }
-                ImportNames::None => {
-                    // No names to re-export.
-                    Vec::new()
-                }
-            };
-
-            // Insert into current symbol table, detecting ambiguities.
+            // Now safe to get write guard on current module
             insert_imports_detecting_ambiguity(
-                self.current_symbol_table_mut_with_state(state),
+                &mut self.current_symbol_table_mut_with_state(state),
                 reexports,
             );
         }
@@ -1117,7 +1287,8 @@ impl TypeChecker {
     /// Resolve a module name: try as child of current module first, then as
     /// root module. Returns `None` if not found.
     pub fn resolve_module_by_name(&self, name: &str) -> Option<ModuleFullPath> {
-        // Try as child of current module (e.g., "user.foo" when current is "user")
+        // Note: reads self.state.current_module which is only valid in
+        // single-threaded (REPL) context. Worker code passes module path explicitly.
         let child_path =
             ModuleFullPath::from(format!("{}.{}", self.state.current_module, name));
         if self.has_module(&child_path) {
@@ -1159,7 +1330,7 @@ impl TypeChecker {
     /// Returns the removed symbol table, or None if the module was not found.
     /// Used during module hot-reload (repl/spec.md §14.2).
     pub fn remove_module(&mut self, module_path: &ModuleFullPath) -> Option<SymbolTable> {
-        let table = self.modules.remove(module_path)?;
+        let (_, table) = self.modules.remove(module_path)?;
 
         // Unregister traits defined by this module.
         let traits_to_remove: Vec<TraitName> = table
@@ -1355,9 +1526,10 @@ impl TypeChecker {
 
     /// Take a snapshot of the current state for REPL error recovery.
     pub fn snapshot(&self) -> ReplSnapshot {
+        let symbol_keys = self.current_symbol_table().symbols.keys().cloned().collect();
         ReplSnapshot {
             next_type_id: self.next_id.load(Ordering::Relaxed),
-            symbol_keys: self.current_symbol_table().symbols.keys().cloned().collect(),
+            symbol_keys,
             subst_len: self.state.subst.len(),
             scope_depth: self.state.env.depth(),
         }
@@ -2148,7 +2320,8 @@ mod tests {
         let mut tc = TypeChecker::new();
         tc.set_current_module(ModuleFullPath::from("mymod"));
         // Builtins should be accessible as imports
-        let entry = tc.symbol_table().get("add-i64");
+        let table_guard = tc.symbol_table();
+        let entry = table_guard.get("add-i64");
         assert!(entry.is_some(), "new module should have add-i64 from builtins");
         assert!(
             matches!(entry.unwrap(), ModuleEntry::Import { .. }),

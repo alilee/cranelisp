@@ -136,7 +136,8 @@ fn r3_info_macro_clause_count() {
         "(defmacro mc ([x] x) ([x y] x) ([x y z] z))",
     );
 
-    let entry = s.core.tc.symbol_table().get("mc");
+    let table_guard = s.core.tc.symbol_table();
+    let entry = table_guard.get("mc");
     match entry {
         Some(cranelisp_types::ModuleEntry::Macro { clauses, .. }) => {
             assert_eq!(
@@ -158,7 +159,8 @@ fn r3_info_macro_docstring() {
     let mut s = repl_session();
     repl_eval_display(&mut s, "(defmacro id [x] x)");
 
-    let entry = s.core.tc.symbol_table().get("id");
+    let table_guard = s.core.tc.symbol_table();
+    let entry = table_guard.get("id");
     match entry {
         Some(cranelisp_types::ModuleEntry::Macro { docstring, .. }) => {
             // Without docstring, should be None.
@@ -183,7 +185,8 @@ fn r3_sig_macro_params() {
     let mut s = repl_session();
     repl_eval_display(&mut s, "(defmacro simple [x y] x)");
 
-    let entry = s.core.tc.symbol_table().get("simple");
+    let table_guard = s.core.tc.symbol_table();
+    let entry = table_guard.get("simple");
     match entry {
         Some(cranelisp_types::ModuleEntry::Macro { clauses, .. }) => {
             assert_eq!(clauses.len(), 1, "expected 1 clause");
@@ -207,7 +210,8 @@ fn r3_sig_macro_variadic() {
 
     match result {
         Ok(_) => {
-            let entry = s.core.tc.symbol_table().get("my-cond");
+            let table_guard = s.core.tc.symbol_table();
+            let entry = table_guard.get("my-cond");
             match entry {
                 Some(cranelisp_types::ModuleEntry::Macro { clauses, .. }) => {
                     assert_eq!(clauses.len(), 2, "expected 2 clauses");
@@ -311,7 +315,8 @@ fn r3_macro_docstring_stored() {
         "(defmacro my-inc \"Increment by one\" [x] `(add-i64 ~x 1))",
     );
 
-    let entry = s.core.tc.symbol_table().get("my-inc");
+    let table_guard = s.core.tc.symbol_table();
+    let entry = table_guard.get("my-inc");
     match entry {
         Some(cranelisp_types::ModuleEntry::Macro { docstring, .. }) => {
             assert_eq!(
@@ -332,7 +337,8 @@ fn r3_macro_no_docstring() {
     let mut s = repl_session();
     repl_eval_display(&mut s, "(defmacro simple [x] x)");
 
-    let entry = s.core.tc.symbol_table().get("simple");
+    let table_guard = s.core.tc.symbol_table();
+    let entry = table_guard.get("simple");
     match entry {
         Some(cranelisp_types::ModuleEntry::Macro { docstring, .. }) => {
             assert!(

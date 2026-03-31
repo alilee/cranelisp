@@ -38,7 +38,7 @@ pub(crate) fn handle_sig(session: &ReplSession, name: &str, stdout: &mut impl Wr
         Some(entry) => {
             let (resolved_entry, resolved_module) =
                 resolve_entry_for_display(entry, &module, session);
-            let display = format_entry_signature(resolved_entry, name, resolved_module, session);
+            let display = format_entry_signature(&resolved_entry, name, &resolved_module, session);
             let _ = writeln!(stdout, "{display}");
         }
         None => {
@@ -145,7 +145,7 @@ pub(crate) fn handle_info(session: &ReplSession, name: &str, stdout: &mut impl W
             let (resolved_entry, resolved_module) =
                 resolve_entry_for_display(entry, &module, session);
             // Line 1: type signature (same as /sig).
-            let sig = format_entry_signature(resolved_entry, name, resolved_module, session);
+            let sig = format_entry_signature(&resolved_entry, name, &resolved_module, session);
             let _ = writeln!(stdout, "{}", pretty_print_str(&sig));
             // Line 2: for functions, show code info.
             if !matches!(resolved_entry, ModuleEntry::Macro { .. } | ModuleEntry::TypeDef { .. } | ModuleEntry::TraitDecl { .. })
@@ -644,16 +644,18 @@ const RESOLVE_DEPTH_LIMIT: usize = 10;
 ///
 /// Returns the concrete entry (Def, Macro, TypeDef, TraitDecl, Constructor)
 /// or None if the chain is broken or exceeds the depth limit.
-pub(super) fn resolve_to_definition<'a>(
-    session: &'a ReplSession,
+pub(super) fn resolve_to_definition(
+    session: &ReplSession,
     source: &cranelisp_types::FQSymbol,
-) -> Option<&'a ModuleEntry> {
+) -> Option<ModuleEntry> {
     let mut current_module = source.module.clone();
     let mut current_name: String = source.symbol.to_string();
     for _ in 0..RESOLVE_DEPTH_LIMIT {
-        let table = session.core.tc.module_table(&current_module)?;
-        let entry = table.get(&current_name)?;
-        match entry {
+        let entry = {
+            let table = session.core.tc.module_table(&current_module)?;
+            table.get(&current_name)?.clone()
+        };
+        match &entry {
             ModuleEntry::Import { source: next } | ModuleEntry::Reexport { source: next } => {
                 current_module = next.module.clone();
                 current_name = next.symbol.to_string();
@@ -669,36 +671,38 @@ pub(super) fn resolve_to_definition<'a>(
 ///
 /// Returns the original entry and module if not Import/Reexport or if
 /// the chain cannot be resolved.
-pub(super) fn resolve_entry_for_display<'a>(
-    entry: &'a ModuleEntry,
-    module: &'a ModuleFullPath,
-    session: &'a ReplSession,
-) -> (&'a ModuleEntry, &'a ModuleFullPath) {
+pub(super) fn resolve_entry_for_display(
+    entry: &ModuleEntry,
+    module: &ModuleFullPath,
+    session: &ReplSession,
+) -> (ModuleEntry, ModuleFullPath) {
     let source = match entry {
         ModuleEntry::Import { source } | ModuleEntry::Reexport { source } => source,
-        _ => return (entry, module),
+        _ => return (entry.clone(), module.clone()),
     };
     // Follow the chain to the ultimate definition.
-    let mut current_module = &source.module;
+    let mut current_module = source.module.clone();
     let mut current_name: String = source.symbol.to_string();
     for _ in 0..RESOLVE_DEPTH_LIMIT {
-        let table = match session.core.tc.module_table(current_module) {
-            Some(t) => t,
-            None => return (entry, module),
+        let resolved = {
+            let table = match session.core.tc.module_table(&current_module) {
+                Some(t) => t,
+                None => return (entry.clone(), module.clone()),
+            };
+            match table.get(&current_name) {
+                Some(e) => e.clone(),
+                None => return (entry.clone(), module.clone()),
+            }
         };
-        let resolved = match table.get(&current_name) {
-            Some(e) => e,
-            None => return (entry, module),
-        };
-        match resolved {
+        match &resolved {
             ModuleEntry::Import { source: next } | ModuleEntry::Reexport { source: next } => {
-                current_module = &next.module;
+                current_module = next.module.clone();
                 current_name = next.symbol.to_string();
             }
             _ => return (resolved, current_module),
         }
     }
-    (entry, module) // Depth limit exceeded -- return original
+    (entry.clone(), module.clone()) // Depth limit exceeded -- return original
 }
 
 /// Format a module entry's type signature for /sig and /info display.
@@ -841,21 +845,23 @@ pub(crate) fn special_form_feedback(input: &str, session: &ReplSession) -> Optio
     // Delegate to format_entry_signature which implements the universal format
     // for all symbol classes.
     let module = session.core.tc.current_module_path().clone();
-    let entry = session.core.tc.symbol_table().get(trimmed)?;
+    let table_guard = session.core.tc.symbol_table();
+    let entry = table_guard.get(trimmed)?.clone();
+    drop(table_guard);
     // For Import/Reexport entries, resolve through the chain to the definition.
     // This allows bare-symbol display for imported special forms, macros, etc.
     let (resolved_entry, resolved_module) =
-        resolve_entry_for_display(entry, &module, session);
+        resolve_entry_for_display(&entry, &module, session);
     // Nullary constructors (zero fields) have value semantics -- they evaluate
     // to a value, so let them pass through to eval instead of showing definition
     // metadata. Non-nullary constructors need arguments and can't be evaluated
     // bare, so they show introspection display (spec section 4.1).
-    if let ModuleEntry::Constructor { info, .. } = resolved_entry
+    if let ModuleEntry::Constructor { ref info, .. } = resolved_entry
         && info.fields.is_empty()
     {
         return None;
     }
-    Some(format_entry_signature(resolved_entry, trimmed, resolved_module, session))
+    Some(format_entry_signature(&resolved_entry, trimmed, &resolved_module, session))
 }
 
 /// Format a builtin type (Int, Bool, Float, String) for bare symbol lookup.
