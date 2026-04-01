@@ -266,23 +266,20 @@ fn run(
                 let input = buffer.trim().to_string();
                 buffer.clear();
 
-                match s.process_commands(&input, &mut stdout) {
-                    CommandResult::Nothing => {}
+                let form = match s.process_commands(&input, &mut stdout) {
+                    CommandResult::Nothing => None,
                     CommandResult::Quit => break,
-                    CommandResult::Display(text) => {
-                        let _ = writeln!(stdout, "{text}");
-                    }
-                    CommandResult::Compile(src) => {
-                        match s.eval(&src) {
-                            Ok(Some(display)) => {
-                                let _ = writeln!(stdout, "{display}");
-                            }
-                            Ok(None) => {}
-                            Err(e) => {
-                                let _ = writeln!(stdout, "Error: {e}");
-                            }
+                    CommandResult::Final(sexp) => Some(sexp),
+                    CommandResult::Compile(src) => match s.eval(&src) {
+                        Ok(form) => form,
+                        Err(e) => {
+                            let _ = writeln!(stdout, "Error: {e}");
+                            None
                         }
-                    }
+                    },
+                };
+                if let Some(sexp) = form {
+                    s.pretty_print(&sexp, &mut stdout);
                 }
 
                 s.write_prompt(&mut stdout);
