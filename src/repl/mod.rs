@@ -659,6 +659,7 @@ impl ReplSession {
                     lib_dirs: &self.core.lib_dirs,
                     project_root: &self.core.project_root,
                     object_codegen_stash: None,
+                    shared_state: None,
                 };
 
                 let r = worker::process_module_forms(
@@ -811,6 +812,7 @@ impl ReplSession {
             lib_dirs: &self.core.lib_dirs,
             project_root: &self.core.project_root,
             object_codegen_stash: None,
+            shared_state: None,
         };
 
         let loop_result = crate::worker::priority_worker_loop(&mut ctx, &mut module_sexps);
@@ -1823,6 +1825,148 @@ fn reload_changed_modules(session: &mut ReplSession, stdout: &mut impl Write) {
     }
 
     let project_root = session.project_root.clone();
+
+    // v4 scheduler path: re-register modules with the scheduler.
+    // Falls back to v3 path when the scheduler is not initialized.
+    let use_v4 = session.scheduler.is_some();
+    if use_v4 {
+        reload_via_scheduler(session, &stale_modules, &project_root, stdout);
+    } else {
+        reload_via_v3(session, &stale_modules, &project_root, stdout);
+    }
+}
+
+/// Reload changed modules via the v4 scheduler (Step 14).
+///
+/// Clears module state in the TC, re-registers with the scheduler at
+/// TypecheckFirst, re-parses source, and runs the worker loop inline.
+fn reload_via_scheduler(
+    session: &mut ReplSession,
+    stale_modules: &[ModuleFullPath],
+    project_root: &std::path::Path,
+    stdout: &mut impl Write,
+) {
+    let scheduler = match session.scheduler.as_ref() {
+        Some(s) => s,
+        None => {
+            // Invariant: caller checks scheduler.is_some() before calling.
+            // If violated, log and return rather than panicking.
+            let _ = writeln!(stdout, "[error: scheduler not initialized]");
+            return;
+        }
+    };
+
+    let mut module_sexps: HashMap<ModuleFullPath, Vec<cranelisp_types::Sexp>> = HashMap::new();
+    let mut registered_modules = Vec::new();
+
+    for module_path in stale_modules {
+        // Clear stale type info from the TC.
+        session.core.tc.set_current_module(module_path.clone());
+        session.core.tc.clear_module_for_replace_public();
+
+        // Re-register with the scheduler.
+        let re_registered = scheduler.re_register_module(module_path);
+
+        let file_display = module_display_name(session, module_path, project_root);
+        if re_registered {
+            session.error_modules.remove(module_path);
+
+            // Resolve and re-parse source for the worker loop.
+            match crate::pipeline::resolve_module_file(module_path, &session.core.lib_dirs) {
+                Some(file_path) => match std::fs::read_to_string(&file_path) {
+                    Ok(source) => match cranelisp_frontend::parse(&source) {
+                        Ok(sexps) => {
+                            module_sexps.insert(module_path.clone(), sexps);
+                            registered_modules.push(module_path.clone());
+                        }
+                        Err(e) => {
+                            let _ = writeln!(stdout, "[errors: {} — {}]", file_display, e);
+                            session.error_modules.insert(module_path.clone());
+                            continue;
+                        }
+                    },
+                    Err(e) => {
+                        let _ = writeln!(stdout, "[errors: {} — {}]", file_display, e);
+                        session.error_modules.insert(module_path.clone());
+                        continue;
+                    }
+                },
+                None => {
+                    let _ = writeln!(stdout, "[errors: {} — file not found]", file_display);
+                    session.error_modules.insert(module_path.clone());
+                    continue;
+                }
+            }
+            let _ = writeln!(stdout, "[updated: {}]", file_display);
+        } else {
+            // Module is currently being typechecked — will be caught on next poll.
+            let _ = writeln!(stdout, "[pending: {}]", file_display);
+        }
+    }
+
+    // Run the worker loop inline to process re-registered modules.
+    if !module_sexps.is_empty() {
+        reload_run_worker_loop(session, &mut module_sexps, stdout);
+    }
+}
+
+/// Run the priority worker loop inline for reload processing.
+///
+/// Extracts shared codegen state, builds a WorkerContext, runs the loop,
+/// and syncs state back. Mirrors the pattern in `compile_dep_inline_v4`.
+fn reload_run_worker_loop(
+    session: &mut ReplSession,
+    module_sexps: &mut HashMap<ModuleFullPath, Vec<cranelisp_types::Sexp>>,
+    stdout: &mut impl Write,
+) {
+    let scheduler = match session.scheduler.as_ref() {
+        Some(s) => s,
+        None => return,
+    };
+
+    let shared_codegen =
+        crate::session::SharedCodegenState::extract_from(&mut session.core.inmem_worker);
+    let mut worker_jit = crate::session::WorkerJitState::new();
+
+    let mut ctx = crate::worker::WorkerContext {
+        tc: &mut session.core.tc,
+        scheduler,
+        shared_codegen: &shared_codegen,
+        worker_jit: &mut worker_jit,
+        platform_registry: &mut session.platform_registry,
+        lib_dirs: &session.core.lib_dirs,
+        project_root: &session.core.project_root,
+        object_codegen_stash: None,
+        shared_state: None,
+    };
+
+    let loop_result = crate::worker::priority_worker_loop(&mut ctx, module_sexps);
+    worker_jit.drain_to_shared(&shared_codegen);
+    shared_codegen.sync_back_to(&mut session.core.inmem_worker);
+
+    if let Err(e) = loop_result {
+        let _ = writeln!(stdout, "[reload error: {}]", e);
+    }
+
+    // Check scheduler completion and reset failed modules for retry.
+    if let Some(sched) = session.scheduler.as_ref() {
+        if let Err(e) = sched.wait_inmem_complete() {
+            let _ = writeln!(stdout, "[reload error: {}]", e);
+            sched.reset_all_failed_modules();
+        }
+    }
+}
+
+/// Reload changed modules via the v3 CompilationSession path.
+///
+/// Delegates to `recompile_module_and_dependents`. This is the fallback
+/// when the v4 scheduler is not active. Will be removed in Step 15.
+fn reload_via_v3(
+    session: &mut ReplSession,
+    stale_modules: &[ModuleFullPath],
+    project_root: &std::path::Path,
+    stdout: &mut impl Write,
+) {
     let cache_dir = project_root.join(".cranelisp-cache");
     let mut cache_state = Some(crate::session::CacheState::new(cache_dir));
 
@@ -1830,11 +1974,11 @@ fn reload_changed_modules(session: &mut ReplSession, stdout: &mut impl Write) {
     let results =
         session
             .core
-            .recompile_module_and_dependents(&stale_modules, &mut cache_state);
+            .recompile_module_and_dependents(stale_modules, &mut cache_state);
 
     // Display results and update REPL-specific error_modules tracking.
     for (module_path, result) in results {
-        let file_display = module_display_name(session, &module_path, &project_root);
+        let file_display = module_display_name(session, &module_path, project_root);
         match result {
             Ok(()) => {
                 session.error_modules.remove(&module_path);

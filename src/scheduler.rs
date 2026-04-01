@@ -178,6 +178,11 @@ struct SchedulerState {
     /// and nice workers.
     typecheck_done: VecDeque<ModuleFullPath>,
 
+    /// Modules loaded from cache (vs. compiled from source).
+    /// Tracked by the scheduler so `re_register_module` can clear
+    /// the flag, preventing stale `.o` loading after a source change.
+    cached_modules: HashSet<ModuleFullPath>,
+
     shutdown: bool,
 }
 
@@ -189,6 +194,7 @@ impl SchedulerState {
             priority_queue: VecDeque::new(),
             typecheck_next: VecDeque::new(),
             typecheck_done: VecDeque::new(),
+            cached_modules: HashSet::new(),
             shutdown: false,
         }
     }
@@ -313,9 +319,18 @@ impl CompileScheduler {
         symbols: HashSet<Symbol>,
     ) {
         let mut state = self.lock();
+
+        // Idempotency guard (F-1): if the module is already registered
+        // (e.g., another worker registered it via register_module or a
+        // concurrent cache-hit load), skip to avoid overwriting state.
+        if state.modules.contains_key(&module) {
+            return;
+        }
+
         let ms = ModuleState::new_cached(symbols.clone());
         state.modules.insert(module.clone(), ms);
         state.typecheck_done.push_back(module.clone());
+        state.cached_modules.insert(module.clone());
 
         // Satisfy any pending typecheck waiters on symbols from this module.
         Self::satisfy_typecheck_waiters_for_all_symbols_locked(
@@ -326,6 +341,68 @@ impl CompileScheduler {
         // for cached, but wake anyway for consistency).
         drop(state);
         self.object_work_available.notify_all();
+    }
+
+    /// Re-register a module after its source file has changed.
+    ///
+    /// Clears the module's scheduler state and re-inserts it at
+    /// TypecheckFirst for priority processing. Only modules in
+    /// TypecheckDone, Complete, or Failed may be re-registered.
+    /// Modules currently being typechecked (TypecheckWorking) are
+    /// skipped — the watcher will catch the change on the next poll.
+    ///
+    /// Returns true if the module was re-registered, false if skipped.
+    pub fn re_register_module(&self, module: &ModuleFullPath) -> bool {
+        let mut state = self.lock();
+        let ms = match state.modules.get(module) {
+            Some(ms) => ms,
+            None => return false, // Unknown module.
+        };
+
+        match ms.pool {
+            ModulePool::TypecheckWorking | ModulePool::TypecheckBlocked => {
+                // Worker is mid-typecheck — skip. Next poll will catch it.
+                return false;
+            }
+            ModulePool::TypecheckFirst | ModulePool::TypecheckNext => {
+                // Not yet claimed — remove from its queue and re-insert.
+                state.typecheck_first.retain(|m| m != module);
+                state.typecheck_next.retain(|m| m != module);
+            }
+            ModulePool::TypecheckDone | ModulePool::Complete | ModulePool::Failed => {
+                // Remove from typecheck_done deque if present.
+                state.typecheck_done.retain(|m| m != module);
+            }
+        }
+
+        // Clear cached-module flag so the module gets fresh JIT
+        // compilation instead of stale `.o` loading (I-1).
+        state.cached_modules.remove(module);
+
+        // Reset ModuleState for re-processing. Keep waiters — other
+        // modules may still be waiting on this module's symbols.
+        if let Some(ms) = state.modules.get_mut(module) {
+            let waiters = std::mem::take(&mut ms.waiters);
+            *ms = ModuleState {
+                pool: ModulePool::TypecheckFirst,
+                waiters,
+                jit_reserved: HashSet::new(),
+                inmem_done: false,
+                object_working: false,
+                object_done: false,
+                error: None,
+                resume_from_form: None,
+                blocked_on: None,
+            };
+        }
+
+        // Push to typecheck_first for immediate processing.
+        state.typecheck_first.push_back(module.clone());
+
+        // Wake priority workers.
+        drop(state);
+        self.priority_work_available.notify_all();
+        true
     }
 
     // -----------------------------------------------------------------------
@@ -406,7 +483,26 @@ impl CompileScheduler {
             return Some(PriorityWork::Typecheck(module));
         }
 
-        // Level 4: JitCodegen — deferred to later steps.
+        // Level 4: JitCodegen for cached modules needing inmem loading.
+        // Scan typecheck_done for modules with inmem_done = false
+        // (cache-hit modules that need Linker-based code loading).
+        let cached_needing_inmem = state.typecheck_done.iter().find_map(|module| {
+            state.modules.get(module)
+                .filter(|ms| !ms.inmem_done && ms.object_done)
+                .map(|_| module.clone())
+        });
+        if let Some(module) = cached_needing_inmem {
+            // Claim guard: set inmem_done = true BEFORE returning the work
+            // item so other workers skip this module. If the worker fails,
+            // it calls notify_module_failed which handles the error state.
+            if let Some(ms) = state.modules.get_mut(&module) {
+                ms.inmem_done = true;
+            }
+            // Use a synthetic symbol name — the worker will batch-load the
+            // entire .o file regardless of which symbol triggered the item.
+            return Some(PriorityWork::JitCodegen(module, Symbol::from("__cache_load")));
+        }
+
         None
     }
 
@@ -897,6 +993,15 @@ impl CompileScheduler {
         state.modules.get(module).map(|ms| ms.resume_from_form)
     }
 
+    /// Check if a module was loaded from cache (vs. compiled from source).
+    ///
+    /// Used by workers to determine whether a codegen work item should
+    /// use the Linker-based `.o` fast path.
+    pub fn is_cached_module(&self, module: &ModuleFullPath) -> bool {
+        let state = self.lock();
+        state.cached_modules.contains(module)
+    }
+
     /// Set the resume_from_form for a module.
     pub fn set_resume_from_form(
         &self,
@@ -965,7 +1070,16 @@ impl CompileScheduler {
         // new work (register deps, block for macro codegen).
         let any_working = state.modules.values()
             .any(|ms| ms.pool == ModulePool::TypecheckWorking);
-        !any_working
+        if any_working {
+            return false;
+        }
+        // Check for cached modules needing inmem loading (Level 4 work).
+        let cached_needing_inmem = state.typecheck_done.iter().any(|module| {
+            state.modules.get(module)
+                .map(|ms| !ms.inmem_done && ms.object_done)
+                .unwrap_or(false)
+        });
+        !cached_needing_inmem
     }
 
     /// Set a module's pool. Does NOT add/remove from deques — caller
@@ -1515,6 +1629,9 @@ mod tests {
             compiled_o_paths: Mutex::new(Vec::new()),
             promote_nice_workers: AtomicBool::new(false),
             object_codegen_inputs: Mutex::new(std::collections::HashMap::new()),
+            cached_modules: Mutex::new(std::collections::HashSet::new()),
+            file_to_module: Mutex::new(std::collections::HashMap::new()),
+            cache_state: Mutex::new(None),
         });
 
         let m = mod_path("test.mod");

@@ -5,7 +5,7 @@
 // routes through process_module_forms(Additive) with serial per-form processing
 // (Step 7).
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
@@ -82,6 +82,21 @@ pub struct SharedState {
     /// Module data for nice worker .o compilation. Populated by the priority
     /// worker after in-memory codegen completes; consumed by nice workers.
     pub object_codegen_inputs: Mutex<HashMap<ModuleFullPath, ObjectCodegenInput>>,
+
+    /// Set of modules loaded from cache (vs. compiled from source).
+    /// Used by workers to detect cache-hit modules for Linker fast path.
+    /// Populated by try_cache_hit_load, read by workers during codegen.
+    pub cached_modules: Mutex<HashSet<ModuleFullPath>>,
+
+    /// File path to module path mapping. Populated during handle_import
+    /// when modules are first discovered. Used by the file watcher to
+    /// identify which module changed.
+    pub file_to_module: Mutex<HashMap<PathBuf, ModuleFullPath>>,
+
+    /// Cache validity state. Holds the manifest, cache directory, and
+    /// source hash records. Behind Mutex because workers update it
+    /// (record_cache_hit) during handle_import.
+    pub cache_state: Mutex<Option<crate::session::CacheState>>,
 }
 
 /// The v4 compiler session — the permanent session type for scheduler-driven
@@ -142,6 +157,8 @@ impl CompilerSession {
         let cache_dir = project_root.join(".cranelisp-cache");
         let _ = std::fs::create_dir_all(&cache_dir);
 
+        let cache_state = crate::session::CacheState::new(cache_dir.clone());
+
         CompilerSession {
             inner,
             shared: Arc::new(SharedState {
@@ -150,6 +167,9 @@ impl CompilerSession {
                 compiled_o_paths: Mutex::new(Vec::new()),
                 promote_nice_workers: AtomicBool::new(false),
                 object_codegen_inputs: Mutex::new(HashMap::new()),
+                cached_modules: Mutex::new(HashSet::new()),
+                file_to_module: Mutex::new(HashMap::new()),
+                cache_state: Mutex::new(Some(cache_state)),
             }),
             project_root,
             platform_registry: PlatformRegistry::new(),
@@ -190,14 +210,19 @@ impl CompilerSession {
         inner.lib_dirs = all_lib_dirs;
         inner.project_root = entry_dir.unwrap_or_else(|| project_root.clone());
 
+        let cache_state = crate::session::CacheState::new(cache_dir.clone());
+
         Ok(CompilerSession {
             inner,
             shared: Arc::new(SharedState {
                 scheduler: CompileScheduler::new(),
-                cache_dir: Some(cache_dir),
+                cache_dir: Some(cache_dir.clone()),
                 compiled_o_paths: Mutex::new(Vec::new()),
                 promote_nice_workers: AtomicBool::new(false),
                 object_codegen_inputs: Mutex::new(HashMap::new()),
+                cached_modules: Mutex::new(HashSet::new()),
+                file_to_module: Mutex::new(HashMap::new()),
+                cache_state: Mutex::new(Some(cache_state)),
             }),
             project_root,
             platform_registry: PlatformRegistry::new(),
@@ -244,6 +269,7 @@ impl CompilerSession {
             lib_dirs: &self.inner.lib_dirs,
             project_root: &self.inner.project_root,
             object_codegen_stash: Some(&self.shared.object_codegen_inputs),
+            shared_state: Some(&self.shared),
         };
 
         // Run the priority worker loop inline (single-threaded).
@@ -536,6 +562,7 @@ impl CompilerSession {
             lib_dirs: &self.inner.lib_dirs,
             project_root: &self.inner.project_root,
             object_codegen_stash: &self.shared.object_codegen_inputs,
+            shared_state: Some(&self.shared),
         };
 
         // Register module with scheduler — workers will pick it up.

@@ -69,6 +69,7 @@ Delivery progress for the Cranelisp reimplementation. For technical scope per ri
 | 45 | Pipeline v4 Steps 8+9 — PlatformRegistry (FQSymbol keys, unified fn_ptr+scheduling_class, bind_chain_analysis migration) + Error Cascade (reset_module/reset_all_failed_modules, cascade embeds original error, impl From, REPL recovery) + cross-module macro dep fix (compile_dep_symbol_inline uses dep module path/table/CheckResult) + 2 FIXMEs resolved, /review 0B 2I 4S (R1-R4 fixed, R5 deferred), 21 new tests, FIXME(/spec) on §9.2.5: 11 pre-existing sketch_port failures, 1 ignored | COMPLETE | `sprints/archive/sprint-45.md` |
 | 46 | Pipeline v4 Step 10 — Nice workers for object codegen: Mutex<SchedulerState> + 3 condvars, scheduler &mut→&self migration, Arc<SharedState>, nice_worker_loop with .o + .meta.json compilation (ObjectCodegenInput stash, build_object_compile_input, compile_module_to_object, write_cached_metadata), object_working double-claim prevention, thread_util.rs extraction, self-promote pattern (AtomicBool), run_with_nice_workers scoped threads, cache in all modes, stash-before-notify race fix, §9.2.5 FIXME restored without codegen concern, /review 2B+6I+5S (all B+I fixed), 6 new scheduler tests: 1570 passed, 11 pre-existing sketch_port failures, 0 ignored | COMPLETE | `sprints/archive/sprint-46.md` |
 | 47 | Pipeline v4 Steps 11+12 — Multi-threaded priority workers + DashMap TypeChecker: CheckState threading (95 methods), SharedCodegenState/WorkerJitState extraction, DashMap modules with &self API, condvar parking (take_priority_work_blocking), priority worker thread spawning via std::thread::scope, shared sexp/suspend maps, CompileScheduler/CompilerSession Drop impls, spec §9.2.5 resolved, 2 design docs (1230 lines), 15 clippy fixes, sprint23 E2E disabled (14 failures from v4 changes): 1494 passed, 13 pre-existing failures, 1 ignored | COMPLETE | `sprints/archive/sprint-47.md` |
+| 48 | Pipeline v4 Steps 13+14 — Cache-hit loading + file watcher migration: cache validity in handle_import, register_module_cached wiring, Linker batch loading, re_register_module, reload_via_scheduler with inline worker loop, TypeChecker &self cache restoration, SharedState extensions (cached_modules/file_to_module/cache_state), cargo nextest adoption, /review 2B+4I+2S (all B+I fixed): 1684 passed, 13 pre-existing failures, 0 ignored | COMPLETE | `sprints/archive/sprint-48.md` |
 
 ## Forward Plan
 
@@ -90,7 +91,8 @@ Scheduler-driven concurrent compilation. See `design/arch/pipeline-v4-roadmap.md
 | 45 | v4 Steps 8+9 — platform registry + error cascade | PlatformRegistry, error cascade, reset_module, cross-module macro dep fix | `/int`, `/qa`, `/review`, `/arch` |
 | 46 | v4 Step 10 — nice workers for object codegen | Scheduler Mutex+condvars, nice_worker_loop, .o compilation, scoped threads | `/int`, `/arch`, `/qa`, `/review` |
 | 47 | v4 Steps 11+12 — multi-threaded priority workers + DashMap TypeChecker | CheckState threading, SharedCodegenState, DashMap &self API, condvar parking, worker threads, scheduler Drop | `/int`, `/typecheck`, `/arch`, `/qa`, `/review`, `/spec` |
-| 48+ | v4 Steps 13-15 — cache-hit loading, watcher, legacy delete | register_module_cached, file watcher, delete v3 code | All skills |
+| 48 | v4 Steps 13+14 — cache-hit loading + file watcher migration | register_module_cached, Linker batch loading, re_register_module, reload_via_scheduler, TC &self cache methods | `/int`, `/typecheck`, `/arch`, `/qa`, `/review` |
+| 49+ | v4 Step 15 — delete legacy code | Delete CompilationSession, compile_unit, v3 types, sprint23 triage | All skills |
 
 ### Ring 4 acceptance criteria gap analysis
 
@@ -102,7 +104,7 @@ Ring 4 acceptance criteria from `design/arch/roadmap.md` vs current state:
 | `(do ...)` chains IO effects | DONE (S17) | |
 | Lenient evaluation parallelises independent bindings | DONE (S25) | |
 | Platform DLLs load and function | DONE (S16) | |
-| Module caching: second compilation hits cache | **GAP** — writes cache, does not load from cache | 39 |
+| Module caching: second compilation hits cache | DONE (S48) — cache-hit loading via register_module_cached + Linker | |
 | Standalone executable generation (`--link`) | DONE (S23) | |
 | REPL: all slash commands work | DONE (S19-21) | |
 | Hot-reload: file changes auto-reload in REPL | DONE (S23, migrated S37) | |

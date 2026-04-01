@@ -137,6 +137,14 @@ Every skill plan must end with a **"Next skills"** section recommending which sk
 - **Optional prelude**: Nothing in the prelude is required for the language to work. An empty prelude is a valid starting point for the REPL or batch programs. The prelude provides convenience (traits, operators, types, macros) but the core language — primitives, special forms, type inference — works without it.
 - **Stdlib separation**: Tests (`tests/`) and examples (`examples/`) MUST be free-standing — zero dependency on `stdlib/`. They define any needed helpers inline using compiler primitives and special forms. Only the exemplar (`exemplar/`) and production binary (`src/main.rs`) may depend on the standard library. This ensures the language itself is validated independently of any particular library code.
 
+## Testing
+
+- **Always use `cargo nextest run`** instead of `cargo test`. Nextest runs each test in its own process, parallelizes across binaries, and completes the full suite in ~9s. The alias `cargo nt` is also available via `.cargo/config.toml`.
+- **Never run tests in background mode.** Wait for the run to complete before proceeding. Background test runs pile up and contend on build locks.
+- **30-second timeout expectation.** If a test run exceeds 30s, something is wrong — kill it and investigate.
+- **One agent, one test run.** When multiple agents are active, only the agent that owns source code changes should run tests. Other agents must not run tests concurrently.
+- **Pre-existing failures**: 11 sketch_port + 2 v4_platform tests fail. These are known and pre-date current work.
+
 ## Git & Remote
 
 - **Remote**: `origin` → `https://github.com/alilee/cranelisp`

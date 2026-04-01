@@ -52,6 +52,9 @@ pub struct WorkerContext<'a> {
     pub object_codegen_stash: Option<&'a std::sync::Mutex<
         HashMap<ModuleFullPath, crate::session_v4::ObjectCodegenInput>,
     >>,
+    /// Optional reference to v4 shared state for cache-hit loading.
+    /// None for REPL contexts where caching is not used.
+    pub shared_state: Option<&'a crate::session_v4::SharedState>,
 }
 
 // ---------------------------------------------------------------------------
@@ -510,6 +513,23 @@ fn handle_import(
                 span: spec.span,
             })?;
 
+        // Populate file_to_module mapping for file watcher (Step 14).
+        if let Some(shared) = ctx.shared_state {
+            if let Ok(canonical) = dep_file.canonicalize() {
+                shared
+                    .file_to_module
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .insert(canonical, dep.clone());
+            }
+        }
+
+        // Cache check: try to load from disk cache before parsing.
+        if try_cache_hit_load(ctx, dep, &dep_file) {
+            ctx.tc.register_imports(std::slice::from_ref(spec))?;
+            continue;
+        }
+
         // Read and parse source.
         let source = std::fs::read_to_string(&dep_file).map_err(|e| {
             CranelispError::ModuleError {
@@ -542,6 +562,122 @@ fn handle_import(
     }
 
     Ok(BlockAction::Continue)
+}
+
+/// Attempt to load a module from the disk cache, skipping typecheck.
+///
+/// Returns `true` if the module was successfully loaded from cache:
+/// type info restored into TC, module registered with scheduler at
+/// TypecheckDone, GOT slots pre-allocated. Returns `false` on any
+/// cache miss (caller falls through to full typecheck path).
+fn try_cache_hit_load(
+    ctx: &mut WorkerContext,
+    dep: &ModuleFullPath,
+    dep_file: &Path,
+) -> bool {
+    use cranelisp_backend::cache;
+    use std::collections::{HashMap as StdHashMap, HashSet as StdHashSet};
+
+    let shared = match ctx.shared_state {
+        Some(s) => s,
+        None => return false,
+    };
+
+    // 1. Check cache validity: read source, compute hash, check manifest.
+    let cache_state_guard = shared.cache_state.lock().unwrap_or_else(|e| e.into_inner());
+    let cache_dir = match cache_state_guard.as_ref() {
+        Some(cs) => cs.cache_dir().to_path_buf(),
+        None => return false,
+    };
+    drop(cache_state_guard);
+
+    let dep_source = match std::fs::read_to_string(dep_file) {
+        Ok(s) => s,
+        Err(_) => return false,
+    };
+    let source_hash = cache::hash_source(&dep_source);
+
+    // Check manifest (source hash only, no dep hashes yet).
+    let dep_hashes: StdHashMap<ModuleFullPath, String> = StdHashMap::new();
+    let cache_state_guard = shared.cache_state.lock().unwrap_or_else(|e| e.into_inner());
+    let is_valid = match cache_state_guard.as_ref() {
+        Some(cs) => cs.is_cache_valid(dep, &source_hash, &dep_hashes),
+        None => return false,
+    };
+    drop(cache_state_guard);
+
+    if !is_valid {
+        return false;
+    }
+
+    // 2. Load metadata from disk.
+    let cached = match cache::try_load_cached_module(&cache_dir, dep) {
+        Ok(Some(c)) => c,
+        _ => return false,
+    };
+
+    // 3. Check .o exists.
+    if !cached.has_object {
+        return false;
+    }
+
+    // 4. Extract all data from cached BEFORE moving symbol_table (avoids clone).
+    let symbols: StdHashSet<Symbol> = cached.metadata.symbol_table
+        .all_symbols()
+        .filter_map(|(name, entry)| match entry {
+            ModuleEntry::Def { .. } | ModuleEntry::Constructor { .. } => Some(name.clone()),
+            _ => None,
+        })
+        .collect();
+    let mangled_names: Vec<String> = cached
+        .codegen_state()
+        .got_slots
+        .keys()
+        .map(|s| s.as_ref().to_string())
+        .collect();
+    let got_slot_keys: Vec<Symbol> = cached
+        .codegen_state()
+        .got_slots
+        .keys()
+        .cloned()
+        .collect();
+
+    // Restore type info into TC (consumes symbol_table by value).
+    ctx.tc.restore_cached_module(cached.metadata.symbol_table);
+
+    // Restore trait impl registrations from cached codegen state.
+    ctx.tc.restore_cached_impls(&mangled_names);
+
+    // 5. Register with scheduler at TypecheckDone.
+    ctx.scheduler.register_module_cached(dep.clone(), symbols);
+
+    // 6. Pre-register GOT slots for cached module's symbols.
+    for sym_name in &got_slot_keys {
+        let _ = ctx.shared_codegen.ensure_slot_for(sym_name);
+    }
+
+    // 7. Record cache hit in cache state.
+    let mut cache_state_guard = shared.cache_state.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(cs) = cache_state_guard.as_mut() {
+        cs.record_cache_hit(dep, source_hash);
+    }
+    drop(cache_state_guard);
+
+    // 8. Record in cached_modules set and file_to_module mapping.
+    shared
+        .cached_modules
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(dep.clone());
+    if let Ok(canonical) = dep_file.canonicalize() {
+        shared
+            .file_to_module
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(canonical, dep.clone());
+    }
+
+    true
 }
 
 /// Handle export forms: register export metadata in the typechecker.
@@ -1462,6 +1598,151 @@ fn compile_regular_defns(
 
 
 // ---------------------------------------------------------------------------
+// Linker-based loading for cached modules (Step 13 — cache-hit inmem codegen)
+// ---------------------------------------------------------------------------
+
+/// Load a cached module's `.o` file via Linker, wiring code pointers into
+/// the GOT. This is the inmem codegen fast-path for cache-hit modules:
+/// one mmap + relocation pass loads all symbols at once.
+///
+/// Returns the list of symbol names that were loaded, for scheduler notification.
+fn load_cached_module_via_linker(
+    shared_codegen: &SharedCodegenState,
+    worker_jit: &mut WorkerJitState,
+    platform_registry: &PlatformRegistry,
+    module: &ModuleFullPath,
+    shared_state: Option<&crate::session_v4::SharedState>,
+) -> Result<Vec<Symbol>, CranelispError> {
+    use cranelisp_backend::cache;
+
+    // Determine cache directory from shared state.
+    let shared = shared_state.ok_or_else(|| CranelispError::ModuleError {
+        message: format!("no shared state for cache-hit loading of '{}'", module),
+        file: None,
+        span: Span::SYNTHETIC,
+    })?;
+    let cache_dir = shared.cache_dir.as_ref().ok_or_else(|| CranelispError::ModuleError {
+        message: format!("no cache directory for cache-hit loading of '{}'", module),
+        file: None,
+        span: Span::SYNTHETIC,
+    })?;
+
+    // Load metadata from disk.
+    let cached = cache::try_load_cached_module(cache_dir, module)?
+        .ok_or_else(|| CranelispError::ModuleError {
+            message: format!("cache metadata missing for module '{}'", module),
+            file: None,
+            span: Span::SYNTHETIC,
+        })?;
+
+    if !cached.has_object {
+        return Err(CranelispError::ModuleError {
+            message: format!("cached .o file missing for module '{}'", module),
+            file: None,
+            span: Span::SYNTHETIC,
+        });
+    }
+
+    // Build Linker with all known symbols.
+    let mut linker = cache::Linker::new()?;
+
+    // Register runtime intrinsics.
+    for sym in cranelisp_backend::jit::intrinsic_symbols() {
+        linker.register_symbol(sym.name, sym.ptr);
+    }
+
+    // Register platform symbols.
+    let platform_symbols = platform_registry.jit_symbols_owned();
+    for (name, ptr) in &platform_symbols {
+        linker.register_symbol(name, *ptr);
+    }
+
+    // Register code pointers from already-compiled modules via def_codegen.
+    for entry in shared_codegen.def_codegen.iter() {
+        if let Some(ptr) = entry.value().code_ptr {
+            linker.register_symbol(entry.key().as_ref(), ptr);
+        }
+    }
+
+    // Register the GOT base address.
+    let got_base = shared_codegen.got_base_ptr();
+    if !got_base.is_null() {
+        linker.register_symbol("__got_base", got_base);
+    }
+
+    // Load the .o file — one mmap + relocation pass.
+    let fn_addrs = cache::load_cached_object(&mut linker, &cached)?;
+
+    // Wire code pointers into the GOT.
+    let mut loaded_symbols = Vec::new();
+    for name in cached.codegen_state().got_slots.keys() {
+        let code_ptr = fn_addrs.get(name.as_ref()).copied();
+
+        // Ensure a GOT slot exists (may already be allocated from try_cache_hit_load).
+        let slot = shared_codegen.ensure_slot_for(name)?;
+
+        // Write the code pointer to the GOT slot.
+        if let Some(ptr) = code_ptr {
+            shared_codegen.update_slot(slot, ptr);
+        }
+
+        // Update the DefCodegen entry with code pointer and param count.
+        let mut dc = shared_codegen.def_codegen.entry(name.clone()).or_default();
+        dc.got_slot = Some(slot);
+        dc.code_ptr = code_ptr;
+        if let Some(def_entry) = cached.codegen_state().def_entries.get(name) {
+            dc.param_count = def_entry.param_count;
+        }
+
+        loaded_symbols.push(name.clone());
+    }
+
+    // Store the Linker in per-worker state (keeps mmap'd code alive).
+    worker_jit.cache_linkers.push(linker);
+
+    Ok(loaded_symbols)
+}
+
+/// Handle a cache-hit codegen work item: check if the module is cached
+/// and load it via Linker, then notify the scheduler.
+///
+/// Shared helper for both `priority_worker_loop` (inline) and
+/// `priority_worker_thread` (spawned). Returns Ok(true) if the module
+/// was loaded, Ok(false) if it was not cached (no-op).
+fn handle_cached_codegen(
+    shared_codegen: &SharedCodegenState,
+    worker_jit: &mut WorkerJitState,
+    platform_registry: &PlatformRegistry,
+    module: &ModuleFullPath,
+    shared_state: Option<&crate::session_v4::SharedState>,
+    scheduler: &CompileScheduler,
+) -> Result<bool, CranelispError> {
+    let is_cached = shared_state
+        .map(|s| s.cached_modules.lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .contains(module))
+        .unwrap_or(false);
+
+    if !is_cached {
+        return Ok(false);
+    }
+
+    match load_cached_module_via_linker(
+        shared_codegen, worker_jit, platform_registry,
+        module, shared_state,
+    ) {
+        Ok(symbols) => {
+            scheduler.notify_inmem_codegen_batch_complete(module, &symbols);
+            Ok(true)
+        }
+        Err(e) => {
+            scheduler.notify_module_failed(module, e);
+            Ok(false)
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // priority_worker_loop — dispatch scheduler work items
 // ---------------------------------------------------------------------------
 
@@ -1566,13 +1847,14 @@ pub fn priority_worker_loop(
                     }
                 }
             }
-            Some(PriorityWork::BlockingJitCodegen(_module, _symbol)) => {
-                // Cross-module macro dep compilation (Step 5+).
-                // For now, macro deps are compiled inline in process_module_forms.
-                // This path will be used for cross-module macro deps in future steps.
-            }
-            Some(PriorityWork::JitCodegen(_module, _symbol)) => {
-                // Background JIT for TypecheckDone modules — deferred to later steps.
+            Some(PriorityWork::BlockingJitCodegen(module, _symbol))
+            | Some(PriorityWork::JitCodegen(module, _symbol)) => {
+                // Cache-hit module: load entire .o via Linker (batch load).
+                // Non-cached modules have their codegen done inline after typecheck.
+                let _ = handle_cached_codegen(
+                    ctx.shared_codegen, ctx.worker_jit, ctx.platform_registry,
+                    &module, ctx.shared_state, ctx.scheduler,
+                );
             }
             None => break,
         }
@@ -1659,6 +1941,7 @@ pub(crate) struct PriorityWorkerShared<'a> {
     pub(crate) object_codegen_stash: &'a std::sync::Mutex<
         HashMap<ModuleFullPath, crate::session_v4::ObjectCodegenInput>,
     >,
+    pub(crate) shared_state: Option<&'a crate::session_v4::SharedState>,
 }
 
 /// Main loop for a spawned priority worker thread.
@@ -1685,11 +1968,16 @@ pub(crate) fn priority_worker_thread(
                 // Drain per-worker JIT state to shared after each module.
                 worker_jit.drain_to_shared(shared.shared_codegen);
             }
-            Some(PriorityWork::BlockingJitCodegen(_module, _symbol)) => {
-                // Cross-module macro dep compilation — deferred.
-            }
-            Some(PriorityWork::JitCodegen(_module, _symbol)) => {
-                // Background JIT for TypecheckDone modules — deferred.
+            Some(PriorityWork::BlockingJitCodegen(module, _symbol))
+            | Some(PriorityWork::JitCodegen(module, _symbol)) => {
+                // Cache-hit module: load entire .o via Linker (batch load).
+                let platform = shared.platform_registry.lock()
+                    .unwrap_or_else(|e| e.into_inner());
+                let _ = handle_cached_codegen(
+                    shared.shared_codegen, &mut worker_jit, &*platform,
+                    &module, shared.shared_state, &shared.scheduler,
+                );
+                worker_jit.drain_to_shared(shared.shared_codegen);
             }
             None => break, // Shutdown or all work done.
         }
@@ -1747,6 +2035,7 @@ fn handle_typecheck_work(
         lib_dirs: shared.lib_dirs,
         project_root: shared.project_root,
         object_codegen_stash: Some(shared.object_codegen_stash),
+        shared_state: shared.shared_state,
     };
 
     match process_module_forms(

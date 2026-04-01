@@ -1380,13 +1380,13 @@ impl TypeChecker {
     /// the cached module without recompiling it.
     ///
     /// Used by the pipeline's cache-hit path (src/pipeline.rs).
-    pub fn restore_cached_module(&mut self, table: SymbolTable) {
+    pub fn restore_cached_module(&self, table: SymbolTable) {
         let path = table.path.clone();
 
         // Reconstruct type_defs, constructor_to_type, and trait registries
         // from symbol table entries.
-        let td = self.type_defs.get_mut().unwrap();
-        let tr = self.trait_registry.get_mut().unwrap();
+        let mut td = self.type_defs.write().unwrap();
+        let mut tr = self.trait_registry.write().unwrap();
         for (_name, entry) in table.all_symbols() {
             match entry {
                 ModuleEntry::TypeDef { info, .. } => {
@@ -1440,7 +1440,7 @@ impl TypeChecker {
     /// Scans all schemes (including constraint vars) in the table and ensures
     /// `next_id` is strictly greater than any ID found. This prevents ID
     /// collisions between cached schemes and freshly created type variables.
-    fn advance_next_id_past_table(&mut self, table: &SymbolTable) {
+    fn advance_next_id_past_table(&self, table: &SymbolTable) {
         let mut max_id: Option<TypeId> = None;
 
         for (_name, entry) in table.all_symbols() {
@@ -1466,10 +1466,8 @@ impl TypeChecker {
             }
         }
 
-        if let Some(id) = max_id
-            && *self.next_id.get_mut() <= id
-        {
-            *self.next_id.get_mut() = id + 1;
+        if let Some(id) = max_id {
+            self.next_id.fetch_max(id + 1, Ordering::Relaxed);
         }
     }
 
@@ -1482,10 +1480,10 @@ impl TypeChecker {
     ///
     /// Must be called after `restore_cached_module` so that `trait_registry`
     /// is already populated.
-    pub fn restore_cached_impls(&mut self, mangled_names: &[String]) {
+    pub fn restore_cached_impls(&self, mangled_names: &[String]) {
         use crate::traits::RegisteredImpl;
 
-        let impl_reg = self.impl_registry.get_mut().unwrap();
+        let mut impl_reg = self.impl_registry.write().unwrap();
         for name in mangled_names {
             // Parse "Trait.method$Type" pattern.
             let Some(dot_pos) = name.find('.') else { continue };
