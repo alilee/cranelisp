@@ -209,18 +209,19 @@ fn run(
         entry_module_path,
     );
 
-    // Register the entry module. For Run/Link this compiles the source file.
-    // For Repl this registers an empty user module (prelude loads lazily).
+    // Register the entry module. Workers discover dependencies lazily
+    // during typechecking (imports trigger recursive loading, including
+    // prelude). Same path for all three modes.
+    let src = match action {
+        Action::Run | Action::Link => read_file(entry_module_path)?,
+        Action::Repl => String::new(), // empty user module; prelude loads lazily
+    };
+    s.register_module(&entry_module_name, &src, entry_module_path)?;
+
     match action {
         Action::Run => {
-            let src = read_file(entry_module_path)?;
-            let unit_warnings = s.run_with_workers(1, 1, &entry_module_name, &src)?;
-
             let (value, ty) = s.trampoline(&entry_module_name)?;
 
-            for w in &unit_warnings {
-                eprintln!("warning: {}", w.message);
-            }
             let display = cranelisp::repl::format_result(value, &ty);
             println!("{display}");
 
@@ -233,11 +234,6 @@ fn run(
             s.link(entry_module_path)?;
         }
         Action::Repl => {
-            // Load prelude.
-            if let Err(e) = s.load_prelude() {
-                eprintln!("warning: prelude loading failed: {e}");
-            }
-
             let stdin = io::stdin();
             let stdout = io::stdout();
             let mut stdout = stdout.lock();
