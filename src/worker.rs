@@ -1466,11 +1466,11 @@ fn compile_regular_defns(
 // ---------------------------------------------------------------------------
 
 /// Per-module suspension state preserved across blocking/resumption.
-struct ModuleSuspendState {
-    accumulator: ModuleCheckAccumulator,
+pub(crate) struct ModuleSuspendState {
+    pub(crate) accumulator: ModuleCheckAccumulator,
     /// Expanded program forms accumulated across suspensions.
     /// Forms processed before the block point are preserved here.
-    expanded_program: Vec<TopLevel>,
+    pub(crate) expanded_program: Vec<TopLevel>,
 }
 
 /// Main worker loop: pull work from the scheduler and process it.
@@ -1633,4 +1633,188 @@ fn stash_object_codegen_input(
     if let Ok(mut map) = stash.lock() {
         map.insert(module.clone(), input);
     }
+}
+
+// ---------------------------------------------------------------------------
+// Threaded priority worker loop (Step 11 — Wave 3)
+// ---------------------------------------------------------------------------
+
+/// Shared state for threaded priority workers.
+///
+/// Holds Mutex-wrapped TypeChecker and PlatformRegistry plus shared
+/// codegen state. Workers lock the Mutexes when processing work items.
+/// With the current `&mut self` TypeChecker API, workers serialize on
+/// the TC mutex. True parallelism comes when TC gets full `&self` API.
+pub(crate) struct PriorityWorkerShared<'a> {
+    pub(crate) tc: &'a std::sync::Mutex<cranelisp_typecheck::TypeChecker>,
+    pub(crate) platform_registry: &'a std::sync::Mutex<PlatformRegistry>,
+    pub(crate) shared_codegen: &'a SharedCodegenState,
+    pub(crate) scheduler: &'a CompileScheduler,
+    pub(crate) module_sexps: &'a std::sync::Mutex<HashMap<ModuleFullPath, Vec<Sexp>>>,
+    pub(crate) suspend_states: &'a std::sync::Mutex<
+        HashMap<ModuleFullPath, ModuleSuspendState>,
+    >,
+    pub(crate) lib_dirs: &'a [PathBuf],
+    pub(crate) project_root: &'a Path,
+    pub(crate) object_codegen_stash: &'a std::sync::Mutex<
+        HashMap<ModuleFullPath, crate::session_v4::ObjectCodegenInput>,
+    >,
+}
+
+/// Main loop for a spawned priority worker thread.
+///
+/// Uses `take_priority_work_blocking` to park when no work is available.
+/// Locks the TypeChecker mutex for each work item (serialized until TC
+/// gets `&self` API). Creates a per-worker `WorkerJitState` and drains
+/// to shared codegen state after each module's codegen sweep.
+pub(crate) fn priority_worker_thread(
+    shared: &PriorityWorkerShared,
+    _worker_id: usize,
+) {
+    let mut worker_jit = WorkerJitState::new();
+
+    loop {
+        let work = shared.scheduler.take_priority_work_blocking();
+        match work {
+            Some(PriorityWork::Typecheck(module)) => {
+                if let Err(e) = handle_typecheck_work(
+                    shared, &mut worker_jit, &module,
+                ) {
+                    shared.scheduler.notify_module_failed(&module, e);
+                }
+                // Drain per-worker JIT state to shared after each module.
+                worker_jit.drain_to_shared(shared.shared_codegen);
+            }
+            Some(PriorityWork::BlockingJitCodegen(_module, _symbol)) => {
+                // Cross-module macro dep compilation — deferred.
+            }
+            Some(PriorityWork::JitCodegen(_module, _symbol)) => {
+                // Background JIT for TypecheckDone modules — deferred.
+            }
+            None => break, // Shutdown or all work done.
+        }
+    }
+}
+
+/// Handle a Typecheck work item under the TC mutex lock.
+///
+/// Locks TC + PlatformRegistry, builds a WorkerContext, and runs
+/// process_module_forms + codegen_module_symbols.
+fn handle_typecheck_work(
+    shared: &PriorityWorkerShared,
+    worker_jit: &mut WorkerJitState,
+    module: &ModuleFullPath,
+) -> Result<(), CranelispError> {
+    let start_idx = shared.scheduler.module_resume_from_form(module)
+        .flatten()
+        .unwrap_or(0);
+
+    // Clone sexps from shared map (don't remove — needed on resume).
+    let sexps = {
+        let map = shared.module_sexps.lock()
+            .unwrap_or_else(|e| e.into_inner());
+        map.get(module)
+            .ok_or_else(|| CranelispError::ModuleError {
+                message: format!("no parsed sexps for module '{}'", module),
+                file: None,
+                span: Span::SYNTHETIC,
+            })?
+            .clone()
+    };
+
+    // Take or create suspend state for this module.
+    let mut state = {
+        let mut states = shared.suspend_states.lock()
+            .unwrap_or_else(|e| e.into_inner());
+        states.remove(module).unwrap_or_else(|| ModuleSuspendState {
+            accumulator: ModuleCheckAccumulator::new(),
+            expanded_program: Vec::new(),
+        })
+    };
+
+    // Lock TC and PlatformRegistry for the duration of processing.
+    let mut tc = shared.tc.lock()
+        .unwrap_or_else(|e| e.into_inner());
+    let mut platform_registry = shared.platform_registry.lock()
+        .unwrap_or_else(|e| e.into_inner());
+
+    let mut ctx = WorkerContext {
+        tc: &mut tc,
+        scheduler: shared.scheduler,
+        shared_codegen: shared.shared_codegen,
+        worker_jit,
+        platform_registry: &mut platform_registry,
+        lib_dirs: shared.lib_dirs,
+        project_root: shared.project_root,
+        object_codegen_stash: Some(shared.object_codegen_stash),
+    };
+
+    match process_module_forms(
+        &mut ctx, module, &sexps, start_idx,
+        &mut state.accumulator,
+        &mut state.expanded_program,
+        ModuleStrategy::Replace,
+    ) {
+        Ok(ProcessResult::Complete { check_result, program }) => {
+            // Post-typecheck codegen sweep.
+            codegen_module_symbols(
+                ctx.shared_codegen,
+                ctx.worker_jit,
+                ctx.platform_registry,
+                ctx.scheduler,
+                module,
+                &program,
+                &check_result,
+            )?;
+
+            // Stash data for nice worker .o + .meta.json.
+            stash_object_codegen_input(
+                ctx.object_codegen_stash,
+                ctx.tc,
+                module,
+                check_result,
+                program,
+            );
+            ctx.scheduler.notify_typecheck_done(module);
+
+            // Clean up — module is done.
+            {
+                let mut map = shared.module_sexps.lock()
+                    .unwrap_or_else(|e| e.into_inner());
+                map.remove(module);
+            }
+            // suspend state was already removed above (taken out of map)
+        }
+        Ok(ProcessResult::Blocked {
+            form_index,
+            dep_module,
+            dep_sexps,
+        }) => {
+            // Save resume state in scheduler.
+            ctx.scheduler.set_resume_from_form(module, form_index);
+            // Store dep sexps for workers to pick up.
+            {
+                let mut map = shared.module_sexps.lock()
+                    .unwrap_or_else(|e| e.into_inner());
+                map.entry(dep_module).or_insert(dep_sexps);
+            }
+            // Put suspend state back for resume.
+            {
+                let mut states = shared.suspend_states.lock()
+                    .unwrap_or_else(|e| e.into_inner());
+                states.insert(module.clone(), state);
+            }
+        }
+        Err(e) => {
+            // Clean up on failure.
+            {
+                let mut map = shared.module_sexps.lock()
+                    .unwrap_or_else(|e| e.into_inner());
+                map.remove(module);
+            }
+            return Err(e);
+        }
+    }
+
+    Ok(())
 }

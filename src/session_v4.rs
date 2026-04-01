@@ -274,6 +274,7 @@ impl CompilerSession {
         Ok(Vec::new())
     }
 
+
     /// Process REPL slash commands and blank/comment detection.
     ///
     /// Delegates to the existing REPL command dispatch. In v4, this remains
@@ -477,37 +478,138 @@ impl CompilerSession {
         Ok(())
     }
 
-    /// Spawn priority worker threads for typecheck + JIT codegen.
+    /// Run a batch compilation with priority and nice worker threads.
     ///
-    /// No-op for Step 3: the worker loop runs inline on the calling thread.
-    /// Replaced by real thread spawning in Step 11.
-    pub fn spawn_priority_workers(&self, _n: usize) {
-        // Step 3: worker loop runs inline via priority_worker_loop().
+    /// Spawns `priority_count` priority workers and `nice_count` nice
+    /// workers in a single `std::thread::scope`. The calling thread
+    /// parses the entry module, registers it with the scheduler, and
+    /// waits for completion. Workers perform typecheck + JIT codegen.
+    ///
+    /// The TypeChecker and PlatformRegistry are temporarily moved into
+    /// Mutex wrappers accessible by priority workers. After the scope
+    /// exits (all workers joined), they are moved back to `self.inner`.
+    ///
+    /// Returns the module name for use by the caller (e.g., trampoline).
+    pub fn run_with_workers(
+        &mut self,
+        priority_count: usize,
+        nice_count: usize,
+        module_name: &str,
+        source: &str,
+    ) -> Result<Vec<Warning>, CranelispError> {
+        let module = ModuleFullPath::from(module_name);
+        let sexps = cranelisp_frontend::parse(source)?;
+
+        // Move TC and PlatformRegistry into Mutex for worker access.
+        let tc = std::mem::replace(
+            &mut self.inner.tc,
+            cranelisp_typecheck::TypeChecker::new(),
+        );
+        let tc_mutex = Mutex::new(tc);
+
+        let platform_registry = std::mem::replace(
+            &mut self.platform_registry,
+            crate::platform_registry::PlatformRegistry::new(),
+        );
+        let platform_mutex = Mutex::new(platform_registry);
+
+        // Extract shared codegen state from InMemWorkerState.
+        let shared_codegen =
+            crate::session::SharedCodegenState::extract_from(&mut self.inner.inmem_worker);
+
+        // Shared sexp and suspend state maps for workers.
+        let module_sexps_map: Mutex<HashMap<ModuleFullPath, Vec<cranelisp_types::Sexp>>> = {
+            let mut map = HashMap::new();
+            map.insert(module.clone(), sexps);
+            Mutex::new(map)
+        };
+        let suspend_states: Mutex<HashMap<ModuleFullPath, crate::worker::ModuleSuspendState>> =
+            Mutex::new(HashMap::new());
+
+        let shared_arc = Arc::clone(&self.shared);
+
+        let worker_shared = crate::worker::PriorityWorkerShared {
+            tc: &tc_mutex,
+            platform_registry: &platform_mutex,
+            shared_codegen: &shared_codegen,
+            scheduler: &self.shared.scheduler,
+            module_sexps: &module_sexps_map,
+            suspend_states: &suspend_states,
+            lib_dirs: &self.inner.lib_dirs,
+            project_root: &self.inner.project_root,
+            object_codegen_stash: &self.shared.object_codegen_inputs,
+        };
+
+        // Register module with scheduler — workers will pick it up.
+        self.shared.scheduler.register_module(module.clone(), false);
+
+        let result: Result<(), CranelispError> = std::thread::scope(|scope| {
+            // Spawn priority workers.
+            for i in 0..priority_count {
+                let ws = &worker_shared;
+                std::thread::Builder::new()
+                    .name(format!("priority-worker-{}", i))
+                    .spawn_scoped(scope, move || {
+                        crate::worker::priority_worker_thread(ws, i);
+                    })
+                    .expect("failed to spawn priority worker thread");
+            }
+
+            // Spawn nice workers.
+            spawn_nice_workers(scope, &shared_arc, nice_count);
+
+            // Block until all in-memory codegen is complete.
+            // This parks on the completion condvar, woken when workers
+            // call notify_inmem_codegen_complete or on failure/shutdown.
+            let wait_result = self.shared.scheduler
+                .wait_inmem_complete_blocking()
+                .map_err(|e| CranelispError::ModuleError {
+                    message: format!("scheduler error: {:?}", e),
+                    file: None,
+                    span: Span::SYNTHETIC,
+                });
+
+            // Wait for nice workers to finish .o compilation.
+            let _ = self.wait_object_complete();
+            self.shared.scheduler.shutdown();
+
+            wait_result
+        });
+
+        // Move TC and PlatformRegistry back.
+        self.inner.tc = tc_mutex.into_inner()
+            .unwrap_or_else(|e| e.into_inner());
+        self.platform_registry = platform_mutex.into_inner()
+            .unwrap_or_else(|e| e.into_inner());
+
+        // Sync shared codegen state back to InMemWorkerState.
+        shared_codegen.sync_back_to(&mut self.inner.inmem_worker);
+
+        // Register module aliases for GOT lookup by unqualified name.
+        crate::session::register_module_aliases_filtered(
+            &mut self.inner.inmem_worker,
+            &module,
+            None,
+        );
+
+        result?;
+        Ok(Vec::new())
     }
 
-    /// Run a closure with nice worker threads active.
+    /// Run a closure with nice worker threads only (no priority workers).
     ///
-    /// Spawns `n` nice workers in a scoped thread pool, runs the closure
-    /// on the calling thread, signals shutdown, and joins all workers.
-    ///
-    /// Workers receive an `Arc<SharedState>` clone, eliminating aliasing
-    /// between the workers' shared reference and the `&mut self` used by
-    /// the closure for priority worker operations.
+    /// Used by paths that run the priority worker loop inline (e.g., link
+    /// mode which uses the old compile_unit path).
     pub fn run_with_nice_workers<T>(
         &mut self,
         n: usize,
         f: impl FnOnce(&mut Self) -> Result<T, CranelispError>,
     ) -> Result<T, CranelispError> {
-        // Clone the Arc for nice workers. Workers hold Arc<SharedState>
-        // independently — no aliasing with &mut self.
         let shared_arc = Arc::clone(&self.shared);
 
         std::thread::scope(|scope| {
             spawn_nice_workers(scope, &shared_arc, n);
             let result = f(self);
-            // Wait for nice workers to finish .o compilation before shutdown.
-            // Promotes workers to normal priority so object codegen completes
-            // promptly (especially important for --link).
             let _ = self.wait_object_complete();
             self.shared.scheduler.shutdown();
             result

@@ -223,6 +223,7 @@ fn v4_main(
         Action::Run => {
             let entry_module_name = slug(entry_module_path);
             let project_root = base_dir(entry_module_path);
+            let src = read_file(entry_module_path)?;
 
             let mut s = cranelisp::session_v4::CompilerSession::new(
                 settings.no_color,
@@ -230,17 +231,21 @@ fn v4_main(
                 entry_module_path,
             );
 
-            let (value, ty, unit_warnings) = s.run_with_nice_workers(
-                1,
-                |s| {
-                    let src = read_file(entry_module_path)?;
-                    let unit_warnings = s.register_module(
-                        &entry_module_name, &src, entry_module_path,
-                    )?;
-                    let (value, ty) = s.trampoline(&entry_module_name)?;
-                    Ok((value, ty, unit_warnings))
-                },
+            // Determine worker counts: 1 priority worker for correctness,
+            // 1 nice worker for .o compilation.
+            let priority_count = 1;
+            let nice_count = 1;
+
+            // Run compilation with worker threads.
+            let unit_warnings = s.run_with_workers(
+                priority_count,
+                nice_count,
+                &entry_module_name,
+                &src,
             )?;
+
+            // Execute main via trampoline.
+            let (value, ty) = s.trampoline(&entry_module_name)?;
 
             // Display warnings and result.
             for w in &unit_warnings {

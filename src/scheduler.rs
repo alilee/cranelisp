@@ -630,6 +630,9 @@ impl CompileScheduler {
             }
             Self::try_complete_locked(&mut state, module);
         }
+        // Wake callers waiting for inmem completion.
+        drop(state);
+        self.completion.notify_all();
     }
 
     /// Batch-mark multiple symbols as inmem-codegenned.
@@ -649,6 +652,9 @@ impl CompileScheduler {
         // Evaluate waiter satisfaction for codegen waiters.
         Self::satisfy_codegen_waiters_batch_locked(&mut state, module, symbols);
         Self::try_complete_locked(&mut state, module);
+        // Wake callers waiting for inmem completion.
+        drop(state);
+        self.completion.notify_all();
     }
 
     // -----------------------------------------------------------------------
@@ -750,6 +756,37 @@ impl CompileScheduler {
             }
         }
         Ok(())
+    }
+
+    /// Block until all registered modules have inmem_done set.
+    ///
+    /// Parks on the `completion` condvar, woken by `notify_inmem_codegen_complete`,
+    /// `notify_module_failed`, and `shutdown`. Returns Ok when all modules
+    /// have inmem_done or are Complete. Returns Err on module failure.
+    pub fn wait_inmem_complete_blocking(&self) -> Result<(), SchedulerError> {
+        let mut state = self.lock();
+        loop {
+            let mut all_done = true;
+            for (path, ms) in &state.modules {
+                if ms.pool == ModulePool::Failed {
+                    return Err(SchedulerError::ModuleFailed {
+                        module: path.clone(),
+                        message: ms.error.as_ref()
+                            .map(|e| e.to_string())
+                            .unwrap_or_else(|| "unknown error".to_string()),
+                    });
+                }
+                if !ms.inmem_done && ms.pool != ModulePool::Complete {
+                    all_done = false;
+                    break;
+                }
+            }
+            if all_done || state.shutdown {
+                return Ok(());
+            }
+            state = self.completion.wait(state)
+                .unwrap_or_else(|e| e.into_inner());
+        }
     }
 
     /// Block until all registered modules have object_done set.
