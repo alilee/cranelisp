@@ -211,12 +211,8 @@ fn run(
 
     // Register the entry module. Workers discover dependencies lazily
     // during typechecking (imports trigger recursive loading, including
-    // prelude). Same path for all three modes. For Run/Link the file must
-    // exist. For Repl the file may or may not exist (session persistence).
-    let src = match action {
-        Action::Run | Action::Link => read_file(entry_module_path)?,
-        Action::Repl => std::fs::read_to_string(entry_module_path).unwrap_or_default(),
-    };
+    // prelude). Same path for all three modes.
+    let src = std::fs::read_to_string(entry_module_path).unwrap_or_default();
     s.register_module(&entry_module_name, &src, entry_module_path)?;
 
     match action {
