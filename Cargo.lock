@@ -265,6 +265,7 @@ dependencies = [
  "cranelisp-runtime",
  "cranelisp-typecheck",
  "cranelisp-types",
+ "dashmap",
  "libc",
  "libloading",
  "notify",

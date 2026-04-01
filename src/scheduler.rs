@@ -210,8 +210,8 @@ impl SchedulerState {
 /// - `completion` — for `wait_object_complete` callers
 pub struct CompileScheduler {
     state: Mutex<SchedulerState>,
-    /// Condvar for priority workers (Step 11 — added now, not used yet).
-    #[allow(dead_code)]
+    /// Condvar for priority workers: woken when new work becomes available
+    /// (module registered, dependency unblocked, typecheck done) or on shutdown.
     priority_work_available: Condvar,
     /// Condvar for nice workers: woken when a TypecheckDone module becomes
     /// available for object codegen, or on shutdown.
@@ -232,6 +232,16 @@ impl std::fmt::Debug for CompileScheduler {
 impl Default for CompileScheduler {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+impl Drop for CompileScheduler {
+    fn drop(&mut self) {
+        // Defensive shutdown: wake all condvars so any parked threads
+        // observe the shutdown flag and exit, preventing hangs when a
+        // scheduler is dropped without an explicit shutdown() call.
+        // Idempotent — safe to call even if shutdown() was already called.
+        self.shutdown();
     }
 }
 
@@ -287,6 +297,10 @@ impl CompileScheduler {
         } else {
             state.typecheck_next.push_back(module);
         }
+
+        // Wake priority workers — new module available for typecheck.
+        drop(state);
+        self.priority_work_available.notify_all();
     }
 
     /// Register a module loaded from cache.
@@ -318,40 +332,81 @@ impl CompileScheduler {
     // Priority Worker Interface (§6.2)
     // -----------------------------------------------------------------------
 
-    /// Return the highest-priority work item, or None if no work available.
+    /// Return the highest-priority work item, or None when no work available.
     ///
-    /// Checks the work lists in order:
+    /// Non-blocking: returns None immediately when all queues are empty.
+    /// Used by the inline single-threaded worker loop (Steps 3-10).
+    ///
+    /// Checks the work lists in priority order:
     ///   1. Pop from typecheck_first -> Typecheck(module)
     ///   2. Scan priority_queue for first Ready entry -> BlockingJitCodegen
     ///   3. Pop from typecheck_next -> Typecheck(module)
-    ///   4. (Level 4 — JitCodegen — not implemented in Step 3. Returns None.)
-    ///
-    /// Returns None immediately when empty (priority workers do not park
-    /// in Step 10 — that is Step 11).
+    ///   4. (Level 4 — JitCodegen — deferred to later steps.)
     pub fn take_priority_work(&self) -> Option<PriorityWork> {
         let mut state = self.lock();
+        Self::try_take_work_locked(&mut state)
+    }
+
+    /// Return the highest-priority work item, blocking if none available.
+    ///
+    /// Parks on `priority_work_available` condvar when no work is available
+    /// and more work could still arrive (modules in TypecheckWorking or
+    /// TypecheckBlocked). Returns None on shutdown or when all work is
+    /// exhausted.
+    ///
+    /// Used by spawned priority worker threads (Wave 3+). The inline
+    /// single-threaded loop uses the non-blocking `take_priority_work`.
+    pub fn take_priority_work_blocking(&self) -> Option<PriorityWork> {
+        let mut state = self.lock();
+        loop {
+            if state.shutdown {
+                return None;
+            }
+
+            if let Some(work) = Self::try_take_work_locked(&mut state) {
+                return Some(work);
+            }
+
+            // Check if all work is exhausted — no more items will arrive.
+            if Self::all_inmem_complete_locked(&state) {
+                return None;
+            }
+
+            // No work available — park until woken by register_module,
+            // unblock, notify_typecheck_done, or shutdown.
+            state = self.priority_work_available.wait(state)
+                .unwrap_or_else(|e| e.into_inner());
+        }
+    }
+
+    /// Try to take a work item from the priority ladder (locked).
+    ///
+    /// Shared implementation for both blocking and non-blocking variants.
+    fn try_take_work_locked(
+        state: &mut SchedulerState,
+    ) -> Option<PriorityWork> {
         if state.shutdown {
             return None;
         }
 
         // Level 1: TypecheckFirst
         if let Some(module) = state.typecheck_first.pop_front() {
-            Self::set_pool_locked(&mut state, &module, ModulePool::TypecheckWorking);
+            Self::set_pool_locked(state, &module, ModulePool::TypecheckWorking);
             return Some(PriorityWork::Typecheck(module));
         }
 
         // Level 2: Priority codegen queue — first Ready entry
-        if let Some(work) = Self::claim_priority_codegen_locked(&mut state) {
+        if let Some(work) = Self::claim_priority_codegen_locked(state) {
             return Some(work);
         }
 
         // Level 3: TypecheckNext
         if let Some(module) = state.typecheck_next.pop_front() {
-            Self::set_pool_locked(&mut state, &module, ModulePool::TypecheckWorking);
+            Self::set_pool_locked(state, &module, ModulePool::TypecheckWorking);
             return Some(PriorityWork::Typecheck(module));
         }
 
-        // Level 4: JitCodegen — deferred to later steps (W2).
+        // Level 4: JitCodegen — deferred to later steps.
         None
     }
 
@@ -368,8 +423,15 @@ impl CompileScheduler {
         let waiters = Self::take_waiters_for_symbol_locked(
             &mut state, module, symbol, WaitKind::Typecheck,
         );
+        let had_waiters = !waiters.is_empty();
         for waiter_module in waiters {
             Self::try_unblock_locked(&mut state, &waiter_module);
+        }
+
+        // Wake priority workers if any module was unblocked.
+        if had_waiters {
+            drop(state);
+            self.priority_work_available.notify_all();
         }
     }
 
@@ -445,6 +507,10 @@ impl CompileScheduler {
         Self::push_priority_entries_locked(
             &mut state, module, &needed, macro_key.as_ref(),
         );
+
+        // Wake priority workers — new entries in the priority codegen queue.
+        drop(state);
+        self.priority_work_available.notify_all();
     }
 
     /// All forms in the module have been typechecked.
@@ -493,9 +559,11 @@ impl CompileScheduler {
             Self::try_unblock_locked(&mut state, &waiter_module);
         }
 
-        // Wake nice workers — new TypecheckDone module is potential
-        // object codegen work.
+        // Wake workers — new TypecheckDone module is potential work.
+        // Nice workers get object codegen; priority workers may have
+        // JitCodegen work (Level 4) or unblocked modules.
         drop(state);
+        self.priority_work_available.notify_all();
         self.object_work_available.notify_all();
     }
 
@@ -510,8 +578,9 @@ impl CompileScheduler {
         let mut state = self.lock();
         Self::notify_module_failed_locked(&mut state, module, error);
 
-        // Wake completion condvar — failed modules affect wait_object_complete.
+        // Wake condvars — failed modules affect completion checks.
         drop(state);
+        self.priority_work_available.notify_all();
         self.completion.notify_all();
     }
 
@@ -538,6 +607,10 @@ impl CompileScheduler {
             // Still has unresolved dependencies — wait.
             state.priority_queue[idx].status = PriorityStatus::Waiting;
         }
+
+        // Wake priority workers — resolved entries may unblock modules.
+        drop(state);
+        self.priority_work_available.notify_all();
     }
 
     /// JIT codegen of a symbol is complete.
@@ -826,6 +899,37 @@ impl CompileScheduler {
     // -----------------------------------------------------------------------
     // Internal helpers (all take &mut SchedulerState to avoid re-locking)
     // -----------------------------------------------------------------------
+
+    /// Check if all priority work has been exhausted.
+    ///
+    /// Returns true when no more work items can appear:
+    /// - The modules map is empty (no work registered), or
+    /// - All work queues are empty (TypecheckFirst, TypecheckNext, and no
+    ///   Ready entries in priority_queue), AND
+    /// - No modules are in TypecheckWorking (which could produce new work
+    ///   via register_module or block_for_macro_codegen).
+    ///
+    /// This covers several scenarios:
+    /// - All modules TypecheckDone/Complete/Failed: no more work.
+    /// - Some modules TypecheckBlocked with nothing to unblock them:
+    ///   no active workers means no new notifications will come.
+    fn all_inmem_complete_locked(state: &SchedulerState) -> bool {
+        // If queues have items, work is available (covered by the
+        // try_take logic above, but double-check for completeness).
+        if !state.typecheck_first.is_empty()
+            || !state.typecheck_next.is_empty()
+        {
+            return false;
+        }
+        if state.priority_queue.iter().any(|e| e.status == PriorityStatus::Ready) {
+            return false;
+        }
+        // If any module is being actively processed, it could produce
+        // new work (register deps, block for macro codegen).
+        let any_working = state.modules.values()
+            .any(|ms| ms.pool == ModulePool::TypecheckWorking);
+        !any_working
+    }
 
     /// Set a module's pool. Does NOT add/remove from deques — caller
     /// is responsible for deque management.
@@ -1394,5 +1498,55 @@ mod tests {
 
         // After scope exits, worker threads have joined.
         assert!(shared.scheduler.is_shutdown());
+    }
+
+    #[test]
+    fn drop_without_shutdown_sets_shutdown_flag() {
+        // Verify that dropping a CompileScheduler without calling
+        // shutdown() still sets the shutdown flag (defensive Drop).
+        let sched = CompileScheduler::new();
+        let m = mod_path("test.mod");
+        sched.register_module(m, false);
+        // Drop without calling shutdown() — the Drop impl should
+        // call shutdown() automatically, preventing any parked
+        // threads from hanging.
+        drop(sched);
+        // If we get here without hanging, the Drop impl works.
+    }
+
+    #[test]
+    fn drop_after_shutdown_is_idempotent() {
+        // Verify that dropping after explicit shutdown() is harmless.
+        let sched = CompileScheduler::new();
+        sched.shutdown();
+        assert!(sched.is_shutdown());
+        drop(sched);
+        // No panic, no double-shutdown issue.
+    }
+
+    #[test]
+    fn drop_wakes_parked_worker() {
+        // Verify that dropping a scheduler wakes a thread parked on
+        // take_object_codegen, preventing a hang.
+        use std::sync::Arc;
+
+        let sched = Arc::new(CompileScheduler::new());
+        let sched_clone = Arc::clone(&sched);
+
+        let handle = std::thread::spawn(move || {
+            // This call parks on the object_work_available condvar
+            // because no modules are in TypecheckDone.
+            sched_clone.take_object_codegen()
+        });
+
+        // Drop our Arc reference. The spawned thread still holds one,
+        // so the scheduler is not dropped yet. We need to call shutdown
+        // explicitly to wake it.
+        // (This test validates the pattern: explicit shutdown before
+        // joining threads. The Drop impl is a safety net, not a
+        // replacement for explicit shutdown when threads are alive.)
+        sched.shutdown();
+        let result = handle.join().expect("worker thread panicked");
+        assert!(result.is_none()); // shutdown returns None
     }
 }

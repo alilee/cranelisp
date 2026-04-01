@@ -230,7 +230,7 @@ impl CompilerSession {
         // Extract shared codegen state from InMemWorkerState for the worker loop.
         // This bridges the old InMemWorkerState with the new SharedCodegenState
         // + WorkerJitState types. After the loop, state is synced back.
-        let mut shared_codegen =
+        let shared_codegen =
             crate::session::SharedCodegenState::extract_from(&mut self.inner.inmem_worker);
         let mut worker_jit = crate::session::WorkerJitState::new();
 
@@ -238,7 +238,7 @@ impl CompilerSession {
         let mut ctx = WorkerContext {
             tc: &mut self.inner.tc,
             scheduler: &self.shared.scheduler,
-            shared_codegen: &mut shared_codegen,
+            shared_codegen: &shared_codegen,
             worker_jit: &mut worker_jit,
             platform_registry: &mut self.platform_registry,
             lib_dirs: &self.inner.lib_dirs,
@@ -253,7 +253,7 @@ impl CompilerSession {
         );
 
         // Drain per-worker JIT state to shared before syncing back.
-        worker_jit.drain_to_shared(&mut shared_codegen);
+        worker_jit.drain_to_shared(&shared_codegen);
 
         // Sync shared codegen state back to InMemWorkerState.
         shared_codegen.sync_back_to(&mut self.inner.inmem_worker);
@@ -542,6 +542,16 @@ impl CompilerSession {
     pub fn shutdown(&mut self) {
         self.shared.scheduler.shutdown();
         // Inner session's Drop handles legacy codegen worker shutdown.
+    }
+}
+
+impl Drop for CompilerSession {
+    fn drop(&mut self) {
+        // Defensive shutdown: ensure the scheduler signals all condvars
+        // before this session is destroyed. This prevents hangs if the
+        // session is dropped without an explicit shutdown() call (e.g.,
+        // during test teardown or panic unwinding).
+        self.shared.scheduler.shutdown();
     }
 }
 

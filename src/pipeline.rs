@@ -1098,7 +1098,7 @@ pub fn compile_checked_program(
 /// for per-worker JIT lifetime tracking. This is the primary implementation;
 /// `compile_and_register_defn` delegates to this for old-path callers.
 pub fn compile_and_register_defn_shared(
-    shared_codegen: &mut crate::session::SharedCodegenState,
+    shared_codegen: &crate::session::SharedCodegenState,
     worker_jit: &mut crate::session::WorkerJitState,
     platform_symbols: &[(String, *const u8)],
     defn: &Defn,
@@ -1118,20 +1118,22 @@ pub fn compile_and_register_defn_shared(
 
     let slot = shared_codegen.ensure_slot_for(&defn.name)?;
 
+    // Snapshot GOT slots from DashMap.
     let mut got_slots: HashMap<Symbol, usize> = HashMap::new();
-    for (name, dc) in &shared_codegen.def_codegen {
-        if let Some(s) = dc.got_slot {
-            got_slots.insert(name.clone(), s);
+    for entry in shared_codegen.def_codegen.iter() {
+        if let Some(s) = entry.got_slot {
+            got_slots.insert(entry.key().clone(), s);
         }
     }
     got_slots.insert(defn.name.clone(), slot);
 
     let got_base = shared_codegen.got_base_ptr() as i64;
 
+    // Snapshot func arities from DashMap.
     let mut func_arities: HashMap<Symbol, usize> = HashMap::new();
-    for (name, dc) in &shared_codegen.def_codegen {
-        if let Some(pc) = dc.param_count {
-            func_arities.insert(name.clone(), pc);
+    for entry in shared_codegen.def_codegen.iter() {
+        if let Some(pc) = entry.param_count {
+            func_arities.insert(entry.key().clone(), pc);
         }
     }
     func_arities.insert(defn.name.clone(), defn.params().len());
@@ -1150,11 +1152,13 @@ pub fn compile_and_register_defn_shared(
 
     shared_codegen.update_slot(slot, code_ptr);
 
-    let entry = shared_codegen.def_codegen.entry(defn.name.clone()).or_default();
+    // Update def_codegen via DashMap.
+    let mut entry = shared_codegen.def_codegen.entry(defn.name.clone()).or_default();
     entry.code_ptr = Some(code_ptr);
     entry.got_slot = Some(slot);
     entry.param_count = Some(defn.params().len());
     entry.defn = Some(defn.clone());
+    drop(entry); // Release DashMap shard lock explicitly.
 
     worker_jit.jit_modules.push(jit);
 

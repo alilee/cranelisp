@@ -31,13 +31,17 @@ use crate::session::{SharedCodegenState, WorkerJitState};
 
 /// Shared context for the priority worker loop and process_module_forms.
 ///
-/// Carries shared codegen state (`SharedCodegenState`) and per-worker JIT
-/// state (`WorkerJitState`) instead of the monolithic `InMemWorkerState`.
-/// The TypeChecker remains `&mut` until Step 12 (DashMap migration).
+/// Carries shared codegen state (`SharedCodegenState`, now `&` since all
+/// fields use concurrent data structures) and per-worker JIT state
+/// (`WorkerJitState`, `&mut` since it is per-worker owned state).
+/// The TypeChecker remains `&mut` until `register_imports_with_state`
+/// and `register_exports_with_state` are made `pub` on the TC crate.
+/// PlatformRegistry remains `&mut` because `register()` needs mutation
+/// during platform form processing.
 pub struct WorkerContext<'a> {
     pub tc: &'a mut cranelisp_typecheck::TypeChecker,
     pub scheduler: &'a CompileScheduler,
-    pub shared_codegen: &'a mut SharedCodegenState,
+    pub shared_codegen: &'a SharedCodegenState,
     pub worker_jit: &'a mut WorkerJitState,
     pub platform_registry: &'a mut PlatformRegistry,
     pub lib_dirs: &'a [PathBuf],
@@ -878,7 +882,7 @@ fn collect_transitive_uncompiled_deps(
 /// constructor_to_type come from the TC's global registry in both cases.
 fn compile_dep_symbol_inline(
     tc: &cranelisp_typecheck::TypeChecker,
-    shared_codegen: &mut SharedCodegenState,
+    shared_codegen: &SharedCodegenState,
     worker_jit: &mut WorkerJitState,
     platform_symbols: &[(String, *const u8)],
     module: &ModuleFullPath,
@@ -904,8 +908,7 @@ fn compile_dep_symbol_inline(
     let defn = shared_codegen
         .def_codegen
         .get(symbol)
-        .and_then(|dc| dc.defn.as_ref())
-        .cloned();
+        .and_then(|dc| dc.defn.clone());
 
     if let Some(defn) = defn {
         compile_and_register_defn_shared(shared_codegen, worker_jit, platform_symbols, &defn, &check)?;
@@ -1030,7 +1033,7 @@ fn compile_macro_clause_inline(
 /// Macro functions build throwaway Sexp trees that are marshalled back to
 /// the compiler. Disabling dealloc prevents use-after-free on unmarshal.
 fn compile_macro_defn_no_dealloc(
-    shared_codegen: &mut SharedCodegenState,
+    shared_codegen: &SharedCodegenState,
     worker_jit: &mut WorkerJitState,
     platform_registry: &PlatformRegistry,
     defn: &Defn,
@@ -1062,11 +1065,12 @@ fn compile_macro_defn_no_dealloc(
     let slot = shared_codegen.ensure_slot_for(&defn.name)?;
     shared_codegen.update_slot(slot, ptr);
 
-    let entry = shared_codegen.def_codegen.entry(defn.name.clone()).or_default();
+    let mut entry = shared_codegen.def_codegen.entry(defn.name.clone()).or_default();
     entry.code_ptr = Some(ptr);
     entry.got_slot = Some(slot);
     entry.param_count = Some(defn.params().len());
     entry.defn = Some(defn.clone());
+    drop(entry); // Release DashMap shard lock explicitly.
 
     // Keep JIT alive so the function pointer remains valid.
     worker_jit.jit_modules.push(jit);
@@ -1320,7 +1324,7 @@ fn wrap_exprs_as_defns(program: &[TopLevel]) -> Vec<TopLevel> {
 /// and notifies the scheduler. Returns the last defn's execution result (for
 /// zero-arg defns like `main`).
 pub fn codegen_module_symbols(
-    shared_codegen: &mut SharedCodegenState,
+    shared_codegen: &SharedCodegenState,
     worker_jit: &mut WorkerJitState,
     platform_registry: &PlatformRegistry,
     scheduler: &CompileScheduler,
@@ -1363,7 +1367,7 @@ pub fn codegen_module_symbols(
 
 /// Pre-register GOT slots for all definitions in the program.
 fn pre_register_got_slots(
-    shared_codegen: &mut SharedCodegenState,
+    shared_codegen: &SharedCodegenState,
     program: &[TopLevel],
 ) -> Result<(), CranelispError> {
     for tl in program {
@@ -1384,7 +1388,7 @@ fn pre_register_got_slots(
 
 /// Compile monomorphised specializations.
 fn compile_mono_defns(
-    shared_codegen: &mut SharedCodegenState,
+    shared_codegen: &SharedCodegenState,
     worker_jit: &mut WorkerJitState,
     platform_symbols: &[(String, *const u8)],
     check: &CheckResult,
@@ -1416,7 +1420,7 @@ fn compile_mono_defns(
 /// Compile regular defns (skipping constrained fn base definitions).
 /// Returns the list of compiled symbol names.
 fn compile_regular_defns(
-    shared_codegen: &mut SharedCodegenState,
+    shared_codegen: &SharedCodegenState,
     worker_jit: &mut WorkerJitState,
     platform_symbols: &[(String, *const u8)],
     program: &[TopLevel],

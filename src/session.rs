@@ -237,26 +237,24 @@ unsafe impl Send for InMemWorkerState {}
 ///
 /// In Wave 1 (single-threaded), this is constructed from `InMemWorkerState`
 /// at the start of the worker loop and synced back on completion.
-/// In later waves, this will live on `CompilerSession` and use concurrent
-/// data structures (DashMap, AtomicUsize).
+/// Shared codegen state accessible by all priority workers concurrently.
 ///
-/// For Wave 1, `def_codegen` uses a plain `HashMap` (no DashMap dependency
-/// yet) and `next_got_slot` uses `AtomicUsize` (zero overhead in
-/// single-threaded usage, ready for concurrent access in Wave 3).
+/// All fields use concurrent data structures (atomics, DashMap, Mutex)
+/// or are read-only after construction. `&self` suffices for all worker
+/// operations.
 pub struct SharedCodegenState {
     /// The GOT table. Already uses AtomicPtr slots. Workers write to
     /// pre-assigned disjoint slots via store(Release).
     pub got_table: std::sync::Arc<cranelisp_backend::got::GotTable>,
 
-    /// Next available GOT slot index. Uses AtomicUsize for future
-    /// concurrent access; in Wave 1 single-threaded, the atomic is
-    /// effectively a plain counter.
+    /// Next available GOT slot index. Atomically incremented by
+    /// `ensure_slot_for`. Replaces the plain `usize` counter.
     pub next_got_slot: std::sync::atomic::AtomicUsize,
 
     /// Per-definition codegen artifacts (GOT slot, code pointer, param
-    /// count, defn). Plain HashMap in Wave 1; will migrate to DashMap
-    /// in Wave 2 for concurrent access.
-    pub def_codegen: HashMap<Symbol, cranelisp_backend::codegen_types::DefCodegen>,
+    /// count, defn). Concurrent read+write via DashMap. Replaces the
+    /// plain HashMap from Wave 1.
+    pub def_codegen: dashmap::DashMap<Symbol, cranelisp_backend::codegen_types::DefCodegen>,
 
     /// JIT instances drained here to keep code memory alive. Workers
     /// drain their per-worker JIT vecs here at module completion.
@@ -279,28 +277,34 @@ unsafe impl Sync for SharedCodegenState {}
 impl SharedCodegenState {
     /// Allocate a GOT slot for a definition and record it in def_codegen.
     /// If the definition already has a slot, reuses it.
-    pub fn ensure_slot_for(&mut self, name: &Symbol) -> Result<usize, CranelispError> {
+    ///
+    /// Thread-safe: uses DashMap entry API for atomic check-and-allocate
+    /// and AtomicUsize fetch_add for slot counter.
+    pub fn ensure_slot_for(&self, name: &Symbol) -> Result<usize, CranelispError> {
         use cranelisp_types::GOT_TABLE_SIZE;
 
-        // Check if we already have a slot.
-        if let Some(dc) = self.def_codegen.get(name)
-            && let Some(slot) = dc.got_slot
-        {
-            return Ok(slot);
+        // Fast path: already has a slot.
+        if let Some(entry) = self.def_codegen.get(name) {
+            if let Some(slot) = entry.got_slot {
+                return Ok(slot);
+            }
         }
 
-        // Allocate a new slot.
-        let slot = self.next_got_slot.load(std::sync::atomic::Ordering::Acquire);
+        // Slow path: allocate a new slot atomically.
+        // Use entry API for atomic insert-if-absent.
+        let mut entry = self.def_codegen.entry(name.clone()).or_default();
+        if let Some(slot) = entry.got_slot {
+            return Ok(slot); // Another thread won the race.
+        }
+
+        let slot = self.next_got_slot.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
         if slot >= GOT_TABLE_SIZE {
             return Err(CranelispError::CodegenError {
                 message: format!("GOT table full (max {GOT_TABLE_SIZE})"),
                 span: Span::SYNTHETIC,
             });
         }
-        self.next_got_slot.store(slot + 1, std::sync::atomic::Ordering::Release);
-
-        let dc = self.def_codegen.entry(name.clone()).or_default();
-        dc.got_slot = Some(slot);
+        entry.got_slot = Some(slot);
         Ok(slot)
     }
 
@@ -328,9 +332,14 @@ impl SharedCodegenState {
         // Ensure the GOT is allocated before extracting.
         let got_table = inmem.got_state.shared_got();
         let next_slot = inmem.got_state.next_got_slot();
-        let def_codegen = std::mem::take(&mut inmem.got_state.def_codegen);
+        let def_codegen_map = std::mem::take(&mut inmem.got_state.def_codegen);
         let jit_modules = std::mem::take(&mut inmem.jit_modules);
         let cache_linkers = std::mem::take(&mut inmem.cache_linkers);
+
+        let def_codegen = dashmap::DashMap::new();
+        for (k, v) in def_codegen_map {
+            def_codegen.insert(k, v);
+        }
 
         SharedCodegenState {
             got_table,
@@ -346,7 +355,12 @@ impl SharedCodegenState {
     /// Moves `def_codegen` and slot counter back, and extends the
     /// InMemWorkerState's JIT/linker vecs with kept instances.
     pub fn sync_back_to(self, inmem: &mut InMemWorkerState) {
-        inmem.got_state.def_codegen = self.def_codegen;
+        // Convert DashMap back to HashMap for InMemWorkerState.
+        let mut def_codegen_map = HashMap::new();
+        for entry in self.def_codegen.into_iter() {
+            def_codegen_map.insert(entry.0, entry.1);
+        }
+        inmem.got_state.def_codegen = def_codegen_map;
         inmem.got_state.set_next_got_slot(
             self.next_got_slot.load(std::sync::atomic::Ordering::Acquire),
         );
@@ -399,7 +413,7 @@ impl WorkerJitState {
 
     /// Drain accumulated JIT and Linker instances to shared state.
     /// Called after each module's codegen sweep completes.
-    pub fn drain_to_shared(&mut self, shared: &mut SharedCodegenState) {
+    pub fn drain_to_shared(&mut self, shared: &SharedCodegenState) {
         if !self.jit_modules.is_empty() {
             let mut kept = shared.kept_jits.lock()
                 .unwrap_or_else(|e| e.into_inner());

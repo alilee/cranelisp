@@ -26,6 +26,9 @@ cranelisp-backend = { path = "crates/cranelisp-backend" }
 cranelisp-runtime = { path = "crates/cranelisp-runtime" }
 cranelisp-platform = { path = "crates/cranelisp-platform" }
 
+[dependencies.dashmap]
+version = "6"
+
 [dependencies.libc]
 version = "0.2"
 
