@@ -130,8 +130,8 @@ These methods perform structural mutations that are not called from worker threa
 | `set_current_module()` | Only used by `check()` (which creates its own `CheckState`) and REPL paths. Workers do not call this — they pass the module path explicitly. |
 | `remove_module()` | Hot-reload (REPL only). Single-threaded. |
 | `insert_module()` | Hot-reload (REPL only). Single-threaded. |
-| `restore_cached_module()` | Cache path — called before workers start on the module. |
-| `restore_cached_impls()` | Cache path — called before workers start. |
+| `restore_cached_module()` | **Moved to `&self`** — see section 10 (Sprint 48, Step 13). |
+| `restore_cached_impls()` | **Moved to `&self`** — see section 10 (Sprint 48, Step 13). |
 | `restore()` / `snapshot()` | REPL error recovery. Single-threaded. |
 | `register_imports()` / `register_exports()` | Called during `check_form` Pass 1. See section 4 for how these work with DashMap. |
 
@@ -333,11 +333,17 @@ fn set_current_module(&self, state: &mut CheckState, path: ModuleFullPath) {
 }
 ```
 
-### 4.8 `remove_module()` / `insert_module()` / `restore_cached_module()`
+### 4.8 `remove_module()` / `insert_module()`
 
 These are single-threaded (REPL or setup). With `&mut self`, DashMap's `get_mut()` returns `&mut V` directly (no guard needed via `get_mut()` on a `&mut DashMap` — but DashMap does not support this pattern). Instead, these methods use the DashMap entry API or `remove()`. Since they hold `&mut self`, no other thread is accessing the map. No deadlock risk.
 
 **Note**: `&mut self` on these methods means we have exclusive access. DashMap operations are still valid — they just acquire and release shard locks internally. Since no other thread holds any guards, no contention or deadlock.
+
+### 4.8a `restore_cached_module()` / `restore_cached_impls()` — concurrent cache restoration
+
+**Updated Sprint 48**: These methods were originally classified as single-threaded ("called before workers start"). Step 13 (cache-hit loading) changes this: a worker thread discovers a cached module during `handle_import` and must restore it into the TypeChecker while other workers are actively typechecking different modules. Both methods must be converted from `&mut self` to `&self`.
+
+See section 10 for the full analysis and conversion plan.
 
 ### 4.9 `module_table()` — public read accessor
 
@@ -561,3 +567,100 @@ Each worker gets a cloned snapshot of all module tables at the start of typechec
 ### 9.4 Channel-based architecture (workers send mutations to a coordinator)
 
 Workers send `RegisterSymbol(module, name, entry)` messages to a coordinator thread that owns the HashMap. This avoids shared state but adds latency (round-trip to coordinator) and complexity (async message protocol). DashMap is simpler and lower latency.
+
+## 10. Cache Restoration under `&self` (Sprint 48, Step 13)
+
+### 10.1 Problem
+
+Step 13 (cache-hit loading) changes the calling context for `restore_cached_module()` and `restore_cached_impls()`. Previously these ran single-threaded before workers started. Now a worker thread calls them from `handle_import` when it discovers a cached dependency — while other workers are concurrently typechecking different modules. Both methods are currently `&mut self`, which is incompatible with the `&self` DashMap API the workers use.
+
+### 10.2 Current Implementation Analysis
+
+**`restore_cached_module(&mut self, table: SymbolTable)`** (checker.rs:1383):
+
+1. `self.type_defs.get_mut().unwrap()` — `RwLock::get_mut()` requires `&mut self`, bypasses locking.
+2. `self.trait_registry.get_mut().unwrap()` — same.
+3. Iterates `table.all_symbols()`, inserting into `type_defs.constructor_to_type`, `type_defs.type_defs`, and `trait_registry.decls`/`method_to_trait`.
+4. `self.advance_next_id_past_table(&table)` — calls `self.next_id.get_mut()` which requires `&mut self`, bypasses atomics.
+5. `self.modules.insert(path, table)` — DashMap insert, already works with `&self`.
+
+**`restore_cached_impls(&mut self, mangled_names: &[String])`** (checker.rs:1485):
+
+1. `self.impl_registry.get_mut().unwrap()` — `RwLock::get_mut()` requires `&mut self`.
+2. Iterates mangled names, parsing `Trait.method$Type` patterns and inserting into `impl_registry.impls`.
+
+**`advance_next_id_past_table(&mut self, table: &SymbolTable)`** (checker.rs:1443):
+
+1. Scans all schemes in the table for the maximum type variable ID.
+2. `self.next_id.get_mut()` — uses `&mut self` bypass on `AtomicU32` for comparison and assignment.
+
+### 10.3 Required Changes
+
+All three methods become `&self`. The changes are mechanical replacements of `&mut self` lock bypasses with proper concurrent primitives:
+
+**`restore_cached_module(&self, table: SymbolTable)`**:
+
+1. Replace `self.type_defs.get_mut().unwrap()` with `self.type_defs.write().unwrap()` — acquires a write lock. Other workers doing `type_defs.read()` will wait briefly. This is acceptable because cache restoration is infrequent (once per cached module) and the write section is short.
+2. Replace `self.trait_registry.get_mut().unwrap()` with `self.trait_registry.write().unwrap()` — same rationale.
+3. `self.modules.insert(path, table)` — unchanged, already `&self`-compatible.
+4. Call the updated `advance_next_id_past_table`.
+
+**Guard lifetime**: The write guards for `type_defs` and `trait_registry` are acquired and used within the same loop body. They do NOT overlap with any DashMap guard on `self.modules` (the `modules.insert` happens after the loop). No deadlock risk.
+
+**Optimization**: The `type_defs` and `trait_registry` write guards can be acquired once before the loop (as they are now) and held for the duration of the iteration. This is a single brief write-lock per cache restoration, not per-entry. The alternative of acquiring per-entry would add unnecessary lock overhead.
+
+**`advance_next_id_past_table(&self, table: &SymbolTable)`**:
+
+Replace:
+```rust
+if *self.next_id.get_mut() <= id {
+    *self.next_id.get_mut() = id + 1;
+}
+```
+
+With:
+```rust
+self.next_id.fetch_max(id + 1, Ordering::Relaxed);
+```
+
+`fetch_max` atomically sets `next_id = max(current, id + 1)` — correct even under concurrent `fetch_add` from other workers allocating fresh type variables. The existing `commit_next_id` method (checker.rs:770) already uses this exact pattern.
+
+**`restore_cached_impls(&self, mangled_names: &[String])`**:
+
+Replace `self.impl_registry.get_mut().unwrap()` with `self.impl_registry.write().unwrap()`. The write guard is held for the duration of the loop — acceptable because the loop is short (only trait impl method names match the `Trait.method$Type` pattern) and cache restoration is infrequent.
+
+### 10.4 Thread Safety Analysis
+
+**Scenario: Worker A restores cached module X while Worker B typechecks module Y.**
+
+- Worker A holds `type_defs.write()` briefly. Worker B may be waiting on `type_defs.read()` for constructor lookups. B is blocked for the duration of A's write — microseconds. Acceptable.
+- Worker A holds `trait_registry.write()` briefly. Same analysis.
+- Worker A calls `self.modules.insert(path_x, table)`. Worker B reads from `self.modules.get(path_y)`. These are different DashMap keys — no contention unless they hash to the same shard, in which case DashMap's per-shard lock handles it correctly.
+- Worker A calls `next_id.fetch_max(id + 1, Relaxed)`. Worker B calls `next_id.fetch_add(1, Relaxed)`. Both are atomic operations. Ordering is `Relaxed` which is sufficient — type variable IDs only need uniqueness, not ordering.
+
+**Scenario: Two workers restore different cached modules concurrently.**
+
+- Both acquire `type_defs.write()` — serialized by the write lock. Second writer waits. Correct.
+- Both acquire `trait_registry.write()` — same.
+- Both call `modules.insert()` with different keys — concurrent DashMap insertions, no issue.
+- The `contains_key` guard on trait decl insertion (`if !tr.decls.contains_key(&decl.name)`) is checked under the write lock, so the check-then-insert is atomic. No TOCTOU race.
+
+**Scenario: Worker restores cached module while REPL `snapshot()`/`restore()` runs.**
+
+- The REPL path uses `&mut self` (via `snapshot()`/`restore()`), which guarantees exclusive access. If `&mut self` is held, no worker can hold `&self` simultaneously (Rust borrow rules). No conflict.
+
+### 10.5 Ordering Constraint
+
+`restore_cached_impls` MUST be called after `restore_cached_module` for the same cached module, because it depends on `trait_registry` being populated by the trait decls in the symbol table. The calling code in the pipeline (`handle_import`) must enforce this ordering. This is a sequential constraint within a single worker's cache-restoration path — not a cross-thread issue.
+
+### 10.6 Migration Steps
+
+These are small changes within the existing cache restoration methods. They can be done as part of the Step 13 implementation work by `/typecheck` or `/int`:
+
+1. Change `advance_next_id_past_table` from `&mut self` to `&self`. Replace `get_mut()` with `fetch_max`.
+2. Change `restore_cached_module` from `&mut self` to `&self`. Replace `type_defs.get_mut()` with `type_defs.write()`, `trait_registry.get_mut()` with `trait_registry.write()`.
+3. Change `restore_cached_impls` from `&mut self` to `&self`. Replace `impl_registry.get_mut()` with `impl_registry.write()`.
+4. Verify `cargo test` passes — behavior is identical in the single-threaded case (write locks are uncontended).
+5. Verify `cargo clippy` produces no new warnings.
+
+No new methods or data structures are needed. The existing API surface is sufficient — only the `self` receiver changes.

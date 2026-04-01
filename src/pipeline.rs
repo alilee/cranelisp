@@ -1462,6 +1462,76 @@ pub fn compile_and_run(
     })
 }
 
+/// Compile and run a single source via the v4 CompilerSession path.
+///
+/// Test helper: creates a CompilerSession, registers the source as a
+/// module via the v4 scheduler-driven path, then runs the entry main
+/// function via the trampoline.
+pub fn compile_and_run_v4(source: &str) -> Result<PipelineResult, CranelispError> {
+    let project_root = std::env::current_dir().unwrap_or_default();
+    let entry_path = project_root.join("user.cl");
+    let mut session = crate::session_v4::CompilerSession::new(
+        false,
+        project_root,
+        &entry_path,
+    );
+
+    session.register_module("user", source, &entry_path)?;
+
+    let (value, ty) = session.trampoline("user")?;
+
+    Ok(PipelineResult {
+        value,
+        ty,
+        warnings: Vec::new(),
+    })
+}
+
+/// Compile a module graph via the v4 CompilerSession path.
+///
+/// Test helper: creates a CompilerSession with specified lib_dirs,
+/// reads the entry file, and compiles via register_module.
+pub fn compile_module_graph_v4(
+    entry_path: &Path,
+    lib_dirs: &[PathBuf],
+) -> Result<PipelineResult, CranelispError> {
+    let project_root = entry_path
+        .parent()
+        .map(|p| p.to_path_buf())
+        .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
+
+    let mut session = crate::session_v4::CompilerSession::new(
+        false,
+        project_root,
+        entry_path,
+    );
+    // Override lib_dirs with the provided list.
+    session.lib_dirs = lib_dirs.to_vec();
+
+    let source = std::fs::read_to_string(entry_path).map_err(|e| {
+        CranelispError::ModuleError {
+            message: format!("cannot read '{}': {}", entry_path.display(), e),
+            file: Some(entry_path.to_path_buf()),
+            span: Span::SYNTHETIC,
+        }
+    })?;
+
+    let module_name = entry_path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("user");
+
+    session.register_module(module_name, &source, entry_path)?;
+
+    let (value, ty) = session.trampoline(module_name)?;
+
+    Ok(PipelineResult {
+        value,
+        ty,
+        warnings: Vec::new(),
+    })
+}
+
 // ---------------------------------------------------------------------------
 // Multi-file module graph pipeline
 // ---------------------------------------------------------------------------

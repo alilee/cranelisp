@@ -1,82 +1,101 @@
-# Sprint 48: Pipeline v4 Steps 13+14 — Cache-Hit Loading + File Watcher Migration
+# Sprint 49: Pipeline v4 Step 15 — Delete Legacy Code
 
-**Status**: COMPLETE
+**Status**: ACTIVE
 **Ring**: — (structural / pipeline v4 migration)
-**Goal**: Second compilations skip typecheck via cache-hit loading through the scheduler; file watcher reloads route through the v4 scheduler instead of the v3 `CompilationSession`.
+**Goal**: Write a clean `run()` function matching pipeline-v4.md §2.2 target state. No ReplSession. No CompilationSession. One session struct, one main, one compilation path.
 
-## Scope
+## Target State (from pipeline-v4.md §2.2)
 
-### Step 13: Cache-Hit Loading
-- Cache validity check in `handle_import` before `register_module`
-- `register_module_cached` called when cache valid (skips typecheck)
-- On-demand Linker loading for cached modules in worker loop
-- `file_to_module` mapping on SharedState for watcher
-- `cache_state` on SharedState for validity checking
-- Idempotency guard on `register_module_cached` (arch finding F-1)
+```rust
+fn run() -> Result<(), CranelispError> {
+    let (action, entry_module_path, settings) = parse_args();
+    let project_root = base_dir(&entry_module_path);
+    let s = CompilerSession::new(settings, project_root);
+    s.register_module(&entry_module_name);
 
-### Step 14: File Watcher Migration
-- `re_register_module` on CompileScheduler (clears state, re-inserts at TypecheckFirst)
-- `reload_via_scheduler` routes through scheduler with inline worker loop
-- Cascade via TC DashMap iteration
-- Clears `cached_modules` on re-register (review finding I-1)
+    match action {
+        Run => {
+            s.scheduler.wait_inmem_complete()?;
+            s.trampoline(&entry_module_name);
+            s.scheduler.wait_object_complete()?;
+        }
+        Link => {
+            s.scheduler.wait_object_complete()?;
+            s.link(&entry_module_name);
+        }
+        Repl => {
+            loop {
+                let src = read_line();
+                match s.process_commands(&src) {
+                    Nothing => {}
+                    Final(sexp) => pretty_print(sexp),
+                    Compile(src) => match s.eval(&src) {
+                        Ok(Some(sexp)) => pretty_print(sexp),
+                        Ok(None) => {}
+                        Err(e) => print_error(e),
+                    },
+                }
+            }
+        }
+    }
+    s.shutdown();
+    Ok(())
+}
 
-### Testing Infrastructure
-- Switched to `cargo nextest run` for all test runs (~9s vs ~15s)
-- `.cargo/config.toml` alias `cargo nt`
-- CLAUDE.md updated with testing conventions
+fn main() {
+    if let Err(e) = run() {
+        eprintln!("error: {e}");
+        process::exit(1);
+    }
+}
+```
 
-## Architecture Review
+Key properties:
+- **One `CompilerSession`** — no CompilationSession, no ReplSession
+- **`eval()` and `process_commands()` are methods on CompilerSession**
+- **Prelude is not special** — discovered lazily when user module imports it
+- **REPL loop is in `run()`** — REPL-specific display/watcher/persistence is helper functions, not a wrapper struct
+- **`run()` returns `Result`** — main handles the error
 
-Approved with 5 technical findings (T-1 through T-5), all addressed in design and implementation. See archive for details.
+## Current Wave: Write clean run()
 
-## Review Findings
+### Task
 
-2B 4I 2S — all B+I resolved:
+Write `run()` from scratch matching the target state. Put it behind `--v4` flag for coexistence with the old path. The old path stays untouched. `run()` must be completely clean — no references to CompilationSession, ReplSession, or any v3 types.
 
-| Finding | Severity | Fix |
-|---------|----------|-----|
-| B-1: Cache-hit codegen claim guard race | Blocker | Set `inmem_done = true` before returning work item |
-| B-2: reload_via_scheduler no-op | Blocker | Added inline worker loop + sexp storage after re-registration |
-| I-1: cached_modules not cleared on reload | Important | `re_register_module` clears cached_modules via SchedulerState |
-| I-2: expect() in pipeline code | Important | Replaced with match + early return |
-| I-3: 4 duplicate cache-hit codegen blocks | Important | Extracted `handle_cached_codegen` helper |
-| I-4: Unnecessary symbol_table clone | Important | Reordered operations to avoid clone |
-| S-1: Source read twice on cache miss | Suggestion | Deferred |
-| S-2: Stringly-typed __cache_load symbol | Suggestion | Deferred |
+This means `CompilerSession` needs:
+- `eval(&mut self, src: &str) -> Result<Option<EvalResult>, CranelispError>` — submit source to current REPL module via scheduler, return display result
+- `process_commands(&self, input: &str) -> CommandResult` — slash commands + blank detection
+- REPL-specific state that currently lives on ReplSession (type_defs for ADT display, file watcher, persistence, error_modules) either moves to CompilerSession or becomes local state in the REPL loop
+
+### What stays on CompilerSession
+
+- `eval()` — compilation core (already partially implemented as eval_one_form_v4)
+- `process_commands()` — command dispatch
+- `type_defs` / `type_modules` — needed for display formatting after eval
+- File watcher state — optional, created in REPL mode
+- Session persistence — save/restore user.cl
+
+### What becomes free functions / loop-local
+
+- Display formatting (`format_result`, `format_repl_display`) — already free functions
+- Line reading, prompt formatting, banner — loop-local
+- Shell escape handling — loop-local
+
+## Prior attempts (lessons)
+
+1. First agent: migrated ReplSession to wrap CompilerSession instead of CompilationSession. Wrong — preserved the wrong abstraction. Fixed 265 test failures but left 27 regressions and didn't touch main.
+2. ReplSession is not in the v4 design. `eval()` and `process_commands()` belong on CompilerSession.
+3. Agent ran `git stash` and lost work. NEVER allow destructive git commands in agents.
+4. The defmacro REPL test (`test_repl_defmacro_and_use`) needs attention — v4 eval path's macro persistence across evals differs from old path. The previous agent added macro persistence code to worker.rs that should be reviewed.
+5. Link mode must not use compile_unit — use register_module + nice workers.
 
 ## Outcome
 
+{To be filled when sprint closes}
+
 ### Delivered
-- **Cache-hit loading (Step 13)** — dependency discovery checks cache, restores types into DashMap TC, registers with scheduler at `TypecheckDone`, loads `.o` via Linker on demand
-- **File watcher migration (Step 14)** — `reload_via_scheduler` routes through v4 scheduler with inline worker loop, cascade via TC module iteration
-- **TypeChecker `&self` cache methods** — `restore_cached_module`, `restore_cached_impls`, `advance_next_id_past_table` converted from `&mut self` to `&self`
-- **SharedState extensions** — `cached_modules`, `file_to_module`, `cache_state` fields
-- **Scheduler extensions** — `re_register_module`, Level 4 cache codegen dispatch, `is_cached_module` query
-- **Design docs** — `design/int/cache-hit-loading.md`, `design/typecheck/dashmap-migration.md` §10
-- **Testing infrastructure** — `cargo nextest run` adopted, `.cargo/config.toml`, CLAUDE.md testing conventions
-- **Review cycle** — 2B+4I resolved, 2S deferred
 
 ### Deferred
-- **Sprint23 E2E triage** — 14 failures gated via cfg. Deferred to Sprint 49 (Step 15 legacy deletion will affect these tests)
-- **S-1, S-2** — minor suggestions, not blocking
 
 ### Findings
-- **Test contention from concurrent agents** — parallel agents running `cargo test` caused 12x slowdown (2.7s → 35s) due to Cargo build-lock contention. Root cause was NOT code regression. Fix: `cargo nextest run` + CLAUDE.md policy (one test run at a time, never background).
-- **Agent context exhaustion** — first `/int` agent burned 719KB of context fighting Edit tool uniqueness issues on TypeChecker. Solved by giving the second agent explicit step-by-step instructions (A through F).
-- **Separate agent runs for implementation** — running `/int` and `/qa` concurrently caused build-lock contention and QA seeing incomplete source changes. Run implementation agents sequentially.
-
-### Test Results
-- **1,684 passed, 13 failed (pre-existing), 0 ignored**
-- Pre-existing: 11 sketch_port + 2 v4_platform
-- No new failures introduced
-- No clippy regressions in changed files
-
-### Files Changed
-```
-crates/cranelisp-typecheck/src/checker.rs |  18 +-
-src/repl/mod.rs                           | 148 +++++++++-
-src/scheduler.rs                          | 121 ++++++++-
-src/session_v4.rs                         |  31 ++-
-src/worker.rs                             | 313 +++++++++++++++++++-
-5 files changed, 603 insertions(+), 28 deletions(-)
-```

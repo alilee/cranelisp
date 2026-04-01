@@ -191,6 +191,11 @@ pub fn process_module_forms(
         // Additive: just set the active module. Module state persists
         // from previous evals — no clear, no re-injection.
         ctx.tc.set_current_module(module.clone());
+
+        // Ensure macros module is imported (needed for quasiquote-based
+        // macro expansion which references SexpSym, SexpInt, etc.).
+        // Idempotent — register_imports handles duplicates gracefully.
+        inject_macros_import(ctx.tc)?;
     } else {
         // Resume: set active module (may have been changed by dep processing).
         ctx.tc.set_current_module(module.clone());
@@ -375,7 +380,7 @@ fn pass2_check_bodies_with_expansion(
     accumulator: &mut ModuleCheckAccumulator,
     expanded_program: &mut Vec<TopLevel>,
 ) -> Result<Pass2Result, CranelispError> {
-    // Collect macro infos for expansion.
+    // Collect macro infos from current sexps for expansion.
     let macro_infos: Vec<(Symbol, cranelisp_frontend::DefmacroInfo, Sexp)> = sexps
         .iter()
         .filter(|s| cranelisp_frontend::is_defmacro(s))
@@ -384,7 +389,17 @@ fn pass2_check_bodies_with_expansion(
             Ok((info.name.clone(), info, s.clone()))
         })
         .collect::<Result<Vec<_>, CranelispError>>()?;
-    let macro_names: Vec<&str> = macro_infos.iter().map(|(n, _, _)| n.as_ref()).collect();
+    let mut macro_names: Vec<&str> = macro_infos.iter().map(|(n, _, _)| n.as_ref()).collect();
+
+    // Also collect macro names from the symbol table (previously registered macros,
+    // e.g., from prior REPL evals or imported modules). These are needed so
+    // `sexp_contains_macro_call` can detect calls to previously defined macros.
+    let persistent_macro_names: Vec<Symbol> = collect_persistent_macro_names(ctx.tc);
+    let persistent_name_refs: Vec<&str> = persistent_macro_names.iter()
+        .map(|s| s.as_ref())
+        .filter(|n| !macro_names.contains(n))
+        .collect();
+    macro_names.extend(persistent_name_refs.iter());
 
     for form_idx in start_form_index..sexps.len() {
         let sexp = &sexps[form_idx];
@@ -455,10 +470,14 @@ fn process_regular_form(
     let built = cranelisp_frontend::build_program(&flattened)?;
     let working = wrap_exprs_as_defns(&built);
 
-    // Register signatures first (Pass 1) for any new forms from expansion.
-    for form in &working {
-        let result = ctx.tc.check_form(module, form, CheckPass::Register, accumulator)?;
-        ctx.tc.merge_form_result(module, accumulator, result);
+    // Register signatures for macro-expanded forms only. Non-expanded forms
+    // were already registered in Pass 1 (pass1_register). Re-registering
+    // causes "already defined" errors for traits.
+    if effective_sexp.is_some() {
+        for form in &working {
+            let result = ctx.tc.check_form(module, form, CheckPass::Register, accumulator)?;
+            ctx.tc.merge_form_result(module, accumulator, result);
+        }
     }
 
     // Typecheck body for each form produced (Pass 2).
@@ -815,6 +834,9 @@ fn try_expand_for_pass2(
             compile_macro_if_needed(
                 ctx, module, info, sexp.span(), accumulator,
             )?;
+        } else {
+            // Macro from a prior eval or imported module — compile on demand.
+            compile_persistent_macro_if_needed(ctx, module, macro_name, sexp.span(), accumulator)?;
         }
     }
 
@@ -829,7 +851,11 @@ fn try_expand_for_pass2(
 
     // Build the full macro map for expansion (includes all compiled macros
     // so recursive expansion can find macros produced by other macros).
-    let all_macros = build_all_macro_entries(ctx.shared_codegen, macro_infos)?;
+    let mut all_macros = build_all_macro_entries(ctx.shared_codegen, macro_infos)?;
+
+    // Also include previously compiled macros from the symbol table
+    // (e.g., from prior REPL evals or imported modules).
+    build_persistent_macro_entries(ctx.tc, ctx.shared_codegen, &mut all_macros)?;
 
     // Expand recursively throughout the entire sexp tree.
     let expanded = expander::expand_sexp_recursive(sexp.clone(), &all_macros, 0)?;
@@ -1235,6 +1261,14 @@ fn has_code_ptr(shared_codegen: &SharedCodegenState, name: &Symbol) -> bool {
         .is_some()
 }
 
+/// Get a code pointer from the shared codegen state, if compiled.
+fn get_code_ptr(shared_codegen: &SharedCodegenState, name: &Symbol) -> Option<*const u8> {
+    shared_codegen
+        .def_codegen
+        .get(name)
+        .and_then(|dc| dc.code_ptr)
+}
+
 /// Build a `MacroEntry` from GOT function pointers for a macro.
 ///
 /// Used after inline compilation to construct the entry needed by
@@ -1290,6 +1324,220 @@ fn build_all_macro_entries(
         }
     }
     Ok(map)
+}
+
+/// Collect names of macros available in the current module's symbol table.
+///
+/// Includes both directly defined Macro entries and Import entries that
+/// resolve to macros in other modules. This ensures `sexp_contains_macro_call`
+/// detects calls to imported macros from the prelude or other modules.
+fn collect_persistent_macro_names(tc: &cranelisp_typecheck::TypeChecker) -> Vec<Symbol> {
+    let mut names = Vec::new();
+    let sym_table = tc.symbol_table();
+    for (name, entry) in sym_table.all_symbols() {
+        match entry {
+            ModuleEntry::Macro { .. } => {
+                names.push(name.clone());
+            }
+            ModuleEntry::Import { source } => {
+                // Follow the import to check if the source is a macro.
+                if let Some(source_table) = tc.module_table(&source.module)
+                    && matches!(
+                        source_table.get(source.symbol.as_ref()),
+                        Some(ModuleEntry::Macro { .. })
+                            | Some(ModuleEntry::Reexport { .. })
+                    )
+                {
+                    names.push(name.clone());
+                }
+                // Also check through Reexport chains.
+                if let Some(source_table) = tc.module_table(&source.module)
+                    && let Some(ModuleEntry::Reexport { source: re_source }) =
+                        source_table.get(source.symbol.as_ref())
+                    && let Some(re_table) = tc.module_table(&re_source.module)
+                    && matches!(
+                        re_table.get(re_source.symbol.as_ref()),
+                        Some(ModuleEntry::Macro { .. })
+                    )
+                {
+                    if !names.contains(name) {
+                        names.push(name.clone());
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    names
+}
+
+/// Compile a persistent macro (from symbol table) on demand.
+///
+/// Looks up the macro's sexp from the symbol table (following Import/Reexport
+/// chains as needed), parses DefmacroInfo, and compiles clauses if not already compiled.
+fn compile_persistent_macro_if_needed(
+    ctx: &mut WorkerContext,
+    module: &ModuleFullPath,
+    macro_name: &str,
+    span: Span,
+    accumulator: &mut cranelisp_typecheck::ModuleCheckAccumulator,
+) -> Result<(), CranelispError> {
+    // Check if already compiled.
+    let clause_name_0 = macro_clause_jit_name(&Symbol::from(macro_name), 0);
+    if has_code_ptr(ctx.shared_codegen, &clause_name_0) {
+        return Ok(());
+    }
+
+    // Find the macro sexp, following Import/Reexport chains.
+    let macro_sexp = resolve_macro_sexp(ctx.tc, macro_name);
+
+    if let Some(sexp) = macro_sexp {
+        let info = cranelisp_frontend::parse_defmacro(&sexp)?;
+        compile_macro_if_needed(ctx, module, &info, span, accumulator)?;
+    }
+
+    Ok(())
+}
+
+/// Resolve a macro's sexp by following Import/Reexport chains.
+fn resolve_macro_sexp(
+    tc: &cranelisp_typecheck::TypeChecker,
+    name: &str,
+) -> Option<Sexp> {
+    let sym_table = tc.symbol_table();
+    let entry = sym_table.get(name)?;
+    match entry {
+        ModuleEntry::Macro { sexp, .. } => sexp.clone(),
+        ModuleEntry::Import { source } => {
+            let source_mod = source.module.clone();
+            let source_sym: String = source.symbol.as_ref().to_string();
+            drop(sym_table); // Release DashMap guard before acquiring another.
+            let source_table = tc.module_table(&source_mod)?;
+            match source_table.get(&source_sym)? {
+                ModuleEntry::Macro { sexp, .. } => sexp.clone(),
+                ModuleEntry::Reexport { source: re_source } => {
+                    let re_mod = re_source.module.clone();
+                    let re_sym: String = re_source.symbol.as_ref().to_string();
+                    drop(source_table);
+                    let re_table = tc.module_table(&re_mod)?;
+                    if let ModuleEntry::Macro { sexp, .. } = re_table.get(&re_sym)? {
+                        sexp.clone()
+                    } else {
+                        None
+                    }
+                }
+                _ => None,
+            }
+        }
+        _ => None,
+    }
+}
+
+/// Compile a macro's clauses for REPL use.
+///
+/// Called from `make_defmacro_result` to ensure the macro is compiled and
+/// available for expansion in subsequent REPL evals.
+pub fn compile_macro_for_repl(
+    ctx: &mut WorkerContext,
+    module: &ModuleFullPath,
+    info: &cranelisp_frontend::DefmacroInfo,
+    span: Span,
+    accumulator: &mut cranelisp_typecheck::ModuleCheckAccumulator,
+) -> Result<(), CranelispError> {
+    compile_macro_if_needed(ctx, module, info, span, accumulator)
+}
+
+/// Build macro entries from the TC symbol table for macros already compiled
+/// in prior REPL evals or imported modules. Only adds entries not already
+/// present in the map (current-sexp macros take priority).
+///
+/// Follows Import/Reexport chains to find actual Macro entries.
+fn build_persistent_macro_entries(
+    tc: &cranelisp_typecheck::TypeChecker,
+    shared_codegen: &SharedCodegenState,
+    map: &mut HashMap<Symbol, MacroEntry>,
+) -> Result<(), CranelispError> {
+    let persistent_names = collect_persistent_macro_names(tc);
+    for name in &persistent_names {
+        if map.contains_key(name) {
+            continue;
+        }
+        // Resolve the actual Macro entry (may be behind Import/Reexport).
+        let (clauses, docstring) = match resolve_macro_entry(tc, name.as_ref()) {
+            Some(resolved) => resolved,
+            None => continue,
+        };
+
+        // Check if all clauses have code pointers in the GOT.
+        let all_compiled = clauses.iter().enumerate().all(|(idx, _)| {
+            let clause_name = macro_clause_jit_name(name, idx);
+            has_code_ptr(shared_codegen, &clause_name)
+        });
+        if all_compiled && !clauses.is_empty() {
+            let mut compiled_clauses = Vec::new();
+            for (idx, clause_info) in clauses.iter().enumerate() {
+                let clause_name = macro_clause_jit_name(name, idx);
+                let code_ptr = get_code_ptr(shared_codegen, &clause_name)
+                    .ok_or_else(|| CranelispError::CodegenError {
+                        message: format!(
+                            "macro '{}' clause {} not compiled ({})",
+                            name, idx, clause_name
+                        ),
+                        span: Span::SYNTHETIC,
+                    })?;
+                compiled_clauses.push(MacroClauseEntry {
+                    func_ptr: code_ptr,
+                    params: clause_info.params.clone(),
+                    rest_param: clause_info.rest_param.clone(),
+                });
+            }
+            map.insert(name.clone(), MacroEntry {
+                clauses: compiled_clauses,
+                docstring,
+            });
+        }
+    }
+    Ok(())
+}
+
+/// Resolve a macro entry's clauses and docstring by following Import/Reexport chains.
+fn resolve_macro_entry(
+    tc: &cranelisp_typecheck::TypeChecker,
+    name: &str,
+) -> Option<(Vec<MacroClauseInfo>, Option<String>)> {
+    let sym_table = tc.symbol_table();
+    let entry = sym_table.get(name)?;
+    match entry {
+        ModuleEntry::Macro { clauses, docstring, .. } => {
+            Some((clauses.clone(), docstring.clone()))
+        }
+        ModuleEntry::Import { source } => {
+            let source_mod = source.module.clone();
+            let source_sym: String = source.symbol.as_ref().to_string();
+            drop(sym_table);
+            let table = tc.module_table(&source_mod)?;
+            match table.get(&source_sym)? {
+                ModuleEntry::Macro { clauses, docstring, .. } => {
+                    Some((clauses.clone(), docstring.clone()))
+                }
+                ModuleEntry::Reexport { source: re_source } => {
+                    let re_mod = re_source.module.clone();
+                    let re_sym: String = re_source.symbol.as_ref().to_string();
+                    drop(table);
+                    let re_table = tc.module_table(&re_mod)?;
+                    if let ModuleEntry::Macro { clauses, docstring, .. } =
+                        re_table.get(&re_sym)?
+                    {
+                        Some((clauses.clone(), docstring.clone()))
+                    } else {
+                        None
+                    }
+                }
+                _ => None,
+            }
+        }
+        _ => None,
+    }
 }
 
 /// Pass 1: register all forms' type signatures in source order.

@@ -43,9 +43,9 @@ fn main() {
     let (action, entry_module_path, settings) = parse_args();
     cranelisp::style::init_color(settings.no_color);
 
-    // v4 pipeline path (pipeline-v4-roadmap Step 0).
+    // v4 pipeline path (pipeline-v4.md §2.2).
     if settings.v4 {
-        if let Err(e) = v4_main(action, &entry_module_path, &settings) {
+        if let Err(e) = run(action, &entry_module_path, &settings) {
             eprintln!("error: {e}");
             process::exit(1);
         }
@@ -185,82 +185,196 @@ fn run_mode(
 // on CompilationSession. Wave 2 replaces them with real thread pool implementations.
 
 // ---------------------------------------------------------------------------
-// v4 pipeline main (pipeline-v4-roadmap Step 0)
+// v4 pipeline: clean run() per pipeline-v4.md §2.2
 // ---------------------------------------------------------------------------
 
-/// The v4 main flow, delegating through CompilerSession to the old path.
+/// The v4 main — clean `run()` matching pipeline-v4.md §2.2.
 ///
-/// Reachable via `--v4` CLI flag. Produces identical output to the old main
-/// for all modes (Run, Link, Repl).
-fn v4_main(
+/// One CompilerSession, one code path. No ReplSession, no CompilationSession
+/// in the hot path. Reachable via `--v4` CLI flag.
+fn run(
     action: Action,
     entry_module_path: &Path,
-    settings: &Settings,
+    _settings: &Settings,
 ) -> Result<(), CranelispError> {
     match action {
-        Action::Repl => {
-            // REPL with v4 eval: same REPL experience (slash commands, display,
-            // line editing) but eval routes through process_module_forms(Additive)
-            // instead of compile_unit (Step 7).
-            cranelisp::repl::run_repl_v4();
-            Ok(())
-        }
-        Action::Link => {
-            let project_root =
-                std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-            let cache_dir = project_root.join(".cranelisp-cache");
-            let mut s = cranelisp::session_v4::CompilerSession::new_for_link(
-                project_root,
-                entry_module_path,
-                cache_dir,
-            )?;
-            s.run_with_nice_workers(1, |s| {
-                s.link(entry_module_path)?;
-                Ok(())
-            })?;
-            Ok(())
-        }
-        Action::Run => {
-            let entry_module_name = slug(entry_module_path);
-            let project_root = base_dir(entry_module_path);
-            let src = read_file(entry_module_path)?;
-
-            let mut s = cranelisp::session_v4::CompilerSession::new(
-                settings.no_color,
-                project_root,
-                entry_module_path,
-            );
-
-            // Determine worker counts: 1 priority worker for correctness,
-            // 1 nice worker for .o compilation.
-            let priority_count = 1;
-            let nice_count = 1;
-
-            // Run compilation with worker threads.
-            let unit_warnings = s.run_with_workers(
-                priority_count,
-                nice_count,
-                &entry_module_name,
-                &src,
-            )?;
-
-            // Execute main via trampoline.
-            let (value, ty) = s.trampoline(&entry_module_name)?;
-
-            // Display warnings and result.
-            for w in &unit_warnings {
-                eprintln!("warning: {}", w.message);
-            }
-            let display = cranelisp::repl::format_result(value, &ty);
-            println!("{display}");
-
-            let exit_code = cranelisp::session::determine_exit_code(value, &ty);
-            if exit_code != 0 {
-                process::exit(exit_code);
-            }
-            Ok(())
-        }
+        Action::Run => run_mode_v4(entry_module_path),
+        Action::Link => link_mode_v4(entry_module_path),
+        Action::Repl => repl_mode(entry_module_path),
     }
+}
+
+/// Run mode: compile entry module, execute main, display result.
+fn run_mode_v4(entry_module_path: &Path) -> Result<(), CranelispError> {
+    let entry_module_name = slug(entry_module_path);
+    let project_root = base_dir(entry_module_path);
+    let src = read_file(entry_module_path)?;
+
+    let mut s = cranelisp::session_v4::CompilerSession::new(
+        false,
+        project_root,
+        entry_module_path,
+    );
+
+    let unit_warnings = s.run_with_workers(1, 1, &entry_module_name, &src)?;
+    let (value, ty) = s.trampoline(&entry_module_name)?;
+
+    for w in &unit_warnings {
+        eprintln!("warning: {}", w.message);
+    }
+    let display = cranelisp::repl::format_result(value, &ty);
+    println!("{display}");
+
+    let exit_code = cranelisp::session::determine_exit_code(value, &ty);
+    if exit_code != 0 {
+        process::exit(exit_code);
+    }
+    Ok(())
+}
+
+/// Link mode: compile all modules, link to executable.
+fn link_mode_v4(entry_module_path: &Path) -> Result<(), CranelispError> {
+    let project_root = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let cache_dir = project_root.join(".cranelisp-cache");
+    let mut s = cranelisp::session_v4::CompilerSession::new_for_link(
+        project_root,
+        entry_module_path,
+        cache_dir,
+    )?;
+    s.run_with_nice_workers(1, |s| {
+        s.link(entry_module_path)?;
+        Ok(())
+    })?;
+    Ok(())
+}
+
+/// REPL mode: interactive read-eval-print loop directly on CompilerSession.
+///
+/// No ReplSession wrapper — eval() and process_commands() are methods on
+/// CompilerSession per pipeline-v4.md §6.
+fn repl_mode(entry_module_path: &Path) -> Result<(), CranelispError> {
+    use std::io::{self, BufRead, Write};
+    use cranelisp::session_v4::QUIT_SENTINEL;
+
+    let project_root = base_dir(entry_module_path);
+    let mut s = cranelisp::session_v4::CompilerSession::new(
+        false,
+        project_root.clone(),
+        entry_module_path,
+    );
+
+    // Load prelude via the inner CompilationSession.
+    if let Err(e) = s.load_prelude() {
+        eprintln!("warning: prelude loading failed: {e}");
+    }
+
+    let stdin = io::stdin();
+    let stdout = io::stdout();
+    let mut stdout = stdout.lock();
+
+    // Startup banner.
+    let _ = writeln!(stdout, "{}", cranelisp::style::styled("Cranelisp v0.1.0 (v4)", cranelisp::style::Style::Dim));
+    let _ = writeln!(stdout, "{}", cranelisp::style::styled("Type /help for commands, /quit to exit.", cranelisp::style::Style::Dim));
+
+    let mut last_compile_ms: u64 = 0;
+    let mut last_eval_ms: u64 = 0;
+    let mut buffer = String::new();
+
+    let module = s.tc.current_module_path().to_string();
+    write_prompt_v4(&mut stdout, last_compile_ms, last_eval_ms, &module);
+
+    for line in stdin.lock().lines() {
+        let line = match line {
+            Ok(l) => l,
+            Err(_) => break,
+        };
+
+        buffer.push_str(&line);
+
+        if !cranelisp::session_v4::parens_balanced_pub(&buffer) {
+            buffer.push('\n');
+            let prompt = format_prompt_v4(last_compile_ms, last_eval_ms, &module);
+            let continuation = format!("{:>width$}", "...", width = prompt.len());
+            let _ = write!(stdout, "{continuation}");
+            let _ = stdout.flush();
+            continue;
+        }
+
+        let input = buffer.trim().to_string();
+
+        match s.process_commands(&input, &mut stdout) {
+            cranelisp::session_v4::CommandResult::Nothing => {}
+            cranelisp::session_v4::CommandResult::Final(text) => {
+                if text == QUIT_SENTINEL {
+                    break;
+                }
+                let _ = writeln!(stdout, "{}", cranelisp::pretty::pretty_print_str(&text));
+            }
+            cranelisp::session_v4::CommandResult::Compile(src) => {
+                let total_start = std::time::Instant::now();
+                match s.eval(&src) {
+                    Ok(Some(result)) => {
+                        let total_elapsed = total_start.elapsed();
+                        let compile_duration = total_elapsed.saturating_sub(result.eval_duration);
+                        last_compile_ms = compile_duration.as_millis() as u64;
+                        last_eval_ms = result.eval_duration.as_millis() as u64;
+
+                        for w in &result.warnings {
+                            let _ = writeln!(stdout, "Warning: {}", w.message);
+                        }
+                        let display = if let Some(ref def_display) = result.definition_display {
+                            def_display.clone()
+                        } else if result.ty.is_io() {
+                            // IO trampoline.
+                            let inner_value = cranelisp_runtime::run_io_trampoline(result.value);
+                            let inner_type = result.ty.io_inner_type();
+                            cranelisp::repl::format_result_value(
+                                inner_value,
+                                &inner_type,
+                                &s.type_defs,
+                                &s.type_modules,
+                            )
+                        } else {
+                            cranelisp::repl::format_result_value(
+                                result.value,
+                                &result.ty,
+                                &s.type_defs,
+                                &s.type_modules,
+                            )
+                        };
+                        let _ = writeln!(stdout, "{}", cranelisp::pretty::pretty_print_str(&display));
+                    }
+                    Ok(None) => {}
+                    Err(e) => {
+                        let total_elapsed = total_start.elapsed();
+                        last_compile_ms = total_elapsed.as_millis() as u64;
+                        last_eval_ms = 0;
+                        let _ = writeln!(stdout, "Error: {e}");
+                    }
+                }
+            }
+        }
+
+        buffer.clear();
+        let module = s.tc.current_module_path().to_string();
+        write_prompt_v4(&mut stdout, last_compile_ms, last_eval_ms, &module);
+    }
+
+    let _ = writeln!(stdout);
+    s.shutdown();
+    Ok(())
+}
+
+/// Format the v4 REPL prompt with timing and module info.
+fn format_prompt_v4(compile_ms: u64, eval_ms: u64, module: &str) -> String {
+    cranelisp::style::styled(&format!("{compile_ms}+{eval_ms}ms; {module}> "), cranelisp::style::Style::Dim)
+}
+
+/// Write the v4 prompt string to stdout and flush.
+fn write_prompt_v4(stdout: &mut impl std::io::Write, compile_ms: u64, eval_ms: u64, module: &str) {
+    let prompt = format_prompt_v4(compile_ms, eval_ms, module);
+    let _ = std::io::Write::write_fmt(stdout, format_args!("{prompt}"));
+    let _ = std::io::Write::flush(stdout);
 }
 
 // ---------------------------------------------------------------------------
