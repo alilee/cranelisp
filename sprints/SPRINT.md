@@ -397,31 +397,45 @@ Per the Phase 3 design doc review recommended ordering:
 ### Wave 1: Internal refactors (parallel, no API changes)
 | Skill | Task | Status | Notes |
 |-------|------|--------|-------|
-| /typecheck | Step B: Thread `CheckState` through ~40 internal methods | pending | Largest mechanical change. All methods remain `&mut self`. No API visible to /int. |
-| /int | Wave 1: Extract `SharedCodegenState` + `WorkerJitState` from `InMemWorkerState`. Refactor `compile_and_register_defn`. | pending | Still single-threaded. |
+| /typecheck | Step B: Thread `CheckState` through ~40 internal methods | done | |
+| /int | Wave 1: Extract `SharedCodegenState` + `WorkerJitState` from `InMemWorkerState`. Refactor `compile_and_register_defn`. | done | Still single-threaded. |
 | /qa | Write concurrency test plan (spec-first, before implementation) | pending | |
 
 ### Wave 2: API changes (sequential: /typecheck then /int)
 | Skill | Task | Status | Notes |
 |-------|------|--------|-------|
-| /typecheck | Steps C+D: Change worker-called methods to `&self`, switch `modules` to DashMap | pending | Guard lifetime audit applies here |
-| /typecheck | Step E: Change `check()` to `&self` | pending | |
-| /int | Wave 2: Add condvar parking to `take_priority_work`. Wire `&TypeChecker` in WorkerContext. | pending | Depends on /typecheck Steps C-E |
+| /typecheck | Steps C+D: Change worker-called methods to `&self`, switch `modules` to DashMap | done | |
+| /typecheck | Step E: Change `check()` to `&self` | done | |
+| /int | Wave 2: Add condvar parking to `take_priority_work`. Wire `&TypeChecker` in WorkerContext. | done | |
 
 ### Wave 3: Thread spawning
 | Skill | Task | Status | Notes |
 |-------|------|--------|-------|
-| /int | Wave 3: Spawn priority worker threads, shared sexp map, run_with_workers | pending | |
+| /int | Wave 3: Spawn priority worker threads, shared sexp map, run_with_workers | done | |
 | /qa | Concurrency tests, thread sanitizer validation | pending | |
 | /review | Review all new code for thread safety | pending | |
 
 ### Wave 4: Cleanup
 | Skill | Task | Status | Notes |
 |-------|------|--------|-------|
-| /int | Wave 4: Delete `InMemWorkerState`, finalize `WorkerContext` | pending | |
-| /typecheck | Step F: Remove `self.state` field, cleanup | pending | |
+| /int | Wave 4: Clippy fixes, assess remaining debt | done | `InMemWorkerState` and `self.state` retained — still needed by REPL/old pipeline. See notes. |
+| /typecheck | Step F: Remove `self.state` field, cleanup | deferred | 51+ references in checker.rs, used by REPL snapshot/restore and backward-compat wrappers. Requires REPL migration to v4 first. |
 
 ## Notes
+
+### Wave 4 Cleanup Assessment
+
+**`InMemWorkerState` — RETAINED.** Cannot delete. The REPL path (`src/repl/mod.rs`) uses `extract_from`/`sync_back_to` in 3 places. The old `CompilationSession` (used by REPL, old pipeline) stores it as a field (`src/session.rs:781`). The old pipeline (`src/pipeline.rs`) uses it in ~30 functions for GOT, JIT, and trace state. Deletion requires migrating the REPL to use `SharedCodegenState` natively instead of bridging through `InMemWorkerState`, which is a future step (post-REPL-v4-migration).
+
+**`self.state` on TypeChecker — RETAINED.** 51+ references in `checker.rs`, plus heavy use in `program.rs`, `infer.rs`, `builtins.rs`, `traits.rs`. Used for REPL `snapshot()`/`restore()`, backward-compat test wrappers (`check_program_self`, `register_trait_decl_self`, etc.), and `current_module` tracking. Requires REPL to own its persistent `CheckState` in `ReplSession` instead of on `TypeChecker`. This is a /typecheck + /int joint migration gated on REPL v4.
+
+**Bridge pattern (`extract_from`/`sync_back_to`) — RETAINED.** Used in `session_v4.rs` (2 call sites: `register_module` and `register_module_with_workers`) and `repl/mod.rs` (3 call sites: REPL module compilation paths). The bridge converts between `InMemWorkerState` (HashMap-based) and `SharedCodegenState` (DashMap-based) at worker loop boundaries. Removal requires REPL migration.
+
+**`.bak` files — NONE FOUND.**
+
+**Clippy — 15 warnings fixed in `src/`.** Remaining warnings (5) are structural: large enum variants (`ProcessResult`, `WriterMessage`), complex return type, loop indexing, too-many-args. These require non-trivial refactoring beyond cleanup scope.
+
+**Pre-existing test failures — 2 in v4_pipeline** (`v4_platform_io_trampoline`, `v4_platform_empty_registry`), confirmed pre-existing on main before any changes. **sketch_port hangs** — also pre-existing.
 
 ## Outcome
 

@@ -163,7 +163,7 @@ impl CompilationSession {
     /// 3. **Expand** — `process_forms_sequentially()`: defmacro interception,
     ///    macro expansion, begin-flattening → `Vec<Sexp>`
     /// 4. **Build AST** — `build_program()` → `Vec<TopLevel>`
-    /// 4b. **Bind chain analysis** — auto IO scheduling between build and typecheck
+    ///    4b. **Bind chain analysis** — auto IO scheduling between build and typecheck
     /// 5. **Typecheck** — `TypeChecker::check()` → `CheckResult`
     ///
     /// # Errors
@@ -208,10 +208,10 @@ fn compile_unit_inner(
     )?;
 
     // Stage 2a-post: Register file→module mapping for the current module.
-    if let Some(resolved) = resolve_module_path(&ctx.module, &session.lib_dirs) {
-        if let Ok(canonical) = resolved.canonicalize() {
-            session.module_deps.register_file(canonical, ctx.module.clone());
-        }
+    if let Some(resolved) = resolve_module_path(&ctx.module, &session.lib_dirs)
+        && let Ok(canonical) = resolved.canonicalize()
+    {
+        session.module_deps.register_file(canonical, ctx.module.clone());
     }
 
     // Stage 2b: Auto-load prelude if needed.
@@ -616,7 +616,7 @@ fn wire_cached_code_into_got(
     cached: &cache::CachedModule,
     fn_addrs: &HashMap<String, *const u8>,
 ) {
-    for (name, _old_slot) in &cached.codegen_state().got_slots {
+    for name in cached.codegen_state().got_slots.keys() {
         let code_ptr = fn_addrs.get(name.as_ref()).copied();
 
         // Allocate a new GOT slot (slot indices from cache may differ).
@@ -891,10 +891,10 @@ fn infer_batch_result_type(
         _ => None,
     });
 
-    if let Some(defn) = last_nullary {
-        if let Some(ty) = check.expr_types.get(&defn.body().span()) {
-            return ty.clone();
-        }
+    if let Some(defn) = last_nullary
+        && let Some(ty) = check.expr_types.get(&defn.body().span())
+    {
+        return ty.clone();
     }
 
     Type::Int

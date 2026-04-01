@@ -37,15 +37,14 @@ unsafe impl Sync for PlatformFunction {}
 /// codegen and bind-chain analysis. The Mutex wrapper lives on CompilerSession
 /// (pipeline-v4.md §5.1), but single-threaded Step 8 accesses it without
 /// locking (direct field access before Mutex is added in Step 10).
+#[derive(Default)]
 pub struct PlatformRegistry {
     entries: HashMap<FQSymbol, PlatformFunction>,
 }
 
 impl PlatformRegistry {
     pub fn new() -> Self {
-        PlatformRegistry {
-            entries: HashMap::new(),
-        }
+        Self::default()
     }
 
     /// Register a platform function. Called during platform DLL loading.

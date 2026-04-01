@@ -1110,27 +1110,26 @@ impl ReplSession {
         // Check if the original input was a defmacro — look up newly registered macro.
         if let Some(sexp) = original_sexps.first()
             && cranelisp_frontend::is_defmacro(sexp)
+            && let Ok(info) = cranelisp_frontend::parse_defmacro(sexp)
         {
-            if let Ok(info) = cranelisp_frontend::parse_defmacro(sexp) {
-                let clause_infos: Vec<MacroClauseInfo> = info
-                    .clauses
-                    .iter()
-                    .map(|c| MacroClauseInfo {
-                        params: c.fixed_params.clone(),
-                        rest_param: c.rest_param.clone(),
-                        source: None,
-                    })
-                    .collect();
-                let display = format_defmacro_display(&info.name, &clause_infos, &module);
-                return Ok(ReplResult {
-                    value: 0,
-                    ty: Type::Int,
-                    is_definition: true,
-                    warnings,
-                    definition_display: Some(display),
-                    eval_duration,
-                });
-            }
+            let clause_infos: Vec<MacroClauseInfo> = info
+                .clauses
+                .iter()
+                .map(|c| MacroClauseInfo {
+                    params: c.fixed_params.clone(),
+                    rest_param: c.rest_param.clone(),
+                    source: None,
+                })
+                .collect();
+            let display = format_defmacro_display(&info.name, &clause_infos, &module);
+            return Ok(ReplResult {
+                value: 0,
+                ty: Type::Int,
+                is_definition: true,
+                warnings,
+                definition_display: Some(display),
+                eval_duration,
+            });
         }
 
         // Check if imports were processed.

@@ -350,15 +350,15 @@ impl CompilerSession {
         let got = &self.inner.inmem_worker.got_state;
 
         // Try unqualified name first, then qualified.
-        if let Some(entry) = got.def_codegen.get(main_sym) {
-            if let Some(ptr) = entry.code_ptr {
-                return Ok(ptr);
-            }
+        if let Some(entry) = got.def_codegen.get(main_sym)
+            && let Some(ptr) = entry.code_ptr
+        {
+            return Ok(ptr);
         }
-        if let Some(entry) = got.def_codegen.get(qualified_main) {
-            if let Some(ptr) = entry.code_ptr {
-                return Ok(ptr);
-            }
+        if let Some(entry) = got.def_codegen.get(qualified_main)
+            && let Some(ptr) = entry.code_ptr
+        {
+            return Ok(ptr);
         }
 
         Err(CranelispError::ModuleError {
@@ -374,14 +374,12 @@ impl CompilerSession {
         let module_path = ModuleFullPath::from(module_name);
         let main_sym = Symbol::from("main");
 
-        if let Some(table) = self.inner.tc.module_table(&module_path) {
-            if let Some(cranelisp_types::ModuleEntry::Def { scheme, .. }) =
+        if let Some(table) = self.inner.tc.module_table(&module_path)
+            && let Some(cranelisp_types::ModuleEntry::Def { scheme, .. }) =
                 table.get(main_sym.as_ref())
-            {
-                if let Type::Fn(_, ret) = &scheme.ty {
-                    return *ret.clone();
-                }
-            }
+            && let Type::Fn(_, ret) = &scheme.ty
+        {
+            return *ret.clone();
         }
         Type::Int
     }

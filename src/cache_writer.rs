@@ -52,6 +52,12 @@ pub struct CacheWriterHandle {
     next_seq: u64,
 }
 
+impl Default for CacheWriterHandle {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl CacheWriterHandle {
     /// Create a new background writer. Spawns the writer thread.
     pub fn new() -> Self {

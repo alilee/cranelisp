@@ -146,10 +146,8 @@ impl CacheState {
         current_source_hash: &str,
         dep_hashes: &HashMap<ModuleFullPath, String>,
     ) -> bool {
-        match cache::check_manifest(&self.manifest, module_path, current_source_hash, dep_hashes) {
-            Ok(valid) => valid,
-            Err(_) => false, // Global invalidation — treat as miss.
-        }
+        cache::check_manifest(&self.manifest, module_path, current_source_hash, dep_hashes)
+            .unwrap_or_default() // Global invalidation — treat as miss.
     }
 
     /// Record a cache-hit module's source hash without marking it as recompiled.
@@ -193,8 +191,8 @@ pub struct InMemWorkerState {
     pub cache_linkers: Vec<cranelisp_backend::cache::Linker>,
 }
 
-impl InMemWorkerState {
-    pub fn new() -> Self {
+impl Default for InMemWorkerState {
+    fn default() -> Self {
         InMemWorkerState {
             got_state: cranelisp_backend::got::ModuleCodegenState::new(),
             jit_modules: Vec::new(),
@@ -202,6 +200,12 @@ impl InMemWorkerState {
             trace_extra_symbols: Vec::new(),
             cache_linkers: Vec::new(),
         }
+    }
+}
+
+impl InMemWorkerState {
+    pub fn new() -> Self {
+        Self::default()
     }
 
     /// Create a worker state with a pre-populated GOT for use by a codegen
@@ -284,10 +288,10 @@ impl SharedCodegenState {
         use cranelisp_types::GOT_TABLE_SIZE;
 
         // Fast path: already has a slot.
-        if let Some(entry) = self.def_codegen.get(name) {
-            if let Some(slot) = entry.got_slot {
-                return Ok(slot);
-            }
+        if let Some(entry) = self.def_codegen.get(name)
+            && let Some(slot) = entry.got_slot
+        {
+            return Ok(slot);
         }
 
         // Slow path: allocate a new slot atomically.
@@ -387,6 +391,7 @@ impl SharedCodegenState {
 /// Not shared across threads. Each worker accumulates JIT instances
 /// and linkers during codegen, then drains them to SharedCodegenState
 /// when the module is complete.
+#[derive(Default)]
 pub struct WorkerJitState {
     /// JIT instances created by this worker. Drained to
     /// shared_codegen.kept_jits after each module's codegen sweep.
@@ -405,10 +410,7 @@ unsafe impl Send for WorkerJitState {}
 impl WorkerJitState {
     /// Create a new empty per-worker JIT state.
     pub fn new() -> Self {
-        WorkerJitState {
-            jit_modules: Vec::new(),
-            cache_linkers: Vec::new(),
-        }
+        Self::default()
     }
 
     /// Drain accumulated JIT and Linker instances to shared state.
@@ -432,6 +434,7 @@ impl WorkerJitState {
 /// Fields used by `codegen_and_execute()` for background .o emission and
 /// manifest tracking. Separated from `CompilationSession` for clarity and
 /// preparation for concurrent codegen (Step 11).
+#[derive(Default)]
 pub struct ObjectWorkerState {
     /// Cache state for .o and .meta.json writing. None = caching disabled.
     /// Initialized by production callers (--run, --link, REPL with prelude).
@@ -454,13 +457,7 @@ pub struct ObjectWorkerState {
 
 impl ObjectWorkerState {
     pub fn new() -> Self {
-        ObjectWorkerState {
-            cache_state: None,
-            cache_writer: None,
-            compiled_o_paths: Vec::new(),
-            compiled_module_structures: Vec::new(),
-            cross_module_func_sigs: Vec::new(),
-        }
+        Self::default()
     }
 
     pub(crate) fn new_with_cache(cache_dir: PathBuf) -> Self {
@@ -615,6 +612,7 @@ fn drain_on_error(
 /// Populated incrementally during `compile_unit` / `load_dependencies` as
 /// modules are compiled.  Replaces the upfront `build_file_to_module_map`
 /// and `build_module_dependency_map` calls that the REPL previously used.
+#[derive(Default)]
 pub struct ModuleDependencyGraph {
     /// Forward edges: module -> modules it depends on (imports + exports).
     pub imports: HashMap<ModuleFullPath, HashSet<ModuleFullPath>>,
@@ -622,16 +620,6 @@ pub struct ModuleDependencyGraph {
     pub dependents: HashMap<ModuleFullPath, HashSet<ModuleFullPath>>,
     /// Filesystem path -> module name mapping (canonical paths).
     pub file_to_module: HashMap<PathBuf, ModuleFullPath>,
-}
-
-impl Default for ModuleDependencyGraph {
-    fn default() -> Self {
-        ModuleDependencyGraph {
-            imports: HashMap::new(),
-            dependents: HashMap::new(),
-            file_to_module: HashMap::new(),
-        }
-    }
 }
 
 impl ModuleDependencyGraph {
@@ -731,6 +719,7 @@ impl ModuleDependencyGraph {
 /// Fields are grouped into sub-structs by pipeline role:
 /// - `inmem_worker`: GOT state, JIT lifetimes, trace support (codegen path)
 /// - `object_worker`: cache writing, .o paths, module structures (codegen path)
+///
 /// `ReplSession` wraps a `CompilationSession` and adds REPL-specific
 /// concerns (display metadata, slash commands, trace state, introspection).
 pub struct CompilationSession {
@@ -1483,10 +1472,10 @@ pub fn register_module_aliases_filtered(
         .iter()
         .filter_map(|(name, dc)| {
             // Skip entries that existed before this module was compiled.
-            if let Some(existing) = pre_existing {
-                if existing.contains(name) {
-                    return None;
-                }
+            if let Some(existing) = pre_existing
+                && existing.contains(name)
+            {
+                return None;
             }
             dc.got_slot.map(|slot| (name.clone(), slot, dc.param_count))
         })

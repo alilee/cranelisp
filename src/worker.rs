@@ -495,7 +495,7 @@ fn handle_import(
 
         // Already loaded — register the import and continue.
         if ctx.tc.has_module(dep) {
-            ctx.tc.register_imports(&[spec.clone()])?;
+            ctx.tc.register_imports(std::slice::from_ref(spec))?;
             continue;
         }
 
