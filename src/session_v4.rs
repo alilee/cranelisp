@@ -1485,6 +1485,13 @@ impl CompilerSession {
 
     /// Wait until all registered modules have object codegen complete.
     ///
+    /// Block until all in-memory codegen (JIT) is complete.
+    pub fn wait_inmem_complete(
+        &self,
+    ) -> Result<(), crate::scheduler::SchedulerError> {
+        self.shared.scheduler.wait_inmem_complete()
+    }
+
     /// Promotes nice workers to normal priority before blocking, ensuring
     /// object codegen completes promptly (e.g., before linking). Wakes
     /// the `object_work_available` condvar so workers observe the promotion
@@ -1511,6 +1518,80 @@ impl CompilerSession {
     pub fn shutdown(&mut self) {
         self.shared.scheduler.shutdown();
         // Inner session's Drop handles legacy codegen worker shutdown.
+    }
+
+    // --- Stubs for pipeline-v4.md §2.2 target API ---
+    // These are called by run() in main.rs. The cascade fills them in.
+
+    /// §2.2: Spawn priority workers (typecheck + JIT).
+    /// TODO: currently workers run inline in register_module. This should
+    /// spawn persistent threads that pull from the scheduler.
+    pub fn spawn_priority_workers(&mut self, _n: usize) {
+        // Currently a no-op: register_module runs workers inline.
+    }
+
+    /// §2.2: Spawn nice workers (.o file writing).
+    /// TODO: currently nice workers are spawned per-invocation in
+    /// run_with_workers/run_with_nice_workers. This should spawn
+    /// persistent threads.
+    pub fn spawn_nice_workers(&mut self, _n: usize) {
+        // Currently a no-op: nice workers spawned inline.
+    }
+
+    /// §3.1: Register entry module by name. Session resolves the source
+    /// file from project_root + lib_dirs, reads it, and registers with
+    /// the scheduler.
+    pub fn register_entry_module(
+        &mut self,
+        module_name: &str,
+    ) -> Result<Vec<Warning>, CranelispError> {
+        let module = ModuleFullPath::from(module_name);
+        // Resolve source file via lib_dirs (includes project_root).
+        let file_path = crate::pipeline::resolve_module_file(&module, &self.lib_dirs);
+        let (source, entry_path) = match file_path {
+            Some(path) => {
+                let src = std::fs::read_to_string(&path).unwrap_or_default();
+                (src, path)
+            }
+            None => {
+                // No file found — empty module (e.g., fresh REPL).
+                let default_path = self.project_root.join(format!("{module_name}.cl"));
+                (String::new(), default_path)
+            }
+        };
+        self.register_module(module_name, &source, &entry_path)
+    }
+
+    /// §8: Link by module name (not path). Session resolves .o paths
+    /// from its compiled module state.
+    pub fn link_by_name(
+        &mut self,
+        _module_name: &str,
+    ) -> Result<(), CranelispError> {
+        // TODO: cascade — implement using scheduler-compiled .o files.
+        // For now, delegate to path-based link.
+        Err(CranelispError::ModuleError {
+            message: "link_by_name not yet implemented — use old path".into(),
+            file: None,
+            span: cranelisp_types::Span::SYNTHETIC,
+        })
+    }
+
+    /// §9: Format an eval result for display.
+    pub fn format_eval_result(&self, result: &EvalResult) -> String {
+        if let Some(ref def_display) = result.definition_display {
+            def_display.clone()
+        } else if result.ty.is_io() {
+            let inner_value = cranelisp_runtime::run_io_trampoline(result.value);
+            let inner_type = result.ty.io_inner_type();
+            crate::repl::format_result_value(
+                inner_value, &inner_type, &self.type_defs, &self.type_modules,
+            )
+        } else {
+            crate::repl::format_result_value(
+                result.value, &result.ty, &self.type_defs, &self.type_modules,
+            )
+        }
     }
 }
 

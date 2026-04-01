@@ -7,8 +7,8 @@ use std::path::{Path, PathBuf};
 use std::process;
 
 use cranelisp_types::{
-    CodegenBehaviour, CompileContext, CranelispError, ModuleFullPath, ModuleStrategy, Span,
-    Type, Warning,
+    CodegenBehaviour, CompileContext, CranelispError, ModuleFullPath, ModuleStrategy, Span, Type,
+    Warning,
 };
 
 use cranelisp::session::CompilationSession;
@@ -124,11 +124,13 @@ fn run_mode(
 
     let result = match codegen_results.into_iter().last() {
         Some(r) => r,
-        None => return Err(CranelispError::ModuleError {
-            message: "no codegen result".into(),
-            file: None,
-            span: Span::SYNTHETIC,
-        }),
+        None => {
+            return Err(CranelispError::ModuleError {
+                message: "no codegen result".into(),
+                file: None,
+                span: Span::SYNTHETIC,
+            });
+        }
     };
 
     // Verify main exists.
@@ -136,10 +138,14 @@ fn run_mode(
     let main_sym = cranelisp_types::Symbol::from("main");
     let qualified_main = cranelisp_types::Symbol::from(format!("{}/main", module_name));
     let main_exists = s.inmem_worker.got_state.def_codegen.contains_key(&main_sym)
-        || s.inmem_worker.got_state.def_codegen.contains_key(&qualified_main);
+        || s.inmem_worker
+            .got_state
+            .def_codegen
+            .contains_key(&qualified_main);
     if !main_exists {
         return Err(CranelispError::ModuleError {
-            message: "entry module has no `main` function — batch mode requires (defn main [] ...)".into(),
+            message: "entry module has no `main` function — batch mode requires (defn main [] ...)"
+                .into(),
             file: None,
             span: Span::SYNTHETIC,
         });
@@ -188,64 +194,60 @@ fn run_mode(
 // v4 pipeline: clean run() per pipeline-v4.md §2.2
 // ---------------------------------------------------------------------------
 
-/// The v4 main — clean `run()` matching pipeline-v4.md §2.2.
+/// The v4 main — pipeline-v4.md §2.2.
 ///
-/// One CompilerSession, one code path. No ReplSession, no CompilationSession.
-/// Reachable via `--v4` CLI flag.
+/// One CompilerSession, one code path. Reachable via `--v4` CLI flag.
 fn run(
     action: Action,
     entry_module_path: &Path,
-    _settings: &Settings,
+    settings: &Settings,
 ) -> Result<(), CranelispError> {
+    use cranelisp::session_v4::CommandResult;
     use std::io::{self, BufRead, Write};
-    use cranelisp::session_v4::{CommandResult, QUIT_SENTINEL};
 
     let entry_module_name = slug(entry_module_path);
     let project_root = base_dir(entry_module_path);
 
+    // §2.2: CompilerSession::new(settings, project_root)
+    // §8: Link mode uses ObjectOnly behaviour.
     let mut s = cranelisp::session_v4::CompilerSession::new(
         false,
         project_root,
-        entry_module_path,
+        entry_module_name,
+        action.into(),
+        settings,
     );
 
-    // Register the entry module. Workers discover dependencies lazily
-    // during typechecking (imports trigger recursive loading, including
-    // prelude). Same path for all three modes.
-    let src = std::fs::read_to_string(entry_module_path).unwrap_or_default();
-    s.register_module(&entry_module_name, &src, entry_module_path)?;
+    // §2.2: Spawn workers.
+    s.spawn_priority_workers(1);
+    s.spawn_nice_workers(1);
+
+    // §3.1: Register the entry module. Session resolves source from
+    // project_root + lib_dirs. Workers discover dependencies lazily.
+    s.register_module(&entry_module_name)?;
 
     match action {
+        // §7: Run mode.
         Action::Run => {
-            let (value, ty) = s.trampoline(&entry_module_name)?;
-
-            let display = cranelisp::repl::format_result(value, &ty);
-            println!("{display}");
-
-            let exit_code = cranelisp::session::determine_exit_code(value, &ty);
-            if exit_code != 0 {
-                process::exit(exit_code);
-            }
+            s.wait_inmem_complete()?;
+            s.trampoline(&entry_module_name)?;
+            s.wait_object_complete()?;
         }
+        // §8: Link mode.
         Action::Link => {
-            s.link(entry_module_path)?;
+            s.wait_object_complete()?;
+            s.link_by_name(&entry_module_name)?;
         }
+        // §6: REPL mode.
         Action::Repl => {
             let stdin = io::stdin();
             let stdout = io::stdout();
             let mut stdout = stdout.lock();
 
-            let _ = writeln!(stdout, "{}", cranelisp::style::styled(
-                "Cranelisp v0.1.0 (v4)", cranelisp::style::Style::Dim));
-            let _ = writeln!(stdout, "{}", cranelisp::style::styled(
-                "Type /help for commands, /quit to exit.", cranelisp::style::Style::Dim));
+            s.print_banner(&mut stdout);
 
-            let mut last_compile_ms: u64 = 0;
-            let mut last_eval_ms: u64 = 0;
             let mut buffer = String::new();
-
-            let module = s.tc.current_module_path().to_string();
-            write_prompt(&mut stdout, last_compile_ms, last_eval_ms, &module);
+            s.write_prompt(&mut stdout);
 
             for line in stdin.lock().lines() {
                 let line = match line {
@@ -255,86 +257,44 @@ fn run(
 
                 buffer.push_str(&line);
 
-                if !cranelisp::session_v4::parens_balanced_pub(&buffer) {
+                if !s.parens_balanced(&buffer) {
                     buffer.push('\n');
-                    let prompt = format_prompt(last_compile_ms, last_eval_ms, &module);
-                    let continuation = format!("{:>width$}", "...", width = prompt.len());
-                    let _ = write!(stdout, "{continuation}");
-                    let _ = stdout.flush();
+                    s.write_continuation_prompt(&mut stdout);
                     continue;
                 }
 
                 let input = buffer.trim().to_string();
+                buffer.clear();
 
                 match s.process_commands(&input, &mut stdout) {
                     CommandResult::Nothing => {}
-                    CommandResult::Final(text) => {
-                        if text == QUIT_SENTINEL {
-                            break;
-                        }
-                        let _ = writeln!(stdout, "{}", cranelisp::pretty::pretty_print_str(&text));
+                    CommandResult::Quit => break,
+                    CommandResult::Display(text) => {
+                        let _ = writeln!(stdout, "{text}");
                     }
                     CommandResult::Compile(src) => {
-                        let total_start = std::time::Instant::now();
                         match s.eval(&src) {
-                            Ok(Some(result)) => {
-                                let total_elapsed = total_start.elapsed();
-                                let compile_duration = total_elapsed.saturating_sub(result.eval_duration);
-                                last_compile_ms = compile_duration.as_millis() as u64;
-                                last_eval_ms = result.eval_duration.as_millis() as u64;
-
-                                for w in &result.warnings {
-                                    let _ = writeln!(stdout, "Warning: {}", w.message);
-                                }
-                                let display = if let Some(ref def_display) = result.definition_display {
-                                    def_display.clone()
-                                } else if result.ty.is_io() {
-                                    let inner_value = cranelisp_runtime::run_io_trampoline(result.value);
-                                    let inner_type = result.ty.io_inner_type();
-                                    cranelisp::repl::format_result_value(
-                                        inner_value, &inner_type, &s.type_defs, &s.type_modules,
-                                    )
-                                } else {
-                                    cranelisp::repl::format_result_value(
-                                        result.value, &result.ty, &s.type_defs, &s.type_modules,
-                                    )
-                                };
-                                let _ = writeln!(stdout, "{}", cranelisp::pretty::pretty_print_str(&display));
+                            Ok(Some(display)) => {
+                                let _ = writeln!(stdout, "{display}");
                             }
                             Ok(None) => {}
                             Err(e) => {
-                                let total_elapsed = total_start.elapsed();
-                                last_compile_ms = total_elapsed.as_millis() as u64;
-                                last_eval_ms = 0;
                                 let _ = writeln!(stdout, "Error: {e}");
                             }
                         }
                     }
                 }
 
-                buffer.clear();
-                let module = s.tc.current_module_path().to_string();
-                write_prompt(&mut stdout, last_compile_ms, last_eval_ms, &module);
+                s.write_prompt(&mut stdout);
             }
 
             let _ = writeln!(stdout);
+            s.wait_object_complete()?;
         }
     }
 
     s.shutdown();
     Ok(())
-}
-
-/// Format the REPL prompt with timing and module info.
-fn format_prompt(compile_ms: u64, eval_ms: u64, module: &str) -> String {
-    cranelisp::style::styled(&format!("{compile_ms}+{eval_ms}ms; {module}> "), cranelisp::style::Style::Dim)
-}
-
-/// Write the prompt string to stdout and flush.
-fn write_prompt(stdout: &mut impl std::io::Write, compile_ms: u64, eval_ms: u64, module: &str) {
-    let prompt = format_prompt(compile_ms, eval_ms, module);
-    let _ = std::io::Write::write_fmt(stdout, format_args!("{prompt}"));
-    let _ = std::io::Write::flush(stdout);
 }
 
 // ---------------------------------------------------------------------------
@@ -352,9 +312,18 @@ fn parse_args() -> (Action, PathBuf, Settings) {
 
     while i < args.len() {
         match args[i].as_str() {
-            "--no-cache" => { no_cache = true; i += 1; }
-            "--no-color" => { no_color = true; i += 1; }
-            "--v4" => { v4 = true; i += 1; }
+            "--no-cache" => {
+                no_cache = true;
+                i += 1;
+            }
+            "--no-color" => {
+                no_color = true;
+                i += 1;
+            }
+            "--v4" => {
+                v4 = true;
+                i += 1;
+            }
             "--run" => {
                 if i + 1 < args.len() {
                     run_file = Some(args[i + 1].clone());
@@ -375,13 +344,19 @@ fn parse_args() -> (Action, PathBuf, Settings) {
             }
             other => {
                 eprintln!("error: unexpected argument: {other}");
-                eprintln!("usage: cranelisp [--run <file.cl>] [--link <file.cl>] [--no-color] [--v4]");
+                eprintln!(
+                    "usage: cranelisp [--run <file.cl>] [--link <file.cl>] [--no-color] [--v4]"
+                );
                 process::exit(1);
             }
         }
     }
 
-    let settings = Settings { no_color, no_cache, v4 };
+    let settings = Settings {
+        no_color,
+        no_cache,
+        v4,
+    };
 
     if run_file.is_some() && link_file.is_some() {
         eprintln!("error: --run and --link cannot be used together");
@@ -475,11 +450,13 @@ fn link_mode(entry_path: &Path) -> Result<(), CranelispError> {
     let order = cranelisp::pipeline::toposort(&graph)?;
 
     // Step 2: Create async session with caching.
-    let canonical_entry = entry_path.canonicalize().map_err(|e| CranelispError::ModuleError {
-        message: format!("cannot canonicalize '{}': {}", entry_path.display(), e),
-        file: Some(entry_path.to_path_buf()),
-        span: Span::SYNTHETIC,
-    })?;
+    let canonical_entry = entry_path
+        .canonicalize()
+        .map_err(|e| CranelispError::ModuleError {
+            message: format!("cannot canonicalize '{}': {}", entry_path.display(), e),
+            file: Some(entry_path.to_path_buf()),
+            span: Span::SYNTHETIC,
+        })?;
     std::fs::create_dir_all(&cache_dir).map_err(|e| CranelispError::ModuleError {
         message: format!("cannot create cache dir '{}': {}", cache_dir.display(), e),
         file: None,
@@ -495,13 +472,12 @@ fn link_mode(entry_path: &Path) -> Result<(), CranelispError> {
     // Step 3: Compile each module in topo order.
     for module_path in &order {
         let node = &graph.nodes[module_path];
-        let source = std::fs::read_to_string(&node.file_path).map_err(|e| {
-            CranelispError::ModuleError {
+        let source =
+            std::fs::read_to_string(&node.file_path).map_err(|e| CranelispError::ModuleError {
                 message: format!("cannot read '{}': {}", node.file_path.display(), e),
                 file: Some(node.file_path.clone()),
                 span: Span::SYNTHETIC,
-            }
-        })?;
+            })?;
 
         let ctx = CompileContext {
             module: module_path.clone(),
