@@ -194,7 +194,7 @@ fn batch_defmacro_simple() {
 (defn main [] (double 21))
 "#;
     let result = pipeline::compile_and_run(src).unwrap();
-    assert_eq!(result.value, 42);
+    assert_eq!(result.value(), 42);
 }
 
 // spec: 09-macros.md §9.4.2 — quasiquote macro in batch
@@ -207,7 +207,7 @@ fn batch_defmacro_quasiquote() {
 (defn main [] (inc 41))
 "#;
     let result = pipeline::compile_and_run(src).unwrap();
-    assert_eq!(result.value, 42);
+    assert_eq!(result.value(), 42);
 }
 
 // spec: 09-macros.md §9.2.6 — multi-clause macro in batch
@@ -220,7 +220,7 @@ fn batch_defmacro_multi_clause() {
 (defn main [] (choose 20 22))
 "#;
     let result = pipeline::compile_and_run(src).unwrap();
-    assert_eq!(result.value, 42);
+    assert_eq!(result.value(), 42);
 }
 
 // spec: 09-macros.md §9.6 — begin splicing in batch
@@ -236,7 +236,7 @@ fn batch_defmacro_begin_splicing() {
 (defn main [] (add-them))
 "#;
     let result = pipeline::compile_and_run(src).unwrap();
-    assert_eq!(result.value, 42);
+    assert_eq!(result.value(), 42);
 }
 
 // spec: 09-macros.md §9.2 — macro using another macro in batch
@@ -250,7 +250,7 @@ fn batch_macro_uses_earlier_macro() {
 (defn main [] (inc2 40))
 "#;
     let result = pipeline::compile_and_run(src).unwrap();
-    assert_eq!(result.value, 42);
+    assert_eq!(result.value(), 42);
 }
 
 // spec: 09-macros.md §9.2 — identity macro (no quasiquote) in batch
@@ -263,7 +263,7 @@ fn batch_defmacro_identity() {
 (defn main [] (id 42))
 "#;
     let result = pipeline::compile_and_run(src).unwrap();
-    assert_eq!(result.value, 42);
+    assert_eq!(result.value(), 42);
 }
 
 // ---------------------------------------------------------------------------

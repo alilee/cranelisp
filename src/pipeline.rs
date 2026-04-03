@@ -1470,13 +1470,16 @@ pub fn compile_and_run(
 pub fn compile_and_run_v4(source: &str) -> Result<PipelineResult, CranelispError> {
     let project_root = std::env::current_dir().unwrap_or_default();
     let entry_path = project_root.join("user.cl");
-    let mut session = crate::session_v4::CompilerSession::new(
-        false,
-        project_root,
-        &entry_path,
-    );
+    let settings = crate::session_v4::SessionSettings {
+        no_color: true,
+        no_cache: true,
+        codegen_behaviour: CodegenBehaviour::InMemoryAndObject,
+        priority_workers: 1,
+        nice_workers: 0,
+    };
+    let mut session = crate::session_v4::CompilerSession::new(settings, project_root);
 
-    session.register_module("user", source, &entry_path)?;
+    session.register_module_with_source("user", source, &entry_path)?;
 
     let (value, ty) = session.trampoline("user")?;
 
@@ -1500,11 +1503,19 @@ pub fn compile_module_graph_v4(
         .map(|p| p.to_path_buf())
         .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
 
-    let mut session = crate::session_v4::CompilerSession::new(
-        false,
-        project_root,
-        entry_path,
-    );
+    let module_name = entry_path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("user")
+        .to_string();
+    let settings = crate::session_v4::SessionSettings {
+        no_color: true,
+        no_cache: true,
+        codegen_behaviour: CodegenBehaviour::InMemoryAndObject,
+        priority_workers: 1,
+        nice_workers: 0,
+    };
+    let mut session = crate::session_v4::CompilerSession::new(settings, project_root);
     // Override lib_dirs with the provided list.
     session.lib_dirs = lib_dirs.to_vec();
 
@@ -1516,14 +1527,9 @@ pub fn compile_module_graph_v4(
         }
     })?;
 
-    let module_name = entry_path
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .unwrap_or("user");
+    session.register_module_with_source(&module_name, &source, entry_path)?;
 
-    session.register_module(module_name, &source, entry_path)?;
-
-    let (value, ty) = session.trampoline(module_name)?;
+    let (value, ty) = session.trampoline(&module_name)?;
 
     Ok(PipelineResult {
         value,

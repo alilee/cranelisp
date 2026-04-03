@@ -25,7 +25,7 @@ use serial_test::serial;
 /// Helper: build REPL session with inline traits and a factorial function,
 /// with trace imported from primitives.
 ///
-fn setup_repl_with_fact() -> cranelisp::repl::ReplSession {
+fn setup_repl_with_fact() -> helpers::ReplSession {
     let mut s = repl_session_with_test_prelude();
     repl_eval(&mut s, "(import [primitives [trace Trace TraceCall]])");
     repl_eval(&mut s, "(defn fact [n] (if (= n 0) 1 (* n (fact (- n 1)))))");

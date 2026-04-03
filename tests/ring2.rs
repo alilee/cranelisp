@@ -17,7 +17,7 @@
 mod helpers;
 
 use helpers::*;
-use cranelisp::repl::ReplSession;
+use cranelisp::session_v4::EvalResult;
 use cranelisp_types::Type;
 
 // ---------------------------------------------------------------------------
@@ -56,7 +56,7 @@ fn with_traits(src: &str) -> String {
 
 /// Load all core trait definitions into a REPL session.
 /// Each form is eval'd separately since the REPL processes one top-level form at a time.
-fn load_traits(session: &mut cranelisp::repl::ReplSession) {
+fn load_traits(session: &mut helpers::ReplSession) {
     // Num trait
     session.eval("(deftrait Num (+ [self self] self) (- [self self] self) (* [self self] self) (/ [self self] self))").unwrap_or_else(|e| panic!("failed to load Num deftrait: {e}"));
     session.eval("(impl Num Int (defn + [a b] (add-i64 a b)) (defn - [a b] (sub-i64 a b)) (defn * [a b] (mul-i64 a b)) (defn / [a b] (div-i64 a b)))").unwrap_or_else(|e| panic!("failed to load Num impl Int: {e}"));
@@ -1599,7 +1599,7 @@ fn trait_method_accessible_across_modules() {
         &dir.path().join("main.cl"),
         &[],
     ).unwrap();
-    assert_eq!(result.value, 2);
+    assert_eq!(result.value(), 2);
 }
 
 // =============================================================================
@@ -1631,7 +1631,7 @@ fn visibility_public_defn_importable() {
         &dir.path().join("main.cl"),
         &[],
     ).unwrap();
-    assert_eq!(result.value, 42);
+    assert_eq!(result.value(), 42);
 }
 
 // spec: 05-definitions §5.11 — deftype- creates private type
@@ -1768,7 +1768,7 @@ fn module_phase_declarations_order_independent() {
         &dir.path().join("main.cl"),
         &[],
     ).unwrap();
-    assert_eq!(result.value, 42);
+    assert_eq!(result.value(), 42);
 }
 
 // =============================================================================
@@ -1813,7 +1813,7 @@ fn qualified_reference_to_module() {
         &dir.path().join("main.cl"),
         &[],
     ).unwrap();
-    assert_eq!(result.value, 42);
+    assert_eq!(result.value(), 42);
 }
 
 // =============================================================================
@@ -1846,8 +1846,8 @@ fn single_file_via_run_project() {
         &dir.path().join("main.cl"),
         &[],
     ).unwrap();
-    assert_eq!(result.value, 42);
-    assert_eq!(result.ty, cranelisp_types::Type::Int);
+    assert_eq!(result.value(), 42);
+    assert_eq!(*result.ty(), cranelisp_types::Type::Int);
 }
 
 // spec: 08-modules §8.2.5 — missing module file gives descriptive error
@@ -1927,7 +1927,7 @@ fn module_qualified_name_resolution() {
         &dir.path().join("main.cl"),
         &[],
     ).unwrap();
-    assert_eq!(result.value, 42);
+    assert_eq!(result.value(), 42);
 }
 
 // spec: 08-modules §8.4 — import specific names
@@ -1941,7 +1941,7 @@ fn import_specific_names() {
         &dir.path().join("main.cl"),
         &[],
     ).unwrap();
-    assert_eq!(result.value, 42);
+    assert_eq!(result.value(), 42);
 }
 
 // spec: 08-modules §8.4 — glob import
@@ -1955,7 +1955,7 @@ fn import_glob() {
         &dir.path().join("main.cl"),
         &[],
     ).unwrap();
-    assert_eq!(result.value, 42);
+    assert_eq!(result.value(), 42);
 }
 
 // spec: 08-modules §8.4 — importing nonexistent name gives clear error
@@ -2014,7 +2014,7 @@ fn neg_glob_export_includes_public() {
         &dir.path().join("main.cl"),
         &[],
     ).unwrap();
-    assert_eq!(result.value, 42);
+    assert_eq!(result.value(), 42);
 }
 
 // spec: 08-modules §8.10.2 — circular module dependency MUST error
@@ -2403,7 +2403,7 @@ fn trait_method_as_value_operator() {
     let mut session = repl_session_with_test_prelude();
     let result = session.eval("(let [f +] (f 1 2))");
     match result {
-        Ok(r) => assert_eq!(r.value, 3, "expected (let [f +] (f 1 2)) = 3"),
+        Ok(r) => assert_eq!(r.value(), 3, "expected (let [f +] (f 1 2)) = 3"),
         Err(e) => panic!(
             "SPEC VIOLATION §7.6: trait method '+' cannot be used as a value. \
              Expected (let [f +] (f 1 2)) = 3 but got error: {e}"
@@ -2418,7 +2418,7 @@ fn trait_method_as_value_comparison() {
     let mut session = repl_session_with_test_prelude();
     let result = session.eval("(let [cmp <] (cmp 3 4))");
     match result {
-        Ok(r) => assert_eq!(r.value, 1, "expected (let [cmp <] (cmp 3 4)) = true"),
+        Ok(r) => assert_eq!(r.value(), 1, "expected (let [cmp <] (cmp 3 4)) = true"),
         Err(e) => panic!(
             "SPEC VIOLATION §7.6: trait method '<' cannot be used as a value. \
              Expected (let [cmp <] (cmp 3 4)) = true but got error: {e}"

@@ -290,7 +290,7 @@ fn r3_special_form_defmacro() {
     match result {
         Ok(r) => {
             let display = if let Some(d) = r.definition_display { d }
-            else { format!("{}", r.value) };
+            else { format!("{}", r.value()) };
             assert!(
                 display.contains("defmacro") || display.contains("Fn"),
                 "bare 'defmacro' should show special form info, got: {display}"
@@ -651,7 +651,7 @@ fn r3_batch_macro_in_function_body() {
 (defn main [] (add-two 40))
 "#;
     let result = pipeline::compile_and_run(src).unwrap();
-    assert_eq!(result.value, 42);
+    assert_eq!(result.value(), 42);
 }
 
 // spec: 09-macros.md §9.2 — macro with multiple uses in same function (batch)
@@ -665,7 +665,7 @@ fn r3_batch_macro_multiple_uses() {
 (defn main [] (primitives/add-i64 (double 10) (double 11)))
 "#;
     let result = pipeline::compile_and_run(src).unwrap();
-    assert_eq!(result.value, 42);
+    assert_eq!(result.value(), 42);
 }
 
 // =============================================================================
@@ -986,7 +986,7 @@ fn r3_constructor_evaluates_as_value() {
     let result = s.eval("Red").unwrap();
     // Constructor evaluates to a value (nullary constructor tag)
     assert!(
-        !result.is_definition,
+        !result.is_def(),
         "constructor eval should be a value, not a definition"
     );
 }

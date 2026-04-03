@@ -10,11 +10,10 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
 
 use cranelisp_types::{
-    CheckResult, CodegenBehaviour, CompileContext, CranelispError,
-    DefKind, ModuleEntry, ModuleFullPath, ModuleStrategy, ModuleStructure,
+    CheckResult, CodegenBehaviour, CranelispError,
+    DefKind, FQSymbol, ModuleEntry, ModuleFullPath, ModuleStrategy, ModuleStructure,
     Sexp, Span, Symbol, SymbolTable, TopLevel, Type, TypeDefInfo,
     TypeName, Warning,
 };
@@ -23,20 +22,35 @@ use crate::expander::MacroEnv;
 use crate::platform::LoadedPlatform;
 use crate::platform_registry::PlatformRegistry;
 use crate::scheduler::CompileScheduler;
-use crate::session::{CompilationSession, InMemWorkerState};
+use crate::session::InMemWorkerState;
 use crate::worker::WorkerContext;
+
+// Re-export display functions so tests can import from session_v4 instead of repl.
+pub use cranelisp_backend::display::format_result_value;
+
+// ---------------------------------------------------------------------------
+// SessionSettings (pipeline-v4.md §10)
+// ---------------------------------------------------------------------------
+
+/// Session configuration. CLI flags override cranelisp.toml values.
+pub struct SessionSettings {
+    pub no_color: bool,
+    pub no_cache: bool,
+    pub codegen_behaviour: CodegenBehaviour,
+    pub priority_workers: usize,
+    pub nice_workers: usize,
+}
 
 // ---------------------------------------------------------------------------
 // CommandResult (pipeline-v4.md §6.1)
 // ---------------------------------------------------------------------------
 
 /// Result of processing a REPL input line through `process_commands`.
-///
-/// Mirrors the v4 design: slash commands are handled inline, blank/comment
-/// lines produce Nothing, and source text is returned for compilation.
 pub enum CommandResult {
-    /// Blank line, comment, or side-effect-only command (e.g., /quit).
+    /// Blank line, comment, or side-effect-only command.
     Nothing,
+    /// Session should exit.
+    Quit,
     /// Command that produces displayable output (e.g., /sig, /list).
     Final(String),
     /// Raw source text to submit for compilation.
@@ -47,20 +61,60 @@ pub enum CommandResult {
 // EvalResult (pipeline-v4.md §6.2)
 // ---------------------------------------------------------------------------
 
-/// Result of evaluating one REPL input via `CompilerSession::eval()`.
-pub struct EvalResult {
-    /// The i64 result value (raw bits; interpret per type).
-    pub value: i64,
-    /// The inferred type of the input.
-    pub ty: Type,
-    /// Whether this was a definition (defn/deftype) rather than an expression.
-    pub is_definition: bool,
-    /// Non-fatal warnings.
-    pub warnings: Vec<Warning>,
-    /// Override display string for definitions (deftrait, impl, constrained fn).
-    pub definition_display: Option<String>,
-    /// Time spent executing the compiled function pointer (excludes compilation).
-    pub eval_duration: Duration,
+/// Result of evaluating one input via `CompilerSession::eval()`.
+///
+/// Either a definition (which introduced a symbol) or a value (which
+/// was computed). Both carry zero or more warnings.
+pub enum EvalResult {
+    /// A definition was processed (defn, deftype, deftrait, impl, defmacro).
+    Def {
+        symbol: FQSymbol,
+        ty: Type,
+        warnings: Vec<Warning>,
+    },
+    /// An expression was evaluated to a value.
+    Val {
+        value: i64,
+        ty: Type,
+        warnings: Vec<Warning>,
+    },
+}
+
+impl EvalResult {
+    pub fn warnings(&self) -> &[Warning] {
+        match self {
+            EvalResult::Def { warnings, .. } => warnings,
+            EvalResult::Val { warnings, .. } => warnings,
+        }
+    }
+
+    pub fn warnings_mut(&mut self) -> &mut Vec<Warning> {
+        match self {
+            EvalResult::Def { warnings, .. } => warnings,
+            EvalResult::Val { warnings, .. } => warnings,
+        }
+    }
+
+    /// The raw i64 value. Returns 0 for `Def`.
+    pub fn value(&self) -> i64 {
+        match self {
+            EvalResult::Val { value, .. } => *value,
+            EvalResult::Def { .. } => 0,
+        }
+    }
+
+    /// The inferred type.
+    pub fn ty(&self) -> &Type {
+        match self {
+            EvalResult::Val { ty, .. } => ty,
+            EvalResult::Def { ty, .. } => ty,
+        }
+    }
+
+    /// Whether this is a definition.
+    pub fn is_def(&self) -> bool {
+        matches!(self, EvalResult::Def { .. })
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -219,18 +273,6 @@ fn format_entry_sig(entry: &ModuleEntry, name: &str) -> String {
     }
 }
 
-/// Format macro display for bare-symbol introspection.
-fn format_macro_display(
-    name: &str,
-    clauses: &[cranelisp_types::MacroClauseInfo],
-    docstring: Option<&str>,
-    _module: &ModuleFullPath,
-) -> String {
-    let clause_count = clauses.len();
-    let doc_part = docstring.map_or(String::new(), |d| format!(" - {d}"));
-    format!("{name} ; defmacro ({clause_count} clause(s)){doc_part}")
-}
-
 /// Check if parentheses are balanced in input (for multi-line continuation).
 /// Exposed as `parens_balanced_pub` for use by the REPL loop in main.rs.
 pub fn parens_balanced_pub(input: &str) -> bool {
@@ -331,17 +373,11 @@ pub struct SharedState {
     pub cache_state: Mutex<Option<crate::session::CacheState>>,
 }
 
-/// The v4 compiler session — the permanent session type for scheduler-driven
-/// concurrent compilation.
+/// The compiler session — scheduler-driven concurrent compilation.
 ///
-/// Currently wraps `CompilationSession` and delegates all operations to the
-/// old path. Each roadmap step progressively replaces delegation with native
-/// v4 logic. The `--v4` CLI flag enables this session for testing.
+/// One session per process. Owns the TypeChecker, codegen state, macro env,
+/// and scheduler. Workers run inline (will become persistent threads).
 pub struct CompilerSession {
-    /// The wrapped old-path session. Kept alive for `link()` and prelude
-    /// loading which still use `compile_unit()`. Will be removed in Step 15.
-    pub inner: Option<CompilationSession>,
-
     /// Type checker state (persists across forms).
     pub tc: cranelisp_typecheck::TypeChecker,
     /// In-memory codegen worker state (GOT, JIT lifetimes, trace).
@@ -383,40 +419,23 @@ pub struct CompilerSession {
 }
 
 impl CompilerSession {
-    /// Create a new v4 session wrapping the existing compilation path.
+    /// Create a new compiler session (pipeline-v4.md §5).
     ///
-    /// Sets up lib_dirs, project_root, and interactive mode on the inner
-    /// session, matching the old `new_session()` helper in main.rs.
+    /// TODO: spawn persistent workers based on settings.priority_workers
+    /// and settings.nice_workers. Currently delegates to old path.
     pub fn new(
-        _no_color: bool,
+        _settings: SessionSettings,
         project_root: PathBuf,
-        entry_path: &Path,
     ) -> Self {
         let lib_dirs = crate::session::assemble_lib_dirs(&project_root);
 
-        let entry_dir = entry_path
-            .canonicalize()
-            .ok()
-            .and_then(|p| p.parent().map(|d| d.to_path_buf()));
-
         let mut all_lib_dirs: Vec<PathBuf> = Vec::new();
-        if let Some(dir) = &entry_dir {
-            all_lib_dirs.push(dir.clone());
-        }
+        all_lib_dirs.push(project_root.clone());
         all_lib_dirs.extend(lib_dirs);
-        let resolved_project_root = entry_dir.unwrap_or_else(|| project_root.clone());
 
-        // Initialize direct fields (same defaults as CompilationSession::new()).
         let tc = cranelisp_typecheck::TypeChecker::new();
         let inmem_worker = InMemWorkerState::new();
         let macro_env = MacroEnv::new();
-
-        // Also keep an inner CompilationSession for methods still using
-        // the old path (link, hot_flush, shutdown_codegen).
-        let mut inner = CompilationSession::new();
-        inner.interactive = true;
-        inner.lib_dirs = all_lib_dirs.clone();
-        inner.project_root = resolved_project_root.clone();
 
         let cache_dir = project_root.join(".cranelisp-cache");
         let _ = std::fs::create_dir_all(&cache_dir);
@@ -424,7 +443,6 @@ impl CompilerSession {
         let cache_state = crate::session::CacheState::new(cache_dir.clone());
 
         CompilerSession {
-            inner: Some(inner),
             tc,
             inmem_worker,
             macro_env,
@@ -459,93 +477,21 @@ impl CompilerSession {
         }
     }
 
-    /// Create a v4 session for link mode with caching enabled.
-    pub fn new_for_link(
-        project_root: PathBuf,
-        entry_path: &Path,
-        cache_dir: PathBuf,
-    ) -> Result<Self, CranelispError> {
-        let lib_dirs = crate::session::assemble_lib_dirs(&project_root);
-
-        let canonical_entry = entry_path.canonicalize().map_err(|e| {
-            CranelispError::ModuleError {
-                message: format!("cannot canonicalize '{}': {}", entry_path.display(), e),
-                file: Some(entry_path.to_path_buf()),
-                span: Span::SYNTHETIC,
-            }
-        })?;
-
-        std::fs::create_dir_all(&cache_dir).map_err(|e| CranelispError::ModuleError {
-            message: format!("cannot create cache dir '{}': {}", cache_dir.display(), e),
-            file: None,
-            span: Span::SYNTHETIC,
-        })?;
-
-        let entry_dir = canonical_entry.parent().map(|p| p.to_path_buf());
-        let mut all_lib_dirs: Vec<PathBuf> = Vec::new();
-        if let Some(dir) = &entry_dir {
-            all_lib_dirs.push(dir.clone());
-        }
-        all_lib_dirs.extend(lib_dirs);
-        let resolved_project_root = entry_dir.unwrap_or_else(|| project_root.clone());
-
-        // Initialize direct fields.
-        let tc = cranelisp_typecheck::TypeChecker::new();
-        let inmem_worker = InMemWorkerState::new();
-        let macro_env = MacroEnv::new();
-
-        // Inner session for link mode (uses compile_unit + async codegen).
-        let mut inner = CompilationSession::new_async_with_cache(cache_dir.clone());
-        inner.interactive = true;
-        inner.lib_dirs = all_lib_dirs.clone();
-        inner.project_root = resolved_project_root;
-
-        let cache_state = crate::session::CacheState::new(cache_dir.clone());
-
-        Ok(CompilerSession {
-            inner: Some(inner),
-            tc,
-            inmem_worker,
-            macro_env,
-            lib_dirs: all_lib_dirs,
-            loaded_platforms: Vec::new(),
-            shared: Arc::new(SharedState {
-                scheduler: CompileScheduler::new(),
-                cache_dir: Some(cache_dir.clone()),
-                compiled_o_paths: Mutex::new(Vec::new()),
-                promote_nice_workers: AtomicBool::new(false),
-                object_codegen_inputs: Mutex::new(HashMap::new()),
-                cached_modules: Mutex::new(HashSet::new()),
-                file_to_module: Mutex::new(HashMap::new()),
-                cache_state: Mutex::new(Some(cache_state)),
-            }),
-            project_root,
-            platform_registry: PlatformRegistry::new(),
-            type_defs: HashMap::new(),
-            type_modules: HashMap::new(),
-            current_module_structure: ModuleStructure {
-                path: ModuleFullPath::from("user"),
-                file_path: None,
-                mod_decls: vec![],
-                import_specs: vec![],
-                export_specs: vec![],
-                platform_specs: vec![],
-                impl_sexps: vec![],
-                impls: vec![],
-                dll_path: None,
-            },
-            error_modules: HashSet::new(),
-        })
+    /// Register a module by name (pipeline-v4.md §3.1).
+    ///
+    /// Resolves source file, parses, enqueues for typechecking.
+    /// TODO: currently runs inline worker loop. Will just enqueue
+    /// once persistent workers are wired.
+    pub fn register_module(
+        &mut self,
+        module_name: &str,
+    ) -> Result<(), CranelispError> {
+        self.register_entry_module(module_name)?;
+        Ok(())
     }
 
-    /// Register a module for compilation via the v4 scheduler-driven path.
-    ///
-    /// All programs go through the v4 path with lazy dependency discovery.
-    /// The C2 filter and old delegation path are deleted (Step 5).
-    ///
-    /// Returns warnings from compilation. Codegen results are available
-    /// via GOT after `scheduler.wait_inmem_complete()`.
-    pub fn register_module(
+    /// Register a module with explicit source (internal + test helpers).
+    pub fn register_module_with_source(
         &mut self,
         module_name: &str,
         source: &str,
@@ -669,8 +615,7 @@ impl CompilerSession {
                 CommandResult::Nothing
             }
             ReplCommand::Quit => {
-                // Signal quit via special Final string.
-                CommandResult::Final(QUIT_SENTINEL.to_string())
+                CommandResult::Quit
             }
             ReplCommand::Sig(name) => {
                 let output = self.handle_sig(name);
@@ -718,7 +663,7 @@ impl CompilerSession {
         for sexp in &sexps {
             match self.eval_one_form(sexp) {
                 Ok(Some(result)) => {
-                    all_warnings.extend(result.warnings.clone());
+                    all_warnings.extend(result.warnings().iter().cloned());
                     last_result = Some(result);
                 }
                 Ok(None) => {}
@@ -727,13 +672,15 @@ impl CompilerSession {
                         return Err(e);
                     }
                     // Multi-form: report error inline but continue.
-                    last_result = Some(EvalResult {
+                    // TODO: multi-form error handling — for now, wrap as Val.
+                    last_result = Some(EvalResult::Val {
                         value: 0,
                         ty: Type::Int,
-                        is_definition: false,
-                        warnings: Vec::new(),
-                        definition_display: Some(format!("Error: {e}")),
-                        eval_duration: Duration::ZERO,
+                        warnings: vec![Warning {
+                            kind: cranelisp_types::WarningKind::Other,
+                            message: format!("Error: {e}"),
+                            span: Span::SYNTHETIC,
+                        }],
                     });
                 }
             }
@@ -743,7 +690,7 @@ impl CompilerSession {
         self.sync_type_defs();
 
         if let Some(ref mut r) = last_result {
-            r.warnings = all_warnings;
+            *r.warnings_mut() = all_warnings;
         }
         Ok(last_result)
     }
@@ -865,7 +812,6 @@ impl CompilerSession {
 
         if has_expr {
             let program_vec = program.to_vec();
-            let eval_start = Instant::now();
             let ps = self.platform_registry.jit_symbols_owned();
             let (value, ty) = crate::pipeline::compile_and_execute_expr(
                 &mut self.inmem_worker,
@@ -873,33 +819,33 @@ impl CompilerSession {
                 &program_vec,
                 check,
             )?;
-            let eval_duration = eval_start.elapsed();
 
-            Ok(EvalResult {
+            Ok(EvalResult::Val {
                 value,
                 ty,
-                is_definition: false,
                 warnings: check.warnings.clone(),
-                definition_display: None,
-                eval_duration,
             })
         } else {
-            // Definition-only: build display text.
-            let display = check.display.as_ref().and_then(|d| {
-                d.scheme.as_ref().map(|s| format!(":{} ; defined", s.ty))
-            });
+            // Definition-only: extract the defined symbol name.
+            let symbol_name = program.last().map(|tl| match tl {
+                TopLevel::Defn(d) => d.name.to_string(),
+                TopLevel::TraitDecl(t) => t.name.to_string(),
+                TopLevel::TraitImpl(t) => format!("{}.{}", t.trait_name, t.target_type),
+                TopLevel::TypeDef { name, .. } => name.to_string(),
+                TopLevel::Expr(_) => unreachable!("has_expr was false"),
+            }).unwrap_or_default();
 
             let ty = check.display.as_ref()
                 .map(|d| d.ty.clone())
                 .unwrap_or(Type::Int);
 
-            Ok(EvalResult {
-                value: 0,
+            Ok(EvalResult::Def {
+                symbol: FQSymbol {
+                    module: module.clone(),
+                    symbol: Symbol::from(symbol_name),
+                },
                 ty,
-                is_definition: true,
                 warnings: check.warnings.clone(),
-                definition_display: display,
-                eval_duration: Duration::ZERO,
             })
         }
     }
@@ -958,7 +904,7 @@ impl CompilerSession {
         };
 
         match &entry {
-            ModuleEntry::Macro { clauses, docstring, .. } => {
+            ModuleEntry::Macro { clauses, .. } => {
                 // Zero-arg macros should be expanded, not introspected.
                 let has_zero_arg = clauses.iter().any(|c| {
                     c.params.is_empty() && c.rest_param.is_none()
@@ -967,26 +913,25 @@ impl CompilerSession {
                     return None;
                 }
                 let module = self.tc.current_module_path().clone();
-                let display = format_macro_display(name, clauses, docstring.as_deref(), &module);
-                Some(EvalResult {
-                    value: 0,
-                    ty: Type::Int,
-                    is_definition: true,
+                Some(EvalResult::Def {
+                    symbol: FQSymbol {
+                        module,
+                        symbol: Symbol::from(name.as_str()),
+                    },
+                    ty: Type::Int, // macros have no meaningful type
                     warnings: Vec::new(),
-                    definition_display: Some(display),
-                    eval_duration: Duration::ZERO,
                 })
             }
-            ModuleEntry::Def { kind, .. } => {
-                if let DefKind::SpecialForm { description } = kind.as_ref() {
-                    let display = format!("{name} ; special form - {description}");
-                    Some(EvalResult {
-                        value: 0,
-                        ty: Type::Int,
-                        is_definition: true,
+            ModuleEntry::Def { kind, scheme, .. } => {
+                if let DefKind::SpecialForm { .. } = kind.as_ref() {
+                    let module = self.tc.current_module_path().clone();
+                    Some(EvalResult::Def {
+                        symbol: FQSymbol {
+                            module,
+                            symbol: Symbol::from(name.as_str()),
+                        },
+                        ty: scheme.ty.clone(),
                         warnings: Vec::new(),
-                        definition_display: Some(display),
-                        eval_duration: Duration::ZERO,
                     })
                 } else {
                     None
@@ -1001,50 +946,6 @@ impl CompilerSession {
         for (name, info) in self.tc.type_def_registry().iter() {
             self.type_defs.insert(name.clone(), info.clone());
         }
-    }
-
-    /// Load prelude into this session for REPL mode.
-    ///
-    /// Compiles an empty source for the user module via the inner
-    /// CompilationSession, which triggers the auto-prelude mechanism.
-    /// Then swaps the inner session's state (TC, inmem_worker, macro_env)
-    /// into the CompilerSession's direct fields for v4 eval.
-    pub fn load_prelude(&mut self) -> Result<(), CranelispError> {
-        let inner = self.inner.as_mut().ok_or_else(|| CranelispError::ModuleError {
-            message: "inner session required for prelude loading".into(),
-            file: None,
-            span: Span::SYNTHETIC,
-        })?;
-
-        let user_ctx = CompileContext {
-            module: ModuleFullPath::from("user"),
-            codegen: CodegenBehaviour::InMemoryAndObject,
-        };
-        let unit_result = inner.compile_unit("", &user_ctx, ModuleStrategy::Additive)?;
-        crate::pipeline::codegen_and_execute_via_session(inner, &unit_result, &user_ctx)?;
-        inner.flush_cache_writes();
-        if let Some(cs) = &inner.object_worker.cache_state {
-            cs.flush_manifest();
-        }
-
-        // Swap the inner session's state into our direct fields.
-        // This moves ownership — the inner session's fields become defaults.
-        std::mem::swap(&mut self.tc, &mut inner.tc);
-        std::mem::swap(&mut self.inmem_worker, &mut inner.inmem_worker);
-        std::mem::swap(&mut self.macro_env, &mut inner.macro_env);
-
-        // Sync type defs for ADT display.
-        self.sync_type_defs();
-
-        // Switch back to user module.
-        self.tc.set_current_module(ModuleFullPath::from("user"));
-
-        // Ensure the scheduler is initialized for REPL eval.
-        self.shared.scheduler.register_module(
-            ModuleFullPath::from("user"), false,
-        );
-
-        Ok(())
     }
 
     // -- Slash command handlers (subset for initial implementation) --
@@ -1160,12 +1061,6 @@ impl CompilerSession {
         &mut self,
         module_name: &str,
     ) -> Result<(i64, Type), CranelispError> {
-        // Flush old-path codegen queue (no-op if queue is empty, i.e. v4 path).
-        if let Some(ref mut inner) = self.inner {
-            let _ = inner.hot_flush_in_mem_queue()?;
-            inner.shutdown_codegen();
-        }
-
         // Look up main in GOT.
         let main_sym = cranelisp_types::Symbol::from("main");
         let qualified_main =
@@ -1247,242 +1142,6 @@ impl CompilerSession {
         Type::Int
     }
 
-    /// Link all compiled modules into an executable.
-    ///
-    /// Delegates to the old link path. In v4, this will use the scheduler's
-    /// module tracking to collect .o files (Step 9+).
-    pub fn link(
-        &mut self,
-        entry_path: &Path,
-    ) -> Result<(), CranelispError> {
-        // The old link_mode is a standalone function in main.rs that creates
-        // its own session. For Step 0, we delegate by using the inner session
-        // fields directly, matching the old link_mode logic.
-        let inner = self.inner.as_mut().ok_or_else(|| CranelispError::ModuleError {
-            message: "link mode requires inner CompilationSession".into(),
-            file: None,
-            span: Span::SYNTHETIC,
-        })?;
-        let graph = crate::pipeline::discover_module_graph(
-            entry_path,
-            &inner.lib_dirs,
-        )?;
-        let order = crate::pipeline::toposort(&graph)?;
-
-        let mut all_warnings: Vec<Warning> = Vec::new();
-
-        // Compile each module in topo order.
-        for module_path in &order {
-            let node = &graph.nodes[module_path];
-            let source = std::fs::read_to_string(&node.file_path).map_err(|e| {
-                CranelispError::ModuleError {
-                    message: format!("cannot read '{}': {}", node.file_path.display(), e),
-                    file: Some(node.file_path.clone()),
-                    span: Span::SYNTHETIC,
-                }
-            })?;
-
-            let ctx = CompileContext {
-                module: module_path.clone(),
-                codegen: CodegenBehaviour::InMemoryAndObject,
-            };
-
-            let unit_result =
-                inner.compile_unit(&source, &ctx, ModuleStrategy::Replace)?;
-            all_warnings.extend(unit_result.warnings.clone());
-            inner.send_codegen(unit_result, ctx);
-            let codegen_results = inner.flush_codegen()?;
-            for cr in codegen_results {
-                all_warnings.extend(cr.warnings);
-            }
-        }
-
-        // Shut down workers, flush .o writes.
-        inner.shutdown_codegen();
-        inner.flush_cache_writes();
-        let module_o_paths = inner.object_worker.compiled_o_paths.clone();
-
-        // Validate main, generate startup, link executable.
-        inner.tc.set_current_module(graph.entry.clone());
-        let entry_symbols = inner.tc.symbol_table().clone();
-        let module_structures = inner.object_worker.compiled_module_structures.clone();
-
-        for w in &all_warnings {
-            eprintln!("warning: {}", w.message);
-        }
-
-        let cache_dir = self.project_root.join(".cranelisp-cache");
-        let main_return = crate::exe::validate_main(&entry_symbols)?;
-        let platform_names =
-            crate::exe::collect_platform_manifest_names(&module_structures);
-        let main_returns_io = main_return == crate::exe::MainReturnKind::Io;
-        let startup_bytes =
-            crate::exe::generate_startup_object(&platform_names, main_returns_io)?;
-        let startup_o_path = cache_dir.join("_startup.o");
-        std::fs::write(&startup_o_path, &startup_bytes).map_err(|e| {
-            CranelispError::ModuleError {
-                message: format!("cannot write startup object: {}", e),
-                file: Some(startup_o_path.clone()),
-                span: Span::SYNTHETIC,
-            }
-        })?;
-        let bundle_lib = crate::exe::find_bundle_lib()?;
-        let platform_rlibs = crate::exe::find_platform_rlibs(&module_structures);
-        let output_path = PathBuf::from(
-            entry_path
-                .file_stem()
-                .unwrap_or(std::ffi::OsStr::new("a.out")),
-        );
-        crate::exe::link_executable(
-            &output_path,
-            &module_o_paths,
-            &startup_o_path,
-            &bundle_lib,
-            &platform_rlibs,
-        )?;
-        eprintln!("; Linked: {}", output_path.display());
-        Ok(())
-    }
-
-    /// Run a batch compilation with priority and nice worker threads.
-    ///
-    /// Spawns `priority_count` priority workers and `nice_count` nice
-    /// workers in a single `std::thread::scope`. The calling thread
-    /// parses the entry module, registers it with the scheduler, and
-    /// waits for completion. Workers perform typecheck + JIT codegen.
-    ///
-    /// The TypeChecker and PlatformRegistry are temporarily moved into
-    /// Mutex wrappers accessible by priority workers. After the scope
-    /// exits (all workers joined), they are moved back to `self.inner`.
-    ///
-    /// Returns the module name for use by the caller (e.g., trampoline).
-    pub fn run_with_workers(
-        &mut self,
-        priority_count: usize,
-        nice_count: usize,
-        module_name: &str,
-        source: &str,
-    ) -> Result<Vec<Warning>, CranelispError> {
-        let module = ModuleFullPath::from(module_name);
-        let sexps = cranelisp_frontend::parse(source)?;
-
-        // Move TC and PlatformRegistry into Mutex for worker access.
-        let tc = std::mem::replace(
-            &mut self.tc,
-            cranelisp_typecheck::TypeChecker::new(),
-        );
-        let tc_mutex = Mutex::new(tc);
-
-        let platform_registry = std::mem::replace(
-            &mut self.platform_registry,
-            crate::platform_registry::PlatformRegistry::new(),
-        );
-        let platform_mutex = Mutex::new(platform_registry);
-
-        // Extract shared codegen state from InMemWorkerState.
-        let shared_codegen =
-            crate::session::SharedCodegenState::extract_from(&mut self.inmem_worker);
-
-        // Shared sexp and suspend state maps for workers.
-        let module_sexps_map: Mutex<HashMap<ModuleFullPath, Vec<cranelisp_types::Sexp>>> = {
-            let mut map = HashMap::new();
-            map.insert(module.clone(), sexps);
-            Mutex::new(map)
-        };
-        let suspend_states: Mutex<HashMap<ModuleFullPath, crate::worker::ModuleSuspendState>> =
-            Mutex::new(HashMap::new());
-
-        let shared_arc = Arc::clone(&self.shared);
-
-        let worker_shared = crate::worker::PriorityWorkerShared {
-            tc: &tc_mutex,
-            platform_registry: &platform_mutex,
-            shared_codegen: &shared_codegen,
-            scheduler: &self.shared.scheduler,
-            module_sexps: &module_sexps_map,
-            suspend_states: &suspend_states,
-            lib_dirs: &self.lib_dirs,
-            project_root: &self.project_root,
-            object_codegen_stash: &self.shared.object_codegen_inputs,
-            shared_state: Some(&self.shared),
-        };
-
-        // Register module with scheduler — workers will pick it up.
-        self.shared.scheduler.register_module(module.clone(), false);
-
-        let result: Result<(), CranelispError> = std::thread::scope(|scope| {
-            // Spawn priority workers.
-            for i in 0..priority_count {
-                let ws = &worker_shared;
-                std::thread::Builder::new()
-                    .name(format!("priority-worker-{}", i))
-                    .spawn_scoped(scope, move || {
-                        crate::worker::priority_worker_thread(ws, i);
-                    })
-                    .expect("failed to spawn priority worker thread");
-            }
-
-            // Spawn nice workers.
-            spawn_nice_workers(scope, &shared_arc, nice_count);
-
-            // Block until all in-memory codegen is complete.
-            // This parks on the completion condvar, woken when workers
-            // call notify_inmem_codegen_complete or on failure/shutdown.
-            let wait_result = self.shared.scheduler
-                .wait_inmem_complete_blocking()
-                .map_err(|e| CranelispError::ModuleError {
-                    message: format!("scheduler error: {:?}", e),
-                    file: None,
-                    span: Span::SYNTHETIC,
-                });
-
-            // Wait for nice workers to finish .o compilation.
-            let _ = self.wait_object_complete();
-            self.shared.scheduler.shutdown();
-
-            wait_result
-        });
-
-        // Move TC and PlatformRegistry back.
-        self.tc = tc_mutex.into_inner()
-            .unwrap_or_else(|e| e.into_inner());
-        self.platform_registry = platform_mutex.into_inner()
-            .unwrap_or_else(|e| e.into_inner());
-
-        // Sync shared codegen state back to InMemWorkerState.
-        shared_codegen.sync_back_to(&mut self.inmem_worker);
-
-        // Register module aliases for GOT lookup by unqualified name.
-        crate::session::register_module_aliases_filtered(
-            &mut self.inmem_worker,
-            &module,
-            None,
-        );
-
-        result?;
-        Ok(Vec::new())
-    }
-
-    /// Run a closure with nice worker threads only (no priority workers).
-    ///
-    /// Used by paths that run the priority worker loop inline (e.g., link
-    /// mode which uses the old compile_unit path).
-    pub fn run_with_nice_workers<T>(
-        &mut self,
-        n: usize,
-        f: impl FnOnce(&mut Self) -> Result<T, CranelispError>,
-    ) -> Result<T, CranelispError> {
-        let shared_arc = Arc::clone(&self.shared);
-
-        std::thread::scope(|scope| {
-            spawn_nice_workers(scope, &shared_arc, n);
-            let result = f(self);
-            let _ = self.wait_object_complete();
-            self.shared.scheduler.shutdown();
-            result
-        })
-    }
-
     /// Wait until all registered modules have object codegen complete.
     ///
     /// Block until all in-memory codegen (JIT) is complete.
@@ -1520,24 +1179,6 @@ impl CompilerSession {
         // Inner session's Drop handles legacy codegen worker shutdown.
     }
 
-    // --- Stubs for pipeline-v4.md §2.2 target API ---
-    // These are called by run() in main.rs. The cascade fills them in.
-
-    /// §2.2: Spawn priority workers (typecheck + JIT).
-    /// TODO: currently workers run inline in register_module. This should
-    /// spawn persistent threads that pull from the scheduler.
-    pub fn spawn_priority_workers(&mut self, _n: usize) {
-        // Currently a no-op: register_module runs workers inline.
-    }
-
-    /// §2.2: Spawn nice workers (.o file writing).
-    /// TODO: currently nice workers are spawned per-invocation in
-    /// run_with_workers/run_with_nice_workers. This should spawn
-    /// persistent threads.
-    pub fn spawn_nice_workers(&mut self, _n: usize) {
-        // Currently a no-op: nice workers spawned inline.
-    }
-
     /// §3.1: Register entry module by name. Session resolves the source
     /// file from project_root + lib_dirs, reads it, and registers with
     /// the scheduler.
@@ -1559,7 +1200,7 @@ impl CompilerSession {
                 (String::new(), default_path)
             }
         };
-        self.register_module(module_name, &source, &entry_path)
+        self.register_module_with_source(module_name, &source, &entry_path)
     }
 
     /// §8: Link by module name (not path). Session resolves .o paths
@@ -1577,20 +1218,69 @@ impl CompilerSession {
         })
     }
 
+    // -- REPL display utilities (pipeline-v4.md §6) --
+
+    /// Print the session banner.
+    pub fn print_banner(&self, stdout: &mut impl Write) {
+        let _ = writeln!(stdout, "cranelisp REPL");
+    }
+
+    /// Write the REPL prompt.
+    pub fn write_prompt(&self, stdout: &mut impl Write) {
+        let _ = write!(stdout, "> ");
+        let _ = stdout.flush();
+    }
+
+    /// Write the continuation prompt (for multi-line input).
+    pub fn write_continuation_prompt(&self, stdout: &mut impl Write) {
+        let _ = write!(stdout, "  ");
+        let _ = stdout.flush();
+    }
+
+    /// Check if input has balanced parentheses.
+    pub fn parens_balanced(&self, input: &str) -> bool {
+        parens_balanced(input)
+    }
+
+    /// Pretty-print a form (eval result string) to stdout.
+    pub fn pretty_print(&self, form: &str, stdout: &mut impl Write) {
+        let _ = writeln!(stdout, "{form}");
+    }
+
     /// §9: Format an eval result for display.
     pub fn format_eval_result(&self, result: &EvalResult) -> String {
-        if let Some(ref def_display) = result.definition_display {
-            def_display.clone()
-        } else if result.ty.is_io() {
-            let inner_value = cranelisp_runtime::run_io_trampoline(result.value);
-            let inner_type = result.ty.io_inner_type();
-            crate::repl::format_result_value(
-                inner_value, &inner_type, &self.type_defs, &self.type_modules,
-            )
-        } else {
-            crate::repl::format_result_value(
-                result.value, &result.ty, &self.type_defs, &self.type_modules,
-            )
+        match result {
+            EvalResult::Def { symbol, .. } => {
+                // Look up the symbol's type for display.
+                match self.tc.symbol_table().get(symbol.symbol.as_ref()) {
+                    Some(ModuleEntry::Def { scheme, .. }) => {
+                        format!(":{} {}", scheme.ty, symbol)
+                    }
+                    Some(ModuleEntry::Macro { .. }) => {
+                        format!("{} ; macro", symbol)
+                    }
+                    Some(ModuleEntry::TraitDecl { .. }) => {
+                        format!("{} ; trait", symbol)
+                    }
+                    Some(ModuleEntry::TypeDef { .. }) => {
+                        format!("{} ; type", symbol)
+                    }
+                    _ => format!("{} ; defined", symbol),
+                }
+            }
+            EvalResult::Val { value, ty, .. } => {
+                if ty.is_io() {
+                    let inner_value = cranelisp_runtime::run_io_trampoline(*value);
+                    let inner_type = ty.io_inner_type();
+                    format_result_value(
+                        inner_value, &inner_type, &self.type_defs, &self.type_modules,
+                    )
+                } else {
+                    format_result_value(
+                        *value, ty, &self.type_defs, &self.type_modules,
+                    )
+                }
+            }
         }
     }
 }

@@ -18,7 +18,8 @@
 #[path = "helpers/mod.rs"]
 mod helpers;
 
-use cranelisp::repl::{format_result, ReplSession};
+use cranelisp::session_v4::{EvalResult, format_result_value};
+use cranelisp_backend::display::format_result;
 use cranelisp_types::{CranelispError, Span, Type, TypeName};
 use helpers::*;
 
@@ -176,8 +177,8 @@ fn display_float_zero() {
 fn eval_reports_int_type() {
     let mut session = repl_session();
     let result = session.eval("42").unwrap();
-    assert_eq!(result.ty, Type::Int);
-    assert!(!result.is_definition);
+    assert_eq!(*result.ty(), Type::Int);
+    assert!(!result.is_def());
 }
 
 // spec: repl/spec.md §1.2 — Bool type reporting
@@ -185,8 +186,8 @@ fn eval_reports_int_type() {
 fn eval_reports_bool_type() {
     let mut session = repl_session();
     let result = session.eval("true").unwrap();
-    assert_eq!(result.ty, Type::Bool);
-    assert!(!result.is_definition);
+    assert_eq!(*result.ty(), Type::Bool);
+    assert!(!result.is_def());
 }
 
 // spec: repl/spec.md §1.2 — Float type reporting
@@ -194,8 +195,8 @@ fn eval_reports_bool_type() {
 fn eval_reports_float_type() {
     let mut session = repl_session();
     let result = session.eval("3.14").unwrap();
-    assert_eq!(result.ty, Type::Float);
-    assert!(!result.is_definition);
+    assert_eq!(*result.ty(), Type::Float);
+    assert!(!result.is_def());
 }
 
 // spec: repl/spec.md §1.2 — arithmetic result type
@@ -203,9 +204,9 @@ fn eval_reports_float_type() {
 fn eval_arithmetic_reports_int_type() {
     let mut session = repl_session();
     let result = session.eval("(add-i64 10 20)").unwrap();
-    assert_eq!(result.ty, Type::Int);
-    assert_eq!(result.value, 30);
-    assert!(!result.is_definition);
+    assert_eq!(*result.ty(), Type::Int);
+    assert_eq!(result.value(), 30);
+    assert!(!result.is_def());
 }
 
 // spec: repl/spec.md §1.2 — comparison result type
@@ -213,9 +214,9 @@ fn eval_arithmetic_reports_int_type() {
 fn eval_comparison_reports_bool_type() {
     let mut session = repl_session();
     let result = session.eval("(lt-i64 3 5)").unwrap();
-    assert_eq!(result.ty, Type::Bool);
-    assert_eq!(result.value, 1); // true
-    assert!(!result.is_definition);
+    assert_eq!(*result.ty(), Type::Bool);
+    assert_eq!(result.value(), 1); // true
+    assert!(!result.is_def());
 }
 
 // spec: repl/spec.md §1.2 — if inherits branch type
@@ -223,8 +224,8 @@ fn eval_comparison_reports_bool_type() {
 fn eval_if_inherits_branch_type() {
     let mut session = repl_session();
     let result = session.eval("(if true 42 0)").unwrap();
-    assert_eq!(result.ty, Type::Int);
-    assert!(!result.is_definition);
+    assert_eq!(*result.ty(), Type::Int);
+    assert!(!result.is_def());
 }
 
 // spec: repl/spec.md §1.2 — let reports body type
@@ -232,8 +233,8 @@ fn eval_if_inherits_branch_type() {
 fn eval_let_reports_body_type() {
     let mut session = repl_session();
     let result = session.eval("(let [x 10] (lt-i64 x 20))").unwrap();
-    assert_eq!(result.ty, Type::Bool);
-    assert!(!result.is_definition);
+    assert_eq!(*result.ty(), Type::Bool);
+    assert!(!result.is_def());
 }
 
 // =============================================================================
@@ -244,13 +245,13 @@ fn eval_let_reports_body_type() {
 #[test]
 fn defn_reports_function_type() {
     // Spec §1.3: defn displays its inferred type scheme and qualified name.
-    // At the API level, ReplResult.ty should be a Fn type and is_definition=true.
+    // At the API level, ReplResult.ty() should be a Fn type and is_definition=true.
     let mut session = repl_session();
     let result = session.eval("(defn double [x] (mul-i64 x 2))").unwrap();
-    assert!(result.is_definition);
+    assert!(result.is_def());
     // Type should be (Fn [primitives/Int] primitives/Int)
     assert_eq!(
-        result.ty,
+        *result.ty(),
         Type::Fn(vec![Type::Int], Box::new(Type::Int))
     );
 }
@@ -261,9 +262,9 @@ fn defn_polymorphic_reports_var_type() {
     // (defn id [x] x) should be polymorphic: (Fn [a] a)
     let mut session = repl_session();
     let result = session.eval("(defn id [x] x)").unwrap();
-    assert!(result.is_definition);
+    assert!(result.is_def());
     // The type should be (Fn [Var(n)] Var(n)) for some n — a polymorphic function.
-    match &result.ty {
+    match &result.ty() {
         Type::Fn(params, ret) => {
             assert_eq!(params.len(), 1);
             match (&params[0], ret.as_ref()) {
@@ -287,9 +288,9 @@ fn defn_multi_param_reports_full_signature() {
     let result = session
         .eval("(defn add3 [a b c] (add-i64 a (add-i64 b c)))")
         .unwrap();
-    assert!(result.is_definition);
+    assert!(result.is_def());
     assert_eq!(
-        result.ty,
+        *result.ty(),
         Type::Fn(vec![Type::Int, Type::Int, Type::Int], Box::new(Type::Int))
     );
 }
@@ -299,9 +300,9 @@ fn defn_multi_param_reports_full_signature() {
 fn defn_zero_param_reports_thunk_type() {
     let mut session = repl_session();
     let result = session.eval("(defn always-42 [] 42)").unwrap();
-    assert!(result.is_definition);
+    assert!(result.is_def());
     assert_eq!(
-        result.ty,
+        *result.ty(),
         Type::Fn(vec![], Box::new(Type::Int))
     );
 }
@@ -314,16 +315,20 @@ fn defn_zero_param_displays_name_not_closure() {
     // closure. `<closure>` is reserved for anonymous function *values*."
     let mut session = repl_session();
     let result = session.eval("(defn always-42 [] 42)").unwrap();
-    // The REPL loop uses definition_display (not format_result) for definitions.
-    // Zero-arg defns must set definition_display with the qualified name.
-    let display = result
-        .definition_display
-        .as_ref()
-        .expect("repl/spec.md §1.3 violation: zero-arg defn must have definition_display set");
-    assert!(
-        display.contains("always-42"),
-        "repl/spec.md §1.3 violation: zero-arg defn MUST NOT display <closure>, got: {display}"
-    );
+    // With the new EvalResult enum, defn returns Def { symbol, .. }.
+    // The symbol must contain the function name (not <closure>).
+    match &result {
+        EvalResult::Def { symbol, .. } => {
+            let name = symbol.to_string();
+            assert!(
+                name.contains("always-42"),
+                "repl/spec.md §1.3 violation: zero-arg defn MUST NOT display <closure>, got: {name}"
+            );
+        }
+        EvalResult::Val { .. } => {
+            panic!("repl/spec.md §1.3 violation: defn should return Def, not Val");
+        }
+    }
 }
 
 // spec: repl/spec.md §1.3 — deftype reports ADT type
@@ -332,9 +337,9 @@ fn deftype_reports_adt_type() {
     // Spec §1.3: type definition displays the qualified type name.
     let mut session = repl_session();
     let result = session.eval("(deftype Color Red Green Blue)").unwrap();
-    assert!(result.is_definition);
+    assert!(result.is_def());
     assert_eq!(
-        result.ty,
+        *result.ty(),
         Type::ADT(TypeName::from("Color"), vec![])
     );
 }
@@ -344,9 +349,9 @@ fn deftype_reports_adt_type() {
 fn deftype_two_constructors() {
     let mut session = repl_session();
     let result = session.eval("(deftype Answer Yes No)").unwrap();
-    assert!(result.is_definition);
+    assert!(result.is_def());
     assert_eq!(
-        result.ty,
+        *result.ty(),
         Type::ADT(TypeName::from("Answer"), vec![])
     );
 }
@@ -363,11 +368,11 @@ fn constructor_reports_adt_type() {
     session.eval("(deftype Color Red Green Blue)").unwrap();
     let result = session.eval("Red").unwrap();
     assert_eq!(
-        result.ty,
+        *result.ty(),
         Type::ADT(TypeName::from("Color"), vec![])
     );
-    assert!(!result.is_definition);
-    assert_eq!(result.value, 0); // tag 0
+    assert!(!result.is_def());
+    assert_eq!(result.value(), 0); // tag 0
 }
 
 // spec: 12-runtime §12.1.4 — sequential constructor tags
@@ -377,14 +382,14 @@ fn constructor_tags_are_sequential() {
     session.eval("(deftype Light Off Dim Bright)").unwrap();
 
     let r0 = session.eval("Off").unwrap();
-    assert_eq!(r0.value, 0);
-    assert_eq!(r0.ty, Type::ADT(TypeName::from("Light"), vec![]));
+    assert_eq!(r0.value(), 0);
+    assert_eq!(*r0.ty(), Type::ADT(TypeName::from("Light"), vec![]));
 
     let r1 = session.eval("Dim").unwrap();
-    assert_eq!(r1.value, 1);
+    assert_eq!(r1.value(), 1);
 
     let r2 = session.eval("Bright").unwrap();
-    assert_eq!(r2.value, 2);
+    assert_eq!(r2.value(), 2);
 }
 
 // =============================================================================
@@ -433,7 +438,7 @@ fn error_after_typedef_preserves_type() {
 
     // Type still usable.
     let result = session.eval("North").unwrap();
-    assert_eq!(result.ty, Type::ADT(TypeName::from("Dir"), vec![]));
+    assert_eq!(*result.ty(), Type::ADT(TypeName::from("Dir"), vec![]));
 }
 
 // spec: repl/spec.md §5.2 — multiple errors then success
@@ -474,7 +479,7 @@ fn error_preserves_multiple_definitions() {
     assert_eq!(repl_eval(&mut session, "(b)"), 2);
     assert_eq!(repl_eval(&mut session, "(c 5)"), 15);
     let flag = session.eval("On").unwrap();
-    assert_eq!(flag.ty, Type::ADT(TypeName::from("Flag"), vec![]));
+    assert_eq!(*flag.ty(), Type::ADT(TypeName::from("Flag"), vec![]));
 }
 
 // =============================================================================
@@ -649,10 +654,10 @@ fn multiple_enum_types_in_session() {
     session.eval("(deftype Size Small Large)").unwrap();
 
     let color = session.eval("Red").unwrap();
-    assert_eq!(color.ty, Type::ADT(TypeName::from("Color"), vec![]));
+    assert_eq!(*color.ty(), Type::ADT(TypeName::from("Color"), vec![]));
 
     let size = session.eval("Small").unwrap();
-    assert_eq!(size.ty, Type::ADT(TypeName::from("Size"), vec![]));
+    assert_eq!(*size.ty(), Type::ADT(TypeName::from("Size"), vec![]));
 }
 
 // =============================================================================
@@ -667,16 +672,16 @@ fn session_build_up_program_incrementally() {
 
     // Step 1: explore literals.
     let r = session.eval("42").unwrap();
-    assert_eq!(r.value, 42);
-    assert_eq!(r.ty, Type::Int);
+    assert_eq!(r.value(), 42);
+    assert_eq!(*r.ty(), Type::Int);
 
     // Step 2: try arithmetic.
     let r = session.eval("(add-i64 10 20)").unwrap();
-    assert_eq!(r.value, 30);
+    assert_eq!(r.value(), 30);
 
     // Step 3: define a helper.
     let r = session.eval("(defn square [x] (mul-i64 x x))").unwrap();
-    assert!(r.is_definition);
+    assert!(r.is_def());
 
     // Step 4: use the helper.
     assert_eq!(repl_eval(&mut session, "(square 7)"), 49);
@@ -702,7 +707,7 @@ fn session_define_type_then_functions_over_it() {
 
     // Define a type.
     let r = session.eval("(deftype TrafficLight Red Yellow Green)").unwrap();
-    assert!(r.is_definition);
+    assert!(r.is_def());
 
     // Define a function that uses the type.
     session
@@ -751,8 +756,8 @@ fn session_interleave_definitions_and_expressions() {
 fn float_display_format_in_session() {
     let mut session = repl_session();
     let result = session.eval("(add-f64 1.5 2.5)").unwrap();
-    assert_eq!(result.ty, Type::Float);
-    let display = format_result(result.value, &result.ty);
+    assert_eq!(*result.ty(), Type::Float);
+    let display = format_result(result.value(), &result.ty());
     assert!(display.starts_with(":primitives/Float 4"), "got: {display}");
 }
 
@@ -762,10 +767,10 @@ fn float_and_int_are_distinct_types() {
     let mut session = repl_session();
     let int_result = session.eval("42").unwrap();
     let float_result = session.eval("42.0").unwrap();
-    assert_eq!(int_result.ty, Type::Int);
-    assert_eq!(float_result.ty, Type::Float);
+    assert_eq!(*int_result.ty(), Type::Int);
+    assert_eq!(*float_result.ty(), Type::Float);
     // They should not be equal types.
-    assert_ne!(int_result.ty, float_result.ty);
+    assert_ne!(int_result.ty(), float_result.ty());
 }
 
 // =============================================================================
@@ -777,8 +782,8 @@ fn float_and_int_are_distinct_types() {
 fn not_returns_bool_type() {
     let mut session = repl_session();
     let result = session.eval("(not true)").unwrap();
-    assert_eq!(result.ty, Type::Bool);
-    assert_eq!(result.value, 0); // false
+    assert_eq!(*result.ty(), Type::Bool);
+    assert_eq!(result.value(), 0); // false
 }
 
 // =============================================================================
@@ -791,7 +796,7 @@ fn successful_eval_has_empty_warnings() {
     let mut session = repl_session();
     let result = session.eval("42").unwrap();
     assert!(
-        result.warnings.is_empty(),
+        result.warnings().is_empty(),
         "simple expression should produce no warnings"
     );
 }
@@ -806,7 +811,7 @@ fn empty_input_is_silent() {
     let mut session = repl_session();
     let result = session.eval("").unwrap();
     // Empty input produces no error; session still works.
-    assert_eq!(result.value, 0);
+    assert_eq!(result.value(), 0);
     assert_eq!(repl_eval(&mut session, "1"), 1);
 }
 
@@ -815,7 +820,7 @@ fn empty_input_is_silent() {
 fn whitespace_only_is_silent() {
     let mut session = repl_session();
     let result = session.eval("   ").unwrap();
-    assert_eq!(result.value, 0);
+    assert_eq!(result.value(), 0);
     assert_eq!(repl_eval(&mut session, "1"), 1);
 }
 
@@ -824,7 +829,7 @@ fn whitespace_only_is_silent() {
 fn comment_only_is_silent() {
     let mut session = repl_session();
     let result = session.eval("; this is a comment").unwrap();
-    assert_eq!(result.value, 0);
+    assert_eq!(result.value(), 0);
     assert_eq!(repl_eval(&mut session, "1"), 1);
 }
 
@@ -833,7 +838,7 @@ fn comment_only_is_silent() {
 fn indented_comment_is_silent() {
     let mut session = repl_session();
     let result = session.eval("  ; indented comment").unwrap();
-    assert_eq!(result.value, 0);
+    assert_eq!(result.value(), 0);
     assert_eq!(repl_eval(&mut session, "1"), 1);
 }
 
@@ -858,8 +863,8 @@ fn let_binding_shadowing() {
     let result = session
         .eval("(let [x 1] (let [x 2] x))")
         .unwrap();
-    assert_eq!(result.value, 2);
-    assert_eq!(result.ty, Type::Int);
+    assert_eq!(result.value(), 2);
+    assert_eq!(*result.ty(), Type::Int);
 }
 
 // spec: none — stress test: many sequential evals
@@ -869,7 +874,7 @@ fn many_sequential_evals() {
     let mut session = repl_session();
     for i in 0..50 {
         let result = session.eval(&format!("{i}")).unwrap();
-        assert_eq!(result.value, i);
+        assert_eq!(result.value(), i);
     }
 }
 
@@ -1128,9 +1133,9 @@ fn defn_with_let_infers_return_type() {
     let result = session
         .eval("(defn inner [x] (let [y (add-i64 x 1)] y))")
         .unwrap();
-    assert!(result.is_definition);
+    assert!(result.is_def());
     assert_eq!(
-        result.ty,
+        *result.ty(),
         Type::Fn(vec![Type::Int], Box::new(Type::Int))
     );
 }
@@ -1142,9 +1147,9 @@ fn defn_with_if_infers_return_type() {
     let result = session
         .eval("(defn abs [x] (if (lt-i64 x 0) (sub-i64 0 x) x))")
         .unwrap();
-    assert!(result.is_definition);
+    assert!(result.is_def());
     assert_eq!(
-        result.ty,
+        *result.ty(),
         Type::Fn(vec![Type::Int], Box::new(Type::Int))
     );
 }
@@ -1156,9 +1161,9 @@ fn defn_bool_return_type() {
     let result = session
         .eval("(defn is-zero [n] (eq-i64 n 0))")
         .unwrap();
-    assert!(result.is_definition);
+    assert!(result.is_def());
     assert_eq!(
-        result.ty,
+        *result.ty(),
         Type::Fn(vec![Type::Int], Box::new(Type::Bool))
     );
 }
@@ -1170,9 +1175,9 @@ fn defn_float_params_and_return() {
     let result = session
         .eval("(defn avg [a b] (div-f64 (add-f64 a b) 2.0))")
         .unwrap();
-    assert!(result.is_definition);
+    assert!(result.is_def());
     assert_eq!(
-        result.ty,
+        *result.ty(),
         Type::Fn(vec![Type::Float, Type::Float], Box::new(Type::Float))
     );
 }
@@ -1247,12 +1252,12 @@ fn enum_with_many_constructors() {
         .unwrap();
 
     let r = session.eval("Mon").unwrap();
-    assert_eq!(r.value, 0);
-    assert_eq!(r.ty, Type::ADT(TypeName::from("Weekday"), vec![]));
+    assert_eq!(r.value(), 0);
+    assert_eq!(*r.ty(), Type::ADT(TypeName::from("Weekday"), vec![]));
 
     let r = session.eval("Sun").unwrap();
-    assert_eq!(r.value, 6);
-    assert_eq!(r.ty, Type::ADT(TypeName::from("Weekday"), vec![]));
+    assert_eq!(r.value(), 6);
+    assert_eq!(*r.ty(), Type::ADT(TypeName::from("Weekday"), vec![]));
 }
 
 // spec: 06-pattern-matching §6.5.1 — match all constructors
@@ -1282,7 +1287,7 @@ fn enum_type_persists_across_many_evals() {
 
     // The type is still available.
     let r = session.eval("Pos").unwrap();
-    assert_eq!(r.ty, Type::ADT(TypeName::from("Sign"), vec![]));
+    assert_eq!(*r.ty(), Type::ADT(TypeName::from("Sign"), vec![]));
 }
 
 // =============================================================================
@@ -1322,17 +1327,17 @@ fn all_int_comparison_primitives_work_in_repl() {
 fn all_float_arithmetic_primitives_work_in_repl() {
     let mut session = repl_session();
     let r = session.eval("(add-f64 1.5 2.5)").unwrap();
-    assert_eq!(r.ty, Type::Float);
-    assert_eq!(f64::from_bits(r.value as u64), 4.0);
+    assert_eq!(*r.ty(), Type::Float);
+    assert_eq!(f64::from_bits(r.value() as u64), 4.0);
 
     let r = session.eval("(sub-f64 5.0 2.0)").unwrap();
-    assert_eq!(f64::from_bits(r.value as u64), 3.0);
+    assert_eq!(f64::from_bits(r.value() as u64), 3.0);
 
     let r = session.eval("(mul-f64 3.0 4.0)").unwrap();
-    assert_eq!(f64::from_bits(r.value as u64), 12.0);
+    assert_eq!(f64::from_bits(r.value() as u64), 12.0);
 
     let r = session.eval("(div-f64 10.0 4.0)").unwrap();
-    assert_eq!(f64::from_bits(r.value as u64), 2.5);
+    assert_eq!(f64::from_bits(r.value() as u64), 2.5);
 }
 
 // spec: appendix-a-builtins §A.3 — all Float comparison primitives
@@ -1352,12 +1357,12 @@ fn all_float_comparison_primitives_work_in_repl() {
 fn not_primitive_works_in_repl() {
     let mut session = repl_session();
     let r = session.eval("(not true)").unwrap();
-    assert_eq!(r.ty, Type::Bool);
-    assert_eq!(r.value, 0); // false
+    assert_eq!(*r.ty(), Type::Bool);
+    assert_eq!(r.value(), 0); // false
 
     let r = session.eval("(not false)").unwrap();
-    assert_eq!(r.ty, Type::Bool);
-    assert_eq!(r.value, 1); // true
+    assert_eq!(*r.ty(), Type::Bool);
+    assert_eq!(r.value(), 1); // true
 }
 
 // =============================================================================
@@ -1371,8 +1376,8 @@ fn let_multiple_bindings() {
     let result = session
         .eval("(let [x 10 y 20] (add-i64 x y))")
         .unwrap();
-    assert_eq!(result.value, 30);
-    assert_eq!(result.ty, Type::Int);
+    assert_eq!(result.value(), 30);
+    assert_eq!(*result.ty(), Type::Int);
 }
 
 // spec: 04-expressions §4.3 — let binding depends on previous
@@ -1382,8 +1387,8 @@ fn let_binding_depends_on_previous() {
     let result = session
         .eval("(let [x 10 y (add-i64 x 5)] y)")
         .unwrap();
-    assert_eq!(result.value, 15);
-    assert_eq!(result.ty, Type::Int);
+    assert_eq!(result.value(), 15);
+    assert_eq!(*result.ty(), Type::Int);
 }
 
 // spec: 04-expressions §4.3 — nested let different types
@@ -1393,8 +1398,8 @@ fn nested_let_with_different_types() {
     let result = session
         .eval("(let [x 42] (let [b (eq-i64 x 42)] (if b 1 0)))")
         .unwrap();
-    assert_eq!(result.value, 1);
-    assert_eq!(result.ty, Type::Int);
+    assert_eq!(result.value(), 1);
+    assert_eq!(*result.ty(), Type::Int);
 }
 
 // =============================================================================
@@ -1483,11 +1488,11 @@ fn constructor_in_if_expression() {
         .eval("(defn pick [cond] (if cond A B))")
         .unwrap();
     let r = session.eval("(pick true)").unwrap();
-    assert_eq!(r.ty, Type::ADT(TypeName::from("AB"), vec![]));
-    assert_eq!(r.value, 0); // A is tag 0
+    assert_eq!(*r.ty(), Type::ADT(TypeName::from("AB"), vec![]));
+    assert_eq!(r.value(), 0); // A is tag 0
 
     let r = session.eval("(pick false)").unwrap();
-    assert_eq!(r.value, 1); // B is tag 1
+    assert_eq!(r.value(), 1); // B is tag 1
 }
 
 // spec: 04-expressions §4.3 — constructor in let binding
@@ -1496,8 +1501,8 @@ fn constructor_in_let() {
     let mut session = repl_session();
     session.eval("(deftype YN Yes No)").unwrap();
     let result = session.eval("(let [x Yes] x)").unwrap();
-    assert_eq!(result.ty, Type::ADT(TypeName::from("YN"), vec![]));
-    assert_eq!(result.value, 0);
+    assert_eq!(*result.ty(), Type::ADT(TypeName::from("YN"), vec![]));
+    assert_eq!(result.value(), 0);
 }
 
 // =============================================================================
@@ -1524,8 +1529,8 @@ fn fresh_session_can_evaluate_immediately() {
     // Spec §6.1: A new user can evaluate a simple expression immediately.
     let mut session = repl_session();
     let result = session.eval("42").unwrap();
-    assert_eq!(result.value, 42);
-    assert_eq!(result.ty, Type::Int);
+    assert_eq!(result.value(), 42);
+    assert_eq!(*result.ty(), Type::Int);
 }
 
 // =============================================================================
@@ -1544,15 +1549,15 @@ fn first_five_minutes_workflow() {
 
     // 1-2. Evaluate and see typed result.
     let r = session.eval("(add-i64 1 2)").unwrap();
-    assert_eq!(r.value, 3);
-    assert_eq!(r.ty, Type::Int);
-    assert!(!r.is_definition);
+    assert_eq!(r.value(), 3);
+    assert_eq!(*r.ty(), Type::Int);
+    assert!(!r.is_def());
 
     // 3. Define a function and see its type.
     let r = session.eval("(defn double [x] (mul-i64 x 2))").unwrap();
-    assert!(r.is_definition);
+    assert!(r.is_def());
     assert_eq!(
-        r.ty,
+        *r.ty(),
         Type::Fn(vec![Type::Int], Box::new(Type::Int))
     );
 
@@ -1571,25 +1576,25 @@ fn session_with_all_three_primitive_types() {
     let mut session = repl_session();
 
     let r_int = session.eval("42").unwrap();
-    assert_eq!(r_int.ty, Type::Int);
+    assert_eq!(*r_int.ty(), Type::Int);
 
     let r_bool = session.eval("true").unwrap();
-    assert_eq!(r_bool.ty, Type::Bool);
+    assert_eq!(*r_bool.ty(), Type::Bool);
 
     let r_float = session.eval("3.14").unwrap();
-    assert_eq!(r_float.ty, Type::Float);
+    assert_eq!(*r_float.ty(), Type::Float);
 
     // Mix them in expressions.
     session
         .eval("(defn classify [n] (if (lt-i64 n 0) false true))")
         .unwrap();
     let r = session.eval("(classify 5)").unwrap();
-    assert_eq!(r.ty, Type::Bool);
-    assert_eq!(r.value, 1);
+    assert_eq!(*r.ty(), Type::Bool);
+    assert_eq!(r.value(), 1);
 
     let r = session.eval("(classify (sub-i64 0 1))").unwrap();
-    assert_eq!(r.ty, Type::Bool);
-    assert_eq!(r.value, 0);
+    assert_eq!(*r.ty(), Type::Bool);
+    assert_eq!(r.value(), 0);
 }
 
 // =============================================================================
@@ -1648,8 +1653,8 @@ fn ring1_string_literal_reports_string_type() {
     // Spec §1.2: string expression should report Type::String.
     let mut session = repl_session();
     let result = session.eval("\"hello\"").unwrap();
-    assert_eq!(result.ty, Type::String);
-    assert!(!result.is_definition);
+    assert_eq!(*result.ty(), Type::String);
+    assert!(!result.is_def());
 }
 
 // spec: appendix-a-builtins §A.3 — string primitive return types
@@ -1660,17 +1665,17 @@ fn ring1_string_primitive_reports_correct_types() {
 
     // str-len returns Int.
     let r = session.eval("(str-len \"hello\")").unwrap();
-    assert_eq!(r.ty, Type::Int);
-    assert_eq!(r.value, 5);
+    assert_eq!(*r.ty(), Type::Int);
+    assert_eq!(r.value(), 5);
 
     // str-eq returns Bool.
     let r = session.eval("(str-eq \"a\" \"a\")").unwrap();
-    assert_eq!(r.ty, Type::Bool);
-    assert_eq!(r.value, 1);
+    assert_eq!(*r.ty(), Type::Bool);
+    assert_eq!(r.value(), 1);
 
     // int-to-string returns String.
     let r = session.eval("(int-to-string 42)").unwrap();
-    assert_eq!(r.ty, Type::String);
+    assert_eq!(*r.ty(), Type::String);
 }
 
 // spec: repl/spec.md §1.5 — int-to-string display
@@ -1740,7 +1745,7 @@ fn ring1_adt_polymorphic_type_display() {
     let result = session.eval("(Some 42)").unwrap();
     // Type should be ADT("Option", [Int]).
     assert_eq!(
-        result.ty,
+        *result.ty(),
         Type::ADT(TypeName::from("Option"), vec![Type::Int])
     );
 }
@@ -1753,10 +1758,10 @@ fn ring1_adt_product_type_reports_adt_type() {
     repl_eval(&mut session, "(deftype Point [:Int x :Int y])");
     let result = session.eval("(Point 3 4)").unwrap();
     assert_eq!(
-        result.ty,
+        *result.ty(),
         Type::ADT(TypeName::from("Point"), vec![])
     );
-    assert!(!result.is_definition);
+    assert!(!result.is_def());
 }
 
 // spec: repl/spec.md §1.5 — ADT nested string field display
@@ -1815,9 +1820,9 @@ fn ring1_deftype_with_fields_reports_type() {
     let result = session
         .eval("(deftype Point [:Int x :Int y])")
         .unwrap();
-    assert!(result.is_definition);
+    assert!(result.is_def());
     assert_eq!(
-        result.ty,
+        *result.ty(),
         Type::ADT(TypeName::from("Point"), vec![])
     );
 }
@@ -1863,7 +1868,7 @@ fn ring1_closure_result_type_is_fn() {
     let mut session = repl_session();
     repl_eval(&mut session, "(defn make-adder [n] (fn [x] (add-i64 n x)))");
     let result = session.eval("(make-adder 5)").unwrap();
-    match &result.ty {
+    match &result.ty() {
         Type::Fn(params, _ret) => {
             assert_eq!(params.len(), 1, "make-adder should return a 1-param closure");
         }
@@ -1879,9 +1884,9 @@ fn ring1_defn_returning_closure_type() {
     let result = session
         .eval("(defn make-adder [n] (fn [x] (add-i64 n x)))")
         .unwrap();
-    assert!(result.is_definition);
+    assert!(result.is_def());
     // Should be (Fn [Int] (Fn [primitives/Int] primitives/Int)).
-    match &result.ty {
+    match &result.ty() {
         Type::Fn(params, ret) => {
             assert_eq!(params.len(), 1);
             assert_eq!(params[0], Type::Int);
@@ -2073,9 +2078,9 @@ fn ring1_defn_with_string_param_type() {
     let result = session
         .eval("(defn greet-len [s] (str-len s))")
         .unwrap();
-    assert!(result.is_definition);
+    assert!(result.is_def());
     assert_eq!(
-        result.ty,
+        *result.ty(),
         Type::Fn(vec![Type::String], Box::new(Type::Int))
     );
 }
@@ -2088,9 +2093,9 @@ fn ring1_defn_returning_string_type() {
     let result = session
         .eval("(defn greeting [] \"hello\")")
         .unwrap();
-    assert!(result.is_definition);
+    assert!(result.is_def());
     assert_eq!(
-        result.ty,
+        *result.ty(),
         Type::Fn(vec![], Box::new(Type::String))
     );
 }
@@ -2104,9 +2109,9 @@ fn ring1_defn_with_adt_param_type() {
     let result = session
         .eval("(defn get-x [p] (match p [(Point x y) x]))")
         .unwrap();
-    assert!(result.is_definition);
+    assert!(result.is_def());
     assert_eq!(
-        result.ty,
+        *result.ty(),
         Type::Fn(
             vec![Type::ADT(TypeName::from("Point"), vec![])],
             Box::new(Type::Int)
@@ -2123,9 +2128,9 @@ fn ring1_defn_polymorphic_adt_return_type() {
     let result = session
         .eval("(defn wrap [x] (Some x))")
         .unwrap();
-    assert!(result.is_definition);
+    assert!(result.is_def());
     // wrap should be polymorphic: (Fn [a] (Option a))
-    match &result.ty {
+    match &result.ty() {
         Type::Fn(params, ret) => {
             assert_eq!(params.len(), 1);
             match ret.as_ref() {
@@ -2413,9 +2418,9 @@ fn ring2a_operators_compose_with_defn() {
     let mut session = repl_session();
     install_trait_prelude(&mut session);
     let result = session.eval("(defn double [x] (* x 2))").unwrap();
-    assert!(result.is_definition);
+    assert!(result.is_def());
     assert_eq!(
-        result.ty,
+        *result.ty(),
         Type::Fn(vec![Type::Int], Box::new(Type::Int))
     );
     let value = repl_eval(&mut session, "(double 21)");
@@ -2457,7 +2462,7 @@ fn ring2a_deftrait_in_repl() {
     let result = session.eval("(deftrait (MyTrait a) (my-method [:a] :Int))");
     assert!(result.is_ok(), "deftrait should succeed: {:?}", result.err());
     let r = result.unwrap();
-    assert!(r.is_definition);
+    assert!(r.is_def());
 }
 
 // spec: 07-traits §7.1 — deftrait session continues
@@ -2486,7 +2491,7 @@ fn u1_6_polymorphic_fn_shows_a_not_t0() {
     let mut session = repl_session();
     let result = session.eval("(defn id [x] x)").unwrap();
     // The type should be (Fn [Var(n)] Var(n)) — display as (Fn [a] a).
-    let display = format_result(result.value, &result.ty);
+    let display = format_result(result.value(), &result.ty());
     assert!(
         display.contains("[a]") && display.contains("] a)"),
         "expected (Fn [a] a) in display, got: {display}"
@@ -2504,7 +2509,7 @@ fn u1_6_two_var_fn_shows_a_b() {
     // (defn const [x y] x) should show (Fn [a b] a), not (Fn [t5 t6] t5).
     let mut session = repl_session();
     let result = session.eval("(defn konst [x y] x)").unwrap();
-    let display = format_result(result.value, &result.ty);
+    let display = format_result(result.value(), &result.ty());
     assert!(
         display.contains("[a b]") && display.contains("] a)"),
         "expected (Fn [a b] a) in display, got: {display}"
@@ -2519,7 +2524,7 @@ fn u1_6_compose_fn_shows_three_vars() {
     let result = session
         .eval("(defn compose [f g] (fn [x] (f (g x))))")
         .unwrap();
-    let display = format_result(result.value, &result.ty);
+    let display = format_result(result.value(), &result.ty());
     // Should contain a, b, c — not t-prefixed numbers.
     assert!(
         !display.contains("t0")
@@ -2542,7 +2547,7 @@ fn u1_6_bare_polymorphic_fn_lookup_normalized() {
     let mut session = repl_session();
     session.eval("(defn id [x] x)").unwrap();
     let result = session.eval("id").unwrap();
-    let display = format_result(result.value, &result.ty);
+    let display = format_result(result.value(), &result.ty());
     assert!(
         display.contains("[a]") && display.contains("] a)"),
         "bare id lookup should show (Fn [a] a), got: {display}"
@@ -2619,7 +2624,7 @@ fn u1_9_adt_type_display_normalizes_vars_for_fn() {
     let result = session
         .eval("(defn wrap [x] (Wrap x))")
         .unwrap();
-    let display = format_result(result.value, &result.ty);
+    let display = format_result(result.value(), &result.ty());
     // Should show (Fn [a] (Wrapper a)), not (Fn [t5] (Wrapper t5))
     assert!(
         !display.contains("t0")

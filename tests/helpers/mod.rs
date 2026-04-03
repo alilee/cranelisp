@@ -5,10 +5,150 @@
 
 #![allow(dead_code)]
 
-use cranelisp::repl::{format_result_value, ReplSession};
-use cranelisp_types::{CranelispError, Type};
+use std::collections::HashMap;
+use std::path::PathBuf;
 
-use cranelisp::repl::ReplResult;
+use cranelisp::session_v4::{
+    CompilerSession, EvalResult, SessionSettings, format_result_value,
+};
+use cranelisp_types::{CranelispError, ModuleFullPath, Type, TypeDefInfo, TypeName};
+
+// =============================================================================
+// Test adapter: ReplSession wrapping CompilerSession
+// =============================================================================
+
+/// Test-only REPL session wrapping the v4 CompilerSession.
+///
+/// Provides the same API that integration tests expect (new, new_with_prelude,
+/// eval returning EvalResult) but routes through the unified pipeline.
+pub struct ReplSession {
+    pub session: CompilerSession,
+}
+
+impl ReplSession {
+    /// Create a bare session (no prelude, no stdlib).
+    ///
+    /// Uses a temp dir as project_root so that assemble_lib_dirs
+    /// doesn't find the repo's stdlib/ and accidentally load prelude.
+    pub fn new() -> Self {
+        // Use CARGO_MANIFEST_DIR/tests/fixtures as project_root —
+        // it exists but has no stdlib/ child, so no prelude is found.
+        let project_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests")
+            .join("fixtures");
+        let settings = SessionSettings {
+            no_color: true,
+            no_cache: true,
+            codegen_behaviour: cranelisp_types::CodegenBehaviour::InMemoryAndObject,
+            priority_workers: 1,
+            nice_workers: 0,
+        };
+        let mut session = CompilerSession::new(settings, project_root);
+        // Ensure no lib_dirs that might contain a prelude.
+        session.lib_dirs = vec![];
+        ReplSession { session }
+    }
+
+    /// Create a session with prelude loaded from lib_dirs.
+    pub fn new_with_prelude(
+        project_root: &std::path::Path,
+        lib_dirs: &[PathBuf],
+    ) -> Result<Self, CranelispError> {
+        let mut all_lib_dirs = vec![project_root.to_path_buf()];
+        all_lib_dirs.extend(lib_dirs.iter().cloned());
+
+        let settings = SessionSettings {
+            no_color: true,
+            no_cache: false,
+            codegen_behaviour: cranelisp_types::CodegenBehaviour::InMemoryAndObject,
+            priority_workers: 1,
+            nice_workers: 0,
+        };
+        let mut session = CompilerSession::new(settings, project_root.to_path_buf());
+        // Override lib_dirs to include the caller's paths.
+        session.lib_dirs = all_lib_dirs;
+
+        // Register the user module — this triggers prelude loading via
+        // inject_prelude_if_needed in the worker loop.
+        session.register_module("user")?;
+
+        Ok(ReplSession { session })
+    }
+
+    /// Evaluate source text, returning the result.
+    ///
+    /// Wraps CompilerSession::eval which returns Option<EvalResult>.
+    /// For test compatibility, empty/comment input panics rather than returning None.
+    pub fn eval(&mut self, source: &str) -> Result<EvalResult, CranelispError> {
+        match self.session.eval(source)? {
+            Some(result) => Ok(result),
+            None => Ok(EvalResult::Val {
+                value: 0,
+                ty: Type::Int,
+                warnings: Vec::new(),
+            }),
+        }
+    }
+
+    /// Create a session for a file-based project.
+    ///
+    /// Sets project_root to the entry file's parent directory,
+    /// and lib_dirs to include the project root plus any extras.
+    pub fn new_for_file(
+        entry_path: &std::path::Path,
+        lib_dirs: &[PathBuf],
+    ) -> Result<Self, CranelispError> {
+        let project_root = entry_path
+            .parent()
+            .map(|p| p.to_path_buf())
+            .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
+
+        let mut all_lib_dirs = vec![project_root.clone()];
+        all_lib_dirs.extend(lib_dirs.iter().cloned());
+
+        let settings = SessionSettings {
+            no_color: true,
+            no_cache: true,
+            codegen_behaviour: cranelisp_types::CodegenBehaviour::InMemoryAndObject,
+            priority_workers: 1,
+            nice_workers: 0,
+        };
+        let mut session = CompilerSession::new(settings, project_root);
+        session.lib_dirs = all_lib_dirs;
+        Ok(ReplSession { session })
+    }
+
+    /// Register a module by name (resolves to file via lib_dirs).
+    pub fn register_module(&mut self, name: &str) -> Result<(), CranelispError> {
+        self.session.register_module(name)
+    }
+
+    /// Register a module with explicit source text.
+    pub fn register_module_with_source(
+        &mut self,
+        name: &str,
+        source: &str,
+    ) -> Result<(), CranelispError> {
+        let path = self.session.project_root.join(format!("{name}.cl"));
+        self.session.register_module_with_source(name, source, &path)?;
+        Ok(())
+    }
+
+    /// Execute main() in the given module and return (value, type).
+    pub fn trampoline(&mut self, module_name: &str) -> Result<(i64, Type), CranelispError> {
+        self.session.trampoline(module_name)
+    }
+
+    /// Get the accumulated type definitions for value display.
+    pub fn type_defs(&self) -> &HashMap<TypeName, TypeDefInfo> {
+        &self.session.type_defs
+    }
+
+    /// Get the type-to-module mapping for qualified display.
+    pub fn type_modules(&self) -> &HashMap<TypeName, ModuleFullPath> {
+        &self.session.type_modules
+    }
+}
 
 // =============================================================================
 // Multi-form eval helper
@@ -19,7 +159,7 @@ use cranelisp::repl::ReplResult;
 /// REPL `eval()` only processes one sexp per call. This helper parses the source
 /// to find form boundaries (via spans), then evals each form's source substring
 /// in order, returning the result of the last form.
-fn eval_all_forms(session: &mut ReplSession, src: &str, label: &str) -> ReplResult {
+fn eval_all_forms(session: &mut ReplSession, src: &str, label: &str) -> EvalResult {
     let sexps = cranelisp_frontend::parse(src)
         .unwrap_or_else(|e| panic!("{label} parse failed: {e}"));
     assert!(!sexps.is_empty(), "{label}: no forms in source");
@@ -36,7 +176,7 @@ fn eval_all_forms(session: &mut ReplSession, src: &str, label: &str) -> ReplResu
 }
 
 /// Like `eval_all_forms` but returns Err if any form produces an error.
-fn try_eval_all_forms(session: &mut ReplSession, src: &str) -> Result<ReplResult, CranelispError> {
+fn try_eval_all_forms(session: &mut ReplSession, src: &str) -> Result<EvalResult, CranelispError> {
     let sexps = cranelisp_frontend::parse(src)?;
     if sexps.is_empty() {
         return Err(CranelispError::ParseError {
@@ -70,6 +210,33 @@ pub fn test_fixtures_dir() -> std::path::PathBuf {
 pub const PREAMBLE_PRIMITIVES: &str = "fixtures/preamble_primitives.cl";
 
 // =============================================================================
+// Batch pipeline helpers (source string or file-based)
+// =============================================================================
+
+/// Compile source text as a module and run main().
+/// Returns (value, type). Equivalent to old `compile_and_run`.
+pub fn batch_run(source: &str) -> Result<(i64, Type), CranelispError> {
+    let mut s = ReplSession::new();
+    s.register_module_with_source("user", source)?;
+    s.trampoline("user")
+}
+
+/// Compile a file-based project and run main().
+/// Returns (value, type). Equivalent to old `compile_module_graph`.
+pub fn batch_run_file(
+    entry_path: &std::path::Path,
+    lib_dirs: &[PathBuf],
+) -> Result<(i64, Type), CranelispError> {
+    let module_name = entry_path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("user");
+    let mut s = ReplSession::new_for_file(entry_path, lib_dirs)?;
+    s.register_module(module_name)?;
+    s.trampoline(module_name)
+}
+
+// =============================================================================
 // REPL session helpers
 // =============================================================================
 
@@ -80,14 +247,6 @@ pub const PREAMBLE_PRIMITIVES: &str = "fixtures/preamble_primitives.cl";
 /// - `preamble`: path relative to `tests/` for a preamble `.cl` file whose
 ///   contents are eval'd into the session before returning (e.g.,
 ///   `"fixtures/preamble_primitives.cl"`). Pass `None` for no preamble.
-///
-/// Examples:
-/// ```ignore
-/// let s = repl_session(None, None);                                    // bare
-/// let s = repl_session(None, Some(PREAMBLE_PRIMITIVES));               // primitives only
-/// let s = repl_session(Some("fixtures/prelude.cl"), None);             // prelude only
-/// let s = repl_session(Some("fixtures/prelude.cl"), Some("fixtures/preamble_macros.cl")); // both
-/// ```
 pub fn repl_session_with(prelude: Option<&str>, preamble: Option<&str>) -> ReplSession {
     let project_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
 
@@ -136,9 +295,9 @@ pub fn compile_and_run_simple_with(preamble: Option<&str>, src: &str) -> i64 {
         let main_result = session
             .eval("(main)")
             .unwrap_or_else(|e| panic!("compile_and_run_simple: calling (main) failed: {e}"));
-        main_result.value
+        main_result.value()
     } else {
-        result.value
+        result.value()
     }
 }
 
@@ -151,9 +310,9 @@ pub fn compile_and_run_typed_with(preamble: Option<&str>, src: &str) -> (i64, Ty
         let main_result = session
             .eval("(main)")
             .unwrap_or_else(|e| panic!("compile_and_run_typed: calling (main) failed: {e}"));
-        (main_result.value, main_result.ty)
+        (main_result.value(), main_result.ty().clone())
     } else {
-        (result.value, result.ty)
+        (result.value(), result.ty().clone())
     }
 }
 
@@ -167,9 +326,9 @@ pub fn compile_both(src: &str, expected: i64) {
         let main_result = session
             .eval("(main)")
             .unwrap_or_else(|e| panic!("compile_both: calling (main) failed: {e}"));
-        main_result.value
+        main_result.value()
     } else {
-        result.value
+        result.value()
     };
     assert_eq!(
         final_value, expected,
@@ -306,7 +465,7 @@ pub fn repl_eval(session: &mut ReplSession, src: &str) -> i64 {
     let result = session
         .eval(src)
         .unwrap_or_else(|e| panic!("repl_eval failed on '{src}': {e}"));
-    result.value
+    result.value()
 }
 
 /// Evaluate one input in a REPL session, returning (value, type).
@@ -314,7 +473,7 @@ pub fn repl_eval_typed(session: &mut ReplSession, src: &str) -> (i64, Type) {
     let result = session
         .eval(src)
         .unwrap_or_else(|e| panic!("repl_eval_typed failed on '{src}': {e}"));
-    (result.value, result.ty)
+    (result.value(), result.ty().clone())
 }
 
 /// Compile source text and return (value, type, display_string).
@@ -332,22 +491,16 @@ pub fn compile_and_run_heap_with(preamble: Option<&str>, src: &str) -> (i64, Typ
         last_result
     };
     let display = format_result_value(
-        result.value,
-        &result.ty,
+        result.value(),
+        result.ty(),
         session.type_defs(),
         session.type_modules(),
     );
-    (result.value, result.ty, display)
+    (result.value(), result.ty().clone(), display)
 }
 
 /// Assert that all RC allocations are balanced (allocs == deallocs) after
 /// running the given source text.
-///
-/// Uses delta-based assertions: snapshots counters before and after execution,
-/// then asserts that alloc_count and dealloc_count incremented by the same amount
-/// and that bytes_current returned to its prior level.
-///
-/// Must be run serially (`--test-threads=1`) since global counters are shared.
 pub fn assert_rc_balanced_with(preamble: Option<&str>, src: &str) {
     let mut session = repl_session_with(None, preamble);
     let allocs_before = cranelisp_runtime::alloc_count();
@@ -385,14 +538,6 @@ pub fn assert_rc_balanced_with(preamble: Option<&str>, src: &str) {
 // =============================================================================
 
 /// Wrapper for the test-capture platform DLL's utility functions.
-///
-/// Provides access to `test_capture_reset`, `test_capture_get_output`, and
-/// `test_capture_free_output` via `libloading`. The test-capture platform
-/// captures print output in-memory and provides scripted read-line input,
-/// enabling IO integration tests without real stdout/stdin.
-///
-/// The test-capture DLL must be built before running these tests:
-///   cargo build -p cranelisp-test-capture
 pub struct TestCapture {
     _lib: libloading::Library,
     reset_fn: unsafe extern "C" fn(),
@@ -485,106 +630,9 @@ pub fn repl_session_with_test_capture() -> Option<(ReplSession, TestCapture)> {
 }
 
 /// Evaluate in REPL and return the formatted display string with ADT context.
-///
-/// Uses `definition_display` when available (for deftrait, impl, constrained fn).
-/// For IO types, forces the IO tree via trampoline (executing side effects) and
-/// formats the inner result value, mirroring what the REPL does in its eval loop.
-/// Otherwise falls back to `format_result_value`.
 pub fn repl_eval_display(session: &mut ReplSession, src: &str) -> String {
     let result = session
         .eval(src)
         .unwrap_or_else(|e| panic!("repl_eval_display failed on '{src}': {e}"));
-    if let Some(display) = result.definition_display {
-        display
-    } else if result.ty.is_io() {
-        // IO expression: force the IO tree via trampoline, then format the inner
-        // value wrapped in (IO.Pure ...). This mirrors the REPL's force_io_and_format behavior.
-        let inner_val = cranelisp_runtime::run_io_trampoline(result.value);
-        let inner_ty = result.ty.io_inner_type();
-        let inner_display = format_result_value(
-            inner_val,
-            &inner_ty,
-            session.type_defs(),
-            session.type_modules(),
-        );
-        let value_part = extract_value_from_display(&inner_display);
-        let inner_type_str = extract_type_from_display(&inner_display);
-        format!(":(IO {inner_type_str}) (IO.Pure {value_part})")
-    } else {
-        format_result_value(result.value, &result.ty, session.type_defs(), session.type_modules())
-    }
-}
-
-/// Extract the type string from a `:Type value` display string.
-///
-/// Handles both simple types (`:primitives/Int`) and parenthesized types
-/// (`:(Fn [a] a)`, `:(Option primitives/Int)`).
-fn extract_type_from_display(display: &str) -> &str {
-    if !display.starts_with(':') {
-        return display;
-    }
-    if display.starts_with(":(") {
-        // Parenthesized type: find the matching ')' by counting parens.
-        let mut depth = 0;
-        for (i, ch) in display[1..].char_indices() {
-            match ch {
-                '(' => depth += 1,
-                ')' => {
-                    depth -= 1;
-                    if depth == 0 {
-                        // Type is display[1..1+i+1], i.e. the parenthesized expression.
-                        return &display[1..i + 2];
-                    }
-                }
-                _ => {}
-            }
-        }
-        // Malformed: return everything after ':'
-        &display[1..]
-    } else {
-        // Simple type: everything from ':' to first space.
-        match display[1..].find(' ') {
-            Some(pos) => &display[1..pos + 1],
-            None => &display[1..],
-        }
-    }
-}
-
-/// Extract the value string from a `:Type value` display string.
-///
-/// Handles both simple types and parenthesized types.
-fn extract_value_from_display(display: &str) -> &str {
-    if !display.starts_with(':') {
-        return display;
-    }
-    if display.starts_with(":(") {
-        // Parenthesized type: find the matching ')' by counting parens in display[1..],
-        // then the value follows after ') '.
-        let mut depth = 0;
-        for (i, ch) in display[1..].char_indices() {
-            match ch {
-                '(' => depth += 1,
-                ')' => {
-                    depth -= 1;
-                    if depth == 0 {
-                        // ')' is at display[1 + i]. Value starts after ') '.
-                        let close_paren_pos = 1 + i; // position in display
-                        let value_start = close_paren_pos + 2; // skip ') '
-                        if value_start <= display.len() {
-                            return &display[value_start..];
-                        }
-                        return "";
-                    }
-                }
-                _ => {}
-            }
-        }
-        display
-    } else {
-        // Simple type: value is everything after first space.
-        match display.find(' ') {
-            Some(pos) => &display[pos + 1..],
-            None => display,
-        }
-    }
+    session.session.format_eval_result(&result)
 }

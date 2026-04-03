@@ -61,13 +61,11 @@ fn io_pure_string() {
 // spec: 10-io §10.1 — Pure in batch mode
 #[test]
 fn io_pure_both_modes() {
+    // batch_run trampolines IO automatically — returns the inner value.
     let src = "(defn main [] (Pure 99))";
-    let result = cranelisp::pipeline::compile_and_run(src)
+    let (value, _ty) = batch_run(src)
         .unwrap_or_else(|e| panic!("batch failed: {e}"));
-    assert!(result.ty.is_io());
-    let inner = cranelisp_runtime::run_io_trampoline(result.value);
-    assert_eq!(inner, 99);
-    cranelisp_runtime::heap_dealloc(result.value);
+    assert_eq!(value, 99);
 }
 
 // =============================================================================
@@ -299,7 +297,7 @@ fn io_repl_eval_pure_bool() {
 #[test]
 fn io_neg_bind_not_constructable() {
     // Verify that Bind produces an error, not a value.
-    let result = cranelisp::pipeline::compile_and_run(
+    let result = batch_run(
         "(defn main [] (Bind (Pure 1) (fn [x] (Pure x))))",
     );
     assert!(result.is_err(), "Bind constructor should be rejected");
@@ -314,7 +312,7 @@ fn io_neg_bind_not_constructable() {
 // spec: 10-io §10.1 — Pattern match on Bind rejected
 #[test]
 fn io_neg_bind_not_matchable() {
-    let result = cranelisp::pipeline::compile_and_run(
+    let result = batch_run(
         r#"(defn main []
           (let [io (Pure 42)]
             (match io [(Bind i c) 0 (Pure x) x])))"#,
@@ -667,7 +665,7 @@ fn io_platform_nonexistent_error() {
         (platform nonexistent_platform_xyz)
         (defn main [] (Pure 0))
     "#;
-    let result = cranelisp::pipeline::compile_and_run(src);
+    let result = batch_run(src);
     assert!(result.is_err(), "platform form in simple pipeline should produce an error");
 }
 
@@ -679,7 +677,7 @@ fn io_platform_missing_name_error() {
         (platform)
         (defn main [] (Pure 0))
     "#;
-    let result = cranelisp::pipeline::compile_and_run(src);
+    let result = batch_run(src);
     // This should either be silently ignored (no platform loaded) or produce an error.
     // Per the spec, platform takes a bare symbol name, so no-arg is invalid.
     // The actual behavior depends on whether scan_for_platform_decls rejects it.
@@ -715,7 +713,7 @@ fn io_platform_non_entry_module_error() {
         (mod sub (platform stdio))
         (defn main [] (Pure 0))
     "#;
-    let result = cranelisp::pipeline::compile_and_run(src);
+    let result = batch_run(src);
     // With the v2 pipeline, (mod sub ...) is extracted in Stage 2.
     // The inline content is not compiled (no file for sub module).
     // main compiles and returns Pure(0) = 0.
@@ -726,35 +724,33 @@ fn io_platform_non_entry_module_error() {
 // Batch entry point tests (spec: 10-io §10.6)
 // =============================================================================
 
-// spec: 10-io §10.6 — main must return IO type in IO programs
+// spec: 10-io §10.6 — batch trampoline unwraps IO, returns inner value and type
 #[test]
 fn io_batch_main_returns_io() {
     let src = "(defn main [] (Pure 42))";
-    let result = cranelisp::pipeline::compile_and_run(src)
+    let (value, ty) = batch_run(src)
         .unwrap_or_else(|e| panic!("batch IO main failed: {e}"));
-    assert!(result.ty.is_io(), "main should return IO type");
+    // batch_run trampolines IO automatically — returns inner value and type.
+    assert_eq!(value, 42);
+    assert_eq!(ty, Type::Int);
 }
 
 // spec: 10-io §10.6.1 — exit code is the inner value of main's IO
 #[test]
 fn io_batch_exit_code_from_pure() {
     let src = "(defn main [] (Pure 0))";
-    let result = cranelisp::pipeline::compile_and_run(src)
+    let (value, _ty) = batch_run(src)
         .unwrap_or_else(|e| panic!("batch failed: {e}"));
-    let exit_code = cranelisp_runtime::run_io_trampoline(result.value);
-    assert_eq!(exit_code, 0);
-    cranelisp_runtime::heap_dealloc(result.value);
+    assert_eq!(value, 0);
 }
 
 // spec: 10-io §10.6.1 — non-zero exit code
 #[test]
 fn io_batch_exit_code_nonzero() {
     let src = "(defn main [] (Pure 1))";
-    let result = cranelisp::pipeline::compile_and_run(src)
+    let (value, _ty) = batch_run(src)
         .unwrap_or_else(|e| panic!("batch failed: {e}"));
-    let exit_code = cranelisp_runtime::run_io_trampoline(result.value);
-    assert_eq!(exit_code, 1);
-    cranelisp_runtime::heap_dealloc(result.value);
+    assert_eq!(value, 1);
 }
 
 // spec: 10-io §10.6.1 — exit code from bind chain
@@ -764,11 +760,9 @@ fn io_batch_exit_code_from_bind() {
         (defn main []
           (bind (Pure 10) (fn [x] (Pure (primitives/add-i64 x 32)))))
     "#;
-    let result = cranelisp::pipeline::compile_and_run(src)
+    let (value, _ty) = batch_run(src)
         .unwrap_or_else(|e| panic!("batch failed: {e}"));
-    let exit_code = cranelisp_runtime::run_io_trampoline(result.value);
-    assert_eq!(exit_code, 42);
-    cranelisp_runtime::heap_dealloc(result.value);
+    assert_eq!(value, 42);
 }
 
 // =============================================================================
@@ -1234,7 +1228,7 @@ fn io_neg_pure_function_cannot_call_io() {
         (defn main [] (add-i64 (bad) 1))
     "#;
     // bad returns IO Int, add-i64 expects Int — type mismatch.
-    let result = cranelisp::pipeline::compile_and_run(src);
+    let result = batch_run(src);
     assert!(result.is_err(), "mixing IO and pure should be a type error");
 }
 
@@ -1245,7 +1239,7 @@ fn io_neg_bind_first_arg_must_be_io() {
     let src = r#"
         (defn main [] (bind 42 (fn [x] (Pure x))))
     "#;
-    let result = cranelisp::pipeline::compile_and_run(src);
+    let result = batch_run(src);
     assert!(result.is_err(), "bind with non-IO first arg should be a type error");
 }
 
@@ -1255,7 +1249,7 @@ fn io_neg_bind_second_arg_must_be_function() {
     let src = r#"
         (defn main [] (bind (Pure 42) 99))
     "#;
-    let result = cranelisp::pipeline::compile_and_run(src);
+    let result = batch_run(src);
     assert!(result.is_err(), "bind with non-function second arg should be a type error");
 }
 
@@ -1266,7 +1260,7 @@ fn io_neg_bind_continuation_must_return_io() {
     let src = r#"
         (defn main [] (bind (Pure 42) (fn [x] x)))
     "#;
-    let result = cranelisp::pipeline::compile_and_run(src);
+    let result = batch_run(src);
     assert!(result.is_err(), "bind continuation returning non-IO should be a type error");
 }
 
