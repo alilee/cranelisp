@@ -20,6 +20,11 @@ pub enum Type {
     /// Function type: param types -> return type
     Fn(Vec<Type>, Box<Type>),
     /// Algebraic data type: type name + type arguments
+    // FIXME(/arch): TypeName should be FQTypeName { module: ModuleFullPath, name: TypeName }
+    // paralleling FQSymbol. The typechecker resolves the module at construction time;
+    // everything downstream gets the qualified name. This eliminates the redundant
+    // type_modules: HashMap<TypeName, ModuleFullPath> maintained by the session for display.
+    // ~182 sites across cranelisp-types, cranelisp-typecheck, cranelisp-backend, src/.
     ADT(TypeName, Vec<Type>),
     /// Unification variable (inference internal; resolved before codegen)
     Var(TypeId),

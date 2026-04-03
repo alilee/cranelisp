@@ -941,10 +941,22 @@ impl CompilerSession {
         }
     }
 
-    /// Sync type definitions from the typechecker for ADT value display.
+    /// Sync type definitions and module mappings from the typechecker for ADT display.
     fn sync_type_defs(&mut self) {
         for (name, info) in self.tc.type_def_registry().iter() {
             self.type_defs.insert(name.clone(), info.clone());
+        }
+        // Scan module symbol tables to build type→module mapping.
+        for entry in self.tc.modules().iter() {
+            let module_path = entry.key().clone();
+            for (sym, me) in entry.value().all_symbols() {
+                if matches!(me, ModuleEntry::TypeDef { .. }) {
+                    self.type_modules.insert(
+                        TypeName::from(sym.as_ref()),
+                        module_path.clone(),
+                    );
+                }
+            }
         }
     }
 

@@ -483,6 +483,12 @@ impl TypeChecker {
         self.type_defs.read().unwrap()
     }
 
+    /// Access the per-module symbol tables (for display, introspection).
+    // FIXME(/arch): remove once FQTypeName migration eliminates type_modules map.
+    pub fn modules(&self) -> &DashMap<ModuleFullPath, SymbolTable> {
+        &self.modules
+    }
+
     /// Build type_defs and constructor_to_type maps from the registry.
     ///
     /// Used by the worker to build partial `CheckResult` for inline
