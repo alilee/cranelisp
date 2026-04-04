@@ -1,15 +1,17 @@
 # Pipeline Convergence Playbook
 
-Status as of Sprint 49, 2026-04-04.
+Status as of Sprint 49, 2026-04-05.
 
 Commits landed:
 - `a642185` — phase 1 structural detach (inner removed, EvalResult redesigned, test adapter built)
 - `9c6a475` — ADT display qualification fix + FQTypeName FIXME
-- (pending) — step 1.7 old pipeline deletion
+- `5c09343` — step 1.7 old pipeline deletion (~7k lines removed)
+- `43eab15` — mark Phase 1 complete in convergence playbook
+- (pending) — Phase 2 display formatting fix + test validation
 
 ## What's Done
 
-### Phase 1 Steps
+### Phase 1 Steps (structural cleanup)
 - [x] 1.3 Delete `load_prelude()` — was dead code
 - [x] 1.4 Delete `link()`, `run_with_workers()`, `run_with_nice_workers()`, stub spawners
 - [x] 1.5 Remove `inner: Option<CompilationSession>` from `CompilerSession`
@@ -18,6 +20,38 @@ Commits landed:
 - [x] 1.7 Delete old pipeline code (see §Deletions below)
 - [x] 1.8 Clean run() in main.rs — already v4-only, no old paths remain
 - [x] 1.9 Verify compilation — `cargo check` clean, `ring0` 106/108 (2 pre-existing)
+
+### Phase 1 Steps NOT done (persistent workers)
+- [ ] 1.1 Persistent workers on CompilerSession — workers still run inline (single-threaded)
+- [ ] 1.2 `register_module` enqueues for workers — still synchronous inline processing
+
+**Impact**: Without persistent workers, multi-module compilation with dependency chains (prelude → core → user) deadlocks. The inline worker loop can't handle blocked modules because there's no second worker to compile the dependency. This blocks all prelude-dependent tests.
+
+### Phase 2 Steps
+- [x] 2.0 Scheduler unit tests — 18/18 pass
+- [ ] 2.1 Worker pool lifecycle — no persistent workers exist to test
+- [x] 2.2 Single trivial module — covered by ring0 (106/108)
+- [ ] 2.3 Prelude loading — **BLOCKED** by missing persistent workers (1.1/1.2)
+- [x] 2.4 Import chains — partially working (modules 18/22, ring2 189/197)
+- [ ] 2.5 REPL eval with prelude — **BLOCKED** by 2.3
+- [x] 2.6 REPL error recovery — working for non-prelude sessions
+- [x] 2.7 Integration tests (progressive) — ring0–ring3 validated, see table below
+- [ ] 2.8 E2E tests — v4_pipeline needs `--v4` flag removal; subprocess tests hang
+- [ ] 2.9 Link mode E2E — not attempted
+- [ ] 2.10 Full test suite — not yet; prelude hang prevents clean run
+
+### Display Formatting Fix (Phase 2)
+Ported rich REPL display formatting from old `src/repl/commands.rs` into `src/session_v4.rs`. The v4 pipeline's `format_eval_result` now produces the spec-compliant universal output format (spec §1.1):
+
+- Functions: `:(Fn [primitives/Int] primitives/Int) user/square ; defn`
+- Macros: `:user/name ; defmacro` + `; [params] -> Sexp` clause signatures
+- Types: `:user/Point ; deftype` + `; match:` constructors + `; impl:` traits
+- Traits: `:user/Num ; deftrait` + `; defn:` methods + `; impl:` types
+- Special forms: `:(Fn [primitives/Bool a a] a) if ; special form - description`
+- Builtin types: `:primitives/Int ; type` + `; impl:` traits
+- TraitImpl: `impl user/Trait for user/Type`
+
+`check_bare_symbol_introspection` now handles all symbol kinds: builtin types, user types, traits, macros, non-nullary constructors, special forms, and follows import/reexport chains.
 
 ### EvalResult Redesign
 `EvalResult` is now an enum:
@@ -52,92 +86,73 @@ Three test entry points, all through v4 `CompilerSession`:
 ### ADT Display
 `type_modules` map populated by `sync_type_defs()` scanning TC module symbol tables. This is a temporary workaround — the real fix is `FQTypeName` (see below).
 
-## Test File Status (post step 1.7)
+## Test File Status
+
+**Total validated: ~788 pass / ~857 run = 92% pass rate** (excluding hangs)
 
 | File | Tests | Status | Notes |
 |------|-------|--------|-------|
 | ring0.rs | 108 | **106/108 pass** | 2 checked_div pre-existing |
 | repl_experience.rs | 181 | **179/181 pass** | 2 fixture prelude gaps (Functor) |
-| io.rs | 74 | **batch tests pass** | Full suite not run yet |
-| ring2.rs | ~80 | **Broken** | 10 errors: false `.value()` on CompiledModuleGraph, needs `batch_run_file` port |
-| ring3_repl.rs | ~30 | **Broken** | 19 errors: ReplSession type ref |
-| repl_negative.rs | ~30 | **Broken** | 2 errors: .core → .session, unused import |
-| macros.rs | ~20 | **Broken** | 7 errors: needs mechanical fix |
-| ring4_trace.rs | ~20 | **Compiles** | Not run yet |
-| modules.rs | ~20 | **Ported** | Discovery tests pass; compilation tests fail (v4 multi-module gap) |
-| stdlib.rs | ~40 | **Ported** | Prelude timeout through v4 pipeline (pre-existing v4 gap) |
-| exemplar.rs | ~5 | **Compiles but uses old helpers** | Uses `compile_module_graph` |
-| cache.rs | 51 | **38/51 pass** | API tests pass; 8 pipeline integration fail (v4 multi-module gap); 5 REPL cache pre-existing |
-| e2e.rs | ~10 | **Unknown** | |
-| examples.rs | ~5 | **Unknown** | |
-| lenient.rs | ~10 | **Unknown** | |
-| rc.rs | ~20 | **Unknown** | |
-| ring1.rs | ~40 | **Unknown** | |
-| sketch_port.rs | ~30 | **Known 11 pre-existing failures** | |
-| sprint23.rs | ~20 | **Ported** | 2 FileWatcher tests deleted (v3 only) |
-| pipeline_v2.rs | — | **Deleted** | Convergence scaffolding, behaviors covered by ring tests |
-| v4_pipeline.rs | ~5 | **Unknown** | |
-| v4_repl_eval.rs | ~10 | **Unknown** | |
-| scheduler.rs | ~20 | **Unknown** | |
+| ring1.rs | 166 | **165/166 pass** | 1 hang: `closure_and_tco` (TCO bug in v4 pipeline) |
+| ring2.rs | 197 | **189/197 pass** | 8 fail: module resolution + multi-sig/trait gaps |
+| ring3_repl.rs | 50 | **39/41 pass** | 2 fail: macro body type validation missing in v4 |
+| repl_negative.rs | 31 | **29/31 pass** | 2 fail: bare primitives accessible without import (module scoping gap) |
+| macros.rs | 28 | **22/27 pass** | 5 fail: macro-calls-macro, depth limit, defmacro-in-results, body validation |
+| rc.rs | 81 | **81/81 pass** | Full pass |
+| scheduler.rs | 18 | **18/18 pass** | Full pass |
+| modules.rs | 22 | **18/22 pass** | 4 fail: multi-module compilation gaps |
+| ring4_trace.rs | 29 | **7/29 pass** | 22 fail: trace depends on prelude/stdlib features |
+| sketch_port.rs | 141 | **102/141 pass** | 39 fail: ADT display, constrained poly, platform (up from 11 pre-existing) |
+| io.rs | 3 | **Hangs** | Platform tests need prelude; prelude loading deadlocks |
+| e2e.rs | 6 | **Hangs** | Uses prelude via run-tests; prelude loading deadlocks |
+| cache.rs | 51 | **Hangs** | Multi-module cache tests trigger prelude loading |
+| stdlib.rs | ~40 | **Hangs** | Prelude loading deadlocks |
+| exemplar.rs | ~5 | **Not validated** | Uses compile_module_graph |
+| examples.rs | ~5 | **Not validated** | Likely needs prelude |
+| lenient.rs | 16 | **4/16 fail** | Subprocess tests; binary needs `--v4` flag removed |
+| sprint23.rs | 0 | **Empty** | FileWatcher tests deleted (v3 only) |
+| pipeline_v2.rs | — | **Deleted** | Convergence scaffolding |
+| v4_pipeline.rs | ~40 | **Hangs/Fails** | Subprocess tests; uses `--v4` flag (deleted); needs porting |
+| v4_repl_eval.rs | ~10 | **Hangs** | Subprocess tests; binary needs rebuild |
+
+## Blocking Issue: Prelude Loading Deadlock
+
+The v4 pipeline has no persistent worker threads (Phase 1 steps 1.1–1.2 were not implemented). `register_module` and `eval` run the worker loop inline in a single thread. When a module discovers a dependency (e.g., prelude), the inline worker tries to compile it synchronously via `compile_dep_inline`. For simple single-dependency chains this works. For the prelude chain (prelude → core → core.num → core.str → ...) it deadlocks because:
+
+1. The inline worker is already processing module A
+2. Module A blocks on dependency B (prelude)
+3. `compile_dep_inline` starts processing B inline
+4. B blocks on dependency C (core)
+5. This recursive inline compilation either deadlocks on scheduler state or exceeds the retry limit
+
+**Resolution**: Implement persistent workers (Phase 1 steps 1.1–1.2) so that blocked modules park and a different worker picks up the dependency. This is the designed architecture per `pipeline-v4.md §5`.
 
 ## Remaining Work
 
-### 1. Mechanical test migration (field→method)
-For files with EvalResult field access errors, apply this python regex:
-```python
-import re
-content = re.sub(r'(\w)\.value(?!\(|_)', r'\1.value()', content)
-content = re.sub(r'(\w)\.ty(?!\(|_|p)', r'\1.ty()', content)
-content = re.sub(r'(\w)\.warnings(?!\(|_)', r'\1.warnings()', content)
-content = content.replace('.is_definition', '.is_def()')
-# Fix assert_eq! type comparisons (single and multi-line)
-content = re.sub(r'assert_eq!\((\w+)\.ty\(\),', r'assert_eq!(*\1.ty(),', content)
-content = re.sub(r'(assert_eq!\(\s*\n\s*)(\w+)\.ty\(\)', r'\1*\2.ty()', content)
-```
-**IMPORTANT:** This regex has false positives on non-EvalResult types (e.g., `CompiledModuleGraph.value`, `PipelineResult.ty`). After applying, grep for `.value()` on struct types that aren't EvalResult and revert those.
+### 1. Persistent workers (Phase 1 steps 1.1–1.2)
 
-### 2. Port old pipeline callers to v4 helpers
+This is the critical path. Without it, nothing that uses prelude/stdlib works.
 
-**`compile_and_run(src)` → `batch_run(src)`:**
-- io.rs — DONE
-- pipeline.rs unit tests — still on old path (internal tests, lower priority)
+### 2. Macro pipeline gaps (5 failures)
 
-**`compile_module_graph(entry, libs)` → `batch_run_file(entry, libs)`:**
-These callers use `result.value` and `result.ty` (struct fields on `CompiledModuleGraph`). Replace with `let (value, ty) = batch_run_file(path, libs)?;`.
-- modules.rs (~12 calls)
-- ring2.rs (~5 calls, lines 1598-1849)
-- stdlib.rs (~4 calls)
-- exemplar.rs (uses compile_module_graph)
+- **Macro-calls-macro**: m2 expanding to call m1 fails with "undefined variable: m1". Macro environment not shared between sequential defmacro definitions.
+- **Defmacro-in-results**: `(make-id-macro my-id)` — defmacro produced by macro expansion not handled.
+- **Body type validation**: Macro body returning non-Sexp type not caught as error.
+- **Expansion depth limit**: Mutual recursion between macros not detected; no depth limit enforcement.
+- **Error recovery**: Bad macro body silently succeeds instead of producing a type error.
 
-**Note:** `batch_run` and `batch_run_file` auto-trampoline IO. Tests that manually trampolined must be simplified to just check final values (see io.rs as example).
+### 3. Module scoping gap (2 failures)
 
-### 3. Fix import references
-Replace `cranelisp::repl::ReplSession` → `helpers::ReplSession`
-Replace `cranelisp::repl::{format_result, ...}` → `cranelisp_backend::display::format_result` or `cranelisp::session_v4::format_result_value`
-Replace `.core.tc.` → `.session.tc.` (repl_negative.rs line 64-65)
+Bare `ReplSession::new()` sessions can still resolve bare primitive names (e.g., `add-i64`) without import. The v4 pipeline's primitives module registration or lookup fallback is too permissive. Spec §8.9.1 requires qualified-only access unless imported.
 
-### 4. Three prelude modes for tests
-1. **No prelude** — `ReplSession::new()` or `batch_run(src)`. Source can include `(import [prelude []])` to explicitly suppress injection if using Replace strategy.
-2. **Fixture prelude** — `repl_session_with(Some("fixtures/prelude.cl"), ...)`. Prelude loaded from `tests/fixtures/`.
-3. **Real stdlib prelude** — pass `stdlib_dir` in lib_dirs. E.g., `ReplSession::new_with_prelude(project_root, &[stdlib_dir])`.
+### 4. TCO hang (1 failure)
 
-Tests that use Replace strategy (via `register_module` / `batch_run_file`) trigger prelude injection. If no prelude file is found in lib_dirs, injection is silently skipped (worker.rs line 1618). Tests using Additive strategy (via `eval`) skip prelude injection entirely.
+`closure_and_tco` in ring1 enters an infinite loop. The v4 pipeline's tail-call optimization has a bug when closures interact with self-recursive TCO.
 
-### 5. Delete old pipeline code (step 1.7) — DONE
+### 5. Subprocess test porting
 
-Deletions completed:
-- `src/main_new.rs` — deleted (168 lines, orphan pseudocode)
-- `tests/pipeline_v2.rs` — deleted (656 lines, convergence scaffolding)
-- `src/session.rs` — 1669→641 lines: deleted `CompilationSession`, `CacheConfig`, `CodegenWorkerMsg`, `CodegenMode`, `ModuleDependencyGraph`, `FormResult`, async codegen worker. Kept: `CacheState`, `InMemWorkerState`, `SharedCodegenState`, `WorkerJitState`, `ObjectWorkerState`, utility functions.
-- `src/pipeline.rs` — 2829→853 lines: deleted `compile_unit`, `codegen_and_execute*`, `compile_and_run`, `compile_module_graph*`, `PipelineResult`, `CompiledModuleGraph`, `CompileUnitResult`, `CodegenResult`, `CodegenPacket`, old cache-hit loading, `#[cfg(test)]` module. Kept: `resolve_module_file`, `compile_and_execute_expr`, `compile_and_register_defn_shared`, `build_codegen_state_for_cache`, `discover_module_graph`, `toposort`, object compilation helpers.
-- `src/repl/` — disconnected via `lib.rs` (`pub mod repl` removed). Files kept on disk as reference. ~3201 lines unreachable.
-- `tests/stdlib.rs` — ported from `cranelisp::repl::ReplSession` to `helpers::ReplSession`
-- `tests/cache.rs` — ported from `compile_module_graph_cached` to `helpers::batch_run_file`
-- `tests/sprint23.rs` — 2 FileWatcher tests deleted (v3 only)
-
-Total: ~3828 lines deleted + ~3201 lines disconnected = ~7029 lines removed.
-
-**Exposed v4 gaps**: Cache pipeline integration tests (8) and modules compilation tests now fail because `batch_run_file` uses the v4 pipeline which doesn't yet handle multi-module batch compilation the same way the old pipeline did. These are future work, not regressions.
+`v4_pipeline.rs`, `v4_repl_eval.rs`, and `lenient.rs` invoke the binary as subprocess with `--v4` flag which was deleted. Need to remove `--v4` from `run_v4()` and merge it with `run_old()`.
 
 ### 6. FQTypeName migration (separate task)
 FIXME on `Type::ADT` in `crates/cranelisp-types/src/types.rs`.
@@ -151,6 +166,19 @@ This eliminates:
 - The `type_modules` parameter on `format_result_value`, `format_type_qualified`, etc.
 
 Do interactively, not via subagent — construction sites in the typechecker need judgment about which module path to use.
+
+## Deletions (step 1.7, completed)
+
+- `src/main_new.rs` — deleted (168 lines, orphan pseudocode)
+- `tests/pipeline_v2.rs` — deleted (656 lines, convergence scaffolding)
+- `src/session.rs` — 1669→641 lines: deleted `CompilationSession`, `CacheConfig`, `CodegenWorkerMsg`, `CodegenMode`, `ModuleDependencyGraph`, `FormResult`, async codegen worker. Kept: `CacheState`, `InMemWorkerState`, `SharedCodegenState`, `WorkerJitState`, `ObjectWorkerState`, utility functions.
+- `src/pipeline.rs` — 2829→853 lines: deleted `compile_unit`, `codegen_and_execute*`, `compile_and_run`, `compile_module_graph*`, `PipelineResult`, `CompiledModuleGraph`, `CompileUnitResult`, `CodegenResult`, `CodegenPacket`, old cache-hit loading, `#[cfg(test)]` module. Kept: `resolve_module_file`, `compile_and_execute_expr`, `compile_and_register_defn_shared`, `build_codegen_state_for_cache`, `discover_module_graph`, `toposort`, object compilation helpers.
+- `src/repl/` — disconnected via `lib.rs` (`pub mod repl` removed). Files kept on disk as reference. ~3201 lines unreachable.
+- `tests/stdlib.rs` — ported from `cranelisp::repl::ReplSession` to `helpers::ReplSession`
+- `tests/cache.rs` — ported from `compile_module_graph_cached` to `helpers::batch_run_file`
+- `tests/sprint23.rs` — 2 FileWatcher tests deleted (v3 only)
+
+Total: ~3828 lines deleted + ~3201 lines disconnected = ~7029 lines removed.
 
 ## Key Decisions Made
 - **IO trampoline**: `batch_run` / `batch_run_file` auto-trampoline IO via `CompilerSession::trampoline()`. Tests check post-trampoline values, not raw IO heap pointers. IO internals testing belongs in unit tests.

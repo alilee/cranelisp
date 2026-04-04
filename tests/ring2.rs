@@ -17,7 +17,6 @@
 mod helpers;
 
 use helpers::*;
-use cranelisp::session_v4::EvalResult;
 use cranelisp_types::Type;
 
 // ---------------------------------------------------------------------------

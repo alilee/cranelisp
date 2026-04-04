@@ -13,9 +13,9 @@ use std::sync::{Arc, Mutex};
 
 use cranelisp_types::{
     CheckResult, CodegenBehaviour, CranelispError,
-    DefKind, FQSymbol, ModuleEntry, ModuleFullPath, ModuleStrategy, ModuleStructure,
-    Sexp, Span, Symbol, SymbolTable, TopLevel, Type, TypeDefInfo,
-    TypeName, Warning,
+    DefKind, FQSymbol, MacroClauseInfo, MacroParam, ModuleEntry, ModuleFullPath,
+    ModuleStrategy, ModuleStructure, Sexp, Span, Symbol, SymbolTable, TopLevel,
+    TraitName, Type, TypeDefInfo, TypeName, Warning,
 };
 
 use crate::expander::MacroEnv;
@@ -27,6 +27,7 @@ use crate::worker::WorkerContext;
 
 // Re-export display functions so tests can import from session_v4 instead of repl.
 pub use cranelisp_backend::display::format_result_value;
+use cranelisp_backend::display::{format_type_qualified, format_scheme_display};
 
 // ---------------------------------------------------------------------------
 // SessionSettings (pipeline-v4.md §10)
@@ -761,6 +762,21 @@ impl CompilerSession {
 
             match result {
                 ProcessResult::Complete { check_result, program } => {
+                    // If program is empty, the form was handled during expansion
+                    // (defmacro, import, platform, mod). Return Def with name
+                    // extracted from the original sexp.
+                    if program.is_empty() {
+                        let symbol_name = extract_def_name_from_sexp(sexp)
+                            .unwrap_or_default();
+                        return Ok(EvalResult::Def {
+                            symbol: FQSymbol {
+                                module: module.clone(),
+                                symbol: Symbol::from(symbol_name),
+                            },
+                            ty: Type::Int,
+                            warnings: check_result.warnings.clone(),
+                        });
+                    }
                     return self.codegen_and_execute(&module, &program, &check_result);
                 }
                 ProcessResult::Blocked { dep_module, dep_sexps, .. } => {
@@ -827,7 +843,9 @@ impl CompilerSession {
             })
         } else {
             // Definition-only: extract the defined symbol name.
-            let symbol_name = program.last().map(|tl| match tl {
+            let last = program.last();
+
+            let symbol_name = last.map(|tl| match tl {
                 TopLevel::Defn(d) => d.name.to_string(),
                 TopLevel::TraitDecl(t) => t.name.to_string(),
                 TopLevel::TraitImpl(t) => format!("{}.{}", t.trait_name, t.target_type),
@@ -892,18 +910,43 @@ impl CompilerSession {
     }
 
     /// Check if a bare symbol should produce introspection display instead of eval.
+    ///
+    /// Handles special forms, macros, builtin types, user types, traits,
+    /// and non-nullary constructors (spec §4.1). Returns None for symbols
+    /// that should be evaluated normally (variables, functions, nullary ctors).
     fn check_bare_symbol_introspection(&self, sexp: &Sexp) -> Option<EvalResult> {
         let name = match sexp {
-            Sexp::Symbol(name, _) => name,
+            Sexp::Symbol(name, _) => name.as_str(),
             _ => return None,
         };
 
+        // Must be a single bare identifier (no parens, no spaces, no brackets).
+        if name.contains(|c: char| c.is_whitespace() || c == '(' || c == ')' || c == '[' || c == ']') {
+            return None;
+        }
+
+        // Check primitive type names: Int, Bool, Float, String (spec §4.1.3).
+        if Type::from_name(name).is_some() {
+            return Some(EvalResult::Def {
+                symbol: FQSymbol {
+                    module: ModuleFullPath::from("primitives"),
+                    symbol: Symbol::from(name),
+                },
+                ty: Type::Int,
+                warnings: Vec::new(),
+            });
+        }
+
         let entry = {
             let guard = self.tc.symbol_table();
-            guard.get(name.as_str())?.clone()
+            guard.get(name)?.clone()
         };
 
-        match &entry {
+        // Resolve import/reexport chains.
+        let module = self.tc.current_module_path().clone();
+        let (resolved_entry, _resolved_module) = self.resolve_entry_for_display(&entry, &module);
+
+        match &resolved_entry {
             ModuleEntry::Macro { clauses, .. } => {
                 // Zero-arg macros should be expanded, not introspected.
                 let has_zero_arg = clauses.iter().any(|c| {
@@ -912,29 +955,47 @@ impl CompilerSession {
                 if has_zero_arg {
                     return None;
                 }
-                let module = self.tc.current_module_path().clone();
                 Some(EvalResult::Def {
-                    symbol: FQSymbol {
-                        module,
-                        symbol: Symbol::from(name.as_str()),
-                    },
-                    ty: Type::Int, // macros have no meaningful type
+                    symbol: FQSymbol { module, symbol: Symbol::from(name) },
+                    ty: Type::Int,
                     warnings: Vec::new(),
                 })
             }
             ModuleEntry::Def { kind, scheme, .. } => {
                 if let DefKind::SpecialForm { .. } = kind.as_ref() {
-                    let module = self.tc.current_module_path().clone();
                     Some(EvalResult::Def {
-                        symbol: FQSymbol {
-                            module,
-                            symbol: Symbol::from(name.as_str()),
-                        },
+                        symbol: FQSymbol { module, symbol: Symbol::from(name) },
                         ty: scheme.ty.clone(),
                         warnings: Vec::new(),
                     })
                 } else {
+                    None // Regular functions evaluate normally.
+                }
+            }
+            ModuleEntry::TypeDef { .. } => {
+                Some(EvalResult::Def {
+                    symbol: FQSymbol { module, symbol: Symbol::from(name) },
+                    ty: Type::Int,
+                    warnings: Vec::new(),
+                })
+            }
+            ModuleEntry::TraitDecl { .. } => {
+                Some(EvalResult::Def {
+                    symbol: FQSymbol { module, symbol: Symbol::from(name) },
+                    ty: Type::Int,
+                    warnings: Vec::new(),
+                })
+            }
+            ModuleEntry::Constructor { info, .. } => {
+                // Nullary constructors evaluate to values; non-nullary get introspection.
+                if info.fields.is_empty() {
                     None
+                } else {
+                    Some(EvalResult::Def {
+                        symbol: FQSymbol { module, symbol: Symbol::from(name) },
+                        ty: Type::Int,
+                        warnings: Vec::new(),
+                    })
                 }
             }
             _ => None,
@@ -1260,25 +1321,35 @@ impl CompilerSession {
     }
 
     /// §9: Format an eval result for display.
+    ///
+    /// Produces the universal output format (spec §1.1):
+    ///   `:Type {value|name} ; {classification} - {docstring}`
     pub fn format_eval_result(&self, result: &EvalResult) -> String {
         match result {
             EvalResult::Def { symbol, .. } => {
-                // Look up the symbol's type for display.
-                match self.tc.symbol_table().get(symbol.symbol.as_ref()) {
-                    Some(ModuleEntry::Def { scheme, .. }) => {
-                        format!(":{} {}", scheme.ty, symbol)
-                    }
-                    Some(ModuleEntry::Macro { .. }) => {
-                        format!("{} ; macro", symbol)
-                    }
-                    Some(ModuleEntry::TraitDecl { .. }) => {
-                        format!("{} ; trait", symbol)
-                    }
-                    Some(ModuleEntry::TypeDef { .. }) => {
-                        format!("{} ; type", symbol)
-                    }
-                    _ => format!("{} ; defined", symbol),
+                let name = symbol.symbol.as_ref();
+                let module = &symbol.module;
+
+                // Builtin type names (Int, Bool, etc.) from primitives module.
+                if module.as_ref() == "primitives" && Type::from_name(name).is_some() {
+                    return self.format_builtin_type_display(name);
                 }
+
+                let entry = self.tc.symbol_table().get(name).cloned();
+                // Follow import chains to the definition.
+                let (entry, resolved_module) = match entry {
+                    Some(ref e) => self.resolve_entry_for_display(e, module),
+                    None => {
+                        // TraitImpl entries have `Trait.Type` names; not in symbol table.
+                        if let Some((trait_name, target_type)) = name.split_once('.') {
+                            return format!(
+                                "impl {module}/{trait_name} for {module}/{target_type}"
+                            );
+                        }
+                        return format!("{symbol} ; defined");
+                    }
+                };
+                self.format_def_entry(&entry, name, &resolved_module)
             }
             EvalResult::Val { value, ty, .. } => {
                 if ty.is_io() {
@@ -1295,6 +1366,247 @@ impl CompilerSession {
             }
         }
     }
+
+    /// Format a definition entry with its classification (spec §1.1, §4.1).
+    fn format_def_entry(
+        &self,
+        entry: &ModuleEntry,
+        name: &str,
+        module: &ModuleFullPath,
+    ) -> String {
+        match entry {
+            ModuleEntry::Def { scheme, kind, docstring, .. } => {
+                if let DefKind::SpecialForm { description } = kind.as_ref() {
+                    return format_special_form_display(name, description);
+                }
+                let base = if !scheme.constraints.is_empty() {
+                    format_scheme_display(name, scheme, module, &self.type_modules)
+                } else {
+                    let type_str = format_type_qualified(&scheme.ty, &self.type_modules);
+                    format!(":{type_str} {module}/{name}")
+                };
+                let classification = if matches!(kind.as_ref(), DefKind::Primitive { .. }) {
+                    "primitive"
+                } else {
+                    "defn"
+                };
+                let base = format!("{base} ; {classification}");
+                append_docstring_comment(base, docstring.as_deref())
+            }
+            ModuleEntry::Constructor { type_name, scheme, .. } => {
+                let type_str = format_type_qualified(&scheme.ty, &self.type_modules);
+                let tn = TypeName::from(type_name.0.as_str());
+                let ctor_display =
+                    if let Some(info) = self.tc.type_def_registry().get(&tn) {
+                        cranelisp_backend::display::format_ctor_display(&tn, name, info)
+                    } else {
+                        format!("{type_name}.{name}")
+                    };
+                format!(":{type_str} {module}/{ctor_display} ; deftype")
+            }
+            ModuleEntry::TypeDef { .. } => {
+                self.format_type_display(name, module)
+            }
+            ModuleEntry::TraitDecl { decl, .. } => {
+                self.format_trait_display(name, decl.docstring.as_deref())
+            }
+            ModuleEntry::Macro { clauses, docstring, .. } => {
+                format_macro_display(name, clauses, docstring.as_deref(), module)
+            }
+            _ => {
+                // TraitImpl entries have `Trait.Type` symbol names and
+                // aren't stored in the symbol table as named entries.
+                if let Some((trait_name, target_type)) = name.split_once('.') {
+                    format!("impl {module}/{trait_name} for {module}/{target_type}")
+                } else {
+                    format!("{module}/{name} ; defined")
+                }
+            }
+        }
+    }
+
+    /// Resolve Import/Reexport chains to the underlying definition entry.
+    fn resolve_entry_for_display(
+        &self,
+        entry: &ModuleEntry,
+        current_module: &ModuleFullPath,
+    ) -> (ModuleEntry, ModuleFullPath) {
+        match entry {
+            ModuleEntry::Import { source }
+            | ModuleEntry::Reexport { source } => {
+                if let Some(module_table) = self.tc.modules().get(&source.module) {
+                    if let Some(resolved) = module_table.get(source.symbol.as_ref()) {
+                        return (resolved.clone(), source.module.clone());
+                    }
+                }
+                (entry.clone(), current_module.clone())
+            }
+            _ => (entry.clone(), current_module.clone()),
+        }
+    }
+
+    /// Format a user-defined type for display (spec §4.1.3).
+    ///
+    /// Shows `:module/TypeName ; deftype` with `; match:` and `; impl:` sections.
+    fn format_type_display(&self, type_name: &str, module: &ModuleFullPath) -> String {
+        let mut result = format!(":{module}/{type_name} ; deftype");
+        let tn = TypeName::from(type_name);
+        if let Some(ctors) = self.tc.get_type_constructors(&tn) {
+            if !ctors.is_empty() {
+                let names: Vec<&str> = ctors.iter().map(|c| c.name.as_ref()).collect();
+                result.push_str(&format_related_section("match", &names));
+            }
+        }
+        let trait_names = self.tc.get_impls_for_type(&tn);
+        if !trait_names.is_empty() {
+            let names: Vec<&str> = trait_names.iter().map(|t| t.as_ref()).collect();
+            result.push_str(&format_related_section("impl", &names));
+        }
+        result
+    }
+
+    /// Format a trait for display (spec §4.1.4).
+    ///
+    /// Shows `:module/TraitName ; deftrait` with `; defn:` and `; impl:` sections.
+    fn format_trait_display(&self, trait_name: &str, docstring: Option<&str>) -> String {
+        let defining_module = self.tc.defining_module_for(trait_name);
+        let tn = TraitName::from(trait_name);
+        let mut result = format!(":{defining_module}/{trait_name} ; deftrait");
+        result = append_docstring_comment(result, docstring);
+        if let Some(methods) = self.tc.get_trait_methods(&tn) {
+            if !methods.is_empty() {
+                let names: Vec<&str> = methods.iter().map(|m| m.as_ref()).collect();
+                result.push_str(&format_related_section("defn", &names));
+            }
+        }
+        let impl_types = self.tc.get_implementing_types(&tn);
+        if !impl_types.is_empty() {
+            let names: Vec<&str> = impl_types.iter().map(|t| t.as_ref()).collect();
+            result.push_str(&format_related_section("impl", &names));
+        }
+        result
+    }
+
+    /// Format a builtin type (Int, Bool, Float, String) for display (spec §4.1.3).
+    fn format_builtin_type_display(&self, type_name: &str) -> String {
+        let tn = TypeName::from(type_name);
+        let mut result = format!(":primitives/{type_name} ; type");
+        let trait_names = self.tc.get_impls_for_type(&tn);
+        if !trait_names.is_empty() {
+            let names: Vec<&str> = trait_names.iter().map(|t| t.as_ref()).collect();
+            result.push_str(&format_related_section("impl", &names));
+        }
+        result
+    }
+}
+
+// =============================================================================
+// Display formatting helpers (ported from repl/commands.rs)
+// =============================================================================
+
+/// Format a special form for display (spec §4.1.5).
+fn format_special_form_display(name: &str, description: &str) -> String {
+    let type_sig = match name {
+        "if" => ":(Fn [primitives/Bool a a] a)",
+        "let" => ":(Fn [bindings body] a)",
+        "fn" => ":(Fn [params body] function)",
+        "defn" => ":(Fn [name params body] function)",
+        "deftype" => ":(Fn [name ctors...] type)",
+        "match" => ":(Fn [expr [pat body]...] a)",
+        "defmacro" => ":(Fn [name params body] macro)",
+        "deftrait" => ":(Fn [name methods...] trait)",
+        "impl" => ":(Fn [trait type methods...] impl)",
+        "import" => ":(Fn [module names] import)",
+        "do" => ":(Fn [exprs...] a)",
+        _ => "",
+    };
+    if type_sig.is_empty() {
+        format!("{name} ; special form - {description}")
+    } else {
+        format!("{type_sig} {name} ; special form - {description}")
+    }
+}
+
+/// Format a macro for display (spec §4.1.6).
+fn format_macro_display(
+    name: &str,
+    clauses: &[MacroClauseInfo],
+    docstring: Option<&str>,
+    module: &ModuleFullPath,
+) -> String {
+    let mut result = format!(":{module}/{name} ; defmacro");
+    result = append_docstring_comment(result, docstring);
+    for clause in clauses {
+        let params = format_macro_clause_params(clause);
+        result.push_str(&format!("\n; {params} -> Sexp"));
+    }
+    result
+}
+
+/// Format macro clause parameters as `[param1 param2 ...]`.
+fn format_macro_clause_params(clause: &MacroClauseInfo) -> String {
+    let mut parts = Vec::new();
+    for param in &clause.params {
+        match param {
+            MacroParam::Name(name) => parts.push(name.to_string()),
+            MacroParam::Bracket { fixed, rest } => {
+                let mut inner: Vec<String> = fixed.iter().map(|f| f.to_string()).collect();
+                if let Some(r) = rest {
+                    inner.push(format!("& {r}"));
+                }
+                parts.push(format!("[{}]", inner.join(" ")));
+            }
+        }
+    }
+    if let Some(rest) = &clause.rest_param {
+        parts.push(format!("& {rest}"));
+    }
+    format!("[{}]", parts.join(" "))
+}
+
+/// Format a related symbols section (spec §1.1).
+fn format_related_section(label: &str, names: &[&str]) -> String {
+    format!("\n; {label}:\n;  {}", names.join(" "))
+}
+
+/// Append docstring as a comment suffix.
+fn append_docstring_comment(base: String, docstring: Option<&str>) -> String {
+    match docstring {
+        Some(doc) if !doc.is_empty() => {
+            let first_line = doc.lines().next().unwrap_or("");
+            if first_line.is_empty() {
+                base
+            } else {
+                format!("{base} ; {first_line}")
+            }
+        }
+        _ => base,
+    }
+}
+
+/// Extract the defined name from a sexp that was handled during expansion.
+///
+/// Handles `(defmacro name ...)`, `(import ...)`, `(platform ...)`, etc.
+fn extract_def_name_from_sexp(sexp: &Sexp) -> Option<String> {
+    if let Sexp::List(items, _) = sexp {
+        if items.len() >= 2 {
+            if let Sexp::Symbol(head, _) = &items[0] {
+                match head.as_str() {
+                    "defmacro" => {
+                        if let Sexp::Symbol(name, _) = &items[1] {
+                            return Some(name.to_string());
+                        }
+                    }
+                    "import" | "platform" | "mod" => {
+                        // These don't define a named symbol in the usual sense.
+                        return None;
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+    None
 }
 
 impl Drop for CompilerSession {
