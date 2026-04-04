@@ -1593,13 +1593,13 @@ fn trait_impl_concrete_type() {
 fn trait_method_accessible_across_modules() {
     let dir = create_test_project(&[
         ("main.cl", "(mod types)\n(import [main.types [Classify classify Color Red Green Blue]])\n(defn main [] (classify Green))"),
-        ("types.cl", "(deftrait (Classify a) (classify [a] Int))\n(deftype Color Red Green Blue)\n(impl Classify Color (defn classify [c] (match c [Red 1 Green 2 Blue 3])))"),
+        ("main/types.cl", "(deftrait (Classify a) (classify [a] Int))\n(deftype Color Red Green Blue)\n(impl Classify Color (defn classify [c] (match c [Red 1 Green 2 Blue 3])))"),
     ]);
-    let result = cranelisp::pipeline::compile_module_graph(
+    let (value, _ty) = helpers::batch_run_file(
         &dir.path().join("main.cl"),
         &[],
     ).unwrap();
-    assert_eq!(result.value(), 2);
+    assert_eq!(value, 2);
 }
 
 // =============================================================================
@@ -1611,9 +1611,9 @@ fn trait_method_accessible_across_modules() {
 fn visibility_private_defn_not_importable() {
     let dir = create_test_project(&[
         ("main.cl", "(mod util)\n(import [main.util [helper]])\n(defn main [] (helper))"),
-        ("util.cl", "(defn- helper [] 42)"),
+        ("main/util.cl", "(defn- helper [] 42)"),
     ]);
-    let result = cranelisp::pipeline::compile_module_graph(
+    let result = helpers::batch_run_file(
         &dir.path().join("main.cl"),
         &[],
     );
@@ -1625,13 +1625,13 @@ fn visibility_private_defn_not_importable() {
 fn visibility_public_defn_importable() {
     let dir = create_test_project(&[
         ("main.cl", "(mod util)\n(import [main.util [helper]])\n(defn main [] (helper))"),
-        ("util.cl", "(defn helper [] 42)"),
+        ("main/util.cl", "(defn helper [] 42)"),
     ]);
-    let result = cranelisp::pipeline::compile_module_graph(
+    let (value, _ty) = helpers::batch_run_file(
         &dir.path().join("main.cl"),
         &[],
     ).unwrap();
-    assert_eq!(result.value(), 42);
+    assert_eq!(value, 42);
 }
 
 // spec: 05-definitions §5.11 — deftype- creates private type
@@ -1639,9 +1639,9 @@ fn visibility_public_defn_importable() {
 fn visibility_private_deftype_not_importable() {
     let dir = create_test_project(&[
         ("main.cl", "(mod types)\n(import [main.types [Secret]])\n(defn main [] 1)"),
-        ("types.cl", "(deftype- Secret [:Int val])"),
+        ("main/types.cl", "(deftype- Secret [:Int val])"),
     ]);
-    let result = cranelisp::pipeline::compile_module_graph(
+    let result = helpers::batch_run_file(
         &dir.path().join("main.cl"),
         &[],
     );
@@ -1735,7 +1735,7 @@ fn synthetic_primitives_bare_without_import_fails_repl() {
 fn synthetic_primitives_bare_without_import_fails_batch() {
     // Bare `add-i64` with no import MUST fail in batch mode.
     let src = "(defn main [] (add-i64 2 3))";
-    let result = cranelisp::pipeline::compile_and_run(src);
+    let result = helpers::batch_run(src);
     assert!(
         result.is_err(),
         "bare primitive without import MUST fail"
@@ -1762,13 +1762,13 @@ fn module_phase_declarations_order_independent() {
     // mod and import at top work correctly in compilation order.
     let dir = create_test_project(&[
         ("main.cl", "(mod helper)\n(import [main.helper [double]])\n(defn main [] (double 21))"),
-        ("helper.cl", "(defn double [:Int x] (add-i64 x x))"),
+        ("main/helper.cl", "(defn double [:Int x] (add-i64 x x))"),
     ]);
-    let result = cranelisp::pipeline::compile_module_graph(
+    let (value, _ty) = helpers::batch_run_file(
         &dir.path().join("main.cl"),
         &[],
     ).unwrap();
-    assert_eq!(result.value(), 42);
+    assert_eq!(value, 42);
 }
 
 // =============================================================================
@@ -1807,13 +1807,13 @@ fn variable_reference_lexical_scope() {
 fn qualified_reference_to_module() {
     let dir = create_test_project(&[
         ("main.cl", "(mod math)\n(defn main [] (math/double 21))"),
-        ("math.cl", "(defn double [:Int x] (add-i64 x x))"),
+        ("main/math.cl", "(defn double [:Int x] (add-i64 x x))"),
     ]);
-    let result = cranelisp::pipeline::compile_module_graph(
+    let (value, _ty) = helpers::batch_run_file(
         &dir.path().join("main.cl"),
         &[],
     ).unwrap();
-    assert_eq!(result.value(), 42);
+    assert_eq!(value, 42);
 }
 
 // =============================================================================
@@ -1836,18 +1836,18 @@ fn create_test_project(files: &[(&str, &str)]) -> TempDir {
     dir
 }
 
-// spec: 08-modules §8.2 — single-file batch compilation via compile_module_graph
+// spec: 08-modules §8.2 — single-file batch compilation
 #[test]
 fn single_file_via_run_project() {
     let dir = create_test_project(&[
         ("main.cl", "(defn main [] 42)"),
     ]);
-    let result = cranelisp::pipeline::compile_module_graph(
+    let (value, ty) = helpers::batch_run_file(
         &dir.path().join("main.cl"),
         &[],
     ).unwrap();
-    assert_eq!(result.value(), 42);
-    assert_eq!(*result.ty(), cranelisp_types::Type::Int);
+    assert_eq!(value, 42);
+    assert_eq!(ty, cranelisp_types::Type::Int);
 }
 
 // spec: 08-modules §8.2.5 — missing module file gives descriptive error
@@ -1856,7 +1856,7 @@ fn module_missing_file_error() {
     let dir = create_test_project(&[
         ("main.cl", "(mod nonexistent)\n(defn main [] 1)"),
     ]);
-    let result = cranelisp::pipeline::compile_module_graph(
+    let result = helpers::batch_run_file(
         &dir.path().join("main.cl"),
         &[],
     );
@@ -1921,13 +1921,13 @@ fn module_cycle_detection() {
 fn module_qualified_name_resolution() {
     let dir = create_test_project(&[
         ("main.cl", "(mod util)\n(defn main [] (util/helper))"),
-        ("util.cl", "(defn helper [] 42)"),
+        ("main/util.cl", "(defn helper [] 42)"),
     ]);
-    let result = cranelisp::pipeline::compile_module_graph(
+    let (value, _ty) = helpers::batch_run_file(
         &dir.path().join("main.cl"),
         &[],
     ).unwrap();
-    assert_eq!(result.value(), 42);
+    assert_eq!(value, 42);
 }
 
 // spec: 08-modules §8.4 — import specific names
@@ -1935,13 +1935,13 @@ fn module_qualified_name_resolution() {
 fn import_specific_names() {
     let dir = create_test_project(&[
         ("main.cl", "(mod util)\n(import [main.util [helper]])\n(defn main [] (helper))"),
-        ("util.cl", "(defn helper [] 42)"),
+        ("main/util.cl", "(defn helper [] 42)"),
     ]);
-    let result = cranelisp::pipeline::compile_module_graph(
+    let (value, _ty) = helpers::batch_run_file(
         &dir.path().join("main.cl"),
         &[],
     ).unwrap();
-    assert_eq!(result.value(), 42);
+    assert_eq!(value, 42);
 }
 
 // spec: 08-modules §8.4 — glob import
@@ -1949,13 +1949,13 @@ fn import_specific_names() {
 fn import_glob() {
     let dir = create_test_project(&[
         ("main.cl", "(mod util)\n(import [main.util [*]])\n(defn main [] (helper))"),
-        ("util.cl", "(defn helper [] 42)"),
+        ("main/util.cl", "(defn helper [] 42)"),
     ]);
-    let result = cranelisp::pipeline::compile_module_graph(
+    let (value, _ty) = helpers::batch_run_file(
         &dir.path().join("main.cl"),
         &[],
     ).unwrap();
-    assert_eq!(result.value(), 42);
+    assert_eq!(value, 42);
 }
 
 // spec: 08-modules §8.4 — importing nonexistent name gives clear error
@@ -1963,9 +1963,9 @@ fn import_glob() {
 fn import_nonexistent_name_errors() {
     let dir = create_test_project(&[
         ("main.cl", "(mod util)\n(import [main.util [nonexistent]])\n(defn main [] 1)"),
-        ("util.cl", "(defn helper [] 42)"),
+        ("main/util.cl", "(defn helper [] 42)"),
     ]);
-    let result = cranelisp::pipeline::compile_module_graph(
+    let result = helpers::batch_run_file(
         &dir.path().join("main.cl"),
         &[],
     );
@@ -1990,9 +1990,9 @@ fn neg_glob_export_excludes_private() {
     // Module A glob-imports from B. The private function MUST NOT be accessible.
     let dir = create_test_project(&[
         ("main.cl", "(mod util)\n(import [main.util [*]])\n(defn main [] (secret))"),
-        ("util.cl", "(defn helper [] 42)\n(defn- secret [] 99)"),
+        ("main/util.cl", "(defn helper [] 42)\n(defn- secret [] 99)"),
     ]);
-    let result = cranelisp::pipeline::compile_module_graph(
+    let result = helpers::batch_run_file(
         &dir.path().join("main.cl"),
         &[],
     );
@@ -2008,13 +2008,13 @@ fn neg_glob_export_includes_public() {
     // Companion test: public name IS accessible via glob import.
     let dir = create_test_project(&[
         ("main.cl", "(mod util)\n(import [main.util [*]])\n(defn main [] (helper))"),
-        ("util.cl", "(defn helper [] 42)\n(defn- secret [] 99)"),
+        ("main/util.cl", "(defn helper [] 42)\n(defn- secret [] 99)"),
     ]);
-    let result = cranelisp::pipeline::compile_module_graph(
+    let (value, _ty) = helpers::batch_run_file(
         &dir.path().join("main.cl"),
         &[],
     ).unwrap();
-    assert_eq!(result.value(), 42);
+    assert_eq!(value, 42);
 }
 
 // spec: 08-modules §8.10.2 — circular module dependency MUST error
@@ -2023,10 +2023,10 @@ fn neg_circular_module_dependency() {
     // Module A imports from B, module B imports from A — circular dependency.
     let dir = create_test_project(&[
         ("main.cl", "(mod a)\n(import [main.a [a-fn]])\n(defn main [] (a-fn))"),
-        ("a.cl", "(import [main.b [b-fn]])\n(defn a-fn [] (b-fn))"),
-        ("b.cl", "(import [main.a [a-fn]])\n(defn b-fn [] (a-fn))"),
+        ("main/a.cl", "(import [main.b [b-fn]])\n(defn a-fn [] (b-fn))"),
+        ("main/b.cl", "(import [main.a [a-fn]])\n(defn b-fn [] (a-fn))"),
     ]);
-    let result = cranelisp::pipeline::compile_module_graph(
+    let result = helpers::batch_run_file(
         &dir.path().join("main.cl"),
         &[],
     );
@@ -2044,7 +2044,7 @@ fn neg_super_in_root_module_errors() {
     let dir = create_test_project(&[
         ("main.cl", "(import [super [thing]])\n(defn main [] (thing))"),
     ]);
-    let result = cranelisp::pipeline::compile_module_graph(
+    let result = helpers::batch_run_file(
         &dir.path().join("main.cl"),
         &[],
     );
@@ -2061,9 +2061,9 @@ fn neg_glob_import_private_not_via_qualified() {
     // via qualified ref (main.util/secret) either.
     let dir = create_test_project(&[
         ("main.cl", "(mod util)\n(import [main.util [*]])\n(defn main [] (main.util/secret))"),
-        ("util.cl", "(defn helper [] 42)\n(defn- secret [] 99)"),
+        ("main/util.cl", "(defn helper [] 42)\n(defn- secret [] 99)"),
     ]);
-    let result = cranelisp::pipeline::compile_module_graph(
+    let result = helpers::batch_run_file(
         &dir.path().join("main.cl"),
         &[],
     );
@@ -2079,9 +2079,9 @@ fn neg_private_macro_not_importable() {
     // A private defmacro (defmacro- name ...) MUST NOT be importable.
     let dir = create_test_project(&[
         ("main.cl", "(mod util)\n(import [main.util [secret-mac]])\n(defn main [] (secret-mac 1))"),
-        ("util.cl", "(defmacro- secret-mac [x] x)\n(defn helper [] 42)"),
+        ("main/util.cl", "(defmacro- secret-mac [x] x)\n(defn helper [] 42)"),
     ]);
-    let result = cranelisp::pipeline::compile_module_graph(
+    let result = helpers::batch_run_file(
         &dir.path().join("main.cl"),
         &[],
     );
@@ -2106,7 +2106,7 @@ fn neg_occurs_check_infinite_type() {
 (defn apply-self [x] (x x))
 (defn main [] (apply-self apply-self))
 "#;
-    let result = cranelisp::pipeline::compile_and_run(src);
+    let result = helpers::batch_run(src);
     assert!(
         result.is_err(),
         "infinite type (occurs check) MUST produce a type error"
@@ -2126,7 +2126,7 @@ fn neg_constrained_fn_in_closure() {
 (defn main [] (let [f add] (f 1 2)))
 "#
     );
-    let result = cranelisp::pipeline::compile_and_run(src);
+    let result = helpers::batch_run(src);
     // This may either error at typecheck (cannot use constrained fn as value)
     // or at codegen. Either way, it must not succeed silently.
     assert!(
@@ -2147,7 +2147,7 @@ fn neg_hkt_impl_primitive_type_rejected() {
   (defn fmap [f x] x))
 (defn main [] 1)
 "#;
-    let result = cranelisp::pipeline::compile_and_run(src);
+    let result = helpers::batch_run(src);
     assert!(
         result.is_err(),
         "implementing HKT trait on primitive type MUST be rejected"
@@ -2167,7 +2167,7 @@ fn neg_impl_missing_method_errors() {
   (defn size [b] 1))
 (defn main [] (size (Box 42)))
 "#;
-    let result = cranelisp::pipeline::compile_and_run(src);
+    let result = helpers::batch_run(src);
     assert!(
         result.is_err(),
         "impl block missing required method MUST produce an error"
@@ -2189,7 +2189,7 @@ fn neg_type_mismatch_fn_arity() {
 (defn f [x y] (add-i64 x y))
 (defn main [] (f 1 2 3))
 "#;
-    let result = cranelisp::pipeline::compile_and_run(src);
+    let result = helpers::batch_run(src);
     assert!(
         result.is_err(),
         "calling function with wrong number of args MUST error"
@@ -2206,7 +2206,7 @@ fn neg_multi_sig_bare_value_errors() {
   ([:Int x :Int y] (add-i64 x y)))
 (defn main [] (let [f choose] (f 1)))
 "#;
-    let result = cranelisp::pipeline::compile_and_run(src);
+    let result = helpers::batch_run(src);
     assert!(
         result.is_err(),
         "multi-sig function used as bare value MUST error"

@@ -77,7 +77,14 @@ Declares `internal` as a private submodule, accessible only within the declaring
 
 ### 8.2.5 File Resolution [Tested tests/ring2::module_missing_file_error]
 
-When `(mod name)` appears in a file (after inline extraction, if applicable), the implementation MUST resolve the corresponding `.cl` file using the following search order:
+When `(mod name)` appears in a file (after inline extraction, if applicable), the implementation MUST resolve the corresponding `.cl` file:
+
+<!-- FIXME(/spec): Remove sibling fallback rule. `(mod child)` in `main.cl` MUST resolve only
+     to `main/child.cl` (child directory), not `child.cl` (sibling). The sibling rule creates
+     ambiguity: the same file could be both `main.child` (via mod) and root module `child`
+     (via search path), violating §8.1's principle that file path determines module identity.
+     The v4 pipeline implements child-directory-only resolution. Tests in ring2.rs have been
+     updated to match. Delete rule 2 and the sibling example below. -->
 
 1. **Child directory**: `{parent_dir}/{stem}/{name}.cl` -- where `{stem}` is the declaring file's name without extension.
 2. **Sibling file**: `{parent_dir}/{name}.cl`
