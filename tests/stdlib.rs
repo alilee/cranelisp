@@ -7,6 +7,8 @@
 // Tests use a shared session (LazyLock<SendableSession>) to avoid
 // expensive re-initialization of the prelude for each test.
 
+mod helpers;
+
 use std::path::Path;
 use std::sync::{LazyLock, Mutex};
 
@@ -549,7 +551,6 @@ fn macro_str_multi() {
 // intercepted for introspection (spec §11.4), so we test const/def in batch.
 #[test]
 fn macro_const_int_batch() {
-    use cranelisp::pipeline::compile_module_graph;
     let dir = tempfile::tempdir().unwrap();
     let entry = dir.path().join("main.cl");
     std::fs::write(
@@ -558,14 +559,13 @@ fn macro_const_int_batch() {
     )
     .unwrap();
     let stdlib_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("stdlib");
-    let result = compile_module_graph(&entry, &[stdlib_dir]).unwrap();
-    assert_eq!(result.value, 42);
+    let (value, _ty) = helpers::batch_run_file(&entry, &[stdlib_dir]).unwrap();
+    assert_eq!(value, 42);
 }
 
 // spec: spec/09-macros.md §9.5 — const with string value
 #[test]
 fn macro_const_string_batch() {
-    use cranelisp::pipeline::compile_module_graph;
     let dir = tempfile::tempdir().unwrap();
     let entry = dir.path().join("main.cl");
     std::fs::write(
@@ -574,8 +574,8 @@ fn macro_const_string_batch() {
     )
     .unwrap();
     let stdlib_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("stdlib");
-    let result = compile_module_graph(&entry, &[stdlib_dir]).unwrap();
-    assert_eq!(result.value, 1); // true
+    let (value, _ty) = helpers::batch_run_file(&entry, &[stdlib_dir]).unwrap();
+    assert_eq!(value, 1); // true
 }
 
 // =============================================================================
@@ -585,7 +585,6 @@ fn macro_const_string_batch() {
 // spec: spec/09-macros.md §9.5 — def creates named value (batch)
 #[test]
 fn macro_def_basic_batch() {
-    use cranelisp::pipeline::compile_module_graph;
     let dir = tempfile::tempdir().unwrap();
     let entry = dir.path().join("main.cl");
     std::fs::write(
@@ -594,14 +593,13 @@ fn macro_def_basic_batch() {
     )
     .unwrap();
     let stdlib_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("stdlib");
-    let result = compile_module_graph(&entry, &[stdlib_dir]).unwrap();
-    assert_eq!(result.value, 42);
+    let (value, _ty) = helpers::batch_run_file(&entry, &[stdlib_dir]).unwrap();
+    assert_eq!(value, 42);
 }
 
 // spec: spec/09-macros.md §9.5 — def with expression (batch)
 #[test]
 fn macro_def_expression_batch() {
-    use cranelisp::pipeline::compile_module_graph;
     let dir = tempfile::tempdir().unwrap();
     let entry = dir.path().join("main.cl");
     // Use add-i64 primitive to avoid prelude import ordering issues.
@@ -611,8 +609,8 @@ fn macro_def_expression_batch() {
     )
     .unwrap();
     let stdlib_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("stdlib");
-    let result = compile_module_graph(&entry, &[stdlib_dir]).unwrap();
-    assert_eq!(result.value, 3);
+    let (value, _ty) = helpers::batch_run_file(&entry, &[stdlib_dir]).unwrap();
+    assert_eq!(value, 3);
 }
 
 // =============================================================================

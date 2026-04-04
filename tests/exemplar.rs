@@ -13,9 +13,9 @@
 //    module path derived from their filename (e.g. "main"), not "user".
 //    Macros work (global in expander), but trait methods don't resolve.
 
-use std::path::Path;
+mod helpers;
 
-use cranelisp::pipeline::compile_module_graph;
+use std::path::Path;
 
 fn stdlib_dir() -> std::path::PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("stdlib")
@@ -35,8 +35,8 @@ fn exemplar_batch_const_macro() {
         "(const SIZE 9)\n(defn main [] SIZE)",
     )
     .unwrap();
-    let result = compile_module_graph(&entry, &[stdlib_dir()]).unwrap();
-    assert_eq!(result.value, 9);
+    let (value, _ty) = helpers::batch_run_file(&entry, &[stdlib_dir()]).unwrap();
+    assert_eq!(value, 9);
 }
 
 // spec: spec/08-modules.md §8.10.1 — cross-module import resolves correctly
@@ -54,8 +54,8 @@ fn exemplar_batch_cross_module_import() {
         "(import [util [helper]])\n(defn main [] (helper))",
     )
     .unwrap();
-    let result = compile_module_graph(&entry, &[stdlib_dir()]).unwrap();
-    assert_eq!(result.value, 42);
+    let (value, _ty) = helpers::batch_run_file(&entry, &[stdlib_dir()]).unwrap();
+    assert_eq!(value, 42);
 }
 
 // spec: spec/08-modules.md §8.10.1 — cross-module with ADT types
@@ -73,6 +73,6 @@ fn exemplar_batch_cross_module_adt() {
         "(import [types [Color Red Green Blue color-val]])\n(defn main [] (add-i64 (color-val Red) (color-val Blue)))",
     )
     .unwrap();
-    let result = compile_module_graph(&entry, &[stdlib_dir()]).unwrap();
-    assert_eq!(result.value, 4); // 1 + 3
+    let (value, _ty) = helpers::batch_run_file(&entry, &[stdlib_dir()]).unwrap();
+    assert_eq!(value, 4); // 1 + 3
 }

@@ -11,7 +11,7 @@
 #[path = "helpers/mod.rs"]
 mod helpers;
 
-use cranelisp::pipeline::{compile_module_graph, discover_module_graph, toposort};
+use cranelisp::pipeline::{discover_module_graph, toposort};
 use cranelisp_types::ModuleFullPath;
 use tempfile::TempDir;
 
@@ -60,8 +60,8 @@ fn import_without_mod_compiles_and_runs() {
         ("main.cl", "(import [util [helper]])\n(defn main [] (helper))"),
         ("util.cl", "(defn helper [] 42)"),
     ]);
-    let result = compile_module_graph(&dir.path().join("main.cl"), &[]).unwrap();
-    assert_eq!(result.value, 42);
+    let (value, _ty) = helpers::batch_run_file(&dir.path().join("main.cl"), &[]).unwrap();
+    assert_eq!(value, 42);
 }
 
 // =============================================================================
@@ -76,7 +76,7 @@ fn import_dependency_ordering_with_mod() {
     // This works because (mod B) triggers file discovery.
     let dir = create_test_project(&[
         ("main.cl", "(mod util)\n(import [main.util [helper]])\n(defn main [] (helper))"),
-        ("util.cl", "(defn helper [] 42)"),
+        ("main/util.cl", "(defn helper [] 42)"),
     ]);
     let graph = discover_module_graph(&dir.path().join("main.cl"), &[]).unwrap();
     let order = toposort(&graph).unwrap();
@@ -106,10 +106,10 @@ fn import_dependency_compiles_correctly() {
             "main.cl",
             "(mod util)\n(import [main.util [helper]])\n(defn main [] (helper))",
         ),
-        ("util.cl", "(defn helper [] 99)"),
+        ("main/util.cl", "(defn helper [] 99)"),
     ]);
-    let result = compile_module_graph(&dir.path().join("main.cl"), &[]).unwrap();
-    assert_eq!(result.value, 99);
+    let (value, _ty) = helpers::batch_run_file(&dir.path().join("main.cl"), &[]).unwrap();
+    assert_eq!(value, 99);
 }
 
 // =============================================================================
@@ -143,22 +143,21 @@ fn project_root_shadows_stdlib() {
     // Project root should take precedence.
     let dir = create_test_project(&[
         ("main.cl", "(mod helper)\n(defn main [] (helper/val))"),
-        ("helper.cl", "(defn val [] 100)"),
+        ("main/helper.cl", "(defn val [] 100)"),
     ]);
     let stdlib_dir = dir.path().join("stdlib");
-    std::fs::create_dir_all(&stdlib_dir).unwrap();
-    std::fs::write(stdlib_dir.join("helper.cl"), "(defn val [] 200)").unwrap();
+    std::fs::create_dir_all(stdlib_dir.join("main")).unwrap();
+    std::fs::write(stdlib_dir.join("main/helper.cl"), "(defn val [] 200)").unwrap();
 
-    // When main.cl is the entry, (mod helper) first looks for main/helper.cl
-    // (child dir), then helper.cl (sibling). The sibling is in project root.
-    // stdlib should NOT be used because the project root file exists.
-    let result = compile_module_graph(
+    // (mod helper) in main.cl resolves to main/helper.cl (child dir only).
+    // Project root file should take precedence over stdlib.
+    let (value, _ty) = helpers::batch_run_file(
         &dir.path().join("main.cl"),
         &[stdlib_dir.clone()],
     )
     .unwrap();
     assert_eq!(
-        result.value, 100,
+        value, 100,
         "project root module should shadow stdlib module"
     );
 }
@@ -172,14 +171,15 @@ fn stdlib_module_compiles_and_runs() {
     ]);
     let stdlib_dir = dir.path().join("stdlib");
     std::fs::create_dir_all(&stdlib_dir).unwrap();
-    std::fs::write(stdlib_dir.join("helper.cl"), "(defn compute [] 55)").unwrap();
+    std::fs::create_dir_all(stdlib_dir.join("main")).unwrap();
+    std::fs::write(stdlib_dir.join("main/helper.cl"), "(defn compute [] 55)").unwrap();
 
-    let result = compile_module_graph(
+    let (value, _ty) = helpers::batch_run_file(
         &dir.path().join("main.cl"),
         &[stdlib_dir.clone()],
     )
     .unwrap();
-    assert_eq!(result.value, 55);
+    assert_eq!(value, 55);
 }
 
 // =============================================================================
@@ -198,8 +198,8 @@ fn module_with_submodule_imports() {
     // qualified references with dotted module paths work for graph discovery.
     let dir = create_test_project(&[
         ("main.cl", "(mod shell)\n(defn main [] (main.shell/relay))"),
-        ("shell.cl", "(mod inner)\n(defn relay [] (main.shell.inner/get-val))"),
-        ("shell/inner.cl", "(defn get-val [] 33)"),
+        ("main/shell.cl", "(mod inner)\n(defn relay [] (main.shell.inner/get-val))"),
+        ("main/shell/inner.cl", "(defn get-val [] 33)"),
     ]);
     let graph = discover_module_graph(&dir.path().join("main.cl"), &[]).unwrap();
     assert!(
@@ -237,10 +237,10 @@ fn prelude_like_reexport_compiles() {
             "main.cl",
             "(mod shell)\n(import [main.shell [get-val]])\n(defn main [] (get-val))",
         ),
-        ("shell.cl", "(defn get-val [] 88)"),
+        ("main/shell.cl", "(defn get-val [] 88)"),
     ]);
-    let result = compile_module_graph(&dir.path().join("main.cl"), &[]).unwrap();
-    assert_eq!(result.value, 88);
+    let (value, _ty) = helpers::batch_run_file(&dir.path().join("main.cl"), &[]).unwrap();
+    assert_eq!(value, 88);
 }
 
 // spec: 08-modules §8.3 — multi-dot module path in import
@@ -252,13 +252,13 @@ fn multi_dot_module_path_in_import() {
             "(mod shell)\n(import [main.shell [relay]])\n(defn main [] (relay))",
         ),
         (
-            "shell.cl",
+            "main/shell.cl",
             "(mod inner)\n(import [main.shell.inner [get-val]])\n(defn relay [] (get-val))",
         ),
-        ("shell/inner.cl", "(defn get-val [] 88)"),
+        ("main/shell/inner.cl", "(defn get-val [] 88)"),
     ]);
-    let result = compile_module_graph(&dir.path().join("main.cl"), &[]).unwrap();
-    assert_eq!(result.value, 88);
+    let (value, _ty) = helpers::batch_run_file(&dir.path().join("main.cl"), &[]).unwrap();
+    assert_eq!(value, 88);
 }
 
 // =============================================================================
@@ -276,8 +276,8 @@ fn nested_dependency_chain_discovered() {
     // because the dot-chain is followed by '/'.
     let dir = create_test_project(&[
         ("main.cl", "(mod mid)\n(defn main [] (main.mid/relay))"),
-        ("mid.cl", "(mod leaf)\n(defn relay [] (main.mid.leaf/value))"),
-        ("mid/leaf.cl", "(defn value [] 7)"),
+        ("main/mid.cl", "(mod leaf)\n(defn relay [] (main.mid.leaf/value))"),
+        ("main/mid/leaf.cl", "(defn value [] 7)"),
     ]);
     let graph = discover_module_graph(&dir.path().join("main.cl"), &[]).unwrap();
     assert_eq!(
@@ -313,13 +313,13 @@ fn nested_dependency_chain_compiles() {
             "(mod mid)\n(import [main.mid [relay]])\n(defn main [] (relay))",
         ),
         (
-            "mid.cl",
+            "main/mid.cl",
             "(mod leaf)\n(defn relay [] (main.mid.leaf/value))",
         ),
-        ("mid/leaf.cl", "(defn value [] 7)"),
+        ("main/mid/leaf.cl", "(defn value [] 7)"),
     ]);
-    let result = compile_module_graph(&dir.path().join("main.cl"), &[]).unwrap();
-    assert_eq!(result.value, 7);
+    let (value, _ty) = helpers::batch_run_file(&dir.path().join("main.cl"), &[]).unwrap();
+    assert_eq!(value, 7);
 }
 
 // spec: 08-modules §8.5.1 — transitive import works with qualified refs
@@ -331,13 +331,13 @@ fn transitive_import_chain() {
             "(mod mid)\n(import [main.mid [relay]])\n(defn main [] (relay))",
         ),
         (
-            "mid.cl",
+            "main/mid.cl",
             "(mod leaf)\n(defn relay [] (main.mid.leaf/base-val))",
         ),
-        ("mid/leaf.cl", "(defn base-val [] 13)"),
+        ("main/mid/leaf.cl", "(defn base-val [] 13)"),
     ]);
-    let result = compile_module_graph(&dir.path().join("main.cl"), &[]).unwrap();
-    assert_eq!(result.value, 13);
+    let (value, _ty) = helpers::batch_run_file(&dir.path().join("main.cl"), &[]).unwrap();
+    assert_eq!(value, 13);
 }
 
 // =============================================================================
@@ -352,9 +352,9 @@ fn import_private_name_errors() {
             "main.cl",
             "(mod util)\n(import [main.util [secret]])\n(defn main [] (secret))",
         ),
-        ("util.cl", "(defn- secret [] 42)"),
+        ("main/util.cl", "(defn- secret [] 42)"),
     ]);
-    let result = compile_module_graph(&dir.path().join("main.cl"), &[]);
+    let result = helpers::batch_run_file(&dir.path().join("main.cl"), &[]);
     assert!(
         result.is_err(),
         "importing a private name should produce an error"
@@ -367,7 +367,7 @@ fn qualified_ref_to_missing_module_errors() {
     let dir = create_test_project(&[
         ("main.cl", "(defn main [] (nonexistent/foo))"),
     ]);
-    let result = compile_module_graph(&dir.path().join("main.cl"), &[]);
+    let result = helpers::batch_run_file(&dir.path().join("main.cl"), &[]);
     assert!(
         result.is_err(),
         "qualified reference to non-existent module should error"
@@ -383,9 +383,9 @@ fn glob_import_excludes_private() {
             "main.cl",
             "(mod util)\n(import [main.util [*]])\n(defn main [] (secret))",
         ),
-        ("util.cl", "(defn- secret [] 42)\n(defn public-fn [] 1)"),
+        ("main/util.cl", "(defn- secret [] 42)\n(defn public-fn [] 1)"),
     ]);
-    let result = compile_module_graph(&dir.path().join("main.cl"), &[]);
+    let result = helpers::batch_run_file(&dir.path().join("main.cl"), &[]);
     assert!(
         result.is_err(),
         "glob import should not include private names; calling 'secret' should fail"
@@ -407,13 +407,13 @@ fn export_specific_reexport() {
             "(mod shell)\n(import [main.shell [val]])\n(defn main [] (val))",
         ),
         (
-            "shell.cl",
+            "main/shell.cl",
             "(mod inner)\n(import [main.shell.inner [val]])\n(export [main.shell.inner [val]])",
         ),
-        ("shell/inner.cl", "(defn val [] 42)"),
+        ("main/shell/inner.cl", "(defn val [] 42)"),
     ]);
-    let result = compile_module_graph(&dir.path().join("main.cl"), &[]).unwrap();
-    assert_eq!(result.value, 42, "re-exported val should be callable");
+    let (value, _ty) = helpers::batch_run_file(&dir.path().join("main.cl"), &[]).unwrap();
+    assert_eq!(value, 42, "re-exported val should be callable");
 }
 
 // spec: 08-modules §8.4.2 — glob re-export exports all public names
@@ -427,13 +427,13 @@ fn export_glob_reexport() {
             "(mod shell)\n(import [main.shell [a b]])\n(defn main [] (add-i64 (a) (b)))",
         ),
         (
-            "shell.cl",
+            "main/shell.cl",
             "(mod inner)\n(import [main.shell.inner [*]])\n(export [main.shell.inner [*]])",
         ),
-        ("shell/inner.cl", "(defn a [] 10)\n(defn b [] 20)"),
+        ("main/shell/inner.cl", "(defn a [] 10)\n(defn b [] 20)"),
     ]);
-    let result = compile_module_graph(&dir.path().join("main.cl"), &[]).unwrap();
-    assert_eq!(result.value, 30, "glob re-exported names should be callable");
+    let (value, _ty) = helpers::batch_run_file(&dir.path().join("main.cl"), &[]).unwrap();
+    assert_eq!(value, 30, "glob re-exported names should be callable");
 }
 
 // spec: 08-modules §8.4.4 — re-export chain: A re-exports from B which re-exports from C
@@ -446,18 +446,18 @@ fn export_transitive_reexport_chain() {
             "(mod shell)\n(import [main.shell [deep-val]])\n(defn main [] (deep-val))",
         ),
         (
-            "shell.cl",
+            "main/shell.cl",
             "(mod mid)\n(import [main.shell.mid [deep-val]])\n(export [main.shell.mid [deep-val]])",
         ),
         (
-            "shell/mid.cl",
+            "main/shell/mid.cl",
             "(mod leaf)\n(import [main.shell.mid.leaf [deep-val]])\n(export [main.shell.mid.leaf [deep-val]])",
         ),
-        ("shell/mid/leaf.cl", "(defn deep-val [] 77)"),
+        ("main/shell/mid/leaf.cl", "(defn deep-val [] 77)"),
     ]);
-    let result = compile_module_graph(&dir.path().join("main.cl"), &[]).unwrap();
+    let (value, _ty) = helpers::batch_run_file(&dir.path().join("main.cl"), &[]).unwrap();
     assert_eq!(
-        result.value, 77,
+        value, 77,
         "transitive re-export chain should resolve"
     );
 }
@@ -472,14 +472,14 @@ fn export_multiple_modules() {
             "(mod shell)\n(import [main.shell [alpha beta]])\n(defn main [] (add-i64 (alpha) (beta)))",
         ),
         (
-            "shell.cl",
+            "main/shell.cl",
             "(mod a)\n(mod b)\n(import [main.shell.a [alpha]])\n(import [main.shell.b [beta]])\n(export [main.shell.a [alpha]\n         main.shell.b [beta]])",
         ),
-        ("shell/a.cl", "(defn alpha [] 3)"),
-        ("shell/b.cl", "(defn beta [] 7)"),
+        ("main/shell/a.cl", "(defn alpha [] 3)"),
+        ("main/shell/b.cl", "(defn beta [] 7)"),
     ]);
-    let result = compile_module_graph(&dir.path().join("main.cl"), &[]).unwrap();
-    assert_eq!(result.value, 10, "multi-module re-export should work");
+    let (value, _ty) = helpers::batch_run_file(&dir.path().join("main.cl"), &[]).unwrap();
+    assert_eq!(value, 10, "multi-module re-export should work");
 }
 
 // spec: 08-modules §8.4.4 — re-exported private name is NOT accessible
@@ -493,12 +493,12 @@ fn export_private_name_not_reexported() {
             "(mod shell)\n(import [main.shell [secret]])\n(defn main [] (secret))",
         ),
         (
-            "shell.cl",
+            "main/shell.cl",
             "(mod inner)\n(import [main.shell.inner [*]])\n(export [main.shell.inner [secret]])",
         ),
-        ("shell/inner.cl", "(defn- secret [] 42)\n(defn public-fn [] 1)"),
+        ("main/shell/inner.cl", "(defn- secret [] 42)\n(defn public-fn [] 1)"),
     ]);
-    let result = compile_module_graph(&dir.path().join("main.cl"), &[]);
+    let result = helpers::batch_run_file(&dir.path().join("main.cl"), &[]);
     assert!(
         result.is_err(),
         "private names should not be re-exportable"
@@ -515,12 +515,13 @@ fn imported_function_as_higher_order_argument() {
             "(mod helper)\n(import [main.helper [double]])\n(defn apply-fn [f x] (f x))\n(defn main [] (apply-fn double 21))",
         ),
         (
-            "helper.cl",
+            "main/helper.cl",
             "(defn double [x] (add-i64 x x))",
         ),
     ]);
-    let result = compile_module_graph(&dir.path().join("main.cl"), &[]);
+    let result = helpers::batch_run_file(&dir.path().join("main.cl"), &[]);
     assert!(result.is_ok(), "imported fn as higher-order arg should compile: {}",
         result.as_ref().err().map(|e| format!("{e}")).unwrap_or_default());
-    assert_eq!(result.unwrap().value, 42);
+    let (value, _ty) = result.unwrap();
+    assert_eq!(value, 42);
 }
