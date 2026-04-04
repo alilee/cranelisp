@@ -14,7 +14,8 @@ pub mod pipeline;
 pub mod platform;
 pub mod platform_registry;
 pub mod pretty;
-pub mod repl;
+// repl/ module removed — v4 REPL is driven directly by CompilerSession in main.rs.
+// Files kept on disk as reference (watch.rs, commands.rs, etc.).
 pub mod scheduler;
 pub mod style;
 pub mod thread_util;

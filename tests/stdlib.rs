@@ -12,7 +12,7 @@ mod helpers;
 use std::path::Path;
 use std::sync::{LazyLock, Mutex};
 
-use cranelisp::repl::{format_result_value, ReplSession};
+use helpers::ReplSession;
 use cranelisp_types::Type;
 
 // ReplSession contains JIT function pointers (in MacroEnv) which are not
@@ -45,28 +45,7 @@ fn eval(src: &str) -> (i64, Type) {
     let result = session
         .eval(src)
         .unwrap_or_else(|e| panic!("eval failed on '{src}': {e}"));
-    (result.value, result.ty)
-}
-
-/// Evaluate an expression and return its formatted display string.
-#[allow(dead_code)]
-fn eval_display(src: &str) -> String {
-    let mut session = SESSION.0.lock().unwrap_or_else(|poisoned| {
-        poisoned.into_inner()
-    });
-    let result = session
-        .eval(src)
-        .unwrap_or_else(|e| panic!("eval_display failed on '{src}': {e}"));
-    if let Some(display) = result.definition_display {
-        display
-    } else {
-        format_result_value(
-            result.value,
-            &result.ty,
-            session.type_defs(),
-            session.type_modules(),
-        )
-    }
+    (result.value(), result.ty().clone())
 }
 
 // =============================================================================

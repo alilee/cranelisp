@@ -1186,37 +1186,7 @@ fn watch_retry_on_next_change() {
 }
 
 // --- 4.6 Interaction with /reset ---
-
-// spec: repl/spec.md §14.6 — watcher continues across /reset
-#[test]
-fn watch_continues_across_reset() {
-    // File watcher should still detect changes after a clear_all() + re-watch.
-    // This simulates what handle_reset does: clears watches, then re-adds
-    // paths for the newly loaded prelude modules.
-    use cranelisp::repl::watch::FileWatcher;
-
-    let dir = test_dir("watch_across_reset");
-    let file = dir.join("mymod.cl");
-    std::fs::write(&file, "(defn val [] 1)").unwrap();
-
-    let mut watcher = FileWatcher::new().expect("FileWatcher should initialize");
-    watcher.watch_file(&file);
-
-    // Simulate /reset: clear all watches.
-    watcher.clear_all();
-
-    // Re-watch the same file (as handle_reset does via update_watched_paths).
-    watcher.watch_file(&file);
-
-    // The watcher should still be functional after clear + re-watch.
-    // Verify by checking that the watcher object is alive and usable.
-    let changes = watcher.poll_changes();
-    // No changes yet since we just re-watched.
-    assert!(
-        changes.is_none(),
-        "no changes should be pending immediately after re-watch"
-    );
-}
+// (watch_continues_across_reset deleted — FileWatcher is v3 only, v4 has its own watcher path)
 
 // --- 4.7 Interaction with object cache ---
 
@@ -1306,35 +1276,7 @@ fn watch_unchanged_modules_keep_cache() {
 
 // --- 4.8 Negative tests ---
 
-// spec: repl/spec.md §14.2 — FileWatcher is detection only, not compilation
-#[test]
-fn watch_neg_no_eager_background_recompilation() {
-    // The FileWatcher only queues filesystem events via poll_changes().
-    // It does NOT spawn any background compilation thread. Recompilation
-    // is triggered by the REPL loop calling reload_changed_modules at
-    // prompt time (poll_and_notify_changes).
-    //
-    // Test: create a watcher, verify poll_changes() returns paths but
-    // does NOT compile anything — it's purely a change detection mechanism.
-    use cranelisp::repl::watch::FileWatcher;
-
-    let dir = test_dir("watch_neg_no_eager");
-    let file = dir.join("mymod.cl");
-    std::fs::write(&file, "(defn val [] 1)").unwrap();
-
-    let mut watcher = FileWatcher::new().expect("FileWatcher should initialize");
-    watcher.watch_file(&file);
-
-    // The watcher should not have any compilation side-effects.
-    // poll_changes() returns Option<Vec<PathBuf>> — just paths, no compilation.
-    let changes = watcher.poll_changes();
-    assert!(
-        changes.is_none(),
-        "no changes should be pending before any file modification"
-    );
-    // FileWatcher has no compile_module or similar method — it's purely
-    // a change detection mechanism.
-}
+// (watch_neg_no_eager_background_recompilation deleted — FileWatcher is v3 only)
 
 // =============================================================================
 // 5. REPL Cache Integration

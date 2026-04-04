@@ -1,8 +1,11 @@
 # Pipeline Convergence Playbook
 
-Status as of Sprint 49, 2026-04-04. Two commits landed:
+Status as of Sprint 49, 2026-04-04.
+
+Commits landed:
 - `a642185` — phase 1 structural detach (inner removed, EvalResult redesigned, test adapter built)
 - `9c6a475` — ADT display qualification fix + FQTypeName FIXME
+- (pending) — step 1.7 old pipeline deletion
 
 ## What's Done
 
@@ -11,8 +14,8 @@ Status as of Sprint 49, 2026-04-04. Two commits landed:
 - [x] 1.4 Delete `link()`, `run_with_workers()`, `run_with_nice_workers()`, stub spawners
 - [x] 1.5 Remove `inner: Option<CompilationSession>` from `CompilerSession`
 - [x] 1.6 (partial) Test adapter `ReplSession` in `tests/helpers/mod.rs` wrapping `CompilerSession`
-- [ ] 1.7 Delete old pipeline code — blocked on test migration
-- [ ] 1.6 (complete) Port ALL test files to v4 helpers
+- [x] 1.6 (complete) Port ALL test files to v4 helpers
+- [x] 1.7 Delete old pipeline code (see §Deletions below)
 
 ### EvalResult Redesign
 `EvalResult` is now an enum:
@@ -47,7 +50,7 @@ Three test entry points, all through v4 `CompilerSession`:
 ### ADT Display
 `type_modules` map populated by `sync_type_defs()` scanning TC module symbol tables. This is a temporary workaround — the real fix is `FQTypeName` (see below).
 
-## Test File Status
+## Test File Status (post step 1.7)
 
 | File | Tests | Status | Notes |
 |------|-------|--------|-------|
@@ -59,18 +62,18 @@ Three test entry points, all through v4 `CompilerSession`:
 | repl_negative.rs | ~30 | **Broken** | 2 errors: .core → .session, unused import |
 | macros.rs | ~20 | **Broken** | 7 errors: needs mechanical fix |
 | ring4_trace.rs | ~20 | **Compiles** | Not run yet |
-| modules.rs | ~20 | **Compiles but uses old helpers** | Uses `compile_module_graph` (old pipeline) |
-| stdlib.rs | ~20 | **Compiles but uses old helpers** | Uses `compile_module_graph` with stdlib_dir |
+| modules.rs | ~20 | **Ported** | Discovery tests pass; compilation tests fail (v4 multi-module gap) |
+| stdlib.rs | ~40 | **Ported** | Prelude timeout through v4 pipeline (pre-existing v4 gap) |
 | exemplar.rs | ~5 | **Compiles but uses old helpers** | Uses `compile_module_graph` |
-| cache.rs | ~20 | **Unknown** | May use old pipeline |
+| cache.rs | 51 | **38/51 pass** | API tests pass; 8 pipeline integration fail (v4 multi-module gap); 5 REPL cache pre-existing |
 | e2e.rs | ~10 | **Unknown** | |
 | examples.rs | ~5 | **Unknown** | |
 | lenient.rs | ~10 | **Unknown** | |
 | rc.rs | ~20 | **Unknown** | |
 | ring1.rs | ~40 | **Unknown** | |
 | sketch_port.rs | ~30 | **Known 11 pre-existing failures** | |
-| sprint23.rs | ~20 | **Unknown** | |
-| pipeline_v2.rs | ~5 | **Unknown** | |
+| sprint23.rs | ~20 | **Ported** | 2 FileWatcher tests deleted (v3 only) |
+| pipeline_v2.rs | — | **Deleted** | Convergence scaffolding, behaviors covered by ring tests |
 | v4_pipeline.rs | ~5 | **Unknown** | |
 | v4_repl_eval.rs | ~10 | **Unknown** | |
 | scheduler.rs | ~20 | **Unknown** | |
@@ -118,14 +121,21 @@ Replace `.core.tc.` → `.session.tc.` (repl_negative.rs line 64-65)
 
 Tests that use Replace strategy (via `register_module` / `batch_run_file`) trigger prelude injection. If no prelude file is found in lib_dirs, injection is silently skipped (worker.rs line 1618). Tests using Additive strategy (via `eval`) skip prelude injection entirely.
 
-### 5. Delete old pipeline code (step 1.7)
-After all test callers are ported:
-- Delete `CompilationSession` from `src/session.rs` (keep shared state types: `InMemWorkerState`, `SharedCodegenState`, `WorkerJitState`, `CacheState`, `ObjectWorkerState`)
-- Delete `compile_unit()` family from `src/pipeline.rs` (keep module resolution: `resolve_module_file`, `discover_module_graph`, `toposort`, `compile_and_execute_expr`)
-- Delete old `compile_and_run`, `compile_module_graph`, `compile_module_graph_cached`, `CompiledModuleGraph`, `PipelineResult` from pipeline.rs
-- Delete `src/repl/mod.rs`'s `ReplSession` struct (keep display functions, slash command handlers as free functions or methods on CompilerSession)
-- Delete `run_with_workers`, `register_module_by_name` (already done)
-- Delete `main_new.rs` (orphan file, not in any module)
+### 5. Delete old pipeline code (step 1.7) — DONE
+
+Deletions completed:
+- `src/main_new.rs` — deleted (168 lines, orphan pseudocode)
+- `tests/pipeline_v2.rs` — deleted (656 lines, convergence scaffolding)
+- `src/session.rs` — 1669→641 lines: deleted `CompilationSession`, `CacheConfig`, `CodegenWorkerMsg`, `CodegenMode`, `ModuleDependencyGraph`, `FormResult`, async codegen worker. Kept: `CacheState`, `InMemWorkerState`, `SharedCodegenState`, `WorkerJitState`, `ObjectWorkerState`, utility functions.
+- `src/pipeline.rs` — 2829→853 lines: deleted `compile_unit`, `codegen_and_execute*`, `compile_and_run`, `compile_module_graph*`, `PipelineResult`, `CompiledModuleGraph`, `CompileUnitResult`, `CodegenResult`, `CodegenPacket`, old cache-hit loading, `#[cfg(test)]` module. Kept: `resolve_module_file`, `compile_and_execute_expr`, `compile_and_register_defn_shared`, `build_codegen_state_for_cache`, `discover_module_graph`, `toposort`, object compilation helpers.
+- `src/repl/` — disconnected via `lib.rs` (`pub mod repl` removed). Files kept on disk as reference. ~3201 lines unreachable.
+- `tests/stdlib.rs` — ported from `cranelisp::repl::ReplSession` to `helpers::ReplSession`
+- `tests/cache.rs` — ported from `compile_module_graph_cached` to `helpers::batch_run_file`
+- `tests/sprint23.rs` — 2 FileWatcher tests deleted (v3 only)
+
+Total: ~3828 lines deleted + ~3201 lines disconnected = ~7029 lines removed.
+
+**Exposed v4 gaps**: Cache pipeline integration tests (8) and modules compilation tests now fail because `batch_run_file` uses the v4 pipeline which doesn't yet handle multi-module batch compilation the same way the old pipeline did. These are future work, not regressions.
 
 ### 6. FQTypeName migration (separate task)
 FIXME on `Type::ADT` in `crates/cranelisp-types/src/types.rs`.

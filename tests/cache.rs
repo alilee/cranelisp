@@ -962,8 +962,6 @@ fn cache_neg_corrupt_metadata_does_not_succeed() {
 // Pipeline integration tests — cache wiring via compile_module_graph_cached
 // =============================================================================
 
-use cranelisp::session::CacheConfig;
-use cranelisp::pipeline::compile_module_graph_cached;
 use tempfile::TempDir;
 
 /// Create a temporary project directory with the given source files.
@@ -982,17 +980,15 @@ fn create_cache_test_project(files: &[(&str, &str)]) -> TempDir {
 
 /// Compile a project with caching enabled.
 /// Returns the i64 result value.
-fn compile_cached(project_dir: &std::path::Path, cache_dir: &std::path::Path) -> i64 {
-    let config = CacheConfig::Enabled {
-        cache_dir: cache_dir.to_path_buf(),
-    };
-    let result = compile_module_graph_cached(
+///
+/// The v4 pipeline always caches to `project_root/.cranelisp-cache`,
+/// so `cache_dir` is unused (kept for call-site compatibility).
+fn compile_cached(project_dir: &std::path::Path, _cache_dir: &std::path::Path) -> i64 {
+    let (value, _ty) = helpers::batch_run_file(
         &project_dir.join("main.cl"),
         &[],
-        &config,
-    )
-    .unwrap();
-    result.value
+    ).unwrap();
+    value
 }
 
 // spec: design/backend/module-caching.md §5 — single-file compile with caching works
