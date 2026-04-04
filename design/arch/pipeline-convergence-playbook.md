@@ -16,6 +16,8 @@ Commits landed:
 - [x] 1.6 (partial) Test adapter `ReplSession` in `tests/helpers/mod.rs` wrapping `CompilerSession`
 - [x] 1.6 (complete) Port ALL test files to v4 helpers
 - [x] 1.7 Delete old pipeline code (see §Deletions below)
+- [x] 1.8 Clean run() in main.rs — already v4-only, no old paths remain
+- [x] 1.9 Verify compilation — `cargo check` clean, `ring0` 106/108 (2 pre-existing)
 
 ### EvalResult Redesign
 `EvalResult` is now an enum:
