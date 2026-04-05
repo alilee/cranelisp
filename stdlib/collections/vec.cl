@@ -7,6 +7,8 @@
 ;;
 ;; Spec: plan-stdlib.md §3.3
 
+(import [prelude []])
+
 (import [macros [SexpBracket SList]])
 
 (defmacro vec "Construct a vec from elements" [&elems]

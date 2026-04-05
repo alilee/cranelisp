@@ -10,6 +10,8 @@
 ;; Spec: 03-types.md §3.2.4, 11-stdlib.md §11.5
 
 ;; Re-export trace primitives so users get everything from one import
+(import [prelude []])
+
 (export [primitives [trace Trace TraceCall name params result children nanos]])
 
 ;; Import what we need for our own definitions

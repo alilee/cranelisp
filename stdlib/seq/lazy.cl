@@ -10,6 +10,8 @@
 
 ;; ── Seq Type ────────────────────────────────────────────────────────────
 
+(import [prelude []])
+
 (deftype (Seq a) "A lazy sequence with thunked tail"
   SeqNil
   (SeqCons [:a head :(Fn [] (Seq a)) rest]))

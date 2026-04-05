@@ -4,5 +4,7 @@
 ;;   text.display — Display trait + impls
 ;;   text.string  — String operations
 
+(import [prelude []])
+
 (mod display)
 (mod string)

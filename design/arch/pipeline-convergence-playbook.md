@@ -21,24 +21,22 @@ Commits landed:
 - [x] 1.8 Clean run() in main.rs — already v4-only, no old paths remain
 - [x] 1.9 Verify compilation — `cargo check` clean, `ring0` 106/108 (2 pre-existing)
 
-### Phase 1 Steps NOT done (persistent workers)
-- [ ] 1.1 Persistent workers on CompilerSession — workers still run inline (single-threaded)
-- [ ] 1.2 `register_module` enqueues for workers — still synchronous inline processing
-
-**Impact**: Without persistent workers, multi-module compilation with dependency chains (prelude → core → user) deadlocks. The inline worker loop can't handle blocked modules because there's no second worker to compile the dependency. This blocks all prelude-dependent tests.
+### Phase 1 Steps (persistent workers) — DONE
+- [x] 1.1 Persistent workers on CompilerSession — scoped threads in `register_module_with_source`
+- [x] 1.2 `register_module` enqueues for workers — workers use `take_priority_work_blocking`
 
 ### Phase 2 Steps
 - [x] 2.0 Scheduler unit tests — 18/18 pass
-- [ ] 2.1 Worker pool lifecycle — no persistent workers exist to test
+- [x] 2.1 Worker pool lifecycle — scoped threads join on scope exit, shutdown via scheduler
 - [x] 2.2 Single trivial module — covered by ring0 (106/108)
-- [ ] 2.3 Prelude loading — **BLOCKED** by missing persistent workers (1.1/1.2)
+- [x] 2.3 Prelude loading — stdlib 38/54 pass (16 are macro pipeline gaps)
 - [x] 2.4 Import chains — partially working (modules 18/22, ring2 189/197)
-- [ ] 2.5 REPL eval with prelude — **BLOCKED** by 2.3
+- [ ] 2.5 REPL eval with prelude — not yet validated
 - [x] 2.6 REPL error recovery — working for non-prelude sessions
 - [x] 2.7 Integration tests (progressive) — ring0–ring3 validated, see table below
-- [ ] 2.8 E2E tests — v4_pipeline needs `--v4` flag removal; subprocess tests hang
+- [ ] 2.8 E2E tests — v4_pipeline needs `--v4` flag removal; subprocess tests need porting
 - [ ] 2.9 Link mode E2E — not attempted
-- [ ] 2.10 Full test suite — not yet; prelude hang prevents clean run
+- [ ] 2.10 Full test suite — macro pipeline gaps remain (see §Remaining Work)
 
 ### Display Formatting Fix (Phase 2)
 Ported rich REPL display formatting from old `src/repl/commands.rs` into `src/session_v4.rs`. The v4 pipeline's `format_eval_result` now produces the spec-compliant universal output format (spec §1.1):
@@ -88,7 +86,7 @@ Three test entry points, all through v4 `CompilerSession`:
 
 ## Test File Status
 
-**Total validated: ~788 pass / ~857 run = 92% pass rate** (excluding hangs)
+**Total validated: ~853 pass / ~922 run = 93% pass rate**
 
 | File | Tests | Status | Notes |
 |------|-------|--------|-------|
@@ -104,40 +102,45 @@ Three test entry points, all through v4 `CompilerSession`:
 | modules.rs | 22 | **18/22 pass** | 4 fail: multi-module compilation gaps |
 | ring4_trace.rs | 29 | **7/29 pass** | 22 fail: trace depends on prelude/stdlib features |
 | sketch_port.rs | 141 | **102/141 pass** | 39 fail: ADT display, constrained poly, platform (up from 11 pre-existing) |
-| io.rs | 3 | **Hangs** | Platform tests need prelude; prelude loading deadlocks |
-| e2e.rs | 6 | **Hangs** | Uses prelude via run-tests; prelude loading deadlocks |
-| cache.rs | 51 | **Hangs** | Multi-module cache tests trigger prelude loading |
-| stdlib.rs | ~40 | **Hangs** | Prelude loading deadlocks |
+| io.rs | 3 | **3/3 pass** | No longer hangs (persistent workers) |
+| cache.rs | 51 | **27/51 pass** | No longer hangs; 24 fail: cache invalidation gaps |
+| stdlib.rs | 54 | **38/54 pass** | No longer hangs; 16 fail: macro pipeline gaps |
+| e2e.rs | 6 | **Not validated** | Subprocess tests; needs porting |
 | exemplar.rs | ~5 | **Not validated** | Uses compile_module_graph |
 | examples.rs | ~5 | **Not validated** | Likely needs prelude |
 | lenient.rs | 16 | **4/16 fail** | Subprocess tests; binary needs `--v4` flag removed |
 | sprint23.rs | 0 | **Empty** | FileWatcher tests deleted (v3 only) |
 | pipeline_v2.rs | — | **Deleted** | Convergence scaffolding |
-| v4_pipeline.rs | ~40 | **Hangs/Fails** | Subprocess tests; uses `--v4` flag (deleted); needs porting |
-| v4_repl_eval.rs | ~10 | **Hangs** | Subprocess tests; binary needs rebuild |
+| v4_pipeline.rs | ~40 | **Not validated** | Subprocess tests; uses `--v4` flag (deleted); needs porting |
+| v4_repl_eval.rs | ~10 | **Not validated** | Subprocess tests; binary needs rebuild |
 
-## Blocking Issue: Prelude Loading Deadlock
+## Blocking Issue: Prelude Loading Deadlock — RESOLVED
 
-The v4 pipeline has no persistent worker threads (Phase 1 steps 1.1–1.2 were not implemented). `register_module` and `eval` run the worker loop inline in a single thread. When a module discovers a dependency (e.g., prelude), the inline worker tries to compile it synchronously via `compile_dep_inline`. For simple single-dependency chains this works. For the prelude chain (prelude → core → core.num → core.str → ...) it deadlocks because:
+The v4 pipeline had no persistent worker threads (Phase 1 steps 1.1–1.2). `register_module` ran the worker loop inline in a single thread, deadlocking on multi-module dependency chains.
 
-1. The inline worker is already processing module A
-2. Module A blocks on dependency B (prelude)
-3. `compile_dep_inline` starts processing B inline
-4. B blocks on dependency C (core)
-5. This recursive inline compilation either deadlocks on scheduler state or exceeds the retry limit
+**Resolution** (Sprint 49): Three changes landed together:
 
-**Resolution**: Implement persistent workers (Phase 1 steps 1.1–1.2) so that blocked modules park and a different worker picks up the dependency. This is the designed architecture per `pipeline-v4.md §5`.
+1. **Scoped worker threads**: `register_module_with_source` spawns scoped priority worker threads via `std::thread::scope`. Workers park blocked modules and pick up ready ones from the scheduler, preventing deadlocks even with a single worker (`priority_workers: 1`).
+
+2. **Export dependency loading**: `handle_export` now loads source modules on demand (same path as `handle_import`). Previously exports assumed source modules were pre-loaded.
+
+3. **Null import / prelude suppression** (spec §8.3.6, §8.8.1): `(import [module []])` is a null import — imports nothing and skips module loading. An explicit prelude reference in any import or export form suppresses the implicit `(import [prelude [*]])`. All stdlib modules include `(import [prelude []])` to avoid circular dependencies when a project prelude re-exports from them.
+
+4. **Pass 1 resume guard**: `pass1_done` flag on `ModuleSuspendState` prevents re-running Pass 1 when a module resumes after blocking at form index 0.
 
 ## Remaining Work
 
-### 1. Persistent workers (Phase 1 steps 1.1–1.2)
+### 1. Macro pipeline gaps (16 stdlib test failures)
 
-This is the critical path. Without it, nothing that uses prelude/stdlib works.
+Three categories of failure in stdlib macro tests:
 
-### 2. Macro pipeline gaps (5 failures)
+- **Macros module symbols unavailable in expansion** (str, threading macros — 10 failures): Macro bodies reference `SexpStr`, `SexpList` etc. from the `macros` synthetic module. When prelude macros expand in user context, the `macros` module symbols are not available for the expanded code. Error: `"undefined variable: SexpStr"` or `"constructor SexpList has no type scheme"`.
+- **Defmacro-in-expansion-results** (const, def macros — 4 failures): The `const`/`def` prelude macros expand to `defmacro` forms. The v4 pipeline's `process_regular_form` doesn't handle defmacro produced by macro expansion. Error: `"defmacro should be handled before AST building"`.
+- **Vec literal parse intercept** (vec macro — 2 failures): `(vec)` is intercepted by the parser as a vec literal before macro expansion can run. Error: `"vec literals not yet supported (Ring 1)"`.
+
+### 2. Macro pipeline gaps (non-stdlib, from macros.rs — 5 failures)
 
 - **Macro-calls-macro**: m2 expanding to call m1 fails with "undefined variable: m1". Macro environment not shared between sequential defmacro definitions.
-- **Defmacro-in-results**: `(make-id-macro my-id)` — defmacro produced by macro expansion not handled.
 - **Body type validation**: Macro body returning non-Sexp type not caught as error.
 - **Expansion depth limit**: Mutual recursion between macros not detected; no depth limit enforcement.
 - **Error recovery**: Bad macro body silently succeeds instead of producing a type error.

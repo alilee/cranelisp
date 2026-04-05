@@ -5,6 +5,8 @@
 ;;
 ;; Spec: plan-stdlib.md §3.3
 
+(import [prelude []])
+
 (defn identity "Return the argument unchanged" [x] x)
 
 (defn compose "Compose two functions: (compose f g) returns (fn [x] (f (g x)))"

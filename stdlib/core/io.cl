@@ -13,6 +13,8 @@
 
 ;; Pure and Effect constructors are in `primitives` but stored as Import
 ;; entries in `user` (not seeded into new modules). Explicit import needed.
+(import [prelude []])
+
 (import [primitives [Pure]])
 (import [collections.list [List Nil Cons]])
 

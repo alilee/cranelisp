@@ -5,6 +5,8 @@
 ;;
 ;; Spec: plan-stdlib.md §3.3
 
+(import [prelude []])
+
 (deftype (Result a e) (Ok [:a val]) (Err [:e err]))
 
 (defn is-ok? "Test if a Result is Ok" [r]

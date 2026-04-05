@@ -4,6 +4,8 @@
 ;;
 ;; Spec: plan-stdlib.md §3.3
 
+(import [prelude []])
+
 (deftype (Pair a b) (Pair [:a first :b second]))
 
 (defn first "Extract the first element of a pair" [p]

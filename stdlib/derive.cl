@@ -10,6 +10,8 @@
 ;;
 ;; Spec: 07-traits.md §7.4, plan-stdlib.md §3.3
 
+(import [prelude []])
+
 (import [macros [*]])
 (import [core.syntax [sfold sreverse sempty? slist]])
 

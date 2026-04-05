@@ -5,6 +5,8 @@
 ;;
 ;; Spec: plan-stdlib.md §3.3
 
+(import [prelude []])
+
 (import [fn.option [Option None]])
 
 (deftrait Default

@@ -27,11 +27,16 @@ unsafe impl Send for SendableSession {}
 unsafe impl Sync for SendableSession {}
 
 /// Shared prelude-loaded session for all stdlib tests.
+///
+/// Uses a fixture project root (tests/fixtures/stdlib_project/) with an
+/// empty user.cl so the real repo root's user.cl (which may contain
+/// development artifacts like unimplemented traits) doesn't interfere.
 static SESSION: LazyLock<SendableSession> = LazyLock::new(|| {
-    let project_root = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let stdlib_dir = project_root.join("stdlib");
+    let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let project_root = manifest_dir.join("tests").join("fixtures").join("stdlib_project");
+    let stdlib_dir = manifest_dir.join("stdlib");
     let session =
-        ReplSession::new_with_prelude(project_root, &[stdlib_dir])
+        ReplSession::new_with_prelude(&project_root, &[stdlib_dir])
             .expect("prelude should load without errors");
     SendableSession(Mutex::new(session))
 });

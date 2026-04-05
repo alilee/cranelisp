@@ -5,6 +5,8 @@
 ;;
 ;; Spec: 12-runtime.md §12.4.2, plan-stdlib.md §3.3
 
+(import [prelude []])
+
 (mod lazy)
 
 (export [lazy [Seq SeqNil SeqCons

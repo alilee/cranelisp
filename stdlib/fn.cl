@@ -6,6 +6,8 @@
 ;;   fn.compose   — compose, pipe, identity, flip
 ;;   fn.threading — ->, ->> macros
 
+(import [prelude []])
+
 (mod option)
 (mod result)
 (mod compose)

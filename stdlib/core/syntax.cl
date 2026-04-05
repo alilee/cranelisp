@@ -4,6 +4,8 @@
 ;; module. `sconcat` is a runtime extern in the `macros` module (not here).
 ;; Helpers are available via explicit (import [core.syntax [...]]).
 
+(import [prelude []])
+
 (import [macros [*]])
 
 ;; -- SList Helpers ----------------------------------------------------------

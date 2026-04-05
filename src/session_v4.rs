@@ -377,7 +377,8 @@ pub struct SharedState {
 /// The compiler session — scheduler-driven concurrent compilation.
 ///
 /// One session per process. Owns the TypeChecker, codegen state, macro env,
-/// and scheduler. Workers run inline (will become persistent threads).
+/// and scheduler. `register_module` spawns scoped priority worker threads
+/// that process modules from the scheduler's work queue.
 pub struct CompilerSession {
     /// Type checker state (persists across forms).
     pub tc: cranelisp_typecheck::TypeChecker,
@@ -397,6 +398,10 @@ pub struct CompilerSession {
     /// by nice workers. All SharedState fields are inherently thread-safe
     /// (Mutex, AtomicBool, read-only).
     pub shared: Arc<SharedState>,
+
+    /// Number of priority worker threads to spawn for module compilation.
+    /// Defaults to 1 for determinism in tests; production uses num_cpus().
+    priority_workers: usize,
 
     /// Project root directory (read-only after construction).
     pub project_root: PathBuf,
@@ -422,10 +427,10 @@ pub struct CompilerSession {
 impl CompilerSession {
     /// Create a new compiler session (pipeline-v4.md §5).
     ///
-    /// TODO: spawn persistent workers based on settings.priority_workers
-    /// and settings.nice_workers. Currently delegates to old path.
+    /// `settings.priority_workers` controls how many scoped threads are
+    /// spawned per `register_module` call. Tests use 1 for determinism.
     pub fn new(
-        _settings: SessionSettings,
+        settings: SessionSettings,
         project_root: PathBuf,
     ) -> Self {
         let lib_dirs = crate::session::assemble_lib_dirs(&project_root);
@@ -443,6 +448,8 @@ impl CompilerSession {
 
         let cache_state = crate::session::CacheState::new(cache_dir.clone());
 
+        let priority_workers = std::cmp::max(settings.priority_workers, 1);
+
         CompilerSession {
             tc,
             inmem_worker,
@@ -459,6 +466,7 @@ impl CompilerSession {
                 file_to_module: Mutex::new(HashMap::new()),
                 cache_state: Mutex::new(Some(cache_state)),
             }),
+            priority_workers,
             project_root,
             platform_registry: PlatformRegistry::new(),
             type_defs: HashMap::new(),
@@ -492,6 +500,11 @@ impl CompilerSession {
     }
 
     /// Register a module with explicit source (internal + test helpers).
+    ///
+    /// Spawns scoped priority worker threads that process the module and
+    /// its dependencies via the scheduler's work queue. Workers park on
+    /// blocked modules and pick up ready ones, preventing deadlocks on
+    /// multi-module dependency chains.
     pub fn register_module_with_source(
         &mut self,
         module_name: &str,
@@ -504,46 +517,68 @@ impl CompilerSession {
         // Register module with scheduler (entry module, not delaying others).
         self.shared.scheduler.register_module(module.clone(), false);
 
-        // Build sexp map for the worker loop.
-        let mut module_sexps = HashMap::new();
-        module_sexps.insert(module.clone(), sexps);
+        // Build shared maps for worker threads.
+        let module_sexps = Mutex::new({
+            let mut map = HashMap::new();
+            map.insert(module.clone(), sexps);
+            map
+        });
+        let suspend_states = Mutex::new(HashMap::new());
 
-        // Extract shared codegen state from InMemWorkerState for the worker loop.
-        // This bridges the old InMemWorkerState with the new SharedCodegenState
-        // + WorkerJitState types. After the loop, state is synced back.
+        // Extract shared codegen state from InMemWorkerState for workers.
         let shared_codegen =
             crate::session::SharedCodegenState::extract_from(&mut self.inmem_worker);
-        let mut worker_jit = crate::session::WorkerJitState::new();
 
-        // Build WorkerContext bundling all worker parameters.
-        let mut ctx = WorkerContext {
-            tc: &mut self.tc,
-            scheduler: &self.shared.scheduler,
+        // Temporarily move TC and PlatformRegistry into Mutexes so worker
+        // threads can lock them. Moved back after the scope exits.
+        let tc = std::mem::replace(&mut self.tc, cranelisp_typecheck::TypeChecker::new());
+        let tc_mutex = Mutex::new(tc);
+        let platform_registry = std::mem::replace(
+            &mut self.platform_registry, PlatformRegistry::new(),
+        );
+        let platform_mutex = Mutex::new(platform_registry);
+
+        // Build shared worker context for scoped threads.
+        let worker_shared = crate::worker::PriorityWorkerShared {
+            tc: &tc_mutex,
+            platform_registry: &platform_mutex,
             shared_codegen: &shared_codegen,
-            worker_jit: &mut worker_jit,
-            platform_registry: &mut self.platform_registry,
+            scheduler: &self.shared.scheduler,
+            module_sexps: &module_sexps,
+            suspend_states: &suspend_states,
             lib_dirs: &self.lib_dirs,
             project_root: &self.project_root,
-            object_codegen_stash: Some(&self.shared.object_codegen_inputs),
+            object_codegen_stash: &self.shared.object_codegen_inputs,
             shared_state: Some(&self.shared),
         };
 
-        // Run the priority worker loop inline (single-threaded).
-        let loop_result = crate::worker::priority_worker_loop(
-            &mut ctx,
-            &mut module_sexps,
-        );
+        // Spawn scoped priority worker threads. They block on the scheduler's
+        // condvar when no work is available, and exit when all modules reach
+        // TypecheckDone/Complete/Failed (or on shutdown).
+        let num_workers = self.priority_workers;
+        std::thread::scope(|s| {
+            for i in 0..num_workers {
+                let shared_ref = &worker_shared;
+                std::thread::Builder::new()
+                    .name(format!("priority-worker-{}", i))
+                    .spawn_scoped(s, move || {
+                        crate::worker::priority_worker_thread(shared_ref, i);
+                    })
+                    .expect("failed to spawn priority worker thread");
+            }
+            // Scope exits here — all workers join before continuing.
+        });
 
-        // Drain per-worker JIT state to shared before syncing back.
-        worker_jit.drain_to_shared(&shared_codegen);
+        // Move TC and PlatformRegistry back from Mutexes.
+        self.tc = tc_mutex.into_inner().unwrap_or_else(|e| e.into_inner());
+        self.platform_registry = platform_mutex.into_inner()
+            .unwrap_or_else(|e| e.into_inner());
 
         // Sync shared codegen state back to InMemWorkerState.
         shared_codegen.sync_back_to(&mut self.inmem_worker);
 
-        // Propagate any error from the worker loop.
-        loop_result?;
-
-        // Check scheduler completion.
+        // Check scheduler completion — all workers have exited, so this
+        // is a non-blocking status check (not a wait).
         self.shared.scheduler.wait_inmem_complete()?;
 
         // Register module aliases for GOT lookup by unqualified name.
@@ -745,6 +780,8 @@ impl CompilerSession {
                     shared_state: None,
                 };
 
+                // REPL eval is always fresh (single-form, not resuming).
+                let mut pass1_done = false;
                 let r = worker::process_module_forms(
                     &mut wctx,
                     &module,
@@ -753,6 +790,7 @@ impl CompilerSession {
                     &mut accumulator,
                     &mut expanded_program,
                     ModuleStrategy::Additive,
+                    &mut pass1_done,
                 );
 
                 worker_jit.drain_to_shared(&shared_codegen);

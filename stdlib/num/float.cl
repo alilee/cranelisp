@@ -7,6 +7,8 @@
 ;;
 ;; Spec: plan-stdlib.md §3.3
 
+(import [prelude []])
+
 (defn abs-float "Absolute value of a float"
   [:Float x] :Float
   (if (lt-f64 x 0.0) (sub-f64 0.0 x) x))

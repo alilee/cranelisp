@@ -179,7 +179,15 @@ Imports `concat` and `join` as bare names, and registers `str` as an alias for `
 
 Registers `opt` as an alias for `core.option` without importing any bare names. Useful when you only want qualified access: `opt/Some`.
 
-### 8.3.6 Super Import
+### 8.3.6 Null Import
+
+```clojure
+(import [core.option []])
+```
+
+Imports nothing and does not trigger module loading or resolution. Useful to suppress the implicit prelude import (§8.8.1) — an explicit `(import [prelude []])` replaces the implicit glob without loading the prelude module.
+
+### 8.3.7 Super Import
 
 ```clojure
 (import [super [*]])
@@ -501,15 +509,17 @@ A private name:
 
 ### 8.8.1 Implicit Import
 
-When a module named `prelude` is found during module resolution, the implementation MUST inject an implicit import for every source-level module except the prelude itself and its transitive dependencies:
+When a module's source does not reference `prelude` in any `import` or `export` form, the implementation MUST inject an implicit glob import:
 
 ```clojure
 (import [prelude [*]])    ; implicit -- injected by the compiler
 ```
 
-This makes all public names from the prelude available as bare symbols in every user module.
+This makes all public names from the prelude available as bare symbols.
 
-An explicit `(import [prelude [...]])` in a module replaces the implicit glob import. This allows modules to selectively import from the prelude rather than receiving all names.
+An explicit `(import [prelude [...]])` or `(export [prelude [...]])` suppresses the implicit glob. The module author may import specific prelude names, suppress the prelude entirely with a null import (§8.3.6), or re-export prelude symbols without receiving the full glob.
+
+A `(mod prelude)` declaration does not suppress the implicit import, but the declared submodule shadows the library prelude during module resolution.
 
 ### 8.8.2 Regular Module Semantics
 

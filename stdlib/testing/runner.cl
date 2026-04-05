@@ -12,6 +12,8 @@
 ;;
 ;; Spec: plan-stdlib.md §3.3
 
+(import [prelude []])
+
 (import [primitives [Trace TraceCall]])
 (import [fn.option [Option Some None]])
 (import [macros [SexpSym SexpStr SexpList SCons SNil Sexp SList]])

@@ -10,6 +10,8 @@
 ;;
 ;; Spec: plan-stdlib.md §3.3
 
+(import [prelude []])
+
 (import [macros [SexpSym SexpStr SexpList SCons SNil Sexp SList]])
 
 (defmacro str "Concatenate string representations of all arguments"

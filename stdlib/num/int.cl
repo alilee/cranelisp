@@ -6,6 +6,8 @@
 ;;
 ;; Spec: plan-stdlib.md §3.3
 
+(import [prelude []])
+
 (defn rem "Integer remainder (truncated division): a - (a / b) * b"
   [:Int a :Int b] :Int
   (sub-i64 a (mul-i64 (div-i64 a b) b)))

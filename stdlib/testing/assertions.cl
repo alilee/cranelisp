@@ -6,6 +6,8 @@
 ;;
 ;; Spec: plan-stdlib.md §3.3
 
+(import [prelude []])
+
 (import [compare.eq [Eq = !=]])
 (import [text.display [Display show]])
 (import [fn.option [Option Some None]])

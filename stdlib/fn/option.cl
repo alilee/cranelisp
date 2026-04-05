@@ -5,4 +5,6 @@
 ;;
 ;; Spec: 06-adt.md §6.1
 
+(import [prelude []])
+
 (deftype (Option a) None (Some [:a val]))

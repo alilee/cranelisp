@@ -4,6 +4,8 @@
 ;;
 ;; Spec: 09-macros.md §9.5, plan-stdlib.md §3.2
 
+(import [prelude []])
+
 (import [macros [SexpSym SexpStr SexpInt SexpFloat SexpBool SexpList SexpBracket
                  SCons SNil Sexp SList]])
 

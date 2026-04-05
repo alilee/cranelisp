@@ -3,4 +3,6 @@
 ;; Submodules:
 ;;   io.monad — pure, do, bind! (IO monadic interface)
 
+(import [prelude []])
+
 (mod monad)

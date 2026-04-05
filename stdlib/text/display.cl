@@ -5,6 +5,8 @@
 ;;
 ;; Spec: 07-traits.md §7.1
 
+(import [prelude []])
+
 (deftrait Display
   (show [self] String))
 

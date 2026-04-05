@@ -171,8 +171,9 @@ pub fn process_module_forms(
     accumulator: &mut ModuleCheckAccumulator,
     expanded_program: &mut Vec<TopLevel>,
     strategy: ModuleStrategy,
+    pass1_done: &mut bool,
 ) -> Result<ProcessResult, CranelispError> {
-    let is_fresh = start_form_index == 0;
+    let is_fresh = !*pass1_done;
 
     if is_fresh && strategy == ModuleStrategy::Replace {
         // Set active module and clear for replace.
@@ -183,8 +184,9 @@ pub fn process_module_forms(
         inject_primitives_import(ctx.tc)?;
         inject_macros_import(ctx.tc)?;
 
-        // Prelude injection: inject (import [prelude [*]]) for non-prelude modules.
-        if let Some(result) = inject_prelude_if_needed(ctx, module)? {
+        // Prelude injection: inject (import [prelude [*]]) for non-prelude modules
+        // unless the source explicitly references prelude in an import or export (§8.8.1).
+        if let Some(result) = inject_prelude_if_needed(ctx, module, sexps)? {
             return Ok(result);
         }
     } else if is_fresh && strategy == ModuleStrategy::Additive {
@@ -201,7 +203,7 @@ pub fn process_module_forms(
         ctx.tc.set_current_module(module.clone());
     }
 
-    // --- Pass 1: only on fresh start ---
+    // --- Pass 1: only on fresh start (not on resume after blocking) ---
     if is_fresh {
         let (regular_sexps, macro_infos) = separate_macros(sexps)?;
 
@@ -217,6 +219,7 @@ pub fn process_module_forms(
 
         let defaults = register_default_methods(ctx.tc, module, accumulator)?;
         accumulator.default_method_defns = defaults;
+        *pass1_done = true;
     }
 
     // --- Pass 2: per-sexp expand-then-check, from start_form_index ---
@@ -409,9 +412,6 @@ fn pass2_check_bodies_with_expansion(
                 match handle_import(ctx, module, specs)? {
                     BlockAction::Continue => {}
                     BlockAction::Block { dep_module, dep_sexps } => {
-                        // Save resume point: re-process this import after unblock
-                        // because we need to register all specs (some may have
-                        // been skipped due to the blocking dep).
                         return Ok(Pass2Result::Blocked {
                             form_index: form_idx,
                             dep_module,
@@ -421,7 +421,16 @@ fn pass2_check_bodies_with_expansion(
                 }
             }
             FormKind::Export(specs) => {
-                handle_export(ctx, &specs)?;
+                match handle_export(ctx, module, &specs)? {
+                    BlockAction::Continue => {}
+                    BlockAction::Block { dep_module, dep_sexps } => {
+                        return Ok(Pass2Result::Blocked {
+                            form_index: form_idx,
+                            dep_module,
+                            dep_sexps,
+                        });
+                    }
+                }
             }
             FormKind::Mod(decl) => {
                 handle_mod(ctx, module, &decl)?;
@@ -514,6 +523,11 @@ fn handle_import(
 ) -> Result<BlockAction, CranelispError> {
     for spec in &specs {
         let dep = &spec.module_path;
+
+        // §8.3.6 Null import: empty names means suppress loading entirely.
+        if matches!(&spec.names, ImportNames::None) {
+            continue;
+        }
 
         // Already loaded — register the import and continue.
         if ctx.tc.has_module(dep) {
@@ -700,11 +714,80 @@ fn try_cache_hit_load(
 }
 
 /// Handle export forms: register export metadata in the typechecker.
+/// Handle export forms: ensure source modules are loaded, then register re-exports.
+///
+/// Export forms like `(export [compare.eq [Eq = !=]])` re-export symbols from
+/// the named module. The source module must be loaded in the typechecker before
+/// `register_exports` can read its symbol table. If the source module isn't
+/// loaded, we trigger dependency loading via the same path as `handle_import`
+/// and return `BlockAction::Block`.
 fn handle_export(
     ctx: &mut WorkerContext,
+    module: &ModuleFullPath,
     specs: &[ExportSpec],
-) -> Result<(), CranelispError> {
-    ctx.tc.register_exports(specs)
+) -> Result<BlockAction, CranelispError> {
+    for spec in specs {
+        let dep = &spec.module_path;
+
+        // Already loaded — continue to the next spec.
+        if ctx.tc.has_module(dep) {
+            continue;
+        }
+
+        // Source module not loaded — need to load it first.
+        // Resolve file path.
+        let dep_file = crate::pipeline::resolve_module_file(dep, ctx.lib_dirs)
+            .ok_or_else(|| CranelispError::ModuleError {
+                message: format!(
+                    "module '{}' not found (re-exported by '{}')",
+                    dep, module
+                ),
+                file: None,
+                span: spec.span,
+            })?;
+
+        // Populate file_to_module mapping for file watcher.
+        if let Some(shared) = ctx.shared_state {
+            if let Ok(canonical) = dep_file.canonicalize() {
+                shared
+                    .file_to_module
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .insert(canonical, dep.clone());
+            }
+        }
+
+        // Cache check.
+        if try_cache_hit_load(ctx, dep, &dep_file) {
+            continue;
+        }
+
+        // Read and parse source.
+        let source = std::fs::read_to_string(&dep_file).map_err(|e| {
+            CranelispError::ModuleError {
+                message: format!(
+                    "cannot read module '{}' from '{}': {}",
+                    dep, dep_file.display(), e
+                ),
+                file: Some(dep_file.clone()),
+                span: spec.span,
+            }
+        })?;
+        let dep_sexps = cranelisp_frontend::parse(&source)?;
+
+        // Register dep with scheduler and block.
+        ctx.scheduler.register_module(dep.clone(), true);
+        ctx.scheduler.block_for_typecheck(module, dep, &Symbol::from("*"))?;
+
+        return Ok(BlockAction::Block {
+            dep_module: dep.clone(),
+            dep_sexps,
+        });
+    }
+
+    // All source modules loaded — register the re-exports.
+    ctx.tc.register_exports(specs)?;
+    Ok(BlockAction::Continue)
 }
 
 /// Handle mod forms: write inline body to disk if present.
@@ -1571,14 +1654,25 @@ fn register_default_methods(
 
 /// Inject prelude import for non-prelude modules, blocking if prelude needs loading.
 ///
+/// Per spec §8.8.1: the implicit `(import [prelude [*]])` is suppressed when the
+/// module's source contains an explicit `(import [prelude ...])` or
+/// `(export [prelude ...])`. This allows modules to control their prelude
+/// relationship — specific imports, null import (§8.3.6), or re-export.
+///
 /// Returns `Some(ProcessResult::Blocked { .. })` if the prelude must be compiled
-/// first, `None` if prelude is already loaded or not needed.
+/// first, `None` if prelude is already loaded, not found, or suppressed.
 fn inject_prelude_if_needed(
     ctx: &mut WorkerContext,
     module: &ModuleFullPath,
+    sexps: &[Sexp],
 ) -> Result<Option<ProcessResult>, CranelispError> {
     let prelude_path = ModuleFullPath::from("prelude");
     if *module == prelude_path {
+        return Ok(None);
+    }
+
+    // §8.8.1: explicit import/export of prelude suppresses the implicit glob.
+    if sexps_reference_prelude(sexps) {
         return Ok(None);
     }
 
@@ -1629,6 +1723,47 @@ fn inject_prelude_if_needed(
     }
 
     Ok(None)
+}
+
+/// Check whether a module's source sexps contain an explicit reference to
+/// `prelude` in an import or export form (spec §8.8.1).
+fn sexps_reference_prelude(sexps: &[Sexp]) -> bool {
+    for sexp in sexps {
+        let Sexp::List(items, _) = sexp else { continue };
+        if items.len() < 2 { continue; }
+        let Sexp::Symbol(head, _) = &items[0] else { continue };
+        if head.as_str() != "import" && head.as_str() != "export" {
+            continue;
+        }
+        // Check each import/export spec for a module path of "prelude".
+        // Import/export specs use brackets: (import [module [names...]])
+        // The inner spec is Sexp::Bracket, not Sexp::List.
+        for spec_sexp in &items[1..] {
+            let spec_items = match spec_sexp {
+                Sexp::Bracket(items, _) => items,
+                Sexp::List(items, _) => items,
+                _ => continue,
+            };
+            if spec_items.is_empty() { continue; }
+            let module_name = match &spec_items[0] {
+                Sexp::Symbol(name, _) => Some(name.as_str()),
+                // Aliased form: [(module alias) [...]] or ((module alias) [...])
+                Sexp::Bracket(alias_items, _) | Sexp::List(alias_items, _)
+                    if !alias_items.is_empty() =>
+                {
+                    match &alias_items[0] {
+                        Sexp::Symbol(name, _) => Some(name.as_str()),
+                        _ => None,
+                    }
+                }
+                _ => None,
+            };
+            if module_name == Some("prelude") {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 /// Inject a wildcard import of the `primitives` module into the current module.
@@ -1995,11 +2130,18 @@ fn handle_cached_codegen(
 // ---------------------------------------------------------------------------
 
 /// Per-module suspension state preserved across blocking/resumption.
+// FIXME(/int): Refactor process_module_forms to take &mut ModuleSuspendState
+// instead of separate &mut accumulator, &mut expanded_program, &mut pass1_done.
+// This would simplify the call sites and keep suspension state cohesive.
 pub(crate) struct ModuleSuspendState {
     pub(crate) accumulator: ModuleCheckAccumulator,
     /// Expanded program forms accumulated across suspensions.
     /// Forms processed before the block point are preserved here.
     pub(crate) expanded_program: Vec<TopLevel>,
+    /// Whether Pass 1 (register signatures) has been completed for this module.
+    /// Prevents re-running Pass 1 on resume when start_form_index is 0
+    /// (which happens when a module blocks on its very first form).
+    pub(crate) pass1_done: bool,
 }
 
 /// Main worker loop: pull work from the scheduler and process it.
@@ -2037,6 +2179,7 @@ pub fn priority_worker_loop(
                     .or_insert_with(|| ModuleSuspendState {
                         accumulator: ModuleCheckAccumulator::new(),
                         expanded_program: Vec::new(),
+                        pass1_done: false,
                     });
 
                 match process_module_forms(
@@ -2044,6 +2187,7 @@ pub fn priority_worker_loop(
                     &mut state.accumulator,
                     &mut state.expanded_program,
                     ModuleStrategy::Replace,
+                    &mut state.pass1_done,
                 ) {
                     Ok(ProcessResult::Complete { check_result, program }) => {
                         // Post-typecheck codegen sweep (W2).
@@ -2265,6 +2409,7 @@ fn handle_typecheck_work(
         states.remove(module).unwrap_or_else(|| ModuleSuspendState {
             accumulator: ModuleCheckAccumulator::new(),
             expanded_program: Vec::new(),
+            pass1_done: false,
         })
     };
 
@@ -2291,6 +2436,7 @@ fn handle_typecheck_work(
         &mut state.accumulator,
         &mut state.expanded_program,
         ModuleStrategy::Replace,
+        &mut state.pass1_done,
     ) {
         Ok(ProcessResult::Complete { check_result, program }) => {
             // Post-typecheck codegen sweep.

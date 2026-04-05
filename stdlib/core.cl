@@ -1,3 +1,5 @@
+(import [prelude []])
+
 (mod syntax)
 (mod io)
 (mod trace)

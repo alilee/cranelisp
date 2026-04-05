@@ -7,6 +7,8 @@
 ;;
 ;; Spec: 06-adt.md §6.1, plan-stdlib.md §3.3
 
+(import [prelude []])
+
 (import [fn.option [Option Some None]])
 (import [macros [SexpSym SexpList SCons SNil Sexp SList]])
 

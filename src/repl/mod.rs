@@ -662,6 +662,7 @@ impl ReplSession {
                     shared_state: None,
                 };
 
+                let mut pass1_done = false;
                 let r = worker::process_module_forms(
                     &mut wctx,
                     &module,
@@ -670,6 +671,7 @@ impl ReplSession {
                     &mut accumulator,
                     &mut expanded_program,
                     ModuleStrategy::Additive,
+                    &mut pass1_done,
                 );
 
                 worker_jit.drain_to_shared(&shared_codegen);

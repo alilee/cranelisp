@@ -5,6 +5,8 @@
 ;;
 ;; Spec: 09-macros.md §9.5
 
+(import [prelude []])
+
 (import [macros [SexpSym SexpList SCons SNil Sexp SList]])
 
 (defmacro -> "Thread value through forms as first argument"

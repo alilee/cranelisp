@@ -116,6 +116,7 @@ Macros: ->, ->>, vec, when, unless, const, const-, do, cond, list, str, case, de
 - Prelude uses only `(export ...)` forms — pure re-export shell
 - Modules outside prelude graph (derive.cl) use primitives directly, not trait operators
 - Macros in submodules are registered in both expander AND symbol table (pipeline fix)
+- **All stdlib modules MUST include `(import [prelude []])`** — the null import (spec §8.3.6) suppresses the implicit prelude glob (spec §8.8.1). This is required because any stdlib module could be re-exported by a project's custom prelude, and importing from a prelude that depends on you is a circular dependency. Stdlib modules use only primitives and explicit imports from each other, never prelude symbols.
 
 ## Pipeline Changes
 
