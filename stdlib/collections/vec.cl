@@ -9,10 +9,10 @@
 
 (import [prelude []])
 
-(import [macros [SexpBracket SList]])
-
+;; Macro body uses qualified macros/ name so expansion is independent
+;; of the call-site's imports (spec §9.1.3).
 (defmacro vec "Construct a vec from elements" [&elems]
-  (SexpBracket elems))
+  (macros/SexpBracket elems))
 
 (defn vec-map "Apply a function to each element of a Vec"
   [f v]

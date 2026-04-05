@@ -70,11 +70,20 @@ fn run(
     s.register_module(&entry_module_name)?;
 
     match action {
-        // §7: Run mode.
+        // §7: Run mode (spec §12.6).
+        // main returns IO _. Exit code is the inner Int value, or 0 for
+        // non-Int IO results and non-IO main (pre-Ring-4 compatibility).
         Action::Run => {
             s.wait_inmem_complete()?;
-            s.trampoline(&entry_module_name)?;
+            let (value, ty) = s.trampoline(&entry_module_name)?;
             s.wait_object_complete()?;
+            s.shutdown();
+            let exit_code = if ty == cranelisp_types::Type::Int {
+                value as i32
+            } else {
+                0
+            };
+            process::exit(exit_code);
         }
         // §8: Link mode.
         Action::Link => {

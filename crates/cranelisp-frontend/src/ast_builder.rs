@@ -966,7 +966,7 @@ fn build_list_expr(
             // and flows through the module system as a name in `primitives`.
             // The typechecker handles it when the callee resolves to a special form.
             "run-tests" => return build_run_tests(children, span),
-            "vec" => return Err(parse_err("vec literals not yet supported (Ring 1)", *head_span)),
+            // "vec" is handled by the prelude vec macro — no AST intercept needed.
             "par-let" => {
                 return Err(parse_err("par-let not yet supported (Ring 4)", *head_span))
             }
@@ -1954,11 +1954,13 @@ mod tests {
         }
     }
 
-    // spec: 02-grammar §2.3.9 — vec keyword form not yet implemented
+    // spec: 02-grammar §2.3.9 — vec is now handled by the prelude vec macro
+    // (no AST intercept). It parses as a regular function application.
     #[test]
-    fn test_reject_vec_keyword() {
-        let err = parse_and_build_expr("(vec 1 2 3)").unwrap_err();
-        assert!(err.message().contains("vec literals not yet supported"));
+    fn test_vec_parses_as_call() {
+        // (vec 1 2 3) should parse as a regular Apply, not be rejected.
+        let expr = parse_and_build_expr("(vec 1 2 3)").unwrap();
+        assert!(matches!(expr, cranelisp_types::Expr::Apply { .. }));
     }
 
     // -- deftrait --

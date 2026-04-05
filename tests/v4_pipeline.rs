@@ -1,12 +1,11 @@
-//! Integration tests for the v4 scheduler-driven pipeline (`--v4 --run`).
+//! Integration tests for the v4 scheduler-driven pipeline (`--run`).
 //!
-//! Sprint 41 Wave 3: verifies that simple programs (primitives + special forms
-//! only, no imports, no macros, no operators) compile correctly through the
-//! scheduler path. Also verifies that non-qualifying programs fall back to the
-//! old delegation path and still produce correct output.
-//!
+//! Verifies that programs compile correctly through the unified pipeline.
 //! These are Layer 4 (E2E) tests: they invoke the binary as a subprocess and
 //! assert on stdout content and exit code. No Rust APIs.
+//!
+//! Note: `run_old` is kept as an alias for `run_v4` — the old pipeline was
+//! deleted in sprint 49. Parity tests now verify the single pipeline works.
 
 use std::path::PathBuf;
 use std::process::{Command, Output, Stdio};
@@ -52,28 +51,8 @@ fn test_dir(label: &str) -> PathBuf {
     dir
 }
 
-/// Run a Cranelisp source file through `--v4 --run` and return the output.
+/// Run a Cranelisp source file through `--run` and return the output.
 fn run_v4(source: &str, label: &str) -> Output {
-    let binary = binary_path();
-    assert!(
-        binary.exists(),
-        "cranelisp binary not found at {binary:?} — run `cargo build` first"
-    );
-    let dir = test_dir(label);
-    let source_path = dir.join("test.cl");
-    std::fs::write(&source_path, source).unwrap();
-
-    Command::new(&binary)
-        .args(["--v4", "--run", source_path.to_str().unwrap()])
-        .current_dir(&dir)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .output()
-        .expect("failed to run cranelisp")
-}
-
-/// Run a Cranelisp source file through `--run` (old path) and return the output.
-fn run_old(source: &str, label: &str) -> Output {
     let binary = binary_path();
     assert!(
         binary.exists(),
@@ -92,6 +71,12 @@ fn run_old(source: &str, label: &str) -> Output {
         .expect("failed to run cranelisp")
 }
 
+/// Alias for `run_v4` — the old pipeline was deleted in sprint 49.
+/// Kept so parity test call sites don't need rewriting.
+fn run_old(source: &str, label: &str) -> Output {
+    run_v4(source, label)
+}
+
 fn stdout_of(o: &Output) -> String {
     String::from_utf8_lossy(&o.stdout).trim().to_string()
 }
@@ -100,51 +85,75 @@ fn stderr_of(o: &Output) -> String {
     String::from_utf8_lossy(&o.stderr).trim().to_string()
 }
 
+/// Assert that the process exited with the given code (spec §12.6:
+/// exit code is the Int value from main, or 0 for non-Int results).
+fn assert_exit_code(out: &Output, expected: i32, label: &str) {
+    assert_eq!(
+        out.status.code(),
+        Some(expected),
+        "{label}: expected exit code {expected}, got {:?}\nstderr: {}",
+        out.status.code(),
+        stderr_of(out),
+    );
+}
+
+/// Assert that the process exited with a non-zero code (error case).
+fn assert_exit_error(out: &Output, label: &str) {
+    assert_ne!(
+        out.status.code(),
+        Some(0),
+        "{label}: expected non-zero exit but got 0\nstdout: {}\nstderr: {}",
+        stdout_of(out),
+        stderr_of(out),
+    );
+}
+
 // ===========================================================================
 // Basic expressions (scheduler path)
 // ===========================================================================
 
 // spec: spec/01-syntax.md §2.1 — integer literals
+// spec: spec/12-runtime.md §12.6 — exit code is Int value from main
 #[test]
 fn test_v4_integer_literal() {
     let out = run_v4("(defn main [] 42)", "int_literal");
-    assert_eq!(stdout_of(&out), ":primitives/Int 42");
+    assert_exit_code(&out, 42, "int_literal");
 }
 
 // spec: spec/01-syntax.md §2.2 — boolean literals
+// Bool is non-Int, so exit code is 0 per §12.6.
 #[test]
 fn test_v4_boolean_literal() {
     let out = run_v4("(defn main [] true)", "bool_literal");
-    assert_eq!(stdout_of(&out), ":primitives/Bool true");
-    assert_eq!(out.status.code(), Some(0));
+    assert_exit_code(&out, 0, "bool_literal");
 }
 
 // spec: spec/appendix-a-builtins.md — add-i64 primitive
 #[test]
 fn test_v4_add_i64() {
     let out = run_v4("(defn main [] (add-i64 1 2))", "add_i64");
-    assert_eq!(stdout_of(&out), ":primitives/Int 3");
+    assert_exit_code(&out, 3, "add_i64");
 }
 
 // spec: spec/appendix-a-builtins.md — sub-i64 primitive
 #[test]
 fn test_v4_sub_i64() {
     let out = run_v4("(defn main [] (sub-i64 10 3))", "sub_i64");
-    assert_eq!(stdout_of(&out), ":primitives/Int 7");
+    assert_exit_code(&out, 7, "sub_i64");
 }
 
 // spec: spec/04-expressions.md §2.1 — if expression
 #[test]
 fn test_v4_if_expression() {
     let out = run_v4("(defn main [] (if true (add-i64 1 2) 0))", "if_expr");
-    assert_eq!(stdout_of(&out), ":primitives/Int 3");
+    assert_exit_code(&out, 3, "if_expr");
 }
 
 // spec: spec/04-expressions.md §3 — let binding
 #[test]
 fn test_v4_let_binding() {
     let out = run_v4("(defn main [] (let [x (add-i64 3 4)] x))", "let_binding");
-    assert_eq!(stdout_of(&out), ":primitives/Int 7");
+    assert_exit_code(&out, 7, "let_binding");
 }
 
 // ===========================================================================
@@ -156,7 +165,7 @@ fn test_v4_let_binding() {
 fn test_v4_defn_and_call() {
     let src = "(defn double [x] (add-i64 x x)) (defn main [] (double 5))";
     let out = run_v4(src, "defn_and_call");
-    assert_eq!(stdout_of(&out), ":primitives/Int 10");
+    assert_exit_code(&out, 10, "defn_and_call");
 }
 
 // spec: spec/05-functions.md §3 — recursive function (factorial)
@@ -169,99 +178,65 @@ fn test_v4_recursive_function() {
     (mul-i64 n (fact (sub-i64 n 1)))))
 (defn main [] (fact 5))";
     let out = run_v4(src, "recursive_fn");
-    assert_eq!(stdout_of(&out), ":primitives/Int 120");
+    assert_exit_code(&out, 120, "recursive_fn");
 }
 
 // ===========================================================================
 // Fallback detection (old delegation path)
 // ===========================================================================
 
-// spec: design/arch/pipeline-v4-roadmap.md §Step 3 — import triggers fallback
+// spec: spec/08-modules.md — explicit import
 #[test]
 fn test_v4_falls_back_for_imports() {
-    // A program with (import ...) should fall back to the old delegation path
-    // and still produce correct output.
     let src = "(import [primitives [add-i64]]) (defn main [] (add-i64 1 2))";
-    let v4_out = run_v4(src, "fallback_import");
-    assert_eq!(stdout_of(&v4_out), ":primitives/Int 3");
-
-    // Verify same output as old path.
-    let old_out = run_old(src, "fallback_import_old");
-    assert_eq!(stdout_of(&v4_out), stdout_of(&old_out));
+    let out = run_v4(src, "fallback_import");
+    assert_exit_code(&out, 3, "fallback_import");
 }
 
-// spec: design/arch/pipeline-v4-roadmap.md §Step 3 — operators trigger fallback
+// spec: spec/03-types.md — undefined variable is a compile error
 #[test]
 fn test_v4_falls_back_for_operators() {
-    // A program with operator syntax (+) without prelude. `+` is undefined —
-    // both paths produce an error. The v4 path wraps errors in a module error
-    // envelope; the old path produces bare errors. Both should contain
-    // "undefined variable: +".
+    // (+) without prelude is undefined — should fail with error on stderr.
     let src = "(defn main [] (+ 1 2))";
-    let v4_out = run_v4(src, "fallback_operators");
-    let old_out = run_old(src, "fallback_operators_old");
-
-    // Both should fail with non-zero exit.
-    assert_ne!(v4_out.status.code(), Some(0));
-    assert_ne!(old_out.status.code(), Some(0));
-
-    // Both should mention the undefined variable.
+    let out = run_v4(src, "fallback_operators");
+    assert_exit_error(&out, "fallback_operators");
     assert!(
-        stderr_of(&v4_out).contains("undefined variable: +"),
-        "v4 stderr should contain 'undefined variable: +', got: {}",
-        stderr_of(&v4_out)
-    );
-    assert!(
-        stderr_of(&old_out).contains("undefined variable: +"),
-        "old stderr should contain 'undefined variable: +', got: {}",
-        stderr_of(&old_out)
+        stderr_of(&out).contains("undefined variable: +"),
+        "stderr should contain 'undefined variable: +', got: {}",
+        stderr_of(&out)
     );
 }
 
 // ===========================================================================
-// Macro expansion (Step 4 — v4 scheduler path)
+// Macro expansion
 // ===========================================================================
 
-/// Helper: run source through both --v4 --run and --run, assert stdout matches
-/// and both exit with code 0.
+/// Helper: run source, assert exit code matches expected Int value.
+/// For programs returning Int, exit code == the value (spec §12.6).
+fn assert_v4_runs(source: &str, expected_exit: i32, label: &str) {
+    let out = run_v4(source, label);
+    assert_exit_code(&out, expected_exit, label);
+}
+
+/// Helper: run source, assert compilation succeeds (no error on stderr).
+/// Exit code is the main return value, not an error indicator.
+/// Replaces old `assert_v4_parity` which compared old vs new pipeline stdout.
 fn assert_v4_parity(source: &str, label: &str) {
-    let v4_out = run_v4(source, &format!("{label}_v4"));
-    let old_out = run_old(source, &format!("{label}_old"));
-
-    let v4_stdout = stdout_of(&v4_out);
-    let old_stdout = stdout_of(&old_out);
-
-    assert_eq!(
-        v4_out.status.code(),
-        old_out.status.code(),
-        "exit code mismatch for {label}: v4={:?}, old={:?}\nv4 stderr: {}\nold stderr: {}",
-        v4_out.status.code(),
-        old_out.status.code(),
-        stderr_of(&v4_out),
-        stderr_of(&old_out)
-    );
-    assert_eq!(
-        v4_stdout, old_stdout,
-        "stdout mismatch for {label}: v4={v4_stdout:?}, old={old_stdout:?}"
+    let out = run_v4(source, label);
+    let err = stderr_of(&out);
+    assert!(
+        err.is_empty(),
+        "{label}: expected clean compilation but got stderr: {err}"
     );
 }
 
-/// Helper: run source through both paths, assert both produce nonzero exit code.
+/// Helper: run source, assert non-zero exit code and error on stderr.
 fn assert_v4_error_parity(source: &str, label: &str) {
-    let v4_out = run_v4(source, &format!("{label}_v4"));
-    let old_out = run_old(source, &format!("{label}_old"));
-
-    assert_ne!(
-        old_out.status.code(),
-        Some(0),
-        "old path should fail for {label} but succeeded: stdout={}",
-        stdout_of(&old_out)
-    );
-    assert_ne!(
-        v4_out.status.code(),
-        Some(0),
-        "v4 path should fail for {label} but succeeded: stdout={}",
-        stdout_of(&v4_out)
+    let out = run_v4(source, label);
+    let err = stderr_of(&out);
+    assert!(
+        !err.is_empty(),
+        "{label}: expected compilation error but stderr was empty"
     );
 }
 
@@ -429,7 +404,7 @@ fn create_multi_file_project(files: &[(&str, &str)], label: &str) -> PathBuf {
     dir
 }
 
-/// Run a multi-file project through `--v4 --run`, pointing at the given entry file.
+/// Run a multi-file project through `--run`, pointing at the given entry file.
 fn run_v4_project(files: &[(&str, &str)], entry: &str, label: &str) -> Output {
     let binary = binary_path();
     assert!(
@@ -437,25 +412,6 @@ fn run_v4_project(files: &[(&str, &str)], entry: &str, label: &str) -> Output {
         "cranelisp binary not found at {binary:?} — run `cargo build` first"
     );
     let dir = create_multi_file_project(files, &format!("{label}_v4"));
-    let entry_path = dir.join(entry);
-
-    Command::new(&binary)
-        .args(["--v4", "--run", entry_path.to_str().unwrap()])
-        .current_dir(&dir)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .output()
-        .expect("failed to run cranelisp")
-}
-
-/// Run a multi-file project through `--run` (old path).
-fn run_old_project(files: &[(&str, &str)], entry: &str, label: &str) -> Output {
-    let binary = binary_path();
-    assert!(
-        binary.exists(),
-        "cranelisp binary not found at {binary:?} — run `cargo build` first"
-    );
-    let dir = create_multi_file_project(files, &format!("{label}_old"));
     let entry_path = dir.join(entry);
 
     Command::new(&binary)
@@ -467,49 +423,28 @@ fn run_old_project(files: &[(&str, &str)], entry: &str, label: &str) -> Output {
         .expect("failed to run cranelisp")
 }
 
-/// Run a multi-file project through both paths, assert stdout matches and
-/// both exit with code 0.
+/// Alias for `run_v4_project` — old pipeline deleted in sprint 49.
+fn run_old_project(files: &[(&str, &str)], entry: &str, label: &str) -> Output {
+    run_v4_project(files, entry, label)
+}
+
+/// Run a multi-file project, assert compilation succeeds (no error on stderr).
 fn assert_v4_project_parity(files: &[(&str, &str)], entry: &str, label: &str) {
-    let v4_out = run_v4_project(files, entry, label);
-    let old_out = run_old_project(files, entry, label);
-
-    let v4_stdout = stdout_of(&v4_out);
-    let old_stdout = stdout_of(&old_out);
-
-    assert_eq!(
-        v4_out.status.code(),
-        old_out.status.code(),
-        "exit code mismatch for {label}: v4={:?}, old={:?}\nv4 stderr: {}\nold stderr: {}",
-        v4_out.status.code(),
-        old_out.status.code(),
-        stderr_of(&v4_out),
-        stderr_of(&old_out)
-    );
-    assert_eq!(
-        v4_stdout, old_stdout,
-        "stdout mismatch for {label}: v4={v4_stdout:?}, old={old_stdout:?}\nv4 stderr: {}\nold stderr: {}",
-        stderr_of(&v4_out),
-        stderr_of(&old_out)
+    let out = run_v4_project(files, entry, label);
+    let err = stderr_of(&out);
+    assert!(
+        err.is_empty(),
+        "{label}: expected clean compilation but got stderr: {err}"
     );
 }
 
-/// Run a multi-file project through both paths, assert both produce nonzero
-/// exit code (both should error).
+/// Run a multi-file project, assert compilation fails (error on stderr).
 fn assert_v4_project_error_parity(files: &[(&str, &str)], entry: &str, label: &str) {
-    let v4_out = run_v4_project(files, entry, label);
-    let old_out = run_old_project(files, entry, label);
-
-    assert_ne!(
-        old_out.status.code(),
-        Some(0),
-        "old path should fail for {label} but succeeded: stdout={}",
-        stdout_of(&old_out)
-    );
-    assert_ne!(
-        v4_out.status.code(),
-        Some(0),
-        "v4 path should fail for {label} but succeeded: stdout={}",
-        stdout_of(&v4_out)
+    let out = run_v4_project(files, entry, label);
+    let err = stderr_of(&out);
+    assert!(
+        !err.is_empty(),
+        "{label}: expected compilation error but stderr was empty"
     );
 }
 
@@ -639,24 +574,18 @@ fn v4_cache_hit_dependency() {
         ("util.cl", "(defn helper [] 77)"),
     ];
 
-    // First run: populates cache
-    let v4_out_1 = run_v4_project(files, "main.cl", "cache_hit_dep_run1");
-    let old_out_1 = run_old_project(files, "main.cl", "cache_hit_dep_run1");
-    assert_eq!(
-        stdout_of(&v4_out_1),
-        stdout_of(&old_out_1),
-        "first run stdout mismatch"
-    );
+    // First run: populates cache. helper returns 77, exit code = 77.
+    let out_1 = run_v4_project(files, "main.cl", "cache_hit_dep_run1");
+    assert_exit_code(&out_1, 77, "cache_hit_dep_run1");
 
-    // Second run: should hit cache for 'util' module
-    // We reuse the same project directory to preserve the cache.
+    // Second run: should hit cache for 'util' module.
     // Create the project once and run twice in the same dir.
     let binary = binary_path();
     let dir = create_multi_file_project(files, "cache_hit_dep_shared");
     let entry_path = dir.join("main.cl");
 
     let run1 = Command::new(&binary)
-        .args(["--v4", "--run", entry_path.to_str().unwrap()])
+        .args(["--run", entry_path.to_str().unwrap()])
         .current_dir(&dir)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -664,21 +593,14 @@ fn v4_cache_hit_dependency() {
         .expect("failed to run cranelisp (run 1)");
 
     let run2 = Command::new(&binary)
-        .args(["--v4", "--run", entry_path.to_str().unwrap()])
+        .args(["--run", entry_path.to_str().unwrap()])
         .current_dir(&dir)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .output()
         .expect("failed to run cranelisp (run 2)");
 
-    // Both runs should produce identical output.
-    assert_eq!(
-        stdout_of(&run1),
-        stdout_of(&run2),
-        "cache hit run should produce same output as first run"
-    );
-    // Batch mode exits with the program's return value (mod 256).
-    // helper returns 77, so exit code is 77.
+    // Both runs should produce same exit code (helper returns 77).
     assert_eq!(
         run1.status.code(),
         run2.status.code(),
@@ -812,19 +734,14 @@ fn v4_platform_io_trampoline() {
     let src = "\
 (platform \"stdio\")
 (defn main [] (print \"trampoline works\"))";
-    let v4_out = run_v4(src, "platform_io_trampoline_v4");
-    let old_out = run_old(src, "platform_io_trampoline_old");
+    let out = run_v4(src, "platform_io_trampoline");
 
-    // Both should succeed.
-    assert_eq!(v4_out.status.code(), old_out.status.code());
-
-    // Both should produce "trampoline works" in stdout.
+    // IO print should produce "trampoline works" on stdout.
     assert!(
-        stdout_of(&v4_out).contains("trampoline works"),
-        "v4 output should contain 'trampoline works', got: {}",
-        stdout_of(&v4_out),
+        stdout_of(&out).contains("trampoline works"),
+        "output should contain 'trampoline works', got: {}",
+        stdout_of(&out),
     );
-    assert_eq!(stdout_of(&v4_out), stdout_of(&old_out));
 }
 
 // ---------------------------------------------------------------------------
@@ -856,8 +773,8 @@ fn v4_platform_empty_registry() {
     // interfere with compilation or execution.
     let src = "(defn main [] (add-i64 100 200))";
     let out = run_v4(src, "platform_empty_registry");
-    assert_eq!(stdout_of(&out), ":primitives/Int 300");
-    assert_eq!(out.status.code(), Some(0).or(out.status.code()));
+    // 300 mod 256 = 44 on Unix (exit codes are bytes).
+    assert_exit_code(&out, 300 % 256, "platform_empty_registry");
 }
 
 // ---------------------------------------------------------------------------
@@ -898,20 +815,19 @@ fn v4_error_type_error_in_entry() {
     assert_ne!(
         v4_out.status.code(),
         Some(0),
-        "type error should produce non-zero exit, got stdout: {}",
-        stdout_of(&v4_out),
+        "type error should produce non-zero exit, got stderr: {}",
+        stderr_of(&v4_out),
     );
 
     // Error should appear on stderr (or stdout depending on display path).
-    let all = format!("{}{}", stdout_of(&v4_out), stderr_of(&v4_out));
+    let all = stderr_of(&v4_out);
     assert!(
         all.contains("type")
             || all.contains("Type")
             || all.contains("mismatch")
             || all.contains("error")
             || all.contains("Error"),
-        "error output should mention type error\nstdout: {}\nstderr: {}",
-        stdout_of(&v4_out),
+        "error output should mention type error\nstderr: {}",
         stderr_of(&v4_out),
     );
 }
@@ -943,11 +859,10 @@ fn v4_error_cascade_from_dependency() {
     assert_ne!(v4_out.status.code(), Some(0));
 
     // Error should mention the dependency module name and the root cause.
-    let all = format!("{}{}", stdout_of(&v4_out), stderr_of(&v4_out));
+    let all = stderr_of(&v4_out);
     assert!(
         all.contains("math"),
-        "cascade error should mention dependency module 'math'\nstdout: {}\nstderr: {}",
-        stdout_of(&v4_out),
+        "cascade error should mention dependency module 'math'\nstderr: {}",
         stderr_of(&v4_out),
     );
 }
@@ -973,13 +888,12 @@ fn v4_error_cascade_includes_root_cause() {
 
     assert_ne!(v4_out.status.code(), Some(0));
 
-    let all = format!("{}{}", stdout_of(&v4_out), stderr_of(&v4_out));
+    let all = stderr_of(&v4_out);
     // Should include the root cause (type mismatch), not just a generic
     // "dependency failed" message.
     assert!(
         all.contains("type") || all.contains("Type") || all.contains("mismatch") || all.contains("Bool"),
-        "cascade error should include root cause type error, not just 'dependency failed'\nstdout: {}\nstderr: {}",
-        stdout_of(&v4_out),
+        "cascade error should include root cause type error, not just 'dependency failed'\nstderr: {}",
         stderr_of(&v4_out),
     );
 }
@@ -995,7 +909,7 @@ fn v4_error_no_error_exits_cleanly() {
     let src = "(defn main [] (add-i64 10 20))";
     let v4_out = run_v4(src, "error_clean_exit");
 
-    assert_eq!(stdout_of(&v4_out), ":primitives/Int 30");
+    assert_exit_code(&v4_out, 30, "error_clean_exit");
     // stderr should be empty or contain only benign output (no error text).
     let err = stderr_of(&v4_out);
     assert!(
@@ -1026,7 +940,7 @@ fn v4_error_cascade_no_duplicate_output() {
 
     assert_ne!(v4_out.status.code(), Some(0));
 
-    let all = format!("{}{}", stdout_of(&v4_out), stderr_of(&v4_out));
+    let all = stderr_of(&v4_out);
     // Count occurrences of "type" or "mismatch" to check for duplicates.
     // The root cause should appear once, not once per cascaded module.
     let type_mentions = all.matches("type mismatch").count()
@@ -1200,19 +1114,18 @@ fn v4_cross_module_macro_dep_type_error() {
     assert_ne!(
         v4_out.status.code(),
         Some(0),
-        "program with type error in macro dep should fail, got stdout: {}",
-        stdout_of(&v4_out),
+        "program with type error in macro dep should fail, got stderr: {}",
+        stderr_of(&v4_out),
     );
 
     // Error should be reported (not a silent failure).
-    let all = format!("{}{}", stdout_of(&v4_out), stderr_of(&v4_out));
+    let all = stderr_of(&v4_out);
     assert!(
         all.contains("error")
             || all.contains("Error")
             || all.contains("type")
             || all.contains("Type"),
-        "should report an error for type error in macro dependency\nstdout: {}\nstderr: {}",
-        stdout_of(&v4_out),
+        "should report an error for type error in macro dependency\nstderr: {}",
         stderr_of(&v4_out),
     );
 }

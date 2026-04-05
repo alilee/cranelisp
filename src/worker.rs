@@ -392,20 +392,24 @@ fn pass2_check_bodies_with_expansion(
             Ok((info.name.clone(), info, s.clone()))
         })
         .collect::<Result<Vec<_>, CranelispError>>()?;
-    let mut macro_names: Vec<&str> = macro_infos.iter().map(|(n, _, _)| n.as_ref()).collect();
+    let mut macro_names: Vec<String> = macro_infos.iter().map(|(n, _, _)| n.to_string()).collect();
 
     // Also collect macro names from the symbol table (previously registered macros,
     // e.g., from prior REPL evals or imported modules). These are needed so
     // `sexp_contains_macro_call` can detect calls to previously defined macros.
     let persistent_macro_names: Vec<Symbol> = collect_persistent_macro_names(ctx.tc);
-    let persistent_name_refs: Vec<&str> = persistent_macro_names.iter()
-        .map(|s| s.as_ref())
-        .filter(|n| !macro_names.contains(n))
-        .collect();
-    macro_names.extend(persistent_name_refs.iter());
+    for name in &persistent_macro_names {
+        let s = name.to_string();
+        if !macro_names.contains(&s) {
+            macro_names.push(s);
+        }
+    }
 
     for form_idx in start_form_index..sexps.len() {
         let sexp = &sexps[form_idx];
+
+        // Build &str slice from owned names for this iteration.
+        let name_refs: Vec<&str> = macro_names.iter().map(|s| s.as_str()).collect();
 
         match classify_form(sexp)? {
             FormKind::Import(specs) => {
@@ -442,10 +446,13 @@ fn pass2_check_bodies_with_expansion(
                 continue; // registered in Pass 1
             }
             FormKind::Regular => {
-                process_regular_form(
-                    ctx, module, sexp, &macro_infos, &macro_names,
+                let new_macros = process_regular_form(
+                    ctx, module, sexp, &macro_infos, &name_refs,
                     accumulator, expanded_program,
                 )?;
+                // Macros produced by expansion (e.g. const/def) become
+                // available for subsequent forms.
+                macro_names.extend(new_macros);
             }
         }
     }
@@ -456,6 +463,10 @@ fn pass2_check_bodies_with_expansion(
 ///
 /// Tries macro expansion, builds AST, registers any new signatures
 /// (for begin-spliced defns), then typechecks the body.
+///
+/// Returns names of any macros newly registered from expansion results
+/// (e.g. const/def expand to defmacro). These must be added to the
+/// caller's macro_names so subsequent forms can expand them.
 fn process_regular_form(
     ctx: &mut WorkerContext,
     module: &ModuleFullPath,
@@ -464,7 +475,7 @@ fn process_regular_form(
     macro_names: &[&str],
     accumulator: &mut ModuleCheckAccumulator,
     expanded_program: &mut Vec<TopLevel>,
-) -> Result<(), CranelispError> {
+) -> Result<Vec<String>, CranelispError> {
     // Try macro expansion on the raw sexp.
     let effective_sexp = try_expand_for_pass2(
         sexp, module, ctx, macro_infos, macro_names, accumulator,
@@ -476,7 +487,28 @@ fn process_regular_form(
     };
 
     let flattened = cranelisp_frontend::flatten_begin(sexp_to_build.clone());
-    let built = cranelisp_frontend::build_program(&flattened)?;
+
+    // Partition flattened forms: macro expansion (e.g. const, def) can produce
+    // defmacro forms that must be routed through the macro pipeline, not the
+    // AST builder which rejects them.
+    let mut regular_sexps = Vec::new();
+    let mut new_macro_names = Vec::new();
+    for form in flattened {
+        if cranelisp_frontend::is_defmacro(&form) {
+            let info = cranelisp_frontend::parse_defmacro(&form)?;
+            new_macro_names.push(info.name.to_string());
+            register_macro_in_module(ctx.tc, &info.name, &info, &form)?;
+            compile_macro_if_needed(ctx, module, &info, form.span(), accumulator)?;
+        } else {
+            regular_sexps.push(form);
+        }
+    }
+
+    if regular_sexps.is_empty() {
+        return Ok(new_macro_names);
+    }
+
+    let built = cranelisp_frontend::build_program(&regular_sexps)?;
     let working = wrap_exprs_as_defns(&built);
 
     // Register signatures for macro-expanded forms only. Non-expanded forms
@@ -500,7 +532,7 @@ fn process_regular_form(
     }
 
     expanded_program.extend(built);
-    Ok(())
+    Ok(new_macro_names)
 }
 
 // ---------------------------------------------------------------------------

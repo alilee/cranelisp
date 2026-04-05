@@ -12,10 +12,10 @@
 
 (import [prelude []])
 
-(import [macros [SexpSym SexpStr SexpList SCons SNil Sexp SList]])
-
+;; Macro bodies use qualified macros/ names so expansion results are
+;; independent of the call-site's imports (spec §9.1.3).
 (defmacro str "Concatenate string representations of all arguments"
-  ([] (SexpStr ""))
+  ([] (macros/SexpStr ""))
   ([x] `(show ~x))
   ([x &rest] `(str-concat (show ~x) (str ~@rest))))
 

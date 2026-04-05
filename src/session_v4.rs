@@ -422,6 +422,11 @@ pub struct CompilerSession {
     /// Modules that failed reload (file watcher). While non-empty, expression
     /// evaluation is blocked.
     pub error_modules: HashSet<ModuleFullPath>,
+
+    /// Nice worker thread handles. Joined in `shutdown()`.
+    nice_worker_handles: Vec<std::thread::JoinHandle<()>>,
+    /// Nice worker count (stored for `wait_object_complete` guard).
+    nice_workers: usize,
 }
 
 impl CompilerSession {
@@ -450,22 +455,42 @@ impl CompilerSession {
 
         let priority_workers = std::cmp::max(settings.priority_workers, 1);
 
+        let nice_workers = settings.nice_workers;
+
+        let shared = Arc::new(SharedState {
+            scheduler: CompileScheduler::new(),
+            cache_dir: Some(cache_dir),
+            compiled_o_paths: Mutex::new(Vec::new()),
+            promote_nice_workers: AtomicBool::new(false),
+            object_codegen_inputs: Mutex::new(HashMap::new()),
+            cached_modules: Mutex::new(HashSet::new()),
+            file_to_module: Mutex::new(HashMap::new()),
+            cache_state: Mutex::new(Some(cache_state)),
+        });
+
+        // Spawn persistent nice worker threads for object codegen (.o files).
+        // Workers park on scheduler condvar and wake when modules reach
+        // TypecheckDone. They run for the session lifetime and are joined
+        // in shutdown().
+        let mut nice_worker_handles = Vec::with_capacity(nice_workers);
+        for i in 0..nice_workers {
+            let worker_shared = Arc::clone(&shared);
+            let handle = std::thread::Builder::new()
+                .name(format!("nice-worker-{}", i))
+                .spawn(move || {
+                    nice_worker_loop(&worker_shared);
+                })
+                .expect("failed to spawn nice worker thread");
+            nice_worker_handles.push(handle);
+        }
+
         CompilerSession {
             tc,
             inmem_worker,
             macro_env,
             lib_dirs: all_lib_dirs,
             loaded_platforms: Vec::new(),
-            shared: Arc::new(SharedState {
-                scheduler: CompileScheduler::new(),
-                cache_dir: Some(cache_dir),
-                compiled_o_paths: Mutex::new(Vec::new()),
-                promote_nice_workers: AtomicBool::new(false),
-                object_codegen_inputs: Mutex::new(HashMap::new()),
-                cached_modules: Mutex::new(HashSet::new()),
-                file_to_module: Mutex::new(HashMap::new()),
-                cache_state: Mutex::new(Some(cache_state)),
-            }),
+            shared,
             priority_workers,
             project_root,
             platform_registry: PlatformRegistry::new(),
@@ -483,6 +508,8 @@ impl CompilerSession {
                 dll_path: None,
             },
             error_modules: HashSet::new(),
+            nice_worker_handles,
+            nice_workers,
         }
     }
 
@@ -1269,6 +1296,12 @@ impl CompilerSession {
     pub fn wait_object_complete(
         &self,
     ) -> Result<(), crate::scheduler::SchedulerError> {
+        // When no nice workers are running (e.g., tests with nice_workers: 0),
+        // no .o files will be produced. Skip the wait to avoid blocking forever.
+        if self.nice_workers == 0 {
+            return Ok(());
+        }
+
         // Promote nice workers so object codegen runs at full speed.
         self.shared.promote_nice_workers.store(
             true,
@@ -1287,7 +1320,11 @@ impl CompilerSession {
     /// automatically when the scope exits.
     pub fn shutdown(&mut self) {
         self.shared.scheduler.shutdown();
-        // Inner session's Drop handles legacy codegen worker shutdown.
+        // Join nice worker threads. They observe the shutdown flag via
+        // take_object_codegen() returning None and exit their loop.
+        for handle in self.nice_worker_handles.drain(..) {
+            let _ = handle.join();
+        }
     }
 
     /// §3.1: Register entry module by name. Session resolves the source
@@ -1314,19 +1351,90 @@ impl CompilerSession {
         self.register_module_with_source(module_name, &source, &entry_path)
     }
 
-    /// §8: Link by module name (not path). Session resolves .o paths
-    /// from its compiled module state.
+    /// §8: Link by module name. Collects .o files produced by nice workers,
+    /// generates a startup stub, and invokes the system linker.
+    ///
+    /// Must be called after `wait_object_complete()` — all .o files must
+    /// be ready.
     pub fn link_by_name(
         &mut self,
-        _module_name: &str,
+        module_name: &str,
     ) -> Result<(), CranelispError> {
-        // TODO: cascade — implement using scheduler-compiled .o files.
-        // For now, delegate to path-based link.
-        Err(CranelispError::ModuleError {
-            message: "link_by_name not yet implemented — use old path".into(),
-            file: None,
-            span: cranelisp_types::Span::SYNTHETIC,
-        })
+        let module = ModuleFullPath::from(module_name);
+
+        // Validate main exists and determine return kind (Int vs IO).
+        let entry_table = self.tc.module_table(&module).ok_or_else(|| {
+            CranelispError::ModuleError {
+                message: format!("entry module '{}' not found in typechecker", module_name),
+                file: None,
+                span: Span::SYNTHETIC,
+            }
+        })?;
+        let main_return = crate::exe::validate_main(&entry_table)?;
+        drop(entry_table);
+
+        let main_returns_io = main_return == crate::exe::MainReturnKind::Io;
+
+        // Collect .o paths from nice workers.
+        let o_paths = self.shared.compiled_o_paths.lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+
+        if o_paths.is_empty() {
+            return Err(CranelispError::ModuleError {
+                message: "no .o files produced — cannot link".into(),
+                file: None,
+                span: Span::SYNTHETIC,
+            });
+        }
+
+        // Collect platform manifest names and rlib paths.
+        // TODO: LoadedPlatform doesn't currently store ModuleStructure.
+        // When platform linking is needed, add module_path + structure
+        // fields to LoadedPlatform. For now, empty — non-platform programs
+        // link correctly.
+        let module_structures: Vec<(ModuleFullPath, ModuleStructure)> = vec![];
+        let platform_manifest_names =
+            crate::exe::collect_platform_manifest_names(&module_structures);
+        let platform_rlib_paths =
+            crate::exe::find_platform_rlibs(&module_structures);
+
+        // Generate startup .o stub.
+        let startup_bytes = crate::exe::generate_startup_object(
+            &platform_manifest_names,
+            main_returns_io,
+        )?;
+
+        let cache_dir = self.shared.cache_dir.as_ref().ok_or_else(|| {
+            CranelispError::ModuleError {
+                message: "cache directory not configured — cannot write startup .o".into(),
+                file: None,
+                span: Span::SYNTHETIC,
+            }
+        })?;
+        let startup_o_path = cache_dir.join("__startup.o");
+        std::fs::write(&startup_o_path, &startup_bytes).map_err(|e| {
+            CranelispError::ModuleError {
+                message: format!("failed to write startup .o: {e}"),
+                file: Some(startup_o_path.clone()),
+                span: Span::SYNTHETIC,
+            }
+        })?;
+
+        // Find the runtime bundle library.
+        let bundle_lib = crate::exe::find_bundle_lib()?;
+
+        // Output path: entry module name without extension, in project root.
+        let output_path = self.project_root.join(module_name.replace(".cl", ""));
+
+        // Link.
+        crate::exe::link_executable(
+            &output_path,
+            &o_paths,
+            &startup_o_path,
+            &bundle_lib,
+            &platform_rlib_paths,
+        )
     }
 
     // -- REPL display utilities (pipeline-v4.md §6) --

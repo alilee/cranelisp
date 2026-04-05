@@ -7,8 +7,8 @@
 
 (import [prelude []])
 
-(import [macros [SexpSym SexpStr SexpInt SexpFloat SexpBool SexpList SexpBracket
-                 SCons SNil Sexp SList]])
+;; Macro bodies use qualified macros/ names so expansion results are
+;; independent of the call-site's imports (spec §9.1.3).
 
 (defmacro const "Define a named constant (bare symbol expansion)" [name value]
   `(defmacro ~name [] ~(quote-sexp value)))
@@ -22,8 +22,8 @@
 
 (defmacro def "Define a named value (zero-arg function, bare symbol)" [name value]
   (match name
-    [(SexpSym s)
-     (let [impl-name (SexpSym (str-concat s "-def"))]
+    [(macros/SexpSym s)
+     (let [impl-name (macros/SexpSym (str-concat s "-def"))]
        `(begin
          (defn ~impl-name [] ~value)
          (defmacro ~name [] (macros/SexpList (macros/SCons ~(quote-sexp impl-name) macros/SNil)))))
@@ -31,8 +31,8 @@
 
 (defmacro def- "Define a private named value" [name value]
   (match name
-    [(SexpSym s)
-     (let [impl-name (SexpSym (str-concat s "-def"))]
+    [(macros/SexpSym s)
+     (let [impl-name (macros/SexpSym (str-concat s "-def"))]
        `(begin
          (defn- ~impl-name [] ~value)
          (defmacro- ~name [] (macros/SexpList (macros/SCons ~(quote-sexp impl-name) macros/SNil)))))
