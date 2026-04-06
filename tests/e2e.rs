@@ -463,7 +463,6 @@ fn e2e_s3_1_type() {
 
 // spec: repl/spec.md §3 — /run-tests discovers and runs test-* functions
 #[test]
-#[ignore] // /run-tests not yet ported to v4 REPL
 fn e2e_run_tests_basic_pass() {
     let input = "(deftype (Option a) None (Some [:a val]))\n\
                  (defn test-one [] None)\n\
@@ -482,7 +481,6 @@ fn e2e_run_tests_basic_pass() {
 
 // spec: repl/spec.md §3 — /run-tests reports failing tests
 #[test]
-#[ignore] // /run-tests not yet ported to v4 REPL
 fn e2e_run_tests_basic_fail() {
     let input = "(deftype (Option a) None (Some [:a val]))\n\
                  (defn test-fail [] (Some \"expected\"))\n\
@@ -501,7 +499,6 @@ fn e2e_run_tests_basic_fail() {
 
 // spec: repl/spec.md §3 — /run-tests with multiple tests
 #[test]
-#[ignore] // /run-tests not yet ported to v4 REPL
 fn e2e_run_tests_multiple() {
     let input = "(deftype (Option a) None (Some [:a val]))\n\
                  (defn test-a [] None)\n\
@@ -518,7 +515,6 @@ fn e2e_run_tests_multiple() {
 
 // spec: repl/spec.md §3 — /run-tests with no test functions
 #[test]
-#[ignore] // /run-tests not yet ported to v4 REPL
 fn e2e_run_tests_empty() {
     let input = "/run-tests\n";
     let o = run_repl(input, "rt_empty");
@@ -531,7 +527,6 @@ fn e2e_run_tests_empty() {
 
 // spec: repl/spec.md §3 — /run-tests mixed pass and fail
 #[test]
-#[ignore] // /run-tests not yet ported to v4 REPL
 fn e2e_run_tests_mixed_pass_fail() {
     let input = "(deftype (Option a) None (Some [:a val]))\n\
                  (defn test-pass-1 [] None)\n\
@@ -548,7 +543,6 @@ fn e2e_run_tests_mixed_pass_fail() {
 
 // spec: repl/spec.md §3 — /run-tests ignores non-test functions
 #[test]
-#[ignore] // /run-tests not yet ported to v4 REPL
 fn e2e_run_tests_ignores_non_test() {
     let input = "(deftype (Option a) None (Some [:a val]))\n\
                  (defn helper [] None)\n\

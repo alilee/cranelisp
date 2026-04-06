@@ -745,8 +745,10 @@ impl CompilerSession {
                     "error: unknown command '{cmd}'. Type /help for available commands."
                 ))
             }
-            // Commands not yet ported — show not-yet-implemented message.
-            _ => {
+            ReplCommand::RunTests(prefix) => {
+                CommandResult::Final(self.handle_run_tests(prefix))
+            }
+            ReplCommand::Reset => {
                 CommandResult::Final("command not yet available in v4 REPL".to_string())
             }
         }
@@ -1753,6 +1755,96 @@ impl CompilerSession {
             }
             Err(e) => format!("Error: {e}"),
         }
+    }
+
+    /// /run-tests handler: discover and execute test-* functions.
+    ///
+    /// Scans def_codegen for zero-arg functions named `test-*`, calls each
+    /// directly, interprets the `(Option String)` result: None = pass,
+    /// Some(reason) = fail.
+    fn handle_run_tests(&self, prefix: &str) -> String {
+        use cranelisp_types::NULLARY_TAG_THRESHOLD;
+
+        // Discover test functions.
+        let mut tests: Vec<(String, *const u8)> = Vec::new();
+        for (sym, dc) in &self.inmem_worker.got_state.def_codegen {
+            let name: &str = sym.as_ref();
+            if !name.starts_with("test-") {
+                continue;
+            }
+            if !prefix.is_empty() && !name.starts_with(&format!("test-{prefix}")) {
+                continue;
+            }
+            let (ptr, arity) = match (dc.code_ptr, dc.param_count) {
+                (Some(p), Some(a)) if !p.is_null() => (p, a),
+                _ => continue,
+            };
+            if arity != 0 {
+                continue;
+            }
+            tests.push((name.to_string(), ptr));
+        }
+        tests.sort_by(|a, b| a.0.cmp(&b.0));
+
+        if tests.is_empty() {
+            return if prefix.is_empty() {
+                "No test-* functions found.".to_string()
+            } else {
+                format!("No test-* functions found matching '{prefix}'.")
+            };
+        }
+
+        // Run each test.
+        let start = std::time::Instant::now();
+        let mut passed = 0usize;
+        let mut failed = 0usize;
+        let mut lines = Vec::new();
+
+        for (name, code_ptr) in &tests {
+            let _ = cranelisp_runtime::panic::take_runtime_error();
+            let value = unsafe {
+                let func: extern "C" fn() -> i64 = std::mem::transmute(*code_ptr);
+                func()
+            };
+
+            let dots = ".".repeat(40usize.saturating_sub(name.len()));
+
+            if let Some(msg) = cranelisp_runtime::panic::take_runtime_error() {
+                lines.push(format!("  {name} {dots} PANIC: {msg}"));
+                failed += 1;
+            } else if (value as usize) < NULLARY_TAG_THRESHOLD {
+                // None = pass
+                lines.push(format!("  {name} {dots} ok"));
+                passed += 1;
+            } else {
+                // Some(reason_string)
+                let reason = unsafe {
+                    let base = value as *const u8;
+                    let string_ptr = *(base.add(
+                        cranelisp_backend::heap::HeapAdt::field_offset(0) as usize,
+                    ) as *const i64);
+                    cranelisp_runtime::read_string_as_str(string_ptr)
+                };
+                lines.push(format!("  {name} {dots} FAILED: {reason}"));
+                failed += 1;
+            }
+        }
+
+        let elapsed = start.elapsed();
+        lines.push(String::new());
+        if failed == 0 {
+            lines.push(format!(
+                "{passed} passed in {:.2}ms",
+                elapsed.as_secs_f64() * 1000.0,
+            ));
+        } else {
+            lines.push(format!(
+                "{passed} passed, {failed} failed in {:.2}ms",
+                elapsed.as_secs_f64() * 1000.0,
+            ));
+        }
+
+        lines.join("\n")
     }
 
     /// Check if input is a bare special form name (for feedback display).
