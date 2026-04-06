@@ -51,18 +51,13 @@ impl ReplSession {
 
     /// Create a session with prelude loaded from lib_dirs.
     ///
-    /// Uses tests/fixtures as project_root to avoid picking up stray .cl files
-    /// from the repo root (e.g. user.cl). The caller's lib_dirs are the only
-    /// search paths for module resolution.
+    /// Uses the caller's project_root for platform DLL resolution, but
+    /// overrides lib_dirs to only include the caller's paths — not the
+    /// repo root (which may contain stray .cl files like user.cl).
     pub fn new_with_prelude(
-        _project_root: &std::path::Path,
+        project_root: &std::path::Path,
         lib_dirs: &[PathBuf],
     ) -> Result<Self, CranelispError> {
-        // Use tests/fixtures as project_root — no stray .cl files to interfere.
-        let safe_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("tests")
-            .join("fixtures");
-
         let settings = SessionSettings {
             no_color: true,
             // Disable cache: the test fixture prelude differs from the stdlib
@@ -73,8 +68,10 @@ impl ReplSession {
             priority_workers: 1,
             nice_workers: 0,
         };
-        let mut session = CompilerSession::new(settings, safe_root);
-        // Only include the caller's lib_dirs — no repo root contamination.
+        let mut session = CompilerSession::new(settings, project_root.to_path_buf());
+        // Override lib_dirs: only include caller's paths, not repo root.
+        // This prevents stray .cl files in the repo root (e.g. user.cl)
+        // from being picked up during module resolution.
         session.lib_dirs = lib_dirs.to_vec();
 
         // Register the user module — this triggers prelude loading via
