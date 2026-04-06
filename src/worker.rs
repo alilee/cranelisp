@@ -586,6 +586,10 @@ fn process_regular_form(
         ctx.tc.merge_form_result(module, accumulator, result);
 
         if let TopLevel::Defn(defn) = form {
+            // Store original sexp for /source and /sexp REPL commands.
+            let mut dc = ctx.shared_codegen.def_codegen.entry(defn.name.clone()).or_default();
+            dc.sexp = Some(sexp.clone());
+            drop(dc);
             ctx.scheduler.notify_symbol_typechecked(module, &defn.name);
         }
     }

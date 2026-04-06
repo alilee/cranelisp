@@ -774,6 +774,19 @@ impl CompilerSession {
         for sexp in &sexps {
             match self.eval_one_form(sexp) {
                 Ok(Some(result)) => {
+                    // Store source text for /source command — extract from
+                    // original input using the sexp's span.
+                    if let EvalResult::Def { symbol, .. } = &result {
+                        let span = sexp.span();
+                        let src = if span.start < span.end && (span.end as usize) <= source.len() {
+                            &source[span.start as usize..span.end as usize]
+                        } else {
+                            source.trim()
+                        };
+                        if let Some(mut dc) = self.inmem_worker.got_state.def_codegen.get_mut(&symbol.symbol) {
+                            dc.source = Some(src.to_string());
+                        }
+                    }
                     all_warnings.extend(result.warnings().iter().cloned());
                     last_result = Some(result);
                 }
@@ -1239,6 +1252,9 @@ impl CompilerSession {
         match self.inmem_worker.got_state.def_codegen.get(name) {
             Some(dc) if dc.source.is_some() => {
                 format!("; source for {name}\n{}", crate::pretty::pretty_print_str(dc.source.as_ref().unwrap()))
+            }
+            Some(dc) if dc.sexp.is_some() => {
+                format!("; source for {name}\n{}", crate::pretty::pretty_print(dc.sexp.as_ref().unwrap()))
             }
             _ => format!("Error: no source available for '{name}'"),
         }

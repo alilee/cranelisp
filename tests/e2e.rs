@@ -1949,7 +1949,6 @@ fn e2e_s3_1_doc_neg_no_arg() {
 
 // spec: repl/spec.md §3.1 — /source shows original source text
 #[test]
-#[ignore] // /source not yet ported to v4 REPL
 fn e2e_s3_1_source_user_fn() {
     let input = format!("{PRIMS}(defn double [x] (add-i64 x x))\n/source double\n");
     let o = run_repl(&input, "s3_1_source_fn");
