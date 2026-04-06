@@ -11,13 +11,14 @@
 ;; Spec: plan-stdlib.md §3.3
 
 (import [prelude []])
+(import [primitives [*]])
 
 ;; Macro bodies use qualified macros/ names so expansion results are
 ;; independent of the call-site's imports (spec §9.1.3).
 (defmacro str "Concatenate string representations of all arguments"
   ([] (macros/SexpStr ""))
   ([x] `(show ~x))
-  ([x &rest] `(str-concat (show ~x) (str ~@rest))))
+  ([x &rest] `(primitives/str-concat (show ~x) (str ~@rest))))
 
 (defn blank? "Test if a string is empty or contains only whitespace"
   [:String s] :Bool

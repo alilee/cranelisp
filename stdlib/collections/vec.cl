@@ -8,6 +8,7 @@
 ;; Spec: plan-stdlib.md §3.3
 
 (import [prelude []])
+(import [primitives [*]])
 
 ;; Macro body uses qualified macros/ name so expansion is independent
 ;; of the call-site's imports (spec §9.1.3).

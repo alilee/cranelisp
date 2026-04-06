@@ -203,6 +203,55 @@ pub fn process_module_forms(
 
     // --- Pass 1: only on fresh start (not on resume after blocking) ---
     if is_fresh {
+        // Pass 0: Process import/export/mod forms before Pass 1.
+        // Imported symbols must be in scope before pass1_register checks
+        // trait impl bodies. If a dependency isn't loaded yet, we block
+        // and resume here later (pass1_done is still false).
+        for (form_idx, sexp) in sexps.iter().enumerate() {
+            match classify_form(sexp)? {
+                FormKind::Import(specs) => {
+                    match handle_import(ctx, module, specs)? {
+                        BlockAction::Continue => {}
+                        BlockAction::Block { dep_module, dep_sexps } => {
+                            return Ok(ProcessResult::Blocked {
+                                form_index: form_idx,
+                                dep_module,
+                                dep_sexps,
+                            });
+                        }
+                    }
+                }
+                FormKind::Export(specs) => {
+                    match handle_export(ctx, module, &specs)? {
+                        BlockAction::Continue => {}
+                        BlockAction::Block { dep_module, dep_sexps } => {
+                            return Ok(ProcessResult::Blocked {
+                                form_index: form_idx,
+                                dep_module,
+                                dep_sexps,
+                            });
+                        }
+                    }
+                }
+                FormKind::Mod(decl) => {
+                    match handle_mod(ctx, module, &decl)? {
+                        BlockAction::Continue => {}
+                        BlockAction::Block { dep_module, dep_sexps } => {
+                            return Ok(ProcessResult::Blocked {
+                                form_index: form_idx,
+                                dep_module,
+                                dep_sexps,
+                            });
+                        }
+                    }
+                }
+                FormKind::Platform(spec) => {
+                    handle_platform(ctx, &spec)?;
+                }
+                _ => {} // Regular, Defmacro — handled in Pass 2
+            }
+        }
+
         let (regular_sexps, macro_infos) = separate_macros(sexps)?;
 
         // Build AST for regular (non-macro) forms.
@@ -410,6 +459,9 @@ fn pass2_check_bodies_with_expansion(
         let name_refs: Vec<&str> = macro_names.iter().map(|s| s.as_str()).collect();
 
         match classify_form(sexp)? {
+            // FIXME(/int): Import/export/mod/platform forms are now processed
+            // in Pass 0 (before Pass 1). These Pass 2 handlers are redundant
+            // but harmless (idempotent). Remove once Pass 0 is verified stable.
             FormKind::Import(specs) => {
                 match handle_import(ctx, module, specs)? {
                     BlockAction::Continue => {}
@@ -768,8 +820,9 @@ fn handle_export(
     for spec in specs {
         let dep = &spec.module_path;
 
-        // Already loaded — continue to the next spec.
+        // Already loaded — register the re-export and continue.
         if ctx.tc.has_module(dep) {
+            ctx.tc.register_exports(std::slice::from_ref(spec))?;
             continue;
         }
 

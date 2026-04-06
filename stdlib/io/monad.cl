@@ -23,10 +23,10 @@
 
 (defmacro do "Sequence IO actions via bind, return last result"
   ([x] x)
-  ([x &rest] `(bind ~x (fn [_] (do ~@rest)))))
+  ([x &rest] `(primitives/bind ~x (fn [_] (do ~@rest)))))
 
 ;; bind! remains inline — bracket destructuring validated at Ring 3.
 (defmacro bind! "Monadic bind sugar"
   ([[] body] body)
   ([[name expr &more] body]
-    `(bind ~expr (fn [~name] (bind! [~@more] ~body)))))
+    `(primitives/bind ~expr (fn [~name] (bind! [~@more] ~body)))))

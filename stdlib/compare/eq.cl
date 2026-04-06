@@ -6,6 +6,7 @@
 ;; Spec: 07-traits.md §7.1
 
 (import [prelude []])
+(import [primitives [*]])
 
 (deftrait Eq
   (= [self self] Bool)

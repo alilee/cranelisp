@@ -11,6 +11,7 @@ Commits landed:
 - `ea5ce35` — submodule loading, no_cache flag, test isolation
 - `a8e4bb7` — keep project_root for DLL resolution
 - `e33aaf3` — spec + implement 3-tier search paths (§8.11) for modules and platforms
+- (pending) — Pass 0 import/export resolution, handle_export registration, macro qualification, stdlib primitives imports
 
 ## What's Done
 
@@ -95,7 +96,7 @@ Three test entry points, all through v4 `CompilerSession`:
 
 ## Test File Status
 
-**Total validated: ~2,293 pass / ~2,411 run = 95% pass rate** (full verification 2026-04-06)
+**Total validated: ~1,405 pass / ~1,538 run = 91% pass rate** (full --no-fail-fast 2026-04-06, post macro qualification fix)
 
 | File | Tests | Status | Notes |
 |------|-------|--------|-------|
@@ -137,6 +138,30 @@ The v4 pipeline had no persistent worker threads (Phase 1 steps 1.1–1.2). `reg
 
 4. **Pass 1 resume guard**: `pass1_done` flag on `ModuleSuspendState` prevents re-running Pass 1 when a module resumes after blocking at form index 0.
 
+### Pass 0 Import Resolution + Export Registration Fix (Phase 2, 2026-04-06)
+
+Two bugs prevented modules with imports from compiling correctly:
+
+1. **Import/export forms processed too late**: `register_trait_impl` checks impl method bodies during Pass 1, but import/export forms were only processed in Pass 2. Any module that imported symbols and used them in trait impl bodies would fail with "undefined variable". Fix: added Pass 0 in `process_module_forms` that processes all import/export/mod/platform forms before Pass 1, so imported symbols are in scope when impl bodies are checked. Pass 2 retains its import/export handling (idempotent) with a FIXME to remove once Pass 0 is verified stable.
+
+2. **`handle_export` never registered symbols**: When a dependency was already loaded, `handle_export` skipped it without calling `register_exports`. Fix: call `ctx.tc.register_exports()` for already-loaded deps, mirroring how `handle_import` calls `register_imports`.
+
+**Impact**: 73 tests recovered (1272→1345 passing, 266→193 failing). The test fixture prelude (`tests/fixtures/prelude.cl`) now loads correctly with `(import [primitives [*]])`.
+
+### Macro Qualification + Stdlib Primitives Import (Phase 2, 2026-04-06)
+
+Two classes of issue prevented stdlib macros and modules from working:
+
+1. **Stdlib modules missing `(import [primitives [*]])`**: 13 stdlib domain modules (eq, ord, num, int, float, display, string, vec, list, derive, trace, runner, lazy) used bare primitive names without importing the `primitives` module. Spec §8.9.1 requires explicit import — primitives are not auto-seeded into modules. Fix: added `(import [primitives [*]])` to all 13 files. Also added to `defs.cl` for macro body compilation.
+
+2. **Macro expansion templates with unqualified symbols**: Macro bodies are compiled inline in the *calling* module's context (not the defining module's), so any non-prelude symbols in macro bodies must be fully qualified. Fixes:
+   - `stdlib/defs.cl`: `quote-sexp` → `primitives/quote-sexp`, `str-concat` → `primitives/str-concat`
+   - `stdlib/text/string.cl`: `str-concat` → `primitives/str-concat` in `str` macro expansion
+   - `stdlib/io/monad.cl`: `bind` → `primitives/bind` in `do`/`bind!` macro expansions
+   - `stdlib/core/syntax.cl`: `SNil` → `macros/SNil`, `SCons` → `macros/SCons` in `slist` macro
+
+**Impact**: 60 additional tests recovered (1345→1405 passing, 193→133 failing). The real stdlib prelude now loads and all trait/type/operator tests pass. 49/57 stdlib+exemplar tests pass (was 0/57).
+
 ### Search Path Model Fix (Phase 2, 2026-04-06)
 
 Full verification (tests/VERIFICATION.md) revealed ~215 new regressions, most caused by a single root issue: `user.cl` at the repo root (a development scratch file) was loaded as the "user" module by tests, because project_root was conflated with lib_dirs.
@@ -151,20 +176,25 @@ Full verification (tests/VERIFICATION.md) revealed ~215 new regressions, most ca
 
 ## Remaining Work
 
-### 1. Macro pipeline gaps (16 stdlib test failures)
+### 1. Macro pipeline gaps (stdlib) — RESOLVED
 
-Three categories of failure in stdlib macro tests:
+Pass 0 import resolution, stdlib `(import [primitives [*]])`, and macro body qualification fixed all stdlib macro failures. 49/57 stdlib+exemplar tests pass.
 
-- **Macros module symbols unavailable in expansion** (str, threading macros — 10 failures): Macro bodies reference `SexpStr`, `SexpList` etc. from the `macros` synthetic module. When prelude macros expand in user context, the `macros` module symbols are not available for the expanded code. Error: `"undefined variable: SexpStr"` or `"constructor SexpList has no type scheme"`.
-- **Defmacro-in-expansion-results** (const, def macros — 4 failures): The `const`/`def` prelude macros expand to `defmacro` forms. The v4 pipeline's `process_regular_form` doesn't handle defmacro produced by macro expansion. Error: `"defmacro should be handled before AST building"`.
-- **Vec literal parse intercept** (vec macro — 2 failures): `(vec)` is intercepted by the parser as a vec literal before macro expansion can run. Error: `"vec literals not yet supported (Ring 1)"`.
+Remaining 8 stdlib/exemplar failures are **test-side issues** (test code uses unqualified primitives like `vec-len`, `Pure`, `str-eq`, `add-i64` that aren't in the prelude):
+- `macro_vec_empty`, `macro_vec_access`, `macro_vec_elements` — test uses bare `vec-len`/`vec-get`
+- `macro_do_multi`, `macro_do_returns_last` — test uses bare `Pure`
+- `macro_const_string_batch` — test source uses bare `str-eq`
+- `macro_def_expression_batch` — test source uses bare `add-i64`
+- `exemplar_batch_cross_module_adt` — separate exemplar issue
 
-### 2. Macro pipeline gaps (non-stdlib, from macros.rs — 5 failures)
+### 2. Macro pipeline gaps (non-stdlib, from macros.rs)
 
-- **Macro-calls-macro**: m2 expanding to call m1 fails with "undefined variable: m1". Macro environment not shared between sequential defmacro definitions.
 - **Body type validation**: Macro body returning non-Sexp type not caught as error.
 - **Expansion depth limit**: Mutual recursion between macros not detected; no depth limit enforcement.
-- **Error recovery**: Bad macro body silently succeeds instead of producing a type error.
+
+### 2a. Macro compilation context
+
+Macro clause bodies are compiled inline in the *calling* module's context (`compile_macro_clause_inline` uses `ctx.tc.current_module_path()`). This means macro bodies can only reference symbols available in the caller's scope, forcing macro authors to fully qualify non-prelude symbols. The proper fix is to compile macros in the defining module's context, but the current workaround (qualification) is sufficient.
 
 ### 3. Module scoping gap (4 failures: ring2 2, repl_negative 2)
 

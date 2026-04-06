@@ -36,5 +36,5 @@
 ;; -- slist Macro ------------------------------------------------------------
 
 (defmacro slist "Construct an SList from elements"
-  ([] `SNil)
-  ([x &rest] `(SCons ~x (slist ~@rest))))
+  ([] `macros/SNil)
+  ([x &rest] `(macros/SCons ~x (slist ~@rest))))

@@ -8,6 +8,7 @@
 ;; Spec: plan-stdlib.md §3.3
 
 (import [prelude []])
+(import [primitives [*]])
 
 (defn abs-float "Absolute value of a float"
   [:Float x] :Float

@@ -11,6 +11,7 @@
 ;; ── Seq Type ────────────────────────────────────────────────────────────
 
 (import [prelude []])
+(import [primitives [*]])
 
 (deftype (Seq a) "A lazy sequence with thunked tail"
   SeqNil

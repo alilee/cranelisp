@@ -7,6 +7,7 @@
 ;; Spec: plan-stdlib.md §3.3
 
 (import [prelude []])
+(import [primitives [*]])
 
 (defn rem "Integer remainder (truncated division): a - (a / b) * b"
   [:Int a :Int b] :Int

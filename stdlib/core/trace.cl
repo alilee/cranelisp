@@ -15,7 +15,7 @@
 (export [primitives [trace Trace TraceCall name params result children nanos]])
 
 ;; Import what we need for our own definitions
-(import [primitives [Trace TraceCall name params result children nanos]])
+(import [primitives [*]])
 (import [macros [SCons SNil]])
 
 ;; ── Single-Node Display ─────────────────────────────────────────────────────

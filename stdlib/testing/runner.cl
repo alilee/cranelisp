@@ -14,7 +14,7 @@
 
 (import [prelude []])
 
-(import [primitives [Trace TraceCall]])
+(import [primitives [*]])
 (import [fn.option [Option Some None]])
 (import [macros [SexpSym SexpStr SexpList SCons SNil Sexp SList]])
 (import [core.trace [trace-show-tree]])
