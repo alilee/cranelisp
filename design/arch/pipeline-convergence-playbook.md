@@ -96,7 +96,7 @@ Three test entry points, all through v4 `CompilerSession`:
 
 ## Test File Status
 
-**Total validated: ~1,405 pass / ~1,538 run = 91% pass rate** (full --no-fail-fast 2026-04-06, post macro qualification fix)
+**Total validated: ~1,467 pass / ~1,548 run = 94.8% pass rate** (full --no-fail-fast 2026-04-06, post slash commands + run-tests)
 
 | File | Tests | Status | Notes |
 |------|-------|--------|-------|
@@ -205,9 +205,9 @@ Bare `ReplSession::new()` sessions can still resolve bare primitive names (e.g.,
 - `neg_multi_sig_bare_value_errors`: `Defn::params()` panics on `DefnMulti` — missing guard.
 - `trait_method_as_value_operator`, `trait_method_as_value_comparison`: using trait method as bare value fails.
 
-### 5. Subprocess test porting (~66 failures: e2e 46, v4_pipeline 20)
+### 5. Subprocess test porting — RESOLVED
 
-E2E and v4_pipeline tests invoke the binary as subprocess. Various issues: `--v4` flag deleted, prompt format changes, `/expand` not available in v4, `run-tests` not ported.
+E2E and v4_pipeline subprocess tests ported: qualified primitives, updated platform syntax, filtered benign warnings, implemented all REPL slash commands including /run-tests. 1 test remains ignored (`v4_cross_module_macro_qualified_ref`) — blocked on GOT slot assignment (see §7).
 
 ### 6. FQTypeName migration (separate task)
 FIXME on `Type::ADT` in `crates/cranelisp-types/src/types.rs`.
@@ -221,6 +221,20 @@ This eliminates:
 - The `type_modules` parameter on `format_result_value`, `format_type_qualified`, etc.
 
 Do interactively, not via subagent — construction sites in the typechecker need judgment about which module path to use.
+
+### 7. GOT slot assignment in typechecker (architectural gap)
+
+GOT slots are currently allocated ad-hoc during codegen (`SharedCodegenState::ensure_slot_for`), keyed by bare symbol name in `def_codegen`. The design (`pipeline-v4.md` §4.1, §5.1) specifies that GOT slots are **pre-assigned during typechecking** and stored on `ModuleEntry`, enabling:
+
+- Parallel codegen: workers write code pointers to pre-assigned slots without coordination
+- Cache persistence: slots stored in `.meta.json` for cache-hit reconstruction
+- Cross-module calls: any module can reference any typechecked symbol's slot by qualified name (`module/symbol`)
+
+Current state diverges: `ModuleEntry` has no `got_slot` field, slots are allocated by codegen, and qualified references like `util/add-ten` fail because the slot is registered under the bare name `add-ten`. The `CrossModuleGot` HashMap in `cranelisp-backend` is unnecessary scaffolding that should be removed.
+
+**Fix**: Add `got_slot: Option<usize>` to `ModuleEntry::Def`. Allocate during `finalize_check_result` (or `pass1_register`). Codegen reads the pre-assigned slot from the TC symbol table. `resolve_got_entry` resolves qualified names by looking up the target module's symbol table for the slot, using the single shared `GotTable`. Remove `CrossModuleGot` type and the `cross_module_got` parameter from `CompileContext`.
+
+**Blocked**: `v4_cross_module_macro_qualified_ref` test (1 ignored).
 
 ## Deletions (step 1.7, completed)
 
