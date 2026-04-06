@@ -451,7 +451,11 @@ impl CompilerSession {
         let cache_dir = project_root.join(".cranelisp-cache");
         let _ = std::fs::create_dir_all(&cache_dir);
 
-        let cache_state = crate::session::CacheState::new(cache_dir.clone());
+        let cache_state = if settings.no_cache {
+            None
+        } else {
+            Some(crate::session::CacheState::new(cache_dir.clone()))
+        };
 
         let priority_workers = std::cmp::max(settings.priority_workers, 1);
 
@@ -465,7 +469,7 @@ impl CompilerSession {
             object_codegen_inputs: Mutex::new(HashMap::new()),
             cached_modules: Mutex::new(HashSet::new()),
             file_to_module: Mutex::new(HashMap::new()),
-            cache_state: Mutex::new(Some(cache_state)),
+            cache_state: Mutex::new(cache_state),
         });
 
         // Spawn persistent nice worker threads for object codegen (.o files).

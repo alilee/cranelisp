@@ -44,7 +44,7 @@ Expected: all pass. No known unit test failures.
 Self-contained tests using primitive operations and special forms. No prelude, no macros.
 
 ```bash
-cargo nt --test ring0
+cargo nt --test ring0 -E 'not test(checked_div)'
 cargo nt --test ring1
 cargo nt --test rc
 ```
@@ -70,12 +70,12 @@ cargo nt --test lenient
 
 | Suite | Tests | Expected |
 |-------|-------|----------|
-| ring2 | 198 | all pass |
-| modules | 22 | all pass |
-| macros | 28 | all pass |
-| ring3_repl | 50 | all pass |
+| ring2 | 197 | 189 pass, 8 fail (qualified names, primitives scoping, multi-sig panic, trait-as-value) |
+| modules | 22 | 18 pass, 4 fail (qualified name resolution) |
+| macros | 28 | 23 pass, 4 fail, 1 ignored (error recovery, depth limit, macro return type) |
+| ring3_repl | 50 | 39 pass, 2 fail, 9 ignored (macro error recovery) |
 | stdlib | 54 | all pass |
-| lenient | 16 | all pass |
+| lenient | 16 | 0 pass, 16 fail (scheduling/par-bind pipeline broken, 9s timeouts) |
 
 ## Phase 4: Infrastructure (Ring 4 + Scheduler)
 
@@ -91,9 +91,9 @@ cargo nt --test cache
 | Suite | Tests | Expected |
 |-------|-------|----------|
 | scheduler | 18 | all pass |
-| io | 74 | all pass |
-| ring4_trace | 29 | all pass |
-| cache | 51 | assess (may need nice workers for .o tests) |
+| io | 74 | 9 pass, 65 fail (IO execution hangs at 9s — platform/DLL pipeline broken) |
+| ring4_trace | 29 | 5 pass, 24 fail (prelude fixture fails: "unknown trait: Functor") |
+| cache | 51 | 31 pass, 20 fail (multi-module, prelude, pipeline, object, repl cache) |
 
 ## Phase 5: REPL Experience
 
@@ -106,8 +106,8 @@ cargo nt --test repl_negative
 
 | Suite | Tests | Expected |
 |-------|-------|----------|
-| repl_experience | 181 | assess |
-| repl_negative | 31 | assess |
+| repl_experience | 181 | 179 pass, 2 fail (display_imported_option formatting) |
+| repl_negative | 31 | 29 pass, 2 fail (primitive module scoping) |
 
 ## Phase 6: E2E and Integration
 
@@ -123,11 +123,11 @@ cargo nt --test sprint23
 
 | Suite | Tests | Expected |
 |-------|-------|----------|
-| e2e | 133 | assess |
+| e2e | 133 | 87 pass, 46 fail (subprocess: prompts, /expand, run-tests, string prims, imports) |
 | examples | 15 | all pass |
-| v4_repl_eval | 13 | assess |
-| v4_pipeline | 47 | assess (requires `--v4` flag removal) |
-| sprint23 | 70 | assess (link tests need `link_by_name`) |
+| v4_repl_eval | 13 | 11 pass, 2 fail |
+| v4_pipeline | 47 | 26 pass, 20 fail, 1 ignored |
+| sprint23 | 70 | 0 run (cfg-disabled: `__sprint47_reenable` feature gate) |
 
 ## Phase 7: Known-Problematic (Last)
 
@@ -140,8 +140,8 @@ cargo nt --test exemplar
 
 | Suite | Tests | Expected |
 |-------|-------|----------|
-| sketch_port | 141 | 130 pass, 11 pre-existing failures |
-| exemplar | 3 | assess |
+| sketch_port | 141 | 102 pass, 39 fail (11 pre-existing + 28 new regressions) |
+| exemplar | 3 | all pass |
 
 ## Pre-Existing Known Failures
 
@@ -152,6 +152,27 @@ Update this table as failures are fixed or new ones discovered.
 | ring0 | 2 | `checked_div_min_neg1_panics`, `checked_division_by_zero_panics` | checked_div not implemented |
 | sketch_port | 11 | various | prototype features not yet ported |
 | v4_pipeline | 2 | `v4_cross_module_macro_calls_helper`, `v4_cross_module_macro_transitive` | cross-module macro resolution gap |
+| sprint23 | 70 | all | cfg-disabled (`__sprint47_reenable` feature gate) |
+
+## v4 Pipeline Regressions (Sprint 49)
+
+Discovered 2026-04-05. ~215 new failures from v4 pipeline rearchitecture, clustered into root causes:
+
+| Category | ~Count | Root Cause | Affected Suites |
+|----------|--------|------------|-----------------|
+| Qualified name resolution | ~20 | `foo/bar` cross-module refs fail as "undefined variable" | ring2, modules, sketch_port |
+| Missing module file not detected | ~2 | `(mod nonexistent)` silently succeeds | ring2, modules |
+| Synthetic primitives not scoped | ~6 | bare `add-i64` works without import | ring2, repl_negative |
+| IO/platform execution hangs | ~65 | IO actions timeout at 9s; platform DLL pipeline broken | io, lenient |
+| Lenient/par-bind scheduling | ~16 | all lenient eval tests fail or timeout | lenient |
+| Prelude fixture loading | ~24 | "unknown trait: Functor" from fixture prelude | ring4_trace |
+| E2E subprocess tests | ~46 | prompts, /expand not in v4, run-tests, imports | e2e |
+| Cache pipeline | ~20 | multi-module/prelude caching broken | cache |
+| Multi-sig panic | 1 | `Defn::params()` on `DefnMulti` without guard | ring2 |
+| Macro error recovery | ~4 | REPL macro error handling regressions | macros, ring3_repl |
+| Trait method as value | 2 | using trait method as bare value fails | ring2 |
+| display_imported_option | 2 | imported Option display formatting | repl_experience |
+| sketch_port new | ~28 | additional sketch_port regressions beyond pre-existing 11 | sketch_port |
 
 ## Ignored Tests
 

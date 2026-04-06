@@ -50,23 +50,32 @@ impl ReplSession {
     }
 
     /// Create a session with prelude loaded from lib_dirs.
+    ///
+    /// Uses tests/fixtures as project_root to avoid picking up stray .cl files
+    /// from the repo root (e.g. user.cl). The caller's lib_dirs are the only
+    /// search paths for module resolution.
     pub fn new_with_prelude(
-        project_root: &std::path::Path,
+        _project_root: &std::path::Path,
         lib_dirs: &[PathBuf],
     ) -> Result<Self, CranelispError> {
-        let mut all_lib_dirs = vec![project_root.to_path_buf()];
-        all_lib_dirs.extend(lib_dirs.iter().cloned());
+        // Use tests/fixtures as project_root — no stray .cl files to interfere.
+        let safe_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests")
+            .join("fixtures");
 
         let settings = SessionSettings {
             no_color: true,
-            no_cache: false,
+            // Disable cache: the test fixture prelude differs from the stdlib
+            // prelude, but both cache under the same "prelude" key. A stale
+            // cache entry from a prior stdlib run causes "unknown trait" errors.
+            no_cache: true,
             codegen_behaviour: cranelisp_types::CodegenBehaviour::InMemoryAndObject,
             priority_workers: 1,
             nice_workers: 0,
         };
-        let mut session = CompilerSession::new(settings, project_root.to_path_buf());
-        // Override lib_dirs to include the caller's paths.
-        session.lib_dirs = all_lib_dirs;
+        let mut session = CompilerSession::new(settings, safe_root);
+        // Only include the caller's lib_dirs — no repo root contamination.
+        session.lib_dirs = lib_dirs.to_vec();
 
         // Register the user module — this triggers prelude loading via
         // inject_prelude_if_needed in the worker loop.

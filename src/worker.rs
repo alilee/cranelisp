@@ -437,7 +437,16 @@ fn pass2_check_bodies_with_expansion(
                 }
             }
             FormKind::Mod(decl) => {
-                handle_mod(ctx, module, &decl)?;
+                match handle_mod(ctx, module, &decl)? {
+                    BlockAction::Continue => {}
+                    BlockAction::Block { dep_module, dep_sexps } => {
+                        return Ok(Pass2Result::Blocked {
+                            form_index: form_idx,
+                            dep_module,
+                            dep_sexps,
+                        });
+                    }
+                }
             }
             FormKind::Platform(spec) => {
                 handle_platform(ctx, &spec)?;
@@ -822,22 +831,118 @@ fn handle_export(
     Ok(BlockAction::Continue)
 }
 
-/// Handle mod forms: write inline body to disk if present.
+/// Handle mod forms: write inline body to disk, then load the submodule.
 ///
-/// The submodule is not immediately loaded — it will be discovered lazily
-/// when another module imports from it via the normal module resolution path.
+/// `(mod util)` declares a submodule whose symbols are accessible via qualified
+/// references like `util/helper`. The submodule must be loaded (typechecked)
+/// before the parent can resolve these references, so we block for it — same
+/// as `handle_import` does for explicit imports.
 fn handle_mod(
     ctx: &mut WorkerContext,
     module: &ModuleFullPath,
     decl: &cranelisp_types::ModDecl,
-) -> Result<(), CranelispError> {
+) -> Result<BlockAction, CranelispError> {
     if let Some(body_sexps) = &decl.inline_body {
         write_inline_mod_to_disk(module, &decl.name, body_sexps, ctx.project_root)?;
     }
 
-    // No explicit submodule registration needed — the submodule is discovered
-    // lazily via file-system resolution when another module imports from it.
-    Ok(())
+    // Compute submodule path: "main" + "util" → "main.util"
+    let sub_path = ModuleFullPath::from(format!("{}.{}", module, decl.name));
+
+    // Already loaded — register GOT aliases for qualified references and continue.
+    if ctx.tc.has_module(&sub_path) {
+        register_submodule_got_aliases(ctx.shared_codegen, module, &sub_path);
+        return Ok(BlockAction::Continue);
+    }
+
+    // Resolve file path.
+    let dep_file = crate::pipeline::resolve_module_file(&sub_path, ctx.lib_dirs)
+        .ok_or_else(|| CranelispError::ModuleError {
+            message: format!(
+                "submodule '{}' not found (declared by '{}')",
+                sub_path, module
+            ),
+            file: None,
+            span: decl.span,
+        })?;
+
+    // Populate file_to_module mapping for file watcher.
+    if let Some(shared) = ctx.shared_state {
+        if let Ok(canonical) = dep_file.canonicalize() {
+            shared
+                .file_to_module
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .insert(canonical, sub_path.clone());
+        }
+    }
+
+    // Cache check: try to load from disk cache before parsing.
+    if try_cache_hit_load(ctx, &sub_path, &dep_file) {
+        return Ok(BlockAction::Continue);
+    }
+
+    // Read and parse source.
+    let source = std::fs::read_to_string(&dep_file).map_err(|e| {
+        CranelispError::ModuleError {
+            message: format!(
+                "cannot read submodule '{}' from '{}': {}",
+                sub_path,
+                dep_file.display(),
+                e
+            ),
+            file: Some(dep_file.clone()),
+            span: decl.span,
+        }
+    })?;
+    let dep_sexps = cranelisp_frontend::parse(&source)?;
+
+    // Register dep with scheduler and block for typecheck.
+    ctx.scheduler.register_module(sub_path.clone(), true);
+    ctx.scheduler.block_for_typecheck(
+        module,
+        &sub_path,
+        &Symbol::from("*"),
+    )?;
+
+    Ok(BlockAction::Block {
+        dep_module: sub_path,
+        dep_sexps,
+    })
+}
+
+/// Register GOT aliases so the parent module can call submodule functions
+/// via qualified names (e.g., `util/helper` → same GOT slot as `helper`).
+///
+/// Uses `generate_module_aliases` to produce all alias forms (last-component,
+/// suffix, full-path) then registers each as a GOT alias pointing to the
+/// same slot as the base symbol.
+fn register_submodule_got_aliases(
+    shared_codegen: &SharedCodegenState,
+    _parent_module: &ModuleFullPath,
+    sub_module: &ModuleFullPath,
+) {
+    let mod_str: &str = sub_module.as_ref();
+
+    // Collect (base_name, slot) pairs from shared codegen.
+    let entries: Vec<(Symbol, usize)> = shared_codegen
+        .def_codegen
+        .iter()
+        .filter_map(|entry| {
+            entry.got_slot.map(|slot| (entry.key().clone(), slot))
+        })
+        .collect();
+
+    for (name, slot) in &entries {
+        for alias in crate::session::generate_module_aliases(mod_str, name.as_ref()) {
+            let qualified = Symbol::from(alias);
+            // Only register if not already present.
+            if !shared_codegen.def_codegen.contains_key(&qualified) {
+                let mut entry = shared_codegen.def_codegen.entry(qualified).or_default();
+                entry.got_slot = Some(*slot);
+            }
+        }
+    }
 }
 
 /// Handle platform forms: load DLL and register type signatures.
