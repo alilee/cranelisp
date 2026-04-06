@@ -267,7 +267,6 @@ fn batch_defmacro_identity() {
 // The functional coverage (macro works when called) is already covered by
 // repl_defmacro_identity and friends.
 #[test]
-#[ignore]
 fn repl_macro_in_symbol_table() {
     let mut s = repl_session();
     repl_eval_display(&mut s, "(defmacro my-mac [x] x)");

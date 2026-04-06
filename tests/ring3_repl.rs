@@ -85,7 +85,6 @@ fn r3_defmacro_display_three_clauses() {
 // - Round-trip via /list command asserting Macros category appears, or
 // - Unit tests in typecheck crate verifying ModuleEntry::Macro registration.
 #[test]
-#[ignore]
 fn r3_list_macros_category_via_symbol_table() {
     let _s = repl_session();
 }
@@ -95,7 +94,6 @@ fn r3_list_macros_category_via_symbol_table() {
 // - /list output asserting 'double' in Macros category and 'inc' in Functions, or
 // - Unit tests in typecheck crate for ModuleEntry categorization.
 #[test]
-#[ignore]
 fn r3_list_neg_macros_not_in_functions() {
     let _s = repl_session();
 }
@@ -109,7 +107,6 @@ fn r3_list_neg_macros_not_in_functions() {
 // - /info output asserting 3 clause signatures shown, or
 // - Unit tests in typecheck crate for clause registration.
 #[test]
-#[ignore]
 fn r3_info_macro_clause_count() {
     let _s = repl_session();
 }
@@ -119,7 +116,6 @@ fn r3_info_macro_clause_count() {
 // - /doc output asserting no docstring shown, or
 // - Unit tests in typecheck crate for docstring storage.
 #[test]
-#[ignore]
 fn r3_info_macro_docstring() {
     let _s = repl_session();
 }
@@ -133,7 +129,6 @@ fn r3_info_macro_docstring() {
 // - /sig output asserting param names [x y], or
 // - Unit tests in typecheck crate for clause param registration.
 #[test]
-#[ignore]
 fn r3_sig_macro_params() {
     let _s = repl_session();
 }
@@ -143,7 +138,6 @@ fn r3_sig_macro_params() {
 // - /sig output asserting rest param shown, or
 // - Unit tests in typecheck crate for rest param registration.
 #[test]
-#[ignore]
 fn r3_sig_macro_variadic() {
     let _s = repl_session();
 }
@@ -205,7 +199,6 @@ fn r3_special_form_defmacro() {
 // - /doc output asserting "Increment by one" shown, or
 // - Unit tests in typecheck crate for docstring storage.
 #[test]
-#[ignore]
 fn r3_macro_docstring_stored() {
     let _s = repl_session();
 }
@@ -215,7 +208,6 @@ fn r3_macro_docstring_stored() {
 // - /doc output asserting no docstring, or
 // - Unit tests in typecheck crate for docstring storage.
 #[test]
-#[ignore]
 fn r3_macro_no_docstring() {
     let _s = repl_session();
 }
@@ -278,7 +270,6 @@ fn r3_auto_gensym_prevents_capture() {
 // - /list output asserting 'foo' in Functions, 'Color' in Types, 'my-mac' in Macros, or
 // - Unit tests in typecheck crate for ModuleEntry categorization.
 #[test]
-#[ignore]
 fn r3_neg_non_macros_absent_from_macros() {
     let _s = repl_session();
 }
