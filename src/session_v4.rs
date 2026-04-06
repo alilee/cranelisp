@@ -703,6 +703,43 @@ impl CompilerSession {
                 let output = self.handle_list(filter);
                 CommandResult::Final(output)
             }
+            ReplCommand::Mod(name) => {
+                self.handle_mod(name);
+                CommandResult::Nothing
+            }
+            ReplCommand::Source(name) => {
+                CommandResult::Final(self.handle_source(name))
+            }
+            ReplCommand::SexpCmd(name) => {
+                CommandResult::Final(self.handle_sexp_cmd(name))
+            }
+            ReplCommand::Ast(name) => {
+                CommandResult::Final(self.handle_ast(name))
+            }
+            ReplCommand::Clif(name) => {
+                CommandResult::Final(self.handle_clif(name))
+            }
+            ReplCommand::Disasm(name) => {
+                CommandResult::Final(self.handle_disasm(name))
+            }
+            ReplCommand::Info(name) => {
+                CommandResult::Final(self.handle_info(name))
+            }
+            ReplCommand::Type(expr) => {
+                CommandResult::Final(self.handle_type(expr))
+            }
+            ReplCommand::Imports(filter) => {
+                CommandResult::Final(self.handle_imports(filter))
+            }
+            ReplCommand::Exports(arg) => {
+                CommandResult::Final(self.handle_exports(arg))
+            }
+            ReplCommand::Expand(form) => {
+                CommandResult::Final(self.handle_expand(form))
+            }
+            ReplCommand::Time(expr) => {
+                CommandResult::Final(self.handle_time(expr))
+            }
             ReplCommand::Unknown(cmd) => {
                 CommandResult::Final(format!(
                     "error: unknown command '{cmd}'. Type /help for available commands."
@@ -1184,6 +1221,521 @@ impl CompilerSession {
             "No definitions in current module.".to_string()
         } else {
             parts.join("\n")
+        }
+    }
+
+    /// /mod handler: switch module namespace.
+    fn handle_mod(&mut self, name: &str) {
+        let target = if name.is_empty() { "user" } else { name };
+        let path = ModuleFullPath::from(target);
+        self.tc.set_current_module(path);
+    }
+
+    /// /source handler: show original source text of a definition.
+    fn handle_source(&self, name: &str) -> String {
+        if name.is_empty() {
+            return "usage: /source <name>".to_string();
+        }
+        match self.inmem_worker.got_state.def_codegen.get(name) {
+            Some(dc) if dc.source.is_some() => {
+                format!("; source for {name}\n{}", crate::pretty::pretty_print_str(dc.source.as_ref().unwrap()))
+            }
+            _ => format!("Error: no source available for '{name}'"),
+        }
+    }
+
+    /// /sexp handler: show parsed S-expression of a definition.
+    fn handle_sexp_cmd(&self, name: &str) -> String {
+        if name.is_empty() {
+            return "usage: /sexp <name>".to_string();
+        }
+        match self.inmem_worker.got_state.def_codegen.get(name) {
+            Some(dc) if dc.sexp.is_some() => {
+                format!("; sexp for {name}\n{}", crate::pretty::pretty_print(dc.sexp.as_ref().unwrap()))
+            }
+            _ => format!("Error: no sexp available for '{name}'"),
+        }
+    }
+
+    /// /ast handler: show AST of a definition.
+    fn handle_ast(&self, name: &str) -> String {
+        if name.is_empty() {
+            return "usage: /ast <name>".to_string();
+        }
+        match self.inmem_worker.got_state.def_codegen.get(name) {
+            Some(dc) if dc.defn.is_some() => {
+                format!("; ast for {name}\n{:#?}", dc.defn.as_ref().unwrap())
+            }
+            _ => format!("Error: no AST available for '{name}'"),
+        }
+    }
+
+    /// /clif handler: show Cranelift IR of a definition.
+    fn handle_clif(&self, name: &str) -> String {
+        if name.is_empty() {
+            return "usage: /clif <name>".to_string();
+        }
+        match self.inmem_worker.got_state.def_codegen.get(name) {
+            Some(dc) if dc.clif_ir.is_some() => {
+                format!("; clif ir for {name}\n{}", dc.clif_ir.as_ref().unwrap())
+            }
+            _ => format!("Error: no CLIF IR available for '{name}'"),
+        }
+    }
+
+    /// /disasm handler: show disassembled native code of a definition.
+    fn handle_disasm(&self, name: &str) -> String {
+        if name.is_empty() {
+            return "usage: /disasm <name>".to_string();
+        }
+        match self.inmem_worker.got_state.def_codegen.get(name) {
+            Some(dc) if dc.disasm.is_some() => {
+                format!("; disasm for {name}\n{}", dc.disasm.as_ref().unwrap())
+            }
+            _ => format!("Error: no disassembly available for '{name}'"),
+        }
+    }
+
+    /// /info handler: show full details (sig + code size + compile time).
+    fn handle_info(&self, name: &str) -> String {
+        if name.is_empty() {
+            return "usage: /info <name>".to_string();
+        }
+        if Type::from_name(name).is_some() {
+            return self.format_builtin_type_display(name);
+        }
+        let entry = match self.tc.symbol_table().get(name) {
+            Some(e) => e.clone(),
+            None => return format!("error: unknown symbol '{name}'"),
+        };
+        let module = self.tc.current_module_path().clone();
+        let (resolved_entry, resolved_module) = self.resolve_entry_for_display(&entry, &module);
+        let sig = self.format_def_entry(&resolved_entry, name, &resolved_module);
+        // Append code info if available.
+        if !matches!(resolved_entry,
+            ModuleEntry::Macro { .. } | ModuleEntry::TypeDef { .. } | ModuleEntry::TraitDecl { .. })
+        {
+            if let Some(dc) = self.inmem_worker.got_state.def_codegen.get(name) {
+                let size_str = dc.code_size
+                    .map(|s| format!("{s} bytes"))
+                    .unwrap_or_else(|| "? bytes".to_string());
+                let time_str = dc.compile_duration
+                    .map(|d| format!("{}ms", d.as_millis()))
+                    .unwrap_or_else(|| "?ms".to_string());
+                return format!("{sig}\n  {size_str}, {time_str}");
+            }
+        }
+        sig
+    }
+
+    /// /type handler: typecheck expression without executing.
+    fn handle_type(&mut self, expr_src: &str) -> String {
+        if expr_src.is_empty() {
+            return "usage: /type <expr>".to_string();
+        }
+        let snapshot = self.tc.snapshot();
+        let result = self.typecheck_only(expr_src);
+        self.tc.restore(snapshot);
+        match result {
+            Ok(ty) => {
+                let display = format_type_qualified(&ty, &self.type_modules);
+                format!(":{display}")
+            }
+            Err(e) => format!("Error: {e}"),
+        }
+    }
+
+    /// Parse, expand, and typecheck an expression without compiling or executing.
+    fn typecheck_only(&mut self, expr_src: &str) -> Result<Type, CranelispError> {
+        let sexps = cranelisp_frontend::parse(expr_src)?;
+        if sexps.is_empty() {
+            return Err(CranelispError::ParseError {
+                message: "empty expression".into(),
+                span: Span::SYNTHETIC,
+            });
+        }
+        let input = cranelisp_frontend::build_repl_input(&sexps[0])?;
+        let module = self.tc.current_module_path().clone();
+        let ctx = cranelisp_types::CompileContext {
+            module,
+            codegen: CodegenBehaviour::InMemoryAndObject,
+        };
+        let check_result = self.tc.check(&[input], &ctx, ModuleStrategy::Additive)?;
+        Ok(check_result.display.as_ref()
+            .map(|d| d.ty.clone())
+            .unwrap_or(Type::Int))
+    }
+
+    /// /imports handler: list imports in current module by category.
+    fn handle_imports(&self, filter: &str) -> String {
+        let table = self.tc.symbol_table();
+        let mut output = String::new();
+
+        if filter.is_empty() {
+            // Unfiltered mode: organize by category
+            let mut special_forms: Vec<String> = Vec::new();
+            let mut macros: Vec<String> = Vec::new();
+            let mut traits: Vec<String> = Vec::new();
+            let mut types: Vec<String> = Vec::new();
+            let mut fns: Vec<String> = Vec::new();
+
+            for (sym, entry) in table.all_symbols() {
+                let name = sym.to_string();
+                match entry {
+                    ModuleEntry::Def { kind, .. } => {
+                        if let DefKind::SpecialForm { .. } = kind.as_ref() {
+                            special_forms.push(name);
+                        }
+                        // Skip locally-defined fns and primitives
+                    }
+                    ModuleEntry::Import { source } | ModuleEntry::Reexport { source } => {
+                        if name.contains('$') {
+                            continue;
+                        }
+                        let classification = self.classify_import(source);
+                        match classification {
+                            ImportClass::Macro => macros.push(name),
+                            ImportClass::Trait => traits.push(name),
+                            ImportClass::Type | ImportClass::Constructor => types.push(name),
+                            ImportClass::Fn => fns.push(name),
+                        }
+                    }
+                    _ => {} // locally defined
+                }
+            }
+
+            special_forms.sort();
+            macros.sort();
+            traits.sort();
+            types.sort();
+            fns.sort();
+
+            append_name_category(&mut output, "Special forms", &special_forms);
+            append_name_category(&mut output, "Macros", &macros);
+            append_name_category(&mut output, "Traits", &traits);
+            append_name_category(&mut output, "Types", &types);
+            append_name_category(&mut output, "Fns", &fns);
+
+            if special_forms.is_empty() && macros.is_empty() && traits.is_empty()
+                && types.is_empty() && fns.is_empty()
+            {
+                output.push_str("(no imports)");
+            }
+        } else {
+            // Filtered mode: show imports from named module only
+            let mut names: Vec<String> = Vec::new();
+            for (sym, entry) in table.all_symbols() {
+                let source = match entry {
+                    ModuleEntry::Import { source } => source,
+                    ModuleEntry::Reexport { source } => source,
+                    _ => continue,
+                };
+                let name = sym.to_string();
+                if name.contains('$') {
+                    continue;
+                }
+                if *source.module == *filter {
+                    names.push(name);
+                }
+            }
+            if names.is_empty() {
+                // Silent for no matches
+                return String::new();
+            }
+            names.sort();
+            append_name_category(&mut output, &format!("From {filter}"), &names);
+        }
+
+        // Trim trailing newline
+        while output.ends_with('\n') {
+            output.pop();
+        }
+        output
+    }
+
+    /// Classify an imported symbol by following import chains to the definition.
+    fn classify_import(&self, source: &FQSymbol) -> ImportClass {
+        match self.resolve_to_definition(source) {
+            Some(entry) => match entry {
+                ModuleEntry::Macro { .. } => ImportClass::Macro,
+                ModuleEntry::TraitDecl { .. } => ImportClass::Trait,
+                ModuleEntry::TypeDef { .. } => ImportClass::Type,
+                ModuleEntry::Constructor { .. } => ImportClass::Constructor,
+                _ => ImportClass::Fn,
+            },
+            None => ImportClass::Fn,
+        }
+    }
+
+    /// Follow Import/Reexport chains to find the ultimate definition entry.
+    fn resolve_to_definition(&self, source: &FQSymbol) -> Option<ModuleEntry> {
+        let mut current_module = source.module.clone();
+        let mut current_name = source.symbol.to_string();
+        for _ in 0..10 {
+            let entry = {
+                let table = self.tc.module_table(&current_module)?;
+                table.get(&current_name)?.clone()
+            };
+            match &entry {
+                ModuleEntry::Import { source: next } | ModuleEntry::Reexport { source: next } => {
+                    current_module = next.module.clone();
+                    current_name = next.symbol.to_string();
+                }
+                _ => return Some(entry),
+            }
+        }
+        None
+    }
+
+    /// /exports handler: list a module's public symbols.
+    fn handle_exports(&self, arg: &str) -> String {
+        if arg.is_empty() {
+            return "Usage: /exports <module-name>".to_string();
+        }
+        let mut parts = arg.splitn(2, char::is_whitespace);
+        let mod_name = parts.next().unwrap_or("");
+        let prefix_filter = parts.next().unwrap_or("").trim();
+
+        let module_path = match self.tc.resolve_module_by_name(mod_name) {
+            Some(path) => path,
+            None => return format!("Module '{mod_name}' not found"),
+        };
+
+        let table = match self.tc.module_table(&module_path) {
+            Some(t) => t,
+            None => return format!("Module '{mod_name}' not found"),
+        };
+
+        let mut macros: Vec<String> = Vec::new();
+        let mut traits: Vec<String> = Vec::new();
+        let mut types: Vec<String> = Vec::new();
+        let mut fns: Vec<String> = Vec::new();
+
+        for (sym, entry) in table.all_symbols() {
+            if matches!(entry, ModuleEntry::Import { .. } | ModuleEntry::Reexport { .. }) {
+                continue;
+            }
+            if !entry.is_public() {
+                continue;
+            }
+            let name = sym.to_string();
+            if name.contains('$') {
+                continue;
+            }
+            if !prefix_filter.is_empty()
+                && !name.to_lowercase().starts_with(&prefix_filter.to_lowercase())
+            {
+                continue;
+            }
+            match entry {
+                ModuleEntry::Macro { .. } => macros.push(name),
+                ModuleEntry::TraitDecl { .. } => traits.push(name),
+                ModuleEntry::TypeDef { .. } | ModuleEntry::Constructor { .. } => types.push(name),
+                ModuleEntry::Def { kind, .. }
+                    if !matches!(kind.as_ref(), DefKind::SpecialForm { .. }) =>
+                {
+                    fns.push(name);
+                }
+                _ => {}
+            }
+        }
+
+        macros.sort();
+        traits.sort();
+        types.sort();
+        fns.sort();
+
+        let has_any = !macros.is_empty() || !traits.is_empty()
+            || !types.is_empty() || !fns.is_empty();
+
+        if !has_any {
+            return format!("Module '{mod_name}' has no public symbols");
+        }
+
+        let mut output = format!("Module '{mod_name}':\n");
+        append_name_category(&mut output, "Macros", &macros);
+        append_name_category(&mut output, "Traits", &traits);
+        append_name_category(&mut output, "Types", &types);
+        append_name_category(&mut output, "Fns", &fns);
+        while output.ends_with('\n') {
+            output.pop();
+        }
+        output
+    }
+
+    /// /expand handler: macro-expand a form without evaluating.
+    fn handle_expand(&mut self, form_src: &str) -> String {
+        if form_src.is_empty() {
+            return "usage: /expand <form>".to_string();
+        }
+        // Compile any uncompiled macros before expansion.
+        if let Err(e) = self.compile_pending_macros() {
+            return format!("Error: {e}");
+        }
+        match self.expand_form_sexp(form_src) {
+            Ok(expanded) => format_sexp(&expanded),
+            Err(e) => format!("Error: {e}"),
+        }
+    }
+
+    /// Compile any macros in the TC symbol table that don't yet have code pointers.
+    ///
+    /// When a defmacro form is processed by the worker, it registers the macro
+    /// in the TC but defers compilation until the macro is first used. For /expand
+    /// we need to compile them eagerly.
+    fn compile_pending_macros(&mut self) -> Result<(), CranelispError> {
+        use cranelisp_typecheck::ModuleCheckAccumulator;
+
+        // Collect macro names + sexps that need compilation.
+        let mut to_compile: Vec<(Symbol, Sexp)> = Vec::new();
+        {
+            let table = self.tc.symbol_table();
+            for (sym, entry) in table.all_symbols() {
+                if let ModuleEntry::Macro { clauses, sexp: Some(sexp), .. } = entry {
+                    let name = Symbol::from(sym.as_ref());
+                    let needs_compile = clauses.iter().enumerate().any(|(idx, _)| {
+                        let clause_name = Symbol::from(
+                            format!("__macro_{}_clause_{}", name, idx),
+                        );
+                        !self.inmem_worker.got_state.def_codegen.contains_key(clause_name.as_ref())
+                    });
+                    if needs_compile {
+                        to_compile.push((name, sexp.clone()));
+                    }
+                }
+            }
+        }
+
+        for (_, sexp) in &to_compile {
+            let module = self.tc.current_module_path().clone();
+            let info = cranelisp_frontend::parse_defmacro(sexp)?;
+            let mut accumulator = ModuleCheckAccumulator::new();
+
+            let shared_codegen =
+                crate::session::SharedCodegenState::extract_from(&mut self.inmem_worker);
+            let mut worker_jit = crate::session::WorkerJitState::new();
+
+            let mut wctx = WorkerContext {
+                tc: &mut self.tc,
+                scheduler: &self.shared.scheduler,
+                shared_codegen: &shared_codegen,
+                worker_jit: &mut worker_jit,
+                platform_registry: &mut self.platform_registry,
+                lib_dirs: &self.lib_dirs,
+                platform_dirs: &self.platform_dirs,
+                project_root: &self.project_root,
+                object_codegen_stash: None,
+                shared_state: None,
+            };
+
+            crate::worker::compile_macro_for_repl(
+                &mut wctx, &module, &info, Span::SYNTHETIC, &mut accumulator,
+            )?;
+
+            worker_jit.drain_to_shared(&shared_codegen);
+            shared_codegen.sync_back_to(&mut self.inmem_worker);
+        }
+        Ok(())
+    }
+
+    /// Parse and expand a form through the compiled macros in the session.
+    fn expand_form_sexp(&self, form_src: &str) -> Result<Sexp, CranelispError> {
+        let sexps = cranelisp_frontend::parse(form_src)?;
+        if sexps.is_empty() {
+            return Err(CranelispError::ParseError {
+                message: "empty form".into(),
+                span: Span::SYNTHETIC,
+            });
+        }
+        let sexp = sexps.into_iter().next().ok_or_else(|| {
+            CranelispError::ParseError {
+                message: "empty form".into(),
+                span: Span::SYNTHETIC,
+            }
+        })?;
+        // Build macro map from persistent macros (compiled in prior evals).
+        let macro_map = self.build_macro_map()?;
+        crate::expander::expand_sexp_recursive(sexp, &macro_map, 0)
+    }
+
+    /// Build a macro map from compiled macros in the GOT and TC symbol table.
+    fn build_macro_map(&self) -> Result<HashMap<Symbol, crate::expander::MacroEntry>, CranelispError> {
+        use crate::expander::{MacroEntry, MacroClauseEntry};
+
+        let mut map = HashMap::new();
+        let table = self.tc.symbol_table();
+
+        for (sym, entry) in table.all_symbols() {
+            let (clauses, docstring) = match entry {
+                ModuleEntry::Macro { clauses, docstring, .. } => {
+                    (clauses.clone(), docstring.clone())
+                }
+                ModuleEntry::Import { source } => {
+                    // Follow import to find macro entry
+                    if let Some(module_table) = self.tc.module_table(&source.module) {
+                        if let Some(ModuleEntry::Macro { clauses, docstring, .. }) =
+                            module_table.get(source.symbol.as_ref())
+                        {
+                            (clauses.clone(), docstring.clone())
+                        } else {
+                            continue;
+                        }
+                    } else {
+                        continue;
+                    }
+                }
+                _ => continue,
+            };
+
+            let name = Symbol::from(sym.as_ref());
+            // Check if all clauses have code pointers
+            let mut compiled_clauses = Vec::new();
+            let mut all_compiled = true;
+            for (idx, clause_info) in clauses.iter().enumerate() {
+                let clause_name = Symbol::from(format!("__macro_{}_clause_{}", name, idx));
+                if let Some(dc) = self.inmem_worker.got_state.def_codegen.get(&clause_name) {
+                    if let Some(code_ptr) = dc.code_ptr {
+                        compiled_clauses.push(MacroClauseEntry {
+                            func_ptr: code_ptr,
+                            params: clause_info.params.clone(),
+                            rest_param: clause_info.rest_param.clone(),
+                        });
+                    } else {
+                        all_compiled = false;
+                        break;
+                    }
+                } else {
+                    all_compiled = false;
+                    break;
+                }
+            }
+            if all_compiled && !compiled_clauses.is_empty() {
+                map.insert(name, MacroEntry {
+                    clauses: compiled_clauses,
+                    docstring,
+                });
+            }
+        }
+        Ok(map)
+    }
+
+    /// /time handler: evaluate with timing.
+    fn handle_time(&mut self, expr_src: &str) -> String {
+        if expr_src.is_empty() {
+            return "usage: /time <expr>".to_string();
+        }
+        let start = std::time::Instant::now();
+        match self.eval(expr_src) {
+            Ok(Some(result)) => {
+                let elapsed = start.elapsed();
+                let display = self.format_eval_result(&result);
+                format!("{display} ({}ms)", elapsed.as_millis())
+            }
+            Ok(None) => {
+                let elapsed = start.elapsed();
+                format!("(no result) ({}ms)", elapsed.as_millis())
+            }
+            Err(e) => format!("Error: {e}"),
         }
     }
 
@@ -1737,6 +2289,58 @@ fn format_macro_clause_params(clause: &MacroClauseInfo) -> String {
 /// Format a related symbols section (spec §1.1).
 fn format_related_section(label: &str, names: &[&str]) -> String {
     format!("\n; {label}:\n;  {}", names.join(" "))
+}
+
+/// Classification of an imported symbol for category-based display.
+enum ImportClass {
+    Macro,
+    Trait,
+    Type,
+    Constructor,
+    Fn,
+}
+
+/// Append a category of names to a string buffer (for /list, /imports, /exports).
+fn append_name_category(buf: &mut String, label: &str, names: &[String]) {
+    if names.is_empty() {
+        return;
+    }
+    buf.push_str(label);
+    buf.push_str(":\n");
+    for name in names {
+        buf.push_str("  ");
+        buf.push_str(name);
+        buf.push('\n');
+    }
+}
+
+/// Format a Sexp value as a readable string.
+fn format_sexp(sexp: &Sexp) -> String {
+    match sexp {
+        Sexp::Symbol(name, _) => name.clone(),
+        Sexp::Int(n, _) => format!("{n}"),
+        Sexp::Float(v, _) => {
+            let s = format!("{v}");
+            if s.contains('.') { s } else { format!("{s}.0") }
+        }
+        Sexp::Bool(b, _) => format!("{b}"),
+        Sexp::Str(s, _) => format!("\"{s}\""),
+        Sexp::List(children, _) => {
+            let parts: Vec<String> = children.iter().map(format_sexp).collect();
+            format!("({})", parts.join(" "))
+        }
+        Sexp::Bracket(children, _) => {
+            let parts: Vec<String> = children.iter().map(format_sexp).collect();
+            format!("[{}]", parts.join(" "))
+        }
+        Sexp::Comment(text, _) => {
+            if text.is_empty() {
+                ";".to_string()
+            } else {
+                format!("; {text}")
+            }
+        }
+    }
 }
 
 /// Append docstring as a comment suffix.
