@@ -435,7 +435,6 @@ fn e2e_s3_1_sig() {
 
 // spec: repl/spec.md §3.4 — /info slash command
 #[test]
-#[ignore] // /info not yet ported to v4 REPL
 fn e2e_s3_4_info() {
     let o = run_repl(
         &format!("{PRIMS}(defn double [x] (mul-i64 x 2))\n/info double\n"),
@@ -456,7 +455,6 @@ fn e2e_s3_1_time() {
 
 // spec: repl/spec.md §3.1 — /type slash command
 #[test]
-#[ignore] // /type not yet ported to v4 REPL
 fn e2e_s3_1_type() {
     let o = run_repl(&format!("{PRIMS}/type (add-i64 1 2)\n"), "s3_type");
     let s = stdout_str(&o);
@@ -1210,7 +1208,6 @@ fn e2e_s1_1_constructor_lookup() {
 
 // spec: repl/spec.md §3.4 — /imports shows Special forms category
 #[test]
-#[ignore] // /imports not yet ported to v4 REPL
 fn e2e_s3_4_imports_special_forms() {
     let o = run_repl("/imports\n", "s3_4_specials");
     let s = stdout_str(&o);
@@ -1284,7 +1281,6 @@ fn e2e_isolation_no_shared_state() {
 
 // spec: repl/spec.md §11.1 — /expand with a single macro shows expanded form
 #[test]
-#[ignore] // /expand not yet ported to v4 REPL
 fn e2e_s11_1_expand_single_macro() {
     let input = "(defmacro double [x] `(add-i64 ~x ~x))\n/expand (double 21)\n";
     let o = run_repl(input, "expand_single");
@@ -1299,7 +1295,6 @@ fn e2e_s11_1_expand_single_macro() {
 
 // spec: repl/spec.md §11.1 — /expand with nested macros expands recursively
 #[test]
-#[ignore] // /expand not yet ported to v4 REPL
 fn e2e_s11_1_expand_nested_macros() {
     let input = "(defmacro inc [x] `(add-i64 ~x 1))\n\
                  (defmacro double-inc [x] `(inc (inc ~x)))\n\
@@ -1323,7 +1318,6 @@ fn e2e_s11_1_expand_nested_macros() {
 
 // spec: repl/spec.md §11.1 — /expand with no macro calls shows input unchanged
 #[test]
-#[ignore] // /expand not yet ported to v4 REPL
 fn e2e_s11_1_expand_no_macro() {
     let input = "/expand (add-i64 1 2)\n";
     let o = run_repl(input, "expand_no_macro");
@@ -1400,7 +1394,6 @@ fn e2e_s3_4_imports_empty() {
 
 // spec: repl/spec.md §3.4 — /imports after explicit import
 #[test]
-#[ignore] // /imports not yet ported to v4 REPL
 fn e2e_s3_4_imports_after_import() {
     let input = "(import [primitives [add-i64 sub-i64]])\n/imports\n";
     let o = run_repl(input, "imports_after");
@@ -1414,7 +1407,6 @@ fn e2e_s3_4_imports_after_import() {
 
 // spec: repl/spec.md §3.4 — /imports <module> filters to one module
 #[test]
-#[ignore] // /imports not yet ported to v4 REPL
 fn e2e_s3_4_imports_filter_by_module() {
     let input = "(import [primitives [add-i64]])\n/imports primitives\n";
     let o = run_repl(input, "imports_filter");
@@ -1581,7 +1573,6 @@ fn e2e_s3_3_list_fns_category_name() {
 
 // spec: repl/spec.md §3.4 — /imports always shows Special forms
 #[test]
-#[ignore] // /imports not yet ported to v4 REPL
 fn e2e_s3_4_imports_special_forms_always() {
     let o = run_repl("/imports\n", "s3_4_sf_always");
     let s = stdout_str(&o);
@@ -1646,7 +1637,6 @@ fn e2e_s3_4_neg_imports_nonexistent_silent() {
 
 // spec: repl/spec.md §3.5 — /exports with no argument prints usage hint
 #[test]
-#[ignore] // /exports not yet ported to v4 REPL
 fn e2e_s3_5_exports_no_arg_usage() {
     let o = run_repl("/exports\n", "s3_5_no_arg");
     let s = stdout_str(&o);
@@ -1658,7 +1648,6 @@ fn e2e_s3_5_exports_no_arg_usage() {
 
 // spec: repl/spec.md §3.5 — /exports nonexistent prints module not found
 #[test]
-#[ignore] // /exports not yet ported to v4 REPL
 fn e2e_s3_5_exports_not_found() {
     let o = run_repl("/exports nonexistent\n", "s3_5_notfound");
     let s = stdout_str(&o);
@@ -1973,7 +1962,6 @@ fn e2e_s3_1_source_user_fn() {
 
 // spec: repl/spec.md §3.1 — /source on nonexistent symbol gives error
 #[test]
-#[ignore] // /source not yet ported to v4 REPL
 fn e2e_s3_1_source_neg_nonexistent() {
     let input = "/source nonexistent_sym\n";
     let o = run_repl(input, "s3_1_source_neg_nonexistent");
@@ -2005,7 +1993,6 @@ fn e2e_s3_1_sexp_user_fn() {
 
 // spec: repl/spec.md §3.1 — /sexp on nonexistent symbol gives error
 #[test]
-#[ignore] // /sexp not yet ported to v4 REPL
 fn e2e_s3_1_sexp_neg_nonexistent() {
     let input = "/sexp nonexistent_sym\n";
     let o = run_repl(input, "s3_1_sexp_neg_nonexistent");
@@ -2036,7 +2023,6 @@ fn e2e_s3_1_ast_user_fn() {
 
 // spec: repl/spec.md §3.1 — /ast on nonexistent symbol gives error
 #[test]
-#[ignore] // /ast not yet ported to v4 REPL
 fn e2e_s3_1_ast_neg_nonexistent() {
     let input = "/ast nonexistent_sym\n";
     let o = run_repl(input, "s3_1_ast_neg_nonexistent");
@@ -2068,7 +2054,6 @@ fn e2e_s3_1_clif_user_fn() {
 
 // spec: repl/spec.md §3.1 — /clif on nonexistent symbol gives error
 #[test]
-#[ignore] // /clif not yet ported to v4 REPL
 fn e2e_s3_1_clif_neg_nonexistent() {
     let input = "/clif nonexistent_sym\n";
     let o = run_repl(input, "s3_1_clif_neg_nonexistent");
@@ -2095,7 +2080,6 @@ fn e2e_s3_1_disasm_user_fn() {
 
 // spec: repl/spec.md §3.1 — /disasm on nonexistent symbol gives error
 #[test]
-#[ignore] // /disasm not yet ported to v4 REPL
 fn e2e_s3_1_disasm_neg_nonexistent() {
     let input = "/disasm nonexistent_sym\n";
     let o = run_repl(input, "s3_1_disasm_neg_nonexistent");
@@ -2110,7 +2094,6 @@ fn e2e_s3_1_disasm_neg_nonexistent() {
 
 // spec: repl/spec.md §8 Scenario 1 — /mod <name> switches namespace
 #[test]
-#[ignore] // /mod switch not yet ported to v4 REPL
 fn e2e_s8_mod_switch_namespace() {
     let input = "/mod math\n";
     let o = run_repl(input, "s8_mod_switch");
@@ -2137,7 +2120,6 @@ fn e2e_s8_mod_show_current() {
 
 // spec: repl/spec.md §8 Scenario 2 — /mod user switches back
 #[test]
-#[ignore] // /mod switch not yet ported to v4 REPL
 fn e2e_s8_mod_switch_back() {
     let input = "/mod math\n/mod user\n";
     let o = run_repl(input, "s8_mod_switch_back");
