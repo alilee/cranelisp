@@ -5,6 +5,7 @@
 
 use std::path::{Path, PathBuf};
 use std::process;
+use std::time::Instant;
 
 use cranelisp_types::{CodegenBehaviour, CranelispError, Span};
 
@@ -102,7 +103,9 @@ fn run(
             s.print_banner(&mut stdout);
 
             let mut buffer = String::new();
-            s.write_prompt(&mut stdout);
+            let mut compile_ms: u64 = 0;
+            let mut eval_ms: u64 = 0;
+            s.write_prompt(&mut stdout, compile_ms, eval_ms);
 
             for line in stdin.lock().lines() {
                 let line = match line {
@@ -114,7 +117,7 @@ fn run(
 
                 if !s.parens_balanced(&buffer) {
                     buffer.push('\n');
-                    s.write_continuation_prompt(&mut stdout);
+                    s.write_continuation_prompt(&mut stdout, compile_ms, eval_ms);
                     continue;
                 }
 
@@ -127,19 +130,31 @@ fn run(
                     CommandResult::Final(text) => {
                         s.pretty_print(&text, &mut stdout);
                     }
-                    CommandResult::Compile(src) => match s.eval(&src) {
-                        Ok(Some(result)) => {
-                            let text = s.format_eval_result(&result);
-                            s.pretty_print(&text, &mut stdout);
+                    CommandResult::Compile(src) => {
+                        let t0 = Instant::now();
+                        match s.eval(&src) {
+                            Ok(Some(result)) => {
+                                let t1 = Instant::now();
+                                let text = s.format_eval_result(&result);
+                                let t2 = Instant::now();
+                                compile_ms = (t1 - t0).as_millis() as u64;
+                                eval_ms = (t2 - t1).as_millis() as u64;
+                                s.pretty_print(&text, &mut stdout);
+                            }
+                            Ok(None) => {
+                                compile_ms = t0.elapsed().as_millis() as u64;
+                                eval_ms = 0;
+                            }
+                            Err(e) => {
+                                compile_ms = t0.elapsed().as_millis() as u64;
+                                eval_ms = 0;
+                                let _ = writeln!(stdout, "Error: {e}");
+                            }
                         }
-                        Ok(None) => {}
-                        Err(e) => {
-                            let _ = writeln!(stdout, "Error: {e}");
-                        }
-                    },
+                    }
                 }
 
-                s.write_prompt(&mut stdout);
+                s.write_prompt(&mut stdout, compile_ms, eval_ms);
             }
 
             let _ = writeln!(stdout);

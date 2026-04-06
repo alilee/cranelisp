@@ -893,7 +893,7 @@ impl TypeChecker {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use cranelisp_types::{ConstructorDef, ModuleEntry, ModuleFullPath, Span, Symbol, TypeName, Visibility};
+    use cranelisp_types::{ConstructorDef, ImportNames, ImportSpec, ModuleEntry, ModuleFullPath, Span, Symbol, TypeName, Visibility};
 
     fn span(start: u32, end: u32) -> Span {
         Span::new(start, end)
@@ -904,6 +904,14 @@ mod tests {
     fn tc() -> TypeChecker {
         let mut tc = TypeChecker::new();
         tc.set_current_module(ModuleFullPath::from("test"));
+        // Import primitives so bare names (add-i64 etc.) resolve.
+        let import_spec = ImportSpec {
+            module_path: ModuleFullPath::from("primitives"),
+            alias: None,
+            names: ImportNames::Glob,
+            span: Span::new(0, 0),
+        };
+        tc.register_imports(&[import_spec]).unwrap();
         tc
     }
 

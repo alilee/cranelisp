@@ -177,13 +177,15 @@ pub fn process_module_forms(
     let is_fresh = !*pass1_done;
 
     if is_fresh && strategy == ModuleStrategy::Replace {
-        // Set active module and clear for replace.
+        // Set active module. Symbol table is preserved for slot reuse
+        // and type-change detection.
         ctx.tc.set_current_module(module.clone());
         ctx.tc.clear_module_for_replace_public();
 
-        // Inject wildcard import of primitives and macros modules.
-        inject_primitives_import(ctx.tc)?;
-        inject_macros_import(ctx.tc)?;
+        // Zero GOT slots and clear codegen artifacts for this module's
+        // symbols. Slot assignments are preserved so re-compiled code
+        // lands in the same slots.
+        clear_module_codegen(ctx, module);
 
         // Prelude injection: inject (import [prelude [*]]) for non-prelude modules
         // unless the source explicitly references prelude in an import or export (§8.8.1).
@@ -194,11 +196,6 @@ pub fn process_module_forms(
         // Additive: just set the active module. Module state persists
         // from previous evals — no clear, no re-injection.
         ctx.tc.set_current_module(module.clone());
-
-        // Ensure macros module is imported (needed for quasiquote-based
-        // macro expansion which references SexpSym, SexpInt, etc.).
-        // Idempotent — register_imports handles duplicates gracefully.
-        inject_macros_import(ctx.tc)?;
     } else {
         // Resume: set active module (may have been changed by dep processing).
         ctx.tc.set_current_module(module.clone());
@@ -1908,35 +1905,58 @@ fn sexps_reference_prelude(sexps: &[Sexp]) -> bool {
 
 /// Inject a wildcard import of the `primitives` module into the current module.
 ///
-/// For the v4 scheduler path (C3: no prelude injection), modules still need
-/// access to named primitives (add-i64, sub-i64, etc.). This injects
-/// `(import [primitives [*]])` so primitives are available by bare name.
-fn inject_primitives_import(
-    tc: &mut cranelisp_typecheck::TypeChecker,
-) -> Result<(), CranelispError> {
-    let import_spec = ImportSpec {
-        module_path: ModuleFullPath::from("primitives"),
-        alias: None,
-        names: cranelisp_types::ImportNames::Glob,
-        span: Span::SYNTHETIC,
-    };
-    tc.register_imports(&[import_spec])
-}
-
-/// Inject a wildcard import of the `macros` module into the current module.
+/// Zero GOT slots and clear codegen artifacts for a module's symbols.
 ///
-/// Macros need Sexp constructors (SexpSym, SexpInt, SCons, SNil, etc.)
-/// which live in the synthetic `macros` module.
-fn inject_macros_import(
-    tc: &mut cranelisp_typecheck::TypeChecker,
-) -> Result<(), CranelispError> {
-    let import_spec = ImportSpec {
-        module_path: ModuleFullPath::from("macros"),
-        alias: None,
-        names: cranelisp_types::ImportNames::Glob,
-        span: Span::SYNTHETIC,
+/// Called at the start of Replace processing. Preserves GOT slot assignments
+/// so re-compiled definitions land in the same slots. Zeroing the slots
+/// ensures stale code pointers are not callable during recompilation.
+fn clear_module_codegen(ctx: &mut WorkerContext, module: &ModuleFullPath) {
+    // Collect qualified symbol names for this module from the TC symbol table.
+    let symbols: Vec<cranelisp_types::Symbol> = {
+        let table = ctx.tc.symbol_table();
+        table.all_symbols()
+            .filter_map(|(name, entry)| {
+                // Only clear codegen for definitions owned by this module,
+                // not imports or special forms.
+                match entry {
+                    cranelisp_types::ModuleEntry::Def { kind, .. } => {
+                        if matches!(kind.as_ref(), cranelisp_types::DefKind::SpecialForm { .. }) {
+                            None
+                        } else {
+                            let qualified = cranelisp_types::Symbol::from(
+                                format!("{}/{}", module, name)
+                            );
+                            Some(qualified)
+                        }
+                    }
+                    cranelisp_types::ModuleEntry::Constructor { .. } => {
+                        let qualified = cranelisp_types::Symbol::from(
+                            format!("{}/{}", module, name)
+                        );
+                        Some(qualified)
+                    }
+                    _ => None,
+                }
+            })
+            .collect()
     };
-    tc.register_imports(&[import_spec])
+
+    // Zero GOT slots and clear codegen artifacts (keep slot assignments).
+    for sym in &symbols {
+        if let Some(mut dc) = ctx.shared_codegen.def_codegen.get_mut(sym) {
+            if let Some(slot) = dc.got_slot {
+                ctx.shared_codegen.got_table.store_slot(slot, std::ptr::null());
+            }
+            dc.code_ptr = None;
+            dc.source = None;
+            dc.sexp = None;
+            dc.defn = None;
+            dc.clif_ir = None;
+            dc.disasm = None;
+            dc.code_size = None;
+            dc.compile_duration = None;
+        }
+    }
 }
 
 /// Wrap `Expr` variants as synthetic zero-arg `Defn` named `__expr`.

@@ -24,8 +24,9 @@ use std::collections::{HashMap, HashSet};
 
 use cranelisp_types::{
     CheckResult, CompileContext, ConstrainedFn, CranelispError, Defn, DefKind, DefnVariant,
-    DisplayInfo, Expr, FQSymbol, JitSymbol, ModuleEntry, ModuleFullPath, ModuleStrategy, MonoDefn,
-    ResolvedCall, Scheme, Span, Symbol, SymbolTable, TopLevel, Type, Visibility, Warning, apply,
+    DisplayInfo, Expr, FQSymbol, ImportNames, ImportSpec, JitSymbol, ModuleEntry, ModuleFullPath,
+    ModuleStrategy, MonoDefn, ResolvedCall, Scheme, Span, Symbol, SymbolTable, TopLevel, Type,
+    Visibility, Warning, apply,
 };
 
 use crate::checker::{CheckState, TypeChecker};
@@ -1101,20 +1102,19 @@ impl TypeChecker {
         }
     }
 
-    /// Clear module state for Replace strategy.
+    /// Prepare module for Replace strategy.
     ///
-    /// Removes all symbol table entries, type defs, trait decls, and trait
-    /// impls for the current module. Called at the start of `check()` when
-    /// `ctx.strategy == ModuleStrategy::Replace`.
-    fn clear_module_for_replace(&self, state: &mut CheckState) {
-        // Clear symbol table entries for the current module
-        self.current_symbol_table_mut_with_state(state).symbols.clear();
-
-        // Note: type_defs, trait_registry, and impl_registry are shared
-        // across modules in the current design. Full per-module clearing
-        // would require tracking which registrations belong to which module.
-        // For now, clearing the symbol table is sufficient for the Replace
-        // semantics needed by file reloading.
+    /// The symbol table is preserved — existing entries guide GOT slot
+    /// reuse and enable type-change detection during re-registration.
+    /// GOT zeroing and codegen artifact cleanup happen at the worker
+    /// level (worker.rs) which has access to SharedCodegenState.
+    ///
+    /// After re-processing, symbols present in the old table but absent
+    /// from the new source are stale and should be invalidated.
+    fn clear_module_for_replace(&self, _state: &mut CheckState) {
+        // Symbol table intentionally NOT cleared.
+        // Slot assignments and type info are needed for correct re-registration.
+        // See worker.rs clear_module_codegen() for the GOT/codegen side.
     }
 
     /// Collect only single-sig Defn entries (skip multi-sig).
@@ -2295,11 +2295,17 @@ mod tests {
         }
     }
 
-    /// Create a TypeChecker with all primitives available in the current module.
-    /// Uses set_current_module to create a "test" module seeded with primitives.
+    /// Create a TypeChecker with primitives imported into a "test" module.
     fn tc_with_prims() -> TypeChecker {
         let mut tc = TypeChecker::new();
         tc.set_current_module(ModuleFullPath::from("test"));
+        let import_spec = ImportSpec {
+            module_path: ModuleFullPath::from("primitives"),
+            alias: None,
+            names: ImportNames::Glob,
+            span: Span::new(0, 0),
+        };
+        tc.register_imports(&[import_spec]).unwrap();
         tc
     }
 

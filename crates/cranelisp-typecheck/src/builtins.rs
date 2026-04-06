@@ -65,6 +65,7 @@ impl TypeChecker {
         self.register_ring1_primitives();
         self.register_vec_primitives();
         self.register_special_forms();
+        self.register_builtin_type_names();
 
         // Ring 3: Seed synthetic `macros` module with SList and Sexp ADTs + sconcat.
         // Must come after primitives registration (references Int, Bool, Float, String).
@@ -82,94 +83,12 @@ impl TypeChecker {
         // NOT auto-imported — users must explicitly (import [primitives [Trace TraceCall ...]]).
         self.register_trace_type();
 
-        // Copy NON-primitive entries from `primitives` into `user` module:
-        // constructors (Pure, Effect, TraceCall), types (IO, Trace), and
-        // non-primitive defs (bind). Per spec §8.9.1, named primitives
-        // (add-i64, str-concat, etc.) are NOT auto-imported — they require
-        // explicit import or qualified access.
-        self.import_non_primitives_into_user(&primitives_path);
+        // Per spec §8.9.1, nothing from primitives is auto-imported.
+        // Modules access primitives via explicit import or qualified names.
     }
 
     /// Copy non-named-primitive entries from the `primitives` module into `user`.
     ///
-    /// Copies constructors (Pure, Effect), types (IO), inline defs (bind,
-    /// quote-sexp), and other non-named-primitive entries as Import entries.
-    /// Per spec §8.9.1, named primitives from Ring 0/1/Vec tables (add-i64,
-    /// str-concat, vec-get, etc.) are NOT auto-imported — they live only in
-    /// the `primitives` synthetic module and require explicit import or
-    /// qualified access.
-    ///
-    /// TypeDef and Constructor entries are converted to Import entries so that
-    /// `/list` (which shows only user definitions) does not display them, while
-    /// `/imports` correctly shows them as available from `primitives`.
-    fn import_non_primitives_into_user(&mut self, primitives_path: &ModuleFullPath) {
-        let user_path = ModuleFullPath::from("user");
-
-        // Build the set of named primitive names to exclude from auto-import.
-        let named_primitives: std::collections::HashSet<String> = ring0_primitives()
-            .iter()
-            .chain(ring1_primitives().iter())
-            .chain(ring3_primitives().iter())
-            .map(|p| p.name.to_string())
-            .collect();
-
-        // Vec primitive names (not in the tables above).
-        let vec_prim_names: [&str; 4] = ["vec-get", "vec-set", "vec-push", "vec-len"];
-
-        // Collect entries to copy (avoid borrowing self.modules while mutating).
-        let entries_to_copy: Vec<(Symbol, ModuleEntry)> = self
-            .modules
-            .get(primitives_path)
-            .map(|table| {
-                table
-                    .all_symbols()
-                    .map(|(name, entry)| (name.clone(), entry.clone()))
-                    .collect()
-            })
-            .unwrap_or_default();
-
-        // Names from the Trace ADT that are NOT auto-imported into `user`.
-        // Per spec §3.2.4 and §4.12.4, users must explicitly import these.
-        const TRACE_NO_AUTO_IMPORT: &[&str] = &[
-            "trace", "Trace", "TraceCall",
-            // Field accessor functions — generic names that would pollute user scope.
-            "name", "params", "result", "children", "nanos",
-        ];
-
-        // Insert copies into user module.
-        if let Some(mut user_table) = self.modules.get_mut(&user_path) {
-            for (name, entry) in entries_to_copy {
-                // Trace-related names require explicit import (spec §3.2.4).
-                if TRACE_NO_AUTO_IMPORT.contains(&name.as_ref()) {
-                    continue;
-                }
-                // Skip named primitives from Ring 0/1/Vec tables (spec §8.9.1).
-                if named_primitives.contains(name.as_ref())
-                    || vec_prim_names.contains(&name.as_ref())
-                {
-                    continue;
-                }
-                // Don't overwrite existing entries.
-                if user_table.get(name.as_ref()).is_none() {
-                    // TypeDef and Constructor entries become Import entries so
-                    // they are accessible but don't appear as user definitions.
-                    let entry = match &entry {
-                        ModuleEntry::TypeDef { .. } | ModuleEntry::Constructor { .. } => {
-                            ModuleEntry::Import {
-                                source: cranelisp_types::FQSymbol {
-                                    module: primitives_path.clone(),
-                                    symbol: name.clone(),
-                                },
-                            }
-                        }
-                        _ => entry,
-                    };
-                    user_table.insert(name, entry);
-                }
-            }
-        }
-    }
-
     /// Register Ring 0 primitives from the authoritative table.
     ///
     /// Each primitive gets a monomorphic scheme (`mono(prim.ty)`) — no type variables.
@@ -369,6 +288,39 @@ impl TypeChecker {
                         description: desc.to_string(),
                     }),
                     callees: Vec::new(),
+                },
+            );
+        }
+    }
+
+    /// Register builtin type names in the root module (user at init).
+    ///
+    /// Primitive type names (Int, Bool, Float, String, Vec) are part of the
+    /// root module — universally available for type annotations without import.
+    /// Registered in `user` (the root module) so they get seeded into every
+    /// new module via `ensure_module_exists`.
+    fn register_builtin_type_names(&mut self) {
+        let builtin_types = vec![
+            ("Int", "builtin integer type"),
+            ("Bool", "builtin boolean type"),
+            ("Float", "builtin floating-point type"),
+            ("String", "builtin string type"),
+            ("Vec", "builtin vector type"),
+        ];
+
+        for (name, desc) in builtin_types {
+            self.current_symbol_table_mut().insert(
+                Symbol::from(name),
+                ModuleEntry::TypeDef {
+                    info: TypeDefInfo {
+                        name: TypeName::from(name),
+                        type_params: vec![],
+                        constructors: vec![],
+                        docstring: Some(desc.to_string()),
+                    },
+                    visibility: Visibility::Public,
+                    constructor_scheme: None,
+                    sexp: None,
                 },
             );
         }
@@ -1842,18 +1794,24 @@ mod tests {
         );
     }
 
-    // spec: 10-io §10.1 — IO constructors accessible from user module
+    // spec: 10-io §10.1 — IO constructors in primitives module
     #[test]
-    fn test_io_constructors_accessible_from_user() {
+    fn test_io_constructors_in_primitives() {
         let tc = TypeChecker::new();
-        // Pure and Effect should be importable via primitives
+        let prims_path = ModuleFullPath::from("primitives");
+        let prims_table = tc.modules.get(&prims_path).unwrap();
         assert!(
-            tc.symbol_table().get("Pure").is_some(),
-            "Pure should be accessible in user module"
+            prims_table.get("Pure").is_some(),
+            "Pure should be in primitives module"
         );
         assert!(
-            tc.symbol_table().get("Effect").is_some(),
-            "Effect should be accessible in user module"
+            prims_table.get("Effect").is_some(),
+            "Effect should be in primitives module"
+        );
+        // NOT in user module without import
+        assert!(
+            tc.symbol_table().get("Pure").is_none(),
+            "Pure should NOT be bare in user"
         );
     }
 
@@ -1861,13 +1819,14 @@ mod tests {
     // bind primitive (Ring 4, design/typecheck/io-types.md §4)
     // -----------------------------------------------------------------------
 
-    // spec: 10-io §10.2 — bind registered as inline primitive
+    // spec: 10-io §10.2 — bind registered as inline primitive in primitives module
     #[test]
     fn test_bind_primitive_registered() {
         let tc = TypeChecker::new();
-        let table_guard = tc.symbol_table();
+        let prims_path = ModuleFullPath::from("primitives");
+        let table_guard = tc.modules.get(&prims_path).unwrap();
         let entry = table_guard.get("bind");
-        assert!(entry.is_some(), "bind should be in user symbol table");
+        assert!(entry.is_some(), "bind should be in primitives symbol table");
 
         if let Some(ModuleEntry::Def { scheme, kind, docstring, .. }) = entry {
             // bind :: forall [a, b]. (Fn [(IO a) (Fn [a] (IO b))] (IO b))

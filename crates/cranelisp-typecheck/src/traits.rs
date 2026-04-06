@@ -1484,14 +1484,21 @@ mod tests {
     use super::*;
     use crate::checker::{CheckState, TypeChecker};
     use cranelisp_types::{
-        Defn, DefnVariant, FQSymbol, ModuleEntry, ModuleFullPath, Sexp, Span, TraitDecl,
-        TraitImpl, TraitMethodSig, TypeExpr, Visibility,
+        Defn, DefnVariant, FQSymbol, ImportNames, ImportSpec, ModuleEntry, ModuleFullPath,
+        Sexp, Span, TraitDecl, TraitImpl, TraitMethodSig, TypeExpr, Visibility,
     };
 
-    /// Create a TypeChecker with all primitives available in the current module.
+    /// Create a TypeChecker with primitives imported into a "test" module.
     fn tc_with_prims() -> TypeChecker {
         let mut tc = TypeChecker::new();
         tc.set_current_module(ModuleFullPath::from("test"));
+        let import_spec = ImportSpec {
+            module_path: ModuleFullPath::from("primitives"),
+            alias: None,
+            names: ImportNames::Glob,
+            span: Span::new(0, 0),
+        };
+        tc.register_imports(&[import_spec]).unwrap();
         tc
     }
 

@@ -266,69 +266,7 @@ impl TypeChecker {
     /// Switch the active module. Creates the module's symbol table if it
     /// doesn't already exist.
     pub fn set_current_module(&mut self, path: ModuleFullPath) {
-        if !self.modules.contains_key(&path) {
-            let mut table = SymbolTable::new(path.clone());
-
-            // Seed new modules with imports from `primitives` module so that
-            // named primitives (add-i64, str-concat, quote-sexp, etc.) and
-            // constructors (Pure, Effect) are accessible everywhere.
-            // Note: the `user` module is NOT seeded — it requires explicit
-            // imports per spec §8.9.1.
-            //
-            // Clone-and-drop discipline: collect entries, drop guard, then insert.
-            let primitives_path = ModuleFullPath::from("primitives");
-            let prim_entries: Vec<Symbol> = self.modules.get(&primitives_path)
-                .map(|guard| guard.all_symbols().map(|(n, _)| n.clone()).collect())
-                .unwrap_or_default();
-            for name in prim_entries {
-                table.insert(
-                    name.clone(),
-                    ModuleEntry::Import {
-                        source: FQSymbol {
-                            module: primitives_path.clone(),
-                            symbol: name,
-                        },
-                    },
-                );
-            }
-
-            // Seed from `user` module: special forms, trait decls,
-            // constrained defs, constructors, and type defs.
-            //
-            // Clone-and-drop discipline: collect seedable names, drop guard, then insert.
-            let user_path = ModuleFullPath::from("user");
-            let user_entries: Vec<Symbol> = self.modules.get(&user_path)
-                .map(|guard| {
-                    guard.all_symbols()
-                        .filter_map(|(name, entry)| {
-                            let is_seedable = matches!(entry, ModuleEntry::Def { kind, .. }
-                                if matches!(kind.as_ref(),
-                                    cranelisp_types::DefKind::SpecialForm { .. }
-                                )
-                            ) || matches!(entry, ModuleEntry::Def { scheme, .. }
-                                if !scheme.constraints.is_empty()
-                            ) || matches!(entry, ModuleEntry::Constructor { .. })
-                              || matches!(entry, ModuleEntry::TypeDef { .. })
-                              || matches!(entry, ModuleEntry::TraitDecl { .. });
-                            if is_seedable { Some(name.clone()) } else { None }
-                        })
-                        .collect()
-                })
-                .unwrap_or_default();
-            for name in user_entries {
-                table.insert(
-                    name.clone(),
-                    ModuleEntry::Import {
-                        source: FQSymbol {
-                            module: user_path.clone(),
-                            symbol: name,
-                        },
-                    },
-                );
-            }
-
-            self.modules.insert(path.clone(), table);
-        }
+        self.ensure_module_exists(&path);
         self.state.current_module = path;
     }
 
@@ -349,53 +287,30 @@ impl TypeChecker {
         }
         let mut table = SymbolTable::new(path.clone());
 
-        // Seed from primitives (clone-and-drop discipline)
-        let primitives_path = ModuleFullPath::from("primitives");
-        let prim_entries: Vec<Symbol> = self.modules.get(&primitives_path)
-            .map(|guard| guard.all_symbols().map(|(n, _)| n.clone()).collect())
-            .unwrap_or_default();
-        for name in prim_entries {
-            table.insert(
-                name.clone(),
-                ModuleEntry::Import {
-                    source: FQSymbol {
-                        module: primitives_path.clone(),
-                        symbol: name,
-                    },
-                },
-            );
-        }
-
-        // Seed from user (clone-and-drop discipline)
+        // Seed with special forms from the root module (user at init).
+        // Seed with root module contents from user (the root module at init):
+        // - Special forms: language keywords, universally available (spec §11.1)
+        // - Builtin type names: Int, Bool, Float, String, Vec
+        // Everything else requires explicit import or qualified access.
+        //
+        // Clone-and-drop discipline: collect entries, drop guard, then insert.
         let user_path = ModuleFullPath::from("user");
-        let user_entries: Vec<Symbol> = self.modules.get(&user_path)
+        let root_entries: Vec<(Symbol, ModuleEntry)> = self.modules.get(&user_path)
             .map(|guard| {
                 guard.all_symbols()
-                    .filter_map(|(name, entry)| {
-                        let is_seedable = matches!(entry, ModuleEntry::Def { kind, .. }
+                    .filter(|(_, entry)| {
+                        matches!(entry, ModuleEntry::Def { kind, .. }
                             if matches!(kind.as_ref(),
                                 cranelisp_types::DefKind::SpecialForm { .. }
                             )
-                        ) || matches!(entry, ModuleEntry::Def { scheme, .. }
-                            if !scheme.constraints.is_empty()
-                        ) || matches!(entry, ModuleEntry::Constructor { .. })
-                          || matches!(entry, ModuleEntry::TypeDef { .. })
-                          || matches!(entry, ModuleEntry::TraitDecl { .. });
-                        if is_seedable { Some(name.clone()) } else { None }
+                        ) || matches!(entry, ModuleEntry::TypeDef { .. })
                     })
+                    .map(|(name, entry)| (name.clone(), entry.clone()))
                     .collect()
             })
             .unwrap_or_default();
-        for name in user_entries {
-            table.insert(
-                name.clone(),
-                ModuleEntry::Import {
-                    source: FQSymbol {
-                        module: user_path.clone(),
-                        symbol: name,
-                    },
-                },
-            );
+        for (name, entry) in root_entries {
+            table.insert(name, entry);
         }
 
         self.modules.insert(path.clone(), table);
@@ -1825,38 +1740,69 @@ mod tests {
         assert_eq!(tc.current_module_path().as_ref(), "user");
     }
 
-    // spec: 08-modules §8.9.1 — named primitives NOT in user module; special forms ARE
+    // spec: 11-stdlib §11.1, 08-modules §8.9 — bare module has root module contents only
+    //
+    // The root module contains special forms (parser keywords, spec §11.1)
+    // and primitive type names (Int, Bool, Float, String, Vec). These are
+    // universally available — needed for type annotations and language
+    // fundamentals. Everything else requires explicit import.
     #[test]
-    fn test_builtins_in_user_module() {
-        let tc = TypeChecker::new();
-        // Per spec §8.9.1, named primitives are NOT bare in user module
-        assert!(tc.symbol_table().get("add-i64").is_none());
-        assert!(tc.symbol_table().get("quote-sexp").is_none());
-        // Special forms ARE in user module
-        assert!(tc.symbol_table().get("if").is_some());
-        // Operators (+, =, etc.) are NOT registered at startup — they come from prelude
-        assert!(tc.symbol_table().get("+").is_none());
-        // Named primitives ARE in the primitives synthetic module
+    fn test_bare_module_has_root_contents_only() {
+        let mut tc = TypeChecker::new();
+        tc.set_current_module(ModuleFullPath::from("bare"));
+
+        // --- Root module: special forms ---
+        assert!(tc.symbol_table().get("if").is_some(), "if should be available");
+        assert!(tc.symbol_table().get("let").is_some(), "let should be available");
+        assert!(tc.symbol_table().get("defn").is_some(), "defn should be available");
+        assert!(tc.symbol_table().get("fn").is_some(), "fn should be available");
+        assert!(tc.symbol_table().get("match").is_some(), "match should be available");
+        assert!(tc.symbol_table().get("deftype").is_some(), "deftype should be available");
+        assert!(tc.symbol_table().get("deftrait").is_some(), "deftrait should be available");
+        assert!(tc.symbol_table().get("impl").is_some(), "impl should be available");
+        assert!(tc.symbol_table().get("defmacro").is_some(), "defmacro should be available");
+
+        // --- Root module: primitive type names ---
+        assert!(tc.symbol_table().get("Int").is_some(), "Int should be available");
+        assert!(tc.symbol_table().get("Bool").is_some(), "Bool should be available");
+        assert!(tc.symbol_table().get("Float").is_some(), "Float should be available");
+        assert!(tc.symbol_table().get("String").is_some(), "String should be available");
+
+        // --- NOT available without import ---
+
+        // Named primitives (spec §8.9.1: "NOT available as bare names").
+        assert!(tc.symbol_table().get("add-i64").is_none(), "add-i64 needs import");
+        assert!(tc.symbol_table().get("str-concat").is_none(), "str-concat needs import");
+
+        // IO/bind constructors.
+        assert!(tc.symbol_table().get("bind").is_none(), "bind needs import");
+        assert!(tc.symbol_table().get("Pure").is_none(), "Pure needs import");
+
+        // Macros module (spec §8.9.2: "NOT implicitly imported").
+        assert!(tc.symbol_table().get("SexpSym").is_none(), "SexpSym needs import");
+
+        // Operators come from prelude.
+        assert!(tc.symbol_table().get("+").is_none(), "+ needs prelude");
+
+        // Primitives ARE in the primitives synthetic module.
         let prims_path = ModuleFullPath::from("primitives");
         let prims_table = tc.modules.get(&prims_path).unwrap();
-        assert!(prims_table.get("add-i64").is_some());
-        assert!(prims_table.get("quote-sexp").is_some());
+        assert!(prims_table.get("add-i64").is_some(), "add-i64 in primitives");
     }
 
-    // spec: 08-modules §8.9 — new modules are seeded with builtin imports
+    // spec: 08-modules §8.9 — new modules get root contents, nothing else
     #[test]
     fn test_set_current_module_creates_new() {
         let mut tc = TypeChecker::new();
         tc.set_current_module(ModuleFullPath::from("math"));
         assert_eq!(tc.current_module_path().as_ref(), "math");
-        // New modules are seeded with primitive imports from `primitives`
-        assert!(tc.symbol_table().get("add-i64").is_some());
-        // Special forms from `user`
+        // Root contents: special forms and primitive type names.
         assert!(tc.symbol_table().get("if").is_some());
-        // Operators come from prelude, NOT compiler builtins
+        assert!(tc.symbol_table().get("Int").is_some());
+        // NOT seeded with primitives.
+        assert!(tc.symbol_table().get("add-i64").is_none());
+        // Operators come from prelude, NOT compiler builtins.
         assert!(tc.symbol_table().get("+").is_none());
-        // User-defined names are NOT copied
-        assert!(tc.symbol_table().get("user-only").is_none());
     }
 
     // spec: 08-modules §8.6 — switching modules preserves existing module state
@@ -2320,17 +2266,15 @@ mod tests {
 
     // spec: 08-modules §8.9 — new module seeded with builtin imports as Import entries
     #[test]
-    fn test_new_module_has_builtin_imports() {
+    fn test_new_module_does_not_have_primitives() {
         let mut tc = TypeChecker::new();
         tc.set_current_module(ModuleFullPath::from("mymod"));
-        // Builtins should be accessible as imports
-        let table_guard = tc.symbol_table();
-        let entry = table_guard.get("add-i64");
-        assert!(entry.is_some(), "new module should have add-i64 from builtins");
-        assert!(
-            matches!(entry.unwrap(), ModuleEntry::Import { .. }),
-            "builtin in new module should be an Import entry"
-        );
+        // Primitives are NOT auto-imported (spec §8.9.1).
+        assert!(tc.symbol_table().get("add-i64").is_none(), "add-i64 needs import");
+        assert!(tc.symbol_table().get("bind").is_none(), "bind needs import");
+        // Only root contents: special forms and builtin type names.
+        assert!(tc.symbol_table().get("if").is_some(), "if should be available");
+        assert!(tc.symbol_table().get("Int").is_some(), "Int should be available");
     }
 
     // --- Concurrency primitives (Phase 2) ---

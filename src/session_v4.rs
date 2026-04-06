@@ -778,7 +778,7 @@ impl CompilerSession {
 
         let snapshot = self.tc.snapshot();
         match self.process_single_form(sexp) {
-            Ok(result) => Ok(Some(result)),
+            Ok(result) => Ok(result),
             Err(e) => {
                 self.tc.restore(snapshot);
                 Err(e)
@@ -789,7 +789,7 @@ impl CompilerSession {
     /// Process a single sexp through `process_module_forms(Additive)` then codegen.
     ///
     /// Handles blocked dependencies by compiling them inline and retrying.
-    fn process_single_form(&mut self, sexp: &Sexp) -> Result<EvalResult, CranelispError> {
+    fn process_single_form(&mut self, sexp: &Sexp) -> Result<Option<EvalResult>, CranelispError> {
         use crate::worker::{self, ProcessResult};
         use cranelisp_typecheck::ModuleCheckAccumulator;
 
@@ -843,18 +843,20 @@ impl CompilerSession {
                     // (defmacro, import, platform, mod). Return Def with name
                     // extracted from the original sexp.
                     if program.is_empty() {
-                        let symbol_name = extract_def_name_from_sexp(sexp)
-                            .unwrap_or_default();
-                        return Ok(EvalResult::Def {
-                            symbol: FQSymbol {
-                                module: module.clone(),
-                                symbol: Symbol::from(symbol_name),
-                            },
-                            ty: Type::Int,
-                            warnings: check_result.warnings.clone(),
-                        });
+                        return match extract_def_name_from_sexp(sexp) {
+                            Some(symbol_name) => Ok(Some(EvalResult::Def {
+                                symbol: FQSymbol {
+                                    module: module.clone(),
+                                    symbol: Symbol::from(symbol_name),
+                                },
+                                ty: Type::Int,
+                                warnings: check_result.warnings.clone(),
+                            })),
+                            // import/platform/mod — no visible result.
+                            None => Ok(None),
+                        };
                     }
-                    return self.codegen_and_execute(&module, &program, &check_result);
+                    return self.codegen_and_execute(&module, &program, &check_result).map(Some);
                 }
                 ProcessResult::Blocked { dep_module, dep_sexps, .. } => {
                     self.compile_dep_inline(&dep_module, &dep_sexps)?;
@@ -1195,7 +1197,7 @@ impl CompilerSession {
         let table = self.tc.symbol_table();
         if let Some(ModuleEntry::Def { kind, .. }) = table.get(trimmed) {
             if let DefKind::SpecialForm { description } = kind.as_ref() {
-                return Some(format!("{trimmed} ; special form - {description}"));
+                return Some(format_special_form_display(trimmed, description));
             }
         }
         None
@@ -1454,18 +1456,27 @@ impl CompilerSession {
 
     /// Print the session banner.
     pub fn print_banner(&self, stdout: &mut impl Write) {
-        let _ = writeln!(stdout, "cranelisp REPL");
+        let _ = writeln!(stdout, "cranelisp REPL — type /help for help");
     }
 
-    /// Write the REPL prompt.
-    pub fn write_prompt(&self, stdout: &mut impl Write) {
-        let _ = write!(stdout, "> ");
+    /// Current module name for prompt display.
+    pub fn current_module_name(&self) -> &str {
+        &self.tc.current_module_path()
+    }
+
+    /// Write the REPL prompt with timing info.
+    /// Format: `{compile_ms}+{eval_ms}ms; {module}> `
+    pub fn write_prompt(&self, stdout: &mut impl Write, compile_ms: u64, eval_ms: u64) {
+        let module = self.current_module_name();
+        let _ = write!(stdout, "{compile_ms}+{eval_ms}ms; {module}> ");
         let _ = stdout.flush();
     }
 
     /// Write the continuation prompt (for multi-line input).
-    pub fn write_continuation_prompt(&self, stdout: &mut impl Write) {
-        let _ = write!(stdout, "  ");
+    pub fn write_continuation_prompt(&self, stdout: &mut impl Write, compile_ms: u64, eval_ms: u64) {
+        let module = self.current_module_name();
+        let prompt_len = format!("{compile_ms}+{eval_ms}ms; {module}> ").len();
+        let _ = write!(stdout, "{:>width$}", "...", width = prompt_len);
         let _ = stdout.flush();
     }
 
