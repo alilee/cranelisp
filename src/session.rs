@@ -521,6 +521,24 @@ pub fn assemble_lib_dirs(project_root: &Path) -> Vec<PathBuf> {
     }
 }
 
+/// Assemble extra platform DLL search directories (§8.11.5 tier 3).
+///
+/// Sources, in order:
+/// 1. `CRANELISP_PLATFORM_PATH` environment variable (colon-separated).
+///
+/// Project-root and lib-dir platform subdirectories (tiers 1-2) are handled
+/// by `resolve_platform_path` directly — they don't need to be in this list.
+pub fn assemble_platform_dirs() -> Vec<PathBuf> {
+    if let Ok(env_val) = std::env::var("CRANELISP_PLATFORM_PATH") {
+        return env_val
+            .split(':')
+            .filter(|s| !s.is_empty())
+            .map(PathBuf::from)
+            .collect();
+    }
+    Vec::new()
+}
+
 /// Resolve the prelude module file, if it exists.
 ///
 /// Search order (matching normal module resolution per spec §8.11.2):

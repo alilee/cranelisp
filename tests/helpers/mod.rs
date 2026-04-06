@@ -51,27 +51,22 @@ impl ReplSession {
 
     /// Create a session with prelude loaded from lib_dirs.
     ///
-    /// Uses the caller's project_root for platform DLL resolution, but
-    /// overrides lib_dirs to only include the caller's paths — not the
-    /// repo root (which may contain stray .cl files like user.cl).
+    /// project_root is the directory containing the entry file (§8.11.1).
+    /// lib_dirs are searched for modules after project_root (§8.11.2).
+    /// Platform DLLs are found via project_root/platforms/ and
+    /// lib_dir/platforms/ (§8.11.3).
     pub fn new_with_prelude(
         project_root: &std::path::Path,
         lib_dirs: &[PathBuf],
     ) -> Result<Self, CranelispError> {
         let settings = SessionSettings {
             no_color: true,
-            // Disable cache: the test fixture prelude differs from the stdlib
-            // prelude, but both cache under the same "prelude" key. A stale
-            // cache entry from a prior stdlib run causes "unknown trait" errors.
             no_cache: true,
             codegen_behaviour: cranelisp_types::CodegenBehaviour::InMemoryAndObject,
             priority_workers: 1,
             nice_workers: 0,
         };
         let mut session = CompilerSession::new(settings, project_root.to_path_buf());
-        // Override lib_dirs: only include caller's paths, not repo root.
-        // This prevents stray .cl files in the repo root (e.g. user.cl)
-        // from being picked up during module resolution.
         session.lib_dirs = lib_dirs.to_vec();
 
         // Register the user module — this triggers prelude loading via
@@ -259,7 +254,9 @@ pub fn repl_session_with(prelude: Option<&str>, preamble: Option<&str>) -> ReplS
     let mut session = if let Some(prelude_path) = prelude {
         let prelude_dir = project_root.join("tests").join(prelude_path);
         let lib_dir = prelude_dir.parent().unwrap().to_path_buf();
-        ReplSession::new_with_prelude(project_root, &[lib_dir])
+        // Use the prelude's parent dir as project root — avoids picking up
+        // stray .cl files from the repo root (user.cl) via tier 2 resolution.
+        ReplSession::new_with_prelude(&lib_dir, &[lib_dir.clone()])
             .unwrap_or_else(|e| panic!("failed to load prelude '{prelude_path}': {e}"))
     } else {
         ReplSession::new()
@@ -558,7 +555,10 @@ impl TestCapture {
     /// Returns None if the DLL is not built.
     pub fn load() -> Option<Self> {
         let project_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-        let dll_path = cranelisp::platform::resolve_platform_path("test-capture", project_root)?;
+        let target_debug = project_root.join("target/debug");
+        let dll_path = cranelisp::platform::resolve_platform_path(
+            "test-capture", project_root, &[], &[target_debug],
+        )?;
 
         let lib = unsafe { libloading::Library::new(&dll_path).ok()? };
 
@@ -619,10 +619,14 @@ pub fn repl_session_with_test_capture() -> Option<(ReplSession, TestCapture)> {
     let capture = TestCapture::load()?;
     capture.reset();
 
-    let project_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-    let stdlib_dir = project_root.join("stdlib");
-    let mut session = ReplSession::new_with_prelude(project_root, &[stdlib_dir])
+    let manifest_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let stdlib_dir = manifest_dir.join("stdlib");
+    // Use a clean project root (no stray .cl files like user.cl at repo root).
+    let project_root = manifest_dir.join("tests").join("fixtures").join("stdlib_project");
+    let mut session = ReplSession::new_with_prelude(&project_root, &[stdlib_dir])
         .unwrap_or_else(|e| panic!("failed to load prelude: {e}"));
+    // Add Cargo build output as a platform search dir so test-capture DLL is found.
+    session.session.platform_dirs.push(manifest_dir.join("target/debug"));
     // Load the test-capture platform.
     session
         .eval("(platform test-capture)")

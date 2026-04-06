@@ -52,7 +52,22 @@ const PLATFORM_EXT: &str = "dll";
 ///
 /// If the name contains `/` or ends with a platform extension, it is treated
 /// as an explicit path and used directly.
-pub fn resolve_platform_path(name: &str, project_root: &Path) -> Option<PathBuf> {
+/// Resolve a platform name to a DLL file path.
+///
+/// Search order per spec §8.11.3:
+/// 1. Project root — `{project_root}/platforms/{name}.{ext}`
+/// 2. Lib directories — `{lib_dir}/platforms/{name}.{ext}` for each lib dir
+/// 3. Platform directories — extra dirs from `CRANELISP_PLATFORM_PATH` env var
+///    or explicit programmatic additions
+///
+/// At each location, tries both `{name}.{ext}` and the Cargo naming convention
+/// `libcranelisp_{name}.{ext}`.
+pub fn resolve_platform_path(
+    name: &str,
+    project_root: &Path,
+    lib_dirs: &[PathBuf],
+    platform_dirs: &[PathBuf],
+) -> Option<PathBuf> {
     // Explicit path bypass: if name looks like a filesystem path.
     if name.contains('/')
         || name.ends_with(".dylib")
@@ -66,52 +81,41 @@ pub fn resolve_platform_path(name: &str, project_root: &Path) -> Option<PathBuf>
         return None;
     }
 
-    // Tier 1: CRANELISP_PLATFORM_PATH env var.
-    if let Ok(env_val) = std::env::var("CRANELISP_PLATFORM_PATH") {
-        for dir in env_val.split(':').filter(|s| !s.is_empty()) {
-            let dir_path = PathBuf::from(dir);
-            // Try plain name first: {name}.{ext}
-            let candidate = dir_path.join(format!("{name}.{PLATFORM_EXT}"));
-            if candidate.is_file() {
-                return Some(candidate);
-            }
-            // Try Cargo library naming: libcranelisp_{name}.{ext}
-            let crate_name = format!("cranelisp_{}", name.replace('-', "_"));
-            let cargo_candidate = dir_path.join(format!("lib{crate_name}.{PLATFORM_EXT}"));
-            if cargo_candidate.is_file() {
-                return Some(cargo_candidate);
-            }
+    let crate_name = format!("cranelisp_{}", name.replace('-', "_"));
+
+    // Check a single directory for the platform DLL (both naming conventions).
+    let check_dir = |dir: &Path| -> Option<PathBuf> {
+        // Try plain name: {name}.{ext}
+        let candidate = dir.join(format!("{name}.{PLATFORM_EXT}"));
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+        // Try Cargo library naming: libcranelisp_{name}.{ext}
+        let cargo_candidate = dir.join(format!("lib{crate_name}.{PLATFORM_EXT}"));
+        if cargo_candidate.is_file() {
+            return Some(cargo_candidate);
+        }
+        None
+    };
+
+    // Tier 1: {project_root}/platforms/
+    let root_platforms = project_root.join("platforms");
+    if let Some(path) = check_dir(&root_platforms) {
+        return Some(path);
+    }
+
+    // Tier 2: {lib_dir}/platforms/ for each lib dir.
+    for lib_dir in lib_dirs {
+        let lib_platforms = lib_dir.join("platforms");
+        if let Some(path) = check_dir(&lib_platforms) {
+            return Some(path);
         }
     }
 
-    // Tier 2: {project_root}/platforms/{name}.{ext}
-    let local = project_root
-        .join("platforms")
-        .join(format!("{name}.{PLATFORM_EXT}"));
-    if local.is_file() {
-        return Some(local);
-    }
-
-    // Tier 3: Cargo build output (development convenience).
-    let crate_name = format!("cranelisp_{}", name.replace('-', "_"));
-    let lib_name = format!("lib{crate_name}.{PLATFORM_EXT}");
-
-    let debug_path = project_root.join("target/debug").join(&lib_name);
-    if debug_path.is_file() {
-        return Some(debug_path);
-    }
-    let release_path = project_root.join("target/release").join(&lib_name);
-    if release_path.is_file() {
-        return Some(release_path);
-    }
-
-    // Tier 4: ~/.cranelisp/platforms/
-    if let Some(home) = home_dir() {
-        let global = home
-            .join(".cranelisp/platforms")
-            .join(format!("{name}.{PLATFORM_EXT}"));
-        if global.is_file() {
-            return Some(global);
+    // Tier 3: extra platform directories (from env var, config, or code).
+    for dir in platform_dirs {
+        if let Some(path) = check_dir(dir) {
+            return Some(path);
         }
     }
 
@@ -437,16 +441,19 @@ pub fn load_and_register_platform(
     tc: &mut cranelisp_typecheck::TypeChecker,
     platform_name: &str,
     project_root: &Path,
+    lib_dirs: &[PathBuf],
+    platform_dirs: &[PathBuf],
     span: Span,
 ) -> Result<(LoadedPlatform, Vec<(String, *const u8)>), CranelispError> {
-    // Step 1: Resolve the DLL path.
-    let dll_path = resolve_platform_path(platform_name, project_root).ok_or_else(|| {
-        CranelispError::ModuleError {
-            message: format!("platform '{}' not found", platform_name),
-            file: None,
-            span,
-        }
-    })?;
+    // Step 1: Resolve the DLL path (§8.11.3).
+    let dll_path = resolve_platform_path(platform_name, project_root, lib_dirs, platform_dirs)
+        .ok_or_else(|| {
+            CranelispError::ModuleError {
+                message: format!("platform '{}' not found", platform_name),
+                file: None,
+                span,
+            }
+        })?;
 
     // Step 2: Load and validate the DLL.
     let platform = load_platform_dll(&dll_path, span)?;
@@ -503,7 +510,7 @@ mod tests {
     #[test]
     fn test_resolve_explicit_path_bypass() {
         // A name containing '/' is treated as an explicit path.
-        let result = resolve_platform_path("./nonexistent.dylib", Path::new("."));
+        let result = resolve_platform_path("./nonexistent.dylib", Path::new("."), &[], &[]);
         assert!(result.is_none()); // File doesn't exist, so None.
     }
 
@@ -558,51 +565,51 @@ mod tests {
         let dll_file = platforms_dir.join(format!("test-plat.{PLATFORM_EXT}"));
         std::fs::write(&dll_file, b"fake dll").unwrap();
 
-        let result = resolve_platform_path("test-plat", dir.path());
+        let result = resolve_platform_path("test-plat", dir.path(), &[], &[]);
         assert!(result.is_some());
         assert_eq!(result.unwrap(), dll_file);
     }
 
-    // spec: platform-dlls §search — tier 3 Cargo build output
+    // spec: platform-dlls §8.11.3 — extra platform_dirs (tier 3)
     #[test]
-    fn test_resolve_platform_path_cargo_debug() {
+    fn test_resolve_platform_path_extra_dir() {
         let dir = tempfile::tempdir().unwrap();
-        let debug_dir = dir.path().join("target/debug");
-        std::fs::create_dir_all(&debug_dir).unwrap();
+        let extra_dir = dir.path().join("extra-platforms");
+        std::fs::create_dir_all(&extra_dir).unwrap();
 
-        let dll_file = debug_dir.join(format!("libcranelisp_stdio.{PLATFORM_EXT}"));
+        let dll_file = extra_dir.join(format!("libcranelisp_stdio.{PLATFORM_EXT}"));
         std::fs::write(&dll_file, b"fake dll").unwrap();
 
-        let result = resolve_platform_path("stdio", dir.path());
+        let result = resolve_platform_path("stdio", dir.path(), &[], &[extra_dir]);
         assert!(result.is_some());
         assert_eq!(result.unwrap(), dll_file);
     }
 
-    // spec: platform-dlls §search — tier 2 takes priority over tier 3
+    // spec: platform-dlls §8.11.3 — tier 1 (project root) takes priority over tier 3
     #[test]
     fn test_resolve_platform_path_local_priority() {
         let dir = tempfile::tempdir().unwrap();
 
-        // Create both tier 2 and tier 3 files.
+        // Create both tier 1 (project root) and tier 3 (extra dir) files.
         let platforms_dir = dir.path().join("platforms");
         std::fs::create_dir_all(&platforms_dir).unwrap();
         let local_dll = platforms_dir.join(format!("stdio.{PLATFORM_EXT}"));
         std::fs::write(&local_dll, b"local").unwrap();
 
-        let debug_dir = dir.path().join("target/debug");
-        std::fs::create_dir_all(&debug_dir).unwrap();
-        let cargo_dll = debug_dir.join(format!("libcranelisp_stdio.{PLATFORM_EXT}"));
-        std::fs::write(&cargo_dll, b"cargo").unwrap();
+        let extra_dir = dir.path().join("extra");
+        std::fs::create_dir_all(&extra_dir).unwrap();
+        let extra_dll = extra_dir.join(format!("libcranelisp_stdio.{PLATFORM_EXT}"));
+        std::fs::write(&extra_dll, b"extra").unwrap();
 
-        let result = resolve_platform_path("stdio", dir.path());
-        assert_eq!(result.unwrap(), local_dll); // Tier 2 wins.
+        let result = resolve_platform_path("stdio", dir.path(), &[], &[extra_dir]);
+        assert_eq!(result.unwrap(), local_dll); // Tier 1 wins.
     }
 
-    // spec: platform-dlls §search — not found returns None
+    // spec: platform-dlls §8.11.3 — not found returns None
     #[test]
     fn test_resolve_platform_path_not_found() {
         let dir = tempfile::tempdir().unwrap();
-        let result = resolve_platform_path("nonexistent", dir.path());
+        let result = resolve_platform_path("nonexistent", dir.path(), &[], &[]);
         assert!(result.is_none());
     }
 
@@ -612,7 +619,8 @@ mod tests {
         // This test requires the stdio platform DLL to be built.
         // cargo build -p cranelisp-stdio must have run.
         let project_root = Path::new(env!("CARGO_MANIFEST_DIR"));
-        let dll_path = resolve_platform_path("stdio", project_root);
+        let target_debug = project_root.join("target/debug");
+        let dll_path = resolve_platform_path("stdio", project_root, &[], &[target_debug]);
         if dll_path.is_none() {
             eprintln!("skipping test: stdio platform DLL not built");
             return;
@@ -642,7 +650,8 @@ mod tests {
     #[test]
     fn test_register_platform_in_tc() {
         let project_root = Path::new(env!("CARGO_MANIFEST_DIR"));
-        let dll_path = resolve_platform_path("stdio", project_root);
+        let target_debug = project_root.join("target/debug");
+        let dll_path = resolve_platform_path("stdio", project_root, &[], &[target_debug.clone()]);
         if dll_path.is_none() {
             eprintln!("skipping test: stdio platform DLL not built");
             return;
@@ -653,6 +662,8 @@ mod tests {
             &mut tc,
             "stdio",
             project_root,
+            &[],
+            &[target_debug],
             Span::SYNTHETIC,
         ).unwrap();
 
@@ -692,9 +703,9 @@ mod tests {
         assert_eq!(platform.name, "stdio");
     }
 
-    // spec: platform-dlls §search — env var tier 1 resolution
+    // spec: §8.11.5 — assemble_platform_dirs reads CRANELISP_PLATFORM_PATH
     #[test]
-    fn test_resolve_platform_path_env_var() {
+    fn test_assemble_platform_dirs_env_var() {
         let dir = tempfile::tempdir().unwrap();
         let env_dir = dir.path().join("custom-platforms");
         std::fs::create_dir_all(&env_dir).unwrap();
@@ -703,11 +714,12 @@ mod tests {
         std::fs::write(&dll_file, b"fake dll").unwrap();
 
         // Set the env var temporarily.
-        // Safety: this test is single-threaded and we restore the var after.
         let prev = std::env::var("CRANELISP_PLATFORM_PATH").ok();
         unsafe { std::env::set_var("CRANELISP_PLATFORM_PATH", env_dir.to_str().unwrap()) };
 
-        let result = resolve_platform_path("test-env", dir.path());
+        // assemble_platform_dirs picks up the env var.
+        let platform_dirs = crate::session::assemble_platform_dirs();
+        let result = resolve_platform_path("test-env", dir.path(), &[], &platform_dirs);
         assert!(result.is_some());
         assert_eq!(result.unwrap(), dll_file);
 
@@ -722,7 +734,8 @@ mod tests {
     #[test]
     fn test_platform_name_mismatch_error() {
         let project_root = Path::new(env!("CARGO_MANIFEST_DIR"));
-        let dll_path = resolve_platform_path("stdio", project_root);
+        let target_debug = project_root.join("target/debug");
+        let dll_path = resolve_platform_path("stdio", project_root, &[], &[target_debug.clone()]);
         if dll_path.is_none() {
             eprintln!("skipping test: stdio platform DLL not built");
             return;
@@ -734,6 +747,8 @@ mod tests {
             &mut tc,
             "wrong-name",
             project_root,
+            &[],
+            &[target_debug],
             Span::SYNTHETIC,
         );
 

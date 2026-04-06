@@ -566,7 +566,7 @@ Platform modules are loaded from dynamic libraries (DLLs) via the `platform` spe
 (platform stdio)     ; loads platform.stdio from a DLL
 ```
 
-This registers a synthetic module named `platform.stdio` containing the functions exported by the platform library. Platform functions that perform side effects MUST return `IO _`.
+The platform name is resolved to a DLL file via the platform DLL search order (§8.11.3). This registers a synthetic module named `platform.stdio` containing the functions exported by the platform library. Platform functions that perform side effects MUST return `IO _`.
 
 Platform module names follow the pattern `platform.<name>`.
 
@@ -609,38 +609,65 @@ stdlib/prelude.cl          ; depends on core
 main.cl                 ; depends on prelude (implicit)
 ```
 
-## 8.11 Stdlib Directory [R2 S10]
+## 8.11 Search Paths [R2 S10]
 
-### 8.11.1 Standard Library Location
+### 8.11.1 Project Root
 
-The standard library is not a special language feature beyond the module search mechanism. Modules named `core`, `prelude`, `std`, or anything else are ordinary Cranelisp source files found through the module search order — there is no distinction at the language level between "standard library" modules and user modules.
+The **project root** is the directory containing the entry file (the `.cl` file passed to the compiler or the REPL's working directory). It anchors all relative path resolution for both modules and platform DLLs.
 
 ### 8.11.2 Module Resolution Search Order
 
 When resolving a module name to a file, the implementation MUST search in this order:
 
-1. **Submodule of current module** -- child directory of the current file
-2. **Project root** -- the directory containing the entry file
-3. **Lib directories** -- the library search locations
+1. **Submodule of current module** -- already registered via `(mod name)` in the current module. No file search is required because the submodule was loaded when the `mod` declaration was processed.
+2. **Project root** -- `{project_root}/{name}.cl`. The directory containing the entry file.
+3. **Lib directories** -- `{lib_dir}/{name}.cl` for each lib directory, in order.
 
-A module in the project root shadows a module with the same name in the stdlib directory. This is intentional -- it allows projects to override library modules on import.
+A module in the project root shadows a module with the same name in a lib directory. This is intentional -- it allows projects to override library modules.
 
-### 8.11.3 Lib Directory Configuration
+The standard library is not a special language feature beyond this search mechanism. Modules named `core`, `prelude`, `std`, or anything else are ordinary Cranelisp source files found through the module search order — there is no distinction at the language level between "standard library" modules and user modules.
 
-Lib directory locations are determined by the first matching source:
+### 8.11.3 Platform DLL Resolution Search Order
 
-1. **Project configuration file** (implementation-defined; e.g., `Cranelisp.toml`) MAY specify a lib directory list. When present, this takes precedence over all other sources.
-2. **`CRANELISP_LIB` environment variable**, if set. A colon-separated list of directory paths. When set (even to empty), it fully controls the lib directory list — no fallback is applied.
-3. **Default fallback**: When neither a project configuration file nor `CRANELISP_LIB` is present, the implementation SHOULD use `{project_root}/stdlib/` as the sole lib directory, if that directory exists.
+When resolving a platform name to a DLL (§8.9.3), the implementation MUST search in this order:
 
-If none of the above sources yield any lib directories, the lib directory list is empty. No lib modules (including `prelude` and `core`) will be found. The language still functions — primitives and special forms remain available — but no standard library names are in scope.
+1. **Project root** -- `{project_root}/platforms/{name}.{ext}`
+2. **Lib directories** -- `{lib_dir}/platforms/{name}.{ext}` for each lib directory, in order.
+3. **Platform directories** -- additional directories from platform-specific configuration (§8.11.5).
+
+The file extension `.{ext}` is platform-dependent (`.dylib` on macOS, `.so` on Linux, `.dll` on Windows). The implementation SHOULD also accept the Cargo library naming convention (`libcranelisp_{name}.{ext}`) as an alternative filename at each search location.
+
+Platform resolution mirrors module resolution: project root is checked first, then lib directories in order. This means a project can ship platform DLLs alongside its source (`myproject/platforms/custom-io.dylib`), and a standard library can ship platforms alongside its modules (`stdlib/platforms/stdio.dylib`).
+
+### 8.11.4 Lib Directory Configuration
+
+Lib directory locations are assembled from the following sources, in precedence order:
+
+1. **Explicit programmatic additions** -- the implementation MUST support adding lib directories in code (e.g., via a session API). These take highest precedence and are appended to the list.
+2. **Project configuration file** (e.g., `Cranelisp.toml`) MAY specify a lib directory list. When present, this takes precedence over environment and defaults.
+3. **`CRANELISP_LIB` environment variable**, if set. A colon-separated list of directory paths. When set (even to empty), it fully controls the default lib directory list — no fallback is applied.
+4. **Default fallback**: When neither a project configuration file nor `CRANELISP_LIB` is present, the implementation SHOULD use `{project_root}/stdlib/` as the sole default lib directory, if that directory exists.
+
+If no sources yield any lib directories, the lib directory list is empty. No lib modules (including `prelude` and `core`) will be found. The language still functions — primitives and special forms remain available — but no standard library names are in scope.
 
 > **Practical implication.** The project root is the directory containing the entry file. A project at `exemplar/solver.cl` has project root `exemplar/`. If `exemplar/stdlib/` does not exist and `CRANELISP_LIB` is not set, the prelude will not load. To use the standard library from a subdirectory project, either:
 > - Set `CRANELISP_LIB` to point to the stdlib location (e.g., `CRANELISP_LIB=../stdlib`), or
 > - Create a project configuration file that specifies the lib path, or
 > - Symlink or copy `stdlib/` into the project root.
 
-### 8.11.4 Standard Library Structure (Reference Implementation)
+### 8.11.5 Platform Directory Configuration
+
+Additional platform-specific search directories are assembled from:
+
+1. **Explicit programmatic additions** -- the implementation MUST support adding platform directories in code.
+2. **Project configuration file** MAY specify a platform directory list.
+3. **`CRANELISP_PLATFORM_PATH` environment variable**, if set. A colon-separated list of directory paths.
+
+These directories are searched after project root and lib directories (§8.11.3, tier 3). They are intended for platform DLLs that are not co-located with source modules — for example, system-wide installations or Cargo build output during development.
+
+> **Development convenience.** During development, set `CRANELISP_PLATFORM_PATH=target/debug` so that `cargo build` output is found automatically without copying DLLs into `platforms/`.
+
+### 8.11.6 Standard Library Structure (Reference Implementation)
 
 There is no language-level requirement for the standard library structure.
 

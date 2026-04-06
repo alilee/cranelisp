@@ -386,8 +386,12 @@ pub struct CompilerSession {
     pub inmem_worker: InMemWorkerState,
     /// Macro environment (persists across forms — macros accumulate).
     pub macro_env: MacroEnv,
-    /// Directories to search when resolving module imports.
+    /// Lib directories for module resolution (§8.11.2 tier 3).
+    /// Does NOT include project_root — that is tier 2 and searched separately.
     pub lib_dirs: Vec<PathBuf>,
+    /// Extra platform DLL search directories (§8.11.3 tier 3).
+    /// Searched after project_root/platforms/ and lib_dir/platforms/.
+    pub platform_dirs: Vec<PathBuf>,
     /// Loaded platform DLL handles. Must remain alive for the process lifetime
     /// so that function pointers into the DLL code segments stay valid.
     pub loaded_platforms: Vec<LoadedPlatform>,
@@ -438,11 +442,12 @@ impl CompilerSession {
         settings: SessionSettings,
         project_root: PathBuf,
     ) -> Self {
+        // Lib dirs: stdlib location(s), NOT including project_root.
+        // Project root is tier 2 in §8.11.2, searched separately.
         let lib_dirs = crate::session::assemble_lib_dirs(&project_root);
 
-        let mut all_lib_dirs: Vec<PathBuf> = Vec::new();
-        all_lib_dirs.push(project_root.clone());
-        all_lib_dirs.extend(lib_dirs);
+        // Platform dirs: extra search locations from env var (§8.11.5).
+        let platform_dirs = crate::session::assemble_platform_dirs();
 
         let tc = cranelisp_typecheck::TypeChecker::new();
         let inmem_worker = InMemWorkerState::new();
@@ -492,7 +497,8 @@ impl CompilerSession {
             tc,
             inmem_worker,
             macro_env,
-            lib_dirs: all_lib_dirs,
+            lib_dirs,
+            platform_dirs,
             loaded_platforms: Vec::new(),
             shared,
             priority_workers,
@@ -578,6 +584,7 @@ impl CompilerSession {
             module_sexps: &module_sexps,
             suspend_states: &suspend_states,
             lib_dirs: &self.lib_dirs,
+            platform_dirs: &self.platform_dirs,
             project_root: &self.project_root,
             object_codegen_stash: &self.shared.object_codegen_inputs,
             shared_state: Some(&self.shared),
@@ -806,6 +813,7 @@ impl CompilerSession {
                     worker_jit: &mut worker_jit,
                     platform_registry: &mut self.platform_registry,
                     lib_dirs: &self.lib_dirs,
+                    platform_dirs: &self.platform_dirs,
                     project_root: &self.project_root,
                     object_codegen_stash: None,
                     shared_state: None,
@@ -959,6 +967,7 @@ impl CompilerSession {
             worker_jit: &mut worker_jit,
             platform_registry: &mut self.platform_registry,
             lib_dirs: &self.lib_dirs,
+            platform_dirs: &self.platform_dirs,
             project_root: &self.project_root,
             object_codegen_stash: None,
             shared_state: None,
@@ -1339,8 +1348,8 @@ impl CompilerSession {
         module_name: &str,
     ) -> Result<Vec<Warning>, CranelispError> {
         let module = ModuleFullPath::from(module_name);
-        // Resolve source file via lib_dirs (includes project_root).
-        let file_path = crate::pipeline::resolve_module_file(&module, &self.lib_dirs);
+        // Resolve source file: project_root (tier 2) then lib_dirs (tier 3).
+        let file_path = crate::pipeline::resolve_module_file(&module, &self.project_root, &self.lib_dirs);
         let (source, entry_path) = match file_path {
             Some(path) => {
                 let src = std::fs::read_to_string(&path).unwrap_or_default();

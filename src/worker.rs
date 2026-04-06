@@ -45,6 +45,7 @@ pub struct WorkerContext<'a> {
     pub worker_jit: &'a mut WorkerJitState,
     pub platform_registry: &'a mut PlatformRegistry,
     pub lib_dirs: &'a [PathBuf],
+    pub platform_dirs: &'a [PathBuf],
     pub project_root: &'a Path,
     /// Optional stash for nice workers to pick up object codegen data.
     /// When Some, the priority worker stores CheckResult + Program after
@@ -577,7 +578,7 @@ fn handle_import(
         }
 
         // Resolve file path.
-        let dep_file = crate::pipeline::resolve_module_file(dep, ctx.lib_dirs)
+        let dep_file = crate::pipeline::resolve_module_file(dep, ctx.project_root, ctx.lib_dirs)
             .ok_or_else(|| CranelispError::ModuleError {
                 message: format!(
                     "module '{}' not found (imported by '{}')",
@@ -777,7 +778,7 @@ fn handle_export(
 
         // Source module not loaded — need to load it first.
         // Resolve file path.
-        let dep_file = crate::pipeline::resolve_module_file(dep, ctx.lib_dirs)
+        let dep_file = crate::pipeline::resolve_module_file(dep, ctx.project_root, ctx.lib_dirs)
             .ok_or_else(|| CranelispError::ModuleError {
                 message: format!(
                     "module '{}' not found (re-exported by '{}')",
@@ -856,7 +857,7 @@ fn handle_mod(
     }
 
     // Resolve file path.
-    let dep_file = crate::pipeline::resolve_module_file(&sub_path, ctx.lib_dirs)
+    let dep_file = crate::pipeline::resolve_module_file(&sub_path, ctx.project_root, ctx.lib_dirs)
         .ok_or_else(|| CranelispError::ModuleError {
             message: format!(
                 "submodule '{}' not found (declared by '{}')",
@@ -957,6 +958,8 @@ fn handle_platform(
         ctx.tc,
         &spec.name,
         ctx.project_root,
+        ctx.lib_dirs,
+        ctx.platform_dirs,
         spec.span,
     )?;
 
@@ -2466,6 +2469,7 @@ pub(crate) struct PriorityWorkerShared<'a> {
         HashMap<ModuleFullPath, ModuleSuspendState>,
     >,
     pub(crate) lib_dirs: &'a [PathBuf],
+    pub(crate) platform_dirs: &'a [PathBuf],
     pub(crate) project_root: &'a Path,
     pub(crate) object_codegen_stash: &'a std::sync::Mutex<
         HashMap<ModuleFullPath, crate::session_v4::ObjectCodegenInput>,
@@ -2563,6 +2567,7 @@ fn handle_typecheck_work(
         worker_jit,
         platform_registry: &mut platform_registry,
         lib_dirs: shared.lib_dirs,
+        platform_dirs: shared.platform_dirs,
         project_root: shared.project_root,
         object_codegen_stash: Some(shared.object_codegen_stash),
         shared_state: shared.shared_state,

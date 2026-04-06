@@ -24,12 +24,29 @@ use crate::session::InMemWorkerState;
 // Module file resolution
 // ---------------------------------------------------------------------------
 
-fn resolve_module_path(
+/// Resolve a module name to a `.cl` file path.
+///
+/// Search order per spec §8.11.2:
+/// 1. Project root — `{project_root}/{name}.cl`
+/// 2. Lib directories — `{lib_dir}/{name}.cl` for each lib dir, in order
+///
+/// Tier 1 (submodule of current module) is handled by the caller — submodules
+/// are already registered in the TypeChecker via `(mod name)` and don't need
+/// file search.
+pub fn resolve_module_file(
     module: &ModuleFullPath,
+    project_root: &Path,
     lib_dirs: &[PathBuf],
 ) -> Option<PathBuf> {
     let relative = format!("{}.cl", module.as_ref().replace('.', "/"));
 
+    // Tier 2: project root.
+    let root_candidate = project_root.join(&relative);
+    if root_candidate.is_file() {
+        return Some(root_candidate);
+    }
+
+    // Tier 3: lib directories.
     for dir in lib_dirs {
         let candidate = dir.join(&relative);
         if candidate.is_file() {
@@ -37,15 +54,6 @@ fn resolve_module_path(
         }
     }
     None
-}
-
-/// Public alias for use by callers that need to resolve module files
-/// outside of compile_unit() (e.g., try_restore_user_module).
-pub fn resolve_module_file(
-    module: &ModuleFullPath,
-    lib_dirs: &[PathBuf],
-) -> Option<PathBuf> {
-    resolve_module_path(module, lib_dirs)
 }
 
 // ---------------------------------------------------------------------------

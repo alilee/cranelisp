@@ -331,11 +331,9 @@ A conforming implementation MUST satisfy:
 
 ## 12.8 Platform ABI [R4 S10]
 
-Platform functions (loaded via `(platform "name")`) use the C calling convention. All parameters and return values are i64. The platform ABI defines the contract between the Cranelisp runtime and external platform libraries.
+Platform functions (loaded via `(platform name)`) use the C calling convention. All parameters and return values are i64. The platform ABI defines the contract between the Cranelisp runtime and external platform libraries.
 
-Platform functions that perform side effects MUST return `IO _`. The implementation MUST provide a mechanism for platform functions to allocate Cranelisp values (strings, IO wrappers) through a host callback interface.
-
-The specific details of the platform loading mechanism and host callback interface are implementation-defined.
+Platform DLLs are discovered via the platform DLL search order defined in §8.11.3. Platform functions that perform side effects MUST return `IO _`. The implementation MUST provide a mechanism for platform functions to allocate Cranelisp values (strings, IO wrappers) through a host callback interface. The specific details of the host callback interface are implementation-defined.
 
 ## 12.9 Value Display Format [Tested tests/repl_experience.rs::display_int_result]
 
