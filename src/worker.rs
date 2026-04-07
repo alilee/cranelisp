@@ -2195,23 +2195,32 @@ pub fn codegen_module_symbols(
     module: &ModuleFullPath,
     program: &[TopLevel],
     check: &CheckResult,
+    tc_modules: Option<&dashmap::DashMap<ModuleFullPath, cranelisp_types::SymbolTable>>,
+    shared_state: Option<&crate::session_v4::SharedState>,
 ) -> Result<(), CranelispError> {
     // Convert platform registry to owned JIT symbols once for the codegen sweep.
     let platform_symbols = platform_registry.jit_symbols_owned();
 
-    // Pre-register all defn names in GOT for forward references.
+    // TODO: Wire CompilationEnv once REPL expr path also uses per-module GOTs.
+    // For now, always use the legacy path to avoid split-brain (codegen writes
+    // to per-module GOT, expr reads from InMemWorkerState GOT).
+    let _env_available = tc_modules.is_some() && shared_state.is_some();
+    let env: Option<&dyn cranelisp_backend::compiler::CompilationEnv> = None;
+    let got_ref: Option<&std::sync::Arc<cranelisp_backend::got::GotTable>> = None;
+
+    // Pre-register GOT slots for forward references (legacy path).
     pre_register_got_slots(shared_codegen, program)?;
 
     // Compile default method bodies.
     for defn in &check.default_method_defns {
-        compile_and_register_defn_shared(shared_codegen, worker_jit, &platform_symbols, defn, check, None, None)?;
+        compile_and_register_defn_shared(shared_codegen, worker_jit, &platform_symbols, defn, check, env, got_ref)?;
     }
 
     // Compile mono specializations with per-specialization resolutions.
-    compile_mono_defns(shared_codegen, worker_jit, &platform_symbols, check)?;
+    compile_mono_defns(shared_codegen, worker_jit, &platform_symbols, check, env, got_ref)?;
 
     // Compile each regular defn.
-    let defn_names = compile_regular_defns(shared_codegen, worker_jit, &platform_symbols, program, check)?;
+    let defn_names = compile_regular_defns(shared_codegen, worker_jit, &platform_symbols, program, check, env, got_ref)?;
 
     // Notify scheduler for each compiled symbol.
     let total = defn_names.len();
@@ -2256,6 +2265,8 @@ fn compile_mono_defns(
     worker_jit: &mut WorkerJitState,
     platform_symbols: &[(String, *const u8)],
     check: &CheckResult,
+    env: Option<&dyn cranelisp_backend::compiler::CompilationEnv>,
+    module_got: Option<&std::sync::Arc<cranelisp_backend::got::GotTable>>,
 ) -> Result<(), CranelispError> {
     for mono in &check.mono_defns {
         let mut merged = check.method_resolutions.clone();
@@ -2276,7 +2287,7 @@ fn compile_mono_defns(
             constructor_to_type: check.constructor_to_type.clone(),
             display: None,
         };
-        compile_and_register_defn_shared(shared_codegen, worker_jit, platform_symbols, &mono.defn, &mono_check, None, None)?;
+        compile_and_register_defn_shared(shared_codegen, worker_jit, platform_symbols, &mono.defn, &mono_check, env, module_got)?;
     }
     Ok(())
 }
@@ -2289,6 +2300,8 @@ fn compile_regular_defns(
     platform_symbols: &[(String, *const u8)],
     program: &[TopLevel],
     check: &CheckResult,
+    env: Option<&dyn cranelisp_backend::compiler::CompilationEnv>,
+    module_got: Option<&std::sync::Arc<cranelisp_backend::got::GotTable>>,
 ) -> Result<Vec<Symbol>, CranelispError> {
     let mut compiled_names = Vec::new();
 
@@ -2298,12 +2311,8 @@ fn compile_regular_defns(
                 if check.constrained_fn_names.contains(&defn.name) {
                     continue;
                 }
-                compile_and_register_defn_shared(shared_codegen, worker_jit, platform_symbols, defn, check, None, None)?;
+                compile_and_register_defn_shared(shared_codegen, worker_jit, platform_symbols, defn, check, env, module_got)?;
                 compiled_names.push(defn.name.clone());
-
-                // Note: zero-arg defns (e.g., `main`) are NOT executed here.
-                // The codegen sweep only compiles and registers code pointers
-                // in the GOT. Execution is done separately by `trampoline`.
             }
             TopLevel::TraitImpl(impl_) => {
                 for method in &impl_.methods {
@@ -2313,8 +2322,8 @@ fn compile_regular_defns(
                         platform_symbols,
                         method,
                         check,
-                        None,
-                        None,
+                        env,
+                        module_got,
                     )?;
                     compiled_names.push(method.name.clone());
                 }
@@ -2546,6 +2555,8 @@ pub fn priority_worker_loop(
                             &module,
                             &program,
                             &check_result,
+                            Some(ctx.tc.modules_ref()),
+                            ctx.shared_state,
                         )?;
 
                         // Stash data for nice worker .o + .meta.json, then
@@ -2797,6 +2808,8 @@ fn handle_typecheck_work(
                 module,
                 &program,
                 &check_result,
+                Some(ctx.tc.modules_ref()),
+                ctx.shared_state,
             )?;
 
             // Stash data for nice worker .o + .meta.json.

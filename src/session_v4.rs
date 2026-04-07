@@ -1013,6 +1013,8 @@ impl CompilerSession {
                 module,
                 program,
                 check,
+                Some(self.tc.modules_ref()),
+                Some(&self.shared),
             );
             worker_jit.drain_to_shared(&shared_codegen);
             shared_codegen.sync_back_to(&mut self.inmem_worker);

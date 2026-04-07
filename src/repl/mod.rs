@@ -732,6 +732,8 @@ impl ReplSession {
                 module,
                 program,
                 check,
+                None,
+                None,
             );
             worker_jit.drain_to_shared(&shared_codegen);
             shared_codegen.sync_back_to(&mut self.core.inmem_worker);

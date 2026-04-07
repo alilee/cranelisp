@@ -399,12 +399,17 @@ impl<'a, M: Module> FnCompiler<'a, M> {
         arg_vals: &[Value],
         span: Span,
     ) -> Result<Value, CranelispError> {
-        if self.ctx.got_slots.is_some() {
+        // Prefer direct call via FuncId for intra-module calls (functions
+        // declared in this JIT instance). Fall back to GOT-indirect for
+        // cross-module calls or when func_ids doesn't have the name.
+        let use_got = if self.ctx.func_ids.contains_key(name) {
+            false
+        } else {
+            self.ctx.env.is_some() || self.ctx.got_slots.is_some()
+        };
+
+        if use_got {
             // GOT-indirect call: load function pointer from GOT slot.
-            //
-            // First try the local module's GOT. If the function isn't found
-            // locally, fall back to the cross-module GOT which maps imported
-            // functions to their defining module's GOT base and slot.
             let (got_base, slot) = self.resolve_got_entry(name, span)?;
 
             // Compute the address of the GOT slot: got_base + slot * 8

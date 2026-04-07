@@ -1175,9 +1175,14 @@ impl<'a, M: Module> FnCompiler<'a, M> {
         user_params: &[Value],
         span: Span,
     ) -> Result<Value, CranelispError> {
-        if self.ctx.got_slots.is_some() {
-            // GOT-indirect call: use resolve_got_entry to check both local
-            // and cross-module GOT, matching compile_direct_call.
+        let use_got = if self.ctx.func_ids.contains_key(target_name) {
+            false
+        } else {
+            self.ctx.env.is_some() || self.ctx.got_slots.is_some()
+        };
+
+        if use_got {
+            // GOT-indirect call: use resolve_got_entry.
             let (got_base, slot) = self.resolve_got_entry(target_name, span)?;
 
             let slot_offset = (slot * 8) as i64;
