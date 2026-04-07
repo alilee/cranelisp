@@ -445,7 +445,12 @@ pub struct CompilerSession {
     /// Type checker state (persists across forms).
     pub tc: cranelisp_typecheck::TypeChecker,
     /// In-memory codegen worker state (GOT, JIT lifetimes, trace).
+    /// Being phased out — GOT state migrated to ModuleGotRegistry + TC symbol tables.
     pub inmem_worker: InMemWorkerState,
+    /// Per-definition codegen artifacts for introspection (/source, /sexp, /clif, /disasm).
+    /// Populated during codegen, read by slash commands. Replaces
+    /// inmem_worker.got_state.def_codegen for introspection reads.
+    pub def_codegen: HashMap<Symbol, cranelisp_backend::codegen_types::DefCodegen>,
     /// Macro environment (persists across forms — macros accumulate).
     pub macro_env: MacroEnv,
     /// Lib directories for module resolution (§8.11.2 tier 3).
@@ -560,6 +565,7 @@ impl CompilerSession {
         CompilerSession {
             tc,
             inmem_worker,
+            def_codegen: HashMap::new(),
             macro_env,
             lib_dirs,
             platform_dirs,
@@ -678,6 +684,10 @@ impl CompilerSession {
 
         // Sync shared codegen state back to InMemWorkerState.
         shared_codegen.sync_back_to(&mut self.inmem_worker);
+        // Merge introspection data from codegen into session-level map.
+        for (k, v) in &self.inmem_worker.got_state.def_codegen {
+            self.def_codegen.insert(k.clone(), v.clone());
+        }
 
         // Check scheduler completion — all workers have exited, so this
         // is a non-blocking status check (not a wait).
@@ -849,7 +859,7 @@ impl CompilerSession {
                         } else {
                             source.trim()
                         };
-                        if let Some(mut dc) = self.inmem_worker.got_state.def_codegen.get_mut(&symbol.symbol) {
+                        if let Some(mut dc) = self.def_codegen.get_mut(&symbol.symbol) {
                             dc.source = Some(src.to_string());
                         }
                     }
@@ -950,6 +960,10 @@ impl CompilerSession {
 
                 worker_jit.drain_to_shared(&shared_codegen);
                 shared_codegen.sync_back_to(&mut self.inmem_worker);
+        // Merge introspection data from codegen into session-level map.
+        for (k, v) in &self.inmem_worker.got_state.def_codegen {
+            self.def_codegen.insert(k.clone(), v.clone());
+        }
                 r?
             };
 
@@ -1027,6 +1041,10 @@ impl CompilerSession {
             );
             worker_jit.drain_to_shared(&shared_codegen);
             shared_codegen.sync_back_to(&mut self.inmem_worker);
+        // Merge introspection data from codegen into session-level map.
+        for (k, v) in &self.inmem_worker.got_state.def_codegen {
+            self.def_codegen.insert(k.clone(), v.clone());
+        }
             result?;
         }
 
@@ -1106,6 +1124,10 @@ impl CompilerSession {
         let loop_result = crate::worker::priority_worker_loop(&mut ctx, &mut module_sexps);
         worker_jit.drain_to_shared(&shared_codegen);
         shared_codegen.sync_back_to(&mut self.inmem_worker);
+        // Merge introspection data from codegen into session-level map.
+        for (k, v) in &self.inmem_worker.got_state.def_codegen {
+            self.def_codegen.insert(k.clone(), v.clone());
+        }
         loop_result?;
 
         match self.shared.scheduler.wait_inmem_complete() {
@@ -1327,7 +1349,7 @@ impl CompilerSession {
         if name.is_empty() {
             return "usage: /source <name>".to_string();
         }
-        match self.inmem_worker.got_state.def_codegen.get(name) {
+        match self.def_codegen.get(name) {
             Some(dc) if dc.source.is_some() => {
                 format!("; source for {name}\n{}", crate::pretty::pretty_print_str(dc.source.as_ref().unwrap()))
             }
@@ -1343,7 +1365,7 @@ impl CompilerSession {
         if name.is_empty() {
             return "usage: /sexp <name>".to_string();
         }
-        match self.inmem_worker.got_state.def_codegen.get(name) {
+        match self.def_codegen.get(name) {
             Some(dc) if dc.sexp.is_some() => {
                 format!("; sexp for {name}\n{}", crate::pretty::pretty_print(dc.sexp.as_ref().unwrap()))
             }
@@ -1356,7 +1378,7 @@ impl CompilerSession {
         if name.is_empty() {
             return "usage: /ast <name>".to_string();
         }
-        match self.inmem_worker.got_state.def_codegen.get(name) {
+        match self.def_codegen.get(name) {
             Some(dc) if dc.defn.is_some() => {
                 format!("; ast for {name}\n{:#?}", dc.defn.as_ref().unwrap())
             }
@@ -1369,7 +1391,7 @@ impl CompilerSession {
         if name.is_empty() {
             return "usage: /clif <name>".to_string();
         }
-        match self.inmem_worker.got_state.def_codegen.get(name) {
+        match self.def_codegen.get(name) {
             Some(dc) if dc.clif_ir.is_some() => {
                 format!("; clif ir for {name}\n{}", dc.clif_ir.as_ref().unwrap())
             }
@@ -1382,7 +1404,7 @@ impl CompilerSession {
         if name.is_empty() {
             return "usage: /disasm <name>".to_string();
         }
-        match self.inmem_worker.got_state.def_codegen.get(name) {
+        match self.def_codegen.get(name) {
             Some(dc) if dc.disasm.is_some() => {
                 format!("; disasm for {name}\n{}", dc.disasm.as_ref().unwrap())
             }
@@ -1409,7 +1431,7 @@ impl CompilerSession {
         if !matches!(resolved_entry,
             ModuleEntry::Macro { .. } | ModuleEntry::TypeDef { .. } | ModuleEntry::TraitDecl { .. })
         {
-            if let Some(dc) = self.inmem_worker.got_state.def_codegen.get(name) {
+            if let Some(dc) = self.def_codegen.get(name) {
                 let size_str = dc.code_size
                     .map(|s| format!("{s} bytes"))
                     .unwrap_or_else(|| "? bytes".to_string());
@@ -1691,7 +1713,7 @@ impl CompilerSession {
                         let clause_name = Symbol::from(
                             format!("__macro_{}_clause_{}", name, idx),
                         );
-                        !self.inmem_worker.got_state.def_codegen.contains_key(clause_name.as_ref())
+                        !self.def_codegen.contains_key(clause_name.as_ref())
                     });
                     if needs_compile {
                         to_compile.push((name, sexp.clone()));
@@ -1728,6 +1750,10 @@ impl CompilerSession {
 
             worker_jit.drain_to_shared(&shared_codegen);
             shared_codegen.sync_back_to(&mut self.inmem_worker);
+        // Merge introspection data from codegen into session-level map.
+        for (k, v) in &self.inmem_worker.got_state.def_codegen {
+            self.def_codegen.insert(k.clone(), v.clone());
+        }
         }
         Ok(())
     }
@@ -1787,7 +1813,7 @@ impl CompilerSession {
             let mut all_compiled = true;
             for (idx, clause_info) in clauses.iter().enumerate() {
                 let clause_name = Symbol::from(format!("__macro_{}_clause_{}", name, idx));
-                if let Some(dc) = self.inmem_worker.got_state.def_codegen.get(&clause_name) {
+                if let Some(dc) = self.def_codegen.get(&clause_name) {
                     if let Some(code_ptr) = dc.code_ptr {
                         compiled_clauses.push(MacroClauseEntry {
                             func_ptr: code_ptr,
@@ -1843,7 +1869,7 @@ impl CompilerSession {
 
         // Discover test functions.
         let mut tests: Vec<(String, *const u8)> = Vec::new();
-        for (sym, dc) in &self.inmem_worker.got_state.def_codegen {
+        for (sym, dc) in &self.def_codegen {
             let name: &str = sym.as_ref();
             if !name.starts_with("test-") {
                 continue;
