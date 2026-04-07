@@ -222,19 +222,24 @@ This eliminates:
 
 Do interactively, not via subagent — construction sites in the typechecker need judgment about which module path to use.
 
-### 7. GOT slot assignment in typechecker (architectural gap)
+### 7. GOT slot assignment in typechecker — RESOLVED
 
-GOT slots are currently allocated ad-hoc during codegen (`SharedCodegenState::ensure_slot_for`), keyed by bare symbol name in `def_codegen`. The design (`pipeline-v4.md` §4.1, §5.1) specifies that GOT slots are **pre-assigned during typechecking** and stored on `ModuleEntry`, enabling:
+GOT slots are now pre-assigned during typechecking (`register_defn_signature`) and stored on `ModuleEntry::Def.got_slot`. Each module gets its own `Arc<GotTable>` via `ModuleGotRegistry`. Codegen resolves GOT entries live from the TC symbol tables through the `CompilationEnv` trait — no snapshot assembly.
 
-- Parallel codegen: workers write code pointers to pre-assigned slots without coordination
-- Cache persistence: slots stored in `.meta.json` for cache-hit reconstruction
-- Cross-module calls: any module can reference any typechecked symbol's slot by qualified name (`module/symbol`)
+**What landed (Sprint 49):**
+- `got_slot: Option<usize>` on `ModuleEntry::Def`, `next_got_slot` counter on `SymbolTable`
+- Slots assigned at registration time with upsert pattern (REPL redefinition preserves slots)
+- `CompilationEnv` trait in backend: `resolve_got(name) -> Option<(got_base, slot)>`, `func_arity(name)`
+- `SessionCompilationEnv` in integration layer reads live from TC `DashMap<ModuleFullPath, SymbolTable>` + `ModuleGotRegistry`
+- Per-module `Arc<GotTable>` via `ModuleGotRegistry` on `SharedState`
+- `ModuleOutput` storage on `SharedState` (typecheck results for codegen to read)
+- `compile_direct_call` prefers `func_ids` for intra-module calls, GOT-indirect only for cross-module
+- `v4_cross_module_macro_qualified_ref` un-ignored and passing
 
-Current state diverges: `ModuleEntry` has no `got_slot` field, slots are allocated by codegen, and qualified references like `util/add-ten` fail because the slot is registered under the bare name `add-ten`. The `CrossModuleGot` HashMap in `cranelisp-backend` is unnecessary scaffolding that should be removed.
-
-**Fix**: Add `got_slot: Option<usize>` to `ModuleEntry::Def`. Allocate during `finalize_check_result` (or `pass1_register`). Codegen reads the pre-assigned slot from the TC symbol table. `resolve_got_entry` resolves qualified names by looking up the target module's symbol table for the slot, using the single shared `GotTable`. Remove `CrossModuleGot` type and the `cross_module_got` parameter from `CompileContext`.
-
-**Blocked**: `v4_cross_module_macro_qualified_ref` test (1 ignored).
+**Remaining cleanup:**
+- `InMemWorkerState` and `SharedCodegenState` extract/sync dance still present (functional but redundant)
+- `CrossModuleGot` type and legacy snapshot fields on `CompileContext` still present (unused when `env` is set)
+- Old REPL path (`repl/mod.rs`) still uses legacy GOT path
 
 ## Deletions (step 1.7, completed)
 
