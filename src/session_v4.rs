@@ -1100,7 +1100,7 @@ impl CompilerSession {
             platform_dirs: &self.platform_dirs,
             project_root: &self.project_root,
             object_codegen_stash: None,
-            shared_state: None,
+            shared_state: Some(&self.shared),
         };
 
         let loop_result = crate::worker::priority_worker_loop(&mut ctx, &mut module_sexps);

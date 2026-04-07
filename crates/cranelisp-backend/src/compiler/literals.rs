@@ -116,15 +116,17 @@ impl<'a, M: Module> FnCompiler<'a, M> {
             return Ok(self.builder.ins().iconst(types::I64, tag as i64));
         }
 
+        // Operator symbol as value: wrap the operator extern function in a closure.
+        // This implements spec §7.6 — trait methods (operators) as first-class values.
+        // Must be checked before is_known_function because operators may appear
+        // in TC symbol tables (via env) but need their dedicated extern wrappers.
+        if let Some(op_extern_name) = Self::operator_extern_name(name) {
+            return self.compile_operator_as_value(op_extern_name, span);
+        }
+
         // Named function as value: wrap in a zero-capture closure.
         if self.is_known_function(name) {
             return self.compile_fn_as_value(name, span);
-        }
-
-        // Operator symbol as value: wrap the operator extern function in a closure.
-        // This implements spec §7.6 — trait methods (operators) as first-class values.
-        if let Some(op_extern_name) = Self::operator_extern_name(name) {
-            return self.compile_operator_as_value(op_extern_name, span);
         }
 
         Err(CranelispError::CodegenError {
