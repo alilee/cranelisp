@@ -616,7 +616,7 @@ pub fn compile_expr_with_got(
     check: &CheckResult,
     got_state: Option<&mut got::ModuleCodegenState>,
 ) -> Result<CompiledExpr, CranelispError> {
-    compile_expr_with_got_and_symbols(expr, check, got_state, &[])
+    compile_expr_with_got_and_symbols(expr, check, got_state, &[], None)
 }
 
 /// Compile an expression using GOT-indirect calls, with extra JIT symbols.
@@ -628,6 +628,7 @@ pub fn compile_expr_with_got_and_symbols(
     check: &CheckResult,
     got_state: Option<&mut got::ModuleCodegenState>,
     extra_symbols: &[(&str, *const u8)],
+    env: Option<&dyn crate::compiler::CompilationEnv>,
 ) -> Result<CompiledExpr, CranelispError> {
     let mut jit = Jit::new_with_symbols(extra_symbols)?;
 
@@ -651,8 +652,10 @@ pub fn compile_expr_with_got_and_symbols(
 
     let func_ids = jit.declare_functions(&[&wrapper_defn])?;
 
-    // Get GOT info and function arities if available.
-    let (got_slots, got_base_ptr, func_arities) = if let Some(state) = got_state {
+    // When env is provided, skip GOT snapshot — env handles resolution live.
+    let (got_slots, got_base_ptr, func_arities) = if env.is_some() {
+        (None, None, HashMap::new())
+    } else if let Some(state) = got_state {
         let mut slots: HashMap<Symbol, usize> = HashMap::new();
         let mut arities: HashMap<Symbol, usize> = HashMap::new();
         for (name, dc) in &state.def_codegen {
@@ -669,7 +672,7 @@ pub fn compile_expr_with_got_and_symbols(
         (None, None, HashMap::new())
     };
 
-    let compile_ctx = jit.build_compile_context(
+    let mut compile_ctx = jit.build_compile_context(
         check,
         &func_ids,
         &func_arities,
@@ -677,6 +680,7 @@ pub fn compile_expr_with_got_and_symbols(
         got_base_ptr,
         None, // No cross-module GOT for single-expression compilation.
     );
+    compile_ctx.env = env;
 
     jit.compile_defn(&wrapper_defn, compile_ctx)?;
 

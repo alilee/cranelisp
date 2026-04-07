@@ -75,7 +75,14 @@ pub struct SessionCompilationEnv<'a> {
 
 impl cranelisp_backend::compiler::CompilationEnv for SessionCompilationEnv<'_> {
     fn resolve_got(&self, name: &Symbol) -> Option<(i64, usize)> {
-        // 1. Qualified "module/name" → split, look up target module
+        // 1. Try current module first (catches local defs, trait impls, mono names).
+        if let Some(result) = self.resolve_in_module(&self.current_module, name.as_ref(), 0) {
+            return Some(result);
+        }
+
+        // 2. Qualified "module/name" → split, look up target module.
+        // Only split on '/' if the name is truly module-qualified (not a mangled
+        // trait method like "Num./$Int" where '/' is part of the method name).
         if let Some(slash) = name.as_ref().find('/') {
             let module_part = &name.as_ref()[..slash];
             let bare_name = &name.as_ref()[slash + 1..];
@@ -89,20 +96,35 @@ impl cranelisp_backend::compiler::CompilationEnv for SessionCompilationEnv<'_> {
                 }
                 // Fall back to absolute module path
                 let abs_path = ModuleFullPath::from(module_part);
-                return self.resolve_in_module(&abs_path, bare_name, 0);
+                if let Some(result) = self.resolve_in_module(&abs_path, bare_name, 0) {
+                    return Some(result);
+                }
             }
         }
 
-        // 2. Bare name → try current module's symbol table
-        if let Some(result) = self.resolve_in_module(&self.current_module, name.as_ref(), 0) {
-            return Some(result);
+        // 3. Global fallback: search all modules for the name.
+        // Handles mangled trait methods (e.g., "Classify.classify$Color") that
+        // are defined in a dependency module but referenced by the mangled name
+        // in method resolution without an explicit import.
+        for entry in self.tc_modules.iter() {
+            if *entry.key() == self.current_module {
+                continue; // Already checked above.
+            }
+            if let Some(result) = self.resolve_in_module(entry.key(), name.as_ref(), 0) {
+                return Some(result);
+            }
         }
 
         None
     }
 
     fn func_arity(&self, name: &Symbol) -> Option<usize> {
-        // Same resolution path as resolve_got, but extract param_names.len()
+        // 1. Try current module first.
+        if let Some(arity) = self.arity_in_module(&self.current_module, name.as_ref(), 0) {
+            return Some(arity);
+        }
+
+        // 2. Qualified "module/name" → split.
         if let Some(slash) = name.as_ref().find('/') {
             let module_part = &name.as_ref()[..slash];
             let bare_name = &name.as_ref()[slash + 1..];
@@ -114,10 +136,23 @@ impl cranelisp_backend::compiler::CompilationEnv for SessionCompilationEnv<'_> {
                     return Some(arity);
                 }
                 let abs_path = ModuleFullPath::from(module_part);
-                return self.arity_in_module(&abs_path, bare_name, 0);
+                if let Some(arity) = self.arity_in_module(&abs_path, bare_name, 0) {
+                    return Some(arity);
+                }
             }
         }
-        self.arity_in_module(&self.current_module, name.as_ref(), 0)
+
+        // 3. Global fallback: search all modules.
+        for entry in self.tc_modules.iter() {
+            if *entry.key() == self.current_module {
+                continue;
+            }
+            if let Some(arity) = self.arity_in_module(entry.key(), name.as_ref(), 0) {
+                return Some(arity);
+            }
+        }
+
+        None
     }
 }
 
@@ -2201,15 +2236,31 @@ pub fn codegen_module_symbols(
     // Convert platform registry to owned JIT symbols once for the codegen sweep.
     let platform_symbols = platform_registry.jit_symbols_owned();
 
-    // TODO: Wire CompilationEnv once REPL expr path also uses per-module GOTs.
-    // For now, always use the legacy path to avoid split-brain (codegen writes
-    // to per-module GOT, expr reads from InMemWorkerState GOT).
-    let _env_available = tc_modules.is_some() && shared_state.is_some();
-    let env: Option<&dyn cranelisp_backend::compiler::CompilationEnv> = None;
-    let got_ref: Option<&std::sync::Arc<cranelisp_backend::got::GotTable>> = None;
+    // Build per-module CompilationEnv when TC modules + shared state available.
+    let (env_impl, module_got);
+    if let (Some(tc_mods), Some(ss)) = (tc_modules, shared_state) {
+        env_impl = Some(SessionCompilationEnv {
+            tc_modules: tc_mods,
+            got_registry: &ss.got_registry,
+            current_module: module.clone(),
+        });
+        module_got = Some(ss.got_registry.ensure_module(module));
+    } else {
+        env_impl = None;
+        module_got = None;
+    }
+    let env: Option<&dyn cranelisp_backend::compiler::CompilationEnv> =
+        env_impl.as_ref().map(|e| e as _);
+    let got_ref = module_got.as_ref();
 
-    // Pre-register GOT slots for forward references (legacy path).
-    pre_register_got_slots(shared_codegen, program)?;
+    // Pre-register GOT slots for forward references.
+    if let Some(tc_mods) = tc_modules {
+        // Env path: pre-assign slots in TC symbol tables so resolve_got finds them.
+        pre_register_got_slots_in_tc(tc_mods, module, program, check);
+    } else {
+        // Legacy path: allocate slots in shared codegen state.
+        pre_register_got_slots(shared_codegen, program)?;
+    }
 
     // Compile default method bodies.
     for defn in &check.default_method_defns {
@@ -2257,6 +2308,87 @@ fn pre_register_got_slots(
         }
     }
     Ok(())
+}
+
+/// Pre-assign GOT slots in TC symbol tables for all definitions that codegen
+/// will compile. This covers names that the typechecker doesn't register in the
+/// symbol table (trait impl mangled methods, mono specializations, default methods).
+fn pre_register_got_slots_in_tc(
+    tc_modules: &dashmap::DashMap<ModuleFullPath, cranelisp_types::SymbolTable>,
+    module: &ModuleFullPath,
+    program: &[TopLevel],
+    check: &CheckResult,
+) {
+    use cranelisp_types::{DefKind, ModuleEntry, Scheme, Visibility};
+
+    let mut st = match tc_modules.get_mut(module) {
+        Some(st) => st,
+        None => return,
+    };
+
+    let mut ensure_slot = |name: &Symbol, params: &[Symbol]| {
+        match st.get(name.as_ref()) {
+            // Already has a GOT slot — nothing to do.
+            Some(ModuleEntry::Def { got_slot: Some(_), .. }) => return,
+            // Def exists but without a GOT slot — update in place.
+            Some(ModuleEntry::Def { got_slot: None, .. }) => {
+                // We can't update in place through get(), so remove + reinsert.
+                // Clone the entry, set got_slot, reinsert.
+                let mut entry = st.symbols.get(name).cloned().unwrap();
+                let slot = st.allocate_got_slot();
+                if let ModuleEntry::Def { got_slot: ref mut gs, .. } = entry {
+                    *gs = Some(slot);
+                }
+                st.symbols.insert(name.clone(), entry);
+                return;
+            }
+            // Any other entry type (Import, Constructor, etc.) — don't overwrite.
+            Some(_) => return,
+            // Not present at all — insert a new Def entry.
+            None => {}
+        }
+        let slot = st.allocate_got_slot();
+        st.insert(
+            name.clone(),
+            ModuleEntry::Def {
+                scheme: Scheme { vars: vec![], constraints: Default::default(), ty: cranelisp_types::Type::Int },
+                visibility: Visibility::Public,
+                docstring: None,
+                param_names: params.to_vec(),
+                kind: Box::new(DefKind::UserFn { constrained_fn: None }),
+                callees: Vec::new(),
+                got_slot: Some(slot),
+            },
+        );
+    };
+
+    // Regular defns (should already be registered, but ensure slot exists).
+    for tl in program {
+        match tl {
+            TopLevel::Defn(defn) => {
+                if check.constrained_fn_names.contains(&defn.name) {
+                    continue;
+                }
+                ensure_slot(&defn.name, &defn.params());
+            }
+            TopLevel::TraitImpl(impl_) => {
+                for method in &impl_.methods {
+                    ensure_slot(&method.name, &method.params());
+                }
+            }
+            _ => {}
+        }
+    }
+
+    // Default method defns (generated by typechecker for trait impls with defaults).
+    for defn in &check.default_method_defns {
+        ensure_slot(&defn.name, &defn.params());
+    }
+
+    // Mono specializations.
+    for mono in &check.mono_defns {
+        ensure_slot(&mono.defn.name, &mono.defn.params());
+    }
 }
 
 /// Compile monomorphised specializations.

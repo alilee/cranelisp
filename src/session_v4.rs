@@ -1000,6 +1000,15 @@ impl CompilerSession {
         program: &[TopLevel],
         check: &CheckResult,
     ) -> Result<EvalResult, CranelispError> {
+        // Build per-module CompilationEnv for both defn codegen and expr eval.
+        let tc_modules = self.tc.modules_ref();
+        let env_impl = crate::worker::SessionCompilationEnv {
+            tc_modules,
+            got_registry: &self.shared.got_registry,
+            current_module: module.clone(),
+        };
+        let env: Option<&dyn cranelisp_backend::compiler::CompilationEnv> = Some(&env_impl);
+
         // Codegen: compile definitions, register in GOT.
         {
             let shared_codegen =
@@ -1013,7 +1022,7 @@ impl CompilerSession {
                 module,
                 program,
                 check,
-                Some(self.tc.modules_ref()),
+                Some(tc_modules),
                 Some(&self.shared),
             );
             worker_jit.drain_to_shared(&shared_codegen);
@@ -1031,6 +1040,7 @@ impl CompilerSession {
                 &ps,
                 &program_vec,
                 check,
+                env,
             )?;
 
             Ok(EvalResult::Val {

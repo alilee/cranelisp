@@ -65,6 +65,7 @@ pub fn compile_and_execute_expr(
     platform_symbols: &[(String, *const u8)],
     program: &Program,
     check: &CheckResult,
+    env: Option<&dyn cranelisp_backend::compiler::CompilationEnv>,
 ) -> Result<(i64, Type), CranelispError> {
     use cranelisp_types::TopLevel;
 
@@ -86,18 +87,21 @@ pub fn compile_and_execute_expr(
             .map(|(name, ptr)| (name.as_str(), *ptr))
             .collect();
 
+        let got_state = if env.is_some() { None } else { Some(&mut inmem_worker.got_state) };
+
         let compiled = cranelisp_backend::compile_expr_with_got_and_symbols(
             expr,
             check,
-            Some(&mut inmem_worker.got_state),
+            got_state,
             &extra_syms,
+            env,
         )?;
 
         // SAFETY: compiled code was just generated and finalized by our JIT.
         let value = unsafe { compiled.execute() };
         Ok((value, ty))
     } else {
-        let value = compile_and_execute_expr_with_trace(inmem_worker, platform_symbols, expr, check)?;
+        let value = compile_and_execute_expr_with_trace(inmem_worker, platform_symbols, expr, check, env)?;
         Ok((value, ty))
     }
 }
@@ -107,6 +111,7 @@ fn compile_and_execute_expr_with_trace(
     platform_symbols: &[(String, *const u8)],
     expr: &cranelisp_types::Expr,
     check: &CheckResult,
+    env: Option<&dyn cranelisp_backend::compiler::CompilationEnv>,
 ) -> Result<i64, CranelispError> {
     use cranelisp_types::{Defn, DefnVariant, Symbol, Visibility};
     use std::collections::HashMap;
@@ -138,27 +143,34 @@ fn compile_and_execute_expr_with_trace(
 
     let func_ids = jit.declare_functions(&[&wrapper_defn])?;
 
-    let mut got_slots: HashMap<Symbol, usize> = HashMap::new();
-    let mut func_arities: HashMap<Symbol, usize> = HashMap::new();
-    for (name, dc) in &inmem_worker.got_state.def_codegen {
-        if let Some(slot) = dc.got_slot {
-            got_slots.insert(name.clone(), slot);
+    // When env is provided, skip GOT snapshot — env handles resolution live.
+    let (got_slots, got_base, func_arities) = if env.is_some() {
+        (HashMap::new(), 0i64, HashMap::new())
+    } else {
+        let mut gs: HashMap<Symbol, usize> = HashMap::new();
+        let mut fa: HashMap<Symbol, usize> = HashMap::new();
+        for (name, dc) in &inmem_worker.got_state.def_codegen {
+            if let Some(slot) = dc.got_slot {
+                gs.insert(name.clone(), slot);
+            }
+            if let Some(pc) = dc.param_count {
+                fa.insert(name.clone(), pc);
+            }
         }
-        if let Some(pc) = dc.param_count {
-            func_arities.insert(name.clone(), pc);
-        }
-    }
-    let got_base = inmem_worker.got_state.got_base_ptr() as i64;
+        let base = inmem_worker.got_state.got_base_ptr() as i64;
+        (gs, base, fa)
+    };
 
     let mut compile_ctx = jit.build_compile_context(
         check,
         &func_ids,
         &func_arities,
-        Some(&got_slots),
-        Some(got_base),
+        if env.is_some() { None } else { Some(&got_slots) },
+        if env.is_some() { None } else { Some(got_base) },
         None,
     );
 
+    compile_ctx.env = env;
     compile_ctx.traced_fns = Some(&inmem_worker.traced_fns);
 
     jit.compile_defn(&wrapper_defn, compile_ctx)?;

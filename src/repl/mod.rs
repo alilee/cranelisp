@@ -751,6 +751,7 @@ impl ReplSession {
                 &ps,
                 &program_vec,
                 check,
+                None, // Legacy REPL path — no per-module env.
             )?;
             let eval_duration = eval_start.elapsed();
 

@@ -1036,6 +1036,10 @@ impl<'a, M: Module> FnCompiler<'a, M> {
                 .ctx
                 .got_slots
                 .is_some_and(|slots| slots.contains_key(name))
+            || self
+                .ctx
+                .env
+                .is_some_and(|env| env.resolve_got(name).is_some())
     }
 
     /// Wrap a named top-level function as a zero-capture closure.
