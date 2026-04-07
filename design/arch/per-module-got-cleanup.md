@@ -2,6 +2,13 @@
 
 **Status:** Sprint 49, 2026-04-07. Per-module GOTs activated; legacy path still present.
 
+## Related Documents
+
+- `design/arch/pipeline-v4.md` — Target pipeline design. §5.1 specifies `CompilerSession` with `got: GotTable` on the session and no worker state (§5.2: "There is no `InMemWorkerState` or `ObjectWorkerState` on the session"). This cleanup moves toward that target.
+- `design/arch/pipeline-convergence-playbook.md` — §7 (GOT slot assignment) is resolved. This plan addresses the remaining cleanup noted there.
+- `design/backend/per-module-got.md` — Per-module GOT design. Phases 1-3 of that plan's migration path are implemented (per-module GotTables, cross-module GOT populated, per-module slot namespaces). Phase 4 (wire into parallel codegen) is future work.
+- `design/arch/CLAUDE.md` — Architectural principles. This cleanup serves Principle 1 (decoupling: InMemWorkerState couples GOT, JIT lifetime, and trace state), Principle 5 (testability: extract/sync dance is untestable in isolation), and Principle 7 (single source of truth: GOT slots are on both TC symbol tables and def_codegen DashMap).
+
 ## What's Done
 
 Per-module GOTs are active. `SessionCompilationEnv` resolves GOT entries live from TC symbol tables + `ModuleGotRegistry`. `v4_cross_module_macro_qualified_ref` passes. `def_codegen` introspection reads moved from `InMemWorkerState.got_state.def_codegen` to `CompilerSession.def_codegen`.
