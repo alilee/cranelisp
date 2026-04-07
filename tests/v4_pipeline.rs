@@ -1083,7 +1083,6 @@ fn v4_cross_module_macro_transitive() {
 // spec: spec/09-macros.md §9.4 — quasiquote template-based construction
 // spec: spec/08-modules.md §8.5.1 — qualified name resolution
 #[test]
-#[ignore = "qualified refs in macro-expanded code not resolved in consuming module — pre-existing limitation"]
 fn v4_cross_module_macro_qualified_ref() {
     // Macro body generates code with a qualified reference to a function
     // from another module.
