@@ -443,7 +443,7 @@ impl<'a, M: Module> FnCompiler<'a, M> {
             let mut inner = FnCompiler::inner(
                 builder,
                 self.module,
-                self.ctx,
+                self.ctx.clone(),
                 0, // fn_param_count=0: binding names come from results buffer
                 last_uses,
             );
@@ -941,7 +941,7 @@ impl<'a, M: Module> FnCompiler<'a, M> {
         let mut inner_compiler = FnCompiler::inner(
             builder,
             self.module,
-            self.ctx,
+            self.ctx.clone(),
             params.len(),
             last_uses,
         );
@@ -1056,12 +1056,14 @@ impl<'a, M: Module> FnCompiler<'a, M> {
                     span,
                 })?;
 
-        let arity = self.ctx.func_arities.get(name).copied().ok_or_else(|| {
-            CranelispError::CodegenError {
-                message: format!("unknown arity for function: {name}"),
-                span,
-            }
-        })?;
+        let arity = self.ctx.func_arities.get(name).copied()
+            .or_else(|| self.ctx.env.and_then(|e| e.func_arity(name)))
+            .ok_or_else(|| {
+                CranelispError::CodegenError {
+                    message: format!("unknown arity for function: {name}"),
+                    span,
+                }
+            })?;
 
         // Compile the wrapper function.
         let wrapper_name = format!("__wrap_{name}_{}_{}__", span.start, span.end);

@@ -143,17 +143,17 @@ pub fn compile_program(
 
     // Compile each regular function.
     for defn in &collected.defns {
-        jit.compile_defn(defn, compile_ctx)?;
+        jit.compile_defn(defn, compile_ctx.clone())?;
     }
 
     // Compile expanded multi-sig variant defns.
     for defn in &collected.multi_sig_defns {
-        jit.compile_defn(defn, compile_ctx)?;
+        jit.compile_defn(defn, compile_ctx.clone())?;
     }
 
     // Compile default method defns with the main resolutions.
     for defn in &check.default_method_defns {
-        jit.compile_defn(defn, compile_ctx)?;
+        jit.compile_defn(defn, compile_ctx.clone())?;
     }
 
     // Compile mono specializations with their per-specialization resolutions.
@@ -565,17 +565,17 @@ pub fn compile_module_program(
 
     // Compile each regular function.
     for defn in &collected.defns {
-        jit.compile_defn(defn, compile_ctx)?;
+        jit.compile_defn(defn, compile_ctx.clone())?;
     }
 
     // Compile expanded multi-sig variant defns.
     for defn in &collected.multi_sig_defns {
-        jit.compile_defn(defn, compile_ctx)?;
+        jit.compile_defn(defn, compile_ctx.clone())?;
     }
 
     // Compile default method defns.
     for defn in &check.default_method_defns {
-        jit.compile_defn(defn, compile_ctx)?;
+        jit.compile_defn(defn, compile_ctx.clone())?;
     }
 
     // Compile mono specializations.

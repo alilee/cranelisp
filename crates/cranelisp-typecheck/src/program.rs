@@ -474,6 +474,7 @@ impl TypeChecker {
                 param_names: vec![],
                 kind: Box::new(DefKind::Overloaded { variants: vec![] }),
                 callees: Vec::new(),
+                got_slot: None,
             },
         );
 
@@ -1192,6 +1193,7 @@ impl TypeChecker {
                         param_names: vec![],
                         kind: Box::new(DefKind::Overloaded { variants: vec![] }),
                         callees: Vec::new(),
+                        got_slot: None,
                     },
                 );
             }
@@ -1312,10 +1314,10 @@ impl TypeChecker {
             let scheme = self.generalize(state, &fn_ty);
 
             // Remove internal name, register mangled name
-            self.current_symbol_table_mut_with_state(state)
-                .symbols
-                .remove(internal_name.as_ref());
-            self.current_symbol_table_mut_with_state(state).insert(
+            let mut st = self.current_symbol_table_mut_with_state(state);
+            st.symbols.remove(internal_name.as_ref());
+            let slot = st.allocate_got_slot();
+            st.insert(
                 mangled.clone(),
                 ModuleEntry::Def {
                     scheme: scheme.clone(),
@@ -1326,6 +1328,7 @@ impl TypeChecker {
                         constrained_fn: None,
                     }),
                     callees: Vec::new(),
+                    got_slot: Some(slot),
                 },
             );
 
@@ -1388,6 +1391,7 @@ impl TypeChecker {
                     variants: overload_variants,
                 }),
                 callees: Vec::new(),
+                got_slot: None,
             },
         );
 
@@ -1757,7 +1761,17 @@ impl TypeChecker {
         let fn_type = Type::Fn(param_types.clone(), Box::new(ret_ty.clone()));
         let scheme = mono(fn_type);
 
-        self.current_symbol_table_mut_with_state(state).insert(
+        // Upsert: preserve existing got_slot if the symbol is being redefined
+        // (REPL Additive mode, module reload). New symbols get a fresh slot.
+        let mut st = self.current_symbol_table_mut_with_state(state);
+        let existing_slot = st.get(defn.name.as_ref())
+            .and_then(|e| match e {
+                ModuleEntry::Def { got_slot, .. } => *got_slot,
+                _ => None,
+            });
+        let got_slot = Some(existing_slot.unwrap_or_else(|| st.allocate_got_slot()));
+
+        st.insert(
             defn.name.clone(),
             ModuleEntry::Def {
                 scheme,
@@ -1768,6 +1782,7 @@ impl TypeChecker {
                     constrained_fn: None,
                 }),
                 callees: Vec::new(),
+                got_slot,
             },
         );
 

@@ -2853,6 +2853,7 @@ mod tests {
                         param_names: vec![],
                         kind: Box::new(DefKind::UserFn { constrained_fn: None }),
                         callees: Vec::new(),
+                        got_slot: None,
                     },
                 ),
             ],

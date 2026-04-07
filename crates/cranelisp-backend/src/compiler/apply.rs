@@ -460,15 +460,19 @@ impl<'a, M: Module> FnCompiler<'a, M> {
         name: &Symbol,
         span: Span,
     ) -> Result<(i64, usize), CranelispError> {
-        // Try local GOT first.
+        // Preferred path: resolve via CompilationEnv (reads live from session).
+        if let Some(env) = self.ctx.env {
+            if let Some(result) = env.resolve_got(name) {
+                return Ok(result);
+            }
+        }
+
+        // Legacy path: snapshot-based lookup (being phased out).
         if let (Some(got_slots), Some(got_base)) = (self.ctx.got_slots, self.ctx.got_base_ptr)
             && let Some(&slot) = got_slots.get(name) {
                 return Ok((got_base, slot));
             }
 
-        // Try cross-module GOT: scan all entries for a matching function name.
-        // The cross-module map is keyed by (ModuleFullPath, Symbol), so we search
-        // for any entry whose Symbol component matches.
         if let Some(xmod_got) = self.ctx.cross_module_got {
             for ((_, sym), &(base, slot)) in xmod_got {
                 if sym == name {
@@ -477,7 +481,6 @@ impl<'a, M: Module> FnCompiler<'a, M> {
             }
         }
 
-        // Neither local nor cross-module GOT has this function.
         Err(CranelispError::CodegenError {
             message: format!("no GOT slot for function: {name}"),
             span,

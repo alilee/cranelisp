@@ -255,6 +255,7 @@ pub fn register_platform_in_tc(
                     jit_name: Some(JitSymbol::from(desc.jit_name.as_str())),
                 }),
                 callees: Vec::new(),
+                got_slot: None,
             },
         );
 

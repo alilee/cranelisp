@@ -434,6 +434,22 @@ impl TypeChecker {
         self.modules.get(path).map(|guard| guard.clone())
     }
 
+    /// Look up a symbol's GOT slot in a specific module's symbol table.
+    pub fn get_got_slot(&self, module: &ModuleFullPath, name: &Symbol) -> Option<usize> {
+        let guard = self.modules.get(module)?;
+        match guard.get(name.as_ref())? {
+            ModuleEntry::Def { got_slot, .. } => *got_slot,
+            _ => None,
+        }
+    }
+
+    /// Get a reference to the underlying modules DashMap.
+    /// Used by the integration layer to construct a `CompilationEnv` that
+    /// resolves GOT slots by reading symbol tables directly.
+    pub fn modules_ref(&self) -> &dashmap::DashMap<ModuleFullPath, SymbolTable> {
+        &self.modules
+    }
+
     /// Look up the defining module for a symbol. Checks the `primitives` module
     /// first (for core traits and builtins), then falls back to the current module.
     pub fn defining_module_for(&self, name: &str) -> ModuleFullPath {
@@ -1831,6 +1847,7 @@ mod tests {
                 param_names: vec![],
                 kind: Box::new(DefKind::UserFn { constrained_fn: None }),
                 callees: Vec::new(),
+                got_slot: None,
             },
         );
 
@@ -1857,6 +1874,7 @@ mod tests {
                     param_names: vec![],
                     kind: Box::new(DefKind::UserFn { constrained_fn: None }),
                     callees: Vec::new(),
+                    got_slot: None,
                 },
             );
         }

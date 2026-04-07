@@ -267,6 +267,7 @@ impl TypeChecker {
                         constrained_fn: None,
                     }),
                     callees: Vec::new(),
+                    got_slot: None,
                 },
             );
 
@@ -329,6 +330,7 @@ impl TypeChecker {
                     constrained_fn: None,
                 }),
                 callees: Vec::new(),
+                got_slot: None,
             },
         );
 

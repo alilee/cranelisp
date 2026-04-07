@@ -59,6 +59,121 @@ pub struct WorkerContext<'a> {
 }
 
 // ---------------------------------------------------------------------------
+// SessionCompilationEnv — CompilationEnv backed by TC + GOT registry
+// ---------------------------------------------------------------------------
+
+/// Implementation of `CompilationEnv` that reads live from the TypeChecker's
+/// module symbol tables and the per-module GOT registry. No snapshots.
+pub struct SessionCompilationEnv<'a> {
+    /// Reference to TC's per-module symbol tables (DashMap).
+    pub tc_modules: &'a dashmap::DashMap<ModuleFullPath, cranelisp_types::SymbolTable>,
+    /// Per-module GOT tables.
+    pub got_registry: &'a crate::session_v4::ModuleGotRegistry,
+    /// The module currently being compiled.
+    pub current_module: ModuleFullPath,
+}
+
+impl cranelisp_backend::compiler::CompilationEnv for SessionCompilationEnv<'_> {
+    fn resolve_got(&self, name: &Symbol) -> Option<(i64, usize)> {
+        // 1. Qualified "module/name" → split, look up target module
+        if let Some(slash) = name.as_ref().find('/') {
+            let module_part = &name.as_ref()[..slash];
+            let bare_name = &name.as_ref()[slash + 1..];
+            if !module_part.is_empty() && !bare_name.is_empty() {
+                // Try child-of-current first (submodule reference)
+                let child_path = ModuleFullPath::from(
+                    format!("{}.{}", self.current_module, module_part),
+                );
+                if let Some(result) = self.resolve_in_module(&child_path, bare_name, 0) {
+                    return Some(result);
+                }
+                // Fall back to absolute module path
+                let abs_path = ModuleFullPath::from(module_part);
+                return self.resolve_in_module(&abs_path, bare_name, 0);
+            }
+        }
+
+        // 2. Bare name → try current module's symbol table
+        if let Some(result) = self.resolve_in_module(&self.current_module, name.as_ref(), 0) {
+            return Some(result);
+        }
+
+        None
+    }
+
+    fn func_arity(&self, name: &Symbol) -> Option<usize> {
+        // Same resolution path as resolve_got, but extract param_names.len()
+        if let Some(slash) = name.as_ref().find('/') {
+            let module_part = &name.as_ref()[..slash];
+            let bare_name = &name.as_ref()[slash + 1..];
+            if !module_part.is_empty() && !bare_name.is_empty() {
+                let child_path = ModuleFullPath::from(
+                    format!("{}.{}", self.current_module, module_part),
+                );
+                if let Some(arity) = self.arity_in_module(&child_path, bare_name, 0) {
+                    return Some(arity);
+                }
+                let abs_path = ModuleFullPath::from(module_part);
+                return self.arity_in_module(&abs_path, bare_name, 0);
+            }
+        }
+        self.arity_in_module(&self.current_module, name.as_ref(), 0)
+    }
+}
+
+impl SessionCompilationEnv<'_> {
+    /// Resolve a bare name in a specific module to (got_base, slot).
+    /// Follows Import chains with depth limit.
+    fn resolve_in_module(&self, module: &ModuleFullPath, name: &str, depth: usize) -> Option<(i64, usize)> {
+        if depth > 10 { return None; }
+        let st = self.tc_modules.get(module)?;
+        let entry = st.get(name)?;
+        match entry {
+            ModuleEntry::Def { got_slot: Some(slot), .. } => {
+                let got_base = self.got_registry.got_base_for(module)?;
+                Some((got_base, *slot))
+            }
+            ModuleEntry::Import { source } => {
+                let source_module = source.module.clone();
+                let source_symbol = source.symbol.clone();
+                drop(st); // release DashMap guard before recursive lookup
+                self.resolve_in_module(&source_module, source_symbol.as_ref(), depth + 1)
+            }
+            ModuleEntry::Reexport { source } => {
+                let source_module = source.module.clone();
+                let source_symbol = source.symbol.clone();
+                drop(st);
+                self.resolve_in_module(&source_module, source_symbol.as_ref(), depth + 1)
+            }
+            _ => None,
+        }
+    }
+
+    /// Look up arity for a bare name in a specific module. Follows Import chains.
+    fn arity_in_module(&self, module: &ModuleFullPath, name: &str, depth: usize) -> Option<usize> {
+        if depth > 10 { return None; }
+        let st = self.tc_modules.get(module)?;
+        let entry = st.get(name)?;
+        match entry {
+            ModuleEntry::Def { param_names, .. } => Some(param_names.len()),
+            ModuleEntry::Import { source } => {
+                let source_module = source.module.clone();
+                let source_symbol = source.symbol.clone();
+                drop(st);
+                self.arity_in_module(&source_module, source_symbol.as_ref(), depth + 1)
+            }
+            ModuleEntry::Reexport { source } => {
+                let source_module = source.module.clone();
+                let source_symbol = source.symbol.clone();
+                drop(st);
+                self.arity_in_module(&source_module, source_symbol.as_ref(), depth + 1)
+            }
+            _ => None,
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // ProcessResult — suspension-aware return type
 // ---------------------------------------------------------------------------
 
@@ -353,9 +468,22 @@ fn finalize_module(
     // notify_typecheck_done AFTER, so that nice workers cannot claim
     // the module before the stash is populated.
 
+    let program = expanded_program.to_vec();
+
+    // Store in module_outputs so codegen workers can read from shared state.
+    if let Some(shared) = ctx.shared_state {
+        shared.module_outputs.insert(
+            module.clone(),
+            crate::session_v4::ModuleOutput {
+                check_result: check_result.clone(),
+                program: program.clone(),
+            },
+        );
+    }
+
     Ok(ProcessResult::Complete {
         check_result,
-        program: expanded_program.to_vec(),
+        program,
     })
 }
 
@@ -1350,7 +1478,7 @@ fn compile_dep_symbol_inline(
         .and_then(|dc| dc.defn.clone());
 
     if let Some(defn) = defn {
-        compile_and_register_defn_shared(shared_codegen, worker_jit, platform_symbols, &defn, &check)?;
+        compile_and_register_defn_shared(shared_codegen, worker_jit, platform_symbols, &defn, &check, None, None)?;
     }
     // If not found in def_codegen, the symbol may be a builtin/primitive
     // that is always available — nothing to compile.
@@ -2076,7 +2204,7 @@ pub fn codegen_module_symbols(
 
     // Compile default method bodies.
     for defn in &check.default_method_defns {
-        compile_and_register_defn_shared(shared_codegen, worker_jit, &platform_symbols, defn, check)?;
+        compile_and_register_defn_shared(shared_codegen, worker_jit, &platform_symbols, defn, check, None, None)?;
     }
 
     // Compile mono specializations with per-specialization resolutions.
@@ -2148,7 +2276,7 @@ fn compile_mono_defns(
             constructor_to_type: check.constructor_to_type.clone(),
             display: None,
         };
-        compile_and_register_defn_shared(shared_codegen, worker_jit, platform_symbols, &mono.defn, &mono_check)?;
+        compile_and_register_defn_shared(shared_codegen, worker_jit, platform_symbols, &mono.defn, &mono_check, None, None)?;
     }
     Ok(())
 }
@@ -2170,7 +2298,7 @@ fn compile_regular_defns(
                 if check.constrained_fn_names.contains(&defn.name) {
                     continue;
                 }
-                compile_and_register_defn_shared(shared_codegen, worker_jit, platform_symbols, defn, check)?;
+                compile_and_register_defn_shared(shared_codegen, worker_jit, platform_symbols, defn, check, None, None)?;
                 compiled_names.push(defn.name.clone());
 
                 // Note: zero-arg defns (e.g., `main`) are NOT executed here.
@@ -2185,6 +2313,8 @@ fn compile_regular_defns(
                         platform_symbols,
                         method,
                         check,
+                        None,
+                        None,
                     )?;
                     compiled_names.push(method.name.clone());
                 }

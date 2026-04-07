@@ -40,7 +40,7 @@ pub enum ResolvedCall {
 }
 
 /// A monomorphised function definition with its specific method resolutions.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct MonoDefn {
     pub defn: Defn,
     pub resolutions: MethodResolutions,
@@ -63,7 +63,7 @@ pub struct DisplayInfo {
 /// Unified boundary type between typecheck and backend — used for both
 /// batch programs and REPL inputs. REPL inputs set `display` to carry
 /// the inferred type/scheme for interactive output.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct CheckResult {
     /// How each call site was resolved (trait dispatch, overload, auto-curry, builtin)
     pub method_resolutions: MethodResolutions,

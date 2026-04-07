@@ -331,6 +331,59 @@ pub struct ObjectCodegenInput {
     pub module_structure: ModuleStructure,
 }
 
+// ---------------------------------------------------------------------------
+// Per-module GOT registry (pipeline-v4.md §5.1, per-module-got.md §3.1)
+// ---------------------------------------------------------------------------
+
+/// Registry of per-module GOT tables. Each module gets its own `Arc<GotTable>`
+/// with module-local slot indices (0, 1, 2...). Cross-module calls look up the
+/// target module's GOT base + slot.
+pub struct ModuleGotRegistry {
+    module_gots: dashmap::DashMap<ModuleFullPath, std::sync::Arc<cranelisp_backend::got::GotTable>>,
+}
+
+impl ModuleGotRegistry {
+    pub fn new() -> Self {
+        ModuleGotRegistry {
+            module_gots: dashmap::DashMap::new(),
+        }
+    }
+
+    /// Get or create the GotTable for a module.
+    pub fn ensure_module(&self, module: &ModuleFullPath) -> std::sync::Arc<cranelisp_backend::got::GotTable> {
+        self.module_gots
+            .entry(module.clone())
+            .or_insert_with(|| std::sync::Arc::new(cranelisp_backend::got::GotTable::new()))
+            .clone()
+    }
+
+    /// Get the GotTable for a module (if it exists).
+    pub fn get_table(&self, module: &ModuleFullPath) -> Option<std::sync::Arc<cranelisp_backend::got::GotTable>> {
+        self.module_gots.get(module).map(|r| r.clone())
+    }
+
+    /// Get the GOT base pointer for a module (if its GotTable is allocated).
+    pub fn got_base_for(&self, module: &ModuleFullPath) -> Option<i64> {
+        self.module_gots.get(module).map(|r| r.base_ptr() as i64)
+    }
+
+    /// Get a reference to the underlying DashMap (for CompilationEnv implementation).
+    pub fn inner(&self) -> &dashmap::DashMap<ModuleFullPath, std::sync::Arc<cranelisp_backend::got::GotTable>> {
+        &self.module_gots
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Module output (typecheck results stored for codegen to read)
+// ---------------------------------------------------------------------------
+
+/// Typecheck results for a module, stored in shared state so codegen workers
+/// can read them without receiving stack-owned values.
+pub struct ModuleOutput {
+    pub check_result: CheckResult,
+    pub program: Vec<TopLevel>,
+}
+
 /// Thread-safe state shared between the main thread and nice worker threads.
 ///
 /// Separated from `CompilerSession` so that nice workers can hold `&SharedState`
@@ -372,6 +425,15 @@ pub struct SharedState {
     /// source hash records. Behind Mutex because workers update it
     /// (record_cache_hit) during handle_import.
     pub cache_state: Mutex<Option<crate::session::CacheState>>,
+
+    /// Per-module GOT tables. Each module gets its own GotTable with
+    /// module-local slot indices. Codegen workers look up GOT base + slot
+    /// through this registry.
+    pub got_registry: ModuleGotRegistry,
+
+    /// Typecheck results stored after finalize_module. Codegen workers and
+    /// nice workers read from here instead of receiving stack-owned values.
+    pub module_outputs: dashmap::DashMap<ModuleFullPath, ModuleOutput>,
 }
 
 /// The compiler session — scheduler-driven concurrent compilation.
@@ -475,6 +537,8 @@ impl CompilerSession {
             cached_modules: Mutex::new(HashSet::new()),
             file_to_module: Mutex::new(HashMap::new()),
             cache_state: Mutex::new(cache_state),
+            got_registry: ModuleGotRegistry::new(),
+            module_outputs: dashmap::DashMap::new(),
         });
 
         // Spawn persistent nice worker threads for object codegen (.o files).

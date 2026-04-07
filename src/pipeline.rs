@@ -186,6 +186,8 @@ pub fn compile_and_register_defn_shared(
     platform_symbols: &[(String, *const u8)],
     defn: &Defn,
     check: &CheckResult,
+    env: Option<&dyn cranelisp_backend::compiler::CompilationEnv>,
+    module_got: Option<&std::sync::Arc<cranelisp_backend::got::GotTable>>,
 ) -> Result<(), CranelispError> {
     use std::collections::HashMap;
 
@@ -199,49 +201,75 @@ pub fn compile_and_register_defn_shared(
 
     let func_ids = jit.declare_functions(&[defn])?;
 
-    let slot = shared_codegen.ensure_slot_for(&defn.name)?;
+    // When env is available, read the pre-assigned slot from TC symbol tables.
+    // Otherwise fall back to legacy codegen-time allocation.
+    let slot = if let Some(e) = env {
+        e.resolve_got(&defn.name)
+            .map(|(_, s)| s)
+            .ok_or_else(|| CranelispError::CodegenError {
+                message: format!("no pre-assigned GOT slot for function: {}", defn.name),
+                span: defn.span,
+            })?
+    } else {
+        shared_codegen.ensure_slot_for(&defn.name)?
+    };
 
-    // Snapshot GOT slots from DashMap.
-    let mut got_slots: HashMap<Symbol, usize> = HashMap::new();
-    for entry in shared_codegen.def_codegen.iter() {
-        if let Some(s) = entry.got_slot {
-            got_slots.insert(entry.key().clone(), s);
+    // When env is available, it provides GOT resolution and arities live.
+    // Otherwise snapshot from DashMap (legacy path).
+    let (got_slots, got_base, func_arities);
+    if env.is_some() {
+        // Empty snapshots — env handles resolution.
+        got_slots = HashMap::new();
+        got_base = 0;
+        func_arities = HashMap::new();
+    } else {
+        let mut gs: HashMap<Symbol, usize> = HashMap::new();
+        for entry in shared_codegen.def_codegen.iter() {
+            if let Some(s) = entry.got_slot {
+                gs.insert(entry.key().clone(), s);
+            }
         }
-    }
-    got_slots.insert(defn.name.clone(), slot);
+        gs.insert(defn.name.clone(), slot);
+        got_slots = gs;
+        got_base = shared_codegen.got_base_ptr() as i64;
 
-    let got_base = shared_codegen.got_base_ptr() as i64;
-
-    // Snapshot func arities from DashMap.
-    let mut func_arities: HashMap<Symbol, usize> = HashMap::new();
-    for entry in shared_codegen.def_codegen.iter() {
-        if let Some(pc) = entry.param_count {
-            func_arities.insert(entry.key().clone(), pc);
+        let mut fa: HashMap<Symbol, usize> = HashMap::new();
+        for entry in shared_codegen.def_codegen.iter() {
+            if let Some(pc) = entry.param_count {
+                fa.insert(entry.key().clone(), pc);
+            }
         }
+        fa.insert(defn.name.clone(), defn.params().len());
+        func_arities = fa;
     }
-    func_arities.insert(defn.name.clone(), defn.params().len());
 
-    let compile_ctx = jit.build_compile_context(
+    let mut compile_ctx = jit.build_compile_context(
         check,
         &func_ids,
         &func_arities,
-        Some(&got_slots),
-        Some(got_base),
+        if env.is_some() { None } else { Some(&got_slots) },
+        if env.is_some() { None } else { Some(got_base) },
         None,
     );
+    compile_ctx.env = env;
     let _clif_ir = jit.compile_defn(defn, compile_ctx)?;
 
     let code_ptr = jit.finalize_and_get_ptr(&defn.name, defn.params().len())?;
 
-    shared_codegen.update_slot(slot, code_ptr);
+    // Write code pointer to the module's GOT table (preferred) or shared GOT (legacy).
+    if let Some(got) = module_got {
+        got.store_slot(slot, code_ptr);
+    } else {
+        shared_codegen.update_slot(slot, code_ptr);
+    }
 
-    // Update def_codegen via DashMap.
+    // Update def_codegen for introspection (code_ptr, param_count, etc.).
     let mut entry = shared_codegen.def_codegen.entry(defn.name.clone()).or_default();
     entry.code_ptr = Some(code_ptr);
     entry.got_slot = Some(slot);
     entry.param_count = Some(defn.params().len());
     entry.defn = Some(defn.clone());
-    drop(entry); // Release DashMap shard lock explicitly.
+    drop(entry);
 
     worker_jit.jit_modules.push(jit);
 

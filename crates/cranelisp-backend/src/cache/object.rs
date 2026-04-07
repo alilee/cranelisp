@@ -715,6 +715,7 @@ fn compile_all_functions(
             got_slots: None,
             got_base_ptr: None,
             cross_module_got: None,
+            env: None,
             traced_fns: None,
             alloc_func_id,
             dealloc_func_id,

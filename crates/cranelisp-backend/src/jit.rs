@@ -385,7 +385,7 @@ impl Jit {
             &mut self.ctx.func,
             &mut self.func_ctx,
             &mut self.module,
-            compile_ctx,
+            compile_ctx.clone(),
         )?;
 
         // Capture CLIF IR text before compilation.
@@ -436,6 +436,7 @@ impl Jit {
             got_slots,
             got_base_ptr,
             cross_module_got,
+            env: None,
             traced_fns: None,
             alloc_func_id: self.alloc_func_id,
             dealloc_func_id: self.dealloc_func_id,

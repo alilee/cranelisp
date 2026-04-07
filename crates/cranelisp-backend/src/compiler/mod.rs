@@ -45,6 +45,23 @@ pub(crate) fn bare_ctor_name(name: &Symbol) -> &str {
 /// Cross-module GOT mapping: `(defining_module, function_name)` -> `(got_base_ptr, slot_index)`.
 pub type CrossModuleGot = HashMap<(ModuleFullPath, Symbol), (i64, usize)>;
 
+/// Session-backed environment for codegen. Resolves GOT entries and function
+/// arities by reading live from the session's symbol tables and GOT registry.
+///
+/// Implemented by the integration layer (`src/`), which has access to the
+/// TypeChecker's module DashMap and the per-module GOT tables.
+pub trait CompilationEnv {
+    /// Resolve a function name to `(got_base_ptr, module_local_slot)`.
+    ///
+    /// Handles:
+    /// - Bare names: look up in current module, follow Import chains
+    /// - Qualified `"module/name"`: split on `/`, look up target module
+    fn resolve_got(&self, name: &Symbol) -> Option<(i64, usize)>;
+
+    /// Get the parameter count for a function (for `call_indirect` signatures).
+    fn func_arity(&self, name: &Symbol) -> Option<usize>;
+}
+
 /// Information about a single function to be traced by `(trace ...)`.
 ///
 /// Populated by the integration layer (src/) from the module symbol tables,
@@ -74,7 +91,8 @@ pub struct TracedFnInfo {
 /// All fields are references or `Copy` types, so the struct is `Clone`+`Copy`.
 /// This avoids verbose field-by-field copies when constructing inner compilers
 /// (e.g., for lambda bodies).
-#[derive(Clone, Copy)]
+/// `CompileContext` is `Clone` but not `Copy` because of the `&dyn` trait object.
+#[derive(Clone)]
 pub struct CompileContext<'a> {
     /// Method resolutions from the typechecker.
     pub method_resolutions: &'a HashMap<Span, ResolvedCall>,
@@ -104,6 +122,14 @@ pub struct CompileContext<'a> {
     ///
     /// In Batch/Release mode this is None; cross-module calls use Cranelift linking.
     pub cross_module_got: Option<&'a CrossModuleGot>,
+
+    /// Session-backed compilation environment (Interactive mode only).
+    ///
+    /// When present, GOT slots and arities are resolved live through this
+    /// trait object instead of from the snapshot fields (`got_slots`,
+    /// `got_base_ptr`, `cross_module_got`, `func_arities`). Those fields
+    /// are being phased out in favor of this single interface.
+    pub env: Option<&'a dyn CompilationEnv>,
 
     // --- Ring 4 trace context ---
     /// Functions to instrument when compiling `(trace ...)` expressions.

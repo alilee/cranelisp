@@ -15,6 +15,10 @@ use crate::{
 pub struct SymbolTable {
     pub path: ModuleFullPath,
     pub symbols: HashMap<Symbol, ModuleEntry>,
+    /// Next available GOT slot index for this module.
+    /// Module-local: slot 0, 1, 2... independently per module.
+    #[serde(default)]
+    pub next_got_slot: usize,
 }
 
 impl SymbolTable {
@@ -22,7 +26,15 @@ impl SymbolTable {
         SymbolTable {
             path,
             symbols: HashMap::new(),
+            next_got_slot: 0,
         }
+    }
+
+    /// Allocate the next available module-local GOT slot.
+    pub fn allocate_got_slot(&mut self) -> usize {
+        let slot = self.next_got_slot;
+        self.next_got_slot += 1;
+        slot
     }
 
     pub fn get(&self, name: &str) -> Option<&ModuleEntry> {
@@ -60,6 +72,11 @@ pub enum ModuleEntry {
         /// Empty for primitives, special forms, and entries not yet body-checked.
         #[serde(default)]
         callees: Vec<FQSymbol>,
+        /// Module-local GOT slot index. Assigned at registration time for
+        /// user-defined functions. `None` for primitives and special forms
+        /// (they don't need GOT slots — inlined or called directly).
+        #[serde(default)]
+        got_slot: Option<usize>,
     },
     /// An imported name from another module (Ring 2).
     Import { source: FQSymbol },

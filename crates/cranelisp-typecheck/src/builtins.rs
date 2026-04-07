@@ -119,6 +119,7 @@ impl TypeChecker {
                         jit_name: None,
                     }),
                     callees: Vec::new(),
+                    got_slot: None,
                 },
             );
         }
@@ -153,6 +154,7 @@ impl TypeChecker {
                         jit_name: Some(JitSymbol::from(prim.name.as_ref())),
                     }),
                     callees: Vec::new(),
+                    got_slot: None,
                 },
             );
         }
@@ -242,6 +244,7 @@ impl TypeChecker {
                         jit_name: Some(JitSymbol::from(name)),
                     }),
                     callees: Vec::new(),
+                    got_slot: None,
                 },
             );
         }
@@ -288,6 +291,7 @@ impl TypeChecker {
                         description: desc.to_string(),
                     }),
                     callees: Vec::new(),
+                    got_slot: None,
                 },
             );
         }
@@ -356,6 +360,7 @@ impl TypeChecker {
                         jit_name: Some(JitSymbol::from(prim.name.as_ref())),
                     }),
                     callees: Vec::new(),
+                    got_slot: None,
                 },
             );
         }
@@ -426,6 +431,7 @@ impl TypeChecker {
                     jit_name: Some(JitSymbol::from("sconcat")),
                 }),
                 callees: Vec::new(),
+                got_slot: None,
             },
         );
     }
@@ -706,6 +712,7 @@ impl TypeChecker {
                     jit_name: None,
                 }),
                 callees: Vec::new(),
+                got_slot: None,
             },
         );
     }
@@ -838,6 +845,7 @@ impl TypeChecker {
                         )),
                     }),
                     callees: Vec::new(),
+                    got_slot: None,
                 },
             );
         }
@@ -866,6 +874,7 @@ impl TypeChecker {
                     description: "Execution trace: (trace expr) — evaluates expr with call instrumentation, returns Trace ADT".to_string(),
                 }),
                 callees: Vec::new(),
+                got_slot: None,
             },
         );
 
