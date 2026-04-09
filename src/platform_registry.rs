@@ -88,6 +88,17 @@ impl PlatformRegistry {
             .collect()
     }
 
+    /// Look up a platform function pointer by its JIT symbol name.
+    ///
+    /// Used by `collect_jit_symbols_for_module` to resolve PlatformEffect
+    /// primitives to their DLL function pointers.
+    pub fn fn_ptr_by_jit_name(&self, jit_name: &JitSymbol) -> Option<*const u8> {
+        self.entries
+            .values()
+            .find(|f| f.jit_name == *jit_name)
+            .map(|f| f.fn_ptr)
+    }
+
     /// True if no platform functions are registered.
     pub fn is_empty(&self) -> bool {
         self.entries.is_empty()

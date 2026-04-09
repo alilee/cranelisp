@@ -62,7 +62,7 @@ pub fn resolve_module_file(
 
 pub fn compile_and_execute_expr(
     inmem_worker: &mut InMemWorkerState,
-    platform_symbols: &[(String, *const u8)],
+    jit_symbols: &[(String, *const u8)],
     program: &Program,
     check: &CheckResult,
     env: Option<&dyn cranelisp_backend::compiler::CompilationEnv>,
@@ -82,7 +82,7 @@ pub fn compile_and_execute_expr(
         .unwrap_or(Type::Int);
 
     if inmem_worker.traced_fns.is_empty() {
-        let extra_syms: Vec<(&str, *const u8)> = platform_symbols
+        let extra_syms: Vec<(&str, *const u8)> = jit_symbols
             .iter()
             .map(|(name, ptr)| (name.as_str(), *ptr))
             .collect();
@@ -101,14 +101,14 @@ pub fn compile_and_execute_expr(
         let value = unsafe { compiled.execute() };
         Ok((value, ty))
     } else {
-        let value = compile_and_execute_expr_with_trace(inmem_worker, platform_symbols, expr, check, env)?;
+        let value = compile_and_execute_expr_with_trace(inmem_worker, jit_symbols, expr, check, env)?;
         Ok((value, ty))
     }
 }
 
 fn compile_and_execute_expr_with_trace(
     inmem_worker: &mut InMemWorkerState,
-    platform_symbols: &[(String, *const u8)],
+    jit_symbols: &[(String, *const u8)],
     expr: &cranelisp_types::Expr,
     check: &CheckResult,
     env: Option<&dyn cranelisp_backend::compiler::CompilationEnv>,
@@ -116,7 +116,7 @@ fn compile_and_execute_expr_with_trace(
     use cranelisp_types::{Defn, DefnVariant, Symbol, Visibility};
     use std::collections::HashMap;
 
-    let mut extra_syms: Vec<(&str, *const u8)> = platform_symbols
+    let mut extra_syms: Vec<(&str, *const u8)> = jit_symbols
         .iter()
         .map(|(name, ptr)| (name.as_str(), *ptr))
         .collect();
@@ -192,18 +192,23 @@ fn compile_and_execute_expr_with_trace(
 ///
 /// Uses `SharedCodegenState` for GOT slot management and `WorkerJitState`
 /// for per-worker JIT lifetime tracking.
+///
+/// When `codegen_products` + `module` are provided, also writes `Code { jit, ptr }`
+/// to the codegen products DashMap (target state). The JIT moves there instead of
+/// `worker_jit.jit_modules`.
 pub fn compile_and_register_defn_shared(
     shared_codegen: &crate::session::SharedCodegenState,
     worker_jit: &mut crate::session::WorkerJitState,
-    platform_symbols: &[(String, *const u8)],
+    jit_symbols: &[(String, *const u8)],
     defn: &Defn,
     check: &CheckResult,
     env: Option<&dyn cranelisp_backend::compiler::CompilationEnv>,
     module_got: Option<&std::sync::Arc<cranelisp_backend::got::GotTable>>,
+    codegen_products: Option<(&dashmap::DashMap<ModuleFullPath, crate::session_v4::CodegenProduct>, &ModuleFullPath)>,
 ) -> Result<(), CranelispError> {
     use std::collections::HashMap;
 
-    let extra_symbols: Vec<(&str, *const u8)> = platform_symbols
+    let extra_symbols: Vec<(&str, *const u8)> = jit_symbols
         .iter()
         .map(|(name, ptr)| (name.as_str(), *ptr))
         .collect();
@@ -276,6 +281,7 @@ pub fn compile_and_register_defn_shared(
     }
 
     // Update def_codegen for introspection (code_ptr, param_count, etc.).
+    // Dual-write: kept during transition so legacy paths still find metadata.
     let mut entry = shared_codegen.def_codegen.entry(defn.name.clone()).or_default();
     entry.code_ptr = Some(code_ptr);
     entry.got_slot = Some(slot);
@@ -283,7 +289,23 @@ pub fn compile_and_register_defn_shared(
     entry.defn = Some(defn.clone());
     drop(entry);
 
-    worker_jit.jit_modules.push(jit);
+    // Write Code to codegen_products (target state) or worker_jit (legacy).
+    if let Some((products, module)) = codegen_products {
+        let product = products.entry(module.clone()).or_insert_with(|| {
+            crate::session_v4::CodegenProduct {
+                linker: None,
+                code: dashmap::DashMap::new(),
+                got: None,
+                got_base: std::ptr::null(),
+            }
+        });
+        product.code.insert(
+            defn.name.clone(),
+            crate::session_v4::Code { jit, ptr: code_ptr },
+        );
+    } else {
+        worker_jit.jit_modules.push(jit);
+    }
 
     Ok(())
 }

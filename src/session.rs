@@ -298,6 +298,22 @@ impl SharedCodegenState {
         Some(self.got_table.load_slot(slot))
     }
 
+    /// Create a minimal scratch SharedCodegenState for the env path.
+    ///
+    /// Does NOT extract from InMemWorkerState. Used when compilation goes
+    /// through SessionCompilationEnv (which handles GOT resolution) and
+    /// codegen_products (which stores JIT instances). The scratch state
+    /// only accumulates def_codegen metadata for introspection.
+    pub fn scratch() -> Self {
+        SharedCodegenState {
+            got_table: std::sync::Arc::new(cranelisp_backend::got::GotTable::new()),
+            next_got_slot: std::sync::atomic::AtomicUsize::new(0),
+            def_codegen: dashmap::DashMap::new(),
+            kept_jits: std::sync::Mutex::new(Vec::new()),
+            kept_linkers: std::sync::Mutex::new(Vec::new()),
+        }
+    }
+
     /// Extract from an `InMemWorkerState`, taking ownership of GOT data.
     ///
     /// The `InMemWorkerState`'s `got_state` fields are consumed: the GOT

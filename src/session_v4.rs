@@ -439,6 +439,11 @@ impl ModuleGotRegistry {
         self.module_gots.get(module).map(|r| r.base_ptr() as i64)
     }
 
+    /// Iterate over all registered module GOT tables.
+    pub fn all_modules(&self) -> dashmap::iter::Iter<'_, ModuleFullPath, std::sync::Arc<cranelisp_backend::got::GotTable>> {
+        self.module_gots.iter()
+    }
+
     /// Get a reference to the underlying DashMap (for CompilationEnv implementation).
     pub fn inner(&self) -> &dashmap::DashMap<ModuleFullPath, std::sync::Arc<cranelisp_backend::got::GotTable>> {
         &self.module_gots
@@ -744,6 +749,8 @@ impl CompilerSession {
         let suspend_states = Mutex::new(HashMap::new());
 
         // Extract shared codegen state from InMemWorkerState for workers.
+        // Workers still use legacy paths (compile_dep_symbol_inline, compile_macro_defn_no_dealloc)
+        // that need the real GOT state. Can't use scratch() until those are migrated to env path.
         let shared_codegen =
             crate::session::SharedCodegenState::extract_from(&mut self.inmem_worker);
 
@@ -761,6 +768,7 @@ impl CompilerSession {
             tc: &tc_mutex,
             platform_registry: &platform_mutex,
             shared_codegen: &shared_codegen,
+            codegen_products: &self.codegen_products,
             scheduler: &self.shared.scheduler,
             module_sexps: &module_sexps,
             suspend_states: &suspend_states,
@@ -1056,7 +1064,6 @@ impl CompilerSession {
                     shared_state: None,
                 };
 
-                // REPL eval is always fresh (single-form, not resuming).
                 let mut pass1_done = false;
                 let r = worker::process_module_forms(
                     &mut wctx,
@@ -1071,10 +1078,9 @@ impl CompilerSession {
 
                 worker_jit.drain_to_shared(&shared_codegen);
                 shared_codegen.sync_back_to(&mut self.inmem_worker);
-        // Merge introspection data from codegen into session-level map.
-        for (k, v) in &self.inmem_worker.got_state.def_codegen {
-            self.def_codegen.insert(k.clone(), v.clone());
-        }
+                for (k, v) in &self.inmem_worker.got_state.def_codegen {
+                    self.def_codegen.insert(k.clone(), v.clone());
+                }
                 r?
             };
 
@@ -1135,9 +1141,10 @@ impl CompilerSession {
         let env: Option<&dyn cranelisp_backend::compiler::CompilationEnv> = Some(&env_impl);
 
         // Codegen: compile definitions, register in GOT.
+        // Uses scratch SharedCodegenState (not extracted from InMemWorkerState).
+        // JIT instances go to codegen_products; scratch only collects introspection metadata.
         {
-            let shared_codegen =
-                crate::session::SharedCodegenState::extract_from(&mut self.inmem_worker);
+            let shared_codegen = crate::session::SharedCodegenState::scratch();
             let mut worker_jit = crate::session::WorkerJitState::new();
             let result = crate::worker::codegen_module_symbols(
                 &shared_codegen,
@@ -1150,12 +1157,14 @@ impl CompilerSession {
                 Some(tc_modules),
                 Some(&self.shared),
             );
-            worker_jit.drain_to_shared(&shared_codegen);
-            shared_codegen.sync_back_to(&mut self.inmem_worker);
-        // Merge introspection data from codegen into session-level map.
-        for (k, v) in &self.inmem_worker.got_state.def_codegen {
-            self.def_codegen.insert(k.clone(), v.clone());
-        }
+            // Copy introspection metadata from scratch state to session-level map.
+            for entry in shared_codegen.def_codegen.iter() {
+                self.def_codegen.insert(entry.key().clone(), entry.value().clone());
+            }
+            // Any JIT modules from legacy path (compile_dep_symbol_inline) still drain normally.
+            for jit in worker_jit.jit_modules.drain(..) {
+                self.inmem_worker.jit_modules.push(jit);
+            }
             result?;
         }
 
@@ -1163,7 +1172,8 @@ impl CompilerSession {
 
         if has_expr {
             let program_vec = program.to_vec();
-            let ps = self.platform_registry.jit_symbols_owned();
+            // Use collect_jit_symbols_for_module for full symbol set (platform + GOT data).
+            let ps = env_impl.collect_jit_symbols_for_module(&self.platform_registry);
             let (value, ty) = crate::pipeline::compile_and_execute_expr(
                 &mut self.inmem_worker,
                 &ps,
@@ -1235,7 +1245,6 @@ impl CompilerSession {
         let loop_result = crate::worker::priority_worker_loop(&mut ctx, &mut module_sexps);
         worker_jit.drain_to_shared(&shared_codegen);
         shared_codegen.sync_back_to(&mut self.inmem_worker);
-        // Merge introspection data from codegen into session-level map.
         for (k, v) in &self.inmem_worker.got_state.def_codegen {
             self.def_codegen.insert(k.clone(), v.clone());
         }
@@ -1861,10 +1870,9 @@ impl CompilerSession {
 
             worker_jit.drain_to_shared(&shared_codegen);
             shared_codegen.sync_back_to(&mut self.inmem_worker);
-        // Merge introspection data from codegen into session-level map.
-        for (k, v) in &self.inmem_worker.got_state.def_codegen {
-            self.def_codegen.insert(k.clone(), v.clone());
-        }
+            for (k, v) in &self.inmem_worker.got_state.def_codegen {
+                self.def_codegen.insert(k.clone(), v.clone());
+            }
         }
         Ok(())
     }

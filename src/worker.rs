@@ -10,9 +10,9 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use cranelisp_types::{
-    CheckResult, CranelispError, Defn, ExportSpec, ImportNames, ImportSpec,
+    CheckResult, CranelispError, DefKind, Defn, ExportSpec, ImportNames, ImportSpec,
     MacroClauseInfo, ModuleEntry, ModuleFullPath, ModuleStrategy,
-    PlatformSpec, Sexp, Span, Symbol, TopLevel, Visibility,
+    PlatformSpec, PrimitiveKind, Sexp, Span, Symbol, TopLevel, Visibility,
 };
 
 use cranelisp_typecheck::{CheckPass, ModuleCheckAccumulator};
@@ -120,9 +120,42 @@ impl cranelisp_backend::compiler::CompilationEnv for SessionCompilationEnv<'_> {
         None
     }
 
-    // resolve_got_module: uses default (None) until JIT GOT data symbols
-    // are registered on the JITBuilder. Activated in Phase C when JIT creation
-    // derives all symbols from primary session sources.
+    fn resolve_got_module(&self, name: &Symbol) -> Option<(ModuleFullPath, usize)> {
+        // 1. Try current module first.
+        if let Some(result) = self.resolve_module_slot(&self.current_module, name.as_ref(), 0) {
+            return Some(result);
+        }
+
+        // 2. Qualified "module/name" → split.
+        if let Some(slash) = name.as_ref().find('/') {
+            let module_part = &name.as_ref()[..slash];
+            let bare_name = &name.as_ref()[slash + 1..];
+            if !module_part.is_empty() && !bare_name.is_empty() {
+                let child_path = ModuleFullPath::from(
+                    format!("{}.{}", self.current_module, module_part),
+                );
+                if let Some(result) = self.resolve_module_slot(&child_path, bare_name, 0) {
+                    return Some(result);
+                }
+                let abs_path = ModuleFullPath::from(module_part);
+                if let Some(result) = self.resolve_module_slot(&abs_path, bare_name, 0) {
+                    return Some(result);
+                }
+            }
+        }
+
+        // 3. Global fallback: search all modules.
+        for entry in self.tc_modules.iter() {
+            if *entry.key() == self.current_module {
+                continue;
+            }
+            if let Some(result) = self.resolve_module_slot(entry.key(), name.as_ref(), 0) {
+                return Some(result);
+            }
+        }
+
+        None
+    }
 
     fn func_arity(&self, name: &Symbol) -> Option<usize> {
         // 1. Try current module first.
@@ -238,6 +271,78 @@ impl SessionCompilationEnv<'_> {
             }
             _ => None,
         }
+    }
+
+    /// Collect all JIT symbols needed to compile a module.
+    ///
+    /// Scans the module's symbol table to find:
+    /// - Platform function pointers (from PlatformRegistry, for PlatformEffect primitives)
+    /// - GOT base pointers (for each referenced module, including self)
+    ///
+    /// Returns `(String, *const u8)` pairs suitable for `Jit::new_with_symbols`.
+    /// Only collects what this module actually references, not everything in the session.
+    pub fn collect_jit_symbols_for_module(
+        &self,
+        platform_registry: &crate::platform_registry::PlatformRegistry,
+    ) -> Vec<(String, *const u8)> {
+        use std::collections::HashSet;
+
+        let mut symbols = Vec::new();
+        let mut referenced_modules: HashSet<ModuleFullPath> = HashSet::new();
+
+        // Always include current module's own GOT base (self-calls).
+        referenced_modules.insert(self.current_module.clone());
+
+        if let Some(st) = self.tc_modules.get(&self.current_module) {
+            for (_name, entry) in st.all_symbols() {
+                match entry {
+                    // Imported symbols → their defining module needs a GOT base.
+                    ModuleEntry::Import { source } => {
+                        referenced_modules.insert(source.module.clone());
+                    }
+                    ModuleEntry::Reexport { source } => {
+                        referenced_modules.insert(source.module.clone());
+                    }
+                    _ => {}
+                }
+                // Scan callees for cross-module references (handles qualified
+                // calls like main.mid.leaf/value that aren't Import entries).
+                for callee in entry.callees() {
+                    referenced_modules.insert(callee.module.clone());
+                }
+                // Platform functions → register their JIT fn pointers.
+                if let ModuleEntry::Def { kind, .. } = entry {
+                    if let DefKind::Primitive {
+                        primitive_kind: PrimitiveKind::PlatformEffect,
+                        jit_name: Some(jit_name),
+                    } = kind.as_ref()
+                    {
+                        if let Some(ptr) = platform_registry.fn_ptr_by_jit_name(jit_name) {
+                            symbols.push((jit_name.0.clone(), ptr));
+                        }
+                    }
+                }
+            }
+        }
+
+        // Register GOT base pointers for all referenced modules, plus
+        // self (always needed for self-calls).
+        let got = self.got_registry.ensure_module(&self.current_module);
+        let name = cranelisp_backend::compiler::got_data_symbol_name(&self.current_module);
+        symbols.push((name, got.base_ptr()));
+
+        // Also register GOT bases for all other known modules. Qualified
+        // references (e.g., main.mid.leaf/value) may reference any module
+        // without an explicit Import entry, so we can't predict which modules
+        // are needed from the symbol table alone.
+        for entry in self.got_registry.all_modules() {
+            let name = cranelisp_backend::compiler::got_data_symbol_name(entry.key());
+            if *entry.key() != self.current_module {
+                symbols.push((name, entry.value().base_ptr()));
+            }
+        }
+
+        symbols
     }
 }
 
@@ -1423,11 +1528,11 @@ fn compile_macro_if_needed(
         ctx.tc, ctx.shared_codegen, module, &info.name,
     );
     // Compute platform JIT symbols once, outside the dep compilation loop.
-    let platform_symbols = ctx.platform_registry.jit_symbols_owned();
+    let jit_symbols = ctx.platform_registry.jit_symbols_owned();
     let current_module = ctx.tc.current_module_path().clone();
     for (dep_module, dep_symbol) in &uncompiled_deps {
         compile_dep_symbol_inline(
-            ctx.tc, ctx.shared_codegen, ctx.worker_jit, &platform_symbols,
+            ctx.tc, ctx.shared_codegen, ctx.worker_jit, &jit_symbols,
             dep_module, dep_symbol, &current_module, accumulator,
         )?;
         ctx.scheduler.notify_inmem_codegen_complete(dep_module, dep_symbol, false);
@@ -1519,7 +1624,7 @@ fn compile_dep_symbol_inline(
     tc: &cranelisp_typecheck::TypeChecker,
     shared_codegen: &SharedCodegenState,
     worker_jit: &mut WorkerJitState,
-    platform_symbols: &[(String, *const u8)],
+    jit_symbols: &[(String, *const u8)],
     module: &ModuleFullPath,
     symbol: &Symbol,
     current_module: &ModuleFullPath,
@@ -1546,7 +1651,7 @@ fn compile_dep_symbol_inline(
         .and_then(|dc| dc.defn.clone());
 
     if let Some(defn) = defn {
-        compile_and_register_defn_shared(shared_codegen, worker_jit, platform_symbols, &defn, &check, None, None)?;
+        compile_and_register_defn_shared(shared_codegen, worker_jit, jit_symbols, &defn, &check, None, None, None)?;
     }
     // If not found in def_codegen, the symbol may be a builtin/primitive
     // that is always available — nothing to compile.
@@ -2266,9 +2371,6 @@ pub fn codegen_module_symbols(
     tc_modules: Option<&dashmap::DashMap<ModuleFullPath, cranelisp_types::SymbolTable>>,
     shared_state: Option<&crate::session_v4::SharedState>,
 ) -> Result<(), CranelispError> {
-    // Convert platform registry to owned JIT symbols once for the codegen sweep.
-    let platform_symbols = platform_registry.jit_symbols_owned();
-
     // Build per-module CompilationEnv when TC modules + shared state available.
     let (env_impl, module_got);
     if let (Some(tc_mods), Some(ss)) = (tc_modules, shared_state) {
@@ -2286,6 +2388,14 @@ pub fn codegen_module_symbols(
         env_impl.as_ref().map(|e| e as _);
     let got_ref = module_got.as_ref();
 
+    // Collect JIT symbols: when env is available, use collect_jit_symbols_for_module
+    // (includes platform fn ptrs + GOT data symbols). Otherwise legacy platform-only.
+    let jit_symbols = if let Some(env_ref) = &env_impl {
+        env_ref.collect_jit_symbols_for_module(platform_registry)
+    } else {
+        platform_registry.jit_symbols_owned()
+    };
+
     // Pre-register GOT slots for forward references.
     if let Some(tc_mods) = tc_modules {
         // Env path: pre-assign slots in TC symbol tables so resolve_got finds them.
@@ -2297,14 +2407,14 @@ pub fn codegen_module_symbols(
 
     // Compile default method bodies.
     for defn in &check.default_method_defns {
-        compile_and_register_defn_shared(shared_codegen, worker_jit, &platform_symbols, defn, check, env, got_ref)?;
+        compile_and_register_defn_shared(shared_codegen, worker_jit, &jit_symbols, defn, check, env, got_ref, None)?;
     }
 
     // Compile mono specializations with per-specialization resolutions.
-    compile_mono_defns(shared_codegen, worker_jit, &platform_symbols, check, env, got_ref)?;
+    compile_mono_defns(shared_codegen, worker_jit, &jit_symbols, check, env, got_ref)?;
 
     // Compile each regular defn.
-    let defn_names = compile_regular_defns(shared_codegen, worker_jit, &platform_symbols, program, check, env, got_ref)?;
+    let defn_names = compile_regular_defns(shared_codegen, worker_jit, &jit_symbols, program, check, env, got_ref)?;
 
     // Notify scheduler for each compiled symbol.
     let total = defn_names.len();
@@ -2429,7 +2539,7 @@ fn pre_register_got_slots_in_tc(
 fn compile_mono_defns(
     shared_codegen: &SharedCodegenState,
     worker_jit: &mut WorkerJitState,
-    platform_symbols: &[(String, *const u8)],
+    jit_symbols: &[(String, *const u8)],
     check: &CheckResult,
     env: Option<&dyn cranelisp_backend::compiler::CompilationEnv>,
     module_got: Option<&std::sync::Arc<cranelisp_backend::got::GotTable>>,
@@ -2453,7 +2563,7 @@ fn compile_mono_defns(
             constructor_to_type: check.constructor_to_type.clone(),
             display: None,
         };
-        compile_and_register_defn_shared(shared_codegen, worker_jit, platform_symbols, &mono.defn, &mono_check, env, module_got)?;
+        compile_and_register_defn_shared(shared_codegen, worker_jit, jit_symbols, &mono.defn, &mono_check, env, module_got, None)?;
     }
     Ok(())
 }
@@ -2463,7 +2573,7 @@ fn compile_mono_defns(
 fn compile_regular_defns(
     shared_codegen: &SharedCodegenState,
     worker_jit: &mut WorkerJitState,
-    platform_symbols: &[(String, *const u8)],
+    jit_symbols: &[(String, *const u8)],
     program: &[TopLevel],
     check: &CheckResult,
     env: Option<&dyn cranelisp_backend::compiler::CompilationEnv>,
@@ -2477,7 +2587,7 @@ fn compile_regular_defns(
                 if check.constrained_fn_names.contains(&defn.name) {
                     continue;
                 }
-                compile_and_register_defn_shared(shared_codegen, worker_jit, platform_symbols, defn, check, env, module_got)?;
+                compile_and_register_defn_shared(shared_codegen, worker_jit, jit_symbols, defn, check, env, module_got, None)?;
                 compiled_names.push(defn.name.clone());
             }
             TopLevel::TraitImpl(impl_) => {
@@ -2485,11 +2595,12 @@ fn compile_regular_defns(
                     compile_and_register_defn_shared(
                         shared_codegen,
                         worker_jit,
-                        platform_symbols,
+                        jit_symbols,
                         method,
                         check,
                         env,
                         module_got,
+                        None,
                     )?;
                     compiled_names.push(method.name.clone());
                 }
@@ -2557,8 +2668,8 @@ fn load_cached_module_via_linker(
     }
 
     // Register platform symbols.
-    let platform_symbols = platform_registry.jit_symbols_owned();
-    for (name, ptr) in &platform_symbols {
+    let jit_symbols = platform_registry.jit_symbols_owned();
+    for (name, ptr) in &jit_symbols {
         linker.register_symbol(name, *ptr);
     }
 
@@ -2848,6 +2959,8 @@ pub(crate) struct PriorityWorkerShared<'a> {
     pub(crate) platform_registry: &'a std::sync::Mutex<PlatformRegistry>,
     /// LEGACY: replaced by codegen_products DashMap. See session-restructure.md.
     pub(crate) shared_codegen: &'a SharedCodegenState,
+    /// TARGET STATE: per-module codegen products. See session-restructure.md.
+    pub(crate) codegen_products: &'a dashmap::DashMap<ModuleFullPath, crate::session_v4::CodegenProduct>,
     pub(crate) scheduler: &'a CompileScheduler,
     pub(crate) module_sexps: &'a std::sync::Mutex<HashMap<ModuleFullPath, Vec<Sexp>>>,
     pub(crate) suspend_states: &'a std::sync::Mutex<
