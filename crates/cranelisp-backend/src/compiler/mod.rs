@@ -43,10 +43,12 @@ pub(crate) fn bare_ctor_name(name: &Symbol) -> &str {
 }
 
 /// Cross-module GOT mapping: `(defining_module, function_name)` -> `(got_base_ptr, slot_index)`.
+#[deprecated(note = "session-restructure.md: replaced by CompilationEnv::resolve_got_module")]
 pub type CrossModuleGot = HashMap<(ModuleFullPath, Symbol), (i64, usize)>;
 
-/// GOT data symbol name for a module. Used as the Cranelift data symbol
-/// name for the module's GOT table in both JIT and object codegen.
+/// TARGET STATE: GOT data symbol name for a module. Single source of truth.
+/// Used as the Cranelift data symbol name for the module's GOT table in both
+/// JIT and object codegen. See session-restructure.md.
 ///
 /// Convention: `__cranelisp_got_<flat_path>` where dots are replaced by
 /// underscores. This is `Export` in the owning module's `.o` and `Import`
@@ -73,8 +75,8 @@ pub trait CompilationEnv {
     /// - Qualified `"module/name"`: split on `/`, look up target module
     fn resolve_got(&self, name: &Symbol) -> Option<(i64, usize)>;
 
-    /// Resolve a function name to `(defining_module, module_local_slot)`.
-    /// Target path — the caller derives the DataId from the module path.
+    /// TARGET STATE: resolve a function name to `(defining_module, module_local_slot)`.
+    /// The caller derives the DataId from the module path. See session-restructure.md.
     fn resolve_got_module(&self, name: &Symbol) -> Option<(ModuleFullPath, usize)> {
         // Default: not implemented. Overridden by SessionCompilationEnv.
         let _ = name;
@@ -129,13 +131,16 @@ pub struct CompileContext<'a> {
     pub type_defs: &'a HashMap<TypeName, TypeDefInfo>,
     /// Constructor name -> parent type name mapping.
     pub constructor_to_type: &'a HashMap<Symbol, TypeName>,
+    /// LEGACY: replaced by CompilationEnv::resolve_got_module. See session-restructure.md.
     /// GOT slot assignments for each function name (Interactive mode only).
     /// In Batch/Release mode this is None; calls use direct `call` instructions.
     pub got_slots: Option<&'a HashMap<Symbol, usize>>,
+    /// LEGACY: replaced by global_value(DataId). See session-restructure.md.
     /// GOT base pointer as a raw i64 value (Interactive mode only).
     /// This is the address of the GOT table, baked into compiled IR as an iconst.
     pub got_base_ptr: Option<i64>,
 
+    /// LEGACY: replaced by CompilationEnv::resolve_got_module. See session-restructure.md.
     /// Cross-module GOT references for imported functions (Interactive mode only).
     ///
     /// Maps `(defining_module, function_name)` to `(got_base_ptr, slot_index)` so

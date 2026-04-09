@@ -89,6 +89,7 @@ impl Default for GotTable {
 }
 
 /// Per-module codegen state. Owns the GOT and per-definition artifacts.
+#[deprecated(note = "session-restructure.md: replaced by CodegenProduct + SymbolTable.got_slot")]
 pub struct ModuleCodegenState {
     /// Shared GOT table: array of atomic function pointers.
     /// Lazily allocated on first use. Shared with codegen workers via Arc.

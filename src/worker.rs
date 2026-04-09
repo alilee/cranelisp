@@ -41,7 +41,9 @@ use crate::session::{SharedCodegenState, WorkerJitState};
 pub struct WorkerContext<'a> {
     pub tc: &'a mut cranelisp_typecheck::TypeChecker,
     pub scheduler: &'a CompileScheduler,
+    /// LEGACY: replaced by codegen_products DashMap. See session-restructure.md.
     pub shared_codegen: &'a SharedCodegenState,
+    /// LEGACY: replaced by direct writes to CodegenProduct.code. See session-restructure.md.
     pub worker_jit: &'a mut WorkerJitState,
     pub platform_registry: &'a mut PlatformRegistry,
     pub lib_dirs: &'a [PathBuf],
@@ -2844,6 +2846,7 @@ fn stash_object_codegen_input(
 pub(crate) struct PriorityWorkerShared<'a> {
     pub(crate) tc: &'a std::sync::Mutex<cranelisp_typecheck::TypeChecker>,
     pub(crate) platform_registry: &'a std::sync::Mutex<PlatformRegistry>,
+    /// LEGACY: replaced by codegen_products DashMap. See session-restructure.md.
     pub(crate) shared_codegen: &'a SharedCodegenState,
     pub(crate) scheduler: &'a CompileScheduler,
     pub(crate) module_sexps: &'a std::sync::Mutex<HashMap<ModuleFullPath, Vec<Sexp>>>,

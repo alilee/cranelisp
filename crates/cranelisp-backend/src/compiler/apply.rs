@@ -471,8 +471,9 @@ impl<'a, M: Module> FnCompiler<'a, M> {
         }
     }
 
-    /// Emit a GOT-indirect call using a data symbol reference.
+    /// TARGET STATE: emit a GOT-indirect call using a data symbol reference.
     /// Works in both JIT and object codegen via Cranelift's `global_value`.
+    /// See session-restructure.md.
     fn emit_got_indirect_call_via_data_id(
         &mut self,
         data_id: cranelift_module::DataId,

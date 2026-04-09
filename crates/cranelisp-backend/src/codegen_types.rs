@@ -11,6 +11,7 @@ pub use cranelisp_types::GOT_TABLE_SIZE;
 pub use cranelisp_types::NULLARY_TAG_THRESHOLD;
 
 /// Codegen artifacts for a single definition.
+#[deprecated(note = "session-restructure.md: replaced by Code + Introspection")]
 #[derive(Debug, Clone, Default)]
 pub struct DefCodegen {
     pub got_slot: Option<usize>,

@@ -317,16 +317,18 @@ fn parens_balanced(input: &str) -> bool {
 // Target data model types (session-restructure.md)
 // ---------------------------------------------------------------------------
 
-/// Typecheck product for a module. Populated by typecheck or deserialized
-/// from .meta.json on cache hit. Permanent for session lifetime.
+/// TARGET STATE: per-module typecheck product. Replaces TC-internal storage.
+/// Populated by typecheck or deserialized from .meta.json on cache hit.
+/// Permanent for session lifetime. See session-restructure.md.
 pub struct TypecheckProduct {
     pub symbols: SymbolTable,
     pub file_path: Option<PathBuf>,
 }
 
-/// Transient codegen input. Produced by typecheck, consumed by both JIT
-/// (priority workers) and .o (nice workers) codegen. Removed when scheduler
-/// signals both `inmem_done` and `object_done`.
+/// TARGET STATE: transient codegen input. Replaces ModuleOutput + ObjectCodegenInput.
+/// Produced by typecheck, consumed by both JIT (priority workers) and .o (nice
+/// workers) codegen. Removed when scheduler signals both `inmem_done` and
+/// `object_done`. See session-restructure.md.
 pub struct CodegenInput {
     pub method_resolutions: cranelisp_types::MethodResolutions,
     pub expr_types: HashMap<Span, Type>,
@@ -335,7 +337,8 @@ pub struct CodegenInput {
     pub program: Vec<TopLevel>,
 }
 
-/// Per-module codegen output. Entry created when codegen starts for a module.
+/// TARGET STATE: per-module codegen output. Replaces ModuleGotRegistry + def_codegen + kept_code.
+/// Entry created when codegen starts for a module. See session-restructure.md.
 pub struct CodegenProduct {
     /// Some if loaded from cache .o; owns code_regions + data_regions.
     pub linker: Option<cranelisp_backend::cache::Linker>,
@@ -353,7 +356,8 @@ pub struct CodegenProduct {
 unsafe impl Send for CodegenProduct {}
 unsafe impl Sync for CodegenProduct {}
 
-/// Per-symbol compiled code. Owns the JIT mmap'd executable pages.
+/// TARGET STATE: per-symbol compiled code. Replaces DefCodegen's code_ptr + kept jit_modules.
+/// Owns the JIT mmap'd executable pages. See session-restructure.md.
 pub struct Code {
     /// Cranelift JIT module — owns mmap'd executable pages. Dropping frees code.
     pub jit: cranelisp_backend::jit::Jit,
@@ -366,7 +370,8 @@ pub struct Code {
 unsafe impl Send for Code {}
 unsafe impl Sync for Code {}
 
-/// REPL-only per-symbol introspection data. Not populated during batch.
+/// TARGET STATE: REPL-only per-symbol introspection data. Replaces DefCodegen's introspection fields.
+/// Not populated during batch. See session-restructure.md.
 #[derive(Debug, Clone, Default)]
 pub struct Introspection {
     pub source: Option<String>,
@@ -384,6 +389,7 @@ pub struct Introspection {
 
 /// Snapshot of typecheck + program data for a module, stored by the priority
 /// worker after codegen so that nice workers can compile the `.o` file.
+#[deprecated(note = "session-restructure.md: replaced by CodegenInput")]
 pub struct ObjectCodegenInput {
     pub check_result: CheckResult,
     pub program: Vec<TopLevel>,
@@ -403,6 +409,7 @@ pub struct ObjectCodegenInput {
 /// Registry of per-module GOT tables. Each module gets its own `Arc<GotTable>`
 /// with module-local slot indices (0, 1, 2...). Cross-module calls look up the
 /// target module's GOT base + slot.
+#[deprecated(note = "session-restructure.md: replaced by CodegenProduct.got")]
 pub struct ModuleGotRegistry {
     module_gots: dashmap::DashMap<ModuleFullPath, std::sync::Arc<cranelisp_backend::got::GotTable>>,
 }
@@ -459,6 +466,7 @@ impl ModuleGotRegistry {
 
 /// Typecheck results for a module, stored in shared state so codegen workers
 /// can read them without receiving stack-owned values.
+#[deprecated(note = "session-restructure.md: replaced by CodegenInput")]
 pub struct ModuleOutput {
     pub check_result: CheckResult,
     pub program: Vec<TopLevel>,
@@ -487,6 +495,7 @@ pub struct SharedState {
     /// When set to true, nice workers self-promote to normal OS priority.
     pub promote_nice_workers: AtomicBool,
 
+    /// LEGACY: replaced by codegen_inputs DashMap on CompilerSession. See session-restructure.md.
     /// Module data for nice worker .o compilation. Populated by the priority
     /// worker after in-memory codegen completes; consumed by nice workers.
     pub object_codegen_inputs: Mutex<HashMap<ModuleFullPath, ObjectCodegenInput>>,
@@ -511,6 +520,7 @@ pub struct SharedState {
     /// through this registry.
     pub got_registry: ModuleGotRegistry,
 
+    /// LEGACY: replaced by codegen_inputs DashMap on CompilerSession. See session-restructure.md.
     /// Typecheck results stored after finalize_module. Codegen workers and
     /// nice workers read from here instead of receiving stack-owned values.
     pub module_outputs: dashmap::DashMap<ModuleFullPath, ModuleOutput>,
@@ -524,13 +534,13 @@ pub struct SharedState {
 pub struct CompilerSession {
     /// Type checker state (persists across forms).
     pub tc: cranelisp_typecheck::TypeChecker,
+    /// LEGACY: replaced by CodegenProduct + CompilerSession DashMaps. See session-restructure.md.
     /// In-memory codegen worker state (GOT, JIT lifetimes, trace).
-    /// Being phased out — GOT state migrated to ModuleGotRegistry + TC symbol tables.
     pub inmem_worker: InMemWorkerState,
+    /// LEGACY: replaced by Code + Introspection DashMaps. See session-restructure.md.
     /// Per-definition codegen artifacts for introspection (/source, /sexp, /clif, /disasm).
-    /// Populated during codegen, read by slash commands. Replaces
-    /// inmem_worker.got_state.def_codegen for introspection reads.
     pub def_codegen: HashMap<Symbol, cranelisp_backend::codegen_types::DefCodegen>,
+    /// LEGACY: replaced by macro clause ptrs in CodegenProduct.code. See session-restructure.md.
     /// Macro environment (persists across forms — macros accumulate).
     pub macro_env: MacroEnv,
     /// Lib directories for module resolution (§8.11.2 tier 3).
@@ -563,13 +573,17 @@ pub struct CompilerSession {
 
     // -- REPL-specific state (pipeline-v4.md §6) --
 
+    /// LEGACY: derivable from typecheck DashMap. See session-restructure.md.
     /// Accumulated type definitions from all inputs (for ADT value display).
     pub type_defs: HashMap<TypeName, TypeDefInfo>,
+    /// LEGACY: derivable from typecheck DashMap. See session-restructure.md.
     /// Maps type names to the module they were defined in (for qualified display).
     pub type_modules: HashMap<TypeName, ModuleFullPath>,
+    /// LEGACY: deleted with ModuleStructure; REPL module state is typecheck.get("user"). See session-restructure.md.
     /// Module structure for the current REPL module (tracks imports, exports,
     /// impl_sexps as they accumulate interactively). Used for persistence.
     pub current_module_structure: ModuleStructure,
+    /// LEGACY: replaced by scheduler state (tracks Failed modules). See session-restructure.md.
     /// Modules that failed reload (file watcher). While non-empty, expression
     /// evaluation is blocked.
     pub error_modules: HashSet<ModuleFullPath>,
@@ -583,13 +597,13 @@ pub struct CompilerSession {
     // All DashMaps on CompilerSession. Workers access via scoped-thread borrows
     // of individual fields — DashMaps are inherently concurrent.
 
-    /// Per-module typecheck products (target: replaces TC-internal storage).
+    /// TARGET STATE: per-module typecheck products (replaces TC-internal storage).
     pub typecheck_products: dashmap::DashMap<ModuleFullPath, TypecheckProduct>,
-    /// Transient codegen inputs (target: replaces module_outputs + object_codegen_inputs).
+    /// TARGET STATE: transient codegen inputs (replaces module_outputs + object_codegen_inputs).
     pub codegen_inputs: dashmap::DashMap<ModuleFullPath, CodegenInput>,
-    /// Per-module codegen products (target: replaces ModuleGotRegistry + def_codegen + kept_code).
+    /// TARGET STATE: per-module codegen products (replaces ModuleGotRegistry + def_codegen + kept_code).
     pub codegen_products: dashmap::DashMap<ModuleFullPath, CodegenProduct>,
-    /// Per-symbol introspection data, REPL-only (target: replaces def_codegen for slash commands).
+    /// TARGET STATE: per-symbol introspection data, REPL-only (replaces def_codegen for slash commands).
     pub introspection: dashmap::DashMap<FQSymbol, Introspection>,
 }
 

@@ -143,6 +143,7 @@ impl CacheState {
 ///
 /// Fields used by codegen and the REPL for GOT-indirect compilation,
 /// JIT module lifetime management, and trace instrumentation.
+#[deprecated(note = "session-restructure.md: replaced by CodegenProduct + CompilerSession DashMaps")]
 pub struct InMemWorkerState {
     /// Backend GOT state (persists across forms for function redefinition).
     pub got_state: cranelisp_backend::got::ModuleCodegenState,
@@ -215,6 +216,7 @@ unsafe impl Send for InMemWorkerState {}
 /// All fields use concurrent data structures (atomics, DashMap, Mutex)
 /// or are read-only after construction. `&self` suffices for all worker
 /// operations.
+#[deprecated(note = "session-restructure.md: replaced by codegen_products DashMap")]
 pub struct SharedCodegenState {
     /// The GOT table. Already uses AtomicPtr slots. Workers write to
     /// pre-assigned disjoint slots via store(Release).
@@ -301,6 +303,7 @@ impl SharedCodegenState {
     /// The `InMemWorkerState`'s `got_state` fields are consumed: the GOT
     /// table Arc is cloned (shared), and `def_codegen` + `next_got_slot`
     /// are moved out. JIT modules and cache linkers are also moved.
+    #[deprecated(note = "session-restructure.md: being deleted with SharedCodegenState")]
     pub fn extract_from(inmem: &mut InMemWorkerState) -> Self {
         // Ensure the GOT is allocated before extracting.
         let got_table = inmem.got_state.shared_got();
@@ -327,6 +330,7 @@ impl SharedCodegenState {
     ///
     /// Moves `def_codegen` and slot counter back, and extends the
     /// InMemWorkerState's JIT/linker vecs with kept instances.
+    #[deprecated(note = "session-restructure.md: being deleted with SharedCodegenState")]
     pub fn sync_back_to(self, inmem: &mut InMemWorkerState) {
         // Convert DashMap back to HashMap for InMemWorkerState.
         let mut def_codegen_map = HashMap::new();
@@ -360,6 +364,7 @@ impl SharedCodegenState {
 /// Not shared across threads. Each worker accumulates JIT instances
 /// and linkers during codegen, then drains them to SharedCodegenState
 /// when the module is complete.
+#[deprecated(note = "session-restructure.md: replaced by direct writes to CodegenProduct.code")]
 #[derive(Default)]
 pub struct WorkerJitState {
     /// JIT instances created by this worker. Drained to
@@ -384,6 +389,7 @@ impl WorkerJitState {
 
     /// Drain accumulated JIT and Linker instances to shared state.
     /// Called after each module's codegen sweep completes.
+    #[deprecated(note = "session-restructure.md: being deleted with WorkerJitState")]
     pub fn drain_to_shared(&mut self, shared: &SharedCodegenState) {
         if !self.jit_modules.is_empty() {
             let mut kept = shared.kept_jits.lock()

@@ -66,6 +66,7 @@ impl PlatformRegistry {
         None
     }
 
+    /// LEGACY: replaced by symbol table scan via collect_jit_symbols_for_module. See session-restructure.md.
     /// Return JIT symbol pairs for Jit::new_with_symbols().
     ///
     /// Produces `Vec<(&str, *const u8)>` matching the existing codegen API.
@@ -77,6 +78,7 @@ impl PlatformRegistry {
             .collect()
     }
 
+    /// LEGACY: replaced by symbol table scan via collect_jit_symbols_for_module. See session-restructure.md.
     /// Return owned JIT symbol pairs for backward compatibility with
     /// `compile_and_register_defn` which takes `&[(String, *const u8)]`.
     pub fn jit_symbols_owned(&self) -> Vec<(String, *const u8)> {

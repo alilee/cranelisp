@@ -77,9 +77,10 @@ pub enum ModuleEntry {
         /// (they don't need GOT slots — inlined or called directly).
         #[serde(default)]
         got_slot: Option<usize>,
-        /// The typechecked function definition. Stored for monomorphisation
-        /// (generating specializations at call sites) and `--run` without cache
-        /// (codegen needs the function body). `None` for primitives and special forms.
+        /// TARGET STATE: the typechecked function definition. See session-restructure.md.
+        /// Stored for monomorphisation (generating specializations at call sites)
+        /// and `--run` without cache (codegen needs the function body).
+        /// `None` for primitives and special forms.
         #[serde(default)]
         defn: Option<Box<Defn>>,
     },
@@ -285,6 +286,7 @@ pub struct ModDecl {
 // --- Module Structure ---
 
 /// Module structural metadata: file paths, declarations, imports, exports.
+#[deprecated(note = "session-restructure.md: all fields derivable from SymbolTable")]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModuleStructure {
     pub path: ModuleFullPath,
