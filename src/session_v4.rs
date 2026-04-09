@@ -580,8 +580,8 @@ pub struct CompilerSession {
     nice_workers: usize,
 
     // -- Target data model (session-restructure.md) --
-    // These DashMaps are the target state. Added alongside existing structures
-    // during Phase A; wired in during later phases.
+    // All DashMaps on CompilerSession. Workers access via scoped-thread borrows
+    // of individual fields — DashMaps are inherently concurrent.
 
     /// Per-module typecheck products (target: replaces TC-internal storage).
     pub typecheck_products: dashmap::DashMap<ModuleFullPath, TypecheckProduct>,
