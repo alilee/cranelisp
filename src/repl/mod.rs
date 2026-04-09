@@ -656,10 +656,11 @@ impl ReplSession {
                     shared_codegen: &shared_codegen,
                     worker_jit: &mut worker_jit,
                     platform_registry: &mut self.platform_registry,
+                    codegen_products: &self.core.codegen_products,
                     lib_dirs: &self.core.lib_dirs,
                     project_root: &self.core.project_root,
                     object_codegen_stash: None,
-                    shared_state: None,
+                    shared_state: Some(&self.core.shared),
                 };
 
                 let mut pass1_done = false;
@@ -814,10 +815,11 @@ impl ReplSession {
             shared_codegen: &shared_codegen,
             worker_jit: &mut worker_jit,
             platform_registry: &mut self.platform_registry,
+            codegen_products: &self.core.codegen_products,
             lib_dirs: &self.core.lib_dirs,
             project_root: &self.core.project_root,
             object_codegen_stash: None,
-            shared_state: None,
+            shared_state: Some(&self.core.shared),
         };
 
         let loop_result = crate::worker::priority_worker_loop(&mut ctx, &mut module_sexps);
@@ -1939,10 +1941,11 @@ fn reload_run_worker_loop(
         shared_codegen: &shared_codegen,
         worker_jit: &mut worker_jit,
         platform_registry: &mut session.platform_registry,
+        codegen_products: &session.core.codegen_products,
         lib_dirs: &session.core.lib_dirs,
         project_root: &session.core.project_root,
         object_codegen_stash: None,
-        shared_state: None,
+        shared_state: Some(&session.core.shared),
     };
 
     let loop_result = crate::worker::priority_worker_loop(&mut ctx, module_sexps);

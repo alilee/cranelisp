@@ -190,24 +190,18 @@ fn compile_and_execute_expr_with_trace(
 
 /// Compile a single function definition and register it in the GOT.
 ///
-/// Uses `SharedCodegenState` for GOT slot management and `WorkerJitState`
-/// for per-worker JIT lifetime tracking.
-///
-/// When `codegen_products` + `module` are provided, also writes `Code { jit, ptr }`
-/// to the codegen products DashMap (target state). The JIT moves there instead of
-/// `worker_jit.jit_modules`.
+/// Writes `Code { jit, ptr }` to `codegen_products` (target state DashMap).
+/// GOT slot resolution goes through `env` (SessionCompilationEnv).
 pub fn compile_and_register_defn_shared(
-    shared_codegen: &crate::session::SharedCodegenState,
-    worker_jit: &mut crate::session::WorkerJitState,
     jit_symbols: &[(String, *const u8)],
     defn: &Defn,
     check: &CheckResult,
-    env: Option<&dyn cranelisp_backend::compiler::CompilationEnv>,
-    module_got: Option<&std::sync::Arc<cranelisp_backend::got::GotTable>>,
-    codegen_products: Option<(&dashmap::DashMap<ModuleFullPath, crate::session_v4::CodegenProduct>, &ModuleFullPath)>,
+    env: &dyn cranelisp_backend::compiler::CompilationEnv,
+    module_got: &std::sync::Arc<cranelisp_backend::got::GotTable>,
+    codegen_products: &dashmap::DashMap<ModuleFullPath, crate::session_v4::CodegenProduct>,
+    module: &ModuleFullPath,
+    disable_dealloc: bool,
 ) -> Result<(), CranelispError> {
-    use std::collections::HashMap;
-
     let extra_symbols: Vec<(&str, *const u8)> = jit_symbols
         .iter()
         .map(|(name, ptr)| (name.as_str(), *ptr))
@@ -218,94 +212,46 @@ pub fn compile_and_register_defn_shared(
 
     let func_ids = jit.declare_functions(&[defn])?;
 
-    // When env is available, read the pre-assigned slot from TC symbol tables.
-    // Otherwise fall back to legacy codegen-time allocation.
-    let slot = if let Some(e) = env {
-        e.resolve_got(&defn.name)
-            .map(|(_, s)| s)
-            .ok_or_else(|| CranelispError::CodegenError {
-                message: format!("no pre-assigned GOT slot for function: {}", defn.name),
-                span: defn.span,
-            })?
-    } else {
-        shared_codegen.ensure_slot_for(&defn.name)?
-    };
+    let slot = env.resolve_got(&defn.name)
+        .map(|(_, s)| s)
+        .ok_or_else(|| CranelispError::CodegenError {
+            message: format!("no pre-assigned GOT slot for function: {}", defn.name),
+            span: defn.span,
+        })?;
 
-    // When env is available, it provides GOT resolution and arities live.
-    // Otherwise snapshot from DashMap (legacy path).
-    let (got_slots, got_base, func_arities);
-    if env.is_some() {
-        // Empty snapshots — env handles resolution.
-        got_slots = HashMap::new();
-        got_base = 0;
-        func_arities = HashMap::new();
-    } else {
-        let mut gs: HashMap<Symbol, usize> = HashMap::new();
-        for entry in shared_codegen.def_codegen.iter() {
-            if let Some(s) = entry.got_slot {
-                gs.insert(entry.key().clone(), s);
-            }
-        }
-        gs.insert(defn.name.clone(), slot);
-        got_slots = gs;
-        got_base = shared_codegen.got_base_ptr() as i64;
-
-        let mut fa: HashMap<Symbol, usize> = HashMap::new();
-        for entry in shared_codegen.def_codegen.iter() {
-            if let Some(pc) = entry.param_count {
-                fa.insert(entry.key().clone(), pc);
-            }
-        }
-        fa.insert(defn.name.clone(), defn.params().len());
-        func_arities = fa;
-    }
-
+    let func_arities = std::collections::HashMap::new();
     let mut compile_ctx = jit.build_compile_context(
         check,
         &func_ids,
         &func_arities,
-        if env.is_some() { None } else { Some(&got_slots) },
-        if env.is_some() { None } else { Some(got_base) },
+        None,
+        None,
         None,
     );
-    compile_ctx.env = env;
+    compile_ctx.env = Some(env);
+    if disable_dealloc {
+        compile_ctx.dealloc_func_id = None;
+    }
     let _clif_ir = jit.compile_defn(defn, compile_ctx)?;
 
     let code_ptr = jit.finalize_and_get_ptr(&defn.name, defn.params().len())?;
 
-    // Write code pointer to the module's GOT table (preferred) or shared GOT (legacy).
-    if let Some(got) = module_got {
-        got.store_slot(slot, code_ptr);
-    } else {
-        shared_codegen.update_slot(slot, code_ptr);
-    }
+    // Write code pointer to module's GOT table.
+    module_got.store_slot(slot, code_ptr);
 
-    // Update def_codegen for introspection (code_ptr, param_count, etc.).
-    // Dual-write: kept during transition so legacy paths still find metadata.
-    let mut entry = shared_codegen.def_codegen.entry(defn.name.clone()).or_default();
-    entry.code_ptr = Some(code_ptr);
-    entry.got_slot = Some(slot);
-    entry.param_count = Some(defn.params().len());
-    entry.defn = Some(defn.clone());
-    drop(entry);
-
-    // Write Code to codegen_products (target state) or worker_jit (legacy).
-    if let Some((products, module)) = codegen_products {
-        let product = products.entry(module.clone()).or_insert_with(|| {
-            crate::session_v4::CodegenProduct {
-                linker: None,
-                code: dashmap::DashMap::new(),
-                got: None,
-                got_base: std::ptr::null(),
-            }
-        });
-        product.code.insert(
-            defn.name.clone(),
-            crate::session_v4::Code { jit, ptr: code_ptr },
-        );
-    } else {
-        worker_jit.jit_modules.push(jit);
-    }
+    // Write Code to codegen_products.
+    let product = codegen_products.entry(module.clone()).or_insert_with(|| {
+        crate::session_v4::CodegenProduct {
+            linker: None,
+            code: dashmap::DashMap::new(),
+            got: None,
+            got_base: std::ptr::null(),
+        }
+    });
+    product.code.insert(
+        defn.name.clone(),
+        crate::session_v4::Code { jit, ptr: code_ptr },
+    );
 
     Ok(())
 }

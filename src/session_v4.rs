@@ -1057,11 +1057,12 @@ impl CompilerSession {
                     shared_codegen: &shared_codegen,
                     worker_jit: &mut worker_jit,
                     platform_registry: &mut self.platform_registry,
+                    codegen_products: &self.codegen_products,
                     lib_dirs: &self.lib_dirs,
                     platform_dirs: &self.platform_dirs,
                     project_root: &self.project_root,
                     object_codegen_stash: None,
-                    shared_state: None,
+                    shared_state: Some(&self.shared),
                 };
 
                 let mut pass1_done = false;
@@ -1141,30 +1142,18 @@ impl CompilerSession {
         let env: Option<&dyn cranelisp_backend::compiler::CompilationEnv> = Some(&env_impl);
 
         // Codegen: compile definitions, register in GOT.
-        // Uses scratch SharedCodegenState (not extracted from InMemWorkerState).
-        // JIT instances go to codegen_products; scratch only collects introspection metadata.
+        // Codegen: compile definitions directly to codegen_products DashMap.
         {
-            let shared_codegen = crate::session::SharedCodegenState::scratch();
-            let mut worker_jit = crate::session::WorkerJitState::new();
             let result = crate::worker::codegen_module_symbols(
-                &shared_codegen,
-                &mut worker_jit,
                 &self.platform_registry,
                 &self.shared.scheduler,
                 module,
                 program,
                 check,
-                Some(tc_modules),
-                Some(&self.shared),
+                tc_modules,
+                &self.shared,
+                &self.codegen_products,
             );
-            // Copy introspection metadata from scratch state to session-level map.
-            for entry in shared_codegen.def_codegen.iter() {
-                self.def_codegen.insert(entry.key().clone(), entry.value().clone());
-            }
-            // Any JIT modules from legacy path (compile_dep_symbol_inline) still drain normally.
-            for jit in worker_jit.jit_modules.drain(..) {
-                self.inmem_worker.jit_modules.push(jit);
-            }
             result?;
         }
 
@@ -1235,6 +1224,7 @@ impl CompilerSession {
             shared_codegen: &shared_codegen,
             worker_jit: &mut worker_jit,
             platform_registry: &mut self.platform_registry,
+            codegen_products: &self.codegen_products,
             lib_dirs: &self.lib_dirs,
             platform_dirs: &self.platform_dirs,
             project_root: &self.project_root,
@@ -1857,11 +1847,12 @@ impl CompilerSession {
                 shared_codegen: &shared_codegen,
                 worker_jit: &mut worker_jit,
                 platform_registry: &mut self.platform_registry,
+                codegen_products: &self.codegen_products,
                 lib_dirs: &self.lib_dirs,
                 platform_dirs: &self.platform_dirs,
                 project_root: &self.project_root,
                 object_codegen_stash: None,
-                shared_state: None,
+                shared_state: Some(&self.shared),
             };
 
             crate::worker::compile_macro_for_repl(
@@ -2095,12 +2086,9 @@ impl CompilerSession {
         &mut self,
         module_name: &str,
     ) -> Result<(i64, Type), CranelispError> {
-        // Look up main in GOT.
+        // Look up main in codegen_products.
         let main_sym = cranelisp_types::Symbol::from("main");
-        let qualified_main =
-            cranelisp_types::Symbol::from(format!("{}/main", module_name));
-
-        let code_ptr = self.lookup_main_code_ptr(&main_sym, &qualified_main)?;
+        let code_ptr = self.lookup_main_code_ptr(module_name, &main_sym)?;
         let result_type = self.lookup_main_return_type(module_name);
 
         // Clear any stale runtime error.
@@ -2133,24 +2121,19 @@ impl CompilerSession {
         }
     }
 
-    /// Look up the code pointer for `main` in the GOT.
+    /// Look up the code pointer for `main` in codegen_products.
     fn lookup_main_code_ptr(
         &self,
+        module_name: &str,
         main_sym: &cranelisp_types::Symbol,
-        qualified_main: &cranelisp_types::Symbol,
     ) -> Result<*const u8, CranelispError> {
-        let got = &self.inmem_worker.got_state;
+        let module_path = ModuleFullPath::from(module_name);
 
-        // Try unqualified name first, then qualified.
-        if let Some(entry) = got.def_codegen.get(main_sym)
-            && let Some(ptr) = entry.code_ptr
-        {
-            return Ok(ptr);
-        }
-        if let Some(entry) = got.def_codegen.get(qualified_main)
-            && let Some(ptr) = entry.code_ptr
-        {
-            return Ok(ptr);
+        // Check codegen_products for the compiled Code.
+        if let Some(product) = self.codegen_products.get(&module_path) {
+            if let Some(code) = product.code.get(main_sym) {
+                return Ok(code.ptr);
+            }
         }
 
         Err(CranelispError::ModuleError {

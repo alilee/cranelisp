@@ -41,11 +41,13 @@ use crate::session::{SharedCodegenState, WorkerJitState};
 pub struct WorkerContext<'a> {
     pub tc: &'a mut cranelisp_typecheck::TypeChecker,
     pub scheduler: &'a CompileScheduler,
-    /// LEGACY: replaced by codegen_products DashMap. See session-restructure.md.
+    /// LEGACY: kept for has_code_ptr during transition. See session-restructure.md.
     pub shared_codegen: &'a SharedCodegenState,
-    /// LEGACY: replaced by direct writes to CodegenProduct.code. See session-restructure.md.
+    /// LEGACY: kept for drain_to_shared during transition. See session-restructure.md.
     pub worker_jit: &'a mut WorkerJitState,
     pub platform_registry: &'a mut PlatformRegistry,
+    /// TARGET STATE: per-module codegen products. Workers write Code directly here.
+    pub codegen_products: &'a dashmap::DashMap<ModuleFullPath, crate::session_v4::CodegenProduct>,
     pub lib_dirs: &'a [PathBuf],
     pub platform_dirs: &'a [PathBuf],
     pub project_root: &'a Path,
@@ -1429,11 +1431,11 @@ fn try_expand_for_pass2(
 
     // Build the full macro map for expansion (includes all compiled macros
     // so recursive expansion can find macros produced by other macros).
-    let mut all_macros = build_all_macro_entries(ctx.shared_codegen, macro_infos)?;
+    let mut all_macros = build_all_macro_entries(ctx.codegen_products, module, macro_infos)?;
 
     // Also include previously compiled macros from the symbol table
     // (e.g., from prior REPL evals or imported modules).
-    build_persistent_macro_entries(ctx.tc, ctx.shared_codegen, &mut all_macros)?;
+    build_persistent_macro_entries(ctx.tc, ctx.codegen_products, &mut all_macros)?;
 
     // Expand recursively throughout the entire sexp tree.
     let expanded = expander::expand_sexp_recursive(sexp.clone(), &all_macros, 0)?;
@@ -1516,7 +1518,7 @@ fn compile_macro_if_needed(
     // Check if all clauses already have function pointers.
     let all_compiled = info.clauses.iter().enumerate().all(|(idx, _)| {
         let clause_name = macro_clause_jit_name(&info.name, idx);
-        has_code_ptr(ctx.shared_codegen, &clause_name)
+        has_code_ptr(ctx.codegen_products, module, &clause_name)
     });
 
     if all_compiled {
@@ -1525,15 +1527,25 @@ fn compile_macro_if_needed(
 
     // Walk transitive callees and compile uncompiled deps first.
     let uncompiled_deps = collect_transitive_uncompiled_deps(
-        ctx.tc, ctx.shared_codegen, module, &info.name,
+        ctx.tc, ctx.codegen_products, module, &info.name,
     );
-    // Compute platform JIT symbols once, outside the dep compilation loop.
-    let jit_symbols = ctx.platform_registry.jit_symbols_owned();
+    // Build env for per-module GOT resolution.
+    let ss = ctx.shared_state.expect("invariant: shared_state always Some");
+    let tc_modules = ctx.tc.modules_ref();
+    let env_impl = SessionCompilationEnv {
+        tc_modules,
+        got_registry: &ss.got_registry,
+        current_module: module.clone(),
+    };
+    let env: &dyn cranelisp_backend::compiler::CompilationEnv = &env_impl;
+    let dep_module_got = ss.got_registry.ensure_module(module);
+    let jit_symbols = env_impl.collect_jit_symbols_for_module(ctx.platform_registry);
     let current_module = ctx.tc.current_module_path().clone();
     for (dep_module, dep_symbol) in &uncompiled_deps {
         compile_dep_symbol_inline(
-            ctx.tc, ctx.shared_codegen, ctx.worker_jit, &jit_symbols,
+            ctx.tc, &jit_symbols,
             dep_module, dep_symbol, &current_module, accumulator,
+            env, &dep_module_got, ctx.codegen_products,
         )?;
         ctx.scheduler.notify_inmem_codegen_complete(dep_module, dep_symbol, false);
     }
@@ -1542,7 +1554,7 @@ fn compile_macro_if_needed(
     let total_clauses = info.clauses.len();
     for (clause_idx, clause) in info.clauses.iter().enumerate() {
         let clause_name = macro_clause_jit_name(&info.name, clause_idx);
-        if has_code_ptr(ctx.shared_codegen, &clause_name) {
+        if has_code_ptr(ctx.codegen_products, module, &clause_name) {
             continue;
         }
 
@@ -1564,7 +1576,7 @@ fn compile_macro_if_needed(
 /// sequential compilation.
 fn collect_transitive_uncompiled_deps(
     tc: &cranelisp_typecheck::TypeChecker,
-    shared_codegen: &SharedCodegenState,
+    codegen_products: &dashmap::DashMap<ModuleFullPath, crate::session_v4::CodegenProduct>,
     module: &ModuleFullPath,
     start_symbol: &Symbol,
 ) -> Vec<(ModuleFullPath, Symbol)> {
@@ -1601,7 +1613,7 @@ fn collect_transitive_uncompiled_deps(
             }
         }
         // Only include if uncompiled.
-        if !has_code_ptr(shared_codegen, &dep_sym) {
+        if !has_code_ptr(codegen_products, &dep_mod, &dep_sym) {
             result.push((dep_mod, dep_sym));
         }
     }
@@ -1622,39 +1634,40 @@ fn collect_transitive_uncompiled_deps(
 /// constructor_to_type come from the TC's global registry in both cases.
 fn compile_dep_symbol_inline(
     tc: &cranelisp_typecheck::TypeChecker,
-    shared_codegen: &SharedCodegenState,
-    worker_jit: &mut WorkerJitState,
     jit_symbols: &[(String, *const u8)],
     module: &ModuleFullPath,
     symbol: &Symbol,
     current_module: &ModuleFullPath,
     accumulator: &ModuleCheckAccumulator,
+    env: &dyn cranelisp_backend::compiler::CompilationEnv,
+    module_got: &std::sync::Arc<cranelisp_backend::got::GotTable>,
+    codegen_products: &dashmap::DashMap<ModuleFullPath, crate::session_v4::CodegenProduct>,
 ) -> Result<(), CranelispError> {
-    // Build the CheckResult from the appropriate source.
     let check = if module == current_module {
-        // Same module: accumulator has the method_resolutions and expr_types.
         build_check_from_accumulator(tc, accumulator)
     } else {
-        // Cross-module: the dep module's transient check state was consumed
-        // when it was finalized. Build a minimal CheckResult with type defs
-        // from the TC's global registry. Method resolutions and expr_types
-        // are empty — cross-module macro helpers are expected to be simple
-        // functions without trait dispatch.
         build_empty_check_from_tc(tc)
     };
 
-    // The defn was already typechecked; we need its AST for compilation.
-    // Look it up from the shared codegen state's stored defns.
-    let defn = shared_codegen
-        .def_codegen
-        .get(symbol)
-        .and_then(|dc| dc.defn.clone());
+    // Look up the defn from the TC's symbol table.
+    let defn = tc.modules_ref()
+        .get(module)
+        .and_then(|st| st.get(symbol.as_ref()).and_then(|entry| {
+            if let ModuleEntry::Def { defn, .. } = entry {
+                defn.as_ref().map(|d| d.as_ref().clone())
+            } else {
+                None
+            }
+        }));
 
     if let Some(defn) = defn {
-        compile_and_register_defn_shared(shared_codegen, worker_jit, jit_symbols, &defn, &check, None, None, None)?;
+        let single = [cranelisp_types::TopLevel::Defn(defn.clone())];
+        pre_register_got_slots_in_tc(tc.modules_ref(), module, &single, &check);
+        compile_and_register_defn_shared(
+            jit_symbols, &defn, &check, env, module_got,
+            codegen_products, module, false,
+        )?;
     }
-    // If not found in def_codegen, the symbol may be a builtin/primitive
-    // that is always available — nothing to compile.
 
     Ok(())
 }
@@ -1762,8 +1775,24 @@ fn compile_macro_clause_inline(
             span,
         })?;
 
-    // Compile using a special JIT that disables dealloc for macro code.
-    compile_macro_defn_no_dealloc(ctx.shared_codegen, ctx.worker_jit, ctx.platform_registry, defn, &check)?;
+    // Compile macro clause with dealloc disabled (prevents use-after-free on Sexp unmarshal).
+    // Macro clause functions are normal functions on per-module GOTs.
+    let module = ctx.tc.current_module_path().clone();
+    let ss = ctx.shared_state.expect("invariant: shared_state always Some");
+    let tc_modules = ctx.tc.modules_ref();
+    let env_impl = SessionCompilationEnv {
+        tc_modules,
+        got_registry: &ss.got_registry,
+        current_module: module.clone(),
+    };
+    let env: &dyn cranelisp_backend::compiler::CompilationEnv = &env_impl;
+    let module_got = ss.got_registry.ensure_module(&module);
+    let macro_jit_symbols = env_impl.collect_jit_symbols_for_module(ctx.platform_registry);
+    pre_register_got_slots_in_tc(tc_modules, &module, &program, &check);
+    compile_and_register_defn_shared(
+        &macro_jit_symbols, defn, &check, env, &module_got,
+        ctx.codegen_products, &module, true,
+    )?;
 
     Ok(())
 }
@@ -1830,21 +1859,27 @@ fn macro_clause_jit_name(macro_name: &Symbol, clause_idx: usize) -> Symbol {
     Symbol::from(format!("__macro_{}_clause_{}", macro_name, clause_idx))
 }
 
-/// Check if a symbol has a compiled code pointer in the GOT.
-fn has_code_ptr(shared_codegen: &SharedCodegenState, name: &Symbol) -> bool {
-    shared_codegen
-        .def_codegen
-        .get(name)
-        .and_then(|dc| dc.code_ptr)
-        .is_some()
+/// Check if a symbol has a compiled code pointer in codegen_products.
+fn has_code_ptr(
+    codegen_products: &dashmap::DashMap<ModuleFullPath, crate::session_v4::CodegenProduct>,
+    module: &ModuleFullPath,
+    name: &Symbol,
+) -> bool {
+    codegen_products
+        .get(module)
+        .map(|p| p.code.contains_key(name))
+        .unwrap_or(false)
 }
 
-/// Get a code pointer from the shared codegen state, if compiled.
-fn get_code_ptr(shared_codegen: &SharedCodegenState, name: &Symbol) -> Option<*const u8> {
-    shared_codegen
-        .def_codegen
-        .get(name)
-        .and_then(|dc| dc.code_ptr)
+/// Get a code pointer from codegen_products, if compiled.
+fn get_code_ptr(
+    codegen_products: &dashmap::DashMap<ModuleFullPath, crate::session_v4::CodegenProduct>,
+    module: &ModuleFullPath,
+    name: &Symbol,
+) -> Option<*const u8> {
+    codegen_products
+        .get(module)
+        .and_then(|p| p.code.get(name).map(|c| c.ptr))
 }
 
 /// Build a `MacroEntry` from GOT function pointers for a macro.
@@ -1852,20 +1887,18 @@ fn get_code_ptr(shared_codegen: &SharedCodegenState, name: &Symbol) -> Option<*c
 /// Used after inline compilation to construct the entry needed by
 /// `invoke_clause` and `find_matching_clause`.
 fn build_macro_entry_from_got(
-    shared_codegen: &SharedCodegenState,
+    codegen_products: &dashmap::DashMap<ModuleFullPath, crate::session_v4::CodegenProduct>,
+    module: &ModuleFullPath,
     info: &cranelisp_frontend::DefmacroInfo,
 ) -> Result<MacroEntry, CranelispError> {
     let mut clauses = Vec::new();
 
     for (idx, clause) in info.clauses.iter().enumerate() {
         let clause_name = macro_clause_jit_name(&info.name, idx);
-        let code_ptr = shared_codegen
-            .def_codegen
-            .get(&clause_name)
-            .and_then(|dc| dc.code_ptr)
+        let code_ptr = get_code_ptr(codegen_products, module, &clause_name)
             .ok_or_else(|| CranelispError::MacroError {
                 message: format!(
-                    "macro clause '{}' not compiled (expected in GOT)",
+                    "macro clause '{}' not compiled (expected in codegen_products)",
                     clause_name
                 ),
                 span: info.span,
@@ -1886,18 +1919,18 @@ fn build_macro_entry_from_got(
 
 /// Build a macro map for all macros in the module (for recursive expansion).
 fn build_all_macro_entries(
-    shared_codegen: &SharedCodegenState,
+    codegen_products: &dashmap::DashMap<ModuleFullPath, crate::session_v4::CodegenProduct>,
+    module: &ModuleFullPath,
     macro_infos: &[(Symbol, cranelisp_frontend::DefmacroInfo, Sexp)],
 ) -> Result<HashMap<Symbol, MacroEntry>, CranelispError> {
     let mut map = HashMap::new();
     for (name, info, _) in macro_infos {
-        // Only include macros that have been compiled.
         let all_compiled = info.clauses.iter().enumerate().all(|(idx, _)| {
             let clause_name = macro_clause_jit_name(name, idx);
-            has_code_ptr(shared_codegen, &clause_name)
+            has_code_ptr(codegen_products, module, &clause_name)
         });
         if all_compiled {
-            let entry = build_macro_entry_from_got(shared_codegen, info)?;
+            let entry = build_macro_entry_from_got(codegen_products, module, info)?;
             map.insert(name.clone(), entry);
         }
     }
@@ -1962,7 +1995,7 @@ fn compile_persistent_macro_if_needed(
 ) -> Result<(), CranelispError> {
     // Check if already compiled.
     let clause_name_0 = macro_clause_jit_name(&Symbol::from(macro_name), 0);
-    if has_code_ptr(ctx.shared_codegen, &clause_name_0) {
+    if has_code_ptr(ctx.codegen_products, module, &clause_name_0) {
         return Ok(());
     }
 
@@ -2032,7 +2065,7 @@ pub fn compile_macro_for_repl(
 /// Follows Import/Reexport chains to find actual Macro entries.
 fn build_persistent_macro_entries(
     tc: &cranelisp_typecheck::TypeChecker,
-    shared_codegen: &SharedCodegenState,
+    codegen_products: &dashmap::DashMap<ModuleFullPath, crate::session_v4::CodegenProduct>,
     map: &mut HashMap<Symbol, MacroEntry>,
 ) -> Result<(), CranelispError> {
     let persistent_names = collect_persistent_macro_names(tc);
@@ -2040,22 +2073,20 @@ fn build_persistent_macro_entries(
         if map.contains_key(name) {
             continue;
         }
-        // Resolve the actual Macro entry (may be behind Import/Reexport).
-        let (clauses, docstring) = match resolve_macro_entry(tc, name.as_ref()) {
+        let (clauses, docstring, defining_module) = match resolve_macro_entry(tc, name.as_ref()) {
             Some(resolved) => resolved,
             None => continue,
         };
 
-        // Check if all clauses have code pointers in the GOT.
         let all_compiled = clauses.iter().enumerate().all(|(idx, _)| {
             let clause_name = macro_clause_jit_name(name, idx);
-            has_code_ptr(shared_codegen, &clause_name)
+            has_code_ptr(codegen_products, &defining_module, &clause_name)
         });
         if all_compiled && !clauses.is_empty() {
             let mut compiled_clauses = Vec::new();
             for (idx, clause_info) in clauses.iter().enumerate() {
                 let clause_name = macro_clause_jit_name(name, idx);
-                let code_ptr = get_code_ptr(shared_codegen, &clause_name)
+                let code_ptr = get_code_ptr(codegen_products, &defining_module, &clause_name)
                     .ok_or_else(|| CranelispError::CodegenError {
                         message: format!(
                             "macro '{}' clause {} not compiled ({})",
@@ -2078,16 +2109,17 @@ fn build_persistent_macro_entries(
     Ok(())
 }
 
-/// Resolve a macro entry's clauses and docstring by following Import/Reexport chains.
+/// Resolve a macro entry's clauses, docstring, and defining module by following Import/Reexport chains.
 fn resolve_macro_entry(
     tc: &cranelisp_typecheck::TypeChecker,
     name: &str,
-) -> Option<(Vec<MacroClauseInfo>, Option<String>)> {
+) -> Option<(Vec<MacroClauseInfo>, Option<String>, ModuleFullPath)> {
+    let current_module = tc.current_module_path().clone();
     let sym_table = tc.symbol_table();
     let entry = sym_table.get(name)?;
     match entry {
         ModuleEntry::Macro { clauses, docstring, .. } => {
-            Some((clauses.clone(), docstring.clone()))
+            Some((clauses.clone(), docstring.clone(), current_module))
         }
         ModuleEntry::Import { source } => {
             let source_mod = source.module.clone();
@@ -2096,7 +2128,7 @@ fn resolve_macro_entry(
             let table = tc.module_table(&source_mod)?;
             match table.get(&source_sym)? {
                 ModuleEntry::Macro { clauses, docstring, .. } => {
-                    Some((clauses.clone(), docstring.clone()))
+                    Some((clauses.clone(), docstring.clone(), source_mod))
                 }
                 ModuleEntry::Reexport { source: re_source } => {
                     let re_mod = re_source.module.clone();
@@ -2106,7 +2138,7 @@ fn resolve_macro_entry(
                     if let ModuleEntry::Macro { clauses, docstring, .. } =
                         re_table.get(&re_sym)?
                     {
-                        Some((clauses.clone(), docstring.clone()))
+                        Some((clauses.clone(), docstring.clone(), re_mod))
                     } else {
                         None
                     }
@@ -2361,60 +2393,38 @@ fn wrap_exprs_as_defns(program: &[TopLevel]) -> Vec<TopLevel> {
 /// and notifies the scheduler. Returns the last defn's execution result (for
 /// zero-arg defns like `main`).
 pub fn codegen_module_symbols(
-    shared_codegen: &SharedCodegenState,
-    worker_jit: &mut WorkerJitState,
     platform_registry: &PlatformRegistry,
     scheduler: &CompileScheduler,
     module: &ModuleFullPath,
     program: &[TopLevel],
     check: &CheckResult,
-    tc_modules: Option<&dashmap::DashMap<ModuleFullPath, cranelisp_types::SymbolTable>>,
-    shared_state: Option<&crate::session_v4::SharedState>,
+    tc_modules: &dashmap::DashMap<ModuleFullPath, cranelisp_types::SymbolTable>,
+    shared_state: &crate::session_v4::SharedState,
+    codegen_products: &dashmap::DashMap<ModuleFullPath, crate::session_v4::CodegenProduct>,
 ) -> Result<(), CranelispError> {
-    // Build per-module CompilationEnv when TC modules + shared state available.
-    let (env_impl, module_got);
-    if let (Some(tc_mods), Some(ss)) = (tc_modules, shared_state) {
-        env_impl = Some(SessionCompilationEnv {
-            tc_modules: tc_mods,
-            got_registry: &ss.got_registry,
-            current_module: module.clone(),
-        });
-        module_got = Some(ss.got_registry.ensure_module(module));
-    } else {
-        env_impl = None;
-        module_got = None;
-    }
-    let env: Option<&dyn cranelisp_backend::compiler::CompilationEnv> =
-        env_impl.as_ref().map(|e| e as _);
-    let got_ref = module_got.as_ref();
-
-    // Collect JIT symbols: when env is available, use collect_jit_symbols_for_module
-    // (includes platform fn ptrs + GOT data symbols). Otherwise legacy platform-only.
-    let jit_symbols = if let Some(env_ref) = &env_impl {
-        env_ref.collect_jit_symbols_for_module(platform_registry)
-    } else {
-        platform_registry.jit_symbols_owned()
+    let env_impl = SessionCompilationEnv {
+        tc_modules,
+        got_registry: &shared_state.got_registry,
+        current_module: module.clone(),
     };
+    let env: &dyn cranelisp_backend::compiler::CompilationEnv = &env_impl;
+    let module_got = shared_state.got_registry.ensure_module(module);
+
+    let jit_symbols = env_impl.collect_jit_symbols_for_module(platform_registry);
 
     // Pre-register GOT slots for forward references.
-    if let Some(tc_mods) = tc_modules {
-        // Env path: pre-assign slots in TC symbol tables so resolve_got finds them.
-        pre_register_got_slots_in_tc(tc_mods, module, program, check);
-    } else {
-        // Legacy path: allocate slots in shared codegen state.
-        pre_register_got_slots(shared_codegen, program)?;
-    }
+    pre_register_got_slots_in_tc(tc_modules, module, program, check);
 
     // Compile default method bodies.
     for defn in &check.default_method_defns {
-        compile_and_register_defn_shared(shared_codegen, worker_jit, &jit_symbols, defn, check, env, got_ref, None)?;
+        compile_and_register_defn_shared(&jit_symbols, defn, check, env, &module_got, codegen_products, module, false)?;
     }
 
     // Compile mono specializations with per-specialization resolutions.
-    compile_mono_defns(shared_codegen, worker_jit, &jit_symbols, check, env, got_ref)?;
+    compile_mono_defns(&jit_symbols, check, env, &module_got, codegen_products, module)?;
 
     // Compile each regular defn.
-    let defn_names = compile_regular_defns(shared_codegen, worker_jit, &jit_symbols, program, check, env, got_ref)?;
+    let defn_names = compile_regular_defns(&jit_symbols, program, check, env, &module_got, codegen_products, module)?;
 
     // Notify scheduler for each compiled symbol.
     let total = defn_names.len();
@@ -2537,12 +2547,12 @@ fn pre_register_got_slots_in_tc(
 
 /// Compile monomorphised specializations.
 fn compile_mono_defns(
-    shared_codegen: &SharedCodegenState,
-    worker_jit: &mut WorkerJitState,
     jit_symbols: &[(String, *const u8)],
     check: &CheckResult,
-    env: Option<&dyn cranelisp_backend::compiler::CompilationEnv>,
-    module_got: Option<&std::sync::Arc<cranelisp_backend::got::GotTable>>,
+    env: &dyn cranelisp_backend::compiler::CompilationEnv,
+    module_got: &std::sync::Arc<cranelisp_backend::got::GotTable>,
+    codegen_products: &dashmap::DashMap<ModuleFullPath, crate::session_v4::CodegenProduct>,
+    module: &ModuleFullPath,
 ) -> Result<(), CranelispError> {
     for mono in &check.mono_defns {
         let mut merged = check.method_resolutions.clone();
@@ -2563,7 +2573,7 @@ fn compile_mono_defns(
             constructor_to_type: check.constructor_to_type.clone(),
             display: None,
         };
-        compile_and_register_defn_shared(shared_codegen, worker_jit, jit_symbols, &mono.defn, &mono_check, env, module_got, None)?;
+        compile_and_register_defn_shared(jit_symbols, &mono.defn, &mono_check, env, module_got, codegen_products, module, false)?;
     }
     Ok(())
 }
@@ -2571,13 +2581,13 @@ fn compile_mono_defns(
 /// Compile regular defns (skipping constrained fn base definitions).
 /// Returns the list of compiled symbol names.
 fn compile_regular_defns(
-    shared_codegen: &SharedCodegenState,
-    worker_jit: &mut WorkerJitState,
     jit_symbols: &[(String, *const u8)],
     program: &[TopLevel],
     check: &CheckResult,
-    env: Option<&dyn cranelisp_backend::compiler::CompilationEnv>,
-    module_got: Option<&std::sync::Arc<cranelisp_backend::got::GotTable>>,
+    env: &dyn cranelisp_backend::compiler::CompilationEnv,
+    module_got: &std::sync::Arc<cranelisp_backend::got::GotTable>,
+    codegen_products: &dashmap::DashMap<ModuleFullPath, crate::session_v4::CodegenProduct>,
+    module: &ModuleFullPath,
 ) -> Result<Vec<Symbol>, CranelispError> {
     let mut compiled_names = Vec::new();
 
@@ -2587,20 +2597,14 @@ fn compile_regular_defns(
                 if check.constrained_fn_names.contains(&defn.name) {
                     continue;
                 }
-                compile_and_register_defn_shared(shared_codegen, worker_jit, jit_symbols, defn, check, env, module_got, None)?;
+                compile_and_register_defn_shared(jit_symbols, defn, check, env, module_got, codegen_products, module, false)?;
                 compiled_names.push(defn.name.clone());
             }
             TopLevel::TraitImpl(impl_) => {
                 for method in &impl_.methods {
                     compile_and_register_defn_shared(
-                        shared_codegen,
-                        worker_jit,
-                        jit_symbols,
-                        method,
-                        check,
-                        env,
-                        module_got,
-                        None,
+                        jit_symbols, method, check, env, module_got,
+                        codegen_products, module, false,
                     )?;
                     compiled_names.push(method.name.clone());
                 }
@@ -2824,17 +2828,19 @@ pub fn priority_worker_loop(
                 ) {
                     Ok(ProcessResult::Complete { check_result, program }) => {
                         // Post-typecheck codegen sweep (W2).
-                        codegen_module_symbols(
-                            ctx.shared_codegen,
-                            ctx.worker_jit,
-                            ctx.platform_registry,
-                            ctx.scheduler,
-                            &module,
-                            &program,
-                            &check_result,
-                            Some(ctx.tc.modules_ref()),
-                            ctx.shared_state,
-                        )?;
+                        {
+                            let ss = ctx.shared_state.expect("invariant: shared_state always Some");
+                            codegen_module_symbols(
+                                ctx.platform_registry,
+                                ctx.scheduler,
+                                &module,
+                                &program,
+                                &check_result,
+                                ctx.tc.modules_ref(),
+                                ss,
+                                ctx.codegen_products,
+                            )?;
+                        }
 
                         // Stash data for nice worker .o + .meta.json, then
                         // notify typecheck_done. Order matters: nice workers
@@ -3064,6 +3070,7 @@ fn handle_typecheck_work(
         shared_codegen: shared.shared_codegen,
         worker_jit,
         platform_registry: &mut platform_registry,
+        codegen_products: shared.codegen_products,
         lib_dirs: shared.lib_dirs,
         platform_dirs: shared.platform_dirs,
         project_root: shared.project_root,
@@ -3080,17 +3087,19 @@ fn handle_typecheck_work(
     ) {
         Ok(ProcessResult::Complete { check_result, program }) => {
             // Post-typecheck codegen sweep.
-            codegen_module_symbols(
-                ctx.shared_codegen,
-                ctx.worker_jit,
-                ctx.platform_registry,
-                ctx.scheduler,
-                module,
-                &program,
-                &check_result,
-                Some(ctx.tc.modules_ref()),
-                ctx.shared_state,
-            )?;
+            {
+                let ss = ctx.shared_state.expect("invariant: shared_state always Some");
+                codegen_module_symbols(
+                    ctx.platform_registry,
+                    ctx.scheduler,
+                    module,
+                    &program,
+                    &check_result,
+                    ctx.tc.modules_ref(),
+                    ss,
+                    ctx.codegen_products,
+                )?;
+            }
 
             // Stash data for nice worker .o + .meta.json.
             stash_object_codegen_input(
