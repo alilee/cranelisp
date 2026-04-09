@@ -2465,6 +2465,7 @@ mod tests {
                 }),
                 callees: Vec::new(),
                 got_slot: None,
+                defn: None,
             },
         );
     }

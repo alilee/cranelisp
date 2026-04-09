@@ -50,6 +50,22 @@ pub struct ObjectCompileInput {
     pub cross_module_fns: Vec<(Symbol, usize)>,
 }
 
+impl crate::compiler::CompilationEnv for ObjectCompileInput {
+    fn resolve_got(&self, _name: &Symbol) -> Option<(i64, usize)> {
+        None // Legacy path — unused for object codegen.
+    }
+
+    fn resolve_got_module(&self, name: &Symbol) -> Option<(ModuleFullPath, usize)> {
+        let slot_info = self.fn_slot_assignments.get(name)?;
+        let module = self.fn_to_module.get(name).unwrap_or(&self.module_path);
+        Some((module.clone(), slot_info.slot))
+    }
+
+    fn func_arity(&self, name: &Symbol) -> Option<usize> {
+        self.fn_slot_assignments.get(name).map(|s| s.param_count)
+    }
+}
+
 /// Information about a function's GOT slot assignment.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FnSlotInfo {
@@ -233,7 +249,7 @@ pub fn process_cache_packet(
 
     // Compile ObjectModule and write .o (only if there are defns to compile)
     if !packet.object_compile_input.defns.is_empty() {
-        let obj_bytes = compile_module_to_object(&packet.object_compile_input)?;
+        let obj_bytes = compile_module_to_object(&packet.object_compile_input, &packet.object_compile_input)?;
         super::atomic_write(&packet.object_path, &obj_bytes).map_err(|e| {
             CranelispError::CodegenError {
                 message: format!(
@@ -255,18 +271,8 @@ pub fn process_cache_packet(
 
 /// Compute the well-known GOT data symbol name for a module.
 ///
-/// Convention: `__cranelisp_got_<flat_path>` where dots are replaced by
-/// underscores. This is `Export` in the owning module's `.o` and `Import`
-/// in any module that calls functions from it.
-///
-/// See design/backend/module-caching.md §13.4.
-pub fn got_data_symbol_name(module_path: &ModuleFullPath) -> String {
-    let flat = module_path.as_ref().replace('.', "_");
-    format!(
-        "__cranelisp_got_{}",
-        if flat.is_empty() { "_entry" } else { &flat }
-    )
-}
+// Re-export from compiler module (single source of truth).
+pub use crate::compiler::got_data_symbol_name;
 
 /// Compile a module's functions into a relocatable `.o` file.
 ///
@@ -278,6 +284,7 @@ pub fn got_data_symbol_name(module_path: &ModuleFullPath) -> String {
 /// See design/backend/module-caching.md §13.2 for the detailed design.
 pub fn compile_module_to_object(
     input: &ObjectCompileInput,
+    env: &dyn crate::compiler::CompilationEnv,
 ) -> Result<Vec<u8>, CranelispError> {
     // 1. Build PIC-mode ISA
     let isa = build_isa(true)?;
@@ -340,6 +347,7 @@ pub fn compile_module_to_object(
         &declared_func_ids,
         &intrinsic_func_ids,
         &obj_fn_slots,
+        env,
     )?;
 
     // 9. Emit the object file bytes
@@ -590,70 +598,13 @@ fn compile_all_functions(
     declared_func_ids: &[FuncId],
     intrinsic_func_ids: &HashMap<String, FuncId>,
     _obj_fn_slots: &HashMap<Symbol, ObjFnSlot>,
+    env: &dyn crate::compiler::CompilationEnv,
 ) -> Result<(), CranelispError> {
-    // Build func_ids map: function name -> FuncId (for direct calls in Batch mode)
+    // Build func_ids: ONLY intrinsics get direct calls.
+    // User functions and cross-module functions go through the GOT.
     let mut func_ids: HashMap<Symbol, FuncId> = HashMap::new();
-    for ((defn, _), &fid) in input.defns.iter().zip(declared_func_ids.iter()) {
-        func_ids.insert(defn.name.clone(), fid);
-    }
-    // Also add intrinsic FuncIds so that calls to builtins resolve
     for (name, &fid) in intrinsic_func_ids {
         func_ids.insert(Symbol::from(name.as_str()), fid);
-    }
-
-    // Declare cross-module functions as imports so that FnCompiler can resolve
-    // calls to functions from dependency modules (both qualified "mod/fn" and
-    // bare imported names). The linker resolves these symbols when loading the .o.
-    //
-    // IMPORTANT: Import declarations use BARE names (e.g., "add-one" not
-    // "helper/add-one") because the exporting module's .o file uses bare names.
-    // The system linker and the custom cache linker both match by symbol name.
-    // The func_ids map registers BOTH qualified and bare forms so FnCompiler
-    // can resolve either form.
-    for (name, param_count) in &input.cross_module_fns {
-        if func_ids.contains_key(name) {
-            continue; // Already declared (e.g., intrinsic or local defn)
-        }
-
-        // For qualified names ("module/name"), extract the bare function name
-        // for the ObjectModule import declaration. The .o file exports bare names.
-        let (import_name, bare_name) = if let Some(slash_pos) = name.as_ref().find('/') {
-            let bare = &name.as_ref()[slash_pos + 1..];
-            (bare.to_string(), Some(Symbol::from(bare)))
-        } else {
-            (name.as_ref().to_string(), None)
-        };
-
-        // Check if the bare name is already declared and reuse the same FuncId.
-        if let Some(bn) = &bare_name
-            && let Some(&existing_fid) = func_ids.get(bn)
-        {
-            func_ids.insert(name.clone(), existing_fid);
-            continue;
-        }
-
-        // Declare as an imported function in the ObjectModule using the bare name.
-        let mut sig = obj_module.make_signature();
-        for _ in 0..*param_count {
-            sig.params.push(AbiParam::new(types::I64));
-        }
-        sig.returns.push(AbiParam::new(types::I64));
-
-        let func_id = obj_module
-            .declare_function(&import_name, Linkage::Import, &sig)
-            .map_err(|e| CranelispError::CodegenError {
-                message: format!(
-                    "failed to declare cross-module function '{}': {e}",
-                    name
-                ),
-                span: Span::SYNTHETIC,
-            })?;
-
-        // Register in func_ids under both qualified and bare forms.
-        func_ids.insert(name.clone(), func_id);
-        if let Some(bn) = bare_name {
-            func_ids.entry(bn).or_insert(func_id);
-        }
     }
 
     // Build func_arities map (local defns + cross-module functions)
@@ -694,28 +645,20 @@ fn compile_all_functions(
         );
 
         // Build CompileContext for this function.
-        // ObjectModule uses Interactive mode (GOT-indirect calls) so that
-        // the generated code uses the same calling convention as the JIT path.
-        // The GOT base pointer is NOT an immediate (iconst) here — it will be
-        // resolved via relocations when the linker loads the .o file.
-        // However, FnCompiler's current GOT load path uses iconst(got_base_ptr).
-        // For the ObjectModule path, we compile with mode=Batch so that
-        // function calls use direct `call func` instructions (resolved by the
-        // linker via BRANCH26/CALL26 relocations). This avoids needing the
-        // GotReference abstraction for now — the linker resolves all cross-module
-        // function references via symbol names.
+        // GOT-indirect calls via got_refs — Cranelift emits ADRP+ADD
+        // relocations for the GOT data symbol, resolved by the linker.
+        // Same calling convention as the JIT path (global_value).
         let compile_ctx = CompileContext {
             method_resolutions: &input.method_resolutions,
             expr_types: &input.expr_types,
             func_ids: &func_ids,
             func_arities: &func_arities,
-            // No GOT for object file compilation — direct calls.
             type_defs: &input.type_defs,
             constructor_to_type: &input.constructor_to_type,
             got_slots: None,
             got_base_ptr: None,
             cross_module_got: None,
-            env: None,
+            env: Some(env),
             traced_fns: None,
             alloc_func_id,
             dealloc_func_id,

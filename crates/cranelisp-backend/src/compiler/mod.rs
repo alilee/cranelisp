@@ -45,6 +45,20 @@ pub(crate) fn bare_ctor_name(name: &Symbol) -> &str {
 /// Cross-module GOT mapping: `(defining_module, function_name)` -> `(got_base_ptr, slot_index)`.
 pub type CrossModuleGot = HashMap<(ModuleFullPath, Symbol), (i64, usize)>;
 
+/// GOT data symbol name for a module. Used as the Cranelift data symbol
+/// name for the module's GOT table in both JIT and object codegen.
+///
+/// Convention: `__cranelisp_got_<flat_path>` where dots are replaced by
+/// underscores. This is `Export` in the owning module's `.o` and `Import`
+/// in any module that calls functions from it.
+pub fn got_data_symbol_name(module_path: &ModuleFullPath) -> String {
+    let flat = module_path.as_ref().replace('.', "_");
+    format!(
+        "__cranelisp_got_{}",
+        if flat.is_empty() { "_entry" } else { &flat }
+    )
+}
+
 /// Session-backed environment for codegen. Resolves GOT entries and function
 /// arities by reading live from the session's symbol tables and GOT registry.
 ///
@@ -52,11 +66,20 @@ pub type CrossModuleGot = HashMap<(ModuleFullPath, Symbol), (i64, usize)>;
 /// TypeChecker's module DashMap and the per-module GOT tables.
 pub trait CompilationEnv {
     /// Resolve a function name to `(got_base_ptr, module_local_slot)`.
+    /// Legacy path — being replaced by `resolve_got_module`.
     ///
     /// Handles:
     /// - Bare names: look up in current module, follow Import chains
     /// - Qualified `"module/name"`: split on `/`, look up target module
     fn resolve_got(&self, name: &Symbol) -> Option<(i64, usize)>;
+
+    /// Resolve a function name to `(defining_module, module_local_slot)`.
+    /// Target path — the caller derives the DataId from the module path.
+    fn resolve_got_module(&self, name: &Symbol) -> Option<(ModuleFullPath, usize)> {
+        // Default: not implemented. Overridden by SessionCompilationEnv.
+        let _ = name;
+        None
+    }
 
     /// Get the parameter count for a function (for `call_indirect` signatures).
     fn func_arity(&self, name: &Symbol) -> Option<usize>;
@@ -130,6 +153,7 @@ pub struct CompileContext<'a> {
     /// `got_base_ptr`, `cross_module_got`, `func_arities`). Those fields
     /// are being phased out in favor of this single interface.
     pub env: Option<&'a dyn CompilationEnv>,
+
 
     // --- Ring 4 trace context ---
     /// Functions to instrument when compiling `(trace ...)` expressions.

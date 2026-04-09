@@ -314,6 +314,71 @@ fn parens_balanced(input: &str) -> bool {
 }
 
 // ---------------------------------------------------------------------------
+// Target data model types (session-restructure.md)
+// ---------------------------------------------------------------------------
+
+/// Typecheck product for a module. Populated by typecheck or deserialized
+/// from .meta.json on cache hit. Permanent for session lifetime.
+pub struct TypecheckProduct {
+    pub symbols: SymbolTable,
+    pub file_path: Option<PathBuf>,
+}
+
+/// Transient codegen input. Produced by typecheck, consumed by both JIT
+/// (priority workers) and .o (nice workers) codegen. Removed when scheduler
+/// signals both `inmem_done` and `object_done`.
+pub struct CodegenInput {
+    pub method_resolutions: cranelisp_types::MethodResolutions,
+    pub expr_types: HashMap<Span, Type>,
+    pub mono_defns: Vec<cranelisp_types::MonoDefn>,
+    pub default_method_defns: Vec<cranelisp_types::Defn>,
+    pub program: Vec<TopLevel>,
+}
+
+/// Per-module codegen output. Entry created when codegen starts for a module.
+pub struct CodegenProduct {
+    /// Some if loaded from cache .o; owns code_regions + data_regions.
+    pub linker: Option<cranelisp_backend::cache::Linker>,
+    /// Per-symbol codegen output. Additive for REPL redefinition over cache.
+    pub code: dashmap::DashMap<Symbol, Code>,
+    /// Some if JIT-created; None if linker-loaded (GOT lives in linker data).
+    pub got: Option<cranelisp_backend::got::GotTable>,
+    /// GOT base address — either &got or linker's __cranelisp_got address.
+    pub got_base: *const u8,
+}
+
+// SAFETY: CodegenProduct contains raw pointer (got_base) that points to
+// either a GotTable (Box-allocated, stable) or linker mmap'd data (stable
+// after load). Both are valid for process lifetime.
+unsafe impl Send for CodegenProduct {}
+unsafe impl Sync for CodegenProduct {}
+
+/// Per-symbol compiled code. Owns the JIT mmap'd executable pages.
+pub struct Code {
+    /// Cranelift JIT module — owns mmap'd executable pages. Dropping frees code.
+    pub jit: cranelisp_backend::jit::Jit,
+    /// Code pointer (also stored in GOT slot).
+    pub ptr: *const u8,
+}
+
+// SAFETY: Code contains raw pointer (code_ptr) and Jit (which has mmap'd
+// pages). Both are stable after JIT finalization, valid for process lifetime.
+unsafe impl Send for Code {}
+unsafe impl Sync for Code {}
+
+/// REPL-only per-symbol introspection data. Not populated during batch.
+#[derive(Debug, Clone, Default)]
+pub struct Introspection {
+    pub source: Option<String>,
+    pub sexp: Option<Sexp>,
+    pub defn: Option<cranelisp_types::Defn>,
+    pub clif_ir: Option<String>,
+    pub disasm: Option<String>,
+    pub code_size: Option<usize>,
+    pub compile_duration: Option<std::time::Duration>,
+}
+
+// ---------------------------------------------------------------------------
 // CompilerSession (pipeline-v4.md §5)
 // ---------------------------------------------------------------------------
 
@@ -370,6 +435,21 @@ impl ModuleGotRegistry {
     /// Get a reference to the underlying DashMap (for CompilationEnv implementation).
     pub fn inner(&self) -> &dashmap::DashMap<ModuleFullPath, std::sync::Arc<cranelisp_backend::got::GotTable>> {
         &self.module_gots
+    }
+
+    /// Collect GOT data symbol entries for JIT registration.
+    /// Returns (symbol_name, base_ptr) pairs for all modules with GOT tables.
+    /// These are registered on the JITBuilder so that `declare_data(name, Import)`
+    /// resolves to the correct GotTable address.
+    pub fn jit_got_symbols(&self) -> Vec<(String, *const u8)> {
+        self.module_gots
+            .iter()
+            .map(|entry| {
+                let name = cranelisp_backend::compiler::got_data_symbol_name(entry.key());
+                let ptr = entry.value().base_ptr();
+                (name, ptr)
+            })
+            .collect()
     }
 }
 
@@ -498,6 +578,19 @@ pub struct CompilerSession {
     nice_worker_handles: Vec<std::thread::JoinHandle<()>>,
     /// Nice worker count (stored for `wait_object_complete` guard).
     nice_workers: usize,
+
+    // -- Target data model (session-restructure.md) --
+    // These DashMaps are the target state. Added alongside existing structures
+    // during Phase A; wired in during later phases.
+
+    /// Per-module typecheck products (target: replaces TC-internal storage).
+    pub typecheck_products: dashmap::DashMap<ModuleFullPath, TypecheckProduct>,
+    /// Transient codegen inputs (target: replaces module_outputs + object_codegen_inputs).
+    pub codegen_inputs: dashmap::DashMap<ModuleFullPath, CodegenInput>,
+    /// Per-module codegen products (target: replaces ModuleGotRegistry + def_codegen + kept_code).
+    pub codegen_products: dashmap::DashMap<ModuleFullPath, CodegenProduct>,
+    /// Per-symbol introspection data, REPL-only (target: replaces def_codegen for slash commands).
+    pub introspection: dashmap::DashMap<FQSymbol, Introspection>,
 }
 
 impl CompilerSession {
@@ -590,6 +683,10 @@ impl CompilerSession {
             error_modules: HashSet::new(),
             nice_worker_handles,
             nice_workers,
+            typecheck_products: dashmap::DashMap::new(),
+            codegen_inputs: dashmap::DashMap::new(),
+            codegen_products: dashmap::DashMap::new(),
+            introspection: dashmap::DashMap::new(),
         }
     }
 
@@ -2722,7 +2819,7 @@ fn compile_module_object(
     );
 
     // Compile to .o bytes via Cranelift ObjectModule.
-    let obj_bytes = match cache::compile_module_to_object(&object_input) {
+    let obj_bytes = match cache::compile_module_to_object(&object_input, &object_input) {
         Ok(bytes) => bytes,
         Err(e) => {
             eprintln!("nice-worker: .o compilation failed for {}: {}", module, e.message());

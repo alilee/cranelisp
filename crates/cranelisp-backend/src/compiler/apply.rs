@@ -399,6 +399,24 @@ impl<'a, M: Module> FnCompiler<'a, M> {
         arg_vals: &[Value],
         span: Span,
     ) -> Result<Value, CranelispError> {
+        // --- Unified GOT path (target: works for both JIT and object codegen) ---
+        // Uses global_value(DataId) which Cranelift lowers to:
+        //   JIT (is_pic=false): movz+movk (absolute address)
+        //   Object (is_pic=true): ADRP+ADD (PC-relative relocation)
+        if let Some(env) = self.ctx.env {
+            if let Some((module_path, slot)) = env.resolve_got_module(name) {
+                let got_sym = crate::compiler::got_data_symbol_name(&module_path);
+                let data_id = self.module
+                    .declare_data(&got_sym, cranelift_module::Linkage::Import, false, false)
+                    .map_err(|e| CranelispError::CodegenError {
+                        message: format!("failed to declare GOT data '{}': {e}", got_sym),
+                        span,
+                    })?;
+                return self.emit_got_indirect_call_via_data_id(data_id, slot, arg_vals);
+            }
+        }
+
+        // --- Legacy paths (being phased out) ---
         // Prefer direct call via FuncId for intra-module calls (functions
         // declared in this JIT instance). Fall back to GOT-indirect for
         // cross-module calls or when func_ids doesn't have the name.
@@ -451,6 +469,41 @@ impl<'a, M: Module> FnCompiler<'a, M> {
             let call = self.builder.ins().call(local_func, arg_vals);
             Ok(self.builder.inst_results(call)[0])
         }
+    }
+
+    /// Emit a GOT-indirect call using a data symbol reference.
+    /// Works in both JIT and object codegen via Cranelift's `global_value`.
+    fn emit_got_indirect_call_via_data_id(
+        &mut self,
+        data_id: cranelift_module::DataId,
+        slot: usize,
+        arg_vals: &[Value],
+    ) -> Result<Value, CranelispError> {
+        // Get the GOT base address via data symbol reference.
+        let gv = self.module.declare_data_in_func(data_id, self.builder.func);
+        let got_base = self.builder.ins().global_value(types::I64, gv);
+
+        // Compute slot address: got_base + slot * 8
+        let slot_addr = self.builder.ins().iadd_imm(got_base, (slot * 8) as i64);
+
+        // Load the function pointer from the GOT slot.
+        let func_ptr = self.builder.ins().load(
+            types::I64,
+            MemFlags::trusted(),
+            slot_addr,
+            0,
+        );
+
+        // Build signature: all params and return are i64.
+        let mut sig = self.module.make_signature();
+        for _ in arg_vals {
+            sig.params.push(AbiParam::new(types::I64));
+        }
+        sig.returns.push(AbiParam::new(types::I64));
+        let sig_ref = self.builder.import_signature(sig);
+
+        let call = self.builder.ins().call_indirect(sig_ref, func_ptr, arg_vals);
+        Ok(self.builder.inst_results(call)[0])
     }
 
     /// Resolve a function name to a `(got_base_ptr, slot_index)` pair.

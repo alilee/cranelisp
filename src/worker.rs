@@ -118,6 +118,10 @@ impl cranelisp_backend::compiler::CompilationEnv for SessionCompilationEnv<'_> {
         None
     }
 
+    // resolve_got_module: uses default (None) until JIT GOT data symbols
+    // are registered on the JITBuilder. Activated in Phase C when JIT creation
+    // derives all symbols from primary session sources.
+
     fn func_arity(&self, name: &Symbol) -> Option<usize> {
         // 1. Try current module first.
         if let Some(arity) = self.arity_in_module(&self.current_module, name.as_ref(), 0) {
@@ -179,6 +183,33 @@ impl SessionCompilationEnv<'_> {
                 let source_symbol = source.symbol.clone();
                 drop(st);
                 self.resolve_in_module(&source_module, source_symbol.as_ref(), depth + 1)
+            }
+            _ => None,
+        }
+    }
+
+    /// Resolve a bare name in a specific module to (defining_module, slot).
+    /// Follows Import chains with depth limit. Returns the module that defines
+    /// the function (for GOT data symbol lookup).
+    fn resolve_module_slot(&self, module: &ModuleFullPath, name: &str, depth: usize) -> Option<(ModuleFullPath, usize)> {
+        if depth > 10 { return None; }
+        let st = self.tc_modules.get(module)?;
+        let entry = st.get(name)?;
+        match entry {
+            ModuleEntry::Def { got_slot: Some(slot), .. } => {
+                Some((module.clone(), *slot))
+            }
+            ModuleEntry::Import { source } => {
+                let source_module = source.module.clone();
+                let source_symbol = source.symbol.clone();
+                drop(st);
+                self.resolve_module_slot(&source_module, source_symbol.as_ref(), depth + 1)
+            }
+            ModuleEntry::Reexport { source } => {
+                let source_module = source.module.clone();
+                let source_symbol = source.symbol.clone();
+                drop(st);
+                self.resolve_module_slot(&source_module, source_symbol.as_ref(), depth + 1)
             }
             _ => None,
         }
@@ -2358,6 +2389,7 @@ fn pre_register_got_slots_in_tc(
                 kind: Box::new(DefKind::UserFn { constrained_fn: None }),
                 callees: Vec::new(),
                 got_slot: Some(slot),
+                defn: None,
             },
         );
     };
