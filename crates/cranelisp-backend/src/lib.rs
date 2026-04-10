@@ -2,9 +2,9 @@
 //
 // Public API:
 // - compile_program: batch compilation of a full program
-// - compile_expr_with_got: compile a single expression, returning CompiledExpr (REPL)
-// - compile_and_run_expr_with_got: compile and execute a single expression (REPL, convenience)
-// - Jit, ModuleCodegenState: exposed for REPL session management
+// - compile_expr_with_got_and_symbols: compile a single expression with env (REPL)
+// - compile_and_run_expr: compile and execute a single expression (convenience)
+// - Jit: JIT module management
 // - build_isa: ISA construction for JIT and ObjectModule (re-exported from cache::object)
 
 pub mod cache;
@@ -43,9 +43,6 @@ pub struct CompiledProgram {
     #[allow(dead_code)]
     jit: Jit,
     entry_ptr: *const u8,
-    // Kept alive for Interactive mode GOT lifetime.
-    #[allow(dead_code)]
-    _got_state: Option<got::ModuleCodegenState>,
     /// Warnings accumulated during codegen.
     pub warnings: Vec<Warning>,
 }
@@ -347,7 +344,6 @@ fn find_entry_and_finalize(
     Ok(CompiledProgram {
         jit,
         entry_ptr,
-        _got_state: None,
         warnings: Vec::new(),
     })
 }
@@ -564,7 +560,6 @@ pub fn compile_module_program(
 pub fn compile_expr_with_got_and_symbols(
     expr: &Expr,
     check: &CheckResult,
-    _got_state: Option<&mut got::ModuleCodegenState>,
     extra_symbols: &[(&str, *const u8)],
     env: Option<&dyn crate::compiler::CompilationEnv>,
 ) -> Result<CompiledExpr, CranelispError> {
@@ -612,12 +607,11 @@ pub fn compile_expr_with_got_and_symbols(
 /// executes it, and returns the i64 result.
 ///
 /// If `got_state` is provided, GOT-indirect calls are used.
-pub fn compile_and_run_expr_with_got(
+pub fn compile_and_run_expr(
     expr: &Expr,
     check: &CheckResult,
-    got_state: Option<&mut got::ModuleCodegenState>,
 ) -> Result<i64, CranelispError> {
-    let compiled = compile_expr_with_got_and_symbols(expr, check, got_state, &[], None)?;
+    let compiled = compile_expr_with_got_and_symbols(expr, check, &[], None)?;
     // SAFETY: compiled was produced by compile_expr_with_got_and_symbols immediately above.
     Ok(unsafe { compiled.execute() })
 }
@@ -690,7 +684,7 @@ mod tests {
         };
         let check = empty_check();
 
-        let value = compile_and_run_expr_with_got(&expr, &check, None).unwrap();
+        let value = compile_and_run_expr(&expr, &check).unwrap();
         assert_eq!(value, 99);
     }
 
@@ -723,22 +717,6 @@ mod tests {
 
     // spec: 04-expressions §4.1.1 — integer literal codegen with GOT state
     #[test]
-    fn test_compile_and_run_expr_with_got_state() {
-        let expr = Expr::IntLit {
-            value: 55,
-            span: Span::new(0, 2),
-        };
-        let check = empty_check();
-        let mut got = got::ModuleCodegenState::new();
-
-        let value = compile_and_run_expr_with_got(
-            &expr,
-            &check,
-            Some(&mut got),
-        ).unwrap();
-        assert_eq!(value, 55);
-    }
-
     // spec: 05-definitions §5.13.1 — multiple function definitions compile together
     #[test]
     fn test_compile_program_multiple_defns() {
@@ -792,7 +770,7 @@ mod tests {
         };
         let check = empty_check();
 
-        let value = compile_and_run_expr_with_got(&expr, &check, None).unwrap();
+        let value = compile_and_run_expr(&expr, &check).unwrap();
         assert_eq!(value, 1);
     }
 
@@ -807,7 +785,7 @@ mod tests {
         };
         let check = empty_check();
 
-        let result = compile_and_run_expr_with_got(&expr, &check, None);
+        let result = compile_and_run_expr(&expr, &check);
         assert!(result.is_ok(), "string literal should compile: {result:?}");
         let ptr = result.unwrap();
         // ptr should be a heap pointer (> NULLARY_TAG_THRESHOLD)
@@ -830,7 +808,7 @@ mod tests {
         };
         let check = empty_check();
 
-        let result = compile_and_run_expr_with_got(&expr, &check, None);
+        let result = compile_and_run_expr(&expr, &check);
         assert!(result.is_ok(), "empty string should compile: {result:?}");
         let ptr = result.unwrap();
         assert!(ptr > 1024, "expected heap pointer, got {ptr}");
@@ -907,7 +885,7 @@ mod tests {
         display: None,
         };
 
-        let result = compile_and_run_expr_with_got(&expr, &check, None);
+        let result = compile_and_run_expr(&expr, &check);
         assert!(result.is_ok(), "ADT constructor should compile: {result:?}");
         let ptr = result.unwrap();
         assert!(ptr > 1024, "expected heap pointer, got {ptr}");
@@ -1025,7 +1003,7 @@ mod tests {
         display: None,
         };
 
-        let result = compile_and_run_expr_with_got(&expr, &check, None);
+        let result = compile_and_run_expr(&expr, &check);
         assert!(result.is_ok(), "match with fields should compile: {result:?}");
         assert_eq!(result.unwrap(), 99, "match should extract field value");
     }
@@ -1098,7 +1076,7 @@ mod tests {
         display: None,
         };
 
-        let result = compile_and_run_expr_with_got(&expr, &check, None);
+        let result = compile_and_run_expr(&expr, &check);
         assert!(result.is_ok(), "closure should compile: {result:?}");
         assert_eq!(result.unwrap(), 15, "5 + 10 = 15");
     }
@@ -1114,7 +1092,7 @@ mod tests {
         };
         let check = empty_check();
 
-        let result = compile_and_run_expr_with_got(&expr, &check, None);
+        let result = compile_and_run_expr(&expr, &check);
         assert!(result.is_ok(), "empty vec literal should compile: {result:?}");
         let ptr = result.unwrap();
         // ptr should be a heap pointer (> NULLARY_TAG_THRESHOLD)
@@ -1140,7 +1118,7 @@ mod tests {
         };
         let check = empty_check();
 
-        let result = compile_and_run_expr_with_got(&expr, &check, None);
+        let result = compile_and_run_expr(&expr, &check);
         assert!(result.is_ok(), "vec literal should compile: {result:?}");
         let ptr = result.unwrap();
         assert!(ptr > 1024, "expected heap pointer, got {ptr}");
@@ -1171,7 +1149,7 @@ mod tests {
         };
         let check = empty_check();
 
-        let result = compile_and_run_expr_with_got(&expr, &check, None);
+        let result = compile_and_run_expr(&expr, &check);
         assert!(result.is_ok(), "single-element vec should compile: {result:?}");
         let ptr = result.unwrap();
 
@@ -1198,7 +1176,7 @@ mod tests {
         };
         let check = empty_check();
 
-        let result = compile_and_run_expr_with_got(&expr, &check, None);
+        let result = compile_and_run_expr(&expr, &check);
         assert!(result.is_ok(), "bool vec should compile: {result:?}");
         let ptr = result.unwrap();
         assert_eq!(cranelisp_runtime::vec_len(ptr), 2);
@@ -1258,7 +1236,7 @@ mod tests {
         display: None,
         };
 
-        let result = compile_and_run_expr_with_got(&expr, &check, None);
+        let result = compile_and_run_expr(&expr, &check);
         assert!(result.is_ok(), "vec-len should compile: {result:?}");
         assert_eq!(result.unwrap(), 3);
     }
@@ -1321,7 +1299,7 @@ mod tests {
         display: None,
         };
 
-        let result = compile_and_run_expr_with_got(&expr, &check, None);
+        let result = compile_and_run_expr(&expr, &check);
         assert!(result.is_ok(), "vec-get should compile: {result:?}");
         assert_eq!(result.unwrap(), 20);
     }
@@ -1382,7 +1360,7 @@ mod tests {
         display: None,
         };
 
-        let result = compile_and_run_expr_with_got(&expr, &check, None);
+        let result = compile_and_run_expr(&expr, &check);
         assert!(result.is_ok(), "vec-get index 0 should work: {result:?}");
         assert_eq!(result.unwrap(), 100);
     }
@@ -1444,7 +1422,7 @@ mod tests {
         display: None,
         };
 
-        let result = compile_and_run_expr_with_got(&expr, &check, None);
+        let result = compile_and_run_expr(&expr, &check);
         assert!(result.is_ok(), "vec-get last index should work: {result:?}");
         assert_eq!(result.unwrap(), 3);
     }
@@ -1523,7 +1501,7 @@ mod tests {
         display: None,
         };
 
-        let result = compile_and_run_expr_with_got(&expr, &check, None);
+        let result = compile_and_run_expr(&expr, &check);
         assert!(result.is_ok(), "vec-set should compile: {result:?}");
         // vec-set returns a new Vec with same length.
         assert_eq!(result.unwrap(), 3);
@@ -1590,7 +1568,7 @@ mod tests {
         display: None,
         };
 
-        let result = compile_and_run_expr_with_got(&expr, &check, None);
+        let result = compile_and_run_expr(&expr, &check);
         assert!(result.is_ok(), "vec-push should compile: {result:?}");
         // [10 20] pushed 30 -> len 3
         assert_eq!(result.unwrap(), 3);
@@ -1651,7 +1629,7 @@ mod tests {
         display: None,
         };
 
-        let result = compile_and_run_expr_with_got(&expr, &check, None);
+        let result = compile_and_run_expr(&expr, &check);
         assert!(result.is_ok(), "vec in let should compile: {result:?}");
         assert_eq!(result.unwrap(), 3);
     }
@@ -1703,7 +1681,7 @@ mod tests {
         display: None,
         };
 
-        let result = compile_and_run_expr_with_got(&expr, &check, None);
+        let result = compile_and_run_expr(&expr, &check);
         assert!(result.is_ok(), "vec with computed elements should compile: {result:?}");
         let ptr = result.unwrap();
 
@@ -1813,7 +1791,7 @@ mod tests {
         display: None,
         };
 
-        let result = compile_and_run_expr_with_got(&expr, &check, None);
+        let result = compile_and_run_expr(&expr, &check);
         assert!(result.is_ok(), "vec-get value should compile: {result:?}");
         assert_eq!(result.unwrap(), 300);
     }
@@ -1879,7 +1857,7 @@ mod tests {
         display: None,
         };
 
-        let result = compile_and_run_expr_with_got(&expr, &check, None);
+        let result = compile_and_run_expr(&expr, &check);
         assert!(result.is_ok(), "vec-push on temp should compile: {result:?}");
         assert_eq!(result.unwrap(), 2);
     }
@@ -1947,7 +1925,7 @@ mod tests {
         display: None,
         };
 
-        let result = compile_and_run_expr_with_got(&expr, &check, None);
+        let result = compile_and_run_expr(&expr, &check);
         assert!(result.is_ok(), "vec-set on temp should compile: {result:?}");
         assert_eq!(result.unwrap(), 3);
     }
@@ -1962,10 +1940,9 @@ mod tests {
             span: Span::new(1100, 1104),
         };
         let check = empty_check();
-        let mut got = got::ModuleCodegenState::new();
 
-        let result = compile_and_run_expr_with_got(
-            &expr, &check, Some(&mut got),
+        let result = compile_and_run_expr(
+            &expr, &check,
         );
         assert!(result.is_ok(), "vec in interactive mode should compile: {result:?}");
         let ptr = result.unwrap();
@@ -2016,7 +1993,7 @@ mod tests {
         display: None,
         };
 
-        let result = compile_and_run_expr_with_got(&expr, &check, None);
+        let result = compile_and_run_expr(&expr, &check);
         assert!(result.is_ok(), "empty vec len should compile: {result:?}");
         assert_eq!(result.unwrap(), 0);
     }
@@ -2079,7 +2056,7 @@ mod tests {
         display: None,
         };
 
-        let result = compile_and_run_expr_with_got(&expr, &check, None);
+        let result = compile_and_run_expr(&expr, &check);
         assert!(result.is_ok(), "push to empty vec should compile: {result:?}");
         assert_eq!(result.unwrap(), 1);
     }
@@ -2123,7 +2100,7 @@ mod tests {
         display: None,
         };
 
-        let result = compile_and_run_expr_with_got(&expr, &check, None);
+        let result = compile_and_run_expr(&expr, &check);
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), 0);
     }
@@ -2153,7 +2130,7 @@ mod tests {
         };
         let check = empty_check();
 
-        let result = compile_and_run_expr_with_got(&expr, &check, None);
+        let result = compile_and_run_expr(&expr, &check);
         assert!(result.is_ok(), "nested vec should compile: {result:?}");
         let outer_ptr = result.unwrap();
         assert!(outer_ptr > 1024);
@@ -2195,7 +2172,7 @@ mod tests {
         };
         let check = empty_check();
 
-        let result = compile_and_run_expr_with_got(&expr, &check, None);
+        let result = compile_and_run_expr(&expr, &check);
         assert!(result.is_ok(), "large vec should compile: {result:?}");
         let ptr = result.unwrap();
         assert_eq!(cranelisp_runtime::vec_len(ptr), 10);
@@ -2241,7 +2218,7 @@ mod tests {
             },
         );
 
-        let value = compile_and_run_expr_with_got(&expr, &check, None)
+        let value = compile_and_run_expr(&expr, &check)
             .expect("TraitMethod inline add should compile");
         assert_eq!(value, 7);
     }
@@ -2274,7 +2251,7 @@ mod tests {
             },
         );
 
-        let value = compile_and_run_expr_with_got(&expr, &check, None)
+        let value = compile_and_run_expr(&expr, &check)
             .expect("TraitMethod eq-bool should compile");
         assert_eq!(value, 1); // true == true → true (1)
     }

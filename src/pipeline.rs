@@ -89,7 +89,6 @@ pub fn compile_and_execute_expr(
         let compiled = cranelisp_backend::compile_expr_with_got_and_symbols(
             expr,
             check,
-            None,
             &extra_syms,
             Some(env),
         )?;

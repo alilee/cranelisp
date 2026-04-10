@@ -480,9 +480,6 @@ pub struct SharedState {
 pub struct CompilerSession {
     /// Type checker state (persists across forms).
     pub tc: cranelisp_typecheck::TypeChecker,
-    /// LEGACY: replaced by Code + Introspection DashMaps. See session-restructure.md.
-    /// Per-definition codegen artifacts for introspection (/source, /sexp, /clif, /disasm).
-    pub def_codegen: HashMap<Symbol, cranelisp_backend::codegen_types::DefCodegen>,
     /// LEGACY: replaced by macro clause ptrs in CodegenProduct.code. See session-restructure.md.
     /// Macro environment (persists across forms — macros accumulate).
     pub macro_env: MacroEnv,
@@ -612,7 +609,6 @@ impl CompilerSession {
 
         CompilerSession {
             tc,
-            def_codegen: HashMap::new(),
             macro_env,
             lib_dirs,
             platform_dirs,
@@ -894,9 +890,11 @@ impl CompilerSession {
                         } else {
                             source.trim()
                         };
-                        if let Some(mut dc) = self.def_codegen.get_mut(&symbol.symbol) {
-                            dc.source = Some(src.to_string());
-                        }
+                        let fq = FQSymbol {
+                            module: symbol.module.clone(),
+                            symbol: symbol.symbol.clone(),
+                        };
+                        self.introspection.entry(fq).or_default().source = Some(src.to_string());
                     }
                     all_warnings.extend(result.warnings().iter().cloned());
                     last_result = Some(result);
@@ -1348,20 +1346,30 @@ impl CompilerSession {
         self.tc.set_current_module(path);
     }
 
+    /// Look up introspection data for a bare symbol name in the current module.
+    fn get_introspection(&self, name: &str) -> Option<dashmap::mapref::one::Ref<'_, FQSymbol, Introspection>> {
+        let module = self.tc.current_module_path().clone();
+        let fq = FQSymbol {
+            module,
+            symbol: Symbol::from(name),
+        };
+        self.introspection.get(&fq)
+    }
+
     /// /source handler: show original source text of a definition.
     fn handle_source(&self, name: &str) -> String {
         if name.is_empty() {
             return "usage: /source <name>".to_string();
         }
-        match self.def_codegen.get(name) {
-            Some(dc) if dc.source.is_some() => {
-                format!("; source for {name}\n{}", crate::pretty::pretty_print_str(dc.source.as_ref().unwrap()))
+        if let Some(intr) = self.get_introspection(name) {
+            if let Some(ref src) = intr.source {
+                return format!("; source for {name}\n{}", crate::pretty::pretty_print_str(src));
             }
-            Some(dc) if dc.sexp.is_some() => {
-                format!("; source for {name}\n{}", crate::pretty::pretty_print(dc.sexp.as_ref().unwrap()))
+            if let Some(ref sexp) = intr.sexp {
+                return format!("; source for {name}\n{}", crate::pretty::pretty_print(sexp));
             }
-            _ => format!("Error: no source available for '{name}'"),
         }
+        format!("Error: no source available for '{name}'")
     }
 
     /// /sexp handler: show parsed S-expression of a definition.
@@ -1369,12 +1377,12 @@ impl CompilerSession {
         if name.is_empty() {
             return "usage: /sexp <name>".to_string();
         }
-        match self.def_codegen.get(name) {
-            Some(dc) if dc.sexp.is_some() => {
-                format!("; sexp for {name}\n{}", crate::pretty::pretty_print(dc.sexp.as_ref().unwrap()))
+        if let Some(intr) = self.get_introspection(name) {
+            if let Some(ref sexp) = intr.sexp {
+                return format!("; sexp for {name}\n{}", crate::pretty::pretty_print(sexp));
             }
-            _ => format!("Error: no sexp available for '{name}'"),
         }
+        format!("Error: no sexp available for '{name}'")
     }
 
     /// /ast handler: show AST of a definition.
@@ -1382,12 +1390,12 @@ impl CompilerSession {
         if name.is_empty() {
             return "usage: /ast <name>".to_string();
         }
-        match self.def_codegen.get(name) {
-            Some(dc) if dc.defn.is_some() => {
-                format!("; ast for {name}\n{:#?}", dc.defn.as_ref().unwrap())
+        if let Some(intr) = self.get_introspection(name) {
+            if let Some(ref defn) = intr.defn {
+                return format!("; ast for {name}\n{:#?}", defn);
             }
-            _ => format!("Error: no AST available for '{name}'"),
         }
+        format!("Error: no AST available for '{name}'")
     }
 
     /// /clif handler: show Cranelift IR of a definition.
@@ -1395,12 +1403,12 @@ impl CompilerSession {
         if name.is_empty() {
             return "usage: /clif <name>".to_string();
         }
-        match self.def_codegen.get(name) {
-            Some(dc) if dc.clif_ir.is_some() => {
-                format!("; clif ir for {name}\n{}", dc.clif_ir.as_ref().unwrap())
+        if let Some(intr) = self.get_introspection(name) {
+            if let Some(ref clif) = intr.clif_ir {
+                return format!("; clif ir for {name}\n{}", clif);
             }
-            _ => format!("Error: no CLIF IR available for '{name}'"),
         }
+        format!("Error: no CLIF IR available for '{name}'")
     }
 
     /// /disasm handler: show disassembled native code of a definition.
@@ -1408,12 +1416,12 @@ impl CompilerSession {
         if name.is_empty() {
             return "usage: /disasm <name>".to_string();
         }
-        match self.def_codegen.get(name) {
-            Some(dc) if dc.disasm.is_some() => {
-                format!("; disasm for {name}\n{}", dc.disasm.as_ref().unwrap())
+        if let Some(intr) = self.get_introspection(name) {
+            if let Some(ref disasm) = intr.disasm {
+                return format!("; disasm for {name}\n{}", disasm);
             }
-            _ => format!("Error: no disassembly available for '{name}'"),
         }
+        format!("Error: no disassembly available for '{name}'")
     }
 
     /// /info handler: show full details (sig + code size + compile time).
@@ -1435,11 +1443,11 @@ impl CompilerSession {
         if !matches!(resolved_entry,
             ModuleEntry::Macro { .. } | ModuleEntry::TypeDef { .. } | ModuleEntry::TraitDecl { .. })
         {
-            if let Some(dc) = self.def_codegen.get(name) {
-                let size_str = dc.code_size
+            if let Some(intr) = self.get_introspection(name) {
+                let size_str = intr.code_size
                     .map(|s| format!("{s} bytes"))
                     .unwrap_or_else(|| "? bytes".to_string());
-                let time_str = dc.compile_duration
+                let time_str = intr.compile_duration
                     .map(|d| format!("{}ms", d.as_millis()))
                     .unwrap_or_else(|| "?ms".to_string());
                 return format!("{sig}\n  {size_str}, {time_str}");
@@ -1713,11 +1721,15 @@ impl CompilerSession {
             for (sym, entry) in table.all_symbols() {
                 if let ModuleEntry::Macro { clauses, sexp: Some(sexp), .. } = entry {
                     let name = Symbol::from(sym.as_ref());
+                    let module = self.tc.current_module_path().clone();
                     let needs_compile = clauses.iter().enumerate().any(|(idx, _)| {
                         let clause_name = Symbol::from(
                             format!("__macro_{}_clause_{}", name, idx),
                         );
-                        !self.def_codegen.contains_key(clause_name.as_ref())
+                        !self.codegen_products
+                            .get(&module)
+                            .map(|p| p.code.contains_key(&clause_name))
+                            .unwrap_or(false)
                     });
                     if needs_compile {
                         to_compile.push((name, sexp.clone()));
@@ -1776,21 +1788,22 @@ impl CompilerSession {
     fn build_macro_map(&self) -> Result<HashMap<Symbol, crate::expander::MacroEntry>, CranelispError> {
         use crate::expander::{MacroEntry, MacroClauseEntry};
 
+        let current_module = self.tc.current_module_path().clone();
         let mut map = HashMap::new();
         let table = self.tc.symbol_table();
 
         for (sym, entry) in table.all_symbols() {
-            let (clauses, docstring) = match entry {
+            let (clauses, docstring, defining_module) = match entry {
                 ModuleEntry::Macro { clauses, docstring, .. } => {
-                    (clauses.clone(), docstring.clone())
+                    (clauses.clone(), docstring.clone(), current_module.clone())
                 }
                 ModuleEntry::Import { source } => {
-                    // Follow import to find macro entry
+                    // Follow import to find macro entry in defining module.
                     if let Some(module_table) = self.tc.module_table(&source.module) {
                         if let Some(ModuleEntry::Macro { clauses, docstring, .. }) =
                             module_table.get(source.symbol.as_ref())
                         {
-                            (clauses.clone(), docstring.clone())
+                            (clauses.clone(), docstring.clone(), source.module.clone())
                         } else {
                             continue;
                         }
@@ -1802,15 +1815,15 @@ impl CompilerSession {
             };
 
             let name = Symbol::from(sym.as_ref());
-            // Check if all clauses have code pointers
+            // Check if all clauses have code pointers in codegen_products.
             let mut compiled_clauses = Vec::new();
             let mut all_compiled = true;
-            for (idx, clause_info) in clauses.iter().enumerate() {
-                let clause_name = Symbol::from(format!("__macro_{}_clause_{}", name, idx));
-                if let Some(dc) = self.def_codegen.get(&clause_name) {
-                    if let Some(code_ptr) = dc.code_ptr {
+            if let Some(cp) = self.codegen_products.get(&defining_module) {
+                for (idx, clause_info) in clauses.iter().enumerate() {
+                    let clause_name = Symbol::from(format!("__macro_{}_clause_{}", name, idx));
+                    if let Some(code) = cp.code.get(&clause_name) {
                         compiled_clauses.push(MacroClauseEntry {
-                            func_ptr: code_ptr,
+                            func_ptr: code.ptr,
                             params: clause_info.params.clone(),
                             rest_param: clause_info.rest_param.clone(),
                         });
@@ -1818,10 +1831,9 @@ impl CompilerSession {
                         all_compiled = false;
                         break;
                     }
-                } else {
-                    all_compiled = false;
-                    break;
                 }
+            } else {
+                all_compiled = false;
             }
             if all_compiled && !compiled_clauses.is_empty() {
                 map.insert(name, MacroEntry {
@@ -1861,24 +1873,31 @@ impl CompilerSession {
     fn handle_run_tests(&self, prefix: &str) -> String {
         use cranelisp_types::NULLARY_TAG_THRESHOLD;
 
-        // Discover test functions.
+        // Discover test functions from codegen_products.
+        let module = self.tc.current_module_path().clone();
         let mut tests: Vec<(String, *const u8)> = Vec::new();
-        for (sym, dc) in &self.def_codegen {
-            let name: &str = sym.as_ref();
-            if !name.starts_with("test-") {
-                continue;
+        if let Some(cp) = self.codegen_products.get(&module) {
+            for entry in cp.code.iter() {
+                let name: &str = entry.key().as_ref();
+                if !name.starts_with("test-") {
+                    continue;
+                }
+                if !prefix.is_empty() && !name.starts_with(&format!("test-{prefix}")) {
+                    continue;
+                }
+                let ptr = entry.value().ptr;
+                if ptr.is_null() {
+                    continue;
+                }
+                // Check arity from TC symbol table (test fns must be zero-arg).
+                let table = self.tc.symbol_table();
+                if let Some(ModuleEntry::Def { param_names, .. }) = table.get(name) {
+                    if !param_names.is_empty() {
+                        continue;
+                    }
+                }
+                tests.push((name.to_string(), ptr));
             }
-            if !prefix.is_empty() && !name.starts_with(&format!("test-{prefix}")) {
-                continue;
-            }
-            let (ptr, arity) = match (dc.code_ptr, dc.param_count) {
-                (Some(p), Some(a)) if !p.is_null() => (p, a),
-                _ => continue,
-            };
-            if arity != 0 {
-                continue;
-            }
-            tests.push((name.to_string(), ptr));
         }
         tests.sort_by(|a, b| a.0.cmp(&b.0));
 
