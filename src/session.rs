@@ -150,9 +150,6 @@ pub struct ObjectWorkerState {
     /// .o file paths written during this session, in compilation order.
     /// Used by --link to collect all .o files for the system linker.
     pub compiled_o_paths: Vec<PathBuf>,
-    /// Module structures extracted during compilation, in compilation order.
-    /// Used by --link for platform rlib discovery and startup object generation.
-    pub compiled_module_structures: Vec<(ModuleFullPath, cranelisp_types::ModuleStructure)>,
     /// Cumulative cross-module function signatures for .o generation.
     /// Each entry is (qualified_name, param_count). Extended after each
     /// module completes stage 6. Used as `ObjectCompileInput.cross_module_fns`
@@ -170,7 +167,6 @@ impl ObjectWorkerState {
             cache_state: Some(CacheState::new(cache_dir)),
             cache_writer: Some(crate::cache_writer::CacheWriterHandle::new()),
             compiled_o_paths: Vec::new(),
-            compiled_module_structures: Vec::new(),
             cross_module_func_sigs: Vec::new(),
         }
     }

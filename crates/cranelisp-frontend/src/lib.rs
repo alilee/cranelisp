@@ -18,6 +18,7 @@ pub mod defmacro;
 use cranelisp_types::{CranelispError, Program, Sexp, TopLevel};
 
 pub use module_extract::extract_module_declarations;
+pub use module_extract::ExtractedDeclarations;
 pub use module_extract::{
     parse_import_sexp, parse_export_sexp, parse_mod_sexp, parse_platform_sexp,
 };

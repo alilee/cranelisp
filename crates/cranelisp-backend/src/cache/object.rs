@@ -223,7 +223,7 @@ pub fn build_cache_packet(
 
 /// Process a `CacheWritePacket`: write `.meta.json` and `.o` files to disk.
 ///
-/// Writes the `.meta.json` containing SymbolTable + ModuleStructure +
+/// Writes the `.meta.json` containing SymbolTable +
 /// CacheCodegenState. Then compiles the module's functions into a
 /// relocatable `.o` file via Cranelift's `ObjectModule` and writes that too.
 ///
@@ -711,7 +711,7 @@ pub struct ProcessedPacket {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use cranelisp_types::{ModuleFullPath, ModuleStructure, SymbolTable};
+    use cranelisp_types::{ModuleFullPath, SymbolTable};
 
     // spec: design/backend/module-caching.md §5 — build_isa with PIC produces valid ISA
     #[test]
@@ -744,22 +744,6 @@ mod tests {
         let mp = ModuleFullPath::from("test.module");
         let metadata = CacheMetadata {
             symbol_table: SymbolTable::new(mp.clone()),
-            module_structure: ModuleStructure {
-                path: mp.clone(),
-                file_path: None,
-                mod_decls: vec![],
-                import_specs: vec![],
-                export_specs: vec![],
-                platform_specs: vec![],
-                impl_sexps: vec![],
-                impls: vec![],
-                dll_path: None,
-            },
-            codegen_state: super::super::serialize::CacheCodegenState {
-                got_slots: HashMap::new(),
-                next_got_slot: 0,
-                def_entries: HashMap::new(),
-            },
         };
         let input = ObjectCompileInput {
             module_path: mp.clone(),
@@ -800,22 +784,6 @@ mod tests {
         let mp = ModuleFullPath::from("user");
         let metadata = CacheMetadata {
             symbol_table: SymbolTable::new(mp.clone()),
-            module_structure: ModuleStructure {
-                path: mp.clone(),
-                file_path: None,
-                mod_decls: vec![],
-                import_specs: vec![],
-                export_specs: vec![],
-                platform_specs: vec![],
-                impl_sexps: vec![],
-                impls: vec![],
-                dll_path: None,
-            },
-            codegen_state: super::super::serialize::CacheCodegenState {
-                got_slots: HashMap::new(),
-                next_got_slot: 0,
-                def_entries: HashMap::new(),
-            },
         };
         let input = ObjectCompileInput {
             module_path: mp.clone(),
@@ -994,22 +962,6 @@ mod tests {
         let mp = ModuleFullPath::from("user");
         let metadata = CacheMetadata {
             symbol_table: SymbolTable::new(mp.clone()),
-            module_structure: ModuleStructure {
-                path: mp.clone(),
-                file_path: None,
-                mod_decls: vec![],
-                import_specs: vec![],
-                export_specs: vec![],
-                platform_specs: vec![],
-                impl_sexps: vec![],
-                impls: vec![],
-                dll_path: None,
-            },
-            codegen_state: super::super::serialize::CacheCodegenState {
-                got_slots: HashMap::new(),
-                next_got_slot: 0,
-                def_entries: HashMap::new(),
-            },
         };
 
         let defn = Defn {
@@ -1078,22 +1030,6 @@ mod tests {
         let mp = ModuleFullPath::from("types_only");
         let metadata = CacheMetadata {
             symbol_table: SymbolTable::new(mp.clone()),
-            module_structure: ModuleStructure {
-                path: mp.clone(),
-                file_path: None,
-                mod_decls: vec![],
-                import_specs: vec![],
-                export_specs: vec![],
-                platform_specs: vec![],
-                impl_sexps: vec![],
-                impls: vec![],
-                dll_path: None,
-            },
-            codegen_state: super::super::serialize::CacheCodegenState {
-                got_slots: HashMap::new(),
-                next_got_slot: 0,
-                def_entries: HashMap::new(),
-            },
         };
         let input = ObjectCompileInput {
             module_path: mp.clone(),

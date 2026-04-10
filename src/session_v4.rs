@@ -14,7 +14,7 @@ use std::sync::{Arc, Mutex};
 use cranelisp_types::{
     CheckResult, CodegenBehaviour, CranelispError,
     DefKind, FQSymbol, MacroClauseInfo, MacroParam, ModuleEntry, ModuleFullPath,
-    ModuleStrategy, ModuleStructure, Sexp, Span, Symbol, SymbolTable, TopLevel,
+    ModuleStrategy, Sexp, Span, Symbol, SymbolTable, TopLevel,
     TraitName, Type, TypeName, Warning,
 };
 
@@ -2094,15 +2094,12 @@ impl CompilerSession {
         }
 
         // Collect platform manifest names and rlib paths.
-        // TODO: LoadedPlatform doesn't currently store ModuleStructure.
-        // When platform linking is needed, add module_path + structure
-        // fields to LoadedPlatform. For now, empty — non-platform programs
-        // link correctly.
-        let module_structures: Vec<(ModuleFullPath, ModuleStructure)> = vec![];
+        // TODO: When platform linking is needed, these functions will
+        // query the loaded platform registry.
         let platform_manifest_names =
-            crate::exe::collect_platform_manifest_names(&module_structures);
+            crate::exe::collect_platform_manifest_names();
         let platform_rlib_paths =
-            crate::exe::find_platform_rlibs(&module_structures);
+            crate::exe::find_platform_rlibs();
 
         // Generate startup .o stub.
         let startup_bytes = crate::exe::generate_startup_object(

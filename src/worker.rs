@@ -2838,9 +2838,8 @@ pub fn priority_worker_loop(
 /// Stash module data for nice worker `.o` and `.meta.json` compilation.
 ///
 /// When the object codegen stash is available, stores the CheckResult,
-/// Program, SymbolTable, and ModuleStructure so that nice workers can
-/// compile `.o` files and write `.meta.json` without re-accessing the
-/// TypeChecker.
+/// Program, and SymbolTable so that nice workers can compile `.o` files
+/// and write `.meta.json` without re-accessing the TypeChecker.
 /// Stash codegen input for nice worker .o compilation.
 ///
 /// Inserts a `CodegenInput` into the shared `codegen_inputs` DashMap.

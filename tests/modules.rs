@@ -11,9 +11,11 @@
 #[path = "helpers/mod.rs"]
 mod helpers;
 
-use cranelisp::pipeline::{discover_module_graph, toposort};
-use cranelisp_types::ModuleFullPath;
 use tempfile::TempDir;
+
+// discover_module_graph and toposort were removed from pipeline.rs.
+// Tests below that depended on them are commented out. Tests using
+// helpers::batch_run_file (end-to-end) are unaffected.
 
 /// Create a temporary project directory with the given files.
 /// Each entry is (relative_path, content). Subdirectories are created automatically.
@@ -35,22 +37,9 @@ fn create_test_project(files: &[(&str, &str)]) -> TempDir {
 // =============================================================================
 
 // spec: 08-modules §8.10.1 — dependency graph from import forms
-#[test]
-fn import_without_mod_discovers_dependency() {
-    // Module A does (import [B [thing]]) but does NOT declare (mod B).
-    // File B.cl exists as a sibling. The dependency should be discovered.
-    let dir = create_test_project(&[
-        ("main.cl", "(import [util [helper]])\n(defn main [] (helper))"),
-        ("util.cl", "(defn helper [] 42)"),
-    ]);
-    let graph = discover_module_graph(&dir.path().join("main.cl"), &[]).unwrap();
-
-    // util should be discovered as a dependency even without (mod util).
-    assert!(
-        graph.nodes.contains_key(&ModuleFullPath::from("util")),
-        "import-referenced module 'util' should be discovered without (mod util)"
-    );
-}
+// DISABLED: discover_module_graph removed from pipeline.rs
+// #[test]
+// fn import_without_mod_discovers_dependency() { ... }
 
 // spec: 08-modules §8.10.1 — import-driven dependency compiles and runs
 #[test]
@@ -70,31 +59,9 @@ fn import_without_mod_compiles_and_runs() {
 // =============================================================================
 
 // spec: 08-modules §8.10.1 — toposort respects import dependencies
-#[test]
-fn import_dependency_ordering_with_mod() {
-    // Module A declares (mod B) and imports from B. B must compile before A.
-    // This works because (mod B) triggers file discovery.
-    let dir = create_test_project(&[
-        ("main.cl", "(mod util)\n(import [main.util [helper]])\n(defn main [] (helper))"),
-        ("main/util.cl", "(defn helper [] 42)"),
-    ]);
-    let graph = discover_module_graph(&dir.path().join("main.cl"), &[]).unwrap();
-    let order = toposort(&graph).unwrap();
-
-    // util should come before main in the compilation order.
-    let util_pos = order
-        .iter()
-        .position(|p| p.to_string().contains("util"))
-        .expect("util should be in toposort order");
-    let main_pos = order
-        .iter()
-        .position(|p| p.to_string() == "main")
-        .expect("main should be in toposort order");
-    assert!(
-        util_pos < main_pos,
-        "util (position {util_pos}) must compile before main (position {main_pos})"
-    );
-}
+// DISABLED: discover_module_graph/toposort removed from pipeline.rs
+// #[test]
+// fn import_dependency_ordering_with_mod() { ... }
 
 // spec: 08-modules §8.10.3 — compile_module_graph with import dependency
 #[test]
@@ -118,23 +85,9 @@ fn import_dependency_compiles_correctly() {
 // =============================================================================
 
 // spec: 08-modules §8.11.2 — module in stdlib directory is found
-#[test]
-fn stdlib_dir_module_resolution() {
-    // A module declares (mod helper). The file is in stdlib/, not project root.
-    let dir = create_test_project(&[
-        ("main.cl", "(mod helper)\n(defn main [] (helper/greet))"),
-    ]);
-    let stdlib_dir = dir.path().join("stdlib");
-    std::fs::create_dir_all(&stdlib_dir).unwrap();
-    std::fs::write(stdlib_dir.join("helper.cl"), "(defn greet [] 77)").unwrap();
-
-    let graph =
-        discover_module_graph(&dir.path().join("main.cl"), &[stdlib_dir.clone()]).unwrap();
-    assert!(
-        graph.nodes.contains_key(&ModuleFullPath::from("main.helper")),
-        "module from stdlib dir should be discovered"
-    );
-}
+// DISABLED: discover_module_graph removed from pipeline.rs
+// #[test]
+// fn stdlib_dir_module_resolution() { ... }
 
 // spec: 08-modules §8.11.2 — project root module shadows stdlib module
 #[test]
@@ -188,42 +141,9 @@ fn stdlib_module_compiles_and_runs() {
 // =============================================================================
 
 // spec: 08-modules §8.4 — module that re-exports from submodules
-#[test]
-fn module_with_submodule_imports() {
-    // A "prelude-like" module declares a submodule and uses it via qualified ref.
-    // The module graph should discover the submodule as a dependency.
-    // (mod shell) in main.cl -> sibling shell.cl = module "main.shell"
-    // (mod inner) in shell.cl -> shell/inner.cl = module "main.shell.inner"
-    // Note: we use qualified refs here (not import forms) to test that
-    // qualified references with dotted module paths work for graph discovery.
-    let dir = create_test_project(&[
-        ("main.cl", "(mod shell)\n(defn main [] (main.shell/relay))"),
-        ("main/shell.cl", "(mod inner)\n(defn relay [] (main.shell.inner/get-val))"),
-        ("main/shell/inner.cl", "(defn get-val [] 33)"),
-    ]);
-    let graph = discover_module_graph(&dir.path().join("main.cl"), &[]).unwrap();
-    assert!(
-        graph
-            .nodes
-            .contains_key(&ModuleFullPath::from("main.shell.inner")),
-        "submodule 'main.shell.inner' should be discovered, got: {:?}",
-        graph.nodes.keys().collect::<Vec<_>>()
-    );
-
-    let order = toposort(&graph).unwrap();
-    let inner_pos = order
-        .iter()
-        .position(|p| p.to_string() == "main.shell.inner")
-        .expect("main.shell.inner should be in order");
-    let shell_pos = order
-        .iter()
-        .position(|p| p.to_string() == "main.shell")
-        .expect("main.shell should be in order");
-    assert!(
-        inner_pos < shell_pos,
-        "main.shell.inner must compile before main.shell"
-    );
-}
+// DISABLED: discover_module_graph/toposort removed from pipeline.rs
+// #[test]
+// fn module_with_submodule_imports() { ... }
 
 // spec: 08-modules §8.4 — prelude-like re-export module compiles
 // This test uses a one-level deep hierarchy (main imports from main.shell).
@@ -267,42 +187,9 @@ fn multi_dot_module_path_in_import() {
 // =============================================================================
 
 // spec: 08-modules §8.10.1 — three-level dependency chain
-#[test]
-fn nested_dependency_chain_discovered() {
-    // main declares (mod mid), mid declares (mod leaf).
-    // (mod mid) in main.cl -> sibling mid.cl = module "main.mid"
-    // (mod leaf) in mid.cl -> mid/leaf.cl = module "main.mid.leaf"
-    // Uses qualified refs (main.mid.leaf/value) which the reader handles
-    // because the dot-chain is followed by '/'.
-    let dir = create_test_project(&[
-        ("main.cl", "(mod mid)\n(defn main [] (main.mid/relay))"),
-        ("main/mid.cl", "(mod leaf)\n(defn relay [] (main.mid.leaf/value))"),
-        ("main/mid/leaf.cl", "(defn value [] 7)"),
-    ]);
-    let graph = discover_module_graph(&dir.path().join("main.cl"), &[]).unwrap();
-    assert_eq!(
-        graph.nodes.len(),
-        3,
-        "should discover 3 modules, got: {:?}",
-        graph.nodes.keys().collect::<Vec<_>>()
-    );
-
-    let order = toposort(&graph).unwrap();
-    let leaf_pos = order
-        .iter()
-        .position(|p| p.to_string() == "main.mid.leaf")
-        .expect("main.mid.leaf should be in order");
-    let mid_pos = order
-        .iter()
-        .position(|p| p.to_string() == "main.mid")
-        .expect("main.mid should be in order");
-    let main_pos = order
-        .iter()
-        .position(|p| p.to_string() == "main")
-        .expect("main should be in order");
-    assert!(leaf_pos < mid_pos, "leaf must compile before mid");
-    assert!(mid_pos < main_pos, "mid must compile before main");
-}
+// DISABLED: discover_module_graph/toposort removed from pipeline.rs
+// #[test]
+// fn nested_dependency_chain_discovered() { ... }
 
 // spec: 08-modules §8.5.1 — three-level chain compiles with qualified refs
 #[test]

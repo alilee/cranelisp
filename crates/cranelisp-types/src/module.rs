@@ -4,7 +4,7 @@ use std::path::PathBuf;
 
 use crate::{
     ConstructorInfo, Defn, FQSymbol, ModuleFullPath, ModuleName, Scheme, Sexp, Span, Symbol,
-    TraitDecl, TraitImpl, TraitName, Type, TypeDefInfo, TypeName, Visibility,
+    TraitDecl, TraitName, Type, TypeDefInfo, TypeName, Visibility,
 };
 
 // --- Symbol Table ---
@@ -275,23 +275,6 @@ pub struct ModDecl {
     pub is_private: bool,
     pub inline_body: Option<Vec<Sexp>>,
     pub span: Span,
-}
-
-// --- Module Structure ---
-
-/// Module structural metadata: file paths, declarations, imports, exports.
-#[deprecated(note = "session-restructure.md: all fields derivable from SymbolTable")]
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ModuleStructure {
-    pub path: ModuleFullPath,
-    pub file_path: Option<PathBuf>,
-    pub mod_decls: Vec<ModDecl>,
-    pub import_specs: Vec<ImportSpec>,
-    pub export_specs: Vec<ExportSpec>,
-    pub platform_specs: Vec<PlatformSpec>,
-    pub impl_sexps: Vec<ImplSexp>,
-    pub impls: Vec<TraitImpl>,
-    pub dll_path: Option<PathBuf>,
 }
 
 use crate::JitSymbol;

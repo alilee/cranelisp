@@ -1,27 +1,34 @@
 //! Sexp-level module declaration extraction.
 //!
 //! Walks top-level S-expressions and extracts `mod`, `mod-`, `import`, and `export`
-//! forms into `ModuleStructure`, returning remaining sexps for further processing.
+//! forms into `ExtractedDeclarations`, returning remaining sexps for further processing.
 //! This runs before macro expansion per spec §8.12.1.
-
-use std::path::PathBuf;
 
 use cranelisp_types::{
     CranelispError, ExportSpec, ImportNames, ImportSpec, ModDecl, ModuleFullPath, ModuleName,
-    ModuleStructure, PlatformSpec, Sexp, Span,
+    PlatformSpec, Sexp, Span,
 };
+
+/// Extracted module-level declarations from top-level S-expressions.
+#[derive(Debug, Clone)]
+pub struct ExtractedDeclarations {
+    pub path: ModuleFullPath,
+    pub mod_decls: Vec<ModDecl>,
+    pub import_specs: Vec<ImportSpec>,
+    pub export_specs: Vec<ExportSpec>,
+    pub platform_specs: Vec<PlatformSpec>,
+}
 
 /// Extract module declarations from top-level S-expressions.
 ///
 /// Recognizes `(mod name)`, `(mod- name)`, `(import [...])`, and `(export [...])`.
 /// All other sexps pass through unchanged.
 ///
-/// Returns `(ModuleStructure, remaining_sexps)`.
+/// Returns `(ExtractedDeclarations, remaining_sexps)`.
 pub fn extract_module_declarations(
     path: ModuleFullPath,
-    file_path: Option<PathBuf>,
     sexps: Vec<Sexp>,
-) -> Result<(ModuleStructure, Vec<Sexp>), CranelispError> {
+) -> Result<(ExtractedDeclarations, Vec<Sexp>), CranelispError> {
     let mut mod_decls = Vec::new();
     let mut import_specs = Vec::new();
     let mut export_specs = Vec::new();
@@ -62,19 +69,15 @@ pub fn extract_module_declarations(
         }
     }
 
-    let structure = ModuleStructure {
+    let declarations = ExtractedDeclarations {
         path,
-        file_path,
         mod_decls,
         import_specs,
         export_specs,
         platform_specs,
-        impl_sexps: Vec::new(),
-        impls: Vec::new(),
-        dll_path: None,
     };
 
-    Ok((structure, remaining))
+    Ok((declarations, remaining))
 }
 
 // ---------------------------------------------------------------------------
@@ -427,11 +430,10 @@ mod tests {
         crate::reader::parse(src).expect("parse failed")
     }
 
-    fn extract(src: &str) -> (ModuleStructure, Vec<Sexp>) {
+    fn extract(src: &str) -> (ExtractedDeclarations, Vec<Sexp>) {
         let sexps = parse(src);
         extract_module_declarations(
             ModuleFullPath::from("test"),
-            None,
             sexps,
         )
         .expect("extraction failed")
@@ -651,7 +653,6 @@ mod tests {
         let sexps = parse("(mod)");
         let result = extract_module_declarations(
             ModuleFullPath::from("test"),
-            None,
             sexps,
         );
         assert!(result.is_err());
@@ -663,26 +664,20 @@ mod tests {
         let sexps = parse("(import [core.option])");
         let result = extract_module_declarations(
             ModuleFullPath::from("test"),
-            None,
             sexps,
         );
         assert!(result.is_err());
     }
 
-    // spec: 08-modules §8.1 — file_path and module path are preserved
+    // spec: 08-modules §8.1 — module path is preserved
     #[test]
     fn test_module_path_preserved() {
         let (ms, _) = extract_module_declarations(
             ModuleFullPath::from("app.handler"),
-            Some(PathBuf::from("/project/app/handler.cl")),
             vec![],
         )
         .unwrap();
         assert_eq!(&*ms.path, "app.handler");
-        assert_eq!(
-            ms.file_path.as_ref().unwrap().to_str().unwrap(),
-            "/project/app/handler.cl"
-        );
     }
 
     // spec: 08-modules §8.3.8 — multiple import forms accumulate
@@ -730,7 +725,6 @@ mod tests {
         let sexps = parse("(platform)");
         let result = extract_module_declarations(
             ModuleFullPath::from("test"),
-            None,
             sexps,
         );
         assert!(result.is_err());

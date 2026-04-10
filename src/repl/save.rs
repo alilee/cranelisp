@@ -9,7 +9,7 @@
 // graph pipeline, restoring all definitions. Cache hits make this near-instant.
 //
 // Port of sketch/src/repl/save.rs adapted for the reimplementation's
-// decomposed data model (SymbolTable + ModuleStructure + DefCodegen).
+// decomposed data model (SymbolTable + DefCodegen).
 
 use std::collections::{HashMap, HashSet};
 use std::io::Write;
@@ -18,7 +18,7 @@ use std::path::Path;
 use cranelisp_backend::codegen_types::DefCodegen;
 use cranelisp_types::{
     DefKind, ExportSpec, ImportNames, ImportSpec, ModDecl, ModuleEntry,
-    ModuleFullPath, ModuleStructure, Sexp, Symbol, SymbolTable,
+    ModuleFullPath, Sexp, Symbol, SymbolTable,
 };
 
 /// Generate the source text for a module from its decomposed data.
@@ -32,56 +32,33 @@ use cranelisp_types::{
 ///   6. `(deftype ...)` definitions
 ///   7. `(impl ...)` implementations
 ///   8. `(defn ...)` and `(defmacro ...)` — dependency-sorted
+// generate_module_source removed — ModuleStructure no longer exists.
+// v4 session persistence regenerates source from SymbolTable directly.
 pub fn generate_module_source(
     sym_table: &SymbolTable,
-    structure: &ModuleStructure,
     def_codegen: &HashMap<Symbol, DefCodegen>,
 ) -> String {
     let mut sections = Vec::new();
 
-    // 1. Module declarations
-    let mod_section = generate_mod_decls(&structure.mod_decls);
-    if !mod_section.is_empty() {
-        sections.push(mod_section);
-    }
-
-    // 2. Platform declarations
+    // 1. Platform declarations
     let platform_section = generate_platforms(sym_table);
     if !platform_section.is_empty() {
         sections.push(platform_section);
     }
 
-    // 3. Imports (merged, excluding implicit prelude)
-    let import_section = generate_imports(&structure.import_specs);
-    if !import_section.is_empty() {
-        sections.push(import_section);
-    }
-
-    // 4. Exports (merged)
-    let export_section = generate_exports(&structure.export_specs);
-    if !export_section.is_empty() {
-        sections.push(export_section);
-    }
-
-    // 5. Trait declarations
+    // 2. Trait declarations
     let trait_section = generate_traits(sym_table);
     if !trait_section.is_empty() {
         sections.push(trait_section);
     }
 
-    // 6. Type definitions
+    // 3. Type definitions
     let type_section = generate_types(sym_table);
     if !type_section.is_empty() {
         sections.push(type_section);
     }
 
-    // 7. Trait implementations
-    let impl_section = generate_impls(structure);
-    if !impl_section.is_empty() {
-        sections.push(impl_section);
-    }
-
-    // 8. Functions and macros (dependency-sorted)
+    // 4. Functions and macros (dependency-sorted)
     let fn_section = generate_fns_and_macros(sym_table, def_codegen);
     if !fn_section.is_empty() {
         sections.push(fn_section);
@@ -258,15 +235,8 @@ fn generate_types(sym_table: &SymbolTable) -> String {
         .join("\n\n")
 }
 
-/// Generate trait implementations section.
-fn generate_impls(structure: &ModuleStructure) -> String {
-    structure
-        .impl_sexps
-        .iter()
-        .map(|impl_sexp| impl_sexp.sexp.format_indented(0))
-        .collect::<Vec<_>>()
-        .join("\n\n")
-}
+// generate_impls removed — ModuleStructure.impl_sexps no longer exists.
+// v4 session tracks impl sexps via SymbolTable directly.
 
 /// Generate functions and macros section, dependency-sorted.
 fn generate_fns_and_macros(
@@ -418,10 +388,9 @@ fn collect_symbol_refs(sexp: &Sexp, refs: &mut HashSet<String>) {
 pub fn save_module_file(
     file_path: &Path,
     sym_table: &SymbolTable,
-    structure: &ModuleStructure,
     def_codegen: &HashMap<Symbol, DefCodegen>,
 ) -> Option<String> {
-    let source = generate_module_source(sym_table, structure, def_codegen);
+    let source = generate_module_source(sym_table, def_codegen);
 
     // Don't write empty files (no user definitions yet).
     if source.trim().is_empty() {
@@ -611,19 +580,8 @@ mod tests {
     #[test]
     fn empty_module_produces_empty_source() {
         let sym_table = SymbolTable::new(ModuleFullPath::from("user"));
-        let structure = ModuleStructure {
-            path: ModuleFullPath::from("user"),
-            file_path: None,
-            mod_decls: vec![],
-            import_specs: vec![],
-            export_specs: vec![],
-            platform_specs: vec![],
-            impl_sexps: vec![],
-            impls: vec![],
-            dll_path: None,
-        };
         let def_codegen = HashMap::new();
-        let source = generate_module_source(&sym_table, &structure, &def_codegen);
+        let source = generate_module_source(&sym_table, &def_codegen);
         assert_eq!(source, "");
     }
 

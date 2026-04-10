@@ -36,8 +36,8 @@ use cranelisp_backend::compiler::TracedFnInfo;
 use cranelisp_backend::display;
 use cranelisp_types::{
     CheckResult, CompileContext, CranelispError, DefKind,
-    ImplSexp, MacroClauseInfo, ModuleEntry, ModuleFullPath, ModuleStrategy,
-    ModuleStructure, Sexp, Symbol, TopLevel, Type, TypeDefInfo, TypeName,
+    MacroClauseInfo, ModuleEntry, ModuleFullPath, ModuleStrategy,
+    Sexp, Symbol, TopLevel, Type, TypeDefInfo, TypeName,
     Warning,
 };
 
@@ -109,10 +109,7 @@ pub struct ReplSession {
     // Module dependency tracking (file→module map, forward/reverse edges)
     // has moved to `self.core.module_deps` (ModuleDependencyGraph) and is
     // populated incrementally during compile_unit / load_dependencies.
-    /// Module structure for the current REPL module (tracks imports, exports,
-    /// impl_sexps as they accumulate interactively). Used by save.rs to
-    /// regenerate the module's `.cl` file.
-    pub(crate) current_module_structure: ModuleStructure,
+    // ModuleStructure removed — v4 session tracks imports/exports via SymbolTable directly.
     /// Content hash of the last saved `.cl` file. Used by the file watcher
     /// to suppress self-triggered reloads (design/int/session-persistence.md §4).
     pub(crate) last_saved_hash: Option<String>,
@@ -139,17 +136,7 @@ impl ReplSession {
             watcher: None,
             pending_changes: Vec::new(),
             error_modules: HashSet::new(),
-            current_module_structure: ModuleStructure {
-                path: user_module,
-                file_path: None,
-                mod_decls: vec![],
-                import_specs: vec![],
-                export_specs: vec![],
-                platform_specs: vec![],
-                impl_sexps: vec![],
-                impls: vec![],
-                dll_path: None,
-            },
+            // ModuleStructure removed — v4 session tracks this via SymbolTable directly.
             last_saved_hash: None,
             restoring: false,
             scheduler: None,
@@ -1266,38 +1253,8 @@ impl ReplSession {
         }
     }
 
-    /// Track impl sexps in module structure for session persistence.
-    fn track_impl_sexps(&mut self, program: &[TopLevel], original_sexps: &[Sexp]) {
-        let use_original = original_sexps.len() == 1;
-
-        for (i, tl) in program.iter().enumerate() {
-            if let TopLevel::TraitImpl(impl_) = tl {
-                let sexp = if use_original {
-                    original_sexps[0].clone()
-                } else if i < original_sexps.len() {
-                    original_sexps[i].clone()
-                } else {
-                    continue;
-                };
-                self.current_module_structure.impl_sexps.push(ImplSexp {
-                    trait_name: impl_.trait_name.clone(),
-                    target: impl_.target_type.clone(),
-                    sexp,
-                });
-            }
-        }
-    }
-
-    /// Merge import and platform specs from a compile_unit result into the
-    /// current REPL module structure (for session persistence).
-    fn merge_module_structure(&mut self, structure: &ModuleStructure) {
-        self.current_module_structure
-            .import_specs
-            .extend(structure.import_specs.clone());
-        self.current_module_structure
-            .platform_specs
-            .extend(structure.platform_specs.clone());
-    }
+    // track_impl_sexps removed — ModuleStructure no longer exists.
+    // merge_module_structure removed — ModuleStructure no longer exists.
 
     /// Evaluate a type annotation expression (`:Type expr` parsed as multiple sexps).
     ///
@@ -1309,24 +1266,9 @@ impl ReplSession {
         let ctx = self.build_repl_compile_context();
         let check_result = self.core.tc.check(std::slice::from_ref(&input), &ctx, ModuleStrategy::Additive)?;
 
-        // Build a CompileUnitResult to pass to codegen_and_execute.
-        let unit_result = crate::pipeline::CompileUnitResult {
-            program: vec![input],
-            module_structure: ModuleStructure {
-                path: ctx.module.clone(),
-                file_path: None,
-                mod_decls: vec![],
-                import_specs: vec![],
-                export_specs: vec![],
-                platform_specs: vec![],
-                impl_sexps: vec![],
-                impls: vec![],
-                dll_path: None,
-            },
-            check_result,
-            source: String::new(),
-            warnings: Vec::new(),
-        };
+        // CompileUnitResult removed — ModuleStructure no longer exists.
+        // v4 session handles annotation eval directly.
+        let _ = (input, check_result);
 
         let codegen_result = crate::pipeline::codegen_and_execute_via_session(
             &mut self.core,
@@ -2189,19 +2131,7 @@ fn handle_reset(session: &mut ReplSession, stdout: &mut impl Write) {
     session.pending_changes.clear();
     session.error_modules.clear();
     // module_deps is cleared by CompilationSession::new() above.
-    // Reset module structure but preserve the file path.
-    let user_cl_path = session.current_module_structure.file_path.clone();
-    session.current_module_structure = ModuleStructure {
-        path: ModuleFullPath::from("user"),
-        file_path: user_cl_path,
-        mod_decls: vec![],
-        import_specs: vec![],
-        export_specs: vec![],
-        platform_specs: vec![],
-        impl_sexps: vec![],
-        impls: vec![],
-        dll_path: None,
-    };
+    // ModuleStructure reset removed — v4 session tracks this via SymbolTable directly.
     session.last_saved_hash = None;
     // Note: loaded_platforms on the old CompilationSession are dropped, but
     // platform DLL pointers remain valid via session.core.loaded_platforms on

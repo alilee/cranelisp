@@ -29,7 +29,7 @@ pub use check::{
 };
 pub use module::{
     ConstrainedFn, DefKind, ExportSpec, ImplSexp, ImportNames, ImportSpec, MacroClauseInfo,
-    MacroParam, ModDecl, ModuleEntry, ModuleStructure, OverloadVariant, PlatformSpec, PrimitiveKind,
+    MacroParam, ModDecl, ModuleEntry, OverloadVariant, PlatformSpec, PrimitiveKind,
     SymbolTable,
 };
 pub use heap::{HeapCategory, HeapHeader};
