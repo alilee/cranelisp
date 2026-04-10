@@ -1034,16 +1034,18 @@ fn try_cache_hit_load(
             _ => None,
         })
         .collect();
-    let mangled_names: Vec<String> = cached
-        .codegen_state()
-        .got_slots
-        .keys()
-        .map(|s| s.as_ref().to_string())
+    // Collect names of functions with GOT slots for trait impl restoration.
+    let mangled_names: Vec<String> = cached.metadata.symbol_table
+        .all_symbols()
+        .filter_map(|(name, entry)| match entry {
+            ModuleEntry::Def { got_slot: Some(_), .. } => Some(name.as_ref().to_string()),
+            _ => None,
+        })
         .collect();
     // Restore type info into TC (consumes symbol_table by value).
     ctx.tc.restore_cached_module(cached.metadata.symbol_table);
 
-    // Restore trait impl registrations from cached codegen state.
+    // Restore trait impl registrations from cached symbol table.
     ctx.tc.restore_cached_impls(&mangled_names);
 
     // 5. Register with scheduler at TypecheckDone.
@@ -2581,9 +2583,14 @@ fn load_cached_module_via_linker(
     // Load the .o file — one mmap + relocation pass.
     let fn_addrs = cache::load_cached_object(&mut linker, &cached)?;
 
-    // Wire code pointers into the per-module GOT.
+    // Wire code pointers into the per-module GOT using slot assignments
+    // from the symbol table.
     let mut loaded_symbols = Vec::new();
-    for (name, &slot) in &cached.codegen_state().got_slots {
+    for (name, entry) in cached.symbol_table().all_symbols() {
+        let slot = match entry {
+            ModuleEntry::Def { got_slot: Some(s), .. } => *s,
+            _ => continue,
+        };
         let code_ptr = fn_addrs.get(name.as_ref()).copied();
 
         // Write the code pointer to the per-module GOT slot.

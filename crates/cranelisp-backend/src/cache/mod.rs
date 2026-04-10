@@ -3,7 +3,7 @@
 // Layout:
 //   .cranelisp-cache/
 //     manifest.json           # version, target triple, module hashes
-//     <module>.meta.json      # serialized SymbolTable + ModuleStructure + CacheCodegenState
+//     <module>.meta.json      # serialized SymbolTable (includes GOT slot assignments)
 //     <module>.o              # relocatable object file
 //
 // See design/backend/module-caching.md for the full design.
@@ -24,7 +24,6 @@ pub use object::{
     compile_module_to_object, got_data_symbol_name,
 };
 pub use linker::Linker;
-pub use serialize::{CacheCodegenState, SerializedDefEntry};
 
 /// Cache format version. Bump when .o or .meta.json layout changes.
 /// On mismatch, all cached modules are invalidated and recompiled.
@@ -97,16 +96,6 @@ impl CachedModule {
     /// Get the restored symbol table.
     pub fn symbol_table(&self) -> &cranelisp_types::SymbolTable {
         &self.metadata.symbol_table
-    }
-
-    /// Get the restored module structure.
-    pub fn module_structure(&self) -> &cranelisp_types::ModuleStructure {
-        &self.metadata.module_structure
-    }
-
-    /// Get the restored codegen state (GOT slots, def entries).
-    pub fn codegen_state(&self) -> &serialize::CacheCodegenState {
-        &self.metadata.codegen_state
     }
 }
 
@@ -204,11 +193,13 @@ pub fn load_cached_object(
     linker.load_object(&module_name, &obj_bytes)?;
 
     // Collect function addresses from the linker's defined_symbols.
-    // The .o file's exported symbols match the function names in got_slots.
+    // Function names with GOT slots are on ModuleEntry::Def in the symbol table.
     let mut fn_addrs = std::collections::HashMap::new();
-    for fn_name in cached.codegen_state().got_slots.keys() {
-        if let Some(addr) = linker.get_symbol(fn_name.as_ref()) {
-            fn_addrs.insert(fn_name.as_ref().to_string(), addr);
+    for (name, entry) in cached.symbol_table().all_symbols() {
+        if matches!(entry, cranelisp_types::ModuleEntry::Def { got_slot: Some(_), .. }) {
+            if let Some(addr) = linker.get_symbol(name.as_ref()) {
+                fn_addrs.insert(name.as_ref().to_string(), addr);
+            }
         }
     }
 
@@ -236,29 +227,12 @@ pub(crate) fn atomic_write(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use cranelisp_types::{ModuleFullPath, ModuleStructure, SymbolTable};
-    use std::collections::HashMap;
+    use cranelisp_types::{ModuleFullPath, SymbolTable};
 
     fn make_test_metadata(module_path: &str) -> serialize::CacheMetadata {
         let mp = ModuleFullPath::from(module_path);
         serialize::CacheMetadata {
-            symbol_table: SymbolTable::new(mp.clone()),
-            module_structure: ModuleStructure {
-                path: mp,
-                file_path: None,
-                mod_decls: vec![],
-                import_specs: vec![],
-                export_specs: vec![],
-                platform_specs: vec![],
-                impl_sexps: vec![],
-                impls: vec![],
-                dll_path: None,
-            },
-            codegen_state: serialize::CacheCodegenState {
-                got_slots: HashMap::new(),
-                next_got_slot: 0,
-                def_entries: HashMap::new(),
-            },
+            symbol_table: SymbolTable::new(mp),
         }
     }
 

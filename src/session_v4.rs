@@ -2686,36 +2686,15 @@ fn compile_module_object(
     }
 
     // Build and write .meta.json for cache-hit restoration.
-    let codegen_state = crate::pipeline::build_codegen_state_for_cache(
-        &input.program,
-        &check_result,
-    );
-
-    // Read symbol table from typecheck_products (populated by priority worker).
+    // GOT slot assignments are on ModuleEntry::Def in the SymbolTable,
+    // so only the symbol table needs serializing.
     let symbol_table = shared.typecheck_products
         .get(module)
         .map(|tp| tp.symbols.clone())
         .unwrap_or_else(|| cranelisp_types::SymbolTable::new(module.clone()));
 
-    // Build a minimal ModuleStructure for cache metadata.
-    // The v4 pipeline stores real data on the symbol table;
-    // a stub structure with the module path is sufficient.
-    let module_structure = cranelisp_types::ModuleStructure {
-        path: module.clone(),
-        file_path: None,
-        mod_decls: Vec::new(),
-        import_specs: Vec::new(),
-        export_specs: Vec::new(),
-        platform_specs: Vec::new(),
-        impl_sexps: Vec::new(),
-        impls: Vec::new(),
-        dll_path: None,
-    };
-
     let metadata = cache::CacheMetadata {
         symbol_table,
-        module_structure,
-        codegen_state,
     };
     if let Err(e) = cache::write_cached_metadata(&meta_path, &metadata) {
         eprintln!("nice-worker: .meta.json write failed for {}: {}", module, e.message());

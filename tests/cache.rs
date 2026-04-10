@@ -23,10 +23,10 @@ use cranelisp_backend::cache::{
     write_manifest, CacheManifest, IntrinsicTable, ObjectCompileInput, CACHE_FORMAT_VERSION,
 };
 use cranelisp_backend::cache::serialize::{
-    CacheCodegenState, CacheMetadata, SerializedDefEntry, read_cached_metadata,
+    CacheMetadata, read_cached_metadata,
     write_cached_metadata,
 };
-use cranelisp_types::{ModuleFullPath, ModuleStructure, Symbol, SymbolTable};
+use cranelisp_types::{ModuleFullPath, Symbol, SymbolTable};
 
 // =============================================================================
 // Helpers
@@ -35,45 +35,28 @@ use cranelisp_types::{ModuleFullPath, ModuleStructure, Symbol, SymbolTable};
 fn make_test_metadata(module_path: &str) -> CacheMetadata {
     let mp = ModuleFullPath::from(module_path);
     CacheMetadata {
-        symbol_table: SymbolTable::new(mp.clone()),
-        module_structure: ModuleStructure {
-            path: mp,
-            file_path: Some(std::path::PathBuf::from(format!("{module_path}.cl"))),
-            mod_decls: vec![],
-            import_specs: vec![],
-            export_specs: vec![],
-            platform_specs: vec![],
-            impl_sexps: vec![],
-            impls: vec![],
-            dll_path: None,
-        },
-        codegen_state: CacheCodegenState {
-            got_slots: HashMap::new(),
-            next_got_slot: 0,
-            def_entries: HashMap::new(),
-        },
+        symbol_table: SymbolTable::new(mp),
     }
 }
 
 fn make_test_metadata_with_defs(module_path: &str, def_names: &[&str]) -> CacheMetadata {
     let mut metadata = make_test_metadata(module_path);
     for (i, name) in def_names.iter().enumerate() {
-        metadata
-            .codegen_state
-            .got_slots
-            .insert(Symbol::from(*name), i);
-        metadata.codegen_state.def_entries.insert(
+        use cranelisp_types::{ModuleEntry, Scheme, Type, DefKind, Visibility};
+        metadata.symbol_table.insert(
             Symbol::from(*name),
-            SerializedDefEntry {
+            ModuleEntry::Def {
+                scheme: Scheme { vars: vec![], ty: Type::Fn(vec![Type::Int], Box::new(Type::Int)), constraints: Default::default() },
+                kind: Box::new(DefKind::UserFn { constrained_fn: None }),
+                docstring: None,
+                param_names: vec![Symbol::from("x")],
+                visibility: Visibility::Public,
+                callees: vec![],
                 got_slot: Some(i),
-                source: Some(format!("(defn {name} [x] x)")),
-                sexp: None,
                 defn: None,
-                param_count: Some(1),
             },
         );
     }
-    metadata.codegen_state.next_got_slot = def_names.len();
     metadata
 }
 
@@ -200,11 +183,12 @@ fn cache_hit_second_compile_uses_cache() {
 
     // Step 4: Verify metadata can be loaded from disk
     let loaded_meta = read_cached_metadata(&meta_path).unwrap();
-    assert_eq!(loaded_meta.codegen_state.next_got_slot, 1);
-    assert!(loaded_meta
-        .codegen_state
-        .got_slots
-        .contains_key(&Symbol::from("main")));
+    // GOT slots are now on ModuleEntry::Def in the symbol table.
+    let main_entry = loaded_meta.symbol_table.get(&Symbol::from("main"));
+    assert!(
+        matches!(main_entry, Some(cranelisp_types::ModuleEntry::Def { got_slot: Some(_), .. })),
+        "main should have a GOT slot in the symbol table"
+    );
 }
 
 // spec: design/backend/module-caching.md §3 — cache key is content hash, not mtime
@@ -529,42 +513,17 @@ fn cache_metadata_roundtrip() {
         ModuleFullPath::from("test.module")
     );
 
-    // Module structure
-    assert_eq!(
-        loaded.module_structure.path,
-        ModuleFullPath::from("test.module")
-    );
-    assert_eq!(
-        loaded.module_structure.file_path,
-        Some(std::path::PathBuf::from("test.module.cl"))
-    );
-
-    // Codegen state
-    assert_eq!(loaded.codegen_state.next_got_slot, 3);
-    assert_eq!(loaded.codegen_state.got_slots.len(), 3);
-    assert_eq!(
-        loaded.codegen_state.got_slots.get(&Symbol::from("foo")),
-        Some(&0)
-    );
-    assert_eq!(
-        loaded.codegen_state.got_slots.get(&Symbol::from("bar")),
-        Some(&1)
-    );
-    assert_eq!(
-        loaded.codegen_state.got_slots.get(&Symbol::from("baz")),
-        Some(&2)
-    );
-
-    // Def entries
-    assert_eq!(loaded.codegen_state.def_entries.len(), 3);
-    let foo_entry = loaded
-        .codegen_state
-        .def_entries
-        .get(&Symbol::from("foo"))
-        .unwrap();
-    assert_eq!(foo_entry.got_slot, Some(0));
-    assert_eq!(foo_entry.source.as_deref(), Some("(defn foo [x] x)"));
-    assert_eq!(foo_entry.param_count, Some(1));
+    // GOT slots are on ModuleEntry::Def in the symbol table.
+    let defs_with_slots: Vec<_> = loaded.symbol_table.all_symbols()
+        .filter_map(|(name, entry)| match entry {
+            cranelisp_types::ModuleEntry::Def { got_slot: Some(s), .. } => Some((name.clone(), *s)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(defs_with_slots.len(), 3);
+    assert!(defs_with_slots.iter().any(|(n, s)| n.as_ref() == "foo" && *s == 0));
+    assert!(defs_with_slots.iter().any(|(n, s)| n.as_ref() == "bar" && *s == 1));
+    assert!(defs_with_slots.iter().any(|(n, s)| n.as_ref() == "baz" && *s == 2));
 }
 
 // spec: design/backend/module-caching.md §4 — empty metadata round-trip
@@ -578,9 +537,14 @@ fn cache_metadata_roundtrip_empty() {
     let loaded = read_cached_metadata(&meta_path).unwrap();
 
     assert_eq!(loaded.symbol_table.path, ModuleFullPath::from("empty"));
-    assert_eq!(loaded.codegen_state.next_got_slot, 0);
-    assert!(loaded.codegen_state.got_slots.is_empty());
-    assert!(loaded.codegen_state.def_entries.is_empty());
+    // Empty metadata has no defs with GOT slots.
+    let defs_with_slots: Vec<_> = loaded.symbol_table.all_symbols()
+        .filter_map(|(_, entry)| match entry {
+            cranelisp_types::ModuleEntry::Def { got_slot: Some(_), .. } => Some(()),
+            _ => None,
+        })
+        .collect();
+    assert!(defs_with_slots.is_empty());
 }
 
 // spec: design/backend/module-caching.md §4 — read nonexistent metadata returns error
@@ -639,7 +603,8 @@ fn cache_packet_build_and_process() {
         ".meta.json should exist after processing"
     );
     let loaded = read_cached_metadata(&packet.meta_path).unwrap();
-    assert_eq!(loaded.codegen_state.next_got_slot, 1);
+    // Verify the symbol table was serialized.
+    assert_eq!(loaded.symbol_table.path, mp);
 }
 
 // spec: design/backend/module-caching.md §7 — nested module creates subdirectory
@@ -1099,20 +1064,16 @@ fn cache_load_symbol_table_equivalence() {
         "cached symbol table should have correct module path"
     );
 
-    // Verify codegen state has the expected function definitions
-    let got_slots = &metadata.codegen_state.got_slots;
-    assert!(
-        got_slots.contains_key(&Symbol::from("add-one")),
-        "cached GOT slots should contain add-one"
-    );
-    assert!(
-        got_slots.contains_key(&Symbol::from("double")),
-        "cached GOT slots should contain double"
-    );
-    assert!(
-        got_slots.contains_key(&Symbol::from("main")),
-        "cached GOT slots should contain main"
-    );
+    // Verify GOT slots on symbol table entries for expected functions
+    let has_got_slot = |name: &str| {
+        matches!(
+            metadata.symbol_table.get(&Symbol::from(name)),
+            Some(cranelisp_types::ModuleEntry::Def { got_slot: Some(_), .. })
+        )
+    };
+    assert!(has_got_slot("add-one"), "cached symbol table should have GOT slot for add-one");
+    assert!(has_got_slot("double"), "cached symbol table should have GOT slot for double");
+    assert!(has_got_slot("main"), "cached symbol table should have GOT slot for main");
 }
 
 // spec: design/backend/module-caching.md §8 — install_module_scope shared path
