@@ -15,10 +15,9 @@ use cranelisp_types::{
     CheckResult, CodegenBehaviour, CranelispError,
     DefKind, FQSymbol, MacroClauseInfo, MacroParam, ModuleEntry, ModuleFullPath,
     ModuleStrategy, ModuleStructure, Sexp, Span, Symbol, SymbolTable, TopLevel,
-    TraitName, Type, TypeDefInfo, TypeName, Warning,
+    TraitName, Type, TypeName, Warning,
 };
 
-use crate::expander::MacroEnv;
 use crate::platform::LoadedPlatform;
 use crate::platform_registry::PlatformRegistry;
 use crate::scheduler::CompileScheduler;
@@ -329,7 +328,7 @@ pub struct TypecheckProduct {
     pub file_path: Option<PathBuf>,
 }
 
-/// TARGET STATE: transient codegen input. Replaces ModuleOutput + ObjectCodegenInput.
+/// Transient codegen input for a module.
 /// Produced by typecheck, consumed by both JIT (priority workers) and .o (nice
 /// workers) codegen. Removed when scheduler signals both `inmem_done` and
 /// `object_done`. See session-restructure.md.
@@ -390,34 +389,9 @@ pub struct Introspection {
 // CompilerSession (pipeline-v4.md §5)
 // ---------------------------------------------------------------------------
 
-/// Snapshot of typecheck + program data for a module, stored by the priority
-/// worker after codegen so that nice workers can compile the `.o` file.
-#[deprecated(note = "session-restructure.md: replaced by CodegenInput")]
-pub struct ObjectCodegenInput {
-    pub check_result: CheckResult,
-    pub program: Vec<TopLevel>,
-    /// Cross-module function signatures accumulated up to this module.
-    /// Each entry is (qualified_name, param_count).
-    pub cross_module_func_sigs: Vec<(Symbol, usize)>,
-    /// Cloned symbol table for .meta.json serialization.
-    pub symbol_table: SymbolTable,
-    /// Module structure for .meta.json serialization.
-    pub module_structure: ModuleStructure,
-}
-
 // ---------------------------------------------------------------------------
-// Per-module GOT registry (pipeline-v4.md §5.1, per-module-got.md §3.1)
+// SharedState (thread-safe state for priority + nice workers)
 // ---------------------------------------------------------------------------
-// Module output (typecheck results stored for codegen to read)
-// ---------------------------------------------------------------------------
-
-/// Typecheck results for a module, stored in shared state so codegen workers
-/// can read them without receiving stack-owned values.
-#[deprecated(note = "session-restructure.md: replaced by CodegenInput")]
-pub struct ModuleOutput {
-    pub check_result: CheckResult,
-    pub program: Vec<TopLevel>,
-}
 
 /// Thread-safe state shared between the main thread and nice worker threads.
 ///
@@ -442,11 +416,6 @@ pub struct SharedState {
     /// When set to true, nice workers self-promote to normal OS priority.
     pub promote_nice_workers: AtomicBool,
 
-    /// LEGACY: replaced by codegen_inputs DashMap on CompilerSession. See session-restructure.md.
-    /// Module data for nice worker .o compilation. Populated by the priority
-    /// worker after in-memory codegen completes; consumed by nice workers.
-    pub object_codegen_inputs: Mutex<HashMap<ModuleFullPath, ObjectCodegenInput>>,
-
     /// Set of modules loaded from cache (vs. compiled from source).
     /// Used by workers to detect cache-hit modules for Linker fast path.
     /// Populated by try_cache_hit_load, read by workers during codegen.
@@ -462,27 +431,28 @@ pub struct SharedState {
     /// (record_cache_hit) during handle_import.
     pub cache_state: Mutex<Option<crate::session::CacheState>>,
 
-    /// Per-module GOT tables. Each module gets its own GotTable with
-    /// module-local slot indices. Codegen workers look up GOT base + slot
-    /// through this registry.
+    // -- Target data model (session-restructure.md) --
+    // DashMaps are inherently concurrent and accessible to both priority
+    // and nice workers via Arc<SharedState>.
 
-    /// LEGACY: replaced by codegen_inputs DashMap on CompilerSession. See session-restructure.md.
-    /// Typecheck results stored after finalize_module. Codegen workers and
-    /// nice workers read from here instead of receiving stack-owned values.
-    pub module_outputs: dashmap::DashMap<ModuleFullPath, ModuleOutput>,
+    /// Per-module typecheck products (replaces TC-internal storage).
+    pub typecheck_products: dashmap::DashMap<ModuleFullPath, TypecheckProduct>,
+    /// Transient codegen inputs (replaces module_outputs + object_codegen_inputs).
+    pub codegen_inputs: dashmap::DashMap<ModuleFullPath, CodegenInput>,
+    /// Per-module codegen products (replaces ModuleGotRegistry + def_codegen + kept_code).
+    pub codegen_products: dashmap::DashMap<ModuleFullPath, CodegenProduct>,
+    /// Per-symbol introspection data, REPL-only (replaces def_codegen for slash commands).
+    pub introspection: dashmap::DashMap<FQSymbol, Introspection>,
 }
 
 /// The compiler session — scheduler-driven concurrent compilation.
 ///
-/// One session per process. Owns the TypeChecker, codegen state, macro env,
-/// and scheduler. `register_module` spawns scoped priority worker threads
+/// One session per process. Owns the TypeChecker, codegen state, and
+/// scheduler. `register_module` spawns scoped priority worker threads
 /// that process modules from the scheduler's work queue.
 pub struct CompilerSession {
     /// Type checker state (persists across forms).
     pub tc: cranelisp_typecheck::TypeChecker,
-    /// LEGACY: replaced by macro clause ptrs in CodegenProduct.code. See session-restructure.md.
-    /// Macro environment (persists across forms — macros accumulate).
-    pub macro_env: MacroEnv,
     /// Lib directories for module resolution (§8.11.2 tier 3).
     /// Does NOT include project_root — that is tier 2 and searched separately.
     pub lib_dirs: Vec<PathBuf>,
@@ -497,7 +467,7 @@ pub struct CompilerSession {
     /// so workers get an independent clone — no aliasing between `&mut self`
     /// (used by priority worker operations) and the shared reference held
     /// by nice workers. All SharedState fields are inherently thread-safe
-    /// (Mutex, AtomicBool, read-only).
+    /// (Mutex, AtomicBool, DashMap, read-only).
     pub shared: Arc<SharedState>,
 
     /// Number of priority worker threads to spawn for module compilation.
@@ -513,12 +483,6 @@ pub struct CompilerSession {
 
     // -- REPL-specific state (pipeline-v4.md §6) --
 
-    /// LEGACY: derivable from typecheck DashMap. See session-restructure.md.
-    /// Accumulated type definitions from all inputs (for ADT value display).
-    pub type_defs: HashMap<TypeName, TypeDefInfo>,
-    /// LEGACY: derivable from typecheck DashMap. See session-restructure.md.
-    /// Maps type names to the module they were defined in (for qualified display).
-    pub type_modules: HashMap<TypeName, ModuleFullPath>,
     /// LEGACY: deleted with ModuleStructure; REPL module state is typecheck.get("user"). See session-restructure.md.
     /// Module structure for the current REPL module (tracks imports, exports,
     /// impl_sexps as they accumulate interactively). Used for persistence.
@@ -532,19 +496,6 @@ pub struct CompilerSession {
     nice_worker_handles: Vec<std::thread::JoinHandle<()>>,
     /// Nice worker count (stored for `wait_object_complete` guard).
     nice_workers: usize,
-
-    // -- Target data model (session-restructure.md) --
-    // All DashMaps on CompilerSession. Workers access via scoped-thread borrows
-    // of individual fields — DashMaps are inherently concurrent.
-
-    /// TARGET STATE: per-module typecheck products (replaces TC-internal storage).
-    pub typecheck_products: dashmap::DashMap<ModuleFullPath, TypecheckProduct>,
-    /// TARGET STATE: transient codegen inputs (replaces module_outputs + object_codegen_inputs).
-    pub codegen_inputs: dashmap::DashMap<ModuleFullPath, CodegenInput>,
-    /// TARGET STATE: per-module codegen products (replaces ModuleGotRegistry + def_codegen + kept_code).
-    pub codegen_products: dashmap::DashMap<ModuleFullPath, CodegenProduct>,
-    /// TARGET STATE: per-symbol introspection data, REPL-only (replaces def_codegen for slash commands).
-    pub introspection: dashmap::DashMap<FQSymbol, Introspection>,
 }
 
 impl CompilerSession {
@@ -564,8 +515,6 @@ impl CompilerSession {
         let platform_dirs = crate::session::assemble_platform_dirs();
 
         let tc = cranelisp_typecheck::TypeChecker::new();
-        let macro_env = MacroEnv::new();
-
         let cache_dir = project_root.join(".cranelisp-cache");
         let _ = std::fs::create_dir_all(&cache_dir);
 
@@ -584,11 +533,13 @@ impl CompilerSession {
             cache_dir: Some(cache_dir),
             compiled_o_paths: Mutex::new(Vec::new()),
             promote_nice_workers: AtomicBool::new(false),
-            object_codegen_inputs: Mutex::new(HashMap::new()),
             cached_modules: Mutex::new(HashSet::new()),
             file_to_module: Mutex::new(HashMap::new()),
             cache_state: Mutex::new(cache_state),
-            module_outputs: dashmap::DashMap::new(),
+            typecheck_products: dashmap::DashMap::new(),
+            codegen_inputs: dashmap::DashMap::new(),
+            codegen_products: dashmap::DashMap::new(),
+            introspection: dashmap::DashMap::new(),
         });
 
         // Spawn persistent nice worker threads for object codegen (.o files).
@@ -609,7 +560,6 @@ impl CompilerSession {
 
         CompilerSession {
             tc,
-            macro_env,
             lib_dirs,
             platform_dirs,
             loaded_platforms: Vec::new(),
@@ -617,8 +567,6 @@ impl CompilerSession {
             priority_workers,
             project_root,
             platform_registry: PlatformRegistry::new(),
-            type_defs: HashMap::new(),
-            type_modules: HashMap::new(),
             current_module_structure: ModuleStructure {
                 path: ModuleFullPath::from("user"),
                 file_path: None,
@@ -633,10 +581,6 @@ impl CompilerSession {
             error_modules: HashSet::new(),
             nice_worker_handles,
             nice_workers,
-            typecheck_products: dashmap::DashMap::new(),
-            codegen_inputs: dashmap::DashMap::new(),
-            codegen_products: dashmap::DashMap::new(),
-            introspection: dashmap::DashMap::new(),
         }
     }
 
@@ -692,16 +636,15 @@ impl CompilerSession {
         let worker_shared = crate::worker::PriorityWorkerShared {
             tc: &tc_mutex,
             platform_registry: &platform_mutex,
-            typecheck_products: &self.typecheck_products,
-            codegen_products: &self.codegen_products,
-            introspection: &self.introspection,
+            typecheck_products: &self.shared.typecheck_products,
+            codegen_products: &self.shared.codegen_products,
+            introspection: &self.shared.introspection,
             scheduler: &self.shared.scheduler,
             module_sexps: &module_sexps,
             suspend_states: &suspend_states,
             lib_dirs: &self.lib_dirs,
             platform_dirs: &self.platform_dirs,
             project_root: &self.project_root,
-            object_codegen_stash: &self.shared.object_codegen_inputs,
             shared_state: Some(&self.shared),
         };
 
@@ -894,7 +837,7 @@ impl CompilerSession {
                             module: symbol.module.clone(),
                             symbol: symbol.symbol.clone(),
                         };
-                        self.introspection.entry(fq).or_default().source = Some(src.to_string());
+                        self.shared.introspection.entry(fq).or_default().source = Some(src.to_string());
                     }
                     all_warnings.extend(result.warnings().iter().cloned());
                     last_result = Some(result);
@@ -918,9 +861,6 @@ impl CompilerSession {
                 }
             }
         }
-
-        // Sync type definitions for ADT value display.
-        self.sync_type_defs();
 
         if let Some(ref mut r) = last_result {
             *r.warnings_mut() = all_warnings;
@@ -965,13 +905,12 @@ impl CompilerSession {
                     tc: &mut self.tc,
                     scheduler: &self.shared.scheduler,
                     platform_registry: &mut self.platform_registry,
-                    typecheck_products: &self.typecheck_products,
-                    codegen_products: &self.codegen_products,
-                    introspection: &self.introspection,
+                    typecheck_products: &self.shared.typecheck_products,
+                    codegen_products: &self.shared.codegen_products,
+                    introspection: &self.shared.introspection,
                     lib_dirs: &self.lib_dirs,
                     platform_dirs: &self.platform_dirs,
                     project_root: &self.project_root,
-                    object_codegen_stash: None,
                     shared_state: Some(&self.shared),
                 };
 
@@ -1036,13 +975,13 @@ impl CompilerSession {
         check: &CheckResult,
     ) -> Result<EvalResult, CranelispError> {
         // Ensure typecheck product exists for this module.
-        crate::worker::ensure_typecheck_product(&self.typecheck_products, module);
+        crate::worker::ensure_typecheck_product(&self.shared.typecheck_products, module);
 
         // Build per-module CompilationEnv for both defn codegen and expr eval.
         let tc_modules = self.tc.modules_ref();
         let env_impl = crate::worker::SessionCompilationEnv {
             tc_modules,
-            typecheck_products: &self.typecheck_products,
+            typecheck_products: &self.shared.typecheck_products,
             current_module: module.clone(),
         };
 
@@ -1054,8 +993,8 @@ impl CompilerSession {
             program,
             check,
             tc_modules,
-            &self.typecheck_products,
-            &self.codegen_products,
+            &self.shared.typecheck_products,
+            &self.shared.codegen_products,
         )?;
 
         let has_expr = program.iter().any(|tl| matches!(tl, TopLevel::Expr(_)));
@@ -1120,13 +1059,12 @@ impl CompilerSession {
             tc: &mut self.tc,
             scheduler: &self.shared.scheduler,
             platform_registry: &mut self.platform_registry,
-            typecheck_products: &self.typecheck_products,
-            codegen_products: &self.codegen_products,
-            introspection: &self.introspection,
+            typecheck_products: &self.shared.typecheck_products,
+            codegen_products: &self.shared.codegen_products,
+            introspection: &self.shared.introspection,
             lib_dirs: &self.lib_dirs,
             platform_dirs: &self.platform_dirs,
             project_root: &self.project_root,
-            object_codegen_stash: None,
             shared_state: Some(&self.shared),
         };
 
@@ -1234,23 +1172,21 @@ impl CompilerSession {
         }
     }
 
-    /// Sync type definitions and module mappings from the typechecker for ADT display.
-    fn sync_type_defs(&mut self) {
-        for (name, info) in self.tc.type_def_registry().iter() {
-            self.type_defs.insert(name.clone(), info.clone());
-        }
-        // Scan module symbol tables to build type→module mapping.
+    /// Build type→module mapping on-demand from the typechecker's module tables.
+    pub fn build_type_modules(&self) -> HashMap<TypeName, ModuleFullPath> {
+        let mut map = HashMap::new();
         for entry in self.tc.modules().iter() {
             let module_path = entry.key().clone();
             for (sym, me) in entry.value().all_symbols() {
                 if matches!(me, ModuleEntry::TypeDef { .. }) {
-                    self.type_modules.insert(
+                    map.insert(
                         TypeName::from(sym.as_ref()),
                         module_path.clone(),
                     );
                 }
             }
         }
+        map
     }
 
     // -- Slash command handlers (subset for initial implementation) --
@@ -1353,7 +1289,7 @@ impl CompilerSession {
             module,
             symbol: Symbol::from(name),
         };
-        self.introspection.get(&fq)
+        self.shared.introspection.get(&fq)
     }
 
     /// /source handler: show original source text of a definition.
@@ -1438,7 +1374,8 @@ impl CompilerSession {
         };
         let module = self.tc.current_module_path().clone();
         let (resolved_entry, resolved_module) = self.resolve_entry_for_display(&entry, &module);
-        let sig = self.format_def_entry(&resolved_entry, name, &resolved_module);
+        let type_modules = self.build_type_modules();
+        let sig = self.format_def_entry(&resolved_entry, name, &resolved_module, &type_modules);
         // Append code info if available.
         if !matches!(resolved_entry,
             ModuleEntry::Macro { .. } | ModuleEntry::TypeDef { .. } | ModuleEntry::TraitDecl { .. })
@@ -1466,7 +1403,8 @@ impl CompilerSession {
         self.tc.restore(snapshot);
         match result {
             Ok(ty) => {
-                let display = format_type_qualified(&ty, &self.type_modules);
+                let type_modules = self.build_type_modules();
+                let display = format_type_qualified(&ty, &type_modules);
                 format!(":{display}")
             }
             Err(e) => format!("Error: {e}"),
@@ -1726,7 +1664,7 @@ impl CompilerSession {
                         let clause_name = Symbol::from(
                             format!("__macro_{}_clause_{}", name, idx),
                         );
-                        !self.codegen_products
+                        !self.shared.codegen_products
                             .get(&module)
                             .map(|p| p.code.contains_key(&clause_name))
                             .unwrap_or(false)
@@ -1747,13 +1685,12 @@ impl CompilerSession {
                 tc: &mut self.tc,
                 scheduler: &self.shared.scheduler,
                 platform_registry: &mut self.platform_registry,
-                typecheck_products: &self.typecheck_products,
-                codegen_products: &self.codegen_products,
-                introspection: &self.introspection,
+                typecheck_products: &self.shared.typecheck_products,
+                codegen_products: &self.shared.codegen_products,
+                introspection: &self.shared.introspection,
                 lib_dirs: &self.lib_dirs,
                 platform_dirs: &self.platform_dirs,
                 project_root: &self.project_root,
-                object_codegen_stash: None,
                 shared_state: Some(&self.shared),
             };
 
@@ -1818,7 +1755,7 @@ impl CompilerSession {
             // Check if all clauses have code pointers in codegen_products.
             let mut compiled_clauses = Vec::new();
             let mut all_compiled = true;
-            if let Some(cp) = self.codegen_products.get(&defining_module) {
+            if let Some(cp) = self.shared.codegen_products.get(&defining_module) {
                 for (idx, clause_info) in clauses.iter().enumerate() {
                     let clause_name = Symbol::from(format!("__macro_{}_clause_{}", name, idx));
                     if let Some(code) = cp.code.get(&clause_name) {
@@ -1876,7 +1813,7 @@ impl CompilerSession {
         // Discover test functions from codegen_products.
         let module = self.tc.current_module_path().clone();
         let mut tests: Vec<(String, *const u8)> = Vec::new();
-        if let Some(cp) = self.codegen_products.get(&module) {
+        if let Some(cp) = self.shared.codegen_products.get(&module) {
             for entry in cp.code.iter() {
                 let name: &str = entry.key().as_ref();
                 if !name.starts_with("test-") {
@@ -2033,7 +1970,7 @@ impl CompilerSession {
         let module_path = ModuleFullPath::from(module_name);
 
         // Check codegen_products for the compiled Code.
-        if let Some(product) = self.codegen_products.get(&module_path) {
+        if let Some(product) = self.shared.codegen_products.get(&module_path) {
             if let Some(code) = product.code.get(main_sym) {
                 return Ok(code.ptr);
             }
@@ -2262,6 +2199,7 @@ impl CompilerSession {
     /// Produces the universal output format (spec §1.1):
     ///   `:Type {value|name} ; {classification} - {docstring}`
     pub fn format_eval_result(&self, result: &EvalResult) -> String {
+        let type_modules = self.build_type_modules();
         match result {
             EvalResult::Def { symbol, .. } => {
                 let name = symbol.symbol.as_ref();
@@ -2286,18 +2224,20 @@ impl CompilerSession {
                         return format!("{symbol} ; defined");
                     }
                 };
-                self.format_def_entry(&entry, name, &resolved_module)
+                self.format_def_entry(&entry, name, &resolved_module, &type_modules)
             }
             EvalResult::Val { value, ty, .. } => {
+                let type_def_reg = self.tc.type_def_registry();
+                let type_defs = type_def_reg.as_map();
                 if ty.is_io() {
                     let inner_value = cranelisp_runtime::run_io_trampoline(*value);
                     let inner_type = ty.io_inner_type();
                     format_result_value(
-                        inner_value, &inner_type, &self.type_defs, &self.type_modules,
+                        inner_value, &inner_type, type_defs, &type_modules,
                     )
                 } else {
                     format_result_value(
-                        *value, ty, &self.type_defs, &self.type_modules,
+                        *value, ty, type_defs, &type_modules,
                     )
                 }
             }
@@ -2310,6 +2250,7 @@ impl CompilerSession {
         entry: &ModuleEntry,
         name: &str,
         module: &ModuleFullPath,
+        type_modules: &HashMap<TypeName, ModuleFullPath>,
     ) -> String {
         match entry {
             ModuleEntry::Def { scheme, kind, docstring, .. } => {
@@ -2317,9 +2258,9 @@ impl CompilerSession {
                     return format_special_form_display(name, description);
                 }
                 let base = if !scheme.constraints.is_empty() {
-                    format_scheme_display(name, scheme, module, &self.type_modules)
+                    format_scheme_display(name, scheme, module, type_modules)
                 } else {
-                    let type_str = format_type_qualified(&scheme.ty, &self.type_modules);
+                    let type_str = format_type_qualified(&scheme.ty, type_modules);
                     format!(":{type_str} {module}/{name}")
                 };
                 let classification = if matches!(kind.as_ref(), DefKind::Primitive { .. }) {
@@ -2331,7 +2272,7 @@ impl CompilerSession {
                 append_docstring_comment(base, docstring.as_deref())
             }
             ModuleEntry::Constructor { type_name, scheme, .. } => {
-                let type_str = format_type_qualified(&scheme.ty, &self.type_modules);
+                let type_str = format_type_qualified(&scheme.ty, type_modules);
                 let tn = TypeName::from(type_name.0.as_str());
                 let ctor_display =
                     if let Some(info) = self.tc.type_def_registry().get(&tn) {
@@ -2651,7 +2592,7 @@ pub fn spawn_nice_workers<'scope, 'env>(
 /// the path to `shared.compiled_o_paths` for the linker.
 ///
 /// When caching is disabled (`shared.cache_dir` is None) or no
-/// `ObjectCodegenInput` is available for a module, the worker skips
+/// `CodegenInput` is available for a module, the worker skips
 /// `.o` compilation and just marks the module as object-complete.
 ///
 /// The loop parks on `scheduler.take_object_codegen()` (condvar-based)
@@ -2687,10 +2628,9 @@ fn nice_worker_loop(shared: &SharedState) {
 
 /// Compile a single module to `.o` and `.meta.json` files in the cache directory.
 ///
-/// Retrieves the module's `ObjectCodegenInput` (stashed by the priority worker),
-/// builds an `ObjectCompileInput`, calls `compile_module_to_object()`, writes
-/// the `.o` bytes, builds `CacheMetadata`, and writes `.meta.json`. Appends the
-/// `.o` path to `shared.compiled_o_paths`.
+/// Reads the module's `CodegenInput` from the shared `codegen_inputs` DashMap
+/// (stashed by the priority worker). Reads `SymbolTable` from `typecheck_products`
+/// for .meta.json serialization.
 ///
 /// Errors are logged to stderr and do not halt the worker — the module is still
 /// marked object-complete so the scheduler lifecycle proceeds.
@@ -2701,14 +2641,8 @@ fn compile_module_object(
 ) {
     use cranelisp_backend::cache;
 
-    // Take the stashed input (lock briefly, remove entry to release memory).
-    let input = {
-        let mut inputs = shared.object_codegen_inputs.lock()
-            .unwrap_or_else(|e| e.into_inner());
-        inputs.remove(module)
-    };
-
-    let Some(input) = input else {
+    // Take the stashed input (remove entry to release memory).
+    let Some((_, input)) = shared.codegen_inputs.remove(module) else {
         // No data stashed — module may have had no compilable defns.
         return;
     };
@@ -2718,12 +2652,27 @@ fn compile_module_object(
         return;
     }
 
+    // Reconstruct a CheckResult for the object codegen pipeline.
+    // FIXME(/arch): object codegen should accept CodegenInput directly
+    // instead of requiring a full CheckResult.
+    let check_result = CheckResult {
+        method_resolutions: input.method_resolutions,
+        constrained_fn_names: HashSet::new(),
+        mono_defns: input.mono_defns,
+        expr_types: input.expr_types,
+        default_method_defns: input.default_method_defns,
+        warnings: Vec::new(),
+        type_defs: HashMap::new(),
+        constructor_to_type: HashMap::new(),
+        display: None,
+    };
+
     // Build the ObjectCompileInput from the stashed data.
     let object_input = crate::pipeline::build_object_compile_input(
         module,
         Some(&input.program),
-        Some(&input.check_result),
-        &input.cross_module_func_sigs,
+        Some(&check_result),
+        &[], // cross_module_func_sigs not accumulated in v4 path yet
     );
 
     // Compile to .o bytes via Cranelift ObjectModule.
@@ -2754,11 +2703,33 @@ fn compile_module_object(
     // Build and write .meta.json for cache-hit restoration.
     let codegen_state = crate::pipeline::build_codegen_state_for_cache(
         &input.program,
-        &input.check_result,
+        &check_result,
     );
+
+    // Read symbol table from typecheck_products (populated by priority worker).
+    let symbol_table = shared.typecheck_products
+        .get(module)
+        .map(|tp| tp.symbols.clone())
+        .unwrap_or_else(|| cranelisp_types::SymbolTable::new(module.clone()));
+
+    // Build a minimal ModuleStructure for cache metadata.
+    // The v4 pipeline stores real data on the symbol table;
+    // a stub structure with the module path is sufficient.
+    let module_structure = cranelisp_types::ModuleStructure {
+        path: module.clone(),
+        file_path: None,
+        mod_decls: Vec::new(),
+        import_specs: Vec::new(),
+        export_specs: Vec::new(),
+        platform_specs: Vec::new(),
+        impl_sexps: Vec::new(),
+        impls: Vec::new(),
+        dll_path: None,
+    };
+
     let metadata = cache::CacheMetadata {
-        symbol_table: input.symbol_table,
-        module_structure: input.module_structure,
+        symbol_table,
+        module_structure,
         codegen_state,
     };
     if let Err(e) = cache::write_cached_metadata(&meta_path, &metadata) {

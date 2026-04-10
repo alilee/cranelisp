@@ -1628,11 +1628,13 @@ mod tests {
             cache_dir: None,
             compiled_o_paths: Mutex::new(Vec::new()),
             promote_nice_workers: AtomicBool::new(false),
-            object_codegen_inputs: Mutex::new(std::collections::HashMap::new()),
             cached_modules: Mutex::new(std::collections::HashSet::new()),
             file_to_module: Mutex::new(std::collections::HashMap::new()),
             cache_state: Mutex::new(None),
-            module_outputs: dashmap::DashMap::new(),
+            typecheck_products: dashmap::DashMap::new(),
+            codegen_inputs: dashmap::DashMap::new(),
+            codegen_products: dashmap::DashMap::new(),
+            introspection: dashmap::DashMap::new(),
         });
 
         let m = mod_path("test.mod");

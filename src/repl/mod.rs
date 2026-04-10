@@ -659,7 +659,6 @@ impl ReplSession {
                     codegen_products: &self.core.codegen_products,
                     lib_dirs: &self.core.lib_dirs,
                     project_root: &self.core.project_root,
-                    object_codegen_stash: None,
                     shared_state: Some(&self.core.shared),
                 };
 
@@ -818,7 +817,6 @@ impl ReplSession {
             codegen_products: &self.core.codegen_products,
             lib_dirs: &self.core.lib_dirs,
             project_root: &self.core.project_root,
-            object_codegen_stash: None,
             shared_state: Some(&self.core.shared),
         };
 
@@ -1944,7 +1942,6 @@ fn reload_run_worker_loop(
         codegen_products: &session.core.codegen_products,
         lib_dirs: &session.core.lib_dirs,
         project_root: &session.core.project_root,
-        object_codegen_stash: None,
         shared_state: Some(&session.core.shared),
     };
 

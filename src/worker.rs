@@ -47,13 +47,8 @@ pub struct WorkerContext<'a> {
     pub lib_dirs: &'a [PathBuf],
     pub platform_dirs: &'a [PathBuf],
     pub project_root: &'a Path,
-    /// Optional stash for nice workers to pick up object codegen data.
-    /// When Some, the priority worker stores CheckResult + Program after
-    /// in-memory codegen so nice workers can compile `.o` files.
-    pub object_codegen_stash: Option<&'a std::sync::Mutex<
-        HashMap<ModuleFullPath, crate::session_v4::ObjectCodegenInput>,
-    >>,
-    /// Optional reference to v4 shared state for cache-hit loading.
+    /// Optional reference to v4 shared state for cache-hit loading and
+    /// codegen input stashing for nice workers.
     /// None for REPL contexts where caching is not used.
     pub shared_state: Option<&'a crate::session_v4::SharedState>,
 }
@@ -627,22 +622,11 @@ fn finalize_module(
         ctx.tc.compute_display_info_public(expanded_program, &accumulator.defn_type_vars);
 
     // NOTE: notify_typecheck_done is NOT called here. The caller is
-    // responsible for stashing ObjectCodegenInput and calling
+    // responsible for stashing CodegenInput and calling
     // notify_typecheck_done AFTER, so that nice workers cannot claim
     // the module before the stash is populated.
 
     let program = expanded_program.to_vec();
-
-    // Store in module_outputs so codegen workers can read from shared state.
-    if let Some(shared) = ctx.shared_state {
-        shared.module_outputs.insert(
-            module.clone(),
-            crate::session_v4::ModuleOutput {
-                check_result: check_result.clone(),
-                program: program.clone(),
-            },
-        );
-    }
 
     Ok(ProcessResult::Complete {
         check_result,
@@ -2743,9 +2727,8 @@ pub fn priority_worker_loop(
                         // notify typecheck_done. Order matters: nice workers
                         // wake on notify_typecheck_done, so the stash must
                         // be populated first.
-                        stash_object_codegen_input(
-                            ctx.object_codegen_stash,
-                            ctx.tc,
+                        stash_codegen_input(
+                            ctx.shared_state,
                             &module,
                             check_result,
                             program,
@@ -2798,53 +2781,29 @@ pub fn priority_worker_loop(
 /// Program, SymbolTable, and ModuleStructure so that nice workers can
 /// compile `.o` files and write `.meta.json` without re-accessing the
 /// TypeChecker.
-fn stash_object_codegen_input(
-    stash: Option<&std::sync::Mutex<
-        HashMap<ModuleFullPath, crate::session_v4::ObjectCodegenInput>,
-    >>,
-    tc: &cranelisp_typecheck::TypeChecker,
+/// Stash codegen input for nice worker .o compilation.
+///
+/// Inserts a `CodegenInput` into the shared `codegen_inputs` DashMap.
+/// Nice workers read from this DashMap and from `typecheck_products`
+/// for the symbol table needed by .meta.json serialization.
+fn stash_codegen_input(
+    shared_state: Option<&crate::session_v4::SharedState>,
     module: &ModuleFullPath,
     check_result: CheckResult,
     program: Vec<TopLevel>,
 ) {
-    let Some(stash) = stash else { return };
+    let Some(shared) = shared_state else { return };
 
-    // Clone symbol table from TypeChecker for .meta.json serialization.
-    let symbol_table = tc.module_table_cloned(module)
-        .unwrap_or_else(|| cranelisp_types::SymbolTable::new(module.clone()));
-
-    // Build a minimal ModuleStructure. The v4 pipeline handles import/export
-    // declarations inline during process_module_forms rather than extracting
-    // them into a structure upfront. A default structure with the module path
-    // is sufficient for cache metadata — the symbol table carries the real data.
-    let module_structure = cranelisp_types::ModuleStructure {
-        path: module.clone(),
-        file_path: None,
-        mod_decls: Vec::new(),
-        import_specs: Vec::new(),
-        export_specs: Vec::new(),
-        platform_specs: Vec::new(),
-        impl_sexps: Vec::new(),
-        impls: Vec::new(),
-        dll_path: None,
-    };
-
-    let input = crate::session_v4::ObjectCodegenInput {
-        check_result,
-        program,
-        // Cross-module func_sigs are not accumulated in the v4 path yet.
-        // The nice worker will compile with an empty list, which means
-        // cross-module GOT references won't have slot assignments in the
-        // `.o` file. This is acceptable for now — full cross-module GOT
-        // support requires the linker integration (Step 10+).
-        cross_module_func_sigs: Vec::new(),
-        symbol_table,
-        module_structure,
-    };
-
-    if let Ok(mut map) = stash.lock() {
-        map.insert(module.clone(), input);
-    }
+    shared.codegen_inputs.insert(
+        module.clone(),
+        crate::session_v4::CodegenInput {
+            method_resolutions: check_result.method_resolutions,
+            expr_types: check_result.expr_types,
+            mono_defns: check_result.mono_defns,
+            default_method_defns: check_result.default_method_defns,
+            program,
+        },
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -2871,9 +2830,6 @@ pub(crate) struct PriorityWorkerShared<'a> {
     pub(crate) lib_dirs: &'a [PathBuf],
     pub(crate) platform_dirs: &'a [PathBuf],
     pub(crate) project_root: &'a Path,
-    pub(crate) object_codegen_stash: &'a std::sync::Mutex<
-        HashMap<ModuleFullPath, crate::session_v4::ObjectCodegenInput>,
-    >,
     pub(crate) shared_state: Option<&'a crate::session_v4::SharedState>,
 }
 
@@ -2961,7 +2917,6 @@ fn handle_typecheck_work(
         lib_dirs: shared.lib_dirs,
         platform_dirs: shared.platform_dirs,
         project_root: shared.project_root,
-        object_codegen_stash: Some(shared.object_codegen_stash),
         shared_state: shared.shared_state,
     };
 
@@ -2986,9 +2941,8 @@ fn handle_typecheck_work(
             )?;
 
             // Stash data for nice worker .o + .meta.json.
-            stash_object_codegen_input(
-                ctx.object_codegen_stash,
-                ctx.tc,
+            stash_codegen_input(
+                ctx.shared_state,
                 module,
                 check_result,
                 program,

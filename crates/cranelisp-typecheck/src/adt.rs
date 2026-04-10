@@ -64,6 +64,12 @@ impl TypeDefRegistry {
         self.type_defs.iter()
     }
 
+    /// Borrow the underlying type definition map.
+    /// Used by display functions that take `&HashMap<TypeName, TypeDefInfo>`.
+    pub fn as_map(&self) -> &HashMap<TypeName, TypeDefInfo> {
+        &self.type_defs
+    }
+
     /// Build a map of known type names with their type parameter counts.
     /// Used by `resolve_type_expr` for ADT lookup and arity validation.
     pub fn known_types(&self) -> crate::resolve::KnownTypes {
