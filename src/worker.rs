@@ -25,7 +25,7 @@ use crate::platform_registry::PlatformRegistry;
 use crate::scheduler::{CompileScheduler, PriorityWork};
 
 // ---------------------------------------------------------------------------
-// WorkerContext — bundled worker parameters (G-1)
+// ModuleCompiler — bundled worker parameters (G-1)
 // ---------------------------------------------------------------------------
 
 /// Shared context for the priority worker loop and process_module_forms.
@@ -34,7 +34,7 @@ use crate::scheduler::{CompileScheduler, PriorityWork};
 /// and `register_exports_with_state` are made `pub` on the TC crate.
 /// PlatformRegistry remains `&mut` because `register()` needs mutation
 /// during platform form processing.
-pub struct WorkerContext<'a> {
+pub struct ModuleCompiler<'a> {
     pub tc: &'a mut cranelisp_typecheck::TypeChecker,
     pub scheduler: &'a CompileScheduler,
     pub platform_registry: &'a mut PlatformRegistry,
@@ -438,7 +438,7 @@ enum BlockAction {
 /// `accumulator`: may be a resumed accumulator (saved across suspension)
 /// or freshly created for first invocation.
 pub fn process_module_forms(
-    ctx: &mut WorkerContext,
+    ctx: &mut ModuleCompiler,
     module: &ModuleFullPath,
     sexps: &[Sexp],
     start_form_index: usize,
@@ -595,7 +595,7 @@ fn separate_macros(
 
 /// Finalize a fully typechecked module: run post-passes and build CheckResult.
 fn finalize_module(
-    ctx: &mut WorkerContext,
+    ctx: &mut ModuleCompiler,
     module: &ModuleFullPath,
     expanded_program: &[TopLevel],
     accumulator: &mut ModuleCheckAccumulator,
@@ -698,7 +698,7 @@ enum Pass2Result {
 /// - Defmacro: skip (already registered in Pass 1).
 /// - Regular: try expand, build AST, typecheck body.
 fn pass2_check_bodies_with_expansion(
-    ctx: &mut WorkerContext,
+    ctx: &mut ModuleCompiler,
     module: &ModuleFullPath,
     sexps: &[Sexp],
     start_form_index: usize,
@@ -802,7 +802,7 @@ fn pass2_check_bodies_with_expansion(
 /// (e.g. const/def expand to defmacro). These must be added to the
 /// caller's macro_names so subsequent forms can expand them.
 fn process_regular_form(
-    ctx: &mut WorkerContext,
+    ctx: &mut ModuleCompiler,
     module: &ModuleFullPath,
     sexp: &Sexp,
     macro_infos: &[(Symbol, cranelisp_frontend::DefmacroInfo, Sexp)],
@@ -889,7 +889,7 @@ fn process_regular_form(
 /// The function is idempotent on resume: already-loaded specs are re-registered
 /// (register_imports is idempotent), and new deps trigger blocking (F2 fix).
 fn handle_import(
-    ctx: &mut WorkerContext,
+    ctx: &mut ModuleCompiler,
     module: &ModuleFullPath,
     specs: Vec<ImportSpec>,
 ) -> Result<BlockAction, CranelispError> {
@@ -976,7 +976,7 @@ fn handle_import(
 /// TypecheckDone, GOT slots pre-allocated. Returns `false` on any
 /// cache miss (caller falls through to full typecheck path).
 fn try_cache_hit_load(
-    ctx: &mut WorkerContext,
+    ctx: &mut ModuleCompiler,
     dep: &ModuleFullPath,
     dep_file: &Path,
 ) -> bool {
@@ -1085,7 +1085,7 @@ fn try_cache_hit_load(
 /// loaded, we trigger dependency loading via the same path as `handle_import`
 /// and return `BlockAction::Block`.
 fn handle_export(
-    ctx: &mut WorkerContext,
+    ctx: &mut ModuleCompiler,
     module: &ModuleFullPath,
     specs: &[ExportSpec],
 ) -> Result<BlockAction, CranelispError> {
@@ -1161,7 +1161,7 @@ fn handle_export(
 /// before the parent can resolve these references, so we block for it — same
 /// as `handle_import` does for explicit imports.
 fn handle_mod(
-    ctx: &mut WorkerContext,
+    ctx: &mut ModuleCompiler,
     module: &ModuleFullPath,
     decl: &cranelisp_types::ModDecl,
 ) -> Result<BlockAction, CranelispError> {
@@ -1238,7 +1238,7 @@ fn handle_mod(
 /// Platform loading is NOT a cross-module blocking operation. The DLL is
 /// loaded synchronously. Type signatures are registered in TC immediately.
 fn handle_platform(
-    ctx: &mut WorkerContext,
+    ctx: &mut ModuleCompiler,
     spec: &PlatformSpec,
 ) -> Result<(), CranelispError> {
     let (platform, _jit_syms) = crate::platform::load_and_register_platform(
@@ -1326,7 +1326,7 @@ fn write_inline_mod_to_disk(
 fn try_expand_for_pass2(
     sexp: &Sexp,
     module: &ModuleFullPath,
-    ctx: &mut WorkerContext,
+    ctx: &mut ModuleCompiler,
     macro_infos: &[(Symbol, cranelisp_frontend::DefmacroInfo, Sexp)],
     macro_names: &[&str],
     accumulator: &mut ModuleCheckAccumulator,
@@ -1439,7 +1439,7 @@ fn sexp_contains_macro_call(sexp: &Sexp, macro_names: &[&str]) -> bool {
 /// macro (from `ModuleEntry.callees`) and compiles any uncompiled
 /// dependencies first. Notifies the scheduler after each symbol is compiled.
 fn compile_macro_if_needed(
-    ctx: &mut WorkerContext,
+    ctx: &mut ModuleCompiler,
     module: &ModuleFullPath,
     info: &cranelisp_frontend::DefmacroInfo,
     span: Span,
@@ -1657,7 +1657,7 @@ fn build_check_from_accumulator(
 /// isolated JIT per clause. Uses `check_form` (per-form API) instead of
 /// the monolithic `tc.check()`.
 fn compile_macro_clause_inline(
-    ctx: &mut WorkerContext,
+    ctx: &mut ModuleCompiler,
     macro_name: &Symbol,
     clause_idx: usize,
     clause: &cranelisp_frontend::MacroClause,
@@ -1872,7 +1872,7 @@ fn collect_persistent_macro_names(tc: &cranelisp_typecheck::TypeChecker) -> Vec<
 /// Looks up the macro's sexp from the symbol table (following Import/Reexport
 /// chains as needed), parses DefmacroInfo, and compiles clauses if not already compiled.
 fn compile_persistent_macro_if_needed(
-    ctx: &mut WorkerContext,
+    ctx: &mut ModuleCompiler,
     module: &ModuleFullPath,
     macro_name: &str,
     span: Span,
@@ -1934,7 +1934,7 @@ fn resolve_macro_sexp(
 /// Called from `make_defmacro_result` to ensure the macro is compiled and
 /// available for expansion in subsequent REPL evals.
 pub fn compile_macro_for_repl(
-    ctx: &mut WorkerContext,
+    ctx: &mut ModuleCompiler,
     module: &ModuleFullPath,
     info: &cranelisp_frontend::DefmacroInfo,
     span: Span,
@@ -2074,7 +2074,7 @@ fn register_default_methods(
 /// Returns `Some(ProcessResult::Blocked { .. })` if the prelude must be compiled
 /// first, `None` if prelude is already loaded, not found, or suppressed.
 fn inject_prelude_if_needed(
-    ctx: &mut WorkerContext,
+    ctx: &mut ModuleCompiler,
     module: &ModuleFullPath,
     sexps: &[Sexp],
 ) -> Result<Option<ProcessResult>, CranelispError> {
@@ -2185,7 +2185,7 @@ fn sexps_reference_prelude(sexps: &[Sexp]) -> bool {
 /// Called at the start of Replace processing. Preserves GOT slot assignments
 /// so re-compiled definitions land in the same slots. Zeroing the slots
 /// ensures stale code pointers are not callable during recompilation.
-fn clear_module_codegen(ctx: &mut WorkerContext, module: &ModuleFullPath) {
+fn clear_module_codegen(ctx: &mut ModuleCompiler, module: &ModuleFullPath) {
     // Collect qualified symbol names for this module from the TC symbol table.
     let symbols: Vec<cranelisp_types::Symbol> = {
         let table = ctx.tc.symbol_table();
@@ -2672,7 +2672,7 @@ pub(crate) struct ModuleSuspendState {
 ///
 /// `module_sexps` grows dynamically as dependencies are discovered (G-2).
 pub fn priority_worker_loop(
-    ctx: &mut WorkerContext,
+    ctx: &mut ModuleCompiler,
     module_sexps: &mut HashMap<ModuleFullPath, Vec<Sexp>>,
 ) -> Result<(), CranelispError> {
     let mut suspend_states: HashMap<ModuleFullPath, ModuleSuspendState> = HashMap::new();
@@ -2816,7 +2816,7 @@ fn stash_codegen_input(
 /// codegen state. Workers lock the Mutexes when processing work items.
 /// With the current `&mut self` TypeChecker API, workers serialize on
 /// the TC mutex. True parallelism comes when TC gets full `&self` API.
-pub(crate) struct PriorityWorkerShared<'a> {
+pub(crate) struct PriorityWorkerRefs<'a> {
     pub(crate) tc: &'a std::sync::Mutex<cranelisp_typecheck::TypeChecker>,
     pub(crate) platform_registry: &'a std::sync::Mutex<PlatformRegistry>,
     pub(crate) typecheck_products: &'a dashmap::DashMap<ModuleFullPath, crate::session_v4::TypecheckProduct>,
@@ -2839,7 +2839,7 @@ pub(crate) struct PriorityWorkerShared<'a> {
 /// Locks the TypeChecker mutex for each work item (serialized until TC
 /// gets `&self` API).
 pub(crate) fn priority_worker_thread(
-    shared: &PriorityWorkerShared,
+    shared: &PriorityWorkerRefs,
     _worker_id: usize,
 ) {
     loop {
@@ -2867,10 +2867,10 @@ pub(crate) fn priority_worker_thread(
 
 /// Handle a Typecheck work item under the TC mutex lock.
 ///
-/// Locks TC + PlatformRegistry, builds a WorkerContext, and runs
+/// Locks TC + PlatformRegistry, builds a ModuleCompiler, and runs
 /// process_module_forms + codegen_module_symbols.
 fn handle_typecheck_work(
-    shared: &PriorityWorkerShared,
+    shared: &PriorityWorkerRefs,
     module: &ModuleFullPath,
 ) -> Result<(), CranelispError> {
     let start_idx = shared.scheduler.module_resume_from_form(module)
@@ -2907,7 +2907,7 @@ fn handle_typecheck_work(
     let mut platform_registry = shared.platform_registry.lock()
         .unwrap_or_else(|e| e.into_inner());
 
-    let mut ctx = WorkerContext {
+    let mut ctx = ModuleCompiler {
         tc: &mut tc,
         scheduler: shared.scheduler,
         platform_registry: &mut platform_registry,

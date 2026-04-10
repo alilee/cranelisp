@@ -21,7 +21,7 @@ use cranelisp_types::{
 use crate::platform::LoadedPlatform;
 use crate::platform_registry::PlatformRegistry;
 use crate::scheduler::CompileScheduler;
-use crate::worker::WorkerContext;
+use crate::worker::ModuleCompiler;
 
 // Re-export display functions so tests can import from session_v4 instead of repl.
 pub use cranelisp_backend::display::format_result_value;
@@ -483,10 +483,6 @@ pub struct CompilerSession {
 
     // -- REPL-specific state (pipeline-v4.md §6) --
 
-    /// LEGACY: deleted with ModuleStructure; REPL module state is typecheck.get("user"). See session-restructure.md.
-    /// Module structure for the current REPL module (tracks imports, exports,
-    /// impl_sexps as they accumulate interactively). Used for persistence.
-    pub current_module_structure: ModuleStructure,
     /// LEGACY: replaced by scheduler state (tracks Failed modules). See session-restructure.md.
     /// Modules that failed reload (file watcher). While non-empty, expression
     /// evaluation is blocked.
@@ -567,17 +563,6 @@ impl CompilerSession {
             priority_workers,
             project_root,
             platform_registry: PlatformRegistry::new(),
-            current_module_structure: ModuleStructure {
-                path: ModuleFullPath::from("user"),
-                file_path: None,
-                mod_decls: vec![],
-                import_specs: vec![],
-                export_specs: vec![],
-                platform_specs: vec![],
-                impl_sexps: vec![],
-                impls: vec![],
-                dll_path: None,
-            },
             error_modules: HashSet::new(),
             nice_worker_handles,
             nice_workers,
@@ -633,7 +618,7 @@ impl CompilerSession {
         let platform_mutex = Mutex::new(platform_registry);
 
         // Build shared worker context for scoped threads.
-        let worker_shared = crate::worker::PriorityWorkerShared {
+        let worker_shared = crate::worker::PriorityWorkerRefs {
             tc: &tc_mutex,
             platform_registry: &platform_mutex,
             typecheck_products: &self.shared.typecheck_products,
@@ -901,7 +886,7 @@ impl CompilerSession {
             let single_sexp = [sexp.clone()];
 
             let result = {
-                let mut wctx = WorkerContext {
+                let mut wctx = ModuleCompiler {
                     tc: &mut self.tc,
                     scheduler: &self.shared.scheduler,
                     platform_registry: &mut self.platform_registry,
@@ -1055,7 +1040,7 @@ impl CompilerSession {
         let mut module_sexps = HashMap::new();
         module_sexps.insert(dep_module.clone(), dep_sexps.to_vec());
 
-        let mut ctx = WorkerContext {
+        let mut ctx = ModuleCompiler {
             tc: &mut self.tc,
             scheduler: &self.shared.scheduler,
             platform_registry: &mut self.platform_registry,
@@ -1681,7 +1666,7 @@ impl CompilerSession {
             let info = cranelisp_frontend::parse_defmacro(sexp)?;
             let mut accumulator = ModuleCheckAccumulator::new();
 
-            let mut wctx = WorkerContext {
+            let mut wctx = ModuleCompiler {
                 tc: &mut self.tc,
                 scheduler: &self.shared.scheduler,
                 platform_registry: &mut self.platform_registry,

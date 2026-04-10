@@ -627,7 +627,7 @@ impl ReplSession {
     /// Uses a loop with a max retry counter to resolve Blocked dependencies
     /// instead of unbounded recursion.
     fn process_single_form_v4(&mut self, sexp: &Sexp) -> Result<ReplResult, CranelispError> {
-        use crate::worker::{self, ProcessResult, WorkerContext};
+        use crate::worker::{self, ProcessResult, ModuleCompiler};
         use cranelisp_typecheck::ModuleCheckAccumulator;
 
         const MAX_DEP_RETRIES: usize = 100;
@@ -650,7 +650,7 @@ impl ReplSession {
                     crate::session::SharedCodegenState::extract_from(&mut self.core.inmem_worker);
                 let mut worker_jit = crate::session::WorkerJitState::new();
 
-                let mut wctx = WorkerContext {
+                let mut wctx = ModuleCompiler {
                     tc: &mut self.core.tc,
                     scheduler,
                     shared_codegen: &shared_codegen,
@@ -808,7 +808,7 @@ impl ReplSession {
             crate::session::SharedCodegenState::extract_from(&mut self.core.inmem_worker);
         let mut worker_jit = crate::session::WorkerJitState::new();
 
-        let mut ctx = crate::worker::WorkerContext {
+        let mut ctx = crate::worker::ModuleCompiler {
             tc: &mut self.core.tc,
             scheduler,
             shared_codegen: &shared_codegen,
@@ -1917,7 +1917,7 @@ fn reload_via_scheduler(
 
 /// Run the priority worker loop inline for reload processing.
 ///
-/// Extracts shared codegen state, builds a WorkerContext, runs the loop,
+/// Extracts shared codegen state, builds a ModuleCompiler, runs the loop,
 /// and syncs state back. Mirrors the pattern in `compile_dep_inline_v4`.
 fn reload_run_worker_loop(
     session: &mut ReplSession,
@@ -1933,7 +1933,7 @@ fn reload_run_worker_loop(
         crate::session::SharedCodegenState::extract_from(&mut session.core.inmem_worker);
     let mut worker_jit = crate::session::WorkerJitState::new();
 
-    let mut ctx = crate::worker::WorkerContext {
+    let mut ctx = crate::worker::ModuleCompiler {
         tc: &mut session.core.tc,
         scheduler,
         shared_codegen: &shared_codegen,
