@@ -246,7 +246,6 @@ pub fn compile_and_register_defn_shared(
         };
         let mut entry = intr_map.entry(fq).or_default();
         entry.clif_ir = Some(artifacts.clif_ir);
-        entry.ast = Some(defn.clone());
         entry.disasm = artifacts.disasm;
         entry.code_size = artifacts.code_size;
     }

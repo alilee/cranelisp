@@ -347,6 +347,7 @@ pub(crate) fn ensure_typecheck_product(
             symbols: cranelisp_types::SymbolTable::new(module.clone()),
             got: std::sync::Arc::new(cranelisp_backend::got::GotTable::new()),
             file_path: None,
+            source_text: None,
         }
     });
 }
@@ -860,18 +861,35 @@ fn process_regular_form(
         let result = ctx.tc.check_form(module, form, CheckPass::CheckBody, accumulator)?;
         ctx.tc.merge_form_result(module, accumulator, result);
 
-        // Store original sexp for /sexp REPL command.
+        // Populate introspection for REPL slash commands (--repl only).
         if let Some(intr_map) = ctx.introspection {
-            let name = match form {
-                TopLevel::Defn(defn) => Some(defn.name.clone()),
-                _ => None,
-            };
-            if let Some(name) = name {
+            if let TopLevel::Defn(defn) = form {
                 let fq = cranelisp_types::FQSymbol {
                     module: module.clone(),
-                    symbol: name.clone(),
+                    symbol: defn.name.clone(),
                 };
-                intr_map.entry(fq).or_default().sexp = Some(sexp.clone());
+                let mut entry = intr_map.entry(fq).or_default();
+                // Source: extract from module source_text via sexp span.
+                // REPL eval may overwrite with the actual input text later.
+                if entry.source.is_none() {
+                    let span = sexp.span();
+                    let src = ctx.typecheck_products.get(module)
+                        .and_then(|tp| tp.source_text.as_ref().and_then(|text| {
+                            let start = span.start as usize;
+                            let end = span.end as usize;
+                            if start < end && end <= text.len() {
+                                Some(text[start..end].to_string())
+                            } else {
+                                None
+                            }
+                        }));
+                    entry.source = src.or_else(|| Some(crate::pretty::pretty_print(sexp)));
+                }
+                entry.sexp = Some(sexp.clone());
+                if let Some(ref expanded) = effective_sexp {
+                    entry.expanded = Some(expanded.clone());
+                }
+                entry.ast = Some(defn.clone());
             }
         }
         if let TopLevel::Defn(defn) = form {
@@ -957,6 +975,14 @@ fn handle_import(
             }
         })?;
         let dep_sexps = cranelisp_frontend::parse(&source)?;
+
+        // Store source text on typecheck product for /source introspection (--repl).
+        if ctx.introspection.is_some() {
+            ensure_typecheck_product(ctx.typecheck_products, dep);
+            if let Some(mut tp) = ctx.typecheck_products.get_mut(dep) {
+                tp.source_text = Some(source);
+            }
+        }
 
         // Register dep with scheduler (idempotent — skips if already registered).
         ctx.scheduler.register_module(dep.clone(), true);
@@ -1149,6 +1175,14 @@ fn handle_export(
         })?;
         let dep_sexps = cranelisp_frontend::parse(&source)?;
 
+        // Store source text for /source introspection (--repl).
+        if ctx.introspection.is_some() {
+            ensure_typecheck_product(ctx.typecheck_products, dep);
+            if let Some(mut tp) = ctx.typecheck_products.get_mut(dep) {
+                tp.source_text = Some(source);
+            }
+        }
+
         // Register dep with scheduler and block.
         ctx.scheduler.register_module(dep.clone(), true);
         ctx.scheduler.block_for_typecheck(module, dep, &Symbol::from("*"))?;
@@ -1228,6 +1262,14 @@ fn handle_mod(
         }
     })?;
     let dep_sexps = cranelisp_frontend::parse(&source)?;
+
+    // Store source text for /source introspection (--repl).
+    if ctx.introspection.is_some() {
+        ensure_typecheck_product(ctx.typecheck_products, &sub_path);
+        if let Some(mut tp) = ctx.typecheck_products.get_mut(&sub_path) {
+            tp.source_text = Some(source);
+        }
+    }
 
     // Register dep with scheduler and block for typecheck.
     ctx.scheduler.register_module(sub_path.clone(), true);
@@ -2107,6 +2149,14 @@ fn inject_prelude_if_needed(
                 }
             })?;
             let prelude_sexps = cranelisp_frontend::parse(&source)?;
+
+            // Store source text for /source introspection (--repl).
+            if ctx.introspection.is_some() {
+                ensure_typecheck_product(ctx.typecheck_products, &prelude_path);
+                if let Some(mut tp) = ctx.typecheck_products.get_mut(&prelude_path) {
+                    tp.source_text = Some(source);
+                }
+            }
 
             ctx.scheduler.register_module(prelude_path.clone(), true);
             ctx.scheduler.block_for_typecheck(

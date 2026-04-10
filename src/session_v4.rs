@@ -326,6 +326,9 @@ pub struct TypecheckProduct {
     /// can read the base address concurrently.
     pub got: std::sync::Arc<cranelisp_backend::got::GotTable>,
     pub file_path: Option<PathBuf>,
+    /// Module source text, retained in --repl mode for /source introspection.
+    /// Sexp spans index into this string. None for cache-hit modules and batch mode.
+    pub source_text: Option<String>,
 }
 
 /// Transient codegen input for a module.
@@ -378,6 +381,7 @@ unsafe impl Sync for Code {}
 pub struct Introspection {
     pub source: Option<String>,
     pub sexp: Option<Sexp>,
+    pub expanded: Option<Sexp>,
     pub ast: Option<cranelisp_types::Defn>,
     pub clif_ir: Option<String>,
     pub disasm: Option<String>,
