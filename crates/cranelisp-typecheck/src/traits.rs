@@ -268,7 +268,6 @@ impl TypeChecker {
                     }),
                     callees: Vec::new(),
                     got_slot: None,
-                    defn: None,
                 },
             );
 
@@ -332,7 +331,6 @@ impl TypeChecker {
                 }),
                 callees: Vec::new(),
                 got_slot: None,
-                defn: None,
             },
         );
 

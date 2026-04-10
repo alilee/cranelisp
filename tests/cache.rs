@@ -53,7 +53,6 @@ fn make_test_metadata_with_defs(module_path: &str, def_names: &[&str]) -> CacheM
                 visibility: Visibility::Public,
                 callees: vec![],
                 got_slot: Some(i),
-                defn: None,
             },
         );
     }

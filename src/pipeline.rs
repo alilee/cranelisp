@@ -12,7 +12,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use cranelisp_types::{
-    CheckResult, CranelispError, Defn, ModuleFullPath,
+    CheckResult, CranelispError, Defn, FQSymbol, ModuleFullPath,
     Program, Span, Symbol, Type,
 };
 
@@ -179,6 +179,7 @@ fn compile_and_execute_expr_with_trace(
 ///
 /// Writes `Code { jit, ptr }` to `codegen_products` (target state DashMap).
 /// GOT slot resolution goes through `env` (SessionCompilationEnv).
+/// If `introspection` is provided, populates CLIF IR, AST, disasm, and code_size.
 pub fn compile_and_register_defn_shared(
     jit_symbols: &[(String, *const u8)],
     got_data_defs: &[(String, *const u8)],
@@ -187,6 +188,7 @@ pub fn compile_and_register_defn_shared(
     env: &dyn cranelisp_backend::compiler::CompilationEnv,
     module_got: &std::sync::Arc<cranelisp_backend::got::GotTable>,
     codegen_products: &dashmap::DashMap<ModuleFullPath, crate::session_v4::CodegenProduct>,
+    introspection: Option<&dashmap::DashMap<FQSymbol, crate::session_v4::Introspection>>,
     module: &ModuleFullPath,
     disable_dealloc: bool,
 ) -> Result<(), CranelispError> {
@@ -222,7 +224,7 @@ pub fn compile_and_register_defn_shared(
     if disable_dealloc {
         compile_ctx.dealloc_func_id = None;
     }
-    let _clif_ir = jit.compile_defn(defn, compile_ctx)?;
+    let artifacts = jit.compile_defn(defn, compile_ctx)?;
 
     let code_ptr = jit.finalize_and_get_ptr(&defn.name, defn.params().len())?;
 
@@ -235,6 +237,19 @@ pub fn compile_and_register_defn_shared(
         defn.name.clone(),
         crate::session_v4::Code { jit, ptr: code_ptr },
     );
+
+    // Populate introspection data (REPL-only).
+    if let Some(intr_map) = introspection {
+        let fq = FQSymbol {
+            module: module.clone(),
+            symbol: defn.name.clone(),
+        };
+        let mut entry = intr_map.entry(fq).or_default();
+        entry.clif_ir = Some(artifacts.clif_ir);
+        entry.ast = Some(defn.clone());
+        entry.disasm = artifacts.disasm;
+        entry.code_size = artifacts.code_size;
+    }
 
     Ok(())
 }

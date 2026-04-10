@@ -372,17 +372,16 @@ pub struct Code {
 unsafe impl Send for Code {}
 unsafe impl Sync for Code {}
 
-/// TARGET STATE: REPL-only per-symbol introspection data. Replaces DefCodegen's introspection fields.
+/// REPL-only per-symbol introspection data.
 /// Not populated during batch. See session-restructure.md.
 #[derive(Debug, Clone, Default)]
 pub struct Introspection {
     pub source: Option<String>,
     pub sexp: Option<Sexp>,
-    pub defn: Option<cranelisp_types::Defn>,
+    pub ast: Option<cranelisp_types::Defn>,
     pub clif_ir: Option<String>,
     pub disasm: Option<String>,
     pub code_size: Option<usize>,
-    pub compile_duration: Option<std::time::Duration>,
 }
 
 // ---------------------------------------------------------------------------
@@ -980,6 +979,7 @@ impl CompilerSession {
             tc_modules,
             &self.shared.typecheck_products,
             &self.shared.codegen_products,
+            Some(&self.shared.introspection),
         )?;
 
         let has_expr = program.iter().any(|tl| matches!(tl, TopLevel::Expr(_)));
@@ -1312,7 +1312,7 @@ impl CompilerSession {
             return "usage: /ast <name>".to_string();
         }
         if let Some(intr) = self.get_introspection(name) {
-            if let Some(ref defn) = intr.defn {
+            if let Some(ref defn) = intr.ast {
                 return format!("; ast for {name}\n{:#?}", defn);
             }
         }
@@ -1369,10 +1369,7 @@ impl CompilerSession {
                 let size_str = intr.code_size
                     .map(|s| format!("{s} bytes"))
                     .unwrap_or_else(|| "? bytes".to_string());
-                let time_str = intr.compile_duration
-                    .map(|d| format!("{}ms", d.as_millis()))
-                    .unwrap_or_else(|| "?ms".to_string());
-                return format!("{sig}\n  {size_str}, {time_str}");
+                return format!("{sig}\n  {size_str}");
             }
         }
         sig

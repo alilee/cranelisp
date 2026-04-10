@@ -1584,26 +1584,16 @@ fn compile_dep_symbol_inline(
         build_empty_check_from_tc(tc)
     };
 
-    // Look up the defn from the TC's symbol table.
-    let defn = tc.modules_ref()
-        .get(module)
-        .and_then(|st| st.get(symbol.as_ref()).and_then(|entry| {
-            if let ModuleEntry::Def { defn, .. } = entry {
-                defn.as_ref().map(|d| d.as_ref().clone())
-            } else {
-                None
-            }
-        }));
-
-    if let Some(defn) = defn {
-        let single = [cranelisp_types::TopLevel::Defn(defn.clone())];
-        pre_register_got_slots_in_tc(tc.modules_ref(), module, &single, &check);
-        compile_and_register_defn_shared(
-            jit_symbols, got_data_defs, &defn, &check, env, module_got,
-            codegen_products, module, false,
-        )?;
-    }
-
+    // The function body (Defn AST) is not stored on the symbol table —
+    // it lives transiently in the program during compilation. For cross-module
+    // deps that have already been compiled, the code pointer is in the GOT
+    // and no recompilation is needed. For same-module deps, they will be
+    // compiled as part of the normal program compilation flow.
+    //
+    // FIXME(/backend): if a dep symbol hasn't been compiled yet (e.g.,
+    // forward reference to a function defined later in the same module),
+    // this is a no-op and the macro may fail at expansion time.
+    let _ = (tc, jit_symbols, got_data_defs, module, symbol, &check, env, module_got, codegen_products);
     Ok(())
 }
 
@@ -1728,7 +1718,7 @@ fn compile_macro_clause_inline(
     pre_register_got_slots_in_tc(tc_modules, &module, &program, &check);
     compile_and_register_defn_shared(
         &macro_jit_symbols, &macro_got_data_defs, defn, &check, env, &module_got,
-        ctx.codegen_products, &module, true,
+        ctx.codegen_products, None, &module, true,
     )?;
 
     Ok(())
@@ -2303,6 +2293,7 @@ pub fn codegen_module_symbols(
     tc_modules: &dashmap::DashMap<ModuleFullPath, cranelisp_types::SymbolTable>,
     typecheck_products: &dashmap::DashMap<ModuleFullPath, crate::session_v4::TypecheckProduct>,
     codegen_products: &dashmap::DashMap<ModuleFullPath, crate::session_v4::CodegenProduct>,
+    introspection: Option<&dashmap::DashMap<cranelisp_types::FQSymbol, crate::session_v4::Introspection>>,
 ) -> Result<(), CranelispError> {
     // Ensure typecheck product with GOT table exists for this module.
     ensure_typecheck_product(typecheck_products, module);
@@ -2324,14 +2315,14 @@ pub fn codegen_module_symbols(
 
     // Compile default method bodies.
     for defn in &check.default_method_defns {
-        compile_and_register_defn_shared(&jit_symbols, &got_data_defs, defn, check, env, &module_got, codegen_products, module, false)?;
+        compile_and_register_defn_shared(&jit_symbols, &got_data_defs, defn, check, env, &module_got, codegen_products, introspection, module, false)?;
     }
 
     // Compile mono specializations with per-specialization resolutions.
-    compile_mono_defns(&jit_symbols, &got_data_defs, check, env, &module_got, codegen_products, module)?;
+    compile_mono_defns(&jit_symbols, &got_data_defs, check, env, &module_got, codegen_products, introspection, module)?;
 
     // Compile each regular defn.
-    let defn_names = compile_regular_defns(&jit_symbols, &got_data_defs, program, check, env, &module_got, codegen_products, module)?;
+    let defn_names = compile_regular_defns(&jit_symbols, &got_data_defs, program, check, env, &module_got, codegen_products, introspection, module)?;
 
     // Notify scheduler for each compiled symbol.
     let total = defn_names.len();
@@ -2397,7 +2388,6 @@ fn pre_register_got_slots_in_tc(
                 kind: Box::new(DefKind::UserFn { constrained_fn: None }),
                 callees: Vec::new(),
                 got_slot: Some(slot),
-                defn: None,
             },
         );
     };
@@ -2439,6 +2429,7 @@ fn compile_mono_defns(
     env: &dyn cranelisp_backend::compiler::CompilationEnv,
     module_got: &std::sync::Arc<cranelisp_backend::got::GotTable>,
     codegen_products: &dashmap::DashMap<ModuleFullPath, crate::session_v4::CodegenProduct>,
+    introspection: Option<&dashmap::DashMap<cranelisp_types::FQSymbol, crate::session_v4::Introspection>>,
     module: &ModuleFullPath,
 ) -> Result<(), CranelispError> {
     for mono in &check.mono_defns {
@@ -2460,7 +2451,7 @@ fn compile_mono_defns(
             constructor_to_type: check.constructor_to_type.clone(),
             display: None,
         };
-        compile_and_register_defn_shared(jit_symbols, got_data_defs, &mono.defn, &mono_check, env, module_got, codegen_products, module, false)?;
+        compile_and_register_defn_shared(jit_symbols, got_data_defs, &mono.defn, &mono_check, env, module_got, codegen_products, introspection, module, false)?;
     }
     Ok(())
 }
@@ -2475,6 +2466,7 @@ fn compile_regular_defns(
     env: &dyn cranelisp_backend::compiler::CompilationEnv,
     module_got: &std::sync::Arc<cranelisp_backend::got::GotTable>,
     codegen_products: &dashmap::DashMap<ModuleFullPath, crate::session_v4::CodegenProduct>,
+    introspection: Option<&dashmap::DashMap<cranelisp_types::FQSymbol, crate::session_v4::Introspection>>,
     module: &ModuleFullPath,
 ) -> Result<Vec<Symbol>, CranelispError> {
     let mut compiled_names = Vec::new();
@@ -2485,14 +2477,14 @@ fn compile_regular_defns(
                 if check.constrained_fn_names.contains(&defn.name) {
                     continue;
                 }
-                compile_and_register_defn_shared(jit_symbols, got_data_defs, defn, check, env, module_got, codegen_products, module, false)?;
+                compile_and_register_defn_shared(jit_symbols, got_data_defs, defn, check, env, module_got, codegen_products, introspection, module, false)?;
                 compiled_names.push(defn.name.clone());
             }
             TopLevel::TraitImpl(impl_) => {
                 for method in &impl_.methods {
                     compile_and_register_defn_shared(
                         jit_symbols, got_data_defs, method, check, env, module_got,
-                        codegen_products, module, false,
+                        codegen_products, introspection, module, false,
                     )?;
                     compiled_names.push(method.name.clone());
                 }
@@ -2728,6 +2720,7 @@ pub fn priority_worker_loop(
                             ctx.tc.modules_ref(),
                             ctx.typecheck_products,
                             ctx.codegen_products,
+                            None,
                         )?;
 
                         // Stash data for nice worker .o + .meta.json, then
@@ -2945,6 +2938,7 @@ fn handle_typecheck_work(
                 ctx.tc.modules_ref(),
                 ctx.typecheck_products,
                 ctx.codegen_products,
+                None,
             )?;
 
             // Stash data for nice worker .o + .meta.json.

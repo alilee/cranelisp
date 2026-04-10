@@ -256,7 +256,6 @@ pub fn register_platform_in_tc(
                 }),
                 callees: Vec::new(),
                 got_slot: None,
-                defn: None,
             },
         );
 

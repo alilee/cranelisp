@@ -1848,7 +1848,6 @@ mod tests {
                 kind: Box::new(DefKind::UserFn { constrained_fn: None }),
                 callees: Vec::new(),
                 got_slot: None,
-                defn: None,
             },
         );
 
@@ -1876,7 +1875,6 @@ mod tests {
                     kind: Box::new(DefKind::UserFn { constrained_fn: None }),
                     callees: Vec::new(),
                     got_slot: None,
-                    defn: None,
                 },
             );
         }

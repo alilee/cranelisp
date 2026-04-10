@@ -77,12 +77,6 @@ pub enum ModuleEntry {
         /// (they don't need GOT slots — inlined or called directly).
         #[serde(default)]
         got_slot: Option<usize>,
-        /// TARGET STATE: the typechecked function definition. See session-restructure.md.
-        /// Stored for monomorphisation (generating specializations at call sites)
-        /// and `--run` without cache (codegen needs the function body).
-        /// `None` for primitives and special forms.
-        #[serde(default)]
-        defn: Option<Box<Defn>>,
     },
     /// An imported name from another module (Ring 2).
     Import { source: FQSymbol },

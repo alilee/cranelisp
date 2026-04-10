@@ -18,6 +18,16 @@ use cranelisp_types::{
     CheckResult, CranelispError, Defn, Span, Symbol,
 };
 
+/// Compilation artifacts returned by `compile_defn`.
+pub struct CompileArtifacts {
+    /// Cranelift IR text (captured before machine code generation).
+    pub clif_ir: String,
+    /// Native disassembly text (None if disasm not supported on this platform).
+    pub disasm: Option<String>,
+    /// Size of generated machine code in bytes.
+    pub code_size: Option<usize>,
+}
+
 use crate::compiler::{CompileContext, FnCompiler};
 
 /// Build the ISA for the current host architecture.
@@ -374,7 +384,7 @@ impl Jit {
         &mut self,
         defn: &Defn,
         compile_ctx: CompileContext<'_>,
-    ) -> Result<String, CranelispError> {
+    ) -> Result<CompileArtifacts, CranelispError> {
         self.ctx.func.signature = self.build_sig(defn.params().len());
         self.ctx.func.name =
             cranelift::codegen::ir::UserFuncName::testcase(defn.name.as_bytes());
@@ -390,6 +400,9 @@ impl Jit {
 
         // Capture CLIF IR text before compilation.
         let clif_ir = format!("{}", self.ctx.func.display());
+
+        // Enable disassembly capture.
+        self.ctx.set_disasm(true);
 
         // Compile to machine code.
         let func_id = *compile_ctx
@@ -407,9 +420,19 @@ impl Jit {
                 span: defn.span,
             })?;
 
+        // Capture disasm + code size after compilation, before clear_context.
+        let (disasm, code_size) = if let Some(compiled) = self.ctx.compiled_code() {
+            (
+                compiled.vcode.clone(),
+                Some(compiled.code_info().total_size as usize),
+            )
+        } else {
+            (None, None)
+        };
+
         self.module.clear_context(&mut self.ctx);
 
-        Ok(clif_ir)
+        Ok(CompileArtifacts { clif_ir, disasm, code_size })
     }
 
     /// Define a GOT base literal pool entry as data in the JIT module.

@@ -475,7 +475,6 @@ impl TypeChecker {
                 kind: Box::new(DefKind::Overloaded { variants: vec![] }),
                 callees: Vec::new(),
                 got_slot: None,
-                defn: None,
             },
         );
 
@@ -1195,7 +1194,6 @@ impl TypeChecker {
                         kind: Box::new(DefKind::Overloaded { variants: vec![] }),
                         callees: Vec::new(),
                         got_slot: None,
-                        defn: None,
                     },
                 );
             }
@@ -1331,7 +1329,6 @@ impl TypeChecker {
                     }),
                     callees: Vec::new(),
                     got_slot: Some(slot),
-                    defn: None,
                 },
             );
 
@@ -1395,7 +1392,6 @@ impl TypeChecker {
                 }),
                 callees: Vec::new(),
                 got_slot: None,
-                defn: None,
             },
         );
 
@@ -1787,7 +1783,6 @@ impl TypeChecker {
                 }),
                 callees: Vec::new(),
                 got_slot,
-                defn: None,
             },
         );
 
