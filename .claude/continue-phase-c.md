@@ -1,71 +1,54 @@
-# Continue: Session Restructure Phase C — Complete
+# Continue: Session Restructure — Phase C Complete
 
 ## Context
 
 Read `design/arch/session-restructure.md` for the full target data model.
+Read `design/backend/per-module-got.md` §9 for the GOT literal pool architecture.
 
-Commits landed:
-1. `0bc433f` — Phase A (target types, defn on ModuleEntry::Def) + Phase B foundations (unified GOT via global_value, object codegen GOT-indirect)
-2. `f4abe11` — DashMaps correctly on CompilerSession (not SharedState)
-3. `c8e3008` — annotate TARGET STATE and LEGACY structures
-4. `fbc791a` — Phase C: activate unified GOT codegen path (Steps 1-5 + partial 6)
-5. `2370f06` — direct-write codegen to target DashMaps, eliminate SharedCodegenState from main path
-6. Uncommitted — delete SharedCodegenState, WorkerJitState, InMemWorkerState; remove all extract/sync sites
+## Commits (this session)
 
-## What's done in this commit (items 3-10 from the previous continue file)
+1. `1d17d20` — delete SharedCodegenState, WorkerJitState, InMemWorkerState; move GOT to TypecheckProduct
+2. `755c003` — remove legacy CompileContext GOT fields, delete CrossModuleGot
+3. `04b9264` — migrate def_codegen to introspection DashMap + codegen_products
+4. `bc48f5a` — unified GOT literal pool: load GOT base from data section entry
+5. Uncommitted — remove linker base_cache, add FIXME for builtin call range
 
-**Deleted structs:**
-- `SharedCodegenState` — struct + all methods (ensure_slot_for, update_slot, got_base_ptr, get_slot, scratch, extract_from, sync_back_to)
-- `WorkerJitState` — struct + new() + drain_to_shared()
-- `InMemWorkerState` — struct + Default + new() + new_with_shared_got()
+## Current Architecture
 
-**Deleted functions:**
-- `compile_macro_defn_no_dealloc` (worker.rs) — dead code
-- `pre_register_got_slots` (worker.rs) — dead code
-- `register_submodule_got_aliases` (worker.rs) — redundant with resolve_got_module chain
-- `register_module_aliases_filtered` (session.rs) — used GOT alias registration
-- `register_got_alias` (session.rs) — helper for above
-- `generate_module_aliases` (session.rs) — helper for above
+### GOT dispatch (unified codegen, both JIT and object paths)
 
-**Removed fields:**
-- `shared_codegen: &SharedCodegenState` from WorkerContext
-- `worker_jit: &mut WorkerJitState` from WorkerContext
-- `shared_codegen: &SharedCodegenState` from PriorityWorkerShared
-- `inmem_worker: InMemWorkerState` from CompilerSession
+```
+  entry_addr = global_value(__cranelisp_got_{module})  // literal pool entry
+  got_base   = load(entry_addr)                         // GOT base from entry
+  fn_ptr     = load(got_base + slot * 8)                // fn ptr from GOT
+  call_indirect(fn_ptr)
+```
 
-**Removed extract/sync/drain sites (8 total):**
-- 4 in session_v4.rs: register_module_with_source, REPL eval, compile_dep_inline, macro compilation
-- 4 in repl/mod.rs (dead — repl module not compiled)
+- **GotTable**: heap-allocated during typecheck (`TypecheckProduct.got: Arc<GotTable>`), immovable
+- **Literal pool**: 8-byte data entries in JIT data or .o data section, patched with GotTable address
+- **JIT**: `Jit::define_got_data(name, ptr)` creates literal pool entries
+- **Object**: foreign GOT symbols declared as Export data (8 bytes, zeroed), linker patches at load time
+- **Self-module GOT**: full GOT table in .o data section with function address relocations (for AOT --link)
 
-**Migrated functions:**
-- `load_cached_module_via_linker` → uses codegen_products + got_registry (stores Linker in CodegenProduct)
-- `handle_cached_codegen` → passes codegen_products instead of shared_codegen
-- `clear_module_codegen` → uses per-module GOT + codegen_products + introspection
-- `compile_and_execute_expr` → no longer takes InMemWorkerState; takes trace fields as params
-- Introspection write (sexp storage) → writes to introspection DashMap via FQSymbol key
-- GOT pre-register for cache-hit → just ensures module GOT table exists
+### Data flow
 
-**New on WorkerContext:**
-- `introspection: &'a DashMap<FQSymbol, Introspection>` — workers write REPL introspection data directly
-
-**CodegenProduct:**
-- Added `Default` impl
+- `TypecheckProduct.got` — `Arc<GotTable>` allocated at module registration
+- `CodegenProduct.code` — `DashMap<Symbol, Code>` with JIT + code pointer per function
+- `CodegenProduct.linker` — keeps loaded .o mmap alive
+- `Introspection` DashMap — `/source`, `/sexp`, `/ast`, `/clif`, `/disasm` data (FQSymbol keys)
+- `codegen_products` — code pointers for macro dispatch and test discovery
 
 ## What's NOT done
 
-### Phase B remainders
+1. **FIXME(/backend): external function call range** — runtime intrinsic and platform DLL function calls use BRANCH26 (BL, ±128MB range). If loaded .o code is far from these functions, BL fails. Fix: put external function addresses in literal pool entries (Export data) and use ADRP+LDR+BLR instead of BL. Same pattern as GOT bases. Filed as FIXME in linker.rs.
 
-1. **Linker: resolve against `__cranelisp_got` data section** — remove internal `got_mmap` from Linker. Currently Linker allocates its own GOT mmap; should resolve `__cranelisp_got_*` symbols against the session's per-module GOT tables.
+2. **REPL module (src/repl/)** — not compiled (commented out in lib.rs). When re-enabled, needs updating to match new APIs (no InMemWorkerState, no CompilationSession struct).
 
-2. **Remove legacy `CompileContext` fields** — `got_slots: Option<&HashMap>`, `got_base: Option<i64>`, `cross_module_got` on the backend's `CompileContext`. Dead when `env` is always `Some`.
+3. **`ModuleCodegenState` cleanup** — still exists in backend crate, used by cache serialization and some tests. Can be simplified or removed once cache serialization is updated.
 
-### Phase C remainders
+4. **Introspection population** — `/clif`, `/disasm`, `/info` (code_size, compile_duration) fields are not populated in the v4 path. The CLIF IR is returned from `compile_defn` but discarded in `compile_and_register_defn_shared`. Thread introspection data from compilation to the DashMap.
 
-3. **`def_codegen: HashMap<Symbol, DefCodegen>` on CompilerSession** — still used by introspection slash commands (/source, /sexp, /clif, /disasm, /sig) and the build_macro_map path. These need to be migrated to read from `introspection` DashMap and `codegen_products` instead.
-
-4. **REPL module (src/repl/)** — not compiled (commented out in lib.rs). When re-enabled, it needs updating to match the new APIs (no InMemWorkerState, CompilationSession struct needs to exist or be replaced).
-
-5. **`ModuleGotRegistry` marked deprecated** — still in active use. Either un-deprecate or integrate into CodegenProduct.
+5. **`macro_env` on CompilerSession** — legacy; macro dispatch now reads from codegen_products. Can be removed once all macro lookup paths use codegen_products.
 
 ## Verification
 
