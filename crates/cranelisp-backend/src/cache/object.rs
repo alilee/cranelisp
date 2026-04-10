@@ -381,21 +381,35 @@ fn declare_got_data_symbols(
     for mod_path in &referenced_modules {
         let symbol_name = got_data_symbol_name(mod_path);
         let is_self = mod_path == self_path;
+
+        // All GOT data symbols are Export + writable. Foreign modules get
+        // 8-byte literal pool entries (linker patches with GotTable address).
+        // Self-module is declared here but defined later with actual GOT content.
         let data_id = obj_module
             .declare_data(
                 &symbol_name,
-                if is_self {
-                    Linkage::Export
-                } else {
-                    Linkage::Import
-                },
-                is_self, // writable: true for self
-                false,   // tls: false
+                Linkage::Export,
+                true,  // writable
+                false, // tls
             )
             .map_err(|e| CranelispError::CodegenError {
                 message: format!("failed to declare GOT data symbol '{symbol_name}': {e}"),
                 span: Span::SYNTHETIC,
             })?;
+
+        // Foreign GOT symbols: define as 8-byte zeroed entry (linker patches).
+        // Self-module: defined later with function address relocations.
+        if !is_self {
+            let mut desc = DataDescription::new();
+            desc.define(Box::new([0u8; 8]));
+            obj_module
+                .define_data(data_id, &desc)
+                .map_err(|e| CranelispError::CodegenError {
+                    message: format!("failed to define GOT data symbol '{symbol_name}': {e}"),
+                    span: Span::SYNTHETIC,
+                })?;
+        }
+
         got_data_ids.insert(mod_path.clone(), data_id);
     }
 

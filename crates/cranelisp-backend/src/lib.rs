@@ -561,12 +561,18 @@ pub fn compile_expr_with_got_and_symbols(
     expr: &Expr,
     check: &CheckResult,
     extra_symbols: &[(&str, *const u8)],
+    got_data_defs: &[(String, *const u8)],
     env: Option<&dyn crate::compiler::CompilationEnv>,
 ) -> Result<CompiledExpr, CranelispError> {
     let mut jit = Jit::new_with_symbols(extra_symbols)?;
 
     // Declare runtime intrinsics (Ring 1 heap infrastructure).
     jit.declare_intrinsics()?;
+
+    // Define GOT base literal pool entries as data in the JIT module.
+    for (name, ptr) in got_data_defs {
+        jit.define_got_data(name, *ptr)?;
+    }
 
     // Wrap expression in a synthetic zero-arg function.
     let wrapper_name = Symbol::from("__repl_expr__");
@@ -611,7 +617,7 @@ pub fn compile_and_run_expr(
     expr: &Expr,
     check: &CheckResult,
 ) -> Result<i64, CranelispError> {
-    let compiled = compile_expr_with_got_and_symbols(expr, check, &[], None)?;
+    let compiled = compile_expr_with_got_and_symbols(expr, check, &[], &[], None)?;
     // SAFETY: compiled was produced by compile_expr_with_got_and_symbols immediately above.
     Ok(unsafe { compiled.execute() })
 }

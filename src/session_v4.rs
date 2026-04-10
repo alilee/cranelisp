@@ -1062,10 +1062,10 @@ impl CompilerSession {
 
         if has_expr {
             let program_vec = program.to_vec();
-            // Use collect_jit_symbols_for_module for full symbol set (platform + GOT data).
-            let ps = env_impl.collect_jit_symbols_for_module(&self.platform_registry);
+            let (jit_syms, got_defs) = env_impl.collect_jit_setup_for_module(&self.platform_registry);
             let (value, ty) = crate::pipeline::compile_and_execute_expr(
-                &ps,
+                &jit_syms,
+                &got_defs,
                 &program_vec,
                 check,
                 &env_impl,

@@ -434,18 +434,33 @@ impl<'a, M: Module> FnCompiler<'a, M> {
         }
     }
 
-    /// TARGET STATE: emit a GOT-indirect call using a data symbol reference.
-    /// Works in both JIT and object codegen via Cranelift's `global_value`.
-    /// See session-restructure.md.
+    /// Emit a GOT-indirect call using a data symbol reference.
+    ///
+    /// The data symbol is a literal pool entry containing a GOT table base
+    /// address. Works in both JIT and object codegen:
+    ///   JIT: data defined with GotTable address, global_value → movz+movk
+    ///   Object: data in .o data section (zeroed), linker patches at load time
+    ///
+    /// Codegen:
+    ///   entry_addr = global_value(data_id)   // address of literal pool entry
+    ///   got_base   = load(entry_addr)         // GOT table base address
+    ///   fn_ptr     = load(got_base + slot*8)  // function pointer from GOT
+    ///   call_indirect(fn_ptr, args)
     fn emit_got_indirect_call_via_data_id(
         &mut self,
         data_id: cranelift_module::DataId,
         slot: usize,
         arg_vals: &[Value],
     ) -> Result<Value, CranelispError> {
-        // Get the GOT base address via data symbol reference.
+        // Load the GOT base address from the literal pool entry.
         let gv = self.module.declare_data_in_func(data_id, self.builder.func);
-        let got_base = self.builder.ins().global_value(types::I64, gv);
+        let entry_addr = self.builder.ins().global_value(types::I64, gv);
+        let got_base = self.builder.ins().load(
+            types::I64,
+            MemFlags::trusted(),
+            entry_addr,
+            0,
+        );
 
         // Compute slot address: got_base + slot * 8
         let slot_addr = self.builder.ins().iadd_imm(got_base, (slot * 8) as i64);

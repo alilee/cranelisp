@@ -278,37 +278,21 @@ impl SessionCompilationEnv<'_> {
     /// - Platform function pointers (from PlatformRegistry, for PlatformEffect primitives)
     /// - GOT base pointers (for each referenced module, including self)
     ///
-    /// Returns `(String, *const u8)` pairs suitable for `Jit::new_with_symbols`.
-    /// Only collects what this module actually references, not everything in the session.
-    pub fn collect_jit_symbols_for_module(
+    /// Collect JIT symbols and GOT data definitions for a module compilation.
+    ///
+    /// Returns:
+    /// - `jit_symbols`: platform function pointers for `Jit::new_with_symbols`
+    /// - `got_data_defs`: `(name, got_base_ptr)` pairs for GOT literal pool entries
+    ///   that must be defined as data in the JIT module (8 bytes each)
+    pub fn collect_jit_setup_for_module(
         &self,
         platform_registry: &crate::platform_registry::PlatformRegistry,
-    ) -> Vec<(String, *const u8)> {
-        use std::collections::HashSet;
-
-        let mut symbols = Vec::new();
-        let mut referenced_modules: HashSet<ModuleFullPath> = HashSet::new();
-
-        // Always include current module's own GOT base (self-calls).
-        referenced_modules.insert(self.current_module.clone());
+    ) -> (Vec<(String, *const u8)>, Vec<(String, *const u8)>) {
+        let mut jit_symbols = Vec::new();
+        let mut got_data_defs = Vec::new();
 
         if let Some(st) = self.tc_modules.get(&self.current_module) {
             for (_name, entry) in st.all_symbols() {
-                match entry {
-                    // Imported symbols → their defining module needs a GOT base.
-                    ModuleEntry::Import { source } => {
-                        referenced_modules.insert(source.module.clone());
-                    }
-                    ModuleEntry::Reexport { source } => {
-                        referenced_modules.insert(source.module.clone());
-                    }
-                    _ => {}
-                }
-                // Scan callees for cross-module references (handles qualified
-                // calls like main.mid.leaf/value that aren't Import entries).
-                for callee in entry.callees() {
-                    referenced_modules.insert(callee.module.clone());
-                }
                 // Platform functions → register their JIT fn pointers.
                 if let ModuleEntry::Def { kind, .. } = entry {
                     if let DefKind::Primitive {
@@ -317,22 +301,22 @@ impl SessionCompilationEnv<'_> {
                     } = kind.as_ref()
                     {
                         if let Some(ptr) = platform_registry.fn_ptr_by_jit_name(jit_name) {
-                            symbols.push((jit_name.0.clone(), ptr));
+                            jit_symbols.push((jit_name.0.clone(), ptr));
                         }
                     }
                 }
             }
         }
 
-        // Register GOT base pointers for all modules with typecheck products.
-        // GOT bases are stable from allocation, so all known modules' bases
-        // can be registered — compilation can happen in any order.
+        // GOT literal pool entries: each module's GOT base address is defined
+        // as 8 bytes of data in the JIT module. The code loads from these entries
+        // to get GOT base addresses for indirect calls.
         for entry in self.typecheck_products.iter() {
             let name = cranelisp_backend::compiler::got_data_symbol_name(entry.key());
-            symbols.push((name, entry.value().got.base_ptr()));
+            got_data_defs.push((name, entry.value().got.base_ptr()));
         }
 
-        symbols
+        (jit_symbols, got_data_defs)
     }
 }
 
@@ -1503,11 +1487,11 @@ fn compile_macro_if_needed(
     let dep_module_got = ctx.typecheck_products.get(module)
         .expect("invariant: just ensured typecheck product exists")
         .got.clone();
-    let jit_symbols = env_impl.collect_jit_symbols_for_module(ctx.platform_registry);
+    let (jit_symbols, got_data_defs) = env_impl.collect_jit_setup_for_module(ctx.platform_registry);
     let current_module = ctx.tc.current_module_path().clone();
     for (dep_module, dep_symbol) in &uncompiled_deps {
         compile_dep_symbol_inline(
-            ctx.tc, &jit_symbols,
+            ctx.tc, &jit_symbols, &got_data_defs,
             dep_module, dep_symbol, &current_module, accumulator,
             env, &dep_module_got, ctx.codegen_products,
         )?;
@@ -1599,6 +1583,7 @@ fn collect_transitive_uncompiled_deps(
 fn compile_dep_symbol_inline(
     tc: &cranelisp_typecheck::TypeChecker,
     jit_symbols: &[(String, *const u8)],
+    got_data_defs: &[(String, *const u8)],
     module: &ModuleFullPath,
     symbol: &Symbol,
     current_module: &ModuleFullPath,
@@ -1628,7 +1613,7 @@ fn compile_dep_symbol_inline(
         let single = [cranelisp_types::TopLevel::Defn(defn.clone())];
         pre_register_got_slots_in_tc(tc.modules_ref(), module, &single, &check);
         compile_and_register_defn_shared(
-            jit_symbols, &defn, &check, env, module_got,
+            jit_symbols, got_data_defs, &defn, &check, env, module_got,
             codegen_products, module, false,
         )?;
     }
@@ -1753,10 +1738,10 @@ fn compile_macro_clause_inline(
     let module_got = ctx.typecheck_products.get(&module)
         .expect("invariant: just ensured typecheck product exists")
         .got.clone();
-    let macro_jit_symbols = env_impl.collect_jit_symbols_for_module(ctx.platform_registry);
+    let (macro_jit_symbols, macro_got_data_defs) = env_impl.collect_jit_setup_for_module(ctx.platform_registry);
     pre_register_got_slots_in_tc(tc_modules, &module, &program, &check);
     compile_and_register_defn_shared(
-        &macro_jit_symbols, defn, &check, env, &module_got,
+        &macro_jit_symbols, &macro_got_data_defs, defn, &check, env, &module_got,
         ctx.codegen_products, &module, true,
     )?;
 
@@ -2346,21 +2331,21 @@ pub fn codegen_module_symbols(
         .expect("invariant: just ensured typecheck product exists")
         .got.clone();
 
-    let jit_symbols = env_impl.collect_jit_symbols_for_module(platform_registry);
+    let (jit_symbols, got_data_defs) = env_impl.collect_jit_setup_for_module(platform_registry);
 
     // Pre-register GOT slots for forward references.
     pre_register_got_slots_in_tc(tc_modules, module, program, check);
 
     // Compile default method bodies.
     for defn in &check.default_method_defns {
-        compile_and_register_defn_shared(&jit_symbols, defn, check, env, &module_got, codegen_products, module, false)?;
+        compile_and_register_defn_shared(&jit_symbols, &got_data_defs, defn, check, env, &module_got, codegen_products, module, false)?;
     }
 
     // Compile mono specializations with per-specialization resolutions.
-    compile_mono_defns(&jit_symbols, check, env, &module_got, codegen_products, module)?;
+    compile_mono_defns(&jit_symbols, &got_data_defs, check, env, &module_got, codegen_products, module)?;
 
     // Compile each regular defn.
-    let defn_names = compile_regular_defns(&jit_symbols, program, check, env, &module_got, codegen_products, module)?;
+    let defn_names = compile_regular_defns(&jit_symbols, &got_data_defs, program, check, env, &module_got, codegen_products, module)?;
 
     // Notify scheduler for each compiled symbol.
     let total = defn_names.len();
@@ -2463,6 +2448,7 @@ fn pre_register_got_slots_in_tc(
 /// Compile monomorphised specializations.
 fn compile_mono_defns(
     jit_symbols: &[(String, *const u8)],
+    got_data_defs: &[(String, *const u8)],
     check: &CheckResult,
     env: &dyn cranelisp_backend::compiler::CompilationEnv,
     module_got: &std::sync::Arc<cranelisp_backend::got::GotTable>,
@@ -2488,7 +2474,7 @@ fn compile_mono_defns(
             constructor_to_type: check.constructor_to_type.clone(),
             display: None,
         };
-        compile_and_register_defn_shared(jit_symbols, &mono.defn, &mono_check, env, module_got, codegen_products, module, false)?;
+        compile_and_register_defn_shared(jit_symbols, got_data_defs, &mono.defn, &mono_check, env, module_got, codegen_products, module, false)?;
     }
     Ok(())
 }
@@ -2497,6 +2483,7 @@ fn compile_mono_defns(
 /// Returns the list of compiled symbol names.
 fn compile_regular_defns(
     jit_symbols: &[(String, *const u8)],
+    got_data_defs: &[(String, *const u8)],
     program: &[TopLevel],
     check: &CheckResult,
     env: &dyn cranelisp_backend::compiler::CompilationEnv,
@@ -2512,13 +2499,13 @@ fn compile_regular_defns(
                 if check.constrained_fn_names.contains(&defn.name) {
                     continue;
                 }
-                compile_and_register_defn_shared(jit_symbols, defn, check, env, module_got, codegen_products, module, false)?;
+                compile_and_register_defn_shared(jit_symbols, got_data_defs, defn, check, env, module_got, codegen_products, module, false)?;
                 compiled_names.push(defn.name.clone());
             }
             TopLevel::TraitImpl(impl_) => {
                 for method in &impl_.methods {
                     compile_and_register_defn_shared(
-                        jit_symbols, method, check, env, module_got,
+                        jit_symbols, got_data_defs, method, check, env, module_got,
                         codegen_products, module, false,
                     )?;
                     compiled_names.push(method.name.clone());

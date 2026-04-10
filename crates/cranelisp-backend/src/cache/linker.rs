@@ -6,9 +6,21 @@
 //
 // Primary target: Mach-O aarch64 (macOS ARM). Also supports ELF aarch64 (Linux ARM).
 //
-// Divergences from sketch:
-// - Growable GOT (Vec<u64> + mprotect) instead of fixed 512-entry panic-on-overflow
-// - Result<T, CranelispError> throughout instead of eprintln+silent fallback
+// GOT base cache: per-module GOT tables are heap-allocated during typecheck.
+// Object code references them via `__cranelisp_got_{module}` data symbols.
+// On aarch64, ADRP has ±4GB range and can't reach arbitrary heap addresses.
+// The linker maintains a GOT base cache co-located with loaded code — a
+// literal pool of GOT table base addresses:
+//
+//   got_base_cache:
+//     __cranelisp_got_user:    0x12345000  // heap address of user module's GotTable
+//     __cranelisp_got_prelude: 0x12346000  // heap address of prelude's GotTable
+//
+//   code:
+//     ADRP x5, __cranelisp_got_user  // page of cache entry (always reachable)
+//     LDR  x5, [x5, #off]            // load GOT base from cache
+//     LDR  x5, [x5, #slot*8]         // load fn ptr from GOT
+//     BLR  x5                         // call
 //
 // See design/backend/module-caching.md §9 for crate placement rationale.
 
@@ -53,17 +65,17 @@ pub struct Linker {
     /// Data memory regions (kept alive so data symbols remain valid).
     /// Holds constants, string literals, etc. from .o data sections.
     data_regions: Vec<DataRegion>,
-    /// Linker-internal GOT: mmap-backed slots for GOT-load relocations.
-    /// Each slot holds a target address; ADRP+LDR loads from here.
-    got_slots: HashMap<String, usize>,
-    /// mmap-backed GOT table. Allocated near code regions so ADRP (+-4GB) can reach.
-    got_mmap: Option<memmap2::MmapMut>,
-    /// Base address of got_mmap.
-    got_mmap_base: usize,
-    /// Number of GOT entries currently allocated.
-    got_count: usize,
-    /// Maximum GOT entries in the current mmap allocation.
-    got_capacity: usize,
+    /// GOT base cache: mmap-backed literal pool for GOT-load relocations.
+    /// Each entry holds a GOT table base address; ADRP+LDR loads from here.
+    base_cache_slots: HashMap<String, usize>,
+    /// mmap-backed cache. Allocated near code regions so ADRP (±4GB) can reach.
+    base_cache: Option<memmap2::MmapMut>,
+    /// Base address of the cache mmap.
+    base_cache_addr: usize,
+    /// Number of cache entries currently allocated.
+    base_cache_count: usize,
+    /// Maximum entries in the current cache allocation.
+    base_cache_capacity: usize,
 }
 
 /// An mmap'd region that holds executable code.
@@ -86,31 +98,31 @@ struct DataRegion {
     size: usize,
 }
 
-/// Initial GOT capacity (one 4KB page = 512 entries).
-const INITIAL_GOT_CAPACITY: usize = 512;
+/// Initial GOT base cache capacity (one 4KB page = 512 entries).
+const INITIAL_BASE_CACHE_CAPACITY: usize = 512;
 
 impl Linker {
-    /// Create a new linker with an initial GOT allocation.
+    /// Create a new linker with an initial GOT base cache allocation.
     pub fn new() -> Result<Self, CranelispError> {
-        let got_capacity = INITIAL_GOT_CAPACITY;
-        let got_size = got_capacity * 8;
-        let got_mmap =
-            memmap2::MmapMut::map_anon(got_size).map_err(|e| CranelispError::CodegenError {
-                message: format!("failed to mmap linker GOT: {e}"),
+        let capacity = INITIAL_BASE_CACHE_CAPACITY;
+        let size = capacity * 8;
+        let cache_mmap =
+            memmap2::MmapMut::map_anon(size).map_err(|e| CranelispError::CodegenError {
+                message: format!("failed to mmap GOT base cache: {e}"),
                 span: Span::SYNTHETIC,
             })?;
-        let got_mmap_base = got_mmap.as_ptr() as usize;
+        let cache_addr = cache_mmap.as_ptr() as usize;
 
         Ok(Linker {
             symbols: HashMap::new(),
             defined_symbols: HashMap::new(),
             code_regions: Vec::new(),
             data_regions: Vec::new(),
-            got_slots: HashMap::new(),
-            got_mmap: Some(got_mmap),
-            got_mmap_base,
-            got_count: 0,
-            got_capacity,
+            base_cache_slots: HashMap::new(),
+            base_cache: Some(cache_mmap),
+            base_cache_addr: cache_addr,
+            base_cache_count: 0,
+            base_cache_capacity: capacity,
         })
     }
 
@@ -127,37 +139,37 @@ impl Linker {
             .map(|&addr| addr as *const u8)
     }
 
-    /// Get or create a GOT slot for a symbol. Returns the address of the GOT entry.
-    fn get_or_create_got_slot(
+    /// Get or create a GOT base cache entry for a symbol.
+    /// Returns the address of the cache entry (which holds the target address).
+    fn get_or_create_base_cache_entry(
         &mut self,
         name: &str,
         target_addr: usize,
     ) -> Result<usize, CranelispError> {
-        if let Some(&idx) = self.got_slots.get(name) {
-            // Update the entry (address might have changed on reload)
-            let mmap = self.got_mmap.as_mut().unwrap();
+        if let Some(&idx) = self.base_cache_slots.get(name) {
+            // Update the entry (address might have changed on reload).
+            let mmap = self.base_cache.as_mut().unwrap();
             mmap[idx * 8..idx * 8 + 8].copy_from_slice(&(target_addr as u64).to_le_bytes());
-            return Ok(self.got_mmap_base + idx * 8);
+            return Ok(self.base_cache_addr + idx * 8);
         }
 
-        if self.got_count >= self.got_capacity {
+        if self.base_cache_count >= self.base_cache_capacity {
             return Err(CranelispError::CodegenError {
                 message: format!(
-                    "linker GOT overflow: {} entries used, capacity {}. \
-                     Growable GOT not yet implemented.",
-                    self.got_count, self.got_capacity
+                    "GOT base cache overflow: {} entries used, capacity {}",
+                    self.base_cache_count, self.base_cache_capacity
                 ),
                 span: Span::SYNTHETIC,
             });
         }
 
-        let idx = self.got_count;
-        self.got_count += 1;
-        let slot_addr = self.got_mmap_base + idx * 8;
-        let mmap = self.got_mmap.as_mut().unwrap();
+        let idx = self.base_cache_count;
+        self.base_cache_count += 1;
+        let entry_addr = self.base_cache_addr + idx * 8;
+        let mmap = self.base_cache.as_mut().unwrap();
         mmap[idx * 8..idx * 8 + 8].copy_from_slice(&(target_addr as u64).to_le_bytes());
-        self.got_slots.insert(name.to_string(), idx);
-        Ok(slot_addr)
+        self.base_cache_slots.insert(name.to_string(), idx);
+        Ok(entry_addr)
     }
 
     /// Load an object file: parse sections, copy code to executable memory,
@@ -273,18 +285,21 @@ impl Linker {
             let patch_addr = base_addr + offset as usize;
             let addend = reloc.addend();
 
-            // For GOT-load relocations, redirect through a linker-internal GOT slot.
+            // For GOT-load relocations, redirect through the GOT base cache.
+            // The cache is co-located with loaded code (mmap'd), so ADRP
+            // always reaches it. Each entry holds the absolute address of a
+            // heap-allocated target (per-module GOT table, data symbol, etc.).
             let target_addr = match reloc.flags() {
                 RelocationFlags::MachO { r_type, .. }
                     if r_type == macho_arm64::ARM64_RELOC_GOT_LOAD_PAGE21
                         || r_type == macho_arm64::ARM64_RELOC_GOT_LOAD_PAGEOFF12 =>
                 {
-                    let got_key = if target_name.starts_with(".L") {
+                    let cache_key = if target_name.starts_with(".L") {
                         format!("{base_addr:#x}:{target_name}")
                     } else {
                         target_name.clone()
                     };
-                    self.get_or_create_got_slot(&got_key, raw_target_addr)?
+                    self.get_or_create_base_cache_entry(&cache_key, raw_target_addr)?
                 }
                 _ => raw_target_addr,
             };
@@ -591,31 +606,31 @@ mod tests {
         assert_eq!(linker.get_symbol("nonexistent"), None);
     }
 
-    // spec: design/backend/module-caching.md §9 — linker GOT slot allocation
+    // spec: design/backend/module-caching.md §9 — GOT base cache entry allocation
     #[test]
-    fn test_linker_got_slot() {
+    fn test_linker_base_cache_entry() {
         let mut linker = Linker::new().unwrap();
-        let slot1 = linker.get_or_create_got_slot("sym1", 0x1000).unwrap();
-        let slot2 = linker.get_or_create_got_slot("sym2", 0x2000).unwrap();
-        // Slots should be at different addresses (each 8 bytes apart)
+        let slot1 = linker.get_or_create_base_cache_entry("sym1", 0x1000).unwrap();
+        let slot2 = linker.get_or_create_base_cache_entry("sym2", 0x2000).unwrap();
+        // Entries should be at different addresses (each 8 bytes apart)
         assert_ne!(slot1, slot2);
         assert_eq!(slot2 - slot1, 8);
     }
 
-    // spec: design/backend/module-caching.md §9 — linker GOT slot reuse
+    // spec: design/backend/module-caching.md §9 — GOT base cache entry reuse
     #[test]
-    fn test_linker_got_slot_reuse() {
+    fn test_linker_base_cache_reuse() {
         let mut linker = Linker::new().unwrap();
-        let slot1 = linker.get_or_create_got_slot("sym", 0x1000).unwrap();
-        let slot2 = linker.get_or_create_got_slot("sym", 0x2000).unwrap();
-        assert_eq!(slot1, slot2); // Same name reuses same slot
+        let slot1 = linker.get_or_create_base_cache_entry("sym", 0x1000).unwrap();
+        let slot2 = linker.get_or_create_base_cache_entry("sym", 0x2000).unwrap();
+        assert_eq!(slot1, slot2); // Same name reuses same entry
     }
 
     // spec: design/backend/module-caching.md §9 — linker creation succeeds
     #[test]
     fn test_linker_new() {
         let linker = Linker::new().unwrap();
-        assert_eq!(linker.got_count, 0);
-        assert_eq!(linker.got_capacity, INITIAL_GOT_CAPACITY);
+        assert_eq!(linker.base_cache_count, 0);
+        assert_eq!(linker.base_cache_capacity, INITIAL_BASE_CACHE_CAPACITY);
     }
 }

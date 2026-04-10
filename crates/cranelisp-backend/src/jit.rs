@@ -412,6 +412,29 @@ impl Jit {
         Ok(clif_ir)
     }
 
+    /// Define a GOT base literal pool entry as data in the JIT module.
+    ///
+    /// Creates an 8-byte data section entry containing the given pointer value.
+    /// Code compiled against this JIT module uses `global_value(DataId)` to get
+    /// the entry's address, then `load` to read the GOT base from it.
+    pub fn define_got_data(&mut self, name: &str, ptr: *const u8) -> Result<(), CranelispError> {
+        let data_id = self.module
+            .declare_data(name, Linkage::Export, false, false)
+            .map_err(|e| CranelispError::CodegenError {
+                message: format!("failed to declare GOT data '{name}': {e}"),
+                span: Span::SYNTHETIC,
+            })?;
+        let mut desc = cranelift_module::DataDescription::new();
+        desc.define(Box::new((ptr as u64).to_le_bytes()));
+        self.module
+            .define_data(data_id, &desc)
+            .map_err(|e| CranelispError::CodegenError {
+                message: format!("failed to define GOT data '{name}': {e}"),
+                span: Span::SYNTHETIC,
+            })?;
+        Ok(())
+    }
+
     /// Build a `CompileContext` from a `CheckResult` and environment parameters.
     ///
     /// Bundles all the information needed for codegen into a single struct,

@@ -60,6 +60,7 @@ pub fn resolve_module_file(
 
 pub fn compile_and_execute_expr(
     jit_symbols: &[(String, *const u8)],
+    got_data_defs: &[(String, *const u8)],
     program: &Program,
     check: &CheckResult,
     env: &dyn cranelisp_backend::compiler::CompilationEnv,
@@ -90,6 +91,7 @@ pub fn compile_and_execute_expr(
             expr,
             check,
             &extra_syms,
+            got_data_defs,
             Some(env),
         )?;
 
@@ -98,7 +100,7 @@ pub fn compile_and_execute_expr(
         Ok((value, ty))
     } else {
         let value = compile_and_execute_expr_with_trace(
-            jit_symbols, expr, check, env, traced_fns, trace_extra_symbols,
+            jit_symbols, got_data_defs, expr, check, env, traced_fns, trace_extra_symbols,
         )?;
         Ok((value, ty))
     }
@@ -106,6 +108,7 @@ pub fn compile_and_execute_expr(
 
 fn compile_and_execute_expr_with_trace(
     jit_symbols: &[(String, *const u8)],
+    got_data_defs: &[(String, *const u8)],
     expr: &cranelisp_types::Expr,
     check: &CheckResult,
     env: &dyn cranelisp_backend::compiler::CompilationEnv,
@@ -124,6 +127,11 @@ fn compile_and_execute_expr_with_trace(
 
     let mut jit = cranelisp_backend::jit::Jit::new_with_symbols(&extra_syms)?;
     jit.declare_intrinsics()?;
+
+    // Define GOT base literal pool entries as data in the JIT module.
+    for (name, ptr) in got_data_defs {
+        jit.define_got_data(name, *ptr)?;
+    }
 
     let wrapper_name = Symbol::from("__repl_expr__");
     let wrapper_defn = Defn {
@@ -173,6 +181,7 @@ fn compile_and_execute_expr_with_trace(
 /// GOT slot resolution goes through `env` (SessionCompilationEnv).
 pub fn compile_and_register_defn_shared(
     jit_symbols: &[(String, *const u8)],
+    got_data_defs: &[(String, *const u8)],
     defn: &Defn,
     check: &CheckResult,
     env: &dyn cranelisp_backend::compiler::CompilationEnv,
@@ -188,6 +197,11 @@ pub fn compile_and_register_defn_shared(
     let mut jit = cranelisp_backend::jit::Jit::new_with_symbols(&extra_symbols)?;
 
     jit.declare_intrinsics()?;
+
+    // Define GOT base literal pool entries as data in the JIT module.
+    for (name, ptr) in got_data_defs {
+        jit.define_got_data(name, *ptr)?;
+    }
 
     let func_ids = jit.declare_functions(&[defn])?;
 

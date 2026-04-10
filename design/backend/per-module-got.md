@@ -1,8 +1,8 @@
-# Per-Module GOT for the JIT Path
+# Per-Module GOT Design
 
 **Author:** `/arch`
-**Date:** 2026-03-28
-**Status:** Proposed
+**Date:** 2026-03-28 (updated 2026-04-10)
+**Status:** Implemented
 **Audience:** `/backend`, `/int`
 
 ## 1. Problem Statement
@@ -325,7 +325,43 @@ This map is analogous to `ObjectCompileInput.fn_to_module` in the object path. T
 14. Workers use module-local `Arc<GotTable>` for atomic writes.
 15. No `inmem_worker` mutex needed during compilation — only during slot allocation on the main thread.
 
-## 9. Risks
+## 9. GOT Base Literal Pool (Unified Codegen)
+
+### 9.1 Problem: ADRP Range
+
+On aarch64, `global_value(DataId)` in PIC mode lowers to ADRP+LDR with ±4GB range. GOT tables are heap-allocated (`Box<[AtomicPtr; N]>` inside `Arc<GotTable>`) and may be >4GB from loaded object code. ADRP cannot reach them directly.
+
+### 9.2 Solution: Literal Pool Entries
+
+Each `__cranelisp_got_{module}` data symbol is an 8-byte literal pool entry containing the GOT table's heap address. The entry is co-located with the code:
+
+- **JIT mode**: defined as data in the JIT module (`Jit::define_got_data`), content is the `GotTable::base_ptr()` value. `global_value` materializes the entry address via `movz+movk`.
+- **Object mode**: defined as Export data in the .o's data section (8 bytes, zeroed). The linker patches it with the actual `GotTable` address at load time. ADRP+LDR reaches the entry because it's in the same .o / mmap region.
+
+### 9.3 Call Sequence
+
+```
+  entry_addr = global_value(__cranelisp_got_{module})  // address of literal pool entry
+  got_base   = load(entry_addr)                         // GOT table base address
+  fn_ptr     = load(got_base + slot * 8)                // function pointer from GOT
+  call_indirect(fn_ptr)
+```
+
+On aarch64 this is ADRP+LDR (literal pool) + ADD+LDR (GOT slot) + BLR. Two loads: one to get the GOT base from the literal pool, one to get the function pointer from the GOT. The first load is from co-located data (always reachable); the second is the actual dispatch.
+
+### 9.4 Immutability Constraints
+
+- **GOT tables are immovable.** Once allocated, a GOT's base address never changes. Any number of literal pool entries across any number of loaded .o files may hold this address — they cannot all be found and updated.
+- **GOT entries are mutable.** Function pointers in GOT slots are `AtomicPtr` — updated when functions are redefined at the REPL via `store(Release)`.
+- **Literal pool entries are fixed at load time.** Written once when the .o is loaded (linker fixup) or when the JIT module is created (`define_got_data`). Not updated thereafter.
+
+### 9.5 Unified Codegen
+
+The same Cranelift IR (`global_value` + `load` + `iadd_imm` + `load`) is used for both JIT and object paths. No mode-specific codegen. This means:
+- Object-loaded functions can be redefined at the REPL (the GOT entry is updated, all callers see the new pointer).
+- `--release` AOT compilation can optimize the literal pool load away (inline the GOT base as a link-time constant).
+
+## 10. Risks
 
 **Low**: Backend compiler changes are minimal. `resolve_got_entry` already handles cross-module GOT lookups. The `CompileContext` already has the right fields. The change is primarily in the integration layer (`pipeline.rs`, `session.rs`).
 
