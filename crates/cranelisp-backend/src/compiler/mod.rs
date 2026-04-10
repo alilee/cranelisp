@@ -42,11 +42,7 @@ pub(crate) fn bare_ctor_name(name: &Symbol) -> &str {
     }
 }
 
-/// Cross-module GOT mapping: `(defining_module, function_name)` -> `(got_base_ptr, slot_index)`.
-#[deprecated(note = "session-restructure.md: replaced by CompilationEnv::resolve_got_module")]
-pub type CrossModuleGot = HashMap<(ModuleFullPath, Symbol), (i64, usize)>;
-
-/// TARGET STATE: GOT data symbol name for a module. Single source of truth.
+/// GOT data symbol name for a module. Single source of truth.
 /// Used as the Cranelift data symbol name for the module's GOT table in both
 /// JIT and object codegen. See session-restructure.md.
 ///
@@ -131,32 +127,11 @@ pub struct CompileContext<'a> {
     pub type_defs: &'a HashMap<TypeName, TypeDefInfo>,
     /// Constructor name -> parent type name mapping.
     pub constructor_to_type: &'a HashMap<Symbol, TypeName>,
-    /// LEGACY: replaced by CompilationEnv::resolve_got_module. See session-restructure.md.
-    /// GOT slot assignments for each function name (Interactive mode only).
-    /// In Batch/Release mode this is None; calls use direct `call` instructions.
-    pub got_slots: Option<&'a HashMap<Symbol, usize>>,
-    /// LEGACY: replaced by global_value(DataId). See session-restructure.md.
-    /// GOT base pointer as a raw i64 value (Interactive mode only).
-    /// This is the address of the GOT table, baked into compiled IR as an iconst.
-    pub got_base_ptr: Option<i64>,
-
-    /// LEGACY: replaced by CompilationEnv::resolve_got_module. See session-restructure.md.
-    /// Cross-module GOT references for imported functions (Interactive mode only).
-    ///
-    /// Maps `(defining_module, function_name)` to `(got_base_ptr, slot_index)` so
-    /// that calls to imported functions can use the defining module's GOT table
-    /// instead of the caller's local GOT. This enables cross-module calls in
-    /// Interactive mode without copying function pointers between GOT tables.
-    ///
-    /// In Batch/Release mode this is None; cross-module calls use Cranelift linking.
-    pub cross_module_got: Option<&'a CrossModuleGot>,
-
-    /// Session-backed compilation environment (Interactive mode only).
+    /// Session-backed compilation environment (Interactive/JIT mode).
     ///
     /// When present, GOT slots and arities are resolved live through this
-    /// trait object instead of from the snapshot fields (`got_slots`,
-    /// `got_base_ptr`, `cross_module_got`, `func_arities`). Those fields
-    /// are being phased out in favor of this single interface.
+    /// trait object. In batch mode (compile_program) this is None and
+    /// direct call instructions are used.
     pub env: Option<&'a dyn CompilationEnv>,
 
 

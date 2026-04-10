@@ -594,9 +594,6 @@ pub(crate) fn compile_single_clause(
         &check,
         &func_ids,
         &func_arities,
-        None,
-        None,
-        None,
     );
     compile_ctx.dealloc_func_id = None;
     jit.compile_defn(defn, compile_ctx)?;

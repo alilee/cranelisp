@@ -655,9 +655,6 @@ fn compile_all_functions(
             func_arities: &func_arities,
             type_defs: &input.type_defs,
             constructor_to_type: &input.constructor_to_type,
-            got_slots: None,
-            got_base_ptr: None,
-            cross_module_got: None,
             env: Some(env),
             traced_fns: None,
             alloc_func_id,
@@ -901,7 +898,7 @@ mod tests {
             cross_module_fns: vec![],
         };
 
-        let bytes = compile_module_to_object(&input).unwrap();
+        let bytes = compile_module_to_object(&input, &input).unwrap();
         assert!(!bytes.is_empty(), "object file should not be empty");
 
         // Verify it is a valid object file by parsing with the `object` crate
@@ -967,7 +964,7 @@ mod tests {
             cross_module_fns: vec![],
         };
 
-        let bytes = compile_module_to_object(&input).unwrap();
+        let bytes = compile_module_to_object(&input, &input).unwrap();
         assert!(!bytes.is_empty());
 
         // Verify parseable

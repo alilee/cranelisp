@@ -1034,10 +1034,6 @@ impl<'a, M: Module> FnCompiler<'a, M> {
         self.ctx.func_ids.contains_key(name)
             || self
                 .ctx
-                .got_slots
-                .is_some_and(|slots| slots.contains_key(name))
-            || self
-                .ctx
                 .env
                 .is_some_and(|env| env.resolve_got(name).is_some())
     }
@@ -1182,7 +1178,7 @@ impl<'a, M: Module> FnCompiler<'a, M> {
         let use_got = if self.ctx.func_ids.contains_key(target_name) {
             false
         } else {
-            self.ctx.env.is_some() || self.ctx.got_slots.is_some()
+            self.ctx.env.is_some()
         };
 
         if use_got {

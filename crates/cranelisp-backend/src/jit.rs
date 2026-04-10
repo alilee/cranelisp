@@ -18,7 +18,7 @@ use cranelisp_types::{
     CheckResult, CranelispError, Defn, Span, Symbol,
 };
 
-use crate::compiler::{CompileContext, CrossModuleGot, FnCompiler};
+use crate::compiler::{CompileContext, FnCompiler};
 
 /// Build the ISA for the current host architecture.
 ///
@@ -422,9 +422,6 @@ impl Jit {
         check: &'a CheckResult,
         func_ids: &'a HashMap<Symbol, FuncId>,
         func_arities: &'a HashMap<Symbol, usize>,
-        got_slots: Option<&'a HashMap<Symbol, usize>>,
-        got_base_ptr: Option<i64>,
-        cross_module_got: Option<&'a CrossModuleGot>,
     ) -> CompileContext<'a> {
         CompileContext {
             method_resolutions: &check.method_resolutions,
@@ -433,9 +430,6 @@ impl Jit {
             func_arities,
             type_defs: &check.type_defs,
             constructor_to_type: &check.constructor_to_type,
-            got_slots,
-            got_base_ptr,
-            cross_module_got,
             env: None,
             traced_fns: None,
             alloc_func_id: self.alloc_func_id,
@@ -688,50 +682,4 @@ mod tests {
         );
     }
 
-    // spec: 08-modules §8.3 — compile context with cross-module GOT for module imports
-    #[test]
-    fn test_build_compile_context_with_cross_module_got() {
-        let jit = Jit::new().unwrap();
-        let check = CheckResult {
-            method_resolutions: HashMap::new(),
-            constrained_fn_names: std::collections::HashSet::new(),
-            mono_defns: Vec::new(),
-            expr_types: HashMap::new(),
-            default_method_defns: Vec::new(),
-            warnings: Vec::new(),
-            type_defs: HashMap::new(),
-            constructor_to_type: HashMap::new(),
-            display: None,
-        };
-        let func_ids = HashMap::new();
-        let func_arities = HashMap::new();
-
-        // Build with cross-module GOT.
-        let mut xmod = HashMap::new();
-        xmod.insert(
-            (ModuleFullPath::from("math"), Symbol::from("add")),
-            (0x1000i64, 3usize),
-        );
-
-        let ctx = jit.build_compile_context(
-            &check,
-            &func_ids,
-            &func_arities,
-            None,
-            None,
-            Some(&xmod),
-        );
-        assert!(ctx.cross_module_got.is_some());
-
-        // Build without cross-module GOT.
-        let ctx2 = jit.build_compile_context(
-            &check,
-            &func_ids,
-            &func_arities,
-            None,
-            None,
-            None,
-        );
-        assert!(ctx2.cross_module_got.is_none());
-    }
 }

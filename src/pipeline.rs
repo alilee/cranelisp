@@ -147,9 +147,6 @@ fn compile_and_execute_expr_with_trace(
         check,
         &func_ids,
         &empty_arities,
-        None,
-        None,
-        None,
     );
 
     compile_ctx.env = Some(env);
@@ -207,9 +204,6 @@ pub fn compile_and_register_defn_shared(
         check,
         &func_ids,
         &func_arities,
-        None,
-        None,
-        None,
     );
     compile_ctx.env = Some(env);
     if disable_dealloc {

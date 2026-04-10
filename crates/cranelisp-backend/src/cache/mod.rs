@@ -484,7 +484,7 @@ mod tests {
         };
 
         // Step 2: Compile to .o bytes
-        let obj_bytes = super::object::compile_module_to_object(&input).unwrap();
+        let obj_bytes = super::object::compile_module_to_object(&input, &input).unwrap();
         assert!(!obj_bytes.is_empty());
 
         // Step 3: Load via linker

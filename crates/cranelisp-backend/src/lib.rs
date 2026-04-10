@@ -35,7 +35,6 @@ use cranelisp_types::{
 use crate::jit::Jit;
 
 /// Result of setting up interactive GOT: (slot_assignments, codegen_state).
-type InteractiveGotResult = (Option<HashMap<Symbol, usize>>, Option<got::ModuleCodegenState>);
 
 /// Result of compiling a batch program. Holds the JIT and entry point
 /// so the caller can execute and then drop the JIT.
@@ -120,7 +119,7 @@ struct CollectedDefns<'a> {
 pub fn compile_program(
     program: &Program,
     check: &CheckResult,
-    use_got: bool,
+    _use_got: bool,
 ) -> Result<CompiledProgram, CranelispError> {
     let mut jit = Jit::new()?;
     jit.declare_intrinsics()?;
@@ -128,17 +127,9 @@ pub fn compile_program(
     // Phase 1: Collect defns, declare functions, build arity map.
     let collected = collect_and_declare_defns(program, check, &mut jit, None)?;
 
-    // Phase 2: Set up GOT if requested.
-    let (got_slots, mut got_state) =
-        setup_interactive_got(&collected, use_got)?;
-
-    let got_base_ptr = got_state.as_mut().map(|s| s.got_base_ptr() as i64);
-
-    // Build the compilation context once for all functions.
-    // No cross-module GOT for single-module compile_program.
+    // Build the compilation context — direct calls only (no env/GOT).
     let compile_ctx = jit.build_compile_context(
         check, &collected.func_ids, &collected.func_arities,
-        got_slots.as_ref(), got_base_ptr, None,
     );
 
     // Compile each regular function.
@@ -159,13 +150,11 @@ pub fn compile_program(
     // Compile mono specializations with their per-specialization resolutions.
     compile_mono_defns(
         &mut jit, check, &collected.func_ids, &collected.func_arities,
-        got_slots.as_ref(), got_base_ptr,
     )?;
 
-    // Phase 3: Find entry, finalize JIT, populate GOT, build result.
+    // Phase 3: Find entry, finalize JIT, build result.
     find_entry_and_finalize(
         &collected.defns, jit, &collected.func_ids,
-        got_slots, got_state,
     )
 }
 
@@ -336,39 +325,12 @@ fn collect_and_declare_defns<'a>(
     Ok(CollectedDefns { defns, extra_defns, multi_sig_defns, func_ids, func_arities, jit_names })
 }
 
-/// Phase 2: Set up a temporary GOT so GOT-indirect calls work.
-/// When `use_got` is false, returns (None, None).
-fn setup_interactive_got(
-    collected: &CollectedDefns<'_>,
-    use_got: bool,
-) -> Result<InteractiveGotResult, CranelispError> {
-    if use_got {
-        let mut state = got::ModuleCodegenState::new();
-        let mut slots = HashMap::new();
-
-        // Build the combined iterator over regular + extra + multi-sig defns.
-        let all_names = collected.defns.iter().map(|d| &d.name)
-            .chain(collected.extra_defns.iter().map(|d| &d.name))
-            .chain(collected.multi_sig_defns.iter().map(|d| &d.name));
-
-        for name in all_names {
-            let slot = state.ensure_slot_for(name)?;
-            slots.insert(name.clone(), slot);
-        }
-        Ok((Some(slots), Some(state)))
-    } else {
-        Ok((None, None))
-    }
-}
-
-/// Phase 3: Find the last zero-arg defn as entry point, finalize the JIT,
+/// Find the last zero-arg defn as entry point, finalize the JIT,
 /// populate GOT slots (Interactive mode), and build the CompiledProgram.
 fn find_entry_and_finalize(
     defns: &[&Defn],
     mut jit: Jit,
-    func_ids: &HashMap<Symbol, FuncId>,
-    got_slots: Option<HashMap<Symbol, usize>>,
-    mut got_state: Option<got::ModuleCodegenState>,
+    _func_ids: &HashMap<Symbol, FuncId>,
 ) -> Result<CompiledProgram, CranelispError> {
     // Find the entry function (last zero-arg defn).
     let entry_defn = defns
@@ -382,21 +344,10 @@ fn find_entry_and_finalize(
 
     let entry_ptr = jit.finalize_and_get_ptr(&entry_defn.name, 0)?;
 
-    // In Interactive mode, populate GOT slots with finalized function pointers.
-    if let (Some(slots), Some(state)) = (&got_slots, &mut got_state) {
-        for (name, &slot) in slots {
-            if let Some(&func_id) = func_ids.get(name) {
-                let ptr = jit.get_finalized_ptr(func_id);
-                state.update_slot(slot, ptr);
-            }
-        }
-    }
-
     Ok(CompiledProgram {
         jit,
         entry_ptr,
-        // Keep GOT state alive alongside the JIT so code pointers remain valid.
-        _got_state: got_state,
+        _got_state: None,
         warnings: Vec::new(),
     })
 }
@@ -425,8 +376,6 @@ fn compile_mono_defns(
     check: &CheckResult,
     func_ids: &HashMap<Symbol, FuncId>,
     func_arities: &HashMap<Symbol, usize>,
-    got_slots: Option<&HashMap<Symbol, usize>>,
-    got_base_ptr: Option<i64>,
 ) -> Result<(), CranelispError> {
     for mono in &check.mono_defns {
         // Merge base resolutions with per-specialization resolutions.
@@ -455,7 +404,7 @@ fn compile_mono_defns(
         };
 
         let ctx = jit.build_compile_context(
-            &mono_check, func_ids, func_arities, got_slots, got_base_ptr, None,
+            &mono_check, func_ids, func_arities,
         );
         jit.compile_defn(&mono.defn, ctx)?;
     }
@@ -560,7 +509,6 @@ pub fn compile_module_program(
     // No GOT for shared-JIT module compilation — direct calls.
     let compile_ctx = jit.build_compile_context(
         check, &merged_func_ids, &merged_arities,
-        None, None, None,
     );
 
     // Compile each regular function.
@@ -581,7 +529,6 @@ pub fn compile_module_program(
     // Compile mono specializations.
     compile_mono_defns(
         jit, check, &merged_func_ids, &merged_arities,
-        None, None,
     )?;
 
     // Collect this module's function signatures for downstream modules.
@@ -610,23 +557,14 @@ pub fn compile_module_program(
 /// The caller can then call `CompiledExpr::execute()` to run it. This
 /// separation enables the caller to time compilation and evaluation independently.
 ///
-/// If `got_state` is provided, GOT-indirect calls are used.
-pub fn compile_expr_with_got(
-    expr: &Expr,
-    check: &CheckResult,
-    got_state: Option<&mut got::ModuleCodegenState>,
-) -> Result<CompiledExpr, CranelispError> {
-    compile_expr_with_got_and_symbols(expr, check, got_state, &[], None)
-}
-
-/// Compile an expression using GOT-indirect calls, with extra JIT symbols.
+/// Compile an expression with extra JIT symbols and optional compilation env.
 ///
-/// Same as `compile_expr_with_got` but accepts additional symbols (e.g.,
-/// platform function pointers) to register in the JIT.
+/// If `env` is provided, GOT-indirect calls are resolved through it.
+/// Otherwise, direct calls via FuncId are used.
 pub fn compile_expr_with_got_and_symbols(
     expr: &Expr,
     check: &CheckResult,
-    got_state: Option<&mut got::ModuleCodegenState>,
+    _got_state: Option<&mut got::ModuleCodegenState>,
     extra_symbols: &[(&str, *const u8)],
     env: Option<&dyn crate::compiler::CompilationEnv>,
 ) -> Result<CompiledExpr, CranelispError> {
@@ -651,34 +589,10 @@ pub fn compile_expr_with_got_and_symbols(
     };
 
     let func_ids = jit.declare_functions(&[&wrapper_defn])?;
-
-    // When env is provided, skip GOT snapshot — env handles resolution live.
-    let (got_slots, got_base_ptr, func_arities) = if env.is_some() {
-        (None, None, HashMap::new())
-    } else if let Some(state) = got_state {
-        let mut slots: HashMap<Symbol, usize> = HashMap::new();
-        let mut arities: HashMap<Symbol, usize> = HashMap::new();
-        for (name, dc) in &state.def_codegen {
-            if let Some(slot) = dc.got_slot {
-                slots.insert(name.clone(), slot);
-            }
-            if let Some(pc) = dc.param_count {
-                arities.insert(name.clone(), pc);
-            }
-        }
-        let base = state.got_base_ptr() as i64;
-        (Some(slots), Some(base), arities)
-    } else {
-        (None, None, HashMap::new())
-    };
+    let func_arities: HashMap<Symbol, usize> = HashMap::new();
 
     let mut compile_ctx = jit.build_compile_context(
-        check,
-        &func_ids,
-        &func_arities,
-        got_slots.as_ref(),
-        got_base_ptr,
-        None, // No cross-module GOT for single-expression compilation.
+        check, &func_ids, &func_arities,
     );
     compile_ctx.env = env;
 
@@ -703,8 +617,8 @@ pub fn compile_and_run_expr_with_got(
     check: &CheckResult,
     got_state: Option<&mut got::ModuleCodegenState>,
 ) -> Result<i64, CranelispError> {
-    let compiled = compile_expr_with_got(expr, check, got_state)?;
-    // SAFETY: compiled was produced by compile_expr_with_got immediately above.
+    let compiled = compile_expr_with_got_and_symbols(expr, check, got_state, &[], None)?;
+    // SAFETY: compiled was produced by compile_expr_with_got_and_symbols immediately above.
     Ok(unsafe { compiled.execute() })
 }
 
@@ -2440,249 +2354,6 @@ mod tests {
         assert_eq!(extras[0].name, Symbol::from("!="));
     }
 
-    // --- Cross-module GOT tests ---
-
-    // spec: 08-modules §8.3, 12-runtime §12.2.1 — cross-module function call via GOT indirection
-    #[test]
-    fn test_cross_module_got_call() {
-        use cranelisp_types::ModuleFullPath;
-
-        // Step 1: Compile a function "add42" in module A's GOT.
-        let add42_defn = Defn {
-            name: Symbol::from("add42"),
-            docstring: None,
-            variants: vec![DefnVariant {
-                params: vec![Symbol::from("x")],
-                param_annotations: vec![],
-                body: Expr::IntLit {
-                value: 42,
-                span: Span::new(0, 2),
-                },
-                span: Span::new(0, 20),
-            }],
-            visibility: cranelisp_types::Visibility::Public,
-            span: Span::new(0, 20),
-        };
-
-        let mut mod_a_got = got::ModuleCodegenState::new();
-        let add42_slot = mod_a_got.ensure_slot_for(&Symbol::from("add42")).unwrap();
-        mod_a_got
-            .def_codegen
-            .entry(Symbol::from("add42"))
-            .or_default()
-            .param_count = Some(1);
-
-        // Compile and finalize add42 in its own JIT.
-        let check = empty_check();
-        let mut jit_a = Jit::new().unwrap();
-        jit_a.declare_intrinsics().unwrap();
-        let func_ids_a = jit_a.declare_functions(&[&add42_defn]).unwrap();
-        let arities_a: HashMap<Symbol, usize> = vec![(Symbol::from("add42"), 1)].into_iter().collect();
-        let mut slots_a = HashMap::new();
-        slots_a.insert(Symbol::from("add42"), add42_slot);
-        let got_base_a = mod_a_got.got_base_ptr() as i64;
-        let ctx_a = jit_a.build_compile_context(
-            &check, &func_ids_a, &arities_a,
-            Some(&slots_a), Some(got_base_a), None,
-        );
-        jit_a.compile_defn(&add42_defn, ctx_a).unwrap();
-        let add42_ptr = jit_a.finalize_and_get_ptr(&Symbol::from("add42"), 1).unwrap();
-        mod_a_got.update_slot(add42_slot, add42_ptr);
-
-        // Step 2: Compile a caller expression that calls "add42" via cross-module GOT.
-        // The expression is just `(add42 10)` which should return 42 (our stub ignores x).
-        let caller_expr = Expr::Apply {
-            callee: Box::new(Expr::Var {
-                name: Symbol::from("add42"),
-                span: Span::new(100, 105),
-            }),
-            args: vec![Expr::IntLit {
-                value: 10,
-                span: Span::new(106, 108),
-            }],
-            span: Span::new(100, 109),
-        };
-
-        // Build cross-module GOT mapping: add42 -> module A's GOT.
-        let mut xmod_got: HashMap<(ModuleFullPath, Symbol), (i64, usize)> = HashMap::new();
-        xmod_got.insert(
-            (ModuleFullPath::from("module_a"), Symbol::from("add42")),
-            (got_base_a, add42_slot),
-        );
-
-        // Compile the caller using cross_module_got.
-        let wrapper_name = Symbol::from("__test_caller__");
-        let wrapper_defn = Defn {
-            name: wrapper_name.clone(),
-            docstring: None,
-            variants: vec![DefnVariant {
-                params: vec![],
-                param_annotations: vec![],
-                body: caller_expr,
-                span: Span::new(100, 120),
-            }],
-            visibility: cranelisp_types::Visibility::Public,
-            span: Span::new(100, 120),
-        };
-
-        let mut jit_b = Jit::new().unwrap();
-        jit_b.declare_intrinsics().unwrap();
-        let func_ids_b = jit_b.declare_functions(&[&wrapper_defn]).unwrap();
-        let arities_b: HashMap<Symbol, usize> = vec![
-            (wrapper_name.clone(), 0),
-            (Symbol::from("add42"), 1),
-        ].into_iter().collect();
-
-        // No local GOT slots for add42 -- it's cross-module only.
-        let mut local_slots = HashMap::new();
-        let mut local_got = got::ModuleCodegenState::new();
-        let wrapper_slot = local_got.ensure_slot_for(&wrapper_name).unwrap();
-        local_slots.insert(wrapper_name.clone(), wrapper_slot);
-        let got_base_b = local_got.got_base_ptr() as i64;
-
-        let ctx_b = jit_b.build_compile_context(
-            &check, &func_ids_b, &arities_b,
-            Some(&local_slots), Some(got_base_b), Some(&xmod_got),
-        );
-        jit_b.compile_defn(&wrapper_defn, ctx_b).unwrap();
-        let caller_ptr = jit_b.finalize_and_get_ptr(&wrapper_name, 0).unwrap();
-
-        // Execute: should call add42 from module A's GOT and return 42.
-        let func: extern "C" fn() -> i64 = unsafe { std::mem::transmute(caller_ptr) };
-        let result = func();
-        assert_eq!(result, 42, "cross-module GOT call should return add42's result");
-    }
-
-    // --- Cross-eval mono defn GOT tests ---
-
-    // spec: 07-traits §7.7, 12-runtime §12.2 — mono defn compiled in prior eval
-    // is callable via GOT from a subsequent eval's defn.
-    //
-    // Simulates the REPL scenario where a constrained-poly function
-    // (e.g., `countdown`) is defined in eval 1, then called in eval 2
-    // (e.g., `(defn main [] (countdown 1000000))`). The monomorphised
-    // specialization (`countdown$Int`) must be compiled and registered
-    // in the GOT before the calling defn is compiled.
-    #[test]
-    fn test_mono_defn_got_callable_across_evals() {
-        // Step 1: Compile a "mono defn" (identity$Int) and register in GOT.
-        // This simulates compile_mono_defns producing countdown$Int.
-        let mono_defn = Defn {
-            name: Symbol::from("identity$Int"),
-            docstring: None,
-            variants: vec![DefnVariant {
-                params: vec![Symbol::from("x")],
-                param_annotations: vec![],
-                body: Expr::Var {
-                name: Symbol::from("x"),
-                span: Span::new(10, 11),
-                },
-                span: Span::new(0, 20),
-            }],
-            visibility: cranelisp_types::Visibility::Public,
-            span: Span::new(0, 20),
-        };
-
-        let mut got_state = got::ModuleCodegenState::new();
-        let mono_slot = got_state.ensure_slot_for(&Symbol::from("identity$Int")).unwrap();
-
-        // Compile mono defn in its own JIT (as compile_and_register_defn does).
-        let check = empty_check();
-        let mut jit1 = Jit::new().unwrap();
-        jit1.declare_intrinsics().unwrap();
-        let func_ids1 = jit1.declare_functions(&[&mono_defn]).unwrap();
-
-        let mut got_slots: HashMap<Symbol, usize> = HashMap::new();
-        got_slots.insert(Symbol::from("identity$Int"), mono_slot);
-        let got_base = got_state.got_base_ptr() as i64;
-
-        let arities1: HashMap<Symbol, usize> =
-            vec![(Symbol::from("identity$Int"), 1)].into_iter().collect();
-
-        let ctx1 = jit1.build_compile_context(
-            &check, &func_ids1, &arities1,
-            Some(&got_slots), Some(got_base), None,
-        );
-        jit1.compile_defn(&mono_defn, ctx1).unwrap();
-        let mono_ptr = jit1.finalize_and_get_ptr(&Symbol::from("identity$Int"), 1).unwrap();
-        got_state.update_slot(mono_slot, mono_ptr);
-        got_state.def_codegen.entry(Symbol::from("identity$Int")).or_default().code_ptr = Some(mono_ptr);
-        got_state.def_codegen.entry(Symbol::from("identity$Int")).or_default().param_count = Some(1);
-
-        // Step 2: Compile a "main" defn that calls identity$Int via SigDispatch.
-        // The call `(identity 99)` is resolved to identity$Int by the typechecker.
-        let call_span = Span::new(100, 115);
-        let main_body = Expr::Apply {
-            callee: Box::new(Expr::Var {
-                name: Symbol::from("identity"),
-                span: Span::new(101, 109),
-            }),
-            args: vec![Expr::IntLit {
-                value: 99,
-                span: Span::new(110, 112),
-            }],
-            span: call_span,
-        };
-
-        let main_defn = Defn {
-            name: Symbol::from("main"),
-            docstring: None,
-            variants: vec![DefnVariant {
-                params: vec![],
-                param_annotations: vec![],
-                body: main_body,
-                span: Span::new(95, 120),
-            }],
-            visibility: cranelisp_types::Visibility::Public,
-            span: Span::new(95, 120),
-        };
-
-        // Set up method_resolutions with SigDispatch for the call.
-        let mut check2 = empty_check();
-        check2.method_resolutions.insert(
-            call_span,
-            cranelisp_types::ResolvedCall::SigDispatch {
-                mangled_name: cranelisp_types::JitSymbol::from("identity$Int"),
-            },
-        );
-
-        let main_slot = got_state.ensure_slot_for(&Symbol::from("main")).unwrap();
-
-        // Build got_slots from the GOT state (as compile_and_register_defn does).
-        let mut got_slots2: HashMap<Symbol, usize> = HashMap::new();
-        for (name, dc) in &got_state.def_codegen {
-            if let Some(s) = dc.got_slot {
-                got_slots2.insert(name.clone(), s);
-            }
-        }
-        got_slots2.insert(Symbol::from("main"), main_slot);
-        let got_base2 = got_state.got_base_ptr() as i64;
-
-        let mut arities2: HashMap<Symbol, usize> = HashMap::new();
-        for (name, dc) in &got_state.def_codegen {
-            if let Some(pc) = dc.param_count {
-                arities2.insert(name.clone(), pc);
-            }
-        }
-        arities2.insert(Symbol::from("main"), 0);
-
-        let mut jit2 = Jit::new().unwrap();
-        jit2.declare_intrinsics().unwrap();
-        let func_ids2 = jit2.declare_functions(&[&main_defn]).unwrap();
-
-        let ctx2 = jit2.build_compile_context(
-            &check2, &func_ids2, &arities2,
-            Some(&got_slots2), Some(got_base2), None,
-        );
-        jit2.compile_defn(&main_defn, ctx2).unwrap();
-        let main_ptr = jit2.finalize_and_get_ptr(&Symbol::from("main"), 0).unwrap();
-
-        // Execute main: should call identity$Int(99) and return 99.
-        let func: extern "C" fn() -> i64 = unsafe { std::mem::transmute(main_ptr) };
-        let result = func();
-        assert_eq!(result, 99, "cross-eval GOT call to mono defn should work");
-    }
-
     // spec: 12-runtime §12.5, 07-traits §7.7 — TCO for monomorphised self-recursive call
     //
     // When a constrained-poly function like `countdown` is monomorphised to
@@ -2784,28 +2455,19 @@ mod tests {
             },
         );
 
-        // Compile in Interactive mode with GOT.
-        let mut got_state = got::ModuleCodegenState::new();
-        let slot = got_state.ensure_slot_for(&Symbol::from("countdown$Int")).unwrap();
-
+        // Compile with direct calls (no GOT).
         let mut jit = Jit::new().unwrap();
         jit.declare_intrinsics().unwrap();
         let func_ids = jit.declare_functions(&[&countdown_defn]).unwrap();
-
-        let mut got_slots: HashMap<Symbol, usize> = HashMap::new();
-        got_slots.insert(Symbol::from("countdown$Int"), slot);
-        let got_base = got_state.got_base_ptr() as i64;
 
         let arities: HashMap<Symbol, usize> =
             vec![(Symbol::from("countdown$Int"), 1)].into_iter().collect();
 
         let ctx = jit.build_compile_context(
             &check, &func_ids, &arities,
-            Some(&got_slots), Some(got_base), None,
         );
         jit.compile_defn(&countdown_defn, ctx).unwrap();
         let countdown_ptr = jit.finalize_and_get_ptr(&Symbol::from("countdown$Int"), 1).unwrap();
-        got_state.update_slot(slot, countdown_ptr);
 
         // Call with 1_000_000 — without TCO this would stack overflow.
         let func: extern "C" fn(i64) -> i64 = unsafe { std::mem::transmute(countdown_ptr) };

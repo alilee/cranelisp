@@ -416,45 +416,8 @@ impl<'a, M: Module> FnCompiler<'a, M> {
             }
         }
 
-        // --- Legacy paths (being phased out) ---
-        // Prefer direct call via FuncId for intra-module calls (functions
-        // declared in this JIT instance). Fall back to GOT-indirect for
-        // cross-module calls or when func_ids doesn't have the name.
-        let use_got = if self.ctx.func_ids.contains_key(name) {
-            false
-        } else {
-            self.ctx.env.is_some() || self.ctx.got_slots.is_some()
-        };
-
-        if use_got {
-            // GOT-indirect call: load function pointer from GOT slot.
-            let (got_base, slot) = self.resolve_got_entry(name, span)?;
-
-            // Compute the address of the GOT slot: got_base + slot * 8
-            let slot_offset = (slot * 8) as i64;
-            let base_val = self.builder.ins().iconst(types::I64, got_base);
-            let slot_addr = self.builder.ins().iadd_imm(base_val, slot_offset);
-
-            // Load the function pointer from the GOT slot.
-            let func_ptr = self.builder.ins().load(
-                types::I64,
-                MemFlags::trusted(),
-                slot_addr,
-                0,
-            );
-
-            // Build the signature for call_indirect: all params and return are i64.
-            let mut sig = self.module.make_signature();
-            for _ in arg_vals {
-                sig.params.push(AbiParam::new(types::I64));
-            }
-            sig.returns.push(AbiParam::new(types::I64));
-            let sig_ref = self.builder.import_signature(sig);
-
-            // Emit call_indirect.
-            let call = self.builder.ins().call_indirect(sig_ref, func_ptr, arg_vals);
-            Ok(self.builder.inst_results(call)[0])
-        } else {
+        // Direct call: look up FuncId and emit `call`.
+        {
             // Direct call: look up FuncId and emit `call`.
             let func_id = self.ctx.func_ids.get(name).ok_or_else(|| {
                 CranelispError::CodegenError {
@@ -507,36 +470,15 @@ impl<'a, M: Module> FnCompiler<'a, M> {
         Ok(self.builder.inst_results(call)[0])
     }
 
-    /// Resolve a function name to a `(got_base_ptr, slot_index)` pair.
-    ///
-    /// Lookup order:
-    /// 1. Local module GOT (`ctx.got_slots` + `ctx.got_base_ptr`)
-    /// 2. Cross-module GOT (`ctx.cross_module_got`) — for imported functions
-    ///
-    /// Returns `(got_base_ptr_as_i64, slot_index)` or an error if not found.
+    /// Resolve a function name to a `(got_base_ptr, slot_index)` pair via env.
     pub(crate) fn resolve_got_entry(
         &self,
         name: &Symbol,
         span: Span,
     ) -> Result<(i64, usize), CranelispError> {
-        // Preferred path: resolve via CompilationEnv (reads live from session).
         if let Some(env) = self.ctx.env {
             if let Some(result) = env.resolve_got(name) {
                 return Ok(result);
-            }
-        }
-
-        // Legacy path: snapshot-based lookup (being phased out).
-        if let (Some(got_slots), Some(got_base)) = (self.ctx.got_slots, self.ctx.got_base_ptr)
-            && let Some(&slot) = got_slots.get(name) {
-                return Ok((got_base, slot));
-            }
-
-        if let Some(xmod_got) = self.ctx.cross_module_got {
-            for ((_, sym), &(base, slot)) in xmod_got {
-                if sym == name {
-                    return Ok((base, slot));
-                }
             }
         }
 
