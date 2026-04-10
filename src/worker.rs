@@ -42,8 +42,8 @@ pub struct ModuleCompiler<'a> {
     pub typecheck_products: &'a dashmap::DashMap<ModuleFullPath, crate::session_v4::TypecheckProduct>,
     /// Per-module codegen products. Workers write Code directly here.
     pub codegen_products: &'a dashmap::DashMap<ModuleFullPath, crate::session_v4::CodegenProduct>,
-    /// Per-symbol introspection data (REPL slash commands).
-    pub introspection: &'a dashmap::DashMap<cranelisp_types::FQSymbol, crate::session_v4::Introspection>,
+    /// Per-symbol introspection data (REPL slash commands). None in batch mode.
+    pub introspection: Option<&'a dashmap::DashMap<cranelisp_types::FQSymbol, crate::session_v4::Introspection>>,
     pub lib_dirs: &'a [PathBuf],
     pub platform_dirs: &'a [PathBuf],
     pub project_root: &'a Path,
@@ -860,13 +860,21 @@ fn process_regular_form(
         let result = ctx.tc.check_form(module, form, CheckPass::CheckBody, accumulator)?;
         ctx.tc.merge_form_result(module, accumulator, result);
 
-        if let TopLevel::Defn(defn) = form {
-            // Store original sexp for /source and /sexp REPL commands.
-            let fq = cranelisp_types::FQSymbol {
-                module: module.clone(),
-                symbol: defn.name.clone(),
+        // Store original sexp for /sexp REPL command.
+        if let Some(intr_map) = ctx.introspection {
+            let name = match form {
+                TopLevel::Defn(defn) => Some(defn.name.clone()),
+                _ => None,
             };
-            ctx.introspection.entry(fq).or_default().sexp = Some(sexp.clone());
+            if let Some(name) = name {
+                let fq = cranelisp_types::FQSymbol {
+                    module: module.clone(),
+                    symbol: name.clone(),
+                };
+                intr_map.entry(fq).or_default().sexp = Some(sexp.clone());
+            }
+        }
+        if let TopLevel::Defn(defn) = form {
             ctx.scheduler.notify_symbol_typechecked(module, &defn.name);
         }
     }
@@ -2236,8 +2244,10 @@ fn clear_module_codegen(ctx: &mut ModuleCompiler, module: &ModuleFullPath) {
             symbol: cranelisp_types::Symbol::from(bare),
         }
     }).collect();
-    for fq in &fq_keys {
-        ctx.introspection.remove(fq);
+    if let Some(intr_map) = ctx.introspection {
+        for fq in &fq_keys {
+            intr_map.remove(fq);
+        }
     }
 }
 
@@ -2821,7 +2831,7 @@ pub(crate) struct PriorityWorkerRefs<'a> {
     pub(crate) platform_registry: &'a std::sync::Mutex<PlatformRegistry>,
     pub(crate) typecheck_products: &'a dashmap::DashMap<ModuleFullPath, crate::session_v4::TypecheckProduct>,
     pub(crate) codegen_products: &'a dashmap::DashMap<ModuleFullPath, crate::session_v4::CodegenProduct>,
-    pub(crate) introspection: &'a dashmap::DashMap<cranelisp_types::FQSymbol, crate::session_v4::Introspection>,
+    pub(crate) introspection: Option<&'a dashmap::DashMap<cranelisp_types::FQSymbol, crate::session_v4::Introspection>>,
     pub(crate) scheduler: &'a CompileScheduler,
     pub(crate) module_sexps: &'a std::sync::Mutex<HashMap<ModuleFullPath, Vec<Sexp>>>,
     pub(crate) suspend_states: &'a std::sync::Mutex<
