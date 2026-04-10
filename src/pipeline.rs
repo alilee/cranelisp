@@ -18,8 +18,6 @@ use cranelisp_types::{
 
 use cranelisp_backend::cache;
 
-use crate::session::InMemWorkerState;
-
 // ---------------------------------------------------------------------------
 // Module file resolution
 // ---------------------------------------------------------------------------
@@ -61,11 +59,12 @@ pub fn resolve_module_file(
 // ---------------------------------------------------------------------------
 
 pub fn compile_and_execute_expr(
-    inmem_worker: &mut InMemWorkerState,
     jit_symbols: &[(String, *const u8)],
     program: &Program,
     check: &CheckResult,
-    env: Option<&dyn cranelisp_backend::compiler::CompilationEnv>,
+    env: &dyn cranelisp_backend::compiler::CompilationEnv,
+    traced_fns: &[cranelisp_backend::compiler::TracedFnInfo],
+    trace_extra_symbols: &[(String, *const u8)],
 ) -> Result<(i64, Type), CranelispError> {
     use cranelisp_types::TopLevel;
 
@@ -81,46 +80,46 @@ pub fn compile_and_execute_expr(
         .or_else(|| check.expr_types.get(&expr.span()).cloned())
         .unwrap_or(Type::Int);
 
-    if inmem_worker.traced_fns.is_empty() {
+    if traced_fns.is_empty() {
         let extra_syms: Vec<(&str, *const u8)> = jit_symbols
             .iter()
             .map(|(name, ptr)| (name.as_str(), *ptr))
             .collect();
 
-        let got_state = if env.is_some() { None } else { Some(&mut inmem_worker.got_state) };
-
         let compiled = cranelisp_backend::compile_expr_with_got_and_symbols(
             expr,
             check,
-            got_state,
+            None,
             &extra_syms,
-            env,
+            Some(env),
         )?;
 
         // SAFETY: compiled code was just generated and finalized by our JIT.
         let value = unsafe { compiled.execute() };
         Ok((value, ty))
     } else {
-        let value = compile_and_execute_expr_with_trace(inmem_worker, jit_symbols, expr, check, env)?;
+        let value = compile_and_execute_expr_with_trace(
+            jit_symbols, expr, check, env, traced_fns, trace_extra_symbols,
+        )?;
         Ok((value, ty))
     }
 }
 
 fn compile_and_execute_expr_with_trace(
-    inmem_worker: &mut InMemWorkerState,
     jit_symbols: &[(String, *const u8)],
     expr: &cranelisp_types::Expr,
     check: &CheckResult,
-    env: Option<&dyn cranelisp_backend::compiler::CompilationEnv>,
+    env: &dyn cranelisp_backend::compiler::CompilationEnv,
+    traced_fns: &[cranelisp_backend::compiler::TracedFnInfo],
+    trace_extra_symbols: &[(String, *const u8)],
 ) -> Result<i64, CranelispError> {
     use cranelisp_types::{Defn, DefnVariant, Symbol, Visibility};
-    use std::collections::HashMap;
 
     let mut extra_syms: Vec<(&str, *const u8)> = jit_symbols
         .iter()
         .map(|(name, ptr)| (name.as_str(), *ptr))
         .collect();
-    for (name, ptr) in &inmem_worker.trace_extra_symbols {
+    for (name, ptr) in trace_extra_symbols {
         extra_syms.push((name.as_str(), *ptr));
     }
 
@@ -142,36 +141,19 @@ fn compile_and_execute_expr_with_trace(
     };
 
     let func_ids = jit.declare_functions(&[&wrapper_defn])?;
-
-    // When env is provided, skip GOT snapshot — env handles resolution live.
-    let (got_slots, got_base, func_arities) = if env.is_some() {
-        (HashMap::new(), 0i64, HashMap::new())
-    } else {
-        let mut gs: HashMap<Symbol, usize> = HashMap::new();
-        let mut fa: HashMap<Symbol, usize> = HashMap::new();
-        for (name, dc) in &inmem_worker.got_state.def_codegen {
-            if let Some(slot) = dc.got_slot {
-                gs.insert(name.clone(), slot);
-            }
-            if let Some(pc) = dc.param_count {
-                fa.insert(name.clone(), pc);
-            }
-        }
-        let base = inmem_worker.got_state.got_base_ptr() as i64;
-        (gs, base, fa)
-    };
+    let empty_arities: HashMap<Symbol, usize> = HashMap::new();
 
     let mut compile_ctx = jit.build_compile_context(
         check,
         &func_ids,
-        &func_arities,
-        if env.is_some() { None } else { Some(&got_slots) },
-        if env.is_some() { None } else { Some(got_base) },
+        &empty_arities,
+        None,
+        None,
         None,
     );
 
-    compile_ctx.env = env;
-    compile_ctx.traced_fns = Some(&inmem_worker.traced_fns);
+    compile_ctx.env = Some(env);
+    compile_ctx.traced_fns = Some(traced_fns);
 
     jit.compile_defn(&wrapper_defn, compile_ctx)?;
     let code_ptr = jit.finalize_and_get_ptr(&wrapper_name, 0)?;
@@ -179,7 +161,8 @@ fn compile_and_execute_expr_with_trace(
     let func: extern "C" fn() -> i64 = unsafe { std::mem::transmute(code_ptr) };
     let value = func();
 
-    inmem_worker.jit_modules.push(jit);
+    // JIT goes out of scope here, but the code was already executed.
+    // No need to keep it alive — expression results are immediate values.
 
     Ok(value)
 }
@@ -240,14 +223,7 @@ pub fn compile_and_register_defn_shared(
     module_got.store_slot(slot, code_ptr);
 
     // Write Code to codegen_products.
-    let product = codegen_products.entry(module.clone()).or_insert_with(|| {
-        crate::session_v4::CodegenProduct {
-            linker: None,
-            code: dashmap::DashMap::new(),
-            got: None,
-            got_base: std::ptr::null(),
-        }
-    });
+    let product = codegen_products.entry(module.clone()).or_default();
     product.code.insert(
         defn.name.clone(),
         crate::session_v4::Code { jit, ptr: code_ptr },

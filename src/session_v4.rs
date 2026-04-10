@@ -22,7 +22,6 @@ use crate::expander::MacroEnv;
 use crate::platform::LoadedPlatform;
 use crate::platform_registry::PlatformRegistry;
 use crate::scheduler::CompileScheduler;
-use crate::session::InMemWorkerState;
 use crate::worker::WorkerContext;
 
 // Re-export display functions so tests can import from session_v4 instead of repl.
@@ -322,6 +321,11 @@ fn parens_balanced(input: &str) -> bool {
 /// Permanent for session lifetime. See session-restructure.md.
 pub struct TypecheckProduct {
     pub symbols: SymbolTable,
+    /// Per-module GOT table. Allocated at module registration, base address
+    /// stable for process lifetime. Slot indices assigned during typecheck,
+    /// code pointers filled during codegen. Arc-shared so codegen workers
+    /// can read the base address concurrently.
+    pub got: std::sync::Arc<cranelisp_backend::got::GotTable>,
     pub file_path: Option<PathBuf>,
 }
 
@@ -337,24 +341,23 @@ pub struct CodegenInput {
     pub program: Vec<TopLevel>,
 }
 
-/// TARGET STATE: per-module codegen output. Replaces ModuleGotRegistry + def_codegen + kept_code.
+/// Per-module codegen output: compiled code + optional cache linker.
 /// Entry created when codegen starts for a module. See session-restructure.md.
 pub struct CodegenProduct {
     /// Some if loaded from cache .o; owns code_regions + data_regions.
     pub linker: Option<cranelisp_backend::cache::Linker>,
     /// Per-symbol codegen output. Additive for REPL redefinition over cache.
     pub code: dashmap::DashMap<Symbol, Code>,
-    /// Some if JIT-created; None if linker-loaded (GOT lives in linker data).
-    pub got: Option<cranelisp_backend::got::GotTable>,
-    /// GOT base address — either &got or linker's __cranelisp_got address.
-    pub got_base: *const u8,
 }
 
-// SAFETY: CodegenProduct contains raw pointer (got_base) that points to
-// either a GotTable (Box-allocated, stable) or linker mmap'd data (stable
-// after load). Both are valid for process lifetime.
-unsafe impl Send for CodegenProduct {}
-unsafe impl Sync for CodegenProduct {}
+impl Default for CodegenProduct {
+    fn default() -> Self {
+        CodegenProduct {
+            linker: None,
+            code: dashmap::DashMap::new(),
+        }
+    }
+}
 
 /// TARGET STATE: per-symbol compiled code. Replaces DefCodegen's code_ptr + kept jit_modules.
 /// Owns the JIT mmap'd executable pages. See session-restructure.md.
@@ -404,67 +407,6 @@ pub struct ObjectCodegenInput {
 
 // ---------------------------------------------------------------------------
 // Per-module GOT registry (pipeline-v4.md §5.1, per-module-got.md §3.1)
-// ---------------------------------------------------------------------------
-
-/// Registry of per-module GOT tables. Each module gets its own `Arc<GotTable>`
-/// with module-local slot indices (0, 1, 2...). Cross-module calls look up the
-/// target module's GOT base + slot.
-#[deprecated(note = "session-restructure.md: replaced by CodegenProduct.got")]
-pub struct ModuleGotRegistry {
-    module_gots: dashmap::DashMap<ModuleFullPath, std::sync::Arc<cranelisp_backend::got::GotTable>>,
-}
-
-impl ModuleGotRegistry {
-    pub fn new() -> Self {
-        ModuleGotRegistry {
-            module_gots: dashmap::DashMap::new(),
-        }
-    }
-
-    /// Get or create the GotTable for a module.
-    pub fn ensure_module(&self, module: &ModuleFullPath) -> std::sync::Arc<cranelisp_backend::got::GotTable> {
-        self.module_gots
-            .entry(module.clone())
-            .or_insert_with(|| std::sync::Arc::new(cranelisp_backend::got::GotTable::new()))
-            .clone()
-    }
-
-    /// Get the GotTable for a module (if it exists).
-    pub fn get_table(&self, module: &ModuleFullPath) -> Option<std::sync::Arc<cranelisp_backend::got::GotTable>> {
-        self.module_gots.get(module).map(|r| r.clone())
-    }
-
-    /// Get the GOT base pointer for a module (if its GotTable is allocated).
-    pub fn got_base_for(&self, module: &ModuleFullPath) -> Option<i64> {
-        self.module_gots.get(module).map(|r| r.base_ptr() as i64)
-    }
-
-    /// Iterate over all registered module GOT tables.
-    pub fn all_modules(&self) -> dashmap::iter::Iter<'_, ModuleFullPath, std::sync::Arc<cranelisp_backend::got::GotTable>> {
-        self.module_gots.iter()
-    }
-
-    /// Get a reference to the underlying DashMap (for CompilationEnv implementation).
-    pub fn inner(&self) -> &dashmap::DashMap<ModuleFullPath, std::sync::Arc<cranelisp_backend::got::GotTable>> {
-        &self.module_gots
-    }
-
-    /// Collect GOT data symbol entries for JIT registration.
-    /// Returns (symbol_name, base_ptr) pairs for all modules with GOT tables.
-    /// These are registered on the JITBuilder so that `declare_data(name, Import)`
-    /// resolves to the correct GotTable address.
-    pub fn jit_got_symbols(&self) -> Vec<(String, *const u8)> {
-        self.module_gots
-            .iter()
-            .map(|entry| {
-                let name = cranelisp_backend::compiler::got_data_symbol_name(entry.key());
-                let ptr = entry.value().base_ptr();
-                (name, ptr)
-            })
-            .collect()
-    }
-}
-
 // ---------------------------------------------------------------------------
 // Module output (typecheck results stored for codegen to read)
 // ---------------------------------------------------------------------------
@@ -523,7 +465,6 @@ pub struct SharedState {
     /// Per-module GOT tables. Each module gets its own GotTable with
     /// module-local slot indices. Codegen workers look up GOT base + slot
     /// through this registry.
-    pub got_registry: ModuleGotRegistry,
 
     /// LEGACY: replaced by codegen_inputs DashMap on CompilerSession. See session-restructure.md.
     /// Typecheck results stored after finalize_module. Codegen workers and
@@ -539,9 +480,6 @@ pub struct SharedState {
 pub struct CompilerSession {
     /// Type checker state (persists across forms).
     pub tc: cranelisp_typecheck::TypeChecker,
-    /// LEGACY: replaced by CodegenProduct + CompilerSession DashMaps. See session-restructure.md.
-    /// In-memory codegen worker state (GOT, JIT lifetimes, trace).
-    pub inmem_worker: InMemWorkerState,
     /// LEGACY: replaced by Code + Introspection DashMaps. See session-restructure.md.
     /// Per-definition codegen artifacts for introspection (/source, /sexp, /clif, /disasm).
     pub def_codegen: HashMap<Symbol, cranelisp_backend::codegen_types::DefCodegen>,
@@ -629,7 +567,6 @@ impl CompilerSession {
         let platform_dirs = crate::session::assemble_platform_dirs();
 
         let tc = cranelisp_typecheck::TypeChecker::new();
-        let inmem_worker = InMemWorkerState::new();
         let macro_env = MacroEnv::new();
 
         let cache_dir = project_root.join(".cranelisp-cache");
@@ -654,7 +591,6 @@ impl CompilerSession {
             cached_modules: Mutex::new(HashSet::new()),
             file_to_module: Mutex::new(HashMap::new()),
             cache_state: Mutex::new(cache_state),
-            got_registry: ModuleGotRegistry::new(),
             module_outputs: dashmap::DashMap::new(),
         });
 
@@ -676,7 +612,6 @@ impl CompilerSession {
 
         CompilerSession {
             tc,
-            inmem_worker,
             def_codegen: HashMap::new(),
             macro_env,
             lib_dirs,
@@ -748,12 +683,6 @@ impl CompilerSession {
         });
         let suspend_states = Mutex::new(HashMap::new());
 
-        // Extract shared codegen state from InMemWorkerState for workers.
-        // Workers still use legacy paths (compile_dep_symbol_inline, compile_macro_defn_no_dealloc)
-        // that need the real GOT state. Can't use scratch() until those are migrated to env path.
-        let shared_codegen =
-            crate::session::SharedCodegenState::extract_from(&mut self.inmem_worker);
-
         // Temporarily move TC and PlatformRegistry into Mutexes so worker
         // threads can lock them. Moved back after the scope exits.
         let tc = std::mem::replace(&mut self.tc, cranelisp_typecheck::TypeChecker::new());
@@ -767,8 +696,9 @@ impl CompilerSession {
         let worker_shared = crate::worker::PriorityWorkerShared {
             tc: &tc_mutex,
             platform_registry: &platform_mutex,
-            shared_codegen: &shared_codegen,
+            typecheck_products: &self.typecheck_products,
             codegen_products: &self.codegen_products,
+            introspection: &self.introspection,
             scheduler: &self.shared.scheduler,
             module_sexps: &module_sexps,
             suspend_states: &suspend_states,
@@ -801,23 +731,9 @@ impl CompilerSession {
         self.platform_registry = platform_mutex.into_inner()
             .unwrap_or_else(|e| e.into_inner());
 
-        // Sync shared codegen state back to InMemWorkerState.
-        shared_codegen.sync_back_to(&mut self.inmem_worker);
-        // Merge introspection data from codegen into session-level map.
-        for (k, v) in &self.inmem_worker.got_state.def_codegen {
-            self.def_codegen.insert(k.clone(), v.clone());
-        }
-
         // Check scheduler completion — all workers have exited, so this
         // is a non-blocking status check (not a wait).
         self.shared.scheduler.wait_inmem_complete()?;
-
-        // Register module aliases for GOT lookup by unqualified name.
-        crate::session::register_module_aliases_filtered(
-            &mut self.inmem_worker,
-            &module,
-            None,
-        );
 
         Ok(Vec::new())
     }
@@ -1047,17 +963,13 @@ impl CompilerSession {
             let single_sexp = [sexp.clone()];
 
             let result = {
-                let shared_codegen =
-                    crate::session::SharedCodegenState::extract_from(&mut self.inmem_worker);
-                let mut worker_jit = crate::session::WorkerJitState::new();
-
                 let mut wctx = WorkerContext {
                     tc: &mut self.tc,
                     scheduler: &self.shared.scheduler,
-                    shared_codegen: &shared_codegen,
-                    worker_jit: &mut worker_jit,
                     platform_registry: &mut self.platform_registry,
+                    typecheck_products: &self.typecheck_products,
                     codegen_products: &self.codegen_products,
+                    introspection: &self.introspection,
                     lib_dirs: &self.lib_dirs,
                     platform_dirs: &self.platform_dirs,
                     project_root: &self.project_root,
@@ -1066,7 +978,7 @@ impl CompilerSession {
                 };
 
                 let mut pass1_done = false;
-                let r = worker::process_module_forms(
+                worker::process_module_forms(
                     &mut wctx,
                     &module,
                     &single_sexp,
@@ -1075,14 +987,7 @@ impl CompilerSession {
                     &mut expanded_program,
                     ModuleStrategy::Additive,
                     &mut pass1_done,
-                );
-
-                worker_jit.drain_to_shared(&shared_codegen);
-                shared_codegen.sync_back_to(&mut self.inmem_worker);
-                for (k, v) in &self.inmem_worker.got_state.def_codegen {
-                    self.def_codegen.insert(k.clone(), v.clone());
-                }
-                r?
+                )?
             };
 
             match result {
@@ -1132,30 +1037,28 @@ impl CompilerSession {
         program: &[TopLevel],
         check: &CheckResult,
     ) -> Result<EvalResult, CranelispError> {
+        // Ensure typecheck product exists for this module.
+        crate::worker::ensure_typecheck_product(&self.typecheck_products, module);
+
         // Build per-module CompilationEnv for both defn codegen and expr eval.
         let tc_modules = self.tc.modules_ref();
         let env_impl = crate::worker::SessionCompilationEnv {
             tc_modules,
-            got_registry: &self.shared.got_registry,
+            typecheck_products: &self.typecheck_products,
             current_module: module.clone(),
         };
-        let env: Option<&dyn cranelisp_backend::compiler::CompilationEnv> = Some(&env_impl);
 
-        // Codegen: compile definitions, register in GOT.
         // Codegen: compile definitions directly to codegen_products DashMap.
-        {
-            let result = crate::worker::codegen_module_symbols(
-                &self.platform_registry,
-                &self.shared.scheduler,
-                module,
-                program,
-                check,
-                tc_modules,
-                &self.shared,
-                &self.codegen_products,
-            );
-            result?;
-        }
+        crate::worker::codegen_module_symbols(
+            &self.platform_registry,
+            &self.shared.scheduler,
+            module,
+            program,
+            check,
+            tc_modules,
+            &self.typecheck_products,
+            &self.codegen_products,
+        )?;
 
         let has_expr = program.iter().any(|tl| matches!(tl, TopLevel::Expr(_)));
 
@@ -1164,11 +1067,12 @@ impl CompilerSession {
             // Use collect_jit_symbols_for_module for full symbol set (platform + GOT data).
             let ps = env_impl.collect_jit_symbols_for_module(&self.platform_registry);
             let (value, ty) = crate::pipeline::compile_and_execute_expr(
-                &mut self.inmem_worker,
                 &ps,
                 &program_vec,
                 check,
-                env,
+                &env_impl,
+                &[], // traced_fns (empty — trace set up by REPL when re-enabled)
+                &[], // trace_extra_symbols
             )?;
 
             Ok(EvalResult::Val {
@@ -1214,17 +1118,13 @@ impl CompilerSession {
         let mut module_sexps = HashMap::new();
         module_sexps.insert(dep_module.clone(), dep_sexps.to_vec());
 
-        let shared_codegen =
-            crate::session::SharedCodegenState::extract_from(&mut self.inmem_worker);
-        let mut worker_jit = crate::session::WorkerJitState::new();
-
         let mut ctx = WorkerContext {
             tc: &mut self.tc,
             scheduler: &self.shared.scheduler,
-            shared_codegen: &shared_codegen,
-            worker_jit: &mut worker_jit,
             platform_registry: &mut self.platform_registry,
+            typecheck_products: &self.typecheck_products,
             codegen_products: &self.codegen_products,
+            introspection: &self.introspection,
             lib_dirs: &self.lib_dirs,
             platform_dirs: &self.platform_dirs,
             project_root: &self.project_root,
@@ -1232,13 +1132,7 @@ impl CompilerSession {
             shared_state: Some(&self.shared),
         };
 
-        let loop_result = crate::worker::priority_worker_loop(&mut ctx, &mut module_sexps);
-        worker_jit.drain_to_shared(&shared_codegen);
-        shared_codegen.sync_back_to(&mut self.inmem_worker);
-        for (k, v) in &self.inmem_worker.got_state.def_codegen {
-            self.def_codegen.insert(k.clone(), v.clone());
-        }
-        loop_result?;
+        crate::worker::priority_worker_loop(&mut ctx, &mut module_sexps)?;
 
         match self.shared.scheduler.wait_inmem_complete() {
             Ok(()) => Ok(()),
@@ -1837,17 +1731,13 @@ impl CompilerSession {
             let info = cranelisp_frontend::parse_defmacro(sexp)?;
             let mut accumulator = ModuleCheckAccumulator::new();
 
-            let shared_codegen =
-                crate::session::SharedCodegenState::extract_from(&mut self.inmem_worker);
-            let mut worker_jit = crate::session::WorkerJitState::new();
-
             let mut wctx = WorkerContext {
                 tc: &mut self.tc,
                 scheduler: &self.shared.scheduler,
-                shared_codegen: &shared_codegen,
-                worker_jit: &mut worker_jit,
                 platform_registry: &mut self.platform_registry,
+                typecheck_products: &self.typecheck_products,
                 codegen_products: &self.codegen_products,
+                introspection: &self.introspection,
                 lib_dirs: &self.lib_dirs,
                 platform_dirs: &self.platform_dirs,
                 project_root: &self.project_root,
@@ -1858,12 +1748,6 @@ impl CompilerSession {
             crate::worker::compile_macro_for_repl(
                 &mut wctx, &module, &info, Span::SYNTHETIC, &mut accumulator,
             )?;
-
-            worker_jit.drain_to_shared(&shared_codegen);
-            shared_codegen.sync_back_to(&mut self.inmem_worker);
-            for (k, v) in &self.inmem_worker.got_state.def_codegen {
-                self.def_codegen.insert(k.clone(), v.clone());
-            }
         }
         Ok(())
     }

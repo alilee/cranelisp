@@ -1632,7 +1632,6 @@ mod tests {
             cached_modules: Mutex::new(std::collections::HashSet::new()),
             file_to_module: Mutex::new(std::collections::HashMap::new()),
             cache_state: Mutex::new(None),
-            got_registry: crate::session_v4::ModuleGotRegistry::new(),
             module_outputs: dashmap::DashMap::new(),
         });
 

@@ -23,7 +23,6 @@ use crate::expander::{
 use crate::pipeline::compile_and_register_defn_shared;
 use crate::platform_registry::PlatformRegistry;
 use crate::scheduler::{CompileScheduler, PriorityWork};
-use crate::session::{SharedCodegenState, WorkerJitState};
 
 // ---------------------------------------------------------------------------
 // WorkerContext — bundled worker parameters (G-1)
@@ -31,9 +30,6 @@ use crate::session::{SharedCodegenState, WorkerJitState};
 
 /// Shared context for the priority worker loop and process_module_forms.
 ///
-/// Carries shared codegen state (`SharedCodegenState`, now `&` since all
-/// fields use concurrent data structures) and per-worker JIT state
-/// (`WorkerJitState`, `&mut` since it is per-worker owned state).
 /// The TypeChecker remains `&mut` until `register_imports_with_state`
 /// and `register_exports_with_state` are made `pub` on the TC crate.
 /// PlatformRegistry remains `&mut` because `register()` needs mutation
@@ -41,13 +37,13 @@ use crate::session::{SharedCodegenState, WorkerJitState};
 pub struct WorkerContext<'a> {
     pub tc: &'a mut cranelisp_typecheck::TypeChecker,
     pub scheduler: &'a CompileScheduler,
-    /// LEGACY: kept for has_code_ptr during transition. See session-restructure.md.
-    pub shared_codegen: &'a SharedCodegenState,
-    /// LEGACY: kept for drain_to_shared during transition. See session-restructure.md.
-    pub worker_jit: &'a mut WorkerJitState,
     pub platform_registry: &'a mut PlatformRegistry,
-    /// TARGET STATE: per-module codegen products. Workers write Code directly here.
+    /// Per-module typecheck products (symbol tables + GOT tables).
+    pub typecheck_products: &'a dashmap::DashMap<ModuleFullPath, crate::session_v4::TypecheckProduct>,
+    /// Per-module codegen products. Workers write Code directly here.
     pub codegen_products: &'a dashmap::DashMap<ModuleFullPath, crate::session_v4::CodegenProduct>,
+    /// Per-symbol introspection data (REPL slash commands).
+    pub introspection: &'a dashmap::DashMap<cranelisp_types::FQSymbol, crate::session_v4::Introspection>,
     pub lib_dirs: &'a [PathBuf],
     pub platform_dirs: &'a [PathBuf],
     pub project_root: &'a Path,
@@ -67,12 +63,12 @@ pub struct WorkerContext<'a> {
 // ---------------------------------------------------------------------------
 
 /// Implementation of `CompilationEnv` that reads live from the TypeChecker's
-/// module symbol tables and the per-module GOT registry. No snapshots.
+/// module symbol tables and per-module GOT tables from typecheck products.
 pub struct SessionCompilationEnv<'a> {
     /// Reference to TC's per-module symbol tables (DashMap).
     pub tc_modules: &'a dashmap::DashMap<ModuleFullPath, cranelisp_types::SymbolTable>,
-    /// Per-module GOT tables.
-    pub got_registry: &'a crate::session_v4::ModuleGotRegistry,
+    /// Per-module typecheck products (GOT tables live here).
+    pub typecheck_products: &'a dashmap::DashMap<ModuleFullPath, crate::session_v4::TypecheckProduct>,
     /// The module currently being compiled.
     pub current_module: ModuleFullPath,
 }
@@ -206,7 +202,8 @@ impl SessionCompilationEnv<'_> {
         let entry = st.get(name)?;
         match entry {
             ModuleEntry::Def { got_slot: Some(slot), .. } => {
-                let got_base = self.got_registry.got_base_for(module)?;
+                let tp = self.typecheck_products.get(module)?;
+                let got_base = tp.got.base_ptr() as i64;
                 Some((got_base, *slot))
             }
             ModuleEntry::Import { source } => {
@@ -327,21 +324,12 @@ impl SessionCompilationEnv<'_> {
             }
         }
 
-        // Register GOT base pointers for all referenced modules, plus
-        // self (always needed for self-calls).
-        let got = self.got_registry.ensure_module(&self.current_module);
-        let name = cranelisp_backend::compiler::got_data_symbol_name(&self.current_module);
-        symbols.push((name, got.base_ptr()));
-
-        // Also register GOT bases for all other known modules. Qualified
-        // references (e.g., main.mid.leaf/value) may reference any module
-        // without an explicit Import entry, so we can't predict which modules
-        // are needed from the symbol table alone.
-        for entry in self.got_registry.all_modules() {
+        // Register GOT base pointers for all modules with typecheck products.
+        // GOT bases are stable from allocation, so all known modules' bases
+        // can be registered — compilation can happen in any order.
+        for entry in self.typecheck_products.iter() {
             let name = cranelisp_backend::compiler::got_data_symbol_name(entry.key());
-            if *entry.key() != self.current_module {
-                symbols.push((name, entry.value().base_ptr()));
-            }
+            symbols.push((name, entry.value().got.base_ptr()));
         }
 
         symbols
@@ -366,6 +354,22 @@ pub enum ProcessResult {
         dep_module: ModuleFullPath,
         dep_sexps: Vec<Sexp>,
     },
+}
+
+/// Ensure a TypecheckProduct entry exists for a module, creating one with a
+/// fresh GOT table if needed. GOT tables are allocated at module registration
+/// time so their base addresses are stable before any codegen begins.
+pub(crate) fn ensure_typecheck_product(
+    typecheck_products: &dashmap::DashMap<ModuleFullPath, crate::session_v4::TypecheckProduct>,
+    module: &ModuleFullPath,
+) {
+    typecheck_products.entry(module.clone()).or_insert_with(|| {
+        crate::session_v4::TypecheckProduct {
+            symbols: cranelisp_types::SymbolTable::new(module.clone()),
+            got: std::sync::Arc::new(cranelisp_backend::got::GotTable::new()),
+            file_path: None,
+        }
+    });
 }
 
 // ---------------------------------------------------------------------------
@@ -890,9 +894,11 @@ fn process_regular_form(
 
         if let TopLevel::Defn(defn) = form {
             // Store original sexp for /source and /sexp REPL commands.
-            let mut dc = ctx.shared_codegen.def_codegen.entry(defn.name.clone()).or_default();
-            dc.sexp = Some(sexp.clone());
-            drop(dc);
+            let fq = cranelisp_types::FQSymbol {
+                module: module.clone(),
+                symbol: defn.name.clone(),
+            };
+            ctx.introspection.entry(fq).or_default().sexp = Some(sexp.clone());
             ctx.scheduler.notify_symbol_typechecked(module, &defn.name);
         }
     }
@@ -1066,13 +1072,6 @@ fn try_cache_hit_load(
         .keys()
         .map(|s| s.as_ref().to_string())
         .collect();
-    let got_slot_keys: Vec<Symbol> = cached
-        .codegen_state()
-        .got_slots
-        .keys()
-        .cloned()
-        .collect();
-
     // Restore type info into TC (consumes symbol_table by value).
     ctx.tc.restore_cached_module(cached.metadata.symbol_table);
 
@@ -1082,10 +1081,8 @@ fn try_cache_hit_load(
     // 5. Register with scheduler at TypecheckDone.
     ctx.scheduler.register_module_cached(dep.clone(), symbols);
 
-    // 6. Pre-register GOT slots for cached module's symbols.
-    for sym_name in &got_slot_keys {
-        let _ = ctx.shared_codegen.ensure_slot_for(sym_name);
-    }
+    // 6. Create typecheck product with GOT table for cached module.
+    ensure_typecheck_product(ctx.typecheck_products, dep);
 
     // 7. Record cache hit in cache state.
     let mut cache_state_guard = shared.cache_state.lock().unwrap_or_else(|e| e.into_inner());
@@ -1207,9 +1204,8 @@ fn handle_mod(
     // Compute submodule path: "main" + "util" → "main.util"
     let sub_path = ModuleFullPath::from(format!("{}.{}", module, decl.name));
 
-    // Already loaded — register GOT aliases for qualified references and continue.
+    // Already loaded — resolution chain handles qualified references.
     if ctx.tc.has_module(&sub_path) {
-        register_submodule_got_aliases(ctx.shared_codegen, module, &sub_path);
         return Ok(BlockAction::Continue);
     }
 
@@ -1267,40 +1263,6 @@ fn handle_mod(
         dep_module: sub_path,
         dep_sexps,
     })
-}
-
-/// Register GOT aliases so the parent module can call submodule functions
-/// via qualified names (e.g., `util/helper` → same GOT slot as `helper`).
-///
-/// Uses `generate_module_aliases` to produce all alias forms (last-component,
-/// suffix, full-path) then registers each as a GOT alias pointing to the
-/// same slot as the base symbol.
-fn register_submodule_got_aliases(
-    shared_codegen: &SharedCodegenState,
-    _parent_module: &ModuleFullPath,
-    sub_module: &ModuleFullPath,
-) {
-    let mod_str: &str = sub_module.as_ref();
-
-    // Collect (base_name, slot) pairs from shared codegen.
-    let entries: Vec<(Symbol, usize)> = shared_codegen
-        .def_codegen
-        .iter()
-        .filter_map(|entry| {
-            entry.got_slot.map(|slot| (entry.key().clone(), slot))
-        })
-        .collect();
-
-    for (name, slot) in &entries {
-        for alias in crate::session::generate_module_aliases(mod_str, name.as_ref()) {
-            let qualified = Symbol::from(alias);
-            // Only register if not already present.
-            if !shared_codegen.def_codegen.contains_key(&qualified) {
-                let mut entry = shared_codegen.def_codegen.entry(qualified).or_default();
-                entry.got_slot = Some(*slot);
-            }
-        }
-    }
 }
 
 /// Handle platform forms: load DLL and register type signatures.
@@ -1530,15 +1492,17 @@ fn compile_macro_if_needed(
         ctx.tc, ctx.codegen_products, module, &info.name,
     );
     // Build env for per-module GOT resolution.
-    let ss = ctx.shared_state.expect("invariant: shared_state always Some");
     let tc_modules = ctx.tc.modules_ref();
     let env_impl = SessionCompilationEnv {
         tc_modules,
-        got_registry: &ss.got_registry,
+        typecheck_products: ctx.typecheck_products,
         current_module: module.clone(),
     };
     let env: &dyn cranelisp_backend::compiler::CompilationEnv = &env_impl;
-    let dep_module_got = ss.got_registry.ensure_module(module);
+    ensure_typecheck_product(ctx.typecheck_products, module);
+    let dep_module_got = ctx.typecheck_products.get(module)
+        .expect("invariant: just ensured typecheck product exists")
+        .got.clone();
     let jit_symbols = env_impl.collect_jit_symbols_for_module(ctx.platform_registry);
     let current_module = ctx.tc.current_module_path().clone();
     for (dep_module, dep_symbol) in &uncompiled_deps {
@@ -1778,71 +1742,23 @@ fn compile_macro_clause_inline(
     // Compile macro clause with dealloc disabled (prevents use-after-free on Sexp unmarshal).
     // Macro clause functions are normal functions on per-module GOTs.
     let module = ctx.tc.current_module_path().clone();
-    let ss = ctx.shared_state.expect("invariant: shared_state always Some");
     let tc_modules = ctx.tc.modules_ref();
     let env_impl = SessionCompilationEnv {
         tc_modules,
-        got_registry: &ss.got_registry,
+        typecheck_products: ctx.typecheck_products,
         current_module: module.clone(),
     };
     let env: &dyn cranelisp_backend::compiler::CompilationEnv = &env_impl;
-    let module_got = ss.got_registry.ensure_module(&module);
+    ensure_typecheck_product(ctx.typecheck_products, &module);
+    let module_got = ctx.typecheck_products.get(&module)
+        .expect("invariant: just ensured typecheck product exists")
+        .got.clone();
     let macro_jit_symbols = env_impl.collect_jit_symbols_for_module(ctx.platform_registry);
     pre_register_got_slots_in_tc(tc_modules, &module, &program, &check);
     compile_and_register_defn_shared(
         &macro_jit_symbols, defn, &check, env, &module_got,
         ctx.codegen_products, &module, true,
     )?;
-
-    Ok(())
-}
-
-/// Compile a macro clause defn with dealloc disabled.
-///
-/// Macro functions build throwaway Sexp trees that are marshalled back to
-/// the compiler. Disabling dealloc prevents use-after-free on unmarshal.
-fn compile_macro_defn_no_dealloc(
-    shared_codegen: &SharedCodegenState,
-    worker_jit: &mut WorkerJitState,
-    platform_registry: &PlatformRegistry,
-    defn: &Defn,
-    check: &CheckResult,
-) -> Result<(), CranelispError> {
-    let extra_symbols = platform_registry.jit_symbols();
-    let mut jit = cranelisp_backend::jit::Jit::new_with_symbols(&extra_symbols)?;
-    jit.declare_intrinsics()?;
-
-    let func_ids = jit.declare_functions(&[defn])?;
-    let func_arities: HashMap<Symbol, usize> =
-        func_ids.keys().map(|n| (n.clone(), defn.params().len())).collect();
-
-    // Build compile context with dealloc disabled.
-    let mut compile_ctx = jit.build_compile_context(
-        check,
-        &func_ids,
-        &func_arities,
-        None,
-        None,
-        None,
-    );
-    compile_ctx.dealloc_func_id = None;
-    jit.compile_defn(defn, compile_ctx)?;
-
-    let ptr = jit.finalize_and_get_ptr(&defn.name, defn.params().len())?;
-
-    // Register in GOT.
-    let slot = shared_codegen.ensure_slot_for(&defn.name)?;
-    shared_codegen.update_slot(slot, ptr);
-
-    let mut entry = shared_codegen.def_codegen.entry(defn.name.clone()).or_default();
-    entry.code_ptr = Some(ptr);
-    entry.got_slot = Some(slot);
-    entry.param_count = Some(defn.params().len());
-    entry.defn = Some(defn.clone());
-    drop(entry); // Release DashMap shard lock explicitly.
-
-    // Keep JIT alive so the function pointer remains valid.
-    worker_jit.jit_modules.push(jit);
 
     Ok(())
 }
@@ -2331,21 +2247,36 @@ fn clear_module_codegen(ctx: &mut WorkerContext, module: &ModuleFullPath) {
             .collect()
     };
 
-    // Zero GOT slots and clear codegen artifacts (keep slot assignments).
-    for sym in &symbols {
-        if let Some(mut dc) = ctx.shared_codegen.def_codegen.get_mut(sym) {
-            if let Some(slot) = dc.got_slot {
-                ctx.shared_codegen.got_table.store_slot(slot, std::ptr::null());
+    // Zero GOT slots via per-module GOT table (keep slot assignments in TC).
+    {
+        if let Some(tp) = ctx.typecheck_products.get(module) {
+            let got_table = &tp.got;
+            let table = ctx.tc.symbol_table();
+            for (_name, entry) in table.all_symbols() {
+                if let cranelisp_types::ModuleEntry::Def { got_slot: Some(slot), kind, .. } = entry {
+                    if !matches!(kind.as_ref(), cranelisp_types::DefKind::SpecialForm { .. }) {
+                        got_table.store_slot(*slot, std::ptr::null());
+                    }
+                }
             }
-            dc.code_ptr = None;
-            dc.source = None;
-            dc.sexp = None;
-            dc.defn = None;
-            dc.clif_ir = None;
-            dc.disasm = None;
-            dc.code_size = None;
-            dc.compile_duration = None;
         }
+    }
+
+    // Clear codegen products for this module (keeps CodegenProduct entry with GOT/linker).
+    if let Some(cp) = ctx.codegen_products.get(module) {
+        cp.code.clear();
+    }
+
+    // Clear introspection entries for this module.
+    let fq_keys: Vec<_> = symbols.iter().map(|sym| {
+        let bare = sym.as_ref().rsplit('/').next().unwrap_or(sym.as_ref());
+        cranelisp_types::FQSymbol {
+            module: module.clone(),
+            symbol: cranelisp_types::Symbol::from(bare),
+        }
+    }).collect();
+    for fq in &fq_keys {
+        ctx.introspection.remove(fq);
     }
 }
 
@@ -2399,16 +2330,21 @@ pub fn codegen_module_symbols(
     program: &[TopLevel],
     check: &CheckResult,
     tc_modules: &dashmap::DashMap<ModuleFullPath, cranelisp_types::SymbolTable>,
-    shared_state: &crate::session_v4::SharedState,
+    typecheck_products: &dashmap::DashMap<ModuleFullPath, crate::session_v4::TypecheckProduct>,
     codegen_products: &dashmap::DashMap<ModuleFullPath, crate::session_v4::CodegenProduct>,
 ) -> Result<(), CranelispError> {
+    // Ensure typecheck product with GOT table exists for this module.
+    ensure_typecheck_product(typecheck_products, module);
+
     let env_impl = SessionCompilationEnv {
         tc_modules,
-        got_registry: &shared_state.got_registry,
+        typecheck_products,
         current_module: module.clone(),
     };
     let env: &dyn cranelisp_backend::compiler::CompilationEnv = &env_impl;
-    let module_got = shared_state.got_registry.ensure_module(module);
+    let module_got = typecheck_products.get(module)
+        .expect("invariant: just ensured typecheck product exists")
+        .got.clone();
 
     let jit_symbols = env_impl.collect_jit_symbols_for_module(platform_registry);
 
@@ -2439,27 +2375,6 @@ pub fn codegen_module_symbols(
         scheduler.notify_inmem_codegen_complete(module, &dummy, true);
     }
 
-    Ok(())
-}
-
-/// Pre-register GOT slots for all definitions in the program.
-fn pre_register_got_slots(
-    shared_codegen: &SharedCodegenState,
-    program: &[TopLevel],
-) -> Result<(), CranelispError> {
-    for tl in program {
-        match tl {
-            TopLevel::Defn(defn) => {
-                shared_codegen.ensure_slot_for(&defn.name)?;
-            }
-            TopLevel::TraitImpl(impl_) => {
-                for method in &impl_.methods {
-                    shared_codegen.ensure_slot_for(&method.name)?;
-                }
-            }
-            _ => {}
-        }
-    }
     Ok(())
 }
 
@@ -2622,26 +2537,20 @@ fn compile_regular_defns(
 // ---------------------------------------------------------------------------
 
 /// Load a cached module's `.o` file via Linker, wiring code pointers into
-/// the GOT. This is the inmem codegen fast-path for cache-hit modules:
-/// one mmap + relocation pass loads all symbols at once.
+/// the per-module GOT. This is the inmem codegen fast-path for cache-hit
+/// modules: one mmap + relocation pass loads all symbols at once.
 ///
 /// Returns the list of symbol names that were loaded, for scheduler notification.
 fn load_cached_module_via_linker(
-    shared_codegen: &SharedCodegenState,
-    worker_jit: &mut WorkerJitState,
     platform_registry: &PlatformRegistry,
     module: &ModuleFullPath,
-    shared_state: Option<&crate::session_v4::SharedState>,
+    shared_state: &crate::session_v4::SharedState,
+    typecheck_products: &dashmap::DashMap<ModuleFullPath, crate::session_v4::TypecheckProduct>,
+    codegen_products: &dashmap::DashMap<ModuleFullPath, crate::session_v4::CodegenProduct>,
 ) -> Result<Vec<Symbol>, CranelispError> {
     use cranelisp_backend::cache;
 
-    // Determine cache directory from shared state.
-    let shared = shared_state.ok_or_else(|| CranelispError::ModuleError {
-        message: format!("no shared state for cache-hit loading of '{}'", module),
-        file: None,
-        span: Span::SYNTHETIC,
-    })?;
-    let cache_dir = shared.cache_dir.as_ref().ok_or_else(|| CranelispError::ModuleError {
+    let cache_dir = shared_state.cache_dir.as_ref().ok_or_else(|| CranelispError::ModuleError {
         message: format!("no cache directory for cache-hit loading of '{}'", module),
         file: None,
         span: Span::SYNTHETIC,
@@ -2677,48 +2586,47 @@ fn load_cached_module_via_linker(
         linker.register_symbol(name, *ptr);
     }
 
-    // Register code pointers from already-compiled modules via def_codegen.
-    for entry in shared_codegen.def_codegen.iter() {
-        if let Some(ptr) = entry.value().code_ptr {
-            linker.register_symbol(entry.key().as_ref(), ptr);
+    // Register code pointers from already-compiled modules via codegen_products.
+    for cp_entry in codegen_products.iter() {
+        for code_entry in cp_entry.value().code.iter() {
+            linker.register_symbol(code_entry.key().as_ref(), code_entry.value().ptr);
         }
     }
 
-    // Register the GOT base address.
-    let got_base = shared_codegen.got_base_ptr();
-    if !got_base.is_null() {
-        linker.register_symbol("__got_base", got_base);
+    // Register per-module GOT data symbols for cross-module GOT-indirect calls.
+    for tp_entry in typecheck_products.iter() {
+        let name = cranelisp_backend::compiler::got_data_symbol_name(tp_entry.key());
+        linker.register_symbol(&name, tp_entry.value().got.base_ptr());
     }
+
+    // Get this module's GOT table from typecheck products.
+    let module_got = typecheck_products.get(module)
+        .ok_or_else(|| CranelispError::ModuleError {
+            message: format!("no typecheck product for cached module '{}'", module),
+            file: None,
+            span: Span::SYNTHETIC,
+        })?.got.clone();
 
     // Load the .o file — one mmap + relocation pass.
     let fn_addrs = cache::load_cached_object(&mut linker, &cached)?;
 
-    // Wire code pointers into the GOT.
+    // Wire code pointers into the per-module GOT.
     let mut loaded_symbols = Vec::new();
-    for name in cached.codegen_state().got_slots.keys() {
+    for (name, &slot) in &cached.codegen_state().got_slots {
         let code_ptr = fn_addrs.get(name.as_ref()).copied();
 
-        // Ensure a GOT slot exists (may already be allocated from try_cache_hit_load).
-        let slot = shared_codegen.ensure_slot_for(name)?;
-
-        // Write the code pointer to the GOT slot.
+        // Write the code pointer to the per-module GOT slot.
         if let Some(ptr) = code_ptr {
-            shared_codegen.update_slot(slot, ptr);
-        }
-
-        // Update the DefCodegen entry with code pointer and param count.
-        let mut dc = shared_codegen.def_codegen.entry(name.clone()).or_default();
-        dc.got_slot = Some(slot);
-        dc.code_ptr = code_ptr;
-        if let Some(def_entry) = cached.codegen_state().def_entries.get(name) {
-            dc.param_count = def_entry.param_count;
+            module_got.store_slot(slot, ptr);
         }
 
         loaded_symbols.push(name.clone());
     }
 
-    // Store the Linker in per-worker state (keeps mmap'd code alive).
-    worker_jit.cache_linkers.push(linker);
+    // Store the Linker in codegen_products (keeps mmap'd code alive).
+    // GOT table lives in typecheck_products, not in CodegenProduct.
+    let mut cp = codegen_products.entry(module.clone()).or_default();
+    cp.linker = Some(linker);
 
     Ok(loaded_symbols)
 }
@@ -2730,11 +2638,11 @@ fn load_cached_module_via_linker(
 /// `priority_worker_thread` (spawned). Returns Ok(true) if the module
 /// was loaded, Ok(false) if it was not cached (no-op).
 fn handle_cached_codegen(
-    shared_codegen: &SharedCodegenState,
-    worker_jit: &mut WorkerJitState,
     platform_registry: &PlatformRegistry,
     module: &ModuleFullPath,
     shared_state: Option<&crate::session_v4::SharedState>,
+    typecheck_products: &dashmap::DashMap<ModuleFullPath, crate::session_v4::TypecheckProduct>,
+    codegen_products: &dashmap::DashMap<ModuleFullPath, crate::session_v4::CodegenProduct>,
     scheduler: &CompileScheduler,
 ) -> Result<bool, CranelispError> {
     let is_cached = shared_state
@@ -2747,9 +2655,14 @@ fn handle_cached_codegen(
         return Ok(false);
     }
 
+    let shared = shared_state.ok_or_else(|| CranelispError::ModuleError {
+        message: format!("no shared state for cache-hit loading of '{}'", module),
+        file: None,
+        span: Span::SYNTHETIC,
+    })?;
+
     match load_cached_module_via_linker(
-        shared_codegen, worker_jit, platform_registry,
-        module, shared_state,
+        platform_registry, module, shared, typecheck_products, codegen_products,
     ) {
         Ok(symbols) => {
             scheduler.notify_inmem_codegen_batch_complete(module, &symbols);
@@ -2828,19 +2741,16 @@ pub fn priority_worker_loop(
                 ) {
                     Ok(ProcessResult::Complete { check_result, program }) => {
                         // Post-typecheck codegen sweep (W2).
-                        {
-                            let ss = ctx.shared_state.expect("invariant: shared_state always Some");
-                            codegen_module_symbols(
-                                ctx.platform_registry,
-                                ctx.scheduler,
-                                &module,
-                                &program,
-                                &check_result,
-                                ctx.tc.modules_ref(),
-                                ss,
-                                ctx.codegen_products,
-                            )?;
-                        }
+                        codegen_module_symbols(
+                            ctx.platform_registry,
+                            ctx.scheduler,
+                            &module,
+                            &program,
+                            &check_result,
+                            ctx.tc.modules_ref(),
+                            ctx.typecheck_products,
+                            ctx.codegen_products,
+                        )?;
 
                         // Stash data for nice worker .o + .meta.json, then
                         // notify typecheck_done. Order matters: nice workers
@@ -2885,8 +2795,8 @@ pub fn priority_worker_loop(
                 // Cache-hit module: load entire .o via Linker (batch load).
                 // Non-cached modules have their codegen done inline after typecheck.
                 let _ = handle_cached_codegen(
-                    ctx.shared_codegen, ctx.worker_jit, ctx.platform_registry,
-                    &module, ctx.shared_state, ctx.scheduler,
+                    ctx.platform_registry, &module, ctx.shared_state,
+                    ctx.typecheck_products, ctx.codegen_products, ctx.scheduler,
                 );
             }
             None => break,
@@ -2963,10 +2873,9 @@ fn stash_object_codegen_input(
 pub(crate) struct PriorityWorkerShared<'a> {
     pub(crate) tc: &'a std::sync::Mutex<cranelisp_typecheck::TypeChecker>,
     pub(crate) platform_registry: &'a std::sync::Mutex<PlatformRegistry>,
-    /// LEGACY: replaced by codegen_products DashMap. See session-restructure.md.
-    pub(crate) shared_codegen: &'a SharedCodegenState,
-    /// TARGET STATE: per-module codegen products. See session-restructure.md.
+    pub(crate) typecheck_products: &'a dashmap::DashMap<ModuleFullPath, crate::session_v4::TypecheckProduct>,
     pub(crate) codegen_products: &'a dashmap::DashMap<ModuleFullPath, crate::session_v4::CodegenProduct>,
+    pub(crate) introspection: &'a dashmap::DashMap<cranelisp_types::FQSymbol, crate::session_v4::Introspection>,
     pub(crate) scheduler: &'a CompileScheduler,
     pub(crate) module_sexps: &'a std::sync::Mutex<HashMap<ModuleFullPath, Vec<Sexp>>>,
     pub(crate) suspend_states: &'a std::sync::Mutex<
@@ -2985,25 +2894,18 @@ pub(crate) struct PriorityWorkerShared<'a> {
 ///
 /// Uses `take_priority_work_blocking` to park when no work is available.
 /// Locks the TypeChecker mutex for each work item (serialized until TC
-/// gets `&self` API). Creates a per-worker `WorkerJitState` and drains
-/// to shared codegen state after each module's codegen sweep.
+/// gets `&self` API).
 pub(crate) fn priority_worker_thread(
     shared: &PriorityWorkerShared,
     _worker_id: usize,
 ) {
-    let mut worker_jit = WorkerJitState::new();
-
     loop {
         let work = shared.scheduler.take_priority_work_blocking();
         match work {
             Some(PriorityWork::Typecheck(module)) => {
-                if let Err(e) = handle_typecheck_work(
-                    shared, &mut worker_jit, &module,
-                ) {
+                if let Err(e) = handle_typecheck_work(shared, &module) {
                     shared.scheduler.notify_module_failed(&module, e);
                 }
-                // Drain per-worker JIT state to shared after each module.
-                worker_jit.drain_to_shared(shared.shared_codegen);
             }
             Some(PriorityWork::BlockingJitCodegen(module, _symbol))
             | Some(PriorityWork::JitCodegen(module, _symbol)) => {
@@ -3011,10 +2913,9 @@ pub(crate) fn priority_worker_thread(
                 let platform = shared.platform_registry.lock()
                     .unwrap_or_else(|e| e.into_inner());
                 let _ = handle_cached_codegen(
-                    shared.shared_codegen, &mut worker_jit, &*platform,
-                    &module, shared.shared_state, &shared.scheduler,
+                    &*platform, &module, shared.shared_state,
+                    shared.typecheck_products, shared.codegen_products, &shared.scheduler,
                 );
-                worker_jit.drain_to_shared(shared.shared_codegen);
             }
             None => break, // Shutdown or all work done.
         }
@@ -3027,7 +2928,6 @@ pub(crate) fn priority_worker_thread(
 /// process_module_forms + codegen_module_symbols.
 fn handle_typecheck_work(
     shared: &PriorityWorkerShared,
-    worker_jit: &mut WorkerJitState,
     module: &ModuleFullPath,
 ) -> Result<(), CranelispError> {
     let start_idx = shared.scheduler.module_resume_from_form(module)
@@ -3067,10 +2967,10 @@ fn handle_typecheck_work(
     let mut ctx = WorkerContext {
         tc: &mut tc,
         scheduler: shared.scheduler,
-        shared_codegen: shared.shared_codegen,
-        worker_jit,
         platform_registry: &mut platform_registry,
+        typecheck_products: shared.typecheck_products,
         codegen_products: shared.codegen_products,
+        introspection: shared.introspection,
         lib_dirs: shared.lib_dirs,
         platform_dirs: shared.platform_dirs,
         project_root: shared.project_root,
@@ -3087,19 +2987,16 @@ fn handle_typecheck_work(
     ) {
         Ok(ProcessResult::Complete { check_result, program }) => {
             // Post-typecheck codegen sweep.
-            {
-                let ss = ctx.shared_state.expect("invariant: shared_state always Some");
-                codegen_module_symbols(
-                    ctx.platform_registry,
-                    ctx.scheduler,
-                    module,
-                    &program,
-                    &check_result,
-                    ctx.tc.modules_ref(),
-                    ss,
-                    ctx.codegen_products,
-                )?;
-            }
+            codegen_module_symbols(
+                ctx.platform_registry,
+                ctx.scheduler,
+                module,
+                &program,
+                &check_result,
+                ctx.tc.modules_ref(),
+                ctx.typecheck_products,
+                ctx.codegen_products,
+            )?;
 
             // Stash data for nice worker .o + .meta.json.
             stash_object_codegen_input(
