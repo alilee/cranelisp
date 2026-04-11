@@ -963,6 +963,9 @@ fn build_list_expr(
             }
             // Non-Ring-0 expression forms
             "trace" => return build_trace(children, span),
+            "discover-tests" => return build_discover_tests(children, span),
+            "run-test" => return build_run_or_trace_test(children, span, "run-test"),
+            "trace-test" => return build_run_or_trace_test(children, span, "trace-test"),
             // "vec" is handled by the prelude vec macro — no AST intercept needed.
             "par-let" => {
                 return Err(parse_err("par-let not yet supported (Ring 4)", *head_span))
@@ -997,6 +1000,92 @@ fn build_trace(
     Ok(Expr::Trace {
         modules: vec![],
         body: Box::new(body),
+        span,
+    })
+}
+
+fn build_discover_tests(
+    children: &[Sexp],
+    span: Span,
+) -> Result<Expr, CranelispError> {
+    // (discover-tests)         — no args, current module
+    // (discover-tests mod.path) — bare module path as symbol
+    // Always emit a String arg. Empty string = current module.
+    let module_str = match children.len() {
+        1 => String::new(),
+        2 => {
+            let (module_name, _) = expect_symbol(&children[1])?;
+            module_name.to_string()
+        }
+        _ => return Err(parse_err(
+            "discover-tests takes zero or one argument: (discover-tests) or (discover-tests module)",
+            span,
+        )),
+    };
+    Ok(Expr::Apply {
+        callee: Box::new(Expr::Var {
+            name: Symbol::from("discover-tests"),
+            span,
+        }),
+        args: vec![Expr::StringLit {
+            value: module_str,
+            span,
+        }],
+        span,
+    })
+}
+
+fn build_run_or_trace_test(
+    children: &[Sexp],
+    span: Span,
+    form_name: &str,
+) -> Result<Expr, CranelispError> {
+    // (run-test user/test-add)   — bare qualified symbol
+    // (run-test sym-expr)        — variable or expression
+    if children.len() != 2 {
+        return Err(parse_err(
+            &format!("{form_name} requires exactly one argument"),
+            span,
+        ));
+    }
+
+    let arg = &children[1];
+
+    // If the argument is a symbol, wrap it as a SexpSym constructor call
+    // so the runtime receives a Sexp value. This handles both bare symbols
+    // (user/test-add) and variables (sym).
+    let arg_expr = if let Ok((sym_name, arg_span)) = expect_symbol(arg) {
+        // Check if this looks like a qualified name (contains '/').
+        // If so, wrap as SexpSym string literal. Otherwise, treat as a
+        // variable reference (could be a Sexp variable from discover-tests).
+        if sym_name.contains('/') {
+            // Bare qualified symbol: compile to (macros/SexpSym "user/test-add")
+            Expr::Apply {
+                callee: Box::new(Expr::Var {
+                    name: Symbol::from("macros/SexpSym"),
+                    span: arg_span,
+                }),
+                args: vec![Expr::StringLit {
+                    value: sym_name.to_string(),
+                    span: arg_span,
+                }],
+                span: arg_span,
+            }
+        } else {
+            // Unqualified symbol: treat as variable reference (Sexp value).
+            build_expr(arg)?
+        }
+    } else {
+        // Not a symbol (e.g., a list expression): evaluate as Sexp expression.
+        build_expr(arg)?
+    };
+
+    Ok(Expr::Apply {
+        callee: Box::new(Expr::Var {
+            name: Symbol::from(form_name),
+            span,
+        }),
+        args: vec![arg_expr],
         span,
     })
 }

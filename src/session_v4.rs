@@ -141,6 +141,7 @@ enum ReplCommand<'a> {
     Disasm(&'a str),
     Mod(&'a str),
     RunTests(&'a str),
+    RunAllTests,
     Reset,
     Unknown(&'a str),
 }
@@ -178,6 +179,7 @@ fn parse_slash_command(input: &str) -> Option<ReplCommand<'_>> {
         "/disasm" => ReplCommand::Disasm(arg),
         "/mod" => ReplCommand::Mod(arg),
         "/run-tests" | "/rt" => ReplCommand::RunTests(arg),
+        "/run-all-tests" => ReplCommand::RunAllTests,
         "/reset" => ReplCommand::Reset,
         _ => ReplCommand::Unknown(cmd),
     })
@@ -203,7 +205,8 @@ fn print_help(stdout: &mut impl Write) {
     let _ = writeln!(stdout, "  /imports [MODULE]   Show imports and special forms");
     let _ = writeln!(stdout, "  /exports MODULE     Show module's public symbols");
     let _ = writeln!(stdout, "  /mod [NAME]         Switch module namespace (default: user)");
-    let _ = writeln!(stdout, "  /run-tests (/rt)    Discover and run test-* functions");
+    let _ = writeln!(stdout, "  /run-tests (/rt) [MOD]  Run test-* functions (current module or named)");
+    let _ = writeln!(stdout, "  /run-all-tests      Run all tests in project modules");
     let _ = writeln!(stdout, "  /reset              Clear all state and reload prelude");
     let _ = writeln!(stdout, "  ;#! <cmd>           Run a shell command");
 }
@@ -961,8 +964,11 @@ impl CompilerSession {
                     "error: unknown command '{cmd}'. Type /help for available commands."
                 ))
             }
-            ReplCommand::RunTests(prefix) => {
-                CommandResult::Final(self.handle_run_tests(prefix))
+            ReplCommand::RunTests(arg) => {
+                CommandResult::Final(self.handle_run_tests(arg))
+            }
+            ReplCommand::RunAllTests => {
+                CommandResult::Final(self.handle_run_all_tests())
             }
             ReplCommand::Reset => {
                 // Clear file watcher state so stale watches don't persist.
@@ -2112,78 +2118,144 @@ impl CompilerSession {
     /// Scans def_codegen for zero-arg functions named `test-*`, calls each
     /// directly, interprets the `(Option String)` result: None = pass,
     /// Some(reason) = fail.
-    fn handle_run_tests(&self, prefix: &str) -> String {
-        use cranelisp_types::NULLARY_TAG_THRESHOLD;
+    /// /run-tests handler: discover and run test-* functions.
+    ///
+    /// With no argument: tests in current module. With a module path: tests
+    /// in that module. Runs all tests fast first, then re-runs failures with
+    /// tracing to capture trace trees for diagnostics.
+    fn handle_run_tests(&self, arg: &str) -> String {
+        let module = if arg.is_empty() {
+            self.tc.current_module_path().clone()
+        } else {
+            ModuleFullPath::from(arg)
+        };
+        let tests = self.discover_tests_in_module(&module);
+        if tests.is_empty() {
+            return if arg.is_empty() {
+                "No test-* functions found.".to_string()
+            } else {
+                format!("No test-* functions found in '{arg}'.")
+            };
+        }
+        self.format_test_run(&tests)
+    }
 
-        // Discover test functions from codegen_products.
-        let module = self.tc.current_module_path().clone();
-        let mut tests: Vec<(String, *const u8)> = Vec::new();
-        if let Some(cp) = self.shared.codegen_products.get(&module) {
-            for entry in cp.code.iter() {
-                let name: &str = entry.key().as_ref();
-                if !name.starts_with("test-") {
-                    continue;
-                }
-                if !prefix.is_empty() && !name.starts_with(&format!("test-{prefix}")) {
-                    continue;
-                }
-                let ptr = entry.value().ptr;
-                if ptr.is_null() {
-                    continue;
-                }
-                // Check arity from TC symbol table (test fns must be zero-arg).
-                let table = self.tc.symbol_table();
-                if let Some(ModuleEntry::Def { param_names, .. }) = table.get(name) {
-                    if !param_names.is_empty() {
+    /// /run-all-tests handler: discover and run tests in all project-root modules.
+    fn handle_run_all_tests(&self) -> String {
+        let mut all_tests: Vec<(String, *const u8)> = Vec::new();
+        for entry in self.shared.typecheck_products.iter() {
+            let module_path = entry.key();
+            // Skip library modules (not under project root).
+            if let Some(tp) = self.shared.typecheck_products.get(module_path) {
+                if let Some(ref fp) = tp.file_path {
+                    if !fp.starts_with(&self.project_root) {
                         continue;
                     }
                 }
-                tests.push((name.to_string(), ptr));
+            }
+            let mut module_tests = self.discover_tests_in_module(module_path);
+            // Prefix names with module path for disambiguation.
+            for (name, _) in &mut module_tests {
+                *name = format!("{}/{name}", module_path.as_ref());
+            }
+            all_tests.extend(module_tests);
+        }
+        all_tests.sort_by(|a, b| a.0.cmp(&b.0));
+        if all_tests.is_empty() {
+            return "No test-* functions found in any project module.".to_string();
+        }
+        self.format_test_run(&all_tests)
+    }
+
+    /// Discover zero-arg test-* functions in a module.
+    fn discover_tests_in_module(
+        &self,
+        module: &ModuleFullPath,
+    ) -> Vec<(String, *const u8)> {
+        let mut tests = Vec::new();
+        let cp = match self.shared.codegen_products.get(module) {
+            Some(cp) => cp,
+            None => return tests,
+        };
+        let symbols = match self.tc.modules().get(module) {
+            Some(st) => st,
+            None => return tests,
+        };
+        for (name, entry) in symbols.all_symbols() {
+            if !name.as_ref().starts_with("test-") {
+                continue;
+            }
+            if let ModuleEntry::Def { param_names, .. } = entry {
+                if !param_names.is_empty() {
+                    continue;
+                }
+            } else {
+                continue;
+            }
+            if let Some(code) = cp.code.get(name) {
+                let ptr = code.ptr;
+                if !ptr.is_null() {
+                    tests.push((name.as_ref().to_string(), ptr));
+                }
             }
         }
         tests.sort_by(|a, b| a.0.cmp(&b.0));
+        tests
+    }
 
-        if tests.is_empty() {
-            return if prefix.is_empty() {
-                "No test-* functions found.".to_string()
-            } else {
-                format!("No test-* functions found matching '{prefix}'.")
-            };
+    /// Run a test function and interpret the (Option String) result.
+    ///
+    /// Returns Ok(None) for pass, Ok(Some(reason)) for fail, Err(msg) for panic.
+    fn run_single_test(code_ptr: *const u8) -> Result<Option<String>, String> {
+        use cranelisp_types::NULLARY_TAG_THRESHOLD;
+
+        let _ = cranelisp_runtime::panic::take_runtime_error();
+        let value = unsafe {
+            let func: extern "C" fn() -> i64 = std::mem::transmute(code_ptr);
+            func()
+        };
+
+        if let Some(msg) = cranelisp_runtime::panic::take_runtime_error() {
+            return Err(msg);
         }
 
-        // Run each test.
+        if (value as usize) < NULLARY_TAG_THRESHOLD {
+            Ok(None) // None = pass
+        } else {
+            // Some(reason_string)
+            let reason = unsafe {
+                let base = value as *const u8;
+                let string_ptr = *(base.add(
+                    cranelisp_backend::heap::HeapAdt::field_offset(0) as usize,
+                ) as *const i64);
+                cranelisp_runtime::read_string_as_str(string_ptr).to_string()
+            };
+            Ok(Some(reason))
+        }
+    }
+
+    /// Format a test run: run all tests, report results.
+    fn format_test_run(&self, tests: &[(String, *const u8)]) -> String {
         let start = std::time::Instant::now();
         let mut passed = 0usize;
         let mut failed = 0usize;
         let mut lines = Vec::new();
 
-        for (name, code_ptr) in &tests {
-            let _ = cranelisp_runtime::panic::take_runtime_error();
-            let value = unsafe {
-                let func: extern "C" fn() -> i64 = std::mem::transmute(*code_ptr);
-                func()
-            };
-
+        for (name, code_ptr) in tests {
             let dots = ".".repeat(40usize.saturating_sub(name.len()));
-
-            if let Some(msg) = cranelisp_runtime::panic::take_runtime_error() {
-                lines.push(format!("  {name} {dots} PANIC: {msg}"));
-                failed += 1;
-            } else if (value as usize) < NULLARY_TAG_THRESHOLD {
-                // None = pass
-                lines.push(format!("  {name} {dots} ok"));
-                passed += 1;
-            } else {
-                // Some(reason_string)
-                let reason = unsafe {
-                    let base = value as *const u8;
-                    let string_ptr = *(base.add(
-                        cranelisp_backend::heap::HeapAdt::field_offset(0) as usize,
-                    ) as *const i64);
-                    cranelisp_runtime::read_string_as_str(string_ptr)
-                };
-                lines.push(format!("  {name} {dots} FAILED: {reason}"));
-                failed += 1;
+            match Self::run_single_test(*code_ptr) {
+                Ok(None) => {
+                    lines.push(format!("  {name} {dots} ok"));
+                    passed += 1;
+                }
+                Ok(Some(reason)) => {
+                    lines.push(format!("  {name} {dots} FAILED: {reason}"));
+                    failed += 1;
+                }
+                Err(msg) => {
+                    lines.push(format!("  {name} {dots} PANIC: {msg}"));
+                    failed += 1;
+                }
             }
         }
 

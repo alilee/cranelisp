@@ -83,6 +83,10 @@ impl TypeChecker {
         // NOT auto-imported — users must explicitly (import [primitives [Trace TraceCall ...]]).
         self.register_trace_type();
 
+        // Ring 4: TestResult root type + test special forms in `user`.
+        // Must come after register_trace_type (TraceFail references Trace).
+        self.register_test_infrastructure();
+
         // Per spec §8.9.1, nothing from primitives is auto-imported.
         // Modules access primitives via explicit import or qualified names.
     }
@@ -880,6 +884,160 @@ impl TypeChecker {
 
         // Restore the original module context.
         self.set_current_module(saved_module);
+    }
+
+    /// Register the TestResult root type and test special forms in `user`.
+    ///
+    /// TestResult is a root type (always in scope). discover-tests, run-test,
+    /// and trace-test are special forms (always in scope). All registered in
+    /// `user` so they are seeded into every new module by ensure_module_exists.
+    fn register_test_infrastructure(&mut self) {
+        // TestResult type: TestPass, TestFail, TraceFail constructors.
+        let trace_type = TypeExpr::Named(TypeName::from("Trace"));
+        let test_result_ctors = vec![
+            ConstructorDef {
+                name: Symbol::from("TestPass"),
+                docstring: Some("Test passed".to_string()),
+                fields: vec![
+                    FieldDef {
+                        name: Symbol::from("name"),
+                        type_expr: TypeExpr::Named(TypeName::from("String")),
+                    },
+                    FieldDef {
+                        name: Symbol::from("nanos"),
+                        type_expr: TypeExpr::Named(TypeName::from("Int")),
+                    },
+                ],
+                span: Span::SYNTHETIC,
+            },
+            ConstructorDef {
+                name: Symbol::from("TestFail"),
+                docstring: Some("Test failed (no trace)".to_string()),
+                fields: vec![
+                    FieldDef {
+                        name: Symbol::from("name"),
+                        type_expr: TypeExpr::Named(TypeName::from("String")),
+                    },
+                    FieldDef {
+                        name: Symbol::from("nanos"),
+                        type_expr: TypeExpr::Named(TypeName::from("Int")),
+                    },
+                    FieldDef {
+                        name: Symbol::from("reason"),
+                        type_expr: TypeExpr::Named(TypeName::from("String")),
+                    },
+                ],
+                span: Span::SYNTHETIC,
+            },
+            ConstructorDef {
+                name: Symbol::from("TraceFail"),
+                docstring: Some("Test failed with execution trace".to_string()),
+                fields: vec![
+                    FieldDef {
+                        name: Symbol::from("name"),
+                        type_expr: TypeExpr::Named(TypeName::from("String")),
+                    },
+                    FieldDef {
+                        name: Symbol::from("nanos"),
+                        type_expr: TypeExpr::Named(TypeName::from("Int")),
+                    },
+                    FieldDef {
+                        name: Symbol::from("reason"),
+                        type_expr: TypeExpr::Named(TypeName::from("String")),
+                    },
+                    FieldDef {
+                        name: Symbol::from("trace"),
+                        type_expr: trace_type,
+                    },
+                ],
+                span: Span::SYNTHETIC,
+            },
+        ];
+
+        self.register_type_def_self(
+            &TypeName::from("TestResult"),
+            &Some("Test execution result".to_string()),
+            &[], // monomorphic
+            &test_result_ctors,
+            Visibility::Public,
+            Span::SYNTHETIC,
+        )
+        .unwrap_or_else(|e| {
+            unreachable!("invariant: TestResult type registration failed: {e}")
+        });
+
+        // Register discover-tests, run-test, trace-test as special forms.
+        let sexp_type = Type::ADT(TypeName::from("Sexp"), vec![]);
+        let slist_sexp = Type::ADT(TypeName::from("SList"), vec![sexp_type.clone()]);
+        let test_result_type = Type::ADT(TypeName::from("TestResult"), vec![]);
+        let io_slist_sexp = Type::ADT(TypeName::from("IO"), vec![slist_sexp]);
+        let io_test_result = Type::ADT(TypeName::from("IO"), vec![test_result_type]);
+
+        self.current_symbol_table_mut().insert(
+            Symbol::from("discover-tests"),
+            ModuleEntry::Def {
+                scheme: Scheme {
+                    vars: vec![],
+                    constraints: HashMap::new(),
+                    ty: Type::Fn(vec![Type::String], Box::new(io_slist_sexp)),
+                },
+                visibility: Visibility::Public,
+                docstring: Some(
+                    "Discover test-* functions: (discover-tests) or (discover-tests module)"
+                        .to_string(),
+                ),
+                param_names: vec![Symbol::from("module")],
+                kind: Box::new(DefKind::SpecialForm {
+                    description: "Discover test-* functions: (discover-tests) or (discover-tests module)".to_string(),
+                }),
+                callees: Vec::new(),
+                got_slot: None,
+            },
+        );
+
+        self.current_symbol_table_mut().insert(
+            Symbol::from("run-test"),
+            ModuleEntry::Def {
+                scheme: Scheme {
+                    vars: vec![],
+                    constraints: HashMap::new(),
+                    ty: Type::Fn(vec![sexp_type.clone()], Box::new(io_test_result.clone())),
+                },
+                visibility: Visibility::Public,
+                docstring: Some(
+                    "Run a single test without tracing: (run-test name)"
+                        .to_string(),
+                ),
+                param_names: vec![Symbol::from("name")],
+                kind: Box::new(DefKind::SpecialForm {
+                    description: "Run a single test without tracing: (run-test name)".to_string(),
+                }),
+                callees: Vec::new(),
+                got_slot: None,
+            },
+        );
+
+        self.current_symbol_table_mut().insert(
+            Symbol::from("trace-test"),
+            ModuleEntry::Def {
+                scheme: Scheme {
+                    vars: vec![],
+                    constraints: HashMap::new(),
+                    ty: Type::Fn(vec![sexp_type], Box::new(io_test_result)),
+                },
+                visibility: Visibility::Public,
+                docstring: Some(
+                    "Run a single test with GOT-swap tracing: (trace-test name)"
+                        .to_string(),
+                ),
+                param_names: vec![Symbol::from("name")],
+                kind: Box::new(DefKind::SpecialForm {
+                    description: "Run a single test with GOT-swap tracing: (trace-test name)".to_string(),
+                }),
+                callees: Vec::new(),
+                got_slot: None,
+            },
+        );
     }
 }
 

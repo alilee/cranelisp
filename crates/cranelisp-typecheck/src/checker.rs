@@ -192,6 +192,12 @@ pub struct TypeChecker {
     pub(crate) state: CheckState,
 }
 
+/// Root type constructors that should be seeded into every module.
+/// These types are always in scope without import (spec §3.2.5).
+fn is_root_type_constructor(type_name: &cranelisp_types::Symbol) -> bool {
+    type_name.as_ref() == "TestResult"
+}
+
 impl TypeChecker {
     /// Create a new TypeChecker with Ring 0 builtins registered.
     ///
@@ -287,10 +293,10 @@ impl TypeChecker {
         }
         let mut table = SymbolTable::new(path.clone());
 
-        // Seed with special forms from the root module (user at init).
         // Seed with root module contents from user (the root module at init):
         // - Special forms: language keywords, universally available (spec §11.1)
-        // - Builtin type names: Int, Bool, Float, String, Vec
+        // - Builtin type names: Int, Bool, Float, String, Vec, TestResult
+        // - Root type constructors: TestPass, TestFail, TraceFail
         // Everything else requires explicit import or qualified access.
         //
         // Clone-and-drop discipline: collect entries, drop guard, then insert.
@@ -304,6 +310,9 @@ impl TypeChecker {
                                 cranelisp_types::DefKind::SpecialForm { .. }
                             )
                         ) || matches!(entry, ModuleEntry::TypeDef { .. })
+                          || matches!(entry, ModuleEntry::Constructor { type_name, .. }
+                            if is_root_type_constructor(type_name)
+                        )
                     })
                     .map(|(name, entry)| (name.clone(), entry.clone()))
                     .collect()
