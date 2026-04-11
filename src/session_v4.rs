@@ -2199,109 +2199,44 @@ impl CompilerSession {
         } else {
             ModuleFullPath::from(arg)
         };
-        let tests = self.discover_tests_in_module(&module);
-        if tests.is_empty() {
+        // Core discovery — shared with discover_tests_extern.
+        let test_names = discover_test_names(
+            &self.shared.codegen_products,
+            self.tc.modules_ref(),
+            &module,
+        );
+        if test_names.is_empty() {
             return if arg.is_empty() {
                 "No test-* functions found.".to_string()
             } else {
                 format!("No test-* functions found in '{arg}'.")
             };
         }
-        self.format_test_run(&tests)
+        self.format_test_run(&test_names)
     }
 
     /// /run-all-tests handler: discover and run tests in all project-root modules.
     fn handle_run_all_tests(&mut self) -> String {
-        let mut all_tests: Vec<(String, *const u8)> = Vec::new();
+        let mut all_names: Vec<String> = Vec::new();
         for entry in self.shared.typecheck_products.iter() {
             let module_path = entry.key();
-            // Skip library modules (not under project root).
-            if let Some(tp) = self.shared.typecheck_products.get(module_path) {
-                if let Some(ref fp) = tp.file_path {
-                    if !fp.starts_with(&self.project_root) {
-                        continue;
-                    }
-                }
-            }
-            let mut module_tests = self.discover_tests_in_module(module_path);
-            // Prefix names with module path for disambiguation.
-            for (name, _) in &mut module_tests {
-                *name = format!("{}/{name}", module_path.as_ref());
-            }
-            all_tests.extend(module_tests);
-        }
-        all_tests.sort_by(|a, b| a.0.cmp(&b.0));
-        if all_tests.is_empty() {
-            return "No test-* functions found in any project module.".to_string();
-        }
-        self.format_test_run(&all_tests)
-    }
-
-    /// Discover zero-arg test-* functions in a module.
-    fn discover_tests_in_module(
-        &self,
-        module: &ModuleFullPath,
-    ) -> Vec<(String, *const u8)> {
-        let mut tests = Vec::new();
-        let cp = match self.shared.codegen_products.get(module) {
-            Some(cp) => cp,
-            None => return tests,
-        };
-        let symbols = match self.tc.modules().get(module) {
-            Some(st) => st,
-            None => return tests,
-        };
-        for (name, entry) in symbols.all_symbols() {
-            if !name.as_ref().starts_with("test-") {
-                continue;
-            }
-            if let ModuleEntry::Def { param_names, .. } = entry {
-                if !param_names.is_empty() {
+            if let Some(ref fp) = entry.value().file_path {
+                if !fp.starts_with(&self.project_root) {
                     continue;
                 }
-            } else {
-                continue;
             }
-            if let Some(code) = cp.code.get(name) {
-                let ptr = code.ptr;
-                if !ptr.is_null() {
-                    tests.push((name.as_ref().to_string(), ptr));
-                }
-            }
+            let names = discover_test_names(
+                &self.shared.codegen_products,
+                self.tc.modules_ref(),
+                module_path,
+            );
+            all_names.extend(names);
         }
-        tests.sort_by(|a, b| a.0.cmp(&b.0));
-        tests
-    }
-
-    /// Run a test function and interpret the (Option String) result.
-    ///
-    /// Returns Ok(None) for pass, Ok(Some(reason)) for fail, Err(msg) for panic.
-    fn run_single_test(code_ptr: *const u8) -> Result<Option<String>, String> {
-        use cranelisp_types::NULLARY_TAG_THRESHOLD;
-
-        let _ = cranelisp_runtime::panic::take_runtime_error();
-        let value = unsafe {
-            let func: extern "C" fn() -> i64 = std::mem::transmute(code_ptr);
-            func()
-        };
-
-        if let Some(msg) = cranelisp_runtime::panic::take_runtime_error() {
-            return Err(msg);
+        all_names.sort();
+        if all_names.is_empty() {
+            return "No test-* functions found in any project module.".to_string();
         }
-
-        if (value as usize) < NULLARY_TAG_THRESHOLD {
-            Ok(None) // None = pass
-        } else {
-            // Some(reason_string)
-            let reason = unsafe {
-                let base = value as *const u8;
-                let string_ptr = *(base.add(
-                    cranelisp_backend::heap::HeapAdt::field_offset(0) as usize,
-                ) as *const i64);
-                cranelisp_runtime::read_string_as_str(string_ptr).to_string()
-            };
-            Ok(Some(reason))
-        }
+        self.format_test_run(&all_names)
     }
 
     /// Re-run a failing test with tracing by eval'ing `(trace (test-name))`.
@@ -2325,28 +2260,30 @@ impl CompilerSession {
         }
     }
 
-    /// Format a test run: run all tests, re-run failures with tracing.
-    fn format_test_run(&mut self, tests: &[(String, *const u8)]) -> String {
+    /// Format a test run: run all tests via core logic, re-run failures with tracing.
+    fn format_test_run(&mut self, test_names: &[String]) -> String {
         let start = std::time::Instant::now();
         let mut passed = 0usize;
         let mut failed = 0usize;
         let mut lines = Vec::new();
         let mut failures: Vec<String> = Vec::new();
 
-        for (name, code_ptr) in tests {
+        for name in test_names {
+            // Core test execution — shared with run_test_extern.
+            let outcome = run_test_by_name(&self.shared.codegen_products, name);
             let dots = ".".repeat(40usize.saturating_sub(name.len()));
-            match Self::run_single_test(*code_ptr) {
-                Ok(None) => {
+            match &outcome {
+                TestOutcome::Pass { .. } => {
                     lines.push(format!("  {name} {dots} ok"));
                     passed += 1;
                 }
-                Ok(Some(reason)) => {
+                TestOutcome::Fail { reason, .. } => {
                     lines.push(format!("  {name} {dots} FAILED: {reason}"));
                     failures.push(name.clone());
                     failed += 1;
                 }
-                Err(msg) => {
-                    lines.push(format!("  {name} {dots} PANIC: {msg}"));
+                TestOutcome::Panic { reason, .. } => {
+                    lines.push(format!("  {name} {dots} PANIC: {reason}"));
                     failed += 1;
                 }
             }
@@ -2357,8 +2294,10 @@ impl CompilerSession {
             lines.push(String::new());
             lines.push("Failure traces:".to_string());
             for name in &failures {
+                // Extract bare function name for trace eval.
+                let bare = name.rsplit_once('/').map(|(_, n)| n).unwrap_or(name);
                 lines.push(format!("  {name}:"));
-                let trace_output = self.trace_failing_test(name);
+                let trace_output = self.trace_failing_test(bare);
                 if !trace_output.is_empty() {
                     lines.push(trace_output);
                 }
@@ -3298,8 +3237,119 @@ unsafe fn format_slist_strings(mut slist_ptr: i64) -> String {
 }
 
 // ---------------------------------------------------------------------------
-// Test infrastructure externs (JIT-callable)
+// Test infrastructure: core logic + JIT-callable externs
 // ---------------------------------------------------------------------------
+
+/// Result of running a single test (Rust-side, no heap allocation).
+enum TestOutcome {
+    Pass { name: String, nanos: i64 },
+    Fail { name: String, nanos: i64, reason: String },
+    Panic { name: String, reason: String },
+}
+
+/// Core: discover test-* function names in a module. No heap allocation.
+///
+/// Returns fully-qualified names ("module/test-name") sorted alphabetically.
+fn discover_test_names(
+    codegen_products: &dashmap::DashMap<ModuleFullPath, CodegenProduct>,
+    tc_modules: &dashmap::DashMap<ModuleFullPath, SymbolTable>,
+    module: &ModuleFullPath,
+) -> Vec<String> {
+    let mut names = Vec::new();
+    let cp = match codegen_products.get(module) {
+        Some(cp) => cp,
+        None => return names,
+    };
+    let symbols = match tc_modules.get(module) {
+        Some(st) => st,
+        None => return names,
+    };
+    for (name, entry) in symbols.all_symbols() {
+        if !name.as_ref().starts_with("test-") {
+            continue;
+        }
+        if let ModuleEntry::Def { param_names, .. } = entry {
+            if !param_names.is_empty() {
+                continue;
+            }
+        } else {
+            continue;
+        }
+        if let Some(code) = cp.code.get(name) {
+            if !code.ptr.is_null() {
+                names.push(format!("{}/{}", module.as_ref(), name.as_ref()));
+            }
+        }
+    }
+    names.sort();
+    names
+}
+
+/// Core: run a single test by fully-qualified name. No heap allocation.
+///
+/// Looks up the code pointer, calls it, interprets the (Option String) result.
+fn run_test_by_name(
+    codegen_products: &dashmap::DashMap<ModuleFullPath, CodegenProduct>,
+    fq_name: &str,
+) -> TestOutcome {
+    use cranelisp_types::NULLARY_TAG_THRESHOLD;
+
+    // Parse "module/name" into module path and bare name.
+    let (module_str, bare_name) = match fq_name.rsplit_once('/') {
+        Some((m, n)) => (m, n),
+        None => ("user", fq_name),
+    };
+    let module = ModuleFullPath::from(module_str);
+
+    // Look up code pointer.
+    let code_ptr = codegen_products.get(&module)
+        .and_then(|cp| cp.code.get(&Symbol::from(bare_name)).map(|c| c.ptr));
+
+    let code_ptr = match code_ptr {
+        Some(ptr) if !ptr.is_null() => ptr,
+        _ => return TestOutcome::Fail {
+            name: fq_name.to_string(),
+            nanos: 0,
+            reason: "test function not found".to_string(),
+        },
+    };
+
+    // Call the test function.
+    let t0 = std::time::Instant::now();
+    let _ = cranelisp_runtime::panic::take_runtime_error();
+    let value = unsafe {
+        let func: extern "C" fn() -> i64 = std::mem::transmute(code_ptr);
+        func()
+    };
+    let nanos = t0.elapsed().as_nanos() as i64;
+
+    if let Some(msg) = cranelisp_runtime::panic::take_runtime_error() {
+        return TestOutcome::Panic {
+            name: fq_name.to_string(),
+            reason: msg,
+        };
+    }
+
+    if (value as usize) < NULLARY_TAG_THRESHOLD {
+        TestOutcome::Pass {
+            name: fq_name.to_string(),
+            nanos,
+        }
+    } else {
+        let reason = unsafe {
+            let base = value as *const u8;
+            let string_ptr = *(base.add(
+                cranelisp_backend::heap::HeapAdt::field_offset(0) as usize,
+            ) as *const i64);
+            cranelisp_runtime::read_string_as_str(string_ptr).to_string()
+        };
+        TestOutcome::Fail {
+            name: fq_name.to_string(),
+            nanos,
+            reason,
+        }
+    }
+}
 
 /// Session state for test externs. Set before JIT evaluation of expressions
 /// containing discover-tests/run-test, cleared after.
@@ -3363,8 +3413,7 @@ extern "C" fn discover_tests_extern(module_path_str: i64) -> i64 {
     TEST_RUNNER.with(|c| {
         let state_ptr = c.get();
         if state_ptr.is_null() {
-            // No state — return IO Pure(SNil).
-            return unsafe { alloc_io_pure(0) }; // SNil = tag 0 = bare 0
+            return unsafe { alloc_io_pure(0) }; // IO Pure(SNil)
         }
 
         let state = unsafe { &*state_ptr };
@@ -3372,7 +3421,6 @@ extern "C" fn discover_tests_extern(module_path_str: i64) -> i64 {
         let tc_modules = unsafe { &*state.tc_modules };
         let current_module = unsafe { &*state.current_module };
 
-        // Read module path from the string argument.
         let module = if module_path_str == 0
             || unsafe { cranelisp_runtime::read_string_as_str(module_path_str) }.is_empty()
         {
@@ -3382,38 +3430,15 @@ extern "C" fn discover_tests_extern(module_path_str: i64) -> i64 {
             ModuleFullPath::from(path_str)
         };
 
-        // Discover test-* zero-arg functions.
-        let mut test_names: Vec<String> = Vec::new();
-        if let Some(cp) = codegen_products.get(&module) {
-            if let Some(symbols) = tc_modules.get(&module) {
-                for (name, entry) in symbols.all_symbols() {
-                    if !name.as_ref().starts_with("test-") {
-                        continue;
-                    }
-                    if let ModuleEntry::Def { param_names, .. } = entry {
-                        if !param_names.is_empty() {
-                            continue;
-                        }
-                    } else {
-                        continue;
-                    }
-                    if let Some(code) = cp.code.get(name) {
-                        if !code.ptr.is_null() {
-                            // Fully-qualified name: module/test-name
-                            test_names.push(format!("{}/{}", module.as_ref(), name.as_ref()));
-                        }
-                    }
-                }
-            }
-        }
-        test_names.sort();
+        // Core logic — shared with slash command.
+        let test_names = discover_test_names(codegen_products, tc_modules, &module);
 
-        // Build SList of SexpSym values (right-fold: last element first).
-        // SexpSym tag = 4 (from Sexp enum: Int=0, Float=1, Bool=2, Str=3, Sym=4).
+        // Heap-allocate: SList of SexpSym, wrapped in IO Pure.
+        // SexpSym tag = 4 (Sexp enum: Int=0, Float=1, Bool=2, Str=3, Sym=4).
         let mut slist: i64 = 0; // SNil
         for name in test_names.into_iter().rev() {
             let name_str = cranelisp_runtime::alloc_string(name.as_bytes()) as i64;
-            let sexp_sym = unsafe { alloc_heap_adt(4, &[name_str]) }; // SexpSym(name)
+            let sexp_sym = unsafe { alloc_heap_adt(4, &[name_str]) };
             slist = unsafe { alloc_scons(sexp_sym, slist) };
         }
 
@@ -3431,10 +3456,8 @@ extern "C" fn run_test_extern(sexp_sym: i64) -> i64 {
     TEST_RUNNER.with(|c| {
         let state_ptr = c.get();
         if state_ptr.is_null() {
-            // No state — return IO Pure(TestPass("?", 0)).
             let name = cranelisp_runtime::alloc_string(b"?") as i64;
-            let test_pass = unsafe { alloc_heap_adt(0, &[name, 0]) };
-            return unsafe { alloc_io_pure(test_pass) };
+            return unsafe { alloc_io_pure(alloc_heap_adt(0, &[name, 0])) };
         }
 
         let state = unsafe { &*state_ptr };
@@ -3446,71 +3469,36 @@ extern "C" fn run_test_extern(sexp_sym: i64) -> i64 {
             let name_ptr = unsafe { *((sexp_sym as *const u8).add(24) as *const i64) };
             unsafe { cranelisp_runtime::read_string_as_str(name_ptr).to_string() }
         } else {
-            return unsafe {
-                let name = cranelisp_runtime::alloc_string(b"?") as i64;
-                alloc_io_pure(alloc_heap_adt(0, &[name, 0])) // TestPass("?", 0)
-            };
+            let name = cranelisp_runtime::alloc_string(b"?") as i64;
+            return unsafe { alloc_io_pure(alloc_heap_adt(0, &[name, 0])) };
         };
 
-        // Parse "module/name" into module path and bare name.
-        let (module_str, bare_name) = match fq_name.rsplit_once('/') {
-            Some((m, n)) => (m, n),
-            None => ("user", fq_name.as_str()),
-        };
-        let module = ModuleFullPath::from(module_str);
+        // Core logic — shared with slash command.
+        let outcome = run_test_by_name(codegen_products, &fq_name);
 
-        // Look up code pointer.
-        let code_ptr = codegen_products.get(&module)
-            .and_then(|cp| cp.code.get(&Symbol::from(bare_name)).map(|c| c.ptr));
-
-        let code_ptr = match code_ptr {
-            Some(ptr) if !ptr.is_null() => ptr,
-            _ => {
-                let name_alloc = cranelisp_runtime::alloc_string(fq_name.as_bytes()) as i64;
-                let reason = cranelisp_runtime::alloc_string(b"test function not found") as i64;
-                let test_fail = unsafe { alloc_heap_adt(1, &[name_alloc, 0, reason]) };
-                return unsafe { alloc_io_pure(test_fail) };
-            }
-        };
-
-        // Run the test.
-        let t0 = std::time::Instant::now();
-        let _ = cranelisp_runtime::panic::take_runtime_error();
-        let value = unsafe {
-            let func: extern "C" fn() -> i64 = std::mem::transmute(code_ptr);
-            func()
-        };
-        let nanos = t0.elapsed().as_nanos() as i64;
-
-        let name_alloc = cranelisp_runtime::alloc_string(fq_name.as_bytes()) as i64;
-
-        if let Some(msg) = cranelisp_runtime::panic::take_runtime_error() {
-            // Panic → TestFail
-            let reason = cranelisp_runtime::alloc_string(msg.as_bytes()) as i64;
-            let test_fail = unsafe { alloc_heap_adt(1, &[name_alloc, nanos, reason]) };
-            return unsafe { alloc_io_pure(test_fail) };
-        }
-
-        if (value as usize) < NULLARY_TAG_THRESHOLD {
-            // None → TestPass
-            let test_pass = unsafe { alloc_heap_adt(0, &[name_alloc, nanos]) };
-            unsafe { alloc_io_pure(test_pass) }
-        } else {
-            // Some(reason) → TestFail
-            let reason_ptr = unsafe {
-                let base = value as *const u8;
-                *(base.add(cranelisp_backend::heap::HeapAdt::field_offset(0) as usize) as *const i64)
-            };
-            // Inc the reason string (we're taking a reference from the Some wrapper).
-            // RC field is at offset 8 from base pointer.
-            unsafe {
-                let rc_ptr = (reason_ptr as *mut u8).add(8) as *mut std::sync::atomic::AtomicI64;
-                (*rc_ptr).fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-            }
-            let test_fail = unsafe { alloc_heap_adt(1, &[name_alloc, nanos, reason_ptr]) };
-            unsafe { alloc_io_pure(test_fail) }
-        }
+        // Heap-allocate TestResult, wrapped in IO Pure.
+        unsafe { alloc_io_pure(test_outcome_to_heap(&outcome)) }
     })
+}
+
+/// Convert a TestOutcome to a heap-allocated TestResult ADT.
+unsafe fn test_outcome_to_heap(outcome: &TestOutcome) -> i64 {
+    match outcome {
+        TestOutcome::Pass { name, nanos } => {
+            let name_alloc = cranelisp_runtime::alloc_string(name.as_bytes()) as i64;
+            alloc_heap_adt(0, &[name_alloc, *nanos]) // TestPass tag=0
+        }
+        TestOutcome::Fail { name, nanos, reason } => {
+            let name_alloc = cranelisp_runtime::alloc_string(name.as_bytes()) as i64;
+            let reason_alloc = cranelisp_runtime::alloc_string(reason.as_bytes()) as i64;
+            alloc_heap_adt(1, &[name_alloc, *nanos, reason_alloc]) // TestFail tag=1
+        }
+        TestOutcome::Panic { name, reason } => {
+            let name_alloc = cranelisp_runtime::alloc_string(name.as_bytes()) as i64;
+            let reason_alloc = cranelisp_runtime::alloc_string(reason.as_bytes()) as i64;
+            alloc_heap_adt(1, &[name_alloc, 0, reason_alloc]) // TestFail tag=1
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
