@@ -54,22 +54,7 @@ impl TypeChecker {
                 callee,
                 args,
                 span,
-            } => {
-                // `trace` is not a parser keyword — it arrives as Apply.
-                // Intercept when callee is the `trace` special form from primitives.
-                if let Expr::Var { name, .. } = callee.as_ref()
-                    && &**name == "trace" && self.is_trace_in_scope(state)
-                {
-                    if args.len() != 1 {
-                        return Err(CranelispError::TypeError {
-                            message: "trace requires exactly one expression".into(),
-                            span: *span,
-                        });
-                    }
-                    return self.infer_trace(state, &args[0], *span);
-                }
-                self.infer_apply(state, callee, args, *span)
-            }
+            } => self.infer_apply(state, callee, args, *span),
             Expr::Match {
                 scrutinee,
                 arms,
@@ -85,9 +70,6 @@ impl TypeChecker {
             Expr::StringLit { span, .. } => self.infer_string_lit(state, *span),
             Expr::VecLit { elements, span } => self.infer_vec_lit(state, elements, *span),
             Expr::Trace { body, span, .. } => self.infer_trace(state, body, *span),
-            Expr::RunTests { init, pass_fn, fail_fn, span, .. } => {
-                self.infer_run_tests(state, init, pass_fn, fail_fn, *span)
-            }
             // ParBind is semantically identical to Let for type-checking;
             // parallel execution is a codegen concern.
             Expr::ParBind {
@@ -802,16 +784,6 @@ impl TypeChecker {
         Ok(vec_type)
     }
 
-    /// Infer the type of `(trace expr)`.
-    ///
-    /// Check whether `trace` is in scope — i.e., imported from `primitives`.
-    /// `trace` is a module-scoped special form, not a parser keyword.
-    fn is_trace_in_scope(&self, state: &CheckState) -> bool {
-        // Check if `trace` resolves in the current module to the primitives entry.
-        // It could be imported via (import [primitives [trace]]) or qualified primitives/trace.
-        self.lookup(state, &Symbol::from("trace")).is_some()
-    }
-
     /// The body expression is inferred normally (for side effects on the type
     /// environment, e.g. unification constraints), but the result type is
     /// always `Trace` regardless of the body's type.
@@ -835,42 +807,6 @@ impl TypeChecker {
     ///
     /// - `init` determines the accumulator type `:a`
     /// - `pass_fn :: (Fn [:a String Int] :a)`
-    /// - `fail_fn :: (Fn [:a String Int String Trace] :a)`
-    /// - Result type is `:a` (the accumulator type)
-    fn infer_run_tests(
-        &self, state: &mut CheckState,
-        init: &Expr,
-        pass_fn: &Expr,
-        fail_fn: &Expr,
-        span: Span,
-    ) -> Result<Type, CranelispError> {
-        // Infer accumulator type from init
-        let acc_ty = self.infer_expr(state, init)?;
-        let acc_ty = self.apply_subst(state, &acc_ty);
-
-        // pass_fn :: (Fn [acc_ty String Int] acc_ty)
-        let expected_pass = Type::Fn(
-            vec![acc_ty.clone(), Type::String, Type::Int],
-            Box::new(acc_ty.clone()),
-        );
-        let pass_ty = self.infer_expr(state, pass_fn)?;
-        self.unify(state, &pass_ty, &expected_pass, span)?;
-
-        // fail_fn :: (Fn [acc_ty String Int String Trace] acc_ty)
-        let trace_ty = Type::ADT("Trace".into(), vec![]);
-        let expected_fail = Type::Fn(
-            vec![acc_ty.clone(), Type::String, Type::Int, Type::String, trace_ty],
-            Box::new(acc_ty.clone()),
-        );
-        let fail_ty = self.infer_expr(state, fail_fn)?;
-        self.unify(state, &fail_ty, &expected_fail, span)?;
-
-        // Result type: acc_ty
-        let result_ty = self.apply_subst(state, &acc_ty);
-        self.record_expr_type(state, span, result_ty.clone());
-        Ok(result_ty)
-    }
-
     fn infer_annotate(
         &self, state: &mut CheckState,
         annotation: &TypeExpr,

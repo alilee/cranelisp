@@ -409,11 +409,6 @@ fn collect_var_uses(
         Expr::Trace { body, .. } => {
             collect_var_uses(body, uses);
         }
-        Expr::RunTests { init, pass_fn, fail_fn, .. } => {
-            collect_var_uses(init, uses);
-            collect_var_uses(pass_fn, uses);
-            collect_var_uses(fail_fn, uses);
-        }
         Expr::ParBind { bindings, body, .. } => {
             for (_, val_expr) in bindings {
                 collect_var_uses(val_expr, uses);

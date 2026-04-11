@@ -100,6 +100,9 @@ fn run(
             // Wait for entry module (prelude) to be ready.
             s.wait_inmem_complete()?;
 
+            // Initialize file watcher now that modules are loaded.
+            s.init_watcher();
+
             s.print_banner(&mut stdout);
 
             let mut buffer = String::new();
@@ -152,6 +155,14 @@ fn run(
                             }
                         }
                     }
+                }
+
+                // Sync watcher with any newly-loaded modules (e.g. from import).
+                s.sync_watcher();
+
+                // Poll file watcher for changed source files (repl/spec.md §14).
+                for msg in s.poll_and_reload() {
+                    let _ = writeln!(stdout, "{msg}");
                 }
 
                 s.write_prompt(&mut stdout, compile_ms, eval_ms);

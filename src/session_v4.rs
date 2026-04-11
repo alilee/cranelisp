@@ -486,10 +486,13 @@ pub struct CompilerSession {
 
     // -- REPL-specific state (pipeline-v4.md §6) --
 
-    /// LEGACY: replaced by scheduler state (tracks Failed modules). See session-restructure.md.
     /// Modules that failed reload (file watcher). While non-empty, expression
     /// evaluation is blocked.
     pub error_modules: HashSet<ModuleFullPath>,
+
+    /// File watcher for REPL mode. Initialized via `init_watcher()` after
+    /// construction. None in batch/link modes or if OS watcher unavailable.
+    pub watcher: Option<crate::watch::FileWatcher>,
 
     /// Nice worker thread handles. Joined in `shutdown()`.
     nice_worker_handles: Vec<std::thread::JoinHandle<()>>,
@@ -567,9 +570,186 @@ impl CompilerSession {
             project_root,
             platform_registry: PlatformRegistry::new(),
             error_modules: HashSet::new(),
+            watcher: None,
             nice_worker_handles,
             nice_workers,
         }
+    }
+
+    /// Initialize the file watcher for REPL mode (repl/spec.md §14).
+    ///
+    /// Creates an OS-level file watcher and registers all currently known
+    /// module source files. Call once after `wait_inmem_complete()` so
+    /// that `file_to_module` is populated.
+    pub fn init_watcher(&mut self) {
+        let mut fw = match crate::watch::FileWatcher::new() {
+            Some(fw) => fw,
+            None => return,
+        };
+
+        // Register all source files already loaded (prelude + its deps).
+        let file_to_mod = self.shared.file_to_module
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        for path in file_to_mod.keys() {
+            fw.watch_file(path);
+        }
+        drop(file_to_mod);
+
+        self.watcher = Some(fw);
+    }
+
+    /// Register any newly-loaded module source files with the watcher.
+    ///
+    /// Called after eval/import so that newly discovered modules get watched.
+    /// The watcher internally deduplicates already-watched directories.
+    pub fn sync_watcher(&mut self) {
+        let watcher = match &mut self.watcher {
+            Some(w) => w,
+            None => return,
+        };
+        let file_to_mod = self.shared.file_to_module
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        for path in file_to_mod.keys() {
+            watcher.watch_file(path);
+        }
+    }
+
+    /// Poll the file watcher for changed source files and reload them.
+    ///
+    /// Returns a list of user-visible messages (one per reloaded module).
+    /// On success, removes the module from `error_modules`. On failure,
+    /// adds it to `error_modules` to block subsequent evals.
+    pub fn poll_and_reload(&mut self) -> Vec<String> {
+        let watcher = match &mut self.watcher {
+            Some(w) => w,
+            None => return Vec::new(),
+        };
+
+        let changed_paths = match watcher.poll_changes() {
+            Some(paths) => paths,
+            None => return Vec::new(),
+        };
+
+        // Map file paths → module paths via SharedState.file_to_module.
+        let file_to_mod = self.shared.file_to_module
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let mut modules_to_reload: Vec<(ModuleFullPath, PathBuf)> = Vec::new();
+        for path in &changed_paths {
+            if let Some(module_path) = file_to_mod.get(path) {
+                if !modules_to_reload.iter().any(|(mp, _)| mp == module_path) {
+                    modules_to_reload.push((module_path.clone(), path.clone()));
+                }
+            }
+        }
+        drop(file_to_mod);
+
+        let mut messages = Vec::new();
+        for (module_path, file_path) in modules_to_reload {
+            match self.reload_module(&module_path, &file_path) {
+                Ok(()) => {
+                    self.error_modules.remove(&module_path);
+                    messages.push(format!("Reloaded {}", module_path.as_ref()));
+                }
+                Err(e) => {
+                    self.error_modules.insert(module_path.clone());
+                    messages.push(format!(
+                        "Error reloading {}: {e}",
+                        module_path.as_ref()
+                    ));
+                }
+            }
+        }
+        messages
+    }
+
+    /// Reload a single module from its source file.
+    ///
+    /// Re-reads the file, re-parses, and re-compiles through the worker
+    /// pipeline with the existing session state. The module must already
+    /// be registered in the scheduler.
+    fn reload_module(
+        &mut self,
+        module_path: &ModuleFullPath,
+        file_path: &Path,
+    ) -> Result<(), CranelispError> {
+        let source = std::fs::read_to_string(file_path).map_err(|e| {
+            CranelispError::ModuleError {
+                message: format!("cannot read {}: {e}", file_path.display()),
+                file: Some(file_path.to_path_buf()),
+                span: Span::new(0, 0),
+            }
+        })?;
+
+        // Re-register through the existing pipeline. The scheduler will
+        // reset the module state and re-process it.
+        self.shared.scheduler.reset_module(module_path);
+
+        // Remove stale products before recompilation.
+        self.shared.typecheck_products.remove(module_path);
+        self.shared.codegen_inputs.remove(module_path);
+        self.shared.codegen_products.remove(module_path);
+
+        let sexps = cranelisp_frontend::parse(&source)?;
+
+        let module_sexps = Mutex::new({
+            let mut map = HashMap::new();
+            map.insert(module_path.clone(), sexps);
+            map
+        });
+        let suspend_states = Mutex::new(HashMap::new());
+
+        let tc = std::mem::replace(&mut self.tc, cranelisp_typecheck::TypeChecker::new());
+        let tc_mutex = Mutex::new(tc);
+        let platform_registry = std::mem::replace(
+            &mut self.platform_registry, PlatformRegistry::new(),
+        );
+        let platform_mutex = Mutex::new(platform_registry);
+
+        let worker_shared = crate::worker::PriorityWorkerRefs {
+            tc: &tc_mutex,
+            platform_registry: &platform_mutex,
+            typecheck_products: &self.shared.typecheck_products,
+            codegen_products: &self.shared.codegen_products,
+            introspection: Some(&self.shared.introspection),
+            scheduler: &self.shared.scheduler,
+            module_sexps: &module_sexps,
+            suspend_states: &suspend_states,
+            lib_dirs: &self.lib_dirs,
+            platform_dirs: &self.platform_dirs,
+            project_root: &self.project_root,
+            shared_state: Some(&self.shared),
+        };
+
+        let num_workers = self.priority_workers;
+        std::thread::scope(|s| {
+            for i in 0..num_workers {
+                let shared_ref = &worker_shared;
+                std::thread::Builder::new()
+                    .name(format!("reload-worker-{}", i))
+                    .spawn_scoped(s, move || {
+                        crate::worker::priority_worker_thread(shared_ref, i);
+                    })
+                    .expect("failed to spawn reload worker thread");
+            }
+        });
+
+        // Move TC and PlatformRegistry back.
+        self.tc = tc_mutex.into_inner().unwrap_or_else(|e| e.into_inner());
+        self.platform_registry = platform_mutex.into_inner().unwrap_or_else(|e| e.into_inner());
+
+        // Check if the module ended up in Failed state.
+        if self.shared.scheduler.is_failed(module_path) {
+            return Err(CranelispError::ModuleError {
+                message: format!("module '{}' failed to compile", module_path.as_ref()),
+                file: None,
+                span: Span::new(0, 0),
+            });
+        }
+
+        Ok(())
     }
 
     /// Register a module by name (pipeline-v4.md §3.1).
@@ -785,6 +965,11 @@ impl CompilerSession {
                 CommandResult::Final(self.handle_run_tests(prefix))
             }
             ReplCommand::Reset => {
+                // Clear file watcher state so stale watches don't persist.
+                if let Some(ref mut w) = self.watcher {
+                    w.clear_all();
+                }
+                self.error_modules.clear();
                 CommandResult::Final("command not yet available in v4 REPL".to_string())
             }
         }
@@ -991,15 +1176,50 @@ impl CompilerSession {
         if has_expr {
             let program_vec = program.to_vec();
             let (jit_syms, got_defs) = env_impl.collect_jit_setup_for_module(&self.platform_registry);
-            let (value, ty) = crate::pipeline::compile_and_execute_expr(
+
+            // Build traced_fns if the expression contains (trace ...) or (run-tests ...).
+            let traced_fns = if Self::program_needs_trace(program) {
+                self.build_traced_fns(module)
+            } else {
+                Vec::new()
+            };
+
+            // Trace format override: provide rich formatting via session's type defs.
+            let trace_extra_symbols: Vec<(String, *const u8)> = if !traced_fns.is_empty() {
+                vec![(
+                    "cranelisp_trace_format".to_string(),
+                    repl_trace_format as *const u8,
+                )]
+            } else {
+                Vec::new()
+            };
+
+            // Set trace display state so repl_trace_format can access type defs.
+            let (type_defs_map, _) = self.tc.snapshot_type_defs();
+            let type_modules_map = self.build_type_modules();
+            let display_state = TraceDisplayState {
+                type_defs: &type_defs_map as *const _,
+                type_modules: &type_modules_map as *const _,
+            };
+            if !traced_fns.is_empty() {
+                set_trace_display_state(&display_state);
+            }
+
+            let result = crate::pipeline::compile_and_execute_expr(
                 &jit_syms,
                 &got_defs,
                 &program_vec,
                 check,
                 &env_impl,
-                &[], // traced_fns (empty — trace set up by REPL when re-enabled)
-                &[], // trace_extra_symbols
-            )?;
+                &traced_fns,
+                &trace_extra_symbols,
+            );
+
+            if !traced_fns.is_empty() {
+                clear_trace_display_state();
+            }
+
+            let (value, ty) = result?;
 
             Ok(EvalResult::Val {
                 value,
@@ -1031,6 +1251,105 @@ impl CompilerSession {
                 warnings: check.warnings.clone(),
             })
         }
+    }
+
+    /// Check if a program contains `Expr::Trace` or `Expr::RunTests` that
+    /// need traced function info for GOT-swap codegen.
+    fn program_needs_trace(program: &[TopLevel]) -> bool {
+        program.iter().any(|tl| {
+            if let TopLevel::Expr(e) = tl {
+                Self::expr_needs_trace(e)
+            } else {
+                false
+            }
+        })
+    }
+
+    /// Recursively check if an expression contains trace or run-tests.
+    fn expr_needs_trace(expr: &cranelisp_types::Expr) -> bool {
+        use cranelisp_types::Expr;
+        match expr {
+            Expr::Trace { .. } => true,
+            Expr::Apply { callee, args, .. } => {
+                Self::expr_needs_trace(callee) || args.iter().any(Self::expr_needs_trace)
+            }
+            Expr::Let { bindings, body, .. } | Expr::ParBind { bindings, body, .. } => {
+                bindings.iter().any(|(_, e)| Self::expr_needs_trace(e))
+                    || Self::expr_needs_trace(body)
+            }
+            Expr::If { cond, then_branch, else_branch, .. } => {
+                Self::expr_needs_trace(cond)
+                    || Self::expr_needs_trace(then_branch)
+                    || Self::expr_needs_trace(else_branch)
+            }
+            Expr::Lambda { body, .. } => Self::expr_needs_trace(body),
+            Expr::Match { scrutinee, arms, .. } => {
+                Self::expr_needs_trace(scrutinee)
+                    || arms.iter().any(|arm| Self::expr_needs_trace(&arm.body))
+            }
+            Expr::Annotate { expr, .. } => Self::expr_needs_trace(expr),
+            Expr::VecLit { elements, .. } => elements.iter().any(Self::expr_needs_trace),
+            _ => false,
+        }
+    }
+
+    /// Build `TracedFnInfo` for all user-defined functions visible from the
+    /// current module. Scans the current module and all imported modules for
+    /// `Def` entries with GOT slots and code pointers.
+    fn build_traced_fns(
+        &self,
+        _current_module: &ModuleFullPath,
+    ) -> Vec<cranelisp_backend::compiler::TracedFnInfo> {
+        use cranelisp_backend::compiler::TracedFnInfo;
+
+        let mut traced = Vec::new();
+
+        // Scan all modules that have both typecheck and codegen products.
+        for tp_entry in self.shared.typecheck_products.iter() {
+            let module_path = tp_entry.key();
+            let tp = tp_entry.value();
+            let got_base = tp.got.base_ptr() as i64;
+
+            let cp = match self.shared.codegen_products.get(module_path) {
+                Some(cp) => cp,
+                None => continue,
+            };
+
+            // Get the symbol table for this module.
+            let symbols = match self.tc.modules().get(module_path) {
+                Some(st) => st,
+                None => continue,
+            };
+
+            for (name, entry) in symbols.all_symbols() {
+                if let ModuleEntry::Def { scheme, param_names, got_slot: Some(slot), .. } = entry {
+                    let code_ptr = match cp.code.get(name) {
+                        Some(code) => code.ptr as i64,
+                        None => continue,
+                    };
+                    if code_ptr == 0 {
+                        continue;
+                    }
+
+                    let (param_types, result_type) = match &scheme.ty {
+                        Type::Fn(params, ret) => (params.clone(), *ret.clone()),
+                        _ => continue,
+                    };
+
+                    traced.push(TracedFnInfo {
+                        name: format!("{}/{}", module_path.as_ref(), name.as_ref()),
+                        got_base,
+                        got_slot: *slot,
+                        arity: param_names.len(),
+                        code_ptr,
+                        param_types,
+                        result_type,
+                    });
+                }
+            }
+        }
+
+        traced
     }
 
     /// Compile a dependency module inline (for blocked REPL eval).
@@ -2703,5 +3022,56 @@ fn compile_module_object(
     if let Ok(mut paths) = shared.compiled_o_paths.lock() {
         paths.push(o_path);
     }
+}
+
+// ---------------------------------------------------------------------------
+// Trace format support (repl/spec.md §4.12)
+// ---------------------------------------------------------------------------
+
+/// Thread-local display state for `repl_trace_format`. Set before JIT
+/// evaluation of a trace expression, cleared after.
+struct TraceDisplayState {
+    type_defs: *const HashMap<TypeName, cranelisp_types::TypeDefInfo>,
+    type_modules: *const HashMap<TypeName, ModuleFullPath>,
+}
+
+// Only accessed via thread-local Cell (never crosses threads).
+unsafe impl Send for TraceDisplayState {}
+
+thread_local! {
+    static TRACE_DISPLAY: std::cell::Cell<*const TraceDisplayState> =
+        const { std::cell::Cell::new(std::ptr::null()) };
+}
+
+/// Set trace display state before evaluating a trace expression.
+pub fn set_trace_display_state(state: &TraceDisplayState) {
+    TRACE_DISPLAY.with(|c| c.set(state as *const _));
+}
+
+/// Clear trace display state after evaluation.
+pub fn clear_trace_display_state() {
+    TRACE_DISPLAY.with(|c| c.set(std::ptr::null()));
+}
+
+/// JIT-callable trace format: formats a runtime value using the session's
+/// type definitions. Registered as a JIT symbol to override the runtime's
+/// fallback `cranelisp_trace_format`.
+extern "C" fn repl_trace_format(val: i64, type_ptr: i64) -> i64 {
+    TRACE_DISPLAY.with(|c| {
+        let state_ptr = c.get();
+        let s = if state_ptr.is_null() {
+            "?".to_string()
+        } else {
+            // SAFETY: state_ptr set by set_trace_display_state, valid for
+            // the duration of the JIT expression execution. type_ptr was
+            // leaked by trace_codegen (valid for program lifetime).
+            let state = unsafe { &*state_ptr };
+            let type_defs = unsafe { &*state.type_defs };
+            let type_modules = unsafe { &*state.type_modules };
+            let ty = unsafe { &*(type_ptr as *const Type) };
+            cranelisp_backend::display::format_value(val, ty, type_defs, type_modules)
+        };
+        cranelisp_runtime::alloc_string(s.as_bytes()) as i64
+    })
 }
 

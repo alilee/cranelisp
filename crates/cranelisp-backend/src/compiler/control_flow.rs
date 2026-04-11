@@ -1692,11 +1692,6 @@ fn collect_free_vars(
         Expr::Trace { body, .. } => {
             collect_free_vars(body, bound, free, seen);
         }
-        Expr::RunTests { init, pass_fn, fail_fn, .. } => {
-            collect_free_vars(init, bound, free, seen);
-            collect_free_vars(pass_fn, bound, free, seen);
-            collect_free_vars(fail_fn, bound, free, seen);
-        }
         Expr::ParBind { bindings, body, .. } => {
             // Same as Let: each binding may reference earlier ones
             let mut extended = bound.clone();

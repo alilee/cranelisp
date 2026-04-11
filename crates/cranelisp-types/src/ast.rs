@@ -62,7 +62,6 @@ pub struct MatchArm {
 ///   Annotate -- spec 4.9 (Type Annotation)
 ///   VecLit -- spec 4.10 (Vec Literal)
 ///   Trace -- spec 12 (Runtime Model, implementation extension)
-///   RunTests -- REPL-only special form (no spec section)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Expr {
     // --- Ring 0 exercised ---
@@ -133,14 +132,6 @@ pub enum Expr {
         body: Box<Expr>,
         span: Span,
     },
-    RunTests {
-        modules: Vec<Symbol>,
-        init: Box<Expr>,
-        pass_fn: Box<Expr>,
-        fail_fn: Box<Expr>,
-        span: Span,
-    },
-
     /// Parallel bind chain: produced by the bind! independence analysis pass.
     /// Semantically identical to a sequential `Let` for type-checking purposes,
     /// but codegen emits parallel IO dispatch via `IO_TAG_PAR`.
@@ -169,7 +160,6 @@ impl Expr {
             | Expr::VecLit { span, .. }
             | Expr::Annotate { span, .. }
             | Expr::Trace { span, .. }
-            | Expr::RunTests { span, .. }
             | Expr::ParBind { span, .. } => *span,
         }
     }
@@ -439,12 +429,6 @@ pub fn free_vars_expr(expr: &Expr, globals: &HashSet<Symbol>) -> HashSet<Symbol>
 
         Expr::Trace { body, .. } => free_vars_expr(body, globals),
 
-        Expr::RunTests { init, pass_fn, fail_fn, .. } => {
-            let mut fv = free_vars_expr(init, globals);
-            fv.extend(free_vars_expr(pass_fn, globals));
-            fv.extend(free_vars_expr(fail_fn, globals));
-            fv
-        }
     }
 }
 

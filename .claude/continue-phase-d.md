@@ -1,4 +1,4 @@
-# Continue: Session Restructure — Phase D/E Progress
+# Continue: Session Restructure — Phases D/E/F Complete
 
 ## Context
 
@@ -8,35 +8,25 @@ Read `design/arch/session-restructure.md` for the full target data model.
 
 1. `b81fd22` — Phase D: delete legacy state, migrate to DashMaps
 2. `4d50ade` — delete current_module_structure, rename WorkerContext/PriorityWorkerShared
+3. `72519de` — simplify cache format: delete CacheCodegenState, DefCodegen, ModuleStructure from .meta.json
+4. `3b77950` — populate introspection: clif_ir, disasm, code_size, ast from codegen
+5. `f7f30de` — gate introspection on --repl: make ModuleCompiler.introspection optional
+6. `1d4406b` — introspection: source from span, expanded sexp, gate on --repl
+7. `15f3c01` — delete ModuleStructure and dead module graph discovery code
 
-## What was done
+## Session Restructure Status
 
-### Phase C (prior session, complete)
-- Unified GOT literal pool, codegen through DashMaps, linker cleanup
+### Completed (Phases A–F)
+- **Phase A**: New types defined (TypecheckProduct, CodegenInput, CodegenProduct, Code, Introspection)
+- **Phase B**: Unified GOT — object codegen + linker
+- **Phase C**: Wire codegen through new structures
+- **Phase D**: Wire typecheck + temporaries (DashMaps on SharedState, type_defs/type_modules derived on-demand, module_outputs deleted, object_codegen_inputs → codegen_inputs)
+- **Phase E**: Delete legacy structures (MacroEnv, ModuleCodegenState, ModuleOutput, ObjectCodegenInput, DefCodegen, ModuleStructure, current_module_structure; renamed WorkerContext → ModuleCompiler, PriorityWorkerShared → PriorityWorkerRefs)
+- **Phase F**: Cache simplified to just SymbolTable, introspection fully populated (source, sexp, expanded, ast, clif_ir, disasm, code_size), gated on --repl
 
-### Phase D (this session)
-- **Deleted**: `MacroEnv` field, `ModuleCodegenState`, `ModuleOutput`, `ObjectCodegenInput`, `current_module_structure`
-- **Migrated**: `object_codegen_inputs` → `codegen_inputs` DashMap on SharedState
-- **Derived on-demand**: `type_defs`/`type_modules` (were cached, now read from TC)
-- **Moved**: all DashMaps (`typecheck_products`, `codegen_inputs`, `codegen_products`, `introspection`) from CompilerSession to SharedState
-
-### Phase E (partial)
-- **Renamed**: `PriorityWorkerShared` → `PriorityWorkerRefs`, `WorkerContext` → `ModuleCompiler`
-- **Deleted**: `ModuleCodegenState` (struct + tests replaced with GotTable-only tests)
-
-## What's NOT done
-
-1. **`DefCodegen` deletion** — still used by cache serialization (`serialize.rs`). Removing requires updating the cache format (Phase F territory).
-
-2. **`error_modules` on CompilerSession** — used to block REPL eval when modules have file-watcher errors. Currently always empty in v4 path (file watcher is in dead repl/ module). Tied to REPL rework — leave until file watcher is re-enabled.
-
-3. **`ModuleStructure` deletion** — still used in cache metadata (`.meta.json` serialization) and in dead repl/ module. Removing requires updating `CacheMetadata` to not require it (Phase F).
-
-4. **Phase F: Cache + introspection cleanup** — update `.meta.json` serialization for new data model, wire slash commands to introspection DashMap, populate `/clif`, `/disasm`, `/info` in v4 path.
-
-5. **FIXME: external function call range** — BL ±128MB range issue for runtime/platform DLL calls. Not part of session restructure phases — orthogonal correctness fix.
-
-6. **REPL module** — src/repl/ commented out of lib.rs. Contains file watcher code worth harvesting. Needs full rework for new APIs when re-enabled.
+### Remaining
+1. **FIXME: external function call range** — BL ±128MB range issue for runtime/platform DLL calls. Not part of session restructure — orthogonal correctness fix.
+2. **REPL module rework** — `src/repl/` commented out of `lib.rs`. Includes file watcher re-enable, `error_modules` redesign, adaptation to new APIs (no InMemWorkerState, no CompilationSession, no MacroEnv, no ModuleStructure, no DefCodegen). See `continue-repl-rework.md`.
 
 ## Current Architecture
 
@@ -44,10 +34,10 @@ Read `design/arch/session-restructure.md` for the full target data model.
 ```
 tc: TypeChecker
 lib_dirs, platform_dirs, loaded_platforms
-shared: Arc<SharedState>      // all concurrent state
+shared: Arc<SharedState>
 priority_workers, project_root
 platform_registry
-error_modules                  // LEGACY: always empty in v4
+error_modules                  // LEGACY: always empty, tied to file watcher
 nice_worker_handles, nice_workers
 ```
 
@@ -60,6 +50,17 @@ codegen_inputs: DashMap<ModulePath, CodegenInput>       // transient
 codegen_products: DashMap<ModulePath, CodegenProduct>
 introspection: DashMap<FQSymbol, Introspection>
 ```
+
+### Introspection population (--repl only)
+| Field | Source | When |
+|-------|--------|------|
+| source | sexp span into TypecheckProduct.source_text | typechecking |
+| sexp | original pre-expansion sexp | typechecking |
+| expanded | post-macro-expansion sexp | typechecking |
+| ast | Defn AST node | typechecking |
+| clif_ir | Cranelift IR text | codegen |
+| disasm | Cranelift vcode | codegen |
+| code_size | compiled_code().code_info().total_size | codegen |
 
 ## Verification
 

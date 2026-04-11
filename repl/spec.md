@@ -296,7 +296,8 @@ Slash commands provide introspection and navigation. All commands start with `/`
 | `/imports [module]` | — | Show imports and special forms; filter by source module | 0 | [Tested tests/e2e::e2e_s3_4_imports_special_forms, tests/e2e::e2e_s3_4_imports_empty] |
 | `/exports <module>` | — | List a module's importable public symbols | 2 | [Tested tests/e2e::e2e_s3_5_exports_lists_symbols, tests/e2e::e2e_s3_5_exports_no_arg_usage] |
 | `/mem [expr]` | `/m` | Show allocation statistics | 1 | [R4 S10] |
-| `/run-tests` | — | Discover and run test functions | 4 | [R4 S10] |
+| `/run-tests [module]` | `/rt` | Discover and run test functions (see §16) | 4 | [R4] |
+| `/run-all-tests` | — | Run all tests in project (see §16) | 4 | [R4] |
 | `/quit` | `/q` | Exit REPL | 0 | [Tested tests/e2e::e2e_s3_1_quit] |
 
 ### 3.2 `/help` Output [Tested tests/e2e::e2e_s3_1_help]
@@ -974,7 +975,7 @@ The TTY detection result SHOULD be computed once at startup and stored as a bool
 | `/mod` | | | yes | | |
 | Demo trampoline | | | | | yes |
 | `/mem` | | yes | | | |
-| `/run-tests` | | | | | yes |
+| `/run-tests`, `/run-all-tests` | | | | | yes |
 | Shell escape (`;#!`) | | | | | yes |
 | File watching | | | | | yes |
 | Self-documentation | bare symbol, special forms, operators (qualified) | | + traits, modules | + macros | |
@@ -1367,3 +1368,144 @@ This feature is not yet implemented. It requires:
 - Atomic file writes for the backing `.cl` file after each definition.
 - Integration with file watching (the watcher must ignore self-triggered writes).
 - Interaction with file watching (watcher must ignore self-triggered writes).
+
+## 16. Test Discovery and Execution [R4]
+
+The REPL provides commands for discovering and running test functions. Test infrastructure is built on two extern primitives (`discover-tests`, `run-test`) defined in the `primitives` module, enabling both command-line convenience and programmatic use.
+
+### 16.1 Test Function Convention
+
+A **test function** is any zero-argument function whose name begins with `test-` and whose return type is `(Option String)`:
+
+- `None` — the test passed
+- `Some(reason)` — the test failed, with a human-readable reason string
+
+There is no module naming requirement. Test functions may be defined in any module.
+
+### 16.2 Slash Commands
+
+#### 16.2.1 `/run-tests [module]` [R4]
+
+Discover and run test functions. With no argument, searches the current module. With a module path argument, searches that module.
+
+```
+user> /run-tests
+  test-add ................................ ok
+  test-div-zero .......................... FAILED: expected error
+
+1 passed, 1 failed in 2.34ms
+```
+
+```
+user> /run-tests user.math.test
+  test-factorial ......................... ok
+
+1 passed in 0.45ms
+```
+
+On failure, the trace tree for the failing test MUST be displayed after the failure reason (see §16.4).
+
+#### 16.2.2 `/run-all-tests` [R4]
+
+Discover and run all test functions in all loaded modules whose source files are under the project root. Library modules (discovered through the lib search path) are excluded.
+
+```
+user> /run-all-tests
+  user/test-add .......................... ok
+  user.math/test-factorial ............... ok
+  user.io/test-read ...................... FAILED: file not found
+
+2 passed, 1 failed in 5.67ms
+```
+
+### 16.3 Special Forms
+
+Both commands are implemented in terms of three special forms. `discover-tests`, `run-test`, `trace-test`, `TestResult`, `TestPass`, `TestFail`, and `TraceFail` are always in scope (root types and special forms — no import needed).
+
+**`discover-tests`** — special form:
+
+```clojure
+(discover-tests)              ;; => :(IO (SList Sexp)) — current module
+(discover-tests user.math)    ;; => :(IO (SList Sexp)) — named module
+```
+
+The module argument is a bare module path — same syntax as `import`, not a string literal. Returns an IO action that produces an `SList` of `SexpSym` values, each containing a fully-qualified test function name (e.g., `(SexpSym "user.math/test-add")`).
+
+**`run-test`** — special form (fast, no tracing):
+
+```clojure
+(run-test user/test-add)      ;; => :(IO TestResult) — bare qualified symbol
+(run-test sym)                ;; => :(IO TestResult) — Sexp variable
+```
+
+Runs the named test function without instrumentation. Returns `TestPass` or `TestFail`. Fast — no GOT manipulation.
+
+**`trace-test`** — special form (with GOT-swap tracing):
+
+```clojure
+(trace-test user/test-add)    ;; => :(IO TestResult) — bare qualified symbol
+(trace-test sym)              ;; => :(IO TestResult) — Sexp variable
+```
+
+Runs the named test function with full GOT-swap tracing active (per [§4.12](../spec/04-expressions.md#412-trace-expression)). Returns `TestPass` or `TraceFail` (which includes the execution `Trace` tree). Slower than `run-test` due to GOT swap/restore overhead.
+
+For all three forms, arguments that are bare symbols (module paths or qualified names) use the same syntax as `import` and qualified references respectively. `discover-tests` returns `SexpSym` values that can be passed directly to `run-test` or `trace-test`.
+
+```clojure
+(deftype TestResult
+  (TestPass [:String name :Int nanos])
+  (TestFail [:String name :Int nanos :String reason])
+  (TraceFail [:String name :Int nanos :String reason :Trace trace]))
+```
+
+`TestPass` indicates the test returned `None`. `TestFail` (from `run-test`) indicates failure without trace data. `TraceFail` (from `trace-test`) indicates failure with the full execution trace tree for diagnostics.
+
+### 16.4 Failure Trace Display
+
+When a test fails via `/run-tests` or `/run-all-tests`, the slash command first runs all tests without tracing (fast), then re-runs failures with `trace-test` to capture trace trees. The trace tree for each failing test MUST be displayed, formatted as an indented call tree below the failure line:
+
+```
+user> /run-tests
+  test-factorial ......................... FAILED: expected 120, got 0
+    user/factorial (5) => 0  [0.12ms]
+      user/factorial (4) => 0  [0.08ms]
+        user/factorial (3) => 0  [0.05ms]
+          ...
+
+1 passed, 1 failed in 3.45ms
+```
+
+The exact formatting of the trace tree is implementation-defined, but MUST include the function name, formatted arguments, formatted result, and timing for each traced call.
+
+### 16.5 Programmatic Use
+
+Because `discover-tests` and `run-test` return IO actions, users can compose them with standard library IO combinators. No imports are needed — all names are always in scope.
+
+`discover-tests` returns `SexpSym` values and both `run-test`/`trace-test` accept `Sexp`, so they compose directly:
+
+```clojure
+;; Run all tests fast (no tracing)
+(bind! (discover-tests)
+  (fn [tests] (map-io run-test tests)))
+
+;; Run all tests with tracing
+(bind! (discover-tests)
+  (fn [tests] (map-io trace-test tests)))
+
+;; Filter tests before running (sname extracts the String from SexpSym)
+(bind! (discover-tests)
+  (fn [tests]
+    (map-io run-test
+      (sfilter (fn [sym] (starts-with? (sname sym) "test-math")) tests))))
+
+;; Run fast, then re-run failures with tracing
+(bind! (discover-tests)
+  (fn [tests]
+    (bind! (map-io run-test tests)
+      (fn [results]
+        (let [failures (sfilter (fn [r] (match r [(TestFail _ _ _ _) true] [_ false])) results)
+              failed-names (smap (fn [r] (match r [(TestFail n _ _ _) (SexpSym n)])) failures)]
+          (map-io trace-test failed-names))))))
+```
+
+Standard library convenience functions (e.g., `format-test-run`, `failures-only`, `test-passed?`) MAY be provided in a `core.testing` module but are not required by this specification.

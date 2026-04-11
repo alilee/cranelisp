@@ -441,16 +441,7 @@ impl<'a, M: Module> FnCompiler<'a, M> {
                 callee,
                 args,
                 span,
-            } => {
-                // `trace` is a module-scoped special form (arch Principle 10).
-                // It arrives as Apply(Var("trace"), [body]) — redirect to compile_trace.
-                if let Expr::Var { name, .. } = callee.as_ref()
-                    && &**name == "trace" && args.len() == 1
-                {
-                    return self.compile_trace(&[], &args[0], *span);
-                }
-                self.compile_apply(callee, args, *span)
-            }
+            } => self.compile_apply(callee, args, *span),
             Expr::Match {
                 scrutinee,
                 arms,
@@ -464,13 +455,6 @@ impl<'a, M: Module> FnCompiler<'a, M> {
                 body,
                 span,
             } => self.compile_trace(modules, body, *span),
-            Expr::RunTests {
-                modules,
-                init,
-                pass_fn,
-                fail_fn,
-                span,
-            } => self.compile_run_tests(modules, init, pass_fn, fail_fn, *span),
             Expr::ParBind {
                 bindings,
                 body,

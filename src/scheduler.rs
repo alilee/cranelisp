@@ -919,6 +919,13 @@ impl CompileScheduler {
     // REPL Recovery (Step 9)
     // -----------------------------------------------------------------------
 
+    /// Check whether a module is in the Failed pool.
+    pub fn is_failed(&self, module: &ModuleFullPath) -> bool {
+        let state = self.lock();
+        state.modules.get(module)
+            .is_some_and(|ms| ms.pool == ModulePool::Failed)
+    }
+
     /// Reset a module from Failed back to an unregistered state.
     ///
     /// Used by the REPL after a failed dependency compilation. Removes

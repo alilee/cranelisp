@@ -715,14 +715,14 @@ The expression `expr` is evaluated exactly once. Its value `v` is used only to p
 
 ### 4.12.3 What Is Traced [Tested tests/ring4_trace::trace_user_defined_function]
 
-Instrumentation applies to **user-defined named functions** that are compiled with an entry in the implementation's function indirection table. This includes:
+Instrumentation applies to **user-defined named functions** that are compiled with an entry in the implementation's function indirection table **and whose source file is under the project root directory**. This includes:
 
 - Top-level functions defined with `defn` (including multi-signature variants and monomorphised specializations)
-- Functions imported from other modules
-- Functions defined in the standard library (if loaded)
+- Functions imported from other modules, provided the defining module's source is under the project root
 
 The following are NOT instrumented:
 
+- **Library modules**: Modules discovered through the lib search path (e.g., standard library, third-party libraries) are not instrumented, even if imported. Only modules whose source files reside under the project root are traced.
 - **Inline primitives**: Arithmetic, comparison, and boolean operations that compile to inline instructions have no callable entry point and cannot be intercepted.
 - **Extern primitives**: Host-implemented functions called via the foreign function interface are not routed through the indirection table.
 - **Compiler-seeded synthetic module functions**: Functions in the `primitives` and `macros` modules are not instrumented.

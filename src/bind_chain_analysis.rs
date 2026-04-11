@@ -362,13 +362,12 @@ fn recurse_children(expr: Expr, registry: &PlatformRegistry) -> Expr {
             body: Box::new(transform_expr(*body, registry)),
             span,
         },
-        // Leaf nodes and RunTests (complex runtime; don't attempt to transform inside).
+        // Leaf nodes.
         leaf @ (Expr::IntLit { .. }
         | Expr::FloatLit { .. }
         | Expr::BoolLit { .. }
         | Expr::StringLit { .. }
-        | Expr::Var { .. }
-        | Expr::RunTests { .. }) => leaf,
+        | Expr::Var { .. }) => leaf,
     }
 }
 

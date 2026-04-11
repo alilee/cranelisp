@@ -962,10 +962,7 @@ fn build_list_expr(
                 ))
             }
             // Non-Ring-0 expression forms
-            // NOTE: `trace` is NOT a parser keyword. It has regular call syntax
-            // and flows through the module system as a name in `primitives`.
-            // The typechecker handles it when the callee resolves to a special form.
-            "run-tests" => return build_run_tests(children, span),
+            "trace" => return build_trace(children, span),
             // "vec" is handled by the prelude vec macro — no AST intercept needed.
             "par-let" => {
                 return Err(parse_err("par-let not yet supported (Ring 4)", *head_span))
@@ -985,52 +982,23 @@ fn build_list_expr(
 // run-tests expression
 // ---------------------------------------------------------------------------
 
-fn build_run_tests(
+fn build_trace(
     children: &[Sexp],
     span: Span,
 ) -> Result<Expr, CranelispError> {
-    // (run-tests init pass-fn fail-fn)
-    // (run-tests [mod1 mod2] init pass-fn fail-fn)
-    match children.len() {
-        4 => {
-            // (run-tests init pass-fn fail-fn)
-            let init = build_expr(&children[1])?;
-            let pass_fn = build_expr(&children[2])?;
-            let fail_fn = build_expr(&children[3])?;
-            Ok(Expr::RunTests {
-                modules: vec![],
-                init: Box::new(init),
-                pass_fn: Box::new(pass_fn),
-                fail_fn: Box::new(fail_fn),
-                span,
-            })
-        }
-        5 => {
-            // (run-tests [mod1 mod2] init pass-fn fail-fn)
-            let (bracket_items, _) = expect_bracket(&children[1])?;
-            let modules = bracket_items
-                .iter()
-                .map(|s| {
-                    let (name, _) = expect_symbol(s)?;
-                    Ok(Symbol::from(name))
-                })
-                .collect::<Result<Vec<_>, CranelispError>>()?;
-            let init = build_expr(&children[2])?;
-            let pass_fn = build_expr(&children[3])?;
-            let fail_fn = build_expr(&children[4])?;
-            Ok(Expr::RunTests {
-                modules,
-                init: Box::new(init),
-                pass_fn: Box::new(pass_fn),
-                fail_fn: Box::new(fail_fn),
-                span,
-            })
-        }
-        _ => Err(parse_err(
-            "run-tests requires: (run-tests init pass-fn fail-fn) or (run-tests [modules...] init pass-fn fail-fn)",
+    // (trace expr)
+    if children.len() != 2 {
+        return Err(parse_err(
+            "trace requires exactly one expression",
             span,
-        )),
+        ));
     }
+    let body = build_expr(&children[1])?;
+    Ok(Expr::Trace {
+        modules: vec![],
+        body: Box::new(body),
+        span,
+    })
 }
 
 fn build_apply(
@@ -1937,20 +1905,18 @@ mod tests {
 
     // -- Rejected forms --
 
-    // spec: spec/04-expressions.md §4.12 — trace parses as regular Apply
-    // trace is NOT a parser keyword — it flows through the module system.
-    // The typechecker handles it when the callee resolves to primitives/trace.
+    // spec: spec/04-expressions.md §4.12 — trace produces Expr::Trace
     #[test]
-    fn test_trace_parses_as_apply() {
+    fn test_trace_produces_trace_node() {
         match parse_and_build_expr("(trace 42)").unwrap() {
-            Expr::Apply { callee, args, .. } => {
-                match *callee {
-                    Expr::Var { ref name, .. } => assert_eq!(&**name, "trace"),
-                    other => panic!("expected Var callee, got {other:?}"),
+            Expr::Trace { modules, body, .. } => {
+                assert!(modules.is_empty());
+                match *body {
+                    Expr::IntLit { value, .. } => assert_eq!(value, 42),
+                    other => panic!("expected IntLit body, got {other:?}"),
                 }
-                assert_eq!(args.len(), 1);
             }
-            other => panic!("expected Apply, got {other:?}"),
+            other => panic!("expected Trace, got {other:?}"),
         }
     }
 

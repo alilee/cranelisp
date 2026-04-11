@@ -91,7 +91,32 @@ Trace
 
 `Trace`, `TraceCall`, `trace`, and the field accessor functions (`name`, `params`, `result`, `children`, `nanos`) are defined in the `primitives` module but are NOT auto-imported into user scope. User code must import them explicitly (e.g., `(import [primitives [trace Trace TraceCall]])`) or use qualified names (e.g., `primitives/trace`). A standard library MAY re-export these through a convenience module (e.g., `core.trace`) using the `export` mechanism (see [Section 8.4](08-modules.md#84-export)).
 
-### 3.2.5 Vec Type [Tested tests/ring1.rs::vec_literal_int]
+### 3.2.5 TestResult Type [R4]
+
+```
+TestResult
+```
+
+`TestResult` is a compiler-seeded algebraic data type representing the outcome of running a single test function:
+
+```clojure
+(deftype TestResult
+  (TestPass [:String name :Int nanos])
+  (TestFail [:String name :Int nanos :String reason])
+  (TraceFail [:String name :Int nanos :String reason :Trace trace]))
+```
+
+| Constructor | Fields | Description |
+|---|---|---|
+| `TestPass` | `name` (String), `nanos` (Int) | Test returned `None` (pass). `name` is the fully-qualified function name; `nanos` is wall-clock elapsed time. |
+| `TestFail` | `name` (String), `nanos` (Int), `reason` (String) | Test returned `Some(reason)` (fail). Produced by `run-test` (no tracing). |
+| `TraceFail` | `name` (String), `nanos` (Int), `reason` (String), `trace` (Trace) | Test returned `Some(reason)` (fail) with tracing active. Produced by `trace-test`. `trace` is the full execution trace tree (§3.2.4). |
+
+`TestResult` is a root type — always in scope without import, like `IO` and `Vec`. The separation between `TestFail` and `TraceFail` reflects the two test execution modes: `run-test` runs without instrumentation (fast), while `trace-test` runs with full GOT-swap tracing (slower, diagnostic). Both share `TestPass` for the success case.
+
+A test function is any zero-argument function whose name begins with `test-` and returns `(Option String)`. `None` indicates pass; `Some(reason)` indicates failure with a human-readable reason.
+
+### 3.2.6 Vec Type [Tested tests/ring1.rs::vec_literal_int]
 
 ```
 Vec(A)
