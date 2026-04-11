@@ -1369,9 +1369,10 @@ impl CompilerSession {
         }
     }
 
-    /// Build `TracedFnInfo` for all user-defined functions visible from the
-    /// current module. Scans the current module and all imported modules for
-    /// `Def` entries with GOT slots and code pointers.
+    /// Build `TracedFnInfo` for user-defined functions in project-root modules.
+    ///
+    /// Per spec §4.12.3: only modules whose source files are under the project
+    /// root are instrumented. Library modules (via lib search path) are excluded.
     fn build_traced_fns(
         &self,
         _current_module: &ModuleFullPath,
@@ -1380,10 +1381,17 @@ impl CompilerSession {
 
         let mut traced = Vec::new();
 
-        // Scan all modules that have both typecheck and codegen products.
         for tp_entry in self.shared.typecheck_products.iter() {
             let module_path = tp_entry.key();
             let tp = tp_entry.value();
+
+            // §4.12.3: only trace project-root modules.
+            if let Some(ref fp) = tp.file_path {
+                if !fp.starts_with(&self.project_root) {
+                    continue;
+                }
+            }
+
             let got_base = tp.got.base_ptr() as i64;
 
             let cp = match self.shared.codegen_products.get(module_path) {
@@ -1391,7 +1399,6 @@ impl CompilerSession {
                 None => continue,
             };
 
-            // Get the symbol table for this module.
             let symbols = match self.tc.modules().get(module_path) {
                 Some(st) => st,
                 None => continue,

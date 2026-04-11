@@ -540,3 +540,38 @@ fn v4_repl_error_multiple_consecutive() {
     // After three errors, the fourth form should produce 7.
     assert_result(&o, ":primitives/Int 7");
 }
+
+// ===========================================================================
+// Test: discover-tests + run-test composed via bind
+// ===========================================================================
+
+// spec: repl/spec.md §16 — test discovery and execution
+//
+// Verifies that (discover-tests) returns an SList of SexpSym, and that
+// (run-test sym) works when sym comes from discover-tests via bind.
+// Uses primitives/bind (not bind! macro) to compose the IO actions.
+#[test]
+fn v4_repl_discover_and_run_test_via_bind() {
+    let o = run_repl(
+        &format!(
+            "(deftype (Option a) None (Some [:a val]))\n\
+             {PRIMS}\
+             (import [macros [SCons SNil]])\n\
+             (import [primitives [Pure]])\n\
+             (defn test-hello [] None)\n\
+             (bind (discover-tests) (fn [tests] (match tests [(SCons h t) (run-test h) (SNil) (Pure (TestPass \"none\" 0))])))\n"
+        ),
+        "discover_run_bind",
+    );
+    assert_success(&o);
+    let all = stdout_str(&o);
+    // The bind chain should produce a TestResult (TestPass).
+    assert!(
+        all.contains("TestPass"),
+        "expected TestPass in output\n---\n{all}"
+    );
+    assert!(
+        all.contains("test-hello"),
+        "expected test-hello in result name\n---\n{all}"
+    );
+}

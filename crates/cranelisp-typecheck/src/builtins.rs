@@ -892,8 +892,7 @@ impl TypeChecker {
     /// run-test are special forms (always in scope). All registered in
     /// `user` so they are seeded into every new module by ensure_module_exists.
     fn register_test_infrastructure(&mut self) {
-        // TestResult type: TestPass, TestFail, TraceFail constructors.
-        let trace_type = TypeExpr::Named(TypeName::from("Trace"));
+        // TestResult type: TestPass, TestFail constructors.
         let test_result_ctors = vec![
             ConstructorDef {
                 name: Symbol::from("TestPass"),

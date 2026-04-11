@@ -521,7 +521,7 @@ apply_expr   = '(' expr expr* ')'
 
 A parenthesized list whose head is not a special-form keyword is a function application. The first element (callee) MUST evaluate to a function. The remaining elements are arguments. Arguments are evaluated left to right.
 
-If the callee is a keyword (`let`, `if`, `fn`, `match`, `vec`), the form is parsed as the corresponding special form instead. Forms with regular call syntax (`trace`) are parsed as function applications and resolved through the module system.
+If the callee is a keyword (`let`, `if`, `fn`, `match`, `vec`, `trace`, `discover-tests`, `run-test`), the form is parsed as the corresponding special form instead.
 
 ```clojure
 (inc 5)                       ; named function call
@@ -604,10 +604,9 @@ trace_expr   = '(' 'trace' expr ')'
 
 The `trace` form evaluates `expr` with function call instrumentation active and returns a `Trace` ADT value capturing the call tree. The body MUST be exactly one expression. The result type is always `Trace`, regardless of the type of `expr`.
 
-Unlike structural special forms (`let`, `if`, `fn`, `match`), `trace` has regular call syntax — its argument is an ordinary expression. It is parsed as a function application and resolved through the module system. `trace` is defined in the `primitives` module and requires explicit import (see [Section 3.2.4](03-types.md#324-trace-type)).
+`trace` is a parser keyword, like `let`, `if`, and `match`. It is always in scope — no import required. The `Trace` and `TraceCall` types are defined in the `primitives` module and require explicit import for pattern matching (see [Section 3.2.4](03-types.md#324-trace-type)).
 
 ```clojure
-(import [primitives [trace]])
 (trace (fact 5))              ; trace the execution of (fact 5)
 (let [t (trace (f x))] t)    ; bind the trace value
 ```
