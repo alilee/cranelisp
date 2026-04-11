@@ -7,37 +7,38 @@ Architecture deliverables for the Cranelisp reimplementation. Owned and maintain
 ### Active (target architecture)
 
 - `CLAUDE.md` — this file: principles, key decisions, conventions
-- `pipeline-convergence-review.md` — Sprint 26 architectural review: dual-pipeline defect analysis, root cause, convergence proposal, decision record
 - `roadmap.md` — Delivery tracking (phases, rings, sprints)
-- `interfaces.md` — v2 pipeline boundary types designed for full spec surface (replaces `v1/interfaces.md`)
-- `pipeline-v2.md` — v2 pipeline design: stages, data flow, unified multi-pass check, call graph, migration strategy
-- `pipeline-v3-roadmap.md` — v3 migration roadmap (Steps 1-14 complete) + post-migration assessment and forward plan
+- `interfaces.md` — boundary type definitions with Rust signatures
+- `pipeline-v4.md` — target pipeline design: scheduler-driven concurrent compilation
+- `pipeline-v4-roadmap.md` — migration status and remaining work
+- `concurrent-pipeline.md` — scheduler design: module pools, priority queue, worker interfaces
 
-### Legacy reference (`v1/`)
+### Archive (`archive/`)
 
-These describe the v1 architecture being replaced. Reference for understanding existing code during transition — not the target design.
+Historical pipeline designs (v1, v2, v3) and migration artefacts. Reference only — not the target architecture.
 
-- `v1/architecture.md` — v1 overall architecture: 7-crate DAG, CompiledModule decomposition
-- `v1/interfaces.md` — v1 boundary types (includes `ReplInput`, `ReplCheckResult` — the duplicated types being eliminated)
-- `v1/design-space.md` — Forward-looking NFR analysis (still relevant for target portability, collection extensibility)
-- `v1/macro-pipeline.md` — Macro expansion pipeline design (implementation details survive into v2)
-- `v1/pipeline-orchestration.md` — v1 pipeline orchestration (being replaced by unified pipeline)
-- `v1/ring0-interfaces.md` — Ring 0 interface snapshot
-- `v1/sketch-audit.md` — Sketch audit findings (still relevant — debts to avoid)
+- `archive/v1/` — v1 architecture, interfaces, pipeline orchestration, sketch audit
+- `archive/pipeline-v2.md` — v2 pipeline design (stages, unified multi-pass check)
+- `archive/pipeline-v3.md`, `archive/pipeline-v3-roadmap.md` — v3 migration (complete)
+- `archive/pipeline-convergence-review.md` — Sprint 26 dual-pipeline defect analysis
+- `archive/pipeline-convergence-playbook.md` — convergence execution plan
+- `archive/session-restructure.md` — session restructure target data model (phases A–F complete)
+- `archive/per-module-got-cleanup.md` — GOT unification design
+- `archive/sprint-40a-design.md` — cancelled Sprint 40a design
 
-## Key Decisions (Phase B) — Under Review
+## Key Decisions (Phase B)
 
-Decisions 1–9 established the current architecture. The pipeline convergence review (Sprint 26) found that Decision 7 was never implemented and the crate structure may change during the pipeline spike. Decisions marked *(surviving)* are confirmed correct. Decisions marked *(under review)* may change.
+Decisions 1–9 established the initial architecture. The pipeline v4 migration resolved the structural defects. Current status of each:
 
-1. *(under review)* **7+1 crate DAG**: 7 pipeline crates + 1 build artifact. Crate boundaries may be reorganised during the pipeline spike.
-2. *(surviving)* **`cranelisp-types` is data-only** — all boundary types, no logic.
-3. *(surviving)* **Span is a struct** — `struct Span { start: u32, end: u32 }`
-4. *(surviving)* **TypeId is u32**
-5. *(surviving)* **No `meta: Option<SymbolMeta>`** on `ModuleEntry::Def`
-6. *(surviving)* **`Type::from_name()` / `type_name()`**
-7. *(failed — see pipeline-convergence-review.md)* **`CompileMode` enum** — intended to ensure batch/REPL share `compile_unit()`. In practice, `compile_unit()` was never implemented. Three parallel pipelines emerged with duplicated types (`TopLevel`/`ReplInput`, `CheckResult`/`ReplCheckResult`). `DefnMulti` broken in all paths. Being replaced by: single `TopLevel` (with `Expr` variant), single `CheckResult` (with optional display), unified multi-pass `check()` with no mode parameter (see `pipeline-v2.md` §5).
-8. *(surviving)* **`MacroExpander` trait** — dependency inversion breaks frontend->backend circular dep
-9. *(surviving)* **CompiledModule decomposed** into `SymbolTable` + `ModuleCodegenState` + `ModuleStructure` + `CacheMetadata`
+1. **7+1 crate DAG**: 7 pipeline crates + 1 build artifact. Surviving — crate boundaries stable.
+2. **`cranelisp-types` is data-only** — all boundary types, no logic. Surviving.
+3. **Span is a struct** — `struct Span { start: u32, end: u32 }`. Surviving.
+4. **TypeId is u32**. Surviving.
+5. **No `meta: Option<SymbolMeta>`** on `ModuleEntry::Def`. Surviving.
+6. **`Type::from_name()` / `type_name()`**. Surviving.
+7. **`CompileMode` enum** — failed. Replaced by scheduler-driven pipeline with no mode parameter. `CompileMode` deleted (Sprint 31). See `archive/pipeline-convergence-review.md` for history.
+8. **`MacroExpander` trait** — superseded. Trait deleted (Sprint 43); expansion is a free function in `src/expander.rs`.
+9. **CompiledModule decomposed** — evolved. `ModuleCodegenState` and `ModuleStructure` deleted during session restructure. Now: `SymbolTable` (in TypeChecker DashMap) + `TypecheckProduct` + `CodegenProduct` + `Introspection` on `SharedState`.
 
 ## Key Decisions (Ring 1)
 
@@ -69,7 +70,7 @@ Decisions 1–9 established the current architecture. The pipeline convergence r
 - `src/CLAUDE.md` — Cross-cutting source conventions (error handling, code structure, naming)
 - `sketch/audits/*.md` — Structural debts to avoid (59 findings: 15 HIGH, 23 MEDIUM, 21 LOW)
 - `sketch/src/` — Prototype source as reference oracle (solutions to language problems, NOT pipeline structure — the sketch has the same dual-pipeline debt)
-- `design/arch/pipeline-convergence-review.md` — Dual-pipeline defect analysis and convergence plan
+- `design/arch/archive/pipeline-convergence-review.md` — Dual-pipeline defect analysis and convergence plan (historical)
 
 ## Architectural Principles
 

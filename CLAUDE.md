@@ -45,20 +45,11 @@ cd sketch && just test                    # run all prototype tests
 
 See `sketch/CLAUDE.md` for full oracle instructions and key file locations.
 
-> **Do not copy the sketch's pipeline structure.** The sketch has a known dual-pipeline defect (`TopLevel`/`ReplInput` duplication, parallel batch/REPL code paths) that was listed in its own audit as a debt to avoid. Study the sketch's *solutions to language-level problems* (RC semantics, match field ownership, closure captures), but design the pipeline independently. See `design/arch/pipeline-convergence-review.md`.
+> **Do not copy the sketch's pipeline structure.** The sketch had a dual-pipeline defect (`TopLevel`/`ReplInput` duplication). Study the sketch's *solutions to language-level problems* (RC semantics, match field ownership, closure captures), but design the pipeline independently. See `design/arch/archive/pipeline-convergence-review.md` for the historical analysis.
 
-## Pipeline Transition (Sprint 26)
+## Pipeline
 
-The reimplementation is transitioning from a v1 pipeline (with known structural defects) to a unified v2 pipeline. All skills should be aware:
-
-- **The pipeline is being unified.** Batch, REPL, and module-loading will share one code path with mode parameters — no parallel types, no parallel functions, no adapter layers.
-- **v2 types** will be added to `cranelisp-types` alongside v1 types. Both coexist during transition.
-- **`src/pipeline_v2.rs`** is the new orchestration entry point. `src/pipeline.rs` and `src/repl/` are being replaced. **Do not add features to the old pipeline.**
-- **Tests run through both pipelines** during transition to verify identical behaviour.
-- **v1 architecture docs** are in `design/arch/v1/` for reference. The active target architecture is in `design/arch/` (principles, convergence review, new `interfaces.md`).
-- **Call graph** is a new cross-cutting data structure serving incremental recompilation, mutual recursion detection, and non-tail recursion warnings.
-
-See `design/arch/pipeline-convergence-review.md` for the full defect analysis and convergence plan.
+The v4 scheduler-driven pipeline is the only pipeline. `CompilerSession` in `session_v4.rs` is the unified session type. `main.rs` uses one code path for Run/Link/REPL. See `design/arch/pipeline-v4.md` for the target design and `design/arch/pipeline-v4-roadmap.md` for current status.
 
 ## Active Skill Indicator
 

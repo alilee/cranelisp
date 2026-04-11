@@ -112,7 +112,7 @@ When reviewing design docs or sprint proposals, `/arch` MUST verify that the ske
 
 - `sprints/reimplementation.md` — full strategy, skill definitions, ring model
 - `design/arch/` — your owned deliverables
-- `design/arch/pipeline-convergence-review.md` — dual-pipeline defect analysis and convergence proposal
+- `design/arch/archive/pipeline-convergence-review.md` — dual-pipeline defect analysis (historical)
 - `sketch/audits/*.md` — structural debts to avoid
 - `sketch/src/` — prototype source as reference oracle (solutions, not structure)
 - `spec/` — language features that need representation in interface types
