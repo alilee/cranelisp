@@ -987,8 +987,9 @@ impl TypeChecker {
                         .to_string(),
                 ),
                 param_names: vec![Symbol::from("module")],
-                kind: Box::new(DefKind::SpecialForm {
-                    description: "Discover test-* functions: (discover-tests) or (discover-tests module)".to_string(),
+                kind: Box::new(DefKind::Primitive {
+                    primitive_kind: PrimitiveKind::Extern,
+                    jit_name: Some(JitSymbol::from("discover-tests")),
                 }),
                 callees: Vec::new(),
                 got_slot: None,
@@ -1009,8 +1010,9 @@ impl TypeChecker {
                         .to_string(),
                 ),
                 param_names: vec![Symbol::from("name")],
-                kind: Box::new(DefKind::SpecialForm {
-                    description: "Run a single test without tracing: (run-test name)".to_string(),
+                kind: Box::new(DefKind::Primitive {
+                    primitive_kind: PrimitiveKind::Extern,
+                    jit_name: Some(JitSymbol::from("run-test")),
                 }),
                 callees: Vec::new(),
                 got_slot: None,
@@ -1031,8 +1033,9 @@ impl TypeChecker {
                         .to_string(),
                 ),
                 param_names: vec![Symbol::from("name")],
-                kind: Box::new(DefKind::SpecialForm {
-                    description: "Run a single test with GOT-swap tracing: (trace-test name)".to_string(),
+                kind: Box::new(DefKind::Primitive {
+                    primitive_kind: PrimitiveKind::Extern,
+                    jit_name: Some(JitSymbol::from("trace-test")),
                 }),
                 callees: Vec::new(),
                 got_slot: None,

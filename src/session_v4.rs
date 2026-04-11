@@ -1181,9 +1181,9 @@ impl CompilerSession {
 
         if has_expr {
             let program_vec = program.to_vec();
-            let (jit_syms, got_defs) = env_impl.collect_jit_setup_for_module(&self.platform_registry);
+            let (mut jit_syms, got_defs) = env_impl.collect_jit_setup_for_module(&self.platform_registry);
 
-            // Build traced_fns if the expression contains (trace ...) or (run-tests ...).
+            // Build traced_fns if the expression contains (trace ...).
             let traced_fns = if Self::program_needs_trace(program) {
                 self.build_traced_fns(module)
             } else {
@@ -1191,14 +1191,26 @@ impl CompilerSession {
             };
 
             // Trace format override: provide rich formatting via session's type defs.
-            let trace_extra_symbols: Vec<(String, *const u8)> = if !traced_fns.is_empty() {
-                vec![(
+            let mut trace_extra_symbols: Vec<(String, *const u8)> = Vec::new();
+            if !traced_fns.is_empty() {
+                trace_extra_symbols.push((
                     "cranelisp_trace_format".to_string(),
                     repl_trace_format as *const u8,
-                )]
-            } else {
-                Vec::new()
-            };
+                ));
+            }
+
+            // Register test infrastructure externs as JIT symbols.
+            let needs_test_externs = Self::program_uses_test_forms(program);
+            if needs_test_externs {
+                jit_syms.push((
+                    "discover-tests".to_string(),
+                    discover_tests_extern as *const u8,
+                ));
+                jit_syms.push((
+                    "run-test".to_string(),
+                    run_test_extern as *const u8,
+                ));
+            }
 
             // Set trace display state so repl_trace_format can access type defs.
             let (type_defs_map, _) = self.tc.snapshot_type_defs();
@@ -1211,6 +1223,17 @@ impl CompilerSession {
                 set_trace_display_state(&display_state);
             }
 
+            // Set test runner state for discover-tests/run-test externs.
+            let current_module_for_tests = module.clone();
+            let test_state = TestRunnerState {
+                codegen_products: &self.shared.codegen_products as *const _,
+                tc_modules: self.tc.modules_ref() as *const _,
+                current_module: &current_module_for_tests as *const _,
+            };
+            if needs_test_externs {
+                set_test_runner_state(&test_state);
+            }
+
             let result = crate::pipeline::compile_and_execute_expr(
                 &jit_syms,
                 &got_defs,
@@ -1221,6 +1244,9 @@ impl CompilerSession {
                 &trace_extra_symbols,
             );
 
+            if needs_test_externs {
+                clear_test_runner_state();
+            }
             if !traced_fns.is_empty() {
                 clear_trace_display_state();
             }
@@ -1259,8 +1285,52 @@ impl CompilerSession {
         }
     }
 
-    /// Check if a program contains `Expr::Trace` or `Expr::RunTests` that
-    /// need traced function info for GOT-swap codegen.
+    /// Check if a program uses discover-tests or run-test special forms.
+    fn program_uses_test_forms(program: &[TopLevel]) -> bool {
+        program.iter().any(|tl| {
+            if let TopLevel::Expr(e) = tl {
+                Self::expr_uses_test_forms(e)
+            } else {
+                false
+            }
+        })
+    }
+
+    fn expr_uses_test_forms(expr: &cranelisp_types::Expr) -> bool {
+        use cranelisp_types::Expr;
+        match expr {
+            Expr::Apply { callee, args, .. } => {
+                if let Expr::Var { name, .. } = callee.as_ref() {
+                    let n = name.as_ref();
+                    if n == "discover-tests" || n == "run-test" || n == "trace-test" {
+                        return true;
+                    }
+                }
+                Self::expr_uses_test_forms(callee) || args.iter().any(Self::expr_uses_test_forms)
+            }
+            Expr::Let { bindings, body, .. } | Expr::ParBind { bindings, body, .. } => {
+                bindings.iter().any(|(_, e)| Self::expr_uses_test_forms(e))
+                    || Self::expr_uses_test_forms(body)
+            }
+            Expr::If { cond, then_branch, else_branch, .. } => {
+                Self::expr_uses_test_forms(cond)
+                    || Self::expr_uses_test_forms(then_branch)
+                    || Self::expr_uses_test_forms(else_branch)
+            }
+            Expr::Lambda { body, .. } => Self::expr_uses_test_forms(body),
+            Expr::Match { scrutinee, arms, .. } => {
+                Self::expr_uses_test_forms(scrutinee)
+                    || arms.iter().any(|arm| Self::expr_uses_test_forms(&arm.body))
+            }
+            Expr::Annotate { expr, .. } => Self::expr_uses_test_forms(expr),
+            Expr::VecLit { elements, .. } => elements.iter().any(Self::expr_uses_test_forms),
+            Expr::Trace { body, .. } => Self::expr_uses_test_forms(body),
+            _ => false,
+        }
+    }
+
+    /// Check if a program contains `Expr::Trace` that needs
+    /// traced function info for GOT-swap codegen.
     fn program_needs_trace(program: &[TopLevel]) -> bool {
         program.iter().any(|tl| {
             if let TopLevel::Expr(e) = tl {
@@ -3226,6 +3296,226 @@ unsafe fn format_slist_strings(mut slist_ptr: i64) -> String {
     }
     parts.join(", ")
 }
+
+// ---------------------------------------------------------------------------
+// Test infrastructure externs (JIT-callable)
+// ---------------------------------------------------------------------------
+
+/// Session state for test externs. Set before JIT evaluation of expressions
+/// containing discover-tests/run-test, cleared after.
+struct TestRunnerState {
+    /// Codegen products for looking up test function code pointers.
+    codegen_products: *const dashmap::DashMap<ModuleFullPath, CodegenProduct>,
+    /// TC modules for scanning symbol tables.
+    tc_modules: *const dashmap::DashMap<ModuleFullPath, SymbolTable>,
+    /// Current module path (for discover-tests with empty module arg).
+    current_module: *const ModuleFullPath,
+}
+
+unsafe impl Send for TestRunnerState {}
+
+thread_local! {
+    static TEST_RUNNER: std::cell::Cell<*const TestRunnerState> =
+        const { std::cell::Cell::new(std::ptr::null()) };
+}
+
+fn set_test_runner_state(state: &TestRunnerState) {
+    TEST_RUNNER.with(|c| c.set(state as *const _));
+}
+
+fn clear_test_runner_state() {
+    TEST_RUNNER.with(|c| c.set(std::ptr::null()));
+}
+
+/// Allocate a heap ADT with the given tag and fields.
+///
+/// Layout: [alloc_size(8) | rc=1(8) | tag(8) | field0(8) | field1(8) | ...]
+/// Returns the base pointer (offset 0 of the allocation).
+unsafe fn alloc_heap_adt(tag: i64, fields: &[i64]) -> i64 {
+    let payload_size = 8 + fields.len() * 8; // tag + fields
+    let base = cranelisp_runtime::alloc::alloc_with_rc(payload_size);
+    // Tag at offset 16 (HeapHeader::SIZE).
+    *(base.add(16) as *mut i64) = tag;
+    // Fields at offsets 24, 32, 40, ...
+    for (i, &field) in fields.iter().enumerate() {
+        *(base.add(24 + i * 8) as *mut i64) = field;
+    }
+    base as i64
+}
+
+/// Wrap a value in IO Pure: allocates Pure(value) on the heap.
+/// IO Pure tag = 0, single field = the wrapped value.
+unsafe fn alloc_io_pure(value: i64) -> i64 {
+    alloc_heap_adt(0, &[value])
+}
+
+/// Build an SList SCons node: SCons(head, tail).
+/// SCons tag = 1.
+unsafe fn alloc_scons(head: i64, tail: i64) -> i64 {
+    alloc_heap_adt(1, &[head, tail])
+}
+
+/// JIT-callable: discover test functions in a module.
+///
+/// Takes a String heap pointer (module path; empty = current module).
+/// Returns IO(SList(Sexp)) — a Pure node wrapping an SList of SexpSym values.
+extern "C" fn discover_tests_extern(module_path_str: i64) -> i64 {
+    TEST_RUNNER.with(|c| {
+        let state_ptr = c.get();
+        if state_ptr.is_null() {
+            // No state — return IO Pure(SNil).
+            return unsafe { alloc_io_pure(0) }; // SNil = tag 0 = bare 0
+        }
+
+        let state = unsafe { &*state_ptr };
+        let codegen_products = unsafe { &*state.codegen_products };
+        let tc_modules = unsafe { &*state.tc_modules };
+        let current_module = unsafe { &*state.current_module };
+
+        // Read module path from the string argument.
+        let module = if module_path_str == 0
+            || unsafe { cranelisp_runtime::read_string_as_str(module_path_str) }.is_empty()
+        {
+            current_module.clone()
+        } else {
+            let path_str = unsafe { cranelisp_runtime::read_string_as_str(module_path_str) };
+            ModuleFullPath::from(path_str)
+        };
+
+        // Discover test-* zero-arg functions.
+        let mut test_names: Vec<String> = Vec::new();
+        if let Some(cp) = codegen_products.get(&module) {
+            if let Some(symbols) = tc_modules.get(&module) {
+                for (name, entry) in symbols.all_symbols() {
+                    if !name.as_ref().starts_with("test-") {
+                        continue;
+                    }
+                    if let ModuleEntry::Def { param_names, .. } = entry {
+                        if !param_names.is_empty() {
+                            continue;
+                        }
+                    } else {
+                        continue;
+                    }
+                    if let Some(code) = cp.code.get(name) {
+                        if !code.ptr.is_null() {
+                            // Fully-qualified name: module/test-name
+                            test_names.push(format!("{}/{}", module.as_ref(), name.as_ref()));
+                        }
+                    }
+                }
+            }
+        }
+        test_names.sort();
+
+        // Build SList of SexpSym values (right-fold: last element first).
+        // SexpSym tag = 4 (from Sexp enum: Int=0, Float=1, Bool=2, Str=3, Sym=4).
+        let mut slist: i64 = 0; // SNil
+        for name in test_names.into_iter().rev() {
+            let name_str = cranelisp_runtime::alloc_string(name.as_bytes()) as i64;
+            let sexp_sym = unsafe { alloc_heap_adt(4, &[name_str]) }; // SexpSym(name)
+            slist = unsafe { alloc_scons(sexp_sym, slist) };
+        }
+
+        unsafe { alloc_io_pure(slist) }
+    })
+}
+
+/// JIT-callable: run a single test without tracing.
+///
+/// Takes a Sexp (SexpSym with function name).
+/// Returns IO(TestResult) — Pure(TestPass(...)) or Pure(TestFail(...)).
+extern "C" fn run_test_extern(sexp_sym: i64) -> i64 {
+    use cranelisp_types::NULLARY_TAG_THRESHOLD;
+
+    TEST_RUNNER.with(|c| {
+        let state_ptr = c.get();
+        if state_ptr.is_null() {
+            // No state — return IO Pure(TestPass("?", 0)).
+            let name = cranelisp_runtime::alloc_string(b"?") as i64;
+            let test_pass = unsafe { alloc_heap_adt(0, &[name, 0]) };
+            return unsafe { alloc_io_pure(test_pass) };
+        }
+
+        let state = unsafe { &*state_ptr };
+        let codegen_products = unsafe { &*state.codegen_products };
+
+        // Extract function name from SexpSym.
+        // SexpSym layout: [header(16) | tag=4(8) | sname(8)]
+        let fq_name = if sexp_sym != 0 && (sexp_sym as usize) >= NULLARY_TAG_THRESHOLD {
+            let name_ptr = unsafe { *((sexp_sym as *const u8).add(24) as *const i64) };
+            unsafe { cranelisp_runtime::read_string_as_str(name_ptr).to_string() }
+        } else {
+            return unsafe {
+                let name = cranelisp_runtime::alloc_string(b"?") as i64;
+                alloc_io_pure(alloc_heap_adt(0, &[name, 0])) // TestPass("?", 0)
+            };
+        };
+
+        // Parse "module/name" into module path and bare name.
+        let (module_str, bare_name) = match fq_name.rsplit_once('/') {
+            Some((m, n)) => (m, n),
+            None => ("user", fq_name.as_str()),
+        };
+        let module = ModuleFullPath::from(module_str);
+
+        // Look up code pointer.
+        let code_ptr = codegen_products.get(&module)
+            .and_then(|cp| cp.code.get(&Symbol::from(bare_name)).map(|c| c.ptr));
+
+        let code_ptr = match code_ptr {
+            Some(ptr) if !ptr.is_null() => ptr,
+            _ => {
+                let name_alloc = cranelisp_runtime::alloc_string(fq_name.as_bytes()) as i64;
+                let reason = cranelisp_runtime::alloc_string(b"test function not found") as i64;
+                let test_fail = unsafe { alloc_heap_adt(1, &[name_alloc, 0, reason]) };
+                return unsafe { alloc_io_pure(test_fail) };
+            }
+        };
+
+        // Run the test.
+        let t0 = std::time::Instant::now();
+        let _ = cranelisp_runtime::panic::take_runtime_error();
+        let value = unsafe {
+            let func: extern "C" fn() -> i64 = std::mem::transmute(code_ptr);
+            func()
+        };
+        let nanos = t0.elapsed().as_nanos() as i64;
+
+        let name_alloc = cranelisp_runtime::alloc_string(fq_name.as_bytes()) as i64;
+
+        if let Some(msg) = cranelisp_runtime::panic::take_runtime_error() {
+            // Panic → TestFail
+            let reason = cranelisp_runtime::alloc_string(msg.as_bytes()) as i64;
+            let test_fail = unsafe { alloc_heap_adt(1, &[name_alloc, nanos, reason]) };
+            return unsafe { alloc_io_pure(test_fail) };
+        }
+
+        if (value as usize) < NULLARY_TAG_THRESHOLD {
+            // None → TestPass
+            let test_pass = unsafe { alloc_heap_adt(0, &[name_alloc, nanos]) };
+            unsafe { alloc_io_pure(test_pass) }
+        } else {
+            // Some(reason) → TestFail
+            let reason_ptr = unsafe {
+                let base = value as *const u8;
+                *(base.add(cranelisp_backend::heap::HeapAdt::field_offset(0) as usize) as *const i64)
+            };
+            // Inc the reason string (we're taking a reference from the Some wrapper).
+            // RC field is at offset 8 from base pointer.
+            unsafe {
+                let rc_ptr = (reason_ptr as *mut u8).add(8) as *mut std::sync::atomic::AtomicI64;
+                (*rc_ptr).fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            }
+            let test_fail = unsafe { alloc_heap_adt(1, &[name_alloc, nanos, reason_ptr]) };
+            unsafe { alloc_io_pure(test_fail) }
+        }
+    })
+}
+
+// ---------------------------------------------------------------------------
+// Trace display support (repl/spec.md §4.12)
+// ---------------------------------------------------------------------------
 
 /// Thread-local display state for `repl_trace_format`. Set before JIT
 /// evaluation of a trace expression, cleared after.

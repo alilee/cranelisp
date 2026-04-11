@@ -198,6 +198,12 @@ fn is_root_type_constructor(type_name: &cranelisp_types::Symbol) -> bool {
     type_name.as_ref() == "TestResult"
 }
 
+/// Root primitives that should be seeded into every module.
+/// These are always in scope without import (repl/spec.md §16.3).
+fn is_root_primitive(name: &cranelisp_types::Symbol) -> bool {
+    matches!(name.as_ref(), "discover-tests" | "run-test" | "trace-test")
+}
+
 impl TypeChecker {
     /// Create a new TypeChecker with Ring 0 builtins registered.
     ///
@@ -304,7 +310,7 @@ impl TypeChecker {
         let root_entries: Vec<(Symbol, ModuleEntry)> = self.modules.get(&user_path)
             .map(|guard| {
                 guard.all_symbols()
-                    .filter(|(_, entry)| {
+                    .filter(|(name, entry)| {
                         matches!(entry, ModuleEntry::Def { kind, .. }
                             if matches!(kind.as_ref(),
                                 cranelisp_types::DefKind::SpecialForm { .. }
@@ -312,7 +318,7 @@ impl TypeChecker {
                         ) || matches!(entry, ModuleEntry::TypeDef { .. })
                           || matches!(entry, ModuleEntry::Constructor { type_name, .. }
                             if is_root_type_constructor(type_name)
-                        )
+                        ) || is_root_primitive(name)
                     })
                     .map(|(name, entry)| (name.clone(), entry.clone()))
                     .collect()
