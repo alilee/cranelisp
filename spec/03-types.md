@@ -102,17 +102,15 @@ TestResult
 ```clojure
 (deftype TestResult
   (TestPass [:String name :Int nanos])
-  (TestFail [:String name :Int nanos :String reason])
-  (TraceFail [:String name :Int nanos :String reason :Trace trace]))
+  (TestFail [:String name :Int nanos :String reason]))
 ```
 
 | Constructor | Fields | Description |
 |---|---|---|
 | `TestPass` | `name` (String), `nanos` (Int) | Test returned `None` (pass). `name` is the fully-qualified function name; `nanos` is wall-clock elapsed time. |
-| `TestFail` | `name` (String), `nanos` (Int), `reason` (String) | Test returned `Some(reason)` (fail). Produced by `run-test` (no tracing). |
-| `TraceFail` | `name` (String), `nanos` (Int), `reason` (String), `trace` (Trace) | Test returned `Some(reason)` (fail) with tracing active. Produced by `trace-test`. `trace` is the full execution trace tree (§3.2.4). |
+| `TestFail` | `name` (String), `nanos` (Int), `reason` (String) | Test returned `Some(reason)` (fail). |
 
-`TestResult` is a root type — always in scope without import, like `IO` and `Vec`. The separation between `TestFail` and `TraceFail` reflects the two test execution modes: `run-test` runs without instrumentation (fast), while `trace-test` runs with full GOT-swap tracing (slower, diagnostic). Both share `TestPass` for the success case.
+`TestResult` is a root type — always in scope without import, like `IO` and `Vec`. To trace a failing test, use `(trace (test-fn))` separately (see [Section 4.12](04-expressions.md#412-trace-expression)).
 
 A test function is any zero-argument function whose name begins with `test-` and returns `(Option String)`. `None` indicates pass; `Some(reason)` indicates failure with a human-readable reason.
 

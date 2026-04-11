@@ -965,7 +965,6 @@ fn build_list_expr(
             "trace" => return build_trace(children, span),
             "discover-tests" => return build_discover_tests(children, span),
             "run-test" => return build_run_or_trace_test(children, span, "run-test"),
-            "trace-test" => return build_run_or_trace_test(children, span, "trace-test"),
             // "vec" is handled by the prelude vec macro — no AST intercept needed.
             "par-let" => {
                 return Err(parse_err("par-let not yet supported (Ring 4)", *head_span))

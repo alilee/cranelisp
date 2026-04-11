@@ -22,7 +22,7 @@ Registered in the `primitives` and `macros` synthetic modules.
 | `(Vec a)` | `primitives` | Built-in | Resizable array, element access via extern primitives | [Tested tests/ring1.rs::vec_len_three]
 | `(IO a)` | `primitives` | Compiler-seeded ADT | Effectful computation; constructors `Pure`, `Effect`, `Bind` | [R4 S9]
 | `Trace` | `primitives` | Compiler-seeded ADT | Execution trace tree; single constructor `TraceCall` with fields `name` (String), `params` (SList String), `result` (String), `children` (SList Trace), `nanos` (Int). Not auto-imported; requires explicit import. | [Tested tests/ring4_trace.rs::trace_type_importable_from_primitives]
-| `TestResult` | root | Compiler-seeded ADT | Test execution result; constructors `TestPass` (name, nanos), `TestFail` (name, nanos, reason), `TraceFail` (name, nanos, reason, trace). Root type — always in scope. | [R4]
+| `TestResult` | root | Compiler-seeded ADT | Test execution result; constructors `TestPass` (name, nanos) and `TestFail` (name, nanos, reason). Root type — always in scope. | [R4]
 | `Sexp` | `macros` | Compiler-seeded ADT | S-expression value for macro system | [Tested tests/macros.rs::macro_basic_repl]
 | `(SList a)` | `macros` | Compiler-seeded ADT | Cons-list for S-expression manipulation | [Tested tests/macros.rs::macro_basic_repl]
 
@@ -140,8 +140,7 @@ Special forms are keywords processed directly by the compiler. They are not func
 |---|---|---|
 | `(discover-tests)` | `(IO (SList Sexp))` | Discover `test-*` function names in the current module. Returns `SexpSym` values. | [R4]
 | `(discover-tests module)` | `(IO (SList Sexp))` | Discover `test-*` function names in the named module. `module` is a bare module path (e.g., `user.math`) — same syntax as `import`. Returns `SexpSym` values. | [R4]
-| `(run-test name)` | `(IO TestResult)` | Run a single test without tracing (fast). Returns `TestPass` or `TestFail`. `name` is a bare qualified symbol (e.g., `user/test-add`) or a `Sexp` expression. | [R4]
-| `(trace-test name)` | `(IO TestResult)` | Run a single test with GOT-swap tracing. Returns `TestPass` or `TraceFail`. `name` is a bare qualified symbol or a `Sexp` expression. | [R4]
+| `(run-test name)` | `(IO TestResult)` | Run a single test. Returns `TestPass` or `TestFail`. `name` is a bare qualified symbol (e.g., `user/test-add`) or a `Sexp` expression. To trace a failing test, use `(trace (test-fn))`. | [R4]
 
 ## A.5 Docstrings for Builtins [R1]
 

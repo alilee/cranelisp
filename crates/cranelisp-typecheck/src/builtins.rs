@@ -888,8 +888,8 @@ impl TypeChecker {
 
     /// Register the TestResult root type and test special forms in `user`.
     ///
-    /// TestResult is a root type (always in scope). discover-tests, run-test,
-    /// and trace-test are special forms (always in scope). All registered in
+    /// TestResult is a root type (always in scope). discover-tests and
+    /// run-test are special forms (always in scope). All registered in
     /// `user` so they are seeded into every new module by ensure_module_exists.
     fn register_test_infrastructure(&mut self) {
         // TestResult type: TestPass, TestFail, TraceFail constructors.
@@ -929,29 +929,6 @@ impl TypeChecker {
                 ],
                 span: Span::SYNTHETIC,
             },
-            ConstructorDef {
-                name: Symbol::from("TraceFail"),
-                docstring: Some("Test failed with execution trace".to_string()),
-                fields: vec![
-                    FieldDef {
-                        name: Symbol::from("name"),
-                        type_expr: TypeExpr::Named(TypeName::from("String")),
-                    },
-                    FieldDef {
-                        name: Symbol::from("nanos"),
-                        type_expr: TypeExpr::Named(TypeName::from("Int")),
-                    },
-                    FieldDef {
-                        name: Symbol::from("reason"),
-                        type_expr: TypeExpr::Named(TypeName::from("String")),
-                    },
-                    FieldDef {
-                        name: Symbol::from("trace"),
-                        type_expr: trace_type,
-                    },
-                ],
-                span: Span::SYNTHETIC,
-            },
         ];
 
         self.register_type_def_self(
@@ -966,7 +943,7 @@ impl TypeChecker {
             unreachable!("invariant: TestResult type registration failed: {e}")
         });
 
-        // Register discover-tests, run-test, trace-test as special forms.
+        // Register discover-tests and run-test as special forms.
         let sexp_type = Type::ADT(TypeName::from("Sexp"), vec![]);
         let slist_sexp = Type::ADT(TypeName::from("SList"), vec![sexp_type.clone()]);
         let test_result_type = Type::ADT(TypeName::from("TestResult"), vec![]);
@@ -1019,28 +996,6 @@ impl TypeChecker {
             },
         );
 
-        self.current_symbol_table_mut().insert(
-            Symbol::from("trace-test"),
-            ModuleEntry::Def {
-                scheme: Scheme {
-                    vars: vec![],
-                    constraints: HashMap::new(),
-                    ty: Type::Fn(vec![sexp_type], Box::new(io_test_result)),
-                },
-                visibility: Visibility::Public,
-                docstring: Some(
-                    "Run a single test with GOT-swap tracing: (trace-test name)"
-                        .to_string(),
-                ),
-                param_names: vec![Symbol::from("name")],
-                kind: Box::new(DefKind::Primitive {
-                    primitive_kind: PrimitiveKind::Extern,
-                    jit_name: Some(JitSymbol::from("trace-test")),
-                }),
-                callees: Vec::new(),
-                got_slot: None,
-            },
-        );
     }
 }
 

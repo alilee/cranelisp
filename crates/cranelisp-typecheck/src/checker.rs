@@ -201,7 +201,7 @@ fn is_root_type_constructor(type_name: &cranelisp_types::Symbol) -> bool {
 /// Root primitives that should be seeded into every module.
 /// These are always in scope without import (repl/spec.md §16.3).
 fn is_root_primitive(name: &cranelisp_types::Symbol) -> bool {
-    matches!(name.as_ref(), "discover-tests" | "run-test" | "trace-test")
+    matches!(name.as_ref(), "discover-tests" | "run-test")
 }
 
 impl TypeChecker {

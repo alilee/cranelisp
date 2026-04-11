@@ -1420,7 +1420,7 @@ user> /run-all-tests
 
 ### 16.3 Special Forms
 
-Both commands are implemented in terms of three special forms. `discover-tests`, `run-test`, `trace-test`, `TestResult`, `TestPass`, `TestFail`, and `TraceFail` are always in scope (root types and special forms — no import needed).
+Both commands are implemented in terms of two special forms. `discover-tests`, `run-test`, `TestResult`, `TestPass`, and `TestFail` are always in scope (root types and special forms — no import needed).
 
 **`discover-tests`** — special form:
 
@@ -1431,81 +1431,54 @@ Both commands are implemented in terms of three special forms. `discover-tests`,
 
 The module argument is a bare module path — same syntax as `import`, not a string literal. Returns an IO action that produces an `SList` of `SexpSym` values, each containing a fully-qualified test function name (e.g., `(SexpSym "user.math/test-add")`).
 
-**`run-test`** — special form (fast, no tracing):
+**`run-test`** — special form:
 
 ```clojure
 (run-test user/test-add)      ;; => :(IO TestResult) — bare qualified symbol
 (run-test sym)                ;; => :(IO TestResult) — Sexp variable
 ```
 
-Runs the named test function without instrumentation. Returns `TestPass` or `TestFail`. Fast — no GOT manipulation.
-
-**`trace-test`** — special form (with GOT-swap tracing):
-
-```clojure
-(trace-test user/test-add)    ;; => :(IO TestResult) — bare qualified symbol
-(trace-test sym)              ;; => :(IO TestResult) — Sexp variable
-```
-
-Runs the named test function with full GOT-swap tracing active (per [§4.12](../spec/04-expressions.md#412-trace-expression)). Returns `TestPass` or `TraceFail` (which includes the execution `Trace` tree). Slower than `run-test` due to GOT swap/restore overhead.
-
-For all three forms, arguments that are bare symbols (module paths or qualified names) use the same syntax as `import` and qualified references respectively. `discover-tests` returns `SexpSym` values that can be passed directly to `run-test` or `trace-test`.
+The argument is either a bare qualified symbol (compiled to a `SexpSym` value) or a `Sexp` expression. `discover-tests` returns `SexpSym` values that can be passed directly to `run-test`.
 
 ```clojure
 (deftype TestResult
   (TestPass [:String name :Int nanos])
-  (TestFail [:String name :Int nanos :String reason])
-  (TraceFail [:String name :Int nanos :String reason :Trace trace]))
+  (TestFail [:String name :Int nanos :String reason]))
 ```
 
-`TestPass` indicates the test returned `None`. `TestFail` (from `run-test`) indicates failure without trace data. `TraceFail` (from `trace-test`) indicates failure with the full execution trace tree for diagnostics.
+`TestPass` indicates the test returned `None`. `TestFail` indicates the test returned `Some(reason)`. To trace a failing test, use `(trace (test-fn))` separately — trace and test are independent, composable features.
 
-### 16.4 Failure Trace Display
+### 16.4 Tracing Failures
 
-When a test fails via `/run-tests` or `/run-all-tests`, the slash command first runs all tests without tracing (fast), then re-runs failures with `trace-test` to capture trace trees. The trace tree for each failing test MUST be displayed, formatted as an indented call tree below the failure line:
+The slash commands do NOT automatically trace failing tests. To trace a failing test, use `(trace (test-fn))` at the REPL:
 
 ```
 user> /run-tests
   test-factorial ......................... FAILED: expected 120, got 0
-    user/factorial (5) => 0  [0.12ms]
-      user/factorial (4) => 0  [0.08ms]
-        user/factorial (3) => 0  [0.05ms]
-          ...
 
-1 passed, 1 failed in 3.45ms
+0 passed, 1 failed in 1.23ms
+user> (trace (test-factorial))
+;; => Trace ADT with full call tree
 ```
 
-The exact formatting of the trace tree is implementation-defined, but MUST include the function name, formatted arguments, formatted result, and timing for each traced call.
+Trace and test are independent, composable features — the user decides when tracing overhead is worthwhile.
 
 ### 16.5 Programmatic Use
 
 Because `discover-tests` and `run-test` return IO actions, users can compose them with standard library IO combinators. No imports are needed — all names are always in scope.
 
-`discover-tests` returns `SexpSym` values and both `run-test`/`trace-test` accept `Sexp`, so they compose directly:
+`discover-tests` returns `SexpSym` values and `run-test` accepts `Sexp`, so they compose directly:
 
 ```clojure
-;; Run all tests fast (no tracing)
+;; Run all tests
 (bind! (discover-tests)
   (fn [tests] (map-io run-test tests)))
-
-;; Run all tests with tracing
-(bind! (discover-tests)
-  (fn [tests] (map-io trace-test tests)))
 
 ;; Filter tests before running (sname extracts the String from SexpSym)
 (bind! (discover-tests)
   (fn [tests]
     (map-io run-test
       (sfilter (fn [sym] (starts-with? (sname sym) "test-math")) tests))))
-
-;; Run fast, then re-run failures with tracing
-(bind! (discover-tests)
-  (fn [tests]
-    (bind! (map-io run-test tests)
-      (fn [results]
-        (let [failures (sfilter (fn [r] (match r [(TestFail _ _ _ _) true] [_ false])) results)
-              failed-names (smap (fn [r] (match r [(TestFail n _ _ _) (SexpSym n)])) failures)]
-          (map-io trace-test failed-names))))))
 ```
 
 Standard library convenience functions (e.g., `format-test-run`, `failures-only`, `test-passed?`) MAY be provided in a `core.testing` module but are not required by this specification.

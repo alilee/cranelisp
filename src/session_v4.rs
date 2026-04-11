@@ -1302,7 +1302,7 @@ impl CompilerSession {
             Expr::Apply { callee, args, .. } => {
                 if let Expr::Var { name, .. } = callee.as_ref() {
                     let n = name.as_ref();
-                    if n == "discover-tests" || n == "run-test" || n == "trace-test" {
+                    if n == "discover-tests" || n == "run-test" {
                         return true;
                     }
                 }
@@ -2193,7 +2193,7 @@ impl CompilerSession {
     /// With no argument: tests in current module. With a module path: tests
     /// in that module. Runs all tests fast first, then re-runs failures with
     /// tracing to capture trace trees for diagnostics.
-    fn handle_run_tests(&mut self, arg: &str) -> String {
+    fn handle_run_tests(&self, arg: &str) -> String {
         let module = if arg.is_empty() {
             self.tc.current_module_path().clone()
         } else {
@@ -2216,7 +2216,7 @@ impl CompilerSession {
     }
 
     /// /run-all-tests handler: discover and run tests in all project-root modules.
-    fn handle_run_all_tests(&mut self) -> String {
+    fn handle_run_all_tests(&self) -> String {
         let mut all_names: Vec<String> = Vec::new();
         for entry in self.shared.typecheck_products.iter() {
             let module_path = entry.key();
@@ -2240,33 +2240,12 @@ impl CompilerSession {
     }
 
     /// Re-run a failing test with tracing by eval'ing `(trace (test-name))`.
-    ///
-    /// Returns the formatted trace tree, or an error message if tracing fails.
-    fn trace_failing_test(&mut self, test_name: &str) -> String {
-        // Synthesize `(trace (test-name))` and eval through the pipeline.
-        // The test name may be module-qualified (user.math/test-add) or bare (test-add).
-        let source = format!("(trace ({test_name}))");
-        match self.eval(&source) {
-            Ok(Some(result)) => {
-                // The result is a Trace ADT. Format it as an indented call tree.
-                if let EvalResult::Val { value, .. } = &result {
-                    format_trace_tree(*value, 2)
-                } else {
-                    String::new()
-                }
-            }
-            Ok(None) => String::new(),
-            Err(e) => format!("    (trace failed: {e})"),
-        }
-    }
-
-    /// Format a test run: run all tests via core logic, re-run failures with tracing.
-    fn format_test_run(&mut self, test_names: &[String]) -> String {
+    /// Format a test run: run all tests via shared core logic.
+    fn format_test_run(&self, test_names: &[String]) -> String {
         let start = std::time::Instant::now();
         let mut passed = 0usize;
         let mut failed = 0usize;
         let mut lines = Vec::new();
-        let mut failures: Vec<String> = Vec::new();
 
         for name in test_names {
             // Core test execution — shared with run_test_extern.
@@ -2279,27 +2258,11 @@ impl CompilerSession {
                 }
                 TestOutcome::Fail { reason, .. } => {
                     lines.push(format!("  {name} {dots} FAILED: {reason}"));
-                    failures.push(name.clone());
                     failed += 1;
                 }
                 TestOutcome::Panic { reason, .. } => {
                     lines.push(format!("  {name} {dots} PANIC: {reason}"));
                     failed += 1;
-                }
-            }
-        }
-
-        // Re-run failures with tracing to capture trace trees.
-        if !failures.is_empty() {
-            lines.push(String::new());
-            lines.push("Failure traces:".to_string());
-            for name in &failures {
-                // Extract bare function name for trace eval.
-                let bare = name.rsplit_once('/').map(|(_, n)| n).unwrap_or(name);
-                lines.push(format!("  {name}:"));
-                let trace_output = self.trace_failing_test(bare);
-                if !trace_output.is_empty() {
-                    lines.push(trace_output);
                 }
             }
         }
@@ -3144,97 +3107,6 @@ fn compile_module_object(
 // ---------------------------------------------------------------------------
 // Trace format support (repl/spec.md §4.12)
 // ---------------------------------------------------------------------------
-
-/// Format a Trace ADT heap pointer as an indented call tree string.
-///
-/// Reads the TraceCall fields directly from the heap layout:
-/// - offset 24: name (String heap ptr)
-/// - offset 32: params (SList of String heap ptrs)
-/// - offset 40: result (String heap ptr)
-/// - offset 48: children (SList of Trace heap ptrs)
-/// - offset 56: nanos (i64)
-fn format_trace_tree(trace_ptr: i64, indent: usize) -> String {
-    use cranelisp_types::NULLARY_TAG_THRESHOLD;
-
-    if trace_ptr == 0 || (trace_ptr as usize) < NULLARY_TAG_THRESHOLD {
-        return String::new();
-    }
-
-    let prefix = " ".repeat(indent);
-    let mut lines = Vec::new();
-
-    unsafe {
-        let base = trace_ptr as *const u8;
-        // Read fields from heap layout.
-        let name_ptr = *(base.add(24) as *const i64);
-        let params_ptr = *(base.add(32) as *const i64);
-        let result_ptr = *(base.add(40) as *const i64);
-        let children_ptr = *(base.add(48) as *const i64);
-        let nanos = *(base.add(56) as *const i64);
-
-        // Format name.
-        let name = if name_ptr != 0 && (name_ptr as usize) >= NULLARY_TAG_THRESHOLD {
-            cranelisp_runtime::read_string_as_str(name_ptr).to_string()
-        } else {
-            "?".to_string()
-        };
-
-        // Format params as comma-separated.
-        let params_str = format_slist_strings(params_ptr);
-
-        // Format result.
-        let result_str = if result_ptr != 0 && (result_ptr as usize) >= NULLARY_TAG_THRESHOLD {
-            cranelisp_runtime::read_string_as_str(result_ptr).to_string()
-        } else {
-            "?".to_string()
-        };
-
-        let ms = nanos as f64 / 1_000_000.0;
-        lines.push(format!(
-            "{prefix}{name}({params_str}) => {result_str}  [{ms:.2}ms]"
-        ));
-
-        // Walk children SList (SCons/SNil).
-        let mut child = children_ptr;
-        while child != 0 && (child as usize) >= NULLARY_TAG_THRESHOLD {
-            let child_base = child as *const u8;
-            // SList tag at offset 16: 0=SNil, 1=SCons.
-            let tag = *(child_base.add(16) as *const i64);
-            if tag == 0 {
-                break; // SNil
-            }
-            // SCons: head at offset 24, tail at offset 32.
-            let head = *(child_base.add(24) as *const i64);
-            let tail = *(child_base.add(32) as *const i64);
-            lines.push(format_trace_tree(head, indent + 2));
-            child = tail;
-        }
-    }
-
-    lines.join("\n")
-}
-
-/// Format an SList of String heap pointers as a comma-separated string.
-unsafe fn format_slist_strings(mut slist_ptr: i64) -> String {
-    use cranelisp_types::NULLARY_TAG_THRESHOLD;
-
-    let mut parts = Vec::new();
-    while slist_ptr != 0 && (slist_ptr as usize) >= NULLARY_TAG_THRESHOLD {
-        let base = slist_ptr as *const u8;
-        let tag = *(base.add(16) as *const i64);
-        if tag == 0 {
-            break; // SNil
-        }
-        // SCons: head at 24, tail at 32.
-        let head = *(base.add(24) as *const i64);
-        let tail = *(base.add(32) as *const i64);
-        if head != 0 && (head as usize) >= NULLARY_TAG_THRESHOLD {
-            parts.push(cranelisp_runtime::read_string_as_str(head).to_string());
-        }
-        slist_ptr = tail;
-    }
-    parts.join(", ")
-}
 
 // ---------------------------------------------------------------------------
 // Test infrastructure: core logic + JIT-callable externs
