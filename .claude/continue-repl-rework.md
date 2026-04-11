@@ -2,60 +2,36 @@
 
 ## Completed
 
-- **Phase 1-3**: FileWatcher integration, error_modules, src/repl/ deletion — all done
-- **Expr::Trace AST fix**: AST builder produces Expr::Trace directly, name-based interception removed
-- **Expr::RunTests deletion**: removed from AST, all crates cleaned up (~420 lines deleted)
-- **Trace infrastructure**: build_traced_fns, repl_trace_format, TraceDisplayState, program_needs_trace
-- **Spec updates**: trace scope (§4.12.3), TestResult type (§3.2.5), test forms (appendix-a §A.4), REPL test commands (repl/spec.md §16)
+- **FileWatcher**: extracted to src/watch.rs, wired into REPL loop, /reset clears state
+- **src/repl/ deletion**: ~5300 lines of dead v3 code removed
+- **Expr::Trace AST fix**: AST builder produces Expr::Trace, name interception removed
+- **Expr::RunTests deletion**: AST variant + codegen removed (~420 lines)
+- **TestResult root type**: seeded in builtins (TestPass/TestFail), constructors seeded into all modules
+- **discover-tests and run-test**: special forms working from Cranelisp + slash commands
+- **Shared core**: discover_test_names() + run_test_by_name() used by both externs and /run-tests
+- **Simplification**: trace-test and TraceFail removed — trace and test are independent
 
-## Current: Test Infrastructure Implementation
+## Architecture
 
-### Design (specced)
+```
+Core (no heap allocation):
+  discover_test_names(codegen_products, tc_modules, module) -> Vec<String>
+  run_test_by_name(codegen_products, fq_name) -> TestOutcome
 
-Three special forms + one root type:
+JIT externs (heap wrapper):
+  discover_tests_extern: core -> SList<SexpSym> -> IO Pure
+  run_test_extern: core -> TestResult -> IO Pure
 
-```clojure
-(deftype TestResult
-  (TestPass [:String name :Int nanos])
-  (TestFail [:String name :Int nanos :String reason])
-  (TraceFail [:String name :Int nanos :String reason :Trace trace]))
-
-(discover-tests)              ;; => :(IO (SList Sexp))
-(discover-tests user.math)    ;; => :(IO (SList Sexp))
-(run-test user/test-add)      ;; => :(IO TestResult) — fast, no tracing
-(trace-test user/test-add)    ;; => :(IO TestResult) — with GOT-swap tracing
+Slash commands (string wrapper):
+  /run-tests [module]: core -> formatted output
+  /run-all-tests: core across project-root modules -> formatted output
 ```
 
-- TestResult is a root type (always in scope)
-- discover-tests/run-test/trace-test are special forms (always in scope)
-- Arguments: bare module paths / qualified symbols, or Sexp variables
-- run-test returns TestPass/TestFail, trace-test returns TestPass/TraceFail
+## What remains
 
-### Architecture Decision
-
-No new Expr variants. All three compile as Expr::Apply to extern Rust functions:
-- AST builder recognizes keywords, converts bare symbols to SexpSym constructors
-- Typechecker assigns correct types via special-form Def entries
-- Backend compiles as normal function calls to externs
-- Extern functions use thread-local session state (same pattern as repl_trace_format)
-
-### Implementation Steps
-
-1. **Seed TestResult type** in builtins.rs (3 constructors, field accessors)
-2. **Register discover-tests/run-test/trace-test** as special form Def entries in builtins.rs
-3. **AST builder handlers** for keyword recognition + bare symbol conversion
-4. **Implement extern functions** in session_v4.rs with thread-local state:
-   - discover_tests_extern: scan symbol tables
-   - run_test_extern: call test fn, interpret result, build TestResult
-   - trace_test_extern: GOT swap + call + restore + trace collect + build TestResult
-5. **Register externs as JIT symbols** in codegen_and_execute
-6. **Rewire /run-tests**: run fast, re-run failures with tracing
-7. **Add /run-all-tests**: all project-root modules
-
-### Slash Commands
-
-- `/run-tests [module]` (`/rt`): discover + run-test (fast), re-run failures with trace-test
-- `/run-all-tests`: all project-root modules, same fast+trace pattern
+- **Session persistence §15**: save-as-you-go for REPL definitions (separate feature, not started)
+- **Trace scope filtering**: build_traced_fns should filter to project-root modules only (specced in §4.12.3 but not enforced yet)
+- **trace-test-by-name not specced**: if users ask, let them know `(trace (test-fn))` is the way
 
 ## Verification
 
