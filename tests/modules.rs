@@ -311,7 +311,7 @@ fn export_glob_reexport() {
     let dir = create_test_project(&[
         (
             "main.cl",
-            "(mod shell)\n(import [main.shell [a b]])\n(defn main [] (add-i64 (a) (b)))",
+            "(import [primitives [add-i64]])\n(mod shell)\n(import [main.shell [a b]])\n(defn main [] (add-i64 (a) (b)))",
         ),
         (
             "main/shell.cl",
@@ -356,7 +356,7 @@ fn export_multiple_modules() {
     let dir = create_test_project(&[
         (
             "main.cl",
-            "(mod shell)\n(import [main.shell [alpha beta]])\n(defn main [] (add-i64 (alpha) (beta)))",
+            "(import [primitives [add-i64]])\n(mod shell)\n(import [main.shell [alpha beta]])\n(defn main [] (add-i64 (alpha) (beta)))",
         ),
         (
             "main/shell.cl",
@@ -403,7 +403,7 @@ fn imported_function_as_higher_order_argument() {
         ),
         (
             "main/helper.cl",
-            "(defn double [x] (add-i64 x x))",
+            "(import [primitives [add-i64]])\n(defn double [x] (add-i64 x x))",
         ),
     ]);
     let result = helpers::batch_run_file(&dir.path().join("main.cl"), &[]);

@@ -319,25 +319,28 @@ fn trace_composability_pattern_match() {
 // Import requirement: trace must be imported from primitives
 // =============================================================================
 
-// spec: 04-expressions §4.12 + 03-types §3.2.4 — trace without import fails
+// spec: 02-grammar §2.2 + 04-expressions §4.12 — trace keyword always in scope
 #[test]
-fn trace_without_import_fails() {
-    // Use bare session (no primitives import) to test that trace is unavailable
+#[serial]
+fn trace_form_available_without_import() {
     let mut s = repl_session_with(None, None);
-    // trace is NOT auto-imported; using it without import should error
-    let result = s.eval("(trace 42)");
-    assert!(
-        result.is_err(),
-        "trace without import should produce an error"
-    );
-    let err_msg = match result {
-        Err(e) => e.to_string(),
-        Ok(_) => panic!("expected error but eval succeeded"),
-    };
-    assert!(
-        err_msg.contains("trace") || err_msg.contains("undefined") || err_msg.contains("Undefined"),
-        "error should mention trace or undefined, got: {err_msg}"
-    );
+    // trace is a parser keyword — always available without import
+    let result = s.eval("(defn id [x] x)");
+    assert!(result.is_ok());
+    let result = s.eval("(trace (id 42))");
+    assert!(result.is_ok(), "trace form should work without import");
+}
+
+// spec: 04-expressions §4.12.4 — TraceCall requires import for pattern matching
+#[test]
+#[serial]
+fn trace_type_requires_import_for_match() {
+    let mut s = repl_session_with(None, None);
+    let result = s.eval("(defn id [x] x)");
+    assert!(result.is_ok());
+    // Pattern matching on TraceCall without import should fail
+    let result = s.eval("(match (trace (id 42)) [(TraceCall n p r c ns) n])");
+    assert!(result.is_err(), "TraceCall pattern match should fail without import");
 }
 
 // =============================================================================
@@ -416,107 +419,153 @@ fn trace_is_value_not_effect() {
 }
 
 // =============================================================================
-// (run-tests init pass-fn fail-fn) special form — Ring 4
+// /run-tests slash command + discover-tests/run-test special forms — Ring 4
 //
-// The `(run-tests ...)` special form is parsed by the AST builder into
-// Expr::RunTests, typechecked with accumulator/pass-fn/fail-fn inference,
-// and compiled by the backend. In REPL mode it discovers and runs test-*
-// functions; in batch mode it returns init unchanged.
+// The old `(run-tests init pass-fn fail-fn)` sexp-level API has been replaced:
 //
-// The `/run-tests` slash command (separate from the expression form) is
-// tested in tests/e2e.rs.
+// 1. `/run-tests` REPL slash command — discovers test-* functions in the
+//    current module and runs them, producing formatted output (ok/FAILED).
+//    Tested via `session.process_commands("/run-tests", ...)`.
+//
+// 2. `discover-tests` and `run-test` special forms — programmatic primitives
+//    in the `primitives` module. `(discover-tests)` returns `IO(SList Sexp)`
+//    with SexpSym values for test-* functions. `(run-test name)` takes a
+//    Sexp and returns `IO(TestResult)` — TestPass or TestFail.
+//    Tested via `session.eval(...)`.
+//
+// See spec: appendix-a-builtins.md (discover-tests, run-test),
+//      spec: 03-types.md §3.2.5 (TestResult type).
 // =============================================================================
 
-// spec: run-tests special form — basic pass: single passing test, counter increments
+/// Helper: invoke a slash command on a session and return the output string.
+fn run_slash_command(s: &mut helpers::ReplSession, cmd: &str) -> String {
+    use cranelisp::session_v4::CommandResult;
+    let mut stdout = Vec::new();
+    let result = s.session.process_commands(cmd, &mut stdout);
+    match result {
+        CommandResult::Final(output) => output,
+        _ => {
+            let stdout_str = String::from_utf8_lossy(&stdout).to_string();
+            panic!("expected CommandResult::Final from '{cmd}', got stdout: {stdout_str}");
+        }
+    }
+}
+
+// spec: repl/spec.md §3 + appendix-a-builtins — /run-tests discovers and runs passing test
 #[test]
 #[serial(trace)]
 fn run_tests_basic_pass() {
     let mut s = repl_session_with_test_prelude();
-    repl_eval(&mut s, "(import [primitives [trace Trace TraceCall]])");
     // Define a test function returning None (pass)
     repl_eval(&mut s, "(defn test-one [] None)");
-    // Run tests with a counter: pass-fn increments, fail-fn increments
-    let result = repl_eval(
-        &mut s,
-        "(run-tests 0 (fn [acc name nanos] (add-i64 acc 1)) (fn [acc name nanos reason trace] (add-i64 acc 100)))",
+    let output = run_slash_command(&mut s, "/run-tests");
+    assert!(
+        output.contains("ok"),
+        "passing test should show 'ok' in output, got: {output}"
     );
-    assert_eq!(result, 1, "one passing test should increment counter by 1");
+    assert!(
+        output.contains("1 passed"),
+        "should report 1 passed, got: {output}"
+    );
 }
 
-// spec: run-tests special form — basic fail: single failing test
+// spec: repl/spec.md §3 + appendix-a-builtins — /run-tests reports failing test
 #[test]
 #[serial(trace)]
 fn run_tests_basic_fail() {
     let mut s = repl_session_with_test_prelude();
-    repl_eval(&mut s, "(import [primitives [trace Trace TraceCall]])");
     // Define a test function returning Some (fail)
     repl_eval(&mut s, "(defn test-fail [] (Some \"expected failure\"))");
-    // pass-fn adds 1, fail-fn adds 100 — result should be 100
-    let result = repl_eval(
-        &mut s,
-        "(run-tests 0 (fn [acc name nanos] (add-i64 acc 1)) (fn [acc name nanos reason trace] (add-i64 acc 100)))",
+    let output = run_slash_command(&mut s, "/run-tests");
+    assert!(
+        output.contains("FAIL"),
+        "failing test should show 'FAIL' in output, got: {output}"
     );
-    assert_eq!(result, 100, "one failing test should invoke fail-fn");
+    assert!(
+        output.contains("expected failure"),
+        "failure reason should appear in output, got: {output}"
+    );
 }
 
-// spec: run-tests special form — multiple tests accumulate correctly
+// spec: repl/spec.md §3 + appendix-a-builtins — /run-tests with multiple tests
 #[test]
 #[serial(trace)]
 fn run_tests_multiple_tests() {
     let mut s = repl_session_with_test_prelude();
-    repl_eval(&mut s, "(import [primitives [trace Trace TraceCall]])");
     // Define 3 passing test functions
     repl_eval(&mut s, "(defn test-a [] None)");
     repl_eval(&mut s, "(defn test-b [] None)");
     repl_eval(&mut s, "(defn test-c [] None)");
-    // Counter should reach 3
-    let result = repl_eval(
-        &mut s,
-        "(run-tests 0 (fn [acc name nanos] (add-i64 acc 1)) (fn [acc name nanos reason trace] (add-i64 acc 1)))",
+    let output = run_slash_command(&mut s, "/run-tests");
+    assert!(
+        output.contains("3 passed"),
+        "three passing tests should report '3 passed', got: {output}"
     );
-    assert_eq!(result, 3, "three passing tests should increment counter to 3");
 }
 
-// spec: run-tests special form — batch mode returns init unchanged
-#[test]
-fn run_tests_batch_returns_init() {
-    // In batch mode, run-tests returns init unchanged (no test discovery)
-    let src = r#"
-        (deftype (Option a) None (Some [:a val]))
-        (defn test-a [] None)
-        (defn main [] (run-tests 42 (fn [acc name nanos] acc) (fn [acc name nanos reason trace] acc)))
-    "#;
-    assert_eq!(compile_and_run_simple(src), 42);
-}
-
-// spec: run-tests special form — no test functions returns init
+// spec: repl/spec.md §3 + appendix-a-builtins — /run-tests with no test functions
 #[test]
 #[serial(trace)]
 fn run_tests_empty_no_tests() {
     let mut s = repl_session_with_test_prelude();
-    repl_eval(&mut s, "(import [primitives [trace Trace TraceCall]])");
-    // No test-* functions defined — should return init (99) unchanged
-    let result = repl_eval(
-        &mut s,
-        "(run-tests 99 (fn [acc name nanos] (add-i64 acc 1)) (fn [acc name nanos reason trace] (add-i64 acc 1)))",
+    // No test-* functions defined
+    let output = run_slash_command(&mut s, "/run-tests");
+    assert!(
+        output.contains("No test-* functions found"),
+        "with no test functions, should report 'No test-* functions found', got: {output}"
     );
-    assert_eq!(result, 99, "with no test functions, init should be returned unchanged");
 }
 
-// spec: run-tests special form — mixed pass and fail
+// spec: repl/spec.md §3 + appendix-a-builtins — /run-tests with mixed pass and fail
 #[test]
 #[serial(trace)]
 fn run_tests_mixed_pass_fail() {
     let mut s = repl_session_with_test_prelude();
-    repl_eval(&mut s, "(import [primitives [trace Trace TraceCall]])");
     // 2 passing, 1 failing
     repl_eval(&mut s, "(defn test-pass-1 [] None)");
     repl_eval(&mut s, "(defn test-pass-2 [] None)");
     repl_eval(&mut s, "(defn test-fail-1 [] (Some \"broken\"))");
-    // pass-fn adds 1, fail-fn adds 100
-    let result = repl_eval(
-        &mut s,
-        "(run-tests 0 (fn [acc name nanos] (add-i64 acc 1)) (fn [acc name nanos reason trace] (add-i64 acc 100)))",
+    let output = run_slash_command(&mut s, "/run-tests");
+    assert!(
+        output.contains("2 passed"),
+        "should report 2 passed, got: {output}"
     );
-    assert_eq!(result, 102, "2 passes (2) + 1 fail (100) = 102");
+    assert!(
+        output.contains("1 failed"),
+        "should report 1 failed, got: {output}"
+    );
+}
+
+// spec: appendix-a-builtins — discover-tests special form returns IO(SList(Sexp))
+#[test]
+#[serial(trace)]
+fn run_tests_discover_tests_form_type() {
+    let mut s = repl_session_with_test_prelude();
+    repl_eval(&mut s, "(import [primitives [discover-tests]])");
+    // Define a test so there's something to discover
+    repl_eval(&mut s, "(defn test-ok [] None)");
+    // (discover-tests) returns IO(SList(Sexp))
+    let (_val, ty) = repl_eval_typed(&mut s, "(discover-tests)");
+    let ty_str = format!("{:?}", ty);
+    assert!(
+        ty_str.contains("IO") && ty_str.contains("SList"),
+        "discover-tests should return IO(SList(Sexp)), got: {ty_str}"
+    );
+}
+
+// spec: appendix-a-builtins — run-test special form returns IO(TestResult)
+#[test]
+#[serial(trace)]
+fn run_tests_run_test_form_type() {
+    let mut s = repl_session_with_test_prelude();
+    repl_eval(&mut s, "(import [primitives [run-test]])");
+    // Define a test function
+    repl_eval(&mut s, "(defn test-ok [] None)");
+    // (run-test user/test-ok) takes a qualified name and returns IO(TestResult)
+    let (_val, ty) = repl_eval_typed(&mut s, "(run-test user/test-ok)");
+    let ty_str = format!("{:?}", ty);
+    assert!(
+        ty_str.contains("IO") && ty_str.contains("TestResult"),
+        "run-test should return IO(TestResult), got: {ty_str}"
+    );
 }

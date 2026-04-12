@@ -70,7 +70,7 @@ fn exemplar_batch_cross_module_adt() {
     let entry = dir.path().join("main.cl");
     std::fs::write(
         &entry,
-        "(import [types [Color Red Green Blue color-val]])\n(defn main [] (add-i64 (color-val Red) (color-val Blue)))",
+        "(import [primitives [add-i64]])\n(import [types [Color Red Green Blue color-val]])\n(defn main [] (add-i64 (color-val Red) (color-val Blue)))",
     )
     .unwrap();
     let (value, _ty) = helpers::batch_run_file(&entry, &[stdlib_dir()]).unwrap();

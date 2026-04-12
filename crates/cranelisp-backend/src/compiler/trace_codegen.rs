@@ -239,6 +239,15 @@ impl<'a, M: Module> FnCompiler<'a, M> {
         tf: &TracedFnInfo,
         span: Span,
     ) -> Result<FuncId, CranelispError> {
+        assert_eq!(
+            tf.arity,
+            tf.param_types.len(),
+            "trace wrapper arity mismatch for '{}': arity={} but param_types={}",
+            tf.name,
+            tf.arity,
+            tf.param_types.len()
+        );
+
         // Wrapper signature: (arg0..argN-1) -> i64.
         let mut sig = self.module.make_signature();
         for _ in 0..tf.arity {

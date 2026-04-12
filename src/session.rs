@@ -1,8 +1,7 @@
-// Session: cache state, object worker state, and utility functions.
+// Session: cache state and utility functions.
 //
 // This module provides:
 // - CacheState: manifest tracking for .o caching
-// - ObjectWorkerState: .o file generation state
 // - Utility functions: lib dirs, prelude resolution, exit code
 
 use std::collections::{HashMap, HashSet};
@@ -136,41 +135,6 @@ impl CacheState {
 // Worker sub-structs: group fields by pipeline role
 // ---------------------------------------------------------------------------
 
-/// Object-file codegen worker state: cache writing, .o paths, module structures.
-///
-/// Fields used for background .o emission and manifest tracking.
-#[derive(Default)]
-pub struct ObjectWorkerState {
-    /// Cache state for .o and .meta.json writing. None = caching disabled.
-    /// Initialized by production callers (--run, --link, REPL with prelude).
-    /// Left as None by test helpers.
-    pub cache_state: Option<CacheState>,
-    /// Background .o writer. Created when cache_state is Some.
-    pub cache_writer: Option<crate::cache_writer::CacheWriterHandle>,
-    /// .o file paths written during this session, in compilation order.
-    /// Used by --link to collect all .o files for the system linker.
-    pub compiled_o_paths: Vec<PathBuf>,
-    /// Cumulative cross-module function signatures for .o generation.
-    /// Each entry is (qualified_name, param_count). Extended after each
-    /// module completes stage 6. Used as `ObjectCompileInput.cross_module_fns`
-    /// for subsequent modules.
-    pub cross_module_func_sigs: Vec<(Symbol, usize)>,
-}
-
-impl ObjectWorkerState {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    pub(crate) fn new_with_cache(cache_dir: PathBuf) -> Self {
-        ObjectWorkerState {
-            cache_state: Some(CacheState::new(cache_dir)),
-            cache_writer: Some(crate::cache_writer::CacheWriterHandle::new()),
-            compiled_o_paths: Vec::new(),
-            cross_module_func_sigs: Vec::new(),
-        }
-    }
-}
 
 // ---------------------------------------------------------------------------
 // Free functions: lib dirs, prelude, exit code

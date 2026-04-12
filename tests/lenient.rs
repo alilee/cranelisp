@@ -247,6 +247,7 @@ fn test_io_schedule_data_dependent_no_par() {
     };
     // `b` depends on `a` — must be sequential even if both call the same function.
     // `a` binds the result of print (IO Int), `b` references `a` in its expression.
+    let _ = session.eval("(import [primitives [int-to-string]])");
     let result = session.eval(
         r#"(defn main [] (bind! [a (print "one") b (print (int-to-string a))] (pure 0)))"#,
     );

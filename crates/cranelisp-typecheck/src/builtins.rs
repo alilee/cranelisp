@@ -316,8 +316,16 @@ impl TypeChecker {
             ("Vec", "builtin vector type"),
         ];
 
+        // Per spec §8.9.1: builtin types live in `primitives` and require
+        // explicit import. They are NOT seeded into `user`.
+        let primitives_path = ModuleFullPath::from("primitives");
+        let mut primitives_table = self
+            .modules
+            .get_mut(&primitives_path)
+            .unwrap_or_else(|| unreachable!("invariant: primitives module should exist"));
+
         for (name, desc) in builtin_types {
-            self.current_symbol_table_mut().insert(
+            primitives_table.insert(
                 Symbol::from(name),
                 ModuleEntry::TypeDef {
                     info: TypeDefInfo {
@@ -886,12 +894,16 @@ impl TypeChecker {
         self.set_current_module(saved_module);
     }
 
-    /// Register the TestResult root type and test special forms in `user`.
+    /// Register the TestResult type and test primitives in `primitives`.
     ///
-    /// TestResult is a root type (always in scope). discover-tests and
-    /// run-test are special forms (always in scope). All registered in
-    /// `user` so they are seeded into every new module by ensure_module_exists.
+    /// Per spec §8.9.1, builtin types live in `primitives` and require
+    /// explicit import. TestResult, discover-tests, and run-test are NOT
+    /// seeded into `user` — they must be imported explicitly.
     fn register_test_infrastructure(&mut self) {
+        // Switch to the `primitives` module for registration.
+        let saved_module = self.state.current_module.clone();
+        self.set_current_module(ModuleFullPath::from("primitives"));
+
         // TestResult type: TestPass, TestFail constructors.
         let test_result_ctors = vec![
             ConstructorDef {
@@ -995,6 +1007,8 @@ impl TypeChecker {
             },
         );
 
+        // Restore the original module context.
+        self.set_current_module(saved_module);
     }
 }
 

@@ -1761,7 +1761,7 @@ fn module_phase_declarations_order_independent() {
     // mod and import at top work correctly in compilation order.
     let dir = create_test_project(&[
         ("main.cl", "(mod helper)\n(import [main.helper [double]])\n(defn main [] (double 21))"),
-        ("main/helper.cl", "(defn double [:Int x] (add-i64 x x))"),
+        ("main/helper.cl", "(import [primitives [add-i64]])\n(defn double [:Int x] (add-i64 x x))"),
     ]);
     let (value, _ty) = helpers::batch_run_file(
         &dir.path().join("main.cl"),
@@ -1806,7 +1806,7 @@ fn variable_reference_lexical_scope() {
 fn qualified_reference_to_module() {
     let dir = create_test_project(&[
         ("main.cl", "(mod math)\n(defn main [] (math/double 21))"),
-        ("main/math.cl", "(defn double [:Int x] (add-i64 x x))"),
+        ("main/math.cl", "(import [primitives [add-i64]])\n(defn double [:Int x] (add-i64 x x))"),
     ]);
     let (value, _ty) = helpers::batch_run_file(
         &dir.path().join("main.cl"),

@@ -115,6 +115,6 @@ The pipeline v4 migration and session restructure are structurally complete. All
 
 | Sprint | Theme | Scope | Skills |
 |--------|-------|-------|--------|
-| 50 | Macro regression fix | Diagnose and fix macro/prelude symbol availability regression (~120 of 137 failures). Diff `17a9906` vs HEAD for macro registration path. Verify stdlib 54/54, then widen. | `/int`, `/qa` |
-| 51 | Test triage and stabilisation | Sketch-port triage (15 failures: real gaps vs sketch-specific). checked_div runtime panics (2 ring0, spec §12.7.3). Exemplar test fix (1 failure). Delete ObjectWorkerState dead code (35 lines). | `/int`, `/backend`, `/qa`, `/port` |
+| 50 | Session restructure regression fix | MacroResolver refactor (eliminate 3 caches, symbol table direct lookup), platform JIT fix, builtin type isolation (primitives module), trace codegen fix (constrained fn skip + arity), cross-module macro qualification, /list improvements, test fixture spec compliance (22 tests), run-tests test redesign, 4 design docs, spec §4.12.4 clarification, TC take_state API: 1487 passed, 32 failed (16 suites green), 4 design docs | COMPLETE | `sprints/archive/sprint-50.md` |
+| 51 | Stateless TC + architecture docs | TC stateless design (transient TC, writes directly to TypecheckProduct DashMap). Post-restructure architecture document (~10-20 pages). Cache infrastructure (manifest writing, 11 tests). Sketch-port triage (13 failures). IO/platform remaining (3 tests). checked_div (2 ring0). | `/arch`, `/typecheck`, `/int`, `/backend`, `/qa` |
 | 52 | Ring 4 gate | Exemplar E2E validation (Sudoku solver batch+REPL). File watcher manual testing. Ring 4 gate review. Performance baseline if time permits. | `/port`, `/repl`, `/review`, `/qa` |

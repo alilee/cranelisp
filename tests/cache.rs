@@ -948,7 +948,7 @@ fn create_cache_test_project(files: &[(&str, &str)]) -> TempDir {
 /// The v4 pipeline always caches to `project_root/.cranelisp-cache`,
 /// so `cache_dir` is unused (kept for call-site compatibility).
 fn compile_cached(project_dir: &std::path::Path, _cache_dir: &std::path::Path) -> i64 {
-    let (value, _ty) = helpers::batch_run_file(
+    let (value, _ty) = helpers::batch_run_file_cached(
         &project_dir.join("main.cl"),
         &[],
     ).unwrap();
@@ -974,7 +974,7 @@ fn cache_object_file_loadable() {
     // in `ObjectCompileInput` (Sprint 22). Multi-module projects generate .o
     // files correctly.
     let dir = create_cache_test_project(&[
-        ("main.cl", "(defn double [x] (add-i64 x x))\n(defn main [] (double 21))"),
+        ("main.cl", "(import [primitives [add-i64]])\n(defn double [x] (add-i64 x x))\n(defn main [] (double 21))"),
     ]);
     let cache_dir = dir.path().join(".cranelisp-cache");
 
@@ -1013,7 +1013,7 @@ fn cache_load_fresh_compile_equivalence() {
     // Compile a single-file project twice with caching. First is fresh,
     // second should hit cache. Both must produce the same result.
     let dir = create_cache_test_project(&[
-        ("main.cl", "(defn double [x] (add-i64 x x))\n(defn main [] (double 21))"),
+        ("main.cl", "(import [primitives [add-i64]])\n(defn double [x] (add-i64 x x))\n(defn main [] (double 21))"),
     ]);
     let cache_dir = dir.path().join(".cranelisp-cache");
 
@@ -1044,7 +1044,7 @@ fn cache_load_fresh_compile_equivalence() {
 fn cache_load_symbol_table_equivalence() {
     // Compile a single-file project, then verify the cached metadata has expected symbols.
     let dir = create_cache_test_project(&[
-        ("main.cl", "(defn add-one [x] (add-i64 x 1))\n(defn double [x] (add-i64 x x))\n(defn main [] (add-one (double 20)))"),
+        ("main.cl", "(import [primitives [add-i64]])\n(defn add-one [x] (add-i64 x 1))\n(defn double [x] (add-i64 x x))\n(defn main [] (add-one (double 20)))"),
     ]);
     let cache_dir = dir.path().join(".cranelisp-cache");
 
@@ -1090,7 +1090,7 @@ fn cache_load_imports_macros_traits_installed() {
     // To work around the entry-module .o bug, we structure the test so the
     // entry module is self-contained (only calls its own helper which uses primitives).
     let dir = create_cache_test_project(&[
-        ("main.cl", "(defn helper [x] (add-i64 x 1))\n(defn main [] (helper 9))"),
+        ("main.cl", "(import [primitives [add-i64]])\n(defn helper [x] (add-i64 x 1))\n(defn main [] (helper 9))"),
     ]);
     let cache_dir = dir.path().join(".cranelisp-cache");
 
@@ -1254,7 +1254,7 @@ fn cache_multi_module_hit_cross_module_call() {
             "main.cl",
             "(import [util [helper]])\n(defn main [] (helper 21))",
         ),
-        ("util.cl", "(defn helper [x] (add-i64 x x))"),
+        ("util.cl", "(import [primitives [add-i64]])\n(defn helper [x] (add-i64 x x))"),
     ]);
     let cache_dir = dir.path().join(".cranelisp-cache");
 
@@ -1335,7 +1335,7 @@ fn cache_multi_module_invalidation_dependency_change() {
             "main.cl",
             "(import [util [helper]])\n(defn main [] (helper 10))",
         ),
-        ("util.cl", "(defn helper [x] (add-i64 x 1))"),
+        ("util.cl", "(import [primitives [add-i64]])\n(defn helper [x] (add-i64 x 1))"),
     ]);
     let cache_dir = dir.path().join(".cranelisp-cache");
 
@@ -1346,7 +1346,7 @@ fn cache_multi_module_invalidation_dependency_change() {
     // Change util's implementation: now doubles instead of adding 1
     std::fs::write(
         dir.path().join("util.cl"),
-        "(defn helper [x] (add-i64 x x))",
+        "(import [primitives [add-i64]])\n(defn helper [x] (add-i64 x x))",
     )
     .unwrap();
 
@@ -1368,7 +1368,7 @@ fn cache_multi_module_unchanged_dep_stays_cached() {
             "main.cl",
             "(import [util [helper]])\n(defn main [] (helper 5))",
         ),
-        ("util.cl", "(defn helper [x] (add-i64 x x))"),
+        ("util.cl", "(import [primitives [add-i64]])\n(defn helper [x] (add-i64 x x))"),
     ]);
     let cache_dir = dir.path().join(".cranelisp-cache");
 
@@ -1414,7 +1414,7 @@ fn cache_multi_module_multiple_imports() {
         ),
         (
             "util.cl",
-            "(defn add-one [x] (add-i64 x 1))\n(defn double [x] (add-i64 x x))",
+            "(import [primitives [add-i64]])\n(defn add-one [x] (add-i64 x 1))\n(defn double [x] (add-i64 x x))",
         ),
     ]);
     let cache_dir = dir.path().join(".cranelisp-cache");
@@ -1440,7 +1440,7 @@ fn cache_multi_module_two_deps() {
             "main.cl",
             "(import [math [square]])\n(import [constants [base-val]])\n(defn main [] (square (base-val)))",
         ),
-        ("math.cl", "(defn square [x] (mul-i64 x x))"),
+        ("math.cl", "(import [primitives [mul-i64]])\n(defn square [x] (mul-i64 x x))"),
         ("constants.cl", "(defn base-val [] 7)"),
     ]);
     let cache_dir = dir.path().join(".cranelisp-cache");
@@ -1560,7 +1560,7 @@ fn cache_multi_module_with_prelude() {
             "main.cl",
             "(import [util [helper]])\n(defn main [] (helper 5))",
         ),
-        ("util.cl", "(defn helper [x] (add-i64 x x))"),
+        ("util.cl", "(import [primitives [add-i64]])\n(defn helper [x] (add-i64 x x))"),
         ("prelude.cl", "(defn id [x] x)"),
     ]);
     let cache_dir = dir.path().join(".cranelisp-cache");
@@ -1617,7 +1617,7 @@ fn cache_repl_restart_cache_hit() {
     // session, loaded from cache on second.
     let dir = create_cache_test_project(&[
         ("main.cl", "(import [helper [add-one]])\n(defn main [] (add-one 41))"),
-        ("helper.cl", "(defn add-one [x] (add-i64 x 1))"),
+        ("helper.cl", "(import [primitives [add-i64]])\n(defn add-one [x] (add-i64 x 1))"),
     ]);
     let cache_dir = dir.path().join(".cranelisp-cache");
 
@@ -1671,7 +1671,7 @@ fn cache_repl_incremental_monomorphisation() {
     // project with a prelude that defines Num.
     let dir = create_cache_test_project(&[
         ("main.cl", "(import [math [double]])\n(defn main [] (double 21))"),
-        ("math.cl", "(defn double [x] (add-i64 x x))"),
+        ("math.cl", "(import [primitives [add-i64]])\n(defn double [x] (add-i64 x x))"),
     ]);
     let cache_dir = dir.path().join(".cranelisp-cache");
 
@@ -1702,7 +1702,7 @@ fn cache_quick_build_links_cached_objects() {
     // files exist after compilation and contain valid object code.
     let dir = create_cache_test_project(&[
         ("main.cl", "(import [helper [double]])\n(defn main [] (double 21))"),
-        ("helper.cl", "(defn double [x] (add-i64 x x))"),
+        ("helper.cl", "(import [primitives [add-i64]])\n(defn double [x] (add-i64 x x))"),
     ]);
     let cache_dir = dir.path().join(".cranelisp-cache");
 
@@ -1751,7 +1751,7 @@ fn cache_quick_build_fallback_on_missing_cache() {
     // This is the "cold start" path.
     let dir = create_cache_test_project(&[
         ("main.cl", "(import [helper [triple]])\n(defn main [] (triple 14))"),
-        ("helper.cl", "(defn triple [x] (add-i64 x (add-i64 x x)))"),
+        ("helper.cl", "(import [primitives [add-i64]])\n(defn triple [x] (add-i64 x (add-i64 x x)))"),
     ]);
     let cache_dir = dir.path().join(".cranelisp-cache");
 

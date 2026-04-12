@@ -28,6 +28,64 @@ pub use cranelisp_backend::display::format_result_value;
 use cranelisp_backend::display::{format_type_qualified, format_scheme_display};
 
 // ---------------------------------------------------------------------------
+// ReadOnlyMacroResolver — for /expand slash command
+// ---------------------------------------------------------------------------
+
+/// Read-only macro resolver for the /expand slash command.
+///
+/// Same lookup logic as `SymbolTableMacroResolver` (follows Import/Reexport
+/// chains) but never triggers compilation. If a macro's clauses are not
+/// compiled, returns `Ok(None)` (silently skipped).
+struct ReadOnlyMacroResolver<'a> {
+    tc: &'a cranelisp_typecheck::TypeChecker,
+    codegen_products: &'a dashmap::DashMap<ModuleFullPath, CodegenProduct>,
+    current_module: ModuleFullPath,
+}
+
+impl crate::expander::MacroResolver for ReadOnlyMacroResolver<'_> {
+    fn resolve_macro(
+        &mut self,
+        name: &str,
+        _span: Span,
+    ) -> Result<Option<crate::expander::MacroEntry>, CranelispError> {
+        // Walk symbol table to find the defining module and clause infos.
+        let resolved = crate::worker::resolve_macro_definition(
+            self.tc, &self.current_module, name, 16,
+        );
+        let (defining_module, clauses, docstring) = match resolved {
+            Some(r) => r,
+            None => return Ok(None),
+        };
+
+        // Check if all clauses are compiled. If not, return None (no on-demand compilation).
+        let macro_sym = Symbol::from(name);
+        let mut compiled_clauses = Vec::new();
+        for (idx, clause_info) in clauses.iter().enumerate() {
+            let clause_name = Symbol::from(format!("__macro_{}_clause_{}", macro_sym, idx));
+            match self.codegen_products.get(&defining_module)
+                .and_then(|cp| cp.code.get(&clause_name).map(|c| c.ptr))
+            {
+                Some(ptr) => {
+                    compiled_clauses.push(crate::expander::MacroClauseEntry {
+                        func_ptr: ptr,
+                        params: clause_info.params.clone(),
+                        rest_param: clause_info.rest_param.clone(),
+                    });
+                }
+                None => return Ok(None), // Uncompiled clause — skip.
+            }
+        }
+        if compiled_clauses.is_empty() {
+            return Ok(None);
+        }
+        Ok(Some(crate::expander::MacroEntry {
+            clauses: compiled_clauses,
+            docstring,
+        }))
+    }
+}
+
+// ---------------------------------------------------------------------------
 // SessionSettings (pipeline-v4.md §10)
 // ---------------------------------------------------------------------------
 
@@ -344,6 +402,16 @@ pub struct CodegenInput {
     pub mono_defns: Vec<cranelisp_types::MonoDefn>,
     pub default_method_defns: Vec<cranelisp_types::Defn>,
     pub program: Vec<TopLevel>,
+    /// Cross-module function signatures for .o compilation.
+    /// Collected during priority worker (which has TC access) and consumed
+    /// by nice worker (which does not). Each entry is (qualified_name, param_count).
+    pub cross_module_func_sigs: Vec<(Symbol, usize)>,
+    /// Type definitions snapshot for .o compilation (constructors need this
+    /// to emit inline constructor code). Snapshotted from TC during priority
+    /// worker phase.
+    pub type_defs: HashMap<cranelisp_types::TypeName, cranelisp_types::TypeDefInfo>,
+    /// Constructor-to-type mapping for .o compilation. Snapshotted from TC.
+    pub constructor_to_type: HashMap<Symbol, cranelisp_types::TypeName>,
 }
 
 /// Per-module codegen output: compiled code + optional cache linker.
@@ -1405,7 +1473,12 @@ impl CompilerSession {
             };
 
             for (name, entry) in symbols.all_symbols() {
-                if let ModuleEntry::Def { scheme, param_names, got_slot: Some(slot), .. } = entry {
+                if let ModuleEntry::Def { scheme, kind, got_slot: Some(slot), .. } = entry {
+                    // Skip constrained polymorphic base names — they're dispatch
+                    // placeholders (e.g. `!=`, `+`, `<`), not directly callable.
+                    if let DefKind::UserFn { constrained_fn: Some(_) } = kind.as_ref() {
+                        continue;
+                    }
                     let code_ptr = match cp.code.get(name) {
                         Some(code) => code.ptr as i64,
                         None => continue,
@@ -1423,7 +1496,7 @@ impl CompilerSession {
                         name: format!("{}/{}", module_path.as_ref(), name.as_ref()),
                         got_base,
                         got_slot: *slot,
-                        arity: param_names.len(),
+                        arity: param_types.len(),
                         code_ptr,
                         param_types,
                         result_type,
@@ -1523,15 +1596,13 @@ impl CompilerSession {
                 })
             }
             ModuleEntry::Def { kind, scheme, .. } => {
-                if let DefKind::SpecialForm { .. } = kind.as_ref() {
-                    Some(EvalResult::Def {
-                        symbol: FQSymbol { module, symbol: Symbol::from(name) },
-                        ty: scheme.ty.clone(),
-                        warnings: Vec::new(),
-                    })
-                } else {
-                    None // Regular functions evaluate normally.
-                }
+                // Special forms, primitives, and user functions all get
+                // introspection display per spec §4.1.1, §4.1.2.
+                Some(EvalResult::Def {
+                    symbol: FQSymbol { module, symbol: Symbol::from(name) },
+                    ty: scheme.ty.clone(),
+                    warnings: Vec::new(),
+                })
             }
             ModuleEntry::TypeDef { .. } => {
                 Some(EvalResult::Def {
@@ -1625,6 +1696,7 @@ impl CompilerSession {
         let table_ref = self.tc.symbol_table();
         let mut fns = Vec::new();
         let mut types = Vec::new();
+        let mut traits = Vec::new();
         let mut macros = Vec::new();
 
         for (name, entry) in table_ref.symbols.iter() {
@@ -1639,9 +1711,15 @@ impl CompilerSession {
                 ModuleEntry::TypeDef { .. } => {
                     types.push(format!("  {name}"));
                 }
+                ModuleEntry::TraitDecl { .. } => {
+                    traits.push(format!("  {name}"));
+                }
                 ModuleEntry::Macro { .. } => {
                     macros.push(format!("  {name}"));
                 }
+                // Import, Reexport, Constructor, PlatformDecl, Ambiguous:
+                // not listed (imports are shown by /imports, constructors
+                // are part of their type).
                 _ => {}
             }
         }
@@ -1650,6 +1728,10 @@ impl CompilerSession {
         if !types.is_empty() {
             types.sort();
             parts.push(format!("Types:\n{}", types.join("\n")));
+        }
+        if !traits.is_empty() {
+            traits.sort();
+            parts.push(format!("Traits:\n{}", traits.join("\n")));
         }
         if !macros.is_empty() {
             macros.sort();
@@ -1660,7 +1742,7 @@ impl CompilerSession {
             parts.push(format!("Fns:\n{}", fns.join("\n")));
         }
         if parts.is_empty() {
-            "No definitions in current module.".to_string()
+            "(no definitions)".to_string()
         } else {
             parts.join("\n")
         }
@@ -2104,70 +2186,13 @@ impl CompilerSession {
                 span: Span::SYNTHETIC,
             }
         })?;
-        // Build macro map from persistent macros (compiled in prior evals).
-        let macro_map = self.build_macro_map()?;
-        crate::expander::expand_sexp_recursive(sexp, &macro_map, 0)
-    }
-
-    /// Build a macro map from compiled macros in the GOT and TC symbol table.
-    fn build_macro_map(&self) -> Result<HashMap<Symbol, crate::expander::MacroEntry>, CranelispError> {
-        use crate::expander::{MacroEntry, MacroClauseEntry};
-
-        let current_module = self.tc.current_module_path().clone();
-        let mut map = HashMap::new();
-        let table = self.tc.symbol_table();
-
-        for (sym, entry) in table.all_symbols() {
-            let (clauses, docstring, defining_module) = match entry {
-                ModuleEntry::Macro { clauses, docstring, .. } => {
-                    (clauses.clone(), docstring.clone(), current_module.clone())
-                }
-                ModuleEntry::Import { source } => {
-                    // Follow import to find macro entry in defining module.
-                    if let Some(module_table) = self.tc.module_table(&source.module) {
-                        if let Some(ModuleEntry::Macro { clauses, docstring, .. }) =
-                            module_table.get(source.symbol.as_ref())
-                        {
-                            (clauses.clone(), docstring.clone(), source.module.clone())
-                        } else {
-                            continue;
-                        }
-                    } else {
-                        continue;
-                    }
-                }
-                _ => continue,
-            };
-
-            let name = Symbol::from(sym.as_ref());
-            // Check if all clauses have code pointers in codegen_products.
-            let mut compiled_clauses = Vec::new();
-            let mut all_compiled = true;
-            if let Some(cp) = self.shared.codegen_products.get(&defining_module) {
-                for (idx, clause_info) in clauses.iter().enumerate() {
-                    let clause_name = Symbol::from(format!("__macro_{}_clause_{}", name, idx));
-                    if let Some(code) = cp.code.get(&clause_name) {
-                        compiled_clauses.push(MacroClauseEntry {
-                            func_ptr: code.ptr,
-                            params: clause_info.params.clone(),
-                            rest_param: clause_info.rest_param.clone(),
-                        });
-                    } else {
-                        all_compiled = false;
-                        break;
-                    }
-                }
-            } else {
-                all_compiled = false;
-            }
-            if all_compiled && !compiled_clauses.is_empty() {
-                map.insert(name, MacroEntry {
-                    clauses: compiled_clauses,
-                    docstring,
-                });
-            }
-        }
-        Ok(map)
+        let module = self.tc.current_module_path().clone();
+        let mut resolver = ReadOnlyMacroResolver {
+            tc: &self.tc,
+            codegen_products: &self.shared.codegen_products,
+            current_module: module,
+        };
+        crate::expander::expand_sexp_recursive(sexp, &mut resolver, 0)
     }
 
     /// /time handler: evaluate with timing.
@@ -3051,17 +3076,19 @@ fn compile_module_object(
         expr_types: input.expr_types,
         default_method_defns: input.default_method_defns,
         warnings: Vec::new(),
-        type_defs: HashMap::new(),
-        constructor_to_type: HashMap::new(),
+        type_defs: input.type_defs,
+        constructor_to_type: input.constructor_to_type,
         display: None,
     };
 
     // Build the ObjectCompileInput from the stashed data.
+    // cross_module_func_sigs were collected during priority worker phase
+    // (which has TC access for synthetic modules like primitives).
     let object_input = crate::pipeline::build_object_compile_input(
         module,
         Some(&input.program),
         Some(&check_result),
-        &[], // cross_module_func_sigs not accumulated in v4 path yet
+        &input.cross_module_func_sigs,
     );
 
     // Compile to .o bytes via Cranelift ObjectModule.

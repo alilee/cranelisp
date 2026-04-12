@@ -237,6 +237,43 @@ pub fn batch_run_file(
     s.trampoline(module_name)
 }
 
+/// Compile a file-based project with caching enabled and run main().
+/// Returns (value, type). Like `batch_run_file` but with `no_cache: false`.
+pub fn batch_run_file_cached(
+    entry_path: &std::path::Path,
+    lib_dirs: &[PathBuf],
+) -> Result<(i64, Type), CranelispError> {
+    let project_root = entry_path
+        .parent()
+        .map(|p| p.to_path_buf())
+        .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
+
+    let mut all_lib_dirs = vec![project_root.clone()];
+    all_lib_dirs.extend(lib_dirs.iter().cloned());
+
+    let settings = cranelisp::session_v4::SessionSettings {
+        no_color: true,
+        no_cache: false,
+        codegen_behaviour: cranelisp_types::CodegenBehaviour::InMemoryAndObject,
+        priority_workers: 1,
+        nice_workers: 1,
+    };
+    let mut session = cranelisp::session_v4::CompilerSession::new(settings, project_root);
+    session.lib_dirs = all_lib_dirs;
+    let mut s = ReplSession { session };
+
+    let module_name = entry_path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("user");
+    s.register_module(module_name)?;
+    let result = s.trampoline(module_name);
+    // Wait for nice workers to finish writing .o and .meta.json files.
+    let _ = s.session.wait_object_complete();
+    s.session.shutdown();
+    result
+}
+
 // =============================================================================
 // REPL session helpers
 // =============================================================================

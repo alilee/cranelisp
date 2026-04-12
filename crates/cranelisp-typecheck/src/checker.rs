@@ -41,6 +41,7 @@
 //! the registries are safe for concurrent access when that conversion happens.
 
 use std::collections::HashMap;
+use std::mem;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, RwLock, RwLockReadGuard};
 
@@ -105,7 +106,7 @@ pub struct CheckState {
 
 impl CheckState {
     /// Create a new empty CheckState for the given module.
-    pub(crate) fn new(module: ModuleFullPath) -> Self {
+    pub fn new(module: ModuleFullPath) -> Self {
         CheckState {
             subst: Subst::new(),
             env: ScopeStack::new(),
@@ -192,17 +193,6 @@ pub struct TypeChecker {
     pub(crate) state: CheckState,
 }
 
-/// Root type constructors that should be seeded into every module.
-/// These types are always in scope without import (spec §3.2.5).
-fn is_root_type_constructor(type_name: &cranelisp_types::Symbol) -> bool {
-    type_name.as_ref() == "TestResult"
-}
-
-/// Root primitives that should be seeded into every module.
-/// These are always in scope without import (repl/spec.md §16.3).
-fn is_root_primitive(name: &cranelisp_types::Symbol) -> bool {
-    matches!(name.as_ref(), "discover-tests" | "run-test")
-}
 
 impl TypeChecker {
     /// Create a new TypeChecker with Ring 0 builtins registered.
@@ -226,6 +216,26 @@ impl TypeChecker {
         };
         tc.register_builtins();
         tc
+    }
+
+    // --- CheckState extraction / restoration ---
+
+    /// Extract the mutable CheckState from the TypeChecker, leaving a
+    /// temporary placeholder. Used by scope-isolating code paths (e.g.,
+    /// SymbolTableMacroResolver) that need to hold `&mut CheckState`
+    /// independently while accessing `&TypeChecker` for symbol lookups.
+    ///
+    /// IMPORTANT: Must be paired with `restore_state()` before using any
+    /// method that requires `self.state`. Do not drop the returned state
+    /// without restoring it.
+    pub fn take_state(&mut self) -> CheckState {
+        mem::replace(&mut self.state, CheckState::new(ModuleFullPath::from("")))
+    }
+
+    /// Restore a previously taken CheckState, replacing the temporary
+    /// placeholder left by `take_state()`. Inverse of `take_state()`.
+    pub fn restore_state(&mut self, state: CheckState) {
+        self.state = state;
     }
 
     // --- Module-scoped symbol table accessors ---
@@ -299,26 +309,22 @@ impl TypeChecker {
         }
         let mut table = SymbolTable::new(path.clone());
 
-        // Seed with root module contents from user (the root module at init):
+        // Seed with special forms from user (the root module at init):
         // - Special forms: language keywords, universally available (spec §11.1)
-        // - Builtin type names: Int, Bool, Float, String, Vec, TestResult
-        // - Root type constructors: TestPass, TestFail, TraceFail
-        // Everything else requires explicit import or qualified access.
+        // Everything else (builtin types, constructors, test primitives) requires
+        // explicit import or qualified access (spec §8.9.1, §8.9.4).
         //
         // Clone-and-drop discipline: collect entries, drop guard, then insert.
         let user_path = ModuleFullPath::from("user");
         let root_entries: Vec<(Symbol, ModuleEntry)> = self.modules.get(&user_path)
             .map(|guard| {
                 guard.all_symbols()
-                    .filter(|(name, entry)| {
+                    .filter(|(_name, entry)| {
                         matches!(entry, ModuleEntry::Def { kind, .. }
                             if matches!(kind.as_ref(),
                                 cranelisp_types::DefKind::SpecialForm { .. }
                             )
-                        ) || matches!(entry, ModuleEntry::TypeDef { .. })
-                          || matches!(entry, ModuleEntry::Constructor { type_name, .. }
-                            if is_root_type_constructor(type_name)
-                        ) || is_root_primitive(name)
+                        )
                     })
                     .map(|(name, entry)| (name.clone(), entry.clone()))
                     .collect()
@@ -1793,13 +1799,13 @@ mod tests {
         assert!(tc.symbol_table().get("impl").is_some(), "impl should be available");
         assert!(tc.symbol_table().get("defmacro").is_some(), "defmacro should be available");
 
-        // --- Root module: primitive type names ---
-        assert!(tc.symbol_table().get("Int").is_some(), "Int should be available");
-        assert!(tc.symbol_table().get("Bool").is_some(), "Bool should be available");
-        assert!(tc.symbol_table().get("Float").is_some(), "Float should be available");
-        assert!(tc.symbol_table().get("String").is_some(), "String should be available");
+        // --- NOT available without import (spec §8.9.1) ---
 
-        // --- NOT available without import ---
+        // Builtin type names live in `primitives`, not `user`.
+        assert!(tc.symbol_table().get("Int").is_none(), "Int needs import");
+        assert!(tc.symbol_table().get("Bool").is_none(), "Bool needs import");
+        assert!(tc.symbol_table().get("Float").is_none(), "Float needs import");
+        assert!(tc.symbol_table().get("String").is_none(), "String needs import");
 
         // Named primitives (spec §8.9.1: "NOT available as bare names").
         assert!(tc.symbol_table().get("add-i64").is_none(), "add-i64 needs import");
@@ -1815,10 +1821,20 @@ mod tests {
         // Operators come from prelude.
         assert!(tc.symbol_table().get("+").is_none(), "+ needs prelude");
 
+        // Test infrastructure NOT in user (spec §8.9.1).
+        assert!(tc.symbol_table().get("TestResult").is_none(), "TestResult needs import");
+        assert!(tc.symbol_table().get("discover-tests").is_none(), "discover-tests needs import");
+        assert!(tc.symbol_table().get("run-test").is_none(), "run-test needs import");
+
         // Primitives ARE in the primitives synthetic module.
         let prims_path = ModuleFullPath::from("primitives");
         let prims_table = tc.modules.get(&prims_path).unwrap();
         assert!(prims_table.get("add-i64").is_some(), "add-i64 in primitives");
+        assert!(prims_table.get("Int").is_some(), "Int in primitives");
+        assert!(prims_table.get("Bool").is_some(), "Bool in primitives");
+        assert!(prims_table.get("TestResult").is_some(), "TestResult in primitives");
+        assert!(prims_table.get("discover-tests").is_some(), "discover-tests in primitives");
+        assert!(prims_table.get("run-test").is_some(), "run-test in primitives");
     }
 
     // spec: 08-modules §8.9 — new modules get root contents, nothing else
@@ -1827,10 +1843,11 @@ mod tests {
         let mut tc = TypeChecker::new();
         tc.set_current_module(ModuleFullPath::from("math"));
         assert_eq!(tc.current_module_path().as_ref(), "math");
-        // Root contents: special forms and primitive type names.
+        // Root contents: special forms only.
         assert!(tc.symbol_table().get("if").is_some());
-        assert!(tc.symbol_table().get("Int").is_some());
-        // NOT seeded with primitives.
+        // Builtin type names NOT seeded (spec §8.9.1).
+        assert!(tc.symbol_table().get("Int").is_none());
+        // Named primitives NOT seeded.
         assert!(tc.symbol_table().get("add-i64").is_none());
         // Operators come from prelude, NOT compiler builtins.
         assert!(tc.symbol_table().get("+").is_none());
@@ -2305,9 +2322,9 @@ mod tests {
         // Primitives are NOT auto-imported (spec §8.9.1).
         assert!(tc.symbol_table().get("add-i64").is_none(), "add-i64 needs import");
         assert!(tc.symbol_table().get("bind").is_none(), "bind needs import");
-        // Only root contents: special forms and builtin type names.
+        // Only root contents: special forms (no builtin type names per spec §8.9.1).
         assert!(tc.symbol_table().get("if").is_some(), "if should be available");
-        assert!(tc.symbol_table().get("Int").is_some(), "Int should be available");
+        assert!(tc.symbol_table().get("Int").is_none(), "Int needs import");
     }
 
     // --- Concurrency primitives (Phase 2) ---

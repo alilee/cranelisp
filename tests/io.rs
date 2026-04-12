@@ -371,7 +371,8 @@ fn io_bind_with_named_function() {
     let dir = tempfile::tempdir().unwrap();
     let file = dir.path().join("test.cl");
     std::fs::write(&file, "\
-        (defn wrap-add-one [x] (Pure (primitives/add-i64 x 1)))\n\
+        (import [primitives [Pure bind add-i64]])\n\
+        (defn wrap-add-one [x] (Pure (add-i64 x 1)))\n\
         (defn main [] (bind (Pure 9) wrap-add-one))\n\
     ").unwrap();
     let output = std::process::Command::new(env!("CARGO_BIN_EXE_cranelisp"))
@@ -485,6 +486,8 @@ fn io_bind_print_sequence() {
     };
 
     capture.reset();
+    // bind is a primitives function — import it per spec §8.9.1.
+    let _ = session.eval("(import [primitives [bind]])");
     let (value, ty) = repl_eval_typed(
         &mut session,
         r#"(bind (print "a") (fn [_] (print "b")))"#,
@@ -576,6 +579,8 @@ fn io_read_line_bind_print_echo() {
     capture.set_input(&["echo me"]);
     capture.reset();
     capture.set_input(&["echo me"]);
+    // bind is a primitives function — import it per spec §8.9.1.
+    let _ = session.eval("(import [primitives [bind]])");
     let (value, ty) =
         repl_eval_typed(&mut session, "(bind (read-line) (fn [line] (print line)))");
     assert!(ty.is_io(), "bind chain should return IO type, got: {:?}", ty);
@@ -640,6 +645,8 @@ fn io_do_macro_type_is_last_expression() {
         }
     };
 
+    // Pure is a primitives constructor — import it per spec §8.9.1.
+    let _ = session.eval("(import [primitives [Pure]])");
     // (do (print "x") (Pure true)) — last expr is IO Bool
     let (_, ty) = repl_eval_typed(
         &mut session,
@@ -796,6 +803,7 @@ fn io_trampoline_deep_bind_chain() {
     let dir = tempfile::tempdir().unwrap();
     let file = dir.path().join("test.cl");
     std::fs::write(&file, "\
+        (import [primitives [Pure bind]])\n\
         (defn add-one [x] (Pure (primitives/add-i64 x 1)))\n\
         (defn main []\n\
           (bind (Pure 0)\n\

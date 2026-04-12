@@ -753,7 +753,7 @@ The fields are:
 
 The `children` field is a standard `SList` (from the `macros` module). User code traverses it with pattern matching on `SCons`/`SNil`, just like any other `SList` value. The `params` field is likewise an `SList` of formatted argument strings.
 
-`Trace`, `TraceCall`, `trace`, and the field accessors are defined in the `primitives` module but NOT auto-imported. See [Section 3.2.4](03-types.md#324-trace-type) for import requirements.
+`trace` is a parser keyword and is always available without import (see [§2.2](02-grammar.md#22-special-forms)). `Trace`, `TraceCall`, and the field accessors (`name`, `params`, `result`, `children`, `nanos`) are defined in the `primitives` module and require explicit import for pattern matching and field access. See [Section 3.2.4](03-types.md#324-trace-type) for import requirements.
 
 ### 4.12.5 Nested Trace [Tested tests/ring4_trace::trace_nested_single_trace]
 

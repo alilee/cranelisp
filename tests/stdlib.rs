@@ -217,7 +217,13 @@ fn option_none_exists() {
 fn macro_do_returns_last() {
     // do now expands to bind chains (IO semantics).
     // (do (Pure 1) (Pure 2) (Pure 3)) sequences IO actions, returns last.
-    let (val, ty) = eval("(do (Pure 1) (Pure 2) (Pure 3))");
+    // Pure is a primitives constructor — import it per spec §8.9.1.
+    let mut session = SESSION.0.lock().unwrap_or_else(|p| p.into_inner());
+    let _ = session.eval("(import [primitives [Pure]])");
+    let result = session
+        .eval("(do (Pure 1) (Pure 2) (Pure 3))")
+        .unwrap_or_else(|e| panic!("eval failed: {e}"));
+    let (val, ty) = (result.value(), result.ty().clone());
     assert!(ty.is_io(), "do should return IO type, got: {:?}", ty);
     let inner = cranelisp_runtime::run_io_trampoline(val);
     assert_eq!(inner, 3);
@@ -435,7 +441,13 @@ fn macro_do_single() {
 #[test]
 fn macro_do_multi() {
     // do with multiple expressions expands to nested bind calls.
-    let (val, ty) = eval("(do (Pure 1) (Pure 2) (Pure 3) (Pure 42))");
+    // Pure is a primitives constructor — import it per spec §8.9.1.
+    let mut session = SESSION.0.lock().unwrap_or_else(|p| p.into_inner());
+    let _ = session.eval("(import [primitives [Pure]])");
+    let result = session
+        .eval("(do (Pure 1) (Pure 2) (Pure 3) (Pure 42))")
+        .unwrap_or_else(|e| panic!("eval failed: {e}"));
+    let (val, ty) = (result.value(), result.ty().clone());
     assert!(ty.is_io(), "do should return IO type, got: {:?}", ty);
     let inner = cranelisp_runtime::run_io_trampoline(val);
     assert_eq!(inner, 42);
@@ -473,25 +485,40 @@ fn macro_when_false_none() {
 // spec: spec/09-macros.md §9.5 — vec macro creates vector
 #[test]
 fn macro_vec_elements() {
-    let (val, ty) = eval("(vec-len (vec 10 20 30))");
-    assert_eq!(val, 3);
-    assert_eq!(ty, Type::Int);
+    // vec-len is a primitives function — import it per spec §8.9.1.
+    let mut session = SESSION.0.lock().unwrap_or_else(|p| p.into_inner());
+    let _ = session.eval("(import [primitives [vec-len]])");
+    let result = session
+        .eval("(vec-len (vec 10 20 30))")
+        .unwrap_or_else(|e| panic!("eval failed: {e}"));
+    assert_eq!(result.value(), 3);
+    assert_eq!(*result.ty(), Type::Int);
 }
 
 // spec: spec/09-macros.md §9.5 — vec macro empty vector
 #[test]
 fn macro_vec_empty() {
-    let (val, ty) = eval("(vec-len (vec))");
-    assert_eq!(val, 0);
-    assert_eq!(ty, Type::Int);
+    // vec-len is a primitives function — import it per spec §8.9.1.
+    let mut session = SESSION.0.lock().unwrap_or_else(|p| p.into_inner());
+    let _ = session.eval("(import [primitives [vec-len]])");
+    let result = session
+        .eval("(vec-len (vec))")
+        .unwrap_or_else(|e| panic!("eval failed: {e}"));
+    assert_eq!(result.value(), 0);
+    assert_eq!(*result.ty(), Type::Int);
 }
 
 // spec: spec/09-macros.md §9.5 — vec macro access element
 #[test]
 fn macro_vec_access() {
-    let (val, ty) = eval("(vec-get (vec 10 20 30) 1)");
-    assert_eq!(val, 20);
-    assert_eq!(ty, Type::Int);
+    // vec-get is a primitives function — import it per spec §8.9.1.
+    let mut session = SESSION.0.lock().unwrap_or_else(|p| p.into_inner());
+    let _ = session.eval("(import [primitives [vec-get]])");
+    let result = session
+        .eval("(vec-get (vec 10 20 30) 1)")
+        .unwrap_or_else(|e| panic!("eval failed: {e}"));
+    assert_eq!(result.value(), 20);
+    assert_eq!(*result.ty(), Type::Int);
 }
 
 // =============================================================================
@@ -554,7 +581,7 @@ fn macro_const_string_batch() {
     let entry = dir.path().join("main.cl");
     std::fs::write(
         &entry,
-        "(const GREETING \"hi\")\n(defn main [] (str-eq GREETING \"hi\"))",
+        "(import [primitives [str-eq]])\n(const GREETING \"hi\")\n(defn main [] (str-eq GREETING \"hi\"))",
     )
     .unwrap();
     let stdlib_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("stdlib");
@@ -589,7 +616,7 @@ fn macro_def_expression_batch() {
     // Use add-i64 primitive to avoid prelude import ordering issues.
     std::fs::write(
         &entry,
-        "(def MY-SUM (add-i64 1 2))\n(defn main [] MY-SUM)",
+        "(import [primitives [add-i64]])\n(def MY-SUM (add-i64 1 2))\n(defn main [] MY-SUM)",
     )
     .unwrap();
     let stdlib_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("stdlib");
