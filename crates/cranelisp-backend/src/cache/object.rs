@@ -24,7 +24,7 @@ use serde::{Deserialize, Serialize};
 
 use cranelisp_types::{
     CranelispError, Defn, MethodResolutions, ModuleFullPath,
-    Scheme, Span, Symbol, Type, TypeDefInfo, TypeName,
+    Scheme, Span, Symbol, SymbolTable, Type,
 };
 
 use super::serialize::CacheMetadata;
@@ -40,8 +40,6 @@ pub struct ObjectCompileInput {
     pub fn_slot_assignments: HashMap<Symbol, FnSlotInfo>,
     pub fn_to_module: HashMap<Symbol, ModuleFullPath>,
     pub intrinsics: IntrinsicTable,
-    pub type_defs: HashMap<TypeName, TypeDefInfo>,
-    pub constructor_to_type: HashMap<Symbol, TypeName>,
     pub expr_types: HashMap<Span, Type>,
     pub next_got_slot: usize,
     /// Cross-module function references: (name, param_count) for functions
@@ -235,6 +233,7 @@ pub fn build_cache_packet(
 /// manifest tracking.
 pub fn process_cache_packet(
     packet: &CacheWritePacket,
+    symbol_tables: &dashmap::DashMap<ModuleFullPath, SymbolTable>,
 ) -> Result<ProcessedPacket, CranelispError> {
     // Write .meta.json atomically
     super::atomic_write(&packet.meta_path, &packet.meta_json_bytes).map_err(|e| {
@@ -249,7 +248,7 @@ pub fn process_cache_packet(
 
     // Compile ObjectModule and write .o (only if there are defns to compile)
     if !packet.object_compile_input.defns.is_empty() {
-        let obj_bytes = compile_module_to_object(&packet.object_compile_input, &packet.object_compile_input)?;
+        let obj_bytes = compile_module_to_object(&packet.object_compile_input, &packet.object_compile_input, symbol_tables)?;
         super::atomic_write(&packet.object_path, &obj_bytes).map_err(|e| {
             CranelispError::CodegenError {
                 message: format!(
@@ -285,6 +284,7 @@ pub use crate::compiler::got_data_symbol_name;
 pub fn compile_module_to_object(
     input: &ObjectCompileInput,
     env: &dyn crate::compiler::CompilationEnv,
+    symbol_tables: &dashmap::DashMap<ModuleFullPath, SymbolTable>,
 ) -> Result<Vec<u8>, CranelispError> {
     // 1. Build PIC-mode ISA
     let isa = build_isa(true)?;
@@ -348,6 +348,7 @@ pub fn compile_module_to_object(
         &intrinsic_func_ids,
         &obj_fn_slots,
         env,
+        symbol_tables,
     )?;
 
     // 9. Emit the object file bytes
@@ -613,6 +614,7 @@ fn compile_all_functions(
     intrinsic_func_ids: &HashMap<String, FuncId>,
     _obj_fn_slots: &HashMap<Symbol, ObjFnSlot>,
     env: &dyn crate::compiler::CompilationEnv,
+    symbol_tables: &dashmap::DashMap<ModuleFullPath, SymbolTable>,
 ) -> Result<(), CranelispError> {
     // Build func_ids: ONLY intrinsics get direct calls.
     // User functions and cross-module functions go through the GOT.
@@ -667,8 +669,8 @@ fn compile_all_functions(
             expr_types: &input.expr_types,
             func_ids: &func_ids,
             func_arities: &func_arities,
-            type_defs: &input.type_defs,
-            constructor_to_type: &input.constructor_to_type,
+            symbol_tables,
+            current_module: input.module_path.clone(),
             env: Some(env),
             traced_fns: None,
             alloc_func_id,
@@ -752,8 +754,6 @@ mod tests {
             fn_slot_assignments: HashMap::new(),
             fn_to_module: HashMap::new(),
             intrinsics: IntrinsicTable::new(),
-            type_defs: HashMap::new(),
-            constructor_to_type: HashMap::new(),
             expr_types: HashMap::new(),
             next_got_slot: 0,
             cross_module_fns: vec![],
@@ -792,8 +792,6 @@ mod tests {
             fn_slot_assignments: HashMap::new(),
             fn_to_module: HashMap::new(),
             intrinsics: IntrinsicTable::new(),
-            type_defs: HashMap::new(),
-            constructor_to_type: HashMap::new(),
             expr_types: HashMap::new(),
             next_got_slot: 0,
             cross_module_fns: vec![],
@@ -810,7 +808,7 @@ mod tests {
         )
         .unwrap();
 
-        let result = process_cache_packet(&packet).unwrap();
+        let result = process_cache_packet(&packet, &dashmap::DashMap::new()).unwrap();
         assert_eq!(result.module_path, mp);
         assert_eq!(result.source_hash, "hash123");
 
@@ -873,14 +871,12 @@ mod tests {
             fn_slot_assignments: HashMap::new(),
             fn_to_module: HashMap::new(),
             intrinsics: IntrinsicTable::new(),
-            type_defs: HashMap::new(),
-            constructor_to_type: HashMap::new(),
             expr_types: HashMap::new(),
             next_got_slot: 0,
             cross_module_fns: vec![],
         };
 
-        let bytes = compile_module_to_object(&input, &input).unwrap();
+        let bytes = compile_module_to_object(&input, &input, &dashmap::DashMap::new()).unwrap();
         assert!(!bytes.is_empty(), "object file should not be empty");
 
         // Verify it is a valid object file by parsing with the `object` crate
@@ -939,14 +935,12 @@ mod tests {
             fn_slot_assignments: HashMap::new(),
             fn_to_module: HashMap::new(),
             intrinsics: IntrinsicTable::new(),
-            type_defs: HashMap::new(),
-            constructor_to_type: HashMap::new(),
             expr_types: HashMap::new(),
             next_got_slot: 0,
             cross_module_fns: vec![],
         };
 
-        let bytes = compile_module_to_object(&input, &input).unwrap();
+        let bytes = compile_module_to_object(&input, &input, &dashmap::DashMap::new()).unwrap();
         assert!(!bytes.is_empty());
 
         // Verify parseable
@@ -992,8 +986,6 @@ mod tests {
             fn_slot_assignments: HashMap::new(),
             fn_to_module: HashMap::new(),
             intrinsics: IntrinsicTable::new(),
-            type_defs: HashMap::new(),
-            constructor_to_type: HashMap::new(),
             expr_types: HashMap::new(),
             next_got_slot: 0,
             cross_module_fns: vec![],
@@ -1010,7 +1002,7 @@ mod tests {
         )
         .unwrap();
 
-        let result = process_cache_packet(&packet).unwrap();
+        let result = process_cache_packet(&packet, &dashmap::DashMap::new()).unwrap();
         assert_eq!(result.source_hash, "hash456");
 
         // Both .meta.json and .o should exist
@@ -1038,8 +1030,6 @@ mod tests {
             fn_slot_assignments: HashMap::new(),
             fn_to_module: HashMap::new(),
             intrinsics: IntrinsicTable::new(),
-            type_defs: HashMap::new(),
-            constructor_to_type: HashMap::new(),
             expr_types: HashMap::new(),
             next_got_slot: 0,
             cross_module_fns: vec![],
@@ -1056,7 +1046,7 @@ mod tests {
         )
         .unwrap();
 
-        let _result = process_cache_packet(&packet).unwrap();
+        let _result = process_cache_packet(&packet, &dashmap::DashMap::new()).unwrap();
 
         // .meta.json should exist, but .o should NOT
         assert!(packet.meta_path.exists());

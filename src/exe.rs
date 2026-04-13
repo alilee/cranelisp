@@ -55,7 +55,7 @@ fn classify_main_return_type(ty: &Type) -> Result<MainReturnKind, CranelispError
     match ty {
         Type::Fn(params, ret) if params.is_empty() => match ret.as_ref() {
             Type::Int => Ok(MainReturnKind::Int),
-            Type::ADT(name, _) if name.as_ref() == "IO" => Ok(MainReturnKind::Io),
+            Type::ADT(name, _) if name.name.as_ref() == "IO" => Ok(MainReturnKind::Io),
             other => Err(CranelispError::CodegenError {
                 message: format!(
                     "main must return Int or IO, found: {}",
@@ -402,6 +402,7 @@ mod tests {
             kind: Box::new(DefKind::UserFn { constrained_fn: None }),
             callees: Vec::new(),
             got_slot: None,
+            trait_origin: None,
         }
     }
 
@@ -425,7 +426,10 @@ mod tests {
             Symbol::from("main"),
             make_main_entry(Type::Fn(
                 vec![],
-                Box::new(Type::ADT(TypeName::from("IO"), vec![Type::Int])),
+                Box::new(Type::ADT(cranelisp_types::FQTypeName::new(
+                    ModuleFullPath::from("primitives"),
+                    TypeName::from("IO"),
+                ), vec![Type::Int])),
             )),
         );
         let result = validate_main(&st).unwrap();

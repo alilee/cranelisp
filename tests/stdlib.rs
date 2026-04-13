@@ -190,10 +190,13 @@ fn display_show_int() {
 #[test]
 fn option_some_constructs() {
     let (_val, ty) = eval("(Some 1)");
-    assert_eq!(
-        ty,
-        Type::ADT(cranelisp_types::TypeName::from("Option"), vec![Type::Int])
-    );
+    match &ty {
+        Type::ADT(name, args) => {
+            assert_eq!(name.name.as_ref(), "Option");
+            assert_eq!(args, &vec![Type::Int]);
+        }
+        other => panic!("expected ADT Option, got: {other:?}"),
+    }
 }
 
 // spec: spec/06-adt.md §6.1 — Option None constructor
@@ -203,7 +206,7 @@ fn option_none_exists() {
     // None is a nullary constructor, represented as bare tag value 0.
     assert_eq!(val, 0);
     match &ty {
-        Type::ADT(name, _) => assert_eq!(name.as_ref(), "Option"),
+        Type::ADT(name, _) => assert_eq!(name.name.as_ref(), "Option"),
         other => panic!("expected ADT Option, got: {other:?}"),
     }
 }
@@ -234,10 +237,13 @@ fn macro_do_returns_last() {
 fn macro_when_true() {
     // when expands to (if test body None), so body must return Option.
     let (_val, ty) = eval("(when true (Some 42))");
-    assert_eq!(
-        ty,
-        Type::ADT(cranelisp_types::TypeName::from("Option"), vec![Type::Int])
-    );
+    match &ty {
+        Type::ADT(name, args) => {
+            assert_eq!(name.name.as_ref(), "Option");
+            assert_eq!(args, &vec![Type::Int]);
+        }
+        other => panic!("expected ADT Option, got: {other:?}"),
+    }
 }
 
 // =============================================================================
@@ -261,7 +267,7 @@ fn macro_cond_fallthrough() {
 fn result_ok_constructs() {
     let (_val, ty) = eval("(Ok 42)");
     match &ty {
-        Type::ADT(name, _) => assert_eq!(name.as_ref(), "Result"),
+        Type::ADT(name, _) => assert_eq!(name.name.as_ref(), "Result"),
         other => panic!("expected ADT Result, got: {other:?}"),
     }
 }
@@ -271,7 +277,7 @@ fn result_ok_constructs() {
 fn result_err_constructs() {
     let (_val, ty) = eval(r#"(Err "oops")"#);
     match &ty {
-        Type::ADT(name, _) => assert_eq!(name.as_ref(), "Result"),
+        Type::ADT(name, _) => assert_eq!(name.name.as_ref(), "Result"),
         other => panic!("expected ADT Result, got: {other:?}"),
     }
 }
@@ -461,10 +467,13 @@ fn macro_do_multi() {
 #[test]
 fn macro_when_true_some() {
     let (_val, ty) = eval("(when true (Some 42))");
-    assert_eq!(
-        ty,
-        Type::ADT(cranelisp_types::TypeName::from("Option"), vec![Type::Int])
-    );
+    match &ty {
+        Type::ADT(name, args) => {
+            assert_eq!(name.name.as_ref(), "Option");
+            assert_eq!(args, &vec![Type::Int]);
+        }
+        other => panic!("expected ADT Option, got: {other:?}"),
+    }
 }
 
 // spec: spec/09-macros.md §9.5 — when false returns None
@@ -473,7 +482,7 @@ fn macro_when_false_none() {
     let (val, ty) = eval("(when false (Some 42))");
     assert_eq!(val, 0); // None is tag 0
     match &ty {
-        Type::ADT(name, _) => assert_eq!(name.as_ref(), "Option"),
+        Type::ADT(name, _) => assert_eq!(name.name.as_ref(), "Option"),
         other => panic!("expected Option, got: {other:?}"),
     }
 }

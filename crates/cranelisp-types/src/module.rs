@@ -3,8 +3,8 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 use crate::{
-    ConstructorInfo, Defn, FQSymbol, ModuleFullPath, ModuleName, Scheme, Sexp, Span, Symbol,
-    TraitDecl, TraitName, Type, TypeDefInfo, TypeName, Visibility,
+    ConstructorInfo, Defn, FQSymbol, FQTraitName, FQTypeName, ModuleFullPath, ModuleName,
+    Scheme, Sexp, Span, Symbol, TraitDecl, TraitName, Type, TypeDefInfo, TypeName, Visibility,
 };
 
 // --- Symbol Table ---
@@ -77,6 +77,11 @@ pub enum ModuleEntry {
         /// (they don't need GOT slots — inlined or called directly).
         #[serde(default)]
         got_slot: Option<usize>,
+        /// If this Def is a trait method, which trait it belongs to.
+        /// Replaces the `method_to_trait` reverse index on `TraitRegistry`.
+        /// `None` for non-trait-method definitions.
+        #[serde(default)]
+        trait_origin: Option<FQTraitName>,
     },
     /// An imported name from another module (Ring 2).
     Import { source: FQSymbol },
@@ -97,7 +102,7 @@ pub enum ModuleEntry {
     },
     /// A constructor (from a deftype).
     Constructor {
-        type_name: Symbol,
+        type_name: FQTypeName,
         info: ConstructorInfo,
         scheme: Scheme,
         visibility: Visibility,
@@ -120,6 +125,16 @@ pub enum ModuleEntry {
         dll_path: PathBuf,
         platform_module: ModuleFullPath,
     },
+    /// A trait implementation for a specific type (Ring 2).
+    /// Keyed by synthetic name `impl$FQTypeName$FQTraitName` on the SymbolTable.
+    /// Always public (spec §5.11: impls are visible wherever both trait and type are in scope).
+    /// See `design/arch/traitimpl-symbol-table.md` for the full design.
+    TraitImpl {
+        trait_name: FQTraitName,
+        impl_type: FQTypeName,
+        /// Method names defined in this impl (local names, not mangled).
+        methods: Vec<Symbol>,
+    },
     /// A bare name that became ambiguous (two different sources registered it, Ring 2).
     Ambiguous,
 }
@@ -132,6 +147,8 @@ impl ModuleEntry {
     pub fn callees(&self) -> &[FQSymbol] {
         match self {
             ModuleEntry::Def { callees, .. } | ModuleEntry::Macro { callees, .. } => callees,
+            // TraitImpl has no callees — it's an index/metadata entry.
+            // The actual method Def entries carry their own callees.
             _ => &[],
         }
     }
@@ -146,6 +163,8 @@ impl ModuleEntry {
             | ModuleEntry::Macro { visibility, .. } => *visibility == Visibility::Public,
             ModuleEntry::Import { .. } | ModuleEntry::Reexport { .. } => true,
             ModuleEntry::PlatformDecl { .. } => true,
+            // Spec §5.11: trait implementations are always public.
+            ModuleEntry::TraitImpl { .. } => true,
             ModuleEntry::Ambiguous => false,
         }
     }

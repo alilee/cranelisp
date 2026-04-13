@@ -4,20 +4,18 @@
 // including string literals and polymorphic ADTs with data constructor fields,
 // builtin operator type schemes, exhaustiveness checking.
 //
-// Architecture: TypeChecker struct with borrow-splitting pattern -- hot-path
-// functions (unify, fresh_var) take explicit &mut Subst / &mut TypeId parameters
-// to avoid &mut self conflicts.
+// Architecture: TypeCheckEnv struct with borrowed references to shared state.
+// Methods take `&self` (immutable — DashMap and AtomicU32 have interior
+// mutability) plus `&mut CheckState` for per-invocation transient state.
 //
-// Concurrency (Sprint 40):
-// - Phase 1: per-check transient state extracted into `CheckState`
-// - Phase 2: `AtomicU32` for TypeId allocation, per-module compilation locks
-//   via `try_lock_module()` / `ModuleGuard` RAII guard
-// - Phase 3: shared registries (type_defs, trait_registry, impl_registry)
-//   behind `RwLock` for parallel-safe access. `check()` remains `&mut self`
-//   until the pipeline needs concurrent calls (see checker.rs module doc).
+// State model (Sprint 51):
+// - All type definitions, trait declarations, and trait implementations stored
+//   on per-module SymbolTables (no global registries).
+// - Per-check transient state in `CheckState`, owned by the caller.
+// - `&AtomicU32` for TypeId allocation, borrowed from session-owned state.
 
 mod adt;
-mod builtins;
+pub mod builtins;
 mod checker;
 mod infer;
 mod program;
@@ -28,7 +26,8 @@ mod traits;
 mod unify;
 
 // Public API
-pub use checker::{CheckState, ModuleGuard, TypeChecker};
+pub use builtins::register_builtins;
+pub use checker::{CheckState, TypeCheckEnv};
 pub use program::{CheckPass, FormCheckResult, ModuleCheckAccumulator};
 
 // Re-export boundary types that callers need

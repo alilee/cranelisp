@@ -20,7 +20,9 @@ use cranelift::prelude::*;
 use cranelift_codegen::ir::AtomicRmwOp;
 use cranelift_module::{FuncId, Module};
 
-use cranelisp_types::{HeapHeader, TypeDefInfo, TypeName};
+use dashmap::DashMap;
+
+use cranelisp_types::{FQTypeName, HeapHeader, ModuleEntry, ModuleFullPath, Symbol, SymbolTable};
 
 use crate::codegen_types::NULLARY_TAG_THRESHOLD;
 
@@ -319,14 +321,20 @@ pub fn emit_alloc<M: Module>(
 // ---------------------------------------------------------------------------
 
 /// Check if a type has mixed nullary and data constructors (for match discrimination).
-pub fn is_mixed_adt(type_defs: &HashMap<TypeName, TypeDefInfo>, type_name: &TypeName) -> bool {
-    if let Some(info) = type_defs.get(type_name) {
-        let has_nullary = info.constructors.iter().any(|c| c.fields.is_empty());
-        let has_data = info.constructors.iter().any(|c| !c.fields.is_empty());
-        has_nullary && has_data
-    } else {
-        false
-    }
+pub fn is_mixed_adt(symbol_tables: &DashMap<ModuleFullPath, SymbolTable>, fqtn: &FQTypeName) -> bool {
+    symbol_tables.get(&fqtn.module)
+        .and_then(|table| {
+            let type_key = Symbol::from(fqtn.name.as_ref());
+            match table.get(type_key.as_ref()) {
+                Some(ModuleEntry::TypeDef { info, .. }) => {
+                    let has_nullary = info.constructors.iter().any(|c| c.fields.is_empty());
+                    let has_data = info.constructors.iter().any(|c| !c.fields.is_empty());
+                    Some(has_nullary && has_data)
+                }
+                _ => None,
+            }
+        })
+        .unwrap_or(false)
 }
 
 /// Threshold constant for discriminating nullary tags from heap pointers.

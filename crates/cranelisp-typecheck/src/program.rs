@@ -24,12 +24,12 @@ use std::collections::{HashMap, HashSet};
 
 use cranelisp_types::{
     CheckResult, CompileContext, ConstrainedFn, CranelispError, Defn, DefKind, DefnVariant,
-    DisplayInfo, Expr, FQSymbol, ImportNames, ImportSpec, JitSymbol, ModuleEntry, ModuleFullPath,
+    DisplayInfo, Expr, FQSymbol, JitSymbol, ModuleEntry, ModuleFullPath,
     ModuleStrategy, MonoDefn, ResolvedCall, Scheme, Span, Symbol, SymbolTable, TopLevel, Type,
     Visibility, Warning, apply,
 };
 
-use crate::checker::{CheckState, TypeChecker};
+use crate::checker::{CheckState, TypeCheckEnv};
 use crate::resolve::resolve_type_expr;
 use crate::scheme::mono;
 
@@ -256,7 +256,7 @@ fn types_compatible(a: &Type, b: &Type) -> bool {
     }
 }
 
-impl TypeChecker {
+impl TypeCheckEnv<'_> {
     // =================================================================
     // Per-Form Typecheck API (v4 pipeline)
     // =================================================================
@@ -272,7 +272,7 @@ impl TypeChecker {
         caller: &Symbol,
         method_resolutions: &HashMap<Span, ResolvedCall>,
     ) -> Vec<(Symbol, FQSymbol)> {
-        let current_module = self.current_module_path().clone();
+        let current_module = state.current_module.clone();
         let mut edges = Vec::new();
 
         for resolved in method_resolutions.values() {
@@ -340,27 +340,11 @@ impl TypeChecker {
     /// - One `ModuleCheckAccumulator` per module, no concurrent access.
     /// Per-form typecheck entry point.
     ///
-    /// Backward-compatible wrapper that uses `self.state` for the CheckState.
-    /// Workers should prefer `check_form_with_state` which takes an explicit
-    /// `CheckState` parameter (enabling `&self` on `TypeChecker`).
+    /// Per-form typecheck entry point.
+    ///
+    /// The caller owns the `CheckState` and passes it in. Multiple workers
+    /// can hold `&TypeCheckEnv` concurrently, each with their own state.
     pub fn check_form(
-        &mut self,
-        _module: &ModuleFullPath,
-        form: &TopLevel,
-        pass: CheckPass,
-        accumulator: &mut ModuleCheckAccumulator,
-    ) -> Result<FormCheckResult, CranelispError> {
-        let mut state = std::mem::replace(&mut self.state, CheckState::new(ModuleFullPath::from("")));
-        let result = match pass {
-            CheckPass::Register => self.check_form_register(&mut state, form, accumulator),
-            CheckPass::CheckBody => self.check_form_body(&mut state, form, accumulator),
-        };
-        self.state = state;
-        result
-    }
-
-    /// Per-form typecheck with explicit state — `&self`-compatible for concurrent use.
-    pub fn check_form_with_state(
         &self,
         _module: &ModuleFullPath,
         form: &TopLevel,
@@ -465,7 +449,7 @@ impl TypeChecker {
         // Register a placeholder for the base name
         let placeholder_ty = self.fresh_var();
         let placeholder_scheme = mono(placeholder_ty);
-        self.current_symbol_table_mut_with_state(state).insert(
+        self.current_symbol_table_mut(state).insert(
             defn.name.clone(),
             ModuleEntry::Def {
                 scheme: placeholder_scheme,
@@ -475,6 +459,7 @@ impl TypeChecker {
                 kind: Box::new(DefKind::Overloaded { variants: vec![] }),
                 callees: Vec::new(),
                 got_slot: None,
+                trait_origin: None,
             },
         );
 
@@ -535,7 +520,7 @@ impl TypeChecker {
         let trial_scheme = self.generalize(state, &fn_type);
         let constrained_fn = if !trial_scheme.constraints.is_empty() {
             if let Some(ModuleEntry::Def { kind, .. }) =
-                self.current_symbol_table_mut_with_state(state).symbols.get_mut(&defn.name)
+                self.current_symbol_table_mut(state).symbols.get_mut(&defn.name)
             {
                 let cf = ConstrainedFn {
                     defn: defn.clone(),
@@ -630,7 +615,7 @@ impl TypeChecker {
             let trial_scheme = self.generalize(state, &fn_type);
             if !trial_scheme.constraints.is_empty() {
                 if let Some(ModuleEntry::Def { kind, .. }) =
-                    self.current_symbol_table_mut_with_state(state).symbols.get_mut(&internal_name)
+                    self.current_symbol_table_mut(state).symbols.get_mut(&internal_name)
                 {
                     let cf = ConstrainedFn {
                         defn: internal_defn,
@@ -683,20 +668,8 @@ impl TypeChecker {
     /// `ModuleEntry` in the symbol table (Decision 21) so that the
     /// scheduler can read them immediately without waiting for
     /// `finalize_check_result`.
-    /// Backward-compatible merge wrapper using `self.state`.
+    /// Merge a per-form check result into the module accumulator.
     pub fn merge_form_result(
-        &mut self,
-        _module: &ModuleFullPath,
-        accumulator: &mut ModuleCheckAccumulator,
-        result: FormCheckResult,
-    ) {
-        let mut state = std::mem::replace(&mut self.state, CheckState::new(ModuleFullPath::from("")));
-        self.merge_form_result_inner(&mut state, accumulator, result);
-        self.state = state;
-    }
-
-    /// Merge with explicit state — `&self`-compatible for concurrent use.
-    pub fn merge_form_result_with_state(
         &self,
         _module: &ModuleFullPath,
         state: &mut CheckState,
@@ -715,7 +688,7 @@ impl TypeChecker {
         // Write callees to ModuleEntry eagerly (Decision 21).
         if !result.call_graph_edges.is_empty() {
             write_callees_to_module_entries(
-                &mut self.current_symbol_table_mut_with_state(state),
+                &mut self.current_symbol_table_mut(state),
                 &result.call_graph_edges,
             );
         }
@@ -745,22 +718,8 @@ impl TypeChecker {
     /// Note: `type_defs` and `constructor_to_type` are read from the TypeChecker's
     /// module tables, not from the accumulator — TypeDef registration writes
     /// directly into the module's type_defs registry during Pass 1.
-    /// Backward-compatible finalize wrapper using `self.state`.
+    /// Finalize: run post-passes and drain the accumulator into `CheckResult`.
     pub fn finalize_check_result(
-        &mut self,
-        _module: &ModuleFullPath,
-        accumulator: &mut ModuleCheckAccumulator,
-        working_program: &[TopLevel],
-        strategy: ModuleStrategy,
-    ) -> Result<CheckResult, CranelispError> {
-        let mut state = std::mem::replace(&mut self.state, CheckState::new(ModuleFullPath::from("")));
-        let result = self.finalize_check_result_inner(&mut state, accumulator, working_program, strategy);
-        self.state = state;
-        result
-    }
-
-    /// Finalize with explicit state — `&self`-compatible for concurrent use.
-    pub fn finalize_check_result_with_state(
         &self,
         _module: &ModuleFullPath,
         state: &mut CheckState,
@@ -787,7 +746,7 @@ impl TypeChecker {
             );
             let scheme = self.generalize(state, &fn_type);
             if let Some(ModuleEntry::Def { scheme: s, kind, .. }) =
-                self.current_symbol_table_mut_with_state(state).symbols.get_mut(name)
+                self.current_symbol_table_mut(state).symbols.get_mut(name)
             {
                 *s = scheme.clone();
                 if scheme.constraints.is_empty()
@@ -838,7 +797,7 @@ impl TypeChecker {
         constrained_fn_names.extend(accumulator.constrained_fn_names.drain());
 
         if strategy == ModuleStrategy::Additive {
-            for (name, entry) in self.current_symbol_table_with_state(state).all_symbols() {
+            for (name, entry) in self.current_symbol_table(state).all_symbols() {
                 if let ModuleEntry::Def { kind, .. } = entry
                     && let DefKind::UserFn { constrained_fn: Some(_) } = kind.as_ref()
                 {
@@ -874,7 +833,7 @@ impl TypeChecker {
         // edges from post-passes.
         if !accumulator.call_graph_edges.is_empty() {
             write_callees_to_module_entries(
-                &mut self.current_symbol_table_mut_with_state(state),
+                &mut self.current_symbol_table_mut(state),
                 &accumulator.call_graph_edges,
             );
         }
@@ -894,8 +853,6 @@ impl TypeChecker {
             method_resolutions: std::mem::take(&mut accumulator.method_resolutions),
             expr_types: resolved_expr_types,
             warnings: std::mem::take(&mut accumulator.warnings),
-            type_defs: self.type_defs.read().unwrap().type_defs.clone(),
-            constructor_to_type: self.type_defs.read().unwrap().constructor_to_type.clone(),
             constrained_fn_names,
             mono_defns,
             default_method_defns: all_default_defns,
@@ -919,6 +876,7 @@ impl TypeChecker {
     #[must_use = "check result contains expr_types and method_resolutions needed by codegen"]
     pub fn check(
         &self,
+        state: &mut CheckState,
         program: &[TopLevel],
         ctx: &CompileContext,
         strategy: ModuleStrategy,
@@ -926,14 +884,9 @@ impl TypeChecker {
         // Ensure the module's symbol table exists (DashMap interior mutation).
         self.ensure_module_exists(&ctx.module);
 
-        // Create a stack-local CheckState for this check.
-        // Carry forward module aliases and overload tables from persistent
-        // state (for REPL additive mode where aliases accumulate across evals).
-        let mut state = CheckState::new(ctx.module.clone());
-        state.module_aliases = self.state.module_aliases.clone();
-        state.overloads = self.state.overloads.clone();
-        state.resolved_overloads = self.state.resolved_overloads.clone();
-        self.check_inner(&mut state, program, strategy)
+        // Set the module on the caller-owned state.
+        state.current_module = ctx.module.clone();
+        self.check_inner(state, program, strategy)
     }
 
     fn check_inner(
@@ -1062,7 +1015,7 @@ impl TypeChecker {
             TopLevel::Defn(defn) => {
                 // Look up the defn's generalized scheme from the symbol table.
                 if let Some(ModuleEntry::Def { scheme, .. }) =
-                    self.current_symbol_table_with_state(state).get(defn.name.as_ref())
+                    self.current_symbol_table(state).get(defn.name.as_ref())
                 {
                     Some(DisplayInfo {
                         ty: scheme.ty.clone(),
@@ -1073,7 +1026,10 @@ impl TypeChecker {
                 }
             }
             TopLevel::TypeDef { name, .. } => {
-                let ty = Type::ADT(name.clone(), vec![]);
+                let fqtn = cranelisp_types::FQTypeName::new(
+                    state.current_module.clone(), name.clone(),
+                );
+                let ty = Type::ADT(fqtn, vec![]);
                 Some(DisplayInfo { ty, scheme: None })
             }
             TopLevel::TraitDecl(_) => {
@@ -1086,21 +1042,18 @@ impl TypeChecker {
     }
 
     /// Public wrapper for `clear_module_for_replace` (used by v4 worker).
-    pub fn clear_module_for_replace_public(&self) {
-        let mut state = CheckState::new(self.state.current_module.clone());
-        self.clear_module_for_replace(&mut state);
+    pub fn clear_module_for_replace_public(&self, state: &mut CheckState) {
+        self.clear_module_for_replace(state);
     }
 
     /// Public wrapper for `compute_display_info` (used by v4 worker).
     pub fn compute_display_info_public(
         &self,
+        state: &CheckState,
         original_program: &[TopLevel],
         defn_type_vars: &HashMap<Symbol, (Vec<Type>, Type)>,
     ) -> Option<DisplayInfo> {
-        {
-            let state = &self.state;
-            self.compute_display_info(state, original_program, defn_type_vars)
-        }
+        self.compute_display_info(state, original_program, defn_type_vars)
     }
 
     /// Prepare module for Replace strategy.
@@ -1184,7 +1137,7 @@ impl TypeChecker {
                 // overload resolution after pass 2.
                 let placeholder_ty = self.fresh_var();
                 let placeholder_scheme = mono(placeholder_ty);
-                self.current_symbol_table_mut_with_state(state).insert(
+                self.current_symbol_table_mut(state).insert(
                     defn.name.clone(),
                     ModuleEntry::Def {
                         scheme: placeholder_scheme,
@@ -1194,6 +1147,7 @@ impl TypeChecker {
                         kind: Box::new(DefKind::Overloaded { variants: vec![] }),
                         callees: Vec::new(),
                         got_slot: None,
+                        trait_origin: None,
                     },
                 );
             }
@@ -1314,7 +1268,7 @@ impl TypeChecker {
             let scheme = self.generalize(state, &fn_ty);
 
             // Remove internal name, register mangled name
-            let mut st = self.current_symbol_table_mut_with_state(state);
+            let mut st = self.current_symbol_table_mut(state);
             st.symbols.remove(internal_name.as_ref());
             let slot = st.allocate_got_slot();
             st.insert(
@@ -1329,6 +1283,7 @@ impl TypeChecker {
                     }),
                     callees: Vec::new(),
                     got_slot: Some(slot),
+                    trait_origin: None,
                 },
             );
 
@@ -1380,7 +1335,7 @@ impl TypeChecker {
         );
         let base_scheme = self.generalize(state, &first_fn_ty);
 
-        self.current_symbol_table_mut_with_state(state).insert(
+        self.current_symbol_table_mut(state).insert(
             defn.name.clone(),
             ModuleEntry::Def {
                 scheme: base_scheme,
@@ -1392,6 +1347,7 @@ impl TypeChecker {
                 }),
                 callees: Vec::new(),
                 got_slot: None,
+                trait_origin: None,
             },
         );
 
@@ -1488,13 +1444,11 @@ impl TypeChecker {
     #[deprecated(note = "use check() instead — unified pipeline entry point")]
     #[must_use = "check result contains expr_types and method_resolutions needed by codegen"]
     pub fn check_program(
-        &mut self,
+        &self,
+        state: &mut CheckState,
         program: &[TopLevel],
     ) -> Result<CheckResult, CranelispError> {
-        let mut state = std::mem::replace(&mut self.state, CheckState::new(ModuleFullPath::from("")));
-        let result = self.check_program_inner(&mut state, program);
-        self.state = state;
-        result
+        self.check_program_inner(state, program)
     }
 
     fn check_program_inner(
@@ -1537,8 +1491,6 @@ impl TypeChecker {
             expr_types: resolved_expr_types,
             default_method_defns: default_defns,
             warnings: std::mem::take(&mut state.warnings),
-            type_defs: self.type_defs.read().unwrap().type_defs.clone(),
-            constructor_to_type: self.type_defs.read().unwrap().constructor_to_type.clone(),
             display: None,
         })
     }
@@ -1547,13 +1499,11 @@ impl TypeChecker {
     #[deprecated(note = "use check() instead — unified pipeline entry point")]
     #[must_use = "check result contains type and expr_types needed by codegen"]
     pub fn check_repl_input(
-        &mut self,
+        &self,
+        state: &mut CheckState,
         input: &TopLevel,
     ) -> Result<CheckResult, CranelispError> {
-        let mut state = std::mem::replace(&mut self.state, CheckState::new(ModuleFullPath::from("")));
-        let result = self.check_repl_input_inner(&mut state, input);
-        self.state = state;
-        result
+        self.check_repl_input_inner(state, input)
     }
 
     fn check_repl_input_inner(
@@ -1607,7 +1557,10 @@ impl TypeChecker {
                 span,
             } => {
                 self.register_type_def(state, name, docstring, type_params, constructors, *visibility, *span)?;
-                let ty = Type::ADT(name.clone(), vec![]);
+                let fqtn = cranelisp_types::FQTypeName::new(
+                    state.current_module.clone(), name.clone(),
+                );
+                let ty = Type::ADT(fqtn, vec![]);
                 Ok(self.build_repl_result(state, ty, None))
             }
 
@@ -1705,7 +1658,7 @@ impl TypeChecker {
 
         for defn in defns {
             if let Some(ModuleEntry::Def { kind, .. }) =
-                self.current_symbol_table_with_state(state).get(defn.name.as_ref())
+                self.current_symbol_table(state).get(defn.name.as_ref())
                 && let DefKind::UserFn { constrained_fn: Some(_) } = kind.as_ref()
             {
                 names.insert(defn.name.clone());
@@ -1763,7 +1716,7 @@ impl TypeChecker {
 
         // Upsert: preserve existing got_slot if the symbol is being redefined
         // (REPL Additive mode, module reload). New symbols get a fresh slot.
-        let mut st = self.current_symbol_table_mut_with_state(state);
+        let mut st = self.current_symbol_table_mut(state);
         let existing_slot = st.get(defn.name.as_ref())
             .and_then(|e| match e {
                 ModuleEntry::Def { got_slot, .. } => *got_slot,
@@ -1783,6 +1736,7 @@ impl TypeChecker {
                 }),
                 callees: Vec::new(),
                 got_slot,
+                trait_origin: None,
             },
         );
 
@@ -1846,7 +1800,7 @@ impl TypeChecker {
             if !trial_scheme.constraints.is_empty() {
                 // Mark as constrained immediately
                 if let Some(ModuleEntry::Def { kind, .. }) =
-                    self.current_symbol_table_mut_with_state(state).symbols.get_mut(&defn.name)
+                    self.current_symbol_table_mut(state).symbols.get_mut(&defn.name)
                 {
                     let cf = ConstrainedFn {
                         defn: (*defn).clone(),
@@ -1870,7 +1824,7 @@ impl TypeChecker {
             );
             let scheme = self.generalize(state, &fn_type);
             if let Some(ModuleEntry::Def { scheme: s, kind, .. }) =
-                self.current_symbol_table_mut_with_state(state).symbols.get_mut(&defn.name)
+                self.current_symbol_table_mut(state).symbols.get_mut(&defn.name)
             {
                 *s = scheme.clone();
                 // Clear eager constrained marker if final scheme is unconstrained
@@ -1957,7 +1911,7 @@ impl TypeChecker {
         // Update symbol table with generalized scheme
         // If constrained, also store as ConstrainedFn
         if let Some(ModuleEntry::Def { scheme: s, kind, .. }) =
-            self.current_symbol_table_mut_with_state(state).symbols.get_mut(&defn.name)
+            self.current_symbol_table_mut(state).symbols.get_mut(&defn.name)
         {
             *s = scheme.clone();
 
@@ -2063,7 +2017,7 @@ impl TypeChecker {
         expr: &Expr,
     ) -> Result<Vec<MonoDefn>, CranelispError> {
         // Build the set of constrained fn names from the symbol table
-        let constrained_fn_names: HashSet<Symbol> = self.current_symbol_table_with_state(state).symbols
+        let constrained_fn_names: HashSet<Symbol> = self.current_symbol_table(state).symbols
             .iter()
             .filter_map(|(name, entry)| {
                 if let ModuleEntry::Def { kind, .. } = entry
@@ -2260,8 +2214,6 @@ impl TypeChecker {
             method_resolutions: std::mem::take(&mut state.method_resolutions),
             expr_types: resolved_expr_types,
             warnings: std::mem::take(&mut state.warnings),
-            type_defs: self.type_defs.read().unwrap().type_defs.clone(),
-            constructor_to_type: self.type_defs.read().unwrap().constructor_to_type.clone(),
             constrained_fn_names: HashSet::new(),
             mono_defns: Vec::new(),
             default_method_defns: Vec::new(),
@@ -2273,10 +2225,22 @@ impl TypeChecker {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::checker::TestFixture;
     use cranelisp_types::{
-        CompileContext, DefnVariant, Expr, FQSymbol, ModuleFullPath, Symbol, TraitDecl,
-        TraitImpl, TraitMethodSig, TraitName, TypeExpr, TypeName, Visibility,
+        CompileContext, DefnVariant, Expr, FQSymbol, FQTypeName, ImportNames, ImportSpec,
+        ModuleFullPath, Symbol,
+        TraitDecl, TraitImpl, TraitMethodSig, TraitName, TypeExpr, TypeName, Visibility,
     };
+
+    /// Test helper: create an FQTypeName in the "user" module (default for TestFixture::new()).
+    fn user_fqtn(name: &str) -> FQTypeName {
+        FQTypeName::new(ModuleFullPath::from("user"), TypeName::from(name))
+    }
+
+    /// Test helper: create an FQTypeName in the "test" module (used by tc_with_prims()).
+    fn test_fqtn(name: &str) -> FQTypeName {
+        FQTypeName::new(ModuleFullPath::from("test"), TypeName::from(name))
+    }
 
     fn span(start: u32, end: u32) -> Span {
         Span::new(start, end)
@@ -2306,8 +2270,8 @@ mod tests {
     }
 
     /// Create a TypeChecker with primitives imported into a "test" module.
-    fn tc_with_prims() -> TypeChecker {
-        let mut tc = TypeChecker::new();
+    fn tc_with_prims() -> TestFixture {
+        let mut tc = TestFixture::new();
         tc.set_current_module(ModuleFullPath::from("test"));
         let import_spec = ImportSpec {
             module_path: ModuleFullPath::from("primitives"),
@@ -2315,13 +2279,13 @@ mod tests {
             names: ImportNames::Glob,
             span: Span::new(0, 0),
         };
-        tc.register_imports(&[import_spec]).unwrap();
+        tc.register_imports_self(&[import_spec]).unwrap();
         tc
     }
 
     /// Register a minimal Num trait with `+` method, plus an impl for Int,
     /// so tests using `(+ x y)` work after Decision 17 elimination.
-    fn register_num_trait_inline(tc: &mut TypeChecker) {
+    fn register_num_trait_inline(tc: &mut TestFixture) {
         let num_decl = TraitDecl {
             name: TraitName::from("Num"),
             docstring: None,
@@ -2634,7 +2598,7 @@ mod tests {
             assert_eq!(
                 scheme.ty,
                 Type::Fn(
-                    vec![Type::ADT(TypeName::from("Color"), vec![])],
+                    vec![Type::ADT(test_fqtn("Color"), vec![])],
                     Box::new(Type::Bool)
                 )
             );
@@ -2643,8 +2607,8 @@ mod tests {
         }
 
         // Type defs should be in the result
-        assert!(result.type_defs.contains_key(&TypeName::from("Color")));
-        assert!(result.constructor_to_type.contains_key("Red"));
+        assert!(tc.lookup_type_def(&TypeName::from("Color")).is_some());
+        assert!(tc.lookup_constructor_type("Red").is_some());
     }
 
     // spec: 03-types §3.8 — unification failure produces type error
@@ -2796,8 +2760,8 @@ mod tests {
             span: Span::SYNTHETIC,
         };
         let result = tc.check_repl_input_self(&input).unwrap();
-        assert_eq!(result.display.as_ref().unwrap().ty, Type::ADT(TypeName::from("Dir"), vec![]));
-        assert!(result.type_defs.contains_key(&TypeName::from("Dir")));
+        assert_eq!(result.display.as_ref().unwrap().ty, Type::ADT(test_fqtn("Dir"), vec![]));
+        assert!(tc.lookup_type_def(&TypeName::from("Dir")).is_some());
     }
 
     // spec: 03-types §3.5.1 — forward references resolved via two-pass inference
@@ -3062,9 +3026,9 @@ mod tests {
         ];
 
         let result = tc.check_program_self(&program).unwrap();
-        assert!(result.type_defs.contains_key(&TypeName::from("Option")));
-        assert!(result.constructor_to_type.contains_key("Some"));
-        assert!(result.constructor_to_type.contains_key("None"));
+        assert!(tc.lookup_type_def(&TypeName::from("Option")).is_some());
+        assert!(tc.lookup_constructor_type("Some").is_some());
+        assert!(tc.lookup_constructor_type("None").is_some());
     }
 
     // spec: 05-definitions §5.2.2 — REPL polymorphic typedef registers type defs
@@ -3096,7 +3060,7 @@ mod tests {
             span: Span::SYNTHETIC,
         };
         let result = tc.check_repl_input_self(&input).unwrap();
-        assert!(result.type_defs.contains_key(&TypeName::from("Option")));
+        assert!(tc.lookup_type_def(&TypeName::from("Option")).is_some());
     }
 
     // spec: 03-types §3.1 — string literal inferred as String type
@@ -3164,7 +3128,7 @@ mod tests {
         };
 
         let mut calls = Vec::new();
-        TypeChecker::collect_constrained_calls(&expr, &constrained, &mut calls);
+        TypeCheckEnv::collect_constrained_calls(&expr, &constrained, &mut calls);
 
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0].0.as_ref(), "add");
@@ -3190,7 +3154,7 @@ mod tests {
         };
 
         let mut calls = Vec::new();
-        TypeChecker::collect_constrained_calls(&expr, &constrained, &mut calls);
+        TypeCheckEnv::collect_constrained_calls(&expr, &constrained, &mut calls);
 
         assert!(calls.is_empty());
     }
@@ -3223,7 +3187,7 @@ mod tests {
         };
 
         let mut calls = Vec::new();
-        TypeChecker::collect_constrained_calls(&expr, &constrained, &mut calls);
+        TypeCheckEnv::collect_constrained_calls(&expr, &constrained, &mut calls);
 
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0].0.as_ref(), "add");
@@ -3262,7 +3226,7 @@ mod tests {
         };
 
         let mut calls = Vec::new();
-        TypeChecker::collect_constrained_calls(&expr, &constrained, &mut calls);
+        TypeCheckEnv::collect_constrained_calls(&expr, &constrained, &mut calls);
 
         assert_eq!(calls.len(), 2, "should find calls in both branches");
     }
@@ -3652,7 +3616,7 @@ mod tests {
         let result = tc.check(&program, &test_ctx(), cranelisp_types::ModuleStrategy::Additive).unwrap();
 
         // The base name "add" should be registered as Overloaded
-        let table_guard = tc.current_symbol_table();
+        let table_guard = tc.symbol_table();
         let entry = table_guard.get("add");
         assert!(entry.is_some(), "base name 'add' should be registered");
         if let Some(ModuleEntry::Def { kind, .. }) = entry {
@@ -3666,11 +3630,11 @@ mod tests {
 
         // Mangled names should be registered: add$Int+Int and add$Int+Int+Int
         assert!(
-            tc.current_symbol_table().get("add$Int+Int").is_some(),
+            tc.symbol_table().get("add$Int+Int").is_some(),
             "add$Int+Int should be registered"
         );
         assert!(
-            tc.current_symbol_table().get("add$Int+Int+Int").is_some(),
+            tc.symbol_table().get("add$Int+Int+Int").is_some(),
             "add$Int+Int+Int should be registered"
         );
 
@@ -3731,11 +3695,11 @@ mod tests {
 
         // Mangled names should be different: process$Int vs process$Bool
         assert!(
-            tc.current_symbol_table().get("process$Int").is_some(),
+            tc.symbol_table().get("process$Int").is_some(),
             "process$Int should be registered"
         );
         assert!(
-            tc.current_symbol_table().get("process$Bool").is_some(),
+            tc.symbol_table().get("process$Bool").is_some(),
             "process$Bool should be registered"
         );
 
@@ -4130,16 +4094,16 @@ mod tests {
         let result = tc.check(&program, &ctx, ModuleStrategy::Additive).unwrap();
 
         // type_defs and constructor_to_type should be populated
-        assert!(result.type_defs.contains_key(&TypeName::from("Color")));
-        assert!(result.constructor_to_type.contains_key("Red"));
-        assert!(result.constructor_to_type.contains_key("Green"));
+        assert!(tc.lookup_type_def(&TypeName::from("Color")).is_some());
+        assert!(tc.lookup_constructor_type("Red").is_some());
+        assert!(tc.lookup_constructor_type("Green").is_some());
 
         // is-red should have correct type
         if let Some(ModuleEntry::Def { scheme, .. }) = tc.symbol_table().get("is-red") {
             assert_eq!(
                 scheme.ty,
                 Type::Fn(
-                    vec![Type::ADT(TypeName::from("Color"), vec![])],
+                    vec![Type::ADT(test_fqtn("Color"), vec![])],
                     Box::new(Type::Bool)
                 )
             );

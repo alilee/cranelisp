@@ -4,11 +4,11 @@
 
 use std::collections::HashMap;
 
-use cranelisp_types::{CranelispError, Span, Symbol, Type, TypeExpr, TypeId, TypeName};
+use cranelisp_types::{CranelispError, FQTypeName, Span, Symbol, Type, TypeExpr, TypeId, TypeName};
 
-/// Map of known user-defined type names to their type parameter count.
+/// Map of known user-defined type names to their FQTypeName and type parameter count.
 /// Used by `resolve_type_expr` for ADT lookup and arity validation.
-pub type KnownTypes = HashMap<TypeName, usize>;
+pub type KnownTypes = HashMap<TypeName, (FQTypeName, usize)>;
 
 /// Resolve a type expression to a concrete type.
 ///
@@ -65,8 +65,8 @@ fn resolve_named(
     }
 
     // Check user-defined ADT types (named without type args => zero-arg ADT)
-    if known_types.contains_key(name) {
-        return Ok(Type::ADT(name.clone(), vec![]));
+    if let Some((fqtn, _arity)) = known_types.get(name) {
+        return Ok(Type::ADT(fqtn.clone(), vec![]));
     }
 
     Err(CranelispError::TypeError {
@@ -86,7 +86,7 @@ fn resolve_applied(
     known_types: &KnownTypes,
     span: Span,
 ) -> Result<Type, CranelispError> {
-    let expected_arity = known_types.get(name).ok_or_else(|| {
+    let (fqtn, expected_arity) = known_types.get(name).ok_or_else(|| {
         CranelispError::TypeError {
             message: format!("unknown type: {name}"),
             span,
@@ -108,12 +108,18 @@ fn resolve_applied(
         .map(|a| resolve_type_expr(a, var_map, known_types, span))
         .collect::<Result<Vec<_>, _>>()?;
 
-    Ok(Type::ADT(name.clone(), resolved_args))
+    Ok(Type::ADT(fqtn.clone(), resolved_args))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use cranelisp_types::ModuleFullPath;
+
+    /// Test helper: create an FQTypeName in a "test" module.
+    fn test_fqtn(name: &str) -> FQTypeName {
+        FQTypeName::new(ModuleFullPath::from("test"), TypeName::from(name))
+    }
 
     // spec: 03-types §3.1 — resolve primitive type names to Type values
     #[test]
@@ -171,7 +177,7 @@ mod tests {
     fn test_resolve_user_defined_adt() {
         let var_map = HashMap::new();
         let mut known = KnownTypes::new();
-        known.insert(TypeName::from("Color"), 0);
+        known.insert(TypeName::from("Color"), (test_fqtn("Color"), 0));
         let span = Span::SYNTHETIC;
 
         let ty = resolve_type_expr(
@@ -181,7 +187,7 @@ mod tests {
             span,
         )
         .unwrap();
-        assert_eq!(ty, Type::ADT(TypeName::from("Color"), vec![]));
+        assert_eq!(ty, Type::ADT(test_fqtn("Color"), vec![]));
     }
 
     // spec: 03-types §3.2.1 — resolve function type expression
@@ -249,7 +255,7 @@ mod tests {
     fn test_resolve_applied_valid() {
         let var_map = HashMap::new();
         let mut known = KnownTypes::new();
-        known.insert(TypeName::from("Option"), 1);
+        known.insert(TypeName::from("Option"), (test_fqtn("Option"), 1));
         let span = Span::SYNTHETIC;
 
         let texpr = TypeExpr::Applied(
@@ -259,7 +265,7 @@ mod tests {
         let ty = resolve_type_expr(&texpr, &var_map, &known, span).unwrap();
         assert_eq!(
             ty,
-            Type::ADT(TypeName::from("Option"), vec![Type::Int])
+            Type::ADT(test_fqtn("Option"), vec![Type::Int])
         );
     }
 
@@ -268,7 +274,7 @@ mod tests {
     fn test_resolve_applied_arity_mismatch() {
         let var_map = HashMap::new();
         let mut known = KnownTypes::new();
-        known.insert(TypeName::from("Option"), 1);
+        known.insert(TypeName::from("Option"), (test_fqtn("Option"), 1));
         let span = Span::SYNTHETIC;
 
         // Too many args
@@ -309,7 +315,7 @@ mod tests {
         let mut var_map = HashMap::new();
         var_map.insert(Symbol::from("a"), 5u32);
         let mut known = KnownTypes::new();
-        known.insert(TypeName::from("Option"), 1);
+        known.insert(TypeName::from("Option"), (test_fqtn("Option"), 1));
         let span = Span::SYNTHETIC;
 
         let texpr = TypeExpr::Applied(
@@ -319,7 +325,7 @@ mod tests {
         let ty = resolve_type_expr(&texpr, &var_map, &known, span).unwrap();
         assert_eq!(
             ty,
-            Type::ADT(TypeName::from("Option"), vec![Type::Var(5)])
+            Type::ADT(test_fqtn("Option"), vec![Type::Var(5)])
         );
     }
 
@@ -328,7 +334,7 @@ mod tests {
     fn test_resolve_applied_multi_param() {
         let var_map = HashMap::new();
         let mut known = KnownTypes::new();
-        known.insert(TypeName::from("Either"), 2);
+        known.insert(TypeName::from("Either"), (test_fqtn("Either"), 2));
         let span = Span::SYNTHETIC;
 
         let texpr = TypeExpr::Applied(
@@ -342,7 +348,7 @@ mod tests {
         assert_eq!(
             ty,
             Type::ADT(
-                TypeName::from("Either"),
+                test_fqtn("Either"),
                 vec![Type::Int, Type::String]
             )
         );

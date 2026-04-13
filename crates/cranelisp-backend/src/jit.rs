@@ -462,20 +462,26 @@ impl Jit {
     ///
     /// Bundles all the information needed for codegen into a single struct,
     /// eliminating the need to pass individual fields to `compile_defn`.
+    ///
+    /// `symbol_tables` is the shared DashMap of per-module symbol tables,
+    /// replacing the deleted `CheckResult.type_defs` and `constructor_to_type`.
+    /// `current_module` identifies the module being compiled.
     #[allow(clippy::too_many_arguments)]
     pub fn build_compile_context<'a>(
         &self,
         check: &'a CheckResult,
         func_ids: &'a HashMap<Symbol, FuncId>,
         func_arities: &'a HashMap<Symbol, usize>,
+        symbol_tables: &'a dashmap::DashMap<cranelisp_types::ModuleFullPath, cranelisp_types::SymbolTable>,
+        current_module: cranelisp_types::ModuleFullPath,
     ) -> CompileContext<'a> {
         CompileContext {
             method_resolutions: &check.method_resolutions,
             expr_types: &check.expr_types,
             func_ids,
             func_arities,
-            type_defs: &check.type_defs,
-            constructor_to_type: &check.constructor_to_type,
+            symbol_tables,
+            current_module,
             env: None,
             traced_fns: None,
             alloc_func_id: self.alloc_func_id,

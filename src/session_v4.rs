@@ -8,7 +8,7 @@
 use std::collections::{HashMap, HashSet};
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, AtomicU32};
 use std::sync::{Arc, Mutex};
 
 use cranelisp_types::{
@@ -17,6 +17,8 @@ use cranelisp_types::{
     ModuleStrategy, Sexp, Span, Symbol, SymbolTable, TopLevel,
     TraitName, Type, TypeName, Warning,
 };
+
+use cranelisp_typecheck::{CheckState, TypeCheckEnv};
 
 use crate::platform::LoadedPlatform;
 use crate::platform_registry::PlatformRegistry;
@@ -37,7 +39,7 @@ use cranelisp_backend::display::{format_type_qualified, format_scheme_display};
 /// chains) but never triggers compilation. If a macro's clauses are not
 /// compiled, returns `Ok(None)` (silently skipped).
 struct ReadOnlyMacroResolver<'a> {
-    tc: &'a cranelisp_typecheck::TypeChecker,
+    symbol_tables: &'a dashmap::DashMap<ModuleFullPath, SymbolTable>,
     codegen_products: &'a dashmap::DashMap<ModuleFullPath, CodegenProduct>,
     current_module: ModuleFullPath,
 }
@@ -50,7 +52,7 @@ impl crate::expander::MacroResolver for ReadOnlyMacroResolver<'_> {
     ) -> Result<Option<crate::expander::MacroEntry>, CranelispError> {
         // Walk symbol table to find the defining module and clause infos.
         let resolved = crate::worker::resolve_macro_definition(
-            self.tc, &self.current_module, name, 16,
+            self.symbol_tables, &self.current_module, name, 16,
         );
         let (defining_module, clauses, docstring) = match resolved {
             Some(r) => r,
@@ -380,7 +382,6 @@ fn parens_balanced(input: &str) -> bool {
 /// Populated by typecheck or deserialized from .meta.json on cache hit.
 /// Permanent for session lifetime. See session-restructure.md.
 pub struct TypecheckProduct {
-    pub symbols: SymbolTable,
     /// Per-module GOT table. Allocated at module registration, base address
     /// stable for process lifetime. Slot indices assigned during typecheck,
     /// code pointers filled during codegen. Arc-shared so codegen workers
@@ -406,12 +407,6 @@ pub struct CodegenInput {
     /// Collected during priority worker (which has TC access) and consumed
     /// by nice worker (which does not). Each entry is (qualified_name, param_count).
     pub cross_module_func_sigs: Vec<(Symbol, usize)>,
-    /// Type definitions snapshot for .o compilation (constructors need this
-    /// to emit inline constructor code). Snapshotted from TC during priority
-    /// worker phase.
-    pub type_defs: HashMap<cranelisp_types::TypeName, cranelisp_types::TypeDefInfo>,
-    /// Constructor-to-type mapping for .o compilation. Snapshotted from TC.
-    pub constructor_to_type: HashMap<Symbol, cranelisp_types::TypeName>,
 }
 
 /// Per-module codegen output: compiled code + optional cache linker.
@@ -505,6 +500,27 @@ pub struct SharedState {
     /// (record_cache_hit) during handle_import.
     pub cache_state: Mutex<Option<crate::session::CacheState>>,
 
+    // -- Stateless TC: shared state (Sprint 51) --
+    // The single source of truth for per-module symbol data. Formerly owned
+    // by TypeChecker; now on SharedState for direct access by all workers.
+
+    /// Per-module symbol tables. The single source of truth for per-module
+    /// symbol data. Workers and session methods access this directly.
+    pub symbol_tables: dashmap::DashMap<ModuleFullPath, SymbolTable>,
+
+    /// Monotonic counter for fresh type variable IDs. Shared across all
+    /// TypeCheckEnv instances for concurrent workers.
+    pub next_type_id: AtomicU32,
+
+    /// REPL carry-forward: current module path for REPL prompt and eval.
+    /// Batch compilation sets this per-worker; REPL uses it across evals.
+    pub current_module: Mutex<ModuleFullPath>,
+
+    /// REPL carry-forward: CheckState that persists across REPL evals.
+    /// Contains substitution, scope stack, overloads, module aliases.
+    /// None in batch mode (CheckState is stack-local per worker).
+    pub repl_check_state: Mutex<Option<CheckState>>,
+
     // -- Target data model (session-restructure.md) --
     // DashMaps are inherently concurrent and accessible to both priority
     // and nice workers via Arc<SharedState>.
@@ -525,8 +541,6 @@ pub struct SharedState {
 /// scheduler. `register_module` spawns scoped priority worker threads
 /// that process modules from the scheduler's work queue.
 pub struct CompilerSession {
-    /// Type checker state (persists across forms).
-    pub tc: cranelisp_typecheck::TypeChecker,
     /// Lib directories for module resolution (§8.11.2 tier 3).
     /// Does NOT include project_root — that is tier 2 and searched separately.
     pub lib_dirs: Vec<PathBuf>,
@@ -587,7 +601,6 @@ impl CompilerSession {
         // Platform dirs: extra search locations from env var (§8.11.5).
         let platform_dirs = crate::session::assemble_platform_dirs();
 
-        let tc = cranelisp_typecheck::TypeChecker::new();
         let cache_dir = project_root.join(".cranelisp-cache");
         let _ = std::fs::create_dir_all(&cache_dir);
 
@@ -601,6 +614,16 @@ impl CompilerSession {
 
         let nice_workers = settings.nice_workers;
 
+        let symbol_tables = dashmap::DashMap::new();
+        let next_type_id = AtomicU32::new(0);
+        let user_module = ModuleFullPath::from("user");
+
+        // Seed the "user" module before register_builtins (which registers special forms on it).
+        symbol_tables.insert(user_module.clone(), SymbolTable::new(user_module.clone()));
+
+        // Seed builtins into symbol tables before any user modules load.
+        cranelisp_typecheck::register_builtins(&symbol_tables, &next_type_id);
+
         let shared = Arc::new(SharedState {
             scheduler: CompileScheduler::new(),
             cache_dir: Some(cache_dir),
@@ -609,6 +632,10 @@ impl CompilerSession {
             cached_modules: Mutex::new(HashSet::new()),
             file_to_module: Mutex::new(HashMap::new()),
             cache_state: Mutex::new(cache_state),
+            symbol_tables,
+            next_type_id,
+            current_module: Mutex::new(user_module.clone()),
+            repl_check_state: Mutex::new(Some(CheckState::new(user_module))),
             typecheck_products: dashmap::DashMap::new(),
             codegen_inputs: dashmap::DashMap::new(),
             codegen_products: dashmap::DashMap::new(),
@@ -632,7 +659,6 @@ impl CompilerSession {
         }
 
         CompilerSession {
-            tc,
             lib_dirs,
             platform_dirs,
             loaded_platforms: Vec::new(),
@@ -645,6 +671,72 @@ impl CompilerSession {
             nice_worker_handles,
             nice_workers,
         }
+    }
+
+    // -- Convenience accessors for shared TC state --
+
+    /// Create a TypeCheckEnv borrowing the shared state.
+    fn tc_env(&self) -> TypeCheckEnv<'_> {
+        TypeCheckEnv::new(&self.shared.symbol_tables, &self.shared.next_type_id)
+    }
+
+    /// Get the current module path (REPL carry-forward).
+    fn current_module_path(&self) -> ModuleFullPath {
+        self.shared.current_module.lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+    }
+
+    /// Set the current module path (REPL carry-forward).
+    fn set_current_module(&self, path: ModuleFullPath) {
+        let tc = self.tc_env();
+        tc.ensure_module_exists(&path);
+        *self.shared.current_module.lock()
+            .unwrap_or_else(|e| e.into_inner()) = path.clone();
+        // Create a new CheckState for the new module.
+        // REPL carry-forward state (subst, env, overloads) is lost on module switch.
+        // This matches the old behavior where /mod started fresh.
+        *self.shared.repl_check_state.lock()
+            .unwrap_or_else(|e| e.into_inner()) = Some(CheckState::new(path));
+    }
+
+    /// Get a read guard for the current module's symbol table.
+    fn current_symbol_table(&self) -> dashmap::mapref::one::Ref<'_, ModuleFullPath, SymbolTable> {
+        let module = self.current_module_path();
+        self.shared.symbol_tables.get(&module)
+            .unwrap_or_else(|| unreachable!("invariant: current_module always exists in symbol_tables"))
+    }
+
+    /// Get a read guard for any module's symbol table.
+    fn module_table(&self, path: &ModuleFullPath) -> Option<dashmap::mapref::one::Ref<'_, ModuleFullPath, SymbolTable>> {
+        self.shared.symbol_tables.get(path)
+    }
+
+    /// Resolve a module by name (for /exports command).
+    fn resolve_module_by_name(&self, name: &str) -> Option<ModuleFullPath> {
+        let tc = self.tc_env();
+        let guard = self.shared.repl_check_state.lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let cs = guard.as_ref()?;
+        tc.resolve_module_by_name(cs, name)
+    }
+
+    /// Take a snapshot for REPL error recovery.
+    fn tc_snapshot(&self) -> cranelisp_types::ReplSnapshot {
+        let tc = self.tc_env();
+        let cs = self.shared.repl_check_state.lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let cs = cs.as_ref().expect("REPL check state must be initialized");
+        tc.snapshot(cs)
+    }
+
+    /// Restore from a snapshot on REPL error.
+    fn tc_restore(&self, snapshot: cranelisp_types::ReplSnapshot) {
+        let tc = self.tc_env();
+        let mut guard = self.shared.repl_check_state.lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let cs = guard.as_mut().expect("REPL check state must be initialized");
+        tc.restore(cs, snapshot);
     }
 
     /// Initialize the file watcher for REPL mode (repl/spec.md §14).
@@ -772,15 +864,12 @@ impl CompilerSession {
         });
         let suspend_states = Mutex::new(HashMap::new());
 
-        let tc = std::mem::replace(&mut self.tc, cranelisp_typecheck::TypeChecker::new());
-        let tc_mutex = Mutex::new(tc);
         let platform_registry = std::mem::replace(
             &mut self.platform_registry, PlatformRegistry::new(),
         );
         let platform_mutex = Mutex::new(platform_registry);
 
         let worker_shared = crate::worker::PriorityWorkerRefs {
-            tc: &tc_mutex,
             platform_registry: &platform_mutex,
             typecheck_products: &self.shared.typecheck_products,
             codegen_products: &self.shared.codegen_products,
@@ -807,8 +896,7 @@ impl CompilerSession {
             }
         });
 
-        // Move TC and PlatformRegistry back.
-        self.tc = tc_mutex.into_inner().unwrap_or_else(|e| e.into_inner());
+        // Move PlatformRegistry back.
         self.platform_registry = platform_mutex.into_inner().unwrap_or_else(|e| e.into_inner());
 
         // Check if the module ended up in Failed state.
@@ -851,6 +939,15 @@ impl CompilerSession {
         let module = ModuleFullPath::from(module_name);
         let sexps = cranelisp_frontend::parse(source)?;
 
+        // Record source hash in CacheState for manifest generation.
+        {
+            let hash = cranelisp_backend::cache::hash_source(source);
+            let mut cs_guard = self.shared.cache_state.lock().unwrap_or_else(|e| e.into_inner());
+            if let Some(cs) = cs_guard.as_mut() {
+                cs.source_hashes_mut().insert(module.clone(), hash);
+            }
+        }
+
         // Register module with scheduler (entry module, not delaying others).
         self.shared.scheduler.register_module(module.clone(), false);
 
@@ -862,10 +959,8 @@ impl CompilerSession {
         });
         let suspend_states = Mutex::new(HashMap::new());
 
-        // Temporarily move TC and PlatformRegistry into Mutexes so worker
-        // threads can lock them. Moved back after the scope exits.
-        let tc = std::mem::replace(&mut self.tc, cranelisp_typecheck::TypeChecker::new());
-        let tc_mutex = Mutex::new(tc);
+        // Temporarily move PlatformRegistry into Mutex so worker
+        // threads can lock it. Moved back after the scope exits.
         let platform_registry = std::mem::replace(
             &mut self.platform_registry, PlatformRegistry::new(),
         );
@@ -873,7 +968,6 @@ impl CompilerSession {
 
         // Build shared worker context for scoped threads.
         let worker_shared = crate::worker::PriorityWorkerRefs {
-            tc: &tc_mutex,
             platform_registry: &platform_mutex,
             typecheck_products: &self.shared.typecheck_products,
             codegen_products: &self.shared.codegen_products,
@@ -904,8 +998,7 @@ impl CompilerSession {
             // Scope exits here — all workers join before continuing.
         });
 
-        // Move TC and PlatformRegistry back from Mutexes.
-        self.tc = tc_mutex.into_inner().unwrap_or_else(|e| e.into_inner());
+        // Move PlatformRegistry back from Mutex.
         self.platform_registry = platform_mutex.into_inner()
             .unwrap_or_else(|e| e.into_inner());
 
@@ -1122,11 +1215,11 @@ impl CompilerSession {
             return Ok(Some(result));
         }
 
-        let snapshot = self.tc.snapshot();
+        let snapshot = self.tc_snapshot();
         match self.process_single_form(sexp) {
             Ok(result) => Ok(result),
             Err(e) => {
-                self.tc.restore(snapshot);
+                self.tc_restore(snapshot);
                 Err(e)
             }
         }
@@ -1142,14 +1235,23 @@ impl CompilerSession {
         const MAX_DEP_RETRIES: usize = 100;
 
         for retry in 0..MAX_DEP_RETRIES {
-            let module = self.tc.current_module_path().clone();
+            let module = self.current_module_path();
             let mut accumulator = ModuleCheckAccumulator::new();
             let mut expanded_program = Vec::new();
             let single_sexp = [sexp.clone()];
 
             let result = {
+                // Extract REPL check_state for worker use, restore after.
+                self.tc_env().ensure_module_exists(&module);
+                let repl_cs = self.shared.repl_check_state.lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .take()
+                    .unwrap_or_else(|| CheckState::new(module.clone()));
                 let mut wctx = ModuleCompiler {
-                    tc: &mut self.tc,
+                    symbol_tables: &self.shared.symbol_tables,
+                    next_type_id: &self.shared.next_type_id,
+                    check_state: repl_cs,
+                    current_module: module.clone(),
                     scheduler: &self.shared.scheduler,
                     platform_registry: &mut self.platform_registry,
                     typecheck_products: &self.shared.typecheck_products,
@@ -1162,7 +1264,7 @@ impl CompilerSession {
                 };
 
                 let mut pass1_done = false;
-                worker::process_module_forms(
+                let res = worker::process_module_forms(
                     &mut wctx,
                     &module,
                     &single_sexp,
@@ -1171,7 +1273,11 @@ impl CompilerSession {
                     &mut expanded_program,
                     ModuleStrategy::Additive,
                     &mut pass1_done,
-                )?
+                );
+                // Restore REPL check_state.
+                *self.shared.repl_check_state.lock()
+                    .unwrap_or_else(|e| e.into_inner()) = Some(wctx.check_state);
+                res?
             };
 
             match result {
@@ -1225,9 +1331,8 @@ impl CompilerSession {
         crate::worker::ensure_typecheck_product(&self.shared.typecheck_products, module);
 
         // Build per-module CompilationEnv for both defn codegen and expr eval.
-        let tc_modules = self.tc.modules_ref();
         let env_impl = crate::worker::SessionCompilationEnv {
-            tc_modules,
+            tc_modules: &self.shared.symbol_tables,
             typecheck_products: &self.shared.typecheck_products,
             current_module: module.clone(),
         };
@@ -1239,7 +1344,7 @@ impl CompilerSession {
             module,
             program,
             check,
-            tc_modules,
+            &self.shared.symbol_tables,
             &self.shared.typecheck_products,
             &self.shared.codegen_products,
             Some(&self.shared.introspection),
@@ -1280,12 +1385,9 @@ impl CompilerSession {
                 ));
             }
 
-            // Set trace display state so repl_trace_format can access type defs.
-            let (type_defs_map, _) = self.tc.snapshot_type_defs();
-            let type_modules_map = self.build_type_modules();
+            // Set trace display state so repl_trace_format can access symbol tables.
             let display_state = TraceDisplayState {
-                type_defs: &type_defs_map as *const _,
-                type_modules: &type_modules_map as *const _,
+                symbol_tables: &self.shared.symbol_tables as *const _,
             };
             if !traced_fns.is_empty() {
                 set_trace_display_state(&display_state);
@@ -1295,7 +1397,7 @@ impl CompilerSession {
             let current_module_for_tests = module.clone();
             let test_state = TestRunnerState {
                 codegen_products: &self.shared.codegen_products as *const _,
-                tc_modules: self.tc.modules_ref() as *const _,
+                tc_modules: &self.shared.symbol_tables as *const _,
                 current_module: &current_module_for_tests as *const _,
             };
             if needs_test_externs {
@@ -1310,6 +1412,8 @@ impl CompilerSession {
                 &env_impl,
                 &traced_fns,
                 &trace_extra_symbols,
+                &self.shared.symbol_tables,
+                module.clone(),
             );
 
             if needs_test_externs {
@@ -1467,7 +1571,7 @@ impl CompilerSession {
                 None => continue,
             };
 
-            let symbols = match self.tc.modules().get(module_path) {
+            let symbols = match self.shared.symbol_tables.get(module_path) {
                 Some(st) => st,
                 None => continue,
             };
@@ -1519,8 +1623,16 @@ impl CompilerSession {
         let mut module_sexps = HashMap::new();
         module_sexps.insert(dep_module.clone(), dep_sexps.to_vec());
 
+        self.tc_env().ensure_module_exists(&dep_module);
+        let repl_cs = self.shared.repl_check_state.lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take()
+            .unwrap_or_else(|| CheckState::new(dep_module.clone()));
         let mut ctx = ModuleCompiler {
-            tc: &mut self.tc,
+            symbol_tables: &self.shared.symbol_tables,
+            next_type_id: &self.shared.next_type_id,
+            check_state: repl_cs,
+            current_module: dep_module.clone(),
             scheduler: &self.shared.scheduler,
             platform_registry: &mut self.platform_registry,
             typecheck_products: &self.shared.typecheck_products,
@@ -1533,6 +1645,9 @@ impl CompilerSession {
         };
 
         crate::worker::priority_worker_loop(&mut ctx, &mut module_sexps)?;
+        // Restore REPL check_state.
+        *self.shared.repl_check_state.lock()
+            .unwrap_or_else(|e| e.into_inner()) = Some(ctx.check_state);
 
         match self.shared.scheduler.wait_inmem_complete() {
             Ok(()) => Ok(()),
@@ -1572,12 +1687,12 @@ impl CompilerSession {
         }
 
         let entry = {
-            let guard = self.tc.symbol_table();
+            let guard = self.current_symbol_table();
             guard.get(name)?.clone()
         };
 
         // Resolve import/reexport chains.
-        let module = self.tc.current_module_path().clone();
+        let module = self.current_module_path();
         let (resolved_entry, _resolved_module) = self.resolve_entry_for_display(&entry, &module);
 
         match &resolved_entry {
@@ -1634,23 +1749,6 @@ impl CompilerSession {
         }
     }
 
-    /// Build type→module mapping on-demand from the typechecker's module tables.
-    pub fn build_type_modules(&self) -> HashMap<TypeName, ModuleFullPath> {
-        let mut map = HashMap::new();
-        for entry in self.tc.modules().iter() {
-            let module_path = entry.key().clone();
-            for (sym, me) in entry.value().all_symbols() {
-                if matches!(me, ModuleEntry::TypeDef { .. }) {
-                    map.insert(
-                        TypeName::from(sym.as_ref()),
-                        module_path.clone(),
-                    );
-                }
-            }
-        }
-        map
-    }
-
     // -- Slash command handlers (subset for initial implementation) --
 
     /// /sig handler: show type signature of a symbol.
@@ -1661,7 +1759,7 @@ impl CompilerSession {
         if Type::from_name(name).is_some() {
             return format!("{name} ; type - builtin type");
         }
-        match self.tc.symbol_table().get(name) {
+        match self.current_symbol_table().get(name) {
             Some(entry) => format_entry_sig(entry, name),
             None => format!("error: unknown symbol '{name}'"),
         }
@@ -1672,7 +1770,7 @@ impl CompilerSession {
         if name.is_empty() {
             return "usage: /doc <name>".to_string();
         }
-        match self.tc.symbol_table().get(name) {
+        match self.current_symbol_table().get(name) {
             Some(ModuleEntry::Def { docstring, .. }) |
             Some(ModuleEntry::Macro { docstring, .. }) => {
                 match docstring {
@@ -1693,7 +1791,7 @@ impl CompilerSession {
 
     /// /list handler: list symbols in current module.
     fn handle_list(&self, _filter: &str) -> String {
-        let table_ref = self.tc.symbol_table();
+        let table_ref = self.current_symbol_table();
         let mut fns = Vec::new();
         let mut types = Vec::new();
         let mut traits = Vec::new();
@@ -1752,14 +1850,13 @@ impl CompilerSession {
     fn handle_mod(&mut self, name: &str) {
         let target = if name.is_empty() { "user" } else { name };
         let path = ModuleFullPath::from(target);
-        self.tc.set_current_module(path);
+        self.set_current_module(path);
     }
 
     /// Look up introspection data for a bare symbol name in the current module.
     fn get_introspection(&self, name: &str) -> Option<dashmap::mapref::one::Ref<'_, FQSymbol, Introspection>> {
-        let module = self.tc.current_module_path().clone();
         let fq = FQSymbol {
-            module,
+            module: self.current_module_path(),
             symbol: Symbol::from(name),
         };
         self.shared.introspection.get(&fq)
@@ -1841,14 +1938,13 @@ impl CompilerSession {
         if Type::from_name(name).is_some() {
             return self.format_builtin_type_display(name);
         }
-        let entry = match self.tc.symbol_table().get(name) {
+        let entry = match self.current_symbol_table().get(name) {
             Some(e) => e.clone(),
             None => return format!("error: unknown symbol '{name}'"),
         };
-        let module = self.tc.current_module_path().clone();
+        let module = self.current_module_path();
         let (resolved_entry, resolved_module) = self.resolve_entry_for_display(&entry, &module);
-        let type_modules = self.build_type_modules();
-        let sig = self.format_def_entry(&resolved_entry, name, &resolved_module, &type_modules);
+        let sig = self.format_def_entry(&resolved_entry, name, &resolved_module);
         // Append code info if available.
         if !matches!(resolved_entry,
             ModuleEntry::Macro { .. } | ModuleEntry::TypeDef { .. } | ModuleEntry::TraitDecl { .. })
@@ -1868,13 +1964,12 @@ impl CompilerSession {
         if expr_src.is_empty() {
             return "usage: /type <expr>".to_string();
         }
-        let snapshot = self.tc.snapshot();
+        let snapshot = self.tc_snapshot();
         let result = self.typecheck_only(expr_src);
-        self.tc.restore(snapshot);
+        self.tc_restore(snapshot);
         match result {
             Ok(ty) => {
-                let type_modules = self.build_type_modules();
-                let display = format_type_qualified(&ty, &type_modules);
+                let display = format_type_qualified(&ty);
                 format!(":{display}")
             }
             Err(e) => format!("Error: {e}"),
@@ -1891,12 +1986,16 @@ impl CompilerSession {
             });
         }
         let input = cranelisp_frontend::build_repl_input(&sexps[0])?;
-        let module = self.tc.current_module_path().clone();
+        let module = self.current_module_path();
         let ctx = cranelisp_types::CompileContext {
             module,
             codegen: CodegenBehaviour::InMemoryAndObject,
         };
-        let check_result = self.tc.check(&[input], &ctx, ModuleStrategy::Additive)?;
+        let tc = self.tc_env();
+        let mut guard = self.shared.repl_check_state.lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let cs = guard.as_mut().expect("REPL check state must be initialized");
+        let check_result = tc.check(cs, &[input], &ctx, ModuleStrategy::Additive)?;
         Ok(check_result.display.as_ref()
             .map(|d| d.ty.clone())
             .unwrap_or(Type::Int))
@@ -1904,7 +2003,7 @@ impl CompilerSession {
 
     /// /imports handler: list imports in current module by category.
     fn handle_imports(&self, filter: &str) -> String {
-        let table = self.tc.symbol_table();
+        let table = self.current_symbol_table();
         let mut output = String::new();
 
         if filter.is_empty() {
@@ -2009,7 +2108,7 @@ impl CompilerSession {
         let mut current_name = source.symbol.to_string();
         for _ in 0..10 {
             let entry = {
-                let table = self.tc.module_table(&current_module)?;
+                let table = self.module_table(&current_module)?;
                 table.get(&current_name)?.clone()
             };
             match &entry {
@@ -2032,12 +2131,12 @@ impl CompilerSession {
         let mod_name = parts.next().unwrap_or("");
         let prefix_filter = parts.next().unwrap_or("").trim();
 
-        let module_path = match self.tc.resolve_module_by_name(mod_name) {
+        let module_path = match self.resolve_module_by_name(mod_name) {
             Some(path) => path,
             None => return format!("Module '{mod_name}' not found"),
         };
 
-        let table = match self.tc.module_table(&module_path) {
+        let table = match self.module_table(&module_path) {
             Some(t) => t,
             None => return format!("Module '{mod_name}' not found"),
         };
@@ -2125,11 +2224,11 @@ impl CompilerSession {
         // Collect macro names + sexps that need compilation.
         let mut to_compile: Vec<(Symbol, Sexp)> = Vec::new();
         {
-            let table = self.tc.symbol_table();
+            let table = self.current_symbol_table();
             for (sym, entry) in table.all_symbols() {
                 if let ModuleEntry::Macro { clauses, sexp: Some(sexp), .. } = entry {
                     let name = Symbol::from(sym.as_ref());
-                    let module = self.tc.current_module_path().clone();
+                    let module = self.current_module_path();
                     let needs_compile = clauses.iter().enumerate().any(|(idx, _)| {
                         let clause_name = Symbol::from(
                             format!("__macro_{}_clause_{}", name, idx),
@@ -2147,12 +2246,20 @@ impl CompilerSession {
         }
 
         for (_, sexp) in &to_compile {
-            let module = self.tc.current_module_path().clone();
+            let module = self.current_module_path();
             let info = cranelisp_frontend::parse_defmacro(sexp)?;
             let mut accumulator = ModuleCheckAccumulator::new();
 
+            self.tc_env().ensure_module_exists(&module);
+            let repl_cs = self.shared.repl_check_state.lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .take()
+                .unwrap_or_else(|| CheckState::new(module.clone()));
             let mut wctx = ModuleCompiler {
-                tc: &mut self.tc,
+                symbol_tables: &self.shared.symbol_tables,
+                next_type_id: &self.shared.next_type_id,
+                check_state: repl_cs,
+                current_module: module.clone(),
                 scheduler: &self.shared.scheduler,
                 platform_registry: &mut self.platform_registry,
                 typecheck_products: &self.shared.typecheck_products,
@@ -2167,6 +2274,9 @@ impl CompilerSession {
             crate::worker::compile_macro_for_repl(
                 &mut wctx, &module, &info, Span::SYNTHETIC, &mut accumulator,
             )?;
+            // Restore REPL check_state.
+            *self.shared.repl_check_state.lock()
+                .unwrap_or_else(|e| e.into_inner()) = Some(wctx.check_state);
         }
         Ok(())
     }
@@ -2186,9 +2296,9 @@ impl CompilerSession {
                 span: Span::SYNTHETIC,
             }
         })?;
-        let module = self.tc.current_module_path().clone();
+        let module = self.current_module_path();
         let mut resolver = ReadOnlyMacroResolver {
-            tc: &self.tc,
+            symbol_tables: &self.shared.symbol_tables,
             codegen_products: &self.shared.codegen_products,
             current_module: module,
         };
@@ -2227,14 +2337,14 @@ impl CompilerSession {
     /// tracing to capture trace trees for diagnostics.
     fn handle_run_tests(&self, arg: &str) -> String {
         let module = if arg.is_empty() {
-            self.tc.current_module_path().clone()
+            self.current_module_path()
         } else {
             ModuleFullPath::from(arg)
         };
         // Core discovery — shared with discover_tests_extern.
         let test_names = discover_test_names(
             &self.shared.codegen_products,
-            self.tc.modules_ref(),
+            &self.shared.symbol_tables,
             &module,
         );
         if test_names.is_empty() {
@@ -2259,7 +2369,7 @@ impl CompilerSession {
             }
             let names = discover_test_names(
                 &self.shared.codegen_products,
-                self.tc.modules_ref(),
+                &self.shared.symbol_tables,
                 module_path,
             );
             all_names.extend(names);
@@ -2323,7 +2433,7 @@ impl CompilerSession {
         if trimmed.contains('(') || trimmed.contains(' ') || trimmed.starts_with('/') {
             return None;
         }
-        let table = self.tc.symbol_table();
+        let table = self.current_symbol_table();
         if let Some(ModuleEntry::Def { kind, .. }) = table.get(trimmed) {
             if let DefKind::SpecialForm { description } = kind.as_ref() {
                 return Some(format_special_form_display(trimmed, description));
@@ -2406,7 +2516,7 @@ impl CompilerSession {
         let module_path = ModuleFullPath::from(module_name);
         let main_sym = Symbol::from("main");
 
-        if let Some(table) = self.tc.module_table(&module_path)
+        if let Some(table) = self.module_table(&module_path)
             && let Some(cranelisp_types::ModuleEntry::Def { scheme, .. }) =
                 table.get(main_sym.as_ref())
             && let Type::Fn(_, ret) = &scheme.ty
@@ -2446,7 +2556,17 @@ impl CompilerSession {
         // Wake workers so they observe the promotion flag.
         self.shared.scheduler.wake_object_workers();
 
-        self.shared.scheduler.wait_object_complete()
+        let result = self.shared.scheduler.wait_object_complete();
+
+        // Flush the cache manifest to disk so the next session can detect cache hits.
+        {
+            let cs_guard = self.shared.cache_state.lock().unwrap_or_else(|e| e.into_inner());
+            if let Some(cs) = cs_guard.as_ref() {
+                cs.flush_manifest();
+            }
+        }
+
+        result
     }
 
     /// Shut down the session: signal workers to drain and exit.
@@ -2499,7 +2619,7 @@ impl CompilerSession {
         let module = ModuleFullPath::from(module_name);
 
         // Validate main exists and determine return kind (Int vs IO).
-        let entry_table = self.tc.module_table(&module).ok_or_else(|| {
+        let entry_table = self.module_table(&module).ok_or_else(|| {
             CranelispError::ModuleError {
                 message: format!("entry module '{}' not found in typechecker", module_name),
                 file: None,
@@ -2578,8 +2698,8 @@ impl CompilerSession {
     }
 
     /// Current module name for prompt display.
-    pub fn current_module_name(&self) -> &str {
-        &self.tc.current_module_path()
+    pub fn current_module_name(&self) -> String {
+        self.current_module_path().to_string()
     }
 
     /// Write the REPL prompt with timing info.
@@ -2613,7 +2733,6 @@ impl CompilerSession {
     /// Produces the universal output format (spec §1.1):
     ///   `:Type {value|name} ; {classification} - {docstring}`
     pub fn format_eval_result(&self, result: &EvalResult) -> String {
-        let type_modules = self.build_type_modules();
         match result {
             EvalResult::Def { symbol, .. } => {
                 let name = symbol.symbol.as_ref();
@@ -2624,7 +2743,7 @@ impl CompilerSession {
                     return self.format_builtin_type_display(name);
                 }
 
-                let entry = self.tc.symbol_table().get(name).cloned();
+                let entry = self.current_symbol_table().get(name).cloned();
                 // Follow import chains to the definition.
                 let (entry, resolved_module) = match entry {
                     Some(ref e) => self.resolve_entry_for_display(e, module),
@@ -2638,20 +2757,18 @@ impl CompilerSession {
                         return format!("{symbol} ; defined");
                     }
                 };
-                self.format_def_entry(&entry, name, &resolved_module, &type_modules)
+                self.format_def_entry(&entry, name, &resolved_module)
             }
             EvalResult::Val { value, ty, .. } => {
-                let type_def_reg = self.tc.type_def_registry();
-                let type_defs = type_def_reg.as_map();
                 if ty.is_io() {
                     let inner_value = cranelisp_runtime::run_io_trampoline(*value);
                     let inner_type = ty.io_inner_type();
                     format_result_value(
-                        inner_value, &inner_type, type_defs, &type_modules,
+                        inner_value, &inner_type, &self.shared.symbol_tables,
                     )
                 } else {
                     format_result_value(
-                        *value, ty, type_defs, &type_modules,
+                        *value, ty, &self.shared.symbol_tables,
                     )
                 }
             }
@@ -2664,7 +2781,6 @@ impl CompilerSession {
         entry: &ModuleEntry,
         name: &str,
         module: &ModuleFullPath,
-        type_modules: &HashMap<TypeName, ModuleFullPath>,
     ) -> String {
         match entry {
             ModuleEntry::Def { scheme, kind, docstring, .. } => {
@@ -2672,9 +2788,9 @@ impl CompilerSession {
                     return format_special_form_display(name, description);
                 }
                 let base = if !scheme.constraints.is_empty() {
-                    format_scheme_display(name, scheme, module, type_modules)
+                    format_scheme_display(name, scheme, module)
                 } else {
-                    let type_str = format_type_qualified(&scheme.ty, type_modules);
+                    let type_str = format_type_qualified(&scheme.ty);
                     format!(":{type_str} {module}/{name}")
                 };
                 let classification = if matches!(kind.as_ref(), DefKind::Primitive { .. }) {
@@ -2686,11 +2802,11 @@ impl CompilerSession {
                 append_docstring_comment(base, docstring.as_deref())
             }
             ModuleEntry::Constructor { type_name, scheme, .. } => {
-                let type_str = format_type_qualified(&scheme.ty, type_modules);
-                let tn = TypeName::from(type_name.0.as_str());
+                let type_str = format_type_qualified(&scheme.ty);
+                let tn = TypeName::from(type_name.name.as_ref());
                 let ctor_display =
-                    if let Some(info) = self.tc.type_def_registry().get(&tn) {
-                        cranelisp_backend::display::format_ctor_display(&tn, name, info)
+                    if let Some(info) = self.tc_env().lookup_type_def(&tn) {
+                        cranelisp_backend::display::format_ctor_display(&tn, name, &info)
                     } else {
                         format!("{type_name}.{name}")
                     };
@@ -2726,7 +2842,7 @@ impl CompilerSession {
         match entry {
             ModuleEntry::Import { source }
             | ModuleEntry::Reexport { source } => {
-                if let Some(module_table) = self.tc.modules().get(&source.module) {
+                if let Some(module_table) = self.shared.symbol_tables.get(&source.module) {
                     if let Some(resolved) = module_table.get(source.symbol.as_ref()) {
                         return (resolved.clone(), source.module.clone());
                     }
@@ -2743,13 +2859,13 @@ impl CompilerSession {
     fn format_type_display(&self, type_name: &str, module: &ModuleFullPath) -> String {
         let mut result = format!(":{module}/{type_name} ; deftype");
         let tn = TypeName::from(type_name);
-        if let Some(ctors) = self.tc.get_type_constructors(&tn) {
+        if let Some(ctors) = self.tc_env().get_type_constructors(&tn) {
             if !ctors.is_empty() {
                 let names: Vec<&str> = ctors.iter().map(|c| c.name.as_ref()).collect();
                 result.push_str(&format_related_section("match", &names));
             }
         }
-        let trait_names = self.tc.get_impls_for_type(&tn);
+        let trait_names = self.tc_env().get_impls_for_type(&tn);
         if !trait_names.is_empty() {
             let names: Vec<&str> = trait_names.iter().map(|t| t.as_ref()).collect();
             result.push_str(&format_related_section("impl", &names));
@@ -2761,17 +2877,21 @@ impl CompilerSession {
     ///
     /// Shows `:module/TraitName ; deftrait` with `; defn:` and `; impl:` sections.
     fn format_trait_display(&self, trait_name: &str, docstring: Option<&str>) -> String {
-        let defining_module = self.tc.defining_module_for(trait_name);
+        let tc = self.tc_env();
+        let guard = self.shared.repl_check_state.lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let cs = guard.as_ref().expect("REPL check state must be initialized");
+        let defining_module = tc.defining_module_for(cs, trait_name);
         let tn = TraitName::from(trait_name);
         let mut result = format!(":{defining_module}/{trait_name} ; deftrait");
         result = append_docstring_comment(result, docstring);
-        if let Some(methods) = self.tc.get_trait_methods(&tn) {
+        if let Some(methods) = self.tc_env().get_trait_methods(&tn) {
             if !methods.is_empty() {
                 let names: Vec<&str> = methods.iter().map(|m| m.as_ref()).collect();
                 result.push_str(&format_related_section("defn", &names));
             }
         }
-        let impl_types = self.tc.get_implementing_types(&tn);
+        let impl_types = self.tc_env().get_implementing_types(&tn);
         if !impl_types.is_empty() {
             let names: Vec<&str> = impl_types.iter().map(|t| t.as_ref()).collect();
             result.push_str(&format_related_section("impl", &names));
@@ -2783,7 +2903,7 @@ impl CompilerSession {
     fn format_builtin_type_display(&self, type_name: &str) -> String {
         let tn = TypeName::from(type_name);
         let mut result = format!(":primitives/{type_name} ; type");
-        let trait_names = self.tc.get_impls_for_type(&tn);
+        let trait_names = self.tc_env().get_impls_for_type(&tn);
         if !trait_names.is_empty() {
             let names: Vec<&str> = trait_names.iter().map(|t| t.as_ref()).collect();
             result.push_str(&format_related_section("impl", &names));
@@ -3076,8 +3196,6 @@ fn compile_module_object(
         expr_types: input.expr_types,
         default_method_defns: input.default_method_defns,
         warnings: Vec::new(),
-        type_defs: input.type_defs,
-        constructor_to_type: input.constructor_to_type,
         display: None,
     };
 
@@ -3092,7 +3210,7 @@ fn compile_module_object(
     );
 
     // Compile to .o bytes via Cranelift ObjectModule.
-    let obj_bytes = match cache::compile_module_to_object(&object_input, &object_input) {
+    let obj_bytes = match cache::compile_module_to_object(&object_input, &object_input, &shared.symbol_tables) {
         Ok(bytes) => bytes,
         Err(e) => {
             eprintln!("nice-worker: .o compilation failed for {}: {}", module, e.message());
@@ -3119,9 +3237,9 @@ fn compile_module_object(
     // Build and write .meta.json for cache-hit restoration.
     // GOT slot assignments are on ModuleEntry::Def in the SymbolTable,
     // so only the symbol table needs serializing.
-    let symbol_table = shared.typecheck_products
+    let symbol_table = shared.symbol_tables
         .get(module)
-        .map(|tp| tp.symbols.clone())
+        .map(|guard| guard.clone())
         .unwrap_or_else(|| cranelisp_types::SymbolTable::new(module.clone()));
 
     let metadata = cache::CacheMetadata {
@@ -3130,6 +3248,19 @@ fn compile_module_object(
     if let Err(e) = cache::write_cached_metadata(&meta_path, &metadata) {
         eprintln!("nice-worker: .meta.json write failed for {}: {}", module, e.message());
         // Continue — the .o file was written successfully.
+    }
+
+    // Record module in manifest for cache-hit detection on next session.
+    {
+        let mut cs_guard = shared.cache_state.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(cs) = cs_guard.as_mut() {
+            let source_hash = cs.source_hashes()
+                .get(module)
+                .cloned()
+                .unwrap_or_default();
+            // dep_hashes: empty for now — full dependency tracking is a future enhancement.
+            cs.record_module(module, source_hash, std::collections::HashMap::new());
+        }
     }
 
     // Append the .o path for the linker.
@@ -3414,8 +3545,7 @@ unsafe fn test_outcome_to_heap(outcome: &TestOutcome) -> i64 {
 /// Thread-local display state for `repl_trace_format`. Set before JIT
 /// evaluation of a trace expression, cleared after.
 struct TraceDisplayState {
-    type_defs: *const HashMap<TypeName, cranelisp_types::TypeDefInfo>,
-    type_modules: *const HashMap<TypeName, ModuleFullPath>,
+    symbol_tables: *const dashmap::DashMap<ModuleFullPath, SymbolTable>,
 }
 
 // Only accessed via thread-local Cell (never crosses threads).
@@ -3449,10 +3579,9 @@ extern "C" fn repl_trace_format(val: i64, type_ptr: i64) -> i64 {
             // the duration of the JIT expression execution. type_ptr was
             // leaked by trace_codegen (valid for program lifetime).
             let state = unsafe { &*state_ptr };
-            let type_defs = unsafe { &*state.type_defs };
-            let type_modules = unsafe { &*state.type_modules };
+            let symbol_tables = unsafe { &*state.symbol_tables };
             let ty = unsafe { &*(type_ptr as *const Type) };
-            cranelisp_backend::display::format_value(val, ty, type_defs, type_modules)
+            cranelisp_backend::display::format_value(val, ty, symbol_tables)
         };
         cranelisp_runtime::alloc_string(s.as_bytes()) as i64
     })

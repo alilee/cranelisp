@@ -5,13 +5,12 @@
 
 #![allow(dead_code)]
 
-use std::collections::HashMap;
 use std::path::PathBuf;
 
 use cranelisp::session_v4::{
     CompilerSession, EvalResult, SessionSettings, format_result_value,
 };
-use cranelisp_types::{CranelispError, ModuleFullPath, Type, TypeDefInfo, TypeName};
+use cranelisp_types::{CranelispError, ModuleFullPath, Type};
 
 // =============================================================================
 // Test adapter: ReplSession wrapping CompilerSession
@@ -140,14 +139,9 @@ impl ReplSession {
         self.session.trampoline(module_name)
     }
 
-    /// Get the accumulated type definitions for value display.
-    pub fn type_defs(&self) -> HashMap<TypeName, TypeDefInfo> {
-        self.session.tc.type_def_registry().as_map().clone()
-    }
-
-    /// Get the type-to-module mapping for qualified display.
-    pub fn type_modules(&self) -> HashMap<TypeName, ModuleFullPath> {
-        self.session.build_type_modules()
+    /// Get the symbol tables for value display.
+    pub fn symbol_tables(&self) -> &dashmap::DashMap<ModuleFullPath, cranelisp_types::SymbolTable> {
+        &self.session.shared.symbol_tables
     }
 }
 
@@ -530,13 +524,10 @@ pub fn compile_and_run_heap_with(preamble: Option<&str>, src: &str) -> (i64, Typ
     } else {
         last_result
     };
-    let type_defs = session.type_defs();
-    let type_modules = session.type_modules();
     let display = format_result_value(
         result.value(),
         result.ty(),
-        &type_defs,
-        &type_modules,
+        session.symbol_tables(),
     );
     (result.value(), result.ty().clone(), display)
 }

@@ -1,7 +1,6 @@
-use std::collections::HashMap;
 use std::mem::{self, offset_of};
 
-use crate::{Type, TypeDefInfo, TypeName};
+use crate::{FQTypeName, ModuleEntry, ModuleFullPath, Symbol, SymbolTable, Type, TypeDefInfo};
 
 /// Universal header for all heap-allocated values.
 /// All offsets in the compiler derive from this struct's layout.
@@ -43,16 +42,20 @@ pub enum HeapCategory {
 impl HeapCategory {
     /// Classify a type's heap behavior. Single source of truth.
     ///
-    /// Accepts an optional `type_defs` registry to make authoritative decisions
-    /// about ADT heap behavior based on actual constructor definitions. When
-    /// `type_defs` is `None` (e.g., during early pipeline stages before type
-    /// checking), ADTs conservatively classify as `Mixed`.
+    /// Accepts an optional reference to the per-module symbol tables (DashMap)
+    /// to make authoritative decisions about ADT heap behavior based on actual
+    /// constructor definitions. When `symbol_tables` is `None` (e.g., during
+    /// early pipeline stages before type checking), ADTs conservatively classify
+    /// as `Mixed`.
     ///
-    /// With the registry, classification is exact:
+    /// With symbol tables, classification is exact:
     /// - All constructors nullary (no fields) -> `NeverHeap` (bare tags)
     /// - All constructors have fields -> `AlwaysHeap` (always heap-allocated)
     /// - Mix of nullary and data constructors -> `Mixed`
-    pub fn classify(ty: &Type, type_defs: Option<&HashMap<TypeName, TypeDefInfo>>) -> HeapCategory {
+    pub fn classify(
+        ty: &Type,
+        symbol_tables: Option<&dashmap::DashMap<ModuleFullPath, SymbolTable>>,
+    ) -> HeapCategory {
         match ty {
             Type::Int | Type::Bool | Type::Float => HeapCategory::NeverHeap,
             Type::String => HeapCategory::AlwaysHeap,
@@ -62,9 +65,7 @@ impl HeapCategory {
                 // Conservative: AlwaysHeap (closures are the common case after Ring 0).
                 HeapCategory::AlwaysHeap
             }
-            Type::ADT(name, _) => {
-                Self::classify_adt(name, type_defs)
-            }
+            Type::ADT(fqtn, _) => Self::classify_adt(fqtn, symbol_tables),
             Type::Var(_) | Type::TyConApp(_, _) => {
                 // Unresolved type variable: might be anything
                 HeapCategory::Mixed
@@ -72,29 +73,44 @@ impl HeapCategory {
         }
     }
 
-    /// Classify an ADT by inspecting its constructors from the type_defs registry.
+    /// Classify an ADT by inspecting its constructors from the symbol tables.
     ///
-    /// Without the registry, conservatively returns `Mixed`.
-    /// With the registry, counts nullary vs data constructors:
+    /// Without the symbol tables, conservatively returns `Mixed`.
+    /// With the symbol tables, looks up `ModuleEntry::TypeDef` on the type's
+    /// owning module and counts nullary vs data constructors:
     /// - All nullary -> `NeverHeap`
     /// - All data -> `AlwaysHeap`
     /// - Mixed -> `Mixed`
-    fn classify_adt(name: &TypeName, type_defs: Option<&HashMap<TypeName, TypeDefInfo>>) -> HeapCategory {
+    fn classify_adt(
+        fqtn: &FQTypeName,
+        symbol_tables: Option<&dashmap::DashMap<ModuleFullPath, SymbolTable>>,
+    ) -> HeapCategory {
         // Vec is a built-in heap type (not registered via deftype).
-        if name.as_ref() == "Vec" {
+        if fqtn.name.as_ref() == "Vec" {
             return HeapCategory::AlwaysHeap;
         }
 
-        let Some(registry) = type_defs else {
-            // No registry available — conservative fallback
+        let Some(tables) = symbol_tables else {
+            // No tables available — conservative fallback
             return HeapCategory::Mixed;
         };
 
-        let Some(info) = registry.get(name) else {
-            // Unknown ADT (shouldn't happen post-typecheck, but be safe)
+        // Look up the TypeDefInfo on the type's owning module.
+        let Some(table) = tables.get(&fqtn.module) else {
             return HeapCategory::Mixed;
         };
 
+        let type_key = Symbol::from(fqtn.name.as_ref());
+        let info = match table.get(type_key.as_ref()) {
+            Some(ModuleEntry::TypeDef { info, .. }) => info,
+            _ => return HeapCategory::Mixed,
+        };
+
+        Self::classify_from_type_def_info(info)
+    }
+
+    /// Classify an ADT from its TypeDefInfo (shared logic).
+    fn classify_from_type_def_info(info: &TypeDefInfo) -> HeapCategory {
         let has_nullary = info.constructors.iter().any(|c| c.fields.is_empty());
         let has_data = info.constructors.iter().any(|c| !c.fields.is_empty());
 
@@ -112,7 +128,14 @@ impl HeapCategory {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{ConstructorInfo, FieldInfo, Symbol, TypeName};
+    use crate::{ConstructorInfo, FieldInfo, ModuleEntry, TypeName, Visibility};
+
+    const TEST_MOD: &str = "test";
+
+    /// Test helper: create an FQTypeName in a "test" module.
+    fn test_fqtn(name: &str) -> FQTypeName {
+        FQTypeName::new(ModuleFullPath::from(TEST_MOD), TypeName::from(name))
+    }
 
     /// Helper: build a TypeDefInfo with the given constructors.
     fn make_type_def(
@@ -121,7 +144,7 @@ mod tests {
         constructors: Vec<ConstructorInfo>,
     ) -> TypeDefInfo {
         TypeDefInfo {
-            name: TypeName::from(name),
+            name: test_fqtn(name),
             type_params: type_params.iter().map(|s| Symbol::from(*s)).collect(),
             constructors,
             docstring: None,
@@ -153,12 +176,27 @@ mod tests {
         }
     }
 
-    /// Helper: build a type_defs registry from a list of TypeDefInfos.
-    fn registry(defs: Vec<TypeDefInfo>) -> HashMap<TypeName, TypeDefInfo> {
-        defs.into_iter().map(|d| (d.name.clone(), d)).collect()
+    /// Helper: build a DashMap with a single module containing the given TypeDefInfos.
+    fn tables_with_defs(defs: Vec<TypeDefInfo>) -> dashmap::DashMap<ModuleFullPath, SymbolTable> {
+        let tables = dashmap::DashMap::new();
+        let mut st = SymbolTable::new(ModuleFullPath::from(TEST_MOD));
+        for def in defs {
+            let key = Symbol::from(def.name.name.as_ref());
+            st.insert(
+                key,
+                ModuleEntry::TypeDef {
+                    info: def,
+                    visibility: Visibility::Public,
+                    constructor_scheme: None,
+                    sexp: None,
+                },
+            );
+        }
+        tables.insert(ModuleFullPath::from(TEST_MOD), st);
+        tables
     }
 
-    // --- Primitive types (no registry needed) ---
+    // --- Primitive types (no tables needed) ---
 
     #[test]
     fn test_primitives_never_heap() {
@@ -201,11 +239,11 @@ mod tests {
         );
     }
 
-    // --- ADT without registry (conservative fallback) ---
+    // --- ADT without tables (conservative fallback) ---
 
     #[test]
-    fn test_adt_without_registry_is_mixed() {
-        let color = Type::ADT(TypeName::from("Color"), vec![]);
+    fn test_adt_without_tables_is_mixed() {
+        let color = Type::ADT(test_fqtn("Color"), vec![]);
         assert_eq!(
             HeapCategory::classify(&color, None),
             HeapCategory::Mixed,
@@ -213,20 +251,20 @@ mod tests {
     }
 
     #[test]
-    fn test_parameterized_adt_without_registry_is_mixed() {
-        let option_int = Type::ADT(TypeName::from("Option"), vec![Type::Int]);
+    fn test_parameterized_adt_without_tables_is_mixed() {
+        let option_int = Type::ADT(test_fqtn("Option"), vec![Type::Int]);
         assert_eq!(
             HeapCategory::classify(&option_int, None),
             HeapCategory::Mixed,
         );
     }
 
-    // --- ADT with registry: enum-only (all nullary) ---
+    // --- ADT with tables: enum-only (all nullary) ---
 
     #[test]
     fn test_enum_only_adt_never_heap() {
         // (deftype Color Red Green Blue)
-        let defs = registry(vec![make_type_def(
+        let tables = tables_with_defs(vec![make_type_def(
             "Color",
             &[],
             vec![
@@ -235,27 +273,27 @@ mod tests {
                 nullary_ctor("Blue", 2),
             ],
         )]);
-        let color = Type::ADT(TypeName::from("Color"), vec![]);
+        let color = Type::ADT(test_fqtn("Color"), vec![]);
         assert_eq!(
-            HeapCategory::classify(&color, Some(&defs)),
+            HeapCategory::classify(&color, Some(&tables)),
             HeapCategory::NeverHeap,
         );
     }
 
-    // --- ADT with registry: all data constructors ---
+    // --- ADT with tables: all data constructors ---
 
     #[test]
     fn test_data_only_adt_always_heap() {
         // (deftype Wrapper [val]) — non-parameterized with data constructor
         // This is the F-2 bug case: was incorrectly NeverHeap
-        let defs = registry(vec![make_type_def(
+        let tables = tables_with_defs(vec![make_type_def(
             "Wrapper",
             &[],
             vec![data_ctor("Wrapper", 0)],
         )]);
-        let wrapper = Type::ADT(TypeName::from("Wrapper"), vec![]);
+        let wrapper = Type::ADT(test_fqtn("Wrapper"), vec![]);
         assert_eq!(
-            HeapCategory::classify(&wrapper, Some(&defs)),
+            HeapCategory::classify(&wrapper, Some(&tables)),
             HeapCategory::AlwaysHeap,
         );
     }
@@ -263,7 +301,7 @@ mod tests {
     #[test]
     fn test_product_type_always_heap() {
         // (deftype IPoint (IPoint [:Int x :Int y])) — product type
-        let defs = registry(vec![make_type_def(
+        let tables = tables_with_defs(vec![make_type_def(
             "IPoint",
             &[],
             vec![ConstructorInfo {
@@ -283,56 +321,56 @@ mod tests {
                 internal: false,
             }],
         )]);
-        let point = Type::ADT(TypeName::from("IPoint"), vec![]);
+        let point = Type::ADT(test_fqtn("IPoint"), vec![]);
         assert_eq!(
-            HeapCategory::classify(&point, Some(&defs)),
+            HeapCategory::classify(&point, Some(&tables)),
             HeapCategory::AlwaysHeap,
         );
     }
 
-    // --- ADT with registry: mixed constructors ---
+    // --- ADT with tables: mixed constructors ---
 
     #[test]
-    fn test_mixed_adt_with_registry() {
+    fn test_mixed_adt_with_tables() {
         // (deftype (Option a) None (Some [:a val]))
-        let defs = registry(vec![make_type_def(
+        let tables = tables_with_defs(vec![make_type_def(
             "Option",
             &["a"],
             vec![nullary_ctor("None", 0), data_ctor("Some", 1)],
         )]);
-        let option_int = Type::ADT(TypeName::from("Option"), vec![Type::Int]);
+        let option_int = Type::ADT(test_fqtn("Option"), vec![Type::Int]);
         assert_eq!(
-            HeapCategory::classify(&option_int, Some(&defs)),
+            HeapCategory::classify(&option_int, Some(&tables)),
             HeapCategory::Mixed,
         );
     }
 
-    // --- ADT with registry: parameterized but only nullary ---
+    // --- ADT with tables: parameterized but only nullary ---
 
     #[test]
     fn test_phantom_type_never_heap() {
         // (deftype (Phantom a) PhantomVal) — parameterized, but only nullary constructor
         // This was incorrectly Mixed with the old heuristic
-        let defs = registry(vec![make_type_def(
+        let tables = tables_with_defs(vec![make_type_def(
             "Phantom",
             &["a"],
             vec![nullary_ctor("PhantomVal", 0)],
         )]);
-        let phantom = Type::ADT(TypeName::from("Phantom"), vec![Type::Int]);
+        let phantom = Type::ADT(test_fqtn("Phantom"), vec![Type::Int]);
         assert_eq!(
-            HeapCategory::classify(&phantom, Some(&defs)),
+            HeapCategory::classify(&phantom, Some(&tables)),
             HeapCategory::NeverHeap,
         );
     }
 
-    // --- ADT with registry: unknown type (not in registry) ---
+    // --- ADT with tables: unknown type (not in tables) ---
 
     #[test]
-    fn test_unknown_adt_with_empty_registry_is_mixed() {
-        let defs: HashMap<TypeName, TypeDefInfo> = HashMap::new();
-        let unknown = Type::ADT(TypeName::from("Unknown"), vec![]);
+    fn test_unknown_adt_with_empty_tables_is_mixed() {
+        let tables = dashmap::DashMap::new();
+        let unknown = Type::ADT(test_fqtn("Unknown"), vec![]);
         assert_eq!(
-            HeapCategory::classify(&unknown, Some(&defs)),
+            HeapCategory::classify(&unknown, Some(&tables)),
             HeapCategory::Mixed,
         );
     }
@@ -340,8 +378,11 @@ mod tests {
     // --- Vec type (built-in, always heap) ---
 
     #[test]
-    fn test_vec_always_heap_without_registry() {
-        let vec_int = Type::ADT(TypeName::from("Vec"), vec![Type::Int]);
+    fn test_vec_always_heap_without_tables() {
+        let vec_int = Type::ADT(
+            FQTypeName::new(ModuleFullPath::from("primitives"), TypeName::from("Vec")),
+            vec![Type::Int],
+        );
         assert_eq!(
             HeapCategory::classify(&vec_int, None),
             HeapCategory::AlwaysHeap,
@@ -349,18 +390,24 @@ mod tests {
     }
 
     #[test]
-    fn test_vec_always_heap_with_registry() {
-        let defs: HashMap<TypeName, TypeDefInfo> = HashMap::new();
-        let vec_str = Type::ADT(TypeName::from("Vec"), vec![Type::String]);
+    fn test_vec_always_heap_with_tables() {
+        let tables = dashmap::DashMap::new();
+        let vec_str = Type::ADT(
+            FQTypeName::new(ModuleFullPath::from("primitives"), TypeName::from("Vec")),
+            vec![Type::String],
+        );
         assert_eq!(
-            HeapCategory::classify(&vec_str, Some(&defs)),
+            HeapCategory::classify(&vec_str, Some(&tables)),
             HeapCategory::AlwaysHeap,
         );
     }
 
     #[test]
     fn test_vec_polymorphic_always_heap() {
-        let vec_var = Type::ADT(TypeName::from("Vec"), vec![Type::Var(0)]);
+        let vec_var = Type::ADT(
+            FQTypeName::new(ModuleFullPath::from("primitives"), TypeName::from("Vec")),
+            vec![Type::Var(0)],
+        );
         assert_eq!(
             HeapCategory::classify(&vec_var, None),
             HeapCategory::AlwaysHeap,

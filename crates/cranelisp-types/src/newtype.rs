@@ -80,3 +80,48 @@ impl std::fmt::Display for FQSymbol {
         write!(f, "{}/{}", self.module, self.symbol)
     }
 }
+
+/// Fully qualified type name: module path + local type name.
+///
+/// Embeds module context at construction time so downstream consumers
+/// (backend match codegen, display, cache) never need reverse lookups.
+/// See `design/arch/fqtypename.md` for motivation and migration plan.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct FQTypeName {
+    pub module: ModuleFullPath,
+    pub name: TypeName,
+}
+
+impl FQTypeName {
+    pub fn new(module: ModuleFullPath, name: TypeName) -> Self {
+        FQTypeName { module, name }
+    }
+}
+
+impl std::fmt::Display for FQTypeName {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}/{}", self.module, self.name)
+    }
+}
+
+/// Fully qualified trait name: module path + local trait name.
+///
+/// Eliminates bare `TraitName` collisions in the same way `FQTypeName`
+/// eliminates bare `TypeName` collisions. See `design/arch/fqtypename.md`.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct FQTraitName {
+    pub module: ModuleFullPath,
+    pub name: TraitName,
+}
+
+impl FQTraitName {
+    pub fn new(module: ModuleFullPath, name: TraitName) -> Self {
+        FQTraitName { module, name }
+    }
+}
+
+impl std::fmt::Display for FQTraitName {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}/{}", self.module, self.name)
+    }
+}

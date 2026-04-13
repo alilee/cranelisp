@@ -200,7 +200,7 @@ fn io_type_inference_pure() {
     let (_, ty) = compile_and_run_typed("(defn main [] (Pure 42))");
     match &ty {
         Type::ADT(name, args) => {
-            assert_eq!(name.as_ref(), "IO");
+            assert_eq!(name.name.as_ref(), "IO");
             assert_eq!(args.len(), 1);
             assert_eq!(args[0], Type::Int);
         }
@@ -218,7 +218,7 @@ fn io_type_inference_bind() {
     let (_, ty) = compile_and_run_typed(src);
     match &ty {
         Type::ADT(name, args) => {
-            assert_eq!(name.as_ref(), "IO");
+            assert_eq!(name.name.as_ref(), "IO");
             assert_eq!(args.len(), 1);
             assert_eq!(args[0], Type::Int);
         }
@@ -464,7 +464,7 @@ fn io_print_returns_io_int() {
     assert!(ty.is_io(), "expected IO type, got: {:?}", ty);
     match &ty {
         Type::ADT(name, args) => {
-            assert_eq!(name.as_ref(), "IO");
+            assert_eq!(name.name.as_ref(), "IO");
             assert_eq!(args.len(), 1);
             assert_eq!(args[0], Type::Int, "print inner type should be Int");
         }

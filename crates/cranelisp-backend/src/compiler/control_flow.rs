@@ -28,12 +28,18 @@ impl<'a, M: Module> FnCompiler<'a, M> {
         // execute sequentially to produce deterministic trace trees.
         if !*LENIENT_DISABLED && !self.in_trace_body {
             // Collect known constructor names to exclude from sparking.
+            // Collect constructor names from the current module's symbol table.
             let constructors: HashSet<Symbol> = self
                 .ctx
-                .constructor_to_type
-                .keys()
-                .cloned()
-                .collect();
+                .symbol_tables
+                .get(&self.ctx.current_module)
+                .map(|table| {
+                    table.symbols.iter()
+                        .filter(|(_, entry)| matches!(entry, cranelisp_types::ModuleEntry::Constructor { .. }))
+                        .map(|(name, _)| name.clone())
+                        .collect()
+                })
+                .unwrap_or_default();
             let sparkable = find_sparkable_bindings(bindings, &constructors);
             if sparkable.len() >= 2 {
                 return self.compile_let_lenient(bindings, body, &sparkable, span);
@@ -499,7 +505,7 @@ impl<'a, M: Module> FnCompiler<'a, M> {
                 // Track type for RC — unwrap IO(T) to get inner T.
                 if let Some(ty) = inner.ctx.expr_types.get(&val_expr.span()) {
                     let inner_ty = match ty {
-                        Type::ADT(name, args) if name.as_ref() == "IO" && !args.is_empty() => {
+                        Type::ADT(fqtn, args) if fqtn.name.as_ref() == "IO" && !args.is_empty() => {
                             args[0].clone()
                         }
                         _ => ty.clone(),
@@ -591,7 +597,7 @@ impl<'a, M: Module> FnCompiler<'a, M> {
 
                 // Inc heap-typed captures: the closure env needs its own reference.
                 if let Some(ty) = self.variable_types.get(cap_name) {
-                    let category = HeapCategory::classify(ty, Some(self.ctx.type_defs));
+                    let category = HeapCategory::classify(ty, Some(self.ctx.symbol_tables));
                     match category {
                         HeapCategory::AlwaysHeap => {
                             heap::emit_rc_inc(&mut self.builder, cap_val);
@@ -776,7 +782,7 @@ impl<'a, M: Module> FnCompiler<'a, M> {
 
                 // Inc heap-typed captures: the closure env needs its own reference.
                 if let Some(ty) = self.variable_types.get(cap_name) {
-                    let category = HeapCategory::classify(ty, Some(self.ctx.type_defs));
+                    let category = HeapCategory::classify(ty, Some(self.ctx.symbol_tables));
                     match category {
                         HeapCategory::AlwaysHeap => {
                             heap::emit_rc_inc(&mut self.builder, cap_val);
@@ -816,7 +822,7 @@ impl<'a, M: Module> FnCompiler<'a, M> {
             .enumerate()
             .filter_map(|(i, cap_name)| {
                 let ty = self.variable_types.get(cap_name)?;
-                let category = HeapCategory::classify(ty, Some(self.ctx.type_defs));
+                let category = HeapCategory::classify(ty, Some(self.ctx.symbol_tables));
                 match category {
                     HeapCategory::AlwaysHeap | HeapCategory::Mixed => {
                         Some((i, ty.clone(), category))
@@ -1240,7 +1246,7 @@ impl<'a, M: Module> FnCompiler<'a, M> {
                 } => {
                     // Check if this maps to an inline primitive (e.g., add-i64 → iadd).
                     if let Some(prim_name) =
-                        operators::primitive_for_trait_method(trait_name, method_name, impl_type)
+                        operators::primitive_for_trait_method(&trait_name.name, method_name, &impl_type.name)
                     {
                         if is_extern_primitive_in_wrapper(prim_name) {
                             return emit_extern_call_in_wrapper(
@@ -1329,7 +1335,7 @@ impl<'a, M: Module> FnCompiler<'a, M> {
                 self.ctx
                     .expr_types
                     .get(&arg.span())
-                    .map(|ty| HeapCategory::classify(ty, Some(self.ctx.type_defs)))
+                    .map(|ty| HeapCategory::classify(ty, Some(self.ctx.symbol_tables)))
                     .unwrap_or(HeapCategory::NeverHeap)
             })
             .collect();

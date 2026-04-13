@@ -216,14 +216,17 @@ pub fn load_platform_dll(
 /// `ModuleEntry::Def` for each platform function. Returns the list of
 /// (jit_name, function_pointer) pairs for JIT symbol registration.
 pub fn register_platform_in_tc(
-    tc: &mut cranelisp_typecheck::TypeChecker,
+    symbol_tables: &dashmap::DashMap<cranelisp_types::ModuleFullPath, cranelisp_types::SymbolTable>,
+    next_type_id: &std::sync::atomic::AtomicU32,
+    check_state: &mut cranelisp_typecheck::CheckState,
     platform: &LoadedPlatform,
 ) -> Result<Vec<(String, *const u8)>, CranelispError> {
     let module_path = ModuleFullPath::from(format!("platform.{}", platform.name));
 
-    // Save current module and switch to the platform module.
-    let prev_module = tc.current_module_path().clone();
-    tc.set_current_module(module_path.clone());
+    let tc = cranelisp_typecheck::TypeCheckEnv::new(symbol_tables, next_type_id);
+
+    // Ensure the platform module exists.
+    tc.ensure_module_exists(&module_path);
 
     let mut jit_symbols: Vec<(String, *const u8)> = Vec::new();
 
@@ -239,31 +242,32 @@ pub fn register_platform_in_tc(
 
         let param_names: Vec<Symbol> = desc.param_names.iter().map(|n| Symbol::from(n.as_str())).collect();
 
-        tc.symbol_table_mut().insert(
-            Symbol::from(desc.name.as_str()),
-            ModuleEntry::Def {
-                scheme,
-                visibility: Visibility::Public,
-                docstring: if desc.docstring.is_empty() {
-                    None
-                } else {
-                    Some(desc.docstring.clone())
+        // Insert directly into the module's symbol table.
+        if let Some(mut table) = symbol_tables.get_mut(&module_path) {
+            table.insert(
+                Symbol::from(desc.name.as_str()),
+                ModuleEntry::Def {
+                    scheme,
+                    visibility: Visibility::Public,
+                    docstring: if desc.docstring.is_empty() {
+                        None
+                    } else {
+                        Some(desc.docstring.clone())
+                    },
+                    param_names,
+                    kind: Box::new(DefKind::Primitive {
+                        primitive_kind: PrimitiveKind::PlatformEffect,
+                        jit_name: Some(JitSymbol::from(desc.jit_name.as_str())),
+                    }),
+                    callees: Vec::new(),
+                    got_slot: None,
+                    trait_origin: None,
                 },
-                param_names,
-                kind: Box::new(DefKind::Primitive {
-                    primitive_kind: PrimitiveKind::PlatformEffect,
-                    jit_name: Some(JitSymbol::from(desc.jit_name.as_str())),
-                }),
-                callees: Vec::new(),
-                got_slot: None,
-            },
-        );
+            );
+        }
 
         jit_symbols.push((desc.jit_name.clone(), desc.ptr));
     }
-
-    // Restore previous module.
-    tc.set_current_module(prev_module);
 
     Ok(jit_symbols)
 }
@@ -406,7 +410,10 @@ fn parse_io_type(elems: &[Sexp], fn_name: &str) -> Result<Type, CranelispError> 
     }
 
     let inner = sexp_to_type(&elems[1], fn_name)?;
-    Ok(Type::ADT("IO".into(), vec![inner]))
+    Ok(Type::ADT(cranelisp_types::FQTypeName::new(
+        ModuleFullPath::from("primitives"),
+        cranelisp_types::TypeName::from("IO"),
+    ), vec![inner]))
 }
 
 /// Check if a Sexp is a `(platform name)` form.
@@ -439,7 +446,9 @@ pub fn extract_platform_name(sexp: &Sexp) -> Option<(String, Span)> {
 /// Returns the loaded platform (must be kept alive) and JIT symbols to register.
 #[allow(clippy::type_complexity)] // Return type encapsulates platform + JIT symbols
 pub fn load_and_register_platform(
-    tc: &mut cranelisp_typecheck::TypeChecker,
+    symbol_tables: &dashmap::DashMap<cranelisp_types::ModuleFullPath, cranelisp_types::SymbolTable>,
+    next_type_id: &std::sync::atomic::AtomicU32,
+    check_state: &mut cranelisp_typecheck::CheckState,
     platform_name: &str,
     project_root: &Path,
     lib_dirs: &[PathBuf],
@@ -472,7 +481,7 @@ pub fn load_and_register_platform(
     }
 
     // Step 4: Register in typechecker.
-    let jit_symbols = register_platform_in_tc(tc, &platform)?;
+    let jit_symbols = register_platform_in_tc(symbol_tables, next_type_id, check_state, &platform)?;
 
     Ok((platform, jit_symbols))
 }
@@ -525,7 +534,7 @@ mod tests {
                 assert_eq!(params[0], Type::String);
                 match ret.as_ref() {
                     Type::ADT(name, args) => {
-                        assert_eq!(name.as_ref(), "IO");
+                        assert_eq!(name.name.as_ref(), "IO");
                         assert_eq!(args.len(), 1);
                         assert_eq!(args[0], Type::Int);
                     }
@@ -545,7 +554,7 @@ mod tests {
                 assert!(params.is_empty());
                 match ret.as_ref() {
                     Type::ADT(name, args) => {
-                        assert_eq!(name.as_ref(), "IO");
+                        assert_eq!(name.name.as_ref(), "IO");
                         assert_eq!(args.len(), 1);
                         assert_eq!(args[0], Type::String);
                     }
@@ -658,9 +667,16 @@ mod tests {
             return;
         }
 
-        let mut tc = cranelisp_typecheck::TypeChecker::new();
+        let symbol_tables = dashmap::DashMap::new();
+        let next_type_id = std::sync::atomic::AtomicU32::new(0);
+        let user_mod = ModuleFullPath::from("user");
+        symbol_tables.insert(user_mod.clone(), cranelisp_types::SymbolTable::new(user_mod.clone()));
+        cranelisp_typecheck::register_builtins(&symbol_tables, &next_type_id);
+        let mut check_state = cranelisp_typecheck::CheckState::new(user_mod);
         let (platform, jit_symbols) = load_and_register_platform(
-            &mut tc,
+            &symbol_tables,
+            &next_type_id,
+            &mut check_state,
             "stdio",
             project_root,
             &[],
@@ -673,7 +689,7 @@ mod tests {
 
         // Check the platform.stdio module exists and has the functions.
         let module_path = ModuleFullPath::from("platform.stdio");
-        let table = tc.module_table(&module_path);
+        let table = symbol_tables.get(&module_path);
         assert!(table.is_some(), "platform.stdio module should exist");
 
         let table = table.unwrap();
@@ -690,7 +706,7 @@ mod tests {
                 Type::Fn(params, ret) => {
                     assert_eq!(params.len(), 1);
                     assert_eq!(params[0], Type::String);
-                    assert!(matches!(ret.as_ref(), Type::ADT(name, _) if name.as_ref() == "IO"));
+                    assert!(matches!(ret.as_ref(), Type::ADT(name, _) if name.name.as_ref() == "IO"));
                 }
                 _ => panic!("expected Fn type for print"),
             }
@@ -742,10 +758,16 @@ mod tests {
             return;
         }
 
-        let mut tc = cranelisp_typecheck::TypeChecker::new();
+        let symbol_tables = dashmap::DashMap::new();
+        let next_type_id = std::sync::atomic::AtomicU32::new(0);
+        let user_mod = ModuleFullPath::from("user");
+        symbol_tables.insert(user_mod.clone(), cranelisp_types::SymbolTable::new(user_mod.clone()));
+        let mut check_state = cranelisp_typecheck::CheckState::new(user_mod);
         // Try to load with wrong name — manifest says "stdio" but we say "wrong-name"
         let result = load_and_register_platform(
-            &mut tc,
+            &symbol_tables,
+            &next_type_id,
+            &mut check_state,
             "wrong-name",
             project_root,
             &[],

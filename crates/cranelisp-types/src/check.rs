@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 
 use crate::{
-    Defn, JitSymbol, Scheme, Span, Symbol, TraitName, Type, TypeId, TypeName, Warning,
+    Defn, FQTraitName, FQTypeName, JitSymbol, Scheme, Span, Symbol, Type, TypeId, Warning,
 };
 
 /// Map from call site span to how that call was resolved.
@@ -13,9 +13,9 @@ pub type MethodResolutions = HashMap<Span, ResolvedCall>;
 pub enum ResolvedCall {
     /// Resolved to a trait method implementation (Ring 2)
     TraitMethod {
-        trait_name: TraitName,
+        trait_name: FQTraitName,
         method_name: Symbol,
-        impl_type: TypeName,
+        impl_type: FQTypeName,
         mangled_name: JitSymbol,
     },
     /// Resolved to a specific multi-sig variant (Ring 2)
@@ -77,12 +77,6 @@ pub struct CheckResult {
     pub default_method_defns: Vec<Defn>,
     /// Non-fatal warnings accumulated during checking
     pub warnings: Vec<Warning>,
-    /// Type definitions registered during checking.
-    /// Backend needs this for ADT tag info and match codegen.
-    pub type_defs: HashMap<TypeName, TypeDefInfo>,
-    /// Map from constructor name to its parent type name.
-    /// Backend needs this to look up tag values during match codegen.
-    pub constructor_to_type: HashMap<Symbol, TypeName>,
     /// Display info for REPL output (None in batch mode).
     pub display: Option<DisplayInfo>,
 }
@@ -90,7 +84,7 @@ pub struct CheckResult {
 /// Information about a user-defined type.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TypeDefInfo {
-    pub name: TypeName,
+    pub name: FQTypeName,
     pub type_params: Vec<Symbol>,
     pub constructors: Vec<ConstructorInfo>,
     pub docstring: Option<String>,

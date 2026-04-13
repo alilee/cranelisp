@@ -20,7 +20,7 @@ mod helpers;
 
 use cranelisp::session_v4::{EvalResult, format_result_value};
 use cranelisp_backend::display::format_result;
-use cranelisp_types::{CranelispError, Span, Type, TypeName};
+use cranelisp_types::{CranelispError, FQTypeName, ModuleFullPath, Span, Type, TypeName};
 use helpers::*;
 
 // ---------------------------------------------------------------------------
@@ -147,9 +147,9 @@ fn display_adt_enum_type() {
     // Spec §1.2: nullary constructor tag displayed as value.
     // Spec §1.5: `Color.Red` notation (Ring 0: enum display is the tag integer).
     // The ADT type should be displayed in the output.
-    let adt = Type::ADT(TypeName::from("Color"), vec![]);
+    let adt = Type::ADT(FQTypeName::new(ModuleFullPath::from("user"), TypeName::from("Color")), vec![]);
     let s = format_result(0, &adt);
-    assert_eq!(s, ":Color 0");
+    assert_eq!(s, ":user/Color 0");
 }
 
 // spec: repl/spec.md §1.2 — negative Float display
@@ -340,7 +340,7 @@ fn deftype_reports_adt_type() {
     assert!(result.is_def());
     assert_eq!(
         *result.ty(),
-        Type::ADT(TypeName::from("Color"), vec![])
+        Type::ADT(FQTypeName::new(ModuleFullPath::from("user"), TypeName::from("Color")), vec![])
     );
 }
 
@@ -352,7 +352,7 @@ fn deftype_two_constructors() {
     assert!(result.is_def());
     assert_eq!(
         *result.ty(),
-        Type::ADT(TypeName::from("Answer"), vec![])
+        Type::ADT(FQTypeName::new(ModuleFullPath::from("user"), TypeName::from("Answer")), vec![])
     );
 }
 
@@ -369,7 +369,7 @@ fn constructor_reports_adt_type() {
     let result = session.eval("Red").unwrap();
     assert_eq!(
         *result.ty(),
-        Type::ADT(TypeName::from("Color"), vec![])
+        Type::ADT(FQTypeName::new(ModuleFullPath::from("user"), TypeName::from("Color")), vec![])
     );
     assert!(!result.is_def());
     assert_eq!(result.value(), 0); // tag 0
@@ -383,7 +383,7 @@ fn constructor_tags_are_sequential() {
 
     let r0 = session.eval("Off").unwrap();
     assert_eq!(r0.value(), 0);
-    assert_eq!(*r0.ty(), Type::ADT(TypeName::from("Light"), vec![]));
+    assert_eq!(*r0.ty(), Type::ADT(FQTypeName::new(ModuleFullPath::from("user"), TypeName::from("Light")), vec![]));
 
     let r1 = session.eval("Dim").unwrap();
     assert_eq!(r1.value(), 1);
@@ -438,7 +438,7 @@ fn error_after_typedef_preserves_type() {
 
     // Type still usable.
     let result = session.eval("North").unwrap();
-    assert_eq!(*result.ty(), Type::ADT(TypeName::from("Dir"), vec![]));
+    assert_eq!(*result.ty(), Type::ADT(FQTypeName::new(ModuleFullPath::from("user"), TypeName::from("Dir")), vec![]));
 }
 
 // spec: repl/spec.md §5.2 — multiple errors then success
@@ -479,7 +479,7 @@ fn error_preserves_multiple_definitions() {
     assert_eq!(repl_eval(&mut session, "(b)"), 2);
     assert_eq!(repl_eval(&mut session, "(c 5)"), 15);
     let flag = session.eval("On").unwrap();
-    assert_eq!(*flag.ty(), Type::ADT(TypeName::from("Flag"), vec![]));
+    assert_eq!(*flag.ty(), Type::ADT(FQTypeName::new(ModuleFullPath::from("user"), TypeName::from("Flag")), vec![]));
 }
 
 // =============================================================================
@@ -654,10 +654,10 @@ fn multiple_enum_types_in_session() {
     session.eval("(deftype Size Small Large)").unwrap();
 
     let color = session.eval("Red").unwrap();
-    assert_eq!(*color.ty(), Type::ADT(TypeName::from("Color"), vec![]));
+    assert_eq!(*color.ty(), Type::ADT(FQTypeName::new(ModuleFullPath::from("user"), TypeName::from("Color")), vec![]));
 
     let size = session.eval("Small").unwrap();
-    assert_eq!(*size.ty(), Type::ADT(TypeName::from("Size"), vec![]));
+    assert_eq!(*size.ty(), Type::ADT(FQTypeName::new(ModuleFullPath::from("user"), TypeName::from("Size")), vec![]));
 }
 
 // =============================================================================
@@ -1253,11 +1253,11 @@ fn enum_with_many_constructors() {
 
     let r = session.eval("Mon").unwrap();
     assert_eq!(r.value(), 0);
-    assert_eq!(*r.ty(), Type::ADT(TypeName::from("Weekday"), vec![]));
+    assert_eq!(*r.ty(), Type::ADT(FQTypeName::new(ModuleFullPath::from("user"), TypeName::from("Weekday")), vec![]));
 
     let r = session.eval("Sun").unwrap();
     assert_eq!(r.value(), 6);
-    assert_eq!(*r.ty(), Type::ADT(TypeName::from("Weekday"), vec![]));
+    assert_eq!(*r.ty(), Type::ADT(FQTypeName::new(ModuleFullPath::from("user"), TypeName::from("Weekday")), vec![]));
 }
 
 // spec: 06-pattern-matching §6.5.1 — match all constructors
@@ -1287,7 +1287,7 @@ fn enum_type_persists_across_many_evals() {
 
     // The type is still available.
     let r = session.eval("Pos").unwrap();
-    assert_eq!(*r.ty(), Type::ADT(TypeName::from("Sign"), vec![]));
+    assert_eq!(*r.ty(), Type::ADT(FQTypeName::new(ModuleFullPath::from("user"), TypeName::from("Sign")), vec![]));
 }
 
 // =============================================================================
@@ -1488,7 +1488,7 @@ fn constructor_in_if_expression() {
         .eval("(defn pick [cond] (if cond A B))")
         .unwrap();
     let r = session.eval("(pick true)").unwrap();
-    assert_eq!(*r.ty(), Type::ADT(TypeName::from("AB"), vec![]));
+    assert_eq!(*r.ty(), Type::ADT(FQTypeName::new(ModuleFullPath::from("user"), TypeName::from("AB")), vec![]));
     assert_eq!(r.value(), 0); // A is tag 0
 
     let r = session.eval("(pick false)").unwrap();
@@ -1501,7 +1501,7 @@ fn constructor_in_let() {
     let mut session = repl_session();
     session.eval("(deftype YN Yes No)").unwrap();
     let result = session.eval("(let [x Yes] x)").unwrap();
-    assert_eq!(*result.ty(), Type::ADT(TypeName::from("YN"), vec![]));
+    assert_eq!(*result.ty(), Type::ADT(FQTypeName::new(ModuleFullPath::from("user"), TypeName::from("YN")), vec![]));
     assert_eq!(result.value(), 0);
 }
 
@@ -1746,7 +1746,7 @@ fn ring1_adt_polymorphic_type_display() {
     // Type should be ADT("Option", [Int]).
     assert_eq!(
         *result.ty(),
-        Type::ADT(TypeName::from("Option"), vec![Type::Int])
+        Type::ADT(FQTypeName::new(ModuleFullPath::from("user"), TypeName::from("Option")), vec![Type::Int])
     );
 }
 
@@ -1759,7 +1759,7 @@ fn ring1_adt_product_type_reports_adt_type() {
     let result = session.eval("(Point 3 4)").unwrap();
     assert_eq!(
         *result.ty(),
-        Type::ADT(TypeName::from("Point"), vec![])
+        Type::ADT(FQTypeName::new(ModuleFullPath::from("user"), TypeName::from("Point")), vec![])
     );
     assert!(!result.is_def());
 }
@@ -1823,7 +1823,7 @@ fn ring1_deftype_with_fields_reports_type() {
     assert!(result.is_def());
     assert_eq!(
         *result.ty(),
-        Type::ADT(TypeName::from("Point"), vec![])
+        Type::ADT(FQTypeName::new(ModuleFullPath::from("user"), TypeName::from("Point")), vec![])
     );
 }
 
@@ -2113,7 +2113,7 @@ fn ring1_defn_with_adt_param_type() {
     assert_eq!(
         *result.ty(),
         Type::Fn(
-            vec![Type::ADT(TypeName::from("Point"), vec![])],
+            vec![Type::ADT(FQTypeName::new(ModuleFullPath::from("user"), TypeName::from("Point")), vec![])],
             Box::new(Type::Int)
         )
     );
@@ -2135,7 +2135,7 @@ fn ring1_defn_polymorphic_adt_return_type() {
             assert_eq!(params.len(), 1);
             match ret.as_ref() {
                 Type::ADT(name, args) => {
-                    assert_eq!(name, &TypeName::from("Option"));
+                    assert_eq!(name.name, TypeName::from("Option"));
                     assert_eq!(args.len(), 1, "Option should have 1 type arg");
                 }
                 other => panic!("expected ADT return type, got: {other:?}"),

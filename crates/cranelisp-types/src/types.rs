@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 
-use crate::{TraitName, TypeName};
+use crate::{FQTraitName, FQTypeName, ModuleFullPath, TypeName};
 
 /// Type variable identifier. Narrow to u32 -- 4 billion type vars sufficient.
 pub type TypeId = u32;
@@ -19,13 +19,9 @@ pub enum Type {
     Float,
     /// Function type: param types -> return type
     Fn(Vec<Type>, Box<Type>),
-    /// Algebraic data type: type name + type arguments
-    // FIXME(/arch): TypeName should be FQTypeName { module: ModuleFullPath, name: TypeName }
-    // paralleling FQSymbol. The typechecker resolves the module at construction time;
-    // everything downstream gets the qualified name. This eliminates the redundant
-    // type_modules: HashMap<TypeName, ModuleFullPath> maintained by the session for display.
-    // ~182 sites across cranelisp-types, cranelisp-typecheck, cranelisp-backend, src/.
-    ADT(TypeName, Vec<Type>),
+    /// Algebraic data type: fully-qualified type name + type arguments.
+    /// Module context embedded at construction time — eliminates `build_type_modules()`.
+    ADT(FQTypeName, Vec<Type>),
     /// Unification variable (inference internal; resolved before codegen)
     Var(TypeId),
     /// Type constructor application (higher-kinded types, Ring 2+)
@@ -57,7 +53,7 @@ impl Type {
 
     /// Check whether this type is `IO _`.
     pub fn is_io(&self) -> bool {
-        matches!(self, Type::ADT(name, _) if name.as_ref() == "IO")
+        matches!(self, Type::ADT(fqtn, _) if fqtn.module == "primitives" && fqtn.name == "IO")
     }
 
     /// Extract the inner type from `IO T`.
@@ -69,6 +65,11 @@ impl Type {
             Type::ADT(_, args) if !args.is_empty() => args[0].clone(),
             _ => self.clone(),
         }
+    }
+
+    /// Create a named ADT type with module qualification.
+    pub fn adt(module: ModuleFullPath, name: TypeName, args: Vec<Type>) -> Type {
+        Type::ADT(FQTypeName::new(module, name), args)
     }
 
     /// Returns true if this type contains any unresolved type variable (`Type::Var`).
@@ -104,11 +105,11 @@ impl std::fmt::Display for Type {
                 }
                 write!(f, "] {ret})")
             }
-            Type::ADT(name, args) => {
+            Type::ADT(fqtn, args) => {
                 if args.is_empty() {
-                    write!(f, "{name}")
+                    write!(f, "{fqtn}")
                 } else {
-                    write!(f, "({name}")?;
+                    write!(f, "({fqtn}")?;
                     for a in args {
                         write!(f, " {a}")?;
                     }
@@ -132,8 +133,8 @@ impl std::fmt::Display for Type {
 pub struct Scheme {
     /// Quantified type variables
     pub vars: Vec<TypeId>,
-    /// Trait constraints on type variables: TypeId -> list of required trait names
-    pub constraints: HashMap<TypeId, Vec<TraitName>>,
+    /// Trait constraints on type variables: TypeId -> list of required fully-qualified trait names
+    pub constraints: HashMap<TypeId, Vec<FQTraitName>>,
     /// The underlying type
     pub ty: Type,
 }
@@ -181,15 +182,15 @@ pub fn format_type_with_vars(ty: &Type, var_names: &HashMap<TypeId, String>) -> 
             let ret_s = format_type_with_vars(ret, var_names);
             format!("(Fn [{}] {ret_s})", parts.join(" "))
         }
-        Type::ADT(name, args) => {
+        Type::ADT(fqtn, args) => {
             if args.is_empty() {
-                format!("{name}")
+                format!("{fqtn}")
             } else {
                 let arg_strs: Vec<String> = args
                     .iter()
                     .map(|a| format_type_with_vars(a, var_names))
                     .collect();
-                format!("({name} {})", arg_strs.join(" "))
+                format!("({fqtn} {})", arg_strs.join(" "))
             }
         }
         Type::Var(id) => {
@@ -358,6 +359,16 @@ fn collect_free_vars(ty: &Type, result: &mut HashSet<TypeId>) {
 mod tests {
     use super::*;
 
+    /// Test helper: create an FQTypeName in a "test" module.
+    fn test_fqtn(name: &str) -> FQTypeName {
+        FQTypeName::new(ModuleFullPath::from("test"), TypeName::from(name))
+    }
+
+    /// Test helper: create an FQTypeName in the "primitives" module.
+    fn primitives_fqtn(name: &str) -> FQTypeName {
+        FQTypeName::new(ModuleFullPath::from("primitives"), TypeName::from(name))
+    }
+
     #[test]
     fn test_from_name() {
         assert_eq!(Type::from_name("Int"), Some(Type::Int));
@@ -436,10 +447,10 @@ mod tests {
 
     #[test]
     fn test_contains_var_nested_adt() {
-        let ty = Type::ADT(TypeName::from("Option"), vec![Type::Var(0)]);
+        let ty = Type::ADT(test_fqtn("Option"), vec![Type::Var(0)]);
         assert!(ty.contains_var());
 
-        let ty2 = Type::ADT(TypeName::from("Option"), vec![Type::Int]);
+        let ty2 = Type::ADT(test_fqtn("Option"), vec![Type::Int]);
         assert!(!ty2.contains_var());
     }
 
@@ -448,8 +459,8 @@ mod tests {
         assert_eq!(format!("{}", Type::Int), "Int");
         let fn_ty = Type::Fn(vec![Type::Int, Type::Int], Box::new(Type::Int));
         assert_eq!(format!("{fn_ty}"), "(Fn [Int Int] Int)");
-        let adt = Type::ADT(TypeName::from("Color"), vec![]);
-        assert_eq!(format!("{adt}"), "Color");
+        let adt = Type::ADT(test_fqtn("Color"), vec![]);
+        assert_eq!(format!("{adt}"), "test/Color");
     }
 
     // --- IO type detection ---
@@ -457,7 +468,7 @@ mod tests {
     // spec: 10-io §10.6.1 — Type::is_io detects IO ADT
     #[test]
     fn test_is_io_positive() {
-        let io_int = Type::ADT(TypeName::from("IO"), vec![Type::Int]);
+        let io_int = Type::ADT(primitives_fqtn("IO"), vec![Type::Int]);
         assert!(io_int.is_io());
     }
 
@@ -466,24 +477,31 @@ mod tests {
     fn test_is_io_negative() {
         assert!(!Type::Int.is_io());
         assert!(!Type::Bool.is_io());
-        let option_int = Type::ADT(TypeName::from("Option"), vec![Type::Int]);
+        let option_int = Type::ADT(test_fqtn("Option"), vec![Type::Int]);
         assert!(!option_int.is_io());
+    }
+
+    // spec: 10-io §10.6.1 — Type::is_io rejects user-defined IO type in wrong module
+    #[test]
+    fn test_is_io_wrong_module() {
+        let user_io = Type::ADT(test_fqtn("IO"), vec![Type::Int]);
+        assert!(!user_io.is_io());
     }
 
     // spec: 10-io §10.6.1 — Type::io_inner_type unwraps IO
     #[test]
     fn test_io_inner_type() {
-        let io_int = Type::ADT(TypeName::from("IO"), vec![Type::Int]);
+        let io_int = Type::ADT(primitives_fqtn("IO"), vec![Type::Int]);
         assert_eq!(io_int.io_inner_type(), Type::Int);
 
-        let io_string = Type::ADT(TypeName::from("IO"), vec![Type::String]);
+        let io_string = Type::ADT(primitives_fqtn("IO"), vec![Type::String]);
         assert_eq!(io_string.io_inner_type(), Type::String);
     }
 
     // spec: 10-io §10.8 — Type::io_inner_type fallback for non-IO
     #[test]
     fn test_io_inner_type_no_args() {
-        let io_bare = Type::ADT(TypeName::from("IO"), vec![]);
+        let io_bare = Type::ADT(primitives_fqtn("IO"), vec![]);
         assert_eq!(io_bare.io_inner_type(), io_bare);
     }
 
@@ -519,9 +537,9 @@ mod tests {
 
     #[test]
     fn test_format_type_display_polymorphic_adt() {
-        // (Option Var(3)) should display as "(Option a)".
-        let ty = Type::ADT(TypeName::from("Option"), vec![Type::Var(3)]);
-        assert_eq!(format_type_display(&ty), "(Option a)");
+        // (test/Option Var(3)) should display as "(test/Option a)".
+        let ty = Type::ADT(test_fqtn("Option"), vec![Type::Var(3)]);
+        assert_eq!(format_type_display(&ty), "(test/Option a)");
     }
 
     #[test]

@@ -26,71 +26,77 @@ use std::collections::HashMap;
 
 use cranelisp_types::{
     ring0_primitives, ring1_primitives, ring3_primitives, ConstructorDef, ConstructorInfo,
-    DefKind, FieldDef, FieldInfo, JitSymbol, ModuleEntry, ModuleFullPath, PrimitiveKind,
-    Scheme, Span, Symbol, Type, TypeDefInfo, TypeExpr, TypeName, Visibility,
+    DefKind, FQTypeName, FieldDef, FieldInfo, JitSymbol, ModuleEntry, ModuleFullPath,
+    PrimitiveKind, Scheme, Span, Symbol, Type, TypeDefInfo, TypeExpr, TypeName, Visibility,
 };
 
-use crate::checker::TypeChecker;
+/// Helper: create FQTypeName in the "primitives" module.
+fn primitives_fqtn(name: &str) -> FQTypeName {
+    FQTypeName::new(ModuleFullPath::from("primitives"), TypeName::from(name))
+}
+
+/// Helper: create FQTypeName in the "macros" module.
+fn macros_fqtn(name: &str) -> FQTypeName {
+    FQTypeName::new(ModuleFullPath::from("macros"), TypeName::from(name))
+}
+
+use crate::checker::{CheckState, TypeCheckEnv};
 use crate::scheme::mono;
 
-impl TypeChecker {
-    /// Register all builtins: Ring 0-4 primitives, special forms, synthetic modules.
-    ///
-    /// Registration order per pipeline-orchestration.md §3:
-    /// 1. register_primitives()          — types + Ring 0 inline prims
-    /// 2. register_ring1_primitives()    — str-concat, int-to-string, etc.
-    /// 3. register_vec_primitives()      — vec-get, vec-set, etc.
-    /// 4. register_special_forms()       — defn, let, if, match, deftrait, impl, defmacro, etc.
-    /// 5. register_macros_module()       — Sexp, SList ADTs + sconcat extern in `macros` module
-    /// 6. register_ring3_primitives()    — quote-sexp in `primitives` (requires Sexp from step 5)
-    /// 7. register_io_type()            — IO ADT (Pure, Effect, Bind) in `primitives`
-    /// 8. register_bind_primitive()     — bind inline primitive in `primitives`
-    /// 9. import_primitives_into_user()  — copy genuine primitives -> user
-    ///
-    /// Traits (Num, Eq, Ord, Display) are NOT registered here — they come from
-    /// prelude `.cl` files loaded through the normal module pipeline.
-    pub(crate) fn register_builtins(&mut self) {
-        // Ensure the `primitives` synthetic module exists.
-        // Ring 3 primitives (quote-sexp) are registered there; other ring
-        // primitives are registered directly in the current module (user).
-        let primitives_path = ModuleFullPath::from("primitives");
-        if !self.modules.contains_key(&primitives_path) {
-            self.modules.insert(
-                primitives_path.clone(),
-                cranelisp_types::SymbolTable::new(primitives_path.clone()),
-            );
-        }
+/// Register all builtins into the given modules map.
+///
+/// This is a free function — the caller owns the `DashMap` and `AtomicU32`.
+/// Called once during session startup before constructing `TypeCheckEnv`.
+///
+/// Seeds the "user" and "primitives" modules with Ring 0-4 primitives,
+/// special forms, and synthetic modules (macros, IO, Trace, TestResult).
+///
+/// Traits (Num, Eq, Ord, Display) are NOT registered here — they come from
+/// prelude `.cl` files loaded through the normal module pipeline.
+pub fn register_builtins(
+    modules: &dashmap::DashMap<ModuleFullPath, cranelisp_types::SymbolTable>,
+    next_id: &std::sync::atomic::AtomicU32,
+) {
+    let env = TypeCheckEnv::new(modules, next_id);
+    let mut state = CheckState::new(ModuleFullPath::from("user"));
 
-        self.register_primitives();
-        self.register_ring1_primitives();
-        self.register_vec_primitives();
-        self.register_special_forms();
-        self.register_builtin_type_names();
-
-        // Ring 3: Seed synthetic `macros` module with SList and Sexp ADTs + sconcat.
-        // Must come after primitives registration (references Int, Bool, Float, String).
-        self.register_macros_module();
-
-        // Ring 3: quote-sexp in `primitives` — must come after register_macros_module()
-        // because the type references Sexp.
-        self.register_ring3_primitives();
-
-        // Ring 4: IO ADT and bind primitive in `primitives`.
-        self.register_io_type();
-        self.register_bind_primitive();
-
-        // Ring 4: Trace ADT (TraceCall) + field accessors in `primitives`.
-        // NOT auto-imported — users must explicitly (import [primitives [Trace TraceCall ...]]).
-        self.register_trace_type();
-
-        // Ring 4: TestResult root type + test special forms in `user`.
-        // Must come after register_trace_type (TraceFail references Trace).
-        self.register_test_infrastructure();
-
-        // Per spec §8.9.1, nothing from primitives is auto-imported.
-        // Modules access primitives via explicit import or qualified names.
+    // Ensure the `primitives` synthetic module exists.
+    let primitives_path = ModuleFullPath::from("primitives");
+    if !modules.contains_key(&primitives_path) {
+        modules.insert(
+            primitives_path.clone(),
+            cranelisp_types::SymbolTable::new(primitives_path.clone()),
+        );
     }
 
+    env.register_primitives();
+    env.register_ring1_primitives();
+    env.register_vec_primitives();
+    env.register_special_forms(&state);
+    env.register_builtin_type_names();
+
+    // Ring 3: Seed synthetic `macros` module with SList and Sexp ADTs + sconcat.
+    env.register_macros_module(&mut state);
+
+    // Ring 3: quote-sexp in `primitives` — must come after macros module
+    env.register_ring3_primitives();
+
+    // Ring 1: Option ADT in `primitives` (needed by parse-int and other builtins).
+    env.register_option_type(&mut state);
+
+    // Ring 4: IO ADT and bind primitive in `primitives`.
+    env.register_io_type(&mut state);
+    env.register_bind_primitive();
+
+    // Ring 4: Trace ADT (TraceCall) + field accessors in `primitives`.
+    env.register_trace_type(&mut state);
+
+    // Ring 4: TestResult root type + test special forms in `user`.
+    env.register_test_infrastructure(&mut state);
+}
+
+impl TypeCheckEnv<'_> {
+    /// (Kept for reference — registration order documented above in register_builtins)
     /// Copy non-named-primitive entries from the `primitives` module into `user`.
     ///
     /// Register Ring 0 primitives from the authoritative table.
@@ -100,7 +106,7 @@ impl TypeChecker {
     /// Cranelift IR for the `cranelift_op` field.
     ///
     /// Docstrings are taken from spec appendix-a-builtins.md §A.3.
-    fn register_primitives(&mut self) {
+    fn register_primitives(&self) {
         let primitives_path = ModuleFullPath::from("primitives");
         let mut primitives_table = self
             .modules
@@ -124,6 +130,7 @@ impl TypeChecker {
                     }),
                     callees: Vec::new(),
                     got_slot: None,
+                    trait_origin: None,
                 },
             );
         }
@@ -135,7 +142,7 @@ impl TypeChecker {
     /// functions. The backend calls them via JIT symbol references, not inline IR.
     ///
     /// Docstrings are taken from spec appendix-a-builtins.md §A.3.
-    fn register_ring1_primitives(&mut self) {
+    fn register_ring1_primitives(&self) {
         let primitives_path = ModuleFullPath::from("primitives");
         let mut primitives_table = self
             .modules
@@ -159,6 +166,7 @@ impl TypeChecker {
                     }),
                     callees: Vec::new(),
                     got_slot: None,
+                    trait_origin: None,
                 },
             );
         }
@@ -174,13 +182,13 @@ impl TypeChecker {
     ///
     /// Unlike Ring 1 string primitives (monomorphic), these require quantified
     /// type variables so the typechecker can instantiate them at each call site.
-    fn register_vec_primitives(&mut self) {
+    fn register_vec_primitives(&self) {
         // Allocate a fresh type variable ID for the polymorphic parameter 'a'.
         // This ensures the scheme's Var(a) won't collide with any Var already
         // in use by the typechecker, preventing infinite recursion in `apply`
         // when `instantiate` maps Var(a) to a fresh var.
         let (_, a) = self.fresh_var_id();
-        let vec_a = Type::ADT(TypeName::from("Vec"), vec![Type::Var(a)]);
+        let vec_a = Type::ADT(primitives_fqtn("Vec"), vec![Type::Var(a)]);
 
         let vec_prims: Vec<(&str, Vec<Symbol>, Scheme)> = vec![
             // vec-get :: forall a. (Fn [(Vec a) Int] a)
@@ -249,6 +257,7 @@ impl TypeChecker {
                     }),
                     callees: Vec::new(),
                     got_slot: None,
+                    trait_origin: None,
                 },
             );
         }
@@ -256,19 +265,24 @@ impl TypeChecker {
         // Register Vec as a known type with 1 type parameter (no constructors).
         // This allows `split` to return `(Vec String)` without the typechecker
         // complaining about an unknown type.
-        self.type_defs.get_mut().unwrap().type_defs.insert(
-            TypeName::from("Vec"),
-            TypeDefInfo {
-                name: TypeName::from("Vec"),
-                type_params: vec![Symbol::from("a")],
-                constructors: vec![],
-                docstring: None,
+        primitives_table.insert(
+            Symbol::from("Vec"),
+            ModuleEntry::TypeDef {
+                info: TypeDefInfo {
+                    name: primitives_fqtn("Vec"),
+                    type_params: vec![Symbol::from("a")],
+                    constructors: vec![],
+                    docstring: None,
+                },
+                visibility: Visibility::Public,
+                constructor_scheme: None,
+                sexp: None,
             },
         );
     }
 
     /// Register special form entries for REPL introspection.
-    fn register_special_forms(&mut self) {
+    fn register_special_forms(&self, state: &CheckState) {
         let special_forms = vec![
             ("if", "conditional: (if cond then else)"),
             ("let", "local binding: (let [x e] body)"),
@@ -282,7 +296,7 @@ impl TypeChecker {
         ];
 
         for (name, desc) in special_forms {
-            self.current_symbol_table_mut().insert(
+            self.current_symbol_table_mut(state).insert(
                 Symbol::from(name),
                 ModuleEntry::Def {
                     // Special forms don't have meaningful type schemes.
@@ -296,6 +310,7 @@ impl TypeChecker {
                     }),
                     callees: Vec::new(),
                     got_slot: None,
+                    trait_origin: None,
                 },
             );
         }
@@ -307,7 +322,7 @@ impl TypeChecker {
     /// root module — universally available for type annotations without import.
     /// Registered in `user` (the root module) so they get seeded into every
     /// new module via `ensure_module_exists`.
-    fn register_builtin_type_names(&mut self) {
+    fn register_builtin_type_names(&self) {
         let builtin_types = vec![
             ("Int", "builtin integer type"),
             ("Bool", "builtin boolean type"),
@@ -329,7 +344,7 @@ impl TypeChecker {
                 Symbol::from(name),
                 ModuleEntry::TypeDef {
                     info: TypeDefInfo {
-                        name: TypeName::from(name),
+                        name: primitives_fqtn(name),
                         type_params: vec![],
                         constructors: vec![],
                         docstring: Some(desc.to_string()),
@@ -349,7 +364,7 @@ impl TypeChecker {
     ///
     /// Registered in `primitives` (not `user`) so that `import_primitives_into_user()`
     /// copies them into `user` alongside Ring 0-1 primitives.
-    fn register_ring3_primitives(&mut self) {
+    fn register_ring3_primitives(&self) {
         let primitives_path = ModuleFullPath::from("primitives");
         let mut primitives_table = self
             .modules
@@ -373,6 +388,7 @@ impl TypeChecker {
                     }),
                     callees: Vec::new(),
                     got_slot: None,
+                    trait_origin: None,
                 },
             );
         }
@@ -402,18 +418,19 @@ impl TypeChecker {
     ///
     /// These are NOT auto-imported into `user`. Access is via qualified names
     /// (`macros/SexpSym`, `macros/SCons`, `macros/sconcat`, etc.) or explicit import.
-    fn register_macros_module(&mut self) {
+    fn register_macros_module(&self, state: &mut CheckState) {
         // Switch to the synthetic `macros` module.
-        let saved_module = self.state.current_module.clone();
+        let saved_module = state.current_module.clone();
         let macros_path = ModuleFullPath::from("macros");
-        self.set_current_module(macros_path);
+        self.ensure_module_exists(&macros_path);
+        state.current_module = macros_path;
 
-        self.register_slist_type();
-        self.register_sexp_type();
-        self.register_sconcat();
+        self.register_slist_type(state);
+        self.register_sexp_type(state);
+        self.register_sconcat(state);
 
         // Restore the original module context.
-        self.set_current_module(saved_module);
+        state.current_module = saved_module;
     }
 
     /// Register `sconcat` as an extern primitive in the `macros` module.
@@ -421,17 +438,17 @@ impl TypeChecker {
     /// Type: `(Fn [(SList Sexp) (SList Sexp)] (SList Sexp))`
     /// The quasiquote expander emits `macros/sconcat` calls to concatenate
     /// S-expression lists during macro expansion.
-    fn register_sconcat(&mut self) {
+    fn register_sconcat(&self, state: &CheckState) {
         let slist_sexp = Type::ADT(
-            TypeName::from("SList"),
-            vec![Type::ADT(TypeName::from("Sexp"), vec![])],
+            macros_fqtn("SList"),
+            vec![Type::ADT(macros_fqtn("Sexp"), vec![])],
         );
         let sconcat_type = Type::Fn(
             vec![slist_sexp.clone(), slist_sexp.clone()],
             Box::new(slist_sexp),
         );
 
-        self.current_symbol_table_mut().insert(
+        self.current_symbol_table_mut(state).insert(
             Symbol::from("sconcat"),
             ModuleEntry::Def {
                 scheme: mono(sconcat_type),
@@ -444,22 +461,34 @@ impl TypeChecker {
                 }),
                 callees: Vec::new(),
                 got_slot: None,
+                trait_origin: None,
             },
         );
     }
 
     /// Register `(deftype (SList a) SNil (SCons [:a shead :(SList a) stail]))`.
-    fn register_slist_type(&mut self) {
-        // Pre-seed SList in type_defs so SCons's self-referential stail field resolves.
-        self.type_defs.get_mut().unwrap().type_defs.insert(
-            TypeName::from("SList"),
-            TypeDefInfo {
-                name: TypeName::from("SList"),
-                type_params: vec![Symbol::from("a")],
-                constructors: vec![],
-                docstring: None,
-            },
-        );
+    fn register_slist_type(&self, state: &mut CheckState) {
+        // Pre-seed SList in macros module's SymbolTable so SCons's self-referential
+        // stail field resolves during build_constructor_infos.
+        {
+            let macros_path = ModuleFullPath::from("macros");
+            let mut macros_table = self.modules.get_mut(&macros_path)
+                .unwrap_or_else(|| unreachable!("invariant: macros module should exist"));
+            macros_table.insert(
+                Symbol::from("SList"),
+                ModuleEntry::TypeDef {
+                    info: TypeDefInfo {
+                        name: macros_fqtn("SList"),
+                        type_params: vec![Symbol::from("a")],
+                        constructors: vec![],
+                        docstring: None,
+                    },
+                    visibility: Visibility::Public,
+                    constructor_scheme: None,
+                    sexp: None,
+                },
+            );
+        }
 
         let slist_ctors = vec![
             // SNil: nullary constructor (tag 0)
@@ -490,7 +519,7 @@ impl TypeChecker {
             },
         ];
 
-        self.register_type_def_self(
+        self.register_type_def(state,
             &TypeName::from("SList"),
             &None,
             &[Symbol::from("a")],
@@ -504,17 +533,28 @@ impl TypeChecker {
     }
 
     /// Register the Sexp type with 7 data constructors (SexpInt through SexpBracket).
-    fn register_sexp_type(&mut self) {
-        // Pre-seed Sexp so SexpList/SexpBracket's :(SList Sexp) fields resolve.
-        self.type_defs.get_mut().unwrap().type_defs.insert(
-            TypeName::from("Sexp"),
-            TypeDefInfo {
-                name: TypeName::from("Sexp"),
-                type_params: vec![],
-                constructors: vec![],
-                docstring: None,
-            },
-        );
+    fn register_sexp_type(&self, state: &mut CheckState) {
+        // Pre-seed Sexp in macros module's SymbolTable so SexpList/SexpBracket's
+        // :(SList Sexp) fields resolve during build_constructor_infos.
+        {
+            let macros_path = ModuleFullPath::from("macros");
+            let mut macros_table = self.modules.get_mut(&macros_path)
+                .unwrap_or_else(|| unreachable!("invariant: macros module should exist"));
+            macros_table.insert(
+                Symbol::from("Sexp"),
+                ModuleEntry::TypeDef {
+                    info: TypeDefInfo {
+                        name: macros_fqtn("Sexp"),
+                        type_params: vec![],
+                        constructors: vec![],
+                        docstring: None,
+                    },
+                    visibility: Visibility::Public,
+                    constructor_scheme: None,
+                    sexp: None,
+                },
+            );
+        }
 
         let slist_sexp = TypeExpr::Applied(
             TypeName::from("SList"),
@@ -531,7 +571,7 @@ impl TypeChecker {
             Self::sexp_ctor("SexpBracket", "sitems", slist_sexp),
         ];
 
-        self.register_type_def_self(
+        self.register_type_def(state,
             &TypeName::from("Sexp"),
             &None,
             &[],
@@ -565,19 +605,65 @@ impl TypeChecker {
     /// - `Bind` (tag=2, internal): chains IO actions — fields `inner: (IO b)`,
     ///   `cont: (Fn [b] (IO a))`, where `b` is an existential type var
     ///
+    /// Register `(Option a)` ADT with `None` and `Some` constructors in primitives.
+    ///
+    /// `parse-int` and other builtins return `primitives/Option`. This type must
+    /// exist in the `primitives` module so that user code importing from primitives
+    /// can match on `Some`/`None` and have the FQTypeName match correctly.
+    fn register_option_type(&self, state: &mut CheckState) {
+        let saved_module = state.current_module.clone();
+        let primitives_path = ModuleFullPath::from("primitives");
+        self.ensure_module_exists(&primitives_path);
+        state.current_module = primitives_path;
+
+        let option_ctors = vec![
+            ConstructorDef {
+                name: Symbol::from("None"),
+                docstring: Some("No value".to_string()),
+                fields: vec![],
+                span: Span::SYNTHETIC,
+            },
+            ConstructorDef {
+                name: Symbol::from("Some"),
+                docstring: Some("Contains a value".to_string()),
+                fields: vec![FieldDef {
+                    name: Symbol::from("val"),
+                    type_expr: TypeExpr::TypeVar(Symbol::from("a")),
+                }],
+                span: Span::SYNTHETIC,
+            },
+        ];
+
+        self.register_type_def(
+            state,
+            &TypeName::from("Option"),
+            &Some("Optional value — None or Some".to_string()),
+            &[Symbol::from("a")],
+            &option_ctors,
+            Visibility::Public,
+            Span::SYNTHETIC,
+        )
+        .unwrap_or_else(|e| {
+            unreachable!("invariant: Option type registration failed: {e}")
+        });
+
+        state.current_module = saved_module;
+    }
+
     /// Pure and Effect are registered through `register_type_def()`.
     /// Bind is added manually afterward as an internal constructor — it is
     /// NOT registered in the symbol table (users cannot construct or match on it).
     ///
     /// See `design/typecheck/io-types.md` §2-3 for the full design rationale.
-    fn register_io_type(&mut self) {
-        // Switch to the synthetic `primitives` module via state.
-        let saved_module = self.state.current_module.clone();
+    fn register_io_type(&self, state: &mut CheckState) {
+        // Switch to the synthetic `primitives` module.
+        let saved_module = state.current_module.clone();
         let primitives_path = ModuleFullPath::from("primitives");
         if !self.modules.contains_key(&primitives_path) {
             self.modules.insert(primitives_path.clone(), cranelisp_types::SymbolTable::new(primitives_path.clone()));
         }
-        self.set_current_module(primitives_path);
+        self.ensure_module_exists(&primitives_path);
+        state.current_module = primitives_path;
 
         // Define Pure and Effect constructors via the normal registration path.
         let io_ctors = vec![
@@ -603,7 +689,7 @@ impl TypeChecker {
             },
         ];
 
-        self.register_type_def_self(
+        self.register_type_def(state,
             &TypeName::from("IO"),
             &Some("Deferred IO computation tree".to_string()),
             &[Symbol::from("a")],
@@ -616,14 +702,10 @@ impl TypeChecker {
         });
 
         // Add Bind as an internal constructor (tag=2).
-        // Bind has an existential type that cannot be expressed via ConstructorDef:
-        //   Bind :: exists b. (IO b, (Fn [b] (IO a))) -> (IO a)
-        // We add it directly to TypeDefInfo so REPL introspection sees it,
-        // but do NOT register it in the symbol table or constructor_to_type.
         self.add_internal_bind_constructor();
 
         // Restore the original module context.
-        self.set_current_module(saved_module);
+        state.current_module = saved_module;
     }
 
     /// Add the internal Bind constructor to the IO TypeDefInfo.
@@ -635,15 +717,15 @@ impl TypeChecker {
     /// The Bind constructor appears in `TypeDefInfo.constructors` for REPL
     /// introspection (`/info IO` shows all three constructors) but is NOT
     /// resolvable as a name in the type environment.
-    fn add_internal_bind_constructor(&mut self) {
+    fn add_internal_bind_constructor(&self) {
         // Allocate fresh type vars for the existential types.
         let (_, a_id) = self.fresh_var_id();
         let (_, b_id) = self.fresh_var_id();
 
         // inner :: (IO b)
-        let io_b = Type::ADT(TypeName::from("IO"), vec![Type::Var(b_id)]);
+        let io_b = Type::ADT(primitives_fqtn("IO"), vec![Type::Var(b_id)]);
         // cont :: (Fn [b] (IO a))
-        let io_a = Type::ADT(TypeName::from("IO"), vec![Type::Var(a_id)]);
+        let io_a = Type::ADT(primitives_fqtn("IO"), vec![Type::Var(a_id)]);
         let cont_ty = Type::Fn(vec![Type::Var(b_id)], Box::new(io_a));
 
         let bind_ctor = ConstructorInfo {
@@ -665,13 +747,15 @@ impl TypeChecker {
             internal: true,
         };
 
-        // Append Bind to the IO TypeDefInfo.
-        let io_type_def = self
-            .type_defs.get_mut().unwrap()
-            .type_defs
-            .get_mut(&TypeName::from("IO"))
-            .unwrap_or_else(|| unreachable!("invariant: IO type should be registered before adding Bind"));
-        io_type_def.constructors.push(bind_ctor);
+        // Append Bind to the IO TypeDefInfo in the primitives module's SymbolTable.
+        let primitives_path = ModuleFullPath::from("primitives");
+        let mut primitives_table = self.modules.get_mut(&primitives_path)
+            .unwrap_or_else(|| unreachable!("invariant: primitives module should exist"));
+        if let Some(ModuleEntry::TypeDef { info, .. }) = primitives_table.symbols.get_mut(&Symbol::from("IO")) {
+            info.constructors.push(bind_ctor);
+        } else {
+            unreachable!("invariant: IO type should be registered before adding Bind");
+        }
 
         // Do NOT register Bind in the symbol table — it is not user-constructable.
         // Do NOT register in constructor_to_type — Bind should not be resolvable by name.
@@ -685,7 +769,7 @@ impl TypeChecker {
     /// emits inline Cranelift IR to allocate a Bind node: `[tag=2, io_ptr, cont_ptr]`.
     ///
     /// See `design/typecheck/io-types.md` §4 for the type scheme construction.
-    fn register_bind_primitive(&mut self) {
+    fn register_bind_primitive(&self) {
         let primitives_path = ModuleFullPath::from("primitives");
 
         // Allocate fresh type vars for the polymorphic parameters.
@@ -693,8 +777,8 @@ impl TypeChecker {
         let (_, b_id) = self.fresh_var_id();
 
         // Build the type: (Fn [(IO a) (Fn [a] (IO b))] (IO b))
-        let io_a = Type::ADT(TypeName::from("IO"), vec![Type::Var(a_id)]);
-        let io_b = Type::ADT(TypeName::from("IO"), vec![Type::Var(b_id)]);
+        let io_a = Type::ADT(primitives_fqtn("IO"), vec![Type::Var(a_id)]);
+        let io_b = Type::ADT(primitives_fqtn("IO"), vec![Type::Var(b_id)]);
         let cont_ty = Type::Fn(vec![Type::Var(a_id)], Box::new(io_b.clone()));
         let bind_ty = Type::Fn(vec![io_a, cont_ty], Box::new(io_b));
 
@@ -725,6 +809,7 @@ impl TypeChecker {
                 }),
                 callees: Vec::new(),
                 got_slot: None,
+                trait_origin: None,
             },
         );
     }
@@ -752,11 +837,12 @@ impl TypeChecker {
     ///   result   :: (Fn [Trace] String)
     ///   children :: (Fn [Trace] Int)
     ///   nanos    :: (Fn [Trace] Int)
-    fn register_trace_type(&mut self) {
+    fn register_trace_type(&self, state: &mut CheckState) {
         // Switch to the synthetic `primitives` module.
-        let saved_module = self.state.current_module.clone();
+        let saved_module = state.current_module.clone();
         let primitives_path = ModuleFullPath::from("primitives");
-        self.set_current_module(primitives_path.clone());
+        self.ensure_module_exists(&primitives_path);
+        state.current_module = primitives_path.clone();
 
         // Define the TraceCall constructor via the normal registration path.
         let trace_ctors = vec![ConstructorDef {
@@ -793,7 +879,7 @@ impl TypeChecker {
             span: Span::SYNTHETIC,
         }];
 
-        self.register_type_def_self(
+        self.register_type_def(state,
             &TypeName::from("Trace"),
             &Some("Recorded execution call tree from (trace expr)".to_string()),
             &[], // monomorphic — no type parameters
@@ -807,7 +893,7 @@ impl TypeChecker {
 
         // Register field accessor functions as monomorphic Def entries.
         // These allow destructuring via function application rather than match.
-        let trace_type = Type::ADT(TypeName::from("Trace"), vec![]);
+        let trace_type = Type::ADT(primitives_fqtn("Trace"), vec![]);
 
         let accessor_defs: Vec<(&str, &str, Type)> = vec![
             (
@@ -818,7 +904,7 @@ impl TypeChecker {
             (
                 "params",
                 "Formatted parameter values from trace call",
-                Type::ADT(TypeName::from("SList"), vec![Type::String]),
+                Type::ADT(macros_fqtn("SList"), vec![Type::String]),
             ),
             (
                 "result",
@@ -829,8 +915,8 @@ impl TypeChecker {
                 "children",
                 "Child calls in trace node",
                 Type::ADT(
-                    TypeName::from("SList"),
-                    vec![Type::ADT(TypeName::from("Trace"), vec![])],
+                    macros_fqtn("SList"),
+                    vec![Type::ADT(primitives_fqtn("Trace"), vec![])],
                 ),
             ),
             ("nanos", "Wall-clock nanoseconds for trace call", Type::Int),
@@ -843,7 +929,7 @@ impl TypeChecker {
                 ty: Type::Fn(vec![trace_type.clone()], Box::new(return_ty)),
             };
 
-            self.current_symbol_table_mut().insert(
+            self.current_symbol_table_mut(state).insert(
                 Symbol::from(field_name),
                 ModuleEntry::Def {
                     scheme,
@@ -858,6 +944,7 @@ impl TypeChecker {
                     }),
                     callees: Vec::new(),
                     got_slot: None,
+                    trait_origin: None,
                 },
             );
         }
@@ -865,7 +952,7 @@ impl TypeChecker {
         // Register `trace` as a module-scoped special form in `primitives`.
         // Unlike parser keywords (let, if, fn), `trace` has regular call syntax
         // and is resolved through the module system (arch Principle 10).
-        self.current_symbol_table_mut().insert(
+        self.current_symbol_table_mut(state).insert(
             Symbol::from("trace"),
             ModuleEntry::Def {
                 scheme: Scheme {
@@ -873,7 +960,7 @@ impl TypeChecker {
                     constraints: HashMap::new(),
                     ty: Type::Fn(
                         vec![Type::Var(0)], // any expression type
-                        Box::new(Type::ADT(TypeName::from("Trace"), vec![])),
+                        Box::new(Type::ADT(primitives_fqtn("Trace"), vec![])),
                     ),
                 },
                 visibility: Visibility::Public,
@@ -887,11 +974,12 @@ impl TypeChecker {
                 }),
                 callees: Vec::new(),
                 got_slot: None,
+                trait_origin: None,
             },
         );
 
         // Restore the original module context.
-        self.set_current_module(saved_module);
+        state.current_module = saved_module;
     }
 
     /// Register the TestResult type and test primitives in `primitives`.
@@ -899,10 +987,11 @@ impl TypeChecker {
     /// Per spec §8.9.1, builtin types live in `primitives` and require
     /// explicit import. TestResult, discover-tests, and run-test are NOT
     /// seeded into `user` — they must be imported explicitly.
-    fn register_test_infrastructure(&mut self) {
+    fn register_test_infrastructure(&self, state: &mut CheckState) {
         // Switch to the `primitives` module for registration.
-        let saved_module = self.state.current_module.clone();
-        self.set_current_module(ModuleFullPath::from("primitives"));
+        let saved_module = state.current_module.clone();
+        self.ensure_module_exists(&ModuleFullPath::from("primitives"));
+        state.current_module = ModuleFullPath::from("primitives");
 
         // TestResult type: TestPass, TestFail constructors.
         let test_result_ctors = vec![
@@ -942,7 +1031,7 @@ impl TypeChecker {
             },
         ];
 
-        self.register_type_def_self(
+        self.register_type_def(state,
             &TypeName::from("TestResult"),
             &Some("Test execution result".to_string()),
             &[], // monomorphic
@@ -955,13 +1044,13 @@ impl TypeChecker {
         });
 
         // Register discover-tests and run-test as special forms.
-        let sexp_type = Type::ADT(TypeName::from("Sexp"), vec![]);
-        let slist_sexp = Type::ADT(TypeName::from("SList"), vec![sexp_type.clone()]);
-        let test_result_type = Type::ADT(TypeName::from("TestResult"), vec![]);
-        let io_slist_sexp = Type::ADT(TypeName::from("IO"), vec![slist_sexp]);
-        let io_test_result = Type::ADT(TypeName::from("IO"), vec![test_result_type]);
+        let sexp_type = Type::ADT(macros_fqtn("Sexp"), vec![]);
+        let slist_sexp = Type::ADT(macros_fqtn("SList"), vec![sexp_type.clone()]);
+        let test_result_type = Type::ADT(primitives_fqtn("TestResult"), vec![]);
+        let io_slist_sexp = Type::ADT(primitives_fqtn("IO"), vec![slist_sexp]);
+        let io_test_result = Type::ADT(primitives_fqtn("IO"), vec![test_result_type]);
 
-        self.current_symbol_table_mut().insert(
+        self.current_symbol_table_mut(state).insert(
             Symbol::from("discover-tests"),
             ModuleEntry::Def {
                 scheme: Scheme {
@@ -981,10 +1070,11 @@ impl TypeChecker {
                 }),
                 callees: Vec::new(),
                 got_slot: None,
+                trait_origin: None,
             },
         );
 
-        self.current_symbol_table_mut().insert(
+        self.current_symbol_table_mut(state).insert(
             Symbol::from("run-test"),
             ModuleEntry::Def {
                 scheme: Scheme {
@@ -1004,11 +1094,12 @@ impl TypeChecker {
                 }),
                 callees: Vec::new(),
                 got_slot: None,
+                trait_origin: None,
             },
         );
 
         // Restore the original module context.
-        self.set_current_module(saved_module);
+        state.current_module = saved_module;
     }
 }
 
@@ -1084,12 +1175,13 @@ fn builtin_docstring(name: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::checker::TestFixture;
     use cranelisp_types::{ring0_primitives, ModuleEntry, Type};
 
-    /// Helper: get the `primitives` module's symbol table from a TypeChecker.
-    fn primitives_table(tc: &TypeChecker) -> dashmap::mapref::one::Ref<'_, ModuleFullPath, cranelisp_types::SymbolTable> {
+    /// Helper: get the `primitives` module's symbol table from a TestFixture.
+    fn primitives_table(tf: &TestFixture) -> dashmap::mapref::one::Ref<'_, ModuleFullPath, cranelisp_types::SymbolTable> {
         let path = ModuleFullPath::from("primitives");
-        tc.modules
+        tf.modules
             .get(&path)
             .expect("primitives module should exist")
     }
@@ -1097,8 +1189,8 @@ mod tests {
     // spec: appendix-a-builtins §A.2 — all ring-0 primitives registered in primitives module
     #[test]
     fn test_primitives_registered() {
-        let tc = TypeChecker::new();
-        let pt = primitives_table(&tc);
+        let tf = TestFixture::new();
+        let pt = primitives_table(&tf);
         // All 20 primitives should be in the primitives module
         for prim in ring0_primitives() {
             assert!(
@@ -1112,8 +1204,8 @@ mod tests {
     // spec: appendix-a-builtins §A.2 — add-i64 has monomorphic (Fn [Int Int] Int) scheme
     #[test]
     fn test_add_i64_scheme() {
-        let tc = TypeChecker::new();
-        if let Some(ModuleEntry::Def { scheme, .. }) = primitives_table(&tc).get("add-i64") {
+        let tf = TestFixture::new();
+        if let Some(ModuleEntry::Def { scheme, .. }) = primitives_table(&tf).get("add-i64") {
             // Monomorphic: no quantified vars
             assert!(scheme.vars.is_empty(), "add-i64 should have no quantified vars");
             assert_eq!(
@@ -1129,8 +1221,8 @@ mod tests {
     // spec: appendix-a-builtins §A.2 — add-f64 has monomorphic (Fn [Float Float] Float) scheme
     #[test]
     fn test_add_f64_scheme() {
-        let tc = TypeChecker::new();
-        if let Some(ModuleEntry::Def { scheme, .. }) = primitives_table(&tc).get("add-f64") {
+        let tf = TestFixture::new();
+        if let Some(ModuleEntry::Def { scheme, .. }) = primitives_table(&tf).get("add-f64") {
             assert!(scheme.vars.is_empty(), "add-f64 should have no quantified vars");
             assert_eq!(
                 scheme.ty,
@@ -1145,8 +1237,8 @@ mod tests {
     // spec: appendix-a-builtins §A.2 — eq-i64 has monomorphic (Fn [Int Int] Bool) scheme
     #[test]
     fn test_eq_i64_scheme() {
-        let tc = TypeChecker::new();
-        if let Some(ModuleEntry::Def { scheme, .. }) = primitives_table(&tc).get("eq-i64") {
+        let tf = TestFixture::new();
+        if let Some(ModuleEntry::Def { scheme, .. }) = primitives_table(&tf).get("eq-i64") {
             assert!(scheme.vars.is_empty(), "eq-i64 should have no quantified vars");
             assert_eq!(
                 scheme.ty,
@@ -1161,8 +1253,8 @@ mod tests {
     // spec: appendix-a-builtins §A.3 — not has monomorphic (Fn [Bool] Bool) scheme
     #[test]
     fn test_not_scheme() {
-        let tc = TypeChecker::new();
-        if let Some(ModuleEntry::Def { scheme, .. }) = primitives_table(&tc).get("not") {
+        let tf = TestFixture::new();
+        if let Some(ModuleEntry::Def { scheme, .. }) = primitives_table(&tf).get("not") {
             assert!(scheme.vars.is_empty(), "not should have no quantified vars");
             assert_eq!(
                 scheme.ty,
@@ -1177,8 +1269,8 @@ mod tests {
     // spec: appendix-a-builtins §A.2 — arithmetic primitives are inline kind
     #[test]
     fn test_primitives_are_inline_kind() {
-        let tc = TypeChecker::new();
-        if let Some(ModuleEntry::Def { kind, .. }) = primitives_table(&tc).get("add-i64") {
+        let tf = TestFixture::new();
+        if let Some(ModuleEntry::Def { kind, .. }) = primitives_table(&tf).get("add-i64") {
             assert!(
                 matches!(
                     kind.as_ref(),
@@ -1194,10 +1286,10 @@ mod tests {
     // spec: appendix-a-builtins §A.1 — special forms registered in symbol table
     #[test]
     fn test_special_forms_registered() {
-        let tc = TypeChecker::new();
+        let tf = TestFixture::new();
         let forms = ["if", "let", "fn", "defn", "deftype", "match", "deftrait", "impl"];
         for name in forms {
-            let table_guard = tc.symbol_table();
+            let table_guard = tf.symbol_table();
             let entry = table_guard.get(name);
             assert!(entry.is_some(), "special form {name} should be registered");
             if let Some(ModuleEntry::Def { kind, .. }) = entry {
@@ -1257,8 +1349,8 @@ mod tests {
     // spec: 03-types §3.2.4 — Vec primitive operations registered
     #[test]
     fn test_vec_primitives_registered() {
-        let tc = TypeChecker::new();
-        let pt = primitives_table(&tc);
+        let tf = TestFixture::new();
+        let pt = primitives_table(&tf);
         let vec_ops = ["vec-get", "vec-set", "vec-push", "vec-len"];
         for name in vec_ops {
             assert!(
@@ -1271,13 +1363,13 @@ mod tests {
     // spec: 03-types §3.2.4 — vec-get is polymorphic (Fn [(Vec a) Int] a)
     #[test]
     fn test_vec_get_scheme_is_polymorphic() {
-        let tc = TypeChecker::new();
-        if let Some(ModuleEntry::Def { scheme, kind, .. }) = primitives_table(&tc).get("vec-get") {
+        let tf = TestFixture::new();
+        if let Some(ModuleEntry::Def { scheme, kind, .. }) = primitives_table(&tf).get("vec-get") {
             assert_eq!(scheme.vars.len(), 1, "vec-get should have 1 quantified var");
             // Type: (Fn [(Vec a) Int] a)
             if let Type::Fn(params, ret) = &scheme.ty {
                 assert_eq!(params.len(), 2);
-                assert!(matches!(&params[0], Type::ADT(name, _) if name.as_ref() == "Vec"));
+                assert!(matches!(&params[0], Type::ADT(name, _) if name.name.as_ref() == "Vec"));
                 assert_eq!(params[1], Type::Int);
                 assert!(matches!(ret.as_ref(), Type::Var(_)));
             } else {
@@ -1295,15 +1387,15 @@ mod tests {
     // spec: 03-types §3.2.4 — vec-set is polymorphic (Fn [(Vec a) Int a] (Vec a))
     #[test]
     fn test_vec_set_scheme_is_polymorphic() {
-        let tc = TypeChecker::new();
-        if let Some(ModuleEntry::Def { scheme, .. }) = primitives_table(&tc).get("vec-set") {
+        let tf = TestFixture::new();
+        if let Some(ModuleEntry::Def { scheme, .. }) = primitives_table(&tf).get("vec-set") {
             assert_eq!(scheme.vars.len(), 1, "vec-set should have 1 quantified var");
             if let Type::Fn(params, ret) = &scheme.ty {
                 assert_eq!(params.len(), 3, "vec-set takes (Vec a), Int, a");
-                assert!(matches!(&params[0], Type::ADT(name, _) if name.as_ref() == "Vec"));
+                assert!(matches!(&params[0], Type::ADT(name, _) if name.name.as_ref() == "Vec"));
                 assert_eq!(params[1], Type::Int);
                 // ret is (Vec a)
-                assert!(matches!(ret.as_ref(), Type::ADT(name, _) if name.as_ref() == "Vec"));
+                assert!(matches!(ret.as_ref(), Type::ADT(name, _) if name.name.as_ref() == "Vec"));
             } else {
                 panic!("vec-set should be a function type");
             }
@@ -1315,12 +1407,12 @@ mod tests {
     // spec: 03-types §3.2.4 — vec-push is polymorphic (Fn [(Vec a) a] (Vec a))
     #[test]
     fn test_vec_push_scheme_is_polymorphic() {
-        let tc = TypeChecker::new();
-        if let Some(ModuleEntry::Def { scheme, .. }) = primitives_table(&tc).get("vec-push") {
+        let tf = TestFixture::new();
+        if let Some(ModuleEntry::Def { scheme, .. }) = primitives_table(&tf).get("vec-push") {
             assert_eq!(scheme.vars.len(), 1, "vec-push should have 1 quantified var");
             if let Type::Fn(params, ret) = &scheme.ty {
                 assert_eq!(params.len(), 2, "vec-push takes (Vec a), a");
-                assert!(matches!(ret.as_ref(), Type::ADT(name, _) if name.as_ref() == "Vec"));
+                assert!(matches!(ret.as_ref(), Type::ADT(name, _) if name.name.as_ref() == "Vec"));
             } else {
                 panic!("vec-push should be a function type");
             }
@@ -1332,12 +1424,12 @@ mod tests {
     // spec: 03-types §3.2.4 — vec-len is polymorphic (Fn [(Vec a)] Int)
     #[test]
     fn test_vec_len_scheme_is_polymorphic() {
-        let tc = TypeChecker::new();
-        if let Some(ModuleEntry::Def { scheme, .. }) = primitives_table(&tc).get("vec-len") {
+        let tf = TestFixture::new();
+        if let Some(ModuleEntry::Def { scheme, .. }) = primitives_table(&tf).get("vec-len") {
             assert_eq!(scheme.vars.len(), 1, "vec-len should have 1 quantified var");
             if let Type::Fn(params, ret) = &scheme.ty {
                 assert_eq!(params.len(), 1, "vec-len takes (Vec a)");
-                assert!(matches!(&params[0], Type::ADT(name, _) if name.as_ref() == "Vec"));
+                assert!(matches!(&params[0], Type::ADT(name, _) if name.name.as_ref() == "Vec"));
                 assert_eq!(*ret.as_ref(), Type::Int);
             } else {
                 panic!("vec-len should be a function type");
@@ -1354,13 +1446,13 @@ mod tests {
     // spec: pipeline-orchestration §5 — no traits registered at startup
     #[test]
     fn test_no_traits_at_startup() {
-        let tc = TypeChecker::new();
+        let tf = TestFixture::new();
         assert!(
-            tc.trait_registry.read().unwrap().decls.is_empty(),
+            tf.env().lookup_trait_decl(&cranelisp_types::TraitName::from("Num")).is_none(),
             "no traits should be registered at startup (Decision 17 eliminated)"
         );
         assert!(
-            tc.impl_registry.read().unwrap().impls.is_empty(),
+            !tf.env().has_impl(&cranelisp_types::TraitName::from("Num"), &cranelisp_types::TypeName::from("Int")),
             "no impls should be registered at startup"
         );
     }
@@ -1368,11 +1460,11 @@ mod tests {
     // spec: pipeline-orchestration §5 — operator symbols NOT in symbol table at startup
     #[test]
     fn test_no_operator_symbols_at_startup() {
-        let tc = TypeChecker::new();
+        let tf = TestFixture::new();
         let ops = ["+", "-", "*", "/", "=", "!=", "<", ">", "<=", ">=", "show"];
         for name in ops {
             assert!(
-                tc.symbol_table().get(name).is_none(),
+                tf.symbol_table().get(name).is_none(),
                 "operator {name} should NOT be in symbol table at startup \
                  (traits come from prelude .cl files)"
             );
@@ -1386,10 +1478,10 @@ mod tests {
     // spec: 09-macros §9.1 — macros module exists after initialization
     #[test]
     fn test_macros_module_exists() {
-        let tc = TypeChecker::new();
+        let tf = TestFixture::new();
         let macros_path = ModuleFullPath::from("macros");
         assert!(
-            tc.modules.get(&macros_path).is_some(),
+            tf.modules.get(&macros_path).is_some(),
             "macros module should exist after TypeChecker initialization"
         );
     }
@@ -1397,9 +1489,8 @@ mod tests {
     // spec: 09-macros §9.1.1 — SList type registered in macros module
     #[test]
     fn test_slist_type_registered() {
-        let tc = TypeChecker::new();
-        let registry = tc.type_defs.read().unwrap();
-        let info = registry.get(&TypeName::from("SList"));
+        let tf = TestFixture::new();
+        let info = tf.env().lookup_type_def(&TypeName::from("SList"));
         assert!(info.is_some(), "SList type should be registered");
         let info = info.unwrap();
         assert_eq!(info.type_params.len(), 1, "SList has 1 type parameter");
@@ -1410,9 +1501,9 @@ mod tests {
     // spec: 09-macros §9.1.1 — SNil is nullary constructor (tag 0)
     #[test]
     fn test_snil_is_nullary() {
-        let tc = TypeChecker::new();
+        let tf = TestFixture::new();
         let macros_path = ModuleFullPath::from("macros");
-        let macros_table = tc.modules.get(&macros_path).unwrap();
+        let macros_table = tf.modules.get(&macros_path).unwrap();
         if let Some(ModuleEntry::Constructor { info, scheme, .. }) = macros_table.get("SNil") {
             assert_eq!(info.tag, 0, "SNil should be tag 0");
             assert!(info.fields.is_empty(), "SNil should have no fields");
@@ -1420,7 +1511,7 @@ mod tests {
             // SNil :: forall [a]. (SList a)
             match &scheme.ty {
                 Type::ADT(name, args) => {
-                    assert_eq!(name.as_ref(), "SList");
+                    assert_eq!(name.name.as_ref(), "SList");
                     assert_eq!(args.len(), 1);
                     assert!(matches!(args[0], Type::Var(_)));
                 }
@@ -1434,9 +1525,9 @@ mod tests {
     // spec: 09-macros §9.1.1 — SCons constructor: (Fn [a (SList a)] (SList a))
     #[test]
     fn test_scons_constructor_type() {
-        let tc = TypeChecker::new();
+        let tf = TestFixture::new();
         let macros_path = ModuleFullPath::from("macros");
-        let macros_table = tc.modules.get(&macros_path).unwrap();
+        let macros_table = tf.modules.get(&macros_path).unwrap();
         if let Some(ModuleEntry::Constructor { info, scheme, .. }) = macros_table.get("SCons") {
             assert_eq!(info.tag, 1, "SCons should be tag 1");
             assert_eq!(info.fields.len(), 2, "SCons has 2 fields: shead, stail");
@@ -1452,7 +1543,7 @@ mod tests {
                     // Second param: (SList a)
                     match &params[1] {
                         Type::ADT(name, args) => {
-                            assert_eq!(name.as_ref(), "SList");
+                            assert_eq!(name.name.as_ref(), "SList");
                             assert_eq!(args.len(), 1);
                             // SList's type arg should be the same var as the first param
                             assert_eq!(params[0], args[0]);
@@ -1462,7 +1553,7 @@ mod tests {
                     // Return: (SList a)
                     match ret.as_ref() {
                         Type::ADT(name, args) => {
-                            assert_eq!(name.as_ref(), "SList");
+                            assert_eq!(name.name.as_ref(), "SList");
                             assert_eq!(args.len(), 1);
                             assert_eq!(params[0], args[0]);
                         }
@@ -1479,9 +1570,8 @@ mod tests {
     // spec: 09-macros §9.1.2 — Sexp type registered with 7 constructors
     #[test]
     fn test_sexp_type_registered() {
-        let tc = TypeChecker::new();
-        let registry = tc.type_defs.read().unwrap();
-        let info = registry.get(&TypeName::from("Sexp"));
+        let tf = TestFixture::new();
+        let info = tf.env().lookup_type_def(&TypeName::from("Sexp"));
         assert!(info.is_some(), "Sexp type should be registered");
         let info = info.unwrap();
         assert!(info.type_params.is_empty(), "Sexp has 0 type parameters");
@@ -1504,16 +1594,16 @@ mod tests {
     // spec: 09-macros §9.1.2 — SexpSym constructor: (Fn [String] Sexp)
     #[test]
     fn test_sexpsym_constructor_type() {
-        let tc = TypeChecker::new();
+        let tf = TestFixture::new();
         let macros_path = ModuleFullPath::from("macros");
-        let macros_table = tc.modules.get(&macros_path).unwrap();
+        let macros_table = tf.modules.get(&macros_path).unwrap();
         if let Some(ModuleEntry::Constructor { scheme, .. }) = macros_table.get("SexpSym") {
             assert!(scheme.vars.is_empty(), "SexpSym should be monomorphic");
             assert_eq!(
                 scheme.ty,
                 Type::Fn(
                     vec![Type::String],
-                    Box::new(Type::ADT(TypeName::from("Sexp"), vec![]))
+                    Box::new(Type::ADT(macros_fqtn("Sexp"), vec![]))
                 ),
                 "SexpSym :: (Fn [String] Sexp)"
             );
@@ -1525,14 +1615,14 @@ mod tests {
     // spec: 09-macros §9.1.2 — all 7 Sexp constructors have correct field types
     #[test]
     fn test_all_sexp_constructor_field_types() {
-        let tc = TypeChecker::new();
+        let tf = TestFixture::new();
         let macros_path = ModuleFullPath::from("macros");
-        let macros_table = tc.modules.get(&macros_path).unwrap();
+        let macros_table = tf.modules.get(&macros_path).unwrap();
 
-        let sexp_type = Type::ADT(TypeName::from("Sexp"), vec![]);
+        let sexp_type = Type::ADT(macros_fqtn("Sexp"), vec![]);
         let slist_sexp_type = Type::ADT(
-            TypeName::from("SList"),
-            vec![Type::ADT(TypeName::from("Sexp"), vec![])],
+            macros_fqtn("SList"),
+            vec![Type::ADT(macros_fqtn("Sexp"), vec![])],
         );
 
         // (SexpInt [:Int sval]) -> (Fn [Int] Sexp)
@@ -1590,10 +1680,10 @@ mod tests {
     // spec: 09-macros §9.1.3 — qualified access macros/SexpSym works from user module
     #[test]
     fn test_qualified_access_from_user() {
-        let tc = TypeChecker::new();
+        let tf = TestFixture::new();
         // The TypeChecker's current module is "user" by default.
         // Qualified lookup: "macros/SexpSym" should resolve.
-        let scheme = tc.lookup_self("macros/SexpSym");
+        let scheme = tf.lookup("macros/SexpSym");
         assert!(
             scheme.is_some(),
             "macros/SexpSym should be resolvable from user module"
@@ -1603,18 +1693,18 @@ mod tests {
             scheme.ty,
             Type::Fn(
                 vec![Type::String],
-                Box::new(Type::ADT(TypeName::from("Sexp"), vec![]))
+                Box::new(Type::ADT(macros_fqtn("Sexp"), vec![]))
             ),
             "macros/SexpSym :: (Fn [String] Sexp)"
         );
 
         // Also check qualified access to SCons and SNil
         assert!(
-            tc.lookup_self("macros/SCons").is_some(),
+            tf.lookup("macros/SCons").is_some(),
             "macros/SCons should be resolvable"
         );
         assert!(
-            tc.lookup_self("macros/SNil").is_some(),
+            tf.lookup("macros/SNil").is_some(),
             "macros/SNil should be resolvable"
         );
     }
@@ -1626,17 +1716,17 @@ mod tests {
     // spec: pipeline-orchestration §3 — sconcat registered as extern primitive in macros module
     #[test]
     fn test_sconcat_registered_in_macros() {
-        let tc = TypeChecker::new();
+        let tf = TestFixture::new();
         let macros_path = ModuleFullPath::from("macros");
-        let macros_table = tc.modules.get(&macros_path).unwrap();
+        let macros_table = tf.modules.get(&macros_path).unwrap();
         let entry = macros_table.get("sconcat");
         assert!(entry.is_some(), "sconcat should be in macros module");
 
         if let Some(ModuleEntry::Def { scheme, kind, .. }) = entry {
             // Type: (Fn [(SList Sexp) (SList Sexp)] (SList Sexp))
             let slist_sexp = Type::ADT(
-                TypeName::from("SList"),
-                vec![Type::ADT(TypeName::from("Sexp"), vec![])],
+                macros_fqtn("SList"),
+                vec![Type::ADT(macros_fqtn("Sexp"), vec![])],
             );
             assert_eq!(
                 scheme.ty,
@@ -1659,8 +1749,8 @@ mod tests {
     // spec: pipeline-orchestration §3 — sconcat accessible via qualified name macros/sconcat
     #[test]
     fn test_sconcat_qualified_access() {
-        let tc = TypeChecker::new();
-        let scheme = tc.lookup_self("macros/sconcat");
+        let tf = TestFixture::new();
+        let scheme = tf.lookup("macros/sconcat");
         assert!(
             scheme.is_some(),
             "macros/sconcat should be resolvable from user module"
@@ -1670,9 +1760,9 @@ mod tests {
     // spec: pipeline-orchestration §3 — sconcat NOT imported into user module
     #[test]
     fn test_sconcat_not_in_user() {
-        let tc = TypeChecker::new();
+        let tf = TestFixture::new();
         assert!(
-            tc.symbol_table().get("sconcat").is_none(),
+            tf.symbol_table().get("sconcat").is_none(),
             "sconcat should NOT be in user module (it's in macros, not primitives)"
         );
     }
@@ -1684,13 +1774,13 @@ mod tests {
     // spec: pipeline-orchestration §3 — quote-sexp registered as extern primitive
     #[test]
     fn test_quote_sexp_registered() {
-        let tc = TypeChecker::new();
-        let prims = primitives_table(&tc);
+        let tf = TestFixture::new();
+        let prims = primitives_table(&tf);
         let entry = prims.get("quote-sexp");
         assert!(entry.is_some(), "quote-sexp should be in primitives module");
 
         if let Some(ModuleEntry::Def { scheme, kind, .. }) = entry {
-            let sexp_type = Type::ADT(TypeName::from("Sexp"), vec![]);
+            let sexp_type = Type::ADT(macros_fqtn("Sexp"), vec![]);
             assert_eq!(
                 scheme.ty,
                 Type::Fn(vec![sexp_type.clone()], Box::new(sexp_type)),
@@ -1712,9 +1802,9 @@ mod tests {
     // spec: pipeline-orchestration §3 — quote-sexp also in primitives module directly
     #[test]
     fn test_quote_sexp_in_primitives_module() {
-        let tc = TypeChecker::new();
+        let tf = TestFixture::new();
         let primitives_path = ModuleFullPath::from("primitives");
-        let primitives_table = tc.modules.get(&primitives_path).unwrap();
+        let primitives_table = tf.modules.get(&primitives_path).unwrap();
         assert!(
             primitives_table.get("quote-sexp").is_some(),
             "quote-sexp should be in primitives module"
@@ -1731,16 +1821,16 @@ mod tests {
         // TypeChecker::new() exercises the full registration sequence.
         // If the ordering is wrong (e.g. quote-sexp before macros module),
         // it would either panic or produce invalid types.
-        let tc = TypeChecker::new();
+        let tf = TestFixture::new();
 
         // Verify all expected modules exist
-        assert!(tc.modules.get(&ModuleFullPath::from("user")).is_some());
-        assert!(tc.modules.get(&ModuleFullPath::from("primitives")).is_some());
-        assert!(tc.modules.get(&ModuleFullPath::from("macros")).is_some());
+        assert!(tf.modules.get(&ModuleFullPath::from("user")).is_some());
+        assert!(tf.modules.get(&ModuleFullPath::from("primitives")).is_some());
+        assert!(tf.modules.get(&ModuleFullPath::from("macros")).is_some());
 
         // Verify quote-sexp has the correct type referencing Sexp (proves ordering)
-        let sexp_type = Type::ADT(TypeName::from("Sexp"), vec![]);
-        if let Some(ModuleEntry::Def { scheme, .. }) = primitives_table(&tc).get("quote-sexp") {
+        let sexp_type = Type::ADT(macros_fqtn("Sexp"), vec![]);
+        if let Some(ModuleEntry::Def { scheme, .. }) = primitives_table(&tf).get("quote-sexp") {
             assert_eq!(
                 scheme.ty,
                 Type::Fn(vec![sexp_type.clone()], Box::new(sexp_type)),
@@ -1757,9 +1847,8 @@ mod tests {
     // spec: 10-io §10.1 — IO type registered in primitives module
     #[test]
     fn test_io_type_registered() {
-        let tc = TypeChecker::new();
-        let registry = tc.type_defs.read().unwrap();
-        let info = registry.get(&TypeName::from("IO"));
+        let tf = TestFixture::new();
+        let info = tf.env().lookup_type_def(&TypeName::from("IO"));
         assert!(info.is_some(), "IO type should be registered");
         let info = info.unwrap();
         assert_eq!(info.type_params.len(), 1, "IO has 1 type parameter");
@@ -1777,9 +1866,9 @@ mod tests {
     // spec: 10-io §10.1 — Pure constructor: tag=0, field `ioval` of type `a`
     #[test]
     fn test_pure_constructor() {
-        let tc = TypeChecker::new();
+        let tf = TestFixture::new();
         let primitives_path = ModuleFullPath::from("primitives");
-        let primitives_table = tc.modules.get(&primitives_path).unwrap();
+        let primitives_table = tf.modules.get(&primitives_path).unwrap();
 
         if let Some(ModuleEntry::Constructor { info, scheme, .. }) =
             primitives_table.get("Pure")
@@ -1796,7 +1885,7 @@ mod tests {
                     assert!(matches!(params[0], Type::Var(_)), "param should be type var");
                     match ret.as_ref() {
                         Type::ADT(name, args) => {
-                            assert_eq!(name.as_ref(), "IO");
+                            assert_eq!(name.name.as_ref(), "IO");
                             assert_eq!(args.len(), 1);
                             assert_eq!(params[0], args[0], "param var should match IO's type arg");
                         }
@@ -1813,9 +1902,9 @@ mod tests {
     // spec: 10-io §10.1 — Effect constructor: tag=1, field `thunk` of type `a`
     #[test]
     fn test_effect_constructor() {
-        let tc = TypeChecker::new();
+        let tf = TestFixture::new();
         let primitives_path = ModuleFullPath::from("primitives");
-        let primitives_table = tc.modules.get(&primitives_path).unwrap();
+        let primitives_table = tf.modules.get(&primitives_path).unwrap();
 
         if let Some(ModuleEntry::Constructor { info, scheme, .. }) =
             primitives_table.get("Effect")
@@ -1831,7 +1920,7 @@ mod tests {
                     assert_eq!(params.len(), 1);
                     match ret.as_ref() {
                         Type::ADT(name, args) => {
-                            assert_eq!(name.as_ref(), "IO");
+                            assert_eq!(name.name.as_ref(), "IO");
                             assert_eq!(args.len(), 1);
                             assert_eq!(params[0], args[0]);
                         }
@@ -1848,11 +1937,10 @@ mod tests {
     // spec: 10-io §10.1 — Bind constructor: tag=2, internal=true, not in symbol table
     #[test]
     fn test_bind_constructor_internal() {
-        let tc = TypeChecker::new();
+        let tf = TestFixture::new();
 
         // Bind should be in TypeDefInfo but NOT in the symbol table.
-        let registry = tc.type_defs.read().unwrap();
-        let info = registry.get(&TypeName::from("IO")).unwrap();
+        let info = tf.env().lookup_type_def(&TypeName::from("IO")).unwrap();
         let bind_ctor = &info.constructors[2];
         assert_eq!(bind_ctor.name.as_ref(), "Bind");
         assert_eq!(bind_ctor.tag, 2);
@@ -1864,7 +1952,7 @@ mod tests {
         // inner :: (IO b)
         match &bind_ctor.fields[0].ty {
             Type::ADT(name, args) => {
-                assert_eq!(name.as_ref(), "IO");
+                assert_eq!(name.name.as_ref(), "IO");
                 assert_eq!(args.len(), 1);
                 assert!(matches!(args[0], Type::Var(_)));
             }
@@ -1878,7 +1966,7 @@ mod tests {
                 assert!(matches!(params[0], Type::Var(_)));
                 match ret.as_ref() {
                     Type::ADT(name, args) => {
-                        assert_eq!(name.as_ref(), "IO");
+                        assert_eq!(name.name.as_ref(), "IO");
                         assert_eq!(args.len(), 1);
                         assert!(matches!(args[0], Type::Var(_)));
                     }
@@ -1896,7 +1984,7 @@ mod tests {
 
         // Bind should NOT be in the primitives symbol table.
         let primitives_path = ModuleFullPath::from("primitives");
-        let primitives_table = tc.modules.get(&primitives_path).unwrap();
+        let primitives_table = tf.modules.get(&primitives_path).unwrap();
         assert!(
             primitives_table.get("Bind").is_none(),
             "Bind should NOT be in symbol table (it is internal)"
@@ -1904,7 +1992,7 @@ mod tests {
 
         // Bind should NOT be in constructor_to_type.
         assert!(
-            tc.type_defs.read().unwrap().constructor_type("Bind").is_none(),
+            tf.env().lookup_constructor_type("Bind").is_none(),
             "Bind should NOT be in constructor_to_type"
         );
     }
@@ -1912,9 +2000,9 @@ mod tests {
     // spec: 10-io §10.1 — Pure and Effect registered as constructors in primitives module
     #[test]
     fn test_io_constructors_in_primitives_module() {
-        let tc = TypeChecker::new();
+        let tf = TestFixture::new();
         let primitives_path = ModuleFullPath::from("primitives");
-        let primitives_table = tc.modules.get(&primitives_path).unwrap();
+        let primitives_table = tf.modules.get(&primitives_path).unwrap();
 
         assert!(
             primitives_table.get("Pure").is_some(),
@@ -1935,9 +2023,9 @@ mod tests {
     // spec: 10-io §10.1 — IO constructors in primitives module
     #[test]
     fn test_io_constructors_in_primitives() {
-        let tc = TypeChecker::new();
+        let tf = TestFixture::new();
         let prims_path = ModuleFullPath::from("primitives");
-        let prims_table = tc.modules.get(&prims_path).unwrap();
+        let prims_table = tf.modules.get(&prims_path).unwrap();
         assert!(
             prims_table.get("Pure").is_some(),
             "Pure should be in primitives module"
@@ -1948,7 +2036,7 @@ mod tests {
         );
         // NOT in user module without import
         assert!(
-            tc.symbol_table().get("Pure").is_none(),
+            tf.symbol_table().get("Pure").is_none(),
             "Pure should NOT be bare in user"
         );
     }
@@ -1960,9 +2048,9 @@ mod tests {
     // spec: 10-io §10.2 — bind registered as inline primitive in primitives module
     #[test]
     fn test_bind_primitive_registered() {
-        let tc = TypeChecker::new();
+        let tf = TestFixture::new();
         let prims_path = ModuleFullPath::from("primitives");
-        let table_guard = tc.modules.get(&prims_path).unwrap();
+        let table_guard = tf.modules.get(&prims_path).unwrap();
         let entry = table_guard.get("bind");
         assert!(entry.is_some(), "bind should be in primitives symbol table");
 
@@ -1977,7 +2065,7 @@ mod tests {
                     // First param: (IO a)
                     match &params[0] {
                         Type::ADT(name, args) => {
-                            assert_eq!(name.as_ref(), "IO");
+                            assert_eq!(name.name.as_ref(), "IO");
                             assert_eq!(args.len(), 1);
                             assert!(matches!(args[0], Type::Var(_)));
                         }
@@ -1991,7 +2079,7 @@ mod tests {
                             assert!(matches!(cont_params[0], Type::Var(_)));
                             match cont_ret.as_ref() {
                                 Type::ADT(name, args) => {
-                                    assert_eq!(name.as_ref(), "IO");
+                                    assert_eq!(name.name.as_ref(), "IO");
                                     assert_eq!(args.len(), 1);
                                     assert!(matches!(args[0], Type::Var(_)));
                                 }
@@ -2013,7 +2101,7 @@ mod tests {
                     // Return: (IO b)
                     match ret.as_ref() {
                         Type::ADT(name, args) => {
-                            assert_eq!(name.as_ref(), "IO");
+                            assert_eq!(name.name.as_ref(), "IO");
                             assert_eq!(args.len(), 1);
                             // b in return should match b in cont's return
                             let cont_ret_b = match &params[1] {
@@ -2051,9 +2139,9 @@ mod tests {
     // spec: 10-io §10.2 — bind also in primitives module
     #[test]
     fn test_bind_in_primitives_module() {
-        let tc = TypeChecker::new();
+        let tf = TestFixture::new();
         let primitives_path = ModuleFullPath::from("primitives");
-        let primitives_table = tc.modules.get(&primitives_path).unwrap();
+        let primitives_table = tf.modules.get(&primitives_path).unwrap();
         assert!(
             primitives_table.get("bind").is_some(),
             "bind should be in primitives module"
@@ -2067,8 +2155,8 @@ mod tests {
     // spec: appendix-a-builtins §A.5 — all Ring 0 primitives have docstrings
     #[test]
     fn test_ring0_primitives_have_docstrings() {
-        let tc = TypeChecker::new();
-        let pt = primitives_table(&tc);
+        let tf = TestFixture::new();
+        let pt = primitives_table(&tf);
         for prim in ring0_primitives() {
             if let Some(ModuleEntry::Def { docstring, .. }) =
                 pt.get(prim.name.as_ref())
@@ -2087,8 +2175,8 @@ mod tests {
     // spec: appendix-a-builtins §A.5 — all Ring 1 primitives have docstrings
     #[test]
     fn test_ring1_primitives_have_docstrings() {
-        let tc = TypeChecker::new();
-        let pt = primitives_table(&tc);
+        let tf = TestFixture::new();
+        let pt = primitives_table(&tf);
         for prim in ring1_primitives() {
             if let Some(ModuleEntry::Def { docstring, .. }) =
                 pt.get(prim.name.as_ref())
@@ -2107,8 +2195,8 @@ mod tests {
     // spec: appendix-a-builtins §A.5 — Vec primitives have docstrings
     #[test]
     fn test_vec_primitives_have_docstrings() {
-        let tc = TypeChecker::new();
-        let pt = primitives_table(&tc);
+        let tf = TestFixture::new();
+        let pt = primitives_table(&tf);
         for name in &["vec-get", "vec-set", "vec-push", "vec-len"] {
             if let Some(ModuleEntry::Def { docstring, .. }) = pt.get(*name) {
                 assert!(
@@ -2124,8 +2212,8 @@ mod tests {
     // spec: appendix-a-builtins §A.5 — specific docstring text matches spec
     #[test]
     fn test_docstring_text_matches_spec() {
-        let tc = TypeChecker::new();
-        let pt = primitives_table(&tc);
+        let tf = TestFixture::new();
+        let pt = primitives_table(&tf);
 
         let check = |name: &str, expected: &str| {
             if let Some(ModuleEntry::Def { docstring, .. }) = pt.get(name) {
@@ -2158,9 +2246,8 @@ mod tests {
     // spec: 03-types §3.2.4 — Trace type registered as monomorphic ADT
     #[test]
     fn test_trace_type_registered() {
-        let tc = TypeChecker::new();
-        let registry = tc.type_defs.read().unwrap();
-        let info = registry.get(&TypeName::from("Trace"));
+        let tf = TestFixture::new();
+        let info = tf.env().lookup_type_def(&TypeName::from("Trace"));
         assert!(info.is_some(), "Trace type should be registered");
         let info = info.unwrap();
         assert!(info.type_params.is_empty(), "Trace has no type parameters (monomorphic)");
@@ -2174,9 +2261,9 @@ mod tests {
     // spec: 03-types §3.2.4 — TraceCall constructor with 5 fields
     #[test]
     fn test_trace_call_constructor() {
-        let tc = TypeChecker::new();
+        let tf = TestFixture::new();
         let primitives_path = ModuleFullPath::from("primitives");
-        let primitives_table = tc.modules.get(&primitives_path).unwrap();
+        let primitives_table = tf.modules.get(&primitives_path).unwrap();
 
         if let Some(ModuleEntry::Constructor { info, scheme, .. }) =
             primitives_table.get("TraceCall")
@@ -2190,10 +2277,10 @@ mod tests {
             assert_eq!(info.fields[4].name.as_ref(), "nanos");
 
             // Field types: String, (SList String), String, (SList Trace), Int
-            let slist_string = Type::ADT(TypeName::from("SList"), vec![Type::String]);
+            let slist_string = Type::ADT(macros_fqtn("SList"), vec![Type::String]);
             let slist_trace = Type::ADT(
-                TypeName::from("SList"),
-                vec![Type::ADT(TypeName::from("Trace"), vec![])],
+                macros_fqtn("SList"),
+                vec![Type::ADT(primitives_fqtn("Trace"), vec![])],
             );
             assert_eq!(info.fields[0].ty, Type::String);
             assert_eq!(info.fields[1].ty, slist_string); // params: SList of String
@@ -2204,10 +2291,10 @@ mod tests {
             // Monomorphic scheme: no quantified vars
             assert!(scheme.vars.is_empty(), "TraceCall scheme should be monomorphic");
             // TraceCall :: (Fn [String (SList String) String (SList Trace) Int] Trace)
-            let slist_string = Type::ADT(TypeName::from("SList"), vec![Type::String]);
+            let slist_string = Type::ADT(macros_fqtn("SList"), vec![Type::String]);
             let slist_trace = Type::ADT(
-                TypeName::from("SList"),
-                vec![Type::ADT(TypeName::from("Trace"), vec![])],
+                macros_fqtn("SList"),
+                vec![Type::ADT(primitives_fqtn("Trace"), vec![])],
             );
             match &scheme.ty {
                 Type::Fn(params, ret) => {
@@ -2219,7 +2306,7 @@ mod tests {
                     assert_eq!(params[4], Type::Int);
                     match ret.as_ref() {
                         Type::ADT(name, args) => {
-                            assert_eq!(name.as_ref(), "Trace");
+                            assert_eq!(name.name.as_ref(), "Trace");
                             assert!(args.is_empty());
                         }
                         _ => panic!("TraceCall return should be Trace, got {:?}", ret),
@@ -2235,9 +2322,9 @@ mod tests {
     // spec: 03-types §3.2.4 — Trace names in primitives module
     #[test]
     fn test_trace_in_primitives_module() {
-        let tc = TypeChecker::new();
+        let tf = TestFixture::new();
         let primitives_path = ModuleFullPath::from("primitives");
-        let primitives_table = tc.modules.get(&primitives_path).unwrap();
+        let primitives_table = tf.modules.get(&primitives_path).unwrap();
 
         assert!(primitives_table.get("Trace").is_some(), "Trace type in primitives");
         assert!(primitives_table.get("TraceCall").is_some(), "TraceCall constructor in primitives");
@@ -2252,8 +2339,8 @@ mod tests {
     // spec: 03-types §3.2.4 — Trace names NOT auto-imported into user module
     #[test]
     fn test_trace_not_auto_imported() {
-        let tc = TypeChecker::new();
-        let user_table = tc.symbol_table();
+        let tf = TestFixture::new();
+        let user_table = tf.symbol_table();
 
         assert!(user_table.get("Trace").is_none(), "Trace must NOT be auto-imported");
         assert!(user_table.get("TraceCall").is_none(), "TraceCall must NOT be auto-imported");
@@ -2267,10 +2354,10 @@ mod tests {
     // spec: 03-types §3.2.4 — Trace field accessor types
     #[test]
     fn test_trace_field_accessors() {
-        let tc = TypeChecker::new();
+        let tf = TestFixture::new();
         let primitives_path = ModuleFullPath::from("primitives");
-        let primitives_table = tc.modules.get(&primitives_path).unwrap();
-        let trace_type = Type::ADT("Trace".into(), vec![]);
+        let primitives_table = tf.modules.get(&primitives_path).unwrap();
+        let trace_type = Type::ADT(primitives_fqtn("Trace"), vec![]);
 
         let check_accessor = |name: &str, expected_ret: &Type| {
             if let Some(ModuleEntry::Def { scheme, .. }) = primitives_table.get(name) {
@@ -2288,10 +2375,10 @@ mod tests {
             }
         };
 
-        let slist_string = Type::ADT(TypeName::from("SList"), vec![Type::String]);
+        let slist_string = Type::ADT(macros_fqtn("SList"), vec![Type::String]);
         let slist_trace = Type::ADT(
-            TypeName::from("SList"),
-            vec![Type::ADT(TypeName::from("Trace"), vec![])],
+            macros_fqtn("SList"),
+            vec![Type::ADT(primitives_fqtn("Trace"), vec![])],
         );
         check_accessor("name", &Type::String);
         check_accessor("params", &slist_string);

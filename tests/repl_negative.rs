@@ -15,7 +15,7 @@
 mod helpers;
 
 use cranelisp_backend::display::format_result;
-use cranelisp_types::{CranelispError, DefKind, ModuleEntry, Type, TypeName};
+use cranelisp_types::{CranelispError, DefKind, FQTypeName, ModuleEntry, ModuleFullPath, Type, TypeName};
 use helpers::*;
 
 // =============================================================================
@@ -60,8 +60,11 @@ fn classify_entry(
 fn collect_list_categories(
     session: &helpers::ReplSession,
 ) -> (Vec<String>, Vec<String>, Vec<String>, Vec<String>) {
-    let module = session.session.tc.current_module_path().to_string();
-    let table = session.session.tc.symbol_table();
+    let module = session.session.shared.current_module.lock().unwrap().to_string();
+    let module_path = cranelisp_types::ModuleFullPath::from(module.as_str());
+    let table_ref = session.session.shared.symbol_tables.get(&module_path)
+        .expect("current module should exist in symbol_tables");
+    let table = table_ref.value();
 
     let mut types = Vec::new();
     let mut traits = Vec::new();
@@ -543,7 +546,7 @@ fn error_neg_parse_error_preserves_definitions() {
     assert_eq!(repl_eval(&mut session, "(a 5)"), 6);
     assert_eq!(repl_eval(&mut session, "(b 5)"), 10);
     let r = session.eval("North").unwrap();
-    assert_eq!(*r.ty(), Type::ADT(TypeName::from("Dir"), vec![]));
+    assert_eq!(*r.ty(), Type::ADT(FQTypeName::new(ModuleFullPath::from("user"), TypeName::from("Dir")), vec![]));
 }
 
 // spec: repl/spec.md §5.2 — Failed defn MUST NOT leave a partial binding
@@ -877,7 +880,7 @@ fn error_neg_failed_deftype_no_partial_type() {
 
     // The original type must still work.
     let r = session.eval("Blue").unwrap();
-    assert_eq!(*r.ty(), Type::ADT(TypeName::from("Color"), vec![]));
+    assert_eq!(*r.ty(), Type::ADT(FQTypeName::new(ModuleFullPath::from("user"), TypeName::from("Color")), vec![]));
     // Basic expressions must work.
     assert_eq!(repl_eval(&mut session, "(add-i64 1 2)"), 3);
 }
@@ -909,6 +912,6 @@ fn error_neg_complex_expr_error_no_type_corruption() {
     let result = session.eval("(Some 99)").unwrap();
     assert_eq!(
         *result.ty(),
-        Type::ADT(TypeName::from("Option"), vec![Type::Int])
+        Type::ADT(FQTypeName::new(ModuleFullPath::from("user"), TypeName::from("Option")), vec![Type::Int])
     );
 }

@@ -30,15 +30,22 @@ use crate::scheduler::{CompileScheduler, PriorityWork};
 
 /// Shared context for the priority worker loop and process_module_forms.
 ///
-/// The TypeChecker remains `&mut` until `register_imports_with_state`
-/// and `register_exports_with_state` are made `pub` on the TC crate.
+/// TypeChecker state (symbol_tables, next_type_id) lives on SharedState.
+/// Workers create `TypeCheckEnv` on the stack from these references.
 /// PlatformRegistry remains `&mut` because `register()` needs mutation
 /// during platform form processing.
 pub struct ModuleCompiler<'a> {
-    pub tc: &'a mut cranelisp_typecheck::TypeChecker,
+    pub symbol_tables: &'a dashmap::DashMap<ModuleFullPath, cranelisp_types::SymbolTable>,
+    pub next_type_id: &'a std::sync::atomic::AtomicU32,
+    /// Per-invocation typecheck state. For REPL: extracted from SharedState.repl_check_state.
+    /// For batch workers: created fresh per module.
+    pub check_state: CheckState,
+    /// Current module path. Mirrors check_state.current_module (which is pub(crate)).
+    /// Updated alongside check_state by set_current_module().
+    pub current_module: ModuleFullPath,
     pub scheduler: &'a CompileScheduler,
     pub platform_registry: &'a mut PlatformRegistry,
-    /// Per-module typecheck products (symbol tables + GOT tables).
+    /// Per-module typecheck products (GOT tables).
     pub typecheck_products: &'a dashmap::DashMap<ModuleFullPath, crate::session_v4::TypecheckProduct>,
     /// Per-module codegen products. Workers write Code directly here.
     pub codegen_products: &'a dashmap::DashMap<ModuleFullPath, crate::session_v4::CodegenProduct>,
@@ -51,6 +58,24 @@ pub struct ModuleCompiler<'a> {
     /// codegen input stashing for nice workers.
     /// None for REPL contexts where caching is not used.
     pub shared_state: Option<&'a crate::session_v4::SharedState>,
+}
+
+impl<'a> ModuleCompiler<'a> {
+    /// Create a TypeCheckEnv borrowing the shared state.
+    pub fn tc_env(&self) -> cranelisp_typecheck::TypeCheckEnv<'_> {
+        cranelisp_typecheck::TypeCheckEnv::new(self.symbol_tables, self.next_type_id)
+    }
+
+    /// Set the current module on both the check_state and the mirror field.
+    pub fn set_current_module(&mut self, module: ModuleFullPath) {
+        self.tc_env().ensure_module_exists(&module);
+        // CheckState.current_module is pub(crate) — use CheckState::new to replace.
+        // We create a new CheckState with the new module and copy over the needed fields.
+        // For now, we just create a new one (batch mode creates fresh per module).
+        // REPL mode preserves state through the repl_check_state mutex.
+        self.check_state = CheckState::new(module.clone());
+        self.current_module = module;
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -350,9 +375,11 @@ impl SessionCompilationEnv<'_> {
 /// from the `TypeChecker` before creating this resolver, so the resolver holds
 /// `&TypeChecker` (shared ref for DashMap reads) and `&mut CheckState` separately.
 struct SymbolTableMacroResolver<'a> {
-    /// Shared ref to TypeChecker — symbol table reads via DashMap interior mutability.
-    tc: &'a cranelisp_typecheck::TypeChecker,
-    /// Extracted CheckState — needed for on-demand compilation (check_form_with_state).
+    /// Per-module symbol tables (DashMap, interior mutability).
+    symbol_tables: &'a dashmap::DashMap<ModuleFullPath, cranelisp_types::SymbolTable>,
+    /// Monotonic counter for fresh type variable IDs.
+    next_type_id: &'a std::sync::atomic::AtomicU32,
+    /// CheckState — needed for on-demand compilation (check_form_with_state).
     check_state: &'a mut CheckState,
     /// Current module path (starting point for symbol lookup).
     current_module: ModuleFullPath,
@@ -379,7 +406,7 @@ impl MacroResolver for SymbolTableMacroResolver<'_> {
     ) -> Result<Option<MacroEntry>, CranelispError> {
         // Step 1: Walk symbol table to find the defining module and clause infos.
         let resolved = resolve_macro_definition(
-            self.tc, &self.current_module, name, 16,
+            self.symbol_tables, &self.current_module, name, 16,
         );
         let (defining_module, clauses, docstring) = match resolved {
             Some(r) => r,
@@ -401,11 +428,11 @@ impl MacroResolver for SymbolTableMacroResolver<'_> {
         if !all_compiled {
             // Step 3: Compile inline. We need DefmacroInfo to drive compilation.
             // Look up the sexp from the defining module's symbol table.
-            let macro_sexp = resolve_macro_sexp_from(self.tc, &defining_module, name);
+            let macro_sexp = resolve_macro_sexp_from(self.symbol_tables, &defining_module, name);
             if let Some(sexp) = macro_sexp {
                 let info = cranelisp_frontend::parse_defmacro(&sexp)?;
                 compile_macro_with_state(
-                    self.tc, self.check_state, &defining_module,
+                    self.symbol_tables, self.next_type_id, self.check_state, &defining_module,
                     &info, span, self.accumulator,
                     self.codegen_products, self.typecheck_products,
                     self.platform_registry, self.scheduler,
@@ -427,7 +454,7 @@ impl MacroResolver for SymbolTableMacroResolver<'_> {
 ///
 /// Generic recursive chain walker with depth limit to prevent infinite loops.
 pub(crate) fn resolve_macro_definition(
-    tc: &cranelisp_typecheck::TypeChecker,
+    symbol_tables: &dashmap::DashMap<ModuleFullPath, cranelisp_types::SymbolTable>,
     module: &ModuleFullPath,
     name: &str,
     max_depth: usize,
@@ -435,7 +462,7 @@ pub(crate) fn resolve_macro_definition(
     if max_depth == 0 {
         return None;
     }
-    let table = tc.module_table(module)?;
+    let table = symbol_tables.get(module)?;
     let entry = table.get(name)?;
     match entry {
         ModuleEntry::Macro { clauses, docstring, .. } => {
@@ -445,7 +472,7 @@ pub(crate) fn resolve_macro_definition(
             let next_mod = source.module.clone();
             let next_sym: String = source.symbol.as_ref().to_string();
             drop(table); // Release DashMap guard before recursing.
-            resolve_macro_definition(tc, &next_mod, &next_sym, max_depth - 1)
+            resolve_macro_definition(symbol_tables, &next_mod, &next_sym, max_depth - 1)
         }
         _ => None,
     }
@@ -456,11 +483,11 @@ pub(crate) fn resolve_macro_definition(
 /// Unlike `resolve_macro_definition`, this specifically looks up the sexp
 /// stored on the `ModuleEntry::Macro` in the defining module.
 fn resolve_macro_sexp_from(
-    tc: &cranelisp_typecheck::TypeChecker,
+    symbol_tables: &dashmap::DashMap<ModuleFullPath, cranelisp_types::SymbolTable>,
     defining_module: &ModuleFullPath,
     name: &str,
 ) -> Option<Sexp> {
-    let table = tc.module_table(defining_module)?;
+    let table = symbol_tables.get(defining_module)?;
     match table.get(name)? {
         ModuleEntry::Macro { sexp, .. } => sexp.clone(),
         _ => None,
@@ -473,7 +500,8 @@ fn resolve_macro_sexp_from(
 /// `check_form_with_state` and `merge_form_result_with_state` which take
 /// `&self` on TypeChecker + `&mut CheckState`.
 fn compile_macro_with_state(
-    tc: &cranelisp_typecheck::TypeChecker,
+    symbol_tables: &dashmap::DashMap<ModuleFullPath, cranelisp_types::SymbolTable>,
+    next_type_id: &std::sync::atomic::AtomicU32,
     check_state: &mut CheckState,
     target_module: &ModuleFullPath,
     info: &cranelisp_frontend::DefmacroInfo,
@@ -492,7 +520,7 @@ fn compile_macro_with_state(
         }
 
         compile_macro_clause_with_state(
-            tc, check_state, target_module,
+            symbol_tables, next_type_id, check_state, target_module,
             &info.name, clause_idx, clause, span,
             accumulator, codegen_products, typecheck_products,
             platform_registry,
@@ -508,7 +536,8 @@ fn compile_macro_with_state(
 /// Mirrors `compile_macro_clause_inline` but uses `&TypeChecker` + `&mut CheckState`
 /// instead of `&mut ModuleCompiler`.
 fn compile_macro_clause_with_state(
-    tc: &cranelisp_typecheck::TypeChecker,
+    symbol_tables: &dashmap::DashMap<ModuleFullPath, cranelisp_types::SymbolTable>,
+    next_type_id: &std::sync::atomic::AtomicU32,
     check_state: &mut CheckState,
     target_module: &ModuleFullPath,
     macro_name: &Symbol,
@@ -533,20 +562,20 @@ fn compile_macro_clause_with_state(
 
     // Step 4: Typecheck using _with_state API (Register + CheckBody).
     for form in &program {
-        let result = tc.check_form_with_state(
+        let result = cranelisp_typecheck::TypeCheckEnv::new(symbol_tables, next_type_id).check_form(
             target_module, form, CheckPass::Register, check_state, accumulator,
         )?;
-        tc.merge_form_result_with_state(target_module, check_state, accumulator, result);
+        cranelisp_typecheck::TypeCheckEnv::new(symbol_tables, next_type_id).merge_form_result(target_module, check_state, accumulator, result);
     }
     for form in &program {
-        let result = tc.check_form_with_state(
+        let result = cranelisp_typecheck::TypeCheckEnv::new(symbol_tables, next_type_id).check_form(
             target_module, form, CheckPass::CheckBody, check_state, accumulator,
         )?;
-        tc.merge_form_result_with_state(target_module, check_state, accumulator, result);
+        cranelisp_typecheck::TypeCheckEnv::new(symbol_tables, next_type_id).merge_form_result(target_module, check_state, accumulator, result);
     }
 
     // Build a CheckResult from the accumulator for codegen.
-    let check = build_check_from_accumulator_tc(tc, accumulator);
+    let check = build_check_from_accumulator_tc(symbol_tables, accumulator);
 
     // Step 5: Extract the defn and compile it.
     let defn = program
@@ -564,7 +593,7 @@ fn compile_macro_clause_with_state(
         })?;
 
     // Compile macro clause with dealloc disabled.
-    let tc_modules = tc.modules_ref();
+    let tc_modules = symbol_tables;
     let env_impl = SessionCompilationEnv {
         tc_modules,
         typecheck_products,
@@ -580,7 +609,7 @@ fn compile_macro_clause_with_state(
     pre_register_got_slots_in_tc(tc_modules, target_module, &program, &check);
     compile_and_register_defn_shared(
         &macro_jit_symbols, &macro_got_data_defs, defn, &check, env, &module_got,
-        codegen_products, None, target_module, true,
+        codegen_products, None, target_module, true, symbol_tables,
     )?;
 
     Ok(())
@@ -588,10 +617,9 @@ fn compile_macro_clause_with_state(
 
 /// Build a CheckResult from the accumulator for codegen (TC shared-ref version).
 fn build_check_from_accumulator_tc(
-    tc: &cranelisp_typecheck::TypeChecker,
+    symbol_tables: &dashmap::DashMap<ModuleFullPath, cranelisp_types::SymbolTable>,
     accumulator: &ModuleCheckAccumulator,
 ) -> CheckResult {
-    let (type_defs, constructor_to_type) = tc.snapshot_type_defs();
     CheckResult {
         method_resolutions: accumulator.method_resolutions.clone(),
         constrained_fn_names: accumulator.constrained_fn_names.clone(),
@@ -599,8 +627,6 @@ fn build_check_from_accumulator_tc(
         expr_types: accumulator.expr_types.clone(),
         default_method_defns: Vec::new(),
         warnings: Vec::new(),
-        type_defs,
-        constructor_to_type,
         display: None,
     }
 }
@@ -647,13 +673,14 @@ fn try_expand_sexp(
     sexp: &Sexp,
     accumulator: &mut ModuleCheckAccumulator,
 ) -> Result<Option<Sexp>, CranelispError> {
-    // Extract CheckState so resolver can hold &TC while we hold &mut CheckState.
-    let mut check_state = ctx.tc.take_state();
-
+    // No need to extract/restore CheckState — TypeCheckEnv borrows are
+    // separate from CheckState. The resolver holds &DashMap (from tc_env)
+    // and &mut CheckState separately.
     let (result, defining_modules) = {
         let mut resolver = SymbolTableMacroResolver {
-            tc: &*ctx.tc,
-            check_state: &mut check_state,
+            symbol_tables: ctx.symbol_tables,
+            next_type_id: ctx.next_type_id,
+            check_state: &mut ctx.check_state,
             current_module: module.clone(),
             codegen_products: ctx.codegen_products,
             typecheck_products: ctx.typecheck_products,
@@ -669,11 +696,6 @@ fn try_expand_sexp(
         // resolver dropped here, releasing all borrows on check_state
     };
 
-    // IMPORTANT: Always restore state, even on error. If we returned early via `?`,
-    // the TC's state would remain as the empty placeholder, causing panics in
-    // subsequent operations (e.g., REPL error recovery via tc.restore()).
-    ctx.tc.restore_state(check_state);
-
     let expanded = result?;
 
     if expanded == *sexp {
@@ -683,7 +705,7 @@ fn try_expand_sexp(
         let qualified = if defining_modules.is_empty() {
             expanded
         } else {
-            qualify_expanded_sexp(ctx.tc, module, &defining_modules, expanded)
+            qualify_expanded_sexp(ctx.symbol_tables, module, &defining_modules, expanded)
         };
         Ok(Some(qualified))
     }
@@ -700,7 +722,7 @@ fn try_expand_sexp(
 /// - Are found in a defining module's symbol table
 /// - Are NOT already available in the current module
 fn qualify_expanded_sexp(
-    tc: &cranelisp_typecheck::TypeChecker,
+    symbol_tables: &dashmap::DashMap<ModuleFullPath, cranelisp_types::SymbolTable>,
     current_module: &ModuleFullPath,
     defining_modules: &[ModuleFullPath],
     sexp: Sexp,
@@ -712,14 +734,14 @@ fn qualify_expanded_sexp(
                 return sexp;
             }
             // Skip if the symbol is already available in the current module
-            if let Some(table) = tc.module_table(current_module) {
+            if let Some(table) = symbol_tables.get(current_module) {
                 if table.get(name).is_some() {
                     return sexp;
                 }
             }
             // Check defining modules for this symbol
             for def_mod in defining_modules {
-                if let Some(table) = tc.module_table(def_mod) {
+                if let Some(table) = symbol_tables.get(def_mod) {
                     if let Some(entry) = table.get(name) {
                         // Follow imports to find the true source module for qualification
                         let qual_module = match entry {
@@ -739,14 +761,14 @@ fn qualify_expanded_sexp(
             // But DO qualify function call targets and their arguments.
             let qualified_children: Vec<Sexp> = children
                 .into_iter()
-                .map(|c| qualify_expanded_sexp(tc, current_module, defining_modules, c))
+                .map(|c| qualify_expanded_sexp(symbol_tables, current_module, defining_modules, c))
                 .collect();
             Sexp::List(qualified_children, span)
         }
         Sexp::Bracket(children, span) => {
             let qualified_children: Vec<Sexp> = children
                 .into_iter()
-                .map(|c| qualify_expanded_sexp(tc, current_module, defining_modules, c))
+                .map(|c| qualify_expanded_sexp(symbol_tables, current_module, defining_modules, c))
                 .collect();
             Sexp::Bracket(qualified_children, span)
         }
@@ -784,7 +806,6 @@ pub(crate) fn ensure_typecheck_product(
 ) {
     typecheck_products.entry(module.clone()).or_insert_with(|| {
         crate::session_v4::TypecheckProduct {
-            symbols: cranelisp_types::SymbolTable::new(module.clone()),
             got: std::sync::Arc::new(cranelisp_backend::got::GotTable::new()),
             file_path: None,
             source_text: None,
@@ -893,8 +914,9 @@ pub fn process_module_forms(
     if is_fresh && strategy == ModuleStrategy::Replace {
         // Set active module. Symbol table is preserved for slot reuse
         // and type-change detection.
-        ctx.tc.set_current_module(module.clone());
-        ctx.tc.clear_module_for_replace_public();
+        ctx.set_current_module(module.clone());
+        // clear_module_for_replace_public is a no-op with stateless TC;
+        // symbol table clearing happens through the module system.
 
         // Zero GOT slots and clear codegen artifacts for this module's
         // symbols. Slot assignments are preserved so re-compiled code
@@ -909,10 +931,10 @@ pub fn process_module_forms(
     } else if is_fresh && strategy == ModuleStrategy::Additive {
         // Additive: just set the active module. Module state persists
         // from previous evals — no clear, no re-injection.
-        ctx.tc.set_current_module(module.clone());
+        ctx.set_current_module(module.clone());
     } else {
         // Resume: set active module (may have been changed by dep processing).
-        ctx.tc.set_current_module(module.clone());
+        ctx.set_current_module(module.clone());
     }
 
     // --- Pass 1: only on fresh start (not on resume after blocking) ---
@@ -972,13 +994,13 @@ pub fn process_module_forms(
         let program = cranelisp_frontend::build_program(&regular_sexps)?;
         let working_program = wrap_exprs_as_defns(&program);
 
-        pass1_register(ctx.tc, module, &working_program, accumulator)?;
+        pass1_register(ctx.symbol_tables, ctx.next_type_id, &mut ctx.check_state, module, &working_program, accumulator)?;
 
         for (name, info, sexp) in &macro_infos {
-            register_macro_in_module(ctx.tc, name, info, sexp)?;
+            register_macro_in_module(ctx.symbol_tables, ctx.next_type_id, &mut ctx.check_state, module, name, info, sexp)?;
         }
 
-        let defaults = register_default_methods(ctx.tc, module, accumulator)?;
+        let defaults = register_default_methods(ctx.symbol_tables, ctx.next_type_id, &mut ctx.check_state, module, accumulator)?;
         accumulator.default_method_defns = defaults;
         *pass1_done = true;
     }
@@ -1048,19 +1070,20 @@ fn finalize_module(
     let defaults_for_body: Vec<Defn> = accumulator.default_method_defns.clone();
     for defn in &defaults_for_body {
         let form = TopLevel::Defn(defn.clone());
-        let result = ctx.tc.check_form(module, &form, CheckPass::CheckBody, accumulator)?;
-        ctx.tc.merge_form_result(module, accumulator, result);
+        let result = cranelisp_typecheck::TypeCheckEnv::new(ctx.symbol_tables, ctx.next_type_id).check_form(module, &form, CheckPass::CheckBody, &mut ctx.check_state, accumulator)?;
+        cranelisp_typecheck::TypeCheckEnv::new(ctx.symbol_tables, ctx.next_type_id).merge_form_result(module, &mut ctx.check_state, accumulator, result);
     }
 
-    let mut check_result = ctx.tc.finalize_check_result(
+    let mut check_result = cranelisp_typecheck::TypeCheckEnv::new(ctx.symbol_tables, ctx.next_type_id).finalize_check_result(
         module,
+        &mut ctx.check_state,
         accumulator,
         &final_working,
         strategy,
     )?;
 
     check_result.display =
-        ctx.tc.compute_display_info_public(expanded_program, &accumulator.defn_type_vars);
+        cranelisp_typecheck::TypeCheckEnv::new(ctx.symbol_tables, ctx.next_type_id).compute_display_info_public(&ctx.check_state,expanded_program, &accumulator.defn_type_vars);
 
     // NOTE: notify_typecheck_done is NOT called here. The caller is
     // responsible for stashing CodegenInput and calling
@@ -1081,7 +1104,10 @@ fn finalize_module(
 /// original sexp for later compilation. No codegen — deferred until
 /// first use.
 fn register_macro_in_module(
-    tc: &mut cranelisp_typecheck::TypeChecker,
+    symbol_tables: &dashmap::DashMap<ModuleFullPath, cranelisp_types::SymbolTable>,
+    _next_type_id: &std::sync::atomic::AtomicU32,
+    _check_state: &mut CheckState,
+    module: &ModuleFullPath,
     name: &Symbol,
     info: &cranelisp_frontend::DefmacroInfo,
     sexp: &Sexp,
@@ -1100,18 +1126,20 @@ fn register_macro_in_module(
     } else {
         Visibility::Public
     };
-    tc.symbol_table_mut().insert(
-        name.clone(),
-        ModuleEntry::Macro {
-            name: name.clone(),
-            clauses: clause_infos,
-            docstring: info.docstring.clone(),
-            visibility,
-            sexp: Some(sexp.clone()),
-            source: None,
-            callees: Vec::new(),
-        },
-    );
+    if let Some(mut table) = symbol_tables.get_mut(module) {
+        table.insert(
+            name.clone(),
+            ModuleEntry::Macro {
+                name: name.clone(),
+                clauses: clause_infos,
+                docstring: info.docstring.clone(),
+                visibility,
+                sexp: Some(sexp.clone()),
+                source: None,
+                callees: Vec::new(),
+            },
+        );
+    }
     Ok(())
 }
 
@@ -1239,7 +1267,7 @@ fn process_regular_form(
     for form in flattened {
         if cranelisp_frontend::is_defmacro(&form) {
             let info = cranelisp_frontend::parse_defmacro(&form)?;
-            register_macro_in_module(ctx.tc, &info.name, &info, &form)?;
+            register_macro_in_module(ctx.symbol_tables, ctx.next_type_id, &mut ctx.check_state, module, &info.name, &info, &form)?;
             compile_macro_if_needed(ctx, module, &info, form.span(), accumulator)?;
         } else {
             regular_sexps.push(form);
@@ -1258,15 +1286,15 @@ fn process_regular_form(
     // causes "already defined" errors for traits.
     if effective_sexp.is_some() {
         for form in &working {
-            let result = ctx.tc.check_form(module, form, CheckPass::Register, accumulator)?;
-            ctx.tc.merge_form_result(module, accumulator, result);
+            let result = cranelisp_typecheck::TypeCheckEnv::new(ctx.symbol_tables, ctx.next_type_id).check_form(module, form, CheckPass::Register, &mut ctx.check_state, accumulator)?;
+            cranelisp_typecheck::TypeCheckEnv::new(ctx.symbol_tables, ctx.next_type_id).merge_form_result(module, &mut ctx.check_state, accumulator, result);
         }
     }
 
     // Typecheck body for each form produced (Pass 2).
     for form in &working {
-        let result = ctx.tc.check_form(module, form, CheckPass::CheckBody, accumulator)?;
-        ctx.tc.merge_form_result(module, accumulator, result);
+        let result = cranelisp_typecheck::TypeCheckEnv::new(ctx.symbol_tables, ctx.next_type_id).check_form(module, form, CheckPass::CheckBody, &mut ctx.check_state, accumulator)?;
+        cranelisp_typecheck::TypeCheckEnv::new(ctx.symbol_tables, ctx.next_type_id).merge_form_result(module, &mut ctx.check_state, accumulator, result);
 
         // Populate introspection for REPL slash commands (--repl only).
         if let Some(intr_map) = ctx.introspection {
@@ -1335,8 +1363,8 @@ fn handle_import(
         }
 
         // Already loaded — register the import and continue.
-        if ctx.tc.has_module(dep) {
-            ctx.tc.register_imports(std::slice::from_ref(spec))?;
+        if ctx.symbol_tables.contains_key(dep) {
+            cranelisp_typecheck::TypeCheckEnv::new(ctx.symbol_tables, ctx.next_type_id).register_imports(&mut ctx.check_state,std::slice::from_ref(spec))?;
             continue;
         }
 
@@ -1364,7 +1392,7 @@ fn handle_import(
 
         // Cache check: try to load from disk cache before parsing.
         if try_cache_hit_load(ctx, dep, &dep_file) {
-            ctx.tc.register_imports(std::slice::from_ref(spec))?;
+            cranelisp_typecheck::TypeCheckEnv::new(ctx.symbol_tables, ctx.next_type_id).register_imports(&mut ctx.check_state,std::slice::from_ref(spec))?;
             continue;
         }
 
@@ -1382,6 +1410,16 @@ fn handle_import(
             }
         })?;
         let dep_sexps = cranelisp_frontend::parse(&source)?;
+
+        // Record source hash in CacheState for manifest generation.
+        if let Some(shared) = ctx.shared_state {
+            let hash = cranelisp_backend::cache::hash_source(&source);
+            let mut cs_guard = shared.cache_state.lock().unwrap_or_else(|e| e.into_inner());
+            if let Some(cs) = cs_guard.as_mut() {
+                cs.source_hashes_mut().insert(dep.clone(), hash);
+            }
+            drop(cs_guard);
+        }
 
         // Store source text on typecheck product for /source introspection (--repl).
         if ctx.introspection.is_some() {
@@ -1484,10 +1522,10 @@ fn try_cache_hit_load(
         })
         .collect();
     // Restore type info into TC (consumes symbol_table by value).
-    ctx.tc.restore_cached_module(cached.metadata.symbol_table);
+    cranelisp_typecheck::TypeCheckEnv::new(ctx.symbol_tables, ctx.next_type_id).restore_cached_module(cached.metadata.symbol_table);
 
     // Restore trait impl registrations from cached symbol table.
-    ctx.tc.restore_cached_impls(&mangled_names);
+    cranelisp_typecheck::TypeCheckEnv::new(ctx.symbol_tables, ctx.next_type_id).restore_cached_impls(&mangled_names);
 
     // 5. Register with scheduler at TypecheckDone.
     ctx.scheduler.register_module_cached(dep.clone(), symbols);
@@ -1536,8 +1574,8 @@ fn handle_export(
         let dep = &spec.module_path;
 
         // Already loaded — register the re-export and continue.
-        if ctx.tc.has_module(dep) {
-            ctx.tc.register_exports(std::slice::from_ref(spec))?;
+        if ctx.symbol_tables.contains_key(dep) {
+            cranelisp_typecheck::TypeCheckEnv::new(ctx.symbol_tables, ctx.next_type_id).register_exports(&mut ctx.check_state,std::slice::from_ref(spec))?;
             continue;
         }
 
@@ -1601,7 +1639,7 @@ fn handle_export(
     }
 
     // All source modules loaded — register the re-exports.
-    ctx.tc.register_exports(specs)?;
+    cranelisp_typecheck::TypeCheckEnv::new(ctx.symbol_tables, ctx.next_type_id).register_exports(&mut ctx.check_state,specs)?;
     Ok(BlockAction::Continue)
 }
 
@@ -1624,7 +1662,7 @@ fn handle_mod(
     let sub_path = ModuleFullPath::from(format!("{}.{}", module, decl.name));
 
     // Already loaded — resolution chain handles qualified references.
-    if ctx.tc.has_module(&sub_path) {
+    if ctx.symbol_tables.contains_key(&sub_path) {
         return Ok(BlockAction::Continue);
     }
 
@@ -1670,6 +1708,16 @@ fn handle_mod(
     })?;
     let dep_sexps = cranelisp_frontend::parse(&source)?;
 
+    // Record source hash in CacheState for manifest generation.
+    if let Some(shared) = ctx.shared_state {
+        let hash = cranelisp_backend::cache::hash_source(&source);
+        let mut cs_guard = shared.cache_state.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(cs) = cs_guard.as_mut() {
+            cs.source_hashes_mut().insert(sub_path.clone(), hash);
+        }
+        drop(cs_guard);
+    }
+
     // Store source text for /source introspection (--repl).
     if ctx.introspection.is_some() {
         ensure_typecheck_product(ctx.typecheck_products, &sub_path);
@@ -1701,7 +1749,9 @@ fn handle_platform(
     spec: &PlatformSpec,
 ) -> Result<(), CranelispError> {
     let (platform, _jit_syms) = crate::platform::load_and_register_platform(
-        ctx.tc,
+        ctx.symbol_tables,
+        ctx.next_type_id,
+        &mut ctx.check_state,
         &spec.name,
         ctx.project_root,
         ctx.lib_dirs,
@@ -1802,10 +1852,10 @@ fn compile_macro_if_needed(
 
     // Walk transitive callees and compile uncompiled deps first.
     let uncompiled_deps = collect_transitive_uncompiled_deps(
-        ctx.tc, ctx.codegen_products, module, &info.name,
+        ctx.symbol_tables, ctx.codegen_products, module, &info.name,
     );
     // Build env for per-module GOT resolution.
-    let tc_modules = ctx.tc.modules_ref();
+    let tc_modules = ctx.symbol_tables;
     let env_impl = SessionCompilationEnv {
         tc_modules,
         typecheck_products: ctx.typecheck_products,
@@ -1817,10 +1867,10 @@ fn compile_macro_if_needed(
         .expect("invariant: just ensured typecheck product exists")
         .got.clone();
     let (jit_symbols, got_data_defs) = env_impl.collect_jit_setup_for_module(ctx.platform_registry);
-    let current_module = ctx.tc.current_module_path().clone();
+    let current_module = ctx.current_module.clone();
     for (dep_module, dep_symbol) in &uncompiled_deps {
         compile_dep_symbol_inline(
-            ctx.tc, &jit_symbols, &got_data_defs,
+            ctx.symbol_tables, ctx.next_type_id, &jit_symbols, &got_data_defs,
             dep_module, dep_symbol, &current_module, accumulator,
             env, &dep_module_got, ctx.codegen_products,
         )?;
@@ -1852,7 +1902,7 @@ fn compile_macro_if_needed(
 /// The result is in dependency order (callees before callers) suitable for
 /// sequential compilation.
 fn collect_transitive_uncompiled_deps(
-    tc: &cranelisp_typecheck::TypeChecker,
+    symbol_tables: &dashmap::DashMap<ModuleFullPath, cranelisp_types::SymbolTable>,
     codegen_products: &dashmap::DashMap<ModuleFullPath, crate::session_v4::CodegenProduct>,
     module: &ModuleFullPath,
     start_symbol: &Symbol,
@@ -1865,7 +1915,7 @@ fn collect_transitive_uncompiled_deps(
     let mut result: Vec<(ModuleFullPath, Symbol)> = Vec::new();
 
     // Seed with the starting symbol's callees.
-    if let Some(table) = tc.module_table(module)
+    if let Some(table) = symbol_tables.get(module)
         && let Some(entry) = table.get(start_symbol.as_ref())
     {
         for callee in entry.callees() {
@@ -1879,7 +1929,7 @@ fn collect_transitive_uncompiled_deps(
     // BFS walk.
     while let Some((dep_mod, dep_sym)) = queue.pop_front() {
         // Look up this symbol's own callees and enqueue them.
-        if let Some(table) = tc.module_table(&dep_mod)
+        if let Some(table) = symbol_tables.get(&dep_mod)
             && let Some(entry) = table.get(dep_sym.as_ref())
         {
             for callee in entry.callees() {
@@ -1910,7 +1960,8 @@ fn collect_transitive_uncompiled_deps(
 /// transient check state has already been consumed. Type defs and
 /// constructor_to_type come from the TC's global registry in both cases.
 fn compile_dep_symbol_inline(
-    tc: &cranelisp_typecheck::TypeChecker,
+    symbol_tables: &dashmap::DashMap<ModuleFullPath, cranelisp_types::SymbolTable>,
+    next_type_id: &std::sync::atomic::AtomicU32,
     jit_symbols: &[(String, *const u8)],
     got_data_defs: &[(String, *const u8)],
     module: &ModuleFullPath,
@@ -1922,21 +1973,15 @@ fn compile_dep_symbol_inline(
     codegen_products: &dashmap::DashMap<ModuleFullPath, crate::session_v4::CodegenProduct>,
 ) -> Result<(), CranelispError> {
     let check = if module == current_module {
-        build_check_from_accumulator(tc, accumulator)
+        build_check_from_accumulator(symbol_tables, accumulator)
     } else {
-        build_empty_check_from_tc(tc)
+        build_empty_check_from_tc(symbol_tables)
     };
 
-    // The function body (Defn AST) is not stored on the symbol table —
-    // it lives transiently in the program during compilation. For cross-module
-    // deps that have already been compiled, the code pointer is in the GOT
-    // and no recompilation is needed. For same-module deps, they will be
-    // compiled as part of the normal program compilation flow.
-    //
-    // FIXME(/backend): if a dep symbol hasn't been compiled yet (e.g.,
-    // forward reference to a function defined later in the same module),
+    // The function body (Defn AST) is not stored on the symbol table.
+    // FIXME(/backend): if a dep symbol hasn't been compiled yet,
     // this is a no-op and the macro may fail at expansion time.
-    let _ = (tc, jit_symbols, got_data_defs, module, symbol, &check, env, module_got, codegen_products);
+    let _ = (jit_symbols, got_data_defs, module, symbol, &check, env, module_got, codegen_products);
     Ok(())
 }
 
@@ -1945,9 +1990,8 @@ fn compile_dep_symbol_inline(
 /// Used for cross-module deps where the dep module's transient check state
 /// (method_resolutions, expr_types) has already been consumed.
 fn build_empty_check_from_tc(
-    tc: &cranelisp_typecheck::TypeChecker,
+    symbol_tables: &dashmap::DashMap<ModuleFullPath, cranelisp_types::SymbolTable>,
 ) -> CheckResult {
-    let (type_defs, constructor_to_type) = tc.snapshot_type_defs();
     CheckResult {
         method_resolutions: std::collections::HashMap::new(),
         constrained_fn_names: std::collections::HashSet::new(),
@@ -1955,8 +1999,6 @@ fn build_empty_check_from_tc(
         expr_types: std::collections::HashMap::new(),
         default_method_defns: Vec::new(),
         warnings: Vec::new(),
-        type_defs,
-        constructor_to_type,
         display: None,
     }
 }
@@ -1968,10 +2010,9 @@ fn build_empty_check_from_tc(
 /// Type defs and constructor_to_type are snapshotted from the TC registry
 /// (required for Sexp constructor codegen in macro clause bodies).
 fn build_check_from_accumulator(
-    tc: &cranelisp_typecheck::TypeChecker,
+    symbol_tables: &dashmap::DashMap<ModuleFullPath, cranelisp_types::SymbolTable>,
     accumulator: &ModuleCheckAccumulator,
 ) -> CheckResult {
-    let (type_defs, constructor_to_type) = tc.snapshot_type_defs();
     CheckResult {
         method_resolutions: accumulator.method_resolutions.clone(),
         constrained_fn_names: accumulator.constrained_fn_names.clone(),
@@ -1979,8 +2020,6 @@ fn build_check_from_accumulator(
         expr_types: accumulator.expr_types.clone(),
         default_method_defns: Vec::new(),
         warnings: Vec::new(),
-        type_defs,
-        constructor_to_type,
         display: None,
     }
 }
@@ -2015,18 +2054,18 @@ fn compile_macro_clause_inline(
     let program = cranelisp_frontend::build_program(&[expanded_sexp])?;
 
     // Step 4: Typecheck using per-form check_form API (Register + CheckBody).
-    let module = ctx.tc.current_module_path().clone();
+    let module = ctx.current_module.clone();
     for form in &program {
-        let result = ctx.tc.check_form(&module, form, CheckPass::Register, accumulator)?;
-        ctx.tc.merge_form_result(&module, accumulator, result);
+        let result = cranelisp_typecheck::TypeCheckEnv::new(ctx.symbol_tables, ctx.next_type_id).check_form(&module, form, CheckPass::Register, &mut ctx.check_state, accumulator)?;
+        cranelisp_typecheck::TypeCheckEnv::new(ctx.symbol_tables, ctx.next_type_id).merge_form_result(&module, &mut ctx.check_state, accumulator, result);
     }
     for form in &program {
-        let result = ctx.tc.check_form(&module, form, CheckPass::CheckBody, accumulator)?;
-        ctx.tc.merge_form_result(&module, accumulator, result);
+        let result = cranelisp_typecheck::TypeCheckEnv::new(ctx.symbol_tables, ctx.next_type_id).check_form(&module, form, CheckPass::CheckBody, &mut ctx.check_state, accumulator)?;
+        cranelisp_typecheck::TypeCheckEnv::new(ctx.symbol_tables, ctx.next_type_id).merge_form_result(&module, &mut ctx.check_state, accumulator, result);
     }
 
     // Build a CheckResult from the accumulator for codegen.
-    let check = build_check_from_accumulator(ctx.tc, accumulator);
+    let check = build_check_from_accumulator(ctx.symbol_tables, accumulator);
 
     // Step 5: Extract the defn and compile it.
     let defn = program
@@ -2045,8 +2084,8 @@ fn compile_macro_clause_inline(
 
     // Compile macro clause with dealloc disabled (prevents use-after-free on Sexp unmarshal).
     // Macro clause functions are normal functions on per-module GOTs.
-    let module = ctx.tc.current_module_path().clone();
-    let tc_modules = ctx.tc.modules_ref();
+    let module = ctx.current_module.clone();
+    let tc_modules = ctx.symbol_tables;
     let env_impl = SessionCompilationEnv {
         tc_modules,
         typecheck_products: ctx.typecheck_products,
@@ -2061,7 +2100,7 @@ fn compile_macro_clause_inline(
     pre_register_got_slots_in_tc(tc_modules, &module, &program, &check);
     compile_and_register_defn_shared(
         &macro_jit_symbols, &macro_got_data_defs, defn, &check, env, &module_got,
-        ctx.codegen_products, None, &module, true,
+        ctx.codegen_products, None, &module, true, tc_modules,
     )?;
 
     Ok(())
@@ -2118,29 +2157,35 @@ pub fn compile_macro_for_repl(
 
 /// Pass 1: register all forms' type signatures in source order.
 fn pass1_register(
-    tc: &mut cranelisp_typecheck::TypeChecker,
+    symbol_tables: &dashmap::DashMap<ModuleFullPath, cranelisp_types::SymbolTable>,
+    next_type_id: &std::sync::atomic::AtomicU32,
+    check_state: &mut CheckState,
     module: &ModuleFullPath,
     working_program: &[TopLevel],
     accumulator: &mut ModuleCheckAccumulator,
 ) -> Result<(), CranelispError> {
+    let tc = cranelisp_typecheck::TypeCheckEnv::new(symbol_tables, next_type_id);
     for form in working_program {
-        let result = tc.check_form(module, form, CheckPass::Register, accumulator)?;
-        tc.merge_form_result(module, accumulator, result);
+        let result = tc.check_form(module, form, CheckPass::Register, check_state, accumulator)?;
+        tc.merge_form_result(module, check_state, accumulator, result);
     }
     Ok(())
 }
 
 /// Register default method defns generated during Pass 1 TraitImpl processing.
 fn register_default_methods(
-    tc: &mut cranelisp_typecheck::TypeChecker,
+    symbol_tables: &dashmap::DashMap<ModuleFullPath, cranelisp_types::SymbolTable>,
+    next_type_id: &std::sync::atomic::AtomicU32,
+    check_state: &mut CheckState,
     module: &ModuleFullPath,
     accumulator: &mut ModuleCheckAccumulator,
 ) -> Result<Vec<Defn>, CranelispError> {
+    let tc = cranelisp_typecheck::TypeCheckEnv::new(symbol_tables, next_type_id);
     let defaults: Vec<Defn> = std::mem::take(&mut accumulator.default_method_defns);
     for defn in &defaults {
         let form = TopLevel::Defn(defn.clone());
-        let result = tc.check_form(module, &form, CheckPass::Register, accumulator)?;
-        tc.merge_form_result(module, accumulator, result);
+        let result = tc.check_form(module, &form, CheckPass::Register, check_state, accumulator)?;
+        tc.merge_form_result(module, check_state, accumulator, result);
     }
     Ok(defaults)
 }
@@ -2169,13 +2214,19 @@ fn inject_prelude_if_needed(
         return Ok(None);
     }
 
-    if !ctx.tc.has_module(&prelude_path) {
+    if !ctx.symbol_tables.contains_key(&prelude_path) {
         // Discover prelude through the same lazy path as any user import.
         let prelude_file = crate::session::resolve_prelude(
             ctx.project_root,
             ctx.lib_dirs,
         );
         if let Some(prelude_file) = prelude_file {
+            // Cache check: try to load prelude from disk cache.
+            if try_cache_hit_load(ctx, &prelude_path, &prelude_file) {
+                // Prelude loaded from cache — inject implicit import and continue.
+                return Ok(None);
+            }
+
             let source = std::fs::read_to_string(&prelude_file).map_err(|e| {
                 CranelispError::ModuleError {
                     message: format!(
@@ -2188,6 +2239,16 @@ fn inject_prelude_if_needed(
                 }
             })?;
             let prelude_sexps = cranelisp_frontend::parse(&source)?;
+
+            // Record source hash in CacheState for manifest generation.
+            if let Some(shared) = ctx.shared_state {
+                let hash = cranelisp_backend::cache::hash_source(&source);
+                let mut cs_guard = shared.cache_state.lock().unwrap_or_else(|e| e.into_inner());
+                if let Some(cs) = cs_guard.as_mut() {
+                    cs.source_hashes_mut().insert(prelude_path.clone(), hash);
+                }
+                drop(cs_guard);
+            }
 
             // Store source text for /source introspection (--repl).
             if ctx.introspection.is_some() {
@@ -2220,7 +2281,7 @@ fn inject_prelude_if_needed(
             names: ImportNames::Glob,
             span: Span::SYNTHETIC,
         };
-        ctx.tc.register_imports(&[prelude_spec])?;
+        cranelisp_typecheck::TypeCheckEnv::new(ctx.symbol_tables, ctx.next_type_id).register_imports(&mut ctx.check_state,&[prelude_spec])?;
     }
 
     Ok(None)
@@ -2277,7 +2338,7 @@ fn sexps_reference_prelude(sexps: &[Sexp]) -> bool {
 fn clear_module_codegen(ctx: &mut ModuleCompiler, module: &ModuleFullPath) {
     // Collect qualified symbol names for this module from the TC symbol table.
     let symbols: Vec<cranelisp_types::Symbol> = {
-        let table = ctx.tc.symbol_table();
+        let table = ctx.symbol_tables.get(&ctx.current_module).unwrap();
         table.all_symbols()
             .filter_map(|(name, entry)| {
                 // Only clear codegen for definitions owned by this module,
@@ -2309,7 +2370,7 @@ fn clear_module_codegen(ctx: &mut ModuleCompiler, module: &ModuleFullPath) {
     {
         if let Some(tp) = ctx.typecheck_products.get(module) {
             let got_table = &tp.got;
-            let table = ctx.tc.symbol_table();
+            let table = ctx.symbol_tables.get(&ctx.current_module).unwrap();
             for (_name, entry) in table.all_symbols() {
                 if let cranelisp_types::ModuleEntry::Def { got_slot: Some(slot), kind, .. } = entry {
                     if !matches!(kind.as_ref(), cranelisp_types::DefKind::SpecialForm { .. }) {
@@ -2414,14 +2475,14 @@ pub fn codegen_module_symbols(
 
     // Compile default method bodies.
     for defn in &check.default_method_defns {
-        compile_and_register_defn_shared(&jit_symbols, &got_data_defs, defn, check, env, &module_got, codegen_products, introspection, module, false)?;
+        compile_and_register_defn_shared(&jit_symbols, &got_data_defs, defn, check, env, &module_got, codegen_products, introspection, module, false, tc_modules)?;
     }
 
     // Compile mono specializations with per-specialization resolutions.
-    compile_mono_defns(&jit_symbols, &got_data_defs, check, env, &module_got, codegen_products, introspection, module)?;
+    compile_mono_defns(&jit_symbols, &got_data_defs, check, env, &module_got, codegen_products, introspection, module, tc_modules)?;
 
     // Compile each regular defn.
-    let defn_names = compile_regular_defns(&jit_symbols, &got_data_defs, program, check, env, &module_got, codegen_products, introspection, module)?;
+    let defn_names = compile_regular_defns(&jit_symbols, &got_data_defs, program, check, env, &module_got, codegen_products, introspection, module, tc_modules)?;
 
     // Notify scheduler for each compiled symbol.
     let total = defn_names.len();
@@ -2487,6 +2548,7 @@ fn pre_register_got_slots_in_tc(
                 kind: Box::new(DefKind::UserFn { constrained_fn: None }),
                 callees: Vec::new(),
                 got_slot: Some(slot),
+                trait_origin: None,
             },
         );
     };
@@ -2530,6 +2592,7 @@ fn compile_mono_defns(
     codegen_products: &dashmap::DashMap<ModuleFullPath, crate::session_v4::CodegenProduct>,
     introspection: Option<&dashmap::DashMap<cranelisp_types::FQSymbol, crate::session_v4::Introspection>>,
     module: &ModuleFullPath,
+    tc_modules: &dashmap::DashMap<ModuleFullPath, cranelisp_types::SymbolTable>,
 ) -> Result<(), CranelispError> {
     for mono in &check.mono_defns {
         let mut merged = check.method_resolutions.clone();
@@ -2546,11 +2609,9 @@ fn compile_mono_defns(
             expr_types,
             default_method_defns: Vec::new(),
             warnings: Vec::new(),
-            type_defs: check.type_defs.clone(),
-            constructor_to_type: check.constructor_to_type.clone(),
             display: None,
         };
-        compile_and_register_defn_shared(jit_symbols, got_data_defs, &mono.defn, &mono_check, env, module_got, codegen_products, introspection, module, false)?;
+        compile_and_register_defn_shared(jit_symbols, got_data_defs, &mono.defn, &mono_check, env, module_got, codegen_products, introspection, module, false, tc_modules)?;
     }
     Ok(())
 }
@@ -2567,6 +2628,7 @@ fn compile_regular_defns(
     codegen_products: &dashmap::DashMap<ModuleFullPath, crate::session_v4::CodegenProduct>,
     introspection: Option<&dashmap::DashMap<cranelisp_types::FQSymbol, crate::session_v4::Introspection>>,
     module: &ModuleFullPath,
+    tc_modules: &dashmap::DashMap<ModuleFullPath, cranelisp_types::SymbolTable>,
 ) -> Result<Vec<Symbol>, CranelispError> {
     let mut compiled_names = Vec::new();
 
@@ -2576,14 +2638,14 @@ fn compile_regular_defns(
                 if check.constrained_fn_names.contains(&defn.name) {
                     continue;
                 }
-                compile_and_register_defn_shared(jit_symbols, got_data_defs, defn, check, env, module_got, codegen_products, introspection, module, false)?;
+                compile_and_register_defn_shared(jit_symbols, got_data_defs, defn, check, env, module_got, codegen_products, introspection, module, false, tc_modules)?;
                 compiled_names.push(defn.name.clone());
             }
             TopLevel::TraitImpl(impl_) => {
                 for method in &impl_.methods {
                     compile_and_register_defn_shared(
                         jit_symbols, got_data_defs, method, check, env, module_got,
-                        codegen_products, introspection, module, false,
+                        codegen_products, introspection, module, false, tc_modules,
                     )?;
                     compiled_names.push(method.name.clone());
                 }
@@ -2816,7 +2878,7 @@ pub fn priority_worker_loop(
                             &module,
                             &program,
                             &check_result,
-                            ctx.tc.modules_ref(),
+                            ctx.symbol_tables,
                             ctx.typecheck_products,
                             ctx.codegen_products,
                             None,
@@ -2824,7 +2886,7 @@ pub fn priority_worker_loop(
 
                         // Collect cross-module func sigs while TC is available.
                         let cross_sigs = collect_cross_module_func_sigs_from_tc(
-                            ctx.tc, ctx.typecheck_products, &module,
+                            ctx.symbol_tables, ctx.typecheck_products, &module,
                         );
 
                         // Stash data for nice worker .o + .meta.json, then
@@ -2886,7 +2948,7 @@ pub fn priority_worker_loop(
 /// then looks up the source scheme in the TC's module tables (which include synthetic
 /// modules like `primitives` and `macros`). Returns (qualified_name, param_count) pairs.
 fn collect_cross_module_func_sigs_from_tc(
-    tc: &cranelisp_typecheck::TypeChecker,
+    symbol_tables: &dashmap::DashMap<ModuleFullPath, cranelisp_types::SymbolTable>,
     #[allow(unused)] typecheck_products: &dashmap::DashMap<ModuleFullPath, crate::session_v4::TypecheckProduct>,
     module: &ModuleFullPath,
 ) -> Vec<(Symbol, usize)> {
@@ -2894,7 +2956,7 @@ fn collect_cross_module_func_sigs_from_tc(
     // Use TC's module table (not typecheck_products) because the full symbol
     // table with Import entries lives in the TC. typecheck_products only has
     // Def entries with GOT slots.
-    let Some(table) = tc.module_table(module) else {
+    let Some(table) = symbol_tables.get(module) else {
         eprintln!("DEBUG cross-sigs: no TC module table for {}", module);
         return sigs;
     };
@@ -2902,7 +2964,7 @@ fn collect_cross_module_func_sigs_from_tc(
     for (name, entry) in table.all_symbols() {
         if let ModuleEntry::Import { source } = entry {
             // Look up in TC's module tables (covers synthetic modules like primitives).
-            if let Some(source_table) = tc.module_table(&source.module) {
+            if let Some(source_table) = symbol_tables.get(&source.module) {
                 if let Some(source_entry) = source_table.get(source.symbol.as_ref()) {
                     let param_count = match source_entry {
                         ModuleEntry::Def { scheme, .. } | ModuleEntry::Constructor { scheme, .. } => {
@@ -2955,8 +3017,6 @@ fn stash_codegen_input(
             default_method_defns: check_result.default_method_defns,
             program,
             cross_module_func_sigs,
-            type_defs: check_result.type_defs,
-            constructor_to_type: check_result.constructor_to_type,
         },
     );
 }
@@ -2972,7 +3032,6 @@ fn stash_codegen_input(
 /// With the current `&mut self` TypeChecker API, workers serialize on
 /// the TC mutex. True parallelism comes when TC gets full `&self` API.
 pub(crate) struct PriorityWorkerRefs<'a> {
-    pub(crate) tc: &'a std::sync::Mutex<cranelisp_typecheck::TypeChecker>,
     pub(crate) platform_registry: &'a std::sync::Mutex<PlatformRegistry>,
     pub(crate) typecheck_products: &'a dashmap::DashMap<ModuleFullPath, crate::session_v4::TypecheckProduct>,
     pub(crate) codegen_products: &'a dashmap::DashMap<ModuleFullPath, crate::session_v4::CodegenProduct>,
@@ -3056,14 +3115,23 @@ fn handle_typecheck_work(
         })
     };
 
-    // Lock TC and PlatformRegistry for the duration of processing.
-    let mut tc = shared.tc.lock()
-        .unwrap_or_else(|e| e.into_inner());
+    // Lock PlatformRegistry for the duration of processing.
+    // TypeChecker state is on SharedState (symbol_tables, next_type_id).
     let mut platform_registry = shared.platform_registry.lock()
         .unwrap_or_else(|e| e.into_inner());
 
+    // Get symbol_tables and next_type_id from shared_state.
+    let shared_state = shared.shared_state.expect("invariant: shared_state must be set for priority workers");
+    // Ensure the module's SymbolTable exists before creating CheckState (invariant: current_module always in modules map).
+    {
+        let tc = cranelisp_typecheck::TypeCheckEnv::new(&shared_state.symbol_tables, &shared_state.next_type_id);
+        tc.ensure_module_exists(&module);
+    }
     let mut ctx = ModuleCompiler {
-        tc: &mut tc,
+        symbol_tables: &shared_state.symbol_tables,
+        next_type_id: &shared_state.next_type_id,
+        check_state: CheckState::new(module.clone()),
+        current_module: module.clone(),
         scheduler: shared.scheduler,
         platform_registry: &mut platform_registry,
         typecheck_products: shared.typecheck_products,
@@ -3090,7 +3158,7 @@ fn handle_typecheck_work(
                 module,
                 &program,
                 &check_result,
-                ctx.tc.modules_ref(),
+                ctx.symbol_tables,
                 ctx.typecheck_products,
                 ctx.codegen_products,
                 None,
@@ -3098,7 +3166,7 @@ fn handle_typecheck_work(
 
             // Collect cross-module func sigs while TC is available.
             let cross_sigs = collect_cross_module_func_sigs_from_tc(
-                ctx.tc, ctx.typecheck_products, module,
+                ctx.symbol_tables, ctx.typecheck_products, module,
             );
 
             // Stash data for nice worker .o + .meta.json.

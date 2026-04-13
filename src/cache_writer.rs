@@ -183,7 +183,9 @@ fn process_write_request(
 
     // Process the packet (compile .o + write files).
     // Errors are logged but not propagated — cache writing is best-effort.
-    if let Err(e) = process_cache_packet(&request.packet) {
+    // TODO: thread symbol_tables through to cache writer for proper DashMap access.
+    let empty_tables = dashmap::DashMap::new();
+    if let Err(e) = process_cache_packet(&request.packet, &empty_tables) {
         eprintln!(
             "cache writer: failed to write cache for {}: {}",
             request.module,

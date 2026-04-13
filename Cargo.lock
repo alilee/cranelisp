@@ -285,6 +285,7 @@ dependencies = [
  "cranelift-object",
  "cranelisp-runtime",
  "cranelisp-types",
+ "dashmap",
  "libc",
  "memmap2",
  "object",
@@ -352,6 +353,7 @@ dependencies = [
 name = "cranelisp-types"
 version = "0.1.0"
 dependencies = [
+ "dashmap",
  "serde",
 ]
 

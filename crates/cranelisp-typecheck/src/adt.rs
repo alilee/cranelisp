@@ -3,90 +3,22 @@
 //! Handles both enum-only ADTs (nullary constructors, Ring 0) and parameterized
 //! ADTs with data constructor fields (Ring 1). Polymorphic types produce
 //! polymorphic constructor schemes via `build_constructor_scheme`.
+//!
+//! Type definitions are stored on per-module SymbolTables as `ModuleEntry::TypeDef`
+//! entries. The old `TypeDefRegistry` global cache has been eliminated — all lookups
+//! go through the module system.
 
 use std::collections::HashMap;
 
 use cranelisp_types::{
-    ConstructorDef, ConstructorInfo, CranelispError, FieldInfo, ModuleEntry,
+    ConstructorDef, ConstructorInfo, CranelispError, FQTypeName, FieldInfo, ModuleEntry,
     Scheme, Span, Symbol, Type, TypeDefInfo, TypeId, TypeName, Visibility,
 };
 
-use crate::checker::{CheckState, TypeChecker};
+use crate::checker::{CheckState, TypeCheckEnv};
 use crate::resolve::resolve_type_expr;
 
-/// Registry of user-defined type definitions.
-#[derive(Debug, Clone)]
-pub struct TypeDefRegistry {
-    /// Type definitions keyed by type name.
-    pub(crate) type_defs: HashMap<TypeName, TypeDefInfo>,
-    /// Map from constructor name to its parent type name.
-    pub(crate) constructor_to_type: HashMap<Symbol, TypeName>,
-}
-
-impl TypeDefRegistry {
-    pub fn new() -> Self {
-        TypeDefRegistry {
-            type_defs: HashMap::new(),
-            constructor_to_type: HashMap::new(),
-        }
-    }
-
-    /// Get type definition info by name.
-    pub fn get(&self, name: &TypeName) -> Option<&TypeDefInfo> {
-        self.type_defs.get(name)
-    }
-
-    /// Get the parent type name for a constructor.
-    pub fn constructor_type(&self, ctor_name: &str) -> Option<&TypeName> {
-        self.constructor_to_type.get(ctor_name)
-    }
-
-    /// Check whether a constructor is marked as internal (not user-constructable).
-    ///
-    /// Returns `true` if the constructor exists in the type registry and has
-    /// `internal: true`. Returns `false` if the constructor is not internal
-    /// or doesn't exist in the registry.
-    pub fn is_internal_constructor(&self, ctor_name: &str) -> bool {
-        if let Some(type_name) = self.constructor_to_type.get(ctor_name)
-            && let Some(type_def) = self.type_defs.get(type_name)
-        {
-            return type_def
-                .constructors
-                .iter()
-                .any(|c| c.name.as_ref() == ctor_name && c.internal);
-        }
-        false
-    }
-
-    /// Iterate over all type definitions.
-    /// Used by the REPL to sync type definitions for ADT value display.
-    pub fn iter(&self) -> impl Iterator<Item = (&TypeName, &TypeDefInfo)> {
-        self.type_defs.iter()
-    }
-
-    /// Borrow the underlying type definition map.
-    /// Used by display functions that take `&HashMap<TypeName, TypeDefInfo>`.
-    pub fn as_map(&self) -> &HashMap<TypeName, TypeDefInfo> {
-        &self.type_defs
-    }
-
-    /// Build a map of known type names with their type parameter counts.
-    /// Used by `resolve_type_expr` for ADT lookup and arity validation.
-    pub fn known_types(&self) -> crate::resolve::KnownTypes {
-        self.type_defs
-            .iter()
-            .map(|(k, info)| (k.clone(), info.type_params.len()))
-            .collect()
-    }
-}
-
-impl Default for TypeDefRegistry {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl TypeChecker {
+impl TypeCheckEnv<'_> {
     /// Register a type definition from a TopLevel::TypeDef.
     ///
     /// Handles both nullary enums (Ring 0) and parameterized ADTs with data
@@ -105,21 +37,29 @@ impl TypeChecker {
         // Allocate fresh type vars for type parameters
         let (var_map, type_var_ids) = self.allocate_type_params(type_params);
 
+        // Build the fully-qualified type name
+        let fqtn = FQTypeName::new(state.current_module.clone(), name.clone());
+
         // Build the ADT result type using the type parameter vars
         let type_args: Vec<Type> = type_var_ids.iter().map(|&id| Type::Var(id)).collect();
-        let adt_type = Type::ADT(name.clone(), type_args);
+        let adt_type = Type::ADT(fqtn.clone(), type_args);
 
-        // Pre-seed the type name so recursive constructor fields (e.g.,
-        // `:(List a) tail` inside a `(deftype (List a) ...)`) can resolve
-        // the type during `build_constructor_infos`. The full TypeDefInfo
+        // Pre-seed the type name in the symbol table so recursive constructor
+        // fields (e.g., `:(List a) tail` inside a `(deftype (List a) ...)`) can
+        // resolve the type during `build_constructor_infos`. The full TypeDefInfo
         // replaces this placeholder below.
-        self.type_defs.write().unwrap().type_defs.insert(
-            name.clone(),
-            TypeDefInfo {
-                name: name.clone(),
-                type_params: type_params.to_vec(),
-                constructors: vec![],
-                docstring: None,
+        self.current_symbol_table_mut(state).insert(
+            Symbol::from(name.as_ref()),
+            ModuleEntry::TypeDef {
+                info: TypeDefInfo {
+                    name: fqtn.clone(),
+                    type_params: type_params.to_vec(),
+                    constructors: vec![],
+                    docstring: None,
+                },
+                visibility,
+                constructor_scheme: None,
+                sexp: None,
             },
         );
 
@@ -131,22 +71,18 @@ impl TypeChecker {
         ) {
             Ok(infos) => infos,
             Err(e) => {
-                self.type_defs.write().unwrap().type_defs.remove(name);
+                self.current_symbol_table_mut(state)
+                    .symbols.remove(&Symbol::from(name.as_ref()));
                 return Err(e);
             }
         };
 
         let type_def_info = TypeDefInfo {
-            name: name.clone(),
+            name: fqtn.clone(),
             type_params: type_params.to_vec(),
             constructors: ctor_infos,
             docstring: docstring.clone(),
         };
-
-        // Register the type definition
-        self.type_defs.write().unwrap()
-            .type_defs
-            .insert(name.clone(), type_def_info.clone());
 
         // Register each constructor with its scheme
         self.register_constructors(state, 
@@ -158,7 +94,7 @@ impl TypeChecker {
         let ctor_scheme = self.find_same_name_constructor_scheme(state, name);
 
         // Register the type in the symbol table
-        self.current_symbol_table_mut_with_state(state).insert(
+        self.current_symbol_table_mut(state).insert(
             Symbol::from(name.as_ref()),
             ModuleEntry::TypeDef {
                 info: type_def_info,
@@ -250,7 +186,7 @@ impl TypeChecker {
     ) -> Option<Scheme> {
         let ctor_sym = Symbol::from(type_name.as_ref());
         if let Some(ModuleEntry::Constructor { scheme, .. }) =
-            self.current_symbol_table_with_state(state).get(ctor_sym.as_ref())
+            self.current_symbol_table(state).get(ctor_sym.as_ref())
         {
             Some(scheme.clone())
         } else {
@@ -258,34 +194,31 @@ impl TypeChecker {
         }
     }
 
-    /// Register constructors in symbol table and constructor_to_type map.
+    /// Register constructors in the current module's symbol table.
     fn register_constructors(
         &self,
         state: &mut CheckState,
-        name: &TypeName,
+        _name: &TypeName,
         type_def_info: &TypeDefInfo,
         adt_type: &Type,
         type_var_ids: &[TypeId],
         visibility: Visibility,
     ) {
+        let fqtn = type_def_info.name.clone();
         for ctor_info in &type_def_info.constructors {
             let ctor_scheme = build_constructor_scheme(
                 ctor_info, adt_type, type_var_ids,
             );
 
-            self.current_symbol_table_mut_with_state(state).insert(
+            self.current_symbol_table_mut(state).insert(
                 ctor_info.name.clone(),
                 ModuleEntry::Constructor {
-                    type_name: Symbol::from(name.as_ref()),
+                    type_name: fqtn.clone(),
                     info: ctor_info.clone(),
                     scheme: ctor_scheme,
                     visibility,
                 },
             );
-
-            self.type_defs.write().unwrap()
-                .constructor_to_type
-                .insert(ctor_info.name.clone(), name.clone());
         }
     }
 
@@ -324,7 +257,7 @@ fn build_constructor_scheme(
     }
 }
 
-impl TypeChecker {
+impl TypeCheckEnv<'_> {
     /// Check exhaustiveness of match arms against an ADT type.
     ///
     /// Returns Ok(()) if the match is exhaustive, Err with details otherwise.
@@ -342,8 +275,7 @@ impl TypeChecker {
             return Ok(());
         }
 
-        let td = self.type_defs.read().unwrap();
-        let type_def = td.get(type_name).ok_or_else(|| {
+        let type_def = self.lookup_type_def(type_name).ok_or_else(|| {
             CranelispError::TypeError {
                 message: format!("unknown type in match: {type_name}"),
                 span,
@@ -383,7 +315,13 @@ impl TypeChecker {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use cranelisp_types::ConstructorDef;
+    use crate::checker::TestFixture;
+    use cranelisp_types::{ConstructorDef, ModuleFullPath};
+
+    /// Test helper: create an FQTypeName in the "user" module (default for TestFixture::new()).
+    fn user_fqtn(name: &str) -> FQTypeName {
+        FQTypeName::new(ModuleFullPath::from("user"), TypeName::from(name))
+    }
 
     fn make_ctor(name: &str) -> ConstructorDef {
         ConstructorDef {
@@ -397,7 +335,7 @@ mod tests {
     // spec: 05-definitions §5.2.3 — enum type registers constructors in symbol table
     #[test]
     fn test_register_enum_type() {
-        let mut tc = TypeChecker::new();
+        let mut tc = TestFixture::new();
         tc.register_type_def_self(
             &TypeName::from("Color"),
             &None,
@@ -408,8 +346,8 @@ mod tests {
         )
         .unwrap();
 
-        // Type should be registered
-        assert!(tc.type_defs.read().unwrap().get(&TypeName::from("Color")).is_some());
+        // Type should be registered in symbol table
+        assert!(tc.lookup_type_def(&TypeName::from("Color")).is_some());
 
         // Constructors should be in symbol table
         assert!(tc.symbol_table().get("Red").is_some());
@@ -418,15 +356,15 @@ mod tests {
 
         // Constructor type lookup
         assert_eq!(
-            tc.type_defs.read().unwrap().constructor_type("Red"),
-            Some(&TypeName::from("Color"))
+            tc.lookup_constructor_type("Red"),
+            Some(TypeName::from("Color"))
         );
     }
 
     // spec: 05-definitions §5.2.7 — nullary constructor scheme is ADT type
     #[test]
     fn test_constructor_scheme_is_adt_type() {
-        let mut tc = TypeChecker::new();
+        let mut tc = TestFixture::new();
         tc.register_type_def_self(
             &TypeName::from("Bool2"),
             &None,
@@ -438,7 +376,7 @@ mod tests {
         .unwrap();
 
         if let Some(ModuleEntry::Constructor { scheme, .. }) = tc.symbol_table().get("True2") {
-            assert_eq!(scheme.ty, Type::ADT(TypeName::from("Bool2"), vec![]));
+            assert_eq!(scheme.ty, Type::ADT(user_fqtn("Bool2"), vec![]));
         } else {
             panic!("True2 should be a Constructor entry");
         }
@@ -447,7 +385,7 @@ mod tests {
     // spec: 05-definitions §5.2.2 — polymorphic sum type: None and Some constructors
     #[test]
     fn test_register_polymorphic_option() {
-        let mut tc = TypeChecker::new();
+        let mut tc = TestFixture::new();
         tc.register_type_def_self(
             &TypeName::from("Option"),
             &None,
@@ -474,7 +412,7 @@ mod tests {
             assert_eq!(scheme.vars.len(), 1, "None should have 1 quantified var");
             match &scheme.ty {
                 Type::ADT(name, args) => {
-                    assert_eq!(name.as_ref(), "Option");
+                    assert_eq!(name.name.as_ref(), "Option");
                     assert_eq!(args.len(), 1);
                     assert!(matches!(args[0], Type::Var(_)));
                 }
@@ -493,7 +431,7 @@ mod tests {
                     assert!(matches!(params[0], Type::Var(_)));
                     match ret.as_ref() {
                         Type::ADT(name, args) => {
-                            assert_eq!(name.as_ref(), "Option");
+                            assert_eq!(name.name.as_ref(), "Option");
                             assert_eq!(args.len(), 1);
                             // The type var in Fn param should match the one in ADT args
                             assert_eq!(params[0], args[0]);
@@ -511,7 +449,7 @@ mod tests {
     // spec: 05-definitions §5.2.1 — product type constructor is function from fields to ADT
     #[test]
     fn test_register_product_type_with_fields() {
-        let mut tc = TypeChecker::new();
+        let mut tc = TestFixture::new();
         tc.register_type_def_self(
             &TypeName::from("Pair"),
             &None,
@@ -543,7 +481,7 @@ mod tests {
                 scheme.ty,
                 Type::Fn(
                     vec![Type::Int, Type::Bool],
-                    Box::new(Type::ADT(TypeName::from("Pair"), vec![]))
+                    Box::new(Type::ADT(user_fqtn("Pair"), vec![]))
                 )
             );
         } else {
@@ -551,8 +489,7 @@ mod tests {
         }
 
         // TypeDefInfo should have the fields recorded
-        let info = tc.type_defs.read().unwrap();
-        let info = info.get(&TypeName::from("Pair")).unwrap();
+        let info = tc.lookup_type_def(&TypeName::from("Pair")).unwrap();
         assert_eq!(info.constructors.len(), 1);
         assert_eq!(info.constructors[0].fields.len(), 2);
         assert_eq!(info.constructors[0].fields[0].name.as_ref(), "x");
@@ -564,7 +501,7 @@ mod tests {
     // spec: 06-pattern-matching §6.5.1 — all constructors covered passes exhaustiveness
     #[test]
     fn test_exhaustiveness_all_covered() {
-        let mut tc = TypeChecker::new();
+        let mut tc = TestFixture::new();
         tc.register_type_def_self(
             &TypeName::from("Color"),
             &None,
@@ -588,7 +525,7 @@ mod tests {
     // spec: 06-pattern-matching §6.5.1 — missing constructor fails exhaustiveness check
     #[test]
     fn test_exhaustiveness_missing_constructor() {
-        let mut tc = TypeChecker::new();
+        let mut tc = TestFixture::new();
         tc.register_type_def_self(
             &TypeName::from("Color"),
             &None,
@@ -609,7 +546,7 @@ mod tests {
     // spec: 06-pattern-matching §6.5.1 — wildcard pattern covers all constructors
     #[test]
     fn test_exhaustiveness_wildcard_covers_all() {
-        let mut tc = TypeChecker::new();
+        let mut tc = TestFixture::new();
         tc.register_type_def_self(
             &TypeName::from("Color"),
             &None,
@@ -629,7 +566,7 @@ mod tests {
     // spec: 05-definitions §5.2.7 — constructors receive sequential integer tags
     #[test]
     fn test_constructor_tags() {
-        let mut tc = TypeChecker::new();
+        let mut tc = TestFixture::new();
         tc.register_type_def_self(
             &TypeName::from("Dir"),
             &None,
@@ -645,8 +582,7 @@ mod tests {
         )
         .unwrap();
 
-        let info = tc.type_defs.read().unwrap();
-        let info = info.get(&TypeName::from("Dir")).unwrap();
+        let info = tc.lookup_type_def(&TypeName::from("Dir")).unwrap();
         assert_eq!(info.constructors[0].tag, 0);
         assert_eq!(info.constructors[1].tag, 1);
         assert_eq!(info.constructors[2].tag, 2);
@@ -656,7 +592,7 @@ mod tests {
     // --- Ring 1: Polymorphic ADT tests ---
 
     /// Helper: register (Option a) with None and Some[:a val].
-    fn register_option(tc: &mut TypeChecker) {
+    fn register_option(tc: &mut TestFixture) {
         tc.register_type_def_self(
             &TypeName::from("Option"),
             &None,
@@ -682,11 +618,10 @@ mod tests {
     // spec: 05-definitions §5.2.2 — polymorphic type parameters recorded in TypeDefInfo
     #[test]
     fn test_polymorphic_type_params_recorded() {
-        let mut tc = TypeChecker::new();
+        let mut tc = TestFixture::new();
         register_option(&mut tc);
 
-        let registry = tc.type_defs.read().unwrap();
-        let info = registry.get(&TypeName::from("Option")).unwrap();
+        let info = tc.lookup_type_def(&TypeName::from("Option")).unwrap();
         assert_eq!(info.type_params.len(), 1);
         assert_eq!(info.type_params[0].as_ref(), "a");
     }
@@ -694,11 +629,10 @@ mod tests {
     // spec: 05-definitions §5.2.7 — polymorphic ADT constructors receive sequential tags
     #[test]
     fn test_polymorphic_constructor_tags() {
-        let mut tc = TypeChecker::new();
+        let mut tc = TestFixture::new();
         register_option(&mut tc);
 
-        let registry = tc.type_defs.read().unwrap();
-        let info = registry.get(&TypeName::from("Option")).unwrap();
+        let info = tc.lookup_type_def(&TypeName::from("Option")).unwrap();
         assert_eq!(info.constructors[0].name.as_ref(), "None");
         assert_eq!(info.constructors[0].tag, 0);
         assert_eq!(info.constructors[1].name.as_ref(), "Some");
@@ -708,11 +642,10 @@ mod tests {
     // spec: 03-types §3.3 — polymorphic field type resolves to type variable
     #[test]
     fn test_polymorphic_field_has_var_type() {
-        let mut tc = TypeChecker::new();
+        let mut tc = TestFixture::new();
         register_option(&mut tc);
 
-        let registry = tc.type_defs.read().unwrap();
-        let info = registry.get(&TypeName::from("Option")).unwrap();
+        let info = tc.lookup_type_def(&TypeName::from("Option")).unwrap();
         let some_ctor = &info.constructors[1];
         assert_eq!(some_ctor.fields.len(), 1);
         assert_eq!(some_ctor.fields[0].name.as_ref(), "val");
@@ -723,7 +656,7 @@ mod tests {
     // spec: 06-pattern-matching §6.5.1 — exhaustiveness with mixed nullary and data constructors
     #[test]
     fn test_exhaustiveness_with_mixed_constructors() {
-        let mut tc = TypeChecker::new();
+        let mut tc = TestFixture::new();
         register_option(&mut tc);
 
         // Missing None
@@ -766,7 +699,7 @@ mod tests {
     #[test]
     fn test_shortcut_product_type() {
         // (deftype Pair [first second]) -- bare field names with type vars
-        let mut tc = TypeChecker::new();
+        let mut tc = TestFixture::new();
         tc.register_type_def_self(
             &TypeName::from("Pair"),
             &None,
@@ -798,8 +731,8 @@ mod tests {
                 Type::Fn(params, ret) => {
                     assert_eq!(params.len(), 2);
                     match ret.as_ref() {
-                        Type::ADT(name, args) => {
-                            assert_eq!(name.as_ref(), "Pair");
+                        Type::ADT(fqtn, args) => {
+                            assert_eq!(fqtn.name.as_ref(), "Pair");
                             assert_eq!(args.len(), 2);
                             // param vars should match the ADT arg vars
                             assert_eq!(params[0], args[0]);
@@ -819,7 +752,7 @@ mod tests {
     #[test]
     fn test_register_multi_param_type() {
         // (deftype (Either a b) (Left [:a val]) (Right [:b val]))
-        let mut tc = TypeChecker::new();
+        let mut tc = TestFixture::new();
         tc.register_type_def_self(
             &TypeName::from("Either"),
             &None,
@@ -849,8 +782,7 @@ mod tests {
         )
         .unwrap();
 
-        let registry = tc.type_defs.read().unwrap();
-        let info = registry.get(&TypeName::from("Either")).unwrap();
+        let info = tc.lookup_type_def(&TypeName::from("Either")).unwrap();
         assert_eq!(info.type_params.len(), 2);
         assert_eq!(info.constructors.len(), 2);
 
@@ -865,7 +797,7 @@ mod tests {
     // spec: 03-types §3.2.2 — known_types tracks type parameter count for arity validation
     #[test]
     fn test_known_types_includes_param_count() {
-        let mut tc = TypeChecker::new();
+        let mut tc = TestFixture::new();
         register_option(&mut tc);
         tc.register_type_def_self(
             &TypeName::from("Color"),
@@ -878,8 +810,8 @@ mod tests {
         .unwrap();
 
         let known = tc.known_type_names();
-        assert_eq!(known.get(&TypeName::from("Option")), Some(&1));
-        assert_eq!(known.get(&TypeName::from("Color")), Some(&0));
+        assert_eq!(known.get(&TypeName::from("Option")).map(|t| t.1), Some(1));
+        assert_eq!(known.get(&TypeName::from("Color")).map(|t| t.1), Some(0));
     }
 
     // spec: 05-definitions §5.2.7 — nullary monomorphic constructor scheme is bare ADT type
@@ -892,11 +824,11 @@ mod tests {
             docstring: None,
             internal: false,
         };
-        let adt_type = Type::ADT(TypeName::from("Color"), vec![]);
+        let adt_type = Type::ADT(user_fqtn("Color"), vec![]);
         let scheme = build_constructor_scheme(&ctor, &adt_type, &[]);
 
         assert!(scheme.vars.is_empty());
-        assert_eq!(scheme.ty, Type::ADT(TypeName::from("Color"), vec![]));
+        assert_eq!(scheme.ty, Type::ADT(user_fqtn("Color"), vec![]));
     }
 
     // spec: 05-definitions §5.2.1 — data constructor scheme is Fn from fields to ADT
@@ -912,7 +844,7 @@ mod tests {
             docstring: None,
             internal: false,
         };
-        let adt_type = Type::ADT(TypeName::from("Point"), vec![]);
+        let adt_type = Type::ADT(user_fqtn("Point"), vec![]);
         let scheme = build_constructor_scheme(&ctor, &adt_type, &[]);
 
         assert!(scheme.vars.is_empty());
@@ -920,7 +852,7 @@ mod tests {
             scheme.ty,
             Type::Fn(
                 vec![Type::Int, Type::Int],
-                Box::new(Type::ADT(TypeName::from("Point"), vec![]))
+                Box::new(Type::ADT(user_fqtn("Point"), vec![]))
             )
         );
     }
@@ -937,7 +869,7 @@ mod tests {
             docstring: None,
             internal: false,
         };
-        let adt_type = Type::ADT(TypeName::from("Option"), vec![Type::Var(42)]);
+        let adt_type = Type::ADT(user_fqtn("Option"), vec![Type::Var(42)]);
         let scheme = build_constructor_scheme(&ctor, &adt_type, &[42]);
 
         assert_eq!(scheme.vars, vec![42]);
@@ -945,7 +877,7 @@ mod tests {
             scheme.ty,
             Type::Fn(
                 vec![Type::Var(42)],
-                Box::new(Type::ADT(TypeName::from("Option"), vec![Type::Var(42)]))
+                Box::new(Type::ADT(user_fqtn("Option"), vec![Type::Var(42)]))
             )
         );
     }
@@ -953,22 +885,22 @@ mod tests {
     // spec: 10-io §10.1 — is_internal_constructor returns true for internal ctors
     #[test]
     fn test_is_internal_constructor() {
-        let tc = TypeChecker::new();
+        let tc = TestFixture::new();
         // Bind is internal but NOT registered in constructor_to_type,
         // so this returns false (enforcement is name-resolution-based).
         // If Bind were in constructor_to_type, this would return true.
-        assert!(!tc.type_defs.read().unwrap().is_internal_constructor("Bind"));
+        assert!(!tc.is_internal_constructor_check("Bind"));
         // Non-internal constructors return false.
-        assert!(!tc.type_defs.read().unwrap().is_internal_constructor("Pure"));
-        assert!(!tc.type_defs.read().unwrap().is_internal_constructor("Effect"));
+        assert!(!tc.is_internal_constructor_check("Pure"));
+        assert!(!tc.is_internal_constructor_check("Effect"));
         // Unknown constructors return false.
-        assert!(!tc.type_defs.read().unwrap().is_internal_constructor("NoSuchCtor"));
+        assert!(!tc.is_internal_constructor_check("NoSuchCtor"));
     }
 
     // spec: 10-io §10.1 — exhaustiveness excludes internal constructors
     #[test]
     fn test_exhaustiveness_excludes_internal_constructors() {
-        let tc = TypeChecker::new();
+        let tc = TestFixture::new();
         // IO has Pure (tag=0), Effect (tag=1), Bind (tag=2, internal).
         // Exhaustiveness should only require Pure and Effect.
         let covered = vec![Symbol::from("Pure"), Symbol::from("Effect")];

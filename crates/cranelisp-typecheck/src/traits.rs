@@ -2,79 +2,23 @@
 //!
 //! Ring 2A: traits provide constrained polymorphism. Operators like `+` are
 //! resolved as trait methods (`Num.+$Int`), not builtin primitives.
+//!
+//! Trait declarations are stored as `ModuleEntry::TraitDecl` entries on per-module
+//! SymbolTables. Trait implementations are stored as `ModuleEntry::TraitImpl` entries.
+//! Method-to-trait reverse lookup uses the `trait_origin` field on `ModuleEntry::Def`.
+//! The old `TraitRegistry` and `ImplRegistry` global caches have been eliminated.
 
 use std::collections::{HashMap, HashSet};
 
 use cranelisp_types::{
-    ConstrainedFn, CranelispError, DefKind, Defn, DefnVariant, JitSymbol, MethodResolutions,
-    ModuleEntry, MonoDefn, ResolvedCall, Scheme, Span, Symbol, TraitDecl,
-    TraitImpl, TraitMethodSig, TraitName, Type, TypeId, TypeName, Visibility,
-    apply,
+    ConstrainedFn, CranelispError, DefKind, Defn, DefnVariant, FQTraitName, FQTypeName,
+    JitSymbol, MethodResolutions, ModuleEntry, ModuleFullPath, MonoDefn, ResolvedCall, Scheme,
+    Span, Symbol, TraitDecl, TraitImpl, TraitMethodSig, TraitName, Type, TypeId, TypeName,
+    Visibility, apply,
 };
 
-use crate::checker::{CheckState, TypeChecker};
+use crate::checker::{CheckState, TypeCheckEnv};
 use crate::scheme;
-
-// ---------------------------------------------------------------------------
-// Trait Registry (stored on TypeChecker)
-// ---------------------------------------------------------------------------
-
-/// Registered trait declarations, keyed by trait name.
-#[derive(Debug, Clone, Default)]
-pub struct TraitRegistry {
-    /// Trait declarations: trait name -> TraitDecl
-    pub(crate) decls: HashMap<TraitName, TraitDecl>,
-    /// Method -> trait name reverse lookup: method name -> trait name
-    pub(crate) method_to_trait: HashMap<Symbol, TraitName>,
-}
-
-impl TraitRegistry {
-    /// Check if a method belongs to a specific trait.
-    pub fn method_belongs_to_trait(&self, method: &Symbol, trait_name: &TraitName) -> bool {
-        self.method_to_trait
-            .get(method) == Some(trait_name)
-    }
-}
-
-/// A registered trait implementation.
-#[derive(Debug, Clone)]
-#[allow(dead_code)] // Fields are stored for future use (e.g., method resolution by impl type).
-pub struct RegisteredImpl {
-    pub trait_name: TraitName,
-    pub impl_type: TypeName,
-    /// Method name -> primitive name it delegates to (for builtin impls)
-    pub method_primitives: HashMap<Symbol, Symbol>,
-}
-
-/// Registry of trait implementations, keyed by trait_name then impl_type.
-#[derive(Debug, Clone, Default)]
-pub struct ImplRegistry {
-    /// trait_name -> (impl_type -> RegisteredImpl)
-    pub(crate) impls: HashMap<TraitName, HashMap<TypeName, RegisteredImpl>>,
-}
-
-impl ImplRegistry {
-    /// Look up an impl for a specific trait and concrete type.
-    #[allow(dead_code)]
-    pub fn get(
-        &self,
-        trait_name: &TraitName,
-        impl_type: &TypeName,
-    ) -> Option<&RegisteredImpl> {
-        self.impls.get(trait_name)?.get(impl_type)
-    }
-
-    /// Check if an impl exists for a trait and type.
-    pub fn has_impl(
-        &self,
-        trait_name: &TraitName,
-        impl_type: &TypeName,
-    ) -> bool {
-        self.impls
-            .get(trait_name)
-            .is_some_and(|inner| inner.contains_key(impl_type))
-    }
-}
 
 // ---------------------------------------------------------------------------
 // Active Constraints (tracked during body checking)
@@ -84,13 +28,13 @@ impl ImplRegistry {
 /// Populated when a constrained scheme is instantiated, consulted during generalize.
 #[derive(Debug, Clone, Default)]
 pub struct ActiveConstraints {
-    /// TypeId -> list of required trait names
-    pub(crate) constraints: HashMap<TypeId, Vec<TraitName>>,
+    /// TypeId -> list of required fully-qualified trait names
+    pub(crate) constraints: HashMap<TypeId, Vec<FQTraitName>>,
 }
 
 impl ActiveConstraints {
     /// Add a constraint on a type variable (idempotent — duplicates are ignored).
-    pub fn add(&mut self, var_id: TypeId, trait_name: TraitName) {
+    pub fn add(&mut self, var_id: TypeId, trait_name: FQTraitName) {
         let traits = self.constraints.entry(var_id).or_default();
         if !traits.contains(&trait_name) {
             traits.push(trait_name);
@@ -99,7 +43,7 @@ impl ActiveConstraints {
 
     /// Get constraints for a type variable.
     #[allow(dead_code)]
-    pub fn get(&self, var_id: TypeId) -> Option<&Vec<TraitName>> {
+    pub fn get(&self, var_id: TypeId) -> Option<&Vec<FQTraitName>> {
         self.constraints.get(&var_id)
     }
 
@@ -110,7 +54,7 @@ impl ActiveConstraints {
     }
 
     /// Iterate over all (var_id, traits) pairs.
-    pub fn all(&self) -> impl Iterator<Item = (&TypeId, &Vec<TraitName>)> {
+    pub fn all(&self) -> impl Iterator<Item = (&TypeId, &Vec<FQTraitName>)> {
         self.constraints.iter()
     }
 
@@ -122,7 +66,7 @@ impl ActiveConstraints {
     pub fn collect_for_vars(
         &self,
         vars: &[TypeId],
-    ) -> HashMap<TypeId, Vec<TraitName>> {
+    ) -> HashMap<TypeId, Vec<FQTraitName>> {
         let mut result = HashMap::new();
         for &var_id in vars {
             if let Some(traits) = self.constraints.get(&var_id)
@@ -139,7 +83,7 @@ impl ActiveConstraints {
 // Trait Registration
 // ---------------------------------------------------------------------------
 
-impl TypeChecker {
+impl TypeCheckEnv<'_> {
     /// Register a trait declaration.
     ///
     /// - Stores the TraitDecl in the trait registry
@@ -150,8 +94,8 @@ impl TypeChecker {
         state: &mut CheckState,
         decl: &TraitDecl,
     ) -> Result<(), CranelispError> {
-        // Check for duplicate trait name
-        if self.trait_registry.write().unwrap().decls.contains_key(&decl.name) {
+        // Check for duplicate trait name by looking in SymbolTables
+        if self.lookup_trait_decl(&decl.name).is_some() {
             return Err(CranelispError::TypeError {
                 message: format!("trait {} already defined", decl.name),
                 span: decl.span,
@@ -184,13 +128,8 @@ impl TypeChecker {
             )?;
         }
 
-        // Store the declaration
-        self.trait_registry.write().unwrap()
-            .decls
-            .insert(decl.name.clone(), decl.clone());
-
         // Register in symbol table as TraitDecl entry
-        self.current_symbol_table_mut_with_state(state).insert(
+        self.current_symbol_table_mut(state).insert(
             Symbol::from(decl.name.as_ref()),
             cranelisp_types::ModuleEntry::TraitDecl {
                 decl: decl.clone(),
@@ -244,9 +183,10 @@ impl TypeChecker {
             all_vars.dedup();
 
             // Add trait constraint to constructor vars
-            let mut constraints: HashMap<TypeId, Vec<TraitName>> = HashMap::new();
+            let fq_trait_name = FQTraitName::new(state.current_module.clone(), decl.name.clone());
+            let mut constraints: HashMap<TypeId, Vec<FQTraitName>> = HashMap::new();
             for &con_id in con_var_map.values() {
-                constraints.insert(con_id, vec![decl.name.clone()]);
+                constraints.insert(con_id, vec![fq_trait_name.clone()]);
             }
 
             let method_scheme = Scheme {
@@ -255,8 +195,8 @@ impl TypeChecker {
                 ty: Type::Fn(param_tys, Box::new(ret_ty)),
             };
 
-            // Register the method name as a symbol
-            self.current_symbol_table_mut_with_state(state).insert(
+            // Register the method name as a symbol with trait_origin
+            self.current_symbol_table_mut(state).insert(
                 method.name.clone(),
                 cranelisp_types::ModuleEntry::Def {
                     scheme: method_scheme,
@@ -268,22 +208,16 @@ impl TypeChecker {
                     }),
                     callees: Vec::new(),
                     got_slot: None,
+                    trait_origin: Some(fq_trait_name.clone()),
                 },
             );
 
-            // Register reverse lookup
-            self.trait_registry.write().unwrap()
-                .method_to_trait
-                .insert(method.name.clone(), decl.name.clone());
+            // trait_origin is already set on the ModuleEntry::Def above,
+            // so no separate reverse lookup registration is needed.
         }
 
-        // Store the modified declaration (with hkt_param_index set)
-        self.trait_registry.write().unwrap()
-            .decls
-            .insert(decl.name.clone(), modified_decl.clone());
-
         // Register in symbol table as TraitDecl entry (with hkt_param_index)
-        self.current_symbol_table_mut_with_state(state).insert(
+        self.current_symbol_table_mut(state).insert(
             Symbol::from(decl.name.as_ref()),
             cranelisp_types::ModuleEntry::TraitDecl {
                 decl: modified_decl,
@@ -309,8 +243,11 @@ impl TypeChecker {
         let method_type =
             self.build_method_type(method, type_var_id, trait_type_params, span)?;
 
+        // Build FQTraitName using the current module (where the trait is being defined)
+        let fq_trait_name = FQTraitName::new(state.current_module.clone(), trait_name.clone());
+
         let mut constraints = HashMap::new();
-        constraints.insert(type_var_id, vec![trait_name.clone()]);
+        constraints.insert(type_var_id, vec![fq_trait_name.clone()]);
 
         let method_scheme = Scheme {
             vars: vec![type_var_id],
@@ -318,8 +255,8 @@ impl TypeChecker {
             ty: method_type,
         };
 
-        // Register the method name as a symbol
-        self.current_symbol_table_mut_with_state(state).insert(
+        // Register the method name as a symbol with trait_origin
+        self.current_symbol_table_mut(state).insert(
             method.name.clone(),
             cranelisp_types::ModuleEntry::Def {
                 scheme: method_scheme,
@@ -331,13 +268,12 @@ impl TypeChecker {
                 }),
                 callees: Vec::new(),
                 got_slot: None,
+                trait_origin: Some(fq_trait_name),
             },
         );
 
-        // Register reverse lookup
-        self.trait_registry.write().unwrap()
-            .method_to_trait
-            .insert(method.name.clone(), trait_name.clone());
+        // trait_origin is already set on the ModuleEntry::Def above,
+        // so no separate reverse lookup registration is needed.
 
         Ok(())
     }
@@ -381,23 +317,20 @@ impl TypeChecker {
 // Impl Registration and Checking
 // ---------------------------------------------------------------------------
 
-impl TypeChecker {
+impl TypeCheckEnv<'_> {
     /// Register and validate a trait implementation.
     pub(crate) fn register_trait_impl(
         &self,
         state: &mut CheckState,
         impl_: &TraitImpl,
     ) -> Result<Vec<Defn>, CranelispError> {
-        // Look up the trait declaration
+        // Look up the trait declaration via SymbolTables
         let decl = self
-            .trait_registry.read().unwrap()
-            .decls
-            .get(&impl_.trait_name)
+            .lookup_trait_decl(&impl_.trait_name)
             .ok_or_else(|| CranelispError::TypeError {
                 message: format!("unknown trait: {}", impl_.trait_name),
                 span: impl_.span,
-            })?
-            .clone();
+            })?;
 
         // HKT arity validation: if the trait has constructor variables,
         // verify the impl target is a type constructor with matching arity.
@@ -427,7 +360,7 @@ impl TypeChecker {
                             }
                         }
                         // Check arity of known ADT types
-                        if let Some(td) = self.type_defs.read().unwrap().get(&impl_.target_type)
+                        if let Some(td) = self.lookup_type_def(&impl_.target_type)
                             && td.type_params.len() != expected_arity
                         {
                             return Err(CranelispError::TypeError {
@@ -453,25 +386,28 @@ impl TypeChecker {
         let default_defns =
             self.generate_default_methods(state, &decl, impl_)?;
 
-        // Register the impl
-        let mut method_primitives = HashMap::new();
-        for method_defn in &impl_.methods {
-            // No primitive mappings for user impls
-            method_primitives
-                .insert(method_defn.name.clone(), method_defn.name.clone());
-        }
+        // Register the impl as a ModuleEntry::TraitImpl on the current module's SymbolTable.
+        // Build FQ names for the trait and impl type.
+        let trait_defining_module = self.defining_module_for(state, impl_.trait_name.as_ref());
+        let fq_trait_name = FQTraitName::new(trait_defining_module, impl_.trait_name.clone());
+        let fq_impl_type = self.fqtn_for_bare_type_name(state, &impl_.target_type);
 
-        self.impl_registry.write().unwrap().impls
-            .entry(impl_.trait_name.clone())
-            .or_default()
-            .insert(
-                impl_.target_type.clone(),
-                RegisteredImpl {
-                    trait_name: impl_.trait_name.clone(),
-                    impl_type: impl_.target_type.clone(),
-                    method_primitives,
-                },
-            );
+        let method_names: Vec<Symbol> = impl_.methods.iter()
+            .map(|m| m.name.clone())
+            .collect();
+
+        let impl_key = Symbol::from(format!(
+            "impl${}${}",
+            fq_impl_type, fq_trait_name
+        ));
+        self.current_symbol_table_mut(state).insert(
+            impl_key,
+            ModuleEntry::TraitImpl {
+                trait_name: fq_trait_name,
+                impl_type: fq_impl_type,
+                methods: method_names,
+            },
+        );
 
         // Type-check each impl method body and generate mangled-name Defns.
         let mut all_defns = default_defns;
@@ -575,7 +511,8 @@ impl TypeChecker {
         // Resolve the concrete type for Self
         let concrete_self = Type::from_name(impl_.target_type.as_ref())
             .unwrap_or_else(|| {
-                Type::ADT(impl_.target_type.clone(), vec![])
+                let fqtn = self.fqtn_for_bare_type_name(state, &impl_.target_type);
+                Type::ADT(fqtn, vec![])
             });
 
         // Pre-seed var_map: trait type params map to concrete self type.
@@ -638,7 +575,8 @@ impl TypeChecker {
                 ty
             })
             .collect();
-        let concrete_self = Type::ADT(impl_.target_type.clone(), type_arg_vars);
+        let target_fqtn = self.fqtn_for_bare_type_name(state, &impl_.target_type);
+        let concrete_self = Type::ADT(target_fqtn.clone(), type_arg_vars);
 
         // Build param types using HKT-aware resolution that substitutes
         // constructor variable applications with concrete ADT applications
@@ -648,7 +586,7 @@ impl TypeChecker {
             .map(|p| resolve_type_expr_hkt_impl(
                 p,
                 &decl.type_params,
-                &impl_.target_type,
+                &target_fqtn,
                 &mut type_var_map,
                 &mut local_next_id,
                 impl_.span,
@@ -658,7 +596,7 @@ impl TypeChecker {
         let ret_ty = resolve_type_expr_hkt_impl(
             &method_sig.ret_type,
             &decl.type_params,
-            &impl_.target_type,
+            &target_fqtn,
             &mut type_var_map,
             &mut local_next_id,
             impl_.span,
@@ -711,7 +649,7 @@ impl TypeChecker {
     }
 
     /// Generate default method implementations for methods not provided in the impl.
-    fn generate_default_methods(
+    pub(crate) fn generate_default_methods(
         &self,
         _state: &CheckState,
         decl: &TraitDecl,
@@ -769,7 +707,7 @@ impl TypeChecker {
 // Method Resolution
 // ---------------------------------------------------------------------------
 
-impl TypeChecker {
+impl TypeCheckEnv<'_> {
     /// Try to resolve a call as a trait method.
     ///
     /// Returns Some(ResolvedCall::TraitMethod) if the callee is a trait method
@@ -782,9 +720,9 @@ impl TypeChecker {
         arg_types: &[Type],
         span: Span,
     ) -> Result<Option<ResolvedCall>, CranelispError> {
-        // Check if this name is a trait method
-        let trait_name = match self.trait_registry.read().unwrap().method_to_trait.get(callee_name) {
-            Some(tn) => tn.clone(),
+        // Check if this name is a trait method (via trait_origin on ModuleEntry::Def)
+        let trait_name = match self.method_to_trait(callee_name) {
+            Some(tn) => tn,
             None => return Ok(None),
         };
 
@@ -805,7 +743,7 @@ impl TypeChecker {
 
         // Check if an impl exists — if the name IS a trait method and the
         // type IS concrete but the impl DOESN'T exist, that's a type error.
-        if !self.impl_registry.read().unwrap().has_impl(&trait_name, &impl_type_name) {
+        if !self.has_impl(&trait_name, &impl_type_name) {
             return Err(CranelispError::TypeError {
                 message: format!(
                     "no impl of trait {} for type {}",
@@ -820,18 +758,25 @@ impl TypeChecker {
             trait_name, callee_name, impl_type_name
         );
 
+        // Build FQTraitName — look up defining module for the trait
+        let trait_defining_module = self.defining_module_for(state, trait_name.as_ref());
+        let fq_trait_name = FQTraitName::new(trait_defining_module, trait_name);
+
+        // Build FQTypeName for the impl type
+        let fq_impl_type = self.fqtn_for_bare_type_name(state, &impl_type_name);
+
         Ok(Some(ResolvedCall::TraitMethod {
-            trait_name,
+            trait_name: fq_trait_name,
             method_name: callee_name.clone(),
-            impl_type: impl_type_name,
+            impl_type: fq_impl_type,
             mangled_name: JitSymbol::from(mangled.as_str()),
         }))
     }
 
-    /// Check if a callee name is a trait method (has constraints in its scheme).
+    /// Check if a callee name is a trait method (via trait_origin on ModuleEntry::Def).
     #[allow(dead_code)]
     pub(crate) fn is_trait_method(&self, name: &Symbol) -> bool {
-        self.trait_registry.read().unwrap().method_to_trait.contains_key(name)
+        self.method_to_trait(name).is_some()
     }
 }
 
@@ -839,7 +784,7 @@ impl TypeChecker {
 // Constrained Instantiation
 // ---------------------------------------------------------------------------
 
-impl TypeChecker {
+impl TypeCheckEnv<'_> {
     /// Instantiate a constrained scheme, tracking the constraints on fresh vars.
     ///
     /// Returns the instantiated type. Side effect: adds constraints to
@@ -879,7 +824,7 @@ impl TypeChecker {
 // Monomorphisation
 // ---------------------------------------------------------------------------
 
-impl TypeChecker {
+impl TypeCheckEnv<'_> {
     /// Generate a monomorphised specialization of a constrained function.
     ///
     /// Called when a constrained function is applied with concrete argument types.
@@ -986,12 +931,12 @@ impl TypeChecker {
                 Some(tn) => tn,
                 None => continue,
             };
-            for trait_name in traits {
-                if !self.impl_registry.read().unwrap().has_impl(trait_name, &impl_type) {
+            for fq_trait in traits {
+                if !self.has_impl(&fq_trait.name, &impl_type) {
                     return Err(CranelispError::TypeError {
                         message: format!(
                             "no impl of trait {} for type {}",
-                            trait_name, impl_type
+                            fq_trait, impl_type
                         ),
                         span: call_span,
                     });
@@ -1045,7 +990,7 @@ impl TypeChecker {
         mono_expr_types: &HashMap<Span, Type>,
         resolutions: &mut MethodResolutions,
     ) {
-        let constrained_fn_names: HashSet<Symbol> = self.current_symbol_table_with_state(state).symbols
+        let constrained_fn_names: HashSet<Symbol> = self.current_symbol_table(state).symbols
             .iter()
             .filter_map(|(name, entry)| {
                 if let ModuleEntry::Def { kind, .. } = entry
@@ -1116,14 +1061,16 @@ fn build_mangled_name(fn_name: &Symbol, param_types: &[Type]) -> String {
     format!("{}${}", fn_name, type_names.join("+"))
 }
 
-/// Extract the TypeName from a concrete (non-Var) type.
+/// Extract the bare TypeName from a concrete (non-Var) type.
+/// For ADTs, returns the bare name without module qualification.
+/// This is used for mangled name construction and impl registry lookup.
 fn concrete_type_name(ty: &Type) -> Option<TypeName> {
     match ty {
         Type::Int => Some(TypeName::from("Int")),
         Type::Float => Some(TypeName::from("Float")),
         Type::Bool => Some(TypeName::from("Bool")),
         Type::String => Some(TypeName::from("String")),
-        Type::ADT(name, _) => Some(name.clone()),
+        Type::ADT(fqtn, _) => Some(fqtn.name.clone()),
         _ => None,
     }
 }
@@ -1241,11 +1188,14 @@ fn resolve_trait_type_expr(
         }
         TypeExpr::Applied(name, args) => {
             // Regular ADT application: (Option Int), (List :a)
+            // Use a placeholder FQTypeName — the bare name will be resolved
+            // when the type flows through the module system.
+            let fqtn = FQTypeName::new(ModuleFullPath::from(""), name.clone());
             let resolved_args: Vec<Type> = args
                 .iter()
                 .map(|a| resolve_trait_type_expr(a, self_type, span, var_map, next_id))
                 .collect::<Result<Vec<_>, _>>()?;
-            Ok(Type::ADT(name.clone(), resolved_args))
+            Ok(Type::ADT(fqtn, resolved_args))
         }
     }
 }
@@ -1276,11 +1226,12 @@ fn resolve_type_expr_hkt(
                 Ok(Type::TyConApp(con_id, resolved_args))
             } else {
                 // Regular ADT application: (Option Int)
+                let fqtn = FQTypeName::new(ModuleFullPath::from(""), name.clone());
                 let resolved_args: Vec<Type> = args
                     .iter()
                     .map(|a| resolve_type_expr_hkt(a, con_var_map, type_var_map, next_id, span))
                     .collect::<Result<Vec<_>, _>>()?;
-                Ok(Type::ADT(name.clone(), resolved_args))
+                Ok(Type::ADT(fqtn, resolved_args))
             }
         }
         TypeExpr::TypeVar(name) => {
@@ -1296,7 +1247,9 @@ fn resolve_type_expr_hkt(
             }
         }
         TypeExpr::Named(name) => {
-            Ok(Type::from_name(name.as_ref()).unwrap_or_else(|| Type::ADT(name.clone(), vec![])))
+            Ok(Type::from_name(name.as_ref()).unwrap_or_else(|| {
+                Type::ADT(FQTypeName::new(ModuleFullPath::from(""), name.clone()), vec![])
+            }))
         }
         TypeExpr::SelfType => {
             Err(CranelispError::TypeError {
@@ -1321,7 +1274,7 @@ fn resolve_type_expr_hkt(
 fn resolve_type_expr_hkt_impl(
     texpr: &cranelisp_types::TypeExpr,
     con_var_names: &[Symbol],
-    target_type: &TypeName,
+    target_fqtn: &FQTypeName,
     type_var_map: &mut HashMap<Symbol, TypeId>,
     next_id: &mut TypeId,
     span: Span,
@@ -1331,16 +1284,18 @@ fn resolve_type_expr_hkt_impl(
     match texpr {
         TypeExpr::Applied(name, args) => {
             let name_sym = Symbol::from(name.as_ref());
-            let resolved_name: TypeName = if con_var_names.contains(&name_sym) {
-                target_type.clone()
+            let fqtn = if con_var_names.contains(&name_sym) {
+                // Constructor variable — resolve to the target ADT's FQTypeName.
+                target_fqtn.clone()
             } else {
-                name.clone()
+                // Non-constructor-var Applied type — use target module as fallback.
+                FQTypeName::new(target_fqtn.module.clone(), name.clone())
             };
             let resolved_args: Vec<Type> = args
                 .iter()
-                .map(|a| resolve_type_expr_hkt_impl(a, con_var_names, target_type, type_var_map, next_id, span))
+                .map(|a| resolve_type_expr_hkt_impl(a, con_var_names, target_fqtn, type_var_map, next_id, span))
                 .collect::<Result<Vec<_>, _>>()?;
-            Ok(Type::ADT(resolved_name, resolved_args))
+            Ok(Type::ADT(fqtn, resolved_args))
         }
         TypeExpr::TypeVar(name) => {
             if let Some(&id) = type_var_map.get(name) {
@@ -1352,7 +1307,10 @@ fn resolve_type_expr_hkt_impl(
             }
         }
         TypeExpr::Named(name) => {
-            Ok(Type::from_name(name.as_ref()).unwrap_or_else(|| Type::ADT(name.clone(), vec![])))
+            Ok(Type::from_name(name.as_ref()).unwrap_or_else(|| {
+                // Use target module as fallback for user-defined types.
+                Type::ADT(FQTypeName::new(target_fqtn.module.clone(), name.clone()), vec![])
+            }))
         }
         TypeExpr::SelfType => {
             Err(CranelispError::TypeError {
@@ -1363,9 +1321,9 @@ fn resolve_type_expr_hkt_impl(
         TypeExpr::FnType(params, ret) => {
             let param_tys: Vec<Type> = params
                 .iter()
-                .map(|p| resolve_type_expr_hkt_impl(p, con_var_names, target_type, type_var_map, next_id, span))
+                .map(|p| resolve_type_expr_hkt_impl(p, con_var_names, target_fqtn, type_var_map, next_id, span))
                 .collect::<Result<Vec<_>, _>>()?;
-            let ret_ty = resolve_type_expr_hkt_impl(ret, con_var_names, target_type, type_var_map, next_id, span)?;
+            let ret_ty = resolve_type_expr_hkt_impl(ret, con_var_names, target_fqtn, type_var_map, next_id, span)?;
             Ok(Type::Fn(param_tys, Box::new(ret_ty)))
         }
     }
@@ -1439,7 +1397,7 @@ fn find_applied_arity(texpr: &cranelisp_types::TypeExpr, con_name: &Symbol) -> O
 // HKT Method Resolution Helpers (on TypeChecker)
 // ---------------------------------------------------------------------------
 
-impl TypeChecker {
+impl TypeCheckEnv<'_> {
     /// Get the HKT param index for a method name, defaulting to 0.
     /// For mangled names like "Functor.fmap$Option", extracts the base method name first.
     fn hkt_param_idx_for_method(&self, name: &Symbol) -> usize {
@@ -1464,12 +1422,16 @@ impl TypeChecker {
         0
     }
 
-    /// Walk trait declarations in the registry to find a method's hkt_param_index.
+    /// Walk trait declarations in loaded modules to find a method's hkt_param_index.
     fn find_hkt_param_index_in_registry(&self, method_name: &str) -> Option<usize> {
-        for decl in self.trait_registry.read().unwrap().decls.values() {
-            for method in &decl.methods {
-                if method.name.as_ref() == method_name {
-                    return method.hkt_param_index;
+        for guard in self.modules.iter() {
+            for (_name, entry) in guard.all_symbols() {
+                if let ModuleEntry::TraitDecl { decl, .. } = entry {
+                    for method in &decl.methods {
+                        if method.name.as_ref() == method_name {
+                            return method.hkt_param_index;
+                        }
+                    }
                 }
             }
         }
@@ -1484,15 +1446,25 @@ impl TypeChecker {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::checker::{CheckState, TypeChecker};
+    use crate::checker::{CheckState, TestFixture, TypeCheckEnv};
     use cranelisp_types::{
         Defn, DefnVariant, FQSymbol, ImportNames, ImportSpec, ModuleEntry, ModuleFullPath,
         Sexp, Span, TraitDecl, TraitImpl, TraitMethodSig, TypeExpr, Visibility,
     };
 
+    /// Test helper: create an FQTraitName in the "test" module.
+    fn test_fqtn_trait(name: &str) -> FQTraitName {
+        FQTraitName::new(ModuleFullPath::from("test"), TraitName::from(name))
+    }
+
+    /// Test helper: create an FQTypeName in the "test" module.
+    fn test_fqtn(name: &str) -> FQTypeName {
+        FQTypeName::new(ModuleFullPath::from("test"), TypeName::from(name))
+    }
+
     /// Create a TypeChecker with primitives imported into a "test" module.
-    fn tc_with_prims() -> TypeChecker {
-        let mut tc = TypeChecker::new();
+    fn tc_with_prims() -> TestFixture {
+        let mut tc = TestFixture::new();
         tc.set_current_module(ModuleFullPath::from("test"));
         let import_spec = ImportSpec {
             module_path: ModuleFullPath::from("primitives"),
@@ -1500,7 +1472,7 @@ mod tests {
             names: ImportNames::Glob,
             span: Span::new(0, 0),
         };
-        tc.register_imports(&[import_spec]).unwrap();
+        tc.register_imports_self(&[import_spec]).unwrap();
         tc
     }
 
@@ -1533,26 +1505,27 @@ mod tests {
         }
     }
 
-    // spec: 07-traits §7.1 — trait registry is empty before any declarations
+    // spec: 07-traits §7.1 — no traits registered at startup
     #[test]
-    fn test_trait_registry_starts_empty() {
-        let reg = TraitRegistry::default();
-        assert!(reg.decls.is_empty());
-        assert!(reg.method_to_trait.is_empty());
+    fn test_no_traits_at_startup() {
+        let tc = TestFixture::new();
+        // No traits should be discoverable via lookup
+        assert!(tc.lookup_trait_decl(&TraitName::from("TestTrait")).is_none());
     }
 
-    // spec: 07-traits §7.3 — impl registry is empty before any implementations
+    // spec: 07-traits §7.3 — no impls registered at startup
     #[test]
-    fn test_impl_registry_starts_empty() {
-        let reg = ImplRegistry::default();
-        assert!(reg.impls.is_empty());
+    fn test_no_impls_at_startup() {
+        let tc = TestFixture::new();
+        // No impls should be discoverable via has_impl
+        assert!(!tc.has_impl(&TraitName::from("Num"), &TypeName::from("Int")));
     }
 
     // spec: 03-types §3.6.1 — constraint detection: add and get trait constraints
     #[test]
     fn test_active_constraints_add_and_get() {
         let mut ac = ActiveConstraints::default();
-        ac.add(0, TraitName::from("Num"));
+        ac.add(0, test_fqtn_trait("Num"));
         assert_eq!(ac.get(0).map(|v| v.len()), Some(1));
         assert!(ac.get(1).is_none());
     }
@@ -1561,22 +1534,22 @@ mod tests {
     #[test]
     fn test_active_constraints_add_is_idempotent() {
         let mut ac = ActiveConstraints::default();
-        ac.add(0, TraitName::from("Num"));
-        ac.add(0, TraitName::from("Num"));
-        ac.add(0, TraitName::from("Eq"));
-        ac.add(0, TraitName::from("Eq"));
+        ac.add(0, test_fqtn_trait("Num"));
+        ac.add(0, test_fqtn_trait("Num"));
+        ac.add(0, test_fqtn_trait("Eq"));
+        ac.add(0, test_fqtn_trait("Eq"));
         let traits = ac.get(0).unwrap();
         assert_eq!(traits.len(), 2, "duplicate adds should be ignored");
-        assert_eq!(traits[0].as_ref(), "Num");
-        assert_eq!(traits[1].as_ref(), "Eq");
+        assert_eq!(traits[0].name.as_ref(), "Num");
+        assert_eq!(traits[1].name.as_ref(), "Eq");
     }
 
     // spec: 03-types §3.6.2 — collect constraints for specific type variable set
     #[test]
     fn test_active_constraints_collect_for_vars() {
         let mut ac = ActiveConstraints::default();
-        ac.add(0, TraitName::from("Num"));
-        ac.add(1, TraitName::from("Eq"));
+        ac.add(0, test_fqtn_trait("Num"));
+        ac.add(1, test_fqtn_trait("Eq"));
 
         let collected = ac.collect_for_vars(&[0, 2]);
         assert!(collected.contains_key(&0));
@@ -1588,7 +1561,7 @@ mod tests {
     #[test]
     fn test_active_constraints_clear() {
         let mut ac = ActiveConstraints::default();
-        ac.add(0, TraitName::from("Num"));
+        ac.add(0, test_fqtn_trait("Num"));
         ac.clear();
         assert!(ac.constraints.is_empty());
     }
@@ -1630,7 +1603,7 @@ mod tests {
     #[test]
     fn test_concrete_type_name_adt() {
         assert_eq!(
-            concrete_type_name(&Type::ADT(TypeName::from("Color"), vec![])),
+            concrete_type_name(&Type::ADT(test_fqtn("Color"), vec![])),
             Some(TypeName::from("Color"))
         );
     }
@@ -1644,16 +1617,16 @@ mod tests {
     // spec: 07-traits §7.1 — deftrait registers trait and methods in symbol table
     #[test]
     fn test_register_trait_decl() {
-        let mut tc = TypeChecker::new();
+        let mut tc = TestFixture::new();
         let decl = make_test_trait_decl();
         tc.register_trait_decl_self(&decl).unwrap();
 
-        // Trait should be in the registry
-        assert!(tc.trait_registry.read().unwrap().decls.contains_key(&TraitName::from("TestTrait")));
-        // Method should be reverse-mapped
+        // Trait should be discoverable via SymbolTable lookup
+        assert!(tc.lookup_trait_decl(&TraitName::from("TestTrait")).is_some());
+        // Method should be reverse-mapped via trait_origin on ModuleEntry::Def
         assert_eq!(
-            tc.trait_registry.read().unwrap().method_to_trait.get(&Symbol::from("test-op")),
-            Some(&TraitName::from("TestTrait"))
+            tc.method_to_trait(&Symbol::from("test-op")),
+            Some(TraitName::from("TestTrait"))
         );
         // Trait should be in symbol table
         assert!(matches!(
@@ -1665,7 +1638,7 @@ mod tests {
     // spec: 07-traits §7.1 — duplicate trait declaration is an error
     #[test]
     fn test_register_duplicate_trait_fails() {
-        let mut tc = TypeChecker::new();
+        let mut tc = TestFixture::new();
         let decl = make_test_trait_decl();
         tc.register_trait_decl_self(&decl).unwrap();
         let err = tc.register_trait_decl_self(&decl).unwrap_err();
@@ -1675,7 +1648,7 @@ mod tests {
     // spec: 03-types §3.4.1 — trait method scheme carries trait constraint
     #[test]
     fn test_trait_method_has_constrained_scheme() {
-        let mut tc = TypeChecker::new();
+        let mut tc = TestFixture::new();
         let decl = make_test_trait_decl();
         tc.register_trait_decl_self(&decl).unwrap();
 
@@ -1688,7 +1661,7 @@ mod tests {
             let var_id = scheme.vars[0];
             let traits = scheme.constraints.get(&var_id).unwrap();
             assert_eq!(traits.len(), 1);
-            assert_eq!(traits[0].as_ref(), "TestTrait");
+            assert_eq!(traits[0].name.as_ref(), "TestTrait");
         } else {
             panic!("test-op should be registered");
         }
@@ -1732,14 +1705,8 @@ mod tests {
         };
         tc.register_trait_impl_self(&impl_).unwrap();
 
-        assert!(tc
-            .impl_registry
-            .read().unwrap()
-            .has_impl(&TraitName::from("TestTrait"), &TypeName::from("Int")));
-        assert!(!tc
-            .impl_registry
-            .read().unwrap()
-            .has_impl(&TraitName::from("TestTrait"), &TypeName::from("Bool")));
+        assert!(tc.has_impl(&TraitName::from("TestTrait"), &TypeName::from("Int")));
+        assert!(!tc.has_impl(&TraitName::from("TestTrait"), &TypeName::from("Bool")));
     }
 
     // spec: 07-traits §7.4.1 — resolve trait method to concrete impl mangled name
@@ -1794,9 +1761,9 @@ mod tests {
             mangled_name,
         }) = result
         {
-            assert_eq!(trait_name.as_ref(), "TestTrait");
+            assert_eq!(trait_name.name.as_ref(), "TestTrait");
             assert_eq!(method_name.as_ref(), "test-op");
-            assert_eq!(impl_type.as_ref(), "Int");
+            assert_eq!(impl_type.name.as_ref(), "Int");
             assert_eq!(mangled_name.as_ref(), "TestTrait.test-op$Int");
         }
     }
@@ -1804,7 +1771,7 @@ mod tests {
     // spec: 07-traits §7.4.3 — no matching impl returns TypeError
     #[test]
     fn test_try_resolve_trait_method_no_impl() {
-        let mut tc = TypeChecker::new();
+        let mut tc = TestFixture::new();
         let decl = make_test_trait_decl();
         tc.register_trait_decl_self(&decl).unwrap();
         // No impl registered for Bool under TestTrait
@@ -1827,7 +1794,7 @@ mod tests {
     // spec: 07-traits §7.4.1 — non-trait-method name returns None
     #[test]
     fn test_try_resolve_non_trait_method() {
-        let mut tc = TypeChecker::new();
+        let mut tc = TestFixture::new();
         let result = tc.try_resolve_trait_method_self(
             &Symbol::from("add-i64"),
             &[Type::Int, Type::Int],
@@ -1836,29 +1803,52 @@ mod tests {
         assert!(matches!(result, Ok(None)));
     }
 
-    // spec: 07-traits §7.4.3 — impl registry tracks trait-type pairs
+    // spec: 07-traits §7.4.3 — has_impl tracks trait-type pairs via SymbolTable
     #[test]
-    fn test_impl_registry_has_impl() {
-        let mut reg = ImplRegistry::default();
-        reg.impls
-            .entry(TraitName::from("Num"))
-            .or_default()
-            .insert(
-                TypeName::from("Int"),
-                RegisteredImpl {
-                    trait_name: TraitName::from("Num"),
-                    impl_type: TypeName::from("Int"),
-                    method_primitives: HashMap::new(),
-                },
-            );
-        assert!(reg.has_impl(&TraitName::from("Num"), &TypeName::from("Int")));
-        assert!(!reg.has_impl(&TraitName::from("Num"), &TypeName::from("Bool")));
+    fn test_has_impl_via_symbol_table() {
+        let mut tc = tc_with_prims();
+        let decl = make_test_trait_decl();
+        tc.register_trait_decl_self(&decl).unwrap();
+
+        let impl_ = TraitImpl {
+            trait_name: TraitName::from("TestTrait"),
+            target_type: TypeName::from("Int"),
+            type_args: vec![],
+            type_constraints: vec![],
+            methods: vec![Defn {
+                name: Symbol::from("test-op"),
+                docstring: None,
+                variants: vec![DefnVariant {
+                    params: vec![Symbol::from("lhs"), Symbol::from("rhs")],
+                    param_annotations: vec![None, None],
+                    body: cranelisp_types::Expr::Apply {
+                        callee: Box::new(cranelisp_types::Expr::Var {
+                            name: Symbol::from("add-i64"),
+                            span: Span::SYNTHETIC,
+                        }),
+                        args: vec![
+                            cranelisp_types::Expr::Var { name: Symbol::from("lhs"), span: Span::SYNTHETIC },
+                            cranelisp_types::Expr::Var { name: Symbol::from("rhs"), span: Span::SYNTHETIC },
+                        ],
+                        span: Span::SYNTHETIC,
+                    },
+                    span: Span::SYNTHETIC,
+                }],
+                visibility: Visibility::Public,
+                span: Span::SYNTHETIC,
+            }],
+            span: Span::SYNTHETIC,
+        };
+        tc.register_trait_impl_self(&impl_).unwrap();
+
+        assert!(tc.has_impl(&TraitName::from("TestTrait"), &TypeName::from("Int")));
+        assert!(!tc.has_impl(&TraitName::from("TestTrait"), &TypeName::from("Bool")));
     }
 
     // spec: 07-traits §7.1 — is_trait_method distinguishes trait methods from plain fns
     #[test]
     fn test_is_trait_method() {
-        let mut tc = TypeChecker::new();
+        let mut tc = TestFixture::new();
         let decl = make_test_trait_decl();
         tc.register_trait_decl_self(&decl).unwrap();
 
@@ -1959,18 +1949,19 @@ mod tests {
     // spec: pipeline-orchestration §5 — no core traits at startup (Decision 17 eliminated)
     #[test]
     fn test_no_core_traits_at_startup() {
-        let tc = TypeChecker::new();
-        // Traits come from prelude .cl files, NOT compiler builtins
-        assert!(tc.trait_registry.read().unwrap().decls.is_empty(),
+        let tc = TestFixture::new();
+        // Traits come from prelude .cl files, NOT compiler builtins.
+        // No traits should be discoverable via SymbolTable lookup.
+        assert!(tc.lookup_trait_decl(&TraitName::from("Num")).is_none(),
             "no traits should be registered at startup");
-        assert!(tc.impl_registry.read().unwrap().impls.is_empty(),
+        assert!(!tc.has_impl(&TraitName::from("Num"), &TypeName::from("Int")),
             "no impls should be registered at startup");
     }
 
     // spec: pipeline-orchestration §5 — operator symbols NOT in symbol table at startup
     #[test]
     fn test_no_operators_at_startup() {
-        let tc = TypeChecker::new();
+        let tc = TestFixture::new();
         let ops = ["+", "-", "*", "/", "=", "!=", "<", ">", "<=", ">="];
         for op in ops {
             assert!(
@@ -2190,7 +2181,7 @@ mod tests {
     fn test_generate_default_methods_produces_real_bodies() {
         // Register Eq trait inline and create an impl with only "=" provided.
         // The "!=" default should be generated with a real body.
-        let mut tc = TypeChecker::new();
+        let mut tc = TestFixture::new();
 
         // Register Eq trait inline (as prelude would)
         let eq_decl = TraitDecl {
@@ -2250,10 +2241,8 @@ mod tests {
             span: Span::SYNTHETIC,
         };
 
-        let decl = tc.trait_registry.read().unwrap().decls
-            .get(&TraitName::from("Eq"))
-            .unwrap()
-            .clone();
+        let decl = tc.lookup_trait_decl(&TraitName::from("Eq"))
+            .expect("Eq trait should be registered");
         let defaults = tc.generate_default_methods(&tc.state, &decl, &impl_).unwrap();
 
         assert_eq!(defaults.len(), 1, "should generate 1 default method (!=)");

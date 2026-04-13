@@ -6,9 +6,11 @@
 
 use std::collections::HashMap;
 
+use dashmap::DashMap;
+
 use cranelisp_types::{
-    ModuleFullPath, Scheme, Type, TypeDefInfo, TypeId, TypeName,
-    NULLARY_TAG_THRESHOLD,
+    FQTypeName, ModuleEntry, ModuleFullPath, Scheme, Symbol, SymbolTable, Type,
+    TypeDefInfo, TypeId, NULLARY_TAG_THRESHOLD,
 };
 
 use crate::heap::{HeapAdt, HeapVec};
@@ -34,10 +36,9 @@ use crate::heap::{HeapAdt, HeapVec};
 pub fn format_value(
     value: i64,
     ty: &Type,
-    type_defs: &HashMap<TypeName, TypeDefInfo>,
-    type_modules: &HashMap<TypeName, ModuleFullPath>,
+    symbol_tables: &DashMap<ModuleFullPath, SymbolTable>,
 ) -> String {
-    format_field_value(value, ty, type_defs, type_modules)
+    format_field_value(value, ty, symbol_tables)
 }
 
 /// Format a runtime value with `:Type value` prefix for REPL display.
@@ -47,8 +48,7 @@ pub fn format_value(
 pub fn format_result_value(
     value: i64,
     ty: &Type,
-    type_defs: &HashMap<TypeName, TypeDefInfo>,
-    type_modules: &HashMap<TypeName, ModuleFullPath>,
+    symbol_tables: &DashMap<ModuleFullPath, SymbolTable>,
 ) -> String {
     match ty {
         Type::Bool => {
@@ -67,22 +67,23 @@ pub fn format_result_value(
         Type::Int => format!(":primitives/Int {value}"),
         Type::String => format_string_value(value),
         Type::Fn(_, _) => {
-            let type_str = format_type_qualified(ty, type_modules);
+            let type_str = format_type_qualified(ty);
             format!(":{type_str} <closure>")
         }
-        Type::ADT(type_name, type_args) => {
-            format_adt_value(value, type_name, type_args, type_defs, type_modules)
+        Type::ADT(fqtn, type_args) => {
+            format_adt_value(value, fqtn, type_args, symbol_tables)
         }
         other => {
-            let type_str = format_type_qualified(other, type_modules);
+            let type_str = format_type_qualified(other);
             format!(":{type_str} {value}")
         }
     }
 }
 
-/// Convenience wrapper: format_result_value with empty type_defs/type_modules.
+/// Convenience wrapper: format_result_value with empty symbol_tables.
 pub fn format_result(value: i64, ty: &Type) -> String {
-    format_result_value(value, ty, &HashMap::new(), &HashMap::new())
+    let empty = DashMap::new();
+    format_result_value(value, ty, &empty)
 }
 
 /// Format a type with fully-qualified names for REPL display (spec §1.4).
@@ -91,11 +92,10 @@ pub fn format_result(value: i64, ty: &Type) -> String {
 /// `Fn` keyword and type variables stay unqualified.
 pub fn format_type_qualified(
     ty: &Type,
-    type_modules: &HashMap<TypeName, ModuleFullPath>,
 ) -> String {
     // Compute var names from the full type, then use them in the recursive helper.
     let var_names = cranelisp_types::type_var_names(ty);
-    format_type_qualified_inner(ty, type_modules, &var_names)
+    format_type_qualified_inner(ty, &var_names)
 }
 
 /// Format a constrained function's scheme for REPL display (spec §1.3).
@@ -110,15 +110,15 @@ pub fn format_scheme_display(
     name: &str,
     scheme: &Scheme,
     module: &ModuleFullPath,
-    type_modules: &HashMap<TypeName, ModuleFullPath>,
 ) -> String {
     let var_names = cranelisp_types::type_var_names(&scheme.ty);
 
     // Build a map from TypeId to the constraint traits for quick lookup.
     // Use sorted trait names for deterministic output.
+    // Constraints are now Vec<FQTraitName>; use local trait name for display.
     let mut constraint_map: HashMap<TypeId, Vec<&str>> = HashMap::new();
     for (type_id, traits) in &scheme.constraints {
-        let mut trait_strs: Vec<&str> = traits.iter().map(|t| t.as_ref()).collect();
+        let mut trait_strs: Vec<&str> = traits.iter().map(|t| t.name.as_ref()).collect();
         trait_strs.sort();
         constraint_map.insert(*type_id, trait_strs);
     }
@@ -128,7 +128,6 @@ pub fn format_scheme_display(
         &var_names,
         &constraint_map,
         false,
-        type_modules,
     );
 
     format!(":{type_str} {module}/{name}")
@@ -138,23 +137,9 @@ pub fn format_scheme_display(
 // Internal helpers
 // ---------------------------------------------------------------------------
 
-/// Qualify a type name using the type_modules map.
-fn qualify_type_name(
-    name: &str,
-    type_modules: &HashMap<TypeName, ModuleFullPath>,
-) -> String {
-    if let Some(module) = type_modules.get(name) {
-        format!("{module}/{name}")
-    } else {
-        // Not in type_modules — unqualified (e.g., type vars, unknown types).
-        name.to_string()
-    }
-}
-
 /// Recursive helper for `format_type_qualified` with pre-computed var names.
 fn format_type_qualified_inner(
     ty: &Type,
-    type_modules: &HashMap<TypeName, ModuleFullPath>,
     var_names: &HashMap<TypeId, String>,
 ) -> String {
     match ty {
@@ -165,19 +150,19 @@ fn format_type_qualified_inner(
         Type::Fn(params, ret) => {
             let parts: Vec<String> = params
                 .iter()
-                .map(|p| format_type_qualified_inner(p, type_modules, var_names))
+                .map(|p| format_type_qualified_inner(p, var_names))
                 .collect();
-            let ret_s = format_type_qualified_inner(ret, type_modules, var_names);
+            let ret_s = format_type_qualified_inner(ret, var_names);
             format!("(Fn [{}] {ret_s})", parts.join(" "))
         }
-        Type::ADT(name, args) => {
-            let qname = qualify_type_name(name, type_modules);
+        Type::ADT(fqtn, args) => {
+            let qname = format!("{}/{}", fqtn.module, fqtn.name);
             if args.is_empty() {
                 qname
             } else {
                 let arg_strs: Vec<String> = args
                     .iter()
-                    .map(|a| format_type_qualified_inner(a, type_modules, var_names))
+                    .map(|a| format_type_qualified_inner(a, var_names))
                     .collect();
                 format!("({qname} {})", arg_strs.join(" "))
             }
@@ -198,7 +183,7 @@ fn format_type_qualified_inner(
             } else {
                 let arg_strs: Vec<String> = args
                     .iter()
-                    .map(|a| format_type_qualified_inner(a, type_modules, var_names))
+                    .map(|a| format_type_qualified_inner(a, var_names))
                     .collect();
                 format!("({name} {})", arg_strs.join(" "))
             }
@@ -216,7 +201,6 @@ fn format_type_with_inline_constraints(
     var_names: &HashMap<TypeId, String>,
     constraints: &HashMap<TypeId, Vec<&str>>,
     in_params: bool,
-    type_modules: &HashMap<TypeName, ModuleFullPath>,
 ) -> String {
     match ty {
         Type::Int => "primitives/Int".to_string(),
@@ -228,17 +212,17 @@ fn format_type_with_inline_constraints(
                 .iter()
                 .map(|p| {
                     format_type_with_inline_constraints(
-                        p, var_names, constraints, true, type_modules,
+                        p, var_names, constraints, true,
                     )
                 })
                 .collect();
             let ret_s = format_type_with_inline_constraints(
-                ret, var_names, constraints, false, type_modules,
+                ret, var_names, constraints, false,
             );
             format!("(Fn [{}] {ret_s})", parts.join(" "))
         }
-        Type::ADT(name, args) => {
-            let qname = qualify_type_name(name, type_modules);
+        Type::ADT(fqtn, args) => {
+            let qname = format!("{}/{}", fqtn.module, fqtn.name);
             if args.is_empty() {
                 qname
             } else {
@@ -246,7 +230,7 @@ fn format_type_with_inline_constraints(
                     .iter()
                     .map(|a| {
                         format_type_with_inline_constraints(
-                            a, var_names, constraints, false, type_modules,
+                            a, var_names, constraints, false,
                         )
                     })
                     .collect();
@@ -285,7 +269,7 @@ fn format_type_with_inline_constraints(
                     .iter()
                     .map(|a| {
                         format_type_with_inline_constraints(
-                            a, var_names, constraints, false, type_modules,
+                            a, var_names, constraints, false,
                         )
                     })
                     .collect();
@@ -311,8 +295,8 @@ fn format_string_value(value: i64) -> String {
 /// Single-constructor product types like `(deftype Point [:Int x :Int y])` have
 /// a redundant `Type.Constructor` display (`Point.Point`). For these types we
 /// suppress the `Type.` prefix and show just the constructor name.
-fn is_single_matching_constructor(type_name: &TypeName, type_info: &TypeDefInfo) -> bool {
-    type_info.constructors.len() == 1 && type_info.constructors[0].name.0 == type_name.0
+fn is_single_matching_constructor(type_name: &str, type_info: &TypeDefInfo) -> bool {
+    type_info.constructors.len() == 1 && type_info.constructors[0].name.as_ref() == type_name
 }
 
 /// Format the constructor display name for an ADT value.
@@ -321,7 +305,7 @@ fn is_single_matching_constructor(type_name: &TypeName, type_info: &TypeDefInfo)
 /// returns just the constructor name (e.g., `Point`). For multi-constructor types,
 /// returns `Type.Constructor` (e.g., `Color.Red`, `Option.Some`).
 pub fn format_ctor_display(
-    type_name: &TypeName,
+    type_name: &str,
     ctor_name: &str,
     type_info: &TypeDefInfo,
 ) -> String {
@@ -329,6 +313,19 @@ pub fn format_ctor_display(
         ctor_name.to_string()
     } else {
         format!("{type_name}.{ctor_name}")
+    }
+}
+
+/// Look up a TypeDefInfo from symbol tables by FQTypeName.
+fn lookup_type_def_from_tables(
+    fqtn: &FQTypeName,
+    symbol_tables: &DashMap<ModuleFullPath, SymbolTable>,
+) -> Option<TypeDefInfo> {
+    let table = symbol_tables.get(&fqtn.module)?;
+    let type_key = Symbol::from(fqtn.name.as_ref());
+    match table.get(type_key.as_ref()) {
+        Some(ModuleEntry::TypeDef { info, .. }) => Some(info.clone()),
+        _ => None,
     }
 }
 
@@ -341,21 +338,21 @@ pub fn format_ctor_display(
 /// Type names in the `:Type` prefix are fully qualified.
 fn format_adt_value(
     value: i64,
-    type_name: &TypeName,
+    fqtn: &FQTypeName,
     type_args: &[Type],
-    type_defs: &HashMap<TypeName, TypeDefInfo>,
-    type_modules: &HashMap<TypeName, ModuleFullPath>,
+    symbol_tables: &DashMap<ModuleFullPath, SymbolTable>,
 ) -> String {
-    let type_display = format_adt_type_qualified(type_name, type_args, type_modules);
+    let type_display = format_adt_type_qualified(fqtn, type_args);
+    let type_name_str = fqtn.name.as_ref();
 
     // Vec is a built-in type, not in type_defs -- handle it specially.
-    if type_name == "Vec" {
+    if type_name_str == "Vec" {
         let elem_type = type_args.first();
-        let elems = format_vec_elements(value, elem_type, type_defs, type_modules);
+        let elems = format_vec_elements(value, elem_type, symbol_tables);
         return format!(":{type_display} {elems}");
     }
 
-    let Some(type_info) = type_defs.get(type_name) else {
+    let Some(type_info) = lookup_type_def_from_tables(fqtn, symbol_tables) else {
         // No type def available -- fallback to bare value display.
         return format!(":{type_display} {value}");
     };
@@ -364,29 +361,28 @@ fn format_adt_value(
     if (value as usize) < NULLARY_TAG_THRESHOLD {
         // Nullary constructor: value is the tag directly.
         let tag = value as usize;
-        let ctor_name = find_constructor_by_tag(type_info, tag);
-        let ctor_display = format_ctor_display(type_name, &ctor_name, type_info);
+        let ctor_name = find_constructor_by_tag(&type_info, tag);
+        let ctor_display = format_ctor_display(type_name_str, &ctor_name, &type_info);
         format!(":{type_display} {ctor_display}")
     } else {
         // Data constructor: read tag and fields from heap.
-        format_adt_heap_value(value, &type_display, type_name, type_info, type_args, type_defs, type_modules)
+        format_adt_heap_value(value, &type_display, type_name_str, &type_info, type_args, symbol_tables)
     }
 }
 
 /// Format the type portion of an ADT display with qualification (spec §1.4).
 /// Simple types: `user/Color`. Parameterized: `(user/Option primitives/Int)`.
 pub fn format_adt_type_qualified(
-    type_name: &TypeName,
+    fqtn: &FQTypeName,
     type_args: &[Type],
-    type_modules: &HashMap<TypeName, ModuleFullPath>,
 ) -> String {
-    let qname = qualify_type_name(type_name, type_modules);
+    let qname = format!("{}/{}", fqtn.module, fqtn.name);
     if type_args.is_empty() {
         qname
     } else {
         let arg_strs: Vec<String> = type_args
             .iter()
-            .map(|a| format_type_qualified(a, type_modules))
+            .map(|a| format_type_qualified(a))
             .collect();
         format!("({qname} {})", arg_strs.join(" "))
     }
@@ -416,11 +412,10 @@ fn find_constructor_by_tag(type_info: &TypeDefInfo, tag: usize) -> String {
 fn format_adt_heap_value(
     value: i64,
     type_display: &str,
-    type_name: &TypeName,
+    type_name: &str,
     type_info: &TypeDefInfo,
     type_args: &[Type],
-    type_defs: &HashMap<TypeName, TypeDefInfo>,
-    type_modules: &HashMap<TypeName, ModuleFullPath>,
+    symbol_tables: &DashMap<ModuleFullPath, SymbolTable>,
 ) -> String {
     // SAFETY: value is a heap pointer to a valid HeapAdt (produced by JIT code).
     let base = value as *const u8;
@@ -447,7 +442,7 @@ fn format_adt_heap_value(
         let field_val = unsafe { *(base.add(field_offset) as *const i64) };
         // Substitute type args into field type before formatting.
         let field_ty = substitute_field_type(&field_info.ty, &subst);
-        let field_str = format_field_value(field_val, &field_ty, type_defs, type_modules);
+        let field_str = format_field_value(field_val, &field_ty, symbol_tables);
         field_strs.push(field_str);
     }
 
@@ -520,8 +515,7 @@ fn substitute_field_type(
 fn format_vec_elements(
     value: i64,
     elem_type: Option<&Type>,
-    type_defs: &HashMap<TypeName, TypeDefInfo>,
-    type_modules: &HashMap<TypeName, ModuleFullPath>,
+    symbol_tables: &DashMap<ModuleFullPath, SymbolTable>,
 ) -> String {
     if value == 0 || (value as usize) < NULLARY_TAG_THRESHOLD {
         return "[]".to_string();
@@ -543,7 +537,7 @@ fn format_vec_elements(
     for i in 0..len {
         let elem_val = unsafe { *data_ptr.add(i) };
         let formatted = match elem_type {
-            Some(ty) => format_field_value(elem_val, ty, type_defs, type_modules),
+            Some(ty) => format_field_value(elem_val, ty, symbol_tables),
             None => format!("{elem_val}"),
         };
         elems.push(formatted);
@@ -558,8 +552,7 @@ fn format_vec_elements(
 fn format_field_value(
     value: i64,
     ty: &Type,
-    type_defs: &HashMap<TypeName, TypeDefInfo>,
-    type_modules: &HashMap<TypeName, ModuleFullPath>,
+    symbol_tables: &DashMap<ModuleFullPath, SymbolTable>,
 ) -> String {
     match ty {
         Type::Int => format!("{value}"),
@@ -582,22 +575,23 @@ fn format_field_value(
             }
         }
         Type::Fn(_, _) => "<closure>".to_string(),
-        Type::ADT(name, args) => {
+        Type::ADT(fqtn, args) => {
+            let type_name_str = fqtn.name.as_ref();
             // Vec is built-in, not in type_defs.
-            if name == "Vec" {
-                return format_vec_elements(value, args.first(), type_defs, type_modules);
+            if type_name_str == "Vec" {
+                return format_vec_elements(value, args.first(), symbol_tables);
             }
             // Recursive ADT formatting with dot notation.
-            let type_display = format_adt_type_qualified(name, args, type_modules);
-            if let Some(info) = type_defs.get(name) {
+            let type_display = format_adt_type_qualified(fqtn, args);
+            if let Some(info) = lookup_type_def_from_tables(fqtn, symbol_tables) {
                 if (value as usize) < NULLARY_TAG_THRESHOLD {
                     let tag = value as usize;
-                    let ctor_name = find_constructor_by_tag(info, tag);
-                    format_ctor_display(name, &ctor_name, info)
+                    let ctor_name = find_constructor_by_tag(&info, tag);
+                    format_ctor_display(type_name_str, &ctor_name, &info)
                 } else {
                     // Recursive heap ADT -- format with parens and dot notation.
                     let inner = format_adt_heap_value(
-                        value, &type_display, name, info, args, type_defs, type_modules,
+                        value, &type_display, type_name_str, &info, args, symbol_tables,
                     );
                     // Strip the leading `:Type ` prefix from the recursive call.
                     inner.split_once(' ').map_or_else(
@@ -616,58 +610,66 @@ fn format_field_value(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use cranelisp_types::TraitName;
+    use cranelisp_types::FQTraitName;
 
     // --- format_value: scalar types ---
 
     #[test]
     fn format_value_int_positive() {
-        let v = format_value(42, &Type::Int, &HashMap::new(), &HashMap::new());
+        let empty = DashMap::new();
+        let v = format_value(42, &Type::Int, &empty);
         assert_eq!(v, "42");
     }
 
     #[test]
     fn format_value_int_negative() {
-        let v = format_value(-7, &Type::Int, &HashMap::new(), &HashMap::new());
+        let empty = DashMap::new();
+        let v = format_value(-7, &Type::Int, &empty);
         assert_eq!(v, "-7");
     }
 
     #[test]
     fn format_value_int_zero() {
-        let v = format_value(0, &Type::Int, &HashMap::new(), &HashMap::new());
+        let empty = DashMap::new();
+        let v = format_value(0, &Type::Int, &empty);
         assert_eq!(v, "0");
     }
 
     #[test]
     fn format_value_bool_true() {
-        let v = format_value(1, &Type::Bool, &HashMap::new(), &HashMap::new());
+        let empty = DashMap::new();
+        let v = format_value(1, &Type::Bool, &empty);
         assert_eq!(v, "true");
     }
 
     #[test]
     fn format_value_bool_false() {
-        let v = format_value(0, &Type::Bool, &HashMap::new(), &HashMap::new());
+        let empty = DashMap::new();
+        let v = format_value(0, &Type::Bool, &empty);
         assert_eq!(v, "false");
     }
 
     #[test]
     fn format_value_float_with_decimal() {
+        let empty = DashMap::new();
         let bits = 3.14_f64.to_bits() as i64;
-        let v = format_value(bits, &Type::Float, &HashMap::new(), &HashMap::new());
+        let v = format_value(bits, &Type::Float, &empty);
         assert!(v.contains('.'), "float display should contain a decimal point: {v}");
     }
 
     #[test]
     fn format_value_float_whole_number_gets_dot_zero() {
+        let empty = DashMap::new();
         let bits = 1.0_f64.to_bits() as i64;
-        let v = format_value(bits, &Type::Float, &HashMap::new(), &HashMap::new());
+        let v = format_value(bits, &Type::Float, &empty);
         assert!(v.ends_with(".0"), "whole float should end with .0: {v}");
     }
 
     #[test]
     fn format_value_fn_displays_closure() {
+        let empty = DashMap::new();
         let ty = Type::Fn(vec![Type::Int], Box::new(Type::Int));
-        let v = format_value(0, &ty, &HashMap::new(), &HashMap::new());
+        let v = format_value(0, &ty, &empty);
         assert_eq!(v, "<closure>");
     }
 
@@ -675,32 +677,32 @@ mod tests {
 
     #[test]
     fn format_type_qualified_int() {
-        let s = format_type_qualified(&Type::Int, &HashMap::new());
+        let s = format_type_qualified(&Type::Int);
         assert_eq!(s, "primitives/Int");
     }
 
     #[test]
     fn format_type_qualified_bool() {
-        let s = format_type_qualified(&Type::Bool, &HashMap::new());
+        let s = format_type_qualified(&Type::Bool);
         assert_eq!(s, "primitives/Bool");
     }
 
     #[test]
     fn format_type_qualified_string() {
-        let s = format_type_qualified(&Type::String, &HashMap::new());
+        let s = format_type_qualified(&Type::String);
         assert_eq!(s, "primitives/String");
     }
 
     #[test]
     fn format_type_qualified_float() {
-        let s = format_type_qualified(&Type::Float, &HashMap::new());
+        let s = format_type_qualified(&Type::Float);
         assert_eq!(s, "primitives/Float");
     }
 
     #[test]
     fn format_type_qualified_fn() {
         let ty = Type::Fn(vec![Type::Int, Type::Bool], Box::new(Type::String));
-        let s = format_type_qualified(&ty, &HashMap::new());
+        let s = format_type_qualified(&ty);
         assert_eq!(s, "(Fn [primitives/Int primitives/Bool] primitives/String)");
     }
 
@@ -708,33 +710,38 @@ mod tests {
 
     #[test]
     fn format_result_value_int() {
-        let s = format_result_value(42, &Type::Int, &HashMap::new(), &HashMap::new());
+        let empty = DashMap::new();
+        let s = format_result_value(42, &Type::Int, &empty);
         assert_eq!(s, ":primitives/Int 42");
     }
 
     #[test]
     fn format_result_value_bool_true() {
-        let s = format_result_value(1, &Type::Bool, &HashMap::new(), &HashMap::new());
+        let empty = DashMap::new();
+        let s = format_result_value(1, &Type::Bool, &empty);
         assert_eq!(s, ":primitives/Bool true");
     }
 
     #[test]
     fn format_result_value_bool_false() {
-        let s = format_result_value(0, &Type::Bool, &HashMap::new(), &HashMap::new());
+        let empty = DashMap::new();
+        let s = format_result_value(0, &Type::Bool, &empty);
         assert_eq!(s, ":primitives/Bool false");
     }
 
     #[test]
     fn format_result_value_float() {
+        let empty = DashMap::new();
         let bits = 2.5_f64.to_bits() as i64;
-        let s = format_result_value(bits, &Type::Float, &HashMap::new(), &HashMap::new());
+        let s = format_result_value(bits, &Type::Float, &empty);
         assert_eq!(s, ":primitives/Float 2.5");
     }
 
     #[test]
     fn format_result_value_fn() {
+        let empty = DashMap::new();
         let ty = Type::Fn(vec![Type::Int], Box::new(Type::Int));
-        let s = format_result_value(0, &ty, &HashMap::new(), &HashMap::new());
+        let s = format_result_value(0, &ty, &empty);
         assert_eq!(s, ":(Fn [primitives/Int] primitives/Int) <closure>");
     }
 
@@ -747,15 +754,17 @@ mod tests {
         let var_id = 100;
         let scheme = Scheme {
             vars: vec![var_id],
-            constraints: HashMap::from([(var_id, vec![TraitName::from("Num")])]),
+            constraints: HashMap::from([(var_id, vec![FQTraitName::new(
+                ModuleFullPath::from("core.num"),
+                "Num".into(),
+            )])]),
             ty: Type::Fn(
                 vec![Type::Var(var_id), Type::Var(var_id)],
                 Box::new(Type::Var(var_id)),
             ),
         };
         let module = ModuleFullPath::from("user");
-        let type_modules: HashMap<TypeName, ModuleFullPath> = HashMap::new();
-        let s = format_scheme_display("add", &scheme, &module, &type_modules);
+        let s = format_scheme_display("add", &scheme, &module);
         assert_eq!(s, ":(Fn [:Num a :Num a] a) user/add");
     }
 
@@ -768,7 +777,10 @@ mod tests {
             vars: vec![var_id],
             constraints: HashMap::from([(
                 var_id,
-                vec![TraitName::from("Num"), TraitName::from("Eq")],
+                vec![
+                    FQTraitName::new(ModuleFullPath::from("core.num"), "Num".into()),
+                    FQTraitName::new(ModuleFullPath::from("core.eq"), "Eq".into()),
+                ],
             )]),
             ty: Type::Fn(
                 vec![Type::Var(var_id), Type::Var(var_id)],
@@ -776,8 +788,7 @@ mod tests {
             ),
         };
         let module = ModuleFullPath::from("user");
-        let type_modules: HashMap<TypeName, ModuleFullPath> = HashMap::new();
-        let s = format_scheme_display("bar", &scheme, &module, &type_modules);
+        let s = format_scheme_display("bar", &scheme, &module);
         // Traits are sorted alphabetically: Eq before Num
         assert_eq!(s, ":(Fn [:Eq :Num a :Eq :Num a] a) user/bar");
     }

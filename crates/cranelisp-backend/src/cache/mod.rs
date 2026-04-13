@@ -418,7 +418,8 @@ mod tests {
     // spec: design/backend/module-caching.md §13 — end-to-end: compile .o, load via linker, execute
     #[test]
     fn test_compile_load_and_execute_cached_module() {
-        use cranelisp_types::{Defn, DefnVariant, Expr, Scheme, Span, Symbol, Visibility};
+        use std::collections::HashMap;
+        use cranelisp_types::{Defn, DefnVariant, Expr, ModuleFullPath, Scheme, Span, Symbol, Visibility};
         use super::object::{ObjectCompileInput, IntrinsicTable};
 
         // Step 1: Create a minimal module with (defn answer [] 42)
@@ -450,15 +451,13 @@ mod tests {
             fn_slot_assignments: HashMap::new(),
             fn_to_module: HashMap::new(),
             intrinsics: IntrinsicTable::new(),
-            type_defs: HashMap::new(),
-            constructor_to_type: HashMap::new(),
             expr_types: HashMap::new(),
             next_got_slot: 0,
             cross_module_fns: vec![],
         };
 
         // Step 2: Compile to .o bytes
-        let obj_bytes = super::object::compile_module_to_object(&input, &input).unwrap();
+        let obj_bytes = super::object::compile_module_to_object(&input, &input, &dashmap::DashMap::new()).unwrap();
         assert!(!obj_bytes.is_empty());
 
         // Step 3: Load via linker

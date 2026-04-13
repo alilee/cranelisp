@@ -65,6 +65,8 @@ pub fn compile_and_execute_expr(
     env: &dyn cranelisp_backend::compiler::CompilationEnv,
     traced_fns: &[cranelisp_backend::compiler::TracedFnInfo],
     trace_extra_symbols: &[(String, *const u8)],
+    symbol_tables: &dashmap::DashMap<ModuleFullPath, cranelisp_types::SymbolTable>,
+    current_module: ModuleFullPath,
 ) -> Result<(i64, Type), CranelispError> {
     use cranelisp_types::TopLevel;
 
@@ -92,6 +94,8 @@ pub fn compile_and_execute_expr(
             &extra_syms,
             got_data_defs,
             Some(env),
+            symbol_tables,
+            current_module.clone(),
         )?;
 
         // SAFETY: compiled code was just generated and finalized by our JIT.
@@ -100,6 +104,7 @@ pub fn compile_and_execute_expr(
     } else {
         let value = compile_and_execute_expr_with_trace(
             jit_symbols, got_data_defs, expr, check, env, traced_fns, trace_extra_symbols,
+            symbol_tables, current_module.clone(),
         )?;
         Ok((value, ty))
     }
@@ -113,6 +118,8 @@ fn compile_and_execute_expr_with_trace(
     env: &dyn cranelisp_backend::compiler::CompilationEnv,
     traced_fns: &[cranelisp_backend::compiler::TracedFnInfo],
     trace_extra_symbols: &[(String, *const u8)],
+    symbol_tables: &dashmap::DashMap<ModuleFullPath, cranelisp_types::SymbolTable>,
+    current_module: ModuleFullPath,
 ) -> Result<i64, CranelispError> {
     use cranelisp_types::{Defn, DefnVariant, Symbol, Visibility};
 
@@ -153,6 +160,8 @@ fn compile_and_execute_expr_with_trace(
         check,
         &func_ids,
         &empty_arities,
+        symbol_tables,
+        current_module.clone(),
     );
 
     compile_ctx.env = Some(env);
@@ -190,6 +199,7 @@ pub fn compile_and_register_defn_shared(
     introspection: Option<&dashmap::DashMap<FQSymbol, crate::session_v4::Introspection>>,
     module: &ModuleFullPath,
     disable_dealloc: bool,
+    symbol_tables: &dashmap::DashMap<ModuleFullPath, cranelisp_types::SymbolTable>,
 ) -> Result<(), CranelispError> {
     let extra_symbols: Vec<(&str, *const u8)> = jit_symbols
         .iter()
@@ -218,6 +228,8 @@ pub fn compile_and_register_defn_shared(
         check,
         &func_ids,
         &func_arities,
+        symbol_tables,
+        module.clone(),
     );
     compile_ctx.env = Some(env);
     if disable_dealloc {
@@ -388,12 +400,6 @@ pub(crate) fn build_object_compile_input(
         fn_slot_assignments: collected.fn_slot_assignments,
         fn_to_module: cross_refs.fn_to_module,
         intrinsics,
-        type_defs: check
-            .map(|ch| ch.type_defs.clone())
-            .unwrap_or_default(),
-        constructor_to_type: check
-            .map(|ch| ch.constructor_to_type.clone())
-            .unwrap_or_default(),
         expr_types: check
             .map(|ch| ch.expr_types.clone())
             .unwrap_or_default(),

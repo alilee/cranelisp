@@ -19,7 +19,7 @@
 mod helpers;
 
 use helpers::*;
-use cranelisp_types::{Type, TypeName};
+use cranelisp_types::{FQTypeName, ModuleFullPath, Type, TypeName};
 use serial_test::serial;
 
 /// Helper: build REPL session with inline traits and a factorial function,
@@ -44,7 +44,7 @@ fn trace_returns_trace_type_int_body() {
     let (_val, ty) = repl_eval_typed(&mut s, "(trace (fact 5))");
     assert_eq!(
         ty,
-        Type::ADT("Trace".into(), vec![]),
+        Type::ADT(FQTypeName::new(ModuleFullPath::from("primitives"), TypeName::from("Trace")), vec![]),
         "trace should return Trace type, got: {:?}",
         ty
     );
@@ -61,7 +61,7 @@ fn trace_returns_trace_type_regardless_of_body() {
     let (_val, ty) = repl_eval_typed(&mut s, "(trace (always-true))");
     assert_eq!(
         ty,
-        Type::ADT("Trace".into(), vec![]),
+        Type::ADT(FQTypeName::new(ModuleFullPath::from("primitives"), TypeName::from("Trace")), vec![]),
         "trace should return Trace type even for Bool body, got: {:?}",
         ty
     );
@@ -78,7 +78,7 @@ fn trace_basic_fact() {
     let mut s = setup_repl_with_fact();
     // trace (fact 5) should succeed and return a non-zero Trace value
     let (val, ty) = repl_eval_typed(&mut s, "(trace (fact 5))");
-    assert_eq!(ty, Type::ADT("Trace".into(), vec![]));
+    assert_eq!(ty, Type::ADT(FQTypeName::new(ModuleFullPath::from("primitives"), TypeName::from("Trace")), vec![]));
     // The value should be a heap pointer (non-zero)
     assert_ne!(val, 0, "trace should return a heap-allocated Trace value");
 }
@@ -94,7 +94,7 @@ fn trace_inline_primitive_no_calls() {
     let (_val, ty) = repl_eval_typed(&mut s, "(trace (add-i64 1 2))");
     assert_eq!(
         ty,
-        Type::ADT("Trace".into(), vec![]),
+        Type::ADT(FQTypeName::new(ModuleFullPath::from("primitives"), TypeName::from("Trace")), vec![]),
         "trace of inline primitive should still return Trace type"
     );
 }
@@ -185,7 +185,7 @@ fn trace_field_params_returns_slist_string() {
     let mut s = setup_repl_with_fact();
     repl_eval(&mut s, "(import [primitives [params]])");
     let (_val, ty) = repl_eval_typed(&mut s, "(params (trace (fact 3)))");
-    let expected = Type::ADT(TypeName::from("SList"), vec![Type::String]);
+    let expected = Type::ADT(FQTypeName::new(ModuleFullPath::from("macros"), TypeName::from("SList")), vec![Type::String]);
     assert_eq!(
         ty,
         expected,
@@ -232,8 +232,8 @@ fn trace_field_children_returns_slist_trace() {
     repl_eval(&mut s, "(import [primitives [children]])");
     let (_val, ty) = repl_eval_typed(&mut s, "(children (trace (fact 3)))");
     let expected = Type::ADT(
-        TypeName::from("SList"),
-        vec![Type::ADT(TypeName::from("Trace"), vec![])],
+        FQTypeName::new(ModuleFullPath::from("macros"), TypeName::from("SList")),
+        vec![Type::ADT(FQTypeName::new(ModuleFullPath::from("primitives"), TypeName::from("Trace")), vec![])],
     );
     assert_eq!(
         ty,
@@ -256,7 +256,7 @@ fn trace_nested_single_trace() {
     let (_val, ty) = repl_eval_typed(&mut s, "(trace (trace (fact 3)))");
     assert_eq!(
         ty,
-        Type::ADT("Trace".into(), vec![]),
+        Type::ADT(FQTypeName::new(ModuleFullPath::from("primitives"), TypeName::from("Trace")), vec![]),
         "nested trace should still return Trace type, got: {:?}",
         ty
     );
@@ -274,7 +274,7 @@ fn trace_composability_let_binding() {
     let (_val, ty) = repl_eval_typed(&mut s, "(let [t (trace (fact 3))] t)");
     assert_eq!(
         ty,
-        Type::ADT("Trace".into(), vec![]),
+        Type::ADT(FQTypeName::new(ModuleFullPath::from("primitives"), TypeName::from("Trace")), vec![]),
         "let-bound trace should be Trace type, got: {:?}",
         ty
     );
@@ -398,7 +398,7 @@ fn trace_composed_expression() {
     repl_eval(&mut s, "(defn double [x] (* x 2))");
     repl_eval(&mut s, "(defn inc-then-double [x] (double (+ x 1)))");
     let (_val, ty) = repl_eval_typed(&mut s, "(trace (inc-then-double 3))");
-    assert_eq!(ty, Type::ADT("Trace".into(), vec![]));
+    assert_eq!(ty, Type::ADT(FQTypeName::new(ModuleFullPath::from("primitives"), TypeName::from("Trace")), vec![]));
     // Root trace name is always "::trace::" — use let binding
     let display = repl_eval_display(&mut s, "(let [t (trace (inc-then-double 3))] (name t))");
     assert!(
@@ -414,7 +414,7 @@ fn trace_is_value_not_effect() {
     let mut s = setup_repl_with_fact();
     // (let [t (trace (fact 3))] t) — should just return the Trace, no side effects
     let (val, ty) = repl_eval_typed(&mut s, "(let [t (trace (fact 3))] t)");
-    assert_eq!(ty, Type::ADT("Trace".into(), vec![]));
+    assert_eq!(ty, Type::ADT(FQTypeName::new(ModuleFullPath::from("primitives"), TypeName::from("Trace")), vec![]));
     assert_ne!(val, 0, "trace value should be a heap pointer");
 }
 

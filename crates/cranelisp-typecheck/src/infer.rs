@@ -10,22 +10,11 @@ use cranelisp_types::{
     Type, TypeExpr,
 };
 
-use crate::checker::{CheckState, TypeChecker};
+use crate::checker::{CheckState, TypeCheckEnv};
 use crate::resolve::resolve_type_expr;
 use crate::scheme::mono;
 
-impl TypeChecker {
-
-    /// Convenience wrapper for tests — creates a temporary CheckState from self.state.
-    /// Used by test code that doesn't want to manage state explicitly.
-    #[cfg(test)]
-    pub(crate) fn infer_expr_for_test(&mut self, expr: &Expr) -> Result<Type, CranelispError> {
-        let mut state = std::mem::replace(&mut self.state, CheckState::new(cranelisp_types::ModuleFullPath::from("")));
-        let result = self.infer_expr(&mut state, expr);
-        self.state = state;
-        result
-    }
-
+impl TypeCheckEnv<'_> {
     /// Infer the type of an expression. Main dispatch method.
     pub(crate) fn infer_expr(&self, state: &mut CheckState, expr: &Expr) -> Result<Type, CranelispError> {
         match expr {
@@ -109,7 +98,7 @@ impl TypeChecker {
         })?;
 
         // Don't instantiate special forms -- they are not callable as values
-        if let Some(ModuleEntry::Def { kind, .. }) = self.current_symbol_table_with_state(state).get(name)
+        if let Some(ModuleEntry::Def { kind, .. }) = self.current_symbol_table(state).get(name)
             && matches!(kind.as_ref(), cranelisp_types::DefKind::SpecialForm { .. })
         {
             return Err(CranelispError::TypeError {
@@ -607,8 +596,8 @@ impl TypeChecker {
 
         // Check exhaustiveness for concrete ADT scrutinees
         let resolved_scrutinee = self.apply_subst(state, &scrutinee_ty);
-        if let Type::ADT(type_name, _) = &resolved_scrutinee {
-            self.check_exhaustiveness(type_name, &covered_ctors, has_wildcard, span)?;
+        if let Type::ADT(fqtn, _) = &resolved_scrutinee {
+            self.check_exhaustiveness(&fqtn.name, &covered_ctors, has_wildcard, span)?;
         }
 
         let resolved = self.apply_subst(state, &result_ty);
@@ -670,10 +659,8 @@ impl TypeChecker {
             name.as_ref()
         };
 
-        // Verify the constructor exists in the type registry
-        if self.type_defs.read().unwrap()
-            .constructor_type(bare_name)
-            .is_none()
+        // Verify the constructor exists by checking the module system
+        if self.lookup_constructor_type(bare_name).is_none()
         {
             return Err(CranelispError::TypeError {
                 message: format!("unknown constructor in pattern: {name}"),
@@ -779,7 +766,13 @@ impl TypeChecker {
             self.apply_subst(state, &first_ty)
         };
 
-        let vec_type = Type::ADT("Vec".into(), vec![elem_type]);
+        let vec_type = Type::ADT(
+            cranelisp_types::FQTypeName::new(
+                cranelisp_types::ModuleFullPath::from("primitives"),
+                cranelisp_types::TypeName::from("Vec"),
+            ),
+            vec![elem_type],
+        );
         self.record_expr_type(state, span, vec_type.clone());
         Ok(vec_type)
     }
@@ -798,7 +791,13 @@ impl TypeChecker {
         // to propagate constraints and detect errors within the body.
         let _body_ty = self.infer_expr(state, body)?;
 
-        let trace_type = Type::ADT("Trace".into(), vec![]);
+        let trace_type = Type::ADT(
+            cranelisp_types::FQTypeName::new(
+                cranelisp_types::ModuleFullPath::from("primitives"),
+                cranelisp_types::TypeName::from("Trace"),
+            ),
+            vec![],
+        );
         self.record_expr_type(state, span, trace_type.clone());
         Ok(trace_type)
     }
@@ -829,7 +828,19 @@ impl TypeChecker {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use cranelisp_types::{ConstructorDef, ImportNames, ImportSpec, ModuleEntry, ModuleFullPath, Span, Symbol, TypeName, Visibility};
+    use crate::checker::TestFixture;
+    use cranelisp_types::{ConstructorDef, FQTypeName, ImportNames, ImportSpec, ModuleEntry, ModuleFullPath, Span, Symbol, TypeName, Visibility};
+
+    /// Test helper: create an FQTypeName in the "test" module (used for types registered via
+    /// register_type_def_self in tc() which has current_module = "test").
+    fn test_fqtn(name: &str) -> FQTypeName {
+        FQTypeName::new(ModuleFullPath::from("test"), TypeName::from(name))
+    }
+
+    /// Test helper: create an FQTypeName in the "primitives" module.
+    fn prims_fqtn(name: &str) -> FQTypeName {
+        FQTypeName::new(ModuleFullPath::from("primitives"), TypeName::from(name))
+    }
 
     fn span(start: u32, end: u32) -> Span {
         Span::new(start, end)
@@ -837,8 +848,8 @@ mod tests {
 
     /// Create a TypeChecker with builtins for testing.
     /// Uses set_current_module to create a "test" module seeded with primitives.
-    fn tc() -> TypeChecker {
-        let mut tc = TypeChecker::new();
+    fn tc() -> TestFixture {
+        let mut tc = TestFixture::new();
         tc.set_current_module(ModuleFullPath::from("test"));
         // Import primitives so bare names (add-i64 etc.) resolve.
         let import_spec = ImportSpec {
@@ -847,12 +858,12 @@ mod tests {
             names: ImportNames::Glob,
             span: Span::new(0, 0),
         };
-        tc.register_imports(&[import_spec]).unwrap();
+        tc.register_imports_self(&[import_spec]).unwrap();
         tc
     }
 
     /// Register a simple enum type for testing.
-    fn register_color(tc: &mut TypeChecker) {
+    fn register_color(tc: &mut TestFixture) {
         tc.register_type_def_self(
             &TypeName::from("Color"),
             &None,
@@ -1609,7 +1620,7 @@ mod tests {
     // --- Data constructor pattern tests (Ring 1) ---
 
     /// Register (Option a) with None and Some[:a val].
-    fn register_option(tc: &mut TypeChecker) {
+    fn register_option(tc: &mut TestFixture) {
         tc.register_type_def_self(
             &TypeName::from("Option"),
             &None,
@@ -1861,7 +1872,7 @@ mod tests {
         let ty = tc.infer_expr_for_test(&annotate_expr).unwrap();
         assert_eq!(
             ty,
-            Type::ADT(TypeName::from("Option"), vec![Type::Int])
+            Type::ADT(test_fqtn("Option"), vec![Type::Int])
         );
     }
 
@@ -1969,7 +1980,7 @@ mod tests {
         let ty = tc.infer_expr_for_test(&expr).unwrap();
         assert_eq!(
             ty,
-            Type::ADT(TypeName::from("Option"), vec![Type::Int])
+            Type::ADT(test_fqtn("Option"), vec![Type::Int])
         );
     }
 
@@ -1988,7 +1999,7 @@ mod tests {
         let ty = tc.infer_expr_for_test(&expr).unwrap();
         match &ty {
             Type::ADT(name, args) => {
-                assert_eq!(name.as_ref(), "Option");
+                assert_eq!(name.name.as_ref(), "Option");
                 assert_eq!(args.len(), 1);
                 // The arg should be a fresh var
                 assert!(matches!(args[0], Type::Var(_)));
@@ -2059,7 +2070,7 @@ mod tests {
         };
         assert_eq!(
             tc.infer_expr_for_test(&expr).unwrap(),
-            Type::ADT(TypeName::from("Vec"), vec![Type::Int])
+            Type::ADT(prims_fqtn("Vec"), vec![Type::Int])
         );
     }
 
@@ -2077,7 +2088,7 @@ mod tests {
         };
         assert_eq!(
             tc.infer_expr_for_test(&expr).unwrap(),
-            Type::ADT(TypeName::from("Vec"), vec![Type::String])
+            Type::ADT(prims_fqtn("Vec"), vec![Type::String])
         );
     }
 
@@ -2093,7 +2104,7 @@ mod tests {
         let ty = tc.infer_expr_for_test(&expr).unwrap();
         match &ty {
             Type::ADT(name, args) => {
-                assert_eq!(name.as_ref(), "Vec");
+                assert_eq!(name.name.as_ref(), "Vec");
                 assert_eq!(args.len(), 1);
                 // Element type should be a fresh type variable
                 assert!(matches!(args[0], Type::Var(_)));
@@ -2132,7 +2143,7 @@ mod tests {
         };
         assert_eq!(
             tc.infer_expr_for_test(&expr).unwrap(),
-            Type::ADT(TypeName::from("Vec"), vec![Type::Bool])
+            Type::ADT(prims_fqtn("Vec"), vec![Type::Bool])
         );
     }
 
@@ -2161,7 +2172,7 @@ mod tests {
         };
         assert_eq!(
             tc.infer_expr_for_test(&expr).unwrap(),
-            Type::ADT(TypeName::from("Vec"), vec![Type::Int])
+            Type::ADT(prims_fqtn("Vec"), vec![Type::Int])
         );
     }
 
@@ -2173,7 +2184,7 @@ mod tests {
         tc.bind_local_self(
             Symbol::from("vec-len"),
             mono(Type::Fn(
-                vec![Type::ADT(TypeName::from("Vec"), vec![Type::Int])],
+                vec![Type::ADT(prims_fqtn("Vec"), vec![Type::Int])],
                 Box::new(Type::Int),
             )),
         );
@@ -2218,7 +2229,7 @@ mod tests {
             ty,
             Type::Fn(
                 vec![Type::Int],
-                Box::new(Type::ADT(TypeName::from("Vec"), vec![Type::Int]))
+                Box::new(Type::ADT(prims_fqtn("Vec"), vec![Type::Int]))
             )
         );
     }
@@ -2234,7 +2245,7 @@ mod tests {
         };
         assert_eq!(
             tc.infer_expr_for_test(&expr).unwrap(),
-            Type::ADT(TypeName::from("Vec"), vec![Type::Int])
+            Type::ADT(prims_fqtn("Vec"), vec![Type::Int])
         );
     }
 
@@ -2253,7 +2264,7 @@ mod tests {
         tc.infer_expr_for_test(&expr).unwrap();
         assert_eq!(
             tc.state.expr_types.get(&s),
-            Some(&Type::ADT(TypeName::from("Vec"), vec![Type::Int]))
+            Some(&Type::ADT(prims_fqtn("Vec"), vec![Type::Int]))
         );
     }
 
@@ -2272,7 +2283,7 @@ mod tests {
         };
         assert_eq!(
             tc.infer_expr_for_test(&expr).unwrap(),
-            Type::ADT(TypeName::from("Vec"), vec![Type::Float])
+            Type::ADT(prims_fqtn("Vec"), vec![Type::Float])
         );
     }
 
@@ -2355,7 +2366,7 @@ mod tests {
     // -----------------------------------------------------------------------
 
     /// Register a constrained function "cfn" in the current module for testing.
-    fn register_constrained_fn(tc: &mut TypeChecker) {
+    fn register_constrained_fn(tc: &mut TestFixture) {
         use cranelisp_types::{ConstrainedFn, Defn, DefnVariant};
 
         let a_var = tc.fresh_var();
@@ -2365,7 +2376,10 @@ mod tests {
             vars: vec![a_id],
             constraints: {
                 let mut c = HashMap::new();
-                c.insert(a_id, vec![cranelisp_types::TraitName::from("Num")]);
+                c.insert(a_id, vec![cranelisp_types::FQTraitName::new(
+                    cranelisp_types::ModuleFullPath::from("test"),
+                    cranelisp_types::TraitName::from("Num"),
+                )]);
                 c
             },
             ty: fn_ty,
@@ -2375,7 +2389,7 @@ mod tests {
         tc.bind_local_self(Symbol::from("cfn"), scheme.clone());
 
         // Register in module so the constrained_fn check finds it
-        tc.current_symbol_table_mut().insert(
+        tc.symbol_table_mut().insert(
             Symbol::from("cfn"),
             ModuleEntry::Def {
                 scheme: scheme.clone(),
@@ -2401,6 +2415,7 @@ mod tests {
                 }),
                 callees: Vec::new(),
                 got_slot: None,
+                trait_origin: None,
             },
         );
     }
@@ -2474,7 +2489,7 @@ mod tests {
 
     /// Set up Num trait with + method (impl for Int, Float only)
     /// and Ord trait with < method (impl for Int, Float only).
-    fn register_num_and_ord_traits(tc: &mut TypeChecker) {
+    fn register_num_and_ord_traits(tc: &mut TestFixture) {
         use cranelisp_types::{DefnVariant, TraitDecl, TraitImpl, TraitMethodSig, TraitName, TypeExpr, Defn};
 
         // Num trait: + :: (Fn [a a] a)

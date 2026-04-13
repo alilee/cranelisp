@@ -85,7 +85,7 @@ impl<'a, M: Module> FnCompiler<'a, M> {
         // the inc prevents premature deallocation. The caller's later
         // dec (scope cleanup or parent expression) restores balance.
         if let Some(ty) = self.ctx.expr_types.get(&span) {
-            let category = HeapCategory::classify(ty, Some(self.ctx.type_defs));
+            let category = HeapCategory::classify(ty, Some(self.ctx.symbol_tables));
             match category {
                 HeapCategory::AlwaysHeap => {
                     heap::emit_rc_inc(&mut self.builder, result);
@@ -188,7 +188,7 @@ impl<'a, M: Module> FnCompiler<'a, M> {
             } => {
                 // Check if this is a known primitive trait method (inline IR).
                 if let Some(prim_name) =
-                    operators::primitive_for_trait_method(trait_name, method_name, impl_type)
+                    operators::primitive_for_trait_method(&trait_name.name, method_name, &impl_type.name)
                 {
                     // Primitive trait methods are borrowing.
                     if is_extern_primitive(prim_name) {
@@ -330,7 +330,7 @@ impl<'a, M: Module> FnCompiler<'a, M> {
             if let Expr::Var { name, .. } = arg
                 && let Some(ty) = self.variable_types.get(name) {
                     let category =
-                        HeapCategory::classify(ty, Some(self.ctx.type_defs));
+                        HeapCategory::classify(ty, Some(self.ctx.symbol_tables));
                     match category {
                         HeapCategory::AlwaysHeap => {
                             heap::emit_rc_inc(&mut self.builder, val);
@@ -366,7 +366,7 @@ impl<'a, M: Module> FnCompiler<'a, M> {
             }
             // Check if the expression produces a heap-typed value.
             if let Some(ty) = self.ctx.expr_types.get(&arg.span()).cloned() {
-                let category = HeapCategory::classify(&ty, Some(self.ctx.type_defs));
+                let category = HeapCategory::classify(&ty, Some(self.ctx.symbol_tables));
                 match category {
                     HeapCategory::AlwaysHeap => {
                         if matches!(ty, cranelisp_types::Type::Fn(_, _)) {

@@ -17,9 +17,12 @@ use std::collections::HashMap;
 use cranelift::prelude::*;
 use cranelift_module::{FuncId, Module};
 
+use dashmap::DashMap;
+
 use cranelisp_types::{
-    ConstructorInfo, CranelispError, Defn, Expr, HeapCategory, ModuleFullPath,
-    ResolvedCall, Span, Symbol, Type, TypeDefInfo, TypeName,
+    ConstructorInfo, CranelispError, Defn, Expr, FQTypeName, HeapCategory,
+    ModuleEntry, ModuleFullPath, ResolvedCall, Span, Symbol, SymbolTable,
+    Type, TypeDefInfo,
 };
 
 use crate::heap;
@@ -28,19 +31,6 @@ use crate::heap;
 
 /// Named constant for the user trap code used when match exhaustion occurs.
 pub const MATCH_EXHAUSTION_TRAP: u8 = 1;
-
-/// Strip module prefix from a possibly-qualified constructor name.
-///
-/// E.g. `"macros/SCons"` -> `"SCons"`, `"Some"` -> `"Some"`.
-/// Constructor registries store unqualified names, so callers of
-/// `constructor_to_type` and `type_defs` use this before lookup.
-pub(crate) fn bare_ctor_name(name: &Symbol) -> &str {
-    if let Some(slash_pos) = name.as_ref().find('/') {
-        &name.as_ref()[slash_pos + 1..]
-    } else {
-        name.as_ref()
-    }
-}
 
 /// GOT data symbol name for a module. Single source of truth.
 /// Used as the Cranelift data symbol name for the module's GOT table in both
@@ -123,10 +113,10 @@ pub struct CompileContext<'a> {
     pub func_ids: &'a HashMap<Symbol, FuncId>,
     /// Function parameter counts, for generating closure wrappers.
     pub func_arities: &'a HashMap<Symbol, usize>,
-    /// Type definitions for ADT codegen.
-    pub type_defs: &'a HashMap<TypeName, TypeDefInfo>,
-    /// Constructor name -> parent type name mapping.
-    pub constructor_to_type: &'a HashMap<Symbol, TypeName>,
+    /// Per-module symbol tables (shared, authoritative source for type defs and constructors).
+    pub symbol_tables: &'a DashMap<ModuleFullPath, SymbolTable>,
+    /// Current module being compiled (for constructor/type lookups).
+    pub current_module: ModuleFullPath,
     /// Session-backed compilation environment (Interactive/JIT mode).
     ///
     /// When present, GOT slots and arities are resolved live through this
@@ -154,6 +144,100 @@ pub struct CompileContext<'a> {
     pub vec_new_func_id: Option<FuncId>,
     /// FuncId for runtime/vec_drop. None in Ring 0 (no Vecs).
     pub vec_drop_func_id: Option<FuncId>,
+}
+
+impl<'a> CompileContext<'a> {
+    /// Look up a constructor by name from the symbol tables.
+    ///
+    /// Accepts both bare names (`"SexpStr"`) and qualified names (`"macros/SexpStr"`).
+    /// For qualified names, looks up directly in the specified module.
+    /// For bare names, searches the current module's symbol table (following imports).
+    /// Returns `(FQTypeName, ConstructorInfo)` if found.
+    pub fn lookup_constructor(&self, name: &str) -> Option<(FQTypeName, ConstructorInfo)> {
+        // Determine which module to search and the bare name within it.
+        let (search_module, bare_name) = if let Some(slash_pos) = name.find('/') {
+            let module_str = &name[..slash_pos];
+            let bare = &name[slash_pos + 1..];
+            (ModuleFullPath::from(module_str), bare)
+        } else {
+            (self.current_module.clone(), name)
+        };
+
+        // 1. Direct lookup in the target module.
+        if let Some(table) = self.symbol_tables.get(&search_module) {
+            if let Some(entry) = table.get(bare_name) {
+                if let Some(result) = Self::extract_constructor(entry) {
+                    return Some(result);
+                }
+            }
+
+            // Follow import chain.
+            if let Some(ModuleEntry::Import { source }) = table.get(bare_name) {
+                let source_mod = source.module.clone();
+                let source_name = source.symbol.clone();
+                drop(table); // Drop guard before getting another
+                if let Some(source_table) = self.symbol_tables.get(&source_mod) {
+                    if let Some(entry) = source_table.get(source_name.as_ref()) {
+                        if let Some(result) = Self::extract_constructor(entry) {
+                            return Some(result);
+                        }
+                    }
+                }
+            }
+        }
+
+        // 2. Global fallback: search all modules for an unqualified name.
+        //    This handles cases where constructors from synthetic modules
+        //    (primitives, macros) are used without an explicit import.
+        if !name.contains('/') {
+            for guard in self.symbol_tables.iter() {
+                if *guard.key() == self.current_module {
+                    continue; // Already searched above
+                }
+                if let Some(entry) = guard.get(bare_name) {
+                    if let Some(result) = Self::extract_constructor(entry) {
+                        return Some(result);
+                    }
+                }
+            }
+        }
+
+        None
+    }
+
+    /// Extract constructor info from a module entry.
+    ///
+    /// Handles both `ModuleEntry::Constructor` (normal case) and
+    /// `ModuleEntry::TypeDef` with `constructor_scheme` (product types
+    /// where the constructor name equals the type name — the TypeDef
+    /// entry overwrites the Constructor entry during registration).
+    fn extract_constructor(entry: &ModuleEntry) -> Option<(FQTypeName, ConstructorInfo)> {
+        match entry {
+            ModuleEntry::Constructor { type_name, info, .. } => {
+                Some((type_name.clone(), info.clone()))
+            }
+            ModuleEntry::TypeDef {
+                info,
+                constructor_scheme: Some(_),
+                ..
+            } => {
+                // Product type: single constructor with same name as type.
+                // The ConstructorInfo is in info.constructors[0].
+                let ctor = info.constructors.first()?;
+                Some((info.name.clone(), ctor.clone()))
+            }
+            _ => None,
+        }
+    }
+
+    /// Look up a TypeDefInfo by FQTypeName from the symbol tables.
+    pub fn lookup_type_def(&self, fqtn: &FQTypeName) -> Option<TypeDefInfo> {
+        let table = self.symbol_tables.get(&fqtn.module)?;
+        match table.get(fqtn.name.as_ref()) {
+            Some(ModuleEntry::TypeDef { info, .. }) => Some(info.clone()),
+            _ => None,
+        }
+    }
 }
 
 /// Match-arm-invariant data bundled to reduce parameter counts in
@@ -533,7 +617,7 @@ impl<'a, M: Module> FnCompiler<'a, M> {
                     let ty = self.variable_types.get(name).cloned()
                         .unwrap_or(Type::Int); // fallback, should not happen
                     let needs_guard = matches!(
-                        HeapCategory::classify(&ty, Some(self.ctx.type_defs)),
+                        HeapCategory::classify(&ty, Some(self.ctx.symbol_tables)),
                         HeapCategory::Mixed
                     );
                     (name.clone(), ty, needs_guard)
@@ -586,13 +670,13 @@ impl<'a, M: Module> FnCompiler<'a, M> {
         dealloc: FuncId,
         is_mixed: bool,
     ) {
-        let type_name = match ty {
-            Type::ADT(name, _) => name,
+        let fqtn = match ty {
+            Type::ADT(fqtn, _) => fqtn,
             _ => return, // Not an ADT; nothing to do.
         };
 
-        let type_def = match self.ctx.type_defs.get(type_name) {
-            Some(td) => td.clone(),
+        let type_def = match self.ctx.lookup_type_def(fqtn) {
+            Some(td) => td,
             None => return,
         };
 
@@ -612,7 +696,7 @@ impl<'a, M: Module> FnCompiler<'a, M> {
             ctor.fields.iter().any(|f| {
                 let resolved = substitute_type_inline(&f.ty, &subst);
                 matches!(
-                    HeapCategory::classify(&resolved, Some(self.ctx.type_defs)),
+                    HeapCategory::classify(&resolved, Some(self.ctx.symbol_tables)),
                     HeapCategory::AlwaysHeap | HeapCategory::Mixed
                 )
             })
@@ -745,7 +829,7 @@ impl<'a, M: Module> FnCompiler<'a, M> {
 
         for (i, field) in ctor.fields.iter().enumerate() {
             let resolved_ty = substitute_type_inline(&field.ty, subst);
-            let category = HeapCategory::classify(&resolved_ty, Some(self.ctx.type_defs));
+            let category = HeapCategory::classify(&resolved_ty, Some(self.ctx.symbol_tables));
             match category {
                 HeapCategory::AlwaysHeap => {
                     let field_val = heap::heap_load(
@@ -845,7 +929,7 @@ impl<'a, M: Module> FnCompiler<'a, M> {
             return;
         }
         if let Some(ty) = self.ctx.expr_types.get(&body.span()) {
-            let category = HeapCategory::classify(ty, Some(self.ctx.type_defs));
+            let category = HeapCategory::classify(ty, Some(self.ctx.symbol_tables));
             match category {
                 HeapCategory::AlwaysHeap => {
                     heap::emit_rc_inc(&mut self.builder, body_val);
@@ -863,7 +947,7 @@ impl<'a, M: Module> FnCompiler<'a, M> {
     /// Check if a type is heap-allocated and needs RC management.
     pub(crate) fn is_heap_type(&self, ty: &Type) -> bool {
         matches!(
-            HeapCategory::classify(ty, Some(self.ctx.type_defs)),
+            HeapCategory::classify(ty, Some(self.ctx.symbol_tables)),
             HeapCategory::AlwaysHeap | HeapCategory::Mixed
         )
     }

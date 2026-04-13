@@ -12,7 +12,7 @@ use cranelift::prelude::*;
 use cranelift_module::{Linkage, Module};
 
 use cranelisp_types::{
-    CranelispError, Expr, HeapCategory, HeapHeader, Span, Type, TypeName,
+    CranelispError, Expr, HeapCategory, HeapHeader, Span, Type,
 };
 
 use crate::heap::{self, HeapAdt, HeapVec, NULLARY_THRESHOLD_I64};
@@ -189,7 +189,7 @@ impl<'a, M: Module> FnCompiler<'a, M> {
 
         // If element type is heap, emit RC inc on the loaded value.
         if let Some(elem_type) = self.vec_elem_type(vec_expr) {
-            let category = HeapCategory::classify(&elem_type, Some(self.ctx.type_defs));
+            let category = HeapCategory::classify(&elem_type, Some(self.ctx.symbol_tables));
             match category {
                 HeapCategory::AlwaysHeap => {
                     heap::emit_rc_inc(&mut self.builder, elem);
@@ -287,7 +287,7 @@ impl<'a, M: Module> FnCompiler<'a, M> {
 
         // Dec the old element (if heap type).
         if let Some(ty) = &elem_type {
-            let category = HeapCategory::classify(ty, Some(self.ctx.type_defs));
+            let category = HeapCategory::classify(ty, Some(self.ctx.symbol_tables));
             match category {
                 HeapCategory::AlwaysHeap => {
                     heap::emit_rc_dec(
@@ -315,7 +315,7 @@ impl<'a, M: Module> FnCompiler<'a, M> {
         // Inc the new value (if heap type) — the vec needs its own reference.
         // The caller retains its reference; the vec is gaining one.
         if let Some(ty) = &elem_type {
-            let category = HeapCategory::classify(ty, Some(self.ctx.type_defs));
+            let category = HeapCategory::classify(ty, Some(self.ctx.symbol_tables));
             match category {
                 HeapCategory::AlwaysHeap => {
                     heap::emit_rc_inc(&mut self.builder, new_val);
@@ -483,8 +483,8 @@ impl<'a, M: Module> FnCompiler<'a, M> {
 
     /// Extract the element type from a Vec expression's type in expr_types.
     fn vec_elem_type(&self, vec_expr: &Expr) -> Option<Type> {
-        if let Some(Type::ADT(name, args)) = self.ctx.expr_types.get(&vec_expr.span())
-            && name.as_ref() == "Vec" && args.len() == 1 {
+        if let Some(Type::ADT(fqtn, args)) = self.ctx.expr_types.get(&vec_expr.span())
+            && fqtn.name.as_ref() == "Vec" && args.len() == 1 {
                 return Some(args[0].clone());
             }
         None
@@ -546,7 +546,7 @@ impl<'a, M: Module> FnCompiler<'a, M> {
             return Ok(self.builder.ins().iconst(types::I64, 0));
         };
 
-        let category = HeapCategory::classify(ty, Some(self.ctx.type_defs));
+        let category = HeapCategory::classify(ty, Some(self.ctx.symbol_tables));
         match category {
             HeapCategory::NeverHeap => Ok(self.builder.ins().iconst(types::I64, 0)),
             HeapCategory::AlwaysHeap => {
@@ -576,7 +576,7 @@ impl<'a, M: Module> FnCompiler<'a, M> {
             return Ok(self.builder.ins().iconst(types::I64, 0));
         };
 
-        let category = HeapCategory::classify(ty, Some(self.ctx.type_defs));
+        let category = HeapCategory::classify(ty, Some(self.ctx.symbol_tables));
         match category {
             HeapCategory::NeverHeap => Ok(self.builder.ins().iconst(types::I64, 0)),
             HeapCategory::AlwaysHeap => {
@@ -686,7 +686,7 @@ impl<'a, M: Module> FnCompiler<'a, M> {
     ) -> Result<cranelift_module::FuncId, CranelispError> {
         let suffix = if guarded { "mixed" } else { "heap" };
         let type_suffix = match elem_type {
-            Type::ADT(name, _) => format!("_{name}"),
+            Type::ADT(fqtn, _) => format!("_{}", fqtn.name),
             _ => String::new(),
         };
         let name = format!("runtime/vec_elem_dec_{suffix}{type_suffix}");
@@ -765,13 +765,13 @@ impl<'a, M: Module> FnCompiler<'a, M> {
         dealloc_id: cranelift_module::FuncId,
         span: Span,
     ) -> Result<Option<cranelift_module::FuncId>, CranelispError> {
-        let type_name = match ty {
-            Type::ADT(name, _) => name.clone(),
+        let fqtn = match ty {
+            Type::ADT(fqtn, _) => fqtn.clone(),
             _ => return Ok(None),
         };
 
-        let type_def = match self.ctx.type_defs.get(&type_name) {
-            Some(td) => td.clone(),
+        let type_def = match self.ctx.lookup_type_def(&fqtn) {
+            Some(td) => td,
             None => return Ok(None),
         };
 
@@ -809,7 +809,7 @@ impl<'a, M: Module> FnCompiler<'a, M> {
             ctor.fields.iter().any(|f| {
                 let resolved = substitute_type_inline(&f.ty, &subst);
                 matches!(
-                    HeapCategory::classify(&resolved, Some(self.ctx.type_defs)),
+                    HeapCategory::classify(&resolved, Some(self.ctx.symbol_tables)),
                     HeapCategory::AlwaysHeap | HeapCategory::Mixed
                 )
             })
@@ -820,7 +820,7 @@ impl<'a, M: Module> FnCompiler<'a, M> {
         }
 
         // Build the drop glue function.
-        let glue_name = format!("runtime/drop_glue_{type_name}");
+        let glue_name = format!("runtime/drop_glue_{}", fqtn.name);
 
         // Check if this drop glue was already built (e.g., by a previous module).
         if let Some(cranelift_module::FuncOrDataId::Func(existing_id)) =
@@ -865,7 +865,7 @@ impl<'a, M: Module> FnCompiler<'a, M> {
                 ctor,
                 &subst,
                 dealloc_id,
-                self.ctx.type_defs,
+                self.ctx.symbol_tables,
             );
         } else {
             // Multiple data constructors: load tag, branch to correct handler.
@@ -894,7 +894,7 @@ impl<'a, M: Module> FnCompiler<'a, M> {
                     ctor,
                     &subst,
                     dealloc_id,
-                    self.ctx.type_defs,
+                    self.ctx.symbol_tables,
                 );
                 builder.ins().jump(done_block, &[]);
 
@@ -933,11 +933,11 @@ impl<'a, M: Module> FnCompiler<'a, M> {
         ctor: &cranelisp_types::ConstructorInfo,
         subst: &std::collections::HashMap<cranelisp_types::TypeId, Type>,
         dealloc_id: cranelift_module::FuncId,
-        type_defs: &std::collections::HashMap<TypeName, cranelisp_types::TypeDefInfo>,
+        symbol_tables: &dashmap::DashMap<cranelisp_types::ModuleFullPath, cranelisp_types::SymbolTable>,
     ) {
         for (i, field) in ctor.fields.iter().enumerate() {
             let resolved_ty = substitute_type_inline(&field.ty, subst);
-            let category = HeapCategory::classify(&resolved_ty, Some(type_defs));
+            let category = HeapCategory::classify(&resolved_ty, Some(symbol_tables));
             match category {
                 HeapCategory::AlwaysHeap => {
                     let field_val =

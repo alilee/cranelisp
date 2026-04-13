@@ -1,49 +1,29 @@
-//! TypeChecker struct: the central state for type inference.
+//! TypeCheckEnv: borrowed references to shared state for type inference.
 //!
 //! Scope operations, fresh variable generation, and expr_type recording.
-//! Other modules extend TypeChecker via `impl TypeChecker` blocks.
+//! Other modules extend TypeCheckEnv via `impl TypeCheckEnv<'_>` blocks.
 //!
-//! ## Concurrency preparation (Sprint 40)
+//! ## State model (Sprint 51)
 //!
 //! State is split between:
-//! - **`TypeChecker`** — persistent state that survives across `check()` calls
-//!   (module tables, type/trait registries, TypeId counter).
+//! - **`TypeCheckEnv<'a>`** — borrowed references to session-owned shared state
+//!   (module symbol tables, TypeId counter). Trivially constructible, `Send + Sync`.
 //! - **`CheckState`** — per-check transient state created/consumed by each
 //!   `check()` invocation (substitution, scope stack, resolutions, warnings).
+//!   The caller owns this and passes `&mut CheckState` to methods that need it.
 //!
-//! **Phase 1** (Wave 1): extracted `CheckState` from `TypeChecker`.
+//! All type definitions, trait declarations, trait implementations, and
+//! constructor mappings are stored on per-module `SymbolTable` entries
+//! (within the `modules` DashMap). The old `TypeDefRegistry`, `TraitRegistry`,
+//! and `ImplRegistry` global caches have been eliminated — all lookups go
+//! through the module system.
 //!
-//! **Phase 2** (Wave 2): added concurrency primitives to persistent state:
-//! - `next_id: AtomicU32` — lock-free TypeId allocation via `fetch_add`.
-//! - `module_locks: HashMap<ModuleFullPath, Arc<AtomicBool>>` — per-module
-//!   compilation exclusion via `try_lock_module()` / `ModuleGuard` RAII guard.
-//!
-//! **Phase 3** (Wave 3): shared registries behind `RwLock`:
-//! - `type_defs: RwLock<TypeDefRegistry>` — read during constructor lookups,
-//!   written during type definition registration.
-//! - `trait_registry: RwLock<TraitRegistry>` — read during method resolution,
-//!   written during trait declaration registration.
-//! - `impl_registry: RwLock<ImplRegistry>` — read during impl lookup,
-//!   written during impl registration.
-//!
-//! Methods with `&mut self` use `get_mut().unwrap()` for zero-overhead access
-//! (no actual locking — `&mut` guarantees exclusivity). Methods with `&self`
-//! acquire `read().unwrap()` or `write().unwrap()` as needed.
-//!
-//! **`check()` remains `&mut self`** because `CheckState` is stored on
-//! `TypeChecker` (field `self.state`) for REPL additive mode, where state
-//! persists across evaluations. Converting `check()` to `&self` requires
-//! either: (a) making `state` an `Option` that is temporarily taken and
-//! restored, or (b) passing `CheckState` as a separate parameter to all
-//! ~30 internal helper methods. Both are invasive changes deferred until
-//! the parallel pipeline actually calls `check()` concurrently.
-//! The `RwLock` wrapping is the primary Phase 3 deliverable — it ensures
-//! the registries are safe for concurrent access when that conversion happens.
+//! `next_id: &AtomicU32` enables lock-free TypeId allocation for concurrent
+//! `check()` calls. Module compilation locks are a scheduling concern owned
+//! by the caller, not by the typechecker.
 
 use std::collections::HashMap;
-use std::mem;
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
-use std::sync::{Arc, Mutex, RwLock, RwLockReadGuard};
+use std::sync::atomic::{AtomicU32, Ordering};
 
 use dashmap::DashMap;
 
@@ -54,10 +34,9 @@ use cranelisp_types::{
     apply,
 };
 
-use crate::adt::TypeDefRegistry;
 use crate::scope::ScopeStack;
 use crate::scheme;
-use crate::traits::{ActiveConstraints, ImplRegistry, TraitRegistry};
+use crate::traits::ActiveConstraints;
 
 /// Maximum depth for following Import/Reexport chains (spec §8.6.2).
 const IMPORT_CHAIN_DEPTH_LIMIT: usize = 10;
@@ -125,117 +104,42 @@ impl CheckState {
     }
 }
 
-/// RAII guard that releases a module's compilation lock on drop.
+/// Borrowed references to session-owned shared state for type inference.
 ///
-/// Returned by `TypeChecker::try_lock_module()`. Holding this guard
-/// guarantees exclusive compilation rights for the named module.
-/// The lock is released automatically when the guard goes out of scope.
-#[derive(Debug)]
-pub struct ModuleGuard {
-    /// The locked flag — shared with the TypeChecker's `module_locks` map.
-    flag: Arc<AtomicBool>,
-    /// The module path, retained for diagnostics / logging.
-    #[allow(dead_code)]
-    module: ModuleFullPath,
-}
-
-impl Drop for ModuleGuard {
-    fn drop(&mut self) {
-        self.flag.store(false, Ordering::Release);
-    }
-}
-
-/// Central persistent state for Hindley-Milner type inference.
+/// No owned mutable state — all mutation goes through `CheckState`
+/// (passed as `&mut CheckState` to methods) or DashMap / AtomicU32
+/// interior mutability.
 ///
-/// Fields are pub(crate) so that `impl TypeChecker` blocks in other modules
-/// can access them directly (borrow-splitting pattern).
+/// Fields are pub(crate) so that `impl TypeCheckEnv<'_>` blocks in other
+/// modules can access them directly (borrow-splitting pattern).
 ///
-/// Persistent state survives across `check()` calls. Per-check transient
-/// state lives in `CheckState` (stored in `self.state`).
-pub struct TypeChecker {
+/// Multiple workers can hold `TypeCheckEnv` references concurrently
+/// (it is `Send + Sync`). Each worker has its own `CheckState` on the stack.
+pub struct TypeCheckEnv<'a> {
     /// Monotonic counter for fresh type variable IDs.
     ///
-    /// `AtomicU32` enables lock-free allocation from concurrent `check()` calls
-    /// in Phase 3. In the current serial model, `&mut self` methods can use
-    /// `get_mut()` for zero-overhead access.
-    pub(crate) next_id: AtomicU32,
+    /// `AtomicU32` enables lock-free allocation from concurrent `check()` calls.
+    pub(crate) next_id: &'a AtomicU32,
     /// Per-module symbol tables, keyed by module full path.
     ///
     /// Behind `DashMap` for concurrent access from multiple worker threads.
     /// Each worker typechecks a different module — DashMap's per-shard locking
     /// allows concurrent reads/writes to different modules without contention.
-    pub(crate) modules: DashMap<ModuleFullPath, SymbolTable>,
-    /// Registered type definitions (ADTs).
-    ///
-    /// Behind `RwLock` for Phase 3 parallel `check()`. Methods with `&mut self`
-    /// use `get_mut()` (zero overhead); `&self` methods acquire read/write locks.
-    pub(crate) type_defs: RwLock<TypeDefRegistry>,
-    /// Registered trait declarations (Ring 2).
-    ///
-    /// Behind `RwLock` for Phase 3 parallel `check()`. Same access pattern as `type_defs`.
-    pub(crate) trait_registry: RwLock<TraitRegistry>,
-    /// Registered trait implementations (Ring 2).
-    ///
-    /// Behind `RwLock` for Phase 3 parallel `check()`. Same access pattern as `type_defs`.
-    pub(crate) impl_registry: RwLock<ImplRegistry>,
-    /// Per-module compilation locks. Each entry is `true` when a `compile_unit`
-    /// is actively building that module, `false` otherwise. `try_lock_module()`
-    /// uses compare-and-swap to claim exclusive access; the RAII `ModuleGuard`
-    /// releases the flag on drop.
-    ///
-    /// Entries are `Arc<AtomicBool>` so the guard can outlive the borrow of the
-    /// HashMap (the guard holds an Arc clone, not a reference into the map).
-    /// Wrapped in `Mutex` so `try_lock_module` works with `&self`.
-    module_locks: Mutex<HashMap<ModuleFullPath, Arc<AtomicBool>>>,
-    /// Per-check transient state. Stored here for serial REPL reuse;
-    /// parallel `check()` will use stack-local `CheckState` once `check()`
-    /// is converted to `&self` (see module-level doc for blockers).
-    pub(crate) state: CheckState,
+    pub(crate) modules: &'a DashMap<ModuleFullPath, SymbolTable>,
 }
 
 
-impl TypeChecker {
-    /// Create a new TypeChecker with Ring 0 builtins registered.
+impl<'a> TypeCheckEnv<'a> {
+    /// Create a new TypeCheckEnv from borrowed shared state.
     ///
-    /// Seeds the default "user" module as the active module.
-    pub fn new() -> Self {
-        let current_module = ModuleFullPath::from("user");
-        let modules = DashMap::new();
-        modules.insert(
-            current_module.clone(),
-            SymbolTable::new(current_module.clone()),
-        );
-        let mut tc = TypeChecker {
-            next_id: AtomicU32::new(0),
-            modules,
-            type_defs: RwLock::new(TypeDefRegistry::new()),
-            trait_registry: RwLock::new(TraitRegistry::default()),
-            impl_registry: RwLock::new(ImplRegistry::default()),
-            module_locks: Mutex::new(HashMap::new()),
-            state: CheckState::new(current_module),
-        };
-        tc.register_builtins();
-        tc
-    }
-
-    // --- CheckState extraction / restoration ---
-
-    /// Extract the mutable CheckState from the TypeChecker, leaving a
-    /// temporary placeholder. Used by scope-isolating code paths (e.g.,
-    /// SymbolTableMacroResolver) that need to hold `&mut CheckState`
-    /// independently while accessing `&TypeChecker` for symbol lookups.
-    ///
-    /// IMPORTANT: Must be paired with `restore_state()` before using any
-    /// method that requires `self.state`. Do not drop the returned state
-    /// without restoring it.
-    pub fn take_state(&mut self) -> CheckState {
-        mem::replace(&mut self.state, CheckState::new(ModuleFullPath::from("")))
-    }
-
-    /// Restore a previously taken CheckState, replacing the temporary
-    /// placeholder left by `take_state()`. Inverse of `take_state()`.
-    pub fn restore_state(&mut self, state: CheckState) {
-        self.state = state;
+    /// The caller owns the `DashMap` and `AtomicU32`; this struct just
+    /// borrows them. Use `register_builtins()` (free function) to seed
+    /// the modules map before constructing the env.
+    pub fn new(
+        modules: &'a DashMap<ModuleFullPath, SymbolTable>,
+        next_id: &'a AtomicU32,
+    ) -> Self {
+        TypeCheckEnv { modules, next_id }
     }
 
     // --- Module-scoped symbol table accessors ---
@@ -245,7 +149,7 @@ impl TypeChecker {
     /// Returns a DashMap `Ref` guard that derefs to `SymbolTable`.
     /// The guard holds a per-shard read lock — drop it before acquiring
     /// another guard to avoid deadlocks (see design/typecheck/dashmap-migration.md §4.10).
-    pub(crate) fn current_symbol_table_with_state(
+    pub(crate) fn current_symbol_table(
         &self,
         state: &CheckState,
     ) -> dashmap::mapref::one::Ref<'_, ModuleFullPath, SymbolTable> {
@@ -258,43 +162,13 @@ impl TypeChecker {
     ///
     /// Returns a DashMap `RefMut` guard that derefs mutably to `SymbolTable`.
     /// Drop before acquiring another guard.
-    pub(crate) fn current_symbol_table_mut_with_state(
+    pub(crate) fn current_symbol_table_mut(
         &self,
         state: &CheckState,
     ) -> dashmap::mapref::one::RefMut<'_, ModuleFullPath, SymbolTable> {
         self.modules
             .get_mut(&state.current_module)
             .unwrap_or_else(|| unreachable!("invariant: current_module always exists in modules map"))
-    }
-
-    /// Get a read guard for the current module's symbol table (using self.state).
-    pub(crate) fn current_symbol_table(
-        &self,
-    ) -> dashmap::mapref::one::Ref<'_, ModuleFullPath, SymbolTable> {
-        self.modules
-            .get(&self.state.current_module)
-            .unwrap_or_else(|| unreachable!("invariant: current_module always exists in modules map"))
-    }
-
-    /// Get a write guard for the current module's symbol table (using self.state).
-    pub(crate) fn current_symbol_table_mut(
-        &self,
-    ) -> dashmap::mapref::one::RefMut<'_, ModuleFullPath, SymbolTable> {
-        self.modules
-            .get_mut(&self.state.current_module)
-            .unwrap_or_else(|| unreachable!("invariant: current_module always exists in modules map"))
-    }
-
-    /// Switch the active module. Creates the module's symbol table if it
-    /// doesn't already exist.
-    pub fn set_current_module(&mut self, path: ModuleFullPath) {
-        self.ensure_module_exists(&path);
-        self.state.current_module = path;
-    }
-
-    /// Get the current module path.
-    pub fn current_module_path(&self) -> &ModuleFullPath {
-        &self.state.current_module
     }
 
     /// Ensure a module's symbol table exists, creating it if needed.
@@ -342,81 +216,86 @@ impl TypeChecker {
         self.modules.contains_key(path)
     }
 
-    // --- Module compilation locks ---
-
-    /// Attempt to acquire exclusive compilation rights for a module.
+    /// Look up a TypeDefInfo by bare TypeName, scanning all loaded module SymbolTables.
     ///
-    /// Returns a RAII `ModuleGuard` that releases the lock on drop.
-    /// If the module is already being compiled (lock held), returns an
-    /// error immediately — non-blocking, deadlock-free.
-    ///
-    /// Used by the pipeline to prevent concurrent compilation of the same
-    /// module. Callers acquire the lock before stages 1-5 and let the guard
-    /// drop on return.
-    pub fn try_lock_module(
-        &self,
-        module: &ModuleFullPath,
-    ) -> Result<ModuleGuard, CranelispError> {
-        let flag = {
-            let mut locks = self.module_locks.lock().unwrap();
-            Arc::clone(locks
-                .entry(module.clone())
-                .or_insert_with(|| Arc::new(AtomicBool::new(false))))
-        };
-
-        // Attempt to flip false → true atomically.
-        let was_locked = flag.compare_exchange(
-            false,
-            true,
-            Ordering::Acquire,
-            Ordering::Relaxed,
-        );
-
-        match was_locked {
-            Ok(_) => Ok(ModuleGuard {
-                flag,
-                module: module.clone(),
-            }),
-            Err(_) => Err(CranelispError::TypeError {
-                message: format!(
-                    "module '{}' is already being compiled",
-                    module
-                ),
-                span: Span::SYNTHETIC,
-            }),
+    /// Returns the first matching TypeDefInfo found across all modules.
+    /// Used where the old `TypeDefRegistry.get()` was called.
+    pub fn lookup_type_def(&self, name: &TypeName) -> Option<TypeDefInfo> {
+        let sym = Symbol::from(name.as_ref());
+        let primitives_path = ModuleFullPath::from("primitives");
+        let mut primitives_fallback: Option<TypeDefInfo> = None;
+        for guard in self.modules.iter() {
+            if let Some(ModuleEntry::TypeDef { info, .. }) = guard.get(sym.as_ref()) {
+                if *guard.key() == primitives_path {
+                    // Defer primitives — prefer user-defined types.
+                    primitives_fallback = Some(info.clone());
+                } else {
+                    return Some(info.clone());
+                }
+            }
         }
+        primitives_fallback
     }
 
-    /// Check whether a module is currently locked for compilation.
+    /// Look up the parent type name for a constructor by scanning all modules.
     ///
-    /// Returns `true` if a `ModuleGuard` is held for this module.
-    /// Useful for diagnostics and testing.
-    pub fn is_module_locked(&self, module: &ModuleFullPath) -> bool {
-        self.module_locks.lock().unwrap()
-            .get(module)
-            .map(|flag| flag.load(Ordering::Acquire))
-            .unwrap_or(false)
+    /// Returns the bare TypeName of the parent type.
+    /// Also handles product types where the constructor has the same name as the
+    /// type — in that case, the `ModuleEntry::TypeDef` with `constructor_scheme`
+    /// is the authority (the Constructor entry was overwritten by the TypeDef entry).
+    pub fn lookup_constructor_type(&self, ctor_name: &str) -> Option<TypeName> {
+        for guard in self.modules.iter() {
+            match guard.get(ctor_name) {
+                Some(ModuleEntry::Constructor { type_name, .. }) => {
+                    return Some(type_name.name.clone());
+                }
+                Some(ModuleEntry::TypeDef { info, constructor_scheme: Some(_), .. }) => {
+                    // Product type: constructor has same name as type.
+                    return Some(info.name.name.clone());
+                }
+                _ => {}
+            }
+        }
+        None
     }
 
-    /// Convenience accessor for the current module's symbol table (public).
-    /// Used by tests and external code that needs to inspect symbols.
-    pub fn symbol_table(&self) -> dashmap::mapref::one::Ref<'_, ModuleFullPath, SymbolTable> {
-        self.current_symbol_table()
-    }
-
-    /// Mutable accessor for the current module's symbol table (public).
-    /// Used by the pipeline orchestrator to register macro entries.
-    pub fn symbol_table_mut(&self) -> dashmap::mapref::one::RefMut<'_, ModuleFullPath, SymbolTable> {
-        self.current_symbol_table_mut()
-    }
-
-    /// Public accessor for the type definition registry.
-    /// Used by prelude loading to copy type defs into the REPL session.
+    /// Check whether a constructor is marked as internal (not user-constructable).
     ///
-    /// Returns a `RwLockReadGuard` that derefs to `TypeDefRegistry`.
-    /// Callers use `.iter()`, `.get()` etc. transparently via `Deref`.
-    pub fn type_def_registry(&self) -> RwLockReadGuard<'_, TypeDefRegistry> {
-        self.type_defs.read().unwrap()
+    /// Scans all modules for the constructor, then checks the parent type's
+    /// TypeDefInfo for the internal flag.
+    pub fn is_internal_constructor_check(&self, ctor_name: &str) -> bool {
+        // Find which type owns this constructor
+        let type_name = match self.lookup_constructor_type(ctor_name) {
+            Some(tn) => tn,
+            None => return false,
+        };
+        // Look up the TypeDefInfo
+        if let Some(info) = self.lookup_type_def(&type_name) {
+            return info.constructors.iter().any(|c| c.name.as_ref() == ctor_name && c.internal);
+        }
+        false
+    }
+
+    /// Iterate over all type definitions across all loaded modules.
+    ///
+    /// Returns (TypeName, TypeDefInfo) pairs. Used by REPL to sync type defs for display.
+    pub fn all_type_defs(&self) -> Vec<(TypeName, TypeDefInfo)> {
+        let mut result = Vec::new();
+        for guard in self.modules.iter() {
+            for (_name, entry) in guard.all_symbols() {
+                if let ModuleEntry::TypeDef { info, .. } = entry {
+                    result.push((info.name.name.clone(), info.clone()));
+                }
+            }
+        }
+        result
+    }
+
+    /// Build a map of all type definitions (TypeName -> TypeDefInfo).
+    ///
+    /// Used by external consumers that need the old HashMap-based API.
+    pub fn all_type_defs_map(&self) -> HashMap<TypeName, TypeDefInfo> {
+        self.all_type_defs().into_iter().collect()
     }
 
     /// Access the per-module symbol tables (for display, introspection).
@@ -425,15 +304,15 @@ impl TypeChecker {
         &self.modules
     }
 
-    /// Build type_defs and constructor_to_type maps from the registry.
+    /// Build type_defs and constructor_to_type maps from SymbolTables.
     ///
     /// Used by the worker to build partial `CheckResult` for inline
     /// macro compilation without going through `finalize_check_result`.
+    ///
+    /// NOTE: These maps will be eliminated when the backend reads from
+    /// SharedState SymbolTables directly (FQTypeName migration wave C).
     pub fn snapshot_type_defs(&self) -> (HashMap<TypeName, TypeDefInfo>, HashMap<Symbol, TypeName>) {
-        let registry = self.type_defs.read().unwrap();
-        let type_defs: HashMap<TypeName, TypeDefInfo> = registry.iter()
-            .map(|(k, v)| (k.clone(), v.clone()))
-            .collect();
+        let type_defs = self.all_type_defs_map();
         let constructor_to_type: HashMap<Symbol, TypeName> = type_defs.iter()
             .flat_map(|(type_name, info)| {
                 info.constructors.iter().map(move |c| (c.name.clone(), type_name.clone()))
@@ -471,9 +350,24 @@ impl TypeChecker {
         &self.modules
     }
 
+    /// Build an FQTypeName for a bare TypeName by looking up SymbolTables.
+    /// Falls back to the current module if the type is not found.
+    pub(crate) fn fqtn_for_bare_type_name(&self, state: &CheckState, type_name: &TypeName) -> cranelisp_types::FQTypeName {
+        if let Some(info) = self.lookup_type_def(type_name) {
+            return info.name.clone();
+        }
+        // Primitive types
+        let module = match type_name.as_ref() {
+            "Int" | "Bool" | "Float" | "String" | "Vec" | "IO" | "Trace" | "TestResult" =>
+                ModuleFullPath::from("primitives"),
+            _ => state.current_module.clone(),
+        };
+        cranelisp_types::FQTypeName::new(module, type_name.clone())
+    }
+
     /// Look up the defining module for a symbol. Checks the `primitives` module
     /// first (for core traits and builtins), then falls back to the current module.
-    pub fn defining_module_for(&self, name: &str) -> ModuleFullPath {
+    pub fn defining_module_for(&self, state: &CheckState, name: &str) -> ModuleFullPath {
         let primitives_path = ModuleFullPath::from("primitives");
         let found = self.modules.get(&primitives_path)
             .map(|guard| guard.get(name).is_some())
@@ -481,7 +375,7 @@ impl TypeChecker {
         if found {
             return primitives_path;
         }
-        self.state.current_module.clone()
+        state.current_module.clone()
     }
 
     // --- Scope operations (delegate to CheckState.env) ---
@@ -837,10 +731,10 @@ impl TypeChecker {
     /// Does NOT clear `subst` because unification results from registration
     /// are harmless (all concrete).
     #[cfg(test)]
-    pub(crate) fn clear_transient_state(&mut self) {
-        self.state.expr_types.clear();
-        self.state.method_resolutions.clear();
-        self.state.active_constraints = ActiveConstraints::default();
+    pub(crate) fn clear_transient_state(state: &mut CheckState) {
+        state.expr_types.clear();
+        state.method_resolutions.clear();
+        state.active_constraints = ActiveConstraints::default();
     }
 
     /// Apply the current substitution to a type.
@@ -862,16 +756,6 @@ impl TypeChecker {
     /// Duplicate bare names from different sources produce `ModuleEntry::Ambiguous`
     /// per spec §8.6.4.
     pub fn register_imports(
-        &mut self,
-        specs: &[ImportSpec],
-    ) -> Result<(), CranelispError> {
-        let mut state = std::mem::replace(&mut self.state, CheckState::new(ModuleFullPath::from("")));
-        let result = self.register_imports_with_state(&mut state, specs);
-        self.state = state;
-        result
-    }
-
-    pub(crate) fn register_imports_with_state(
         &self,
         state: &mut CheckState,
         specs: &[ImportSpec],
@@ -925,7 +809,7 @@ impl TypeChecker {
 
             // Now safe to get write guard on current module
             insert_imports_detecting_ambiguity(
-                &mut self.current_symbol_table_mut_with_state(state),
+                &mut self.current_symbol_table_mut(state),
                 imports_to_add,
             );
         }
@@ -939,16 +823,6 @@ impl TypeChecker {
     /// Follows the same pattern as `register_imports` but creates Reexport
     /// entries instead of Import entries.
     pub fn register_exports(
-        &mut self,
-        specs: &[ExportSpec],
-    ) -> Result<(), CranelispError> {
-        let mut state = std::mem::replace(&mut self.state, CheckState::new(ModuleFullPath::from("")));
-        let result = self.register_exports_with_state(&mut state, specs);
-        self.state = state;
-        result
-    }
-
-    pub(crate) fn register_exports_with_state(
         &self,
         state: &mut CheckState,
         specs: &[ExportSpec],
@@ -1009,7 +883,7 @@ impl TypeChecker {
 
             // Now safe to get write guard on current module
             insert_imports_detecting_ambiguity(
-                &mut self.current_symbol_table_mut_with_state(state),
+                &mut self.current_symbol_table_mut(state),
                 reexports,
             );
         }
@@ -1076,20 +950,18 @@ impl TypeChecker {
         module_path: &ModuleFullPath,
     ) -> Vec<(Symbol, ModuleEntry)> {
         let trait_name = cranelisp_types::TraitName::from(parent.as_ref());
-        let trait_reg = self.trait_registry.read().unwrap();
         let mut result = Vec::new();
         for (name, entry) in source_table.public_symbols() {
             let is_member = match entry {
                 ModuleEntry::Constructor { type_name, .. } => {
-                    type_name.as_ref() == parent.as_ref()
+                    type_name.name.as_ref() == parent.as_ref()
                 }
-                ModuleEntry::Def { kind, .. } => {
+                ModuleEntry::Def { trait_origin, kind, .. } => {
                     matches!(
                         kind.as_ref(),
                         cranelisp_types::DefKind::Primitive { .. }
                             | cranelisp_types::DefKind::UserFn { .. }
-                    ) && trait_reg
-                        .method_belongs_to_trait(name, &trait_name)
+                    ) && trait_origin.as_ref().is_some_and(|fqtn| fqtn.name == trait_name)
                 }
                 _ => false,
             };
@@ -1167,20 +1039,18 @@ impl TypeChecker {
         module_path: &ModuleFullPath,
     ) -> Vec<(Symbol, ModuleEntry)> {
         let trait_name = cranelisp_types::TraitName::from(parent.as_ref());
-        let trait_reg = self.trait_registry.read().unwrap();
         let mut result = Vec::new();
         for (name, entry) in source_table.public_symbols() {
             let is_member = match entry {
                 ModuleEntry::Constructor { type_name, .. } => {
-                    type_name.as_ref() == parent.as_ref()
+                    type_name.name.as_ref() == parent.as_ref()
                 }
-                ModuleEntry::Def { kind, .. } => {
+                ModuleEntry::Def { trait_origin, kind, .. } => {
                     matches!(
                         kind.as_ref(),
                         cranelisp_types::DefKind::Primitive { .. }
                             | cranelisp_types::DefKind::UserFn { .. }
-                    ) && trait_reg
-                        .method_belongs_to_trait(name, &trait_name)
+                    ) && trait_origin.as_ref().is_some_and(|fqtn| fqtn.name == trait_name)
                 }
                 _ => false,
             };
@@ -1202,53 +1072,114 @@ impl TypeChecker {
 
     /// Look up a type definition and return its constructors.
     pub fn get_type_constructors(&self, type_name: &TypeName) -> Option<Vec<ConstructorInfo>> {
-        self.type_defs.read().unwrap()
-            .get(type_name)
-            .map(|info| info.constructors.clone())
+        self.lookup_type_def(type_name)
+            .map(|info| info.constructors)
+    }
+
+    /// Look up the FQTypeName for a bare type name via SymbolTables.
+    /// Used for display formatting and diagnostics.
+    pub fn fqtn_for_type(&self, type_name: &TypeName) -> Option<cranelisp_types::FQTypeName> {
+        self.lookup_type_def(type_name)
+            .map(|info| info.name)
     }
 
     /// Return all trait names that have an impl registered for `type_name`.
     /// Results are sorted alphabetically.
+    ///
+    /// Scans all loaded module SymbolTables for `ModuleEntry::TraitImpl` entries
+    /// whose `impl_type.name` matches the given type name.
     pub fn get_impls_for_type(&self, type_name: &TypeName) -> Vec<TraitName> {
-        let impl_reg = self.impl_registry.read().unwrap();
-        let mut traits: Vec<TraitName> = impl_reg
-            .impls
-            .iter()
-            .filter(|(_, type_map)| type_map.contains_key(type_name))
-            .map(|(trait_name, _)| trait_name.clone())
-            .collect();
+        let mut traits: Vec<TraitName> = Vec::new();
+        for guard in self.modules.iter() {
+            for (_name, entry) in guard.all_symbols() {
+                if let ModuleEntry::TraitImpl { trait_name, impl_type, .. } = entry {
+                    if &impl_type.name == type_name && !traits.contains(&trait_name.name) {
+                        traits.push(trait_name.name.clone());
+                    }
+                }
+            }
+        }
         traits.sort();
         traits
     }
 
     /// Return the method names declared in a trait.
     pub fn get_trait_methods(&self, trait_name: &TraitName) -> Option<Vec<Symbol>> {
-        self.trait_registry.read().unwrap()
-            .decls
-            .get(trait_name)
+        self.lookup_trait_decl(trait_name)
             .map(|decl| decl.methods.iter().map(|m| m.name.clone()).collect())
+    }
+
+    /// Look up a TraitDecl by bare TraitName, scanning all loaded module SymbolTables.
+    pub fn lookup_trait_decl(&self, trait_name: &TraitName) -> Option<cranelisp_types::TraitDecl> {
+        let sym = Symbol::from(trait_name.as_ref());
+        for guard in self.modules.iter() {
+            if let Some(ModuleEntry::TraitDecl { decl, .. }) = guard.get(sym.as_ref()) {
+                return Some(decl.clone());
+            }
+        }
+        None
+    }
+
+    /// Look up which trait a method name belongs to, via trait_origin on ModuleEntry::Def.
+    ///
+    /// Scans all loaded modules for a Def entry with the given name that has
+    /// a `trait_origin` set.
+    pub fn method_to_trait(&self, method_name: &Symbol) -> Option<TraitName> {
+        for guard in self.modules.iter() {
+            if let Some(ModuleEntry::Def { trait_origin: Some(fqtn), .. }) = guard.get(method_name.as_ref()) {
+                return Some(fqtn.name.clone());
+            }
+        }
+        None
+    }
+
+    /// Check if a method belongs to a specific trait, via trait_origin on ModuleEntry::Def.
+    pub fn method_belongs_to_trait(&self, method: &Symbol, trait_name: &TraitName) -> bool {
+        self.method_to_trait(method).as_ref() == Some(trait_name)
+    }
+
+    /// Check if a trait impl exists for the given (trait_name, impl_type) pair.
+    ///
+    /// Scans all loaded module SymbolTables for a `ModuleEntry::TraitImpl` entry
+    /// matching both the trait name and the implementation type name.
+    pub fn has_impl(&self, trait_name: &TraitName, impl_type: &TypeName) -> bool {
+        for guard in self.modules.iter() {
+            for (_name, entry) in guard.all_symbols() {
+                if let ModuleEntry::TraitImpl { trait_name: tn, impl_type: it, .. } = entry {
+                    if &tn.name == trait_name && &it.name == impl_type {
+                        return true;
+                    }
+                }
+            }
+        }
+        false
     }
 
     /// Return all type names that implement a given trait.
     /// Results are sorted alphabetically.
+    ///
+    /// Scans all loaded module SymbolTables for `ModuleEntry::TraitImpl` entries
+    /// whose `trait_name.name` matches the given trait name.
     pub fn get_implementing_types(&self, trait_name: &TraitName) -> Vec<TypeName> {
-        let impl_reg = self.impl_registry.read().unwrap();
-        let mut types: Vec<TypeName> = impl_reg
-            .impls
-            .get(trait_name)
-            .map(|type_map| type_map.keys().cloned().collect())
-            .unwrap_or_default();
+        let mut types: Vec<TypeName> = Vec::new();
+        for guard in self.modules.iter() {
+            for (_name, entry) in guard.all_symbols() {
+                if let ModuleEntry::TraitImpl { trait_name: tn, impl_type, .. } = entry {
+                    if &tn.name == trait_name && !types.contains(&impl_type.name) {
+                        types.push(impl_type.name.clone());
+                    }
+                }
+            }
+        }
         types.sort();
         types
     }
 
     /// Resolve a module name: try as child of current module first, then as
     /// root module. Returns `None` if not found.
-    pub fn resolve_module_by_name(&self, name: &str) -> Option<ModuleFullPath> {
-        // Note: reads self.state.current_module which is only valid in
-        // single-threaded (REPL) context. Worker code passes module path explicitly.
+    pub fn resolve_module_by_name(&self, state: &CheckState, name: &str) -> Option<ModuleFullPath> {
         let child_path =
-            ModuleFullPath::from(format!("{}.{}", self.state.current_module, name));
+            ModuleFullPath::from(format!("{}.{}", state.current_module, name));
         if self.has_module(&child_path) {
             return Some(child_path);
         }
@@ -1262,32 +1193,30 @@ impl TypeChecker {
 
     // --- Module state management ---
 
-    /// Unregister a trait declaration from the trait registry.
+    /// Unregister a trait.
     ///
-    /// Removes the trait from the decls map and all its method-to-trait
-    /// reverse lookups. Used during module hot-reload to clear old state
-    /// before recompilation (repl/spec.md §14.2).
-    pub fn unregister_trait(&mut self, trait_name: &TraitName) {
-        let trait_reg = self.trait_registry.get_mut().unwrap();
-        if let Some(decl) = trait_reg.decls.remove(trait_name) {
-            for method in &decl.methods {
-                trait_reg.method_to_trait.remove(&method.name);
-            }
-            // Also remove impls for this trait to allow re-registration.
-            self.impl_registry.get_mut().unwrap().impls.remove(trait_name);
-        }
+    /// The trait declaration and methods are on the module's SymbolTable,
+    /// which is removed by `remove_module`. TraitImpl entries are also on
+    /// module SymbolTables, so removing the module removes them too.
+    /// This method is now a no-op but kept for API compatibility.
+    ///
+    /// Used during module hot-reload (repl/spec.md §14.2).
+    pub fn unregister_trait(&self, _trait_name: &TraitName) {
+        // TraitImpl entries live on module SymbolTables — removing the module
+        // (done by remove_module before this is called) removes them.
     }
 
     /// Remove a module's symbol table and unregister its types and traits.
     ///
     /// Removes the CompiledModule from the modules map and cleans up:
     /// - Trait declarations (from trait_registry)
-    /// - Type definitions (from type_defs)
-    /// - Constructor-to-type mappings
+    ///
+    /// Type definitions and constructor-to-type mappings are stored on the
+    /// module's SymbolTable, so removing the module implicitly removes them.
     ///
     /// Returns the removed symbol table, or None if the module was not found.
     /// Used during module hot-reload (repl/spec.md §14.2).
-    pub fn remove_module(&mut self, module_path: &ModuleFullPath) -> Option<SymbolTable> {
+    pub fn remove_module(&self, module_path: &ModuleFullPath) -> Option<SymbolTable> {
         let (_, table) = self.modules.remove(module_path)?;
 
         // Unregister traits defined by this module.
@@ -1305,16 +1234,8 @@ impl TypeChecker {
             self.unregister_trait(trait_name);
         }
 
-        // Unregister type definitions defined by this module.
-        let td = self.type_defs.get_mut().unwrap();
-        for (_, entry) in table.all_symbols() {
-            if let ModuleEntry::TypeDef { info, .. } = entry {
-                td.type_defs.remove(&info.name);
-                for ctor in &info.constructors {
-                    td.constructor_to_type.remove(&ctor.name);
-                }
-            }
-        }
+        // Type definitions and constructor mappings are on the SymbolTable,
+        // so removing the module from self.modules is sufficient.
 
         Some(table)
     }
@@ -1323,7 +1244,7 @@ impl TypeChecker {
     ///
     /// Used after `remove_module` to re-establish the module path before
     /// recompilation populates it with fresh definitions.
-    pub fn insert_module(&mut self, table: SymbolTable) {
+    pub fn insert_module(&self, table: SymbolTable) {
         self.modules.insert(table.path.clone(), table);
     }
 
@@ -1331,58 +1252,14 @@ impl TypeChecker {
 
     /// Restore a module's symbol table from cached metadata.
     ///
-    /// Installs the given symbol table into the modules map and
-    /// reconstructs type_defs and constructor_to_type entries from
-    /// the table's TypeDef and Constructor entries. This enables
-    /// downstream modules to import from and typecheck against
-    /// the cached module without recompiling it.
+    /// Installs the given symbol table into the modules map.
+    /// All definitions (types, traits, constructors) are stored directly
+    /// on the SymbolTable, so no separate registry reconstruction is needed.
+    /// Trait method resolution uses `trait_origin` on `ModuleEntry::Def` entries.
     ///
     /// Used by the pipeline's cache-hit path (src/pipeline.rs).
     pub fn restore_cached_module(&self, table: SymbolTable) {
         let path = table.path.clone();
-
-        // Reconstruct type_defs, constructor_to_type, and trait registries
-        // from symbol table entries.
-        let mut td = self.type_defs.write().unwrap();
-        let mut tr = self.trait_registry.write().unwrap();
-        for (_name, entry) in table.all_symbols() {
-            match entry {
-                ModuleEntry::TypeDef { info, .. } => {
-                    // Register each constructor in constructor_to_type.
-                    for ctor in &info.constructors {
-                        td.constructor_to_type.insert(
-                            ctor.name.clone(),
-                            info.name.clone(),
-                        );
-                    }
-                    td.type_defs.insert(
-                        info.name.clone(),
-                        info.clone(),
-                    );
-                }
-                ModuleEntry::Constructor { type_name, .. } => {
-                    // Ensure constructor_to_type has this entry too
-                    // (may duplicate the TypeDef loop, but HashMap insert is idempotent).
-                    td.constructor_to_type.insert(
-                        _name.clone(),
-                        TypeName::from(type_name.as_ref()),
-                    );
-                }
-                ModuleEntry::TraitDecl { decl, .. }
-                    // Reconstruct trait_registry from cached TraitDecl entries.
-                    // This populates decls and method_to_trait so trait method
-                    // resolution works after loading from cache.
-                    if !tr.decls.contains_key(&decl.name) => {
-                        for method in &decl.methods {
-                            tr.method_to_trait
-                                .insert(method.name.clone(), decl.name.clone());
-                        }
-                        tr.decls
-                            .insert(decl.name.clone(), decl.clone());
-                }
-                _ => {}
-            }
-        }
 
         // Advance next_id past any type variable IDs used in the cached
         // module's schemes. Without this, instantiate_constrained may create
@@ -1429,89 +1306,80 @@ impl TypeChecker {
         }
     }
 
-    /// Restore trait implementation registrations from cached mangled method names.
+    /// Restore trait implementation registrations from cached data.
     ///
-    /// During fresh compilation, `register_trait_impl` populates `impl_registry`
-    /// with (trait_name, impl_type) pairs. When loading from cache, the impl
-    /// information is reconstructed from the mangled method names in the codegen
-    /// state (e.g., `"Num.+$Int"` → trait=Num, impl_type=Int).
-    ///
-    /// Must be called after `restore_cached_module` so that `trait_registry`
-    /// is already populated.
-    pub fn restore_cached_impls(&self, mangled_names: &[String]) {
-        use crate::traits::RegisteredImpl;
-
-        let mut impl_reg = self.impl_registry.write().unwrap();
-        for name in mangled_names {
-            // Parse "Trait.method$Type" pattern.
-            let Some(dot_pos) = name.find('.') else { continue };
-            let Some(dollar_pos) = name.find('$') else { continue };
-            if dollar_pos <= dot_pos { continue; }
-
-            let trait_str = &name[..dot_pos];
-            let method_str = &name[dot_pos + 1..dollar_pos];
-            let impl_type_str = &name[dollar_pos + 1..];
-
-            let trait_name = TraitName::from(trait_str);
-            let impl_type = TypeName::from(impl_type_str);
-            let method_name = Symbol::from(method_str);
-
-            // Skip if this impl is already registered.
-            if impl_reg.has_impl(&trait_name, &impl_type) {
-                continue;
-            }
-
-            let mut method_primitives = HashMap::new();
-            method_primitives.insert(method_name.clone(), method_name);
-
-            impl_reg.impls
-                .entry(trait_name.clone())
-                .or_default()
-                .insert(
-                    impl_type.clone(),
-                    RegisteredImpl {
-                        trait_name,
-                        impl_type,
-                        method_primitives,
-                    },
-                );
-        }
+    /// After registry elimination, `ModuleEntry::TraitImpl` entries are stored
+    /// directly on the module's SymbolTable and restored with it via
+    /// `restore_cached_module`. This method is now a no-op but kept for API
+    /// compatibility with the caller in `src/worker.rs`.
+    pub fn restore_cached_impls(&self, _mangled_names: &[String]) {
+        // TraitImpl entries are on the SymbolTable — no separate reconstruction needed.
     }
 
     // --- REPL snapshot/restore ---
 
     /// Take a snapshot of the current state for REPL error recovery.
-    pub fn snapshot(&self) -> ReplSnapshot {
-        let symbol_keys = self.current_symbol_table().symbols.keys().cloned().collect();
+    pub fn snapshot(&self, state: &CheckState) -> ReplSnapshot {
+        let symbol_keys = self.current_symbol_table(state).symbols.keys().cloned().collect();
         ReplSnapshot {
             next_type_id: self.next_id.load(Ordering::Relaxed),
             symbol_keys,
-            subst_len: self.state.subst.len(),
-            scope_depth: self.state.env.depth(),
+            subst_len: state.subst.len(),
+            scope_depth: state.env.depth(),
         }
     }
 
     /// Restore state from a snapshot (on REPL error).
-    pub fn restore(&mut self, snapshot: ReplSnapshot) {
-        *self.next_id.get_mut() = snapshot.next_type_id;
-        self.state.subst.retain(|id, _| *id < snapshot.next_type_id);
-        self.state.expr_types.clear();
-        self.state.method_resolutions.clear();
-        self.state.warnings.clear();
-        self.state.pending_auto_curry.clear();
+    pub fn restore(&self, state: &mut CheckState, snapshot: ReplSnapshot) {
+        self.next_id.store(snapshot.next_type_id, Ordering::Relaxed);
+        state.subst.retain(|id, _| *id < snapshot.next_type_id);
+        state.expr_types.clear();
+        state.method_resolutions.clear();
+        state.warnings.clear();
+        state.pending_auto_curry.clear();
         // Remove symbol table entries added after the snapshot was taken.
-        self.current_symbol_table_mut()
+        self.current_symbol_table_mut(state)
             .symbols
             .retain(|key, _| snapshot.symbol_keys.contains(key));
         // Restore scope stack depth (pop frames left by failed check_defn_body).
-        self.state.env.truncate_to(snapshot.scope_depth);
+        state.env.truncate_to(snapshot.scope_depth);
     }
 
     // --- Known types lookup (for resolve_type_expr) ---
 
     /// Build a map of known type names for type expression resolution.
+    ///
+    /// Scans all loaded module SymbolTables for TypeDef entries and builds
+    /// a map of (TypeName -> (FQTypeName, arity)).
     pub(crate) fn known_type_names(&self) -> crate::resolve::KnownTypes {
-        self.type_defs.read().unwrap().known_types()
+        let mut result = crate::resolve::KnownTypes::new();
+        let primitives_path = ModuleFullPath::from("primitives");
+        // Process primitives module first so user-defined types shadow builtins.
+        // HashMap last-insert-wins ensures local definitions take precedence.
+        if let Some(guard) = self.modules.get(&primitives_path) {
+            for (_name, entry) in guard.all_symbols() {
+                if let ModuleEntry::TypeDef { info, .. } = entry {
+                    result.insert(
+                        info.name.name.clone(),
+                        (info.name.clone(), info.type_params.len()),
+                    );
+                }
+            }
+        }
+        for guard in self.modules.iter() {
+            if *guard.key() == primitives_path {
+                continue; // Already processed above.
+            }
+            for (_name, entry) in guard.all_symbols() {
+                if let ModuleEntry::TypeDef { info, .. } = entry {
+                    result.insert(
+                        info.name.name.clone(),
+                        (info.name.clone(), info.type_params.len()),
+                    );
+                }
+            }
+        }
+        result
     }
 
     /// Check whether a constructor name refers to an internal constructor.
@@ -1525,113 +1393,7 @@ impl TypeChecker {
         } else {
             name.as_ref()
         };
-        self.type_defs.read().unwrap().is_internal_constructor(bare_name)
-    }
-
-    // --- Test convenience methods (take-and-restore pattern) ---
-
-    /// Lookup using self.state (test convenience).
-    #[cfg(test)]
-    pub(crate) fn lookup_self(&self, name: &str) -> Option<Scheme> {
-        self.lookup(&self.state, name)
-    }
-
-    /// Resolve qualified using self.state (test convenience).
-    #[cfg(test)]
-    pub(crate) fn resolve_qualified_self(
-        &self,
-        module_path: &ModuleFullPath,
-        name: &str,
-    ) -> Result<Option<Scheme>, CranelispError> {
-        self.resolve_qualified(&self.state, module_path, name)
-    }
-
-    /// Bind local using self.state (test convenience).
-    #[cfg(test)]
-    pub(crate) fn bind_local_self(&mut self, name: Symbol, scheme: Scheme) {
-        self.state.env.bind(name, scheme);
-    }
-
-    /// Apply subst using self.state (test convenience).
-    #[cfg(test)]
-    pub(crate) fn apply_subst_self(&self, ty: &Type) -> Type {
-        apply(&self.state.subst, ty)
-    }
-
-
-    /// Register trait decl using self.state (test/external convenience).
-    pub(crate) fn register_trait_decl_self(
-        &mut self,
-        decl: &cranelisp_types::TraitDecl,
-    ) -> Result<(), CranelispError> {
-        let mut state = std::mem::replace(&mut self.state, CheckState::new(ModuleFullPath::from("")));
-        let result = self.register_trait_decl(&mut state, decl);
-        self.state = state;
-        result
-    }
-
-    /// Register trait impl using self.state (test convenience).
-    pub(crate) fn register_trait_impl_self(
-        &mut self,
-        impl_: &cranelisp_types::TraitImpl,
-    ) -> Result<Vec<cranelisp_types::Defn>, CranelispError> {
-        let mut state = std::mem::replace(&mut self.state, CheckState::new(ModuleFullPath::from("")));
-        let result = self.register_trait_impl(&mut state, impl_);
-        self.state = state;
-        result
-    }
-
-    /// Try resolve trait method using self.state (test convenience).
-    pub(crate) fn try_resolve_trait_method_self(
-        &mut self,
-        name: &Symbol,
-        arg_types: &[Type],
-        span: Span,
-    ) -> Result<Option<cranelisp_types::ResolvedCall>, CranelispError> {
-        let mut state = std::mem::replace(&mut self.state, CheckState::new(ModuleFullPath::from("")));
-        let result = self.try_resolve_trait_method(&mut state, name, arg_types, span);
-        self.state = state;
-        result
-    }
-
-    /// Check program using self.state (test convenience, deprecated).
-    pub(crate) fn check_program_self(
-        &mut self,
-        program: &[cranelisp_types::TopLevel],
-    ) -> Result<cranelisp_types::CheckResult, CranelispError> {
-        #[allow(deprecated)]
-        self.check_program(program)
-    }
-
-    /// Check REPL input using self.state (test convenience, deprecated).
-    pub(crate) fn check_repl_input_self(
-        &mut self,
-        input: &cranelisp_types::TopLevel,
-    ) -> Result<cranelisp_types::CheckResult, CranelispError> {
-        #[allow(deprecated)]
-        self.check_repl_input(input)
-    }
-
-
-    /// Register type def using self.state (test/external convenience).
-    pub(crate) fn register_type_def_self(
-        &mut self,
-        name: &cranelisp_types::TypeName,
-        docstring: &Option<String>,
-        type_params: &[Symbol],
-        constructors: &[cranelisp_types::ConstructorDef],
-        visibility: cranelisp_types::Visibility,
-        span: Span,
-    ) -> Result<(), CranelispError> {
-        let mut state = std::mem::replace(&mut self.state, CheckState::new(ModuleFullPath::from("")));
-        let result = self.register_type_def(&mut state, name, docstring, type_params, constructors, visibility, span);
-        self.state = state;
-        result
-    }
-
-    /// Resolve primitive JIT name using self.state (test convenience).
-    pub(crate) fn resolve_primitive_jit_name_self(&self, name: &str) -> Option<Symbol> {
-        self.resolve_primitive_jit_name(&self.state, name)
+        self.is_internal_constructor_check(bare_name)
     }
 
 }
@@ -1754,9 +1516,307 @@ fn insert_imports_detecting_ambiguity(
     }
 }
 
-impl Default for TypeChecker {
-    fn default() -> Self {
-        Self::new()
+// ---------------------------------------------------------------------------
+// Test fixture: owns DashMap + AtomicU32, provides TypeCheckEnv + CheckState
+// ---------------------------------------------------------------------------
+
+/// Test helper that owns the backing stores and provides a `TypeCheckEnv`
+/// plus a `CheckState` for test methods. Replaces the old `TypeChecker::new()`.
+#[cfg(test)]
+pub(crate) struct TestFixture {
+    pub modules: DashMap<ModuleFullPath, SymbolTable>,
+    pub next_id: AtomicU32,
+    pub state: CheckState,
+}
+
+#[cfg(test)]
+impl TestFixture {
+    /// Create a test fixture with builtins registered and "user" as the current module.
+    pub fn new() -> Self {
+        let modules = DashMap::new();
+        let next_id = AtomicU32::new(0);
+        let current_module = ModuleFullPath::from("user");
+        modules.insert(current_module.clone(), SymbolTable::new(current_module.clone()));
+        crate::builtins::register_builtins(&modules, &next_id);
+        TestFixture {
+            modules,
+            next_id,
+            state: CheckState::new(current_module),
+        }
+    }
+
+    /// Get a TypeCheckEnv borrowing this fixture's stores.
+    pub fn env(&self) -> TypeCheckEnv<'_> {
+        TypeCheckEnv::new(&self.modules, &self.next_id)
+    }
+
+    /// Switch the active module. Creates the module's symbol table if needed.
+    pub fn set_current_module(&mut self, path: ModuleFullPath) {
+        self.env().ensure_module_exists(&path);
+        self.state.current_module = path;
+    }
+
+    /// Get a read guard for the current module's symbol table.
+    pub fn symbol_table(&self) -> dashmap::mapref::one::Ref<'_, ModuleFullPath, SymbolTable> {
+        self.modules.get(&self.state.current_module)
+            .unwrap_or_else(|| unreachable!("invariant: current_module always exists"))
+    }
+
+    /// Get a write guard for the current module's symbol table.
+    pub fn symbol_table_mut(&self) -> dashmap::mapref::one::RefMut<'_, ModuleFullPath, SymbolTable> {
+        self.modules.get_mut(&self.state.current_module)
+            .unwrap_or_else(|| unreachable!("invariant: current_module always exists"))
+    }
+
+    /// Look up a name using current state.
+    pub fn lookup(&self, name: &str) -> Option<Scheme> {
+        self.env().lookup(&self.state, name)
+    }
+
+    /// Resolve qualified using current state.
+    pub fn resolve_qualified(
+        &self,
+        module_path: &ModuleFullPath,
+        name: &str,
+    ) -> Result<Option<Scheme>, CranelispError> {
+        self.env().resolve_qualified(&self.state, module_path, name)
+    }
+
+    /// Register a type definition (test convenience).
+    pub fn register_type_def_self(
+        &mut self,
+        name: &cranelisp_types::TypeName,
+        docstring: &Option<String>,
+        type_params: &[Symbol],
+        constructors: &[cranelisp_types::ConstructorDef],
+        visibility: cranelisp_types::Visibility,
+        span: Span,
+    ) -> Result<(), CranelispError> {
+        let env = TypeCheckEnv::new(&self.modules, &self.next_id);
+        env.register_type_def(&mut self.state, name, docstring, type_params, constructors, visibility, span)
+    }
+
+    /// Register a trait decl (test convenience).
+    pub fn register_trait_decl_self(
+        &mut self,
+        decl: &cranelisp_types::TraitDecl,
+    ) -> Result<(), CranelispError> {
+        let env = TypeCheckEnv::new(&self.modules, &self.next_id);
+        env.register_trait_decl(&mut self.state, decl)
+    }
+
+    /// Register a trait impl (test convenience).
+    pub fn register_trait_impl_self(
+        &mut self,
+        impl_: &cranelisp_types::TraitImpl,
+    ) -> Result<Vec<cranelisp_types::Defn>, CranelispError> {
+        let env = TypeCheckEnv::new(&self.modules, &self.next_id);
+        env.register_trait_impl(&mut self.state, impl_)
+    }
+
+    /// Try resolve trait method (test convenience).
+    pub fn try_resolve_trait_method_self(
+        &mut self,
+        name: &Symbol,
+        arg_types: &[Type],
+        span: Span,
+    ) -> Result<Option<cranelisp_types::ResolvedCall>, CranelispError> {
+        let env = TypeCheckEnv::new(&self.modules, &self.next_id);
+        env.try_resolve_trait_method(&mut self.state, name, arg_types, span)
+    }
+
+    /// Check program (test convenience).
+    pub fn check_program_self(
+        &mut self,
+        program: &[cranelisp_types::TopLevel],
+    ) -> Result<cranelisp_types::CheckResult, CranelispError> {
+        let env = TypeCheckEnv::new(&self.modules, &self.next_id);
+        #[allow(deprecated)]
+        env.check_program(&mut self.state, program)
+    }
+
+    /// Check REPL input (test convenience).
+    pub fn check_repl_input_self(
+        &mut self,
+        input: &cranelisp_types::TopLevel,
+    ) -> Result<cranelisp_types::CheckResult, CranelispError> {
+        let env = TypeCheckEnv::new(&self.modules, &self.next_id);
+        #[allow(deprecated)]
+        env.check_repl_input(&mut self.state, input)
+    }
+
+    /// Infer expression type (test convenience).
+    pub fn infer_expr_for_test(
+        &mut self,
+        expr: &cranelisp_types::Expr,
+    ) -> Result<Type, CranelispError> {
+        let env = TypeCheckEnv::new(&self.modules, &self.next_id);
+        env.infer_expr(&mut self.state, expr)
+    }
+
+    /// Register imports (test convenience).
+    pub fn register_imports_self(
+        &mut self,
+        specs: &[cranelisp_types::ImportSpec],
+    ) -> Result<(), CranelispError> {
+        let env = TypeCheckEnv::new(&self.modules, &self.next_id);
+        env.register_imports(&mut self.state, specs)
+    }
+
+    /// Clear transient state (test convenience).
+    pub fn clear_transient_state(&mut self) {
+        TypeCheckEnv::clear_transient_state(&mut self.state);
+    }
+
+    /// Resolve primitive JIT name (test convenience).
+    pub fn resolve_primitive_jit_name_self(&self, name: &str) -> Option<Symbol> {
+        self.env().resolve_primitive_jit_name(&self.state, name)
+    }
+
+    /// Look up type def (test convenience).
+    pub fn lookup_type_def(&self, name: &TypeName) -> Option<TypeDefInfo> {
+        self.env().lookup_type_def(name)
+    }
+
+    /// Look up constructor type (test convenience).
+    pub fn lookup_constructor_type(&self, ctor_name: &str) -> Option<TypeName> {
+        self.env().lookup_constructor_type(ctor_name)
+    }
+
+    /// Check exhaustiveness (test convenience).
+    pub fn check_exhaustiveness(
+        &self,
+        type_name: &TypeName,
+        covered: &[Symbol],
+        has_wildcard: bool,
+        span: Span,
+    ) -> Result<(), CranelispError> {
+        self.env().check_exhaustiveness(type_name, covered, has_wildcard, span)
+    }
+
+    /// Fresh var id (test convenience).
+    pub fn fresh_var_id(&self) -> (Type, TypeId) {
+        self.env().fresh_var_id()
+    }
+
+    /// Fresh var (test convenience).
+    pub fn fresh_var(&self) -> Type {
+        self.env().fresh_var()
+    }
+
+    /// Snapshot (test convenience).
+    pub fn snapshot(&self) -> ReplSnapshot {
+        self.env().snapshot(&self.state)
+    }
+
+    /// Has impl (test convenience).
+    pub fn has_impl(&self, trait_name: &TraitName, impl_type: &TypeName) -> bool {
+        self.env().has_impl(trait_name, impl_type)
+    }
+
+    /// Lookup trait decl (test convenience).
+    pub fn lookup_trait_decl(&self, trait_name: &TraitName) -> Option<cranelisp_types::TraitDecl> {
+        self.env().lookup_trait_decl(trait_name)
+    }
+
+    /// Method to trait (test convenience).
+    pub fn method_to_trait(&self, method_name: &Symbol) -> Option<TraitName> {
+        self.env().method_to_trait(method_name)
+    }
+
+    /// Get impls for type (test convenience).
+    pub fn get_impls_for_type(&self, type_name: &TypeName) -> Vec<TraitName> {
+        self.env().get_impls_for_type(type_name)
+    }
+
+    /// Get implementing types (test convenience).
+    pub fn get_implementing_types(&self, trait_name: &TraitName) -> Vec<TypeName> {
+        self.env().get_implementing_types(trait_name)
+    }
+
+    /// Bind local (test convenience).
+    pub fn bind_local_self(&mut self, name: Symbol, scheme: Scheme) {
+        self.state.env.bind(name, scheme);
+    }
+
+    /// Apply subst (test convenience).
+    pub fn apply_subst_self(&self, ty: &Type) -> Type {
+        apply(&self.state.subst, ty)
+    }
+
+    /// Check form (test convenience).
+    pub fn check_form(
+        &mut self,
+        module: &ModuleFullPath,
+        form: &cranelisp_types::TopLevel,
+        pass: crate::program::CheckPass,
+        accumulator: &mut crate::program::ModuleCheckAccumulator,
+    ) -> Result<crate::program::FormCheckResult, CranelispError> {
+        let env = TypeCheckEnv::new(&self.modules, &self.next_id);
+        env.check_form(module, form, pass, &mut self.state, accumulator)
+    }
+
+    /// Merge form result (test convenience).
+    pub fn merge_form_result(
+        &mut self,
+        module: &ModuleFullPath,
+        accumulator: &mut crate::program::ModuleCheckAccumulator,
+        result: crate::program::FormCheckResult,
+    ) {
+        let env = TypeCheckEnv::new(&self.modules, &self.next_id);
+        env.merge_form_result(module, &mut self.state, accumulator, result);
+    }
+
+    /// Finalize check result (test convenience).
+    pub fn finalize_check_result(
+        &mut self,
+        module: &ModuleFullPath,
+        accumulator: &mut crate::program::ModuleCheckAccumulator,
+        working_program: &[cranelisp_types::TopLevel],
+        strategy: cranelisp_types::ModuleStrategy,
+    ) -> Result<cranelisp_types::CheckResult, CranelispError> {
+        let env = TypeCheckEnv::new(&self.modules, &self.next_id);
+        env.finalize_check_result(module, &mut self.state, accumulator, working_program, strategy)
+    }
+
+    /// Check (unified pipeline, test convenience).
+    pub fn check(
+        &mut self,
+        program: &[cranelisp_types::TopLevel],
+        ctx: &cranelisp_types::CompileContext,
+        strategy: cranelisp_types::ModuleStrategy,
+    ) -> Result<cranelisp_types::CheckResult, CranelispError> {
+        let env = TypeCheckEnv::new(&self.modules, &self.next_id);
+        env.check(&mut self.state, program, ctx, strategy)
+    }
+
+    /// Is internal constructor (test convenience).
+    pub fn is_internal_constructor_check(&self, ctor_name: &str) -> bool {
+        self.env().is_internal_constructor_check(ctor_name)
+    }
+
+    /// Known type names (test convenience).
+    pub fn known_type_names(&self) -> crate::resolve::KnownTypes {
+        self.env().known_type_names()
+    }
+
+    /// Is trait method (test convenience).
+    pub fn is_trait_method(&self, name: &Symbol) -> bool {
+        self.env().method_to_trait(name).is_some()
+    }
+
+    /// Generate default methods (test convenience).
+    /// Note: the real method takes (state, decl, impl_) but this wrapper
+    /// keeps state implicit. Tests that need to pass decl explicitly can
+    /// use `env().generate_default_methods(state, decl, impl_)`.
+    pub fn generate_default_methods(
+        &self,
+        _state: &CheckState,
+        decl: &cranelisp_types::TraitDecl,
+        impl_: &cranelisp_types::TraitImpl,
+    ) -> Result<Vec<cranelisp_types::Defn>, CranelispError> {
+        let env = TypeCheckEnv::new(&self.modules, &self.next_id);
+        env.generate_default_methods(&self.state, decl, impl_)
     }
 }
 
@@ -1773,62 +1833,45 @@ mod tests {
     // spec: 08-modules §8.13 — default REPL module is "user"
     #[test]
     fn test_default_module_is_user() {
-        let tc = TypeChecker::new();
-        assert_eq!(tc.current_module_path().as_ref(), "user");
+        let tf = TestFixture::new();
+        assert_eq!(tf.state.current_module.as_ref(), "user");
     }
 
     // spec: 11-stdlib §11.1, 08-modules §8.9 — bare module has root module contents only
-    //
-    // The root module contains special forms (parser keywords, spec §11.1)
-    // and primitive type names (Int, Bool, Float, String, Vec). These are
-    // universally available — needed for type annotations and language
-    // fundamentals. Everything else requires explicit import.
     #[test]
     fn test_bare_module_has_root_contents_only() {
-        let mut tc = TypeChecker::new();
-        tc.set_current_module(ModuleFullPath::from("bare"));
+        let mut tf = TestFixture::new();
+        tf.set_current_module(ModuleFullPath::from("bare"));
 
         // --- Root module: special forms ---
-        assert!(tc.symbol_table().get("if").is_some(), "if should be available");
-        assert!(tc.symbol_table().get("let").is_some(), "let should be available");
-        assert!(tc.symbol_table().get("defn").is_some(), "defn should be available");
-        assert!(tc.symbol_table().get("fn").is_some(), "fn should be available");
-        assert!(tc.symbol_table().get("match").is_some(), "match should be available");
-        assert!(tc.symbol_table().get("deftype").is_some(), "deftype should be available");
-        assert!(tc.symbol_table().get("deftrait").is_some(), "deftrait should be available");
-        assert!(tc.symbol_table().get("impl").is_some(), "impl should be available");
-        assert!(tc.symbol_table().get("defmacro").is_some(), "defmacro should be available");
+        assert!(tf.symbol_table().get("if").is_some(), "if should be available");
+        assert!(tf.symbol_table().get("let").is_some(), "let should be available");
+        assert!(tf.symbol_table().get("defn").is_some(), "defn should be available");
+        assert!(tf.symbol_table().get("fn").is_some(), "fn should be available");
+        assert!(tf.symbol_table().get("match").is_some(), "match should be available");
+        assert!(tf.symbol_table().get("deftype").is_some(), "deftype should be available");
+        assert!(tf.symbol_table().get("deftrait").is_some(), "deftrait should be available");
+        assert!(tf.symbol_table().get("impl").is_some(), "impl should be available");
+        assert!(tf.symbol_table().get("defmacro").is_some(), "defmacro should be available");
 
         // --- NOT available without import (spec §8.9.1) ---
-
-        // Builtin type names live in `primitives`, not `user`.
-        assert!(tc.symbol_table().get("Int").is_none(), "Int needs import");
-        assert!(tc.symbol_table().get("Bool").is_none(), "Bool needs import");
-        assert!(tc.symbol_table().get("Float").is_none(), "Float needs import");
-        assert!(tc.symbol_table().get("String").is_none(), "String needs import");
-
-        // Named primitives (spec §8.9.1: "NOT available as bare names").
-        assert!(tc.symbol_table().get("add-i64").is_none(), "add-i64 needs import");
-        assert!(tc.symbol_table().get("str-concat").is_none(), "str-concat needs import");
-
-        // IO/bind constructors.
-        assert!(tc.symbol_table().get("bind").is_none(), "bind needs import");
-        assert!(tc.symbol_table().get("Pure").is_none(), "Pure needs import");
-
-        // Macros module (spec §8.9.2: "NOT implicitly imported").
-        assert!(tc.symbol_table().get("SexpSym").is_none(), "SexpSym needs import");
-
-        // Operators come from prelude.
-        assert!(tc.symbol_table().get("+").is_none(), "+ needs prelude");
-
-        // Test infrastructure NOT in user (spec §8.9.1).
-        assert!(tc.symbol_table().get("TestResult").is_none(), "TestResult needs import");
-        assert!(tc.symbol_table().get("discover-tests").is_none(), "discover-tests needs import");
-        assert!(tc.symbol_table().get("run-test").is_none(), "run-test needs import");
+        assert!(tf.symbol_table().get("Int").is_none(), "Int needs import");
+        assert!(tf.symbol_table().get("Bool").is_none(), "Bool needs import");
+        assert!(tf.symbol_table().get("Float").is_none(), "Float needs import");
+        assert!(tf.symbol_table().get("String").is_none(), "String needs import");
+        assert!(tf.symbol_table().get("add-i64").is_none(), "add-i64 needs import");
+        assert!(tf.symbol_table().get("str-concat").is_none(), "str-concat needs import");
+        assert!(tf.symbol_table().get("bind").is_none(), "bind needs import");
+        assert!(tf.symbol_table().get("Pure").is_none(), "Pure needs import");
+        assert!(tf.symbol_table().get("SexpSym").is_none(), "SexpSym needs import");
+        assert!(tf.symbol_table().get("+").is_none(), "+ needs prelude");
+        assert!(tf.symbol_table().get("TestResult").is_none(), "TestResult needs import");
+        assert!(tf.symbol_table().get("discover-tests").is_none(), "discover-tests needs import");
+        assert!(tf.symbol_table().get("run-test").is_none(), "run-test needs import");
 
         // Primitives ARE in the primitives synthetic module.
         let prims_path = ModuleFullPath::from("primitives");
-        let prims_table = tc.modules.get(&prims_path).unwrap();
+        let prims_table = tf.modules.get(&prims_path).unwrap();
         assert!(prims_table.get("add-i64").is_some(), "add-i64 in primitives");
         assert!(prims_table.get("Int").is_some(), "Int in primitives");
         assert!(prims_table.get("Bool").is_some(), "Bool in primitives");
@@ -1840,37 +1883,31 @@ mod tests {
     // spec: 08-modules §8.9 — new modules get root contents, nothing else
     #[test]
     fn test_set_current_module_creates_new() {
-        let mut tc = TypeChecker::new();
-        tc.set_current_module(ModuleFullPath::from("math"));
-        assert_eq!(tc.current_module_path().as_ref(), "math");
-        // Root contents: special forms only.
-        assert!(tc.symbol_table().get("if").is_some());
-        // Builtin type names NOT seeded (spec §8.9.1).
-        assert!(tc.symbol_table().get("Int").is_none());
-        // Named primitives NOT seeded.
-        assert!(tc.symbol_table().get("add-i64").is_none());
-        // Operators come from prelude, NOT compiler builtins.
-        assert!(tc.symbol_table().get("+").is_none());
+        let mut tf = TestFixture::new();
+        tf.set_current_module(ModuleFullPath::from("math"));
+        assert_eq!(tf.state.current_module.as_ref(), "math");
+        assert!(tf.symbol_table().get("if").is_some());
+        assert!(tf.symbol_table().get("Int").is_none());
+        assert!(tf.symbol_table().get("add-i64").is_none());
+        assert!(tf.symbol_table().get("+").is_none());
     }
 
     // spec: 08-modules §8.6 — switching modules preserves existing module state
     #[test]
     fn test_switch_back_to_user_preserves_builtins() {
-        let mut tc = TypeChecker::new();
-        tc.set_current_module(ModuleFullPath::from("other"));
-        tc.set_current_module(ModuleFullPath::from("user"));
-        // Special forms preserved in user
-        assert!(tc.symbol_table().get("if").is_some());
-        // Named primitives NOT in user (spec §8.9.1)
-        assert!(tc.symbol_table().get("add-i64").is_none());
+        let mut tf = TestFixture::new();
+        tf.set_current_module(ModuleFullPath::from("other"));
+        tf.set_current_module(ModuleFullPath::from("user"));
+        assert!(tf.symbol_table().get("if").is_some());
+        assert!(tf.symbol_table().get("add-i64").is_none());
     }
 
     // spec: 08-modules §8.6 — modules have independent symbol tables
     #[test]
     fn test_modules_are_independent() {
-        let mut tc = TypeChecker::new();
+        let mut tf = TestFixture::new();
         // Define something in user
-        tc.current_symbol_table_mut().insert(
+        tf.symbol_table_mut().insert(
             Symbol::from("user-only"),
             ModuleEntry::Def {
                 scheme: crate::scheme::mono(Type::Int),
@@ -1880,24 +1917,25 @@ mod tests {
                 kind: Box::new(DefKind::UserFn { constrained_fn: None }),
                 callees: Vec::new(),
                 got_slot: None,
+                trait_origin: None,
             },
         );
 
         // Switch to another module — shouldn't see user-only
-        tc.set_current_module(ModuleFullPath::from("other"));
-        assert!(tc.symbol_table().get("user-only").is_none());
+        tf.set_current_module(ModuleFullPath::from("other"));
+        assert!(tf.symbol_table().get("user-only").is_none());
 
         // Switch back — should see it again
-        tc.set_current_module(ModuleFullPath::from("user"));
-        assert!(tc.symbol_table().get("user-only").is_some());
+        tf.set_current_module(ModuleFullPath::from("user"));
+        assert!(tf.symbol_table().get("user-only").is_some());
     }
 
     // --- Cross-module name resolution ---
 
-    fn seed_module(tc: &mut TypeChecker, path: &str, entries: Vec<(&str, Visibility)>) {
-        tc.set_current_module(ModuleFullPath::from(path));
+    fn seed_module(tf: &mut TestFixture, path: &str, entries: Vec<(&str, Visibility)>) {
+        tf.set_current_module(ModuleFullPath::from(path));
         for (name, vis) in entries {
-            tc.current_symbol_table_mut().insert(
+            tf.symbol_table_mut().insert(
                 Symbol::from(name),
                 ModuleEntry::Def {
                     scheme: crate::scheme::mono(Type::Int),
@@ -1907,6 +1945,7 @@ mod tests {
                     kind: Box::new(DefKind::UserFn { constrained_fn: None }),
                     callees: Vec::new(),
                     got_slot: None,
+                    trait_origin: None,
                 },
             );
         }
@@ -1915,27 +1954,22 @@ mod tests {
     // spec: 08-modules §8.5 — qualified name resolves public symbol in target module
     #[test]
     fn test_resolve_qualified_public() {
-        let mut tc = TypeChecker::new();
-        seed_module(&mut tc, "math", vec![("add", Visibility::Public)]);
-        tc.set_current_module(ModuleFullPath::from("user"));
+        let mut tf = TestFixture::new();
+        seed_module(&mut tf, "math", vec![("add", Visibility::Public)]);
+        tf.set_current_module(ModuleFullPath::from("user"));
 
-        let result = tc
-            .resolve_qualified_self(&ModuleFullPath::from("math"), "add")
-            .unwrap();
+        let result = tf.resolve_qualified(&ModuleFullPath::from("math"), "add").unwrap();
         assert!(result.is_some());
     }
 
     // spec: 08-modules §8.7 — private symbol access denied from outside module
     #[test]
     fn test_resolve_qualified_private_denied() {
-        let mut tc = TypeChecker::new();
-        seed_module(&mut tc, "math", vec![("internal", Visibility::Private)]);
-        tc.set_current_module(ModuleFullPath::from("user"));
+        let mut tf = TestFixture::new();
+        seed_module(&mut tf, "math", vec![("internal", Visibility::Private)]);
+        tf.set_current_module(ModuleFullPath::from("user"));
 
-        let result = tc.resolve_qualified_self(
-            &ModuleFullPath::from("math"),
-            "internal",
-        );
+        let result = tf.resolve_qualified(&ModuleFullPath::from("math"), "internal");
         assert!(result.is_err());
         assert!(result.unwrap_err().message().contains("private"));
     }
@@ -1943,41 +1977,30 @@ mod tests {
     // spec: 08-modules §8.7 — private symbol accessible from child module in subtree
     #[test]
     fn test_resolve_qualified_private_allowed_in_subtree() {
-        let mut tc = TypeChecker::new();
-        seed_module(
-            &mut tc,
-            "math",
-            vec![("internal", Visibility::Private)],
-        );
-        // A child module of math should be able to access private names
-        tc.set_current_module(ModuleFullPath::from("math.test"));
+        let mut tf = TestFixture::new();
+        seed_module(&mut tf, "math", vec![("internal", Visibility::Private)]);
+        tf.set_current_module(ModuleFullPath::from("math.test"));
 
-        let result = tc
-            .resolve_qualified_self(&ModuleFullPath::from("math"), "internal")
-            .unwrap();
+        let result = tf.resolve_qualified(&ModuleFullPath::from("math"), "internal").unwrap();
         assert!(result.is_some());
     }
 
     // spec: 08-modules §8.6 — qualified lookup returns None for nonexistent symbol
     #[test]
     fn test_resolve_qualified_not_found() {
-        let mut tc = TypeChecker::new();
-        seed_module(&mut tc, "math", vec![("add", Visibility::Public)]);
-        tc.set_current_module(ModuleFullPath::from("user"));
+        let mut tf = TestFixture::new();
+        seed_module(&mut tf, "math", vec![("add", Visibility::Public)]);
+        tf.set_current_module(ModuleFullPath::from("user"));
 
-        let result = tc
-            .resolve_qualified_self(&ModuleFullPath::from("math"), "nonexistent")
-            .unwrap();
+        let result = tf.resolve_qualified(&ModuleFullPath::from("math"), "nonexistent").unwrap();
         assert!(result.is_none());
     }
 
     // spec: 08-modules §8.6 — qualified lookup on unknown module returns None
     #[test]
     fn test_resolve_qualified_unknown_module() {
-        let tc = TypeChecker::new();
-        let result = tc
-            .resolve_qualified_self(&ModuleFullPath::from("unknown"), "foo")
-            .unwrap();
+        let tf = TestFixture::new();
+        let result = tf.resolve_qualified(&ModuleFullPath::from("unknown"), "foo").unwrap();
         assert!(result.is_none());
     }
 
@@ -1986,9 +2009,9 @@ mod tests {
     // spec: 08-modules §8.3 — glob import brings all public names into scope
     #[test]
     fn test_import_glob() {
-        let mut tc = TypeChecker::new();
+        let mut tf = TestFixture::new();
         seed_module(
-            &mut tc,
+            &mut tf,
             "math",
             vec![
                 ("add", Visibility::Public),
@@ -1996,57 +2019,53 @@ mod tests {
                 ("internal", Visibility::Private),
             ],
         );
-        tc.set_current_module(ModuleFullPath::from("main"));
+        tf.set_current_module(ModuleFullPath::from("main"));
 
-        tc.register_imports(&[ImportSpec {
+        tf.register_imports_self(&[ImportSpec {
             module_path: ModuleFullPath::from("math"),
             alias: None,
             names: ImportNames::Glob,
             span: Span::SYNTHETIC,
-        }])
-        .unwrap();
+        }]).unwrap();
 
-        // Public names imported
-        assert!(tc.symbol_table().get("add").is_some());
-        assert!(tc.symbol_table().get("sub").is_some());
-        // Private names NOT imported
-        assert!(tc.symbol_table().get("internal").is_none());
+        assert!(tf.symbol_table().get("add").is_some());
+        assert!(tf.symbol_table().get("sub").is_some());
+        assert!(tf.symbol_table().get("internal").is_none());
     }
 
     // spec: 08-modules §8.3 — specific import brings only named symbols into scope
     #[test]
     fn test_import_specific() {
-        let mut tc = TypeChecker::new();
+        let mut tf = TestFixture::new();
         seed_module(
-            &mut tc,
+            &mut tf,
             "math",
             vec![
                 ("add", Visibility::Public),
                 ("sub", Visibility::Public),
             ],
         );
-        tc.set_current_module(ModuleFullPath::from("main"));
+        tf.set_current_module(ModuleFullPath::from("main"));
 
-        tc.register_imports(&[ImportSpec {
+        tf.register_imports_self(&[ImportSpec {
             module_path: ModuleFullPath::from("math"),
             alias: None,
             names: ImportNames::Specific(vec![Symbol::from("add")]),
             span: Span::SYNTHETIC,
-        }])
-        .unwrap();
+        }]).unwrap();
 
-        assert!(tc.symbol_table().get("add").is_some());
-        assert!(tc.symbol_table().get("sub").is_none());
+        assert!(tf.symbol_table().get("add").is_some());
+        assert!(tf.symbol_table().get("sub").is_none());
     }
 
     // spec: 08-modules §8.7 — importing private symbol by name produces error
     #[test]
     fn test_import_specific_private_error() {
-        let mut tc = TypeChecker::new();
-        seed_module(&mut tc, "math", vec![("secret", Visibility::Private)]);
-        tc.set_current_module(ModuleFullPath::from("main"));
+        let mut tf = TestFixture::new();
+        seed_module(&mut tf, "math", vec![("secret", Visibility::Private)]);
+        tf.set_current_module(ModuleFullPath::from("main"));
 
-        let result = tc.register_imports(&[ImportSpec {
+        let result = tf.register_imports_self(&[ImportSpec {
             module_path: ModuleFullPath::from("math"),
             alias: None,
             names: ImportNames::Specific(vec![Symbol::from("secret")]),
@@ -2060,11 +2079,11 @@ mod tests {
     // spec: 08-modules §8.3 — importing nonexistent symbol produces error
     #[test]
     fn test_import_specific_not_found_error() {
-        let mut tc = TypeChecker::new();
-        seed_module(&mut tc, "math", vec![("add", Visibility::Public)]);
-        tc.set_current_module(ModuleFullPath::from("main"));
+        let mut tf = TestFixture::new();
+        seed_module(&mut tf, "math", vec![("add", Visibility::Public)]);
+        tf.set_current_module(ModuleFullPath::from("main"));
 
-        let result = tc.register_imports(&[ImportSpec {
+        let result = tf.register_imports_self(&[ImportSpec {
             module_path: ModuleFullPath::from("math"),
             alias: None,
             names: ImportNames::Specific(vec![Symbol::from("nonexistent")]),
@@ -2078,10 +2097,10 @@ mod tests {
     // spec: 08-modules §8.3 — importing from unknown module produces error
     #[test]
     fn test_import_unknown_module_error() {
-        let mut tc = TypeChecker::new();
-        tc.set_current_module(ModuleFullPath::from("main"));
+        let mut tf = TestFixture::new();
+        tf.set_current_module(ModuleFullPath::from("main"));
 
-        let result = tc.register_imports(&[ImportSpec {
+        let result = tf.register_imports_self(&[ImportSpec {
             module_path: ModuleFullPath::from("unknown"),
             alias: None,
             names: ImportNames::Glob,
@@ -2095,14 +2114,12 @@ mod tests {
     // spec: 08-modules §8.4 — re-exported symbol resolved through import chain
     #[test]
     fn test_import_chain_resolution() {
-        let mut tc = TypeChecker::new();
+        let mut tf = TestFixture::new();
 
-        // Create "lib" module with a definition
-        seed_module(&mut tc, "lib", vec![("helper", Visibility::Public)]);
+        seed_module(&mut tf, "lib", vec![("helper", Visibility::Public)]);
 
-        // Create "reexport" module that re-exports from "lib"
-        tc.set_current_module(ModuleFullPath::from("reexport"));
-        tc.current_symbol_table_mut().insert(
+        tf.set_current_module(ModuleFullPath::from("reexport"));
+        tf.symbol_table_mut().insert(
             Symbol::from("helper"),
             ModuleEntry::Reexport {
                 source: FQSymbol {
@@ -2112,30 +2129,27 @@ mod tests {
             },
         );
 
-        // Import from "reexport" into "main"
-        tc.set_current_module(ModuleFullPath::from("main"));
-        tc.register_imports(&[ImportSpec {
+        tf.set_current_module(ModuleFullPath::from("main"));
+        tf.register_imports_self(&[ImportSpec {
             module_path: ModuleFullPath::from("reexport"),
             alias: None,
             names: ImportNames::Glob,
             span: Span::SYNTHETIC,
-        }])
-        .unwrap();
+        }]).unwrap();
 
-        // Should be able to look up "helper" in main — follows the chain
-        let scheme = tc.lookup_self("helper");
+        let scheme = tf.lookup("helper");
         assert!(scheme.is_some());
     }
 
     // spec: 08-modules §8.6 — conflicting glob imports produce Ambiguous entry
     #[test]
     fn test_import_ambiguity() {
-        let mut tc = TypeChecker::new();
-        seed_module(&mut tc, "mod_a", vec![("clash", Visibility::Public)]);
-        seed_module(&mut tc, "mod_b", vec![("clash", Visibility::Public)]);
-        tc.set_current_module(ModuleFullPath::from("main"));
+        let mut tf = TestFixture::new();
+        seed_module(&mut tf, "mod_a", vec![("clash", Visibility::Public)]);
+        seed_module(&mut tf, "mod_b", vec![("clash", Visibility::Public)]);
+        tf.set_current_module(ModuleFullPath::from("main"));
 
-        tc.register_imports(&[
+        tf.register_imports_self(&[
             ImportSpec {
                 module_path: ModuleFullPath::from("mod_a"),
                 alias: None,
@@ -2148,27 +2162,23 @@ mod tests {
                 names: ImportNames::Glob,
                 span: Span::SYNTHETIC,
             },
-        ])
-        .unwrap();
+        ]).unwrap();
 
-        // The name should be marked Ambiguous
         assert!(matches!(
-            tc.symbol_table().get("clash"),
+            tf.symbol_table().get("clash"),
             Some(ModuleEntry::Ambiguous)
         ));
-        // Lookup should return None for ambiguous names
-        assert!(tc.lookup_self("clash").is_none());
+        assert!(tf.lookup("clash").is_none());
     }
 
     // spec: 08-modules §8.6 — duplicate import from same source is not ambiguous
     #[test]
     fn test_import_same_source_not_ambiguous() {
-        let mut tc = TypeChecker::new();
-        seed_module(&mut tc, "math", vec![("add", Visibility::Public)]);
-        tc.set_current_module(ModuleFullPath::from("main"));
+        let mut tf = TestFixture::new();
+        seed_module(&mut tf, "math", vec![("add", Visibility::Public)]);
+        tf.set_current_module(ModuleFullPath::from("main"));
 
-        // Import the same name twice from the same source
-        tc.register_imports(&[
+        tf.register_imports_self(&[
             ImportSpec {
                 module_path: ModuleFullPath::from("math"),
                 alias: None,
@@ -2181,12 +2191,10 @@ mod tests {
                 names: ImportNames::Glob,
                 span: Span::SYNTHETIC,
             },
-        ])
-        .unwrap();
+        ]).unwrap();
 
-        // Should NOT be ambiguous (same source)
         assert!(matches!(
-            tc.symbol_table().get("add"),
+            tf.symbol_table().get("add"),
             Some(ModuleEntry::Import { .. })
         ));
     }
@@ -2194,22 +2202,19 @@ mod tests {
     // spec: 08-modules §8.3 — alias-only import registers alias without bare names
     #[test]
     fn test_import_alias_only() {
-        let mut tc = TypeChecker::new();
-        seed_module(&mut tc, "core.option", vec![("Some", Visibility::Public)]);
-        tc.set_current_module(ModuleFullPath::from("main"));
+        let mut tf = TestFixture::new();
+        seed_module(&mut tf, "core.option", vec![("Some", Visibility::Public)]);
+        tf.set_current_module(ModuleFullPath::from("main"));
 
-        tc.register_imports(&[ImportSpec {
+        tf.register_imports_self(&[ImportSpec {
             module_path: ModuleFullPath::from("core.option"),
             alias: Some(cranelisp_types::ModuleName::from("opt")),
             names: ImportNames::None,
             span: Span::SYNTHETIC,
-        }])
-        .unwrap();
+        }]).unwrap();
 
-        // No bare names imported
-        assert!(tc.symbol_table().get("Some").is_none());
-        // Alias registered
-        assert!(tc.state.module_aliases.contains_key(&Symbol::from("opt")));
+        assert!(tf.symbol_table().get("Some").is_none());
+        assert!(tf.state.module_aliases.contains_key(&Symbol::from("opt")));
     }
 
     // --- is_in_subtree ---
@@ -2217,8 +2222,8 @@ mod tests {
     // spec: 08-modules §8.7 — module is in its own subtree
     #[test]
     fn test_is_in_subtree_self() {
-        let tc = TypeChecker::new();
-        assert!(tc.is_in_subtree(
+        let tf = TestFixture::new();
+        assert!(tf.env().is_in_subtree(
             &ModuleFullPath::from("foo"),
             &ModuleFullPath::from("foo"),
         ));
@@ -2227,8 +2232,8 @@ mod tests {
     // spec: 08-modules §8.7 — child module is in parent subtree
     #[test]
     fn test_is_in_subtree_child() {
-        let tc = TypeChecker::new();
-        assert!(tc.is_in_subtree(
+        let tf = TestFixture::new();
+        assert!(tf.env().is_in_subtree(
             &ModuleFullPath::from("foo.bar"),
             &ModuleFullPath::from("foo"),
         ));
@@ -2237,8 +2242,8 @@ mod tests {
     // spec: 08-modules §8.7 — grandchild module is in ancestor subtree
     #[test]
     fn test_is_in_subtree_grandchild() {
-        let tc = TypeChecker::new();
-        assert!(tc.is_in_subtree(
+        let tf = TestFixture::new();
+        assert!(tf.env().is_in_subtree(
             &ModuleFullPath::from("foo.bar.baz"),
             &ModuleFullPath::from("foo"),
         ));
@@ -2247,8 +2252,8 @@ mod tests {
     // spec: 08-modules §8.7 — unrelated module is not in subtree
     #[test]
     fn test_is_not_in_subtree() {
-        let tc = TypeChecker::new();
-        assert!(!tc.is_in_subtree(
+        let tf = TestFixture::new();
+        assert!(!tf.env().is_in_subtree(
             &ModuleFullPath::from("other"),
             &ModuleFullPath::from("foo"),
         ));
@@ -2257,9 +2262,8 @@ mod tests {
     // spec: 08-modules §8.7 — string prefix without dot separator is not subtree
     #[test]
     fn test_is_not_in_subtree_prefix_mismatch() {
-        let tc = TypeChecker::new();
-        // "foobar" starts with "foo" but is NOT a subtree of "foo"
-        assert!(!tc.is_in_subtree(
+        let tf = TestFixture::new();
+        assert!(!tf.env().is_in_subtree(
             &ModuleFullPath::from("foobar"),
             &ModuleFullPath::from("foo"),
         ));
@@ -2270,45 +2274,27 @@ mod tests {
     // spec: 08-modules §8.3 — qualified resolution follows module alias
     #[test]
     fn test_resolve_qualified_uses_alias() {
-        let mut tc = TypeChecker::new();
-        seed_module(
-            &mut tc,
-            "core.option",
-            vec![("Some", Visibility::Public)],
-        );
-        tc.set_current_module(ModuleFullPath::from("main"));
+        let mut tf = TestFixture::new();
+        seed_module(&mut tf, "core.option", vec![("Some", Visibility::Public)]);
+        tf.set_current_module(ModuleFullPath::from("main"));
 
-        // Register alias: "opt" -> "core.option"
-        tc.state.module_aliases.insert(
+        tf.state.module_aliases.insert(
             Symbol::from("opt"),
             ModuleFullPath::from("core.option"),
         );
 
-        // resolve_qualified with alias module path should find the symbol
-        let result = tc
-            .resolve_qualified_self(&ModuleFullPath::from("opt"), "Some")
-            .unwrap();
-        assert!(
-            result.is_some(),
-            "resolve_qualified should resolve 'opt/Some' via alias to core.option"
-        );
+        let result = tf.resolve_qualified(&ModuleFullPath::from("opt"), "Some").unwrap();
+        assert!(result.is_some(), "resolve_qualified should resolve 'opt/Some' via alias");
     }
 
     // spec: 08-modules §8.5 — direct qualified path works without alias
     #[test]
     fn test_resolve_qualified_without_alias_unchanged() {
-        let mut tc = TypeChecker::new();
-        seed_module(
-            &mut tc,
-            "math",
-            vec![("add", Visibility::Public)],
-        );
-        tc.set_current_module(ModuleFullPath::from("main"));
+        let mut tf = TestFixture::new();
+        seed_module(&mut tf, "math", vec![("add", Visibility::Public)]);
+        tf.set_current_module(ModuleFullPath::from("main"));
 
-        // No alias — direct path should still work
-        let result = tc
-            .resolve_qualified_self(&ModuleFullPath::from("math"), "add")
-            .unwrap();
+        let result = tf.resolve_qualified(&ModuleFullPath::from("math"), "add").unwrap();
         assert!(result.is_some());
     }
 
@@ -2317,25 +2303,24 @@ mod tests {
     // spec: 08-modules §8.9 — new module seeded with builtin imports as Import entries
     #[test]
     fn test_new_module_does_not_have_primitives() {
-        let mut tc = TypeChecker::new();
-        tc.set_current_module(ModuleFullPath::from("mymod"));
-        // Primitives are NOT auto-imported (spec §8.9.1).
-        assert!(tc.symbol_table().get("add-i64").is_none(), "add-i64 needs import");
-        assert!(tc.symbol_table().get("bind").is_none(), "bind needs import");
-        // Only root contents: special forms (no builtin type names per spec §8.9.1).
-        assert!(tc.symbol_table().get("if").is_some(), "if should be available");
-        assert!(tc.symbol_table().get("Int").is_none(), "Int needs import");
+        let mut tf = TestFixture::new();
+        tf.set_current_module(ModuleFullPath::from("mymod"));
+        assert!(tf.symbol_table().get("add-i64").is_none(), "add-i64 needs import");
+        assert!(tf.symbol_table().get("bind").is_none(), "bind needs import");
+        assert!(tf.symbol_table().get("if").is_some(), "if should be available");
+        assert!(tf.symbol_table().get("Int").is_none(), "Int needs import");
     }
 
-    // --- Concurrency primitives (Phase 2) ---
+    // --- Fresh variable generation ---
 
     // spec: pipeline-v3.md §3.4.3 — AtomicU32 TypeId allocation is monotonic
     #[test]
     fn test_fresh_var_ids_are_monotonic() {
-        let mut tc = TypeChecker::new();
-        let (_, id1) = tc.fresh_var_id();
-        let (_, id2) = tc.fresh_var_id();
-        let (_, id3) = tc.fresh_var_id();
+        let tf = TestFixture::new();
+        let env = tf.env();
+        let (_, id1) = env.fresh_var_id();
+        let (_, id2) = env.fresh_var_id();
+        let (_, id3) = env.fresh_var_id();
         assert!(id1 < id2);
         assert!(id2 < id3);
     }
@@ -2343,92 +2328,34 @@ mod tests {
     // spec: pipeline-v3.md §3.4.3 — fresh_var returns unique Var types
     #[test]
     fn test_fresh_var_returns_unique_vars() {
-        let mut tc = TypeChecker::new();
-        let v1 = tc.fresh_var();
-        let v2 = tc.fresh_var();
+        let tf = TestFixture::new();
+        let env = tf.env();
+        let v1 = env.fresh_var();
+        let v2 = env.fresh_var();
         assert_ne!(v1, v2);
         assert!(matches!(v1, Type::Var(_)));
         assert!(matches!(v2, Type::Var(_)));
     }
 
-    // spec: pipeline-v3.md §3.4.3 — try_lock_module succeeds on unlocked module
-    #[test]
-    fn test_try_lock_module_succeeds() {
-        let mut tc = TypeChecker::new();
-        let module = ModuleFullPath::from("test.mod");
-        assert!(!tc.is_module_locked(&module));
-        let guard = tc.try_lock_module(&module);
-        assert!(guard.is_ok());
-        assert!(tc.is_module_locked(&module));
-        drop(guard);
-        assert!(!tc.is_module_locked(&module));
-    }
-
-    // spec: pipeline-v3.md §3.4.3 — try_lock_module fails on already-locked module
-    #[test]
-    fn test_try_lock_module_fails_when_locked() {
-        let mut tc = TypeChecker::new();
-        let module = ModuleFullPath::from("test.mod");
-        let _guard = tc.try_lock_module(&module).unwrap();
-        // Second lock attempt must fail immediately
-        let result = tc.try_lock_module(&module);
-        assert!(result.is_err());
-        let err = result.unwrap_err();
-        assert!(
-            err.message().contains("already being compiled"),
-            "expected 'already being compiled' error, got: {}",
-            err.message()
-        );
-    }
-
-    // spec: pipeline-v3.md §3.4.3 — ModuleGuard releases lock on drop (RAII)
-    #[test]
-    fn test_module_guard_releases_on_drop() {
-        let mut tc = TypeChecker::new();
-        let module = ModuleFullPath::from("test.mod");
-        {
-            let _guard = tc.try_lock_module(&module).unwrap();
-            assert!(tc.is_module_locked(&module));
-        }
-        // Guard dropped — lock must be released
-        assert!(!tc.is_module_locked(&module));
-        // Can re-acquire
-        let guard2 = tc.try_lock_module(&module);
-        assert!(guard2.is_ok());
-    }
-
-    // spec: pipeline-v3.md §3.4.3 — independent modules can be locked simultaneously
-    #[test]
-    fn test_independent_modules_lock_simultaneously() {
-        let mut tc = TypeChecker::new();
-        let mod_a = ModuleFullPath::from("mod.a");
-        let mod_b = ModuleFullPath::from("mod.b");
-        let _guard_a = tc.try_lock_module(&mod_a).unwrap();
-        let guard_b = tc.try_lock_module(&mod_b);
-        assert!(guard_b.is_ok(), "independent modules should lock independently");
-        assert!(tc.is_module_locked(&mod_a));
-        assert!(tc.is_module_locked(&mod_b));
-    }
-
     // spec: pipeline-v3.md §3.4.3 — snapshot/restore works with atomic next_id
     #[test]
     fn test_snapshot_restore_with_atomic_next_id() {
-        let mut tc = TypeChecker::new();
-        // Generate some type vars
-        let _ = tc.fresh_var();
-        let _ = tc.fresh_var();
-        let snap = tc.snapshot();
+        let mut tf = TestFixture::new();
+        // Use fresh_var through env (doesn't borrow state)
+        let _ = tf.fresh_var();
+        let _ = tf.fresh_var();
+        let snap = tf.snapshot();
         let snap_id = snap.next_type_id;
-        // Generate more after snapshot
-        let _ = tc.fresh_var();
-        let _ = tc.fresh_var();
-        // Counter should have advanced past snapshot
-        assert_eq!(*tc.next_id.get_mut(), snap_id + 2);
-        // Restore should reset the counter
-        tc.restore(snap);
-        assert_eq!(*tc.next_id.get_mut(), snap_id);
-        // Next fresh var should use the snapshot's next_id
-        let (_, id_after_restore) = tc.fresh_var_id();
+        let _ = tf.fresh_var();
+        let _ = tf.fresh_var();
+        assert_eq!(tf.next_id.load(Ordering::Relaxed), snap_id + 2);
+        // Restore through env — create env fresh to avoid borrow conflict
+        {
+            let env = TypeCheckEnv::new(&tf.modules, &tf.next_id);
+            env.restore(&mut tf.state, snap);
+        }
+        assert_eq!(tf.next_id.load(Ordering::Relaxed), snap_id);
+        let (_, id_after_restore) = tf.fresh_var_id();
         assert_eq!(id_after_restore, snap_id);
     }
 }

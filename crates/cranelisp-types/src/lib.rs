@@ -44,7 +44,8 @@ pub use marshal::{
     TAG_SEXP_SYM, TAG_SEXP_LIST, TAG_SEXP_BRACKET,
 };
 
-// String newtypes
+// String newtypes and fully-qualified name types
 pub use newtype::{
-    FQSymbol, JitSymbol, ModuleFullPath, ModuleName, Symbol, TraitName, TypeName,
+    FQSymbol, FQTraitName, FQTypeName, JitSymbol, ModuleFullPath, ModuleName, Symbol, TraitName,
+    TypeName,
 };

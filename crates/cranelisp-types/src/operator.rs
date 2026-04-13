@@ -10,7 +10,7 @@
 //! Ring 2 will add `Num.+` which dispatches to `add-i64`/`add-f64` via trait resolution.
 //! These primitives survive permanently as the foundation for that dispatch.
 
-use crate::{Symbol, Type, TypeName};
+use crate::{ModuleFullPath, Symbol, Type, TypeName};
 
 /// A Ring 0 monomorphic primitive definition.
 ///
@@ -223,7 +223,7 @@ pub fn ring1_primitives() -> Vec<PrimitiveDef> {
             name: Symbol::from("parse-int"),
             ty: Type::Fn(
                 vec![Type::String],
-                Box::new(Type::ADT(TypeName::from("Option"), vec![Type::Int])),
+                Box::new(Type::adt(ModuleFullPath::from("primitives"), TypeName::from("Option"), vec![Type::Int])),
             ),
             cranelift_op: "parse-int",
             param_names: vec![Symbol::from("s")],
@@ -245,7 +245,7 @@ pub fn ring1_primitives() -> Vec<PrimitiveDef> {
             name: Symbol::from("split"),
             ty: Type::Fn(
                 vec![Type::String, Type::String],
-                Box::new(Type::ADT(TypeName::from("Vec"), vec![Type::String])),
+                Box::new(Type::adt(ModuleFullPath::from("primitives"), TypeName::from("Vec"), vec![Type::String])),
             ),
             cranelift_op: "split",
             param_names: vec![Symbol::from("s"), Symbol::from("sep")],
@@ -253,7 +253,7 @@ pub fn ring1_primitives() -> Vec<PrimitiveDef> {
         PrimitiveDef {
             name: Symbol::from("join"),
             ty: Type::Fn(
-                vec![Type::String, Type::ADT(TypeName::from("Vec"), vec![Type::String])],
+                vec![Type::String, Type::adt(ModuleFullPath::from("primitives"), TypeName::from("Vec"), vec![Type::String])],
                 Box::new(Type::String),
             ),
             cranelift_op: "join",
@@ -313,7 +313,7 @@ pub fn ring1_primitives() -> Vec<PrimitiveDef> {
 /// `quote-sexp` converts a runtime Sexp value into a quoted form suitable
 /// for splicing into macro output.
 pub fn ring3_primitives() -> Vec<PrimitiveDef> {
-    let sexp_type = Type::ADT(TypeName::from("Sexp"), vec![]);
+    let sexp_type = Type::adt(ModuleFullPath::from("macros"), TypeName::from("Sexp"), vec![]);
     vec![
         PrimitiveDef {
             name: Symbol::from("quote-sexp"),
@@ -509,7 +509,7 @@ mod tests {
     fn test_quote_sexp_type() {
         let prims = ring3_primitives();
         let qs = prims.iter().find(|p| p.name.as_ref() == "quote-sexp").unwrap();
-        let sexp_type = Type::ADT(TypeName::from("Sexp"), vec![]);
+        let sexp_type = Type::adt(ModuleFullPath::from("macros"), TypeName::from("Sexp"), vec![]);
         assert_eq!(
             qs.ty,
             Type::Fn(vec![sexp_type.clone()], Box::new(sexp_type)),

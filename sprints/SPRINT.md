@@ -1,249 +1,355 @@
-# Sprint 50: Session Restructure Regression Fix
+# Sprint 51: Stateless TypeChecker
 
-**Status**: COMPLETE
-**Ring**: — (stabilisation)
-**Goal**: Fix the macro/prelude/platform regressions introduced by the Sprint 49 session restructure, restoring all tests that passed before Sprint 49.
+**Status**: ACTIVE
+**Ring**: 4 (Effects — stabilisation)
+**Goal**: Make the TypeChecker fully stateless — all persistent state eliminated or moved to SharedState/scheduler, global registries replaced by per-module resolution through the module system, FQTypeName migration, `CompilerSession.tc` deleted. Fix all 11 cache test failures.
 
 ## Scope
 
-The Sprint 49 session restructure (GOT unification, SharedState DashMaps, `src/repl/` deletion) broke macro symbol availability, platform DLL registration, introspection commands, and some module export paths. This caused 137 test failures (up from 13 pre-existing). This sprint diagnoses and fixes the regressions.
+TypeChecker currently holds 7 fields of persistent state. All of it is either derived indexes over per-module data (should be eliminated), scheduling state (belongs on the scheduler), or per-invocation state (belongs on the stack).
+
+### The registry problem
+
+Three global registries (`type_defs: TypeDefRegistry`, `trait_registry: TraitRegistry`, `impl_registry: ImplRegistry`) are keyed by bare `TypeName`/`TraitName` — no module qualification. But the same data already lives on per-module SymbolTables as `ModuleEntry::TypeDef`, `ModuleEntry::TraitDecl`, and `ModuleEntry::Constructor`. The registries are derived caches. `restore_cached_module()` proves this: it reconstructs the registries from SymbolTable entries.
+
+These caches create sync bugs (like the current parallel symbol table divergence) and will collide on bare names when two modules define types with the same name. The fix is: eliminate the global registries entirely, resolve type/trait/impl lookups through the module system using fully-qualified names.
+
+This converges with the planned FQTypeName migration (`TypeName` → `FQTypeName { module: ModuleFullPath, name: TypeName }`). Bare-name global lookup goes away; all resolution follows import chains through SymbolTables.
+
+### TC field disposition
+
+| Field | Current | Target | Rationale |
+|-------|---------|--------|-----------|
+| `modules` | `DashMap<ModuleFullPath, SymbolTable>` | SharedState | Cross-module shared data. Root cause of cache failures. |
+| `type_defs` | `RwLock<TypeDefRegistry>` | **Deleted** | Derived cache. Per-module TypeDef entries on SymbolTable are the source of truth. Lookups go through module system with FQTypeName. |
+| `trait_registry` | `RwLock<TraitRegistry>` | **Deleted** | Derived cache. Per-module TraitDecl entries on SymbolTable are the source of truth. |
+| `impl_registry` | `RwLock<ImplRegistry>` | **Deleted** | Derived cache. Impl entries on SymbolTable are the source of truth. |
+| `next_id` | `AtomicU32` | SharedState `AtomicU32` | Monotonic counter. No semantic coupling to TC. |
+| `module_locks` | `Mutex<HashMap<...>>` | Scheduler (or deleted) | Compilation scheduling. Scheduler already tracks module lifecycle. |
+| `state` (CheckState) | On TC struct | Stack-local per `check()` call | Per-invocation: subst, env, expr_types, etc. Created fresh each call. |
+| — REPL carry-forward | `module_aliases`, `overloads`, `resolved_overloads` | SharedState REPL state | 3 fields that persist across REPL evals. |
+
+### FQTypeName migration
+
+`TypeName` (bare string) → `FQTypeName { module: ModuleFullPath, name: TypeName }` throughout boundary types. This is the FIXME at `types.rs:23` and `checker.rs:423`. All type resolution becomes module-qualified. The `type_modules` map in checker.rs (which maps TypeName → ModuleFullPath) becomes unnecessary — the module is embedded in FQTypeName.
 
 **In scope:**
-1. **Macro expander refactor** (~100 failures): Replace the cache-based macro expansion (pre-built HashMap of macro entries) with direct symbol table lookups. Root cause: per-module codegen products store macro code pointers under the current module, but the lookup searches the defining module. Rather than patch the store/lookup mismatch, eliminate the redundant cache layer entirely. Requires design doc.
-2. **Platform DLL JIT symbol resolution** (~12-17 failures): `collect_jit_setup_for_module` only scans `ModuleEntry::Def` but platform functions appear as `ModuleEntry::Import`. Fix: register all platform registry entries unconditionally.
-3. **Test fixture imports** (~24 failures, MIXED): Tests use bare primitive names (`add-i64`) without import, violating spec §8.9.1. Fix the tests to add explicit `(import [primitives [...]])`. Also fix the entry-module inconsistency (entry modules get primitives implicitly, violating the spec).
-4. **Builtin type leaking into `/list`** (~7 failures): `ensure_module_exists` copies all TypeDef entries from user to new modules. Fix: filter out compiler-seeded builtin type names.
-5. **Macro body type checking** (~4 failures): Macro clauses not type-checked at definition time in v4. Either add eager check or update test expectations.
-6. **`run-tests` special form** (~7 failures): Never ported to reimplementation AST builder. Missing feature, not regression — may defer to Sprint 51.
-7. **ObjectWorkerState dead code** (35 lines in `src/session.rs`): Trivial cleanup per `/arch`.
 
-**Out of scope (pre-existing, carried to Sprint 51):**
-- 11 sketch_port failures (pre-existing before Sprint 49)
-- 2 ring0 checked_div failures (pre-existing, spec §12.7.3)
+1. **Stateless TC**: Extract `modules` and `next_id` to SharedState. Delete `type_defs`, `trait_registry`, `impl_registry` (replace with module-system resolution). Make CheckState stack-local. Move REPL carry-forward to SharedState. Move/delete `module_locks`. Delete `CompilerSession.tc`. TC becomes free functions or worker-local.
 
-**Success criteria:** Restore to <= 13 failures (pre-existing only). All stdlib 54/54 pass. All ring4_trace 29/29 pass. All cache 51/51 pass. All v4_pipeline platform tests pass.
+2. **FQTypeName migration**: `TypeName` → `FQTypeName` in boundary types. Eliminate `type_modules` map. All type/trait/impl resolution through module system using qualified names.
 
-## Diagnosis Summary (Wave 1 findings)
+3. **Registry elimination**: Delete `TypeDefRegistry`, `TraitRegistry`, `ImplRegistry` structs. Add `ModuleEntry::TraitImpl` variant to SymbolTable (impls are not currently first-class module entries — they only exist in the global `ImplRegistry`). Type/trait/impl lookups resolve through SymbolTable import chains to the defining module's `ModuleEntry::TypeDef`/`ModuleEntry::TraitDecl`/`ModuleEntry::TraitImpl`. `constructor_to_type` replaced by module-system lookup.
 
-### Root causes identified
+4. **Cache infrastructure fix** (11 tests): Once symbol tables live on SharedState and are the single source of truth (no parallel copies, no derived caches), nice workers can read populated symbol tables for `.meta.json` manifest writing. Also fix cache test file layout.
 
-| # | Root Cause | Tests | Fix Type |
-|---|-----------|-------|----------|
-| 1 | Macro code pointer store/lookup mismatch — cache layer diverged from codegen products | ~100 | Architectural refactor: eliminate macro cache, use symbol table directly |
-| 2 | Platform JIT symbols: `collect_jit_setup_for_module` misses Import entries | ~12-17 | Code fix |
-| 3 | Test fixtures use bare primitives without import (spec §8.9.1 violation) | ~24 | Test fix + entry-module consistency fix |
-| 4 | Builtin types leak from `user` module into all new modules via `ensure_module_exists` | ~7 | Code fix |
-| 5 | Macro body type checking deferred (not checked at definition time) | ~4 | Code fix or test update |
-| 6 | `run-tests` special form not ported to reimplementation | ~7 | Missing feature |
-| 7 | Cross-eval REPL macros not visible (sub-case of #1) | ~2 | Fixed by #1 |
+**Out of scope (Sprint 52):**
+- Sketch-port triage (13 failures)
+- IO/platform failures (3 tests)
+- Checked division (2 tests)
+- Ring 2 failures (2 tests)
+- E2E imported fn HOF (1 test)
+- Sprint 23 test triage (FIXME(/qa), 2x deferred)
+- Remaining FIXMEs not resolved by this refactor
+- Post-restructure architecture document
+- Prior-ring spec traceability
 
-### Key design decision
-
-The prior implementation used three redundant caches of macro information:
-- `macro_names: Vec<&str>` — pre-built list for sexp scanning
-- `macro_infos: Vec<(Symbol, DefmacroInfo, Sexp)>` — current-module definitions
-- `HashMap<Symbol, MacroEntry>` — assembled by `build_all_macro_entries` + `build_persistent_macro_entries`
-
-All three duplicate information already in the symbol table + codegen products. The bug exists because cache #3 disagrees with codegen products about which module key to use. The fix eliminates the caches:
-
-**New approach**: `expand_sexp_recursive` takes a `MacroResolver` trait. The implementation walks the symbol table on each symbol encounter, follows Import/Reexport chains to the defining module, checks codegen products there, compiles on demand if needed, and returns the `MacroEntry`. No pre-scanning, no name lists, no HashMap assembly.
-
-**Design constraint**: FQ macro references (e.g., `(control/cond ...)`) are out of scope — they don't work for regular defns either. Only imported macros are supported. FQ support is a future feature.
-
-**Borrow checker consideration**: The resolver needs `&mut` access for on-demand compilation but the caller needs `&mut` access after expansion. Solution: extract expansion into a separate function so borrows are scoped.
+**Success criteria:** All 11 cache tests pass. No regressions in the other 1509 passing tests. `CompilerSession.tc` field deleted. TypeChecker struct has no owned persistent state. `TypeDefRegistry`, `TraitRegistry`, `ImplRegistry` deleted. FQTypeName in use throughout boundary types. FIXMEs at `types.rs:23` and `checker.rs:423` resolved.
 
 ## FIXME Debt
 
 | File | Owning Skill | Issue | Resolution |
 |------|-------------|-------|------------|
-| `crates/cranelisp-typecheck/src/checker.rs:417` | /arch | FQTypeName migration | deferred — not blocking |
-| `crates/cranelisp-backend/src/cache/linker.rs:231` | /backend | BL range for runtime intrinsics | deferred — large codebase only |
-| `crates/cranelisp-types/src/types.rs:23` | /arch | TypeName → FQTypeName | deferred — architectural improvement |
-| `tests/sprint23.rs:11` | /qa | Sprint23 tests disabled for v4 | deferred — needs triage in Sprint 51 |
-| `tests/v4_pipeline.rs:359` | /frontend | Macro define-before-use not enforced | deferred — spec compliance gap |
-| `spec/08-modules.md:82` | /spec | Remove sibling fallback rule | deferred — spec clarification |
+| `checker.rs:423` | /arch | FQTypeName migration | **in scope — resolved by FQTypeName migration** |
+| `types.rs:23` | /arch | TypeName → FQTypeName | **in scope — resolved by FQTypeName migration** |
+| `linker.rs:231` | /backend | BL range for runtime intrinsics | carried — Sprint 52 |
+| `sprint23.rs:11` | /qa | Sprint23 tests disabled for v4 | carried — Sprint 52 (**2x deferred, must ship S52**) |
+| `v4_pipeline.rs:359` | /frontend | Macro define-before-use not enforced | carried — Sprint 52 |
+| `spec/08-modules.md:82` | /spec | Remove sibling fallback rule | carried — Sprint 52 |
+| `session_v4.rs:3070` | /arch | Object codegen CodegenInput | carried — Sprint 52 |
+| `worker.rs:1153` | /int | Dead code comment | carried — Sprint 52 |
+| `worker.rs:1936` | /backend | Dep symbol compilation | carried — Sprint 52 |
+| `worker.rs:2752` | /int | process_module_forms refactor | carried — Sprint 52 |
 
 ## Architecture Review
 
 **Reviewer**: `/arch`
-**Verdict**: APPROVED with notes (initial scope review — pre-diagnosis)
+**Verdict**: APPROVED WITH CHANGES
 
-**Technical coherence**: Scope is well-defined — restore pre-Sprint-49 test behavior through restructured session code paths. Success criteria (≤13 pre-existing failures) is concrete and measurable. Complete, testable increment.
+**Technical coherence**: The three pieces are genuinely entangled and form a natural unit. FQTypeName is needed to make registry elimination possible; registry elimination is what makes stateless TC possible; the cache fix is a natural consequence. No hidden dependencies beyond what the plan identifies.
 
-**No interim architecture**: Confirmed. All fixes within existing `SharedState` / `DashMap` / `CodegenProduct` data model. No new types or temporary bridges.
+**No interim architecture**: PASS. The module-system resolution helper is target architecture. However, `CheckResult.type_defs` and `CheckResult.constructor_to_type` key types must be specified as FQTypeName (not left as bare TypeName — that would be semantically inconsistent).
 
-**Wave ordering**: Correct. Macro/prelude is the dominant root cause — fixing it will likely resolve significantly more than 94 tests (roadmap estimated ~120). Wave 2 should re-triage after Wave 1 lands since some failures may cascade.
+**Critical finding — impl lookup strategy undefined (BLOCKER)**:
 
-**Additional design refs for `/int`**:
-- `design/arch/archive/session-restructure.md` — target data model, especially §MacroEnv elimination
-- `src/worker.rs:1848-2020` — `build_all_macro_entries`, `build_persistent_macro_entries`, `collect_persistent_macro_names` — DashMap-based macro env builders (likely regression site)
-- `src/session.rs:264` — `inject_prelude_import` — verify called at right point in v4 worker flow
-- `src/worker.rs:465` — prelude auto-injection 4-guard condition
+There is no `ModuleEntry::TraitImpl` variant on SymbolTable today. The sprint plan says "Impl entries on SymbolTable are the source of truth" but this is incorrect — impls are only recorded in the global `ImplRegistry`, not as SymbolTable entries. `restore_cached_module()` reconstructs impls by parsing mangled JIT names, not from SymbolTable data.
 
-**Note**: `MacroEnv` still exists in `src/expander.rs` (test-only). Production path uses DashMap-based builder functions. Regression is in the latter.
+**Required**: Add a `ModuleEntry::TraitImpl` variant that records `(trait_name, impl_type)` pairs, making impls first-class module entries. This enables impl resolution through the module system. The design doc must specify the impl search strategy (trait's module, type's module, current module — analogous to Haskell's orphan instance rules).
 
-**Cleanup**: Include `ObjectWorkerState` dead code deletion (35 lines in `src/session.rs`) in Wave 1 — trivial, consistent with debt-first principle.
+**Concrete resolution path — `(+ x y)` after registry elimination:**
+1. Look up `+` in scope → find scheme with constraint `Num` on var0
+2. Resolve dispatch arg to concrete type `Int`
+3. Look up `Num` trait's defining module (follow import chain from `+`'s source). Find `ModuleEntry::TraitDecl` for `Num` there.
+4. Search for `ModuleEntry::TraitImpl { trait_name: "Num", impl_type: FQTypeName("primitives", "Int") }` in the trait's module, type's module, or current module.
+5. Emit `ResolvedCall::TraitMethod { ... }`
 
-**Interface gaps**: None. Boundary types (`TypecheckProduct`, `CodegenProduct`, `ModuleEntry::Macro`) are sufficient.
+**Interface changes required by design doc:**
+- `Type::ADT(TypeName, Vec<Type>)` → `Type::ADT(FQTypeName, Vec<Type>)` — every pattern match on `Type::ADT` changes
+- `CheckResult.type_defs: HashMap<TypeName, TypeDefInfo>` → `HashMap<FQTypeName, TypeDefInfo>`
+- `CheckResult.constructor_to_type: HashMap<Symbol, TypeName>` → `HashMap<Symbol, FQTypeName>`
+- `TypeDefInfo.name: TypeName` → `FQTypeName`
+- `CodegenInput` duplicated fields must use FQTypeName too
+- New `ModuleEntry::TraitImpl { trait_name: TraitName, impl_type: FQTypeName, methods: Vec<Symbol> }`
 
-**Single pipeline invariant**: Maintained. No risk of re-introducing parallel paths.
+**Blast radius**: FQTypeName in cranelisp-types changes a shared boundary crate. All downstream crates break simultaneously until migrated. Must be an atomic branch — Wave 3a changes cranelisp-types, Wave 3b fixes all crates before the tree compiles.
 
-**NOTE**: The diagnosis revealed that the fix requires an architectural refactor (eliminate macro cache layer), not a simple store-key patch. This needs a design doc from `/arch` and re-review before implementation.
+**Risk assessment:**
+- **Size (HIGH)**: ~200+ sites across every crate. Mitigated by mechanical nature + test coverage.
+- **Ordering (MEDIUM)**: FQTypeName big-bang breaks all crates until migrated. Feature branch recommended.
+- **Impl lookup (MEDIUM)**: Design gap — must be resolved in design doc before coding.
+- **Critical path**: /typecheck is the bottleneck. Registry elimination + resolution rewrite is the novel engineering; everything else is mechanical.
+
+**Benefits confirmed:**
+- `build_type_modules()` in session_v4.rs (called ~10 times for REPL display) eliminated by FQTypeName
+- Three `RwLock<Registry>` fields deleted, improving DashMap guard discipline
+- Two FIXMEs resolved (`types.rs:23`, `checker.rs:423`)
 
 ## Skill Plans
 
 ### /arch
-**Task**: Write design doc `design/arch/macro-resolver.md` for the macro expander refactor.
-
-The design doc MUST cover:
-
-**1. Problem statement**: Three redundant caches (`macro_names`, `macro_infos`, `HashMap<Symbol, MacroEntry>`) duplicate information in the symbol table + codegen products. The `HashMap` cache disagrees with codegen products on which module key stores macro code pointers (current module vs defining module). This is the root cause of ~100 test failures.
-
-**2. Target architecture**: 
-- `MacroResolver` trait in `expander.rs` with method `resolve_macro(&mut self, name: &str, span: Span) -> Result<Option<MacroEntry>, CranelispError>`
-- `SymbolTableMacroResolver` impl in `worker.rs` that:
-  - Looks up `name` in the current module's symbol table
-  - If `ModuleEntry::Macro` → local, use current module as defining module
-  - If `ModuleEntry::Import` → follow chain (Import → Reexport → Macro) to find defining module. Use generic recursive chain walker, not hardcoded 2-hop.
-  - Check codegen products under the **defining module** for compiled code pointers
-  - If not compiled → compile inline via `compile_macro_clause_inline`, store under defining module
-  - Return `MacroEntry` with function pointers
-- Read-only variant (`ReadOnlyMacroResolver`) for `/expand` slash command in `session_v4.rs` — same lookup, no on-demand compilation
-- `expand_sexp_recursive` takes `&mut dyn MacroResolver` instead of `&HashMap<Symbol, MacroEntry>`
-
-**3. What gets deleted**:
-- `MacroEnv` struct + impl + `compile_single_clause` (expander.rs) — dead code, only used by unit tests
-- `build_all_macro_entries`, `build_persistent_macro_entries`, `collect_persistent_macro_names` (worker.rs)
-- `sexp_contains_macro_call`, `collect_called_macros`, `collect_called_macros_inner` (worker.rs)
-- `resolve_macro_entry`, `resolve_macro_sexp`, `compile_persistent_macro_if_needed` (worker.rs)
-- `build_macro_map` (session_v4.rs)
-- `macro_names` list construction and `macro_infos` threading through `pass2_check_bodies_with_expansion` / `process_regular_form`
-
-**4. What changes**:
-- `compile_macro_if_needed` gains `target_module: &ModuleFullPath` param (the defining module for code pointer storage)
-- `compile_macro_clause_inline` gains `target_module` param — stores code pointer, GOT slot, etc. under target module
-- `pass2_check_bodies_with_expansion` simplified — no macro_names/macro_infos plumbing
-- `process_regular_form` simplified — creates resolver, calls `expand_sexp_recursive`, done. Return type changes from `Vec<String>` to `()` (new macros auto-visible via symbol table)
-- `expand_form_sexp` in session_v4.rs uses `ReadOnlyMacroResolver` instead of `build_macro_map`
-
-**5. Borrow checker design**:
-- `SymbolTableMacroResolver` must NOT hold `&mut ModuleCompiler` (would prevent caller from using it after expansion)
-- Instead: extract expansion into a separate function `try_expand_sexp(ctx, module, sexp, accumulator)` that creates the resolver, runs expansion, drops resolver, returns result. Borrows are scoped to the function.
-- The resolver struct holds only the shared-ref fields it needs from `ModuleCompiler` — document which fields and why
-- For on-demand compilation inside the resolver, document the borrow path
-
-**6. Scope constraints**:
-- FQ macro references (`control/cond`) NOT supported — same as FQ defn references, which require module to already be loaded via import. Separate future feature.
-- Macros in the current module (from `defmacro` in the current batch) are registered in the symbol table during Pass 1 (`register_macro_in_module`), so the resolver sees them naturally
-- Macros produced by expansion (e.g., `const`/`def` → `defmacro`) are registered inline in `process_regular_form` and immediately visible to the resolver for subsequent forms
-
-**7. Sketch comparison**: The sketch used `MacroEnv` (a flat HashMap) because it had a single JIT with a single flat code pointer namespace. The reimplementation's per-module `CodegenProduct` DashMaps introduced the store/lookup mismatch. The resolver eliminates the intermediate cache entirely.
-
-**Acceptance**: Design doc in `design/arch/macro-resolver.md`, addresses all 7 sections above.
-
-### /frontend
-**Task**: Design and implement `MacroResolver` trait in `expander.rs`. Change `expand_sexp_recursive` and `expand_macro_call` to use `&mut dyn MacroResolver`. Delete `MacroEnv`, `compile_single_clause`, and MacroEnv unit tests.
-**Design doc**: `design/frontend/macro-resolver-trait.md` — trait definition, expansion loop changes, what gets deleted from expander.rs
-**Acceptance**: `expander.rs` compiles with new trait; old `HashMap`-based API removed; marshal round-trip tests preserved.
+**Task**: Write stateless TC design doc `design/arch/stateless-tc.md` covering the full refactor: stateless TC + FQTypeName + registry elimination.
+**Design doc**: `design/arch/stateless-tc.md` (new)
+**Approach**: {to be filled by /arch}
+**Design refs**: `design/arch/archive/session-restructure.md`, `design/arch/CLAUDE.md` Decisions 9+newtypes, `crates/cranelisp-typecheck/src/checker.rs`, `crates/cranelisp-typecheck/src/adt.rs` (TypeDefRegistry), `crates/cranelisp-typecheck/src/traits.rs` (TraitRegistry, ImplRegistry), `crates/cranelisp-types/src/types.rs` (TypeName), `src/session_v4.rs` (SharedState, CompilerSession), `src/worker.rs`
+**Acceptance**: Design doc covers: (1) FQTypeName definition and migration path, (2) registry elimination — how type/trait/impl lookups resolve through module system, (3) `ModuleEntry::TraitImpl` variant specification, (4) impl search strategy (trait's module, type's module, current module), (5) TC public API as free functions, (6) SharedState additions (modules DashMap, next_type_id), (7) CheckState stack-local with REPL carry-forward on SharedState, (8) module_locks disposition, (9) builtins bootstrapping as free function, (10) cache manifest population path, (11) exact changes to `Type::ADT`, `TypeDefInfo`, `CheckResult`, `CodegenInput`, (12) `build_type_modules()` elimination, (13) sketch comparison.
 
 ### /typecheck
-**Task**: Fix `ensure_module_exists` to stop leaking builtin type names into new modules (RC4). Assess macro body type checking at definition time (RC5).
-**Design doc**: `design/typecheck/sprint50-fixes.md` — which entries to filter in `ensure_module_exists`, approach for macro body type check (eager vs deferred)
-**Acceptance**: `/list` on empty REPL shows no types; macro body type errors caught at definition time (or test expectations updated with rationale).
+**Task**: (A) Refactor TypeChecker to stateless — extract all shared state, make CheckState stack-local. (B) Delete TypeDefRegistry, TraitRegistry, ImplRegistry — replace all lookups with module-system resolution using FQTypeName. (C) Migrate TypeName → FQTypeName throughout typecheck crate.
+**Design doc**: `design/typecheck/stateless-tc-impl.md` (new)
+**Approach**: {to be filled by /typecheck}
+**Design refs**: `design/arch/stateless-tc.md`, `checker.rs`, `adt.rs`, `traits.rs`, `infer.rs`, `program.rs`, `scheme.rs`, `unify.rs`, `builtins.rs`
+**Acceptance**: TypeChecker has no owned persistent state. Three registry structs deleted. All type/trait/impl resolution goes through module system. FQTypeName in typecheck crate. All existing passing tests pass.
+
+### /backend
+**Task**: (A) Migrate TypeName → FQTypeName in backend crate (CheckResult consumers, match codegen, ADT tag lookup). (B) Fix cache manifest writing to read from SharedState symbol tables. (C) Remove TypecheckProduct.symbols field. (D) Fix cache test file layout.
+**Design doc**: `design/backend/sprint51-fqtypename-cache.md` (new)
+**Approach**: {to be filled by /backend}
+**Design refs**: `design/arch/stateless-tc.md`, `crates/cranelisp-backend/src/`, `crates/cranelisp-types/src/check.rs` (CheckResult), `src/session_v4.rs:3070-3133`
+**Acceptance**: All 11 cache tests pass. TypecheckProduct.symbols removed. FQTypeName in backend crate.
+
+### /frontend
+**Task**: Migrate TypeName → FQTypeName in frontend crate if applicable (AST builder, expander).
+**Design doc**: n/a (mechanical migration)
+**Approach**: {to be filled by /frontend}
+**Design refs**: `design/arch/stateless-tc.md`, `crates/cranelisp-frontend/src/`
+**Acceptance**: FQTypeName in frontend crate where needed. All existing tests pass.
 
 ### /int
-**Task**: Implement `SymbolTableMacroResolver` in `worker.rs`. Simplify `pass2_check_bodies_with_expansion` and `process_regular_form` (delete macro_names/macro_infos plumbing). Implement `ReadOnlyMacroResolver` in `session_v4.rs`. Fix platform JIT symbol resolution (RC2). Fix entry-module primitives inconsistency. Delete ObjectWorkerState. Delete dead macro cache functions from worker.rs.
-**Design doc**: `design/int/macro-resolver-impl.md` — resolver struct fields, borrow scoping (`try_expand_sexp` extraction), `compile_macro_clause_inline` target_module change, platform JIT fix, what gets deleted from worker.rs
-**Acceptance**: stdlib 54/54, ring4_trace 29/29, cache 51/51, v4_pipeline 47/47, io 74/74, all platform tests pass.
+**Task**: (A) Add modules DashMap + next_type_id + REPL carry-forward state to SharedState. (B) Delete `CompilerSession.tc` field. (C) Update all TC call sites in session_v4.rs and worker.rs to use free functions with `&SharedState`. (D) Wire builtins registration into session startup. (E) Move/delete module_locks. (F) Migrate TypeName → FQTypeName in integration layer.
+**Design doc**: n/a (wiring work driven by /arch design doc)
+**Approach**:
+
+**1. SharedState additions** (`session_v4.rs`):
+
+Add the following fields to `SharedState`, which is already `Arc`-shared between main thread and nice workers:
+
+- `symbol_tables: DashMap<ModuleFullPath, SymbolTable>` — migrated from `TypeChecker.modules`. This is the single source of truth for per-module symbol data. Currently the TC owns a `DashMap<ModuleFullPath, SymbolTable>` that the integration layer accesses via `tc.modules_ref()` (~12 call sites in session_v4.rs, ~8 in worker.rs). After: all sites use `shared.symbol_tables` directly.
+- `next_type_id: AtomicU32` — migrated from `TypeChecker.next_id`. Monotonic counter for fresh type variables. Passed to TC free functions that need fresh IDs.
+- `impl_index: Mutex<HashMap<(FQTypeName, FQTraitName), ModuleFullPath>>` — new, per `traitimpl-symbol-table.md`. Populated when modules load (fresh compilation or cache-hit). Used for O(1) impl lookup and cross-module duplicate detection. Behind `Mutex` because multiple priority workers may register impls concurrently.
+- `current_module: Mutex<ModuleFullPath>` — REPL carry-forward. Currently `tc.current_module_path()`. Tracks which module the REPL prompt targets (`/mod` command). Only meaningful in REPL mode; batch compilation sets it per-worker. Behind `Mutex` for thread safety.
+- `module_aliases: Mutex<HashMap<Symbol, ModuleFullPath>>` — REPL carry-forward. Currently on `CheckState` inside TC (field `state.module_aliases`). Persists across REPL evals so `(import [opt core.option])` alias survives.
+- `overloads: Mutex<HashMap<Symbol, Vec<(Symbol, usize)>>>` — REPL carry-forward. Currently on `CheckState`. Multi-sig dispatch table persists across REPL evals.
+- `resolved_overloads: Mutex<HashMap<Symbol, Vec<(Vec<Type>, Type, Symbol)>>>` — REPL carry-forward. Currently on `CheckState`. Resolved overload type info persists across evals.
+- `repl_subst: Mutex<Subst>` — REPL carry-forward. Currently on `CheckState.subst`. Unification bindings must persist across REPL evals so that type variables from one eval are visible in the next (e.g., `(let [x 3])` → `x` has type `Int` in subsequent evals).
+- `repl_env: Mutex<ScopeStack>` — REPL carry-forward. Currently on `CheckState.env`. Lexical scope must persist across evals so bindings survive.
+
+Note: all 5 REPL carry-forward fields (`module_aliases`, `overloads`, `resolved_overloads`, `repl_subst`, `repl_env`) could be bundled into a `ReplTypeState` struct on SharedState for cleaner organization. The `/typecheck` design doc proposes this pattern.
+
+**2. CompilerSession.tc deletion** (`session_v4.rs`):
+
+Delete `pub tc: cranelisp_typecheck::TypeChecker` from `CompilerSession`. The TC struct no longer holds persistent state — it either becomes free functions or a transient worker-local value. The ~55 `self.tc.*` call sites in session_v4.rs and ~35 `ctx.tc.*` sites in worker.rs break down into these replacement patterns:
+
+| Current pattern | Count (approx) | Replacement |
+|---|---|---|
+| `tc.current_module_path()` | 15 | `shared.current_module.lock()` (REPL) or worker-local module from scheduler (batch) |
+| `tc.symbol_table()` / `tc.module_table(m)` | 14 | `shared.symbol_tables.get(&module)` |
+| `tc.modules_ref()` / `tc.modules()` | 12 | `&shared.symbol_tables` (already a DashMap ref) |
+| `tc.check_form()` / `tc.merge_form_result()` / `tc.finalize_check_result()` | 10 | Free functions: `typecheck::check_form(&shared.symbol_tables, &shared.next_type_id, ...)`. CheckState is stack-local, created per invocation. |
+| `tc.set_current_module(m)` | 4 | `*shared.current_module.lock() = m` (REPL) or worker-local (batch) |
+| `tc.register_imports()` / `tc.register_exports()` | 8 | Free functions operating on `&shared.symbol_tables` |
+| `tc.has_module(m)` | 4 | `shared.symbol_tables.contains_key(m)` |
+| `tc.snapshot()` / `tc.restore()` | 4 | Snapshot/restore operates on the REPL carry-forward Mutex fields. For error recovery: clone the carry-forward state before eval, restore on error. |
+| `tc.check(&[input], &ctx, Additive)` | 1 | Free function with `&shared.symbol_tables`, carry-forward refs |
+| `tc.resolve_module_by_name()` | 1 | Free function or helper on SharedState |
+| `tc.type_def_registry()` / `tc.get_type_constructors()` / `tc.get_impls_for_type()` / `tc.get_trait_methods()` / `tc.get_implementing_types()` / `tc.defining_module_for()` | 8 | **Deleted** — these query the global registries being eliminated. Replaced by SymbolTable lookups: scan `shared.symbol_tables` for `ModuleEntry::TypeDef`, `ModuleEntry::TraitDecl`, `ModuleEntry::TraitImpl`. The `impl_index` provides O(1) impl lookup. |
+| `tc.compute_display_info_public()` | 1 | Free function with SymbolTable refs |
+| `tc.restore_cached_module()` / `tc.restore_cached_impls()` | 2 | Insert SymbolTable into `shared.symbol_tables`; register TraitImpl entries in `shared.impl_index`. `restore_cached_impls()` deleted entirely (TraitImpl entries are on the SymbolTable, serialized in .meta.json). |
+| `tc.clear_module_for_replace_public()` | 1 | Direct SymbolTable manipulation on `shared.symbol_tables` |
+| `tc.take_state()` / `tc.restore_state()` | 2 | No longer needed — CheckState is stack-local per check invocation |
+
+The `std::mem::replace(&mut self.tc, TypeChecker::new())` pattern (lines 775, 867) for moving TC into worker threads disappears. Workers receive `&SharedState` directly (symbol_tables, next_type_id, impl_index are all on SharedState). `PriorityWorkerRefs.tc` field deleted; replaced by `shared_state` ref which already exists.
+
+**3. build_type_modules() deletion** (`session_v4.rs`):
+
+Called at 4 sites (lines 1285, 1850, 1876, 2616) to build `HashMap<TypeName, ModuleFullPath>` by scanning all symbol tables. With FQTypeName, `Type::ADT(fqtn, args)` carries the module directly. All 4 call sites and the function definition (line 1638) are deleted. The `type_modules` parameter is removed from `format_type_qualified()`, `format_scheme_display()`, `format_value()`, `format_result_value()` throughout the display API.
+
+**4. TypecheckProduct changes** (`session_v4.rs`):
+
+Delete `pub symbols: SymbolTable` from `TypecheckProduct` (line 383). Symbol tables now live on `SharedState.symbol_tables`. TypecheckProduct retains:
+- `pub got: Arc<GotTable>` — per-module GOT, stable base address
+- `pub file_path: Option<PathBuf>` — source file for introspection
+- `pub source_text: Option<String>` — source text for /source command
+
+The 1 site reading `tp.symbols` (nice worker .meta.json at line 3122) moves to `shared.symbol_tables.get(module)`.
+
+**5. CodegenInput changes** (`session_v4.rs`):
+
+Delete from `CodegenInput`:
+- `pub type_defs: HashMap<TypeName, TypeDefInfo>` (line 412) — backend reads from `shared.symbol_tables` via `ModuleEntry::TypeDef`
+- `pub constructor_to_type: HashMap<Symbol, TypeName>` (line 414) — backend resolves constructors via `ModuleEntry::Constructor` on SymbolTables
+
+CodegenInput retains: `method_resolutions`, `expr_types`, `mono_defns`, `default_method_defns`, `program`, `cross_module_func_sigs`. The `compile_module_object()` function (line 3072) no longer copies `type_defs`/`constructor_to_type` into the reconstructed CheckResult.
+
+**6. snapshot_type_defs() deletion**:
+
+Called at 4 sites:
+- `session_v4.rs:1284` — REPL eval, populating type_defs for display. Replaced by direct SymbolTable lookup using FQTypeName.
+- `worker.rs:594` — priority worker stashing CodegenInput. No longer needed (type_defs/constructor_to_type deleted from CodegenInput).
+- `worker.rs:1950, 1974` — similar stash sites. Same deletion.
+
+The `snapshot_type_defs()` method on TypeChecker is deleted by /typecheck.
+
+**7. Nice worker .meta.json write** (`session_v4.rs:3119-3133`):
+
+Currently reads `shared.typecheck_products.get(module).map(|tp| tp.symbols.clone())`. After TypecheckProduct.symbols is deleted, reads from `shared.symbol_tables.get(module).map(|table| table.clone())`. This is actually simpler — one fewer indirection. The SymbolTable now includes `ModuleEntry::TraitImpl` entries, which get serialized into .meta.json automatically (Serde derives on ModuleEntry).
+
+**8. impl_index wiring**:
+
+Populated at two points in the pipeline:
+
+- **Fresh compilation** (worker.rs, after `finalize_check_result()`): When a module's typecheck completes, scan its SymbolTable for `ModuleEntry::TraitImpl` entries. For each, insert `(impl_type, trait_name) -> module` into `shared.impl_index`. Check for duplicates (different module already registered same pair = error).
+
+- **Cache-hit restoration** (worker.rs, in `try_cache_hit_load()` / `restore_cached_module()`): After installing the cached SymbolTable into `shared.symbol_tables`, scan for `TraitImpl` entries and populate `shared.impl_index` identically. This replaces the current `restore_cached_impls()` which reverse-engineers impls from mangled JIT names.
+
+Both paths converge on a shared helper: `register_module_impls(shared: &SharedState, module: &ModuleFullPath) -> Result<(), CranelispError>` that scans the module's SymbolTable and populates `impl_index`.
+
+**9. ReadOnlyMacroResolver update** (`session_v4.rs:39-86`):
+
+Currently holds `tc: &TypeChecker`. After: holds `symbol_tables: &DashMap<ModuleFullPath, SymbolTable>`. The `resolve_macro_definition()` call (line 52-53) already takes a TC ref for SymbolTable access — update to take `&DashMap` directly.
+
+**10. SessionCompilationEnv update** (`worker.rs:62`):
+
+Currently holds `tc_modules: &DashMap<ModuleFullPath, SymbolTable>` sourced from `tc.modules_ref()`. After: sourced from `shared.symbol_tables`. The field type stays the same — only the construction site changes.
+
+**11. Builtins registration** (session startup):
+
+Currently `TypeChecker::new()` registers builtins internally (primitives module SymbolTable). After: builtins registration is a free function called during `CompilerSession::new()` that populates `shared.symbol_tables` with the `primitives` module's SymbolTable and `shared.impl_index` with any builtin impls. Called once at session startup before any user modules load.
+
+**12. module_locks disposition**:
+
+`module_locks` is already absent from the integration layer (confirmed by grep). The scheduler already tracks module lifecycle. If /typecheck still has `module_locks` on the TC struct, it is deleted as part of TC statelessness — no /int action needed.
+
+**Ordering**: Items 1 (SharedState additions) and 11 (builtins) land first. Then 2-6 (TC deletion + call site migration) as one atomic change. Then 3, 7, 8 (deletions + impl_index). Item 12 is a no-op for /int.
+
+**Design refs**: `design/arch/stateless-tc.md`, `design/arch/fqtypename.md`, `design/arch/traitimpl-symbol-table.md`, `src/session_v4.rs`, `src/worker.rs`
+**Acceptance**: `CompilerSession.tc` deleted. All TC access via SharedState. FQTypeName in integration layer. All existing passing tests pass.
 
 ### /qa
-**Task**: Fix test fixtures that use bare primitives without import (spec §8.9.1). Verify fixes progressively. Triage remaining failures after each implementation wave.
-**Acceptance**: Full suite ≤ 13 failures, all from pre-existing set (11 sketch_port + 2 ring0).
+**Task**: (A) Verify cache tests pass. (B) Run full suite for regressions. (C) Migrate TypeName → FQTypeName in test assertions where needed.
+**Acceptance**: 11 cache tests pass. Full suite: 1520 passed, 21 failed (32 total failures minus 11 cache = 21 pre-existing non-cache failures unchanged).
 
-### /sprint
-**Task**: Coordinate design → review → implementation → verification cycle.
+### /repl
+**Task**: Create sprint demo `repl/demos/ring4j.demo` showcasing cache and any visible improvements from FQTypeName (e.g., better qualified type display).
+**Acceptance**: Demo plays cleanly. All prior demos play cleanly.
 
-### All other skills
-No assignment this sprint — stabilisation only.
+### /port
+**Task**: Validate exemplar compiles after refactor.
+**Acceptance**: Exemplar batch mode runs.
+
+### /stdlib
+**Task**: Validate stdlib compiles after refactor.
+**Acceptance**: All 54 stdlib tests pass.
+
+### /examples
+**Task**: Verify all examples compile and run.
+**Acceptance**: All `examples/*.cl` run successfully.
+
+### /review
+**Task**: Code review of stateless TC + FQTypeName + registry elimination + cache fixes.
+**Acceptance**: 0 Blockers, all Important findings addressed.
+
+### /docs, /platform, /spec, /sprint
+**Task**: No assignment this sprint.
 
 ## Waves
 
-### Wave 1: Diagnosis (COMPLETE)
+### Wave 1: Design (COMPLETE)
 | Skill | Task | Status | Notes |
 |-------|------|--------|-------|
-| /int | Diagnose macro regression | done | Root causes 1-7 identified |
-| /qa | Audit failing tests against spec | done | 137 tests classified |
+| /arch | Write `fqtypename.md` + `traitimpl-symbol-table.md` | done | 2 design sketches, 3 rounds of review |
+| /typecheck | Write `stateless-tc-impl.md` | done | TypeCheckEnv, registry elimination, 5-phase migration |
+| /backend | Write `sprint51-fqtypename-cache.md` | done | Direct DashMap access, no snapshot/trait |
+| /int | Fill SPRINT.md approach | done | 12-point plan, ~90 call sites catalogued |
 
-### Wave 2: Design docs + review (COMPLETE)
+### Wave 2: Design review (COMPLETE)
 | Skill | Task | Status | Notes |
 |-------|------|--------|-------|
-| /arch | Write `design/arch/macro-resolver.md` | done | Umbrella design, all 7 sections |
-| /frontend | Write `design/frontend/macro-resolver-trait.md` | done | MacroResolver trait, expansion loop, expander.rs deletions |
-| /typecheck | Write `design/typecheck/sprint50-fixes.md` | done | ensure_module_exists filter, macro body type check, take_state API |
-| /int | Write `design/int/macro-resolver-impl.md` | done | Resolver impl, borrow scoping, worker.rs changes, platform JIT fix |
-| /arch | Review all design docs | done | APPROVED WITH CHANGES — 3 doc fixes applied (compile_queue, fn name, depth limit) |
+| /arch | Review all design docs | done | APPROVED WITH CHANGES — 2 blockers fixed (REPL subst/env, TP.symbols) |
 
-### Wave 3a: Implementation — macro refactor + test fixtures (parallel)
+### Wave 3a: Boundary type changes in cranelisp-types (tree breaks)
 | Skill | Task | Status | Notes |
 |-------|------|--------|-------|
-| /frontend | Implement MacroResolver trait, update expand_sexp_recursive, delete MacroEnv | pending | Per design doc |
-| /int | Implement SymbolTableMacroResolver, simplify worker.rs, ReadOnlyMacroResolver | pending | Per design doc; depends on /frontend trait |
-| /qa | Fix test fixtures with bare primitives (RC3) | pending | Add explicit imports per spec §8.9.1 |
+| /typecheck | Add FQTypeName, FQTraitName structs to newtype.rs | pending | |
+| /typecheck | Change Type::ADT(TypeName) → Type::ADT(FQTypeName) | pending | ~182 downstream sites break |
+| /typecheck | Add ModuleEntry::TraitImpl variant | pending | Per traitimpl-symbol-table.md |
+| /typecheck | Add trait_origin: Option\<FQTraitName\> on ModuleEntry::Def | pending | Replaces method_to_trait |
+| /typecheck | Change ModuleEntry::Constructor.type_name: Symbol → FQTypeName | pending | |
+| /typecheck | Change ResolvedCall::TraitMethod fields → FQTypeName/FQTraitName | pending | |
+| /typecheck | Change Scheme.constraints → Vec\<FQTraitName\> | pending | |
+| /typecheck | Delete CheckResult.type_defs + constructor_to_type fields | pending | Backend reads DashMap directly |
+| /typecheck | Change HeapCategory::classify signature → &DashMap | pending | cranelisp-types adds dashmap dep |
 
-### Wave 3b: Implementation — remaining fixes (after 3a re-triage)
+### Wave 3b: All crates fix in parallel (tree compiles again)
 | Skill | Task | Status | Notes |
 |-------|------|--------|-------|
-| /int | Fix platform JIT symbol resolution (RC2) | pending | If not resolved by Wave 3a |
-| /typecheck | Fix builtin type leaking in ensure_module_exists (RC4) | pending | Per design doc |
-| /typecheck | Fix macro body type checking (RC5) | pending | Per design doc |
-| /int | Delete ObjectWorkerState dead code | pending | 35 lines |
-| /int | Delete dead macro cache functions from worker.rs | pending | build_all_macro_entries etc. |
+| /typecheck | Stateless TC: extract all state, delete registries, TypeCheckEnv, module-system resolution | pending | Critical path — registry elimination |
+| /backend | FQTypeName migration: CompileContext gets &DashMap, display simplification, ObjectCompileInput slimmed | pending | |
+| /frontend | FQTypeName migration if needed (likely minimal — frontend produces TypeExpr not Type) | pending | |
+| /int | SharedState additions (7 fields), CompilerSession.tc deletion, build_type_modules deletion, builtins wiring, impl_index wiring | pending | ~90 call sites |
 
-### Wave 4: Verification
+### Wave 4: Build/test/review
 | Skill | Task | Status | Notes |
 |-------|------|--------|-------|
-| /qa | Run full suite, confirm ≤ 13 failures | pending | |
-| /int | Assess `run-tests` port (RC6) | pending | May defer to Sprint 51 |
+| /qa | Run full suite, triage failures, verify 11 cache tests pass | pending | Target: 1520 pass, 21 fail |
+| /review | Code review of all new/changed code | pending | 0 Blockers required |
+| all | Fix failures + review findings, iterate | pending | |
+
+### Wave 5: Showcase
+| Skill | Task | Status | Notes |
+|-------|------|--------|-------|
+| /repl | Create sprint demo repl/demos/ring4j.demo | pending | Cache working, FQTypeName display |
+| /port | Validate exemplar compiles | pending | |
+| /stdlib | Validate stdlib compiles | pending | |
+| /examples | Verify all examples run | pending | |
 
 ## Notes
 
-- **Primitives seeding was NOT the fix**: First /int agent restored implicit primitives seeding (violating spec §8.9.1). Reverted. The prior implementation at `17a9906` also violated the spec — tests passed because of invalid behavior.
-- **Test validity audit**: /qa audited all 137 failures. Only ~2 are clearly invalid tests. ~24 are mixed (test needs import fix AND implementation inconsistency). ~111 are genuine implementation bugs.
-- **FQ references**: Neither macros nor defns support FQ references to unloaded modules. Module discovery only happens via import/export/mod declarations. FQ support is a separate future feature.
-- **TC stateless design (carry to Sprint 51)**: Cache root cause #2 (TypecheckProduct.symbols empty) reveals TC and TypecheckProduct maintain parallel symbol tables that are never synced. Target state: TC becomes transient — constructed in the worker with `&mut SymbolTable` pointing into the TypecheckProduct DashMap entry, writes directly, dropped when done. No copying. Requires `/arch` design doc + `/typecheck` crate refactor. Blocks 11 cache tests (manifest writing needs populated symbols). `/qa` root cause #3 (test file layout) also deferred — no point fixing 1 test when the other 10 are blocked.
-- **Cache test file layout (carry to Sprint 51)**: `cache_multi_module_transitive_imports` uses flat file layout but `(mod mid)` expects submodule paths. Fix alongside cache infrastructure.
+- **This is a large refactor**. FQTypeName touches boundary types (cranelisp-types), which ripple through every crate. The registry elimination changes how typechecking resolves types/traits/impls. The stateless TC changes every TC call site. Mitigated by: (a) most changes are mechanical, (b) existing tests validate correctness, (c) the three pieces are logically entangled (doing them separately would create interim architecture).
+- **FQTypeName must land in cranelisp-types first** — it's a boundary type change that all crates depend on. Wave 3 must be phased.
+- **Registry elimination may need a transitional lookup helper** — a function that walks import chains to find a TypeDef/TraitDecl. This is the module-system resolution path that replaces the flat HashMap. Not interim architecture — it's the target lookup mechanism.
+- **Cache test file layout**: `cache_multi_module_transitive_imports` has an independent file layout bug. /backend should fix regardless.
+- **2 FIXMEs resolved**: `types.rs:23` and `checker.rs:423` are directly addressed by FQTypeName migration.
+- **Sprint 23 FIXME will be 3x deferred** — requires user approval at Sprint 52 scoping.
 
 ## Outcome
 
+{To be filled at sprint close}
+
 ### Delivered
-
-- **Macro resolver refactor**: Eliminated 3 redundant macro caches (`macro_names`, `macro_infos`, `HashMap<MacroEntry>`). New `MacroResolver` trait with `SymbolTableMacroResolver` (inline compilation, `take_state`/`restore_state` borrow scoping) and `ReadOnlyMacroResolver` for `/expand`. Code pointers stored under defining module. ~350 lines deleted from expander.rs, ~12 dead functions deleted from worker.rs.
-- **Platform JIT symbol resolution**: All platform registry entries registered unconditionally.
-- **Builtin type isolation**: `Int`/`Bool`/`Float`/`String`/`Vec`/`TestResult` moved from `user` to `primitives` module. `ensure_module_exists` only seeds special forms.
-- **Trace codegen fix**: Skip constrained polymorphic base names in `build_traced_fns`, derive arity from `param_types.len()`, added assertion in `compile_trace_wrapper_fn`.
-- **Cross-module macro qualification**: Macro-expanded symbols qualified with defining module path.
-- **`/list` improvements**: Traits category, empty module message, bare fn introspection.
-- **Test fixture compliance**: 22 tests updated with explicit `(import [primitives [...]])` per spec §8.9.1.
-- **run-tests test redesign**: 6 tests rewritten for `/run-tests` slash command + 2 new special form type tests.
-- **Spec clarification**: §4.12.4 — `trace` keyword vs `Trace`/`TraceCall` types clearly separated.
-- **ObjectWorkerState dead code deleted** (35 lines).
-- **TypeChecker API**: `take_state()`/`restore_state()` methods for borrow scoping.
-- **4 design docs**: `design/arch/macro-resolver.md`, `design/frontend/macro-resolver-trait.md`, `design/typecheck/sprint50-fixes.md`, `design/int/macro-resolver-impl.md`.
-
-**Test results**: 137 failures → 32. 16 of 20 test suites fully green. 1487 passed of 1546 total (+80 from sprint start).
+- {TBD}
 
 ### Deferred
-
-- **Cache infrastructure (11 tests)**: TC and TypecheckProduct maintain parallel symbol tables. Manifest never written. Blocked on TC stateless design — TC becomes transient, constructed with `&mut SymbolTable` pointing into TypecheckProduct DashMap, writes directly. Requires `/arch` design + `/typecheck` refactor.
-- **IO display/platform (3 tests)**: REPL IO forcing, platform DLL in submodules, .o cross-module compilation.
-- **Sketch_port (13 tests)**: Mostly pre-existing (11 before Sprint 49). Default methods, multi-sig, ADT display.
-- **Ring0 checked_div (2 tests)**: Pre-existing.
-- **Ring2 (2 tests)**: Multi-sig panic + spec enforcement negative test.
-- **E2E imported fn HOF (1 test)**: REPL `/mod` switch + cross-module resolution.
+- {TBD}
 
 ### Findings
-
-- **Prior implementation violated spec §8.9.1**: Primitives were implicitly seeded into all module tables. Tests passed on invalid behavior. Sprint 49 restructure exposed this.
-- **Redundant caches are a bug category**: The macro cache diverged from the source of truth (symbol table + codegen products). Eliminating the cache eliminated the category.
-- **TC stateless is the next architectural milestone**: The TypeChecker holding its own module DashMap while TypecheckProduct holds a parallel copy is the root cause of cache failures. Target: TC is transient, writes directly to the session's DashMaps.
-- **Test validity matters**: Automated agents must validate failing tests against the spec before assuming the code is wrong. Several tests relied on non-compliant behavior.
+- {TBD}

@@ -12,7 +12,7 @@ use cranelisp_types::{CranelispError, Expr, HeapCategory, MatchArm, Pattern, Spa
 
 use crate::heap::{self, HeapAdt};
 
-use super::{FnCompiler, MatchContext, bare_ctor_name, collect_var_ids_from_type, substitute_type_inline};
+use super::{FnCompiler, MatchContext, collect_var_ids_from_type, substitute_type_inline};
 
 impl<'a, M: Module> FnCompiler<'a, M> {
     // --- Match expression ---
@@ -160,7 +160,7 @@ impl<'a, M: Module> FnCompiler<'a, M> {
         let is_temp = !matches!(scrutinee, Expr::Var { .. });
         if is_temp
             && let Some(scrut_ty) = self.ctx.expr_types.get(&scrutinee.span()).cloned() {
-                let category = HeapCategory::classify(&scrut_ty, Some(self.ctx.type_defs));
+                let category = HeapCategory::classify(&scrut_ty, Some(self.ctx.symbol_tables));
                 if let (Some(dealloc), HeapCategory::AlwaysHeap | HeapCategory::Mixed) =
                     (self.ctx.dealloc_func_id, category)
                 {
@@ -184,49 +184,32 @@ impl<'a, M: Module> FnCompiler<'a, M> {
         body: &Expr,
         span: Span,
     ) -> Result<(), CranelispError> {
-        // For module-qualified names like "macros/SCons", strip the module
-        // prefix for registry lookups (which store unqualified names).
-        let bare_name: &str = if let Some(slash_pos) = name.as_ref().find('/') {
-            &name.as_ref()[slash_pos + 1..]
-        } else {
-            name.as_ref()
-        };
-
-        // Look up constructor info.
-        let type_name =
+        // Look up constructor info. lookup_constructor handles both
+        // qualified names ("macros/SCons") and bare names ("Some").
+        let (fqtn, ctor_info) =
             self.ctx
-                .constructor_to_type
-                .get(bare_name)
+                .lookup_constructor(name.as_ref())
                 .ok_or_else(|| CranelispError::CodegenError {
                     message: format!("unknown constructor: {name}"),
                     span,
                 })?;
-        let type_def =
+        let _type_def =
             self.ctx
-                .type_defs
-                .get(type_name)
+                .lookup_type_def(&fqtn)
                 .ok_or_else(|| CranelispError::CodegenError {
-                    message: format!("unknown type: {type_name}"),
+                    message: format!("unknown type: {fqtn}"),
                     span,
                 })?;
-        let ctor = type_def
-            .constructors
-            .iter()
-            .find(|c| c.name.as_ref() == bare_name)
-            .ok_or_else(|| CranelispError::CodegenError {
-                message: format!("constructor '{name}' not found in type '{type_name}'"),
-                span,
-            })?;
 
-        let tag = ctor.tag;
-        let is_nullary = ctor.fields.is_empty();
-        let is_mixed = heap::is_mixed_adt(self.ctx.type_defs, type_name);
+        let tag = ctor_info.tag;
+        let is_nullary = ctor_info.fields.is_empty();
+        let is_mixed = heap::is_mixed_adt(self.ctx.symbol_tables, &fqtn);
 
         if is_nullary && bindings.is_empty() {
             self.compile_nullary_pattern(
                 tag, is_mixed, match_ctx, body,
             )
-        } else if !is_nullary && bindings.len() == ctor.fields.len() {
+        } else if !is_nullary && bindings.len() == ctor_info.fields.len() {
             self.compile_data_pattern(
                 name, tag, is_mixed, bindings, match_ctx, body,
             )
@@ -234,7 +217,7 @@ impl<'a, M: Module> FnCompiler<'a, M> {
             Err(CranelispError::CodegenError {
                 message: format!(
                     "constructor '{name}' has {} fields but pattern has {} bindings",
-                    ctor.fields.len(),
+                    ctor_info.fields.len(),
                     bindings.len()
                 ),
                 span,
@@ -343,7 +326,7 @@ impl<'a, M: Module> FnCompiler<'a, M> {
             && self.borrowed_vars.contains(sv)
         {
             if let Some(ty) = self.variable_types.get(sv).cloned() {
-                let category = HeapCategory::classify(&ty, Some(self.ctx.type_defs));
+                let category = HeapCategory::classify(&ty, Some(self.ctx.symbol_tables));
                 match category {
                     HeapCategory::AlwaysHeap => {
                         heap::emit_rc_inc(&mut self.builder, body_val);
@@ -448,7 +431,7 @@ impl<'a, M: Module> FnCompiler<'a, M> {
             // Record the field type for RC classification (needed by
             // protect_return_value and consuming arg lists).
             if let Some(ft) = field_types.get(i) {
-                let category = HeapCategory::classify(ft, Some(self.ctx.type_defs));
+                let category = HeapCategory::classify(ft, Some(self.ctx.symbol_tables));
                 if matches!(category, HeapCategory::AlwaysHeap | HeapCategory::Mixed) {
                     self.variable_types.insert(binding_name.clone(), ft.clone());
                     // Mark as borrowed: skip scope-exit dec (owner handles cleanup).
@@ -480,26 +463,21 @@ impl<'a, M: Module> FnCompiler<'a, M> {
     ) -> Vec<cranelisp_types::Type> {
         use cranelisp_types::Type;
 
-        // Strip module prefix for registry lookups (which store bare names).
-        let bare = bare_ctor_name(ctor_name);
-
-        // Look up the parent type name for this constructor.
-        let type_name = match self.ctx.constructor_to_type.get(bare) {
-            Some(tn) => tn,
+        // Look up the constructor and its parent type.
+        // lookup_constructor handles both qualified and bare names.
+        let (fqtn, ctor_info) = match self.ctx.lookup_constructor(ctor_name.as_ref()) {
+            Some(pair) => pair,
             None => return Vec::new(),
         };
 
         // Look up the type definition.
-        let type_def = match self.ctx.type_defs.get(type_name) {
+        let type_def = match self.ctx.lookup_type_def(&fqtn) {
             Some(td) => td,
             None => return Vec::new(),
         };
 
-        // Find the constructor info.
-        let ctor = match type_def.constructors.iter().find(|c| c.name.as_ref() == bare) {
-            Some(c) => c,
-            None => return Vec::new(),
-        };
+        // Use the constructor info directly.
+        let ctor = &ctor_info;
 
         // Try to get the scrutinee's concrete type from expr_types.
         // This gives us e.g. `ADT("Option", [String])` which we can use

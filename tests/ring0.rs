@@ -593,7 +593,7 @@ fn repl_adt_enum() {
     let (value, ty) = repl_eval_typed(&mut session, "Red");
     assert_eq!(
         ty,
-        Type::ADT(cranelisp_types::TypeName::from("Color"), vec![])
+        Type::ADT(cranelisp_types::FQTypeName::new(cranelisp_types::ModuleFullPath::from("user"), cranelisp_types::TypeName::from("Color")), vec![])
     );
     // Red is tag 0
     assert_eq!(value, 0);

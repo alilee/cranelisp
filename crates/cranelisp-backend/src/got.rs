@@ -86,6 +86,7 @@ impl Default for GotTable {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
     use super::*;
 
     // spec: 12-runtime §12.2 — GOT slot store and load

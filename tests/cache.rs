@@ -26,6 +26,7 @@ use cranelisp_backend::cache::serialize::{
     CacheMetadata, read_cached_metadata,
     write_cached_metadata,
 };
+use dashmap::DashMap;
 use cranelisp_types::{ModuleFullPath, Symbol, SymbolTable};
 
 // =============================================================================
@@ -53,6 +54,7 @@ fn make_test_metadata_with_defs(module_path: &str, def_names: &[&str]) -> CacheM
                 visibility: Visibility::Public,
                 callees: vec![],
                 got_slot: Some(i),
+                trait_origin: None,
             },
         );
     }
@@ -67,8 +69,6 @@ fn make_object_compile_input(module_path: &str) -> ObjectCompileInput {
         fn_slot_assignments: HashMap::new(),
         fn_to_module: HashMap::new(),
         intrinsics: IntrinsicTable::new(),
-        type_defs: HashMap::new(),
-        constructor_to_type: HashMap::new(),
         expr_types: HashMap::new(),
         next_got_slot: 0,
         cross_module_fns: vec![],
@@ -593,7 +593,7 @@ fn cache_packet_build_and_process() {
     assert!(!packet.meta_json_bytes.is_empty());
 
     // Process writes .meta.json to disk
-    let result = process_cache_packet(&packet).unwrap();
+    let result = process_cache_packet(&packet, &DashMap::new()).unwrap();
     assert_eq!(result.module_path, mp);
     assert_eq!(result.source_hash, source_hash);
 
@@ -635,7 +635,7 @@ fn cache_packet_nested_module_path() {
         packet.meta_path.display()
     );
 
-    process_cache_packet(&packet).unwrap();
+    process_cache_packet(&packet, &DashMap::new()).unwrap();
     assert!(packet.meta_path.exists());
 }
 
@@ -662,7 +662,7 @@ fn cache_packet_dependency_hashes() {
     )
     .unwrap();
 
-    let result = process_cache_packet(&packet).unwrap();
+    let result = process_cache_packet(&packet, &DashMap::new()).unwrap();
     assert_eq!(result.dependency_hashes, dep_hashes);
 }
 
@@ -776,7 +776,7 @@ fn cache_directory_layout() {
             input,
         )
         .unwrap();
-        process_cache_packet(&packet).unwrap();
+        process_cache_packet(&packet, &DashMap::new()).unwrap();
     }
 
     assert!(dir.path().join("user.meta.json").exists());

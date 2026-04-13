@@ -27,9 +27,12 @@ use std::collections::HashMap;
 
 use cranelift_module::FuncId;
 
+use dashmap::DashMap;
+
 use cranelisp_types::{
-    CheckResult, CranelispError, Defn, DefnVariant, Expr, Program, Span, Symbol,
-    TopLevel, Type, TypeName, Warning,
+    CheckResult, CranelispError, Defn, DefnVariant, Expr, FQTypeName,
+    ModuleFullPath, Program, Span, Symbol, SymbolTable, TopLevel, Type,
+    TypeName, Warning,
 };
 
 use crate::jit::Jit;
@@ -117,6 +120,7 @@ pub fn compile_program(
     program: &Program,
     check: &CheckResult,
     _use_got: bool,
+    symbol_tables: &DashMap<ModuleFullPath, SymbolTable>,
 ) -> Result<CompiledProgram, CranelispError> {
     let mut jit = Jit::new()?;
     jit.declare_intrinsics()?;
@@ -127,6 +131,7 @@ pub fn compile_program(
     // Build the compilation context — direct calls only (no env/GOT).
     let compile_ctx = jit.build_compile_context(
         check, &collected.func_ids, &collected.func_arities,
+        symbol_tables, ModuleFullPath::from("main"),
     );
 
     // Compile each regular function.
@@ -147,6 +152,7 @@ pub fn compile_program(
     // Compile mono specializations with their per-specialization resolutions.
     compile_mono_defns(
         &mut jit, check, &collected.func_ids, &collected.func_arities,
+        symbol_tables,
     )?;
 
     // Phase 3: Find entry, finalize JIT, build result.
@@ -160,13 +166,13 @@ pub fn compile_program(
 /// Mirrors `concrete_type_name` in the typecheck crate. Returns `None` for
 /// unresolved type variables — those cannot appear in multi-sig dispatch
 /// (all variants must have concrete parameter types).
-fn concrete_type_name(ty: &Type) -> Option<TypeName> {
+fn concrete_type_name(ty: &Type) -> Option<FQTypeName> {
     match ty {
-        Type::Int => Some(TypeName::from("Int")),
-        Type::Float => Some(TypeName::from("Float")),
-        Type::Bool => Some(TypeName::from("Bool")),
-        Type::String => Some(TypeName::from("String")),
-        Type::ADT(name, _) => Some(name.clone()),
+        Type::Int => Some(FQTypeName::new(ModuleFullPath::from("primitives"), TypeName::from("Int"))),
+        Type::Float => Some(FQTypeName::new(ModuleFullPath::from("primitives"), TypeName::from("Float"))),
+        Type::Bool => Some(FQTypeName::new(ModuleFullPath::from("primitives"), TypeName::from("Bool"))),
+        Type::String => Some(FQTypeName::new(ModuleFullPath::from("primitives"), TypeName::from("String"))),
+        Type::ADT(fqtn, _) => Some(fqtn.clone()),
         _ => None,
     }
 }
@@ -179,7 +185,7 @@ fn concrete_type_name(ty: &Type) -> Option<TypeName> {
 fn build_mangled_name(fn_name: &Symbol, param_types: &[Type]) -> String {
     let type_names: Vec<String> = param_types
         .iter()
-        .filter_map(|t| concrete_type_name(t).map(|tn| tn.to_string()))
+        .filter_map(|t| concrete_type_name(t).map(|fqtn| fqtn.name.to_string()))
         .collect();
     format!("{}${}", fn_name, type_names.join("+"))
 }
@@ -372,6 +378,7 @@ fn compile_mono_defns(
     check: &CheckResult,
     func_ids: &HashMap<Symbol, FuncId>,
     func_arities: &HashMap<Symbol, usize>,
+    symbol_tables: &DashMap<ModuleFullPath, SymbolTable>,
 ) -> Result<(), CranelispError> {
     for mono in &check.mono_defns {
         // Merge base resolutions with per-specialization resolutions.
@@ -394,13 +401,12 @@ fn compile_mono_defns(
             expr_types,
             default_method_defns: Vec::new(),
             warnings: Vec::new(),
-            type_defs: check.type_defs.clone(),
-            constructor_to_type: check.constructor_to_type.clone(),
             display: None,
         };
 
         let ctx = jit.build_compile_context(
             &mono_check, func_ids, func_arities,
+            symbol_tables, ModuleFullPath::from("main"),
         );
         jit.compile_defn(&mono.defn, ctx)?;
     }
@@ -437,6 +443,7 @@ pub fn compile_module_program(
     jit: &mut Jit,
     prior_funcs: &[(Symbol, usize)],
     module_prefix: &str,
+    symbol_tables: &DashMap<ModuleFullPath, SymbolTable>,
 ) -> Result<CompiledModuleInfo, CranelispError> {
     // Phase 1: Collect defns, declare them with module-qualified names in
     // the shared JIT to avoid collisions. The returned func_ids map bare
@@ -503,8 +510,10 @@ pub fn compile_module_program(
 
     // Build compile context with merged symbol tables.
     // No GOT for shared-JIT module compilation — direct calls.
+    let current_module = ModuleFullPath::from(module_prefix);
     let compile_ctx = jit.build_compile_context(
         check, &merged_func_ids, &merged_arities,
+        symbol_tables, current_module,
     );
 
     // Compile each regular function.
@@ -525,6 +534,7 @@ pub fn compile_module_program(
     // Compile mono specializations.
     compile_mono_defns(
         jit, check, &merged_func_ids, &merged_arities,
+        symbol_tables,
     )?;
 
     // Collect this module's function signatures for downstream modules.
@@ -563,6 +573,8 @@ pub fn compile_expr_with_got_and_symbols(
     extra_symbols: &[(&str, *const u8)],
     got_data_defs: &[(String, *const u8)],
     env: Option<&dyn crate::compiler::CompilationEnv>,
+    symbol_tables: &DashMap<ModuleFullPath, SymbolTable>,
+    current_module: ModuleFullPath,
 ) -> Result<CompiledExpr, CranelispError> {
     let mut jit = Jit::new_with_symbols(extra_symbols)?;
 
@@ -594,6 +606,7 @@ pub fn compile_expr_with_got_and_symbols(
 
     let mut compile_ctx = jit.build_compile_context(
         check, &func_ids, &func_arities,
+        symbol_tables, current_module,
     );
     compile_ctx.env = env;
 
@@ -616,8 +629,12 @@ pub fn compile_expr_with_got_and_symbols(
 pub fn compile_and_run_expr(
     expr: &Expr,
     check: &CheckResult,
+    symbol_tables: &DashMap<ModuleFullPath, SymbolTable>,
 ) -> Result<i64, CranelispError> {
-    let compiled = compile_expr_with_got_and_symbols(expr, check, &[], &[], None)?;
+    let compiled = compile_expr_with_got_and_symbols(
+        expr, check, &[], &[], None,
+        symbol_tables, ModuleFullPath::from("main"),
+    )?;
     // SAFETY: compiled was produced by compile_expr_with_got_and_symbols immediately above.
     Ok(unsafe { compiled.execute() })
 }
@@ -638,10 +655,97 @@ mod tests {
             expr_types: HashMap::new(),
             default_method_defns: Vec::new(),
             warnings: Vec::new(),
-            type_defs: HashMap::new(),
-            constructor_to_type: HashMap::new(),
-        display: None,
+            display: None,
         }
+    }
+
+    fn empty_tables() -> DashMap<ModuleFullPath, SymbolTable> {
+        DashMap::new()
+    }
+
+    /// Build symbol tables with an Option type for ADT tests.
+    fn option_type_tables() -> DashMap<ModuleFullPath, SymbolTable> {
+        use cranelisp_types::{
+            ConstructorInfo, FQTypeName, FieldInfo, ModuleEntry, Scheme, Type,
+            TypeDefInfo, TypeName, Visibility,
+        };
+
+        let module = ModuleFullPath::from("main");
+        let type_name = TypeName::from("Option");
+        let fqtn = FQTypeName::new(module.clone(), type_name.clone());
+
+        let type_def_info = TypeDefInfo {
+            name: fqtn.clone(),
+            type_params: vec![],
+            constructors: vec![
+                ConstructorInfo {
+                    name: Symbol::from("None"),
+                    tag: 0,
+                    fields: vec![],
+                    docstring: None,
+                    internal: false,
+                },
+                ConstructorInfo {
+                    name: Symbol::from("Some"),
+                    tag: 1,
+                    fields: vec![FieldInfo {
+                        name: Symbol::from("val"),
+                        ty: Type::Int,
+                    }],
+                    docstring: None,
+                    internal: false,
+                },
+            ],
+            docstring: None,
+        };
+
+        let tables = DashMap::new();
+        let mut st = SymbolTable::new(module.clone());
+
+        // Insert type def
+        st.insert(
+            Symbol::from("Option"),
+            ModuleEntry::TypeDef {
+                info: type_def_info.clone(),
+                visibility: Visibility::Public,
+                constructor_scheme: None,
+                sexp: None,
+            },
+        );
+
+        // Insert constructors
+        let none_scheme = Scheme {
+            vars: vec![],
+            constraints: HashMap::new(),
+            ty: Type::ADT(fqtn.clone(), vec![]),
+        };
+        st.insert(
+            Symbol::from("None"),
+            ModuleEntry::Constructor {
+                type_name: fqtn.clone(),
+                info: type_def_info.constructors[0].clone(),
+                scheme: none_scheme,
+                visibility: Visibility::Public,
+            },
+        );
+
+        let some_scheme = Scheme {
+            vars: vec![],
+            constraints: HashMap::new(),
+            ty: Type::Fn(vec![Type::Int], Box::new(Type::ADT(fqtn.clone(), vec![]))),
+        };
+        st.insert(
+            Symbol::from("Some"),
+            ModuleEntry::Constructor {
+                type_name: fqtn.clone(),
+                info: type_def_info.constructors[1].clone(),
+                scheme: some_scheme,
+                visibility: Visibility::Public,
+            },
+        );
+
+        tables.insert(module, st);
+        tables
     }
 
     // spec: 05-definitions §5.1 — single defn compiles and executes via JIT
@@ -666,7 +770,7 @@ mod tests {
         let program: Program = vec![TopLevel::Defn(defn)];
         let check = empty_check();
 
-        let compiled = compile_program(&program, &check, false).unwrap();
+        let compiled = compile_program(&program, &check, false, &empty_tables()).unwrap();
         let value = unsafe { compiled.execute().unwrap() };
         assert_eq!(value, 42);
     }
@@ -677,7 +781,7 @@ mod tests {
         let program: Program = vec![];
         let check = empty_check();
 
-        let result = compile_program(&program, &check, false);
+        let result = compile_program(&program, &check, false, &empty_tables());
         assert!(result.is_err());
     }
 
@@ -690,7 +794,7 @@ mod tests {
         };
         let check = empty_check();
 
-        let value = compile_and_run_expr(&expr, &check).unwrap();
+        let value = compile_and_run_expr(&expr, &check, &empty_tables()).unwrap();
         assert_eq!(value, 99);
     }
 
@@ -716,7 +820,7 @@ mod tests {
         let program: Program = vec![TopLevel::Defn(defn)];
         let check = empty_check();
 
-        let compiled = compile_program(&program, &check, true).unwrap();
+        let compiled = compile_program(&program, &check, true, &empty_tables()).unwrap();
         let value = unsafe { compiled.execute().unwrap() };
         assert_eq!(value, 7);
     }
@@ -762,7 +866,7 @@ mod tests {
         let program: Program = vec![TopLevel::Defn(helper), TopLevel::Defn(main_defn)];
         let check = empty_check();
 
-        let compiled = compile_program(&program, &check, false).unwrap();
+        let compiled = compile_program(&program, &check, false, &empty_tables()).unwrap();
         let value = unsafe { compiled.execute().unwrap() };
         assert_eq!(value, 100);
     }
@@ -776,7 +880,7 @@ mod tests {
         };
         let check = empty_check();
 
-        let value = compile_and_run_expr(&expr, &check).unwrap();
+        let value = compile_and_run_expr(&expr, &check, &empty_tables()).unwrap();
         assert_eq!(value, 1);
     }
 
@@ -791,7 +895,7 @@ mod tests {
         };
         let check = empty_check();
 
-        let result = compile_and_run_expr(&expr, &check);
+        let result = compile_and_run_expr(&expr, &check, &empty_tables());
         assert!(result.is_ok(), "string literal should compile: {result:?}");
         let ptr = result.unwrap();
         // ptr should be a heap pointer (> NULLARY_TAG_THRESHOLD)
@@ -814,7 +918,7 @@ mod tests {
         };
         let check = empty_check();
 
-        let result = compile_and_run_expr(&expr, &check);
+        let result = compile_and_run_expr(&expr, &check, &empty_tables());
         assert!(result.is_ok(), "empty string should compile: {result:?}");
         let ptr = result.unwrap();
         assert!(ptr > 1024, "expected heap pointer, got {ptr}");
@@ -828,43 +932,6 @@ mod tests {
     // spec: 12-runtime §12.1.4 — data constructor heap layout [tag | fields]
     #[test]
     fn test_compile_adt_data_constructor() {
-        use cranelisp_types::{ConstructorInfo, FieldInfo, Type, TypeDefInfo, TypeName};
-
-        // Define Option type with None (tag 0) and Some (tag 1, one field).
-        let type_name = TypeName::from("Option");
-        let mut type_defs = HashMap::new();
-        type_defs.insert(
-            type_name.clone(),
-            TypeDefInfo {
-                name: type_name.clone(),
-                type_params: vec![],
-                constructors: vec![
-                    ConstructorInfo {
-                        name: Symbol::from("None"),
-                        tag: 0,
-                        fields: vec![],
-                        docstring: None,
-                        internal: false,
-                    },
-                    ConstructorInfo {
-                        name: Symbol::from("Some"),
-                        tag: 1,
-                        fields: vec![FieldInfo {
-                            name: Symbol::from("val"),
-                            ty: Type::Int,
-                        }],
-                        docstring: None,
-                        internal: false,
-                    },
-                ],
-                docstring: None,
-            },
-        );
-
-        let mut constructor_to_type = HashMap::new();
-        constructor_to_type.insert(Symbol::from("None"), type_name.clone());
-        constructor_to_type.insert(Symbol::from("Some"), type_name.clone());
-
         // Expression: (Some 42)
         let some_span = Span::new(0, 10);
         let expr = Expr::Apply {
@@ -879,19 +946,10 @@ mod tests {
             span: some_span,
         };
 
-        let check = CheckResult {
-            method_resolutions: HashMap::new(),
-            constrained_fn_names: HashSet::new(),
-            mono_defns: Vec::new(),
-            expr_types: HashMap::new(),
-            default_method_defns: Vec::new(),
-            warnings: Vec::new(),
-            type_defs,
-            constructor_to_type,
-        display: None,
-        };
+        let check = empty_check();
+        let tables = option_type_tables();
 
-        let result = compile_and_run_expr(&expr, &check);
+        let result = compile_and_run_expr(&expr, &check, &tables);
         assert!(result.is_ok(), "ADT constructor should compile: {result:?}");
         let ptr = result.unwrap();
         assert!(ptr > 1024, "expected heap pointer, got {ptr}");
@@ -911,44 +969,7 @@ mod tests {
     // spec: 04-expressions §4.8 — match expression with constructor patterns and field extraction
     #[test]
     fn test_compile_match_with_fields() {
-        use cranelisp_types::{
-            ConstructorInfo, FieldInfo, MatchArm, Pattern, Type, TypeDefInfo, TypeName,
-        };
-
-        // Option type as above.
-        let type_name = TypeName::from("Option");
-        let mut type_defs = HashMap::new();
-        type_defs.insert(
-            type_name.clone(),
-            TypeDefInfo {
-                name: type_name.clone(),
-                type_params: vec![],
-                constructors: vec![
-                    ConstructorInfo {
-                        name: Symbol::from("None"),
-                        tag: 0,
-                        fields: vec![],
-                        docstring: None,
-                        internal: false,
-                    },
-                    ConstructorInfo {
-                        name: Symbol::from("Some"),
-                        tag: 1,
-                        fields: vec![FieldInfo {
-                            name: Symbol::from("val"),
-                            ty: Type::Int,
-                        }],
-                        docstring: None,
-                        internal: false,
-                    },
-                ],
-                docstring: None,
-            },
-        );
-
-        let mut constructor_to_type = HashMap::new();
-        constructor_to_type.insert(Symbol::from("None"), type_name.clone());
-        constructor_to_type.insert(Symbol::from("Some"), type_name.clone());
+        use cranelisp_types::{MatchArm, Pattern};
 
         // (match (Some 99) [(Some x) x (None) 0])
         let some_span = Span::new(10, 20);
@@ -997,19 +1018,10 @@ mod tests {
             compiler_generated: false,
         };
 
-        let check = CheckResult {
-            method_resolutions: HashMap::new(),
-            constrained_fn_names: HashSet::new(),
-            mono_defns: Vec::new(),
-            expr_types: HashMap::new(),
-            default_method_defns: Vec::new(),
-            warnings: Vec::new(),
-            type_defs,
-            constructor_to_type,
-        display: None,
-        };
+        let check = empty_check();
+        let tables = option_type_tables();
 
-        let result = compile_and_run_expr(&expr, &check);
+        let result = compile_and_run_expr(&expr, &check, &tables);
         assert!(result.is_ok(), "match with fields should compile: {result:?}");
         assert_eq!(result.unwrap(), 99, "match should extract field value");
     }
@@ -1077,12 +1089,10 @@ mod tests {
             expr_types: HashMap::new(),
             default_method_defns: Vec::new(),
             warnings: Vec::new(),
-            type_defs: HashMap::new(),
-            constructor_to_type: HashMap::new(),
         display: None,
         };
 
-        let result = compile_and_run_expr(&expr, &check);
+        let result = compile_and_run_expr(&expr, &check, &empty_tables());
         assert!(result.is_ok(), "closure should compile: {result:?}");
         assert_eq!(result.unwrap(), 15, "5 + 10 = 15");
     }
@@ -1098,7 +1108,7 @@ mod tests {
         };
         let check = empty_check();
 
-        let result = compile_and_run_expr(&expr, &check);
+        let result = compile_and_run_expr(&expr, &check, &empty_tables());
         assert!(result.is_ok(), "empty vec literal should compile: {result:?}");
         let ptr = result.unwrap();
         // ptr should be a heap pointer (> NULLARY_TAG_THRESHOLD)
@@ -1124,7 +1134,7 @@ mod tests {
         };
         let check = empty_check();
 
-        let result = compile_and_run_expr(&expr, &check);
+        let result = compile_and_run_expr(&expr, &check, &empty_tables());
         assert!(result.is_ok(), "vec literal should compile: {result:?}");
         let ptr = result.unwrap();
         assert!(ptr > 1024, "expected heap pointer, got {ptr}");
@@ -1155,7 +1165,7 @@ mod tests {
         };
         let check = empty_check();
 
-        let result = compile_and_run_expr(&expr, &check);
+        let result = compile_and_run_expr(&expr, &check, &empty_tables());
         assert!(result.is_ok(), "single-element vec should compile: {result:?}");
         let ptr = result.unwrap();
 
@@ -1182,7 +1192,7 @@ mod tests {
         };
         let check = empty_check();
 
-        let result = compile_and_run_expr(&expr, &check);
+        let result = compile_and_run_expr(&expr, &check, &empty_tables());
         assert!(result.is_ok(), "bool vec should compile: {result:?}");
         let ptr = result.unwrap();
         assert_eq!(cranelisp_runtime::vec_len(ptr), 2);
@@ -1237,12 +1247,10 @@ mod tests {
             expr_types: HashMap::new(),
             default_method_defns: Vec::new(),
             warnings: Vec::new(),
-            type_defs: HashMap::new(),
-            constructor_to_type: HashMap::new(),
         display: None,
         };
 
-        let result = compile_and_run_expr(&expr, &check);
+        let result = compile_and_run_expr(&expr, &check, &empty_tables());
         assert!(result.is_ok(), "vec-len should compile: {result:?}");
         assert_eq!(result.unwrap(), 3);
     }
@@ -1300,12 +1308,10 @@ mod tests {
             expr_types: HashMap::new(),
             default_method_defns: Vec::new(),
             warnings: Vec::new(),
-            type_defs: HashMap::new(),
-            constructor_to_type: HashMap::new(),
         display: None,
         };
 
-        let result = compile_and_run_expr(&expr, &check);
+        let result = compile_and_run_expr(&expr, &check, &empty_tables());
         assert!(result.is_ok(), "vec-get should compile: {result:?}");
         assert_eq!(result.unwrap(), 20);
     }
@@ -1361,12 +1367,10 @@ mod tests {
             expr_types: HashMap::new(),
             default_method_defns: Vec::new(),
             warnings: Vec::new(),
-            type_defs: HashMap::new(),
-            constructor_to_type: HashMap::new(),
         display: None,
         };
 
-        let result = compile_and_run_expr(&expr, &check);
+        let result = compile_and_run_expr(&expr, &check, &empty_tables());
         assert!(result.is_ok(), "vec-get index 0 should work: {result:?}");
         assert_eq!(result.unwrap(), 100);
     }
@@ -1423,12 +1427,10 @@ mod tests {
             expr_types: HashMap::new(),
             default_method_defns: Vec::new(),
             warnings: Vec::new(),
-            type_defs: HashMap::new(),
-            constructor_to_type: HashMap::new(),
         display: None,
         };
 
-        let result = compile_and_run_expr(&expr, &check);
+        let result = compile_and_run_expr(&expr, &check, &empty_tables());
         assert!(result.is_ok(), "vec-get last index should work: {result:?}");
         assert_eq!(result.unwrap(), 3);
     }
@@ -1502,12 +1504,10 @@ mod tests {
             expr_types: HashMap::new(),
             default_method_defns: Vec::new(),
             warnings: Vec::new(),
-            type_defs: HashMap::new(),
-            constructor_to_type: HashMap::new(),
         display: None,
         };
 
-        let result = compile_and_run_expr(&expr, &check);
+        let result = compile_and_run_expr(&expr, &check, &empty_tables());
         assert!(result.is_ok(), "vec-set should compile: {result:?}");
         // vec-set returns a new Vec with same length.
         assert_eq!(result.unwrap(), 3);
@@ -1569,12 +1569,10 @@ mod tests {
             expr_types: HashMap::new(),
             default_method_defns: Vec::new(),
             warnings: Vec::new(),
-            type_defs: HashMap::new(),
-            constructor_to_type: HashMap::new(),
         display: None,
         };
 
-        let result = compile_and_run_expr(&expr, &check);
+        let result = compile_and_run_expr(&expr, &check, &empty_tables());
         assert!(result.is_ok(), "vec-push should compile: {result:?}");
         // [10 20] pushed 30 -> len 3
         assert_eq!(result.unwrap(), 3);
@@ -1630,12 +1628,10 @@ mod tests {
             expr_types: HashMap::new(),
             default_method_defns: Vec::new(),
             warnings: Vec::new(),
-            type_defs: HashMap::new(),
-            constructor_to_type: HashMap::new(),
         display: None,
         };
 
-        let result = compile_and_run_expr(&expr, &check);
+        let result = compile_and_run_expr(&expr, &check, &empty_tables());
         assert!(result.is_ok(), "vec in let should compile: {result:?}");
         assert_eq!(result.unwrap(), 3);
     }
@@ -1682,12 +1678,10 @@ mod tests {
             expr_types: HashMap::new(),
             default_method_defns: Vec::new(),
             warnings: Vec::new(),
-            type_defs: HashMap::new(),
-            constructor_to_type: HashMap::new(),
         display: None,
         };
 
-        let result = compile_and_run_expr(&expr, &check);
+        let result = compile_and_run_expr(&expr, &check, &empty_tables());
         assert!(result.is_ok(), "vec with computed elements should compile: {result:?}");
         let ptr = result.unwrap();
 
@@ -1731,7 +1725,7 @@ mod tests {
         let program: Program = vec![TopLevel::Defn(defn)];
         let check = empty_check();
 
-        let compiled = compile_program(&program, &check, false).unwrap();
+        let compiled = compile_program(&program, &check, false, &empty_tables()).unwrap();
         let ptr = unsafe { compiled.execute().unwrap() };
         assert!(ptr > 1024, "expected heap pointer, got {ptr}");
         assert_eq!(cranelisp_runtime::vec_len(ptr), 3);
@@ -1792,12 +1786,10 @@ mod tests {
             expr_types: HashMap::new(),
             default_method_defns: Vec::new(),
             warnings: Vec::new(),
-            type_defs: HashMap::new(),
-            constructor_to_type: HashMap::new(),
         display: None,
         };
 
-        let result = compile_and_run_expr(&expr, &check);
+        let result = compile_and_run_expr(&expr, &check, &empty_tables());
         assert!(result.is_ok(), "vec-get value should compile: {result:?}");
         assert_eq!(result.unwrap(), 300);
     }
@@ -1858,12 +1850,10 @@ mod tests {
             expr_types: HashMap::new(),
             default_method_defns: Vec::new(),
             warnings: Vec::new(),
-            type_defs: HashMap::new(),
-            constructor_to_type: HashMap::new(),
         display: None,
         };
 
-        let result = compile_and_run_expr(&expr, &check);
+        let result = compile_and_run_expr(&expr, &check, &empty_tables());
         assert!(result.is_ok(), "vec-push on temp should compile: {result:?}");
         assert_eq!(result.unwrap(), 2);
     }
@@ -1926,12 +1916,10 @@ mod tests {
             expr_types: HashMap::new(),
             default_method_defns: Vec::new(),
             warnings: Vec::new(),
-            type_defs: HashMap::new(),
-            constructor_to_type: HashMap::new(),
         display: None,
         };
 
-        let result = compile_and_run_expr(&expr, &check);
+        let result = compile_and_run_expr(&expr, &check, &empty_tables());
         assert!(result.is_ok(), "vec-set on temp should compile: {result:?}");
         assert_eq!(result.unwrap(), 3);
     }
@@ -1948,7 +1936,7 @@ mod tests {
         let check = empty_check();
 
         let result = compile_and_run_expr(
-            &expr, &check,
+            &expr, &check, &empty_tables(),
         );
         assert!(result.is_ok(), "vec in interactive mode should compile: {result:?}");
         let ptr = result.unwrap();
@@ -1994,12 +1982,10 @@ mod tests {
             expr_types: HashMap::new(),
             default_method_defns: Vec::new(),
             warnings: Vec::new(),
-            type_defs: HashMap::new(),
-            constructor_to_type: HashMap::new(),
         display: None,
         };
 
-        let result = compile_and_run_expr(&expr, &check);
+        let result = compile_and_run_expr(&expr, &check, &empty_tables());
         assert!(result.is_ok(), "empty vec len should compile: {result:?}");
         assert_eq!(result.unwrap(), 0);
     }
@@ -2057,12 +2043,10 @@ mod tests {
             expr_types: HashMap::new(),
             default_method_defns: Vec::new(),
             warnings: Vec::new(),
-            type_defs: HashMap::new(),
-            constructor_to_type: HashMap::new(),
         display: None,
         };
 
-        let result = compile_and_run_expr(&expr, &check);
+        let result = compile_and_run_expr(&expr, &check, &empty_tables());
         assert!(result.is_ok(), "push to empty vec should compile: {result:?}");
         assert_eq!(result.unwrap(), 1);
     }
@@ -2101,12 +2085,10 @@ mod tests {
             expr_types: HashMap::new(),
             default_method_defns: Vec::new(),
             warnings: Vec::new(),
-            type_defs: HashMap::new(),
-            constructor_to_type: HashMap::new(),
         display: None,
         };
 
-        let result = compile_and_run_expr(&expr, &check);
+        let result = compile_and_run_expr(&expr, &check, &empty_tables());
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), 0);
     }
@@ -2136,7 +2118,7 @@ mod tests {
         };
         let check = empty_check();
 
-        let result = compile_and_run_expr(&expr, &check);
+        let result = compile_and_run_expr(&expr, &check, &empty_tables());
         assert!(result.is_ok(), "nested vec should compile: {result:?}");
         let outer_ptr = result.unwrap();
         assert!(outer_ptr > 1024);
@@ -2178,7 +2160,7 @@ mod tests {
         };
         let check = empty_check();
 
-        let result = compile_and_run_expr(&expr, &check);
+        let result = compile_and_run_expr(&expr, &check, &empty_tables());
         assert!(result.is_ok(), "large vec should compile: {result:?}");
         let ptr = result.unwrap();
         assert_eq!(cranelisp_runtime::vec_len(ptr), 10);
@@ -2217,14 +2199,14 @@ mod tests {
         check.method_resolutions.insert(
             apply_span,
             cranelisp_types::ResolvedCall::TraitMethod {
-                trait_name: cranelisp_types::TraitName::from("Num"),
+                trait_name: cranelisp_types::FQTraitName::new(ModuleFullPath::from("core.num"), "Num".into()),
                 method_name: Symbol::from("+"),
-                impl_type: cranelisp_types::TypeName::from("Int"),
+                impl_type: cranelisp_types::FQTypeName::new(ModuleFullPath::from("primitives"), "Int".into()),
                 mangled_name: cranelisp_types::JitSymbol::from("Num.+$Int"),
             },
         );
 
-        let value = compile_and_run_expr(&expr, &check)
+        let value = compile_and_run_expr(&expr, &check, &empty_tables())
             .expect("TraitMethod inline add should compile");
         assert_eq!(value, 7);
     }
@@ -2250,14 +2232,14 @@ mod tests {
         check.method_resolutions.insert(
             apply_span,
             cranelisp_types::ResolvedCall::TraitMethod {
-                trait_name: cranelisp_types::TraitName::from("Eq"),
+                trait_name: cranelisp_types::FQTraitName::new(ModuleFullPath::from("core.eq"), "Eq".into()),
                 method_name: Symbol::from("="),
-                impl_type: cranelisp_types::TypeName::from("Bool"),
+                impl_type: cranelisp_types::FQTypeName::new(ModuleFullPath::from("primitives"), "Bool".into()),
                 mangled_name: cranelisp_types::JitSymbol::from("Eq.=$Bool"),
             },
         );
 
-        let value = compile_and_run_expr(&expr, &check)
+        let value = compile_and_run_expr(&expr, &check, &empty_tables())
             .expect("TraitMethod eq-bool should compile");
         assert_eq!(value, 1); // true == true → true (1)
     }
@@ -2301,7 +2283,7 @@ mod tests {
         // Mark "add" as constrained — should be skipped during compilation.
         check.constrained_fn_names.insert(Symbol::from("add"));
 
-        let compiled = compile_program(&program, &check, false)
+        let compiled = compile_program(&program, &check, false, &empty_tables())
             .expect("should compile with constrained fn skipped");
         let value = unsafe { compiled.execute().unwrap() };
         assert_eq!(value, 42);
@@ -2446,8 +2428,10 @@ mod tests {
         let arities: HashMap<Symbol, usize> =
             vec![(Symbol::from("countdown$Int"), 1)].into_iter().collect();
 
+        let tables = empty_tables();
         let ctx = jit.build_compile_context(
             &check, &func_ids, &arities,
+            &tables, ModuleFullPath::from("test"),
         );
         jit.compile_defn(&countdown_defn, ctx).unwrap();
         let countdown_ptr = jit.finalize_and_get_ptr(&Symbol::from("countdown$Int"), 1).unwrap();
@@ -2525,9 +2509,10 @@ mod tests {
         jit.declare_intrinsics().unwrap();
 
         // Compile module A with prefix "mod_a".
+        let tables = empty_tables();
         let info_a = compile_module_program(
             &program_a, &check_a,
-            &mut jit, &[], "mod_a",
+            &mut jit, &[], "mod_a", &tables,
         ).expect("module A should compile");
 
         // Build prior_funcs from module A's output (simulating accumulate_func_sigs).
@@ -2540,7 +2525,7 @@ mod tests {
         // "Duplicate definition" error.
         let _info_b = compile_module_program(
             &program_b, &check_b,
-            &mut jit, &prior_funcs, "mod_b",
+            &mut jit, &prior_funcs, "mod_b", &tables,
         ).expect("module B should compile without name collision");
 
         // Finalize the shared JIT.
@@ -2699,7 +2684,7 @@ mod tests {
             },
         );
 
-        let compiled = compile_program(&program, &check, false)
+        let compiled = compile_program(&program, &check, false, &empty_tables())
             .expect("multi-sig program should compile");
         let result = unsafe { compiled.execute().unwrap() };
         assert_eq!(result, 42, "should dispatch to f$Int and return 42");
@@ -2773,7 +2758,7 @@ mod tests {
             },
         );
 
-        let compiled = compile_program(&program, &check, false)
+        let compiled = compile_program(&program, &check, false, &empty_tables())
             .expect("multi-sig program should compile");
         let result = unsafe { compiled.execute().unwrap() };
         assert_eq!(result, 99, "should dispatch to g$Int+Int and return second arg (99)");
@@ -2806,10 +2791,10 @@ mod tests {
     // spec: 05-definitions §5.1.2 — concrete_type_name covers all primitive types
     #[test]
     fn test_concrete_type_name_all_primitives() {
-        assert_eq!(concrete_type_name(&Type::Int).unwrap().as_ref(), "Int");
-        assert_eq!(concrete_type_name(&Type::Float).unwrap().as_ref(), "Float");
-        assert_eq!(concrete_type_name(&Type::Bool).unwrap().as_ref(), "Bool");
-        assert_eq!(concrete_type_name(&Type::String).unwrap().as_ref(), "String");
+        assert_eq!(concrete_type_name(&Type::Int).unwrap().name.as_ref(), "Int");
+        assert_eq!(concrete_type_name(&Type::Float).unwrap().name.as_ref(), "Float");
+        assert_eq!(concrete_type_name(&Type::Bool).unwrap().name.as_ref(), "Bool");
+        assert_eq!(concrete_type_name(&Type::String).unwrap().name.as_ref(), "String");
         assert!(concrete_type_name(&Type::Var(0)).is_none());
     }
 }

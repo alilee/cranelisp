@@ -167,7 +167,12 @@ pub fn fresh_var_id(next_id: &mut TypeId) -> (Type, TypeId) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use cranelisp_types::TypeName;
+    use cranelisp_types::{FQTypeName, ModuleFullPath, TypeName};
+
+    /// Test helper: create an FQTypeName in a "test" module.
+    fn test_fqtn(name: &str) -> FQTypeName {
+        FQTypeName::new(ModuleFullPath::from("test"), TypeName::from(name))
+    }
 
     // spec: 03-types §3.8.1 — trivial unification of identical primitives
     #[test]
@@ -257,8 +262,8 @@ mod tests {
     #[test]
     fn test_unify_adt_same_name() {
         let mut subst = Subst::new();
-        let a1 = Type::ADT(TypeName::from("Color"), vec![]);
-        let a2 = Type::ADT(TypeName::from("Color"), vec![]);
+        let a1 = Type::ADT(test_fqtn("Color"), vec![]);
+        let a2 = Type::ADT(test_fqtn("Color"), vec![]);
         assert!(unify(&mut subst, &a1, &a2).is_ok());
     }
 
@@ -266,8 +271,8 @@ mod tests {
     #[test]
     fn test_unify_adt_different_names() {
         let mut subst = Subst::new();
-        let a1 = Type::ADT(TypeName::from("Color"), vec![]);
-        let a2 = Type::ADT(TypeName::from("Shape"), vec![]);
+        let a1 = Type::ADT(test_fqtn("Color"), vec![]);
+        let a2 = Type::ADT(test_fqtn("Shape"), vec![]);
         let err = unify(&mut subst, &a1, &a2).unwrap_err();
         assert!(err.message().contains("Color"));
         assert!(err.message().contains("Shape"));

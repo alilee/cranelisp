@@ -8,7 +8,7 @@ use cranelift_module::{Linkage, Module};
 
 use cranelisp_types::{CranelispError, Span, Symbol};
 
-use super::{FnCompiler, bare_ctor_name};
+use super::FnCompiler;
 use crate::heap::{self, HeapClosure};
 
 impl<'a, M: Module> FnCompiler<'a, M> {
@@ -137,15 +137,12 @@ impl<'a, M: Module> FnCompiler<'a, M> {
 
     /// Look up the tag value for a nullary constructor.
     ///
-    /// Supports module-qualified names (e.g. `macros/SNil`): strips the module
-    /// prefix for registry lookups which store unqualified names.
+    /// Supports module-qualified names (e.g. `macros/SNil`):
+    /// lookup_constructor handles qualified name resolution.
     pub(crate) fn nullary_constructor_tag(&self, name: &Symbol) -> Option<usize> {
-        let bare = bare_ctor_name(name);
-        let type_name = self.ctx.constructor_to_type.get(bare)?;
-        let type_def = self.ctx.type_defs.get(type_name)?;
-        let ctor = type_def.constructors.iter().find(|c| c.name.as_ref() == bare)?;
-        if ctor.fields.is_empty() {
-            Some(ctor.tag)
+        let (_fqtn, ctor_info) = self.ctx.lookup_constructor(name.as_ref())?;
+        if ctor_info.fields.is_empty() {
+            Some(ctor_info.tag)
         } else {
             None
         }
@@ -159,14 +156,11 @@ impl<'a, M: Module> FnCompiler<'a, M> {
         &self,
         name: &Symbol,
     ) -> Option<(usize, usize)> {
-        let bare = bare_ctor_name(name);
-        let type_name = self.ctx.constructor_to_type.get(bare)?;
-        let type_def = self.ctx.type_defs.get(type_name)?;
-        let ctor = type_def.constructors.iter().find(|c| c.name.as_ref() == bare)?;
-        if ctor.fields.is_empty() {
+        let (_fqtn, ctor_info) = self.ctx.lookup_constructor(name.as_ref())?;
+        if ctor_info.fields.is_empty() {
             None
         } else {
-            Some((ctor.tag, ctor.fields.len()))
+            Some((ctor_info.tag, ctor_info.fields.len()))
         }
     }
 

@@ -226,12 +226,15 @@ pub fn determine_exit_code(value: i64, inner_ty: &Type) -> i32 {
 /// Inject an implicit `(import [prelude [*]])` into the typechecker's current
 /// module, unless the current module IS "prelude" (to avoid self-import).
 pub(crate) fn inject_prelude_import(
-    tc: &mut cranelisp_typecheck::TypeChecker,
+    symbol_tables: &dashmap::DashMap<ModuleFullPath, cranelisp_types::SymbolTable>,
+    next_type_id: &std::sync::atomic::AtomicU32,
+    check_state: &mut cranelisp_typecheck::CheckState,
+    current_module: &ModuleFullPath,
 ) -> Result<(), CranelispError> {
     let prelude_path = ModuleFullPath::from("prelude");
 
     // Don't self-import prelude into itself.
-    if tc.current_module_path() == &prelude_path {
+    if *current_module == prelude_path {
         return Ok(());
     }
 
@@ -241,7 +244,8 @@ pub(crate) fn inject_prelude_import(
         names: cranelisp_types::ImportNames::Glob,
         span: Span::SYNTHETIC,
     };
-    tc.register_imports(&[import_spec])
+    let tc = cranelisp_typecheck::TypeCheckEnv::new(symbol_tables, next_type_id);
+    tc.register_imports(check_state, &[import_spec])
 }
 
 /// Check whether a program has any defns or trait impls that need codegen.
