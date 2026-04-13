@@ -39,6 +39,12 @@ A function definition binds a name to a function value. The parameter list uses 
   - **Trait constraint**: `:Num`, `:Display` -- constrains the parameter's type variable to types implementing that trait, producing a constrained polymorphic function (see [Section 7: Traits](07-traits.md)).
 - When no annotation is provided, the parameter type is inferred via Hindley-Milner unification.
 - The return type is always inferred; there is no return type annotation syntax.
+- Parameter names MUST be unique within a parameter list, with one exception: the name `_` (underscore) is a **discard parameter** and is exempt from the duplicate name check. Each `_` is an independent discard — the value is bound to a fresh, unreferenceable variable. Multiple `_` parameters MAY appear in the same parameter list. Referencing `_` in the function body is a compile-time error. [R4 S52]
+
+```clojure
+(defn fold [f _ acc] (f acc))              ; one discard
+(fn [acc _ _] acc)                         ; multiple discards -- each is independent
+```
 
 ### 5.1.2 Multi-Signature [Tested tests/ring2::neg_multi_sig_bare_value_errors, tests/repl_experience::defn_multi_param_reports_full_signature]
 

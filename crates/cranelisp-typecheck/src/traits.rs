@@ -13,7 +13,7 @@ use std::collections::{HashMap, HashSet};
 use cranelisp_types::{
     ConstrainedFn, CranelispError, DefKind, Defn, DefnVariant, FQTraitName, FQTypeName,
     JitSymbol, MethodResolutions, ModuleEntry, ModuleFullPath, MonoDefn, ResolvedCall, Scheme,
-    Span, Symbol, TraitDecl, TraitImpl, TraitMethodSig, TraitName, Type, TypeId, TypeName,
+    Sexp, Span, Symbol, TraitDecl, TraitImpl, TraitMethodSig, TraitName, Type, TypeId, TypeName,
     Visibility, apply,
 };
 
@@ -508,11 +508,23 @@ impl TypeCheckEnv<'_> {
             return self.check_hkt_impl_method(state, decl, impl_, method_defn, method_sig);
         }
 
-        // Resolve the concrete type for Self
+        // Resolve the concrete type for Self.
+        // For parameterized impls like `(impl Showable (MyOpt Int) ...)`,
+        // type_args contains the concrete type arguments (e.g., ["Int"]).
         let concrete_self = Type::from_name(impl_.target_type.as_ref())
             .unwrap_or_else(|| {
                 let fqtn = self.fqtn_for_bare_type_name(state, &impl_.target_type);
-                Type::ADT(fqtn, vec![])
+                let resolved_type_args: Vec<Type> = impl_.type_args.iter()
+                    .map(|arg| {
+                        Type::from_name(arg.as_ref())
+                            .unwrap_or_else(|| {
+                                // Type variable or user-defined type
+                                let arg_fqtn = self.fqtn_for_bare_type_name(state, &TypeName::from(arg.as_ref()));
+                                Type::ADT(arg_fqtn, vec![])
+                            })
+                    })
+                    .collect();
+                Type::ADT(fqtn, resolved_type_args)
             });
 
         // Pre-seed var_map: trait type params map to concrete self type.
@@ -677,12 +689,18 @@ impl TypeCheckEnv<'_> {
             );
 
             let span = impl_.span;
-            let body = build_default_body(
-                decl.name.as_ref(),
-                method_sig.name.as_ref(),
-                &method_sig.default_param_names,
-                span,
-            )?;
+            let body = if let Some(ref sexp_body) = method_sig.default_body {
+                // User-defined default body: convert Sexp to Expr
+                sexp_to_default_expr(sexp_body)?
+            } else {
+                // Hard-coded builtin defaults (Eq.!=, Ord.>, etc.)
+                build_default_body(
+                    decl.name.as_ref(),
+                    method_sig.name.as_ref(),
+                    &method_sig.default_param_names,
+                    span,
+                )?
+            };
 
             defaults.push(Defn {
                 name: Symbol::from(mangled.as_str()),
@@ -1148,6 +1166,59 @@ fn build_default_body(
                 "no hard-coded default body for {trait_name}.{method_name}"
             ),
             span,
+        }),
+    }
+}
+
+/// Convert a Sexp (from a trait default body) into an Expr.
+///
+/// Handles the basic expression forms that can appear in default method bodies:
+/// symbols, integers, floats, booleans, strings, and function applications (lists).
+fn sexp_to_default_expr(sexp: &Sexp) -> Result<cranelisp_types::Expr, CranelispError> {
+    use cranelisp_types::Expr;
+
+    match sexp {
+        Sexp::Symbol(name, span) => Ok(Expr::Var {
+            name: Symbol::from(name.as_str()),
+            span: *span,
+        }),
+        Sexp::Int(value, span) => Ok(Expr::IntLit {
+            value: *value,
+            span: *span,
+        }),
+        Sexp::Float(value, span) => Ok(Expr::FloatLit {
+            value: *value,
+            span: *span,
+        }),
+        Sexp::Bool(value, span) => Ok(Expr::BoolLit {
+            value: *value,
+            span: *span,
+        }),
+        Sexp::Str(value, span) => Ok(Expr::StringLit {
+            value: value.clone(),
+            span: *span,
+        }),
+        Sexp::List(children, span) => {
+            if children.is_empty() {
+                return Err(CranelispError::TypeError {
+                    message: "empty list in default method body".into(),
+                    span: *span,
+                });
+            }
+            let callee = Box::new(sexp_to_default_expr(&children[0])?);
+            let args = children[1..]
+                .iter()
+                .map(sexp_to_default_expr)
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok(Expr::Apply {
+                callee,
+                args,
+                span: *span,
+            })
+        }
+        _ => Err(CranelispError::TypeError {
+            message: format!("unsupported sexp form in default method body: {:?}", sexp),
+            span: sexp.span(),
         }),
     }
 }
@@ -2213,7 +2284,15 @@ mod tests {
                     span: Span::SYNTHETIC,
                     hkt_param_index: None,
                     default_param_names: vec![Symbol::from("x"), Symbol::from("y")],
-                    default_body: Some(Sexp::Symbol("default".to_string(), Span::SYNTHETIC)),
+                    // Default body: (not (= x y))
+                    default_body: Some(Sexp::List(vec![
+                        Sexp::Symbol("not".to_string(), Span::SYNTHETIC),
+                        Sexp::List(vec![
+                            Sexp::Symbol("=".to_string(), Span::SYNTHETIC),
+                            Sexp::Symbol("x".to_string(), Span::SYNTHETIC),
+                            Sexp::Symbol("y".to_string(), Span::SYNTHETIC),
+                        ], Span::SYNTHETIC),
+                    ], Span::SYNTHETIC)),
                 },
             ],
             visibility: Visibility::Public,

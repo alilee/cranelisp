@@ -59,8 +59,18 @@ impl CompiledProgram {
     /// `extern "C" fn() -> i64`. This is guaranteed when CompiledProgram was
     /// produced by `compile_program`.
     pub unsafe fn execute(&self) -> Result<i64, CranelispError> {
+        // Clear any stale runtime error before execution.
+        let _ = cranelisp_runtime::panic::take_runtime_error();
         let func: extern "C" fn() -> i64 = unsafe { std::mem::transmute(self.entry_ptr) };
-        Ok(func())
+        let value = func();
+        // Check for runtime panics (e.g., division by zero, match failure).
+        if let Some(msg) = cranelisp_runtime::panic::take_runtime_error() {
+            return Err(CranelispError::CodegenError {
+                message: format!("runtime panic: {}", msg),
+                span: Span::SYNTHETIC,
+            });
+        }
+        Ok(value)
     }
 }
 
@@ -77,14 +87,27 @@ pub struct CompiledExpr {
 impl CompiledExpr {
     /// Execute the compiled expression and return the i64 result.
     ///
+    /// Checks for runtime panics (division by zero, match failure, etc.)
+    /// after execution and returns an error if one occurred.
+    ///
     /// # Safety
     ///
     /// The func_ptr must point to valid JIT-compiled code with the signature
     /// `extern "C" fn() -> i64`. This is guaranteed when CompiledExpr was
     /// produced by `compile_expr_with_got`.
-    pub unsafe fn execute(&self) -> i64 {
+    pub unsafe fn execute(&self) -> Result<i64, CranelispError> {
+        // Clear any stale runtime error before execution.
+        let _ = cranelisp_runtime::panic::take_runtime_error();
         let func: extern "C" fn() -> i64 = unsafe { std::mem::transmute(self.func_ptr) };
-        func()
+        let value = func();
+        // Check for runtime panics (e.g., division by zero, match failure).
+        if let Some(msg) = cranelisp_runtime::panic::take_runtime_error() {
+            return Err(CranelispError::CodegenError {
+                message: format!("runtime panic: {}", msg),
+                span: Span::SYNTHETIC,
+            });
+        }
+        Ok(value)
     }
 }
 
@@ -636,7 +659,7 @@ pub fn compile_and_run_expr(
         symbol_tables, ModuleFullPath::from("main"),
     )?;
     // SAFETY: compiled was produced by compile_expr_with_got_and_symbols immediately above.
-    Ok(unsafe { compiled.execute() })
+    unsafe { compiled.execute() }
 }
 
 #[cfg(test)]

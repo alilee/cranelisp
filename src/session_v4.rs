@@ -2677,8 +2677,9 @@ impl CompilerSession {
         // Find the runtime bundle library.
         let bundle_lib = crate::exe::find_bundle_lib()?;
 
-        // Output path: entry module name without extension, in project root.
-        let output_path = self.project_root.join(module_name.replace(".cl", ""));
+        // Output path: entry module stem in CWD (not project root).
+        // E.g., `cranelisp --link examples/hello.cl` produces `./hello`.
+        let output_path = PathBuf::from(module_name.replace(".cl", ""));
 
         // Link.
         crate::exe::link_executable(
@@ -3207,13 +3208,18 @@ fn compile_module_object(
         Some(&input.program),
         Some(&check_result),
         &input.cross_module_func_sigs,
+        &shared.symbol_tables,
     );
 
     // Compile to .o bytes via Cranelift ObjectModule.
     let obj_bytes = match cache::compile_module_to_object(&object_input, &object_input, &shared.symbol_tables) {
         Ok(bytes) => bytes,
         Err(e) => {
-            eprintln!("nice-worker: .o compilation failed for {}: {}", module, e.message());
+            // Log .o compilation errors only when CRANELISP_CODEGEN_TRACE is set.
+            // These are non-fatal (in-memory compilation may have succeeded).
+            if std::env::var("CRANELISP_CODEGEN_TRACE").is_ok() {
+                eprintln!("nice-worker: .o compilation failed for {}: {}", module, e.message());
+            }
             return;
         }
     };

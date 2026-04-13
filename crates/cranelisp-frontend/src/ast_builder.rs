@@ -1418,9 +1418,13 @@ fn build_annotated_params(
         }
     }
 
-    // Check for duplicate parameter names (spec §5 — defn params must be distinct)
+    // Check for duplicate parameter names (spec §5.1.1 — defn params must be distinct,
+    // except `_` which is a discard parameter exempt from the uniqueness check)
     let mut seen = HashSet::new();
     for name in &names {
+        if name == "_" {
+            continue;
+        }
         if !seen.insert(name.as_ref()) {
             return Err(parse_err(
                 &format!("duplicate parameter name '{}'", name),

@@ -77,23 +77,13 @@ Declares `internal` as a private submodule, accessible only within the declaring
 
 ### 8.2.5 File Resolution [Tested tests/ring2::module_missing_file_error]
 
-When `(mod name)` appears in a file (after inline extraction, if applicable), the implementation MUST resolve the corresponding `.cl` file:
+When `(mod name)` appears in a file (after inline extraction, if applicable), the implementation MUST resolve the corresponding `.cl` file to the child directory path only:
 
-<!-- FIXME(/spec): Remove sibling fallback rule. `(mod child)` in `main.cl` MUST resolve only
-     to `main/child.cl` (child directory), not `child.cl` (sibling). The sibling rule creates
-     ambiguity: the same file could be both `main.child` (via mod) and root module `child`
-     (via search path), violating §8.1's principle that file path determines module identity.
-     The v4 pipeline implements child-directory-only resolution. Tests in ring2.rs have been
-     updated to match. Delete rule 2 and the sibling example below. -->
+- **Child directory**: `{parent_dir}/{stem}/{name}.cl` -- where `{stem}` is the declaring file's name without extension.
 
-1. **Child directory**: `{parent_dir}/{stem}/{name}.cl` -- where `{stem}` is the declaring file's name without extension.
-2. **Sibling file**: `{parent_dir}/{name}.cl`
+For example, if `app.cl` contains `(mod handler)`, the implementation resolves to `app/handler.cl`. If this file does not exist, it is a compile-time error.
 
-For example, if `app.cl` contains `(mod handler)`:
-1. Try `app/handler.cl` (child directory)
-2. Try `handler.cl` (sibling)
-
-If neither file exists, it is a compile-time error.
+Sibling files (e.g., `handler.cl` in the same directory as `app.cl`) are NOT considered. A sibling file is a peer module, not a submodule. Allowing sibling fallback would create ambiguity: the same file could be both `app.handler` (via `mod`) and root module `handler` (via the search path in §8.11.2), violating §8.1's principle that file path determines module identity. To reference a peer module, use `import` with the module's own name (e.g., `(import [handler [...]])`), not `mod`.
 
 ### 8.2.6 Placement [Tested tests/ring2::module_cycle_detection, crates/cranelisp-frontend/src/module_extract.rs::test_mixed_forms]
 
@@ -548,6 +538,8 @@ The `primitives` module contains:
 - **Primitive functions**: The specific catalog of primitive functions is implementation-defined. See [Appendix A](appendix-a-builtins.md) for the reference implementation's catalog.
 
 Names in `primitives` are stored in qualified form only (`primitives/add-i64`). They are NOT available as bare names unless imported through the prelude chain.
+
+In batch mode (and REPL mode), the implicit prelude import (§8.8.1) brings primitive functions into scope as bare names, provided the prelude re-exports them. A program that uses `(add-i64 2 3)` without an explicit `(import [primitives [...]])` works correctly when the prelude is loaded and re-exports `add-i64`. Without a prelude (or with a prelude that does not re-export the needed primitives), an explicit import from `primitives` is required. [R4 S52]
 
 ### 8.9.2 The `macros` Module
 

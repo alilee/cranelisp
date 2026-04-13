@@ -519,13 +519,13 @@ fn sketch_closure_with_higher_order() {
 // (sketch: integration.rs — pure_lifts_value, bind_extracts_and_continues, etc.)
 // =============================================================================
 
-// spec: 10-io §10.2 — pure lifts value into IO
+// spec: 10-io §10.2 — Pure lifts value into IO
 #[test]
 fn sketch_pure_lifts_value() {
     let mut s = repl_session_with_test_prelude();
-    // pure wraps a value in IO
-    let result = repl_eval_display(&mut s, "(pure 42)");
-    assert!(result.contains("42"), "pure 42 display should contain 42: {}", result);
+    // Pure (constructor) wraps a value in IO — lowercase `pure` is a library fn not available here
+    let result = repl_eval_display(&mut s, "(Pure 42)");
+    assert!(result.contains("42"), "Pure 42 display should contain 42: {}", result);
 }
 
 // =============================================================================
@@ -1638,6 +1638,8 @@ fn sketch_platform_capture_read_input() {
     };
     capture.reset();
     capture.set_input(&["Alice"]);
+    // str-concat is a primitive — needs explicit import
+    repl_eval_display(&mut session, "(import [primitives [str-concat]])");
     // Use repl_eval_display which handles IO forcing via trampoline
     let _display = repl_eval_display(&mut session, "(bind! [name (read-line)] (print (str-concat \"Hello, \" name)))");
     let output = capture.get_output();

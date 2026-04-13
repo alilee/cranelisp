@@ -1528,10 +1528,7 @@ impl TypeCheckEnv<'_> {
             }
 
             TopLevel::Defn(defn) if defn.is_multi_sig() => {
-                Err(CranelispError::TypeError {
-                    message: "multi-signature functions not supported in Ring 0".into(),
-                    span: defn.span,
-                })
+                self.check_repl_multi_sig(state, defn)
             }
 
             TopLevel::Defn(defn) => {
@@ -1927,6 +1924,100 @@ impl TypeCheckEnv<'_> {
         }
 
         Ok((scheme.ty.clone(), scheme))
+    }
+
+    /// Check a multi-sig defn for REPL: register variants, check bodies,
+    /// resolve overloads, and build the result — all in one step.
+    fn check_repl_multi_sig(
+        &self,
+        state: &mut CheckState,
+        defn: &Defn,
+    ) -> Result<CheckResult, CranelispError> {
+        // Phase 1: Register each variant's signature
+        let mut defn_type_vars = HashMap::new();
+        let mut overload_entries = Vec::new();
+        for (i, variant) in defn.variants.iter().enumerate() {
+            let internal_name = Symbol::from(format!("{}__v{}", defn.name, i));
+            overload_entries.push((internal_name.clone(), variant.params.len()));
+
+            let internal_defn = Defn {
+                name: internal_name.clone(),
+                docstring: defn.docstring.clone(),
+                variants: vec![DefnVariant {
+                    params: variant.params.clone(),
+                    param_annotations: variant.param_annotations.clone(),
+                    body: variant.body.clone(),
+                    span: variant.span,
+                }],
+                visibility: defn.visibility,
+                span: variant.span,
+            };
+            let (param_types, ret_ty) = self.register_defn_signature(state, &internal_defn)?;
+            defn_type_vars.insert(internal_name, (param_types, ret_ty));
+        }
+        state.overloads.insert(defn.name.clone(), overload_entries);
+
+        // Register a placeholder for the base name
+        let placeholder_ty = self.fresh_var();
+        let placeholder_scheme = mono(placeholder_ty);
+        self.current_symbol_table_mut(state).insert(
+            defn.name.clone(),
+            ModuleEntry::Def {
+                scheme: placeholder_scheme,
+                visibility: defn.visibility,
+                docstring: defn.docstring.clone(),
+                param_names: vec![],
+                kind: Box::new(DefKind::Overloaded { variants: vec![] }),
+                callees: Vec::new(),
+                got_slot: None,
+                trait_origin: None,
+            },
+        );
+
+        // Phase 2: Check each variant body
+        for (i, variant) in defn.variants.iter().enumerate() {
+            let internal_name = Symbol::from(format!("{}__v{}", defn.name, i));
+            let (param_types, ret_ty) = defn_type_vars
+                .get(&internal_name)
+                .expect("internal: missing type vars for multi-sig variant");
+
+            let internal_defn = Defn {
+                name: internal_name.clone(),
+                docstring: defn.docstring.clone(),
+                variants: vec![DefnVariant {
+                    params: variant.params.clone(),
+                    param_annotations: variant.param_annotations.clone(),
+                    body: variant.body.clone(),
+                    span: variant.span,
+                }],
+                visibility: defn.visibility,
+                span: variant.span,
+            };
+
+            self.check_defn_body(state, &internal_defn, param_types, ret_ty)?;
+            self.resolve_deferred_trait_calls(state, &internal_defn.body());
+        }
+
+        // Phase 2.5: Resolve multi-sig overloads (mangle names, register)
+        let resolved = self.resolve_variant_types(state, defn, &defn_type_vars)?;
+        let (mangled_defns, resolved_info) =
+            self.register_mangled_variants(state, defn, &resolved);
+        self.register_overloaded_base(state, defn, resolved_info);
+
+        // Resolve pending overloads and auto-curry
+        self.resolve_pending_overloads(state)?;
+        self.resolve_auto_curry(state);
+
+        // Build the result using the first variant's type for display
+        let first_variant_ty = if let Some((concrete_params, concrete_ret, _, _)) = resolved.first() {
+            Type::Fn(concrete_params.clone(), Box::new(concrete_ret.clone()))
+        } else {
+            Type::Int // fallback — shouldn't happen
+        };
+        let scheme = self.generalize(state, &first_variant_ty);
+        let mut result = self.build_repl_result(state, first_variant_ty, Some(scheme));
+        result.default_method_defns = mangled_defns;
+        Ok(result)
     }
 
     // --- Monomorphisation passes ---

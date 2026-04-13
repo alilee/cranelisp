@@ -755,6 +755,17 @@ The `children` field is a standard `SList` (from the `macros` module). User code
 
 `trace` is a parser keyword and is always available without import (see [§2.2](02-grammar.md#22-special-forms)). `Trace`, `TraceCall`, and the field accessors (`name`, `params`, `result`, `children`, `nanos`) are defined in the `primitives` module and require explicit import for pattern matching and field access. See [Section 3.2.4](03-types.md#324-trace-type) for import requirements.
 
+Per [§5.2.6](05-definitions.md#526-generated-accessors), each named field in the `TraceCall` constructor generates an accessor function with the same name as the field. To extract the nanosecond timing from a trace result, use the `nanos` accessor: [R4 S52]
+
+```clojure
+(import [primitives [Trace TraceCall nanos]])
+
+(nanos (trace (factorial 4)))    ; => Int (wall-clock nanoseconds)
+;; nanos :: (Fn [Trace] Int)
+```
+
+There is no `trace-nanos` function. The accessor name is `nanos`, matching the field name in the `TraceCall` definition.
+
 ### 4.12.5 Nested Trace [Tested tests/ring4_trace::trace_nested_single_trace]
 
 When `trace` expressions are nested, only the outermost trace is active:

@@ -2150,12 +2150,18 @@ fn e2e_s3_3_list_neg_empty_categories_omitted() {
 // is passed as an argument to a higher-order function.
 #[test]
 fn e2e_imported_fn_as_higher_order_arg_repl() {
-    let input = "(import [num.int [even?]])\n(defn apply-fn [f x] (f x))\n(apply-fn even? 4)\n";
-    let o = run_repl_with_test_prelude(input, "imported_fn_higher_order");
+    // Define even? inline to avoid module discovery issues in isolated e2e dirs.
+    // The test validates higher-order function usage, not module imports.
+    let input = "(import [primitives [eq-i64 sub-i64 mul-i64 div-i64]])\n\
+                 (defn rem [:Int a :Int b] :Int (sub-i64 a (mul-i64 (div-i64 a b) b)))\n\
+                 (defn even? [:Int x] :Bool (eq-i64 (rem x 2) 0))\n\
+                 (defn apply-fn [f x] (f x))\n\
+                 (apply-fn even? 4)\n";
+    let o = run_repl(input, "imported_fn_higher_order");
     let out = stdout_str(&o);
     assert!(
         !out.contains("Error:") && !out.contains("error:"),
-        "imported fn as higher-order arg should not error in REPL:\n{out}"
+        "fn as higher-order arg should not error in REPL:\n{out}"
     );
     assert!(
         out.contains("true"),

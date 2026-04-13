@@ -279,6 +279,11 @@ fn parse_args() -> (Action, PathBuf, SessionSettings) {
         process::exit(1);
     }
 
+    if no_cache && link_file.is_some() {
+        eprintln!("error: --no-cache is not supported with --link");
+        process::exit(1);
+    }
+
     if let Some(path) = link_file {
         return (Action::Link, PathBuf::from(path), settings);
     }

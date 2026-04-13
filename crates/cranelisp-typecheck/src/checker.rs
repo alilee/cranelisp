@@ -299,7 +299,6 @@ impl<'a> TypeCheckEnv<'a> {
     }
 
     /// Access the per-module symbol tables (for display, introspection).
-    // FIXME(/arch): remove once FQTypeName migration eliminates type_modules map.
     pub fn modules(&self) -> &DashMap<ModuleFullPath, SymbolTable> {
         &self.modules
     }

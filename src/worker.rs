@@ -982,7 +982,7 @@ pub fn process_module_forms(
                     }
                 }
                 FormKind::Platform(spec) => {
-                    handle_platform(ctx, &spec)?;
+                    handle_platform(ctx, module, &spec)?;
                 }
                 _ => {} // Regular, Defmacro — handled in Pass 2
             }
@@ -1218,7 +1218,7 @@ fn pass2_check_bodies_with_expansion(
                 }
             }
             FormKind::Platform(spec) => {
-                handle_platform(ctx, &spec)?;
+                handle_platform(ctx, module, &spec)?;
             }
             FormKind::Defmacro => {
                 // Registered in Pass 1. Compile eagerly in Pass 2 so type errors
@@ -1744,10 +1744,18 @@ fn handle_mod(
 ///
 /// Platform loading is NOT a cross-module blocking operation. The DLL is
 /// loaded synchronously. Type signatures are registered in TC immediately.
+///
+/// Platform declarations in non-entry modules (submodules) are silently
+/// ignored per spec §10.9.1 — only the entry module may load platforms.
 fn handle_platform(
     ctx: &mut ModuleCompiler,
+    module: &ModuleFullPath,
     spec: &PlatformSpec,
 ) -> Result<(), CranelispError> {
+    // Submodules (paths containing '.') cannot load platforms.
+    if module.as_ref().contains('.') {
+        return Ok(());
+    }
     let (platform, _jit_syms) = crate::platform::load_and_register_platform(
         ctx.symbol_tables,
         ctx.next_type_id,
@@ -2271,8 +2279,18 @@ fn inject_prelude_if_needed(
                 dep_sexps: prelude_sexps,
             }));
         }
-        // No prelude file found — continue without prelude.
-        // Operators will fail at typecheck, which is correct behavior.
+        // No prelude file found — inject minimal primitives import so that
+        // all modules have access to built-in functions like add-i64.
+        // Operators will fail at typecheck (they need trait impls from prelude).
+        let primitives_path = ModuleFullPath::from("primitives");
+        let prim_spec = ImportSpec {
+            module_path: primitives_path,
+            alias: None,
+            names: ImportNames::Glob,
+            span: Span::SYNTHETIC,
+        };
+        cranelisp_typecheck::TypeCheckEnv::new(ctx.symbol_tables, ctx.next_type_id)
+            .register_imports(&mut ctx.check_state, &[prim_spec])?;
     } else {
         // Prelude already loaded — register the import.
         let prelude_spec = ImportSpec {

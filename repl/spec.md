@@ -8,20 +8,31 @@ While called repl, the repl experience encompasses the entire user experience fr
 
 The `cranelisp` binary supports the following invocation modes:
 
+The general invocation form is:
+
+```
+cranelisp [target] [--run | --link | --release] [--no-color] [--no-cache]
+```
+
+The optional positional `[target]` specifies the project root and entry module (see §0.5). Flags modify the behaviour applied to the resolved entry module. No flag takes a parameter — all are boolean modifiers.
+
 | Mode | Invocation | Description | Status |
 |---|---|---|---|
-| REPL | `cranelisp` | Start the interactive REPL | Implemented |
-| Batch | `cranelisp --run <file.cl>` | Compile and execute a source file, print result, exit | Implemented |
-| Version | `cranelisp --version` | Print version string and exit | Future work |
-| Help | `cranelisp --help` | Print usage summary and exit | Future work |
+| REPL | `cranelisp [target]` | Interactive REPL (default when no mode flag) | [R4 S52] |
+| Run | `cranelisp [target] --run` | Compile and execute `main`, then exit | [R4 S52] |
+| Link | `cranelisp [target] --link` | Compile and produce linkable object file | [R4 S52] |
+| Version | `cranelisp --version` | Print version string and exit | [R4] |
+| Help | `cranelisp --help` | Print usage summary and exit | [R4] |
 
-### 0.1 REPL Mode (no arguments)
+### 0.1 REPL Mode [Tested]
 
-When invoked with no arguments, the binary MUST start the interactive REPL: display the startup banner (see Section 6.2), load the prelude, and present the primary prompt. The REPL runs until the user enters `/quit` or sends EOF (Ctrl-D).
+When invoked with no arguments, the binary MUST start the interactive REPL with cwd as the project root and `user` as the entry module: display the startup banner (see Section 6.2), load the prelude, and present the primary prompt. The REPL runs until the user enters `/quit` or sends EOF (Ctrl-D).
 
-### 0.2 Batch Mode (`--run <file>`) [Tested+Neg tests/sprint23::batch_main_*]
+When invoked with a positional target (e.g. `cranelisp mymod`, `cranelisp dir/mymod`), the REPL MUST resolve the project root and entry module per §0.5 and start the REPL in that context. [R4 S52]
 
-`cranelisp --run <file.cl>` MUST compile the module graph rooted at `<file.cl>`, then call `main` in the entry module.
+### 0.2 Run Mode (`--run`) [Tested+Neg tests/sprint23::batch_main_*]
+
+`cranelisp [target] --run` MUST compile the module graph rooted at the resolved entry module, then call `main` in the entry module. The binary MUST NOT print any output itself — all output is produced by IO effects within the program. [R4 S52]
 
 **Entry point resolution:**
 
@@ -34,7 +45,7 @@ When invoked with no arguments, the binary MUST start the interactive REPL: disp
 |---|---|
 | `IO _` | Execute through the IO trampoline (side effects happen). The inner type determines the exit code per the exit code rules below. |
 | `Int` | Use the value as the process exit code. |
-| Any other type | Print the result to stdout in `:Type value` format (Section 1.2) and exit with status code 0. |
+| Any other type | Exit with status code 0. No output. |
 
 **Exit code rules:**
 
@@ -43,11 +54,17 @@ When invoked with no arguments, the binary MUST start the interactive REPL: disp
 
 **Warnings** MUST be printed to stderr. On compilation failure, the error MUST be printed to stderr and the process MUST exit with a non-zero status code.
 
-If the file does not exist, the binary MUST print an error to stderr and exit with status code 1.
+If the resolved entry module source file does not exist, the binary MUST print an error to stderr and exit with status code 1.
+
+### 0.2.1 Link Mode (`--link`) [R4 S52]
+
+`cranelisp [target] --link` MUST compile the module graph rooted at the resolved entry module and produce a linkable object file. It MUST NOT execute any code and MUST NOT produce output to stdout. [R4 S52]
+
+`--run` and `--link` MUST NOT be used together. If both are present, the binary MUST print an error to stderr and exit with status code 1.
 
 ### 0.3 Error Handling
 
-Invalid arguments (e.g., `cranelisp --run` without a file, or unknown flags) MUST print a usage hint to stderr and exit with status code 1. The usage hint MUST show the supported invocation forms.
+Invalid arguments (e.g., unknown flags, `--run` and `--link` together) MUST print a usage hint to stderr and exit with status code 1. The usage hint MUST show the supported invocation form including the positional target syntax.
 
 ### 0.4 Future: `--version` and `--help` [R4]
 
@@ -56,6 +73,75 @@ Invalid arguments (e.g., `cranelisp --run` without a file, or unknown flags) MUS
 `cranelisp --help` SHOULD print a usage summary listing all supported flags and their descriptions to stdout and exit with status code 0.
 
 These are not yet implemented. When added, they MUST follow standard CLI conventions (GNU-style long flags, stdout for informational output, exit code 0 on success).
+
+### 0.5 Positional Target Resolution [R4 S52]
+
+All invocation modes accept an optional positional `[target]` argument that specifies the **project root** and **entry module**. The target MUST be the last argument on the command line, after all flags.
+
+#### 0.5.1 Resolution Rules
+
+The target argument is resolved to a `(project_root, entry_module)` pair according to the following rules, applied in order:
+
+1. **No target**: project root is cwd, entry module is `user`.
+2. **Target has a directory component** (contains `/`): the directory portion is the project root, the final component is the entry module name. E.g. `dir/mymod` resolves to project root `dir/`, entry module `mymod`.
+3. **Target is an existing directory** (no `/` but the name matches a directory in cwd): project root is that directory, entry module is `user`. E.g. if `myproject/` exists, `cranelisp myproject` resolves to project root `myproject/`, entry module `user`.
+4. **Target is a bare name** (no `/`, not an existing directory): project root is cwd, entry module is the target name. E.g. `cranelisp mymod` resolves to project root `.`, entry module `mymod`.
+
+The `.cl` extension MUST be optional in the target. `cranelisp user` and `cranelisp user.cl` MUST be equivalent. If the target ends in `.cl`, the extension MUST be stripped before deriving the entry module name.
+
+The project root MUST be resolved to an absolute path. If a relative path is given, it MUST be resolved against cwd.
+
+#### 0.5.2 Directory Component Detection
+
+A target "has a directory component" when it contains at least one `/` separator. This includes:
+
+- `dir/mymod` — project root `dir/`, entry module `mymod`
+- `path/to/mymod` — project root `path/to/`, entry module `mymod`
+- `./mymod` — project root `.` (cwd), entry module `mymod`
+- `../other/mymod` — project root `../other/`, entry module `mymod`
+
+A bare name like `mymod` does NOT have a directory component, even if a directory named `mymod` exists. The directory-existence check (rule 3) is a separate, lower-priority rule.
+
+#### 0.5.3 Interaction with `--run` and `--link`
+
+The `--run` and `--link` flags are boolean modifiers — they do not take parameters. The positional target is always resolved via §0.5.1 regardless of which mode flag is present. The target may appear before or after the flags: `cranelisp dir/mymod --run` and `cranelisp --run dir/mymod` MUST be equivalent.
+
+#### 0.5.4 Examples [R4 S52]
+
+| Invocation | Project root | Entry module | Notes |
+|---|---|---|---|
+| `cranelisp` | cwd | `user` | Default: REPL in current directory |
+| `cranelisp user` | cwd | `user` | Explicit default module |
+| `cranelisp user.cl` | cwd | `user` | `.cl` stripped |
+| `cranelisp mymod` | cwd | `mymod` | Bare name, not a directory |
+| `cranelisp myproject` | `myproject/` | `user` | `myproject/` is an existing directory |
+| `cranelisp dir/mymod` | `dir/` | `mymod` | Directory component present |
+| `cranelisp ./mymod` | cwd | `mymod` | Explicit cwd via `./` |
+| `cranelisp ../other/app` | `../other/` | `app` | Relative parent path |
+| `cranelisp --run` | cwd | `user` | Run mode, default target |
+| `cranelisp mymod --run` | cwd | `mymod` | Run mode with target |
+| `cranelisp dir/mymod --run` | `dir/` | `mymod` | Run mode with path |
+| `cranelisp dir/mymod --link` | `dir/` | `mymod` | Link mode with path |
+
+#### 0.5.5 Error Handling [R4 S52]
+
+1. If the target contains a directory component and the directory does not exist, the binary MUST print an error to stderr naming the missing directory and exit with status code 1.
+2. If the resolved entry module source file (`{project_root}/{entry_module}.cl`) does not exist:
+   - In REPL mode: the binary SHOULD create an empty source file and proceed. This supports the common workflow of starting a new project from an empty directory.
+   - In `--run` mode: the binary MUST print an error to stderr naming the missing file and exit with status code 1.
+   - In `--link` mode: the binary MUST print an error to stderr naming the missing file and exit with status code 1.
+3. If the target is ambiguous (e.g. both a file `mymod.cl` and a directory `mymod/` exist in cwd), the directory-existence check (rule 3 in §0.5.1) takes precedence — the target is treated as a project root directory. To force module interpretation, use `./mymod`.
+
+#### 0.5.6 Dotted Module Paths [R4 S52]
+
+The positional target supports only file-system paths (`/`-separated), not Cranelisp dotted module paths. To start the REPL in a submodule, use the file-system path:
+
+| Intent | Correct | Incorrect |
+|---|---|---|
+| Module `app` in `myproject/` | `cranelisp myproject/app` | `cranelisp myproject.app` |
+| Submodule `core.str` | `cranelisp core/str` | `cranelisp core.str` |
+
+Dotted names (e.g. `core.str`) MUST be treated as a single module name, not as a path separator. If a user passes `core.str`, the binary resolves it as entry module `core.str` in cwd — which will fail if no file `core.str.cl` exists.
 
 ## Design Principle
 
@@ -298,6 +384,7 @@ Slash commands provide introspection and navigation. All commands start with `/`
 | `/mem [expr]` | `/m` | Show allocation statistics | 1 | [R4 S10] |
 | `/run-tests [module]` | `/rt` | Discover and run test functions (see §16) | 4 | [R4] |
 | `/run-all-tests` | — | Run all tests in project (see §16) | 4 | [R4] |
+| `/sh <cmd>` | — | Run a shell command (see §13) | 4 | [R4 S52] |
 | `/quit` | `/q` | Exit REPL | 0 | [Tested tests/e2e::e2e_s3_1_quit] |
 
 ### 3.2 `/help` Output [Tested tests/e2e::e2e_s3_1_help]
@@ -976,7 +1063,7 @@ The TTY detection result SHOULD be computed once at startup and stored as a bool
 | Demo trampoline | | | | | yes |
 | `/mem` | | yes | | | |
 | `/run-tests`, `/run-all-tests` | | | | | yes |
-| Shell escape (`;#!`) | | | | | yes |
+| Shell escape (`/sh`) | | | | | yes |
 | File watching | | | | | yes |
 | Self-documentation | bare symbol, special forms, operators (qualified) | | + traits, modules | + macros | |
 | Error recovery | yes | | | | |
@@ -1134,47 +1221,42 @@ foo
 
 When the demo player detects that the REPL process has exited (due to `/quit` or EOF), it SHOULD start a new REPL process and pipe the remaining demo lines into it. The demo ends when the script is exhausted, not when the first REPL exits.
 
-## 13. Shell Escape [R4 S23]
+## 13. Shell Escape [R4 S52]
 
-The REPL supports a shell escape syntax for running operating system commands without leaving the REPL session. This is useful for checking file contents, running external tools, or verifying output during iterative development.
+The REPL supports a `/sh` slash command for running operating system commands without leaving the REPL session. This is useful for checking file contents, running external tools, or verifying output during iterative development.
 
-### 13.1 Syntax [R4 S23]
+### 13.1 Syntax [R4 S52]
 
-The shell escape prefix is `;#!`:
+The shell escape command is `/sh <command>`:
 
 ```
-user> ;#! ls -la
+user> /sh ls -la
 ```
 
-The `;` character begins a Cranelisp comment, so `;#! <cmd>` is syntactically a comment to the parser. The REPL intercepts lines starting with `;#!` (after optional leading whitespace) BEFORE passing them to the parser. Everything after the `;#!` prefix (with optional whitespace) is the shell command.
+`/sh` follows the same slash-command convention as all other REPL commands (§3). Everything after `/sh` and optional whitespace is the shell command string.
 
-The prefix was chosen to avoid collision with any valid Cranelisp syntax:
-- `;` is the comment character, so the line is invisible to the reader/parser.
-- `#!` is a conventional shebang marker, signalling "run this as a command".
-- No valid Cranelisp expression or definition starts with `;`.
+### 13.2 Execution [R4 S52]
 
-### 13.2 Execution [R4 S23]
-
-The command string (everything after `;#!` and optional whitespace) MUST be passed to the system shell for execution. On Unix-like systems, this means invoking `/bin/sh -c "<command>"`. The REPL MUST NOT attempt to parse or interpret the command itself.
+The command string (everything after `/sh` and optional whitespace) MUST be passed to the system shell for execution. On Unix-like systems, this means invoking `/bin/sh -c "<command>"`. The REPL MUST NOT attempt to parse or interpret the command itself.
 
 The command runs synchronously — the REPL blocks until the command completes. The REPL prompt is not displayed until the command finishes.
 
-### 13.3 Output Handling [R4 S23]
+### 13.3 Output Handling [R4 S52]
 
 The command's stdout and stderr MUST be passed through directly to the terminal. The REPL does NOT capture, buffer, or reformat the output. The user sees exactly what the command produces, interleaved as the OS delivers it.
 
 ```
-user> ;#! echo "hello from shell"
+user> /sh echo "hello from shell"
 hello from shell
 0+0ms; user>
 ```
 
-### 13.4 Exit Code Display [R4 S23]
+### 13.4 Exit Code Display [R4 S52]
 
 If the command exits with a non-zero status, the REPL MUST display the exit code after the command output:
 
 ```
-user> ;#! false
+user> /sh false
 exit status: 1
 0+0ms; user>
 ```
@@ -1184,12 +1266,12 @@ If the command exits with status 0, no exit code is displayed — silence means 
 If the command is terminated by a signal (e.g., SIGKILL), the REPL SHOULD display the signal information:
 
 ```
-user> ;#! kill -9 $$
+user> /sh kill -9 $$
 killed by signal: 9
 0+0ms; user>
 ```
 
-### 13.5 No REPL State Interaction [R4 S23]
+### 13.5 No REPL State Interaction [R4 S52]
 
 Shell escape is a pure passthrough. The command MUST NOT affect REPL state in any way:
 - No variables, definitions, or imports are modified.
@@ -1197,34 +1279,35 @@ Shell escape is a pure passthrough. The command MUST NOT affect REPL state in an
 - The typechecker, code cache, and compilation state are untouched.
 - Environment variables set by the command do NOT propagate back to the REPL process (the command runs in a child process).
 
-### 13.6 Edge Cases [R4 S23]
+### 13.6 Edge Cases [R4 S52]
 
-**Empty command:** `;#!` with no command (or only whitespace) MUST silently re-prompt. No error, no output.
+**No arguments:** `/sh` with no command (or only whitespace) MUST print a usage hint: `Usage: /sh <command>`. [R4 S52]
 
 ```
-user> ;#!
+user> /sh
+Usage: /sh <command>
 0+0ms; user>
 ```
 
 **Command not found:** If the shell cannot find the command, the shell's own error message is passed through (since stdout/stderr are not captured). The exit code is displayed per §13.4.
 
 ```
-user> ;#! nonexistent-command
+user> /sh nonexistent-command
 /bin/sh: nonexistent-command: command not found
 exit status: 127
 0+0ms; user>
 ```
 
-**Multi-line:** Shell escape does NOT support continuation lines. Each `;#!` line is a self-contained command. For multi-statement commands, use shell syntax (e.g., `;#! echo a && echo b`).
+**Multi-line:** Shell escape does NOT support continuation lines. Each `/sh` invocation is a self-contained command. For multi-statement commands, use shell syntax (e.g., `/sh echo a && echo b`).
 
 **Timing:** The prompt after a shell escape MUST show `0+0ms` — shell commands are not Cranelisp evaluations and do not contribute to compile/eval timing.
 
-### 13.7 `/help` Integration [R4 S23]
+### 13.7 `/help` Integration [R4 S52]
 
-Shell escape SHOULD appear in `/help` output as:
+`/sh` MUST appear in `/help` output as:
 
 ```
-  ;#! <cmd>       Run a shell command
+  /sh <cmd>       Run a shell command
 ```
 
 ## 14. File Watching [R4 S23]
@@ -1333,41 +1416,50 @@ File watching and the object cache work together:
 
 This means that after editing one file, only that file and its dependents are recompiled — unchanged modules load instantly from cache.
 
-## 15. REPL Session Persistence [R4]
+## 15. REPL Session Persistence [R4 S52]
 
-### 15.1 Current Limitation
+### 15.1 Source Regeneration [R4 S52]
 
-Definitions entered interactively at the REPL (via `defn`, `deftype`, `deftrait`, `defmacro`, `impl`) exist only in memory. They are not written to any `.cl` source file and are not cached as `.o` files. Restarting the REPL loses all interactive definitions.
+The REPL MUST persist interactive definitions to disk by maintaining a backing `.cl` file for the entry module (e.g. `user.cl`). When the user enters a definition that compiles successfully:
 
-This means:
-- File watching (§14) only benefits modules loaded from `.cl` files on disk — not interactive definitions.
-- The object cache (§14.7) only caches modules compiled from source files — the `user` module has no backing file and produces no cache entry.
-- Restarting the REPL discards all interactive work with no way to recover it.
+1. The definition MUST be compiled and installed in the session. [R4 S52]
+2. The entry module's backing `.cl` file MUST be **regenerated** atomically from the module's current state. The regeneration is performed by the REPL after eval — it is not part of the compilation or `.o` caching pipeline. [R4 S52]
 
-### 15.2 Intended Design: Source Regeneration
+The regenerated source file MUST be valid, parseable Cranelisp source — loading it through the normal module graph pipeline MUST reproduce the same session state. [R4 S52]
 
-The REPL SHOULD persist interactive definitions to disk by maintaining a backing `.cl` file for each module (including `user`). When the user enters a definition:
+Definitions that fail to compile MUST NOT trigger regeneration — the backing file reflects only the last successfully compiled state. [R4 S52]
 
-1. The definition is compiled and installed in the session (as currently).
-2. The module's backing `.cl` file is **regenerated** from the module's symbol table — not by appending the raw input, but by producing a well-ordered source file (imports, traits, types, impls, functions sorted by dependency).
-3. The `.o` cache file is updated.
+### 15.2 Session Restore [R4 S52]
 
-On REPL restart, the backing file is loaded through the normal module graph pipeline (with cache hit for fast restore). The user resumes exactly where they left off.
+On REPL startup, the entry module's backing `.cl` file MUST be loaded through the normal module graph pipeline (with cache hit for fast restore). Definitions from the previous session MUST survive restart — the user resumes where they left off. [R4 S52]
 
-Restarting the REPL produces a genuinely fresh start — the backing file is loaded on startup, restoring the previous session.
+If the backing file does not exist (first session, or user deleted it), the REPL MUST start with an empty module. [R4 S52]
+
+### 15.3 Unified Development Model [R4 S52]
 
 This design unifies interactive and file-based development:
 - Interactive definitions are source files that happen to be managed by the REPL.
-- File watching applies uniformly — external edits to `user.cl` are picked up.
-- The object cache accelerates both imported modules and the user's own work.
+- File watching (§14) applies uniformly — external edits to the backing file MUST be picked up by the watcher and recompiled.
+- The object cache (§14.7) accelerates both imported modules and the user's own work.
 
-### 15.3 Status
+### 15.4 Regeneration Integrity [R4 S52]
 
-This feature is not yet implemented. It requires:
-- Source regeneration from `CompiledModule` (dependency-sorted, qualified references).
-- Atomic file writes for the backing `.cl` file after each definition.
-- Integration with file watching (the watcher must ignore self-triggered writes).
-- Interaction with file watching (watcher must ignore self-triggered writes).
+The regenerated source file MUST satisfy the following invariants:
+
+1. **Round-trip correctness:** Loading the regenerated file through the compiler MUST produce the same types, values, and module exports as the interactive session. [R4 S52]
+2. **Dependency ordering:** Definitions MUST appear in dependency order so that the file compiles in a single pass without forward references. [R4 S52]
+3. **Symbol qualification preservation:** The regenerated source MUST preserve the user's original qualification style. If the user wrote a fully-qualified reference (`core.option/Some`), it MUST remain fully-qualified. If the user wrote a bare name (`Some`) that was resolved via an import, it MUST remain bare. The regenerator MUST NOT rewrite bare names to qualified or vice versa. [R4 S52]
+4. **Import preservation:** All `(import ...)` forms entered during the session MUST appear at the top of the regenerated file. [R4 S52]
+5. **Comments:** The behaviour of comments in regenerated source is unspecified. The implementation MAY strip comments, preserve them, or handle them in any other way. [R4 S52]
+6. **Source in cache metadata:** The `.meta.json` cache file MUST include all source text needed for regeneration, so that the REPL can restore the backing file from cache alone. [R4 S52]
+
+### 15.5 File Watching Integration [R4 S52]
+
+The file watcher (§14) MUST ignore writes triggered by the REPL's own source regeneration. Self-triggered writes MUST NOT cause a recompilation cycle. External edits to the backing file (e.g. from a text editor) MUST be detected and recompiled normally. [R4 S52]
+
+### 15.6 Redefinition [R4 S52]
+
+When the user redefines a name that already exists in the session, the regenerated source file MUST contain only the latest definition — the previous definition MUST be replaced, not duplicated. [R4 S52]
 
 ## 16. Test Discovery and Execution [R4]
 

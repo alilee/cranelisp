@@ -99,7 +99,7 @@ pub fn compile_and_execute_expr(
         )?;
 
         // SAFETY: compiled code was just generated and finalized by our JIT.
-        let value = unsafe { compiled.execute() };
+        let value = unsafe { compiled.execute()? };
         Ok((value, ty))
     } else {
         let value = compile_and_execute_expr_with_trace(
@@ -386,10 +386,58 @@ pub(crate) fn build_object_compile_input(
     program: Option<&Program>,
     check: Option<&CheckResult>,
     func_sigs: &[(Symbol, usize)],
+    symbol_tables: &dashmap::DashMap<ModuleFullPath, cranelisp_types::SymbolTable>,
 ) -> cache::ObjectCompileInput {
     let collected = collect_defns_for_cache(program, check);
     let cross_refs = collect_cross_module_refs(func_sigs);
     let intrinsics = build_intrinsic_table();
+
+    // Merge cross-module function slot assignments into fn_slot_assignments.
+    // Local defns have sequential slots from collect_defns_for_cache.
+    // Cross-module functions need their GOT slot from their source module's
+    // symbol table so that resolve_got_module can find them.
+    let mut fn_slot_assignments = collected.fn_slot_assignments;
+    for (name, param_count) in &cross_refs.cross_module_fns {
+        if fn_slot_assignments.contains_key(name) {
+            continue;
+        }
+        // For qualified names like "helper/add-one", look up the GOT slot
+        // from the source module's symbol table.
+        if let Some(source_module) = cross_refs.fn_to_module.get(name) {
+            if let Some(slash) = name.as_ref().find('/') {
+                let bare_name = &name.as_ref()[slash + 1..];
+                if let Some(table) = symbol_tables.get(source_module) {
+                    if let Some(cranelisp_types::ModuleEntry::Def { got_slot: Some(slot), .. }) = table.get(bare_name) {
+                        fn_slot_assignments.insert(
+                            name.clone(),
+                            cache::object::FnSlotInfo {
+                                slot: *slot,
+                                param_count: *param_count,
+                            },
+                        );
+                    }
+                }
+            }
+        } else {
+            // Bare (unqualified) import name — look up the import source
+            // from the current module's symbol table.
+            if let Some(table) = symbol_tables.get(module_path) {
+                if let Some(cranelisp_types::ModuleEntry::Import { source }) = table.get(name.as_ref()) {
+                    if let Some(source_table) = symbol_tables.get(&source.module) {
+                        if let Some(cranelisp_types::ModuleEntry::Def { got_slot: Some(slot), .. }) = source_table.get(source.symbol.as_ref()) {
+                            fn_slot_assignments.insert(
+                                name.clone(),
+                                cache::object::FnSlotInfo {
+                                    slot: *slot,
+                                    param_count: *param_count,
+                                },
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
 
     cache::ObjectCompileInput {
         module_path: module_path.clone(),
@@ -397,7 +445,7 @@ pub(crate) fn build_object_compile_input(
         method_resolutions: check
             .map(|ch| ch.method_resolutions.clone())
             .unwrap_or_default(),
-        fn_slot_assignments: collected.fn_slot_assignments,
+        fn_slot_assignments,
         fn_to_module: cross_refs.fn_to_module,
         intrinsics,
         expr_types: check
