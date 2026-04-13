@@ -364,7 +364,7 @@ fn link_multi_module_project() {
 }
 
 // =============================================================================
-// 3. Shell Escape (;#!)
+// 3. Shell Escape (/sh)
 //    Spec: repl/spec.md §13
 // =============================================================================
 
@@ -373,7 +373,7 @@ fn link_multi_module_project() {
 // spec: repl/spec.md §13.2 — command execution via /bin/sh
 #[test]
 fn shell_escape_basic_echo() {
-    let input = ";#! echo hello_from_shell\n/quit\n";
+    let input = "/sh echo hello_from_shell\n/quit\n";
     let output = run_repl(input, "shell_echo");
     let out = stdout_str(&output);
     assert!(
@@ -385,7 +385,7 @@ fn shell_escape_basic_echo() {
 // spec: repl/spec.md §13.3 — output handling (stdout passthrough)
 #[test]
 fn shell_escape_output_passthrough() {
-    let input = ";#! echo \"hello from shell\"\n/quit\n";
+    let input = "/sh echo \"hello from shell\"\n/quit\n";
     let output = run_repl(input, "shell_passthrough");
     let out = stdout_str(&output);
     assert!(
@@ -399,7 +399,7 @@ fn shell_escape_output_passthrough() {
 // spec: repl/spec.md §13.4 — non-zero exit code displayed
 #[test]
 fn shell_escape_nonzero_exit_code() {
-    let input = ";#! false\n/quit\n";
+    let input = "/sh false\n/quit\n";
     let output = run_repl(input, "shell_exit_code");
     let out = stdout_str(&output);
     assert!(
@@ -411,7 +411,7 @@ fn shell_escape_nonzero_exit_code() {
 // spec: repl/spec.md §13.4 — zero exit code: silence
 #[test]
 fn shell_escape_zero_exit_silent() {
-    let input = ";#! true\n/quit\n";
+    let input = "/sh true\n/quit\n";
     let output = run_repl(input, "shell_exit_silent");
     let out = stdout_str(&output);
     assert!(
@@ -423,7 +423,7 @@ fn shell_escape_zero_exit_silent() {
 // spec: repl/spec.md §13.4 — command not found shows exit code
 #[test]
 fn shell_escape_command_not_found() {
-    let input = ";#! nonexistent_command_xyz\n/quit\n";
+    let input = "/sh nonexistent_command_xyz\n/quit\n";
     let output = run_repl(input, "shell_not_found");
     let out = stdout_str(&output);
     // stderr from the shell should pass through
@@ -441,7 +441,7 @@ fn shell_escape_command_not_found() {
 // spec: repl/spec.md §13.6 — empty command silently re-prompts
 #[test]
 fn shell_escape_empty_command() {
-    let input = ";#!\n;#!   \n/quit\n";
+    let input = "/sh\n/sh   \n/quit\n";
     let output = run_repl(input, "shell_empty");
     let out = stdout_str(&output);
     // Should not produce any error — just re-prompt
@@ -454,7 +454,7 @@ fn shell_escape_empty_command() {
 // spec: repl/spec.md §13.6 — multi-line not supported, use shell syntax
 #[test]
 fn shell_escape_chained_commands() {
-    let input = ";#! echo first && echo second\n/quit\n";
+    let input = "/sh echo first && echo second\n/quit\n";
     let output = run_repl(input, "shell_chain");
     let out = stdout_str(&output);
     assert!(out.contains("first"), "first command should run: {out}");
@@ -467,7 +467,7 @@ fn shell_escape_chained_commands() {
 #[test]
 fn shell_escape_no_state_interaction() {
     // Define something, run shell command, definition should still work
-    let input = "(defn foo [] 42)\n;#! echo test\n(foo)\n/quit\n";
+    let input = "(defn foo [] 42)\n/sh echo test\n(foo)\n/quit\n";
     let output = run_repl(input, "shell_no_state");
     let out = stdout_str(&output);
     assert!(
@@ -479,7 +479,7 @@ fn shell_escape_no_state_interaction() {
 // spec: repl/spec.md §13.6 — timing shows 0+0ms after shell escape
 #[test]
 fn shell_escape_timing_reset() {
-    let input = ";#! echo hi\n/quit\n";
+    let input = "/sh echo hi\n/quit\n";
     let output = run_repl(input, "shell_timing");
     let out = stdout_str(&output);
     assert!(
@@ -497,7 +497,7 @@ fn shell_escape_appears_in_help() {
     let output = run_repl(input, "shell_help");
     let out = stdout_str(&output);
     assert!(
-        out.contains(";#!"),
+        out.contains("/sh"),
         "/help should mention shell escape syntax: {out}"
     );
 }
@@ -509,7 +509,7 @@ fn shell_escape_appears_in_help() {
 fn shell_escape_neg_no_env_propagation() {
     // Set an env var in shell, it should not affect subsequent REPL behavior.
     // This is inherently true (child process), but verify no crash.
-    let input = ";#! export FOO=bar\n;#! echo done\n/quit\n";
+    let input = "/sh export FOO=bar\n/sh echo done\n/quit\n";
     let output = run_repl(input, "shell_neg_env");
     assert!(output.status.success(), "shell escape should not crash the REPL");
 }
@@ -518,7 +518,7 @@ fn shell_escape_neg_no_env_propagation() {
 // 4. File Watching (E2E via shell escape)
 //    Spec: repl/spec.md §14
 //
-//    These tests use the `;#!` shell escape to modify source files mid-REPL-session,
+//    These tests use the `/sh` shell escape to modify source files mid-REPL-session,
 //    then verify that the file watcher detects changes, displays notifications,
 //    recompiles modules, and handles errors. The REPL polls for changes before
 //    each prompt (`poll_and_notify_changes`), including after shell escape commands.
@@ -590,9 +590,9 @@ fn watch_detects_source_change() {
     .unwrap();
     let input = "\
 (add-i64 1 2)
-;#! sleep 0.3
-;#! echo '(defn val [] 99)' > mymod.cl
-;#! sleep 0.5
+/sh sleep 0.3
+/sh echo '(defn val [] 99)' > mymod.cl
+/sh sleep 0.5
 (add-i64 10 20)
 /quit
 ";
@@ -620,9 +620,9 @@ fn watch_ignores_metadata_only_changes() {
     .unwrap();
     let input = "\
 (add-i64 1 2)
-;#! sleep 0.3
-;#! touch mymod.cl
-;#! sleep 0.5
+/sh sleep 0.3
+/sh touch mymod.cl
+/sh sleep 0.5
 (add-i64 10 20)
 /quit
 ";
@@ -653,9 +653,9 @@ fn watch_cascade_invalidation() {
     .unwrap();
     let input = "\
 (add-i64 1 2)
-;#! sleep 0.3
-;#! echo '(defn val-b [] 99)' > mod_b.cl
-;#! sleep 0.5
+/sh sleep 0.3
+/sh echo '(defn val-b [] 99)' > mod_b.cl
+/sh sleep 0.5
 (add-i64 10 20)
 /quit
 ";
@@ -690,9 +690,9 @@ fn watch_notification_format() {
     .unwrap();
     let input = "\
 (add-i64 1 2)
-;#! sleep 0.3
-;#! echo '(defn val [] 99)' > mymod.cl
-;#! sleep 0.5
+/sh sleep 0.3
+/sh echo '(defn val [] 99)' > mymod.cl
+/sh sleep 0.5
 (add-i64 10 20)
 /quit
 ";
@@ -725,9 +725,9 @@ fn watch_notification_truncation() {
     .unwrap();
     let input = "\
 (add-i64 1 2)
-;#! sleep 0.5
-;#! echo '(defn val-a [] 10)' > mod_a.cl; echo '(defn val-b [] 20)' > mod_b.cl
-;#! sleep 1.0
+/sh sleep 0.5
+/sh echo '(defn val-a [] 10)' > mod_a.cl; echo '(defn val-b [] 20)' > mod_b.cl
+/sh sleep 1.0
 (add-i64 10 20)
 /quit
 ";
@@ -763,9 +763,9 @@ fn watch_notification_deferred_during_input() {
     // The notification should appear at a prompt boundary between the two evals.
     let input = "\
 (val)
-;#! sleep 0.3
-;#! echo '(defn val [] 99)' > mymod.cl
-;#! sleep 0.5
+/sh sleep 0.3
+/sh echo '(defn val [] 99)' > mymod.cl
+/sh sleep 0.5
 (val)
 /quit
 ";
@@ -809,9 +809,9 @@ fn watch_automatic_recompilation() {
     .unwrap();
     let input = "\
 (add-i64 1 2)
-;#! sleep 0.3
-;#! echo '(defn val [] 99)' > mymod.cl
-;#! sleep 0.5
+/sh sleep 0.3
+/sh echo '(defn val [] 99)' > mymod.cl
+/sh sleep 0.5
 (add-i64 10 20)
 /quit
 ";
@@ -832,9 +832,9 @@ fn watch_type_incompatibility_on_reload() {
     let dir = watch_test_setup(WATCH_PRELUDE);
     let input = "\
 (+ 1 2)
-;#! sleep 0.3
-;#! echo '(deftrait Num (+ [self self] self)) (impl Num Int (defn + [a b] \"not-an-int\"))' > prelude.cl
-;#! sleep 0.5
+/sh sleep 0.3
+/sh echo '(deftrait Num (+ [self self] self)) (impl Num Int (defn + [a b] \"not-an-int\"))' > prelude.cl
+/sh sleep 0.5
 (+ 10 20)
 /quit
 ";
@@ -870,9 +870,9 @@ fn watch_error_display_format() {
     .unwrap();
     let input = "\
 (add-i64 1 2)
-;#! sleep 0.3
-;#! echo '(defn val []' > mymod.cl
-;#! sleep 0.5
+/sh sleep 0.3
+/sh echo '(defn val []' > mymod.cl
+/sh sleep 0.5
 (add-i64 10 20)
 /quit
 ";
@@ -902,9 +902,9 @@ fn watch_error_recovery_last_known_good() {
     .unwrap();
     let input = "\
 (+ 1 2)
-;#! sleep 0.3
-;#! echo '(defn val []' > mymod.cl
-;#! sleep 0.5
+/sh sleep 0.3
+/sh echo '(defn val []' > mymod.cl
+/sh sleep 0.5
 (+ 10 20)
 /quit
 ";
@@ -936,13 +936,13 @@ fn watch_retry_on_next_change() {
     .unwrap();
     let input = "\
 (add-i64 1 2)
-;#! sleep 0.3
-;#! echo '(defn val []' > mymod.cl
-;#! sleep 0.5
+/sh sleep 0.3
+/sh echo '(defn val []' > mymod.cl
+/sh sleep 0.5
 (add-i64 10 20)
-;#! sleep 0.1
-;#! echo '(defn val [] 99)' > mymod.cl
-;#! sleep 0.5
+/sh sleep 0.1
+/sh echo '(defn val [] 99)' > mymod.cl
+/sh sleep 0.5
 (add-i64 10 20)
 /quit
 ";
@@ -980,9 +980,9 @@ fn watch_invalidates_cache_on_change() {
     .unwrap();
     let input = "\
 (add-i64 1 2)
-;#! sleep 0.3
-;#! echo '(defn val [] 99)' > mymod.cl
-;#! sleep 0.5
+/sh sleep 0.3
+/sh echo '(defn val [] 99)' > mymod.cl
+/sh sleep 0.5
 (add-i64 10 20)
 /quit
 ";
@@ -1328,7 +1328,7 @@ fn persist_import_survives_restart() {
 #[test]
 fn persist_user_cl_created() {
     // Define something, quit, verify user.cl exists on disk.
-    // Uses ;#! shell escape to check the file system during the session.
+    // Uses /sh shell escape to check the file system during the session.
     let dir = tempfile::tempdir().expect("failed to create temp dir");
 
     let input = "\
@@ -1472,7 +1472,7 @@ fn persist_watcher_ignores_self_write() {
 
     let input = "\
 (defn self-write-test [] 77)
-;#! sleep 0.5
+/sh sleep 0.5
 (add-i64 1 1)
 /quit
 ";

@@ -1582,13 +1582,16 @@ fn sketch_trace_literal_returns_trace_call() {
     assert!(result > 0, "trace should return a non-null heap pointer: {}", result);
 }
 
-// spec: 04-expressions §4.12 — trace-nanos returns positive timing value
+// spec: 04-expressions §4.12 — nanos accessor returns positive timing value
+// The accessor is `nanos` (field name on TraceCall), not `trace-nanos`.
+// Requires explicit import from primitives (Trace accessors are not auto-imported).
 #[test]
 fn sketch_trace_nanos_is_positive() {
     let mut s = repl_session_with_test_prelude();
+    repl_eval(&mut s, "(import [primitives [nanos]])");
     repl_eval(&mut s, "(defn factorial [:Int n] (if (<= n 1) 1 (* n (factorial (- n 1)))))");
-    let nanos = repl_eval(&mut s, "(trace-nanos (trace (factorial 4)))");
-    assert!(nanos > 0, "trace-nanos should be > 0, got: {}", nanos);
+    let nanos = repl_eval(&mut s, "(nanos (trace (factorial 4)))");
+    assert!(nanos > 0, "nanos should be > 0, got: {}", nanos);
 }
 
 // =============================================================================
