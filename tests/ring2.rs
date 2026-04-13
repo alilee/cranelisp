@@ -2195,8 +2195,8 @@ fn hkt_type_variable_in_trait() {
 #[test]
 fn hkt_trait_declaration() {
     // A trait with a type constructor parameter: (deftrait (Functor f) ...)
-    // Option is now a builtin in primitives, imported by the preamble.
     let src = r#"
+(deftype (Option a) None (Some [:a val]))
 (deftrait (Functor f)
   (fmap [(Fn [a] b) (f a)] (f b)))
 (impl Functor Option
@@ -2213,8 +2213,8 @@ fn hkt_trait_declaration() {
 #[test]
 fn hkt_impl_bare_constructor() {
     // (impl Functor Option ...) — target is bare Option, not (Option a).
-    // Option is now a builtin in primitives, imported by the preamble.
     let src = r#"
+(deftype (Option a) None (Some [:a val]))
 (deftrait (Functor f)
   (fmap [(Fn [a] b) (f a)] (f b)))
 (impl Functor Option

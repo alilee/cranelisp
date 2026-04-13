@@ -1160,8 +1160,8 @@ fn rc_lambda_unused_string_param_freed() {
 #[test]
 #[serial]
 fn rc_lambda_unused_adt_param_freed() {
-    // Option is a builtin in primitives, imported by the preamble.
     let src = r#"
+        (deftype (Option a) None (Some [:a val]))
         (defn main []
           (let [f (fn [:(Option Int) _opt] 0)] (f (Some 99))))
     "#;

@@ -1133,9 +1133,8 @@ fn higher_order_on_adt() {
 // spec: appendix-a-builtins §A.3 — parse-int valid input
 #[test]
 fn parse_int_valid() {
-    // parse-int returns primitives/Option. The preamble imports all primitives
-    // (including Option, Some, None), so no redefinition needed.
     let src = r#"
+        (deftype (Option a) None (Some [:a val]))
         (defn main []
           (match (parse-int "42")
             [(Some n) n
@@ -1148,6 +1147,7 @@ fn parse_int_valid() {
 #[test]
 fn parse_int_invalid() {
     let src = r#"
+        (deftype (Option a) None (Some [:a val]))
         (defn main []
           (match (parse-int "not-a-number")
             [(Some n) n

@@ -81,8 +81,8 @@ pub fn register_builtins(
     // Ring 3: quote-sexp in `primitives` — must come after macros module
     env.register_ring3_primitives();
 
-    // Ring 1: Option ADT in `primitives` (needed by parse-int and other builtins).
-    env.register_option_type(&mut state);
+    // Note: Option is NOT a builtin — it's defined in stdlib/prelude.cl.
+    // parse-int returns Option but should be migrated to stdlib (Sprint 52 FIXME).
 
     // Ring 4: IO ADT and bind primitive in `primitives`.
     env.register_io_type(&mut state);
@@ -605,51 +605,6 @@ impl TypeCheckEnv<'_> {
     /// - `Bind` (tag=2, internal): chains IO actions — fields `inner: (IO b)`,
     ///   `cont: (Fn [b] (IO a))`, where `b` is an existential type var
     ///
-    /// Register `(Option a)` ADT with `None` and `Some` constructors in primitives.
-    ///
-    /// `parse-int` and other builtins return `primitives/Option`. This type must
-    /// exist in the `primitives` module so that user code importing from primitives
-    /// can match on `Some`/`None` and have the FQTypeName match correctly.
-    fn register_option_type(&self, state: &mut CheckState) {
-        let saved_module = state.current_module.clone();
-        let primitives_path = ModuleFullPath::from("primitives");
-        self.ensure_module_exists(&primitives_path);
-        state.current_module = primitives_path;
-
-        let option_ctors = vec![
-            ConstructorDef {
-                name: Symbol::from("None"),
-                docstring: Some("No value".to_string()),
-                fields: vec![],
-                span: Span::SYNTHETIC,
-            },
-            ConstructorDef {
-                name: Symbol::from("Some"),
-                docstring: Some("Contains a value".to_string()),
-                fields: vec![FieldDef {
-                    name: Symbol::from("val"),
-                    type_expr: TypeExpr::TypeVar(Symbol::from("a")),
-                }],
-                span: Span::SYNTHETIC,
-            },
-        ];
-
-        self.register_type_def(
-            state,
-            &TypeName::from("Option"),
-            &Some("Optional value — None or Some".to_string()),
-            &[Symbol::from("a")],
-            &option_ctors,
-            Visibility::Public,
-            Span::SYNTHETIC,
-        )
-        .unwrap_or_else(|e| {
-            unreachable!("invariant: Option type registration failed: {e}")
-        });
-
-        state.current_module = saved_module;
-    }
-
     /// Pure and Effect are registered through `register_type_def()`.
     /// Bind is added manually afterward as an internal constructor — it is
     /// NOT registered in the symbol table (users cannot construct or match on it).

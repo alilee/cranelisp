@@ -1,0 +1,51 @@
+; Cranelisp Ring 4K — Stateless TypeChecker, FQTypeName, Module Caching
+
+; Sprint 51: types carry their module, registries eliminated, cache fixed
+
+; Types are now module-qualified — no ambiguity
+
+(deftype (Pair a b) (MkPair [:a fst :b snd]))
+
+/sig MkPair
+
+; Inspect how types display with full module paths
+
+(MkPair 1 true)
+
+(Some 42)
+
+; Option comes from primitives — check where it lives
+
+/sig Some
+
+/sig None
+
+; User-defined types live in user/
+
+/sig MkPair
+
+; Trait methods carry their origin — /sig shows the trait
+
+/sig +
+
+/sig show
+
+; The type system resolves through the module system now
+; No global registries — everything is per-module
+
+(deftype Color Red Green Blue)
+
+(defn color-name [c] (match c [Color.Red "red" Color.Green "green" Color.Blue "blue"]))
+
+(color-name Color.Blue)
+
+; Module caching — second load hits cache
+
+/time (+ 1 2)
+
+; Verify the sprint
+
+(defn test-pair [] (let [p (MkPair 1 true)] (if (= (fst p) 1) None (Some "pair"))))
+(defn test-color [] (if (= (color-name Color.Red) "red") None (Some "color")))
+
+/run-tests
