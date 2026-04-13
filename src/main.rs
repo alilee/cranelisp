@@ -35,10 +35,10 @@ impl Action {
 // ---------------------------------------------------------------------------
 
 fn main() {
-    let (action, entry_module_path, settings) = parse_args();
+    let (action, project_root, entry_module, settings) = parse_args();
     cranelisp::style::init_color(settings.no_color);
 
-    if let Err(e) = run(action, &entry_module_path, settings) {
+    if let Err(e) = run(action, &project_root, &entry_module, settings) {
         eprintln!("error: {e}");
         process::exit(1);
     }
@@ -53,22 +53,20 @@ fn main() {
 /// compilation.
 fn run(
     action: Action,
-    entry_module_path: &Path,
+    project_root: &Path,
+    entry_module_name: &str,
     settings: SessionSettings,
 ) -> Result<(), CranelispError> {
     use std::io::{self, BufRead, Write};
 
-    let entry_module_name = slug(entry_module_path);
-    let project_root = base_dir(entry_module_path);
-
     // §2.2: CompilerSession::new(settings, project_root).
     // Workers are spawned and parked on condvars immediately.
-    let mut s = CompilerSession::new(settings, project_root);
+    let mut s = CompilerSession::new(settings, project_root.to_path_buf());
 
     // §3.1: Register the entry module. Front-end work (resolve, parse,
     // extract declarations) then enqueue for typechecking. Workers wake
     // and do expand+typecheck+codegen.
-    s.register_module(&entry_module_name)?;
+    s.register_module(entry_module_name)?;
 
     match action {
         // §7: Run mode (spec §12.6).
@@ -76,7 +74,7 @@ fn run(
         // non-Int IO results and non-IO main (pre-Ring-4 compatibility).
         Action::Run => {
             s.wait_inmem_complete()?;
-            let (value, ty) = s.trampoline(&entry_module_name)?;
+            let (value, ty) = s.trampoline(entry_module_name)?;
             s.wait_object_complete()?;
             s.shutdown();
             let exit_code = if ty == cranelisp_types::Type::Int {
@@ -89,7 +87,7 @@ fn run(
         // §8: Link mode.
         Action::Link => {
             s.wait_object_complete()?;
-            s.link_by_name(&entry_module_name)?;
+            s.link_by_name(entry_module_name)?;
         }
         // §6: REPL mode.
         Action::Repl => {
@@ -143,10 +141,17 @@ fn run(
                                 compile_ms = (t1 - t0).as_millis() as u64;
                                 eval_ms = (t2 - t1).as_millis() as u64;
                                 s.pretty_print(&text, &mut stdout);
+                                // Persist definitions to backing file (repl/spec.md §15).
+                                if result.is_def() {
+                                    s.regenerate_backing_file();
+                                }
                             }
                             Ok(None) => {
                                 compile_ms = t0.elapsed().as_millis() as u64;
                                 eval_ms = 0;
+                                // Structural changes (import, mod, platform) also
+                                // need persistence. Regenerate if the module has content.
+                                s.regenerate_backing_file();
                             }
                             Err(e) => {
                                 compile_ms = t0.elapsed().as_millis() as u64;
@@ -181,14 +186,15 @@ fn run(
 // Argument parsing
 // ---------------------------------------------------------------------------
 
-fn parse_args() -> (Action, PathBuf, SessionSettings) {
+fn parse_args() -> (Action, PathBuf, String, SessionSettings) {
     let args: Vec<String> = std::env::args().collect();
     let mut no_color = false;
     let mut no_cache = false;
     let mut priority_workers: Option<usize> = None;
     let mut nice_workers: Option<usize> = None;
-    let mut run_file: Option<String> = None;
-    let mut link_file: Option<String> = None;
+    let mut action_run = false;
+    let mut action_link = false;
+    let mut target: Option<String> = None;
     let mut i = 1;
 
     while i < args.len() {
@@ -226,92 +232,125 @@ fn parse_args() -> (Action, PathBuf, SessionSettings) {
                 }
             }
             "--run" => {
-                if i + 1 < args.len() {
-                    run_file = Some(args[i + 1].clone());
-                    i += 2;
-                } else {
-                    eprintln!("error: --run requires a file argument");
-                    process::exit(1);
-                }
+                action_run = true;
+                i += 1;
             }
             "--link" => {
-                if i + 1 < args.len() {
-                    link_file = Some(args[i + 1].clone());
-                    i += 2;
-                } else {
-                    eprintln!("error: --link requires a file argument");
-                    process::exit(1);
-                }
+                action_link = true;
+                i += 1;
             }
-            other => {
-                eprintln!("error: unexpected argument: {other}");
+            arg if arg.starts_with("--") => {
+                eprintln!("error: unknown flag: {arg}");
                 eprintln!(
-                    "usage: cranelisp [--run <file.cl>] [--link <file.cl>] [--no-color] \
+                    "usage: cranelisp [target] [--run | --link] [--no-color] \
                      [--no-cache] [--priority-workers N] [--nice-workers N]"
                 );
                 process::exit(1);
             }
+            _ => {
+                if target.is_some() {
+                    eprintln!("error: unexpected argument: {}", args[i]);
+                    eprintln!(
+                        "usage: cranelisp [target] [--run | --link] [--no-color] \
+                         [--no-cache] [--priority-workers N] [--nice-workers N]"
+                    );
+                    process::exit(1);
+                }
+                target = Some(args[i].clone());
+                i += 1;
+            }
         }
     }
 
-    // Determine codegen behaviour from action.
-    let codegen_behaviour = if link_file.is_some() {
-        CodegenBehaviour::ObjectOnly
+    if action_run && action_link {
+        eprintln!("error: --run and --link cannot be used together");
+        process::exit(1);
+    }
+
+    if no_cache && action_link {
+        eprintln!("error: --no-cache is not supported with --link");
+        process::exit(1);
+    }
+
+    let action = if action_link {
+        Action::Link
+    } else if action_run {
+        Action::Run
     } else {
-        CodegenBehaviour::InMemoryAndObject
+        Action::Repl
     };
 
-    // Default worker counts: 1 for now (single-threaded-per-pool for
-    // initial debugging). Will default to num_cpus() once stable.
-    let default_priority = 1;
-    let default_nice = 1;
+    // Resolve (project_root, entry_module) per spec §0.5.1.
+    let (project_root, entry_module) = resolve_target(target.as_deref());
+
+    let codegen_behaviour = action.codegen_behaviour();
 
     let settings = SessionSettings {
         no_color,
         no_cache,
         codegen_behaviour,
-        priority_workers: priority_workers.unwrap_or(default_priority),
-        nice_workers: nice_workers.unwrap_or(default_nice),
+        priority_workers: priority_workers.unwrap_or(1),
+        nice_workers: nice_workers.unwrap_or(1),
     };
 
-    if run_file.is_some() && link_file.is_some() {
-        eprintln!("error: --run and --link cannot be used together");
-        process::exit(1);
-    }
+    (action, project_root, entry_module, settings)
+}
 
-    if no_cache && link_file.is_some() {
-        eprintln!("error: --no-cache is not supported with --link");
-        process::exit(1);
-    }
+/// Resolve a positional target to (project_root, entry_module) per spec §0.5.1.
+///
+/// Rules:
+/// 1. No target → (cwd, "user")
+/// 2. Target has `/` → (directory portion, final component)
+/// 3. Target is an existing directory → (target, "user")
+/// 4. Bare name → (cwd, target)
+///
+/// The `.cl` extension is stripped if present. Project root is resolved to
+/// an absolute path.
+fn resolve_target(target: Option<&str>) -> (PathBuf, String) {
+    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
 
-    if let Some(path) = link_file {
-        return (Action::Link, PathBuf::from(path), settings);
-    }
+    let target = match target {
+        None => return (cwd, "user".to_string()),
+        Some(t) => t,
+    };
 
-    match run_file {
-        Some(path) => (Action::Run, PathBuf::from(path), settings),
-        None => (Action::Repl, PathBuf::from("user.cl"), settings),
+    // Strip .cl extension if present.
+    let target = target.strip_suffix(".cl").unwrap_or(target);
+
+    let path = Path::new(target);
+
+    if target.contains('/') {
+        // Rule 2: has directory component.
+        let dir = path.parent().unwrap_or(Path::new("."));
+        let module = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("user")
+            .to_string();
+        let project_root = make_absolute(dir, &cwd);
+        (project_root, module)
+    } else if cwd.join(target).is_dir() {
+        // Rule 3: existing directory.
+        let project_root = make_absolute(Path::new(target), &cwd);
+        (project_root, "user".to_string())
+    } else {
+        // Rule 4: bare name.
+        (cwd, target.to_string())
+    }
+}
+
+/// Resolve a possibly-relative path to absolute using a base directory.
+fn make_absolute(path: &Path, base: &Path) -> PathBuf {
+    if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        base.join(path)
     }
 }
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-/// Derive module name from file path (file stem).
-fn slug(path: &Path) -> String {
-    path.file_stem()
-        .and_then(|s| s.to_str())
-        .unwrap_or("main")
-        .to_string()
-}
-
-/// Derive project root from file path (parent directory).
-fn base_dir(path: &Path) -> PathBuf {
-    path.parent()
-        .map(|p| p.to_path_buf())
-        .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")))
-}
 
 /// Read source file.
 #[allow(dead_code)] // Will be used by register_module or tests.

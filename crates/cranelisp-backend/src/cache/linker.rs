@@ -233,19 +233,18 @@ impl Linker {
             // from these functions, BL fails. Fix: put external function addresses
             // in literal pool entries (Export data) and use ADRP+LDR+BLR instead
             // of BL. Same pattern as GOT bases.
-            if let RelocationFlags::MachO { r_type, .. } = reloc.flags() {
-                if r_type == macho_arm64::ARM64_RELOC_GOT_LOAD_PAGE21
-                    || r_type == macho_arm64::ARM64_RELOC_GOT_LOAD_PAGEOFF12
-                {
-                    return Err(CranelispError::CodegenError {
-                        message: format!(
-                            "unexpected GOT-load relocation for '{}' — \
-                             all GOT data symbols should be Export (literal pool entries)",
-                            target_name,
-                        ),
-                        span: Span::SYNTHETIC,
-                    });
-                }
+            if let RelocationFlags::MachO { r_type, .. } = reloc.flags()
+                && (r_type == macho_arm64::ARM64_RELOC_GOT_LOAD_PAGE21
+                    || r_type == macho_arm64::ARM64_RELOC_GOT_LOAD_PAGEOFF12)
+            {
+                return Err(CranelispError::CodegenError {
+                    message: format!(
+                        "unexpected GOT-load relocation for '{}' — \
+                         all GOT data symbols should be Export (literal pool entries)",
+                        target_name,
+                    ),
+                    span: Span::SYNTHETIC,
+                });
             }
             let target_addr = raw_target_addr;
 

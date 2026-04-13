@@ -196,10 +196,10 @@ pub fn load_cached_object(
     // Function names with GOT slots are on ModuleEntry::Def in the symbol table.
     let mut fn_addrs = std::collections::HashMap::new();
     for (name, entry) in cached.symbol_table().all_symbols() {
-        if matches!(entry, cranelisp_types::ModuleEntry::Def { got_slot: Some(_), .. }) {
-            if let Some(addr) = linker.get_symbol(name.as_ref()) {
-                fn_addrs.insert(name.as_ref().to_string(), addr);
-            }
+        if matches!(entry, cranelisp_types::ModuleEntry::Def { got_slot: Some(_), .. })
+            && let Some(addr) = linker.get_symbol(name.as_ref())
+        {
+            fn_addrs.insert(name.as_ref().to_string(), addr);
         }
     }
 

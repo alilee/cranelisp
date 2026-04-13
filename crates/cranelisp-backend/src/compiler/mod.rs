@@ -165,10 +165,10 @@ impl<'a> CompileContext<'a> {
 
         // 1. Direct lookup in the target module.
         if let Some(table) = self.symbol_tables.get(&search_module) {
-            if let Some(entry) = table.get(bare_name) {
-                if let Some(result) = Self::extract_constructor(entry) {
-                    return Some(result);
-                }
+            if let Some(entry) = table.get(bare_name)
+                && let Some(result) = Self::extract_constructor(entry)
+            {
+                return Some(result);
             }
 
             // Follow import chain.
@@ -176,12 +176,11 @@ impl<'a> CompileContext<'a> {
                 let source_mod = source.module.clone();
                 let source_name = source.symbol.clone();
                 drop(table); // Drop guard before getting another
-                if let Some(source_table) = self.symbol_tables.get(&source_mod) {
-                    if let Some(entry) = source_table.get(source_name.as_ref()) {
-                        if let Some(result) = Self::extract_constructor(entry) {
-                            return Some(result);
-                        }
-                    }
+                if let Some(source_table) = self.symbol_tables.get(&source_mod)
+                    && let Some(entry) = source_table.get(source_name.as_ref())
+                    && let Some(result) = Self::extract_constructor(entry)
+                {
+                    return Some(result);
                 }
             }
         }
@@ -194,10 +193,10 @@ impl<'a> CompileContext<'a> {
                 if *guard.key() == self.current_module {
                     continue; // Already searched above
                 }
-                if let Some(entry) = guard.get(bare_name) {
-                    if let Some(result) = Self::extract_constructor(entry) {
-                        return Some(result);
-                    }
+                if let Some(entry) = guard.get(bare_name)
+                    && let Some(result) = Self::extract_constructor(entry)
+                {
+                    return Some(result);
                 }
             }
         }

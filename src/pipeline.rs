@@ -57,6 +57,7 @@ pub fn resolve_module_file(
 // Expression compilation (REPL eval path)
 // ---------------------------------------------------------------------------
 
+#[allow(clippy::too_many_arguments)]
 pub fn compile_and_execute_expr(
     jit_symbols: &[(String, *const u8)],
     got_data_defs: &[(String, *const u8)],
@@ -110,6 +111,7 @@ pub fn compile_and_execute_expr(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn compile_and_execute_expr_with_trace(
     jit_symbols: &[(String, *const u8)],
     got_data_defs: &[(String, *const u8)],
@@ -188,6 +190,7 @@ fn compile_and_execute_expr_with_trace(
 /// Writes `Code { jit, ptr }` to `codegen_products` (target state DashMap).
 /// GOT slot resolution goes through `env` (SessionCompilationEnv).
 /// If `introspection` is provided, populates CLIF IR, AST, disasm, and code_size.
+#[allow(clippy::too_many_arguments)]
 pub fn compile_and_register_defn_shared(
     jit_symbols: &[(String, *const u8)],
     got_data_defs: &[(String, *const u8)],
@@ -406,8 +409,8 @@ pub(crate) fn build_object_compile_input(
         if let Some(source_module) = cross_refs.fn_to_module.get(name) {
             if let Some(slash) = name.as_ref().find('/') {
                 let bare_name = &name.as_ref()[slash + 1..];
-                if let Some(table) = symbol_tables.get(source_module) {
-                    if let Some(cranelisp_types::ModuleEntry::Def { got_slot: Some(slot), .. }) = table.get(bare_name) {
+                if let Some(table) = symbol_tables.get(source_module)
+                    && let Some(cranelisp_types::ModuleEntry::Def { got_slot: Some(slot), .. }) = table.get(bare_name) {
                         fn_slot_assignments.insert(
                             name.clone(),
                             cache::object::FnSlotInfo {
@@ -416,15 +419,14 @@ pub(crate) fn build_object_compile_input(
                             },
                         );
                     }
-                }
             }
         } else {
             // Bare (unqualified) import name — look up the import source
             // from the current module's symbol table.
-            if let Some(table) = symbol_tables.get(module_path) {
-                if let Some(cranelisp_types::ModuleEntry::Import { source }) = table.get(name.as_ref()) {
-                    if let Some(source_table) = symbol_tables.get(&source.module) {
-                        if let Some(cranelisp_types::ModuleEntry::Def { got_slot: Some(slot), .. }) = source_table.get(source.symbol.as_ref()) {
+            if let Some(table) = symbol_tables.get(module_path)
+                && let Some(cranelisp_types::ModuleEntry::Import { source }) = table.get(name.as_ref())
+                    && let Some(source_table) = symbol_tables.get(&source.module)
+                        && let Some(cranelisp_types::ModuleEntry::Def { got_slot: Some(slot), .. }) = source_table.get(source.symbol.as_ref()) {
                             fn_slot_assignments.insert(
                                 name.clone(),
                                 cache::object::FnSlotInfo {
@@ -433,9 +435,6 @@ pub(crate) fn build_object_compile_input(
                                 },
                             );
                         }
-                    }
-                }
-            }
         }
     }
 

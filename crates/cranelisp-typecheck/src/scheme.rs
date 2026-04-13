@@ -4,6 +4,7 @@ use std::collections::HashMap;
 
 use cranelisp_types::{Scheme, Subst, Type, TypeId, apply, free_vars};
 
+#[cfg(test)]
 use crate::unify::fresh_var;
 
 /// Create a monomorphic scheme (no quantified variables).
@@ -18,6 +19,7 @@ pub fn mono(ty: Type) -> Scheme {
 /// Instantiate a scheme by replacing each quantified variable with a fresh variable.
 ///
 /// Takes `next_id` explicitly (borrow-splitting pattern).
+#[cfg(test)]
 pub fn instantiate(scheme: &Scheme, next_id: &mut TypeId) -> Type {
     if scheme.vars.is_empty() {
         return scheme.ty.clone();

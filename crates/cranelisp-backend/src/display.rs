@@ -382,7 +382,7 @@ pub fn format_adt_type_qualified(
     } else {
         let arg_strs: Vec<String> = type_args
             .iter()
-            .map(|a| format_type_qualified(a))
+            .map(format_type_qualified)
             .collect();
         format!("({qname} {})", arg_strs.join(" "))
     }

@@ -37,8 +37,6 @@ use cranelisp_types::{
 
 use crate::jit::Jit;
 
-/// Result of setting up interactive GOT: (slot_assignments, codegen_state).
-
 /// Result of compiling a batch program. Holds the JIT and entry point
 /// so the caller can execute and then drop the JIT.
 pub struct CompiledProgram {
@@ -118,6 +116,7 @@ struct CollectedDefns<'a> {
     defns: Vec<&'a Defn>,
     /// Extra defns owned by this struct (default method impls + mono specializations).
     /// These are declared but compiled via their own dedicated loops.
+    #[allow(dead_code)]
     extra_defns: Vec<Defn>,
     /// Expanded multi-sig variant defns, each with a mangled name.
     /// These are compiled alongside regular defns.

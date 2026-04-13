@@ -716,6 +716,7 @@ impl TypeCheckEnv<'_> {
     }
 
     /// Bind pattern variables for a data constructor with fields.
+    #[allow(clippy::too_many_arguments)]
     fn bind_data_ctor_pattern(
         &self, state: &mut CheckState,
         name: &Symbol,

@@ -13,8 +13,10 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use cranelisp_types::{
-    CranelispError, ModuleEntry, ModuleFullPath, Span, SymbolTable, Type,
+    CranelispError, ModuleEntry, Span, SymbolTable, Type,
 };
+#[cfg(test)]
+use cranelisp_types::ModuleFullPath;
 
 // Re-export generate_startup_object from the backend for convenience.
 pub use cranelisp_backend::exe::generate_startup_object;

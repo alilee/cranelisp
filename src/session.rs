@@ -8,7 +8,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use cranelisp_types::{
-    CranelispError, ModuleFullPath, Program, Span, Symbol,
+    CranelispError, ModuleFullPath, Program, Span,
     Type,
 };
 
@@ -225,6 +225,7 @@ pub fn determine_exit_code(value: i64, inner_ty: &Type) -> i32 {
 
 /// Inject an implicit `(import [prelude [*]])` into the typechecker's current
 /// module, unless the current module IS "prelude" (to avoid self-import).
+#[allow(dead_code)]
 pub(crate) fn inject_prelude_import(
     symbol_tables: &dashmap::DashMap<ModuleFullPath, cranelisp_types::SymbolTable>,
     next_type_id: &std::sync::atomic::AtomicU32,
@@ -255,6 +256,7 @@ pub(crate) fn has_compilable_defns(program: &[cranelisp_types::TopLevel]) -> boo
 }
 
 /// Apply bind chain independence analysis to all defn bodies in a program.
+#[allow(dead_code)]
 pub(crate) fn apply_bind_chain_analysis(
     program: &mut Program,
     registry: &crate::platform_registry::PlatformRegistry,

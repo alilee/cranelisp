@@ -304,6 +304,7 @@ impl SessionCompilationEnv<'_> {
     /// - `jit_symbols`: platform function pointers for `Jit::new_with_symbols`
     /// - `got_data_defs`: `(name, got_base_ptr)` pairs for GOT literal pool entries
     ///   that must be defined as data in the JIT module (8 bytes each)
+    #[allow(clippy::type_complexity)]
     pub fn collect_jit_setup_for_module(
         &self,
         platform_registry: &crate::platform_registry::PlatformRegistry,
@@ -320,29 +321,22 @@ impl SessionCompilationEnv<'_> {
                             primitive_kind: PrimitiveKind::PlatformEffect,
                             jit_name: Some(jit_name),
                         } = kind.as_ref()
-                        {
-                            if let Some(ptr) = platform_registry.fn_ptr_by_jit_name(jit_name) {
+                            && let Some(ptr) = platform_registry.fn_ptr_by_jit_name(jit_name) {
                                 jit_symbols.push((jit_name.0.clone(), ptr));
                             }
-                        }
                     }
                     // Import that may resolve to a platform function.
                     ModuleEntry::Import { source } => {
-                        if let Some(source_table) = self.tc_modules.get(&source.module) {
-                            if let Some(ModuleEntry::Def { kind, .. }) =
+                        if let Some(source_table) = self.tc_modules.get(&source.module)
+                            && let Some(ModuleEntry::Def { kind, .. }) =
                                 source_table.get(source.symbol.as_ref())
-                            {
-                                if let DefKind::Primitive {
+                                && let DefKind::Primitive {
                                     primitive_kind: PrimitiveKind::PlatformEffect,
                                     jit_name: Some(jit_name),
                                 } = kind.as_ref()
-                                {
-                                    if let Some(ptr) = platform_registry.fn_ptr_by_jit_name(jit_name) {
+                                    && let Some(ptr) = platform_registry.fn_ptr_by_jit_name(jit_name) {
                                         jit_symbols.push((jit_name.0.clone(), ptr));
                                     }
-                                }
-                            }
-                        }
                     }
                     _ => {}
                 }
@@ -499,6 +493,7 @@ fn resolve_macro_sexp_from(
 /// This is the on-demand compilation path for the resolver. Uses
 /// `check_form_with_state` and `merge_form_result_with_state` which take
 /// `&self` on TypeChecker + `&mut CheckState`.
+#[allow(clippy::too_many_arguments)]
 fn compile_macro_with_state(
     symbol_tables: &dashmap::DashMap<ModuleFullPath, cranelisp_types::SymbolTable>,
     next_type_id: &std::sync::atomic::AtomicU32,
@@ -535,6 +530,7 @@ fn compile_macro_with_state(
 ///
 /// Mirrors `compile_macro_clause_inline` but uses `&TypeChecker` + `&mut CheckState`
 /// instead of `&mut ModuleCompiler`.
+#[allow(clippy::too_many_arguments)]
 fn compile_macro_clause_with_state(
     symbol_tables: &dashmap::DashMap<ModuleFullPath, cranelisp_types::SymbolTable>,
     next_type_id: &std::sync::atomic::AtomicU32,
@@ -617,7 +613,7 @@ fn compile_macro_clause_with_state(
 
 /// Build a CheckResult from the accumulator for codegen (TC shared-ref version).
 fn build_check_from_accumulator_tc(
-    symbol_tables: &dashmap::DashMap<ModuleFullPath, cranelisp_types::SymbolTable>,
+    _symbol_tables: &dashmap::DashMap<ModuleFullPath, cranelisp_types::SymbolTable>,
     accumulator: &ModuleCheckAccumulator,
 ) -> CheckResult {
     CheckResult {
@@ -734,15 +730,14 @@ fn qualify_expanded_sexp(
                 return sexp;
             }
             // Skip if the symbol is already available in the current module
-            if let Some(table) = symbol_tables.get(current_module) {
-                if table.get(name).is_some() {
+            if let Some(table) = symbol_tables.get(current_module)
+                && table.get(name).is_some() {
                     return sexp;
                 }
-            }
             // Check defining modules for this symbol
             for def_mod in defining_modules {
-                if let Some(table) = symbol_tables.get(def_mod) {
-                    if let Some(entry) = table.get(name) {
+                if let Some(table) = symbol_tables.get(def_mod)
+                    && let Some(entry) = table.get(name) {
                         // Follow imports to find the true source module for qualification
                         let qual_module = match entry {
                             ModuleEntry::Import { source } => &source.module,
@@ -752,7 +747,6 @@ fn qualify_expanded_sexp(
                         let qualified = format!("{}/{}", qual_module.as_ref(), name);
                         return Sexp::Symbol(qualified, span);
                     }
-                }
             }
             sexp
         }
@@ -783,6 +777,7 @@ fn qualify_expanded_sexp(
 
 /// Result of processing module forms. Either the module is fully typechecked,
 /// or it blocked on a dependency and needs to be resumed later.
+#[allow(clippy::large_enum_variant)]
 pub enum ProcessResult {
     /// Module fully typechecked.
     Complete {
@@ -899,6 +894,7 @@ enum BlockAction {
 ///
 /// `accumulator`: may be a resumed accumulator (saved across suspension)
 /// or freshly created for first invocation.
+#[allow(clippy::too_many_arguments)]
 pub fn process_module_forms(
     ctx: &mut ModuleCompiler,
     module: &ModuleFullPath,
@@ -946,6 +942,13 @@ pub fn process_module_forms(
         for (form_idx, sexp) in sexps.iter().enumerate() {
             match classify_form(sexp)? {
                 FormKind::Import(specs) => {
+                    // Record import specs for source regeneration (§15).
+                    if let Some(shared) = ctx.shared_state {
+                        let mut ms = shared.module_structures
+                            .entry(module.clone())
+                            .or_default();
+                        ms.import_specs.extend(specs.iter().cloned());
+                    }
                     match handle_import(ctx, module, specs)? {
                         BlockAction::Continue => {}
                         BlockAction::Block { dep_module, dep_sexps } => {
@@ -958,6 +961,13 @@ pub fn process_module_forms(
                     }
                 }
                 FormKind::Export(specs) => {
+                    // Record export specs for source regeneration (§15).
+                    if let Some(shared) = ctx.shared_state {
+                        let mut ms = shared.module_structures
+                            .entry(module.clone())
+                            .or_default();
+                        ms.export_specs.extend(specs.iter().cloned());
+                    }
                     match handle_export(ctx, module, &specs)? {
                         BlockAction::Continue => {}
                         BlockAction::Block { dep_module, dep_sexps } => {
@@ -970,6 +980,13 @@ pub fn process_module_forms(
                     }
                 }
                 FormKind::Mod(decl) => {
+                    // Record mod decl for source regeneration (§15).
+                    if let Some(shared) = ctx.shared_state {
+                        let mut ms = shared.module_structures
+                            .entry(module.clone())
+                            .or_default();
+                        ms.mod_decls.push(decl.clone());
+                    }
                     match handle_mod(ctx, module, &decl)? {
                         BlockAction::Continue => {}
                         BlockAction::Block { dep_module, dep_sexps } => {
@@ -982,6 +999,13 @@ pub fn process_module_forms(
                     }
                 }
                 FormKind::Platform(spec) => {
+                    // Record platform spec for source regeneration (§15).
+                    if let Some(shared) = ctx.shared_state {
+                        let mut ms = shared.module_structures
+                            .entry(module.clone())
+                            .or_default();
+                        ms.platform_specs.push(spec.clone());
+                    }
                     handle_platform(ctx, module, &spec)?;
                 }
                 _ => {} // Regular, Defmacro — handled in Pass 2
@@ -1030,6 +1054,7 @@ pub fn process_module_forms(
 }
 
 /// Separate defmacro forms from regular forms for Pass 1.
+#[allow(clippy::type_complexity)]
 fn separate_macros(
     sexps: &[Sexp],
 ) -> Result<(Vec<Sexp>, Vec<(Symbol, cranelisp_frontend::DefmacroInfo, Sexp)>), CranelispError> {
@@ -1174,8 +1199,7 @@ fn pass2_check_bodies_with_expansion(
     accumulator: &mut ModuleCheckAccumulator,
     expanded_program: &mut Vec<TopLevel>,
 ) -> Result<Pass2Result, CranelispError> {
-    for form_idx in start_form_index..sexps.len() {
-        let sexp = &sexps[form_idx];
+    for (form_idx, sexp) in sexps.iter().enumerate().skip(start_form_index) {
 
         match classify_form(sexp)? {
             // FIXME(/int): Import/export/mod/platform forms are now processed
@@ -1297,8 +1321,8 @@ fn process_regular_form(
         cranelisp_typecheck::TypeCheckEnv::new(ctx.symbol_tables, ctx.next_type_id).merge_form_result(module, &mut ctx.check_state, accumulator, result);
 
         // Populate introspection for REPL slash commands (--repl only).
-        if let Some(intr_map) = ctx.introspection {
-            if let TopLevel::Defn(defn) = form {
+        if let Some(intr_map) = ctx.introspection
+            && let TopLevel::Defn(defn) = form {
                 let fq = cranelisp_types::FQSymbol {
                     module: module.clone(),
                     symbol: defn.name.clone(),
@@ -1326,7 +1350,6 @@ fn process_regular_form(
                 }
                 entry.ast = Some(defn.clone());
             }
-        }
         if let TopLevel::Defn(defn) = form {
             ctx.scheduler.notify_symbol_typechecked(module, &defn.name);
         }
@@ -1380,15 +1403,14 @@ fn handle_import(
             })?;
 
         // Populate file_to_module mapping for file watcher (Step 14).
-        if let Some(shared) = ctx.shared_state {
-            if let Ok(canonical) = dep_file.canonicalize() {
+        if let Some(shared) = ctx.shared_state
+            && let Ok(canonical) = dep_file.canonicalize() {
                 shared
                     .file_to_module
                     .lock()
                     .unwrap_or_else(|e| e.into_inner())
                     .insert(canonical, dep.clone());
             }
-        }
 
         // Cache check: try to load from disk cache before parsing.
         if try_cache_hit_load(ctx, dep, &dep_file) {
@@ -1592,15 +1614,14 @@ fn handle_export(
             })?;
 
         // Populate file_to_module mapping for file watcher.
-        if let Some(shared) = ctx.shared_state {
-            if let Ok(canonical) = dep_file.canonicalize() {
+        if let Some(shared) = ctx.shared_state
+            && let Ok(canonical) = dep_file.canonicalize() {
                 shared
                     .file_to_module
                     .lock()
                     .unwrap_or_else(|e| e.into_inner())
                     .insert(canonical, dep.clone());
             }
-        }
 
         // Cache check.
         if try_cache_hit_load(ctx, dep, &dep_file) {
@@ -1678,15 +1699,14 @@ fn handle_mod(
         })?;
 
     // Populate file_to_module mapping for file watcher.
-    if let Some(shared) = ctx.shared_state {
-        if let Ok(canonical) = dep_file.canonicalize() {
+    if let Some(shared) = ctx.shared_state
+        && let Ok(canonical) = dep_file.canonicalize() {
             shared
                 .file_to_module
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
                 .insert(canonical, sub_path.clone());
         }
-    }
 
     // Cache check: try to load from disk cache before parsing.
     if try_cache_hit_load(ctx, &sub_path, &dep_file) {
@@ -1967,9 +1987,10 @@ fn collect_transitive_uncompiled_deps(
 /// deps, builds a CheckResult with empty resolutions — the dep module's
 /// transient check state has already been consumed. Type defs and
 /// constructor_to_type come from the TC's global registry in both cases.
+#[allow(clippy::too_many_arguments)]
 fn compile_dep_symbol_inline(
     symbol_tables: &dashmap::DashMap<ModuleFullPath, cranelisp_types::SymbolTable>,
-    next_type_id: &std::sync::atomic::AtomicU32,
+    _next_type_id: &std::sync::atomic::AtomicU32,
     jit_symbols: &[(String, *const u8)],
     got_data_defs: &[(String, *const u8)],
     module: &ModuleFullPath,
@@ -1998,7 +2019,7 @@ fn compile_dep_symbol_inline(
 /// Used for cross-module deps where the dep module's transient check state
 /// (method_resolutions, expr_types) has already been consumed.
 fn build_empty_check_from_tc(
-    symbol_tables: &dashmap::DashMap<ModuleFullPath, cranelisp_types::SymbolTable>,
+    _symbol_tables: &dashmap::DashMap<ModuleFullPath, cranelisp_types::SymbolTable>,
 ) -> CheckResult {
     CheckResult {
         method_resolutions: std::collections::HashMap::new(),
@@ -2018,7 +2039,7 @@ fn build_empty_check_from_tc(
 /// Type defs and constructor_to_type are snapshotted from the TC registry
 /// (required for Sexp constructor codegen in macro clause bodies).
 fn build_check_from_accumulator(
-    symbol_tables: &dashmap::DashMap<ModuleFullPath, cranelisp_types::SymbolTable>,
+    _symbol_tables: &dashmap::DashMap<ModuleFullPath, cranelisp_types::SymbolTable>,
     accumulator: &ModuleCheckAccumulator,
 ) -> CheckResult {
     CheckResult {
@@ -2390,11 +2411,10 @@ fn clear_module_codegen(ctx: &mut ModuleCompiler, module: &ModuleFullPath) {
             let got_table = &tp.got;
             let table = ctx.symbol_tables.get(&ctx.current_module).unwrap();
             for (_name, entry) in table.all_symbols() {
-                if let cranelisp_types::ModuleEntry::Def { got_slot: Some(slot), kind, .. } = entry {
-                    if !matches!(kind.as_ref(), cranelisp_types::DefKind::SpecialForm { .. }) {
+                if let cranelisp_types::ModuleEntry::Def { got_slot: Some(slot), kind, .. } = entry
+                    && !matches!(kind.as_ref(), cranelisp_types::DefKind::SpecialForm { .. }) {
                         got_table.store_slot(*slot, std::ptr::null());
                     }
-                }
             }
         }
     }
@@ -2462,6 +2482,7 @@ fn wrap_exprs_as_defns(program: &[TopLevel]) -> Vec<TopLevel> {
 /// Iterates the program's definitions, compiles each via `compile_and_register_defn`,
 /// and notifies the scheduler. Returns the last defn's execution result (for
 /// zero-arg defns like `main`).
+#[allow(clippy::too_many_arguments)]
 pub fn codegen_module_symbols(
     platform_registry: &PlatformRegistry,
     scheduler: &CompileScheduler,
@@ -2578,11 +2599,11 @@ fn pre_register_got_slots_in_tc(
                 if check.constrained_fn_names.contains(&defn.name) {
                     continue;
                 }
-                ensure_slot(&defn.name, &defn.params());
+                ensure_slot(&defn.name, defn.params());
             }
             TopLevel::TraitImpl(impl_) => {
                 for method in &impl_.methods {
-                    ensure_slot(&method.name, &method.params());
+                    ensure_slot(&method.name, method.params());
                 }
             }
             _ => {}
@@ -2591,16 +2612,17 @@ fn pre_register_got_slots_in_tc(
 
     // Default method defns (generated by typechecker for trait impls with defaults).
     for defn in &check.default_method_defns {
-        ensure_slot(&defn.name, &defn.params());
+        ensure_slot(&defn.name, defn.params());
     }
 
     // Mono specializations.
     for mono in &check.mono_defns {
-        ensure_slot(&mono.defn.name, &mono.defn.params());
+        ensure_slot(&mono.defn.name, mono.defn.params());
     }
 }
 
 /// Compile monomorphised specializations.
+#[allow(clippy::too_many_arguments)]
 fn compile_mono_defns(
     jit_symbols: &[(String, *const u8)],
     got_data_defs: &[(String, *const u8)],
@@ -2636,6 +2658,7 @@ fn compile_mono_defns(
 
 /// Compile regular defns (skipping constrained fn base definitions).
 /// Returns the list of compiled symbol names.
+#[allow(clippy::too_many_arguments)]
 fn compile_regular_defns(
     jit_symbols: &[(String, *const u8)],
     got_data_defs: &[(String, *const u8)],
@@ -2982,8 +3005,8 @@ fn collect_cross_module_func_sigs_from_tc(
     for (name, entry) in table.all_symbols() {
         if let ModuleEntry::Import { source } = entry {
             // Look up in TC's module tables (covers synthetic modules like primitives).
-            if let Some(source_table) = symbol_tables.get(&source.module) {
-                if let Some(source_entry) = source_table.get(source.symbol.as_ref()) {
+            if let Some(source_table) = symbol_tables.get(&source.module)
+                && let Some(source_entry) = source_table.get(source.symbol.as_ref()) {
                     let param_count = match source_entry {
                         ModuleEntry::Def { scheme, .. } | ModuleEntry::Constructor { scheme, .. } => {
                             match &scheme.ty {
@@ -3001,7 +3024,6 @@ fn collect_cross_module_func_sigs_from_tc(
                     sigs.push((qualified, param_count));
                     sigs.push((name.clone(), param_count));
                 }
-            }
         }
     }
     sigs
@@ -3088,8 +3110,8 @@ pub(crate) fn priority_worker_thread(
                 let platform = shared.platform_registry.lock()
                     .unwrap_or_else(|e| e.into_inner());
                 let _ = handle_cached_codegen(
-                    &*platform, &module, shared.shared_state,
-                    shared.typecheck_products, shared.codegen_products, &shared.scheduler,
+                    &platform, &module, shared.shared_state,
+                    shared.typecheck_products, shared.codegen_products, shared.scheduler,
                 );
             }
             None => break, // Shutdown or all work done.
@@ -3143,7 +3165,7 @@ fn handle_typecheck_work(
     // Ensure the module's SymbolTable exists before creating CheckState (invariant: current_module always in modules map).
     {
         let tc = cranelisp_typecheck::TypeCheckEnv::new(&shared_state.symbol_tables, &shared_state.next_type_id);
-        tc.ensure_module_exists(&module);
+        tc.ensure_module_exists(module);
     }
     let mut ctx = ModuleCompiler {
         symbol_tables: &shared_state.symbol_tables,

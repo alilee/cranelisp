@@ -403,17 +403,17 @@ impl<'a, M: Module> FnCompiler<'a, M> {
         // Uses global_value(DataId) which Cranelift lowers to:
         //   JIT (is_pic=false): movz+movk (absolute address)
         //   Object (is_pic=true): ADRP+ADD (PC-relative relocation)
-        if let Some(env) = self.ctx.env {
-            if let Some((module_path, slot)) = env.resolve_got_module(name) {
-                let got_sym = crate::compiler::got_data_symbol_name(&module_path);
-                let data_id = self.module
-                    .declare_data(&got_sym, cranelift_module::Linkage::Import, false, false)
-                    .map_err(|e| CranelispError::CodegenError {
-                        message: format!("failed to declare GOT data '{}': {e}", got_sym),
-                        span,
-                    })?;
-                return self.emit_got_indirect_call_via_data_id(data_id, slot, arg_vals);
-            }
+        if let Some(env) = self.ctx.env
+            && let Some((module_path, slot)) = env.resolve_got_module(name)
+        {
+            let got_sym = crate::compiler::got_data_symbol_name(&module_path);
+            let data_id = self.module
+                .declare_data(&got_sym, cranelift_module::Linkage::Import, false, false)
+                .map_err(|e| CranelispError::CodegenError {
+                    message: format!("failed to declare GOT data '{}': {e}", got_sym),
+                    span,
+                })?;
+            return self.emit_got_indirect_call_via_data_id(data_id, slot, arg_vals);
         }
 
         // Direct call: look up FuncId and emit `call`.
@@ -491,10 +491,10 @@ impl<'a, M: Module> FnCompiler<'a, M> {
         name: &Symbol,
         span: Span,
     ) -> Result<(i64, usize), CranelispError> {
-        if let Some(env) = self.ctx.env {
-            if let Some(result) = env.resolve_got(name) {
-                return Ok(result);
-            }
+        if let Some(env) = self.ctx.env
+            && let Some(result) = env.resolve_got(name)
+        {
+            return Ok(result);
         }
 
         Err(CranelispError::CodegenError {

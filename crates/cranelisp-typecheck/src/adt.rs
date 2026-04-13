@@ -24,6 +24,7 @@ impl TypeCheckEnv<'_> {
     /// Handles both nullary enums (Ring 0) and parameterized ADTs with data
     /// constructor fields (Ring 1). Allocates fresh type vars for type parameters,
     /// resolves field types, and produces polymorphic constructor schemes.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn register_type_def(
         &self,
         state: &mut CheckState,

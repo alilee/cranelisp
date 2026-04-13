@@ -27,6 +27,7 @@ struct CacheWriteRequest {
 }
 
 /// Sentinel value to tell the writer thread to shut down.
+#[allow(clippy::large_enum_variant)]
 enum WriterMessage {
     Write(CacheWriteRequest),
     /// Flush: signal that all prior writes must complete before the

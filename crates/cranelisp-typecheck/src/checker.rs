@@ -300,7 +300,7 @@ impl<'a> TypeCheckEnv<'a> {
 
     /// Access the per-module symbol tables (for display, introspection).
     pub fn modules(&self) -> &DashMap<ModuleFullPath, SymbolTable> {
-        &self.modules
+        self.modules
     }
 
     /// Build type_defs and constructor_to_type maps from SymbolTables.
@@ -346,7 +346,7 @@ impl<'a> TypeCheckEnv<'a> {
     /// Used by the integration layer to construct a `CompilationEnv` that
     /// resolves GOT slots by reading symbol tables directly.
     pub fn modules_ref(&self) -> &dashmap::DashMap<ModuleFullPath, SymbolTable> {
-        &self.modules
+        self.modules
     }
 
     /// Build an FQTypeName for a bare TypeName by looking up SymbolTables.
@@ -1091,10 +1091,10 @@ impl<'a> TypeCheckEnv<'a> {
         let mut traits: Vec<TraitName> = Vec::new();
         for guard in self.modules.iter() {
             for (_name, entry) in guard.all_symbols() {
-                if let ModuleEntry::TraitImpl { trait_name, impl_type, .. } = entry {
-                    if &impl_type.name == type_name && !traits.contains(&trait_name.name) {
-                        traits.push(trait_name.name.clone());
-                    }
+                if let ModuleEntry::TraitImpl { trait_name, impl_type, .. } = entry
+                    && &impl_type.name == type_name && !traits.contains(&trait_name.name)
+                {
+                    traits.push(trait_name.name.clone());
                 }
             }
         }
@@ -1144,10 +1144,10 @@ impl<'a> TypeCheckEnv<'a> {
     pub fn has_impl(&self, trait_name: &TraitName, impl_type: &TypeName) -> bool {
         for guard in self.modules.iter() {
             for (_name, entry) in guard.all_symbols() {
-                if let ModuleEntry::TraitImpl { trait_name: tn, impl_type: it, .. } = entry {
-                    if &tn.name == trait_name && &it.name == impl_type {
-                        return true;
-                    }
+                if let ModuleEntry::TraitImpl { trait_name: tn, impl_type: it, .. } = entry
+                    && &tn.name == trait_name && &it.name == impl_type
+                {
+                    return true;
                 }
             }
         }
@@ -1163,10 +1163,10 @@ impl<'a> TypeCheckEnv<'a> {
         let mut types: Vec<TypeName> = Vec::new();
         for guard in self.modules.iter() {
             for (_name, entry) in guard.all_symbols() {
-                if let ModuleEntry::TraitImpl { trait_name: tn, impl_type, .. } = entry {
-                    if &tn.name == trait_name && !types.contains(&impl_type.name) {
-                        types.push(impl_type.name.clone());
-                    }
+                if let ModuleEntry::TraitImpl { trait_name: tn, impl_type, .. } = entry
+                    && &tn.name == trait_name && !types.contains(&impl_type.name)
+                {
+                    types.push(impl_type.name.clone());
                 }
             }
         }

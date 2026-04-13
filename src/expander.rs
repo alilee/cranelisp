@@ -368,14 +368,13 @@ pub(crate) fn expand_sexp_recursive(
     match sexp {
         Sexp::List(ref children, span) if !children.is_empty() => {
             // Check if head is a macro name.
-            if let Sexp::Symbol(ref name, sym_span) = children[0] {
-                if let Some(entry) = resolver.resolve_macro(name, sym_span)? {
+            if let Sexp::Symbol(ref name, sym_span) = children[0]
+                && let Some(entry) = resolver.resolve_macro(name, sym_span)? {
                     let args = &children[1..];
                     return expand_macro_call_with_entry(
                         name, args, span, &entry, resolver, depth,
                     );
                 }
-            }
             // Not a macro call — recurse into children.
             let Sexp::List(children, span) = sexp else {
                 unreachable!("invariant: sexp matched Sexp::List in outer arm");

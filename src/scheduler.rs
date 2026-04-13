@@ -1646,6 +1646,7 @@ mod tests {
             codegen_inputs: dashmap::DashMap::new(),
             codegen_products: dashmap::DashMap::new(),
             introspection: dashmap::DashMap::new(),
+            module_structures: dashmap::DashMap::new(),
         });
 
         let m = mod_path("test.mod");

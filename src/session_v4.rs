@@ -203,6 +203,7 @@ enum ReplCommand<'a> {
     RunTests(&'a str),
     RunAllTests,
     Reset,
+    Sh(&'a str),
     Unknown(&'a str),
 }
 
@@ -241,6 +242,7 @@ fn parse_slash_command(input: &str) -> Option<ReplCommand<'_>> {
         "/run-tests" | "/rt" => ReplCommand::RunTests(arg),
         "/run-all-tests" => ReplCommand::RunAllTests,
         "/reset" => ReplCommand::Reset,
+        "/sh" => ReplCommand::Sh(arg),
         _ => ReplCommand::Unknown(cmd),
     })
 }
@@ -268,7 +270,7 @@ fn print_help(stdout: &mut impl Write) {
     let _ = writeln!(stdout, "  /run-tests (/rt) [MOD]  Run test-* functions (current module or named)");
     let _ = writeln!(stdout, "  /run-all-tests      Run all tests in project modules");
     let _ = writeln!(stdout, "  /reset              Clear all state and reload prelude");
-    let _ = writeln!(stdout, "  ;#! <cmd>           Run a shell command");
+    let _ = writeln!(stdout, "  /sh <cmd>       Run a shell command");
 }
 
 /// Check if input is a comment-only line.
@@ -279,20 +281,35 @@ fn is_comment_only(input: &str) -> bool {
     })
 }
 
-/// Run a shell command and print output.
+/// Run a shell command with stdout/stderr passed through directly.
+///
+/// Uses `.status()` instead of `.output()` so the child process inherits
+/// stdout/stderr from the REPL process. This ensures E2E test harnesses
+/// (which capture subprocess stdout) see the shell command output.
 fn run_shell_command(cmd: &str, stdout: &mut impl Write) {
     if cmd.is_empty() {
-        let _ = writeln!(stdout, "usage: ;#! <command>");
+        let _ = writeln!(stdout, "Usage: /sh <command>");
         return;
     }
     match std::process::Command::new("sh")
         .arg("-c")
         .arg(cmd)
-        .output()
+        .status()
     {
-        Ok(output) => {
-            let _ = stdout.write_all(&output.stdout);
-            let _ = stdout.write_all(&output.stderr);
+        Ok(status) => {
+            if !status.success() {
+                #[cfg(unix)]
+                {
+                    use std::os::unix::process::ExitStatusExt;
+                    if let Some(sig) = status.signal() {
+                        let _ = writeln!(stdout, "killed by signal: {sig}");
+                        return;
+                    }
+                }
+                if let Some(code) = status.code() {
+                    let _ = writeln!(stdout, "exit status: {code}");
+                }
+            }
         }
         Err(e) => {
             let _ = writeln!(stdout, "error: {e}");
@@ -331,7 +348,7 @@ fn format_entry_sig(entry: &ModuleEntry, name: &str) -> String {
         ModuleEntry::Import { source } => {
             format!("{name} ; imported from {}/{}", source.module, source.symbol)
         }
-        _ => format!("{name}"),
+        _ => name.to_string(),
     }
 }
 
@@ -533,6 +550,9 @@ pub struct SharedState {
     pub codegen_products: dashmap::DashMap<ModuleFullPath, CodegenProduct>,
     /// Per-symbol introspection data, REPL-only (replaces def_codegen for slash commands).
     pub introspection: dashmap::DashMap<FQSymbol, Introspection>,
+    /// Per-module structural metadata for source regeneration (repl/spec.md §15).
+    /// Tracks import/export/mod/platform specs. Populated during form processing.
+    pub module_structures: dashmap::DashMap<ModuleFullPath, crate::save::ModuleStructure>,
 }
 
 /// The compiler session — scheduler-driven concurrent compilation.
@@ -640,6 +660,7 @@ impl CompilerSession {
             codegen_inputs: dashmap::DashMap::new(),
             codegen_products: dashmap::DashMap::new(),
             introspection: dashmap::DashMap::new(),
+            module_structures: dashmap::DashMap::new(),
         });
 
         // Spawn persistent nice worker threads for object codegen (.o files).
@@ -801,11 +822,10 @@ impl CompilerSession {
             .unwrap_or_else(|e| e.into_inner());
         let mut modules_to_reload: Vec<(ModuleFullPath, PathBuf)> = Vec::new();
         for path in &changed_paths {
-            if let Some(module_path) = file_to_mod.get(path) {
-                if !modules_to_reload.iter().any(|(mp, _)| mp == module_path) {
+            if let Some(module_path) = file_to_mod.get(path)
+                && !modules_to_reload.iter().any(|(mp, _)| mp == module_path) {
                     modules_to_reload.push((module_path.clone(), path.clone()));
                 }
-            }
         }
         drop(file_to_mod);
 
@@ -826,6 +846,81 @@ impl CompilerSession {
             }
         }
         messages
+    }
+
+    /// Regenerate the backing .cl file for the current module.
+    ///
+    /// Called after successful eval of a definition (defn, deftype, deftrait,
+    /// impl, defmacro) or structural change (import, mod, platform).
+    /// Reads the current module's symbol table and structural metadata,
+    /// generates source text, and writes atomically.
+    ///
+    /// On write failure, prints a warning and continues — in-memory state
+    /// is the ground truth (design/int/session-persistence.md §3.3).
+    pub fn regenerate_backing_file(&mut self) {
+        let module = self.current_module_path();
+
+        // Get the backing file path from typecheck product.
+        let file_path = match self.shared.typecheck_products.get(&module) {
+            Some(tp) => match &tp.file_path {
+                Some(p) => p.clone(),
+                None => {
+                    // Entry module may not have a file path yet (fresh session).
+                    // Default to {project_root}/{module}.cl.
+                    self.project_root.join(format!("{}.cl", module))
+                }
+            },
+            None => self.project_root.join(format!("{}.cl", module)),
+        };
+
+        // Read the symbol table for this module.
+        let st = match self.shared.symbol_tables.get(&module) {
+            Some(st) => st.clone(),
+            None => return, // No symbol table — nothing to save.
+        };
+
+        // Read structural metadata.
+        let structure = self.shared.module_structures
+            .get(&module)
+            .map(|s| s.clone())
+            .unwrap_or_default();
+
+        // Generate source text.
+        let source = crate::save::generate_module_source(
+            &st,
+            &self.shared.introspection,
+            &structure,
+            &module,
+        );
+
+        // Skip writing empty source (no user-defined content).
+        if source.trim().is_empty() {
+            return;
+        }
+
+        // Compute content hash for watcher suppression.
+        let hash = cranelisp_backend::cache::hash_source(&source);
+
+        // Atomic write.
+        if let Err(e) = crate::save::atomic_write(&file_path, &source) {
+            eprintln!("Warning: failed to save {}: {e}", file_path.display());
+            return;
+        }
+
+        // Update watcher content hash so the self-write is suppressed
+        // (design/int/session-persistence.md §4).
+        if let Some(ref mut watcher) = self.watcher {
+            let canonical = file_path.canonicalize().unwrap_or_else(|_| file_path.clone());
+            watcher.update_content_hash(canonical.clone(), hash);
+        }
+
+        // Register the file in file_to_module so the watcher can find it.
+        if let Ok(canonical) = file_path.canonicalize() {
+            self.shared.file_to_module
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .insert(canonical, module);
+        }
     }
 
     /// Reload a single module from its source file.
@@ -971,7 +1066,7 @@ impl CompilerSession {
             platform_registry: &platform_mutex,
             typecheck_products: &self.shared.typecheck_products,
             codegen_products: &self.shared.codegen_products,
-            introspection: None,
+            introspection: Some(&self.shared.introspection),
             scheduler: &self.shared.scheduler,
             module_sexps: &module_sexps,
             suspend_states: &suspend_states,
@@ -1022,12 +1117,6 @@ impl CompilerSession {
 
         // Blank or comment-only.
         if trimmed.is_empty() || is_comment_only(trimmed) {
-            return CommandResult::Nothing;
-        }
-
-        // Shell escape: ;#! lines run as shell commands.
-        if let Some(stripped) = trimmed.strip_prefix(";#!") {
-            run_shell_command(stripped.trim(), stdout);
             return CommandResult::Nothing;
         }
 
@@ -1119,6 +1208,10 @@ impl CompilerSession {
             }
             ReplCommand::Time(expr) => {
                 CommandResult::Final(self.handle_time(expr))
+            }
+            ReplCommand::Sh(cmd) => {
+                run_shell_command(cmd, stdout);
+                CommandResult::Nothing
             }
             ReplCommand::Unknown(cmd) => {
                 CommandResult::Final(format!(
@@ -1558,11 +1651,10 @@ impl CompilerSession {
             let tp = tp_entry.value();
 
             // §4.12.3: only trace project-root modules.
-            if let Some(ref fp) = tp.file_path {
-                if !fp.starts_with(&self.project_root) {
+            if let Some(ref fp) = tp.file_path
+                && !fp.starts_with(&self.project_root) {
                     continue;
                 }
-            }
 
             let got_base = tp.got.base_ptr() as i64;
 
@@ -1623,7 +1715,7 @@ impl CompilerSession {
         let mut module_sexps = HashMap::new();
         module_sexps.insert(dep_module.clone(), dep_sexps.to_vec());
 
-        self.tc_env().ensure_module_exists(&dep_module);
+        self.tc_env().ensure_module_exists(dep_module);
         let repl_cs = self.shared.repl_check_state.lock()
             .unwrap_or_else(|e| e.into_inner())
             .take()
@@ -1710,7 +1802,7 @@ impl CompilerSession {
                     warnings: Vec::new(),
                 })
             }
-            ModuleEntry::Def { kind, scheme, .. } => {
+            ModuleEntry::Def { kind: _, scheme, .. } => {
                 // Special forms, primitives, and user functions all get
                 // introspection display per spec §4.1.1, §4.1.2.
                 Some(EvalResult::Def {
@@ -1883,11 +1975,10 @@ impl CompilerSession {
         if name.is_empty() {
             return "usage: /sexp <name>".to_string();
         }
-        if let Some(intr) = self.get_introspection(name) {
-            if let Some(ref sexp) = intr.sexp {
+        if let Some(intr) = self.get_introspection(name)
+            && let Some(ref sexp) = intr.sexp {
                 return format!("; sexp for {name}\n{}", crate::pretty::pretty_print(sexp));
             }
-        }
         format!("Error: no sexp available for '{name}'")
     }
 
@@ -1896,11 +1987,10 @@ impl CompilerSession {
         if name.is_empty() {
             return "usage: /ast <name>".to_string();
         }
-        if let Some(intr) = self.get_introspection(name) {
-            if let Some(ref defn) = intr.ast {
+        if let Some(intr) = self.get_introspection(name)
+            && let Some(ref defn) = intr.ast {
                 return format!("; ast for {name}\n{:#?}", defn);
             }
-        }
         format!("Error: no AST available for '{name}'")
     }
 
@@ -1909,11 +1999,10 @@ impl CompilerSession {
         if name.is_empty() {
             return "usage: /clif <name>".to_string();
         }
-        if let Some(intr) = self.get_introspection(name) {
-            if let Some(ref clif) = intr.clif_ir {
+        if let Some(intr) = self.get_introspection(name)
+            && let Some(ref clif) = intr.clif_ir {
                 return format!("; clif ir for {name}\n{}", clif);
             }
-        }
         format!("Error: no CLIF IR available for '{name}'")
     }
 
@@ -1922,11 +2011,10 @@ impl CompilerSession {
         if name.is_empty() {
             return "usage: /disasm <name>".to_string();
         }
-        if let Some(intr) = self.get_introspection(name) {
-            if let Some(ref disasm) = intr.disasm {
+        if let Some(intr) = self.get_introspection(name)
+            && let Some(ref disasm) = intr.disasm {
                 return format!("; disasm for {name}\n{}", disasm);
             }
-        }
         format!("Error: no disassembly available for '{name}'")
     }
 
@@ -1948,14 +2036,12 @@ impl CompilerSession {
         // Append code info if available.
         if !matches!(resolved_entry,
             ModuleEntry::Macro { .. } | ModuleEntry::TypeDef { .. } | ModuleEntry::TraitDecl { .. })
-        {
-            if let Some(intr) = self.get_introspection(name) {
+            && let Some(intr) = self.get_introspection(name) {
                 let size_str = intr.code_size
                     .map(|s| format!("{s} bytes"))
                     .unwrap_or_else(|| "? bytes".to_string());
                 return format!("{sig}\n  {size_str}");
             }
-        }
         sig
     }
 
@@ -2362,11 +2448,10 @@ impl CompilerSession {
         let mut all_names: Vec<String> = Vec::new();
         for entry in self.shared.typecheck_products.iter() {
             let module_path = entry.key();
-            if let Some(ref fp) = entry.value().file_path {
-                if !fp.starts_with(&self.project_root) {
+            if let Some(ref fp) = entry.value().file_path
+                && !fp.starts_with(&self.project_root) {
                     continue;
                 }
-            }
             let names = discover_test_names(
                 &self.shared.codegen_products,
                 &self.shared.symbol_tables,
@@ -2434,11 +2519,10 @@ impl CompilerSession {
             return None;
         }
         let table = self.current_symbol_table();
-        if let Some(ModuleEntry::Def { kind, .. }) = table.get(trimmed) {
-            if let DefKind::SpecialForm { description } = kind.as_ref() {
+        if let Some(ModuleEntry::Def { kind, .. }) = table.get(trimmed)
+            && let DefKind::SpecialForm { description } = kind.as_ref() {
                 return Some(format_special_form_display(trimmed, description));
             }
-        }
         None
     }
 
@@ -2497,11 +2581,10 @@ impl CompilerSession {
         let module_path = ModuleFullPath::from(module_name);
 
         // Check codegen_products for the compiled Code.
-        if let Some(product) = self.shared.codegen_products.get(&module_path) {
-            if let Some(code) = product.code.get(main_sym) {
+        if let Some(product) = self.shared.codegen_products.get(&module_path)
+            && let Some(code) = product.code.get(main_sym) {
                 return Ok(code.ptr);
             }
-        }
 
         Err(CranelispError::ModuleError {
             message: "entry module has no `main` function — batch mode requires (defn main [] ...)"
@@ -2843,11 +2926,10 @@ impl CompilerSession {
         match entry {
             ModuleEntry::Import { source }
             | ModuleEntry::Reexport { source } => {
-                if let Some(module_table) = self.shared.symbol_tables.get(&source.module) {
-                    if let Some(resolved) = module_table.get(source.symbol.as_ref()) {
+                if let Some(module_table) = self.shared.symbol_tables.get(&source.module)
+                    && let Some(resolved) = module_table.get(source.symbol.as_ref()) {
                         return (resolved.clone(), source.module.clone());
                     }
-                }
                 (entry.clone(), current_module.clone())
             }
             _ => (entry.clone(), current_module.clone()),
@@ -2860,12 +2942,11 @@ impl CompilerSession {
     fn format_type_display(&self, type_name: &str, module: &ModuleFullPath) -> String {
         let mut result = format!(":{module}/{type_name} ; deftype");
         let tn = TypeName::from(type_name);
-        if let Some(ctors) = self.tc_env().get_type_constructors(&tn) {
-            if !ctors.is_empty() {
+        if let Some(ctors) = self.tc_env().get_type_constructors(&tn)
+            && !ctors.is_empty() {
                 let names: Vec<&str> = ctors.iter().map(|c| c.name.as_ref()).collect();
                 result.push_str(&format_related_section("match", &names));
             }
-        }
         let trait_names = self.tc_env().get_impls_for_type(&tn);
         if !trait_names.is_empty() {
             let names: Vec<&str> = trait_names.iter().map(|t| t.as_ref()).collect();
@@ -2886,12 +2967,11 @@ impl CompilerSession {
         let tn = TraitName::from(trait_name);
         let mut result = format!(":{defining_module}/{trait_name} ; deftrait");
         result = append_docstring_comment(result, docstring);
-        if let Some(methods) = self.tc_env().get_trait_methods(&tn) {
-            if !methods.is_empty() {
+        if let Some(methods) = self.tc_env().get_trait_methods(&tn)
+            && !methods.is_empty() {
                 let names: Vec<&str> = methods.iter().map(|m| m.as_ref()).collect();
                 result.push_str(&format_related_section("defn", &names));
             }
-        }
         let impl_types = self.tc_env().get_implementing_types(&tn);
         if !impl_types.is_empty() {
             let names: Vec<&str> = impl_types.iter().map(|t| t.as_ref()).collect();
@@ -3053,9 +3133,9 @@ fn append_docstring_comment(base: String, docstring: Option<&str>) -> String {
 ///
 /// Handles `(defmacro name ...)`, `(import ...)`, `(platform ...)`, etc.
 fn extract_def_name_from_sexp(sexp: &Sexp) -> Option<String> {
-    if let Sexp::List(items, _) = sexp {
-        if items.len() >= 2 {
-            if let Sexp::Symbol(head, _) = &items[0] {
+    if let Sexp::List(items, _) = sexp
+        && items.len() >= 2
+            && let Sexp::Symbol(head, _) = &items[0] {
                 match head.as_str() {
                     "defmacro" => {
                         if let Sexp::Symbol(name, _) = &items[1] {
@@ -3069,8 +3149,6 @@ fn extract_def_name_from_sexp(sexp: &Sexp) -> Option<String> {
                     _ => {}
                 }
             }
-        }
-    }
     None
 }
 
@@ -3318,11 +3396,10 @@ fn discover_test_names(
         } else {
             continue;
         }
-        if let Some(code) = cp.code.get(name) {
-            if !code.ptr.is_null() {
+        if let Some(code) = cp.code.get(name)
+            && !code.ptr.is_null() {
                 names.push(format!("{}/{}", module.as_ref(), name.as_ref()));
             }
-        }
     }
     names.sort();
     names
@@ -3424,7 +3501,7 @@ fn clear_test_runner_state() {
 ///
 /// Layout: [alloc_size(8) | rc=1(8) | tag(8) | field0(8) | field1(8) | ...]
 /// Returns the base pointer (offset 0 of the allocation).
-unsafe fn alloc_heap_adt(tag: i64, fields: &[i64]) -> i64 {
+unsafe fn alloc_heap_adt(tag: i64, fields: &[i64]) -> i64 { unsafe {
     let payload_size = 8 + fields.len() * 8; // tag + fields
     let base = cranelisp_runtime::alloc::alloc_with_rc(payload_size);
     // Tag at offset 16 (HeapHeader::SIZE).
@@ -3434,19 +3511,19 @@ unsafe fn alloc_heap_adt(tag: i64, fields: &[i64]) -> i64 {
         *(base.add(24 + i * 8) as *mut i64) = field;
     }
     base as i64
-}
+}}
 
 /// Wrap a value in IO Pure: allocates Pure(value) on the heap.
 /// IO Pure tag = 0, single field = the wrapped value.
-unsafe fn alloc_io_pure(value: i64) -> i64 {
+unsafe fn alloc_io_pure(value: i64) -> i64 { unsafe {
     alloc_heap_adt(0, &[value])
-}
+}}
 
 /// Build an SList SCons node: SCons(head, tail).
 /// SCons tag = 1.
-unsafe fn alloc_scons(head: i64, tail: i64) -> i64 {
+unsafe fn alloc_scons(head: i64, tail: i64) -> i64 { unsafe {
     alloc_heap_adt(1, &[head, tail])
-}
+}}
 
 /// JIT-callable: discover test functions in a module.
 ///
@@ -3525,7 +3602,7 @@ extern "C" fn run_test_extern(sexp_sym: i64) -> i64 {
 }
 
 /// Convert a TestOutcome to a heap-allocated TestResult ADT.
-unsafe fn test_outcome_to_heap(outcome: &TestOutcome) -> i64 {
+unsafe fn test_outcome_to_heap(outcome: &TestOutcome) -> i64 { unsafe {
     match outcome {
         TestOutcome::Pass { name, nanos } => {
             let name_alloc = cranelisp_runtime::alloc_string(name.as_bytes()) as i64;
@@ -3542,7 +3619,7 @@ unsafe fn test_outcome_to_heap(outcome: &TestOutcome) -> i64 {
             alloc_heap_adt(1, &[name_alloc, 0, reason_alloc]) // TestFail tag=1
         }
     }
-}
+}}
 
 // ---------------------------------------------------------------------------
 // Trace display support (repl/spec.md §4.12)
@@ -3550,7 +3627,7 @@ unsafe fn test_outcome_to_heap(outcome: &TestOutcome) -> i64 {
 
 /// Thread-local display state for `repl_trace_format`. Set before JIT
 /// evaluation of a trace expression, cleared after.
-struct TraceDisplayState {
+pub(crate) struct TraceDisplayState {
     symbol_tables: *const dashmap::DashMap<ModuleFullPath, SymbolTable>,
 }
 
@@ -3563,7 +3640,7 @@ thread_local! {
 }
 
 /// Set trace display state before evaluating a trace expression.
-pub fn set_trace_display_state(state: &TraceDisplayState) {
+pub(crate) fn set_trace_display_state(state: &TraceDisplayState) {
     TRACE_DISPLAY.with(|c| c.set(state as *const _));
 }
 

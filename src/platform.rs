@@ -123,6 +123,7 @@ pub fn resolve_platform_path(
 }
 
 /// Get the user's home directory.
+#[allow(dead_code)]
 fn home_dir() -> Option<PathBuf> {
     std::env::var("HOME")
         .ok()
@@ -218,7 +219,7 @@ pub fn load_platform_dll(
 pub fn register_platform_in_tc(
     symbol_tables: &dashmap::DashMap<cranelisp_types::ModuleFullPath, cranelisp_types::SymbolTable>,
     next_type_id: &std::sync::atomic::AtomicU32,
-    check_state: &mut cranelisp_typecheck::CheckState,
+    _check_state: &mut cranelisp_typecheck::CheckState,
     platform: &LoadedPlatform,
 ) -> Result<Vec<(String, *const u8)>, CranelispError> {
     let module_path = ModuleFullPath::from(format!("platform.{}", platform.name));
@@ -444,7 +445,7 @@ pub fn extract_platform_name(sexp: &Sexp) -> Option<(String, Span)> {
 /// register in typechecker.
 ///
 /// Returns the loaded platform (must be kept alive) and JIT symbols to register.
-#[allow(clippy::type_complexity)] // Return type encapsulates platform + JIT symbols
+#[allow(clippy::type_complexity, clippy::too_many_arguments)]
 pub fn load_and_register_platform(
     symbol_tables: &dashmap::DashMap<cranelisp_types::ModuleFullPath, cranelisp_types::SymbolTable>,
     next_type_id: &std::sync::atomic::AtomicU32,

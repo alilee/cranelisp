@@ -13,8 +13,6 @@ use cranelift_module::{FuncId, Linkage, Module};
 
 use cranelisp_types::{CranelispError, Expr, Span};
 
-use crate::heap;
-
 use super::{FnCompiler, TracedFnInfo};
 
 impl<'a, M: Module> FnCompiler<'a, M> {

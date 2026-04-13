@@ -59,14 +59,11 @@ fn write_callees_to_module_entries(
                 .then(a.symbol.as_ref().cmp(b.symbol.as_ref()))
         });
         callees.dedup();
-        if let Some(entry) = sym_table.symbols.get_mut(&caller) {
-            match entry {
-                ModuleEntry::Def { callees: c, .. }
-                | ModuleEntry::Macro { callees: c, .. } => {
-                    *c = callees;
-                }
-                _ => {} // Constructors, imports, etc. don't have callees
-            }
+        if let Some(
+            ModuleEntry::Def { callees: c, .. } | ModuleEntry::Macro { callees: c, .. },
+        ) = sym_table.symbols.get_mut(&caller)
+        {
+            *c = callees;
         }
     }
 }
@@ -172,6 +169,12 @@ pub struct ModuleCheckAccumulator {
     pub defn_type_vars: HashMap<Symbol, (Vec<Type>, Type)>,
 }
 
+impl Default for ModuleCheckAccumulator {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ModuleCheckAccumulator {
     /// Create a new empty accumulator for a module.
     pub fn new() -> Self {
@@ -188,6 +191,14 @@ impl ModuleCheckAccumulator {
         }
     }
 }
+
+// --- Multi-sig type aliases ---
+
+/// Resolved variant info: (concrete_params, concrete_ret, internal_name, variant_index).
+type ResolvedVariant = (Vec<Type>, Type, Symbol, usize);
+
+/// Mangled variant info: (concrete_params, concrete_ret, mangled_name).
+type MangledVariantInfo = (Vec<Type>, Type, Symbol);
 
 // --- Name mangling for multi-sig overload dispatch ---
 
@@ -338,9 +349,6 @@ impl TypeCheckEnv<'_> {
     /// - All signatures must be registered (Pass 1) before any body is checked (Pass 2).
     /// - Source order within Pass 1 must respect: TypeDef < TraitDecl < TraitImpl < Defn.
     /// - One `ModuleCheckAccumulator` per module, no concurrent access.
-    /// Per-form typecheck entry point.
-    ///
-    /// Per-form typecheck entry point.
     ///
     /// The caller owns the `CheckState` and passes it in. Multiple workers
     /// can hold `&TypeCheckEnv` concurrently, each with their own state.
@@ -510,7 +518,7 @@ impl TypeCheckEnv<'_> {
         let et_before: HashSet<Span> = state.expr_types.keys().copied().collect();
 
         self.check_defn_body(state, defn, param_types, ret_ty)?;
-        self.resolve_deferred_trait_calls(state, &defn.body());
+        self.resolve_deferred_trait_calls(state, defn.body());
 
         // Eager constrained-fn detection
         let fn_type = Type::Fn(
@@ -605,7 +613,7 @@ impl TypeCheckEnv<'_> {
             };
 
             self.check_defn_body(state, &internal_defn, param_types, ret_ty)?;
-            self.resolve_deferred_trait_calls(state, &internal_defn.body());
+            self.resolve_deferred_trait_calls(state, internal_defn.body());
 
             // Eager constrained-fn detection for variant
             let fn_type = Type::Fn(
@@ -613,18 +621,17 @@ impl TypeCheckEnv<'_> {
                 Box::new(self.apply_subst(state, ret_ty)),
             );
             let trial_scheme = self.generalize(state, &fn_type);
-            if !trial_scheme.constraints.is_empty() {
-                if let Some(ModuleEntry::Def { kind, .. }) =
+            if !trial_scheme.constraints.is_empty()
+                && let Some(ModuleEntry::Def { kind, .. }) =
                     self.current_symbol_table_mut(state).symbols.get_mut(&internal_name)
-                {
-                    let cf = ConstrainedFn {
-                        defn: internal_defn,
-                        scheme: trial_scheme,
-                    };
-                    **kind = DefKind::UserFn {
-                        constrained_fn: Some(Box::new(cf)),
-                    };
-                }
+            {
+                let cf = ConstrainedFn {
+                    defn: internal_defn,
+                    scheme: trial_scheme,
+                };
+                **kind = DefKind::UserFn {
+                    constrained_fn: Some(Box::new(cf)),
+                };
             }
         }
 
@@ -775,10 +782,10 @@ impl TypeCheckEnv<'_> {
                             visibility: defn.visibility,
                             span: variant.span,
                         };
-                        self.resolve_deferred_trait_calls(state, &internal_defn.body());
+                        self.resolve_deferred_trait_calls(state, internal_defn.body());
                     }
                 } else {
-                    self.resolve_deferred_trait_calls(state, &defn.body());
+                    self.resolve_deferred_trait_calls(state, defn.body());
                 }
             }
         }
@@ -1196,7 +1203,7 @@ impl TypeCheckEnv<'_> {
         state: &CheckState,
         defn: &Defn,
         type_vars: &HashMap<Symbol, (Vec<Type>, Type)>,
-    ) -> Result<Vec<(Vec<Type>, Type, Symbol, usize)>, CranelispError> {
+    ) -> Result<Vec<ResolvedVariant>, CranelispError> {
         let mut resolved = Vec::new();
         let mut sig_set: Vec<Vec<Type>> = Vec::new();
 
@@ -1252,8 +1259,8 @@ impl TypeCheckEnv<'_> {
         &self,
         state: &mut CheckState,
         defn: &Defn,
-        resolved: &[(Vec<Type>, Type, Symbol, usize)],
-    ) -> (Vec<Defn>, Vec<(Vec<Type>, Type, Symbol)>) {
+        resolved: &[ResolvedVariant],
+    ) -> (Vec<Defn>, Vec<MangledVariantInfo>) {
         let mut mangled_defns = Vec::new();
         let mut resolved_info = Vec::new();
 
@@ -1785,7 +1792,7 @@ impl TypeCheckEnv<'_> {
                 })?;
 
             self.check_defn_body(state, defn, param_types, ret_ty)?;
-            self.resolve_deferred_trait_calls(state, &defn.body());
+            self.resolve_deferred_trait_calls(state, defn.body());
 
             // Eagerly detect if this function is constrained.
             // Must happen now, before later call sites resolve its type vars.
@@ -1838,7 +1845,7 @@ impl TypeCheckEnv<'_> {
         // resolved because arg types were still unresolved vars. After Phase 2,
         // later call sites may have pinned those vars to concrete types.
         for defn in defns {
-            self.resolve_deferred_trait_calls(state, &defn.body());
+            self.resolve_deferred_trait_calls(state, defn.body());
         }
 
         Ok(())
@@ -1864,7 +1871,7 @@ impl TypeCheckEnv<'_> {
         self.bind_local(state, defn.name.clone(), mono(fn_type));
 
         // Infer body type
-        let body_ty = self.infer_expr(state, &defn.body())?;
+        let body_ty = self.infer_expr(state, defn.body())?;
 
         // Unify body type with return type variable
         self.unify(state, &body_ty, ret_ty, defn.span)?;
@@ -1896,7 +1903,7 @@ impl TypeCheckEnv<'_> {
         self.check_defn_body(state, defn, &param_types, &ret_ty)?;
 
         // Post-inference deferred trait resolution
-        self.resolve_deferred_trait_calls(state, &defn.body());
+        self.resolve_deferred_trait_calls(state, defn.body());
 
         // Generalize (propagates active constraints)
         let resolved_fn_type = Type::Fn(
@@ -1995,7 +2002,7 @@ impl TypeCheckEnv<'_> {
             };
 
             self.check_defn_body(state, &internal_defn, param_types, ret_ty)?;
-            self.resolve_deferred_trait_calls(state, &internal_defn.body());
+            self.resolve_deferred_trait_calls(state, internal_defn.body());
         }
 
         // Phase 2.5: Resolve multi-sig overloads (mangle names, register)
