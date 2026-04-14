@@ -319,7 +319,47 @@ pub fn process_cache_packet(
 
     // Compile ObjectModule and write .o (only if there are defns to compile)
     if !packet.object_compile_input.defns.is_empty() {
-        let obj_bytes = compile_module_to_object(&packet.object_compile_input, &packet.object_compile_input, symbol_tables)?;
+        use cranelift_module::default_libcall_names;
+        use cranelift_object::ObjectBuilder;
+
+        let input = &packet.object_compile_input;
+
+        // Convert ObjectCompileInput to compile_to_module params.
+        let program: Vec<cranelisp_types::TopLevel> = input.defns.iter()
+            .map(|(defn, _scheme)| cranelisp_types::TopLevel::Defn(defn.clone()))
+            .collect();
+        let check = cranelisp_types::CheckResult {
+            method_resolutions: input.method_resolutions.clone(),
+            constrained_fn_names: std::collections::HashSet::new(),
+            mono_defns: Vec::new(),
+            expr_types: input.expr_types.clone(),
+            default_method_defns: Vec::new(),
+            warnings: Vec::new(),
+            display: None,
+        };
+
+        let isa = build_isa(true)?;
+        let obj_builder = ObjectBuilder::new(isa, "cranelisp_module", default_libcall_names())
+            .map_err(|e| CranelispError::CodegenError {
+                message: format!("failed to create ObjectBuilder: {e}"),
+                span: Span::SYNTHETIC,
+            })?;
+        let mut obj_module = ObjectModule::new(obj_builder);
+
+        crate::compile_to_module(
+            input.module_path.clone(),
+            &program,
+            &check,
+            symbol_tables,
+            &mut obj_module,
+        )?;
+
+        let product = obj_module.finish();
+        let obj_bytes = product.emit().map_err(|e| CranelispError::CodegenError {
+            message: format!("failed to emit object file: {e}"),
+            span: Span::SYNTHETIC,
+        })?;
+
         super::atomic_write(&packet.object_path, &obj_bytes).map_err(|e| {
             CranelispError::CodegenError {
                 message: format!(
@@ -882,12 +922,21 @@ mod tests {
         );
     }
 
+    /// Helper: create an ObjectModule for testing.
+    fn test_object_module() -> ObjectModule {
+        use cranelift_module::default_libcall_names;
+        use cranelift_object::ObjectBuilder;
+
+        let isa = build_isa(true).unwrap();
+        let builder = ObjectBuilder::new(isa, "test", default_libcall_names()).unwrap();
+        ObjectModule::new(builder)
+    }
+
     // spec: design/backend/module-caching.md §13.2 — compile simple module to .o
     #[test]
     fn test_compile_module_to_object_simple() {
-        use cranelisp_types::{Defn, DefnVariant, Expr, Scheme, Visibility};
+        use cranelisp_types::{CheckResult, Defn, DefnVariant, Expr, TopLevel, Visibility};
 
-        // Create a minimal module with one function: (defn answer [] 42)
         let defn = Defn {
             name: Symbol::from("answer"),
             docstring: None,
@@ -903,29 +952,33 @@ mod tests {
             visibility: Visibility::Public,
             span: Span::new(0, 20),
         };
-        let scheme = Scheme {
-            vars: vec![],
-            constraints: HashMap::new(),
-            ty: cranelisp_types::Type::Fn(vec![], Box::new(cranelisp_types::Type::Int)),
-        };
 
-        let input = ObjectCompileInput {
-            module_path: ModuleFullPath::from("test"),
-            defns: vec![(defn, scheme)],
+        let program = vec![TopLevel::Defn(defn)];
+        let check = CheckResult {
             method_resolutions: HashMap::new(),
-            fn_slot_assignments: HashMap::new(),
-            fn_to_module: HashMap::new(),
-            intrinsics: IntrinsicTable::new(),
+            constrained_fn_names: std::collections::HashSet::new(),
+            mono_defns: Vec::new(),
             expr_types: HashMap::new(),
-            next_got_slot: 0,
-            cross_module_fns: vec![],
+            default_method_defns: Vec::new(),
+            warnings: Vec::new(),
+            display: None,
         };
 
-        let bytes = compile_module_to_object(&input, &input, &dashmap::DashMap::new()).unwrap();
+        let mut obj_module = test_object_module();
+        let _result = crate::compile_to_module(
+            ModuleFullPath::from("user"),
+            &program,
+            &check,
+            &dashmap::DashMap::new(),
+            &mut obj_module,
+        ).unwrap();
+
+        let product = obj_module.finish();
+        let bytes = product.emit().unwrap();
         assert!(!bytes.is_empty(), "object file should not be empty");
 
         // Verify it is a valid object file by parsing with the `object` crate
-        use ::object::{Object, ObjectSection, ObjectSymbol};
+        use ::object::{Object, ObjectSymbol};
         let obj = ::object::File::parse(&*bytes).expect("should be parseable as object file");
 
         // Verify we have a text section
@@ -946,9 +999,8 @@ mod tests {
     // spec: design/backend/module-caching.md §13.2 — compile module with params
     #[test]
     fn test_compile_module_to_object_with_params() {
-        use cranelisp_types::{Defn, DefnVariant, Expr, Scheme, Visibility};
+        use cranelisp_types::{CheckResult, Defn, DefnVariant, Expr, TopLevel, Visibility};
 
-        // Create: (defn identity [x] x)
         let defn = Defn {
             name: Symbol::from("identity"),
             docstring: None,
@@ -964,28 +1016,29 @@ mod tests {
             visibility: Visibility::Public,
             span: Span::new(0, 25),
         };
-        let scheme = Scheme {
-            vars: vec![],
-            constraints: HashMap::new(),
-            ty: cranelisp_types::Type::Fn(
-                vec![cranelisp_types::Type::Int],
-                Box::new(cranelisp_types::Type::Int),
-            ),
-        };
 
-        let input = ObjectCompileInput {
-            module_path: ModuleFullPath::from("test"),
-            defns: vec![(defn, scheme)],
+        let program = vec![TopLevel::Defn(defn)];
+        let check = CheckResult {
             method_resolutions: HashMap::new(),
-            fn_slot_assignments: HashMap::new(),
-            fn_to_module: HashMap::new(),
-            intrinsics: IntrinsicTable::new(),
+            constrained_fn_names: std::collections::HashSet::new(),
+            mono_defns: Vec::new(),
             expr_types: HashMap::new(),
-            next_got_slot: 0,
-            cross_module_fns: vec![],
+            default_method_defns: Vec::new(),
+            warnings: Vec::new(),
+            display: None,
         };
 
-        let bytes = compile_module_to_object(&input, &input, &dashmap::DashMap::new()).unwrap();
+        let mut obj_module = test_object_module();
+        let _result = crate::compile_to_module(
+            ModuleFullPath::from("user"),
+            &program,
+            &check,
+            &dashmap::DashMap::new(),
+            &mut obj_module,
+        ).unwrap();
+
+        let product = obj_module.finish();
+        let bytes = product.emit().unwrap();
         assert!(!bytes.is_empty());
 
         // Verify parseable

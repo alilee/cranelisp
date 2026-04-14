@@ -43,7 +43,7 @@ use cranelift::prelude::*;
 use cranelift_module::Module;
 
 use crate::compiler::{CompilationEnv, CompileContext, FnCompiler};
-use crate::jit::{Jit, IntrinsicFuncIds};
+use crate::jit::{Jit, IntrinsicFuncIds, declare_intrinsics_generic};
 
 /// Result of compiling a program's functions into a module.
 ///
@@ -88,15 +88,15 @@ pub fn compile_to_module<M: Module>(
         current_module: module_path.clone(),
     };
     let cross_refs = resolve_cross_module_refs(symbol_tables, &module_path);
-    let jit_prefix = if module_path.as_ref() != "user" && module_path.as_ref() != "main" {
-        Some(module_path.as_ref())
+    let jit_prefix_owned: Option<String> = if module_path.as_ref() != "user" && module_path.as_ref() != "main" {
+        Some(module_path.as_ref().to_string())
     } else {
         None
     };
     _compile_to_module_inner(
         program, typecheck, symbol_tables, module, module_path,
         &intrinsic_ids, Some(&env_impl as &dyn CompilationEnv),
-        &cross_refs, jit_prefix,
+        &cross_refs, jit_prefix_owned.as_deref(),
     )
 }
 
@@ -395,7 +395,7 @@ pub struct _DeprecatedCompiledProgram {
     pub warnings: Vec<Warning>,
 }
 
-impl CompiledProgram {
+impl _DeprecatedCompiledProgram {
     /// Execute the compiled program.
     ///
     /// # Safety
@@ -429,7 +429,7 @@ pub struct _DeprecatedCompiledExpr {
     func_ptr: *const u8,
 }
 
-impl CompiledExpr {
+impl _DeprecatedCompiledExpr {
     /// Execute the compiled expression and return the i64 result.
     ///
     /// Checks for runtime panics (division by zero, match failure, etc.)
@@ -468,7 +468,7 @@ pub fn _deprecated_compile_program(
     _check: &CheckResult,
     _use_got: bool,
     _symbol_tables: &DashMap<ModuleFullPath, SymbolTable>,
-) -> Result<CompiledProgram, CranelispError> {
+) -> Result<_DeprecatedCompiledProgram, CranelispError> {
     unimplemented!("superseded by compile_to_module")
 }
 
@@ -577,7 +577,7 @@ pub fn _deprecated_compile_module_program(
     _prior_funcs: &[(Symbol, usize)],
     _module_prefix: &str,
     _symbol_tables: &DashMap<ModuleFullPath, SymbolTable>,
-) -> Result<CompiledModuleInfo, CranelispError> {
+) -> Result<_DeprecatedCompiledModuleInfo, CranelispError> {
     unimplemented!("superseded by compile_to_module")
 }
 
@@ -593,7 +593,7 @@ pub fn _deprecated_compile_expr_with_got_and_symbols(
     _env: Option<&dyn crate::compiler::CompilationEnv>,
     _symbol_tables: &DashMap<ModuleFullPath, SymbolTable>,
     _current_module: ModuleFullPath,
-) -> Result<CompiledExpr, CranelispError> {
+) -> Result<_DeprecatedCompiledExpr, CranelispError> {
     unimplemented!("superseded by compile_to_module")
 }
 
@@ -612,7 +612,7 @@ pub fn _deprecated_compile_and_run_expr(
 mod tests {
     use super::*;
     use cranelisp_types::{
-        CheckResult, Defn, DefnVariant, Expr, Span, Symbol, TopLevel,
+        CheckResult, Defn, DefnVariant, Expr, Span, Symbol, TopLevel, Visibility,
     };
     use std::collections::{HashMap, HashSet};
 
@@ -630,6 +630,85 @@ mod tests {
 
     fn empty_tables() -> DashMap<ModuleFullPath, SymbolTable> {
         DashMap::new()
+    }
+
+    /// Test helper: wrap an expression in a synthetic zero-arg defn, compile via
+    /// `compile_to_module`, finalize JIT, execute, and return the i64 result.
+    fn test_compile_and_run(
+        expr: &Expr,
+        check: &CheckResult,
+        tables: &DashMap<ModuleFullPath, SymbolTable>,
+    ) -> Result<i64, CranelispError> {
+        let defn = Defn {
+            name: Symbol::from("__expr__"),
+            docstring: None,
+            variants: vec![DefnVariant {
+                params: vec![],
+                param_annotations: vec![],
+                body: expr.clone(),
+                span: Span::SYNTHETIC,
+            }],
+            visibility: Visibility::Public,
+            span: Span::SYNTHETIC,
+        };
+        let program: Program = vec![TopLevel::Defn(defn)];
+        let mut jit = Jit::new()?;
+        let result = compile_to_module(
+            ModuleFullPath::from("user"),
+            &program,
+            check,
+            tables,
+            jit.jit_module(),
+        )?;
+        jit.finalize()?;
+        let entry_id = result.entry_func_id.ok_or_else(|| CranelispError::CodegenError {
+            message: "no entry function".into(),
+            span: Span::SYNTHETIC,
+        })?;
+        let ptr = jit.get_finalized_ptr(entry_id);
+        let _ = cranelisp_runtime::panic::take_runtime_error();
+        let func: extern "C" fn() -> i64 = unsafe { std::mem::transmute(ptr) };
+        let value = func();
+        if let Some(msg) = cranelisp_runtime::panic::take_runtime_error() {
+            return Err(CranelispError::CodegenError {
+                message: format!("runtime panic: {}", msg),
+                span: Span::SYNTHETIC,
+            });
+        }
+        Ok(value)
+    }
+
+    /// Test helper: compile a program via `compile_to_module`, finalize JIT,
+    /// execute entry function, and return the i64 result.
+    fn test_compile_program_and_run(
+        program: &Program,
+        check: &CheckResult,
+        tables: &DashMap<ModuleFullPath, SymbolTable>,
+    ) -> Result<i64, CranelispError> {
+        let mut jit = Jit::new()?;
+        let result = compile_to_module(
+            ModuleFullPath::from("user"),
+            program,
+            check,
+            tables,
+            jit.jit_module(),
+        )?;
+        jit.finalize()?;
+        let entry_id = result.entry_func_id.ok_or_else(|| CranelispError::CodegenError {
+            message: "no entry function".into(),
+            span: Span::SYNTHETIC,
+        })?;
+        let ptr = jit.get_finalized_ptr(entry_id);
+        let _ = cranelisp_runtime::panic::take_runtime_error();
+        let func: extern "C" fn() -> i64 = unsafe { std::mem::transmute(ptr) };
+        let value = func();
+        if let Some(msg) = cranelisp_runtime::panic::take_runtime_error() {
+            return Err(CranelispError::CodegenError {
+                message: format!("runtime panic: {}", msg),
+                span: Span::SYNTHETIC,
+            });
+        }
+        Ok(value)
     }
 
     /// Build symbol tables with an Option type for ADT tests.
@@ -739,8 +818,7 @@ mod tests {
         let program: Program = vec![TopLevel::Defn(defn)];
         let check = empty_check();
 
-        let compiled = compile_program(&program, &check, false, &empty_tables()).unwrap();
-        let value = unsafe { compiled.execute().unwrap() };
+        let value = test_compile_program_and_run(&program, &check, &empty_tables()).unwrap();
         assert_eq!(value, 42);
     }
 
@@ -750,7 +828,14 @@ mod tests {
         let program: Program = vec![];
         let check = empty_check();
 
-        let result = compile_program(&program, &check, false, &empty_tables());
+        let mut jit = Jit::new().unwrap();
+        let result = compile_to_module(
+            ModuleFullPath::from("user"),
+            &program,
+            &check,
+            &empty_tables(),
+            jit.jit_module(),
+        );
         assert!(result.is_err());
     }
 
@@ -763,7 +848,7 @@ mod tests {
         };
         let check = empty_check();
 
-        let value = compile_and_run_expr(&expr, &check, &empty_tables()).unwrap();
+        let value = test_compile_and_run(&expr, &check, &empty_tables()).unwrap();
         assert_eq!(value, 99);
     }
 
@@ -789,13 +874,11 @@ mod tests {
         let program: Program = vec![TopLevel::Defn(defn)];
         let check = empty_check();
 
-        let compiled = compile_program(&program, &check, true, &empty_tables()).unwrap();
-        let value = unsafe { compiled.execute().unwrap() };
+        let value = test_compile_program_and_run(&program, &check, &empty_tables()).unwrap();
         assert_eq!(value, 7);
     }
 
     // spec: 04-expressions §4.1.1 — integer literal codegen with GOT state
-    #[test]
     // spec: 05-definitions §5.13.1 — multiple function definitions compile together
     #[test]
     fn test_compile_program_multiple_defns() {
@@ -835,8 +918,7 @@ mod tests {
         let program: Program = vec![TopLevel::Defn(helper), TopLevel::Defn(main_defn)];
         let check = empty_check();
 
-        let compiled = compile_program(&program, &check, false, &empty_tables()).unwrap();
-        let value = unsafe { compiled.execute().unwrap() };
+        let value = test_compile_program_and_run(&program, &check, &empty_tables()).unwrap();
         assert_eq!(value, 100);
     }
 
@@ -849,7 +931,7 @@ mod tests {
         };
         let check = empty_check();
 
-        let value = compile_and_run_expr(&expr, &check, &empty_tables()).unwrap();
+        let value = test_compile_and_run(&expr, &check, &empty_tables()).unwrap();
         assert_eq!(value, 1);
     }
 
@@ -864,7 +946,7 @@ mod tests {
         };
         let check = empty_check();
 
-        let result = compile_and_run_expr(&expr, &check, &empty_tables());
+        let result = test_compile_and_run(&expr, &check, &empty_tables());
         assert!(result.is_ok(), "string literal should compile: {result:?}");
         let ptr = result.unwrap();
         // ptr should be a heap pointer (> NULLARY_TAG_THRESHOLD)
@@ -887,7 +969,7 @@ mod tests {
         };
         let check = empty_check();
 
-        let result = compile_and_run_expr(&expr, &check, &empty_tables());
+        let result = test_compile_and_run(&expr, &check, &empty_tables());
         assert!(result.is_ok(), "empty string should compile: {result:?}");
         let ptr = result.unwrap();
         assert!(ptr > 1024, "expected heap pointer, got {ptr}");
@@ -918,7 +1000,7 @@ mod tests {
         let check = empty_check();
         let tables = option_type_tables();
 
-        let result = compile_and_run_expr(&expr, &check, &tables);
+        let result = test_compile_and_run(&expr, &check, &tables);
         assert!(result.is_ok(), "ADT constructor should compile: {result:?}");
         let ptr = result.unwrap();
         assert!(ptr > 1024, "expected heap pointer, got {ptr}");
@@ -990,7 +1072,7 @@ mod tests {
         let check = empty_check();
         let tables = option_type_tables();
 
-        let result = compile_and_run_expr(&expr, &check, &tables);
+        let result = test_compile_and_run(&expr, &check, &tables);
         assert!(result.is_ok(), "match with fields should compile: {result:?}");
         assert_eq!(result.unwrap(), 99, "match should extract field value");
     }
@@ -1061,7 +1143,7 @@ mod tests {
         display: None,
         };
 
-        let result = compile_and_run_expr(&expr, &check, &empty_tables());
+        let result = test_compile_and_run(&expr, &check, &empty_tables());
         assert!(result.is_ok(), "closure should compile: {result:?}");
         assert_eq!(result.unwrap(), 15, "5 + 10 = 15");
     }
@@ -1077,7 +1159,7 @@ mod tests {
         };
         let check = empty_check();
 
-        let result = compile_and_run_expr(&expr, &check, &empty_tables());
+        let result = test_compile_and_run(&expr, &check, &empty_tables());
         assert!(result.is_ok(), "empty vec literal should compile: {result:?}");
         let ptr = result.unwrap();
         // ptr should be a heap pointer (> NULLARY_TAG_THRESHOLD)
@@ -1103,7 +1185,7 @@ mod tests {
         };
         let check = empty_check();
 
-        let result = compile_and_run_expr(&expr, &check, &empty_tables());
+        let result = test_compile_and_run(&expr, &check, &empty_tables());
         assert!(result.is_ok(), "vec literal should compile: {result:?}");
         let ptr = result.unwrap();
         assert!(ptr > 1024, "expected heap pointer, got {ptr}");
@@ -1134,7 +1216,7 @@ mod tests {
         };
         let check = empty_check();
 
-        let result = compile_and_run_expr(&expr, &check, &empty_tables());
+        let result = test_compile_and_run(&expr, &check, &empty_tables());
         assert!(result.is_ok(), "single-element vec should compile: {result:?}");
         let ptr = result.unwrap();
 
@@ -1161,7 +1243,7 @@ mod tests {
         };
         let check = empty_check();
 
-        let result = compile_and_run_expr(&expr, &check, &empty_tables());
+        let result = test_compile_and_run(&expr, &check, &empty_tables());
         assert!(result.is_ok(), "bool vec should compile: {result:?}");
         let ptr = result.unwrap();
         assert_eq!(cranelisp_runtime::vec_len(ptr), 2);
@@ -1219,7 +1301,7 @@ mod tests {
         display: None,
         };
 
-        let result = compile_and_run_expr(&expr, &check, &empty_tables());
+        let result = test_compile_and_run(&expr, &check, &empty_tables());
         assert!(result.is_ok(), "vec-len should compile: {result:?}");
         assert_eq!(result.unwrap(), 3);
     }
@@ -1280,7 +1362,7 @@ mod tests {
         display: None,
         };
 
-        let result = compile_and_run_expr(&expr, &check, &empty_tables());
+        let result = test_compile_and_run(&expr, &check, &empty_tables());
         assert!(result.is_ok(), "vec-get should compile: {result:?}");
         assert_eq!(result.unwrap(), 20);
     }
@@ -1339,7 +1421,7 @@ mod tests {
         display: None,
         };
 
-        let result = compile_and_run_expr(&expr, &check, &empty_tables());
+        let result = test_compile_and_run(&expr, &check, &empty_tables());
         assert!(result.is_ok(), "vec-get index 0 should work: {result:?}");
         assert_eq!(result.unwrap(), 100);
     }
@@ -1399,7 +1481,7 @@ mod tests {
         display: None,
         };
 
-        let result = compile_and_run_expr(&expr, &check, &empty_tables());
+        let result = test_compile_and_run(&expr, &check, &empty_tables());
         assert!(result.is_ok(), "vec-get last index should work: {result:?}");
         assert_eq!(result.unwrap(), 3);
     }
@@ -1476,7 +1558,7 @@ mod tests {
         display: None,
         };
 
-        let result = compile_and_run_expr(&expr, &check, &empty_tables());
+        let result = test_compile_and_run(&expr, &check, &empty_tables());
         assert!(result.is_ok(), "vec-set should compile: {result:?}");
         // vec-set returns a new Vec with same length.
         assert_eq!(result.unwrap(), 3);
@@ -1541,7 +1623,7 @@ mod tests {
         display: None,
         };
 
-        let result = compile_and_run_expr(&expr, &check, &empty_tables());
+        let result = test_compile_and_run(&expr, &check, &empty_tables());
         assert!(result.is_ok(), "vec-push should compile: {result:?}");
         // [10 20] pushed 30 -> len 3
         assert_eq!(result.unwrap(), 3);
@@ -1600,7 +1682,7 @@ mod tests {
         display: None,
         };
 
-        let result = compile_and_run_expr(&expr, &check, &empty_tables());
+        let result = test_compile_and_run(&expr, &check, &empty_tables());
         assert!(result.is_ok(), "vec in let should compile: {result:?}");
         assert_eq!(result.unwrap(), 3);
     }
@@ -1650,7 +1732,7 @@ mod tests {
         display: None,
         };
 
-        let result = compile_and_run_expr(&expr, &check, &empty_tables());
+        let result = test_compile_and_run(&expr, &check, &empty_tables());
         assert!(result.is_ok(), "vec with computed elements should compile: {result:?}");
         let ptr = result.unwrap();
 
@@ -1694,8 +1776,7 @@ mod tests {
         let program: Program = vec![TopLevel::Defn(defn)];
         let check = empty_check();
 
-        let compiled = compile_program(&program, &check, false, &empty_tables()).unwrap();
-        let ptr = unsafe { compiled.execute().unwrap() };
+        let ptr = test_compile_program_and_run(&program, &check, &empty_tables()).unwrap();
         assert!(ptr > 1024, "expected heap pointer, got {ptr}");
         assert_eq!(cranelisp_runtime::vec_len(ptr), 3);
 
@@ -1758,7 +1839,7 @@ mod tests {
         display: None,
         };
 
-        let result = compile_and_run_expr(&expr, &check, &empty_tables());
+        let result = test_compile_and_run(&expr, &check, &empty_tables());
         assert!(result.is_ok(), "vec-get value should compile: {result:?}");
         assert_eq!(result.unwrap(), 300);
     }
@@ -1822,7 +1903,7 @@ mod tests {
         display: None,
         };
 
-        let result = compile_and_run_expr(&expr, &check, &empty_tables());
+        let result = test_compile_and_run(&expr, &check, &empty_tables());
         assert!(result.is_ok(), "vec-push on temp should compile: {result:?}");
         assert_eq!(result.unwrap(), 2);
     }
@@ -1888,7 +1969,7 @@ mod tests {
         display: None,
         };
 
-        let result = compile_and_run_expr(&expr, &check, &empty_tables());
+        let result = test_compile_and_run(&expr, &check, &empty_tables());
         assert!(result.is_ok(), "vec-set on temp should compile: {result:?}");
         assert_eq!(result.unwrap(), 3);
     }
@@ -1904,7 +1985,7 @@ mod tests {
         };
         let check = empty_check();
 
-        let result = compile_and_run_expr(
+        let result = test_compile_and_run(
             &expr, &check, &empty_tables(),
         );
         assert!(result.is_ok(), "vec in interactive mode should compile: {result:?}");
@@ -1954,7 +2035,7 @@ mod tests {
         display: None,
         };
 
-        let result = compile_and_run_expr(&expr, &check, &empty_tables());
+        let result = test_compile_and_run(&expr, &check, &empty_tables());
         assert!(result.is_ok(), "empty vec len should compile: {result:?}");
         assert_eq!(result.unwrap(), 0);
     }
@@ -2015,7 +2096,7 @@ mod tests {
         display: None,
         };
 
-        let result = compile_and_run_expr(&expr, &check, &empty_tables());
+        let result = test_compile_and_run(&expr, &check, &empty_tables());
         assert!(result.is_ok(), "push to empty vec should compile: {result:?}");
         assert_eq!(result.unwrap(), 1);
     }
@@ -2057,7 +2138,7 @@ mod tests {
         display: None,
         };
 
-        let result = compile_and_run_expr(&expr, &check, &empty_tables());
+        let result = test_compile_and_run(&expr, &check, &empty_tables());
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), 0);
     }
@@ -2087,7 +2168,7 @@ mod tests {
         };
         let check = empty_check();
 
-        let result = compile_and_run_expr(&expr, &check, &empty_tables());
+        let result = test_compile_and_run(&expr, &check, &empty_tables());
         assert!(result.is_ok(), "nested vec should compile: {result:?}");
         let outer_ptr = result.unwrap();
         assert!(outer_ptr > 1024);
@@ -2129,7 +2210,7 @@ mod tests {
         };
         let check = empty_check();
 
-        let result = compile_and_run_expr(&expr, &check, &empty_tables());
+        let result = test_compile_and_run(&expr, &check, &empty_tables());
         assert!(result.is_ok(), "large vec should compile: {result:?}");
         let ptr = result.unwrap();
         assert_eq!(cranelisp_runtime::vec_len(ptr), 10);
@@ -2175,7 +2256,7 @@ mod tests {
             },
         );
 
-        let value = compile_and_run_expr(&expr, &check, &empty_tables())
+        let value = test_compile_and_run(&expr, &check, &empty_tables())
             .expect("TraitMethod inline add should compile");
         assert_eq!(value, 7);
     }
@@ -2208,7 +2289,7 @@ mod tests {
             },
         );
 
-        let value = compile_and_run_expr(&expr, &check, &empty_tables())
+        let value = test_compile_and_run(&expr, &check, &empty_tables())
             .expect("TraitMethod eq-bool should compile");
         assert_eq!(value, 1); // true == true → true (1)
     }
@@ -2252,9 +2333,8 @@ mod tests {
         // Mark "add" as constrained — should be skipped during compilation.
         check.constrained_fn_names.insert(Symbol::from("add"));
 
-        let compiled = compile_program(&program, &check, false, &empty_tables())
+        let value = test_compile_program_and_run(&program, &check, &empty_tables())
             .expect("should compile with constrained fn skipped");
-        let value = unsafe { compiled.execute().unwrap() };
         assert_eq!(value, 42);
     }
 
@@ -2262,30 +2342,58 @@ mod tests {
     #[test]
     fn test_collect_extra_defns_empty() {
         let check = empty_check();
-        let extras = collect_extra_defns(&check);
-        assert!(extras.is_empty());
+        // Verify default_method_defns is empty in a fresh CheckResult.
+        assert!(check.default_method_defns.is_empty());
     }
 
-    // spec: 07-traits §7.7 — default trait methods collected as extra defns
+    // spec: 07-traits §7.7 — default trait methods compiled as extra defns
     #[test]
-    fn test_collect_extra_defns_with_defaults() {
-        let mut check = empty_check();
-        check.default_method_defns.push(Defn {
-            name: Symbol::from("!="),
+    fn test_compile_with_default_method_defns() {
+        // A program with only a main function, but check has a default method defn.
+        // The default method defn should be compiled alongside main.
+        let main_defn = Defn {
+            name: Symbol::from("main"),
+            docstring: None,
+            variants: vec![DefnVariant {
+                params: vec![],
+                param_annotations: vec![],
+                body: Expr::Apply {
+                    callee: Box::new(Expr::Var {
+                        name: Symbol::from("default-ne"),
+                        span: Span::new(10, 20),
+                    }),
+                    args: vec![
+                        Expr::IntLit { value: 1, span: Span::new(21, 22) },
+                        Expr::IntLit { value: 2, span: Span::new(23, 24) },
+                    ],
+                    span: Span::new(9, 25),
+                },
+                span: Span::new(0, 30),
+            }],
+            visibility: Visibility::Public,
+            span: Span::new(0, 30),
+        };
+
+        let default_defn = Defn {
+            name: Symbol::from("default-ne"),
             docstring: None,
             variants: vec![DefnVariant {
                 params: vec![Symbol::from("x"), Symbol::from("y")],
                 param_annotations: vec![],
-                body: Expr::IntLit { value: 0, span: Span::new(0, 1) },
+                body: Expr::IntLit { value: 77, span: Span::new(0, 2) },
                 span: Span::new(0, 10),
             }],
-            visibility: cranelisp_types::Visibility::Public,
+            visibility: Visibility::Public,
             span: Span::new(0, 10),
-        });
+        };
 
-        let extras = collect_extra_defns(&check);
-        assert_eq!(extras.len(), 1);
-        assert_eq!(extras[0].name, Symbol::from("!="));
+        let program: Program = vec![TopLevel::Defn(main_defn)];
+        let mut check = empty_check();
+        check.default_method_defns.push(default_defn);
+
+        let value = test_compile_program_and_run(&program, &check, &empty_tables())
+            .expect("program with default method defns should compile");
+        assert_eq!(value, 77, "should call the default method defn");
     }
 
     // spec: 12-runtime §12.5, 07-traits §7.7 — TCO for monomorphised self-recursive call
@@ -2411,14 +2519,14 @@ mod tests {
         assert_eq!(result, 0, "TCO should allow 1M recursive calls without stack overflow");
     }
 
-    // --- compile_module_program tests ---
+    // --- compile_to_module module tests ---
 
-    // spec: 08-modules §8.3 — two modules with same-named function in shared JIT
-    // Regression test: previously caused "Duplicate definition" error when
-    // both modules defined a function with the same bare name (e.g., "fold").
+    // spec: 08-modules §8.3 — two modules with same-named function compiled separately
+    // Regression test: verifies module prefixing avoids name collisions.
+    // With compile_to_module, each module gets its own JIT — no collision possible.
     #[test]
-    fn test_shared_jit_name_collision_avoided() {
-        // Module A defines "val" returning 100.
+    fn test_module_prefix_applied() {
+        // Module "mod_a" defines "val" returning 100.
         let val_a = Defn {
             name: Symbol::from("val"),
             docstring: None,
@@ -2428,13 +2536,37 @@ mod tests {
                 body: Expr::IntLit { value: 100, span: Span::new(0, 3) },
                 span: Span::new(0, 20),
             }],
-            visibility: cranelisp_types::Visibility::Public,
+            visibility: Visibility::Public,
             span: Span::new(0, 20),
         };
         let program_a: Program = vec![TopLevel::Defn(val_a)];
         let check_a = empty_check();
 
-        // Module B also defines "val" returning 200.
+        let tables = empty_tables();
+        let mut jit_a = Jit::new().unwrap();
+        let result_a = compile_to_module(
+            ModuleFullPath::from("mod_a"),
+            &program_a,
+            &check_a,
+            &tables,
+            jit_a.jit_module(),
+        ).expect("module A should compile");
+        jit_a.finalize().unwrap();
+
+        // The result should have the function with a module-qualified name.
+        assert!(
+            result_a.func_ids.contains_key(&Symbol::from("mod_a/val")),
+            "func_ids should contain module-qualified name: {:?}",
+            result_a.func_ids.keys().collect::<Vec<_>>()
+        );
+
+        // Execute module A's "val".
+        let entry_id = result_a.entry_func_id.expect("should have entry");
+        let ptr = jit_a.get_finalized_ptr(entry_id);
+        let func: extern "C" fn() -> i64 = unsafe { std::mem::transmute(ptr) };
+        assert_eq!(func(), 100, "module A's val should return 100");
+
+        // Module B also defines "val" returning 200 — compiles into a separate JIT.
         let val_b = Defn {
             name: Symbol::from("val"),
             docstring: None,
@@ -2444,77 +2576,26 @@ mod tests {
                 body: Expr::IntLit { value: 200, span: Span::new(100, 103) },
                 span: Span::new(100, 120),
             }],
-            visibility: cranelisp_types::Visibility::Public,
+            visibility: Visibility::Public,
             span: Span::new(100, 120),
         };
-        // Module B also defines "main" that calls its own "val".
-        let main_b = Defn {
-            name: Symbol::from("main"),
-            docstring: None,
-            variants: vec![DefnVariant {
-                params: vec![],
-                param_annotations: vec![],
-                body: Expr::Apply {
-                callee: Box::new(Expr::Var {
-                name: Symbol::from("val"),
-                span: Span::new(130, 133),
-                }),
-                args: vec![],
-                span: Span::new(130, 135),
-                },
-                span: Span::new(125, 140),
-            }],
-            visibility: cranelisp_types::Visibility::Public,
-            span: Span::new(125, 140),
-        };
-        let program_b: Program = vec![
-            TopLevel::Defn(val_b),
-            TopLevel::Defn(main_b),
-        ];
+        let program_b: Program = vec![TopLevel::Defn(val_b)];
         let check_b = empty_check();
 
-        // Compile both modules into one shared JIT.
-        let mut jit = jit::Jit::new().unwrap();
-        jit.declare_intrinsics().unwrap();
+        let mut jit_b = Jit::new().unwrap();
+        let result_b = compile_to_module(
+            ModuleFullPath::from("mod_b"),
+            &program_b,
+            &check_b,
+            &tables,
+            jit_b.jit_module(),
+        ).expect("module B should compile without collision");
+        jit_b.finalize().unwrap();
 
-        // Compile module A with prefix "mod_a".
-        let tables = empty_tables();
-        let info_a = compile_module_program(
-            &program_a, &check_a,
-            &mut jit, &[], "mod_a", &tables,
-        ).expect("module A should compile");
-
-        // Build prior_funcs from module A's output (simulating accumulate_func_sigs).
-        let mut prior_funcs: Vec<(Symbol, usize)> = Vec::new();
-        for (name, arity) in &info_a.func_signatures {
-            prior_funcs.push((name.clone(), *arity));
-        }
-
-        // Compile module B with prefix "mod_b" — should NOT fail with
-        // "Duplicate definition" error.
-        let _info_b = compile_module_program(
-            &program_b, &check_b,
-            &mut jit, &prior_funcs, "mod_b", &tables,
-        ).expect("module B should compile without name collision");
-
-        // Finalize the shared JIT.
-        jit.finalize().expect("JIT finalization should succeed");
-
-        // Module B's "main" calls its own "val" which returns 200.
-        let main_ptr = jit.get_ptr_by_name(
-            &Symbol::from("mod_b/main"), 0,
-        ).expect("mod_b/main should be findable");
-        let func: extern "C" fn() -> i64 = unsafe { std::mem::transmute(main_ptr) };
-        let result = func();
-        assert_eq!(result, 200, "module B's main should call its own val (200), not module A's (100)");
-
-        // Module A's "val" should also be accessible by its qualified name.
-        let val_a_ptr = jit.get_ptr_by_name(
-            &Symbol::from("mod_a/val"), 0,
-        ).expect("mod_a/val should be findable");
-        let func_a: extern "C" fn() -> i64 = unsafe { std::mem::transmute(val_a_ptr) };
-        let result_a = func_a();
-        assert_eq!(result_a, 100, "module A's val should return 100");
+        let entry_b = result_b.entry_func_id.expect("should have entry");
+        let ptr_b = jit_b.get_finalized_ptr(entry_b);
+        let func_b: extern "C" fn() -> i64 = unsafe { std::mem::transmute(ptr_b) };
+        assert_eq!(func_b(), 200, "module B's val should return 200");
     }
 
     // --- multi-sig defn tests ---
@@ -2653,9 +2734,8 @@ mod tests {
             },
         );
 
-        let compiled = compile_program(&program, &check, false, &empty_tables())
+        let result = test_compile_program_and_run(&program, &check, &empty_tables())
             .expect("multi-sig program should compile");
-        let result = unsafe { compiled.execute().unwrap() };
         assert_eq!(result, 42, "should dispatch to f$Int and return 42");
     }
 
@@ -2727,9 +2807,8 @@ mod tests {
             },
         );
 
-        let compiled = compile_program(&program, &check, false, &empty_tables())
+        let result = test_compile_program_and_run(&program, &check, &empty_tables())
             .expect("multi-sig program should compile");
-        let result = unsafe { compiled.execute().unwrap() };
         assert_eq!(result, 99, "should dispatch to g$Int+Int and return second arg (99)");
     }
 
