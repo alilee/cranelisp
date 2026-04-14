@@ -80,23 +80,53 @@ pub fn compile_and_execute_expr(
         .unwrap_or(Type::Int);
 
     if traced_fns.is_empty() {
+        use cranelisp_types::{Defn, DefnVariant, Symbol, Visibility};
+
         let extra_syms: Vec<(&str, *const u8)> = jit_symbols
             .iter()
             .map(|(name, ptr)| (name.as_str(), *ptr))
             .collect();
 
-        let compiled = cranelisp_backend::compile_expr_with_got_and_symbols(
-            expr,
+        let mut jit = cranelisp_backend::jit::Jit::new_with_symbols(&extra_syms)?;
+        jit.declare_intrinsics()?;
+
+        // Define GOT base literal pool entries as data in the JIT module.
+        for (name, ptr) in got_data_defs {
+            jit.define_got_data(name, *ptr)?;
+        }
+
+        let wrapper_name = Symbol::from("__repl_expr__");
+        let wrapper_defn = Defn {
+            name: wrapper_name.clone(),
+            docstring: None,
+            variants: vec![DefnVariant {
+                params: vec![],
+                param_annotations: vec![],
+                body: expr.clone(),
+                span: expr.span(),
+            }],
+            visibility: Visibility::Public,
+            span: expr.span(),
+        };
+
+        let func_ids = jit.declare_functions(&[&wrapper_defn])?;
+        let empty_arities: HashMap<Symbol, usize> = HashMap::new();
+
+        let mut compile_ctx = jit.build_compile_context(
             check,
-            &extra_syms,
-            got_data_defs,
-            Some(env),
+            &func_ids,
+            &empty_arities,
             symbol_tables,
             current_module.clone(),
-        )?;
+        );
+        compile_ctx.env = Some(env);
+
+        jit.compile_defn(&wrapper_defn, compile_ctx)?;
+        let code_ptr = jit.finalize_and_get_ptr(&wrapper_name, 0)?;
 
         // SAFETY: compiled code was just generated and finalized by our JIT.
-        let value = unsafe { compiled.execute()? };
+        let func: extern "C" fn() -> i64 = unsafe { std::mem::transmute(code_ptr) };
+        let value = func();
         Ok((value, ty))
     } else {
         let value = compile_and_execute_expr_with_trace(

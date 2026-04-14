@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 use cranelisp_types::{
     CheckResult, CranelispError, DefKind, Defn, ExportSpec, ImportNames, ImportSpec,
     MacroClauseInfo, ModuleEntry, ModuleFullPath, ModuleStrategy,
-    PlatformSpec, PrimitiveKind, Sexp, Span, Symbol, TopLevel, Type, Visibility,
+    PlatformSpec, PrimitiveKind, Sexp, Span, Symbol, TopLevel, Visibility,
 };
 
 use cranelisp_typecheck::{CheckPass, CheckState, ModuleCheckAccumulator};
@@ -2851,52 +2851,6 @@ pub fn priority_worker_loop(
         }
     }
     Ok(())
-}
-
-/// Collect cross-module function signatures from TC symbol tables.
-///
-/// Scans the module's symbol table (from `typecheck_products`) for `Import` entries,
-/// then looks up the source scheme in the TC's module tables (which include synthetic
-/// modules like `primitives` and `macros`). Returns (qualified_name, param_count) pairs.
-pub(crate) fn collect_cross_module_func_sigs_from_tc(
-    symbol_tables: &dashmap::DashMap<ModuleFullPath, cranelisp_types::SymbolTable>,
-    #[allow(unused)] typecheck_products: &dashmap::DashMap<ModuleFullPath, crate::session_v4::TypecheckProduct>,
-    module: &ModuleFullPath,
-) -> Vec<(Symbol, usize)> {
-    let mut sigs = Vec::new();
-    // Use TC's module table (not typecheck_products) because the full symbol
-    // table with Import entries lives in the TC. typecheck_products only has
-    // Def entries with GOT slots.
-    let Some(table) = symbol_tables.get(module) else {
-        eprintln!("DEBUG cross-sigs: no TC module table for {}", module);
-        return sigs;
-    };
-
-    for (name, entry) in table.all_symbols() {
-        if let ModuleEntry::Import { source } = entry {
-            // Look up in TC's module tables (covers synthetic modules like primitives).
-            if let Some(source_table) = symbol_tables.get(&source.module)
-                && let Some(source_entry) = source_table.get(source.symbol.as_ref()) {
-                    let param_count = match source_entry {
-                        ModuleEntry::Def { scheme, .. } | ModuleEntry::Constructor { scheme, .. } => {
-                            match &scheme.ty {
-                                Type::Fn(params, _) => params.len(),
-                                _ => continue,
-                            }
-                        }
-                        _ => continue,
-                    };
-                    let qualified = Symbol::from(format!(
-                        "{}/{}",
-                        source.module.as_ref(),
-                        source.symbol.as_ref()
-                    ));
-                    sigs.push((qualified, param_count));
-                    sigs.push((name.clone(), param_count));
-                }
-        }
-    }
-    sigs
 }
 
 /// Stash module data for nice worker `.o` and `.meta.json` compilation.

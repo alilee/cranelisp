@@ -21,7 +21,7 @@ pub use serialize::{CacheMetadata, read_cached_metadata, write_cached_metadata};
 pub use object::{
     ObjectCompileInput, ObjectCompilationEnv, IntrinsicTable, IntrinsicEntry,
     CacheWritePacket, build_cache_packet, process_cache_packet,
-    _deprecated_compile_module_to_object, got_data_symbol_name,
+    got_data_symbol_name,
 };
 pub use linker::Linker;
 

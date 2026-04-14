@@ -3302,13 +3302,6 @@ fn compile_module_object(
     // where the object path used an empty set.
     let check = input.check;
 
-    // Collect cross-module function signatures for import declaration.
-    let cross_module_func_sigs = crate::worker::collect_cross_module_func_sigs_from_tc(
-        &shared.symbol_tables,
-        &shared.typecheck_products,
-        module,
-    );
-
     // Build ObjectModule with PIC ISA.
     let isa = match cranelisp_backend::build_isa(true) {
         Ok(isa) => isa,
@@ -3334,28 +3327,14 @@ fn compile_module_object(
     };
     let mut obj_module = cranelisp_backend::cranelift_object::ObjectModule::new(obj_builder);
 
-    // Declare intrinsics (generic over Module).
-    let intrinsic_ids = match cranelisp_backend::jit::declare_intrinsics_generic(&mut obj_module) {
-        Ok(ids) => ids,
-        Err(e) => {
-            if std::env::var("CRANELISP_CODEGEN_TRACE").is_ok() {
-                eprintln!("nice-worker: intrinsic declaration failed for {}: {}", module, e.message());
-            }
-            return;
-        }
-    };
-
-    // Create ObjectCompilationEnv for GOT resolution from symbol tables.
-    let env = cranelisp_backend::cache::ObjectCompilationEnv {
-        symbol_tables: &shared.symbol_tables,
-        current_module: module.clone(),
-    };
-
     // Compile using the unified compile_to_module path.
+    // Intrinsics, CompilationEnv, and cross-module refs are derived internally.
     let obj_bytes = match cranelisp_backend::compile_to_module(
-        &input.program, &check, &shared.symbol_tables,
-        &mut obj_module, module.clone(), &intrinsic_ids,
-        Some(&env), &cross_module_func_sigs, None,
+        module.clone(),
+        &input.program,
+        &check,
+        &shared.symbol_tables,
+        &mut obj_module,
     ) {
         Ok(_result) => {
             // Emit .o bytes from the ObjectModule.

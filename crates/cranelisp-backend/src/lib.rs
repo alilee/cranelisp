@@ -1,10 +1,7 @@
 // cranelisp-backend: Cranelift IR codegen, JIT, RC emission, caching, linking.
 //
 // Public API:
-// - compile_program: batch compilation of a full program
-// - compile_expr_with_got_and_symbols: compile a single expression with env (REPL)
-// - compile_and_run_expr: compile and execute a single expression (convenience)
-// - Jit: JIT module management
+// - compile_to_module: compile a program's functions into any Cranelift Module
 // - build_isa: ISA construction for JIT and ObjectModule (re-exported from cache::object)
 
 pub mod cache;
@@ -34,7 +31,7 @@ use cranelift_module::FuncId;
 use dashmap::DashMap;
 
 use cranelisp_types::{
-    CheckResult, CranelispError, Defn, Expr, FQTypeName,
+    CheckResult, CranelispError, Defn, FQTypeName,
     ModuleFullPath, Program, Span, Symbol, SymbolTable,
     TopLevel, Type, TypeName, Warning,
 };
@@ -43,7 +40,7 @@ use cranelift::prelude::*;
 use cranelift_module::Module;
 
 use crate::compiler::{CompilationEnv, CompileContext, FnCompiler};
-use crate::jit::{Jit, IntrinsicFuncIds, declare_intrinsics_generic};
+use crate::jit::declare_intrinsics_generic;
 
 /// Result of compiling a program's functions into a module.
 ///
@@ -80,81 +77,32 @@ pub fn compile_to_module<M: Module>(
     symbol_tables: &DashMap<ModuleFullPath, SymbolTable>,
     module: &mut M,
 ) -> Result<CompilationResult, CranelispError> {
-    // TODO(/backend): Derive all of these internally instead of
-    // delegating to the legacy inner function. See §2.3 of the design doc.
+    // Derive internal dependencies.
     let intrinsic_ids = declare_intrinsics_generic(module)?;
     let env_impl = crate::cache::object::ObjectCompilationEnv {
         symbol_tables,
         current_module: module_path.clone(),
     };
+    let env: Option<&dyn CompilationEnv> = Some(&env_impl as &dyn CompilationEnv);
     let cross_refs = resolve_cross_module_refs(symbol_tables, &module_path);
     let jit_prefix_owned: Option<String> = if module_path.as_ref() != "user" && module_path.as_ref() != "main" {
         Some(module_path.as_ref().to_string())
     } else {
         None
     };
-    _compile_to_module_inner(
-        program, typecheck, symbol_tables, module, module_path,
-        &intrinsic_ids, Some(&env_impl as &dyn CompilationEnv),
-        &cross_refs, jit_prefix_owned.as_deref(),
-    )
-}
+    let jit_prefix: Option<&str> = jit_prefix_owned.as_deref();
 
-/// Resolve cross-module function references from symbol table Import chains.
-fn resolve_cross_module_refs(
-    symbol_tables: &DashMap<ModuleFullPath, SymbolTable>,
-    module_path: &ModuleFullPath,
-) -> Vec<(Symbol, usize)> {
-    let mut refs = Vec::new();
-    let Some(table) = symbol_tables.get(module_path) else { return refs };
-    for (name, entry) in table.all_symbols() {
-        if let ModuleEntry::Import { source } = entry {
-            if let Some(source_table) = symbol_tables.get(&source.module) {
-                if let Some(source_entry) = source_table.get(source.symbol.as_ref()) {
-                    let param_count = match source_entry {
-                        ModuleEntry::Def { scheme, .. } | ModuleEntry::Constructor { scheme, .. } => {
-                            match &scheme.ty {
-                                Type::Fn(params, _) => params.len(),
-                                _ => continue,
-                            }
-                        }
-                        _ => continue,
-                    };
-                    let qualified = Symbol::from(format!("{}/{}", source.module.as_ref(), source.symbol.as_ref()));
-                    refs.push((qualified, param_count));
-                    refs.push((name.clone(), param_count));
-                }
-            }
-        }
-    }
-    refs
-}
-
-/// Legacy inner implementation — to be eliminated by /backend.
-/// All parameters should be derived internally by compile_to_module.
-#[allow(clippy::too_many_arguments)]
-fn _compile_to_module_inner<M: Module>(
-    program: &Program,
-    check: &CheckResult,
-    symbol_tables: &DashMap<ModuleFullPath, SymbolTable>,
-    module: &mut M,
-    current_module: ModuleFullPath,
-    intrinsic_ids: &IntrinsicFuncIds,
-    env: Option<&dyn CompilationEnv>,
-    prior_funcs: &[(Symbol, usize)],
-    jit_prefix: Option<&str>,
-) -> Result<CompilationResult, CranelispError> {
     // Step 1: Collect defns from the program.
     let mut regular_defns: Vec<&Defn> = Vec::new();
     let mut multi_sig_defns: Vec<Defn> = Vec::new();
 
     for tl in program {
         if let TopLevel::Defn(defn) = tl {
-            if check.constrained_fn_names.contains(&defn.name) {
+            if typecheck.constrained_fn_names.contains(&defn.name) {
                 continue; // Template only — mono specializations compiled below
             }
             if defn.is_multi_sig() {
-                let expanded = expand_multi_sig_defn(defn, &check.expr_types)?;
+                let expanded = expand_multi_sig_defn(defn, &typecheck.expr_types)?;
                 multi_sig_defns.extend(expanded);
             } else {
                 regular_defns.push(defn);
@@ -163,8 +111,8 @@ fn _compile_to_module_inner<M: Module>(
     }
 
     // Step 2: Collect extra defns from CheckResult.
-    let extra_defns: Vec<&Defn> = check.default_method_defns.iter().collect();
-    let mono_defns: Vec<&Defn> = check.mono_defns.iter().map(|m| &m.defn).collect();
+    let extra_defns: Vec<&Defn> = typecheck.default_method_defns.iter().collect();
+    let mono_defns: Vec<&Defn> = typecheck.mono_defns.iter().map(|m| &m.defn).collect();
 
     // Step 3: Build the full defn list for declaration.
     let mut all_declare: Vec<&Defn> = regular_defns.clone();
@@ -211,7 +159,7 @@ fn _compile_to_module_inner<M: Module>(
     }
 
     // Declare prior (cross-module) functions as imports.
-    for (name, param_count) in prior_funcs {
+    for (name, param_count) in &cross_refs {
         if func_ids.contains_key(name) {
             continue;
         }
@@ -242,9 +190,7 @@ fn _compile_to_module_inner<M: Module>(
         // Also register the bare name.
         if let Some(slash_pos) = name.as_ref().rfind('/') {
             let bare_name = Symbol::from(&name.as_ref()[slash_pos + 1..]);
-            if !func_ids.contains_key(&bare_name) {
-                func_ids.insert(bare_name, func_id);
-            }
+            func_ids.entry(bare_name).or_insert(func_id);
         }
     }
 
@@ -253,7 +199,7 @@ fn _compile_to_module_inner<M: Module>(
         .iter()
         .map(|d| (d.name.clone(), d.params().len()))
         .collect();
-    for (name, count) in prior_funcs {
+    for (name, count) in &cross_refs {
         func_arities.insert(name.clone(), *count);
         if let Some(slash_pos) = name.as_ref().rfind('/') {
             let bare_name = Symbol::from(&name.as_ref()[slash_pos + 1..]);
@@ -272,12 +218,12 @@ fn _compile_to_module_inner<M: Module>(
 
     for defn in &non_mono_defns {
         let compile_ctx = CompileContext {
-            method_resolutions: &check.method_resolutions,
-            expr_types: &check.expr_types,
+            method_resolutions: &typecheck.method_resolutions,
+            expr_types: &typecheck.expr_types,
             func_ids: &func_ids,
             func_arities: &func_arities,
             symbol_tables,
-            current_module: current_module.clone(),
+            current_module: module_path.clone(),
             env,
             traced_fns: None,
             alloc_func_id: intrinsic_ids.alloc,
@@ -291,12 +237,12 @@ fn _compile_to_module_inner<M: Module>(
     }
 
     // Compile mono specializations with per-specialization resolutions.
-    for mono in &check.mono_defns {
-        let mut merged = check.method_resolutions.clone();
+    for mono in &typecheck.mono_defns {
+        let mut merged = typecheck.method_resolutions.clone();
         merged.extend(mono.resolutions.clone());
 
         let expr_types = if mono.expr_types.is_empty() {
-            &check.expr_types
+            &typecheck.expr_types
         } else {
             &mono.expr_types
         };
@@ -307,7 +253,7 @@ fn _compile_to_module_inner<M: Module>(
             func_ids: &func_ids,
             func_arities: &func_arities,
             symbol_tables,
-            current_module: current_module.clone(),
+            current_module: module_path.clone(),
             env,
             traced_fns: None,
             alloc_func_id: intrinsic_ids.alloc,
@@ -343,6 +289,35 @@ fn _compile_to_module_inner<M: Module>(
         func_arities,
         warnings: Vec::new(),
     })
+}
+
+/// Resolve cross-module function references from symbol table Import chains.
+fn resolve_cross_module_refs(
+    symbol_tables: &DashMap<ModuleFullPath, SymbolTable>,
+    module_path: &ModuleFullPath,
+) -> Vec<(Symbol, usize)> {
+    let mut refs = Vec::new();
+    let Some(table) = symbol_tables.get(module_path) else { return refs };
+    for (name, entry) in table.all_symbols() {
+        if let ModuleEntry::Import { source } = entry
+            && let Some(source_table) = symbol_tables.get(&source.module)
+            && let Some(source_entry) = source_table.get(source.symbol.as_ref())
+        {
+            let param_count = match source_entry {
+                ModuleEntry::Def { scheme, .. } | ModuleEntry::Constructor { scheme, .. } => {
+                    match &scheme.ty {
+                        Type::Fn(params, _) => params.len(),
+                        _ => continue,
+                    }
+                }
+                _ => continue,
+            };
+            let qualified = Symbol::from(format!("{}/{}", source.module.as_ref(), source.symbol.as_ref()));
+            refs.push((qualified, param_count));
+            refs.push((name.clone(), param_count));
+        }
+    }
+    refs
 }
 
 /// Compile a single defn into a module using FnCompiler.
@@ -382,94 +357,6 @@ fn compile_defn_in_module<M: Module>(
         })?;
 
     Ok(())
-}
-
-/// Result of compiling a batch program. Holds the JIT and entry point
-/// so the caller can execute and then drop the JIT.
-pub struct _DeprecatedCompiledProgram {
-    // Kept alive so JIT-compiled code pointers remain valid.
-    #[allow(dead_code)]
-    jit: Jit,
-    entry_ptr: *const u8,
-    /// Warnings accumulated during codegen.
-    pub warnings: Vec<Warning>,
-}
-
-impl _DeprecatedCompiledProgram {
-    /// Execute the compiled program.
-    ///
-    /// # Safety
-    ///
-    /// The entry_ptr must point to valid JIT-compiled code with the signature
-    /// `extern "C" fn() -> i64`. This is guaranteed when CompiledProgram was
-    /// produced by `compile_program`.
-    pub unsafe fn execute(&self) -> Result<i64, CranelispError> {
-        // Clear any stale runtime error before execution.
-        let _ = cranelisp_runtime::panic::take_runtime_error();
-        let func: extern "C" fn() -> i64 = unsafe { std::mem::transmute(self.entry_ptr) };
-        let value = func();
-        // Check for runtime panics (e.g., division by zero, match failure).
-        if let Some(msg) = cranelisp_runtime::panic::take_runtime_error() {
-            return Err(CranelispError::CodegenError {
-                message: format!("runtime panic: {}", msg),
-                span: Span::SYNTHETIC,
-            });
-        }
-        Ok(value)
-    }
-}
-
-/// Result of compiling a single REPL expression. Holds the JIT alive so
-/// the caller can execute the compiled function pointer at its leisure.
-/// This enables the caller to separately time compilation and evaluation.
-pub struct _DeprecatedCompiledExpr {
-    // Kept alive so the compiled function pointer remains valid.
-    #[allow(dead_code)]
-    jit: Jit,
-    func_ptr: *const u8,
-}
-
-impl _DeprecatedCompiledExpr {
-    /// Execute the compiled expression and return the i64 result.
-    ///
-    /// Checks for runtime panics (division by zero, match failure, etc.)
-    /// after execution and returns an error if one occurred.
-    ///
-    /// # Safety
-    ///
-    /// The func_ptr must point to valid JIT-compiled code with the signature
-    /// `extern "C" fn() -> i64`. This is guaranteed when CompiledExpr was
-    /// produced by `compile_expr_with_got`.
-    pub unsafe fn execute(&self) -> Result<i64, CranelispError> {
-        // Clear any stale runtime error before execution.
-        let _ = cranelisp_runtime::panic::take_runtime_error();
-        let func: extern "C" fn() -> i64 = unsafe { std::mem::transmute(self.func_ptr) };
-        let value = func();
-        // Check for runtime panics (e.g., division by zero, match failure).
-        if let Some(msg) = cranelisp_runtime::panic::take_runtime_error() {
-            return Err(CranelispError::CodegenError {
-                message: format!("runtime panic: {}", msg),
-                span: Span::SYNTHETIC,
-            });
-        }
-        Ok(value)
-    }
-}
-
-
-/// Compile a batch program: declare all functions, compile them, finalize.
-///
-/// The last zero-arg function in the program is the entry point.
-/// Returns a CompiledProgram that can be executed.
-///
-/// Thin wrapper around `compile_to_module<JITModule>`.
-pub fn _deprecated_compile_program(
-    _program: &Program,
-    _check: &CheckResult,
-    _use_got: bool,
-    _symbol_tables: &DashMap<ModuleFullPath, SymbolTable>,
-) -> Result<_DeprecatedCompiledProgram, CranelispError> {
-    unimplemented!("superseded by compile_to_module")
 }
 
 /// Extract the concrete type name from a resolved type, for mangled name construction.
@@ -552,65 +439,10 @@ fn expand_multi_sig_defn(
     Ok(expanded)
 }
 
-
-
-
-
-/// Result of compiling a module's program into a shared JIT.
-///
-/// Holds function name/arity pairs for symbols that downstream
-/// modules may need to reference.
-pub struct _DeprecatedCompiledModuleInfo {
-    /// Function names and their param counts (for downstream import declarations).
-    pub func_signatures: Vec<(Symbol, usize)>,
-    /// Warnings accumulated during codegen.
-    pub warnings: Vec<Warning>,
-}
-
-/// Compile a module's program into an existing shared JIT (no finalize).
-///
-/// Thin wrapper around `compile_to_module` with JIT prefix and prior funcs.
-pub fn _deprecated_compile_module_program(
-    _program: &Program,
-    _check: &CheckResult,
-    _jit: &mut Jit,
-    _prior_funcs: &[(Symbol, usize)],
-    _module_prefix: &str,
-    _symbol_tables: &DashMap<ModuleFullPath, SymbolTable>,
-) -> Result<_DeprecatedCompiledModuleInfo, CranelispError> {
-    unimplemented!("superseded by compile_to_module")
-}
-
-/// Compile a single expression into a `CompiledExpr` without executing it.
-///
-/// Thin wrapper around `compile_to_module<JITModule>`. Wraps the expression
-/// in a synthetic zero-arg function and compiles it.
-pub fn _deprecated_compile_expr_with_got_and_symbols(
-    _expr: &Expr,
-    _check: &CheckResult,
-    _extra_symbols: &[(&str, *const u8)],
-    _got_data_defs: &[(String, *const u8)],
-    _env: Option<&dyn crate::compiler::CompilationEnv>,
-    _symbol_tables: &DashMap<ModuleFullPath, SymbolTable>,
-    _current_module: ModuleFullPath,
-) -> Result<_DeprecatedCompiledExpr, CranelispError> {
-    unimplemented!("superseded by compile_to_module")
-}
-
-/// Compile and execute a single expression (convenience wrapper).
-///
-/// Delegates to `compile_expr_with_got_and_symbols` then executes.
-pub fn _deprecated_compile_and_run_expr(
-    _expr: &Expr,
-    _check: &CheckResult,
-    _symbol_tables: &DashMap<ModuleFullPath, SymbolTable>,
-) -> Result<i64, CranelispError> {
-    unimplemented!("superseded by compile_to_module")
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::jit::Jit;
     use cranelisp_types::{
         CheckResult, Defn, DefnVariant, Expr, Span, Symbol, TopLevel, Visibility,
     };
