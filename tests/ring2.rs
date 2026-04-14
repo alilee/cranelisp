@@ -1733,8 +1733,15 @@ fn synthetic_primitives_bare_without_import_fails_repl() {
 #[test]
 fn synthetic_primitives_bare_without_import_fails_batch() {
     // Bare `add-i64` with no import MUST fail in batch mode.
+    // Use a temp dir as project_root so no prelude.cl is found
+    // (tests/fixtures/ has a prelude that imports primitives).
+    let dir = tempfile::tempdir().expect("tempdir");
     let src = "(defn main [] (add-i64 2 3))";
-    let result = helpers::batch_run(src);
+    std::fs::write(dir.path().join("user.cl"), src).unwrap();
+    let result = helpers::batch_run_file(
+        &dir.path().join("user.cl"),
+        &[],
+    );
     assert!(
         result.is_err(),
         "bare primitive without import MUST fail"

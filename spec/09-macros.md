@@ -255,13 +255,13 @@ Implementations SHOULD limit the number of expansion iterations to prevent infin
 ;; Fixed point reached (no more macros)
 ```
 
-### 9.3.4 Define-Before-Use
+### 9.3.4 Module-Wide Availability
 
-Macros MUST be defined before they are referenced. A macro call to a name that has not yet been defined as a macro is NOT expanded — it passes through to the AST builder as a regular function call.
+Within a module (batch compilation), macros are available throughout the module regardless of definition position. The compiler extracts and compiles all `defmacro` forms in a pre-pass before processing other forms. This means a macro MAY be used before its `defmacro` form in source order, consistent with the two-pass model described in [Section 5.13.2](05-definitions.md#5132-macros).
 
-Within a source file, top-level forms are processed sequentially. A `defmacro` form MUST make its macro available for expansion by all subsequent forms in the same file. An implementation MAY defer compilation of the macro body until first use, provided the macro is available when a subsequent form references it.
+In the REPL, macros MUST be defined before use because forms are evaluated one at a time. A reference to an undefined macro in a REPL expression is an error — it passes through to the AST builder as a regular function call.
 
-A `defmacro` body MAY reference any function or macro that was defined before it. Forward references to macros are NOT supported.
+A `defmacro` body MAY reference any function or macro defined in the same module.
 
 ### 9.3.5 Span Attribution
 
@@ -909,7 +909,7 @@ user> (double 21)
 The following features are NOT supported by the macro system:
 
 1. **No fully hygienic macros**: Auto-gensym (`x#`) prevents accidental capture in most cases, but macro-introduced names are still subject to capture for names that don't use the `#` suffix (see Section 9.8).
-2. **No forward references**: Macros must be defined before use.
+2. **REPL ordering**: In the REPL, macros must be defined before use (forms are evaluated sequentially). In batch mode, macros are module-wide (see §9.3.4).
 3. **No user-defined reader macros**: Reader-level extensions (`'`, `` ` ``, `~`, `~@`, `#(...)`) are hardcoded. User-extensible reader macros (`defreader`) are planned but not yet implemented.
 4. **No compile-time type access**: Macro bodies cannot inspect or query the types of their arguments. Macros operate on syntactic structure only.
 5. **Error span limitation**: Error messages from expanded code point to the macro call site, not to the specific location within the macro definition body that produced the problematic form.

@@ -19,7 +19,7 @@ pub use manifest::{
 };
 pub use serialize::{CacheMetadata, read_cached_metadata, write_cached_metadata};
 pub use object::{
-    ObjectCompileInput, IntrinsicTable, IntrinsicEntry,
+    ObjectCompileInput, ObjectCompilationEnv, IntrinsicTable, IntrinsicEntry,
     CacheWritePacket, build_cache_packet, process_cache_packet,
     compile_module_to_object, got_data_symbol_name,
 };
@@ -96,6 +96,28 @@ impl CachedModule {
     /// Get the restored symbol table.
     pub fn symbol_table(&self) -> &cranelisp_types::SymbolTable {
         &self.metadata.symbol_table
+    }
+
+    /// Extract the set of module paths this cached module imports from.
+    ///
+    /// Scans Import entries in the symbol table and collects the unique
+    /// source module paths. The orchestration layer uses this to
+    /// recursively load transitive dependencies from cache.
+    ///
+    /// Excludes `primitives` and `macros` (synthetic compiler modules)
+    /// since they are always available without cache loading.
+    pub fn imported_modules(&self) -> std::collections::HashSet<cranelisp_types::ModuleFullPath> {
+        let mut modules = std::collections::HashSet::new();
+        for (_name, entry) in self.metadata.symbol_table.all_symbols() {
+            if let cranelisp_types::ModuleEntry::Import { source } = entry {
+                let mod_path = &source.module;
+                // Skip synthetic compiler modules.
+                if mod_path.as_ref() != "primitives" && mod_path.as_ref() != "macros" {
+                    modules.insert(mod_path.clone());
+                }
+            }
+        }
+        modules
     }
 }
 
@@ -233,6 +255,7 @@ mod tests {
         let mp = ModuleFullPath::from(module_path);
         serialize::CacheMetadata {
             symbol_table: SymbolTable::new(mp),
+            dependencies: Vec::new(),
         }
     }
 
@@ -469,5 +492,71 @@ mod tests {
         let func: extern "C" fn() -> i64 = unsafe { std::mem::transmute(answer_ptr) };
         let result = func();
         assert_eq!(result, 42, "cached function should return 42");
+    }
+
+    // spec: design/backend/module-caching.md §8 — imported_modules extracts dep paths
+    #[test]
+    fn test_imported_modules_extracts_deps() {
+        use cranelisp_types::{FQSymbol, ModuleEntry, Scheme, Symbol, Type};
+
+        let dir = tempfile::tempdir().unwrap();
+        let mp = ModuleFullPath::from("main.mid");
+        let mut table = SymbolTable::new(mp.clone());
+
+        // Add an Import entry from main.mid.leaf
+        table.insert(
+            Symbol::from("base-val"),
+            ModuleEntry::Import {
+                source: FQSymbol {
+                    module: ModuleFullPath::from("main.mid.leaf"),
+                    symbol: Symbol::from("base-val"),
+                },
+            },
+        );
+
+        // Add a Def entry (should NOT appear in imported_modules)
+        table.insert(
+            Symbol::from("relay"),
+            ModuleEntry::Def {
+                scheme: Scheme {
+                    vars: vec![],
+                    constraints: std::collections::HashMap::new(),
+                    ty: Type::Fn(vec![], Box::new(Type::Int)),
+                },
+                visibility: cranelisp_types::Visibility::Public,
+                docstring: None,
+                param_names: vec![],
+                kind: Box::new(cranelisp_types::DefKind::UserFn { constrained_fn: None }),
+                callees: vec![],
+                got_slot: Some(0),
+                trait_origin: None,
+            },
+        );
+
+        // Add an Import from primitives (should be excluded)
+        table.insert(
+            Symbol::from("add-i64"),
+            ModuleEntry::Import {
+                source: FQSymbol {
+                    module: ModuleFullPath::from("primitives"),
+                    symbol: Symbol::from("add-i64"),
+                },
+            },
+        );
+
+        let metadata = serialize::CacheMetadata {
+            symbol_table: table,
+            dependencies: Vec::new(),
+        };
+        let cached = CachedModule {
+            metadata,
+            meta_path: dir.path().join("test.meta.json"),
+            object_path: dir.path().join("test.o"),
+            has_object: false,
+        };
+
+        let imported = cached.imported_modules();
+        assert_eq!(imported.len(), 1);
+        assert!(imported.contains(&ModuleFullPath::from("main.mid.leaf")));
     }
 }

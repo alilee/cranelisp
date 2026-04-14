@@ -224,27 +224,32 @@ Accessor functions are first-class values and can be passed as arguments or boun
 deftrait_form  = '(' ('deftrait' | 'deftrait-') trait_head docstring? method_sig+ ')'
 trait_head     = name                         (* simple trait *)
                | '(' name type_var+ ')'       (* higher-kinded trait *)
-method_sig     = '(' name docstring? '[' type_expr* ']' type_expr ')'
+method_sig     = required_method | default_method
+required_method = '(' name docstring? '[' param+ ']' type_expr ')'
+default_method  = '(' name docstring? '[' param+ ']' body ')'
+param          = ':' type_expr symbol          (* typed parameter *)
+               | symbol                        (* bare -- implementing type *)
 type_expr      = 'Self'                       (* implementing type *)
                | symbol                        (* named type or type var *)
                | '(' 'Fn' '[' type_expr* ']' type_expr ')'   (* function type *)
                | '(' name type_expr+ ')'       (* applied type *)
 ```
 
-A trait declaration introduces a named interface with one or more method signatures.
+A trait declaration introduces a named interface with one or more method signatures. All methods use named parameters in brackets. Required methods end with a return type; default methods end with a body expression.
 
 ### 5.3.1 Simple Traits [Tested tests/ring2::user_trait_simple, tests/ring2::repl_user_trait, tests/repl_experience::ring2a_deftrait_in_repl]
 
 ```clojure
 (deftrait Display "Convert a value to its string representation"
-  (show "Return string form of value" [Self] String))
+  (show "Return string form of value" [x] String))
 
 (deftrait Eq "Equality comparison"
-  (eq [Self Self] Bool))
+  (= "Test equality" [a b] Bool))
 ```
 
-- Each method signature specifies the parameter types in square brackets and the return type.
-- `Self` refers to the type that will implement the trait.
+- All methods use named parameters in brackets. Bare parameter names default to the implementing type.
+- `Self` (capitalized) in return type position refers to the implementing type.
+- Required methods end with a return type expression; default methods end with a body expression.
 - An optional docstring MAY appear on the trait itself and on each method.
 
 ### 5.3.2 Higher-Kinded Traits [R3 S17]
@@ -254,11 +259,12 @@ When the trait head includes type parameters, the trait operates on type constru
 ```clojure
 (deftrait (Functor f) "Mappable container"
   (fmap "Apply function to values inside container"
-    [(Fn [a] b) (f a)] (f b)))
+    [:(Fn [a] b) f :(f a) x] (f b)))
 ```
 
 - The type parameter `f` represents a type constructor (e.g., `Option`, `List`).
 - Method signatures MAY use the type parameter applied to type variables: `(f a)`.
+- HKT method parameters do not use bare names for `Self`; instead, all parameters have explicit type annotations.
 
 ### 5.3.3 Trait Semantics [Tested tests/ring2::trait_plus_int, tests/ring2::error_plus_bool]
 
@@ -535,7 +541,7 @@ Definitions MAY include an optional docstring -- a string literal placed between
 | `defn` | Between name and params: `(defn name "doc" [params] body)` |
 | `deftype` | After type head: `(deftype Name "doc" ...)` |
 | `deftrait` | After trait head: `(deftrait Name "doc" ...)` |
-| Trait method | After method name: `(method "doc" [types] ret)` |
+| Trait method | After method name: `(method "doc" [params] ret_or_body)` |
 | Constructor | After constructor name: `(CtorName "doc" [:Type field])` |
 | `defmacro` | Between name and params: `(defmacro name "doc" [params] body)` |
 
@@ -567,17 +573,18 @@ This means a function may call another function defined later in the file, and a
 
 ### 5.13.2 Macros [Tested tests/ring3_repl::r3_neg_forward_reference_not_expanded, tests/macros::batch_defmacro_simple]
 
-Macros MUST be defined before use. A `defmacro` form MUST make its macro available for expansion by all subsequent forms in the same file. A reference to a macro that has not yet been defined is an error. An implementation MAY defer compilation of the macro body until first use, provided the macro is available when a subsequent form references it.
+Within a module (batch compilation), macros are available throughout the module regardless of definition position. The compiler uses a two-pass model: all `defmacro` forms are extracted and compiled in a pre-pass before other forms are processed. This means a macro may be used before its `defmacro` form in source order. This is consistent with Clojure's model where macros are available module-wide.
 
 ```clojure
-;; CORRECT: macro defined before use
-(defmacro double [x] `(+ ~x ~x))
+;; Both orderings are valid in a module:
 (defn f [x] (double x))
+(defmacro double [x] `(+ ~x ~x))
 
-;; ERROR: macro used before definition
-(defn f [x] (double x))
-(defmacro double [x] `(+ ~x ~x))
+(defmacro triple [x] `(+ ~x ~x ~x))
+(defn g [x] (triple x))
 ```
+
+In the REPL, macros MUST be defined before use because forms are evaluated one at a time. A reference to an undefined macro in a REPL expression is an error.
 
 ### 5.13.3 Module-Phase Declarations [Tested tests/ring2.rs::module_phase_declarations_order_independent, crates/cranelisp-frontend/src/module_extract.rs::test_mixed_forms]
 

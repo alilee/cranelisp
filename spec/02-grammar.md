@@ -180,48 +180,55 @@ Constructors in a sum type MAY also have docstrings:
 ### 2.2.3 `deftrait` -- Trait Declaration [Tested tests/ring2.rs::user_trait_simple]
 
 ```ebnf
-deftrait_form = '(' deftrait_kw trait_head docstring? method_sig* ')'
+deftrait_form   = '(' deftrait_kw trait_head docstring? method_sig* ')'
 
-deftrait_kw   = 'deftrait' | 'deftrait-'
+deftrait_kw     = 'deftrait' | 'deftrait-'
 
-trait_head    = TRAIT_NAME
-              | '(' TRAIT_NAME type_param+ ')'
+trait_head      = TRAIT_NAME
+                | '(' TRAIT_NAME type_param+ ')'
 
-method_sig    = '(' method_name docstring? '[' type_expr* ']' type_expr ')'
+method_sig      = required_method | default_method
+
+required_method = '(' method_name docstring? '[' param+ ']' type_expr ')'
+
+default_method  = '(' method_name docstring? '[' param+ ']' expr ')'
+
+param           = annotation SYMBOL          (* typed parameter *)
+                | SYMBOL                      (* bare -- implementing type *)
 ```
 
-The `deftrait` form declares a trait -- a named collection of method signatures. The `deftrait-` variant makes it module-private.
+The `deftrait` form declares a trait -- a named collection of method signatures. The `deftrait-` variant makes it module-private. All methods use named parameters in brackets.
 
 The **trait head** is either a bare name (for simple traits) or a parenthesized name with type constructor parameters (for higher-kinded traits). Trait names MUST start with an uppercase letter.
 
-**Simple traits**: The type parameter `Self` is implicit and refers to the implementing type.
+**Simple traits**: Bare (unannotated) parameter names default to the implementing type. `Self` (capitalized) in return type position refers to the implementing type. Required methods end with a return type; default methods end with a body expression.
 
 ```clojure
 (deftrait Display
-  (show [Self] String))
+  (show [x] String))
 
 (deftrait Eq
-  (= [Self Self] Bool))
+  (= [a b] Bool))
 
 (deftrait Ord
-  (< [Self Self] Bool)
-  (> [Self Self] Bool)
-  (<= [Self Self] Bool)
-  (>= [Self Self] Bool))
+  (< [a b] Bool)
+  (> [a b] Bool)
+  (<= [a b] (not (> a b)))
+  (>= [a b] (not (< a b))))
 ```
 
 **Higher-kinded traits**: Explicit type constructor parameters enable abstraction over parameterized types. The lowercase parameters represent type constructors (e.g., `f` in `(Functor f)` ranges over `Option`, `List`, etc.).
 
 ```clojure
 (deftrait (Functor f)
-  (fmap [(Fn [a] b) (f a)] (f b)))
+  (fmap [:(Fn [a] b) f :(f a) x] (f b)))
 ```
 
 An optional docstring MAY appear between the trait head and the method signatures. Individual methods MAY also have docstrings:
 
 ```clojure
 (deftrait Display "Convert a value to its string representation"
-  (show "Return the string form of a value" [Self] String))
+  (show "Return the string form of a value" [x] String))
 ```
 
 ### 2.2.4 `impl` -- Trait Implementation [Tested tests/ring2.rs::user_trait_simple]
@@ -628,7 +635,7 @@ named_type   = TYPE_NAME                  (* starts with uppercase *)
 
 type_var     = SYMBOL                     (* starts with lowercase *)
 
-self_type    = 'self'
+self_type    = 'Self'
 
 applied_type = '(' TYPE_NAME type_expr+ ')'
 
@@ -657,14 +664,17 @@ b                             ; type variable
 
 ### 2.4.3 Self Type
 
-The keyword `self` refers to the implementing type within trait method signatures.
+The keyword `Self` (capitalized) refers to the implementing type within trait method signatures. It appears in return type position and in type annotations on parameters.
 
 ```clojure
-(deftrait Eq
-  (= [self self] Bool))      ; self = the implementing type
+(deftrait Num
+  (+ [a b] Self))            ;; Self = the implementing type (return type)
+
+(deftrait Convertible
+  (convert [:String s] Self)) ;; s is String, returns Self
 ```
 
-Note: `self` in type position is distinct from `Self` (which would be a named type). The trait method parameter list uses `self` (lowercase) to refer to the implementing type. When writing `[Self]` with uppercase, it is interpreted as a named type rather than the self-type of the trait.
+`Self` is NOT a type variable -- it is resolved at impl time to the concrete target type. Bare (unannotated) parameter names in trait methods also default to the implementing type, so `Self` is primarily useful in return type position and in applied types like `(Option Self)`.
 
 ### 2.4.4 Applied Types
 
@@ -788,7 +798,7 @@ The following forms support docstrings:
 | `deftrait` / `deftrait-` | Between trait head and first method |
 | `defmacro` / `defmacro-` | Between name and param list |
 | Constructor definitions | Between constructor name and field list |
-| Trait method signatures | Between method name and param types |
+| Trait method signatures | Between method name and param list |
 
 ```clojure
 (defn factorial "Compute n!" [:Int n]
@@ -801,7 +811,7 @@ The following forms support docstrings:
   (Some "The present case" [:a val]))
 
 (deftrait Display "Convert values to strings"
-  (show "Return the string representation" [Self] String))
+  (show "Return the string representation" [x] String))
 
 (defmacro unless "Evaluate body when condition is false" [cond body]
   `(if ~cond 0 ~body))

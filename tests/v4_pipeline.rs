@@ -351,17 +351,14 @@ fn v4_macro_multi_clause_dispatch() {
     assert_v4_parity(src, "macro_multi_clause");
 }
 
-// spec: spec/05-definitions.md §5.13.2 — macro used before definition is an error
-// spec: spec/09-macros.md §9.3.4 — define-before-use
-// NOTE: The v4 pipeline processes macros regardless of source order, so
-// forward references to macros now succeed. This test verifies current behavior
-// (macro expansion succeeds) rather than the spec requirement (define-before-use).
-// FIXME(/frontend): v4 pipeline does not enforce macro define-before-use per spec §5.13.2
+// spec: spec/05-definitions.md §5.13.2 — macros available module-wide regardless of source order
+// spec: spec/09-macros.md §9.3.4 — macro hoisting
+// The v4 pipeline processes all defmacro forms before other forms, making macros
+// available module-wide. This is the specified behavior per §5.13.2.
 #[test]
-
-fn v4_macro_define_before_use_violation() {
-    // Macro used before its defmacro form. The v4 pipeline processes all macros
-    // before use regardless of source order, so this now succeeds.
+fn v4_macro_forward_reference_succeeds() {
+    // Macro used before its defmacro form in source order. The pipeline hoists
+    // all defmacro forms, so forward references succeed as specified.
     let src = "\
 (defn main [] (nope 42))
 (defmacro nope [x] x)";

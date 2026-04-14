@@ -228,11 +228,6 @@ impl Linker {
             // GOT-load relocations should not occur: all __cranelisp_got_*
             // symbols are Export data in the .o (literal pool entries), so
             // Cranelift emits PAGE21+PAGEOFF12, not GOT_LOAD.
-            // FIXME(/backend): runtime intrinsic and platform DLL function calls
-            // use BRANCH26 (BL) which has ±128MB range. If loaded .o code is far
-            // from these functions, BL fails. Fix: put external function addresses
-            // in literal pool entries (Export data) and use ADRP+LDR+BLR instead
-            // of BL. Same pattern as GOT bases.
             if let RelocationFlags::MachO { r_type, .. } = reloc.flags()
                 && (r_type == macho_arm64::ARM64_RELOC_GOT_LOAD_PAGE21
                     || r_type == macho_arm64::ARM64_RELOC_GOT_LOAD_PAGEOFF12)
@@ -400,12 +395,31 @@ fn apply_macho_arm64_reloc(
 ) -> Result<(), CranelispError> {
     match r_type {
         // ARM64_RELOC_BRANCH26: B/BL branch (26-bit offset, 4-byte aligned)
+        //
+        // Range limit: BL has ±128MB range on aarch64 (26-bit signed offset * 4).
+        // If loaded .o code is far from runtime intrinsics or platform DLL functions,
+        // this relocation will fail. The diagnostic below catches this with a clear
+        // message.
+        //
+        // Fallback plan (if this ever triggers): Replace direct BL calls to external
+        // functions with ADRP+LDR+BLR via literal pool entries (Export data), the
+        // same pattern used for GOT base addresses. This requires changes to
+        // compile_all_functions to emit indirect calls for intrinsics instead of
+        // declaring them as Linkage::Import.
         macho_arm64::ARM64_RELOC_BRANCH26 => {
             let rel_offset = (target_addr as i64 + addend - patch_addr as i64) >> 2;
-            if !(-(1 << 25)..(1 << 25)).contains(&rel_offset) {
+
+            // Diagnostic assertion: check ±128MB range (2^25 instructions = 2^27 bytes)
+            const BL_MAX_RANGE: i64 = 1 << 25; // ±128MB in instruction units
+            if !(-BL_MAX_RANGE..BL_MAX_RANGE).contains(&rel_offset) {
                 return Err(CranelispError::CodegenError {
                     message: format!(
-                        "branch target '{target_name}' out of range: offset {rel_offset}"
+                        "BRANCH26 (BL) target '{target_name}' out of ±128MB range: \
+                         offset={rel_offset} instructions ({} bytes). \
+                         This means loaded .o code is too far from the target function. \
+                         Fix: emit ADRP+LDR+BLR (indirect call via literal pool entry) \
+                         instead of BL for external function calls.",
+                        rel_offset * 4
                     ),
                     span: Span::SYNTHETIC,
                 });
@@ -479,8 +493,22 @@ fn apply_elf_aarch64_reloc(
     target_name: &str,
 ) -> Result<(), CranelispError> {
     match r_type {
+        // R_AARCH64_CALL26: same ±128MB range limit as Mach-O BRANCH26.
+        // See apply_macho_arm64_reloc for the diagnostic rationale.
         elf_aarch64::R_AARCH64_CALL26 => {
             let rel_offset = (target_addr as i64 + addend - patch_addr as i64) >> 2;
+            const BL_MAX_RANGE: i64 = 1 << 25;
+            if !(-BL_MAX_RANGE..BL_MAX_RANGE).contains(&rel_offset) {
+                return Err(CranelispError::CodegenError {
+                    message: format!(
+                        "CALL26 (BL) target '{target_name}' out of ±128MB range: \
+                         offset={rel_offset} instructions ({} bytes). \
+                         Fix: emit ADRP+LDR+BLR for external function calls.",
+                        rel_offset * 4
+                    ),
+                    span: Span::SYNTHETIC,
+                });
+            }
             let existing =
                 u32::from_le_bytes(mmap[offset..offset + 4].try_into().unwrap());
             let patched =

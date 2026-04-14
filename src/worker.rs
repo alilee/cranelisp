@@ -892,20 +892,17 @@ enum BlockAction {
 /// `start_form_index`: the Pass 2 form to resume from (0 for fresh modules).
 /// On resume, Pass 1 is skipped (already done).
 ///
-/// `accumulator`: may be a resumed accumulator (saved across suspension)
-/// or freshly created for first invocation.
-#[allow(clippy::too_many_arguments)]
+/// `state`: per-module suspension state (accumulator, expanded_program, pass1_done).
+/// May be a resumed state (saved across suspension) or freshly created.
 pub fn process_module_forms(
     ctx: &mut ModuleCompiler,
     module: &ModuleFullPath,
     sexps: &[Sexp],
     start_form_index: usize,
-    accumulator: &mut ModuleCheckAccumulator,
-    expanded_program: &mut Vec<TopLevel>,
+    state: &mut ModuleSuspendState,
     strategy: ModuleStrategy,
-    pass1_done: &mut bool,
 ) -> Result<ProcessResult, CranelispError> {
-    let is_fresh = !*pass1_done;
+    let is_fresh = !state.pass1_done;
 
     if is_fresh && strategy == ModuleStrategy::Replace {
         // Set active module. Symbol table is preserved for slot reuse
@@ -1018,37 +1015,26 @@ pub fn process_module_forms(
         let program = cranelisp_frontend::build_program(&regular_sexps)?;
         let working_program = wrap_exprs_as_defns(&program);
 
-        pass1_register(ctx.symbol_tables, ctx.next_type_id, &mut ctx.check_state, module, &working_program, accumulator)?;
+        pass1_register(ctx.symbol_tables, ctx.next_type_id, &mut ctx.check_state, module, &working_program, &mut state.accumulator)?;
 
         for (name, info, sexp) in &macro_infos {
             register_macro_in_module(ctx.symbol_tables, ctx.next_type_id, &mut ctx.check_state, module, name, info, sexp)?;
         }
 
-        let defaults = register_default_methods(ctx.symbol_tables, ctx.next_type_id, &mut ctx.check_state, module, accumulator)?;
-        accumulator.default_method_defns = defaults;
-        *pass1_done = true;
+        let defaults = register_default_methods(ctx.symbol_tables, ctx.next_type_id, &mut ctx.check_state, module, &mut state.accumulator)?;
+        state.accumulator.default_method_defns = defaults;
+        state.pass1_done = true;
     }
 
     // --- Pass 2: per-sexp expand-then-check, from start_form_index ---
     // expanded_program accumulates across suspensions via the caller.
     let pass2_result = pass2_check_bodies_with_expansion(
-        ctx, module, sexps, start_form_index, accumulator, expanded_program,
+        ctx, module, sexps, start_form_index, &mut state.accumulator, &mut state.expanded_program,
     )?;
 
     match pass2_result {
         Pass2Result::Complete => {
-            finalize_module(ctx, module, expanded_program, accumulator, strategy)
-        }
-        Pass2Result::Blocked {
-            form_index,
-            dep_module,
-            dep_sexps,
-        } => {
-            Ok(ProcessResult::Blocked {
-                form_index,
-                dep_module,
-                dep_sexps,
-            })
+            finalize_module(ctx, module, &mut state.expanded_program, &mut state.accumulator, strategy)
         }
     }
 }
@@ -1173,12 +1159,8 @@ fn register_macro_in_module(
 enum Pass2Result {
     /// All forms processed. Expanded program is in the caller's Vec.
     Complete,
-    /// Blocked on a dependency. Expanded program so far is in caller's Vec.
-    Blocked {
-        form_index: usize,
-        dep_module: ModuleFullPath,
-        dep_sexps: Vec<Sexp>,
-    },
+    // Note: Import/export/mod/platform blocking is now handled in Pass 0.
+    // Pass 2 no longer needs a Blocked variant.
 }
 
 /// Pass 2: per-sexp expand-then-check, with inline macro compilation
@@ -1199,51 +1181,16 @@ fn pass2_check_bodies_with_expansion(
     accumulator: &mut ModuleCheckAccumulator,
     expanded_program: &mut Vec<TopLevel>,
 ) -> Result<Pass2Result, CranelispError> {
-    for (form_idx, sexp) in sexps.iter().enumerate().skip(start_form_index) {
+    for (_form_idx, sexp) in sexps.iter().enumerate().skip(start_form_index) {
 
         match classify_form(sexp)? {
-            // FIXME(/int): Import/export/mod/platform forms are now processed
-            // in Pass 0 (before Pass 1). These Pass 2 handlers are redundant
-            // but harmless (idempotent). Remove once Pass 0 is verified stable.
-            FormKind::Import(specs) => {
-                match handle_import(ctx, module, specs)? {
-                    BlockAction::Continue => {}
-                    BlockAction::Block { dep_module, dep_sexps } => {
-                        return Ok(Pass2Result::Blocked {
-                            form_index: form_idx,
-                            dep_module,
-                            dep_sexps,
-                        });
-                    }
-                }
-            }
-            FormKind::Export(specs) => {
-                match handle_export(ctx, module, &specs)? {
-                    BlockAction::Continue => {}
-                    BlockAction::Block { dep_module, dep_sexps } => {
-                        return Ok(Pass2Result::Blocked {
-                            form_index: form_idx,
-                            dep_module,
-                            dep_sexps,
-                        });
-                    }
-                }
-            }
-            FormKind::Mod(decl) => {
-                match handle_mod(ctx, module, &decl)? {
-                    BlockAction::Continue => {}
-                    BlockAction::Block { dep_module, dep_sexps } => {
-                        return Ok(Pass2Result::Blocked {
-                            form_index: form_idx,
-                            dep_module,
-                            dep_sexps,
-                        });
-                    }
-                }
-            }
-            FormKind::Platform(spec) => {
-                handle_platform(ctx, module, &spec)?;
-            }
+            // Import/export/mod/platform forms are processed in Pass 0
+            // (before Pass 1). By the time Pass 2 runs, these have already
+            // been handled. Skip them here — they are no-ops in Pass 2.
+            FormKind::Import(_)
+            | FormKind::Export(_)
+            | FormKind::Mod(_)
+            | FormKind::Platform(_) => {}
             FormKind::Defmacro => {
                 // Registered in Pass 1. Compile eagerly in Pass 2 so type errors
                 // in the macro body are caught at definition time (not deferred
@@ -1878,30 +1825,20 @@ fn compile_macro_if_needed(
         return Ok(());
     }
 
-    // Walk transitive callees and compile uncompiled deps first.
+    // Walk transitive callees and notify scheduler for any uncompiled deps.
+    // The actual compilation is handled through the scheduler's normal priority
+    // codegen path (block_for_macro_codegen). This loop only updates the
+    // scheduler's completion tracking.
     let uncompiled_deps = collect_transitive_uncompiled_deps(
         ctx.symbol_tables, ctx.codegen_products, module, &info.name,
     );
-    // Build env for per-module GOT resolution.
-    let tc_modules = ctx.symbol_tables;
-    let env_impl = SessionCompilationEnv {
-        tc_modules,
-        typecheck_products: ctx.typecheck_products,
-        current_module: module.clone(),
-    };
-    let env: &dyn cranelisp_backend::compiler::CompilationEnv = &env_impl;
-    ensure_typecheck_product(ctx.typecheck_products, module);
-    let dep_module_got = ctx.typecheck_products.get(module)
-        .expect("invariant: just ensured typecheck product exists")
-        .got.clone();
-    let (jit_symbols, got_data_defs) = env_impl.collect_jit_setup_for_module(ctx.platform_registry);
-    let current_module = ctx.current_module.clone();
     for (dep_module, dep_symbol) in &uncompiled_deps {
-        compile_dep_symbol_inline(
-            ctx.symbol_tables, ctx.next_type_id, &jit_symbols, &got_data_defs,
-            dep_module, dep_symbol, &current_module, accumulator,
-            env, &dep_module_got, ctx.codegen_products,
-        )?;
+        if std::env::var("CRANELISP_CODEGEN_TRACE").is_ok() {
+            eprintln!(
+                "compile_macro_if_needed: uncompiled dep {}/{} — handled by scheduler",
+                dep_module, dep_symbol
+            );
+        }
         ctx.scheduler.notify_inmem_codegen_complete(dep_module, dep_symbol, false);
     }
 
@@ -1976,61 +1913,9 @@ fn collect_transitive_uncompiled_deps(
     result
 }
 
-/// Compile a dependency symbol inline using the accumulated check state.
-///
-/// Looks up the defn from the GOT state (it has been typechecked
-/// in Pass 2 already since deps are defined before the macro) and
-/// compiles it via `compile_and_register_defn`.
-///
-/// For same-module deps, uses the current module's accumulator to build
-/// the CheckResult (method_resolutions, expr_types). For cross-module
-/// deps, builds a CheckResult with empty resolutions — the dep module's
-/// transient check state has already been consumed. Type defs and
-/// constructor_to_type come from the TC's global registry in both cases.
-#[allow(clippy::too_many_arguments)]
-fn compile_dep_symbol_inline(
-    symbol_tables: &dashmap::DashMap<ModuleFullPath, cranelisp_types::SymbolTable>,
-    _next_type_id: &std::sync::atomic::AtomicU32,
-    jit_symbols: &[(String, *const u8)],
-    got_data_defs: &[(String, *const u8)],
-    module: &ModuleFullPath,
-    symbol: &Symbol,
-    current_module: &ModuleFullPath,
-    accumulator: &ModuleCheckAccumulator,
-    env: &dyn cranelisp_backend::compiler::CompilationEnv,
-    module_got: &std::sync::Arc<cranelisp_backend::got::GotTable>,
-    codegen_products: &dashmap::DashMap<ModuleFullPath, crate::session_v4::CodegenProduct>,
-) -> Result<(), CranelispError> {
-    let check = if module == current_module {
-        build_check_from_accumulator(symbol_tables, accumulator)
-    } else {
-        build_empty_check_from_tc(symbol_tables)
-    };
-
-    // The function body (Defn AST) is not stored on the symbol table.
-    // FIXME(/backend): if a dep symbol hasn't been compiled yet,
-    // this is a no-op and the macro may fail at expansion time.
-    let _ = (jit_symbols, got_data_defs, module, symbol, &check, env, module_got, codegen_products);
-    Ok(())
-}
-
-/// Build an empty CheckResult with only type defs from the TC.
-///
-/// Used for cross-module deps where the dep module's transient check state
-/// (method_resolutions, expr_types) has already been consumed.
-fn build_empty_check_from_tc(
-    _symbol_tables: &dashmap::DashMap<ModuleFullPath, cranelisp_types::SymbolTable>,
-) -> CheckResult {
-    CheckResult {
-        method_resolutions: std::collections::HashMap::new(),
-        constrained_fn_names: std::collections::HashSet::new(),
-        mono_defns: Vec::new(),
-        expr_types: std::collections::HashMap::new(),
-        default_method_defns: Vec::new(),
-        warnings: Vec::new(),
-        display: None,
-    }
-}
+// compile_dep_symbol_inline removed (Sprint 53): was a dead stub that took 10
+// parameters and returned Ok(()). The scheduler's block_for_macro_codegen
+// handles dependency compilation through the normal priority codegen path.
 
 /// Build a CheckResult from the accumulator's current state.
 ///
@@ -2300,18 +2185,10 @@ fn inject_prelude_if_needed(
                 dep_sexps: prelude_sexps,
             }));
         }
-        // No prelude file found — inject minimal primitives import so that
-        // all modules have access to built-in functions like add-i64.
-        // Operators will fail at typecheck (they need trait impls from prelude).
-        let primitives_path = ModuleFullPath::from("primitives");
-        let prim_spec = ImportSpec {
-            module_path: primitives_path,
-            alias: None,
-            names: ImportNames::Glob,
-            span: Span::SYNTHETIC,
-        };
-        cranelisp_typecheck::TypeCheckEnv::new(ctx.symbol_tables, ctx.next_type_id)
-            .register_imports(&mut ctx.check_state, &[prim_spec])?;
+        // No prelude file found. Per spec §8.9.1: primitives are NOT
+        // available as bare names without explicit import or prelude.
+        // No implicit injection — modules that need primitives must
+        // either have a prelude that re-exports them or import explicitly.
     } else {
         // Prelude already loaded — register the import.
         let prelude_spec = ImportSpec {
@@ -2852,18 +2729,19 @@ fn handle_cached_codegen(
 // ---------------------------------------------------------------------------
 
 /// Per-module suspension state preserved across blocking/resumption.
-// FIXME(/int): Refactor process_module_forms to take &mut ModuleSuspendState
-// instead of separate &mut accumulator, &mut expanded_program, &mut pass1_done.
-// This would simplify the call sites and keep suspension state cohesive.
-pub(crate) struct ModuleSuspendState {
-    pub(crate) accumulator: ModuleCheckAccumulator,
+///
+/// Groups the mutable state that `process_module_forms` accumulates across
+/// suspensions: the typechecker accumulator, expanded program forms, and
+/// a flag tracking whether Pass 1 has completed.
+pub struct ModuleSuspendState {
+    pub accumulator: ModuleCheckAccumulator,
     /// Expanded program forms accumulated across suspensions.
     /// Forms processed before the block point are preserved here.
-    pub(crate) expanded_program: Vec<TopLevel>,
+    pub expanded_program: Vec<TopLevel>,
     /// Whether Pass 1 (register signatures) has been completed for this module.
     /// Prevents re-running Pass 1 on resume when start_form_index is 0
     /// (which happens when a module blocks on its very first form).
-    pub(crate) pass1_done: bool,
+    pub pass1_done: bool,
 }
 
 /// Main worker loop: pull work from the scheduler and process it.
@@ -2906,10 +2784,8 @@ pub fn priority_worker_loop(
 
                 match process_module_forms(
                     ctx, &module, &sexps, start_idx,
-                    &mut state.accumulator,
-                    &mut state.expanded_program,
+                    state,
                     ModuleStrategy::Replace,
-                    &mut state.pass1_done,
                 ) {
                     Ok(ProcessResult::Complete { check_result, program }) => {
                         // Post-typecheck codegen sweep (W2).
@@ -2925,11 +2801,6 @@ pub fn priority_worker_loop(
                             None,
                         )?;
 
-                        // Collect cross-module func sigs while TC is available.
-                        let cross_sigs = collect_cross_module_func_sigs_from_tc(
-                            ctx.symbol_tables, ctx.typecheck_products, &module,
-                        );
-
                         // Stash data for nice worker .o + .meta.json, then
                         // notify typecheck_done. Order matters: nice workers
                         // wake on notify_typecheck_done, so the stash must
@@ -2939,7 +2810,6 @@ pub fn priority_worker_loop(
                             &module,
                             check_result,
                             program,
-                            cross_sigs,
                         );
                         ctx.scheduler.notify_typecheck_done(&module);
 
@@ -2988,7 +2858,7 @@ pub fn priority_worker_loop(
 /// Scans the module's symbol table (from `typecheck_products`) for `Import` entries,
 /// then looks up the source scheme in the TC's module tables (which include synthetic
 /// modules like `primitives` and `macros`). Returns (qualified_name, param_count) pairs.
-fn collect_cross_module_func_sigs_from_tc(
+pub(crate) fn collect_cross_module_func_sigs_from_tc(
     symbol_tables: &dashmap::DashMap<ModuleFullPath, cranelisp_types::SymbolTable>,
     #[allow(unused)] typecheck_products: &dashmap::DashMap<ModuleFullPath, crate::session_v4::TypecheckProduct>,
     module: &ModuleFullPath,
@@ -3039,24 +2909,22 @@ fn collect_cross_module_func_sigs_from_tc(
 /// Inserts a `CodegenInput` into the shared `codegen_inputs` DashMap.
 /// Nice workers read from this DashMap and from `typecheck_products`
 /// for the symbol table needed by .meta.json serialization.
+///
+/// Stashes the full `CheckResult` (including `constrained_fn_names`)
+/// so the nice worker gets the same information as the priority worker.
 fn stash_codegen_input(
     shared_state: Option<&crate::session_v4::SharedState>,
     module: &ModuleFullPath,
     check_result: CheckResult,
     program: Vec<TopLevel>,
-    cross_module_func_sigs: Vec<(Symbol, usize)>,
 ) {
     let Some(shared) = shared_state else { return };
 
     shared.codegen_inputs.insert(
         module.clone(),
         crate::session_v4::CodegenInput {
-            method_resolutions: check_result.method_resolutions,
-            expr_types: check_result.expr_types,
-            mono_defns: check_result.mono_defns,
-            default_method_defns: check_result.default_method_defns,
+            check: check_result,
             program,
-            cross_module_func_sigs,
         },
     );
 }
@@ -3185,10 +3053,8 @@ fn handle_typecheck_work(
 
     match process_module_forms(
         &mut ctx, module, &sexps, start_idx,
-        &mut state.accumulator,
-        &mut state.expanded_program,
+        &mut state,
         ModuleStrategy::Replace,
-        &mut state.pass1_done,
     ) {
         Ok(ProcessResult::Complete { check_result, program }) => {
             // Post-typecheck codegen sweep.
@@ -3204,18 +3070,12 @@ fn handle_typecheck_work(
                 None,
             )?;
 
-            // Collect cross-module func sigs while TC is available.
-            let cross_sigs = collect_cross_module_func_sigs_from_tc(
-                ctx.symbol_tables, ctx.typecheck_products, module,
-            );
-
             // Stash data for nice worker .o + .meta.json.
             stash_codegen_input(
                 ctx.shared_state,
                 module,
                 check_result,
                 program,
-                cross_sigs,
             );
             ctx.scheduler.notify_typecheck_done(module);
 

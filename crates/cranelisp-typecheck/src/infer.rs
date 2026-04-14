@@ -138,6 +138,22 @@ impl TypeCheckEnv<'_> {
             });
         }
 
+        // Multi-sig (overloaded) functions cannot be used as bare values.
+        // They must be called so the dispatch can select the correct variant.
+        if !state.in_call_position
+            && let Some(entry) = self.resolve_entry_in_current_module(state, name)
+            && let ModuleEntry::Def { kind, .. } = entry
+            && matches!(kind.as_ref(), cranelisp_types::DefKind::Overloaded { .. })
+        {
+            return Err(CranelispError::TypeError {
+                message: format!(
+                    "multi-sig function '{name}' cannot be used as a value \
+                     — it must be called with arguments"
+                ),
+                span,
+            });
+        }
+
         let ty = self.instantiate(state, &scheme);
         let resolved = self.apply_subst(state, &ty);
         self.record_expr_type(state, span, resolved.clone());

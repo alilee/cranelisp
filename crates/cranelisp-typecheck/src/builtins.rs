@@ -81,8 +81,8 @@ pub fn register_builtins(
     // Ring 3: quote-sexp in `primitives` — must come after macros module
     env.register_ring3_primitives();
 
-    // Note: Option is NOT a builtin — it's defined in stdlib/prelude.cl.
-    // parse-int returns Option but should be migrated to stdlib (Sprint 52 FIXME).
+    // Ring 1: Option ADT in `primitives` (needed by parse-int return type).
+    env.register_option_type(&mut state);
 
     // Ring 4: IO ADT and bind primitive in `primitives`.
     env.register_io_type(&mut state);
@@ -595,6 +595,55 @@ impl TypeCheckEnv<'_> {
             }],
             span: Span::SYNTHETIC,
         }
+    }
+
+    /// Register the `Option` ADT in the `primitives` module.
+    ///
+    /// `(deftype (Option a) None (Some [:a val]))`
+    ///
+    /// This is needed for `parse-int` which returns `(Option Int)`.
+    /// Constructors `None` and `Some` are registered in the primitives module
+    /// and become available to user code via `(import [primitives [*]])`.
+    fn register_option_type(&self, state: &mut CheckState) {
+        let saved_module = state.current_module.clone();
+        let primitives_path = ModuleFullPath::from("primitives");
+        self.ensure_module_exists(&primitives_path);
+        state.current_module = primitives_path;
+
+        let option_ctors = vec![
+            // None (tag=0): nullary
+            ConstructorDef {
+                name: Symbol::from("None"),
+                docstring: Some("Absent value".to_string()),
+                fields: vec![],
+                span: Span::SYNTHETIC,
+            },
+            // Some (tag=1): field `val` of type `a`
+            ConstructorDef {
+                name: Symbol::from("Some"),
+                docstring: Some("Present value".to_string()),
+                fields: vec![FieldDef {
+                    name: Symbol::from("val"),
+                    type_expr: TypeExpr::TypeVar(Symbol::from("a")),
+                }],
+                span: Span::SYNTHETIC,
+            },
+        ];
+
+        self.register_type_def(
+            state,
+            &TypeName::from("Option"),
+            &Some("Optional value — None or (Some val)".to_string()),
+            &[Symbol::from("a")],
+            &option_ctors,
+            Visibility::Public,
+            Span::SYNTHETIC,
+        )
+        .unwrap_or_else(|e| {
+            unreachable!("invariant: Option type registration failed: {e}")
+        });
+
+        state.current_module = saved_module;
     }
 
     /// Register the IO ADT in the `primitives` module.

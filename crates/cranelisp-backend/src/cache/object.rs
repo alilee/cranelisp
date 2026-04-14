@@ -18,7 +18,7 @@ use std::sync::Arc;
 
 use cranelift::prelude::*;
 use cranelift_module::{DataDescription, FuncId, Linkage, Module};
-use cranelift_object::{ObjectBuilder, ObjectModule};
+use cranelift_object::ObjectModule;
 
 use serde::{Deserialize, Serialize};
 
@@ -112,6 +112,77 @@ pub struct IntrinsicEntry {
     pub jit_name: String,
     /// Number of parameters.
     pub param_count: usize,
+}
+
+/// CompilationEnv for ObjectModule compilation.
+///
+/// Resolves GOT slots by reading from symbol tables (not live runtime state).
+/// Replaces the `ObjectCompileInput impl CompilationEnv` after the unification.
+pub struct ObjectCompilationEnv<'a> {
+    pub symbol_tables: &'a dashmap::DashMap<ModuleFullPath, SymbolTable>,
+    pub current_module: ModuleFullPath,
+}
+
+impl crate::compiler::CompilationEnv for ObjectCompilationEnv<'_> {
+    fn resolve_got(&self, _name: &Symbol) -> Option<(i64, usize)> {
+        // Object path doesn't use runtime pointers.
+        None
+    }
+
+    fn resolve_got_module(&self, name: &Symbol) -> Option<(ModuleFullPath, usize)> {
+        // Look up in current module's symbol table, following Import chains.
+        let table = self.symbol_tables.get(&self.current_module)?;
+        match table.get(name.as_ref())? {
+            cranelisp_types::ModuleEntry::Def { got_slot: Some(slot), .. } => {
+                Some((self.current_module.clone(), *slot))
+            }
+            cranelisp_types::ModuleEntry::Import { source } => {
+                let source_mod = source.module.clone();
+                let source_sym = source.symbol.clone();
+                drop(table); // Release guard before getting another
+                let source_table = self.symbol_tables.get(&source_mod)?;
+                if let Some(cranelisp_types::ModuleEntry::Def { got_slot: Some(slot), .. }) =
+                    source_table.get(source_sym.as_ref())
+                {
+                    Some((source_mod, *slot))
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        }
+    }
+
+    fn func_arity(&self, name: &Symbol) -> Option<usize> {
+        let table = self.symbol_tables.get(&self.current_module)?;
+        match table.get(name.as_ref())? {
+            cranelisp_types::ModuleEntry::Def { scheme, .. } => {
+                if let cranelisp_types::Type::Fn(params, _) = &scheme.ty {
+                    Some(params.len())
+                } else {
+                    None
+                }
+            }
+            cranelisp_types::ModuleEntry::Import { source } => {
+                let source_mod = source.module.clone();
+                let source_sym = source.symbol.clone();
+                drop(table);
+                let source_table = self.symbol_tables.get(&source_mod)?;
+                if let Some(cranelisp_types::ModuleEntry::Def { scheme, .. }) =
+                    source_table.get(source_sym.as_ref())
+                {
+                    if let cranelisp_types::Type::Fn(params, _) = &scheme.ty {
+                        Some(params.len())
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        }
+    }
 }
 
 /// An owned snapshot for background cache writing. Fully Send-safe.
@@ -282,82 +353,11 @@ pub use crate::compiler::got_data_symbol_name;
 ///
 /// See design/backend/module-caching.md §13.2 for the detailed design.
 pub fn compile_module_to_object(
-    input: &ObjectCompileInput,
-    env: &dyn crate::compiler::CompilationEnv,
-    symbol_tables: &dashmap::DashMap<ModuleFullPath, SymbolTable>,
+    _input: &ObjectCompileInput,
+    _env: &dyn crate::compiler::CompilationEnv,
+    _symbol_tables: &dashmap::DashMap<ModuleFullPath, SymbolTable>,
 ) -> Result<Vec<u8>, CranelispError> {
-    // 1. Build PIC-mode ISA
-    let isa = build_isa(true)?;
-
-    // 2. Create ObjectModule
-    let obj_builder = ObjectBuilder::new(
-        isa,
-        format!("cranelisp_{}", input.module_path),
-        cranelift_module::default_libcall_names(),
-    )
-    .map_err(|e| CranelispError::CodegenError {
-        message: format!("failed to create ObjectBuilder: {e}"),
-        span: Span::SYNTHETIC,
-    })?;
-    let mut obj_module = ObjectModule::new(obj_builder);
-
-    // 3. Declare per-module GOT data symbols
-    let got_data_ids = declare_got_data_symbols(
-        &mut obj_module,
-        &input.module_path,
-        &input.fn_to_module,
-    )?;
-
-    // 4. Declare all intrinsic imports
-    let intrinsic_func_ids = declare_intrinsic_imports(
-        &mut obj_module,
-        &input.intrinsics,
-    )?;
-
-    // 5. Pass 1: Declare all module functions (get FuncIds)
-    let declared_func_ids = declare_module_functions(
-        &mut obj_module,
-        &input.defns,
-    )?;
-
-    // 6. Define the GOT data section with function-address relocations
-    define_got_data(
-        &mut obj_module,
-        &input.module_path,
-        &got_data_ids,
-        &declared_func_ids,
-        &input.defns,
-        &input.fn_slot_assignments,
-        &input.fn_to_module,
-        input.next_got_slot,
-    )?;
-
-    // 7. Build ObjectModule-specific fn_slots with GOT DataId references
-    let obj_fn_slots = build_obj_fn_slots(
-        &input.fn_slot_assignments,
-        &input.fn_to_module,
-        &got_data_ids,
-        &input.module_path,
-    )?;
-
-    // 8. Pass 2: Compile each function body
-    compile_all_functions(
-        &mut obj_module,
-        input,
-        &declared_func_ids,
-        &intrinsic_func_ids,
-        &obj_fn_slots,
-        env,
-        symbol_tables,
-    )?;
-
-    // 9. Emit the object file bytes
-    let product = obj_module.finish();
-    let bytes = product.emit().map_err(|e| CranelispError::CodegenError {
-        message: format!("failed to emit object file: {e}"),
-        span: Span::SYNTHETIC,
-    })?;
-    Ok(bytes)
+    unimplemented!("superseded by compile_to_module")
 }
 
 // ---------------------------------------------------------------------------
@@ -418,19 +418,24 @@ fn declare_got_data_symbols(
 }
 
 /// Declare all intrinsic (runtime + primitive + platform) functions as imports.
+///
+/// Delegates to `declare_intrinsics_generic<M>` for the standard intrinsics,
+/// then adds any platform-specific entries from the IntrinsicTable.
 fn declare_intrinsic_imports(
     obj_module: &mut ObjectModule,
     intrinsics: &IntrinsicTable,
 ) -> Result<HashMap<String, FuncId>, CranelispError> {
+    // Use the generic path for all standard intrinsics.
+    let generic_ids = crate::jit::declare_intrinsics_generic(obj_module)?;
+
+    // Convert IntrinsicFuncIds to the HashMap<String, FuncId> expected by callers.
     let mut ids: HashMap<String, FuncId> = HashMap::new();
+    for (name, func_id) in &generic_ids.by_name {
+        ids.insert(name.as_ref().to_string(), *func_id);
+    }
 
-    let all_entries = intrinsics
-        .runtime_fns
-        .iter()
-        .chain(intrinsics.primitive_fns.iter())
-        .chain(intrinsics.platform_fns.iter());
-
-    for entry in all_entries {
+    // Add platform-specific entries (not covered by intrinsic_symbols()).
+    for entry in &intrinsics.platform_fns {
         if ids.contains_key(&entry.jit_name) {
             continue;
         }
@@ -444,13 +449,12 @@ fn declare_intrinsic_imports(
             .declare_function(&entry.jit_name, Linkage::Import, &sig)
             .map_err(|e| CranelispError::CodegenError {
                 message: format!(
-                    "failed to declare intrinsic '{}': {e}",
+                    "failed to declare platform intrinsic '{}': {e}",
                     entry.jit_name
                 ),
                 span: Span::SYNTHETIC,
             })?;
         ids.insert(entry.jit_name.clone(), func_id);
-        // Also index by user_name for builtins that FnCompiler resolves by user name
         ids.insert(entry.user_name.as_ref().to_string(), func_id);
     }
 
@@ -616,11 +620,50 @@ fn compile_all_functions(
     env: &dyn crate::compiler::CompilationEnv,
     symbol_tables: &dashmap::DashMap<ModuleFullPath, SymbolTable>,
 ) -> Result<(), CranelispError> {
-    // Build func_ids: ONLY intrinsics get direct calls.
-    // User functions and cross-module functions go through the GOT.
+    // Build func_ids: intrinsics + all module functions get direct calls.
+    // In object files, the system linker resolves symbol references, so both
+    // self-module and cross-module function calls can use direct BL. This
+    // avoids depending on runtime GOT initialization, which is required for
+    // JIT mode but unnecessary for linked executables.
     let mut func_ids: HashMap<Symbol, FuncId> = HashMap::new();
     for (name, &fid) in intrinsic_func_ids {
         func_ids.insert(Symbol::from(name.as_str()), fid);
+    }
+    // Add self-module functions (declared in Pass 1).
+    for ((defn, _), &fid) in input.defns.iter().zip(declared_func_ids.iter()) {
+        func_ids.insert(defn.name.clone(), fid);
+    }
+    // Declare cross-module functions as imports and add to func_ids.
+    // The system linker resolves these against the importing module's .o file.
+    for (name, param_count) in &input.cross_module_fns {
+        if func_ids.contains_key(name) {
+            continue;
+        }
+        let bare_name = if let Some(slash_pos) = name.as_ref().find('/') {
+            &name.as_ref()[slash_pos + 1..]
+        } else {
+            name.as_ref()
+        };
+        // Cross-module functions may already be declared (as self-module or intrinsic).
+        if func_ids.contains_key(bare_name) {
+            continue;
+        }
+        let mut sig = obj_module.make_signature();
+        for _ in 0..*param_count {
+            sig.params.push(AbiParam::new(types::I64));
+        }
+        sig.returns.push(AbiParam::new(types::I64));
+        match obj_module.declare_function(bare_name, Linkage::Import, &sig) {
+            Ok(fid) => {
+                func_ids.insert(Symbol::from(bare_name), fid);
+                // Also register the qualified name
+                func_ids.insert(name.clone(), fid);
+            }
+            Err(_) => {
+                // If declaration fails (e.g., symbol already declared with different
+                // linkage), fall back to GOT-indirect for this function.
+            }
+        }
     }
 
     // Build func_arities map (local defns + cross-module functions)
@@ -746,6 +789,7 @@ mod tests {
         let mp = ModuleFullPath::from("test.module");
         let metadata = CacheMetadata {
             symbol_table: SymbolTable::new(mp.clone()),
+            dependencies: Vec::new(),
         };
         let input = ObjectCompileInput {
             module_path: mp.clone(),
@@ -784,6 +828,7 @@ mod tests {
         let mp = ModuleFullPath::from("user");
         let metadata = CacheMetadata {
             symbol_table: SymbolTable::new(mp.clone()),
+            dependencies: Vec::new(),
         };
         let input = ObjectCompileInput {
             module_path: mp.clone(),
@@ -956,6 +1001,7 @@ mod tests {
         let mp = ModuleFullPath::from("user");
         let metadata = CacheMetadata {
             symbol_table: SymbolTable::new(mp.clone()),
+            dependencies: Vec::new(),
         };
 
         let defn = Defn {
@@ -1022,6 +1068,7 @@ mod tests {
         let mp = ModuleFullPath::from("types_only");
         let metadata = CacheMetadata {
             symbol_table: SymbolTable::new(mp.clone()),
+            dependencies: Vec::new(),
         };
         let input = ObjectCompileInput {
             module_path: mp.clone(),

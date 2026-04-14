@@ -344,6 +344,11 @@ fn link_multi_module_project() {
     // A project with an entry module that imports another module.
     let dir = test_dir("link_multi_module");
     std::fs::write(
+        dir.join("prelude.cl"),
+        "(import [primitives [*]])\n",
+    )
+    .unwrap();
+    std::fs::write(
         dir.join("main.cl"),
         "(import [helper [add-one]])\n(defn main [] (add-one 41))",
     )
@@ -585,7 +590,7 @@ fn watch_detects_source_change() {
     std::fs::write(dir.path().join("mymod.cl"), "(defn val [] 42)").unwrap();
     std::fs::write(
         dir.path().join("prelude.cl"),
-        "(import [mymod [val]])\n",
+        "(import [primitives [*]])\n(import [mymod [val]])\n",
     )
     .unwrap();
     let input = "\
@@ -615,7 +620,7 @@ fn watch_ignores_metadata_only_changes() {
     std::fs::write(dir.path().join("mymod.cl"), "(defn val [] 42)").unwrap();
     std::fs::write(
         dir.path().join("prelude.cl"),
-        "(import [mymod [val]])\n",
+        "(import [primitives [*]])\n(import [mymod [val]])\n",
     )
     .unwrap();
     let input = "\
@@ -648,7 +653,7 @@ fn watch_cascade_invalidation() {
     .unwrap();
     std::fs::write(
         dir.path().join("prelude.cl"),
-        "(import [mod_a [val-a]])\n",
+        "(import [primitives [*]])\n(import [mod_a [val-a]])\n",
     )
     .unwrap();
     let input = "\
@@ -685,7 +690,7 @@ fn watch_notification_format() {
     std::fs::write(dir.path().join("mymod.cl"), "(defn val [] 42)").unwrap();
     std::fs::write(
         dir.path().join("prelude.cl"),
-        "(import [mymod [val]])\n",
+        "(import [primitives [*]])\n(import [mymod [val]])\n",
     )
     .unwrap();
     let input = "\
@@ -720,7 +725,7 @@ fn watch_notification_truncation() {
     std::fs::write(dir.path().join("mod_b.cl"), "(defn val-b [] 2)").unwrap();
     std::fs::write(
         dir.path().join("prelude.cl"),
-        "(import [mod_a [val-a]])\n(import [mod_b [val-b]])\n",
+        "(import [primitives [*]])\n(import [mod_a [val-a]])\n(import [mod_b [val-b]])\n",
     )
     .unwrap();
     let input = "\
@@ -804,7 +809,7 @@ fn watch_automatic_recompilation() {
     std::fs::write(dir.path().join("mymod.cl"), "(defn val [] 42)").unwrap();
     std::fs::write(
         dir.path().join("prelude.cl"),
-        "(import [mymod [val]])\n",
+        "(import [primitives [*]])\n(import [mymod [val]])\n",
     )
     .unwrap();
     let input = "\
@@ -865,7 +870,7 @@ fn watch_error_display_format() {
     std::fs::write(dir.path().join("mymod.cl"), "(defn val [] 42)").unwrap();
     std::fs::write(
         dir.path().join("prelude.cl"),
-        "(import [mymod [val]])\n",
+        "(import [primitives [*]])\n(import [mymod [val]])\n",
     )
     .unwrap();
     let input = "\
@@ -931,7 +936,7 @@ fn watch_retry_on_next_change() {
     std::fs::write(dir.path().join("mymod.cl"), "(defn val [] 42)").unwrap();
     std::fs::write(
         dir.path().join("prelude.cl"),
-        "(import [mymod [val]])\n",
+        "(import [primitives [*]])\n(import [mymod [val]])\n",
     )
     .unwrap();
     let input = "\
@@ -975,7 +980,7 @@ fn watch_invalidates_cache_on_change() {
     std::fs::write(dir.path().join("mymod.cl"), "(defn val [] 42)").unwrap();
     std::fs::write(
         dir.path().join("prelude.cl"),
-        "(import [mymod [val]])\n",
+        "(import [primitives [*]])\n(import [mymod [val]])\n",
     )
     .unwrap();
     let input = "\
@@ -1287,6 +1292,10 @@ Color.Red
 #[test]
 fn persist_import_survives_restart() {
     // Import a module, quit, restart, verify the imported symbol works.
+    // Uses run_repl_in_with_test_prelude because imports need the prelude
+    // (operators used in typical modules). Deletes .cranelisp-cache/ between
+    // sessions so session 2 must recompile from the regenerated user.cl,
+    // testing true persistence rather than cache-hit loading.
     let dir = tempfile::tempdir().expect("failed to create temp dir");
 
     // Create a helper module on disk for the import
@@ -1302,19 +1311,38 @@ fn persist_import_survives_restart() {
 (helper-val)
 /quit
 ";
-    let output1 = run_repl_in(dir.path(), input1);
+    let output1 = run_repl_in_with_test_prelude(dir.path(), input1);
     let out1 = stdout_str(&output1);
     assert!(
         out1.contains("99"),
         "session 1 should successfully import and call helper-val: {out1}"
     );
 
+    // Verify user.cl was created and contains the import
+    let user_cl = dir.path().join("user.cl");
+    assert!(
+        user_cl.exists(),
+        "user.cl should exist after session 1"
+    );
+    let user_cl_contents = std::fs::read_to_string(&user_cl)
+        .expect("should be able to read user.cl");
+    assert!(
+        user_cl_contents.contains("import") && user_cl_contents.contains("helper"),
+        "user.cl should contain the import statement: {user_cl_contents}"
+    );
+
+    // Delete cache so session 2 must recompile from user.cl (not cache hit)
+    let cache_dir = dir.path().join(".cranelisp-cache");
+    if cache_dir.exists() {
+        std::fs::remove_dir_all(&cache_dir).expect("failed to delete .cranelisp-cache");
+    }
+
     // Session 2: restart, the import should be persisted in user.cl
     let input2 = "\
 (helper-val)
 /quit
 ";
-    let output2 = run_repl_in(dir.path(), input2);
+    let output2 = run_repl_in_with_test_prelude(dir.path(), input2);
     let out2 = stdout_str(&output2);
     assert!(
         out2.contains("99"),
@@ -1601,6 +1629,8 @@ fn persist_bug1_all_defns_saved_to_user_cl() {
 #[test]
 fn persist_bug1_constrained_fn_survives_restart() {
     // Define a constrained polymorphic fn, quit, restart, call it.
+    // Deletes .cranelisp-cache/ between sessions so session 2 must recompile
+    // from user.cl, testing true persistence rather than cache-hit loading.
     let dir = tempfile::tempdir().expect("failed to create temp dir");
 
     // Session 1: define constrained poly fn
@@ -1615,6 +1645,25 @@ fn persist_bug1_constrained_fn_survives_restart() {
         out1.contains("30"),
         "session 1: (add 10 20) should be 30: {out1}"
     );
+
+    // Verify user.cl was created and contains the defn
+    let user_cl = dir.path().join("user.cl");
+    assert!(
+        user_cl.exists(),
+        "user.cl should exist after session 1"
+    );
+    let user_cl_contents = std::fs::read_to_string(&user_cl)
+        .expect("should be able to read user.cl");
+    assert!(
+        user_cl_contents.contains("defn add"),
+        "user.cl should contain the constrained poly fn 'add': {user_cl_contents}"
+    );
+
+    // Delete cache so session 2 must recompile from user.cl (not cache hit)
+    let cache_dir = dir.path().join(".cranelisp-cache");
+    if cache_dir.exists() {
+        std::fs::remove_dir_all(&cache_dir).expect("failed to delete .cranelisp-cache");
+    }
 
     // Session 2: restart, call the restored function
     let input2 = "\
@@ -1864,13 +1913,14 @@ fn persist_bug_macro_not_expanded_in_user_cl() {
     );
 }
 
-// --- Defect 2 regression: no user.o cache after first session ---
+// --- Cache: REPL session produces object files ---
 // After defining something and quitting, .cranelisp-cache/ should contain
-// user.meta.json and user.o immediately (not requiring a second session).
+// user.meta.json and user.o immediately. This tests cache file production,
+// not session persistence across restarts.
 
-// spec: repl/spec.md §15.2, design/int/session-persistence.md §3 — cache on first save
+// spec: design/int/session-persistence.md §3 — cache written after save
 #[test]
-fn persist_bug_cache_files_on_first_save() {
+fn cache_repl_produces_object_files() {
     let dir = tempfile::tempdir().expect("failed to create temp dir");
 
     let input = "\

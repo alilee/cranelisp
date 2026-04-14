@@ -16,9 +16,17 @@ use cranelisp_types::{CranelispError, Span, SymbolTable};
 /// GOT slot assignments and function definitions are on SymbolTable entries
 /// (ModuleEntry::Def.got_slot, ModuleEntry::Def.defn). No separate codegen
 /// state is needed.
+///
+/// `dependencies` records which modules this module imports, enabling
+/// recursive cache loading of transitive dependencies.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CacheMetadata {
     pub symbol_table: SymbolTable,
+    /// Module paths this module directly imports from (excluding primitives/macros).
+    /// Populated at cache-write time so the orchestration layer can recursively
+    /// load transitive dependencies on cache hit without scanning the symbol table.
+    #[serde(default)]
+    pub dependencies: Vec<String>,
 }
 
 /// Read cached module metadata from disk.
@@ -68,6 +76,7 @@ mod tests {
     fn make_test_metadata() -> CacheMetadata {
         CacheMetadata {
             symbol_table: SymbolTable::new(ModuleFullPath::from("test")),
+            dependencies: Vec::new(),
         }
     }
 

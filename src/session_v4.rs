@@ -414,16 +414,14 @@ pub struct TypecheckProduct {
 /// Produced by typecheck, consumed by both JIT (priority workers) and .o (nice
 /// workers) codegen. Removed when scheduler signals both `inmem_done` and
 /// `object_done`. See session-restructure.md.
+///
+/// Stores the full `CheckResult` (including `constrained_fn_names`) so that
+/// the nice worker gets the same information as the priority worker. This
+/// fixes the pre-existing bug where `constrained_fn_names` was discarded at
+/// stash time and the object path used an empty set.
 pub struct CodegenInput {
-    pub method_resolutions: cranelisp_types::MethodResolutions,
-    pub expr_types: HashMap<Span, Type>,
-    pub mono_defns: Vec<cranelisp_types::MonoDefn>,
-    pub default_method_defns: Vec<cranelisp_types::Defn>,
+    pub check: cranelisp_types::CheckResult,
     pub program: Vec<TopLevel>,
-    /// Cross-module function signatures for .o compilation.
-    /// Collected during priority worker (which has TC access) and consumed
-    /// by nice worker (which does not). Each entry is (qualified_name, param_count).
-    pub cross_module_func_sigs: Vec<(Symbol, usize)>,
 }
 
 /// Per-module codegen output: compiled code + optional cache linker.
@@ -805,6 +803,10 @@ impl CompilerSession {
     /// Returns a list of user-visible messages (one per reloaded module).
     /// On success, removes the module from `error_modules`. On failure,
     /// adds it to `error_modules` to block subsequent evals.
+    ///
+    /// Per repl/spec.md §14: notification format is `[updated: file.cl]`
+    /// on success, `[errors: file.cl]` on failure. Cascade invalidation
+    /// reloads modules that depend on changed modules.
     pub fn poll_and_reload(&mut self) -> Vec<String> {
         let watcher = match &mut self.watcher {
             Some(w) => w,
@@ -827,21 +829,49 @@ impl CompilerSession {
                     modules_to_reload.push((module_path.clone(), path.clone()));
                 }
         }
+        // Cascade invalidation: find modules that import any changed module
+        // and add them to the reload list. Uses module_structures to discover
+        // reverse dependencies.
+        let changed_modules: HashSet<ModuleFullPath> = modules_to_reload
+            .iter()
+            .map(|(mp, _)| mp.clone())
+            .collect();
+        for entry in self.shared.module_structures.iter() {
+            let dependent_module = entry.key().clone();
+            if changed_modules.contains(&dependent_module) {
+                continue; // Already being reloaded directly.
+            }
+            let structure = entry.value();
+            let depends_on_changed = structure.import_specs.iter().any(|spec| {
+                let import_mod = ModuleFullPath::from(spec.module_path.as_ref());
+                changed_modules.contains(&import_mod)
+            });
+            if depends_on_changed {
+                // Find the file path for this dependent module.
+                if let Some(dep_path) = file_to_mod.iter()
+                    .find(|(_, mp)| **mp == dependent_module)
+                    .map(|(p, _)| p.clone())
+                {
+                    modules_to_reload.push((dependent_module, dep_path));
+                }
+            }
+        }
         drop(file_to_mod);
 
         let mut messages = Vec::new();
         for (module_path, file_path) in modules_to_reload {
+            // Extract just the filename for the notification message.
+            let file_name = file_path.file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or_else(|| module_path.as_ref());
             match self.reload_module(&module_path, &file_path) {
                 Ok(()) => {
                     self.error_modules.remove(&module_path);
-                    messages.push(format!("Reloaded {}", module_path.as_ref()));
+                    messages.push(format!("[updated: {}]", file_name));
                 }
                 Err(e) => {
                     self.error_modules.insert(module_path.clone());
-                    messages.push(format!(
-                        "Error reloading {}: {e}",
-                        module_path.as_ref()
-                    ));
+                    messages.push(format!("[errors: {}]\n  {e}", file_name));
                 }
             }
         }
@@ -1329,8 +1359,8 @@ impl CompilerSession {
 
         for retry in 0..MAX_DEP_RETRIES {
             let module = self.current_module_path();
-            let mut accumulator = ModuleCheckAccumulator::new();
-            let mut expanded_program = Vec::new();
+            let accumulator = ModuleCheckAccumulator::new();
+            let expanded_program = Vec::new();
             let single_sexp = [sexp.clone()];
 
             let result = {
@@ -1356,16 +1386,18 @@ impl CompilerSession {
                     shared_state: Some(&self.shared),
                 };
 
-                let mut pass1_done = false;
+                let mut suspend_state = worker::ModuleSuspendState {
+                    accumulator,
+                    expanded_program,
+                    pass1_done: false,
+                };
                 let res = worker::process_module_forms(
                     &mut wctx,
                     &module,
                     &single_sexp,
                     0,
-                    &mut accumulator,
-                    &mut expanded_program,
+                    &mut suspend_state,
                     ModuleStrategy::Additive,
-                    &mut pass1_done,
                 );
                 // Restore REPL check_state.
                 *self.shared.repl_check_state.lock()
@@ -3265,33 +3297,78 @@ fn compile_module_object(
         return;
     }
 
-    // Reconstruct a CheckResult for the object codegen pipeline.
-    // FIXME(/arch): object codegen should accept CodegenInput directly
-    // instead of requiring a full CheckResult.
-    let check_result = CheckResult {
-        method_resolutions: input.method_resolutions,
-        constrained_fn_names: HashSet::new(),
-        mono_defns: input.mono_defns,
-        expr_types: input.expr_types,
-        default_method_defns: input.default_method_defns,
-        warnings: Vec::new(),
-        display: None,
-    };
+    // Use the full CheckResult stashed by the priority worker.
+    // This includes constrained_fn_names, fixing the pre-existing bug
+    // where the object path used an empty set.
+    let check = input.check;
 
-    // Build the ObjectCompileInput from the stashed data.
-    // cross_module_func_sigs were collected during priority worker phase
-    // (which has TC access for synthetic modules like primitives).
-    let object_input = crate::pipeline::build_object_compile_input(
-        module,
-        Some(&input.program),
-        Some(&check_result),
-        &input.cross_module_func_sigs,
+    // Collect cross-module function signatures for import declaration.
+    let cross_module_func_sigs = crate::worker::collect_cross_module_func_sigs_from_tc(
         &shared.symbol_tables,
+        &shared.typecheck_products,
+        module,
     );
 
-    // Compile to .o bytes via Cranelift ObjectModule.
-    let obj_bytes = match cache::compile_module_to_object(&object_input, &object_input, &shared.symbol_tables) {
-        Ok(bytes) => bytes,
+    // Build ObjectModule with PIC ISA.
+    let isa = match cranelisp_backend::build_isa(true) {
+        Ok(isa) => isa,
+        Err(e) => {
+            if std::env::var("CRANELISP_CODEGEN_TRACE").is_ok() {
+                eprintln!("nice-worker: ISA build failed for {}: {}", module, e.message());
+            }
+            return;
+        }
+    };
+    let obj_builder = match cranelisp_backend::cranelift_object::ObjectBuilder::new(
+        isa,
+        format!("cranelisp_{}", module),
+        cranelisp_backend::cranelift_module::default_libcall_names(),
+    ) {
+        Ok(b) => b,
+        Err(e) => {
+            if std::env::var("CRANELISP_CODEGEN_TRACE").is_ok() {
+                eprintln!("nice-worker: ObjectBuilder failed for {}: {e}", module);
+            }
+            return;
+        }
+    };
+    let mut obj_module = cranelisp_backend::cranelift_object::ObjectModule::new(obj_builder);
+
+    // Declare intrinsics (generic over Module).
+    let intrinsic_ids = match cranelisp_backend::jit::declare_intrinsics_generic(&mut obj_module) {
+        Ok(ids) => ids,
+        Err(e) => {
+            if std::env::var("CRANELISP_CODEGEN_TRACE").is_ok() {
+                eprintln!("nice-worker: intrinsic declaration failed for {}: {}", module, e.message());
+            }
+            return;
+        }
+    };
+
+    // Create ObjectCompilationEnv for GOT resolution from symbol tables.
+    let env = cranelisp_backend::cache::ObjectCompilationEnv {
+        symbol_tables: &shared.symbol_tables,
+        current_module: module.clone(),
+    };
+
+    // Compile using the unified compile_to_module path.
+    let obj_bytes = match cranelisp_backend::compile_to_module(
+        &input.program, &check, &shared.symbol_tables,
+        &mut obj_module, module.clone(), &intrinsic_ids,
+        Some(&env), &cross_module_func_sigs, None,
+    ) {
+        Ok(_result) => {
+            // Emit .o bytes from the ObjectModule.
+            match obj_module.finish().emit() {
+                Ok(bytes) => bytes,
+                Err(e) => {
+                    if std::env::var("CRANELISP_CODEGEN_TRACE").is_ok() {
+                        eprintln!("nice-worker: .o emit failed for {}: {e}", module);
+                    }
+                    return;
+                }
+            }
+        }
         Err(e) => {
             // Log .o compilation errors only when CRANELISP_CODEGEN_TRACE is set.
             // These are non-fatal (in-memory compilation may have succeeded).
@@ -3326,8 +3403,23 @@ fn compile_module_object(
         .map(|guard| guard.clone())
         .unwrap_or_else(|| cranelisp_types::SymbolTable::new(module.clone()));
 
+    // Extract dependency module paths from Import entries for recursive
+    // cache loading on future cache hits (Sprint 53 — transitive deps).
+    let dependencies: Vec<String> = {
+        let mut deps = std::collections::HashSet::new();
+        for (_name, entry) in symbol_table.all_symbols() {
+            if let cranelisp_types::ModuleEntry::Import { source } = entry {
+                let mod_path = source.module.as_ref();
+                if mod_path != "primitives" && mod_path != "macros" {
+                    deps.insert(mod_path.to_string());
+                }
+            }
+        }
+        deps.into_iter().collect()
+    };
     let metadata = cache::CacheMetadata {
         symbol_table,
+        dependencies,
     };
     if let Err(e) = cache::write_cached_metadata(&meta_path, &metadata) {
         eprintln!("nice-worker: .meta.json write failed for {}: {}", module, e.message());

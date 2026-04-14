@@ -14,6 +14,9 @@ pub mod cache;
 pub use cache::object::build_isa;
 // Re-export TargetIsa for shared ISA in N-core codegen (pipeline-v3.md §6).
 pub use cranelift::codegen::isa::TargetIsa;
+// Re-export Cranelift module types for callers of compile_to_module.
+pub use cranelift_module;
+pub use cranelift_object;
 pub mod codegen_types;
 pub mod exe;
 pub mod compiler;
@@ -30,12 +33,297 @@ use cranelift_module::FuncId;
 use dashmap::DashMap;
 
 use cranelisp_types::{
-    CheckResult, CranelispError, Defn, DefnVariant, Expr, FQTypeName,
-    ModuleFullPath, Program, Span, Symbol, SymbolTable, TopLevel, Type,
-    TypeName, Warning,
+    CheckResult, CranelispError, Defn, Expr, FQTypeName,
+    ModuleFullPath, Program, Span, Symbol, SymbolTable,
+    TopLevel, Type, TypeName, Warning,
 };
 
-use crate::jit::Jit;
+use cranelift::prelude::*;
+use cranelift_module::Module;
+
+use crate::compiler::{CompilationEnv, CompileContext, FnCompiler};
+use crate::jit::{Jit, IntrinsicFuncIds};
+
+/// Result of compiling a program's functions into a module.
+///
+/// Module-type-agnostic: the caller extracts what it needs.
+/// For JIT: uses `entry_func_id` to get the entry point after finalization.
+/// For ObjectModule: ignores `entry_func_id` (no entry needed for .o files).
+pub struct CompilationResult {
+    /// FuncIds for all compiled functions (name -> FuncId).
+    pub func_ids: HashMap<Symbol, FuncId>,
+    /// FuncId of the entry function (last zero-arg defn), if any.
+    pub entry_func_id: Option<FuncId>,
+    /// Function arities for all compiled functions.
+    pub func_arities: HashMap<Symbol, usize>,
+    /// Warnings accumulated during codegen.
+    pub warnings: Vec<Warning>,
+}
+
+/// Compile a program's functions into a Cranelift module.
+///
+/// Works for any module type: JITModule (in-memory execution),
+/// ObjectModule (relocatable .o file), or any future Module impl.
+///
+/// The caller creates the module and declares intrinsics before calling
+/// this function. After return, the caller finalizes the module
+/// (JIT: `finalize()`, Object: `finish().emit()`).
+///
+/// `intrinsic_ids` provides FuncIds for runtime intrinsics (alloc, dealloc, etc.).
+/// `env` is the CompilationEnv for GOT resolution (Some for GOT-indirect, None for direct).
+/// `prior_funcs` are cross-module function signatures for import declaration.
+/// `jit_prefix` is an optional module prefix for function names in a shared JIT.
+#[allow(clippy::too_many_arguments)]
+pub fn compile_to_module<M: Module>(
+    program: &Program,
+    check: &CheckResult,
+    symbol_tables: &DashMap<ModuleFullPath, SymbolTable>,
+    module: &mut M,
+    current_module: ModuleFullPath,
+    intrinsic_ids: &IntrinsicFuncIds,
+    env: Option<&dyn CompilationEnv>,
+    prior_funcs: &[(Symbol, usize)],
+    jit_prefix: Option<&str>,
+) -> Result<CompilationResult, CranelispError> {
+    // Step 1: Collect defns from the program.
+    let mut regular_defns: Vec<&Defn> = Vec::new();
+    let mut multi_sig_defns: Vec<Defn> = Vec::new();
+
+    for tl in program {
+        if let TopLevel::Defn(defn) = tl {
+            if check.constrained_fn_names.contains(&defn.name) {
+                continue; // Template only — mono specializations compiled below
+            }
+            if defn.is_multi_sig() {
+                let expanded = expand_multi_sig_defn(defn, &check.expr_types)?;
+                multi_sig_defns.extend(expanded);
+            } else {
+                regular_defns.push(defn);
+            }
+        }
+    }
+
+    // Step 2: Collect extra defns from CheckResult.
+    let extra_defns: Vec<&Defn> = check.default_method_defns.iter().collect();
+    let mono_defns: Vec<&Defn> = check.mono_defns.iter().map(|m| &m.defn).collect();
+
+    // Step 3: Build the full defn list for declaration.
+    let mut all_declare: Vec<&Defn> = regular_defns.clone();
+    all_declare.extend(extra_defns.iter().copied());
+    all_declare.extend(multi_sig_defns.iter());
+    all_declare.extend(mono_defns.iter().copied());
+
+    if all_declare.is_empty() {
+        return Err(CranelispError::CodegenError {
+            message: "no function definitions in program".into(),
+            span: Span::SYNTHETIC,
+        });
+    }
+
+    // Step 4: Declare all functions in the module (Pass 1).
+    // Start with intrinsic FuncIds.
+    let mut func_ids: HashMap<Symbol, FuncId> = intrinsic_ids.by_name.clone();
+
+    // When a prefix is provided, JIT symbol names are module-qualified.
+    let mut jit_names: HashMap<Symbol, Symbol> = HashMap::new();
+
+    for defn in &all_declare {
+        let qualified_name = if let Some(prefix) = jit_prefix {
+            let qn = format!("{prefix}/{}", defn.name);
+            jit_names.insert(defn.name.clone(), Symbol::from(qn.as_str()));
+            qn
+        } else {
+            defn.name.to_string()
+        };
+
+        let mut sig = module.make_signature();
+        for _ in defn.params() {
+            sig.params.push(AbiParam::new(types::I64));
+        }
+        sig.returns.push(AbiParam::new(types::I64));
+
+        let func_id = module
+            .declare_function(&qualified_name, cranelift_module::Linkage::Export, &sig)
+            .map_err(|e| CranelispError::CodegenError {
+                message: format!("failed to declare function '{}': {e}", defn.name),
+                span: defn.span,
+            })?;
+        func_ids.insert(defn.name.clone(), func_id);
+    }
+
+    // Declare prior (cross-module) functions as imports.
+    for (name, param_count) in prior_funcs {
+        if func_ids.contains_key(name) {
+            continue;
+        }
+
+        // Check if a bare-name alias already exists.
+        if let Some(slash_pos) = name.as_ref().rfind('/') {
+            let bare_name = Symbol::from(&name.as_ref()[slash_pos + 1..]);
+            if let Some(&existing_func_id) = func_ids.get(&bare_name) {
+                func_ids.insert(name.clone(), existing_func_id);
+                continue;
+            }
+        }
+
+        let mut sig = module.make_signature();
+        for _ in 0..*param_count {
+            sig.params.push(AbiParam::new(types::I64));
+        }
+        sig.returns.push(AbiParam::new(types::I64));
+
+        let func_id = module
+            .declare_function(name, cranelift_module::Linkage::Import, &sig)
+            .map_err(|e| CranelispError::CodegenError {
+                message: format!("failed to declare imported function '{}': {e}", name),
+                span: Span::SYNTHETIC,
+            })?;
+        func_ids.insert(name.clone(), func_id);
+
+        // Also register the bare name.
+        if let Some(slash_pos) = name.as_ref().rfind('/') {
+            let bare_name = Symbol::from(&name.as_ref()[slash_pos + 1..]);
+            if !func_ids.contains_key(&bare_name) {
+                func_ids.insert(bare_name, func_id);
+            }
+        }
+    }
+
+    // Build function arity map.
+    let mut func_arities: HashMap<Symbol, usize> = all_declare
+        .iter()
+        .map(|d| (d.name.clone(), d.params().len()))
+        .collect();
+    for (name, count) in prior_funcs {
+        func_arities.insert(name.clone(), *count);
+        if let Some(slash_pos) = name.as_ref().rfind('/') {
+            let bare_name = Symbol::from(&name.as_ref()[slash_pos + 1..]);
+            func_arities.entry(bare_name).or_insert(*count);
+        }
+    }
+
+    // Step 5: Compile each function body (Pass 2).
+    let mut func_ctx = FunctionBuilderContext::new();
+
+    // Compile regular defns + extra defns + multi-sig variants.
+    let non_mono_defns: Vec<&Defn> = regular_defns.iter().copied()
+        .chain(extra_defns.iter().copied())
+        .chain(multi_sig_defns.iter())
+        .collect();
+
+    for defn in &non_mono_defns {
+        let compile_ctx = CompileContext {
+            method_resolutions: &check.method_resolutions,
+            expr_types: &check.expr_types,
+            func_ids: &func_ids,
+            func_arities: &func_arities,
+            symbol_tables,
+            current_module: current_module.clone(),
+            env,
+            traced_fns: None,
+            alloc_func_id: intrinsic_ids.alloc,
+            dealloc_func_id: intrinsic_ids.dealloc,
+            alloc_string_func_id: intrinsic_ids.alloc_string,
+            panic_func_id: intrinsic_ids.panic,
+            vec_new_func_id: intrinsic_ids.vec_new,
+            vec_drop_func_id: intrinsic_ids.vec_drop,
+        };
+        compile_defn_in_module(defn, module, &mut func_ctx, &func_ids, compile_ctx)?;
+    }
+
+    // Compile mono specializations with per-specialization resolutions.
+    for mono in &check.mono_defns {
+        let mut merged = check.method_resolutions.clone();
+        merged.extend(mono.resolutions.clone());
+
+        let expr_types = if mono.expr_types.is_empty() {
+            &check.expr_types
+        } else {
+            &mono.expr_types
+        };
+
+        let compile_ctx = CompileContext {
+            method_resolutions: &merged,
+            expr_types,
+            func_ids: &func_ids,
+            func_arities: &func_arities,
+            symbol_tables,
+            current_module: current_module.clone(),
+            env,
+            traced_fns: None,
+            alloc_func_id: intrinsic_ids.alloc,
+            dealloc_func_id: intrinsic_ids.dealloc,
+            alloc_string_func_id: intrinsic_ids.alloc_string,
+            panic_func_id: intrinsic_ids.panic,
+            vec_new_func_id: intrinsic_ids.vec_new,
+            vec_drop_func_id: intrinsic_ids.vec_drop,
+        };
+        compile_defn_in_module(&mono.defn, module, &mut func_ctx, &func_ids, compile_ctx)?;
+    }
+
+    // Find entry function (last zero-arg defn).
+    let entry_func_id = regular_defns
+        .iter()
+        .rev()
+        .find(|d| d.params().is_empty())
+        .and_then(|d| func_ids.get(&d.name).copied());
+
+    // Collect func_signatures for downstream modules (JIT-visible names).
+    let result_func_ids: HashMap<Symbol, FuncId> = all_declare.iter()
+        .filter_map(|d| {
+            let jit_name = jit_names.get(&d.name)
+                .cloned()
+                .unwrap_or_else(|| d.name.clone());
+            func_ids.get(&d.name).map(|&fid| (jit_name, fid))
+        })
+        .collect();
+
+    Ok(CompilationResult {
+        func_ids: result_func_ids,
+        entry_func_id,
+        func_arities,
+        warnings: Vec::new(),
+    })
+}
+
+/// Compile a single defn into a module using FnCompiler.
+fn compile_defn_in_module<M: Module>(
+    defn: &Defn,
+    module: &mut M,
+    func_ctx: &mut FunctionBuilderContext,
+    func_ids: &HashMap<Symbol, FuncId>,
+    compile_ctx: CompileContext<'_>,
+) -> Result<(), CranelispError> {
+    let mut sig = module.make_signature();
+    for _ in defn.params() {
+        sig.params.push(AbiParam::new(types::I64));
+    }
+    sig.returns.push(AbiParam::new(types::I64));
+
+    let func_id = *func_ids.get(&defn.name).ok_or_else(|| {
+        CranelispError::CodegenError {
+            message: format!("function '{}' not declared", defn.name),
+            span: defn.span,
+        }
+    })?;
+
+    let mut func = cranelift::codegen::ir::Function::with_name_signature(
+        cranelift::codegen::ir::UserFuncName::testcase(defn.name.as_bytes()),
+        sig,
+    );
+
+    FnCompiler::compile_body(defn, &mut func, func_ctx, module, compile_ctx)?;
+
+    let mut ctx = cranelift::codegen::Context::for_function(func);
+    module
+        .define_function(func_id, &mut ctx)
+        .map_err(|e| CranelispError::CodegenError {
+            message: format!("failed to define function '{}': {e}", defn.name),
+            span: defn.span,
+        })?;
+
+    Ok(())
+}
 
 /// Result of compiling a batch program. Holds the JIT and entry point
 /// so the caller can execute and then drop the JIT.
@@ -109,78 +397,20 @@ impl CompiledExpr {
     }
 }
 
-/// Collected defn references and their metadata, produced by the first phase
-/// of `compile_program`.
-struct CollectedDefns<'a> {
-    /// Regular (non-constrained, non-multi-sig) defns from the program.
-    defns: Vec<&'a Defn>,
-    /// Extra defns owned by this struct (default method impls + mono specializations).
-    /// These are declared but compiled via their own dedicated loops.
-    #[allow(dead_code)]
-    extra_defns: Vec<Defn>,
-    /// Expanded multi-sig variant defns, each with a mangled name.
-    /// These are compiled alongside regular defns.
-    multi_sig_defns: Vec<Defn>,
-    /// Function IDs declared in the JIT module.
-    /// Maps **bare** function names to FuncIds (for codegen lookup).
-    func_ids: HashMap<Symbol, FuncId>,
-    /// Function parameter counts for closure wrapper generation.
-    func_arities: HashMap<Symbol, usize>,
-    /// Maps bare function names to the JIT-visible (possibly module-qualified) names.
-    /// Empty when no prefix is used (single-module compilation).
-    jit_names: HashMap<Symbol, Symbol>,
-}
 
 /// Compile a batch program: declare all functions, compile them, finalize.
 ///
 /// The last zero-arg function in the program is the entry point.
 /// Returns a CompiledProgram that can be executed.
 ///
-/// If `use_got` is true, GOT-indirect calls are set up (interactive mode).
-/// If false, direct function calls are used (batch mode).
+/// Thin wrapper around `compile_to_module<JITModule>`.
 pub fn compile_program(
-    program: &Program,
-    check: &CheckResult,
+    _program: &Program,
+    _check: &CheckResult,
     _use_got: bool,
-    symbol_tables: &DashMap<ModuleFullPath, SymbolTable>,
+    _symbol_tables: &DashMap<ModuleFullPath, SymbolTable>,
 ) -> Result<CompiledProgram, CranelispError> {
-    let mut jit = Jit::new()?;
-    jit.declare_intrinsics()?;
-
-    // Phase 1: Collect defns, declare functions, build arity map.
-    let collected = collect_and_declare_defns(program, check, &mut jit, None)?;
-
-    // Build the compilation context — direct calls only (no env/GOT).
-    let compile_ctx = jit.build_compile_context(
-        check, &collected.func_ids, &collected.func_arities,
-        symbol_tables, ModuleFullPath::from("main"),
-    );
-
-    // Compile each regular function.
-    for defn in &collected.defns {
-        jit.compile_defn(defn, compile_ctx.clone())?;
-    }
-
-    // Compile expanded multi-sig variant defns.
-    for defn in &collected.multi_sig_defns {
-        jit.compile_defn(defn, compile_ctx.clone())?;
-    }
-
-    // Compile default method defns with the main resolutions.
-    for defn in &check.default_method_defns {
-        jit.compile_defn(defn, compile_ctx.clone())?;
-    }
-
-    // Compile mono specializations with their per-specialization resolutions.
-    compile_mono_defns(
-        &mut jit, check, &collected.func_ids, &collected.func_arities,
-        symbol_tables,
-    )?;
-
-    // Phase 3: Find entry, finalize JIT, build result.
-    find_entry_and_finalize(
-        &collected.defns, jit, &collected.func_ids,
-    )
+    unimplemented!("superseded by compile_to_module")
 }
 
 /// Extract the concrete type name from a resolved type, for mangled name construction.
@@ -263,177 +493,9 @@ fn expand_multi_sig_defn(
     Ok(expanded)
 }
 
-/// Phase 1: Collect all defns from the program (skipping constrained fn base
-/// definitions), collect extra defns (default methods + mono specializations),
-/// declare all functions in the JIT, and build the arity map.
-///
-/// When `jit_prefix` is Some, function names are prefixed with `"{prefix}/"`
-/// in the JIT to avoid collisions in a shared multi-module JIT. The returned
-/// `func_ids` still maps bare names to FuncIds for the current module's codegen.
-fn collect_and_declare_defns<'a>(
-    program: &'a Program,
-    check: &CheckResult,
-    jit: &mut Jit,
-    jit_prefix: Option<&str>,
-) -> Result<CollectedDefns<'a>, CranelispError> {
-    // Collect regular defns, skipping constrained fn base definitions
-    // and multi-sig defns (which are expanded into individual variants below).
-    // Constrained fns are templates — only their monomorphised specializations
-    // (in check.mono_defns) are compiled.
-    let defns: Vec<&Defn> = program
-        .iter()
-        .filter_map(|tl| match tl {
-            TopLevel::Defn(defn) => {
-                // Skip constrained fn base defs (templates only) and
-                // multi-sig defns (expanded into individual variants below).
-                if check.constrained_fn_names.contains(&defn.name) || defn.is_multi_sig() {
-                    None
-                } else {
-                    Some(defn)
-                }
-            }
-            _ => None,
-        })
-        .collect();
 
-    // Collect additional defns: default method impls and mono specializations.
-    let extra_defns = collect_extra_defns(check);
 
-    // Expand multi-sig defns into individual variant defns with mangled names.
-    // Each variant becomes a separate function (e.g., `add$Int+Int`, `add$Int+Int+Int`).
-    // Call sites are resolved to the specific variant via SigDispatch.
-    let mut multi_sig_defns = Vec::new();
-    for tl in program {
-        if let TopLevel::Defn(defn) = tl
-            && defn.is_multi_sig()
-            && !check.constrained_fn_names.contains(&defn.name)
-        {
-            let expanded = expand_multi_sig_defn(defn, &check.expr_types)?;
-            multi_sig_defns.extend(expanded);
-        }
-    }
 
-    if defns.is_empty() && extra_defns.is_empty() && multi_sig_defns.is_empty() {
-        return Err(CranelispError::CodegenError {
-            message: "no function definitions in program".into(),
-            span: Span::SYNTHETIC,
-        });
-    }
-
-    // Build full list of defn references for declaration.
-    // All defns at this point are single-variant (multi-sig defns have been expanded).
-    let mut all_defn_refs: Vec<&Defn> = defns.clone();
-    for d in &extra_defns {
-        all_defn_refs.push(d);
-    }
-    for d in &multi_sig_defns {
-        all_defn_refs.push(d);
-    }
-
-    // Declare all functions first (so they can reference each other).
-    // When a prefix is provided, JIT symbol names are module-qualified to
-    // avoid collisions, but func_ids maps bare names for codegen.
-    let (func_ids, jit_names) = if let Some(prefix) = jit_prefix {
-        jit.declare_functions_prefixed(&all_defn_refs, prefix)?
-    } else {
-        let ids = jit.declare_functions(&all_defn_refs)?;
-        (ids, HashMap::new())
-    };
-
-    // Build function arity map for named-function-as-value closure wrappers.
-    // All defns are single-variant at this point so .params() is safe.
-    let func_arities: HashMap<Symbol, usize> = all_defn_refs
-        .iter()
-        .map(|d| (d.name.clone(), d.params().len()))
-        .collect();
-
-    Ok(CollectedDefns { defns, extra_defns, multi_sig_defns, func_ids, func_arities, jit_names })
-}
-
-/// Find the last zero-arg defn as entry point, finalize the JIT,
-/// populate GOT slots (Interactive mode), and build the CompiledProgram.
-fn find_entry_and_finalize(
-    defns: &[&Defn],
-    mut jit: Jit,
-    _func_ids: &HashMap<Symbol, FuncId>,
-) -> Result<CompiledProgram, CranelispError> {
-    // Find the entry function (last zero-arg defn).
-    let entry_defn = defns
-        .iter()
-        .rev()
-        .find(|d| d.params().is_empty())
-        .ok_or_else(|| CranelispError::CodegenError {
-            message: "no zero-arg function to use as entry point".into(),
-            span: Span::SYNTHETIC,
-        })?;
-
-    let entry_ptr = jit.finalize_and_get_ptr(&entry_defn.name, 0)?;
-
-    Ok(CompiledProgram {
-        jit,
-        entry_ptr,
-        warnings: Vec::new(),
-    })
-}
-
-/// Collect extra defns from CheckResult: default method impls and mono specializations.
-///
-/// These are additional functions that need to be declared and compiled alongside
-/// the regular program defns.
-fn collect_extra_defns(check: &CheckResult) -> Vec<Defn> {
-    let mut extras = Vec::new();
-    for d in &check.default_method_defns {
-        extras.push(d.clone());
-    }
-    for mono in &check.mono_defns {
-        extras.push(mono.defn.clone());
-    }
-    extras
-}
-
-/// Compile monomorphised specializations with their per-specialization resolutions.
-///
-/// Each MonoDefn carries its own method_resolutions (from the specific type
-/// instantiation). We build a temporary CheckResult overlay for each one.
-fn compile_mono_defns(
-    jit: &mut Jit,
-    check: &CheckResult,
-    func_ids: &HashMap<Symbol, FuncId>,
-    func_arities: &HashMap<Symbol, usize>,
-    symbol_tables: &DashMap<ModuleFullPath, SymbolTable>,
-) -> Result<(), CranelispError> {
-    for mono in &check.mono_defns {
-        // Merge base resolutions with per-specialization resolutions.
-        let mut merged = check.method_resolutions.clone();
-        merged.extend(mono.resolutions.clone());
-
-        // I5 fix: Use the per-mono expr_types subset instead of cloning the
-        // full program expr_types map. Falls back to the full map if the
-        // per-mono subset is empty (before /typecheck populates it).
-        let expr_types = if mono.expr_types.is_empty() {
-            check.expr_types.clone()
-        } else {
-            mono.expr_types.clone()
-        };
-
-        let mono_check = CheckResult {
-            method_resolutions: merged,
-            constrained_fn_names: check.constrained_fn_names.clone(),
-            mono_defns: Vec::new(),
-            expr_types,
-            default_method_defns: Vec::new(),
-            warnings: Vec::new(),
-            display: None,
-        };
-
-        let ctx = jit.build_compile_context(
-            &mono_check, func_ids, func_arities,
-            symbol_tables, ModuleFullPath::from("main"),
-        );
-        jit.compile_defn(&mono.defn, ctx)?;
-    }
-    Ok(())
-}
 
 /// Result of compiling a module's program into a shared JIT.
 ///
@@ -448,217 +510,43 @@ pub struct CompiledModuleInfo {
 
 /// Compile a module's program into an existing shared JIT (no finalize).
 ///
-/// Used by the multi-module pipeline: all modules compile into one JIT,
-/// which is finalized once after all modules are compiled. This allows
-/// cross-module function calls to resolve via shared JIT symbol tables.
-/// Uses direct calls (no GOT) since all modules share one JIT.
-///
-/// `module_prefix` is the module path (e.g., `"core.list"` or `"main"`).
-/// Function names are prefixed with `"{module_prefix}/"` in the JIT to
-/// avoid name collisions between modules (e.g., stdlib `fold` vs user `fold`).
-///
-/// `prior_funcs` lists `(name, param_count)` from previously-compiled
-/// dependency modules. Names are module-qualified (e.g., `"core.list/fold"`).
+/// Thin wrapper around `compile_to_module` with JIT prefix and prior funcs.
 pub fn compile_module_program(
-    program: &Program,
-    check: &CheckResult,
-    jit: &mut Jit,
-    prior_funcs: &[(Symbol, usize)],
-    module_prefix: &str,
-    symbol_tables: &DashMap<ModuleFullPath, SymbolTable>,
+    _program: &Program,
+    _check: &CheckResult,
+    _jit: &mut Jit,
+    _prior_funcs: &[(Symbol, usize)],
+    _module_prefix: &str,
+    _symbol_tables: &DashMap<ModuleFullPath, SymbolTable>,
 ) -> Result<CompiledModuleInfo, CranelispError> {
-    // Phase 1: Collect defns, declare them with module-qualified names in
-    // the shared JIT to avoid collisions. The returned func_ids map bare
-    // names to FuncIds for this module's codegen.
-    let collected = collect_and_declare_defns(
-        program, check, jit, Some(module_prefix),
-    )?;
-
-    // Build merged func_ids from this module + prior dependencies.
-    // The current module's func_ids maps bare names → FuncIds.
-    // Prior funcs are module-qualified (e.g., "core.list/fold") or aliases
-    // (e.g., "list/fold") that refer to the same underlying function.
-    let mut merged_func_ids = collected.func_ids.clone();
-
-    for (name, param_count) in prior_funcs {
-        if merged_func_ids.contains_key(name) {
-            continue; // Already declared (e.g., current module defines same name)
-        }
-
-        // Check if this is an alias for a function already in merged_func_ids.
-        // Aliases share the same bare name (e.g., "list/fold" and "core.list/fold"
-        // both have bare name "fold"). If the bare name is already mapped, reuse
-        // that FuncId instead of declaring a new import (which would create an
-        // unresolvable Import function in the JIT).
-        if let Some(slash_pos) = name.as_ref().rfind('/') {
-            let bare_name = Symbol::from(&name.as_ref()[slash_pos + 1..]);
-            if let Some(&existing_func_id) = merged_func_ids.get(&bare_name) {
-                merged_func_ids.insert(name.clone(), existing_func_id);
-                continue;
-            }
-        }
-
-        // Declare as an imported function in the shared JIT.
-        // The qualified name (e.g., "core.list/fold") matches an existing
-        // JIT symbol from the prior module's prefixed declaration.
-        jit.declare_imported_functions(
-            &[(name.clone(), *param_count)],
-            &mut merged_func_ids,
-        )?;
-
-        // Also register the bare name (after the last '/') in func_ids,
-        // since the AST uses bare names for imported functions. Only add
-        // if the current module doesn't already define a function with
-        // that bare name (local definitions shadow imports).
-        if let Some(slash_pos) = name.as_ref().rfind('/') {
-            let bare_name = Symbol::from(&name.as_ref()[slash_pos + 1..]);
-            if !merged_func_ids.contains_key(&bare_name) {
-                let func_id = *merged_func_ids.get(name)
-                    .expect("just declared");
-                merged_func_ids.insert(bare_name, func_id);
-            }
-        }
-    }
-
-    let mut merged_arities: HashMap<Symbol, usize> = collected.func_arities.clone();
-    for (name, count) in prior_funcs {
-        merged_arities.insert(name.clone(), *count);
-        // Also register bare-name arities for codegen lookup.
-        if let Some(slash_pos) = name.as_ref().rfind('/') {
-            let bare_name = Symbol::from(&name.as_ref()[slash_pos + 1..]);
-            merged_arities.entry(bare_name).or_insert(*count);
-        }
-    }
-
-    // Build compile context with merged symbol tables.
-    // No GOT for shared-JIT module compilation — direct calls.
-    let current_module = ModuleFullPath::from(module_prefix);
-    let compile_ctx = jit.build_compile_context(
-        check, &merged_func_ids, &merged_arities,
-        symbol_tables, current_module,
-    );
-
-    // Compile each regular function.
-    for defn in &collected.defns {
-        jit.compile_defn(defn, compile_ctx.clone())?;
-    }
-
-    // Compile expanded multi-sig variant defns.
-    for defn in &collected.multi_sig_defns {
-        jit.compile_defn(defn, compile_ctx.clone())?;
-    }
-
-    // Compile default method defns.
-    for defn in &check.default_method_defns {
-        jit.compile_defn(defn, compile_ctx.clone())?;
-    }
-
-    // Compile mono specializations.
-    compile_mono_defns(
-        jit, check, &merged_func_ids, &merged_arities,
-        symbol_tables,
-    )?;
-
-    // Collect this module's function signatures for downstream modules.
-    // Use the JIT-visible names (which may be module-qualified if there
-    // was a collision with a prior module's function of the same name).
-    let func_signatures: Vec<(Symbol, usize)> = collected
-        .func_arities
-        .iter()
-        .map(|(name, arity)| {
-            let jit_name = collected.jit_names.get(name)
-                .cloned()
-                .unwrap_or_else(|| name.clone());
-            (jit_name, *arity)
-        })
-        .collect();
-
-    Ok(CompiledModuleInfo {
-        func_signatures,
-        warnings: Vec::new(),
-    })
+    unimplemented!("superseded by compile_to_module")
 }
 
 /// Compile a single expression into a `CompiledExpr` without executing it.
 ///
-/// Wraps the expression in a synthetic zero-arg function and compiles it.
-/// The caller can then call `CompiledExpr::execute()` to run it. This
-/// separation enables the caller to time compilation and evaluation independently.
-///
-/// Compile an expression with extra JIT symbols and optional compilation env.
-///
-/// If `env` is provided, GOT-indirect calls are resolved through it.
-/// Otherwise, direct calls via FuncId are used.
+/// Thin wrapper around `compile_to_module<JITModule>`. Wraps the expression
+/// in a synthetic zero-arg function and compiles it.
 pub fn compile_expr_with_got_and_symbols(
-    expr: &Expr,
-    check: &CheckResult,
-    extra_symbols: &[(&str, *const u8)],
-    got_data_defs: &[(String, *const u8)],
-    env: Option<&dyn crate::compiler::CompilationEnv>,
-    symbol_tables: &DashMap<ModuleFullPath, SymbolTable>,
-    current_module: ModuleFullPath,
+    _expr: &Expr,
+    _check: &CheckResult,
+    _extra_symbols: &[(&str, *const u8)],
+    _got_data_defs: &[(String, *const u8)],
+    _env: Option<&dyn crate::compiler::CompilationEnv>,
+    _symbol_tables: &DashMap<ModuleFullPath, SymbolTable>,
+    _current_module: ModuleFullPath,
 ) -> Result<CompiledExpr, CranelispError> {
-    let mut jit = Jit::new_with_symbols(extra_symbols)?;
-
-    // Declare runtime intrinsics (Ring 1 heap infrastructure).
-    jit.declare_intrinsics()?;
-
-    // Define GOT base literal pool entries as data in the JIT module.
-    for (name, ptr) in got_data_defs {
-        jit.define_got_data(name, *ptr)?;
-    }
-
-    // Wrap expression in a synthetic zero-arg function.
-    let wrapper_name = Symbol::from("__repl_expr__");
-    let wrapper_defn = Defn {
-        name: wrapper_name.clone(),
-        docstring: None,
-        variants: vec![DefnVariant {
-            params: vec![],
-            param_annotations: vec![],
-            body: expr.clone(),
-            span: expr.span(),
-        }],
-        visibility: cranelisp_types::Visibility::Public,
-        span: expr.span(),
-    };
-
-    let func_ids = jit.declare_functions(&[&wrapper_defn])?;
-    let func_arities: HashMap<Symbol, usize> = HashMap::new();
-
-    let mut compile_ctx = jit.build_compile_context(
-        check, &func_ids, &func_arities,
-        symbol_tables, current_module,
-    );
-    compile_ctx.env = env;
-
-    jit.compile_defn(&wrapper_defn, compile_ctx)?;
-
-    let code_ptr = jit.finalize_and_get_ptr(&wrapper_name, 0)?;
-
-    Ok(CompiledExpr {
-        jit,
-        func_ptr: code_ptr,
-    })
+    unimplemented!("superseded by compile_to_module")
 }
 
-/// Compile and execute a single expression in Interactive mode (convenience wrapper).
+/// Compile and execute a single expression (convenience wrapper).
 ///
-/// Wraps the expression in a synthetic zero-arg function, compiles it,
-/// executes it, and returns the i64 result.
-///
-/// If `got_state` is provided, GOT-indirect calls are used.
+/// Delegates to `compile_expr_with_got_and_symbols` then executes.
 pub fn compile_and_run_expr(
-    expr: &Expr,
-    check: &CheckResult,
-    symbol_tables: &DashMap<ModuleFullPath, SymbolTable>,
+    _expr: &Expr,
+    _check: &CheckResult,
+    _symbol_tables: &DashMap<ModuleFullPath, SymbolTable>,
 ) -> Result<i64, CranelispError> {
-    let compiled = compile_expr_with_got_and_symbols(
-        expr, check, &[], &[], None,
-        symbol_tables, ModuleFullPath::from("main"),
-    )?;
-    // SAFETY: compiled was produced by compile_expr_with_got_and_symbols immediately above.
-    unsafe { compiled.execute() }
+    unimplemented!("superseded by compile_to_module")
 }
 
 #[cfg(test)]

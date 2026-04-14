@@ -37,6 +37,7 @@ fn make_test_metadata(module_path: &str) -> CacheMetadata {
     let mp = ModuleFullPath::from(module_path);
     CacheMetadata {
         symbol_table: SymbolTable::new(mp),
+        dependencies: Vec::new(),
     }
 }
 

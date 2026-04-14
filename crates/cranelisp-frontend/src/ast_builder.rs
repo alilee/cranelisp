@@ -697,17 +697,18 @@ fn build_method_sig(
     };
 
     if has_default_body {
-        // Default body: bracket items are param names, not type exprs
-        let param_names: Vec<Symbol> = bracket_items
-            .iter()
-            .map(|s| {
-                let (n, _) = expect_symbol(s)?;
-                Ok(n.into())
-            })
-            .collect::<Result<Vec<_>, CranelispError>>()?;
-
-        // Build param types as SelfType (self-typed) for each param
-        let params = param_names.iter().map(|_| TypeExpr::SelfType).collect();
+        // Default body: bracket items are param names with optional type annotations.
+        // Use build_annotated_params (same as sketch) to support `:Type name` syntax.
+        // Bare names default to SelfType; annotated names use the annotation.
+        let (param_names, annotations) = build_annotated_params(&children[next])?;
+        let params: Vec<TypeExpr> = if annotations.is_empty() {
+            param_names.iter().map(|_| TypeExpr::SelfType).collect()
+        } else {
+            annotations
+                .iter()
+                .map(|a| a.clone().unwrap_or(TypeExpr::SelfType))
+                .collect()
+        };
 
         // The default body is the raw sexp after the return type
         let default_body = Some(children[ret_pos + 1].clone());

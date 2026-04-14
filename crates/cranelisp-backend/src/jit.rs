@@ -104,8 +104,8 @@ pub fn intrinsic_symbols() -> Vec<IntrinsicSymbol> {
         // Trace runtime symbols
         IntrinsicSymbol { name: "cranelisp_trace_enter", ptr: cranelisp_runtime::cranelisp_trace_enter as *const u8, param_count: 3, is_runtime: true },
         IntrinsicSymbol { name: "cranelisp_trace_exit", ptr: cranelisp_runtime::cranelisp_trace_exit as *const u8, param_count: 2, is_runtime: true },
-        IntrinsicSymbol { name: "cranelisp_trace_swap_got", ptr: cranelisp_runtime::cranelisp_trace_swap_got as *const u8, param_count: 3, is_runtime: true },
-        IntrinsicSymbol { name: "cranelisp_trace_restore_got", ptr: cranelisp_runtime::cranelisp_trace_restore_got as *const u8, param_count: 3, is_runtime: true },
+        IntrinsicSymbol { name: "cranelisp_trace_swap_got", ptr: cranelisp_runtime::cranelisp_trace_swap_got as *const u8, param_count: 4, is_runtime: true },
+        IntrinsicSymbol { name: "cranelisp_trace_restore_got", ptr: cranelisp_runtime::cranelisp_trace_restore_got as *const u8, param_count: 2, is_runtime: true },
         IntrinsicSymbol { name: "cranelisp_collect_trace", ptr: cranelisp_runtime::cranelisp_collect_trace as *const u8, param_count: 0, is_runtime: true },
         IntrinsicSymbol { name: "cranelisp_trace_first_child_nanos", ptr: cranelisp_runtime::cranelisp_trace_first_child_nanos as *const u8, param_count: 1, is_runtime: true },
         IntrinsicSymbol { name: "cranelisp_trace_format", ptr: cranelisp_runtime::cranelisp_trace_format as *const u8, param_count: 2, is_runtime: true },
@@ -264,29 +264,27 @@ impl Jit {
     ///
     /// Must be called before compiling any function that needs heap operations.
     /// Returns the declared FuncIds for use by codegen.
+    ///
+    /// Delegates to the generic `declare_intrinsics_generic<M>` and stores
+    /// the 6 convenience FuncIds on the Jit struct for `build_compile_context`.
     pub fn declare_intrinsics(&mut self) -> Result<IntrinsicIds, CranelispError> {
-        let alloc_id = self.declare_import("runtime/alloc", 1, 1)?;
-        let dealloc_id = self.declare_import("runtime/dealloc", 1, 1)?;
-        let alloc_string_id = self.declare_import("runtime/alloc_string", 2, 1)?;
-        let panic_id = self.declare_import_no_return("runtime/panic", 2)?;
-        let vec_new_id = self.declare_import("runtime/vec_new", 1, 1)?;
-        // vec_drop returns void in Rust, but we declare it with no returns for Cranelift.
-        let vec_drop_id = self.declare_import_void("runtime/vec_drop", 2)?;
+        let generic_ids = declare_intrinsics_generic(&mut self.module)?;
 
-        self.alloc_func_id = Some(alloc_id);
-        self.dealloc_func_id = Some(dealloc_id);
-        self.alloc_string_func_id = Some(alloc_string_id);
-        self.panic_func_id = Some(panic_id);
-        self.vec_new_func_id = Some(vec_new_id);
-        self.vec_drop_func_id = Some(vec_drop_id);
+        // Store on self for build_compile_context.
+        self.alloc_func_id = generic_ids.alloc;
+        self.dealloc_func_id = generic_ids.dealloc;
+        self.alloc_string_func_id = generic_ids.alloc_string;
+        self.panic_func_id = generic_ids.panic;
+        self.vec_new_func_id = generic_ids.vec_new;
+        self.vec_drop_func_id = generic_ids.vec_drop;
 
         Ok(IntrinsicIds {
-            alloc: alloc_id,
-            dealloc: dealloc_id,
-            alloc_string: alloc_string_id,
-            panic: panic_id,
-            vec_new: vec_new_id,
-            vec_drop: vec_drop_id,
+            alloc: generic_ids.alloc.expect("runtime/alloc must be declared"),
+            dealloc: generic_ids.dealloc.expect("runtime/dealloc must be declared"),
+            alloc_string: generic_ids.alloc_string.expect("runtime/alloc_string must be declared"),
+            panic: generic_ids.panic.expect("runtime/panic must be declared"),
+            vec_new: generic_ids.vec_new.expect("runtime/vec_new must be declared"),
+            vec_drop: generic_ids.vec_drop.expect("runtime/vec_drop must be declared"),
         })
     }
 
@@ -567,66 +565,6 @@ impl Jit {
         sig
     }
 
-    /// Declare an imported function (from runtime) with n params, m returns.
-    fn declare_import(
-        &mut self,
-        name: &str,
-        n_params: usize,
-        n_returns: usize,
-    ) -> Result<FuncId, CranelispError> {
-        let mut sig = self.module.make_signature();
-        for _ in 0..n_params {
-            sig.params.push(AbiParam::new(types::I64));
-        }
-        for _ in 0..n_returns {
-            sig.returns.push(AbiParam::new(types::I64));
-        }
-        self.module
-            .declare_function(name, Linkage::Import, &sig)
-            .map_err(|e| CranelispError::CodegenError {
-                message: format!("failed to declare intrinsic '{name}': {e}"),
-                span: Span::SYNTHETIC,
-            })
-    }
-
-    /// Declare an imported void function (no return value).
-    fn declare_import_void(
-        &mut self,
-        name: &str,
-        n_params: usize,
-    ) -> Result<FuncId, CranelispError> {
-        let mut sig = self.module.make_signature();
-        for _ in 0..n_params {
-            sig.params.push(AbiParam::new(types::I64));
-        }
-        // No return values.
-        self.module
-            .declare_function(name, Linkage::Import, &sig)
-            .map_err(|e| CranelispError::CodegenError {
-                message: format!("failed to declare intrinsic '{name}': {e}"),
-                span: Span::SYNTHETIC,
-            })
-    }
-
-    /// Declare an imported function that never returns (panic).
-    fn declare_import_no_return(
-        &mut self,
-        name: &str,
-        n_params: usize,
-    ) -> Result<FuncId, CranelispError> {
-        let mut sig = self.module.make_signature();
-        for _ in 0..n_params {
-            sig.params.push(AbiParam::new(types::I64));
-        }
-        // Panic returns i64 for cranelift compatibility (never actually returns).
-        sig.returns.push(AbiParam::new(types::I64));
-        self.module
-            .declare_function(name, Linkage::Import, &sig)
-            .map_err(|e| CranelispError::CodegenError {
-                message: format!("failed to declare intrinsic '{name}': {e}"),
-                span: Span::SYNTHETIC,
-            })
-    }
 }
 
 /// FuncIds for declared runtime intrinsics.
@@ -637,6 +575,71 @@ pub struct IntrinsicIds {
     pub panic: FuncId,
     pub vec_new: FuncId,
     pub vec_drop: FuncId,
+}
+
+/// FuncIds for all intrinsic functions, populated during declare_intrinsics.
+///
+/// Replaces the scattered approach where intrinsic FuncIds are stored on
+/// individual Jit fields and ad-hoc lookup maps. This is the single
+/// source of truth for intrinsic function IDs across all module types.
+#[derive(Default)]
+pub struct IntrinsicFuncIds {
+    /// All intrinsics indexed by JIT symbol name.
+    pub by_name: HashMap<Symbol, FuncId>,
+    // Convenience accessors for commonly-used intrinsics (used directly by FnCompiler).
+    pub alloc: Option<FuncId>,
+    pub dealloc: Option<FuncId>,
+    pub alloc_string: Option<FuncId>,
+    pub panic: Option<FuncId>,
+    pub vec_new: Option<FuncId>,
+    pub vec_drop: Option<FuncId>,
+}
+
+/// Declare all runtime and primitive intrinsics in a Cranelift module.
+///
+/// For JITModule: these resolve to function pointers registered via JITBuilder::symbol().
+/// For ObjectModule: these become Import symbols resolved by the linker.
+///
+/// This is the unified intrinsic declaration path. Both `Jit::declare_intrinsics`
+/// and the object path's `declare_intrinsic_imports` delegate to this function.
+pub fn declare_intrinsics_generic<M: Module>(
+    module: &mut M,
+) -> Result<IntrinsicFuncIds, CranelispError> {
+    let mut ids = IntrinsicFuncIds::default();
+
+    for sym in intrinsic_symbols() {
+        let mut sig = module.make_signature();
+        for _ in 0..sym.param_count {
+            sig.params.push(AbiParam::new(types::I64));
+        }
+        // Special case: runtime/vec_drop returns void.
+        // runtime/panic returns i64 for Cranelift compatibility (never actually returns).
+        if sym.name != "runtime/vec_drop" {
+            sig.returns.push(AbiParam::new(types::I64));
+        }
+
+        let func_id = module
+            .declare_function(sym.name, Linkage::Import, &sig)
+            .map_err(|e| CranelispError::CodegenError {
+                message: format!("failed to declare intrinsic '{}': {e}", sym.name),
+                span: Span::SYNTHETIC,
+            })?;
+
+        ids.by_name.insert(Symbol::from(sym.name), func_id);
+
+        // Set convenience accessors for the 6 special intrinsics.
+        match sym.name {
+            "runtime/alloc" => ids.alloc = Some(func_id),
+            "runtime/dealloc" => ids.dealloc = Some(func_id),
+            "runtime/alloc_string" => ids.alloc_string = Some(func_id),
+            "runtime/panic" => ids.panic = Some(func_id),
+            "runtime/vec_new" => ids.vec_new = Some(func_id),
+            "runtime/vec_drop" => ids.vec_drop = Some(func_id),
+            _ => {}
+        }
+    }
+
+    Ok(ids)
 }
 
 #[cfg(test)]

@@ -965,3 +965,87 @@ The sketch's approach to macro re-compilation on cache hit, cross-module GOT ref
 | Relocation types not handled by linker | Low | Medium | Linker already handles all Cranelift-emitted relocation types (tested in sketch). Add panic-on-unknown for early detection. |
 | ADRP range exceeded (code and GOT >4GB apart) | Very Low | Medium | `mmap` allocations are typically in the same region. If hit, allocate code near GOT via `MAP_FIXED` hint. |
 | Macro re-compilation from source is slow | Very Low | Low | Macros are small. If measured as a bottleneck, cache macro code in the `.o` (future optimization). |
+
+### 13.11 Implementation Defect: Parallel Compilation Paths (Sprint 53)
+
+**Status**: MUST FIX — object path crashes on multi-sig defns; root cause is duplicated compilation logic.
+
+#### The Problem
+
+The JIT (in-memory) and object (.o file) compilation paths are separate implementations that should be the same code parameterised by the Cranelift module type. Instead:
+
+- **JIT path** (`compile_program` in `lib.rs`): takes `(program, check, symbol_tables)`, internally collects defns, expands multi-sig, declares functions against `JITModule`, compiles bodies.
+- **Object path** (`compile_module_to_object` in `cache/object.rs`): takes `ObjectCompileInput`, a separate struct assembled by `build_object_compile_input` in `pipeline.rs`, which re-derives defn lists and slot assignments from the AST.
+
+This duplication causes:
+1. **Multi-sig crash**: `collect_defns_for_cache` calls `defn.params()` on DefnMulti — panics. The JIT path handles multi-sig correctly; the object path doesn't because it's separate code.
+2. **Invented slot numbers**: `collect_defns_for_cache` assigns sequential slots (0, 1, 2, ...) instead of reading the real GOT slots from the symbol table.
+3. **Redundant data assembly**: `ObjectCompileInput` carries `fn_slot_assignments`, `fn_to_module`, `cross_module_fns`, `next_got_slot` — all derivable from the symbol table. `CodegenInput` carries `cross_module_func_sigs` for the same reason.
+
+#### Analysis: What Both Paths Need
+
+Both JIT and object compilation need exactly three inputs:
+
+1. **`program`** — AST bodies (the source to compile)
+2. **`CheckResult`** — typecheck products: method_resolutions, expr_types, constrained_fn_names, mono_defns, default_method_defns
+3. **`symbol_tables`** — GOT slots, import chains, schemes, cross-module refs
+
+Everything else (`fn_slot_assignments`, `fn_to_module`, `intrinsics`, `next_got_slot`, `cross_module_fns`) is either on the symbol table already or is a static table (intrinsics). `ObjectCompileInput` exists because the object path was built separately instead of sharing the JIT path's logic.
+
+The only genuine difference between the two outputs is how GOT references are encoded:
+- **JIT**: `GotReference::RuntimePtr(i64)` — direct pointer to GOT table in memory
+- **Object**: `GotReference::DataSymbol(DataId)` — relocatable reference resolved by linker
+
+#### Correct Design
+
+One compilation function parameterised by module type:
+
+```rust
+pub fn compile_to_module<M: Module>(
+    program: &Program,
+    check: &CheckResult,
+    symbol_tables: &DashMap<ModuleFullPath, SymbolTable>,
+    module: &mut M,
+) -> Result<CompiledProgram, CranelispError>
+```
+
+The caller (priority worker or nice worker) creates the appropriate module:
+
+```rust
+// Priority worker (JIT / in-memory):
+let mut jit_module = JITModule::new(jit_builder);
+let result = compile_to_module(program, check, symbol_tables, &mut jit_module)?;
+
+// Nice worker (object / .o file):
+let mut obj_module = ObjectModule::new(obj_builder);
+let result = compile_to_module(program, check, symbol_tables, &mut obj_module)?;
+let bytes = obj_module.finish().emit()?;
+```
+
+The GOT reference strategy is handled inside `compile_to_module` via the `Module` trait — `declare_data`, `declare_func_in_data`, etc. have the same API on both `JITModule` and `ObjectModule`.
+
+#### What To Delete
+
+- `ObjectCompileInput` struct (cache/object.rs)
+- `collect_defns_for_cache` (pipeline.rs)
+- `build_object_compile_input` (pipeline.rs)
+- `cross_module_func_sigs` field on `CodegenInput` (session_v4.rs)
+- `compile_module_to_object` wrapper that takes `ObjectCompileInput` — replaced by `compile_to_module<ObjectModule>`
+
+#### What To Keep
+
+- `CodegenInput` retains its legitimate fields: `program`, `method_resolutions`, `expr_types`, `mono_defns`, `default_method_defns` — these are typecheck products not on the symbol table.
+- `CodegenInput` effectively becomes the stashed `CheckResult` + `program`. Consider whether it should just BE `(CheckResult, Program)`.
+- `IntrinsicTable` — but built once and shared, not assembled per-module.
+
+#### `--link` Mode
+
+The `--link` path compiles to .o without doing JIT. This works naturally: the worker creates an `ObjectModule` and calls `compile_to_module`. There is no `InmemCompileInput` vs `ObjectCompileInput` distinction — both modes call the same function with different module types.
+
+#### Fix Approach
+
+1. Unify `compile_program` and `compile_module_to_object` into `compile_to_module<M: Module>`.
+2. All structural data (GOT slots, imports, cross-module refs) read from `symbol_tables` inside the function.
+3. Delete the redundant types and assembly functions listed above.
+4. Nice worker stashes `(CheckResult, Program)` instead of `CodegenInput` — or `CodegenInput` is simplified to just those fields.
+5. Priority and nice workers both call `compile_to_module` with their respective module type.

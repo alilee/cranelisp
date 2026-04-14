@@ -570,7 +570,7 @@ fn sketch_default_method_used_when_not_overridden() {
     let mut s = repl_session_with_test_prelude();
     repl_eval(
         &mut s,
-        "(deftrait Greetable (greet [self] Int) (wave [self self] Int (+ (greet self) 10)))",
+        "(deftrait Greetable (greet [self] Int) (wave [x] Int (+ (greet x) 10)))",
     );
     repl_eval(&mut s, "(impl Greetable Int (defn greet [x] x))");
     assert_eq!(repl_eval(&mut s, "(wave 5)"), 15);
@@ -582,7 +582,7 @@ fn sketch_default_method_overridden() {
     let mut s = repl_session_with_test_prelude();
     repl_eval(
         &mut s,
-        "(deftrait Greetable (greet [self] Int) (wave [self self] Int (+ (greet self) 10)))",
+        "(deftrait Greetable (greet [self] Int) (wave [x] Int (+ (greet x) 10)))",
     );
     repl_eval(
         &mut s,
@@ -597,7 +597,7 @@ fn sketch_default_method_validate_impl_missing_required() {
     let mut s = repl_session_with_test_prelude();
     repl_eval(
         &mut s,
-        "(deftrait Greetable (greet [self] Int) (wave [self self] Int (+ (greet self) 10)))",
+        "(deftrait Greetable (greet [self] Int) (wave [x] Int (+ (greet x) 10)))",
     );
     let result = s.eval("(impl Greetable Int (defn wave [x] 42))");
     assert!(result.is_err(), "missing required method should error");
@@ -1202,7 +1202,7 @@ fn sketch_default_method_on_adt() {
     let mut s = repl_session_with_test_prelude();
     repl_eval(
         &mut s,
-        "(deftrait Countable (count [self] Int) (count-plus-one [self self] Int (+ (count self) 1)))",
+        "(deftrait Countable (count [self] Int) (count-plus-one [x] Int (+ (count x) 1)))",
     );
     repl_eval(&mut s, "(deftype Color Red Green Blue)");
     repl_eval(
@@ -1601,12 +1601,45 @@ fn sketch_trace_nanos_is_positive() {
 // spec: 04-expressions §4.11 — run-tests discovers test-* functions and invokes pass callback
 #[test]
 fn sketch_run_tests_pass_fn_called() {
-    // run-tests finds test-* functions and calls pass_fn for passing tests
+    // Prove a user can compose discover-tests and run-test primitives into
+    // their own test runner without relying on the /run-tests slash command.
     let mut s = repl_session_with_test_prelude();
-    repl_eval(&mut s, "(deftype (Option a) None (Some [:a val]))");
-    repl_eval(&mut s, "(defn test-passing [] (if true None (Some \"x\")))");
-    let count = repl_eval(&mut s, "(run-tests 0 (fn [acc _ _] (add-i64 acc 1)) (fn [acc _ _ _ _] acc))");
-    assert!(count >= 1, "expected >= 1 passing test, got {}", count);
+
+    // Import SList constructors for pattern matching on discover-tests result.
+    repl_eval(&mut s, "(import [macros [SCons SNil]])");
+
+    // Define a test function that passes (returns None).
+    repl_eval(&mut s, "(defn test-passing [] None)");
+
+    // Define a user-level test runner that:
+    //   1. Discovers test-* functions via (discover-tests "")
+    //   2. Iterates the SList, calling (run-test name) for each
+    //   3. Folds a counter, incrementing for each TestPass
+    //   4. Returns IO Int (the pass count)
+    repl_eval(
+        &mut s,
+        "(defn count-passes [acc names]
+           (match names
+             [SNil (Pure acc)
+              (SCons head tail)
+                (bind (run-test head)
+                      (fn [result]
+                        (match result
+                          [(TestPass n ns) (count-passes (+ acc 1) tail)
+                           (TestFail n ns r) (count-passes acc tail)])))]))");
+
+    repl_eval(
+        &mut s,
+        "(defn my-run-tests []
+           (bind (discover-tests \"\") (fn [names] (count-passes 0 names))))");
+
+    // Run the user-defined test runner and check the display output.
+    let display = repl_eval_display(&mut s, "(my-run-tests)");
+    // The result should be the pass count (>= 1) after IO trampoline forcing.
+    assert!(
+        display.contains("1"),
+        "expected pass count >= 1 in output, got: {display}"
+    );
 }
 
 // =============================================================================

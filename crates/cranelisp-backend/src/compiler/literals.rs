@@ -9,7 +9,7 @@ use cranelift_module::{Linkage, Module};
 use cranelisp_types::{CranelispError, Span, Symbol};
 
 use super::FnCompiler;
-use crate::heap::{self, HeapClosure};
+use crate::heap::{self, HeapAdt, HeapClosure};
 
 impl<'a, M: Module> FnCompiler<'a, M> {
     // --- Literal codegen ---
@@ -116,6 +116,12 @@ impl<'a, M: Module> FnCompiler<'a, M> {
             return Ok(self.builder.ins().iconst(types::I64, tag as i64));
         }
 
+        // Data constructor as value: wrap in a closure that allocates the ADT.
+        // e.g. `(let [f Some] (f 42))` — `Some` becomes a closure `(env, val) -> ADT`.
+        if let Some((tag, field_count)) = self.data_constructor_info(name) {
+            return self.compile_data_constructor_as_value(name, tag, field_count, span);
+        }
+
         // Operator symbol as value: wrap the operator extern function in a closure.
         // This implements spec §7.6 — trait methods (operators) as first-class values.
         // Must be checked before is_known_function because operators may appear
@@ -162,6 +168,150 @@ impl<'a, M: Module> FnCompiler<'a, M> {
         } else {
             Some((ctor_info.tag, ctor_info.fields.len()))
         }
+    }
+
+    /// Wrap a data constructor as a first-class value (closure).
+    ///
+    /// Generates a wrapper function `(env_ptr, field0, field1, ...) -> i64`
+    /// that allocates the ADT on the heap, stores the tag and fields, and
+    /// returns the heap pointer. Wraps it in a zero-capture closure.
+    ///
+    /// Implements spec §5.5: constructors as first-class values.
+    fn compile_data_constructor_as_value(
+        &mut self,
+        name: &Symbol,
+        tag: usize,
+        field_count: usize,
+        span: Span,
+    ) -> Result<Value, CranelispError> {
+        let alloc_id =
+            self.ctx
+                .alloc_func_id
+                .ok_or_else(|| CranelispError::CodegenError {
+                    message: "runtime/alloc not declared (need declare_intrinsics)".into(),
+                    span,
+                })?;
+
+        // Declare the wrapper function: (env_ptr, fields...) -> i64
+        let wrapper_name = format!("__ctor_wrap_{name}_{}_{}__", span.start, span.end);
+        let wrapper_param_count = 1 + field_count; // env_ptr + fields
+        let mut sig = self.module.make_signature();
+        for _ in 0..wrapper_param_count {
+            sig.params.push(AbiParam::new(types::I64));
+        }
+        sig.returns.push(AbiParam::new(types::I64));
+
+        let wrapper_func_id = self
+            .module
+            .declare_function(&wrapper_name, Linkage::Local, &sig)
+            .map_err(|e| CranelispError::CodegenError {
+                message: format!("failed to declare constructor wrapper: {e}"),
+                span,
+            })?;
+
+        // Compile the wrapper body.
+        self.compile_ctor_wrapper_body(wrapper_func_id, tag, field_count, alloc_id, span)?;
+
+        // Allocate a closure with zero captures: [header | code_ptr].
+        let payload_size = HeapClosure::payload_size(0) as i64;
+        let base_ptr = heap::emit_alloc(
+            &mut self.builder,
+            self.module,
+            alloc_id,
+            payload_size,
+        );
+
+        // Store the wrapper function pointer.
+        let wrapper_ref = self
+            .module
+            .declare_func_in_func(wrapper_func_id, self.builder.func);
+        let code_ptr = self.builder.ins().func_addr(types::I64, wrapper_ref);
+        heap::heap_store(
+            &mut self.builder,
+            code_ptr,
+            base_ptr,
+            HeapClosure::CODE_PTR_OFFSET,
+        );
+
+        // Store zero drop glue pointer (no captures to drop).
+        let zero = self.builder.ins().iconst(types::I64, 0);
+        heap::heap_store(
+            &mut self.builder,
+            zero,
+            base_ptr,
+            HeapClosure::DROP_GLUE_PTR_OFFSET,
+        );
+
+        Ok(base_ptr)
+    }
+
+    /// Compile the body of a constructor wrapper function.
+    ///
+    /// The wrapper allocates a heap ADT, stores the tag and fields from
+    /// its parameters, and returns the heap pointer.
+    fn compile_ctor_wrapper_body(
+        &mut self,
+        func_id: cranelift_module::FuncId,
+        tag: usize,
+        field_count: usize,
+        alloc_id: cranelift_module::FuncId,
+        span: Span,
+    ) -> Result<(), CranelispError> {
+        let mut inner_ctx = self.module.make_context();
+        let mut inner_func_ctx = FunctionBuilderContext::new();
+
+        // Signature: (env_ptr, field0, field1, ...) -> i64
+        for _ in 0..1 + field_count {
+            inner_ctx.func.signature.params.push(AbiParam::new(types::I64));
+        }
+        inner_ctx.func.signature.returns.push(AbiParam::new(types::I64));
+
+        let mut builder =
+            FunctionBuilder::new(&mut inner_ctx.func, &mut inner_func_ctx);
+
+        let entry_block = builder.create_block();
+        builder.append_block_params_for_function_params(entry_block);
+        builder.switch_to_block(entry_block);
+        builder.seal_block(entry_block);
+
+        let block_params = builder.block_params(entry_block).to_vec();
+        let field_vals: Vec<Value> = block_params[1..].to_vec(); // skip env_ptr
+
+        // Allocate the ADT on the heap.
+        let payload_size = HeapAdt::payload_size(field_count) as i64;
+        let base_ptr = heap::emit_alloc(
+            &mut builder,
+            self.module,
+            alloc_id,
+            payload_size,
+        );
+
+        // Store tag at HeapAdt::TAG_OFFSET.
+        let tag_val = builder.ins().iconst(types::I64, tag as i64);
+        heap::heap_store(&mut builder, tag_val, base_ptr, HeapAdt::TAG_OFFSET);
+
+        // Store each field.
+        for (i, &field_val) in field_vals.iter().enumerate() {
+            heap::heap_store(
+                &mut builder,
+                field_val,
+                base_ptr,
+                HeapAdt::field_offset(i),
+            );
+        }
+
+        builder.ins().return_(&[base_ptr]);
+        builder.seal_all_blocks();
+        builder.finalize();
+
+        self.module
+            .define_function(func_id, &mut inner_ctx)
+            .map_err(|e| CranelispError::CodegenError {
+                message: format!("failed to define constructor wrapper: {e}"),
+                span,
+            })?;
+
+        Ok(())
     }
 
     // --- Operator-as-value support (spec §7.6) ---

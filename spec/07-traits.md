@@ -7,50 +7,60 @@ This section defines the trait system of Cranelisp -- the mechanism for ad-hoc p
 A trait declares one or more method signatures parameterized over an implementing type.
 
 ```ebnf
-trait_decl   = '(' 'deftrait' trait_head docstring? method_sig+ ')'
-trait_head   = trait_name                  (* simple trait *)
-             | '(' trait_name con_var ')'  (* higher-kinded trait, see 7.2 *)
-trait_name   = uppercase_symbol
-method_sig   = '(' method_name docstring? '[' type_expr+ ']' type_expr ')'
-             | '(' method_name docstring? '[' param+ ']' type_expr body ')'  (* with default *)
-method_name  = symbol
+trait_decl     = '(' 'deftrait' trait_head docstring? method_sig+ ')'
+trait_head     = trait_name                  (* simple trait *)
+               | '(' trait_name con_var ')'  (* higher-kinded trait, see 7.2 *)
+trait_name     = uppercase_symbol
+method_sig     = required_method | default_method
+required_method = '(' method_name docstring? '[' param+ ']' type_expr ')'
+default_method  = '(' method_name docstring? '[' param+ ']' body ')'
+param           = ':' type_expr symbol | symbol
+method_name    = symbol
 ```
 
-The `deftrait` form introduces a named trait with one or more method signatures. Each method signature specifies parameter types in square brackets followed by a return type.
+The `deftrait` form introduces a named trait with one or more method signatures. All methods use named parameters in square brackets. Required methods end with a return type expression; default methods end with a body expression.
+
+**Parameters:** Bare parameter names default to the implementing type (`Self`). Annotated parameters (`:Type name`) have explicit types. `Self` (capitalized) in return type position refers to the implementing type (see §7.1.1).
+
+**Disambiguation:** The parser distinguishes required from default methods by the last element after the bracket:
+- A capitalized symbol or applied type (`Self`, `Int`, `Bool`, `String`, `(Option Self)`, `(Fn [a] b)`) is a return type -- the method is required.
+- Everything else (function calls, literals, lowercase symbols) is a body expression -- the method has a default implementation.
 
 **Example:** A standard library might define traits for arithmetic, equality, and display:
 
 ```clojure
 (deftrait Display "Convert to string representation"
-  (show "Convert value to string" [self] String))
+  (show "Convert value to string" [x] String))
 
 (deftrait Num "Numeric arithmetic operations"
-  (+ "Add two values" [self self] self)
-  (- "Subtract two values" [self self] self)
-  (* "Multiply two values" [self self] self)
-  (/ "Divide two values" [self self] self))
+  (+ "Add two values" [a b] Self)
+  (- "Subtract two values" [a b] Self)
+  (* "Multiply two values" [a b] Self)
+  (/ "Divide two values" [a b] Self))
 
 (deftrait Eq "Equality comparison"
-  (= "Test equality" [self self] Bool))
+  (= "Test equality" [a b] Bool))
 
 (deftrait Ord "Ordering comparisons"
-  (< "Test less-than" [self self] Bool)
-  (> "Test greater-than" [self self] Bool)
-  (<= "Test less-than-or-equal" [x y] Bool (if (< x y) true (= x y)))
-  (>= "Test greater-than-or-equal" [x y] Bool (if (> x y) true (= x y))))
+  (< "Test less-than" [a b] Bool)
+  (> "Test greater-than" [a b] Bool)
+  (<= "Test less-than-or-equal" [a b] (not (> a b)))
+  (>= "Test greater-than-or-equal" [a b] (not (< a b))))
 ```
 
-### 7.1.1 The `self` Type
+### 7.1.1 The `Self` Type
 
-The keyword `self` in a method signature is a placeholder for the implementing type. When a type implements a trait, `self` is replaced by the concrete type throughout the method signature.
+Bare (unannotated) parameter names in a method signature have the implementing type. In return type position, `Self` (capitalized) explicitly refers to the implementing type. When a type implements a trait, the implementing type is substituted for `Self` and for all bare parameter types.
 
 ```clojure
-;; In (deftrait Eq (= [self self] Bool)):
-;;   For (impl Eq Int ...): self becomes Int, so = :: Int -> Int -> Bool
-;;   For (impl Eq Float ...): self becomes Float, so = :: Float -> Float -> Bool
+;; In (deftrait Eq (= [a b] Bool)):
+;;   For (impl Eq Int ...): a, b become Int, so = :: Int -> Int -> Bool
+;;   For (impl Eq Float ...): a, b become Float, so = :: Float -> Float -> Bool
 ```
 
-A trait MUST contain at least one method signature. Each method signature MUST contain at least one `self` type in its parameter list, except for higher-kinded trait methods (see 7.2).
+`Self` is NOT a type variable -- it is resolved at impl time to the concrete target type. It may appear in return types and in applied type positions (e.g., `(Option Self)`).
+
+A trait MUST contain at least one method signature. Each method signature MUST contain at least one parameter of the implementing type (bare or annotated as `Self`), except for higher-kinded trait methods (see 7.2).
 
 ### 7.1.2 Docstrings
 
@@ -58,7 +68,7 @@ Both traits and individual methods MAY have docstrings. A docstring is a string 
 
 ```clojure
 (deftrait Describable "Trait for human-readable descriptions"
-  (describe "Return a description string" [self] String))
+  (describe "Return a description string" [x] String))
 ```
 
 ### 7.1.3 Multiple Methods
@@ -67,32 +77,27 @@ A trait MAY declare multiple methods. An implementation of the trait MUST provid
 
 ```clojure
 (deftrait Num "Numeric arithmetic operations"
-  (+ "Add two values" [self self] self)
-  (- "Subtract two values" [self self] self)
-  (* "Multiply two values" [self self] self)
-  (/ "Divide two values" [self self] self))
+  (+ "Add two values" [a b] Self)
+  (- "Subtract two values" [a b] Self)
+  (* "Multiply two values" [a b] Self)
+  (/ "Divide two values" [a b] Self))
 ```
 
 ### 7.1.5 Default Method Implementations [Tested tests/ring2::default_method_gt_int, tests/ring2::repl_default_neq, tests/ring2::repl_default_ge, tests/ring2::repl_default_le]
 
-A method signature MAY include a default body. Default methods use named parameters (not type keywords) and a trailing body expression:
-
-```ebnf
-default_method_sig = '(' method_name docstring? '[' param_name+ ']' type_expr body ')'
-param_name         = symbol
-```
+A method signature MAY include a default body. Default methods have a body expression as the last element (rather than a return type). The return type of a default method is inferred from its body.
 
 The default body provides an implementation that is used when an `impl` block does not explicitly override the method. Default methods may call other methods of the same trait.
 
 ```clojure
 (deftrait Ord "Ordering comparisons"
-  (< "Test less-than" [self self] Bool)
-  (> "Test greater-than" [self self] Bool)
-  (<= "Test less-than-or-equal" [x y] Bool (if (< x y) true (= x y)))
-  (>= "Test greater-than-or-equal" [x y] Bool (if (> x y) true (= x y))))
+  (< "Test less-than" [a b] Bool)
+  (> "Test greater-than" [a b] Bool)
+  (<= "Test less-than-or-equal" [a b] (not (> a b)))
+  (>= "Test greater-than-or-equal" [a b] (not (< a b))))
 ```
 
-In the example above, `<=` and `>=` have default implementations derived from `<`, `=`, and `>`. An `impl Ord` block need only provide `<` and `>`:
+In the example above, `<=` and `>=` have default implementations derived from `<` and `>`. An `impl Ord` block need only provide `<` and `>`:
 
 ```clojure
 (impl Ord MyType
@@ -117,17 +122,22 @@ An impl MAY override a default method by providing an explicit definition:
 
 ### 7.1.4 Type Expressions in Signatures
 
-Method signatures MAY use any valid type expression:
+Return types and parameter annotations MAY use any valid type expression:
 
-- `self` -- the implementing type
+- `Self` -- the implementing type (in return type or annotation position)
 - Concrete types: `Int`, `Bool`, `String`, `Float`
-- Parameterized types: `(Option a)`, `(List a)`
+- Parameterized types: `(Option a)`, `(Option Self)`
 - Function types: `(Fn [a] b)`
 - Type variables: lowercase names like `a`, `b`
 
+Bare (unannotated) parameter names always have the implementing type. To give a parameter a different type, use a `:Type name` annotation.
+
 ```clojure
 (deftrait Mappable
-  (map-val [(Fn [a] b) self] self))
+  (map-val [:(Fn [a] b) f x] Self))
+
+(deftrait Convertible
+  (convert [:String s] Int))        ;; s is String, not Self
 ```
 
 ## 7.2 Higher-Kinded Traits [Tested tests/ring2.rs::hkt_trait_declaration]
@@ -144,7 +154,7 @@ The trait head is wrapped in parentheses with a lowercase type constructor varia
 ```clojure
 (deftrait (Functor f) "Mappable container"
   (fmap "Apply function to values inside container"
-    [(Fn [a] b) (f a)] (f b)))
+    [:(Fn [a] b) func :(f a) x] (f b)))
 ```
 
 ### 7.2.1 Constructor Variables
@@ -155,16 +165,16 @@ The arity of a constructor variable is determined by its usage in method signatu
 
 ### 7.2.2 Method Signatures
 
-In an HKT trait, method parameters do NOT use `self`. Instead, the constructor variable appears applied to type variables:
+In an HKT trait, all method parameters use named params with explicit type annotations (bare names would default to the implementing type, which is a type constructor -- not useful as a value type):
 
 ```clojure
 (deftrait (Functor f) "Mappable container"
-  (fmap [(Fn [a] b) (f a)] (f b)))
-;;        ^function   ^input  ^output
-;;     a -> b     f a     f b
+  (fmap [:(Fn [a] b) func :(f a) x] (f b)))
+;;        ^function          ^input    ^output
+;;       a -> b            f a       f b
 ```
 
-The method `fmap` takes a function `(Fn [a] b)` and a value of type `(f a)`, returning a value of type `(f b)`.
+The method `fmap` takes a function `(Fn [a] b)` named `func` and a value of type `(f a)` named `x`, returning a value of type `(f b)`.
 
 ### 7.2.3 Kind Checking
 
@@ -223,7 +233,7 @@ The simplest form targets a specific concrete type.
   (defn >= [x y] (ge-i64 x y)))
 ```
 
-Each `defn` in the impl block MUST correspond to a method declared in the trait. The parameter count MUST match the number of parameter types in the trait signature (with `self` replaced by the target type). An impl block MUST provide definitions for all methods in the trait that do not have default implementations (see 7.1.5). Methods with defaults are automatically synthesized if not explicitly provided.
+Each `defn` in the impl block MUST correspond to a method declared in the trait. The parameter count MUST match the number of parameters in the trait's method signature. An impl block MUST provide definitions for all methods in the trait that do not have default implementations (see 7.1.5). Methods with defaults are automatically synthesized if not explicitly provided.
 
 ### 7.3.2 Concrete Parameterized Implementation
 
@@ -231,8 +241,8 @@ An impl MAY target a fully applied parameterized type:
 
 ```clojure
 (impl Display (Option Int)
-  (defn show [self]
-    (match self
+  (defn show [opt]
+    (match opt
       [None "None"
        (Some x) (show x)])))
 ```
@@ -245,8 +255,8 @@ An impl MAY target a parameterized type with constrained type variables. Constra
 
 ```clojure
 (impl Display (Option :Display a)
-  (defn show [self]
-    (match self
+  (defn show [opt]
+    (match opt
       [None "None"
        (Some x) (show x)])))
 ```
@@ -365,15 +375,15 @@ Operator symbols (`+`, `-`, `*`, `/`, `=`, `<`, `>`, `<=`, `>=`) have no special
 
 | Operator | Trait | Signature |
 |---|---|---|
-| `+` | `Num` | `self -> self -> self` |
-| `-` | `Num` | `self -> self -> self` |
-| `*` | `Num` | `self -> self -> self` |
-| `/` | `Num` | `self -> self -> self` |
-| `=` | `Eq` | `self -> self -> Bool` |
-| `<` | `Ord` | `self -> self -> Bool` |
-| `>` | `Ord` | `self -> self -> Bool` |
-| `<=` | `Ord` | `self -> self -> Bool` |
-| `>=` | `Ord` | `self -> self -> Bool` |
+| `+` | `Num` | `Self -> Self -> Self` |
+| `-` | `Num` | `Self -> Self -> Self` |
+| `*` | `Num` | `Self -> Self -> Self` |
+| `/` | `Num` | `Self -> Self -> Self` |
+| `=` | `Eq` | `Self -> Self -> Bool` |
+| `<` | `Ord` | `Self -> Self -> Bool` |
+| `>` | `Ord` | `Self -> Self -> Bool` |
+| `<=` | `Ord` | `Self -> Self -> Bool` |
+| `>=` | `Ord` | `Self -> Self -> Bool` |
 
 ```clojure
 (+ 1 2)       ; → 3    (resolved to +$Int)
@@ -414,10 +424,10 @@ Numeric arithmetic operations.
 
 ```clojure
 (deftrait Num "Numeric arithmetic operations"
-  (+ "Add two values" [self self] self)
-  (- "Subtract two values" [self self] self)
-  (* "Multiply two values" [self self] self)
-  (/ "Divide two values" [self self] self))
+  (+ "Add two values" [a b] Self)
+  (- "Subtract two values" [a b] Self)
+  (* "Multiply two values" [a b] Self)
+  (/ "Divide two values" [a b] Self))
 ```
 
 **Typical implementations:** A standard library typically provides `Num` implementations for `Int` and `Float`.
@@ -449,10 +459,10 @@ Unchecked arithmetic operations. Same method names as `Num` but without overflow
 
 ```clojure
 (deftrait Unchecked "Unchecked arithmetic (wraps on overflow, traps on div-by-zero)"
-  (+ "Unchecked addition" [self self] self)
-  (- "Unchecked subtraction" [self self] self)
-  (* "Unchecked multiplication" [self self] self)
-  (/ "Unchecked division" [self self] self))
+  (+ "Unchecked addition" [a b] Self)
+  (- "Unchecked subtraction" [a b] Self)
+  (* "Unchecked multiplication" [a b] Self)
+  (/ "Unchecked division" [a b] Self))
 ```
 
 **Semantics:**
@@ -477,7 +487,7 @@ Equality comparison.
 
 ```clojure
 (deftrait Eq "Equality comparison"
-  (= "Test equality" [self self] Bool))
+  (= "Test equality" [a b] Bool))
 ```
 
 **Typical implementations:** A standard library typically provides `Eq` implementations for `Int` and `Float`.
@@ -505,10 +515,10 @@ Ordering comparisons.
 
 ```clojure
 (deftrait Ord "Ordering comparisons"
-  (< "Test less-than" [self self] Bool)
-  (> "Test greater-than" [self self] Bool)
-  (<= "Test less-than-or-equal" [x y] Bool (if (< x y) true (= x y)))
-  (>= "Test greater-than-or-equal" [x y] Bool (if (> x y) true (= x y))))
+  (< "Test less-than" [a b] Bool)
+  (> "Test greater-than" [a b] Bool)
+  (<= "Test less-than-or-equal" [a b] (not (> a b)))
+  (>= "Test greater-than-or-equal" [a b] (not (< a b))))
 ```
 
 **Typical implementations:** A standard library typically provides `Ord` implementations for `Int` and `Float`.
@@ -537,7 +547,7 @@ String conversion for human-readable output.
 
 ```clojure
 (deftrait Display "Convert to string representation"
-  (show "Convert value to string" [self] String))
+  (show "Convert value to string" [x] String))
 ```
 
 **Typical implementations:** A standard library typically provides `Display` implementations for `Int`, `Float`, `Bool`, and `String`.
@@ -569,7 +579,7 @@ Maps a function over a type constructor. This is a higher-kinded trait (see 7.2)
 ```clojure
 (deftrait (Functor f) "Mappable container"
   (fmap "Apply function to values inside container"
-    [(Fn [a] b) (f a)] (f b)))
+    [:(Fn [a] b) func :(f a) x] (f b)))
 ```
 
 **Typical implementations:** A standard library typically provides `Functor` implementations for `Option`, `List`, and `Seq`.
@@ -645,7 +655,7 @@ Users MAY define their own traits using the same `deftrait` and `impl` forms. Us
 
 ```clojure
 (deftrait Describable "Types that can describe themselves"
-  (describe "Return a human-readable description" [self] String))
+  (describe "Return a human-readable description" [x] String))
 
 (impl Describable Int
   (defn describe [x]
@@ -671,7 +681,7 @@ User traits MAY have polymorphic implementations for algebraic data types, using
 
 ```clojure
 (deftrait Describable
-  (describe [self] String))
+  (describe [x] String))
 
 (impl Describable (Option :Describable a)
   (defn describe [self]
@@ -697,7 +707,7 @@ HKT trait declarations display with their type parameters:
 
 ```
 cranelisp> Functor
-Functor :: (deftrait (Functor f) (fmap [(Fn [a] b) (f a)] (f b)))
+Functor :: (deftrait (Functor f) (fmap [:(Fn [a] b) func :(f a) x] (f b)))
 ```
 
 ### 7.10.2 Method Descriptions
