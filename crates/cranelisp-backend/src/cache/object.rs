@@ -352,7 +352,7 @@ pub use crate::compiler::got_data_symbol_name;
 /// the `Linker` can load on cache hit.
 ///
 /// See design/backend/module-caching.md §13.2 for the detailed design.
-pub fn compile_module_to_object(
+pub fn _deprecated_compile_module_to_object(
     _input: &ObjectCompileInput,
     _env: &dyn crate::compiler::CompilationEnv,
     _symbol_tables: &dashmap::DashMap<ModuleFullPath, SymbolTable>,

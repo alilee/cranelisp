@@ -12,6 +12,7 @@ pub mod cache;
 // Re-export build_isa at the crate root for convenient access.
 // This is the single ISA construction point (architecture decision 7).
 pub use cache::object::build_isa;
+use cranelisp_types::ModuleEntry;
 // Re-export TargetIsa for shared ISA in N-core codegen (pipeline-v3.md §6).
 pub use cranelift::codegen::isa::TargetIsa;
 // Re-export Cranelift module types for callers of compile_to_module.
@@ -62,19 +63,77 @@ pub struct CompilationResult {
 
 /// Compile a program's functions into a Cranelift module.
 ///
-/// Works for any module type: JITModule (in-memory execution),
-/// ObjectModule (relocatable .o file), or any future Module impl.
+/// This is the ONLY compilation entry point in the backend crate.
+/// See design/backend/compile-to-module.md §2 (PRESCRIPTIVE).
 ///
-/// The caller creates the module and declares intrinsics before calling
-/// this function. After return, the caller finalizes the module
-/// (JIT: `finalize()`, Object: `finish().emit()`).
-///
-/// `intrinsic_ids` provides FuncIds for runtime intrinsics (alloc, dealloc, etc.).
-/// `env` is the CompilationEnv for GOT resolution (Some for GOT-indirect, None for direct).
-/// `prior_funcs` are cross-module function signatures for import declaration.
-/// `jit_prefix` is an optional module prefix for function names in a shared JIT.
-#[allow(clippy::too_many_arguments)]
+/// Five parameters. Everything else derived internally:
+/// - Intrinsics: declared on the module internally
+/// - GOT slots: read from symbol_tables
+/// - GOT bases: JIT → runtime pointers; Object → symbolic relocations (internal fork)
+/// - Cross-module refs: resolved from symbol_tables Import chains
+/// - CompilationEnv: built internally
+/// - JIT name prefix: derived from module_path
 pub fn compile_to_module<M: Module>(
+    module_path: ModuleFullPath,
+    program: &Program,
+    typecheck: &CheckResult,
+    symbol_tables: &DashMap<ModuleFullPath, SymbolTable>,
+    module: &mut M,
+) -> Result<CompilationResult, CranelispError> {
+    // TODO(/backend): Derive all of these internally instead of
+    // delegating to the legacy inner function. See §2.3 of the design doc.
+    let intrinsic_ids = declare_intrinsics_generic(module)?;
+    let env_impl = crate::cache::object::ObjectCompilationEnv {
+        symbol_tables,
+        current_module: module_path.clone(),
+    };
+    let cross_refs = resolve_cross_module_refs(symbol_tables, &module_path);
+    let jit_prefix = if module_path.as_ref() != "user" && module_path.as_ref() != "main" {
+        Some(module_path.as_ref())
+    } else {
+        None
+    };
+    _compile_to_module_inner(
+        program, typecheck, symbol_tables, module, module_path,
+        &intrinsic_ids, Some(&env_impl as &dyn CompilationEnv),
+        &cross_refs, jit_prefix,
+    )
+}
+
+/// Resolve cross-module function references from symbol table Import chains.
+fn resolve_cross_module_refs(
+    symbol_tables: &DashMap<ModuleFullPath, SymbolTable>,
+    module_path: &ModuleFullPath,
+) -> Vec<(Symbol, usize)> {
+    let mut refs = Vec::new();
+    let Some(table) = symbol_tables.get(module_path) else { return refs };
+    for (name, entry) in table.all_symbols() {
+        if let ModuleEntry::Import { source } = entry {
+            if let Some(source_table) = symbol_tables.get(&source.module) {
+                if let Some(source_entry) = source_table.get(source.symbol.as_ref()) {
+                    let param_count = match source_entry {
+                        ModuleEntry::Def { scheme, .. } | ModuleEntry::Constructor { scheme, .. } => {
+                            match &scheme.ty {
+                                Type::Fn(params, _) => params.len(),
+                                _ => continue,
+                            }
+                        }
+                        _ => continue,
+                    };
+                    let qualified = Symbol::from(format!("{}/{}", source.module.as_ref(), source.symbol.as_ref()));
+                    refs.push((qualified, param_count));
+                    refs.push((name.clone(), param_count));
+                }
+            }
+        }
+    }
+    refs
+}
+
+/// Legacy inner implementation — to be eliminated by /backend.
+/// All parameters should be derived internally by compile_to_module.
+#[allow(clippy::too_many_arguments)]
+fn _compile_to_module_inner<M: Module>(
     program: &Program,
     check: &CheckResult,
     symbol_tables: &DashMap<ModuleFullPath, SymbolTable>,
@@ -327,7 +386,7 @@ fn compile_defn_in_module<M: Module>(
 
 /// Result of compiling a batch program. Holds the JIT and entry point
 /// so the caller can execute and then drop the JIT.
-pub struct CompiledProgram {
+pub struct _DeprecatedCompiledProgram {
     // Kept alive so JIT-compiled code pointers remain valid.
     #[allow(dead_code)]
     jit: Jit,
@@ -363,7 +422,7 @@ impl CompiledProgram {
 /// Result of compiling a single REPL expression. Holds the JIT alive so
 /// the caller can execute the compiled function pointer at its leisure.
 /// This enables the caller to separately time compilation and evaluation.
-pub struct CompiledExpr {
+pub struct _DeprecatedCompiledExpr {
     // Kept alive so the compiled function pointer remains valid.
     #[allow(dead_code)]
     jit: Jit,
@@ -404,7 +463,7 @@ impl CompiledExpr {
 /// Returns a CompiledProgram that can be executed.
 ///
 /// Thin wrapper around `compile_to_module<JITModule>`.
-pub fn compile_program(
+pub fn _deprecated_compile_program(
     _program: &Program,
     _check: &CheckResult,
     _use_got: bool,
@@ -501,7 +560,7 @@ fn expand_multi_sig_defn(
 ///
 /// Holds function name/arity pairs for symbols that downstream
 /// modules may need to reference.
-pub struct CompiledModuleInfo {
+pub struct _DeprecatedCompiledModuleInfo {
     /// Function names and their param counts (for downstream import declarations).
     pub func_signatures: Vec<(Symbol, usize)>,
     /// Warnings accumulated during codegen.
@@ -511,7 +570,7 @@ pub struct CompiledModuleInfo {
 /// Compile a module's program into an existing shared JIT (no finalize).
 ///
 /// Thin wrapper around `compile_to_module` with JIT prefix and prior funcs.
-pub fn compile_module_program(
+pub fn _deprecated_compile_module_program(
     _program: &Program,
     _check: &CheckResult,
     _jit: &mut Jit,
@@ -526,7 +585,7 @@ pub fn compile_module_program(
 ///
 /// Thin wrapper around `compile_to_module<JITModule>`. Wraps the expression
 /// in a synthetic zero-arg function and compiles it.
-pub fn compile_expr_with_got_and_symbols(
+pub fn _deprecated_compile_expr_with_got_and_symbols(
     _expr: &Expr,
     _check: &CheckResult,
     _extra_symbols: &[(&str, *const u8)],
@@ -541,7 +600,7 @@ pub fn compile_expr_with_got_and_symbols(
 /// Compile and execute a single expression (convenience wrapper).
 ///
 /// Delegates to `compile_expr_with_got_and_symbols` then executes.
-pub fn compile_and_run_expr(
+pub fn _deprecated_compile_and_run_expr(
     _expr: &Expr,
     _check: &CheckResult,
     _symbol_tables: &DashMap<ModuleFullPath, SymbolTable>,

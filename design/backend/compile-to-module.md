@@ -25,81 +25,90 @@ This triplication causes:
 - Three code paths that can (and do) diverge silently.
 - `CompiledExpr` struct that exists only to hold a `Jit` alive — unnecessary once the caller owns the module.
 
-## 2. Target API
+## 2. Target API — PRESCRIPTIVE
+
+This section is normative. The function signature, parameter list, and constraints MUST be implemented exactly as written. No additional parameters. No restructuring of the signature.
+
+### 2.1 Exact Signature
 
 ```rust
-/// Compile a program's functions into a Cranelift module.
-///
-/// Works for any module type: JITModule (in-memory execution),
-/// ObjectModule (relocatable .o file), or any future Module impl.
-///
-/// The caller creates the module; this function populates it.
-/// After return, the caller finalizes (JIT: `finalize()`, Object: `finish().emit()`).
 pub fn compile_to_module<M: Module>(
+    module_path: ModuleFullPath,
     program: &Program,
-    check: &CheckResult,
+    typecheck: &CheckResult,
     symbol_tables: &DashMap<ModuleFullPath, SymbolTable>,
     module: &mut M,
-    current_module: ModuleFullPath,
 ) -> Result<CompilationResult, CranelispError>
 ```
 
-The caller creates the appropriate module. All three use cases — batch JIT, REPL expression, and object file — use the same function:
+**Five parameters. No more. No optional parameters. No feature flags.**
+
+| Parameter | What it is | Where caller gets it |
+|-----------|-----------|---------------------|
+| `module_path` | Identity of the module being compiled | DashMap key, scheduler, or hardcoded for batch |
+| `program` | AST bodies to compile (`Vec<TopLevel>`) | Source parse, or synthetic wrapper for REPL expr |
+| `typecheck` | Typecheck products (resolutions, types, mono, defaults) | `CheckResult` from typechecker |
+| `symbol_tables` | All module symbol tables (GOT slots, imports, schemes) | `SharedState.symbol_tables` |
+| `module` | Cranelift module to populate | Caller creates `JITModule` or `ObjectModule` |
+
+### 2.2 Hard Constraints
+
+1. **No caller-provided intrinsic IDs.** `compile_to_module` declares intrinsics internally on the module.
+2. **No caller-provided GOT resolution.** GOT slot assignments read from `symbol_tables[module_path]` entries (`ModuleEntry::Def { got_slot }`). No `CompilationEnv` parameter. Built internally.
+3. **No caller-provided function arities.** Derived from the defns being compiled.
+4. **No JIT prefix parameter.** Module-qualified JIT names derived from `module_path` internally.
+5. **No traced_fns parameter.** Tracing is a runtime/GOT concern, not a compilation concern.
+6. **No prior_funcs or cross-module func sigs.** Cross-module references resolved from `symbol_tables` (follow Import chains).
+7. **No extra JIT symbols or GOT data defs.** Caller registers these on the JITBuilder/module before creating it — not a compile_to_module concern.
+
+### 2.3 What the function derives internally
+
+| Concern | Source | NOT passed by caller |
+|---------|--------|---------------------|
+| Intrinsic FuncIds | Declares intrinsics on `module` internally | Not a parameter |
+| GOT slot assignments | `symbol_tables[module_path]` → `ModuleEntry::Def { got_slot }` | Not a parameter |
+| GOT base resolution | **Internal fork** (see §2.4) | Not a parameter |
+| Cross-module refs | `symbol_tables[module_path]` → `ModuleEntry::Import { source }` chain | Not a parameter |
+| Function arities | Defn param counts from program | Not a parameter |
+| CompilationEnv | Built internally from `symbol_tables` + `module_path` | Not a parameter |
+| JIT name prefix | Derived from `module_path` | Not a parameter |
+
+### 2.4 Internal Fork: GOT Base Resolution
+
+This is the ONE place where JIT and Object paths diverge inside `compile_to_module`. The compiled code is identical — the same CLIF IR, same instruction selection. The difference is how GOT base pointers are materialised:
+
+- **JIT (inmem)**: GOT table base pointers are runtime addresses. Retrieved from the session state (GotTable pointers stored alongside the symbol tables) and defined as data symbols with concrete values. Compiled code loads the GOT base via `iconst` or data load.
+
+- **Object (.o file)**: GOT bases are symbolic data references (`Linkage::Export` for self-module, `Linkage::Import` for cross-module). The linker patches concrete addresses at load time. Compiled code loads the GOT base via `global_value` referencing the data symbol.
+
+The function detects which mode it's in and builds the appropriate GOT base entries. Everything else — intrinsic declaration, defn collection, function compilation — is identical.
+
+### 2.5 Caller Usage
+
+The caller creates the module and passes it in. `compile_to_module` populates and finalizes it. The caller then processes the result:
 
 ```rust
-// Batch JIT (--run mode):
-let mut jit_module = JITModule::new(jit_builder)?;
-declare_intrinsics(&mut jit_module)?;
-let result = compile_to_module(&program, &check, &symbol_tables, &mut jit_module, module_path)?;
-jit_module.finalize_definitions()?;
-let entry_ptr = jit_module.get_finalized_function(result.entry_func_id.unwrap());
+// JIT caller (batch, REPL, priority worker):
+let result = compile_to_module(module_path, &program, &check, &symbol_tables, &mut jit_module)?;
+// jit_module is finalized. Extract pointers:
+for (name, func_id) in &result.func_ids {
+    let ptr = jit_module.get_finalized_function(*func_id);
+    // Register in CodegenProduct / GOT table
+}
 
-// REPL expression eval:
-// Caller wraps the expr in a synthetic one-defn Program, sets up JITBuilder
-// with extra symbols and GOT data, then uses the same entry point.
-let mut jit_builder = JITBuilder::new(settings::builder(), ...)?;
-for (name, ptr) in &extra_symbols { jit_builder.symbol(name, *ptr); }
-let mut jit_module = JITModule::new(jit_builder)?;
-declare_intrinsics(&mut jit_module)?;
-// GOT data defs set up on the module by the caller
-for (name, ptr) in &got_data_defs { define_got_data(&mut jit_module, name, *ptr)?; }
-let result = compile_to_module(&wrapper_program, &check, &symbol_tables, &mut jit_module, module_path)?;
-jit_module.finalize_definitions()?;
-let entry_ptr = jit_module.get_finalized_function(result.entry_func_id.unwrap());
-// Caller keeps jit_module alive while executing the pointer.
-
-// Nice worker (object / .o file):
-let isa = build_isa(true)?;
-let obj_builder = ObjectBuilder::new(isa, name, default_libcall_names())?;
-let mut obj_module = ObjectModule::new(obj_builder);
-declare_intrinsics(&mut obj_module)?;
-let result = compile_to_module(&program, &check, &symbol_tables, &mut obj_module, module_path)?;
+// Object caller (nice worker, --link):
+let result = compile_to_module(module_path, &program, &check, &symbol_tables, &mut obj_module)?;
 let bytes = obj_module.finish().emit()?;
-
-// --link mode:
-// Same as nice worker — creates ObjectModule, calls compile_to_module.
+// Write bytes to .o file
 ```
+
+`Jit` is `pub(crate)` — callers work with `JITModule` directly (from cranelift_jit). No backend wrapper types in the public API except `CompilationResult`.
 
 ## 3. Function Signature and Generic Constraints
 
 ### What `M: Module` provides
 
-The `cranelift_module::Module` trait (from Cranelift v0.125) provides:
-
-- `declare_function(&str, Linkage, &Signature) -> ModuleResult<FuncId>`
-- `declare_data(&str, Linkage, bool, bool) -> ModuleResult<DataId>`
-- `define_function(FuncId, &mut Context) -> ModuleResult<()>`
-- `define_data(DataId, &DataDescription) -> ModuleResult<()>`
-- `declare_func_in_func(FuncId, &mut Function) -> FuncRef`
-- `declare_data_in_func(DataId, &mut Function) -> GlobalValue`
-- `make_signature() -> Signature`
-- `target_config() -> TargetFrontendConfig`
-
-Both `JITModule` and `ObjectModule` implement this trait. `FnCompiler` is already generic over `M: Module`. No additional trait bounds are needed.
-
-### Additional bounds
-
-None. The `Module` trait provides everything `compile_to_module` needs. GOT reference encoding (the one genuine difference) is handled by `CompilationEnv` and `GotReference`, not by additional trait bounds.
+The `cranelift_module::Module` trait (from Cranelift v0.125) provides all APIs needed for function/data declaration, definition, and compilation. Both `JITModule` and `ObjectModule` implement it. `FnCompiler` is already generic over `M: Module`. No additional trait bounds are needed.
 
 ## 4. Defn Collection — Unified Approach
 
@@ -753,7 +762,7 @@ The sketch's `FnCompiler` equivalent is not a struct but a set of free functions
 | GOT reference dispatch | `match got_ref` inside `FnSlot` at each GOT load | `CompilationEnv` trait dispatches once | Cleaner separation: FnCompiler doesn't know which module type it targets |
 | Intrinsic declaration | Separate per-path | `declare_intrinsics<M>` | Single source of truth for intrinsic set |
 | Defn collection | Separate per-path (object path broken) | One path, reused | Fixes multi-sig handling for object path |
-| Parameter passing | 21 positional params | `(Program, CheckResult, SymbolTable)` — same inputs as typecheck output | Addresses HIGH-3 without inventing a new input struct |
+| Parameter passing | 21 positional params | `(ModuleFullPath, Program, CheckResult, SymbolTable, Module)` — 5 params, everything else derived internally | Addresses HIGH-3 without inventing a new input struct |
 
 ### What we adopt from the sketch
 
@@ -762,3 +771,60 @@ The sketch's `FnCompiler` equivalent is not a struct but a set of free functions
 - `__data` vs `__bss` workaround (explicit zero bytes, not `define_zeroinit`).
 - ObjectModule-specific GOT setup as a pre-step before compilation.
 - Background cache writing pattern (unchanged by this design).
+
+## 15. Acceptance Criteria — PRESCRIPTIVE
+
+These criteria MUST ALL pass before the implementation is accepted. They are not suggestions.
+
+### 15.1 Signature compliance
+
+`compile_to_module` MUST have EXACTLY this signature:
+
+```rust
+pub fn compile_to_module<M: Module>(
+    module_path: ModuleFullPath,
+    program: &Program,
+    typecheck: &CheckResult,
+    symbol_tables: &DashMap<ModuleFullPath, SymbolTable>,
+    module: &mut M,
+) -> Result<CompilationResult, CranelispError>
+```
+
+Five parameters. No additional parameters of any kind.
+
+### 15.2 No test coverage loss
+
+Every test that existed before the migration MUST either:
+- (a) Be ported to call `compile_to_module` (preferred), or
+- (b) Still call a deprecated function (acceptable during migration)
+
+No test may be deleted.
+
+### 15.3 Internal derivation
+
+`compile_to_module` must NOT receive from callers:
+- Intrinsic FuncIds (declares them internally on the module)
+- GOT slot assignments (reads from symbol_tables)
+- GOT base pointers or data defs (resolved internally — JIT vs Object fork)
+- CompilationEnv (builds internally from symbol_tables + module_path)
+- Function arities (derives from defns)
+- Cross-module function sigs (resolves from symbol_tables)
+- JIT name prefix (derives from module_path)
+- Traced function list (not a compilation concern)
+- Extra JIT symbols (caller registers on JITBuilder before creating the module)
+
+### 15.4 Build state
+
+- `cargo build --lib -p cranelisp-backend` passes with zero errors
+- Backend crate tests pass (or call deprecated functions during transition)
+- Full workspace `cargo build` will have errors in `src/` callers from deprecated functions — that is expected and correct
+
+### 15.5 Public API surface
+
+The backend crate's public compilation API is:
+- `compile_to_module<M: Module>` — the only compilation entry point
+- `CompilationResult` — the return type
+- `build_isa(pic: bool)` — for callers creating ObjectModule
+
+`Jit` and all its methods are `pub(crate)`. Callers work with `JITModule` directly.
+No `CompilationEnv` in the public API. No `ObjectCompileInput`. No `IntrinsicTable`.
