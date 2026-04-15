@@ -1,6 +1,6 @@
 # Sprint 54: Clean & Green
 
-**Status**: DRAFT
+**Status**: ACTIVE
 **Ring**: 4 (Effects — full spec scope)
 **Goal**: Zero test failures — triage and fix all 58 failures to establish a clean baseline for Ring 4 gate review.
 
@@ -8,66 +8,34 @@
 
 Sprint 53 fixed the workspace build (backend API conformance, broken call site repairs) and unmasked 29 additional failures. Sprint 53 also silently fixed 7 tests (default methods, parse-int, constructor-as-value, batch scoping) via backend API changes. The true failure inventory is 58 tests across 8 categories:
 
-| Category | Count | Owner | Root Cause Hypothesis |
-|----------|-------|-------|-----------------------|
-| Trace | 22 | /backend or /int | Trace codegen broken after session restructure — likely one root cause |
-| Cache SIGSEGV/FAIL | 12 | /backend | Memory corruption in .o loading / JIT relocation path |
-| File watching E2E | 11 | /int | E2E test subprocess environment (prelude/primitives availability, watcher timing) |
-| Link | 5 | /backend | Likely related to cache — same .o loading path |
-| Multi-sig batch | 3 | /typecheck | `Defn::params()` panics on `DefnMulti` in batch codegen |
-| Checked division | 3 | /backend or /int | Checked div codegen or panic handler wiring |
-| Persistence | 1 | /int | Import restart — module resolution in temp dir |
-| run-tests | 1 | /int | `run-tests` special form not wired in v4 pipeline |
+| Category | Count | Owner | Confirmed Root Cause |
+|----------|-------|-------|---------------------|
+| Trace | 22 | /backend | Conflicting intrinsic signature: `cranelisp_trace_restore_got` declared with return in jit.rs, void in trace_codegen.rs |
+| Cache SIGSEGV/FAIL | 12 | /backend + /int | Cross-module GOT crash with nice_workers=1; transitive deps: GOT data symbols not registered |
+| File watching E2E | 11 | /int | `notify` v7 uses kqueue on macOS (not FSEvents); kqueue directory watches miss file modifications |
+| Link | 5 | /backend | Object files export module-qualified `hello/main` but startup stub expects unqualified `main` |
+| Multi-sig batch | 3 | /int | `pre_register_got_slots_in_tc` and `compile_regular_defns` in worker.rs don't skip DefnMulti |
+| Checked division | 3 | /int | `compile_and_execute_expr` in pipeline.rs doesn't check `take_runtime_error()` after JIT call |
+| Persistence | 1 | /int | `compile_dep_inline` takes `repl_check_state` but doesn't restore on error path |
+| run-tests | 1 | /backend + /int | `run-test`/`discover-tests` extern primitives declared but no runtime function implemented |
 
-### Failure Detail
+### Triage Ownership Summary
 
-**Trace (22 tests)**:
-- `ring4_trace::trace_*` (19 tests) — trace codegen, field access, composability
-- `sketch_port::sketch_trace_literal_returns_trace_call` — trace return type
-- `sketch_port::sketch_trace_nanos_is_positive` — trace timing field
-- `v4_repl_eval::v4_repl_trace_as_expression` — trace in REPL context
-
-**Cache (12 tests)**:
-- SIGSEGV (8): `cache_multi_module_hit_cross_module_call`, `cache_multi_module_multiple_imports`, `cache_multi_module_two_deps`, `cache_multi_module_unchanged_dep_stays_cached`, `cache_multi_module_with_prelude`, `cache_repl_incremental_monomorphisation`, `cache_quick_build_links_cached_objects`, `cache_repl_restart_cache_hit`
-- FAIL (1): `cache_multi_module_transitive_imports` — unresolved GOT symbol
-- sprint23 (2): `cache_repl_loads_on_startup`, `cache_repl_produces_object_files`
-- v4_pipeline (1): `v4_cache_hit_dependency`
-
-**File Watching (11 tests)**:
-- `watch_automatic_recompilation`, `watch_detects_source_change`, `watch_cascade_invalidation`, `watch_invalidates_cache_on_change`, `watch_notification_format`, `watch_notification_deferred_during_input`, `watch_type_incompatibility_on_reload`, `watch_notification_truncation`, `watch_error_display_format`, `watch_error_recovery_last_known_good`, `watch_retry_on_next_change`
-
-**Link (5 tests)**:
-- `link_hello_world_produces_executable`, `link_main_returns_int_exit_code`, `link_reuses_cached_object_files`, `link_multi_module_project`, `link_default_output_is_entry_stem`
-
-**Multi-sig (3 tests)**:
-- `sketch_multi_sig_different_arities`, `sketch_multi_sig_type_based_dispatch`, `sketch_repl_multi_sig_different_arities`
-
-**Checked Division (3 tests)**:
-- `ring0::checked_division_by_zero_panics`, `ring0::checked_div_min_neg1_panics`, `sketch_port::sketch_checked_division_by_zero_panics`
-
-**Persistence (1 test)**: `persist_import_survives_restart`
-
-**run-tests (1 test)**: `sketch_run_tests_pass_fn_called`
-
-### /int Burden Assessment
-
-/int owns 13 tests directly (11 watch + 1 persistence + 1 run-tests). Trace (22) and checked-div (3) need triage to determine if they're /backend (codegen) or /int (pipeline wiring). Cache (12) and link (5) are /backend.
-
-This is feasible because: (a) watch failures are likely one or two root causes in E2E test infrastructure, (b) trace failures are likely one root cause in trace codegen after session restructure, (c) cache SIGSEGVs are the main risk but are all in one subsystem.
+- **/backend**: 39 tests (trace 22, cache 12, link 5) + run-tests runtime implementation
+- **/int**: 19 tests (watch 11, multi-sig 3, checked-div 3, persistence 1, run-tests wiring 1)
+- **/typecheck**: 0 tests (multi-sig is in worker.rs, not typecheck)
 
 ### FIXME Debt
 
-All 5 source code FIXMEs from the prior Sprint 54 draft were resolved in Sprint 53. No `FIXME()` markers remain in `src/`, `crates/`, or `tests/`.
-
-Design doc FIXMEs remain (in `design/int/`, `design/backend/`) but these are future-work notes, not blocking debt.
+All source code FIXMEs resolved. No blocking debt.
 
 | File | Owning Skill | Issue | Resolution |
 |------|-------------|-------|------------|
-| (none in source) | — | All 5 S53 FIXMEs resolved | resolved |
+| (none in source) | — | All S53 FIXMEs resolved | resolved |
 
 ### Prior-Ring Coverage Gaps
 
-~25 spec requirements from completed rings (R0-R3) still carry `[R{N} S{M}]` tags. These are traceability gaps, not missing features. Noted but not blocking Sprint 54 — priority is 0 failures.
+~25 spec requirements from completed rings (R0-R3) still carry `[R{N} S{M}]` tags. Noted but not blocking Sprint 54.
 
 ### Out of Scope
 
@@ -78,69 +46,82 @@ Design doc FIXMEs remain (in `design/int/`, `design/backend/`) but these are fut
 
 ## Architecture Review
 
-{To be filled by /arch during Wave 2}
+**Reviewer**: /arch
+**Verdict**: APPROVED
+
+**Technical coherence**: PASS. 8 failure categories cleanly partitioned. Shared-ownership items resolved via triage before implementation. Wave structure sound.
+
+**No interim architecture**: PASS. All tasks are fixes to existing subsystems. No new abstractions proposed.
+
+**Design references**: Adequate. Each skill plan cites correct source locations. Design doc "n/a" is correct for bug fixes — triage findings serve as design artifacts.
+
+**Interface gaps**: None. Bug fixes don't require boundary type changes.
+
+**Risk assessment**:
+| Category | Risk | Rationale |
+|----------|------|-----------|
+| Trace (22) | **Low** | Single root cause in jit.rs intrinsic declaration |
+| Cache SIGSEGV (12) | **High** | Could be race condition or fundamental .o loading issue |
+| File watching (11) | **Medium** | Platform-specific watcher backend; fix is clear but fiddly |
+| Link (5) | **Low** | Clear cause: module-qualified name vs unqualified expectation |
+| Multi-sig (3) | **Low** | Add `is_multi_sig()` guard in 2 places |
+| Checked div (3) | **Low** | Add `take_runtime_error()` check |
+| Persistence (1) | **Low** | Restore state before `?` operator |
+| run-tests (1) | **Medium** | Missing runtime function implementation |
+
+**Conditional**: If cache SIGSEGVs require architectural changes to .o loading path, descope cache+link (17 tests) to Sprint 55.
 
 ## Skill Plans
 
 ### /backend
-**Task**: Fix 3 failure categories + triage trace:
-- (A) Cache SIGSEGV (12 tests): investigate .o loading / JIT relocation / GOT init path for memory corruption. 8 SIGSEGVs suggest use-after-free or bad relocation in cached module loading.
-- (B) Link (5 tests): likely shares root cause with cache — both use .o loading path. Investigate after cache fix.
-- (C) Trace codegen (shared with /int): if trace failures are codegen-level (Cranelift IR generation for trace special form), /backend owns. If pipeline wiring, /int owns. Triage determines.
-- (D) Checked division (3 tests): if codegen-level panic handler emission, /backend owns.
-**Design doc**: n/a (bug fixes — triage notes in Wave 1)
-**Approach**: {to be filled by /backend during Wave 1 triage}
-**Design refs**: `crates/cranelisp-backend/src/cache/`, `src/session_v4.rs` (nice worker .o path), `design/backend/compile-to-module.md`
-**Acceptance**: All cache (12), link (5), and owned trace/checked-div tests pass. 0 SIGSEGVs.
-
-### /typecheck
-**Task**: Fix multi-sig batch path (3 tests):
-- `Defn::params()` panics on `DefnMulti` in batch codegen path. REPL path was fixed in S52 (`check_repl_multi_sig`). Batch path needs same treatment.
-**Design doc**: n/a (regression fix)
-**Approach**: {to be filled by /typecheck during Wave 1 triage}
-**Design refs**: `crates/cranelisp-typecheck/src/`, `spec/05-definitions.md` §5.1.2
-**Acceptance**: All 3 multi-sig tests pass.
+**Task**: Fix 3 confirmed failure categories (39 tests) + run-tests runtime:
+- (A) **Trace (22 tests)**: Add `cranelisp_trace_restore_got` to void-return exception list in `declare_intrinsics_generic` (jit.rs:617), alongside `runtime/vec_drop`.
+- (B) **Cache SIGSEGV (12 tests)**: Investigate whether setting `nice_workers: 0` eliminates SIGSEGVs (isolates race vs logic bug). For transitive imports: ensure `load_cached_module_object` registers GOT data symbols for ALL modules including transitive deps.
+- (C) **Link (5 tests)**: Fix module-qualified `main` export. Either always export `main` without prefix, or have `generate_startup_object` use qualified name.
+- (D) **run-tests runtime**: Implement `run-test` and `discover-tests` functions in cranelisp-runtime and register in JIT builder symbol table.
+**Design doc**: n/a (bug fixes — triage findings above serve as design)
+**Design refs**: `crates/cranelisp-backend/src/jit.rs:617`, `crates/cranelisp-backend/src/compiler/trace_codegen.rs:71`, `crates/cranelisp-backend/src/lib.rs:88`, `crates/cranelisp-backend/src/exe.rs:50`, `src/worker.rs:2619-2681`
+**Acceptance**: All trace (22), cache (12), link (5) tests pass. 0 SIGSEGVs. run-test/discover-tests symbols resolvable.
 
 ### /int
-**Task**: Fix 3 failure categories + triage shared issues:
-- (A) File watching E2E (11 tests): investigate subprocess test environment — CRANELISP_LIB env, prelude/primitives availability in child process, watcher timing.
-- (B) Persistence (1 test): `persist_import_survives_restart` — module resolution in temp dir after session restart.
-- (C) run-tests (1 test): `run-tests` special form needs v4 pipeline wiring.
-- (D) Trace triage (shared): if trace failures are pipeline wiring (trace not routed through compile_unit), /int owns.
-- (E) Checked-div triage (shared): if checked-div failures are panic handler wiring in v4, /int owns.
+**Task**: Fix 5 confirmed failure categories (19 tests):
+- (A) **Watch (11 tests)**: Replace `RecommendedWatcher` with `notify::FsEventWatcher` on macOS via `#[cfg(target_os = "macos")]` in `src/watch.rs:36-42`.
+- (B) **Multi-sig (3 tests)**: Add `if defn.is_multi_sig() { continue; }` in `pre_register_got_slots_in_tc` (worker.rs:2475) and `compile_regular_defns` (worker.rs:2555).
+- (C) **Checked-div (3 tests)**: Add `take_runtime_error()` check after JIT call in `compile_and_execute_expr` (pipeline.rs:129) and trace variant (~line 180).
+- (D) **Persistence (1 test)**: Move `repl_check_state` restore before `?` in `compile_dep_inline` (session_v4.rs:1771).
+- (E) **run-tests wiring (1 test)**: Wire v4 pipeline to use the runtime functions once /backend implements them.
 **Design doc**: n/a (bug fixes)
-**Approach**: {to be filled by /int during Wave 1 triage}
-**Design refs**: `src/session_v4.rs`, `src/worker.rs`, `repl/spec.md` §14 §15
-**Acceptance**: All watch (11), persistence (1), run-tests (1), and owned trace/checked-div tests pass.
+**Design refs**: `src/watch.rs`, `src/worker.rs`, `src/pipeline.rs`, `src/session_v4.rs`
+**Acceptance**: All watch (11), multi-sig (3), checked-div (3), persistence (1), run-tests (1) tests pass.
+
+### /typecheck
+**Task**: No tasks — multi-sig triage confirmed the bug is in worker.rs (/int territory), not in typecheck.
 
 ### /arch
 **Task**: Architecture review of sprint scope and triage findings.
-**Acceptance**: Architecture review complete. No architectural concerns with proposed fixes.
+**Acceptance**: COMPLETE — reviewed and approved.
 
 ### /qa
-**Task**: (A) Validate all fixes against spec — confirm each test exercises the correct spec requirement. (B) Update spec annotations for newly-passing tests (including the 7 silently fixed by S53). (C) Run full suite to confirm 0 failures.
+**Task**: (A) Validate all fixes against spec. (B) Update spec annotations for newly-passing tests. (C) Run full suite to confirm 0 failures.
 **Design doc**: n/a
-**Approach**: Spec-first validation. Each passing test gets a `// spec:` trace and the corresponding spec gets `[Tested ...]`.
 **Design refs**: `spec/*.md`, `repl/spec.md`, all test files
-**Acceptance**: 0 failures, 0 ignored. Spec annotations current for all fixed tests.
+**Acceptance**: 0 failures, 0 ignored. Spec annotations current.
 
 ### /review
-**Task**: Code review of all bug fixes. Two review passes: one after Wave 3 implementation, one after Wave 4 fix cycle.
+**Task**: Code review of all bug fixes. Two review passes: one after Wave 3, one after Wave 4 fix cycle.
 **Acceptance**: 0 Blockers, all Important findings addressed.
 
 ### /frontend
-**Task**: No primary assignment. Validate after fixes.
+**Task**: No primary assignment.
 
 ### /repl
 **Task**: (A) Create sprint demo `repl/demos/ring4l.demo`. (B) Verify all prior demos play cleanly.
-**Design doc**: n/a
-**Approach**: Demo showcases the fixes visible to users: trace working, multi-sig dispatch, cached modules, linked executables.
 **Design refs**: `repl/demos/CLAUDE.md`
 **Acceptance**: Demo plays cleanly. All prior demos pass.
 
 ### /port
 **Task**: Validate exemplar compiles and runs after fixes.
-**Acceptance**: Exemplar batch mode runs. Exemplar tests pass.
+**Acceptance**: Exemplar batch mode runs.
 
 ### /examples
 **Task**: Verify all examples compile and run.
@@ -151,77 +132,144 @@ Design doc FIXMEs remain (in `design/int/`, `design/backend/`) but these are fut
 **Acceptance**: All stdlib modules compile.
 
 ### /spec
-**Task**: Update spec annotations for newly-passing tests. Address any spec gaps discovered during triage.
-**Acceptance**: Annotations current for fixed tests.
+**Task**: Update spec annotations for newly-passing tests.
+**Acceptance**: Annotations current.
 
 ### /docs, /platform
-**Task**: No primary assignment. Validate after fixes.
+**Task**: No primary assignment.
 
 ## Waves
 
-### Wave 1: Triage (no code changes)
+### Wave 1: Triage (no code changes) — COMPLETE
 
-Root cause investigation for each failure category. This is the design-equivalent for a bug-fix sprint — understanding the root cause IS the design work. Each skill investigates their failures and documents findings.
-
-| Skill | Task | Status | Notes |
-|-------|------|--------|-------|
-| /arch | Architecture review of sprint scope | pending | |
-| /backend | Triage cache SIGSEGVs — reproduce, identify corruption source | pending | 12 tests |
-| /backend | Triage link failures — relate to cache or independent | pending | 5 tests |
-| /backend | Triage trace — codegen-level or pipeline-level? | pending | shared ownership |
-| /backend | Triage checked-div — codegen or panic handler wiring? | pending | shared ownership |
-| /typecheck | Triage multi-sig batch — confirm `Defn::params()` on `DefnMulti` | pending | 3 tests |
-| /int | Triage watch — subprocess env or watcher architecture? | pending | 11 tests |
-| /int | Triage persistence — temp dir module resolution | pending | 1 test |
-| /int | Triage run-tests — v4 pipeline gap | pending | 1 test |
-
-### Wave 2: Arch Review
-
-/arch reviews triage findings and proposed approaches for all categories.
+Root cause investigation for each failure category. All 8 categories triaged with confirmed root causes and ownership.
 
 | Skill | Task | Status | Notes |
 |-------|------|--------|-------|
-| /arch | Review triage findings, confirm approaches are architecturally sound | pending | |
+| /arch | Architecture review of sprint scope | **done** | APPROVED with cache descope conditional |
+| /backend | Triage cache SIGSEGVs | **done** | Race condition or GOT symbol registration; HIGH risk |
+| /backend | Triage link failures | **done** | Module-qualified name mismatch; LOW risk |
+| /backend | Triage trace | **done** | Intrinsic signature conflict in jit.rs; /backend-owned |
+| /backend | Triage checked-div | **done** | Missing take_runtime_error() check; /int-owned |
+| /typecheck | Triage multi-sig batch | **done** | worker.rs issue, not typecheck; /int-owned |
+| /int | Triage watch | **done** | kqueue vs FSEvents on macOS |
+| /int | Triage persistence | **done** | repl_check_state not restored on error |
+| /int | Triage run-tests | **done** | Missing runtime function implementation |
 
-### Wave 3: Implementation (parallel by skill)
+### Wave 2: Arch Review of Triage Findings — COMPLETE
 
-| Skill | Task | Status | Notes |
-|-------|------|--------|-------|
-| /backend | Fix cache SIGSEGV root cause | pending | 12 tests |
-| /backend | Fix link failures | pending | 5 tests |
-| /backend | Fix trace codegen (if /backend-owned) | pending | up to 22 tests |
-| /backend | Fix checked-div (if /backend-owned) | pending | up to 3 tests |
-| /typecheck | Fix multi-sig batch path | pending | 3 tests |
-| /int | Fix file watching E2E | pending | 11 tests |
-| /int | Fix persistence import restart | pending | 1 test |
-| /int | Wire run-tests in v4 pipeline | pending | 1 test |
-| /int | Fix trace pipeline wiring (if /int-owned) | pending | shared |
-| /int | Fix checked-div panic handler (if /int-owned) | pending | shared |
-
-### Wave 4: Build/Test/Review (iterative)
+/arch reviewed sprint scope and approved. Triage findings embedded in skill plans above.
 
 | Skill | Task | Status | Notes |
 |-------|------|--------|-------|
-| /qa | Run full suite, validate 0 failures | pending | |
-| /qa | Update spec annotations for all fixed tests | pending | |
-| /review | Review all code changes from Wave 3 | pending | |
-| /backend | Address /review findings (B + I) | pending | |
-| /typecheck | Address /review findings (B + I) | pending | |
-| /int | Address /review findings (B + I) | pending | |
+| /arch | Review triage findings, confirm approaches | **done** | APPROVED; cache descope conditional |
 
-### Wave 5: Showcase
+### Wave 3: Design docs (sequential — each builds on prior decisions)
+
+Five design docs for the remaining 32 tests. Sequenced so decisions cascade correctly.
+
+| # | Skill | Design Doc | Scope | Status | Notes |
+|---|-------|-----------|-------|--------|-------|
+| 3a | /int + /backend | Codegen convergence | Delete `codegen_module_symbols`, route JIT through `compile_to_module` | pending | Fixes multi-sig (3 tests). Principle 11. Must land before link design. |
+| 3b | /backend + /arch | `"user"` special-casing removal + link startup | Audit all `"user"` special-casing, GOT-indirect startup stub | pending | Fixes link (5 tests). Depends on 3a (single codegen path). |
+| 3c | /int | Cache / nice_worker interaction | Investigate SIGSEGV root cause, document fix, restructure test helpers | pending | 12 tests. Depends on 3a (codegen convergence may affect nice worker path). |
+| 3d | /int + /qa | Watch test design + watcher status | Outcome-based tests, assess watcher implementation | pending | 11 tests. Independent but benefits from test helper patterns in 3c. |
+| 3e | /arch + /frontend + /backend | run-tests / discover-tests special forms | Separate testing from tracing, spec the codegen | pending | 1 test. Independent. Design doc revision. |
+
+### Wave 4: Arch review of design docs
 
 | Skill | Task | Status | Notes |
 |-------|------|--------|-------|
-| /repl | Create `repl/demos/ring4l.demo` | pending | |
-| /repl | Verify all prior demos play cleanly | pending | |
-| /port | Validate exemplar compiles and runs | pending | |
-| /examples | Verify all examples compile and run | pending | |
-| /stdlib | Validate stdlib compiles | pending | |
+| /arch | Review all 5 design docs for coherence | pending | |
+
+### Wave 5: Implementation (Tier 1 fixes + design doc implementations)
+
+Tier 1 fixes (26 tests) picked up here alongside Tier 2/3 implementations approved by /arch.
+
+| Skill | Task | Status | Notes |
+|-------|------|--------|-------|
+| /backend | Fix trace intrinsic signature (jit.rs) | pending | 22 tests |
+| /int | Fix checked-div: add runtime error check + rewrite tests | pending | 3 tests |
+| /int | Fix persistence: module resolution path ordering | pending | 1 test |
+| /int + /backend | Implement codegen convergence per design 3a | pending | 3 tests |
+| /backend | Implement link fix per design 3b | pending | 5 tests |
+| /int | Implement cache fix per design 3c | pending | 12 tests (if scope allows) |
+| /int + /qa | Implement watch per design 3d | pending | 11 tests (if scope allows) |
+| | run-tests per design 3e | pending | 1 test (likely deferred to S55) |
+
+### Wave 6: Build/Test/Review (iterative)
+
+| Skill | Task | Status | Notes |
+|-------|------|--------|-------|
+| /qa | Run full suite, validate fixes | pending | |
+| /qa | Update spec annotations | pending | |
+| /review | Review all code changes | pending | |
+
+### Wave 7: Showcase
+
+| Skill | Task | Status | Notes |
+|-------|------|--------|-------|
+| /repl | Create sprint demo | pending | |
+| /repl | Verify all prior demos | pending | |
+| /port | Validate exemplar | pending | |
 
 ## Notes
 
-{Runtime log: blockers encountered, scope changes, decisions made}
+**Wave 1 triage review — confirmed actions:**
+
+1. **Trace (22 tests)**: Add `has_return: bool` field to `IntrinsicSymbol` struct (jit.rs:69). Set correctly for each intrinsic in `intrinsic_symbols()`. Use in `declare_intrinsics_generic` instead of hardcoded `runtime/vec_drop` name check. Also fix `cranelisp_trace_enter` param_count from 3 to 4 (must match runtime signature). Owner: /backend.
+
+2. **Cache SIGSEGV (12 tests)**: Pipeline bug — `CompilerSession` with `nice_workers >= 1` SIGSEGVs on multi-module projects during fresh compile (before any cache loading). Test helper restructuring needed: collapse `compile_cached` → `batch_run_file_cached` → `ReplSession` into a thin helper that calls `CompilerSession` APIs directly. Fix the underlying pipeline bug in `src/session_v4.rs` or `src/worker.rs`. Owner: /int (pipeline), /qa (test helpers).
+
+   **Target test shape** (cache tests should read like this):
+   ```rust
+   let dir = project_from_sources(&[("main.cl", "..."), ("util.cl", "...")]);
+
+   // Fresh compile works
+   let r1 = run_entry(&dir, "main");
+   assert_eq!(r1, 42);
+
+   // Cache artifacts written
+   assert_cache_exists(&dir, "util");
+
+   // Cache-hit compile produces same result
+   let r2 = run_entry(&dir, "main");
+   assert_eq!(r2, 42);
+   ```
+   Where `run_entry` is one thin function: `CompilerSession::new(settings)` → `register_module()` → `trampoline()` with production-like settings (including `nice_workers: 1`). No `ReplSession` wrapper, no "batch" vs "cached" naming.
+
+3. **Watch E2E (11 tests)**: These tests were never implemented — Sprint 52 confirms file watching E2E was never completed. They've been failing since creation. Additionally, the test design is wrong: tests check for `[updated: mymod.cl]` notification strings on stdout (REPL chrome), not for the actual effect of file watching (recompilation). Correct tests should verify the *outcome* — that changed code produces different results:
+   ```rust
+   let dir = project_from_sources(&[("main.cl", "..."), ("helper.cl", "(defn val [] 42)")]);
+   let r1 = run_entry(&dir, "main");
+   assert_eq!(r1, 42);
+
+   // Modify source
+   write(dir.join("helper.cl"), "(defn val [] 99)");
+
+   // Re-run picks up change
+   let r2 = run_entry(&dir, "main");
+   assert_eq!(r2, 99);
+   ```
+   These need rewriting, not just fixing. Owner: /qa (test design), /int (watcher implementation if needed).
+
+6. **Checked division (3 tests)**: Two problems. (a) Solution: `compile_and_execute_expr` (pipeline.rs:129) doesn't check `take_runtime_error()` after JIT execution — `runtime_panic` stores the error in a thread-local and returns 0, but nobody reads it. Fix: add `take_runtime_error()` check after JIT call, return `Err` if set. (b) Test design: tests use `catch_unwind` expecting a Rust panic, but `runtime_panic` doesn't Rust-panic. Tests should assert `session.eval()` returns `Err` with the expected error message, not rely on `catch_unwind`. Owner: /int (pipeline.rs fix), /qa (rewrite tests).
+
+7. **Persistence (1 test)**: `persist_import_survives_restart` fails at session 1 — `(import [helper [helper-val]])` produces no output at all. REPL shows `0+0ms` (no prelude compilation time) then no results. Other tests using the same `run_repl_in_with_test_prelude` helper pass (e.g., `persist_defn_survives_restart`). The difference: the failing test imports a module from the temp dir while `CRANELISP_LIB` is set to `tests/fixtures/`. Module resolution may not search the working directory when `CRANELISP_LIB` is set. This is a solution bug in module resolution path ordering, not a test design issue. Owner: /int (module resolution in session_v4.rs).
+
+8. **run-tests (1 test)**: `can't resolve symbol run-test` — JIT linker can't find the function. Per spec (appendix-a §A.4, repl/spec.md §16), `discover-tests` and `run-test` are **special forms** returning IO values — not extern runtime functions. `(discover-tests [module])` → `:(IO (SList Sexp))` scans symbol tables for `test-*` functions. `(run-test name)` → `:(IO TestResult)` calls a function by name via GOT. `TestResult` ADT (`TestPass`/`TestFail`) is spec'd. Trace and test are independent, composable features (§16: "use `(trace (test-fn))` separately"). The `PrimitiveKind::Extern` declarations in builtins.rs are wrong — these need `Expr` variants and codegen, like `trace`. The design doc (`design/backend/auto-curry-and-run-tests.md` §R1) conflates testing with tracing and needs revision. Fix: (a) change builtins.rs from Extern to proper special form registration, (b) add `Expr::DiscoverTests`/`Expr::RunTest` variants, (c) implement codegen — `discover-tests` builds SList from symbol tables at compile time, `run-test` emits GOT-indirect call + TestResult construction. Owner: /frontend (AST), /backend (codegen), /int (wiring). Feature implementation — defer from Sprint 54.
+
+5. **Multi-sig batch (3 tests)**: `codegen_module_symbols` in worker.rs is a parallel JIT codegen path that duplicates `compile_to_module` in lib.rs. It misses multi-sig handling (panics on `defn.params()` for DefnMulti). The fix is NOT to add guards to worker.rs — it's to **delete `codegen_module_symbols` and route the JIT path through `compile_to_module`**, which is already generic over `M: Module` and handles multi-sig correctly. This is an Principle 11 (single pipeline) and Principle 7 (single source of truth) violation. Owner: /int (delete worker.rs codegen path), /backend (ensure `compile_to_module` covers JIT needs).
+
+4. **Link (5 tests)**: Startup stub imports bare `_main` but .o exports `hello/main` (module-qualified). Root cause is deeper: `compile_to_module` (lib.rs:88) special-cases `"user"` and `"main"` module names to skip JIT prefixing. This leaks CLI naming conventions into the backend — the backend shouldn't know or care what the module is called. The correct model: `generate_startup_object` calls `main` through the entry module's GOT (like any cross-module call), not via a bare symbol import. Fix: (a) remove `"user"`/`"main"` special-casing from `compile_to_module`, (b) rewrite startup stub to use GOT-indirect call to entry module's `main`, (c) grep for other `"user"` special-casing outside `parse_args` and eliminate. Owner: /backend (exe.rs, lib.rs), /arch (review the "user" special-casing audit).
+
+**Wave 1 findings (triage):**
+- Multi-sig ownership shifted: /typecheck → /int (bug is in worker.rs, not typecheck crate)
+- Checked-div ownership shifted: /backend → /int (bug is in pipeline.rs, not codegen)
+- Trace confirmed as single root cause — intrinsic signature mismatch, not pipeline issue
+- Cache SIGSEGVs may need descoping if architectural — /arch conditional approved
+- Watch failure is platform-specific (macOS kqueue), not watcher architecture
+- run-tests needs both /backend (implement runtime fns) and /int (wire into pipeline)
 
 ## Outcome
 
