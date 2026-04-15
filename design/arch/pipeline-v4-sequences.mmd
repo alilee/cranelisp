@@ -1,0 +1,58 @@
+sequenceDiagram
+    title Pipeline v4 — Batch Run Mode (§7)
+
+    participant Main
+    participant Session as CompilerSession
+    participant Sched as Scheduler
+    participant PW as Priority Worker
+    participant NW as Nice Worker
+    participant ST as SymbolTable<C,L>
+
+    Main->>Session: new(settings, project_root)
+    Main->>Session: spawn_priority_workers()
+    Main->>Session: spawn_nice_workers()
+    Main->>Session: register_module("entry")
+
+    Session->>Sched: register("entry") → TypecheckFirst
+
+    rect rgb(230, 245, 255)
+        note over PW,ST: Typecheck Phase
+        PW->>Sched: claim TypecheckFirst("entry")
+        loop each form in source order
+            PW->>PW: expand → build AST → typecheck
+            PW->>ST: write scheme, ast, got_slot, resolved calls
+            PW->>Sched: enqueue JIT(fqname)
+            PW->>Sched: notify_symbol_typechecked(fqname)
+        end
+        note over PW: import discovered → register_module("dep")
+        PW->>Sched: notify_typecheck_done("entry")
+        PW->>Sched: enqueue Object("entry")
+    end
+
+    rect rgb(230, 255, 230)
+        note over PW,ST: JIT Codegen Phase (§4.2)
+        PW->>Sched: claim JIT(fqname)
+        PW->>ST: read ast, scheme, resolved calls
+        PW->>PW: create fresh JITModule
+        PW->>PW: compile_to_module("entry", [fqname], symbol_tables, &mut jit)
+        PW->>PW: finalize JIT → code_ptr
+        PW->>ST: got.write_slot(slot, code_ptr)
+        PW->>ST: entry.code = Some(Code { jit, ptr })
+        PW->>Sched: notify_inmem_codegen_complete(fqname)
+    end
+
+    rect rgb(255, 245, 230)
+        note over NW,ST: Object Codegen Phase (§4.3)
+        NW->>Sched: claim Object("entry")
+        NW->>ST: read all compilable symbol names
+        NW->>NW: create ObjectModule
+        NW->>NW: compile_to_module("entry", all_names, symbol_tables, &mut obj)
+        NW->>NW: finalize → .o bytes
+        NW->>NW: write .o + .meta.json (serialized SymbolTable)
+        NW->>Sched: notify_object_complete("entry")
+    end
+
+    Main->>Sched: wait_inmem_complete()
+    Main->>Session: trampoline("entry") → execute main()
+    Main->>Sched: wait_object_complete()
+    Main->>Session: shutdown()
