@@ -1702,12 +1702,17 @@ fn sketch_platform_capture_reset_clears_state() {
 // Checked arithmetic tests
 // =============================================================================
 
-// spec: 12-runtime §12.7.3 — integer division by zero causes runtime panic
+// spec: 12-runtime §12.7.3 — integer division by zero causes runtime error
 #[test]
-#[should_panic(expected = "division by zero")]
 fn sketch_checked_division_by_zero_panics() {
-    let _result = compile_and_run_simple("(div-i64 10 0)");
-    unreachable!("div-i64 by zero should have panicked");
+    let mut session = repl_session();
+    let result = session.eval("(div-i64 10 0)");
+    let err = match result {
+        Err(e) => e,
+        Ok(_) => panic!("division by zero should return Err"),
+    };
+    let msg = err.to_string();
+    assert!(msg.contains("division by zero"), "error should mention division by zero, got: {msg}");
 }
 
 // =============================================================================

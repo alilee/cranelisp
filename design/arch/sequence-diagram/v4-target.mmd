@@ -1,0 +1,264 @@
+%% Pipeline v4 TARGET design — as described in pipeline-v4.md §1–§9.
+%% Differences from current implementation (3dadf5e) highlighted in
+%% coloured rect blocks:
+%%   rgb(255, 220, 180)  orange  = changed calling sequence / signature
+%%   rgb(180, 230, 255)  blue    = new capability (not yet implemented)
+%%   rgb(255, 200, 200)  red     = removed / eliminated from current impl
+%%
+%% Unchanged sequences use no background.
+
+sequenceDiagram
+    participant main as main.rs
+    participant session as CompilerSession
+    participant sched as CompileScheduler
+    participant worker as priority worker
+    participant nice as nice worker
+    participant expander as expander
+    participant fe as cranelisp-frontend
+    participant tc as cranelisp-typecheck
+    participant be as cranelisp-backend<br/>compile_to_module
+    participant jit as per-fn JIT
+    participant rt as cranelisp-runtime
+    participant plat as cranelisp-platform
+
+    Note over main,plat: STARTUP (unchanged)
+
+    main->>main: parse_args() → Action, project_root, entry_module, settings
+    main->>session: CompilerSession::new(settings, project_root)
+    activate session
+    session->>tc: register_builtins(symbol_tables, next_type_id)
+    session->>sched: CompileScheduler::new()
+
+    rect rgb(180, 230, 255)
+        Note over session,nice: v4: workers spawned as session-persistent threads (§5.2, §7)
+        session->>session: spawn_priority_workers(num_cpus)
+        session->>session: spawn_nice_workers(num_cpus)
+    end
+    deactivate session
+
+    Note over main,plat: MODULE REGISTRATION (unchanged)
+
+    main->>session: register_module(entry_module)
+    activate session
+    session->>fe: parse(source) → Vec‹Sexp›
+    session->>sched: register(entry_module, TypecheckFirst)
+    deactivate session
+
+    Note over main,plat: PRIORITY WORKER LOOP
+
+    activate worker
+    loop for each module (scheduler-driven)
+        worker->>sched: take_priority_work()
+
+        Note over worker,tc: Pass 0: imports, exports, mod, platform (unchanged)
+        worker->>worker: classify_form(sexp) → FormKind
+
+        opt FormKind::Import
+            worker->>fe: parse(dep_source)
+            worker->>sched: register(dep_module) or register_module_cached
+            Note right of worker: may Block → re-queued after dep
+        end
+
+        opt FormKind::Platform
+            worker->>plat: dlopen → get_platform_manifest()
+            rect rgb(255, 220, 180)
+                Note over worker,plat: v4: platform fn ptrs stored on ModuleEntry::Def<br/>in symbol_tables (§3.4, §9.1).<br/>Current: separate PlatformRegistry HashMap.
+                worker->>tc: symbol_tables[platform_mod].insert(Def { ptr, scheme })
+            end
+        end
+
+        Note over worker,tc: Pass 1: Register types, traits, signatures (unchanged)
+        loop for each form
+            worker->>fe: expand_quasiquotes(sexp)
+            worker->>fe: build AST from sexp → TopLevel
+            worker->>tc: check_form(form, Register, &mut CheckState) → FormCheckResult
+            worker->>worker: accumulator.merge(FormCheckResult)
+        end
+
+        Note over worker,tc: Pass 2: CheckBody — infer, resolve, monomorphise
+
+        loop for each form
+            opt defmacro
+                worker->>fe: parse_defmacro(sexp) → DefmacroInfo
+                worker->>tc: check_form(clause_defn, Register + CheckBody)
+                rect rgb(255, 220, 180)
+                    Note over worker,jit: v4: defmacro NOT compiled here.<br/>Compilation deferred to first use (§3.2 step 5).<br/>Current: immediately JIT-compiled.
+                end
+            end
+
+            worker->>expander: expand_macros(sexp, resolver)
+            activate expander
+
+            rect rgb(180, 230, 255)
+                Note over expander,jit: v4: if macro deps not compiled,<br/>block_for_macro_codegen (§3.2 step 1).<br/>Worker releases module, returns to ladder.<br/>Current: macros always pre-compiled before use.
+                expander->>sched: block_for_macro_codegen(needed_symbols)
+                sched-->>expander: unblocked (deps compiled by another worker)
+            end
+
+            expander->>rt: marshal args → call func_ptr → unmarshal
+            expander-->>worker: expanded Sexp
+            deactivate expander
+
+            worker->>fe: build AST → TopLevel
+
+            rect rgb(255, 220, 180)
+                Note over worker,tc: v4: typecheck writes types + resolved calls<br/>directly onto AST nodes (§9.1).<br/>Current: writes to HashMap‹Span, Type› and<br/>HashMap‹Span, ResolvedCall› side maps.
+                worker->>tc: check_form(form, CheckBody) → FormCheckResult
+                tc->>tc: annotate AST nodes with Type, ResolvedCall
+                tc->>tc: write ast + scheme + callees to ModuleEntry::Def
+            end
+
+            rect rgb(255, 220, 180)
+                Note over worker,sched: v4: per-symbol notification (§3.2 step 4).<br/>Current: only notify_typecheck_done per module.
+                worker->>sched: notify_symbol_typechecked(module, symbol)
+                Note right of sched: may unblock other modules<br/>or trigger priority JIT codegen
+            end
+        end
+
+        rect rgb(255, 200, 200)
+            Note over worker,jit: REMOVED in v4: batch codegen_module_symbols sweep.<br/>Current: after all forms typechecked, batch JIT<br/>compiles every defn in the module sequentially.
+        end
+
+        worker->>sched: notify_typecheck_done(module)
+        Note right of sched: enqueues symbols onto JIT queue
+    end
+
+    Note over worker,jit: PER-SYMBOL JIT CODEGEN (scheduler-driven)
+
+    rect rgb(255, 220, 180)
+        Note over worker,jit: v4: workers claim individual symbols from JIT queue (§4.2).<br/>Current: batch codegen_module_symbols after typecheck.
+
+        loop scheduler assigns symbols to workers
+            worker->>sched: take_priority_work() → JitCodegen(module, symbol)
+
+            worker->>be: compile_to_module(module, &[symbol], symbol_tables, &mut jit_module)
+            activate be
+            Note over be,jit: v4 signature: reads AST body, scheme, resolved<br/>calls from symbol_tables[module].symbols[name].<br/>Current: takes program: &Program, check: &CheckResult.
+            be->>be: FnCompiler compile body from ModuleEntry.ast
+            be->>be: resolve GOT cross-refs from symbol_tables
+            be-->>worker: CompilationResult
+            deactivate be
+
+            worker->>jit: finalize → code_ptr
+
+            rect rgb(255, 220, 180)
+                Note over worker,jit: v4: code stored on ModuleEntry::Def.code (§9.4).<br/>Current: stored in separate CodegenProduct DashMap.
+                worker->>tc: symbol_tables[module].symbols[name].code = Some(Code { jit, ptr })
+            end
+
+            worker->>worker: GOT atomic store(slot, code_ptr)
+            worker->>sched: notify_priority_codegen_complete(symbol)
+        end
+    end
+
+    deactivate worker
+
+    Note over nice,plat: NICE WORKER — object codegen (largely unchanged)
+
+    activate nice
+
+    loop for each TypecheckDone module
+        nice->>sched: take_object_codegen() → module
+
+        rect rgb(255, 220, 180)
+            Note over nice,be: v4: compile_to_module reads from symbol_tables only (§9.3).<br/>Current: reads stashed CheckResult + Program from codegen_inputs.
+            nice->>be: compile_to_module(module, all_names, symbol_tables, &mut ObjectModule)
+        end
+
+        activate be
+        be->>be: compile all defns (reads AST from ModuleEntry.ast)
+        be-->>nice: CompilationResult
+        deactivate be
+        nice->>nice: write .o + .meta.json
+        nice->>sched: notify_object_codegen_complete(module)
+    end
+    deactivate nice
+
+    Note over main,plat: MODE DISPATCH
+
+    alt Run mode (unchanged)
+        main->>session: wait_inmem_complete()
+        main->>session: trampoline(entry_module)
+        session->>rt: call compiled main() → i64
+        rt->>rt: cranelisp_run_io(task_ptr) for IO
+        main->>session: wait_object_complete()
+        main->>main: process::exit(exit_code)
+
+    else Link mode (unchanged)
+        main->>session: wait_object_complete()
+        main->>session: link(entry_module)
+        session->>session: collect .o paths → invoke system linker
+
+    else REPL mode
+        main->>session: wait_inmem_complete()
+        main->>session: init_watcher()
+
+        loop for each user input
+            main->>session: process_commands(input) → CommandResult
+
+            alt CommandResult::Compile(src)
+                main->>session: eval(source)
+                activate session
+                session->>fe: parse(source) → Vec‹Sexp›
+
+                loop for each sexp
+                    session->>worker: process_module_forms(Additive, &[sexp])
+                    Note right of worker: same 2-pass pipeline, Additive strategy
+
+                    opt trailing expression
+                        rect rgb(180, 230, 255)
+                            Note over session,jit: v4: expression compiled as temporary closure<br/>on persistent eval JIT (§6.2 steps 3-6).<br/>Current: fresh Jit per expression in<br/>compile_and_execute_expr.
+
+                            session->>session: walk closure call graph for uncompiled deps
+                            session->>sched: submit deps as BlockingJitCodegen
+                            sched-->>session: deps compiled (notified)
+
+                            session->>jit: compile closure on persistent eval JIT
+                            session->>jit: call closure → (i64 value, Type)
+                            Note right of jit: eval JIT reused across evals,<br/>old closure code discardable
+                        end
+                    end
+                end
+
+                session-->>main: Ok(Some(EvalResult))
+                deactivate session
+                main->>session: format_eval_result(result)
+                session->>be: display::format_result_value(value, type)
+            end
+
+            main->>session: sync_watcher()
+            Note right of session: register newly-loaded source<br/>files with FileWatcher
+
+            main->>session: poll_and_reload()
+            activate session
+            session->>session: watcher.poll_changes() → changed .cl paths
+            Note right of session: content-hash comparison<br/>skips metadata-only events
+
+            opt changed files detected
+                session->>session: map file paths → module paths
+
+                loop cascade invalidation (§6.3)
+                    session->>session: find modules importing changed modules
+                    session->>session: add dependents to reload list
+                end
+
+                rect rgb(255, 220, 180)
+                    Note over session,worker: v4: re-register with Replace strategy (§6.3).<br/>Workers re-typecheck, GOT updated with new code ptrs.<br/>Current: spawns scoped reload-worker threads,<br/>removes stale products manually.
+                    loop for each module to reload
+                        session->>sched: register_module(module, Replace)
+                        Note right of sched: persistent workers pick it up<br/>from priority ladder
+                        worker->>fe: parse(new_source)
+                        worker->>worker: full pipeline (Replace strategy)
+                        worker->>worker: GOT atomic store (new code ptrs)
+                        worker->>sched: notify_typecheck_done(module)
+                    end
+                end
+
+                session-->>main: "[updated: file.cl]" or "[errors: file.cl]"
+            end
+            deactivate session
+        end
+    end
+
+    main->>session: shutdown()
+    session->>session: join all worker threads

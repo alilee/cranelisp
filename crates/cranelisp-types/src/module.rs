@@ -3,8 +3,8 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 use crate::{
-    ConstructorInfo, Defn, FQSymbol, FQTraitName, FQTypeName, ModuleFullPath, ModuleName, Scheme,
-    Sexp, Span, Symbol, TraitDecl, TraitName, Type, TypeDefInfo, TypeName, Visibility,
+    ConstructorInfo, Defn, FQSymbol, FQTraitName, FQTypeName, ModuleFullPath, ModuleName,
+    Scheme, Sexp, Span, Symbol, TraitDecl, TraitName, Type, TypeDefInfo, TypeName, Visibility,
 };
 
 // --- Symbol Table ---
@@ -19,7 +19,6 @@ pub struct SymbolTable {
     /// Module-local: slot 0, 1, 2... independently per module.
     #[serde(default)]
     pub next_got_slot: usize,
-    pub got_table: GOT_TABLE,
 }
 
 impl SymbolTable {
@@ -188,7 +187,9 @@ pub enum DefKind {
         constrained_fn: Option<Box<ConstrainedFn>>,
     },
     /// Multi-sig overloaded function base name (Ring 2).
-    Overloaded { variants: Vec<OverloadVariant> },
+    Overloaded {
+        variants: Vec<OverloadVariant>,
+    },
 }
 
 /// Classification of primitive functions.

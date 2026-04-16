@@ -75,6 +75,8 @@ pub struct IntrinsicSymbol {
     pub param_count: usize,
     /// Whether this is a runtime-internal function (true) or user-visible primitive (false).
     pub is_runtime: bool,
+    /// Whether the function returns an i64 value (false = void).
+    pub has_return: bool,
 }
 
 /// Return the authoritative list of all runtime and primitive intrinsic symbols.
@@ -88,73 +90,73 @@ pub struct IntrinsicSymbol {
 pub fn intrinsic_symbols() -> Vec<IntrinsicSymbol> {
     vec![
         // Runtime infrastructure (internal, not user-callable)
-        IntrinsicSymbol { name: "runtime/alloc", ptr: cranelisp_runtime::heap_alloc as *const u8, param_count: 1, is_runtime: true },
-        IntrinsicSymbol { name: "runtime/dealloc", ptr: cranelisp_runtime::heap_dealloc as *const u8, param_count: 1, is_runtime: true },
-        IntrinsicSymbol { name: "runtime/panic", ptr: cranelisp_runtime::runtime_panic as *const u8, param_count: 2, is_runtime: true },
-        IntrinsicSymbol { name: "runtime/rc_underflow_check", ptr: cranelisp_runtime::rc_underflow_check as *const u8, param_count: 1, is_runtime: true },
-        IntrinsicSymbol { name: "runtime/alloc_string", ptr: cranelisp_runtime::heap_alloc_string as *const u8, param_count: 2, is_runtime: true },
-        IntrinsicSymbol { name: "runtime/string_read", ptr: cranelisp_runtime::string_read as *const u8, param_count: 1, is_runtime: true },
-        IntrinsicSymbol { name: "runtime/vec_new", ptr: cranelisp_runtime::vec_new as *const u8, param_count: 1, is_runtime: true },
-        IntrinsicSymbol { name: "runtime/vec_drop", ptr: cranelisp_runtime::vec_drop as *const u8, param_count: 2, is_runtime: true },
-        IntrinsicSymbol { name: "runtime/run_io", ptr: cranelisp_runtime::cranelisp_run_io as *const u8, param_count: 1, is_runtime: true },
+        IntrinsicSymbol { name: "runtime/alloc", ptr: cranelisp_runtime::heap_alloc as *const u8, param_count: 1, is_runtime: true, has_return: true },
+        IntrinsicSymbol { name: "runtime/dealloc", ptr: cranelisp_runtime::heap_dealloc as *const u8, param_count: 1, is_runtime: true, has_return: true },
+        IntrinsicSymbol { name: "runtime/panic", ptr: cranelisp_runtime::runtime_panic as *const u8, param_count: 2, is_runtime: true, has_return: true },
+        IntrinsicSymbol { name: "runtime/rc_underflow_check", ptr: cranelisp_runtime::rc_underflow_check as *const u8, param_count: 1, is_runtime: true, has_return: true },
+        IntrinsicSymbol { name: "runtime/alloc_string", ptr: cranelisp_runtime::heap_alloc_string as *const u8, param_count: 2, is_runtime: true, has_return: true },
+        IntrinsicSymbol { name: "runtime/string_read", ptr: cranelisp_runtime::string_read as *const u8, param_count: 1, is_runtime: true, has_return: true },
+        IntrinsicSymbol { name: "runtime/vec_new", ptr: cranelisp_runtime::vec_new as *const u8, param_count: 1, is_runtime: true, has_return: true },
+        IntrinsicSymbol { name: "runtime/vec_drop", ptr: cranelisp_runtime::vec_drop as *const u8, param_count: 2, is_runtime: true, has_return: false },
+        IntrinsicSymbol { name: "runtime/run_io", ptr: cranelisp_runtime::cranelisp_run_io as *const u8, param_count: 1, is_runtime: true, has_return: true },
         // IVar intrinsics for lenient evaluation
-        IntrinsicSymbol { name: "cranelisp_ivar_create", ptr: cranelisp_runtime::ivar_create as *const u8, param_count: 1, is_runtime: true },
-        IntrinsicSymbol { name: "cranelisp_ivar_spark", ptr: cranelisp_runtime::ivar_spark as *const u8, param_count: 1, is_runtime: true },
-        IntrinsicSymbol { name: "cranelisp_ivar_force", ptr: cranelisp_runtime::ivar_force as *const u8, param_count: 1, is_runtime: true },
+        IntrinsicSymbol { name: "cranelisp_ivar_create", ptr: cranelisp_runtime::ivar_create as *const u8, param_count: 1, is_runtime: true, has_return: true },
+        IntrinsicSymbol { name: "cranelisp_ivar_spark", ptr: cranelisp_runtime::ivar_spark as *const u8, param_count: 1, is_runtime: true, has_return: true },
+        IntrinsicSymbol { name: "cranelisp_ivar_force", ptr: cranelisp_runtime::ivar_force as *const u8, param_count: 1, is_runtime: true, has_return: true },
         // Trace runtime symbols
-        IntrinsicSymbol { name: "cranelisp_trace_enter", ptr: cranelisp_runtime::cranelisp_trace_enter as *const u8, param_count: 3, is_runtime: true },
-        IntrinsicSymbol { name: "cranelisp_trace_exit", ptr: cranelisp_runtime::cranelisp_trace_exit as *const u8, param_count: 2, is_runtime: true },
-        IntrinsicSymbol { name: "cranelisp_trace_swap_got", ptr: cranelisp_runtime::cranelisp_trace_swap_got as *const u8, param_count: 4, is_runtime: true },
-        IntrinsicSymbol { name: "cranelisp_trace_restore_got", ptr: cranelisp_runtime::cranelisp_trace_restore_got as *const u8, param_count: 2, is_runtime: true },
-        IntrinsicSymbol { name: "cranelisp_collect_trace", ptr: cranelisp_runtime::cranelisp_collect_trace as *const u8, param_count: 0, is_runtime: true },
-        IntrinsicSymbol { name: "cranelisp_trace_first_child_nanos", ptr: cranelisp_runtime::cranelisp_trace_first_child_nanos as *const u8, param_count: 1, is_runtime: true },
-        IntrinsicSymbol { name: "cranelisp_trace_format", ptr: cranelisp_runtime::cranelisp_trace_format as *const u8, param_count: 2, is_runtime: true },
+        IntrinsicSymbol { name: "cranelisp_trace_enter", ptr: cranelisp_runtime::cranelisp_trace_enter as *const u8, param_count: 4, is_runtime: true, has_return: false },
+        IntrinsicSymbol { name: "cranelisp_trace_exit", ptr: cranelisp_runtime::cranelisp_trace_exit as *const u8, param_count: 2, is_runtime: true, has_return: true },
+        IntrinsicSymbol { name: "cranelisp_trace_swap_got", ptr: cranelisp_runtime::cranelisp_trace_swap_got as *const u8, param_count: 4, is_runtime: true, has_return: true },
+        IntrinsicSymbol { name: "cranelisp_trace_restore_got", ptr: cranelisp_runtime::cranelisp_trace_restore_got as *const u8, param_count: 2, is_runtime: true, has_return: false },
+        IntrinsicSymbol { name: "cranelisp_collect_trace", ptr: cranelisp_runtime::cranelisp_collect_trace as *const u8, param_count: 0, is_runtime: true, has_return: true },
+        IntrinsicSymbol { name: "cranelisp_trace_first_child_nanos", ptr: cranelisp_runtime::cranelisp_trace_first_child_nanos as *const u8, param_count: 1, is_runtime: true, has_return: true },
+        IntrinsicSymbol { name: "cranelisp_trace_format", ptr: cranelisp_runtime::cranelisp_trace_format as *const u8, param_count: 2, is_runtime: true, has_return: true },
         // Trace ADT field accessors
-        IntrinsicSymbol { name: "cranelisp_trace_name", ptr: cranelisp_runtime::cranelisp_trace_name as *const u8, param_count: 1, is_runtime: true },
-        IntrinsicSymbol { name: "cranelisp_trace_params", ptr: cranelisp_runtime::cranelisp_trace_params as *const u8, param_count: 1, is_runtime: true },
-        IntrinsicSymbol { name: "cranelisp_trace_result", ptr: cranelisp_runtime::cranelisp_trace_result as *const u8, param_count: 1, is_runtime: true },
-        IntrinsicSymbol { name: "cranelisp_trace_children", ptr: cranelisp_runtime::cranelisp_trace_children as *const u8, param_count: 1, is_runtime: true },
-        IntrinsicSymbol { name: "cranelisp_trace_nanos", ptr: cranelisp_runtime::cranelisp_trace_nanos as *const u8, param_count: 1, is_runtime: true },
+        IntrinsicSymbol { name: "cranelisp_trace_name", ptr: cranelisp_runtime::cranelisp_trace_name as *const u8, param_count: 1, is_runtime: true, has_return: true },
+        IntrinsicSymbol { name: "cranelisp_trace_params", ptr: cranelisp_runtime::cranelisp_trace_params as *const u8, param_count: 1, is_runtime: true, has_return: true },
+        IntrinsicSymbol { name: "cranelisp_trace_result", ptr: cranelisp_runtime::cranelisp_trace_result as *const u8, param_count: 1, is_runtime: true, has_return: true },
+        IntrinsicSymbol { name: "cranelisp_trace_children", ptr: cranelisp_runtime::cranelisp_trace_children as *const u8, param_count: 1, is_runtime: true, has_return: true },
+        IntrinsicSymbol { name: "cranelisp_trace_nanos", ptr: cranelisp_runtime::cranelisp_trace_nanos as *const u8, param_count: 1, is_runtime: true, has_return: true },
         // Vec extern primitives (user-visible and internal)
-        IntrinsicSymbol { name: "vec-len", ptr: cranelisp_runtime::vec_len as *const u8, param_count: 1, is_runtime: false },
-        IntrinsicSymbol { name: "vec-set-copy", ptr: cranelisp_runtime::vec_set_copy as *const u8, param_count: 4, is_runtime: false },
-        IntrinsicSymbol { name: "vec-push-copy", ptr: cranelisp_runtime::vec_push_copy as *const u8, param_count: 3, is_runtime: false },
-        IntrinsicSymbol { name: "vec-push-grow", ptr: cranelisp_runtime::vec_push_grow as *const u8, param_count: 2, is_runtime: false },
+        IntrinsicSymbol { name: "vec-len", ptr: cranelisp_runtime::vec_len as *const u8, param_count: 1, is_runtime: false, has_return: true },
+        IntrinsicSymbol { name: "vec-set-copy", ptr: cranelisp_runtime::vec_set_copy as *const u8, param_count: 4, is_runtime: false, has_return: true },
+        IntrinsicSymbol { name: "vec-push-copy", ptr: cranelisp_runtime::vec_push_copy as *const u8, param_count: 3, is_runtime: false, has_return: true },
+        IntrinsicSymbol { name: "vec-push-grow", ptr: cranelisp_runtime::vec_push_grow as *const u8, param_count: 2, is_runtime: false, has_return: true },
         // Extern primitives (user-visible via primitives module)
-        IntrinsicSymbol { name: "str-concat", ptr: cranelisp_runtime::str_concat as *const u8, param_count: 2, is_runtime: false },
-        IntrinsicSymbol { name: "str-eq", ptr: cranelisp_runtime::str_eq as *const u8, param_count: 2, is_runtime: false },
-        IntrinsicSymbol { name: "str-len", ptr: cranelisp_runtime::str_len as *const u8, param_count: 1, is_runtime: false },
-        IntrinsicSymbol { name: "string-identity", ptr: cranelisp_runtime::string_identity as *const u8, param_count: 1, is_runtime: false },
-        IntrinsicSymbol { name: "int-to-string", ptr: cranelisp_runtime::int_to_string as *const u8, param_count: 1, is_runtime: false },
-        IntrinsicSymbol { name: "float-to-string", ptr: cranelisp_runtime::float_to_string as *const u8, param_count: 1, is_runtime: false },
-        IntrinsicSymbol { name: "bool-to-string", ptr: cranelisp_runtime::bool_to_string as *const u8, param_count: 1, is_runtime: false },
-        IntrinsicSymbol { name: "parse-int", ptr: cranelisp_runtime::parse_int as *const u8, param_count: 1, is_runtime: false },
+        IntrinsicSymbol { name: "str-concat", ptr: cranelisp_runtime::str_concat as *const u8, param_count: 2, is_runtime: false, has_return: true },
+        IntrinsicSymbol { name: "str-eq", ptr: cranelisp_runtime::str_eq as *const u8, param_count: 2, is_runtime: false, has_return: true },
+        IntrinsicSymbol { name: "str-len", ptr: cranelisp_runtime::str_len as *const u8, param_count: 1, is_runtime: false, has_return: true },
+        IntrinsicSymbol { name: "string-identity", ptr: cranelisp_runtime::string_identity as *const u8, param_count: 1, is_runtime: false, has_return: true },
+        IntrinsicSymbol { name: "int-to-string", ptr: cranelisp_runtime::int_to_string as *const u8, param_count: 1, is_runtime: false, has_return: true },
+        IntrinsicSymbol { name: "float-to-string", ptr: cranelisp_runtime::float_to_string as *const u8, param_count: 1, is_runtime: false, has_return: true },
+        IntrinsicSymbol { name: "bool-to-string", ptr: cranelisp_runtime::bool_to_string as *const u8, param_count: 1, is_runtime: false, has_return: true },
+        IntrinsicSymbol { name: "parse-int", ptr: cranelisp_runtime::parse_int as *const u8, param_count: 1, is_runtime: false, has_return: true },
         // Extended string primitives
-        IntrinsicSymbol { name: "substring", ptr: cranelisp_runtime::str_substring as *const u8, param_count: 3, is_runtime: false },
-        IntrinsicSymbol { name: "char-at", ptr: cranelisp_runtime::str_char_at as *const u8, param_count: 2, is_runtime: false },
-        IntrinsicSymbol { name: "split", ptr: cranelisp_runtime::str_split as *const u8, param_count: 2, is_runtime: false },
-        IntrinsicSymbol { name: "join", ptr: cranelisp_runtime::str_join as *const u8, param_count: 2, is_runtime: false },
-        IntrinsicSymbol { name: "replace", ptr: cranelisp_runtime::str_replace as *const u8, param_count: 3, is_runtime: false },
-        IntrinsicSymbol { name: "trim", ptr: cranelisp_runtime::str_trim as *const u8, param_count: 1, is_runtime: false },
-        IntrinsicSymbol { name: "starts-with?", ptr: cranelisp_runtime::str_starts_with as *const u8, param_count: 2, is_runtime: false },
-        IntrinsicSymbol { name: "ends-with?", ptr: cranelisp_runtime::str_ends_with as *const u8, param_count: 2, is_runtime: false },
-        IntrinsicSymbol { name: "contains?", ptr: cranelisp_runtime::str_contains as *const u8, param_count: 2, is_runtime: false },
-        IntrinsicSymbol { name: "to-upper", ptr: cranelisp_runtime::str_to_upper as *const u8, param_count: 1, is_runtime: false },
-        IntrinsicSymbol { name: "to-lower", ptr: cranelisp_runtime::str_to_lower as *const u8, param_count: 1, is_runtime: false },
+        IntrinsicSymbol { name: "substring", ptr: cranelisp_runtime::str_substring as *const u8, param_count: 3, is_runtime: false, has_return: true },
+        IntrinsicSymbol { name: "char-at", ptr: cranelisp_runtime::str_char_at as *const u8, param_count: 2, is_runtime: false, has_return: true },
+        IntrinsicSymbol { name: "split", ptr: cranelisp_runtime::str_split as *const u8, param_count: 2, is_runtime: false, has_return: true },
+        IntrinsicSymbol { name: "join", ptr: cranelisp_runtime::str_join as *const u8, param_count: 2, is_runtime: false, has_return: true },
+        IntrinsicSymbol { name: "replace", ptr: cranelisp_runtime::str_replace as *const u8, param_count: 3, is_runtime: false, has_return: true },
+        IntrinsicSymbol { name: "trim", ptr: cranelisp_runtime::str_trim as *const u8, param_count: 1, is_runtime: false, has_return: true },
+        IntrinsicSymbol { name: "starts-with?", ptr: cranelisp_runtime::str_starts_with as *const u8, param_count: 2, is_runtime: false, has_return: true },
+        IntrinsicSymbol { name: "ends-with?", ptr: cranelisp_runtime::str_ends_with as *const u8, param_count: 2, is_runtime: false, has_return: true },
+        IntrinsicSymbol { name: "contains?", ptr: cranelisp_runtime::str_contains as *const u8, param_count: 2, is_runtime: false, has_return: true },
+        IntrinsicSymbol { name: "to-upper", ptr: cranelisp_runtime::str_to_upper as *const u8, param_count: 1, is_runtime: false, has_return: true },
+        IntrinsicSymbol { name: "to-lower", ptr: cranelisp_runtime::str_to_lower as *const u8, param_count: 1, is_runtime: false, has_return: true },
         // Marshal primitives (macros module + primitives module)
-        IntrinsicSymbol { name: "sconcat", ptr: cranelisp_runtime::sconcat as *const u8, param_count: 2, is_runtime: false },
-        IntrinsicSymbol { name: "quote-sexp", ptr: cranelisp_runtime::quote_sexp as *const u8, param_count: 1, is_runtime: false },
+        IntrinsicSymbol { name: "sconcat", ptr: cranelisp_runtime::sconcat as *const u8, param_count: 2, is_runtime: false, has_return: true },
+        IntrinsicSymbol { name: "quote-sexp", ptr: cranelisp_runtime::quote_sexp as *const u8, param_count: 1, is_runtime: false, has_return: true },
         // Operator wrapper functions (for trait methods as first-class values, spec §7.6)
-        IntrinsicSymbol { name: "cranelisp_op_add", ptr: cranelisp_runtime::cranelisp_op_add as *const u8, param_count: 2, is_runtime: true },
-        IntrinsicSymbol { name: "cranelisp_op_sub", ptr: cranelisp_runtime::cranelisp_op_sub as *const u8, param_count: 2, is_runtime: true },
-        IntrinsicSymbol { name: "cranelisp_op_mul", ptr: cranelisp_runtime::cranelisp_op_mul as *const u8, param_count: 2, is_runtime: true },
-        IntrinsicSymbol { name: "cranelisp_op_div", ptr: cranelisp_runtime::cranelisp_op_div as *const u8, param_count: 2, is_runtime: true },
-        IntrinsicSymbol { name: "cranelisp_op_eq", ptr: cranelisp_runtime::cranelisp_op_eq as *const u8, param_count: 2, is_runtime: true },
-        IntrinsicSymbol { name: "cranelisp_op_neq", ptr: cranelisp_runtime::cranelisp_op_neq as *const u8, param_count: 2, is_runtime: true },
-        IntrinsicSymbol { name: "cranelisp_op_lt", ptr: cranelisp_runtime::cranelisp_op_lt as *const u8, param_count: 2, is_runtime: true },
-        IntrinsicSymbol { name: "cranelisp_op_gt", ptr: cranelisp_runtime::cranelisp_op_gt as *const u8, param_count: 2, is_runtime: true },
-        IntrinsicSymbol { name: "cranelisp_op_le", ptr: cranelisp_runtime::cranelisp_op_le as *const u8, param_count: 2, is_runtime: true },
-        IntrinsicSymbol { name: "cranelisp_op_ge", ptr: cranelisp_runtime::cranelisp_op_ge as *const u8, param_count: 2, is_runtime: true },
+        IntrinsicSymbol { name: "cranelisp_op_add", ptr: cranelisp_runtime::cranelisp_op_add as *const u8, param_count: 2, is_runtime: true, has_return: true },
+        IntrinsicSymbol { name: "cranelisp_op_sub", ptr: cranelisp_runtime::cranelisp_op_sub as *const u8, param_count: 2, is_runtime: true, has_return: true },
+        IntrinsicSymbol { name: "cranelisp_op_mul", ptr: cranelisp_runtime::cranelisp_op_mul as *const u8, param_count: 2, is_runtime: true, has_return: true },
+        IntrinsicSymbol { name: "cranelisp_op_div", ptr: cranelisp_runtime::cranelisp_op_div as *const u8, param_count: 2, is_runtime: true, has_return: true },
+        IntrinsicSymbol { name: "cranelisp_op_eq", ptr: cranelisp_runtime::cranelisp_op_eq as *const u8, param_count: 2, is_runtime: true, has_return: true },
+        IntrinsicSymbol { name: "cranelisp_op_neq", ptr: cranelisp_runtime::cranelisp_op_neq as *const u8, param_count: 2, is_runtime: true, has_return: true },
+        IntrinsicSymbol { name: "cranelisp_op_lt", ptr: cranelisp_runtime::cranelisp_op_lt as *const u8, param_count: 2, is_runtime: true, has_return: true },
+        IntrinsicSymbol { name: "cranelisp_op_gt", ptr: cranelisp_runtime::cranelisp_op_gt as *const u8, param_count: 2, is_runtime: true, has_return: true },
+        IntrinsicSymbol { name: "cranelisp_op_le", ptr: cranelisp_runtime::cranelisp_op_le as *const u8, param_count: 2, is_runtime: true, has_return: true },
+        IntrinsicSymbol { name: "cranelisp_op_ge", ptr: cranelisp_runtime::cranelisp_op_ge as *const u8, param_count: 2, is_runtime: true, has_return: true },
     ]
 }
 
@@ -612,9 +614,7 @@ pub fn declare_intrinsics_generic<M: Module>(
         for _ in 0..sym.param_count {
             sig.params.push(AbiParam::new(types::I64));
         }
-        // Special case: runtime/vec_drop returns void.
-        // runtime/panic returns i64 for Cranelift compatibility (never actually returns).
-        if sym.name != "runtime/vec_drop" {
+        if sym.has_return {
             sig.returns.push(AbiParam::new(types::I64));
         }
 

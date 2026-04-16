@@ -1768,10 +1768,11 @@ impl CompilerSession {
             shared_state: Some(&self.shared),
         };
 
-        crate::worker::priority_worker_loop(&mut ctx, &mut module_sexps)?;
-        // Restore REPL check_state.
+        let worker_result = crate::worker::priority_worker_loop(&mut ctx, &mut module_sexps);
+        // Restore REPL check_state before propagating errors.
         *self.shared.repl_check_state.lock()
             .unwrap_or_else(|e| e.into_inner()) = Some(ctx.check_state);
+        worker_result?;
 
         match self.shared.scheduler.wait_inmem_complete() {
             Ok(()) => Ok(()),
@@ -2719,6 +2720,16 @@ impl CompilerSession {
                 (String::new(), default_path)
             }
         };
+
+        // Register the entry module's own file in file_to_module so the
+        // file watcher can detect changes to it (not just its dependencies).
+        if let Ok(canonical) = entry_path.canonicalize() {
+            self.shared.file_to_module
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .insert(canonical, module);
+        }
+
         self.register_module_with_source(module_name, &source, &entry_path)
     }
 
@@ -2767,10 +2778,20 @@ impl CompilerSession {
         let platform_rlib_paths =
             crate::exe::find_platform_rlibs();
 
+        // Compute the qualified entry function name. compile_to_module
+        // prefixes function names with "module/" for modules not named
+        // "user" or "main" (see lib.rs jit_prefix logic).
+        let entry_fn_name = if module_name == "user" || module_name == "main" {
+            "main".to_string()
+        } else {
+            format!("{module_name}/main")
+        };
+
         // Generate startup .o stub.
         let startup_bytes = crate::exe::generate_startup_object(
             &platform_manifest_names,
             main_returns_io,
+            &entry_fn_name,
         )?;
 
         let cache_dir = self.shared.cache_dir.as_ref().ok_or_else(|| {

@@ -55,20 +55,25 @@ impl FileWatcher {
     /// detection — many editors save via atomic rename which would lose
     /// file-level watches.
     ///
-    /// Also records the initial content hash so that subsequent changes can
-    /// be compared against it.
+    /// Records the initial content hash only on first encounter. Subsequent
+    /// calls for the same file skip the hash update to avoid racing with
+    /// `poll_changes` — if `sync_watcher` re-reads a file that was modified
+    /// externally, it would silently overwrite the stored hash, making the
+    /// change invisible to the next poll.
     pub fn watch_file(&mut self, path: &Path) {
         let dir = match path.parent() {
             Some(d) if !d.as_os_str().is_empty() => d,
             _ => return,
         };
 
-        // Record the initial content hash if we can read the file.
-        if let Ok(canonical) = path.canonicalize()
-            && let Ok(content) = std::fs::read_to_string(&canonical)
-        {
-            let hash = cranelisp_backend::cache::hash_source(&content);
-            self.content_hashes.insert(canonical, hash);
+        // Record the initial content hash only if we haven't seen this file yet.
+        if let Ok(canonical) = path.canonicalize() {
+            if !self.content_hashes.contains_key(&canonical) {
+                if let Ok(content) = std::fs::read_to_string(&canonical) {
+                    let hash = cranelisp_backend::cache::hash_source(&content);
+                    self.content_hashes.insert(canonical, hash);
+                }
+            }
         }
 
         if self.watched_dirs.contains(dir) {

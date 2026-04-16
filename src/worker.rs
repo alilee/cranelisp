@@ -2172,6 +2172,17 @@ fn inject_prelude_if_needed(
                 }
             }
 
+            // Populate file_to_module mapping for file watcher.
+            if let Some(shared) = ctx.shared_state {
+                if let Ok(canonical) = prelude_file.canonicalize() {
+                    shared
+                        .file_to_module
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .insert(canonical, prelude_path.clone());
+                }
+            }
+
             ctx.scheduler.register_module(prelude_path.clone(), true);
             ctx.scheduler.block_for_typecheck(
                 module,
@@ -2473,6 +2484,9 @@ fn pre_register_got_slots_in_tc(
     for tl in program {
         match tl {
             TopLevel::Defn(defn) => {
+                if defn.is_multi_sig() {
+                    continue;
+                }
                 if check.constrained_fn_names.contains(&defn.name) {
                     continue;
                 }
@@ -2553,6 +2567,9 @@ fn compile_regular_defns(
     for tl in program {
         match tl {
             TopLevel::Defn(defn) => {
+                if defn.is_multi_sig() {
+                    continue;
+                }
                 if check.constrained_fn_names.contains(&defn.name) {
                     continue;
                 }
@@ -2765,13 +2782,15 @@ pub fn priority_worker_loop(
                     .unwrap_or(0);
 
                 // Clone sexps (don't remove — needed on resume).
-                let sexps = module_sexps.get(&module)
-                    .ok_or_else(|| CranelispError::ModuleError {
-                        message: format!("no parsed sexps for module '{}'", module),
-                        file: None,
-                        span: Span::SYNTHETIC,
-                    })?
-                    .clone();
+                // If no sexps are available for this module, skip it —
+                // the module may be managed externally (e.g., REPL driving
+                // the user module directly). The scheduler unblocked it
+                // when a dependency completed, but the REPL retry loop
+                // will re-process it.
+                let sexps = match module_sexps.get(&module) {
+                    Some(s) => s.clone(),
+                    None => continue,
+                };
 
                 // Get or create suspend state for this module.
                 let state = suspend_states

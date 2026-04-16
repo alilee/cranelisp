@@ -116,7 +116,10 @@ fn run(
 
                 buffer.push_str(&line);
 
-                if !s.parens_balanced(&buffer) {
+                // Slash commands are complete on a single line regardless of
+                // paren balance — their arguments may contain unbalanced parens
+                // (e.g., `/sh echo '(broken' > file.cl`).
+                if !buffer.trim_start().starts_with('/') && !s.parens_balanced(&buffer) {
                     buffer.push('\n');
                     s.write_continuation_prompt(&mut stdout, compile_ms, eval_ms);
                     continue;

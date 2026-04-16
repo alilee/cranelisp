@@ -126,7 +126,17 @@ pub fn compile_and_execute_expr(
 
         // SAFETY: compiled code was just generated and finalized by our JIT.
         let func: extern "C" fn() -> i64 = unsafe { std::mem::transmute(code_ptr) };
+        // Clear any stale error before the JIT call.
+        let _ = cranelisp_runtime::panic::take_runtime_error();
         let value = func();
+
+        // Check thread-local error flag (set by runtime_panic in JIT code).
+        if let Some(msg) = cranelisp_runtime::panic::take_runtime_error() {
+            return Err(CranelispError::CodegenError {
+                message: format!("runtime error: {msg}"),
+                span: expr.span(),
+            });
+        }
         Ok((value, ty))
     } else {
         let value = compile_and_execute_expr_with_trace(
@@ -199,10 +209,17 @@ fn compile_and_execute_expr_with_trace(
     let code_ptr = jit.finalize_and_get_ptr(&wrapper_name, 0)?;
 
     let func: extern "C" fn() -> i64 = unsafe { std::mem::transmute(code_ptr) };
+    // Clear any stale error before the JIT call.
+    let _ = cranelisp_runtime::panic::take_runtime_error();
     let value = func();
 
-    // JIT goes out of scope here, but the code was already executed.
-    // No need to keep it alive — expression results are immediate values.
+    // Check thread-local error flag (set by runtime_panic in JIT code).
+    if let Some(msg) = cranelisp_runtime::panic::take_runtime_error() {
+        return Err(CranelispError::CodegenError {
+            message: format!("runtime error: {msg}"),
+            span: expr.span(),
+        });
+    }
 
     Ok(value)
 }

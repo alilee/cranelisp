@@ -2,43 +2,67 @@
 
 Status of the scheduler-driven architecture described in `pipeline-v4.md` and `concurrent-pipeline.md`.
 
-## Current State (verified 2026-04-11)
+## Current State (verified 2026-04-16)
 
-The v4 pipeline is the only pipeline. `CompilerSession` in `session_v4.rs` is the unified session type. `main.rs` uses one code path for Run/Link/REPL. There is no `--v4` flag.
+The v4 scheduler-driven pipeline is the only pipeline. `CompilerSession` in `session_v4.rs` is the unified session type. `main.rs` uses one code path for Run/Link/REPL.
 
-**What works:**
-- One `CompilerSession`, one `run()`, all modes (Run, Link, REPL)
-- `CompileScheduler` with full module lifecycle, priority ladder, blocking/unblocking
-- Per-form typecheck via `tc.check_form()`
-- Form-by-form worker loop in `process_module_forms()`
-- Macro expansion blocking via scheduler priority codegen queue
-- Lazy dependency discovery during form processing
-- Expansion is a free function in `src/expander.rs` (MacroExpander trait deleted)
-- REPL eval with TC snapshot/restore and scheduler-driven definitions
-- Platform registry (`PlatformRegistry` with `HashMap<FQSymbol, PlatformFunction>`)
-- Error cascade via `notify_module_failed` + `cascade_failure_locked`
-- DashMap-backed TypeChecker module tables and codegen products
-- Cache-hit loading via `try_cache_hit_load()` in worker.rs
-- GOT with atomic slot-based table (`GotTable` with `AtomicPtr`)
-- Scoped priority workers spawned per `register_module_with_source()` call
-- Nice workers spawned as persistent threads in `CompilerSession::new()`, `.o` files produced
-- `--link` mode fully implemented (`link_by_name` calls exe infrastructure)
-- `--v4` CLI flag removed; `ReplSession` moved to `tests/helpers/mod.rs` (test-only)
-- `src/repl/` directory deleted; `ModuleCodegenState`, `MacroEnv`, `CompilationSession` deleted
-- Introspection fully populated (source, sexp, expanded, ast, clif_ir, disasm, code_size), gated on `--repl`
-- File watcher extracted to `src/watch.rs`, wired into REPL loop in `main.rs` (init, sync, poll_and_reload)
-- Session restructure phases A–F complete (new types: TypecheckProduct, CodegenProduct, Code, Introspection)
-- Old pipeline code deleted (~12k+ lines removed across sprints 49 and session restructure)
+**Build status**: Does not compile at HEAD. Commit `3dadf5e` introduced a placeholder `GOT_TABLE` type on `SymbolTable` as part of the §9 data model design. Reverting that one field restores compilation. **1546 pass, 200 fail** out of 1604 tests (at HEAD~1).
 
-**What doesn't work (test failures as of 2026-04-11):**
-- Stdlib macro tests: 30/54 failing — session restructure regressed macro symbol availability (was 54/54 at commit `17a9906`)
-- ring4_trace: 48 failures — trace tests broken (likely same macro/prelude regression)
-- Cache tests: 36 failures
-- sketch_port: 15 failures (down from 23, some fixed)
-- IO tests: 24 failures
-- v4_pipeline: 9 failures (cross-module macro + platform symbol resolution)
-- Other: e2e (14), ring2 (8), macros (8), modules (6), lenient (6), ring3_repl (4), ring0 (2 checked_div), repl_negative (4), exemplar (1)
-- Total: ~1407 passed, ~137 failed out of 1544
+**Failure breakdown** (at HEAD~1, last compiling commit):
+
+| Category | Failures | Root Cause |
+|----------|----------|------------|
+| sprint23 (watch) | 38 | `notify` kqueue backend misses file modifications on macOS |
+| ring4_trace | 38 | Trace intrinsic signature conflict (`cranelisp_trace_restore_got`) |
+| sketch_port | 14 | Needs triage — mix of real gaps and sketch-specific |
+| ring0 | 4 | checked_div missing runtime error check; 2 related |
+| v4_repl_eval | 2 | Trace-as-expression |
+| v4_pipeline | 2 | Cache-hit dependency loading |
+| cache | 2 | Cross-module GOT / nice worker interaction |
+
+### What's Implemented
+
+The pipeline orchestration layer is complete. What remains is the **data model convergence** — collapsing intermediate types into the symbol table so that `compile_to_module` is self-sufficient.
+
+| Capability | Status |
+|------------|--------|
+| One `CompilerSession`, one `run()`, all modes | Done |
+| `CompileScheduler` with module lifecycle, priority ladder, blocking/unblocking | Done |
+| Per-form typecheck via `tc.check_form()` + `FormCheckResult` | Done |
+| Form-by-form worker loop (`process_module_forms`) | Done |
+| Macro expansion blocking via scheduler priority codegen queue | Done |
+| Lazy dependency discovery during form processing | Done |
+| Expansion as free function in `src/expander.rs` | Done |
+| REPL eval with TC snapshot/restore, Additive strategy | Done |
+| Error cascade via `notify_module_failed` + `cascade_failure_locked` | Done |
+| DashMap-backed symbol tables and codegen products | Done |
+| Cache-hit loading via `try_cache_hit_load()` | Done |
+| GOT with atomic slot-based table (`GotTable`) | Done |
+| Nice workers as persistent threads (`.o` production) | Done |
+| `--link` mode (`link_by_name` + exe infrastructure) | Done |
+| Introspection (source, sexp, expanded, ast, clif_ir, disasm) | Done |
+| File watcher (`src/watch.rs`, init/sync/poll_and_reload) | Done |
+| Old pipeline deleted (~12k+ lines removed) | Done |
+
+### What's NOT Implemented (v4 target gaps)
+
+The audit compares actual code against `pipeline-v4.md` §9. Nine structural gaps remain, all related to the data model convergence. See `design/arch/sequence-diagram/` for visual comparison.
+
+| # | Gap | Severity | What exists now | What v4 §9 specifies |
+|---|-----|----------|-----------------|---------------------|
+| G1 | `ModuleEntry::Def` lacks `ast` field | HIGH | Bodies in transient `CodegenInput.program: Vec<TopLevel>` | `ast: Option<DefnVariant>` on entry |
+| G2 | `CheckResult` still a boundary type | HIGH | Passed from typecheck to codegen via `CodegenInput` | Eliminated — TC writes to symbol table |
+| G3 | Resolved calls / expr types in side maps | HIGH | `HashMap<Span, ResolvedCall>`, `HashMap<Span, Type>` on `CheckResult` | Directly on AST nodes |
+| G4 | `compile_to_module` takes program + CheckResult | HIGH | `(path, program, check, symbol_tables, module)` | `(path, names, symbol_tables, module)` |
+| G5 | Two codegen entry points | HIGH | `codegen_module_symbols` (JIT) + `compile_to_module` (object) | `compile_to_module` only (§9.3) |
+| G6 | Compiled code in separate `CodegenProduct` | MEDIUM | `DashMap<ModuleFullPath, CodegenProduct>` with `DashMap<Symbol, Code>` | `code: Option<C>` on `ModuleEntry::Def` |
+| G7 | GOT table on `TypecheckProduct` | MEDIUM | `TypecheckProduct { got, file_path, source_text }` | `got: GotTable` on `SymbolTable` |
+| G8 | Separate `PlatformRegistry` | MEDIUM | `HashMap<FQSymbol, PlatformFunction>` | Platform fn ptrs on `ModuleEntry::Def` entries |
+| G9 | Scoped priority workers | LOW | Thread scope per `register_module_with_source()` | Session-persistent workers |
+| G10 | Fresh JIT per REPL expression | LOW | `Jit::new_with_symbols()` in `compile_and_execute_expr` | Persistent eval JIT across session |
+| G11 | Reload via scoped threads | LOW | `reload_module` spawns scoped worker threads | Re-register through scheduler for persistent workers |
+
+Gaps G9–G11 are all consequences of G9 (no persistent priority workers). Once workers are persistent, reload and eval naturally route through them.
 
 ## Completed Steps
 
@@ -54,77 +78,190 @@ The v4 pipeline is the only pipeline. `CompilerSession` in `session_v4.rs` is th
 | 7 | REPL eval via scheduler (Additive strategy, TC snapshot/restore) | 44 |
 | 8 | Platform registry (`PlatformRegistry`, DLL loading) | 45 |
 | 9 | Error cascade (`notify_module_failed`, `cascade_failure_locked`) | 45 |
-| 10 | Nice workers as persistent threads (`.o` production, `wait_object_complete`) | 46 |
-| 11 | Persistent priority workers — **deferred**, scoped workers are correct | — |
-| 12 | DashMap (TC module tables, codegen products; TC serialized via `tc_mutex`) | 47 |
+| 10 | Nice workers as persistent threads (`.o` production) | 46 |
+| 11 | Persistent priority workers — **deferred**, scoped workers correct | — |
+| 12 | DashMap (TC module tables, codegen products) | 47 |
 | 13 | Cache-hit loading (`try_cache_hit_load()`, symbol table restore) | 48 |
-| 14 | File watcher (`src/watch.rs`, init/sync/poll_and_reload in REPL loop) | REPL rework |
-| 15a | `link_by_name` (exe validation, startup object, system linker) | 49+ |
-| 15b | v4_pipeline test infrastructure (`--v4` flag references removed) | 49+ |
-| 15c | Dead code cleanup — `src/repl/` deleted, `CompilationSession`/`MacroEnv`/`ModuleCodegenState` deleted | session restructure |
+| 14 | File watcher (`src/watch.rs`, init/sync/poll_and_reload) | REPL rework |
+| 15 | Link mode, dead code cleanup, v4 test infrastructure | 49+ |
 
 ## Remaining Work
 
-### 1. Macro/prelude regression (BLOCKING — ~120 of 137 test failures)
+### Phase 0: Stabilise (fix what's broken)
 
-The session restructure (GOT unification, SharedState DashMaps, introspection gating) regressed macro symbol availability. At commit `17a9906` all 54 stdlib tests passed; currently 30/54 fail. This is the root cause of most test failures across stdlib, trace, cache, IO, and e2e test binaries.
+Get to green on the existing test suite before any data model work. Every convergence step below must land on a green baseline and leave it green.
 
-**Symptoms:** `"undefined variable: SexpStr"`, `"undefined variable: cond"`, macro expansion can't find `macros` module constructors or prelude macro names in user module scope.
+| Task | Tests | Owner | Notes |
+|------|-------|-------|-------|
+| **P0.1** Revert `GOT_TABLE` placeholder | 0 | /int | Restore compilation. One-line fix. |
+| **P0.2** Fix trace intrinsic signature | 38 | /backend | `cranelisp_trace_restore_got` void-return exception in `declare_intrinsics_generic` |
+| **P0.3** Fix file watcher tests | 38 | /int | Replace `RecommendedWatcher` with `FsEventWatcher` on macOS |
+| **P0.4** Triage sketch_port failures | 14 | /qa | Classify: real gap vs sketch-specific. Fix or delete. |
+| **P0.5** Fix checked-div | 4 | /int | Add `take_runtime_error()` check in `compile_and_execute_expr` |
+| **P0.6** Fix remaining (v4_pipeline, v4_repl_eval, cache) | 6 | /int + /backend | Cache GOT symbol registration, trace-as-expression |
 
-**Likely cause:** Macro symbol table registration or prelude export propagation broken during session restructure commits. The prelude loads successfully but its macros are not accessible at expansion time.
+**Exit criterion**: 0 test failures. This is the baseline for convergence work.
 
-**Investigation:** Compare macro registration path at `17a9906` vs HEAD. Focus on `inject_macros_import`, prelude symbol export, and how expanded macro code resolves `macros` module symbols in user context.
+### Phase 1: AST on symbol table (G1 + G2 + G3)
 
-### 2. Dead code in `src/session.rs` (MINOR — 35 lines)
+The foundational change. Once AST bodies, types, and resolved calls live on `ModuleEntry`, every downstream step becomes possible.
 
-`ObjectWorkerState` struct and impl (lines 139–173) are defined but never used outside session.rs. Safe to delete.
+#### Step 1a: Add `ast` to `ModuleEntry::Def` (G1)
 
-### 3. FQTypeName migration (DEFERRED — architectural improvement)
+Add an `ast: Option<Defn>` field to `ModuleEntry::Def`. Typecheck stores the typechecked defn body on the entry after `check_form(CheckBody)`. Initially duplicated — both the entry and the existing `CodegenInput.program` carry the body. No consumers change yet.
 
-FIXME in `crates/cranelisp-types/src/types.rs:23`: `Type::ADT(TypeName, ...)` should be `Type::ADT(FQTypeName, ...)`. Requires ~182 call sites. Not blocking functionality — display works via separate `type_modules` lookup.
+**Touches**: `cranelisp-types/src/module.rs` (add field), `src/worker.rs` (write to entry after typecheck).
 
-### 4. Persistent priority workers (DEFERRED — design improvement)
+**Verification**: All tests still pass. The new field is write-only in this step.
 
-Priority workers are scoped per `register_module_with_source()` call, not session-persistent. Functionally correct for batch and REPL. Suboptimal for REPL (fresh thread scope per eval). Not blocking any tests.
+#### Step 1b: Move resolved calls and expr types onto AST nodes (G3)
 
-### 5. BL range fix (DEFERRED — correctness on large binaries)
+Add `resolved_call: Option<ResolvedCall>` to `Expr::Apply` and `inferred_type: Option<Type>` to every `Expr` variant (or a wrapping struct). Typecheck populates these during inference instead of (or in addition to) the `HashMap<Span, _>` side maps.
 
-FIXME in `crates/cranelisp-backend/src/cache/linker.rs:231`: runtime intrinsic and platform DLL function calls use BL (±128MB range). If loaded `.o` code is far from these functions, BL will fail. Fix: use literal pool entries (ADRP+LDR+BLR). Only manifests with very large codebases or unlucky memory layout.
+**Touches**: `cranelisp-types/src/ast.rs` (add fields), `cranelisp-typecheck/src/checker.rs` (write to AST nodes).
 
-### 6. File watcher manual testing (DEFERRED — interactive-only)
+**Verification**: Both old (side map) and new (AST node) paths populated. Tests pass. Add assertions that they agree.
 
-Code is fully wired (src/watch.rs → session_v4.rs → main.rs). Needs end-to-end manual verification with actual file edits in a running REPL session.
+#### Step 1c: Backend reads from AST nodes (G3 completion)
 
-### 7. Ring 4 acceptance gaps
+`compile_to_module` and `FnCompiler` read resolved calls and expr types from AST nodes instead of `CheckResult` side maps. Side maps become optional / deprecated.
 
-| Gap | Status |
-|-----|--------|
-| Sketch-port test triage | 15 failures (down from 23). Need triage: real gaps vs sketch-specific |
-| Performance benchmarking | Not measured. No benchmark infrastructure exists |
-| Exemplar validation | 1 test failure (`exemplar_batch_cross_module_adt`). Not fully E2E validated |
-| REPL experience edge cases | Coverage gaps in spec conformance |
-| Ring 4 gate review | Not performed |
-| checked_div runtime panics | 2 ring0 failures: `div-i64` doesn't panic on ÷0 or i64::MIN/-1 |
+**Touches**: `cranelisp-backend/src/compiler/*.rs` (read from AST nodes), `cranelisp-backend/src/lib.rs` (stop requiring side maps).
 
-## Priority Order
+**Verification**: All tests pass reading from AST nodes. Side maps can be removed.
+
+#### Step 1d: Eliminate `CheckResult` as boundary type (G2)
+
+`compile_to_module` no longer takes `CheckResult`. It reads everything from `ModuleEntry::Def.ast` (body + resolved calls + types) and `ModuleEntry::Def.scheme` (type signature). The `CheckResult` struct is either deleted or reduced to a typecheck-internal type (warnings + display info only).
+
+**Touches**: `cranelisp-backend/src/lib.rs` (new signature), `src/worker.rs` (stop building CodegenInput), `src/session_v4.rs` (stop stashing CheckResult).
+
+**Verification**: All tests pass. `CodegenInput` type deleted.
+
+### Phase 2: Single codegen entry point (G4 + G5)
+
+With AST on symbol table entries, `compile_to_module` can take symbol names instead of a program.
+
+#### Step 2a: `compile_to_module` takes `names: &[Symbol]`  (G4)
+
+Change the signature to `(path, names, symbol_tables, module)`. Implementation reads `ModuleEntry::Def.ast` for each name. Multi-sig, constrained, default-method entries are all just names in the symbol table — no special expansion logic in the caller.
+
+**Touches**: `cranelisp-backend/src/lib.rs` (new signature + implementation), all callers.
+
+**Verification**: Both JIT and object callers updated. All tests pass.
+
+#### Step 2b: Delete `codegen_module_symbols` (G5)
+
+Route JIT codegen through `compile_to_module` with per-function `JITModule` instances. The batch sweep function and its helpers (`compile_regular_defns`, `compile_and_register_defn_shared`, etc.) are deleted. Priority workers call `compile_to_module` directly.
+
+**Touches**: `src/worker.rs` (delete function, update priority worker), `src/pipeline.rs` (may be substantially reduced or deleted).
+
+**Verification**: All tests pass. Only one codegen path exists.
+
+### Phase 3: Consolidate per-module state (G6 + G7)
+
+Collapse the intermediate DashMaps into the symbol table.
+
+#### Step 3a: Move GOT table onto `SymbolTable` (G7)
+
+Add `got: GotTable` field to `SymbolTable`. GOT created at module registration time. `TypecheckProduct` reduced to file metadata only, or deleted.
+
+**Touches**: `cranelisp-types/src/module.rs`, `cranelisp-backend/src/got.rs`, `src/session_v4.rs` (delete `TypecheckProduct` or reduce it).
+
+**Verification**: All tests pass. GOT access goes through symbol table.
+
+#### Step 3b: Move compiled code onto `ModuleEntry::Def` (G6)
+
+Add `code: Option<Code>` to `ModuleEntry::Def` (initially not generic — `Code` is a concrete type from the integration layer). `CodegenProduct` DashMap eliminated. `Introspection` remains separate (display-only data, not needed for compilation).
+
+This requires `SymbolTable` to be in a `DashMap` that allows concurrent read/write since codegen workers write `code` while typecheck workers read `scheme`. Already the case — `DashMap<ModuleFullPath, SymbolTable>` with per-module granularity.
+
+**Touches**: `cranelisp-types/src/module.rs` (add field), `src/worker.rs` (write code to entry), `src/session_v4.rs` (delete `CodegenProduct`).
+
+**Verification**: All tests pass. Code pointers read from symbol table.
+
+**Note on generics**: `pipeline-v4.md` §9.1 specifies `SymbolTable<C: CodeStore, L: LinkerStore>` generics so that typecheck and backend crates can work with `SymbolTable<()>` (no code dependency). This is an API cleanliness concern, not a prerequisite. The initial implementation can use `#[serde(skip)]` on the `code` field and defer generics until the coupling becomes a problem. The priority is eliminating the separate DashMap, not achieving generic purity.
+
+### Phase 4: Platform and worker convergence (G8 + G9)
+
+#### Step 4a: Platform functions on symbol table entries (G8)
+
+Move platform function pointers onto `ModuleEntry::Def` entries with `PrimitiveKind::PlatformEffect`. The IO trampoline resolves platform functions by symbol table lookup. Delete `PlatformRegistry`.
+
+**Touches**: `src/platform_registry.rs` (delete), `src/worker.rs` (platform form handling), IO trampoline code.
+
+**Verification**: All platform / IO tests pass. No separate registry.
+
+#### Step 4b: Persistent priority workers (G9, G10, G11)
+
+Priority workers become session-persistent (spawned in `CompilerSession::new`, parked on condvar). `register_module` enqueues work; workers pick it up. `eval` submits to the scheduler; `reload_module` re-registers via scheduler. Scoped thread spawning eliminated.
+
+This also enables the persistent eval JIT (G10) — the eval path submits dependencies as `BlockingJitCodegen` entries, blocks until notified, then compiles the expression on a session-persistent JIT instance.
+
+**Touches**: `src/session_v4.rs` (worker lifecycle, eval path, reload path), `src/worker.rs` (thread function signature).
+
+**Verification**: All tests pass. No `thread::scope` for workers outside of tests.
+
+### Phase 5: Structural declarations and cache (cleanup)
+
+#### Step 5a: Structural declarations on `SymbolTable`
+
+Add `imports`, `exports`, `platforms`, `submodules` fields to `SymbolTable` for `.cl` regeneration (§6.4). Delete `ModuleStructure` from `SharedState`.
+
+**Touches**: `cranelisp-types/src/module.rs`, `src/session_v4.rs`, `src/save.rs`.
+
+#### Step 5b: Cache serialization via symbol table
+
+`.meta.json` serializes the enriched `SymbolTable` (types, GOT slots, AST bodies, structural declarations). Cache restore reconstructs the full compilation state without re-typechecking. `CodegenInput` stashing no longer needed.
+
+**Touches**: `src/worker.rs` (cache write), `crates/cranelisp-backend/src/cache/`.
+
+## Deferred (not blocking convergence)
+
+| Item | Reason |
+|------|--------|
+| `SymbolTable<C, L>` generics | API cleanliness. `#[serde(skip)]` on code field is sufficient for now. |
+| `FQTypeName` migration | 182 call sites. Display works via `type_modules` lookup. |
+| BL range fix (linker.rs) | Only manifests on very large codebases. |
+| `Linker` on `SymbolTable` | Depends on generics. Cache-hit `.o` loading works without it. |
+
+## Dependency Graph
 
 ```
-1. Fix macro/prelude regression     ── unblocks ~120 test failures
-   │
-   ▼
-2. Delete ObjectWorkerState         ── trivial cleanup
-   │
-   ▼
-3. Sketch-port test triage          ── determine real gaps (15 failures)
-   │
-   ▼
-4. checked_div runtime panics       ── 2 ring0 failures, spec §12.7.3
-   │
-   ▼
-5. Exemplar E2E validation          ── validates language at scale
-   │
-   ▼
-6. Ring 4 gate review               ── formal review before Phase H
+Phase 0: Stabilise (green baseline)
+    │
+    ▼
+Phase 1: AST on symbol table ──────────────────────┐
+    1a: ast field on ModuleEntry                    │
+    1b: resolved calls / types on AST nodes         │
+    1c: backend reads from AST nodes                │
+    1d: eliminate CheckResult boundary              │
+    │                                               │
+    ▼                                               │
+Phase 2: Single codegen entry point                 │
+    2a: compile_to_module(names, symbol_tables)      │
+    2b: delete codegen_module_symbols               │
+    │                                               │
+    ├───────────────┬───────────────────────────────┘
+    ▼               ▼
+Phase 3:        Phase 4:
+GOT + code      Platform + workers
+on SymbolTable  on SymbolTable
+    3a: GOT         4a: platform fns
+    3b: code        4b: persistent workers
+    │               │
+    └───────┬───────┘
+            ▼
+        Phase 5:
+        Structural decls + cache
+            5a: imports/exports
+            5b: cache via SymbolTable
 ```
 
-Items 3–5 (FQTypeName, persistent priority workers, BL range) are deferred indefinitely — they don't block Ring 4 completion.
+Phases 3 and 4 are independent and can be done in parallel or either order. Phase 5 depends on both.
+
+## Visual Reference
+
+See `design/arch/sequence-diagram/` for Mermaid sequence diagrams comparing:
+- `3dadf5e/` — current implementation (commit 3dadf5e)
+- `v4-target.*` — pipeline-v4.md target with colour-highlighted differences

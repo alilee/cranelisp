@@ -31,6 +31,7 @@ use cranelisp_types::{CranelispError, Span};
 pub fn generate_startup_object(
     platform_manifest_names: &[String],
     main_returns_io: bool,
+    entry_fn_name: &str,
 ) -> Result<Vec<u8>, CranelispError> {
     let isa = crate::cache::object::build_isa(true)?;
 
@@ -43,13 +44,15 @@ pub fn generate_startup_object(
         })?;
     let mut obj_module = ObjectModule::new(obj_builder);
 
-    // Declare `main` as imported (user's main function, returns i64)
+    // Declare entry function as imported (user's main function, returns i64).
+    // The name must match what compile_to_module exports — module-qualified
+    // for modules not named "user" or "main" (e.g., "hello/main").
     let mut main_sig = obj_module.make_signature();
     main_sig.returns.push(AbiParam::new(types::I64));
     let main_func_id = obj_module
-        .declare_function("main", Linkage::Import, &main_sig)
+        .declare_function(entry_fn_name, Linkage::Import, &main_sig)
         .map_err(|e| CranelispError::CodegenError {
-            message: format!("failed to declare main: {e}"),
+            message: format!("failed to declare {}: {e}", entry_fn_name),
             span: Span::SYNTHETIC,
         })?;
 
@@ -192,14 +195,14 @@ mod tests {
     // spec: design/backend/executable-generation.md §4 — startup stub generation (no IO)
     #[test]
     fn generate_startup_object_no_io() {
-        let bytes = generate_startup_object(&[], false).unwrap();
+        let bytes = generate_startup_object(&[], false, "main").unwrap();
         assert!(!bytes.is_empty(), "startup .o should not be empty");
     }
 
     // spec: design/backend/executable-generation.md §4 — startup stub with IO trampoline
     #[test]
     fn generate_startup_object_with_io() {
-        let bytes = generate_startup_object(&[], true).unwrap();
+        let bytes = generate_startup_object(&[], true, "main").unwrap();
         assert!(!bytes.is_empty(), "startup .o should not be empty");
     }
 
@@ -207,7 +210,7 @@ mod tests {
     #[test]
     fn generate_startup_object_with_platform() {
         let manifest_names = vec!["cranelisp_platform_manifest".to_string()];
-        let bytes = generate_startup_object(&manifest_names, false).unwrap();
+        let bytes = generate_startup_object(&manifest_names, false, "main").unwrap();
         assert!(!bytes.is_empty(), "startup .o should not be empty");
     }
 
@@ -215,7 +218,14 @@ mod tests {
     #[test]
     fn generate_startup_object_with_platform_and_io() {
         let manifest_names = vec!["cranelisp_platform_manifest".to_string()];
-        let bytes = generate_startup_object(&manifest_names, true).unwrap();
+        let bytes = generate_startup_object(&manifest_names, true, "main").unwrap();
         assert!(!bytes.is_empty(), "startup .o should not be empty");
+    }
+
+    // spec: design/backend/executable-generation.md §4 — startup stub with module-qualified entry
+    #[test]
+    fn generate_startup_object_qualified_entry() {
+        let bytes = generate_startup_object(&[], false, "hello/main").unwrap();
+        assert!(!bytes.is_empty(), "startup .o with qualified entry should not be empty");
     }
 }

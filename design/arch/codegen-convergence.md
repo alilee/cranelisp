@@ -37,26 +37,6 @@ See `design/arch/pipeline-v4.md` §9 for the full data model.
 
 ## Migration
 
-This is a multi-sprint migration. Sprint 54 identifies the gap and begins the convergence. The steps are ordered to minimize risk — each step is independently verifiable.
+This is a multi-phase migration. See `design/arch/pipeline-v4-roadmap.md` for the authoritative step-by-step plan with dependency ordering, verification criteria, and file-level touch lists. The roadmap supersedes any migration steps previously listed here.
 
-### Sprint 54 scope (design + minimal fixes)
-
-1. Pipeline-v4 §9 written and reviewed (this sprint, done)
-2. Tier 1 fixes that don't depend on convergence (trace intrinsics, checked-div, persistence)
-3. Assessment of migration sequencing for subsequent sprints
-
-### Subsequent sprints (implementation)
-
-The migration touches every compilation-related file. Steps must be sequenced carefully:
-
-1. **Add `ast` to `ModuleEntry::Def`** — typecheck stores bodies on entries. `compile_to_module` reads from entries instead of program array. Multi-sig and TraitImpl gaps fixed.
-2. **Move resolved calls / expr types onto AST nodes** — eliminate `CheckResult` side maps.
-3. **Move GOT table onto SymbolTable** — eliminate `TypecheckProduct`.
-4. **Move compiled code onto entries** — eliminate `codegen_products` DashMap. Add `C` generic.
-5. **Add `Linker` to SymbolTable** — add `L` generic. Eliminate separate linker handling.
-6. **Move platform fn pointers onto symbol table entries** — eliminate `session.platform`.
-7. **Add structural declarations to SymbolTable** — imports, exports, platforms, submodules for `.cl` regeneration.
-8. **Delete `codegen_module_symbols`** and all its helpers. Route JIT through `compile_to_module`.
-9. **Remove `"user"` special-casing** from backend.
-
-Each step can be a sprint-sized increment with its own tests and verification.
+Key sequence: Phase 1 (AST + types on symbol table) → Phase 2 (single codegen entry point) → Phase 3 (GOT + code on symbol table) → Phase 4 (platform + persistent workers) → Phase 5 (structural decls + cache).

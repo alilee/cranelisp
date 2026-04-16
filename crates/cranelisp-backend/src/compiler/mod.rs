@@ -37,8 +37,9 @@ pub const MATCH_EXHAUSTION_TRAP: u8 = 1;
 /// JIT and object codegen. See session-restructure.md.
 ///
 /// Convention: `__cranelisp_got_<flat_path>` where dots are replaced by
-/// underscores. This is `Export` in the owning module's `.o` and `Import`
-/// in any module that calls functions from it.
+/// underscores. Each `.o` file defines all GOT data symbols it needs
+/// (own module + imported modules) as `Export` with a placeholder value;
+/// the linker/loader patches them at load time.
 pub fn got_data_symbol_name(module_path: &ModuleFullPath) -> String {
     let flat = module_path.as_ref().replace('.', "_");
     format!(

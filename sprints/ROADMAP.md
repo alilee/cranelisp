@@ -71,6 +71,8 @@ Delivery progress for the Cranelisp reimplementation. For technical scope per ri
 | 47 | Pipeline v4 Steps 11+12 — Multi-threaded priority workers + DashMap TypeChecker: CheckState threading (95 methods), SharedCodegenState/WorkerJitState extraction, DashMap modules with &self API, condvar parking (take_priority_work_blocking), priority worker thread spawning via std::thread::scope, shared sexp/suspend maps, CompileScheduler/CompilerSession Drop impls, spec §9.2.5 resolved, 2 design docs (1230 lines), 15 clippy fixes, sprint23 E2E disabled (14 failures from v4 changes): 1494 passed, 13 pre-existing failures, 1 ignored | COMPLETE | `sprints/archive/sprint-47.md` |
 | 48 | Pipeline v4 Steps 13+14 — Cache-hit loading + file watcher migration: cache validity in handle_import, register_module_cached wiring, Linker batch loading, re_register_module, reload_via_scheduler with inline worker loop, TypeChecker &self cache restoration, SharedState extensions (cached_modules/file_to_module/cache_state), cargo nextest adoption, /review 2B+4I+2S (all B+I fixed): 1684 passed, 13 pre-existing failures, 0 ignored | COMPLETE | `sprints/archive/sprint-48.md` |
 | 49 | Pipeline v4 Step 15 + Session Restructure — one CompilerSession, one run(), all modes. ReplSession/CompilationSession/MacroEnv/ModuleCodegenState/ModuleStructure/src/repl/ deleted. Session restructure phases A–F (TypecheckProduct, CodegenProduct, Code, Introspection on SharedState DashMaps). Unified GOT literal pool. Nice workers persistent. --link implemented. File watcher wired to v4. ~12k lines deleted. Macro regression outstanding (Sprint 50): 1407 passed, 137 failed (macro/prelude regression), 0 ignored | COMPLETE | `sprints/archive/sprint-49.md` |
+| 50-53 | Backend API conformance, workspace build fix, test porting | COMPLETE | `sprints/archive/sprint-53.md` |
+| 54 | Stabilise — Phase 0 of pipeline-v4 convergence: 41 tests fixed (trace intrinsics, file watcher, link startup, checked-div, persistence), 9 deferred (cache/multi-sig/run-tests — all touch subsystems replaced by convergence Phases 1-5), pipeline-v4 roadmap + sequence diagrams + codegen convergence design doc: 1595 passed, 9 failures (all deferred), 0 ignored | COMPLETE | `sprints/archive/sprint-54.md` |
 
 ## Forward Plan
 
@@ -78,15 +80,13 @@ Delivery progress for the Cranelisp reimplementation. For technical scope per ri
 
 Steps 1-10 + 14 delivered. Single-pipeline invariant established. ~2,100 lines of v1 code deleted. Steps 11-13 (concurrency) deferred indefinitely. Step 15 (new main.rs) retired — substantially delivered by Step 6. See `design/arch/archive/pipeline-v3-roadmap.md` §Post-Migration for full assessment.
 
-### Pipeline v4 migration — STRUCTURALLY COMPLETE (Sprints 40–48 + session restructure)
+### Pipeline v4 migration — ORCHESTRATION COMPLETE, DATA MODEL CONVERGENCE NEXT
 
-Scheduler-driven concurrent compilation. All 15 migration steps delivered (Step 11 deferred as design improvement). See `design/arch/pipeline-v4-roadmap.md` for verified status.
+Scheduler-driven concurrent compilation. All 15 orchestration steps delivered (Step 11 deferred as design improvement). Sprint 54 stabilised the test suite (41 fixes, 9 deferred).
 
-Session restructure (post-Sprint 48) unified data model: TypecheckProduct, CodegenProduct, Code, Introspection on SharedState DashMaps. Deleted CompilationSession, MacroEnv, ModuleCodegenState, ModuleStructure, src/repl/ (~12k+ lines removed total).
+**Next**: Data model convergence (pipeline-v4-roadmap.md Phases 1–5). 9 structural gaps between current implementation and v4 target §9. See `design/arch/pipeline-v4-roadmap.md` for the phased plan and `design/arch/sequence-diagram/` for visual comparison.
 
-**Regression**: the session restructure broke macro symbol availability, causing ~120 test failures across stdlib, trace, cache, IO, and e2e binaries. Fixing this is the critical next step.
-
-### Ring 4 acceptance criteria gap analysis (verified 2026-04-11)
+### Ring 4 acceptance criteria gap analysis (verified 2026-04-16)
 
 Ring 4 acceptance criteria from `design/arch/roadmap.md` vs current state:
 
@@ -96,14 +96,14 @@ Ring 4 acceptance criteria from `design/arch/roadmap.md` vs current state:
 | `(do ...)` chains IO effects | DONE (S17) |
 | Lenient evaluation parallelises independent bindings | DONE (S25) |
 | Platform DLLs load and function | DONE (S16) |
-| Module caching: second compilation hits cache | DONE (S48) — cache-hit loading + Linker |
-| Standalone executable generation (`--link`) | DONE (S23, rewired session restructure) |
+| Module caching: second compilation hits cache | DONE (S48) — 3 cache tests deferred (convergence Phases 3+5) |
+| Standalone executable generation (`--link`) | DONE (S23, fixed S54) — 1 multi-module link test deferred (Phase 3) |
 | REPL: all slash commands work | DONE (S19-21) |
-| Hot-reload: file changes auto-reload in REPL | DONE (S23, migrated S37, wired to v4 in REPL rework) — needs manual testing |
-| `(trace (fib 5))` execution tracing | DONE (S20) — 48 trace test failures from macro regression |
-| `(run-tests ...)` test runner | DONE (S21) |
-| All ~470 portable integration tests from prototype pass | **GAP** — 15 sketch_port failures, needs triage |
-| All E2E transcript tests pass | **REGRESSED** — 1407/1544 passing, 137 failures (macro/prelude regression) |
+| Hot-reload: file changes auto-reload in REPL | DONE (S54) — 4 root causes fixed (content hash, paren balance, file_to_module) |
+| `(trace (fib 5))` execution tracing | DONE (S20, fixed S54) — intrinsic signatures corrected |
+| `(run-tests ...)` test runner | **GAP** — needs special form implementation (AST variants + codegen) |
+| All ~470 portable integration tests from prototype pass | **GAP** — 4 sketch_port failures (3 multi-sig JIT, 1 run-tests) |
+| All E2E transcript tests pass | 1595/1604 passing, 9 failures (all deferred to convergence) |
 | Performance within 2x of prototype | **NOT MEASURED** — no benchmark infrastructure |
 | REPL experience test suite passes | Partial — core experience works, coverage gaps |
 | Exemplar project compiles, runs, passes tests | **GAP** — 1 test failure, not fully E2E validated |
@@ -111,13 +111,13 @@ Ring 4 acceptance criteria from `design/arch/roadmap.md` vs current state:
 
 ### Phase G (Ring 4) remaining sprints
 
-The pipeline v4 migration and session restructure are structurally complete. All 15 migration steps are done (Step 11 deferred as design-only improvement). The remaining work is fixing regressions and validation.
+Pipeline v4 orchestration complete. Data model convergence next (pipeline-v4-roadmap.md Phases 1–5).
 
 | Sprint | Theme | Scope | Skills |
 |--------|-------|-------|--------|
-| 50 | Session restructure regression fix | MacroResolver refactor (eliminate 3 caches, symbol table direct lookup), platform JIT fix, builtin type isolation (primitives module), trace codegen fix (constrained fn skip + arity), cross-module macro qualification, /list improvements, test fixture spec compliance (22 tests), run-tests test redesign, 4 design docs, spec §4.12.4 clarification, TC take_state API: 1487 passed, 32 failed (16 suites green), 4 design docs | COMPLETE | `sprints/archive/sprint-50.md` |
-| 51 | Stateless TC | TypeChecker → TypeCheckEnv (borrowed refs), FQTypeName/FQTraitName throughout, TypeDefRegistry/TraitRegistry/ImplRegistry deleted, ModuleEntry::TraitImpl added, CheckResult.type_defs deleted (backend reads DashMap directly), 9/11 cache tests fixed, 4 design docs: 1516 passed, 25 failed (+7 net), 2 parse-int regressions (Sprint 52). **57 files, +4800/-2900 lines.** | COMPLETE | `sprints/archive/sprint-51.md` |
-| 52 | Clean & Green (part 1) | Sprint23 ungated (70→58 tests, /reset deleted), spec updates (§0.5 CLI positional targets, §13 /sh, §15 persistence normative, §5.1.1 `_` exemption, §8.2.5 sibling removed), CLI positional args, `/sh` shell escape, session persistence (13/16 pass), checked_div+multi-sig+default-method+ADT fixes, 0 clippy warnings, persistence design doc: 1576 passed, 28 failed, 0 warnings | COMPLETE | `sprints/archive/sprint-52.md` |
-| 53 | Backend API Conformance — inlined `_compile_to_module_inner` (-608 lines), fixed broken workspace build (S53 prior commits left 2 call sites mismatched), removed all deprecated backend code, unmasked 29 additional test failures previously hidden by compile errors. Macro define-before-use spec resolved. 1546 passed, 58 failed (29 known + 29 unmasked), 0 ignored | COMPLETE | `sprints/archive/sprint-53.md` |
-| 54 | Clean & Green | Triage and fix 58 failures: watch (11), trace (20), cache (9), multi-sig (4), default methods (3), persistence (3), parse-int (2), link (5), checked-div (2), constructor-as-value (1), run-tests (1), batch scoping (1). 6 FIXMEs. | all skills |
-| 55+ | TBD | Ring 4 gate review, exemplar E2E, performance baseline, Ring 4 acceptance. | TBD |
+| 50 | Session restructure regression fix | MacroResolver refactor, platform JIT fix, builtin type isolation, trace codegen fix, cross-module macro qualification: 1487 passed, 32 failed, 4 design docs | COMPLETE | `sprints/archive/sprint-50.md` |
+| 51 | Stateless TC | TypeCheckEnv, FQTypeName/FQTraitName, registries deleted: 1516 passed, 25 failed. **57 files, +4800/-2900 lines.** | COMPLETE | `sprints/archive/sprint-51.md` |
+| 52 | Clean & Green (part 1) | Sprint23 ungated, spec updates, CLI positional args, session persistence, fixes: 1576 passed, 28 failed | COMPLETE | `sprints/archive/sprint-52.md` |
+| 53 | Backend API Conformance | Inlined compile_to_module_inner (-608 lines), workspace build fix: 1546 passed, 58 failed | COMPLETE | `sprints/archive/sprint-53.md` |
+| 55 | Pipeline v4 convergence Phase 1 | AST on symbol table, eliminate CheckResult boundary type | — | — |
+| 56+ | Phases 2–5 | Single codegen entry, GOT/code on SymbolTable, platform/workers, cache | — | — |
