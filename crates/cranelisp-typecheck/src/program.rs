@@ -29,9 +29,157 @@ use cranelisp_types::{
     Visibility, Warning, apply,
 };
 
+use cranelisp_types::types::Subst;
+
 use crate::checker::{CheckState, TypeCheckEnv};
 use crate::resolve::resolve_type_expr;
 use crate::scheme::mono;
+
+// --- AST annotation helpers (Step 1b) ---
+
+/// Apply substitution to all `inferred_type` fields on an expression tree.
+/// Replaces `Var(N)` with concrete types from the substitution.
+fn apply_subst_to_expr(subst: &Subst, expr: &mut Expr) {
+    // Apply substitution to this node's inferred_type
+    if let Some(ty) = expr.inferred_type() {
+        let resolved = apply(subst, ty);
+        expr.set_inferred_type(Some(Box::new(resolved)));
+    }
+    // Recurse into children
+    match expr {
+        Expr::Apply { callee, args, .. } => {
+            apply_subst_to_expr(subst, callee);
+            for arg in args {
+                apply_subst_to_expr(subst, arg);
+            }
+        }
+        Expr::Let { bindings, body, .. } | Expr::ParBind { bindings, body, .. } => {
+            for (_, binding_expr) in bindings {
+                apply_subst_to_expr(subst, binding_expr);
+            }
+            apply_subst_to_expr(subst, body);
+        }
+        Expr::If { cond, then_branch, else_branch, .. } => {
+            apply_subst_to_expr(subst, cond);
+            apply_subst_to_expr(subst, then_branch);
+            apply_subst_to_expr(subst, else_branch);
+        }
+        Expr::Lambda { body, .. } => {
+            apply_subst_to_expr(subst, body);
+        }
+        Expr::Match { scrutinee, arms, .. } => {
+            apply_subst_to_expr(subst, scrutinee);
+            for arm in arms {
+                apply_subst_to_expr(subst, &mut arm.body);
+            }
+        }
+        Expr::Annotate { expr: inner, .. } => {
+            apply_subst_to_expr(subst, inner);
+        }
+        Expr::VecLit { elements, .. } => {
+            for elem in elements {
+                apply_subst_to_expr(subst, elem);
+            }
+        }
+        Expr::Trace { body, .. } => {
+            apply_subst_to_expr(subst, body);
+        }
+        // Leaf nodes: no children to recurse into
+        Expr::IntLit { .. }
+        | Expr::FloatLit { .. }
+        | Expr::BoolLit { .. }
+        | Expr::StringLit { .. }
+        | Expr::Var { .. } => {}
+    }
+}
+
+/// Apply substitution to all `inferred_type` fields in a `Defn`.
+pub(crate) fn apply_subst_to_defn(subst: &Subst, defn: &mut Defn) {
+    for variant in &mut defn.variants {
+        apply_subst_to_expr(subst, &mut variant.body);
+    }
+}
+
+/// Annotate an expression tree with types and resolved calls from side maps.
+/// Walks the tree recursively; for each node, sets `inferred_type` from
+/// `expr_types` (by span) and `resolved_call` from `method_resolutions` (by span).
+fn annotate_expr_from_maps(
+    expr: &mut Expr,
+    expr_types: &HashMap<Span, Type>,
+    method_resolutions: &HashMap<Span, ResolvedCall>,
+) {
+    let span = expr.span();
+
+    // Set inferred_type from expr_types
+    if let Some(ty) = expr_types.get(&span) {
+        expr.set_inferred_type(Some(Box::new(ty.clone())));
+    }
+
+    // Set resolved_call on Apply nodes from method_resolutions
+    if let Expr::Apply { resolved_call, span: apply_span, .. } = expr
+        && let Some(resolution) = method_resolutions.get(apply_span)
+    {
+        *resolved_call = Some(Box::new(resolution.clone()));
+    }
+
+    // Recurse into children
+    match expr {
+        Expr::Apply { callee, args, .. } => {
+            annotate_expr_from_maps(callee, expr_types, method_resolutions);
+            for arg in args {
+                annotate_expr_from_maps(arg, expr_types, method_resolutions);
+            }
+        }
+        Expr::Let { bindings, body, .. } | Expr::ParBind { bindings, body, .. } => {
+            for (_, binding_expr) in bindings {
+                annotate_expr_from_maps(binding_expr, expr_types, method_resolutions);
+            }
+            annotate_expr_from_maps(body, expr_types, method_resolutions);
+        }
+        Expr::If { cond, then_branch, else_branch, .. } => {
+            annotate_expr_from_maps(cond, expr_types, method_resolutions);
+            annotate_expr_from_maps(then_branch, expr_types, method_resolutions);
+            annotate_expr_from_maps(else_branch, expr_types, method_resolutions);
+        }
+        Expr::Lambda { body, .. } => {
+            annotate_expr_from_maps(body, expr_types, method_resolutions);
+        }
+        Expr::Match { scrutinee, arms, .. } => {
+            annotate_expr_from_maps(scrutinee, expr_types, method_resolutions);
+            for arm in arms {
+                annotate_expr_from_maps(&mut arm.body, expr_types, method_resolutions);
+            }
+        }
+        Expr::Annotate { expr: inner, .. } => {
+            annotate_expr_from_maps(inner, expr_types, method_resolutions);
+        }
+        Expr::VecLit { elements, .. } => {
+            for elem in elements {
+                annotate_expr_from_maps(elem, expr_types, method_resolutions);
+            }
+        }
+        Expr::Trace { body, .. } => {
+            annotate_expr_from_maps(body, expr_types, method_resolutions);
+        }
+        // Leaf nodes
+        Expr::IntLit { .. }
+        | Expr::FloatLit { .. }
+        | Expr::BoolLit { .. }
+        | Expr::StringLit { .. }
+        | Expr::Var { .. } => {}
+    }
+}
+
+/// Annotate a `Defn` with types and resolved calls from side maps.
+pub(crate) fn annotate_defn_from_maps(
+    defn: &mut Defn,
+    expr_types: &HashMap<Span, Type>,
+    method_resolutions: &HashMap<Span, ResolvedCall>,
+) {
+    for variant in &mut defn.variants {
+        annotate_expr_from_maps(&mut variant.body, expr_types, method_resolutions);
+    }
+}
 
 // --- Callee write helper (Decision 21) ---
 
@@ -521,6 +669,11 @@ impl TypeCheckEnv<'_> {
         self.check_defn_body(state, defn, param_types, ret_ty)?;
         self.resolve_deferred_trait_calls(state, defn.body());
 
+        // Per-defn post-passes: resolve auto-curry accumulated during this
+        // defn's body check. Overload resolution is deferred to finalize
+        // because resolved_overloads is populated by resolve_multi_sig_overloads.
+        self.resolve_auto_curry(state);
+
         // Eager constrained-fn detection
         let fn_type = Type::Fn(
             param_types.iter().map(|t| self.apply_subst(state, t)).collect(),
@@ -555,6 +708,23 @@ impl TypeCheckEnv<'_> {
         for (span, ty) in &state.expr_types {
             if !et_before.contains(span) {
                 form_et.insert(*span, ty.clone());
+            }
+        }
+
+        // Per-defn AST annotation: clone the defn, annotate from side maps,
+        // apply final substitution, and write to ModuleEntry::Def.ast.
+        {
+            let resolved_et: HashMap<Span, Type> = form_et
+                .iter()
+                .map(|(span, ty)| (*span, apply(&state.subst, ty)))
+                .collect();
+            let mut annotated = defn.clone();
+            annotate_defn_from_maps(&mut annotated, &resolved_et, &form_mr);
+            apply_subst_to_defn(&state.subst, &mut annotated);
+            if let Some(ModuleEntry::Def { ast, .. }) =
+                self.current_symbol_table_mut(state).symbols.get_mut(&defn.name)
+            {
+                *ast = Some(annotated);
             }
         }
 
@@ -599,6 +769,10 @@ impl TypeCheckEnv<'_> {
                     span: variant.span,
                 })?;
 
+            // Snapshot for per-variant delta extraction
+            let variant_mr_before: HashSet<Span> = state.method_resolutions.keys().copied().collect();
+            let variant_et_before: HashSet<Span> = state.expr_types.keys().copied().collect();
+
             // Build a temporary single-variant defn for body checking
             let internal_defn = Defn {
                 name: internal_name.clone(),
@@ -615,6 +789,31 @@ impl TypeCheckEnv<'_> {
 
             self.check_defn_body(state, &internal_defn, param_types, ret_ty)?;
             self.resolve_deferred_trait_calls(state, internal_defn.body());
+
+            // Per-variant post-passes (auto-curry only; overloads deferred to finalize)
+            self.resolve_auto_curry(state);
+
+            // Per-variant AST annotation
+            {
+                let variant_mr: HashMap<Span, ResolvedCall> = state.method_resolutions
+                    .iter()
+                    .filter(|(span, _)| !variant_mr_before.contains(span))
+                    .map(|(span, res)| (*span, res.clone()))
+                    .collect();
+                let variant_et: HashMap<Span, Type> = state.expr_types
+                    .iter()
+                    .filter(|(span, _)| !variant_et_before.contains(span))
+                    .map(|(span, ty)| (*span, apply(&state.subst, ty)))
+                    .collect();
+                let mut annotated = internal_defn.clone();
+                annotate_defn_from_maps(&mut annotated, &variant_et, &variant_mr);
+                apply_subst_to_defn(&state.subst, &mut annotated);
+                if let Some(ModuleEntry::Def { ast, .. }) =
+                    self.current_symbol_table_mut(state).symbols.get_mut(&internal_name)
+                {
+                    *ast = Some(annotated);
+                }
+            }
 
             // Eager constrained-fn detection for variant
             let fn_type = Type::Fn(
@@ -765,7 +964,11 @@ impl TypeCheckEnv<'_> {
             }
         }
 
-        // Phase 3: re-resolve deferred trait calls with final types
+        // Phase 3: re-resolve deferred trait calls with final substitution.
+        // Per-defn resolution already ran in check_form_body, but cross-defn
+        // substitution refinement (e.g., constrained fns pinned by call sites)
+        // may enable additional resolutions. This updates the side maps for
+        // backward compatibility; AST annotation is already done per-defn.
         for top in working_program {
             if let TopLevel::Defn(defn) = top {
                 if defn.is_multi_sig() {
@@ -817,7 +1020,8 @@ impl TypeCheckEnv<'_> {
         // Pass 4: monomorphise constrained function call sites
         let mono_defns = self.pass4_monomorphise(state, &single_sig_defns, &constrained_fn_names)?;
 
-        // Pass 5: resolve pending overload dispatch + auto-curry
+        // Pass 5: overloads and auto-curry already resolved per-defn.
+        // Drain any remaining entries (e.g., from mono defn generation).
         self.resolve_pending_overloads(state)?;
         self.resolve_auto_curry(state);
 
@@ -852,6 +1056,64 @@ impl TypeCheckEnv<'_> {
             .iter()
             .map(|(span, ty)| (*span, apply(&state.subst, ty)))
             .collect();
+
+        // Step 1b: AST annotation is primarily per-defn (check_form_body_single_defn,
+        // check_form_body_multi_sig, check_impl_method, check_hkt_impl_method,
+        // monomorphise_call). However, cross-defn substitution refinement (e.g.,
+        // constrained fns pinned by call sites) and batch post-passes (Phase 3
+        // re-resolve, Pass 5 overloads/auto-curry) may add new resolutions after
+        // per-defn annotation. Re-annotate ASTs that have new information.
+        {
+            let sym_table = &mut self.current_symbol_table_mut(state);
+            for top in working_program {
+                match top {
+                    TopLevel::Defn(defn) if defn.is_multi_sig() => {
+                        for (i, _variant) in defn.variants.iter().enumerate() {
+                            let internal_name = Symbol::from(format!("{}__v{}", defn.name, i));
+                            if let Some(ModuleEntry::Def { ast: Some(existing), .. }) =
+                                sym_table.symbols.get_mut(&internal_name)
+                            {
+                                annotate_defn_from_maps(
+                                    existing,
+                                    &resolved_expr_types,
+                                    &accumulator.method_resolutions,
+                                );
+                                apply_subst_to_defn(&state.subst, existing);
+                            }
+                        }
+                    }
+                    TopLevel::Defn(defn) => {
+                        if let Some(ModuleEntry::Def { ast: Some(existing), .. }) =
+                            sym_table.symbols.get_mut(&defn.name)
+                        {
+                            annotate_defn_from_maps(
+                                existing,
+                                &resolved_expr_types,
+                                &accumulator.method_resolutions,
+                            );
+                            apply_subst_to_defn(&state.subst, existing);
+                        }
+                    }
+                    TopLevel::TraitImpl(ti) => {
+                        for method in &ti.methods {
+                            let mangled = format!("{}.{}${}", ti.trait_name, method.name, ti.target_type);
+                            let mangled_sym = Symbol::from(mangled.as_str());
+                            if let Some(ModuleEntry::Def { ast: Some(existing), .. }) =
+                                sym_table.symbols.get_mut(&mangled_sym)
+                            {
+                                annotate_defn_from_maps(
+                                    existing,
+                                    &resolved_expr_types,
+                                    &accumulator.method_resolutions,
+                                );
+                                apply_subst_to_defn(&state.subst, existing);
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
 
         // Build CheckResult from the accumulator (authoritative source).
         let mut all_default_defns = std::mem::take(&mut accumulator.default_method_defns);
@@ -1495,6 +1757,89 @@ impl TypeCheckEnv<'_> {
         self.resolve_auto_curry(state);
 
         let resolved_expr_types = self.resolve_expr_types(state);
+
+        // Step 1b: Annotate AST nodes and write to ModuleEntry::Def.ast
+        {
+            let sym_table = &mut self.current_symbol_table_mut(state);
+            for top in program {
+                match top {
+                    TopLevel::Defn(defn) if defn.is_multi_sig() => {
+                        for (i, variant) in defn.variants.iter().enumerate() {
+                            let internal_name = Symbol::from(format!("{}__v{}", defn.name, i));
+                            let mut variant_defn = Defn {
+                                name: internal_name.clone(),
+                                docstring: defn.docstring.clone(),
+                                variants: vec![DefnVariant {
+                                    params: variant.params.clone(),
+                                    param_annotations: variant.param_annotations.clone(),
+                                    body: variant.body.clone(),
+                                    span: variant.span,
+                                }],
+                                visibility: defn.visibility,
+                                span: variant.span,
+                            };
+                            annotate_defn_from_maps(
+                                &mut variant_defn,
+                                &resolved_expr_types,
+                                &state.method_resolutions,
+                            );
+                            apply_subst_to_defn(&state.subst, &mut variant_defn);
+                            if let Some(ModuleEntry::Def { ast, .. }) =
+                                sym_table.symbols.get_mut(&internal_name)
+                            {
+                                *ast = Some(variant_defn);
+                            }
+                        }
+                    }
+                    TopLevel::Defn(defn) => {
+                        let mut annotated = defn.clone();
+                        annotate_defn_from_maps(
+                            &mut annotated,
+                            &resolved_expr_types,
+                            &state.method_resolutions,
+                        );
+                        apply_subst_to_defn(&state.subst, &mut annotated);
+                        if let Some(ModuleEntry::Def { ast, .. }) =
+                            sym_table.symbols.get_mut(&defn.name)
+                        {
+                            *ast = Some(annotated);
+                        }
+                    }
+                    TopLevel::TraitImpl(ti) => {
+                        for method in &ti.methods {
+                            let mangled = format!("{}.{}${}", ti.trait_name, method.name, ti.target_type);
+                            let mangled_sym = Symbol::from(mangled.as_str());
+                            let mut annotated = method.clone();
+                            annotated.name = mangled_sym.clone();
+                            annotate_defn_from_maps(
+                                &mut annotated,
+                                &resolved_expr_types,
+                                &state.method_resolutions,
+                            );
+                            apply_subst_to_defn(&state.subst, &mut annotated);
+                            if let Some(ModuleEntry::Def { ast, .. }) =
+                                sym_table.symbols.get_mut(&mangled_sym)
+                            {
+                                *ast = Some(annotated);
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        // Annotate mono defn ASTs
+        let mut mono_defns = mono_defns;
+        for mono in &mut mono_defns {
+            annotate_defn_from_maps(
+                &mut mono.defn,
+                &mono.expr_types,
+                &mono.resolutions,
+            );
+            apply_subst_to_defn(&state.subst, &mut mono.defn);
+        }
+
         Ok(CheckResult {
             method_resolutions: std::mem::take(&mut state.method_resolutions),
             constrained_fn_names: constrained_fn_names.clone(),
@@ -1550,6 +1895,23 @@ impl TypeCheckEnv<'_> {
 
                 // Scan defn body for constrained-fn calls, monomorphise on demand
                 let mono_defns = self.monomorphise_expr_calls(state, defn.body())?;
+
+                // Step 1b: Annotate AST and write to ModuleEntry::Def.ast (REPL path)
+                {
+                    let resolved_expr_types = self.resolve_expr_types(state);
+                    let mut annotated = defn.clone();
+                    annotate_defn_from_maps(
+                        &mut annotated,
+                        &resolved_expr_types,
+                        &state.method_resolutions,
+                    );
+                    apply_subst_to_defn(&state.subst, &mut annotated);
+                    if let Some(ModuleEntry::Def { ast, .. }) =
+                        self.current_symbol_table_mut(state).symbols.get_mut(&defn.name)
+                    {
+                        *ast = Some(annotated);
+                    }
+                }
 
                 let mut result = self.build_repl_result(state, ty, Some(scheme));
                 result.mono_defns = mono_defns;
@@ -5456,5 +5818,599 @@ mod tests {
         let result = tc.check_form(&module, &form, CheckPass::Register, &mut accumulator);
 
         assert!(result.is_err(), "TraitImpl for undeclared trait should error");
+    }
+
+    // ---- AST Annotation Tests (Step 1b) ----
+
+    /// Walk an Expr tree and collect all (span, inferred_type) pairs.
+    fn collect_inferred_types(expr: &Expr, out: &mut Vec<(Span, Option<Type>)>) {
+        out.push((expr.span(), expr.inferred_type().cloned()));
+        match expr {
+            Expr::Apply { callee, args, .. } => {
+                collect_inferred_types(callee, out);
+                for arg in args {
+                    collect_inferred_types(arg, out);
+                }
+            }
+            Expr::Let { bindings, body, .. } | Expr::ParBind { bindings, body, .. } => {
+                for (_, binding_expr) in bindings {
+                    collect_inferred_types(binding_expr, out);
+                }
+                collect_inferred_types(body, out);
+            }
+            Expr::If { cond, then_branch, else_branch, .. } => {
+                collect_inferred_types(cond, out);
+                collect_inferred_types(then_branch, out);
+                collect_inferred_types(else_branch, out);
+            }
+            Expr::Lambda { body, .. } => {
+                collect_inferred_types(body, out);
+            }
+            Expr::Match { scrutinee, arms, .. } => {
+                collect_inferred_types(scrutinee, out);
+                for arm in arms {
+                    collect_inferred_types(&arm.body, out);
+                }
+            }
+            Expr::Annotate { expr: inner, .. } => {
+                collect_inferred_types(inner, out);
+            }
+            Expr::VecLit { elements, .. } => {
+                for elem in elements {
+                    collect_inferred_types(elem, out);
+                }
+            }
+            Expr::Trace { body, .. } => {
+                collect_inferred_types(body, out);
+            }
+            _ => {}
+        }
+    }
+
+    /// Find the resolved_call on an Apply node with a given span.
+    fn find_resolved_call(expr: &Expr, target_span: Span) -> Option<ResolvedCall> {
+        if let Expr::Apply { resolved_call, span, callee, args, .. } = expr {
+            if *span == target_span {
+                return resolved_call.as_ref().map(|rc| *rc.clone());
+            }
+            if let Some(rc) = find_resolved_call(callee, target_span) {
+                return Some(rc);
+            }
+            for arg in args {
+                if let Some(rc) = find_resolved_call(arg, target_span) {
+                    return Some(rc);
+                }
+            }
+        }
+        match expr {
+            Expr::Let { bindings, body, .. } | Expr::ParBind { bindings, body, .. } => {
+                for (_, binding_expr) in bindings {
+                    if let Some(rc) = find_resolved_call(binding_expr, target_span) {
+                        return Some(rc);
+                    }
+                }
+                find_resolved_call(body, target_span)
+            }
+            Expr::If { cond, then_branch, else_branch, .. } => {
+                find_resolved_call(cond, target_span)
+                    .or_else(|| find_resolved_call(then_branch, target_span))
+                    .or_else(|| find_resolved_call(else_branch, target_span))
+            }
+            Expr::Lambda { body, .. } => find_resolved_call(body, target_span),
+            Expr::Match { scrutinee, arms, .. } => {
+                find_resolved_call(scrutinee, target_span)
+                    .or_else(|| arms.iter().find_map(|arm| find_resolved_call(&arm.body, target_span)))
+            }
+            Expr::Annotate { expr: inner, .. } | Expr::Trace { body: inner, .. } => {
+                find_resolved_call(inner, target_span)
+            }
+            _ => None,
+        }
+    }
+
+    // spec: design/arch/ast-annotation-examples.md §3.1 — simple fn resolved_call
+    #[test]
+    fn test_ast_annotation_simple_fn_resolved_call() {
+        // (defn double [x] (add-i64 x x))
+        // After typecheck, the add-i64 Apply should have:
+        // - inferred_type: Some(Int) (concrete, no Var)
+        // - resolved_call: Some(BuiltinFn) (since add-i64 is a primitive)
+        let mut tc = tc_with_prims();
+        let ctx = cf_test_ctx();
+
+        let add_span = span(100, 115);
+        let program = vec![TopLevel::Defn(make_defn(
+            "double",
+            vec![Symbol::from("x")],
+            vec![None],
+            Expr::Apply {
+                callee: Box::new(Expr::Var {
+                    name: Symbol::from("add-i64"),
+                    span: span(101, 108),
+                    inferred_type: None,
+                }),
+                args: vec![
+                    Expr::Var { name: Symbol::from("x"), span: span(109, 110), inferred_type: None },
+                    Expr::Var { name: Symbol::from("x"), span: span(111, 112), inferred_type: None },
+                ],
+                span: add_span,
+                resolved_call: None,
+                inferred_type: None,
+            },
+            Visibility::Public,
+            span(90, 120),
+        ))];
+
+        let _result = tc.check(&program, &ctx, ModuleStrategy::Additive).unwrap();
+
+        // Retrieve the annotated AST from the symbol table
+        let st = tc.symbol_table();
+        let entry = st.get("double").expect("double should be in symbol table");
+        if let ModuleEntry::Def { ast: Some(defn), .. } = entry {
+            let body = defn.body();
+
+            // All inferred_types should be concrete (no Var)
+            let mut types = Vec::new();
+            collect_inferred_types(body, &mut types);
+            for (s, ty) in &types {
+                let ty = ty.as_ref().unwrap_or_else(|| panic!("no inferred_type at span {:?}", s));
+                assert!(
+                    !ty.contains_var(),
+                    "inferred_type at span {:?} contains Var: {:?}", s, ty
+                );
+            }
+
+            // The Apply node should have inferred_type = Int
+            assert_eq!(
+                body.inferred_type().unwrap(),
+                &Type::Int,
+                "Apply (add-i64 x x) should have type Int"
+            );
+
+            // Check that resolved_call is present on the Apply (BuiltinFn for add-i64)
+            let rc = find_resolved_call(body, add_span);
+            assert!(rc.is_some(), "Apply (add-i64 x x) should have resolved_call");
+            match rc.unwrap() {
+                ResolvedCall::BuiltinFn { name } => {
+                    assert_eq!(name.as_ref(), "add-i64");
+                }
+                other => panic!("expected BuiltinFn, got {:?}", other),
+            }
+        } else {
+            panic!("double should have ast: Some(..), got {:?}", entry);
+        }
+    }
+
+    // spec: design/arch/ast-annotation-examples.md §3.1 — trait method resolved_call
+    #[test]
+    fn test_ast_annotation_trait_method_resolved_call() {
+        // (defn double [x] (+ x x))  with Num trait
+        // (double 5)
+        // After typecheck, the + Apply should have resolved_call = TraitMethod
+        let mut tc = tc_with_prims();
+        register_num_trait_inline(&mut tc);
+        let ctx = cf_test_ctx();
+
+        let plus_span = span(200, 210);
+        let call_span = span(220, 230);
+        let program = vec![
+            TopLevel::Defn(make_defn(
+                "double",
+                vec![Symbol::from("x")],
+                vec![None],
+                Expr::Apply {
+                    callee: Box::new(Expr::Var {
+                        name: Symbol::from("+"),
+                        span: span(201, 202),
+                        inferred_type: None,
+                    }),
+                    args: vec![
+                        Expr::Var { name: Symbol::from("x"), span: span(203, 204), inferred_type: None },
+                        Expr::Var { name: Symbol::from("x"), span: span(205, 206), inferred_type: None },
+                    ],
+                    span: plus_span,
+                    resolved_call: None,
+                    inferred_type: None,
+                },
+                Visibility::Public,
+                span(190, 215),
+            )),
+            // Call site: (double 5)
+            TopLevel::Defn(make_defn(
+                "__expr",
+                vec![],
+                vec![],
+                Expr::Apply {
+                    callee: Box::new(Expr::Var {
+                        name: Symbol::from("double"),
+                        span: span(221, 227),
+                        inferred_type: None,
+                    }),
+                    args: vec![
+                        Expr::IntLit { value: 5, span: span(228, 229), inferred_type: None },
+                    ],
+                    span: call_span,
+                    resolved_call: None,
+                    inferred_type: None,
+                },
+                Visibility::Public,
+                span(219, 231),
+            )),
+        ];
+
+        let result = tc.check(&program, &ctx, ModuleStrategy::Additive).unwrap();
+
+        // Verify the side map has the trait method resolution
+        assert!(
+            result.method_resolutions.contains_key(&plus_span),
+            "method_resolutions should have entry for + call"
+        );
+
+        // Verify the AST has the same resolution
+        let st = tc.symbol_table();
+        let entry = st.get("double").expect("double should be in symbol table");
+        if let ModuleEntry::Def { ast: Some(defn), .. } = entry {
+            let body = defn.body();
+            let rc = find_resolved_call(body, plus_span);
+            assert!(rc.is_some(), "Apply (+ x x) should have resolved_call on AST node");
+            match rc.unwrap() {
+                ResolvedCall::TraitMethod { .. } => {} // expected
+                other => panic!("expected TraitMethod, got {:?}", other),
+            }
+
+            // All types should be concrete
+            let mut types = Vec::new();
+            collect_inferred_types(body, &mut types);
+            for (s, ty) in &types {
+                let ty = ty.as_ref().unwrap_or_else(|| panic!("no inferred_type at span {:?}", s));
+                assert!(
+                    !ty.contains_var(),
+                    "inferred_type at span {:?} contains Var: {:?}", s, ty
+                );
+            }
+        } else {
+            panic!("double should have ast: Some(..)");
+        }
+    }
+
+    // spec: design/arch/ast-annotation-examples.md §3.7 — let binding concrete types
+    #[test]
+    fn test_ast_annotation_let_binding_concrete_type() {
+        // (defn f [] (let [x (add-i64 1 2)] x))
+        // All inferred_type fields should be concrete (Int, no Var).
+        let mut tc = tc_with_prims();
+        let ctx = cf_test_ctx();
+
+        let add_span = span(310, 325);
+        let program = vec![TopLevel::Defn(make_defn(
+            "f",
+            vec![],
+            vec![],
+            Expr::Let {
+                bindings: vec![(
+                    Symbol::from("x"),
+                    Expr::Apply {
+                        callee: Box::new(Expr::Var {
+                            name: Symbol::from("add-i64"),
+                            span: span(311, 318),
+                            inferred_type: None,
+                        }),
+                        args: vec![
+                            Expr::IntLit { value: 1, span: span(319, 320), inferred_type: None },
+                            Expr::IntLit { value: 2, span: span(321, 322), inferred_type: None },
+                        ],
+                        span: add_span,
+                        resolved_call: None,
+                        inferred_type: None,
+                    },
+                )],
+                body: Box::new(Expr::Var {
+                    name: Symbol::from("x"),
+                    span: span(330, 331),
+                    inferred_type: None,
+                }),
+                span: span(300, 340),
+                inferred_type: None,
+            },
+            Visibility::Public,
+            span(295, 345),
+        ))];
+
+        let _result = tc.check(&program, &ctx, ModuleStrategy::Additive).unwrap();
+
+        let st = tc.symbol_table();
+        let entry = st.get("f").expect("f should be in symbol table");
+        if let ModuleEntry::Def { ast: Some(defn), .. } = entry {
+            let body = defn.body();
+
+            // All inferred_types should be concrete
+            let mut types = Vec::new();
+            collect_inferred_types(body, &mut types);
+            for (s, ty) in &types {
+                let ty = ty.as_ref().unwrap_or_else(|| panic!("no inferred_type at span {:?}", s));
+                assert!(
+                    !ty.contains_var(),
+                    "inferred_type at span {:?} contains Var: {:?}", s, ty
+                );
+            }
+
+            // The Let expression should have type Int
+            assert_eq!(body.inferred_type().unwrap(), &Type::Int);
+
+            // The binding expression (add-i64 1 2) should have resolved_call
+            let rc = find_resolved_call(body, add_span);
+            assert!(rc.is_some(), "Apply (add-i64 1 2) should have resolved_call");
+        } else {
+            panic!("f should have ast: Some(..)");
+        }
+    }
+
+    // spec: design/arch/ast-annotation-examples.md §3.6 — self-recursive all resolved
+    #[test]
+    fn test_ast_annotation_self_recursive_all_resolved() {
+        // (defn fact [n acc]
+        //   (if (eq-i64 n 0)
+        //     acc
+        //     (fact (sub-i64 n 1) (mul-i64 n acc))))
+        // All inferred_types should be concrete Int.
+        let mut tc = tc_with_prims();
+        let ctx = cf_test_ctx();
+
+        let eq_span = span(410, 425);
+        let sub_span = span(440, 455);
+        let mul_span = span(460, 475);
+        let fact_span = span(430, 480);
+        let program = vec![TopLevel::Defn(make_defn(
+            "fact",
+            vec![Symbol::from("n"), Symbol::from("acc")],
+            vec![None, None],
+            Expr::If {
+                cond: Box::new(Expr::Apply {
+                    callee: Box::new(Expr::Var {
+                        name: Symbol::from("eq-i64"),
+                        span: span(411, 417),
+                        inferred_type: None,
+                    }),
+                    args: vec![
+                        Expr::Var { name: Symbol::from("n"), span: span(418, 419), inferred_type: None },
+                        Expr::IntLit { value: 0, span: span(420, 421), inferred_type: None },
+                    ],
+                    span: eq_span,
+                    resolved_call: None,
+                    inferred_type: None,
+                }),
+                then_branch: Box::new(Expr::Var {
+                    name: Symbol::from("acc"),
+                    span: span(426, 429),
+                    inferred_type: None,
+                }),
+                else_branch: Box::new(Expr::Apply {
+                    callee: Box::new(Expr::Var {
+                        name: Symbol::from("fact"),
+                        span: span(431, 435),
+                        inferred_type: None,
+                    }),
+                    args: vec![
+                        Expr::Apply {
+                            callee: Box::new(Expr::Var {
+                                name: Symbol::from("sub-i64"),
+                                span: span(441, 448),
+                                inferred_type: None,
+                            }),
+                            args: vec![
+                                Expr::Var { name: Symbol::from("n"), span: span(449, 450), inferred_type: None },
+                                Expr::IntLit { value: 1, span: span(451, 452), inferred_type: None },
+                            ],
+                            span: sub_span,
+                            resolved_call: None,
+                            inferred_type: None,
+                        },
+                        Expr::Apply {
+                            callee: Box::new(Expr::Var {
+                                name: Symbol::from("mul-i64"),
+                                span: span(461, 468),
+                                inferred_type: None,
+                            }),
+                            args: vec![
+                                Expr::Var { name: Symbol::from("n"), span: span(469, 470), inferred_type: None },
+                                Expr::Var { name: Symbol::from("acc"), span: span(471, 474), inferred_type: None },
+                            ],
+                            span: mul_span,
+                            resolved_call: None,
+                            inferred_type: None,
+                        },
+                    ],
+                    span: fact_span,
+                    resolved_call: None,
+                    inferred_type: None,
+                }),
+                span: span(400, 490),
+                inferred_type: None,
+            },
+            Visibility::Public,
+            span(395, 495),
+        ))];
+
+        let _result = tc.check(&program, &ctx, ModuleStrategy::Additive).unwrap();
+
+        let st = tc.symbol_table();
+        let entry = st.get("fact").expect("fact should be in symbol table");
+        if let ModuleEntry::Def { ast: Some(defn), .. } = entry {
+            let body = defn.body();
+
+            // All inferred_types should be concrete
+            let mut types = Vec::new();
+            collect_inferred_types(body, &mut types);
+            for (s, ty) in &types {
+                let ty = ty.as_ref().unwrap_or_else(|| panic!("no inferred_type at span {:?}", s));
+                assert!(
+                    !ty.contains_var(),
+                    "inferred_type at span {:?} contains Var: {:?}", s, ty
+                );
+            }
+
+            // Builtin calls should have resolved_call
+            let eq_rc = find_resolved_call(body, eq_span);
+            assert!(eq_rc.is_some(), "eq-i64 Apply should have resolved_call");
+            let sub_rc = find_resolved_call(body, sub_span);
+            assert!(sub_rc.is_some(), "sub-i64 Apply should have resolved_call");
+            let mul_rc = find_resolved_call(body, mul_span);
+            assert!(mul_rc.is_some(), "mul-i64 Apply should have resolved_call");
+
+            // The recursive call to fact should NOT have resolved_call (it's a plain user fn)
+            let fact_rc = find_resolved_call(body, fact_span);
+            assert!(fact_rc.is_none(), "recursive fact call should have resolved_call = None (plain user fn)");
+        } else {
+            panic!("fact should have ast: Some(..)");
+        }
+    }
+
+    // spec: design/arch/ast-annotation-examples.md §3.2 — constrained fn with shared subst
+    #[test]
+    fn test_ast_annotation_constrained_fn_pinned_by_call_site() {
+        // (defn add [x y] (+ x y))
+        // (defn main [] (add 1 2))
+        // Within the same program, the shared substitution pins add's type vars
+        // to Int. The AST on ModuleEntry::Def.ast for `add` should have fully
+        // concrete types (Int), and the + Apply should have a TraitMethod resolution.
+        let mut tc = tc_with_prims();
+        register_num_trait_inline(&mut tc);
+
+        let plus_span = span(500, 510);
+        let program = vec![
+            TopLevel::Defn(make_defn(
+                "add",
+                vec![Symbol::from("x"), Symbol::from("y")],
+                vec![None, None],
+                Expr::Apply {
+                    callee: Box::new(Expr::Var {
+                        name: Symbol::from("+"),
+                        span: span(501, 502),
+                        inferred_type: None,
+                    }),
+                    args: vec![
+                        Expr::Var { name: Symbol::from("x"), span: span(503, 504), inferred_type: None },
+                        Expr::Var { name: Symbol::from("y"), span: span(505, 506), inferred_type: None },
+                    ],
+                    span: plus_span,
+                    resolved_call: None,
+                    inferred_type: None,
+                },
+                Visibility::Public,
+                span(490, 515),
+            )),
+            TopLevel::Defn(make_defn(
+                "main",
+                vec![],
+                vec![],
+                Expr::Apply {
+                    callee: Box::new(Expr::Var {
+                        name: Symbol::from("add"),
+                        span: span(521, 524),
+                        inferred_type: None,
+                    }),
+                    args: vec![
+                        Expr::IntLit { value: 1, span: span(525, 526), inferred_type: None },
+                        Expr::IntLit { value: 2, span: span(527, 528), inferred_type: None },
+                    ],
+                    span: span(520, 530),
+                    resolved_call: None,
+                    inferred_type: None,
+                },
+                Visibility::Public,
+                span(518, 531),
+            )),
+        ];
+
+        let _result = tc.check_program_self(&program).unwrap();
+
+        // The `add` function should have a fully annotated AST on ModuleEntry::Def.ast.
+        // The shared substitution pins add's type vars to Int.
+        let st = tc.symbol_table();
+        let entry = st.get("add").expect("add should be in symbol table");
+        if let ModuleEntry::Def { ast: Some(defn), .. } = entry {
+            let body = defn.body();
+
+            // All inferred_types should be concrete (Int, no Var)
+            let mut types = Vec::new();
+            collect_inferred_types(body, &mut types);
+            for (s, ty) in &types {
+                let ty = ty.as_ref().unwrap_or_else(|| panic!("no inferred_type at span {:?}", s));
+                assert!(
+                    !ty.contains_var(),
+                    "inferred_type at span {:?} contains Var: {:?}", s, ty
+                );
+            }
+
+            // The + call should have resolved_call = TraitMethod (resolved via
+            // deferred trait call resolution after the call site pins types)
+            let rc = find_resolved_call(body, plus_span);
+            assert!(rc.is_some(), "Apply (+ x x) should have resolved_call on AST node");
+            match rc.unwrap() {
+                ResolvedCall::TraitMethod { .. } => {} // expected
+                other => panic!("expected TraitMethod, got {:?}", other),
+            }
+        } else {
+            panic!("add should have ast: Some(..)");
+        }
+    }
+
+    // spec: design/arch/ast-annotation-examples.md — qualified cross-module extern
+    // A defn body that calls macros/sconcat via qualified name must have
+    // resolved_call set on the Apply node. This is the pattern quasiquote
+    // ~@ generates inside macro clause bodies.
+    #[test]
+    fn test_ast_annotation_qualified_extern_resolved_call() {
+        let mut tc = tc_with_prims();
+        let ctx = cf_test_ctx();
+
+        let sexps = cranelisp_frontend::parse(
+            "(defn concat-nils [] (macros/sconcat macros/SNil macros/SNil))"
+        ).unwrap();
+        let program = cranelisp_frontend::build_program(&sexps).unwrap();
+
+        let _result = tc.check(&program, &ctx, ModuleStrategy::Additive).unwrap();
+
+        let st = tc.symbol_table();
+        let entry = st.get("concat-nils").expect("concat-nils should be in symbol table");
+        if let ModuleEntry::Def { ast: Some(defn), .. } = entry {
+            let body = defn.body();
+
+            // Find the Apply node (there's only one)
+            fn find_any_apply(expr: &Expr) -> Option<&Expr> {
+                if matches!(expr, Expr::Apply { .. }) {
+                    return Some(expr);
+                }
+                match expr {
+                    Expr::Let { bindings, body, .. } | Expr::ParBind { bindings, body, .. } => {
+                        for (_, e) in bindings { if let Some(a) = find_any_apply(e) { return Some(a); } }
+                        find_any_apply(body)
+                    }
+                    Expr::If { cond, then_branch, else_branch, .. } => {
+                        find_any_apply(cond).or_else(|| find_any_apply(then_branch)).or_else(|| find_any_apply(else_branch))
+                    }
+                    Expr::Lambda { body, .. } | Expr::Annotate { expr: body, .. } | Expr::Trace { body, .. } => find_any_apply(body),
+                    _ => None,
+                }
+            }
+            let apply = find_any_apply(body).expect("should have an Apply node");
+            if let Expr::Apply { resolved_call, .. } = apply {
+                assert!(
+                    resolved_call.is_some(),
+                    "Apply (macros/sconcat ...) should have resolved_call on AST node"
+                );
+                match resolved_call.as_deref().unwrap() {
+                    ResolvedCall::BuiltinFn { name } => {
+                        assert_eq!(name.as_ref(), "sconcat");
+                    }
+                    other => panic!("expected BuiltinFn for macros/sconcat, got {:?}", other),
+                }
+            }
+
+            let ty = body.inferred_type().expect("Apply should have inferred_type");
+            assert!(!ty.contains_var(), "inferred_type should be concrete, got {:?}", ty);
+        } else {
+            panic!("concat-nils should have ast: Some(..)");
+        }
     }
 }

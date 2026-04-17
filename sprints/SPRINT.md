@@ -532,3 +532,90 @@ Checking `check_repl_input_inner` (program.rs:1540-1609):
 | 7 | `default_method_defns` not walked by Phase 3 | Pre-existing | Not in `working_program`; may need attention |
 
 **Verdict**: Section 3.6 is structurally sound and correctly diagnoses the root cause. Two findings must be addressed before implementation: (1) add `monomorphise_expr_calls` to the post-pass inventory, and (3) explicitly address the REPL `check_single_defn` path where `resolve_deferred_trait_calls` and final substitution must operate on the annotated clone. The remaining findings are non-blocking or pre-existing.
+
+### Wave 3b Trait Impl Method Annotation Review
+
+**Reviewer**: /arch
+**Verdict**: APPROVED
+
+Reviewed `design/typecheck/ast-annotation.md` Section 3.7 and `design/backend/ast-sourced-codegen.md` Section 3.5, added to address the 59-regression root cause where trait impl method bodies lacked AST annotations.
+
+#### 1. Pattern consistency (typecheck Section 3.7 vs Sections 3.4 and 3.6.4)
+
+Section 3.7 follows the established clone-and-annotate pattern correctly: clone the Defn, pass `&mut Defn` to `check_defn_body_with_types`, run the post-pass (`resolve_deferred_trait_calls`), apply final substitution walk, write to `ModuleEntry::Def.ast`. This is structurally identical to: (a) regular defns in Section 3.4 (clone, `&mut`, infer, post-pass, subst, write), and (b) mono defns in Section 3.6.4 (re-check with `&mut`, resolve auto-curry/inner constrained, subst, write). The HKT path (Section 3.7.3) correctly notes that HKT resolution happens before body checking, so the annotation path is identical to non-HKT. Consistent.
+
+#### 2. Backend Section 3.5 uniformity claim
+
+Section 3.5 correctly documents that all four method categories (regular defns, mono specializations, default method defns, trait impl methods) are uniform `ModuleEntry::Def` entries found by mangled name. The `TopLevel::TraitImpl` skip in the codegen dispatch loop is correctly justified. Cross-module resolution via GOT is correctly noted as name-keyed (origin-agnostic). Accurate.
+
+#### 3. Missed method paths
+
+Verified against source: all trait impl methods flow through `register_trait_impl` which calls `check_impl_method` (or `check_hkt_impl_method`) per method. No alternative paths exist for trait impl body checking. The REPL path (`check_repl_input_inner` for `TopLevel::TraitImpl`) also delegates to `register_trait_impl`. No gaps.
+
+**Note**: The current `register_trait_impl` (traits.rs:429-440) constructs the returned `all_defns` by cloning the *original* method body (`method_defn.body().clone()`), not the annotated clone from `check_impl_method`. After Section 3.7's fix, these returned defns become irrelevant for the AST-on-symbol-table path (the annotated defn is written directly to `ModuleEntry::Def.ast` at step 5 of Section 3.7.2). The returned defns are still needed for the `program`-based compilation path (Option A, Section 3.4 of the backend doc) during the migration period. The implementer must ensure the returned defns are also annotated, or that the `program` path is updated to read from the symbol table for trait impl methods. This is an implementation detail, not a design gap.
+
+#### 4. Ordering
+
+Section 3.7.4 correctly states trait impl method bodies are checked during Pass 2, with deferred resolutions handled inside `check_defn_body_with_types` (not by the later Phase 3 pass). The fully annotated AST is on the symbol table before Phase 3 begins. Correct.
+
+#### 5. Root cause closure
+
+The 59-regression root cause was: Step 1d skipped `TopLevel::TraitImpl` in the codegen dispatch loop, expecting methods to be available by mangled name on the symbol table with annotated `ast` fields. But `check_impl_method` took `&Defn`, so no annotations were written. Section 3.7 fixes the write side (clone + `&mut` + post-pass + subst + write to `ast`). Section 3.5 documents the read side (backend finds them by name, same as any defn). Together these close the gap. The `enrich_defn_from_side_maps` workaround and the `annotate_defn_from_maps` call at program.rs:1064 become unnecessary once Section 3.7 is implemented.
+
+**No blocking findings.** The design updates are complete and internally consistent. The Section 2.6 update correctly cross-references Section 3.7.
+
+### Wave 3b Architecture Review: Per-Defn Completion Design (Rewritten ast-annotation.md Section 3.4)
+
+**Reviewer**: /arch
+**Scope**: Review of rewritten `design/typecheck/ast-annotation.md` Section 3.4 (per-defn completion), 3.6 (post-passes inside check_form), 3.6.5 (REPL path), 3.6.6 (macro clause path), 3.6.7 (no enrichment), and 3.8 (FormCheckResult disposition).
+**Verdict**: APPROVED — the design is sound.
+
+#### Question 1: Is per-defn completion actually possible?
+
+**Yes.** The core claim — that each defn's type variables are fully determined by the end of that defn's body check — is verified against source. `register_defn_signature` (program.rs:2043) allocates fresh type variables via `fresh_var()` (monotonic counter) for each defn. Cross-defn calls instantiate the callee's scheme with fresh vars scoped to the calling defn. No defn B's body check can introduce substitution entries that refine defn A's type variables.
+
+Verified that `resolve_deferred_trait_calls` (infer.rs:495) calls `self.apply_subst(state, t)` on argument types — it reads the current substitution. The design doc correctly identifies that the Phase 3 second pass in `finalize_check_result_inner` (line 916) is a safety net that adds no new resolutions. After A's body check completes, A's substitution is fully determined. Later defn body checks add entries for *their own* fresh vars, never for A's vars. The per-defn call at line 670 already has full information.
+
+`resolve_pending_overloads` and `resolve_auto_curry` drain per-defn queues (`std::mem::take` pattern). Since `check_form(CheckBody)` processes one defn at a time, the queues contain only entries from the current defn. The per-defn post-pass variant is equivalent to the batch version. Sound.
+
+#### Question 2: Does this eliminate the enrichment workaround?
+
+**Yes, fully justified.** `enrich_defn_from_side_maps` exists in two places (worker.rs:1061, backend/lib.rs:443) because the current `check_form(CheckBody)` returns an unannotated Defn and post-passes write to side maps only. With per-defn completion, `check_form(CheckBody)` returns a Defn with all `inferred_type` fields concrete and all `resolved_call` fields populated. No downstream caller needs to patch annotations from side maps. The Span-keyed lookup with "overwrite if contains_var" heuristic is eliminated entirely. This closes a structural asymmetry: currently batch/macro/REPL paths each have different annotation strategies; per-defn completion unifies all three.
+
+#### Question 3: Macro clause path
+
+**Covered.** Section 3.6.6 correctly shows that `compile_macro_clause_with_state` calls `check_form(Register)` then `check_form(CheckBody)` per form, without `finalize_check_result`. This was the original motivation for per-defn completion. Macro clause functions have simple bodies (no trait methods, no multi-sig dispatch, no constrained polymorphism), so the per-defn post-passes (resolve deferred traits, resolve overloads, resolve auto-curry) are typically no-ops. The design correctly notes that per-defn completion makes the macro clause path work "without modification" — the annotated Defn is ready to compile immediately. This is the strongest validation of the design: the path that currently needs the `enrich_defn_from_side_maps` workaround becomes the simplest case.
+
+#### Question 4: FormCheckResult disposition
+
+**method_resolutions and expr_types become redundant. No remaining consumers after Step 1d.** Section 3.8 correctly categorizes each field. The annotated AST on `ModuleEntry::Def.ast` replaces both side maps. During the dual-write period, both are populated for verification (Section 3.5). After Step 1d removes the side maps, the remaining `FormCheckResult` fields (constrained_fn, mono_defns, default_method_defns, multi_sig_defns, warnings, call_graph_edges) are legitimately needed for non-annotation concerns and correctly retained.
+
+One note: `state.expr_types` is still read by `resolve_deferred_trait_calls` (line 506-508) to get argument types for trait resolution. The per-defn design must continue populating `state.expr_types` during `infer_expr` so that the per-defn `resolve_deferred_trait_calls` call can read them. This is an internal implementation detail — the side map is used transiently within the defn's body check scope, not exported on `FormCheckResult`. The doc could be clearer that `state.expr_types` persists as a transient working structure even after it is removed from `FormCheckResult`.
+
+#### Question 5: Pipeline simplification
+
+**Significant.** The design eliminates:
+1. `enrich_defn_from_side_maps` in worker.rs (~180 lines, 2 call sites)
+2. `enrich_defn_from_side_maps` in backend/lib.rs (~135 lines, 5 call sites)
+3. Phase 3 batch `resolve_deferred_trait_calls` loop in `finalize_check_result_inner` (lines 916-940)
+4. Batch `resolve_pending_overloads` call (line 839)
+5. Batch `resolve_auto_curry` call (line 840)
+6. Batch final substitution walk (lines 867-872)
+7. `method_resolutions` and `expr_types` fields on `FormCheckResult`, `ModuleCheckAccumulator`, and `CheckResult`
+8. `CodegenInput` type entirely
+
+That is 7 separate enrichment/post-processing paths collapsed into one: per-defn post-passes inside `check_form(CheckBody)`. Three structurally different annotation strategies (batch finalize, REPL inline, macro clause workaround) become one.
+
+#### Question 6: Implementation risk
+
+**Medium, well-mitigated.** The primary risk is the `&mut Expr` threading — every `infer_expr` call site and every recursive AST walk must switch from `&Expr` to `&mut Expr`. This is a pervasive mechanical change across `infer.rs` and `program.rs`. The risk is mitigated by:
+- Cloning the Defn before mutation (original AST untouched for constrained-fn templates)
+- `set_inferred_type` helper method localizing mutation
+- Dual-write assertions catching discrepancies between old and new paths
+- The change is to an internal crate (`cranelisp-typecheck`), not a boundary type
+
+Secondary risk: the REPL path has `monomorphise_expr_calls` (identified as a gap in the prior Wave 4 review, Finding 1). The rewritten doc addresses this in Section 3.6.5 with explicit per-defn handling. The implementer must verify this path.
+
+Third risk: `resolve_deferred_trait_calls` currently takes `&Expr` (immutable). Changing to `&mut Expr` is straightforward but the Phase 3 loop in `finalize_check_result_inner` constructs temporary clones from `working_program`. Once Phase 3 is removed (per the design), this is moot. During the migration, the implementer must ensure the per-defn call mutates the annotated clone, not `working_program`.
+
+**Overall**: The design is architecturally sound, eliminates a real structural defect (three divergent annotation paths), and the per-defn completion claim is verified against source. The prior review's two blocking findings (monomorphise_expr_calls gap, REPL check_single_defn path) are addressed in the rewritten doc. No new blocking findings.

@@ -3040,4 +3040,106 @@ mod tests {
         assert_eq!(concrete_type_name(&Type::String).unwrap().name.as_ref(), "String");
         assert!(concrete_type_name(&Type::Var(0)).is_none());
     }
+
+    // spec: appendix-a-builtins §A.2 — extern primitive dispatch via resolved_call
+    //
+    // Isolates the "undefined function: macros/sconcat" failure from
+    // repl_defmacro_rest_splice. When compile_apply receives an Apply node
+    // with resolved_call: Some(BuiltinFn { name: "sconcat" }), it must take
+    // the extern call path (compile_extern_call). When resolved_call is None,
+    // it falls through to compile_direct_call which fails because there is no
+    // GOT slot or FuncId for the qualified name "macros/sconcat".
+    #[test]
+    fn test_extern_primitive_via_resolved_call_succeeds() {
+        use cranelisp_types::ResolvedCall;
+
+        // Build: (defn main [] (sconcat 0 0))
+        // sconcat is an extern primitive that takes two i64 args.
+        // We pass 0s (representing SNil) — the extern symbol exists in the
+        // JIT runtime so the call will succeed at compile time.
+        let apply_span = Span::new(2000, 2030);
+
+        let mut method_resolutions = HashMap::new();
+        method_resolutions.insert(
+            apply_span,
+            ResolvedCall::BuiltinFn {
+                name: Symbol::from("sconcat"),
+            },
+        );
+
+        let expr = Expr::Apply {
+            callee: Box::new(Expr::Var {
+                name: Symbol::from("macros/sconcat"),
+                span: Span::new(2001, 2015),
+                inferred_type: None,
+            }),
+            args: vec![
+                Expr::IntLit { value: 0, span: Span::new(2016, 2017), inferred_type: None },
+                Expr::IntLit { value: 0, span: Span::new(2018, 2019), inferred_type: None },
+            ],
+            span: apply_span,
+            resolved_call: None, // enrichment will set this from method_resolutions
+            inferred_type: None,
+        };
+
+        let check = CheckResult {
+            method_resolutions,
+            constrained_fn_names: HashSet::new(),
+            mono_defns: Vec::new(),
+            expr_types: HashMap::new(),
+            default_method_defns: Vec::new(),
+            warnings: Vec::new(),
+            display: None,
+        };
+
+        // With resolved_call present (via enrichment), compilation should
+        // succeed because compile_apply routes to compile_extern_call.
+        let result = test_compile_and_run(&expr, &check, &empty_tables());
+        assert!(
+            result.is_ok(),
+            "extern primitive sconcat should compile when resolved_call is BuiltinFn: {result:?}"
+        );
+    }
+
+    // spec: appendix-a-builtins §A.2 — missing resolved_call causes "undefined function"
+    //
+    // Companion to the test above: when resolved_call is None (not enriched),
+    // compile_apply falls through to compile_var_apply -> compile_direct_call
+    // which fails because "macros/sconcat" has no GOT slot or FuncId.
+    // This is the broken path that the integration test hits.
+    #[test]
+    fn test_extern_primitive_without_resolved_call_fails() {
+        // Build: (defn main [] (macros/sconcat 0 0))
+        // No resolved_call, no GOT entry, no FuncId — should fail.
+        let apply_span = Span::new(2100, 2130);
+
+        // No method_resolutions — resolved_call stays None.
+        let expr = Expr::Apply {
+            callee: Box::new(Expr::Var {
+                name: Symbol::from("macros/sconcat"),
+                span: Span::new(2101, 2115),
+                inferred_type: None,
+            }),
+            args: vec![
+                Expr::IntLit { value: 0, span: Span::new(2116, 2117), inferred_type: None },
+                Expr::IntLit { value: 0, span: Span::new(2118, 2119), inferred_type: None },
+            ],
+            span: apply_span,
+            resolved_call: None,
+            inferred_type: None,
+        };
+
+        let check = empty_check();
+
+        let result = test_compile_and_run(&expr, &check, &empty_tables());
+        assert!(
+            result.is_err(),
+            "macros/sconcat without resolved_call should fail"
+        );
+        let err_msg = format!("{:?}", result.unwrap_err());
+        assert!(
+            err_msg.contains("undefined function"),
+            "error should be 'undefined function', got: {err_msg}"
+        );
+    }
 }

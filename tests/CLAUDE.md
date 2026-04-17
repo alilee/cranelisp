@@ -215,6 +215,64 @@ cargo test --test e2e_runner
 5. **Add dual-mode**: for language-behavior integration tests, test both batch and REPL
 6. **Note provenance**: if porting from prototype, note the original test name in a comment
 
+## Isolating Cross-Crate Failures
+
+When an integration test fails and the root cause could be in any crate (typecheck? backend? integration wiring?), follow this process to isolate before fixing. Do NOT guess-and-patch — that creates workarounds that mask the real problem.
+
+### Step 1: Minimal integration test
+
+Write the smallest test that reproduces the failure. Strip everything: no prelude, no stdlib, no imports unless required. Use `repl_session()` (bare session). The test should fail with the same error as the original.
+
+```rust
+#[test]
+fn repl_defmacro_rest_splice() {
+    let mut s = repl_session();
+    s.eval("(defmacro my-begin ([] 0) ([x &rest] `(begin ~x ~@rest)))").unwrap();
+    let val = repl_eval(&mut s, "(my-begin 42)");
+    assert_eq!(val, 42);
+}
+```
+
+### Step 2: Inspect compiler state at the failure point
+
+The error message names a symbol (e.g., "undefined function: macros/sconcat"). Inspect the compiler's state for that symbol at the point where the error occurs. Use `ReplSession::show_entry("module/name")` to dump the symbol table entry, or add temporary diagnostics at the error site in the backend/integration code. Run with `cargo test --test <file> <test> -- --nocapture`.
+
+```rust
+s.show_entry("macros/sconcat");  // what does the compiler know about this symbol?
+s.eval("...").unwrap();          // fails here
+```
+
+The goal: determine whether the data is **missing** (never created), **incomplete** (created but missing a field like `got_slot` or `resolved_call`), or **present but not reached** (exists in the symbol table but the code path doesn't look it up). This determines which crate owns the fix.
+
+### Step 3: Unit test in the owning crate
+
+Write a `#[cfg(test)]` unit test in the crate that should produce the correct output. Use `cranelisp_frontend::parse` + `build_program` (via `[dev-dependencies]`) to build AST from source — don't hand-construct `Expr` trees.
+
+```rust
+#[test]
+fn test_ast_annotation_qualified_extern_resolved_call() {
+    let mut tc = tc_with_prims();
+    let sexps = cranelisp_frontend::parse(
+        "(defn f [] (macros/sconcat macros/SNil macros/SNil))"
+    ).unwrap();
+    let program = cranelisp_frontend::build_program(&sexps).unwrap();
+    let _result = tc.check(&program, &ctx, ModuleStrategy::Additive).unwrap();
+    // Assert the symbol table entry has the expected annotation
+    let entry = tc.symbol_table().get("f").unwrap();
+    // ... assert resolved_call, inferred_type, etc.
+}
+```
+
+### Step 4: Interpret the result
+
+- **Unit test passes, integration test fails** → bug is in the integration wiring (`src/worker.rs`, `src/pipeline.rs`, `src/session_v4.rs`). The crate produces correct output but the integration layer isn't using it.
+- **Unit test fails** → bug is in the crate. Fix there.
+- **Unit test can't be written** (crate doesn't have the right test infrastructure) → add the infrastructure first.
+
+### Step 5: Fix at the right level
+
+Don't patch the integration layer to work around a crate bug. Don't patch a crate to compensate for integration wiring. Each crate's output must be correct independently.
+
 ## Prototype Test Oracle
 
 The prototype's tests are acceptance criteria:

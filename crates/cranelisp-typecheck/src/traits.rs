@@ -412,32 +412,17 @@ impl TypeCheckEnv<'_> {
         );
 
         // Type-check each impl method body and generate mangled-name Defns.
+        // check_impl_method returns the annotated defn (already written to
+        // ModuleEntry::Def.ast under the mangled name).
         let mut all_defns = default_defns;
         for method_defn in &impl_.methods {
-            self.check_impl_method(
+            let annotated = self.check_impl_method(
                 state,
                 &decl,
                 impl_,
                 method_defn,
             )?;
-
-            // Gap 3: Emit a Defn with the mangled name for the backend to compile.
-            let mangled = format!(
-                "{}.{}${}",
-                impl_.trait_name, method_defn.name, impl_.target_type
-            );
-            all_defns.push(Defn {
-                name: Symbol::from(mangled.as_str()),
-                docstring: method_defn.docstring.clone(),
-                variants: vec![DefnVariant {
-                    params: method_defn.params().to_vec(),
-                    param_annotations: method_defn.param_annotations().to_vec(),
-                    body: method_defn.body().clone(),
-                    span: method_defn.span,
-                }],
-                visibility: Visibility::Public,
-                span: method_defn.span,
-            });
+            all_defns.push(annotated);
         }
 
         Ok(all_defns)
@@ -476,13 +461,18 @@ impl TypeCheckEnv<'_> {
     }
 
     /// Type-check a single impl method.
+    ///
+    /// Clones the method defn, type-checks the body, annotates the clone
+    /// with resolved calls and inferred types from side maps, applies final
+    /// substitution, and writes the annotated defn to `ModuleEntry::Def.ast`
+    /// under the mangled name.
     fn check_impl_method(
         &self,
         state: &mut CheckState,
         decl: &TraitDecl,
         impl_: &TraitImpl,
         method_defn: &Defn,
-    ) -> Result<(), CranelispError> {
+    ) -> Result<Defn, CranelispError> {
         let mut local_next_id = self.next_id_snapshot();
         // Look up the method signature from the trait
         let method_sig = decl
@@ -552,10 +542,65 @@ impl TypeCheckEnv<'_> {
 
         self.commit_next_id(local_next_id);
 
-        // Check the body
-        self.check_defn_body_with_types(state, method_defn, &param_types, &ret_ty)?;
+        // Snapshot side maps for per-defn delta extraction
+        let mr_before: HashSet<Span> = state.method_resolutions.keys().copied().collect();
+        let et_before: HashSet<Span> = state.expr_types.keys().copied().collect();
 
-        Ok(())
+        // Clone the method defn and check the body with the mutable copy
+        let mut method_clone = method_defn.clone();
+        self.check_defn_body_with_types(state, &mut method_clone, &param_types, &ret_ty)?;
+
+        // Per-defn post-passes (auto-curry only; overloads deferred to finalize)
+        self.resolve_auto_curry(state);
+
+        // Build the mangled name and create annotated defn for symbol table
+        let mangled = format!(
+            "{}.{}${}",
+            impl_.trait_name, method_defn.name, impl_.target_type
+        );
+        let mangled_sym = Symbol::from(mangled.as_str());
+
+        // Extract delta: only entries added during this method's body check
+        let method_mr: HashMap<Span, ResolvedCall> = state.method_resolutions
+            .iter()
+            .filter(|(span, _)| !mr_before.contains(span))
+            .map(|(span, res)| (*span, res.clone()))
+            .collect();
+        let method_et: HashMap<Span, Type> = state.expr_types
+            .iter()
+            .filter(|(span, _)| !et_before.contains(span))
+            .map(|(span, ty)| (*span, apply(&state.subst, ty)))
+            .collect();
+
+        // Annotate the clone with types and resolved calls from delta,
+        // then apply final substitution to resolve Var(N) type variables
+        let mut annotated = Defn {
+            name: mangled_sym.clone(),
+            docstring: method_clone.docstring.clone(),
+            variants: vec![DefnVariant {
+                params: method_clone.params().to_vec(),
+                param_annotations: method_clone.param_annotations().to_vec(),
+                body: method_clone.body().clone(),
+                span: method_clone.span,
+            }],
+            visibility: Visibility::Public,
+            span: method_clone.span,
+        };
+        crate::program::annotate_defn_from_maps(
+            &mut annotated,
+            &method_et,
+            &method_mr,
+        );
+        crate::program::apply_subst_to_defn(&state.subst, &mut annotated);
+
+        // Write the fully annotated defn to ModuleEntry::Def.ast
+        if let Some(ModuleEntry::Def { ast, .. }) =
+            self.current_symbol_table_mut(state).symbols.get_mut(&mangled_sym)
+        {
+            *ast = Some(annotated.clone());
+        }
+
+        Ok(annotated)
     }
 
     /// Type-check an HKT impl method.
@@ -563,6 +608,8 @@ impl TypeCheckEnv<'_> {
     /// For `(impl Functor Option (defn fmap [func opt] ...))`:
     /// - The constructor variable `f` maps to the impl target `Option`
     /// - `(f a)` in the signature resolves to `(Option a)` via ADT application
+    ///
+    /// Same clone-annotate-write pattern as `check_impl_method`.
     fn check_hkt_impl_method(
         &self,
         state: &mut CheckState,
@@ -570,7 +617,7 @@ impl TypeCheckEnv<'_> {
         impl_: &TraitImpl,
         method_defn: &Defn,
         method_sig: &TraitMethodSig,
-    ) -> Result<(), CranelispError> {
+    ) -> Result<Defn, CranelispError> {
         let mut local_next_id = self.next_id_snapshot();
         // Build con_var_map: constructor variable name -> resolve to ADT name
         // For HKT impls, we substitute constructor vars with the target ADT.
@@ -625,18 +672,76 @@ impl TypeCheckEnv<'_> {
 
         self.commit_next_id(local_next_id);
 
-        // Check the body
-        self.check_defn_body_with_types(state, method_defn, &param_types, &ret_ty)?;
+        // Snapshot side maps for per-defn delta extraction
+        let mr_before: HashSet<Span> = state.method_resolutions.keys().copied().collect();
+        let et_before: HashSet<Span> = state.expr_types.keys().copied().collect();
 
-        Ok(())
+        // Clone the method defn and check the body with the mutable copy
+        let mut method_clone = method_defn.clone();
+        self.check_defn_body_with_types(state, &mut method_clone, &param_types, &ret_ty)?;
+
+        // Per-defn post-passes (auto-curry only; overloads deferred to finalize)
+        self.resolve_auto_curry(state);
+
+        // Build the mangled name and create annotated defn for symbol table
+        let mangled = format!(
+            "{}.{}${}",
+            impl_.trait_name, method_defn.name, impl_.target_type
+        );
+        let mangled_sym = Symbol::from(mangled.as_str());
+
+        // Extract delta: only entries added during this method's body check
+        let method_mr: HashMap<Span, ResolvedCall> = state.method_resolutions
+            .iter()
+            .filter(|(span, _)| !mr_before.contains(span))
+            .map(|(span, res)| (*span, res.clone()))
+            .collect();
+        let method_et: HashMap<Span, Type> = state.expr_types
+            .iter()
+            .filter(|(span, _)| !et_before.contains(span))
+            .map(|(span, ty)| (*span, apply(&state.subst, ty)))
+            .collect();
+
+        // Annotate the clone with types and resolved calls from delta,
+        // then apply final substitution to resolve Var(N) type variables
+        let mut annotated = Defn {
+            name: mangled_sym.clone(),
+            docstring: method_clone.docstring.clone(),
+            variants: vec![DefnVariant {
+                params: method_clone.params().to_vec(),
+                param_annotations: method_clone.param_annotations().to_vec(),
+                body: method_clone.body().clone(),
+                span: method_clone.span,
+            }],
+            visibility: Visibility::Public,
+            span: method_clone.span,
+        };
+        crate::program::annotate_defn_from_maps(
+            &mut annotated,
+            &method_et,
+            &method_mr,
+        );
+        crate::program::apply_subst_to_defn(&state.subst, &mut annotated);
+
+        // Write the fully annotated defn to ModuleEntry::Def.ast
+        if let Some(ModuleEntry::Def { ast, .. }) =
+            self.current_symbol_table_mut(state).symbols.get_mut(&mangled_sym)
+        {
+            *ast = Some(annotated.clone());
+        }
+
+        Ok(annotated)
     }
 
     /// Check a function body with explicit parameter types.
-    /// Shared helper for impl method checking.
+    /// Shared helper for impl method checking and monomorphisation re-check.
+    ///
+    /// Takes `&mut Defn` so callers can annotate the AST after inference
+    /// (via `annotate_defn_from_maps` + `apply_subst_to_defn`).
     pub(crate) fn check_defn_body_with_types(
         &self,
         state: &mut CheckState,
-        defn: &Defn,
+        defn: &mut Defn,
         param_types: &[Type],
         ret_ty: &Type,
     ) -> Result<(), CranelispError> {
@@ -886,8 +991,9 @@ impl TypeCheckEnv<'_> {
             return Ok(None);
         };
 
+        let mut defn = defn;
         let (mut resolutions, mono_expr_types) =
-            self.recheck_body_for_mono(state, &defn, &concrete_param_types, &concrete_ret_ty)?;
+            self.recheck_body_for_mono(state, &mut defn, &concrete_param_types, &concrete_ret_ty)?;
 
         // Add SigDispatch entries for inner constrained fn calls
         self.resolve_inner_constrained_calls(
@@ -897,19 +1003,28 @@ impl TypeCheckEnv<'_> {
             &mut resolutions,
         );
 
-        let mono_defn = MonoDefn {
-            defn: Defn {
-                name: Symbol::from(mangled_name.as_str()),
-                docstring: defn.docstring.clone(),
-                variants: vec![DefnVariant {
-                    params: defn.params().to_vec(),
-                    param_annotations: defn.param_annotations().to_vec(),
-                    body: defn.body().clone(),
-                    span: defn.span,
-                }],
-                visibility: defn.visibility,
+        // Build annotated mono defn: annotate from side maps, apply subst
+        let mut mono_defn_ast = Defn {
+            name: Symbol::from(mangled_name.as_str()),
+            docstring: defn.docstring.clone(),
+            variants: vec![DefnVariant {
+                params: defn.params().to_vec(),
+                param_annotations: defn.param_annotations().to_vec(),
+                body: defn.body().clone(),
                 span: defn.span,
-            },
+            }],
+            visibility: defn.visibility,
+            span: defn.span,
+        };
+        crate::program::annotate_defn_from_maps(
+            &mut mono_defn_ast,
+            &mono_expr_types,
+            &resolutions,
+        );
+        crate::program::apply_subst_to_defn(&state.subst, &mut mono_defn_ast);
+
+        let mono_defn = MonoDefn {
+            defn: mono_defn_ast,
             resolutions,
             expr_types: mono_expr_types,
         };
@@ -973,7 +1088,7 @@ impl TypeCheckEnv<'_> {
     fn recheck_body_for_mono(
         &self,
         state: &mut CheckState,
-        defn: &Defn,
+        defn: &mut Defn,
         concrete_param_types: &[Type],
         concrete_ret_ty: &Type,
     ) -> Result<(MethodResolutions, HashMap<Span, Type>), CranelispError> {

@@ -86,3 +86,7 @@ All symbols registered in the JIT share a single flat namespace. Names must be u
 - `cranelisp` (binary): depends on all above
 
 No circular dependencies. Cargo enforces this at build time.
+
+## Debugging Cross-Crate Failures
+
+When an integration test fails and the root cause could be in any crate, follow the isolation process in `tests/CLAUDE.md` §"Isolating Cross-Crate Failures". The key principle: write a crate-level unit test that asserts the expected state at the crate boundary. If it passes, the bug is in the integration wiring. If it fails, fix the crate.

@@ -197,7 +197,25 @@ Concretely:
 - `default_method_defns` are appended to `program` as `TopLevel::Defn(defn)`. Each default method defn's AST nodes carry their own `inferred_type` and `resolved_call` fields. No Defn-level maps.
 - `constrained_fn_names`: the defn collection loop identifies constrained templates by checking `ModuleEntry::Def.kind` in the symbol table (which already distinguishes `UserFn { constrained_fn: Some(_) }` from regular `UserFn`). No separate `HashSet` needed.
 
-### 3.5 What happens to CodegenInput
+### 3.5 Trait impl methods: symbol table entries, not TopLevel traversal
+
+After the data model change, trait impl methods follow the same pattern as mono specializations, default method defns, and multi-sig variants: each method is a first-class `ModuleEntry::Def` on the symbol table under its mangled name (e.g., `Display.show$Option$Int`), with `ast: Some(annotated_defn)` carrying concrete types and resolved calls on its AST nodes.
+
+**How the backend finds them**: The same way it finds any regular defn — by name in the symbol table. There is no special trait-impl iteration path. When `compile_to_module` processes defns (either from `program` entries or from the symbol table's name list in Phase 2), mangled trait method defns appear alongside regular defns and mono specializations.
+
+**Why `TopLevel::TraitImpl` is skipped**: The `TopLevel::TraitImpl` form in the program is a structural declaration — it records which trait is implemented for which type. The compilable method bodies are already extracted by typecheck and placed on the symbol table as separate `ModuleEntry::Def` entries. The `compile_to_module` defn collection loop skips `TopLevel::TraitImpl` because there is nothing to compile from the structural form; the methods are compiled individually by their mangled names.
+
+**Consistency with other mangled defns**: This is the established pattern:
+- **Mono specializations** (`add$Int+Int`): separate `ModuleEntry::Def` entries by mangled name.
+- **Default method defns** (`Num.negate$Int`): separate `ModuleEntry::Def` entries by mangled name.
+- **Multi-sig variants** (`map$Vec+Fn`, `map$List+Fn`): separate `ModuleEntry::Def` entries by mangled name.
+- **Trait impl methods** (`Display.show$Option$Int`): same — separate `ModuleEntry::Def` entries by mangled name.
+
+All are compiled uniformly by the defn collection loop. No special-case handling per category.
+
+**Cross-module resolution**: For the `compile_to_module` object codegen path, cross-module references to trait impl methods resolve through the symbol table the same way as any other cross-module function reference — via GOT slot lookup in `ObjectCompilationEnv`. The mangled name is the key; the origin (trait impl vs regular defn) is irrelevant to the backend.
+
+### 3.6 What happens to CodegenInput
 
 `CodegenInput` in `session_v4.rs` is **deleted**. Its fields were:
 
@@ -218,7 +236,7 @@ The `/int` skill deletes:
 - `stash_codegen_input()` calls in `worker.rs`
 - All code that constructs `CodegenInput` from `CheckResult`
 
-### 3.6 What happens to CheckResult
+### 3.7 What happens to CheckResult
 
 `CheckResult` is **not deleted** -- it becomes a typecheck-internal type. After Step 1d, it carries only:
 - `warnings: Vec<Warning>` -- consumed immediately by the integration layer

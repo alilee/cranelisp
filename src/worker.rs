@@ -570,11 +570,13 @@ fn compile_macro_clause_with_state(
         cranelisp_typecheck::TypeCheckEnv::new(symbol_tables, next_type_id).merge_form_result(target_module, check_state, accumulator, result);
     }
 
-    // Step 5: Extract the defn and compile it.
-    let defn = program
+    // Step 5: Extract the defn from the annotated symbol table (not the unannotated program).
+    // The typechecker stores annotated defns (with resolved_call on AST nodes) in
+    // ModuleEntry::Def.ast. Using the unannotated program would lose these annotations.
+    let defn_name = program
         .iter()
         .find_map(|tl| match tl {
-            TopLevel::Defn(d) => Some(d),
+            TopLevel::Defn(d) => Some(d.name.clone()),
             _ => None,
         })
         .ok_or_else(|| CranelispError::MacroError {
@@ -584,6 +586,21 @@ fn compile_macro_clause_with_state(
             ),
             span,
         })?;
+
+    let defn = symbol_tables
+        .get(target_module)
+        .and_then(|table| match table.get(defn_name.as_ref()) {
+            Some(cranelisp_types::ModuleEntry::Def { ast: Some(d), .. }) => Some(d.clone()),
+            _ => None,
+        })
+        .unwrap_or_else(|| {
+            // Fallback to program version (should not happen if typecheck is working)
+            program.iter().find_map(|tl| match tl {
+                TopLevel::Defn(d) => Some(d.clone()),
+                _ => None,
+            }).expect("invariant: defn_name was extracted from program above")
+        });
+    let defn = &defn;
 
     // Compile macro clause with dealloc disabled.
     let tc_modules = symbol_tables;
@@ -2117,11 +2134,13 @@ fn compile_macro_clause_inline(
         cranelisp_typecheck::TypeCheckEnv::new(ctx.symbol_tables, ctx.next_type_id).merge_form_result(&module, &mut ctx.check_state, accumulator, result);
     }
 
-    // Step 5: Extract the defn and compile it.
-    let defn = program
+    // Step 5: Extract the defn from the annotated symbol table (not the unannotated program).
+    // The typechecker stores annotated defns (with resolved_call on AST nodes) in
+    // ModuleEntry::Def.ast. Using the unannotated program would lose these annotations.
+    let defn_name = program
         .iter()
         .find_map(|tl| match tl {
-            TopLevel::Defn(d) => Some(d),
+            TopLevel::Defn(d) => Some(d.name.clone()),
             _ => None,
         })
         .ok_or_else(|| CranelispError::MacroError {
@@ -2131,6 +2150,21 @@ fn compile_macro_clause_inline(
             ),
             span,
         })?;
+
+    let defn = ctx.symbol_tables
+        .get(&module)
+        .and_then(|table| match table.get(defn_name.as_ref()) {
+            Some(cranelisp_types::ModuleEntry::Def { ast: Some(d), .. }) => Some(d.clone()),
+            _ => None,
+        })
+        .unwrap_or_else(|| {
+            // Fallback to program version (should not happen if typecheck is working)
+            program.iter().find_map(|tl| match tl {
+                TopLevel::Defn(d) => Some(d.clone()),
+                _ => None,
+            }).expect("invariant: defn_name was extracted from program above")
+        });
+    let defn = &defn;
 
     // Compile macro clause with dealloc disabled (prevents use-after-free on Sexp unmarshal).
     // Macro clause functions are normal functions on per-module GOTs.

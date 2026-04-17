@@ -345,6 +345,7 @@ dependencies = [
 name = "cranelisp-typecheck"
 version = "0.1.0"
 dependencies = [
+ "cranelisp-frontend",
  "cranelisp-types",
  "dashmap",
 ]

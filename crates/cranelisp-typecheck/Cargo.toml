@@ -6,3 +6,6 @@ edition = "2024"
 [dependencies]
 cranelisp-types = { path = "../cranelisp-types" }
 dashmap = "6"
+
+[dev-dependencies]
+cranelisp-frontend = { path = "../cranelisp-frontend" }

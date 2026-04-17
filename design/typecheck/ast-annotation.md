@@ -60,7 +60,9 @@ During Step 1a, the `ast` field is **write-only**. No consumers read it. The exi
 
 ### 2.6 TraitImpl Forms
 
-`TopLevel::TraitImpl` forms produce method entries via the existing trait impl registration path. Each method within a `TraitImpl` becomes a `ModuleEntry::Def` with a mangled name (e.g., `Display.show$Option$Int`). These entries get `ast: Some(method_defn)` after body checking, same as regular defns.
+`TopLevel::TraitImpl` forms produce method entries via the existing trait impl registration path. Each method within a `TraitImpl` becomes a `ModuleEntry::Def` with a mangled name (e.g., `Display.show$Option$Int`). These entries get `ast: Some(method_defn)` after body checking — but this requires the annotation fix described in Section 3.7.
+
+**Key consequence**: Once trait impl methods have fully annotated `ast` fields on their `ModuleEntry::Def` entries, `compile_regular_defns` in the integration layer can find them by mangled name — the same as any other function. There is no need to iterate `TopLevel::TraitImpl` forms during codegen. The integration layer's `TopLevel::TraitImpl(_) => {}` (skip) is correct: the methods are already on the symbol table under their mangled names, with populated `ast` fields ready for compilation.
 
 ### 2.7 TypeDef and Expr Forms
 
@@ -138,87 +140,103 @@ This **eliminates `HashMap<Span, Type>` entirely** — no more Span-keyed side m
 
 ### 3.4 How Typecheck Populates the Annotations
 
-The current inference flow:
+**Design principle**: `check_form(CheckBody)` returns a fully annotated `Defn`. No downstream enrichment from side maps. No batch post-passes. The returned `Defn` has:
+- All `inferred_type` fields concrete (no `Var(N)`) — final substitution applied
+- All `resolved_call` fields populated — including deferred trait calls, auto-curry, overloads
+- Ready to write directly to `ModuleEntry::Def.ast`
+- Ready to compile immediately (e.g., macro clause path) without any enrichment
 
-1. `check_form_body_single_defn(state, defn, accumulator)` calls `check_defn_body(state, defn, ...)`.
-2. Inside `check_defn_body`, inference calls `record_expr_type(state, span, ty)` which writes to `state.expr_types`.
-3. Trait/builtin resolution writes to `state.method_resolutions`.
-4. After body checking, the method extracts new entries from `state.expr_types` and `state.method_resolutions` (delta from before/after snapshots) into `FormCheckResult`.
+**Why per-defn completion is possible**: The post-passes that currently run in batch in `finalize_check_result_inner` appear to need cross-defn information, but they do not. Each defn's body checking creates fresh type variables via `register_defn_signature`, and cross-defn calls instantiate the callee's scheme with fresh vars. All type variables within a single defn's body are fully determined by the end of that defn's body check. Specifically:
 
-The new flow replaces side maps with direct AST annotation. Annotation happens in two stages: the initial `infer_expr` dual-write, and then post-pass AST updates that complete the annotation.
+1. **`resolve_deferred_trait_calls`** — already called per-defn in `check_form_body_single_defn` (line 670). It reads `state.expr_types` for argument types and the trait registry (symbol table) for impls. Both are available immediately after body check. The second pass in `finalize_check_result_inner` (Phase 3, line 917) is a safety net that adds no new information — substitutions from other defns do not refine this defn's type variables.
 
-**Stage 1 — `infer_expr` dual-write:**
+2. **`resolve_pending_overloads`** — processes `state.pending_overload_resolutions`, which accumulates entries during `infer_expr`. These entries contain type variables that are resolved via `apply(&state.subst, t)`. Since the substitution is fully determined after body check, this can run per-defn.
 
-1. `check_form_body_single_defn` clones the `Defn` to get a mutable copy.
-2. Body checking proceeds with `infer_expr` taking `&mut Expr`. When inference determines an expression's type, it writes `expr.set_inferred_type(Some(Box::new(ty)))` directly on the node in addition to `state.expr_types`.
-3. For `Expr::Apply`, when method resolution determines the resolved call during inference, it writes `apply.resolved_call = Some(Box::new(resolution))` directly on the node.
-4. At this point, AST annotations are **incomplete**: `inferred_type` fields contain pre-substitution types (may contain `Var(N)` type variables), and several categories of `resolved_call` are missing because they are determined by post-passes that run after `infer_expr` returns.
+3. **`resolve_auto_curry`** — processes `state.pending_auto_curry`, same pattern as overloads. Uses `apply_subst` to resolve types. Can run per-defn.
 
-**Stage 2 — post-pass AST updates** (see Section 3.6 for details):
+4. **Final substitution walk** — `apply(&state.subst, ty)` on all `inferred_type` fields. The substitution is complete after body check.
 
-5. Post-passes (`resolve_deferred_trait_calls`, `resolve_pending_overloads`, `resolve_auto_curry`) run and update AST nodes directly, filling in the `resolved_call` fields that were left `None` during inference.
-6. A final substitution walk applies `apply(&state.subst, ty)` to every `inferred_type` on every AST node, replacing `Var(N)` type variables with their concrete bindings.
-7. After all post-passes and final substitution complete, the fully annotated `Defn` is written to `ModuleEntry::Def.ast`.
+**The flow inside `check_form(CheckBody)`**:
 
-**Dual-write period (Step 1b)**: During the migration, both paths are populated — `state.expr_types` / `state.method_resolutions` (old) AND the AST node fields (new). This enables verification assertions. Once Step 1c switches all readers to AST nodes, the old side maps can be removed (Step 1d).
+```
+check_form(CheckBody)
+  └─ check_form_body_single_defn(state, defn, accumulator)
+       1. Clone the Defn to get a mutable copy
+       2. check_defn_body(state, &mut defn_clone, param_types, ret_ty)
+          └─ infer_expr(&mut expr) annotates during inference:
+             - expr.set_inferred_type(Some(Box::new(ty))) on every node
+             - apply.resolved_call = Some(Box::new(resolution)) on Apply nodes
+             (types are pre-substitution; some resolved_calls are None)
+       3. Per-defn post-passes on the mutable clone:
+          a. resolve_deferred_trait_calls(state, &mut defn_clone.body())
+             — fills resolved_call on Apply nodes that were deferred
+          b. resolve_pending_overloads_for_defn(state, &mut defn_clone)
+             — fills resolved_call for multi-sig dispatch sites
+          c. resolve_auto_curry_for_defn(state, &mut defn_clone)
+             — fills resolved_call for partial application sites
+       4. Final substitution walk on defn_clone:
+          apply_subst_to_defn(&state.subst, &mut defn_clone)
+             — replaces Var(N) with concrete types on all inferred_type fields
+       5. Return the fully annotated defn_clone
+  └─ Caller writes defn_clone to ModuleEntry::Def.ast
+```
 
 **`&mut Expr` threading**: `infer_expr` takes `&mut Expr`. Since the `Defn` is cloned at the start of body checking, all mutation is on the clone — the original AST is untouched. The clone becomes the annotated version stored on `ModuleEntry::Def.ast`.
 
+**Per-defn post-pass variants**: The current `resolve_pending_overloads` and `resolve_auto_curry` drain ALL pending entries from `CheckState` (via `std::mem::take`). The per-defn variants (`resolve_pending_overloads_for_defn`, `resolve_auto_curry_for_defn`) drain only the entries accumulated during this defn's body check. Since `check_form(CheckBody)` processes one defn at a time, the pending queues contain only entries from the current defn when these post-passes run. The `std::mem::take` pattern still works — the queues are empty before each defn's body check begins (cleared by the previous defn's post-passes or empty at the start).
+
 **Helper method on Expr**: Add `fn set_inferred_type(&mut self, ty: Option<Box<Type>>)` that matches on self and sets the field. This keeps the mutation localized — callers don't need to match on every variant.
+
+**Side map elimination**: With per-defn completion, `state.expr_types` and `state.method_resolutions` become unnecessary for annotation. They may be retained temporarily for verification (Section 3.5) and for `FormCheckResult` fields consumed by the accumulator, but they are no longer the source of truth. See Section 3.8 for `FormCheckResult` field disposition.
 
 ### 3.5 Dual-Write Verification
 
-During Step 1b, both paths are populated:
+During the migration period, both paths are populated:
 
 - **Old path**: `FormCheckResult.method_resolutions` and `FormCheckResult.expr_types` flow into `ModuleCheckAccumulator`, then into `CheckResult`.
 - **New path**: `Expr.inferred_type` and `Expr::Apply.resolved_call` on the annotated AST stored in `ModuleEntry::Def.ast`.
 
-Verification assertions (debug-only, via `debug_assert!`) run **after all post-passes and final substitution** — not after `infer_expr` alone. This is critical because the AST is incomplete until the post-passes in Section 3.6 have run.
+Verification assertions (debug-only, via `debug_assert!`) run **inside `check_form(CheckBody)` after per-defn post-passes and final substitution complete** — i.e., on the fully annotated `Defn` before it is returned.
 
 Verification assertions:
 
-1. After `finalize_check_result_inner` completes (i.e., after all post-passes, final substitution walk, and AST write to `ModuleEntry::Def.ast`), walk each annotated `Defn` AST.
-2. For every `Expr` node with `inferred_type.is_some()`, assert that the accumulated `expr_types` (after `apply(&state.subst, ty)`) has an entry for that span with the same type.
-3. For every `Expr::Apply` with `resolved_call.is_some()`, assert that the accumulated `method_resolutions` has a matching entry for that span.
-4. Assert completeness: every entry in the side maps has a corresponding AST annotation. This catches cases where a post-pass wrote to a side map but failed to update the AST node.
+1. Walk the annotated `Defn` returned by `check_form_body_single_defn`.
+2. For every `Expr` node with `inferred_type.is_some()`, assert that `state.expr_types` (after `apply(&state.subst, ty)`) has an entry for that span with the same type.
+3. For every `Expr::Apply` with `resolved_call.is_some()`, assert that `state.method_resolutions` has a matching entry for that span.
+4. Assert completeness: every entry in the side maps for this defn's spans has a corresponding AST annotation. This catches cases where a side map has an entry but the AST node was not updated.
 
 These assertions run in test builds and CI. They do not run in release builds (no performance impact). They are removed in Step 1d when the side maps are deleted.
 
-### 3.6 Post-Pass AST Update
+### 3.6 Per-Defn Post-Passes (Inside `check_form`)
 
-The initial `infer_expr` dual-write (Section 3.4, Stage 1) does NOT fully annotate the AST. The typecheck pipeline has multiple post-passes in `finalize_check_result_inner` that determine additional resolutions and apply final type substitutions. Each post-pass must update AST nodes directly — not just the side maps.
+All annotation post-passes run per-defn inside `check_form(CheckBody)`, immediately after `infer_expr` returns. There is no batch post-pass phase for annotation purposes. The `finalize_check_result_inner` phase continues to exist for non-annotation concerns (generalization, constrained-fn detection, monomorphisation dispatch), but it does NOT touch AST nodes.
 
-#### 3.6.1 Post-Passes That Add Resolutions
+#### 3.6.1 Post-Passes That Run Per-Defn
 
-**Phase 3 — `resolve_deferred_trait_calls`** (`infer.rs:504`): Walks the AST to resolve trait method calls that were deferred during `infer_expr` because the concrete type was not yet known. Currently takes `&Expr` and writes only to `state.method_resolutions`. The change: take `&mut Expr`, and when a resolution is found for an `Expr::Apply` node, write `resolved_call = Some(Box::new(resolution))` on the node in addition to the side map. This pass already walks the AST recursively, so the structural change is minimal — it gains `&mut` access and sets the field alongside the existing `state.method_resolutions.insert()`.
+Each post-pass takes `&mut Defn` (the clone from Section 3.4) and writes directly to AST nodes:
 
-**Pass 2.5 — `resolve_multi_sig_overloads`**: Resolves multi-sig function dispatch. Currently produces internal variant `Defn`s with `resolved_call` entries written to `state.method_resolutions`. The internal defns created here must have their AST nodes annotated with `resolved_call` before being written to `ModuleEntry::Def.ast`.
+**`resolve_deferred_trait_calls`** (`infer.rs:495`): Walks the `&mut Expr` tree to resolve trait method calls deferred during `infer_expr` because the concrete type was not yet known. Currently takes `&Expr` and writes to `state.method_resolutions`. The change: take `&mut Expr`, and when a resolution is found for an `Expr::Apply` node, write `resolved_call = Some(Box::new(resolution))` directly on the node. This pass already runs per-defn in `check_form_body_single_defn` (line 670); the change is gaining `&mut` access and writing to the node instead of (or in addition to) the side map.
 
-**Pass 5 — `resolve_pending_overloads`** (`program.rs:1395`): Resolves overloaded function calls from `state.pending_overload_resolutions`. Currently writes `ResolvedCall::SigDispatch` entries to `state.method_resolutions` keyed by span. The change: after writing to the side map, also locate the `Expr::Apply` node in the relevant `Defn`'s AST and set its `resolved_call`. Since this pass operates on spans rather than AST references, the implementation has two options:
+**Why per-defn is sufficient**: This pass reads `state.expr_types` for argument types and the trait registry for impls. Both are available after body check. The pass does NOT need types from other defns' bodies — each defn's type variables are fresh (allocated by `register_defn_signature`), and cross-defn calls instantiate the callee's scheme with fresh vars. The second pass of `resolve_deferred_trait_calls` in `finalize_check_result_inner` (Phase 3, line 917) currently exists as a safety net but adds no new resolutions — it can be removed.
 
-- **(a) Deferred node update**: accumulate the set of `(span, resolution)` pairs from the post-pass, then do a single AST walk per defn to apply them. This is a targeted Span-keyed write (not a general-purpose enrichment) that runs inside the typecheck crate and is eliminated when side maps are removed.
-- **(b) Mutable AST references**: thread `&mut Defn` references through the pass. This is cleaner but requires restructuring `pending_overload_resolutions` to store AST path information rather than spans.
+**`resolve_pending_overloads_for_defn`**: Drains `state.pending_overload_resolutions` (which contains only entries from the current defn's body check) and resolves multi-sig dispatch. For each resolved overload, walks the `&mut Defn` to find the `Expr::Apply` node by span and sets its `resolved_call`. This replaces the batch `resolve_pending_overloads` for annotation purposes.
 
-Option (a) is acceptable for the migration period. Option (b) is the target for Step 1d.
+**`resolve_auto_curry_for_defn`**: Drains `state.pending_auto_curry` and resolves partial application sites. Same pattern: resolve, then walk the `&mut Defn` to set `resolved_call` on the matching `Expr::Apply` node.
 
-**Pass 5 — `resolve_auto_curry`** (`program.rs:2382`): Resolves auto-curry call sites from `state.pending_auto_curry`. Currently writes `ResolvedCall::AutoCurry` entries to `state.method_resolutions`. Same approach as `resolve_pending_overloads`: accumulate resolutions, then walk and apply to AST nodes.
-
-**REPL-path — `monomorphise_expr_calls`** (`program.rs:2141`): Called from `check_repl_input_inner` (lines 1555, 1573) after `resolve_auto_curry`. Scans an expression or defn body for call sites to constrained polymorphic functions, monomorphises them on demand, and writes `ResolvedCall::SigDispatch` entries to `state.method_resolutions` for each resolved call site. These entries must also be propagated to the corresponding `Expr::Apply.resolved_call` nodes. Same deferred-node-update approach as `resolve_pending_overloads`: accumulate `(span, resolution)` pairs, then walk the AST to apply them. This pass is REPL-only — the batch path handles monomorphisation via `pass4_monomorphise` in `finalize_check_result_inner`.
+**Multi-sig variant handling**: For `DefnMulti` forms, `check_form_body_multi_sig` checks each variant's body independently. Each variant gets its own clone, post-passes, and substitution walk. The internal variant defns (`foo__v0`, `foo__v1`) are each fully annotated before being written to `ModuleEntry::Def.ast`.
 
 #### 3.6.2 Final Substitution Walk
 
-After all post-passes complete, a final AST walk applies `apply(&state.subst, ty)` to every `inferred_type` on every `Expr` node in every annotated `Defn`. This replaces `Var(N)` type variables with their concrete bindings.
-
-The walk is a simple recursive traversal:
+After all per-defn post-passes complete (still inside `check_form`), a final walk applies `apply(&state.subst, ty)` to every `inferred_type` on every `Expr` node in the annotated `Defn`. This replaces `Var(N)` type variables with their concrete bindings.
 
 ```rust
-fn apply_subst_to_ast(subst: &Substitution, defn: &mut Defn) {
+fn apply_subst_to_defn(subst: &Subst, defn: &mut Defn) {
     for variant in &mut defn.variants {
         apply_subst_to_expr(subst, &mut variant.body);
     }
 }
 
-fn apply_subst_to_expr(subst: &Substitution, expr: &mut Expr) {
+fn apply_subst_to_expr(subst: &Subst, expr: &mut Expr) {
     if let Some(ty) = expr.inferred_type_mut() {
         *ty = Box::new(apply(subst, ty));
     }
@@ -227,71 +245,127 @@ fn apply_subst_to_expr(subst: &Substitution, expr: &mut Expr) {
 }
 ```
 
-This replaces the current bulk resolution in `finalize_check_result_inner` (lines 868-872 of `program.rs`) which builds a new `HashMap<Span, Type>` by applying substitution to the accumulated `expr_types`. After this change, the AST nodes contain the final resolved types directly.
+This runs per-defn, not in batch. The current bulk resolution in `finalize_check_result_inner` (lines 998-1002 of `program.rs`) that builds a `HashMap<Span, Type>` by applying substitution to accumulated `expr_types` becomes unnecessary for annotation — it may be retained for side-map verification during the dual-write period.
 
-#### 3.6.3 Ordering
+#### 3.6.3 `finalize_check_result_inner` — What Remains
 
-The complete annotation pipeline within `finalize_check_result_inner`:
+With per-defn annotation, `finalize_check_result_inner` no longer touches AST nodes. Its remaining responsibilities:
 
-1. **Phase 2 — Generalize**: finalize function schemes (no AST changes).
-2. **Phase 3 — `resolve_deferred_trait_calls`**: walk each defn's `&mut` AST, set `resolved_call` on newly-resolved `Apply` nodes.
-3. **Pass 2.5 — `resolve_multi_sig_overloads`**: annotate internal variant ASTs.
-4. **Pass 3 — `detect_constrained_fns`**: identify constrained functions (no AST changes).
-5. **Pass 4 — `pass4_monomorphise`**: generate mono defns with annotated ASTs (see Section 3.6.4).
-6. **Pass 5 — `resolve_pending_overloads`**: set `resolved_call` on overload call sites.
-7. **Pass 5 — `resolve_auto_curry`**: set `resolved_call` on auto-curry call sites.
-8. **Final substitution walk**: apply `subst` to all `inferred_type` fields on all annotated ASTs.
-9. **Write to `ModuleEntry::Def.ast`**: the fully annotated `Defn` is stored.
+1. **Phase 2 — Generalize**: finalize function schemes, clear false-positive constrained markers. No AST changes.
+2. ~~Phase 3 — `resolve_deferred_trait_calls`~~: **Removed.** Already handled per-defn in `check_form(CheckBody)`.
+3. **Pass 2.5 — `resolve_multi_sig_overloads`**: Produces overload dispatch info. AST annotation is handled per-variant in `check_form_body_multi_sig`.
+4. **Pass 3 — `detect_constrained_fns`**: Identifies constrained functions. No AST changes.
+5. **Pass 4 — `pass4_monomorphise`**: Generates mono defns. Each mono defn is annotated during its generation (see Section 3.6.4).
+6. ~~Pass 5 — `resolve_pending_overloads` / `resolve_auto_curry`~~: **Removed from batch.** Already handled per-defn.
+7. ~~Final substitution walk~~: **Removed from batch.** Already handled per-defn.
+8. ~~AST write to `ModuleEntry::Def.ast`~~: **Removed from batch.** Each `check_form(CheckBody)` writes its own result.
 
-After step 9, AST nodes are self-contained. No Span-keyed enrichment in the integration layer is needed.
-
-**Critical implementation note — Phase 3 must iterate stored ASTs, not `working_program`**: The current `finalize_check_result_inner` receives `working_program: &[TopLevel]` and Phase 3 walks those input AST bodies via `resolve_deferred_trait_calls(state, defn.body())`. These are the *original* unannotated ASTs — not the annotated clones stored on `ModuleEntry::Def.ast` by `check_form_body_single_defn`. With the `&mut` approach, Phase 3 must instead iterate the annotated ASTs stored on `ModuleEntry::Def.ast`, so that deferred trait resolutions are written to the same `Defn` that codegen will later read. Concretely: instead of `for top in working_program`, Phase 3 must iterate over the symbol table entries for the current module, take `&mut` references to each `ModuleEntry::Def.ast`, and call `resolve_deferred_trait_calls` on those. The `working_program` parameter is still needed for other passes (Pass 2.5 multi-sig structure, Pass 3 constrained-fn detection) but NOT for Phase 3 AST mutation.
+The `working_program: &[TopLevel]` parameter to `finalize_check_result_inner` is still needed for Pass 2.5 (multi-sig structure) and Pass 3 (constrained-fn detection), but NOT for any AST mutation.
 
 #### 3.6.4 Mono Defn Annotation
 
-Monomorphised defns are generated in `pass4_monomorphise`, which calls `monomorphise_constrained_fn` in `traits.rs`. That function calls `recheck_body_for_mono` which:
+Monomorphised defns are generated in `pass4_monomorphise` → `monomorphise_constrained_fn` → `recheck_body_for_mono`. The mono defn follows the same per-defn annotation pattern:
 
-1. Calls `check_defn_body_with_types(state, &mut defn, ...)` — this runs `infer_expr` on the mono body with `&mut Defn`, so the Stage 1 dual-write annotates `inferred_type` and initial `resolved_call` fields on the mono body's AST nodes.
-2. Calls `resolve_auto_curry(state)` — resolves auto-curry sites generated during mono re-check.
-3. Captures `state.method_resolutions` and builds `mono_expr_types` with substitution applied.
+1. `recheck_body_for_mono` calls `check_defn_body_with_types(state, &mut mono_defn, ...)` — `infer_expr` annotates during inference.
+2. Per-defn post-passes run on the `&mut mono_defn`:
+   - `resolve_deferred_trait_calls(state, &mut mono_defn.body())`
+   - `resolve_auto_curry_for_defn(state, &mut mono_defn)`
+   - `resolve_inner_constrained_calls` entries applied to AST nodes
+3. Final substitution walk on the mono defn.
+4. The `MonoDefn.defn` is fully annotated before being returned.
 
-The change for mono defns:
+When `pass4_monomorphise` writes the mono defn to `ModuleEntry::Def.ast` (per Section 5.3), the AST is already complete. No `annotate_defn_from_maps` call is needed.
 
-- After `resolve_auto_curry` in `recheck_body_for_mono`, apply the deferred-node-update pattern (Section 3.6.1) to set `resolved_call` on any auto-curry `Apply` nodes in the mono defn's AST.
-- `resolve_inner_constrained_calls` adds `SigDispatch` entries for self-recursive constrained calls. These must also be applied to AST nodes.
-- Apply the final substitution walk (Section 3.6.2) to the mono defn's AST before constructing the `MonoDefn`.
-- The `MonoDefn.defn` stored on `ModuleEntry::Def.ast` (per Section 5.3) then carries fully resolved `inferred_type` and `resolved_call` on all nodes.
-
-The `MonoDefn` struct's `resolutions` and `expr_types` fields become redundant once the AST is self-contained. They are retained during the dual-write period for verification, then removed in Step 1d.
+The `MonoDefn` struct's `resolutions` and `expr_types` fields become redundant once per-defn annotation is in place. They are retained during the dual-write period for verification, then removed in Step 1d.
 
 #### 3.6.5 REPL Path
 
-The REPL has three distinct entry points, each with its own post-pass sequence:
+The REPL paths follow the same per-defn pattern. Each entry point produces a fully annotated AST before returning:
 
-**`check_repl_input_inner` for `TopLevel::Expr`**: Calls `infer_expr` (Stage 1 dual-write on the expression), then `resolve_auto_curry`, then `monomorphise_expr_calls`. No `resolve_deferred_trait_calls` call — REPL expressions are typically simple. After `monomorphise_expr_calls`, the `SigDispatch` entries it writes to `state.method_resolutions` must be propagated to `Expr::Apply.resolved_call` nodes on the annotated expression. The final substitution walk must run on the expression before `build_repl_result`.
+**`check_repl_input_inner` for `TopLevel::Expr`**: The expression is wrapped in a synthetic `__expr` defn. The same per-defn flow applies: `infer_expr` on `&mut expr`, per-defn post-passes (`resolve_auto_curry_for_defn`, `monomorphise_expr_calls` with `&mut` AST propagation), final substitution walk. The annotated expression is returned before `build_repl_result`.
 
-**`check_single_defn` for single-sig `TopLevel::Defn`**: This method has its own self-contained flow, separate from `finalize_check_result_inner`. The sequence is:
+**`check_single_defn` for single-sig `TopLevel::Defn`**: Already has its own per-defn flow (register, check body, resolve deferred traits, generalize). The changes are:
+1. Clone the `Defn` and pass `&mut` to body checking and post-passes.
+2. After generalize: `resolve_auto_curry_for_defn(state, &mut defn_clone)`.
+3. `monomorphise_expr_calls` with `&mut` propagation to AST nodes.
+4. Final substitution walk on `defn_clone`.
+5. Write `defn_clone` to `ModuleEntry::Def.ast`.
 
-1. `register_defn_signature` — register signature in symbol table.
-2. Clone the `Defn` and call `check_defn_body(state, &mut defn_clone, ...)` — Stage 1 dual-write annotates the clone.
-3. `resolve_deferred_trait_calls(state, defn_clone.body())` — currently takes `&Expr`. Must change to `&mut Expr` so deferred resolutions are written to `resolved_call` on the clone's `Apply` nodes.
-4. `generalize` — finalize the scheme.
-5. Back in `check_repl_input_inner`: `resolve_auto_curry` — must propagate to the clone's AST nodes.
-6. `monomorphise_expr_calls(state, defn.body())` — generates mono defns and writes `SigDispatch` entries to `state.method_resolutions`. Must propagate to the clone's AST nodes.
-7. **Final substitution walk** on the annotated `defn_clone` — apply `subst` to every `inferred_type`. Currently `build_repl_result` calls `resolve_expr_types` on the side map; the AST walk replaces this.
-8. Write `defn_clone` to `ModuleEntry::Def.ast` — currently `check_single_defn` does not do this; it must be added.
+Note: `check_single_defn` stores the *original* `defn` (not the annotated clone) in `ConstrainedFn.defn`. This is correct — the constrained-fn template stores the original for later monomorphisation.
 
-Note: `check_single_defn` currently stores the *original* `defn` (not the annotated clone) in `ConstrainedFn.defn`. This is correct — the constrained-fn template stores the original for later monomorphisation. The annotated clone goes to `ModuleEntry::Def.ast`.
+**`check_repl_multi_sig` for multi-sig `TopLevel::Defn`**: Same per-variant pattern as batch multi-sig (Section 3.6.1). Each variant is annotated independently.
 
-**`check_repl_multi_sig` for multi-sig `TopLevel::Defn`**: Calls `resolve_deferred_trait_calls` per variant, then `resolve_variant_types` (analogous to Pass 2.5), then `resolve_pending_overloads`, then `resolve_auto_curry`. Same pattern: each post-pass must propagate to AST nodes on the annotated internal variant defns, and the final substitution walk must run before writing to `ModuleEntry::Def.ast`.
+#### 3.6.6 Macro Clause Path
 
-The `build_repl_result` method currently calls `resolve_expr_types` (which applies substitution to the `expr_types` side map). The AST substitution walk replaces this for the annotation path — it must run before `build_repl_result` is called, not inside it.
+`compile_macro_clause_with_state` in `src/worker.rs` calls `check_form(Register)` then `check_form(CheckBody)` per form, WITHOUT calling `finalize_check_result`. This is what motivated the per-defn annotation design.
 
-#### 3.6.6 No Integration-Layer Enrichment
+With per-defn completion, the macro clause path works without modification:
 
-The current integration layer (`src/worker.rs`) contains `enrich_defn_from_side_maps` — a function that walks the AST post-hoc and fills in missing/stale annotations from `CheckResult`'s side maps. This function exists precisely because the typecheck post-passes did not update AST nodes. It uses Span-keyed lookup with a "overwrite if `contains_var`" heuristic that is fragile: span keys from one defn can match spans from another defn in module-scoped side maps, and the heuristic does not handle all cases (e.g., a `resolved_call` that was `None` after `infer_expr` but should have been set by a post-pass).
+```
+compile_macro_clause_with_state
+  └─ check_form(Register) — registers signature
+  └─ check_form(CheckBody) — returns fully annotated Defn
+       (post-passes and substitution already applied)
+  └─ compile_and_register_defn_shared — compiles the annotated Defn
+```
 
-With the changes in this section, `enrich_defn_from_side_maps` is eliminated. The typecheck crate is solely responsible for producing fully annotated ASTs. The integration layer reads `ModuleEntry::Def.ast` and passes it to codegen without modification. This is the pipeline-v4.md target: typecheck writes, codegen reads, no intermediate enrichment layer.
+No `finalize_check_result` call is needed. No `enrich_defn_from_side_maps` workaround is needed. The annotated `Defn` returned by `check_form(CheckBody)` is ready to compile immediately.
+
+This eliminates a structural asymmetry in the current codebase: the batch path runs `finalize_check_result_inner` (which does batch annotation via `annotate_defn_from_maps`), the macro clause path skips it (producing incompletely annotated ASTs that require the `enrich_defn_from_side_maps` workaround in the integration layer), and the REPL path has its own annotation logic. With per-defn completion, all three paths produce the same output from `check_form(CheckBody)`.
+
+#### 3.6.7 No Integration-Layer Enrichment
+
+`enrich_defn_from_side_maps` in `src/worker.rs` and `crates/cranelisp-backend/src/lib.rs` exists because `check_form(CheckBody)` did not produce complete output. The integration layer had to patch up annotations from `CheckResult`'s side maps using Span-keyed lookup with "overwrite if `contains_var`" heuristics — a fragile workaround.
+
+With per-defn completion inside `check_form(CheckBody)`, this function is eliminated entirely. It never needs to exist because:
+- `check_form(CheckBody)` returns a `Defn` with all `inferred_type` fields concrete and all `resolved_call` fields populated
+- The caller writes this `Defn` to `ModuleEntry::Def.ast`
+- Codegen reads `ModuleEntry::Def.ast` directly
+- No intermediate enrichment layer exists
+
+This is the pipeline-v4.md target: typecheck writes, codegen reads, no intermediate enrichment layer.
+
+### 3.7 Trait Impl Method Annotation
+
+Trait impl methods follow the same per-defn annotation pattern as regular defns. `check_impl_method` produces a fully annotated `Defn` — no batch post-pass or integration-layer enrichment is needed.
+
+#### 3.7.1 The Pattern
+
+1. **Clone**: `check_impl_method` clones the `&Defn` to get a mutable copy.
+2. **Body check with annotation**: `check_defn_body_with_types(state, &mut defn_clone, ...)` — `infer_expr` receives `&mut Expr` and annotates `inferred_type` and initial `resolved_call` during inference.
+3. **Per-defn post-passes**: Same as regular defns (Section 3.4 step 3):
+   - `resolve_deferred_trait_calls(state, &mut defn_clone.body())`
+   - `resolve_pending_overloads_for_defn(state, &mut defn_clone)`
+   - `resolve_auto_curry_for_defn(state, &mut defn_clone)`
+4. **Final substitution walk**: `apply_subst_to_defn(&state.subst, &mut defn_clone)`.
+5. **Write to symbol table**: Write the fully annotated `Defn` to `ModuleEntry::Def.ast` under the mangled name (e.g., `Display.show$Option$Int`). The entry already exists from Pass 1 registration.
+
+#### 3.7.2 HKT Impl Methods
+
+`check_hkt_impl_method` follows the identical pattern. HKT resolution (constructor variable substitution, ADT application) happens before body checking when building `param_types` and `ret_ty`. Once concrete types are determined, the body-checking and annotation path is the same as non-HKT methods.
+
+#### 3.7.3 Consequence for the Integration Layer
+
+Once trait impl methods have populated `ast` fields on their `ModuleEntry::Def` entries, `compile_regular_defns` finds them by iterating symbol table entries — the same path as any user-defined function. The `TopLevel::TraitImpl(_) => {}` skip in the codegen dispatch loop is correct: the methods are already on the symbol table under mangled names with self-contained annotated ASTs.
+
+### 3.8 `FormCheckResult` Field Disposition
+
+`FormCheckResult` currently carries:
+
+| Field | Purpose | After per-defn annotation |
+|-------|---------|---------------------------|
+| `method_resolutions` | Side map of resolved calls | **Redundant** — now on AST nodes. Retained during dual-write for verification (Section 3.5), then removed in Step 1d. |
+| `expr_types` | Side map of expression types | **Redundant** — now on AST nodes. Same disposition as `method_resolutions`. |
+| `constrained_fn` | Detected constrained fn name | **Kept** — needed by accumulator for Pass 3 constrained-fn detection. |
+| `mono_defns` | Mono specializations | **Kept** — generated during Pass 4 in `finalize_check_result_inner`. Mono defns are annotated during generation (Section 3.6.4). |
+| `default_method_defns` | Default trait method bodies | **Kept** — generated during Pass 1 trait impl processing. Annotated during their own body check. |
+| `multi_sig_defns` | Multi-sig internal variant defns | **Kept** — generated by Pass 2.5. Annotated per-variant. |
+| `warnings` | Accumulated warnings | **Kept** — unchanged. |
+| `call_graph_edges` | Call graph for scheduler | **Kept** — unchanged. |
+
+**The annotated `Defn` itself** is a new implicit output of `check_form(CheckBody)`: it is written to `ModuleEntry::Def.ast` by the caller (or by `check_form` internals). It does not appear on `FormCheckResult` because it flows through the symbol table, not through the accumulator.
+
+**Step 1d target**: Remove `method_resolutions` and `expr_types` from `FormCheckResult`, `ModuleCheckAccumulator`, and `CheckResult`. The annotated AST on `ModuleEntry::Def.ast` is the single source of truth for types and resolutions.
 
 ## 4. Expr Size Impact Analysis
 
@@ -426,7 +500,7 @@ The sketch (`sketch/src/typechecker.rs`) used the same side-map approach: `expr_
 
 The sketch's approach worked for a single-threaded, single-module-at-a-time prototype. The reimplementation's concurrent pipeline makes this untenable: when multiple workers process different modules simultaneously, a global `CheckResult` that aggregates all resolution data cannot work. The per-entry annotation approach (types and resolutions on `ModuleEntry::Def.ast`) provides natural per-symbol isolation that concurrent workers can read independently.
 
-The sketch's `resolve_expr_types()` method (line 661) applied the final substitution to all expr types in bulk. The reimplementation applies substitution per-form in `finalize_check_result` (line 849-853 of `program.rs`). Both achieve the same result; the per-form approach is necessary for form-by-form processing.
+The sketch's `resolve_expr_types()` method (line 661) applied the final substitution to all expr types in bulk. The reimplementation applies substitution per-defn inside `check_form(CheckBody)`, immediately after body checking and post-passes complete. This is more granular than the sketch's bulk approach — each defn's AST is fully resolved before `check_form` returns.
 
 **Divergence**: The reimplementation annotates AST nodes with both resolved calls and inferred types. The sketch did not — it used Span-keyed side maps for both. This is a deliberate improvement: it eliminates the fragile Span-keyed indirection (byte-offset reverse lookup) and makes the AST self-describing for codegen. Span is retained for error messages only, not as a data lookup key.
 

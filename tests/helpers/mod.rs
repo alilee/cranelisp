@@ -90,6 +90,43 @@ impl ReplSession {
         }
     }
 
+    /// Dump a symbol table entry for debugging. Takes "module/name" or "name"
+    /// (searches current module). Prints to stderr.
+    pub fn show_entry(&self, fq_name: &str) {
+        let (mod_path, bare_name) = if let Some(slash) = fq_name.find('/') {
+            (
+                ModuleFullPath::from(&fq_name[..slash]),
+                &fq_name[slash + 1..],
+            )
+        } else {
+            let current = self.session.shared.current_module
+                .lock().unwrap_or_else(|e| e.into_inner()).clone();
+            (current, fq_name)
+        };
+
+        let tables = &self.session.shared.symbol_tables;
+        match tables.get(&mod_path) {
+            None => eprintln!("[show_entry] module '{}' not found", mod_path),
+            Some(table) => match table.get(bare_name) {
+                None => eprintln!("[show_entry] '{}' not found in module '{}'", bare_name, mod_path),
+                Some(entry) => {
+                    eprintln!("[show_entry] {}/{}:", mod_path, bare_name);
+                    match entry {
+                        cranelisp_types::ModuleEntry::Def { scheme, got_slot, kind, ast, .. } => {
+                            eprintln!("  Def: scheme={}, got_slot={:?}, kind={:?}", scheme.ty, got_slot, kind);
+                            eprintln!("  ast: {}", if ast.is_some() { "Some" } else { "None" });
+                        }
+                        other => eprintln!("  {:?}", std::mem::discriminant(other)),
+                    }
+                }
+            },
+        }
+
+        // Also check TypecheckProduct for GOT table presence
+        let tp = &self.session.shared.typecheck_products;
+        eprintln!("  typecheck_product for '{}': {}", mod_path, if tp.contains_key(&mod_path) { "exists" } else { "MISSING" });
+    }
+
     /// Create a session for a file-based project.
     ///
     /// Sets project_root to the entry file's parent directory,

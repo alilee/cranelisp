@@ -426,3 +426,18 @@ fn neg_macro_error_no_session_corruption() {
     let val = repl_eval(&mut s, "(good 42)");
     assert_eq!(val, 42);
 }
+
+// Macro clause with rest-param + quasiquote splice (~@).
+// Quasiquote ~@ generates macros/sconcat calls in the compiled clause body.
+// This must resolve during macro clause inline compilation.
+#[test]
+fn repl_defmacro_rest_splice() {
+    let mut s = repl_session();
+    // Show macros/sconcat entry before defmacro
+    s.show_entry("macros/sconcat");
+    // Multi-clause macro with rest param. The [x &rest] clause's
+    // `~@rest` splice generates macros/sconcat in the compiled body.
+    s.eval("(defmacro my-begin ([] 0) ([x &rest] `(begin ~x ~@rest)))").unwrap();
+    let val = repl_eval(&mut s, "(my-begin 42)");
+    assert_eq!(val, 42);
+}
