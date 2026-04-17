@@ -31,7 +31,7 @@ use cranelift_module::FuncId;
 use dashmap::DashMap;
 
 use cranelisp_types::{
-    CheckResult, CranelispError, Defn, FQTypeName,
+    CranelispError, Defn, FQTypeName,
     ModuleFullPath, Program, Span, Symbol, SymbolTable,
     TopLevel, Type, TypeName, Warning,
 };
@@ -73,7 +73,6 @@ pub struct CompilationResult {
 pub fn compile_to_module<M: Module>(
     module_path: ModuleFullPath,
     program: &Program,
-    typecheck: &CheckResult,
     symbol_tables: &DashMap<ModuleFullPath, SymbolTable>,
     module: &mut M,
 ) -> Result<CompilationResult, CranelispError> {
@@ -92,17 +91,36 @@ pub fn compile_to_module<M: Module>(
     };
     let jit_prefix: Option<&str> = jit_prefix_owned.as_deref();
 
+    // Derive constrained_fn_names from the symbol table.
+    let constrained_fn_names: std::collections::HashSet<Symbol> = symbol_tables
+        .get(&module_path)
+        .map(|table| {
+            table.all_symbols()
+                .filter_map(|(name, entry)| {
+                    if let ModuleEntry::Def { kind, .. } = entry {
+                        if let cranelisp_types::DefKind::UserFn { constrained_fn: Some(_) } = kind.as_ref() {
+                            return Some(name.clone());
+                        }
+                    }
+                    None
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+
     // Step 1: Collect defns from the program.
+    // Defns arrive pre-annotated. Mono defns and default method defns are
+    // inlined into program by the caller.
     let mut regular_defns: Vec<&Defn> = Vec::new();
     let mut multi_sig_defns: Vec<Defn> = Vec::new();
 
     for tl in program {
         if let TopLevel::Defn(defn) = tl {
-            if typecheck.constrained_fn_names.contains(&defn.name) {
-                continue; // Template only — mono specializations compiled below
+            if constrained_fn_names.contains(&defn.name) {
+                continue; // Template only — mono specializations are in program
             }
             if defn.is_multi_sig() {
-                let expanded = expand_multi_sig_defn(defn, &typecheck.expr_types)?;
+                let expanded = expand_multi_sig_defn(defn, symbol_tables, &module_path)?;
                 multi_sig_defns.extend(expanded);
             } else {
                 regular_defns.push(defn);
@@ -110,15 +128,9 @@ pub fn compile_to_module<M: Module>(
         }
     }
 
-    // Step 2: Collect extra defns from CheckResult.
-    let extra_defns: Vec<&Defn> = typecheck.default_method_defns.iter().collect();
-    let mono_defns: Vec<&Defn> = typecheck.mono_defns.iter().map(|m| &m.defn).collect();
-
-    // Step 3: Build the full defn list for declaration.
+    // Step 2: Build the full defn list for declaration.
     let mut all_declare: Vec<&Defn> = regular_defns.clone();
-    all_declare.extend(extra_defns.iter().copied());
     all_declare.extend(multi_sig_defns.iter());
-    all_declare.extend(mono_defns.iter().copied());
 
     if all_declare.is_empty() {
         return Err(CranelispError::CodegenError {
@@ -207,19 +219,17 @@ pub fn compile_to_module<M: Module>(
         }
     }
 
-    // Step 5: Compile each function body (Pass 2).
+    // Step 4: Compile each function body (Pass 2).
+    // All defns are compiled uniformly — no separate mono pass needed since
+    // mono and default method defns are inlined into program by the caller.
     let mut func_ctx = FunctionBuilderContext::new();
 
-    // Compile regular defns + extra defns + multi-sig variants.
-    let non_mono_defns: Vec<&Defn> = regular_defns.iter().copied()
-        .chain(extra_defns.iter().copied())
+    let all_compile: Vec<&Defn> = regular_defns.iter().copied()
         .chain(multi_sig_defns.iter())
         .collect();
 
-    for defn in &non_mono_defns {
+    for defn in &all_compile {
         let compile_ctx = CompileContext {
-            method_resolutions: &typecheck.method_resolutions,
-            expr_types: &typecheck.expr_types,
             func_ids: &func_ids,
             func_arities: &func_arities,
             symbol_tables,
@@ -234,36 +244,6 @@ pub fn compile_to_module<M: Module>(
             vec_drop_func_id: intrinsic_ids.vec_drop,
         };
         compile_defn_in_module(defn, module, &mut func_ctx, &func_ids, compile_ctx)?;
-    }
-
-    // Compile mono specializations with per-specialization resolutions.
-    for mono in &typecheck.mono_defns {
-        let mut merged = typecheck.method_resolutions.clone();
-        merged.extend(mono.resolutions.clone());
-
-        let expr_types = if mono.expr_types.is_empty() {
-            &typecheck.expr_types
-        } else {
-            &mono.expr_types
-        };
-
-        let compile_ctx = CompileContext {
-            method_resolutions: &merged,
-            expr_types,
-            func_ids: &func_ids,
-            func_arities: &func_arities,
-            symbol_tables,
-            current_module: module_path.clone(),
-            env,
-            traced_fns: None,
-            alloc_func_id: intrinsic_ids.alloc,
-            dealloc_func_id: intrinsic_ids.dealloc,
-            alloc_string_func_id: intrinsic_ids.alloc_string,
-            panic_func_id: intrinsic_ids.panic,
-            vec_new_func_id: intrinsic_ids.vec_new,
-            vec_drop_func_id: intrinsic_ids.vec_drop,
-        };
-        compile_defn_in_module(&mono.defn, module, &mut func_ctx, &func_ids, compile_ctx)?;
     }
 
     // Find entry function (last zero-arg defn).
@@ -398,31 +378,47 @@ fn build_mangled_name(fn_name: &Symbol, param_types: &[Type]) -> String {
 /// directly — callers use `ResolvedCall::SigDispatch` to call specific variants.
 fn expand_multi_sig_defn(
     defn: &Defn,
-    expr_types: &HashMap<Span, Type>,
+    symbol_tables: &DashMap<ModuleFullPath, SymbolTable>,
+    module_path: &ModuleFullPath,
 ) -> Result<Vec<Defn>, CranelispError> {
-    let mut expanded = Vec::new();
-
-    for variant in &defn.variants {
-        // Look up the function type for this variant's span.
-        let param_types = match expr_types.get(&variant.span) {
-            Some(Type::Fn(params, _)) => params.clone(),
-            _ => {
-                // Fall back: try the defn-level span (some typecheckers register there).
-                match expr_types.get(&defn.span) {
-                    Some(Type::Fn(params, _)) if params.len() == variant.params.len() => {
-                        params.clone()
-                    }
-                    _ => {
-                        return Err(CranelispError::CodegenError {
-                            message: format!(
-                                "multi-sig variant of '{}' missing type info at span {:?}",
-                                defn.name, variant.span
-                            ),
-                            span: variant.span,
-                        });
-                    }
+    // Look up OverloadVariant info from the symbol table for mangled names.
+    let overload_variants: Option<Vec<cranelisp_types::OverloadVariant>> = symbol_tables
+        .get(module_path)
+        .and_then(|table| {
+            if let Some(ModuleEntry::Def { kind, .. }) = table.get(defn.name.as_ref()) {
+                if let cranelisp_types::DefKind::Overloaded { variants } = kind.as_ref() {
+                    return Some(variants.clone());
                 }
             }
+            None
+        });
+
+    let mut expanded = Vec::new();
+
+    for (i, variant) in defn.variants.iter().enumerate() {
+        let param_types: Vec<Type> = if let Some(ref ov) = overload_variants {
+            // Find matching variant by param count or by index.
+            if let Some(ov_entry) = ov.iter().find(|v| v.param_types.len() == variant.params.len()) {
+                ov_entry.param_types.clone()
+            } else if i < ov.len() {
+                ov[i].param_types.clone()
+            } else {
+                return Err(CranelispError::CodegenError {
+                    message: format!(
+                        "multi-sig variant {} of '{}' has no matching overload entry in symbol table",
+                        i, defn.name
+                    ),
+                    span: variant.span,
+                });
+            }
+        } else {
+            return Err(CranelispError::CodegenError {
+                message: format!(
+                    "multi-sig defn '{}' missing overload info in symbol table for module {}",
+                    defn.name, module_path
+                ),
+                span: variant.span,
+            });
         };
 
         let mangled_name = build_mangled_name(&defn.name, &param_types);
@@ -437,6 +433,97 @@ fn expand_multi_sig_defn(
     }
 
     Ok(expanded)
+}
+
+/// Enrich a defn's AST nodes with type and resolution annotations from side maps.
+///
+/// Walks the expression tree and sets `inferred_type` and `resolved_call` on nodes
+/// where the side maps have entries. Used by test helpers to bridge old test code
+/// (which uses CheckResult side maps) to the new API (which reads from AST nodes).
+fn enrich_defn_from_side_maps(
+    defn: &mut Defn,
+    resolutions: &HashMap<Span, cranelisp_types::ResolvedCall>,
+    expr_types: &HashMap<Span, Type>,
+) {
+    for variant in &mut defn.variants {
+        enrich_expr_from_side_maps(&mut variant.body, resolutions, expr_types);
+    }
+}
+
+/// Recursively enrich expression nodes with side map data.
+fn enrich_expr_from_side_maps(
+    expr: &mut cranelisp_types::Expr,
+    resolutions: &HashMap<Span, cranelisp_types::ResolvedCall>,
+    expr_types: &HashMap<Span, Type>,
+) {
+    use cranelisp_types::Expr;
+
+    let span = expr.span();
+
+    // Overlay inferred_type from side map if present.
+    if let Some(ty) = expr_types.get(&span) {
+        expr.set_inferred_type(Some(Box::new(ty.clone())));
+    }
+
+    // Overlay resolved_call from side map if present (Apply only).
+    if let Expr::Apply { resolved_call, span: apply_span, .. } = expr {
+        if let Some(resolution) = resolutions.get(apply_span) {
+            *resolved_call = Some(Box::new(resolution.clone()));
+        }
+    }
+
+    // Recurse into children.
+    match expr {
+        Expr::Let { bindings, body, .. } => {
+            for (_, binding_expr) in bindings {
+                enrich_expr_from_side_maps(binding_expr, resolutions, expr_types);
+            }
+            enrich_expr_from_side_maps(body, resolutions, expr_types);
+        }
+        Expr::If { cond, then_branch, else_branch, .. } => {
+            enrich_expr_from_side_maps(cond, resolutions, expr_types);
+            enrich_expr_from_side_maps(then_branch, resolutions, expr_types);
+            enrich_expr_from_side_maps(else_branch, resolutions, expr_types);
+        }
+        Expr::Lambda { body, .. } => {
+            enrich_expr_from_side_maps(body, resolutions, expr_types);
+        }
+        Expr::Apply { callee, args, .. } => {
+            enrich_expr_from_side_maps(callee, resolutions, expr_types);
+            for arg in args {
+                enrich_expr_from_side_maps(arg, resolutions, expr_types);
+            }
+        }
+        Expr::Match { scrutinee, arms, .. } => {
+            enrich_expr_from_side_maps(scrutinee, resolutions, expr_types);
+            for arm in arms {
+                enrich_expr_from_side_maps(&mut arm.body, resolutions, expr_types);
+            }
+        }
+        Expr::VecLit { elements, .. } => {
+            for elem in elements {
+                enrich_expr_from_side_maps(elem, resolutions, expr_types);
+            }
+        }
+        Expr::Annotate { expr: inner, .. } => {
+            enrich_expr_from_side_maps(inner, resolutions, expr_types);
+        }
+        Expr::Trace { body, .. } => {
+            enrich_expr_from_side_maps(body, resolutions, expr_types);
+        }
+        Expr::ParBind { bindings, body, .. } => {
+            for (_, binding_expr) in bindings {
+                enrich_expr_from_side_maps(binding_expr, resolutions, expr_types);
+            }
+            enrich_expr_from_side_maps(body, resolutions, expr_types);
+        }
+        // Leaf nodes: no children to recurse into.
+        Expr::IntLit { .. }
+        | Expr::FloatLit { .. }
+        | Expr::BoolLit { .. }
+        | Expr::StringLit { .. }
+        | Expr::Var { .. } => {}
+    }
 }
 
 #[cfg(test)]
@@ -466,12 +553,16 @@ mod tests {
 
     /// Test helper: wrap an expression in a synthetic zero-arg defn, compile via
     /// `compile_to_module`, finalize JIT, execute, and return the i64 result.
+    ///
+    /// The `check` parameter provides side-map data that is enriched onto the
+    /// defn's AST nodes before compilation (bridging old test code to the new
+    /// CheckResult-free API).
     fn test_compile_and_run(
         expr: &Expr,
         check: &CheckResult,
         tables: &DashMap<ModuleFullPath, SymbolTable>,
     ) -> Result<i64, CranelispError> {
-        let defn = Defn {
+        let mut defn = Defn {
             name: Symbol::from("__expr__"),
             docstring: None,
             variants: vec![DefnVariant {
@@ -483,12 +574,13 @@ mod tests {
             visibility: Visibility::Public,
             span: Span::SYNTHETIC,
         };
+        // Enrich the defn from CheckResult side maps (test bridge).
+        enrich_defn_from_side_maps(&mut defn, &check.method_resolutions, &check.expr_types);
         let program: Program = vec![TopLevel::Defn(defn)];
         let mut jit = Jit::new()?;
         let result = compile_to_module(
             ModuleFullPath::from("user"),
             &program,
-            check,
             tables,
             jit.jit_module(),
         )?;
@@ -512,16 +604,47 @@ mod tests {
 
     /// Test helper: compile a program via `compile_to_module`, finalize JIT,
     /// execute entry function, and return the i64 result.
+    ///
+    /// Enriches defns from `check` side maps before compilation (test bridge).
     fn test_compile_program_and_run(
         program: &Program,
         check: &CheckResult,
         tables: &DashMap<ModuleFullPath, SymbolTable>,
     ) -> Result<i64, CranelispError> {
+        // Enrich all defns in the program from CheckResult side maps.
+        let enriched_program: Program = program.iter().map(|tl| {
+            match tl {
+                TopLevel::Defn(defn) => {
+                    let mut d = defn.clone();
+                    enrich_defn_from_side_maps(&mut d, &check.method_resolutions, &check.expr_types);
+                    TopLevel::Defn(d)
+                }
+                other => other.clone(),
+            }
+        }).collect();
+        // Inline default_method_defns and mono_defns into the program.
+        let mut full_program = enriched_program;
+        for d in &check.default_method_defns {
+            let mut enriched = d.clone();
+            enrich_defn_from_side_maps(&mut enriched, &check.method_resolutions, &check.expr_types);
+            full_program.push(TopLevel::Defn(enriched));
+        }
+        for mono in &check.mono_defns {
+            let mut enriched = mono.defn.clone();
+            let mut merged = check.method_resolutions.clone();
+            merged.extend(mono.resolutions.clone());
+            let expr_types = if mono.expr_types.is_empty() {
+                &check.expr_types
+            } else {
+                &mono.expr_types
+            };
+            enrich_defn_from_side_maps(&mut enriched, &merged, expr_types);
+            full_program.push(TopLevel::Defn(enriched));
+        }
         let mut jit = Jit::new()?;
         let result = compile_to_module(
             ModuleFullPath::from("user"),
-            program,
-            check,
+            &full_program,
             tables,
             jit.jit_module(),
         )?;
@@ -640,6 +763,7 @@ mod tests {
                 body: Expr::IntLit {
                     value: 42,
                     span: Span::new(0, 2),
+                    inferred_type: None,
                 },
                 span: Span::new(0, 20),
             }],
@@ -664,7 +788,6 @@ mod tests {
         let result = compile_to_module(
             ModuleFullPath::from("user"),
             &program,
-            &check,
             &empty_tables(),
             jit.jit_module(),
         );
@@ -677,6 +800,7 @@ mod tests {
         let expr = Expr::IntLit {
             value: 99,
             span: Span::new(0, 2),
+            inferred_type: None,
         };
         let check = empty_check();
 
@@ -696,6 +820,7 @@ mod tests {
                 body: Expr::IntLit {
                 value: 7,
                 span: Span::new(0, 1),
+                inferred_type: None,
                 },
                 span: Span::new(0, 20),
             }],
@@ -724,6 +849,7 @@ mod tests {
                 body: Expr::Var {
                 name: Symbol::from("x"),
                 span: Span::new(20, 21),
+                inferred_type: None,
                 },
                 span: Span::new(10, 30),
             }],
@@ -740,6 +866,7 @@ mod tests {
                 body: Expr::IntLit {
                 value: 100,
                 span: Span::new(40, 43),
+                inferred_type: None,
                 },
                 span: Span::new(35, 50),
             }],
@@ -760,6 +887,7 @@ mod tests {
         let expr = Expr::BoolLit {
             value: true,
             span: Span::new(0, 4),
+            inferred_type: None,
         };
         let check = empty_check();
 
@@ -775,6 +903,7 @@ mod tests {
         let expr = Expr::StringLit {
             value: "hello".to_string(),
             span: Span::new(0, 7),
+            inferred_type: None,
         };
         let check = empty_check();
 
@@ -798,6 +927,7 @@ mod tests {
         let expr = Expr::StringLit {
             value: String::new(),
             span: Span::new(0, 2),
+            inferred_type: None,
         };
         let check = empty_check();
 
@@ -821,12 +951,16 @@ mod tests {
             callee: Box::new(Expr::Var {
                 name: Symbol::from("Some"),
                 span: Span::new(1, 5),
+                inferred_type: None,
             }),
             args: vec![Expr::IntLit {
                 value: 42,
                 span: Span::new(6, 8),
+                inferred_type: None,
             }],
             span: some_span,
+            resolved_call: None,
+            inferred_type: None,
         };
 
         let check = empty_check();
@@ -861,12 +995,16 @@ mod tests {
             callee: Box::new(Expr::Var {
                 name: Symbol::from("Some"),
                 span: Span::new(11, 15),
+                inferred_type: None,
             }),
             args: vec![Expr::IntLit {
                 value: 99,
                 span: Span::new(16, 18),
+                inferred_type: None,
             }],
             span: some_span,
+            resolved_call: None,
+            inferred_type: None,
         };
 
         let expr = Expr::Match {
@@ -881,6 +1019,7 @@ mod tests {
                     body: Expr::Var {
                         name: Symbol::from("x"),
                         span: Span::new(31, 32),
+                        inferred_type: None,
                     },
                     span: Span::new(22, 32),
                 },
@@ -893,12 +1032,14 @@ mod tests {
                     body: Expr::IntLit {
                         value: 0,
                         span: Span::new(41, 42),
+                        inferred_type: None,
                     },
                     span: Span::new(34, 42),
                 },
             ],
             span: match_span,
             compiler_generated: false,
+            inferred_type: None,
         };
 
         let check = empty_check();
@@ -931,6 +1072,7 @@ mod tests {
                 Expr::IntLit {
                     value: 5,
                     span: Span::new(5, 6),
+                    inferred_type: None,
                 },
             )],
             body: Box::new(Expr::Apply {
@@ -941,28 +1083,38 @@ mod tests {
                         callee: Box::new(Expr::Var {
                             name: Symbol::from("+"),
                             span: Span::new(31, 32),
+                            inferred_type: None,
                         }),
                         args: vec![
                             Expr::Var {
                                 name: Symbol::from("n"),
                                 span: Span::new(33, 34),
+                                inferred_type: None,
                             },
                             Expr::Var {
                                 name: Symbol::from("x"),
                                 span: Span::new(35, 36),
+                                inferred_type: None,
                             },
                         ],
                         span: add_span,
+                        resolved_call: None,
+                        inferred_type: None,
                     }),
                     span: Span::new(10, 40),
+                    inferred_type: None,
                 }),
                 args: vec![Expr::IntLit {
                     value: 10,
                     span: Span::new(42, 44),
+                    inferred_type: None,
                 }],
                 span: Span::new(10, 45),
+                resolved_call: None,
+                inferred_type: None,
             }),
             span: Span::new(0, 46),
+            inferred_type: None,
         };
 
         let check = CheckResult {
@@ -988,6 +1140,7 @@ mod tests {
         let expr = Expr::VecLit {
             elements: vec![],
             span: Span::new(0, 2),
+            inferred_type: None,
         };
         let check = empty_check();
 
@@ -1009,11 +1162,12 @@ mod tests {
     fn test_compile_vec_literal_with_ints() {
         let expr = Expr::VecLit {
             elements: vec![
-                Expr::IntLit { value: 10, span: Span::new(1, 3) },
-                Expr::IntLit { value: 20, span: Span::new(4, 6) },
-                Expr::IntLit { value: 30, span: Span::new(7, 9) },
+                Expr::IntLit { value: 10, span: Span::new(1, 3), inferred_type: None },
+                Expr::IntLit { value: 20, span: Span::new(4, 6), inferred_type: None },
+                Expr::IntLit { value: 30, span: Span::new(7, 9), inferred_type: None },
             ],
             span: Span::new(0, 10),
+            inferred_type: None,
         };
         let check = empty_check();
 
@@ -1042,9 +1196,10 @@ mod tests {
     fn test_compile_vec_literal_single_element() {
         let expr = Expr::VecLit {
             elements: vec![
-                Expr::IntLit { value: 42, span: Span::new(1, 3) },
+                Expr::IntLit { value: 42, span: Span::new(1, 3), inferred_type: None },
             ],
             span: Span::new(0, 4),
+            inferred_type: None,
         };
         let check = empty_check();
 
@@ -1068,10 +1223,11 @@ mod tests {
     fn test_compile_vec_literal_with_bool_elements() {
         let expr = Expr::VecLit {
             elements: vec![
-                Expr::BoolLit { value: true, span: Span::new(1, 5) },
-                Expr::BoolLit { value: false, span: Span::new(6, 11) },
+                Expr::BoolLit { value: true, span: Span::new(1, 5), inferred_type: None },
+                Expr::BoolLit { value: false, span: Span::new(6, 11), inferred_type: None },
             ],
             span: Span::new(0, 12),
+            inferred_type: None,
         };
         let check = empty_check();
 
@@ -1111,16 +1267,20 @@ mod tests {
             callee: Box::new(Expr::Var {
                 name: Symbol::from("vec-len"),
                 span: Span::new(1, 8),
+                inferred_type: None,
             }),
             args: vec![Expr::VecLit {
                 elements: vec![
-                    Expr::IntLit { value: 10, span: Span::new(11, 13) },
-                    Expr::IntLit { value: 20, span: Span::new(14, 16) },
-                    Expr::IntLit { value: 30, span: Span::new(17, 19) },
+                    Expr::IntLit { value: 10, span: Span::new(11, 13), inferred_type: None },
+                    Expr::IntLit { value: 20, span: Span::new(14, 16), inferred_type: None },
+                    Expr::IntLit { value: 30, span: Span::new(17, 19), inferred_type: None },
                 ],
                 span: vec_span,
+                inferred_type: None,
             }],
             span: apply_span,
+            resolved_call: None,
+            inferred_type: None,
         };
 
         let check = CheckResult {
@@ -1160,28 +1320,34 @@ mod tests {
                 Symbol::from("v"),
                 Expr::VecLit {
                     elements: vec![
-                        Expr::IntLit { value: 10, span: Span::new(9, 11) },
-                        Expr::IntLit { value: 20, span: Span::new(12, 14) },
-                        Expr::IntLit { value: 30, span: Span::new(15, 17) },
+                        Expr::IntLit { value: 10, span: Span::new(9, 11), inferred_type: None },
+                        Expr::IntLit { value: 20, span: Span::new(12, 14), inferred_type: None },
+                        Expr::IntLit { value: 30, span: Span::new(15, 17), inferred_type: None },
                     ],
                     span: vec_span,
+                    inferred_type: None,
                 },
             )],
             body: Box::new(Expr::Apply {
                 callee: Box::new(Expr::Var {
                     name: Symbol::from("vec-get"),
                     span: Span::new(22, 29),
+                    inferred_type: None,
                 }),
                 args: vec![
                     Expr::Var {
                         name: Symbol::from("v"),
                         span: Span::new(30, 31),
+                        inferred_type: None,
                     },
-                    Expr::IntLit { value: 1, span: Span::new(32, 33) },
+                    Expr::IntLit { value: 1, span: Span::new(32, 33), inferred_type: None },
                 ],
                 span: get_span,
+                resolved_call: None,
+                inferred_type: None,
             }),
             span: Span::new(0, 36),
+            inferred_type: None,
         };
 
         let check = CheckResult {
@@ -1220,27 +1386,33 @@ mod tests {
                 Symbol::from("v"),
                 Expr::VecLit {
                     elements: vec![
-                        Expr::IntLit { value: 100, span: Span::new(101, 104) },
-                        Expr::IntLit { value: 200, span: Span::new(105, 108) },
+                        Expr::IntLit { value: 100, span: Span::new(101, 104), inferred_type: None },
+                        Expr::IntLit { value: 200, span: Span::new(105, 108), inferred_type: None },
                     ],
                     span: vec_span,
+                    inferred_type: None,
                 },
             )],
             body: Box::new(Expr::Apply {
                 callee: Box::new(Expr::Var {
                     name: Symbol::from("vec-get"),
                     span: Span::new(121, 128),
+                    inferred_type: None,
                 }),
                 args: vec![
                     Expr::Var {
                         name: Symbol::from("v"),
                         span: Span::new(129, 130),
+                        inferred_type: None,
                     },
-                    Expr::IntLit { value: 0, span: Span::new(131, 132) },
+                    Expr::IntLit { value: 0, span: Span::new(131, 132), inferred_type: None },
                 ],
                 span: get_span,
+                resolved_call: None,
+                inferred_type: None,
             }),
             span: Span::new(99, 136),
+            inferred_type: None,
         };
 
         let check = CheckResult {
@@ -1279,28 +1451,34 @@ mod tests {
                 Symbol::from("v"),
                 Expr::VecLit {
                     elements: vec![
-                        Expr::IntLit { value: 1, span: Span::new(201, 202) },
-                        Expr::IntLit { value: 2, span: Span::new(203, 204) },
-                        Expr::IntLit { value: 3, span: Span::new(205, 206) },
+                        Expr::IntLit { value: 1, span: Span::new(201, 202), inferred_type: None },
+                        Expr::IntLit { value: 2, span: Span::new(203, 204), inferred_type: None },
+                        Expr::IntLit { value: 3, span: Span::new(205, 206), inferred_type: None },
                     ],
                     span: vec_span,
+                    inferred_type: None,
                 },
             )],
             body: Box::new(Expr::Apply {
                 callee: Box::new(Expr::Var {
                     name: Symbol::from("vec-get"),
                     span: Span::new(221, 228),
+                    inferred_type: None,
                 }),
                 args: vec![
                     Expr::Var {
                         name: Symbol::from("v"),
                         span: Span::new(229, 230),
+                        inferred_type: None,
                     },
-                    Expr::IntLit { value: 2, span: Span::new(231, 232) },
+                    Expr::IntLit { value: 2, span: Span::new(231, 232), inferred_type: None },
                 ],
                 span: get_span,
+                resolved_call: None,
+                inferred_type: None,
             }),
             span: Span::new(199, 236),
+            inferred_type: None,
         };
 
         let check = CheckResult {
@@ -1348,36 +1526,45 @@ mod tests {
                 Symbol::from("v"),
                 Expr::VecLit {
                     elements: vec![
-                        Expr::IntLit { value: 10, span: Span::new(301, 303) },
-                        Expr::IntLit { value: 20, span: Span::new(304, 306) },
-                        Expr::IntLit { value: 30, span: Span::new(307, 309) },
+                        Expr::IntLit { value: 10, span: Span::new(301, 303), inferred_type: None },
+                        Expr::IntLit { value: 20, span: Span::new(304, 306), inferred_type: None },
+                        Expr::IntLit { value: 30, span: Span::new(307, 309), inferred_type: None },
                     ],
                     span: vec_span,
+                    inferred_type: None,
                 },
             )],
             body: Box::new(Expr::Apply {
                 callee: Box::new(Expr::Var {
                     name: Symbol::from("vec-len"),
                     span: Span::new(316, 323),
+                    inferred_type: None,
                 }),
                 args: vec![Expr::Apply {
                     callee: Box::new(Expr::Var {
                         name: Symbol::from("vec-set"),
                         span: Span::new(321, 328),
+                        inferred_type: None,
                     }),
                     args: vec![
                         Expr::Var {
                             name: Symbol::from("v"),
                             span: Span::new(329, 330),
+                            inferred_type: None,
                         },
-                        Expr::IntLit { value: 1, span: Span::new(331, 332) },
-                        Expr::IntLit { value: 99, span: Span::new(333, 335) },
+                        Expr::IntLit { value: 1, span: Span::new(331, 332), inferred_type: None },
+                        Expr::IntLit { value: 99, span: Span::new(333, 335), inferred_type: None },
                     ],
                     span: set_span,
+                    resolved_call: None,
+                    inferred_type: None,
                 }],
                 span: len_span,
+                resolved_call: None,
+                inferred_type: None,
             }),
             span: Span::new(299, 346),
+            inferred_type: None,
         };
 
         let check = CheckResult {
@@ -1424,25 +1611,32 @@ mod tests {
             callee: Box::new(Expr::Var {
                 name: Symbol::from("vec-len"),
                 span: Span::new(411, 418),
+                inferred_type: None,
             }),
             args: vec![Expr::Apply {
                 callee: Box::new(Expr::Var {
                     name: Symbol::from("vec-push"),
                     span: Span::new(416, 424),
+                    inferred_type: None,
                 }),
                 args: vec![
                     Expr::VecLit {
                         elements: vec![
-                            Expr::IntLit { value: 10, span: Span::new(401, 403) },
-                            Expr::IntLit { value: 20, span: Span::new(404, 406) },
+                            Expr::IntLit { value: 10, span: Span::new(401, 403), inferred_type: None },
+                            Expr::IntLit { value: 20, span: Span::new(404, 406), inferred_type: None },
                         ],
                         span: vec_span,
+                        inferred_type: None,
                     },
-                    Expr::IntLit { value: 30, span: Span::new(425, 427) },
+                    Expr::IntLit { value: 30, span: Span::new(425, 427), inferred_type: None },
                 ],
                 span: push_span,
+                resolved_call: None,
+                inferred_type: None,
             }],
             span: len_span,
+            resolved_call: None,
+            inferred_type: None,
         };
 
         let check = CheckResult {
@@ -1483,25 +1677,31 @@ mod tests {
                 Symbol::from("v"),
                 Expr::VecLit {
                     elements: vec![
-                        Expr::IntLit { value: 1, span: Span::new(501, 502) },
-                        Expr::IntLit { value: 2, span: Span::new(503, 504) },
-                        Expr::IntLit { value: 3, span: Span::new(505, 506) },
+                        Expr::IntLit { value: 1, span: Span::new(501, 502), inferred_type: None },
+                        Expr::IntLit { value: 2, span: Span::new(503, 504), inferred_type: None },
+                        Expr::IntLit { value: 3, span: Span::new(505, 506), inferred_type: None },
                     ],
                     span: vec_span,
+                    inferred_type: None,
                 },
             )],
             body: Box::new(Expr::Apply {
                 callee: Box::new(Expr::Var {
                     name: Symbol::from("vec-len"),
                     span: Span::new(516, 523),
+                    inferred_type: None,
                 }),
                 args: vec![Expr::Var {
                     name: Symbol::from("v"),
                     span: Span::new(524, 525),
+                    inferred_type: None,
                 }],
                 span: len_span,
+                resolved_call: None,
+                inferred_type: None,
             }),
             span: Span::new(499, 531),
+            inferred_type: None,
         };
 
         let check = CheckResult {
@@ -1537,21 +1737,25 @@ mod tests {
 
         let expr = Expr::VecLit {
             elements: vec![
-                Expr::IntLit { value: 1, span: Span::new(601, 602) },
+                Expr::IntLit { value: 1, span: Span::new(601, 602), inferred_type: None },
                 Expr::Apply {
                     callee: Box::new(Expr::Var {
                         name: Symbol::from("+"),
                         span: Span::new(604, 605),
+                        inferred_type: None,
                     }),
                     args: vec![
-                        Expr::IntLit { value: 2, span: Span::new(606, 607) },
-                        Expr::IntLit { value: 3, span: Span::new(608, 609) },
+                        Expr::IntLit { value: 2, span: Span::new(606, 607), inferred_type: None },
+                        Expr::IntLit { value: 3, span: Span::new(608, 609), inferred_type: None },
                     ],
                     span: add_span,
+                    resolved_call: None,
+                    inferred_type: None,
                 },
-                Expr::IntLit { value: 10, span: Span::new(611, 613) },
+                Expr::IntLit { value: 10, span: Span::new(611, 613), inferred_type: None },
             ],
             span: Span::new(600, 614),
+            inferred_type: None,
         };
 
         let check = CheckResult {
@@ -1593,11 +1797,12 @@ mod tests {
                 param_annotations: vec![],
                 body: Expr::VecLit {
                 elements: vec![
-                Expr::IntLit { value: 1, span: Span::new(701, 702) },
-                Expr::IntLit { value: 2, span: Span::new(703, 704) },
-                Expr::IntLit { value: 3, span: Span::new(705, 706) },
+                Expr::IntLit { value: 1, span: Span::new(701, 702), inferred_type: None },
+                Expr::IntLit { value: 2, span: Span::new(703, 704), inferred_type: None },
+                Expr::IntLit { value: 3, span: Span::new(705, 706), inferred_type: None },
                 ],
                 span: Span::new(700, 707),
+                inferred_type: None,
                 },
                 span: Span::new(700, 710),
             }],
@@ -1637,28 +1842,34 @@ mod tests {
                 Symbol::from("v"),
                 Expr::VecLit {
                     elements: vec![
-                        Expr::IntLit { value: 100, span: Span::new(809, 812) },
-                        Expr::IntLit { value: 200, span: Span::new(813, 816) },
-                        Expr::IntLit { value: 300, span: Span::new(817, 820) },
+                        Expr::IntLit { value: 100, span: Span::new(809, 812), inferred_type: None },
+                        Expr::IntLit { value: 200, span: Span::new(813, 816), inferred_type: None },
+                        Expr::IntLit { value: 300, span: Span::new(817, 820), inferred_type: None },
                     ],
                     span: vec_span,
+                    inferred_type: None,
                 },
             )],
             body: Box::new(Expr::Apply {
                 callee: Box::new(Expr::Var {
                     name: Symbol::from("vec-get"),
                     span: Span::new(822, 829),
+                    inferred_type: None,
                 }),
                 args: vec![
                     Expr::Var {
                         name: Symbol::from("v"),
                         span: Span::new(830, 831),
+                        inferred_type: None,
                     },
-                    Expr::IntLit { value: 2, span: Span::new(832, 833) },
+                    Expr::IntLit { value: 2, span: Span::new(832, 833), inferred_type: None },
                 ],
                 span: get_span,
+                resolved_call: None,
+                inferred_type: None,
             }),
             span: Span::new(807, 841),
+            inferred_type: None,
         };
 
         let check = CheckResult {
@@ -1705,24 +1916,31 @@ mod tests {
             callee: Box::new(Expr::Var {
                 name: Symbol::from("vec-len"),
                 span: Span::new(906, 913),
+                inferred_type: None,
             }),
             args: vec![Expr::Apply {
                 callee: Box::new(Expr::Var {
                     name: Symbol::from("vec-push"),
                     span: Span::new(911, 919),
+                    inferred_type: None,
                 }),
                 args: vec![
                     Expr::VecLit {
                         elements: vec![
-                            Expr::IntLit { value: 1, span: Span::new(901, 902) },
+                            Expr::IntLit { value: 1, span: Span::new(901, 902), inferred_type: None },
                         ],
                         span: vec_span,
+                        inferred_type: None,
                     },
-                    Expr::IntLit { value: 2, span: Span::new(920, 921) },
+                    Expr::IntLit { value: 2, span: Span::new(920, 921), inferred_type: None },
                 ],
                 span: push_span,
+                resolved_call: None,
+                inferred_type: None,
             }],
             span: len_span,
+            resolved_call: None,
+            inferred_type: None,
         };
 
         let check = CheckResult {
@@ -1768,27 +1986,34 @@ mod tests {
             callee: Box::new(Expr::Var {
                 name: Symbol::from("vec-len"),
                 span: Span::new(1011, 1018),
+                inferred_type: None,
             }),
             args: vec![Expr::Apply {
                 callee: Box::new(Expr::Var {
                     name: Symbol::from("vec-set"),
                     span: Span::new(1016, 1023),
+                    inferred_type: None,
                 }),
                 args: vec![
                     Expr::VecLit {
                         elements: vec![
-                            Expr::IntLit { value: 10, span: Span::new(1001, 1003) },
-                            Expr::IntLit { value: 20, span: Span::new(1004, 1006) },
-                            Expr::IntLit { value: 30, span: Span::new(1007, 1009) },
+                            Expr::IntLit { value: 10, span: Span::new(1001, 1003), inferred_type: None },
+                            Expr::IntLit { value: 20, span: Span::new(1004, 1006), inferred_type: None },
+                            Expr::IntLit { value: 30, span: Span::new(1007, 1009), inferred_type: None },
                         ],
                         span: vec_span,
+                        inferred_type: None,
                     },
-                    Expr::IntLit { value: 0, span: Span::new(1024, 1025) },
-                    Expr::IntLit { value: 99, span: Span::new(1026, 1028) },
+                    Expr::IntLit { value: 0, span: Span::new(1024, 1025), inferred_type: None },
+                    Expr::IntLit { value: 99, span: Span::new(1026, 1028), inferred_type: None },
                 ],
                 span: set_span,
+                resolved_call: None,
+                inferred_type: None,
             }],
             span: len_span,
+            resolved_call: None,
+            inferred_type: None,
         };
 
         let check = CheckResult {
@@ -1811,9 +2036,10 @@ mod tests {
     fn test_compile_vec_literal_interactive_mode() {
         let expr = Expr::VecLit {
             elements: vec![
-                Expr::IntLit { value: 42, span: Span::new(1101, 1103) },
+                Expr::IntLit { value: 42, span: Span::new(1101, 1103), inferred_type: None },
             ],
             span: Span::new(1100, 1104),
+            inferred_type: None,
         };
         let check = empty_check();
 
@@ -1849,12 +2075,16 @@ mod tests {
             callee: Box::new(Expr::Var {
                 name: Symbol::from("vec-len"),
                 span: Span::new(1196, 1203),
+                inferred_type: None,
             }),
             args: vec![Expr::VecLit {
                 elements: vec![],
                 span: vec_span,
+                inferred_type: None,
             }],
             span: len_span,
+            resolved_call: None,
+            inferred_type: None,
         };
 
         let check = CheckResult {
@@ -1900,22 +2130,29 @@ mod tests {
             callee: Box::new(Expr::Var {
                 name: Symbol::from("vec-len"),
                 span: Span::new(1301, 1308),
+                inferred_type: None,
             }),
             args: vec![Expr::Apply {
                 callee: Box::new(Expr::Var {
                     name: Symbol::from("vec-push"),
                     span: Span::new(1306, 1314),
+                    inferred_type: None,
                 }),
                 args: vec![
                     Expr::VecLit {
                         elements: vec![],
                         span: vec_span,
+                        inferred_type: None,
                     },
-                    Expr::IntLit { value: 42, span: Span::new(1315, 1317) },
+                    Expr::IntLit { value: 42, span: Span::new(1315, 1317), inferred_type: None },
                 ],
                 span: push_span,
+                resolved_call: None,
+                inferred_type: None,
             }],
             span: len_span,
+            resolved_call: None,
+            inferred_type: None,
         };
 
         let check = CheckResult {
@@ -1952,12 +2189,16 @@ mod tests {
             callee: Box::new(Expr::Var {
                 name: Symbol::from("vec-len"),
                 span: Span::new(1401, 1408),
+                inferred_type: None,
             }),
             args: vec![Expr::VecLit {
                 elements: vec![],
                 span: Span::new(1409, 1411),
+                inferred_type: None,
             }],
             span: len_span,
+            resolved_call: None,
+            inferred_type: None,
         };
 
         let check = CheckResult {
@@ -1983,20 +2224,23 @@ mod tests {
             elements: vec![
                 Expr::VecLit {
                     elements: vec![
-                        Expr::IntLit { value: 1, span: Span::new(1502, 1503) },
-                        Expr::IntLit { value: 2, span: Span::new(1504, 1505) },
+                        Expr::IntLit { value: 1, span: Span::new(1502, 1503), inferred_type: None },
+                        Expr::IntLit { value: 2, span: Span::new(1504, 1505), inferred_type: None },
                     ],
                     span: Span::new(1501, 1506),
+                    inferred_type: None,
                 },
                 Expr::VecLit {
                     elements: vec![
-                        Expr::IntLit { value: 3, span: Span::new(1508, 1509) },
-                        Expr::IntLit { value: 4, span: Span::new(1510, 1511) },
+                        Expr::IntLit { value: 3, span: Span::new(1508, 1509), inferred_type: None },
+                        Expr::IntLit { value: 4, span: Span::new(1510, 1511), inferred_type: None },
                     ],
                     span: Span::new(1507, 1512),
+                    inferred_type: None,
                 },
             ],
             span: Span::new(1500, 1513),
+            inferred_type: None,
         };
         let check = empty_check();
 
@@ -2033,12 +2277,14 @@ mod tests {
             .map(|i| Expr::IntLit {
                 value: i,
                 span: Span::new(1600 + (i as u32) * 2, 1602 + (i as u32) * 2),
+                inferred_type: None,
             })
             .collect();
 
         let expr = Expr::VecLit {
             elements,
             span: Span::new(1600, 1620),
+            inferred_type: None,
         };
         let check = empty_check();
 
@@ -2069,12 +2315,15 @@ mod tests {
             callee: Box::new(Expr::Var {
                 name: Symbol::from("+"),
                 span: Span::new(101, 102),
+                inferred_type: None,
             }),
             args: vec![
-                Expr::IntLit { value: 3, span: Span::new(103, 104) },
-                Expr::IntLit { value: 4, span: Span::new(105, 106) },
+                Expr::IntLit { value: 3, span: Span::new(103, 104), inferred_type: None },
+                Expr::IntLit { value: 4, span: Span::new(105, 106), inferred_type: None },
             ],
             span: apply_span,
+            resolved_call: None,
+            inferred_type: None,
         };
 
         let mut check = empty_check();
@@ -2102,12 +2351,15 @@ mod tests {
             callee: Box::new(Expr::Var {
                 name: Symbol::from("="),
                 span: Span::new(201, 202),
+                inferred_type: None,
             }),
             args: vec![
-                Expr::BoolLit { value: true, span: Span::new(203, 207) },
-                Expr::BoolLit { value: true, span: Span::new(208, 212) },
+                Expr::BoolLit { value: true, span: Span::new(203, 207), inferred_type: None },
+                Expr::BoolLit { value: true, span: Span::new(208, 212), inferred_type: None },
             ],
             span: apply_span,
+            resolved_call: None,
+            inferred_type: None,
         };
 
         let mut check = empty_check();
@@ -2136,7 +2388,7 @@ mod tests {
             variants: vec![DefnVariant {
                 params: vec![Symbol::from("x"), Symbol::from("y")],
                 param_annotations: vec![],
-                body: Expr::IntLit { value: 0, span: Span::new(10, 11) },
+                body: Expr::IntLit { value: 0, span: Span::new(10, 11), inferred_type: None },
                 span: Span::new(0, 20),
             }],
             visibility: cranelisp_types::Visibility::Public,
@@ -2149,7 +2401,7 @@ mod tests {
             variants: vec![DefnVariant {
                 params: vec![],
                 param_annotations: vec![],
-                body: Expr::IntLit { value: 42, span: Span::new(30, 32) },
+                body: Expr::IntLit { value: 42, span: Span::new(30, 32), inferred_type: None },
                 span: Span::new(25, 40),
             }],
             visibility: cranelisp_types::Visibility::Public,
@@ -2193,12 +2445,15 @@ mod tests {
                     callee: Box::new(Expr::Var {
                         name: Symbol::from("default-ne"),
                         span: Span::new(10, 20),
+                        inferred_type: None,
                     }),
                     args: vec![
-                        Expr::IntLit { value: 1, span: Span::new(21, 22) },
-                        Expr::IntLit { value: 2, span: Span::new(23, 24) },
+                        Expr::IntLit { value: 1, span: Span::new(21, 22), inferred_type: None },
+                        Expr::IntLit { value: 2, span: Span::new(23, 24), inferred_type: None },
                     ],
                     span: Span::new(9, 25),
+                    resolved_call: None,
+                    inferred_type: None,
                 },
                 span: Span::new(0, 30),
             }],
@@ -2212,7 +2467,7 @@ mod tests {
             variants: vec![DefnVariant {
                 params: vec![Symbol::from("x"), Symbol::from("y")],
                 param_annotations: vec![],
-                body: Expr::IntLit { value: 77, span: Span::new(0, 2) },
+                body: Expr::IntLit { value: 77, span: Span::new(0, 2), inferred_type: None },
                 span: Span::new(0, 10),
             }],
             visibility: Visibility::Public,
@@ -2254,24 +2509,30 @@ mod tests {
             callee: Box::new(Expr::Var {
                 name: Symbol::from("eq-i64"),
                 span: Span::new(31, 37),
+                inferred_type: None,
             }),
             args: vec![
-                Expr::Var { name: Symbol::from("n"), span: n_span },
-                Expr::IntLit { value: 0, span: zero_span },
+                Expr::Var { name: Symbol::from("n"), span: n_span, inferred_type: None },
+                Expr::IntLit { value: 0, span: zero_span, inferred_type: None },
             ],
             span: eq_span,
+            resolved_call: None,
+            inferred_type: None,
         };
 
         let sub_call = Expr::Apply {
             callee: Box::new(Expr::Var {
                 name: Symbol::from("sub-i64"),
                 span: Span::new(51, 58),
+                inferred_type: None,
             }),
             args: vec![
-                Expr::Var { name: Symbol::from("n"), span: Span::new(55, 56) },
-                Expr::IntLit { value: 1, span: Span::new(57, 58) },
+                Expr::Var { name: Symbol::from("n"), span: Span::new(55, 56), inferred_type: None },
+                Expr::IntLit { value: 1, span: Span::new(57, 58), inferred_type: None },
             ],
             span: sub_span,
+            resolved_call: None,
+            inferred_type: None,
         };
 
         // The recursive call: callee is "countdown" (original name),
@@ -2280,16 +2541,20 @@ mod tests {
             callee: Box::new(Expr::Var {
                 name: Symbol::from("countdown"),
                 span: Span::new(71, 80),
+                inferred_type: None,
             }),
             args: vec![sub_call],
             span: recurse_span,
+            resolved_call: None,
+            inferred_type: None,
         };
 
         let body = Expr::If {
             cond: Box::new(cond),
-            then_branch: Box::new(Expr::IntLit { value: 0, span: result_span }),
+            then_branch: Box::new(Expr::IntLit { value: 0, span: result_span, inferred_type: None }),
             else_branch: Box::new(recurse),
             span: if_span,
+            inferred_type: None,
         };
 
         let countdown_defn = Defn {
@@ -2329,20 +2594,24 @@ mod tests {
             },
         );
 
+        // Enrich the defn from CheckResult side maps (test bridge).
+        let mut enriched_defn = countdown_defn.clone();
+        enrich_defn_from_side_maps(&mut enriched_defn, &check.method_resolutions, &check.expr_types);
+
         // Compile with direct calls (no GOT).
         let mut jit = Jit::new().unwrap();
         jit.declare_intrinsics().unwrap();
-        let func_ids = jit.declare_functions(&[&countdown_defn]).unwrap();
+        let func_ids = jit.declare_functions(&[&enriched_defn]).unwrap();
 
         let arities: HashMap<Symbol, usize> =
             vec![(Symbol::from("countdown$Int"), 1)].into_iter().collect();
 
         let tables = empty_tables();
         let ctx = jit.build_compile_context(
-            &check, &func_ids, &arities,
+            &func_ids, &arities,
             &tables, ModuleFullPath::from("test"),
         );
-        jit.compile_defn(&countdown_defn, ctx).unwrap();
+        jit.compile_defn(&enriched_defn, ctx).unwrap();
         let countdown_ptr = jit.finalize_and_get_ptr(&Symbol::from("countdown$Int"), 1).unwrap();
 
         // Call with 1_000_000 — without TCO this would stack overflow.
@@ -2365,7 +2634,7 @@ mod tests {
             variants: vec![DefnVariant {
                 params: vec![],
                 param_annotations: vec![],
-                body: Expr::IntLit { value: 100, span: Span::new(0, 3) },
+                body: Expr::IntLit { value: 100, span: Span::new(0, 3), inferred_type: None },
                 span: Span::new(0, 20),
             }],
             visibility: Visibility::Public,
@@ -2379,7 +2648,6 @@ mod tests {
         let result_a = compile_to_module(
             ModuleFullPath::from("mod_a"),
             &program_a,
-            &check_a,
             &tables,
             jit_a.jit_module(),
         ).expect("module A should compile");
@@ -2405,7 +2673,7 @@ mod tests {
             variants: vec![DefnVariant {
                 params: vec![],
                 param_annotations: vec![],
-                body: Expr::IntLit { value: 200, span: Span::new(100, 103) },
+                body: Expr::IntLit { value: 200, span: Span::new(100, 103), inferred_type: None },
                 span: Span::new(100, 120),
             }],
             visibility: Visibility::Public,
@@ -2418,7 +2686,6 @@ mod tests {
         let result_b = compile_to_module(
             ModuleFullPath::from("mod_b"),
             &program_b,
-            &check_b,
             &tables,
             jit_b.jit_module(),
         ).expect("module B should compile without collision");
@@ -2469,13 +2736,13 @@ mod tests {
                 DefnVariant {
                     params: vec![Symbol::from("x")],
                     param_annotations: vec![],
-                    body: Expr::Var { name: Symbol::from("x"), span: Span::new(15, 16) },
+                    body: Expr::Var { name: Symbol::from("x"), span: Span::new(15, 16), inferred_type: None },
                     span: variant1_span,
                 },
                 DefnVariant {
                     params: vec![Symbol::from("a"), Symbol::from("b")],
                     param_annotations: vec![],
-                    body: Expr::Var { name: Symbol::from("a"), span: Span::new(45, 46) },
+                    body: Expr::Var { name: Symbol::from("a"), span: Span::new(45, 46), inferred_type: None },
                     span: variant2_span,
                 },
             ],
@@ -2483,12 +2750,40 @@ mod tests {
             span: Span::new(0, 70),
         };
 
-        // Set up expr_types: variant1 is (Fn [Int] Int), variant2 is (Fn [Bool Bool] Bool)
-        let mut expr_types: HashMap<Span, Type> = HashMap::new();
-        expr_types.insert(variant1_span, Type::Fn(vec![Type::Int], Box::new(Type::Int)));
-        expr_types.insert(variant2_span, Type::Fn(vec![Type::Bool, Type::Bool], Box::new(Type::Bool)));
+        // Set up symbol table with Overloaded entry for multi-sig dispatch.
+        let tables: DashMap<ModuleFullPath, SymbolTable> = DashMap::new();
+        let module_path = ModuleFullPath::from("user");
+        let mut table = SymbolTable::new(module_path.clone());
+        table.insert(
+            Symbol::from("f"),
+            cranelisp_types::ModuleEntry::Def {
+                scheme: cranelisp_types::Scheme { vars: vec![], constraints: Default::default(), ty: Type::Int },
+                visibility: cranelisp_types::Visibility::Public,
+                docstring: None,
+                param_names: vec![],
+                kind: Box::new(cranelisp_types::DefKind::Overloaded {
+                    variants: vec![
+                        cranelisp_types::OverloadVariant {
+                            param_types: vec![Type::Int],
+                            ret_type: Type::Int,
+                            mangled_name: Symbol::from("f$Int"),
+                        },
+                        cranelisp_types::OverloadVariant {
+                            param_types: vec![Type::Bool, Type::Bool],
+                            ret_type: Type::Bool,
+                            mangled_name: Symbol::from("f$Bool+Bool"),
+                        },
+                    ],
+                }),
+                callees: vec![],
+                got_slot: None,
+                trait_origin: None,
+                ast: None,
+            },
+        );
+        tables.insert(module_path.clone(), table);
 
-        let expanded = expand_multi_sig_defn(&defn, &expr_types).unwrap();
+        let expanded = expand_multi_sig_defn(&defn, &tables, &module_path).unwrap();
         assert_eq!(expanded.len(), 2);
         assert_eq!(expanded[0].name, Symbol::from("f$Int"));
         assert_eq!(expanded[1].name, Symbol::from("f$Bool+Bool"));
@@ -2513,13 +2808,13 @@ mod tests {
                 DefnVariant {
                     params: vec![Symbol::from("x")],
                     param_annotations: vec![],
-                    body: Expr::Var { name: Symbol::from("x"), span: Span::new(15, 16) },
+                    body: Expr::Var { name: Symbol::from("x"), span: Span::new(15, 16), inferred_type: None },
                     span: variant1_span,
                 },
                 DefnVariant {
                     params: vec![Symbol::from("a"), Symbol::from("b")],
                     param_annotations: vec![],
-                    body: Expr::Var { name: Symbol::from("a"), span: Span::new(45, 46) },
+                    body: Expr::Var { name: Symbol::from("a"), span: Span::new(45, 46), inferred_type: None },
                     span: variant2_span,
                 },
             ],
@@ -2539,9 +2834,12 @@ mod tests {
                     callee: Box::new(Expr::Var {
                         name: Symbol::from("f"),
                         span: Span::new(101, 102),
+                        inferred_type: None,
                     }),
-                    args: vec![Expr::IntLit { value: 42, span: Span::new(103, 105) }],
+                    args: vec![Expr::IntLit { value: 42, span: Span::new(103, 105), inferred_type: None }],
                     span: call_span,
+                    resolved_call: None,
+                    inferred_type: None,
                 },
                 span: Span::new(95, 125),
             }],
@@ -2555,9 +2853,6 @@ mod tests {
         ];
 
         let mut check = empty_check();
-        // Register variant types so expand_multi_sig_defn can compute mangled names.
-        check.expr_types.insert(variant1_span, Type::Fn(vec![Type::Int], Box::new(Type::Int)));
-        check.expr_types.insert(variant2_span, Type::Fn(vec![Type::Int, Type::Int], Box::new(Type::Int)));
         // Register SigDispatch for the call site.
         check.method_resolutions.insert(
             call_span,
@@ -2566,7 +2861,40 @@ mod tests {
             },
         );
 
-        let result = test_compile_program_and_run(&program, &check, &empty_tables())
+        // Set up symbol table with Overloaded entry for multi-sig expansion.
+        let tables: DashMap<ModuleFullPath, SymbolTable> = DashMap::new();
+        let module_path = ModuleFullPath::from("user");
+        let mut table = SymbolTable::new(module_path.clone());
+        table.insert(
+            Symbol::from("f"),
+            cranelisp_types::ModuleEntry::Def {
+                scheme: cranelisp_types::Scheme { vars: vec![], constraints: Default::default(), ty: Type::Int },
+                visibility: cranelisp_types::Visibility::Public,
+                docstring: None,
+                param_names: vec![],
+                kind: Box::new(cranelisp_types::DefKind::Overloaded {
+                    variants: vec![
+                        cranelisp_types::OverloadVariant {
+                            param_types: vec![Type::Int],
+                            ret_type: Type::Int,
+                            mangled_name: Symbol::from("f$Int"),
+                        },
+                        cranelisp_types::OverloadVariant {
+                            param_types: vec![Type::Int, Type::Int],
+                            ret_type: Type::Int,
+                            mangled_name: Symbol::from("f$Int+Int"),
+                        },
+                    ],
+                }),
+                callees: vec![],
+                got_slot: None,
+                trait_origin: None,
+                ast: None,
+            },
+        );
+        tables.insert(module_path, table);
+
+        let result = test_compile_program_and_run(&program, &check, &tables)
             .expect("multi-sig program should compile");
         assert_eq!(result, 42, "should dispatch to f$Int and return 42");
     }
@@ -2584,14 +2912,14 @@ mod tests {
                 DefnVariant {
                     params: vec![Symbol::from("x")],
                     param_annotations: vec![],
-                    body: Expr::Var { name: Symbol::from("x"), span: Span::new(15, 16) },
+                    body: Expr::Var { name: Symbol::from("x"), span: Span::new(15, 16), inferred_type: None },
                     span: variant1_span,
                 },
                 DefnVariant {
                     params: vec![Symbol::from("a"), Symbol::from("b")],
                     param_annotations: vec![],
                     // Return b (second param) to prove we dispatched to the right variant.
-                    body: Expr::Var { name: Symbol::from("b"), span: Span::new(45, 46) },
+                    body: Expr::Var { name: Symbol::from("b"), span: Span::new(45, 46), inferred_type: None },
                     span: variant2_span,
                 },
             ],
@@ -2611,12 +2939,15 @@ mod tests {
                     callee: Box::new(Expr::Var {
                         name: Symbol::from("g"),
                         span: Span::new(101, 102),
+                        inferred_type: None,
                     }),
                     args: vec![
-                        Expr::IntLit { value: 10, span: Span::new(103, 105) },
-                        Expr::IntLit { value: 99, span: Span::new(106, 108) },
+                        Expr::IntLit { value: 10, span: Span::new(103, 105), inferred_type: None },
+                        Expr::IntLit { value: 99, span: Span::new(106, 108), inferred_type: None },
                     ],
                     span: call_span,
+                    resolved_call: None,
+                    inferred_type: None,
                 },
                 span: Span::new(95, 125),
             }],
@@ -2630,8 +2961,6 @@ mod tests {
         ];
 
         let mut check = empty_check();
-        check.expr_types.insert(variant1_span, Type::Fn(vec![Type::Int], Box::new(Type::Int)));
-        check.expr_types.insert(variant2_span, Type::Fn(vec![Type::Int, Type::Int], Box::new(Type::Int)));
         check.method_resolutions.insert(
             call_span,
             cranelisp_types::ResolvedCall::SigDispatch {
@@ -2639,7 +2968,40 @@ mod tests {
             },
         );
 
-        let result = test_compile_program_and_run(&program, &check, &empty_tables())
+        // Set up symbol table with Overloaded entry for multi-sig expansion.
+        let tables: DashMap<ModuleFullPath, SymbolTable> = DashMap::new();
+        let module_path = ModuleFullPath::from("user");
+        let mut table = SymbolTable::new(module_path.clone());
+        table.insert(
+            Symbol::from("g"),
+            cranelisp_types::ModuleEntry::Def {
+                scheme: cranelisp_types::Scheme { vars: vec![], constraints: Default::default(), ty: Type::Int },
+                visibility: cranelisp_types::Visibility::Public,
+                docstring: None,
+                param_names: vec![],
+                kind: Box::new(cranelisp_types::DefKind::Overloaded {
+                    variants: vec![
+                        cranelisp_types::OverloadVariant {
+                            param_types: vec![Type::Int],
+                            ret_type: Type::Int,
+                            mangled_name: Symbol::from("g$Int"),
+                        },
+                        cranelisp_types::OverloadVariant {
+                            param_types: vec![Type::Int, Type::Int],
+                            ret_type: Type::Int,
+                            mangled_name: Symbol::from("g$Int+Int"),
+                        },
+                    ],
+                }),
+                callees: vec![],
+                got_slot: None,
+                trait_origin: None,
+                ast: None,
+            },
+        );
+        tables.insert(module_path, table);
+
+        let result = test_compile_program_and_run(&program, &check, &tables)
             .expect("multi-sig program should compile");
         assert_eq!(result, 99, "should dispatch to g$Int+Int and return second arg (99)");
     }
@@ -2654,7 +3016,7 @@ mod tests {
                 DefnVariant {
                     params: vec![Symbol::from("x")],
                     param_annotations: vec![],
-                    body: Expr::IntLit { value: 1, span: Span::new(15, 16) },
+                    body: Expr::IntLit { value: 1, span: Span::new(15, 16), inferred_type: None },
                     span: Span::new(10, 30),
                 },
             ],
@@ -2662,10 +3024,11 @@ mod tests {
             span: Span::new(0, 40),
         };
 
-        // No expr_types registered — should error.
-        let expr_types: HashMap<Span, Type> = HashMap::new();
-        let result = expand_multi_sig_defn(&defn, &expr_types);
-        assert!(result.is_err(), "should error when type info is missing");
+        // No overload info in symbol table — should error.
+        let tables: DashMap<ModuleFullPath, SymbolTable> = DashMap::new();
+        let module_path = ModuleFullPath::from("user");
+        let result = expand_multi_sig_defn(&defn, &tables, &module_path);
+        assert!(result.is_err(), "should error when overload info is missing");
     }
 
     // spec: 05-definitions §5.1.2 — concrete_type_name covers all primitive types

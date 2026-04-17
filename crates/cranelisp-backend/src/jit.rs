@@ -15,7 +15,7 @@ use cranelift_jit::{JITBuilder, JITModule};
 use cranelift_module::{FuncId, Linkage, Module};
 
 use cranelisp_types::{
-    CheckResult, CranelispError, Defn, Span, Symbol,
+    CranelispError, Defn, Span, Symbol,
 };
 
 /// Compilation artifacts returned by `compile_defn`.
@@ -390,6 +390,11 @@ impl Jit {
             cranelift::codegen::ir::UserFuncName::testcase(defn.name.as_bytes());
 
         // Build the function body.
+        // The caller provides the enriched defn (with resolved_call and
+        // inferred_type annotations from post-pass enrichment). Do NOT
+        // override with the symbol table's ast field — that version has
+        // unresolved type variables from the dual-write and lacks post-pass
+        // enrichment (resolve_deferred_trait_calls, final substitution).
         FnCompiler::compile_body(
             defn,
             &mut self.ctx.func,
@@ -458,26 +463,21 @@ impl Jit {
         Ok(())
     }
 
-    /// Build a `CompileContext` from a `CheckResult` and environment parameters.
+    /// Build a `CompileContext` from environment parameters.
     ///
     /// Bundles all the information needed for codegen into a single struct,
     /// eliminating the need to pass individual fields to `compile_defn`.
     ///
-    /// `symbol_tables` is the shared DashMap of per-module symbol tables,
-    /// replacing the deleted `CheckResult.type_defs` and `constructor_to_type`.
+    /// `symbol_tables` is the shared DashMap of per-module symbol tables.
     /// `current_module` identifies the module being compiled.
-    #[allow(clippy::too_many_arguments)]
     pub fn build_compile_context<'a>(
         &self,
-        check: &'a CheckResult,
         func_ids: &'a HashMap<Symbol, FuncId>,
         func_arities: &'a HashMap<Symbol, usize>,
         symbol_tables: &'a dashmap::DashMap<cranelisp_types::ModuleFullPath, cranelisp_types::SymbolTable>,
         current_module: cranelisp_types::ModuleFullPath,
     ) -> CompileContext<'a> {
         CompileContext {
-            method_resolutions: &check.method_resolutions,
-            expr_types: &check.expr_types,
             func_ids,
             func_arities,
             symbol_tables,
@@ -701,6 +701,7 @@ mod tests {
                 body: cranelisp_types::Expr::Var {
                     name: Symbol::from("x"),
                     span: Span::new(0, 1),
+                    inferred_type: None,
                 },
                 span: Span::new(0, 10),
             }],

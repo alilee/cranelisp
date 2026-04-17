@@ -22,6 +22,8 @@ impl<'a, M: Module> FnCompiler<'a, M> {
         callee: &Expr,
         args: &[Expr],
         span: Span,
+        resolved_call: Option<&ResolvedCall>,
+        apply_type: Option<&cranelisp_types::Type>,
     ) -> Result<Value, CranelispError> {
         // TCO check: self-recursive call in tail position -> jump to loop header.
         if self.in_tail_position
@@ -45,7 +47,7 @@ impl<'a, M: Module> FnCompiler<'a, M> {
         if self.in_tail_position
             && self.tail_loop_block.is_some()
             && args.len() == self.fn_param_count
-            && let Some(ResolvedCall::SigDispatch { mangled_name }) = self.ctx.method_resolutions.get(&span)
+            && let Some(ResolvedCall::SigDispatch { mangled_name }) = resolved_call
             && let Some(ref fn_name) = self.current_fn_name
             && fn_name.as_ref() == mangled_name.as_ref()
         {
@@ -57,7 +59,7 @@ impl<'a, M: Module> FnCompiler<'a, M> {
         self.in_tail_position = false;
 
         // Check for resolved call (builtin, trait method, sig-dispatch, auto-curry).
-        if let Some(resolved) = self.ctx.method_resolutions.get(&span) {
+        if let Some(resolved) = resolved_call {
             return self.compile_resolved_call(resolved.clone(), args, span, saved_tail);
         }
 
@@ -66,6 +68,7 @@ impl<'a, M: Module> FnCompiler<'a, M> {
         if let Expr::Var {
             name,
             span: var_span,
+            ..
         } = callee
         {
             return self.compile_var_apply(name, *var_span, callee, args, span, saved_tail);
@@ -84,7 +87,7 @@ impl<'a, M: Module> FnCompiler<'a, M> {
         // all captured heap values — if the result aliases a capture,
         // the inc prevents premature deallocation. The caller's later
         // dec (scope cleanup or parent expression) restores balance.
-        if let Some(ty) = self.ctx.expr_types.get(&span) {
+        if let Some(ty) = apply_type {
             let category = HeapCategory::classify(ty, Some(self.ctx.symbol_tables));
             match category {
                 HeapCategory::AlwaysHeap => {
@@ -365,7 +368,7 @@ impl<'a, M: Module> FnCompiler<'a, M> {
                 continue;
             }
             // Check if the expression produces a heap-typed value.
-            if let Some(ty) = self.ctx.expr_types.get(&arg.span()).cloned() {
+            if let Some(ty) = arg.inferred_type().cloned() {
                 let category = HeapCategory::classify(&ty, Some(self.ctx.symbol_tables));
                 match category {
                     HeapCategory::AlwaysHeap => {
@@ -418,7 +421,6 @@ impl<'a, M: Module> FnCompiler<'a, M> {
 
         // Direct call: look up FuncId and emit `call`.
         {
-            // Direct call: look up FuncId and emit `call`.
             let func_id = self.ctx.func_ids.get(name).ok_or_else(|| {
                 CranelispError::CodegenError {
                     message: format!("undefined function: {name}"),

@@ -405,6 +405,7 @@ mod tests {
             callees: Vec::new(),
             got_slot: None,
             trait_origin: None,
+            ast: None,
         }
     }
 

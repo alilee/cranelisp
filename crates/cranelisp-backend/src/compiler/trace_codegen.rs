@@ -19,8 +19,8 @@ impl<'a, M: Module> FnCompiler<'a, M> {
     /// Discard a body result by decrementing its RC if it is heap-allocated.
     /// Used by both `compile_trace` and `compile_trace_no_swap` to drop the
     /// body value (the trace result is the Trace ADT, not the body's value).
-    fn emit_body_discard(&mut self, body_val: Value, body_span: Span) {
-        if let Some(ty) = self.ctx.expr_types.get(&body_span).cloned()
+    fn emit_body_discard(&mut self, body_val: Value, body: &Expr) {
+        if let Some(ty) = body.inferred_type().cloned()
             && self.is_heap_type(&ty)
             && let Some(dealloc) = self.ctx.dealloc_func_id
         {
@@ -134,7 +134,7 @@ impl<'a, M: Module> FnCompiler<'a, M> {
 
         // Discard body result (dec RC if it is heap-allocated).
         // The trace result is the Trace ADT, not the body's value.
-        self.emit_body_discard(body_result, body.span());
+        self.emit_body_discard(body_result, body);
 
         // Restore GOTs in reverse order (for clean nesting semantics).
         let restore_ref = self
@@ -171,7 +171,7 @@ impl<'a, M: Module> FnCompiler<'a, M> {
         self.in_tail_position = saved_tail;
 
         // Discard body result.
-        self.emit_body_discard(body_result, body.span());
+        self.emit_body_discard(body_result, body);
 
         // Return empty trace from collect_trace (handles empty stack gracefully).
         let collect_id =

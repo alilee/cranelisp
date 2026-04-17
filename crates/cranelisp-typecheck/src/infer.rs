@@ -21,28 +21,32 @@ impl TypeCheckEnv<'_> {
             Expr::IntLit { span, .. } => self.infer_int_lit(state, *span),
             Expr::FloatLit { span, .. } => self.infer_float_lit(state, *span),
             Expr::BoolLit { span, .. } => self.infer_bool_lit(state, *span),
-            Expr::Var { name, span } => self.infer_var(state, name, *span),
+            Expr::Var { name, span, .. } => self.infer_var(state, name, *span),
             Expr::Let {
                 bindings,
                 body,
                 span,
+                ..
             } => self.infer_let(state, bindings, body, *span),
             Expr::If {
                 cond,
                 then_branch,
                 else_branch,
                 span,
+                ..
             } => self.infer_if(state, cond, then_branch, else_branch, *span),
             Expr::Lambda {
                 params,
                 param_annotations,
                 body,
                 span,
+                ..
             } => self.infer_lambda(state, params, param_annotations, body, *span),
             Expr::Apply {
                 callee,
                 args,
                 span,
+                ..
             } => self.infer_apply(state, callee, args, *span),
             Expr::Match {
                 scrutinee,
@@ -54,10 +58,11 @@ impl TypeCheckEnv<'_> {
                 annotation,
                 expr,
                 span,
+                ..
             } => self.infer_annotate(state, annotation, expr, *span),
 
             Expr::StringLit { span, .. } => self.infer_string_lit(state, *span),
-            Expr::VecLit { elements, span } => self.infer_vec_lit(state, elements, *span),
+            Expr::VecLit { elements, span, .. } => self.infer_vec_lit(state, elements, *span),
             Expr::Trace { body, span, .. } => self.infer_trace(state, body, *span),
             // ParBind is semantically identical to Let for type-checking;
             // parallel execution is a codegen concern.
@@ -65,6 +70,7 @@ impl TypeCheckEnv<'_> {
                 bindings,
                 body,
                 span,
+                ..
             } => self.infer_let(state, bindings, body, *span),
         }
     }
@@ -488,7 +494,7 @@ impl TypeCheckEnv<'_> {
     /// a known trait method but has no entry in method_resolutions, and resolves them.
     pub(crate) fn resolve_deferred_trait_calls(&self, state: &mut CheckState, expr: &Expr) {
         match expr {
-            Expr::Apply { callee, args, span } => {
+            Expr::Apply { callee, args, span, .. } => {
                 // Try to resolve this Apply if it's not already resolved
                 if !state.method_resolutions.contains_key(span)
                     && let Expr::Var { name, .. } = callee.as_ref()
@@ -917,33 +923,36 @@ mod tests {
     #[test]
     fn test_infer_int_lit() {
         let mut tc = tc();
-        let expr = Expr::IntLit {
+        let mut expr = Expr::IntLit {
             value: 42,
             span: span(0, 2),
+            inferred_type: None,
         };
-        assert_eq!(tc.infer_expr_for_test(&expr).unwrap(), Type::Int);
+        assert_eq!(tc.infer_expr_for_test(&mut expr).unwrap(), Type::Int);
     }
 
     // spec: 03-types §3.5.3 — float literal infers to Float
     #[test]
     fn test_infer_float_lit() {
         let mut tc = tc();
-        let expr = Expr::FloatLit {
+        let mut expr = Expr::FloatLit {
             value: 2.72,
             span: span(0, 4),
+            inferred_type: None,
         };
-        assert_eq!(tc.infer_expr_for_test(&expr).unwrap(), Type::Float);
+        assert_eq!(tc.infer_expr_for_test(&mut expr).unwrap(), Type::Float);
     }
 
     // spec: 03-types §3.5.3 — boolean literal infers to Bool
     #[test]
     fn test_infer_bool_lit() {
         let mut tc = tc();
-        let expr = Expr::BoolLit {
+        let mut expr = Expr::BoolLit {
             value: true,
             span: span(0, 4),
+            inferred_type: None,
         };
-        assert_eq!(tc.infer_expr_for_test(&expr).unwrap(), Type::Bool);
+        assert_eq!(tc.infer_expr_for_test(&mut expr).unwrap(), Type::Bool);
     }
 
     // --- Var tests ---
@@ -953,22 +962,24 @@ mod tests {
     fn test_infer_var_defined() {
         let mut tc = tc();
         tc.bind_local_self(Symbol::from("x"), mono(Type::Int));
-        let expr = Expr::Var {
+        let mut expr = Expr::Var {
             name: Symbol::from("x"),
             span: span(0, 1),
+            inferred_type: None,
         };
-        assert_eq!(tc.infer_expr_for_test(&expr).unwrap(), Type::Int);
+        assert_eq!(tc.infer_expr_for_test(&mut expr).unwrap(), Type::Int);
     }
 
     // spec: 03-types §3.5.3 — undefined variable reference is a type error
     #[test]
     fn test_infer_var_undefined() {
         let mut tc = tc();
-        let expr = Expr::Var {
+        let mut expr = Expr::Var {
             name: Symbol::from("x"),
             span: span(0, 1),
+            inferred_type: None,
         };
-        assert!(tc.infer_expr_for_test(&expr).is_err());
+        assert!(tc.infer_expr_for_test(&mut expr).is_err());
     }
 
     // --- Let tests ---
@@ -978,21 +989,24 @@ mod tests {
     fn test_infer_let_simple() {
         let mut tc = tc();
         // (let [x 42] x)
-        let expr = Expr::Let {
+        let mut expr = Expr::Let {
             bindings: vec![(
                 Symbol::from("x"),
                 Expr::IntLit {
                     value: 42,
                     span: span(6, 8),
+                    inferred_type: None,
                 },
             )],
             body: Box::new(Expr::Var {
                 name: Symbol::from("x"),
                 span: span(10, 11),
+                inferred_type: None,
             }),
             span: span(0, 12),
+            inferred_type: None,
         };
-        assert_eq!(tc.infer_expr_for_test(&expr).unwrap(), Type::Int);
+        assert_eq!(tc.infer_expr_for_test(&mut expr).unwrap(), Type::Int);
     }
 
     // spec: 03-types §3.5.3 — let sequential bindings: later bindings see earlier ones
@@ -1000,13 +1014,14 @@ mod tests {
     fn test_infer_let_sequential_bindings() {
         let mut tc = tc();
         // (let [x 42 y x] y)
-        let expr = Expr::Let {
+        let mut expr = Expr::Let {
             bindings: vec![
                 (
                     Symbol::from("x"),
                     Expr::IntLit {
                         value: 42,
                         span: span(6, 8),
+                        inferred_type: None,
                     },
                 ),
                 (
@@ -1014,16 +1029,19 @@ mod tests {
                     Expr::Var {
                         name: Symbol::from("x"),
                         span: span(11, 12),
+                        inferred_type: None,
                     },
                 ),
             ],
             body: Box::new(Expr::Var {
                 name: Symbol::from("y"),
                 span: span(14, 15),
+                inferred_type: None,
             }),
             span: span(0, 16),
+            inferred_type: None,
         };
-        assert_eq!(tc.infer_expr_for_test(&expr).unwrap(), Type::Int);
+        assert_eq!(tc.infer_expr_for_test(&mut expr).unwrap(), Type::Int);
     }
 
     // --- If tests ---
@@ -1033,22 +1051,26 @@ mod tests {
     fn test_infer_if_ok() {
         let mut tc = tc();
         // (if true 1 2)
-        let expr = Expr::If {
+        let mut expr = Expr::If {
             cond: Box::new(Expr::BoolLit {
                 value: true,
                 span: span(4, 8),
+                inferred_type: None,
             }),
             then_branch: Box::new(Expr::IntLit {
                 value: 1,
                 span: span(9, 10),
+                inferred_type: None,
             }),
             else_branch: Box::new(Expr::IntLit {
                 value: 2,
                 span: span(11, 12),
+                inferred_type: None,
             }),
             span: span(0, 13),
+            inferred_type: None,
         };
-        assert_eq!(tc.infer_expr_for_test(&expr).unwrap(), Type::Int);
+        assert_eq!(tc.infer_expr_for_test(&mut expr).unwrap(), Type::Int);
     }
 
     // spec: 03-types §3.5.3 — if condition must unify with Bool
@@ -1056,22 +1078,26 @@ mod tests {
     fn test_infer_if_non_bool_condition() {
         let mut tc = tc();
         // (if 42 1 2) -- condition must be Bool
-        let expr = Expr::If {
+        let mut expr = Expr::If {
             cond: Box::new(Expr::IntLit {
                 value: 42,
                 span: span(4, 6),
+                inferred_type: None,
             }),
             then_branch: Box::new(Expr::IntLit {
                 value: 1,
                 span: span(7, 8),
+                inferred_type: None,
             }),
             else_branch: Box::new(Expr::IntLit {
                 value: 2,
                 span: span(9, 10),
+                inferred_type: None,
             }),
             span: span(0, 11),
+            inferred_type: None,
         };
-        let err = tc.infer_expr_for_test(&expr).unwrap_err();
+        let err = tc.infer_expr_for_test(&mut expr).unwrap_err();
         assert!(err.message().contains("type mismatch"));
     }
 
@@ -1080,22 +1106,26 @@ mod tests {
     fn test_infer_if_branch_mismatch() {
         let mut tc = tc();
         // (if true 1 true) -- branches must agree
-        let expr = Expr::If {
+        let mut expr = Expr::If {
             cond: Box::new(Expr::BoolLit {
                 value: true,
                 span: span(4, 8),
+                inferred_type: None,
             }),
             then_branch: Box::new(Expr::IntLit {
                 value: 1,
                 span: span(9, 10),
+                inferred_type: None,
             }),
             else_branch: Box::new(Expr::BoolLit {
                 value: true,
                 span: span(11, 15),
+                inferred_type: None,
             }),
             span: span(0, 16),
+            inferred_type: None,
         };
-        assert!(tc.infer_expr_for_test(&expr).is_err());
+        assert!(tc.infer_expr_for_test(&mut expr).is_err());
     }
 
     // --- Lambda tests ---
@@ -1105,16 +1135,18 @@ mod tests {
     fn test_infer_lambda_identity() {
         let mut tc = tc();
         // (fn [x] x)
-        let expr = Expr::Lambda {
+        let mut expr = Expr::Lambda {
             params: vec![Symbol::from("x")],
             param_annotations: vec![None],
             body: Box::new(Expr::Var {
                 name: Symbol::from("x"),
                 span: span(8, 9),
+                inferred_type: None,
             }),
             span: span(0, 10),
+            inferred_type: None,
         };
-        let ty = tc.infer_expr_for_test(&expr).unwrap();
+        let ty = tc.infer_expr_for_test(&mut expr).unwrap();
         // Should be Fn([tN], tN) for some N
         match ty {
             Type::Fn(params, ret) => {
@@ -1130,16 +1162,18 @@ mod tests {
     fn test_infer_lambda_annotated() {
         let mut tc = tc();
         // (fn [:Int x] x)
-        let expr = Expr::Lambda {
+        let mut expr = Expr::Lambda {
             params: vec![Symbol::from("x")],
             param_annotations: vec![Some(TypeExpr::Named(TypeName::from("Int")))],
             body: Box::new(Expr::Var {
                 name: Symbol::from("x"),
                 span: span(13, 14),
+                inferred_type: None,
             }),
             span: span(0, 15),
+            inferred_type: None,
         };
-        let ty = tc.infer_expr_for_test(&expr).unwrap();
+        let ty = tc.infer_expr_for_test(&mut expr).unwrap();
         assert_eq!(ty, Type::Fn(vec![Type::Int], Box::new(Type::Int)));
     }
 
@@ -1150,23 +1184,28 @@ mod tests {
     fn test_infer_apply_lambda() {
         let mut tc = tc();
         // ((fn [x] x) 42)
-        let expr = Expr::Apply {
+        let mut expr = Expr::Apply {
             callee: Box::new(Expr::Lambda {
                 params: vec![Symbol::from("x")],
                 param_annotations: vec![None],
                 body: Box::new(Expr::Var {
                     name: Symbol::from("x"),
                     span: span(8, 9),
+                    inferred_type: None,
                 }),
                 span: span(1, 10),
+                inferred_type: None,
             }),
             args: vec![Expr::IntLit {
                 value: 42,
                 span: span(11, 13),
+                inferred_type: None,
             }],
             span: span(0, 14),
+            resolved_call: None,
+            inferred_type: None,
         };
-        assert_eq!(tc.infer_expr_for_test(&expr).unwrap(), Type::Int);
+        assert_eq!(tc.infer_expr_for_test(&mut expr).unwrap(), Type::Int);
     }
 
     // spec: 03-types §3.5.3 — apply primitive add-i64 records BuiltinFn resolution
@@ -1174,24 +1213,29 @@ mod tests {
     fn test_infer_apply_int_add() {
         let mut tc = tc();
         // (add-i64 1 2) -> Int
-        let expr = Expr::Apply {
+        let mut expr = Expr::Apply {
             callee: Box::new(Expr::Var {
                 name: Symbol::from("add-i64"),
                 span: span(1, 8),
+                inferred_type: None,
             }),
             args: vec![
                 Expr::IntLit {
                     value: 1,
                     span: span(9, 10),
+                    inferred_type: None,
                 },
                 Expr::IntLit {
                     value: 2,
                     span: span(11, 12),
+                    inferred_type: None,
                 },
             ],
             span: span(0, 13),
+            resolved_call: None,
+            inferred_type: None,
         };
-        assert_eq!(tc.infer_expr_for_test(&expr).unwrap(), Type::Int);
+        assert_eq!(tc.infer_expr_for_test(&mut expr).unwrap(), Type::Int);
 
         // Check that a BuiltinFn resolution was recorded
         let resolution = tc.state.method_resolutions.get(&span(0, 13)).unwrap();
@@ -1208,24 +1252,29 @@ mod tests {
     fn test_infer_apply_float_add() {
         let mut tc = tc();
         // (add-f64 1.0 2.0) -> Float
-        let expr = Expr::Apply {
+        let mut expr = Expr::Apply {
             callee: Box::new(Expr::Var {
                 name: Symbol::from("add-f64"),
                 span: span(1, 8),
+                inferred_type: None,
             }),
             args: vec![
                 Expr::FloatLit {
                     value: 1.0,
                     span: span(9, 12),
+                    inferred_type: None,
                 },
                 Expr::FloatLit {
                     value: 2.0,
                     span: span(13, 16),
+                    inferred_type: None,
                 },
             ],
             span: span(0, 17),
+            resolved_call: None,
+            inferred_type: None,
         };
-        assert_eq!(tc.infer_expr_for_test(&expr).unwrap(), Type::Float);
+        assert_eq!(tc.infer_expr_for_test(&mut expr).unwrap(), Type::Float);
 
         let resolution = tc.state.method_resolutions.get(&span(0, 17)).unwrap();
         match resolution {
@@ -1241,24 +1290,29 @@ mod tests {
     fn test_infer_apply_int_eq() {
         let mut tc = tc();
         // (eq-i64 1 2) -> Bool
-        let expr = Expr::Apply {
+        let mut expr = Expr::Apply {
             callee: Box::new(Expr::Var {
                 name: Symbol::from("eq-i64"),
                 span: span(1, 7),
+                inferred_type: None,
             }),
             args: vec![
                 Expr::IntLit {
                     value: 1,
                     span: span(8, 9),
+                    inferred_type: None,
                 },
                 Expr::IntLit {
                     value: 2,
                     span: span(10, 11),
+                    inferred_type: None,
                 },
             ],
             span: span(0, 12),
+            resolved_call: None,
+            inferred_type: None,
         };
-        assert_eq!(tc.infer_expr_for_test(&expr).unwrap(), Type::Bool);
+        assert_eq!(tc.infer_expr_for_test(&mut expr).unwrap(), Type::Bool);
     }
 
     // spec: appendix-a-builtins §A.3 — not primitive: Bool -> Bool
@@ -1266,18 +1320,22 @@ mod tests {
     fn test_infer_apply_not() {
         let mut tc = tc();
         // (not true) -> Bool
-        let expr = Expr::Apply {
+        let mut expr = Expr::Apply {
             callee: Box::new(Expr::Var {
                 name: Symbol::from("not"),
                 span: span(1, 4),
+                inferred_type: None,
             }),
             args: vec![Expr::BoolLit {
                 value: true,
                 span: span(5, 9),
+                inferred_type: None,
             }],
             span: span(0, 10),
+            resolved_call: None,
+            inferred_type: None,
         };
-        assert_eq!(tc.infer_expr_for_test(&expr).unwrap(), Type::Bool);
+        assert_eq!(tc.infer_expr_for_test(&mut expr).unwrap(), Type::Bool);
 
         let resolution = tc.state.method_resolutions.get(&span(0, 10)).unwrap();
         match resolution {
@@ -1293,24 +1351,29 @@ mod tests {
     fn test_infer_apply_type_mismatch_int_add_float() {
         let mut tc = tc();
         // (add-i64 1.0 2.0) -- type error: float args to int primitive
-        let expr = Expr::Apply {
+        let mut expr = Expr::Apply {
             callee: Box::new(Expr::Var {
                 name: Symbol::from("add-i64"),
                 span: span(1, 8),
+                inferred_type: None,
             }),
             args: vec![
                 Expr::FloatLit {
                     value: 1.0,
                     span: span(9, 12),
+                    inferred_type: None,
                 },
                 Expr::FloatLit {
                     value: 2.0,
                     span: span(13, 16),
+                    inferred_type: None,
                 },
             ],
             span: span(0, 17),
+            resolved_call: None,
+            inferred_type: None,
         };
-        assert!(tc.infer_expr_for_test(&expr).is_err(), "add-i64 with float args should fail");
+        assert!(tc.infer_expr_for_test(&mut expr).is_err(), "add-i64 with float args should fail");
     }
 
     // spec: 04-expressions §4.6.3 — too few args triggers auto-curry
@@ -1318,18 +1381,22 @@ mod tests {
     fn test_infer_apply_auto_curry() {
         let mut tc = tc();
         // (add-i64 1) -- too few args, auto-curry returns Fn([Int], Int)
-        let expr = Expr::Apply {
+        let mut expr = Expr::Apply {
             callee: Box::new(Expr::Var {
                 name: Symbol::from("add-i64"),
                 span: span(1, 8),
+                inferred_type: None,
             }),
             args: vec![Expr::IntLit {
                 value: 1,
                 span: span(9, 10),
+                inferred_type: None,
             }],
             span: span(0, 11),
+            resolved_call: None,
+            inferred_type: None,
         };
-        let ty = tc.infer_expr_for_test(&expr).expect("auto-curry should succeed");
+        let ty = tc.infer_expr_for_test(&mut expr).expect("auto-curry should succeed");
         let resolved = tc.apply_subst_self(&ty);
         match resolved {
             Type::Fn(params, ret) => {
@@ -1346,19 +1413,22 @@ mod tests {
     fn test_infer_apply_too_many_args() {
         let mut tc = tc();
         // (add-i64 1 2 3) -- too many args
-        let expr = Expr::Apply {
+        let mut expr = Expr::Apply {
             callee: Box::new(Expr::Var {
                 name: Symbol::from("add-i64"),
                 span: span(1, 8),
+                inferred_type: None,
             }),
             args: vec![
-                Expr::IntLit { value: 1, span: span(9, 10) },
-                Expr::IntLit { value: 2, span: span(11, 12) },
-                Expr::IntLit { value: 3, span: span(13, 14) },
+                Expr::IntLit { value: 1, span: span(9, 10), inferred_type: None, },
+                Expr::IntLit { value: 2, span: span(11, 12), inferred_type: None, },
+                Expr::IntLit { value: 3, span: span(13, 14), inferred_type: None, },
             ],
             span: span(0, 15),
+            resolved_call: None,
+            inferred_type: None,
         };
-        assert!(tc.infer_expr_for_test(&expr).is_err());
+        assert!(tc.infer_expr_for_test(&mut expr).is_err());
     }
 
     // --- Match tests ---
@@ -1370,10 +1440,11 @@ mod tests {
         register_color(&mut tc);
 
         // (match Red [Red 1 Green 2 Blue 3])
-        let expr = Expr::Match {
+        let mut expr = Expr::Match {
             scrutinee: Box::new(Expr::Var {
                 name: Symbol::from("Red"),
                 span: span(7, 10),
+                inferred_type: None,
             }),
             arms: vec![
                 MatchArm {
@@ -1385,6 +1456,7 @@ mod tests {
                     body: Expr::IntLit {
                         value: 1,
                         span: span(16, 17),
+                        inferred_type: None,
                     },
                     span: span(12, 17),
                 },
@@ -1397,6 +1469,7 @@ mod tests {
                     body: Expr::IntLit {
                         value: 2,
                         span: span(24, 25),
+                        inferred_type: None,
                     },
                     span: span(18, 25),
                 },
@@ -1409,14 +1482,16 @@ mod tests {
                     body: Expr::IntLit {
                         value: 3,
                         span: span(31, 32),
+                        inferred_type: None,
                     },
                     span: span(26, 32),
                 },
             ],
             span: span(0, 33),
             compiler_generated: false,
+            inferred_type: None,
         };
-        assert_eq!(tc.infer_expr_for_test(&expr).unwrap(), Type::Int);
+        assert_eq!(tc.infer_expr_for_test(&mut expr).unwrap(), Type::Int);
     }
 
     // spec: 06-pattern-matching §6.5.1 — non-exhaustive match on ADT is compile error
@@ -1426,10 +1501,11 @@ mod tests {
         register_color(&mut tc);
 
         // Match with only Red -- missing Green, Blue
-        let expr = Expr::Match {
+        let mut expr = Expr::Match {
             scrutinee: Box::new(Expr::Var {
                 name: Symbol::from("Red"),
                 span: span(7, 10),
+                inferred_type: None,
             }),
             arms: vec![MatchArm {
                 pattern: Pattern::Constructor {
@@ -1440,13 +1516,15 @@ mod tests {
                 body: Expr::IntLit {
                     value: 1,
                     span: span(16, 17),
+                    inferred_type: None,
                 },
                 span: span(12, 17),
             }],
             span: span(0, 18),
             compiler_generated: false,
+            inferred_type: None,
         };
-        let err = tc.infer_expr_for_test(&expr).unwrap_err();
+        let err = tc.infer_expr_for_test(&mut expr).unwrap_err();
         assert!(err.message().contains("non-exhaustive"));
     }
 
@@ -1457,10 +1535,11 @@ mod tests {
         register_color(&mut tc);
 
         // (match Red [Red 1 _ 0])
-        let expr = Expr::Match {
+        let mut expr = Expr::Match {
             scrutinee: Box::new(Expr::Var {
                 name: Symbol::from("Red"),
                 span: span(7, 10),
+                inferred_type: None,
             }),
             arms: vec![
                 MatchArm {
@@ -1472,6 +1551,7 @@ mod tests {
                     body: Expr::IntLit {
                         value: 1,
                         span: span(16, 17),
+                        inferred_type: None,
                     },
                     span: span(12, 17),
                 },
@@ -1482,14 +1562,16 @@ mod tests {
                     body: Expr::IntLit {
                         value: 0,
                         span: span(20, 21),
+                        inferred_type: None,
                     },
                     span: span(18, 21),
                 },
             ],
             span: span(0, 22),
             compiler_generated: false,
+            inferred_type: None,
         };
-        assert_eq!(tc.infer_expr_for_test(&expr).unwrap(), Type::Int);
+        assert_eq!(tc.infer_expr_for_test(&mut expr).unwrap(), Type::Int);
     }
 
     // spec: 06-pattern-matching §6.2.4 — variable pattern binds scrutinee value
@@ -1499,10 +1581,11 @@ mod tests {
         register_color(&mut tc);
 
         // (match Red [x 1]) -- var pattern binds scrutinee
-        let expr = Expr::Match {
+        let mut expr = Expr::Match {
             scrutinee: Box::new(Expr::Var {
                 name: Symbol::from("Red"),
                 span: span(7, 10),
+                inferred_type: None,
             }),
             arms: vec![MatchArm {
                 pattern: Pattern::Var {
@@ -1512,13 +1595,15 @@ mod tests {
                 body: Expr::IntLit {
                     value: 1,
                     span: span(14, 15),
+                    inferred_type: None,
                 },
                 span: span(12, 15),
             }],
             span: span(0, 16),
             compiler_generated: false,
+            inferred_type: None,
         };
-        assert_eq!(tc.infer_expr_for_test(&expr).unwrap(), Type::Int);
+        assert_eq!(tc.infer_expr_for_test(&mut expr).unwrap(), Type::Int);
     }
 
     // --- Annotate tests ---
@@ -1528,15 +1613,17 @@ mod tests {
     fn test_infer_annotate_matching() {
         let mut tc = tc();
         // (:Int 42) -- annotation matches
-        let expr = Expr::Annotate {
+        let mut expr = Expr::Annotate {
             annotation: TypeExpr::Named(TypeName::from("Int")),
             expr: Box::new(Expr::IntLit {
                 value: 42,
                 span: span(5, 7),
+                inferred_type: None,
             }),
             span: span(0, 8),
+            inferred_type: None,
         };
-        assert_eq!(tc.infer_expr_for_test(&expr).unwrap(), Type::Int);
+        assert_eq!(tc.infer_expr_for_test(&mut expr).unwrap(), Type::Int);
     }
 
     // spec: 03-types §3.9.1 — annotation mismatching inferred type fails
@@ -1544,15 +1631,17 @@ mod tests {
     fn test_infer_annotate_mismatch() {
         let mut tc = tc();
         // (:Bool 42) -- annotation doesn't match
-        let expr = Expr::Annotate {
+        let mut expr = Expr::Annotate {
             annotation: TypeExpr::Named(TypeName::from("Bool")),
             expr: Box::new(Expr::IntLit {
                 value: 42,
                 span: span(6, 8),
+                inferred_type: None,
             }),
             span: span(0, 9),
+            inferred_type: None,
         };
-        assert!(tc.infer_expr_for_test(&expr).is_err());
+        assert!(tc.infer_expr_for_test(&mut expr).is_err());
     }
 
     // --- expr_types recording tests ---
@@ -1562,8 +1651,8 @@ mod tests {
     fn test_expr_types_recorded() {
         let mut tc = tc();
         let s = span(0, 2);
-        let expr = Expr::IntLit { value: 42, span: s };
-        tc.infer_expr_for_test(&expr).unwrap();
+        let mut expr = Expr::IntLit { value: 42, span: s, inferred_type: None, };
+        tc.infer_expr_for_test(&mut expr).unwrap();
         assert_eq!(tc.state.expr_types.get(&s), Some(&Type::Int));
     }
 
@@ -1578,34 +1667,43 @@ mod tests {
             callee: Box::new(Expr::Var {
                 name: Symbol::from("add-i64"),
                 span: span(9, 16),
+                inferred_type: None,
             }),
             args: vec![
                 Expr::IntLit {
                     value: 1,
                     span: span(17, 18),
+                    inferred_type: None,
                 },
                 Expr::IntLit {
                     value: 2,
                     span: span(19, 20),
+                    inferred_type: None,
                 },
             ],
             span: span(8, 21),
+            resolved_call: None,
+            inferred_type: None,
         };
-        let expr = Expr::Apply {
+        let mut expr = Expr::Apply {
             callee: Box::new(Expr::Var {
                 name: Symbol::from("add-i64"),
                 span: span(1, 8),
+                inferred_type: None,
             }),
             args: vec![
                 inner,
                 Expr::IntLit {
                     value: 3,
                     span: span(23, 24),
+                    inferred_type: None,
                 },
             ],
             span: span(0, 25),
+            resolved_call: None,
+            inferred_type: None,
         };
-        assert_eq!(tc.infer_expr_for_test(&expr).unwrap(), Type::Int);
+        assert_eq!(tc.infer_expr_for_test(&mut expr).unwrap(), Type::Int);
     }
 
     // --- String literal tests (Ring 1) ---
@@ -1614,11 +1712,12 @@ mod tests {
     #[test]
     fn test_infer_string_lit() {
         let mut tc = tc();
-        let expr = Expr::StringLit {
+        let mut expr = Expr::StringLit {
             value: "hello".to_string(),
             span: span(0, 7),
+            inferred_type: None,
         };
-        assert_eq!(tc.infer_expr_for_test(&expr).unwrap(), Type::String);
+        assert_eq!(tc.infer_expr_for_test(&mut expr).unwrap(), Type::String);
     }
 
     // spec: 03-types §3.5.1 — string literal records String in expr_types
@@ -1626,11 +1725,12 @@ mod tests {
     fn test_string_lit_expr_types_recorded() {
         let mut tc = tc();
         let s = span(0, 7);
-        let expr = Expr::StringLit {
+        let mut expr = Expr::StringLit {
             value: "hello".to_string(),
             span: s,
+            inferred_type: None,
         };
-        tc.infer_expr_for_test(&expr).unwrap();
+        tc.infer_expr_for_test(&mut expr).unwrap();
         assert_eq!(tc.state.expr_types.get(&s), Some(&Type::String));
     }
 
@@ -1672,17 +1772,21 @@ mod tests {
         register_option(&mut tc);
 
         // (match (Some 42) [(Some x) x (None 0)])
-        let expr = Expr::Match {
+        let mut expr = Expr::Match {
             scrutinee: Box::new(Expr::Apply {
                 callee: Box::new(Expr::Var {
                     name: Symbol::from("Some"),
                     span: span(8, 12),
+                    inferred_type: None,
                 }),
                 args: vec![Expr::IntLit {
                     value: 42,
                     span: span(13, 15),
+                    inferred_type: None,
                 }],
                 span: span(7, 16),
+                resolved_call: None,
+                inferred_type: None,
             }),
             arms: vec![
                 MatchArm {
@@ -1694,6 +1798,7 @@ mod tests {
                     body: Expr::Var {
                         name: Symbol::from("x"),
                         span: span(26, 27),
+                        inferred_type: None,
                     },
                     span: span(18, 27),
                 },
@@ -1706,16 +1811,18 @@ mod tests {
                     body: Expr::IntLit {
                         value: 0,
                         span: span(34, 35),
+                        inferred_type: None,
                     },
                     span: span(29, 35),
                 },
             ],
             span: span(0, 36),
             compiler_generated: false,
+            inferred_type: None,
         };
 
         // Should infer result type Int (x : Int from Some pattern, 0 : Int)
-        assert_eq!(tc.infer_expr_for_test(&expr).unwrap(), Type::Int);
+        assert_eq!(tc.infer_expr_for_test(&mut expr).unwrap(), Type::Int);
     }
 
     // spec: 06-pattern-matching §6.2.1 — wrong binding count in constructor pattern is error
@@ -1725,17 +1832,21 @@ mod tests {
         register_option(&mut tc);
 
         // (match (Some 42) [(Some x y) x]) -- too many bindings
-        let expr = Expr::Match {
+        let mut expr = Expr::Match {
             scrutinee: Box::new(Expr::Apply {
                 callee: Box::new(Expr::Var {
                     name: Symbol::from("Some"),
                     span: span(108, 112),
+                    inferred_type: None,
                 }),
                 args: vec![Expr::IntLit {
                     value: 42,
                     span: span(113, 115),
+                    inferred_type: None,
                 }],
                 span: span(107, 116),
+                resolved_call: None,
+                inferred_type: None,
             }),
             arms: vec![MatchArm {
                 pattern: Pattern::Constructor {
@@ -1746,14 +1857,16 @@ mod tests {
                 body: Expr::Var {
                     name: Symbol::from("x"),
                     span: span(130, 131),
+                    inferred_type: None,
                 },
                 span: span(118, 131),
             }],
             span: span(100, 132),
             compiler_generated: false,
+            inferred_type: None,
         };
 
-        let err = tc.infer_expr_for_test(&expr).unwrap_err();
+        let err = tc.infer_expr_for_test(&mut expr).unwrap_err();
         assert!(err.message().contains("expects 1 field"));
     }
 
@@ -1764,17 +1877,21 @@ mod tests {
         register_option(&mut tc);
 
         // (match (Some 1) [(None x) x]) -- None is nullary, no bindings allowed
-        let expr = Expr::Match {
+        let mut expr = Expr::Match {
             scrutinee: Box::new(Expr::Apply {
                 callee: Box::new(Expr::Var {
                     name: Symbol::from("Some"),
                     span: span(208, 212),
+                    inferred_type: None,
                 }),
                 args: vec![Expr::IntLit {
                     value: 1,
                     span: span(213, 214),
+                    inferred_type: None,
                 }],
                 span: span(207, 215),
+                resolved_call: None,
+                inferred_type: None,
             }),
             arms: vec![MatchArm {
                 pattern: Pattern::Constructor {
@@ -1785,14 +1902,16 @@ mod tests {
                 body: Expr::Var {
                     name: Symbol::from("x"),
                     span: span(226, 227),
+                    inferred_type: None,
                 },
                 span: span(217, 227),
             }],
             span: span(200, 228),
             compiler_generated: false,
+            inferred_type: None,
         };
 
-        let err = tc.infer_expr_for_test(&expr).unwrap_err();
+        let err = tc.infer_expr_for_test(&mut expr).unwrap_err();
         assert!(err.message().contains("takes no arguments"));
     }
 
@@ -1803,17 +1922,21 @@ mod tests {
         register_option(&mut tc);
 
         // Match only Some, missing None
-        let expr = Expr::Match {
+        let mut expr = Expr::Match {
             scrutinee: Box::new(Expr::Apply {
                 callee: Box::new(Expr::Var {
                     name: Symbol::from("Some"),
                     span: span(308, 312),
+                    inferred_type: None,
                 }),
                 args: vec![Expr::IntLit {
                     value: 1,
                     span: span(313, 314),
+                    inferred_type: None,
                 }],
                 span: span(307, 315),
+                resolved_call: None,
+                inferred_type: None,
             }),
             arms: vec![MatchArm {
                 pattern: Pattern::Constructor {
@@ -1824,14 +1947,16 @@ mod tests {
                 body: Expr::Var {
                     name: Symbol::from("x"),
                     span: span(326, 327),
+                    inferred_type: None,
                 },
                 span: span(317, 327),
             }],
             span: span(300, 328),
             compiler_generated: false,
+            inferred_type: None,
         };
 
-        let err = tc.infer_expr_for_test(&expr).unwrap_err();
+        let err = tc.infer_expr_for_test(&mut expr).unwrap_err();
         assert!(err.message().contains("None"));
     }
 
@@ -1842,16 +1967,18 @@ mod tests {
     fn test_lambda_expr_types_recorded() {
         let mut tc = tc();
         let s = span(0, 10);
-        let expr = Expr::Lambda {
+        let mut expr = Expr::Lambda {
             params: vec![Symbol::from("x")],
             param_annotations: vec![Some(TypeExpr::Named(TypeName::from("Int")))],
             body: Box::new(Expr::Var {
                 name: Symbol::from("x"),
                 span: span(13, 14),
+                inferred_type: None,
             }),
             span: s,
+            inferred_type: None,
         };
-        tc.infer_expr_for_test(&expr).unwrap();
+        tc.infer_expr_for_test(&mut expr).unwrap();
 
         // Lambda should record a Fn type in expr_types
         let recorded = tc.state.expr_types.get(&s).unwrap();
@@ -1867,7 +1994,7 @@ mod tests {
         register_option(&mut tc);
 
         // :(Option Int) (Some 42) -- annotate with applied type
-        let annotate_expr = Expr::Annotate {
+        let mut annotate_expr = Expr::Annotate {
             annotation: TypeExpr::Applied(
                 TypeName::from("Option"),
                 vec![TypeExpr::Named(TypeName::from("Int"))],
@@ -1876,17 +2003,22 @@ mod tests {
                 callee: Box::new(Expr::Var {
                     name: Symbol::from("Some"),
                     span: span(418, 422),
+                    inferred_type: None,
                 }),
                 args: vec![Expr::IntLit {
                     value: 42,
                     span: span(423, 425),
+                    inferred_type: None,
                 }],
                 span: span(417, 426),
+                resolved_call: None,
+                inferred_type: None,
             }),
             span: span(400, 427),
+            inferred_type: None,
         };
 
-        let ty = tc.infer_expr_for_test(&annotate_expr).unwrap();
+        let ty = tc.infer_expr_for_test(&mut annotate_expr).unwrap();
         assert_eq!(
             ty,
             Type::ADT(test_fqtn("Option"), vec![Type::Int])
@@ -1925,23 +2057,28 @@ mod tests {
         .unwrap();
 
         // (match (Point 1 2) [(Point a b) (add-i64 a b)])
-        let expr = Expr::Match {
+        let mut expr = Expr::Match {
             scrutinee: Box::new(Expr::Apply {
                 callee: Box::new(Expr::Var {
                     name: Symbol::from("Point"),
                     span: span(508, 513),
+                    inferred_type: None,
                 }),
                 args: vec![
                     Expr::IntLit {
                         value: 1,
                         span: span(514, 515),
+                        inferred_type: None,
                     },
                     Expr::IntLit {
                         value: 2,
                         span: span(516, 517),
+                        inferred_type: None,
                     },
                 ],
                 span: span(507, 518),
+                resolved_call: None,
+                inferred_type: None,
             }),
             arms: vec![MatchArm {
                 pattern: Pattern::Constructor {
@@ -1953,26 +2090,32 @@ mod tests {
                     callee: Box::new(Expr::Var {
                         name: Symbol::from("add-i64"),
                         span: span(532, 539),
+                        inferred_type: None,
                     }),
                     args: vec![
                         Expr::Var {
                             name: Symbol::from("a"),
                             span: span(540, 541),
+                            inferred_type: None,
                         },
                         Expr::Var {
                             name: Symbol::from("b"),
                             span: span(542, 543),
+                            inferred_type: None,
                         },
                     ],
                     span: span(531, 544),
+                    resolved_call: None,
+                    inferred_type: None,
                 },
                 span: span(520, 544),
             }],
             span: span(500, 545),
             compiler_generated: false,
+            inferred_type: None,
         };
 
-        assert_eq!(tc.infer_expr_for_test(&expr).unwrap(), Type::Int);
+        assert_eq!(tc.infer_expr_for_test(&mut expr).unwrap(), Type::Int);
     }
 
     // spec: 05-definitions §5.2.7 — data constructor applied as function
@@ -1982,19 +2125,23 @@ mod tests {
         register_option(&mut tc);
 
         // (Some 42) -- constructor applied to argument
-        let expr = Expr::Apply {
+        let mut expr = Expr::Apply {
             callee: Box::new(Expr::Var {
                 name: Symbol::from("Some"),
                 span: span(601, 605),
+                inferred_type: None,
             }),
             args: vec![Expr::IntLit {
                 value: 42,
                 span: span(606, 608),
+                inferred_type: None,
             }],
             span: span(600, 609),
+            resolved_call: None,
+            inferred_type: None,
         };
 
-        let ty = tc.infer_expr_for_test(&expr).unwrap();
+        let ty = tc.infer_expr_for_test(&mut expr).unwrap();
         assert_eq!(
             ty,
             Type::ADT(test_fqtn("Option"), vec![Type::Int])
@@ -2008,12 +2155,13 @@ mod tests {
         register_option(&mut tc);
 
         // None on its own should be (Option tN) for some N
-        let expr = Expr::Var {
+        let mut expr = Expr::Var {
             name: Symbol::from("None"),
             span: span(700, 704),
+            inferred_type: None,
         };
 
-        let ty = tc.infer_expr_for_test(&expr).unwrap();
+        let ty = tc.infer_expr_for_test(&mut expr).unwrap();
         match &ty {
             Type::ADT(name, args) => {
                 assert_eq!(name.name.as_ref(), "Option");
@@ -2030,22 +2178,26 @@ mod tests {
     fn test_infer_string_in_if_branches() {
         let mut tc = tc();
         // (if true "hello" "world")
-        let expr = Expr::If {
+        let mut expr = Expr::If {
             cond: Box::new(Expr::BoolLit {
                 value: true,
                 span: span(804, 808),
+                inferred_type: None,
             }),
             then_branch: Box::new(Expr::StringLit {
                 value: "hello".to_string(),
                 span: span(809, 816),
+                inferred_type: None,
             }),
             else_branch: Box::new(Expr::StringLit {
                 value: "world".to_string(),
                 span: span(817, 824),
+                inferred_type: None,
             }),
             span: span(800, 825),
+            inferred_type: None,
         };
-        assert_eq!(tc.infer_expr_for_test(&expr).unwrap(), Type::String);
+        assert_eq!(tc.infer_expr_for_test(&mut expr).unwrap(), Type::String);
     }
 
     // spec: 03-types §3.5.3 — let binding with String value
@@ -2053,21 +2205,24 @@ mod tests {
     fn test_infer_string_in_let() {
         let mut tc = tc();
         // (let [s "hello"] s)
-        let expr = Expr::Let {
+        let mut expr = Expr::Let {
             bindings: vec![(
                 Symbol::from("s"),
                 Expr::StringLit {
                     value: "hello".to_string(),
                     span: span(906, 913),
+                    inferred_type: None,
                 },
             )],
             body: Box::new(Expr::Var {
                 name: Symbol::from("s"),
                 span: span(915, 916),
+                inferred_type: None,
             }),
             span: span(900, 917),
+            inferred_type: None,
         };
-        assert_eq!(tc.infer_expr_for_test(&expr).unwrap(), Type::String);
+        assert_eq!(tc.infer_expr_for_test(&mut expr).unwrap(), Type::String);
     }
 
     // --- Vec literal tests (Sprint 3) ---
@@ -2077,16 +2232,17 @@ mod tests {
     fn test_infer_vec_lit_ints() {
         let mut tc = tc();
         // [1 2 3]
-        let expr = Expr::VecLit {
+        let mut expr = Expr::VecLit {
             elements: vec![
-                Expr::IntLit { value: 1, span: span(1001, 1002) },
-                Expr::IntLit { value: 2, span: span(1003, 1004) },
-                Expr::IntLit { value: 3, span: span(1005, 1006) },
+                Expr::IntLit { value: 1, span: span(1001, 1002), inferred_type: None, },
+                Expr::IntLit { value: 2, span: span(1003, 1004), inferred_type: None, },
+                Expr::IntLit { value: 3, span: span(1005, 1006), inferred_type: None, },
             ],
             span: span(1000, 1007),
+            inferred_type: None,
         };
         assert_eq!(
-            tc.infer_expr_for_test(&expr).unwrap(),
+            tc.infer_expr_for_test(&mut expr).unwrap(),
             Type::ADT(prims_fqtn("Vec"), vec![Type::Int])
         );
     }
@@ -2096,15 +2252,16 @@ mod tests {
     fn test_infer_vec_lit_strings() {
         let mut tc = tc();
         // ["a" "b"]
-        let expr = Expr::VecLit {
+        let mut expr = Expr::VecLit {
             elements: vec![
-                Expr::StringLit { value: "a".into(), span: span(1101, 1104) },
-                Expr::StringLit { value: "b".into(), span: span(1105, 1108) },
+                Expr::StringLit { value: "a".into(), span: span(1101, 1104), inferred_type: None, },
+                Expr::StringLit { value: "b".into(), span: span(1105, 1108), inferred_type: None, },
             ],
             span: span(1100, 1109),
+            inferred_type: None,
         };
         assert_eq!(
-            tc.infer_expr_for_test(&expr).unwrap(),
+            tc.infer_expr_for_test(&mut expr).unwrap(),
             Type::ADT(prims_fqtn("Vec"), vec![Type::String])
         );
     }
@@ -2114,11 +2271,12 @@ mod tests {
     fn test_infer_vec_lit_empty_is_polymorphic() {
         let mut tc = tc();
         // []
-        let expr = Expr::VecLit {
+        let mut expr = Expr::VecLit {
             elements: vec![],
             span: span(1200, 1202),
+            inferred_type: None,
         };
-        let ty = tc.infer_expr_for_test(&expr).unwrap();
+        let ty = tc.infer_expr_for_test(&mut expr).unwrap();
         match &ty {
             Type::ADT(name, args) => {
                 assert_eq!(name.name.as_ref(), "Vec");
@@ -2135,14 +2293,15 @@ mod tests {
     fn test_infer_vec_lit_type_mismatch() {
         let mut tc = tc();
         // [1 "hello"] -- Int vs String
-        let expr = Expr::VecLit {
+        let mut expr = Expr::VecLit {
             elements: vec![
-                Expr::IntLit { value: 1, span: span(1301, 1302) },
-                Expr::StringLit { value: "hello".into(), span: span(1303, 1310) },
+                Expr::IntLit { value: 1, span: span(1301, 1302), inferred_type: None, },
+                Expr::StringLit { value: "hello".into(), span: span(1303, 1310), inferred_type: None, },
             ],
             span: span(1300, 1311),
+            inferred_type: None,
         };
-        let err = tc.infer_expr_for_test(&expr).unwrap_err();
+        let err = tc.infer_expr_for_test(&mut expr).unwrap_err();
         assert!(err.message().contains("mismatch"), "expected type mismatch error, got: {}", err.message());
     }
 
@@ -2151,15 +2310,16 @@ mod tests {
     fn test_infer_vec_lit_booleans() {
         let mut tc = tc();
         // [true false]
-        let expr = Expr::VecLit {
+        let mut expr = Expr::VecLit {
             elements: vec![
-                Expr::BoolLit { value: true, span: span(1401, 1405) },
-                Expr::BoolLit { value: false, span: span(1406, 1411) },
+                Expr::BoolLit { value: true, span: span(1401, 1405), inferred_type: None, },
+                Expr::BoolLit { value: false, span: span(1406, 1411), inferred_type: None, },
             ],
             span: span(1400, 1412),
+            inferred_type: None,
         };
         assert_eq!(
-            tc.infer_expr_for_test(&expr).unwrap(),
+            tc.infer_expr_for_test(&mut expr).unwrap(),
             Type::ADT(prims_fqtn("Vec"), vec![Type::Bool])
         );
     }
@@ -2169,26 +2329,29 @@ mod tests {
     fn test_infer_vec_lit_in_let_binding() {
         let mut tc = tc();
         // (let [xs [1 2 3]] xs)
-        let expr = Expr::Let {
+        let mut expr = Expr::Let {
             bindings: vec![(
                 Symbol::from("xs"),
                 Expr::VecLit {
                     elements: vec![
-                        Expr::IntLit { value: 1, span: span(1508, 1509) },
-                        Expr::IntLit { value: 2, span: span(1510, 1511) },
-                        Expr::IntLit { value: 3, span: span(1512, 1513) },
+                        Expr::IntLit { value: 1, span: span(1508, 1509), inferred_type: None, },
+                        Expr::IntLit { value: 2, span: span(1510, 1511), inferred_type: None, },
+                        Expr::IntLit { value: 3, span: span(1512, 1513), inferred_type: None, },
                     ],
                     span: span(1507, 1514),
+                    inferred_type: None,
                 },
             )],
             body: Box::new(Expr::Var {
                 name: Symbol::from("xs"),
                 span: span(1516, 1518),
+                inferred_type: None,
             }),
             span: span(1500, 1519),
+            inferred_type: None,
         };
         assert_eq!(
-            tc.infer_expr_for_test(&expr).unwrap(),
+            tc.infer_expr_for_test(&mut expr).unwrap(),
             Type::ADT(prims_fqtn("Vec"), vec![Type::Int])
         );
     }
@@ -2206,22 +2369,26 @@ mod tests {
             )),
         );
         // (vec-len [1 2 3])
-        let expr = Expr::Apply {
+        let mut expr = Expr::Apply {
             callee: Box::new(Expr::Var {
                 name: Symbol::from("vec-len"),
                 span: span(1601, 1608),
+                inferred_type: None,
             }),
             args: vec![Expr::VecLit {
                 elements: vec![
-                    Expr::IntLit { value: 1, span: span(1610, 1611) },
-                    Expr::IntLit { value: 2, span: span(1612, 1613) },
-                    Expr::IntLit { value: 3, span: span(1614, 1615) },
+                    Expr::IntLit { value: 1, span: span(1610, 1611), inferred_type: None, },
+                    Expr::IntLit { value: 2, span: span(1612, 1613), inferred_type: None, },
+                    Expr::IntLit { value: 3, span: span(1614, 1615), inferred_type: None, },
                 ],
                 span: span(1609, 1616),
+                inferred_type: None,
             }],
             span: span(1600, 1617),
+            resolved_call: None,
+            inferred_type: None,
         };
-        assert_eq!(tc.infer_expr_for_test(&expr).unwrap(), Type::Int);
+        assert_eq!(tc.infer_expr_for_test(&mut expr).unwrap(), Type::Int);
     }
 
     // spec: 03-types §3.5.3 — lambda returning Vec infers (Fn [Int] (Vec Int))
@@ -2229,19 +2396,22 @@ mod tests {
     fn test_infer_vec_lit_as_function_return() {
         let mut tc = tc();
         // (fn [x] [x]) -- returns Vec of the param type
-        let expr = Expr::Lambda {
+        let mut expr = Expr::Lambda {
             params: vec![Symbol::from("x")],
             param_annotations: vec![Some(TypeExpr::Named(TypeName::from("Int")))],
             body: Box::new(Expr::VecLit {
                 elements: vec![Expr::Var {
                     name: Symbol::from("x"),
                     span: span(1710, 1711),
+                    inferred_type: None,
                 }],
                 span: span(1709, 1712),
+                inferred_type: None,
             }),
             span: span(1700, 1713),
+            inferred_type: None,
         };
-        let ty = tc.infer_expr_for_test(&expr).unwrap();
+        let ty = tc.infer_expr_for_test(&mut expr).unwrap();
         assert_eq!(
             ty,
             Type::Fn(
@@ -2256,12 +2426,13 @@ mod tests {
     fn test_infer_vec_lit_single_element() {
         let mut tc = tc();
         // [42]
-        let expr = Expr::VecLit {
-            elements: vec![Expr::IntLit { value: 42, span: span(1801, 1803) }],
+        let mut expr = Expr::VecLit {
+            elements: vec![Expr::IntLit { value: 42, span: span(1801, 1803), inferred_type: None, }],
             span: span(1800, 1804),
+            inferred_type: None,
         };
         assert_eq!(
-            tc.infer_expr_for_test(&expr).unwrap(),
+            tc.infer_expr_for_test(&mut expr).unwrap(),
             Type::ADT(prims_fqtn("Vec"), vec![Type::Int])
         );
     }
@@ -2271,14 +2442,15 @@ mod tests {
     fn test_infer_vec_lit_expr_type_recorded() {
         let mut tc = tc();
         let s = span(1900, 1907);
-        let expr = Expr::VecLit {
+        let mut expr = Expr::VecLit {
             elements: vec![
-                Expr::IntLit { value: 1, span: span(1901, 1902) },
-                Expr::IntLit { value: 2, span: span(1903, 1904) },
+                Expr::IntLit { value: 1, span: span(1901, 1902), inferred_type: None, },
+                Expr::IntLit { value: 2, span: span(1903, 1904), inferred_type: None, },
             ],
             span: s,
+            inferred_type: None,
         };
-        tc.infer_expr_for_test(&expr).unwrap();
+        tc.infer_expr_for_test(&mut expr).unwrap();
         assert_eq!(
             tc.state.expr_types.get(&s),
             Some(&Type::ADT(prims_fqtn("Vec"), vec![Type::Int]))
@@ -2290,16 +2462,17 @@ mod tests {
     fn test_infer_vec_lit_floats() {
         let mut tc = tc();
         // [1.0 2.0 3.0]
-        let expr = Expr::VecLit {
+        let mut expr = Expr::VecLit {
             elements: vec![
-                Expr::FloatLit { value: 1.0, span: span(2001, 2004) },
-                Expr::FloatLit { value: 2.0, span: span(2005, 2008) },
-                Expr::FloatLit { value: 3.0, span: span(2009, 2012) },
+                Expr::FloatLit { value: 1.0, span: span(2001, 2004), inferred_type: None, },
+                Expr::FloatLit { value: 2.0, span: span(2005, 2008), inferred_type: None, },
+                Expr::FloatLit { value: 3.0, span: span(2009, 2012), inferred_type: None, },
             ],
             span: span(2000, 2013),
+            inferred_type: None,
         };
         assert_eq!(
-            tc.infer_expr_for_test(&expr).unwrap(),
+            tc.infer_expr_for_test(&mut expr).unwrap(),
             Type::ADT(prims_fqtn("Vec"), vec![Type::Float])
         );
     }
@@ -2421,7 +2594,7 @@ mod tests {
                             variants: vec![DefnVariant {
                                 params: vec![Symbol::from("x"), Symbol::from("y")],
                                 param_annotations: vec![None, None],
-                                body: Expr::IntLit { value: 0, span: Span::SYNTHETIC },
+                                body: Expr::IntLit { value: 0, span: Span::SYNTHETIC, inferred_type: None, },
                                 span: Span::SYNTHETIC,
                             }],
                             visibility: Visibility::Public,
@@ -2433,6 +2606,7 @@ mod tests {
                 callees: Vec::new(),
                 got_slot: None,
                 trait_origin: None,
+                ast: None,
             },
         );
     }
@@ -2457,19 +2631,23 @@ mod tests {
         );
 
         // (id cfn) — cfn is an argument, NOT in call position → should error
-        let expr = Expr::Apply {
+        let mut expr = Expr::Apply {
             callee: Box::new(Expr::Var {
                 name: Symbol::from("id"),
                 span: span(3000, 3002),
+                inferred_type: None,
             }),
             args: vec![Expr::Var {
                 name: Symbol::from("cfn"),
                 span: span(3003, 3006),
+                inferred_type: None,
             }],
             span: span(2999, 3007),
+            resolved_call: None,
+            inferred_type: None,
         };
 
-        let err = tc.infer_expr_for_test(&expr).unwrap_err();
+        let err = tc.infer_expr_for_test(&mut expr).unwrap_err();
         assert!(
             err.message().contains("constrained function"),
             "should reject constrained fn as argument, got: {}",
@@ -2484,20 +2662,23 @@ mod tests {
         register_constrained_fn(&mut tc);
 
         // (cfn 1 2) — cfn is in call position → should succeed
-        let expr = Expr::Apply {
+        let mut expr = Expr::Apply {
             callee: Box::new(Expr::Var {
                 name: Symbol::from("cfn"),
                 span: span(3100, 3103),
+                inferred_type: None,
             }),
             args: vec![
-                Expr::IntLit { value: 1, span: span(3104, 3105) },
-                Expr::IntLit { value: 2, span: span(3106, 3107) },
+                Expr::IntLit { value: 1, span: span(3104, 3105), inferred_type: None, },
+                Expr::IntLit { value: 2, span: span(3106, 3107), inferred_type: None, },
             ],
             span: span(3099, 3108),
+            resolved_call: None,
+            inferred_type: None,
         };
 
         // Should succeed (constrained fn in call position is allowed)
-        assert!(tc.infer_expr_for_test(&expr).is_ok());
+        assert!(tc.infer_expr_for_test(&mut expr).is_ok());
     }
 
     // -----------------------------------------------------------------------
@@ -2548,12 +2729,15 @@ mod tests {
                         callee: Box::new(Expr::Var {
                             name: Symbol::from("add-i64"),
                             span: Span::SYNTHETIC,
+                            inferred_type: None,
                         }),
                         args: vec![
-                            Expr::Var { name: Symbol::from("x"), span: Span::SYNTHETIC },
-                            Expr::Var { name: Symbol::from("y"), span: Span::SYNTHETIC },
+                            Expr::Var { name: Symbol::from("x"), span: Span::SYNTHETIC, inferred_type: None, },
+                            Expr::Var { name: Symbol::from("y"), span: Span::SYNTHETIC, inferred_type: None, },
                         ],
                         span: Span::SYNTHETIC,
+                        resolved_call: None,
+                        inferred_type: None,
                     },
                     span: Span::SYNTHETIC,
                 }],
@@ -2580,12 +2764,15 @@ mod tests {
                         callee: Box::new(Expr::Var {
                             name: Symbol::from("add-f64"),
                             span: Span::SYNTHETIC,
+                            inferred_type: None,
                         }),
                         args: vec![
-                            Expr::Var { name: Symbol::from("x"), span: Span::SYNTHETIC },
-                            Expr::Var { name: Symbol::from("y"), span: Span::SYNTHETIC },
+                            Expr::Var { name: Symbol::from("x"), span: Span::SYNTHETIC, inferred_type: None, },
+                            Expr::Var { name: Symbol::from("y"), span: Span::SYNTHETIC, inferred_type: None, },
                         ],
                         span: Span::SYNTHETIC,
+                        resolved_call: None,
+                        inferred_type: None,
                     },
                     span: Span::SYNTHETIC,
                 }],
@@ -2635,12 +2822,15 @@ mod tests {
                         callee: Box::new(Expr::Var {
                             name: Symbol::from("lt-i64"),
                             span: Span::SYNTHETIC,
+                            inferred_type: None,
                         }),
                         args: vec![
-                            Expr::Var { name: Symbol::from("x"), span: Span::SYNTHETIC },
-                            Expr::Var { name: Symbol::from("y"), span: Span::SYNTHETIC },
+                            Expr::Var { name: Symbol::from("x"), span: Span::SYNTHETIC, inferred_type: None, },
+                            Expr::Var { name: Symbol::from("y"), span: Span::SYNTHETIC, inferred_type: None, },
                         ],
                         span: Span::SYNTHETIC,
+                        resolved_call: None,
+                        inferred_type: None,
                     },
                     span: Span::SYNTHETIC,
                 }],
@@ -2661,19 +2851,22 @@ mod tests {
         register_num_and_ord_traits(&mut tc);
 
         // (+ true true)
-        let expr = Expr::Apply {
+        let mut expr = Expr::Apply {
             callee: Box::new(Expr::Var {
                 name: Symbol::from("+"),
                 span: span(4001, 4002),
+                inferred_type: None,
             }),
             args: vec![
-                Expr::BoolLit { value: true, span: span(4003, 4007) },
-                Expr::BoolLit { value: true, span: span(4008, 4012) },
+                Expr::BoolLit { value: true, span: span(4003, 4007), inferred_type: None, },
+                Expr::BoolLit { value: true, span: span(4008, 4012), inferred_type: None, },
             ],
             span: span(4000, 4013),
+            resolved_call: None,
+            inferred_type: None,
         };
 
-        let err = tc.infer_expr_for_test(&expr).unwrap_err();
+        let err = tc.infer_expr_for_test(&mut expr).unwrap_err();
         assert!(
             err.message().contains("no impl of trait Num for type Bool"),
             "expected Num/Bool error, got: {}",
@@ -2688,19 +2881,22 @@ mod tests {
         register_num_and_ord_traits(&mut tc);
 
         // (+ "a" "b")
-        let expr = Expr::Apply {
+        let mut expr = Expr::Apply {
             callee: Box::new(Expr::Var {
                 name: Symbol::from("+"),
                 span: span(4101, 4102),
+                inferred_type: None,
             }),
             args: vec![
-                Expr::StringLit { value: "a".to_string(), span: span(4103, 4106) },
-                Expr::StringLit { value: "b".to_string(), span: span(4107, 4110) },
+                Expr::StringLit { value: "a".to_string(), span: span(4103, 4106), inferred_type: None, },
+                Expr::StringLit { value: "b".to_string(), span: span(4107, 4110), inferred_type: None, },
             ],
             span: span(4100, 4111),
+            resolved_call: None,
+            inferred_type: None,
         };
 
-        let err = tc.infer_expr_for_test(&expr).unwrap_err();
+        let err = tc.infer_expr_for_test(&mut expr).unwrap_err();
         assert!(
             err.message().contains("no impl of trait Num for type String"),
             "expected Num/String error, got: {}",
@@ -2715,19 +2911,22 @@ mod tests {
         register_num_and_ord_traits(&mut tc);
 
         // (< true false)
-        let expr = Expr::Apply {
+        let mut expr = Expr::Apply {
             callee: Box::new(Expr::Var {
                 name: Symbol::from("<"),
                 span: span(4201, 4202),
+                inferred_type: None,
             }),
             args: vec![
-                Expr::BoolLit { value: true, span: span(4203, 4207) },
-                Expr::BoolLit { value: false, span: span(4208, 4213) },
+                Expr::BoolLit { value: true, span: span(4203, 4207), inferred_type: None, },
+                Expr::BoolLit { value: false, span: span(4208, 4213), inferred_type: None, },
             ],
             span: span(4200, 4214),
+            resolved_call: None,
+            inferred_type: None,
         };
 
-        let err = tc.infer_expr_for_test(&expr).unwrap_err();
+        let err = tc.infer_expr_for_test(&mut expr).unwrap_err();
         assert!(
             err.message().contains("no impl of trait Ord for type Bool"),
             "expected Ord/Bool error, got: {}",
@@ -2742,19 +2941,22 @@ mod tests {
         register_num_and_ord_traits(&mut tc);
 
         // (< "a" "b")
-        let expr = Expr::Apply {
+        let mut expr = Expr::Apply {
             callee: Box::new(Expr::Var {
                 name: Symbol::from("<"),
                 span: span(4301, 4302),
+                inferred_type: None,
             }),
             args: vec![
-                Expr::StringLit { value: "a".to_string(), span: span(4303, 4306) },
-                Expr::StringLit { value: "b".to_string(), span: span(4307, 4310) },
+                Expr::StringLit { value: "a".to_string(), span: span(4303, 4306), inferred_type: None, },
+                Expr::StringLit { value: "b".to_string(), span: span(4307, 4310), inferred_type: None, },
             ],
             span: span(4300, 4311),
+            resolved_call: None,
+            inferred_type: None,
         };
 
-        let err = tc.infer_expr_for_test(&expr).unwrap_err();
+        let err = tc.infer_expr_for_test(&mut expr).unwrap_err();
         assert!(
             err.message().contains("no impl of trait Ord for type String"),
             "expected Ord/String error, got: {}",
@@ -2769,20 +2971,23 @@ mod tests {
         register_num_and_ord_traits(&mut tc);
 
         // (+ 1 true) — first arg is Int, second is Bool → unification error
-        let expr = Expr::Apply {
+        let mut expr = Expr::Apply {
             callee: Box::new(Expr::Var {
                 name: Symbol::from("+"),
                 span: span(4401, 4402),
+                inferred_type: None,
             }),
             args: vec![
-                Expr::IntLit { value: 1, span: span(4403, 4404) },
-                Expr::BoolLit { value: true, span: span(4405, 4409) },
+                Expr::IntLit { value: 1, span: span(4403, 4404), inferred_type: None, },
+                Expr::BoolLit { value: true, span: span(4405, 4409), inferred_type: None, },
             ],
             span: span(4400, 4410),
+            resolved_call: None,
+            inferred_type: None,
         };
 
         // Should error: either unification fails (Int vs Bool) or constraint fails
-        assert!(tc.infer_expr_for_test(&expr).is_err());
+        assert!(tc.infer_expr_for_test(&mut expr).is_err());
     }
 
     // spec: 07-traits §7.4.1 — (+ 1 2) succeeds: Int has Num impl
@@ -2792,19 +2997,22 @@ mod tests {
         register_num_and_ord_traits(&mut tc);
 
         // (+ 1 2) -> Int
-        let expr = Expr::Apply {
+        let mut expr = Expr::Apply {
             callee: Box::new(Expr::Var {
                 name: Symbol::from("+"),
                 span: span(4501, 4502),
+                inferred_type: None,
             }),
             args: vec![
-                Expr::IntLit { value: 1, span: span(4503, 4504) },
-                Expr::IntLit { value: 2, span: span(4505, 4506) },
+                Expr::IntLit { value: 1, span: span(4503, 4504), inferred_type: None, },
+                Expr::IntLit { value: 2, span: span(4505, 4506), inferred_type: None, },
             ],
             span: span(4500, 4507),
+            resolved_call: None,
+            inferred_type: None,
         };
 
-        let ty = tc.infer_expr_for_test(&expr).unwrap();
+        let ty = tc.infer_expr_for_test(&mut expr).unwrap();
         assert_eq!(ty, Type::Int);
 
         // Check TraitMethod resolution was recorded
@@ -2824,19 +3032,22 @@ mod tests {
         register_num_and_ord_traits(&mut tc);
 
         // (+ 1.0 2.0) -> Float
-        let expr = Expr::Apply {
+        let mut expr = Expr::Apply {
             callee: Box::new(Expr::Var {
                 name: Symbol::from("+"),
                 span: span(4601, 4602),
+                inferred_type: None,
             }),
             args: vec![
-                Expr::FloatLit { value: 1.0, span: span(4603, 4606) },
-                Expr::FloatLit { value: 2.0, span: span(4607, 4610) },
+                Expr::FloatLit { value: 1.0, span: span(4603, 4606), inferred_type: None, },
+                Expr::FloatLit { value: 2.0, span: span(4607, 4610), inferred_type: None, },
             ],
             span: span(4600, 4611),
+            resolved_call: None,
+            inferred_type: None,
         };
 
-        let ty = tc.infer_expr_for_test(&expr).unwrap();
+        let ty = tc.infer_expr_for_test(&mut expr).unwrap();
         assert_eq!(ty, Type::Float);
     }
 }

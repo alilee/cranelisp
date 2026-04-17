@@ -56,6 +56,7 @@ fn make_test_metadata_with_defs(module_path: &str, def_names: &[&str]) -> CacheM
                 callees: vec![],
                 got_slot: Some(i),
                 trait_origin: None,
+                ast: None,
             },
         );
     }

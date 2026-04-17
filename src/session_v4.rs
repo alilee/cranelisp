@@ -415,15 +415,6 @@ pub struct TypecheckProduct {
 /// workers) codegen. Removed when scheduler signals both `inmem_done` and
 /// `object_done`. See session-restructure.md.
 ///
-/// Stores the full `CheckResult` (including `constrained_fn_names`) so that
-/// the nice worker gets the same information as the priority worker. This
-/// fixes the pre-existing bug where `constrained_fn_names` was discarded at
-/// stash time and the object path used an empty set.
-pub struct CodegenInput {
-    pub check: cranelisp_types::CheckResult,
-    pub program: Vec<TopLevel>,
-}
-
 /// Per-module codegen output: compiled code + optional cache linker.
 /// Entry created when codegen starts for a module. See session-restructure.md.
 pub struct CodegenProduct {
@@ -542,8 +533,8 @@ pub struct SharedState {
 
     /// Per-module typecheck products (replaces TC-internal storage).
     pub typecheck_products: dashmap::DashMap<ModuleFullPath, TypecheckProduct>,
-    /// Transient codegen inputs (replaces module_outputs + object_codegen_inputs).
-    pub codegen_inputs: dashmap::DashMap<ModuleFullPath, CodegenInput>,
+    /// Transient program stash for nice worker .o compilation.
+    pub codegen_programs: dashmap::DashMap<ModuleFullPath, Vec<TopLevel>>,
     /// Per-module codegen products (replaces ModuleGotRegistry + def_codegen + kept_code).
     pub codegen_products: dashmap::DashMap<ModuleFullPath, CodegenProduct>,
     /// Per-symbol introspection data, REPL-only (replaces def_codegen for slash commands).
@@ -655,7 +646,7 @@ impl CompilerSession {
             current_module: Mutex::new(user_module.clone()),
             repl_check_state: Mutex::new(Some(CheckState::new(user_module))),
             typecheck_products: dashmap::DashMap::new(),
-            codegen_inputs: dashmap::DashMap::new(),
+            codegen_programs: dashmap::DashMap::new(),
             codegen_products: dashmap::DashMap::new(),
             introspection: dashmap::DashMap::new(),
             module_structures: dashmap::DashMap::new(),
@@ -977,7 +968,7 @@ impl CompilerSession {
 
         // Remove stale products before recompilation.
         self.shared.typecheck_products.remove(module_path);
-        self.shared.codegen_inputs.remove(module_path);
+        self.shared.codegen_programs.remove(module_path);
         self.shared.codegen_products.remove(module_path);
 
         let sexps = cranelisp_frontend::parse(&source)?;
@@ -1468,7 +1459,7 @@ impl CompilerSession {
             &self.shared.scheduler,
             module,
             program,
-            check,
+            &check.constrained_fn_names,
             &self.shared.symbol_tables,
             &self.shared.typecheck_products,
             &self.shared.codegen_products,
@@ -1533,7 +1524,7 @@ impl CompilerSession {
                 &jit_syms,
                 &got_defs,
                 &program_vec,
-                check,
+                check.display.as_ref(),
                 &env_impl,
                 &traced_fns,
                 &trace_extra_symbols,
@@ -1556,8 +1547,15 @@ impl CompilerSession {
                 warnings: check.warnings.clone(),
             })
         } else {
-            // Definition-only: extract the defined symbol name.
-            let last = program.last();
+            // Definition-only: extract the defined symbol name from the last
+            // user-visible form. Inlined defns (mono, default methods, trait
+            // impl mangled methods) are appended after the original forms by
+            // finalize_module — skip them by finding the last non-Defn form
+            // (TraitDecl, TraitImpl, TypeDef) or the first Defn.
+            let last = program.iter().rev().find(|tl| matches!(tl,
+                TopLevel::TraitDecl(_) | TopLevel::TraitImpl(_) | TopLevel::TypeDef { .. }
+            )).or_else(|| program.iter().find(|tl| matches!(tl, TopLevel::Defn(_))))
+              .or(program.last());
 
             let symbol_name = last.map(|tl| match tl {
                 TopLevel::Defn(d) => d.name.to_string(),
@@ -3258,7 +3256,7 @@ pub fn spawn_nice_workers<'scope, 'env>(
 /// the path to `shared.compiled_o_paths` for the linker.
 ///
 /// When caching is disabled (`shared.cache_dir` is None) or no
-/// `CodegenInput` is available for a module, the worker skips
+/// program is available for a module, the worker skips
 /// `.o` compilation and just marks the module as object-complete.
 ///
 /// The loop parks on `scheduler.take_object_codegen()` (condvar-based)
@@ -3294,7 +3292,7 @@ fn nice_worker_loop(shared: &SharedState) {
 
 /// Compile a single module to `.o` and `.meta.json` files in the cache directory.
 ///
-/// Reads the module's `CodegenInput` from the shared `codegen_inputs` DashMap
+/// Reads the module's program from the shared `codegen_programs` DashMap
 /// (stashed by the priority worker). Reads `SymbolTable` from `typecheck_products`
 /// for .meta.json serialization.
 ///
@@ -3307,21 +3305,16 @@ fn compile_module_object(
 ) {
     use cranelisp_backend::cache;
 
-    // Take the stashed input (remove entry to release memory).
-    let Some((_, input)) = shared.codegen_inputs.remove(module) else {
+    // Take the stashed program (remove entry to release memory).
+    let Some((_, program)) = shared.codegen_programs.remove(module) else {
         // No data stashed — module may have had no compilable defns.
         return;
     };
 
     // Skip modules with no compilable defns (types-only, imports-only).
-    if !crate::session::has_compilable_defns(&input.program) {
+    if !crate::session::has_compilable_defns(&program) {
         return;
     }
-
-    // Use the full CheckResult stashed by the priority worker.
-    // This includes constrained_fn_names, fixing the pre-existing bug
-    // where the object path used an empty set.
-    let check = input.check;
 
     // Build ObjectModule with PIC ISA.
     let isa = match cranelisp_backend::build_isa(true) {
@@ -3352,8 +3345,7 @@ fn compile_module_object(
     // Intrinsics, CompilationEnv, and cross-module refs are derived internally.
     let obj_bytes = match cranelisp_backend::compile_to_module(
         module.clone(),
-        &input.program,
-        &check,
+        &program,
         &shared.symbol_tables,
         &mut obj_module,
     ) {

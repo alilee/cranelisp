@@ -441,8 +441,7 @@ mod tests {
     // spec: design/backend/module-caching.md §13 — end-to-end: compile .o, load via linker, execute
     #[test]
     fn test_compile_load_and_execute_cached_module() {
-        use std::collections::{HashMap, HashSet};
-        use cranelisp_types::{CheckResult, Defn, DefnVariant, Expr, ModuleFullPath, Span, Symbol, TopLevel, Visibility};
+        use cranelisp_types::{Defn, DefnVariant, Expr, ModuleFullPath, Span, Symbol, TopLevel, Visibility};
         use cranelift_module::default_libcall_names;
         use cranelift_object::{ObjectBuilder, ObjectModule};
 
@@ -456,6 +455,7 @@ mod tests {
                 body: Expr::IntLit {
                     value: 42,
                     span: Span::new(10, 12),
+                    inferred_type: None,
                 },
                 span: Span::new(0, 20),
             }],
@@ -464,15 +464,6 @@ mod tests {
         };
 
         let program = vec![TopLevel::Defn(defn)];
-        let check = CheckResult {
-            method_resolutions: HashMap::new(),
-            constrained_fn_names: HashSet::new(),
-            mono_defns: Vec::new(),
-            expr_types: HashMap::new(),
-            default_method_defns: Vec::new(),
-            warnings: Vec::new(),
-            display: None,
-        };
 
         // Step 2: Compile to .o bytes via compile_to_module<ObjectModule>
         let isa = super::object::build_isa(true).unwrap();
@@ -482,7 +473,6 @@ mod tests {
         crate::compile_to_module(
             ModuleFullPath::from("user"),
             &program,
-            &check,
             &dashmap::DashMap::new(),
             &mut obj_module,
         ).unwrap();
@@ -538,6 +528,7 @@ mod tests {
                 callees: vec![],
                 got_slot: Some(0),
                 trait_origin: None,
+                ast: None,
             },
         );
 

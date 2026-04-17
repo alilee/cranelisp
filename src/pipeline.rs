@@ -9,7 +9,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use cranelisp_types::{
-    CheckResult, CranelispError, Defn, FQSymbol, ModuleFullPath,
+    CranelispError, Defn, FQSymbol, ModuleFullPath,
     Program, Span, Type,
 };
 
@@ -58,7 +58,7 @@ pub fn compile_and_execute_expr(
     jit_symbols: &[(String, *const u8)],
     got_data_defs: &[(String, *const u8)],
     program: &Program,
-    check: &CheckResult,
+    display: Option<&cranelisp_types::DisplayInfo>,
     env: &dyn cranelisp_backend::compiler::CompilationEnv,
     traced_fns: &[cranelisp_backend::compiler::TracedFnInfo],
     trace_extra_symbols: &[(String, *const u8)],
@@ -74,9 +74,10 @@ pub fn compile_and_execute_expr(
         span: Span::SYNTHETIC,
     })?;
 
-    let ty = check.display.as_ref()
+    // Get the type from display info or from the AST node's inferred_type.
+    let ty = display
         .map(|d| d.ty.clone())
-        .or_else(|| check.expr_types.get(&expr.span()).cloned())
+        .or_else(|| expr.inferred_type().cloned())
         .unwrap_or(Type::Int);
 
     if traced_fns.is_empty() {
@@ -113,7 +114,6 @@ pub fn compile_and_execute_expr(
         let empty_arities: HashMap<Symbol, usize> = HashMap::new();
 
         let mut compile_ctx = jit.build_compile_context(
-            check,
             &func_ids,
             &empty_arities,
             symbol_tables,
@@ -140,7 +140,7 @@ pub fn compile_and_execute_expr(
         Ok((value, ty))
     } else {
         let value = compile_and_execute_expr_with_trace(
-            jit_symbols, got_data_defs, expr, check, env, traced_fns, trace_extra_symbols,
+            jit_symbols, got_data_defs, expr, env, traced_fns, trace_extra_symbols,
             symbol_tables, current_module.clone(),
         )?;
         Ok((value, ty))
@@ -152,7 +152,6 @@ fn compile_and_execute_expr_with_trace(
     jit_symbols: &[(String, *const u8)],
     got_data_defs: &[(String, *const u8)],
     expr: &cranelisp_types::Expr,
-    check: &CheckResult,
     env: &dyn cranelisp_backend::compiler::CompilationEnv,
     traced_fns: &[cranelisp_backend::compiler::TracedFnInfo],
     trace_extra_symbols: &[(String, *const u8)],
@@ -195,7 +194,6 @@ fn compile_and_execute_expr_with_trace(
     let empty_arities: HashMap<Symbol, usize> = HashMap::new();
 
     let mut compile_ctx = jit.build_compile_context(
-        check,
         &func_ids,
         &empty_arities,
         symbol_tables,
@@ -238,7 +236,6 @@ pub fn compile_and_register_defn_shared(
     jit_symbols: &[(String, *const u8)],
     got_data_defs: &[(String, *const u8)],
     defn: &Defn,
-    check: &CheckResult,
     env: &dyn cranelisp_backend::compiler::CompilationEnv,
     module_got: &std::sync::Arc<cranelisp_backend::got::GotTable>,
     codegen_products: &dashmap::DashMap<ModuleFullPath, crate::session_v4::CodegenProduct>,
@@ -271,7 +268,6 @@ pub fn compile_and_register_defn_shared(
 
     let func_arities = std::collections::HashMap::new();
     let mut compile_ctx = jit.build_compile_context(
-        check,
         &func_ids,
         &func_arities,
         symbol_tables,

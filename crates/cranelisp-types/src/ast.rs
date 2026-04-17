@@ -2,7 +2,7 @@ use std::collections::HashSet;
 
 use serde::{Deserialize, Serialize};
 
-use crate::{Sexp, Span, Symbol, TraitName, TypeName};
+use crate::{ResolvedCall, Sexp, Span, Symbol, TraitName, Type, TypeName};
 
 // --- Type Expressions ---
 
@@ -68,40 +68,61 @@ pub enum Expr {
     IntLit {
         value: i64,
         span: Span,
+        #[serde(default)]
+        inferred_type: Option<Box<Type>>,
     },
     FloatLit {
         value: f64,
         span: Span,
+        #[serde(default)]
+        inferred_type: Option<Box<Type>>,
     },
     BoolLit {
         value: bool,
         span: Span,
+        #[serde(default)]
+        inferred_type: Option<Box<Type>>,
     },
     Var {
         name: Symbol,
         span: Span,
+        #[serde(default)]
+        inferred_type: Option<Box<Type>>,
     },
     Let {
         bindings: Vec<(Symbol, Expr)>,
         body: Box<Expr>,
         span: Span,
+        #[serde(default)]
+        inferred_type: Option<Box<Type>>,
     },
     If {
         cond: Box<Expr>,
         then_branch: Box<Expr>,
         else_branch: Box<Expr>,
         span: Span,
+        #[serde(default)]
+        inferred_type: Option<Box<Type>>,
     },
     Lambda {
         params: Vec<Symbol>,
         param_annotations: Vec<Option<TypeExpr>>,
         body: Box<Expr>,
         span: Span,
+        #[serde(default)]
+        inferred_type: Option<Box<Type>>,
     },
     Apply {
         callee: Box<Expr>,
         args: Vec<Expr>,
         span: Span,
+        /// How this call was resolved by the typechecker.
+        /// None before typecheck; Some after body checking.
+        /// Boxed to avoid bloating the Expr enum (see design/typecheck/ast-annotation.md §4.3).
+        #[serde(default)]
+        resolved_call: Option<Box<ResolvedCall>>,
+        #[serde(default)]
+        inferred_type: Option<Box<Type>>,
     },
     Match {
         scrutinee: Box<Expr>,
@@ -109,21 +130,29 @@ pub enum Expr {
         span: Span,
         /// true for compiler-generated match (e.g. from macro expansion)
         compiler_generated: bool,
+        #[serde(default)]
+        inferred_type: Option<Box<Type>>,
     },
     Annotate {
         annotation: TypeExpr,
         expr: Box<Expr>,
         span: Span,
+        #[serde(default)]
+        inferred_type: Option<Box<Type>>,
     },
 
     // --- Defined, deferred to Ring 1 ---
     StringLit {
         value: String,
         span: Span,
+        #[serde(default)]
+        inferred_type: Option<Box<Type>>,
     },
     VecLit {
         elements: Vec<Expr>,
         span: Span,
+        #[serde(default)]
+        inferred_type: Option<Box<Type>>,
     },
 
     // --- Defined, deferred to Ring 4 ---
@@ -131,6 +160,8 @@ pub enum Expr {
         modules: Vec<Symbol>,
         body: Box<Expr>,
         span: Span,
+        #[serde(default)]
+        inferred_type: Option<Box<Type>>,
     },
     /// Parallel bind chain: produced by the bind! independence analysis pass.
     /// Semantically identical to a sequential `Let` for type-checking purposes,
@@ -140,6 +171,8 @@ pub enum Expr {
         bindings: Vec<(Symbol, Expr)>,
         body: Box<Expr>,
         span: Span,
+        #[serde(default)]
+        inferred_type: Option<Box<Type>>,
     },
 }
 
@@ -161,6 +194,46 @@ impl Expr {
             | Expr::Annotate { span, .. }
             | Expr::Trace { span, .. }
             | Expr::ParBind { span, .. } => *span,
+        }
+    }
+
+    /// Returns the inferred type annotation, if set by typecheck.
+    pub fn inferred_type(&self) -> Option<&Type> {
+        match self {
+            Expr::IntLit { inferred_type, .. }
+            | Expr::FloatLit { inferred_type, .. }
+            | Expr::BoolLit { inferred_type, .. }
+            | Expr::StringLit { inferred_type, .. }
+            | Expr::Var { inferred_type, .. }
+            | Expr::Let { inferred_type, .. }
+            | Expr::If { inferred_type, .. }
+            | Expr::Lambda { inferred_type, .. }
+            | Expr::Apply { inferred_type, .. }
+            | Expr::Match { inferred_type, .. }
+            | Expr::VecLit { inferred_type, .. }
+            | Expr::Annotate { inferred_type, .. }
+            | Expr::Trace { inferred_type, .. }
+            | Expr::ParBind { inferred_type, .. } => inferred_type.as_deref(),
+        }
+    }
+
+    /// Sets the inferred type annotation on this expression node.
+    pub fn set_inferred_type(&mut self, ty: Option<Box<Type>>) {
+        match self {
+            Expr::IntLit { inferred_type, .. }
+            | Expr::FloatLit { inferred_type, .. }
+            | Expr::BoolLit { inferred_type, .. }
+            | Expr::StringLit { inferred_type, .. }
+            | Expr::Var { inferred_type, .. }
+            | Expr::Let { inferred_type, .. }
+            | Expr::If { inferred_type, .. }
+            | Expr::Lambda { inferred_type, .. }
+            | Expr::Apply { inferred_type, .. }
+            | Expr::Match { inferred_type, .. }
+            | Expr::VecLit { inferred_type, .. }
+            | Expr::Annotate { inferred_type, .. }
+            | Expr::Trace { inferred_type, .. }
+            | Expr::ParBind { inferred_type, .. } => *inferred_type = ty,
         }
     }
 }
@@ -208,6 +281,17 @@ impl Defn {
             self.variants.len()
         );
         &self.variants[0].body
+    }
+
+    /// Returns a mutable reference to the body of a single-sig defn. Panics if multi-sig.
+    pub fn body_mut(&mut self) -> &mut Expr {
+        assert!(
+            self.variants.len() == 1,
+            "Defn::body_mut() called on multi-sig defn '{}' with {} variants",
+            self.name,
+            self.variants.len()
+        );
+        &mut self.variants[0].body
     }
 
     /// Returns the param annotations of a single-sig defn. Panics if multi-sig.

@@ -209,6 +209,7 @@ impl TypeCheckEnv<'_> {
                     callees: Vec::new(),
                     got_slot: None,
                     trait_origin: Some(fq_trait_name.clone()),
+                    ast: None,
                 },
             );
 
@@ -269,6 +270,7 @@ impl TypeCheckEnv<'_> {
                 callees: Vec::new(),
                 got_slot: None,
                 trait_origin: Some(fq_trait_name),
+                ast: None,
             },
         );
 
@@ -1118,11 +1120,11 @@ fn build_default_body(
         });
     }
 
-    let x = Expr::Var { name: param_names[0].clone(), span };
-    let y = Expr::Var { name: param_names[1].clone(), span };
-    let not_var = Expr::Var { name: Symbol::from("not"), span };
-    let eq_var = Expr::Var { name: Symbol::from("="), span };
-    let lt_var = Expr::Var { name: Symbol::from("<"), span };
+    let x = Expr::Var { name: param_names[0].clone(), span, inferred_type: None, };
+    let y = Expr::Var { name: param_names[1].clone(), span, inferred_type: None, };
+    let not_var = Expr::Var { name: Symbol::from("not"), span, inferred_type: None, };
+    let eq_var = Expr::Var { name: Symbol::from("="), span, inferred_type: None, };
+    let lt_var = Expr::Var { name: Symbol::from("<"), span, inferred_type: None, };
 
     match (trait_name, method_name) {
         // != → (not (= x y))
@@ -1132,14 +1134,20 @@ fn build_default_body(
                 callee: Box::new(eq_var),
                 args: vec![x, y],
                 span,
+                resolved_call: None,
+                inferred_type: None,
             }],
             span,
+            resolved_call: None,
+            inferred_type: None,
         }),
         // > → (< y x)
         ("Ord", ">") => Ok(Expr::Apply {
             callee: Box::new(lt_var),
             args: vec![y, x],
             span,
+            resolved_call: None,
+            inferred_type: None,
         }),
         // <= → (not (< y x))
         ("Ord", "<=") => Ok(Expr::Apply {
@@ -1148,8 +1156,12 @@ fn build_default_body(
                 callee: Box::new(lt_var),
                 args: vec![y, x],
                 span,
+                resolved_call: None,
+                inferred_type: None,
             }],
             span,
+            resolved_call: None,
+            inferred_type: None,
         }),
         // >= → (not (< x y))
         ("Ord", ">=") => Ok(Expr::Apply {
@@ -1158,8 +1170,12 @@ fn build_default_body(
                 callee: Box::new(lt_var),
                 args: vec![x, y],
                 span,
+                resolved_call: None,
+                inferred_type: None,
             }],
             span,
+            resolved_call: None,
+            inferred_type: None,
         }),
         _ => Err(CranelispError::TypeError {
             message: format!(
@@ -1181,22 +1197,27 @@ fn sexp_to_default_expr(sexp: &Sexp) -> Result<cranelisp_types::Expr, CranelispE
         Sexp::Symbol(name, span) => Ok(Expr::Var {
             name: Symbol::from(name.as_str()),
             span: *span,
+            inferred_type: None,
         }),
         Sexp::Int(value, span) => Ok(Expr::IntLit {
             value: *value,
             span: *span,
+            inferred_type: None,
         }),
         Sexp::Float(value, span) => Ok(Expr::FloatLit {
             value: *value,
             span: *span,
+            inferred_type: None,
         }),
         Sexp::Bool(value, span) => Ok(Expr::BoolLit {
             value: *value,
             span: *span,
+            inferred_type: None,
         }),
         Sexp::Str(value, span) => Ok(Expr::StringLit {
             value: value.clone(),
             span: *span,
+            inferred_type: None,
         }),
         Sexp::List(children, span) => {
             if children.is_empty() {
@@ -1214,6 +1235,8 @@ fn sexp_to_default_expr(sexp: &Sexp) -> Result<cranelisp_types::Expr, CranelispE
                 callee,
                 args,
                 span: *span,
+                resolved_call: None,
+                inferred_type: None,
             })
         }
         _ => Err(CranelispError::TypeError {
@@ -1760,12 +1783,15 @@ mod tests {
                         callee: Box::new(cranelisp_types::Expr::Var {
                             name: Symbol::from("add-i64"),
                             span: Span::SYNTHETIC,
+                            inferred_type: None,
                         }),
                         args: vec![
-                            cranelisp_types::Expr::Var { name: Symbol::from("lhs"), span: Span::SYNTHETIC },
-                            cranelisp_types::Expr::Var { name: Symbol::from("rhs"), span: Span::SYNTHETIC },
+                            cranelisp_types::Expr::Var { name: Symbol::from("lhs"), span: Span::SYNTHETIC, inferred_type: None, },
+                            cranelisp_types::Expr::Var { name: Symbol::from("rhs"), span: Span::SYNTHETIC, inferred_type: None, },
                         ],
                         span: Span::SYNTHETIC,
+                        resolved_call: None,
+                        inferred_type: None,
                     },
                     span: Span::SYNTHETIC,
                 }],
@@ -1802,12 +1828,15 @@ mod tests {
                         callee: Box::new(cranelisp_types::Expr::Var {
                             name: Symbol::from("add-i64"),
                             span: Span::SYNTHETIC,
+                            inferred_type: None,
                         }),
                         args: vec![
-                            cranelisp_types::Expr::Var { name: Symbol::from("lhs"), span: Span::SYNTHETIC },
-                            cranelisp_types::Expr::Var { name: Symbol::from("rhs"), span: Span::SYNTHETIC },
+                            cranelisp_types::Expr::Var { name: Symbol::from("lhs"), span: Span::SYNTHETIC, inferred_type: None, },
+                            cranelisp_types::Expr::Var { name: Symbol::from("rhs"), span: Span::SYNTHETIC, inferred_type: None, },
                         ],
                         span: Span::SYNTHETIC,
+                        resolved_call: None,
+                        inferred_type: None,
                     },
                     span: Span::SYNTHETIC,
                 }],
@@ -1896,12 +1925,15 @@ mod tests {
                         callee: Box::new(cranelisp_types::Expr::Var {
                             name: Symbol::from("add-i64"),
                             span: Span::SYNTHETIC,
+                            inferred_type: None,
                         }),
                         args: vec![
-                            cranelisp_types::Expr::Var { name: Symbol::from("lhs"), span: Span::SYNTHETIC },
-                            cranelisp_types::Expr::Var { name: Symbol::from("rhs"), span: Span::SYNTHETIC },
+                            cranelisp_types::Expr::Var { name: Symbol::from("lhs"), span: Span::SYNTHETIC, inferred_type: None, },
+                            cranelisp_types::Expr::Var { name: Symbol::from("rhs"), span: Span::SYNTHETIC, inferred_type: None, },
                         ],
                         span: Span::SYNTHETIC,
+                        resolved_call: None,
+                        inferred_type: None,
                     },
                     span: Span::SYNTHETIC,
                 }],
@@ -2085,12 +2117,15 @@ mod tests {
                         callee: Box::new(Expr::Var {
                             name: Symbol::from("add-i64"),
                             span: Span::SYNTHETIC,
+                            inferred_type: None,
                         }),
                         args: vec![
-                            Expr::Var { name: Symbol::from("x"), span: Span::SYNTHETIC },
-                            Expr::Var { name: Symbol::from("y"), span: Span::SYNTHETIC },
+                            Expr::Var { name: Symbol::from("x"), span: Span::SYNTHETIC, inferred_type: None, },
+                            Expr::Var { name: Symbol::from("y"), span: Span::SYNTHETIC, inferred_type: None, },
                         ],
                         span: Span::SYNTHETIC,
+                        resolved_call: None,
+                        inferred_type: None,
                     },
                     span: Span::SYNTHETIC,
                 }],
@@ -2311,7 +2346,7 @@ mod tests {
                 variants: vec![DefnVariant {
                     params: vec![Symbol::from("lhs"), Symbol::from("rhs")],
                     param_annotations: vec![None, None],
-                    body: Expr::BoolLit { value: true, span: Span::SYNTHETIC },
+                    body: Expr::BoolLit { value: true, span: Span::SYNTHETIC, inferred_type: None, },
                     span: Span::SYNTHETIC,
                 }],
                 visibility: Visibility::Public,

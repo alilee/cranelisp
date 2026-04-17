@@ -1643,7 +1643,7 @@ mod tests {
             current_module: Mutex::new(cranelisp_types::ModuleFullPath::from("user")),
             repl_check_state: Mutex::new(None),
             typecheck_products: dashmap::DashMap::new(),
-            codegen_inputs: dashmap::DashMap::new(),
+            codegen_programs: dashmap::DashMap::new(),
             codegen_products: dashmap::DashMap::new(),
             introspection: dashmap::DashMap::new(),
             module_structures: dashmap::DashMap::new(),

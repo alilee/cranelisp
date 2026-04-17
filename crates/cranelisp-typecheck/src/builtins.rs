@@ -131,6 +131,7 @@ impl TypeCheckEnv<'_> {
                     callees: Vec::new(),
                     got_slot: None,
                     trait_origin: None,
+                ast: None,
                 },
             );
         }
@@ -167,6 +168,7 @@ impl TypeCheckEnv<'_> {
                     callees: Vec::new(),
                     got_slot: None,
                     trait_origin: None,
+                ast: None,
                 },
             );
         }
@@ -258,6 +260,7 @@ impl TypeCheckEnv<'_> {
                     callees: Vec::new(),
                     got_slot: None,
                     trait_origin: None,
+                ast: None,
                 },
             );
         }
@@ -311,6 +314,7 @@ impl TypeCheckEnv<'_> {
                     callees: Vec::new(),
                     got_slot: None,
                     trait_origin: None,
+                ast: None,
                 },
             );
         }
@@ -389,6 +393,7 @@ impl TypeCheckEnv<'_> {
                     callees: Vec::new(),
                     got_slot: None,
                     trait_origin: None,
+                ast: None,
                 },
             );
         }
@@ -462,6 +467,7 @@ impl TypeCheckEnv<'_> {
                 callees: Vec::new(),
                 got_slot: None,
                 trait_origin: None,
+                ast: None,
             },
         );
     }
@@ -814,6 +820,7 @@ impl TypeCheckEnv<'_> {
                 callees: Vec::new(),
                 got_slot: None,
                 trait_origin: None,
+                ast: None,
             },
         );
     }
@@ -949,6 +956,7 @@ impl TypeCheckEnv<'_> {
                     callees: Vec::new(),
                     got_slot: None,
                     trait_origin: None,
+                ast: None,
                 },
             );
         }
@@ -979,6 +987,7 @@ impl TypeCheckEnv<'_> {
                 callees: Vec::new(),
                 got_slot: None,
                 trait_origin: None,
+                ast: None,
             },
         );
 
@@ -1075,6 +1084,7 @@ impl TypeCheckEnv<'_> {
                 callees: Vec::new(),
                 got_slot: None,
                 trait_origin: None,
+                ast: None,
             },
         );
 
@@ -1099,6 +1109,7 @@ impl TypeCheckEnv<'_> {
                 callees: Vec::new(),
                 got_slot: None,
                 trait_origin: None,
+                ast: None,
             },
         );
 

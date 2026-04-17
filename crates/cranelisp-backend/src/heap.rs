@@ -377,7 +377,7 @@ fn collect_var_uses(
     use cranelisp_types::Expr;
 
     match expr {
-        Expr::Var { name, span } => {
+        Expr::Var { name, span, .. } => {
             uses.entry(name.clone()).or_default().push(*span);
         }
         Expr::Let { bindings, body, .. } => {
@@ -475,12 +475,14 @@ mod tests {
 
         let x = Symbol::from("x");
         let expr = Expr::Apply {
-            callee: Box::new(Expr::Var { name: Symbol::from("f"), span: Span::new(0, 1) }),
+            callee: Box::new(Expr::Var { name: Symbol::from("f"), span: Span::new(0, 1), inferred_type: None }),
             args: vec![
-                Expr::Var { name: x.clone(), span: Span::new(2, 3) },
-                Expr::Var { name: x.clone(), span: Span::new(4, 5) },
+                Expr::Var { name: x.clone(), span: Span::new(2, 3), inferred_type: None },
+                Expr::Var { name: x.clone(), span: Span::new(4, 5), inferred_type: None },
             ],
             span: Span::new(0, 6),
+            resolved_call: None,
+            inferred_type: None,
         };
 
         let last_uses = compute_last_uses(&expr);

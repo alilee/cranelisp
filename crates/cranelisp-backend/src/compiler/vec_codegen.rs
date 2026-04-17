@@ -481,9 +481,9 @@ impl<'a, M: Module> FnCompiler<'a, M> {
 
     // --- Helpers ---
 
-    /// Extract the element type from a Vec expression's type in expr_types.
+    /// Extract the element type from a Vec expression's inferred type.
     fn vec_elem_type(&self, vec_expr: &Expr) -> Option<Type> {
-        if let Some(Type::ADT(fqtn, args)) = self.ctx.expr_types.get(&vec_expr.span())
+        if let Some(Type::ADT(fqtn, args)) = vec_expr.inferred_type()
             && fqtn.name.as_ref() == "Vec" && args.len() == 1 {
                 return Some(args[0].clone());
             }
@@ -492,7 +492,7 @@ impl<'a, M: Module> FnCompiler<'a, M> {
 
     /// Check if a Vec expression is at its last use (for COW eligibility).
     fn is_vec_last_use(&self, vec_expr: &Expr) -> bool {
-        if let Expr::Var { name, span } = vec_expr {
+        if let Expr::Var { name, span, .. } = vec_expr {
             self.is_last_use(name, *span)
         } else {
             // Temporary expression: ownership transfers, treat as unique.

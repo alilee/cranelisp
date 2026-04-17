@@ -1647,7 +1647,7 @@ impl TestFixture {
     /// Infer expression type (test convenience).
     pub fn infer_expr_for_test(
         &mut self,
-        expr: &cranelisp_types::Expr,
+        expr: &mut cranelisp_types::Expr,
     ) -> Result<Type, CranelispError> {
         let env = TypeCheckEnv::new(&self.modules, &self.next_id);
         env.infer_expr(&mut self.state, expr)
@@ -1917,6 +1917,7 @@ mod tests {
                 callees: Vec::new(),
                 got_slot: None,
                 trait_origin: None,
+                ast: None,
             },
         );
 
@@ -1945,6 +1946,7 @@ mod tests {
                     callees: Vec::new(),
                     got_slot: None,
                     trait_origin: None,
+                    ast: None,
                 },
             );
         }

@@ -896,24 +896,29 @@ fn build_expr(sexp: &Sexp) -> Result<Expr, CranelispError> {
         Sexp::Int(v, span) => Ok(Expr::IntLit {
             value: *v,
             span: *span,
+            inferred_type: None,
         }),
         Sexp::Float(v, span) => Ok(Expr::FloatLit {
             value: *v,
             span: *span,
+            inferred_type: None,
         }),
         Sexp::Bool(v, span) => Ok(Expr::BoolLit {
             value: *v,
             span: *span,
+            inferred_type: None,
         }),
         Sexp::Str(v, span) => Ok(Expr::StringLit {
             value: v.clone(),
             span: *span,
+            inferred_type: None,
         }),
         Sexp::Symbol(name, span) => {
             reject_non_ring0_symbol(name, *span)?;
             Ok(Expr::Var {
                 name: name.as_str().into(),
                 span: *span,
+                inferred_type: None,
             })
         }
         Sexp::List(children, span) => build_list_expr(children, *span),
@@ -1001,6 +1006,7 @@ fn build_trace(
         modules: vec![],
         body: Box::new(body),
         span,
+        inferred_type: None,
     })
 }
 
@@ -1026,12 +1032,16 @@ fn build_discover_tests(
         callee: Box::new(Expr::Var {
             name: Symbol::from("discover-tests"),
             span,
+            inferred_type: None,
         }),
         args: vec![Expr::StringLit {
             value: module_str,
             span,
+            inferred_type: None,
         }],
         span,
+        resolved_call: None,
+        inferred_type: None,
     })
 }
 
@@ -1064,12 +1074,16 @@ fn build_run_or_trace_test(
                 callee: Box::new(Expr::Var {
                     name: Symbol::from("macros/SexpSym"),
                     span: arg_span,
+                    inferred_type: None,
                 }),
                 args: vec![Expr::StringLit {
                     value: sym_name.to_string(),
                     span: arg_span,
+                    inferred_type: None,
                 }],
                 span: arg_span,
+                resolved_call: None,
+                inferred_type: None,
             }
         } else {
             // Unqualified symbol: treat as variable reference (Sexp value).
@@ -1084,9 +1098,12 @@ fn build_run_or_trace_test(
         callee: Box::new(Expr::Var {
             name: Symbol::from(form_name),
             span,
+            inferred_type: None,
         }),
         args: vec![arg_expr],
         span,
+        resolved_call: None,
+        inferred_type: None,
     })
 }
 
@@ -1100,6 +1117,8 @@ fn build_apply(
         callee: Box::new(callee),
         args,
         span,
+        resolved_call: None,
+        inferred_type: None,
     })
 }
 
@@ -1122,6 +1141,7 @@ fn build_let(
         bindings,
         body: Box::new(body),
         span,
+        inferred_type: None,
     })
 }
 
@@ -1166,6 +1186,7 @@ fn build_if(
         then_branch: Box::new(then_branch),
         else_branch: Box::new(else_branch),
         span,
+        inferred_type: None,
     })
 }
 
@@ -1188,6 +1209,7 @@ fn build_fn(
         param_annotations,
         body: Box::new(body),
         span,
+        inferred_type: None,
     })
 }
 
@@ -1217,6 +1239,7 @@ fn build_match(
         arms,
         span,
         compiler_generated: false,
+        inferred_type: None,
     })
 }
 
@@ -1295,7 +1318,7 @@ fn build_vec_lit(
     span: Span,
 ) -> Result<Expr, CranelispError> {
     let elements = build_args_with_annotations(children)?;
-    Ok(Expr::VecLit { elements, span })
+    Ok(Expr::VecLit { elements, span, inferred_type: None })
 }
 
 // ---------------------------------------------------------------------------
@@ -1360,6 +1383,7 @@ fn build_one_expr_at(
                 annotation,
                 expr: Box::new(inner),
                 span,
+                inferred_type: None,
             },
             consumed + 1,
         ))

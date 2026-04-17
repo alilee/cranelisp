@@ -325,15 +325,6 @@ pub fn process_cache_packet(
         let program: Vec<cranelisp_types::TopLevel> = input.defns.iter()
             .map(|(defn, _scheme)| cranelisp_types::TopLevel::Defn(defn.clone()))
             .collect();
-        let check = cranelisp_types::CheckResult {
-            method_resolutions: input.method_resolutions.clone(),
-            constrained_fn_names: std::collections::HashSet::new(),
-            mono_defns: Vec::new(),
-            expr_types: input.expr_types.clone(),
-            default_method_defns: Vec::new(),
-            warnings: Vec::new(),
-            display: None,
-        };
 
         let isa = build_isa(true)?;
         let obj_builder = ObjectBuilder::new(isa, "cranelisp_module", default_libcall_names())
@@ -346,7 +337,6 @@ pub fn process_cache_packet(
         crate::compile_to_module(
             input.module_path.clone(),
             &program,
-            &check,
             symbol_tables,
             &mut obj_module,
         )?;
@@ -543,6 +533,7 @@ mod tests {
                 body: Expr::IntLit {
                     value: 42,
                     span: Span::new(10, 12),
+                    inferred_type: None,
                 },
                 span: Span::new(0, 20),
             }],
@@ -551,21 +542,11 @@ mod tests {
         };
 
         let program = vec![TopLevel::Defn(defn)];
-        let check = CheckResult {
-            method_resolutions: HashMap::new(),
-            constrained_fn_names: std::collections::HashSet::new(),
-            mono_defns: Vec::new(),
-            expr_types: HashMap::new(),
-            default_method_defns: Vec::new(),
-            warnings: Vec::new(),
-            display: None,
-        };
 
         let mut obj_module = test_object_module();
         let _result = crate::compile_to_module(
             ModuleFullPath::from("user"),
             &program,
-            &check,
             &dashmap::DashMap::new(),
             &mut obj_module,
         ).unwrap();
@@ -596,7 +577,7 @@ mod tests {
     // spec: design/backend/module-caching.md §13.2 — compile module with params
     #[test]
     fn test_compile_module_to_object_with_params() {
-        use cranelisp_types::{CheckResult, Defn, DefnVariant, Expr, TopLevel, Visibility};
+        use cranelisp_types::{Defn, DefnVariant, Expr, TopLevel, Visibility};
 
         let defn = Defn {
             name: Symbol::from("identity"),
@@ -607,6 +588,7 @@ mod tests {
                 body: Expr::Var {
                     name: Symbol::from("x"),
                     span: Span::new(20, 21),
+                    inferred_type: None,
                 },
                 span: Span::new(0, 25),
             }],
@@ -615,21 +597,11 @@ mod tests {
         };
 
         let program = vec![TopLevel::Defn(defn)];
-        let check = CheckResult {
-            method_resolutions: HashMap::new(),
-            constrained_fn_names: std::collections::HashSet::new(),
-            mono_defns: Vec::new(),
-            expr_types: HashMap::new(),
-            default_method_defns: Vec::new(),
-            warnings: Vec::new(),
-            display: None,
-        };
 
         let mut obj_module = test_object_module();
         let _result = crate::compile_to_module(
             ModuleFullPath::from("user"),
             &program,
-            &check,
             &dashmap::DashMap::new(),
             &mut obj_module,
         ).unwrap();
@@ -663,6 +635,7 @@ mod tests {
                 body: Expr::IntLit {
                     value: 0,
                     span: Span::new(10, 11),
+                    inferred_type: None,
                 },
                 span: Span::new(0, 15),
             }],

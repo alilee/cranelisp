@@ -570,9 +570,6 @@ fn compile_macro_clause_with_state(
         cranelisp_typecheck::TypeCheckEnv::new(symbol_tables, next_type_id).merge_form_result(target_module, check_state, accumulator, result);
     }
 
-    // Build a CheckResult from the accumulator for codegen.
-    let check = build_check_from_accumulator_tc(symbol_tables, accumulator);
-
     // Step 5: Extract the defn and compile it.
     let defn = program
         .iter()
@@ -602,30 +599,17 @@ fn compile_macro_clause_with_state(
         .got.clone();
     let (macro_jit_symbols, macro_got_data_defs) =
         env_impl.collect_jit_setup_for_module(platform_registry);
-    pre_register_got_slots_in_tc(tc_modules, target_module, &program, &check);
+    // Derive constrained_fn_names from accumulator for macro clause GOT registration.
+    let constrained_fn_names = accumulator.constrained_fn_names.clone();
+    pre_register_got_slots_in_tc(tc_modules, target_module, &program, &constrained_fn_names);
     compile_and_register_defn_shared(
-        &macro_jit_symbols, &macro_got_data_defs, defn, &check, env, &module_got,
+        &macro_jit_symbols, &macro_got_data_defs, defn, env, &module_got,
         codegen_products, None, target_module, true, symbol_tables,
     )?;
 
     Ok(())
 }
 
-/// Build a CheckResult from the accumulator for codegen (TC shared-ref version).
-fn build_check_from_accumulator_tc(
-    _symbol_tables: &dashmap::DashMap<ModuleFullPath, cranelisp_types::SymbolTable>,
-    accumulator: &ModuleCheckAccumulator,
-) -> CheckResult {
-    CheckResult {
-        method_resolutions: accumulator.method_resolutions.clone(),
-        constrained_fn_names: accumulator.constrained_fn_names.clone(),
-        mono_defns: Vec::new(),
-        expr_types: accumulator.expr_types.clone(),
-        default_method_defns: Vec::new(),
-        warnings: Vec::new(),
-        display: None,
-    }
-}
 
 /// Build a MacroEntry from compiled clause code pointers.
 fn build_macro_entry_from_clauses(
@@ -1067,6 +1051,105 @@ fn separate_macros(
     Ok((regular_sexps, macro_infos))
 }
 
+/// Enrich a defn's AST body with side-map resolutions and expr types.
+///
+/// Walks the expression tree and applies resolved_call and inferred_type
+/// from the side maps to AST nodes that don't already have annotations.
+/// This bridges the gap where the typecheck's post-inference passes
+/// (resolve_deferred_trait_calls, resolve_auto_curry) add resolutions
+/// to side maps but don't write them back to AST nodes.
+fn enrich_defn_from_side_maps(
+    defn: &mut Defn,
+    resolutions: &cranelisp_types::check::MethodResolutions,
+    expr_types: &std::collections::HashMap<Span, cranelisp_types::Type>,
+) {
+    for variant in &mut defn.variants {
+        enrich_expr_from_side_maps(&mut variant.body, resolutions, expr_types);
+    }
+}
+
+/// Recursively enrich an expression tree with side-map annotations.
+fn enrich_expr_from_side_maps(
+    expr: &mut cranelisp_types::Expr,
+    resolutions: &cranelisp_types::check::MethodResolutions,
+    expr_types: &std::collections::HashMap<Span, cranelisp_types::Type>,
+) {
+    use cranelisp_types::Expr;
+
+    // Apply inferred_type from side map if not already annotated, OR if the
+    // existing annotation contains unresolved type variables. The dual-write
+    // during inference stores pre-substitution types (may contain Var(N)),
+    // but codegen needs fully resolved types. The side map's types have been
+    // resolved through apply(&state.subst, ty) in finalize_check_result_inner.
+    if let Some(ty) = expr_types.get(&expr.span()) {
+        let should_overwrite = match expr.inferred_type() {
+            None => true,
+            Some(existing) => existing.contains_var(),
+        };
+        if should_overwrite {
+            expr.set_inferred_type(Some(Box::new(ty.clone())));
+        }
+    }
+
+    match expr {
+        Expr::Apply { callee, args, span, resolved_call, .. } => {
+            // Apply resolved_call from side map if not already annotated.
+            if resolved_call.is_none() {
+                if let Some(resolution) = resolutions.get(span) {
+                    *resolved_call = Some(Box::new(resolution.clone()));
+                }
+            }
+            enrich_expr_from_side_maps(callee, resolutions, expr_types);
+            for arg in args {
+                enrich_expr_from_side_maps(arg, resolutions, expr_types);
+            }
+        }
+        Expr::Let { bindings, body, .. } => {
+            for (_, binding_expr) in bindings {
+                enrich_expr_from_side_maps(binding_expr, resolutions, expr_types);
+            }
+            enrich_expr_from_side_maps(body, resolutions, expr_types);
+        }
+        Expr::If { cond, then_branch, else_branch, .. } => {
+            enrich_expr_from_side_maps(cond, resolutions, expr_types);
+            enrich_expr_from_side_maps(then_branch, resolutions, expr_types);
+            enrich_expr_from_side_maps(else_branch, resolutions, expr_types);
+        }
+        Expr::Match { scrutinee, arms, .. } => {
+            enrich_expr_from_side_maps(scrutinee, resolutions, expr_types);
+            for arm in arms {
+                enrich_expr_from_side_maps(&mut arm.body, resolutions, expr_types);
+            }
+        }
+        Expr::Lambda { body, .. } => {
+            enrich_expr_from_side_maps(body, resolutions, expr_types);
+        }
+        Expr::Annotate { expr: inner, .. } => {
+            enrich_expr_from_side_maps(inner, resolutions, expr_types);
+        }
+        Expr::Trace { body, .. } => {
+            enrich_expr_from_side_maps(body, resolutions, expr_types);
+        }
+        Expr::ParBind { bindings, body, .. } => {
+            for (_, binding_expr) in bindings {
+                enrich_expr_from_side_maps(binding_expr, resolutions, expr_types);
+            }
+            enrich_expr_from_side_maps(body, resolutions, expr_types);
+        }
+        Expr::VecLit { elements, .. } => {
+            for elem in elements {
+                enrich_expr_from_side_maps(elem, resolutions, expr_types);
+            }
+        }
+        // Leaf nodes — nothing to recurse into.
+        Expr::IntLit { .. }
+        | Expr::FloatLit { .. }
+        | Expr::BoolLit { .. }
+        | Expr::StringLit { .. }
+        | Expr::Var { .. } => {}
+    }
+}
+
 /// Finalize a fully typechecked module: run post-passes and build CheckResult.
 fn finalize_module(
     ctx: &mut ModuleCompiler,
@@ -1097,11 +1180,85 @@ fn finalize_module(
         cranelisp_typecheck::TypeCheckEnv::new(ctx.symbol_tables, ctx.next_type_id).compute_display_info_public(&ctx.check_state,expanded_program, &accumulator.defn_type_vars);
 
     // NOTE: notify_typecheck_done is NOT called here. The caller is
-    // responsible for stashing CodegenInput and calling
+    // responsible for stashing the program and calling
     // notify_typecheck_done AFTER, so that nice workers cannot claim
     // the module before the stash is populated.
 
-    let program = expanded_program.to_vec();
+    // Build program with annotated AST from the symbol table where available.
+    // The typechecker stores annotated defns (with inferred_type and resolved_call
+    // on AST nodes) in ModuleEntry::Def.ast. The expanded_program has the original
+    // unannotated AST. Replace each defn with its annotated version.
+    let mut program: Vec<TopLevel> = expanded_program.iter().map(|tl| {
+        match tl {
+            TopLevel::Defn(defn) => {
+                if let Some(table) = ctx.symbol_tables.get(module) {
+                    if let Some(cranelisp_types::ModuleEntry::Def { ast: Some(annotated), .. }) = table.get(defn.name.as_ref()) {
+                        return TopLevel::Defn(annotated.clone());
+                    }
+                }
+                tl.clone()
+            }
+            TopLevel::TraitImpl(impl_) => {
+                // For trait impls, try to get annotated versions of each method.
+                let mut new_impl = impl_.clone();
+                if let Some(table) = ctx.symbol_tables.get(module) {
+                    for method in &mut new_impl.methods {
+                        if let Some(cranelisp_types::ModuleEntry::Def { ast: Some(annotated), .. }) = table.get(method.name.as_ref()) {
+                            *method = annotated.clone();
+                        }
+                    }
+                }
+                TopLevel::TraitImpl(new_impl)
+            }
+            TopLevel::Expr(_) => {
+                // Expressions are wrapped as synthetic __expr defns by the typechecker.
+                // Retrieve the annotated body from the symbol table.
+                if let Some(table) = ctx.symbol_tables.get(module) {
+                    if let Some(cranelisp_types::ModuleEntry::Def { ast: Some(annotated), .. }) = table.get("__expr") {
+                        return TopLevel::Expr(annotated.body().clone());
+                    }
+                }
+                tl.clone()
+            }
+            _ => tl.clone(),
+        }
+    }).collect();
+
+    // Inline default method defns into program. These are already annotated
+    // by the typechecker (check_impl_method annotates via infer_expr).
+    for defn in &check_result.default_method_defns {
+        program.push(TopLevel::Defn(defn.clone()));
+    }
+
+    // Inline mono defns with enrichment from their per-specialization side maps.
+    // The typechecker's recheck_body_for_mono annotates most AST nodes during
+    // infer_expr, but post-inference passes (resolve_deferred_trait_calls,
+    // resolve_auto_curry) add resolutions to MonoDefn.resolutions that aren't
+    // written back to AST nodes. Apply them here.
+    for mono in &check_result.mono_defns {
+        let mut defn = mono.defn.clone();
+        enrich_defn_from_side_maps(&mut defn, &mono.resolutions, &mono.expr_types);
+        program.push(TopLevel::Defn(defn));
+    }
+
+    // Enrich program entries with post-pass resolutions from CheckResult.
+    // The typechecker's post-passes (resolve_pending_overloads, resolve_auto_curry)
+    // add resolutions to the side maps after the initial dual-write. Apply them
+    // to AST nodes that lack annotations. The enrich function only sets values
+    // on unannotated nodes (is_none checks).
+    if !check_result.method_resolutions.is_empty() || !check_result.expr_types.is_empty() {
+        for tl in &mut program {
+            match tl {
+                TopLevel::Defn(defn) => {
+                    enrich_defn_from_side_maps(defn, &check_result.method_resolutions, &check_result.expr_types);
+                }
+                TopLevel::Expr(expr) => {
+                    enrich_expr_from_side_maps(expr, &check_result.method_resolutions, &check_result.expr_types);
+                }
+                _ => {}
+            }
+        }
+    }
 
     Ok(ProcessResult::Complete {
         check_result,
@@ -1918,25 +2075,7 @@ fn collect_transitive_uncompiled_deps(
 // handles dependency compilation through the normal priority codegen path.
 
 /// Build a CheckResult from the accumulator's current state.
-///
-/// Used for inline macro compilation. Mono defns and default methods are
-/// not needed for macro clause codegen, so they are left empty.
-/// Type defs and constructor_to_type are snapshotted from the TC registry
-/// (required for Sexp constructor codegen in macro clause bodies).
-fn build_check_from_accumulator(
-    _symbol_tables: &dashmap::DashMap<ModuleFullPath, cranelisp_types::SymbolTable>,
-    accumulator: &ModuleCheckAccumulator,
-) -> CheckResult {
-    CheckResult {
-        method_resolutions: accumulator.method_resolutions.clone(),
-        constrained_fn_names: accumulator.constrained_fn_names.clone(),
-        mono_defns: Vec::new(),
-        expr_types: accumulator.expr_types.clone(),
-        default_method_defns: Vec::new(),
-        warnings: Vec::new(),
-        display: None,
-    }
-}
+
 
 /// Compile a single macro clause inline using the worker's shared state.
 ///
@@ -1978,9 +2117,6 @@ fn compile_macro_clause_inline(
         cranelisp_typecheck::TypeCheckEnv::new(ctx.symbol_tables, ctx.next_type_id).merge_form_result(&module, &mut ctx.check_state, accumulator, result);
     }
 
-    // Build a CheckResult from the accumulator for codegen.
-    let check = build_check_from_accumulator(ctx.symbol_tables, accumulator);
-
     // Step 5: Extract the defn and compile it.
     let defn = program
         .iter()
@@ -2011,9 +2147,10 @@ fn compile_macro_clause_inline(
         .expect("invariant: just ensured typecheck product exists")
         .got.clone();
     let (macro_jit_symbols, macro_got_data_defs) = env_impl.collect_jit_setup_for_module(ctx.platform_registry);
-    pre_register_got_slots_in_tc(tc_modules, &module, &program, &check);
+    let constrained_fn_names = accumulator.constrained_fn_names.clone();
+    pre_register_got_slots_in_tc(tc_modules, &module, &program, &constrained_fn_names);
     compile_and_register_defn_shared(
-        &macro_jit_symbols, &macro_got_data_defs, defn, &check, env, &module_got,
+        &macro_jit_symbols, &macro_got_data_defs, defn, env, &module_got,
         ctx.codegen_products, None, &module, true, tc_modules,
     )?;
 
@@ -2376,7 +2513,7 @@ pub fn codegen_module_symbols(
     scheduler: &CompileScheduler,
     module: &ModuleFullPath,
     program: &[TopLevel],
-    check: &CheckResult,
+    constrained_fn_names: &std::collections::HashSet<Symbol>,
     tc_modules: &dashmap::DashMap<ModuleFullPath, cranelisp_types::SymbolTable>,
     typecheck_products: &dashmap::DashMap<ModuleFullPath, crate::session_v4::TypecheckProduct>,
     codegen_products: &dashmap::DashMap<ModuleFullPath, crate::session_v4::CodegenProduct>,
@@ -2398,18 +2535,11 @@ pub fn codegen_module_symbols(
     let (jit_symbols, got_data_defs) = env_impl.collect_jit_setup_for_module(platform_registry);
 
     // Pre-register GOT slots for forward references.
-    pre_register_got_slots_in_tc(tc_modules, module, program, check);
+    pre_register_got_slots_in_tc(tc_modules, module, program, &constrained_fn_names);
 
-    // Compile default method bodies.
-    for defn in &check.default_method_defns {
-        compile_and_register_defn_shared(&jit_symbols, &got_data_defs, defn, check, env, &module_got, codegen_products, introspection, module, false, tc_modules)?;
-    }
-
-    // Compile mono specializations with per-specialization resolutions.
-    compile_mono_defns(&jit_symbols, &got_data_defs, check, env, &module_got, codegen_products, introspection, module, tc_modules)?;
-
-    // Compile each regular defn.
-    let defn_names = compile_regular_defns(&jit_symbols, &got_data_defs, program, check, env, &module_got, codegen_products, introspection, module, tc_modules)?;
+    // Compile each defn uniformly. Mono defns and default method defns are
+    // inlined into program by finalize_module (design §3.4, Option A).
+    let defn_names = compile_regular_defns(&jit_symbols, &got_data_defs, program, &constrained_fn_names, env, &module_got, codegen_products, introspection, module, tc_modules)?;
 
     // Notify scheduler for each compiled symbol.
     let total = defn_names.len();
@@ -2434,7 +2564,7 @@ fn pre_register_got_slots_in_tc(
     tc_modules: &dashmap::DashMap<ModuleFullPath, cranelisp_types::SymbolTable>,
     module: &ModuleFullPath,
     program: &[TopLevel],
-    check: &CheckResult,
+    constrained_fn_names: &std::collections::HashSet<Symbol>,
 ) {
     use cranelisp_types::{DefKind, ModuleEntry, Scheme, Visibility};
 
@@ -2476,85 +2606,39 @@ fn pre_register_got_slots_in_tc(
                 callees: Vec::new(),
                 got_slot: Some(slot),
                 trait_origin: None,
+                ast: None,
             },
         );
     };
 
-    // Regular defns (should already be registered, but ensure slot exists).
+    // All defns — regular, mono, default method, and trait impl mangled methods —
+    // are now unified in program as TopLevel::Defn entries.
+    // (Inlined by finalize_module from check_result.)
     for tl in program {
         match tl {
             TopLevel::Defn(defn) => {
                 if defn.is_multi_sig() {
                     continue;
                 }
-                if check.constrained_fn_names.contains(&defn.name) {
+                if constrained_fn_names.contains(&defn.name) {
                     continue;
                 }
                 ensure_slot(&defn.name, defn.params());
             }
-            TopLevel::TraitImpl(impl_) => {
-                for method in &impl_.methods {
-                    ensure_slot(&method.name, method.params());
-                }
-            }
             _ => {}
         }
     }
-
-    // Default method defns (generated by typechecker for trait impls with defaults).
-    for defn in &check.default_method_defns {
-        ensure_slot(&defn.name, defn.params());
-    }
-
-    // Mono specializations.
-    for mono in &check.mono_defns {
-        ensure_slot(&mono.defn.name, mono.defn.params());
-    }
 }
 
-/// Compile monomorphised specializations.
-#[allow(clippy::too_many_arguments)]
-fn compile_mono_defns(
-    jit_symbols: &[(String, *const u8)],
-    got_data_defs: &[(String, *const u8)],
-    check: &CheckResult,
-    env: &dyn cranelisp_backend::compiler::CompilationEnv,
-    module_got: &std::sync::Arc<cranelisp_backend::got::GotTable>,
-    codegen_products: &dashmap::DashMap<ModuleFullPath, crate::session_v4::CodegenProduct>,
-    introspection: Option<&dashmap::DashMap<cranelisp_types::FQSymbol, crate::session_v4::Introspection>>,
-    module: &ModuleFullPath,
-    tc_modules: &dashmap::DashMap<ModuleFullPath, cranelisp_types::SymbolTable>,
-) -> Result<(), CranelispError> {
-    for mono in &check.mono_defns {
-        let mut merged = check.method_resolutions.clone();
-        merged.extend(mono.resolutions.clone());
-        let expr_types = if mono.expr_types.is_empty() {
-            check.expr_types.clone()
-        } else {
-            mono.expr_types.clone()
-        };
-        let mono_check = CheckResult {
-            method_resolutions: merged,
-            constrained_fn_names: check.constrained_fn_names.clone(),
-            mono_defns: Vec::new(),
-            expr_types,
-            default_method_defns: Vec::new(),
-            warnings: Vec::new(),
-            display: None,
-        };
-        compile_and_register_defn_shared(jit_symbols, got_data_defs, &mono.defn, &mono_check, env, module_got, codegen_products, introspection, module, false, tc_modules)?;
-    }
-    Ok(())
-}
-
-/// Compile regular defns (skipping constrained fn base definitions).
+/// Compile all defns in program (skipping constrained fn base definitions).
 /// Returns the list of compiled symbol names.
+/// Mono defns and default method defns are already inlined in program.
 #[allow(clippy::too_many_arguments)]
 fn compile_regular_defns(
     jit_symbols: &[(String, *const u8)],
     got_data_defs: &[(String, *const u8)],
     program: &[TopLevel],
-    check: &CheckResult,
+    constrained_fn_names: &std::collections::HashSet<Symbol>,
     env: &dyn cranelisp_backend::compiler::CompilationEnv,
     module_got: &std::sync::Arc<cranelisp_backend::got::GotTable>,
     codegen_products: &dashmap::DashMap<ModuleFullPath, crate::session_v4::CodegenProduct>,
@@ -2570,21 +2654,15 @@ fn compile_regular_defns(
                 if defn.is_multi_sig() {
                     continue;
                 }
-                if check.constrained_fn_names.contains(&defn.name) {
+                if constrained_fn_names.contains(&defn.name) {
                     continue;
                 }
-                compile_and_register_defn_shared(jit_symbols, got_data_defs, defn, check, env, module_got, codegen_products, introspection, module, false, tc_modules)?;
+                compile_and_register_defn_shared(jit_symbols, got_data_defs, defn, env, module_got, codegen_products, introspection, module, false, tc_modules)?;
                 compiled_names.push(defn.name.clone());
             }
-            TopLevel::TraitImpl(impl_) => {
-                for method in &impl_.methods {
-                    compile_and_register_defn_shared(
-                        jit_symbols, got_data_defs, method, check, env, module_got,
-                        codegen_products, introspection, module, false, tc_modules,
-                    )?;
-                    compiled_names.push(method.name.clone());
-                }
-            }
+            // TraitImpl methods are now compiled via their mangled defns
+            // (inlined from default_method_defns into program as TopLevel::Defn).
+            TopLevel::TraitImpl(_) => {}
             _ => {}
         }
     }
@@ -2813,21 +2891,20 @@ pub fn priority_worker_loop(
                             ctx.scheduler,
                             &module,
                             &program,
-                            &check_result,
+                            &check_result.constrained_fn_names,
                             ctx.symbol_tables,
                             ctx.typecheck_products,
                             ctx.codegen_products,
                             None,
                         )?;
 
-                        // Stash data for nice worker .o + .meta.json, then
+                        // Stash program for nice worker .o compilation, then
                         // notify typecheck_done. Order matters: nice workers
                         // wake on notify_typecheck_done, so the stash must
                         // be populated first.
-                        stash_codegen_input(
+                        stash_codegen_program(
                             ctx.shared_state,
                             &module,
-                            check_result,
                             program,
                         );
                         ctx.scheduler.notify_typecheck_done(&module);
@@ -2877,28 +2954,22 @@ pub fn priority_worker_loop(
 /// When the object codegen stash is available, stores the CheckResult,
 /// Program, and SymbolTable so that nice workers can compile `.o` files
 /// and write `.meta.json` without re-accessing the TypeChecker.
-/// Stash codegen input for nice worker .o compilation.
+/// Stash program for nice worker .o compilation.
 ///
-/// Inserts a `CodegenInput` into the shared `codegen_inputs` DashMap.
-/// Nice workers read from this DashMap and from `typecheck_products`
-/// for the symbol table needed by .meta.json serialization.
-///
-/// Stashes the full `CheckResult` (including `constrained_fn_names`)
-/// so the nice worker gets the same information as the priority worker.
-fn stash_codegen_input(
+/// Inserts the program into the shared `codegen_programs` DashMap.
+/// Nice workers read from this DashMap to compile .o files.
+/// The program already contains mono defns and default method defns
+/// (inlined by finalize_module).
+fn stash_codegen_program(
     shared_state: Option<&crate::session_v4::SharedState>,
     module: &ModuleFullPath,
-    check_result: CheckResult,
     program: Vec<TopLevel>,
 ) {
     let Some(shared) = shared_state else { return };
 
-    shared.codegen_inputs.insert(
+    shared.codegen_programs.insert(
         module.clone(),
-        crate::session_v4::CodegenInput {
-            check: check_result,
-            program,
-        },
+        program,
     );
 }
 
@@ -3036,18 +3107,17 @@ fn handle_typecheck_work(
                 ctx.scheduler,
                 module,
                 &program,
-                &check_result,
+                &check_result.constrained_fn_names,
                 ctx.symbol_tables,
                 ctx.typecheck_products,
                 ctx.codegen_products,
                 None,
             )?;
 
-            // Stash data for nice worker .o + .meta.json.
-            stash_codegen_input(
+            // Stash program for nice worker .o compilation.
+            stash_codegen_program(
                 ctx.shared_state,
                 module,
-                check_result,
                 program,
             );
             ctx.scheduler.notify_typecheck_done(module);

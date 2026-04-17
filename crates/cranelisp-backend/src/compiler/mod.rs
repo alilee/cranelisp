@@ -21,7 +21,7 @@ use dashmap::DashMap;
 
 use cranelisp_types::{
     ConstructorInfo, CranelispError, Defn, Expr, FQTypeName, HeapCategory,
-    ModuleEntry, ModuleFullPath, ResolvedCall, Span, Symbol, SymbolTable,
+    ModuleEntry, ModuleFullPath, Span, Symbol, SymbolTable,
     Type, TypeDefInfo,
 };
 
@@ -106,10 +106,6 @@ pub struct TracedFnInfo {
 /// `CompileContext` is `Clone` but not `Copy` because of the `&dyn` trait object.
 #[derive(Clone)]
 pub struct CompileContext<'a> {
-    /// Method resolutions from the typechecker.
-    pub method_resolutions: &'a HashMap<Span, ResolvedCall>,
-    /// Expression types from the typechecker.
-    pub expr_types: &'a HashMap<Span, Type>,
     /// Function IDs for direct calls (Batch mode).
     pub func_ids: &'a HashMap<Symbol, FuncId>,
     /// Function parameter counts, for generating closure wrappers.
@@ -245,8 +241,8 @@ impl<'a> CompileContext<'a> {
 pub struct MatchContext {
     /// The compiled scrutinee value.
     pub scrut_val: Value,
-    /// The span of the scrutinee expression (for type lookup in expr_types).
-    pub scrut_span: Span,
+    /// The inferred type of the scrutinee expression (for field type resolution).
+    pub scrut_type: Option<Type>,
     /// The block to branch to if this arm does not match.
     pub next_block: Block,
     /// The merge block where all arms converge.
@@ -445,13 +441,20 @@ impl<'a, M: Module> FnCompiler<'a, M> {
         // This is essential for unused parameters: derive_param_type scans
         // use sites, so unused params (e.g., `_s` in `(defn f [:String _s] 42)`)
         // would have no type recorded and scope cleanup would skip their RC dec.
-        let defn_param_types: Vec<Option<Type>> = if let Some(Type::Fn(param_types, _)) =
-            compiler.ctx.expr_types.get(&defn.span)
-        {
-            param_types.iter().map(|t| Some(t.clone())).collect()
-        } else {
-            vec![None; defn.params().len()]
-        };
+        //
+        // Read from the symbol table's Scheme.ty (authoritative source) rather
+        // than from expr_types side map (Step 1c: AST-sourced codegen).
+        let defn_param_types: Vec<Option<Type>> = compiler.ctx.symbol_tables
+            .get(&compiler.ctx.current_module)
+            .and_then(|table| {
+                if let Some(ModuleEntry::Def { scheme, .. }) = table.get(defn.name.as_ref()) {
+                    if let Type::Fn(ref param_types, _) = scheme.ty {
+                        return Some(param_types.iter().map(|t| Some(t.clone())).collect());
+                    }
+                }
+                None
+            })
+            .unwrap_or_else(|| vec![None; defn.params().len()]);
 
         // Bind function parameters from loop header block params (not entry block).
         // Also record parameter types in variable_types so scope cleanup
@@ -468,12 +471,12 @@ impl<'a, M: Module> FnCompiler<'a, M> {
                 .unwrap_or_else(|| unreachable!("invariant: scope_stack non-empty"))
                 .push(param_name.clone());
 
-            // Use the defn's inferred param type (from expr_types) first.
-            // Fall back to derive_param_type (use-site inference) if the
+            // Use the defn's inferred param type (from symbol table) first.
+            // Fall back to derive_param_type_from_body (use-site inference) if the
             // defn type isn't available.
             if let Some(Some(ty)) = defn_param_types.get(i) {
                 compiler.variable_types.insert(param_name.clone(), ty.clone());
-            } else if let Some(ty) = compiler.derive_param_type(param_name) {
+            } else if let Some(ty) = Self::derive_param_type_from_body(defn.body(), param_name) {
                 compiler.variable_types.insert(param_name.clone(), ty);
             }
         }
@@ -505,12 +508,13 @@ impl<'a, M: Module> FnCompiler<'a, M> {
             Expr::IntLit { value, .. } => self.compile_int_lit(*value),
             Expr::FloatLit { value, .. } => self.compile_float_lit(*value),
             Expr::BoolLit { value, .. } => self.compile_bool_lit(*value),
-            Expr::StringLit { value, span } => self.compile_string_lit(value, *span),
-            Expr::Var { name, span } => self.compile_var(name, *span),
+            Expr::StringLit { value, span, .. } => self.compile_string_lit(value, *span),
+            Expr::Var { name, span, .. } => self.compile_var(name, *span),
             Expr::Let {
                 bindings,
                 body,
                 span,
+                ..
             } => self.compile_let(bindings, body, *span),
             Expr::If {
                 cond,
@@ -519,13 +523,16 @@ impl<'a, M: Module> FnCompiler<'a, M> {
                 ..
             } => self.compile_if(cond, then_branch, else_branch),
             Expr::Lambda {
-                params, body, span, ..
-            } => self.compile_lambda(params, body, *span),
+                params, body, span, inferred_type, ..
+            } => self.compile_lambda(params, body, *span, inferred_type.as_deref()),
             Expr::Apply {
                 callee,
                 args,
                 span,
-            } => self.compile_apply(callee, args, *span),
+                resolved_call,
+                inferred_type,
+                ..
+            } => self.compile_apply(callee, args, *span, resolved_call.as_deref(), inferred_type.as_deref()),
             Expr::Match {
                 scrutinee,
                 arms,
@@ -533,16 +540,18 @@ impl<'a, M: Module> FnCompiler<'a, M> {
                 ..
             } => self.compile_match(scrutinee, arms, *span),
             Expr::Annotate { expr, .. } => self.compile_expr(expr),
-            Expr::VecLit { elements, span } => self.compile_vec_lit(elements, *span),
+            Expr::VecLit { elements, span, .. } => self.compile_vec_lit(elements, *span),
             Expr::Trace {
                 modules,
                 body,
                 span,
+                ..
             } => self.compile_trace(modules, body, *span),
             Expr::ParBind {
                 bindings,
                 body,
                 span,
+                ..
             } => self.compile_par_bind(bindings, body, *span),
         }
     }
@@ -928,7 +937,7 @@ impl<'a, M: Module> FnCompiler<'a, M> {
         if !has_heap_bindings {
             return;
         }
-        if let Some(ty) = self.ctx.expr_types.get(&body.span()) {
+        if let Some(ty) = body.inferred_type() {
             let category = HeapCategory::classify(ty, Some(self.ctx.symbol_tables));
             match category {
                 HeapCategory::AlwaysHeap => {
@@ -952,25 +961,14 @@ impl<'a, M: Module> FnCompiler<'a, M> {
         )
     }
 
-    /// Look up the type of an expression from the typechecker's expr_types.
-    #[allow(dead_code)]
-    pub(crate) fn expr_type(&self, span: Span) -> Option<&Type> {
-        self.ctx.expr_types.get(&span)
-    }
-
-    /// Derive a function parameter's type from `expr_types` via `last_uses`.
+    /// Derive a function parameter's type by finding a Var reference with the
+    /// given name in the function body and reading its `inferred_type()`.
     ///
-    /// Function parameters don't have their own span in `expr_types`, but
-    /// every use site of the parameter in the body does. We scan `last_uses`
-    /// for any entry matching this parameter name and look up its type.
-    pub(crate) fn derive_param_type(&self, name: &Symbol) -> Option<Type> {
-        for (var_name, span) in self.last_uses.keys() {
-            if var_name == name
-                && let Some(ty) = self.ctx.expr_types.get(span) {
-                    return Some(ty.clone());
-                }
-        }
-        None
+    /// Function parameters don't have their own `inferred_type`, but every
+    /// Var reference to the parameter in the body does. We walk the body AST
+    /// to find the first Var node matching the name.
+    pub(crate) fn derive_param_type_from_body(body: &Expr, name: &Symbol) -> Option<Type> {
+        find_var_type_in_expr(body, name)
     }
 
     /// Check if a variable use is the last use (for ownership transfer).
@@ -1263,6 +1261,55 @@ pub(crate) fn substitute_type_inline(
             Type::Fn(new_params, new_ret)
         }
         _ => ty.clone(),
+    }
+}
+
+/// Find the inferred type of a Var reference with the given name in an expression tree.
+///
+/// Walks the AST recursively and returns the first Var node's `inferred_type()`
+/// that matches the name. Used by `derive_param_type_from_body` to find parameter
+/// types from use sites when the defn-level type is not available.
+fn find_var_type_in_expr(expr: &Expr, name: &Symbol) -> Option<Type> {
+    match expr {
+        Expr::Var { name: var_name, inferred_type, .. } if var_name == name => {
+            inferred_type.as_deref().cloned()
+        }
+        Expr::Let { bindings, body, .. } => {
+            for (_, val) in bindings {
+                if let Some(ty) = find_var_type_in_expr(val, name) {
+                    return Some(ty);
+                }
+            }
+            find_var_type_in_expr(body, name)
+        }
+        Expr::If { cond, then_branch, else_branch, .. } => {
+            find_var_type_in_expr(cond, name)
+                .or_else(|| find_var_type_in_expr(then_branch, name))
+                .or_else(|| find_var_type_in_expr(else_branch, name))
+        }
+        Expr::Lambda { body, .. } => find_var_type_in_expr(body, name),
+        Expr::Apply { callee, args, .. } => {
+            find_var_type_in_expr(callee, name)
+                .or_else(|| args.iter().find_map(|a| find_var_type_in_expr(a, name)))
+        }
+        Expr::Match { scrutinee, arms, .. } => {
+            find_var_type_in_expr(scrutinee, name)
+                .or_else(|| arms.iter().find_map(|arm| find_var_type_in_expr(&arm.body, name)))
+        }
+        Expr::Annotate { expr, .. } => find_var_type_in_expr(expr, name),
+        Expr::VecLit { elements, .. } => {
+            elements.iter().find_map(|e| find_var_type_in_expr(e, name))
+        }
+        Expr::Trace { body, .. } => find_var_type_in_expr(body, name),
+        Expr::ParBind { bindings, body, .. } => {
+            for (_, val) in bindings {
+                if let Some(ty) = find_var_type_in_expr(val, name) {
+                    return Some(ty);
+                }
+            }
+            find_var_type_in_expr(body, name)
+        }
+        _ => None,
     }
 }
 

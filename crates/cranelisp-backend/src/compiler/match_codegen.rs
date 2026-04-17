@@ -74,7 +74,7 @@ impl<'a, M: Module> FnCompiler<'a, M> {
                 Pattern::Constructor { name, bindings, .. } => {
                     let match_ctx = MatchContext {
                         scrut_val,
-                        scrut_span: scrutinee.span(),
+                        scrut_type: scrutinee.inferred_type().cloned(),
                         next_block,
                         merge_block,
                         saved_tail,
@@ -119,7 +119,7 @@ impl<'a, M: Module> FnCompiler<'a, M> {
         self.builder.def_var(var, scrut_val);
         self.variables.insert(name.clone(), var);
         // Record type for RC management.
-        if let Some(ty) = self.ctx.expr_types.get(&scrutinee.span()) {
+        if let Some(ty) = scrutinee.inferred_type() {
             self.variable_types.insert(name.clone(), ty.clone());
         }
 
@@ -159,7 +159,7 @@ impl<'a, M: Module> FnCompiler<'a, M> {
     fn dec_temporary_scrutinee(&mut self, scrutinee: &Expr, scrut_val: Value) {
         let is_temp = !matches!(scrutinee, Expr::Var { .. });
         if is_temp
-            && let Some(scrut_ty) = self.ctx.expr_types.get(&scrutinee.span()).cloned() {
+            && let Some(scrut_ty) = scrutinee.inferred_type().cloned() {
                 let category = HeapCategory::classify(&scrut_ty, Some(self.ctx.symbol_tables));
                 if let (Some(dealloc), HeapCategory::AlwaysHeap | HeapCategory::Mixed) =
                     (self.ctx.dealloc_func_id, category)
@@ -479,11 +479,10 @@ impl<'a, M: Module> FnCompiler<'a, M> {
         // Use the constructor info directly.
         let ctor = &ctor_info;
 
-        // Try to get the scrutinee's concrete type from expr_types.
+        // Try to get the scrutinee's concrete type from the match context.
         // This gives us e.g. `ADT("Option", [String])` which we can use
         // to substitute type variables in the field types.
-        let concrete_type_args: Vec<Type> = self.ctx.expr_types
-            .get(&match_ctx.scrut_span)
+        let concrete_type_args: Vec<Type> = match_ctx.scrut_type.as_ref()
             .and_then(|ty| match ty {
                 Type::ADT(_, args) => Some(args.clone()),
                 _ => None,

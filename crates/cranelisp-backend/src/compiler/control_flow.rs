@@ -64,8 +64,8 @@ impl<'a, M: Module> FnCompiler<'a, M> {
         self.in_tail_position = false;
 
         for (name, val_expr) in bindings {
-            // Record the binding's type from the typechecker's expr_types map.
-            if let Some(ty) = self.ctx.expr_types.get(&val_expr.span()) {
+            // Record the binding's type from the expression's inferred_type.
+            if let Some(ty) = val_expr.inferred_type() {
                 self.variable_types.insert(name.clone(), ty.clone());
             }
 
@@ -134,6 +134,7 @@ impl<'a, M: Module> FnCompiler<'a, M> {
                 param_annotations: vec![],
                 body: Box::new(val_expr.clone()),
                 span: val_expr.span(),
+                inferred_type: None,
             };
             let thunk_val = self.compile_expr(&thunk_expr)?;
 
@@ -152,7 +153,7 @@ impl<'a, M: Module> FnCompiler<'a, M> {
 
         // Phase 2: Process all bindings in order.
         for (i, (name, val_expr)) in bindings.iter().enumerate() {
-            if let Some(ty) = self.ctx.expr_types.get(&val_expr.span()) {
+            if let Some(ty) = val_expr.inferred_type() {
                 self.variable_types.insert(name.clone(), ty.clone());
             }
 
@@ -503,7 +504,7 @@ impl<'a, M: Module> FnCompiler<'a, M> {
                     .push(name.clone());
 
                 // Track type for RC — unwrap IO(T) to get inner T.
-                if let Some(ty) = inner.ctx.expr_types.get(&val_expr.span()) {
+                if let Some(ty) = val_expr.inferred_type() {
                     let inner_ty = match ty {
                         Type::ADT(fqtn, args) if fqtn.name.as_ref() == "IO" && !args.is_empty() => {
                             args[0].clone()
@@ -673,6 +674,7 @@ impl<'a, M: Module> FnCompiler<'a, M> {
         params: &[Symbol],
         body: &Expr,
         span: Span,
+        lambda_type: Option<&Type>,
     ) -> Result<Value, CranelispError> {
         let alloc_id =
             self.ctx
@@ -721,6 +723,7 @@ impl<'a, M: Module> FnCompiler<'a, M> {
             &captures,
             body,
             span,
+            lambda_type,
         )?;
 
         // At the lambda site: allocate closure [header | code_ptr | captures...]
@@ -921,6 +924,7 @@ impl<'a, M: Module> FnCompiler<'a, M> {
         captures: &[Symbol],
         body: &Expr,
         span: Span,
+        lambda_type: Option<&Type>,
     ) -> Result<(), CranelispError> {
         // Build the inner function using a separate codegen context.
         let mut inner_ctx = self.module.make_context();
@@ -970,7 +974,7 @@ impl<'a, M: Module> FnCompiler<'a, M> {
         // use sites, so unused params (e.g., `_s` in `(fn [_s] 42)`) would
         // have no type recorded and scope cleanup would skip their RC dec.
         let lambda_param_types: Vec<Option<Type>> = if let Some(Type::Fn(param_types, _)) =
-            inner_compiler.ctx.expr_types.get(&span)
+            lambda_type
         {
             param_types.iter().map(|t| Some(t.clone())).collect()
         } else {
@@ -995,12 +999,12 @@ impl<'a, M: Module> FnCompiler<'a, M> {
                 .unwrap_or_else(|| unreachable!("invariant: scope_stack non-empty"))
                 .push(param_name.clone());
 
-            // Use the lambda's inferred param type (from expr_types) first.
-            // Fall back to derive_param_type (use-site inference) if the
+            // Use the lambda's inferred param type first.
+            // Fall back to derive_param_type_from_body (use-site inference) if the
             // lambda type isn't available.
             if let Some(Some(ty)) = lambda_param_types.get(i) {
                 inner_compiler.variable_types.insert(param_name.clone(), ty.clone());
-            } else if let Some(ty) = inner_compiler.derive_param_type(param_name) {
+            } else if let Some(ty) = Self::derive_param_type_from_body(body, param_name) {
                 inner_compiler.variable_types.insert(param_name.clone(), ty);
             }
         }
@@ -1332,9 +1336,7 @@ impl<'a, M: Module> FnCompiler<'a, M> {
         let arg_categories: Vec<HeapCategory> = args
             .iter()
             .map(|arg| {
-                self.ctx
-                    .expr_types
-                    .get(&arg.span())
+                arg.inferred_type()
                     .map(|ty| HeapCategory::classify(ty, Some(self.ctx.symbol_tables)))
                     .unwrap_or(HeapCategory::NeverHeap)
             })

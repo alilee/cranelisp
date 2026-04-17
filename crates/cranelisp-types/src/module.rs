@@ -82,6 +82,10 @@ pub enum ModuleEntry {
         /// `None` for non-trait-method definitions.
         #[serde(default)]
         trait_origin: Option<FQTraitName>,
+        /// Typechecked function body. Written by typecheck after check_form(CheckBody).
+        /// Read by codegen. None for primitives, special forms, and pre-body-check entries.
+        #[serde(default)]
+        ast: Option<Defn>,
     },
     /// An imported name from another module (Ring 2).
     Import { source: FQSymbol },

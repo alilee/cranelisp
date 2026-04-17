@@ -31,7 +31,7 @@ pub fn auto_schedule_defn(defn: &mut Defn, registry: &PlatformRegistry) {
     assert!(!defn.is_multi_sig(), "auto_schedule_defn called on multi-sig defn");
     let body = std::mem::replace(
         &mut defn.variants[0].body,
-        Expr::BoolLit { value: false, span: defn.span },
+        Expr::BoolLit { value: false, span: defn.span, inferred_type: None },
     );
     defn.variants[0].body = transform_expr(body, registry);
 }
@@ -40,7 +40,7 @@ pub fn auto_schedule_defn(defn: &mut Defn, registry: &PlatformRegistry) {
 pub fn auto_schedule_expr(expr: &mut Expr, registry: &PlatformRegistry) {
     let owned = std::mem::replace(
         expr,
-        Expr::BoolLit { value: false, span: Span::SYNTHETIC },
+        Expr::BoolLit { value: false, span: Span::SYNTHETIC, inferred_type: None },
     );
     *expr = transform_expr(owned, registry);
 }
@@ -260,6 +260,7 @@ fn rebuild_chain(
                     bindings,
                     body: Box::new(result),
                     span,
+                    inferred_type: None,
                 }
             }
         };
@@ -279,6 +280,7 @@ fn make_bind(
         callee: Box::new(Expr::Var {
             name: Symbol::from("bind"),
             span,
+            inferred_type: None,
         }),
         args: vec![
             io_expr,
@@ -287,9 +289,12 @@ fn make_bind(
                 param_annotations: vec![annotation],
                 body: Box::new(body),
                 span,
+                inferred_type: None,
             },
         ],
         span,
+        resolved_call: None,
+        inferred_type: None,
     }
 }
 
@@ -302,32 +307,37 @@ fn make_bind(
 /// Called for any expression that is not itself a bind chain start.
 fn recurse_children(expr: Expr, registry: &PlatformRegistry) -> Expr {
     match expr {
-        Expr::Let { bindings, body, span } => Expr::Let {
+        Expr::Let { bindings, body, span, inferred_type } => Expr::Let {
             bindings: bindings
                 .into_iter()
                 .map(|(n, v)| (n, transform_expr(v, registry)))
                 .collect(),
             body: Box::new(transform_expr(*body, registry)),
             span,
+            inferred_type,
         },
-        Expr::If { cond, then_branch, else_branch, span } => Expr::If {
+        Expr::If { cond, then_branch, else_branch, span, inferred_type } => Expr::If {
             cond: Box::new(transform_expr(*cond, registry)),
             then_branch: Box::new(transform_expr(*then_branch, registry)),
             else_branch: Box::new(transform_expr(*else_branch, registry)),
             span,
+            inferred_type,
         },
-        Expr::Lambda { params, param_annotations, body, span } => Expr::Lambda {
+        Expr::Lambda { params, param_annotations, body, span, inferred_type } => Expr::Lambda {
             params,
             param_annotations,
             body: Box::new(transform_expr(*body, registry)),
             span,
+            inferred_type,
         },
-        Expr::Apply { callee, args, span } => Expr::Apply {
+        Expr::Apply { callee, args, span, resolved_call, inferred_type } => Expr::Apply {
             callee: Box::new(transform_expr(*callee, registry)),
             args: args.into_iter().map(|a| transform_expr(a, registry)).collect(),
             span,
+            resolved_call,
+            inferred_type,
         },
-        Expr::Match { scrutinee, arms, span, compiler_generated } => Expr::Match {
+        Expr::Match { scrutinee, arms, span, compiler_generated, inferred_type } => Expr::Match {
             scrutinee: Box::new(transform_expr(*scrutinee, registry)),
             arms: arms
                 .into_iter()
@@ -339,28 +349,33 @@ fn recurse_children(expr: Expr, registry: &PlatformRegistry) -> Expr {
                 .collect(),
             span,
             compiler_generated,
+            inferred_type,
         },
-        Expr::VecLit { elements, span } => Expr::VecLit {
+        Expr::VecLit { elements, span, inferred_type } => Expr::VecLit {
             elements: elements.into_iter().map(|e| transform_expr(e, registry)).collect(),
             span,
+            inferred_type,
         },
-        Expr::Annotate { annotation, expr, span } => Expr::Annotate {
+        Expr::Annotate { annotation, expr, span, inferred_type } => Expr::Annotate {
             annotation,
             expr: Box::new(transform_expr(*expr, registry)),
             span,
+            inferred_type,
         },
-        Expr::ParBind { bindings, body, span } => Expr::ParBind {
+        Expr::ParBind { bindings, body, span, inferred_type } => Expr::ParBind {
             bindings: bindings
                 .into_iter()
                 .map(|(n, v)| (n, transform_expr(v, registry)))
                 .collect(),
             body: Box::new(transform_expr(*body, registry)),
             span,
+            inferred_type,
         },
-        Expr::Trace { modules, body, span } => Expr::Trace {
+        Expr::Trace { modules, body, span, inferred_type } => Expr::Trace {
             modules,
             body: Box::new(transform_expr(*body, registry)),
             span,
+            inferred_type,
         },
         // Leaf nodes.
         leaf @ (Expr::IntLit { .. }
@@ -406,11 +421,11 @@ mod tests {
     use cranelisp_types::Span;
 
     fn make_var(name: &str) -> Expr {
-        Expr::Var { name: Symbol::from(name), span: Span::SYNTHETIC }
+        Expr::Var { name: Symbol::from(name), span: Span::SYNTHETIC, inferred_type: None }
     }
 
     fn make_int(value: i64) -> Expr {
-        Expr::IntLit { value, span: Span::SYNTHETIC }
+        Expr::IntLit { value, span: Span::SYNTHETIC, inferred_type: None }
     }
 
     fn make_apply(callee: &str, args: Vec<Expr>) -> Expr {
@@ -418,6 +433,8 @@ mod tests {
             callee: Box::new(make_var(callee)),
             args,
             span: Span::SYNTHETIC,
+            resolved_call: None,
+            inferred_type: None,
         }
     }
 
@@ -431,9 +448,12 @@ mod tests {
                     param_annotations: vec![None],
                     body: Box::new(body),
                     span: Span::SYNTHETIC,
+                    inferred_type: None,
                 },
             ],
             span: Span::SYNTHETIC,
+            resolved_call: None,
+            inferred_type: None,
         }
     }
 
@@ -502,9 +522,12 @@ mod tests {
             callee: Box::new(Expr::Var {
                 name: Symbol::from("platform.time/get-time"),
                 span: Span::SYNTHETIC,
+                inferred_type: None,
             }),
             args: vec![],
             span: Span::SYNTHETIC,
+            resolved_call: None,
+            inferred_type: None,
         };
         assert_eq!(classify_expr(&expr, &registry), SchedulingClass::Commutative);
     }
