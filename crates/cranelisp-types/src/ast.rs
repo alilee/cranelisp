@@ -285,12 +285,13 @@ impl Defn {
 
     /// Returns a mutable reference to the body of a single-sig defn. Panics if multi-sig.
     pub fn body_mut(&mut self) -> &mut Expr {
-        assert!(
-            self.variants.len() == 1,
-            "Defn::body_mut() called on multi-sig defn '{}' with {} variants",
-            self.name,
-            self.variants.len()
-        );
+        if self.variants.len() != 1 {
+            unreachable!(
+                "invariant: Defn::body_mut() called on multi-sig defn '{}' with {} variants",
+                self.name,
+                self.variants.len()
+            );
+        }
         &mut self.variants[0].body
     }
 

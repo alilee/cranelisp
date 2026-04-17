@@ -1811,3 +1811,76 @@ fn sketch_compile_both_recursive() {
         3628800,
     );
 }
+
+// =============================================================================
+// SIGSEGV isolation: minimal trait impl method repro
+// =============================================================================
+
+// Minimal repro: trait impl on primitive, no default methods, no ADT
+#[test]
+fn sigsegv_isolation_trait_impl_minimal() {
+    let mut s = repl_session();
+    repl_eval(&mut s, "(deftrait Dbl (dbl [self] Int))");
+    repl_eval(&mut s, "(impl Dbl Int (defn dbl [x] (add-i64 x x)))");
+    assert_eq!(repl_eval(&mut s, "(dbl 3)"), 6);
+}
+
+// Minimal repro: trait impl on ADT, no default methods
+#[test]
+fn sigsegv_isolation_trait_impl_on_adt() {
+    let mut s = repl_session();
+    repl_eval(&mut s, "(deftype Color Red Green Blue)");
+    repl_eval(&mut s, "(deftrait Tag (tag [self] Int))");
+    repl_eval(&mut s, "(impl Tag Color (defn tag [c] (match c [Red 1 Green 2 Blue 3])))");
+    assert_eq!(repl_eval(&mut s, "(tag Red)"), 1);
+}
+
+// Minimal repro: trait with default method (uses required method in default body)
+#[test]
+fn sigsegv_isolation_default_method() {
+    let mut s = repl_session();
+    repl_eval(&mut s, "(deftrait Countable (count [self] Int) (count-plus [x] Int (add-i64 (count x) 10)))");
+    repl_eval(&mut s, "(impl Countable Int (defn count [x] x))");
+    assert_eq!(repl_eval(&mut s, "(count-plus 5)"), 15);
+}
+
+// Minimal repro: polymorphic ADT impl calling another impl of same trait
+#[test]
+fn sigsegv_isolation_poly_adt_impl() {
+    let mut s = repl_session();
+    repl_eval(&mut s, "(deftrait Showable (showit [self] String))");
+    repl_eval(&mut s, "(impl Showable Int (defn showit [x] \"int\"))");
+    repl_eval(&mut s, "(deftype (MyOpt a) MyNone (MySome [:a mval]))");
+    repl_eval(&mut s, "(impl Showable (MyOpt Int) (defn showit [self] (match self [MyNone \"none\" (MySome x) (showit x)])))");
+    let result = s.eval("(showit (MySome 42))");
+    eprintln!("poly_adt_impl result: is_ok={}, err={}", result.is_ok(), result.as_ref().err().map(|e| e.message()).unwrap_or_default());
+    assert!(result.is_ok(), "showit should succeed");
+}
+
+// Check: does a default method that uses add-i64 directly (no trait call) also crash?
+#[test]
+fn sigsegv_isolation_default_method_no_trait_call() {
+    let mut s = repl_session();
+    repl_eval(&mut s, "(deftrait Simple (val [self] Int) (val-plus [x] Int (add-i64 (val x) 1)))");
+    repl_eval(&mut s, "(impl Simple Int (defn val [x] x))");
+    assert_eq!(repl_eval(&mut s, "(val 5)"), 5);
+    assert_eq!(repl_eval(&mut s, "(val-plus 5)"), 6);
+}
+
+// Check: trait method that uses trait dispatch internally (like + from prelude)
+#[test]
+fn sigsegv_isolation_trait_impl_with_trait_dispatch_in_body() {
+    let mut s = repl_session_with_test_prelude();
+    repl_eval(&mut s, "(deftrait Double (double [self] Int))");
+    repl_eval(&mut s, "(impl Double Int (defn double [x] (+ x x)))");
+    assert_eq!(repl_eval(&mut s, "(double 3)"), 6);
+}
+
+// Check: impl method that calls add-i64 (not a trait method)
+#[test]
+fn sigsegv_isolation_trait_impl_with_primitive_in_body() {
+    let mut s = repl_session();
+    repl_eval(&mut s, "(deftrait Double (double [self] Int))");
+    repl_eval(&mut s, "(impl Double Int (defn double [x] (add-i64 x x)))");
+    assert_eq!(repl_eval(&mut s, "(double 3)"), 6);
+}

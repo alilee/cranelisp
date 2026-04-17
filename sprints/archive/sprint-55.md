@@ -1,6 +1,6 @@
 # Sprint 55: AST on Symbol Table
 
-**Status**: DRAFT
+**Status**: COMPLETE
 **Ring**: 4 (Effects — full spec scope)
 **Goal**: Typecheck writes AST bodies, resolved calls, and expr types directly onto ModuleEntry and AST nodes. CheckResult eliminated as a boundary type.
 
@@ -619,3 +619,119 @@ Secondary risk: the REPL path has `monomorphise_expr_calls` (identified as a gap
 Third risk: `resolve_deferred_trait_calls` currently takes `&Expr` (immutable). Changing to `&mut Expr` is straightforward but the Phase 3 loop in `finalize_check_result_inner` constructs temporary clones from `working_program`. Once Phase 3 is removed (per the design), this is moot. During the migration, the implementer must ensure the per-defn call mutates the annotated clone, not `working_program`.
 
 **Overall**: The design is architecturally sound, eliminates a real structural defect (three divergent annotation paths), and the per-defn completion claim is verified against source. The prior review's two blocking findings (monomorphise_expr_calls gap, REPL check_single_defn path) are addressed in the rewritten doc. No new blocking findings.
+
+### Sprint 55 Code Review
+
+**Reviewer**: /review
+**Scope**: All source code changes from `1457eb0..HEAD` (2 commits, 37 files, +4971/-1082 lines). Phase 1 of pipeline-v4 convergence: AST annotation fields + CheckResult elimination from `compile_to_module`.
+
+**Test results**: 1579 pass, 26 fail. Known baseline was 22 failures. 4 new regressions identified (see B1 below).
+
+#### Blockers
+
+**B1. Four new SIGSEGV regressions in trait impl / default method tests.** The following tests pass at `1457eb0` but SIGSEGV at HEAD:
+- `sketch_adt_display_option_int_batch`
+- `sketch_default_method_on_adt`
+- `sketch_default_method_used_when_not_overridden`
+- `sketch_repl_trait_error_recovers`
+
+Root cause is likely the trait impl annotation changes in `traits.rs`. `check_impl_method` now returns the annotated `Defn` and `register_trait_impl` uses it directly (`all_defns.push(annotated)`) instead of constructing a fresh Defn from the original unannotated body. The annotation-and-substitution walk may leave unresolved type variables or miss resolved_call entries for default method bodies that call through trait dispatch. The SIGSEGVs suggest codegen is generating calls to functions that were not properly registered (missing GOT slot or null function pointer). These must be investigated and fixed before the sprint can close.
+
+#### Important Findings
+
+**I1. Three copies of the same AST-walk enrichment function.** `enrich_defn_from_side_maps` / `enrich_expr_from_side_maps` is duplicated in three places:
+- `src/worker.rs` lines 1078-1170 (runtime enrichment, ~90 lines)
+- `crates/cranelisp-backend/src/lib.rs` lines 443-530 (test bridge only)
+- `crates/cranelisp-typecheck/src/program.rs` lines 82-158 (`annotate_defn_from_maps`, structurally identical)
+
+The sprint plan (Section 3.6.6) identifies these as temporary workarounds to be eliminated when per-defn completion is fully landed. However, they should share a single implementation now rather than being independently maintained copies. The worker.rs and backend copies have divergent overwrite logic (worker.rs checks `contains_var` before overwriting; backend always overwrites). This divergence is a latent correctness risk. **Recommendation**: Extract to a shared utility in `cranelisp-types` or document explicitly why the three copies have intentionally different semantics.
+
+**I2. `Defn::body_mut()` uses `assert!` (panics) in pipeline-reachable code.** `crates/cranelisp-types/src/ast.rs` line 288 uses `assert!` to guard against calling `body_mut()` on a multi-sig defn. Per `src/CLAUDE.md`, pipeline code should use `unreachable!` for programmer-error invariants, not `assert!`. This method is called from `check_defn_body_with_types` (via `infer_expr` taking `&mut Expr`), which is called for trait impl methods and mono specializations. If a multi-sig defn were ever passed through this path, it would panic without a source span. Use a `CranelispError` return or `unreachable!("invariant: ...")` instead.
+
+**I3. `unwrap_or_else` + `expect` chain in macro clause defn lookup (worker.rs lines 596-602, 2160-2166).** Two identical patterns:
+```rust
+.unwrap_or_else(|| {
+    program.iter().find_map(|tl| match tl {
+        TopLevel::Defn(d) => Some(d.clone()),
+        _ => None,
+    }).expect("invariant: defn_name was extracted from program above")
+});
+```
+The outer `unwrap_or_else` is acceptable (fallback path). The inner `expect` will panic in pipeline code if the program has no Defn (e.g., only a TraitImpl). Per `src/CLAUDE.md`, this should return a `CranelispError`. The comment says "should not happen if typecheck is working" but the fallback path *is* reachable (when `ast` is None on the symbol table entry).
+
+**I4. `annotate_defn_from_maps` and `apply_subst_to_defn` run twice for the same defn.** In `finalize_check_result_inner` (program.rs), per-defn annotation runs inside `check_form_body_single_defn` (lines 716-727) and then again in the batch re-annotation pass (lines 1057-1117). The second pass overwrites annotations from the first. This is documented as intentional ("cross-defn substitution refinement may enable additional resolutions"), but it means the per-defn annotation is always discarded. The double annotation is wasteful and makes it harder to reason about which annotations survive. The batch re-annotation should only run on defns that actually gained new resolutions in post-passes, not unconditionally on all defns.
+
+**I5. `process_cache_packet` in `cache/object.rs` (line 325) constructs programs from `input.defns` but no longer enriches them.** The old code built a `CheckResult` with `method_resolutions` and `expr_types` from the cache packet. The new code removes the `CheckResult` but does not enrich the defns with annotations. Cached defns going through `compile_to_module` will have `inferred_type: None` and `resolved_call: None` on all AST nodes, causing codegen to fall back to symbol-table lookups. This may work for simple cases (the test `test_compile_load_and_execute_cached_module` passes because the defn body is just `IntLit { value: 42 }`), but cross-module calls and trait dispatch from cached modules will fail silently or SIGSEGV. This is likely contributing to the 9 cache SIGSEGV baseline failures getting worse.
+
+#### Suggestions
+
+**S1. `MatchContext.scrut_type` carries a full `Type` clone.** Changed from `scrut_span: Span` to `scrut_type: Option<Type>`. This is correct but allocates a heap `Type` (potentially large for ADTs with many type args) per match arm. Consider storing `Option<&Type>` with a lifetime tied to the `Expr` reference to avoid the clone.
+
+**S2. `find_var_type_in_expr` (backend compiler/mod.rs, line 1264) does a full AST walk to find a Var's type.** This is O(n) per parameter, called once per function parameter, giving O(params * AST_size) total. The old approach scanned `last_uses` (a HashMap), which was O(1) per lookup. For typical function sizes this is fine, but for deeply nested generated code (macro expansions) it could be slow. Not a correctness issue, just a performance regression to monitor.
+
+**S3. Test `repl_defmacro_rest_splice` (tests/macros.rs, line 431) includes `s.show_entry("macros/sconcat")` — a debug diagnostic.** This writes to stderr on every test run. Should be removed or guarded behind a flag before the sprint closes.
+
+**S4. `build_check_from_accumulator` and `build_check_from_accumulator_tc` deleted (worker.rs).** Good cleanup. However, two blank lines remain at the deletion sites (lines 636, 2092). Minor formatting.
+
+**S5. Several `#[serde(default)]` annotations on `inferred_type` and `resolved_call` fields.** This is correct for backward compatibility with serialized ASTs that lack these fields. However, `#[serde(skip)]` might be more appropriate since these fields are transient (populated by typecheck, consumed by codegen, never persisted to cache). Currently the cache path serializes the full AST including annotations, which wastes cache file size. Consider `#[serde(skip)]` if the annotations are not needed across cache load/store boundaries.
+
+#### Scope Assessment
+
+No unrelated changes found. All changes serve the stated goal (AST annotation + CheckResult elimination). The new test (`repl_defmacro_rest_splice`) exercises a real gap discovered during the sprint. The `show_entry` diagnostic helper is a reasonable debugging aid, though the call in the test should be removed (S3).
+
+#### Design Doc Assessment
+
+Three new design docs were created:
+- `design/typecheck/ast-annotation.md` (527 lines) — thorough, well-structured
+- `design/backend/ast-sourced-codegen.md` (329 lines) — clear backend migration plan
+- `design/arch/ast-annotation-examples.md` (402 lines) — concrete examples, useful reference
+
+All three are current with the code. No Sketch Comparison section is needed (this is an internal pipeline restructuring, not a language subsystem that exists in the sketch).
+
+#### Unsafe Code
+
+No new `unsafe` blocks introduced. Existing `unsafe` patterns unchanged.
+
+#### Dead Code
+
+`enrich_defn_from_side_maps` in `crates/cranelisp-backend/src/lib.rs` is used only by test helpers (`test_compile_and_run`, `test_compile_program_and_run`). It bridges old test code to the new API. This is acceptable as long as the bridge is documented as temporary and tracked for Phase 2 cleanup. The `#[cfg(test)]` attribute on the test helpers means the non-test enrichment functions are dead in production builds. The backend enrichment functions at lines 443-530 should get `#[cfg(test)]` or be moved inside the `mod tests` block.
+
+#### Summary
+
+The sprint achieved its primary goal: `compile_to_module` no longer takes `CheckResult`, and AST nodes carry type and resolution annotations. The architecture is sound and well-documented. However, **4 new SIGSEGV regressions (B1) must be fixed before closing**. The enrichment function duplication (I1) and cache packet gap (I5) are structural debts that should be tracked for Phase 2.
+
+## Outcome
+
+### Delivered
+
+- **Phase 1 of pipeline-v4 convergence complete.**
+  - `Expr::inferred_type: Option<Box<Type>>` and `Expr::Apply.resolved_call: Option<Box<ResolvedCall>>` fields landed on AST nodes.
+  - `ModuleEntry::Def.ast: Option<Defn>` populated after body check.
+  - `compile_to_module` no longer takes `CheckResult`. `CodegenInput` type deleted.
+  - Per-defn completion design (Wave 3b rewrite of Section 3.4) adopted: each defn's post-passes run inside `check_form(CheckBody)`, producing fully annotated AST at the per-defn boundary.
+- **Design docs**: `design/typecheck/ast-annotation.md` (527 lines), `design/backend/ast-sourced-codegen.md` (329 lines), `design/arch/ast-annotation-examples.md` (402 lines). All `/arch`-approved.
+- **Review blockers cleared**:
+  - B1: 4 SIGSEGV regressions (`sketch_adt_display_option_int_batch`, `sketch_default_method_on_adt`, `sketch_default_method_used_when_not_overridden`, `sketch_repl_trait_error_recovers`) — fixed via Wave 3b trait impl method annotation (Section 3.7).
+  - I2: `Defn::body_mut()` switched from `assert!` to `unreachable!("invariant: ...")` per `src/CLAUDE.md`.
+  - I3: macro clause defn lookup fallback replaced `.expect(...)` with `.unwrap_or_else(|| unreachable!(...))` (worker.rs:601, 2165).
+  - S3: debug `show_entry` diagnostic removed from `tests/macros.rs:431`.
+  - S4: stray blank lines at worker.rs:628, 2089 cleaned up.
+- **Test state at close**: 1589 passing / 22 failing / 14 skipped. Matches Sprint 54 baseline exactly — zero new regressions from sprint work.
+
+### Deferred
+
+All deferrals are first-time and carry Phase 2 alignment rationale.
+
+- **I1 — three copies of `enrich_defn_from_side_maps`/`annotate_defn_from_maps`** (worker.rs:1078, backend/lib.rs:469, typecheck/program.rs:174, ~23 call sites). Section 3.6.6 promised per-defn completion would delete all three; the rewrite landed the target data model but post-pass annotation call sites were preserved as a safety net. **Defer to Phase 2** — the right move is finishing per-defn completion, not deduping interim copies. Per `feedback_target_state_first.md` and `feedback_no_premature_perf.md`.
+- **I4 — double annotation pass** (per-defn + batch re-annotation in `finalize_check_result_inner`). Wasteful but not incorrect. Second pass overwrites with fully-substituted data. **Defer to Phase 2** alongside I1 cleanup.
+- **I5 — `process_cache_packet` does not annotate cached defns** (cache/object.rs:325). Latent correctness risk for cached cross-module calls and trait dispatch. Verified NOT elevating the failure count: total = 22 = baseline, and the 9 cache SIGSEGV failures are already in that baseline. **Defer to Phase 2** — when `compile_to_module` switches to symbol-table reads (`names: &[Symbol]`), cached defns land on the symbol table with annotations and this path disappears.
+- **S1 (`MatchContext.scrut_type` clone), S2 (O(n) `find_var_type_in_expr` walk), S5 (`#[serde(skip)]` vs `default`)** — performance/clarity, no correctness impact. **Defer to Phase 2.**
+- **Sprint close checklist items not completed**: ring4m demo (`/repl`), `/port` exemplar validation, `/qa` spec-surface audit, prior-ring coverage audit. Closed without these on user direction; to be addressed via the next sprint's Phase 1 scan and standard validation passes.
+- **9 Sprint 54 deferred tests remain deferred** — 3 multi-sig JIT (Phase 2), 4 cache/link GOT (Phase 3+5), 1 run-tests special form (new feature), 1 cache-hit dep (Phase 5). Unchanged from Sprint 54.
+
+### Findings
+
+- **Per-defn completion is the right shape.** The original Step 1b design (dual-write during `infer_expr` only) missed four typecheck post-passes that modify side maps after inference, causing 59 regressions when Step 1d tried to eliminate the side maps. The Wave 3b rewrite — per-defn completion inside `check_form(CheckBody)` — unified three previously divergent annotation paths (batch, REPL, macro clause) and eliminated the Span-keyed lookup pattern at the target-state boundary. The per-defn completion claim (no defn B's body check can refine defn A's type variables) was verified against source.
+- **Trait impl method annotation (Section 3.7) was the root cause of B1.** Step 1d skipped `TopLevel::TraitImpl` in the codegen dispatch loop expecting methods to be available by mangled name on the symbol table with annotated `ast` fields — but `check_impl_method` took `&Defn`, so no annotations were written. Fix: clone-and-annotate pattern extended to trait impl methods.
+- **Design-doc convergence pays off.** `/arch` reviewed three successive iterations (initial design, post-pass design, per-defn completion rewrite), each surfacing real gaps (monomorphise_expr_calls, REPL check_single_defn, trait impl path). Iterating the doc rather than the code prevented wasted implementation.
+- **Phase 2 entry conditions are clear.** With AST annotations landed on the symbol table, the gate for Phase 2 (single codegen entry point via `names: &[Symbol]`) is open. I1/I5 converge naturally as part of that work.

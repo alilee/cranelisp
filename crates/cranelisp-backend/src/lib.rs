@@ -435,97 +435,6 @@ fn expand_multi_sig_defn(
     Ok(expanded)
 }
 
-/// Enrich a defn's AST nodes with type and resolution annotations from side maps.
-///
-/// Walks the expression tree and sets `inferred_type` and `resolved_call` on nodes
-/// where the side maps have entries. Used by test helpers to bridge old test code
-/// (which uses CheckResult side maps) to the new API (which reads from AST nodes).
-fn enrich_defn_from_side_maps(
-    defn: &mut Defn,
-    resolutions: &HashMap<Span, cranelisp_types::ResolvedCall>,
-    expr_types: &HashMap<Span, Type>,
-) {
-    for variant in &mut defn.variants {
-        enrich_expr_from_side_maps(&mut variant.body, resolutions, expr_types);
-    }
-}
-
-/// Recursively enrich expression nodes with side map data.
-fn enrich_expr_from_side_maps(
-    expr: &mut cranelisp_types::Expr,
-    resolutions: &HashMap<Span, cranelisp_types::ResolvedCall>,
-    expr_types: &HashMap<Span, Type>,
-) {
-    use cranelisp_types::Expr;
-
-    let span = expr.span();
-
-    // Overlay inferred_type from side map if present.
-    if let Some(ty) = expr_types.get(&span) {
-        expr.set_inferred_type(Some(Box::new(ty.clone())));
-    }
-
-    // Overlay resolved_call from side map if present (Apply only).
-    if let Expr::Apply { resolved_call, span: apply_span, .. } = expr {
-        if let Some(resolution) = resolutions.get(apply_span) {
-            *resolved_call = Some(Box::new(resolution.clone()));
-        }
-    }
-
-    // Recurse into children.
-    match expr {
-        Expr::Let { bindings, body, .. } => {
-            for (_, binding_expr) in bindings {
-                enrich_expr_from_side_maps(binding_expr, resolutions, expr_types);
-            }
-            enrich_expr_from_side_maps(body, resolutions, expr_types);
-        }
-        Expr::If { cond, then_branch, else_branch, .. } => {
-            enrich_expr_from_side_maps(cond, resolutions, expr_types);
-            enrich_expr_from_side_maps(then_branch, resolutions, expr_types);
-            enrich_expr_from_side_maps(else_branch, resolutions, expr_types);
-        }
-        Expr::Lambda { body, .. } => {
-            enrich_expr_from_side_maps(body, resolutions, expr_types);
-        }
-        Expr::Apply { callee, args, .. } => {
-            enrich_expr_from_side_maps(callee, resolutions, expr_types);
-            for arg in args {
-                enrich_expr_from_side_maps(arg, resolutions, expr_types);
-            }
-        }
-        Expr::Match { scrutinee, arms, .. } => {
-            enrich_expr_from_side_maps(scrutinee, resolutions, expr_types);
-            for arm in arms {
-                enrich_expr_from_side_maps(&mut arm.body, resolutions, expr_types);
-            }
-        }
-        Expr::VecLit { elements, .. } => {
-            for elem in elements {
-                enrich_expr_from_side_maps(elem, resolutions, expr_types);
-            }
-        }
-        Expr::Annotate { expr: inner, .. } => {
-            enrich_expr_from_side_maps(inner, resolutions, expr_types);
-        }
-        Expr::Trace { body, .. } => {
-            enrich_expr_from_side_maps(body, resolutions, expr_types);
-        }
-        Expr::ParBind { bindings, body, .. } => {
-            for (_, binding_expr) in bindings {
-                enrich_expr_from_side_maps(binding_expr, resolutions, expr_types);
-            }
-            enrich_expr_from_side_maps(body, resolutions, expr_types);
-        }
-        // Leaf nodes: no children to recurse into.
-        Expr::IntLit { .. }
-        | Expr::FloatLit { .. }
-        | Expr::BoolLit { .. }
-        | Expr::StringLit { .. }
-        | Expr::Var { .. } => {}
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -549,6 +458,98 @@ mod tests {
 
     fn empty_tables() -> DashMap<ModuleFullPath, SymbolTable> {
         DashMap::new()
+    }
+
+    /// Test helper: enrich a defn's AST nodes with type and resolution
+    /// annotations from CheckResult side maps.
+    ///
+    /// Used by tests that build ASTs by hand and carry resolutions in a
+    /// `CheckResult`. In production, typecheck annotates the AST directly,
+    /// so this bridge is test-only.
+    fn enrich_defn_from_side_maps(
+        defn: &mut Defn,
+        resolutions: &HashMap<Span, cranelisp_types::ResolvedCall>,
+        expr_types: &HashMap<Span, Type>,
+    ) {
+        for variant in &mut defn.variants {
+            enrich_expr_from_side_maps(&mut variant.body, resolutions, expr_types);
+        }
+    }
+
+    /// Test helper: recursively enrich expression nodes with side map data.
+    fn enrich_expr_from_side_maps(
+        expr: &mut cranelisp_types::Expr,
+        resolutions: &HashMap<Span, cranelisp_types::ResolvedCall>,
+        expr_types: &HashMap<Span, Type>,
+    ) {
+        use cranelisp_types::Expr;
+
+        let span = expr.span();
+
+        // Overlay inferred_type from side map if present.
+        if let Some(ty) = expr_types.get(&span) {
+            expr.set_inferred_type(Some(Box::new(ty.clone())));
+        }
+
+        // Overlay resolved_call from side map if present (Apply only).
+        if let Expr::Apply { resolved_call, span: apply_span, .. } = expr {
+            if let Some(resolution) = resolutions.get(apply_span) {
+                *resolved_call = Some(Box::new(resolution.clone()));
+            }
+        }
+
+        // Recurse into children.
+        match expr {
+            Expr::Let { bindings, body, .. } => {
+                for (_, binding_expr) in bindings {
+                    enrich_expr_from_side_maps(binding_expr, resolutions, expr_types);
+                }
+                enrich_expr_from_side_maps(body, resolutions, expr_types);
+            }
+            Expr::If { cond, then_branch, else_branch, .. } => {
+                enrich_expr_from_side_maps(cond, resolutions, expr_types);
+                enrich_expr_from_side_maps(then_branch, resolutions, expr_types);
+                enrich_expr_from_side_maps(else_branch, resolutions, expr_types);
+            }
+            Expr::Lambda { body, .. } => {
+                enrich_expr_from_side_maps(body, resolutions, expr_types);
+            }
+            Expr::Apply { callee, args, .. } => {
+                enrich_expr_from_side_maps(callee, resolutions, expr_types);
+                for arg in args {
+                    enrich_expr_from_side_maps(arg, resolutions, expr_types);
+                }
+            }
+            Expr::Match { scrutinee, arms, .. } => {
+                enrich_expr_from_side_maps(scrutinee, resolutions, expr_types);
+                for arm in arms {
+                    enrich_expr_from_side_maps(&mut arm.body, resolutions, expr_types);
+                }
+            }
+            Expr::VecLit { elements, .. } => {
+                for elem in elements {
+                    enrich_expr_from_side_maps(elem, resolutions, expr_types);
+                }
+            }
+            Expr::Annotate { expr: inner, .. } => {
+                enrich_expr_from_side_maps(inner, resolutions, expr_types);
+            }
+            Expr::Trace { body, .. } => {
+                enrich_expr_from_side_maps(body, resolutions, expr_types);
+            }
+            Expr::ParBind { bindings, body, .. } => {
+                for (_, binding_expr) in bindings {
+                    enrich_expr_from_side_maps(binding_expr, resolutions, expr_types);
+                }
+                enrich_expr_from_side_maps(body, resolutions, expr_types);
+            }
+            // Leaf nodes: no children to recurse into.
+            Expr::IntLit { .. }
+            | Expr::FloatLit { .. }
+            | Expr::BoolLit { .. }
+            | Expr::StringLit { .. }
+            | Expr::Var { .. } => {}
+        }
     }
 
     /// Test helper: wrap an expression in a synthetic zero-arg defn, compile via

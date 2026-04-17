@@ -73,6 +73,7 @@ Delivery progress for the Cranelisp reimplementation. For technical scope per ri
 | 49 | Pipeline v4 Step 15 + Session Restructure — one CompilerSession, one run(), all modes. ReplSession/CompilationSession/MacroEnv/ModuleCodegenState/ModuleStructure/src/repl/ deleted. Session restructure phases A–F (TypecheckProduct, CodegenProduct, Code, Introspection on SharedState DashMaps). Unified GOT literal pool. Nice workers persistent. --link implemented. File watcher wired to v4. ~12k lines deleted. Macro regression outstanding (Sprint 50): 1407 passed, 137 failed (macro/prelude regression), 0 ignored | COMPLETE | `sprints/archive/sprint-49.md` |
 | 50-53 | Backend API conformance, workspace build fix, test porting | COMPLETE | `sprints/archive/sprint-53.md` |
 | 54 | Stabilise — Phase 0 of pipeline-v4 convergence: 41 tests fixed (trace intrinsics, file watcher, link startup, checked-div, persistence), 9 deferred (cache/multi-sig/run-tests — all touch subsystems replaced by convergence Phases 1-5), pipeline-v4 roadmap + sequence diagrams + codegen convergence design doc: 1595 passed, 9 failures (all deferred), 0 ignored | COMPLETE | `sprints/archive/sprint-54.md` |
+| 55 | Pipeline v4 convergence Phase 1 — AST on symbol table: `Expr.inferred_type`/`Expr::Apply.resolved_call` fields, `ModuleEntry::Def.ast` populated, `compile_to_module` no longer takes `CheckResult`, `CodegenInput` deleted. Per-defn completion design (post-passes inside `check_form(CheckBody)`). Wave 3b trait impl method annotation (Section 3.7) fixed 59-regression root cause. 3 design docs, /arch approved through 3 iterations. 4 B1 regressions + I2/I3/S3/S4 review findings resolved. I1/I4/I5/S1/S2/S5 deferred to Phase 2: 1589 passed, 22 failures (all baseline, 0 new), 14 skipped | COMPLETE | `sprints/archive/sprint-55.md` |
 
 ## Forward Plan
 
@@ -119,5 +120,4 @@ Pipeline v4 orchestration complete. Data model convergence next (pipeline-v4-roa
 | 51 | Stateless TC | TypeCheckEnv, FQTypeName/FQTraitName, registries deleted: 1516 passed, 25 failed. **57 files, +4800/-2900 lines.** | COMPLETE | `sprints/archive/sprint-51.md` |
 | 52 | Clean & Green (part 1) | Sprint23 ungated, spec updates, CLI positional args, session persistence, fixes: 1576 passed, 28 failed | COMPLETE | `sprints/archive/sprint-52.md` |
 | 53 | Backend API Conformance | Inlined compile_to_module_inner (-608 lines), workspace build fix: 1546 passed, 58 failed | COMPLETE | `sprints/archive/sprint-53.md` |
-| 55 | Pipeline v4 convergence Phase 1 | AST on symbol table, eliminate CheckResult boundary type | — | — |
 | 56+ | Phases 2–5 | Single codegen entry, GOT/code on SymbolTable, platform/workers, cache | — | — |

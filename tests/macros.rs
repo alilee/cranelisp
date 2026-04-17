@@ -433,8 +433,6 @@ fn neg_macro_error_no_session_corruption() {
 #[test]
 fn repl_defmacro_rest_splice() {
     let mut s = repl_session();
-    // Show macros/sconcat entry before defmacro
-    s.show_entry("macros/sconcat");
     // Multi-clause macro with rest param. The [x &rest] clause's
     // `~@rest` splice generates macros/sconcat in the compiled body.
     s.eval("(defmacro my-begin ([] 0) ([x &rest] `(begin ~x ~@rest)))").unwrap();

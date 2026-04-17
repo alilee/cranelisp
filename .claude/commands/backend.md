@@ -56,12 +56,13 @@ When your design diverges from the sketch, document the divergence and rationale
 
 ## Release Gate
 
-Before considering any task complete, you MUST verify:
-1. `cargo build` succeeds with no errors
-2. `cargo test` passes with no new failures (pre-existing ignored tests are acceptable)
-3. `cargo clippy` produces no new warnings in your owned files
+Before considering any task complete, you MUST verify AND report on:
+1. `cargo check -p <your-crate>` produces zero warnings — not just errors. Fix dead code left by your changes: unused imports after removed parameters, unused functions after their callers were removed, unused variables after refactored signatures. Do this BEFORE declaring the task done, not after.
+2. `cargo check --tests -p <your-crate>` also produces zero warnings — test code counts.
+3. `cargo nextest run -p <your-crate> --no-fail-fast` passes with no new failures.
+4. `cargo clippy -p <your-crate> --all-targets` produces no new lints.
 
-Do not hand off to `/sprint` or `/review` with a broken build. If your changes cause failures in another crate, fix the issue or coordinate with the owning skill before completing.
+Report the before/after warning count in your completion summary. Do not hand off to `/sprint` or `/review` with a broken build or warnings you introduced. If your changes cause failures in another crate, fix the issue or coordinate with the owning skill before completing.
 
 ## Workflow (ring by ring)
 

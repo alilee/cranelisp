@@ -352,6 +352,26 @@ type MangledVariantInfo = (Vec<Type>, Type, Symbol);
 
 /// Mangle a function name with its parameter type signature.
 /// e.g., `mangle_sig("foo", &[Type::Int, Type::Bool])` → `"foo$Int+Bool"`.
+/// Returns true if `name` matches the trait-impl mangled form `Trait.method$Type`
+/// (e.g., `Double.double$Int`, `Num.+$Int`, `Countable.count-plus$Int`).
+///
+/// This is used to distinguish annotated defns produced by `check_impl_method`
+/// from user-written or REPL-synthetic defns (`__expr`), so that the
+/// "skip re-inference" fast path only applies to trait impl methods.
+fn is_trait_impl_mangled_name(name: &str) -> bool {
+    // Trait-impl mangled names contain exactly one '.' followed by a '$'
+    // separating the method name from the impl type suffix.
+    if let Some(dot_pos) = name.find('.')
+        && let Some(dollar_pos) = name[dot_pos + 1..].find('$')
+    {
+        let after_dot = &name[dot_pos + 1..];
+        let method_part = &after_dot[..dollar_pos];
+        let type_part = &after_dot[dollar_pos + 1..];
+        return !method_part.is_empty() && !type_part.is_empty();
+    }
+    false
+}
+
 fn mangle_sig(name: &str, param_types: &[Type]) -> Symbol {
     if param_types.is_empty() {
         Symbol::from(format!("{}$", name))
@@ -653,6 +673,22 @@ impl TypeCheckEnv<'_> {
         defn: &Defn,
         accumulator: &ModuleCheckAccumulator,
     ) -> Result<FormCheckResult, CranelispError> {
+        // Skip body re-check for trait impl (mangled) defns already type-checked
+        // by `check_impl_method` during Pass 1. Re-checking with fresh type vars
+        // causes spurious constrained-fn detection → null GOT → SIGSEGV.
+        //
+        // Gated on the `Trait.method$Type` name pattern to avoid false positives
+        // on REPL-transient `__expr` or regular user defns whose ast was
+        // annotated by a prior evaluation.
+        if is_trait_impl_mangled_name(defn.name.as_ref()) {
+            let sym_table = self.current_symbol_table(state);
+            if let Some(ModuleEntry::Def { ast: Some(_), .. }) =
+                sym_table.symbols.get(&defn.name)
+            {
+                return Ok(FormCheckResult::empty());
+            }
+        }
+
         let (param_types, ret_ty) = accumulator
             .defn_type_vars
             .get(&defn.name)
@@ -2068,6 +2104,32 @@ impl TypeCheckEnv<'_> {
         state: &mut CheckState,
         defn: &Defn,
     ) -> Result<(Vec<Type>, Type), CranelispError> {
+        // Fast path for trait impl (mangled) methods: if this symbol already
+        // has a Def entry with `ast: Some(_)` and a concrete scheme (no free
+        // vars / constraints), AND its name matches the trait-impl mangled
+        // form `Trait.method$Type`, it was already type-checked by
+        // `check_impl_method`. Reuse its param/ret types rather than
+        // allocating fresh type vars — the fresh vars would never be unified
+        // (CheckBody short-circuits on `ast: Some`) and would leave the symbol
+        // with a spuriously polymorphic scheme after
+        // `finalize_check_result_inner`'s generalization pass, breaking trait
+        // dispatch (e.g., `(double true)` silently accepting any type).
+        //
+        // The name-pattern gate avoids false positives on `__expr` (REPL
+        // synthetic) or regular user defns whose ast was annotated by a prior
+        // REPL evaluation.
+        if is_trait_impl_mangled_name(defn.name.as_ref()) {
+            let st_ro = self.current_symbol_table(state);
+            if let Some(ModuleEntry::Def { scheme, ast: Some(_), .. }) =
+                st_ro.symbols.get(defn.name.as_ref())
+                && scheme.vars.is_empty()
+                && scheme.constraints.is_empty()
+                && let Type::Fn(param_types, ret_ty) = &scheme.ty
+            {
+                return Ok((param_types.clone(), (**ret_ty).clone()));
+            }
+        }
+
         let mut param_types = Vec::new();
         for (i, _param) in defn.params().iter().enumerate() {
             let param_ty = if let Some(Some(ann)) = defn.param_annotations().get(i) {
@@ -2084,14 +2146,17 @@ impl TypeCheckEnv<'_> {
         let fn_type = Type::Fn(param_types.clone(), Box::new(ret_ty.clone()));
         let scheme = mono(fn_type);
 
-        // Upsert: preserve existing got_slot if the symbol is being redefined
-        // (REPL Additive mode, module reload). New symbols get a fresh slot.
+        // Upsert: preserve existing got_slot and ast if the symbol is being redefined
+        // (REPL Additive mode, module reload, or trait impl method re-registration).
+        // New symbols get a fresh slot. Preserving ast prevents double-checking of
+        // trait impl methods that were already type-checked by check_impl_method.
         let mut st = self.current_symbol_table_mut(state);
-        let existing_slot = st.get(defn.name.as_ref())
-            .and_then(|e| match e {
-                ModuleEntry::Def { got_slot, .. } => *got_slot,
-                _ => None,
-            });
+        let (existing_slot, existing_ast) = st.get(defn.name.as_ref())
+            .map(|e| match e {
+                ModuleEntry::Def { got_slot, ast, .. } => (*got_slot, ast.clone()),
+                _ => (None, None),
+            })
+            .unwrap_or((None, None));
         let got_slot = Some(existing_slot.unwrap_or_else(|| st.allocate_got_slot()));
 
         st.insert(
@@ -2107,7 +2172,7 @@ impl TypeCheckEnv<'_> {
                 callees: Vec::new(),
                 got_slot,
                 trait_origin: None,
-                ast: None,
+                ast: existing_ast,
             },
         );
 
@@ -6411,6 +6476,153 @@ mod tests {
             assert!(!ty.contains_var(), "inferred_type should be concrete, got {:?}", ty);
         } else {
             panic!("concat-nils should have ast: Some(..)");
+        }
+    }
+
+    // =========================================================================
+    // AST annotation tests — trait impl methods
+    // =========================================================================
+
+    // SIGSEGV isolation: trait impl method using trait dispatch in body
+    // must NOT be marked as constrained fn after body check pass.
+    //
+    // Reproduces the Sprint 55 regression where check_form_body_single_defn
+    // re-infers the impl method body with fresh type vars, finds trait
+    // constraints (from + operator), and marks the method as constrained_fn.
+    // Codegen then skips it (constrained fns are deferred for monomorphisation),
+    // leaving a null GOT slot -> SIGSEGV on dispatch.
+    #[test]
+    fn test_impl_method_not_marked_constrained_after_body_check() {
+        let mut tc = tc_with_prims();
+        let module = ModuleFullPath::from("test");
+        register_num_trait_inline(&mut tc);
+
+        let mut accumulator = ModuleCheckAccumulator::new();
+
+        // Register Double trait: (deftrait Double (double [self] self))
+        let double_decl = TraitDecl {
+            name: TraitName::from("Double"),
+            docstring: None,
+            type_params: vec![Symbol::from("a")],
+            methods: vec![TraitMethodSig {
+                name: Symbol::from("double"),
+                docstring: None,
+                params: vec![TypeExpr::TypeVar(Symbol::from("a"))],
+                ret_type: TypeExpr::TypeVar(Symbol::from("a")),
+                span: Span::SYNTHETIC,
+                hkt_param_index: None,
+                default_param_names: vec![Symbol::from("x")],
+                default_body: None,
+            }],
+            visibility: Visibility::Public,
+            span: Span::SYNTHETIC,
+        };
+        let decl_form = TopLevel::TraitDecl(double_decl);
+        let result = tc.check_form(&module, &decl_form, CheckPass::Register, &mut accumulator).unwrap();
+        tc.merge_form_result(&module, &mut accumulator, result);
+
+        // Impl Double for Int: (defn double [x] (+ x x))
+        let impl_ = TraitImpl {
+            trait_name: TraitName::from("Double"),
+            target_type: TypeName::from("Int"),
+            type_args: vec![],
+            type_constraints: vec![],
+            methods: vec![Defn {
+                name: Symbol::from("double"),
+                docstring: None,
+                variants: vec![DefnVariant {
+                    params: vec![Symbol::from("x")],
+                    param_annotations: vec![None],
+                    body: Expr::Apply {
+                        callee: Box::new(Expr::Var {
+                            name: Symbol::from("+"),
+                            span: span(100, 101),
+                            inferred_type: None,
+                        }),
+                        args: vec![
+                            Expr::Var { name: Symbol::from("x"), span: span(102, 103), inferred_type: None },
+                            Expr::Var { name: Symbol::from("x"), span: span(104, 105), inferred_type: None },
+                        ],
+                        span: span(99, 106),
+                        resolved_call: None,
+                        inferred_type: None,
+                    },
+                    span: span(90, 110),
+                }],
+                visibility: Visibility::Public,
+                span: span(90, 110),
+            }],
+            span: span(80, 120),
+        };
+        let impl_form = TopLevel::TraitImpl(impl_);
+        let result = tc.check_form(&module, &impl_form, CheckPass::Register, &mut accumulator).unwrap();
+        tc.merge_form_result(&module, &mut accumulator, result);
+
+        // The register pass should produce the mangled defn
+        let mangled_name = Symbol::from("Double.double$Int");
+        assert!(
+            !accumulator.default_method_defns.is_empty(),
+            "register should produce default_method_defns"
+        );
+        assert!(
+            accumulator.default_method_defns.iter().any(|d| d.name == mangled_name),
+            "should contain Double.double$Int"
+        );
+
+        // Step: Run register for the mangled defn (like register_default_methods does)
+        let defaults = std::mem::take(&mut accumulator.default_method_defns);
+        for defn in &defaults {
+            let form = TopLevel::Defn(defn.clone());
+            let result = tc.check_form(&module, &form, CheckPass::Register, &mut accumulator).unwrap();
+            tc.merge_form_result(&module, &mut accumulator, result);
+        }
+        accumulator.default_method_defns = defaults;
+
+        // Step: Run CheckBody for the mangled defn (like finalize_module does)
+        let defaults_for_body = accumulator.default_method_defns.clone();
+        for defn in &defaults_for_body {
+            let form = TopLevel::Defn(defn.clone());
+            let result = tc.check_form(&module, &form, CheckPass::CheckBody, &mut accumulator).unwrap();
+            tc.merge_form_result(&module, &mut accumulator, result);
+        }
+
+        // KEY ASSERTION: The mangled method must NOT be constrained.
+        // If it is, codegen will skip it -> null GOT slot -> SIGSEGV.
+        let table = tc.symbol_table();
+        if let Some(ModuleEntry::Def { kind, scheme, .. }) = table.get(mangled_name.as_ref()) {
+            match kind.as_ref() {
+                DefKind::UserFn { constrained_fn } => {
+                    assert!(
+                        constrained_fn.is_none(),
+                        "BUG: trait impl method '{}' was marked as constrained fn \
+                        (scheme: {}). This causes codegen to skip it, leaving a null \
+                        GOT slot -> SIGSEGV on dispatch.",
+                        mangled_name, scheme.ty
+                    );
+                }
+                other => panic!("expected UserFn, got {:?}", other),
+            }
+
+            // Also verify the scheme is concrete
+            assert!(
+                scheme.vars.is_empty() && scheme.constraints.is_empty(),
+                "impl method scheme should be concrete (no vars/constraints), got: {:?}",
+                scheme,
+            );
+        } else {
+            panic!("mangled method '{}' not found in symbol table", mangled_name);
+        }
+
+        // Verify AST annotations are concrete (no Var(N))
+        if let Some(ModuleEntry::Def { ast: Some(annotated), .. }) = table.get(mangled_name.as_ref()) {
+            let body = annotated.body();
+            if let Some(ty) = body.inferred_type() {
+                assert!(
+                    !ty.contains_var(),
+                    "impl method body inferred_type should be concrete, got: {:?}",
+                    ty
+                );
+            }
         }
     }
 }

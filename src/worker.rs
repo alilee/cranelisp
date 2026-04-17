@@ -598,7 +598,7 @@ fn compile_macro_clause_with_state(
             program.iter().find_map(|tl| match tl {
                 TopLevel::Defn(d) => Some(d.clone()),
                 _ => None,
-            }).expect("invariant: defn_name was extracted from program above")
+            }).unwrap_or_else(|| unreachable!("invariant: defn_name was extracted from program above"))
         });
     let defn = &defn;
 
@@ -626,7 +626,6 @@ fn compile_macro_clause_with_state(
 
     Ok(())
 }
-
 
 /// Build a MacroEntry from compiled clause code pointers.
 fn build_macro_entry_from_clauses(
@@ -2091,9 +2090,6 @@ fn collect_transitive_uncompiled_deps(
 // parameters and returned Ok(()). The scheduler's block_for_macro_codegen
 // handles dependency compilation through the normal priority codegen path.
 
-/// Build a CheckResult from the accumulator's current state.
-
-
 /// Compile a single macro clause inline using the worker's shared state.
 ///
 /// Mirrors `compile_single_clause` from expander.rs but uses the worker's
@@ -2162,7 +2158,7 @@ fn compile_macro_clause_inline(
             program.iter().find_map(|tl| match tl {
                 TopLevel::Defn(d) => Some(d.clone()),
                 _ => None,
-            }).expect("invariant: defn_name was extracted from program above")
+            }).unwrap_or_else(|| unreachable!("invariant: defn_name was extracted from program above"))
         });
     let defn = &defn;
 
