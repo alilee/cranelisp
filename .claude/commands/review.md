@@ -85,3 +85,11 @@ For each review session:
 - `sketch/audits/module.md` — module system structural debts
 - `sketch/audits/cache.md` — cache structural debts
 - `sketch/audits/CLAUDE.md` — audit process and conventions
+
+## Git discipline
+
+Never run commands that discard uncommitted work. Forbidden: stash-discard (`git stash drop`, `git stash clear`), `git reset --hard`, `git checkout --`, `git restore`, `git clean -f`/`-fd`. Permitted: `git stash` + `git stash pop` if the pop completes cleanly. See `memory/feedback_no_git_stash_agents.md`.
+
+## Testing ownership
+
+Unit tests (`#[cfg(test)] mod tests` within each crate) belong to the implementing skill. `/qa` owns integration tests in `tests/`. When reviewing an implementation wave, verify that the owning skill included unit tests for its changes — their absence is a Blocker finding. See `memory/feedback_unit_tests_with_dev.md`.

@@ -67,3 +67,11 @@ Report the before/after warning count in your completion summary. Do not hand of
 - `sketch/docs/syntax.md` — syntax design rationale
 - `sketch/docs/macro.md` — macro implementation notes
 - `design/arch/interfaces.md` — boundary types you produce
+
+## Git discipline
+
+Never run commands that discard uncommitted work. Forbidden: stash-discard (`git stash drop`, `git stash clear`), `git reset --hard`, `git checkout --`, `git restore`, `git clean -f`/`-fd`. Permitted: `git stash` + `git stash pop` if the pop completes cleanly. See `memory/feedback_no_git_stash_agents.md`.
+
+## Testing ownership
+
+Unit tests (`#[cfg(test)] mod tests` within each crate) belong to the implementing skill, not `/qa`. `/qa` owns integration tests in `tests/`. As an implementation skill, write unit tests for your crate during dev. See `memory/feedback_unit_tests_with_dev.md`.

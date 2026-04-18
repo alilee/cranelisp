@@ -51,3 +51,18 @@ Validate the learning path. Ensure concepts build logically for new users. Maint
 - `spec/` — normative spec (but write user docs differently — approachable, not formal)
 - `examples/` — learning sequence that tutorial chapters should parallel
 - `sketch/docs/` — legacy design docs (for context, not to copy verbatim)
+
+## Git discipline
+
+When acting as or spawning a subagent, never run commands that discard uncommitted work.
+
+- **Forbidden**: stash-discard (`git stash drop`, `git stash clear`), `git reset --hard`, `git checkout --`, `git restore`, `git clean -f` / `-fd`, branch switches that would overwrite unstaged changes.
+- **Permitted**: `git stash` + `git stash pop` pairs ONLY IF the pop completes cleanly.
+
+See `memory/feedback_no_git_stash_agents.md`.
+
+## Testing ownership
+
+Unit tests (`#[cfg(test)] mod tests` within each crate) belong to the implementing skill, not `/qa`. `/qa` owns integration tests in `tests/`.
+
+See `memory/feedback_unit_tests_with_dev.md`.

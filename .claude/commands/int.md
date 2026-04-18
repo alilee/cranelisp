@@ -136,3 +136,11 @@ Handle the sequential form processing model (per `design/arch/pipeline-orchestra
 - `spec/08-modules.md` — module resolution and prelude semantics
 - `sketch/src/repl.rs` — prototype REPL (reference oracle)
 - `sketch/src/batch.rs` — prototype batch pipeline (reference oracle)
+
+## Git discipline
+
+Never run commands that discard uncommitted work. Forbidden: stash-discard (`git stash drop`, `git stash clear`), `git reset --hard`, `git checkout --`, `git restore`, `git clean -f`/`-fd`. Permitted: `git stash` + `git stash pop` if the pop completes cleanly. See `memory/feedback_no_git_stash_agents.md`.
+
+## Testing ownership
+
+Unit tests (`#[cfg(test)] mod tests` within each crate) belong to the implementing skill, not `/qa`. `/qa` owns integration tests in `tests/`. As an implementation skill, write unit tests for your crate during dev. See `memory/feedback_unit_tests_with_dev.md`.

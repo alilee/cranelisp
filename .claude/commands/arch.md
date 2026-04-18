@@ -116,3 +116,20 @@ When reviewing design docs or sprint proposals, `/arch` MUST verify that the ske
 - `sketch/audits/*.md` — structural debts to avoid
 - `sketch/src/` — prototype source as reference oracle (solutions, not structure)
 - `spec/` — language features that need representation in interface types
+
+## Git discipline
+
+When acting as or spawning a subagent, never run commands that discard uncommitted work. The working tree is shared across the session and other agents; losing work destroys review-before-enact visibility.
+
+- **Forbidden**: stash-discard (`git stash drop`, `git stash clear`), `git reset --hard`, `git checkout --`, `git restore`, `git clean -f` / `-fd`, branch switches that would overwrite unstaged changes.
+- **Permitted**: `git stash` + `git stash pop` pairs ONLY IF the pop is guaranteed to complete cleanly. If the pop conflicts, resolve or STOP and report — never discard the stash.
+
+See `memory/feedback_no_git_stash_agents.md` for the incident that motivated this rule.
+
+## Testing ownership
+
+Unit tests (`#[cfg(test)] mod tests` within the crate) are owned by the skill that owns the crate — written alongside the implementation they cover, in the same wave. `/qa` owns integration tests (in `tests/` at the project root) that exercise the full pipeline or cross-crate behaviour.
+
+Implementation skills (backend, typecheck, int, frontend, platform, stdlib, examples, port) write unit tests for their crate during dev. Do not delegate them to `/qa`. `/qa` focuses on integration tests — not unit tests inside other skills' crates.
+
+See `memory/feedback_unit_tests_with_dev.md`.

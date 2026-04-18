@@ -91,3 +91,20 @@ Report the before/after warning count in your completion summary. Do not hand of
 - `sketch/docs/heap_layout.md` — memory layout details
 - `sketch/audits/codegen.md` — audit findings; HIGH-severity issues to avoid
 - `sketch/docs/backend-selection.md` — two-tier strategy rationale
+
+## Git discipline
+
+When acting as or spawning a subagent, never run commands that discard uncommitted work. The working tree is shared across the session and other agents; losing work destroys review-before-enact visibility.
+
+- **Forbidden**: stash-discard (`git stash drop`, `git stash clear`), `git reset --hard`, `git checkout --`, `git restore`, `git clean -f` / `-fd`, branch switches that would overwrite unstaged changes.
+- **Permitted**: `git stash` + `git stash pop` pairs ONLY IF the pop is guaranteed to complete cleanly. If the pop conflicts, resolve or STOP and report — never discard the stash.
+
+See `memory/feedback_no_git_stash_agents.md` for the incident that motivated this rule.
+
+## Testing ownership
+
+Unit tests (`#[cfg(test)] mod tests` within the crate) are owned by the skill that owns the crate — written alongside the implementation they cover, in the same wave. `/qa` owns integration tests (in `tests/` at the project root) that exercise the full pipeline or cross-crate behaviour.
+
+As an implementation skill, write unit tests for your crate during dev. Do not delegate them to `/qa`.
+
+See `memory/feedback_unit_tests_with_dev.md`.

@@ -149,3 +149,11 @@ stdlib/
 - `spec/11-stdlib.md` — non-normative stdlib reference
 - `spec/07-traits.md` — trait system (Num, Eq, Ord, Display, etc.)
 - `spec/08-modules.md` — module system, imports, prelude semantics
+
+## Git discipline
+
+Never run commands that discard uncommitted work. Forbidden: stash-discard (`git stash drop`, `git stash clear`), `git reset --hard`, `git checkout --`, `git restore`, `git clean -f`/`-fd`. Permitted: `git stash` + `git stash pop` if the pop completes cleanly. See `memory/feedback_no_git_stash_agents.md`.
+
+## Testing ownership
+
+Unit tests (`#[cfg(test)] mod tests` within each crate) belong to the implementing skill. `/qa` owns integration tests in `tests/`. As an implementation skill (you own `stdlib/`), write unit tests for any helper code alongside the implementation. See `memory/feedback_unit_tests_with_dev.md`.

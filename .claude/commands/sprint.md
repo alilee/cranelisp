@@ -370,3 +370,11 @@ Sprint 0 assignments follow this pattern for each skill:
 - `tests/plan/ring{N}.md` — per-ring test plans
 - Root `CLAUDE.md` — project layout and skill list
 - Each skill's `.claude/commands/{skill}.md` — what each skill does
+
+## Git discipline
+
+When spawning subagents, explicitly forbid commands that discard uncommitted work. Include a "Forbidden" clause in every agent prompt: stash-discard (`git stash drop`, `git stash clear`), `git reset --hard`, `git checkout --`, `git restore`, `git clean -f`/`-fd`. Permitted: `git stash` + `git stash pop` pairs if the pop completes cleanly. See `memory/feedback_no_git_stash_agents.md`.
+
+## Testing ownership
+
+When planning waves: unit tests (`#[cfg(test)] mod tests` within each crate) are assigned to the implementing skill, NOT to `/qa`. `/qa` is assigned integration tests in `tests/` at the project root. Never place unit-test deliverables on `/qa`'s plate. See `memory/feedback_unit_tests_with_dev.md`.
