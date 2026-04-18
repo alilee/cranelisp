@@ -601,6 +601,7 @@ stdlib/prelude.cl          ; depends on core
 main.cl                 ; depends on prelude (implicit)
 ```
 
+<!-- FIXME(/qa): Traceability gap — §8.11 annotated [R2 S10] but module resolution through project root + lib dirs is exercised by every stdlib test (tests/stdlib.rs lines 36–39, 581–632 — `ReplSession::new_with_prelude(&project_root, &[stdlib_dir])`) and multi-file module tests (tests/modules.rs, tests/v4_pipeline.rs). Consider whether the section should be `[Tested ...]` referencing a representative test, or whether sub-sections §8.11.1–§8.11.5 should be annotated individually. In particular, project-root-shadows-lib-dir ordering (§8.11.2) and Cranelisp.toml precedence (§8.11.4) may be untested — check and add gap annotations. Filed by /spec during Sprint 56 close prior-ring audit. -->
 ## 8.11 Search Paths [R2 S10]
 
 ### 8.11.1 Project Root

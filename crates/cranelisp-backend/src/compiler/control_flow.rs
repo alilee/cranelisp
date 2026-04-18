@@ -524,15 +524,13 @@ impl<'a, M: Module> FnCompiler<'a, M> {
             // Dec the results buffer. It's an alloc_with_rc allocation —
             // emit_rc_dec with no drop glue (results are plain i64 values,
             // their RC is managed by the binding variables above).
-            if let Some(dealloc_id) = inner.ctx.dealloc_func_id {
-                heap::emit_rc_dec(
-                    &mut inner.builder,
-                    inner.module,
-                    results_ptr,
-                    dealloc_id,
-                    None,
-                );
-            }
+            heap::emit_rc_dec(
+                &mut inner.builder,
+                inner.module,
+                results_ptr,
+                inner.ctx.dealloc_func_id,
+                None,
+            );
 
             inner.builder.ins().return_(&[result]);
             inner.builder.seal_all_blocks();
@@ -812,12 +810,7 @@ impl<'a, M: Module> FnCompiler<'a, M> {
         captures: &[Symbol],
         span: Span,
     ) -> Result<Option<cranelift_module::FuncId>, CranelispError> {
-        let dealloc_id = self.ctx.dealloc_func_id.ok_or_else(|| {
-            CranelispError::CodegenError {
-                message: "runtime/dealloc not declared (need declare_intrinsics)".into(),
-                span,
-            }
-        })?;
+        let dealloc_id = self.ctx.dealloc_func_id;
 
         // Collect (capture_index, type, heap_category) for heap-typed captures.
         let heap_captures: Vec<(usize, Type, HeapCategory)> = captures
@@ -1535,12 +1528,7 @@ impl<'a, M: Module> FnCompiler<'a, M> {
         arg_categories: &[HeapCategory],
         span: Span,
     ) -> Result<Option<cranelift_module::FuncId>, CranelispError> {
-        let dealloc_id = self.ctx.dealloc_func_id.ok_or_else(|| {
-            CranelispError::CodegenError {
-                message: "runtime/dealloc not declared (need declare_intrinsics)".into(),
-                span,
-            }
-        })?;
+        let dealloc_id = self.ctx.dealloc_func_id;
 
         // Collect indices of heap-typed captures.
         let heap_indices: Vec<(usize, HeapCategory)> = arg_categories

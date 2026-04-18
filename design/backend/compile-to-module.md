@@ -274,6 +274,12 @@ pub fn declare_intrinsics<M: Module>(
 
 ```rust
 /// FuncIds for all intrinsic functions, populated during declare_intrinsics.
+///
+/// Convenience-accessor fields are stored as `Option<FuncId>` internally because
+/// intrinsic declaration is a two-phase affair on the `Jit` wrapper (the struct
+/// exists before `declare_intrinsics` runs). Once intrinsics have been declared
+/// and the `CompileContext` is built, the fields consumed inside codegen are
+/// non-optional `FuncId` values — see Decision 24.
 #[derive(Default)]
 pub struct IntrinsicFuncIds {
     by_name: HashMap<Symbol, FuncId>,
@@ -321,12 +327,15 @@ for defn in &defns {
         env,
         traced_fns: None,
         alloc_func_id: intrinsic_ids.alloc,
-        dealloc_func_id: intrinsic_ids.dealloc,
+        dealloc_func_id: intrinsic_ids.dealloc.expect("dealloc must be declared"),
         alloc_string_func_id: intrinsic_ids.alloc_string,
         panic_func_id: intrinsic_ids.panic,
         vec_new_func_id: intrinsic_ids.vec_new,
         vec_drop_func_id: intrinsic_ids.vec_drop,
     };
+    // CompileContext.dealloc_func_id is a non-optional FuncId per Decision 24 —
+    // the split convention's caller-suppressible dealloc flag is gone. Extract
+    // the concrete FuncId once at the compile-site and pass it in unconditionally.
 
     FnCompiler::compile_body(defn, &mut func, &mut func_ctx, module, compile_ctx)?;
 

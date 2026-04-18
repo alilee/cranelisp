@@ -242,12 +242,7 @@ impl<'a, M: Module> FnCompiler<'a, M> {
         elem_type: &Option<Type>,
         span: Span,
     ) -> Result<Value, CranelispError> {
-        let dealloc_id = self.ctx.dealloc_func_id.ok_or_else(|| {
-            CranelispError::CodegenError {
-                message: "runtime/dealloc not declared".into(),
-                span,
-            }
-        })?;
+        let dealloc_id = self.ctx.dealloc_func_id;
 
         // Load RC and check if == 1 (unique owner).
         let rc = heap::heap_load(
@@ -698,12 +693,7 @@ impl<'a, M: Module> FnCompiler<'a, M> {
             return Ok(existing_id);
         }
 
-        let dealloc_id = self.ctx.dealloc_func_id.ok_or_else(|| {
-            CranelispError::CodegenError {
-                message: "runtime/dealloc not declared".into(),
-                span,
-            }
-        })?;
+        let dealloc_id = self.ctx.dealloc_func_id;
 
         // Build drop glue for ADT element types with heap fields.
         let drop_glue_id = self.build_adt_drop_glue_fn(elem_type, dealloc_id, span)?;

@@ -398,20 +398,27 @@ pub extern "C" fn cranelisp_trace_first_child_nanos(trace_adt: i64) -> i64 {
 
     // tchildren is at offset 48 (FIELD0_OFFSET + 3*8 = 24 + 24)
     let tchildren = unsafe { read_i64(trace_adt, 48) };
-    if tchildren < NULLARY_THRESHOLD {
-        return 0; // SNil
-    }
-    let scons_tag = unsafe { read_i64(tchildren, PAYLOAD_OFFSET) };
-    if scons_tag != TAG_SCONS {
-        return 0; // not SCons
-    }
-    // head is at FIELD0_OFFSET (24) of the SCons
-    let first_child = unsafe { read_i64(tchildren, FIELD0_OFFSET) };
-    if first_child < NULLARY_THRESHOLD {
-        return 0;
-    }
-    // tnanos is at offset 56 (FIELD0_OFFSET + 4*8 = 24 + 32) of the TraceCall
-    unsafe { read_i64(first_child, 56) }
+    let result = if tchildren < NULLARY_THRESHOLD {
+        0 // SNil
+    } else {
+        let scons_tag = unsafe { read_i64(tchildren, PAYLOAD_OFFSET) };
+        if scons_tag != TAG_SCONS {
+            0 // not SCons
+        } else {
+            // head is at FIELD0_OFFSET (24) of the SCons
+            let first_child = unsafe { read_i64(tchildren, FIELD0_OFFSET) };
+            if first_child < NULLARY_THRESHOLD {
+                0
+            } else {
+                // tnanos is at offset 56 (FIELD0_OFFSET + 4*8 = 24 + 32)
+                unsafe { read_i64(first_child, 56) }
+            }
+        }
+    };
+    // Decision 24 (Sprint 56 Step 2c): consuming convention — release the
+    // Trace ADT (walks sub-refs if this was the last reference).
+    crate::drop::consume_trace_call(trace_adt);
+    result
 }
 
 /// Collect the root trace frame, release the trace role, and return the trace as a
@@ -471,47 +478,63 @@ fn rc_inc_if_heap(val: i64) {
 
 /// Return the `tname` field (String heap ptr) of a TraceCall ADT.
 ///
-/// The returned value is RC-incremented so it remains valid after the parent
-/// TraceCall is dec'd. This is necessary because borrowing-convention callers
-/// dec the argument (the TraceCall) after the call — without the inc, the
-/// returned interior pointer would dangle.
+/// Decision 24 (Sprint 56 Step 2c): consuming convention. The returned
+/// field is inc'd (it gets its own reference independent of the parent)
+/// then the TraceCall ADT is released via `consume_trace_call` (which
+/// runs recursive drop glue for the Trace ADT's sub-refs if the Trace
+/// itself reaches rc=0).
 #[unsafe(no_mangle)]
 pub extern "C" fn cranelisp_trace_name(trace_ptr: i64) -> i64 {
     // SAFETY: trace_ptr is a valid TraceCall heap pointer.
     let val = unsafe { read_i64(trace_ptr, TRACE_TNAME_OFFSET) };
     rc_inc_if_heap(val);
+    crate::drop::consume_trace_call(trace_ptr);
     val
 }
 
 /// Return the `tparams` field (SList of String heap ptrs) of a TraceCall ADT.
+///
+/// Decision 24 (Sprint 56 Step 2c): consuming convention — see `cranelisp_trace_name`.
 #[unsafe(no_mangle)]
 pub extern "C" fn cranelisp_trace_params(trace_ptr: i64) -> i64 {
     let val = unsafe { read_i64(trace_ptr, TRACE_TPARAMS_OFFSET) };
     rc_inc_if_heap(val);
+    crate::drop::consume_trace_call(trace_ptr);
     val
 }
 
 /// Return the `tresult` field (String heap ptr) of a TraceCall ADT.
+///
+/// Decision 24 (Sprint 56 Step 2c): consuming convention — see `cranelisp_trace_name`.
 #[unsafe(no_mangle)]
 pub extern "C" fn cranelisp_trace_result(trace_ptr: i64) -> i64 {
     let val = unsafe { read_i64(trace_ptr, TRACE_TRESULT_OFFSET) };
     rc_inc_if_heap(val);
+    crate::drop::consume_trace_call(trace_ptr);
     val
 }
 
 /// Return the `tchildren` field (SList of TraceCall heap ptrs) of a TraceCall ADT.
+///
+/// Decision 24 (Sprint 56 Step 2c): consuming convention — see `cranelisp_trace_name`.
 #[unsafe(no_mangle)]
 pub extern "C" fn cranelisp_trace_children(trace_ptr: i64) -> i64 {
     let val = unsafe { read_i64(trace_ptr, TRACE_TCHILDREN_OFFSET) };
     rc_inc_if_heap(val);
+    crate::drop::consume_trace_call(trace_ptr);
     val
 }
 
 /// Return the `tnanos` field (i64 nanoseconds) of a TraceCall ADT.
+///
+/// Decision 24 (Sprint 56 Step 2c): consuming convention — Int payload is
+/// not heap-typed, but the Trace ADT containing it is. Consume the Trace.
 #[unsafe(no_mangle)]
 pub extern "C" fn cranelisp_trace_nanos(trace_ptr: i64) -> i64 {
     // SAFETY: same as cranelisp_trace_name — offset 56 is within payload bounds.
-    unsafe { read_i64(trace_ptr, TRACE_TNANOS_OFFSET) }
+    let val = unsafe { read_i64(trace_ptr, TRACE_TNANOS_OFFSET) };
+    crate::drop::consume_trace_call(trace_ptr);
+    val
 }
 
 /// Format a runtime value as a cranelisp heap String using the display module.
@@ -625,5 +648,92 @@ mod tests {
         assert!(trace != 0);
         let tag = unsafe { read_i64(trace, PAYLOAD_OFFSET) };
         assert_eq!(tag, TAG_TRACE_CALL);
+    }
+
+    // ---------------------------------------------------------------------
+    // Decision 24 extern-consumption tests (Sprint 56 Step 2c)
+    //
+    // Each accessor inc's the returned heap field (so the caller gets an
+    // independent reference) and then consumes the TraceCall via
+    // `consume_trace_call`. If the Trace's rc reaches 0, drop glue walks
+    // the remaining heap sub-refs (tname/tparams/tresult/tchildren).
+    // ---------------------------------------------------------------------
+
+    /// Build a minimal TraceCall heap value with bare-tag params and children
+    /// (so we isolate name + result as the only heap sub-refs besides the
+    /// TraceCall node itself). Returns the TraceCall base pointer.
+    fn make_minimal_trace_call(name_bytes: &[u8], result_bytes: &[u8]) -> (i64, i64, i64) {
+        let name = alloc_string(name_bytes) as i64; // rc=1
+        let result = alloc_string(result_bytes) as i64; // rc=1
+        let trace = alloc_adt(
+            TAG_TRACE_CALL,
+            &[
+                name,
+                TAG_SNIL,   // tparams: bare SNil, no heap
+                result,
+                TAG_SNIL,   // tchildren: bare SNil, no heap
+                0i64,       // tnanos: scalar
+            ],
+        );
+        (trace, name, result)
+    }
+
+    // spec: design/arch/CLAUDE.md Decision 24 — consuming convention, extern cranelisp_trace_name
+    #[test]
+    fn decision24_trace_name_rc_balanced() {
+        let allocs_before = crate::alloc::alloc_count();
+        let deallocs_before = crate::alloc::dealloc_count();
+
+        let (trace, _name, _result) = make_minimal_trace_call(b"my-fn", b"42");
+        // Accessor: inc's name (rc 1→2), consumes Trace (rc 1→0 last ref →
+        // walks sub-refs: dec tname (2→1), consume SNil params no-op,
+        // consume result (rc 1→0, freed), consume SNil children no-op,
+        // dealloc Trace).
+        let returned_name = cranelisp_trace_name(trace);
+        // Caller now owns name at rc=1. Release it.
+        crate::rc::consume_shallow(returned_name);
+
+        // allocs: name + result + trace = 3
+        // deallocs: name + result + trace = 3
+        assert_eq!(crate::alloc::alloc_count() - allocs_before, 3, "alloc count mismatch");
+        assert_eq!(
+            crate::alloc::dealloc_count() - deallocs_before,
+            3,
+            "dealloc count mismatch (leak or double-free)"
+        );
+    }
+
+    // spec: design/arch/CLAUDE.md Decision 24 — consuming convention, extern cranelisp_trace_result
+    #[test]
+    fn decision24_trace_result_rc_balanced() {
+        let allocs_before = crate::alloc::alloc_count();
+        let deallocs_before = crate::alloc::dealloc_count();
+
+        let (trace, _name, _result) = make_minimal_trace_call(b"g", b"7");
+        // Accessor: inc's result, consumes Trace — on last ref, dec'd name
+        // (1→0 freed), SNil params no-op, result (2→1 via dec), SNil
+        // children no-op, dealloc Trace.
+        let returned = cranelisp_trace_result(trace);
+        crate::rc::consume_shallow(returned);
+
+        assert_eq!(crate::alloc::alloc_count() - allocs_before, 3);
+        assert_eq!(crate::alloc::dealloc_count() - deallocs_before, 3);
+    }
+
+    // spec: design/arch/CLAUDE.md Decision 24 — consuming convention, extern cranelisp_trace_nanos
+    // (Int return — no inc on return value; Trace is still consumed.)
+    #[test]
+    fn decision24_trace_nanos_rc_balanced() {
+        let allocs_before = crate::alloc::alloc_count();
+        let deallocs_before = crate::alloc::dealloc_count();
+
+        let (trace, _name, _result) = make_minimal_trace_call(b"h", b"ok");
+        let nanos = cranelisp_trace_nanos(trace);
+        assert_eq!(nanos, 0, "tnanos field was set to 0 in the fixture");
+
+        // allocs: name + result + trace = 3
+        // deallocs: name + result + trace = 3 (all freed by consume_trace_call)
+        assert_eq!(crate::alloc::alloc_count() - allocs_before, 3);
+        assert_eq!(crate::alloc::dealloc_count() - deallocs_before, 3);
     }
 }

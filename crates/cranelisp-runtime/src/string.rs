@@ -110,7 +110,10 @@ pub extern "C" fn heap_alloc_string(bytes_ptr: *const u8, byte_len: i64) -> i64 
 }
 
 /// Concatenate two strings. Returns a new string (rc=1).
-/// Both inputs are borrowed (caller manages their RC).
+///
+/// Decision 24 (Sprint 56 Step 2c): consuming convention — this extern dec's
+/// both heap args before returning. Caller emits `compile_consuming_arg_list`
+/// which incs heap-typed Var args so the caller's binding survives.
 #[unsafe(no_mangle)]
 pub extern "C" fn str_concat(a: i64, b: i64) -> i64 {
     // SAFETY: a and b are valid HeapString base pointers from JIT code.
@@ -118,23 +121,36 @@ pub extern "C" fn str_concat(a: i64, b: i64) -> i64 {
     let b_str = unsafe { read_str(b as *const u8) };
 
     let combined = format!("{a_str}{b_str}");
-    alloc_string(combined.as_bytes()) as i64
+    let result = alloc_string(combined.as_bytes()) as i64;
+    // Decision 24: consume the heap arguments we did not return.
+    rc::consume_shallow(a);
+    rc::consume_shallow(b);
+    result
 }
 
 /// String equality (byte-wise). Returns 1 (true) or 0 (false).
+///
+/// Decision 24 (Sprint 56 Step 2c): consuming convention — dec both heap args.
 #[unsafe(no_mangle)]
 pub extern "C" fn str_eq(a: i64, b: i64) -> i64 {
     // SAFETY: a and b are valid HeapString base pointers from JIT code.
     let a_str = unsafe { read_str(a as *const u8) };
     let b_str = unsafe { read_str(b as *const u8) };
-    if a_str == b_str { 1 } else { 0 }
+    let result = if a_str == b_str { 1 } else { 0 };
+    rc::consume_shallow(a);
+    rc::consume_shallow(b);
+    result
 }
 
 /// String length in bytes.
+///
+/// Decision 24 (Sprint 56 Step 2c): consuming convention — dec the heap arg.
 #[unsafe(no_mangle)]
 pub extern "C" fn str_len(s: i64) -> i64 {
     // SAFETY: s is a valid HeapString base pointer.
-    unsafe { *(( s as *const u8).add(HeapString::LEN_OFFSET as usize) as *const i64) }
+    let len = unsafe { *((s as *const u8).add(HeapString::LEN_OFFSET as usize) as *const i64) };
+    rc::consume_shallow(s);
+    len
 }
 
 /// Identity function for strings — increments RC and returns the same pointer.
@@ -172,6 +188,8 @@ pub extern "C" fn string_read(s: i64, out_ptr: *mut *const u8, out_len: *mut i64
 
 /// Extract a substring from `start` (inclusive) to `end` (exclusive), clamping
 /// out-of-bounds indices. Returns a new heap string (rc=1).
+///
+/// Decision 24 (Sprint 56 Step 2c): consuming convention — dec the heap arg.
 #[unsafe(no_mangle)]
 pub extern "C" fn str_substring(s: i64, start: i64, end: i64) -> i64 {
     let src = unsafe { read_str(s as *const u8) };
@@ -180,16 +198,20 @@ pub extern "C" fn str_substring(s: i64, start: i64, end: i64) -> i64 {
     let end = end.clamp(0, len) as usize;
     let end = end.max(start);
     let slice = &src[start..end];
-    alloc_string(slice.as_bytes()) as i64
+    let result = alloc_string(slice.as_bytes()) as i64;
+    rc::consume_shallow(s);
+    result
 }
 
 /// Return the character at byte index `idx` as a single-character string.
 /// Returns an empty string if `idx` is out of bounds.
+///
+/// Decision 24 (Sprint 56 Step 2c): consuming convention — dec the heap arg.
 #[unsafe(no_mangle)]
 pub extern "C" fn str_char_at(s: i64, idx: i64) -> i64 {
     let src = unsafe { read_str(s as *const u8) };
     let idx = idx as usize;
-    match src.get(idx..) {
+    let result = match src.get(idx..) {
         Some(rest) => match rest.chars().next() {
             Some(ch) => {
                 let mut buf = [0u8; 4];
@@ -199,10 +221,14 @@ pub extern "C" fn str_char_at(s: i64, idx: i64) -> i64 {
             None => alloc_string(b"") as i64,
         },
         None => alloc_string(b"") as i64,
-    }
+    };
+    rc::consume_shallow(s);
+    result
 }
 
 /// Split a string by a separator. Returns a Vec of heap strings.
+///
+/// Decision 24 (Sprint 56 Step 2c): consuming convention — dec both heap args.
 #[unsafe(no_mangle)]
 pub extern "C" fn str_split(s: i64, sep: i64) -> i64 {
     let src = unsafe { read_str(s as *const u8) };
@@ -224,10 +250,16 @@ pub extern "C" fn str_split(s: i64, sep: i64) -> i64 {
         *((vec_base as *mut u8).add(crate::vec::LEN_OFFSET) as *mut i64) = count;
     }
 
+    rc::consume_shallow(s);
+    rc::consume_shallow(sep);
     vec_base
 }
 
 /// Join a Vec of strings with a separator. Separator is the first argument.
+///
+/// Decision 24 (Sprint 56 Step 2c): consuming convention — dec the separator
+/// via `consume_shallow` and dec the Vec via `consume_vec_of_string` (which
+/// walks the element Strings and frees the Vec struct + data buffer).
 #[unsafe(no_mangle)]
 pub extern "C" fn str_join(sep: i64, vec: i64) -> i64 {
     let sep_str = unsafe { read_str(sep as *const u8) };
@@ -236,73 +268,109 @@ pub extern "C" fn str_join(sep: i64, vec: i64) -> i64 {
     let len = unsafe { *(base.add(crate::vec::LEN_OFFSET) as *const i64) } as usize;
     let data_ptr = unsafe { *(base.add(crate::vec::DATA_PTR_OFFSET) as *const i64) as *const i64 };
 
-    let mut parts = Vec::with_capacity(len);
+    // Copy the joined bytes out before we release the input Vec.
+    let mut parts: Vec<String> = Vec::with_capacity(len);
     for i in 0..len {
         let elem = unsafe { *data_ptr.add(i) };
         let s = unsafe { read_str(elem as *const u8) };
-        parts.push(s);
+        parts.push(s.to_string());
     }
 
-    let joined = parts.join(sep_str);
-    alloc_string(joined.as_bytes()) as i64
+    let joined: String = parts.join(sep_str);
+    let result = alloc_string(joined.as_bytes()) as i64;
+
+    // Decision 24: consume both heap arguments.
+    rc::consume_shallow(sep);
+    crate::drop::consume_vec_of_string(vec);
+
+    result
 }
 
 /// Replace all occurrences of `from` with `to` in `s`. Returns a new string.
+///
+/// Decision 24 (Sprint 56 Step 2c): consuming convention — dec all three heap args.
 #[unsafe(no_mangle)]
 pub extern "C" fn str_replace(s: i64, from: i64, to: i64) -> i64 {
     let src = unsafe { read_str(s as *const u8) };
     let from_str = unsafe { read_str(from as *const u8) };
     let to_str = unsafe { read_str(to as *const u8) };
-    let result = src.replace(from_str, to_str);
-    alloc_string(result.as_bytes()) as i64
+    let result = alloc_string(src.replace(from_str, to_str).as_bytes()) as i64;
+    rc::consume_shallow(s);
+    rc::consume_shallow(from);
+    rc::consume_shallow(to);
+    result
 }
 
 /// Trim leading and trailing whitespace. Returns a new string.
+///
+/// Decision 24 (Sprint 56 Step 2c): consuming convention — dec the heap arg.
 #[unsafe(no_mangle)]
 pub extern "C" fn str_trim(s: i64) -> i64 {
     let src = unsafe { read_str(s as *const u8) };
-    let trimmed = src.trim();
-    alloc_string(trimmed.as_bytes()) as i64
+    let result = alloc_string(src.trim().as_bytes()) as i64;
+    rc::consume_shallow(s);
+    result
 }
 
 /// Returns 1 if `s` starts with `prefix`, 0 otherwise.
+///
+/// Decision 24 (Sprint 56 Step 2c): consuming convention — dec both heap args.
 #[unsafe(no_mangle)]
 pub extern "C" fn str_starts_with(s: i64, prefix: i64) -> i64 {
     let src = unsafe { read_str(s as *const u8) };
     let prefix_str = unsafe { read_str(prefix as *const u8) };
-    if src.starts_with(prefix_str) { 1 } else { 0 }
+    let result = if src.starts_with(prefix_str) { 1 } else { 0 };
+    rc::consume_shallow(s);
+    rc::consume_shallow(prefix);
+    result
 }
 
 /// Returns 1 if `s` ends with `suffix`, 0 otherwise.
+///
+/// Decision 24 (Sprint 56 Step 2c): consuming convention — dec both heap args.
 #[unsafe(no_mangle)]
 pub extern "C" fn str_ends_with(s: i64, suffix: i64) -> i64 {
     let src = unsafe { read_str(s as *const u8) };
     let suffix_str = unsafe { read_str(suffix as *const u8) };
-    if src.ends_with(suffix_str) { 1 } else { 0 }
+    let result = if src.ends_with(suffix_str) { 1 } else { 0 };
+    rc::consume_shallow(s);
+    rc::consume_shallow(suffix);
+    result
 }
 
 /// Returns 1 if `s` contains `needle`, 0 otherwise.
+///
+/// Decision 24 (Sprint 56 Step 2c): consuming convention — dec both heap args.
 #[unsafe(no_mangle)]
 pub extern "C" fn str_contains(s: i64, needle: i64) -> i64 {
     let src = unsafe { read_str(s as *const u8) };
     let needle_str = unsafe { read_str(needle as *const u8) };
-    if src.contains(needle_str) { 1 } else { 0 }
+    let result = if src.contains(needle_str) { 1 } else { 0 };
+    rc::consume_shallow(s);
+    rc::consume_shallow(needle);
+    result
 }
 
 /// Convert string to uppercase. Returns a new string.
+///
+/// Decision 24 (Sprint 56 Step 2c): consuming convention — dec the heap arg.
 #[unsafe(no_mangle)]
 pub extern "C" fn str_to_upper(s: i64) -> i64 {
     let src = unsafe { read_str(s as *const u8) };
-    let upper = src.to_uppercase();
-    alloc_string(upper.as_bytes()) as i64
+    let result = alloc_string(src.to_uppercase().as_bytes()) as i64;
+    rc::consume_shallow(s);
+    result
 }
 
 /// Convert string to lowercase. Returns a new string.
+///
+/// Decision 24 (Sprint 56 Step 2c): consuming convention — dec the heap arg.
 #[unsafe(no_mangle)]
 pub extern "C" fn str_to_lower(s: i64) -> i64 {
     let src = unsafe { read_str(s as *const u8) };
-    let lower = src.to_lowercase();
-    alloc_string(lower.as_bytes()) as i64
+    let result = alloc_string(src.to_lowercase().as_bytes()) as i64;
+    rc::consume_shallow(s);
+    result
 }
 
 // ---------------------------------------------------------------------------
@@ -357,6 +425,7 @@ mod tests {
     }
 
     // spec: appendix-a-builtins §A.3 — str-concat concatenates two strings
+    // Decision 24: str_concat consumes both heap args — test releases only the result.
     #[test]
     fn test_str_concat() {
         let allocs_before = alloc_count();
@@ -367,50 +436,43 @@ mod tests {
 
         unsafe {
             assert_eq!(read_str(result as *const u8), "hello, world!");
-            alloc::dealloc(a as *mut u8);
-            alloc::dealloc(b as *mut u8);
+            // Decision 24: extern consumed a and b — only dealloc the result.
             alloc::dealloc(result as *mut u8);
         }
-        // Delta-based: at least 3 allocs (a + b + result), 3 deallocs.
+        // Delta-based: at least 3 allocs (a + b + result), 3 deallocs (extern consumed a and b; test freed result).
         assert!(alloc_count() - allocs_before >= 3);
         assert!(dealloc_count() - deallocs_before >= 3);
     }
 
     // spec: appendix-a-builtins §A.3 — str-eq returns true for equal strings
+    // Decision 24: str_eq consumes both heap args — nothing to dealloc.
     #[test]
     fn test_str_eq_equal() {
         let a = alloc_string(b"same") as i64;
         let b = alloc_string(b"same") as i64;
         assert_eq!(str_eq(a, b), 1);
-        unsafe {
-            alloc::dealloc(a as *mut u8);
-            alloc::dealloc(b as *mut u8);
-        }
+        // Decision 24: extern consumed a and b.
     }
 
     // spec: appendix-a-builtins §A.3 — str-eq returns false for different strings
+    // Decision 24: str_eq consumes both heap args — nothing to dealloc.
     #[test]
     fn test_str_eq_not_equal() {
         let a = alloc_string(b"hello") as i64;
         let b = alloc_string(b"world") as i64;
         assert_eq!(str_eq(a, b), 0);
-        unsafe {
-            alloc::dealloc(a as *mut u8);
-            alloc::dealloc(b as *mut u8);
-        }
+        // Decision 24: extern consumed a and b.
     }
 
     // spec: 12-runtime §12.1.2 — string length in bytes (not characters)
+    // Decision 24: str_len consumes its heap arg — nothing to dealloc.
     #[test]
     fn test_str_len() {
         let s = alloc_string(b"hello") as i64;
         assert_eq!(str_len(s), 5);
         let empty = alloc_string(b"") as i64;
         assert_eq!(str_len(empty), 0);
-        unsafe {
-            alloc::dealloc(s as *mut u8);
-            alloc::dealloc(empty as *mut u8);
-        }
+        // Decision 24: extern consumed s and empty.
     }
 
     // spec: 12-runtime §12.3.2, appendix-a-builtins §A.3 — string-identity increments RC
@@ -480,29 +542,30 @@ mod tests {
     }
 
     // spec: 12-runtime §12.1.2 — null pointer string allocation produces empty string
+    // Decision 24: str_len consumes its heap arg.
     #[test]
     fn test_alloc_string_null_ptr() {
         let s = heap_alloc_string(std::ptr::null(), 0);
         assert_ne!(s, 0);
         assert_eq!(str_len(s), 0);
-        unsafe { alloc::dealloc(s as *mut u8) };
+        // Decision 24: str_len consumed s.
     }
 
     // spec: appendix-a-builtins §A.3 — str-concat with both empty strings
+    // Decision 24: str_concat + str_len both consume their heap args — only
+    // the intermediate `result` needs an explicit dealloc, since str_len
+    // consumes it at the end.
     #[test]
     fn test_str_concat_empty_strings() {
         let a = alloc_string(b"") as i64;
         let b = alloc_string(b"") as i64;
         let result = str_concat(a, b);
         assert_eq!(str_len(result), 0);
-        unsafe {
-            alloc::dealloc(a as *mut u8);
-            alloc::dealloc(b as *mut u8);
-            alloc::dealloc(result as *mut u8);
-        }
+        // Decision 24: extern consumed a, b, and result (via str_len).
     }
 
     // spec: appendix-a-builtins §A.3 — str-concat with one empty string
+    // Decision 24: str_concat consumes both heap args — test releases only the result.
     #[test]
     fn test_str_concat_one_empty() {
         let a = alloc_string(b"hello") as i64;
@@ -510,8 +573,7 @@ mod tests {
         let result = str_concat(a, b);
         unsafe {
             assert_eq!(read_str(result as *const u8), "hello");
-            alloc::dealloc(a as *mut u8);
-            alloc::dealloc(b as *mut u8);
+            // Decision 24: extern consumed a and b — only dealloc the result.
             alloc::dealloc(result as *mut u8);
         }
     }
@@ -524,5 +586,132 @@ mod tests {
             assert_eq!(read_str(s as *const u8), "héllo 世界");
             alloc::dealloc(s as *mut u8);
         }
+    }
+
+    // ---------------------------------------------------------------------
+    // Decision 24 extern-consumption tests (Sprint 56 Step 2c)
+    //
+    // Each test verifies RC balance for a string-family extern: the extern
+    // must consume its heap arguments such that, after freeing the extern's
+    // return value (if heap-typed), the net alloc/dealloc delta is zero.
+    // A leak surfaces as an inequality; a double-free surfaces as a panic.
+    // ---------------------------------------------------------------------
+
+    // spec: design/arch/CLAUDE.md Decision 24 — consuming convention, extern str_concat
+    #[test]
+    fn decision24_str_concat_consumes_heap_args() {
+        let allocs_before = alloc_count();
+        let deallocs_before = dealloc_count();
+        let a = alloc_string(b"foo") as i64; // rc=1
+        let b = alloc_string(b"bar") as i64; // rc=1
+        let result = str_concat(a, b);       // consumes a (−1, freed), consumes b (−1, freed)
+        assert_eq!(unsafe { read_str(result as *const u8) }, "foobar");
+        unsafe { alloc::dealloc(result as *mut u8) };
+        // 3 allocs (a, b, result); 3 deallocs (extern freed a and b; test freed result).
+        assert_eq!(alloc_count() - allocs_before, 3, "alloc count mismatch");
+        assert_eq!(dealloc_count() - deallocs_before, 3, "dealloc count mismatch (leak or double-free)");
+    }
+
+    // spec: design/arch/CLAUDE.md Decision 24 — consuming convention, extern str_eq
+    #[test]
+    fn decision24_str_eq_consumes_both_heap_args() {
+        let allocs_before = alloc_count();
+        let deallocs_before = dealloc_count();
+        let a = alloc_string(b"xyz") as i64;
+        let b = alloc_string(b"xyz") as i64;
+        assert_eq!(str_eq(a, b), 1);
+        // Extern consumed a and b — no further dealloc needed.
+        assert_eq!(alloc_count() - allocs_before, 2);
+        assert_eq!(dealloc_count() - deallocs_before, 2);
+    }
+
+    // spec: design/arch/CLAUDE.md Decision 24 — consuming convention, extern str_len
+    #[test]
+    fn decision24_str_len_consumes_heap_arg() {
+        let allocs_before = alloc_count();
+        let deallocs_before = dealloc_count();
+        let s = alloc_string(b"abcde") as i64;
+        assert_eq!(str_len(s), 5);
+        assert_eq!(alloc_count() - allocs_before, 1);
+        assert_eq!(dealloc_count() - deallocs_before, 1);
+    }
+
+    // spec: design/arch/CLAUDE.md Decision 24 — consuming convention, extern str_substring
+    #[test]
+    fn decision24_str_substring_consumes_heap_arg() {
+        let allocs_before = alloc_count();
+        let deallocs_before = dealloc_count();
+        let s = alloc_string(b"hello world") as i64;
+        let result = str_substring(s, 6, 11);
+        assert_eq!(unsafe { read_str(result as *const u8) }, "world");
+        unsafe { alloc::dealloc(result as *mut u8) };
+        // 2 allocs (s, result); 2 deallocs (extern freed s, test freed result).
+        assert_eq!(alloc_count() - allocs_before, 2);
+        assert_eq!(dealloc_count() - deallocs_before, 2);
+    }
+
+    // spec: design/arch/CLAUDE.md Decision 24 — consuming convention, extern str_trim
+    #[test]
+    fn decision24_str_trim_consumes_heap_arg() {
+        let allocs_before = alloc_count();
+        let deallocs_before = dealloc_count();
+        let s = alloc_string(b"  hi  ") as i64;
+        let result = str_trim(s);
+        assert_eq!(unsafe { read_str(result as *const u8) }, "hi");
+        unsafe { alloc::dealloc(result as *mut u8) };
+        assert_eq!(alloc_count() - allocs_before, 2);
+        assert_eq!(dealloc_count() - deallocs_before, 2);
+    }
+
+    // spec: design/arch/CLAUDE.md Decision 24 — consuming convention, extern str_starts_with
+    #[test]
+    fn decision24_str_starts_with_consumes_both_heap_args() {
+        let allocs_before = alloc_count();
+        let deallocs_before = dealloc_count();
+        let s = alloc_string(b"hello world") as i64;
+        let prefix = alloc_string(b"hello") as i64;
+        assert_eq!(str_starts_with(s, prefix), 1);
+        assert_eq!(alloc_count() - allocs_before, 2);
+        assert_eq!(dealloc_count() - deallocs_before, 2);
+    }
+
+    // spec: design/arch/CLAUDE.md Decision 24 — consuming convention, extern str_replace
+    #[test]
+    fn decision24_str_replace_consumes_three_heap_args() {
+        let allocs_before = alloc_count();
+        let deallocs_before = dealloc_count();
+        let s = alloc_string(b"aaabbb") as i64;
+        let from = alloc_string(b"a") as i64;
+        let to = alloc_string(b"X") as i64;
+        let result = str_replace(s, from, to);
+        assert_eq!(unsafe { read_str(result as *const u8) }, "XXXbbb");
+        unsafe { alloc::dealloc(result as *mut u8) };
+        // 4 allocs, 4 deallocs (extern freed s/from/to; test freed result).
+        assert_eq!(alloc_count() - allocs_before, 4);
+        assert_eq!(dealloc_count() - deallocs_before, 4);
+    }
+
+    // spec: design/arch/CLAUDE.md Decision 24 — consume_shallow handles rc>1 correctly
+    // (scope semantic: the caller incs before the call, the extern dec's; net = 0.)
+    #[test]
+    fn decision24_consume_shallow_with_refcount_above_one() {
+        use std::sync::atomic::{AtomicI64, Ordering};
+        let allocs_before = alloc_count();
+        let deallocs_before = dealloc_count();
+        let s = alloc_string(b"shared") as i64;
+
+        // Simulate caller-side inc (rc: 1 -> 2).
+        unsafe {
+            let rc_ptr = &*((s as *const u8).add(HeapHeader::RC_OFFSET as usize) as *const AtomicI64);
+            rc_ptr.fetch_add(1, Ordering::Release);
+        }
+
+        let len = str_len(s); // consume_shallow dec's (rc: 2 -> 1), no free.
+        assert_eq!(len, 6);
+
+        // String still alive with rc=1; clean up.
+        unsafe { alloc::dealloc(s as *mut u8) };
+        assert_eq!(alloc_count() - allocs_before, 1);
+        assert_eq!(dealloc_count() - deallocs_before, 1);
     }
 }

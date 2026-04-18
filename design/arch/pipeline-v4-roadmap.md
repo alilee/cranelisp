@@ -44,6 +44,21 @@ The pipeline orchestration layer is complete. What remains is the **data model c
 | File watcher (`src/watch.rs`, init/sync/poll_and_reload) | Done |
 | Old pipeline deleted (~12k+ lines removed) | Done |
 
+<!-- FIXME(/int) Sprint 56 Wave 3 /port verification: exemplar/solver.cl fails to
+     compile with: "module 'super' not found (imported by 'grid.test')".
+     The frontend module_extract captures `(import [super [*]])` as a module
+     path named literally "super" (see crates/cranelisp-frontend/src/module_extract.rs
+     test_import_super). The v4 scheduler/module loader never rewrites this to
+     the parent path. The sketch resolved this in sketch/src/module.rs:1429-1434
+     (strip last dotted component: `math.test` super → `math`). Spec requirement
+     is spec/08-modules.md §8.3.6 lines 183-195 (MUST rewrite; MUST error if
+     parent doesn't exist). This blocks all exemplar modules (grid, solver,
+     html, form each use `(mod test (import [super [*]])...)`). Proposed
+     resolution: add `resolve_super_imports` pass in src/scheduler.rs or
+     src/worker.rs when a module's import_specs are first consumed, rewriting
+     `super` → parent path (via `ModuleFullPath::rsplit_once('.')`) and
+     erroring on root modules. -->
+
 ### What's NOT Implemented (v4 target gaps)
 
 The audit compares actual code against `pipeline-v4.md` §9. Nine structural gaps remain, all related to the data model convergence. See `design/arch/sequence-diagram/` for visual comparison.

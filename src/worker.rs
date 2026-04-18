@@ -21,7 +21,6 @@ use cranelisp_typecheck::{CheckPass, CheckState, ModuleCheckAccumulator};
 use crate::expander::{
     self, MacroClauseEntry, MacroEntry, MacroResolver,
 };
-use crate::pipeline::compile_and_register_defn_shared;
 use crate::platform_registry::PlatformRegistry;
 use crate::scheduler::{CompileScheduler, PriorityWork};
 
@@ -332,23 +331,25 @@ fn compile_macro_clause_with_state(
         });
     let defn = &defn;
 
-    // Compile macro clause with dealloc disabled.
+    // Compile macro clause through the unified compile_to_module path.
+    // Macro clause functions are normal functions on per-module GOTs — the
+    // typechecker has registered `defn.name` on `target_module`'s symbol
+    // table with `ast: Some(_)` and `got_slot: Some(_)` (Wave 0 invariant).
     let tc_modules = symbol_tables;
     ensure_typecheck_product(typecheck_products, target_module);
-    // G7 (Wave 0): GOT lives on SymbolTable; clone Arc so we can release the
-    // DashMap guard before recursive codegen reads the same table.
-    let module_got = symbol_tables.get(target_module)
-        .expect("invariant: symbol table exists for target module")
-        .got.clone();
-    let (macro_jit_symbols, macro_got_data_defs) =
-        collect_jit_setup(tc_modules, target_module, platform_registry);
     // Wave 0 (Sprint 56): the typechecker registers every compilable defn
     // with `got_slot: Some(_)`, so the legacy `pre_register_got_slots_in_tc`
     // safety net is no longer needed here.
     let _ = accumulator;
-    compile_and_register_defn_shared(
-        &macro_jit_symbols, &macro_got_data_defs, defn, &module_got,
-        codegen_products, None, target_module, true, symbol_tables,
+    let names = [defn.name.clone()];
+    inline_jit_codegen_for_names(
+        platform_registry,
+        target_module,
+        &names,
+        tc_modules,
+        codegen_products,
+        None,
+        &[],
     )?;
 
     Ok(())
@@ -1725,24 +1726,26 @@ fn compile_macro_clause_inline(
         });
     let defn = &defn;
 
-    // Compile macro clause with dealloc disabled (prevents use-after-free on Sexp unmarshal).
-    // Macro clause functions are normal functions on per-module GOTs.
+    // Compile macro clause through the unified compile_to_module path.
+    // Macro clause functions are normal functions on per-module GOTs — the
+    // typechecker has registered `defn.name` on the current module's symbol
+    // table with `ast: Some(_)` and `got_slot: Some(_)` (Wave 0 invariant).
     let module = ctx.current_module.clone();
     let tc_modules = ctx.symbol_tables;
     ensure_typecheck_product(ctx.typecheck_products, &module);
-    // G7 (Wave 0): GOT lives on SymbolTable.
-    let module_got = ctx.symbol_tables.get(&module)
-        .expect("invariant: symbol table exists for module")
-        .got.clone();
-    let (macro_jit_symbols, macro_got_data_defs) =
-        collect_jit_setup(tc_modules, &module, ctx.platform_registry);
     // Wave 0 (Sprint 56): the typechecker registers every compilable defn
     // with `got_slot: Some(_)`, so the legacy `pre_register_got_slots_in_tc`
     // safety net is no longer needed here.
     let _ = accumulator;
-    compile_and_register_defn_shared(
-        &macro_jit_symbols, &macro_got_data_defs, defn, &module_got,
-        ctx.codegen_products, None, &module, true, tc_modules,
+    let names = [defn.name.clone()];
+    inline_jit_codegen_for_names(
+        ctx.platform_registry,
+        &module,
+        &names,
+        tc_modules,
+        ctx.codegen_products,
+        None,
+        &[],
     )?;
 
     Ok(())
@@ -2330,6 +2333,57 @@ pub fn inline_jit_codegen_for_module(
         return Ok(());
     }
 
+    // Delegate to the names-explicit helper and then notify the scheduler
+    // once per compiled name (last-in-batch flag set for the final entry).
+    inline_jit_codegen_for_names(
+        platform_registry,
+        module,
+        &names,
+        tc_modules,
+        codegen_products,
+        introspection,
+        extra_jit_symbols,
+    )?;
+
+    let total = names.len();
+    for (i, name) in names.iter().enumerate() {
+        let is_last = i + 1 == total;
+        scheduler.notify_inmem_codegen_complete(module, name, is_last);
+    }
+
+    Ok(())
+}
+
+/// Compile an explicit list of already-registered symbols through the unified
+/// `compile_to_module` entry point.
+///
+/// This is the shared core of `inline_jit_codegen_for_module`: it takes a
+/// pre-computed `names` batch (each name must already live on the module's
+/// symbol table with `ast: Some(_)` and `got_slot: Some(_)` — Wave 0
+/// invariant) and performs steps 2–7 of the compile flow. It does NOT notify
+/// the scheduler — the caller is responsible for that.
+///
+/// Used by:
+/// - `inline_jit_codegen_for_module` (primary caller, derives `names` via
+///   `derive_codegen_batch`, notifies after)
+/// - Macro clause compilation (`compile_macro_clause_with_state`,
+///   `compile_macro_clause_inline`) — passes a single-element `names` for the
+///   synthesised `__macro_{name}_clause_{idx}` defn. Macro-clause callers
+///   notify the scheduler themselves in their outer loop.
+#[allow(clippy::too_many_arguments)]
+pub fn inline_jit_codegen_for_names(
+    platform_registry: &PlatformRegistry,
+    module: &ModuleFullPath,
+    names: &[Symbol],
+    tc_modules: &dashmap::DashMap<ModuleFullPath, cranelisp_types::SymbolTable>,
+    codegen_products: &dashmap::DashMap<ModuleFullPath, crate::session_v4::CodegenProduct>,
+    introspection: Option<&dashmap::DashMap<cranelisp_types::FQSymbol, crate::session_v4::Introspection>>,
+    extra_jit_symbols: &[(String, *const u8)],
+) -> Result<(), CranelispError> {
+    if names.is_empty() {
+        return Ok(());
+    }
+
     // 2. Collect platform symbols + per-module GOT base addresses.
     let (mut jit_symbols, got_data_defs) =
         collect_jit_setup(tc_modules, module, platform_registry);
@@ -2374,7 +2428,7 @@ pub fn inline_jit_codegen_for_module(
     // 4. Unified codegen entry — no env, no mode.
     let result = cranelisp_backend::compile_to_module(
         module.clone(),
-        &names,
+        names,
         tc_modules,
         jit.jit_module(),
     )?;
@@ -2390,7 +2444,7 @@ pub fn inline_jit_codegen_for_module(
     // 6. For each compiled name: read finalised pointer, store in GOT slot,
     //    and register a Code entry in codegen_products.
     let product = codegen_products.entry(module.clone()).or_default();
-    for name in &names {
+    for name in names {
         let Some(func_id) = result.func_ids.get(name).copied().or_else(|| {
             // compile_to_module returns func_ids keyed by the module-qualified
             // JIT name for non-user/non-main modules. Fall back to scanning
@@ -2444,13 +2498,6 @@ pub fn inline_jit_codegen_for_module(
             };
             entry.code_size = Some(artifacts.code_size as usize);
         }
-    }
-
-    // 8. Notify the scheduler for each compiled name.
-    let total = names.len();
-    for (i, name) in names.iter().enumerate() {
-        let is_last = i + 1 == total;
-        scheduler.notify_inmem_codegen_complete(module, name, is_last);
     }
 
     Ok(())
@@ -3237,5 +3284,98 @@ mod tests {
             .got
             .load_slot(slot);
         assert_eq!(stored, fake_ptr, "GOT slot must hold the code pointer just written");
+    }
+
+    // spec: design/int/phase2-codegen-convergence.md §5 — macro-clause compile via unified path
+    #[test]
+    fn inline_jit_codegen_for_names_compiles_single_defn() {
+        // Exercises the macro-clause migration path: a single-element `names`
+        // batch flows through the unified `compile_to_module` entry point and
+        // produces a Code entry + GOT slot write + introspection payload.
+        // This is the contract relied on by compile_macro_clause_with_state and
+        // compile_macro_clause_inline after Sprint 56 Wave 2c deleted
+        // `compile_and_register_defn_shared`.
+        let module = ModuleFullPath::from("user");
+        let symbol_tables: dashmap::DashMap<ModuleFullPath, SymbolTable> =
+            dashmap::DashMap::new();
+        let codegen_products: dashmap::DashMap<
+            ModuleFullPath,
+            crate::session_v4::CodegenProduct,
+        > = dashmap::DashMap::new();
+        let introspection: dashmap::DashMap<FQSymbol, crate::session_v4::Introspection> =
+            dashmap::DashMap::new();
+
+        let mut st = SymbolTable::new(module.clone());
+        let slot = st.allocate_got_slot();
+        let defn_name = Symbol::from("__macro_demo_clause_0");
+        st.insert(
+            defn_name.clone(),
+            mk_def_with_got(
+                DefKind::UserFn { constrained_fn: None },
+                Some(trivial_defn(defn_name.as_ref())),
+                Some(slot),
+            ),
+        );
+        symbol_tables.insert(module.clone(), st);
+
+        let platform_registry = crate::platform_registry::PlatformRegistry::new();
+
+        let names = [defn_name.clone()];
+        inline_jit_codegen_for_names(
+            &platform_registry,
+            &module,
+            &names,
+            &symbol_tables,
+            &codegen_products,
+            Some(&introspection),
+            &[],
+        )
+        .expect("unified codegen should succeed for a trivial int-returning defn");
+
+        // Assert: codegen_products has a Code entry for the defn name with a
+        // non-null pointer.
+        let code_ptr = {
+            let product = codegen_products
+                .get(&module)
+                .expect("codegen_products entry created for module");
+            let code = product
+                .code
+                .get(&defn_name)
+                .expect("Code entry present for compiled macro-clause defn");
+            assert!(!code.ptr.is_null(), "compiled function pointer must be non-null");
+            code.ptr
+        };
+
+        // Assert: the GOT slot holds the same pointer.
+        let stored = symbol_tables
+            .get(&module)
+            .expect("symbol table present")
+            .got
+            .load_slot(slot);
+        assert_eq!(
+            stored, code_ptr,
+            "GOT slot must hold the pointer returned from the unified codegen path"
+        );
+
+        // Assert: introspection entry carries CLIF IR and a code_size.
+        let fq = FQSymbol {
+            module: module.clone(),
+            symbol: defn_name.clone(),
+        };
+        let intro = introspection
+            .get(&fq)
+            .expect("introspection entry populated for compiled defn");
+        assert!(
+            intro
+                .clif_ir
+                .as_deref()
+                .unwrap_or("")
+                .contains(defn_name.as_ref()),
+            "CLIF IR should mention the compiled function name"
+        );
+        assert!(
+            intro.code_size.is_some_and(|n| n > 0),
+            "code_size must be populated from FunctionArtifacts"
+        );
     }
 }

@@ -74,6 +74,7 @@ Delivery progress for the Cranelisp reimplementation. For technical scope per ri
 | 50-53 | Backend API conformance, workspace build fix, test porting | COMPLETE | `sprints/archive/sprint-53.md` |
 | 54 | Stabilise — Phase 0 of pipeline-v4 convergence: 41 tests fixed (trace intrinsics, file watcher, link startup, checked-div, persistence), 9 deferred (cache/multi-sig/run-tests — all touch subsystems replaced by convergence Phases 1-5), pipeline-v4 roadmap + sequence diagrams + codegen convergence design doc: 1595 passed, 9 failures (all deferred), 0 ignored | COMPLETE | `sprints/archive/sprint-54.md` |
 | 55 | Pipeline v4 convergence Phase 1 — AST on symbol table: `Expr.inferred_type`/`Expr::Apply.resolved_call` fields, `ModuleEntry::Def.ast` populated, `compile_to_module` no longer takes `CheckResult`, `CodegenInput` deleted. Per-defn completion design (post-passes inside `check_form(CheckBody)`). Wave 3b trait impl method annotation (Section 3.7) fixed 59-regression root cause. 3 design docs, /arch approved through 3 iterations. 4 B1 regressions + I2/I3/S3/S4 review findings resolved. I1/I4/I5/S1/S2/S5 deferred to Phase 2: 1589 passed, 22 failures (all baseline, 0 new), 14 skipped | COMPLETE | `sprints/archive/sprint-55.md` |
+| 56 | Pipeline v4 convergence Phase 2 — single codegen entry point. `compile_to_module(path, names, symbol_tables, module)` — 4 params, one path. Wave 0 (ast on mangled multi-sig + mono entries, `defined_symbols()`, G7 pulled forward: `got: GotTable` on SymbolTable). Wave 1 (delete `CompilationEnv`/`ObjectCompilationEnv`/`expand_multi_sig_defn`; uniform `global_value` GOT emission; `CompilationResult.artifacts`). Wave 2 (delete `codegen_module_symbols`/`compile_regular_defns`/`SessionCompilationEnv`/`pre_register_got_slots_in_tc`/`TypecheckProduct.got`). Wave 2c Decision 24 (retracts Decision 20) — single consuming convention; delete `dec_temporary_args`/`disable_dealloc`/`compile_and_register_defn_shared`; 36-extern RC audit with one-row-per-extern table in ring2-rc.md §3.3; new `cranelisp-runtime::drop` helper module. 3 multi-sig JIT tests flip green. 43+ new unit tests (6 Wave 0 + 4 Step 2a + 4 priority worker + 29 `decision24_*`). 18 FIXMEs filed during close (14 prior-ring /qa + super-import + /mem + io leak + /qa pattern + pipeline cleanup): 1602 passed, 14 failed (all deferred to Phase 3+5), 0 skipped | COMPLETE | `sprints/archive/sprint-56.md` |
 
 ## Forward Plan
 
@@ -103,8 +104,8 @@ Ring 4 acceptance criteria from `design/arch/roadmap.md` vs current state:
 | Hot-reload: file changes auto-reload in REPL | DONE (S54) — 4 root causes fixed (content hash, paren balance, file_to_module) |
 | `(trace (fib 5))` execution tracing | DONE (S20, fixed S54) — intrinsic signatures corrected |
 | `(run-tests ...)` test runner | **GAP** — needs special form implementation (AST variants + codegen) |
-| All ~470 portable integration tests from prototype pass | **GAP** — 4 sketch_port failures (3 multi-sig JIT, 1 run-tests) |
-| All E2E transcript tests pass | 1595/1604 passing, 9 failures (all deferred to convergence) |
+| All ~470 portable integration tests from prototype pass | **GAP** — 1 sketch_port failure (run-tests); 3 multi-sig JIT fixed in S56 |
+| All E2E transcript tests pass | 1602/1616 passing, 14 failures (all deferred to Phases 3+5) |
 | Performance within 2x of prototype | **NOT MEASURED** — no benchmark infrastructure |
 | REPL experience test suite passes | Partial — core experience works, coverage gaps |
 | Exemplar project compiles, runs, passes tests | **GAP** — 1 test failure, not fully E2E validated |
@@ -120,4 +121,5 @@ Pipeline v4 orchestration complete. Data model convergence next (pipeline-v4-roa
 | 51 | Stateless TC | TypeCheckEnv, FQTypeName/FQTraitName, registries deleted: 1516 passed, 25 failed. **57 files, +4800/-2900 lines.** | COMPLETE | `sprints/archive/sprint-51.md` |
 | 52 | Clean & Green (part 1) | Sprint23 ungated, spec updates, CLI positional args, session persistence, fixes: 1576 passed, 28 failed | COMPLETE | `sprints/archive/sprint-52.md` |
 | 53 | Backend API Conformance | Inlined compile_to_module_inner (-608 lines), workspace build fix: 1546 passed, 58 failed | COMPLETE | `sprints/archive/sprint-53.md` |
-| 56+ | Phases 2–5 | Single codegen entry, GOT/code on SymbolTable, platform/workers, cache | — | — |
+| 56 | Phase 2 — Single codegen entry (DELIVERED): 1602 passed, 14 failed | COMPLETE | `sprints/archive/sprint-56.md` |
+| 57+ | Phases 3–5 | GOT/code on SymbolTable, platform/workers, cache | — | — |

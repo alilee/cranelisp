@@ -6,9 +6,23 @@
 //! The backend emits RC inc/dec inline as atomic_rmw — NOT as extern function
 //! calls. This module provides the trace logging infrastructure that both the
 //! runtime (alloc/free) and the backend (inc/dec underflow check) can use.
+//!
+//! ## Consuming helper
+//!
+//! Decision 24 (Sprint 56 Step 2c) introduces a uniform consuming calling
+//! convention. Externs implemented in Rust must dec their own heap arguments
+//! if they do not return them. `consume_shallow` provides the canonical way
+//! to do this for any heap value with no embedded heap sub-references (String,
+//! plain Trace ADT pointers — the caller should use specialised paths for Vec,
+//! ADTs with heap fields, and closures where inline drop glue is already
+//! emitted by the backend).
 
 use std::sync::LazyLock;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
+
+use cranelisp_types::HeapHeader;
+
+use crate::alloc;
 
 /// Whether RC trace logging is enabled. Checked once at process start.
 static RC_TRACE_ENABLED: LazyLock<AtomicBool> = LazyLock::new(|| {
@@ -38,6 +52,48 @@ pub fn rc_trace(op: &str, ptr: i64, rc: i64) {
 /// Check if RC trace logging is currently enabled.
 pub fn is_rc_trace_enabled() -> bool {
     RC_TRACE_ENABLED.load(Ordering::Relaxed)
+}
+
+/// Consume a heap argument: atomically dec RC; if it was 1, free the allocation.
+///
+/// This is the canonical "extern received a heap arg, does not return it,
+/// must release its reference" operation. It is safe for:
+///   - String (HeapString — no heap sub-references)
+///   - Trace ADT (Trace contains heap fields, but freeing it unconditionally
+///     would leave fields dangling — use only when the caller's semantics match)
+///   - Any heap object with NO heap-typed fields
+///
+/// NOT safe for Vec (separate data buffer to free), closures (embedded drop
+/// glue), or ADTs with heap fields (need drop glue to recursively dec fields).
+/// Those have specialised code paths.
+///
+/// No-op for values below `NULLARY_TAG_THRESHOLD` (bare nullary tags of
+/// Mixed-category ADTs).
+///
+/// # Safety
+///
+/// `ptr` must be either a valid heap base pointer whose RC is > 0, or a
+/// bare nullary tag (< NULLARY_TAG_THRESHOLD).
+#[inline]
+pub fn consume_shallow(ptr: i64) {
+    if ptr < cranelisp_types::NULLARY_TAG_THRESHOLD as i64 {
+        return; // bare tag — no heap alloc to dec
+    }
+    // SAFETY: caller guarantees ptr is a valid heap base with RC > 0.
+    let rc_ptr = unsafe {
+        &*((ptr as *const u8).add(HeapHeader::RC_OFFSET as usize) as *const AtomicI64)
+    };
+    let old_rc = rc_ptr.fetch_sub(1, Ordering::Release);
+    debug_assert!(
+        old_rc > 0,
+        "consume_shallow underflow: ptr={ptr:#x} had rc={old_rc} before decrement"
+    );
+    rc_trace("dec", ptr, old_rc - 1);
+    if old_rc == 1 {
+        std::sync::atomic::fence(Ordering::Acquire);
+        // SAFETY: RC reached 0, no other references exist.
+        unsafe { alloc::dealloc(ptr as *mut u8) };
+    }
 }
 
 /// RC underflow check — called from JIT-generated inline dec code.
@@ -91,5 +147,53 @@ mod tests {
         // Should not panic when old_rc > 0.
         rc_underflow_check(0x1234, 1);
         rc_underflow_check(0x1234, 5);
+    }
+
+    // spec: design/arch/CLAUDE.md Decision 24 — consume_shallow skips bare nullary tags
+    #[test]
+    fn decision24_consume_shallow_skips_nullary_tags() {
+        // Bare nullary tags (< NULLARY_TAG_THRESHOLD) must be skipped —
+        // they are not heap pointers. This is critical for Mixed-category
+        // ADTs where an Option/Result value might be either a bare tag or
+        // a heap pointer.
+        let allocs_before = alloc::alloc_count();
+        let deallocs_before = alloc::dealloc_count();
+        // 0 = None (nullary tag); passing to consume_shallow must be a no-op.
+        consume_shallow(0);
+        consume_shallow(1);
+        consume_shallow(100);
+        consume_shallow(cranelisp_types::NULLARY_TAG_THRESHOLD as i64 - 1);
+        assert_eq!(alloc::alloc_count() - allocs_before, 0);
+        assert_eq!(alloc::dealloc_count() - deallocs_before, 0);
+    }
+
+    // spec: design/arch/CLAUDE.md Decision 24 — consume_shallow frees last reference
+    #[test]
+    fn decision24_consume_shallow_frees_last_reference() {
+        let allocs_before = alloc::alloc_count();
+        let deallocs_before = alloc::dealloc_count();
+        // Allocate a heap value with rc=1; consume_shallow should free it.
+        let base = alloc::alloc_with_rc(16) as i64;
+        consume_shallow(base);
+        assert_eq!(alloc::alloc_count() - allocs_before, 1);
+        assert_eq!(alloc::dealloc_count() - deallocs_before, 1);
+    }
+
+    // spec: design/arch/CLAUDE.md Decision 24 — consume_shallow preserves value at rc>1
+    #[test]
+    fn decision24_consume_shallow_preserves_shared_reference() {
+        let allocs_before = alloc::alloc_count();
+        let deallocs_before = alloc::dealloc_count();
+        let base = alloc::alloc_with_rc(16) as i64;
+        // Simulate a second reference (rc: 1 -> 2).
+        unsafe {
+            let rc_ptr = &*((base as *const u8).add(HeapHeader::RC_OFFSET as usize) as *const AtomicI64);
+            rc_ptr.fetch_add(1, Ordering::Release);
+        }
+        consume_shallow(base); // rc: 2 -> 1, no free
+        assert_eq!(alloc::alloc_count() - allocs_before, 1);
+        assert_eq!(alloc::dealloc_count() - deallocs_before, 0, "must not free when other refs exist");
+        // Clean up.
+        unsafe { alloc::dealloc(base as *mut u8) };
     }
 }

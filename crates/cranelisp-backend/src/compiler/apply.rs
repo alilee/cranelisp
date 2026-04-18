@@ -120,30 +120,25 @@ impl<'a, M: Module> FnCompiler<'a, M> {
     ) -> Result<Value, CranelispError> {
         match resolved {
             ResolvedCall::BuiltinFn { name: ref op_name } => {
-                // Builtins are borrowing: they don't dec params.
-                // We dec temporary (non-variable) heap args after the call.
+                // Decision 24: uniform consuming convention. Extern primitives
+                // dec their own heap args; inline builtins operate on NeverHeap
+                // operands. The caller never emits a post-call temporary dec.
 
                 // IO bind: intercept and compile inline.
                 // bind uses consuming semantics: it takes ownership of both args
                 // by storing them in the Bind node. For variables, inc to add
                 // the Bind node's reference. For temporaries, transfer ownership
                 // (temp starts at rc=1, Bind node inherits it — no inc/dec needed).
-                //
-                // CRITICAL: do NOT call dec_temporary_args after bind. Unlike
-                // borrowing builtins, bind stores its args. dec_temporary_args
-                // would call emit_inline_drop_glue which dec's ADT fields
-                // while the node is still alive, causing use-after-free.
                 if op_name.as_ref() == "bind" {
                     let arg_vals = self.compile_consuming_arg_list(args)?;
                     self.in_tail_position = saved_tail;
-                    let result = self.compile_bind_inline(&arg_vals, span)?;
-                    // No dec_temporary_args — bind owns the args.
-                    return Ok(result);
+                    return self.compile_bind_inline(&arg_vals, span);
                 }
 
                 // Vec operations: intercept and compile inline.
                 // Vec ops handle their own temporary cleanup internally
-                // via emit_vec_drop_if_temporary — do NOT call dec_temporary_args.
+                // via emit_vec_drop_if_temporary (COW-specific, not post-call
+                // convention). See ring2-rc.md §3.3.
                 if is_vec_primitive(op_name) {
                     let arg_vals = self.compile_arg_list(args)?;
                     self.in_tail_position = saved_tail;
@@ -155,11 +150,23 @@ impl<'a, M: Module> FnCompiler<'a, M> {
                 }
 
                 if is_extern_primitive(op_name) {
-                    let arg_vals = self.compile_arg_list(args)?;
+                    // Decision 24 (Sprint 56 Step 2c): uniform consuming
+                    // convention. Every extern dec's its own heap args via
+                    // `rc::consume_shallow` (simple heap) or
+                    // `crate::drop::consume_*` (complex heap — SList, Sexp,
+                    // Vec, Trace ADT, IO tree). Caller incs heap-typed Var
+                    // args here so the Var's scope still holds a live
+                    // reference after the callee's dec. `string-identity`
+                    // is special: it inc-and-returns its arg, so callers
+                    // stay on plain arg compilation (the identity retains
+                    // the original reference).
+                    let arg_vals = if op_name.as_ref() == "string-identity" {
+                        self.compile_arg_list(args)?
+                    } else {
+                        self.compile_consuming_arg_list(args)?
+                    };
                     self.in_tail_position = saved_tail;
-                    let result = self.compile_extern_call(op_name, &arg_vals, span)?;
-                    self.dec_temporary_args(args, &arg_vals);
-                    return Ok(result);
+                    return self.compile_extern_call(op_name, &arg_vals, span);
                 }
 
                 // Unrecognized builtin: treat as extern call.
@@ -173,15 +180,14 @@ impl<'a, M: Module> FnCompiler<'a, M> {
                     return self.compile_extern_call(op_name, &arg_vals, span);
                 }
 
+                // Inline builtin operators (arithmetic, comparison, boolean).
+                // All operands are NeverHeap (Int/Bool/Float) — no dec work.
                 let arg_vals = self.compile_arg_list(args)?;
                 self.in_tail_position = saved_tail;
-                let result =
-                    operators::emit_builtin_op(
-                        &mut self.builder, op_name, &arg_vals, span,
-                        self.module, self.ctx.panic_func_id,
-                    )?;
-                self.dec_temporary_args(args, &arg_vals);
-                Ok(result)
+                operators::emit_builtin_op(
+                    &mut self.builder, op_name, &arg_vals, span,
+                    self.module, self.ctx.panic_func_id,
+                )
             }
             ResolvedCall::TraitMethod {
                 ref trait_name,
@@ -193,33 +199,34 @@ impl<'a, M: Module> FnCompiler<'a, M> {
                 if let Some(prim_name) =
                     operators::primitive_for_trait_method(&trait_name.name, method_name, &impl_type.name)
                 {
-                    // Primitive trait methods are borrowing.
+                    // Decision 24 (Sprint 56 Step 2c): consuming convention —
+                    // mirror the BuiltinFn arm above.
                     if is_extern_primitive(prim_name) {
-                        let arg_vals = self.compile_arg_list(args)?;
+                        let arg_vals = if prim_name == "string-identity" {
+                            self.compile_arg_list(args)?
+                        } else {
+                            self.compile_consuming_arg_list(args)?
+                        };
                         self.in_tail_position = saved_tail;
-                        let result = self.compile_extern_call(prim_name, &arg_vals, span)?;
-                        self.dec_temporary_args(args, &arg_vals);
-                        return Ok(result);
+                        return self.compile_extern_call(prim_name, &arg_vals, span);
                     }
 
                     // neq-string: call str-eq (extern) and negate the result.
+                    // str-eq is a simple-heap consuming extern — use consuming args.
                     if prim_name == "neq-string" {
-                        let arg_vals = self.compile_arg_list(args)?;
+                        let arg_vals = self.compile_consuming_arg_list(args)?;
                         self.in_tail_position = saved_tail;
                         let eq_result = self.compile_extern_call("str-eq", &arg_vals, span)?;
-                        let result = self.builder.ins().bxor_imm(eq_result, 1);
-                        self.dec_temporary_args(args, &arg_vals);
-                        return Ok(result);
+                        return Ok(self.builder.ins().bxor_imm(eq_result, 1));
                     }
 
+                    // Inline primitive trait method (NeverHeap operands).
                     let arg_vals = self.compile_arg_list(args)?;
                     self.in_tail_position = saved_tail;
-                    let result = operators::emit_builtin_op(
+                    return operators::emit_builtin_op(
                         &mut self.builder, prim_name, &arg_vals, span,
                         self.module, self.ctx.panic_func_id,
-                    )?;
-                    self.dec_temporary_args(args, &arg_vals);
-                    return Ok(result);
+                    );
                 }
 
                 // Not a primitive: user function — consuming convention.
@@ -282,9 +289,13 @@ impl<'a, M: Module> FnCompiler<'a, M> {
                 });
             }
 
-            // Data constructors store args as fields; no function body
-            // to dec them. ADT drop glue handles field cleanup.
-            let arg_vals = self.compile_arg_list(args)?;
+            // Decision 24 (Sprint 56 Step 2c): uniform consuming convention.
+            // The constructor stores args as fields; the ADT's drop glue
+            // dec's heap-typed fields when the ADT itself reaches rc=0.
+            // For variable args we inc so the caller's binding survives
+            // scope cleanup — the ADT holds its own independent reference.
+            // For temporary args, rc=1 transfers directly into the field.
+            let arg_vals = self.compile_consuming_arg_list(args)?;
             self.in_tail_position = saved_tail;
             return self.compile_data_constructor_call(tag, &arg_vals, span);
         }
@@ -306,9 +317,12 @@ impl<'a, M: Module> FnCompiler<'a, M> {
 
     /// Compile a list of argument expressions into Cranelift values.
     ///
-    /// Plain compilation: no RC adjustments. The caller is responsible for
-    /// any inc/dec depending on whether the callee is consuming (user fn)
-    /// or borrowing (builtin/extern).
+    /// Plain compilation: no RC adjustments. Used for inline builtins whose
+    /// operands are NeverHeap (Int/Bool/Float), and for data-constructor
+    /// call-site arg preparation where the consuming inc happens via
+    /// `compile_consuming_arg_list` (which this method backs). Under
+    /// Decision 24 (uniform consuming) the plain form has a narrow role:
+    /// pure-value builtins where RC does not apply.
     fn compile_arg_list(&mut self, args: &[Expr]) -> Result<Vec<Value>, CranelispError> {
         args.iter()
             .map(|arg| self.compile_expr(arg))
@@ -348,47 +362,6 @@ impl<'a, M: Module> FnCompiler<'a, M> {
             vals.push(val);
         }
         Ok(vals)
-    }
-
-    /// Dec temporary (non-variable) heap-typed arguments after a
-    /// borrowing call (builtin/extern). Variable arguments are owned
-    /// by their scope and will be dec'd by `pop_scope_with_cleanup`.
-    ///
-    /// ADT field cleanup is done inside the dealloc path (RC=0) via
-    /// `emit_rc_dec_with_inline_drop_glue`, not unconditionally.
-    fn dec_temporary_args(&mut self, args: &[Expr], arg_vals: &[Value]) {
-        let dealloc_id = match self.ctx.dealloc_func_id {
-            Some(id) => id,
-            None => return,
-        };
-
-        for (arg, &val) in args.iter().zip(arg_vals.iter()) {
-            // Only dec temporaries (non-variable expressions).
-            if matches!(arg, Expr::Var { .. }) {
-                continue;
-            }
-            // Check if the expression produces a heap-typed value.
-            if let Some(ty) = arg.inferred_type().cloned() {
-                let category = HeapCategory::classify(&ty, Some(self.ctx.symbol_tables));
-                match category {
-                    HeapCategory::AlwaysHeap => {
-                        if matches!(ty, cranelisp_types::Type::Fn(_, _)) {
-                            self.emit_closure_dec_inline(val, dealloc_id);
-                        } else {
-                            self.emit_rc_dec_with_inline_drop_glue(
-                                val, &ty, dealloc_id, false,
-                            );
-                        }
-                    }
-                    HeapCategory::Mixed => {
-                        self.emit_rc_dec_with_inline_drop_glue(
-                            val, &ty, dealloc_id, true,
-                        );
-                    }
-                    HeapCategory::NeverHeap => {}
-                }
-            }
-        }
     }
 
     /// Compile a call to a named function.
@@ -718,16 +691,15 @@ impl<'a, M: Module> FnCompiler<'a, M> {
 
     /// Emit RC dec for a temporary closure value, using the shared method.
     pub(crate) fn emit_closure_dec(&mut self, closure_val: Value, _span: Span) {
-        if let Some(dealloc_id) = self.ctx.dealloc_func_id {
-            self.emit_closure_dec_inline(closure_val, dealloc_id);
-        }
+        self.emit_closure_dec_inline(closure_val, self.ctx.dealloc_func_id);
     }
 }
 
 /// Check if a builtin name is an extern primitive (requires a call, not inline IR).
 ///
-/// Extern primitives use borrowing convention: arguments are not consumed.
-/// The caller dec's temporaries after the call via `dec_temporary_args`.
+/// Under Decision 24 (uniform consuming convention) these externs dec their
+/// own heap arguments in their Rust implementations. The backend uses
+/// `compile_consuming_arg_list` at every call site — no per-callee classification.
 fn is_extern_primitive(name: &str) -> bool {
     matches!(
         name,
@@ -752,7 +724,9 @@ fn is_extern_primitive(name: &str) -> bool {
             | "contains?"
             | "to-upper"
             | "to-lower"
-            // Trace ADT field accessors: borrowing convention (just read a field).
+            // Trace ADT field accessors: consuming convention (Decision 24).
+            // Each inc-and-returns the heap field being read; the Trace arg is
+            // consumed on the Rust side via `consume_trace_call`.
             | "cranelisp_trace_name"
             | "cranelisp_trace_params"
             | "cranelisp_trace_result"

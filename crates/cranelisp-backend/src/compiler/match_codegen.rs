@@ -161,12 +161,10 @@ impl<'a, M: Module> FnCompiler<'a, M> {
         if is_temp
             && let Some(scrut_ty) = scrutinee.inferred_type().cloned() {
                 let category = HeapCategory::classify(&scrut_ty, Some(self.ctx.symbol_tables));
-                if let (Some(dealloc), HeapCategory::AlwaysHeap | HeapCategory::Mixed) =
-                    (self.ctx.dealloc_func_id, category)
-                {
+                if matches!(category, HeapCategory::AlwaysHeap | HeapCategory::Mixed) {
                     let needs_guard = matches!(category, HeapCategory::Mixed);
                     self.emit_rc_dec_with_inline_drop_glue(
-                        scrut_val, &scrut_ty, dealloc, needs_guard,
+                        scrut_val, &scrut_ty, self.ctx.dealloc_func_id, needs_guard,
                     );
                 }
             }

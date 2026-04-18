@@ -252,6 +252,7 @@ A trait declaration introduces a named interface with one or more method signatu
 - Required methods end with a return type expression; default methods end with a body expression.
 - An optional docstring MAY appear on the trait itself and on each method.
 
+<!-- FIXME(/qa): Traceability gap — §5.3.2 and §5.4.4 (HKT declarations / HKT impl on bare constructor) annotated [R3 S17] but tests exist and pass. See tests/ring2.rs lines 2191, 2203, 2221 (hkt_type_variable_in_trait, hkt_trait_declaration, hkt_impl_bare_constructor). These tests are not `#[ignore]`d — the prose comment at line 2185 claiming otherwise is also stale. Update both section headings to `[Tested tests/ring2.rs::hkt_trait_declaration]`/`[Tested tests/ring2.rs::hkt_impl_bare_constructor]`. Filed by /spec during Sprint 56 close prior-ring audit. -->
 ### 5.3.2 Higher-Kinded Traits [R3 S17]
 
 When the trait head includes type parameters, the trait operates on type constructors rather than concrete types.
@@ -300,6 +301,7 @@ A trait implementation provides method bodies for a specific type.
        Blue "Blue"])))
 ```
 
+<!-- FIXME(/qa): Traceability gap — §5.4.2 and §5.4.3 are annotated [R2 S10] but tests exist. See tests/sketch_port.rs lines 1719+ (concrete ADT impl: `(impl Showable (MyOpt Int) …)`) and line 1854 (polymorphic impl with recursive show). Update both section headings to `[Tested tests/sketch_port.rs::<test_name>]`. Filed by /spec during Sprint 56 close prior-ring audit. -->
 ### 5.4.2 Concrete ADT Instantiation [R2 S10]
 
 ```clojure

@@ -2,7 +2,7 @@
 
 ## Overview
 
-Ring 2 activates the RC scaffolding laid down in Ring 1 (see `ring1-codegen.md` for foundation). It implements automatic memory management for all heap-allocated values: Strings, ADTs with data constructors, closures (Fn types), and Vecs. The key contribution is the **split calling convention** that determines which party (caller or callee) is responsible for RC decrements, plus the **scope cleanup** protocol that ensures no leaks on function exit.
+Ring 2 activates the RC scaffolding laid down in Ring 1 (see `ring1-codegen.md` for foundation). It implements automatic memory management for all heap-allocated values: Strings, ADTs with data constructors, closures (Fn types), and Vecs. The key contribution is the **uniform consuming calling convention** (Decision 24) — every call site compiles identically for RC management, with the callee responsible for dec'ing heap parameters it does not return — plus the **scope cleanup** protocol that ensures no leaks on function exit.
 
 This document is the authoritative reference for Ring 3 implementers. If you are compiling functions (macros, auto-curry wrappers, trace instrumentation), you must follow these conventions exactly or introduce leaks or use-after-free.
 
@@ -128,8 +128,8 @@ An `rc_inc` is emitted whenever a new reference to a heap value is created:
 
 An `rc_dec` is emitted when a reference is released:
 
-1. **Scope cleanup** (`pop_scope_with_cleanup`): at the end of a `let` body or function body, all heap-typed bindings are dec'd (except the return value).
-2. **Borrowing call temporaries** (`dec_temporary_args`): after a builtin/extern call, any non-variable heap-typed argument expression is dec'd.
+1. **Scope cleanup** (`pop_scope_with_cleanup`): at the end of a `let` body or function body, all heap-typed bindings are dec'd (except the return value). For user-defined functions, this includes all heap-typed parameters (the consuming convention).
+2. **Callee-side extern dec**: extern primitives implemented in Rust (`str-concat`, `string-length`, Vec ops, Sexp marshaling, IO trampolines, etc.) dec any heap argument they do not return. This is part of the uniform consuming convention — there is no caller-side post-call temporary dec.
 3. **Temporary closure callee**: after calling a closure expression (not a named variable), the closure is dec'd.
 4. **Match scrutinee temporary**: if the scrutinee is a non-variable expression, it is dec'd after all arms have been compiled.
 5. **Vec COW mutate-in-place**: the old element is dec'd before storing the new value.
@@ -142,66 +142,106 @@ When `rc_dec` brings the old RC to 1 (meaning it was the last reference):
 2. **Drop glue** (if provided) is called to recursively dec any heap-typed sub-values.
 3. **`runtime/dealloc`** reads `alloc_size` from offset 0 and frees the allocation.
 
-## 3. Split Calling Convention
+## 3. Calling Convention
 
-This is the central design decision of Ring 2. There are three conventions, determined statically at each call site.
+**Historical note**: Prior to Sprint 56 Step 2c, this section described a split convention (Decision 20, retracted) with three classifications — consuming for user functions, borrowing for builtins/externs, and none for data constructors — plus a caller-side `dec_temporary_args` helper. The current target is **Decision 24** — a uniform consuming convention applied to every call type. The split form is gone; data constructors are reclassified as consuming (the ADT inherits ownership of field values); extern primitives now dec their own heap arguments before return.
 
-### 3.1 Consuming Convention (User Functions)
+There is exactly one calling convention, applied identically to direct user-function calls, closure calls (named or temporary callee), trait method dispatch (user impls and primitive/extern impls), sig-dispatch, data constructors, inline builtin operators, Vec primitives, and every extern Rust function that takes heap arguments.
 
-**Applies to**: direct calls to user-defined functions, closure calls, trait method calls to user-defined impls, sig-dispatch calls.
+### 3.1 The Uniform Consuming Convention
 
 **Protocol**:
 1. **Caller** compiles args via `compile_consuming_arg_list`:
-   - For each argument that is a variable reference (`Expr::Var`), check its type via `variable_types`. If heap-typed, emit `rc_inc` (or `rc_inc_guarded` for Mixed). This gives the callee its own reference to the caller's binding.
-   - For each argument that is a temporary expression (not a Var), no caller-side action is needed. The temporary starts at rc=1 from its allocation, and the callee's dec will free it.
-2. **Callee** owns all parameters. At function exit, `pop_scope_with_cleanup` dec's all heap-typed parameters (and let-bindings), except the return value variable.
+   - For each argument that is a variable reference (`Expr::Var`), check its type via `variable_types`. If heap-typed, emit `rc_inc` (or `rc_inc_guarded` for Mixed). This gives the callee its own reference to the caller's binding while preserving the caller-side binding. (Future optimisation: skip this inc when last-use analysis proves the variable is not reused after the call — direct transfer.)
+   - For each argument that is a temporary expression (not a Var), no caller-side action is needed. The temporary starts at rc=1 from its allocation; ownership transfers to the callee.
+2. **Callee** owns all heap parameters. It is responsible for dec'ing anything it does not return. The form of that dec depends on what the callee is:
+   - **User-defined function**: `pop_scope_with_cleanup` at function exit dec's all heap-typed parameters (and let-bindings) except the return variable. This is automatic — the backend emits it for every user function.
+   - **Extern Rust primitive**: the Rust implementation itself dec's its heap arguments before returning. See §3.3 Extern Consumption Audit.
+   - **Data constructor**: the field-store implicitly consumes the argument (the new heap object holds the only reference to the transferred value; the ADT's own drop glue will dec each heap-typed field when the ADT itself reaches rc=0). The constructor emits no explicit dec because the dec happens later through the ADT's lifetime.
+   - **Inline builtin operator**: operators whose operands are NeverHeap (integers, booleans, floats, comparison results) need no dec — there is nothing to free. Operators whose operands are heap-typed (e.g., a hypothetical string arithmetic) behave like externs: they dec their heap args inline before producing the result.
+   - **Closure call**: the code pointer leads to a user function body, so `pop_scope_with_cleanup` in the target applies. When the closure callee is a temporary expression, the caller additionally dec's the closure value itself after the call (it was a one-shot temporary, not a named binding).
 
-**Why this works**: A variable argument has rc >= 2 after the inc (one for the caller's binding, one for the callee). The callee's dec brings it back to rc >= 1. A temporary argument has rc=1. The callee's dec brings it to 0, freeing it.
+**Why this works**: With uniform consuming semantics, every heap-typed argument has exactly one dec responsibility — the callee. The caller's inc for variable args preserves the caller-side binding; the callee's dec matches it. Temporary args transfer rc=1 directly; the callee's dec releases them. There is no divergent code path, no attribute annotation on extern symbols, no `dec_temporary_args` post-call cleanup.
 
-### 3.2 Borrowing Convention (Builtins/Externs)
+### 3.2 Variable-into-Constructor Ownership
 
-**Applies to**: inline arithmetic/boolean/comparison operators, extern string primitives (`str-concat`, `str-eq`, etc.), primitive trait methods that compile to inline IR.
+Consider `(let [s "hello"] (Some s))`. At the `(Some s)` call site, `compile_consuming_arg_list` emits an `rc_inc` on `s` (it is a heap-typed Var). The constructor stores the string pointer as a field; the ADT now holds one reference. Two things now reference the string: the variable `s` (held by the enclosing `let` scope) and the `Some` ADT's field.
 
-**Protocol**:
-1. **Caller** compiles args via `compile_arg_list` (plain, no RC adjustments).
-2. After the call, **caller** calls `dec_temporary_args`: for each argument that is NOT a `Expr::Var` and IS heap-typed, emit `rc_dec` (with drop glue if needed). Variable arguments are left alone; they are owned by their scope.
-
-**Why this convention exists**: Builtin operations are compiled inline (no function body exists to dec parameters). String externs are Rust functions that do not touch RC. In both cases, the caller is the only party that can clean up temporaries.
-
-### 3.3 Data Constructor Convention
-
-**Applies to**: calls to ADT data constructors (e.g., `(Some x)`, `(Pair 1 2)`).
-
-**Protocol**:
-1. **Caller** compiles args via `compile_arg_list` (plain, no RC adjustments).
-2. No post-call dec is emitted. The arguments become fields of the newly allocated ADT. When the ADT is dec'd and freed, **drop glue** handles decrementing each heap-typed field.
-
-**Why no inc/dec at call site**: The constructor stores the field values directly into the new heap object. If the field value is a temporary (rc=1), it now has exactly one owner (the ADT). If it is a variable, the variable still holds its reference, and the ADT field shares the same pointer value — but no inc is emitted because the two references serve different lifetimes, managed by separate mechanisms.
-
-**Variable-into-constructor ownership detail**: Consider `(let [s "hello"] (Some s))`. At the `(Some s)` call site, no inc or dec is emitted (plain `compile_arg_list`). Two things now reference the string: the variable `s` and the `Some` ADT's field. These are tracked independently:
-
-- The variable `s` is owned by its scope. When `s` goes out of scope, `pop_scope_with_cleanup` dec's it. This is a dec of the *variable's* reference, not the ADT's field.
+- The variable `s` is owned by its scope. When `s` goes out of scope, `pop_scope_with_cleanup` dec's it.
 - The ADT `(Some s)` is itself a new heap allocation at rc=1. It is tracked by whatever scope or calling convention governs the ADT value. The ADT's drop glue will dec the field when the ADT reaches rc=0.
 
-Between these two dec paths, the underlying string stays alive as long as either reference exists. If the ADT is later passed to a user function (consuming convention), the inc at *that* call site is on the ADT itself — it has nothing to do with the original constructor call. The constructor call site emits no RC operations at all.
+Between these two dec paths, the underlying string stays alive as long as either reference exists. If the ADT is later passed to a user function, the inc at *that* call site is on the ADT pointer itself.
 
-### 3.4 Convention Decision Table
+For temporary-into-constructor (e.g. `(Some (str-concat a b))`): the temporary result of `str-concat` has rc=1, no caller-side inc is emitted (it is not a Var), and the field store transfers ownership directly to the ADT. No extra inc/dec is required.
 
-| Call type | Convention | Arg compilation | Post-call cleanup |
-|---|---|---|---|
-| User-defined function (direct) | Consuming | `compile_consuming_arg_list` | Callee dec's at exit |
-| Closure call (named variable callee) | Consuming | `compile_consuming_arg_list` | Callee dec's at exit |
-| Closure call (temporary expression callee) | Consuming + callee dec | `compile_consuming_arg_list` | Callee dec's args; caller dec's closure |
-| Trait method (user impl) | Consuming | `compile_consuming_arg_list` | Callee dec's at exit |
-| Trait method (primitive impl, inline IR) | Borrowing | `compile_arg_list` | `dec_temporary_args` |
-| Trait method (primitive impl, extern) | Borrowing | `compile_arg_list` | `dec_temporary_args` |
-| Sig-dispatch (multi-sig) | Consuming | `compile_consuming_arg_list` | Callee dec's at exit |
-| Inline builtin operator | Borrowing | `compile_arg_list` | `dec_temporary_args` |
-| Extern primitive (str-concat, etc.) | Borrowing | `compile_arg_list` | `dec_temporary_args` |
-| Vec primitive (vec-get, etc.) | Borrowing (special) | `compile_arg_list` | Internal cleanup via `emit_vec_drop_if_temporary` |
-| Data constructor | None (field store) | `compile_arg_list` | Drop glue handles fields |
+### 3.3 Extern Consumption Audit (Sprint 56 Step 2c)
 
-### 3.5 Temporary Closure Callee
+Under Decision 24, every extern primitive implemented in Rust that takes a heap argument MUST dec that argument before returning, unless the argument is returned unchanged (in which case ownership flows out through the return value) or stored in a runtime-owned structure that will outlive the call (in which case the extern has inc'd it and the caller's passed-in reference must not be dec'd by the extern — use the "retains" column).
+
+The authoritative per-extern table is:
+
+| Extern name | Crate/file | Heap arg(s) | Returns arg unchanged? | Retains arg? | Action (Sprint 56 Step 2c) |
+|---|---|---|---|---|---|
+| `str-concat` | runtime/string.rs | `a`, `b` (String) | No (returns new String) | No | **DONE**: dec both via `rc::consume_shallow` before return; caller uses `compile_consuming_arg_list` |
+| `str-eq` | runtime/string.rs | `a`, `b` (String) | No (returns Bool) | No | **DONE**: dec both |
+| `str-len` | runtime/string.rs | `s` (String) | No (returns Int) | No | **DONE**: dec |
+| `string-identity` | runtime/string.rs | `s` (String) | Yes (returns same ptr after inc) | Yes (inc'd) | **DONE** (semantics-preserving): inc-and-return is already consuming — the returned pointer carries the caller's consumed reference plus a fresh inc. Caller uses `compile_arg_list` (no inc) because inc-and-return would double-up otherwise. |
+| `substring` | runtime/string.rs | `s` | No (returns new String) | No | **DONE**: dec |
+| `char-at` | runtime/string.rs | `s` | No (returns new String) | No | **DONE**: dec |
+| `split` | runtime/string.rs | `s`, `sep` | No (returns Vec of Strings) | No | **DONE**: dec both |
+| `join` | runtime/string.rs | `sep`, `vec` | No (returns new String) | No | **DONE**: `consume_shallow` on sep; `drop::consume_vec_of_string` on vec (walks String elements, frees data buffer, frees Vec struct). |
+| `replace` | runtime/string.rs | `s`, `from`, `to` | No | No | **DONE**: dec all three |
+| `trim` | runtime/string.rs | `s` | No | No | **DONE**: dec |
+| `starts-with?` | runtime/string.rs | `s`, `prefix` | No | No | **DONE**: dec both |
+| `ends-with?` | runtime/string.rs | `s`, `suffix` | No | No | **DONE**: dec both |
+| `contains?` | runtime/string.rs | `s`, `needle` | No | No | **DONE**: dec both |
+| `to-upper` | runtime/string.rs | `s` | No | No | **DONE**: dec |
+| `to-lower` | runtime/string.rs | `s` | No | No | **DONE**: dec |
+| `int-to-string` | runtime/primitives/int.rs | none (Int arg) | — | — | no heap arg |
+| `float-to-string` | runtime/primitives/float.rs | none (Float bits) | — | — | no heap arg |
+| `bool-to-string` | runtime/primitives/bool.rs | none (Bool arg) | — | — | no heap arg |
+| `parse-int` | runtime/primitives/int.rs | `s` (String) | No (returns Option Int) | No | **DONE**: dec |
+| `sconcat` | runtime/marshal.rs | `xs`, `ys` (SList) | Sometimes (ys if xs empty — inc'd) | Sometimes (ys deep inc; xs items shallow inc) | **DONE**: after building result (which shares items from xs and reuses ys as tail with deep inc), `drop::consume_slist` releases both inputs — on the last-ref path it recursively walks SCons nodes and Sexp heads. |
+| `quote-sexp` | runtime/marshal.rs | `val` (Sexp) | No (returns new Sexp) | No | **DONE**: split into `quote_sexp` (extern entry — builds then `drop::consume_sexp(val)`) and `quote_sexp_build` (internal, non-consuming, used by `quote_slist` recursion since sub-items are owned by the parent SList). |
+| `vec-len` | runtime/vec.rs | `vec` (Vec) | No (returns Int) | No | handled inline in vec codegen via `emit_vec_drop_if_temporary` (Vec-op caller handling — see below). Not routed through the extern-primitive consuming path. |
+| `vec-set-copy` | runtime/vec.rs | `vec` | No (returns new Vec) | No | handled by caller (`emit_vec_drop_if_temporary`) — no change here; vec-codegen path is already correct |
+| `vec-push-copy` | runtime/vec.rs | `vec` | No (returns new Vec) | No | handled by caller (`emit_vec_drop_if_temporary`) |
+| `vec-push-grow` | runtime/vec.rs | `vec` | Yes (returns same pointer) | Yes (keeps ownership) | ok — mutation in place; semantically consuming-then-re-returning |
+| `heap_alloc_string` | runtime/string.rs | none (raw bytes ptr, len) | — | — | no heap arg (raw, not a Cranelisp heap) |
+| `string_read` | runtime/string.rs | `s` | out-params only, no return | borrowed for the call | ok — called from Rust side (ValueFormatter), not from JIT |
+| `cranelisp_trace_name` | runtime/trace.rs | `trace` (Trace ADT) | No (returns field value) | No | **DONE**: inc the returned field (heap-typed — now has its own reference), then `drop::consume_trace_call` releases the Trace (walks sub-refs tname/tparams/tresult/tchildren on last ref). |
+| `cranelisp_trace_params` | runtime/trace.rs | `trace` | No | No | **DONE**: same as cranelisp_trace_name |
+| `cranelisp_trace_result` | runtime/trace.rs | `trace` | No | No | **DONE**: same as cranelisp_trace_name |
+| `cranelisp_trace_children` | runtime/trace.rs | `trace` | No | No | **DONE**: same as cranelisp_trace_name |
+| `cranelisp_trace_nanos` | runtime/trace.rs | `trace` | No | No | **DONE**: Int return — no inc; `drop::consume_trace_call` on the Trace. |
+| `cranelisp_trace_first_child_nanos` | runtime/trace.rs | `trace` | No | No | **DONE**: Int return — no inc; `drop::consume_trace_call` on the Trace. |
+| `cranelisp_run_io` | runtime/io.rs | `io_ast` (IO ADT) | No | No (evaluates to completion) | **DONE**: after `run_io_trampoline` returns the final value, `drop::consume_io_tree(io_ptr)` releases the whole tree (tag-dispatched: Pure/Effect are leaves, Bind recurses into inner + consumes the continuation closure, Par walks all branches). |
+| IVar intrinsics | runtime/ivar.rs | various | varies | varies | separately reviewed — IVar code already has RC management for its specific semantics |
+| Platform DLL functions | cranelisp-platform/src/lib.rs | varies per DLL | varies | varies | see platform CLAUDE.md; platform fns are consuming per Decision 24, most already use CLString::own() pattern |
+
+**Full migration complete**: all 36 externs consume correctly under Decision 24 (Sprint 56 Step 2c). Caller-side inc runs via `compile_consuming_arg_list` (apply.rs) for every heap-typed Var argument. Callee-side dec runs via:
+
+- `rc::consume_shallow` — simple-heap externs whose heap args have no heap sub-refs (all 14 string externs + `parse-int`).
+- `drop::consume_slist` / `consume_sexp` — SList/Sexp runtime marshaling (`sconcat`, `quote-sexp`).
+- `drop::consume_vec_of_string` — Vec of Strings (`join`).
+- `drop::consume_trace_call` — Trace ADT accessors (6 functions).
+- `drop::consume_io_tree` — IO trampoline (`cranelisp_run_io`).
+
+Each `drop::consume_*` function mirrors the backend's `emit_rc_dec_with_inline_drop_glue` in Rust: atomic dec with Release ordering; on last-ref path, Acquire fence → walk heap-typed fields → recursively consume each → dealloc the outer allocation. Non-last-ref paths short-circuit after the outer dec, matching the inline-drop-glue invariant that sub-refs are dec'd only when the outer reaches rc=0.
+
+RC balance is: Var arg → caller +1, callee −1 = net 0 (Var's own scope still holds its original ref); Temp arg → caller +0 (no inc), callee −1 = net −1 (frees the temp, which started at rc=1).
+
+**`string-identity`**: the one exception remains consuming-compatible. Semantically it is "inc and return" — the input pointer flows out through the return value with a fresh inc. Callers use `compile_arg_list` (no caller-side inc) because inc-and-return on an already-inc'd arg would double-count.
+
+**Vec-op caller handling**: `compile_vec_op` in backend emits `emit_vec_drop_if_temporary(vec_arg)` for the old Vec when the copy path is taken. This is a caller-side dec that predates Decision 24 and is tied to COW semantics (the old Vec is structurally replaced). It is NOT a post-call `dec_temporary_args` — it is a COW-specific cleanup that runs in the copy branch only. Keep it as is.
+
+**Data constructor calls** (`compile_var_apply` → `compile_data_constructor_call`): now uses `compile_consuming_arg_list` for its args. Variable args get inc'd at the call site so the caller's scope still holds a reference while the ADT holds its own independent reference (released via the ADT's drop glue at destruction). Previously used plain-arg compilation, which caused use-after-free when the ADT outlived the caller's scope (the field stored a pointer to a heap object whose only reference was about to be dec'd by scope cleanup). Fixed in Step 2c.
+
+**Operator wrappers (`cranelisp_op_add` etc.)**: No heap args — Int/Bool/Float bit-patterns only. No action.
+
+**Guidance for adding new externs**: default to consuming. For each heap-typed parameter decide: (a) does it flow out unchanged through the return? If yes, inc-and-return or just return-as-is with ownership transfer. (b) does it get stored/retained? If yes, inc it into the storage. (c) otherwise: dec it before return. Write a test per §4 of this doc.
+
+### 3.4 Temporary Closure Callee
 
 When the callee itself is a temporary expression (e.g., `((make-adder 5) 3)`), the result of the callee expression is a closure at rc=1. After the call:
 
@@ -233,7 +273,7 @@ At dec time, `emit_closure_dec_inline`:
 
 ADT field cleanup uses two approaches:
 
-**Inline drop glue** (`emit_inline_drop_glue` on FnCompiler): Emitted directly into the caller's function body. Used by `pop_scope_with_cleanup` and `dec_temporary_args`. For each data constructor with heap-typed fields:
+**Inline drop glue** (`emit_inline_drop_glue` on FnCompiler): Emitted directly into the caller's function body. Used by `pop_scope_with_cleanup` (the historical `dec_temporary_args` helper was deleted in Sprint 56 Step 2c — see §3 historical note). For each data constructor with heap-typed fields:
 - Single data constructor: directly load and dec each heap-typed field.
 - Multiple data constructors: load the tag, branch to the correct constructor's field-dec block.
 - For Mixed ADTs, the entire drop glue is guarded by a heap-pointer check.
@@ -334,11 +374,11 @@ These invariants must hold at all times. Violation indicates a bug.
 
 ### 6.2 Calling Convention Invariants
 
-5. **User function parameters are consumed**: A user function's `compile_body` always ends with `pop_scope_with_cleanup` that dec's all heap-typed parameters. The caller must inc variable arguments before the call to preserve its own bindings.
+5. **All call sites use consuming convention (Decision 24)**: The caller incs heap-typed variable arguments before the call; the callee is responsible for dec'ing heap arguments it does not return. This applies uniformly to user functions, trait methods, sig-dispatch, data constructors, closure calls, inline builtins, Vec ops, and extern primitives.
 
-6. **Builtin/extern parameters are borrowed**: The caller dec's temporaries after the call. Variable arguments are untouched and remain owned by their scope.
+6. **Extern primitives dec their own heap args**: A Rust-implemented extern that takes a heap pointer MUST dec that pointer before returning (unless it returns the pointer unchanged, i.e. ownership flows out through the return value, or it stores the pointer in a runtime-owned structure). The caller emits no post-call dec. See §3.3 Extern Consumption Audit.
 
-7. **Data constructor fields are owned by the ADT**: No inc/dec at the constructor call site. Drop glue handles fields at destruction time.
+7. **Data constructor fields are owned by the ADT**: The caller incs variable args (consuming convention); the constructor stores the field values into the new heap object and emits no explicit dec. Drop glue handles fields at destruction time when the ADT itself reaches rc=0.
 
 ### 6.3 Debugging Invariants
 
@@ -354,7 +394,7 @@ These invariants must hold at all times. Violation indicates a bug.
 | Heap layout structs | `cranelisp-backend/src/heap.rs` | `HeapAdt`, `HeapClosure`, `HeapVec` |
 | RC emission | `cranelisp-backend/src/heap.rs` | `emit_rc_inc`, `emit_rc_inc_guarded`, `emit_rc_dec`, `emit_rc_dec_guarded` |
 | Last-use analysis | `cranelisp-backend/src/heap.rs` | `compute_last_uses` |
-| Calling convention | `cranelisp-backend/src/compiler/apply.rs` | `compile_consuming_arg_list`, `compile_arg_list`, `dec_temporary_args` |
+| Calling convention | `cranelisp-backend/src/compiler/apply.rs` | `compile_consuming_arg_list`, `compile_arg_list` (plain args; consuming dispatch applies uniformly — no caller-side `dec_temporary_args`) |
 | Scope cleanup | `cranelisp-backend/src/compiler/mod.rs` | `pop_scope_with_cleanup`, `return_var_in_scope`, `protect_return_value` |
 | Inline drop glue | `cranelisp-backend/src/compiler/mod.rs` | `emit_inline_drop_glue`, `emit_field_decs` |
 | Closure drop glue | `cranelisp-backend/src/compiler/control_flow.rs` | `build_closure_drop_glue`, `emit_closure_dec_inline` |
@@ -362,7 +402,8 @@ These invariants must hold at all times. Violation indicates a bug.
 | Vec element inc/dec | `cranelisp-backend/src/compiler/vec_codegen.rs` | `build_elem_inc_fn`, `build_elem_dec_fn` |
 | Runtime allocator | `cranelisp-runtime/src/alloc.rs` | `alloc_with_rc`, `dealloc`, `heap_alloc`, `heap_dealloc` |
 | Runtime Vec | `cranelisp-runtime/src/vec.rs` | `vec_new`, `vec_drop`, `vec_set_copy`, `vec_push_copy`, `vec_push_grow` |
-| RC debug/trace | `cranelisp-runtime/src/rc.rs` | `rc_trace`, `rc_underflow_check` |
+| RC debug/trace | `cranelisp-runtime/src/rc.rs` | `rc_trace`, `rc_underflow_check`, `consume_shallow` |
+| Runtime drop glue | `cranelisp-runtime/src/drop.rs` | `consume_slist`, `consume_sexp`, `consume_vec_of_string`, `consume_vec_with`, `consume_trace_call`, `consume_io_tree`, `consume_closure` |
 | Intrinsic registration | `cranelisp-backend/src/jit.rs` | `register_intrinsics` |
 
 ## 8. Guidance for Ring 3 Implementers
@@ -371,9 +412,9 @@ These invariants must hold at all times. Violation indicates a bug.
 
 If you are generating a JIT function (e.g., a macro expansion helper, a trace wrapper):
 
-1. **Parameters**: If the function will be called with the consuming convention, its parameters are owned. You MUST ensure `pop_scope_with_cleanup` runs at function exit with the return variable excluded.
-2. **Calling user functions**: Use `compile_consuming_arg_list` for the args. The callee will dec everything.
-3. **Calling builtins/externs**: Use `compile_arg_list`, then call `dec_temporary_args` after.
+1. **Parameters**: All user-defined functions are called with consuming convention — their parameters are owned. You MUST ensure `pop_scope_with_cleanup` runs at function exit with the return variable excluded.
+2. **Calling any function (user, extern, trait method, data constructor, closure)**: Use `compile_consuming_arg_list` for the args. The callee is responsible for dec'ing anything it does not return.
+3. **Writing an extern primitive in Rust**: Decide per heap-typed parameter — return unchanged (ownership flows out), retain/store (inc it into storage), or consume (dec before return). See §3.3 for the audit table.
 4. **Allocating closures**: Call `build_closure_drop_glue` and store the result at `DROP_GLUE_PTR_OFFSET`. Inc heap-typed captures.
 
 ### 8.2 TCO and RC
@@ -383,8 +424,8 @@ Self-recursive tail calls currently do NOT emit scope cleanup before jumping to 
 ### 8.3 Common Pitfalls
 
 - **Missing inc for variable args in consuming calls**: Causes use-after-free. The callee dec's the parameter at exit; without the caller's inc, the caller's binding is freed.
-- **Missing dec for temporary args in borrowing calls**: Causes leaks. Nobody else will dec the temporary.
-- **Wrong convention for a call type**: A user function called with borrowing convention will have its parameters dec'd twice (once by callee, once by caller). An extern called with consuming convention will have its parameters dec'd by the callee's scope cleanup, but externs have no scope cleanup -- the dec never happens, causing leaks.
+- **Missing dec in a new extern primitive**: Causes leaks. Under Decision 24 the extern owns its heap args — write the dec before return, or verify the arg flows out through the return value.
+- **Extra dec in an existing extern primitive**: Causes use-after-free / double-free. Since Decision 24 the caller no longer emits `dec_temporary_args`; if an extern was previously dec'ing AND the caller was dec'ing, removing one without fixing the other flips the balance wrong.
 - **Forgetting protect_return_value**: Causes use-after-free when the return value aliases a scope binding that gets dec'd by scope cleanup.
 - **Captured variables treated as last-use**: Captured variables must NEVER skip inc at consuming call sites. The closure env needs its reference to remain valid.
 
@@ -397,11 +438,15 @@ Ring 1 considered using a `HashMap<code_ptr, drop_fn>` for closure drop glue ins
 - Embedding the pointer costs 8 bytes per closure but makes closure dec a self-contained operation.
 - Critical benefit: `emit_closure_dec_inline` can handle closures from any module without a global side table lookup.
 
-### 9.2 Unified Calling Convention
+### 9.2 Unified Calling Convention (ADOPTED — Sprint 56 Step 2c, Decision 24)
 
-Considered making all calls consuming. Rejected because:
-- Builtins/externs compile to inline IR or Rust functions with no function body to dec parameters.
-- Forcing consuming convention on builtins would require wrapper functions around every arithmetic operation, adding overhead and complexity.
+This is now the implemented convention — see §3. Historical context: it was initially rejected in favour of a split convention (Decision 20) because requiring builtins/externs to dec their own heap args was seen as adding overhead and complexity. In practice:
+
+- Inline builtins operate on NeverHeap operands (Int/Bool/Float) — no dec required.
+- Extern Rust primitives that take heap args are a finite, enumerable set (§3.3 audit). Adding a dec before return is a small, localised change per extern.
+- The complexity saved on the caller side (no `dec_temporary_args`, no per-call-type classification, no `Option<dealloc_func_id>` conditional) dwarfs the per-extern cost. Every call site now compiles identically for RC management; the code path no longer branches on callee classification.
+
+The split convention created a divergent compile path at every application site, exactly the kind of parallel structure Principle 7 (single source of truth) and Principle 11 (single pipeline) exist to prevent.
 
 ### 9.3 Deferred Reference Counting
 

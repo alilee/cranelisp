@@ -30,12 +30,23 @@ const CLOSURE_CODE_PTR_OFFSET: isize = HeapHeader::SIZE as isize; // 16
 /// Takes a base pointer to a heap-allocated IO node (Pure/Effect/Bind).
 /// Returns the final result value (i64).
 ///
+/// Decision 24 (Sprint 56 Step 2c): consuming convention — the top-level IO
+/// tree handed to `cranelisp_run_io` is released via `crate::drop::consume_io_tree`
+/// after evaluation. Intermediate Pure/Effect nodes produced by continuations
+/// during the trampoline walk are currently leaked — each continuation's
+/// returned node becomes the new `current` and the prior `current` is dropped
+/// from the local without a dec/dealloc. See the FIXME above
+/// `run_io_trampoline` below and `design/backend/ring2-rc.md` §3.3.
+///
 /// # Safety
 /// `io_ptr` must be a valid base pointer to an IO node with rc > 0.
 /// The IO tree must remain live for the duration of this call.
 #[unsafe(no_mangle)]
 pub extern "C" fn cranelisp_run_io(io_ptr: i64) -> i64 {
-    run_io_trampoline(io_ptr)
+    let result = run_io_trampoline(io_ptr);
+    // Decision 24: release the IO argument tree.
+    crate::drop::consume_io_tree(io_ptr);
+    result
 }
 
 /// Core trampoline implementation. Separate from the extern "C" wrapper
@@ -44,6 +55,11 @@ pub extern "C" fn cranelisp_run_io(io_ptr: i64) -> i64 {
 /// The trampoline is iterative with an explicit continuation stack.
 /// It does not perform any RC operations — the IO tree must remain
 /// live for the duration of this call (see design doc §6).
+// FIXME(/backend): run_io_trampoline leaks intermediate Pure/Effect nodes produced
+// by continuations — each continuation's return becomes `current`, and the prior
+// `current` is dropped from the local without a dec/dealloc. Pre-existing since
+// before Sprint 56. Fix: dec the prior node at each loop step, or redesign the
+// trampoline to track ownership explicitly.
 pub fn run_io_trampoline(io_ptr: i64) -> i64 {
     let mut cont_stack: Vec<i64> = Vec::new();
     let mut current: i64 = io_ptr;
@@ -522,6 +538,42 @@ mod tests {
         let pos_2 = executed.iter().position(|&x| x == 2).unwrap();
         let pos_3 = executed.iter().position(|&x| x == 3).unwrap();
         assert!(pos_2 < pos_3, "Token=1 effects should run in order: {executed:?}");
+    }
+
+    // ---------------------------------------------------------------------
+    // Decision 24 extern-consumption tests (Sprint 56 Step 2c)
+    //
+    // `cranelisp_run_io` runs the trampoline to completion and then releases
+    // the top-level IO tree via `consume_io_tree`. This test exercises only
+    // the Pure-at-root path (no continuations), avoiding the known
+    // intermediate-leak in `run_io_trampoline` documented in the FIXME above.
+    // ---------------------------------------------------------------------
+
+    // spec: design/arch/CLAUDE.md Decision 24 — consuming convention, extern cranelisp_run_io
+    #[test]
+    fn decision24_run_io_pure_rc_balanced() {
+        let allocs_before = crate::alloc::alloc_count();
+        let deallocs_before = crate::alloc::dealloc_count();
+
+        // Pure(42): trampoline returns 42 (scalar — no heap ownership to
+        // track). consume_io_tree then dec's the Pure node to rc=0 and frees
+        // it. No continuations, no intermediate nodes — the known
+        // intermediate-leak path is not exercised.
+        let pure = make_pure_node(42);
+        let result = cranelisp_run_io(pure);
+        assert_eq!(result, 42);
+
+        // allocs: 1 Pure node. deallocs: 1 (consumed by cranelisp_run_io).
+        assert_eq!(
+            crate::alloc::alloc_count() - allocs_before,
+            1,
+            "alloc count mismatch"
+        );
+        assert_eq!(
+            crate::alloc::dealloc_count() - deallocs_before,
+            1,
+            "dealloc count mismatch (leak or double-free)"
+        );
     }
 
     // spec: 10-io §10.12 — read_resource_token returns 0 for non-Effect nodes

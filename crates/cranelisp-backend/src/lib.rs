@@ -253,7 +253,12 @@ pub fn compile_to_module<M: Module>(
             current_module: module_path.clone(),
             traced_fns: None,
             alloc_func_id: intrinsic_ids.alloc,
-            dealloc_func_id: intrinsic_ids.dealloc,
+            dealloc_func_id: intrinsic_ids.dealloc.unwrap_or_else(|| {
+                unreachable!(
+                    "invariant: runtime/dealloc must be declared before compile \
+                     (Decision 24)"
+                )
+            }),
             alloc_string_func_id: intrinsic_ids.alloc_string,
             panic_func_id: intrinsic_ids.panic,
             vec_new_func_id: intrinsic_ids.vec_new,

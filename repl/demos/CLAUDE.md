@@ -100,6 +100,7 @@ The REPL process `chdir`s into this directory, so `.cache` artifacts and any oth
 | `ring4h.demo` | 4H | Session persistence (user.cl), shell escape (;#!), shell-driven module creation, file watching, --link standalone executable, /run-tests |
 | `ring4i.demo` | 4I | Higher-kinded types (Functor/fmap), lazy sequences (range-from/iterate/take), terminal styling narrative, checked division panic + recovery, /run-tests |
 | `ring4j.demo` | 4J | Lenient evaluation (parallel independent let bindings, cost heuristic), auto IO scheduling (commutative bind! chains), trait methods as first-class values (§7.6), /run-tests |
+| `ring4n.demo` | 4N | Sprint 56 — multi-sig JIT dispatch (arity and type), /sig/info/list for multi-sig, /clif on mangled variants ($Int, $Int+Int) |
 | `v4a.demo` | — | Pipeline v4 skeleton — --v4 delegates to old pipeline, identical results |
 | `v4b.demo` | — | Pipeline v4 scheduler — primitive-only programs compile through scheduler-driven path |
 | `v4c.demo` | — | Pipeline v4 robust — error recovery (type error + undefined var), platform IO (print, bind), PlatformRegistry |

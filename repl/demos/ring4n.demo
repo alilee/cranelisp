@@ -1,0 +1,42 @@
+; Cranelisp Ring 4N — Multi-sig JIT Dispatch
+
+; Sprint 56: one compilation entry point; JIT and object paths converge
+
+; A multi-sig function defines several arity/type variants under one name
+
+defn
+
+; Arity-based dispatch — one name, two shapes
+
+(defn area "Square or rectangle area" ([:Int side] (* side side)) ([:Int w :Int h] (* w h)))
+
+(area 7)
+
+(area 3 4)
+
+; /sig reports the multi-sig name; variants appear under mangled names
+
+/sig area
+
+/list
+
+; Each variant is separately compiled — /clif shows the generated IR
+
+/clif area$Int
+
+/clif area$Int+Int
+
+; Type-based dispatch — same name, different argument types
+
+(defn show-val "Display by type" ([:Int n] (str "int: " (show n))) ([:Float n] (str "float: " (show n))))
+
+(show-val 42)
+
+(show-val 3.14)
+
+/list
+
+; Before Sprint 56 the JIT path expanded multi-sig variants separately from
+; the object path, and (area 3 4) would fail in the REPL. Phase 2 routed
+; both paths through one compile_to_module entry point that reads from the
+; symbol table — same IR, same dispatch, one pipeline.

@@ -248,8 +248,10 @@ pub struct CompileContext<'a> {
     // --- Ring 1 intrinsic FuncIds ---
     /// FuncId for runtime/alloc. None in Ring 0 (no heap).
     pub alloc_func_id: Option<FuncId>,
-    /// FuncId for runtime/dealloc. None in Ring 0 (no heap).
-    pub dealloc_func_id: Option<FuncId>,
+    /// FuncId for runtime/dealloc. Non-optional: Decision 24 retires the
+    /// Option<...> conditional. Codegen always assumes dealloc is declared
+    /// — all compile paths since Ring 1 require heap + RC support.
+    pub dealloc_func_id: FuncId,
     /// FuncId for runtime/alloc_string. None in Ring 0 (no strings).
     pub alloc_string_func_id: Option<FuncId>,
     /// FuncId for runtime/panic. None in Ring 0 (uses trap instead).
@@ -751,27 +753,26 @@ impl<'a, M: Module> FnCompiler<'a, M> {
                 .collect();
 
             // Emit rc_dec for each heap-typed binding.
-            if let Some(dealloc) = self.ctx.dealloc_func_id {
-                for (name, ty, needs_guard) in &to_dec {
-                    if let Some(var) = self.variables.get(name) {
-                        let val = self.builder.use_var(*var);
+            let dealloc = self.ctx.dealloc_func_id;
+            for (name, ty, needs_guard) in &to_dec {
+                if let Some(var) = self.variables.get(name) {
+                    let val = self.builder.use_var(*var);
 
-                        // For closures (Type::Fn), use runtime-embedded drop glue.
-                        // This handles both locally-created closures AND closures
-                        // received as function parameters (where the static
-                        // closure_drop_glue map has no entry).
-                        if matches!(ty, Type::Fn(_, _)) {
-                            self.emit_closure_dec_inline(val, dealloc);
-                            continue;
-                        }
-
-                        // For ADTs: emit RC dec with inline drop glue in the
-                        // dealloc path. Field cleanup ONLY happens when RC
-                        // reaches 0 (inside the free branch), not unconditionally.
-                        // This prevents double-free when fields are independently
-                        // referenced (e.g., extracted via pattern match).
-                        self.emit_rc_dec_with_inline_drop_glue(val, ty, dealloc, *needs_guard);
+                    // For closures (Type::Fn), use runtime-embedded drop glue.
+                    // This handles both locally-created closures AND closures
+                    // received as function parameters (where the static
+                    // closure_drop_glue map has no entry).
+                    if matches!(ty, Type::Fn(_, _)) {
+                        self.emit_closure_dec_inline(val, dealloc);
+                        continue;
                     }
+
+                    // For ADTs: emit RC dec with inline drop glue in the
+                    // dealloc path. Field cleanup ONLY happens when RC
+                    // reaches 0 (inside the free branch), not unconditionally.
+                    // This prevents double-free when fields are independently
+                    // referenced (e.g., extracted via pattern match).
+                    self.emit_rc_dec_with_inline_drop_glue(val, ty, dealloc, *needs_guard);
                 }
             }
         }

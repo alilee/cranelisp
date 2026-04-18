@@ -1,5 +1,7 @@
 # Cranelisp Language Specification
 
+<!-- FIXME(/qa): Negative-coverage audit — Sprint 56 close prior-ring audit found 100 `[Tested ...]` annotations in spec/ and 11 in repl/spec.md that have not been upgraded to `[Tested+Neg ...]`. Per CLAUDE.md §"Applying Annotations", MUST/MUST NOT requirements should have both positive and negative coverage. A batch pass through high-value sections would help: suggest prioritising module/import boundaries (§8), match exhaustiveness (§6.5), visibility/private variants (§5), trait dispatch (§7), and REPL category boundaries (repl/spec.md §3, §4). Not every `[Tested]` needs upgrading — some describe display formats where "wrong output" is naturally caught — but requirements about what MUST NOT appear (e.g. primitives not leaking into user/, private symbols not visible cross-module, wildcard not required on exhaustive ADTs) deserve explicit negative tests. Filed by /spec during Sprint 56 close prior-ring audit. -->
+
 **Version**: 0.1 (Draft)
 
 This document specifies the Cranelisp programming language. It describes the syntax, type system, and evaluation semantics in implementation-agnostic terms. Section 11 and Appendix A are non-normative reference documentation describing the reference implementation's standard library. Appendix C defines normative non-functional requirements that constrain implementation strategies. A conforming implementation may use any compilation strategy (JIT, AOT, interpretation) provided it satisfies the behavioral and non-functional requirements described herein.

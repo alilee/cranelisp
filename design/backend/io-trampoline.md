@@ -123,12 +123,12 @@ Both incs ensure the Bind node's references are accounted for. The Bind node's d
 
 ### 2.3 Calling Convention
 
-`bind` is classified as an inline primitive (like arithmetic operators), so it uses the **borrowing convention** at the call site level. The caller compiles arguments via `compile_arg_list` (no per-arg RC adjustments), and after the `bind` IR, `dec_temporary_args` runs as usual for any non-variable heap-typed argument.
+Under Decision 24 (Sprint 56 Step 2c), `bind` uses the **uniform consuming convention**. The caller compiles arguments via `compile_consuming_arg_list`, which incs heap-typed Var args so the Var's scope retains its reference; temporary args transfer directly (no caller action). The Bind node owns its two field references.
 
-However, the `bind` IR itself performs the two incs (§2.1 step 3). This is an intentional exception to the normal inline-primitive pattern. The net effect:
+**Historical note**: prior to Decision 24, `bind` was classified as a borrowing inline primitive — the caller used `compile_arg_list` (no per-arg inc) and emitted a caller-side `dec_temporary_args` after the IR. The `bind` IR inc'd both args explicitly because it was nominally borrowing. The consuming convention subsumes that behaviour: the caller's inc for Var args is performed once by `compile_consuming_arg_list`, and the explicit inc inside the `bind` IR is NO LONGER needed — the Bind node's field-store now inherits ownership from the consuming arg list directly. See `compile_bind_inline` in `crates/cranelisp-backend/src/compiler/apply.rs` — the "no explicit inc needed" comment reflects the Decision 24 state.
 
-- **Variable argument `l`** (e.g., `(bind some-io cont)`): rc starts at N. `bind` incs to N+1. `dec_temporary_args` skips it (it is a variable, not a temporary). The Bind node owns one reference; the variable's scope owns another. Correct.
-- **Temporary argument `l`** (e.g., `(bind (print "hello") cont)`): rc starts at 1. `bind` incs to 2. `dec_temporary_args` dec's it to 1. The Bind node owns the sole remaining reference. Correct.
+- **Variable argument `l`** (e.g., `(bind some-io cont)`): `compile_consuming_arg_list` incs `l`. The Bind node stores the inc'd reference; the Var's scope retains its original reference. Correct.
+- **Temporary argument `l`** (e.g., `(bind (print "hello") cont)`): no inc from the caller (it is not a Var). The temporary's rc=1 transfers directly into the Bind node's field. Correct.
 
 The same reasoning applies symmetrically to `r`.
 

@@ -20,6 +20,7 @@
 //! - `panic` — runtime panic handler for JIT code
 
 pub mod alloc;
+pub mod drop;
 pub mod io;
 pub mod ivar;
 pub mod rc;

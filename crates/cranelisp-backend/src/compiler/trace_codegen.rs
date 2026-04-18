@@ -22,13 +22,12 @@ impl<'a, M: Module> FnCompiler<'a, M> {
     fn emit_body_discard(&mut self, body_val: Value, body: &Expr) {
         if let Some(ty) = body.inferred_type().cloned()
             && self.is_heap_type(&ty)
-            && let Some(dealloc) = self.ctx.dealloc_func_id
         {
             crate::heap::emit_rc_dec(
                 &mut self.builder,
                 self.module,
                 body_val,
-                dealloc,
+                self.ctx.dealloc_func_id,
                 None,
             );
         }

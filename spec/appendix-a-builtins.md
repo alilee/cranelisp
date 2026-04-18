@@ -93,6 +93,7 @@ Extern primitives are called via the foreign function interface.
 
 **String operations**:
 
+<!-- FIXME(/qa): Coverage gap — 11 string primitives are annotated [R3 S14] but Ring 3 is complete: `substring`, `char-at`, `split`, `join`, `replace`, `trim`, `starts-with?`, `ends-with?`, `contains?`, `to-upper`, `to-lower`. These are implemented (see crates/cranelisp-typecheck/src/builtins.rs docstrings lines 1165–1175; exercised transitively through stdlib/text/string.cl) but no integration test in tests/*.rs calls them directly. Add direct primitive tests in tests/ring1.rs alongside existing `str-concat`/`str-eq`/`str-len`/`parse-int` tests (spec invariants: clamping for substring, out-of-bounds char-at, split empty separator, etc.). Filed by /spec during Sprint 56 close prior-ring audit. -->
 | Function | Type | Description |
 |---|---|---|
 | `str-concat` | `(Fn [String String] String)` | Concatenate two strings | [Tested tests/ring1.rs::string_concat]
@@ -119,6 +120,7 @@ Extern primitives are called via the foreign function interface.
 
 **Vec operations**:
 
+<!-- FIXME(/qa): Coverage gap — `vec-map` and `vec-reduce` are annotated [R3 S10] but Ring 3 is complete. They are implemented and used in stdlib/collections/vec.cl, but no integration test in tests/*.rs exercises them directly. Add primitive-level tests in tests/ring1.rs (map: empty vec, length preservation, element-wise transform; reduce: empty vec with init, accumulator threading, order left-to-right). Filed by /spec during Sprint 56 close prior-ring audit. -->
 | Function | Type | Description |
 |---|---|---|
 | `vec-get` | `(Fn [(Vec a) Int] a)` | Index (bounds-checked; panics on out-of-bounds) | [Tested tests/ring1.rs::vec_get_first]
@@ -130,6 +132,7 @@ Extern primitives are called via the foreign function interface.
 
 `vec-set` and `vec-push` are semantically pure (return new values). The implementation MAY use copy-on-write when the reference count is 1.
 
+<!-- FIXME(/qa): Section heading annotation `[R3 S10]` is stale — every row of the table below has individual `[Tested …]` annotations. Promote the section heading to `[Tested]` (or `[Tested+Neg]` once negative coverage is added for attempted shadowing of special forms). Filed by /spec during Sprint 56 close prior-ring audit. -->
 ## A.4 Special Forms [R3 S10]
 
 Special forms are keywords processed directly by the compiler. They are not functions or macros and cannot be shadowed.

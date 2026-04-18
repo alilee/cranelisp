@@ -4,6 +4,16 @@
 
 **Test count target**: ~120 additional tests (~591 cumulative, matching prototype).
 
+<!-- FIXME(/qa): RC-balance assertion adoption survey. The runtime exposes `cranelisp_runtime::alloc_count()` / `dealloc_count()` / `bytes_current()` as public fns; `tests/helpers/mod.rs:526+` already wraps them in `assert_rc_balanced(src)` and `assert_rc_balanced_with(preamble, src)`. Sprint 56 Wave 2c landed 14 `decision24_*` unit tests inside `crates/cranelisp-runtime/` (string, int, trace, io, marshal, drop helpers) that assert exact balance at the extern boundary. The integration-layer helpers are older and pre-date the Wave 2c convention.
+
+Proposed actions:
+1. **Survey** Ring 4 integration tests (especially IO, trace, platform, run-tests, par-let) for which would benefit from wrapping their assertions in `assert_rc_balanced_with(...)` instead of running bare. Expected payoff: IO trampoline leaks (see `crates/cranelisp-runtime/src/io.rs` FIXME on intermediate Pure/Effect nodes) would surface via this helper rather than only via `CRANELISP_RC_TRACE=1` inspection.
+2. **Extend** `assert_rc_balanced` with a session-reset variant so tests that register prelude / platform DLLs don't count those one-time allocations as leaks. The current helper handles this via `allocs_before` / `deallocs_before` snapshot, but Ring 4 tests may hold state across multiple evals that needs a per-eval wrapper.
+3. **Consider** a `#[rc_balanced]` attribute macro or a `assert_rc_balanced_eval(&mut session, src)` variant to make adoption low-friction inside REPL-session tests that do incremental eval.
+4. **Document** the adoption policy in `tests/CLAUDE.md` — which kinds of Ring 4 tests MUST use RC balance assertions vs MAY.
+
+Filed by /sprint during Sprint 56 close per user request (2026-04-18). The infrastructure is already in place; this is about systematic adoption and Ring 4-specific extension. -->
+
 ## Tests to Port
 
 ### IO / do / pure / bind (spec: 10-io)

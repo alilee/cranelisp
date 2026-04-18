@@ -292,6 +292,7 @@ Polymorphic type schemes MUST display quantified variables as consecutive lowerc
 :(Fn [:core.numerics/Num a :a] a) core.numerics/+
 ```
 
+<!-- FIXME(/qa): Coverage gaps in §1.5 — rows for `List` (line 311) and `Seq` (line 312) display formats are annotated [R3 S8] but Ring 3 is complete. Need tests that: (a) an empty list displays as `List.Nil`; (b) a non-empty list displays as `(list elem1 elem2 ...)`; (c) a Seq displays as `(seq elem1 elem2 ... +more)` after forcing up to 20 elements (i.e., infinite seq does NOT hang REPL output). Add tests in tests/repl_experience.rs alongside the existing `r1_display_vec_int` test. Filed by /spec during Sprint 56 close prior-ring audit. -->
 ### 1.5 Value Display [R3 S8]
 
 Values are runtime results and have no module scope. They are displayed bare.
@@ -361,6 +362,7 @@ This enables:
 
 Slash commands provide introspection and navigation. All commands start with `/` and are NOT expressions — they are REPL-only features.
 
+<!-- FIXME(/qa): Traceability gap — §3.1 section heading annotated [R3 S10] is stale. Most rows have individual `[Tested …]` annotations already. The section heading should be updated to match the lowest-coverage child (several rows are still `[R4 S10]` or `[R1]` — these are Ring 4 introspection commands, legitimately pending). Consider replacing the section-heading annotation with a summary or removing it in favour of per-row annotations. Filed by /spec during Sprint 56 close prior-ring audit. -->
 ### 3.1 Command Inventory [R3 S10]
 
 | Command | Aliases | Description | Ring | Test |
@@ -382,6 +384,7 @@ Slash commands provide introspection and navigation. All commands start with `/`
 | `/imports [module]` | — | Show imports and special forms; filter by source module | 0 | [Tested tests/e2e::e2e_s3_4_imports_special_forms, tests/e2e::e2e_s3_4_imports_empty] |
 | `/exports <module>` | — | List a module's importable public symbols | 2 | [Tested tests/e2e::e2e_s3_5_exports_lists_symbols, tests/e2e::e2e_s3_5_exports_no_arg_usage] |
 | `/mem [expr]` | `/m` | Show allocation statistics | 1 | [R4 S10] |
+<!-- FIXME(/repl): Implement `/mem`. The runtime already exposes the required counters as `pub fn` in `crates/cranelisp-runtime/src/alloc.rs` — `cranelisp_runtime::alloc_count()` and `cranelisp_runtime::dealloc_count()`. They are already used by integration tests (`tests/sketch_port.rs:1463-1510`) and the Sprint 56 Wave 2c extern unit tests. `/mem` with no argument SHOULD print live allocs (`alloc_count - dealloc_count`), total allocs, and total deallocs. `/mem <expr>` SHOULD evaluate the expression and print the delta in each counter across the evaluation — which makes RC behaviour directly observable in a session. Filed by /sprint during Sprint 56 close per user request (2026-04-18). -->
 | `/run-tests [module]` | `/rt` | Discover and run test functions (see §16) | 4 | [R4] |
 | `/run-all-tests` | — | Run all tests in project (see §16) | 4 | [R4] |
 | `/sh <cmd>` | — | Run a shell command (see §13) | 4 | [R4 S52] |
@@ -535,6 +538,11 @@ For overloaded functions, all variants MUST be listed. For constrained functions
 
 Every valid language construct entered at the REPL MUST produce useful feedback. This is the **self-documentation principle** from the project's design principles. All output reinforces the language syntax.
 
+<!-- FIXME(/qa): Coverage gaps within §4.1 rows (all [R3 S14] but Ring 3 is complete):
+  - line 267 / 574: "overloaded fn shows all variants" — need test that bare-symbol lookup of a multi-sig fn (e.g. `map` with Vec and List signatures) emits one line per variant per §1.3
+  - line 624: "related constructors" — need test that bare-type lookup of an ADT includes `; match:` section with constructor names
+  - line 625: "related trait impls" — need test that bare-type lookup includes `; impl:` section with trait names
+  These are §4.1-wide gaps; add tests in tests/repl_experience.rs (integration) or tests/e2e.rs (E2E). Filed by /spec during Sprint 56 close prior-ring audit. -->
 ### 4.1 Symbol Lookup — Per-Class Specification [R3 S14]
 
 Entering a bare symbol name at the REPL MUST produce output following the universal format (§1.1). Every symbol class has a defined response. No valid name MUST produce an opaque error. If a name is unbound, the error MUST say so clearly. [Tested tests/repl_experience::unbound_symbol_clear_error]
@@ -697,6 +705,7 @@ Zero-arg macros expand immediately — they do not reach the lookup path.
 | macro shows clause signatures | [Tested tests/ring3_repl::r3_bare_macro_lookup] |
 | multi-clause macro | [Tested tests/ring3_repl::r3_bare_macro_lookup_multi_clause] |
 
+<!-- FIXME(/qa): Coverage gap — §4.1.7 annotated [R3 S14] but Ring 3 is complete. The section itself calls out a "Current gap" (line 713): "implementation skips primitives (DefKind::Primitive returns None). They MUST be shown like any other function." Need tests asserting bare-symbol lookup for primitives like `add-i64`, `str-concat` produces the universal format output per §1.1, §4.1.7. If the implementation gap is still present, the test should fail visibly (per feedback_failing_not_ignored.md). Filed by /spec during Sprint 56 close prior-ring audit. -->
 #### 4.1.7 Primitive Functions [R3 S14]
 
 Primary line only. Classification `defn` (primitives are functions). Primitives are defined in the `primitives` module.
@@ -861,6 +870,7 @@ Simple expressions (arithmetic, boolean logic, small function calls) MUST evalua
 
 After displaying a result, the next prompt MUST appear within **10ms**. There MUST be no perceptible delay between result display and prompt readiness.
 
+<!-- FIXME(/qa): Coverage gap — §7.4 Large Output annotated [R3 S8] but no tests found. A SHOULD-level requirement ("REPL SHOULD truncate output") would benefit from at least one test exercising a large Vec (e.g. 1000 elements) and asserting that output is bounded — even if the exact truncation threshold is implementation-defined. Filed by /spec during Sprint 56 close prior-ring audit. -->
 ### 7.4 Large Output [R3 S8]
 
 When displaying large values (e.g., a Vec with 1000 elements), the REPL SHOULD truncate output with an indication of the total size rather than flooding the terminal. The truncation threshold is implementation-defined but SHOULD be configurable.
@@ -1077,6 +1087,7 @@ The TTY detection result SHOULD be computed once at startup and stored as a bool
 
 Ring 3 introduces the macro system. The REPL MUST integrate macros into all existing introspection and display mechanisms so that macros are first-class citizens of the self-documentation experience.
 
+<!-- FIXME(/qa): Traceability gap — §11.1 annotated [R3 S16] but `/expand` tests exist and pass: tests/e2e.rs::e2e_s11_1_expand_single_macro (line 1278), e2e_s11_1_expand_nested_macros (1292), e2e_s11_1_expand_no_macro (1315), e2e_s11_1_neg_expand_non_macro_unchanged (1328). Update §11.1 heading to `[Tested+Neg tests/e2e.rs::e2e_s11_1_expand_single_macro, tests/e2e.rs::e2e_s11_1_neg_expand_non_macro_unchanged]`, and update table rows in §11.5 (lines 1199–1201) likewise. Filed by /spec during Sprint 56 close prior-ring audit. -->
 ### 11.1 `/expand` Command [R3 S16]
 
 The `/expand` (alias `/e`) command MUST accept a single S-expression form, perform recursive macro expansion to a fixed point (per spec Section 9.3.3), and display the fully expanded S-expression WITHOUT evaluating it.

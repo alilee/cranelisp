@@ -3,13 +3,12 @@
 // This module provides:
 // - Module file resolution
 // - Expression compilation and execution (REPL eval)
-// - Per-defn GOT registration (worker codegen)
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use cranelisp_types::{
-    CranelispError, Defn, FQSymbol, ModuleFullPath,
+    CranelispError, ModuleFullPath,
     Program, Span, Type,
 };
 
@@ -53,6 +52,17 @@ pub fn resolve_module_file(
 // Expression compilation (REPL eval path)
 // ---------------------------------------------------------------------------
 
+// FIXME(/int): Sprint 56 Wave 3 — the `program: &Program` parameter below is
+// a leftover from the pre-Wave-2 code path. The new path pulls `__expr` from
+// `symbol_tables` (Wave 0 installs it there as a synthetic Defn with
+// `ast: Some(...)`), and the `program` fallback is kept only for
+// "backward compatibility with callers that hand-build programs without
+// going through `wrap_exprs_as_defns`". No production caller exercises the
+// fallback today — `session_v4.rs:1574` passes `program_vec` but the symbol
+// table always has `__expr` installed first. Audit call sites, confirm the
+// fallback is dead, then remove `program: &Program` from the signature (and
+// the `program_vec` construction upstream). Wave 3 audit did not edit this to
+// keep this investigation read-only.
 #[allow(clippy::too_many_arguments)]
 pub fn compile_and_execute_expr(
     jit_symbols: &[(String, *const u8)],
@@ -243,103 +253,3 @@ fn compile_and_execute_expr_with_trace(
 
     Ok(value)
 }
-
-// ---------------------------------------------------------------------------
-// Per-defn GOT registration (worker codegen path)
-// ---------------------------------------------------------------------------
-
-/// Compile a single function definition and register it in the GOT.
-///
-/// Writes `Code { jit, ptr }` to `codegen_products` (target state DashMap).
-/// GOT slot is read from `symbol_tables[module].get(defn.name).got_slot`
-/// (Wave 0 contract — slot assigned at registration time by typecheck).
-/// If `introspection` is provided, populates CLIF IR, AST, disasm, and code_size.
-#[allow(clippy::too_many_arguments)]
-pub fn compile_and_register_defn_shared(
-    jit_symbols: &[(String, *const u8)],
-    got_data_defs: &[(String, *const u8)],
-    defn: &Defn,
-    module_got: &std::sync::Arc<cranelisp_backend::got::GotTable>,
-    codegen_products: &dashmap::DashMap<ModuleFullPath, crate::session_v4::CodegenProduct>,
-    introspection: Option<&dashmap::DashMap<FQSymbol, crate::session_v4::Introspection>>,
-    module: &ModuleFullPath,
-    disable_dealloc: bool,
-    symbol_tables: &dashmap::DashMap<ModuleFullPath, cranelisp_types::SymbolTable>,
-) -> Result<(), CranelispError> {
-    let extra_symbols: Vec<(&str, *const u8)> = jit_symbols
-        .iter()
-        .map(|(name, ptr)| (name.as_str(), *ptr))
-        .collect();
-    let mut jit = cranelisp_backend::jit::Jit::new_with_symbols(&extra_symbols)?;
-
-    jit.declare_intrinsics()?;
-
-    // Define GOT base literal pool entries as data in the JIT module.
-    for (name, ptr) in got_data_defs {
-        jit.define_got_data(name, *ptr)?;
-    }
-
-    let func_ids = jit.declare_functions(&[defn])?;
-
-    // Read the pre-assigned GOT slot from the symbol table (Wave 0 contract —
-    // slot is assigned at typecheck-register time and lives on `ModuleEntry::Def`).
-    let slot = symbol_tables
-        .get(module)
-        .and_then(|t| match t.get(defn.name.as_ref()) {
-            Some(cranelisp_types::ModuleEntry::Def {
-                got_slot: Some(slot), ..
-            }) => Some(*slot),
-            _ => None,
-        })
-        .ok_or_else(|| CranelispError::CodegenError {
-            message: format!("no pre-assigned GOT slot for function: {}", defn.name),
-            span: defn.span,
-        })?;
-
-    let func_arities = std::collections::HashMap::new();
-    let mut compile_ctx = jit.build_compile_context(
-        &func_ids,
-        &func_arities,
-        symbol_tables,
-        module.clone(),
-    );
-    if disable_dealloc {
-        compile_ctx.dealloc_func_id = None;
-    }
-    let artifacts = jit.compile_defn(defn, compile_ctx)?;
-
-    let code_ptr = jit.finalize_and_get_ptr(&defn.name, defn.params().len())?;
-
-    // Write code pointer to module's GOT table.
-    module_got.store_slot(slot, code_ptr);
-
-    // Write Code to codegen_products. `Jit` owns mmap'd executable pages
-    // that are immutable after finalise; `Code` already carries unsafe
-    // `Send + Sync` impls so the `Arc<Jit>` wrapping is safe in practice.
-    #[allow(clippy::arc_with_non_send_sync)]
-    let jit_arc = std::sync::Arc::new(jit);
-    let product = codegen_products.entry(module.clone()).or_default();
-    product.code.insert(
-        defn.name.clone(),
-        crate::session_v4::Code {
-            jit: jit_arc,
-            ptr: code_ptr,
-        },
-    );
-
-    // Populate introspection data (REPL-only).
-    if let Some(intr_map) = introspection {
-        let fq = FQSymbol {
-            module: module.clone(),
-            symbol: defn.name.clone(),
-        };
-        let mut entry = intr_map.entry(fq).or_default();
-        entry.clif_ir = Some(artifacts.clif_ir);
-        entry.disasm = artifacts.disasm;
-        entry.code_size = artifacts.code_size;
-    }
-
-    Ok(())
-}
-
-

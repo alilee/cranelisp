@@ -1,6 +1,6 @@
 # Sprint 56: Single Codegen Entry Point
 
-**Status**: ACTIVE
+**Status**: COMPLETE
 **Ring**: 4 (Effects — full spec scope)
 **Goal**: Route all codegen (JIT batch, REPL expression, object file) through a single `compile_to_module` entry point that reads from the symbol table. Delete `codegen_module_symbols` and its helpers.
 
@@ -33,11 +33,22 @@ Three sequential steps, each leaving tests green. **Unifying principle (Principl
    - **GOT emission is uniform across modes**: `compile_to_module` emits `global_value` against a `Linkage::Import` data symbol `__cranelisp_got_{module}`. The `Module` resolves it — Object via relocation (linker patches), JIT via caller-registered `JITBuilder::symbol_lookup_fn` returning `symbol_tables[m].got.base_ptr()`. Backend IR is byte-identical in both modes. Tradeoff accepted: one extra memory load per cross-module JIT call vs structural simplicity.
    - `CompilationResult` gains `artifacts: HashMap<Symbol, FunctionArtifacts>` (per-symbol CLIF IR / disasm / code_size) so the priority worker can populate `Introspection` without a separate compilation pass. See `pipeline-v4.md` §9.6.
 
-2. **Step 2b** — Delete `codegen_module_symbols` and route JIT through `compile_to_module` (G5).
+2. **Step 2b** — Delete `codegen_module_symbols` and route JIT through `compile_to_module` (G5). **LANDED** (Wave 2).
    - Priority worker calls `compile_to_module(path, &names, &symbol_tables, &mut jit_module)` directly, after configuring `JITBuilder::symbol_lookup_fn` to resolve `__cranelisp_got_*` names from `symbol_tables`.
-   - `compile_regular_defns`, `compile_and_register_defn_shared`, `pre_register_got_slots_in_tc`, `SessionCompilationEnv`, `SessionCompilationEnv.collect_jit_setup_for_module` — all deleted.
-   - `src/worker.rs` substantially reduced.
+   - `codegen_module_symbols`, `compile_regular_defns`, `pre_register_got_slots_in_tc`, `SessionCompilationEnv`, `SessionCompilationEnv.collect_jit_setup_for_module` — all deleted.
+   - `src/worker.rs` substantially reduced (−591 lines net).
    - Batch and REPL paths converge into one JIT codegen path.
+   - **Scope residue**: `compile_and_register_defn_shared` retained as macro-clause helper due to `disable_dealloc` flag. Target of Step 2c.
+
+3. **Step 2c** — Unify calling convention. **Retract Decision 20** (split convention: user fns consuming, builtins borrowing) in favour of a single consuming convention across all call types. Macro expansions are just normal functions; there is no "borrowing" distinction.
+   - Delete `dec_temporary_args` and all its call sites in `crates/cranelisp-backend/src/compiler/apply.rs` — no caller-side post-call dec.
+   - Delete `disable_dealloc` flag on `CompileContext` and all its threading.
+   - Delete `compile_and_register_defn_shared` and migrate its two callers in `src/worker.rs:349`, `:1743` to the unified inline-compile path with `names = [clause_name]`.
+   - Audit every extern primitive that takes a heap arg: Rust implementation MUST dec heap args it doesn't return. Externs that already retain/consume are correct; externs that read-and-return-unchanged need a dec added. Every extern reviewed in a single pass, documented in a table in the backend design doc.
+   - `/arch` retracts Decision 20 in `design/arch/CLAUDE.md` and records the replacement in a new Key Decision (24) — one consuming convention, every call site compiles identically, extern Rust implementations manage RC for their own heap args.
+   - `/backend` updates `design/backend/ring2-rc.md` §3 (the decision table) to match.
+   - Risk: any missed extern becomes a memory bug (leak if it didn't dec, double-free if the caller's removed dec was compensating). Mitigation: the audit must be exhaustive + `/qa` writes an integration test per extern category that would catch both failure modes via RC trace.
+   - Expected outcome: `src/pipeline.rs:compile_and_register_defn_shared` gone; `apply.rs:dec_temporary_args` gone; every extern's Rust impl audited and fixed; no regression from the 19-failures baseline.
 
 ### Direct failure-fixing opportunities
 
@@ -437,6 +448,24 @@ Depends on Wave 1. Delivers Step 2b. Fixes the 3 multi-sig JIT tests.
 
 **Gate criterion**: all 6 deletions done; priority worker + REPL + batch + object paths all go through `compile_to_module`; 3 multi-sig JIT tests pass; no regression below 19 (22 baseline - 3 fixed); `cargo clippy` clean.
 
+### Wave 2c — Calling convention unification
+
+Depends on Wave 2. Retracts Decision 20. Bundled into Sprint 56 per user direction — avoid deferring the primary unification objective into another sprint.
+
+| Skill | Task | Status | Notes |
+|-------|------|--------|-------|
+| /arch | Retract Decision 20; add Decision 24 (one consuming convention) | pending | Updates `design/arch/CLAUDE.md` + brief note in `interfaces.md` if borrowing/consuming language appears. Design-only. |
+| /backend | Rewrite `design/backend/ring2-rc.md` §3 (the decision table) to unified consuming | pending | Design-only. |
+| /backend | Delete `dec_temporary_args` + all its call sites in `apply.rs` | pending | Each call site (7 in apply.rs per grep) becomes a no-op. |
+| /backend | Delete `CompileContext.dealloc_func_id: Option<...>` conditionals — treat `dealloc_func_id` as always `Some` | pending | If the `Option` wrapper exists because of the disable_dealloc flag, simplify to always-present. |
+| /int | Delete `disable_dealloc` parameter on `compile_and_register_defn_shared` → delete the function itself → migrate both callers (`worker.rs:349`, `:1743`) to unified inline-compile | pending | Two macro-clause compile sites collapse into the priority-worker-style inline sequence with `names = [clause_name]`. |
+| /backend | Audit every extern primitive that takes a heap arg | pending | Table in `design/backend/ring2-rc.md` or a new audit doc: one row per extern with "heap arg RC: passes/consumes/needs-fix". Each needs-fix gets a commit. |
+| /backend | Unit tests for the extern audit: one `#[cfg(test)]` test per extern category verifying RC balance after representative call | pending | Cover str-concat, string-length, vec-ops, trace intrinsics, Sexp marshaling, IO. Each test verifies no leak and no double-free via RC trace or heap alloc tracking. |
+| /qa | Integration regression tests: compile a macro clause via the unified path; run a prelude-heavy program and assert RC balance | pending | Would-have-caught tests for the macro-clause migration (via unified compile) and the extern convention change. |
+| /review | Review Step 2c code | pending | After build-green. Any missed extern is a Blocker. |
+
+**Gate criterion**: `disable_dealloc`, `dec_temporary_args`, and `compile_and_register_defn_shared` removed from the source tree; every extern audited with a row in the design doc; test count ≥ 2438 (add new tests, no regressions); 19-failure baseline preserved or better.
+
 ### Wave 3 — Showcase (user-proxy skills)
 
 Depends on Wave 2. Gates sprint close.
@@ -469,4 +498,94 @@ Depends on Wave 2. Gates sprint close.
 
 ## Outcome
 
-(Filled when sprint closes.)
+**Closed**: 2026-04-18. Sprint technical goal **achieved** — one codegen path. Two pre-existing close-checklist items flagged as carried debt (exemplar super-import and prior-ring coverage gaps), not Sprint 56 defects.
+
+**Test count**: 1602 passed / 14 failed / 0 skipped (1616 total). Baseline was 1590/22/0 (1612). Net: +12 pass, -8 fail, +4 total.
+
+### Delivered
+
+**Wave 0 — Symbol table groundwork** (`/typecheck`):
+- Mangled multi-sig variant entries now carry `ast: Some(...)` (reuses internal-name annotated AST, renames `defn.name` to mangled form)
+- Mono specialisation entries carry annotated `ast: Some(...)` via clone at `monomorphise_call` site
+- `SymbolTable::defined_symbols()` iterator with shared codegen predicate (Decision 22)
+- **G7 pulled forward**: `got: GotTable` moved from `TypecheckProduct` onto `SymbolTable` (with `#[serde(skip, default)]`); `GotTable` type migrated from `cranelisp-backend` into `cranelisp-types`
+- 6 Wave 0 unit tests + 4 `GotTable` tests
+
+**Wave 1 — Backend signature flip** (`/backend`):
+- `compile_to_module(module_path, names, symbol_tables, module)` — **4 parameters, single entry point** (Principle 11)
+- `CompilationEnv` trait + `ObjectCompilationEnv` struct + all env infrastructure **deleted**
+- `expand_multi_sig_defn` **deleted** (Wave 0 makes it redundant)
+- Uniform `global_value` + `Linkage::Import` GOT emission — byte-identical CLIF across JIT and Object modes
+- `CompilationResult.artifacts: HashMap<Symbol, FunctionArtifacts>` for per-symbol introspection
+- 4 Step 2a backend unit tests
+
+**Wave 2 — JIT sweep deletion** (`/int`):
+- `codegen_module_symbols`, `compile_regular_defns`, `pre_register_got_slots_in_tc`, `SessionCompilationEnv` — all **deleted**
+- Priority worker inlines `compile_to_module` with `JITBuilder::symbol_lookup_fn` resolving `__cranelisp_got_*` directly from `symbol_tables`
+- `finalize_module`'s REPL `__expr` special case, mono-inlining, default-method-inlining, post-pass enrichment loops — all **deleted** (Wave 0 makes them redundant)
+- `TypecheckProduct.got` deleted
+- 4 priority-worker unit tests
+- `src/worker.rs` substantially shrunk (net ~−591 lines in checkpoint)
+
+**Wave 2c — Single consuming convention** (Decision 24 retracts Decision 20):
+- `dec_temporary_args` + 7 call sites in `apply.rs` **deleted**
+- `disable_dealloc` flag + `compile_and_register_defn_shared` **deleted**; macro-clause callers migrated to unified `inline_jit_codegen_for_names` path
+- Every extern taking heap args audited with one row per extern in `design/backend/ring2-rc.md` §3.3 (36 externs)
+- New helper module `crates/cranelisp-runtime/src/drop.rs` — centralises `consume_shallow` / `consume_slist` / `consume_sexp` / `consume_vec_of_string` / `consume_trace_call` / `consume_io_tree` / `consume_closure`
+- Edge cases handled: `quote_sexp` → `quote_sexp_build` split (avoids consume-during-recursion); `string-identity` retained on borrowing path as documented exception; `join`-of-Vec-of-String uses `consume_vec_of_string`
+- 29 `decision24_*` unit tests across 7 categories (string × 8, drop/consume × 11, rc core × 3, trace × 3, int × 2, io × 1, marshal × 1)
+
+**Flip-green (target sprint deliverable)**: All 3 multi-sig JIT tests pass — `sketch_multi_sig_type_based_dispatch`, `sketch_multi_sig_different_arities`, `sketch_repl_multi_sig_different_arities`.
+
+**Design doc landings**:
+- `design/backend/compile-to-module.md` — §2.1 PRESCRIPTIVE at 4 params; §12 uniform GOT strategy; deletion list
+- `design/typecheck/ast-annotation.md` §9 — four substeps including G7 pull-forward §9.8
+- `design/int/phase2-codegen-convergence.md` — env-replacement table, priority-worker pseudocode, migration order
+- `design/backend/ring2-rc.md` §3.3 — extern audit table; §3 rewritten to unified consuming convention
+- `design/arch/CLAUDE.md` — Decisions 22 (`defined_symbols()` predicate), 23 (uniform GOT emission; env types retracted), 24 (single consuming convention)
+- `design/arch/interfaces.md` — stale `CheckResult` boundary-type refs removed
+
+**Wave 3 showcase**:
+- `repl/demos/ring4n.demo` created showcasing multi-sig JIT dispatch via `(defn area ...)` — arity-based dispatch with `/sig`, `/list`, `/clif` introspection
+- Stdlib integration: 54/54 pass (3.0s)
+- Examples 01–15: 15/15 pass (0.13s)
+- Prior demos: all 22 run to completion
+
+**Review findings resolved in-sprint** (from `/review`):
+- I2: stale "borrowing convention" comment at `apply.rs:727-728` rewritten for Decision 24
+- I3: `io.rs:33-37` trampoline comment corrected; `FIXME(/backend)` filed for the real intermediate-node leak
+- I4: `.expect()` at `lib.rs:258` and `jit.rs:488` → `.unwrap_or_else(|| unreachable!(...))` per `src/CLAUDE.md` error-handling convention
+- I1: 5 additional `decision24_*` RC-balance tests added for trace accessor, `cranelisp_run_io`, `sconcat` — closing the Wave 2c per-extern coverage commitment
+
+### Deferred
+
+**Deferred to future sprints with rationale**:
+
+1. **3 sketch_port cache failures + 5 v4_platform failures + 1 run-tests failure + 1 v4 cache-hit dep** — Phase 3 (GOT+code on SymbolTable) and Phase 5 (cache serialization) territory; not Phase 2 concerns. 14 failures total, all outside Sprint 56 scope.
+2. **`src/pipeline.rs:compile_and_execute_expr` still takes `program: &Program` fallback parameter** (Suggestion-level finding from `/frontend` audit) — cosmetic; no production caller uses the fallback. FIXME(/int) filed at `src/pipeline.rs:55`.
+3. **`CheckResult` slimming** (from `/arch`'s Phase 3a review) — FIXME filed on `crates/cranelisp-types/src/check.rs` for `/typecheck` to address before Phase 5 cache work.
+
+**Pre-existing debt surfaced by this sprint's close-gate process** (NOT Sprint 56 defects):
+
+4. **Exemplar project blocked by missing `super` import in v4 pipeline** — `exemplar/solver.cl` cannot run because `(mod test (import [super [*]])...)` fails during module discovery. Sketch had `super` resolution (at `sketch/src/module.rs:1429-1434`); v4 pipeline migration lost it. FIXME(/int) filed on `design/arch/pipeline-v4-roadmap.md`. Blocks close-checklist item "`/port` (exemplar) demo is current" — pre-existing, not Sprint 56.
+5. **14 prior-ring coverage/traceability/negative-coverage gaps** surfaced by `/spec` audit — 11 string primitives, 2 vec primitives, lazy sequences §12.4.2 placeholder test, HKT traceability, REPL `/expand` traceability, §4.1.7 primitive bare-symbol lookup, 100+ MUST requirements without `[Tested+Neg]`. All 14 FIXME(/qa) entries filed. Blocks "Prior-ring coverage audit clean" — all pre-existing Ring 2/3 debt.
+6. **Prior-demo content drift** — 6-7 demos reference bare primitive names or outdated prelude APIs. All run to completion but show `Error:` output. Pre-existing.
+
+**FIXMEs filed during Sprint 56 close** (18 total):
+- 14 FIXME(/qa) on `spec/*.md` + `repl/spec.md` — prior-ring coverage gaps
+- 1 FIXME(/int) on `src/pipeline.rs:55` — cosmetic `&Program` fallback cleanup
+- 1 FIXME(/int) on `design/arch/pipeline-v4-roadmap.md` — super import v4 pipeline gap
+- 1 FIXME(/backend) on `crates/cranelisp-runtime/src/io.rs` — `run_io_trampoline` intermediate-node leak
+- 1 FIXME(/repl) on `repl/spec.md:385` — implement `/mem` command (counters already public)
+- 1 FIXME(/qa) on `tests/plan/ring4.md` — Ring 4 RC-balance assertion adoption survey
+- (The `FIXME(/typecheck)` on `crates/cranelisp-types/src/check.rs` for `CheckResult` slimming was filed during Phase 3 and remains active.)
+
+### Findings
+
+- **Principle 11 (one path) verified** — `compile_to_module` is genuinely the single codegen entry point; `/review` confirmed absence from source of every deleted symbol (`CompilationEnv`, `ObjectCompilationEnv`, `SessionCompilationEnv`, `codegen_module_symbols`, `compile_regular_defns`, `pre_register_got_slots_in_tc`, `compile_and_register_defn_shared`, `dec_temporary_args`, `disable_dealloc`, `expand_multi_sig_defn`).
+- **Principle 11 pays dividends at test time** — the 3 multi-sig JIT failures were a direct symptom of JIT-vs-object path divergence. Convergence on one path fixed them as a natural byproduct, not a special-case fix.
+- **Extern RC audit is the right shape** — a one-row-per-extern table in `design/backend/ring2-rc.md` §3.3 made the "missed extern = memory bug" risk tractable. 36 externs audited; no blockers surfaced in `/review`. Pattern worth retaining for future cross-skill audits.
+- **Close-gate process as debt surfacer** — `/spec` and `/port` Wave 3 audits uncovered substantial pre-existing debt (14 coverage gaps + exemplar super-import) unrelated to Sprint 56. Sprint close was clean on its own work but honest about the broader landscape.
+- **`assert_rc_balanced` infrastructure is further along than assumed** — `tests/helpers/mod.rs:526+` already wraps `cranelisp_runtime::alloc_count()`/`dealloc_count()`. Only adoption needs expansion. Narrowed the FIXME(/qa) scope accordingly.
+- **Alloc/dealloc counters are well-placed for REPL exposure** — `cranelisp_runtime::alloc_count()`/`dealloc_count()` are already `pub fn`, used in 3 sites. A `/mem` command is a thin wrapper away. FIXME filed.
+- **Wave 2c bundling was the right call** — unification objective achieved in one sprint rather than split across two. The `drop.rs` helper + extern-audit table pattern made the change tractable. Splitting would have required maintaining the Decision-20 split-convention intermediate — exactly the "interim architecture" anti-pattern.

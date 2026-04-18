@@ -8,6 +8,7 @@
 //! of truth). See that module for constructor order documentation.
 
 use crate::alloc::alloc_with_rc;
+use crate::drop::{consume_sexp, consume_slist};
 use crate::string::alloc_string;
 use cranelisp_types::{
     TAG_SNIL, TAG_SCONS,
@@ -147,29 +148,41 @@ fn deep_rc_inc_slist(mut slist: i64) {
 /// **RC ownership**: The result shares data from both inputs:
 /// - Items from `xs` are extracted and placed in new SCons nodes. Each item
 ///   gets a shallow RC inc so it survives if the caller frees the original
-///   `xs` chain (via drop glue on temporaries).
+///   `xs` chain.
 /// - The `ys` chain is used directly as the tail of the result. It gets a
 ///   deep RC inc (every SCons node and every element) so it survives if the
 ///   caller's scope cleanup dec's the original `ys` variable.
+///
+/// Decision 24 (Sprint 56 Step 2c): consuming convention. `sconcat` inc's
+/// the items of `xs` into new SCons nodes, inc's the `ys` chain deeply so
+/// the result can use it as a tail, then releases the original `xs` and
+/// `ys` via `consume_slist` (runtime-side recursive drop glue). Callers
+/// compile args through `compile_consuming_arg_list` (heap-typed Vars are
+/// inc'd at the call site so the caller's binding survives our dec).
 ///
 /// Registered in the JIT as "sconcat" and in the `macros` module typechecker
 /// so that `macros/sconcat` resolves correctly.
 pub extern "C" fn sconcat(xs: i64, ys: i64) -> i64 {
     let items = unsafe { read_slist(xs) };
-    if items.is_empty() {
+    let result = if items.is_empty() {
         // No items from xs: result IS ys. Inc it so the caller can't free
         // the result by freeing ys.
         deep_rc_inc_slist(ys);
-        return ys;
-    }
-    // Inc the ys chain so it survives scope cleanup of the original variable.
-    deep_rc_inc_slist(ys);
-    let mut result = ys;
-    for &item in items.iter().rev() {
-        // Inc each item so it survives if the original xs chain is freed.
-        shallow_rc_inc(item);
-        result = alloc_adt_3(TAG_SCONS, item, result);
-    }
+        ys
+    } else {
+        // Inc the ys chain so it survives consumption of the original variable.
+        deep_rc_inc_slist(ys);
+        let mut acc = ys;
+        for &item in items.iter().rev() {
+            // Inc each item so it survives when the original xs chain is freed.
+            shallow_rc_inc(item);
+            acc = alloc_adt_3(TAG_SCONS, item, acc);
+        }
+        acc
+    };
+    // Decision 24: consume the heap arguments we did not return.
+    consume_slist(xs);
+    consume_slist(ys);
     result
 }
 
@@ -188,7 +201,23 @@ pub extern "C" fn sconcat(xs: i64, ys: i64) -> i64 {
 /// Examples:
 /// - `(SexpInt 42)` -> `(SexpList [(SexpSym "macros/SexpInt") (SexpInt 42)])`
 /// - `(SexpSym "foo")` -> `(SexpList [(SexpSym "macros/SexpSym") (SexpStr "foo")])`
+///
+/// Decision 24 (Sprint 56 Step 2c): consuming convention. The extern entry
+/// point builds the quoted result (sharing field pointers with appropriate
+/// incs) and then releases the input via `consume_sexp` (runtime-side
+/// recursive drop glue). Callers compile args through
+/// `compile_consuming_arg_list`.
 pub extern "C" fn quote_sexp(val: i64) -> i64 {
+    let result = quote_sexp_build(val);
+    // Decision 24: consume the heap argument we did not return.
+    consume_sexp(val);
+    result
+}
+
+/// Build the quoted-form Sexp without consuming `val`. Shared between the
+/// extern entry and `quote_slist` (which feeds items that are still owned
+/// by the parent SList).
+fn quote_sexp_build(val: i64) -> i64 {
     // SAFETY: val is a valid heap pointer to a Sexp ADT cell.
     let tag = unsafe { read_i64(val, PAYLOAD_OFFSET) };
     let field0 = unsafe { read_i64(val, FIELD0_OFFSET) };
@@ -213,13 +242,18 @@ pub extern "C" fn quote_sexp(val: i64) -> i64 {
             alloc_adt_2(TAG_SEXP_LIST, items)
         }
         TAG_SEXP_STR => {
+            // The cloned ADT reuses field0 (a String pointer) — inc it so
+            // both the input and the new wrapper own a reference.
+            shallow_rc_inc(field0);
             let ctor = make_sexp_sym("macros/SexpStr");
             let original = alloc_adt_2(TAG_SEXP_STR, field0);
             let items = build_runtime_list(&[ctor, original]);
             alloc_adt_2(TAG_SEXP_LIST, items)
         }
         TAG_SEXP_SYM => {
-            // Symbol name (string ptr) -> wrap as SexpStr for the argument
+            // Symbol name (string ptr) -> wrap as SexpStr for the argument.
+            // Inc so the new SexpStr owns an independent reference.
+            shallow_rc_inc(field0);
             let ctor = make_sexp_sym("macros/SexpSym");
             let str_val = alloc_adt_2(TAG_SEXP_STR, field0);
             let items = build_runtime_list(&[ctor, str_val]);
@@ -252,7 +286,10 @@ pub extern "C" fn quote_sexp(val: i64) -> i64 {
 /// SCons(head, tail) -> SexpList([SexpSym("macros/SCons"), quote_sexp(head), quote_slist(tail)])
 fn quote_slist(slist: i64) -> i64 {
     let items = unsafe { read_slist(slist) };
-    let quoted: Vec<i64> = items.iter().map(|&item| quote_sexp(item)).collect();
+    // Use the non-consuming builder for sub-items: ownership of each item
+    // stays with the parent SList, which the caller will eventually
+    // release via `consume_sexp` at the top-level quote_sexp.
+    let quoted: Vec<i64> = items.iter().map(|&item| quote_sexp_build(item)).collect();
 
     let nil = make_sexp_sym("macros/SNil");
     quoted.iter().rev().fold(nil, |acc, &item| {
@@ -300,5 +337,53 @@ mod tests {
         let result = sconcat(xs, ys);
         let items = unsafe { read_slist(result) };
         assert_eq!(items, vec![1, 2, 3]);
+    }
+
+    // ---------------------------------------------------------------------
+    // Decision 24 extern-consumption tests (Sprint 56 Step 2c)
+    //
+    // `sconcat` incs items of xs into new SCons nodes, deep-incs ys so the
+    // result can splice it as a tail, then releases the original xs and ys
+    // via `consume_slist`. The test verifies RC balance: after the caller
+    // drops the result (also via consume_slist), no leaks or double-frees.
+    // ---------------------------------------------------------------------
+
+    // spec: design/arch/CLAUDE.md Decision 24 — consuming convention, extern sconcat
+    #[test]
+    fn decision24_sconcat_rc_balanced() {
+        let allocs_before = crate::alloc::alloc_count();
+        let deallocs_before = crate::alloc::dealloc_count();
+
+        // xs = SCons(1, SCons(2, SNil))  — 2 SCons allocs, items are bare tags.
+        // ys = SCons(3, SNil)            — 1 SCons alloc.
+        let xs = alloc_adt_3(TAG_SCONS, 1, alloc_adt_3(TAG_SCONS, 2, TAG_SNIL));
+        let ys = alloc_adt_3(TAG_SCONS, 3, TAG_SNIL);
+
+        // sconcat:
+        //   - deep_rc_inc_slist(ys): ys SCons rc 1→2, head=3 is bare tag.
+        //   - builds 2 new SCons nodes holding items 1, 2 (bare tags —
+        //     shallow_rc_inc no-op), tail chained to ys.
+        //   - consume_slist(xs): last ref → frees both xs SCons nodes.
+        //   - consume_slist(ys): rc 2→1, not freed.
+        let result = sconcat(xs, ys);
+        let items = unsafe { read_slist(result) };
+        assert_eq!(items, vec![1, 2, 3]);
+
+        // Caller releases the result (Decision 24 semantics — receiver owns).
+        // consume_slist walks: frees the 2 new SCons, then ys SCons (rc 1→0).
+        consume_slist(result);
+
+        // allocs: 3 original (xs:2 + ys:1) + 2 new result SCons = 5
+        // deallocs: same 5 — no leaks, no double-frees.
+        assert_eq!(
+            crate::alloc::alloc_count() - allocs_before,
+            5,
+            "alloc count mismatch"
+        );
+        assert_eq!(
+            crate::alloc::dealloc_count() - deallocs_before,
+            5,
+            "dealloc count mismatch (leak or double-free)"
+        );
     }
 }

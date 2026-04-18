@@ -484,7 +484,12 @@ impl Jit {
             current_module,
             traced_fns: None,
             alloc_func_id: self.alloc_func_id,
-            dealloc_func_id: self.dealloc_func_id,
+            dealloc_func_id: self.dealloc_func_id.unwrap_or_else(|| {
+                unreachable!(
+                    "invariant: declare_intrinsics must run before \
+                     build_compile_context (Decision 24)"
+                )
+            }),
             alloc_string_func_id: self.alloc_string_func_id,
             panic_func_id: self.panic_func_id,
             vec_new_func_id: self.vec_new_func_id,
