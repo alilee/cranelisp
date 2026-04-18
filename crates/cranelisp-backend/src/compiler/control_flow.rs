@@ -1042,10 +1042,12 @@ impl<'a, M: Module> FnCompiler<'a, M> {
     /// Check if a name is a known top-level function (eligible for wrapping).
     pub(crate) fn is_known_function(&self, name: &Symbol) -> bool {
         self.ctx.func_ids.contains_key(name)
-            || self
-                .ctx
-                .env
-                .is_some_and(|env| env.resolve_got(name).is_some())
+            || crate::compiler::resolve_got_target(
+                self.ctx.symbol_tables,
+                &self.ctx.current_module,
+                name,
+            )
+            .is_some()
     }
 
     /// Wrap a named top-level function as a zero-capture closure.
@@ -1067,7 +1069,11 @@ impl<'a, M: Module> FnCompiler<'a, M> {
                 })?;
 
         let arity = self.ctx.func_arities.get(name).copied()
-            .or_else(|| self.ctx.env.and_then(|e| e.func_arity(name)))
+            .or_else(|| crate::compiler::resolve_func_arity(
+                self.ctx.symbol_tables,
+                &self.ctx.current_module,
+                name,
+            ))
             .ok_or_else(|| {
                 CranelispError::CodegenError {
                     message: format!("unknown arity for function: {name}"),
@@ -1176,8 +1182,10 @@ impl<'a, M: Module> FnCompiler<'a, M> {
 
     /// Emit the call instruction inside a wrapper function body.
     ///
-    /// Batch/Release: direct `call` via FuncId.
-    /// Interactive: GOT-indirect `call_indirect`.
+    /// Prefers a direct `call` via FuncId when the target is in the current
+    /// unit's `func_ids` map. Otherwise emits a GOT-indirect `call_indirect`
+    /// using the uniform `__cranelisp_got_{module}` data-symbol strategy
+    /// (design/backend/compile-to-module.md §12).
     fn emit_wrapper_call(
         &mut self,
         builder: &mut FunctionBuilder,
@@ -1185,46 +1193,46 @@ impl<'a, M: Module> FnCompiler<'a, M> {
         user_params: &[Value],
         span: Span,
     ) -> Result<Value, CranelispError> {
-        let use_got = if self.ctx.func_ids.contains_key(target_name) {
-            false
-        } else {
-            self.ctx.env.is_some()
-        };
-
-        if use_got {
-            // GOT-indirect call: use resolve_got_entry.
-            let (got_base, slot) = self.resolve_got_entry(target_name, span)?;
-
-            let slot_offset = (slot * 8) as i64;
-            let base_val = builder.ins().iconst(types::I64, got_base);
-            let slot_addr = builder.ins().iadd_imm(base_val, slot_offset);
-            let func_ptr = builder.ins().load(
-                types::I64, MemFlags::trusted(), slot_addr, 0,
-            );
-
-            let mut sig = self.module.make_signature();
-            for _ in user_params {
-                sig.params.push(AbiParam::new(types::I64));
-            }
-            sig.returns.push(AbiParam::new(types::I64));
-            let sig_ref = builder.import_signature(sig);
-
-            let call = builder.ins().call_indirect(sig_ref, func_ptr, user_params);
-            Ok(builder.inst_results(call)[0])
-        } else {
-            // Direct call via FuncId.
-            let target_id =
-                self.ctx.func_ids.get(target_name).ok_or_else(|| {
-                    CranelispError::CodegenError {
-                        message: format!("undefined function: {target_name}"),
-                        span,
-                    }
-                })?;
+        // If the function is declared in the current compilation unit, emit a
+        // direct call — cheaper and avoids an unnecessary GOT dereference.
+        if let Some(target_id) = self.ctx.func_ids.get(target_name) {
             let target_ref =
                 self.module.declare_func_in_func(*target_id, builder.func);
             let call = builder.ins().call(target_ref, user_params);
-            Ok(builder.inst_results(call)[0])
+            return Ok(builder.inst_results(call)[0]);
         }
+
+        // Otherwise: GOT-indirect call via __cranelisp_got_{module} data sym.
+        let (module_path, slot) = self.resolve_got_entry(target_name, span)?;
+        let got_sym = crate::compiler::got_data_symbol_name(&module_path);
+        let data_id = self
+            .module
+            .declare_data(&got_sym, cranelift_module::Linkage::Import, false, false)
+            .map_err(|e| CranelispError::CodegenError {
+                message: format!("failed to declare GOT data '{}': {e}", got_sym),
+                span,
+            })?;
+
+        let gv = self.module.declare_data_in_func(data_id, builder.func);
+        let entry_addr = builder.ins().global_value(types::I64, gv);
+        let got_base = builder
+            .ins()
+            .load(types::I64, MemFlags::trusted(), entry_addr, 0);
+        let slot_offset = (slot * 8) as i64;
+        let slot_addr = builder.ins().iadd_imm(got_base, slot_offset);
+        let func_ptr = builder
+            .ins()
+            .load(types::I64, MemFlags::trusted(), slot_addr, 0);
+
+        let mut sig = self.module.make_signature();
+        for _ in user_params {
+            sig.params.push(AbiParam::new(types::I64));
+        }
+        sig.returns.push(AbiParam::new(types::I64));
+        let sig_ref = builder.import_signature(sig);
+
+        let call = builder.ins().call_indirect(sig_ref, func_ptr, user_params);
+        Ok(builder.inst_results(call)[0])
     }
 
     /// Emit the call to the auto-curry target inside a wrapper function body.

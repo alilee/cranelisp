@@ -7,8 +7,10 @@
 
 Complete Rust type signatures for every type that crosses a crate boundary. These are the contracts that all compiler skills implement against. All types live in `cranelisp-types` unless otherwise noted.
 
-Types are organized by pipeline stage, following the v2 data flow:
-source text -> Sexp -> (ModuleDecls, Sexp) -> Sexp (expanded) -> TopLevel -> CheckResult -> executable code.
+Types are organized by pipeline stage, following the pipeline-v4 data flow:
+source text -> Sexp -> (ModuleDecls, Sexp) -> Sexp (expanded) -> TopLevel -> annotated AST on `SymbolTable` -> executable code.
+
+**Sprint 55/56 update:** `CheckResult` is no longer a cross-crate boundary type. Typecheck deposits its outputs directly onto `SymbolTable` entries (annotated `ast`, `scheme`, `got_slot`, `callees`, mangled multi-sig / mono variants) and returns a slim transient value to its caller. The backend reads from `SymbolTable` via `SymbolTable::defined_symbols()`; it no longer receives `CheckResult`. See §"TypeChecker Internal State (was: CheckResult Boundary)" and §"Backend Compilation Entry Point" below, and `design/backend/compile-to-module.md` §2.1.
 
 **Architectural invariants** (Principles 11, 12, 13):
 - No structurally identical types at any pipeline boundary.
@@ -604,54 +606,40 @@ pub struct CompileContext {
 
 ---
 
-## TypeChecker -> Backend Boundary (Stage 5 output)
+## TypeChecker Internal State (was: CheckResult Boundary)
 
-### CheckResult (CHANGED from v1)
+**Sprint 55/56 change:** `CheckResult` is no longer a boundary contract between `cranelisp-typecheck` and `cranelisp-backend`. It was formerly the "SOLE boundary type between typecheck and backend"; it is now typecheck-internal transient state carrying only diagnostics and REPL display.
+
+The codegen payload the backend used to consume from `CheckResult` has been redistributed onto `SymbolTable` entries by Sprint 55 (Phase 1 — AST annotation) and Sprint 56 (Phase 2 — shared codegen-compilable predicate):
+
+| Former `CheckResult` field | New location (source of truth for codegen) |
+|---|---|
+| `method_resolutions: MethodResolutions` | `Expr::Apply.resolved_call` on AST nodes (`ModuleEntry::Def.ast`). |
+| `expr_types: HashMap<Span, Type>` | `Expr.inferred_type` on every AST node. |
+| `mono_defns: Vec<MonoDefn>` | Registered eagerly by `register_mono_entry` as mangled `ModuleEntry::Def` entries with `ast: Some(_)` carrying fully-concrete annotations. |
+| `default_method_defns: Vec<Defn>` | Registered by `register_mangled_method` as mangled `ModuleEntry::Def` entries with `ast: Some(_)`. |
+| `constrained_fn_names: HashSet<Symbol>` | Derivable by scanning `SymbolTable` for `ModuleEntry::Def { kind: UserFn { constrained_fn: Some(_) }, .. }` — negation of `defined_symbols()` within `UserFn`. |
+| `type_defs`, `constructor_to_type` | Already on `SymbolTable` as `ModuleEntry::TypeDef` / `ModuleEntry::Constructor`. |
+| `call_graph: CallGraph` | Transient within-module graph still produced during typecheck for TCO / analysis (see §"Call Graph"); persistent per-symbol `callees: Vec<FQSymbol>` lives on `ModuleEntry::Def` / `ModuleEntry::Macro` per Decision 21. |
+
+### Residual `CheckResult` — typecheck-internal only
 
 ```rust
-/// Result of type checking a compilation unit.
+/// Transient typecheck output. NOT a boundary type. Owned by
+/// `cranelisp-typecheck`; never serialised, never passed into the
+/// backend.
 ///
-/// The SOLE boundary type between typecheck and backend. There is no
-/// parallel result type. (Principle 11, 13)
-///
-/// Self-contained: the backend produces code from CheckResult + Program
-/// alone, with no hidden state from the typechecker.
+/// Its remaining role is to carry diagnostics and the optional REPL
+/// display payload out of `TypeChecker::check` to its immediate caller
+/// (the integration layer in `src/`). All durable typecheck output is
+/// deposited onto `SymbolTable` entries before `check` returns.
 #[derive(Debug)]
 pub struct CheckResult {
-    // --- Codegen payload (consumed by backend) ---
-
-    /// How each call site was resolved.
-    pub method_resolutions: MethodResolutions,
-
-    /// Names of constrained polymorphic functions.
-    pub constrained_fn_names: HashSet<Symbol>,
-
-    /// Monomorphised function definitions.
-    pub mono_defns: Vec<MonoDefn>,
-
-    /// Type of every expression, keyed by span (for heap classification).
-    pub expr_types: HashMap<Span, Type>,
-
-    /// Default trait method implementations expanded during checking.
-    pub default_method_defns: Vec<Defn>,
-
-    /// ADT definitions. Backend needs for constructor alloc, match, drop glue.
-    pub type_defs: HashMap<TypeName, TypeDefInfo>,
-
-    /// Constructor name -> parent type name.
-    pub constructor_to_type: HashMap<Symbol, TypeName>,
-
-    /// Program-wide call graph (populated during typecheck).
-    pub call_graph: CallGraph,
-
-    // --- Diagnostics ---
-
-    /// Non-fatal warnings.
+    /// Non-fatal warnings accumulated during checking.
     pub warnings: Vec<Warning>,
 
-    // --- REPL display (ignored by backend) ---
-
-    /// Display information for REPL. None in batch/module mode.
+    /// Display information for the REPL (last Expr or Defn in the input).
+    /// `None` in batch / module-load mode.
     pub display: Option<DisplayInfo>,
 }
 
@@ -665,7 +653,9 @@ pub struct DisplayInfo {
 }
 ```
 
-**v1 diff:** Added `display: Option<DisplayInfo>`, `call_graph: CallGraph`. `ReplCheckResult` deleted. `build_check_for_backend()` deleted.
+**Current status**: the struct definition in `crates/cranelisp-types/src/check.rs` still carries the legacy fields as typecheck-internal working state during the Phase 1 -> Phase 2 transition. A FIXME filed by `/typecheck` on that file tracks Phase 5 slimming to exactly `warnings + display`. The legacy fields are not a backend contract — `compile_to_module` no longer takes `CheckResult`. (Principle 2 — narrow interfaces; Principle 13 — `interfaces.md` is auditable.)
+
+**No adapter functions.** `build_check_for_backend()` and `ReplCheckResult` remain deleted. No function converts `CheckResult` into a backend input — the backend input is `SymbolTable::defined_symbols()` (see below).
 
 ### Method Resolutions
 
@@ -741,10 +731,12 @@ pub struct CallInfo {
 /// Transient within-module call graph. Adjacency list representation.
 /// Rich edges with tail-position and span for codegen/analysis.
 ///
-/// Populated during typecheck (Stage 5). Carried on `CheckResult`.
+/// Populated during typecheck (Stage 5). Held as typecheck-internal
+/// state during checking; not a cross-crate boundary value.
 /// Consumed by:
-/// - Analysis passes (SCC detection, recursion warnings)
-/// - Codegen (tail call optimization decisions)
+/// - Analysis passes (SCC detection, recursion warnings — typecheck-internal)
+/// - Codegen (tail call optimization decisions — read indirectly via
+///   `ModuleEntry.callees` and AST annotations, not via `CheckResult`)
 ///
 /// For cross-module / persistent call graph queries, use the per-symbol
 /// `callees: Vec<FQSymbol>` on `ModuleEntry::Def` and `ModuleEntry::Macro`.
@@ -779,17 +771,19 @@ impl CallGraph {
 }
 ```
 
-### FormCheckResult (NEW)
+### FormCheckResult (typecheck-internal)
 
-Per-form typecheck output, returned by `tc.check_form()`. Accumulated into the module's full `CheckResult` via `tc.merge_form_result()`.
+Per-form typecheck output, returned by `tc.check_form()`. **Not a boundary type** — lives inside `cranelisp-typecheck` and is merged via `tc.merge_form_result()`. Merging deposits annotations onto AST nodes (`Expr.inferred_type`, `Expr::Apply.resolved_call`), writes call-graph edges to `ModuleEntry.callees`, and registers mangled multi-sig variants / mono specializations directly on the `SymbolTable`. It does not populate a cross-crate `CheckResult`.
 
 ```rust
-/// Per-form typecheck result. Accumulated into module-level CheckResult.
+/// Per-form typecheck result. Typecheck-internal.
 #[derive(Debug)]
 pub struct FormCheckResult {
-    /// Method resolutions for this form's call sites.
+    /// Method resolutions for this form's call sites (written onto
+    /// `Expr::Apply.resolved_call` during merge).
     pub method_resolutions: MethodResolutions,
-    /// Expression types for this form.
+    /// Expression types for this form (written onto `Expr.inferred_type`
+    /// during merge).
     pub expr_types: HashMap<Span, Type>,
     /// Constraints discovered for this form's symbols.
     pub constrained_fn_names: HashSet<Symbol>,
@@ -1149,7 +1143,7 @@ pub struct CodegenPacket {
 }
 ```
 
-**Thread safety for parallel codegen:** Each codegen worker receives its module's `Arc<GotTable>` and writes code pointers atomically to its own module's slots. No contention between workers compiling different modules. `CheckResult` and `Program` are `Send + Sync` (read-only). Each worker creates its own `Jit` instance. See `design/backend/per-module-got.md` for full design.
+**Thread safety for parallel codegen:** Each codegen worker receives its module's `Arc<GotTable>` and writes code pointers atomically to its own module's slots. No contention between workers compiling different modules. The `DashMap<ModuleFullPath, SymbolTable>` passed into `compile_to_module` is read-only from the worker's perspective during a compile, and `SymbolTable` / `ModuleEntry` / `Defn` / `Expr` are `Send + Sync`. Each worker creates its own `Jit` instance. See `design/backend/per-module-got.md` for full design.
 
 ---
 
@@ -1324,7 +1318,15 @@ impl TypeChecker {
     /// (Pass 2), detect constrained fns, monomorphise, resolve auto-curry.
     /// Works identically on a batch program (many forms) or a REPL line (one form).
     ///
-    /// Populates `CheckResult.display` from the last Expr or Defn in the input.
+    /// Side effects: all durable output is deposited onto the relevant
+    /// `SymbolTable` entries before returning — annotated `ast: Some(Defn)`,
+    /// `scheme`, `callees`, `got_slot`, and mangled multi-sig / mono variant
+    /// entries. See `design/typecheck/ast-annotation.md` for the full
+    /// symbol-table contract.
+    ///
+    /// Returns: `CheckResult { warnings, display }` only. Not a boundary
+    /// contract — the backend does not receive this value; it reads the
+    /// symbol table directly.
     pub fn check(
         &mut self,
         ctx: &CompileContext,
@@ -1335,24 +1337,140 @@ impl TypeChecker {
 
 ---
 
+## Backend Compilation Entry Point
+
+The single entry point for codegen. Defined in `cranelisp-backend`. This is the sole compilation function; there is no `compile_program`, no `compile_expr_with_got_and_symbols`, and no separate object-file compilation path (Principle 11).
+
+```rust
+/// Compile the named symbols of `module_path` into `module`.
+///
+/// Normative signature — four parameters. See
+/// `design/backend/compile-to-module.md` §2.1 for the full contract.
+///
+/// Preconditions:
+/// - For every name in `names`, `symbol_tables[module_path].get(name)`
+///   returns a `ModuleEntry::Def` with `ast: Some(_)` carrying fully
+///   annotated AST nodes (`inferred_type` and `resolved_call` populated).
+///   A `None` body is a typecheck bug — `compile_to_module` returns
+///   `CranelispError::CodegenError` naming the offending symbol.
+/// - `names` should be obtained via `SymbolTable::defined_symbols()`
+///   (shared predicate — see below). Callers that pass a subset must
+///   ensure every element satisfies the same predicate.
+///
+/// Generic over the Cranelift `Module` impl so one function serves both
+/// the JIT (`JITModule`) and object (`ObjectModule`) paths.
+pub fn compile_to_module<M: Module>(
+    module_path: ModuleFullPath,
+    names: &[Symbol],
+    symbol_tables: &DashMap<ModuleFullPath, SymbolTable>,
+    module: &mut M,
+) -> Result<CompilationResult, CranelispError>;
+
+/// Declare the intrinsic imports that `compile_to_module` may call into.
+/// Call once per module creation, before `compile_to_module`.
+pub fn declare_intrinsics<M: Module>(module: &mut M) -> IntrinsicIds;
+```
+
+### CompilationResult (NEW)
+
+Returned by `compile_to_module`. Module-type-agnostic: the caller extracts what it needs (entry point for JIT; full map for object emission).
+
+```rust
+/// Result of compiling a set of named symbols into a Cranelift module.
+///
+/// Backend -> caller boundary. Replaces legacy `CompiledProgram` and
+/// `CompiledModuleInfo`. See `design/backend/compile-to-module.md` §8.
+#[derive(Debug)]
+pub struct CompilationResult {
+    /// FuncIds for all compiled functions, keyed by the same `Symbol` that
+    /// appeared in `names` (mangled where the symbol table entry is mangled).
+    pub func_ids: HashMap<Symbol, FuncId>,
+
+    /// Per-symbol introspection artifacts (CLIF IR, disassembly, code size).
+    /// Empty when capture is disabled (e.g., `--run` or object emission).
+    /// The caller routes these onto `SharedState.introspection` if desired;
+    /// the backend never touches `introspection` directly.
+    pub artifacts: HashMap<Symbol, FunctionArtifacts>,
+
+    /// FuncId of the entry function (last zero-arg defn), if any.
+    /// JIT batch mode uses this to obtain the entry point; object mode
+    /// ignores it.
+    pub entry_func_id: Option<FuncId>,
+
+    /// Arities for all compiled functions (used by closure wrapper generation).
+    pub func_arities: HashMap<Symbol, usize>,
+
+    /// Warnings accumulated during codegen (backend-phase warnings only).
+    pub warnings: Vec<Warning>,
+}
+
+/// Per-symbol codegen byproducts. Captured during the same `FnCompiler`
+/// pass that defines the function — no recompilation.
+#[derive(Debug, Clone)]
+pub struct FunctionArtifacts {
+    pub clif_ir: String,
+    pub disasm: String,
+    pub code_size: u32,
+}
+```
+
+### `SymbolTable::defined_symbols()` — shared codegen-compilable predicate
+
+Both the priority worker in `src/` (preparing `names` for a `compile_to_module` call) and the backend's internal compile loop (when it re-enumerates) consume the same predicate. Defining it on `SymbolTable` ensures they cannot diverge (Principle 7 — single source of truth). See Key Decision 22 and `design/typecheck/ast-annotation.md` §9.5.
+
+```rust
+impl SymbolTable {
+    /// Iterate over codegen-compilable entries: those with `ast: Some(_)`
+    /// whose kind is NOT `Overloaded` (dispatch index — its mangled
+    /// variants are compiled instead) and NOT `UserFn { constrained_fn:
+    /// Some(_) }` (template — mono specializations are compiled instead).
+    ///
+    /// Canonical location: `crates/cranelisp-types/src/module.rs`.
+    /// Consumed by:
+    /// - Priority worker in `/int`: collects `names` for `compile_to_module`.
+    /// - `compile_to_module` in `/backend`: internal compile loop.
+    /// - `constrained_fn_names` derivations: negation of the second filter
+    ///   clause within `UserFn`.
+    pub fn defined_symbols(&self) -> impl Iterator<Item = (&Symbol, &ModuleEntry)> {
+        self.symbols.iter().filter(|(_, entry)| match entry {
+            ModuleEntry::Def { ast: Some(_), kind, .. } => match kind.as_ref() {
+                DefKind::Overloaded { .. } => false,
+                DefKind::UserFn { constrained_fn: Some(_) } => false,
+                _ => true,
+            },
+            _ => false,
+        })
+    }
+}
+```
+
+The filter is deliberately strict: any `ModuleEntry::Def` with `ast: None` is excluded — whether pre-body-check, primitive, special form, `Overloaded` base, or constrained-fn template. Adding new non-compilable categories never silently breaks codegen, because the `ast.is_some()` clause comes first.
+
+> Note on `ModuleEntry::Def.ast`: The `ast: Option<Defn>` field was introduced in Sprint 55 (Phase 1) so typecheck can deposit annotated bodies directly on symbol-table entries. It is not yet shown in the `ModuleEntry::Def` variant definition earlier in this document — a follow-up edit will add it alongside `scheme`, `visibility`, `kind`, `callees`, and `got_slot`. See `design/typecheck/ast-annotation.md` §6 for the authoritative per-category table of which entries carry `ast: Some(_)`.
+
+---
+
 ## Summary of Changes from v1
 
 ### Types deleted
 - `ReplInput` — replaced by `TopLevel` with `Expr` variant
 - `ReplCheckResult` — replaced by `CheckResult` with `display: Option<DisplayInfo>`
+- `CheckResult` as a **boundary type** — demoted to typecheck-internal (Sprint 55/56). The struct still exists transiently in `cranelisp-types/src/check.rs` carrying `warnings + display` plus legacy working fields pending Phase 5 slimming (FIXME filed by `/typecheck`). It is no longer a parameter of any backend function.
 
 ### Types added
 - `TopLevel::Expr(Expr)` variant
 - `DisplayInfo` — REPL display payload
 - `CallGraph`, `CallEdge`, `CallInfo` — transient within-module call graph (rich, with tail-position/span)
-- `FormCheckResult` — per-form typecheck output with `call_graph_edges: Vec<(Symbol, FQSymbol)>`
+- `FormCheckResult` — per-form typecheck output with `call_graph_edges: Vec<(Symbol, FQSymbol)>` (typecheck-internal)
 - `ModuleEntry::Def.callees`, `ModuleEntry::Macro.callees` — persistent per-symbol `Vec<FQSymbol>` for cross-module call graph queries (Decision 21)
+- `ModuleEntry::Def.ast: Option<Defn>` — annotated AST body deposited by typecheck; consumed by `compile_to_module` (Sprint 55 Phase 1). Authoritative table in `design/typecheck/ast-annotation.md` §6.
 - `WarningKind::NonTailRecursion` — new warning category
 - `CompileContext` — explicit compilation context (module target, strategy, compile mode)
 - `ModuleStrategy` — additive vs replacement module compilation
 - ~~`GotSlotMap`~~ — removed. GOT slot assignments are persistent session state in `ModuleCodegenState`, not a pipeline output. See `pipeline-v2.md` §12.5.
 - `FnSlotEntry { module: ModuleFullPath, slot_index: usize }` — identifies a function's GOT location (which module's GOT, which slot). See `design/backend/per-module-got.md`.
 - `ModuleGotRegistry` — per-module GOT table registry, replaces flat `InMemWorkerState.got_state`. Lives in `cranelisp-backend`.
+- `CompilationResult` + `FunctionArtifacts` — backend output of `compile_to_module` (Sprint 56 Phase 2). Replaces `CompiledProgram` and `CompiledModuleInfo`.
 
 ### Types NOT added
 - ~~`CheckMode`~~ — eliminated during design review. The multi-pass pipeline works identically on any input size. See `pipeline-v2.md` §5.
@@ -1362,12 +1480,15 @@ impl TypeChecker {
 - `build_check_for_backend()` — both copies
 - `toplevel_to_repl_input()` — no conversion needed
 - `build_repl_input()` — no separate builder needed
+- `compile_program`, `compile_expr_with_got_and_symbols`, `compile_module_to_object` — replaced by the single `compile_to_module<M: Module>` (Sprint 56).
 
 ### Functions changed
-- `TypeChecker::check(&mut self, ctx: &CompileContext, program: &[TopLevel])` — single typecheck entry point, now takes explicit context
+- `TypeChecker::check(&mut self, ctx: &CompileContext, program: &[TopLevel])` — single typecheck entry point, now takes explicit context; `CheckResult` is no longer a backend input.
+- `compile_to_module<M: Module>(module_path, names, symbol_tables, module)` — four-parameter normative signature (Sprint 56 Phase 2). No `CheckResult`, no `Program`, no intrinsic IDs, no GOT map, no arities parameter. See `design/backend/compile-to-module.md` §2.1.
 
 ### Functions added
 - `CallGraph::add_edge()`, `reverse_index()`, `sccs()`, `non_tail_self_recursion()`
+- `SymbolTable::defined_symbols() -> impl Iterator<Item = (&Symbol, &ModuleEntry)>` — shared codegen-compilable predicate (Decision 22, Sprint 56).
 - ~~`declare_all_got_slots()`~~ — removed. GOT slots are assigned incrementally by `ModuleCodegenState::ensure_slot_for()` during function registration, not in a separate phase. See `pipeline-v2.md` §12.5.
 
 ### Coherence checklist

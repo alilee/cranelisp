@@ -1,7 +1,7 @@
 // cranelisp-backend: Cranelift IR codegen, JIT, RC emission, caching, linking.
 //
 // Public API:
-// - compile_to_module: compile a program's functions into any Cranelift Module
+// - compile_to_module: compile a set of named symbols' functions into any Cranelift Module
 // - build_isa: ISA construction for JIT and ObjectModule (re-exported from cache::object)
 
 pub mod cache;
@@ -31,18 +31,34 @@ use cranelift_module::FuncId;
 use dashmap::DashMap;
 
 use cranelisp_types::{
-    CranelispError, Defn, FQTypeName,
-    ModuleFullPath, Program, Span, Symbol, SymbolTable,
-    TopLevel, Type, TypeName, Warning,
+    CranelispError, Defn, ModuleFullPath, Span, Symbol, SymbolTable, Type, Warning,
 };
 
 use cranelift::prelude::*;
 use cranelift_module::Module;
 
-use crate::compiler::{CompilationEnv, CompileContext, FnCompiler};
+use crate::compiler::{CompileContext, FnCompiler};
 use crate::jit::declare_intrinsics_generic;
 
-/// Result of compiling a program's functions into a module.
+/// Per-symbol codegen byproducts captured during `compile_to_module`.
+///
+/// Populated during the same `FnCompiler` pass that defines each function.
+/// Returned in `CompilationResult.artifacts` keyed by the symbol's local name
+/// in `symbol_tables[module_path]` — see design/backend/compile-to-module.md
+/// §8.1 for the contract. The caller (e.g., priority worker in Wave 2) routes
+/// these into `Introspection` without a second compilation pass.
+pub struct FunctionArtifacts {
+    /// Human-readable CLIF dump of the compiled function. Same text rendered
+    /// by `/clif`.
+    pub clif_ir: String,
+    /// Human-readable machine-code disassembly (may be empty on platforms that
+    /// don't support disassembly). Same text rendered by `/disasm`.
+    pub disasm: String,
+    /// Size in bytes of the compiled machine code.
+    pub code_size: u32,
+}
+
+/// Result of compiling a set of named symbols into a Cranelift module.
 ///
 /// Module-type-agnostic: the caller extracts what it needs.
 /// For JIT: uses `entry_func_id` to get the entry point after finalization.
@@ -50,6 +66,10 @@ use crate::jit::declare_intrinsics_generic;
 pub struct CompilationResult {
     /// FuncIds for all compiled functions (name -> FuncId).
     pub func_ids: HashMap<Symbol, FuncId>,
+    /// Per-symbol artifacts for introspection (CLIF IR, disassembly, code
+    /// size). See `FunctionArtifacts` and design/backend/compile-to-module.md
+    /// §8.1. Keyed by the same local `Symbol` used in `func_ids`.
+    pub artifacts: HashMap<Symbol, FunctionArtifacts>,
     /// FuncId of the entry function (last zero-arg defn), if any.
     pub entry_func_id: Option<FuncId>,
     /// Function arities for all compiled functions.
@@ -58,31 +78,30 @@ pub struct CompilationResult {
     pub warnings: Vec<Warning>,
 }
 
-/// Compile a program's functions into a Cranelift module.
+/// Compile the functions named by `names` (all inside `module_path`) into a
+/// Cranelift module.
 ///
 /// This is the ONLY compilation entry point in the backend crate.
 /// See design/backend/compile-to-module.md §2 (PRESCRIPTIVE).
 ///
-/// Five parameters. Everything else derived internally:
+/// Four parameters. Everything else derived internally:
 /// - Intrinsics: declared on the module internally
-/// - GOT slots: read from symbol_tables
-/// - GOT bases: JIT → runtime pointers; Object → symbolic relocations (internal fork)
-/// - Cross-module refs: resolved from symbol_tables Import chains
-/// - CompilationEnv: built internally
-/// - JIT name prefix: derived from module_path
+/// - Defn bodies: read from `symbol_tables[module_path].get(name).ast`
+/// - GOT slots: read from `ModuleEntry::Def.got_slot`
+/// - GOT base resolution: uniform — emits `global_value` against a
+///   `Linkage::Import` data symbol `__cranelisp_got_{module}`; `Module`
+///   implementations resolve at finalize time (linker relocations for Object;
+///   `JITBuilder::symbol_lookup_fn` for JIT — caller's responsibility)
+/// - Cross-module refs: resolved from `symbol_tables` Import chains
+/// - JIT name prefix: derived from `module_path`
 pub fn compile_to_module<M: Module>(
     module_path: ModuleFullPath,
-    program: &Program,
+    names: &[Symbol],
     symbol_tables: &DashMap<ModuleFullPath, SymbolTable>,
     module: &mut M,
 ) -> Result<CompilationResult, CranelispError> {
     // Derive internal dependencies.
     let intrinsic_ids = declare_intrinsics_generic(module)?;
-    let env_impl = crate::cache::object::ObjectCompilationEnv {
-        symbol_tables,
-        current_module: module_path.clone(),
-    };
-    let env: Option<&dyn CompilationEnv> = Some(&env_impl as &dyn CompilationEnv);
     let cross_refs = resolve_cross_module_refs(symbol_tables, &module_path);
     let jit_prefix_owned: Option<String> = if module_path.as_ref() != "user" && module_path.as_ref() != "main" {
         Some(module_path.as_ref().to_string())
@@ -91,62 +110,63 @@ pub fn compile_to_module<M: Module>(
     };
     let jit_prefix: Option<&str> = jit_prefix_owned.as_deref();
 
-    // Derive constrained_fn_names from the symbol table.
-    let constrained_fn_names: std::collections::HashSet<Symbol> = symbol_tables
-        .get(&module_path)
-        .map(|table| {
-            table.all_symbols()
-                .filter_map(|(name, entry)| {
-                    if let ModuleEntry::Def { kind, .. } = entry {
-                        if let cranelisp_types::DefKind::UserFn { constrained_fn: Some(_) } = kind.as_ref() {
-                            return Some(name.clone());
-                        }
-                    }
-                    None
-                })
-                .collect()
-        })
-        .unwrap_or_default();
-
-    // Step 1: Collect defns from the program.
-    // Defns arrive pre-annotated. Mono defns and default method defns are
-    // inlined into program by the caller.
-    let mut regular_defns: Vec<&Defn> = Vec::new();
-    let mut multi_sig_defns: Vec<Defn> = Vec::new();
-
-    for tl in program {
-        if let TopLevel::Defn(defn) = tl {
-            if constrained_fn_names.contains(&defn.name) {
-                continue; // Template only — mono specializations are in program
+    // Step 1: Look up each named entry and retrieve its AST body (§4 symbol-
+    // table lookup loop; replaces the former `program: &Program` scan).
+    // Wave 0 invariant: each entry in `names` carries `ast: Some(_)`. If not,
+    // surface a codegen error naming the offending symbol — see
+    // design/backend/compile-to-module.md §16.4.
+    let mut defns: Vec<Defn> = Vec::with_capacity(names.len());
+    {
+        let table = symbol_tables.get(&module_path).ok_or_else(|| {
+            CranelispError::CodegenError {
+                message: format!(
+                    "compile_to_module: no symbol table for module '{module_path}'"
+                ),
+                span: Span::SYNTHETIC,
             }
-            if defn.is_multi_sig() {
-                let expanded = expand_multi_sig_defn(defn, symbol_tables, &module_path)?;
-                multi_sig_defns.extend(expanded);
-            } else {
-                regular_defns.push(defn);
-            }
+        })?;
+        for name in names {
+            let entry = table.get(name.as_ref()).ok_or_else(|| {
+                CranelispError::CodegenError {
+                    message: format!(
+                        "compile_to_module: symbol '{name}' not found in module '{module_path}'"
+                    ),
+                    span: Span::SYNTHETIC,
+                }
+            })?;
+            let ModuleEntry::Def { ast, .. } = entry else {
+                return Err(CranelispError::CodegenError {
+                    message: format!(
+                        "compile_to_module: symbol '{name}' in module '{module_path}' is not a compilable Def (wrong ModuleEntry variant)"
+                    ),
+                    span: Span::SYNTHETIC,
+                });
+            };
+            let defn = ast.as_ref().ok_or_else(|| CranelispError::CodegenError {
+                message: format!(
+                    "compile_to_module: symbol '{name}' in module '{module_path}' has ast: None — Wave 0 invariant violated (see design/typecheck/ast-annotation.md for the categories of entries that must carry ast: Some(_))"
+                ),
+                span: Span::SYNTHETIC,
+            })?;
+            defns.push(defn.clone());
         }
     }
 
-    // Step 2: Build the full defn list for declaration.
-    let mut all_declare: Vec<&Defn> = regular_defns.clone();
-    all_declare.extend(multi_sig_defns.iter());
-
-    if all_declare.is_empty() {
+    if defns.is_empty() {
         return Err(CranelispError::CodegenError {
-            message: "no function definitions in program".into(),
+            message: "no function definitions to compile".into(),
             span: Span::SYNTHETIC,
         });
     }
 
-    // Step 4: Declare all functions in the module (Pass 1).
+    // Step 2: Declare all functions in the module (Pass 1).
     // Start with intrinsic FuncIds.
     let mut func_ids: HashMap<Symbol, FuncId> = intrinsic_ids.by_name.clone();
 
     // When a prefix is provided, JIT symbol names are module-qualified.
     let mut jit_names: HashMap<Symbol, Symbol> = HashMap::new();
 
-    for defn in &all_declare {
+    for defn in &defns {
         let qualified_name = if let Some(prefix) = jit_prefix {
             let qn = format!("{prefix}/{}", defn.name);
             jit_names.insert(defn.name.clone(), Symbol::from(qn.as_str()));
@@ -207,7 +227,7 @@ pub fn compile_to_module<M: Module>(
     }
 
     // Build function arity map.
-    let mut func_arities: HashMap<Symbol, usize> = all_declare
+    let mut func_arities: HashMap<Symbol, usize> = defns
         .iter()
         .map(|d| (d.name.clone(), d.params().len()))
         .collect();
@@ -219,22 +239,18 @@ pub fn compile_to_module<M: Module>(
         }
     }
 
-    // Step 4: Compile each function body (Pass 2).
-    // All defns are compiled uniformly — no separate mono pass needed since
-    // mono and default method defns are inlined into program by the caller.
+    // Step 3: Compile each function body (Pass 2).
+    // All defns are compiled uniformly — mangled multi-sig variants and mono
+    // specialisations are ordinary entries in `names` after Wave 0.
     let mut func_ctx = FunctionBuilderContext::new();
+    let mut artifacts: HashMap<Symbol, FunctionArtifacts> = HashMap::new();
 
-    let all_compile: Vec<&Defn> = regular_defns.iter().copied()
-        .chain(multi_sig_defns.iter())
-        .collect();
-
-    for defn in &all_compile {
+    for defn in &defns {
         let compile_ctx = CompileContext {
             func_ids: &func_ids,
             func_arities: &func_arities,
             symbol_tables,
             current_module: module_path.clone(),
-            env,
             traced_fns: None,
             alloc_func_id: intrinsic_ids.alloc,
             dealloc_func_id: intrinsic_ids.dealloc,
@@ -243,18 +259,19 @@ pub fn compile_to_module<M: Module>(
             vec_new_func_id: intrinsic_ids.vec_new,
             vec_drop_func_id: intrinsic_ids.vec_drop,
         };
-        compile_defn_in_module(defn, module, &mut func_ctx, &func_ids, compile_ctx)?;
+        let art = compile_defn_in_module(defn, module, &mut func_ctx, &func_ids, compile_ctx)?;
+        artifacts.insert(defn.name.clone(), art);
     }
 
     // Find entry function (last zero-arg defn).
-    let entry_func_id = regular_defns
+    let entry_func_id = defns
         .iter()
         .rev()
         .find(|d| d.params().is_empty())
         .and_then(|d| func_ids.get(&d.name).copied());
 
     // Collect func_signatures for downstream modules (JIT-visible names).
-    let result_func_ids: HashMap<Symbol, FuncId> = all_declare.iter()
+    let result_func_ids: HashMap<Symbol, FuncId> = defns.iter()
         .filter_map(|d| {
             let jit_name = jit_names.get(&d.name)
                 .cloned()
@@ -265,6 +282,7 @@ pub fn compile_to_module<M: Module>(
 
     Ok(CompilationResult {
         func_ids: result_func_ids,
+        artifacts,
         entry_func_id,
         func_arities,
         warnings: Vec::new(),
@@ -300,14 +318,15 @@ fn resolve_cross_module_refs(
     refs
 }
 
-/// Compile a single defn into a module using FnCompiler.
+/// Compile a single defn into a module using FnCompiler, returning the
+/// per-symbol introspection artifacts captured during codegen.
 fn compile_defn_in_module<M: Module>(
     defn: &Defn,
     module: &mut M,
     func_ctx: &mut FunctionBuilderContext,
     func_ids: &HashMap<Symbol, FuncId>,
     compile_ctx: CompileContext<'_>,
-) -> Result<(), CranelispError> {
+) -> Result<FunctionArtifacts, CranelispError> {
     let mut sig = module.make_signature();
     for _ in defn.params() {
         sig.params.push(AbiParam::new(types::I64));
@@ -328,7 +347,12 @@ fn compile_defn_in_module<M: Module>(
 
     FnCompiler::compile_body(defn, &mut func, func_ctx, module, compile_ctx)?;
 
+    // Capture CLIF IR text before define_function consumes the context.
+    let clif_ir = format!("{}", func.display());
+
     let mut ctx = cranelift::codegen::Context::for_function(func);
+    // Enable disassembly capture so CompiledCode.vcode is populated.
+    ctx.set_disasm(true);
     module
         .define_function(func_id, &mut ctx)
         .map_err(|e| CranelispError::CodegenError {
@@ -336,111 +360,30 @@ fn compile_defn_in_module<M: Module>(
             span: defn.span,
         })?;
 
-    Ok(())
+    // Capture disasm + code size from the compiled code.
+    let (disasm, code_size) = if let Some(compiled) = ctx.compiled_code() {
+        (
+            compiled.vcode.clone().unwrap_or_default(),
+            compiled.code_info().total_size,
+        )
+    } else {
+        (String::new(), 0)
+    };
+
+    Ok(FunctionArtifacts {
+        clif_ir,
+        disasm,
+        code_size,
+    })
 }
 
-/// Extract the concrete type name from a resolved type, for mangled name construction.
-///
-/// Mirrors `concrete_type_name` in the typecheck crate. Returns `None` for
-/// unresolved type variables — those cannot appear in multi-sig dispatch
-/// (all variants must have concrete parameter types).
-fn concrete_type_name(ty: &Type) -> Option<FQTypeName> {
-    match ty {
-        Type::Int => Some(FQTypeName::new(ModuleFullPath::from("primitives"), TypeName::from("Int"))),
-        Type::Float => Some(FQTypeName::new(ModuleFullPath::from("primitives"), TypeName::from("Float"))),
-        Type::Bool => Some(FQTypeName::new(ModuleFullPath::from("primitives"), TypeName::from("Bool"))),
-        Type::String => Some(FQTypeName::new(ModuleFullPath::from("primitives"), TypeName::from("String"))),
-        Type::ADT(fqtn, _) => Some(fqtn.clone()),
-        _ => None,
-    }
-}
-
-/// Build a mangled function name from a base name and concrete parameter types.
-///
-/// Follows the convention `name$Type1+Type2` (spec §5.1.2). Mirrors
-/// `build_mangled_name` in the typecheck crate to ensure the backend and
-/// typechecker agree on mangled names.
-fn build_mangled_name(fn_name: &Symbol, param_types: &[Type]) -> String {
-    let type_names: Vec<String> = param_types
-        .iter()
-        .filter_map(|t| concrete_type_name(t).map(|fqtn| fqtn.name.to_string()))
-        .collect();
-    format!("{}${}", fn_name, type_names.join("+"))
-}
-
-/// Expand a multi-sig defn into individual single-variant defns with mangled names.
-///
-/// For each variant, looks up its function type in `expr_types` (keyed by the
-/// variant's span) to determine the concrete parameter types, then builds a
-/// mangled name using `build_mangled_name`.
-///
-/// Returns the expanded defns. The base multi-sig defn should not be compiled
-/// directly — callers use `ResolvedCall::SigDispatch` to call specific variants.
-fn expand_multi_sig_defn(
-    defn: &Defn,
-    symbol_tables: &DashMap<ModuleFullPath, SymbolTable>,
-    module_path: &ModuleFullPath,
-) -> Result<Vec<Defn>, CranelispError> {
-    // Look up OverloadVariant info from the symbol table for mangled names.
-    let overload_variants: Option<Vec<cranelisp_types::OverloadVariant>> = symbol_tables
-        .get(module_path)
-        .and_then(|table| {
-            if let Some(ModuleEntry::Def { kind, .. }) = table.get(defn.name.as_ref()) {
-                if let cranelisp_types::DefKind::Overloaded { variants } = kind.as_ref() {
-                    return Some(variants.clone());
-                }
-            }
-            None
-        });
-
-    let mut expanded = Vec::new();
-
-    for (i, variant) in defn.variants.iter().enumerate() {
-        let param_types: Vec<Type> = if let Some(ref ov) = overload_variants {
-            // Find matching variant by param count or by index.
-            if let Some(ov_entry) = ov.iter().find(|v| v.param_types.len() == variant.params.len()) {
-                ov_entry.param_types.clone()
-            } else if i < ov.len() {
-                ov[i].param_types.clone()
-            } else {
-                return Err(CranelispError::CodegenError {
-                    message: format!(
-                        "multi-sig variant {} of '{}' has no matching overload entry in symbol table",
-                        i, defn.name
-                    ),
-                    span: variant.span,
-                });
-            }
-        } else {
-            return Err(CranelispError::CodegenError {
-                message: format!(
-                    "multi-sig defn '{}' missing overload info in symbol table for module {}",
-                    defn.name, module_path
-                ),
-                span: variant.span,
-            });
-        };
-
-        let mangled_name = build_mangled_name(&defn.name, &param_types);
-
-        expanded.push(Defn {
-            name: Symbol::from(mangled_name),
-            docstring: defn.docstring.clone(),
-            variants: vec![variant.clone()],
-            visibility: defn.visibility,
-            span: variant.span,
-        });
-    }
-
-    Ok(expanded)
-}
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::jit::Jit;
     use cranelisp_types::{
-        CheckResult, Defn, DefnVariant, Expr, Span, Symbol, TopLevel, Visibility,
+        CheckResult, Defn, DefnVariant, Expr, Program, Span, Symbol, TopLevel, Visibility,
     };
     use std::collections::{HashMap, HashSet};
 
@@ -552,6 +495,37 @@ mod tests {
         }
     }
 
+    /// Test helper: build a `ModuleEntry::Def` with `ast: Some(defn)`, matching
+    /// the Wave 0 invariant. Used by test helpers that construct defns by hand.
+    fn make_def_entry(defn: Defn) -> cranelisp_types::ModuleEntry {
+        use cranelisp_types::{DefKind, ModuleEntry, Scheme, Visibility};
+        let param_count = defn.params().len();
+        let param_names = defn
+            .variants
+            .first()
+            .map(|v| v.params.clone())
+            .unwrap_or_default();
+        let scheme = Scheme {
+            vars: vec![],
+            constraints: HashMap::new(),
+            ty: Type::Fn(
+                (0..param_count).map(|_| Type::Int).collect(),
+                Box::new(Type::Int),
+            ),
+        };
+        ModuleEntry::Def {
+            scheme,
+            visibility: Visibility::Public,
+            docstring: None,
+            param_names,
+            kind: Box::new(DefKind::UserFn { constrained_fn: None }),
+            callees: vec![],
+            got_slot: None,
+            trait_origin: None,
+            ast: Some(defn),
+        }
+    }
+
     /// Test helper: wrap an expression in a synthetic zero-arg defn, compile via
     /// `compile_to_module`, finalize JIT, execute, and return the i64 result.
     ///
@@ -577,11 +551,22 @@ mod tests {
         };
         // Enrich the defn from CheckResult side maps (test bridge).
         enrich_defn_from_side_maps(&mut defn, &check.method_resolutions, &check.expr_types);
-        let program: Program = vec![TopLevel::Defn(defn)];
+
+        let module = ModuleFullPath::from("user");
+        let name = defn.name.clone();
+        // Post-Phase-2: insert the defn into the shared symbol table so the
+        // backend's `compile_to_module` reads its AST from there.
+        {
+            let mut st = tables
+                .entry(module.clone())
+                .or_insert_with(|| SymbolTable::new(module.clone()));
+            st.insert(name.clone(), make_def_entry(defn));
+        }
+
         let mut jit = Jit::new()?;
         let result = compile_to_module(
-            ModuleFullPath::from("user"),
-            &program,
+            module,
+            &[name],
             tables,
             jit.jit_module(),
         )?;
@@ -606,29 +591,33 @@ mod tests {
     /// Test helper: compile a program via `compile_to_module`, finalize JIT,
     /// execute entry function, and return the i64 result.
     ///
-    /// Enriches defns from `check` side maps before compilation (test bridge).
+    /// Enriches defns from `check` side maps, inserts each defn into the
+    /// shared symbol table as a `ModuleEntry::Def { ast: Some(_), .. }` entry
+    /// (matching the Wave 0 invariant), then hands the name list to
+    /// `compile_to_module`. Bridges legacy test scaffolding to the post-
+    /// Phase-2 backend API (no `Program`/`CheckResult` parameters).
     fn test_compile_program_and_run(
-        program: &Program,
+        program: &[TopLevel],
         check: &CheckResult,
         tables: &DashMap<ModuleFullPath, SymbolTable>,
     ) -> Result<i64, CranelispError> {
-        // Enrich all defns in the program from CheckResult side maps.
-        let enriched_program: Program = program.iter().map(|tl| {
-            match tl {
-                TopLevel::Defn(defn) => {
-                    let mut d = defn.clone();
-                    enrich_defn_from_side_maps(&mut d, &check.method_resolutions, &check.expr_types);
-                    TopLevel::Defn(d)
-                }
-                other => other.clone(),
+        let module = ModuleFullPath::from("user");
+
+        // Enrich and collect all TopLevel::Defn entries from the program,
+        // plus default_method_defns and mono specialisations from the check
+        // (historically injected into the program by finalize_module).
+        let mut defns: Vec<Defn> = Vec::new();
+        for tl in program {
+            if let TopLevel::Defn(defn) = tl {
+                let mut d = defn.clone();
+                enrich_defn_from_side_maps(&mut d, &check.method_resolutions, &check.expr_types);
+                defns.push(d);
             }
-        }).collect();
-        // Inline default_method_defns and mono_defns into the program.
-        let mut full_program = enriched_program;
+        }
         for d in &check.default_method_defns {
             let mut enriched = d.clone();
             enrich_defn_from_side_maps(&mut enriched, &check.method_resolutions, &check.expr_types);
-            full_program.push(TopLevel::Defn(enriched));
+            defns.push(enriched);
         }
         for mono in &check.mono_defns {
             let mut enriched = mono.defn.clone();
@@ -640,12 +629,77 @@ mod tests {
                 &mono.expr_types
             };
             enrich_defn_from_side_maps(&mut enriched, &merged, expr_types);
-            full_program.push(TopLevel::Defn(enriched));
+            defns.push(enriched);
         }
+
+        // Install each defn as a symbol-table entry with ast: Some(defn).
+        // Multi-sig defns need expansion into mangled variants here (legacy
+        // tests don't pre-materialise those; typecheck does in production).
+        let mut names: Vec<Symbol> = Vec::new();
+        {
+            let mut st = tables
+                .entry(module.clone())
+                .or_insert_with(|| SymbolTable::new(module.clone()));
+            for defn in defns {
+                if defn.is_multi_sig() {
+                    // Look up OverloadVariant info from the pre-inserted
+                    // Overloaded base entry to recover mangled names + param
+                    // types, then materialise each variant as its own entry.
+                    let variants = match st.get(defn.name.as_ref()) {
+                        Some(cranelisp_types::ModuleEntry::Def { kind, .. }) => {
+                            if let cranelisp_types::DefKind::Overloaded { variants } =
+                                kind.as_ref()
+                            {
+                                variants.clone()
+                            } else {
+                                continue;
+                            }
+                        }
+                        _ => continue,
+                    };
+                    for (i, variant) in defn.variants.iter().enumerate() {
+                        let param_types = variants
+                            .iter()
+                            .find(|v| v.param_types.len() == variant.params.len())
+                            .map(|v| v.param_types.clone())
+                            .or_else(|| variants.get(i).map(|v| v.param_types.clone()))
+                            .unwrap_or_default();
+                        let mangled = format!(
+                            "{}${}",
+                            defn.name,
+                            param_types
+                                .iter()
+                                .filter_map(|t| match t {
+                                    Type::Int => Some("Int"),
+                                    Type::Float => Some("Float"),
+                                    Type::Bool => Some("Bool"),
+                                    Type::String => Some("String"),
+                                    _ => None,
+                                })
+                                .collect::<Vec<_>>()
+                                .join("+"),
+                        );
+                        let variant_defn = Defn {
+                            name: Symbol::from(mangled),
+                            docstring: defn.docstring.clone(),
+                            variants: vec![variant.clone()],
+                            visibility: defn.visibility,
+                            span: variant.span,
+                        };
+                        names.push(variant_defn.name.clone());
+                        st.insert(variant_defn.name.clone(), make_def_entry(variant_defn));
+                    }
+                } else {
+                    names.push(defn.name.clone());
+                    st.insert(defn.name.clone(), make_def_entry(defn));
+                }
+            }
+        }
+
         let mut jit = Jit::new()?;
         let result = compile_to_module(
-            ModuleFullPath::from("user"),
-            &full_program,
+            module,
+            &names,
             tables,
             jit.jit_module(),
         )?;
@@ -782,14 +836,18 @@ mod tests {
     // spec: 12-runtime §12.6 — batch mode requires main entry point
     #[test]
     fn test_compile_program_no_defns() {
-        let program: Program = vec![];
-        let check = empty_check();
+        let _ = empty_check();
+        let names: Vec<Symbol> = vec![];
+        let tables = empty_tables();
+        // No symbol table for "user" at all — compile_to_module errors out
+        // because there's no module entry (and no names anyway).
+        tables.insert(ModuleFullPath::from("user"), SymbolTable::new(ModuleFullPath::from("user")));
 
         let mut jit = Jit::new().unwrap();
         let result = compile_to_module(
             ModuleFullPath::from("user"),
-            &program,
-            &empty_tables(),
+            &names,
+            &tables,
             jit.jit_module(),
         );
         assert!(result.is_err());
@@ -2628,6 +2686,7 @@ mod tests {
     // With compile_to_module, each module gets its own JIT — no collision possible.
     #[test]
     fn test_module_prefix_applied() {
+        let _ = empty_check();
         // Module "mod_a" defines "val" returning 100.
         let val_a = Defn {
             name: Symbol::from("val"),
@@ -2641,14 +2700,18 @@ mod tests {
             visibility: Visibility::Public,
             span: Span::new(0, 20),
         };
-        let program_a: Program = vec![TopLevel::Defn(val_a)];
-        let check_a = empty_check();
 
+        let mod_a = ModuleFullPath::from("mod_a");
         let tables = empty_tables();
+        {
+            let mut st = SymbolTable::new(mod_a.clone());
+            st.insert(val_a.name.clone(), make_def_entry(val_a.clone()));
+            tables.insert(mod_a.clone(), st);
+        }
         let mut jit_a = Jit::new().unwrap();
         let result_a = compile_to_module(
-            ModuleFullPath::from("mod_a"),
-            &program_a,
+            mod_a.clone(),
+            std::slice::from_ref(&val_a.name),
             &tables,
             jit_a.jit_module(),
         ).expect("module A should compile");
@@ -2680,13 +2743,17 @@ mod tests {
             visibility: Visibility::Public,
             span: Span::new(100, 120),
         };
-        let program_b: Program = vec![TopLevel::Defn(val_b)];
-        let check_b = empty_check();
+        let mod_b = ModuleFullPath::from("mod_b");
+        {
+            let mut st = SymbolTable::new(mod_b.clone());
+            st.insert(val_b.name.clone(), make_def_entry(val_b.clone()));
+            tables.insert(mod_b.clone(), st);
+        }
 
         let mut jit_b = Jit::new().unwrap();
         let result_b = compile_to_module(
-            ModuleFullPath::from("mod_b"),
-            &program_b,
+            mod_b,
+            std::slice::from_ref(&val_b.name),
             &tables,
             jit_b.jit_module(),
         ).expect("module B should compile without collision");
@@ -2699,98 +2766,14 @@ mod tests {
     }
 
     // --- multi-sig defn tests ---
-
-    // spec: 05-definitions §5.1.2 — mangled name construction
-    #[test]
-    fn test_build_mangled_name_single_param() {
-        let name = Symbol::from("identity");
-        let mangled = build_mangled_name(&name, &[Type::Int]);
-        assert_eq!(mangled, "identity$Int");
-    }
-
-    // spec: 05-definitions §5.1.2 — mangled name with multiple params
-    #[test]
-    fn test_build_mangled_name_multiple_params() {
-        let name = Symbol::from("add");
-        let mangled = build_mangled_name(&name, &[Type::Int, Type::Int]);
-        assert_eq!(mangled, "add$Int+Int");
-    }
-
-    // spec: 05-definitions §5.1.2 — mangled name with mixed types
-    #[test]
-    fn test_build_mangled_name_mixed_types() {
-        let name = Symbol::from("convert");
-        let mangled = build_mangled_name(&name, &[Type::Float, Type::Bool]);
-        assert_eq!(mangled, "convert$Float+Bool");
-    }
-
-    // spec: 05-definitions §5.1.2 — expand multi-sig defn into variant defns
-    #[test]
-    fn test_expand_multi_sig_defn() {
-        let variant1_span = Span::new(10, 30);
-        let variant2_span = Span::new(40, 60);
-
-        let defn = Defn {
-            name: Symbol::from("f"),
-            docstring: None,
-            variants: vec![
-                DefnVariant {
-                    params: vec![Symbol::from("x")],
-                    param_annotations: vec![],
-                    body: Expr::Var { name: Symbol::from("x"), span: Span::new(15, 16), inferred_type: None },
-                    span: variant1_span,
-                },
-                DefnVariant {
-                    params: vec![Symbol::from("a"), Symbol::from("b")],
-                    param_annotations: vec![],
-                    body: Expr::Var { name: Symbol::from("a"), span: Span::new(45, 46), inferred_type: None },
-                    span: variant2_span,
-                },
-            ],
-            visibility: cranelisp_types::Visibility::Public,
-            span: Span::new(0, 70),
-        };
-
-        // Set up symbol table with Overloaded entry for multi-sig dispatch.
-        let tables: DashMap<ModuleFullPath, SymbolTable> = DashMap::new();
-        let module_path = ModuleFullPath::from("user");
-        let mut table = SymbolTable::new(module_path.clone());
-        table.insert(
-            Symbol::from("f"),
-            cranelisp_types::ModuleEntry::Def {
-                scheme: cranelisp_types::Scheme { vars: vec![], constraints: Default::default(), ty: Type::Int },
-                visibility: cranelisp_types::Visibility::Public,
-                docstring: None,
-                param_names: vec![],
-                kind: Box::new(cranelisp_types::DefKind::Overloaded {
-                    variants: vec![
-                        cranelisp_types::OverloadVariant {
-                            param_types: vec![Type::Int],
-                            ret_type: Type::Int,
-                            mangled_name: Symbol::from("f$Int"),
-                        },
-                        cranelisp_types::OverloadVariant {
-                            param_types: vec![Type::Bool, Type::Bool],
-                            ret_type: Type::Bool,
-                            mangled_name: Symbol::from("f$Bool+Bool"),
-                        },
-                    ],
-                }),
-                callees: vec![],
-                got_slot: None,
-                trait_origin: None,
-                ast: None,
-            },
-        );
-        tables.insert(module_path.clone(), table);
-
-        let expanded = expand_multi_sig_defn(&defn, &tables, &module_path).unwrap();
-        assert_eq!(expanded.len(), 2);
-        assert_eq!(expanded[0].name, Symbol::from("f$Int"));
-        assert_eq!(expanded[1].name, Symbol::from("f$Bool+Bool"));
-        assert_eq!(expanded[0].params().len(), 1);
-        assert_eq!(expanded[1].params().len(), 2);
-    }
+    //
+    // Sprint 56 Wave 1: `build_mangled_name`, `concrete_type_name`, and
+    // `expand_multi_sig_defn` were deleted from the backend. Mangled variant
+    // entries are now pre-materialised by typecheck in Wave 0. The unit tests
+    // that exercised those helpers directly are retired; end-to-end multi-sig
+    // dispatch is covered by `test_compile_multi_sig_defn_end_to_end` and
+    // `test_compile_multi_sig_second_variant` below (plus the integration
+    // tests in `tests/`).
 
     // spec: 05-definitions §5.1.2 — multi-sig defn compiles and dispatches correctly
     //
@@ -3007,40 +2990,13 @@ mod tests {
         assert_eq!(result, 99, "should dispatch to g$Int+Int and return second arg (99)");
     }
 
-    // spec: 05-definitions §5.1.2 — multi-sig defn with missing type info errors
-    #[test]
-    fn test_expand_multi_sig_missing_type_info() {
-        let defn = Defn {
-            name: Symbol::from("f"),
-            docstring: None,
-            variants: vec![
-                DefnVariant {
-                    params: vec![Symbol::from("x")],
-                    param_annotations: vec![],
-                    body: Expr::IntLit { value: 1, span: Span::new(15, 16), inferred_type: None },
-                    span: Span::new(10, 30),
-                },
-            ],
-            visibility: cranelisp_types::Visibility::Public,
-            span: Span::new(0, 40),
-        };
-
-        // No overload info in symbol table — should error.
-        let tables: DashMap<ModuleFullPath, SymbolTable> = DashMap::new();
-        let module_path = ModuleFullPath::from("user");
-        let result = expand_multi_sig_defn(&defn, &tables, &module_path);
-        assert!(result.is_err(), "should error when overload info is missing");
-    }
-
-    // spec: 05-definitions §5.1.2 — concrete_type_name covers all primitive types
-    #[test]
-    fn test_concrete_type_name_all_primitives() {
-        assert_eq!(concrete_type_name(&Type::Int).unwrap().name.as_ref(), "Int");
-        assert_eq!(concrete_type_name(&Type::Float).unwrap().name.as_ref(), "Float");
-        assert_eq!(concrete_type_name(&Type::Bool).unwrap().name.as_ref(), "Bool");
-        assert_eq!(concrete_type_name(&Type::String).unwrap().name.as_ref(), "String");
-        assert!(concrete_type_name(&Type::Var(0)).is_none());
-    }
+    // Note: `test_expand_multi_sig_missing_type_info` and
+    // `test_concrete_type_name_all_primitives` were retired in Sprint 56 Wave 1
+    // with the deletion of `expand_multi_sig_defn` / `concrete_type_name`. The
+    // equivalent mangled-name construction now lives in `/typecheck`, and the
+    // "missing overload info" error surface is exercised by the backend's
+    // `ast: None` error path (see `test_compile_to_module_ast_none_errors` in
+    // the Sprint 56 Wave 1 unit tests below).
 
     // spec: appendix-a-builtins §A.2 — extern primitive dispatch via resolved_call
     //
@@ -3141,6 +3097,318 @@ mod tests {
         assert!(
             err_msg.contains("undefined function"),
             "error should be 'undefined function', got: {err_msg}"
+        );
+    }
+
+    // -----------------------------------------------------------------
+    // Sprint 56 Wave 1 (Step 2a) — direct compile_to_module tests
+    // -----------------------------------------------------------------
+
+    // spec: design/backend/compile-to-module.md §2.1 — 4-param signature
+    //
+    // Direct `compile_to_module` call with a populated `symbol_tables` and a
+    // single-name `names` list. Verifies the post-Phase-2 contract: bodies
+    // arrive via `ModuleEntry::Def.ast`, the return value keys `func_ids` by
+    // the compiled symbol, and a zero-arg defn sets `entry_func_id`.
+    #[test]
+    fn sprint56_compile_to_module_direct_call_returns_funcid() {
+        use cranelisp_types::ModuleEntry;
+        let defn = Defn {
+            name: Symbol::from("answer"),
+            docstring: None,
+            variants: vec![DefnVariant {
+                params: vec![],
+                param_annotations: vec![],
+                body: Expr::IntLit { value: 42, span: Span::new(0, 2), inferred_type: None },
+                span: Span::new(0, 10),
+            }],
+            visibility: Visibility::Public,
+            span: Span::new(0, 10),
+        };
+
+        let module = ModuleFullPath::from("user");
+        let tables = empty_tables();
+        {
+            let mut st = SymbolTable::new(module.clone());
+            st.insert(defn.name.clone(), make_def_entry(defn.clone()));
+            tables.insert(module.clone(), st);
+        }
+
+        let mut jit = Jit::new().unwrap();
+        let result = compile_to_module(
+            module,
+            std::slice::from_ref(&defn.name),
+            &tables,
+            jit.jit_module(),
+        )
+        .expect("direct compile_to_module should succeed");
+
+        assert!(
+            result.func_ids.contains_key(&defn.name),
+            "func_ids must include the compiled symbol: {:?}",
+            result.func_ids.keys().collect::<Vec<_>>()
+        );
+        assert!(
+            result.entry_func_id.is_some(),
+            "zero-arg defn should set entry_func_id"
+        );
+        assert!(
+            result.artifacts.contains_key(&defn.name),
+            "artifacts map must include per-symbol codegen byproducts"
+        );
+        // Ensure the entry is present as a Def with ast: Some(_) in the table
+        // (regression guard against accidentally dropping the entry).
+        let guard = tables.get(&ModuleFullPath::from("user")).unwrap();
+        assert!(matches!(
+            guard.get(defn.name.as_ref()),
+            Some(ModuleEntry::Def { ast: Some(_), .. })
+        ));
+    }
+
+    // spec: design/backend/compile-to-module.md §4 — ast: None returns error
+    //
+    // Negative: insert a `ModuleEntry::Def { ast: None, .. }` into the symbol
+    // table and pass its name in `names`. `compile_to_module` must return
+    // `Err(CranelispError::CodegenError)` whose message names the symbol —
+    // no panic, no silent skip.
+    #[test]
+    fn sprint56_compile_to_module_ast_none_errors() {
+        use cranelisp_types::{DefKind, ModuleEntry, Scheme, Visibility};
+        let module = ModuleFullPath::from("user");
+        let name = Symbol::from("stub");
+        let tables = empty_tables();
+        {
+            let mut st = SymbolTable::new(module.clone());
+            st.insert(
+                name.clone(),
+                ModuleEntry::Def {
+                    scheme: Scheme {
+                        vars: vec![],
+                        constraints: HashMap::new(),
+                        ty: Type::Fn(vec![], Box::new(Type::Int)),
+                    },
+                    visibility: Visibility::Public,
+                    docstring: None,
+                    param_names: vec![],
+                    kind: Box::new(DefKind::UserFn { constrained_fn: None }),
+                    callees: vec![],
+                    got_slot: None,
+                    trait_origin: None,
+                    ast: None,
+                },
+            );
+            tables.insert(module.clone(), st);
+        }
+
+        let mut jit = Jit::new().unwrap();
+        let result = compile_to_module(
+            module,
+            std::slice::from_ref(&name),
+            &tables,
+            jit.jit_module(),
+        );
+        let err = match result {
+            Ok(_) => unreachable!("ast: None must not succeed"),
+            Err(e) => e,
+        };
+
+        let msg = err.message();
+        assert!(
+            msg.contains(name.as_ref()),
+            "error message must name the offending symbol 'stub', got: {msg}"
+        );
+        assert!(
+            msg.contains("ast: None") || msg.contains("ast") && msg.contains("None"),
+            "error message should mention the ast: None invariant violation, got: {msg}"
+        );
+    }
+
+    // spec: design/backend/compile-to-module.md §4 — no multi-sig expansion in backend
+    //
+    // Populate symbol_tables with a pre-mangled multi-sig variant entry
+    // (`add$Int+Int`, ast: Some(single-variant defn)) alongside the
+    // Overloaded base entry (`add`, ast: None). Call compile_to_module with
+    // names = [mangled variant]. Compilation must succeed — the backend never
+    // invokes a (deleted) `expand_multi_sig_defn` path.
+    //
+    // That this test compiles and passes IS the verification: Wave 1 deleted
+    // `expand_multi_sig_defn` entirely from the source tree.
+    #[test]
+    fn sprint56_compile_to_module_mangled_variant_compiles_without_expansion() {
+        use cranelisp_types::{DefKind, ModuleEntry, OverloadVariant, Scheme, Visibility};
+
+        let module = ModuleFullPath::from("user");
+        let base_name = Symbol::from("add");
+        let variant_name = Symbol::from("add$Int+Int");
+
+        // Mangled variant defn — what typecheck's Wave 0 materialises.
+        let variant_defn = Defn {
+            name: variant_name.clone(),
+            docstring: None,
+            variants: vec![DefnVariant {
+                params: vec![Symbol::from("x"), Symbol::from("y")],
+                param_annotations: vec![],
+                // Body returns x (proves the variant body is what got compiled).
+                body: Expr::Var {
+                    name: Symbol::from("x"),
+                    span: Span::new(5, 6),
+                    inferred_type: Some(Box::new(Type::Int)),
+                },
+                span: Span::new(0, 20),
+            }],
+            visibility: Visibility::Public,
+            span: Span::new(0, 20),
+        };
+
+        let tables = empty_tables();
+        {
+            let mut st = SymbolTable::new(module.clone());
+            // Overloaded base entry: ast: None — compile_to_module must NOT
+            // try to compile this (the filter via `defined_symbols()` skips
+            // it; a caller passing it in `names` would hit the ast: None
+            // error path — which is the right behaviour).
+            st.insert(
+                base_name.clone(),
+                ModuleEntry::Def {
+                    scheme: Scheme {
+                        vars: vec![],
+                        constraints: HashMap::new(),
+                        ty: Type::Int,
+                    },
+                    visibility: Visibility::Public,
+                    docstring: None,
+                    param_names: vec![],
+                    kind: Box::new(DefKind::Overloaded {
+                        variants: vec![OverloadVariant {
+                            param_types: vec![Type::Int, Type::Int],
+                            ret_type: Type::Int,
+                            mangled_name: variant_name.clone(),
+                        }],
+                    }),
+                    callees: vec![],
+                    got_slot: None,
+                    trait_origin: None,
+                    ast: None,
+                },
+            );
+            // Mangled variant entry: ast: Some(variant_defn).
+            st.insert(variant_name.clone(), make_def_entry(variant_defn));
+            tables.insert(module.clone(), st);
+        }
+
+        let mut jit = Jit::new().unwrap();
+        let result = compile_to_module(
+            module,
+            std::slice::from_ref(&variant_name),
+            &tables,
+            jit.jit_module(),
+        )
+        .expect("pre-mangled variant should compile without expansion");
+
+        assert!(
+            result.func_ids.contains_key(&variant_name),
+            "func_ids must contain the mangled name"
+        );
+    }
+
+    // spec: design/backend/compile-to-module.md §4 — constrained-template exclusion via defined_symbols
+    //
+    // Verifies that `SymbolTable::defined_symbols()` — the shared filter
+    // callers use to build the `names` list — excludes constrained-function
+    // templates (`UserFn { constrained_fn: Some(_) }`). The backend relies
+    // on this filter upstream; if it were to break, constrained templates
+    // would reach compile_to_module and fail (templates carry type vars,
+    // not concrete types). This re-asserts Wave 0's contract from the
+    // backend's vantage point.
+    #[test]
+    fn sprint56_constrained_template_excluded_by_defined_symbols() {
+        use cranelisp_types::{DefKind, ModuleEntry, Scheme, Visibility};
+
+        let module = ModuleFullPath::from("user");
+        let template_name = Symbol::from("identity");
+        let normal_name = Symbol::from("answer");
+
+        // A typical regular defn: compile-eligible.
+        let normal_defn = Defn {
+            name: normal_name.clone(),
+            docstring: None,
+            variants: vec![DefnVariant {
+                params: vec![],
+                param_annotations: vec![],
+                body: Expr::IntLit { value: 1, span: Span::new(0, 1), inferred_type: None },
+                span: Span::new(0, 5),
+            }],
+            visibility: Visibility::Public,
+            span: Span::new(0, 5),
+        };
+
+        // A constrained-fn template defn: should be filtered OUT by
+        // defined_symbols() even though it carries ast: Some(_).
+        let template_defn = Defn {
+            name: template_name.clone(),
+            docstring: None,
+            variants: vec![DefnVariant {
+                params: vec![Symbol::from("x")],
+                param_annotations: vec![],
+                body: Expr::Var {
+                    name: Symbol::from("x"),
+                    span: Span::new(0, 1),
+                    inferred_type: None,
+                },
+                span: Span::new(0, 10),
+            }],
+            visibility: Visibility::Public,
+            span: Span::new(0, 10),
+        };
+
+        let tables = empty_tables();
+        {
+            let mut st = SymbolTable::new(module.clone());
+            st.insert(normal_name.clone(), make_def_entry(normal_defn));
+            // Insert a UserFn template by hand — constrained_fn is Some.
+            st.insert(
+                template_name.clone(),
+                ModuleEntry::Def {
+                    scheme: Scheme {
+                        vars: vec![],
+                        constraints: HashMap::new(),
+                        ty: Type::Fn(vec![Type::Var(0)], Box::new(Type::Var(0))),
+                    },
+                    visibility: Visibility::Public,
+                    docstring: None,
+                    param_names: vec![Symbol::from("x")],
+                    kind: Box::new(DefKind::UserFn {
+                        // Sentinel — real typecheck stores a cloned Defn here.
+                        constrained_fn: Some(Box::new(cranelisp_types::ConstrainedFn {
+                            defn: template_defn.clone(),
+                            scheme: Scheme {
+                                vars: vec![],
+                                constraints: HashMap::new(),
+                                ty: Type::Fn(vec![Type::Var(0)], Box::new(Type::Var(0))),
+                            },
+                        })),
+                    }),
+                    callees: vec![],
+                    got_slot: None,
+                    trait_origin: None,
+                    ast: Some(template_defn),
+                },
+            );
+            tables.insert(module.clone(), st);
+        }
+
+        let guard = tables.get(&module).unwrap();
+        let defined: Vec<&Symbol> = guard.defined_symbols().map(|(n, _)| n).collect();
+
+        assert!(
+            defined.contains(&&normal_name),
+            "defined_symbols() must yield regular defns: got {:?}",
+            defined
+        );
+        assert!(
+            !defined.contains(&&template_name),
+            "defined_symbols() must NOT yield constrained-fn templates: got {:?}",
+            defined
         );
     }
 }

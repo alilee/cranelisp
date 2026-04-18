@@ -3,14 +3,24 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 use crate::{
-    ConstructorInfo, Defn, FQSymbol, FQTraitName, FQTypeName, ModuleFullPath, ModuleName,
-    Scheme, Sexp, Span, Symbol, TraitDecl, TraitName, Type, TypeDefInfo, TypeName, Visibility,
+    ConstructorInfo, Defn, FQSymbol, FQTraitName, FQTypeName, GotTable, ModuleFullPath,
+    ModuleName, Scheme, Sexp, Span, Symbol, TraitDecl, TraitName, Type, TypeDefInfo, TypeName,
+    Visibility,
 };
 
 // --- Symbol Table ---
 
-/// Per-module symbol table. Pure data -- no runtime state.
-/// Owned by TypeChecker, read by Backend for type information.
+/// Per-module symbol table.
+///
+/// Mostly pure data (types, schemes, docstrings) with a single runtime-only
+/// field: `got` (the per-module Global Offset Table). The GOT holds code
+/// pointers that codegen writes and JIT-emitted call sites read; it is
+/// `#[serde(skip)]` so cache files stay pointer-free and re-initialise to a
+/// fresh null table on deserialise.
+///
+/// Owned by `TypeChecker` (via `DashMap<ModuleFullPath, SymbolTable>`), read
+/// by `Backend` for type information, and mutated atomically per-slot by
+/// codegen workers through `got.store_slot`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SymbolTable {
     pub path: ModuleFullPath,
@@ -19,6 +29,27 @@ pub struct SymbolTable {
     /// Module-local: slot 0, 1, 2... independently per module.
     #[serde(default)]
     pub next_got_slot: usize,
+    /// Per-module Global Offset Table. Created when the `SymbolTable` is
+    /// constructed (at module registration). Base address is stable for
+    /// the module's lifetime. Slot indices are assigned by
+    /// `allocate_got_slot`; code pointers are written atomically by
+    /// codegen workers and read by JIT-emitted call sites.
+    ///
+    /// Wrapped in `Arc` so codegen workers can hold a cheap handle to the
+    /// GOT while the `DashMap` read guard is released. Cloning a
+    /// `SymbolTable` shares the same underlying GOT via refcount bump — the
+    /// GOT is runtime state, not copied data. Phase 2 bridge: `/int`'s
+    /// Wave 2 may swap the `Arc` for a bare field once
+    /// `compile_and_register_defn_shared` and its helpers are deleted.
+    ///
+    /// Not serialised: cache reconstruction creates a fresh GOT and
+    /// re-populates slot pointers during cache-hit codegen.
+    #[serde(skip, default = "default_got_arc")]
+    pub got: std::sync::Arc<GotTable>,
+}
+
+fn default_got_arc() -> std::sync::Arc<GotTable> {
+    std::sync::Arc::new(GotTable::new())
 }
 
 impl SymbolTable {
@@ -27,6 +58,7 @@ impl SymbolTable {
             path,
             symbols: HashMap::new(),
             next_got_slot: 0,
+            got: std::sync::Arc::new(GotTable::new()),
         }
     }
 
@@ -52,6 +84,31 @@ impl SymbolTable {
     /// Iterate over all symbols (public and private).
     pub fn all_symbols(&self) -> impl Iterator<Item = (&Symbol, &ModuleEntry)> {
         self.symbols.iter()
+    }
+
+    /// Iterator over entries that codegen should compile.
+    ///
+    /// Filter: `ast.is_some() AND kind != Overloaded AND kind != UserFn { constrained_fn: Some(_) }`.
+    ///
+    /// Shared codegen-compilable predicate — see Decision 22 in
+    /// `design/arch/CLAUDE.md` and §9.5 of `design/typecheck/ast-annotation.md`.
+    /// Both the backend's `compile_to_module` and the integration layer's
+    /// priority worker enumerate codegen targets via this iterator so the
+    /// filter lives in exactly one place.
+    ///
+    /// Entries that carry `ast: None` are never compilable (pre-body-check,
+    /// primitives, special forms, `Overloaded` base entries whose mangled
+    /// variants carry the bodies, and constrained-fn templates whose mono
+    /// specialisations carry the bodies).
+    pub fn defined_symbols(&self) -> impl Iterator<Item = (&Symbol, &ModuleEntry)> {
+        self.symbols.iter().filter(|(_, entry)| match entry {
+            ModuleEntry::Def { ast: Some(_), kind, .. } => !matches!(
+                kind.as_ref(),
+                DefKind::Overloaded { .. }
+                    | DefKind::UserFn { constrained_fn: Some(_) }
+            ),
+            _ => false,
+        })
     }
 }
 
@@ -301,3 +358,252 @@ pub struct ModDecl {
 }
 
 use crate::JitSymbol;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        Defn, DefnVariant, Expr, FQSymbol, FQTypeName, Scheme, Span, Symbol, Type, TypeDefInfo,
+        TypeName, Visibility,
+    };
+    use std::collections::HashMap;
+
+    // ---- Sprint 56 Wave 0 §9.5 — defined_symbols filter predicate ----
+
+    /// Build a minimal `ModuleEntry::Def` for test fixtures.
+    fn mk_def(
+        kind: DefKind,
+        ast: Option<Defn>,
+    ) -> ModuleEntry {
+        ModuleEntry::Def {
+            scheme: Scheme {
+                vars: vec![],
+                constraints: HashMap::new(),
+                ty: Type::Int,
+            },
+            visibility: Visibility::Public,
+            docstring: None,
+            param_names: vec![],
+            kind: Box::new(kind),
+            callees: Vec::new(),
+            got_slot: None,
+            trait_origin: None,
+            ast,
+        }
+    }
+
+    /// A trivial one-variant Defn used as an `ast` payload for tests.
+    fn trivial_defn(name: &str) -> Defn {
+        Defn {
+            name: Symbol::from(name),
+            docstring: None,
+            variants: vec![DefnVariant {
+                params: vec![],
+                param_annotations: vec![],
+                body: Expr::IntLit {
+                    value: 0,
+                    span: Span::SYNTHETIC,
+                    inferred_type: Some(Box::new(Type::Int)),
+                },
+                span: Span::SYNTHETIC,
+            }],
+            visibility: Visibility::Public,
+            span: Span::SYNTHETIC,
+        }
+    }
+
+    // spec: design/typecheck/ast-annotation.md §9.5 — defined_symbols filter predicate
+    #[test]
+    fn wave0_defined_symbols_filter_is_correct() {
+        let mut st = SymbolTable::new(ModuleFullPath::from("user"));
+
+        // (a) Regular UserFn with ast: Some(_) — SHOULD appear.
+        st.insert(
+            Symbol::from("regular"),
+            mk_def(
+                DefKind::UserFn { constrained_fn: None },
+                Some(trivial_defn("regular")),
+            ),
+        );
+
+        // (b) Overloaded base with ast: None — MUST NOT appear.
+        st.insert(
+            Symbol::from("overloaded_base"),
+            mk_def(
+                DefKind::Overloaded { variants: vec![] },
+                None,
+            ),
+        );
+
+        // (c) UserFn template with constrained_fn: Some(_) — MUST NOT appear,
+        // even if ast happens to be Some(_) (§9.5 filter excludes templates by kind).
+        let template_cf = ConstrainedFn {
+            defn: trivial_defn("template"),
+            scheme: Scheme {
+                vars: vec![],
+                constraints: HashMap::new(),
+                ty: Type::Int,
+            },
+        };
+        st.insert(
+            Symbol::from("template"),
+            mk_def(
+                DefKind::UserFn { constrained_fn: Some(Box::new(template_cf)) },
+                Some(trivial_defn("template")),
+            ),
+        );
+
+        // (d) TypeDef — not a Def variant at all; MUST NOT appear.
+        st.insert(
+            Symbol::from("MyType"),
+            ModuleEntry::TypeDef {
+                info: TypeDefInfo {
+                    name: FQTypeName::new(
+                        ModuleFullPath::from("user"),
+                        TypeName::from("MyType"),
+                    ),
+                    type_params: vec![],
+                    constructors: vec![],
+                    docstring: None,
+                },
+                visibility: Visibility::Public,
+                constructor_scheme: None,
+                sexp: None,
+            },
+        );
+
+        // (e) Import — not a Def variant; MUST NOT appear.
+        st.insert(
+            Symbol::from("imported"),
+            ModuleEntry::Import {
+                source: FQSymbol {
+                    module: ModuleFullPath::from("primitives"),
+                    symbol: Symbol::from("some-prim"),
+                },
+            },
+        );
+
+        // (f) Mangled multi-sig variant with ast: Some(_) — SHOULD appear.
+        st.insert(
+            Symbol::from("add$Int+Int"),
+            mk_def(
+                DefKind::UserFn { constrained_fn: None },
+                Some(trivial_defn("add$Int+Int")),
+            ),
+        );
+
+        let names: std::collections::HashSet<String> = st
+            .defined_symbols()
+            .map(|(s, _)| s.as_ref().to_string())
+            .collect();
+
+        assert!(
+            names.contains("regular"),
+            "regular UserFn with ast: Some(..) must appear; got {:?}",
+            names
+        );
+        assert!(
+            names.contains("add$Int+Int"),
+            "mangled multi-sig variant with ast: Some(..) must appear; got {:?}",
+            names
+        );
+        assert!(
+            !names.contains("overloaded_base"),
+            "Overloaded base must NOT appear; got {:?}",
+            names
+        );
+        assert!(
+            !names.contains("template"),
+            "constrained-fn template must NOT appear; got {:?}",
+            names
+        );
+        assert!(
+            !names.contains("MyType"),
+            "TypeDef must NOT appear; got {:?}",
+            names
+        );
+        assert!(
+            !names.contains("imported"),
+            "Import must NOT appear; got {:?}",
+            names
+        );
+    }
+
+    // ---- Sprint 56 Wave 0 §9.8 — GotTable on SymbolTable ----
+
+    // spec: design/typecheck/ast-annotation.md §9.8 — GotTable on SymbolTable: presence + serde roundtrip
+    #[test]
+    fn wave0_symbol_table_got_present_and_serde_skipped() {
+        // Build a SymbolTable and verify `got` is live and addressable.
+        let mut st = SymbolTable::new(ModuleFullPath::from("user"));
+
+        // base_ptr() is non-null and stable across reads.
+        let p1 = st.got.base_ptr();
+        let p2 = st.got.base_ptr();
+        assert!(!p1.is_null(), "fresh SymbolTable's GOT base pointer must be non-null");
+        assert_eq!(p1, p2, "GOT base_ptr() must be stable across reads");
+
+        // Slot bookkeeping before and after allocation.
+        assert_eq!(st.next_got_slot, 0);
+        let s0 = st.allocate_got_slot();
+        let s1 = st.allocate_got_slot();
+        assert_eq!(s0, 0);
+        assert_eq!(s1, 1);
+        assert_eq!(st.next_got_slot, 2);
+
+        // Allocation does not move the GOT array in memory.
+        assert_eq!(st.got.base_ptr(), p1);
+
+        // Insert one entry to prove serde roundtrip preserves symbol data.
+        st.insert(
+            Symbol::from("entry"),
+            mk_def(
+                DefKind::UserFn { constrained_fn: None },
+                Some(trivial_defn("entry")),
+            ),
+        );
+
+        // Write a known pointer through the GOT and read it back (round-trip
+        // of the runtime pointer must NOT survive serde — verified below).
+        let fake_ptr = 0xDEAD_BEEFusize as *const u8;
+        st.got.store_slot(s0, fake_ptr);
+        assert_eq!(st.got.load_slot(s0), fake_ptr);
+
+        // Serialize and deserialize. The `got` field is `#[serde(skip)]` so it
+        // must NOT round-trip the runtime pointer; a fresh null GOT is expected.
+        let json = serde_json::to_string(&st).expect("SymbolTable must serialize");
+        assert!(
+            !json.contains("DEADBEEF") && !json.contains("deadbeef"),
+            "serialized form must not contain runtime pointer values: {}",
+            json
+        );
+        let rt: SymbolTable =
+            serde_json::from_str(&json).expect("SymbolTable must deserialize");
+
+        // next_got_slot bookkeeping is preserved across the roundtrip.
+        assert_eq!(
+            rt.next_got_slot, 2,
+            "next_got_slot must round-trip via serde"
+        );
+
+        // The deserialized GOT exists (#[serde(default)] reconstructs it), has a
+        // valid base pointer, and all slots start null (runtime state NOT
+        // round-tripped — §9.8.3 Serde semantics).
+        let rt_base = rt.got.base_ptr();
+        assert!(
+            !rt_base.is_null(),
+            "deserialized SymbolTable must have a live GOT (non-null base_ptr)"
+        );
+        assert!(
+            rt.got.load_slot(s0).is_null(),
+            "deserialized GOT must reset slot pointers to null"
+        );
+        assert!(
+            rt.got.load_slot(s1).is_null(),
+            "deserialized GOT must reset every slot to null"
+        );
+
+        // Symbol payload (non-runtime) survives the roundtrip.
+        assert!(rt.get("entry").is_some(), "entry must round-trip");
+    }
+}

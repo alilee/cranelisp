@@ -364,6 +364,148 @@ nodes. They test the analysis logic, not the runtime dispatch.
   // spec: spec/10-io.md §10.12.2 — unknown fn defaults to Sequential
   Negative. Unknown function name defaults to `Sequential` classification.
 
+## Sprint 56 Phase 2: Single Codegen Entry Point
+
+Derived from:
+- `design/typecheck/ast-annotation.md` §9 (Wave 0 — pre-materialise `ast` on mangled + mono entries)
+- `design/backend/compile-to-module.md` §2.1, §4, §16 (Step 2a — 4-param signature, symbol-table-sourced collection)
+- `design/int/phase2-codegen-convergence.md` §5, §7, §9, §10 (Step 2b — delete `codegen_module_symbols`; converge JIT + object on one entry point)
+
+Baseline: 1590 passed / 22 failed / 0 ignored. Sprint 56 target: flip 3 multi-sig JIT tests green (-> 1593/19) with no regressions in the other 1590.
+
+### A. Wave 0 — Typecheck Unit Tests (in `crates/cranelisp-typecheck/src/program.rs` / `traits.rs` `#[cfg(test)] mod tests`)
+
+`/typecheck` owns these; `/qa` tracks them here because they gate Step 2a and the `defined_symbols()` contract is the shared predicate both backend and integration rely on. All six trace back to `design/typecheck/ast-annotation.md` §9.7.
+
+1. `wave0_mangled_variant_carries_ast` [NEW]
+   // spec: design/typecheck/ast-annotation.md §9.1 row 3 — mangled multi-sig variants carry annotated ast
+   Positive + negative. Check `(defn add ([:Int a :Int b] ...) ([:Float a :Float b] ...))`. Assert both `add$Int+Int` and `add$Float+Float` are present as `ModuleEntry::Def { ast: Some(d), kind: UserFn { constrained_fn: None }, .. }` with `d.name == <mangled form>`. Negative: `add__v0` / `add__v1` internal names are NOT present; no cross-variant entries like `add$Float+Int` exist.
+
+2. `wave0_mangled_variant_ast_is_annotated` [NEW]
+   // spec: design/typecheck/ast-annotation.md §3.3 + §9.3 — final substitution on mangled ast
+   Positive + negative. Walk the mangled entry's `ast` recursively; assert every `Expr` has `inferred_type.is_some()` AND no `inferred_type` is a `Type::Var(_)`. Assert the inner `add-i64` `Expr::Apply` has `resolved_call == Some(ResolvedCall::BuiltinFn { name: "add-i64" })`. Negative: no `Type::Var` leaks.
+
+3. `wave0_overloaded_base_has_no_ast` [NEW]
+   // spec: design/typecheck/ast-annotation.md §9.2 — Overloaded base carries `ast: None`
+   Positive. Look up `add` (base name). Assert `kind: DefKind::Overloaded { variants }` and `ast: None`. The base entry is a dispatch index, not a compilable defn.
+
+4. `wave0_mono_entry_registered` [NEW]
+   // spec: design/typecheck/ast-annotation.md §9.4 — mono specialisations carry ast with concrete types
+   Positive + negative. Check `(defn add [x y] (+ x y))` (constrained polymorphic) with a caller `(defn use-add [] (add 1 2))`. Assert `add` has `kind: UserFn { constrained_fn: Some(_) }` AND `ast: None` (template). Assert `add$Int+Int` has `ast: Some(_)` with fully concrete types on every `Expr`, `resolved_call` set on the inner `+` apply, and a `got_slot: Some(_)` distinct from any other slot.
+
+5. `wave0_defined_symbols_filters_correctly` [NEW]
+   // spec: design/typecheck/ast-annotation.md §9.5 — SymbolTable::defined_symbols contract
+   Positive + negative. A program combining: one regular defn, one multi-sig, one constrained-polymorphic defn with one mono call site, one trait impl, one `deftype`, and one `(import [...])`. Positive: assert `defined_symbols()` yields the regular defn, both mangled multi-sig variants, the single mono specialisation, and the trait impl's mangled method. Negative: assert the `Overloaded` base, the constrained-fn template, the `TypeDef` entry, the `Import` entry, and any `TraitDecl`/`TraitImpl` index entry are ALL absent from the iterator.
+
+6. `wave0_repl_multi_sig_carries_ast` [NEW]
+   // spec: design/typecheck/ast-annotation.md §9.3 — REPL path uses the same registration
+   Positive. Drive `check_repl_input_inner` with a `TopLevel::Defn` that is multi-sig. Assert the mangled variants on the REPL module's symbol table carry `ast: Some(_)`. Guards the REPL path through `check_repl_multi_sig` → `register_mangled_variants` (program.rs:2444).
+
+**Wave 0 exit gate**: all 6 pass; full nextest baseline remains 1590/22.
+
+### B. Step 2a — Backend Tests (in `crates/cranelisp-backend/src/` or `tests/boundary/`)
+
+`/backend` owns unit coverage in the crate; `/qa` owns boundary tests that call `compile_to_module` directly without pipeline wiring. All four trace back to `design/backend/compile-to-module.md`.
+
+7. `boundary_compile_to_module_four_param_signature` [NEW]
+   // spec: design/backend/compile-to-module.md §2.1 — PRESCRIPTIVE 4-param signature
+   Positive. Construct a populated `SymbolTable` with one `ModuleEntry::Def { ast: Some(d), .. }` for a trivial zero-arg defn returning `42`. Call `compile_to_module(path, &[name.clone()], &symbol_tables, &mut jit_module)`. Assert the returned `CompilationResult::func_ids` contains `name -> FuncId`. Assert `entry_func_id.is_some()` for zero-arg defns. This is the minimum-viable contract test — if the signature ever drifts, this test fails to compile.
+
+8. `boundary_compile_to_module_ast_none_returns_named_error` [NEW]
+   // spec: design/backend/compile-to-module.md §16.4 — `ast: None` returns CodegenError naming the symbol
+   Negative. Populate a symbol table with a `ModuleEntry::Def { ast: None, .. }` entry (e.g., an `Overloaded` base or a synthesised template). Call `compile_to_module` with that name in `names`. Assert the returned `Err(CranelispError::CodegenError { message, .. })` with `message.contains(name)` AND no panic. Asserts the fail-loud contract — the backend must not silently skip unannotated entries.
+
+9. `boundary_compile_to_module_no_multi_sig_expansion` [NEW]
+   // spec: design/backend/compile-to-module.md §4 — expand_multi_sig_defn deleted in Step 2b
+   Positive + structural. After Step 2b, the function `expand_multi_sig_defn` no longer exists in the backend crate. Verify either by (a) a compile-fails-if-reintroduced guard — a `#[cfg(test)] fn expand_removed()` that references the old symbol path and is expected NOT to resolve, OR (b) direct assertion that passing two mangled names for the same base (e.g., `add$Int+Int` and `add$Float+Float`) compiles both as independent defns — same shape as compiling two unrelated regular defns. No base-name entry appears in `names`. Preferred: (b) — structural behaviour test rather than a negative-reference compile check.
+
+10. `boundary_compile_to_module_no_constrained_template_scan` [NEW]
+    // spec: design/backend/compile-to-module.md §2.3 + §4 — SymbolTable::defined_symbols owns the filter
+    Positive + negative. Populate a symbol table with both a constrained-fn template (`UserFn { constrained_fn: Some(_) }`) and its mono specialisation (`UserFn { constrained_fn: None }`). Caller computes `names = symbol_table.defined_symbols().collect()`. Positive: assert the mono is in `names` and is compiled (present in `CompilationResult::func_ids`). Negative: assert the template is NOT in `names` (filter applied once, at the iterator) AND does NOT appear in `func_ids`. If a caller erroneously passes the template name, §16.4 says the call returns `CodegenError` — a complementary negative test (8b) covers that explicitly.
+
+### C. Step 2b — Integration Tests (in `tests/v4_codegen/` and `tests/v4_repl_eval/`)
+
+`/qa` owns these. They exercise the full pipeline through the unified `compile_to_module` entry point. Traceability per `design/int/phase2-codegen-convergence.md` §10.3 + §10.1.
+
+11. `sketch_multi_sig_type_based_dispatch` [DEFERRED → FLIP GREEN]
+    // spec: spec/05-definitions.md §5.2 (multi-sig defn) + design/int/phase2-codegen-convergence.md §10.1 — JIT path converges with object path
+    Positive. Existing test in `tests/sketch_port/multi_sig.rs`. Expected to flip from FAIL to PASS after Step 2b.2 lands.
+
+12. `sketch_multi_sig_different_arities` [DEFERRED → FLIP GREEN]
+    // spec: spec/05-definitions.md §5.2 — multi-sig dispatch by arity
+    Positive. Existing test in `tests/sketch_port/multi_sig.rs`. Same flip-green target as #11.
+
+13. `sketch_repl_multi_sig_different_arities` [DEFERRED → FLIP GREEN]
+    // spec: spec/05-definitions.md §5.2 + repl/spec.md §4.1 — multi-sig dispatch works in REPL path
+    Positive. Existing test in `tests/sketch_port/repl_multi_sig.rs`. Flip-green target for REPL convergence.
+
+14. `v4_repl_eval_expr_compiles_via_compile_to_module` [NEW]
+    // spec: design/int/phase2-codegen-convergence.md §6 — REPL `__expr` path unified
+    Positive. REPL session. Drive `(+ 1 2)` as a bare expression. Assert: (a) evaluation returns `3`; (b) after eval, `symbol_tables[repl_module].get("__expr")` returns a `ModuleEntry::Def { ast: Some(_), got_slot: Some(_), .. }`; (c) `codegen_products[repl_module].code["__expr"].ptr` is non-null. Guards the §6 end-to-end REPL path.
+
+15. `v4_codegen_batch_regular_plus_multi_sig_via_priority_worker` [NEW]
+    // spec: design/int/phase2-codegen-convergence.md §5 — priority worker single entry point
+    Positive. Batch compile a `.cl` file containing one regular defn (`(defn inc [x] (add-i64 x 1))`) AND one multi-sig defn (`(defn add ([:Int a :Int b] ...) ([:Float a :Float b] ...))`) AND a main entry that calls both. Assert exit code 0 and correct stdout via `run_binary(["--run", path], "")`. Stress the priority worker loop (§5 pseudocode) against a non-trivial mix.
+
+16. `v4_codegen_cross_module_multi_sig_call` [NEW]
+    // spec: spec/08-modules.md + design/int/phase2-codegen-convergence.md §5 — cross-module multi-sig resolution
+    Positive. Two-module project: module `b` exports a multi-sig `add`; module `a` imports `b` and calls `(add 1 2)` and `(add 1.0 2.0)`. Assert both calls resolve to the correct mangled variant across module boundaries via the unified path. Guards that Import-chain resolution for mangled names works after the `CompilationEnv` consolidation (§3 replacement map).
+
+17. `v4_codegen_structural_symbol_set_matches_defined_symbols` [NEW, from §10.3]
+    // spec: design/int/phase2-codegen-convergence.md §10.3 — structural invariant
+    Positive. After any module compile, assert `codegen_products[module].code.keys()` is a subset of `symbol_tables[module].defined_symbols().map(|(name, _)| name)`. The two sets should match for fully-compiled modules (no skipped names). This catches both over-compilation (names compiled that `defined_symbols` doesn't yield) and under-compilation (`defined_symbols` yields names that failed to compile). Structural regression guard.
+
+18. `v4_codegen_regression_guard_baseline` [NEW, meta-test]
+    // spec: sprint 56 acceptance — 1590 baseline preserved
+    Positive. Not a discrete test but a sprint-close checklist item: full `cargo nextest run` produces at minimum 1590 passed + 0 new failures. Any passing test that regresses is a Step 2b fault. Tracked as a wave-gate in `sprints/SPRINT.md`, not a standalone `#[test]`.
+
+### D. Must-Not-Regress List
+
+The following currently-passing categories MUST remain green through Sprint 56. Any regression here blocks sprint close.
+
+| Category | Scope | Why it matters |
+|---|---|---|
+| Ring 0 tests | All tests tagged `ring0` or in `tests/ring0.rs` | Core expression / type inference / function compilation. Ring 0 is complete; regression = structural fault. |
+| Ring 1 tests | `ring1.rs`, `rc.rs` | ADTs, closures, strings, RC balance. Regression in RC is a data-corruption risk. |
+| Ring 2 tests | `ring2.rs`, module tests | Traits, modules, constrained polymorphism. Step 2a's symbol-table-sourced collection directly touches trait-impl and mono codegen. |
+| Ring 3 tests | `ring3*.rs`, macro tests | Macros, prelude. Not directly touched, but the REPL `__expr` path (§6) shares infrastructure. |
+| `v4_pipeline` tests | All currently passing | Pipeline scheduling. Step 2b changes the worker's `Complete` branch — high risk surface. |
+| `v4_repl_eval` tests | All currently passing | REPL eval convergence. The `__expr` special case deletion (§7 item 10) is the single most regression-prone change. |
+| Platform tests that currently pass | Excluding the 5 known failures | Platform function resolution moves from `SessionCompilationEnv::collect_jit_setup_for_module` to backend-internal discovery (§3, §9.4). |
+| `sprint23` tests that currently pass | Excluding the 3 cache/link known failures | Cache tests inherit `compile_to_module`'s signature via `ObjectCompilationEnv`. |
+| `cache` tests that currently pass | Excluding the 9 known multi-module SIGSEGVs | Object-path cache reconstruction reads `ast` and `got_slot` — Wave 0 doesn't change these fields, but new cache-write paths may exercise mono/mangled entries differently. |
+| Examples suite | All `examples/*.cl` under `--run` | Owned by `/examples`; validates the full user surface. |
+| Stdlib compile-and-load | `tests/stdlib.rs` | Owned by `/stdlib`; first line-of-defence against trait/module regressions. |
+| Exemplar | Sudoku solver under `exemplar/` | Owned by `/port`; multi-module program at scale. |
+
+### E. Risk-Targeted Coverage (from `design/int/phase2-codegen-convergence.md` §9)
+
+19. `risk_got_slot_allocated_before_codegen` [NEW]
+    // spec: design/int/phase2-codegen-convergence.md §9.2 — no GOT slot allocation race
+    Positive + debug_assert. After Wave 0, every entry yielded by `defined_symbols()` must have `got_slot: Some(_)` at codegen time. Add a `debug_assert!` in the inline codegen block (per §9.2 mitigation) asserting this invariant, and a companion test that exercises a module with multi-sig + mono + regular defns and confirms all GOT slots are populated before `compile_to_module` is called. **Scheduler prevents the two-worker-per-module race** (§9.1 confirms `ModulePool` serialises); no additional test needed for that race — the scheduler's own tests cover it. If the scheduler gap is found, flag back to `/int` via a new FIXME.
+
+20. `risk_introspection_preserved_after_step2b` [NEW]
+    // spec: design/int/phase2-codegen-convergence.md §9.3 + repl/spec.md §3.1 — introspection survives convergence
+    Positive. REPL session. Define `(defn foo [:Int x] (add-i64 x 1))`. Invoke `/sig foo`, `/clif foo`, `/disasm foo`, `/source foo`. Assert each produces non-empty output with the expected classifier (e.g., `/sig` returns `(Fn [Int] Int)`, `/clif` contains `v0 = iadd_imm`, `/disasm` is non-empty, `/source` returns the source text). Guards §9.3 — the priority worker must populate `Introspection[fq]` keyed by `FQSymbol` from `CompilationResult::artifacts` in the new inline path.
+
+21. `risk_introspection_mangled_names_hidden_from_list` [NEW, per §9.5]
+    // spec: repl/spec.md §3.1 + §3.3 — /list does not surface mangled/mono names
+    Negative. REPL: define multi-sig `(defn add ([:Int a :Int b] ...) ([:Float a :Float b] ...))`. Invoke `/list`. Assert output contains `add` ONCE, does NOT contain `add$Int+Int` or `add$Float+Float`. The mangled names are first-class in `defined_symbols()` but `/list`'s display layer must continue to filter them — Step 2b must not inadvertently surface them.
+
+22. `risk_platform_function_resolution_via_unified_path` [NEW, from §9.4]
+    // spec: design/int/phase2-codegen-convergence.md §9.4 + spec/12-runtime.md §12 (platform) — platform fns resolve through the unified path
+    Positive. Batch compile a program that calls `(print "hello")` (platform.stdio/print via prelude). Assert exit code 0 and stdout `hello`. Exercises that after `SessionCompilationEnv::collect_jit_setup_for_module` is deleted (§7 item 8, 9), the backend's internal platform-fn resolution path carries the load. **This test depends on `/arch`'s arbitration of `/platform` Finding 3 (platform function discoverability)** — if `/arch` concludes the backend should not discover platform fns directly, this test's path changes. Flagged for Wave 2 coordination.
+
+### F. Sprint 56 Delta Summary
+
+| Bucket | Count | Notes |
+|---|---|---|
+| Wave 0 (new typecheck unit tests) | 6 | In-crate under `#[cfg(test)] mod tests`; `/typecheck` writes, `/qa` tracks |
+| Step 2a (new backend/boundary tests) | 4 | `/qa` writes boundary tests; `/backend` owns unit variants |
+| Step 2b (new integration tests) | 5 new + 3 flip-green + 1 meta = 9 | `/qa` writes; flip-green covers `sketch_multi_sig_*` |
+| Risk-targeted (§9 coverage) | 4 | `/qa` writes |
+| **Sprint 56 total planned** | **~23 new + 3 flip-green** | Baseline after sprint: 1593 passed / 19 failed / 0 ignored (target) |
+
 ## New Tests
 
 - Performance benchmarks (reader, inference, codegen, JIT startup, REPL evaluation)

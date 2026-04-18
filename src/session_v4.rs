@@ -398,12 +398,14 @@ fn parens_balanced(input: &str) -> bool {
 /// TARGET STATE: per-module typecheck product. Replaces TC-internal storage.
 /// Populated by typecheck or deserialized from .meta.json on cache hit.
 /// Permanent for session lifetime. See session-restructure.md.
+///
+/// Sprint 56 Wave 0 (§9.8 G7 pull-forward): the per-module GOT table moved
+/// onto `SymbolTable.got`. Readers who previously read `tp.got` now read
+/// `symbol_tables[m].got` directly. The `got` field is deleted from this
+/// struct. Sprint 56 Wave 2 retired `SessionCompilationEnv` entirely — the
+/// only survivors on this struct are `file_path` (used by `/source`) and
+/// `source_text` (used for sexp-span slicing in introspection).
 pub struct TypecheckProduct {
-    /// Per-module GOT table. Allocated at module registration, base address
-    /// stable for process lifetime. Slot indices assigned during typecheck,
-    /// code pointers filled during codegen. Arc-shared so codegen workers
-    /// can read the base address concurrently.
-    pub got: std::sync::Arc<cranelisp_backend::got::GotTable>,
     pub file_path: Option<PathBuf>,
     /// Module source text, retained in --repl mode for /source introspection.
     /// Sexp spans index into this string. None for cache-hit modules and batch mode.
@@ -435,9 +437,17 @@ impl Default for CodegenProduct {
 
 /// TARGET STATE: per-symbol compiled code. Replaces DefCodegen's code_ptr + kept jit_modules.
 /// Owns the JIT mmap'd executable pages. See session-restructure.md.
+///
+/// Sprint 56 Wave 2: the JIT module is wrapped in `Arc<Jit>` so that a single
+/// `compile_to_module` call producing N compiled functions can share one JIT
+/// across N `Code` entries (one per symbol). The `Arc` keeps the mmap'd pages
+/// alive until every referencing entry is dropped. /arch Phase 3a §3 accepted
+/// this as the Phase 2→3 bridge shape — Phase 3 G6 moves `Code` onto
+/// `ModuleEntry::Def` and the `Arc` continues to serve the same sharing role.
 pub struct Code {
-    /// Cranelift JIT module — owns mmap'd executable pages. Dropping frees code.
-    pub jit: cranelisp_backend::jit::Jit,
+    /// Cranelift JIT module — owns mmap'd executable pages. Dropping the last
+    /// `Arc<Jit>` frees code.
+    pub jit: std::sync::Arc<cranelisp_backend::jit::Jit>,
     /// Code pointer (also stored in GOT slot).
     pub ptr: *const u8,
 }
@@ -1446,31 +1456,72 @@ impl CompilerSession {
         // Ensure typecheck product exists for this module.
         crate::worker::ensure_typecheck_product(&self.shared.typecheck_products, module);
 
-        // Build per-module CompilationEnv for both defn codegen and expr eval.
-        let env_impl = crate::worker::SessionCompilationEnv {
-            tc_modules: &self.shared.symbol_tables,
-            typecheck_products: &self.shared.typecheck_products,
-            current_module: module.clone(),
-        };
+        // Collect extra JIT symbols that must be registered BEFORE codegen —
+        // primarily the REPL-specific trace and test-runner externs that
+        // user code in this program references. `compile_to_module` declares
+        // these symbols as `Linkage::Import`; without pre-registration the
+        // JIT `finalize_definitions` fails with "can't resolve symbol".
+        let mut codegen_extra_symbols: Vec<(String, *const u8)> = Vec::new();
+        if Self::program_uses_test_forms(program) {
+            codegen_extra_symbols.push((
+                "discover-tests".to_string(),
+                discover_tests_extern as *const u8,
+            ));
+            codegen_extra_symbols.push((
+                "run-test".to_string(),
+                run_test_extern as *const u8,
+            ));
+        }
+        let needs_trace_format = Self::program_needs_trace(program);
+        if needs_trace_format {
+            codegen_extra_symbols.push((
+                "cranelisp_trace_format".to_string(),
+                repl_trace_format as *const u8,
+            ));
+        }
 
-        // Codegen: compile definitions directly to codegen_products DashMap.
-        crate::worker::codegen_module_symbols(
+        // The test-runner externs dereference `TestRunnerState` at call
+        // time; the state must be set before the compiled expression runs
+        // AND the compiled `__expr` body may reference these symbols. Set
+        // the test-runner state here (before codegen) so any references are
+        // live by JIT finalize.
+        let current_module_for_tests = module.clone();
+        let test_state = TestRunnerState {
+            codegen_products: &self.shared.codegen_products as *const _,
+            tc_modules: &self.shared.symbol_tables as *const _,
+            current_module: &current_module_for_tests as *const _,
+        };
+        let needs_test_state =
+            codegen_extra_symbols.iter().any(|(n, _)| n == "discover-tests");
+        if needs_test_state {
+            set_test_runner_state(&test_state);
+        }
+
+        // Unified JIT codegen via compile_to_module (Sprint 56 Wave 2).
+        // Derives the compilation batch from `program`, compiles through the
+        // single backend entry point, and populates codegen_products +
+        // introspection. No env, no mode discriminator — see
+        // design/int/phase2-codegen-convergence.md §5.
+        crate::worker::inline_jit_codegen_for_module(
             &self.platform_registry,
             &self.shared.scheduler,
             module,
             program,
-            &check.constrained_fn_names,
             &self.shared.symbol_tables,
-            &self.shared.typecheck_products,
             &self.shared.codegen_products,
             Some(&self.shared.introspection),
+            &codegen_extra_symbols,
         )?;
 
         let has_expr = program.iter().any(|tl| matches!(tl, TopLevel::Expr(_)));
 
         if has_expr {
             let program_vec = program.to_vec();
-            let (mut jit_syms, got_defs) = env_impl.collect_jit_setup_for_module(&self.platform_registry);
+            let (mut jit_syms, got_defs) = crate::worker::collect_jit_setup_public(
+                &self.shared.symbol_tables,
+                module,
+                &self.platform_registry,
+            );
 
             // Build traced_fns if the expression contains (trace ...).
             let traced_fns = if Self::program_needs_trace(program) {
@@ -1525,14 +1576,13 @@ impl CompilerSession {
                 &got_defs,
                 &program_vec,
                 check.display.as_ref(),
-                &env_impl,
                 &traced_fns,
                 &trace_extra_symbols,
                 &self.shared.symbol_tables,
                 module.clone(),
             );
 
-            if needs_test_externs {
+            if needs_test_externs || needs_test_state {
                 clear_test_runner_state();
             }
             if !traced_fns.is_empty() {
@@ -1547,6 +1597,12 @@ impl CompilerSession {
                 warnings: check.warnings.clone(),
             })
         } else {
+            // Test runner state was set pre-codegen; clear it now since no
+            // expression runs in this branch.
+            if needs_test_state {
+                clear_test_runner_state();
+            }
+
             // Definition-only: extract the defined symbol name from the last
             // user-visible form. Inlined defns (mono, default methods, trait
             // impl mangled methods) are appended after the original forms by
@@ -1686,7 +1742,11 @@ impl CompilerSession {
                     continue;
                 }
 
-            let got_base = tp.got.base_ptr() as i64;
+            // G7 (Wave 0): GOT lives on SymbolTable now.
+            let got_base = match self.shared.symbol_tables.get(module_path) {
+                Some(st) => st.got.base_ptr() as i64,
+                None => continue,
+            };
 
             let cp = match self.shared.codegen_products.get(module_path) {
                 Some(cp) => cp,
@@ -3305,7 +3365,10 @@ fn compile_module_object(
 ) {
     use cranelisp_backend::cache;
 
-    // Take the stashed program (remove entry to release memory).
+    // Drain the stashed program (Phase 2 still writes this, Step 2b will delete
+    // both the stash and this drain). The backend no longer reads from it —
+    // it walks `symbol_tables` via `defined_symbols()` — but we still use its
+    // presence as a "had compilable defns" signal.
     let Some((_, program)) = shared.codegen_programs.remove(module) else {
         // No data stashed — module may have had no compilable defns.
         return;
@@ -3313,6 +3376,20 @@ fn compile_module_object(
 
     // Skip modules with no compilable defns (types-only, imports-only).
     if !crate::session::has_compilable_defns(&program) {
+        return;
+    }
+
+    // Enumerate codegen-compilable symbols via the shared predicate (Decision 22).
+    let names: Vec<cranelisp_types::Symbol> = shared
+        .symbol_tables
+        .get(module)
+        .map(|t| {
+            t.defined_symbols()
+                .map(|(name, _)| name.clone())
+                .collect()
+        })
+        .unwrap_or_default();
+    if names.is_empty() {
         return;
     }
 
@@ -3341,11 +3418,11 @@ fn compile_module_object(
     };
     let mut obj_module = cranelisp_backend::cranelift_object::ObjectModule::new(obj_builder);
 
-    // Compile using the unified compile_to_module path.
-    // Intrinsics, CompilationEnv, and cross-module refs are derived internally.
+    // Compile using the unified compile_to_module path. Intrinsics are declared
+    // on the module internally; cross-module refs resolve from `symbol_tables`.
     let obj_bytes = match cranelisp_backend::compile_to_module(
         module.clone(),
-        &program,
+        &names,
         &shared.symbol_tables,
         &mut obj_module,
     ) {

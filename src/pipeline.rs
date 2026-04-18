@@ -59,7 +59,6 @@ pub fn compile_and_execute_expr(
     got_data_defs: &[(String, *const u8)],
     program: &Program,
     display: Option<&cranelisp_types::DisplayInfo>,
-    env: &dyn cranelisp_backend::compiler::CompilationEnv,
     traced_fns: &[cranelisp_backend::compiler::TracedFnInfo],
     trace_extra_symbols: &[(String, *const u8)],
     symbol_tables: &dashmap::DashMap<ModuleFullPath, cranelisp_types::SymbolTable>,
@@ -67,12 +66,34 @@ pub fn compile_and_execute_expr(
 ) -> Result<(i64, Type), CranelispError> {
     use cranelisp_types::TopLevel;
 
-    let expr = program.iter().rev().find_map(|tl| {
-        if let TopLevel::Expr(e) = tl { Some(e) } else { None }
-    }).ok_or_else(|| CranelispError::CodegenError {
-        message: "no expression found in program".into(),
-        span: Span::SYNTHETIC,
-    })?;
+    // Sprint 56 Wave 2: pull the annotated expression body from the symbol
+    // table entry for `__expr` (Wave 0 registers it as a synthetic defn with
+    // `ast: Some(...)`), falling back to the program's `TopLevel::Expr` for
+    // backward compatibility with callers that hand-build programs without
+    // going through `wrap_exprs_as_defns`. The symbol-table body carries the
+    // post-pass resolution annotations (SigDispatch for Overloaded-base
+    // calls, auto-curry resolutions) that the program's TopLevel::Expr lacks.
+    let expr_owned: Option<cranelisp_types::Expr> = symbol_tables
+        .get(&current_module)
+        .and_then(|t| match t.get("__expr") {
+            Some(cranelisp_types::ModuleEntry::Def { ast: Some(defn), .. }) => {
+                Some(defn.body().clone())
+            }
+            _ => None,
+        });
+    let expr_ref: &cranelisp_types::Expr = if let Some(ref e) = expr_owned {
+        e
+    } else {
+        program
+            .iter()
+            .rev()
+            .find_map(|tl| if let TopLevel::Expr(e) = tl { Some(e) } else { None })
+            .ok_or_else(|| CranelispError::CodegenError {
+                message: "no expression found in program".into(),
+                span: Span::SYNTHETIC,
+            })?
+    };
+    let expr = expr_ref;
 
     // Get the type from display info or from the AST node's inferred_type.
     let ty = display
@@ -97,6 +118,10 @@ pub fn compile_and_execute_expr(
         }
 
         let wrapper_name = Symbol::from("__repl_expr__");
+        // Use a synthetic wrapper span that nests the expr span so the
+        // typecheck's pre-eval resolution annotations (keyed by expr.span())
+        // survive through codegen.
+        let wrapper_span = expr.span();
         let wrapper_defn = Defn {
             name: wrapper_name.clone(),
             docstring: None,
@@ -104,22 +129,21 @@ pub fn compile_and_execute_expr(
                 params: vec![],
                 param_annotations: vec![],
                 body: expr.clone(),
-                span: expr.span(),
+                span: wrapper_span,
             }],
             visibility: Visibility::Public,
-            span: expr.span(),
+            span: wrapper_span,
         };
 
         let func_ids = jit.declare_functions(&[&wrapper_defn])?;
         let empty_arities: HashMap<Symbol, usize> = HashMap::new();
 
-        let mut compile_ctx = jit.build_compile_context(
+        let compile_ctx = jit.build_compile_context(
             &func_ids,
             &empty_arities,
             symbol_tables,
             current_module.clone(),
         );
-        compile_ctx.env = Some(env);
 
         jit.compile_defn(&wrapper_defn, compile_ctx)?;
         let code_ptr = jit.finalize_and_get_ptr(&wrapper_name, 0)?;
@@ -140,7 +164,7 @@ pub fn compile_and_execute_expr(
         Ok((value, ty))
     } else {
         let value = compile_and_execute_expr_with_trace(
-            jit_symbols, got_data_defs, expr, env, traced_fns, trace_extra_symbols,
+            jit_symbols, got_data_defs, expr, traced_fns, trace_extra_symbols,
             symbol_tables, current_module.clone(),
         )?;
         Ok((value, ty))
@@ -152,7 +176,6 @@ fn compile_and_execute_expr_with_trace(
     jit_symbols: &[(String, *const u8)],
     got_data_defs: &[(String, *const u8)],
     expr: &cranelisp_types::Expr,
-    env: &dyn cranelisp_backend::compiler::CompilationEnv,
     traced_fns: &[cranelisp_backend::compiler::TracedFnInfo],
     trace_extra_symbols: &[(String, *const u8)],
     symbol_tables: &dashmap::DashMap<ModuleFullPath, cranelisp_types::SymbolTable>,
@@ -200,7 +223,6 @@ fn compile_and_execute_expr_with_trace(
         current_module.clone(),
     );
 
-    compile_ctx.env = Some(env);
     compile_ctx.traced_fns = Some(traced_fns);
 
     jit.compile_defn(&wrapper_defn, compile_ctx)?;
@@ -229,14 +251,14 @@ fn compile_and_execute_expr_with_trace(
 /// Compile a single function definition and register it in the GOT.
 ///
 /// Writes `Code { jit, ptr }` to `codegen_products` (target state DashMap).
-/// GOT slot resolution goes through `env` (SessionCompilationEnv).
+/// GOT slot is read from `symbol_tables[module].get(defn.name).got_slot`
+/// (Wave 0 contract — slot assigned at registration time by typecheck).
 /// If `introspection` is provided, populates CLIF IR, AST, disasm, and code_size.
 #[allow(clippy::too_many_arguments)]
 pub fn compile_and_register_defn_shared(
     jit_symbols: &[(String, *const u8)],
     got_data_defs: &[(String, *const u8)],
     defn: &Defn,
-    env: &dyn cranelisp_backend::compiler::CompilationEnv,
     module_got: &std::sync::Arc<cranelisp_backend::got::GotTable>,
     codegen_products: &dashmap::DashMap<ModuleFullPath, crate::session_v4::CodegenProduct>,
     introspection: Option<&dashmap::DashMap<FQSymbol, crate::session_v4::Introspection>>,
@@ -259,8 +281,16 @@ pub fn compile_and_register_defn_shared(
 
     let func_ids = jit.declare_functions(&[defn])?;
 
-    let slot = env.resolve_got(&defn.name)
-        .map(|(_, s)| s)
+    // Read the pre-assigned GOT slot from the symbol table (Wave 0 contract —
+    // slot is assigned at typecheck-register time and lives on `ModuleEntry::Def`).
+    let slot = symbol_tables
+        .get(module)
+        .and_then(|t| match t.get(defn.name.as_ref()) {
+            Some(cranelisp_types::ModuleEntry::Def {
+                got_slot: Some(slot), ..
+            }) => Some(*slot),
+            _ => None,
+        })
         .ok_or_else(|| CranelispError::CodegenError {
             message: format!("no pre-assigned GOT slot for function: {}", defn.name),
             span: defn.span,
@@ -273,7 +303,6 @@ pub fn compile_and_register_defn_shared(
         symbol_tables,
         module.clone(),
     );
-    compile_ctx.env = Some(env);
     if disable_dealloc {
         compile_ctx.dealloc_func_id = None;
     }
@@ -284,11 +313,18 @@ pub fn compile_and_register_defn_shared(
     // Write code pointer to module's GOT table.
     module_got.store_slot(slot, code_ptr);
 
-    // Write Code to codegen_products.
+    // Write Code to codegen_products. `Jit` owns mmap'd executable pages
+    // that are immutable after finalise; `Code` already carries unsafe
+    // `Send + Sync` impls so the `Arc<Jit>` wrapping is safe in practice.
+    #[allow(clippy::arc_with_non_send_sync)]
+    let jit_arc = std::sync::Arc::new(jit);
     let product = codegen_products.entry(module.clone()).or_default();
     product.code.insert(
         defn.name.clone(),
-        crate::session_v4::Code { jit, ptr: code_ptr },
+        crate::session_v4::Code {
+            jit: jit_arc,
+            ptr: code_ptr,
+        },
     );
 
     // Populate introspection data (REPL-only).

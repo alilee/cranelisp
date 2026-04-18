@@ -102,6 +102,16 @@ impl CheckState {
             current_module: module,
         }
     }
+
+    /// Currently active module path for this check state.
+    ///
+    /// Exposed for callers that carry a `CheckState` across module
+    /// boundaries (e.g., the REPL's `repl_check_state` mutex) and need to
+    /// decide whether a preserved state is valid for the module about to
+    /// be checked.
+    pub fn current_module(&self) -> &ModuleFullPath {
+        &self.current_module
+    }
 }
 
 /// Borrowed references to session-owned shared state for type inference.

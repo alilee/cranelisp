@@ -19,7 +19,7 @@ pub use manifest::{
 };
 pub use serialize::{CacheMetadata, read_cached_metadata, write_cached_metadata};
 pub use object::{
-    ObjectCompileInput, ObjectCompilationEnv, IntrinsicTable, IntrinsicEntry,
+    ObjectCompileInput, IntrinsicTable, IntrinsicEntry,
     CacheWritePacket, build_cache_packet, process_cache_packet,
     got_data_symbol_name,
 };
@@ -441,7 +441,10 @@ mod tests {
     // spec: design/backend/module-caching.md §13 — end-to-end: compile .o, load via linker, execute
     #[test]
     fn test_compile_load_and_execute_cached_module() {
-        use cranelisp_types::{Defn, DefnVariant, Expr, ModuleFullPath, Span, Symbol, TopLevel, Visibility};
+        use cranelisp_types::{
+            DefKind, Defn, DefnVariant, Expr, ModuleEntry, ModuleFullPath, Scheme, Span, Symbol,
+            SymbolTable, Type, Visibility,
+        };
         use cranelift_module::default_libcall_names;
         use cranelift_object::{ObjectBuilder, ObjectModule};
 
@@ -463,7 +466,29 @@ mod tests {
             span: Span::new(0, 20),
         };
 
-        let program = vec![TopLevel::Defn(defn)];
+        // Wave 0 contract: backend reads the AST from the symbol table.
+        let module = ModuleFullPath::from("user");
+        let tables = dashmap::DashMap::new();
+        let mut st = SymbolTable::new(module.clone());
+        st.insert(
+            defn.name.clone(),
+            ModuleEntry::Def {
+                scheme: Scheme {
+                    vars: vec![],
+                    constraints: Default::default(),
+                    ty: Type::Fn(vec![], Box::new(Type::Int)),
+                },
+                visibility: Visibility::Public,
+                docstring: None,
+                param_names: vec![],
+                kind: Box::new(DefKind::UserFn { constrained_fn: None }),
+                callees: vec![],
+                got_slot: None,
+                trait_origin: None,
+                ast: Some(defn.clone()),
+            },
+        );
+        tables.insert(module.clone(), st);
 
         // Step 2: Compile to .o bytes via compile_to_module<ObjectModule>
         let isa = super::object::build_isa(true).unwrap();
@@ -471,9 +496,9 @@ mod tests {
         let mut obj_module = ObjectModule::new(obj_builder);
 
         crate::compile_to_module(
-            ModuleFullPath::from("user"),
-            &program,
-            &dashmap::DashMap::new(),
+            module,
+            std::slice::from_ref(&defn.name),
+            &tables,
             &mut obj_module,
         ).unwrap();
 

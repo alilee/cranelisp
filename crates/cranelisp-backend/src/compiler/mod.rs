@@ -48,30 +48,152 @@ pub fn got_data_symbol_name(module_path: &ModuleFullPath) -> String {
     )
 }
 
-/// Session-backed environment for codegen. Resolves GOT entries and function
-/// arities by reading live from the session's symbol tables and GOT registry.
+/// Resolve a function name to `(defining_module, module_local_slot)` by
+/// walking `symbol_tables` starting at `current_module`.
 ///
-/// Implemented by the integration layer (`src/`), which has access to the
-/// TypeChecker's module DashMap and the per-module GOT tables.
-pub trait CompilationEnv {
-    /// Resolve a function name to `(got_base_ptr, module_local_slot)`.
-    /// Legacy path — being replaced by `resolve_got_module`.
-    ///
-    /// Handles:
-    /// - Bare names: look up in current module, follow Import chains
-    /// - Qualified `"module/name"`: split on `/`, look up target module
-    fn resolve_got(&self, name: &Symbol) -> Option<(i64, usize)>;
+/// Uniform replacement for the Sprint-56-retracted `CompilationEnv` trait.
+/// Handles:
+/// - Bare names: resolved in `current_module`, following Import/Reexport chains.
+/// - Qualified `"module/name"`: tries `current_module.module`, then absolute
+///   `module` path; the bare name is then resolved in the target module.
+/// - Global fallback: walks all modules for names that weren't import-linked
+///   (e.g., mangled trait methods written without an explicit import).
+///
+/// Returns `None` if the symbol is not found, is not a `Def` with a `got_slot`,
+/// or if the Import chain exceeds the depth limit (10).
+pub fn resolve_got_target(
+    symbol_tables: &DashMap<ModuleFullPath, SymbolTable>,
+    current_module: &ModuleFullPath,
+    name: &Symbol,
+) -> Option<(ModuleFullPath, usize)> {
+    const MAX_IMPORT_DEPTH: usize = 10;
 
-    /// TARGET STATE: resolve a function name to `(defining_module, module_local_slot)`.
-    /// The caller derives the DataId from the module path. See session-restructure.md.
-    fn resolve_got_module(&self, name: &Symbol) -> Option<(ModuleFullPath, usize)> {
-        // Default: not implemented. Overridden by SessionCompilationEnv.
-        let _ = name;
-        None
+    fn resolve_in_module(
+        tables: &DashMap<ModuleFullPath, SymbolTable>,
+        module: &ModuleFullPath,
+        bare: &str,
+        depth: usize,
+    ) -> Option<(ModuleFullPath, usize)> {
+        if depth > MAX_IMPORT_DEPTH {
+            return None;
+        }
+        let st = tables.get(module)?;
+        let entry = st.get(bare)?;
+        match entry {
+            ModuleEntry::Def { got_slot: Some(slot), .. } => Some((module.clone(), *slot)),
+            ModuleEntry::Import { source } | ModuleEntry::Reexport { source } => {
+                let source_module = source.module.clone();
+                let source_symbol = source.symbol.clone();
+                drop(st);
+                resolve_in_module(tables, &source_module, source_symbol.as_ref(), depth + 1)
+            }
+            _ => None,
+        }
     }
 
-    /// Get the parameter count for a function (for `call_indirect` signatures).
-    fn func_arity(&self, name: &Symbol) -> Option<usize>;
+    // 1. Try current module first.
+    if let Some(result) = resolve_in_module(symbol_tables, current_module, name.as_ref(), 0) {
+        return Some(result);
+    }
+
+    // 2. Qualified "module/name" — try child-of-current, then absolute.
+    if let Some(slash) = name.as_ref().find('/') {
+        let module_part = &name.as_ref()[..slash];
+        let bare_name = &name.as_ref()[slash + 1..];
+        if !module_part.is_empty() && !bare_name.is_empty() {
+            let child_path =
+                ModuleFullPath::from(format!("{}.{}", current_module, module_part));
+            if let Some(result) = resolve_in_module(symbol_tables, &child_path, bare_name, 0) {
+                return Some(result);
+            }
+            let abs_path = ModuleFullPath::from(module_part);
+            if let Some(result) = resolve_in_module(symbol_tables, &abs_path, bare_name, 0) {
+                return Some(result);
+            }
+        }
+    }
+
+    // 3. Global fallback: walk all modules. Handles mangled trait methods
+    //    referenced without an explicit import.
+    for entry in symbol_tables.iter() {
+        if entry.key() == current_module {
+            continue;
+        }
+        if let Some(result) = resolve_in_module(symbol_tables, entry.key(), name.as_ref(), 0) {
+            return Some(result);
+        }
+    }
+
+    None
+}
+
+/// Resolve a function's parameter count by walking `symbol_tables` starting at
+/// `current_module`. Replacement for the Sprint-56-retracted
+/// `CompilationEnv::func_arity`. Used when generating closure wrappers for
+/// cross-module function references.
+pub fn resolve_func_arity(
+    symbol_tables: &DashMap<ModuleFullPath, SymbolTable>,
+    current_module: &ModuleFullPath,
+    name: &Symbol,
+) -> Option<usize> {
+    const MAX_IMPORT_DEPTH: usize = 10;
+
+    fn arity_in_module(
+        tables: &DashMap<ModuleFullPath, SymbolTable>,
+        module: &ModuleFullPath,
+        bare: &str,
+        depth: usize,
+    ) -> Option<usize> {
+        if depth > MAX_IMPORT_DEPTH {
+            return None;
+        }
+        let st = tables.get(module)?;
+        let entry = st.get(bare)?;
+        match entry {
+            ModuleEntry::Def { param_names, .. } => Some(param_names.len()),
+            ModuleEntry::Import { source } | ModuleEntry::Reexport { source } => {
+                let source_module = source.module.clone();
+                let source_symbol = source.symbol.clone();
+                drop(st);
+                arity_in_module(tables, &source_module, source_symbol.as_ref(), depth + 1)
+            }
+            _ => None,
+        }
+    }
+
+    // 1. Try current module first.
+    if let Some(arity) = arity_in_module(symbol_tables, current_module, name.as_ref(), 0) {
+        return Some(arity);
+    }
+
+    // 2. Qualified "module/name" — try child-of-current, then absolute.
+    if let Some(slash) = name.as_ref().find('/') {
+        let module_part = &name.as_ref()[..slash];
+        let bare_name = &name.as_ref()[slash + 1..];
+        if !module_part.is_empty() && !bare_name.is_empty() {
+            let child_path =
+                ModuleFullPath::from(format!("{}.{}", current_module, module_part));
+            if let Some(arity) = arity_in_module(symbol_tables, &child_path, bare_name, 0) {
+                return Some(arity);
+            }
+            let abs_path = ModuleFullPath::from(module_part);
+            if let Some(arity) = arity_in_module(symbol_tables, &abs_path, bare_name, 0) {
+                return Some(arity);
+            }
+        }
+    }
+
+    // 3. Global fallback.
+    for entry in symbol_tables.iter() {
+        if entry.key() == current_module {
+            continue;
+        }
+        if let Some(arity) = arity_in_module(symbol_tables, entry.key(), name.as_ref(), 0) {
+            return Some(arity);
+        }
+    }
+
+    None
 }
 
 /// Information about a single function to be traced by `(trace ...)`.
@@ -100,26 +222,21 @@ pub struct TracedFnInfo {
 /// Shared immutable context for compilation, bundling references that
 /// are threaded through from `compile_body` to all expression compilers.
 ///
-/// All fields are references or `Copy` types, so the struct is `Clone`+`Copy`.
+/// All fields are references or `Copy`-ish types, so the struct is `Clone`.
 /// This avoids verbose field-by-field copies when constructing inner compilers
 /// (e.g., for lambda bodies).
-/// `CompileContext` is `Clone` but not `Copy` because of the `&dyn` trait object.
 #[derive(Clone)]
 pub struct CompileContext<'a> {
     /// Function IDs for direct calls (Batch mode).
     pub func_ids: &'a HashMap<Symbol, FuncId>,
     /// Function parameter counts, for generating closure wrappers.
     pub func_arities: &'a HashMap<Symbol, usize>,
-    /// Per-module symbol tables (shared, authoritative source for type defs and constructors).
+    /// Per-module symbol tables (shared, authoritative source for type defs,
+    /// constructors, GOT slots, and post-G7 GOT base pointers). The backend
+    /// reads GOT slots/bases directly from this map — no env abstraction.
     pub symbol_tables: &'a DashMap<ModuleFullPath, SymbolTable>,
     /// Current module being compiled (for constructor/type lookups).
     pub current_module: ModuleFullPath,
-    /// Session-backed compilation environment (Interactive/JIT mode).
-    ///
-    /// When present, GOT slots and arities are resolved live through this
-    /// trait object. In batch mode (compile_program) this is None and
-    /// direct call instructions are used.
-    pub env: Option<&'a dyn CompilationEnv>,
 
 
     // --- Ring 4 trace context ---

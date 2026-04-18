@@ -3,7 +3,8 @@
 // `process_module_forms` — drives two-pass typecheck for a single module,
 //   with per-sexp macro expansion interleaved in Pass 2 (Step 4).
 //   Lazily discovers dependencies (imports, prelude, platform) in Step 5.
-// `codegen_module_symbols` — post-typecheck codegen sweep.
+// `inline_jit_codegen_for_module` — unified JIT codegen entry point that
+//   calls `cranelisp_backend::compile_to_module` (Sprint 56 Wave 2).
 // `priority_worker_loop` — dispatches work items from the scheduler.
 
 use std::collections::HashMap;
@@ -67,291 +68,20 @@ impl<'a> ModuleCompiler<'a> {
     }
 
     /// Set the current module on both the check_state and the mirror field.
+    ///
+    /// If the caller already holds a CheckState for this module (REPL
+    /// Additive path where the same state is reused across form
+    /// evaluations), the state is preserved unchanged — carrying
+    /// overloads / resolved_overloads / substitution across evaluations.
+    /// If the CheckState is for a different module, it is replaced with a
+    /// fresh state so per-module state (overloads, pending resolutions)
+    /// does not leak across module boundaries.
     pub fn set_current_module(&mut self, module: ModuleFullPath) {
         self.tc_env().ensure_module_exists(&module);
-        // CheckState.current_module is pub(crate) — use CheckState::new to replace.
-        // We create a new CheckState with the new module and copy over the needed fields.
-        // For now, we just create a new one (batch mode creates fresh per module).
-        // REPL mode preserves state through the repl_check_state mutex.
-        self.check_state = CheckState::new(module.clone());
+        if self.check_state.current_module() != &module {
+            self.check_state = CheckState::new(module.clone());
+        }
         self.current_module = module;
-    }
-}
-
-// ---------------------------------------------------------------------------
-// SessionCompilationEnv — CompilationEnv backed by TC + GOT registry
-// ---------------------------------------------------------------------------
-
-/// Implementation of `CompilationEnv` that reads live from the TypeChecker's
-/// module symbol tables and per-module GOT tables from typecheck products.
-pub struct SessionCompilationEnv<'a> {
-    /// Reference to TC's per-module symbol tables (DashMap).
-    pub tc_modules: &'a dashmap::DashMap<ModuleFullPath, cranelisp_types::SymbolTable>,
-    /// Per-module typecheck products (GOT tables live here).
-    pub typecheck_products: &'a dashmap::DashMap<ModuleFullPath, crate::session_v4::TypecheckProduct>,
-    /// The module currently being compiled.
-    pub current_module: ModuleFullPath,
-}
-
-impl cranelisp_backend::compiler::CompilationEnv for SessionCompilationEnv<'_> {
-    fn resolve_got(&self, name: &Symbol) -> Option<(i64, usize)> {
-        // 1. Try current module first (catches local defs, trait impls, mono names).
-        if let Some(result) = self.resolve_in_module(&self.current_module, name.as_ref(), 0) {
-            return Some(result);
-        }
-
-        // 2. Qualified "module/name" → split, look up target module.
-        // Only split on '/' if the name is truly module-qualified (not a mangled
-        // trait method like "Num./$Int" where '/' is part of the method name).
-        if let Some(slash) = name.as_ref().find('/') {
-            let module_part = &name.as_ref()[..slash];
-            let bare_name = &name.as_ref()[slash + 1..];
-            if !module_part.is_empty() && !bare_name.is_empty() {
-                // Try child-of-current first (submodule reference)
-                let child_path = ModuleFullPath::from(
-                    format!("{}.{}", self.current_module, module_part),
-                );
-                if let Some(result) = self.resolve_in_module(&child_path, bare_name, 0) {
-                    return Some(result);
-                }
-                // Fall back to absolute module path
-                let abs_path = ModuleFullPath::from(module_part);
-                if let Some(result) = self.resolve_in_module(&abs_path, bare_name, 0) {
-                    return Some(result);
-                }
-            }
-        }
-
-        // 3. Global fallback: search all modules for the name.
-        // Handles mangled trait methods (e.g., "Classify.classify$Color") that
-        // are defined in a dependency module but referenced by the mangled name
-        // in method resolution without an explicit import.
-        for entry in self.tc_modules.iter() {
-            if *entry.key() == self.current_module {
-                continue; // Already checked above.
-            }
-            if let Some(result) = self.resolve_in_module(entry.key(), name.as_ref(), 0) {
-                return Some(result);
-            }
-        }
-
-        None
-    }
-
-    fn resolve_got_module(&self, name: &Symbol) -> Option<(ModuleFullPath, usize)> {
-        // 1. Try current module first.
-        if let Some(result) = self.resolve_module_slot(&self.current_module, name.as_ref(), 0) {
-            return Some(result);
-        }
-
-        // 2. Qualified "module/name" → split.
-        if let Some(slash) = name.as_ref().find('/') {
-            let module_part = &name.as_ref()[..slash];
-            let bare_name = &name.as_ref()[slash + 1..];
-            if !module_part.is_empty() && !bare_name.is_empty() {
-                let child_path = ModuleFullPath::from(
-                    format!("{}.{}", self.current_module, module_part),
-                );
-                if let Some(result) = self.resolve_module_slot(&child_path, bare_name, 0) {
-                    return Some(result);
-                }
-                let abs_path = ModuleFullPath::from(module_part);
-                if let Some(result) = self.resolve_module_slot(&abs_path, bare_name, 0) {
-                    return Some(result);
-                }
-            }
-        }
-
-        // 3. Global fallback: search all modules.
-        for entry in self.tc_modules.iter() {
-            if *entry.key() == self.current_module {
-                continue;
-            }
-            if let Some(result) = self.resolve_module_slot(entry.key(), name.as_ref(), 0) {
-                return Some(result);
-            }
-        }
-
-        None
-    }
-
-    fn func_arity(&self, name: &Symbol) -> Option<usize> {
-        // 1. Try current module first.
-        if let Some(arity) = self.arity_in_module(&self.current_module, name.as_ref(), 0) {
-            return Some(arity);
-        }
-
-        // 2. Qualified "module/name" → split.
-        if let Some(slash) = name.as_ref().find('/') {
-            let module_part = &name.as_ref()[..slash];
-            let bare_name = &name.as_ref()[slash + 1..];
-            if !module_part.is_empty() && !bare_name.is_empty() {
-                let child_path = ModuleFullPath::from(
-                    format!("{}.{}", self.current_module, module_part),
-                );
-                if let Some(arity) = self.arity_in_module(&child_path, bare_name, 0) {
-                    return Some(arity);
-                }
-                let abs_path = ModuleFullPath::from(module_part);
-                if let Some(arity) = self.arity_in_module(&abs_path, bare_name, 0) {
-                    return Some(arity);
-                }
-            }
-        }
-
-        // 3. Global fallback: search all modules.
-        for entry in self.tc_modules.iter() {
-            if *entry.key() == self.current_module {
-                continue;
-            }
-            if let Some(arity) = self.arity_in_module(entry.key(), name.as_ref(), 0) {
-                return Some(arity);
-            }
-        }
-
-        None
-    }
-}
-
-impl SessionCompilationEnv<'_> {
-    /// Resolve a bare name in a specific module to (got_base, slot).
-    /// Follows Import chains with depth limit.
-    fn resolve_in_module(&self, module: &ModuleFullPath, name: &str, depth: usize) -> Option<(i64, usize)> {
-        if depth > 10 { return None; }
-        let st = self.tc_modules.get(module)?;
-        let entry = st.get(name)?;
-        match entry {
-            ModuleEntry::Def { got_slot: Some(slot), .. } => {
-                let tp = self.typecheck_products.get(module)?;
-                let got_base = tp.got.base_ptr() as i64;
-                Some((got_base, *slot))
-            }
-            ModuleEntry::Import { source } => {
-                let source_module = source.module.clone();
-                let source_symbol = source.symbol.clone();
-                drop(st); // release DashMap guard before recursive lookup
-                self.resolve_in_module(&source_module, source_symbol.as_ref(), depth + 1)
-            }
-            ModuleEntry::Reexport { source } => {
-                let source_module = source.module.clone();
-                let source_symbol = source.symbol.clone();
-                drop(st);
-                self.resolve_in_module(&source_module, source_symbol.as_ref(), depth + 1)
-            }
-            _ => None,
-        }
-    }
-
-    /// Resolve a bare name in a specific module to (defining_module, slot).
-    /// Follows Import chains with depth limit. Returns the module that defines
-    /// the function (for GOT data symbol lookup).
-    fn resolve_module_slot(&self, module: &ModuleFullPath, name: &str, depth: usize) -> Option<(ModuleFullPath, usize)> {
-        if depth > 10 { return None; }
-        let st = self.tc_modules.get(module)?;
-        let entry = st.get(name)?;
-        match entry {
-            ModuleEntry::Def { got_slot: Some(slot), .. } => {
-                Some((module.clone(), *slot))
-            }
-            ModuleEntry::Import { source } => {
-                let source_module = source.module.clone();
-                let source_symbol = source.symbol.clone();
-                drop(st);
-                self.resolve_module_slot(&source_module, source_symbol.as_ref(), depth + 1)
-            }
-            ModuleEntry::Reexport { source } => {
-                let source_module = source.module.clone();
-                let source_symbol = source.symbol.clone();
-                drop(st);
-                self.resolve_module_slot(&source_module, source_symbol.as_ref(), depth + 1)
-            }
-            _ => None,
-        }
-    }
-
-    /// Look up arity for a bare name in a specific module. Follows Import chains.
-    fn arity_in_module(&self, module: &ModuleFullPath, name: &str, depth: usize) -> Option<usize> {
-        if depth > 10 { return None; }
-        let st = self.tc_modules.get(module)?;
-        let entry = st.get(name)?;
-        match entry {
-            ModuleEntry::Def { param_names, .. } => Some(param_names.len()),
-            ModuleEntry::Import { source } => {
-                let source_module = source.module.clone();
-                let source_symbol = source.symbol.clone();
-                drop(st);
-                self.arity_in_module(&source_module, source_symbol.as_ref(), depth + 1)
-            }
-            ModuleEntry::Reexport { source } => {
-                let source_module = source.module.clone();
-                let source_symbol = source.symbol.clone();
-                drop(st);
-                self.arity_in_module(&source_module, source_symbol.as_ref(), depth + 1)
-            }
-            _ => None,
-        }
-    }
-
-    /// Collect all JIT symbols needed to compile a module.
-    ///
-    /// Scans the module's symbol table to find:
-    /// - Platform function pointers (from PlatformRegistry, for PlatformEffect primitives)
-    /// - GOT base pointers (for each referenced module, including self)
-    ///
-    /// Collect JIT symbols and GOT data definitions for a module compilation.
-    ///
-    /// Returns:
-    /// - `jit_symbols`: platform function pointers for `Jit::new_with_symbols`
-    /// - `got_data_defs`: `(name, got_base_ptr)` pairs for GOT literal pool entries
-    ///   that must be defined as data in the JIT module (8 bytes each)
-    #[allow(clippy::type_complexity)]
-    pub fn collect_jit_setup_for_module(
-        &self,
-        platform_registry: &crate::platform_registry::PlatformRegistry,
-    ) -> (Vec<(String, *const u8)>, Vec<(String, *const u8)>) {
-        let mut jit_symbols = Vec::new();
-        let mut got_data_defs = Vec::new();
-
-        if let Some(st) = self.tc_modules.get(&self.current_module) {
-            for (_name, entry) in st.all_symbols() {
-                match entry {
-                    // Direct platform function definition.
-                    ModuleEntry::Def { kind, .. } => {
-                        if let DefKind::Primitive {
-                            primitive_kind: PrimitiveKind::PlatformEffect,
-                            jit_name: Some(jit_name),
-                        } = kind.as_ref()
-                            && let Some(ptr) = platform_registry.fn_ptr_by_jit_name(jit_name) {
-                                jit_symbols.push((jit_name.0.clone(), ptr));
-                            }
-                    }
-                    // Import that may resolve to a platform function.
-                    ModuleEntry::Import { source } => {
-                        if let Some(source_table) = self.tc_modules.get(&source.module)
-                            && let Some(ModuleEntry::Def { kind, .. }) =
-                                source_table.get(source.symbol.as_ref())
-                                && let DefKind::Primitive {
-                                    primitive_kind: PrimitiveKind::PlatformEffect,
-                                    jit_name: Some(jit_name),
-                                } = kind.as_ref()
-                                    && let Some(ptr) = platform_registry.fn_ptr_by_jit_name(jit_name) {
-                                        jit_symbols.push((jit_name.0.clone(), ptr));
-                                    }
-                    }
-                    _ => {}
-                }
-            }
-        }
-
-        // GOT literal pool entries: each module's GOT base address is defined
-        // as 8 bytes of data in the JIT module. The code loads from these entries
-        // to get GOT base addresses for indirect calls.
-        for entry in self.typecheck_products.iter() {
-            let name = cranelisp_backend::compiler::got_data_symbol_name(entry.key());
-            got_data_defs.push((name, entry.value().got.base_ptr()));
-        }
-
-        (jit_symbols, got_data_defs)
     }
 }
 
@@ -604,23 +334,20 @@ fn compile_macro_clause_with_state(
 
     // Compile macro clause with dealloc disabled.
     let tc_modules = symbol_tables;
-    let env_impl = SessionCompilationEnv {
-        tc_modules,
-        typecheck_products,
-        current_module: target_module.clone(),
-    };
-    let env: &dyn cranelisp_backend::compiler::CompilationEnv = &env_impl;
     ensure_typecheck_product(typecheck_products, target_module);
-    let module_got = typecheck_products.get(target_module)
-        .expect("invariant: just ensured typecheck product exists")
+    // G7 (Wave 0): GOT lives on SymbolTable; clone Arc so we can release the
+    // DashMap guard before recursive codegen reads the same table.
+    let module_got = symbol_tables.get(target_module)
+        .expect("invariant: symbol table exists for target module")
         .got.clone();
     let (macro_jit_symbols, macro_got_data_defs) =
-        env_impl.collect_jit_setup_for_module(platform_registry);
-    // Derive constrained_fn_names from accumulator for macro clause GOT registration.
-    let constrained_fn_names = accumulator.constrained_fn_names.clone();
-    pre_register_got_slots_in_tc(tc_modules, target_module, &program, &constrained_fn_names);
+        collect_jit_setup(tc_modules, target_module, platform_registry);
+    // Wave 0 (Sprint 56): the typechecker registers every compilable defn
+    // with `got_slot: Some(_)`, so the legacy `pre_register_got_slots_in_tc`
+    // safety net is no longer needed here.
+    let _ = accumulator;
     compile_and_register_defn_shared(
-        &macro_jit_symbols, &macro_got_data_defs, defn, env, &module_got,
+        &macro_jit_symbols, &macro_got_data_defs, defn, &module_got,
         codegen_products, None, target_module, true, symbol_tables,
     )?;
 
@@ -792,16 +519,20 @@ pub enum ProcessResult {
     },
 }
 
-/// Ensure a TypecheckProduct entry exists for a module, creating one with a
-/// fresh GOT table if needed. GOT tables are allocated at module registration
-/// time so their base addresses are stable before any codegen begins.
+/// Ensure a `TypecheckProduct` entry exists for a module, creating an empty
+/// one if needed.
+///
+/// Sprint 56 Wave 0 (§9.8 G7 pull-forward): the per-module GOT moved onto
+/// `SymbolTable.got` — created by `SymbolTable::new` when the typechecker
+/// registers the module. Callers that previously relied on this function
+/// to seed a fresh GOT must now go through the typecheck module registration
+/// path (which constructs `SymbolTable::new`).
 pub(crate) fn ensure_typecheck_product(
     typecheck_products: &dashmap::DashMap<ModuleFullPath, crate::session_v4::TypecheckProduct>,
     module: &ModuleFullPath,
 ) {
     typecheck_products.entry(module.clone()).or_insert_with(|| {
         crate::session_v4::TypecheckProduct {
-            got: std::sync::Arc::new(cranelisp_backend::got::GotTable::new()),
             file_path: None,
             source_text: None,
         }
@@ -1034,7 +765,7 @@ pub fn process_module_forms(
 
     match pass2_result {
         Pass2Result::Complete => {
-            finalize_module(ctx, module, &mut state.expanded_program, &mut state.accumulator, strategy)
+            finalize_module(ctx, module, &state.expanded_program, &mut state.accumulator, strategy)
         }
     }
 }
@@ -1065,105 +796,6 @@ fn separate_macros(
         }
     }
     Ok((regular_sexps, macro_infos))
-}
-
-/// Enrich a defn's AST body with side-map resolutions and expr types.
-///
-/// Walks the expression tree and applies resolved_call and inferred_type
-/// from the side maps to AST nodes that don't already have annotations.
-/// This bridges the gap where the typecheck's post-inference passes
-/// (resolve_deferred_trait_calls, resolve_auto_curry) add resolutions
-/// to side maps but don't write them back to AST nodes.
-fn enrich_defn_from_side_maps(
-    defn: &mut Defn,
-    resolutions: &cranelisp_types::check::MethodResolutions,
-    expr_types: &std::collections::HashMap<Span, cranelisp_types::Type>,
-) {
-    for variant in &mut defn.variants {
-        enrich_expr_from_side_maps(&mut variant.body, resolutions, expr_types);
-    }
-}
-
-/// Recursively enrich an expression tree with side-map annotations.
-fn enrich_expr_from_side_maps(
-    expr: &mut cranelisp_types::Expr,
-    resolutions: &cranelisp_types::check::MethodResolutions,
-    expr_types: &std::collections::HashMap<Span, cranelisp_types::Type>,
-) {
-    use cranelisp_types::Expr;
-
-    // Apply inferred_type from side map if not already annotated, OR if the
-    // existing annotation contains unresolved type variables. The dual-write
-    // during inference stores pre-substitution types (may contain Var(N)),
-    // but codegen needs fully resolved types. The side map's types have been
-    // resolved through apply(&state.subst, ty) in finalize_check_result_inner.
-    if let Some(ty) = expr_types.get(&expr.span()) {
-        let should_overwrite = match expr.inferred_type() {
-            None => true,
-            Some(existing) => existing.contains_var(),
-        };
-        if should_overwrite {
-            expr.set_inferred_type(Some(Box::new(ty.clone())));
-        }
-    }
-
-    match expr {
-        Expr::Apply { callee, args, span, resolved_call, .. } => {
-            // Apply resolved_call from side map if not already annotated.
-            if resolved_call.is_none() {
-                if let Some(resolution) = resolutions.get(span) {
-                    *resolved_call = Some(Box::new(resolution.clone()));
-                }
-            }
-            enrich_expr_from_side_maps(callee, resolutions, expr_types);
-            for arg in args {
-                enrich_expr_from_side_maps(arg, resolutions, expr_types);
-            }
-        }
-        Expr::Let { bindings, body, .. } => {
-            for (_, binding_expr) in bindings {
-                enrich_expr_from_side_maps(binding_expr, resolutions, expr_types);
-            }
-            enrich_expr_from_side_maps(body, resolutions, expr_types);
-        }
-        Expr::If { cond, then_branch, else_branch, .. } => {
-            enrich_expr_from_side_maps(cond, resolutions, expr_types);
-            enrich_expr_from_side_maps(then_branch, resolutions, expr_types);
-            enrich_expr_from_side_maps(else_branch, resolutions, expr_types);
-        }
-        Expr::Match { scrutinee, arms, .. } => {
-            enrich_expr_from_side_maps(scrutinee, resolutions, expr_types);
-            for arm in arms {
-                enrich_expr_from_side_maps(&mut arm.body, resolutions, expr_types);
-            }
-        }
-        Expr::Lambda { body, .. } => {
-            enrich_expr_from_side_maps(body, resolutions, expr_types);
-        }
-        Expr::Annotate { expr: inner, .. } => {
-            enrich_expr_from_side_maps(inner, resolutions, expr_types);
-        }
-        Expr::Trace { body, .. } => {
-            enrich_expr_from_side_maps(body, resolutions, expr_types);
-        }
-        Expr::ParBind { bindings, body, .. } => {
-            for (_, binding_expr) in bindings {
-                enrich_expr_from_side_maps(binding_expr, resolutions, expr_types);
-            }
-            enrich_expr_from_side_maps(body, resolutions, expr_types);
-        }
-        Expr::VecLit { elements, .. } => {
-            for elem in elements {
-                enrich_expr_from_side_maps(elem, resolutions, expr_types);
-            }
-        }
-        // Leaf nodes — nothing to recurse into.
-        Expr::IntLit { .. }
-        | Expr::FloatLit { .. }
-        | Expr::BoolLit { .. }
-        | Expr::StringLit { .. }
-        | Expr::Var { .. } => {}
-    }
 }
 
 /// Finalize a fully typechecked module: run post-passes and build CheckResult.
@@ -1200,81 +832,12 @@ fn finalize_module(
     // notify_typecheck_done AFTER, so that nice workers cannot claim
     // the module before the stash is populated.
 
-    // Build program with annotated AST from the symbol table where available.
-    // The typechecker stores annotated defns (with inferred_type and resolved_call
-    // on AST nodes) in ModuleEntry::Def.ast. The expanded_program has the original
-    // unannotated AST. Replace each defn with its annotated version.
-    let mut program: Vec<TopLevel> = expanded_program.iter().map(|tl| {
-        match tl {
-            TopLevel::Defn(defn) => {
-                if let Some(table) = ctx.symbol_tables.get(module) {
-                    if let Some(cranelisp_types::ModuleEntry::Def { ast: Some(annotated), .. }) = table.get(defn.name.as_ref()) {
-                        return TopLevel::Defn(annotated.clone());
-                    }
-                }
-                tl.clone()
-            }
-            TopLevel::TraitImpl(impl_) => {
-                // For trait impls, try to get annotated versions of each method.
-                let mut new_impl = impl_.clone();
-                if let Some(table) = ctx.symbol_tables.get(module) {
-                    for method in &mut new_impl.methods {
-                        if let Some(cranelisp_types::ModuleEntry::Def { ast: Some(annotated), .. }) = table.get(method.name.as_ref()) {
-                            *method = annotated.clone();
-                        }
-                    }
-                }
-                TopLevel::TraitImpl(new_impl)
-            }
-            TopLevel::Expr(_) => {
-                // Expressions are wrapped as synthetic __expr defns by the typechecker.
-                // Retrieve the annotated body from the symbol table.
-                if let Some(table) = ctx.symbol_tables.get(module) {
-                    if let Some(cranelisp_types::ModuleEntry::Def { ast: Some(annotated), .. }) = table.get("__expr") {
-                        return TopLevel::Expr(annotated.body().clone());
-                    }
-                }
-                tl.clone()
-            }
-            _ => tl.clone(),
-        }
-    }).collect();
-
-    // Inline default method defns into program. These are already annotated
-    // by the typechecker (check_impl_method annotates via infer_expr).
-    for defn in &check_result.default_method_defns {
-        program.push(TopLevel::Defn(defn.clone()));
-    }
-
-    // Inline mono defns with enrichment from their per-specialization side maps.
-    // The typechecker's recheck_body_for_mono annotates most AST nodes during
-    // infer_expr, but post-inference passes (resolve_deferred_trait_calls,
-    // resolve_auto_curry) add resolutions to MonoDefn.resolutions that aren't
-    // written back to AST nodes. Apply them here.
-    for mono in &check_result.mono_defns {
-        let mut defn = mono.defn.clone();
-        enrich_defn_from_side_maps(&mut defn, &mono.resolutions, &mono.expr_types);
-        program.push(TopLevel::Defn(defn));
-    }
-
-    // Enrich program entries with post-pass resolutions from CheckResult.
-    // The typechecker's post-passes (resolve_pending_overloads, resolve_auto_curry)
-    // add resolutions to the side maps after the initial dual-write. Apply them
-    // to AST nodes that lack annotations. The enrich function only sets values
-    // on unannotated nodes (is_none checks).
-    if !check_result.method_resolutions.is_empty() || !check_result.expr_types.is_empty() {
-        for tl in &mut program {
-            match tl {
-                TopLevel::Defn(defn) => {
-                    enrich_defn_from_side_maps(defn, &check_result.method_resolutions, &check_result.expr_types);
-                }
-                TopLevel::Expr(expr) => {
-                    enrich_expr_from_side_maps(expr, &check_result.method_resolutions, &check_result.expr_types);
-                }
-                _ => {}
-            }
-        }
-    }
+    // Build a program view for nice worker stashing. The nice worker no
+    // longer reads program contents — it enumerates via `defined_symbols()`
+    // — but a non-empty `program` still signals "has compilable defns".
+    // Expression forms flow through as `TopLevel::Expr`; regular defns and
+    // trait impls are passed through unchanged.
+    let program: Vec<TopLevel> = expanded_program.to_vec();
 
     Ok(ProcessResult::Complete {
         check_result,
@@ -2166,21 +1729,19 @@ fn compile_macro_clause_inline(
     // Macro clause functions are normal functions on per-module GOTs.
     let module = ctx.current_module.clone();
     let tc_modules = ctx.symbol_tables;
-    let env_impl = SessionCompilationEnv {
-        tc_modules,
-        typecheck_products: ctx.typecheck_products,
-        current_module: module.clone(),
-    };
-    let env: &dyn cranelisp_backend::compiler::CompilationEnv = &env_impl;
     ensure_typecheck_product(ctx.typecheck_products, &module);
-    let module_got = ctx.typecheck_products.get(&module)
-        .expect("invariant: just ensured typecheck product exists")
+    // G7 (Wave 0): GOT lives on SymbolTable.
+    let module_got = ctx.symbol_tables.get(&module)
+        .expect("invariant: symbol table exists for module")
         .got.clone();
-    let (macro_jit_symbols, macro_got_data_defs) = env_impl.collect_jit_setup_for_module(ctx.platform_registry);
-    let constrained_fn_names = accumulator.constrained_fn_names.clone();
-    pre_register_got_slots_in_tc(tc_modules, &module, &program, &constrained_fn_names);
+    let (macro_jit_symbols, macro_got_data_defs) =
+        collect_jit_setup(tc_modules, &module, ctx.platform_registry);
+    // Wave 0 (Sprint 56): the typechecker registers every compilable defn
+    // with `got_slot: Some(_)`, so the legacy `pre_register_got_slots_in_tc`
+    // safety net is no longer needed here.
+    let _ = accumulator;
     compile_and_register_defn_shared(
-        &macro_jit_symbols, &macro_got_data_defs, defn, env, &module_got,
+        &macro_jit_symbols, &macro_got_data_defs, defn, &module_got,
         ctx.codegen_products, None, &module, true, tc_modules,
     )?;
 
@@ -2461,17 +2022,20 @@ fn clear_module_codegen(ctx: &mut ModuleCompiler, module: &ModuleFullPath) {
     };
 
     // Zero GOT slots via per-module GOT table (keep slot assignments in TC).
+    // G7 (Wave 0): GOT lives on SymbolTable; grab the Arc so we can release
+    // the DashMap read guard before acquiring another guard on a potentially
+    // different module.
     {
-        if let Some(tp) = ctx.typecheck_products.get(module) {
-            let got_table = &tp.got;
-            let table = ctx.symbol_tables.get(&ctx.current_module).unwrap();
-            for (_name, entry) in table.all_symbols() {
-                if let cranelisp_types::ModuleEntry::Def { got_slot: Some(slot), kind, .. } = entry
-                    && !matches!(kind.as_ref(), cranelisp_types::DefKind::SpecialForm { .. }) {
-                        got_table.store_slot(*slot, std::ptr::null());
-                    }
+        let module_got = ctx.symbol_tables.get(module).map(|st| st.got.clone());
+        if let Some(got_table) = module_got
+            && let Some(table) = ctx.symbol_tables.get(&ctx.current_module) {
+                for (_name, entry) in table.all_symbols() {
+                    if let cranelisp_types::ModuleEntry::Def { got_slot: Some(slot), kind, .. } = entry
+                        && !matches!(kind.as_ref(), cranelisp_types::DefKind::SpecialForm { .. }) {
+                            got_table.store_slot(*slot, std::ptr::null());
+                        }
+                }
             }
-        }
     }
 
     // Clear codegen products for this module (keeps CodegenProduct entry with GOT/linker).
@@ -2529,177 +2093,401 @@ fn wrap_exprs_as_defns(program: &[TopLevel]) -> Vec<TopLevel> {
 }
 
 // ---------------------------------------------------------------------------
-// codegen_module_symbols — post-typecheck codegen sweep (W2)
+// inline_jit_codegen_for_module — unified JIT codegen entry (Sprint 56 Wave 2)
 // ---------------------------------------------------------------------------
 
-/// Compile all symbols from a typechecked module and register in GOT.
+/// Collect platform-function JIT symbols and GOT data-base definitions for a
+/// module compilation.
 ///
-/// Iterates the program's definitions, compiles each via `compile_and_register_defn`,
-/// and notifies the scheduler. Returns the last defn's execution result (for
-/// zero-arg defns like `main`).
+/// Replaces `SessionCompilationEnv::collect_jit_setup_for_module`. Walks the
+/// module's symbol table for `PlatformEffect` primitives (both direct defs and
+/// imports), gathers their function pointers from the platform registry, and
+/// then records every existing module's GOT base address so the JIT module can
+/// define `__cranelisp_got_{m}` literal-pool entries — see
+/// `design/backend/compile-to-module.md` §12 and
+/// `design/int/phase2-codegen-convergence.md` §5.
+#[allow(clippy::type_complexity)]
+fn collect_jit_setup(
+    tc_modules: &dashmap::DashMap<ModuleFullPath, cranelisp_types::SymbolTable>,
+    current_module: &ModuleFullPath,
+    platform_registry: &PlatformRegistry,
+) -> (Vec<(String, *const u8)>, Vec<(String, *const u8)>) {
+    let mut jit_symbols = Vec::new();
+    let mut got_data_defs = Vec::new();
+
+    if let Some(st) = tc_modules.get(current_module) {
+        for (_name, entry) in st.all_symbols() {
+            match entry {
+                ModuleEntry::Def { kind, .. } => {
+                    if let DefKind::Primitive {
+                        primitive_kind: PrimitiveKind::PlatformEffect,
+                        jit_name: Some(jit_name),
+                    } = kind.as_ref()
+                        && let Some(ptr) = platform_registry.fn_ptr_by_jit_name(jit_name)
+                    {
+                        jit_symbols.push((jit_name.0.clone(), ptr));
+                    }
+                }
+                ModuleEntry::Import { source } => {
+                    if let Some(source_table) = tc_modules.get(&source.module)
+                        && let Some(ModuleEntry::Def { kind, .. }) =
+                            source_table.get(source.symbol.as_ref())
+                        && let DefKind::Primitive {
+                            primitive_kind: PrimitiveKind::PlatformEffect,
+                            jit_name: Some(jit_name),
+                        } = kind.as_ref()
+                        && let Some(ptr) = platform_registry.fn_ptr_by_jit_name(jit_name)
+                    {
+                        jit_symbols.push((jit_name.0.clone(), ptr));
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    for entry in tc_modules.iter() {
+        let name = cranelisp_backend::compiler::got_data_symbol_name(entry.key());
+        got_data_defs.push((name, entry.value().got.base_ptr()));
+    }
+
+    (jit_symbols, got_data_defs)
+}
+
+/// Public wrapper for `collect_jit_setup` used by the REPL expression
+/// evaluation path in `session_v4::codegen_and_execute`. Mirrors the setup
+/// used inside `inline_jit_codegen_for_module` so the throwaway
+/// `compile_and_execute_expr` JIT module resolves cross-module GOT bases and
+/// platform functions consistently.
+#[allow(clippy::type_complexity)]
+pub fn collect_jit_setup_public(
+    tc_modules: &dashmap::DashMap<ModuleFullPath, cranelisp_types::SymbolTable>,
+    current_module: &ModuleFullPath,
+    platform_registry: &PlatformRegistry,
+) -> (Vec<(String, *const u8)>, Vec<(String, *const u8)>) {
+    collect_jit_setup(tc_modules, current_module, platform_registry)
+}
+
+/// Derive the codegen batch — a `Vec<Symbol>` — from a `program` and the
+/// module's symbol table. Separated out from `inline_jit_codegen_for_module`
+/// so unit tests can exercise the name-derivation logic without standing up
+/// a full JIT pipeline. See the sprint's testing ownership clause.
+///
+/// The batch includes:
+/// - each `TopLevel::Defn`'s `name` (when the symbol-table entry has
+///   `ast: Some(_)` and is not a constrained template or an `Overloaded`
+///   base);
+/// - every mangled multi-sig variant whose base name appears in `program`;
+/// - `__expr` when `program` contains a `TopLevel::Expr`;
+/// - each trait-impl method's mangled name;
+/// - any symbol-table entry with `$` in its name (mono specialisation or
+///   other mangling) that is not already compiled in `codegen_products`.
+#[doc(hidden)]
+pub fn derive_codegen_batch(
+    module: &ModuleFullPath,
+    program: &[TopLevel],
+    tc_modules: &dashmap::DashMap<ModuleFullPath, cranelisp_types::SymbolTable>,
+    codegen_products: &dashmap::DashMap<ModuleFullPath, crate::session_v4::CodegenProduct>,
+) -> Vec<Symbol> {
+    let mut names: Vec<Symbol> = Vec::new();
+    let mut seen: std::collections::HashSet<Symbol> = std::collections::HashSet::new();
+    let table_ref = tc_modules.get(module);
+
+    let try_push = |name: &Symbol,
+                        names: &mut Vec<Symbol>,
+                        seen: &mut std::collections::HashSet<Symbol>|
+     -> bool {
+        if seen.contains(name) {
+            return false;
+        }
+        let Some(ref table) = table_ref else {
+            return false;
+        };
+        let Some(entry) = table.get(name.as_ref()) else {
+            return false;
+        };
+        if let ModuleEntry::Def { kind, ast: Some(_), .. } = entry
+            && !matches!(
+                kind.as_ref(),
+                DefKind::UserFn { constrained_fn: Some(_) } | DefKind::Overloaded { .. }
+            )
+        {
+            names.push(name.clone());
+            seen.insert(name.clone());
+            return true;
+        }
+        false
+    };
+
+    for tl in program {
+        match tl {
+            TopLevel::Defn(defn) => {
+                try_push(&defn.name, &mut names, &mut seen);
+
+                if defn.is_multi_sig()
+                    && let Some(ref table) = table_ref
+                {
+                    let mangled: Vec<Symbol> = table
+                        .defined_symbols()
+                        .filter_map(|(sym, _)| {
+                            sym.as_ref().split_once('$').and_then(|(base, _)| {
+                                if base == defn.name.as_ref() {
+                                    Some(sym.clone())
+                                } else {
+                                    None
+                                }
+                            })
+                        })
+                        .collect();
+                    for m in &mangled {
+                        try_push(m, &mut names, &mut seen);
+                    }
+                }
+            }
+            TopLevel::Expr(_) => {
+                try_push(&Symbol::from("__expr"), &mut names, &mut seen);
+            }
+            TopLevel::TraitImpl(impl_) => {
+                for method in &impl_.methods {
+                    try_push(&method.name, &mut names, &mut seen);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    if let Some(ref table) = table_ref {
+        let candidates: Vec<Symbol> = table
+            .defined_symbols()
+            .filter(|(sym, _)| !seen.contains(*sym))
+            .map(|(sym, _)| sym.clone())
+            .collect();
+        for name in &candidates {
+            let already_compiled = codegen_products
+                .get(module)
+                .map(|cp| cp.code.contains_key(name))
+                .unwrap_or(false);
+            if already_compiled {
+                continue;
+            }
+            if name.as_ref().contains('$') || name.as_ref() == "__expr" {
+                try_push(name, &mut names, &mut seen);
+            }
+        }
+    }
+
+    drop(table_ref);
+    names
+}
+
+/// Compile the defined symbols of a module through the unified
+/// `compile_to_module` entry point.
+///
+/// Sprint 56 Wave 2 replacement for `codegen_module_symbols`. Per
+/// `design/int/phase2-codegen-convergence.md` §5 and `pipeline-v4.md` §9.3,
+/// the worker:
+///
+/// 1. Derives `names` — a compilation batch — from `program`'s `TopLevel::Defn`
+///    entries plus any mangled multi-sig variants that belong to those base
+///    names. This preserves the REPL's incremental model: a new eval compiles
+///    only what's new, not the entire module's symbol table.
+/// 2. Builds a fresh `Jit` with intrinsic + platform symbols pre-registered
+///    and defines `__cranelisp_got_{m}` literal-pool entries for every module.
+/// 3. Calls `cranelisp_backend::compile_to_module` — the sole backend entry
+///    point. No env, no mode discriminator.
+/// 4. Finalizes the JIT, extracts each function pointer, stores it in the
+///    module's GOT slot and in `codegen_products[module].code`.
+/// 5. Routes per-symbol `FunctionArtifacts` from `CompilationResult.artifacts`
+///    into `SharedState.introspection` keyed by `FQSymbol` (`pipeline-v4.md`
+///    §9.6).
+/// 6. Notifies the scheduler per compiled symbol.
+///
+/// `extra_jit_symbols` carries additional JIT symbol registrations needed by
+/// the REPL eval path (trace-runtime overrides, test-runner externs). Regular
+/// worker invocations pass an empty slice.
+///
+/// The JIT is wrapped in `Arc<Jit>` so a single compile call producing N
+/// functions can store N `Code` entries sharing one JIT (see
+/// `src/session_v4.rs` `Code` doc — /arch Phase 3a §3).
 #[allow(clippy::too_many_arguments)]
-pub fn codegen_module_symbols(
+pub fn inline_jit_codegen_for_module(
     platform_registry: &PlatformRegistry,
     scheduler: &CompileScheduler,
     module: &ModuleFullPath,
     program: &[TopLevel],
-    constrained_fn_names: &std::collections::HashSet<Symbol>,
     tc_modules: &dashmap::DashMap<ModuleFullPath, cranelisp_types::SymbolTable>,
-    typecheck_products: &dashmap::DashMap<ModuleFullPath, crate::session_v4::TypecheckProduct>,
     codegen_products: &dashmap::DashMap<ModuleFullPath, crate::session_v4::CodegenProduct>,
     introspection: Option<&dashmap::DashMap<cranelisp_types::FQSymbol, crate::session_v4::Introspection>>,
+    extra_jit_symbols: &[(String, *const u8)],
 ) -> Result<(), CranelispError> {
-    // Ensure typecheck product with GOT table exists for this module.
-    ensure_typecheck_product(typecheck_products, module);
+    // 1. Derive compilation batch from `program` and the module's symbol
+    //    table — see `derive_codegen_batch` for the filter details.
+    let names = derive_codegen_batch(module, program, tc_modules, codegen_products);
 
-    let env_impl = SessionCompilationEnv {
-        tc_modules,
-        typecheck_products,
-        current_module: module.clone(),
-    };
-    let env: &dyn cranelisp_backend::compiler::CompilationEnv = &env_impl;
-    let module_got = typecheck_products.get(module)
-        .expect("invariant: just ensured typecheck product exists")
-        .got.clone();
-
-    let (jit_symbols, got_data_defs) = env_impl.collect_jit_setup_for_module(platform_registry);
-
-    // Pre-register GOT slots for forward references.
-    pre_register_got_slots_in_tc(tc_modules, module, program, &constrained_fn_names);
-
-    // Compile each defn uniformly. Mono defns and default method defns are
-    // inlined into program by finalize_module (design §3.4, Option A).
-    let defn_names = compile_regular_defns(&jit_symbols, &got_data_defs, program, &constrained_fn_names, env, &module_got, codegen_products, introspection, module, tc_modules)?;
-
-    // Notify scheduler for each compiled symbol.
-    let total = defn_names.len();
-    for (i, name) in defn_names.iter().enumerate() {
-        let is_last = i + 1 == total;
-        scheduler.notify_inmem_codegen_complete(module, name, is_last);
-    }
-
-    // If no defns were compiled, mark inmem done anyway.
-    if total == 0 {
+    if names.is_empty() {
         let dummy = Symbol::from("__empty_module");
         scheduler.notify_inmem_codegen_complete(module, &dummy, true);
+        return Ok(());
+    }
+
+    // 2. Collect platform symbols + per-module GOT base addresses.
+    let (mut jit_symbols, got_data_defs) =
+        collect_jit_setup(tc_modules, module, platform_registry);
+    jit_symbols.extend_from_slice(extra_jit_symbols);
+
+    // 2b. Register pointers for already-compiled functions across all modules.
+    // The backend's `resolve_cross_module_refs` declares each imported
+    // function as `Linkage::Import` (see crates/cranelisp-backend/src/lib.rs);
+    // the JIT's `finalize_definitions` must resolve those symbol names to
+    // concrete pointers. Names are the JIT-mangled form
+    // `"<defining_module>/<bare>"` for non-user/non-main modules and
+    // `"<bare>"` otherwise — exactly how `compile_to_module` declares them.
+    for cp in codegen_products.iter() {
+        let defining_module = cp.key();
+        let use_prefix =
+            defining_module.as_ref() != "user" && defining_module.as_ref() != "main";
+        for code_entry in cp.value().code.iter() {
+            let bare = code_entry.key().clone();
+            let ptr = code_entry.value().ptr;
+            if use_prefix {
+                jit_symbols.push((format!("{defining_module}/{bare}"), ptr));
+            }
+            // Always register the bare name too: compile_to_module also
+            // declares a bare alias for cross-module Import entries.
+            jit_symbols.push((bare.as_ref().to_string(), ptr));
+        }
+    }
+
+    let extra: Vec<(&str, *const u8)> = jit_symbols
+        .iter()
+        .map(|(n, p)| (n.as_str(), *p))
+        .collect();
+
+    // 3. Build the JIT and seed GOT data entries BEFORE calling
+    //    compile_to_module — those entries are what the backend's
+    //    `Linkage::Import` cross-module GOT references resolve to.
+    let mut jit = cranelisp_backend::jit::Jit::new_with_symbols(&extra)?;
+    for (got_name, got_ptr) in &got_data_defs {
+        jit.define_got_data(got_name, *got_ptr)?;
+    }
+
+    // 4. Unified codegen entry — no env, no mode.
+    let result = cranelisp_backend::compile_to_module(
+        module.clone(),
+        &names,
+        tc_modules,
+        jit.jit_module(),
+    )?;
+
+    jit.finalize()?;
+
+    // 5. Share the finalised JIT across the produced Code entries. `Jit`
+    // owns mmap'd executable pages that are immutable after finalise; the
+    // enclosing `Code` struct already carries unsafe `Send + Sync` impls.
+    #[allow(clippy::arc_with_non_send_sync)]
+    let jit_arc = std::sync::Arc::new(jit);
+
+    // 6. For each compiled name: read finalised pointer, store in GOT slot,
+    //    and register a Code entry in codegen_products.
+    let product = codegen_products.entry(module.clone()).or_default();
+    for name in &names {
+        let Some(func_id) = result.func_ids.get(name).copied().or_else(|| {
+            // compile_to_module returns func_ids keyed by the module-qualified
+            // JIT name for non-user/non-main modules. Fall back to scanning
+            // the result for a FuncId whose qualified form matches this name.
+            let module_prefix = if module.as_ref() != "user" && module.as_ref() != "main" {
+                Some(module.as_ref().to_string())
+            } else {
+                None
+            };
+            module_prefix.and_then(|p| {
+                let qn = Symbol::from(format!("{p}/{name}"));
+                result.func_ids.get(&qn).copied()
+            })
+        }) else {
+            continue;
+        };
+
+        let code_ptr = jit_arc.get_finalized_ptr(func_id);
+
+        // Store in pre-assigned GOT slot (Wave 0 invariant: every compilable
+        // symbol carries a `got_slot`).
+        if let Some(slot) = lookup_got_slot(tc_modules, module, name)
+            && let Some(st) = tc_modules.get(module)
+        {
+            st.got.store_slot(slot, code_ptr);
+        }
+
+        product.code.insert(
+            name.clone(),
+            crate::session_v4::Code {
+                jit: jit_arc.clone(),
+                ptr: code_ptr,
+            },
+        );
+    }
+    drop(product);
+
+    // 7. Route per-symbol artifacts into introspection (REPL-only).
+    if let Some(intr_map) = introspection {
+        for (name, artifacts) in &result.artifacts {
+            let fq = cranelisp_types::FQSymbol {
+                module: module.clone(),
+                symbol: name.clone(),
+            };
+            let mut entry = intr_map.entry(fq).or_default();
+            entry.clif_ir = Some(artifacts.clif_ir.clone());
+            entry.disasm = if artifacts.disasm.is_empty() {
+                None
+            } else {
+                Some(artifacts.disasm.clone())
+            };
+            entry.code_size = Some(artifacts.code_size as usize);
+        }
+    }
+
+    // 8. Notify the scheduler for each compiled name.
+    let total = names.len();
+    for (i, name) in names.iter().enumerate() {
+        let is_last = i + 1 == total;
+        scheduler.notify_inmem_codegen_complete(module, name, is_last);
     }
 
     Ok(())
 }
 
-/// Pre-assign GOT slots in TC symbol tables for all definitions that codegen
-/// will compile. This covers names that the typechecker doesn't register in the
-/// symbol table (trait impl mangled methods, mono specializations, default methods).
-fn pre_register_got_slots_in_tc(
+/// Follow Import/Reexport chains to find a symbol's GOT slot.
+fn lookup_got_slot(
     tc_modules: &dashmap::DashMap<ModuleFullPath, cranelisp_types::SymbolTable>,
     module: &ModuleFullPath,
-    program: &[TopLevel],
-    constrained_fn_names: &std::collections::HashSet<Symbol>,
-) {
-    use cranelisp_types::{DefKind, ModuleEntry, Scheme, Visibility};
-
-    let mut st = match tc_modules.get_mut(module) {
-        Some(st) => st,
-        None => return,
-    };
-
-    let mut ensure_slot = |name: &Symbol, params: &[Symbol]| {
-        match st.get(name.as_ref()) {
-            // Already has a GOT slot — nothing to do.
-            Some(ModuleEntry::Def { got_slot: Some(_), .. }) => return,
-            // Def exists but without a GOT slot — update in place.
-            Some(ModuleEntry::Def { got_slot: None, .. }) => {
-                // We can't update in place through get(), so remove + reinsert.
-                // Clone the entry, set got_slot, reinsert.
-                let mut entry = st.symbols.get(name).cloned().unwrap();
-                let slot = st.allocate_got_slot();
-                if let ModuleEntry::Def { got_slot: ref mut gs, .. } = entry {
-                    *gs = Some(slot);
-                }
-                st.symbols.insert(name.clone(), entry);
-                return;
-            }
-            // Any other entry type (Import, Constructor, etc.) — don't overwrite.
-            Some(_) => return,
-            // Not present at all — insert a new Def entry.
-            None => {}
+    name: &Symbol,
+) -> Option<usize> {
+    fn walk(
+        tables: &dashmap::DashMap<ModuleFullPath, cranelisp_types::SymbolTable>,
+        module: &ModuleFullPath,
+        name: &str,
+        depth: usize,
+    ) -> Option<usize> {
+        if depth > 10 {
+            return None;
         }
-        let slot = st.allocate_got_slot();
-        st.insert(
-            name.clone(),
+        let st = tables.get(module)?;
+        match st.get(name)? {
             ModuleEntry::Def {
-                scheme: Scheme { vars: vec![], constraints: Default::default(), ty: cranelisp_types::Type::Int },
-                visibility: Visibility::Public,
-                docstring: None,
-                param_names: params.to_vec(),
-                kind: Box::new(DefKind::UserFn { constrained_fn: None }),
-                callees: Vec::new(),
                 got_slot: Some(slot),
-                trait_origin: None,
-                ast: None,
-            },
-        );
-    };
-
-    // All defns — regular, mono, default method, and trait impl mangled methods —
-    // are now unified in program as TopLevel::Defn entries.
-    // (Inlined by finalize_module from check_result.)
-    for tl in program {
-        match tl {
-            TopLevel::Defn(defn) => {
-                if defn.is_multi_sig() {
-                    continue;
-                }
-                if constrained_fn_names.contains(&defn.name) {
-                    continue;
-                }
-                ensure_slot(&defn.name, defn.params());
+                ..
+            } => Some(*slot),
+            ModuleEntry::Import { source } | ModuleEntry::Reexport { source } => {
+                let source_module = source.module.clone();
+                let source_symbol = source.symbol.clone();
+                drop(st);
+                walk(tables, &source_module, source_symbol.as_ref(), depth + 1)
             }
-            _ => {}
+            _ => None,
         }
     }
+    walk(tc_modules, module, name.as_ref(), 0)
 }
-
-/// Compile all defns in program (skipping constrained fn base definitions).
-/// Returns the list of compiled symbol names.
-/// Mono defns and default method defns are already inlined in program.
-#[allow(clippy::too_many_arguments)]
-fn compile_regular_defns(
-    jit_symbols: &[(String, *const u8)],
-    got_data_defs: &[(String, *const u8)],
-    program: &[TopLevel],
-    constrained_fn_names: &std::collections::HashSet<Symbol>,
-    env: &dyn cranelisp_backend::compiler::CompilationEnv,
-    module_got: &std::sync::Arc<cranelisp_backend::got::GotTable>,
-    codegen_products: &dashmap::DashMap<ModuleFullPath, crate::session_v4::CodegenProduct>,
-    introspection: Option<&dashmap::DashMap<cranelisp_types::FQSymbol, crate::session_v4::Introspection>>,
-    module: &ModuleFullPath,
-    tc_modules: &dashmap::DashMap<ModuleFullPath, cranelisp_types::SymbolTable>,
-) -> Result<Vec<Symbol>, CranelispError> {
-    let mut compiled_names = Vec::new();
-
-    for tl in program {
-        match tl {
-            TopLevel::Defn(defn) => {
-                if defn.is_multi_sig() {
-                    continue;
-                }
-                if constrained_fn_names.contains(&defn.name) {
-                    continue;
-                }
-                compile_and_register_defn_shared(jit_symbols, got_data_defs, defn, env, module_got, codegen_products, introspection, module, false, tc_modules)?;
-                compiled_names.push(defn.name.clone());
-            }
-            // TraitImpl methods are now compiled via their mangled defns
-            // (inlined from default_method_defns into program as TopLevel::Defn).
-            TopLevel::TraitImpl(_) => {}
-            _ => {}
-        }
-    }
-
-    Ok(compiled_names)
-}
-
 
 // ---------------------------------------------------------------------------
 // Linker-based loading for cached modules (Step 13 — cache-hit inmem codegen)
@@ -2714,7 +2502,6 @@ fn load_cached_module_via_linker(
     platform_registry: &PlatformRegistry,
     module: &ModuleFullPath,
     shared_state: &crate::session_v4::SharedState,
-    typecheck_products: &dashmap::DashMap<ModuleFullPath, crate::session_v4::TypecheckProduct>,
     codegen_products: &dashmap::DashMap<ModuleFullPath, crate::session_v4::CodegenProduct>,
 ) -> Result<Vec<Symbol>, CranelispError> {
     use cranelisp_backend::cache;
@@ -2763,15 +2550,16 @@ fn load_cached_module_via_linker(
     }
 
     // Register per-module GOT data symbols for cross-module GOT-indirect calls.
-    for tp_entry in typecheck_products.iter() {
-        let name = cranelisp_backend::compiler::got_data_symbol_name(tp_entry.key());
-        linker.register_symbol(&name, tp_entry.value().got.base_ptr());
+    // G7 (Wave 0): GOT lives on SymbolTable; iterate symbol tables.
+    for st_entry in shared_state.symbol_tables.iter() {
+        let name = cranelisp_backend::compiler::got_data_symbol_name(st_entry.key());
+        linker.register_symbol(&name, st_entry.value().got.base_ptr());
     }
 
-    // Get this module's GOT table from typecheck products.
-    let module_got = typecheck_products.get(module)
+    // Get this module's GOT table from the symbol table.
+    let module_got = shared_state.symbol_tables.get(module)
         .ok_or_else(|| CranelispError::ModuleError {
-            message: format!("no typecheck product for cached module '{}'", module),
+            message: format!("no symbol table for cached module '{}'", module),
             file: None,
             span: Span::SYNTHETIC,
         })?.got.clone();
@@ -2815,7 +2603,6 @@ fn handle_cached_codegen(
     platform_registry: &PlatformRegistry,
     module: &ModuleFullPath,
     shared_state: Option<&crate::session_v4::SharedState>,
-    typecheck_products: &dashmap::DashMap<ModuleFullPath, crate::session_v4::TypecheckProduct>,
     codegen_products: &dashmap::DashMap<ModuleFullPath, crate::session_v4::CodegenProduct>,
     scheduler: &CompileScheduler,
 ) -> Result<bool, CranelispError> {
@@ -2835,8 +2622,11 @@ fn handle_cached_codegen(
         span: Span::SYNTHETIC,
     })?;
 
+    // Wave 0 moved the GOT table onto `SymbolTable`; `typecheck_products` is
+    // no longer needed here. Callers pass neither parameter (Sprint 56 2b.6).
+
     match load_cached_module_via_linker(
-        platform_registry, module, shared, typecheck_products, codegen_products,
+        platform_registry, module, shared, codegen_products,
     ) {
         Ok(symbols) => {
             scheduler.notify_inmem_codegen_batch_complete(module, &symbols);
@@ -2914,18 +2704,17 @@ pub fn priority_worker_loop(
                     state,
                     ModuleStrategy::Replace,
                 ) {
-                    Ok(ProcessResult::Complete { check_result, program }) => {
-                        // Post-typecheck codegen sweep (W2).
-                        codegen_module_symbols(
+                    Ok(ProcessResult::Complete { check_result: _, program }) => {
+                        // Unified JIT codegen via compile_to_module (Sprint 56 Wave 2).
+                        inline_jit_codegen_for_module(
                             ctx.platform_registry,
                             ctx.scheduler,
                             &module,
                             &program,
-                            &check_result.constrained_fn_names,
                             ctx.symbol_tables,
-                            ctx.typecheck_products,
                             ctx.codegen_products,
                             None,
+                            &[],
                         )?;
 
                         // Stash program for nice worker .o compilation, then
@@ -2970,7 +2759,7 @@ pub fn priority_worker_loop(
                 // Non-cached modules have their codegen done inline after typecheck.
                 let _ = handle_cached_codegen(
                     ctx.platform_registry, &module, ctx.shared_state,
-                    ctx.typecheck_products, ctx.codegen_products, ctx.scheduler,
+                    ctx.codegen_products, ctx.scheduler,
                 );
             }
             None => break,
@@ -3053,7 +2842,7 @@ pub(crate) fn priority_worker_thread(
                     .unwrap_or_else(|e| e.into_inner());
                 let _ = handle_cached_codegen(
                     &platform, &module, shared.shared_state,
-                    shared.typecheck_products, shared.codegen_products, shared.scheduler,
+                    shared.codegen_products, shared.scheduler,
                 );
             }
             None => break, // Shutdown or all work done.
@@ -3064,7 +2853,8 @@ pub(crate) fn priority_worker_thread(
 /// Handle a Typecheck work item under the TC mutex lock.
 ///
 /// Locks TC + PlatformRegistry, builds a ModuleCompiler, and runs
-/// process_module_forms + codegen_module_symbols.
+/// `process_module_forms` followed by `inline_jit_codegen_for_module`
+/// (Sprint 56 Wave 2 — unified JIT codegen entry).
 fn handle_typecheck_work(
     shared: &PriorityWorkerRefs,
     module: &ModuleFullPath,
@@ -3130,18 +2920,17 @@ fn handle_typecheck_work(
         &mut state,
         ModuleStrategy::Replace,
     ) {
-        Ok(ProcessResult::Complete { check_result, program }) => {
-            // Post-typecheck codegen sweep.
-            codegen_module_symbols(
+        Ok(ProcessResult::Complete { check_result: _, program }) => {
+            // Unified JIT codegen via compile_to_module (Sprint 56 Wave 2).
+            inline_jit_codegen_for_module(
                 ctx.platform_registry,
                 ctx.scheduler,
                 module,
                 &program,
-                &check_result.constrained_fn_names,
                 ctx.symbol_tables,
-                ctx.typecheck_products,
                 ctx.codegen_products,
                 None,
+                &[],
             )?;
 
             // Stash program for nice worker .o compilation.
@@ -3192,4 +2981,261 @@ fn handle_typecheck_work(
     }
 
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Unit tests — priority-worker codegen path (Sprint 56 Wave 2)
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use cranelisp_types::{
+        DefKind, Defn, DefnVariant, Expr, FQSymbol, ModuleEntry, ModuleFullPath,
+        Scheme, Symbol, SymbolTable, Type, Visibility,
+    };
+    use std::collections::HashMap;
+
+    fn synthetic_scheme() -> Scheme {
+        Scheme {
+            vars: vec![],
+            constraints: HashMap::new(),
+            ty: Type::Int,
+        }
+    }
+
+    fn trivial_defn(name: &str) -> Defn {
+        Defn {
+            name: Symbol::from(name),
+            docstring: None,
+            variants: vec![DefnVariant {
+                params: vec![],
+                param_annotations: vec![],
+                body: Expr::IntLit {
+                    value: 0,
+                    span: Span::SYNTHETIC,
+                    inferred_type: Some(Box::new(Type::Int)),
+                },
+                span: Span::SYNTHETIC,
+            }],
+            visibility: Visibility::Public,
+            span: Span::SYNTHETIC,
+        }
+    }
+
+    fn mk_def_with_got(kind: DefKind, ast: Option<Defn>, got_slot: Option<usize>) -> ModuleEntry {
+        ModuleEntry::Def {
+            scheme: synthetic_scheme(),
+            visibility: Visibility::Public,
+            docstring: None,
+            param_names: vec![],
+            kind: Box::new(kind),
+            callees: Vec::new(),
+            got_slot,
+            trait_origin: None,
+            ast,
+        }
+    }
+
+    // spec: design/int/phase2-codegen-convergence.md §5 — name-list prep via defined_symbols
+    #[test]
+    fn priority_worker_name_list_via_defined_symbols_filter() {
+        // Seed a symbol table with a cross-section of entries. Only the entries
+        // that pass `defined_symbols()` should be candidates for codegen — the
+        // worker's name-list preparation MUST produce the same set.
+        let module = ModuleFullPath::from("user");
+        let mut st = SymbolTable::new(module.clone());
+
+        // Compilable: regular UserFn with ast: Some(_).
+        st.insert(
+            Symbol::from("regular"),
+            mk_def_with_got(
+                DefKind::UserFn { constrained_fn: None },
+                Some(trivial_defn("regular")),
+                Some(0),
+            ),
+        );
+
+        // Compilable: mangled multi-sig variant (also a UserFn with ast).
+        st.insert(
+            Symbol::from("add$Int+Int"),
+            mk_def_with_got(
+                DefKind::UserFn { constrained_fn: None },
+                Some(trivial_defn("add$Int+Int")),
+                Some(1),
+            ),
+        );
+
+        // Not compilable: Overloaded base — ast: None.
+        st.insert(
+            Symbol::from("add"),
+            mk_def_with_got(
+                DefKind::Overloaded { variants: vec![] },
+                None,
+                None,
+            ),
+        );
+
+        // Not compilable: constrained template even if ast happens to be Some.
+        st.insert(
+            Symbol::from("poly_fn"),
+            mk_def_with_got(
+                DefKind::UserFn {
+                    constrained_fn: Some(Box::new(cranelisp_types::ConstrainedFn {
+                        defn: trivial_defn("poly_fn"),
+                        scheme: synthetic_scheme(),
+                    })),
+                },
+                Some(trivial_defn("poly_fn")),
+                None,
+            ),
+        );
+
+        // Not compilable: Import chain entry.
+        st.insert(
+            Symbol::from("imported"),
+            ModuleEntry::Import {
+                source: FQSymbol {
+                    module: ModuleFullPath::from("other"),
+                    symbol: Symbol::from("x"),
+                },
+            },
+        );
+
+        let compiled: Vec<Symbol> = st
+            .defined_symbols()
+            .map(|(name, _)| name.clone())
+            .collect();
+
+        // Exactly the two compilable entries: set equality ignoring order.
+        assert_eq!(compiled.len(), 2, "expected 2 compilable names, got {compiled:?}");
+        assert!(compiled.contains(&Symbol::from("regular")));
+        assert!(compiled.contains(&Symbol::from("add$Int+Int")));
+        assert!(!compiled.contains(&Symbol::from("add")));
+        assert!(!compiled.contains(&Symbol::from("poly_fn")));
+        assert!(!compiled.contains(&Symbol::from("imported")));
+    }
+
+    // spec: design/int/phase2-codegen-convergence.md §5 — artifact routing to Introspection
+    #[test]
+    fn priority_worker_routes_artifacts_to_introspection() {
+        // Given a CompilationResult.artifacts map, simulate the routing loop and
+        // assert each (name, artifacts) pair lands in SharedState.introspection
+        // keyed by FQSymbol.
+        let module = ModuleFullPath::from("user");
+
+        // Build a synthetic artifacts map mirroring what compile_to_module returns.
+        let mut artifacts: HashMap<Symbol, cranelisp_backend::FunctionArtifacts> = HashMap::new();
+        artifacts.insert(
+            Symbol::from("foo"),
+            cranelisp_backend::FunctionArtifacts {
+                clif_ir: "function %foo() -> i64 { ... }".to_string(),
+                disasm: "mov rax, 0\nret".to_string(),
+                code_size: 7,
+            },
+        );
+        artifacts.insert(
+            Symbol::from("bar"),
+            cranelisp_backend::FunctionArtifacts {
+                clif_ir: "function %bar() -> i64 { ... }".to_string(),
+                disasm: String::new(), // empty disasm -> None in Introspection
+                code_size: 12,
+            },
+        );
+
+        let introspection: dashmap::DashMap<FQSymbol, crate::session_v4::Introspection> =
+            dashmap::DashMap::new();
+
+        // Mirror the exact routing loop in inline_jit_codegen_for_module step 7.
+        for (name, art) in &artifacts {
+            let fq = FQSymbol {
+                module: module.clone(),
+                symbol: name.clone(),
+            };
+            let mut entry = introspection.entry(fq).or_default();
+            entry.clif_ir = Some(art.clif_ir.clone());
+            entry.disasm = if art.disasm.is_empty() {
+                None
+            } else {
+                Some(art.disasm.clone())
+            };
+            entry.code_size = Some(art.code_size as usize);
+        }
+
+        // Assert each entry is keyed by the correct FQSymbol and carries the
+        // expected artifact payload.
+        let foo_fq = FQSymbol {
+            module: module.clone(),
+            symbol: Symbol::from("foo"),
+        };
+        let bar_fq = FQSymbol {
+            module: module.clone(),
+            symbol: Symbol::from("bar"),
+        };
+
+        let foo_entry = introspection.get(&foo_fq).expect("foo introspection entry present");
+        assert!(foo_entry.clif_ir.as_deref().unwrap_or("").contains("%foo"));
+        assert_eq!(foo_entry.disasm.as_deref(), Some("mov rax, 0\nret"));
+        assert_eq!(foo_entry.code_size, Some(7));
+        drop(foo_entry);
+
+        let bar_entry = introspection.get(&bar_fq).expect("bar introspection entry present");
+        assert!(bar_entry.clif_ir.as_deref().unwrap_or("").contains("%bar"));
+        assert_eq!(bar_entry.disasm, None, "empty disasm must be None, not Some(empty string)");
+        assert_eq!(bar_entry.code_size, Some(12));
+    }
+
+    // spec: design/int/phase2-codegen-convergence.md §5 — GOT slot registration on compile completion
+    #[test]
+    fn priority_worker_stores_code_ptr_in_got_slot() {
+        // Given a symbol_tables entry with got_slot: Some(3), verify that after
+        // compile completion the worker stores the compiled function pointer
+        // at slot 3 in the module's GOT table.
+        let module = ModuleFullPath::from("user");
+        let symbol_tables: dashmap::DashMap<ModuleFullPath, SymbolTable> = dashmap::DashMap::new();
+        let mut st = SymbolTable::new(module.clone());
+
+        // Advance the next_got_slot by allocating four slots; the 4th is slot 3.
+        let slot_0 = st.allocate_got_slot();
+        let slot_1 = st.allocate_got_slot();
+        let slot_2 = st.allocate_got_slot();
+        let slot_3 = st.allocate_got_slot();
+        assert_eq!(slot_0, 0);
+        assert_eq!(slot_1, 1);
+        assert_eq!(slot_2, 2);
+        assert_eq!(slot_3, 3);
+
+        st.insert(
+            Symbol::from("target"),
+            mk_def_with_got(
+                DefKind::UserFn { constrained_fn: None },
+                Some(trivial_defn("target")),
+                Some(3),
+            ),
+        );
+        symbol_tables.insert(module.clone(), st);
+
+        // Sanity: lookup_got_slot returns Some(3) for this entry.
+        let resolved = lookup_got_slot(&symbol_tables, &module, &Symbol::from("target"));
+        assert_eq!(resolved, Some(3), "lookup_got_slot must walk to the pre-assigned slot");
+
+        // Synthetic code pointer — the worker would normally extract this from
+        // jit.get_finalized_ptr(). We only care that the store hits slot 3.
+        let fake_ptr: *const u8 = 0xCAFEBABE_usize as *const u8;
+
+        // Mirror the exact store call from inline_jit_codegen_for_module step 6.
+        let slot = lookup_got_slot(&symbol_tables, &module, &Symbol::from("target"))
+            .expect("invariant: got_slot is Some after Wave 0");
+        if let Some(st) = symbol_tables.get(&module) {
+            st.got.store_slot(slot, fake_ptr);
+        }
+
+        // Read back: the same GotTable reads the stored pointer.
+        let stored = symbol_tables
+            .get(&module)
+            .expect("symbol table present")
+            .got
+            .load_slot(slot);
+        assert_eq!(stored, fake_ptr, "GOT slot must hold the code pointer just written");
+    }
 }

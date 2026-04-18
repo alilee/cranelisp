@@ -406,9 +406,14 @@ impl<'a, M: Module> FnCompiler<'a, M> {
         // Uses global_value(DataId) which Cranelift lowers to:
         //   JIT (is_pic=false): movz+movk (absolute address)
         //   Object (is_pic=true): ADRP+ADD (PC-relative relocation)
-        if let Some(env) = self.ctx.env
-            && let Some((module_path, slot)) = env.resolve_got_module(name)
-        {
+        //
+        // Slot assignments are read directly from `symbol_tables` — no env
+        // abstraction. See design/backend/compile-to-module.md §12.
+        if let Some((module_path, slot)) = crate::compiler::resolve_got_target(
+            self.ctx.symbol_tables,
+            &self.ctx.current_module,
+            name,
+        ) {
             let got_sym = crate::compiler::got_data_symbol_name(&module_path);
             let data_id = self.module
                 .declare_data(&got_sym, cranelift_module::Linkage::Import, false, false)
@@ -487,19 +492,24 @@ impl<'a, M: Module> FnCompiler<'a, M> {
         Ok(self.builder.inst_results(call)[0])
     }
 
-    /// Resolve a function name to a `(got_base_ptr, slot_index)` pair via env.
+    /// Resolve a function name to `(defining_module, slot_index)` by walking
+    /// the shared symbol-table map. Returns an error if no GOT slot is found.
+    ///
+    /// Replacement for the Sprint-56-retracted `CompilationEnv::resolve_got`.
+    /// Callers that need a concrete base-pointer should emit a `global_value`
+    /// against the `__cranelisp_got_{module}` data symbol (see §12) rather
+    /// than embedding a compile-time constant.
     pub(crate) fn resolve_got_entry(
         &self,
         name: &Symbol,
         span: Span,
-    ) -> Result<(i64, usize), CranelispError> {
-        if let Some(env) = self.ctx.env
-            && let Some(result) = env.resolve_got(name)
-        {
-            return Ok(result);
-        }
-
-        Err(CranelispError::CodegenError {
+    ) -> Result<(cranelisp_types::ModuleFullPath, usize), CranelispError> {
+        crate::compiler::resolve_got_target(
+            self.ctx.symbol_tables,
+            &self.ctx.current_module,
+            name,
+        )
+        .ok_or_else(|| CranelispError::CodegenError {
             message: format!("no GOT slot for function: {name}"),
             span,
         })

@@ -45,22 +45,6 @@ pub struct ObjectCompileInput {
     pub cross_module_fns: Vec<(Symbol, usize)>,
 }
 
-impl crate::compiler::CompilationEnv for ObjectCompileInput {
-    fn resolve_got(&self, _name: &Symbol) -> Option<(i64, usize)> {
-        None // Legacy path — unused for object codegen.
-    }
-
-    fn resolve_got_module(&self, name: &Symbol) -> Option<(ModuleFullPath, usize)> {
-        let slot_info = self.fn_slot_assignments.get(name)?;
-        let module = self.fn_to_module.get(name).unwrap_or(&self.module_path);
-        Some((module.clone(), slot_info.slot))
-    }
-
-    fn func_arity(&self, name: &Symbol) -> Option<usize> {
-        self.fn_slot_assignments.get(name).map(|s| s.param_count)
-    }
-}
-
 /// Information about a function's GOT slot assignment.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FnSlotInfo {
@@ -109,77 +93,6 @@ pub struct IntrinsicEntry {
     pub jit_name: String,
     /// Number of parameters.
     pub param_count: usize,
-}
-
-/// CompilationEnv for ObjectModule compilation.
-///
-/// Resolves GOT slots by reading from symbol tables (not live runtime state).
-/// Replaces the `ObjectCompileInput impl CompilationEnv` after the unification.
-pub struct ObjectCompilationEnv<'a> {
-    pub symbol_tables: &'a dashmap::DashMap<ModuleFullPath, SymbolTable>,
-    pub current_module: ModuleFullPath,
-}
-
-impl crate::compiler::CompilationEnv for ObjectCompilationEnv<'_> {
-    fn resolve_got(&self, _name: &Symbol) -> Option<(i64, usize)> {
-        // Object path doesn't use runtime pointers.
-        None
-    }
-
-    fn resolve_got_module(&self, name: &Symbol) -> Option<(ModuleFullPath, usize)> {
-        // Look up in current module's symbol table, following Import chains.
-        let table = self.symbol_tables.get(&self.current_module)?;
-        match table.get(name.as_ref())? {
-            cranelisp_types::ModuleEntry::Def { got_slot: Some(slot), .. } => {
-                Some((self.current_module.clone(), *slot))
-            }
-            cranelisp_types::ModuleEntry::Import { source } => {
-                let source_mod = source.module.clone();
-                let source_sym = source.symbol.clone();
-                drop(table); // Release guard before getting another
-                let source_table = self.symbol_tables.get(&source_mod)?;
-                if let Some(cranelisp_types::ModuleEntry::Def { got_slot: Some(slot), .. }) =
-                    source_table.get(source_sym.as_ref())
-                {
-                    Some((source_mod, *slot))
-                } else {
-                    None
-                }
-            }
-            _ => None,
-        }
-    }
-
-    fn func_arity(&self, name: &Symbol) -> Option<usize> {
-        let table = self.symbol_tables.get(&self.current_module)?;
-        match table.get(name.as_ref())? {
-            cranelisp_types::ModuleEntry::Def { scheme, .. } => {
-                if let cranelisp_types::Type::Fn(params, _) = &scheme.ty {
-                    Some(params.len())
-                } else {
-                    None
-                }
-            }
-            cranelisp_types::ModuleEntry::Import { source } => {
-                let source_mod = source.module.clone();
-                let source_sym = source.symbol.clone();
-                drop(table);
-                let source_table = self.symbol_tables.get(&source_mod)?;
-                if let Some(cranelisp_types::ModuleEntry::Def { scheme, .. }) =
-                    source_table.get(source_sym.as_ref())
-                {
-                    if let cranelisp_types::Type::Fn(params, _) = &scheme.ty {
-                        Some(params.len())
-                    } else {
-                        None
-                    }
-                } else {
-                    None
-                }
-            }
-            _ => None,
-        }
-    }
 }
 
 /// An owned snapshot for background cache writing. Fully Send-safe.
@@ -321,9 +234,13 @@ pub fn process_cache_packet(
 
         let input = &packet.object_compile_input;
 
-        // Convert ObjectCompileInput to compile_to_module params.
-        let program: Vec<cranelisp_types::TopLevel> = input.defns.iter()
-            .map(|(defn, _scheme)| cranelisp_types::TopLevel::Defn(defn.clone()))
+        // Post-Phase-2: the backend reads defn bodies from `symbol_tables[module].get(name).ast`.
+        // The packet's `defns` field only supplies the name list here; the
+        // canonical AST already lives on the symbol table (Wave 0 invariant).
+        let names: Vec<Symbol> = input
+            .defns
+            .iter()
+            .map(|(defn, _scheme)| defn.name.clone())
             .collect();
 
         let isa = build_isa(true)?;
@@ -336,7 +253,7 @@ pub fn process_cache_packet(
 
         crate::compile_to_module(
             input.module_path.clone(),
-            &program,
+            &names,
             symbol_tables,
             &mut obj_module,
         )?;
@@ -519,10 +436,45 @@ mod tests {
         ObjectModule::new(builder)
     }
 
+    // Helper: build a SymbolTable containing `defn` as a `ModuleEntry::Def`
+    // with `ast: Some(defn)`. Mirrors the Wave 0 contract for these tests —
+    // the backend reads the AST body from the symbol table, never a Program.
+    fn table_with_def(
+        module: &ModuleFullPath,
+        defn: cranelisp_types::Defn,
+        scheme: cranelisp_types::Scheme,
+    ) -> dashmap::DashMap<ModuleFullPath, SymbolTable> {
+        use cranelisp_types::{DefKind, ModuleEntry, Visibility};
+        let tables = dashmap::DashMap::new();
+        let mut st = SymbolTable::new(module.clone());
+        let name = defn.name.clone();
+        let param_names = defn
+            .variants
+            .first()
+            .map(|v| v.params.clone())
+            .unwrap_or_default();
+        st.insert(
+            name,
+            ModuleEntry::Def {
+                scheme,
+                visibility: Visibility::Public,
+                docstring: None,
+                param_names,
+                kind: Box::new(DefKind::UserFn { constrained_fn: None }),
+                callees: vec![],
+                got_slot: None,
+                trait_origin: None,
+                ast: Some(defn),
+            },
+        );
+        tables.insert(module.clone(), st);
+        tables
+    }
+
     // spec: design/backend/module-caching.md §13.2 — compile simple module to .o
     #[test]
     fn test_compile_module_to_object_simple() {
-        use cranelisp_types::{CheckResult, Defn, DefnVariant, Expr, TopLevel, Visibility};
+        use cranelisp_types::{Defn, DefnVariant, Expr, Scheme, Visibility};
 
         let defn = Defn {
             name: Symbol::from("answer"),
@@ -541,13 +493,19 @@ mod tests {
             span: Span::new(0, 20),
         };
 
-        let program = vec![TopLevel::Defn(defn)];
+        let module = ModuleFullPath::from("user");
+        let scheme = Scheme {
+            vars: vec![],
+            constraints: HashMap::new(),
+            ty: cranelisp_types::Type::Fn(vec![], Box::new(cranelisp_types::Type::Int)),
+        };
+        let tables = table_with_def(&module, defn.clone(), scheme);
 
         let mut obj_module = test_object_module();
         let _result = crate::compile_to_module(
-            ModuleFullPath::from("user"),
-            &program,
-            &dashmap::DashMap::new(),
+            module,
+            std::slice::from_ref(&defn.name),
+            &tables,
             &mut obj_module,
         ).unwrap();
 
@@ -577,7 +535,7 @@ mod tests {
     // spec: design/backend/module-caching.md §13.2 — compile module with params
     #[test]
     fn test_compile_module_to_object_with_params() {
-        use cranelisp_types::{Defn, DefnVariant, Expr, TopLevel, Visibility};
+        use cranelisp_types::{Defn, DefnVariant, Expr, Scheme, Visibility};
 
         let defn = Defn {
             name: Symbol::from("identity"),
@@ -596,13 +554,22 @@ mod tests {
             span: Span::new(0, 25),
         };
 
-        let program = vec![TopLevel::Defn(defn)];
+        let module = ModuleFullPath::from("user");
+        let scheme = Scheme {
+            vars: vec![],
+            constraints: HashMap::new(),
+            ty: cranelisp_types::Type::Fn(
+                vec![cranelisp_types::Type::Int],
+                Box::new(cranelisp_types::Type::Int),
+            ),
+        };
+        let tables = table_with_def(&module, defn.clone(), scheme);
 
         let mut obj_module = test_object_module();
         let _result = crate::compile_to_module(
-            ModuleFullPath::from("user"),
-            &program,
-            &dashmap::DashMap::new(),
+            module,
+            std::slice::from_ref(&defn.name),
+            &tables,
             &mut obj_module,
         ).unwrap();
 
@@ -650,7 +617,7 @@ mod tests {
 
         let input = ObjectCompileInput {
             module_path: mp.clone(),
-            defns: vec![(defn, scheme)],
+            defns: vec![(defn.clone(), scheme.clone())],
             method_resolutions: HashMap::new(),
             fn_slot_assignments: HashMap::new(),
             fn_to_module: HashMap::new(),
@@ -671,7 +638,10 @@ mod tests {
         )
         .unwrap();
 
-        let result = process_cache_packet(&packet, &dashmap::DashMap::new()).unwrap();
+        // Post-Phase-2: process_cache_packet reads AST bodies from the symbol
+        // tables via compile_to_module's name-list interface.
+        let tables = table_with_def(&mp, defn, scheme);
+        let result = process_cache_packet(&packet, &tables).unwrap();
         assert_eq!(result.source_hash, "hash456");
 
         // Both .meta.json and .o should exist

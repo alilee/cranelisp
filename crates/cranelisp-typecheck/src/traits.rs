@@ -1150,7 +1150,61 @@ impl TypeCheckEnv<'_> {
             expr_types: mono_expr_types,
         };
 
+        // Wave 0 (§9.4): register the mono specialisation as a symbol-table
+        // entry with `ast: Some(annotated)`. The body has been fully annotated
+        // by `annotate_defn_from_maps` + `apply_subst_to_defn` above — no further
+        // enrichment needed. Backend codegen reads the body via
+        // `ModuleEntry::Def.ast`. This is additive to `CheckResult.mono_defns`;
+        // /int removes the `finalize_module` inlining loop in Wave 2.
+        self.register_mono_entry(state, &mono_defn, &concrete_param_types, &concrete_ret_ty);
+
         Ok(Some(mono_defn))
+    }
+
+    /// Register a mono specialisation on the current module's symbol table
+    /// as a `ModuleEntry::Def` with `ast: Some(annotated)`. Wave 0 §9.4.
+    fn register_mono_entry(
+        &self,
+        state: &mut CheckState,
+        mono: &MonoDefn,
+        concrete_param_types: &[Type],
+        concrete_ret_ty: &Type,
+    ) {
+        let fn_ty = Type::Fn(
+            concrete_param_types.to_vec(),
+            Box::new(concrete_ret_ty.clone()),
+        );
+        let scheme = crate::scheme::mono(fn_ty);
+
+        let mut st = self.current_symbol_table_mut(state);
+        // De-duplication note: `pass4_monomorphise` / `monomorphise_expr_calls`
+        // short-circuit via `seen` before calling `monomorphise_call` a second
+        // time for the same mangled name, so this insertion runs exactly once
+        // per specialisation. If an entry already exists (e.g., REPL redefinition),
+        // we preserve its `got_slot` to keep call-site GOT indices stable.
+        let existing_got_slot = st.get(mono.defn.name.as_ref())
+            .and_then(|e| match e {
+                ModuleEntry::Def { got_slot, .. } => *got_slot,
+                _ => None,
+            });
+        let got_slot = Some(existing_got_slot.unwrap_or_else(|| st.allocate_got_slot()));
+
+        st.insert(
+            mono.defn.name.clone(),
+            ModuleEntry::Def {
+                scheme,
+                visibility: mono.defn.visibility,
+                docstring: mono.defn.docstring.clone(),
+                param_names: mono.defn.params().to_vec(),
+                kind: Box::new(DefKind::UserFn {
+                    constrained_fn: None,
+                }),
+                callees: Vec::new(),
+                got_slot,
+                trait_origin: None,
+                ast: Some(mono.defn.clone()),
+            },
+        );
     }
 
     /// Instantiate a scheme with fresh type variables, unify with the given
@@ -2602,5 +2656,254 @@ mod tests {
 
         // Body should be (not (= x y)), not IntLit 0
         assert_apply_callee(neq.body(), "not");
+    }
+
+    // ---- Sprint 56 Wave 0 §9.4 — mono specialisation ast + distinct GOT slot ----
+
+    /// Register a minimal `Num` trait with `+` and an impl for Int
+    /// (identical in intent to `program::tests::register_num_trait_inline`, but
+    /// kept local to the traits test module so we don't cross test-module boundaries).
+    fn register_num_for_int(tc: &mut TestFixture) {
+        let num_decl = TraitDecl {
+            name: TraitName::from("Num"),
+            docstring: None,
+            type_params: vec![Symbol::from("a")],
+            methods: vec![TraitMethodSig {
+                name: Symbol::from("+"),
+                docstring: None,
+                params: vec![
+                    TypeExpr::TypeVar(Symbol::from("a")),
+                    TypeExpr::TypeVar(Symbol::from("a")),
+                ],
+                ret_type: TypeExpr::TypeVar(Symbol::from("a")),
+                span: Span::SYNTHETIC,
+                hkt_param_index: None,
+                default_param_names: vec![Symbol::from("lhs"), Symbol::from("rhs")],
+                default_body: None,
+            }],
+            visibility: Visibility::Public,
+            span: Span::SYNTHETIC,
+        };
+        tc.register_trait_decl_self(&num_decl).unwrap();
+
+        let impl_ = TraitImpl {
+            trait_name: TraitName::from("Num"),
+            target_type: TypeName::from("Int"),
+            type_args: vec![],
+            type_constraints: vec![],
+            methods: vec![Defn {
+                name: Symbol::from("+"),
+                docstring: None,
+                variants: vec![DefnVariant {
+                    params: vec![Symbol::from("x"), Symbol::from("y")],
+                    param_annotations: vec![None, None],
+                    body: cranelisp_types::Expr::Apply {
+                        callee: Box::new(cranelisp_types::Expr::Var {
+                            name: Symbol::from("add-i64"),
+                            span: Span::SYNTHETIC,
+                            inferred_type: None,
+                        }),
+                        args: vec![
+                            cranelisp_types::Expr::Var {
+                                name: Symbol::from("x"),
+                                span: Span::SYNTHETIC,
+                                inferred_type: None,
+                            },
+                            cranelisp_types::Expr::Var {
+                                name: Symbol::from("y"),
+                                span: Span::SYNTHETIC,
+                                inferred_type: None,
+                            },
+                        ],
+                        span: Span::SYNTHETIC,
+                        resolved_call: None,
+                        inferred_type: None,
+                    },
+                    span: Span::SYNTHETIC,
+                }],
+                visibility: Visibility::Public,
+                span: Span::SYNTHETIC,
+            }],
+            span: Span::SYNTHETIC,
+        };
+        tc.register_trait_impl_self(&impl_).unwrap();
+        tc.clear_transient_state();
+    }
+
+    /// Walk an Expr tree and visit every inferred_type, asserting it is concrete.
+    fn assert_types_concrete(expr: &cranelisp_types::Expr) {
+        if let Some(ty) = expr.inferred_type() {
+            assert!(
+                !ty.contains_var(),
+                "inferred_type should be concrete, got Var at span {:?}: {:?}",
+                expr.span(),
+                ty
+            );
+        }
+        use cranelisp_types::Expr as E;
+        match expr {
+            E::Apply { callee, args, .. } => {
+                assert_types_concrete(callee);
+                for a in args {
+                    assert_types_concrete(a);
+                }
+            }
+            E::Let { bindings, body, .. } | E::ParBind { bindings, body, .. } => {
+                for (_, b) in bindings {
+                    assert_types_concrete(b);
+                }
+                assert_types_concrete(body);
+            }
+            E::If { cond, then_branch, else_branch, .. } => {
+                assert_types_concrete(cond);
+                assert_types_concrete(then_branch);
+                assert_types_concrete(else_branch);
+            }
+            E::Lambda { body, .. }
+            | E::Annotate { expr: body, .. }
+            | E::Trace { body, .. } => {
+                assert_types_concrete(body);
+            }
+            E::Match { scrutinee, arms, .. } => {
+                assert_types_concrete(scrutinee);
+                for arm in arms {
+                    assert_types_concrete(&arm.body);
+                }
+            }
+            E::VecLit { elements, .. } => {
+                for e in elements {
+                    assert_types_concrete(e);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    // spec: design/typecheck/ast-annotation.md §9.4 — mono specialisation ast + distinct GOT slot
+    #[test]
+    fn wave0_mono_entry_registered_with_distinct_got_slot() {
+        use cranelisp_types::Expr;
+        let mut tc = tc_with_prims();
+        register_num_for_int(&mut tc);
+
+        // Template: (defn add [x y] (+ x y))
+        let add_defn = cranelisp_types::TopLevel::Defn(Defn {
+            name: Symbol::from("add"),
+            docstring: None,
+            variants: vec![DefnVariant {
+                params: vec![Symbol::from("x"), Symbol::from("y")],
+                param_annotations: vec![None, None],
+                body: Expr::Apply {
+                    callee: Box::new(Expr::Var {
+                        name: Symbol::from("+"),
+                        span: Span::new(18, 19),
+                        inferred_type: None,
+                    }),
+                    args: vec![
+                        Expr::Var { name: Symbol::from("x"), span: Span::new(20, 21), inferred_type: None },
+                        Expr::Var { name: Symbol::from("y"), span: Span::new(22, 23), inferred_type: None },
+                    ],
+                    span: Span::new(17, 24),
+                    resolved_call: None,
+                    inferred_type: None,
+                },
+                span: Span::new(0, 25),
+            }],
+            visibility: Visibility::Public,
+            span: Span::new(0, 25),
+        });
+        tc.check_repl_input_self(&add_defn).unwrap();
+
+        // Concrete call-site triggers monomorphisation: (defn main [] (add 1 2))
+        let main_defn = cranelisp_types::TopLevel::Defn(Defn {
+            name: Symbol::from("main"),
+            docstring: None,
+            variants: vec![DefnVariant {
+                params: vec![],
+                param_annotations: vec![],
+                body: Expr::Apply {
+                    callee: Box::new(Expr::Var {
+                        name: Symbol::from("add"),
+                        span: Span::new(200, 203),
+                        inferred_type: None,
+                    }),
+                    args: vec![
+                        Expr::IntLit { value: 1, span: Span::new(204, 205), inferred_type: None },
+                        Expr::IntLit { value: 2, span: Span::new(206, 207), inferred_type: None },
+                    ],
+                    span: Span::new(199, 208),
+                    resolved_call: None,
+                    inferred_type: None,
+                },
+                span: Span::new(180, 209),
+            }],
+            visibility: Visibility::Public,
+            span: Span::new(180, 209),
+        });
+        tc.check_repl_input_self(&main_defn).unwrap();
+
+        // Template entry: kind UserFn { constrained_fn: Some(_) }.
+        // NOTE: §9.2 of design/typecheck/ast-annotation.md says the template's `ast`
+        // "stays None" to signal "skip at codegen". That is the future intent — the
+        // filter in `defined_symbols()` (§9.5) gates on `kind`, not `ast`, so the
+        // invariant that matters today is `kind`. The mono entry below carries the
+        // compilable body.
+        let template_got_slot = {
+            let st = tc.symbol_table();
+            match st.get("add") {
+                Some(ModuleEntry::Def { kind, got_slot, .. }) => {
+                    assert!(
+                        matches!(kind.as_ref(), DefKind::UserFn { constrained_fn: Some(_) }),
+                        "template 'add' kind should be UserFn(Some), got {:?}",
+                        kind
+                    );
+                    *got_slot
+                }
+                other => panic!("'add' template should be Def entry, got {:?}", other),
+            }
+        };
+
+        // Mono entry: kind UserFn(None), ast: Some(..), has a GOT slot distinct from template.
+        let mono_got_slot = {
+            let st = tc.symbol_table();
+            match st.get("add$Int+Int") {
+                Some(ModuleEntry::Def { kind, ast, got_slot, .. }) => {
+                    assert!(
+                        matches!(kind.as_ref(), DefKind::UserFn { constrained_fn: None }),
+                        "mono 'add$Int+Int' kind should be UserFn(None), got {:?}",
+                        kind
+                    );
+                    let defn = ast.as_ref().expect("mono must carry ast: Some(..)");
+                    assert_eq!(defn.name.as_ref(), "add$Int+Int");
+
+                    // All inferred types on the mono body are concrete.
+                    assert_types_concrete(defn.body());
+
+                    // The resolved_call on the + call site must be set (SigDispatch or
+                    // TraitMethod — both are valid concrete resolutions post-mono).
+                    if let Expr::Apply { resolved_call, .. } = defn.body() {
+                        assert!(
+                            resolved_call.is_some(),
+                            "mono body's + call site must have resolved_call set"
+                        );
+                    } else {
+                        panic!("mono body should be Apply, got {:?}", defn.body());
+                    }
+
+                    got_slot.expect("mono must have a GOT slot assigned")
+                }
+                other => panic!("'add$Int+Int' mono should be Def entry, got {:?}", other),
+            }
+        };
+
+        // Distinctness: template slot (if any) must differ from the mono slot.
+        // Constrained templates usually get no slot (`None`); in that case any
+        // Some(slot) on the mono is trivially distinct.
+        if let Some(t) = template_got_slot {
+            assert_ne!(
+                t, mono_got_slot,
+                "template and mono must have distinct GOT slots"
+            );
+        }
     }
 }

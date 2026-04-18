@@ -482,7 +482,6 @@ impl Jit {
             func_arities,
             symbol_tables,
             current_module,
-            env: None,
             traced_fns: None,
             alloc_func_id: self.alloc_func_id,
             dealloc_func_id: self.dealloc_func_id,
@@ -645,7 +644,7 @@ pub fn declare_intrinsics_generic<M: Module>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use cranelisp_types::{DefnVariant, ModuleFullPath};
+    use cranelisp_types::DefnVariant;
 
     // spec: 12-runtime §12.1 — ISA construction for host platform
     #[test]

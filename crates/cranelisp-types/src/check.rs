@@ -1,3 +1,9 @@
+// FIXME(/typecheck): Phase 5 — slim `CheckResult` (a.k.a. CheckOutput) to typecheck-internal state.
+// Post-Phase-2, `method_resolutions`, `mono_defns`, `default_method_defns`,
+// `constrained_fn_names`, and `expr_types` are duplicate data (canonical source
+// is ModuleEntry.ast + annotated AST nodes). Only `warnings` and `display` remain
+// as boundary data. See design/backend/ast-sourced-codegen.md §3.7.
+
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 

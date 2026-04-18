@@ -1574,9 +1574,23 @@ impl TypeCheckEnv<'_> {
             );
             let scheme = self.generalize(state, &fn_ty);
 
-            // Remove internal name, register mangled name
+            // Remove internal name, register mangled name.
+            // Wave 0 (§9.3): capture the already-annotated `ast` from the
+            // internal-name entry (`foo__v0`) and transfer it onto the mangled
+            // entry, renaming `defn.name` to the mangled form. The internal
+            // variant was fully annotated by `check_form_body_multi_sig` —
+            // no re-annotation needed here.
             let mut st = self.current_symbol_table_mut(state);
-            st.symbols.remove(internal_name.as_ref());
+            let internal_entry = st.symbols.remove(internal_name.as_ref());
+            let annotated_ast: Option<Defn> = match internal_entry {
+                Some(ModuleEntry::Def { ast, .. }) => {
+                    ast.map(|mut d| {
+                        d.name = mangled.clone();
+                        d
+                    })
+                }
+                _ => None,
+            };
             let slot = st.allocate_got_slot();
             st.insert(
                 mangled.clone(),
@@ -1591,7 +1605,7 @@ impl TypeCheckEnv<'_> {
                     callees: Vec::new(),
                     got_slot: Some(slot),
                     trait_origin: None,
-                    ast: None,
+                    ast: annotated_ast,
                 },
             );
 
@@ -6623,6 +6637,168 @@ mod tests {
                     ty
                 );
             }
+        }
+    }
+
+    // ---- Sprint 56 Wave 0 §9.3 — mangled multi-sig variant ast pre-materialisation ----
+
+    /// Build a two-variant multi-sig `add` defn:
+    ///   (defn add
+    ///     ([:Int a :Int b]   (add-i64 a b))
+    ///     ([:Float a :Float b] (add-f64 a b)))
+    fn make_add_multi_sig_int_float() -> Defn {
+        make_multi_defn(
+            "add",
+            vec![
+                DefnVariant {
+                    params: vec![Symbol::from("a"), Symbol::from("b")],
+                    param_annotations: vec![
+                        Some(TypeExpr::Named(TypeName::from("Int"))),
+                        Some(TypeExpr::Named(TypeName::from("Int"))),
+                    ],
+                    body: Expr::Apply {
+                        callee: Box::new(Expr::Var {
+                            name: Symbol::from("add-i64"),
+                            span: span(510, 517),
+                            inferred_type: None,
+                        }),
+                        args: vec![
+                            Expr::Var { name: Symbol::from("a"), span: span(518, 519), inferred_type: None },
+                            Expr::Var { name: Symbol::from("b"), span: span(520, 521), inferred_type: None },
+                        ],
+                        span: span(509, 522),
+                        resolved_call: None,
+                        inferred_type: None,
+                    },
+                    span: span(505, 523),
+                },
+                DefnVariant {
+                    params: vec![Symbol::from("a"), Symbol::from("b")],
+                    param_annotations: vec![
+                        Some(TypeExpr::Named(TypeName::from("Float"))),
+                        Some(TypeExpr::Named(TypeName::from("Float"))),
+                    ],
+                    body: Expr::Apply {
+                        callee: Box::new(Expr::Var {
+                            name: Symbol::from("add-f64"),
+                            span: span(530, 537),
+                            inferred_type: None,
+                        }),
+                        args: vec![
+                            Expr::Var { name: Symbol::from("a"), span: span(538, 539), inferred_type: None },
+                            Expr::Var { name: Symbol::from("b"), span: span(540, 541), inferred_type: None },
+                        ],
+                        span: span(529, 542),
+                        resolved_call: None,
+                        inferred_type: None,
+                    },
+                    span: span(525, 543),
+                },
+            ],
+            span(500, 544),
+        )
+    }
+
+    // spec: design/typecheck/ast-annotation.md §9.3 — mangled multi-sig variant ast pre-materialisation
+    #[test]
+    fn wave0_mangled_variant_carries_ast() {
+        let mut tc = tc_with_prims();
+        let program = vec![TopLevel::Defn(make_add_multi_sig_int_float())];
+        tc.check(&program, &test_ctx(), ModuleStrategy::Additive).unwrap();
+
+        let st = tc.symbol_table();
+
+        // add$Int+Int: Def entry with ast: Some(..) and ast.name == "add$Int+Int",
+        // single variant (mangled defns are per-variant).
+        match st.get("add$Int+Int") {
+            Some(ModuleEntry::Def { ast: Some(defn), kind, .. }) => {
+                assert_eq!(defn.name.as_ref(), "add$Int+Int");
+                assert_eq!(
+                    defn.variants.len(),
+                    1,
+                    "mangled variant must be a single-variant defn"
+                );
+                assert!(
+                    matches!(kind.as_ref(), DefKind::UserFn { constrained_fn: None }),
+                    "mangled variant kind should be UserFn(None), got {:?}",
+                    kind
+                );
+            }
+            other => panic!("add$Int+Int should be Def {{ ast: Some(..), .. }}, got {:?}", other),
+        }
+
+        // add$Float+Float: same shape, name rewritten.
+        match st.get("add$Float+Float") {
+            Some(ModuleEntry::Def { ast: Some(defn), kind, .. }) => {
+                assert_eq!(defn.name.as_ref(), "add$Float+Float");
+                assert_eq!(defn.variants.len(), 1);
+                assert!(matches!(kind.as_ref(), DefKind::UserFn { constrained_fn: None }));
+            }
+            other => panic!("add$Float+Float should be Def {{ ast: Some(..), .. }}, got {:?}", other),
+        }
+    }
+
+    // spec: design/typecheck/ast-annotation.md §9.3 — annotations fully substituted on mangled variant
+    #[test]
+    fn wave0_mangled_variant_ast_is_annotated() {
+        let mut tc = tc_with_prims();
+        let program = vec![TopLevel::Defn(make_add_multi_sig_int_float())];
+        tc.check(&program, &test_ctx(), ModuleStrategy::Additive).unwrap();
+
+        let st = tc.symbol_table();
+        let entry = st.get("add$Int+Int").expect("add$Int+Int must be registered");
+        let defn = match entry {
+            ModuleEntry::Def { ast: Some(d), .. } => d,
+            other => panic!("expected ast: Some(..), got {:?}", other),
+        };
+
+        // Walk every Expr node in the body; every inferred_type must be concrete
+        // (no Type::Var leaks after final substitution).
+        let body = defn.body();
+        let mut types = Vec::new();
+        collect_inferred_types(body, &mut types);
+        assert!(!types.is_empty(), "body should have at least one Expr node");
+        for (s, ty) in &types {
+            let ty = ty
+                .as_ref()
+                .unwrap_or_else(|| panic!("no inferred_type at span {:?}", s));
+            assert!(
+                !ty.contains_var(),
+                "inferred_type at span {:?} contains Type::Var: {:?}",
+                s,
+                ty
+            );
+        }
+
+        // The body root (the add-i64 Apply) should be concretely typed as Int.
+        assert_eq!(
+            body.inferred_type(),
+            Some(&Type::Int),
+            "add$Int+Int body should be Int"
+        );
+    }
+
+    // spec: design/typecheck/ast-annotation.md §9.3 — overloaded base has no ast
+    #[test]
+    fn wave0_overloaded_base_has_no_ast() {
+        let mut tc = tc_with_prims();
+        let program = vec![TopLevel::Defn(make_add_multi_sig_int_float())];
+        tc.check(&program, &test_ctx(), ModuleStrategy::Additive).unwrap();
+
+        let st = tc.symbol_table();
+        match st.get("add") {
+            Some(ModuleEntry::Def { ast, kind, .. }) => {
+                assert!(
+                    ast.is_none(),
+                    "overloaded base 'add' must have ast: None (bodies live on mangled variants)"
+                );
+                assert!(
+                    matches!(kind.as_ref(), DefKind::Overloaded { variants } if variants.len() == 2),
+                    "overloaded base kind should be Overloaded with 2 variants, got {:?}",
+                    kind
+                );
+            }
+            other => panic!("'add' base should be Def {{ Overloaded, ast: None }}, got {:?}", other),
         }
     }
 }

@@ -9,6 +9,7 @@ pub mod ast;
 pub mod types;
 pub mod check;
 pub mod module;
+pub mod got;
 pub mod heap;
 pub mod pipeline;
 pub mod operator;
@@ -32,6 +33,7 @@ pub use module::{
     MacroParam, ModDecl, ModuleEntry, OverloadVariant, PlatformSpec, PrimitiveKind,
     SymbolTable,
 };
+pub use got::GotTable;
 pub use heap::{HeapCategory, HeapHeader};
 pub use pipeline::{
     CallEdge, CallGraph, CallInfo, CodegenBehaviour, CompileContext, CompileResult,
