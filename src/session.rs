@@ -249,11 +249,10 @@ pub(crate) fn inject_prelude_import(
     tc.register_imports(check_state, &[import_spec])
 }
 
-/// Check whether a program has any defns or trait impls that need codegen.
-pub(crate) fn has_compilable_defns(program: &[cranelisp_types::TopLevel]) -> bool {
-    use cranelisp_types::TopLevel;
-    program.iter().any(|tl| matches!(tl, TopLevel::Defn(_) | TopLevel::TraitImpl(_)))
-}
+// Sprint 58 Step 5b: `has_compilable_defns` was a presence-check helper used
+// by the now-defunct `codegen_programs` stash drain in `compile_module_object`.
+// The replacement is `SymbolTable::defined_symbols().count() > 0`, which is
+// the same predicate the priority worker uses (Decision 22). Helper deleted.
 
 /// Apply bind chain independence analysis to all defn bodies in a program.
 #[allow(dead_code)]

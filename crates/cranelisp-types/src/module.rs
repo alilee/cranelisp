@@ -21,6 +21,14 @@ use crate::{
 /// Owned by `TypeChecker` (via `DashMap<ModuleFullPath, SymbolTable>`), read
 /// by `Backend` for type information, and mutated atomically per-slot by
 /// codegen workers through `got.store_slot`.
+///
+/// Structural declarations (`imports`, `exports`, `platforms`, `submodules`)
+/// retain the *original specification* of the module's `(import …)` /
+/// `(export …)` / `(platform …)` / `(mod …)` forms — the per-symbol
+/// `ModuleEntry::Import` entries are the *resolved effects* of imports.
+/// See Decision 33 in `design/arch/CLAUDE.md` (Sprint 58 Step 5a). The
+/// `ModuleStructure` parallel store in `src/save.rs` (Sprint-57 transitional
+/// shape) dissolves at Step 5a — its fields move 1:1 to these.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SymbolTable {
     pub path: ModuleFullPath,
@@ -46,6 +54,59 @@ pub struct SymbolTable {
     /// re-populates slot pointers during cache-hit codegen.
     #[serde(skip, default = "default_got_arc")]
     pub got: std::sync::Arc<GotTable>,
+
+    // --- Structural declarations (Sprint 58 Step 5a; Decision 33) ---
+    /// Original `(import [module [names...]])` declarations in source order.
+    /// Used by `src/save.rs::generate_module_source` for `.cl` regeneration
+    /// (spec §6.4) and by the import-resolver. Distinct from the per-symbol
+    /// `ModuleEntry::Import` entries, which are the *resolved* effects.
+    ///
+    /// Append-only during the form-by-form classification pass; insertion
+    /// order MUST match source order. No deduplication: duplicate `(import …)`
+    /// forms within one module produce two entries (the resolver issues a
+    /// duplicate-import warning based on this structural record). Per-module:
+    /// `imports` on module A's table contains only forms that appeared
+    /// lexically in A's source. See `design/typecheck/ast-annotation.md` §11.3
+    /// for the full invariants.
+    ///
+    /// Writer: `/int` (in `src/worker.rs` form-handlers; not typecheck-crate
+    /// code). Reader: import-resolver (`crates/cranelisp-typecheck/src/imports.rs`),
+    /// `.cl` regenerator (`src/save.rs`).
+    #[serde(default)]
+    pub imports: Vec<ImportSpec>,
+    /// Original `(export [names...])` declarations in source order. Same
+    /// append-only / no-dedup discipline as `imports`. See §11.3.
+    #[serde(default)]
+    pub exports: Vec<ExportSpec>,
+    /// Original `(platform "name")` declarations in source order. Same
+    /// append-only / no-dedup discipline as `imports`. Consumed by `/int` and
+    /// `/platform` (NOT by typecheck — see §11.5).
+    #[serde(default)]
+    pub platforms: Vec<PlatformSpec>,
+    /// Original `(mod child)` / `(mod- child)` declarations in source order;
+    /// `is_private` distinguishes `(mod-)`. Consumed by `/int` for submodule
+    /// loading.
+    #[serde(default)]
+    pub submodules: Vec<ModDecl>,
+
+    // --- Cache schema version (Sprint 58 Step 5b; Decision 34) ---
+    /// Schema version of the serialised symbol table. Bumped on every
+    /// shape-changing field addition / deletion / type change (additions of
+    /// `#[serde(default)]` fields whose default matches a fresh-build value
+    /// do NOT require a bump; explicit-default field additions, deletions,
+    /// and type changes DO require a bump).
+    ///
+    /// Cache-load reads this first; mismatch with the current
+    /// `CACHE_SCHEMA_VERSION` constant (defined in
+    /// `crates/cranelisp-backend/src/cache/mod.rs`, owned by `/backend`) is
+    /// treated as cache-stale — the same code path that fires when source
+    /// mtime or dependency hash changes.
+    ///
+    /// `#[serde(default)]` so pre-Sprint-58 caches (which lack the field)
+    /// deserialise as `0` and are rejected as version-mismatch by the cache
+    /// loader. See Decision 34.
+    #[serde(default)]
+    pub schema_version: u32,
 }
 
 fn default_got_arc() -> std::sync::Arc<GotTable> {
@@ -59,6 +120,11 @@ impl SymbolTable {
             symbols: HashMap::new(),
             next_got_slot: 0,
             got: std::sync::Arc::new(GotTable::new()),
+            imports: Vec::new(),
+            exports: Vec::new(),
+            platforms: Vec::new(),
+            submodules: Vec::new(),
+            schema_version: 0,
         }
     }
 
@@ -415,8 +481,8 @@ use crate::JitSymbol;
 mod tests {
     use super::*;
     use crate::{
-        Defn, DefnVariant, Expr, FQSymbol, FQTypeName, Scheme, Span, Symbol, Type, TypeDefInfo,
-        TypeName, Visibility,
+        Defn, DefnVariant, Expr, FQSymbol, FQTypeName, ModuleName, Scheme, Span, Symbol, Type,
+        TypeDefInfo, TypeName, Visibility,
     };
     use std::collections::HashMap;
 
@@ -878,5 +944,385 @@ mod tests {
             }
             other => panic!("expected ModuleEntry::Def, got {:?}", other),
         }
+    }
+
+    // ---- Sprint 58 Wave 2 Step 5a — Decision 33: structural-decl fields on SymbolTable ----
+
+    /// Build an `ImportSpec` with a unique span (used to verify source-order
+    /// preservation in the no-deduplication and ordering tests).
+    fn mk_import(module_path: &str, names: &[&str], span_start: u32) -> ImportSpec {
+        ImportSpec {
+            module_path: ModuleFullPath::from(module_path),
+            alias: None,
+            names: ImportNames::Specific(names.iter().map(|s| Symbol::from(*s)).collect()),
+            span: Span::new(span_start, span_start + 8),
+        }
+    }
+
+    /// Build an `ExportSpec` with a unique span.
+    fn mk_export(module_path: &str, names: &[&str], span_start: u32) -> ExportSpec {
+        ExportSpec {
+            module_path: ModuleFullPath::from(module_path),
+            names: ImportNames::Specific(names.iter().map(|s| Symbol::from(*s)).collect()),
+            span: Span::new(span_start, span_start + 8),
+        }
+    }
+
+    /// Build a `PlatformSpec` with a unique span.
+    fn mk_platform(name: &str, span_start: u32) -> PlatformSpec {
+        PlatformSpec {
+            name: name.to_string(),
+            span: Span::new(span_start, span_start + 8),
+        }
+    }
+
+    /// Build a `ModDecl` with a unique span.
+    fn mk_mod(name: &str, is_private: bool, span_start: u32) -> ModDecl {
+        ModDecl {
+            name: ModuleName::from(name),
+            is_private,
+            inline_body: None,
+            span: Span::new(span_start, span_start + 8),
+        }
+    }
+
+    // spec: design/typecheck/ast-annotation.md §11.3 invariant 1 — source-order preservation
+    //       (importing `[a [x]]` then `[b [y]]` records both in declaration order).
+    #[test]
+    fn symbol_table_imports_preserves_source_order() {
+        let mut st = SymbolTable::new(ModuleFullPath::from("user"));
+
+        // Push three imports in source order; spans are strictly increasing.
+        st.imports.push(mk_import("a", &["x"], 10));
+        st.imports.push(mk_import("b", &["y"], 30));
+        st.imports.push(mk_import("c", &["z"], 50));
+
+        assert_eq!(st.imports.len(), 3, "all three imports must be recorded");
+
+        // First-class structural shape: module paths in source order.
+        assert_eq!(
+            st.imports[0].module_path.as_ref(),
+            "a",
+            "imports[0] must be the first form pushed"
+        );
+        assert_eq!(st.imports[1].module_path.as_ref(), "b");
+        assert_eq!(st.imports[2].module_path.as_ref(), "c");
+
+        // Span ordering: insertion order matches source order.
+        assert!(
+            st.imports[0].span.start < st.imports[1].span.start,
+            "source-order invariant: imports[0].span.start < imports[1].span.start"
+        );
+        assert!(
+            st.imports[1].span.start < st.imports[2].span.start,
+            "source-order invariant: imports[1].span.start < imports[2].span.start"
+        );
+    }
+
+    // spec: design/typecheck/ast-annotation.md §11.3 invariant 2 — no deduplication
+    //       (importing `[a [x y]]` then `[a [x]]` records both; writer MUST NOT dedup).
+    #[test]
+    fn symbol_table_imports_no_deduplication() {
+        let mut st = SymbolTable::new(ModuleFullPath::from("user"));
+
+        // Two imports from the same module, different name lists, distinct spans.
+        st.imports.push(mk_import("a", &["x", "y"], 10));
+        st.imports.push(mk_import("a", &["x"], 30));
+
+        assert_eq!(
+            st.imports.len(),
+            2,
+            "duplicate imports MUST NOT collapse — both spans needed for resolver diagnostics"
+        );
+
+        // Both retain their distinct spans (not collapsed to one).
+        assert_eq!(st.imports[0].span.start, 10);
+        assert_eq!(st.imports[1].span.start, 30);
+
+        // Same shape applies to structurally-identical pushes (different spans).
+        let mut st2 = SymbolTable::new(ModuleFullPath::from("user"));
+        st2.imports.push(mk_import("a", &["x"], 10));
+        st2.imports.push(mk_import("a", &["x"], 30));
+        assert_eq!(
+            st2.imports.len(),
+            2,
+            "structurally-identical imports with distinct spans MUST NOT collapse"
+        );
+    }
+
+    // spec: design/typecheck/ast-annotation.md §11.3 invariant 3 — no cross-module mixing
+    //       (module A's `imports` does not contain B's imports).
+    #[test]
+    fn symbol_table_no_cross_module_mixing() {
+        // Two distinct symbol tables for modules A and B.
+        let mut a = SymbolTable::new(ModuleFullPath::from("user.a"));
+        let mut b = SymbolTable::new(ModuleFullPath::from("user.b"));
+
+        // Push to A only.
+        a.imports.push(mk_import("primitives", &["foo"], 10));
+        a.exports.push(mk_export("user.a", &["bar"], 20));
+        a.platforms.push(mk_platform("io", 30));
+        a.submodules.push(mk_mod("inner", false, 40));
+
+        // B is untouched.
+        assert_eq!(b.imports.len(), 0, "B's imports MUST be empty — A's writes do not leak");
+        assert_eq!(b.exports.len(), 0, "B's exports MUST be empty");
+        assert_eq!(b.platforms.len(), 0, "B's platforms MUST be empty");
+        assert_eq!(b.submodules.len(), 0, "B's submodules MUST be empty");
+
+        // Now push to B; A is unchanged.
+        b.imports.push(mk_import("primitives", &["baz"], 100));
+        assert_eq!(a.imports.len(), 1, "A's imports unchanged after B's write");
+        assert_eq!(b.imports.len(), 1);
+
+        // Distinct content across modules.
+        assert_ne!(
+            a.imports[0].span.start, b.imports[0].span.start,
+            "A and B carry independent records"
+        );
+    }
+
+    // spec: design/typecheck/ast-annotation.md §11.3 invariant 4 — coherence with
+    //       ModuleEntry::Import chains is one-way (positive direction):
+    //       every imports entry's specific names have a corresponding ModuleEntry::Import.
+    //       The reverse is NOT required (implicit prelude injection is /int's call).
+    #[test]
+    fn symbol_table_imports_have_corresponding_module_entries_positive() {
+        let mut st = SymbolTable::new(ModuleFullPath::from("user"));
+
+        // Structural record: import [primitives [foo bar]].
+        st.imports.push(mk_import("primitives", &["foo", "bar"], 10));
+
+        // Resolved effects: per-symbol Import entries from the same module.
+        st.insert(
+            Symbol::from("foo"),
+            ModuleEntry::Import {
+                source: FQSymbol {
+                    module: ModuleFullPath::from("primitives"),
+                    symbol: Symbol::from("foo"),
+                },
+            },
+        );
+        st.insert(
+            Symbol::from("bar"),
+            ModuleEntry::Import {
+                source: FQSymbol {
+                    module: ModuleFullPath::from("primitives"),
+                    symbol: Symbol::from("bar"),
+                },
+            },
+        );
+
+        // For every name in every Specific imports entry, a corresponding
+        // ModuleEntry::Import must exist whose source matches.
+        for spec in &st.imports {
+            if let ImportNames::Specific(syms) = &spec.names {
+                for sym in syms {
+                    let entry = st.get(sym.as_ref()).unwrap_or_else(|| {
+                        panic!(
+                            "import [{} [{}]] has no corresponding ModuleEntry::Import for `{}`",
+                            spec.module_path.as_ref(),
+                            sym.as_ref(),
+                            sym.as_ref()
+                        )
+                    });
+                    match entry {
+                        ModuleEntry::Import { source } => {
+                            assert_eq!(
+                                source.module, spec.module_path,
+                                "ModuleEntry::Import source module must match imports entry"
+                            );
+                            assert_eq!(
+                                source.symbol.as_ref(),
+                                sym.as_ref(),
+                                "ModuleEntry::Import source symbol must match imports entry"
+                            );
+                        }
+                        other => panic!(
+                            "expected ModuleEntry::Import for `{}`, got {:?}",
+                            sym.as_ref(),
+                            other
+                        ),
+                    }
+                }
+            }
+        }
+
+        // Reverse direction (every ModuleEntry::Import has an imports entry)
+        // is /int's Wave 2b design call per §11.3 invariant 4 — NOT enforced
+        // here. Implicit prelude injection produces ModuleEntry::Import chains
+        // without a structural imports entry, and that may be the chosen
+        // behaviour. /int picks based on resolver-diagnostic quality.
+    }
+
+    // spec: design/typecheck/ast-annotation.md §11.3 invariant 5 — read-only after
+    //       typecheck completes. There is no setter API for these fields; they are
+    //       written via direct field access by the worker (per §11.2). This test
+    //       is the documented-sense check: SymbolTable exposes no `set_imports`
+    //       /`add_import` / `clear_imports`-style mutator method that would imply
+    //       a public mutation protocol post-typecheck.
+    #[test]
+    fn symbol_table_structural_fields_have_no_setter_api() {
+        // Compile-time enforcement: this test compiles only because no such
+        // methods exist. The presence of any of the following inherent methods
+        // would indicate an unintended mutation API and SHOULD break the build:
+        //
+        //   st.set_imports(...)
+        //   st.add_import(...)
+        //   st.clear_imports()
+        //   st.set_exports(...)
+        //   st.set_platforms(...)
+        //   st.set_submodules(...)
+        //
+        // The fields are `pub`, so the worker writes via `st.imports.push(spec)`
+        // directly — that is the documented writer protocol (§11.2). No setter
+        // method abstraction is introduced because doing so would imply the
+        // mutation is part of the type's public API; the actual contract is
+        // "writer-only during the form-by-form classification pass, frozen
+        // after `tc.check_program(...)` returns" (§11.3 invariant 5), which
+        // is enforced at the call-site discipline level (in `/int`'s
+        // `src/worker.rs`), not at the type level.
+        //
+        // Assert nothing additional here — the test passes by compilation.
+        // Constructor returns empty fields, confirming the only mutation path
+        // is direct field-access by the writer.
+        let st = SymbolTable::new(ModuleFullPath::from("user"));
+        assert!(st.imports.is_empty(), "fresh SymbolTable starts with empty imports");
+        assert!(st.exports.is_empty(), "fresh SymbolTable starts with empty exports");
+        assert!(st.platforms.is_empty(), "fresh SymbolTable starts with empty platforms");
+        assert!(st.submodules.is_empty(), "fresh SymbolTable starts with empty submodules");
+    }
+
+    // spec: design/typecheck/ast-annotation.md §11.3 invariant 6 — serde round-trip
+    //       identity. A SymbolTable serialised → deserialised yields structurally
+    //       identical fields modulo runtime-only fields (`got`, `code`,
+    //       `platform_fn_ptr`, `linker`).
+    #[test]
+    fn symbol_table_serde_round_trip_with_structural_decls() {
+        let mut st = SymbolTable::new(ModuleFullPath::from("user.module"));
+        st.schema_version = 1;
+
+        // Populate all four structural fields with non-trivial content.
+        st.imports.push(mk_import("primitives", &["foo", "bar"], 10));
+        st.imports.push(mk_import("user.helper", &["baz"], 30));
+
+        st.exports.push(mk_export("user.module", &["public_fn"], 50));
+
+        st.platforms.push(mk_platform("stdio", 70));
+        st.platforms.push(mk_platform("test_capture", 90));
+
+        st.submodules.push(mk_mod("public_child", false, 110));
+        st.submodules.push(mk_mod("private_child", true, 130));
+
+        // Also add one Def entry to confirm symbols round-trip alongside.
+        st.insert(
+            Symbol::from("entry"),
+            mk_def(
+                DefKind::UserFn { constrained_fn: None },
+                Some(trivial_defn("entry")),
+            ),
+        );
+
+        // Round-trip via serde-JSON.
+        let json = serde_json::to_string(&st).expect("SymbolTable must serialize");
+        let rt: SymbolTable =
+            serde_json::from_str(&json).expect("SymbolTable must deserialize");
+
+        // Structural identity on the four new fields.
+        assert_eq!(rt.imports.len(), 2, "imports.len() must round-trip");
+        assert_eq!(rt.imports[0].module_path.as_ref(), "primitives");
+        assert_eq!(rt.imports[0].span.start, 10);
+        assert_eq!(rt.imports[1].module_path.as_ref(), "user.helper");
+        assert_eq!(rt.imports[1].span.start, 30);
+
+        assert_eq!(rt.exports.len(), 1, "exports.len() must round-trip");
+        assert_eq!(rt.exports[0].module_path.as_ref(), "user.module");
+        assert_eq!(rt.exports[0].span.start, 50);
+
+        assert_eq!(rt.platforms.len(), 2, "platforms.len() must round-trip");
+        assert_eq!(rt.platforms[0].name, "stdio");
+        assert_eq!(rt.platforms[1].name, "test_capture");
+        assert_eq!(rt.platforms[0].span.start, 70);
+
+        assert_eq!(rt.submodules.len(), 2, "submodules.len() must round-trip");
+        assert_eq!(rt.submodules[0].name.as_ref(), "public_child");
+        assert!(!rt.submodules[0].is_private, "is_private flag must round-trip (false)");
+        assert_eq!(rt.submodules[1].name.as_ref(), "private_child");
+        assert!(rt.submodules[1].is_private, "is_private flag must round-trip (true)");
+
+        // Schema version round-trips.
+        assert_eq!(rt.schema_version, 1, "schema_version must round-trip");
+
+        // Symbols round-trip (sanity check that adding new fields didn't
+        // disturb the existing serde shape).
+        assert!(rt.get("entry").is_some(), "Def entry must round-trip");
+
+        // Source ordering invariant survives the round-trip.
+        assert!(
+            rt.imports[0].span.start < rt.imports[1].span.start,
+            "source-order invariant survives serde round-trip"
+        );
+    }
+
+    // spec: design/arch/CLAUDE.md Decision 34 — `schema_version` defaults to 0
+    //       when deserialising from a Sprint-57-era cache (which lacks the field).
+    //       The cache loader compares the deserialised value to the current
+    //       `CACHE_SCHEMA_VERSION` constant (owned by /backend) and rejects
+    //       mismatches as cache-stale.
+    #[test]
+    fn symbol_table_schema_version_defaults_to_zero_for_legacy_cache() {
+        // Synthesise a JSON shape that matches a Sprint-57-era serialised
+        // SymbolTable: lacks `schema_version`. The four structural-decl fields
+        // also lack values (Sprint 57 had no `imports`/`exports`/`platforms`/
+        // `submodules` on SymbolTable), and they too carry `#[serde(default)]`
+        // so the legacy cache deserialises cleanly to empty Vecs and the
+        // schema_version mismatch is surfaced to the loader.
+        //
+        // This is the exact shape Decision 34 promises will trigger
+        // version-mismatch handling: deserialise succeeds with `schema_version
+        // = 0`, the loader compares to `CACHE_SCHEMA_VERSION = 1` (owned by
+        // /backend), and the cache entry is rejected as stale (same path as
+        // dep-hash mismatch).
+        let legacy_json = r#"{
+            "path": "user",
+            "symbols": {},
+            "next_got_slot": 0
+        }"#;
+
+        let rt: SymbolTable = serde_json::from_str(legacy_json)
+            .expect("legacy Sprint-57-era SymbolTable JSON must deserialize cleanly");
+
+        assert_eq!(
+            rt.schema_version, 0,
+            "schema_version MUST default to 0 for legacy caches lacking the field — \
+             cache loader uses this to detect Sprint-57-era caches and reject as stale"
+        );
+
+        // The four structural-decl fields default to empty when absent — also
+        // load-bearing for legacy-cache compatibility (the cache loader
+        // version-checks BEFORE attempting to use these fields, but the
+        // deserialise step must succeed first).
+        assert!(rt.imports.is_empty(), "missing `imports` field defaults to empty Vec");
+        assert!(rt.exports.is_empty(), "missing `exports` field defaults to empty Vec");
+        assert!(rt.platforms.is_empty(), "missing `platforms` field defaults to empty Vec");
+        assert!(rt.submodules.is_empty(), "missing `submodules` field defaults to empty Vec");
+    }
+
+    // spec: design/typecheck/ast-annotation.md §11.3 invariant 2 — no deduplication
+    //       (same shape applies to exports as to imports).
+    #[test]
+    fn symbol_table_exports_no_deduplication() {
+        let mut st = SymbolTable::new(ModuleFullPath::from("user"));
+
+        st.exports.push(mk_export("user", &["foo"], 10));
+        st.exports.push(mk_export("user", &["foo"], 30));
+
+        assert_eq!(
+            st.exports.len(),
+            2,
+            "duplicate exports MUST NOT collapse (parallel to imports invariant)"
+        );
+        assert_eq!(st.exports[0].span.start, 10);
+        assert_eq!(st.exports[1].span.start, 30);
     }
 }

@@ -1206,13 +1206,12 @@ impl<'a, M: Module> FnCompiler<'a, M> {
                 span,
             })?;
 
+        // Decision 23 (Wave 2 follow-on): the symbol address IS the slab base
+        // — no extra pointer-cell deref. One load reaches the slot.
         let gv = self.module.declare_data_in_func(data_id, builder.func);
-        let entry_addr = builder.ins().global_value(types::I64, gv);
-        let got_base = builder
-            .ins()
-            .load(types::I64, MemFlags::trusted(), entry_addr, 0);
+        let slab_base = builder.ins().global_value(types::I64, gv);
         let slot_offset = (slot * 8) as i64;
-        let slot_addr = builder.ins().iadd_imm(got_base, slot_offset);
+        let slot_addr = builder.ins().iadd_imm(slab_base, slot_offset);
         let func_ptr = builder
             .ins()
             .load(types::I64, MemFlags::trusted(), slot_addr, 0);

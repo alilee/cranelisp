@@ -113,18 +113,21 @@ pub fn compile_and_execute_expr(
     if traced_fns.is_empty() {
         use cranelisp_types::{Defn, DefnVariant, Symbol, Visibility};
 
-        let extra_syms: Vec<(&str, *const u8)> = jit_symbols
+        // Decision 23 (Wave 2 follow-on): per-module GOT slabs are registered
+        // through the JIT's symbol-lookup table — the symbol address IS the
+        // slab base, no extra pointer-cell indirection. Fold `got_data_defs`
+        // into `extra_symbols` so `JITBuilder::symbol()` resolves
+        // `__cranelisp_got_{M}` directly to `GotTable.base_ptr()`.
+        let mut extra_syms: Vec<(&str, *const u8)> = jit_symbols
             .iter()
             .map(|(name, ptr)| (name.as_str(), *ptr))
             .collect();
+        for (name, ptr) in got_data_defs {
+            extra_syms.push((name.as_str(), *ptr));
+        }
 
         let mut jit = cranelisp_backend::jit::Jit::new_with_symbols(&extra_syms)?;
         jit.declare_intrinsics()?;
-
-        // Define GOT base literal pool entries as data in the JIT module.
-        for (name, ptr) in got_data_defs {
-            jit.define_got_data(name, *ptr)?;
-        }
 
         let wrapper_name = Symbol::from("__repl_expr__");
         // Use a synthetic wrapper span that nests the expr span so the
@@ -251,14 +254,14 @@ fn compile_and_execute_expr_with_trace(
     for (name, ptr) in trace_extra_symbols {
         extra_syms.push((name.as_str(), *ptr));
     }
+    // Decision 23 (Wave 2 follow-on): per-module GOT slabs are registered via
+    // the JIT's symbol-lookup table — the symbol address IS the slab base.
+    for (name, ptr) in got_data_defs {
+        extra_syms.push((name.as_str(), *ptr));
+    }
 
     let mut jit = cranelisp_backend::jit::Jit::new_with_symbols(&extra_syms)?;
     jit.declare_intrinsics()?;
-
-    // Define GOT base literal pool entries as data in the JIT module.
-    for (name, ptr) in got_data_defs {
-        jit.define_got_data(name, *ptr)?;
-    }
 
     let wrapper_name = Symbol::from("__repl_expr__");
     let wrapper_defn = Defn {

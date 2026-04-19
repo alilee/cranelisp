@@ -544,29 +544,17 @@ impl Jit {
         Ok(CompileArtifacts { clif_ir, disasm, code_size })
     }
 
-    /// Define a GOT base literal pool entry as data in the JIT module.
-    ///
-    /// Creates an 8-byte data section entry containing the given pointer value.
-    /// Code compiled against this JIT module uses `global_value(DataId)` to get
-    /// the entry's address, then `load` to read the GOT base from it.
-    pub fn define_got_data(&mut self, name: &str, ptr: *const u8) -> Result<(), CranelispError> {
-        let data_id = self
-            .module_mut()
-            .declare_data(name, Linkage::Export, false, false)
-            .map_err(|e| CranelispError::CodegenError {
-                message: format!("failed to declare GOT data '{name}': {e}"),
-                span: Span::SYNTHETIC,
-            })?;
-        let mut desc = cranelift_module::DataDescription::new();
-        desc.define(Box::new((ptr as u64).to_le_bytes()));
-        self.module_mut()
-            .define_data(data_id, &desc)
-            .map_err(|e| CranelispError::CodegenError {
-                message: format!("failed to define GOT data '{name}': {e}"),
-                span: Span::SYNTHETIC,
-            })?;
-        Ok(())
-    }
+    // Decision 23 (Sprint 58 Wave 2 follow-on): per-module GOT slabs are
+    // registered with the JIT via `JITBuilder::symbol()` (passed through
+    // `Jit::new_with_symbols`'s `extra_symbols`). The symbol address IS the
+    // slab base (`GotTable.base_ptr()`) — no extra pointer-cell indirection.
+    // The matching `apply.rs` CLIF declares the symbol as `Linkage::Import`
+    // data on demand and resolves it via `global_value`. This matches
+    // object-mode's `define_module_got_data` shape so the same CLIF runs
+    // byte-identically in both modes. The previous helper that defined an
+    // 8-byte data block containing the slab pointer (an extra indirection)
+    // has been removed; callers now fold GOT registrations into
+    // `extra_symbols`.
 
     /// Build a `CompileContext` from environment parameters.
     ///
@@ -955,4 +943,274 @@ mod tests {
         );
     }
 
+    // spec: design/arch/CLAUDE.md Decision 23 (Sprint 58 Wave 2 follow-on) —
+    // unified GOT data symbol shape: the symbol address IS the per-module
+    // slab base directly, with NO extra pointer-cell indirection. In JIT
+    // mode this is achieved by registering `__cranelisp_got_{M}` via
+    // `JITBuilder::symbol()` (passed through `extra_symbols`) so the
+    // lookup-fn returns the slab base; CLIF emitted by
+    // `emit_got_indirect_call_via_data_id` then does one `global_value`
+    // (= ADRP+LDR through the system GOT) + one slot offset + one slot
+    // load. This test compiles a function that takes the symbol's address
+    // via `global_value` and asserts the address equals the registered
+    // slab base — i.e. the registered address is NOT a separate pointer
+    // cell that itself contains the slab base.
+    #[test]
+    fn jit_got_symbol_address_is_slab_base() {
+        use cranelisp_types::{Defn, DefnVariant, Expr, Type, Visibility};
+        use cranelift_module::Linkage;
+        use std::sync::atomic::{AtomicU64, Ordering};
+
+        // Use a static, address-stable backing storage as the "slab base".
+        // The test asserts that `__cranelisp_got_test_module` resolves to
+        // exactly this address (no extra deref).
+        static SLAB: AtomicU64 = AtomicU64::new(0xDEAD_BEEF_CAFE_F00D);
+        let slab_base_ptr: *const u8 = &SLAB as *const _ as *const u8;
+
+        let got_sym = "__cranelisp_got_test_module";
+        let mut jit = Jit::new_with_symbols(&[(got_sym, slab_base_ptr)])
+            .expect("JIT construction with GOT symbol");
+        jit.declare_intrinsics().expect("intrinsics");
+
+        // Compile a fn that returns the *address* of the GOT data symbol —
+        // this is what `global_value` resolves to inside the unified GOT
+        // call sequence. If JIT registration is correct, the returned i64
+        // equals `slab_base_ptr as u64` (no extra pointer-cell deref).
+        let name = Symbol::from("get_got_addr");
+        let body = Expr::IntLit {
+            value: 0,
+            span: Span::SYNTHETIC,
+            inferred_type: Some(Box::new(Type::Int)),
+        };
+        let defn = Defn {
+            name: name.clone(),
+            docstring: None,
+            variants: vec![DefnVariant {
+                params: vec![],
+                param_annotations: vec![],
+                body,
+                span: Span::SYNTHETIC,
+            }],
+            visibility: Visibility::Public,
+            span: Span::SYNTHETIC,
+        };
+
+        // Declare the function and build a context, then hand-write the body
+        // so the test does not depend on the broader codegen pipeline. The
+        // body is: declare `__cranelisp_got_test_module` as Import data,
+        // take its address via `global_value`, return it as i64.
+        let func_ids = jit.declare_functions(&[&defn]).expect("declare");
+        let func_id = *func_ids.get(&name).expect("func_id");
+
+        // Build the body by reaching into the JIT module directly.
+        {
+            let module = jit.jit_module();
+            let mut sig = module.make_signature();
+            sig.returns.push(cranelift::prelude::AbiParam::new(
+                cranelift::prelude::types::I64,
+            ));
+            let mut ctx = module.make_context();
+            ctx.func.signature = sig;
+            ctx.func.name = cranelift::codegen::ir::UserFuncName::testcase(name.as_bytes());
+
+            let data_id = module
+                .declare_data(got_sym, Linkage::Import, false, false)
+                .expect("declare GOT data");
+
+            let mut fbc = FunctionBuilderContext::new();
+            {
+                let gv = module.declare_data_in_func(data_id, &mut ctx.func);
+                let mut fb = cranelift::prelude::FunctionBuilder::new(&mut ctx.func, &mut fbc);
+                let entry = fb.create_block();
+                fb.switch_to_block(entry);
+                fb.seal_block(entry);
+                let addr = fb
+                    .ins()
+                    .global_value(cranelift::prelude::types::I64, gv);
+                fb.ins().return_(&[addr]);
+                fb.finalize();
+            }
+            module
+                .define_function(func_id, &mut ctx)
+                .expect("define_function");
+            module.clear_context(&mut ctx);
+        }
+
+        let ptr = jit.finalize_and_get_ptr(&name, 0).expect("finalize");
+        // SAFETY: the JIT is still alive; signature is `extern "C" fn() -> i64`.
+        let f: extern "C" fn() -> i64 = unsafe { std::mem::transmute(ptr) };
+        let returned = f() as u64;
+
+        assert_eq!(
+            returned,
+            slab_base_ptr as u64,
+            "JIT-resolved address of __cranelisp_got_test_module must equal \
+             the registered slab base directly (no pointer-cell indirection); \
+             returned={:#x}, expected={:#x}",
+            returned,
+            slab_base_ptr as u64,
+        );
+
+        // Regression guard: read the SLAB content. If the JIT had defined
+        // the symbol as a pointer cell containing the slab base, the
+        // returned address would point INTO `SLAB` (and `*returned == SLAB`).
+        // With the correct registration, the returned address IS
+        // `&SLAB`, so `*returned == SLAB.load()`. The two are
+        // distinguishable only when the registered symbol address is the
+        // slab itself: confirm by reading 8 bytes at the returned address.
+        let read = unsafe { std::ptr::read_unaligned(returned as *const u64) };
+        assert_eq!(
+            read,
+            SLAB.load(Ordering::Relaxed),
+            "Address returned must point AT the slab (so dereferencing it \
+             yields the slab's first word), confirming no intermediate \
+             pointer cell exists."
+        );
+    }
+
+    // spec: design/arch/CLAUDE.md Decision 23 — cross-module dispatch via
+    // GOT-indirect call. Two synthetic modules: producer module owns a fn
+    // returning 99 with its pointer placed at slot 7 of a heap-allocated
+    // slab; consumer module compiles a thunk that loads slot 7 from the
+    // producer's GOT and tail-calls through it. Asserts the round-trip
+    // returns 99, exercising the full unified call shape end-to-end.
+    #[test]
+    fn jit_cross_module_got_dispatch_end_to_end() {
+        use cranelift_module::Linkage;
+        use std::alloc::{alloc_zeroed, Layout};
+
+        // 1. Build a "producer" JIT, compile `producer_fn` returning 99.
+        //    Read out its finalised pointer.
+        let producer_ptr: *const u8 = {
+            use cranelisp_types::{Defn, DefnVariant, Expr, Type, Visibility};
+            let mut jit = Jit::new().expect("producer JIT");
+            jit.declare_intrinsics().expect("intrinsics");
+            let name = Symbol::from("producer_fn");
+            let defn = Defn {
+                name: name.clone(),
+                docstring: None,
+                variants: vec![DefnVariant {
+                    params: vec![],
+                    param_annotations: vec![],
+                    body: Expr::IntLit {
+                        value: 99,
+                        span: Span::SYNTHETIC,
+                        inferred_type: Some(Box::new(Type::Int)),
+                    },
+                    span: Span::SYNTHETIC,
+                }],
+                visibility: Visibility::Public,
+                span: Span::SYNTHETIC,
+            };
+            let func_ids = jit.declare_functions(&[&defn]).expect("declare");
+            let func_arities: HashMap<Symbol, usize> = HashMap::new();
+            let symbol_tables: dashmap::DashMap<
+                cranelisp_types::ModuleFullPath,
+                cranelisp_types::SymbolTable,
+            > = dashmap::DashMap::new();
+            let module_path = cranelisp_types::ModuleFullPath::from("producer");
+            symbol_tables.insert(
+                module_path.clone(),
+                cranelisp_types::SymbolTable::new(module_path.clone()),
+            );
+            let compile_ctx =
+                jit.build_compile_context(&func_ids, &func_arities, &symbol_tables, module_path);
+            jit.compile_defn(&defn, compile_ctx).expect("compile");
+            let ptr = jit.finalize_and_get_ptr(&name, 0).expect("finalize");
+            // Leak `jit` so the code pages stay live for the duration of the test.
+            std::mem::forget(jit);
+            ptr
+        };
+
+        // 2. Allocate a 16-slot slab on the heap, write `producer_ptr` at slot 7.
+        let slot = 7usize;
+        let slab_size = 16 * 8;
+        let layout = Layout::from_size_align(slab_size, 8).unwrap();
+        let slab_base: *mut u8 = unsafe { alloc_zeroed(layout) };
+        unsafe {
+            let slot_addr = slab_base.add(slot * 8) as *mut u64;
+            slot_addr.write(producer_ptr as u64);
+        }
+
+        // 3. Build a consumer JIT with `__cranelisp_got_producer` registered
+        //    pointing at the slab base directly (Decision 23 — symbol
+        //    address IS the slab base, no pointer-cell indirection).
+        let got_sym = "__cranelisp_got_producer";
+        let mut consumer = Jit::new_with_symbols(&[(got_sym, slab_base as *const u8)])
+            .expect("consumer JIT");
+        consumer.declare_intrinsics().expect("intrinsics");
+
+        // 4. Hand-build a thunk that emits the unified GOT call shape:
+        //    slab = global_value(__cranelisp_got_producer)
+        //    fn_ptr = load(slab + slot * 8)
+        //    return call_indirect(fn_ptr)
+        let thunk_name = Symbol::from("consumer_thunk");
+        let thunk_id = {
+            let module = consumer.jit_module();
+            let mut sig = module.make_signature();
+            sig.returns.push(cranelift::prelude::AbiParam::new(
+                cranelift::prelude::types::I64,
+            ));
+            let id = module
+                .declare_function(&thunk_name, Linkage::Export, &sig)
+                .expect("declare thunk");
+            let data_id = module
+                .declare_data(got_sym, Linkage::Import, false, false)
+                .expect("declare GOT data");
+
+            let mut ctx = module.make_context();
+            ctx.func.signature = sig.clone();
+            ctx.func.name =
+                cranelift::codegen::ir::UserFuncName::testcase(thunk_name.as_bytes());
+            let mut fbc = FunctionBuilderContext::new();
+            {
+                let gv = module.declare_data_in_func(data_id, &mut ctx.func);
+                let mut fb = cranelift::prelude::FunctionBuilder::new(&mut ctx.func, &mut fbc);
+                let entry = fb.create_block();
+                fb.switch_to_block(entry);
+                fb.seal_block(entry);
+                let slab = fb
+                    .ins()
+                    .global_value(cranelift::prelude::types::I64, gv);
+                let slot_addr = fb.ins().iadd_imm(slab, (slot * 8) as i64);
+                let fn_ptr = fb.ins().load(
+                    cranelift::prelude::types::I64,
+                    cranelift::prelude::MemFlags::trusted(),
+                    slot_addr,
+                    0,
+                );
+                let mut callee_sig = module.make_signature();
+                callee_sig.returns.push(cranelift::prelude::AbiParam::new(
+                    cranelift::prelude::types::I64,
+                ));
+                let sig_ref = fb.import_signature(callee_sig);
+                let call = fb.ins().call_indirect(sig_ref, fn_ptr, &[]);
+                let result = fb.inst_results(call)[0];
+                fb.ins().return_(&[result]);
+                fb.finalize();
+            }
+            module
+                .define_function(id, &mut ctx)
+                .expect("define thunk");
+            module.clear_context(&mut ctx);
+            id
+        };
+
+        consumer.finalize().expect("finalize consumer");
+        let thunk_ptr = consumer.get_finalized_ptr(thunk_id);
+        // SAFETY: thunk just finalised; signature is `extern "C" fn() -> i64`.
+        let thunk: extern "C" fn() -> i64 = unsafe { std::mem::transmute(thunk_ptr) };
+        let result = thunk();
+        assert_eq!(
+            result, 99,
+            "Cross-module GOT dispatch must round-trip the producer's return value (99)"
+        );
+
+        // Cleanup: drop consumer JIT (producer was forgotten — the slab
+        // and its slot pointer remain valid for the duration of `result`'s
+        // computation, and we deliberately leak both for test simplicity).
+        drop(consumer);
+        // SAFETY: nothing reads `slab_base` after this point.
+        unsafe { std::alloc::dealloc(slab_base, layout) };
+    }
 }

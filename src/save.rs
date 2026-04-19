@@ -2,7 +2,13 @@
 //
 // Implements repl/spec.md §15 and design/int/session-persistence.md.
 // Regenerates the backing .cl file for the current module from the
-// symbol table and structural metadata after each definition.
+// symbol table after each definition.
+//
+// Sprint 58 Step 5a (Decision 33): the structural decls
+// (imports/exports/platforms/submodules) live as fields on `SymbolTable`
+// itself. The transitional `ModuleStructure` parallel store on
+// `SharedState.module_structures` dissolves; this module reads everything
+// from `SymbolTable`.
 
 use std::collections::HashSet;
 use std::io::Write;
@@ -18,25 +24,10 @@ use dashmap::DashMap;
 use crate::session_v4::Introspection;
 
 // ---------------------------------------------------------------------------
-// ModuleStructure — per-module structural metadata for persistence
-// ---------------------------------------------------------------------------
-
-/// Structural metadata retained per module for source regeneration.
-/// Populated during form processing (import/export/mod/platform).
-/// Lives on SharedState.module_structures.
-#[derive(Debug, Clone, Default)]
-pub struct ModuleStructure {
-    pub import_specs: Vec<ImportSpec>,
-    pub export_specs: Vec<ExportSpec>,
-    pub mod_decls: Vec<ModDecl>,
-    pub platform_specs: Vec<PlatformSpec>,
-}
-
-// ---------------------------------------------------------------------------
 // Source regeneration — pure function
 // ---------------------------------------------------------------------------
 
-/// Generate complete module source from symbol table and structural metadata.
+/// Generate complete module source from the module's `SymbolTable`.
 ///
 /// Pure function: reads data, returns source text. Sections appear in
 /// the order specified by design/int/session-persistence.md §1.3:
@@ -48,34 +39,40 @@ pub struct ModuleStructure {
 ///   6. types (alphabetical)
 ///   7. impls (from TraitImpl entries)
 ///   8. fns and macros (dependency-sorted)
+///
+/// Sprint 58 Step 5a: structural decls read directly from
+/// `symbol_table.{submodules, platforms, imports, exports}`. The implicit
+/// prelude `(import [prelude [*]])` is suppressed by `generate_imports`
+/// itself — `imports` records only user-authored forms (CP3 / option (b),
+/// see `design/int/symbol-table-cache.md` §3) but the filter remains as a
+/// belt-and-braces guard.
 pub fn generate_module_source(
     symbol_table: &SymbolTable,
     introspection: &DashMap<FQSymbol, Introspection>,
-    structure: &ModuleStructure,
     module_path: &ModuleFullPath,
 ) -> String {
     let mut sections = Vec::new();
 
     // 1. Module declarations
-    let mod_section = generate_mod_decls(&structure.mod_decls);
+    let mod_section = generate_mod_decls(&symbol_table.submodules);
     if !mod_section.is_empty() {
         sections.push(mod_section);
     }
 
     // 2. Platform declarations
-    let platform_section = generate_platforms(&structure.platform_specs);
+    let platform_section = generate_platforms(&symbol_table.platforms);
     if !platform_section.is_empty() {
         sections.push(platform_section);
     }
 
     // 3. Imports (merged, prelude filtered)
-    let import_section = generate_imports(&structure.import_specs);
+    let import_section = generate_imports(&symbol_table.imports);
     if !import_section.is_empty() {
         sections.push(import_section);
     }
 
     // 4. Exports (merged)
-    let export_section = generate_exports(&structure.export_specs);
+    let export_section = generate_exports(&symbol_table.exports);
     if !export_section.is_empty() {
         sections.push(export_section);
     }

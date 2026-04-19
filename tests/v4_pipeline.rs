@@ -598,6 +598,13 @@ fn v4_circular_import_error() {
 
 // spec: design/int/step5-lazy-discovery.md §4 — cache hit path
 // spec: design/arch/pipeline-v4-roadmap.md §Step 5 — register_module_cached
+//
+// FIXME(/int): Sprint 58 Wave 2c — second `--run` invocation produces a
+// different exit code (`None` vs `Some(77)`), indicating the cache-hit path
+// crashes the binary. After Wave 2c migrated `tests/cache.rs` to the new
+// `cache::write_meta` / `cache::load_meta` API (Decision 33+34), this test
+// is still failing — root cause is in `/int`'s cache-hit re-derive flow,
+// shared with the `cache_multi_module_*` cluster in `tests/cache.rs`.
 #[test]
 fn v4_cache_hit_dependency() {
     // Run a multi-module program twice. The second run should hit the cache

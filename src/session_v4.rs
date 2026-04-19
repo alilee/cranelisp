@@ -570,8 +570,10 @@ pub struct SharedState {
 
     /// Per-module typecheck products (replaces TC-internal storage).
     pub typecheck_products: dashmap::DashMap<ModuleFullPath, TypecheckProduct>,
-    /// Transient program stash for nice worker .o compilation.
-    pub codegen_programs: dashmap::DashMap<ModuleFullPath, Vec<TopLevel>>,
+    // Sprint 58 Step 5b (Decision 22): the `codegen_programs` transient
+    // stash is gone — the nice worker walks `symbol_tables[module]
+    // .defined_symbols()` directly to enumerate codegen targets, the same
+    // predicate the priority worker uses, so no parallel store is needed.
 
     // Sprint 57 Wave 2 G6: `codegen_products: DashMap<ModuleFullPath, CodegenProduct>`
     // was here. Deleted. Compiled code is read from
@@ -617,9 +619,11 @@ pub struct SharedState {
     pub kept_dlls: Mutex<Vec<LoadedPlatform>>,
     /// Per-symbol introspection data, REPL-only (replaces def_codegen for slash commands).
     pub introspection: dashmap::DashMap<FQSymbol, Introspection>,
-    /// Per-module structural metadata for source regeneration (repl/spec.md §15).
-    /// Tracks import/export/mod/platform specs. Populated during form processing.
-    pub module_structures: dashmap::DashMap<ModuleFullPath, crate::save::ModuleStructure>,
+    // Sprint 58 Step 5a (Decision 33): `module_structures` was a parallel
+    // store for `(import …)`/`(export …)`/`(platform …)`/`(mod …)` decls in
+    // source order. Those are now fields on `SymbolTable` itself
+    // (populated by `src/worker.rs` form-handlers, read by `src/save.rs`
+    // and the file-watcher cascade in `try_pop_changes`).
 }
 
 /// Resolve the effective priority-worker count from a `SessionSettings`
@@ -740,12 +744,10 @@ impl CompilerSession {
             current_module: Mutex::new(user_module.clone()),
             repl_check_state: Mutex::new(Some(CheckState::new(user_module))),
             typecheck_products: dashmap::DashMap::new(),
-            codegen_programs: dashmap::DashMap::new(),
             kept_jits: Mutex::new(Vec::new()),
             kept_linkers: Mutex::new(Vec::new()),
             kept_dlls: Mutex::new(Vec::new()),
             introspection: dashmap::DashMap::new(),
-            module_structures: dashmap::DashMap::new(),
         });
 
         // Spawn persistent priority worker threads (Sprint 57 Wave 4 G9).
@@ -970,19 +972,19 @@ impl CompilerSession {
                 }
         }
         // Cascade invalidation: find modules that import any changed module
-        // and add them to the reload list. Uses module_structures to discover
-        // reverse dependencies.
+        // and add them to the reload list. Sprint 58 Step 5a: read `imports`
+        // off the per-module SymbolTable directly (was: parallel
+        // `module_structures.import_specs`).
         let changed_modules: HashSet<ModuleFullPath> = modules_to_reload
             .iter()
             .map(|(mp, _)| mp.clone())
             .collect();
-        for entry in self.shared.module_structures.iter() {
+        for entry in self.shared.symbol_tables.iter() {
             let dependent_module = entry.key().clone();
             if changed_modules.contains(&dependent_module) {
                 continue; // Already being reloaded directly.
             }
-            let structure = entry.value();
-            let depends_on_changed = structure.import_specs.iter().any(|spec| {
+            let depends_on_changed = entry.value().imports.iter().any(|spec| {
                 let import_mod = ModuleFullPath::from(spec.module_path.as_ref());
                 changed_modules.contains(&import_mod)
             });
@@ -1043,23 +1045,18 @@ impl CompilerSession {
             None => self.shared.project_root.join(format!("{}.cl", module)),
         };
 
-        // Read the symbol table for this module.
+        // Read the symbol table for this module. Sprint 58 Step 5a: structural
+        // decls (imports/exports/platforms/submodules) are now fields on the
+        // SymbolTable itself; no separate read is needed.
         let st = match self.shared.symbol_tables.get(&module) {
             Some(st) => st.clone(),
             None => return, // No symbol table — nothing to save.
         };
 
-        // Read structural metadata.
-        let structure = self.shared.module_structures
-            .get(&module)
-            .map(|s| s.clone())
-            .unwrap_or_default();
-
         // Generate source text.
         let source = crate::save::generate_module_source(
             &st,
             &self.shared.introspection,
-            &structure,
             &module,
         );
 
@@ -1123,7 +1120,6 @@ impl CompilerSession {
         // redefinition policy of "old code stays callable for in-flight
         // calls" — same behaviour as before, just via a different store).
         self.shared.typecheck_products.remove(module_path);
-        self.shared.codegen_programs.remove(module_path);
         // Clear any stale suspend state from a prior compile of this module.
         {
             let mut states = self.shared.suspend_states.lock()
@@ -2978,6 +2974,11 @@ impl CompilerSession {
             }
         })?;
         let main_return = crate::exe::validate_main(&entry_table)?;
+        // Sprint 58 Wave 2 / Decision 36: read the entry module's `main`
+        // GOT slot index now (before dropping the table guard). The alias
+        // `.o` (emitted below) routes the system linker's `_main` import
+        // through this slot via `__cranelisp_got_{entry_module}`.
+        let main_got_slot = crate::exe::entry_main_got_slot(&entry_table)?;
         drop(entry_table);
 
         let main_returns_io = main_return == crate::exe::MainReturnKind::Io;
@@ -3003,14 +3004,13 @@ impl CompilerSession {
         let platform_rlib_paths =
             crate::exe::find_platform_rlibs();
 
-        // Compute the qualified entry function name. compile_to_module
-        // prefixes function names with "module/" for modules not named
-        // "user" or "main" (see lib.rs jit_prefix logic).
-        let entry_fn_name = if module_name == "user" || module_name == "main" {
-            "main".to_string()
-        } else {
-            format!("{module_name}/main")
-        };
+        // Sprint 58 Wave 2 / Decision 36: every user-defined function is
+        // declared bare-`Linkage::Local` by `compile_to_module` (no
+        // module-qualified naming). The startup stub references `main`
+        // (bare) as `Linkage::Import`; the system linker resolves it
+        // against the alias `.o` we emit below, which exports `main`
+        // and tail-calls through the entry module's GOT.
+        let entry_fn_name = "main".to_string();
 
         // Generate startup .o stub.
         let startup_bytes = crate::exe::generate_startup_object(
@@ -3035,6 +3035,23 @@ impl CompilerSession {
             }
         })?;
 
+        // Sprint 58 Wave 2 / Decision 36 `--link` exception: emit the
+        // `_main` Export alias `.o` that tail-calls into the entry
+        // module's GOT slot for `main`. Without this alias the system
+        // linker has no `_main` symbol to resolve (the entry module's
+        // bare `main` is `Linkage::Local`), and link fails with
+        // "undefined symbol _main".
+        let alias_bytes =
+            crate::exe::generate_main_alias_object(&module, main_got_slot)?;
+        let alias_o_path = cache_dir.join("__main_alias.o");
+        std::fs::write(&alias_o_path, &alias_bytes).map_err(|e| {
+            CranelispError::ModuleError {
+                message: format!("failed to write main alias .o: {e}"),
+                file: Some(alias_o_path.clone()),
+                span: Span::SYNTHETIC,
+            }
+        })?;
+
         // Find the runtime bundle library.
         let bundle_lib = crate::exe::find_bundle_lib()?;
 
@@ -3042,10 +3059,16 @@ impl CompilerSession {
         // E.g., `cranelisp --link examples/hello.cl` produces `./hello`.
         let output_path = PathBuf::from(module_name.replace(".cl", ""));
 
+        // Compose the final .o list: nice-worker module .o files +
+        // the `_main` alias .o. The alias is appended last so its Export
+        // `_main` resolves the startup stub's Import.
+        let mut all_o_paths = o_paths;
+        all_o_paths.push(alias_o_path);
+
         // Link.
         crate::exe::link_executable(
             &output_path,
-            &o_paths,
+            &all_o_paths,
             &startup_o_path,
             &bundle_lib,
             &platform_rlib_paths,
@@ -3531,9 +3554,11 @@ fn nice_worker_loop(shared: &SharedState) {
 
 /// Compile a single module to `.o` and `.meta.json` files in the cache directory.
 ///
-/// Reads the module's program from the shared `codegen_programs` DashMap
-/// (stashed by the priority worker). Reads `SymbolTable` from `typecheck_products`
-/// for .meta.json serialization.
+/// Sprint 58 Step 5b: reads `SymbolTable` directly via the shared
+/// `defined_symbols()` predicate (Decision 22). The transitional
+/// `codegen_programs` stash is gone — the backend never read from it, and
+/// the "had compilable defns" presence signal collapses to "did
+/// `defined_symbols()` return anything".
 ///
 /// Errors are logged to stderr and do not halt the worker — the module is still
 /// marked object-complete so the scheduler lifecycle proceeds.
@@ -3544,21 +3569,8 @@ fn compile_module_object(
 ) {
     use cranelisp_backend::cache;
 
-    // Drain the stashed program (Phase 2 still writes this, Step 2b will delete
-    // both the stash and this drain). The backend no longer reads from it —
-    // it walks `symbol_tables` via `defined_symbols()` — but we still use its
-    // presence as a "had compilable defns" signal.
-    let Some((_, program)) = shared.codegen_programs.remove(module) else {
-        // No data stashed — module may have had no compilable defns.
-        return;
-    };
-
-    // Skip modules with no compilable defns (types-only, imports-only).
-    if !crate::session::has_compilable_defns(&program) {
-        return;
-    }
-
     // Enumerate codegen-compilable symbols via the shared predicate (Decision 22).
+    // Empty result → no compilable defns (types-only, imports-only) → skip.
     let names: Vec<cranelisp_types::Symbol> = shared
         .symbol_tables
         .get(module)
@@ -3643,33 +3655,23 @@ fn compile_module_object(
         return;
     }
 
-    // Build and write .meta.json for cache-hit restoration.
-    // GOT slot assignments are on ModuleEntry::Def in the SymbolTable,
-    // so only the symbol table needs serializing.
+    // Write .meta.json for cache-hit restoration via the unified
+    // `cache::write_meta` API (Sprint 58 Step 5b / Decision 33+34).
+    // The .meta.json IS a serialised SymbolTable; `write_meta` stamps
+    // `schema_version = CACHE_SCHEMA_VERSION` on the cloned table before
+    // serialising. Per Decision 33, structural decls
+    // (imports/exports/platforms/submodules) are now fields on the
+    // SymbolTable itself — the worker form-handlers populate them in
+    // `process_module_forms`, so the serialised table carries the
+    // user-authored structural specifications inline (no separate
+    // `dependencies` envelope needed; cache-hit derives transitive deps from
+    // `imports` directly).
     let symbol_table = shared.symbol_tables
         .get(module)
         .map(|guard| guard.clone())
         .unwrap_or_else(|| cranelisp_types::SymbolTable::new(module.clone()));
 
-    // Extract dependency module paths from Import entries for recursive
-    // cache loading on future cache hits (Sprint 53 — transitive deps).
-    let dependencies: Vec<String> = {
-        let mut deps = std::collections::HashSet::new();
-        for (_name, entry) in symbol_table.all_symbols() {
-            if let cranelisp_types::ModuleEntry::Import { source } = entry {
-                let mod_path = source.module.as_ref();
-                if mod_path != "primitives" && mod_path != "macros" {
-                    deps.insert(mod_path.to_string());
-                }
-            }
-        }
-        deps.into_iter().collect()
-    };
-    let metadata = cache::CacheMetadata {
-        symbol_table,
-        dependencies,
-    };
-    if let Err(e) = cache::write_cached_metadata(&meta_path, &metadata) {
+    if let Err(e) = cache::write_meta(&meta_path, &symbol_table, cache::CACHE_SCHEMA_VERSION) {
         eprintln!("nice-worker: .meta.json write failed for {}: {}", module, e.message());
         // Continue — the .o file was written successfully.
     }

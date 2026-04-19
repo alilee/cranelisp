@@ -932,6 +932,23 @@ impl<C: CodeStore, L: LinkerStore> SymbolTable<C, L> {
 
 The Sprint-57 `ModuleStructure` struct in `src/save.rs` is **deleted** at Step 5a — its `import_specs` / `export_specs` / `mod_decls` / `platform_specs` fields move 1:1 to the corresponding `SymbolTable` fields above. `SharedState.module_structures: DashMap<ModuleFullPath, ModuleStructure>` dissolves; `src/save.rs::generate_module_source` reads from the `SymbolTable` it already holds. See Decision 33.
 
+#### Two-GOT model — SymbolTable GOT vs `.o` data section GOT
+
+Decision 23 (updated Sprint 58 Wave 2) records that every CLIF reference to `__cranelisp_got_{M}` resolves to a base address; the runtime memory the base addresses depends on the `Module` implementation used at finalize time. The two GOTs are distinct artefacts with different owners, lifetimes, mutability, and purposes — but they share the same name and the same per-slot semantics so that the backend can emit byte-identical CLIF in both modes.
+
+| GOT | Backing | Owner / location | Lifetime | When read | Mutable? |
+|---|---|---|---|---|---|
+| **SymbolTable GOT** | `pub got: Arc<GotTable>` field on `SymbolTable` (above, line 870) — in-process memory | runtime / `cranelisp-types` | session — created at module registration, lives until session teardown | JIT (`--run`, REPL) — `JITBuilder::symbol_lookup_fn` (registered by the integration layer in `src/session_v4.rs`) returns `symbol_tables[M].got.base_ptr()` when Cranelift resolves the `Linkage::Import` data symbol at finalize | YES — REPL redefinition writes a new fn ptr into the existing slot via the Decision-31 atomic swap; the swap is the redefinition mechanism that makes existing callers see the new code |
+| **`.o` data section GOT** | `Linkage::Export` data symbol named `__cranelisp_got_{M}` defined inside `M`'s own `.o`, with relocation initializers against the local function symbols (Decision 36) | object-file artefact emitted by `compile_to_module<ObjectModule>` | one per `.o` file on disk; in-memory only after `Linker::load_object` mmaps the `.o` | `--link` mode — system linker (`ld`) patches relocations against the defined data symbol when producing the executable; or our cache `Linker` in `--run`/REPL after cache-hit, when reading the `.o` to resolve cross-`.o` references | NO — initialised by the linker / loader once at load time, never mutated thereafter |
+
+**Why two GOTs.** The SymbolTable GOT is for runtime — JIT calls index into it; REPL redefinition mutates it; it is the live store that user code reaches through. The `.o` data section GOT is for the on-disk artefact — the system linker in `--link` mode needs a defined data symbol to patch relocations against; without it, the system linker reports `__cranelisp_got_{M}` undefined (Bug B in `design/int/symbol-table-cache.md` §"Investigation findings"). The two are not stepping stones for each other — they serve different masters at different lifecycle phases.
+
+**Same data symbol, different resolvers.** The CLIF emitted by `compile_to_module` declares `__cranelisp_got_{M}` as `Linkage::Import` from the caller's POV uniformly (the FnCompiler does not know which Module impl resolves it). The `.o` definition (`Linkage::Export`) appears only in the *defining* module's own `.o`, emitted via `compile_to_module<ObjectModule>`'s data-section emission step. JIT mode never reads the `.o` definition — `JITBuilder::symbol_lookup_fn` short-circuits the import resolution to the SymbolTable GOT base. `--link` mode never touches the SymbolTable GOT (the binary runs standalone and never instantiates a session).
+
+**Mode dispatch is the Module impl, not the CLIF.** This is the canonical illustration of Principle 11 (single pipeline, mode parameters): one CLIF, two resolvers. Adding a third mode (e.g. AOT to a static archive) would add a third resolver behind a third Module impl — the CLIF would not change.
+
+Cross-references: Decision 23 (two-GOT framing); Decision 31 (the SymbolTable GOT slot is the redefinition atomic-swap target — the `--run` GOT MUST be mutable for redefinition to work); Decision 36 (function symbol naming + linkage policy — bare-Local is correct because the `.o` data section GOT's relocation initializers are intra-`.o`); Decision 37 (cache-hit codegen-phase order independence is established by the SymbolTable GOT slot LAYOUT being pinned at typecheck time).
+
 ### Module Entries
 
 ```rust

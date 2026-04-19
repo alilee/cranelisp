@@ -17,6 +17,16 @@ pub use manifest::{
     CacheManifest, CachedModuleRef, CacheInvalidReason, check_manifest, hash_source,
     read_manifest, write_manifest, binary_fingerprint,
 };
+// Authoritative cache API (Sprint 58 Step 5b — `module-caching.md` §14):
+// `.meta.json` IS a serialised `SymbolTable`; `CacheStale` is the
+// failure-mode discriminator caller logs / branches on.
+pub use serialize::{
+    deserialise_meta, load_meta, serialise_meta, write_meta, CacheStale,
+};
+// Deprecated shims — present so `/int`-owned (`src/session_v4.rs`) and
+// `/qa`-owned (`tests/cache.rs`) call sites continue to compile during the
+// Wave 2b parallel migration. Migrate to the authoritative API above.
+#[allow(deprecated)]
 pub use serialize::{CacheMetadata, read_cached_metadata, write_cached_metadata};
 pub use object::{
     ObjectCompileInput, IntrinsicTable, IntrinsicEntry,
@@ -25,9 +35,30 @@ pub use object::{
 };
 pub use linker::Linker;
 
-/// Cache format version. Bump when .o or .meta.json layout changes.
-/// On mismatch, all cached modules are invalidated and recompiled.
-pub const CACHE_FORMAT_VERSION: u32 = 1;
+/// Cache schema version (Decision 34, Sprint 58 §14.2).
+///
+/// Stamped onto `SymbolTable.schema_version` at cache-write time. Cache-load
+/// peeks the field first; mismatch returns `CacheStale::SchemaMismatch` and
+/// the caller falls through to a fresh build (same code path as dep-hash
+/// mismatch).
+///
+/// Bump on:
+/// * field deletions on `SymbolTable` / any `ModuleEntry` variant,
+/// * field type changes (deserialise<New> would fail on persisted Old),
+/// * enum variant additions to a serde-tagged enum used inside `SymbolTable`,
+/// * variant renames.
+///
+/// Field additions with `#[serde(default)]` whose default matches a fresh-build
+/// value do NOT require a bump.
+pub const CACHE_SCHEMA_VERSION: u32 = 1;
+
+/// **SUPERSEDED (Sprint 58 §14.2)**: renamed to `CACHE_SCHEMA_VERSION` so
+/// `/int`'s `symbol-table-cache.md` and Decision 34 use one term. The semantic
+/// is unchanged. Kept as an alias so `tests/cache.rs` (owned by `/qa`)
+/// continues to compile during the Wave 2b parallel migration. Doc-only
+/// deprecation: a `#[deprecated]` attribute would surface warnings inside
+/// files this crate is forbidden to edit.
+pub const CACHE_FORMAT_VERSION: u32 = CACHE_SCHEMA_VERSION;
 
 /// Compute the cache directory path for module files.
 ///
@@ -81,8 +112,14 @@ fn module_dir_and_stem(module_path: &cranelisp_types::ModuleFullPath) -> (String
 /// re-done from source (fast compared to full pipeline). Full `.o` loading
 /// via the Linker is deferred to a future sprint.
 #[derive(Debug, Clone)]
+#[allow(deprecated)]
 pub struct CachedModule {
     /// The deserialized module metadata (symbol table, structure, codegen state).
+    ///
+    /// **Note (Sprint 58 §14.4)**: this field still typed as `CacheMetadata`
+    /// for back-compat during Wave 2b. New callers should consume
+    /// `cached.symbol_table()` directly and ignore the envelope. The envelope
+    /// dissolves when the `/int` worker migrates to the `load_meta` API.
     pub metadata: serialize::CacheMetadata,
     /// Path to the `.meta.json` file (for diagnostics).
     pub meta_path: std::path::PathBuf,
@@ -92,6 +129,7 @@ pub struct CachedModule {
     pub has_object: bool,
 }
 
+#[allow(deprecated)]
 impl CachedModule {
     /// Get the restored symbol table.
     pub fn symbol_table(&self) -> &cranelisp_types::SymbolTable {
@@ -138,29 +176,23 @@ impl CachedModule {
 /// `SymbolTable` must have the same entries as a freshly typechecked module.
 /// This is enforced structurally: both paths feed the same
 /// `install_module_scope()` function in the pipeline.
+#[allow(deprecated)]
 pub fn try_load_cached_module(
     cache_dir: &std::path::Path,
     module_path: &cranelisp_types::ModuleFullPath,
 ) -> Result<Option<CachedModule>, cranelisp_types::CranelispError> {
     let (meta_path, object_path) = module_cache_path(cache_dir, module_path);
 
-    // Check if .meta.json exists
-    if !meta_path.exists() {
-        return Ok(None);
-    }
-
-    // Attempt to deserialize
-    let metadata = match serialize::read_cached_metadata(&meta_path) {
-        Ok(m) => m,
-        Err(_) => {
-            // Corrupt or incompatible metadata — treat as cache miss.
-            // The file will be overwritten on next successful compilation.
-            return Ok(None);
-        }
+    // Use the authoritative `load_meta` API; treat any `CacheStale` variant
+    // as a cache miss (§14.7 — every variant maps to "fall through to fresh
+    // build" caller-side).
+    let symbol_table = match serialize::load_meta(&meta_path) {
+        Ok(t) => t,
+        Err(_stale) => return Ok(None),
     };
 
     // Validate the module path matches (defense against file mix-ups)
-    if metadata.symbol_table.path != *module_path {
+    if symbol_table.path != *module_path {
         return Ok(None);
     }
 
@@ -169,6 +201,15 @@ pub fn try_load_cached_module(
         && std::fs::metadata(&object_path)
             .map(|m| m.len() > 0)
             .unwrap_or(false);
+
+    // Wrap the symbol table back into the deprecated `CacheMetadata` envelope
+    // for back-compat with the `CachedModule { metadata }` field shape. Once
+    // `/int` migrates `try_cache_hit_load` to consume `SymbolTable` directly,
+    // this wrapper goes away with `CacheMetadata` itself.
+    let metadata = serialize::CacheMetadata {
+        symbol_table,
+        dependencies: Vec::new(),
+    };
 
     Ok(Some(CachedModule {
         metadata,
@@ -197,6 +238,7 @@ pub fn try_load_cached_module(
 /// into the live GOT using the slot assignments from `cached.codegen_state().got_slots`.
 ///
 /// Returns a map of function name → code pointer (`*const u8`).
+#[allow(deprecated)]
 pub fn load_cached_object(
     linker: &mut linker::Linker,
     cached: &CachedModule,
@@ -247,16 +289,19 @@ pub(crate) fn atomic_write(
 }
 
 #[cfg(test)]
+#[allow(deprecated)]
 mod tests {
     use super::*;
     use cranelisp_types::{ModuleFullPath, SymbolTable};
 
-    fn make_test_metadata(module_path: &str) -> serialize::CacheMetadata {
+    /// Helper: write a fresh-build SymbolTable to the cache path using the
+    /// authoritative API (`write_meta` + `CACHE_SCHEMA_VERSION`). Replaces
+    /// the pre-§14 `make_test_metadata` + `write_cached_metadata` pattern
+    /// inside this test module.
+    fn write_test_table(meta_path: &std::path::Path, module_path: &str) {
         let mp = ModuleFullPath::from(module_path);
-        serialize::CacheMetadata {
-            symbol_table: SymbolTable::new(mp),
-            dependencies: Vec::new(),
-        }
+        let table = SymbolTable::new(mp);
+        serialize::write_meta(meta_path, &table, CACHE_SCHEMA_VERSION).unwrap();
     }
 
     // spec: design/backend/module-caching.md §8 — cache load returns metadata
@@ -264,13 +309,12 @@ mod tests {
     fn test_try_load_cached_module_success() {
         let dir = tempfile::tempdir().unwrap();
         let mp = ModuleFullPath::from("user");
-        let metadata = make_test_metadata("user");
 
-        // Write metadata to expected path
+        // Write a fresh-build SymbolTable to the expected path.
         let (meta_path, _) = module_cache_path(dir.path(), &mp);
-        serialize::write_cached_metadata(&meta_path, &metadata).unwrap();
+        write_test_table(&meta_path, "user");
 
-        // Load it back
+        // Load it back via the back-compat wrapper.
         let result = try_load_cached_module(dir.path(), &mp).unwrap();
         assert!(result.is_some());
         let cached = result.unwrap();
@@ -303,11 +347,11 @@ mod tests {
     #[test]
     fn test_try_load_cached_module_path_mismatch() {
         let dir = tempfile::tempdir().unwrap();
-        // Write metadata for "other" at the path for "user"
+        // Write a SymbolTable with module path "other" at the cache slot
+        // expected by module path "user" — defence against file mix-ups.
         let mp_user = ModuleFullPath::from("user");
-        let metadata = make_test_metadata("other");
         let (meta_path, _) = module_cache_path(dir.path(), &mp_user);
-        serialize::write_cached_metadata(&meta_path, &metadata).unwrap();
+        write_test_table(&meta_path, "other");
 
         let result = try_load_cached_module(dir.path(), &mp_user).unwrap();
         assert!(result.is_none());
@@ -318,10 +362,9 @@ mod tests {
     fn test_try_load_cached_module_nested() {
         let dir = tempfile::tempdir().unwrap();
         let mp = ModuleFullPath::from("core.numerics");
-        let metadata = make_test_metadata("core.numerics");
 
         let (meta_path, _) = module_cache_path(dir.path(), &mp);
-        serialize::write_cached_metadata(&meta_path, &metadata).unwrap();
+        write_test_table(&meta_path, "core.numerics");
 
         let result = try_load_cached_module(dir.path(), &mp).unwrap();
         assert!(result.is_some());
@@ -334,10 +377,9 @@ mod tests {
     fn test_try_load_cached_module_with_object() {
         let dir = tempfile::tempdir().unwrap();
         let mp = ModuleFullPath::from("user");
-        let metadata = make_test_metadata("user");
 
         let (meta_path, object_path) = module_cache_path(dir.path(), &mp);
-        serialize::write_cached_metadata(&meta_path, &metadata).unwrap();
+        write_test_table(&meta_path, "user");
         // Write a non-empty .o file
         atomic_write(&object_path, b"fake object data").unwrap();
 
@@ -352,10 +394,9 @@ mod tests {
     fn test_try_load_cached_module_empty_object() {
         let dir = tempfile::tempdir().unwrap();
         let mp = ModuleFullPath::from("user");
-        let metadata = make_test_metadata("user");
 
         let (meta_path, object_path) = module_cache_path(dir.path(), &mp);
-        serialize::write_cached_metadata(&meta_path, &metadata).unwrap();
+        write_test_table(&meta_path, "user");
         // Write empty .o
         atomic_write(&object_path, b"").unwrap();
 

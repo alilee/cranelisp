@@ -14,7 +14,10 @@ use sha2::{Digest, Sha256};
 
 use cranelisp_types::{CranelispError, ModuleFullPath, Span};
 
-use super::CACHE_FORMAT_VERSION;
+// `cache_format_version` is the field name on `CacheManifest` (kept stable
+// for on-disk JSON compatibility). The constant value comes from
+// `CACHE_SCHEMA_VERSION` post-Sprint-58 §14.2 rename.
+use super::CACHE_SCHEMA_VERSION as CACHE_FORMAT_VERSION;
 
 /// Global cache manifest. Maps module paths to source hashes and
 /// stores global invalidation keys.

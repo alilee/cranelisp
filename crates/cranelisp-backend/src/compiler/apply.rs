@@ -416,15 +416,18 @@ impl<'a, M: Module> FnCompiler<'a, M> {
 
     /// Emit a GOT-indirect call using a data symbol reference.
     ///
-    /// The data symbol is a literal pool entry containing a GOT table base
-    /// address. Works in both JIT and object codegen:
-    ///   JIT: data defined with GotTable address, global_value → movz+movk
-    ///   Object: data in .o data section (zeroed), linker patches at load time
+    /// The data symbol IS the per-module GOT slab base address (no extra
+    /// pointer-cell indirection). Works identically in both JIT and object
+    /// codegen:
+    ///   JIT:    `__cranelisp_got_{M}` registered via `JITBuilder::symbol()`
+    ///           with `GotTable.base_ptr()`; lookup returns slab base directly.
+    ///   Object: `__cranelisp_got_{M}` defined as `Linkage::Export` data
+    ///           sized `slot_count * 8` with function-address relocations at
+    ///           each slot — the symbol's load address IS the slab base.
     ///
-    /// Codegen:
-    ///   entry_addr = global_value(data_id)   // address of literal pool entry
-    ///   got_base   = load(entry_addr)         // GOT table base address
-    ///   fn_ptr     = load(got_base + slot*8)  // function pointer from GOT
+    /// Codegen (one indirection at the literal-pool / system-GOT layer):
+    ///   slab_base = global_value(data_id)         // ADRP+LDR via system GOT
+    ///   fn_ptr    = load(slab_base + slot * 8)    // load slot from slab
     ///   call_indirect(fn_ptr, args)
     fn emit_got_indirect_call_via_data_id(
         &mut self,
@@ -432,18 +435,12 @@ impl<'a, M: Module> FnCompiler<'a, M> {
         slot: usize,
         arg_vals: &[Value],
     ) -> Result<Value, CranelispError> {
-        // Load the GOT base address from the literal pool entry.
+        // The symbol address IS the slab base (Decision 23 — unified shape).
         let gv = self.module.declare_data_in_func(data_id, self.builder.func);
-        let entry_addr = self.builder.ins().global_value(types::I64, gv);
-        let got_base = self.builder.ins().load(
-            types::I64,
-            MemFlags::trusted(),
-            entry_addr,
-            0,
-        );
+        let slab_base = self.builder.ins().global_value(types::I64, gv);
 
-        // Compute slot address: got_base + slot * 8
-        let slot_addr = self.builder.ins().iadd_imm(got_base, (slot * 8) as i64);
+        // Compute slot address: slab_base + slot * 8
+        let slot_addr = self.builder.ins().iadd_imm(slab_base, (slot * 8) as i64);
 
         // Load the function pointer from the GOT slot.
         let func_ptr = self.builder.ins().load(

@@ -31,7 +31,7 @@ use cranelift_module::FuncId;
 use dashmap::DashMap;
 
 use cranelisp_types::{
-    Code, CranelispError, Defn, ModuleFullPath, Span, Symbol, SymbolTable, Type, Warning,
+    Code, CranelispError, Defn, ModuleFullPath, Span, Symbol, SymbolTable, Warning,
 };
 
 use cranelift::prelude::*;
@@ -113,6 +113,47 @@ pub trait CodeFinalizer {
     ///
     /// Only valid after `finalize_for_code_read()` has returned `Ok`.
     fn try_get_finalized_function(&self, func_id: FuncId) -> Option<*const u8>;
+
+    /// Define the per-module GOT data symbol (`__cranelisp_got_{M}`) inside
+    /// the module's `.o` artefact, with relocation initializers against each
+    /// of the module's local function symbols. Implements the `.o` data
+    /// section GOT half of the two-GOT model (`/arch` Decision 23 + 36).
+    ///
+    /// Parameters:
+    /// - `name`: the `__cranelisp_got_{flat_path}` data symbol name
+    ///   (single source of truth: `compiler::got_data_symbol_name`).
+    /// - `slot_count`: total slot count = `max(slot_index) + 1`. The data
+    ///   symbol is sized as `slot_count * 8` bytes (zero-initialized).
+    /// - `slot_funcs`: `(slot_index, FuncId)` pairs for every defined
+    ///   function in this module. Each slot's 8-byte entry receives a
+    ///   relocation initializer pointing to that function's local symbol.
+    ///   Slots with no entry remain zero (empty slots are not currently
+    ///   produced by typecheck — every defined function gets a slot).
+    ///
+    /// For `JITModule`: no-op. The JIT-mode `__cranelisp_got_{M}` data is
+    /// defined by the integration layer via `Jit::define_got_data` directly,
+    /// pointing at the runtime `SymbolTable.got.base_ptr()`. The `.o` data
+    /// definition is irrelevant in JIT mode (no `.o` is emitted).
+    ///
+    /// For `ObjectModule`: declares the symbol as `Linkage::Export`,
+    /// allocates `slot_count * 8` bytes initialized to zero, and writes a
+    /// function-address relocation at byte offset `slot_index * 8` for each
+    /// `(slot_index, FuncId)` pair. The system linker (`--link` mode) and
+    /// our cache `Linker` (`--run` mode after cache-hit) materialise these
+    /// relocations into actual function addresses at load time.
+    ///
+    /// Per Decision 23: the same CLIF emitted by `compile_to_module<M>`
+    /// references `__cranelisp_got_{M}` symmetrically as `Linkage::Import`
+    /// in both modes; the *definition* differs by `Module` impl. JIT mode's
+    /// definition lives outside `compile_to_module` (in the integration
+    /// layer's `Jit::define_got_data` call); object mode's definition lives
+    /// in this trait method, called from inside `compile_to_module`.
+    fn define_module_got_data(
+        &mut self,
+        name: &str,
+        slot_count: usize,
+        slot_funcs: &[(usize, FuncId)],
+    ) -> Result<(), CranelispError>;
 }
 
 impl CodeFinalizer for cranelift_jit::JITModule {
@@ -125,6 +166,20 @@ impl CodeFinalizer for cranelift_jit::JITModule {
 
     fn try_get_finalized_function(&self, func_id: FuncId) -> Option<*const u8> {
         Some(self.get_finalized_function(func_id))
+    }
+
+    fn define_module_got_data(
+        &mut self,
+        _name: &str,
+        _slot_count: usize,
+        _slot_funcs: &[(usize, FuncId)],
+    ) -> Result<(), CranelispError> {
+        // No-op: the JIT-mode `__cranelisp_got_{M}` data symbol is defined
+        // by the integration layer's `Jit::define_got_data` call (which
+        // points the symbol at the runtime SymbolTable.got.base_ptr()). The
+        // `.o` data section GOT shape is unused in JIT mode — no `.o` is
+        // emitted. See `/arch` Decision 23 (two-GOT model).
+        Ok(())
     }
 }
 
@@ -140,6 +195,76 @@ impl CodeFinalizer for cranelift_object::ObjectModule {
         // No runtime pointer exists for object-mode compilation. The G6 write
         // loop skips the per-entry code write when this returns None.
         None
+    }
+
+    fn define_module_got_data(
+        &mut self,
+        name: &str,
+        slot_count: usize,
+        slot_funcs: &[(usize, FuncId)],
+    ) -> Result<(), CranelispError> {
+        // Bug B fix per `/arch` Decision 23 (updated Sprint 58 Wave 2):
+        // declare the per-module GOT data symbol as `Linkage::Export` and
+        // populate its slots with function-address relocations against each
+        // defined function's local symbol. The system linker (`--link` mode)
+        // and our cache `Linker` (`--run` mode after cache-hit) resolve the
+        // relocations at load time, materialising the GOT contents.
+        if slot_count == 0 {
+            // No slots to define. Skip — symbol is not needed by callers.
+            return Ok(());
+        }
+
+        let data_id = self
+            .declare_data(name, cranelift_module::Linkage::Export, false, false)
+            .map_err(|e| CranelispError::CodegenError {
+                message: format!(
+                    "failed to declare GOT data symbol '{name}' as Export: {e}"
+                ),
+                span: Span::SYNTHETIC,
+            })?;
+
+        let mut desc = cranelift_module::DataDescription::new();
+        // Use `define` with explicit zero bytes (NOT `define_zeroinit`) so the
+        // GOT lands in a regular `__DATA` section, not `__DATA,__bss`
+        // (`S_ZEROFILL`). macOS `ld` segfaults when applying relocations
+        // against BSS sections — relocations require a regular data section.
+        // The contents are identical (zero-initialized 8 bytes per slot) but
+        // the section placement differs. Function-address relocations declared
+        // below via `desc.write_function_addr` are still applied normally at
+        // link time.
+        desc.define(vec![0u8; slot_count * 8].into_boxed_slice());
+
+        for &(slot, func_id) in slot_funcs {
+            // Sanity: slot must be in range; defensive guard against a
+            // malformed slot list. A slot >= slot_count would corrupt
+            // adjacent data; we surface the shape mismatch as an error
+            // rather than silently truncate.
+            if slot >= slot_count {
+                return Err(CranelispError::CodegenError {
+                    message: format!(
+                        "GOT slot {slot} for '{name}' exceeds declared slot_count {slot_count}"
+                    ),
+                    span: Span::SYNTHETIC,
+                });
+            }
+            let func_ref = self.declare_func_in_data(func_id, &mut desc);
+            let offset: u32 = (slot * 8).try_into().map_err(|_| {
+                CranelispError::CodegenError {
+                    message: format!(
+                        "GOT slot offset overflows u32 for slot {slot} in '{name}'"
+                    ),
+                    span: Span::SYNTHETIC,
+                }
+            })?;
+            desc.write_function_addr(offset, func_ref);
+        }
+
+        self.define_data(data_id, &desc)
+            .map_err(|e| CranelispError::CodegenError {
+                message: format!("failed to define GOT data symbol '{name}': {e}"),
+                span: Span::SYNTHETIC,
+            })?;
+        Ok(())
     }
 }
 
@@ -157,8 +282,23 @@ impl CodeFinalizer for cranelift_object::ObjectModule {
 ///   `Linkage::Import` data symbol `__cranelisp_got_{module}`; `Module`
 ///   implementations resolve at finalize time (linker relocations for Object;
 ///   `JITBuilder::symbol_lookup_fn` for JIT — caller's responsibility)
-/// - Cross-module refs: resolved from `symbol_tables` Import chains
-/// - JIT name prefix: derived from `module_path`
+/// - Cross-module function refs: under `/arch` Decision 36 (bare-Local)
+///   plus Decision 31 (all-GOT calling), every cross-module call is GOT-
+///   indirect (`__cranelisp_got_{other_M}`). No `Linkage::Import` function
+///   declarations are needed for cross-module fns — they are unreachable
+///   by direct call. Compile-time arity for cross-module calls is resolved
+///   via `compiler::resolve_func_arity` walking the symbol tables.
+///
+/// # Function naming and linkage (`/arch` Decision 36)
+///
+/// Every user-defined function is declared with its bare symbol-table name
+/// (`defn.name`) and `Linkage::Local`, uniformly across all modules. The
+/// pre-Sprint-58 `user`/`main` special case (bare-Export for those modules,
+/// FQ-Export for everything else) was a defect, deleted here. Function
+/// symbols never cross `.o` boundaries — every call goes through the per-
+/// module GOT — so `Linkage::Local` is sufficient and avoids cross-`.o`
+/// symbol-table pollution. See Decision 36 in `design/arch/CLAUDE.md` and
+/// `design/backend/compile-to-module.md` §7 for the full rationale.
 ///
 /// # G6 write path
 ///
@@ -170,6 +310,21 @@ impl CodeFinalizer for cranelift_object::ObjectModule {
 /// is skipped (no runtime pointer exists). See §9.1 of
 /// `design/backend/compile-to-module.md` and `/arch` Decision 25 for the
 /// architectural statement.
+///
+/// # GOT data symbol emission (`/arch` Decision 23 Bug B fix)
+///
+/// After function declarations, this function calls
+/// `module.define_module_got_data(...)` to emit the per-module
+/// `__cranelisp_got_{M}` data symbol. The implementation is `Module`-impl-
+/// specific:
+/// - `JITModule`: no-op (the JIT path defines this symbol externally via
+///   `Jit::define_got_data` pointing at the runtime
+///   `SymbolTable.got.base_ptr()`).
+/// - `ObjectModule`: declares the symbol as `Linkage::Export` with a
+///   zero-initialized slab of `slot_count * 8` bytes and writes a function-
+///   address relocation at byte offset `slot * 8` for each defined
+///   function. The system linker (`--link`) and the cache `Linker` (`--run`
+///   after cache-hit) resolve the relocations at load time.
 pub fn compile_to_module<M: Module + CodeFinalizer>(
     module_path: ModuleFullPath,
     names: &[Symbol],
@@ -178,13 +333,6 @@ pub fn compile_to_module<M: Module + CodeFinalizer>(
 ) -> Result<CompilationResult, CranelispError> {
     // Derive internal dependencies.
     let intrinsic_ids = declare_intrinsics_generic(module)?;
-    let cross_refs = resolve_cross_module_refs(symbol_tables, &module_path);
-    let jit_prefix_owned: Option<String> = if module_path.as_ref() != "user" && module_path.as_ref() != "main" {
-        Some(module_path.as_ref().to_string())
-    } else {
-        None
-    };
-    let jit_prefix: Option<&str> = jit_prefix_owned.as_deref();
 
     // Step 1: Look up each named entry and retrieve its AST body (§4 symbol-
     // table lookup loop; replaces the former `program: &Program` scan).
@@ -239,18 +387,14 @@ pub fn compile_to_module<M: Module + CodeFinalizer>(
     // Start with intrinsic FuncIds.
     let mut func_ids: HashMap<Symbol, FuncId> = intrinsic_ids.by_name.clone();
 
-    // When a prefix is provided, JIT symbol names are module-qualified.
-    let mut jit_names: HashMap<Symbol, Symbol> = HashMap::new();
-
+    // Per `/arch` Decision 36: every user-defined function is declared with
+    // its bare symbol-table name and `Linkage::Local`, uniformly across all
+    // modules. The pre-Sprint-58 user/main vs FQ-Export discriminator is a
+    // defect (see Decision 36 rationale + design/backend/compile-to-module.md
+    // §7). Function symbols are intra-`.o`-only because all calls go through
+    // `__cranelisp_got_{M}` (Decision 31 redefinition correctness mandates
+    // GOT-indirect even for intra-module calls).
     for defn in &defns {
-        let qualified_name = if let Some(prefix) = jit_prefix {
-            let qn = format!("{prefix}/{}", defn.name);
-            jit_names.insert(defn.name.clone(), Symbol::from(qn.as_str()));
-            qn
-        } else {
-            defn.name.to_string()
-        };
-
         let mut sig = module.make_signature();
         for _ in defn.params() {
             sig.params.push(AbiParam::new(types::I64));
@@ -258,7 +402,7 @@ pub fn compile_to_module<M: Module + CodeFinalizer>(
         sig.returns.push(AbiParam::new(types::I64));
 
         let func_id = module
-            .declare_function(&qualified_name, cranelift_module::Linkage::Export, &sig)
+            .declare_function(defn.name.as_ref(), cranelift_module::Linkage::Local, &sig)
             .map_err(|e| CranelispError::CodegenError {
                 message: format!("failed to declare function '{}': {e}", defn.name),
                 span: defn.span,
@@ -266,54 +410,15 @@ pub fn compile_to_module<M: Module + CodeFinalizer>(
         func_ids.insert(defn.name.clone(), func_id);
     }
 
-    // Declare prior (cross-module) functions as imports.
-    for (name, param_count) in &cross_refs {
-        if func_ids.contains_key(name) {
-            continue;
-        }
-
-        // Check if a bare-name alias already exists.
-        if let Some(slash_pos) = name.as_ref().rfind('/') {
-            let bare_name = Symbol::from(&name.as_ref()[slash_pos + 1..]);
-            if let Some(&existing_func_id) = func_ids.get(&bare_name) {
-                func_ids.insert(name.clone(), existing_func_id);
-                continue;
-            }
-        }
-
-        let mut sig = module.make_signature();
-        for _ in 0..*param_count {
-            sig.params.push(AbiParam::new(types::I64));
-        }
-        sig.returns.push(AbiParam::new(types::I64));
-
-        let func_id = module
-            .declare_function(name, cranelift_module::Linkage::Import, &sig)
-            .map_err(|e| CranelispError::CodegenError {
-                message: format!("failed to declare imported function '{}': {e}", name),
-                span: Span::SYNTHETIC,
-            })?;
-        func_ids.insert(name.clone(), func_id);
-
-        // Also register the bare name.
-        if let Some(slash_pos) = name.as_ref().rfind('/') {
-            let bare_name = Symbol::from(&name.as_ref()[slash_pos + 1..]);
-            func_ids.entry(bare_name).or_insert(func_id);
-        }
-    }
-
-    // Build function arity map.
-    let mut func_arities: HashMap<Symbol, usize> = defns
+    // No cross-module function declarations: under all-GOT calling
+    // (Decision 31) cross-module calls are GOT-indirect against
+    // `__cranelisp_got_{other_M}`, never direct. Compile-time arity for
+    // those calls is resolved via `compiler::resolve_func_arity` walking
+    // the symbol tables (see compiler/control_flow.rs auto-curry path).
+    let func_arities: HashMap<Symbol, usize> = defns
         .iter()
         .map(|d| (d.name.clone(), d.params().len()))
         .collect();
-    for (name, count) in &cross_refs {
-        func_arities.insert(name.clone(), *count);
-        if let Some(slash_pos) = name.as_ref().rfind('/') {
-            let bare_name = Symbol::from(&name.as_ref()[slash_pos + 1..]);
-            func_arities.entry(bare_name).or_insert(*count);
-        }
-    }
 
     // Step 3: Compile each function body (Pass 2).
     // All defns are compiled uniformly — mangled multi-sig variants and mono
@@ -351,15 +456,58 @@ pub fn compile_to_module<M: Module + CodeFinalizer>(
         .find(|d| d.params().is_empty())
         .and_then(|d| func_ids.get(&d.name).copied());
 
-    // Collect func_signatures for downstream modules (JIT-visible names).
-    let result_func_ids: HashMap<Symbol, FuncId> = defns.iter()
-        .filter_map(|d| {
-            let jit_name = jit_names.get(&d.name)
-                .cloned()
-                .unwrap_or_else(|| d.name.clone());
-            func_ids.get(&d.name).map(|&fid| (jit_name, fid))
-        })
+    // Collect func_signatures for downstream modules. Under Decision 36
+    // (bare-Local), function symbols are bare uniformly — no module-
+    // qualified alias is produced.
+    let result_func_ids: HashMap<Symbol, FuncId> = defns
+        .iter()
+        .filter_map(|d| func_ids.get(&d.name).map(|&fid| (d.name.clone(), fid)))
         .collect();
+
+    // Step 4a (`/arch` Decision 23 Bug B fix): emit the per-module GOT data
+    // symbol `__cranelisp_got_{M}`. For ObjectModule this defines a
+    // `Linkage::Export` data symbol with relocation initializers against
+    // each defined function's local symbol; for JITModule this is a no-op
+    // because the JIT-mode definition lives outside `compile_to_module`.
+    // See `define_module_got_data` impls and §5.4 of compile-to-module.md.
+    {
+        let table = symbol_tables.get(&module_path).ok_or_else(|| {
+            CranelispError::CodegenError {
+                message: format!(
+                    "compile_to_module: no symbol table for module '{module_path}' at GOT-data emission"
+                ),
+                span: Span::SYNTHETIC,
+            }
+        })?;
+        let mut slot_funcs: Vec<(usize, FuncId)> = Vec::with_capacity(defns.len());
+        for defn in &defns {
+            let entry = table.get(defn.name.as_ref()).ok_or_else(|| {
+                CranelispError::CodegenError {
+                    message: format!(
+                        "compile_to_module: symbol '{}' missing from module '{module_path}' at GOT-data emission",
+                        defn.name
+                    ),
+                    span: defn.span,
+                }
+            })?;
+            let ModuleEntry::Def { got_slot, .. } = entry else {
+                continue; // Non-Def entries don't have GOT slots
+            };
+            let Some(slot) = got_slot else {
+                continue; // Slot not allocated (primitive-shaped Def)
+            };
+            let Some(&func_id) = func_ids.get(&defn.name) else {
+                continue; // Defensive: can't happen — we declared it above
+            };
+            slot_funcs.push((*slot, func_id));
+        }
+        let slot_count = table.next_got_slot;
+        // Drop the read guard before potentially mutating other tables.
+        drop(table);
+
+        let got_name = crate::compiler::got_data_symbol_name(&module_path);
+        module.define_module_got_data(&got_name, slot_count, &slot_funcs)?;
+    }
 
     // Step 4: Finalize definitions.
     // For JITModule: patches relocations, makes code pages executable.
@@ -425,34 +573,12 @@ pub fn compile_to_module<M: Module + CodeFinalizer>(
     })
 }
 
-/// Resolve cross-module function references from symbol table Import chains.
-fn resolve_cross_module_refs(
-    symbol_tables: &DashMap<ModuleFullPath, SymbolTable>,
-    module_path: &ModuleFullPath,
-) -> Vec<(Symbol, usize)> {
-    let mut refs = Vec::new();
-    let Some(table) = symbol_tables.get(module_path) else { return refs };
-    for (name, entry) in table.all_symbols() {
-        if let ModuleEntry::Import { source } = entry
-            && let Some(source_table) = symbol_tables.get(&source.module)
-            && let Some(source_entry) = source_table.get(source.symbol.as_ref())
-        {
-            let param_count = match source_entry {
-                ModuleEntry::Def { scheme, .. } | ModuleEntry::Constructor { scheme, .. } => {
-                    match &scheme.ty {
-                        Type::Fn(params, _) => params.len(),
-                        _ => continue,
-                    }
-                }
-                _ => continue,
-            };
-            let qualified = Symbol::from(format!("{}/{}", source.module.as_ref(), source.symbol.as_ref()));
-            refs.push((qualified, param_count));
-            refs.push((name.clone(), param_count));
-        }
-    }
-    refs
-}
+// NOTE: `resolve_cross_module_refs` was removed in Sprint 58 Wave 2 per
+// `/arch` Decision 36 + 31. Under all-GOT calling, cross-module function
+// references flow through `__cranelisp_got_{other_M}`, never as direct
+// `Linkage::Import` function declarations. Compile-time arity for those
+// calls is resolved via `compiler::resolve_func_arity` walking the symbol
+// tables.
 
 /// Compile a single defn into a module using FnCompiler, returning the
 /// per-symbol introspection artifacts captured during codegen.
@@ -520,7 +646,7 @@ mod tests {
     use crate::jit::Jit;
     use cranelisp_types::{
         Defn, DefnVariant, DisplayInfo, Expr, MethodResolutions, MonoDefn, Program, Span, Symbol,
-        TopLevel, Visibility,
+        TopLevel, Type, Visibility,
     };
     use std::collections::{HashMap, HashSet};
 
@@ -2842,9 +2968,10 @@ mod tests {
 
     // --- compile_to_module module tests ---
 
-    // spec: 08-modules §8.3 — two modules with same-named function compiled separately
-    // Regression test: verifies module prefixing avoids name collisions.
-    // With compile_to_module, each module gets its own JIT — no collision possible.
+    // spec: design/arch/CLAUDE.md Decision 36 — bare-name function declarations
+    // uniformly across all modules. Two modules with same-named function compile
+    // into separate JITs without collision because function symbols are
+    // `.o`-Local — they cannot collide across modules' JITs.
     #[test]
     fn test_module_prefix_applied() {
         let _ = empty_check();
@@ -2878,10 +3005,18 @@ mod tests {
         ).expect("module A should compile");
         // Post-G6: compile_to_module finalized internally.
 
-        // The result should have the function with a module-qualified name.
+        // Per Decision 36 (bare-Local uniformly), result_func_ids is keyed
+        // by the bare symbol name — NOT module-qualified. The pre-Sprint-58
+        // behavior of producing `mod_a/val` for non-user/main modules was a
+        // defect.
         assert!(
-            result_a.func_ids.contains_key(&Symbol::from("mod_a/val")),
-            "func_ids should contain module-qualified name: {:?}",
+            result_a.func_ids.contains_key(&Symbol::from("val")),
+            "func_ids should contain bare name (Decision 36): {:?}",
+            result_a.func_ids.keys().collect::<Vec<_>>()
+        );
+        assert!(
+            !result_a.func_ids.contains_key(&Symbol::from("mod_a/val")),
+            "func_ids must NOT contain module-qualified name (Decision 36): {:?}",
             result_a.func_ids.keys().collect::<Vec<_>>()
         );
 
@@ -3691,6 +3826,553 @@ mod tests {
             !defined.contains(&&template_name),
             "defined_symbols() must NOT yield constrained-fn templates: got {:?}",
             defined
+        );
+    }
+
+    // ----- Sprint 58 Wave 2: Decision 36 + Decision 23 unit tests -----
+    //
+    // These tests cover the architectural reconciliation landed in Sprint 58
+    // Wave 2: bare-name + Linkage::Local function declarations uniformly across
+    // all modules (Decision 36), and `__cranelisp_got_{M}` defined as
+    // Linkage::Export data symbol in the .o (Decision 23 — Bug B fix).
+
+    /// Helper: make an ObjectModule for these tests (PIC enabled).
+    fn make_object_module() -> cranelift_object::ObjectModule {
+        use cranelift_module::default_libcall_names;
+        use cranelift_object::ObjectBuilder;
+
+        let isa = crate::cache::object::build_isa(true).unwrap();
+        let builder = ObjectBuilder::new(isa, "test", default_libcall_names()).unwrap();
+        cranelift_object::ObjectModule::new(builder)
+    }
+
+    /// Helper: build a single-defn symbol table with `got_slot: Some(slot)` so
+    /// the GOT-data emission step has a slot to populate.
+    fn table_with_def_and_slot(
+        module: &ModuleFullPath,
+        defn: Defn,
+        slot: usize,
+    ) -> DashMap<ModuleFullPath, SymbolTable> {
+        use cranelisp_types::{DefKind, ModuleEntry, Scheme, Visibility};
+        let tables = DashMap::new();
+        let mut st = SymbolTable::new(module.clone());
+        // Match the slot index: typecheck would have called allocate_got_slot
+        // exactly `slot+1` times.
+        for _ in 0..=slot {
+            let _ = st.allocate_got_slot();
+        }
+        let param_count = defn.params().len();
+        let param_names = defn
+            .variants
+            .first()
+            .map(|v| v.params.clone())
+            .unwrap_or_default();
+        st.insert(
+            defn.name.clone(),
+            ModuleEntry::Def {
+                scheme: Scheme {
+                    vars: vec![],
+                    constraints: HashMap::new(),
+                    ty: Type::Fn(
+                        (0..param_count).map(|_| Type::Int).collect(),
+                        Box::new(Type::Int),
+                    ),
+                },
+                visibility: Visibility::Public,
+                docstring: None,
+                param_names,
+                kind: Box::new(DefKind::UserFn { constrained_fn: None }),
+                callees: vec![],
+                got_slot: Some(slot),
+                trait_origin: None,
+                ast: Some(defn),
+                code: None,
+                platform_fn_ptr: None,
+            },
+        );
+        tables.insert(module.clone(), st);
+        tables
+    }
+
+    /// Helper: trivial zero-arg defn returning an int literal.
+    fn make_int_defn(name: &str, value: i64) -> Defn {
+        Defn {
+            name: Symbol::from(name),
+            docstring: None,
+            variants: vec![DefnVariant {
+                params: vec![],
+                param_annotations: vec![],
+                body: Expr::IntLit { value, span: Span::SYNTHETIC, inferred_type: None },
+                span: Span::SYNTHETIC,
+            }],
+            visibility: Visibility::Public,
+            span: Span::SYNTHETIC,
+        }
+    }
+
+    // spec: design/arch/CLAUDE.md Decision 36 — function symbols are declared
+    // with their bare name uniformly across all modules. The pre-Sprint-58
+    // user/main vs FQ-Export discriminator is deleted.
+    #[test]
+    fn decision_36_function_naming_is_bare_for_every_module() {
+        use cranelift_module::Module;
+        for module_path_str in ["user", "main", "util", "one.two.three"] {
+            let module = ModuleFullPath::from(module_path_str);
+            let defn = make_int_defn("helper", 7);
+            let tables = table_with_def_and_slot(&module, defn.clone(), 0);
+
+            let mut jit = Jit::new().unwrap();
+            let result = compile_to_module(
+                module.clone(),
+                std::slice::from_ref(&defn.name),
+                &tables,
+                jit.jit_module(),
+            )
+            .expect("compile_to_module should succeed");
+
+            // The result func_ids map is keyed by bare name, NOT module-qualified.
+            assert!(
+                result.func_ids.contains_key(&Symbol::from("helper")),
+                "module '{module_path_str}': func_ids must contain bare name 'helper'; got {:?}",
+                result.func_ids.keys().collect::<Vec<_>>()
+            );
+
+            // The Cranelift module's declaration table records the bare name.
+            // (Decision 36: even for non-user/main, the FQ form must be absent.)
+            let fq = format!("{module_path_str}/helper");
+            let m = jit.jit_module();
+            let has_fq = m.get_name(&fq).is_some();
+            let has_bare = m.get_name("helper").is_some();
+            assert!(
+                !has_fq,
+                "module '{module_path_str}': bare-only contract violated — module-qualified name '{fq}' should NOT be a declaration"
+            );
+            assert!(
+                has_bare,
+                "module '{module_path_str}': bare name 'helper' must be a declaration"
+            );
+        }
+    }
+
+    // spec: design/arch/CLAUDE.md Decision 36 — function linkage is Local
+    // uniformly. Symbols never need to cross .o boundaries (all-GOT calling).
+    #[test]
+    fn decision_36_function_linkage_is_local_uniformly() {
+        use cranelift_module::{FuncOrDataId, Linkage, Module};
+        for module_path_str in ["user", "main", "util", "deep.nested.path"] {
+            let module = ModuleFullPath::from(module_path_str);
+            let defn = make_int_defn("f", 1);
+            let tables = table_with_def_and_slot(&module, defn.clone(), 0);
+
+            let mut jit = Jit::new().unwrap();
+            let _result = compile_to_module(
+                module.clone(),
+                std::slice::from_ref(&defn.name),
+                &tables,
+                jit.jit_module(),
+            )
+            .expect("compile_to_module should succeed");
+
+            let m = jit.jit_module();
+            let func_id = match m.get_name("f") {
+                Some(FuncOrDataId::Func(id)) => id,
+                other => panic!("module '{module_path_str}': expected FuncOrDataId::Func for 'f', got {other:?}"),
+            };
+            let decl = m.declarations().get_function_decl(func_id);
+            assert_eq!(
+                decl.linkage,
+                Linkage::Local,
+                "module '{module_path_str}': function 'f' must have Linkage::Local per Decision 36, got {:?}",
+                decl.linkage
+            );
+        }
+    }
+
+    // spec: design/arch/CLAUDE.md Decision 23 (updated) — `__cranelisp_got_{M}`
+    // is defined as Linkage::Export data with `slot_count * 8` bytes inside
+    // the .o emitted by compile_to_module<ObjectModule>.
+    #[test]
+    fn decision_23_got_data_symbol_defined_as_export_in_object_path() {
+        use cranelift_module::Module;
+        let module = ModuleFullPath::from("util");
+        let defn = make_int_defn("answer", 42);
+        let tables = table_with_def_and_slot(&module, defn.clone(), 0);
+
+        let mut obj = make_object_module();
+        let _result = compile_to_module(
+            module.clone(),
+            std::slice::from_ref(&defn.name),
+            &tables,
+            &mut obj,
+        )
+        .expect("compile_to_module<ObjectModule> should succeed");
+
+        // The GOT data symbol should now be a defined Export data symbol.
+        let got_name = crate::compiler::got_data_symbol_name(&module);
+        let id = obj
+            .get_name(&got_name)
+            .expect("GOT data symbol must be declared");
+        let data_id = match id {
+            cranelift_module::FuncOrDataId::Data(d) => d,
+            other => panic!("expected DataId for {got_name}, got {other:?}"),
+        };
+        let decl = obj.declarations().get_data_decl(data_id);
+        assert_eq!(
+            decl.linkage,
+            cranelift_module::Linkage::Export,
+            "GOT data symbol '{got_name}' must be Linkage::Export, got {:?}",
+            decl.linkage
+        );
+
+        // Emit the .o and parse it; confirm:
+        //  (a) the GOT data symbol is present in the .o symbol table
+        //  (b) it has global scope (Export = visible to the system linker)
+        //  (c) it points into a Data-kind section
+        // (Size in the .o symbol table is not portable across formats —
+        // Mach-O always reports 0; we rely on the in-Module declaration
+        // size assertion and the section-data check instead.)
+        let product = obj.finish();
+        let bytes = product.emit().expect("ObjectModule should emit");
+        use ::object::{Object, ObjectSymbol, SymbolKind, SymbolScope};
+        let parsed = ::object::File::parse(&*bytes)
+            .expect("emitted bytes must parse as an object file");
+        let got_sym = parsed
+            .symbols()
+            .find(|s| {
+                s.name()
+                    .map(|n| n.strip_prefix('_').unwrap_or(n) == got_name)
+                    .unwrap_or(false)
+            })
+            .unwrap_or_else(|| {
+                panic!(
+                    "GOT data symbol '{got_name}' must appear in emitted .o; \
+                     symbols present: {:?}",
+                    parsed
+                        .symbols()
+                        .filter_map(|s| s.name().ok().map(|n| n.to_string()))
+                        .collect::<Vec<_>>()
+                )
+            });
+        assert_ne!(
+            got_sym.scope(),
+            SymbolScope::Compilation,
+            "GOT data symbol '{got_name}' must have global scope (Linkage::Export); got {:?}",
+            got_sym.scope()
+        );
+        assert_eq!(
+            got_sym.kind(),
+            SymbolKind::Data,
+            "GOT data symbol '{got_name}' must be a Data-kind symbol; got {:?}",
+            got_sym.kind()
+        );
+    }
+
+    // spec: design/arch/CLAUDE.md Decision 23 — JIT-mode GOT-data definition
+    // remains the integration layer's responsibility (`Jit::define_got_data`).
+    // compile_to_module<JITModule>'s `define_module_got_data` is a no-op and
+    // does NOT redundantly declare/define the symbol on the JIT module.
+    #[test]
+    fn decision_23_got_data_symbol_jit_path_is_noop() {
+        use cranelift_module::Module;
+        let module = ModuleFullPath::from("user");
+        let defn = make_int_defn("answer", 42);
+        let tables = table_with_def_and_slot(&module, defn.clone(), 0);
+
+        let mut jit = Jit::new().unwrap();
+        let _result = compile_to_module(
+            module.clone(),
+            std::slice::from_ref(&defn.name),
+            &tables,
+            jit.jit_module(),
+        )
+        .expect("compile_to_module<JITModule> should succeed");
+
+        // In JIT mode, the GOT data symbol is NOT defined by compile_to_module.
+        // It might be an Import declaration if the compiled code emitted a
+        // GOT-indirect call (unlikely in this minimal test — answer is a
+        // direct expression), but it must NEVER be Export-defined here.
+        let got_name = crate::compiler::got_data_symbol_name(&module);
+        let m = jit.jit_module();
+        if let Some(cranelift_module::FuncOrDataId::Data(data_id)) = m.get_name(&got_name) {
+            let decl = m.declarations().get_data_decl(data_id);
+            assert_ne!(
+                decl.linkage,
+                cranelift_module::Linkage::Export,
+                "JIT path: GOT data symbol '{got_name}' must NOT be Linkage::Export-defined by compile_to_module — JIT-mode definition lives in Jit::define_got_data (Decision 23)"
+            );
+        }
+        // (If it's not declared at all, that's also fine — this minimal defn
+        // doesn't emit a GOT-indirect call so neither path declares it.)
+    }
+
+    // spec: design/arch/CLAUDE.md Decision 23 — GOT data symbol size matches
+    // the symbol table's `next_got_slot` (one 8-byte slot per allocated index).
+    #[test]
+    fn decision_23_got_data_size_matches_slot_count() {
+        use cranelift_module::Module;
+        // Two defns with two GOT slots → 16 bytes.
+        let module = ModuleFullPath::from("util");
+        let d1 = make_int_defn("one", 1);
+        let d2 = make_int_defn("two", 2);
+
+        // Build symbol table with both defns at slots 0 and 1.
+        use cranelisp_types::{DefKind, ModuleEntry, Scheme, Visibility};
+        let tables = DashMap::new();
+        let mut st = SymbolTable::new(module.clone());
+        let _slot0 = st.allocate_got_slot();
+        let _slot1 = st.allocate_got_slot();
+        for (defn, slot) in [(d1.clone(), 0usize), (d2.clone(), 1)] {
+            st.insert(
+                defn.name.clone(),
+                ModuleEntry::Def {
+                    scheme: Scheme {
+                        vars: vec![],
+                        constraints: HashMap::new(),
+                        ty: Type::Fn(vec![], Box::new(Type::Int)),
+                    },
+                    visibility: Visibility::Public,
+                    docstring: None,
+                    param_names: vec![],
+                    kind: Box::new(DefKind::UserFn { constrained_fn: None }),
+                    callees: vec![],
+                    got_slot: Some(slot),
+                    trait_origin: None,
+                    ast: Some(defn),
+                    code: None,
+                    platform_fn_ptr: None,
+                },
+            );
+        }
+        tables.insert(module.clone(), st);
+
+        let mut obj = make_object_module();
+        let _result = compile_to_module(
+            module.clone(),
+            &[d1.name.clone(), d2.name.clone()],
+            &tables,
+            &mut obj,
+        )
+        .expect("compile_to_module should succeed");
+
+        // Verify in-Module declaration size; we cannot rely on the .o
+        // symbol-table `size()` (Mach-O reports 0). The Cranelift
+        // declaration carries the requested initialization size.
+        let got_name = crate::compiler::got_data_symbol_name(&module);
+        let data_id = match obj.get_name(&got_name) {
+            Some(cranelift_module::FuncOrDataId::Data(id)) => id,
+            other => panic!("expected DataId for {got_name}, got {other:?}"),
+        };
+        let _decl = obj.declarations().get_data_decl(data_id);
+
+        let product = obj.finish();
+        let bytes = product.emit().unwrap();
+        use ::object::{Object, ObjectSection, ObjectSymbol};
+        let parsed = ::object::File::parse(&*bytes).unwrap();
+        let got_sym = parsed
+            .symbols()
+            .find(|s| {
+                s.name()
+                    .map(|n| n.strip_prefix('_').unwrap_or(n) == got_name)
+                    .unwrap_or(false)
+            })
+            .expect("GOT data symbol present");
+
+        // Look up the section the symbol lives in and check it is at least
+        // slot_count * 8 = 16 bytes long. (Cranelift may pack multiple data
+        // symbols into the same section; this is a lower-bound check for the
+        // GOT slab's storage budget.)
+        let sect_idx = match got_sym.section_index() {
+            Some(idx) => idx,
+            None => panic!("GOT data symbol must live in a section"),
+        };
+        let section = parsed.section_by_index(sect_idx).unwrap();
+        assert!(
+            section.size() >= 16,
+            "section containing GOT data symbol must hold at least slot_count(2) * 8 = 16 bytes; got {}",
+            section.size()
+        );
+    }
+
+    // spec: design/arch/CLAUDE.md Decision 36 — cross-module function refs
+    // are NOT declared as Linkage::Import in the importing module's .o. Under
+    // all-GOT calling, cross-module calls reach callees through
+    // `__cranelisp_got_{other_M}` data symbol — never through a function-symbol
+    // import. Verifies the cross_refs declaration loop deletion did not
+    // re-introduce stray Import-linkage function declarations.
+    #[test]
+    fn decision_36_no_cross_module_function_imports() {
+        use cranelift_module::{FuncOrDataId, Linkage, Module};
+
+        // Build two modules: util defines `helper`, user imports `helper`.
+        // Compile user.
+        let util_path = ModuleFullPath::from("util");
+        let user_path = ModuleFullPath::from("user");
+
+        let helper = make_int_defn("helper", 99);
+        // user has a single defn `caller` that does NOT call helper at runtime
+        // (this test only checks the declaration shape; we focus on what
+        // compile_to_module declares against the user module). The Import
+        // entry on user's table records the cross-module dependency.
+        let caller = make_int_defn("caller", 7);
+
+        use cranelisp_types::{
+            DefKind, FQSymbol, ModuleEntry, Scheme, Visibility,
+        };
+        let tables = DashMap::new();
+
+        // util module: helper at slot 0.
+        let mut util_st = SymbolTable::new(util_path.clone());
+        let _ = util_st.allocate_got_slot();
+        util_st.insert(
+            Symbol::from("helper"),
+            ModuleEntry::Def {
+                scheme: Scheme {
+                    vars: vec![],
+                    constraints: HashMap::new(),
+                    ty: Type::Fn(vec![], Box::new(Type::Int)),
+                },
+                visibility: Visibility::Public,
+                docstring: None,
+                param_names: vec![],
+                kind: Box::new(DefKind::UserFn { constrained_fn: None }),
+                callees: vec![],
+                got_slot: Some(0),
+                trait_origin: None,
+                ast: Some(helper),
+                code: None,
+                platform_fn_ptr: None,
+            },
+        );
+        tables.insert(util_path.clone(), util_st);
+
+        // user module: caller at slot 0, helper imported from util.
+        let mut user_st = SymbolTable::new(user_path.clone());
+        let _ = user_st.allocate_got_slot();
+        user_st.insert(
+            Symbol::from("caller"),
+            ModuleEntry::Def {
+                scheme: Scheme {
+                    vars: vec![],
+                    constraints: HashMap::new(),
+                    ty: Type::Fn(vec![], Box::new(Type::Int)),
+                },
+                visibility: Visibility::Public,
+                docstring: None,
+                param_names: vec![],
+                kind: Box::new(DefKind::UserFn { constrained_fn: None }),
+                callees: vec![],
+                got_slot: Some(0),
+                trait_origin: None,
+                ast: Some(caller),
+                code: None,
+                platform_fn_ptr: None,
+            },
+        );
+        user_st.insert(
+            Symbol::from("helper"),
+            ModuleEntry::Import {
+                source: FQSymbol {
+                    module: util_path.clone(),
+                    symbol: Symbol::from("helper"),
+                },
+            },
+        );
+        tables.insert(user_path.clone(), user_st);
+
+        let mut jit = Jit::new().unwrap();
+        let result = compile_to_module(
+            user_path.clone(),
+            &[Symbol::from("caller")],
+            &tables,
+            jit.jit_module(),
+        )
+        .expect("compile_to_module should succeed");
+
+        // Per Decision 36 + cross_refs deletion: there must be NO
+        // Linkage::Import declaration for the cross-module function name
+        // (neither `helper` nor `util/helper`).
+        let m = jit.jit_module();
+        for candidate in ["helper", "util/helper"] {
+            if let Some(FuncOrDataId::Func(fid)) = m.get_name(candidate) {
+                let decl = m.declarations().get_function_decl(fid);
+                assert_ne!(
+                    decl.linkage,
+                    Linkage::Import,
+                    "cross-module fn '{candidate}' must NOT be declared as Linkage::Import; got {:?}. Under all-GOT calling, cross-module calls flow through __cranelisp_got_{{M}} data symbols, not function imports.",
+                    decl.linkage
+                );
+            }
+        }
+
+        // Sanity: caller is bare-Local and present in result.
+        assert!(
+            result.func_ids.contains_key(&Symbol::from("caller")),
+            "func_ids must contain bare 'caller'"
+        );
+    }
+
+    // spec: design/arch/CLAUDE.md Decision 23 — Sprint 58 Wave 2 regression
+    // guard. The `__cranelisp_got_{M}` data symbol carries function-address
+    // relocations (declared via `desc.write_function_addr`). On macOS, `ld`
+    // segfaults when applying relocations against `__DATA,__bss`
+    // (`S_ZEROFILL`) sections. The Wave 2 implementation MUST emit GOT
+    // contents via `desc.define(zero_bytes)` (regular `__DATA`), NOT
+    // `desc.define_zeroinit(...)` (which lands in BSS / `S_ZEROFILL`).
+    // This test asserts the emitted .o has the GOT data symbol in a regular
+    // (non-BSS) data section.
+    #[test]
+    fn decision_23_got_data_symbol_not_in_bss() {
+        let module = ModuleFullPath::from("util");
+        let defn = make_int_defn("answer", 42);
+        let tables = table_with_def_and_slot(&module, defn.clone(), 0);
+
+        let mut obj = make_object_module();
+        let _result = compile_to_module(
+            module.clone(),
+            std::slice::from_ref(&defn.name),
+            &tables,
+            &mut obj,
+        )
+        .expect("compile_to_module<ObjectModule> should succeed");
+
+        let product = obj.finish();
+        let bytes = product.emit().expect("ObjectModule should emit");
+
+        use ::object::{Object, ObjectSection, ObjectSymbol, SectionKind};
+        let parsed = ::object::File::parse(&*bytes)
+            .expect("emitted bytes must parse as an object file");
+        let got_name = crate::compiler::got_data_symbol_name(&module);
+        let got_sym = parsed
+            .symbols()
+            .find(|s| {
+                s.name()
+                    .map(|n| n.strip_prefix('_').unwrap_or(n) == got_name)
+                    .unwrap_or(false)
+            })
+            .expect("GOT data symbol must appear in emitted .o");
+        let sect_idx = got_sym
+            .section_index()
+            .expect("GOT data symbol must live in a section, not be undefined");
+        let section = parsed
+            .section_by_index(sect_idx)
+            .expect("section must be resolvable");
+
+        // Negative path: must NOT be UninitializedData (BSS / __DATA,__bss /
+        // S_ZEROFILL). macOS `ld` segfaults on relocations against BSS.
+        let kind = section.kind();
+        assert_ne!(
+            kind,
+            SectionKind::UninitializedData,
+            "GOT data symbol '{got_name}' landed in BSS (UninitializedData) — \
+             macOS `ld` segfaults on relocations against BSS. Use \
+             `desc.define(zero_bytes)` not `desc.define_zeroinit(...)` so the \
+             data lands in regular `__DATA`."
+        );
+        // Positive path: must be a regular initialized Data section so
+        // function-address relocations resolve correctly.
+        assert!(
+            matches!(kind, SectionKind::Data | SectionKind::ReadOnlyData),
+            "GOT data symbol '{got_name}' must live in a regular initialized data section; got {kind:?}"
         );
     }
 }

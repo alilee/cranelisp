@@ -7,21 +7,27 @@
 // Primary target: Mach-O aarch64 (macOS ARM). Also supports ELF aarch64 (Linux ARM).
 //
 // GOT architecture: per-module GOT tables are heap-allocated during typecheck.
-// Object code references them via `__cranelisp_got_{module}` data symbols,
-// each declared as Export data (8-byte literal pool entry) in the .o file.
-// The linker patches these entries with actual GotTable heap addresses at
-// load time. Code uses ADRP+LDR from the co-located data section to load
-// the GOT base, then indexes into the GOT for function dispatch:
-//
-//   .o data section (patched by linker):
-//     __cranelisp_got_user:    0x12345000  // heap address of user's GotTable
-//     __cranelisp_got_prelude: 0x12346000  // heap address of prelude's GotTable
+// Object code references them via `__cranelisp_got_{module}` data symbols.
+// Decision 23 (Sprint 58 Wave 2 follow-on): the symbol address IS the GOT
+// slab base directly — no extra pointer-cell indirection. In `.o` files the
+// symbol is defined as `Linkage::Export` data sized `slot_count * 8` with
+// function-address relocations at each slot (`define_module_got_data`); in
+// JIT mode the symbol is registered via `JITBuilder::symbol()` with
+// `GotTable.base_ptr()`. Either way `global_value(__cranelisp_got_{M})`
+// resolves to the slab base, after which one load+offset reaches the slot:
 //
 //   code:
-//     ADRP x5, __cranelisp_got_user  // page of data entry (always reachable)
-//     LDR  x5, [x5, #off]            // load GOT base from data section
-//     LDR  x5, [x5, #slot*8]         // load fn ptr from GOT
-//     BLR  x5                         // call
+//     ADRP x5, __cranelisp_got_user@GOTPAGE     // system GOT page for the symbol
+//     LDR  x5, [x5, #__cranelisp_got_user@GOTPAGEOFF]  // x5 = slab base
+//     LDR  x5, [x5, #slot*8]                    // load fn ptr from slot
+//     BLR  x5                                   // call
+//
+// The first ADRP+LDR pair is the system-GOT (literal pool) layer: in object
+// mode the system linker materialises it from `ARM64_RELOC_GOT_LOAD_*`
+// relocations against an in-process slot allocated by this `Linker`; in JIT
+// mode `global_value` lowers identically and resolves through the same
+// system-GOT mechanism backed by the JIT's `lookup_symbol`. Same CLIF, same
+// machine-code shape, both modes (Decision 23 byte-identical).
 //
 // See design/backend/module-caching.md §9 for crate placement rationale.
 
@@ -66,6 +72,23 @@ pub struct Linker {
     /// Data memory regions (kept alive so data symbols remain valid).
     /// Holds constants, string literals, etc. from .o data sections.
     data_regions: Vec<DataRegion>,
+    /// Per-symbol GOT slots for `ARM64_RELOC_GOT_LOAD_*` relocations.
+    /// Maps a symbol name to the address of an 8-byte slot containing the
+    /// symbol's resolved address. The standard system-linker GOT mechanism
+    /// for cross-module data references implemented in-process: when
+    /// Cranelift emits a GOT_LOAD_PAGE21+PAGEOFF12 pair for an
+    /// `Linkage::Import` data symbol (`__cranelisp_got_{M}`), the relocations
+    /// resolve against the slot's address — code does ADRP+LDR off the slot
+    /// to fetch the symbol value. One slot per unique symbol; reused across
+    /// loaded `.o` files. Backed by `got_pool` for lifetime.
+    got_slots: HashMap<String, usize>,
+    /// Backing storage for `got_slots` — each entry is an mmap'd page-sized
+    /// region holding one or more 8-byte GOT entries. Kept alive so the slot
+    /// addresses in `got_slots` remain valid for the lifetime of the linker.
+    got_pool: Vec<memmap2::MmapMut>,
+    /// Number of slots currently used in the most-recently-allocated page in
+    /// `got_pool` (each slot is 8 bytes; a 4096-byte page holds 512 slots).
+    got_pool_used: usize,
 }
 
 /// An mmap'd region that holds executable code.
@@ -96,7 +119,67 @@ impl Linker {
             defined_symbols: HashMap::new(),
             code_regions: Vec::new(),
             data_regions: Vec::new(),
+            got_slots: HashMap::new(),
+            got_pool: Vec::new(),
+            got_pool_used: 0,
         })
+    }
+
+    /// Look up (or allocate) the in-process GOT slot for `target_name` and
+    /// return the slot's address. Initialises the slot with the registered
+    /// symbol's address on first call. Subsequent calls for the same symbol
+    /// return the cached slot address.
+    ///
+    /// Used by `ARM64_RELOC_GOT_LOAD_*` relocation handling: the relocation
+    /// patches code to ADRP+LDR the slot address (not the symbol address);
+    /// the LDR pulls the symbol value out of the slot at run time. This is
+    /// the standard system-linker GOT mechanism reproduced in-process.
+    fn ensure_got_slot(&mut self, target_name: &str) -> Result<usize, CranelispError> {
+        if let Some(&addr) = self.got_slots.get(target_name) {
+            return Ok(addr);
+        }
+        let symbol_addr = self
+            .defined_symbols
+            .get(target_name)
+            .or_else(|| self.symbols.get(target_name))
+            .copied()
+            .ok_or_else(|| CranelispError::CodegenError {
+                message: format!(
+                    "GOT_LOAD relocation: unresolved symbol '{target_name}' \
+                     (cannot allocate slot for unknown address)"
+                ),
+                span: Span::SYNTHETIC,
+            })?;
+
+        // Allocate a fresh page for slots if the current page is full or none
+        // exists. 4096 bytes / 8 bytes per slot = 512 slots per page; far more
+        // than the per-process module count.
+        const PAGE_SIZE: usize = 4096;
+        const SLOT_SIZE: usize = 8;
+        const SLOTS_PER_PAGE: usize = PAGE_SIZE / SLOT_SIZE;
+
+        if self.got_pool.is_empty() || self.got_pool_used >= SLOTS_PER_PAGE {
+            let page = memmap2::MmapMut::map_anon(PAGE_SIZE).map_err(|e| {
+                CranelispError::CodegenError {
+                    message: format!("failed to mmap GOT slot page: {e}"),
+                    span: Span::SYNTHETIC,
+                }
+            })?;
+            self.got_pool.push(page);
+            self.got_pool_used = 0;
+        }
+
+        let page = self
+            .got_pool
+            .last_mut()
+            .expect("got_pool just pushed a page");
+        let slot_byte_offset = self.got_pool_used * SLOT_SIZE;
+        let slot_addr = page.as_ptr() as usize + slot_byte_offset;
+        page[slot_byte_offset..slot_byte_offset + SLOT_SIZE]
+            .copy_from_slice(&(symbol_addr as u64).to_le_bytes());
+        self.got_pool_used += 1;
+        self.got_slots.insert(target_name.to_string(), slot_addr);
+        Ok(slot_addr)
     }
 
     /// Register a known external symbol (intrinsic, builtin, platform function, GOT base).
@@ -225,23 +308,24 @@ impl Linker {
             let patch_addr = base_addr + offset as usize;
             let addend = reloc.addend();
 
-            // GOT-load relocations should not occur: all __cranelisp_got_*
-            // symbols are Export data in the .o (literal pool entries), so
-            // Cranelift emits PAGE21+PAGEOFF12, not GOT_LOAD.
-            if let RelocationFlags::MachO { r_type, .. } = reloc.flags()
-                && (r_type == macho_arm64::ARM64_RELOC_GOT_LOAD_PAGE21
-                    || r_type == macho_arm64::ARM64_RELOC_GOT_LOAD_PAGEOFF12)
-            {
-                return Err(CranelispError::CodegenError {
-                    message: format!(
-                        "unexpected GOT-load relocation for '{}' — \
-                         all GOT data symbols should be Export (literal pool entries)",
-                        target_name,
-                    ),
-                    span: Span::SYNTHETIC,
-                });
-            }
-            let target_addr = raw_target_addr;
+            // ARM64_RELOC_GOT_LOAD_* relocations: Cranelift emits these for
+            // `Linkage::Import` data symbols accessed via `global_value`
+            // (the `__cranelisp_got_{M}` cross-module GOT-base references
+            // under Decision 23). The standard system-linker GOT mechanism
+            // routes the load through an indirection slot: the code does
+            // ADRP+LDR off the SLOT, then LDR off the loaded value. Allocate
+            // an in-process slot containing the symbol's address and resolve
+            // the relocation against the slot's address (not the symbol's
+            // address). See `ensure_got_slot` for slot lifetime management.
+            let target_addr = match reloc.flags() {
+                RelocationFlags::MachO { r_type, .. }
+                    if r_type == macho_arm64::ARM64_RELOC_GOT_LOAD_PAGE21
+                        || r_type == macho_arm64::ARM64_RELOC_GOT_LOAD_PAGEOFF12 =>
+                {
+                    self.ensure_got_slot(&target_name)?
+                }
+                _ => raw_target_addr,
+            };
 
             match reloc.flags() {
                 RelocationFlags::MachO {
@@ -583,5 +667,137 @@ mod tests {
     fn test_linker_new() {
         let linker = Linker::new().unwrap();
         assert!(linker.symbols.is_empty());
+    }
+
+    // spec: design/arch/CLAUDE.md Decision 23 — Sprint 58 Wave 2 regression
+    // guard. Cranelift emits `ARM64_RELOC_GOT_LOAD_PAGE21` /
+    // `ARM64_RELOC_GOT_LOAD_PAGEOFF12` relocations when CLIF references an
+    // `Linkage::Import` data symbol (such as `__cranelisp_got_{M}` for cross-
+    // module GOT-base references) via `global_value`. The cache `Linker` MUST
+    // resolve these by allocating an in-process slot containing the
+    // registered symbol's address and patching the relocations to point at
+    // the slot (not the symbol). This test synthesizes an .o with such a
+    // reference, loads it via the linker, and asserts the slot contains the
+    // registered symbol's address.
+    #[cfg(all(target_arch = "aarch64", target_os = "macos"))]
+    #[test]
+    fn linker_resolves_arm64_got_load_relocations() {
+        use cranelift::codegen::Context;
+        use cranelift::codegen::ir::{Function, UserFuncName, types};
+        use cranelift::prelude::{
+            AbiParam, FunctionBuilder, FunctionBuilderContext, InstBuilder, Signature,
+        };
+        use cranelift_module::{Linkage, Module};
+        use cranelift_object::{ObjectBuilder, ObjectModule};
+
+        // Build an aarch64 PIC ISA — same as the cache build path.
+        let isa = crate::cache::object::build_isa(true).unwrap();
+        let call_conv = isa.default_call_conv();
+        let builder = ObjectBuilder::new(
+            isa,
+            "got_load_reloc_test",
+            cranelift_module::default_libcall_names(),
+        )
+        .unwrap();
+        let mut module = ObjectModule::new(builder);
+
+        // Declare an Import data symbol — the canonical case that triggers
+        // GOT_LOAD relocations on aarch64 macOS.
+        let import_data = module
+            .declare_data("__cranelisp_got_imported", Linkage::Import, false, false)
+            .unwrap();
+
+        // Declare a function `get_got_base` that returns the address of the
+        // import data symbol (mirroring how compile_to_module's
+        // `emit_got_indirect_call_via_data_id` emits the slab base — the
+        // symbol address IS the slab base, no extra pointer-cell deref).
+        let mut sig = Signature::new(call_conv);
+        sig.returns.push(AbiParam::new(types::I64));
+        let func_id = module
+            .declare_function("get_got_base", Linkage::Export, &sig)
+            .unwrap();
+
+        let mut func = Function::with_name_signature(UserFuncName::user(0, 0), sig.clone());
+        let mut fbc = FunctionBuilderContext::new();
+        {
+            let import_gv = module.declare_data_in_func(import_data, &mut func);
+            let mut fb = FunctionBuilder::new(&mut func, &mut fbc);
+            let entry = fb.create_block();
+            fb.switch_to_block(entry);
+            fb.seal_block(entry);
+            let addr = fb.ins().symbol_value(types::I64, import_gv);
+            fb.ins().return_(&[addr]);
+            fb.finalize();
+        }
+
+        let mut ctx = Context::for_function(func);
+        module.define_function(func_id, &mut ctx).unwrap();
+
+        let product = module.finish();
+        let bytes = product.emit().unwrap();
+
+        // Sanity: the synthesised .o must contain GOT_LOAD relocations against
+        // our import symbol — otherwise the test would not exercise the new
+        // code path.
+        {
+            use ::object::{
+                Object, ObjectSection, ObjectSymbol, RelocationFlags, RelocationTarget,
+            };
+            let parsed = ::object::File::parse(&*bytes).unwrap();
+            let text = parsed
+                .section_by_name("__text")
+                .or_else(|| parsed.section_by_name(".text"))
+                .expect("text section must exist");
+            let mut got_load_count = 0usize;
+            for (_off, reloc) in text.relocations() {
+                if let RelocationTarget::Symbol(sym_idx) = reloc.target() {
+                    let sym = parsed.symbol_by_index(sym_idx).unwrap();
+                    let nm = sym.name().unwrap_or("");
+                    let clean = nm.strip_prefix('_').unwrap_or(nm);
+                    if clean == "__cranelisp_got_imported"
+                        && let RelocationFlags::MachO { r_type, .. } = reloc.flags()
+                        && (r_type == macho_arm64::ARM64_RELOC_GOT_LOAD_PAGE21
+                            || r_type == macho_arm64::ARM64_RELOC_GOT_LOAD_PAGEOFF12)
+                    {
+                        got_load_count += 1;
+                    }
+                }
+            }
+            assert!(
+                got_load_count >= 2,
+                "synthesised .o must emit at least one GOT_LOAD_PAGE21 + \
+                 GOT_LOAD_PAGEOFF12 pair against the Import symbol so this \
+                 test exercises the new code path; got {got_load_count}"
+            );
+        }
+
+        // Use the address of a stable heap allocation as the registered
+        // symbol value. The slot will be initialised with this address.
+        let stable: Box<u64> = Box::new(0xDEAD_BEEF_F00D_CAFEu64);
+        let stable_ptr: *const u64 = &*stable;
+        let mut linker = Linker::new().unwrap();
+        linker.register_symbol("__cranelisp_got_imported", stable_ptr as *const u8);
+
+        // Load the synthesised .o — this MUST NOT error on the GOT_LOAD relocs.
+        linker
+            .load_object("got_load_reloc_test", &bytes)
+            .expect("linker must accept GOT_LOAD relocations and resolve them via in-process slots");
+
+        // Verify the linker allocated a GOT slot for the symbol and the slot
+        // contains the registered address (the slot is the indirection that
+        // the patched ADRP+LDR will load through at runtime).
+        let slot_addr = *linker
+            .got_slots
+            .get("__cranelisp_got_imported")
+            .expect("linker must allocate a GOT slot for the GOT_LOAD-referenced symbol");
+        let stored = unsafe { *(slot_addr as *const u64) };
+        assert_eq!(
+            stored, stable_ptr as u64,
+            "GOT slot must hold the registered symbol address; got {:#x}",
+            stored
+        );
+
+        // Keep `stable` alive until after the assertion (drop runs at end of fn).
+        drop(stable);
     }
 }

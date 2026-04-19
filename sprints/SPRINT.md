@@ -301,6 +301,79 @@ Phase 3a Architecture Review COMPLETE. All Phase-2 conditions satisfied except (
 
 Recommended next action by `/sprint`: advance to Phase 3b (Design Review by `/review`) before opening Wave 2.
 
+### Wave 2 mid-wave architectural reconciliation
+
+**Reviewer**: `/arch`
+**Trigger**: `/qa` Wave 2c surfaced 12 cache-hit production bugs; `/int` investigation traced them to an architectural defect (the `user`/`main` bare-naming special case in `crates/cranelisp-backend/src/lib.rs:182-186`). User-driven design discussion converged on a deeper architectural reframing.
+**Verdict**: **APPROVED with 0 conditions** for the proposed Wave 2 fix shape (A + B + C). The shape produces the §9 target form directly (Principle 8), preserves Decision 31's redefinition invariant, and satisfies Decision 23's byte-identical-CLIF principle. `/sprint` may proceed to spawn `/backend` then `/int` in serial without waiting on further `/arch` work.
+
+#### Findings
+
+**1. The two-GOT model is the missing framing.** Pre-reconciliation, the docs treated "GOT" as one concept. Two distinct artefacts have been conflated:
+- **SymbolTable GOT**: `Arc<GotTable>` field on `SymbolTable`, in-process, mutable. Used by JIT (`--run`) and REPL. Where REPL redefinition writes the new fn ptr (Decision 31 atomic swap). Resolved at JIT finalize via `JITBuilder::symbol_lookup_fn`.
+- **`.o` data section GOT**: `Linkage::Export` data symbol `__cranelisp_got_{M}` defined inside `M`'s own `.o`, with relocation initializers against local function symbols. Used only by the system linker (`ld`) in `--link` mode. Dormant in `--run`/REPL.
+
+Decision 23 has been UPDATED Sprint 58 Wave 2 to make this explicit. `interfaces.md` gains a "Two-GOT model" subsection in §"Symbol Table". The two-GOT framing IS the architectural shape Principle 11 mandates: same data symbol reference (`Linkage::Import` from caller's POV), mode chooses resolver. The pre-reconciliation conflation was the root cause behind both Bug A (cache-hit lookup of wrong name) and Bug B (`__cranelisp_got_M` never defined as Export data in `.o`).
+
+**2. All-GOT calling is the Decision 31 prerequisite.** REPL redefinition correctness mandates that EVERY call site — including intra-module — go through the GOT slot. Without all-GOT, the Decision-31 atomic swap at the GOT slot would not affect existing callers' compiled code (they'd have the old function address baked in as a direct relocation). The all-GOT discipline is what makes the swap effective. This is documented elsewhere but not previously connected to function-symbol naming + linkage policy. The connection: under all-GOT, no native code ever takes a user function's symbol address across `.o` boundaries — therefore user functions don't need cross-`.o`-visible names, therefore bare + Local linkage is correct.
+
+**3. The `user`/`main` special case is a defect, not a feature.** Pre-Sprint-58, `crates/cranelisp-backend/src/lib.rs:182-186` declared user functions in `user` and `main` modules with bare names + `Linkage::Export`, while every other module's functions got `module/name` qualified names + `Linkage::Export`. This violated Principle 11 (single pipeline, mode parameters): the same `compile_to_module` function emitted different linkage shapes depending on the module's name. It accreted to make `--link`'s `_main` entry point work — the system linker needs `_main` to find the program entry — and was never reconciled against the all-GOT-call architecture. Decision 36 records the corrected policy: bare + `Linkage::Local` uniformly, with the `_main` entry point provided by the `--link` layer as a single targeted Export alias outside `compile_to_module`. The defect being fixed in Wave 2 IS this special case.
+
+**4. Cache-hit integration belongs inside `register_module`'s recursion, not as a parallel orchestration.** Pre-Sprint-58, `try_cache_hit_load` (`src/worker.rs:1169`) re-implemented dependency discovery, ordering, and GOT setup in parallel with the fresh-build code path. This is the dual-pipeline shape Principle 11 was created to forbid. Decision 37 records the correct shape: cache-hit decision is a branch inside `register_module` (deserialise-or-typecheck per module, then recurse on imports). After typecheck-or-deserialise completes for ALL transitively-reachable modules, codegen phase runs in any order across modules — typecheck has already pinned the GOT slot LAYOUT (slot indices in `SymbolTable.symbols[s].got_slot`), so codegen workers fill slot CONTENTS independently. No bespoke topo-sort is needed at codegen.
+
+**5. Decision 25's "regenerated from `ast` on cache-hit load" wording was wrong.** The cache stores BOTH `.meta.json` (deserialise → SymbolTable) AND `.o` (linker maps native code; addresses populated into SymbolTable GOT). Cache-hit LOADS the `.o`; it does NOT re-codegen. Codegen runs only on fresh build. Decision 25 has been UPDATED Sprint 58 Wave 2 with this corrected framing.
+
+#### Verdict on the proposed Wave 2 fix shape (A + B + C)
+
+| Aspect | Verdict | Rationale |
+|---|---|---|
+| **A — `compile_to_module` user/main special case deletion + bare+Local function declarations + `__cranelisp_got_{M}` Export-data definition (`/backend`)** | APPROVED | Produces the §9 target shape directly: the Decision-36 naming policy is the final shape (no per-module asymmetry survives); the `__cranelisp_got_{M}` Export-data definition closes Bug B and aligns the `.o` data section GOT with Decision 23's two-GOT framing. Principle 8: not interim — this IS the §9 form. Principle 11: restored compliance (single pipeline, single naming rule). |
+| **B — Cache-hit integration into `register_module`; defensive guard against swallowed-failure (`/int`)** | APPROVED | Produces the §9 target shape directly: Decision 37's recursive flow is the final shape (no bespoke `try_cache_hit_load` orchestration survives); the defensive guard upholds Decision 31's safety invariant (GOT slots that fail to resolve must error, not silently report success). Principle 8: not interim. Principle 11: single pipeline restored. Decision 31 invariant preserved by the defensive guard. |
+| **C — Downstream consumers of the deleted bare-naming special case (`/int` survey)** | APPROVED | The `--link` layer's `_main` Export alias is the correct narrow exception — one targeted alias for the system linker's entry-point requirement, not a whole-module asymmetry. REPL display already uses bare names, so no display change is needed; the survey-and-verify approach is correct. Principle 11 satisfied (the alias is a `--link`-mode-only artefact, not a general policy). |
+
+**Decision 23 byte-identical CLIF check**: PRESERVED. The CLIF emitted by `compile_to_module` is unchanged in structure: `global_value` against `__cranelisp_got_{M}` declared as `Linkage::Import` from the caller's POV, indexed load by slot. Only the `.o` data section GOT's *definition* (now `Linkage::Export` in the owning module's `.o`) is added — this is an additional emission, not a CLIF change at call sites. JIT mode still resolves the `Linkage::Import` reference via `JITBuilder::symbol_lookup_fn` to the SymbolTable GOT base; nothing about that path changes.
+
+**Decision 31 redefinition invariant check**: PRESERVED. All-GOT calling continues unchanged. The bare + Local function naming does not affect call-site emission (which uses GOT, not function symbols). The SymbolTable GOT slot remains the atomic-swap target. The defensive guard in B (no swallowed failures) STRENGTHENS the invariant — pre-fix, a NULL slot could be reachable; post-fix, a slot that fails to populate errors out before the codegen worker reports success.
+
+#### Conditions for approval
+
+NONE. The Wave 2 fix shape (A + B + C) as proposed is approved without conditions.
+
+#### Follow-on architectural concerns (not blockers)
+
+1. **Decision 23's two-GOT framing implies a `compile_to_module<ObjectModule>` requirement to define `__cranelisp_got_{M}` as Export data.** This is captured in the FIXME on `compile-to-module.md` filed by `/arch` during this review. The mechanism (Module trait extension vs `TypeId` downcast vs caller-side responsibility) is `/backend`'s implementation choice — `/arch` does not pre-empt. The shape constraint is: every `.o` produced by `compile_to_module<ObjectModule>` MUST carry the defined `__cranelisp_got_{M}` Export data symbol with relocation initializers against the local function symbols. Wave 2 close gate: `/backend` confirms the chosen mechanism in `compile-to-module.md` §5 update.
+
+2. **Cache-write becomes mandatory for any module with defined symbols.** Pre-reconciliation, the `.o` write was implicitly optional in some framings (REPL-only sessions might skip it). Post-reconciliation, the `.o` is the cache-hit path's load source — so any session that intends to populate the cache directory must write the `.o` for every module with defined symbols. This is captured in the FIXME on `module-caching.md` §14.5. Not a blocker, but `/sprint` should weigh whether REPL-only sessions are expected to populate the cache or are expected to bypass it entirely (the latter is fine; the former requires the `.o` write to be in the REPL-mode worker's discipline).
+
+3. **The Decision-37 recursive-flow refactor touches `register_module` directly.** This is `/int`'s deepest worker-orchestration code. The proposed shape is sound, but the implementation may surface borrow-checker / scheduler-state-coordination issues that don't show up in the design. `/sprint` should monitor `/int`'s wave-2 implementation for emergent complexity, with the standard escalation path if scope expands beyond the wave's budget.
+
+4. **No new architectural decisions are needed beyond Decisions 36 and 37.** The `/backend`-side and `/int`-side changes both flow from the Decision-23 + Decision-25 + Decision-31 + Decision-32 + Decision-33 + Decision-35 + Decision-36 + Decision-37 set. No further `/arch` arbitration is anticipated for Wave 2 close.
+
+#### `design/arch/CLAUDE.md` updates applied during this review
+
+- **Decision 23 UPDATED** — explicit two-GOT framing added (SymbolTable GOT vs `.o` data section GOT; same data symbol reference, mode chooses resolver). Cross-references Decisions 31, 36, and 37.
+- **Decision 25 UPDATED** — corrected wording: cache stores BOTH `.meta.json` AND `.o`; cache-hit LOADS the `.o`, does NOT re-codegen. Earlier "regenerated from `ast` on cache-hit load" framing was wrong.
+- **Decision 36 ADDED** — function symbol naming + linkage policy: bare names + `Linkage::Local` uniformly. The `user`/`main` special case is a defect, not a feature. The `--link` `_main` entry-point alias is a one-off targeted Export emitted by the `--link` layer, not a whole-module asymmetry.
+- **Decision 37 ADDED** — cache-hit integration into `register_module`'s recursive flow; codegen phase order-independent because typecheck pins GOT slot LAYOUT. Bespoke `try_cache_hit_load` orchestration deleted.
+
+#### `design/arch/interfaces.md` updates applied during this review
+
+- §"Symbol Table" gains "Two-GOT model" subsection — distinguishes SymbolTable GOT (`Arc<GotTable>` field on `SymbolTable`, in-process, mutable, JIT-mode resolver target) from `.o` data section GOT (Export data symbol in object file, on-disk, immutable after load, `--link`-mode resolver target). Documents that the two share the same name + per-slot semantics so the backend emits byte-identical CLIF in both modes. Cross-references Decisions 23, 31, 36, 37.
+
+#### FIXMEs filed against other skills during this review
+
+| File | Skill | Concern |
+|---|---|---|
+| `design/int/symbol-table-cache.md` (head FIXME) | `/int` | (a) §3.1 vs §3.3 contradiction — rewrite §3.1 to match §3.3 (cache-hit LOADS `.o`, no re-codegen); (b) §3.2 — cache-hit decision moves inside `register_module`'s recursion per Decision 37; (c) reference Decisions 36 and 37 in the relevant subsections; "Investigation findings" Bug A's preferred fix becomes obsolete under Decision 36 (bare lookup uniformly is the correct fix, made consistent by `/backend`'s same-wave change). |
+| `design/backend/compile-to-module.md` (head FIXME) | `/backend` | (a) §7 function declaration loop: bare names + `Linkage::Local` uniformly per Decision 36; delete the cross-module `Linkage::Import` paragraph (under all-GOT calling, no function-symbol cross-`.o` references exist); (b) §5.3 / new §5.4: `__cranelisp_got_{M}` Export-data definition for ObjectModule path (Bug B fix per Decision 23); (c) §12 head: add Decision-23 two-GOT framing reference. (Plus the previously-filed C8 follow-on for the raw-shape return type.) |
+| `design/backend/module-caching.md` (head FIXME) | `/backend` | (a) §14.3 step [5b] is wrong — cache-hit LOADS `.o`, does not re-codegen per Decision 25 (updated); (b) cache-hit explicit two-GOT model paragraph; (c) §14.3 reframing per Decision 37 (cache-hit lives inside `register_module`'s recursion); (d) §14.5 — `.o` write becomes mandatory for any module with defined symbols. |
+
+#### Status update
+
+Wave 2 mid-wave architectural reconciliation COMPLETE. Decisions 23 + 25 updated; Decisions 36 + 37 added; `interfaces.md` gains two-GOT model subsection; three FIXMEs filed (one each on `/int` and two on `/backend`). The proposed Wave 2 fix shape is APPROVED with zero conditions. `/sprint` may proceed to spawn `/backend` then `/int` in serial action.
+
+Recommended next action by `/sprint`: spawn `/backend` agent first to land the `compile_to_module` changes (A) and the FIXME-driven doc updates on `compile-to-module.md` + `module-caching.md`; then spawn `/int` agent to land the cache-hit-into-`register_module` integration (B), the downstream survey + `_main` Export alias for `--link` (C), and the FIXME-driven doc update on `symbol-table-cache.md`.
+
 ## Skill Plans
 
 {Each skill's plan filled during Phase 3. Compiler skills with implementation work MUST land or update a design doc in their `design/{skill}/` subtree before Wave 2 opens. Per the Sprint 57 process, design-review and test-derivation gates Wave 2.}

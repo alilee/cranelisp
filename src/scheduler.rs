@@ -44,6 +44,17 @@ pub struct ModuleState {
     /// All in-memory codegen complete for this module.
     pub inmem_done: bool,
 
+    /// A worker has claimed cache-hit inmem loading for this module but has
+    /// not yet finished. Set by `take_priority_work` when it dispatches the
+    /// JitCodegen work item; checked alongside `inmem_done` so other
+    /// workers skip the claimed module. Cleared on completion (via
+    /// `notify_inmem_codegen_batch_complete`) or failure (via
+    /// `notify_module_failed`). Sprint 58 Wave 2c — splits the
+    /// "claim-then-do" race that previously set `inmem_done = true` BEFORE
+    /// the worker ran, causing `wait_inmem_complete` to falsely report
+    /// readiness while the cache-hit `.o` was still loading.
+    pub inmem_claimed: bool,
+
     /// A nice worker is currently performing object codegen for this module.
     /// Set when `take_object_codegen` claims the module; cleared when
     /// `notify_object_codegen_complete` is called. Prevents double-claim
@@ -73,6 +84,7 @@ impl ModuleState {
             waiters: HashMap::new(),
             jit_reserved: HashSet::new(),
             inmem_done: false,
+            inmem_claimed: false,
             object_working: false,
             object_done: false,
             error: None,
@@ -91,6 +103,7 @@ impl ModuleState {
             waiters: HashMap::new(),
             jit_reserved: HashSet::new(),
             inmem_done: false,
+            inmem_claimed: false,
             object_working: false,
             object_done: true,
             error: None,
@@ -388,6 +401,7 @@ impl CompileScheduler {
                 waiters,
                 jit_reserved: HashSet::new(),
                 inmem_done: false,
+                inmem_claimed: false,
                 object_working: false,
                 object_done: false,
                 error: None,
@@ -488,19 +502,24 @@ impl CompileScheduler {
         }
 
         // Level 4: JitCodegen for cached modules needing inmem loading.
-        // Scan typecheck_done for modules with inmem_done = false
-        // (cache-hit modules that need Linker-based code loading).
+        // Scan typecheck_done for modules with inmem_done = false AND
+        // inmem_claimed = false (cache-hit modules that need Linker-based
+        // code loading and have not yet been claimed by another worker).
+        // Sprint 58 Wave 2c: split claim-vs-done so `wait_inmem_complete`
+        // only sees `inmem_done = true` after the worker actually finishes.
         let cached_needing_inmem = state.typecheck_done.iter().find_map(|module| {
             state.modules.get(module)
-                .filter(|ms| !ms.inmem_done && ms.object_done)
+                .filter(|ms| !ms.inmem_done && !ms.inmem_claimed && ms.object_done)
                 .map(|_| module.clone())
         });
         if let Some(module) = cached_needing_inmem {
-            // Claim guard: set inmem_done = true BEFORE returning the work
-            // item so other workers skip this module. If the worker fails,
-            // it calls notify_module_failed which handles the error state.
+            // Claim guard: set inmem_claimed = true so other workers skip
+            // this module while the cache-hit worker loads its `.o`. The
+            // worker calls `notify_inmem_codegen_batch_complete` on success
+            // (which sets `inmem_done = true`) or `notify_module_failed`
+            // on error (which moves the module to `Failed`).
             if let Some(ms) = state.modules.get_mut(&module) {
-                ms.inmem_done = true;
+                ms.inmem_claimed = true;
             }
             // Use a synthetic symbol name — the worker will batch-load the
             // entire .o file regardless of which symbol triggered the item.
@@ -737,6 +756,8 @@ impl CompileScheduler {
 
     /// Batch-mark multiple symbols as inmem-codegenned.
     /// Used when a Linker load resolves all symbols in a cached .o at once.
+    /// Sprint 58 Wave 2c: clears `inmem_claimed` alongside setting
+    /// `inmem_done` so the claim and the completion are released atomically.
     pub fn notify_inmem_codegen_batch_complete(
         &self,
         module: &ModuleFullPath,
@@ -748,6 +769,7 @@ impl CompileScheduler {
                 ms.jit_reserved.remove(sym);
             }
             ms.inmem_done = true;
+            ms.inmem_claimed = false;
         }
         // Evaluate waiter satisfaction for codegen waiters.
         Self::satisfy_codegen_waiters_batch_locked(&mut state, module, symbols);
@@ -1657,12 +1679,10 @@ mod tests {
             current_module: Mutex::new(cranelisp_types::ModuleFullPath::from("user")),
             repl_check_state: Mutex::new(None),
             typecheck_products: dashmap::DashMap::new(),
-            codegen_programs: dashmap::DashMap::new(),
             kept_jits: Mutex::new(Vec::new()),
             kept_linkers: Mutex::new(Vec::new()),
             kept_dlls: Mutex::new(Vec::new()),
             introspection: dashmap::DashMap::new(),
-            module_structures: dashmap::DashMap::new(),
         });
 
         let m = mod_path("test.mod");
@@ -1733,5 +1753,134 @@ mod tests {
         sched.shutdown();
         let result = handle.join().expect("worker thread panicked");
         assert!(result.is_none()); // shutdown returns None
+    }
+
+    // ──────────────────────────────────────────────────────────────────────
+    // Sprint 58 Wave 2c: split inmem_claimed from inmem_done so
+    // wait_inmem_complete only sees inmem_done after the cache-hit worker
+    // actually finishes loading the .o.
+    // ──────────────────────────────────────────────────────────────────────
+
+    // spec: design/int/symbol-table-cache.md §3.2 — claim guard does not
+    // pre-set `inmem_done`; only the worker's
+    // `notify_inmem_codegen_batch_complete` does.
+    #[test]
+    fn level4_claim_guard_sets_inmem_claimed_not_inmem_done() {
+        let sched = CompileScheduler::new();
+        let m = mod_path("cached.dep");
+        // Cached module enters TypecheckDone with object_done=true,
+        // inmem_done=false, inmem_claimed=false.
+        sched.register_module_cached(m.clone(), HashSet::new());
+        {
+            let state = sched.lock();
+            let ms = state.modules.get(&m).unwrap();
+            assert!(!ms.inmem_done, "cached module starts with inmem_done=false");
+            assert!(!ms.inmem_claimed, "cached module starts with inmem_claimed=false");
+            assert!(ms.object_done, "cached module starts with object_done=true");
+        }
+
+        // Take level-4 work — should claim, NOT mark done.
+        let work = sched.take_priority_work();
+        assert!(matches!(work, Some(PriorityWork::JitCodegen(_, _))));
+        {
+            let state = sched.lock();
+            let ms = state.modules.get(&m).unwrap();
+            assert!(
+                !ms.inmem_done,
+                "claim guard MUST NOT pre-set inmem_done — that races against \
+                 wait_inmem_complete (Sprint 58 Wave 2c regression guard)"
+            );
+            assert!(
+                ms.inmem_claimed,
+                "claim guard sets inmem_claimed so other workers skip this module"
+            );
+        }
+
+        // Second take must skip this module (claimed).
+        let second = sched.take_priority_work();
+        assert!(
+            second.is_none(),
+            "second take_priority_work must skip the inmem_claimed module"
+        );
+
+        // Worker reports completion → inmem_done set, claim cleared.
+        sched.notify_inmem_codegen_batch_complete(&m, &[]);
+        {
+            let state = sched.lock();
+            let ms = state.modules.get(&m).unwrap();
+            assert!(ms.inmem_done, "completion sets inmem_done");
+            assert!(
+                !ms.inmem_claimed,
+                "completion releases the claim atomically with setting done"
+            );
+        }
+    }
+
+    // spec: design/int/symbol-table-cache.md §3.2 — wait_inmem_complete
+    // distinguishes "claimed but not done" from "done"; cache-hit worker
+    // failure must surface as an error before trampoline runs.
+    #[test]
+    fn wait_inmem_complete_does_not_pass_on_claimed_but_unfinished_module() {
+        let sched = CompileScheduler::new();
+        let m = mod_path("cached.dep");
+        sched.register_module_cached(m.clone(), HashSet::new());
+
+        // Take work — claims the module.
+        let _work = sched.take_priority_work();
+
+        // wait_inmem_complete (non-blocking) must NOT report success because
+        // inmem_done is still false. It returns InmemIncomplete.
+        let result = sched.wait_inmem_complete();
+        assert!(
+            result.is_err(),
+            "wait_inmem_complete must fail while module is claimed but not done — \
+             pre-fix: claim-guard set inmem_done, hiding the unfinished work"
+        );
+    }
+
+    // spec: design/int/symbol-table-cache.md §3.2 — multiple cache-hit
+    // modules can be loaded in parallel without the claim guard letting
+    // wait_inmem_complete pass prematurely.
+    #[test]
+    fn level4_multiple_cached_modules_each_claim_independently() {
+        let sched = CompileScheduler::new();
+        let m1 = mod_path("dep.one");
+        let m2 = mod_path("dep.two");
+        sched.register_module_cached(m1.clone(), HashSet::new());
+        sched.register_module_cached(m2.clone(), HashSet::new());
+
+        // Two takes — each claims one module.
+        let w1 = sched.take_priority_work();
+        let w2 = sched.take_priority_work();
+        let w3 = sched.take_priority_work();
+
+        assert!(matches!(w1, Some(PriorityWork::JitCodegen(_, _))));
+        assert!(matches!(w2, Some(PriorityWork::JitCodegen(_, _))));
+        assert!(w3.is_none(), "third take must return None — both claimed");
+
+        // Both modules must be claimed but not done.
+        {
+            let state = sched.lock();
+            for path in [&m1, &m2] {
+                let ms = state.modules.get(path).unwrap();
+                assert!(ms.inmem_claimed);
+                assert!(!ms.inmem_done);
+            }
+        }
+
+        // Complete one. wait_inmem_complete must still fail (the other is
+        // still claimed-but-not-done).
+        sched.notify_inmem_codegen_batch_complete(&m1, &[]);
+        assert!(
+            sched.wait_inmem_complete().is_err(),
+            "wait_inmem_complete must fail while ANY module is claimed-but-not-done"
+        );
+
+        // Complete the other. Now wait succeeds.
+        sched.notify_inmem_codegen_batch_complete(&m2, &[]);
+        assert!(
+            sched.wait_inmem_complete().is_ok(),
+            "wait_inmem_complete passes after every claim is resolved"
+        );
     }
 }

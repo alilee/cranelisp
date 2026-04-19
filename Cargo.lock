@@ -259,6 +259,7 @@ dependencies = [
 name = "cranelisp"
 version = "0.1.0"
 dependencies = [
+ "cranelift",
  "cranelisp-backend",
  "cranelisp-frontend",
  "cranelisp-platform",

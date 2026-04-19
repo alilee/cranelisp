@@ -13,10 +13,8 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use cranelisp_types::{
-    CranelispError, ModuleEntry, Span, SymbolTable, Type,
+    CranelispError, ModuleEntry, ModuleFullPath, Span, SymbolTable, Type,
 };
-#[cfg(test)]
-use cranelisp_types::ModuleFullPath;
 
 // Re-export generate_startup_object from the backend for convenience.
 pub use cranelisp_backend::exe::generate_startup_object;
@@ -107,6 +105,161 @@ fn type_display_brief(ty: &Type) -> String {
                 type_display_brief(ret)
             )
         }
+    }
+}
+
+// ── `_main` entry-point alias (Decision 36 `--link` exception) ──────────
+
+/// Generate a small alias `.o` defining `main` as `Linkage::Export`, body =
+/// GOT-indirect tail-call into the entry module's `__cranelisp_got_{M}`
+/// data symbol at the slot allocated for `main`.
+///
+/// This satisfies Decision 36's "`--link` entry point exception": every
+/// user-defined function is declared bare-`Linkage::Local` by
+/// `compile_to_module`, but the system linker requires `_main` (or the
+/// configured entry stub's referenced name) as a globally-visible symbol.
+/// Rather than punching a per-module-name special case back into
+/// `compile_to_module`, the `--link` layer emits a separate alias `.o` that
+/// tail-calls through the GOT — the same indirection mechanism every
+/// cross-module call uses (Decision 23 + 31). The entry module's
+/// `__cranelisp_got_{M}` data symbol is `Linkage::Export` per the
+/// Bug B fix in `define_module_got_data` (Sprint 58 Wave 2 / Decision 23),
+/// so the alias `.o` can resolve it at link time.
+///
+/// # Arguments
+/// * `entry_module` — module path of the entry module (e.g. `zero`, `main`,
+///   `hello`). Used to compute the GOT data-symbol name.
+/// * `main_got_slot` — the GOT slot index that the entry module's symbol
+///   table allocated for `main`. Read off
+///   `symbol_tables[entry_module].symbols["main"].got_slot.unwrap()`.
+///
+/// # Returns
+/// Raw bytes of a relocatable Mach-O `.o` file containing one Export symbol
+/// `main` whose body loads `__cranelisp_got_{entry_module}[main_got_slot]`
+/// and tail-calls the resulting function pointer.
+pub fn generate_main_alias_object(
+    entry_module: &ModuleFullPath,
+    main_got_slot: usize,
+) -> Result<Vec<u8>, CranelispError> {
+    use cranelift::prelude::*;
+    use cranelisp_backend::cranelift_module::{default_libcall_names, Linkage, Module};
+    use cranelisp_backend::cranelift_object::{ObjectBuilder, ObjectModule};
+
+    let isa = cranelisp_backend::build_isa(true)?;
+    let obj_builder = ObjectBuilder::new(
+        isa,
+        "cranelisp_main_alias",
+        default_libcall_names(),
+    )
+    .map_err(|e| CranelispError::CodegenError {
+        message: format!("failed to create ObjectBuilder for main alias: {e}"),
+        span: Span::SYNTHETIC,
+    })?;
+    let mut obj_module = ObjectModule::new(obj_builder);
+
+    // Declare the per-entry-module GOT data symbol as Linkage::Import.
+    // The entry module's `.o` defines this symbol as Export (per Bug B fix
+    // in `define_module_got_data` — Sprint 58 Wave 2 / Decision 23).
+    let got_name = cranelisp_backend::compiler::got_data_symbol_name(entry_module);
+    let got_data_id = obj_module
+        .declare_data(&got_name, Linkage::Import, false, false)
+        .map_err(|e| CranelispError::CodegenError {
+            message: format!("failed to declare {got_name} as Import: {e}"),
+            span: Span::SYNTHETIC,
+        })?;
+
+    // Declare `main` as Linkage::Export. The system linker resolves the
+    // startup stub's `_main` import against this symbol.
+    let mut main_sig = obj_module.make_signature();
+    main_sig.returns.push(AbiParam::new(types::I64));
+    let main_func_id = obj_module
+        .declare_function("main", Linkage::Export, &main_sig)
+        .map_err(|e| CranelispError::CodegenError {
+            message: format!("failed to declare main alias as Export: {e}"),
+            span: Span::SYNTHETIC,
+        })?;
+
+    let mut func = cranelift::codegen::ir::Function::with_name_signature(
+        cranelift::codegen::ir::UserFuncName::user(0, main_func_id.as_u32()),
+        main_sig,
+    );
+
+    let mut func_ctx = FunctionBuilderContext::new();
+    {
+        let mut builder = FunctionBuilder::new(&mut func, &mut func_ctx);
+        let entry_block = builder.create_block();
+        builder.append_block_params_for_function_params(entry_block);
+        builder.switch_to_block(entry_block);
+        builder.seal_block(entry_block);
+
+        // Load the GOT base address.
+        let got_global = obj_module.declare_data_in_func(got_data_id, builder.func);
+        let got_base = builder.ins().symbol_value(types::I64, got_global);
+
+        // Load the function pointer at slot `main_got_slot * 8`.
+        let slot_offset: i32 = (main_got_slot * 8).try_into().map_err(|_| {
+            CranelispError::CodegenError {
+                message: format!(
+                    "main GOT slot offset overflows i32 for slot {main_got_slot}"
+                ),
+                span: Span::SYNTHETIC,
+            }
+        })?;
+        let fn_ptr = builder.ins().load(
+            types::I64,
+            cranelift::codegen::ir::MemFlags::trusted(),
+            got_base,
+            slot_offset,
+        );
+
+        // Tail-call via `call_indirect`. The signature: `() -> i64`.
+        let mut ind_sig = obj_module.make_signature();
+        ind_sig.returns.push(AbiParam::new(types::I64));
+        let sig_ref = builder.import_signature(ind_sig);
+        let call = builder.ins().call_indirect(sig_ref, fn_ptr, &[]);
+        let result = builder.inst_results(call)[0];
+        builder.ins().return_(&[result]);
+        builder.finalize();
+    }
+
+    let mut ctx = cranelift::codegen::Context::for_function(func);
+    obj_module
+        .define_function(main_func_id, &mut ctx)
+        .map_err(|e| CranelispError::CodegenError {
+            message: format!("failed to define main alias: {e:?}"),
+            span: Span::SYNTHETIC,
+        })?;
+
+    let product = obj_module.finish();
+    product.emit().map_err(|e| CranelispError::CodegenError {
+        message: format!("failed to emit main alias object: {e}"),
+        span: Span::SYNTHETIC,
+    })
+}
+
+/// Look up the `main` GOT slot for the given entry module's symbol table.
+///
+/// Returns the slot index pinned at typecheck time. Errors if `main` is
+/// missing or has no slot allocated (defensive — `validate_main` should
+/// have caught the missing case).
+pub fn entry_main_got_slot(entry_table: &SymbolTable) -> Result<usize, CranelispError> {
+    let entry = entry_table.get("main").ok_or_else(|| {
+        CranelispError::CodegenError {
+            message: "entry module has no 'main' function (alias generation)".to_string(),
+            span: Span::SYNTHETIC,
+        }
+    })?;
+    match entry {
+        ModuleEntry::Def { got_slot: Some(slot), .. } => Ok(*slot),
+        ModuleEntry::Def { got_slot: None, .. } => Err(CranelispError::CodegenError {
+            message: "entry module's 'main' has no GOT slot — typecheck did \
+                      not pin a slot index".to_string(),
+            span: Span::SYNTHETIC,
+        }),
+        _ => Err(CranelispError::CodegenError {
+            message: "entry module's 'main' is not a Def entry".to_string(),
+            span: Span::SYNTHETIC,
+        }),
     }
 }
 

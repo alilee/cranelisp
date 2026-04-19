@@ -11,6 +11,14 @@
 // 2. Pipeline integration tests — exercise the full cache-hit path
 //    via compile_module_graph_cached, including cross-module calls,
 //    prelude caching, and cache invalidation.
+//
+// Sprint 58 Wave 2c migration (Decision 33+34, `module-caching.md` §14):
+// the legacy `CacheMetadata` envelope is gone — `.meta.json` IS a serialised
+// `SymbolTable`. All metadata I/O in this file flows through the authoritative
+// `cache::write_meta` / `cache::load_meta` API; assertions read directly off
+// the deserialised `SymbolTable`. `CACHE_SCHEMA_VERSION` replaces
+// `CACHE_FORMAT_VERSION` (renamed for consistency with Decision 34 / the
+// `schema_version` field on `SymbolTable`).
 
 #[path = "helpers/mod.rs"]
 mod helpers;
@@ -19,12 +27,9 @@ use std::collections::HashMap;
 use std::path::Path;
 
 use cranelisp_backend::cache::{
-    self, build_cache_packet, check_manifest, hash_source, process_cache_packet, read_manifest,
-    write_manifest, CacheManifest, IntrinsicTable, ObjectCompileInput, CACHE_FORMAT_VERSION,
-};
-use cranelisp_backend::cache::serialize::{
-    CacheMetadata, read_cached_metadata,
-    write_cached_metadata,
+    self, check_manifest, hash_source, process_cache_packet, read_manifest,
+    serialize::CacheStale, write_manifest, CacheManifest, IntrinsicTable, ObjectCompileInput,
+    CACHE_SCHEMA_VERSION,
 };
 use dashmap::DashMap;
 use cranelisp_types::{ModuleFullPath, Symbol, SymbolTable};
@@ -33,22 +38,31 @@ use cranelisp_types::{ModuleFullPath, Symbol, SymbolTable};
 // Helpers
 // =============================================================================
 
-fn make_test_metadata(module_path: &str) -> CacheMetadata {
-    let mp = ModuleFullPath::from(module_path);
-    CacheMetadata {
-        symbol_table: SymbolTable::new(mp),
-        dependencies: Vec::new(),
-    }
+/// Build a fresh `SymbolTable` for the given module path.
+///
+/// Replaces the pre-Wave-2c `make_test_metadata` helper; the cache no longer
+/// has a separate envelope, so a fresh SymbolTable IS the in-memory shape that
+/// `write_meta` serialises directly to `.meta.json`.
+fn make_test_symbol_table(module_path: &str) -> SymbolTable {
+    SymbolTable::new(ModuleFullPath::from(module_path))
 }
 
-fn make_test_metadata_with_defs(module_path: &str, def_names: &[&str]) -> CacheMetadata {
-    let mut metadata = make_test_metadata(module_path);
+/// Build a `SymbolTable` populated with one `Def` per name (each with a fresh
+/// GOT slot). Replaces the pre-Wave-2c `make_test_metadata_with_defs` helper;
+/// the SymbolTable IS what gets serialised to `.meta.json` via the
+/// authoritative API.
+fn make_test_symbol_table_with_defs(module_path: &str, def_names: &[&str]) -> SymbolTable {
+    let mut table = make_test_symbol_table(module_path);
     for (i, name) in def_names.iter().enumerate() {
-        use cranelisp_types::{ModuleEntry, Scheme, Type, DefKind, Visibility};
-        metadata.symbol_table.insert(
+        use cranelisp_types::{DefKind, ModuleEntry, Scheme, Type, Visibility};
+        table.insert(
             Symbol::from(*name),
             ModuleEntry::Def {
-                scheme: Scheme { vars: vec![], ty: Type::Fn(vec![Type::Int], Box::new(Type::Int)), constraints: Default::default() },
+                scheme: Scheme {
+                    vars: vec![],
+                    ty: Type::Fn(vec![Type::Int], Box::new(Type::Int)),
+                    constraints: Default::default(),
+                },
                 kind: Box::new(DefKind::UserFn { constrained_fn: None }),
                 docstring: None,
                 param_names: vec![Symbol::from("x")],
@@ -62,7 +76,7 @@ fn make_test_metadata_with_defs(module_path: &str, def_names: &[&str]) -> CacheM
             },
         );
     }
-    metadata
+    table
 }
 
 fn make_object_compile_input(module_path: &str) -> ObjectCompileInput {
@@ -171,10 +185,11 @@ fn cache_hit_second_compile_uses_cache() {
     manifest.upsert_module(&mp, source_hash.clone(), HashMap::new());
     write_manifest(dir.path(), &manifest).unwrap();
 
-    // Step 2: Write cache metadata file
-    let metadata = make_test_metadata_with_defs("user", &["main"]);
+    // Step 2: Write cache metadata file (the .meta.json IS a serialised SymbolTable
+    // per Decision 33+34; `write_meta` stamps `schema_version`).
+    let table = make_test_symbol_table_with_defs("user", &["main"]);
     let (meta_path, _obj_path) = cache::module_cache_path(dir.path(), &mp);
-    write_cached_metadata(&meta_path, &metadata).unwrap();
+    cache::write_meta(&meta_path, &table, CACHE_SCHEMA_VERSION).unwrap();
 
     // Step 3: Simulate second compile — check manifest reports cache hit
     let loaded_manifest = read_manifest(dir.path()).unwrap();
@@ -185,9 +200,9 @@ fn cache_hit_second_compile_uses_cache() {
     );
 
     // Step 4: Verify metadata can be loaded from disk
-    let loaded_meta = read_cached_metadata(&meta_path).unwrap();
-    // GOT slots are now on ModuleEntry::Def in the symbol table.
-    let main_entry = loaded_meta.symbol_table.get(&Symbol::from("main"));
+    let loaded_table = cache::load_meta(&meta_path).expect("cache load should succeed");
+    // GOT slots are on ModuleEntry::Def in the symbol table.
+    let main_entry = loaded_table.get(&Symbol::from("main"));
     assert!(
         matches!(main_entry, Some(cranelisp_types::ModuleEntry::Def { got_slot: Some(_), .. })),
         "main should have a GOT slot in the symbol table"
@@ -380,7 +395,7 @@ fn cache_invalidation_format_version_change() {
 
     let mut manifest = make_host_manifest();
     manifest.upsert_module(&mp, source_hash.clone(), HashMap::new());
-    manifest.cache_format_version = CACHE_FORMAT_VERSION + 999;
+    manifest.cache_format_version = CACHE_SCHEMA_VERSION + 999;
 
     let result = check_manifest(&manifest, &mp, &source_hash, &HashMap::new());
     assert!(
@@ -501,23 +516,23 @@ fn cache_invalidation_new_dependency() {
 // =============================================================================
 
 // spec: design/backend/module-caching.md §4 — .meta.json round-trip preserves all metadata
+// spec: design/backend/module-caching.md §14.6 — write/load symmetry on SymbolTable
 #[test]
 fn cache_metadata_roundtrip() {
     let dir = tempfile::tempdir().unwrap();
     let meta_path = dir.path().join("test.meta.json");
 
-    let original = make_test_metadata_with_defs("test.module", &["foo", "bar", "baz"]);
-    write_cached_metadata(&meta_path, &original).unwrap();
-    let loaded = read_cached_metadata(&meta_path).unwrap();
+    let original = make_test_symbol_table_with_defs("test.module", &["foo", "bar", "baz"]);
+    cache::write_meta(&meta_path, &original, CACHE_SCHEMA_VERSION).unwrap();
+    let loaded = cache::load_meta(&meta_path).expect("cache load should succeed");
 
     // Symbol table module path
-    assert_eq!(
-        loaded.symbol_table.path,
-        ModuleFullPath::from("test.module")
-    );
+    assert_eq!(loaded.path, ModuleFullPath::from("test.module"));
+    assert_eq!(loaded.schema_version, CACHE_SCHEMA_VERSION);
 
     // GOT slots are on ModuleEntry::Def in the symbol table.
-    let defs_with_slots: Vec<_> = loaded.symbol_table.all_symbols()
+    let defs_with_slots: Vec<_> = loaded
+        .all_symbols()
         .filter_map(|(name, entry)| match entry {
             cranelisp_types::ModuleEntry::Def { got_slot: Some(s), .. } => Some((name.clone(), *s)),
             _ => None,
@@ -535,13 +550,14 @@ fn cache_metadata_roundtrip_empty() {
     let dir = tempfile::tempdir().unwrap();
     let meta_path = dir.path().join("empty.meta.json");
 
-    let original = make_test_metadata("empty");
-    write_cached_metadata(&meta_path, &original).unwrap();
-    let loaded = read_cached_metadata(&meta_path).unwrap();
+    let original = make_test_symbol_table("empty");
+    cache::write_meta(&meta_path, &original, CACHE_SCHEMA_VERSION).unwrap();
+    let loaded = cache::load_meta(&meta_path).expect("cache load should succeed");
 
-    assert_eq!(loaded.symbol_table.path, ModuleFullPath::from("empty"));
+    assert_eq!(loaded.path, ModuleFullPath::from("empty"));
     // Empty metadata has no defs with GOT slots.
-    let defs_with_slots: Vec<_> = loaded.symbol_table.all_symbols()
+    let defs_with_slots: Vec<_> = loaded
+        .all_symbols()
         .filter_map(|(_, entry)| match entry {
             cranelisp_types::ModuleEntry::Def { got_slot: Some(_), .. } => Some(()),
             _ => None,
@@ -550,46 +566,80 @@ fn cache_metadata_roundtrip_empty() {
     assert!(defs_with_slots.is_empty());
 }
 
-// spec: design/backend/module-caching.md §4 — read nonexistent metadata returns error
+// spec: design/backend/module-caching.md §14.7 — missing file flows through CacheStale
 #[test]
 fn cache_metadata_read_nonexistent() {
-    let result = read_cached_metadata(Path::new("/nonexistent/path.meta.json"));
-    assert!(result.is_err(), "reading nonexistent metadata should error");
+    let err = cache::load_meta(Path::new("/nonexistent/path.meta.json"))
+        .expect_err("reading nonexistent metadata should return CacheStale");
+    assert!(matches!(err, CacheStale::Missing { .. }), "got {err:?}");
 }
 
-// spec: design/backend/module-caching.md §4 — corrupt metadata returns error
+// spec: design/backend/module-caching.md §14.7 — corrupt bytes flow through CacheStale
 #[test]
 fn cache_metadata_read_corrupt() {
     let dir = tempfile::tempdir().unwrap();
     let meta_path = dir.path().join("corrupt.meta.json");
     std::fs::write(&meta_path, "{ invalid json }}}").unwrap();
-    let result = read_cached_metadata(&meta_path);
-    assert!(result.is_err(), "corrupt metadata should return error");
+    let err = cache::load_meta(&meta_path)
+        .expect_err("corrupt metadata should return CacheStale, not panic");
+    assert!(matches!(err, CacheStale::Deserialise { .. }), "got {err:?}");
 }
 
 // =============================================================================
 // §7 CacheWritePacket — build and process packets
 // =============================================================================
 
+// Build a `CacheWritePacket` directly from a `SymbolTable` using the new
+// authoritative API to populate `meta_json_bytes` (Decision 33+34). This sits
+// alongside `build_cache_packet`'s legacy `CacheMetadata` signature so this
+// test file does not pull in the deprecated envelope at all. Once the
+// `build_cache_packet` overload that takes `&SymbolTable` lands (per the
+// `module-caching.md` §14.4 migration note), this helper collapses to a single
+// call.
+fn build_cache_packet_from_table(
+    cache_dir: &Path,
+    module_path: &ModuleFullPath,
+    source_hash: &str,
+    is_stdlib: bool,
+    dependency_hashes: HashMap<String, String>,
+    table: &SymbolTable,
+    object_compile_input: ObjectCompileInput,
+) -> cranelisp_backend::cache::CacheWritePacket {
+    let (meta_path, object_path) = cache::module_cache_path(cache_dir, module_path);
+    let meta_json_bytes =
+        cache::serialize::serialise_meta(table, CACHE_SCHEMA_VERSION).unwrap();
+    cranelisp_backend::cache::CacheWritePacket {
+        cache_dir: cache_dir.to_path_buf(),
+        module_path: module_path.clone(),
+        source_hash: source_hash.to_string(),
+        is_stdlib,
+        dependency_hashes,
+        meta_json_bytes,
+        meta_path,
+        object_path,
+        object_compile_input,
+    }
+}
+
 // spec: design/backend/module-caching.md §7 — build and process cache packet
+// spec: design/backend/module-caching.md §14.4 — packet bytes are a serialised SymbolTable
 #[test]
 fn cache_packet_build_and_process() {
     let dir = tempfile::tempdir().unwrap();
     let mp = ModuleFullPath::from("user");
     let source_hash = hash_source("(defn main [] 42)");
-    let metadata = make_test_metadata_with_defs("user", &["main"]);
+    let table = make_test_symbol_table_with_defs("user", &["main"]);
     let input = make_object_compile_input("user");
 
-    let packet = build_cache_packet(
+    let packet = build_cache_packet_from_table(
         dir.path(),
         &mp,
         &source_hash,
         false,
         HashMap::new(),
-        &metadata,
+        &table,
         input,
-    )
-    .unwrap();
+    );
 
     assert_eq!(packet.module_path, mp);
     assert_eq!(packet.source_hash, source_hash);
@@ -605,9 +655,10 @@ fn cache_packet_build_and_process() {
         packet.meta_path.exists(),
         ".meta.json should exist after processing"
     );
-    let loaded = read_cached_metadata(&packet.meta_path).unwrap();
+    let loaded = cache::load_meta(&packet.meta_path).expect("cache load should succeed");
     // Verify the symbol table was serialized.
-    assert_eq!(loaded.symbol_table.path, mp);
+    assert_eq!(loaded.path, mp);
+    assert_eq!(loaded.schema_version, CACHE_SCHEMA_VERSION);
 }
 
 // spec: design/backend/module-caching.md §7 — nested module creates subdirectory
@@ -615,19 +666,18 @@ fn cache_packet_build_and_process() {
 fn cache_packet_nested_module_path() {
     let dir = tempfile::tempdir().unwrap();
     let mp = ModuleFullPath::from("core.numerics");
-    let metadata = make_test_metadata("core.numerics");
+    let table = make_test_symbol_table("core.numerics");
     let input = make_object_compile_input("core.numerics");
 
-    let packet = build_cache_packet(
+    let packet = build_cache_packet_from_table(
         dir.path(),
         &mp,
         &hash_source("source"),
         true,
         HashMap::new(),
-        &metadata,
+        &table,
         input,
-    )
-    .unwrap();
+    );
 
     assert!(
         packet
@@ -648,23 +698,22 @@ fn cache_packet_nested_module_path() {
 fn cache_packet_dependency_hashes() {
     let dir = tempfile::tempdir().unwrap();
     let mp = ModuleFullPath::from("user");
-    let metadata = make_test_metadata("user");
+    let table = make_test_symbol_table("user");
     let input = make_object_compile_input("user");
 
     let mut dep_hashes = HashMap::new();
     dep_hashes.insert("prelude".to_string(), hash_source("prelude content"));
     dep_hashes.insert("core.num".to_string(), hash_source("num content"));
 
-    let packet = build_cache_packet(
+    let packet = build_cache_packet_from_table(
         dir.path(),
         &mp,
         &hash_source("user source"),
         false,
         dep_hashes.clone(),
-        &metadata,
+        &table,
         input,
-    )
-    .unwrap();
+    );
 
     let result = process_cache_packet(&packet, &DashMap::new()).unwrap();
     assert_eq!(result.dependency_hashes, dep_hashes);
@@ -768,18 +817,17 @@ fn cache_directory_layout() {
 
     for (mod_path, defs) in &modules {
         let mp = ModuleFullPath::from(*mod_path);
-        let metadata = make_test_metadata_with_defs(mod_path, defs);
+        let table = make_test_symbol_table_with_defs(mod_path, defs);
         let input = make_object_compile_input(mod_path);
-        let packet = build_cache_packet(
+        let packet = build_cache_packet_from_table(
             dir.path(),
             &mp,
             &hash_source(&format!("{mod_path} source")),
             false,
             HashMap::new(),
-            &metadata,
+            &table,
             input,
-        )
-        .unwrap();
+        );
         process_cache_packet(&packet, &DashMap::new()).unwrap();
     }
 
@@ -908,22 +956,20 @@ fn cache_neg_stale_dependency_not_valid() {
     );
 }
 
-// spec: design/backend/module-caching.md §4 — corrupt .meta.json does NOT silently succeed
+// spec: design/backend/module-caching.md §14.7 — corrupt .meta.json does NOT silently succeed
 #[test]
 fn cache_neg_corrupt_metadata_does_not_succeed() {
     let dir = tempfile::tempdir().unwrap();
     // Write valid metadata, then corrupt it
     let meta_path = dir.path().join("test.meta.json");
-    let metadata = make_test_metadata("test");
-    write_cached_metadata(&meta_path, &metadata).unwrap();
+    let table = make_test_symbol_table("test");
+    cache::write_meta(&meta_path, &table, CACHE_SCHEMA_VERSION).unwrap();
 
     // Truncate the file to corrupt it
-    std::fs::write(&meta_path, "{\"symbol_table\":").unwrap();
-    let result = read_cached_metadata(&meta_path);
-    assert!(
-        result.is_err(),
-        "truncated metadata must return error, not partial data"
-    );
+    std::fs::write(&meta_path, "{\"path\":").unwrap();
+    let err = cache::load_meta(&meta_path)
+        .expect_err("truncated metadata must return CacheStale, not partial data");
+    assert!(matches!(err, CacheStale::Deserialise { .. }), "got {err:?}");
 }
 
 // =============================================================================
@@ -1044,6 +1090,7 @@ fn cache_load_fresh_compile_equivalence() {
 }
 
 // spec: design/backend/module-caching.md §8 — cached symbol table matches fresh compile
+// spec: design/backend/module-caching.md §14 — `.meta.json` IS a serialised SymbolTable
 #[test]
 fn cache_load_symbol_table_equivalence() {
     // Compile a single-file project, then verify the cached metadata has expected symbols.
@@ -1056,21 +1103,28 @@ fn cache_load_symbol_table_equivalence() {
     let result = compile_cached(dir.path(), &cache_dir);
     assert_eq!(result, 41, "add-one(double(20)) = add-one(40) = 41");
 
-    // Load and inspect the cached metadata for the entry module
+    // Load and inspect the cached metadata for the entry module via the
+    // authoritative API. `.meta.json` IS the serialised SymbolTable; the
+    // pre-Wave-2c envelope is gone (Decision 33+34).
     let meta_path = cache_dir.join("main.meta.json");
     assert!(meta_path.exists(), "entry metadata should exist");
 
-    let metadata = read_cached_metadata(&meta_path).unwrap();
+    let table = cache::load_meta(&meta_path).expect("cache load should succeed");
     assert_eq!(
-        metadata.symbol_table.path,
+        table.path,
         ModuleFullPath::from("main"),
         "cached symbol table should have correct module path"
+    );
+    assert_eq!(
+        table.schema_version,
+        CACHE_SCHEMA_VERSION,
+        "worker write must stamp the current schema_version"
     );
 
     // Verify GOT slots on symbol table entries for expected functions
     let has_got_slot = |name: &str| {
         matches!(
-            metadata.symbol_table.get(&Symbol::from(name)),
+            table.get(&Symbol::from(name)),
             Some(cranelisp_types::ModuleEntry::Def { got_slot: Some(_), .. })
         )
     };
@@ -1247,6 +1301,32 @@ fn cache_invalidation_transitive_pipeline() {
 // These tests exercise the full cache-hit path with cross-module function
 // calls, validating that .o files with cross-module references can be
 // cached and loaded correctly.
+//
+// FIXME(/int): the second-build cache-hit path for cross-module projects
+// SIGSEGVs in the JIT (Sprint 58 Wave 2c diagnostic). After the Wave 2c
+// migration of `tests/cache.rs` to the `cache::write_meta` / `cache::load_meta`
+// API (Decision 33+34), the following cluster still fails:
+//   - cache_multi_module_hit_cross_module_call (SIGSEGV)
+//   - cache_multi_module_multiple_imports (SIGSEGV)
+//   - cache_multi_module_two_deps (SIGSEGV)
+//   - cache_multi_module_with_prelude (SIGSEGV)
+//   - cache_multi_module_unchanged_dep_stays_cached (SIGSEGV)
+//   - cache_multi_module_transitive_imports (FAIL — `unresolved symbol:
+//     __cranelisp_got_main_mid_leaf`)
+//   - cache_repl_incremental_monomorphisation (SIGSEGV)
+//   - cache_repl_restart_cache_hit (SIGSEGV)
+//   - cache_quick_build_links_cached_objects (SIGSEGV)
+//   - cache_round_trip_multi_module_observable_equivalence (SIGSEGV — new
+//     Wave 2c G.11 test exposing the same defect)
+// The migration cleared `cache_load_symbol_table_equivalence` (envelope
+// mismatch) and the three new G.11 single-module / e2e tests pass; the
+// surviving failures all share the symptom that the second build crashes in
+// the JIT after a cache hit on a dep module that defines functions called
+// from the entry. The defect is in `/int`'s cache-hit re-derive flow
+// (`src/session_v4.rs::try_cache_hit_load` and the cross-module GOT linkage)
+// — `tests/cache.rs` is correct against the new API.
+// See `design/int/symbol-table-cache.md` §3.2–§3.3 for the cache-hit
+// contract and `design/int/cache-hit-loading.md` for the re-derive flow.
 
 // spec: design/backend/module-caching.md §8 — multi-module cache hit with cross-module call
 #[test]
@@ -1775,4 +1855,217 @@ fn cache_quick_build_fallback_on_missing_cache() {
         cache_dir.join("helper.meta.json").exists(),
         "helper module should be cached after cold-start compilation"
     );
+}
+
+// =============================================================================
+// Sprint 58 Wave 2c — G.11 cache round-trip integration tests
+// =============================================================================
+// Per tests/plan/ring4.md §G.11: validate that the new cache::write_meta /
+// cache::load_meta round-trip preserves enough state for fresh-build vs
+// cache-hit observable equivalence. These tests sit on top of the migration
+// of `tests/cache.rs` from the deprecated `CacheMetadata` envelope to the
+// authoritative SymbolTable-as-`.meta.json` shape (Decision 33+34).
+
+/// Helper: load the on-disk `.meta.json` for a module in a project cache and
+/// extract a sorted list of `(symbol_name, has_got_slot)` for `Def` entries.
+/// Used to compare two cache states (fresh-build vs cache-hit) for structural
+/// equivalence. We do not compare runtime fields (`got`, `code`,
+/// `platform_fn_ptr`) — those are `#[serde(skip)]` and re-derived per §14.3.
+fn cached_def_summary(meta_path: &Path) -> Vec<(String, bool)> {
+    let table = cache::load_meta(meta_path).expect("cache load should succeed");
+    let mut defs: Vec<(String, bool)> = table
+        .all_symbols()
+        .filter_map(|(name, entry)| match entry {
+            cranelisp_types::ModuleEntry::Def { got_slot, .. } => {
+                Some((name.as_ref().to_string(), got_slot.is_some()))
+            }
+            _ => None,
+        })
+        .collect();
+    defs.sort();
+    defs
+}
+
+// spec: design/backend/module-caching.md §14 — cache-hit reproduces identical compilation state
+// spec: tests/plan/ring4.md §G.11 — single-module round-trip
+#[test]
+fn cache_round_trip_single_module_observable_equivalence() {
+    // Compile a single-defn module twice; the second build must be a cache
+    // hit (per `module-caching.md` §14.3) and the on-disk SymbolTable must
+    // re-deserialise into the same observable shape that the fresh build
+    // produced. The runtime value (`main`'s return) must also be identical
+    // across both builds — that is the user-visible round-trip guarantee.
+    let dir = create_cache_test_project(&[
+        ("main.cl", "(defn main [] 99)"),
+    ]);
+    let cache_dir = dir.path().join(".cranelisp-cache");
+
+    // First build (fresh): writes cache.
+    let fresh_value = compile_cached(dir.path(), &cache_dir);
+    assert_eq!(fresh_value, 99, "fresh build should return 99");
+
+    let entry_meta = cache_dir.join("main.meta.json");
+    assert!(entry_meta.exists(), "main.meta.json should exist after fresh build");
+    let fresh_summary = cached_def_summary(&entry_meta);
+    assert!(
+        fresh_summary.iter().any(|(n, has_slot)| n == "main" && *has_slot),
+        "fresh build's SymbolTable must contain main with a GOT slot, got {fresh_summary:?}"
+    );
+
+    // Second build (cache present): runtime value must match the fresh build.
+    let cached_value = compile_cached(dir.path(), &cache_dir);
+    assert_eq!(
+        cached_value, fresh_value,
+        "cache-hit and fresh-build must produce identical runtime values"
+    );
+
+    // Re-load the on-disk SymbolTable; structural shape must match.
+    let cached_summary = cached_def_summary(&entry_meta);
+    assert_eq!(
+        cached_summary, fresh_summary,
+        "cache-hit SymbolTable must structurally match the fresh-build SymbolTable"
+    );
+}
+
+// spec: design/backend/module-caching.md §14 — multi-module cache-hit reproduces compilation state
+// spec: tests/plan/ring4.md §G.11 — multi-module round-trip with cross-module call
+#[test]
+fn cache_round_trip_multi_module_observable_equivalence() {
+    // Two-module project: main imports helper from util. First build writes
+    // cache for both. Second build must produce identical runtime value AND
+    // the dep module's on-disk SymbolTable must round-trip to the same
+    // observable shape (modulo `#[serde(skip)]` runtime fields per §14.3).
+    let dir = create_cache_test_project(&[
+        (
+            "main.cl",
+            "(import [util [helper]])\n(defn main [] (helper 21))",
+        ),
+        (
+            "util.cl",
+            "(import [primitives [add-i64]])\n(defn helper [x] (add-i64 x x))",
+        ),
+    ]);
+    let cache_dir = dir.path().join(".cranelisp-cache");
+
+    // Fresh build: writes both cache files.
+    let fresh_value = compile_cached(dir.path(), &cache_dir);
+    assert_eq!(fresh_value, 42, "fresh build: helper(21) = 42");
+
+    let util_meta = cache_dir.join("util.meta.json");
+    assert!(util_meta.exists(), "util.meta.json should exist after fresh build");
+    let util_fresh = cached_def_summary(&util_meta);
+    assert!(
+        util_fresh.iter().any(|(n, has_slot)| n == "helper" && *has_slot),
+        "fresh-build util.meta.json must contain helper with GOT slot, got {util_fresh:?}"
+    );
+
+    // Second build: cache hit on util.
+    let cached_value = compile_cached(dir.path(), &cache_dir);
+    assert_eq!(
+        cached_value, fresh_value,
+        "multi-module cache-hit and fresh-build must produce identical runtime values"
+    );
+
+    // util's on-disk SymbolTable must structurally match the fresh-build shape.
+    let util_cached = cached_def_summary(&util_meta);
+    assert_eq!(
+        util_cached, util_fresh,
+        "cache-hit util SymbolTable must structurally match the fresh-build util SymbolTable"
+    );
+}
+
+// spec: design/backend/module-caching.md §14.4 — schema_version mismatch falls through to fresh build
+// spec: design/arch/CLAUDE.md Decision 34 — CACHE_SCHEMA_VERSION is the cache invalidation handshake
+// spec: tests/plan/ring4.md §G.11 — cache_invalidation_on_dep_change_e2e
+#[test]
+fn cache_invalidation_on_dep_change_e2e() {
+    // Build a project with a dep module; warm the cache; modify the dep .cl
+    // file; rebuild and confirm the dependent re-runs through the new dep
+    // (i.e., the value changes — proving the cache was invalidated, not
+    // re-served stale).
+    let dir = create_cache_test_project(&[
+        (
+            "main.cl",
+            "(import [dep [val]])\n(defn main [] (val))",
+        ),
+        ("dep.cl", "(defn val [] 11)"),
+    ]);
+    let cache_dir = dir.path().join(".cranelisp-cache");
+
+    // Build 1: fresh, writes dep cache.
+    let v1 = compile_cached(dir.path(), &cache_dir);
+    assert_eq!(v1, 11, "first build: val() = 11");
+
+    let dep_meta = cache_dir.join("dep.meta.json");
+    assert!(dep_meta.exists(), "dep.meta.json should exist after first build");
+
+    // Modify the dep source file: changing the constant must propagate.
+    std::fs::write(dir.path().join("dep.cl"), "(defn val [] 22)").unwrap();
+
+    // Build 2: dep source changed, so the dep cache MUST NOT be used. The
+    // observable signal is the changed return value (cache-served stale would
+    // still return 11).
+    let v2 = compile_cached(dir.path(), &cache_dir);
+    assert_eq!(
+        v2, 22,
+        "after modifying dep, the dependent must recompile and produce the new value (got {v2}, expected 22)"
+    );
+    assert_ne!(v1, v2, "dep change must produce a different observable value");
+}
+
+// spec: design/arch/CLAUDE.md Decision 34 — schema_version mismatch is the cache invalidation handshake
+// spec: design/backend/module-caching.md §14.4 — schema mismatch falls through (same path as dep change)
+// spec: tests/plan/ring4.md §G.11 — cache_schema_version_mismatch_e2e_falls_through
+#[test]
+fn cache_schema_version_mismatch_e2e_falls_through() {
+    // Verify the wire-level handshake: a `.meta.json` with the wrong
+    // `schema_version` MUST be treated as cache-stale by `cache::load_meta`
+    // (returns `CacheStale::SchemaMismatch`). This is the production path
+    // that gates cache-hit; the unit-side equivalent lives in
+    // `crates/cranelisp-backend/src/cache/serialize.rs::tests`.
+    //
+    // Strategy: compile a project (warming the cache); peek the disk
+    // representation; tamper the `schema_version` to `u32::MAX`; re-load
+    // via `cache::load_meta`; assert `CacheStale::SchemaMismatch`.
+    let dir = create_cache_test_project(&[
+        ("main.cl", "(defn main [] 5)"),
+    ]);
+    let cache_dir = dir.path().join(".cranelisp-cache");
+
+    let v1 = compile_cached(dir.path(), &cache_dir);
+    assert_eq!(v1, 5, "fresh build returns 5");
+
+    let entry_meta = cache_dir.join("main.meta.json");
+    assert!(entry_meta.exists(), "main.meta.json must exist after fresh build");
+
+    // Sanity: the freshly-written file's schema_version is the current one.
+    let table_pre = cache::load_meta(&entry_meta).expect("fresh cache should be loadable");
+    assert_eq!(
+        table_pre.schema_version,
+        CACHE_SCHEMA_VERSION,
+        "fresh-build SymbolTable on disk must carry CACHE_SCHEMA_VERSION"
+    );
+
+    // Tamper: re-serialise with a u32::MAX schema_version. This simulates a
+    // cache file written by a future incompatible schema (or a corrupt one).
+    // `serialise_meta` stamps the version on a clone, so passing `u32::MAX`
+    // produces bytes whose deserialised `schema_version` field is `u32::MAX`.
+    let bytes = cache::serialize::serialise_meta(&table_pre, u32::MAX).unwrap();
+    std::fs::write(&entry_meta, &bytes).unwrap();
+
+    // load_meta must report SchemaMismatch — same code path as dep-hash
+    // mismatch per §14.7. The caller (`/int`'s worker) uses the variant for
+    // diagnostics; control flow falls through to a fresh build.
+    let err = cache::load_meta(&entry_meta)
+        .expect_err("tampered schema_version must produce CacheStale, not data");
+    match err {
+        CacheStale::SchemaMismatch { found, expected, .. } => {
+            assert_eq!(found, u32::MAX, "found field must reflect the tampered value");
+            assert_eq!(
+                expected, CACHE_SCHEMA_VERSION,
+                "expected field must reflect the live CACHE_SCHEMA_VERSION"
+            );
+        }
+        other => panic!("expected CacheStale::SchemaMismatch, got {other:?}"),
+    }
 }

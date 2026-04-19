@@ -25,6 +25,7 @@ use cranelisp_types::{
     Scheme, Span, Symbol, SymbolTable, Type,
 };
 
+#[allow(deprecated)]
 use super::serialize::CacheMetadata;
 
 /// All inputs needed to compile a module to an ObjectModule.
@@ -168,6 +169,14 @@ pub fn build_isa(
 ///
 /// Pure function: captures all needed data as owned values.
 /// Called on the main thread; the resulting packet can be sent to a background writer.
+///
+/// **Sprint 58 §14.4**: callers should serialise the `SymbolTable` directly
+/// via `serialise_meta(&table, CACHE_SCHEMA_VERSION)` and pass the resulting
+/// bytes to a future `build_cache_packet` overload that does not require the
+/// envelope. The current `metadata: &CacheMetadata` parameter is preserved
+/// during the Wave 2b parallel migration; it is wrapped onto an
+/// already-deprecated type.
+#[allow(deprecated)]
 pub fn build_cache_packet(
     cache_dir: &Path,
     module_path: &ModuleFullPath,
@@ -298,6 +307,7 @@ pub struct ProcessedPacket {
 }
 
 #[cfg(test)]
+#[allow(deprecated)]
 mod tests {
     use super::*;
     use cranelisp_types::{ModuleFullPath, SymbolTable};

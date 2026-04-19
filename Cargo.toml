@@ -26,6 +26,15 @@ cranelisp-backend = { path = "crates/cranelisp-backend" }
 cranelisp-runtime = { path = "crates/cranelisp-runtime" }
 cranelisp-platform = { path = "crates/cranelisp-platform" }
 
+# Sprint 58 Wave 2 / Decision 36: the `--link` `_main` entry-point alias
+# generator (`src/exe.rs::generate_main_alias_object`) emits a small
+# Cranelift-compiled `.o` defining `_main` as `Linkage::Export` that
+# tail-calls into the entry module's GOT. Cranelift APIs are accessed
+# directly here (rather than via re-export from cranelisp-backend) because
+# the alias is `/int`-owned per Decision 36's "lives outside
+# `compile_to_module`" framing — `/backend` keeps generic-blind.
+cranelift = "0.116"
+
 [dependencies.dashmap]
 version = "6"
 

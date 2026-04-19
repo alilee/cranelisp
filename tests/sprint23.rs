@@ -339,6 +339,13 @@ fn link_reuses_cached_object_files() {
 // --- 1.5 Multi-module linking ---
 
 // spec: design/backend/executable-generation.md §3 — module graph compilation
+//
+// FIXME(/int): Sprint 58 Wave 2c — `--link` fails because the linker cannot
+// resolve `___cranelisp_got_helper` (the helper module's per-module GOT base
+// symbol is not exported in the helper.o emitted by the cache writer). The
+// `tests/cache.rs` migration to the new API (Decision 33+34) does not affect
+// this — the defect is in `/int`'s `--link` flow / cross-module GOT export
+// in the cache-write `.o` emission path. See `design/backend/executable-generation.md` §3.
 #[test]
 fn link_multi_module_project() {
     // A project with an entry module that imports another module.
@@ -1115,6 +1122,13 @@ fn cache_repl_writes_on_import() {
 }
 
 // spec: design/int/repl-lifecycle.md §4.2 — cache load on startup
+//
+// FIXME(/int): Sprint 58 Wave 2c — second REPL run reports `undefined variable: +`
+// after the prelude was supposedly loaded from cache, which means the cache-hit
+// re-derive path is not restoring prelude bindings into the new session.
+// The `tests/cache.rs` migration to the new `cache::write_meta` /
+// `cache::load_meta` API (Decision 33+34) does not change this — the bug is in
+// `/int`'s cache-hit prelude restoration in `src/session_v4.rs`.
 #[test]
 fn cache_repl_loads_on_startup() {
     // Start REPL twice with a local prelude. First run populates cache,
@@ -1289,6 +1303,13 @@ Color.Red
 }
 
 // spec: repl/spec.md §15.2 — import persisted via source regeneration
+//
+// FIXME(/int): Sprint 58 Wave 2c — second REPL session does not see the
+// persisted import (the helper module is not loaded on session 2 startup
+// even though `user.cl` was regenerated with the import statement). The
+// `tests/cache.rs` migration to the new API (Decision 33+34) does not affect
+// this — the defect is in `/int`'s session restart / persisted-`user.cl`
+// reload flow. See `design/int/session-persistence.md` and `repl/spec.md` §15.2.
 #[test]
 fn persist_import_survives_restart() {
     // Import a module, quit, restart, verify the imported symbol works.

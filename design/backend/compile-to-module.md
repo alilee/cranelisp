@@ -1,5 +1,21 @@
 # compile_to_module<M: Module> — Unified Compilation Function
 
+<!-- Sprint 58 Wave 2 architectural reconciliation: ACTIONED.
+     The three FIXME points filed by /arch (Decisions 23, 25 updated; 36
+     NEW; 37 NEW) have landed in component A:
+       (1) Function declaration loop: bare names + Linkage::Local uniformly
+           (Decision 36). §7 below updated; the "Cross-module function
+           references (ObjectModule)" paragraph removed.
+       (2) __cranelisp_got_{M} Export-data definition emitted inside
+           compile_to_module<ObjectModule> via the new CodeFinalizer trait
+           method `define_module_got_data` (Module trait extension, option
+           (a)). §5.3/§5.4 below updated.
+       (3) §12 head paragraph cross-references the two-GOT framing.
+
+     §17 still owes the C8 follow-on (raw-shape return type per CP1
+     arbitration, Decision 35) — separate FIXME.
+-->
+
 Design for replacing all compilation paths — JIT batch, REPL expression, and object file — with a single generic function parameterised by Cranelift module type.
 
 `compile_to_module<M>` is the ONLY compilation entry point in the backend crate. The backend's public compilation API is exactly two functions: `compile_to_module<M: Module>` and `declare_intrinsics<M: Module>`. Nothing else.
@@ -220,19 +236,39 @@ Mode differences live in the passed-in `Module` implementation at finalize time:
 
 Nothing specific to GOT emission. Both modes receive the same IR. `FnCompiler` reads slot assignments from `symbol_tables` and emits `global_value` uniformly; it does not know (and does not need to know) which `Module` implementation it is targeting.
 
-### GOT data symbols (ObjectModule only)
+### 5.3 GOT data symbol — defined inside `compile_to_module` (Sprint 58 Wave 2)
 
-For the object path, `compile_to_module` must declare GOT data symbols before compilation. This is a pre-step that only applies when `M` is `ObjectModule`:
+Per `/arch` Decision 23 (updated Sprint 58 Wave 2) — the two-GOT model — the per-module data symbol `__cranelisp_got_{M}` MUST be defined inside the module's own `.o` so that the system linker (`--link` mode) and our cache `Linker` (`--run` mode after cache-hit) can resolve cross-`.o` GOT references at load time. The pre-Sprint-58 state (declared `Linkage::Import` everywhere, defined nowhere in the `.o`) was Bug B in `design/int/symbol-table-cache.md` §"Investigation findings".
+
+The Wave-2 fix moves the `.o` data definition INSIDE `compile_to_module<M>` via a new method on the `CodeFinalizer` trait (Module trait extension — option (a) per the FIXME's three options):
 
 ```rust
-// Before calling compile_to_module for ObjectModule:
-let got_data_ids = declare_got_data_symbols(&mut obj_module, &current_module, &fn_to_module)?;
-define_got_data(&mut obj_module, ...)?;
+trait CodeFinalizer {
+    // ... existing methods ...
+
+    /// Define `__cranelisp_got_{M}` inside the .o (or no-op for JIT).
+    fn define_module_got_data(
+        &mut self,
+        name: &str,
+        slot_count: usize,
+        slot_funcs: &[(usize, FuncId)],
+    ) -> Result<(), CranelispError>;
+}
 ```
 
-These helper functions (`declare_got_data_symbols`, `define_got_data`) remain in `cache/object.rs` as ObjectModule-specific setup. They are called by the nice worker before `compile_to_module`, not inside it.
+- **`JITModule` impl: no-op.** The JIT-mode definition lives outside `compile_to_module` in the integration layer's `Jit::define_got_data` call (which points the symbol at the runtime `SymbolTable.got.base_ptr()`). The `.o` data section GOT shape is irrelevant in JIT mode (no `.o` is emitted).
+- **`ObjectModule` impl: declares `Linkage::Export` + emits relocations.** The data symbol is `slot_count * 8` bytes (zero-initialized); for each `(slot_index, FuncId)` pair, a function-address relocation is written at byte offset `slot * 8` via `DataDescription::write_function_addr`. The system linker (`--link`) and the cache `Linker` (`--run` after cache-hit) materialise the relocations into actual function addresses at load time.
 
-**Alternative considered**: making `compile_to_module` internally detect `ObjectModule` and set up GOT data symbols. Rejected — this would require runtime type detection (`TypeId`/downcasting) or a second trait bound, both ugly. Keeping GOT data symbol setup outside `compile_to_module` is cleaner: the function compiles code, the caller prepares the module.
+The implementation lives at `crates/cranelisp-backend/src/lib.rs` (CodeFinalizer trait + impls). The call site in `compile_to_module` reads each defined function's `got_slot` from the symbol-table entry (after function declaration, before `finalize_for_code_read`), assembles the `(slot, FuncId)` list, and invokes `module.define_module_got_data(...)`.
+
+**Why option (a) over downcast / caller-side:**
+- (b) `TypeId` downcast: violates Principle 11 (mode-as-discriminator inside a function); the `Module` impl IS the mode dispatch.
+- (c) caller-side responsibility: was the pre-Sprint-58 state. The consequence was that `.o` mode never defined the symbol because the cache writer was the only `ObjectModule` caller and it never ran the GOT-define pre-step.
+- (a) Module trait extension: aligns with the existing `CodeFinalizer` extension pattern (`finalize_for_code_read`, `try_get_finalized_function`) and Principle 11 (mode is a Module property, not a function parameter).
+
+### 5.4 Legacy `declare_got_data_symbols` / `define_got_data` helpers
+
+The pre-Sprint-58 helpers `declare_got_data_symbols` and `define_got_data` (`cache/object.rs`) for caller-side ObjectModule setup are obsoleted by §5.3. The JIT path's `Jit::define_got_data` (integration-layer call to point the data symbol at the SymbolTable GOT base) is unchanged — it's the JIT-mode symbol-lookup-fn registration mechanism, orthogonal to `.o` data emission.
 
 ## 6. Intrinsic Declaration
 
@@ -302,7 +338,11 @@ The `IntrinsicTable` struct (currently in `cache/object.rs`) becomes unnecessary
 `FnCompiler<M: Module>` is already generic. The compilation loop inside `compile_to_module`:
 
 ```rust
-// Declare all functions (Pass 1)
+// Declare all functions (Pass 1) — bare names + Linkage::Local uniformly
+// per /arch Decision 36 (Sprint 58 Wave 2). The pre-Sprint-58 user/main
+// vs FQ-Export discriminator was a defect, deleted in Wave 2. All calls
+// go through __cranelisp_got_{M}, so function symbols are intra-`.o`-only;
+// Linkage::Local is sufficient.
 let mut func_ids: HashMap<Symbol, FuncId> = intrinsic_ids.by_name.clone();
 for defn in &defns { // defns collected per §4 from symbol-table entries
     let mut sig = module.make_signature();
@@ -310,7 +350,7 @@ for defn in &defns { // defns collected per §4 from symbol-table entries
         sig.params.push(AbiParam::new(types::I64));
     }
     sig.returns.push(AbiParam::new(types::I64));
-    let func_id = module.declare_function(defn.name.as_ref(), Linkage::Export, &sig)?;
+    let func_id = module.declare_function(defn.name.as_ref(), Linkage::Local, &sig)?;
     func_ids.insert(defn.name.clone(), func_id);
 }
 
@@ -350,26 +390,13 @@ for defn in &defns {
 
 Nothing. `FnCompiler` is already `FnCompiler<'a, M: Module>`. Its `compile_body` method takes `&mut M` and works with both `JITModule` and `ObjectModule`. GOT reference encoding is uniform — `FnCompiler` reads slot assignments from `symbol_tables` and emits a `global_value` against a `Linkage::Import` data symbol for every mode (§12). There is no env parameter on `CompileContext`.
 
-### Cross-module function references (ObjectModule)
+### Cross-module function references — NO `Linkage::Import` declarations (Sprint 58 Wave 2)
 
-For the object path, cross-module functions must be declared as `Linkage::Import` so the linker can resolve them. This is done before the compilation loop:
+Per `/arch` Decision 36 + Decision 31 (all-GOT calling for REPL redefinition correctness), every cross-module function call is GOT-indirect through `__cranelisp_got_{other_M}` data symbol — never via a `Linkage::Import` function declaration. Cross-module function symbols are not exposed across `.o` boundaries (they are `Linkage::Local` per Decision 36), so `Linkage::Import` declarations against them would fail to link.
 
-```rust
-// For ObjectModule only: declare cross-module function imports
-// (already done by the nice worker before calling compile_to_module)
-for (name, param_count) in &cross_module_fns {
-    if func_ids.contains_key(name) { continue; }
-    let bare_name = bare_fn_name(name);
-    let mut sig = module.make_signature();
-    // ...
-    let func_id = module.declare_function(bare_name, Linkage::Import, &sig)?;
-    func_ids.insert(name.clone(), func_id);
-}
-```
+`compile_to_module` therefore declares NO cross-module function imports. The previous `cross_refs` loop (`crates/cranelisp-backend/src/lib.rs:269-303` pre-Sprint-58) was deleted in Wave 2.
 
-For JIT, cross-module functions are already in the shared JIT symbol table and don't need separate declaration.
-
-**Decision**: Cross-module function declarations are part of module preparation (done by the caller), not part of `compile_to_module`. This keeps `compile_to_module` focused on compilation, not module setup. The caller (priority worker or nice worker) handles the mode-specific preparation before calling the shared function.
+Compile-time arity for cross-module call sites is resolved at codegen time via `compiler::resolve_func_arity` walking the symbol tables (used in `compile_curry_function`, `control_flow.rs:1064`).
 
 ## 8. Return Type
 
@@ -847,6 +874,8 @@ Works identically to the nice worker: creates `ObjectModule`, calls `compile_to_
 
 > **Historical note**: Earlier drafts proposed a `CompilationEnv` trait with two implementations (`ObjectCompilationEnv`, `JitCompilationEnv`), two public wrapper entry points (`compile_to_module_object`, `compile_to_module_jit`), and a crate-private `compile_to_module_core`. That design was retracted during Sprint 56 Phase 3a review in favour of the uniform strategy below. See `design/arch/pipeline-v4.md` §9.1 / §9.3 and Principle 11 + Decision 22 in `design/arch/CLAUDE.md`.
 
+> **Two-GOT framing (Sprint 58 Wave 2 — Decision 23 updated)**: there are two distinct GOT artefacts that share the same data-symbol name but serve different masters. (a) The **SymbolTable GOT** is in-process, mutable, owned by the runtime — it lives at `symbol_tables[M].got.base_ptr()` and is the redefinition swap target (Decision 31). (b) The **`.o` data section GOT** is on-disk, immutable, defined as `Linkage::Export` in the module's own `.o` per Decision 36 — it carries function-address relocation initializers and is patched by the system linker (`--link`) or our cache `Linker` (`--run` after cache-hit). Both are referenced from CLIF as a single `Linkage::Import` data symbol named `__cranelisp_got_{M}`; the *resolver* differs by `Module` impl at finalize time. See `design/arch/interfaces.md` §"Symbol Table" → "Two-GOT model" subsection for the canonical comparison table.
+
 GOT reference emission is **uniform across JIT and object modes**. The backend emits the same CLIF at every GOT load site — mode differences live entirely in the `Module` implementation at finalize time.
 
 ### The uniform strategy
@@ -1094,19 +1123,6 @@ The implication for `/backend`: `CompilationResult` stays as-is for Phase 2. Do 
 
 §13 documents the Sprint-55 migration path (five-parameter → four-parameter, `CheckResult` elimination). Its steps are historical at this point — they describe work that has landed. §16 is the Phase-2 continuation: `program` elimination, symbol-table-sourced defn collection, `expand_multi_sig_defn` deletion. Treat §16 as authoritative for Phase 2 and §13 as a historical record of how we got here.
 
-<!-- FIXME(/backend) — Sprint 58 Phase 3a Architecture Review (CP1 arbitration / Decision 35 / Condition C8):
-     §17 currently leaves the `compile_to_module` return shape implicit and references §16.7
-     for the existing `CompilationResult` carrying `func_ids`. Per CP1 arbitration, Layer 2
-     Option B is binding (backend stays generic-blind; integration layer constructs `Code::Jit`).
-     Wave 2 must spell out explicitly the raw-shape that the integration-side consumer
-     (`/int`'s priority-worker compile-finalise) constructs `Code::Jit` from — either:
-       (a) the `Arc<Jit>` is added as a field on `CompilationResult` alongside `func_ids`;
-       (b) `compile_to_module` returns `(CompilationResult, Arc<Jit>)` as a tuple.
-     Either is acceptable; choose during Wave 2 implementation. Update §17.6 ("What does NOT
-     change") accordingly — the `Arc<Jit>` exposure on the return path IS a change from §16.7's
-     pre-Decision-35 framing where the JIT lifetime was opaque to callers via `kept_jits`.
-     Reference `design/arch/CLAUDE.md` Decision 35 for the rationale. /arch reviews at Wave-2 close. -->
-
 ## 17. Step 5c — `SymbolTable<C, L>` generics activation (Sprint 58, Phase 5)
 
 **Status**: PRESCRIPTIVE for Sprint 58 Wave 3. Refines §2.1's signature for the parameterised symbol-table type. Backend-internal call-site changes are mechanical.
@@ -1131,6 +1147,66 @@ Note the `SymbolTable` parameter is the default-generic shape: `SymbolTable` ≡
 **Why backend signatures don't gain `<C, L>`:** the backend's job is to populate the runtime fields (`code`, `platform_fn_ptr`) on Def entries. To do that it needs to read the symbol-table data (AST, scheme, GOT slot) and write into the entry. The data it reads is `<C, L>`-erased — `ast: Option<Defn>`, `scheme: Scheme`, etc. — those fields' types don't depend on `C` or `L`. The fields it writes ARE `<C>`-typed (`code: Option<C>`, `platform_fn_ptr: Option<*const u8>`), but the writes happen at the *integration-layer* call site that already holds the concrete-typed `SymbolTable<Arc<Jit>, Linker>` reference. Backend functions take `&DashMap<ModuleFullPath, SymbolTable<(), ()>>` (or its default-equivalent `&DashMap<ModuleFullPath, SymbolTable>`) and return `CompilationResult`; the `code` write happens on the integration side.
 
 (If a future change requires `compile_to_module` to write into `ModuleEntry::Def.code` directly — the §16.7 Phase-3 seam — the signature would need to gain the `<C>` parameter so the function knows what type to write. Sprint 58 keeps the §16.7 model: `compile_to_module` returns the function pointer in `CompilationResult`; the integration layer writes it onto the entry. Step 5c does NOT change this contract.)
+
+#### 17.1.1 Raw return shape — Decision 35 / Layer 2 Option B (Wave 2 close)
+
+Per `design/arch/CLAUDE.md` Decision 35 (CP1 arbitration), Sprint 58 binds **Layer 2 Option B**: the backend stays generic-blind on `Code` storage; the integration layer (`/int`'s `src/session_v4.rs`) constructs `Code::Jit { jit, ptr }` from raw outputs. The backend therefore returns the raw artefacts a JIT-mode caller needs to construct the enum variant; it does NOT name `Code` at all.
+
+The raw artefacts a JIT-mode integration-layer consumer needs are:
+
+1. The owned `JITModule` instance whose code pages back the function pointers. The integration layer wraps it in `Arc<cranelisp_backend::jit::Jit>` per Decision 31 Scenario 2 so per-batch reclaim fires when the last `Arc` clone drops.
+2. The per-symbol code pointers (`*const u8`) for each name in the input `names: &[Symbol]` — the same pointers the integration layer writes into `ModuleEntry::Def.code` on the post-call write-site.
+
+**Backend's choice (Sprint 58 Wave 2)**: keep the `<M: Module>` generic on `compile_to_module` and surface the JITModule (and the per-symbol pointers) via the `Module` trait's existing post-finalise interface — i.e. *the backend does NOT take ownership of the JITModule*. The caller passes `&mut module: &mut M`, the caller owns the `M` instance, and the caller calls `module.finalize_definitions()` + `module.get_finalized_function(func_id)` *after* `compile_to_module` returns to extract the per-symbol pointers and to wrap the JITModule itself into the `Arc<Jit>` (Decision 31 + 32). `CompilationResult` continues to carry `func_ids: HashMap<Symbol, FuncId>` and `entry_func_id` — exactly enough information for the caller to call `module.get_finalized_function(func_id)` per-symbol.
+
+In other words: option-(b) of the FIXME — `compile_to_module` returns `(CompilationResult, Arc<Jit>)` — is **rejected**. Option-(a) — `Arc<Jit>` as a field on `CompilationResult` — is also **rejected**. Both require the backend to pre-own the `M` instance, which contradicts the §2.1 normative signature where the caller passes `&mut M`. The chosen shape is option-(c): **the backend hands back FuncIds and the caller owns the Module**; the caller wraps `module` into `Arc<Jit>` *after* `compile_to_module` returns and *before* writing into `ModuleEntry::Def.code`. This keeps `compile_to_module<M: Module>` blind to the storage type that wraps `M`, makes the function callable for both `JITModule` (REPL) and `ObjectModule` (cache write) without knowing which, and keeps the `Arc<Jit>` constructor at the integration layer where the `Code` enum is named.
+
+**Concrete integration-layer flow** (illustrative; `/int` owns the implementation in `src/session_v4.rs`):
+
+```rust
+// Integration layer — JIT path (REPL / fresh build).
+let mut jit_module: JITModule = build_jit_module(...);
+let result: CompilationResult = compile_to_module(
+    module_path.clone(),
+    &names,
+    &symbol_tables,
+    &mut jit_module,
+)?;
+
+// Caller owns `jit_module`; finalize + extract pointers, then construct the
+// Arc<Jit> wrapper and Code enum variants.
+jit_module.finalize_definitions()?;
+let jit_arc: Arc<Jit> = Arc::new(Jit::wrap(jit_module));   // Decision 31 wrapper
+for (sym, func_id) in &result.func_ids {
+    let ptr: *const u8 = jit_arc.get_finalized_function(*func_id);
+    let code = Code::Jit { jit: jit_arc.clone(), ptr };
+    symbol_tables
+        .get_mut(&module_path)
+        .unwrap()
+        .symbols
+        .get_mut(sym)
+        .and_then(ModuleEntry::as_def_mut)
+        .map(|d| d.code = Some(code));
+}
+```
+
+For the cache `.o` path (`/int`'s nice worker), the same `compile_to_module` call passes a `&mut ObjectModule`; the caller does NOT wrap it in `Arc<Jit>` (no JIT pages exist) — instead it calls `obj_module.finish().emit()` for `.o` bytes and writes them to disk via the `cache::write_meta` companion call. `result.func_ids` is consulted only to confirm every requested name was compiled; the `Code` enum is not constructed at all because cache-restore re-runs codegen via the JIT path (per §14.3 step [5b]).
+
+**What the backend does NOT need to provide for this Layer-2 Option B shape**:
+
+- A return tuple containing `Arc<Jit>` (rejected — the backend doesn't own the `M`).
+- A field on `CompilationResult` carrying `Arc<Jit>` (rejected — same reason).
+- A `Code::Jit` constructor (the enum lives in `/int`'s `session_v4.rs` per Decision 35; the backend is blind to it).
+- A `code: Option<C>` write-into-the-entry callback (Sprint 58 keeps the §16.7 caller-writes-after-return contract; Phase 3's seam to push the write inside `compile_to_module` is deferred to a future sprint and would re-introduce the `<C>` parameter then).
+
+**What the backend DOES provide** (unchanged from §8 / §16.7):
+
+- `CompilationResult { func_ids, artifacts, entry_func_id, func_arities, warnings }` — the same shape Sprint 56 Phase 2 landed.
+- The post-finalise pointer extraction is the caller's responsibility via `M::get_finalized_function(func_id)` — a method on the `Module` trait the caller already holds `&mut` to.
+
+This is the §17.6 "what does NOT change" entry made explicit: the backend's return shape is unchanged from Sprint 56 Phase 2's `CompilationResult`. The `Arc<Jit>` exposure on the return path that §16.7's pre-Decision-35 framing alluded to (via `kept_jits`) becomes irrelevant because Decision 31 Scenario 2 routes the `Arc<Jit>` through `ModuleEntry::Def.code` directly; the integration layer constructs the `Arc` from the `M` instance it already owns and inserts it into the per-symbol code field. No backend-API surface change is needed to enable Decision 35 Layer 2 Option B.
+
+(Cross-reference: `design/arch/CLAUDE.md` Decision 35 records the rationale for Layer 2 Option B; `design/int/symbol-table-generics.md` documents the concrete integration-layer call-site choices.)
 
 ### 17.2 Backend-internal helper signatures
 
@@ -1185,6 +1261,7 @@ The integration-layer migration of `Arc<Jit>` from `kept_jits` to entries is `/i
 - The §6 intrinsic declaration via `declare_intrinsics<M: Module>` — same.
 - The §8 `CompilationResult` return type carrying `func_ids`, `entry_func_id`, `func_arities`, `warnings` — same.
 - The §16.7 Phase-3 seam (caller writes `code` onto entries; backend returns the pointer in `CompilationResult`) — same.
+- The return shape per Decision 35 / Layer 2 Option B (§17.1.1) — `compile_to_module` returns only `CompilationResult`; the caller owns the `M` instance and constructs `Arc<Jit>` + `Code::Jit` on the integration side after `compile_to_module` returns. No `Arc<Jit>` is added to `CompilationResult`; no return tuple appears.
 
 Step 5c is a type-annotation activation, not a contract change. The contract was deliberately written generic-friendly in earlier sprints (§16.7's "the storage location moves from `CodegenProduct` to `ModuleEntry::Def.code`, and the write-site moves from the priority worker into the backend — both changes land together in Sprint 57 Wave 2" — Sprint 57 landed the field move; Sprint 58 Step 5c lands the generic-parameter activation enabling per-redefinition reclaim).
 
