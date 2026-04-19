@@ -35,7 +35,7 @@ use crate::scheduler::{CompileScheduler, PriorityWork};
 /// pointers live on `ModuleEntry::Def.platform_fn_ptr`; DLL handles are
 /// retained in `SharedState::kept_dlls`.
 pub struct ModuleCompiler<'a> {
-    pub symbol_tables: &'a dashmap::DashMap<ModuleFullPath, cranelisp_types::SymbolTable>,
+    pub symbol_tables: &'a dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable>,
     pub next_type_id: &'a std::sync::atomic::AtomicU32,
     /// Per-invocation typecheck state. For REPL: extracted from SharedState.repl_check_state.
     /// For batch workers: created fresh per module.
@@ -59,7 +59,9 @@ pub struct ModuleCompiler<'a> {
 
 impl<'a> ModuleCompiler<'a> {
     /// Create a TypeCheckEnv borrowing the shared state.
-    pub fn tc_env(&self) -> cranelisp_typecheck::TypeCheckEnv<'_> {
+    pub fn tc_env(
+        &self,
+    ) -> cranelisp_typecheck::TypeCheckEnv<'_, crate::code::Code, ()> {
         cranelisp_typecheck::TypeCheckEnv::new(self.symbol_tables, self.next_type_id)
     }
 
@@ -97,7 +99,7 @@ impl<'a> ModuleCompiler<'a> {
 /// `&TypeChecker` (shared ref for DashMap reads) and `&mut CheckState` separately.
 struct SymbolTableMacroResolver<'a> {
     /// Per-module symbol tables (DashMap, interior mutability).
-    symbol_tables: &'a dashmap::DashMap<ModuleFullPath, cranelisp_types::SymbolTable>,
+    symbol_tables: &'a dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable>,
     /// Monotonic counter for fresh type variable IDs.
     next_type_id: &'a std::sync::atomic::AtomicU32,
     /// CheckState — needed for on-demand compilation (check_form_with_state).
@@ -175,7 +177,7 @@ impl MacroResolver for SymbolTableMacroResolver<'_> {
 ///
 /// Generic recursive chain walker with depth limit to prevent infinite loops.
 pub(crate) fn resolve_macro_definition(
-    symbol_tables: &dashmap::DashMap<ModuleFullPath, cranelisp_types::SymbolTable>,
+    symbol_tables: &dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable>,
     module: &ModuleFullPath,
     name: &str,
     max_depth: usize,
@@ -204,7 +206,7 @@ pub(crate) fn resolve_macro_definition(
 /// Unlike `resolve_macro_definition`, this specifically looks up the sexp
 /// stored on the `ModuleEntry::Macro` in the defining module.
 fn resolve_macro_sexp_from(
-    symbol_tables: &dashmap::DashMap<ModuleFullPath, cranelisp_types::SymbolTable>,
+    symbol_tables: &dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable>,
     defining_module: &ModuleFullPath,
     name: &str,
 ) -> Option<Sexp> {
@@ -222,7 +224,7 @@ fn resolve_macro_sexp_from(
 /// `&self` on TypeChecker + `&mut CheckState`.
 #[allow(clippy::too_many_arguments)]
 fn compile_macro_with_state(
-    symbol_tables: &dashmap::DashMap<ModuleFullPath, cranelisp_types::SymbolTable>,
+    symbol_tables: &dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable>,
     next_type_id: &std::sync::atomic::AtomicU32,
     check_state: &mut CheckState,
     target_module: &ModuleFullPath,
@@ -263,7 +265,7 @@ fn compile_macro_with_state(
 /// instead of `&mut ModuleCompiler`.
 #[allow(clippy::too_many_arguments)]
 fn compile_macro_clause_with_state(
-    symbol_tables: &dashmap::DashMap<ModuleFullPath, cranelisp_types::SymbolTable>,
+    symbol_tables: &dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable>,
     next_type_id: &std::sync::atomic::AtomicU32,
     check_state: &mut CheckState,
     target_module: &ModuleFullPath,
@@ -357,7 +359,7 @@ fn compile_macro_clause_with_state(
 
 /// Build a MacroEntry from compiled clause code pointers.
 fn build_macro_entry_from_clauses(
-    symbol_tables: &dashmap::DashMap<ModuleFullPath, cranelisp_types::SymbolTable>,
+    symbol_tables: &dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable>,
     defining_module: &ModuleFullPath,
     macro_sym: &Symbol,
     clauses: &[MacroClauseInfo],
@@ -445,7 +447,7 @@ fn try_expand_sexp(
 /// - Are found in a defining module's symbol table
 /// - Are NOT already available in the current module
 fn qualify_expanded_sexp(
-    symbol_tables: &dashmap::DashMap<ModuleFullPath, cranelisp_types::SymbolTable>,
+    symbol_tables: &dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable>,
     current_module: &ModuleFullPath,
     defining_modules: &[ModuleFullPath],
     sexp: Sexp,
@@ -910,7 +912,7 @@ fn finalize_module(
 /// original sexp for later compilation. No codegen — deferred until
 /// first use.
 fn register_macro_in_module(
-    symbol_tables: &dashmap::DashMap<ModuleFullPath, cranelisp_types::SymbolTable>,
+    symbol_tables: &dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable>,
     _next_type_id: &std::sync::atomic::AtomicU32,
     _check_state: &mut CheckState,
     module: &ModuleFullPath,
@@ -1320,7 +1322,13 @@ fn try_cache_hit_load(
         cached.metadata.symbol_table.imports.clone();
 
     // Restore type info into TC (consumes symbol_table by value).
-    cranelisp_typecheck::TypeCheckEnv::new(ctx.symbol_tables, ctx.next_type_id).restore_cached_module(cached.metadata.symbol_table);
+    // Sprint 58 Wave 3b: cached `<()>` table is converted to `<Code, ()>`
+    // via `into_concrete` (every entry's `code` becomes `None::<Code>`;
+    // codegen will populate fresh `Code::Jit` / `Code::Linker` entries).
+    cranelisp_typecheck::TypeCheckEnv::new(ctx.symbol_tables, ctx.next_type_id)
+        .restore_cached_module(
+            cached.metadata.symbol_table.into_concrete::<crate::code::Code, ()>(),
+        );
 
     // Restore trait impl registrations from cached symbol table.
     cranelisp_typecheck::TypeCheckEnv::new(ctx.symbol_tables, ctx.next_type_id).restore_cached_impls(&mangled_names);
@@ -1871,7 +1879,7 @@ fn compile_macro_if_needed(
 /// The result is in dependency order (callees before callers) suitable for
 /// sequential compilation.
 fn collect_transitive_uncompiled_deps(
-    symbol_tables: &dashmap::DashMap<ModuleFullPath, cranelisp_types::SymbolTable>,
+    symbol_tables: &dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable>,
     module: &ModuleFullPath,
     start_symbol: &Symbol,
 ) -> Vec<(ModuleFullPath, Symbol)> {
@@ -2032,7 +2040,7 @@ fn macro_clause_jit_name(macro_name: &Symbol, clause_idx: usize) -> Symbol {
 /// field (Sprint 57 Wave 2 G6 — `CodegenProduct` deleted; compiled code lives
 /// on the symbol-table entry).
 fn has_code_ptr(
-    symbol_tables: &dashmap::DashMap<ModuleFullPath, cranelisp_types::SymbolTable>,
+    symbol_tables: &dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable>,
     module: &ModuleFullPath,
     name: &Symbol,
 ) -> bool {
@@ -2047,14 +2055,14 @@ fn has_code_ptr(
 
 /// Get a code pointer from the symbol-table entry, if compiled.
 fn get_code_ptr(
-    symbol_tables: &dashmap::DashMap<ModuleFullPath, cranelisp_types::SymbolTable>,
+    symbol_tables: &dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable>,
     module: &ModuleFullPath,
     name: &Symbol,
 ) -> Option<*const u8> {
     symbol_tables
         .get(module)
         .and_then(|t| match t.get(name.as_ref())? {
-            ModuleEntry::Def { code: Some(c), .. } => Some(c.ptr),
+            ModuleEntry::Def { code: Some(c), .. } => Some(c.ptr()),
             _ => None,
         })
 }
@@ -2075,7 +2083,7 @@ pub fn compile_macro_for_repl(
 
 /// Pass 1: register all forms' type signatures in source order.
 fn pass1_register(
-    symbol_tables: &dashmap::DashMap<ModuleFullPath, cranelisp_types::SymbolTable>,
+    symbol_tables: &dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable>,
     next_type_id: &std::sync::atomic::AtomicU32,
     check_state: &mut CheckState,
     module: &ModuleFullPath,
@@ -2092,7 +2100,7 @@ fn pass1_register(
 
 /// Register default method defns generated during Pass 1 TraitImpl processing.
 fn register_default_methods(
-    symbol_tables: &dashmap::DashMap<ModuleFullPath, cranelisp_types::SymbolTable>,
+    symbol_tables: &dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable>,
     next_type_id: &std::sync::atomic::AtomicU32,
     check_state: &mut CheckState,
     module: &ModuleFullPath,
@@ -2393,7 +2401,7 @@ fn wrap_exprs_as_defns(program: &[TopLevel]) -> Vec<TopLevel> {
 /// `design/int/phase2-codegen-convergence.md` §5.
 #[allow(clippy::type_complexity)]
 fn collect_jit_setup(
-    tc_modules: &dashmap::DashMap<ModuleFullPath, cranelisp_types::SymbolTable>,
+    tc_modules: &dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable>,
     current_module: &ModuleFullPath,
 ) -> (Vec<(String, *const u8)>, Vec<(String, *const u8)>) {
     let mut jit_symbols = Vec::new();
@@ -2450,7 +2458,7 @@ fn collect_jit_setup(
 /// platform functions consistently.
 #[allow(clippy::type_complexity)]
 pub fn collect_jit_setup_public(
-    tc_modules: &dashmap::DashMap<ModuleFullPath, cranelisp_types::SymbolTable>,
+    tc_modules: &dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable>,
     current_module: &ModuleFullPath,
 ) -> (Vec<(String, *const u8)>, Vec<(String, *const u8)>) {
     collect_jit_setup(tc_modules, current_module)
@@ -2475,7 +2483,7 @@ pub fn collect_jit_setup_public(
 pub fn derive_codegen_batch(
     module: &ModuleFullPath,
     program: &[TopLevel],
-    tc_modules: &dashmap::DashMap<ModuleFullPath, cranelisp_types::SymbolTable>,
+    tc_modules: &dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable>,
 ) -> Vec<Symbol> {
     let mut names: Vec<Symbol> = Vec::new();
     let mut seen: std::collections::HashSet<Symbol> = std::collections::HashSet::new();
@@ -2609,7 +2617,7 @@ pub fn inline_jit_codegen_for_module(
     scheduler: &CompileScheduler,
     module: &ModuleFullPath,
     program: &[TopLevel],
-    tc_modules: &dashmap::DashMap<ModuleFullPath, cranelisp_types::SymbolTable>,
+    tc_modules: &dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable>,
     introspection: Option<&dashmap::DashMap<cranelisp_types::FQSymbol, crate::session_v4::Introspection>>,
     extra_jit_symbols: &[(String, *const u8)],
     shared_state: Option<&crate::session_v4::SharedState>,
@@ -2664,7 +2672,7 @@ pub fn inline_jit_codegen_for_module(
 pub fn inline_jit_codegen_for_names(
     module: &ModuleFullPath,
     names: &[Symbol],
-    tc_modules: &dashmap::DashMap<ModuleFullPath, cranelisp_types::SymbolTable>,
+    tc_modules: &dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable>,
     introspection: Option<&dashmap::DashMap<cranelisp_types::FQSymbol, crate::session_v4::Introspection>>,
     extra_jit_symbols: &[(String, *const u8)],
     shared_state: Option<&crate::session_v4::SharedState>,
@@ -2691,7 +2699,7 @@ pub fn inline_jit_codegen_for_names(
     for st_entry in tc_modules.iter() {
         for (bare, entry) in st_entry.value().all_symbols() {
             if let ModuleEntry::Def { code: Some(c), .. } = entry {
-                jit_symbols.push((bare.as_ref().to_string(), c.ptr));
+                jit_symbols.push((bare.as_ref().to_string(), c.ptr()));
             }
         }
     }
@@ -2727,38 +2735,33 @@ pub fn inline_jit_codegen_for_names(
         jit.jit_module(),
     )?;
 
-    // 5. Share the finalised JIT. `Jit` owns mmap'd executable pages that
-    // must stay valid for as long as any `ModuleEntry::Def.code.ptr` points
-    // into them. After G6 the `Code` type in `cranelisp_types` is
-    // pointer-only, so the `Arc<Jit>` is retained on
-    // `SharedState.kept_jits` (Decision 25 + Decision 28 — session owns
-    // the `Arc<Jit>` set; entries only hold raw pointers into its pages).
+    // 5. Sprint 58 Wave 3b (Decision 35 + Decision 31 Scenario 2): share
+    // the finalised `Arc<Jit>` per-entry on each `ModuleEntry::Def.code`,
+    // not via the session-level `SharedState.kept_jits` pool (dissolved
+    // Wave 3b). When a REPL user redefines a defn, the prior entry's
+    // `Code::Jit` clone drops; once the last clone in the symbol tables
+    // drops (no more entries reference this batch's JIT), `Arc::drop`
+    // triggers `Jit::drop` which calls `unsafe JITModule::free_memory()`
+    // and reclaims the per-batch JIT pages — Decision 31's per-redefinition
+    // reclaim primitive.
     #[allow(clippy::arc_with_non_send_sync)]
     let jit_arc = std::sync::Arc::new(jit);
-    if let Some(shared) = shared_state {
-        shared
-            .kept_jits
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .push(crate::session_v4::KeptJit(jit_arc.clone()));
-    }
+    let _ = shared_state; // shared_state retained for signature compat;
+                          // kept_jits push removed (Wave 3b dissolution).
 
-    // 6. For each compiled name: read finalised pointer and store it in the
-    //    GOT slot. The `code: Some(Code { ptr })` write onto
-    //    `ModuleEntry::Def` has already happened inside `compile_to_module`
-    //    (via the `CodeFinalizer` trait). We only need to mirror the
-    //    pointer into the per-module GOT slot for indirect-call dispatch.
+    // 6. For each compiled name: pull the per-symbol code pointer from
+    //    `result.code_ptrs` (Wave 3b Layer 2 Option B — backend returns
+    //    `(Arc<Jit>, code_ptrs)`, integration constructs `Code::Jit`),
+    //    store it in the GOT slot, AND construct `Code::Jit { jit, ptr }`
+    //    onto each `Def.code`. The per-entry `Arc::clone(&jit_arc)` is
+    //    the lifetime root that activates Decision 31 Scenario 2.
     for name in names {
-        // Sprint 58 Wave 2 / Decision 36: `compile_to_module` returns
-        // `result.func_ids` keyed by **bare** symbol names uniformly across
-        // every module. The pre-Sprint-58 module-qualified fallback for
-        // non-user/non-main modules is gone — `func_ids[name]` is the only
-        // valid lookup form.
-        let Some(func_id) = result.func_ids.get(name).copied() else {
+        // Sprint 58 Wave 2 / Decision 36: `result.code_ptrs` and
+        // `result.func_ids` are keyed by bare symbol names uniformly
+        // across every module.
+        let Some(code_ptr) = result.code_ptrs.get(name).copied() else {
             continue;
         };
-
-        let code_ptr = jit_arc.get_finalized_ptr(func_id);
 
         // Store in pre-assigned GOT slot (Wave 0 invariant: every compilable
         // symbol carries a `got_slot`).
@@ -2766,6 +2769,21 @@ pub fn inline_jit_codegen_for_names(
             && let Some(st) = tc_modules.get(module)
         {
             st.got.store_slot(slot, code_ptr);
+        }
+
+        // Wave 3b Layer 3: write Code::Jit on the entry. The Arc::clone
+        // per-entry is what makes Decision 31 Scenario 2 fire — when the
+        // entry is replaced (REPL redefinition), the clone drops, and
+        // when the last clone in the table drops, the underlying Jit
+        // reclaims its pages.
+        if let Some(mut st) = tc_modules.get_mut(module)
+            && let Some(entry) = st.symbols.get_mut(name.as_ref())
+            && let cranelisp_types::ModuleEntry::Def { code, .. } = entry
+        {
+            *code = Some(crate::code::Code::jit(
+                std::sync::Arc::clone(&jit_arc),
+                code_ptr,
+            ));
         }
     }
 
@@ -2792,12 +2810,12 @@ pub fn inline_jit_codegen_for_names(
 
 /// Follow Import/Reexport chains to find a symbol's GOT slot.
 fn lookup_got_slot(
-    tc_modules: &dashmap::DashMap<ModuleFullPath, cranelisp_types::SymbolTable>,
+    tc_modules: &dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable>,
     module: &ModuleFullPath,
     name: &Symbol,
 ) -> Option<usize> {
     fn walk(
-        tables: &dashmap::DashMap<ModuleFullPath, cranelisp_types::SymbolTable>,
+        tables: &dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable>,
         module: &ModuleFullPath,
         name: &str,
         depth: usize,
@@ -2896,7 +2914,7 @@ fn load_cached_module_via_linker(
     for st_entry in shared_state.symbol_tables.iter() {
         for (name, entry) in st_entry.value().all_symbols() {
             if let ModuleEntry::Def { code: Some(c), .. } = entry {
-                linker.register_symbol(name.as_ref(), c.ptr);
+                linker.register_symbol(name.as_ref(), c.ptr());
             }
         }
     }
@@ -2954,33 +2972,31 @@ fn load_cached_module_via_linker(
         loaded_symbols.push(name.clone());
     }
 
-    // Sprint 58 Step 5b §3.2 — fresh-build/cache-hit symmetry invariant
-    // (module-caching.md §14.6): after fresh build, `compile_to_module`
-    // writes `code: Some(Code { ptr })` onto each `ModuleEntry::Def` in the
-    // live symbol table. The cache-hit Linker path must do the same so that
-    // downstream readers (e.g. `discover_test_names`,
-    // `format_overloaded_variants`, `/mem`) see the same shape regardless of
-    // origin. The deserialised entries arrived with `code: None` (the field
-    // is `#[serde(skip)]`); re-derive here from the linker's resolved
-    // addresses (Decision 25 — `code` is re-derived on cache-hit load).
+    // Sprint 58 Step 5b §3.2 + Wave 3b (Decision 35 Cache-restore): after
+    // fresh build, the integration layer writes `Code::Jit { jit, ptr }`
+    // onto each `ModuleEntry::Def.code`; the cache-hit Linker path mirrors
+    // that with `Code::Linker { linker, ptr }`, sharing one `Arc<Linker>`
+    // across every entry the linker materialised. Reclamation of the
+    // mmap'd `.o` pages happens when the last `Code::Linker` referencing
+    // the Arc drops (per-module reclaim, dual of Scenario 2's per-batch
+    // JIT reclaim).
+    let linker_arc = std::sync::Arc::new(linker);
     if let Some(mut live_table) = shared_state.symbol_tables.get_mut(module) {
         for (name, entry) in live_table.symbols.iter_mut() {
             if let ModuleEntry::Def { code, .. } = entry
                 && let Some(ptr) = fn_addrs.get(name.as_ref()).copied()
             {
-                *code = Some(cranelisp_types::Code { ptr });
+                *code = Some(crate::code::Code::linker(
+                    std::sync::Arc::clone(&linker_arc),
+                    ptr,
+                ));
             }
         }
     }
-
-    // Sprint 57 Wave 2 G6: retain the Linker on the session-level
-    // `kept_linkers` pool (replaces the per-module `CodegenProduct.linker`
-    // field). Keeps mmap'd code regions alive for the session lifetime.
-    shared_state
-        .kept_linkers
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .push(linker);
+    // Sprint 58 Wave 3b: `kept_linkers` dissolved per Decision 35 — the
+    // `Arc<Linker>` retention root is now the per-entry `Code::Linker`.
+    // No session-level push needed.
+    drop(linker_arc);
 
     Ok(loaded_symbols)
 }
@@ -3344,7 +3360,7 @@ mod tests {
     use super::*;
     use cranelisp_types::{
         DefKind, Defn, DefnVariant, Expr, FQSymbol, ModuleEntry, ModuleFullPath,
-        Scheme, Symbol, SymbolTable, Type, Visibility,
+        Scheme, Symbol, Type, Visibility,
     };
     use std::collections::HashMap;
 
@@ -3375,7 +3391,11 @@ mod tests {
         }
     }
 
-    fn mk_def_with_got(kind: DefKind, ast: Option<Defn>, got_slot: Option<usize>) -> ModuleEntry {
+    fn mk_def_with_got(
+        kind: DefKind,
+        ast: Option<Defn>,
+        got_slot: Option<usize>,
+    ) -> ModuleEntry<crate::code::Code> {
         ModuleEntry::Def {
             scheme: synthetic_scheme(),
             visibility: Visibility::Public,
@@ -3398,7 +3418,7 @@ mod tests {
         // that pass `defined_symbols()` should be candidates for codegen — the
         // worker's name-list preparation MUST produce the same set.
         let module = ModuleFullPath::from("user");
-        let mut st = SymbolTable::new(module.clone());
+        let mut st = crate::code::SessionSymbolTable::new_with_params(module.clone());
 
         // Compilable: regular UserFn with ast: Some(_).
         st.insert(
@@ -3546,8 +3566,8 @@ mod tests {
         // compile completion the worker stores the compiled function pointer
         // at slot 3 in the module's GOT table.
         let module = ModuleFullPath::from("user");
-        let symbol_tables: dashmap::DashMap<ModuleFullPath, SymbolTable> = dashmap::DashMap::new();
-        let mut st = SymbolTable::new(module.clone());
+        let symbol_tables: dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable> = dashmap::DashMap::new();
+        let mut st = crate::code::SessionSymbolTable::new_with_params(module.clone());
 
         // Advance the next_got_slot by allocating four slots; the 4th is slot 3.
         let slot_0 = st.allocate_got_slot();
@@ -3603,12 +3623,12 @@ mod tests {
         // `ModuleEntry::Def` plus mirrors the pointer into the GOT slot.
         // Replaces the Phase-2 `CodegenProduct.code` assertion.
         let module = ModuleFullPath::from("user");
-        let symbol_tables: dashmap::DashMap<ModuleFullPath, SymbolTable> =
+        let symbol_tables: dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable> =
             dashmap::DashMap::new();
         let introspection: dashmap::DashMap<FQSymbol, crate::session_v4::Introspection> =
             dashmap::DashMap::new();
 
-        let mut st = SymbolTable::new(module.clone());
+        let mut st = crate::code::SessionSymbolTable::new_with_params(module.clone());
         let slot = st.allocate_got_slot();
         let defn_name = Symbol::from("__macro_demo_clause_0");
         st.insert(
@@ -3643,8 +3663,8 @@ mod tests {
                 .expect("defn entry present after codegen");
             match entry {
                 ModuleEntry::Def { code: Some(c), .. } => {
-                    assert!(!c.ptr.is_null(), "compiled function pointer must be non-null");
-                    c.ptr
+                    assert!(!c.ptr().is_null(), "compiled function pointer must be non-null");
+                    c.ptr()
                 }
                 other => panic!(
                     "expected ModuleEntry::Def with code: Some(_); got {other:?}"
@@ -3693,10 +3713,10 @@ mod tests {
         // codegen path. After return, the entry carries `code: Some(_)`.
         // This is the G6 target write contract at the priority-worker seam.
         let module = ModuleFullPath::from("user");
-        let symbol_tables: dashmap::DashMap<ModuleFullPath, SymbolTable> =
+        let symbol_tables: dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable> =
             dashmap::DashMap::new();
 
-        let mut st = SymbolTable::new(module.clone());
+        let mut st = crate::code::SessionSymbolTable::new_with_params(module.clone());
         let slot = st.allocate_got_slot();
         let defn_name = Symbol::from("answer");
         st.insert(
@@ -3723,7 +3743,7 @@ mod tests {
         let table = symbol_tables.get(&module).expect("symbol table present");
         match table.get(defn_name.as_ref()).expect("entry present") {
             ModuleEntry::Def { code: Some(c), .. } => {
-                assert!(!c.ptr.is_null(), "code pointer must be non-null after compile");
+                assert!(!c.ptr().is_null(), "code pointer must be non-null after compile");
             }
             other => panic!(
                 "expected ModuleEntry::Def with code: Some(_) after worker codegen; got {other:?}"
@@ -3742,10 +3762,10 @@ mod tests {
         // the deleted `codegen_products.get(module).code.contains_key(name)`
         // to the symbol-table lookup.
         let module = ModuleFullPath::from("user");
-        let symbol_tables: dashmap::DashMap<ModuleFullPath, SymbolTable> =
+        let symbol_tables: dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable> =
             dashmap::DashMap::new();
 
-        let mut st = SymbolTable::new(module.clone());
+        let mut st = crate::code::SessionSymbolTable::new_with_params(module.clone());
         let slot = st.allocate_got_slot();
         let defn_name = Symbol::from("probe");
         st.insert(
@@ -3790,7 +3810,7 @@ mod tests {
         let via_entry = {
             let table = symbol_tables.get(&module).expect("symbol table present");
             match table.get(defn_name.as_ref()).expect("entry present") {
-                ModuleEntry::Def { code: Some(c), .. } => c.ptr,
+                ModuleEntry::Def { code: Some(c), .. } => c.ptr(),
                 other => panic!(
                     "expected ModuleEntry::Def with code: Some(_); got {other:?}"
                 ),
@@ -3818,10 +3838,10 @@ mod tests {
         use cranelisp_types::{DefnVariant, Expr, TopLevel, Visibility};
 
         let module = ModuleFullPath::from("user");
-        let symbol_tables: dashmap::DashMap<ModuleFullPath, SymbolTable> =
+        let symbol_tables: dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable> =
             dashmap::DashMap::new();
 
-        let mut st = SymbolTable::new(module.clone());
+        let mut st = crate::code::SessionSymbolTable::new_with_params(module.clone());
         let slot = st.allocate_got_slot();
         let expr_name = Symbol::from("__expr");
         let expr_defn = Defn {
@@ -3872,7 +3892,7 @@ mod tests {
         let table = symbol_tables.get(&module).expect("symbol table present");
         match table.get(expr_name.as_ref()).expect("__expr entry present") {
             ModuleEntry::Def { code: Some(c), .. } => {
-                assert!(!c.ptr.is_null(), "__expr code pointer must be non-null");
+                assert!(!c.ptr().is_null(), "__expr code pointer must be non-null");
             }
             other => panic!(
                 "expected __expr entry with code: Some(_) after the uniform path; got {other:?}"
@@ -3895,11 +3915,11 @@ mod tests {
         // `codegen_products.iter()` loop).
         let dep_module = ModuleFullPath::from("dep");
         let user_module = ModuleFullPath::from("user");
-        let symbol_tables: dashmap::DashMap<ModuleFullPath, SymbolTable> =
+        let symbol_tables: dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable> =
             dashmap::DashMap::new();
 
         let fake_ptr = 0xFEEDF00Dusize as *const u8;
-        let mut dep_st = SymbolTable::new(dep_module.clone());
+        let mut dep_st = crate::code::SessionSymbolTable::new_with_params(dep_module.clone());
         let dep_name = Symbol::from("already_compiled");
         dep_st.insert(
             dep_name.clone(),
@@ -3913,12 +3933,22 @@ mod tests {
                 got_slot: Some(0),
                 trait_origin: None,
                 ast: Some(trivial_defn(dep_name.as_ref())),
-                code: Some(cranelisp_types::Code::new(fake_ptr)),
+                // Sprint 58 Wave 3b: synthetic Code::Jit with a stack-local
+                // Jit (the Arc keeps it alive until the test ends).
+                code: Some(crate::code::Code::jit(
+                    std::sync::Arc::new(
+                        cranelisp_backend::jit::Jit::new().expect("Jit::new for test"),
+                    ),
+                    fake_ptr,
+                )),
                 platform_fn_ptr: None,
             },
         );
         symbol_tables.insert(dep_module.clone(), dep_st);
-        symbol_tables.insert(user_module.clone(), SymbolTable::new(user_module.clone()));
+        symbol_tables.insert(
+            user_module.clone(),
+            crate::code::SessionSymbolTable::new_with_params(user_module.clone()),
+        );
 
         // Simulate the step-2b loop from `inline_jit_codegen_for_names`:
         // iterate `symbol_tables`, pick up every `Def { code: Some(c), .. }`,
@@ -3930,7 +3960,7 @@ mod tests {
                 defining_module.as_ref() != "user" && defining_module.as_ref() != "main";
             for (bare, entry) in st_entry.value().all_symbols() {
                 if let ModuleEntry::Def { code: Some(c), .. } = entry {
-                    let ptr = c.ptr;
+                    let ptr = c.ptr();
                     if use_prefix {
                         jit_symbols.push((format!("{defining_module}/{bare}"), ptr));
                     }
@@ -3968,7 +3998,7 @@ mod tests {
     fn platform_form_handler_writes_fn_ptr_to_entry() {
         use cranelisp_types::{JitSymbol, PrimitiveKind, Scheme, Type};
 
-        let symbol_tables: dashmap::DashMap<ModuleFullPath, SymbolTable> =
+        let symbol_tables: dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable> =
             dashmap::DashMap::new();
         let current = ModuleFullPath::from("platform.stdio");
         let fake_ptr: *const u8 = 0xC0FFEE_usize as *const u8;
@@ -3997,7 +4027,7 @@ mod tests {
             platform_fn_ptr: Some(fake_ptr),
         };
 
-        let mut st = SymbolTable::new(current.clone());
+        let mut st = crate::code::SessionSymbolTable::new_with_params(current.clone());
         st.insert(Symbol::from("print"), entry);
         symbol_tables.insert(current.clone(), st);
 
@@ -4036,7 +4066,7 @@ mod tests {
     fn cross_module_platform_fn_resolution() {
         use cranelisp_types::{FQSymbol, JitSymbol, PrimitiveKind, Scheme, Type};
 
-        let symbol_tables: dashmap::DashMap<ModuleFullPath, SymbolTable> =
+        let symbol_tables: dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable> =
             dashmap::DashMap::new();
         let plat_mod = ModuleFullPath::from("platform.stdio");
         let user_mod = ModuleFullPath::from("user");
@@ -4067,14 +4097,14 @@ mod tests {
             code: None,
             platform_fn_ptr: Some(fake_ptr),
         };
-        let mut plat_st = SymbolTable::new(plat_mod.clone());
+        let mut plat_st = crate::code::SessionSymbolTable::new_with_params(plat_mod.clone());
         plat_st.insert(Symbol::from("print"), plat_entry);
         symbol_tables.insert(plat_mod.clone(), plat_st);
 
         // user imports `print` from platform.stdio (an Import chain — the
         // caller-side symbol table carries only the import record, not the
         // platform pointer).
-        let mut user_st = SymbolTable::new(user_mod.clone());
+        let mut user_st = crate::code::SessionSymbolTable::new_with_params(user_mod.clone());
         user_st.insert(
             Symbol::from("print"),
             ModuleEntry::Import {
@@ -4109,7 +4139,7 @@ mod tests {
     /// scheduler / shared-state graph — the writers only touch
     /// `ctx.symbol_tables`.
     fn mk_writer_test_ctx<'a>(
-        symbol_tables: &'a dashmap::DashMap<ModuleFullPath, SymbolTable>,
+        symbol_tables: &'a dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable>,
         next_type_id: &'a std::sync::atomic::AtomicU32,
         scheduler: &'a CompileScheduler,
         typecheck_products: &'a dashmap::DashMap<ModuleFullPath, crate::session_v4::TypecheckProduct>,
@@ -4135,9 +4165,9 @@ mod tests {
     #[test]
     fn writer_records_imports_in_source_order() {
         let module = ModuleFullPath::from("user");
-        let symbol_tables: dashmap::DashMap<ModuleFullPath, SymbolTable> =
+        let symbol_tables: dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable> =
             dashmap::DashMap::new();
-        symbol_tables.insert(module.clone(), SymbolTable::new(module.clone()));
+        symbol_tables.insert(module.clone(), crate::code::SessionSymbolTable::new_with_params(module.clone()));
         let next_type_id = std::sync::atomic::AtomicU32::new(0);
         let scheduler = CompileScheduler::new();
         let typecheck_products = dashmap::DashMap::new();
@@ -4194,9 +4224,9 @@ mod tests {
         // Assert: only the user-authored ImportSpec ends up in
         // `symbol_table.imports`.
         let module = ModuleFullPath::from("user");
-        let symbol_tables: dashmap::DashMap<ModuleFullPath, SymbolTable> =
+        let symbol_tables: dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable> =
             dashmap::DashMap::new();
-        symbol_tables.insert(module.clone(), SymbolTable::new(module.clone()));
+        symbol_tables.insert(module.clone(), crate::code::SessionSymbolTable::new_with_params(module.clone()));
         let next_type_id = std::sync::atomic::AtomicU32::new(0);
         let scheduler = CompileScheduler::new();
         let typecheck_products = dashmap::DashMap::new();
@@ -4301,7 +4331,7 @@ mod tests {
         use cranelisp_types::ModDecl;
 
         let module = ModuleFullPath::from("user");
-        let mut st = SymbolTable::new(module.clone());
+        let mut st = crate::code::SessionSymbolTable::new_with_params(module.clone());
 
         // Populate the structural-decl fields directly on the SymbolTable
         // (this is the post-Step-5a invariant — no separate ModuleStructure).
@@ -4352,9 +4382,9 @@ mod tests {
         use cranelisp_types::ModDecl;
 
         let module = ModuleFullPath::from("main.host");
-        let symbol_tables: dashmap::DashMap<ModuleFullPath, SymbolTable> =
+        let symbol_tables: dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable> =
             dashmap::DashMap::new();
-        symbol_tables.insert(module.clone(), SymbolTable::new(module.clone()));
+        symbol_tables.insert(module.clone(), crate::code::SessionSymbolTable::new_with_params(module.clone()));
         let next_type_id = std::sync::atomic::AtomicU32::new(0);
         let scheduler = CompileScheduler::new();
         let typecheck_products = dashmap::DashMap::new();
@@ -4397,7 +4427,7 @@ mod tests {
 
         let dir = tempfile::tempdir().expect("tmp dir");
         let module = ModuleFullPath::from("user");
-        let mut st = SymbolTable::new(module.clone());
+        let mut st = crate::code::SessionSymbolTable::new_with_params(module.clone());
         st.imports.push(ImportSpec {
             module_path: "core".into(),
             alias: None,

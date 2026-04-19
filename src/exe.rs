@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use cranelisp_types::{
-    CranelispError, ModuleEntry, ModuleFullPath, Span, SymbolTable, Type,
+    CranelispError, ModuleEntry, ModuleFullPath, Span, Type,
 };
 
 // Re-export generate_startup_object from the backend for convenience.
@@ -33,7 +33,7 @@ pub enum MainReturnKind {
 ///
 /// Returns the return kind so the startup stub can conditionally include the
 /// IO trampoline.
-pub fn validate_main(entry_symbols: &SymbolTable) -> Result<MainReturnKind, CranelispError> {
+pub fn validate_main(entry_symbols: &crate::code::SessionSymbolTable) -> Result<MainReturnKind, CranelispError> {
     let entry = entry_symbols.get("main").ok_or_else(|| {
         CranelispError::CodegenError {
             message: "entry module has no 'main' function".to_string(),
@@ -242,7 +242,7 @@ pub fn generate_main_alias_object(
 /// Returns the slot index pinned at typecheck time. Errors if `main` is
 /// missing or has no slot allocated (defensive — `validate_main` should
 /// have caught the missing case).
-pub fn entry_main_got_slot(entry_table: &SymbolTable) -> Result<usize, CranelispError> {
+pub fn entry_main_got_slot(entry_table: &crate::code::SessionSymbolTable) -> Result<usize, CranelispError> {
     let entry = entry_table.get("main").ok_or_else(|| {
         CranelispError::CodegenError {
             message: "entry module has no 'main' function (alias generation)".to_string(),
@@ -544,7 +544,7 @@ mod tests {
     use cranelisp_types::{DefKind, Scheme, Symbol, TypeName, Visibility};
     use std::collections::HashMap;
 
-    fn make_main_entry(ty: Type) -> ModuleEntry {
+    fn make_main_entry(ty: Type) -> ModuleEntry<crate::code::Code> {
         ModuleEntry::Def {
             scheme: Scheme {
                 vars: vec![],
@@ -567,7 +567,7 @@ mod tests {
     // spec: design/backend/executable-generation.md §7 — main :: () -> Int accepted
     #[test]
     fn validate_main_returns_int() {
-        let mut st = SymbolTable::new(ModuleFullPath::from("user"));
+        let mut st = crate::code::SessionSymbolTable::new_with_params(ModuleFullPath::from("user"));
         st.insert(
             Symbol::from("main"),
             make_main_entry(Type::Fn(vec![], Box::new(Type::Int))),
@@ -579,7 +579,7 @@ mod tests {
     // spec: design/backend/executable-generation.md §7 — main :: () -> IO _ accepted
     #[test]
     fn validate_main_returns_io() {
-        let mut st = SymbolTable::new(ModuleFullPath::from("user"));
+        let mut st = crate::code::SessionSymbolTable::new_with_params(ModuleFullPath::from("user"));
         st.insert(
             Symbol::from("main"),
             make_main_entry(Type::Fn(
@@ -597,7 +597,7 @@ mod tests {
     // spec: design/backend/executable-generation.md §7 — missing main is error
     #[test]
     fn validate_main_missing() {
-        let st = SymbolTable::new(ModuleFullPath::from("user"));
+        let st = crate::code::SessionSymbolTable::new_with_params(ModuleFullPath::from("user"));
         let err = validate_main(&st).unwrap_err();
         match err {
             CranelispError::CodegenError { message, .. } => {
@@ -610,7 +610,7 @@ mod tests {
     // spec: design/backend/executable-generation.md §7 — main :: () -> String is error
     #[test]
     fn validate_main_wrong_return_type() {
-        let mut st = SymbolTable::new(ModuleFullPath::from("user"));
+        let mut st = crate::code::SessionSymbolTable::new_with_params(ModuleFullPath::from("user"));
         st.insert(
             Symbol::from("main"),
             make_main_entry(Type::Fn(vec![], Box::new(Type::String))),
@@ -627,7 +627,7 @@ mod tests {
     // spec: design/backend/executable-generation.md §7 — main with params is error
     #[test]
     fn validate_main_with_params() {
-        let mut st = SymbolTable::new(ModuleFullPath::from("user"));
+        let mut st = crate::code::SessionSymbolTable::new_with_params(ModuleFullPath::from("user"));
         st.insert(
             Symbol::from("main"),
             make_main_entry(Type::Fn(vec![Type::Int], Box::new(Type::Int))),

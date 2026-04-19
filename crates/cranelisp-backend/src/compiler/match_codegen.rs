@@ -14,7 +14,11 @@ use crate::heap::{self, HeapAdt};
 
 use super::{FnCompiler, MatchContext, collect_var_ids_from_type, substitute_type_inline};
 
-impl<'a, M: Module> FnCompiler<'a, M> {
+impl<'a, M: Module, C, L> FnCompiler<'a, M, C, L>
+where
+    C: cranelisp_types::CodeStore,
+    L: cranelisp_types::LinkerStore,
+{
     // --- Match expression ---
 
     pub(crate) fn compile_match(

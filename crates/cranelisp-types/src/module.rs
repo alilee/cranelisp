@@ -3,10 +3,56 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 use crate::{
-    Code, ConstructorInfo, Defn, FQSymbol, FQTraitName, FQTypeName, GotTable, ModuleFullPath,
+    ConstructorInfo, Defn, FQSymbol, FQTraitName, FQTypeName, GotTable, ModuleFullPath,
     ModuleName, Scheme, SchedulingClass, Sexp, Span, Symbol, TraitDecl, TraitName, Type,
     TypeDefInfo, TypeName, Visibility,
 };
+
+// --- CodeStore / LinkerStore marker traits (Sprint 58 Wave 3a; Decision 32) ---
+
+/// Empty marker trait for the per-function compiled-code store carried on
+/// `ModuleEntry::Def.code`.
+///
+/// This trait is method-free by design (Decision 32). The integration layer
+/// chooses the concrete type for `C` (per Decision 35: `Code` enum unifying
+/// `Code::Jit { Arc<Jit>, ptr }` and `Code::Linker { Arc<Linker>, ptr }`),
+/// and methods that compile, evict, or reclaim code go on the concrete type
+/// in the integration layer or `cranelisp-backend`. `cranelisp-types` MUST
+/// stay ignorant of `cranelift_jit::JITModule` and the linker — the empty
+/// marker is the type-system handle that lets `SymbolTable<C, L>` carry
+/// the parameterisation without inverting the dependency edge that
+/// Principle 3 protects (`cranelisp-types → cranelisp-backend` is forbidden).
+///
+/// The blanket `impl<T: Send + Sync + 'static> CodeStore for T` means any
+/// `Send + Sync + 'static` type the integration layer wants to use as `C`
+/// automatically satisfies the bound — no per-call-site `impl` line needed.
+/// `()` trivially satisfies it (zero-sized, Send + Sync + 'static), which
+/// is why it works as the default for crates that don't handle compiled
+/// code (typecheck, frontend, the bulk of backend).
+///
+/// See `design/arch/CLAUDE.md` Decision 32 (canonical) and Decision 35
+/// (the integration layer's `Code` enum) and Decision 31 (per-redefinition
+/// JIT reclaim — the behavioural payoff this enables).
+pub trait CodeStore: Clone + Send + Sync + 'static {}
+impl<T: Clone + Send + Sync + 'static> CodeStore for T {}
+
+/// Empty marker trait for the per-module linker store carried on
+/// `SymbolTable.linker`.
+///
+/// Same shape as `CodeStore` but kept distinct so `SymbolTable<C, L>` has
+/// two independent type parameters (per-function reclaim and per-module
+/// reclaim are separate concerns; cache-restore can supply a `Linker`
+/// without supplying a `Code` shape, and vice versa). Per Decision 35,
+/// the current integration-layer choice is `L = ()` because per-symbol
+/// `Code::Linker.linker: Arc<Linker>` retention covers the only case where
+/// a Linker needs to outlive its construction; `L` is reserved for future
+/// expansion if a Linker must be retained without any `Code::Linker`
+/// referencing it.
+///
+/// See `design/arch/CLAUDE.md` Decision 32 (canonical) and Decision 35
+/// (`L = ()` rationale).
+pub trait LinkerStore: Clone + Send + Sync + 'static {}
+impl<T: Clone + Send + Sync + 'static> LinkerStore for T {}
 
 // --- Symbol Table ---
 
@@ -29,10 +75,32 @@ use crate::{
 /// See Decision 33 in `design/arch/CLAUDE.md` (Sprint 58 Step 5a). The
 /// `ModuleStructure` parallel store in `src/save.rs` (Sprint-57 transitional
 /// shape) dissolves at Step 5a — its fields move 1:1 to these.
+///
+/// Generic over `C: CodeStore` (per-function compiled-code store carried on
+/// `ModuleEntry::Def.code`) and `L: LinkerStore` (per-module linker store
+/// carried on `linker`). Both default to `()` so crates that don't handle
+/// compiled code (typecheck, frontend, the bulk of backend) work with
+/// `SymbolTable` (i.e. `SymbolTable<(), ()>`) and never see the parameters
+/// in their signatures. The integration layer instantiates
+/// `SymbolTable<Code, ()>` (or similar) in `src/session_v4.rs` (per
+/// Decision 35). See Decision 32 for the trait shape and the
+/// `pipeline-v4.md` §9.1 normative shape.
+///
+/// **Serde discipline.** The `linker: Option<L>` field is `#[serde(skip)]`
+/// (runtime state), and `code: Option<C>` on `ModuleEntry::Def` is also
+/// `#[serde(skip)]`. The explicit `#[serde(bound = "")]` on the derive
+/// suppresses the auto-generated `C: Serialize + Deserialize` and
+/// `L: Serialize + Deserialize` bounds that the derive would otherwise
+/// emit; without it, even skipped fields' type parameters get
+/// trait-bound on serialise/deserialise. `()` trivially implements
+/// neither (the marker traits are empty), so omitting the bounds keeps
+/// the derive sound for the `()` default and for any concrete `C` /
+/// `L` the integration layer chooses.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SymbolTable {
+#[serde(bound = "")]
+pub struct SymbolTable<C: CodeStore = (), L: LinkerStore = ()> {
     pub path: ModuleFullPath,
-    pub symbols: HashMap<Symbol, ModuleEntry>,
+    pub symbols: HashMap<Symbol, ModuleEntry<C>>,
     /// Next available GOT slot index for this module.
     /// Module-local: slot 0, 1, 2... independently per module.
     #[serde(default)]
@@ -107,13 +175,53 @@ pub struct SymbolTable {
     /// loader. See Decision 34.
     #[serde(default)]
     pub schema_version: u32,
+
+    // --- Cached object code (Sprint 58 Wave 3a; Decision 32 + Decision 35) ---
+    /// Per-module linker store — the retention root for cached `.o`-mapped
+    /// code in `--run`/REPL mode after cache-hit. `L = ()` for crates that
+    /// don't handle linker state (typecheck, frontend, etc.); the integration
+    /// layer wires the concrete `Linker` (or `Arc<Linker>` per Decision 35)
+    /// in Wave 3b.
+    ///
+    /// `#[serde(skip)]` — runtime state. Cache-hit re-derives the field
+    /// by re-loading the `.o`; the persisted `.meta.json` carries no linker
+    /// state. Per Decision 35, the *current* integration-layer choice is
+    /// `L = ()` because per-symbol `Code::Linker.linker: Arc<Linker>`
+    /// retention covers every case where a Linker needs to outlive its
+    /// construction. The field exists for completeness and forward
+    /// compatibility — if a future scenario emerges where a Linker must be
+    /// retained without any `Code::Linker` referencing it, `L` can be
+    /// reactivated without further generics churn.
+    ///
+    /// See Decision 32 (`LinkerStore` trait shape), Decision 35 (`Code`
+    /// enum + `L = ()` rationale), `interfaces.md` §"Symbol Table" for
+    /// the field-shape contract.
+    #[serde(skip)]
+    pub linker: Option<L>,
 }
 
 fn default_got_arc() -> std::sync::Arc<GotTable> {
     std::sync::Arc::new(GotTable::new())
 }
 
-impl SymbolTable {
+/// Inherent constructor on the `()`-defaulted instantiation. Defined on
+/// `SymbolTable<(), ()>` specifically (not on the generic `impl<C, L>`)
+/// so that the call `SymbolTable::new(path)` — which appears throughout
+/// the codebase without type annotations — resolves to this method
+/// directly without requiring the type parameters to be specified or
+/// inferred from context. Crates that need the parameterised flavour
+/// (the integration layer with `C = Code`) construct the entry-set
+/// differently (e.g., `cache-restore` populates a `SymbolTable<Code, _>`
+/// from the deserialised `()` flavour by mapping entries; or use
+/// `SymbolTable::<Code, ()>::new(path)` explicitly).
+///
+/// See the `cargo doc` discussion in Sprint 58 Wave 3a: Rust's default
+/// type parameter inference does not propagate to associated function
+/// calls (`SymbolTable::new(path)` would error with `type annotations
+/// needed` if `new` were defined only on the generic `impl<C: CodeStore,
+/// L: LinkerStore>`). The concrete-`()` inherent impl resolves the
+/// ergonomic gap without sacrificing the parameterisation.
+impl SymbolTable<(), ()> {
     pub fn new(path: ModuleFullPath) -> Self {
         SymbolTable {
             path,
@@ -125,6 +233,113 @@ impl SymbolTable {
             platforms: Vec::new(),
             submodules: Vec::new(),
             schema_version: 0,
+            linker: None,
+        }
+    }
+}
+
+// Sprint 58 Wave 3b: Conversion `SymbolTable<()> → SymbolTable<C, L>` for
+// the cache-restore path. The cache deserialises a `<()>`-flavoured table
+// (because `code` is `#[serde(skip)]` and `linker` is `#[serde(skip)]`,
+// the serialised form is parameter-independent); the integration layer
+// needs to install it as a `<Code, ()>`-flavoured table for its session.
+// This is a structural conversion (every entry's `code` becomes `None::<C>`
+// and the `linker` field becomes `None::<L>`).
+impl SymbolTable<(), ()> {
+    /// Convert a `()`-flavoured `SymbolTable` to any other `<C, L>`
+    /// instantiation by mapping each entry's `code: Option<()>` field to
+    /// `None::<C>` and `linker: Option<()>` to `None::<L>`. Used by the
+    /// cache-restore path: deserialise yields `<()>`, install needs
+    /// `<Code, ()>` for the integration layer, and the structural
+    /// fields (ast, scheme, callees, got_slot, etc.) are
+    /// parameter-independent — they're carried over as-is.
+    ///
+    /// Sprint 58 Wave 3b (Decision 35).
+    pub fn into_concrete<C: CodeStore, L: LinkerStore>(self) -> SymbolTable<C, L> {
+        let mut symbols: HashMap<Symbol, ModuleEntry<C>> = HashMap::with_capacity(self.symbols.len());
+        for (name, entry) in self.symbols {
+            symbols.insert(name, entry.into_concrete::<C>());
+        }
+        SymbolTable {
+            path: self.path,
+            symbols,
+            next_got_slot: self.next_got_slot,
+            got: self.got,
+            imports: self.imports,
+            exports: self.exports,
+            platforms: self.platforms,
+            submodules: self.submodules,
+            schema_version: self.schema_version,
+            linker: None,
+        }
+    }
+}
+
+impl ModuleEntry<()> {
+    /// Convert a `()`-flavoured `ModuleEntry` to any other `<C>`
+    /// instantiation by setting `code` to `None::<C>` (the only field
+    /// that depends on `C`). All other fields are parameter-independent.
+    /// Sprint 58 Wave 3b (Decision 35).
+    pub fn into_concrete<C: CodeStore>(self) -> ModuleEntry<C> {
+        match self {
+            ModuleEntry::Def {
+                scheme, visibility, docstring, param_names, kind, callees,
+                got_slot, trait_origin, ast, code: _, platform_fn_ptr,
+            } => ModuleEntry::Def {
+                scheme, visibility, docstring, param_names, kind, callees,
+                got_slot, trait_origin, ast, code: None, platform_fn_ptr,
+            },
+            ModuleEntry::Import { source } => ModuleEntry::Import { source },
+            ModuleEntry::Reexport { source } => ModuleEntry::Reexport { source },
+            ModuleEntry::TypeDef { info, visibility, constructor_scheme, sexp } => {
+                ModuleEntry::TypeDef { info, visibility, constructor_scheme, sexp }
+            }
+            ModuleEntry::TraitDecl { decl, visibility, sexp } => {
+                ModuleEntry::TraitDecl { decl, visibility, sexp }
+            }
+            ModuleEntry::Constructor { type_name, info, scheme, visibility } => {
+                ModuleEntry::Constructor { type_name, info, scheme, visibility }
+            }
+            ModuleEntry::Macro { name, clauses, docstring, visibility, sexp, source, callees } => {
+                ModuleEntry::Macro { name, clauses, docstring, visibility, sexp, source, callees }
+            }
+            ModuleEntry::PlatformDecl { dll_path, platform_module } => {
+                ModuleEntry::PlatformDecl { dll_path, platform_module }
+            }
+            ModuleEntry::TraitImpl { trait_name, impl_type, methods } => {
+                ModuleEntry::TraitImpl { trait_name, impl_type, methods }
+            }
+            ModuleEntry::Ambiguous => ModuleEntry::Ambiguous,
+        }
+    }
+}
+
+impl<C: CodeStore, L: LinkerStore> SymbolTable<C, L> {
+    /// Construct an empty `SymbolTable<C, L>` for a generic instantiation.
+    ///
+    /// Sprint 58 Wave 3b (Decision 35): the integration layer needs to
+    /// construct `SymbolTable<Code, ()>` directly (to seed user/test
+    /// modules into `SharedState.symbol_tables`). The `()`-flavoured
+    /// inherent impl above (`SymbolTable::<(), ()>::new`) covers
+    /// typecheck/frontend's use case where no type annotation is supplied;
+    /// this generic version covers the integration layer's
+    /// `SymbolTable::<Code, ()>::new(path)` call sites.
+    ///
+    /// Both produce identical structural state (empty maps, fresh GOT,
+    /// `code: None` / `linker: None`); they differ only in the type
+    /// parameters Rust infers.
+    pub fn new_with_params(path: ModuleFullPath) -> Self {
+        SymbolTable {
+            path,
+            symbols: HashMap::new(),
+            next_got_slot: 0,
+            got: std::sync::Arc::new(GotTable::new()),
+            imports: Vec::new(),
+            exports: Vec::new(),
+            platforms: Vec::new(),
+            submodules: Vec::new(),
+            schema_version: 0,
+            linker: None,
         }
     }
 
@@ -135,20 +350,20 @@ impl SymbolTable {
         slot
     }
 
-    pub fn get(&self, name: &str) -> Option<&ModuleEntry> {
+    pub fn get(&self, name: &str) -> Option<&ModuleEntry<C>> {
         self.symbols.get(name)
     }
 
-    pub fn insert(&mut self, name: Symbol, entry: ModuleEntry) {
+    pub fn insert(&mut self, name: Symbol, entry: ModuleEntry<C>) {
         self.symbols.insert(name, entry);
     }
 
-    pub fn public_symbols(&self) -> impl Iterator<Item = (&Symbol, &ModuleEntry)> {
+    pub fn public_symbols(&self) -> impl Iterator<Item = (&Symbol, &ModuleEntry<C>)> {
         self.symbols.iter().filter(|(_, e)| e.is_public())
     }
 
     /// Iterate over all symbols (public and private).
-    pub fn all_symbols(&self) -> impl Iterator<Item = (&Symbol, &ModuleEntry)> {
+    pub fn all_symbols(&self) -> impl Iterator<Item = (&Symbol, &ModuleEntry<C>)> {
         self.symbols.iter()
     }
 
@@ -166,7 +381,7 @@ impl SymbolTable {
     /// primitives, special forms, `Overloaded` base entries whose mangled
     /// variants carry the bodies, and constrained-fn templates whose mono
     /// specialisations carry the bodies).
-    pub fn defined_symbols(&self) -> impl Iterator<Item = (&Symbol, &ModuleEntry)> {
+    pub fn defined_symbols(&self) -> impl Iterator<Item = (&Symbol, &ModuleEntry<C>)> {
         self.symbols.iter().filter(|(_, entry)| match entry {
             ModuleEntry::Def { ast: Some(_), kind, .. } => !matches!(
                 kind.as_ref(),
@@ -181,8 +396,25 @@ impl SymbolTable {
 // --- Module Entries ---
 
 /// An entry in a module's symbol table.
+///
+/// Generic over `C: CodeStore` per the parameterised `SymbolTable<C, L>`
+/// shape (Decision 32). `C` defaults to `()` so crates that don't handle
+/// compiled code work with `ModuleEntry` (i.e. `ModuleEntry<()>`). The
+/// `code: Option<C>` field on the `Def` variant is the only place `C`
+/// appears; every other variant is independent of the parameter (the
+/// `PhantomData` slot is implicit via the `code: Option<C>` field).
+///
+/// **Serde discipline.** The `code: Option<C>` field is `#[serde(skip)]` —
+/// it never round-trips through serde. The explicit `#[serde(bound = "")]`
+/// on the derive suppresses the auto-generated `C: Serialize +
+/// Deserialize` bounds that the derive would otherwise emit; without
+/// `bound = ""`, the derive proactively requires bounds on `C` even for
+/// skipped fields. The `Option<C>` field's `default` (i.e., `None`) does
+/// not require `C: Default` because `Option::default()` returns `None`
+/// for any `T`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum ModuleEntry {
+#[serde(bound = "")]
+pub enum ModuleEntry<C: CodeStore = ()> {
     /// A definition: function, primitive, special form.
     Def {
         scheme: Scheme,
@@ -213,10 +445,21 @@ pub enum ModuleEntry {
         /// returns. Runtime-only state (Decision 25 in `design/arch/CLAUDE.md`):
         /// `#[serde(skip)]` so cache manifests stay pointer-free, and the field
         /// re-initialises to `None` on cache-hit load. Codegen repopulates it
-        /// on demand. Owner of `Code`: integration layer (per-session Jit set
-        /// holds the backing pages alive per Decision 28).
+        /// on demand.
+        ///
+        /// Generic over `C: CodeStore` (Wave 3a; Decision 32 + Decision 35).
+        /// The integration layer instantiates `C = Code` (an enum unifying
+        /// `Code::Jit { Arc<Jit>, ptr }` and `Code::Linker { Arc<Linker>,
+        /// ptr }` per Decision 35); other crates default `C = ()` and read
+        /// this as `Option<()>` (a structurally meaningless tag). Per
+        /// Decision 31 Scenario 2, after Wave 3b lands the integration
+        /// layer's concrete `Code::Jit` here, dropping the last
+        /// `ModuleEntry::Def.code` referencing a given `Arc<Jit>` reaches
+        /// refcount 0 and the custom `Drop` on the `Jit` wrapper calls
+        /// `unsafe JITModule::free_memory()` — the per-redefinition reclaim
+        /// primitive.
         #[serde(skip)]
-        code: Option<Code>,
+        code: Option<C>,
         /// Platform-function pointer written during `(platform ...)` form
         /// processing (Sprint 57 Wave 3 / G8, Decision 26 in
         /// `design/arch/CLAUDE.md`).
@@ -293,19 +536,30 @@ pub enum ModuleEntry {
 }
 
 // SAFETY: `ModuleEntry::Def` carries `platform_fn_ptr: Option<*const u8>`
-// (Sprint 57 Wave 3, Decision 26) and `code: Option<Code>` (Decision 25) —
-// both are raw pointers into DLL code pages or JIT-owned mmap'd executable
-// pages. The pointers are integer handles; transmitting the integer across
-// threads is safe. The backing pages are kept alive at the session level
-// (session's `loaded_platforms` DLL handles and `Arc<Jit>` set), which
-// outlives every `SymbolTable` holding entries that reference them. Threads
-// that dereference `platform_fn_ptr` or `code.ptr` must hold a live handle
-// (directly or transitively via the session) to the owning resource — the
-// session enforces this invariant.
-unsafe impl Send for ModuleEntry {}
-unsafe impl Sync for ModuleEntry {}
+// (Sprint 57 Wave 3, Decision 26) — a raw pointer into DLL code pages.
+// The pointer is an integer handle; transmitting the integer across threads
+// is safe. The backing pages are kept alive at the session level (session's
+// `loaded_platforms` DLL handles), which outlives every `SymbolTable`
+// holding entries that reference them. Threads that dereference
+// `platform_fn_ptr` must hold a live handle (directly or transitively via
+// the session) to the owning resource — the session enforces this
+// invariant.
+//
+// `code: Option<C>` (Decision 25 + Decision 32) is parameterised over
+// `C: CodeStore`, which itself requires `Send + Sync + 'static`. The
+// safety of `code` is therefore delegated to whatever concrete type the
+// integration layer chooses for `C` — for `C = ()` (the default for
+// typecheck/frontend/backend), there is nothing to dereference; for
+// `C = Code` (the integration layer's enum per Decision 35), `Code`
+// carries its own `unsafe impl Send + Sync` with the `Arc<Jit>` /
+// `Arc<Linker>` keeping the backing pages alive. The `CodeStore` bound
+// guarantees `Send + Sync` propagates through `Option<C>`, so the
+// `unsafe impl` here covers only the `*const u8` pointer in
+// `platform_fn_ptr`.
+unsafe impl<C: CodeStore> Send for ModuleEntry<C> {}
+unsafe impl<C: CodeStore> Sync for ModuleEntry<C> {}
 
-impl ModuleEntry {
+impl<C: CodeStore> ModuleEntry<C> {
     /// Returns the callees for this entry, or an empty slice for variants without callees.
     ///
     /// Supports the `tc.symbol_table(module).get(name).callees()` dot-access pattern
@@ -749,12 +1003,16 @@ mod tests {
         }
     }
 
-    // spec: design/arch/CLAUDE.md Decision 25 — #[serde(skip)] on code field; runtime-only,
-    //       never round-trips through the cache manifest.
+    // spec: design/arch/CLAUDE.md Decision 25 + Sprint 58 Wave 3b (Decision 35) —
+    //       #[serde(skip)] on the `code: Option<C>` field; runtime-only, never
+    //       round-trips through the cache manifest. Wave 3b note: the old
+    //       `cranelisp_types::Code` pointer-only struct is gone; the field is
+    //       now generic over `C: CodeStore`. This test exercises the `()`
+    //       default flavour (typecheck-side view); the integration-layer
+    //       enum-flavour serde is exercised in `src/code.rs::tests`.
     #[test]
     fn code_serialise_round_trip_skips_field() {
-        let fake_ptr = 0xCAFEF00Dusize as *const u8;
-        let entry = ModuleEntry::Def {
+        let entry: ModuleEntry<()> = ModuleEntry::Def {
             scheme: Scheme {
                 vars: vec![],
                 constraints: HashMap::new(),
@@ -768,7 +1026,9 @@ mod tests {
             got_slot: None,
             trait_origin: None,
             ast: Some(trivial_defn("with_code")),
-            code: Some(crate::Code::new(fake_ptr)),
+            // `()` flavour — Some/None of the unit type. Serde discipline
+            // is the same regardless of `C`.
+            code: Some(()),
             platform_fn_ptr: None,
         };
 
@@ -777,12 +1037,6 @@ mod tests {
         assert!(
             !json.contains("\"code\""),
             "serialised form must not contain the `code` field (it is #[serde(skip)]): {}",
-            json
-        );
-        // Raw pointer value must not leak through (hex or decimal representation).
-        assert!(
-            !json.to_lowercase().contains("cafef00d"),
-            "serialised form must not contain the raw pointer value: {}",
             json
         );
 
@@ -874,7 +1128,14 @@ mod tests {
     #[test]
     fn platform_fn_ptr_skipped_by_serde() {
         let fake_ptr = 0xFEEDFACEusize as *const u8;
-        let entry = ModuleEntry::Def {
+        // Explicit `<()>` annotation: `code: None` is polymorphic in `C`, so
+        // the inferred `C` would be ambiguous without context (Wave 3a:
+        // ModuleEntry is generic over `C: CodeStore = ()`). The downstream
+        // deserialise (`let rt: ModuleEntry = ...`) anchors the inferred
+        // type via the type annotation on `rt`, but the construction here
+        // needs its own annotation since defaults don't propagate to enum
+        // variant constructors.
+        let entry: ModuleEntry = ModuleEntry::Def {
             scheme: Scheme {
                 vars: vec![],
                 constraints: HashMap::new(),
@@ -1324,5 +1585,170 @@ mod tests {
         );
         assert_eq!(st.exports[0].span.start, 10);
         assert_eq!(st.exports[1].span.start, 30);
+    }
+
+    // ---- Sprint 58 Wave 3a — Decision 32: CodeStore / LinkerStore marker traits ----
+
+    // spec: design/typecheck/ast-annotation.md §12.1 + Decision 32 —
+    //       SymbolTable<C: CodeStore = (), L: LinkerStore = ()> defaults
+    //       resolve to SymbolTable<(), ()> when constructed without args.
+    //       Confirms the "default-(): propagation" invariant: typecheck-side
+    //       call sites that name `SymbolTable` (no args) get the unit
+    //       parameterisation and the `code: Option<()>` / `linker: Option<()>`
+    //       shape compiles cleanly.
+    #[test]
+    fn symbol_table_default_generics_resolve_to_unit() {
+        // Construct via the inherent `SymbolTable<(), ()>::new(...)` path
+        // (the only one defined; see the inherent-impl rationale on
+        // `impl SymbolTable<(), ()>` for why `::new` lives there rather
+        // than on the generic impl).
+        let st = SymbolTable::new(ModuleFullPath::from("user"));
+
+        // Annotate explicitly to assert the inferred parameterisation is
+        // <(), ()>. The `:` binds a fresh local with the spelled type;
+        // the assignment from `st` would fail to compile if the parameters
+        // were anything other than <(), ()>.
+        let _typed: SymbolTable<(), ()> = st;
+
+        // The four Vec<…> fields and the linker / schema_version fields
+        // are all populated with their defaults by `::new`. The `linker`
+        // field is `Option<()>` (a meaningless tag from typecheck's POV);
+        // confirm it starts as None.
+        let st: SymbolTable<(), ()> = SymbolTable::new(ModuleFullPath::from("user"));
+        assert!(
+            st.linker.is_none(),
+            "fresh SymbolTable<(), ()> must have linker: None (Wave 3a default)"
+        );
+        // Sanity: the structural-decl Vec<…> fields are empty too (Step 5a
+        // invariant; reasserted here to prove parameterisation didn't
+        // disturb the existing field set).
+        assert!(st.imports.is_empty());
+        assert!(st.exports.is_empty());
+        assert!(st.platforms.is_empty());
+        assert!(st.submodules.is_empty());
+        // `code` field shape exists on every Def entry; it is Option<()>
+        // for typecheck-side fixtures and would be Option<Code> for
+        // integration-layer fixtures (Wave 3b instantiates `C = Code`).
+    }
+
+    // spec: design/typecheck/ast-annotation.md §12.2 + Decision 32 —
+    //       The blanket `impl<T: Send + Sync + 'static> CodeStore for T` /
+    //       `impl<T: Send + Sync + 'static> LinkerStore for T` makes both
+    //       traits trivially satisfied by `()` (zero-sized, Send + Sync +
+    //       'static) and by other common types the integration layer
+    //       might choose. Confirms the "no per-call-site impl line"
+    //       ergonomic property of the empty-marker design (Decision 32
+    //       rationale).
+    #[test]
+    fn code_store_and_linker_store_blanket_impl_holds() {
+        // Compile-time check: the function below requires its parameter
+        // type to satisfy `CodeStore`. The fact that this compiles is the
+        // assertion — calling it with `()` and several other plausible
+        // integration-layer concrete types proves the blanket impl
+        // applies.
+        fn _requires_code_store<T: CodeStore>() {}
+        fn _requires_linker_store<T: LinkerStore>() {}
+
+        _requires_code_store::<()>();
+        _requires_linker_store::<()>();
+
+        // Common Arc-wrapped shapes that the integration layer may use
+        // for `C` (per Decision 35: `Arc<Jit>`-or-`Code`-enum) and `L`
+        // (per Decision 35: `Arc<Linker>` if `L` is reactivated). Use
+        // `Arc<()>` and `Arc<u64>` as stand-ins for the integration
+        // layer's concrete shapes — they must satisfy the bound for the
+        // Wave 3b instantiation to compile. `i64` exercises the simplest
+        // primitive case (the §G.12 unit test for `module_entry_def_code_field_is_optional_c`
+        // uses `i64` synthetically).
+        _requires_code_store::<std::sync::Arc<()>>();
+        _requires_code_store::<std::sync::Arc<u64>>();
+        _requires_code_store::<i64>();
+        _requires_code_store::<u64>();
+        _requires_linker_store::<std::sync::Arc<()>>();
+        _requires_linker_store::<std::sync::Arc<u64>>();
+
+        // (Sprint 58 Wave 3b: the previous `_requires_code_store::<crate::Code>()`
+        // assertion targeted the now-dissolved `cranelisp_types::Code` struct.
+        // The replacement test lives in `src/code.rs::tests` —
+        // `session_symbol_table_concrete_type_choice` — and asserts
+        // `_requires_code_store::<src::code::Code>()` against the integration
+        // layer's enum, the actual concrete type for `C`. This module's
+        // tests stay strictly within `cranelisp-types`'s scope and exercise
+        // only synthetic / `()`-flavoured shapes.)
+    }
+
+    // spec: design/typecheck/ast-annotation.md §12.4 + Decision 32 + §G.12
+    //       (`module_entry_def_code_field_is_optional_c`) —
+    //       `ModuleEntry<C>` parameterises the `code: Option<C>` field over
+    //       the `C: CodeStore` parameter. With a synthetic `C = i64`,
+    //       constructing `Def { code: Some(42i64), .. }` must compile and
+    //       round-trip via serde with `code` skipped (the serialised JSON
+    //       contains no `code` field; deserialise produces `code: None`
+    //       regardless of the source `C`).
+    #[test]
+    fn module_entry_def_code_field_is_optional_c() {
+        // Synthetic `C = i64`: any `Send + Sync + 'static` type satisfies
+        // CodeStore via the blanket impl. The point of this test is to
+        // exercise the `Option<C>` parameterisation with a `C` that is
+        // NOT `Code` and NOT `()` — proving the field is genuinely
+        // generic over the parameter, not specialised to either default.
+        let entry: ModuleEntry<i64> = ModuleEntry::Def {
+            scheme: Scheme {
+                vars: vec![],
+                constraints: HashMap::new(),
+                ty: Type::Int,
+            },
+            visibility: Visibility::Public,
+            docstring: None,
+            param_names: vec![],
+            kind: Box::new(DefKind::UserFn { constrained_fn: None }),
+            callees: Vec::new(),
+            got_slot: None,
+            trait_origin: None,
+            ast: Some(trivial_defn("synthetic")),
+            code: Some(42i64),
+            platform_fn_ptr: None,
+        };
+
+        // The `code` field carries the synthetic `C = i64` value.
+        match &entry {
+            ModuleEntry::Def { code, .. } => {
+                assert_eq!(*code, Some(42i64), "code field must hold the constructed Some(42i64)");
+            }
+            other => panic!("expected ModuleEntry::Def, got {:?}", other),
+        }
+
+        // Serde discipline: `code` is `#[serde(skip)]`, so the serialised
+        // shape MUST NOT contain a `code` field, and the deserialised
+        // entry MUST have `code: None` regardless of the source `C`. Use
+        // the `()` flavour for the deserialise target (typecheck-side
+        // view) to confirm cross-flavour serde compatibility — the
+        // serialised shape is identical because `code` never appears in
+        // the JSON.
+        let json = serde_json::to_string(&entry).expect("ModuleEntry<i64> must serialize");
+        assert!(
+            !json.contains("\"code\""),
+            "serialised form must not contain the `code` field (it is #[serde(skip)]): {}",
+            json
+        );
+
+        let rt: ModuleEntry<()> = serde_json::from_str(&json)
+            .expect("ModuleEntry<()> must deserialize from ModuleEntry<i64>'s JSON");
+        match rt {
+            ModuleEntry::Def { code, ast, .. } => {
+                // The deserialised `code` is `None::<()>` — the source
+                // `Some(42i64)` did not survive (correctly) because the
+                // field is skipped.
+                assert!(
+                    code.is_none(),
+                    "deserialised ModuleEntry<()>::Def must have code: None (serde(skip)); got {:?}",
+                    code
+                );
+                // ast survives the round-trip — only the `code` (and
+                // `platform_fn_ptr`) fields are skipped.
+                assert!(ast.is_some(), "ast must survive the round-trip");
+            }
+            other => panic!("expected ModuleEntry::Def, got {:?}", other),
+        }
     }
 }

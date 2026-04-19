@@ -52,10 +52,14 @@ impl HeapCategory {
     /// - All constructors nullary (no fields) -> `NeverHeap` (bare tags)
     /// - All constructors have fields -> `AlwaysHeap` (always heap-allocated)
     /// - Mix of nullary and data constructors -> `Mixed`
-    pub fn classify(
+    pub fn classify<C, L>(
         ty: &Type,
-        symbol_tables: Option<&dashmap::DashMap<ModuleFullPath, SymbolTable>>,
-    ) -> HeapCategory {
+        symbol_tables: Option<&dashmap::DashMap<ModuleFullPath, SymbolTable<C, L>>>,
+    ) -> HeapCategory
+    where
+        C: crate::CodeStore,
+        L: crate::LinkerStore,
+    {
         match ty {
             Type::Int | Type::Bool | Type::Float => HeapCategory::NeverHeap,
             Type::String => HeapCategory::AlwaysHeap,
@@ -81,10 +85,14 @@ impl HeapCategory {
     /// - All nullary -> `NeverHeap`
     /// - All data -> `AlwaysHeap`
     /// - Mixed -> `Mixed`
-    fn classify_adt(
+    fn classify_adt<C, L>(
         fqtn: &FQTypeName,
-        symbol_tables: Option<&dashmap::DashMap<ModuleFullPath, SymbolTable>>,
-    ) -> HeapCategory {
+        symbol_tables: Option<&dashmap::DashMap<ModuleFullPath, SymbolTable<C, L>>>,
+    ) -> HeapCategory
+    where
+        C: crate::CodeStore,
+        L: crate::LinkerStore,
+    {
         // Vec is a built-in heap type (not registered via deftype).
         if fqtn.name.as_ref() == "Vec" {
             return HeapCategory::AlwaysHeap;
@@ -178,7 +186,7 @@ mod tests {
 
     /// Helper: build a DashMap with a single module containing the given TypeDefInfos.
     fn tables_with_defs(defs: Vec<TypeDefInfo>) -> dashmap::DashMap<ModuleFullPath, SymbolTable> {
-        let tables = dashmap::DashMap::new();
+        let tables: dashmap::DashMap<ModuleFullPath, SymbolTable> = dashmap::DashMap::new();
         let mut st = SymbolTable::new(ModuleFullPath::from(TEST_MOD));
         for def in defs {
             let key = Symbol::from(def.name.name.as_ref());
@@ -201,15 +209,15 @@ mod tests {
     #[test]
     fn test_primitives_never_heap() {
         assert_eq!(
-            HeapCategory::classify(&Type::Int, None),
+            HeapCategory::classify::<(), ()>(&Type::Int, None),
             HeapCategory::NeverHeap
         );
         assert_eq!(
-            HeapCategory::classify(&Type::Bool, None),
+            HeapCategory::classify::<(), ()>(&Type::Bool, None),
             HeapCategory::NeverHeap
         );
         assert_eq!(
-            HeapCategory::classify(&Type::Float, None),
+            HeapCategory::classify::<(), ()>(&Type::Float, None),
             HeapCategory::NeverHeap
         );
     }
@@ -217,7 +225,7 @@ mod tests {
     #[test]
     fn test_string_always_heap() {
         assert_eq!(
-            HeapCategory::classify(&Type::String, None),
+            HeapCategory::classify::<(), ()>(&Type::String, None),
             HeapCategory::AlwaysHeap
         );
     }
@@ -226,7 +234,7 @@ mod tests {
     fn test_fn_always_heap() {
         let fn_ty = Type::Fn(vec![Type::Int], Box::new(Type::Int));
         assert_eq!(
-            HeapCategory::classify(&fn_ty, None),
+            HeapCategory::classify::<(), ()>(&fn_ty, None),
             HeapCategory::AlwaysHeap
         );
     }
@@ -234,7 +242,7 @@ mod tests {
     #[test]
     fn test_var_mixed() {
         assert_eq!(
-            HeapCategory::classify(&Type::Var(0), None),
+            HeapCategory::classify::<(), ()>(&Type::Var(0), None),
             HeapCategory::Mixed
         );
     }
@@ -245,7 +253,7 @@ mod tests {
     fn test_adt_without_tables_is_mixed() {
         let color = Type::ADT(test_fqtn("Color"), vec![]);
         assert_eq!(
-            HeapCategory::classify(&color, None),
+            HeapCategory::classify::<(), ()>(&color, None),
             HeapCategory::Mixed,
         );
     }
@@ -254,7 +262,7 @@ mod tests {
     fn test_parameterized_adt_without_tables_is_mixed() {
         let option_int = Type::ADT(test_fqtn("Option"), vec![Type::Int]);
         assert_eq!(
-            HeapCategory::classify(&option_int, None),
+            HeapCategory::classify::<(), ()>(&option_int, None),
             HeapCategory::Mixed,
         );
     }
@@ -367,7 +375,7 @@ mod tests {
 
     #[test]
     fn test_unknown_adt_with_empty_tables_is_mixed() {
-        let tables = dashmap::DashMap::new();
+        let tables: dashmap::DashMap<ModuleFullPath, SymbolTable> = dashmap::DashMap::new();
         let unknown = Type::ADT(test_fqtn("Unknown"), vec![]);
         assert_eq!(
             HeapCategory::classify(&unknown, Some(&tables)),
@@ -384,14 +392,14 @@ mod tests {
             vec![Type::Int],
         );
         assert_eq!(
-            HeapCategory::classify(&vec_int, None),
+            HeapCategory::classify::<(), ()>(&vec_int, None),
             HeapCategory::AlwaysHeap,
         );
     }
 
     #[test]
     fn test_vec_always_heap_with_tables() {
-        let tables = dashmap::DashMap::new();
+        let tables: dashmap::DashMap<ModuleFullPath, SymbolTable> = dashmap::DashMap::new();
         let vec_str = Type::ADT(
             FQTypeName::new(ModuleFullPath::from("primitives"), TypeName::from("Vec")),
             vec![Type::String],
@@ -409,7 +417,7 @@ mod tests {
             vec![Type::Var(0)],
         );
         assert_eq!(
-            HeapCategory::classify(&vec_var, None),
+            HeapCategory::classify::<(), ()>(&vec_var, None),
             HeapCategory::AlwaysHeap,
         );
     }

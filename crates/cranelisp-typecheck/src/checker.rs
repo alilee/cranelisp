@@ -125,7 +125,17 @@ impl CheckState {
 ///
 /// Multiple workers can hold `TypeCheckEnv` references concurrently
 /// (it is `Send + Sync`). Each worker has its own `CheckState` on the stack.
-pub struct TypeCheckEnv<'a> {
+// Sprint 58 Wave 3b (Decision 35 / 32): generic over `C: CodeStore` and
+// `L: LinkerStore`. Defaults to `<(), ()>` so existing call sites within
+// typecheck need no change; the integration layer instantiates with
+// `<Code, ()>` (its `SessionSymbolTable` flavour). Typecheck's own code
+// never reads or writes the `code` field — the parameters propagate as
+// opaque type variables.
+pub struct TypeCheckEnv<'a, C = (), L = ()>
+where
+    C: cranelisp_types::CodeStore,
+    L: cranelisp_types::LinkerStore,
+{
     /// Monotonic counter for fresh type variable IDs.
     ///
     /// `AtomicU32` enables lock-free allocation from concurrent `check()` calls.
@@ -135,18 +145,22 @@ pub struct TypeCheckEnv<'a> {
     /// Behind `DashMap` for concurrent access from multiple worker threads.
     /// Each worker typechecks a different module — DashMap's per-shard locking
     /// allows concurrent reads/writes to different modules without contention.
-    pub(crate) modules: &'a DashMap<ModuleFullPath, SymbolTable>,
+    pub(crate) modules: &'a DashMap<ModuleFullPath, SymbolTable<C, L>>,
 }
 
 
-impl<'a> TypeCheckEnv<'a> {
+impl<'a, C, L> TypeCheckEnv<'a, C, L>
+where
+    C: cranelisp_types::CodeStore,
+    L: cranelisp_types::LinkerStore,
+{
     /// Create a new TypeCheckEnv from borrowed shared state.
     ///
     /// The caller owns the `DashMap` and `AtomicU32`; this struct just
     /// borrows them. Use `register_builtins()` (free function) to seed
     /// the modules map before constructing the env.
     pub fn new(
-        modules: &'a DashMap<ModuleFullPath, SymbolTable>,
+        modules: &'a DashMap<ModuleFullPath, SymbolTable<C, L>>,
         next_id: &'a AtomicU32,
     ) -> Self {
         TypeCheckEnv { modules, next_id }
@@ -162,7 +176,7 @@ impl<'a> TypeCheckEnv<'a> {
     pub(crate) fn current_symbol_table(
         &self,
         state: &CheckState,
-    ) -> dashmap::mapref::one::Ref<'_, ModuleFullPath, SymbolTable> {
+    ) -> dashmap::mapref::one::Ref<'_, ModuleFullPath, SymbolTable<C, L>> {
         self.modules
             .get(&state.current_module)
             .unwrap_or_else(|| unreachable!("invariant: current_module always exists in modules map"))
@@ -175,7 +189,7 @@ impl<'a> TypeCheckEnv<'a> {
     pub(crate) fn current_symbol_table_mut(
         &self,
         state: &CheckState,
-    ) -> dashmap::mapref::one::RefMut<'_, ModuleFullPath, SymbolTable> {
+    ) -> dashmap::mapref::one::RefMut<'_, ModuleFullPath, SymbolTable<C, L>> {
         self.modules
             .get_mut(&state.current_module)
             .unwrap_or_else(|| unreachable!("invariant: current_module always exists in modules map"))
@@ -191,7 +205,9 @@ impl<'a> TypeCheckEnv<'a> {
         if self.modules.contains_key(path) {
             return;
         }
-        let mut table = SymbolTable::new(path.clone());
+        // Use the generic `new_with_params` constructor so the table
+        // matches the parameterised flavour `<C, L>` of `self.modules`.
+        let mut table = SymbolTable::<C, L>::new_with_params(path.clone());
 
         // Seed with special forms from user (the root module at init):
         // - Special forms: language keywords, universally available (spec §11.1)
@@ -200,7 +216,7 @@ impl<'a> TypeCheckEnv<'a> {
         //
         // Clone-and-drop discipline: collect entries, drop guard, then insert.
         let user_path = ModuleFullPath::from("user");
-        let root_entries: Vec<(Symbol, ModuleEntry)> = self.modules.get(&user_path)
+        let root_entries: Vec<(Symbol, ModuleEntry<C>)> = self.modules.get(&user_path)
             .map(|guard| {
                 guard.all_symbols()
                     .filter(|(_name, entry)| {
@@ -309,7 +325,7 @@ impl<'a> TypeCheckEnv<'a> {
     }
 
     /// Access the per-module symbol tables (for display, introspection).
-    pub fn modules(&self) -> &DashMap<ModuleFullPath, SymbolTable> {
+    pub fn modules(&self) -> &DashMap<ModuleFullPath, SymbolTable<C, L>> {
         self.modules
     }
 
@@ -333,13 +349,13 @@ impl<'a> TypeCheckEnv<'a> {
     /// Look up a specific module's symbol table by path.
     /// Returns a DashMap read guard that derefs to `SymbolTable`.
     /// Used by `/imports` to resolve type signatures of imported symbols.
-    pub fn module_table(&self, path: &ModuleFullPath) -> Option<dashmap::mapref::one::Ref<'_, ModuleFullPath, SymbolTable>> {
+    pub fn module_table(&self, path: &ModuleFullPath) -> Option<dashmap::mapref::one::Ref<'_, ModuleFullPath, SymbolTable<C, L>>> {
         self.modules.get(path)
     }
 
     /// Look up a specific module's symbol table by path, returning an owned clone.
     /// Used by callers that need to own the symbol table (e.g., serialization).
-    pub fn module_table_cloned(&self, path: &ModuleFullPath) -> Option<SymbolTable> {
+    pub fn module_table_cloned(&self, path: &ModuleFullPath) -> Option<SymbolTable<C, L>> {
         self.modules.get(path).map(|guard| guard.clone())
     }
 
@@ -355,7 +371,7 @@ impl<'a> TypeCheckEnv<'a> {
     /// Get a reference to the underlying modules DashMap.
     /// Used by the integration layer to construct a `CompilationEnv` that
     /// resolves GOT slots by reading symbol tables directly.
-    pub fn modules_ref(&self) -> &dashmap::DashMap<ModuleFullPath, SymbolTable> {
+    pub fn modules_ref(&self) -> &dashmap::DashMap<ModuleFullPath, SymbolTable<C, L>> {
         self.modules
     }
 
@@ -469,7 +485,7 @@ impl<'a> TypeCheckEnv<'a> {
     /// ensuring no DashMap guard is held during chain following.
     fn extract_scheme_from_entry_owned(
         &self,
-        entry: &ModuleEntry,
+        entry: &ModuleEntry<C>,
         depth: usize,
     ) -> Option<Scheme> {
         if depth > IMPORT_CHAIN_DEPTH_LIMIT {
@@ -508,7 +524,7 @@ impl<'a> TypeCheckEnv<'a> {
 
     /// Resolve a name in the current module to its terminal `ModuleEntry`,
     /// following Import/Reexport chains. Returns an owned clone.
-    pub(crate) fn resolve_entry_in_current_module(&self, state: &CheckState, name: &str) -> Option<ModuleEntry> {
+    pub(crate) fn resolve_entry_in_current_module(&self, state: &CheckState, name: &str) -> Option<ModuleEntry<C>> {
         let entry = {
             let guard = self.modules.get(&state.current_module)?;
             guard.get(name)?.clone()
@@ -520,9 +536,9 @@ impl<'a> TypeCheckEnv<'a> {
     /// Returns an owned clone. Clone-and-drop discipline applied at each step.
     pub(crate) fn resolve_to_terminal_entry_owned(
         &self,
-        entry: &ModuleEntry,
+        entry: &ModuleEntry<C>,
         depth: usize,
-    ) -> Option<ModuleEntry> {
+    ) -> Option<ModuleEntry<C>> {
         if depth > IMPORT_CHAIN_DEPTH_LIMIT {
             return None;
         }
@@ -780,7 +796,7 @@ impl<'a> TypeCheckEnv<'a> {
 
             // Clone-and-drop discipline: collect imports from source guard,
             // drop it, then acquire write guard on current module.
-            let imports_to_add: Vec<(Symbol, ModuleEntry)> = {
+            let imports_to_add: Vec<(Symbol, ModuleEntry<C>)> = {
                 let source_guard = match self.modules.get(&spec.module_path) {
                     Some(g) => g,
                     None => {
@@ -862,7 +878,7 @@ impl<'a> TypeCheckEnv<'a> {
 
             // Clone-and-drop discipline: collect reexports from source guard,
             // drop it, then acquire write guard on current module.
-            let reexports: Vec<(Symbol, ModuleEntry)> = {
+            let reexports: Vec<(Symbol, ModuleEntry<C>)> = {
                 let source_guard = match self.modules.get(&resolved_path) {
                     Some(g) => g,
                     None => unreachable!("module existence verified above"),
@@ -904,11 +920,11 @@ impl<'a> TypeCheckEnv<'a> {
     fn collect_specific_reexports(
         &self,
         state: &CheckState,
-        source_table: &SymbolTable,
+        source_table: &SymbolTable<C, L>,
         names: &[Symbol],
         module_path: &ModuleFullPath,
         span: Span,
-    ) -> Result<Vec<(Symbol, ModuleEntry)>, CranelispError> {
+    ) -> Result<Vec<(Symbol, ModuleEntry<C>)>, CranelispError> {
         let mut result = Vec::new();
         for name in names {
             match source_table.get(name.as_ref()) {
@@ -954,10 +970,10 @@ impl<'a> TypeCheckEnv<'a> {
     /// source module for re-export (member glob).
     fn collect_member_glob_reexports(
         &self,
-        source_table: &SymbolTable,
+        source_table: &SymbolTable<C, L>,
         parent: &Symbol,
         module_path: &ModuleFullPath,
-    ) -> Vec<(Symbol, ModuleEntry)> {
+    ) -> Vec<(Symbol, ModuleEntry<C>)> {
         let trait_name = cranelisp_types::TraitName::from(parent.as_ref());
         let mut result = Vec::new();
         for (name, entry) in source_table.public_symbols() {
@@ -993,11 +1009,11 @@ impl<'a> TypeCheckEnv<'a> {
     fn collect_specific_imports(
         &self,
         state: &CheckState,
-        source_table: &SymbolTable,
+        source_table: &SymbolTable<C, L>,
         names: &[Symbol],
         module_path: &ModuleFullPath,
         span: Span,
-    ) -> Result<Vec<(Symbol, ModuleEntry)>, CranelispError> {
+    ) -> Result<Vec<(Symbol, ModuleEntry<C>)>, CranelispError> {
         let mut result = Vec::new();
         for name in names {
             match source_table.get(name.as_ref()) {
@@ -1043,10 +1059,10 @@ impl<'a> TypeCheckEnv<'a> {
     /// source module (member glob import).
     fn collect_member_glob_imports(
         &self,
-        source_table: &SymbolTable,
+        source_table: &SymbolTable<C, L>,
         parent: &Symbol,
         module_path: &ModuleFullPath,
-    ) -> Vec<(Symbol, ModuleEntry)> {
+    ) -> Vec<(Symbol, ModuleEntry<C>)> {
         let trait_name = cranelisp_types::TraitName::from(parent.as_ref());
         let mut result = Vec::new();
         for (name, entry) in source_table.public_symbols() {
@@ -1225,7 +1241,7 @@ impl<'a> TypeCheckEnv<'a> {
     ///
     /// Returns the removed symbol table, or None if the module was not found.
     /// Used during module hot-reload (repl/spec.md §14.2).
-    pub fn remove_module(&self, module_path: &ModuleFullPath) -> Option<SymbolTable> {
+    pub fn remove_module(&self, module_path: &ModuleFullPath) -> Option<SymbolTable<C, L>> {
         let (_, table) = self.modules.remove(module_path)?;
 
         // Unregister traits defined by this module.
@@ -1253,7 +1269,7 @@ impl<'a> TypeCheckEnv<'a> {
     ///
     /// Used after `remove_module` to re-establish the module path before
     /// recompilation populates it with fresh definitions.
-    pub fn insert_module(&self, table: SymbolTable) {
+    pub fn insert_module(&self, table: SymbolTable<C, L>) {
         self.modules.insert(table.path.clone(), table);
     }
 
@@ -1267,7 +1283,7 @@ impl<'a> TypeCheckEnv<'a> {
     /// Trait method resolution uses `trait_origin` on `ModuleEntry::Def` entries.
     ///
     /// Used by the pipeline's cache-hit path (src/pipeline.rs).
-    pub fn restore_cached_module(&self, table: SymbolTable) {
+    pub fn restore_cached_module(&self, table: SymbolTable<C, L>) {
         let path = table.path.clone();
 
         // Advance next_id past any type variable IDs used in the cached
@@ -1284,7 +1300,7 @@ impl<'a> TypeCheckEnv<'a> {
     /// Scans all schemes (including constraint vars) in the table and ensures
     /// `next_id` is strictly greater than any ID found. This prevents ID
     /// collisions between cached schemes and freshly created type variables.
-    fn advance_next_id_past_table(&self, table: &SymbolTable) {
+    fn advance_next_id_past_table(&self, table: &SymbolTable<C, L>) {
         let mut max_id: Option<TypeId> = None;
 
         for (_name, entry) in table.all_symbols() {
@@ -1412,10 +1428,14 @@ impl<'a> TypeCheckEnv<'a> {
 // ---------------------------------------------------------------------------
 
 /// Collect all public symbols from a source module as glob imports.
-fn collect_glob_imports(
-    source_table: &SymbolTable,
+fn collect_glob_imports<C, L>(
+    source_table: &SymbolTable<C, L>,
     module_path: &ModuleFullPath,
-) -> Vec<(Symbol, ModuleEntry)> {
+) -> Vec<(Symbol, ModuleEntry<C>)>
+where
+    C: cranelisp_types::CodeStore,
+    L: cranelisp_types::LinkerStore,
+{
     source_table
         .public_symbols()
         .map(|(name, _entry)| {
@@ -1429,10 +1449,14 @@ fn collect_glob_imports(
 }
 
 /// Collect all public names from a module as Reexport entries (glob re-export).
-fn collect_glob_reexports(
-    source_table: &SymbolTable,
+fn collect_glob_reexports<C, L>(
+    source_table: &SymbolTable<C, L>,
     module_path: &ModuleFullPath,
-) -> Vec<(Symbol, ModuleEntry)> {
+) -> Vec<(Symbol, ModuleEntry<C>)>
+where
+    C: cranelisp_types::CodeStore,
+    L: cranelisp_types::LinkerStore,
+{
     source_table
         .public_symbols()
         .map(|(name, _entry)| {
@@ -1448,10 +1472,14 @@ fn collect_glob_reexports(
 /// Insert import entries into a symbol table, marking same-name entries from
 /// different sources as ambiguous (spec §8.6.4). Same-source duplicates are
 /// allowed and silently deduplicated.
-fn insert_imports_detecting_ambiguity(
-    table: &mut SymbolTable,
-    imports: Vec<(Symbol, ModuleEntry)>,
-) {
+fn insert_imports_detecting_ambiguity<C, L>(
+    table: &mut SymbolTable<C, L>,
+    imports: Vec<(Symbol, ModuleEntry<C>)>,
+)
+where
+    C: cranelisp_types::CodeStore,
+    L: cranelisp_types::LinkerStore,
+{
     for (name, new_entry) in imports {
         if let Some(existing) = table.get(name.as_ref()) {
             // Same-source duplicate is NOT ambiguous (spec §8.6.4)
@@ -1494,7 +1522,7 @@ fn insert_imports_detecting_ambiguity(
             if both_indirect {
                 // If either source is from "user" or "primitives" (builtin
                 // seeding), prefer the existing entry — it's canonical.
-                let is_seeded_source = |entry: &ModuleEntry| -> bool {
+                let is_seeded_source = |entry: &ModuleEntry<C>| -> bool {
                     match entry {
                         ModuleEntry::Import { source }
                         | ModuleEntry::Reexport { source } => {
@@ -1674,7 +1702,7 @@ impl TestFixture {
 
     /// Clear transient state (test convenience).
     pub fn clear_transient_state(&mut self) {
-        TypeCheckEnv::clear_transient_state(&mut self.state);
+        TypeCheckEnv::<()>::clear_transient_state(&mut self.state);
     }
 
     /// Resolve primitive JIT name (test convenience).

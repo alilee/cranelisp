@@ -321,7 +321,14 @@ pub fn emit_alloc<M: Module>(
 // ---------------------------------------------------------------------------
 
 /// Check if a type has mixed nullary and data constructors (for match discrimination).
-pub fn is_mixed_adt(symbol_tables: &DashMap<ModuleFullPath, SymbolTable>, fqtn: &FQTypeName) -> bool {
+pub fn is_mixed_adt<C, L>(
+    symbol_tables: &DashMap<ModuleFullPath, SymbolTable<C, L>>,
+    fqtn: &FQTypeName,
+) -> bool
+where
+    C: cranelisp_types::CodeStore,
+    L: cranelisp_types::LinkerStore,
+{
     symbol_tables.get(&fqtn.module)
         .and_then(|table| {
             let type_key = Symbol::from(fqtn.name.as_ref());

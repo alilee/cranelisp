@@ -181,6 +181,14 @@ fn register_intrinsics(builder: &mut JITBuilder) {
 pub(crate) static JIT_FREE_MEMORY_CALL_COUNT: std::sync::atomic::AtomicU64 =
     std::sync::atomic::AtomicU64::new(0);
 
+/// Public read accessor for the `Jit::drop` reclaim counter. Lets the
+/// integration layer's reclaim tests (Decision 31 Scenario 2 verification
+/// in `src/code.rs::tests`) assert the underlying free path actually
+/// fired without exposing the static directly.
+pub fn jit_free_memory_call_count() -> u64 {
+    JIT_FREE_MEMORY_CALL_COUNT.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 /// JIT module wrapper. Owns the Cranelift JIT module and provides
 /// function compilation and execution services.
 ///
@@ -463,11 +471,15 @@ impl Jit {
     /// The `compile_ctx` bundles all environment needed for codegen: function IDs,
     /// arities, GOT state, and intrinsic IDs. Construct it at the call site using
     /// `Jit::build_compile_context`.
-    pub fn compile_defn(
+    pub fn compile_defn<C, L>(
         &mut self,
         defn: &Defn,
-        compile_ctx: CompileContext<'_>,
-    ) -> Result<CompileArtifacts, CranelispError> {
+        compile_ctx: CompileContext<'_, C, L>,
+    ) -> Result<CompileArtifacts, CranelispError>
+    where
+        C: cranelisp_types::CodeStore,
+        L: cranelisp_types::LinkerStore,
+    {
         self.ctx.func.signature = self.build_sig(defn.params().len());
         self.ctx.func.name =
             cranelift::codegen::ir::UserFuncName::testcase(defn.name.as_bytes());
@@ -563,13 +575,20 @@ impl Jit {
     ///
     /// `symbol_tables` is the shared DashMap of per-module symbol tables.
     /// `current_module` identifies the module being compiled.
-    pub fn build_compile_context<'a>(
+    pub fn build_compile_context<'a, C, L>(
         &self,
         func_ids: &'a HashMap<Symbol, FuncId>,
         func_arities: &'a HashMap<Symbol, usize>,
-        symbol_tables: &'a dashmap::DashMap<cranelisp_types::ModuleFullPath, cranelisp_types::SymbolTable>,
+        symbol_tables: &'a dashmap::DashMap<
+            cranelisp_types::ModuleFullPath,
+            cranelisp_types::SymbolTable<C, L>,
+        >,
         current_module: cranelisp_types::ModuleFullPath,
-    ) -> CompileContext<'a> {
+    ) -> CompileContext<'a, C, L>
+    where
+        C: cranelisp_types::CodeStore,
+        L: cranelisp_types::LinkerStore,
+    {
         CompileContext {
             func_ids,
             func_arities,

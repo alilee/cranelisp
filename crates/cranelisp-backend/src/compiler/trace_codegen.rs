@@ -15,7 +15,11 @@ use cranelisp_types::{CranelispError, Expr, Span};
 
 use super::{FnCompiler, TracedFnInfo};
 
-impl<'a, M: Module> FnCompiler<'a, M> {
+impl<'a, M: Module, C, L> FnCompiler<'a, M, C, L>
+where
+    C: cranelisp_types::CodeStore,
+    L: cranelisp_types::LinkerStore,
+{
     /// Discard a body result by decrementing its RC if it is heap-allocated.
     /// Used by both `compile_trace` and `compile_trace_no_swap` to drop the
     /// body value (the trace result is the Trace ADT, not the body's value).

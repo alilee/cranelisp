@@ -222,7 +222,7 @@ pub fn load_platform_dll(
 /// `ModuleEntry::Def` for each platform function. Returns the list of
 /// (jit_name, function_pointer) pairs for JIT symbol registration.
 pub fn register_platform_in_tc(
-    symbol_tables: &dashmap::DashMap<cranelisp_types::ModuleFullPath, cranelisp_types::SymbolTable>,
+    symbol_tables: &dashmap::DashMap<cranelisp_types::ModuleFullPath, crate::code::SessionSymbolTable>,
     next_type_id: &std::sync::atomic::AtomicU32,
     _check_state: &mut cranelisp_typecheck::CheckState,
     platform: &LoadedPlatform,
@@ -457,7 +457,7 @@ pub fn extract_platform_name(sexp: &Sexp) -> Option<(String, Span)> {
 /// Returns the loaded platform (must be kept alive) and JIT symbols to register.
 #[allow(clippy::type_complexity, clippy::too_many_arguments)]
 pub fn load_and_register_platform(
-    symbol_tables: &dashmap::DashMap<cranelisp_types::ModuleFullPath, cranelisp_types::SymbolTable>,
+    symbol_tables: &dashmap::DashMap<cranelisp_types::ModuleFullPath, crate::code::SessionSymbolTable>,
     next_type_id: &std::sync::atomic::AtomicU32,
     check_state: &mut cranelisp_typecheck::CheckState,
     platform_name: &str,
@@ -681,7 +681,7 @@ mod tests {
         let symbol_tables = dashmap::DashMap::new();
         let next_type_id = std::sync::atomic::AtomicU32::new(0);
         let user_mod = ModuleFullPath::from("user");
-        symbol_tables.insert(user_mod.clone(), cranelisp_types::SymbolTable::new(user_mod.clone()));
+        symbol_tables.insert(user_mod.clone(), crate::code::SessionSymbolTable::new_with_params(user_mod.clone()));
         cranelisp_typecheck::register_builtins(&symbol_tables, &next_type_id);
         let mut check_state = cranelisp_typecheck::CheckState::new(user_mod);
         let (platform, jit_symbols) = load_and_register_platform(
@@ -772,7 +772,7 @@ mod tests {
         let symbol_tables = dashmap::DashMap::new();
         let next_type_id = std::sync::atomic::AtomicU32::new(0);
         let user_mod = ModuleFullPath::from("user");
-        symbol_tables.insert(user_mod.clone(), cranelisp_types::SymbolTable::new(user_mod.clone()));
+        symbol_tables.insert(user_mod.clone(), crate::code::SessionSymbolTable::new_with_params(user_mod.clone()));
         let mut check_state = cranelisp_typecheck::CheckState::new(user_mod);
         // Try to load with wrong name — manifest says "stdio" but we say "wrong-name"
         let result = load_and_register_platform(

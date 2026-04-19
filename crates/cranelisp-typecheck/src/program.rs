@@ -188,10 +188,14 @@ pub(crate) fn annotate_defn_from_maps(
 /// Used by both `merge_form_result` (eager write so the scheduler can read callees
 /// immediately) and `finalize_check_result` (canonical final write that includes
 /// any edges from post-passes).
-fn write_callees_to_module_entries(
-    sym_table: &mut SymbolTable,
+fn write_callees_to_module_entries<C, L>(
+    sym_table: &mut SymbolTable<C, L>,
     edges: &[(Symbol, FQSymbol)],
-) {
+)
+where
+    C: cranelisp_types::CodeStore,
+    L: cranelisp_types::LinkerStore,
+{
     let mut by_caller: HashMap<Symbol, Vec<FQSymbol>> = HashMap::new();
     for (caller, callee) in edges {
         by_caller
@@ -435,7 +439,7 @@ fn types_compatible(a: &Type, b: &Type) -> bool {
     }
 }
 
-impl TypeCheckEnv<'_> {
+impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEnv<'_, C, L> {
     // =================================================================
     // Per-Form Typecheck API (v4 pipeline)
     // =================================================================
@@ -2177,17 +2181,35 @@ impl TypeCheckEnv<'_> {
         let fn_type = Type::Fn(param_types.clone(), Box::new(ret_ty.clone()));
         let scheme = mono(fn_type);
 
-        // Upsert: preserve existing got_slot and ast if the symbol is being redefined
-        // (REPL Additive mode, module reload, or trait impl method re-registration).
-        // New symbols get a fresh slot. Preserving ast prevents double-checking of
-        // trait impl methods that were already type-checked by check_impl_method.
+        // Upsert: preserve existing got_slot, ast, AND code if the symbol is being
+        // redefined (REPL Additive mode, module reload, or trait impl method
+        // re-registration). New symbols get a fresh slot. Preserving ast prevents
+        // double-checking of trait impl methods that were already type-checked by
+        // check_impl_method.
+        //
+        // Sprint 58 Wave 3b (Decision 35 / 31): preserving `code` is load-bearing
+        // for failed-redefinition recovery. Pre-Wave-3b, `Arc<Jit>` lived in
+        // `SharedState.kept_jits` (session-level); replacing the entry was a
+        // pointer-swap and the JIT pages stayed alive at session level. Wave 3b
+        // moves `Arc<Jit>` retention onto `Code::Jit` per-entry — replacing the
+        // entry with `code: None` drops the Arc, and if no other entry referenced
+        // it, the Jit's `Drop` calls `free_memory()` and the GOT slot's old
+        // pointer (still in place during typecheck) becomes invalid. If the
+        // redefinition then fails (type error), snapshot/restore reverts the
+        // entry's keys but the GOT slot is already pointing at freed pages —
+        // a subsequent call to the original defn segfaults.
+        //
+        // Carrying the existing `code` forward through registration preserves
+        // the Arc; on success, codegen overwrites it with the new `Code::Jit`;
+        // on failure, restore keeps the carried-forward (original) `code`,
+        // and the GOT slot remains valid because the Arc never dropped.
         let mut st = self.current_symbol_table_mut(state);
-        let (existing_slot, existing_ast) = st.get(defn.name.as_ref())
+        let (existing_slot, existing_ast, existing_code) = st.get(defn.name.as_ref())
             .map(|e| match e {
-                ModuleEntry::Def { got_slot, ast, .. } => (*got_slot, ast.clone()),
-                _ => (None, None),
+                ModuleEntry::Def { got_slot, ast, code, .. } => (*got_slot, ast.clone(), code.clone()),
+                _ => (None, None, None),
             })
-            .unwrap_or((None, None));
+            .unwrap_or((None, None, None));
         let got_slot = Some(existing_slot.unwrap_or_else(|| st.allocate_got_slot()));
 
         st.insert(
@@ -2204,7 +2226,7 @@ impl TypeCheckEnv<'_> {
                 got_slot,
                 trait_origin: None,
                 ast: existing_ast,
-                code: None,
+                code: existing_code,
                 platform_fn_ptr: None,
             },
         );
@@ -3830,7 +3852,7 @@ mod tests {
         };
 
         let mut calls = Vec::new();
-        TypeCheckEnv::collect_constrained_calls(&expr, &constrained, &mut calls);
+        TypeCheckEnv::<()>::collect_constrained_calls(&expr, &constrained, &mut calls);
 
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0].0.as_ref(), "add");
@@ -3859,7 +3881,7 @@ mod tests {
         };
 
         let mut calls = Vec::new();
-        TypeCheckEnv::collect_constrained_calls(&expr, &constrained, &mut calls);
+        TypeCheckEnv::<()>::collect_constrained_calls(&expr, &constrained, &mut calls);
 
         assert!(calls.is_empty());
     }
@@ -3897,7 +3919,7 @@ mod tests {
         };
 
         let mut calls = Vec::new();
-        TypeCheckEnv::collect_constrained_calls(&expr, &constrained, &mut calls);
+        TypeCheckEnv::<()>::collect_constrained_calls(&expr, &constrained, &mut calls);
 
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0].0.as_ref(), "add");
@@ -3943,7 +3965,7 @@ mod tests {
         };
 
         let mut calls = Vec::new();
-        TypeCheckEnv::collect_constrained_calls(&expr, &constrained, &mut calls);
+        TypeCheckEnv::<()>::collect_constrained_calls(&expr, &constrained, &mut calls);
 
         assert_eq!(calls.len(), 2, "should find calls in both branches");
     }

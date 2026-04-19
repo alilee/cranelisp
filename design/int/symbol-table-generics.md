@@ -1,8 +1,33 @@
 # Symbol-Table Generics Activation (Step 5c)
 
-Strategy doc for the ~182-call-site sweep that activates the `SymbolTable<C: CodeStore, L: LinkerStore>` parameterisation, places `Arc<Jit>` on `ModuleEntry::Def.code`, and dissolves `SharedState.kept_jits` for Jit retention. This closes G12 and completes Decision 31 Scenario 2 (per-redefinition JIT reclaim).
+Strategy doc for the call-site sweep that activates the `SymbolTable<C: CodeStore, L: LinkerStore>` parameterisation, places `Arc<Jit>` on `ModuleEntry::Def.code`, and dissolves `SharedState.kept_jits` for Jit retention. This closes G12 and completes Decision 31 Scenario 2 (per-redefinition JIT reclaim).
 
-Spec anchor: `pipeline-v4.md` §9.1 (parameterised `SymbolTable`). Decisions 25 (compiled code on entry), 31 (one `JITModule` per compile batch; `Arc<Jit>` on `ModuleEntry::Def.code`), 32 (`CodeStore` / `LinkerStore` empty marker traits).
+Spec anchor: `pipeline-v4.md` §9.1 (parameterised `SymbolTable`). Decisions 25 (compiled code on entry), 31 (one `JITModule` per compile batch; `Arc<Jit>` on `ModuleEntry::Def.code`), 32 (`CodeStore` / `LinkerStore` empty marker traits), 35 (`Code` enum location + Layer 2 Option B + `kept_jits` / `kept_linkers` dissolution).
+
+## Wave 3b implementation outcome (Sprint 58)
+
+**Landed**:
+
+1. `Code` enum at `src/code.rs` per Decision 35:
+   - Variants: `Code::Jit { jit: Arc<cranelisp_backend::jit::Jit>, ptr: *const u8 }`,
+     `Code::Linker { linker: Arc<cranelisp_backend::cache::Linker>, ptr: *const u8 }`.
+   - `pub fn ptr(&self) -> *const u8` accessor — uniform across both variants.
+   - Manual `Debug` impl (Jit/Linker don't impl Debug); auto-derived `Clone`; `unsafe impl Send + Sync`.
+   - `pub type SessionSymbolTable = SymbolTable<Code, ()>` and `pub type SessionModuleEntry = ModuleEntry<Code>` aliases.
+
+2. `pub mod code` removed from `cranelisp-types/src/lib.rs`; the old pointer-only `cranelisp_types::Code` struct deleted (Decision 35: integration layer owns `Code`).
+
+3. `compile_to_module<M, C, L>` parameterised over the symbol-table flavour. Per Decision 35 Layer 2 Option B, the function returns `CompilationResult.code_ptrs: HashMap<Symbol, *const u8>`; the integration-layer `inline_jit_codegen_for_names` (in `src/worker.rs`) constructs `Code::Jit { jit, ptr }` per-entry from the returned pointers. Backend itself never names `Code`.
+
+4. `SharedState.kept_jits` and `SharedState.kept_linkers` deleted. Per-entry `Code::Jit { jit: Arc::clone(&jit_arc), ptr }` (cache-hit: `Code::Linker { linker: Arc::clone(&linker_arc), ptr }`) is the new retention root; `Arc::strong_count` drops as entries evict, and the underlying `Jit::Drop` (calling `unsafe JITModule::free_memory()`) fires when the last clone drops. `kept_dlls` (platform DLLs) is unchanged — orthogonal to Step 5c.
+
+5. `register_defn_signature` (in `cranelisp-typecheck/src/program.rs`) extended to preserve the `code` field on REPL-redefinition upsert. Pre-Wave-3b, replacing the entry with `code: None` was harmless because the `Arc<Jit>` lived in the session-level `kept_jits` pool. Post-Wave-3b, the same replacement would drop the Arc and free the JIT pages mid-typecheck — leaving the GOT slot pointing at freed memory if the redefinition then fails. Carrying the existing `code` forward through registration preserves the Arc; on success, codegen overwrites with the new `Code::Jit`; on failure, snapshot/restore keeps the carried-forward (original) code, and the GOT slot remains valid.
+
+6. **Out-of-scope addendum**: typecheck and types crates *were* touched, contrary to the original CLAUDE-prompt expectation that they should "already work via default propagation". The widespread `TypeCheckEnv<'_>` → `TypeCheckEnv<'_, C, L>` parameterisation, `CompileContext<'a, C, L>`, and helper-function generic propagation (`HeapCategory::classify`, `is_mixed_adt`, `display::*`, etc.) was necessary because the typecheck crate's accessors and helpers are pinned to `<()>` by default; passing the integration layer's `<Code, ()>` flavour required generics-through-the-stack. The `CodeStore` and `LinkerStore` traits gained a `Clone` super-bound to enable the `code.clone()` carry-forward in `register_defn_signature` and the `serialise_meta`/`write_meta` cache-write path. `SymbolTable<C, L>` gained a generic `new_with_params(path)` constructor for callers that need `<Code, ()>` directly. `SymbolTable<()>` gained an `into_concrete<C, L>()` conversion for the cache-restore path (deserialise yields `<()>`, install needs `<Code, ()>`).
+
+7. **Test count delta**: 1717 total, 1712 pass, 5 fail (the same pre-existing baseline as Wave 2 close). Newly-introduced unit tests in `src/code.rs` cover (a) Arc reclaim via `Arc::strong_count` drop chain (Decision 31 Scenario 2 reclaim primitive), (b) `Code::Linker` constructibility, (c) `SessionSymbolTable` concrete-type choice (compile-time `_requires_code_store::<Code>()` assertion), (d) mixed-lineage table (both `Code::Jit` and `Code::Linker` coexist), (e) regression-guard scanning `src/session_v4.rs` for residual `kept_jits`/`kept_linkers` references.
+
+The Layer 1/2 sweep counts in §3 below are *pre-implementation estimates*; the actual sweep was wider than estimated for typecheck (~30 sites parameterised) but matched expectations elsewhere.
 
 ## 1. Problem Statement
 

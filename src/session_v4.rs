@@ -14,12 +14,13 @@ use std::sync::{Arc, Mutex};
 use cranelisp_types::{
     CheckResult, CodegenBehaviour, CranelispError,
     DefKind, FQSymbol, MacroClauseInfo, MacroParam, ModuleEntry, ModuleFullPath,
-    ModuleStrategy, Sexp, Span, Symbol, SymbolTable, TopLevel,
+    ModuleStrategy, Sexp, Span, Symbol, TopLevel,
     TraitName, Type, TypeName, Warning,
 };
 
 use cranelisp_typecheck::{CheckState, TypeCheckEnv};
 
+use crate::code::{Code, SessionSymbolTable};
 use crate::platform::LoadedPlatform;
 use crate::scheduler::CompileScheduler;
 use crate::worker::ModuleCompiler;
@@ -38,7 +39,7 @@ use cranelisp_backend::display::{format_type_qualified, format_scheme_display};
 /// chains) but never triggers compilation. If a macro's clauses are not
 /// compiled, returns `Ok(None)` (silently skipped).
 struct ReadOnlyMacroResolver<'a> {
-    symbol_tables: &'a dashmap::DashMap<ModuleFullPath, SymbolTable>,
+    symbol_tables: &'a dashmap::DashMap<ModuleFullPath, SessionSymbolTable>,
     current_module: ModuleFullPath,
 }
 
@@ -65,7 +66,7 @@ impl crate::expander::MacroResolver for ReadOnlyMacroResolver<'_> {
             let clause_name = Symbol::from(format!("__macro_{}_clause_{}", macro_sym, idx));
             let code_ptr = self.symbol_tables.get(&defining_module)
                 .and_then(|t| match t.get(clause_name.as_ref())? {
-                    ModuleEntry::Def { code: Some(c), .. } => Some(c.ptr),
+                    ModuleEntry::Def { code: Some(c), .. } => Some(c.ptr()),
                     _ => None,
                 });
             match code_ptr {
@@ -339,7 +340,7 @@ fn format_mem_snapshot() -> String {
 }
 
 /// Format a module entry signature for /sig display.
-fn format_entry_sig(entry: &ModuleEntry, name: &str) -> String {
+fn format_entry_sig(entry: &ModuleEntry<Code>, name: &str) -> String {
     match entry {
         ModuleEntry::Def { scheme, kind, .. } => {
             let classification = match kind.as_ref() {
@@ -549,7 +550,15 @@ pub struct SharedState {
 
     /// Per-module symbol tables. The single source of truth for per-module
     /// symbol data. Workers and session methods access this directly.
-    pub symbol_tables: dashmap::DashMap<ModuleFullPath, SymbolTable>,
+    ///
+    /// Sprint 58 Wave 3b (Decision 35): the integration layer's concrete
+    /// `C = Code` (an enum unifying `Code::Jit { Arc<Jit>, ptr }` and
+    /// `Code::Linker { Arc<Linker>, ptr }`); `L = ()` (per-symbol Linker
+    /// retention via `Code::Linker.linker` covers every case where a
+    /// Linker needs to outlive its construction). See `src/code.rs` for
+    /// the `Code` enum definition + reclaim contract; `SessionSymbolTable`
+    /// is the alias.
+    pub symbol_tables: dashmap::DashMap<ModuleFullPath, SessionSymbolTable>,
 
     /// Monotonic counter for fresh type variable IDs. Shared across all
     /// TypeCheckEnv instances for concurrent workers.
@@ -577,31 +586,19 @@ pub struct SharedState {
 
     // Sprint 57 Wave 2 G6: `codegen_products: DashMap<ModuleFullPath, CodegenProduct>`
     // was here. Deleted. Compiled code is read from
-    // `symbol_tables[module].get(name).code`. `Arc<Jit>` retention moved to
-    // `kept_jits` below; `Linker` retention moved to `kept_linkers` below.
-
-    /// JIT retention pool (Sprint 57 Wave 2 G6). Holds `Arc<Jit>` handles to
-    /// keep mmap'd executable pages alive for as long as any
-    /// `ModuleEntry::Def.code` entry references them. Replaces the per-module
-    /// `CodegenProduct.code`-embedded `Arc<Jit>` carrier — the on-entry `Code`
-    /// type in `cranelisp_types` is pointer-only (Decision 25), so the session
-    /// keeps a parallel retention pool here. Pushed to when a priority worker
-    /// finalises a JIT; never manually drained (drop is tied to session
-    /// lifetime).
-    ///
-    /// `KeptJit` is an `unsafe Send + Sync` wrapper — `cranelift_jit::JITModule`
-    /// contains non-`Sync` interior mutability (symbol cache) but the post-
-    /// finalize pages are stable and the wrapper is never read during
-    /// compilation after the `Arc` is pushed. Workers may read the vec only
-    /// to preserve lifetime; they never call mutating methods on the
-    /// contained `Jit`.
-    pub kept_jits: Mutex<Vec<KeptJit>>,
-    /// Linker retention pool (Sprint 57 Wave 2 G6). Holds `Linker` instances
-    /// for cache-hit loaded `.o` files. Keeps mmap'd code regions alive for
-    /// the session. Same purpose as `kept_jits` but for the
-    /// `cranelisp_backend::cache::Linker` lifetime. Replaces
-    /// `CodegenProduct.linker`.
-    pub kept_linkers: Mutex<Vec<cranelisp_backend::cache::Linker>>,
+    // `symbol_tables[module].get(name).code`.
+    //
+    // Sprint 58 Wave 3b (Decision 35): `kept_jits: Mutex<Vec<KeptJit>>` and
+    // `kept_linkers: Mutex<Vec<Linker>>` retention pools dissolved. The
+    // `Arc<Jit>` retention root moved per-entry onto `Code::Jit { jit, ptr }`
+    // on each `ModuleEntry::Def.code`; the `Arc<Linker>` retention root
+    // moved per-entry onto `Code::Linker { linker, ptr }`. When a REPL
+    // user redefines a defn, the prior `ModuleEntry::Def` value drops; if
+    // no other entry references the same `Arc<Jit>`, the count hits zero
+    // and `Jit::Drop` calls `unsafe JITModule::free_memory()` — the
+    // Decision 31 Scenario 2 per-redefinition reclaim primitive. See
+    // `src/code.rs` for the `Code` enum; `design/int/symbol-table-generics.md`
+    // §2.3 for the dissolution rationale.
     /// Platform DLL retention pool (Sprint 57 Wave 3 G8). Holds
     /// `LoadedPlatform` handles for the session lifetime so that every
     /// `ModuleEntry::Def.platform_fn_ptr` remains valid for as long as any
@@ -716,12 +713,18 @@ impl CompilerSession {
 
         let nice_workers = settings.nice_workers;
 
-        let symbol_tables = dashmap::DashMap::new();
+        let symbol_tables: dashmap::DashMap<ModuleFullPath, SessionSymbolTable> =
+            dashmap::DashMap::new();
         let next_type_id = AtomicU32::new(0);
         let user_module = ModuleFullPath::from("user");
 
         // Seed the "user" module before register_builtins (which registers special forms on it).
-        symbol_tables.insert(user_module.clone(), SymbolTable::new(user_module.clone()));
+        // Sprint 58 Wave 3b: `<Code, ()>` flavour via `new_with_params` on the
+        // generic impl (not the `<()>`-pinned `SymbolTable::new`).
+        symbol_tables.insert(
+            user_module.clone(),
+            SessionSymbolTable::new_with_params(user_module.clone()),
+        );
 
         // Seed builtins into symbol tables before any user modules load.
         cranelisp_typecheck::register_builtins(&symbol_tables, &next_type_id);
@@ -744,8 +747,9 @@ impl CompilerSession {
             current_module: Mutex::new(user_module.clone()),
             repl_check_state: Mutex::new(Some(CheckState::new(user_module))),
             typecheck_products: dashmap::DashMap::new(),
-            kept_jits: Mutex::new(Vec::new()),
-            kept_linkers: Mutex::new(Vec::new()),
+            // Sprint 58 Wave 3b: kept_jits / kept_linkers dissolved per
+            // Decision 35; Arc retention now lives on each Code::Jit /
+            // Code::Linker on `ModuleEntry::Def.code`.
             kept_dlls: Mutex::new(Vec::new()),
             introspection: dashmap::DashMap::new(),
         });
@@ -837,7 +841,7 @@ impl CompilerSession {
     // -- Convenience accessors for shared TC state --
 
     /// Create a TypeCheckEnv borrowing the shared state.
-    fn tc_env(&self) -> TypeCheckEnv<'_> {
+    fn tc_env(&self) -> TypeCheckEnv<'_, Code, ()> {
         TypeCheckEnv::new(&self.shared.symbol_tables, &self.shared.next_type_id)
     }
 
@@ -862,14 +866,14 @@ impl CompilerSession {
     }
 
     /// Get a read guard for the current module's symbol table.
-    fn current_symbol_table(&self) -> dashmap::mapref::one::Ref<'_, ModuleFullPath, SymbolTable> {
+    fn current_symbol_table(&self) -> dashmap::mapref::one::Ref<'_, ModuleFullPath, SessionSymbolTable> {
         let module = self.current_module_path();
         self.shared.symbol_tables.get(&module)
             .unwrap_or_else(|| unreachable!("invariant: current_module always exists in symbol_tables"))
     }
 
     /// Get a read guard for any module's symbol table.
-    fn module_table(&self, path: &ModuleFullPath) -> Option<dashmap::mapref::one::Ref<'_, ModuleFullPath, SymbolTable>> {
+    fn module_table(&self, path: &ModuleFullPath) -> Option<dashmap::mapref::one::Ref<'_, ModuleFullPath, SessionSymbolTable>> {
         self.shared.symbol_tables.get(path)
     }
 
@@ -1862,7 +1866,7 @@ impl CompilerSession {
                     if let DefKind::UserFn { constrained_fn: Some(_) } = kind.as_ref() {
                         continue;
                     }
-                    let code_ptr = c.ptr as i64;
+                    let code_ptr = c.ptr() as i64;
                     if code_ptr == 0 {
                         continue;
                     }
@@ -2374,7 +2378,7 @@ impl CompilerSession {
     }
 
     /// Follow Import/Reexport chains to find the ultimate definition entry.
-    fn resolve_to_definition(&self, source: &FQSymbol) -> Option<ModuleEntry> {
+    fn resolve_to_definition(&self, source: &FQSymbol) -> Option<ModuleEntry<Code>> {
         let mut current_module = source.module.clone();
         let mut current_name = source.symbol.to_string();
         for _ in 0..10 {
@@ -2822,7 +2826,7 @@ impl CompilerSession {
             && let Some(ModuleEntry::Def { code: Some(c), .. }) =
                 table.get(main_sym.as_ref())
         {
-            return Ok(c.ptr);
+            return Ok(c.ptr());
         }
 
         Err(CranelispError::ModuleError {
@@ -3172,7 +3176,7 @@ impl CompilerSession {
     /// Format a definition entry with its classification (spec §1.1, §4.1).
     fn format_def_entry(
         &self,
-        entry: &ModuleEntry,
+        entry: &ModuleEntry<Code>,
         name: &str,
         module: &ModuleFullPath,
     ) -> String {
@@ -3230,9 +3234,9 @@ impl CompilerSession {
     /// Resolve Import/Reexport chains to the underlying definition entry.
     fn resolve_entry_for_display(
         &self,
-        entry: &ModuleEntry,
+        entry: &ModuleEntry<Code>,
         current_module: &ModuleFullPath,
-    ) -> (ModuleEntry, ModuleFullPath) {
+    ) -> (ModuleEntry<Code>, ModuleFullPath) {
         match entry {
             ModuleEntry::Import { source }
             | ModuleEntry::Reexport { source } => {
@@ -3669,7 +3673,7 @@ fn compile_module_object(
     let symbol_table = shared.symbol_tables
         .get(module)
         .map(|guard| guard.clone())
-        .unwrap_or_else(|| cranelisp_types::SymbolTable::new(module.clone()));
+        .unwrap_or_else(|| crate::code::SessionSymbolTable::new_with_params(module.clone()));
 
     if let Err(e) = cache::write_meta(&meta_path, &symbol_table, cache::CACHE_SCHEMA_VERSION) {
         eprintln!("nice-worker: .meta.json write failed for {}: {}", module, e.message());
@@ -3717,7 +3721,7 @@ enum TestOutcome {
 /// Sprint 57 Wave 2 G6: reads `ModuleEntry::Def.code` (replaces the deleted
 /// `CodegenProduct` DashMap).
 fn discover_test_names(
-    tc_modules: &dashmap::DashMap<ModuleFullPath, SymbolTable>,
+    tc_modules: &dashmap::DashMap<ModuleFullPath, SessionSymbolTable>,
     module: &ModuleFullPath,
 ) -> Vec<String> {
     let mut names = Vec::new();
@@ -3731,7 +3735,7 @@ fn discover_test_names(
         }
         match entry {
             ModuleEntry::Def { param_names, code: Some(c), .. }
-                if param_names.is_empty() && !c.ptr.is_null() =>
+                if param_names.is_empty() && !c.ptr().is_null() =>
             {
                 names.push(format!("{}/{}", module.as_ref(), name.as_ref()));
             }
@@ -3749,7 +3753,7 @@ fn discover_test_names(
 /// Sprint 57 Wave 2 G6: reads `ModuleEntry::Def.code` (replaces the deleted
 /// `CodegenProduct` DashMap).
 fn run_test_by_name(
-    tc_modules: &dashmap::DashMap<ModuleFullPath, SymbolTable>,
+    tc_modules: &dashmap::DashMap<ModuleFullPath, SessionSymbolTable>,
     fq_name: &str,
 ) -> TestOutcome {
     use cranelisp_types::NULLARY_TAG_THRESHOLD;
@@ -3764,7 +3768,7 @@ fn run_test_by_name(
     // Look up code pointer from the symbol-table entry.
     let code_ptr = tc_modules.get(&module).and_then(|t| {
         match t.get(bare_name)? {
-            ModuleEntry::Def { code: Some(c), .. } => Some(c.ptr),
+            ModuleEntry::Def { code: Some(c), .. } => Some(c.ptr()),
             _ => None,
         }
     });
@@ -3823,7 +3827,7 @@ fn run_test_by_name(
 /// `codegen_products` DashMap).
 struct TestRunnerState {
     /// TC modules for scanning symbol tables and reading compiled `code`.
-    tc_modules: *const dashmap::DashMap<ModuleFullPath, SymbolTable>,
+    tc_modules: *const dashmap::DashMap<ModuleFullPath, SessionSymbolTable>,
     /// Current module path (for discover-tests with empty module arg).
     current_module: *const ModuleFullPath,
 }
@@ -3973,7 +3977,7 @@ unsafe fn test_outcome_to_heap(outcome: &TestOutcome) -> i64 { unsafe {
 /// Thread-local display state for `repl_trace_format`. Set before JIT
 /// evaluation of a trace expression, cleared after.
 pub(crate) struct TraceDisplayState {
-    symbol_tables: *const dashmap::DashMap<ModuleFullPath, SymbolTable>,
+    symbol_tables: *const dashmap::DashMap<ModuleFullPath, SessionSymbolTable>,
 }
 
 // Only accessed via thread-local Cell (never crosses threads).

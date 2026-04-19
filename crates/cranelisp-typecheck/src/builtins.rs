@@ -53,10 +53,14 @@ use crate::scheme::mono;
 ///
 /// Traits (Num, Eq, Ord, Display) are NOT registered here — they come from
 /// prelude `.cl` files loaded through the normal module pipeline.
-pub fn register_builtins(
-    modules: &dashmap::DashMap<ModuleFullPath, cranelisp_types::SymbolTable>,
+pub fn register_builtins<C, L>(
+    modules: &dashmap::DashMap<ModuleFullPath, cranelisp_types::SymbolTable<C, L>>,
     next_id: &std::sync::atomic::AtomicU32,
-) {
+)
+where
+    C: cranelisp_types::CodeStore,
+    L: cranelisp_types::LinkerStore,
+{
     let env = TypeCheckEnv::new(modules, next_id);
     let mut state = CheckState::new(ModuleFullPath::from("user"));
 
@@ -65,7 +69,7 @@ pub fn register_builtins(
     if !modules.contains_key(&primitives_path) {
         modules.insert(
             primitives_path.clone(),
-            cranelisp_types::SymbolTable::new(primitives_path.clone()),
+            cranelisp_types::SymbolTable::<C, L>::new_with_params(primitives_path.clone()),
         );
     }
 
@@ -95,7 +99,7 @@ pub fn register_builtins(
     env.register_test_infrastructure(&mut state);
 }
 
-impl TypeCheckEnv<'_> {
+impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEnv<'_, C, L> {
     /// (Kept for reference — registration order documented above in register_builtins)
     /// Copy non-named-primitive entries from the `primitives` module into `user`.
     ///
@@ -682,7 +686,10 @@ impl TypeCheckEnv<'_> {
         let saved_module = state.current_module.clone();
         let primitives_path = ModuleFullPath::from("primitives");
         if !self.modules.contains_key(&primitives_path) {
-            self.modules.insert(primitives_path.clone(), cranelisp_types::SymbolTable::new(primitives_path.clone()));
+            self.modules.insert(
+                primitives_path.clone(),
+                cranelisp_types::SymbolTable::<C, L>::new_with_params(primitives_path.clone()),
+            );
         }
         self.ensure_module_exists(&primitives_path);
         state.current_module = primitives_path;

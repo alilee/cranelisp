@@ -11,7 +11,11 @@ use cranelisp_types::{CranelispError, Span, Symbol};
 use super::FnCompiler;
 use crate::heap::{self, HeapAdt, HeapClosure};
 
-impl<'a, M: Module> FnCompiler<'a, M> {
+impl<'a, M: Module, C, L> FnCompiler<'a, M, C, L>
+where
+    C: cranelisp_types::CodeStore,
+    L: cranelisp_types::LinkerStore,
+{
     // --- Literal codegen ---
 
     pub(crate) fn compile_int_lit(&mut self, value: i64) -> Result<Value, CranelispError> {

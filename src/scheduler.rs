@@ -1679,8 +1679,8 @@ mod tests {
             current_module: Mutex::new(cranelisp_types::ModuleFullPath::from("user")),
             repl_check_state: Mutex::new(None),
             typecheck_products: dashmap::DashMap::new(),
-            kept_jits: Mutex::new(Vec::new()),
-            kept_linkers: Mutex::new(Vec::new()),
+            // Sprint 58 Wave 3b: kept_jits / kept_linkers dissolved per
+            // Decision 35.
             kept_dlls: Mutex::new(Vec::new()),
             introspection: dashmap::DashMap::new(),
         });

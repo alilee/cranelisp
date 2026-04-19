@@ -83,7 +83,7 @@ impl ActiveConstraints {
 // Trait Registration
 // ---------------------------------------------------------------------------
 
-impl TypeCheckEnv<'_> {
+impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEnv<'_, C, L> {
     /// Register a trait declaration.
     ///
     /// - Stores the TraitDecl in the trait registry
@@ -323,7 +323,7 @@ impl TypeCheckEnv<'_> {
 // Impl Registration and Checking
 // ---------------------------------------------------------------------------
 
-impl TypeCheckEnv<'_> {
+impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEnv<'_, C, L> {
     /// Register and validate a trait implementation.
     pub(crate) fn register_trait_impl(
         &self,
@@ -961,7 +961,7 @@ impl TypeCheckEnv<'_> {
 // Method Resolution
 // ---------------------------------------------------------------------------
 
-impl TypeCheckEnv<'_> {
+impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEnv<'_, C, L> {
     /// Try to resolve a call as a trait method.
     ///
     /// Returns Some(ResolvedCall::TraitMethod) if the callee is a trait method
@@ -1038,7 +1038,7 @@ impl TypeCheckEnv<'_> {
 // Constrained Instantiation
 // ---------------------------------------------------------------------------
 
-impl TypeCheckEnv<'_> {
+impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEnv<'_, C, L> {
     /// Instantiate a constrained scheme, tracking the constraints on fresh vars.
     ///
     /// Returns the instantiated type. Side effect: adds constraints to
@@ -1078,7 +1078,7 @@ impl TypeCheckEnv<'_> {
 // Monomorphisation
 // ---------------------------------------------------------------------------
 
-impl TypeCheckEnv<'_> {
+impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEnv<'_, C, L> {
     /// Generate a monomorphised specialization of a constrained function.
     ///
     /// Called when a constrained function is applied with concrete argument types.
@@ -1791,7 +1791,7 @@ fn find_applied_arity(texpr: &cranelisp_types::TypeExpr, con_name: &Symbol) -> O
 // HKT Method Resolution Helpers (on TypeChecker)
 // ---------------------------------------------------------------------------
 
-impl TypeCheckEnv<'_> {
+impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEnv<'_, C, L> {
     /// Get the HKT param index for a method name, defaulting to 0.
     /// For mangled names like "Functor.fmap$Option", extracts the base method name first.
     fn hkt_param_idx_for_method(&self, name: &Symbol) -> usize {

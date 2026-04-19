@@ -61,19 +61,27 @@ pub fn got_data_symbol_name(module_path: &ModuleFullPath) -> String {
 ///
 /// Returns `None` if the symbol is not found, is not a `Def` with a `got_slot`,
 /// or if the Import chain exceeds the depth limit (10).
-pub fn resolve_got_target(
-    symbol_tables: &DashMap<ModuleFullPath, SymbolTable>,
+pub fn resolve_got_target<C, L>(
+    symbol_tables: &DashMap<ModuleFullPath, SymbolTable<C, L>>,
     current_module: &ModuleFullPath,
     name: &Symbol,
-) -> Option<(ModuleFullPath, usize)> {
+) -> Option<(ModuleFullPath, usize)>
+where
+    C: cranelisp_types::CodeStore,
+    L: cranelisp_types::LinkerStore,
+{
     const MAX_IMPORT_DEPTH: usize = 10;
 
-    fn resolve_in_module(
-        tables: &DashMap<ModuleFullPath, SymbolTable>,
+    fn resolve_in_module<C, L>(
+        tables: &DashMap<ModuleFullPath, SymbolTable<C, L>>,
         module: &ModuleFullPath,
         bare: &str,
         depth: usize,
-    ) -> Option<(ModuleFullPath, usize)> {
+    ) -> Option<(ModuleFullPath, usize)>
+    where
+        C: cranelisp_types::CodeStore,
+        L: cranelisp_types::LinkerStore,
+    {
         if depth > MAX_IMPORT_DEPTH {
             return None;
         }
@@ -131,19 +139,27 @@ pub fn resolve_got_target(
 /// `current_module`. Replacement for the Sprint-56-retracted
 /// `CompilationEnv::func_arity`. Used when generating closure wrappers for
 /// cross-module function references.
-pub fn resolve_func_arity(
-    symbol_tables: &DashMap<ModuleFullPath, SymbolTable>,
+pub fn resolve_func_arity<C, L>(
+    symbol_tables: &DashMap<ModuleFullPath, SymbolTable<C, L>>,
     current_module: &ModuleFullPath,
     name: &Symbol,
-) -> Option<usize> {
+) -> Option<usize>
+where
+    C: cranelisp_types::CodeStore,
+    L: cranelisp_types::LinkerStore,
+{
     const MAX_IMPORT_DEPTH: usize = 10;
 
-    fn arity_in_module(
-        tables: &DashMap<ModuleFullPath, SymbolTable>,
+    fn arity_in_module<C, L>(
+        tables: &DashMap<ModuleFullPath, SymbolTable<C, L>>,
         module: &ModuleFullPath,
         bare: &str,
         depth: usize,
-    ) -> Option<usize> {
+    ) -> Option<usize>
+    where
+        C: cranelisp_types::CodeStore,
+        L: cranelisp_types::LinkerStore,
+    {
         if depth > MAX_IMPORT_DEPTH {
             return None;
         }
@@ -225,8 +241,25 @@ pub struct TracedFnInfo {
 /// All fields are references or `Copy`-ish types, so the struct is `Clone`.
 /// This avoids verbose field-by-field copies when constructing inner compilers
 /// (e.g., for lambda bodies).
-#[derive(Clone)]
-pub struct CompileContext<'a> {
+// Sprint 58 Wave 3b (Decision 35 / 32): `CompileContext` is generic over
+// `C: CodeStore` and `L: LinkerStore` so it can hold a borrow of the
+// integration layer's `SymbolTable<Code, ()>` (or any other instantiation
+// — the typecheck-product `<(), ()>` works too via the defaults). Backend
+// reads only `code`-independent fields (`ast`, `scheme`, `got_slot`,
+// `kind`, `param_names`), so the `C`/`L` parameters propagate as opaque
+// type variables that never get named — consistent with Decision 35's
+// "backend stays generic-blind" framing.
+//
+// Manual `Clone` impl (instead of `#[derive(Clone)]`) avoids the auto-
+// derived `C: Clone, L: Clone` bounds that the macro would impose. Every
+// field is either `Copy`, an `&` reference (which is `Copy`), or already
+// owned-cloneable (`ModuleFullPath`); none of them depend on `C` or `L`
+// being `Clone`. This keeps the trait bound surface minimal.
+pub struct CompileContext<'a, C = (), L = ()>
+where
+    C: cranelisp_types::CodeStore,
+    L: cranelisp_types::LinkerStore,
+{
     /// Function IDs for direct calls (Batch mode).
     pub func_ids: &'a HashMap<Symbol, FuncId>,
     /// Function parameter counts, for generating closure wrappers.
@@ -234,7 +267,7 @@ pub struct CompileContext<'a> {
     /// Per-module symbol tables (shared, authoritative source for type defs,
     /// constructors, GOT slots, and post-G7 GOT base pointers). The backend
     /// reads GOT slots/bases directly from this map — no env abstraction.
-    pub symbol_tables: &'a DashMap<ModuleFullPath, SymbolTable>,
+    pub symbol_tables: &'a DashMap<ModuleFullPath, SymbolTable<C, L>>,
     /// Current module being compiled (for constructor/type lookups).
     pub current_module: ModuleFullPath,
 
@@ -262,7 +295,37 @@ pub struct CompileContext<'a> {
     pub vec_drop_func_id: Option<FuncId>,
 }
 
-impl<'a> CompileContext<'a> {
+// Manual Clone impl so neither `C: Clone` nor `L: Clone` is required —
+// every field is either `Copy` or `&`-referenced or `ModuleFullPath`
+// (which has its own `Clone` independent of `C`/`L`). See the type-decl
+// comment above for rationale.
+impl<'a, C, L> Clone for CompileContext<'a, C, L>
+where
+    C: cranelisp_types::CodeStore,
+    L: cranelisp_types::LinkerStore,
+{
+    fn clone(&self) -> Self {
+        CompileContext {
+            func_ids: self.func_ids,
+            func_arities: self.func_arities,
+            symbol_tables: self.symbol_tables,
+            current_module: self.current_module.clone(),
+            traced_fns: self.traced_fns,
+            alloc_func_id: self.alloc_func_id,
+            dealloc_func_id: self.dealloc_func_id,
+            alloc_string_func_id: self.alloc_string_func_id,
+            panic_func_id: self.panic_func_id,
+            vec_new_func_id: self.vec_new_func_id,
+            vec_drop_func_id: self.vec_drop_func_id,
+        }
+    }
+}
+
+impl<'a, C, L> CompileContext<'a, C, L>
+where
+    C: cranelisp_types::CodeStore,
+    L: cranelisp_types::LinkerStore,
+{
     /// Look up a constructor by name from the symbol tables.
     ///
     /// Accepts both bare names (`"SexpStr"`) and qualified names (`"macros/SexpStr"`).
@@ -326,7 +389,9 @@ impl<'a> CompileContext<'a> {
     /// `ModuleEntry::TypeDef` with `constructor_scheme` (product types
     /// where the constructor name equals the type name — the TypeDef
     /// entry overwrites the Constructor entry during registration).
-    fn extract_constructor(entry: &ModuleEntry) -> Option<(FQTypeName, ConstructorInfo)> {
+    fn extract_constructor<C2: cranelisp_types::CodeStore>(
+        entry: &ModuleEntry<C2>,
+    ) -> Option<(FQTypeName, ConstructorInfo)> {
         match entry {
             ModuleEntry::Constructor { type_name, info, .. } => {
                 Some((type_name.clone(), info.clone()))
@@ -375,7 +440,14 @@ pub struct MatchContext {
 /// Generic over `M: Module` so the same codegen can target both `JITModule`
 /// (for immediate execution) and `ObjectModule` (for `.o` file generation).
 /// See design/backend/module-caching.md §13.2 for rationale.
-pub struct FnCompiler<'a, M: Module> {
+// Sprint 58 Wave 3b (Decision 35): generic over `C: CodeStore` and
+// `L: LinkerStore` so it can hold `CompileContext<'a, C, L>`. Defaults
+// to `<()>`-pinned for backward compat with the typecheck-product flavour.
+pub struct FnCompiler<'a, M: Module, C = (), L = ()>
+where
+    C: cranelisp_types::CodeStore,
+    L: cranelisp_types::LinkerStore,
+{
     /// Cranelift function builder.
     pub builder: FunctionBuilder<'a>,
     /// Reference to the compilation module (JITModule or ObjectModule).
@@ -385,7 +457,7 @@ pub struct FnCompiler<'a, M: Module> {
     /// Scope stack: each frame is a list of variable names introduced.
     pub(crate) scope_stack: Vec<Vec<Symbol>>,
     /// Shared immutable compilation context.
-    pub(crate) ctx: CompileContext<'a>,
+    pub(crate) ctx: CompileContext<'a, C, L>,
 
     /// Next Cranelift Variable index (per-function counter).
     pub(crate) next_var: u32,
@@ -460,7 +532,11 @@ pub struct FnCompiler<'a, M: Module> {
     pub(crate) in_trace_body: bool,
 }
 
-impl<'a, M: Module> FnCompiler<'a, M> {
+impl<'a, M: Module, C, L> FnCompiler<'a, M, C, L>
+where
+    C: cranelisp_types::CodeStore,
+    L: cranelisp_types::LinkerStore,
+{
     /// Create an inner `FnCompiler` for lambda bodies, continuations,
     /// or (future) drop glue. This is the single construction point for
     /// inner compilers (ring1-checklist section 5.9).
@@ -470,7 +546,7 @@ impl<'a, M: Module> FnCompiler<'a, M> {
     pub(crate) fn inner(
         builder: FunctionBuilder<'a>,
         module: &'a mut M,
-        ctx: CompileContext<'a>,
+        ctx: CompileContext<'a, C, L>,
         fn_param_count: usize,
         last_uses: HashMap<(Symbol, Span), bool>,
     ) -> Self {
@@ -507,7 +583,7 @@ impl<'a, M: Module> FnCompiler<'a, M> {
         func: &mut cranelift::codegen::ir::Function,
         func_ctx: &mut FunctionBuilderContext,
         module: &'a mut M,
-        ctx: CompileContext<'a>,
+        ctx: CompileContext<'a, C, L>,
     ) -> Result<(), CranelispError> {
         let mut builder = FunctionBuilder::new(func, func_ctx);
 

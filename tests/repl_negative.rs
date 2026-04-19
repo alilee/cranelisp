@@ -30,7 +30,7 @@ use helpers::*;
 /// Returns (category, qualified_name) or None if the entry should be skipped.
 fn classify_entry(
     sym: &str,
-    entry: &ModuleEntry,
+    entry: &ModuleEntry<cranelisp::code::Code>,
     module: &str,
 ) -> Option<(&'static str, String)> {
     // Skip constructors — handle_list skips them.

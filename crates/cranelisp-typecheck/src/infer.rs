@@ -14,7 +14,7 @@ use crate::checker::{CheckState, TypeCheckEnv};
 use crate::resolve::resolve_type_expr;
 use crate::scheme::mono;
 
-impl TypeCheckEnv<'_> {
+impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEnv<'_, C, L> {
     /// Infer the type of an expression. Main dispatch method.
     pub(crate) fn infer_expr(&self, state: &mut CheckState, expr: &Expr) -> Result<Type, CranelispError> {
         match expr {

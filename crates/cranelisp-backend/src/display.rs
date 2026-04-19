@@ -33,11 +33,15 @@ use crate::heap::{HeapAdt, HeapVec};
 ///   Fn     → "<closure>"
 ///   ADT    → constructor dot notation (see below)
 ///   Vec    → "[elem1 elem2 ...]"
-pub fn format_value(
+pub fn format_value<C, L>(
     value: i64,
     ty: &Type,
-    symbol_tables: &DashMap<ModuleFullPath, SymbolTable>,
-) -> String {
+    symbol_tables: &DashMap<ModuleFullPath, SymbolTable<C, L>>,
+) -> String
+where
+    C: cranelisp_types::CodeStore,
+    L: cranelisp_types::LinkerStore,
+{
     format_field_value(value, ty, symbol_tables)
 }
 
@@ -45,11 +49,15 @@ pub fn format_value(
 ///
 /// Combines qualified type formatting with value formatting.
 /// This is the top-level entry point for REPL result display.
-pub fn format_result_value(
+pub fn format_result_value<C, L>(
     value: i64,
     ty: &Type,
-    symbol_tables: &DashMap<ModuleFullPath, SymbolTable>,
-) -> String {
+    symbol_tables: &DashMap<ModuleFullPath, SymbolTable<C, L>>,
+) -> String
+where
+    C: cranelisp_types::CodeStore,
+    L: cranelisp_types::LinkerStore,
+{
     match ty {
         Type::Bool => {
             let display_val = if value != 0 { "true" } else { "false" };
@@ -82,7 +90,7 @@ pub fn format_result_value(
 
 /// Convenience wrapper: format_result_value with empty symbol_tables.
 pub fn format_result(value: i64, ty: &Type) -> String {
-    let empty = DashMap::new();
+    let empty: DashMap<ModuleFullPath, SymbolTable<(), ()>> = DashMap::new();
     format_result_value(value, ty, &empty)
 }
 
@@ -317,10 +325,14 @@ pub fn format_ctor_display(
 }
 
 /// Look up a TypeDefInfo from symbol tables by FQTypeName.
-fn lookup_type_def_from_tables(
+fn lookup_type_def_from_tables<C, L>(
     fqtn: &FQTypeName,
-    symbol_tables: &DashMap<ModuleFullPath, SymbolTable>,
-) -> Option<TypeDefInfo> {
+    symbol_tables: &DashMap<ModuleFullPath, SymbolTable<C, L>>,
+) -> Option<TypeDefInfo>
+where
+    C: cranelisp_types::CodeStore,
+    L: cranelisp_types::LinkerStore,
+{
     let table = symbol_tables.get(&fqtn.module)?;
     let type_key = Symbol::from(fqtn.name.as_ref());
     match table.get(type_key.as_ref()) {
@@ -336,12 +348,16 @@ fn lookup_type_def_from_tables(
 /// Single-constructor product types where the constructor name matches the type name
 /// suppress the `Type.` prefix (e.g., `(Point 3 4)` not `(Point.Point 3 4)`).
 /// Type names in the `:Type` prefix are fully qualified.
-fn format_adt_value(
+fn format_adt_value<C, L>(
     value: i64,
     fqtn: &FQTypeName,
     type_args: &[Type],
-    symbol_tables: &DashMap<ModuleFullPath, SymbolTable>,
-) -> String {
+    symbol_tables: &DashMap<ModuleFullPath, SymbolTable<C, L>>,
+) -> String
+where
+    C: cranelisp_types::CodeStore,
+    L: cranelisp_types::LinkerStore,
+{
     let type_display = format_adt_type_qualified(fqtn, type_args);
     let type_name_str = fqtn.name.as_ref();
 
@@ -409,14 +425,18 @@ fn find_constructor_by_tag(type_info: &TypeDefInfo, tag: usize) -> String {
 /// For polymorphic ADTs (e.g., `(Option Int)`), substitutes the concrete type_args
 /// into field types before formatting. Without this, fields with type variables
 /// would display as raw values instead of properly formatted values.
-fn format_adt_heap_value(
+fn format_adt_heap_value<C, L>(
     value: i64,
     type_display: &str,
     type_name: &str,
     type_info: &TypeDefInfo,
     type_args: &[Type],
-    symbol_tables: &DashMap<ModuleFullPath, SymbolTable>,
-) -> String {
+    symbol_tables: &DashMap<ModuleFullPath, SymbolTable<C, L>>,
+) -> String
+where
+    C: cranelisp_types::CodeStore,
+    L: cranelisp_types::LinkerStore,
+{
     // SAFETY: value is a heap pointer to a valid HeapAdt (produced by JIT code).
     let base = value as *const u8;
     let tag = unsafe { *(base.add(HeapAdt::TAG_OFFSET as usize) as *const i64) } as usize;
@@ -512,11 +532,15 @@ fn substitute_field_type(
 ///
 /// HeapVec layout: `[alloc_size(+0) | rc(+8) | len(+16) | cap(+24) | data_ptr(+32)]`
 /// Elements are stored in the data buffer at `data_ptr`, each 8 bytes (i64).
-fn format_vec_elements(
+fn format_vec_elements<C, L>(
     value: i64,
     elem_type: Option<&Type>,
-    symbol_tables: &DashMap<ModuleFullPath, SymbolTable>,
-) -> String {
+    symbol_tables: &DashMap<ModuleFullPath, SymbolTable<C, L>>,
+) -> String
+where
+    C: cranelisp_types::CodeStore,
+    L: cranelisp_types::LinkerStore,
+{
     if value == 0 || (value as usize) < NULLARY_TAG_THRESHOLD {
         return "[]".to_string();
     }
@@ -549,11 +573,15 @@ fn format_vec_elements(
 /// Format a single field value based on its type.
 ///
 /// Field values use `Type.Constructor` dot notation for ADT constructors (spec §1.5).
-fn format_field_value(
+fn format_field_value<C, L>(
     value: i64,
     ty: &Type,
-    symbol_tables: &DashMap<ModuleFullPath, SymbolTable>,
-) -> String {
+    symbol_tables: &DashMap<ModuleFullPath, SymbolTable<C, L>>,
+) -> String
+where
+    C: cranelisp_types::CodeStore,
+    L: cranelisp_types::LinkerStore,
+{
     match ty {
         Type::Int => format!("{value}"),
         Type::Bool => {
@@ -616,42 +644,42 @@ mod tests {
 
     #[test]
     fn format_value_int_positive() {
-        let empty = DashMap::new();
+        let empty: DashMap<ModuleFullPath, SymbolTable> = DashMap::new();
         let v = format_value(42, &Type::Int, &empty);
         assert_eq!(v, "42");
     }
 
     #[test]
     fn format_value_int_negative() {
-        let empty = DashMap::new();
+        let empty: DashMap<ModuleFullPath, SymbolTable> = DashMap::new();
         let v = format_value(-7, &Type::Int, &empty);
         assert_eq!(v, "-7");
     }
 
     #[test]
     fn format_value_int_zero() {
-        let empty = DashMap::new();
+        let empty: DashMap<ModuleFullPath, SymbolTable> = DashMap::new();
         let v = format_value(0, &Type::Int, &empty);
         assert_eq!(v, "0");
     }
 
     #[test]
     fn format_value_bool_true() {
-        let empty = DashMap::new();
+        let empty: DashMap<ModuleFullPath, SymbolTable> = DashMap::new();
         let v = format_value(1, &Type::Bool, &empty);
         assert_eq!(v, "true");
     }
 
     #[test]
     fn format_value_bool_false() {
-        let empty = DashMap::new();
+        let empty: DashMap<ModuleFullPath, SymbolTable> = DashMap::new();
         let v = format_value(0, &Type::Bool, &empty);
         assert_eq!(v, "false");
     }
 
     #[test]
     fn format_value_float_with_decimal() {
-        let empty = DashMap::new();
+        let empty: DashMap<ModuleFullPath, SymbolTable> = DashMap::new();
         let bits = 3.14_f64.to_bits() as i64;
         let v = format_value(bits, &Type::Float, &empty);
         assert!(v.contains('.'), "float display should contain a decimal point: {v}");
@@ -659,7 +687,7 @@ mod tests {
 
     #[test]
     fn format_value_float_whole_number_gets_dot_zero() {
-        let empty = DashMap::new();
+        let empty: DashMap<ModuleFullPath, SymbolTable> = DashMap::new();
         let bits = 1.0_f64.to_bits() as i64;
         let v = format_value(bits, &Type::Float, &empty);
         assert!(v.ends_with(".0"), "whole float should end with .0: {v}");
@@ -667,7 +695,7 @@ mod tests {
 
     #[test]
     fn format_value_fn_displays_closure() {
-        let empty = DashMap::new();
+        let empty: DashMap<ModuleFullPath, SymbolTable> = DashMap::new();
         let ty = Type::Fn(vec![Type::Int], Box::new(Type::Int));
         let v = format_value(0, &ty, &empty);
         assert_eq!(v, "<closure>");
@@ -710,28 +738,28 @@ mod tests {
 
     #[test]
     fn format_result_value_int() {
-        let empty = DashMap::new();
+        let empty: DashMap<ModuleFullPath, SymbolTable> = DashMap::new();
         let s = format_result_value(42, &Type::Int, &empty);
         assert_eq!(s, ":primitives/Int 42");
     }
 
     #[test]
     fn format_result_value_bool_true() {
-        let empty = DashMap::new();
+        let empty: DashMap<ModuleFullPath, SymbolTable> = DashMap::new();
         let s = format_result_value(1, &Type::Bool, &empty);
         assert_eq!(s, ":primitives/Bool true");
     }
 
     #[test]
     fn format_result_value_bool_false() {
-        let empty = DashMap::new();
+        let empty: DashMap<ModuleFullPath, SymbolTable> = DashMap::new();
         let s = format_result_value(0, &Type::Bool, &empty);
         assert_eq!(s, ":primitives/Bool false");
     }
 
     #[test]
     fn format_result_value_float() {
-        let empty = DashMap::new();
+        let empty: DashMap<ModuleFullPath, SymbolTable> = DashMap::new();
         let bits = 2.5_f64.to_bits() as i64;
         let s = format_result_value(bits, &Type::Float, &empty);
         assert_eq!(s, ":primitives/Float 2.5");
@@ -739,7 +767,7 @@ mod tests {
 
     #[test]
     fn format_result_value_fn() {
-        let empty = DashMap::new();
+        let empty: DashMap<ModuleFullPath, SymbolTable> = DashMap::new();
         let ty = Type::Fn(vec![Type::Int], Box::new(Type::Int));
         let s = format_result_value(0, &ty, &empty);
         assert_eq!(s, ":(Fn [primitives/Int] primitives/Int) <closure>");

@@ -16,7 +16,7 @@ use std::path::Path;
 
 use cranelisp_types::{
     ExportSpec, FQSymbol, ImportNames, ImportSpec, ModDecl, ModuleEntry,
-    ModuleFullPath, PlatformSpec, Sexp, SymbolTable,
+    ModuleFullPath, PlatformSpec, Sexp,
 };
 
 use dashmap::DashMap;
@@ -47,7 +47,7 @@ use crate::session_v4::Introspection;
 /// see `design/int/symbol-table-cache.md` §3) but the filter remains as a
 /// belt-and-braces guard.
 pub fn generate_module_source(
-    symbol_table: &SymbolTable,
+    symbol_table: &crate::code::SessionSymbolTable,
     introspection: &DashMap<FQSymbol, Introspection>,
     module_path: &ModuleFullPath,
 ) -> String {
@@ -217,7 +217,7 @@ fn generate_exports(specs: &[ExportSpec]) -> String {
     format!("(export [{}])", parts.join(" "))
 }
 
-fn generate_traits(st: &SymbolTable) -> String {
+fn generate_traits(st: &crate::code::SessionSymbolTable) -> String {
     let mut items: Vec<(String, String)> = Vec::new();
     for (name, entry) in st.all_symbols() {
         if let ModuleEntry::TraitDecl {
@@ -235,7 +235,7 @@ fn generate_traits(st: &SymbolTable) -> String {
         .join("\n\n")
 }
 
-fn generate_types(st: &SymbolTable) -> String {
+fn generate_types(st: &crate::code::SessionSymbolTable) -> String {
     let mut items: Vec<(String, String)> = Vec::new();
     for (name, entry) in st.all_symbols() {
         if let ModuleEntry::TypeDef {
@@ -256,7 +256,7 @@ fn generate_types(st: &SymbolTable) -> String {
 /// Generate trait implementations. Uses sexp from TraitImpl entries
 /// on the symbol table (if they have sexp fields). Falls back to
 /// introspection for impl method sources.
-fn generate_impls(st: &SymbolTable) -> String {
+fn generate_impls(st: &crate::code::SessionSymbolTable) -> String {
     // TraitImpl entries currently don't have an sexp field (see §2.1 gap).
     // For now, skip impl regeneration — impls will need the sexp field
     // added to ModuleEntry::TraitImpl as a prerequisite (design §9.1).
@@ -266,7 +266,7 @@ fn generate_impls(st: &SymbolTable) -> String {
 }
 
 fn generate_fns_and_macros(
-    st: &SymbolTable,
+    st: &crate::code::SessionSymbolTable,
     introspection: &DashMap<FQSymbol, Introspection>,
     module_path: &ModuleFullPath,
 ) -> String {
@@ -317,7 +317,7 @@ fn generate_fns_and_macros(
 /// Sort functions/macros by dependency order using callee lists from the
 /// symbol table (Decision 21). Items with no intra-module deps appear first.
 /// Cycles are broken alphabetically.
-fn dependency_sort(items: Vec<(String, Sexp)>, st: &SymbolTable) -> Vec<(String, Sexp)> {
+fn dependency_sort(items: Vec<(String, Sexp)>, st: &crate::code::SessionSymbolTable) -> Vec<(String, Sexp)> {
     if items.len() <= 1 {
         return items;
     }

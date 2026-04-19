@@ -18,7 +18,7 @@ use cranelisp_types::{
 use crate::checker::{CheckState, TypeCheckEnv};
 use crate::resolve::resolve_type_expr;
 
-impl TypeCheckEnv<'_> {
+impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEnv<'_, C, L> {
     /// Register a type definition from a TopLevel::TypeDef.
     ///
     /// Handles both nullary enums (Ring 0) and parameterized ADTs with data
@@ -258,7 +258,7 @@ fn build_constructor_scheme(
     }
 }
 
-impl TypeCheckEnv<'_> {
+impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEnv<'_, C, L> {
     /// Check exhaustiveness of match arms against an ADT type.
     ///
     /// Returns Ok(()) if the match is exhaustive, Err with details otherwise.

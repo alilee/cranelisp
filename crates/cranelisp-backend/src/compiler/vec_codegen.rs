@@ -19,7 +19,11 @@ use crate::heap::{self, HeapAdt, HeapVec, NULLARY_THRESHOLD_I64};
 
 use super::{collect_var_ids_from_type, substitute_type_inline, FnCompiler};
 
-impl<'a, M: Module> FnCompiler<'a, M> {
+impl<'a, M: Module, C, L> FnCompiler<'a, M, C, L>
+where
+    C: cranelisp_types::CodeStore,
+    L: cranelisp_types::LinkerStore,
+{
     /// Compile a Vec literal: `[e1 e2 e3]` → allocate Vec, store elements.
     pub(crate) fn compile_vec_lit(
         &mut self,
@@ -923,7 +927,10 @@ impl<'a, M: Module> FnCompiler<'a, M> {
         ctor: &cranelisp_types::ConstructorInfo,
         subst: &std::collections::HashMap<cranelisp_types::TypeId, Type>,
         dealloc_id: cranelift_module::FuncId,
-        symbol_tables: &dashmap::DashMap<cranelisp_types::ModuleFullPath, cranelisp_types::SymbolTable>,
+        symbol_tables: &dashmap::DashMap<
+            cranelisp_types::ModuleFullPath,
+            cranelisp_types::SymbolTable<C, L>,
+        >,
     ) {
         for (i, field) in ctor.fields.iter().enumerate() {
             let resolved_ty = substitute_type_inline(&field.ty, subst);

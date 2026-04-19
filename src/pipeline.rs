@@ -82,7 +82,7 @@ pub fn compile_and_execute_expr(
     display: Option<&cranelisp_types::DisplayInfo>,
     traced_fns: &[cranelisp_backend::compiler::TracedFnInfo],
     trace_extra_symbols: &[(String, *const u8)],
-    symbol_tables: &dashmap::DashMap<ModuleFullPath, cranelisp_types::SymbolTable>,
+    symbol_tables: &dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable>,
     current_module: ModuleFullPath,
 ) -> Result<(i64, Type), CranelispError> {
     // Pull the annotated expression body from the symbol-table entry for
@@ -241,7 +241,7 @@ fn compile_and_execute_expr_with_trace(
     expr: &cranelisp_types::Expr,
     traced_fns: &[cranelisp_backend::compiler::TracedFnInfo],
     trace_extra_symbols: &[(String, *const u8)],
-    symbol_tables: &dashmap::DashMap<ModuleFullPath, cranelisp_types::SymbolTable>,
+    symbol_tables: &dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable>,
     current_module: ModuleFullPath,
     ty: Type,
 ) -> Result<(i64, Type), CranelispError> {

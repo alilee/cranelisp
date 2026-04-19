@@ -14,7 +14,11 @@ use crate::operators;
 
 use super::FnCompiler;
 
-impl<'a, M: Module> FnCompiler<'a, M> {
+impl<'a, M: Module, C, L> FnCompiler<'a, M, C, L>
+where
+    C: cranelisp_types::CodeStore,
+    L: cranelisp_types::LinkerStore,
+{
     // --- Let expression ---
 
     pub(crate) fn compile_let(

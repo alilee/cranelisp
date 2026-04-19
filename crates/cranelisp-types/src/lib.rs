@@ -8,7 +8,15 @@ pub mod sexp;
 pub mod ast;
 pub mod types;
 pub mod check;
-pub mod code;
+// `pub mod code` removed in Sprint 58 Wave 3b (Decision 35): the old
+// pointer-only `cranelisp_types::Code` struct dissolves in favour of the
+// integration layer's `Code` enum at `src/code.rs`, which carries
+// `Arc<Jit>` / `Arc<Linker>` retention roots directly. `cranelisp-types`
+// stays ignorant of `cranelift_jit::JITModule` (Principle 3); the
+// `SymbolTable<C: CodeStore, L: LinkerStore>` parameterisation is the
+// DAG-compatible mechanism that lets the integration layer place its
+// `Code` enum on `ModuleEntry::Def.code` without inverting the dependency
+// edge.
 pub mod module;
 pub mod got;
 pub mod heap;
@@ -30,12 +38,14 @@ pub use check::{
     CheckResult, ConstructorInfo, DisplayInfo, FieldInfo, MethodResolutions, MonoDefn,
     ReplSnapshot, ResolvedCall, TypeDefInfo,
 };
-pub use code::Code;
+// `pub use code::Code` removed in Sprint 58 Wave 3b (Decision 35). See
+// the `pub mod code` block above for the rationale; the integration
+// layer's `Code` enum at `src/code.rs` is the replacement.
 pub use scheduling::SchedulingClass;
 pub use module::{
-    ConstrainedFn, DefKind, ExportSpec, ImplSexp, ImportNames, ImportSpec, MacroClauseInfo,
-    MacroParam, ModDecl, ModuleEntry, OverloadVariant, PlatformSpec, PrimitiveKind,
-    SymbolTable,
+    CodeStore, ConstrainedFn, DefKind, ExportSpec, ImplSexp, ImportNames, ImportSpec,
+    LinkerStore, MacroClauseInfo, MacroParam, ModDecl, ModuleEntry, OverloadVariant,
+    PlatformSpec, PrimitiveKind, SymbolTable,
 };
 pub use got::GotTable;
 pub use heap::{HeapCategory, HeapHeader};

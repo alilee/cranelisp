@@ -31,7 +31,7 @@ use cranelift_module::FuncId;
 use dashmap::DashMap;
 
 use cranelisp_types::{
-    Code, CranelispError, Defn, ModuleFullPath, Span, Symbol, SymbolTable, Warning,
+    CranelispError, Defn, ModuleFullPath, Span, Symbol, SymbolTable, Warning,
 };
 
 use cranelift::prelude::*;
@@ -66,6 +66,18 @@ pub struct FunctionArtifacts {
 pub struct CompilationResult {
     /// FuncIds for all compiled functions (name -> FuncId).
     pub func_ids: HashMap<Symbol, FuncId>,
+    /// Per-symbol finalised code pointers for JIT-capable modules. Keyed by
+    /// the same local `Symbol` used in `func_ids`. Empty for `ObjectModule`
+    /// (no runtime pointers exist before `finish()`); populated for
+    /// `JITModule` after `finalize_for_code_read`.
+    ///
+    /// Sprint 58 Wave 3b (Decision 35 Layer 2 Option B): backend returns
+    /// raw pointers and the integration layer constructs `Code::Jit { jit,
+    /// ptr }` per defined symbol. This keeps `cranelisp-backend` ignorant
+    /// of the integration-layer `Code` enum and preserves Principle 3
+    /// (no `cranelisp-types -> cranelisp-backend` edge); `Code` lives in
+    /// `src/code.rs`.
+    pub code_ptrs: HashMap<Symbol, *const u8>,
     /// Per-symbol artifacts for introspection (CLIF IR, disassembly, code
     /// size). See `FunctionArtifacts` and design/backend/compile-to-module.md
     /// §8.1. Keyed by the same local `Symbol` used in `func_ids`.
@@ -77,6 +89,17 @@ pub struct CompilationResult {
     /// Warnings accumulated during codegen.
     pub warnings: Vec<Warning>,
 }
+
+// SAFETY: `code_ptrs` is `HashMap<Symbol, *const u8>`. The raw pointer is
+// an integer handle into JIT-emitted pages owned by the caller's `Arc<Jit>`
+// (Decision 35); transmitting the integer across threads is safe. The
+// caller (integration layer) constructs `Code::Jit { jit, ptr }` where
+// `Arc<Jit>` is the lifetime root for `ptr`. This `unsafe impl` exists so
+// `CompilationResult` can be returned across worker boundaries; the same
+// reasoning that justified the pre-Wave-3b `KeptJit` and `Code` Send/Sync
+// impls applies.
+unsafe impl Send for CompilationResult {}
+unsafe impl Sync for CompilationResult {}
 
 /// Capability extension for the `Module` trait: post-finalize code access.
 ///
@@ -325,12 +348,17 @@ impl CodeFinalizer for cranelift_object::ObjectModule {
 ///   address relocation at byte offset `slot * 8` for each defined
 ///   function. The system linker (`--link`) and the cache `Linker` (`--run`
 ///   after cache-hit) resolve the relocations at load time.
-pub fn compile_to_module<M: Module + CodeFinalizer>(
+pub fn compile_to_module<M, C, L>(
     module_path: ModuleFullPath,
     names: &[Symbol],
-    symbol_tables: &DashMap<ModuleFullPath, SymbolTable>,
+    symbol_tables: &DashMap<ModuleFullPath, SymbolTable<C, L>>,
     module: &mut M,
-) -> Result<CompilationResult, CranelispError> {
+) -> Result<CompilationResult, CranelispError>
+where
+    M: Module + CodeFinalizer,
+    C: cranelisp_types::CodeStore,
+    L: cranelisp_types::LinkerStore,
+{
     // Derive internal dependencies.
     let intrinsic_ids = declare_intrinsics_generic(module)?;
 
@@ -514,58 +542,37 @@ pub fn compile_to_module<M: Module + CodeFinalizer>(
     // For ObjectModule: no-op (bytes emitted at a later `finish()` call).
     module.finalize_for_code_read()?;
 
-    // Step 5 (G6): Write compiled-code pointers onto ModuleEntry::Def.code.
-    // See design/backend/compile-to-module.md §9.1.3 for the lifecycle
-    // and §9.1.6 for object-mode gating (try_get_finalized_function returns
-    // None for ObjectModule, which is the capability-based skip).
+    // Step 5 (G6 + Sprint 58 Wave 3b): Collect per-symbol finalised code
+    // pointers into `CompilationResult.code_ptrs`. Per Decision 35 Layer 2
+    // Option B, backend no longer writes `Code` onto `ModuleEntry::Def.code`
+    // directly — the `Code` enum lives in the integration layer and unifies
+    // fresh-build (`Code::Jit`) with cache-hit (`Code::Linker`). The
+    // integration-layer caller (`src/worker.rs::inline_jit_codegen_for_names`)
+    // constructs `Code::Jit { jit: Arc::clone(&jit_arc), ptr }` per entry
+    // and writes it onto the live symbol table. Backend stays ignorant of
+    // the `Code` enum and preserves Principle 3.
     //
-    // Failure semantics (§9.1.4): per-symbol writes are best-effort atomic
-    // at the `CompilationResult` level — a missing entry or wrong variant
-    // at this point is a `defined_symbols()` contract violation and produces
-    // a CodegenError naming the offending symbol.
-    {
-        let mut table = symbol_tables.get_mut(&module_path).ok_or_else(|| {
-            CranelispError::CodegenError {
-                message: format!(
-                    "compile_to_module: no symbol table for module '{module_path}' at G6 write"
-                ),
-                span: Span::SYNTHETIC,
-            }
-        })?;
-        for defn in &defns {
-            let Some(&func_id) = func_ids.get(&defn.name) else {
-                continue;
-            };
-            let Some(ptr) = module.try_get_finalized_function(func_id) else {
-                // Object-mode path: no runtime pointer exists; skip the
-                // per-entry write. `code` stays `None` on every entry.
-                break;
-            };
-            let entry = table.symbols.get_mut(defn.name.as_ref()).ok_or_else(|| {
-                CranelispError::CodegenError {
-                    message: format!(
-                        "compile_to_module: symbol '{}' vanished from module '{module_path}' between compile and G6 write",
-                        defn.name
-                    ),
-                    span: defn.span,
-                }
-            })?;
-            if let cranelisp_types::ModuleEntry::Def { code, .. } = entry {
-                *code = Some(Code::new(ptr));
-            } else {
-                return Err(CranelispError::CodegenError {
-                    message: format!(
-                        "compile_to_module: symbol '{}' in module '{module_path}' is not a Def at G6 write (wrong ModuleEntry variant)",
-                        defn.name
-                    ),
-                    span: defn.span,
-                });
-            }
-        }
+    // `code_ptrs` is empty for `ObjectModule` (`try_get_finalized_function`
+    // returns `None` per §9.1.6 capability-based skip). The integration
+    // layer's cache-hit path produces `Code::Linker` from the linker's
+    // resolved addresses (a separate code path in `worker.rs`).
+    let mut code_ptrs: HashMap<Symbol, *const u8> = HashMap::with_capacity(defns.len());
+    for defn in &defns {
+        let Some(&func_id) = func_ids.get(&defn.name) else {
+            continue;
+        };
+        let Some(ptr) = module.try_get_finalized_function(func_id) else {
+            // Object-mode path: no runtime pointer exists; leave
+            // `code_ptrs` empty and break (subsequent symbols will also
+            // return None — capability is module-wide, not per-symbol).
+            break;
+        };
+        code_ptrs.insert(defn.name.clone(), ptr);
     }
 
     Ok(CompilationResult {
         func_ids: result_func_ids,
+        code_ptrs,
         artifacts,
         entry_func_id,
         func_arities,
@@ -582,13 +589,18 @@ pub fn compile_to_module<M: Module + CodeFinalizer>(
 
 /// Compile a single defn into a module using FnCompiler, returning the
 /// per-symbol introspection artifacts captured during codegen.
-fn compile_defn_in_module<M: Module>(
+fn compile_defn_in_module<M, C, L>(
     defn: &Defn,
     module: &mut M,
     func_ctx: &mut FunctionBuilderContext,
     func_ids: &HashMap<Symbol, FuncId>,
-    compile_ctx: CompileContext<'_>,
-) -> Result<FunctionArtifacts, CranelispError> {
+    compile_ctx: CompileContext<'_, C, L>,
+) -> Result<FunctionArtifacts, CranelispError>
+where
+    M: Module,
+    C: cranelisp_types::CodeStore,
+    L: cranelisp_types::LinkerStore,
+{
     let mut sig = module.make_signature();
     for _ in defn.params() {
         sig.params.push(AbiParam::new(types::I64));
@@ -3061,13 +3073,16 @@ mod tests {
         assert_eq!(func_b(), 200, "module B's val should return 200");
     }
 
-    // --- G6 code-write invariants (Sprint 57 Wave 2) ---
+    // --- G6 code-write invariants (Sprint 57 Wave 2; updated Sprint 58 Wave 3b) ---
     //
-    // spec: design/backend/compile-to-module.md §9.1.3 — after finalize,
-    // compile_to_module writes each produced code pointer onto the matching
-    // ModuleEntry::Def.code in symbol_tables[module_path].
+    // spec: design/backend/compile-to-module.md §9.1.3 + Sprint 58 Wave 3b
+    // (Decision 35 Layer 2 Option B) — compile_to_module returns per-symbol
+    // finalised code pointers in `CompilationResult.code_ptrs`. The
+    // integration layer constructs `Code::Jit { jit, ptr }` per entry and
+    // writes it onto `ModuleEntry::Def.code`. Backend itself no longer
+    // touches the `code` field.
     #[test]
-    fn compile_to_module_writes_code_after_finalize() {
+    fn compile_to_module_returns_code_ptrs_after_finalize() {
         let defn = Defn {
             name: Symbol::from("seven"),
             docstring: None,
@@ -3090,25 +3105,34 @@ mod tests {
         }
 
         let mut jit = Jit::new().unwrap();
-        let _result = compile_to_module(
+        let result = compile_to_module(
             module.clone(),
             std::slice::from_ref(&defn.name),
             &tables,
             jit.jit_module(),
         ).expect("JIT compile should succeed");
 
-        // Post-G6 invariant: the entry's `code` field is populated with a
-        // non-null pointer after compile_to_module returns.
+        // Post-Wave-3b invariant: result.code_ptrs is populated with the
+        // finalised code pointer per defined symbol (JIT mode).
+        let ptr = result
+            .code_ptrs
+            .get(&defn.name)
+            .copied()
+            .expect("JIT compile must populate code_ptrs[name]");
+        assert!(
+            !ptr.is_null(),
+            "finalized code pointer must be non-null (JIT mode)"
+        );
+
+        // Backend MUST NOT touch ModuleEntry::Def.code itself — that's the
+        // integration layer's responsibility (Decision 35 Layer 2 Option B).
         let guard = tables.get(&module).expect("symbol table present");
         let entry = guard.get(defn.name.as_ref()).expect("entry present");
         match entry {
             ModuleEntry::Def { code, .. } => {
-                let code = code.as_ref().expect(
-                    "G6 write path must populate code: Some(_) after JIT finalize",
-                );
                 assert!(
-                    !code.ptr.is_null(),
-                    "finalized code pointer must be non-null (JIT mode)"
+                    code.is_none(),
+                    "backend must not write to ModuleEntry::Def.code in Wave 3b — that's the integration layer's job"
                 );
             }
             _ => unreachable!("test inserted a Def entry"),
@@ -3116,10 +3140,9 @@ mod tests {
     }
 
     // spec: design/backend/compile-to-module.md §9.1.6 — ObjectModule has no
-    // post-finalize runtime pointer; the G6 write loop skips the per-entry
-    // store, leaving `code: None`.
+    // post-finalize runtime pointer; `code_ptrs` is empty in object mode.
     #[test]
-    fn compile_to_module_object_mode_skips_code_write() {
+    fn compile_to_module_object_mode_empty_code_ptrs() {
         use cranelift_module::default_libcall_names;
         use cranelift_object::{ObjectBuilder, ObjectModule};
 
@@ -3149,23 +3172,31 @@ mod tests {
             ObjectBuilder::new(isa, "test_obj", default_libcall_names()).unwrap();
         let mut obj_module = ObjectModule::new(obj_builder);
 
-        let _result = compile_to_module(
+        let result = compile_to_module(
             module.clone(),
             std::slice::from_ref(&defn.name),
             &tables,
             &mut obj_module,
         ).expect("object compile should succeed");
 
-        // Object-mode invariant: `code` remains None because ObjectModule's
+        // Object-mode invariant: `code_ptrs` is empty because ObjectModule's
         // `try_get_finalized_function` returns None (no runtime pointer).
+        assert!(
+            result.code_ptrs.is_empty(),
+            "object-mode compile must not produce any code pointers (got {:?})",
+            result.code_ptrs.keys().collect::<Vec<_>>()
+        );
+
+        // Sanity: the entry's `code` field is also None (backend doesn't
+        // touch it; cache-write path eventually serialises this entry to
+        // `.meta.json` with `code` skipped per #[serde(skip)]).
         let guard = tables.get(&module).expect("symbol table present");
         let entry = guard.get(defn.name.as_ref()).expect("entry present");
         match entry {
             ModuleEntry::Def { code, .. } => {
                 assert!(
                     code.is_none(),
-                    "object-mode compile must not write code onto the entry (got {:?})",
-                    code.as_ref().map(|c| c.ptr)
+                    "object-mode entry's code field must be None"
                 );
             }
             _ => unreachable!("test inserted a Def entry"),

@@ -131,10 +131,14 @@ impl std::fmt::Display for CacheStale {
 /// `code`, `platform_fn_ptr`, `got`, and `linker` are `#[serde(skip)]` on
 /// `SymbolTable` / `ModuleEntry::Def`, so the produced bytes never contain
 /// pointer state — they are re-derived on cache-hit per §14.3.
-pub fn serialise_meta(
-    table: &SymbolTable,
+pub fn serialise_meta<C, L>(
+    table: &SymbolTable<C, L>,
     schema_version: u32,
-) -> Result<Vec<u8>, CranelispError> {
+) -> Result<Vec<u8>, CranelispError>
+where
+    C: cranelisp_types::CodeStore + Clone,
+    L: cranelisp_types::LinkerStore + Clone,
+{
     let mut stamped = table.clone();
     stamped.schema_version = schema_version;
     serde_json::to_vec_pretty(&stamped).map_err(|e| CranelispError::CodegenError {
@@ -176,11 +180,15 @@ pub fn deserialise_meta(
 ///
 /// Stamps `schema_version` and writes via temp-file-then-rename to avoid
 /// partial-read hazards. `meta_path`'s parent directory is created if absent.
-pub fn write_meta(
+pub fn write_meta<C, L>(
     meta_path: &Path,
-    table: &SymbolTable,
+    table: &SymbolTable<C, L>,
     schema_version: u32,
-) -> Result<(), CranelispError> {
+) -> Result<(), CranelispError>
+where
+    C: cranelisp_types::CodeStore,
+    L: cranelisp_types::LinkerStore,
+{
     let bytes = serialise_meta(table, schema_version)?;
     super::atomic_write(meta_path, &bytes).map_err(|e| CranelispError::CodegenError {
         message: format!(

@@ -181,7 +181,9 @@ impl ReplSession {
     }
 
     /// Get the symbol tables for value display.
-    pub fn symbol_tables(&self) -> &dashmap::DashMap<ModuleFullPath, cranelisp_types::SymbolTable> {
+    pub fn symbol_tables(
+        &self,
+    ) -> &dashmap::DashMap<ModuleFullPath, cranelisp::code::SessionSymbolTable> {
         &self.session.shared.symbol_tables
     }
 }
