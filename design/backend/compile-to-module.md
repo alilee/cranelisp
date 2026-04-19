@@ -1093,3 +1093,105 @@ The implication for `/backend`: `CompilationResult` stays as-is for Phase 2. Do 
 ### 16.8 Relationship to §13
 
 §13 documents the Sprint-55 migration path (five-parameter → four-parameter, `CheckResult` elimination). Its steps are historical at this point — they describe work that has landed. §16 is the Phase-2 continuation: `program` elimination, symbol-table-sourced defn collection, `expand_multi_sig_defn` deletion. Treat §16 as authoritative for Phase 2 and §13 as a historical record of how we got here.
+
+<!-- FIXME(/backend) — Sprint 58 Phase 3a Architecture Review (CP1 arbitration / Decision 35 / Condition C8):
+     §17 currently leaves the `compile_to_module` return shape implicit and references §16.7
+     for the existing `CompilationResult` carrying `func_ids`. Per CP1 arbitration, Layer 2
+     Option B is binding (backend stays generic-blind; integration layer constructs `Code::Jit`).
+     Wave 2 must spell out explicitly the raw-shape that the integration-side consumer
+     (`/int`'s priority-worker compile-finalise) constructs `Code::Jit` from — either:
+       (a) the `Arc<Jit>` is added as a field on `CompilationResult` alongside `func_ids`;
+       (b) `compile_to_module` returns `(CompilationResult, Arc<Jit>)` as a tuple.
+     Either is acceptable; choose during Wave 2 implementation. Update §17.6 ("What does NOT
+     change") accordingly — the `Arc<Jit>` exposure on the return path IS a change from §16.7's
+     pre-Decision-35 framing where the JIT lifetime was opaque to callers via `kept_jits`.
+     Reference `design/arch/CLAUDE.md` Decision 35 for the rationale. /arch reviews at Wave-2 close. -->
+
+## 17. Step 5c — `SymbolTable<C, L>` generics activation (Sprint 58, Phase 5)
+
+**Status**: PRESCRIPTIVE for Sprint 58 Wave 3. Refines §2.1's signature for the parameterised symbol-table type. Backend-internal call-site changes are mechanical.
+
+**Decisions consumed**: Decision 25 (`code` on `ModuleEntry::Def`), Decision 31 (`Arc<Jit>` lifetime; per-batch reclaim with custom `Drop`), Decision 32 (`CodeStore`/`LinkerStore` empty marker traits with default `()`).
+
+### 17.1 Signature shape — backend POV
+
+The §2.1 normative signature continues to read:
+
+```rust
+pub fn compile_to_module<M: Module>(
+    module_path: ModuleFullPath,
+    names: &[Symbol],
+    symbol_tables: &DashMap<ModuleFullPath, SymbolTable>,
+    module: &mut M,
+) -> Result<CompilationResult, CranelispError>
+```
+
+Note the `SymbolTable` parameter is the default-generic shape: `SymbolTable` ≡ `SymbolTable<(), ()>`. The backend operates on the typecheck-product shape — `C = ()` and `L = ()` — and never observes `Arc<Jit>` or the linker through this signature. Per Decision 32's blanket-impl design, no explicit `<C: CodeStore, L: LinkerStore>` bound appears at backend signatures.
+
+**Why backend signatures don't gain `<C, L>`:** the backend's job is to populate the runtime fields (`code`, `platform_fn_ptr`) on Def entries. To do that it needs to read the symbol-table data (AST, scheme, GOT slot) and write into the entry. The data it reads is `<C, L>`-erased — `ast: Option<Defn>`, `scheme: Scheme`, etc. — those fields' types don't depend on `C` or `L`. The fields it writes ARE `<C>`-typed (`code: Option<C>`, `platform_fn_ptr: Option<*const u8>`), but the writes happen at the *integration-layer* call site that already holds the concrete-typed `SymbolTable<Arc<Jit>, Linker>` reference. Backend functions take `&DashMap<ModuleFullPath, SymbolTable<(), ()>>` (or its default-equivalent `&DashMap<ModuleFullPath, SymbolTable>`) and return `CompilationResult`; the `code` write happens on the integration side.
+
+(If a future change requires `compile_to_module` to write into `ModuleEntry::Def.code` directly — the §16.7 Phase-3 seam — the signature would need to gain the `<C>` parameter so the function knows what type to write. Sprint 58 keeps the §16.7 model: `compile_to_module` returns the function pointer in `CompilationResult`; the integration layer writes it onto the entry. Step 5c does NOT change this contract.)
+
+### 17.2 Backend-internal helper signatures
+
+Most backend-internal helpers (`FnCompiler<M: Module>`, `compile_function_body`, `declare_intrinsics<M>`, `expand_multi_sig_defn` legacy paths if any survive, GOT-data-symbol declaration helpers) operate on the data-shape fields of `SymbolTable`/`ModuleEntry`. They do NOT need explicit `<C: CodeStore, L: LinkerStore>` bounds because:
+- They read fields like `entry.scheme`, `entry.ast`, `entry.got_slot` whose types are independent of `C`.
+- They never read `entry.code` (the runtime field) — that's the integration layer's territory.
+- They never read `symbol_table.linker` or `symbol_table.got` (also runtime).
+- The `<M: Module>` bound on `FnCompiler` is independent of `<C, L>` on `SymbolTable` — the former is a Cranelift codegen concept, the latter a storage concept.
+
+Confirmation step during implementation: when sweeping backend signatures (Wave 3), if any helper *does* need to access `entry.code` for some reason, that's a sign that the helper has been mis-placed across the integration boundary and should be moved out of the backend crate. The expected outcome is that `cranelisp-backend`'s public and private signatures all read `SymbolTable` (i.e. `SymbolTable<(), ()>`) and never name `C` or `L`.
+
+### 17.3 Concrete-type instantiation — outside backend
+
+The integration layer (`src/session_v4.rs`, owned by `/int`) is the sole site where the concrete `C` and `L` types are chosen. The expected choice (per Decision 31 + Decision 32):
+
+```rust
+// src/session_v4.rs
+use std::sync::Arc;
+use cranelisp_backend::jit::Jit;
+use cranelisp_backend::cache::Linker;
+
+type Code = Arc<Jit>;          // or a thin newtype wrapper if /int prefers
+type LinkerHandle = Linker;    // or a newtype
+
+pub struct ReplSession {
+    // ...
+    pub symbol_tables: DashMap<ModuleFullPath, SymbolTable<Code, LinkerHandle>>,
+    // ...
+}
+```
+
+The `Arc<Jit>` choice activates Decision 31 Scenario 2: when a `ModuleEntry::Def` is replaced (REPL redefinition) or evicted, the `Arc` clone on that entry drops; when the last `Arc` referencing a particular `Jit` instance drops, our custom `Drop` fires `unsafe Jit::free_memory()` and JIT pages are reclaimed per-redefinition (not just at session teardown). `SharedState.kept_jits` dissolves at this transition because the `Arc<Jit>` lives directly on entries instead of in the side-store.
+
+**Backend's role at the instantiation:** `cranelisp-backend` exports the `Jit` struct (with the custom `Drop` impl) and the `Linker` struct. The integration layer composes them into the concrete `SymbolTable<Arc<Jit>, Linker>` shape. Backend does not name the composed type — it just provides the building blocks. This split satisfies Principle 3 (`cranelisp-types` knows nothing about Cranelift; `cranelisp-backend` knows about Cranelift but doesn't pick the storage shape; integration layer picks the storage shape).
+
+### 17.4 `Jit` wrapper drop-impl placement
+
+Decision 31 names `crates/cranelisp-backend/src/jit.rs` as the canonical location of the `Jit` wrapper with custom `Drop`. Step 5c does not change the Jit wrapper itself — that landed in Sprint 57 Wave 4 per Decision 31. What changes is where `Arc<Jit>` clones live: previously `SharedState.kept_jits: Mutex<Vec<KeptJit>>` (session-side side-store); after Step 5c, `ModuleEntry::Def.code: Option<Arc<Jit>>` for every Def produced by the same `compile_to_module` batch (entry-side). The `Drop` impl on `Jit` is unchanged — it still calls `unsafe JITModule::free_memory()` when the Arc refcount hits 0.
+
+The integration-layer migration of `Arc<Jit>` from `kept_jits` to entries is `/int`'s responsibility (their Wave-3 work). Backend's side: confirm that the `Jit` wrapper's API surface accepts `Arc<Jit>` storage (it does — `Jit` is `Send + Sync + 'static`, satisfying the blanket `CodeStore` impl) and that nothing in backend code relies on `kept_jits` existing.
+
+### 17.5 Cache coupling (cross-reference to §14)
+
+`module-caching.md` §14.3 step [5b] re-runs codegen via `compile_to_module<JITModule>` for each cache-restored Def with `ast: Some(_)`. The freshly-allocated `Arc<Jit>` from that codegen run lands on `ModuleEntry::Def.code` per §17.3's instantiation. Cache-restore therefore exercises the same Step-5c data path as fresh build — no separate cache-restore code path needs to be written. The `Arc<Jit>` from cache-restore reclaims on redefinition the same way as fresh build's.
+
+### 17.6 What does NOT change in compile_to_module
+
+- The four-parameter signature (§2.1 — `module_path`, `names`, `symbol_tables`, `module`) — same.
+- The `<M: Module>` bound — same.
+- The §4 defn-collection loop reading from `symbol_tables[module_path]` — same.
+- The §5 GOT reference encoding (uniform across modes via `__cranelisp_got_{module}` data symbol) — same.
+- The §6 intrinsic declaration via `declare_intrinsics<M: Module>` — same.
+- The §8 `CompilationResult` return type carrying `func_ids`, `entry_func_id`, `func_arities`, `warnings` — same.
+- The §16.7 Phase-3 seam (caller writes `code` onto entries; backend returns the pointer in `CompilationResult`) — same.
+
+Step 5c is a type-annotation activation, not a contract change. The contract was deliberately written generic-friendly in earlier sprints (§16.7's "the storage location moves from `CodegenProduct` to `ModuleEntry::Def.code`, and the write-site moves from the priority worker into the backend — both changes land together in Sprint 57 Wave 2" — Sprint 57 landed the field move; Sprint 58 Step 5c lands the generic-parameter activation enabling per-redefinition reclaim).
+
+### 17.7 Acceptance signals (backend-side)
+
+After Step 5c lands:
+- All backend functions touching `SymbolTable` continue to compile against `SymbolTable<(), ()>` (default-equivalent `SymbolTable`); no new `<C, L>` bounds are introduced into backend signatures.
+- The integration layer's `src/session_v4.rs` instantiates `SymbolTable<Arc<Jit>, Linker>` (or chosen newtype shape) and the type-annotation chain remains coherent (`/int`'s sweep work).
+- `kept_jits` is dissolved (`/int`'s sweep work; backend confirms no backend code referenced it).
+- `/qa`'s Decision-31-Scenario-2 reclaim test passes: REPL redefinition shows `/mem` live-bytes drop on the redefinition (not just session teardown).

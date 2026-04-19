@@ -839,39 +839,109 @@ No changes from v1.
 ### Symbol Table
 
 ```rust
-/// Per-module symbol table. Pure data.
+/// Per-module symbol table. Pure data. Generic over the per-function code
+/// store `C` and per-module linker store `L` per `pipeline-v4.md` §9.1.
+///
+/// Both `C` and `L` default to `()` so that crates that do not handle
+/// compiled code (typecheck, frontend, the bulk of backend) work with
+/// `SymbolTable` (i.e. `SymbolTable<(), ()>`) and never see the parameters
+/// in their signatures. The integration layer instantiates
+/// `SymbolTable<Code, Linker>` where `Code` and `Linker` are concrete types
+/// chosen in `src/session_v4.rs`. See Decision 32 for the trait shape.
+///
+/// Structural declarations (`imports`, `exports`, `platforms`, `submodules`)
+/// retain the *original specification* of the module's `(import …)` /
+/// `(export …)` / `(platform …)` / `(mod …)` forms — the per-symbol
+/// `ModuleEntry::Import` entries are the *resolved effects* of imports.
+/// See Decision 33 (Step 5a). The `ModuleStructure` parallel store in
+/// `src/save.rs` (Sprint-57 transitional shape) dissolves at Step 5a.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SymbolTable {
+pub struct SymbolTable<C: CodeStore = (), L: LinkerStore = ()> {
     pub path: ModuleFullPath,
-    pub symbols: HashMap<Symbol, ModuleEntry>,
+    pub symbols: HashMap<Symbol, ModuleEntry<C>>,
+
+    // --- GOT (runtime memory for code pointers) ---
+    /// Next available GOT slot index for this module (module-local).
+    pub next_got_slot: usize,
+    /// Per-module Global Offset Table. Created at module registration;
+    /// base address stable for the module's lifetime. `Arc` for cheap
+    /// codegen-worker handles.
+    #[serde(skip, default = "default_got_arc")]
+    pub got: std::sync::Arc<GotTable>,
+
+    // --- Structural declarations (Step 5a; Decision 33) ---
+    /// Original `(import [module [names...]])` declarations in source order.
+    /// Used by `src/save.rs` for `.cl` regeneration (§6.4) and by the
+    /// import-resolver. Cf. per-symbol `ModuleEntry::Import` entries which
+    /// are the *resolved* effects.
+    pub imports: Vec<ImportSpec>,
+    /// Original `(export [names...])` declarations in source order.
+    pub exports: Vec<ExportSpec>,
+    /// Original `(platform "name")` declarations in source order.
+    pub platforms: Vec<PlatformSpec>,
+    /// Original `(mod child)` declarations in source order; `is_private`
+    /// distinguishes `(mod- child)`.
+    pub submodules: Vec<ModDecl>,
+
+    // --- Cache schema version (Step 5b; Decision 34) ---
+    /// Schema version of the serialised symbol table. Bumped on every
+    /// shape-changing field addition / deletion / type change.
+    /// Defaults to 0 on legacy caches (no field) → triggers cache-stale.
+    #[serde(default)]
+    pub schema_version: u32,
+
+    // --- Cached object code (module-level .o loading) ---
+    /// Mapped `.o` code for cache-hit modules. `#[serde(skip)]` — runtime
+    /// state, re-derived on cache-hit load. `L = ()` for crates that don't
+    /// handle linker state.
+    #[serde(skip)]
+    pub linker: Option<L>,
 }
 
-impl SymbolTable {
-    pub fn get(&self, name: &str) -> Option<&ModuleEntry> { ... }
-    pub fn insert(&mut self, name: Symbol, entry: ModuleEntry) { ... }
-    pub fn public_symbols(&self) -> impl Iterator<Item = (&Symbol, &ModuleEntry)> { ... }
+/// Empty marker trait for the per-function code store. Defined in
+/// `cranelisp-types` so `SymbolTable` can be generic without pulling
+/// Cranelift types into the contract surface (Decision 32).
+///
+/// `()` implements both `CodeStore` and `LinkerStore` via the blanket
+/// `impl<T: Send + Sync + 'static>`. Concrete types live in the
+/// integration layer or `cranelisp-backend` — methods that compile,
+/// evict, or reclaim code go on those types, not on the trait.
+pub trait CodeStore: Send + Sync + 'static {}
+impl<T: Send + Sync + 'static> CodeStore for T {}
+
+/// Empty marker trait for the per-module linker store. Same shape as
+/// `CodeStore` but kept distinct so `SymbolTable<C, L>` has two
+/// independent type parameters (per-function reclaim and per-module
+/// reclaim are separate concerns; cache-restore can supply a `Linker`
+/// without supplying a `Code` shape).
+pub trait LinkerStore: Send + Sync + 'static {}
+impl<T: Send + Sync + 'static> LinkerStore for T {}
+
+fn default_got_arc() -> std::sync::Arc<GotTable> {
+    std::sync::Arc::new(GotTable::new())
 }
 
-/// Module structural metadata.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ModuleStructure {
-    pub path: ModuleFullPath,
-    pub file_path: Option<PathBuf>,
-    pub mod_decls: Vec<ModuleName>,
-    pub import_specs: Vec<ImportSpec>,
-    pub export_specs: Vec<ExportSpec>,
-    pub impl_sexps: Vec<ImplSexp>,
-    pub impls: Vec<TraitImpl>,
-    pub dll_path: Option<PathBuf>,
+impl<C: CodeStore, L: LinkerStore> SymbolTable<C, L> {
+    pub fn get(&self, name: &str) -> Option<&ModuleEntry<C>> { ... }
+    pub fn insert(&mut self, name: Symbol, entry: ModuleEntry<C>) { ... }
+    pub fn public_symbols(&self) -> impl Iterator<Item = (&Symbol, &ModuleEntry<C>)> { ... }
+    pub fn allocate_got_slot(&mut self) -> usize { ... }
+    pub fn defined_symbols(&self) -> impl Iterator<Item = (&Symbol, &ModuleEntry<C>)> { ... }
 }
 ```
+
+The Sprint-57 `ModuleStructure` struct in `src/save.rs` is **deleted** at Step 5a — its `import_specs` / `export_specs` / `mod_decls` / `platform_specs` fields move 1:1 to the corresponding `SymbolTable` fields above. `SharedState.module_structures: DashMap<ModuleFullPath, ModuleStructure>` dissolves; `src/save.rs::generate_module_source` reads from the `SymbolTable` it already holds. See Decision 33.
 
 ### Module Entries
 
 ```rust
 /// An entry in a module's symbol table.
+///
+/// Generic over `C: CodeStore` per the parameterised `SymbolTable<C, L>`
+/// shape (Decision 32). `C` defaults to `()` so crates that don't handle
+/// compiled code work with `ModuleEntry` (i.e. `ModuleEntry<()>`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum ModuleEntry {
+pub enum ModuleEntry<C: CodeStore = ()> {
     Def {
         scheme: Scheme,
         visibility: Visibility,
@@ -899,32 +969,43 @@ pub enum ModuleEntry {
         /// entries. Authoritative per-category table:
         /// `design/typecheck/ast-annotation.md` §6. (Phase 1.)
         ast: Option<Defn>,
-        /// Compiled code for this symbol (Phase 3 Step 3b — G6).
+        /// Compiled code for this symbol (Phase 3 Step 3b — G6;
+        /// parameterised over `C` at Phase 5 Step 5c).
         /// Written by the priority worker after `compile_to_module` returns.
-        /// `None` until codegen completes. Carries the raw code pointer
-        /// stored into the GOT slot plus an `Arc<Jit>` shared across every
-        /// `Code` entry produced by the same `compile_to_module` batch.
+        /// `None` until codegen completes. The integration layer chooses
+        /// `C` so this carries the raw code pointer stored into the GOT
+        /// slot plus an `Arc<Jit>` shared across every sibling entry
+        /// produced by the same `compile_to_module` batch.
         ///
-        /// **Lifetime / reclaim (Decision 31)**: the `Arc<Jit>` is the
-        /// reachability primitive. While any `Code` entry holding an
-        /// `Arc<Jit>` clone is alive, its code pointers are reachable and
-        /// the JIT's executable pages stay mapped. When every sibling entry
-        /// is evicted or redefined, the Arc refcount reaches zero and the
-        /// custom `Drop` on our `Jit` wrapper calls `unsafe
-        /// JITModule::free_memory()` — this is the ONLY way to reclaim
-        /// JIT pages in Cranelift 0.116 (the default drop path leaks on
-        /// purpose; see `pipeline-v4.md` §9.4 for evidence). The safety
-        /// invariant is maintained by: (a) code pointers live here or on
-        /// the stack; (b) GOT slots are atomically swapped to new code
-        /// before the old Arc can drop; (c) user-returned `fn` values are
-        /// heap closures calling through the GOT, not raw code pointers.
+        /// **Lifetime / reclaim (Decision 31, Scenario 2 active at Step 5c)**:
+        /// the `Arc<Jit>` *living directly on this field* is the
+        /// reachability primitive that fires per-redefinition reclaim.
+        /// While any `Code` entry holding an `Arc<Jit>` clone is alive,
+        /// its code pointers are reachable and the JIT's executable pages
+        /// stay mapped. When every sibling entry is evicted or redefined,
+        /// the Arc refcount reaches zero and the custom `Drop` on our
+        /// `Jit` wrapper calls `unsafe JITModule::free_memory()` — this is
+        /// the ONLY way to reclaim JIT pages in Cranelift 0.116 (the
+        /// default drop path leaks on purpose; see `pipeline-v4.md` §9.4
+        /// for evidence). The safety invariant is maintained by: (a) code
+        /// pointers live here or on the stack; (b) GOT slots are atomically
+        /// swapped to new code before the old Arc can drop; (c)
+        /// user-returned `fn` values are heap closures calling through the
+        /// GOT, not raw code pointers.
+        ///
+        /// **Pre-Phase-5 transitional shape (Sprint 57; superseded at
+        /// Step 5c)**: `Arc<Jit>` lived in `SharedState.kept_jits` rather
+        /// than directly on this field, because `SymbolTable<C, L>` was
+        /// not yet activated. Per-redefinition reclaim therefore deferred
+        /// to session teardown. Step 5c activates the generics and
+        /// dissolves `kept_jits`.
         ///
         /// `#[serde(skip)]` — runtime state. Cache re-derives it from
-        /// `ast` on cache-hit load. See `pipeline-v4-roadmap.md:198`:
-        /// `SymbolTable<C, L>` generics are deferred; `#[serde(skip)]` on
-        /// this field is the sufficient form. See Decision 25.
+        /// `ast` on cache-hit load. See Decision 25 (canonical placement)
+        /// + Decision 31 (reclaim primitive) + Decision 32 (`CodeStore`
+        /// trait shape).
         #[serde(skip)]
-        code: Option<Code>,
+        code: Option<C>,
         /// Platform function pointer (Phase 4 Step 4a — G8).
         /// `Some` only when `kind == DefKind::Primitive { primitive_kind:
         /// PrimitiveKind::PlatformEffect { scheduling_class }, .. }` —
@@ -1034,6 +1115,57 @@ pub struct ConstrainedFn {
 ```
 
 No changes from v1.
+
+### Integration-Layer `Code` Enum (in `src/`)
+
+The integration layer's concrete `C` for `SymbolTable<C, L>` is the `Code`
+enum defined below. **Lives in `src/` (owned by `/int`), NOT in
+`cranelisp-types`** — see Decision 35 for why placement here would invert
+Principle 3's dependency edge. Documented at this boundary because every
+integration-layer `SymbolTable` instantiation names it.
+
+```rust
+// src/code.rs (or inline in src/session_v4.rs); owned by /int.
+//
+// Concrete `C: CodeStore` for the integration layer's SymbolTable<Code, ()>.
+// Unifies two compilation lineages — fresh-build JIT and cache-hit Linker —
+// behind one uniform code-pointer accessor.
+//
+// See Decision 35 for the full rationale (Code-enum location, L=() choice,
+// Layer 2 Option B for compile_to_module's return shape, kept_jits +
+// kept_linkers dissolution, mixed-lineage modules).
+pub enum Code {
+    Jit { jit: Arc<cranelisp_backend::jit::Jit>, ptr: *const u8 },
+    Linker { linker: Arc<cranelisp_backend::cache::Linker>, ptr: *const u8 },
+}
+
+impl Code {
+    /// GOT-target code address; variant-uniform.
+    pub fn ptr(&self) -> *const u8 {
+        match self {
+            Code::Jit { ptr, .. } => *ptr,
+            Code::Linker { ptr, .. } => *ptr,
+        }
+    }
+}
+
+// SAFETY: the raw pointer is an integer handle into pages the Arc keeps
+// alive (analogous to ModuleEntry's existing `unsafe impl Send + Sync`).
+unsafe impl Send for Code {}
+unsafe impl Sync for Code {}
+```
+
+The session boundary types in `src/session_v4.rs` instantiate
+`SymbolTable<Code, ()>` and `ModuleEntry<Code>`; backend signatures
+continue to read `SymbolTable` (i.e. `SymbolTable<(), ()>`) per Decision
+32 and `compile-to-module.md` §17.
+
+`compile_to_module<M: Module>` returns the raw codegen result
+(`CompilationResult` carrying `func_ids` + the per-batch `Arc<Jit>`); the
+integration-layer worker constructs `Code::Jit { jit, ptr }` per defined
+symbol and writes it onto `Def.code`. This is the **CP1 arbitration**
+recorded in Sprint 58 Phase 3a Architecture Review (Layer 2 Option B):
+backend stays generic-blind, `/int` owns the conversion.
 
 ### Macro Support Types
 
@@ -1514,7 +1646,7 @@ impl SymbolTable {
 
 The filter is deliberately strict: any `ModuleEntry::Def` with `ast: None` is excluded — whether pre-body-check, primitive, special form, `Overloaded` base, or constrained-fn template. Adding new non-compilable categories never silently breaks codegen, because the `ast.is_some()` clause comes first.
 
-> Note on `ModuleEntry::Def.ast` / `code` / `platform_fn_ptr`: the full set of typecheck- and codegen-populated fields on `ModuleEntry::Def` (`ast`, `code`, `platform_fn_ptr`, `got_slot`, `callees`, `trait_origin`) is now shown in the variant definition above and matches `pipeline-v4.md` §9.1. `ast` arrived in Sprint 55 (Phase 1); `code` lands in Sprint 57 Phase 3 G6; `platform_fn_ptr` lands in Sprint 57 Phase 4 G8. The `code` and `platform_fn_ptr` fields are `#[serde(skip)]` per `pipeline-v4-roadmap.md:198` — runtime-only, re-derivable from the AST (code) or platform manifest (platform_fn_ptr) on cache-hit load. See `design/typecheck/ast-annotation.md` §6 for the authoritative per-category table of which entries carry `ast: Some(_)`.
+> Note on `ModuleEntry::Def.ast` / `code` / `platform_fn_ptr`: the full set of typecheck- and codegen-populated fields on `ModuleEntry::Def` (`ast`, `code`, `platform_fn_ptr`, `got_slot`, `callees`, `trait_origin`) is now shown in the variant definition above and matches `pipeline-v4.md` §9.1. `ast` arrived in Sprint 55 (Phase 1); `code` shape landed in Sprint 57 Phase 3 G6 (concrete `Code` placeholder); `platform_fn_ptr` landed in Sprint 57 Phase 4 G8; `code` is parameterised to `Option<C>` in Sprint 58 Phase 5 Step 5c (G12) per Decision 32 — the integration layer chooses the concrete `C = Arc<Jit>` so per-redefinition reclaim fires (Decision 31 Scenario 2). The `code` and `platform_fn_ptr` fields are `#[serde(skip)]` — runtime-only, re-derivable from the AST (code) or platform manifest (platform_fn_ptr) on cache-hit load. See `design/typecheck/ast-annotation.md` §6 for the authoritative per-category table of which entries carry `ast: Some(_)`.
 
 ---
 
@@ -1524,6 +1656,7 @@ The filter is deliberately strict: any `ModuleEntry::Def` with `ast: None` is ex
 - `ReplInput` — replaced by `TopLevel` with `Expr` variant
 - `ReplCheckResult` — replaced by `CheckResult` with `display: Option<DisplayInfo>`
 - `CheckResult` as a **boundary type** — demoted to typecheck-internal (Sprint 55/56). The struct still exists transiently in `cranelisp-types/src/check.rs` carrying `warnings + display` plus legacy working fields pending Phase 5 slimming (FIXME filed by `/typecheck`). It is no longer a parameter of any backend function.
+- `ModuleStructure` (in `src/save.rs`) — dissolved at Sprint 58 Step 5a; fields move 1:1 to `SymbolTable.{imports, exports, platforms, submodules}`. The `SharedState.module_structures` parallel store is deleted. See Decision 33.
 
 ### Types added
 - `TopLevel::Expr(Expr)` variant
@@ -1539,6 +1672,11 @@ The filter is deliberately strict: any `ModuleEntry::Def` with `ast: None` is ex
 - `FnSlotEntry { module: ModuleFullPath, slot_index: usize }` — identifies a function's GOT location (which module's GOT, which slot). See `design/backend/per-module-got.md`.
 - `ModuleGotRegistry` — per-module GOT table registry, replaces flat `InMemWorkerState.got_state`. Lives in `cranelisp-backend`.
 - `CompilationResult` + `FunctionArtifacts` — backend output of `compile_to_module` (Sprint 56 Phase 2). Replaces `CompiledProgram` and `CompiledModuleInfo`.
+- `CodeStore` + `LinkerStore` empty marker traits (Sprint 58 Step 5c, Decision 32) — generic boundary on `SymbolTable<C, L>` and `ModuleEntry<C>`. Both default to `()`. See `pipeline-v4.md` §9.1.
+- `SymbolTable.imports`, `.exports`, `.platforms`, `.submodules` (Sprint 58 Step 5a, Decision 33) — structural declarations as fields, not a parallel store. Reuse existing `cranelisp-types::{ImportSpec, ExportSpec, PlatformSpec, ModDecl}`.
+- `SymbolTable.linker: Option<L>` (Sprint 58 Step 5c) — per-module linker store for cache-hit `.o` mapping. `#[serde(skip)]`.
+- `SymbolTable.schema_version: u32` (Sprint 58 Step 5b, Decision 34) — explicit cache schema version; mismatch invalidates the cache as if dependencies changed.
+- `Code` enum (Sprint 58 Phase 3a, Decision 35) — integration-layer concrete `C` for `SymbolTable<Code, ()>`. Two variants `Code::Jit { jit: Arc<Jit>, ptr }` + `Code::Linker { linker: Arc<Linker>, ptr }`. Lives in `src/`, NOT in `cranelisp-types` (Principle 3). Backend signatures stay generic-blind per CP1 arbitration (Layer 2 Option B): `compile_to_module` returns raw `(Arc<Jit>, …)`, integration layer constructs `Code::Jit`. Documented at this boundary so every consumer of `SymbolTable<Code, ()>` references the same shape.
 
 ### Types NOT added
 - ~~`CheckMode`~~ — eliminated during design review. The multi-pass pipeline works identically on any input size. See `pipeline-v2.md` §5.

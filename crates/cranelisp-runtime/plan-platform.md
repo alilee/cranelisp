@@ -71,8 +71,7 @@ Every function below uses `extern "C"` with all-`i64` parameters and return valu
 | `trace_enter` | `runtime/trace_enter` | `(name_ptr, name_len, params_count, params_array_ptr) -> ()` | 4 | Push trace frame at function entry |
 | `trace_exit` | `runtime/trace_exit` | `(result, result_str_ptr) -> i64` | 4 | Pop trace frame at function exit, build TraceCall ADT |
 | `collect_trace` | `runtime/collect_trace` | `() -> i64` | 4 | Collect root frame, release thread ownership, return Trace ADT |
-| `trace_first_child_nanos` | `runtime/trace_first_child_nanos` | `(trace_adt: i64) -> i64` | 4 | Extract nanos from first child (for per-test timing) |
-<!-- FIXME(/platform): Row above previously said "for run-tests timing". The `(run-tests init pass-fn fail-fn)` special form has been retired (replaced by `discover-tests` / `run-test` builtins). Per-test timing is now consumed by `/run-tests` slash command + user-level test runners composed from the builtins. Confirm description is accurate; also check `crates/cranelisp-runtime/src/trace.rs:380` for a matching doc-comment update. Filed Sprint 57 planning. -->
+| `trace_first_child_nanos` | `runtime/trace_first_child_nanos` | `(trace_adt: i64) -> i64` | 4 | Extract nanos from first child — per-test timing consumed by `/run-tests` slash command + user-level test runners composed from `discover-tests` + `run-test` builtins |
 
 
 #### Sexp Marshalling (marshal.rs)

@@ -1224,3 +1224,221 @@ The reimplementation diverges on all three: per-node annotations (Sprint 55), ma
 Divergence is justified: the sketch's wider `CheckResult` was a coupling surface; the Phase-3 target shape eliminates it. No cache-serialisation or REPL-additivity concern from the sketch survives — the slim-down is an unambiguous simplification.
 
 If `TypecheckProduct` is only reduced to `{ file_path, source_text }` (minimum viable Step 4), the above checks become Phase 3 Step 3b's gating conditions instead, and §9.8.2's FIXME on `src/session_v4.rs:401` remains open.
+
+---
+
+## 11. Sprint 58 Wave 1 — Phase 5 Step 5a: Structural Declarations on `SymbolTable`
+
+Phase 5 Step 5a places four structural-declaration fields directly on `SymbolTable` so the cache reader, the `.cl` regenerator, and the import-resolver can reconstruct a module's *original specification* from one source. This is the §9.1 / Decision 33 normative shape — not interim. The Sprint-57 transitional `ModuleStructure` parallel store on `SharedState` (currently in `src/save.rs`) dissolves at this step.
+
+This section is the typecheck-side observation of the change. `/typecheck` owns the field shape because `crates/cranelisp-types/src/module.rs` is in `/typecheck`'s ownership tree (per `cranelisp-types`'s data-only role and the §"Owns" entry in `.claude/commands/typecheck.md`); `/int` owns the *writer placement* in `src/worker.rs` form-handlers and the *reader migration* in `src/save.rs`.
+
+### 11.1 Field shape — reused 1:1 from `cranelisp-types`
+
+Decision 33 pins the four field types as already-existing `cranelisp-types` types, reused byte-for-byte. Verified against `crates/cranelisp-types/src/module.rs`:
+
+| Field on `SymbolTable` | Type | Definition site | Verified-present |
+|------------------------|------|-----------------|------------------|
+| `imports: Vec<ImportSpec>` | `ImportSpec { module_path, alias, names: ImportNames, span }` | `crates/cranelisp-types/src/module.rs:369` | YES (line 369, Sprint 56-vintage) |
+| `exports: Vec<ExportSpec>` | `ExportSpec { module_path, names: ImportNames, span }` | `crates/cranelisp-types/src/module.rs:378` | YES (line 378) |
+| `platforms: Vec<PlatformSpec>` | `PlatformSpec { name: String, span }` | `crates/cranelisp-types/src/module.rs:396` | YES (line 396) |
+| `submodules: Vec<ModDecl>` | `ModDecl { name: ModuleName, is_private: bool, inline_body: Option<Vec<Sexp>>, span }` | `crates/cranelisp-types/src/module.rs:405` | YES (line 405) |
+
+The fields above all live on the `SymbolTable` struct after Step 5a; the `interfaces.md` §"Symbol Table" target shape (lines 858–931) shows the full layout. **No new `cranelisp-types` boundary types are introduced.**
+
+The `interfaces.md` target shape adds these four fields with no `#[serde(default)]` annotation — they are required fields on the serialised `SymbolTable`. (Cache-shape-mismatch discipline is handled by `schema_version`, not by per-field defaults — see §12.5.) The `imports`, `exports`, `platforms`, `submodules` fields are populated by the writer (see §11.3); cache-restore deserialises them without re-typechecking.
+
+### 11.2 Writer placement — `/int`-owned, not `/typecheck`-owned
+
+The writer (the code that *appends* to these fields when the typechecker / form-classifier processes a `(import …)` / `(export …)` / `(platform …)` / `(mod …)` form) is **not** typecheck-crate code. Per /arch's Phase-2 finding 3 + the SPRINT.md §/typecheck task entry, the writer lives in `/int`'s `src/worker.rs` form-handlers — the same module that already handles per-form classification and the call into `tc.check_form(...)`. /typecheck's role on Step 5a ends at the field shape: as long as the four fields exist on `SymbolTable<C, L>` with the types in §11.1, /int is unblocked.
+
+This is a clean split because the writer needs `SharedState`-level visibility (it mutates the `SymbolTable` for the *owning* module by following the form-by-form scheduler's per-module DashMap entry — `tc.symbol_tables.entry(module).or_default().imports.push(spec)` shape), and `cranelisp-typecheck` does not see `SharedState`. The typecheck crate's view of these fields is read-only — see §11.5.
+
+### 11.3 Typecheck-side invariants on the four fields
+
+Typecheck does not write `imports` / `exports` / `platforms` / `submodules`, but it must *honour* them in three places that already read import/export information today. The invariants below are the contract /typecheck commits to as the field-shape owner; they are conditions /int's writer must satisfy and conditions cache-restore must preserve (Step 5b cross-reference, §12.5).
+
+1. **Source-order preservation.** The four `Vec<_>` fields are append-only during the form-by-form classification pass. Insertion order MUST equal the source order of the underlying forms. Rationale: `.cl` regeneration (spec §6.4) reproduces the original source; the import-resolver's diagnostics quote the offending form by index. `/typecheck` does not enforce this directly (the writer is /int's), but a /typecheck unit test on `cranelisp-types` SHOULD round-trip a small `SymbolTable` with non-trivial source ordering through serde-JSON and assert `imports[0].span.start < imports[1].span.start` (and the same for the other three fields).
+
+2. **No deduplication.** Duplicate `(import [foo [*]])` forms within one module produce two entries in `imports`. Rationale: the spec treats duplicate imports as a warning the resolver issues based on the structural record (§8.5 import diagnostics); silently collapsing them at the writer would lose the second `span` and prevent the warning from pointing to the redundant form. Same rule for `exports`, `platforms`, `submodules`. *Negative invariant*: /int's writer MUST NOT call `imports.iter().any(|i| i == &spec)` before pushing.
+
+3. **No cross-module mixing.** `SymbolTable` is per-module (keyed by `ModuleFullPath` in `tc.symbol_tables`). The `imports` field on module `A`'s symbol table contains *only* the `(import …)` forms that appeared lexically in `A`'s source (not in `A`'s parent or children). The writer's per-form-handler dispatch already routes by owning module; this invariant is the contract that no `(import …)` form is "promoted" to a different module's structural record.
+
+4. **Coherence with `ModuleEntry::Import` chains is one-way.** The structural `imports: Vec<ImportSpec>` is the *original specification*; the per-symbol `ModuleEntry::Import { source: FQSymbol }` entries are the *resolved effects* (Decision 33's framing). The two MUST be related as follows:
+   - For every `ImportSpec { module_path: M, names: ImportNames::Specific(syms), .. }` in `imports`, every `s` in `syms` either resolves to a `ModuleEntry::Import { source: FQSymbol { module: M, symbol: s } }` entry in `symbols`, OR the import resolver emitted a "name not exported" diagnostic. (Glob and `MemberGlob` imports produce a fan-out of `ModuleEntry::Import` entries, one per name `M` actually exports.)
+   - The reverse is NOT required: not every `ModuleEntry::Import` chain corresponds to a single `ImportSpec` (e.g., the implicit `(import [prelude [*]])` injection from `interfaces.md` does not appear in `imports`).
+   - **Open question for /int writer (FIXME(/int) below)**: does the implicit prelude injection appear in `imports`? Two principled answers — (a) yes, with a synthetic `Span` distinguishing it (preserves "imports is the source of every Import entry's reason"); (b) no, the prelude is special-cased and its `ModuleEntry::Import` chains lack a corresponding `ImportSpec` (matches today's behaviour). /typecheck does not pre-empt the choice; the resolver's diagnostic quality drives it.
+
+5. **Read-only after typecheck completes.** Once `tc.check_program(...)` returns for a module, that module's `imports` / `exports` / `platforms` / `submodules` are frozen. Cache-write (§12.5 / Step 5b) reads them; the resolver reads them; `.cl` regeneration reads them. There is no second pass that mutates them. This matches the pattern for `symbols` and `next_got_slot` already in place (§9 / §9.8 G7 land discipline).
+
+6. **Serde round-trip identity.** A `SymbolTable<(), ()>` round-tripped through `serde_json::to_string` + `serde_json::from_str` MUST produce a structurally identical `SymbolTable<(), ()>` modulo runtime-only fields (`got: #[serde(skip)]`, `code: #[serde(skip)]`, `platform_fn_ptr: #[serde(skip)]`, `linker: #[serde(skip)]`). This is the fundamental cache-restore invariant for Step 5b (§12.5). /typecheck's contract is that the four new fields participate in serde without quirks — they are plain `Vec<T>` of `Serialize + Deserialize` types and the existing `#[derive(Serialize, Deserialize)]` on `SymbolTable` covers them. A /typecheck unit test in `crates/cranelisp-types/src/module.rs` SHOULD assert this round-trip on a fixture with non-empty values in all four fields.
+
+### 11.4 What dissolves: `ModuleStructure` in `src/save.rs`
+
+The Sprint-57 transitional `ModuleStructure` struct in `src/save.rs` (see SPRINT.md Step 5a description: "delete `ModuleStructure` from `SharedState`") is *not* `cranelisp-types` code, so /typecheck does not edit it. From the typecheck POV the dissolution is sound because:
+
+- Every field on `ModuleStructure` (`import_specs`, `export_specs`, `mod_decls`, `platform_specs` per /arch finding) maps 1:1 onto one of the four new `SymbolTable` fields with identical element types.
+- The `SharedState.module_structures: DashMap<ModuleFullPath, ModuleStructure>` parallel store is exactly the kind of duplication Decision 33 cites — Principle 7 violation (the same structural record in two places, where they can drift). Dissolving it is structurally sound regardless of the typecheck crate's involvement.
+- After dissolution, `src/save.rs::generate_module_source` reads the four fields from the `SymbolTable` it already holds (it already calls `tc.symbol_tables.get(&module)` for `symbols`-side regeneration), so no new lookup path is introduced.
+
+/typecheck's read-side observation: nothing in `cranelisp-typecheck` reads from `ModuleStructure` today (the struct is `/int`-side scaffolding). The dissolution is invisible to typecheck-crate code and tests.
+
+### 11.5 Read-side from typecheck
+
+`cranelisp-typecheck` itself has limited interest in the four new fields. Today, the import-resolver lives in `crates/cranelisp-typecheck/src/imports.rs` (and reads from `tc.imports[&module]`-style transitional structures); after Step 5a, that same resolver migrates to read from `symbol_table.imports` directly. The migration is local to the resolver — it does not change Algorithm W, unification, or any other part of the typecheck crate. Specifically:
+
+- The resolver reads `imports` to enumerate the `(import [M [names]])` requests it must satisfy.
+- The resolver reads `exports` to validate that names actually requested for re-export are in `symbols` (or are valid `ModuleEntry::Import` chains it can re-export).
+- The resolver does *not* read `platforms` or `submodules` directly; those are consumed by `/int` and `/platform` respectively.
+
+The migration is a Wave 2 task; this section commits to the read-shape so /int's writer matches.
+
+### 11.6 Cosmetic plan: stale `infer.rs:828` doc-comment
+
+`crates/cranelisp-typecheck/src/infer.rs:828` carries a doc-comment describing the retired `(run-tests init pass-fn fail-fn)` special form, but the function it annotates is `infer_annotate` (type ascription via `(:Type expr)`). The current text is verbatim:
+
+```text
+/// Infer the type of `(run-tests init pass-fn fail-fn)`.
+///
+/// - `init` determines the accumulator type `:a`
+/// - `pass_fn :: (Fn [:a String Int] :a)`
+```
+
+The fix (Wave 2 implementation, plan-only here) is a one-block edit:
+
+1. Delete the `// FIXME(/typecheck): ...` block (lines 828–833) — no longer needed once corrected.
+2. Replace the `///` block (lines 834–837) with a one-line doc-comment matching `infer_annotate`'s actual behaviour:
+   ```text
+   /// Infer the type of an annotated expression `(:T e)` per spec §3.5.
+   /// Resolves the type expression `T`, infers the body's type, unifies the two,
+   /// and records the resolved type at `span`.
+   ```
+
+That accurately describes the body: `infer_annotate` resolves `annotation` to a concrete `Type` via `resolve_type_expr`, runs `infer_expr` on the inner expression, unifies the two types at `span`, applies the substitution, records the resolved type, and returns it. No behavioural change; comment-only edit.
+
+The Wave 2 actual edit is one `Edit` call on one file. No tests are affected (doc-comments do not affect test outcomes), and there is no other `infer_annotate` documentation site to keep in sync.
+
+---
+
+## 12. Sprint 58 Wave 1 — Phase 5 Step 5c: `SymbolTable<C, L>` Generics Activation
+
+Phase 5 Step 5c parameterises `SymbolTable` and `ModuleEntry` over two type parameters — `C: CodeStore` (the per-function compiled-code store) and `L: LinkerStore` (the per-module linker store). The generics are the DAG-compatible mechanism for placing `Arc<cranelisp_backend::jit::Jit>` directly on `ModuleEntry::Def.code` without inverting the `cranelisp-types → cranelisp-backend` dependency edge (Principle 3). This is the §9.1 normative shape and the gap G12 in `pipeline-v4-roadmap.md`. After Step 5c lands, Decision 31 Scenario 2 fires per redefinition (REPL `/mem` shows live-bytes drop on the redefinition, not just at session teardown).
+
+This section is the typecheck-side observation. The structural change lives entirely in `cranelisp-types` (the trait definitions + parameterisation) and `src/session_v4.rs` (the concrete-type instantiation). /typecheck commits that the change does not alter Algorithm W, unification, constraint solving, monomorphisation, or any part of the inference engine — typecheck is genericity-blind.
+
+### 12.1 Trait surface — empty markers in `cranelisp-types`
+
+Per Decision 32, `CodeStore` and `LinkerStore` are empty marker traits with blanket impls:
+
+```rust
+// crates/cranelisp-types/src/module.rs (Step 5c additions)
+pub trait CodeStore: Send + Sync + 'static {}
+impl<T: Send + Sync + 'static> CodeStore for T {}
+
+pub trait LinkerStore: Send + Sync + 'static {}
+impl<T: Send + Sync + 'static> LinkerStore for T {}
+```
+
+Both default to `()`:
+
+```rust
+pub struct SymbolTable<C: CodeStore = (), L: LinkerStore = ()> { ... }
+pub enum ModuleEntry<C: CodeStore = ()> { ... }
+```
+
+The defaults are load-bearing for /typecheck's invariant (§12.2): every typecheck-crate function signature continues to read `SymbolTable` (resolved as `SymbolTable<(), ()>` thanks to the defaults) without touching `<C, L>` annotations. This is the §"Coherence checklist" item — "Mode differences expressed as parameters" — applied to compile-time generics rather than function arguments.
+
+**Why empty markers, not method-bearing traits.** Decision 32 records the rationale in full; the typecheck-side reason is narrow but compelling: a method-bearing `CodeStore` trait would have to declare `fn drop_code(&self)` or `fn code_ptr(&self) -> *const u8` (or similar), which forces `cranelisp-types` to know about Cranelift JIT pages. That inverts the dependency edge that Principle 3 protects (`cranelisp-types → cranelisp-backend` is forbidden). Empty markers add the necessary type-system handle — "this concrete type is the per-function code store" — without smuggling Cranelift types into the contract surface.
+
+**Why a blanket impl.** `impl<T: Send + Sync + 'static> CodeStore for T {}` means any `Send + Sync + 'static` type the integration layer chooses for `C` automatically satisfies the bound — no per-call-site `impl CodeStore for Arc<Jit>` line. This avoids friction at the instantiation site (`src/session_v4.rs`) and at any future newtype the integration layer decides to wrap around `Arc<Jit>`. The `Send + Sync + 'static` requirement is the irreducible minimum for `SymbolTable` to be `Send + Sync` and live in the `DashMap<ModuleFullPath, SymbolTable<C, L>>` that backs `tc.symbol_tables` — `()` trivially satisfies it.
+
+### 12.2 Typecheck never observes `C` or `L`
+
+Typecheck's authoritative claim: every function signature in `cranelisp-typecheck/src/*` continues to read `SymbolTable` (i.e., `SymbolTable<(), ()>`) after Step 5c lands, with no `<C, L>` propagation into typecheck APIs. The justification:
+
+1. **Decision 25 ownership boundary**: typecheck *writes* the `ast` field of `ModuleEntry::Def` (after `check_form(CheckBody)` succeeds — §3.4). Typecheck *never reads or writes* the `code` field — that is exclusively the backend's responsibility (`/backend` writes after `compile_to_module` returns; `/int` reads at JIT call sites and at `/clif` / `/disasm` introspection). The `code` field is the only place `C` appears on `ModuleEntry::Def`. Symmetrically, `linker: Option<L>` lives on `SymbolTable` itself and is exclusively `/int` / `/backend` territory.
+
+2. **Default-`()` propagation**: when typecheck-crate code writes `&SymbolTable` in a signature, Rust's default-type-parameter resolution treats it as `&SymbolTable<(), ()>`. The `code: Option<C>` field is `Option<()>` — a one-byte zero-sized-option that is always `None` from typecheck's POV. Writing `entry.ast = Some(defn)` works irrespective of `C` (the field is `Option<Defn>`, not parameterised). Writing `entry.code = Some(...)` would require `C = ()` and would write `Some(())` — which typecheck never does, because typecheck never owns compiled code.
+
+3. **Pattern-matching on `ModuleEntry`**: typecheck pattern-matches on `ModuleEntry::Def { ast, kind, scheme, .. }` etc. Pattern matching with `..` ignores the `code` and `platform_fn_ptr` fields entirely — no annotation churn for typecheck patterns. (The unused `code` and `platform_fn_ptr` fields are silently `Option<()>` and `Option<*const u8>` respectively from typecheck's POV; both visit-via-`..`.)
+
+4. **Constructing `ModuleEntry::Def`**: typecheck constructs `ModuleEntry::Def` in two places — `register_defn_signature` (Pass 1) and `register_mono_entry` (§9.4 helper). Both sites write `code: None` and `platform_fn_ptr: None` literally. After Step 5c, `code: None` becomes `code: Option::<()>::None` by default-`()` resolution; the literal `None` continues to work without annotation because Rust infers the type parameter from context (the surrounding `SymbolTable<(), ()>` the entry is being inserted into).
+
+5. **Forward-flowing unit tests**: `crates/cranelisp-types/src/module.rs` test fixtures (e.g., `mk_def` at line 426 — see §9.5 reference) construct `ModuleEntry::Def` with `code: None`. These tests are `cranelisp-types`-internal and continue to compile because the `()` default applies. /typecheck's authority over these tests confirms: no test in `cranelisp-typecheck` requires updating to add `<(), ()>` annotations.
+
+**Consequence for /typecheck's Wave 2 work**: zero implementation changes to `cranelisp-typecheck/src/*`. The changes to `cranelisp-types/src/module.rs` (trait additions, parameterisation) are owned by /typecheck and land alongside §11's structural-decl fields; the call-site sweep across `src/`, `crates/cranelisp-backend/`, `crates/cranelisp-frontend/` is /int + /backend territory. /typecheck's only Wave 2 implementation touches are:
+
+- Add `pub trait CodeStore` + blanket impl + `pub trait LinkerStore` + blanket impl to `crates/cranelisp-types/src/module.rs`.
+- Parameterise `SymbolTable` and `ModuleEntry` per the `interfaces.md` shape.
+- Add `code: Option<C>` to `ModuleEntry::Def` (re-using the existing `code: Option<Code>` field by replacing the concrete `Code` with `C`; the `#[serde(skip)]` discipline carries over verbatim).
+- Add `linker: Option<L>` to `SymbolTable` (new field, `#[serde(skip)]`).
+- Update the `cranelisp-types` unit tests to match (the `mk_def` fixture and similar) — most should compile unchanged thanks to default-`()` resolution; if any need an explicit `SymbolTable::<(), ()>::new(...)` annotation, that is a one-line edit.
+
+The `Code` type itself (currently `crates/cranelisp-types/src/code.rs` per the current `ModuleEntry::Def.code: Option<Code>` shape — confirmed via `crates/cranelisp-types/src/lib.rs` re-export at the top of `module.rs`) does not move. The current concrete `Code` becomes the integration layer's chosen `C` — likely `Code` directly, or a newtype wrapping `Arc<Jit>` + the existing fields, per /int's `symbol-table-generics.md` design doc (forthcoming Wave 1).
+
+### 12.3 Why typecheck does not observe `Arc<Jit>` lifetime
+
+Decision 31's Scenario 2 — per-redefinition JIT reclaim — is the headline behavioural payoff of Step 5c. The reclaim primitive is the `Arc<Jit>` refcount reaching zero on the *last* `ModuleEntry::Def.code` referencing it; the custom `Drop` on the `Jit` wrapper then calls `unsafe JITModule::free_memory()`. This entire mechanism is invisible to typecheck:
+
+- /typecheck never holds an `Arc<Jit>`. Typecheck operates on `SymbolTable<(), ()>` so `code: Option<()>` is unconditionally `None` from typecheck's POV.
+- /typecheck never causes `Arc<Jit>` clones or drops. The clones happen at `compile_to_module`'s code-write site (`/backend`-owned); the drops happen at `ModuleEntry::Def.code` overwrite (REPL redefinition, `/int`-owned) or at session teardown (the integration layer's session-drop, `/int`-owned).
+- /typecheck's REPL additive strategy (§8.4) — redefining a function replaces the `ModuleEntry::Def` entry — is the *trigger* for Decision 31 Scenario 2, but the trigger fires at the *integration-layer write site*, not at the typecheck-crate write site. Typecheck constructs the new `ModuleEntry::Def` value (with `code: None`); /int swaps it into the symbol table and the old entry's `Arc<Jit>` clone drops as part of `HashMap::insert`'s overwrite semantics.
+
+The safety invariant from Decision 31 (no `fn` pointer derived from a JIT reachable when the Arc refcount hits 0) holds at the `/int` + `/backend` boundary; /typecheck has no role in maintaining or weakening it.
+
+### 12.4 Concrete-type instantiation site
+
+Per Decision 32 + the SPRINT.md /int Step 5c Approach, the single concrete-type instantiation site is `src/session_v4.rs`. The integration layer chooses:
+
+- `C = Arc<cranelisp_backend::jit::Jit>` (or a thin newtype `Code` wrapping `Arc<Jit>` plus the raw `*const u8` code pointer that the GOT slot needs — /int's `symbol-table-generics.md` design picks one).
+- `L = cranelisp_backend::cache::Linker` (or equivalent thin wrapper, similarly /int's choice).
+
+The session-level `tc.symbol_tables: DashMap<ModuleFullPath, SymbolTable<Code, Linker>>` at the session boundary, with `tc.symbol_tables_view()` (or equivalent) returning `&DashMap<ModuleFullPath, SymbolTable<(), ()>>` for typecheck-crate consumption — *if* typecheck-crate code needs to read entries from the session. (In practice, typecheck operates per-module on its own `SymbolTable<(), ()>` instance and merges results back via the worker's symbol-table-write path; it does not need a typed view of the integration-layer's parameterised store.)
+
+The `SymbolTable<(), ()>` ↔ `SymbolTable<Code, Linker>` boundary is *not* a runtime cast — it is a compile-time view of the same data with different default-parameter resolution at different call sites. Typecheck's `SymbolTable` reads `code: Option<()>`; integration-layer's `SymbolTable<Code, Linker>` reads `code: Option<Code>`. Because `code` is `#[serde(skip)]`, the two views have an identical *serialised* representation, which is what makes cache-restore (§12.5) trivially work across the boundary.
+
+/typecheck does not pre-empt /int's choice between `C = Arc<Jit>` directly versus `C = Code` (where `Code` newtype-wraps `Arc<Jit>` + fields). Either satisfies `CodeStore`'s `Send + Sync + 'static` blanket bound. Whichever /int picks, the typecheck-side observation is unchanged: typecheck sees `()` and never observes the choice.
+
+### 12.5 Cache restore — Step 5b interaction
+
+Step 5b serialises `SymbolTable` (with the Step 5a structural-decl fields populated and the Step 5c `code` / `platform_fn_ptr` / `linker` fields skipped) to `.meta.json`. Cache-restore deserialises it back. The typecheck-side observation:
+
+1. **Cache-restore deserialises into `SymbolTable<(), ()>` directly**. The cache reader's deserialisation target is the typecheck-crate's view — `SymbolTable` with the default `<(), ()>` resolution. The `code: Option<()>` field is unconditionally `None` after deserialisation (it is `#[serde(skip)]`; `()` re-initialises trivially). `platform_fn_ptr: Option<*const u8>` is also `None` post-deserialise (`#[serde(skip)]`). `linker: Option<()>` is also `None`. **Cache-restore therefore produces a structurally complete typecheck-side view without any re-typechecking.**
+
+2. **Code is re-derived by re-codegen, not deserialised**. After cache-restore, the priority worker walks `defined_symbols()` (§9.5) over each module's `SymbolTable` and runs `compile_to_module` over the entries that codegen needs to materialise. The new code populates `code: Option<C>` at the integration-layer's parameterised view (`C = Code` / `Arc<Jit>` per §12.4). This is the same code-write path used on a fresh build — no cache-specific code path.
+
+3. **Platform fn ptrs are re-resolved from the manifest**. Per Decision 26's serialisation discipline, platform fn ptrs are re-derived on cache-hit load by re-opening the DLL referenced by the corresponding `PlatformDecl` entry and reading its manifest. This is `/platform`'s territory (the addendum to `design/platform/platform-registry-removal.md` per the SPRINT.md /platform task). Typecheck has no role in the re-resolution.
+
+4. **`schema_version` discipline (Decision 34)**. The `schema_version: u32` field on the serialised `SymbolTable` (via `#[serde(default)]`, `interfaces.md` line 891) gates cache-restore: if the deserialised version does not match the current `CACHE_SCHEMA_VERSION` constant (owned by `/backend` in `crates/cranelisp-backend/src/cache/mod.rs`), the cache entry is treated as stale and the source is re-typechecked. /typecheck's commitment: every shape-changing field addition to `SymbolTable` or `ModuleEntry` (deletion, type change, or non-default field addition) MUST coordinate with `/backend` to bump `CACHE_SCHEMA_VERSION`. /typecheck is the field-shape owner for `cranelisp-types/src/module.rs`, so /typecheck triggers the bump request via FIXME(/backend) on `cache/mod.rs` when a shape-changing edit lands.
+
+5. **Round-trip invariant (echoed from §11.3 item 6)**. A `SymbolTable<(), ()>` serialised via `serde_json::to_string` and deserialised via `serde_json::from_str` MUST be structurally identical modulo `#[serde(skip)]` fields. This is the fundamental contract Step 5b is built on. /typecheck's contribution to validating it is a unit test in `crates/cranelisp-types/src/module.rs` (see §11.3 item 6 — the same test covers both Step 5a and Step 5b).
+
+**Typecheck-side invariants survive serialise→deserialise.** Specifically:
+- `SymbolTable.symbols` round-trips: every `ModuleEntry::Def` with `ast: Some(defn)` retains the annotated `Defn` (the `inferred_type` and `resolved_call` annotations on AST nodes are `Box<Type>` / `Box<ResolvedCall>` and serialise via the `#[serde(default)]` discipline established in §3 / §8.5).
+- `SymbolTable.next_got_slot` round-trips (it is a `usize` with `#[serde(default)]`; the GOT itself is `#[serde(skip)]` and re-initialises to a fresh empty `GotTable` — codegen re-populates).
+- The four Step 5a structural-decl fields round-trip per §11.3 item 6.
+- `schema_version` round-trips; mismatch triggers stale-cache treatment.
+
+After cache-restore, typecheck's view of the module is *identical* to a fresh-typechecked view (modulo the runtime-only fields that fresh-typecheck would also leave empty pre-codegen). No re-typechecking is triggered by cache-restore for valid (`schema_version`-matching) cache entries; this is the convergence payoff of Step 5b.
+
+### 12.6 Sketch comparison
+
+The sketch (`sketch/src/typechecker.rs`) does not parameterise its symbol table. Compiled code lives on `CompiledModule` (the prototype's pre-decomposition shape) as a concrete `JitModule` field, and `cranelisp-types` (in the prototype) directly depends on Cranelift JIT — Principle 3 violation that the reimplementation explicitly corrects. The sketch had no `CodeStore` / `LinkerStore` traits, no `SymbolTable<C, L>` shape, and no per-redefinition reclaim mechanism — its REPL leaks JIT pages on every redefinition (the same Cranelift `Memory::drop` leak Decision 31 documents, with no mitigation).
+
+**Divergence**: the reimplementation's empty-marker traits + default-`()` parameterisation gives the same data shape from typecheck's POV (typecheck operates on a concrete-`()` symbol table, never observes `C`) while keeping the integration layer free to choose the concrete `C` that delivers per-redefinition reclaim. This is the "narrow interface" rationale (Principle 2): typecheck sees the minimum surface area (`SymbolTable<(), ()>` is genericity-blind), while the integration layer sees the maximum (`SymbolTable<Code, Linker>` carries the JIT lifetime story).
+
+The sketch's design works for a single-pipeline single-threaded prototype; the reimplementation's concurrent pipeline + per-redefinition reclaim require the parameterised shape. The divergence is justified by the audit findings that catalogue the prototype's lifecycle defects (the `JitModule` lifetime story is one of the 15 HIGH-severity findings in `sketch/audits/`).
+
+### 12.7 Cross-references
+
+- `design/arch/CLAUDE.md` Decision 32 — `CodeStore` / `LinkerStore` trait shape (canonical).
+- `design/arch/CLAUDE.md` Decision 25 — `code` field placement on `ModuleEntry::Def` + Decision 31's Scenario 2 cross-reference.
+- `design/arch/CLAUDE.md` Decision 31 — JIT lifetime + Scenario 2 reclaim (the behavioural payoff Step 5c delivers).
+- `design/arch/CLAUDE.md` Decision 33 — structural decls on `SymbolTable` (companion to §11).
+- `design/arch/CLAUDE.md` Decision 34 — cache schema versioning (companion to §12.5).
+- `design/arch/interfaces.md` §"Symbol Table" — target shape (lines 858–931).
+- `design/arch/interfaces.md` §"Module Entries" — `ModuleEntry<C>` parameterisation (lines 944–1064).
+- `design/arch/pipeline-v4-roadmap.md` Phase 5 Step 5a / 5b / 5c — the migration plan this section observes.
+- `design/int/symbol-table-cache.md` (forthcoming Wave 1) — /int's writer-side design for Step 5b.
+- `design/int/symbol-table-generics.md` (forthcoming Wave 1) — /int's call-site sweep design for Step 5c, including the concrete-`C` choice.
+- `design/backend/module-caching.md` (Wave 1 update) — /backend's cache-restore design for Step 5b.

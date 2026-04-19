@@ -825,16 +825,9 @@ impl TypeCheckEnv<'_> {
         Ok(trace_type)
     }
 
-    // FIXME(/typecheck): The doc-comment below describes the retired
-    // `(run-tests init pass-fn fail-fn)` special form, but the function it
-    // annotates is `infer_annotate` (type ascription). Rewrite or delete
-    // the doc-comment to match what `infer_annotate` actually does. The old
-    // run-tests special form no longer exists in the language (replaced by
-    // discover-tests / run-test builtins). Filed Sprint 57 planning.
-    /// Infer the type of `(run-tests init pass-fn fail-fn)`.
-    ///
-    /// - `init` determines the accumulator type `:a`
-    /// - `pass_fn :: (Fn [:a String Int] :a)`
+    /// Infer the type of an annotated expression `(:T e)` per spec §3.5.
+    /// Resolves the type expression `T`, infers the body's type, unifies the two,
+    /// and records the resolved type at `span`.
     fn infer_annotate(
         &self, state: &mut CheckState,
         annotation: &TypeExpr,

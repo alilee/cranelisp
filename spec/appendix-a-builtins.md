@@ -119,17 +119,16 @@ Extern primitives are called via the foreign function interface.
 
 **Vec operations**:
 
-<!-- FIXME(/spec): `vec-map` and `vec-reduce` appear in this primitives table but are NOT primitives — they are implemented in `stdlib/collections/vec.cl` (see `(defn vec-map ...)` at stdlib/collections/vec.cl:18 and `(defn vec-reduce ...)` at :39). Attempting `(vec-map ...)` without importing stdlib yields `undefined variable: vec-map`. These rows should be moved out of appendix-a (which is for builtins / primitives) into §11 (stdlib non-normative). `builtins.rs` has their docstrings but no runtime binding or primitive registration. Filed by /qa during Sprint 57 Wave 5 while resolving the previous FIXME(/qa) on coverage. -->
 | Function | Type | Description |
 |---|---|---|
 | `vec-get` | `(Fn [(Vec a) Int] a)` | Index (bounds-checked; panics on out-of-bounds) | [Tested tests/ring1.rs::vec_get_first]
 | `vec-set` | `(Fn [(Vec a) Int a] (Vec a))` | Return new Vec with element at index replaced | [Tested tests/ring1.rs::vec_set_element]
 | `vec-push` | `(Fn [(Vec a) a] (Vec a))` | Return new Vec with element appended | [Tested tests/ring1.rs::vec_push_appends]
 | `vec-len` | `(Fn [(Vec a)] Int)` | Number of elements | [Tested tests/ring1.rs::vec_len_three]
-| `vec-map` | `(Fn [(Fn [a] b) (Vec a)] (Vec b))` | Map function over elements (stdlib, NOT a primitive — see FIXME(/spec) above) | [Tested stdlib/collections/vec.cl via tests/stdlib.rs]
-| `vec-reduce` | `(Fn [(Fn [b a] b) b (Vec a)] b)` | Left fold over elements (stdlib, NOT a primitive — see FIXME(/spec) above) | [Tested stdlib/collections/vec.cl via tests/stdlib.rs]
 
 `vec-set` and `vec-push` are semantically pure (return new values). The implementation MAY use copy-on-write when the reference count is 1.
+
+Higher-order Vec operations such as `vec-map` and `vec-reduce` are NOT primitives — they are provided by the standard library (`stdlib/collections/vec.cl` in the reference implementation), built on top of the primitives above. See [Section 11](11-stdlib.md) for the contract a standard library must satisfy.
 
 ## A.4 Special Forms [Tested]
 

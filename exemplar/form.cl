@@ -105,5 +105,76 @@
     (process-pairs-helper puzzle pairs 0)))
 
 ;; ── Tests ─────────────────────────────────────────────────────────────
-;; FIXME(/int): test submodule disabled — parent↔child typecheck deadlock
-;; (spec §8.3.7 + Decision 30). See grid.cl for full explanation.
+;;
+;; Test functions are top-level `test-*` defns returning `(Option String)`
+;; per repl/spec.md §16.1. Discoverable via `(discover-tests)`,
+;; runnable via `(run-test ...)` — Decision 30 safe pattern (c). No
+;; `(mod test ...)` wrapper, no `(import [super [*]])`.
+
+;; Test parsing a simple form body with a few digits
+(defn test-parse-simple []
+  (let [body "c00=5&c02=3"
+        result (parse-form-body body)]
+    ;; Position 0 should be '5', position 2 should be '3', rest dots
+    (if (str-eq (char-at result 0) "5")
+      (if (str-eq (char-at result 2) "3") None
+        (Some "position 2 should be '3'"))
+      (Some "position 0 should be '5'"))))
+
+;; Test that empty values produce dots
+(defn test-empty-values-produce-dots []
+  (let [body "c00=&c01=&c02="
+        result (parse-form-body body)]
+    (if (str-eq (char-at result 0) ".")
+      (if (str-eq (char-at result 1) ".")
+        (if (str-eq (char-at result 2) ".") None
+          (Some "position 2 should be a dot"))
+        (Some "position 1 should be a dot"))
+      (Some "position 0 should be a dot"))))
+
+;; Test result is exactly 81 characters
+(defn test-result-length []
+  (let [result (parse-form-body "c00=5")]
+    (if (eq-i64 (str-len result) 81) None
+      (Some "parse-form-body result should be 81 chars long"))))
+
+;; Test url-decode replaces + with space
+(defn test-url-decode []
+  (if (str-eq (url-decode "hello+world") "hello world") None
+    (Some "url-decode should replace + with space")))
+
+;; Test parse-field-index with valid name
+(defn test-field-index-valid []
+  ;; c35 -> row 3, col 5 -> index 32
+  (if (eq-i64 (parse-field-index "c35") 32) None
+    (Some "parse-field-index of 'c35' should be 32")))
+
+;; Test parse-field-index with invalid name
+(defn test-field-index-invalid []
+  (if (eq-i64 (parse-field-index "x00") -1) None
+    (Some "parse-field-index of 'x00' should be -1")))
+
+;; Test that all 81 positions are addressable
+(defn test-last-position []
+  (let [body "c88=7"
+        result (parse-form-body body)]
+    ;; Position 80 (row 8, col 8) should be '7'
+    (if (str-eq (char-at result 80) "7") None
+      (Some "position 80 should be '7'"))))
+
+;; Test with a more realistic body fragment
+(defn test-multiple-digits []
+  (let [body "c00=5&c01=3&c10=6&c11=&c20=9"
+        result (parse-form-body body)]
+    ;; c00=5 -> idx 0, c01=3 -> idx 1, c10=6 -> idx 9,
+    ;; c11= -> idx 10 (dot), c20=9 -> idx 18
+    (if (str-eq (char-at result 0) "5")
+      (if (str-eq (char-at result 1) "3")
+        (if (str-eq (char-at result 9) "6")
+          (if (str-eq (char-at result 10) ".")
+            (if (str-eq (char-at result 18) "9") None
+              (Some "idx 18 should be '9'"))
+            (Some "idx 10 should be '.'"))
+          (Some "idx 9 should be '6'"))
+        (Some "idx 1 should be '3'"))
+      (Some "idx 0 should be '5'"))))

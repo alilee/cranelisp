@@ -117,17 +117,11 @@ fn parse_mod_decl(elems: &[Sexp], span: Span, is_private: bool) -> Result<ModDec
 /// Parse `(import [module-spec names-list ...])`.
 ///
 /// The bracket contents are pairs: `module-spec names-list module-spec names-list ...`
-// FIXME(/frontend): spec citations in this file reference §8.3.6; the correct
-// section is now §8.3.7 "Super Import" after `/spec` renumbered the duplicate
-// §8.3.7 in Sprint 57 Wave 0. Seven code-comment citations need updating
-// (lines 124, 155, 169, 378, 593, 612, 625). Cosmetic — pointer resolves
-// unambiguously; non-blocking for Wave 0 close. Batch-update in the next
-// /frontend touch.
 /// where module-spec is a symbol, `super`, or `(module alias)`, and names-list is `[names]`.
 ///
 /// `containing_module` is the path of the module whose source contains this
 /// import form; it is required to rewrite `super` to the parent module path
-/// per spec §8.3.6.
+/// per spec §8.3.7.
 fn parse_import(
     elems: &[Sexp],
     span: Span,
@@ -158,7 +152,7 @@ fn parse_import(
 /// Parse pairs of `module-spec names-list` from bracket contents.
 ///
 /// Rewrites `super` module specifiers to the parent of `containing_module`
-/// per spec §8.3.6: inside `a.b.c`, `super` resolves to `a.b`. Using `super`
+/// per spec §8.3.7: inside `a.b.c`, `super` resolves to `a.b`. Using `super`
 /// in a root module produces a compile-time error. After this function
 /// returns, no `ImportSpec.module_path` contains the literal string `"super"`.
 fn parse_import_entries(
@@ -172,7 +166,7 @@ fn parse_import_entries(
     while i < items.len() {
         let (raw_module_path, alias, mod_span) = parse_module_spec(&items[i])?;
 
-        // Rewrite `super` to the parent module path (spec §8.3.6).
+        // Rewrite `super` to the parent module path (spec §8.3.7).
         let module_path = if raw_module_path == "super" {
             match containing_module.as_ref().rsplit_once('.') {
                 Some((parent, _)) => parent.to_string(),
@@ -381,7 +375,7 @@ fn parse_platform(elems: &[Sexp], span: Span) -> Result<PlatformSpec, CranelispE
 ///
 /// `containing_module` is the path of the module whose source contains this
 /// import form; it is required to rewrite `super` to the parent module path
-/// per spec §8.3.6. After this function returns, no
+/// per spec §8.3.7. After this function returns, no
 /// `ImportSpec.module_path` contains the literal string `"super"` — the
 /// frontend-boundary invariant for `ImportSpec`.
 pub fn parse_import_sexp(
@@ -596,7 +590,7 @@ mod tests {
         assert_eq!(ms.import_specs[0].names, ImportNames::None);
     }
 
-    // spec: 08-modules §8.3.6 — super import rewritten to parent module path
+    // spec: 08-modules §8.3.7 — super import rewritten to parent module path
     //
     // Per the super-import arbitration (design/arch/super-import-arbitration.md),
     // `super` is rewritten at frontend capture time. After extraction,
@@ -615,7 +609,7 @@ mod tests {
         assert_eq!(ms.import_specs[0].names, ImportNames::Glob);
     }
 
-    // spec: 08-modules §8.3.6 — nested super rewrite (a.b.c → a.b)
+    // spec: 08-modules §8.3.7 — nested super rewrite (a.b.c → a.b)
     #[test]
     fn test_import_super_rewrites_nested_parent() {
         let sexps = parse("(import [super [helper]])");
@@ -628,7 +622,7 @@ mod tests {
         assert_eq!(&*ms.import_specs[0].module_path, "app.handler");
     }
 
-    // spec: 08-modules §8.3.6 — super at a top-level module is a compile-time error
+    // spec: 08-modules §8.3.7 — super at a top-level module is a compile-time error
     #[test]
     fn test_import_super_at_root_errors() {
         let sexps = parse("(import [super [*]])");
@@ -659,7 +653,7 @@ mod tests {
         }
     }
 
-    // spec: 08-modules §8.3.7 — multiple modules in one import form
+    // spec: 08-modules §8.3.8 — multiple modules in one import form
     #[test]
     fn test_import_multiple_modules() {
         let (ms, _) = extract("(import [core.option [Some None] core.math [*]])");

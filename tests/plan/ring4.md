@@ -852,6 +852,245 @@ Semantic: snapshots `cranelisp_runtime::alloc_count()` / `dealloc_count()` / `by
 | Wave 6 (showcase) | 0 | 8 | Cross-skill close gate. |
 | **Sprint 57 total** | **38 unit** | **~59 integration** | Baseline before: 1602/14. Target after: ≥1636/≤9. |
 
+## Sprint 58 — Phase 5 Convergence Tests (data-model close)
+
+Derived from:
+- `design/typecheck/ast-annotation.md` §11 (Step 5a — structural decls on `SymbolTable`, six typecheck-side invariants) + §12 (Step 5c — `CodeStore`/`LinkerStore` empty marker traits, cache-restore round-trip)
+- `design/backend/module-caching.md` §14 (PRESCRIPTIVE for Wave 2 — cache rewrite, `CACHE_SCHEMA_VERSION`)
+- `design/backend/compile-to-module.md` §17 (Wave 3 — generics activation, `Code` enum + `SessionSymbolTable` alias)
+- `design/backend/ring2-rc.md` §10 (`io.rs:28` consuming-convention fix; user-visible regression-test symptom per Condition 6)
+- `design/int/symbol-table-cache.md` §3 (Step 5b cache-write + cache-hit data flow)
+- `design/int/symbol-table-generics.md` §3 (Step 5c staged sweep; `Arc<Jit>` on `ModuleEntry::Def.code`; `kept_jits` dissolution)
+- `design/int/private-submodule-import.md` (Step 5d (i))
+- `design/int/multi-sig-introspection.md` (Step 5d (ii))
+- `design/int/cranelisp-toml.md` (Step 5d (iii))
+- `design/platform/platform-registry-removal.md` Addendum §A1–A7 (cache-restore platform-fn-ptr re-resolution; `kept_dlls` retention unchanged)
+
+Baseline at sprint start: **1679 passed / 17 failed / 0 ignored** (Sprint 57 close — 15 pre-existing + 2 explicit Wave-5 carries to Sprint 58). Target at Sprint 58 close: **≤4 failures** — Step 5b expected to clear the 9 cache SIGSEGV / cross-module GOT + the 3 sprint23 cache/link + the 1 v4 cache-hit-dep cluster (13 of 15 pre-existing); Step 5d (i)+(ii) clear the 2 carried `/int` gaps; the 2 residuals (`sketch_run_tests_pass_fn_called` + Sprint 57 follow-on `sketch_port`) re-triaged in §G.16 below.
+
+The Sprint 58 sub-sections below mirror the design-doc grouping. Each test row pins: name, intended location, spec/design anchor, and expected outcome (positive / negative / regression-guard). Annotations move from `[R4 S58]` → `[Tested tests/file::test_name]` (or `[Tested+Neg ...]`) as Wave 2/3/4 implementation lands.
+
+### G.10. Step 5a — Structural decls on `SymbolTable` (typecheck-side invariants)
+
+Validates `/typecheck` `ast-annotation.md` §11.3's six invariants. Most are unit-level (round-trip serde, structural shape) and live in the owning crate; integration coverage is for cross-pipeline behaviour (private-submodule import — see §G.13 (i) below; `.cl` regeneration round-trip — see §G.10.7).
+
+**Unit** (`/typecheck`, in `crates/cranelisp-types/src/module.rs::tests` under `#[cfg(test)]`):
+- `symbol_table_imports_preserves_source_order` — append-only writes record source order. Construct a `SymbolTable` with three `ImportSpec`s pushed in order; assert `imports[i].span.start < imports[i+1].span.start`. Spec: `ast-annotation.md` §11.3 invariant 1.
+- `symbol_table_imports_no_deduplication` — duplicate-import preservation. Push two structurally-identical `ImportSpec` values (different spans); assert `imports.len() == 2`. Spec: §11.3 invariant 2 (negative invariant — writer MUST NOT dedup).
+- `symbol_table_exports_no_deduplication` — same shape for `exports`.
+- `symbol_table_submodules_preserves_is_private` — push two `ModDecl`s with distinct `is_private` values; assert flag survives round-trip. Spec: §11.3 + Decision 33.
+- `symbol_table_serde_round_trip_with_structural_decls` — round-trip a non-empty `SymbolTable<(), ()>` (with all four structural fields populated) through `serde_json::to_string` + `from_str`; assert structural identity modulo `#[serde(skip)]` fields (`got`, `code`, `platform_fn_ptr`, `linker`). Spec: §11.3 invariant 6 + §12.5 cache-restore invariant.
+- `symbol_table_no_cross_module_mixing` — given two `SymbolTable`s for modules A and B, write A's import via the writer path then assert B's `imports` is unchanged. Spec: §11.3 invariant 3.
+- `symbol_table_read_only_after_typecheck` — sentinel test: any module API mutating `imports`/`exports`/`platforms`/`submodules` post-typecheck must not exist. Compile-time check (no public mut accessors) or grep-based scan over `crates/cranelisp-typecheck/src/` for `imports.push|exports.push|submodules.push|platforms.push` outside the writer module. Spec: §11.3 invariant 5.
+
+**Integration** (`/qa`, in `tests/modules.rs` or new `tests/cl_regen.rs`):
+- `cl_regen_preserves_source_order_imports` — write a `.cl` with three imports in a defined order; load + re-generate via `src/save.rs::generate_module_source` (post-Step-5a refactor); assert the regenerated source preserves order. Positive. Spec: `ast-annotation.md` §11.4 + Decision 33 (b).
+- `cl_regen_preserves_duplicate_imports` — input `.cl` has two duplicate `(import [foo [*]])` forms; regenerated source contains both. Positive. Spec: §11.3 invariant 2.
+- `cl_regen_preserves_mod_private_marker_neg` — input `.cl` has `(mod- internal)`; regenerated source contains `mod-` (NOT `mod`). Negative-shape regression guard against accidental privacy stripping. Spec: §11.3 + spec/08-modules.md §8.2.3.
+
+**Open-question test** (await `/int` Wave 2 design call per §11.3 invariant 4):
+- `symbol_table_implicit_prelude_in_imports_field` — does the implicit `(import [prelude [*]])` injection at `src/worker.rs:1973` populate `SymbolTable.imports`? `/int` decides Option (a) preserve-with-synthetic-span vs (b) special-case (today's behaviour). Test name and assertion shape pinned once `/int` decides. Tracked in §G.16.
+
+Approximate counts: 7 unit (`/typecheck`) + 3 integration (`/qa`) + 1 deferred-pending-/int-decision.
+
+### G.11. Step 5b — Cache via `SymbolTable` (clear the cache failure cluster)
+
+Validates `design/backend/module-caching.md` §14 (PRESCRIPTIVE) + `design/int/symbol-table-cache.md` §3.1–§3.2 + Decision 34 (`CACHE_SCHEMA_VERSION`). Target: **flip green ≥13 of the 15 pre-existing failures**.
+
+**Unit** (`/backend`, in `crates/cranelisp-backend/src/cache/` under `#[cfg(test)]`):
+- `cache_meta_json_is_serialised_symbol_table` — write a `SymbolTable<(), ()>` with one Defn entry, schema-version stamped, to `.meta.json`; deserialise; assert structural identity. Spec: `module-caching.md` §14.1.
+- `cache_schema_version_mismatch_falls_through` — synthesise a `.meta.json` with `schema_version = u32::MAX` (mismatch); cache-load returns "miss" (not "error"). Spec: Decision 34.
+- `cache_codegen_input_stash_is_deleted` — compile-time / structural check: `SharedState::codegen_programs` does not exist; `stash_codegen_program` symbol is unresolved; `try_cache_hit_load`'s 238-line import-resolution duplication is gone (line-count assertion or grep regression guard). Spec: `module-caching.md` §14.4 + closes MED-2.
+
+**Unit** (`/int`, in `src/worker.rs::tests`):
+- `worker_cache_write_reads_only_symbol_tables` — instrument the cache-write path; assert no read of `module_structures` or `codegen_programs` (both deleted Step 5b). Spec: `symbol-table-cache.md` §3.1.
+
+**Integration** (`/qa`, in `tests/cache.rs` — extend existing file):
+
+Cache round-trip (Step 5b verification per `/qa` SPRINT.md task):
+- `cache_round_trip_single_module_observable_equivalence` — fresh-build vs cache-hit observable equivalence: compile a single-defn module from source; capture stdout + exit code; clear in-memory state; restart with the cache present; assert identical stdout + exit code. Positive. Spec: `module-caching.md` §14 (cache-hit reproduces identical compilation state).
+- `cache_round_trip_multi_module_observable_equivalence` — same as above but with two modules + cross-module call. Positive.
+- `cache_invalidation_on_dep_change_e2e` — write project with module `dep`; build (warm cache); modify `dep.cl`; rebuild dependent; assert cache-hit was NOT used (dependent recompiled because dep changed). Positive (= correct invalidation behaviour). Spec: `module-caching.md` §14.4 (`schema_version`-mismatch path applies the same as dep-hash mismatch).
+- `cache_schema_version_mismatch_e2e_falls_through` — write a project; build (warm cache); manually edit the `.meta.json` to bump `schema_version` to `u32::MAX`; rebuild; assert: (a) build succeeds (no error), (b) cache-hit was NOT used (counter or trace assertion). Positive. Spec: Decision 34.
+
+**Pinned cache-failure flip-greens** (Sprint 57 baseline; expected to flip under Step 5b):
+
+The 17-failure baseline cluster of cache failures, taxonomised per Sprint 57 close (`tests/plan/ring4.md` §G.6 Wave 6 finding):
+
+*9 cache SIGSEGV / cross-module GOT failures (`tests/cache.rs`)*:
+1. `cache_multi_module_hit_cross_module_call` (line 1253)
+2. `cache_multi_module_transitive_imports` (line 1297)
+3. `cache_multi_module_invalidation_dependency_change` (line 1336)
+4. `cache_multi_module_unchanged_dep_stays_cached` (line 1369)
+5. `cache_multi_module_multiple_imports` (line 1414)
+6. `cache_multi_module_two_deps` (line 1442)
+7. `cache_multi_module_with_prelude` (line 1561)
+8. `cache_pipeline_hit_second_compile` (line 1115)
+9. `cache_invalidation_transitive_pipeline` (line 1176)
+
+(`/qa` confirms the exact 9 by re-running the failing-test list at Wave 2 implementation start; if the baseline differs from the above set, file FIXME and re-pin. The above is the strongest candidate set per the `cache_multi_module_*` and `cache_pipeline_*` cluster names that match the "cache SIGSEGV / cross-module GOT" taxonomy.)
+
+*3 sprint23 cache/link failures (`tests/sprint23.rs`)*:
+1. `cache_repl_loads_on_startup` (line 1119)
+2. `persist_bug2_cache_files_created_after_restore` (line 1695)
+3. `cache_repl_produces_object_files` (line 1923)
+
+(Sprint 57 documented "3" but observed actual was 4 — see Sprint 57 close finding §G.6. The fourth is likely `cache_repl_writes_on_import` (line 1079) or `link_reuses_cached_object_files` (line 318) — `/qa` confirms at Wave 2 implementation start. The 4th may also be `cache_quick_build_links_cached_objects` from `tests/cache.rs` if the categorisation overlaps.)
+
+*1 v4 cache-hit dep failure (`tests/v4_pipeline.rs`)*:
+1. `v4_cache_hit_dependency` (line 602)
+
+**Wave 2 close acceptance**: ≥9 of the 9 `cache_multi_module_*`/`cache_pipeline_*` flip green; ≥3 of the 3 sprint23 cache/link flip green; `v4_cache_hit_dependency` flips green. Total: ≥13 of the 13 enumerated tests above flip green. Worst case: cross-module cache failures land partial; `/qa` re-pins residuals to S59 with explicit per-test rationale.
+
+Approximate counts: 3 unit (`/backend`) + 1 unit (`/int`) + 4 integration (`/qa`) + 13 pinned flip-green targets.
+
+### G.12. Step 5c — `SymbolTable<C, L>` generics + Decision 31 Scenario 2
+
+Validates `design/typecheck/ast-annotation.md` §12 + `design/int/symbol-table-generics.md` §3 + Decision 31 Scenario 2 (per-redefinition JIT reclaim — the headline payoff).
+
+**Unit** (`/typecheck`, in `crates/cranelisp-types/src/module.rs::tests` under `#[cfg(test)]`):
+- `symbol_table_default_generics_resolve_to_unit` — assert the type alias `SymbolTable` (no generic args) resolves to `SymbolTable<(), ()>`; the four `Vec` fields and the `code: Option<()>` / `linker: Option<()>` shape compile cleanly. Spec: `ast-annotation.md` §12.1 + Decision 32.
+- `code_store_blanket_impl_for_unit` — assert `(): CodeStore` and `(): LinkerStore` hold via the blanket impl. Spec: §12.2 + Decision 32.
+- `module_entry_def_code_field_is_optional_c` — given `SymbolTable<i64, ()>` (synthetic), construct `ModuleEntry::Def { code: Some(42i64), .. }`; assert it compiles. Spec: §12.4.
+
+**Unit** (`/int`, in `src/session_v4.rs::tests` and `src/worker.rs::tests`):
+- `code_enum_jit_variant_carries_arc_jit` — construct `Code::Jit { jit: Arc::new(Jit::placeholder()), ptr: ... }`; assert `Arc::strong_count(&jit) == 1`; clone into a second `Code::Jit`; assert count == 2; drop the second; assert count == 1; drop the first; assert the underlying `Jit::Drop` ran (e.g., via a counter on a synthetic `Jit` test double). Spec: `symbol-table-generics.md` §3 Layer 3 + Decision 31 Scenario 2 reclaim primitive.
+- `kept_jits_field_does_not_exist` — compile-time regression guard: `SharedState::kept_jits` is unresolved; grep over `src/**/*.rs` for `kept_jits` returns zero non-comment hits. Spec: `symbol-table-generics.md` §2.3 dissolution.
+- `kept_linkers_field_does_not_exist` — same shape for `kept_linkers`. Spec: §2.3.
+- `kept_dlls_field_still_exists` — counter-regression-guard: `SharedState::kept_dlls` is preserved (platform DLLs are session-scope, not Step 5c scope). Spec: `symbol-table-generics.md` §2.3 + platform addendum §A3.
+- `priority_worker_writes_arc_jit_per_def_in_batch` — synthesise a 3-defn module compile batch; assert each `ModuleEntry::Def.code = Some(Code::Jit { jit, ptr })` and the three `Arc::ptr_eq(&entry[0].jit, &entry[1].jit)` hold (shared `Arc<Jit>` per batch). Spec: `symbol-table-generics.md` §3 Layer 3 + Decision 31.
+
+**Integration** (`/qa`, in `tests/repl_experience.rs` extension or new `tests/v4_jit_reclaim.rs`):
+
+**Decision 31 Scenario 1 (Sprint 57 carry — REPL-eval JIT reclaim)**:
+- `decision31_scenario1_repl_eval_mem_drops_after_eval` — positive: capture `/mem` snapshot pre-eval (call it `A`); REPL eval `(+ 1 2)`; capture `/mem` snapshot post-eval (call it `B`); assert `B.live_bytes <= A.live_bytes` (eval allocations released; live bytes returned to baseline ±1). Negative-bound: assert `B.live_bytes - A.live_bytes < threshold` (some small constant, say 256 bytes for any persistent introspection state). Spec: Decision 31 Scenario 1 + `repl/spec.md` §3.7.
+- `decision31_scenario1_repl_eval_no_unbounded_growth_repeated` — negative (regression guard): `/mem` baseline; REPL eval `(+ 1 2)` 100 times in succession; `/mem` final; assert `final.live_bytes - baseline.live_bytes` is bounded (does NOT grow with repetitions; bound = small constant scaled by 1, NOT by 100). Pre-fix the gap would grow ~100x; post-fix it stays flat. Spec: Decision 31 Scenario 1 footnote.
+
+**Decision 31 Scenario 2 (Step 5c headline payoff — defn redefinition JIT reclaim)** — per `/arch` Condition 7:
+- `decision31_scenario2_repl_redefinition_mem_drops_on_redefinition` — positive: `/mem` baseline → `(defn f [x] x)` → `/mem` (call `B`) → `(defn f [x] (+ x 1))` → `/mem` (call `C`); assert `C.live_bytes < B.live_bytes` OR `C.live_bytes <= B.live_bytes + small_constant` (the second `defn` reclaimed the first's JIT pages; the new defn's pages count toward `C` but should be ≤ first defn's pages plus small overhead). Spec: Decision 31 Scenario 2 + `symbol-table-generics.md` §2.3.
+- `decision31_scenario2_repeated_redefinition_no_unbounded_growth` — negative (regression guard): `/mem` baseline; redefine `(defn f [x] (+ x N))` 50 times with varying `N`; `/mem` final; assert `final.live_bytes - baseline.live_bytes` is bounded (does NOT grow linearly with redefinition count; pre-Step-5c the gap would grow ~50x because `kept_jits` accumulated each batch). This is the strongest signal that Scenario 2 reclaim genuinely fires. Spec: Decision 31 Scenario 2 + `kept_jits` dissolution.
+
+**Cache-fresh Code-enum coexistence test**:
+- `code_enum_jit_and_linker_coexist_in_one_session` — compile module A fresh (`Code::Jit`); cache-hit module B (`Code::Linker`); both modules' `Def.code.is_some()`; one is `Code::Jit`, one is `Code::Linker`; cross-module call from A to B succeeds. Positive. Spec: `symbol-table-cache.md` §3.3 + `symbol-table-generics.md` §2.1 (enum unifies fresh-build + cache-hit).
+
+Approximate counts: 3 unit (`/typecheck`) + 5 unit (`/int`) + 4 integration (`/qa` reclaim) + 1 integration (`/qa` enum coexistence).
+
+### G.13. Step 5d — Three Wave-5 carries (private submodule, multi-sig display, Cranelisp.toml)
+
+Validates `design/int/private-submodule-import.md` (i), `design/int/multi-sig-introspection.md` (ii), `design/int/cranelisp-toml.md` (iii).
+
+#### G.13 (i) — Private submodule import enforcement
+
+**Existing failing test** (`/qa` confirms scope, no new test):
+- `tests/ring2.rs::neg_private_submodule_not_importable_from_peer` (line 2044). Currently FAILING. After Wave 4: flips green. Spec: `spec/08-modules.md §8.2.3` + `design/int/private-submodule-import.md` §3.
+
+**Optional companion test** (positive sanity check):
+- `private_submodule_import_from_within_subtree_succeeds` — peer of a public submodule (e.g. `main.host.public-leaf`) imports `main.host.internal` — this should succeed (within parent's subtree). Positive. Spec: `private-submodule-import.md` §2.3 (subtree containment rule).
+- `private_submodule_import_root_peer_rejected_neg` — `main` (root) imports `main.host.internal`; rejected. Negative. Spec: §2.3 edge case.
+
+#### G.13 (ii) — Multi-sig REPL bare-symbol display
+
+**Existing failing test** (`/qa` confirms scope, no new test):
+- `tests/repl_experience.rs::display_overloaded_fn_shows_all_variants` (line 2347). Currently FAILING. After Wave 4: flips green. Spec: `repl/spec.md §1.3 + §4.1.1` + `design/int/multi-sig-introspection.md` §1.
+
+**Optional companion test** (negative — single-variant defn):
+- `display_single_variant_fn_does_not_emit_duplicate_lines_neg` — define `(defn f [x] x)` (single variant); REPL bare-symbol lookup `f`; assert exactly ONE line is emitted (no spurious duplicates). Negative regression guard against the multi-line code path applying inappropriately. Spec: `multi-sig-introspection.md` §6 edge case (single-variant `Overloaded`).
+
+#### G.13 (iii) — Cranelisp.toml lookup
+
+**NEW E2E tests** (`/qa`, in `tests/e2e.rs`):
+- `e2e_cranelisp_toml_lib_dirs_overrides_default` — positive: temp project with `vendor-libs/custom-helper.cl`; `Cranelisp.toml` with `lib-dirs = ["vendor-libs"]`; entry `main.cl` imports `custom-helper`; build with `CRANELISP_LIB=/nonexistent/path` (deliberately wrong env var); assert build succeeds AND result is correct. Tests Cranelisp.toml takes precedence over env var (per spec §8.11.4 item 2). Spec: `spec/08-modules.md §8.11.4` + `cranelisp-toml.md` §6.
+- `e2e_cranelisp_toml_absent_falls_through_to_env_var` — positive sanity check: no `Cranelisp.toml`; `CRANELISP_LIB` set; assert env var is used. Spec: `cranelisp-toml.md` §5 (absent file behaviour).
+- `e2e_cranelisp_toml_malformed_emits_diagnostic` — negative: `Cranelisp.toml` with malformed TOML (e.g. `lib-dirs = [unclosed`); assert build FAILS with helpful error message containing the file path AND a TOML parse-error description. Spec: `cranelisp-toml.md` §2.6 failure modes.
+- `e2e_cranelisp_toml_empty_lib_dirs_overrides_env` — edge case: `Cranelisp.toml` with `lib-dirs = []`; `CRANELISP_LIB` set to a real path; assert `lib-dirs = []` wins (skips env var); module imports relying on env-var paths fail. Negative-shape (verifies precedence is fully overriding, not additive). Spec: §5 edge case.
+
+**`/mem` integration tests** (Sprint 57 carry per `/arch` Condition 7 + `repl/spec.md §3.7`):
+
+Per SPRINT.md `/qa` task entry: 4 §3.7 rows. Tests assert observable `; live:` / `; allocs:` / `; delta:` lines in REPL stdout via `run_repl`.
+
+**NEW integration tests** (`/qa`, in `tests/repl_experience.rs` extension or new `tests/repl_mem.rs`):
+- `mem_command_baseline_outputs_live_allocs_lines` — positive: bare `/mem` command emits one line containing `; live: ` + " bytes (" + " allocations)" suffix AND one line containing `; allocs: ` + " deallocs: " counts. Format-conformance assertion for the §3.7 baseline shape. Spec: `repl/spec.md §3.7` row 1.
+- `mem_command_with_expr_outputs_delta_line` — positive: `/mem (+ 1 2)` emits the baseline two lines PLUS a `; delta: +N bytes` (or `: -N bytes`) line. Assert `; delta:` substring present. Spec: §3.7 row 2.
+- `mem_command_zero_delta_after_pure_eval` — positive (and Decision 31 Scenario 1 cross-check): `/mem (+ 1 2)` for a primitive eval; assert `; delta:` line shows `0` or near-zero bytes (eval allocations released; sensitive to small constant overhead). Spec: §3.7 row 3 + Decision 31 Scenario 1.
+- `mem_command_format_stable_across_evals_neg` — negative (format stability): run `/mem` 5 times in a session; assert each emission has the same line shape (not e.g. extra/missing `; delta:` line); regression guard against format drift between calls. Spec: §3.7 row 4.
+
+Approximate counts (Step 5d total): 0 new for (i)/(ii) — confirm flip-green only — plus 3 optional companions; 4 new e2e for (iii); 4 new integration for `/mem`. Total NEW: 11 (3 optional + 4 toml + 4 mem).
+
+### G.14. `io.rs:28` RC residual — regression-guard tests (Condition 6)
+
+Validates `design/backend/ring2-rc.md` §10 (the FIXME(/backend) at `crates/cranelisp-runtime/src/io.rs:28`). Per `/arch` Condition 6, the deferral-or-fix policy requires user-visible regression tests BEFORE any deferral.
+
+**Unit** (`/backend` / `/runtime`, in `crates/cranelisp-runtime/src/io.rs::tests` or `crates/cranelisp-platform/src/lib.rs::tests`):
+- `decision24_print_string_input_rc_balanced` — positive: snapshot `cranelisp_runtime::alloc::alloc_count() / dealloc_count()` baseline; invoke `print_string` (or a synthetic capture-Effect extern via the same code path) with one `CLString` input; trampoline to completion; re-snapshot; assert `alloc_delta == dealloc_delta`. Pre-fix: gap = 1 per call (the leaked input ref). Spec: `ring2-rc.md` §10.6 positive coverage + Decision 24.
+- `decision24_print_string_repeated_rc_no_growth` — negative (the stronger signal): baseline; invoke `print_string` 1000 times under the trampoline; final snapshot; assert `dealloc_delta` within ±1 of `alloc_delta`. Pre-fix: gap grows to ~1000. Catches both leak (gap > 0) AND over-dec (gap < 0 — e.g. if Form B `into_owned_consuming` accidentally dec'd twice). Spec: §10.6 negative coverage.
+
+**Integration** (`/qa`, in `tests/io.rs`):
+- `io_do_print_three_strings_rc_balanced_e2e` — positive E2E via `assert_rc_balanced`-equivalent: `(do (print "a") (print "b") (print "c"))` evaluated through `cranelisp_run_io`; assert `alloc_count - dealloc_count` balanced. Pre-fix: gap = 3. Spec: `ring2-rc.md` §10.6 + Decision 24.
+- `io_loop_print_no_unbounded_growth_e2e_neg` — negative E2E: the equivalent of `(loop 1000 (print "x"))` (or the manually unrolled bind chain of 1000 prints); assert the gap stays within ±1 across the entire run. Pre-fix the gap grows by ~1000. Spec: §10.6.
+
+Test placement note: the unit tests live in `crates/cranelisp-runtime/src/io.rs::tests` (closest to the leak source); the integration tests live in `tests/io.rs` (Ring 4 IO test home). The integration `assert_rc_balanced` helper already exists at `tests/helpers/mod.rs:579` per §G.8 adoption survey; the tests above use it.
+
+**Deferral artefact contract** (per `ring2-rc.md` §10.8 — only if `/backend` invokes one-deferral-permitted): the four tests above ship un-`#[ignore]`'d; if `/backend` defers, the tests are kept FAILING per `feedback_failing_not_ignored.md`. The FIXME(/backend) at `io.rs:28` is rewritten to name the deferral sprint and rationale. `/sprint` records in §Outcome → §Deferred.
+
+Approximate counts: 2 unit (`/backend`) + 2 integration (`/qa`).
+
+### G.15. Prior-ring negative-coverage continuation (`/qa` parallel work)
+
+Per `spec/index.md:3` priority list (continuing the standing tracker from Sprint 57 Wave 5). Picks for Sprint 58 Wave 5 — sized to fit alongside Sprint 58 Steps 5b/5c/5d work; not aiming to clear the full backlog.
+
+**Module/import boundaries (§8 — what MUST NOT leak across modules)**:
+- `import_neg_private_defn_not_importable_from_peer` — `defn-` symbols (private functions, not Step 5d (i) submodule-level privacy) MUST NOT resolve in import lists. Confirms the existing per-symbol privacy check holds (sketch-era mechanism). Spec: §8.5.
+- `super_import_neg_root_module_rejected_with_spec_message` — sanity check on Sprint 57 Wave 0 super-import fix; confirms the negative path. Spec: §8.3.7 known limitation. (Likely already covered by existing `super_import_at_root_is_rejected_neg` per §G.0; verify no duplication.)
+- `qualified_ref_to_private_submodule_neg` — `(defn use-private [] main.host.internal/private-leaf)` from `main.consumer` — the qualified-ref path MUST also be rejected, not just the `(import …)` path. Negative; companion to Step 5d (i). Spec: §8.2.3 + §8.5.
+
+**Match exhaustiveness (§6.5)**:
+- `match_neg_non_adt_scrutinee_requires_wildcard` — `(match 42 (1 "a") (2 "b"))` — non-ADT scrutinee with no wildcard should fail typecheck (no exhaustiveness analysis on Int). Negative. Spec: §6.5.
+- `match_neg_adt_non_exhaustive_rejected` — `(match opt (Some x) x)` on `Option Int` (missing `None` arm) — should fail or emit warning. Negative. Spec: §6.5.
+
+**REPL category boundaries (`repl/spec.md §3, §4`)**:
+- `list_neg_empty_categories_omitted` — fresh session with no defns: `/list` does NOT emit "Functions:" header (or other empty category headers). Negative. Spec: `repl/spec.md §3.3` (empty categories omitted).
+- `list_neg_primitives_absent_from_user_category` — fresh session with `(defn foo [] 0)`: `/list` user/Functions row contains `foo` but does NOT contain `add-i64` (or other primitives). Negative. Spec: §3.3 + sketch-era category-leak regression.
+
+Approximate counts: 7 negative-coverage tests for prior-ring promotion.
+
+### G.16. Re-triage of Sprint 57 carried failures
+
+**`sketch_run_tests_pass_fn_called`** (`tests/sketch_port.rs:1603`) — pre-existing, unresolved through Sprint 57 close. Per §G.7 prior-sprint triage, hypothesis was "G6 fixes it for free" (it didn't) + "G8 RC fix may resolve" (it didn't).
+
+`/qa` Sprint 58 re-triage call: **defect likely uncovered by Step 5b cache work** — the test composes `discover-tests` + `run-test` builtins via user-defined `my-run-tests`; the runtime extern plumbing reads through symbol-table state that Step 5b refactors. Two hypotheses:
+1. **Step 5b refactor fixes it** (analogous to Sprint 57 Wave 2 G6 hope). Re-run after Wave 2 lands; if green, no FIXME needed.
+2. **Latent IO-trampoline interaction** with `bind` over `(IO TestResult)` values. Re-run after Wave 2 + Wave 3; if still red, file FIXME(/int) with a minimal repro per `feedback_qa_reproduction.md` (which `/qa` reduces before handoff).
+
+`/qa` action at Wave 2 close: re-run + re-triage. At Wave 6 close: if still failing, file FIXME(/int) with minimal repro.
+
+**Sprint 57 follow-on `sketch_port` failure** — Sprint 57 close lists "1 sketch_port" alongside `sketch_run_tests_pass_fn_called`. If they are the same test, consolidate. If a different `sketch_port` test, identify by name and triage independently — likely candidates: `sketch_platform_capture_read_input` (mentioned at Sprint 57 close as an IO-trampoline regression that resolved during Wave 6) — re-confirm green at Wave 2 baseline.
+
+### G.17. Sprint 58 Delta Summary
+
+| Bucket | Unit (owning skill) | Integration (`/qa`) | Notes |
+|---|---|---|---|
+| G.10 Step 5a (structural decls) | 7 (`/typecheck`) | 3 + 1 deferred | Open-question test (implicit-prelude) waits on /int Wave 2 design call |
+| G.11 Step 5b (cache via SymbolTable) | 3 (`/backend`) + 1 (`/int`) | 4 new + 13 pinned flip-greens | Headline failure-clearing wave; 9 cache + 3 sprint23 + 1 v4 = 13 |
+| G.12 Step 5c (generics + reclaim) | 3 (`/typecheck`) + 5 (`/int`) | 4 reclaim + 1 enum coexistence | Decision 31 Scenario 1 (carry) + Scenario 2 (headline payoff) |
+| G.13 Step 5d (3 carries) | 0 | 2 confirmed flip-greens + 11 new (3 companions + 4 toml + 4 mem) | Two carries flip green; toml + /mem newly authored |
+| G.14 io.rs:28 RC residual | 2 (`/backend`) | 2 (`/qa`) | Condition 6 regression-guard contract |
+| G.15 prior-ring continuation | 0 | 7 | Negative-coverage tracker advance |
+| G.16 re-triage | 0 | 0 (analysis only; FIXME if needed) | Two carried failures re-triaged |
+| **Sprint 58 total planned** | **18 unit (10 typecheck + 1 int + 7 backend/runtime)** | **~32 integration + 13 pinned flip-greens** | Baseline before: 1679/17. Target after: ≥1692/≤4. |
+
+### Wave 5 (`/qa` parallel work) sequencing
+
+Per SPRINT.md Wave 5 framing: integration tests authored in parallel to Waves 2/3/4 implementation; pinned flip-greens validated as their owning wave lands.
+
+| Wave | `/qa` deliverable |
+|------|-------------------|
+| Wave 1 (design) | This ring4.md Sprint 58 section. NO test code authoring. |
+| Wave 2 (Step 5a + 5b) | Author G.10 integration tests (`cl_regen_*`); author G.11 integration tests (cache round-trip); confirm 13 pinned flip-greens; re-triage `sketch_run_tests_pass_fn_called`. |
+| Wave 3 (Step 5c) | Author G.12 reclaim tests; verify Decision 31 Scenario 1 (Sprint 57 carry) + Scenario 2 (headline). |
+| Wave 4 (Step 5d) | Confirm flip-greens for `neg_private_submodule_*` + `display_overloaded_fn_*`; author G.13 (iii) e2e tests (Cranelisp.toml); author `/mem` integration tests. |
+| Wave 5 (parallel — runs throughout Waves 2/3/4) | Author G.14 io.rs:28 regression tests; author G.15 prior-ring negative-coverage tests. |
+| Wave 6 (close) | Coverage audit: every Sprint 58 in-scope requirement has a passing test or a documented `[Tested+Neg]` annotation; re-pin any residual failing tests (Step 5e auto-bump applies). |
+
 ## Known issues / deferred
 
 - **I-1 (MonoDefn dead-carrier fields)** — `MonoDefn.resolutions`, `MonoDefn.expr_types` are typecheck-internal dead carriers kept from Phase 1 (Sprint 56). Retained as dead state per `/review` Wave 2 I-1 + user approval; deferred to Sprint 58 Phase 5 cleanup. Cross-reference: `design/typecheck/ast-annotation.md` §10.3.

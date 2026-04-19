@@ -300,5 +300,106 @@
                   (print "\nNo solution found")])])))))
 
 ;; ── Tests ───────────────────────────────────────────────────────────────
-;; FIXME(/int): test submodule disabled — parent↔child typecheck deadlock
-;; (spec §8.3.7 + Decision 30). See grid.cl for full explanation.
+;;
+;; Test functions are top-level `test-*` defns returning `(Option String)`
+;; per repl/spec.md §16.1. Discoverable via `(discover-tests)`,
+;; runnable via `(run-test ...)` — Decision 30 safe pattern (c). No
+;; `(mod test ...)` wrapper, no `(import [super [*]])`.
+
+;; --- Helper to count determined cells ---
+
+(defn count-determined-helper [g i acc]
+  (if (eq-i64 i 81) acc
+    (if (cell-determined? (cell-at g i))
+      (count-determined-helper g (add-i64 i 1) (add-i64 acc 1))
+      (count-determined-helper g (add-i64 i 1) acc))))
+
+(defn count-determined [g]
+  (count-determined-helper g 0 0))
+
+;; --- Test grid builders (no `let`-defined `build` recursion) ---
+
+;; Build a grid: cell 0 has the given mask as Candidates, the rest are Given 1.
+(defn build-mask-then-givens-helper [v i mask]
+  (if (eq-i64 i 81) v
+    (if (eq-i64 i 0)
+      (build-mask-then-givens-helper (vec-push v (Candidates mask)) (add-i64 i 1) mask)
+      (build-mask-then-givens-helper (vec-push v (Given 1)) (add-i64 i 1) mask))))
+
+(defn make-test-grid-with-mask [mask]
+  (Grid (build-mask-then-givens-helper [] 0 mask)))
+
+;; --- Elimination tests (don't need make-grid) ---
+
+(defn test-eliminate-removes-digit []
+  ;; Eliminate digit 5 from cell 0 (which has full-mask)
+  (let [g (make-test-grid-with-mask (full-mask))]
+    (match (eliminate g 0 5)
+      [(Some g2)
+         (match (cell-at g2 0)
+           [(Candidates m) (if (not (bit-set? m 5)) None
+                             (Some "bit 5 should be cleared in cell 0 candidates"))
+            _ (Some "cell 0 should still be Candidates")])
+       None (Some "eliminate should not return None for valid input")])))
+
+(defn test-eliminate-no-effect-on-given []
+  ;; Eliminating from a Given cell should be a no-op (still Some)
+  (let [g (make-test-grid-with-mask (full-mask))]
+    (match (eliminate g 1 5)
+      [(Some _) None
+       None (Some "eliminate from Given cell should be a no-op (not None)")])))
+
+(defn test-eliminate-determines-cell []
+  ;; Start with only digits 3 and 7 as candidates (mask = 4 + 64 = 68).
+  ;; Eliminate 7 -> should determine cell as 3.
+  (let [g (make-test-grid-with-mask 68)]
+    (match (eliminate g 0 7)
+      [(Some g2)
+         (match (cell-at g2 0)
+           [(Solved v) (if (eq-i64 v 3) None
+                         (Some "cell 0 should be Solved 3 after eliminating 7"))
+            _ (Some "cell 0 should be Solved after eliminating 7 from {3,7}")])
+       None (Some "eliminate of valid digit should not return None")])))
+
+(defn test-eliminate-contradiction []
+  ;; Cell with only digit 5 (mask = 16). Eliminate 5 -> contradiction (None).
+  (let [g (make-test-grid-with-mask 16)]
+    (match (eliminate g 0 5)
+      [None None
+       _ (Some "eliminating last candidate should produce contradiction (None)")])))
+
+;; --- Solver tests ---
+;;
+;; The full-puzzle tests below are commented out: `propagate`/`solve`
+;; currently segfault on full 81-cell grids due to deep recursion (see
+;; CLAUDE.md "Known Issues"). The structural shape (test-* fn returning
+;; Option String) is preserved so these tests can be re-enabled by
+;; un-commenting the bodies once the runtime issue is resolved.
+;;
+;; (defn test-easy-puzzle []
+;;   (match (make-grid "003020600900305001001806400008102900700000008006708200002609500800203009005010300")
+;;     [(Some g)
+;;        (match (solve g)
+;;          [(Success solution)
+;;             (if (eq-i64 (count-determined solution) 81) None
+;;               (Some "easy puzzle should be fully determined"))
+;;           Unsolvable (Some "easy puzzle should be solvable")])
+;;      None (Some "make-grid should accept the easy puzzle string")]))
+;;
+;; (defn test-hard-puzzle []
+;;   (match (make-grid "800000000003600000070090200050007000000045700000100030001000068008500010090000400")
+;;     [(Some g)
+;;        (match (solve g)
+;;          [(Success solution)
+;;             (if (eq-i64 (count-determined solution) 81) None
+;;               (Some "hard puzzle should be fully determined"))
+;;           Unsolvable (Some "hard puzzle should be solvable")])
+;;      None (Some "make-grid should accept the hard puzzle string")]))
+;;
+;; (defn test-unsolvable []
+;;   (match (make-grid "550000000000000000000000000000000000000000000000000000000000000000000000000000000")
+;;     [(Some g)
+;;        (match (solve g)
+;;          [(Success _) (Some "puzzle with two 5s in row 0 should be unsolvable")
+;;           Unsolvable None])
+;;      None (Some "make-grid should accept the malformed puzzle string")]))

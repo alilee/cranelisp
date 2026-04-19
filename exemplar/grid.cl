@@ -217,9 +217,163 @@
      (Candidates _) false]))
 
 ;; ── Tests ───────────────────────────────────────────────────────────────
-;; FIXME(/int): test submodules disabled — parent↔child typecheck deadlock
-;; (spec §8.3.7 + Decision 30). Inline (mod test ...) forms using
-;; (import [super [*]]) block forever against the current form-by-form
-;; scheduler. Re-enable once the scheduler supports sibling super-import
-;; or the exemplar tests are migrated to discover-tests / run-test.
-;; See: tests/wave6_port.md (TODO) and spec/08-modules.md §8.3.7.
+;;
+;; Test functions are top-level `test-*` defns returning `(Option String)`
+;; per repl/spec.md §16.1: `None` = pass, `(Some reason)` = fail. They are
+;; discoverable via `(discover-tests)` and runnable via `(run-test ...)` —
+;; Decision 30 safe pattern (c). No `(mod test ...)` wrapper, no
+;; `(import [super [*]])` — the parent↔child deadlock cannot occur.
+
+;; --- Bitmask tests ---
+
+(defn test-full-mask []
+  (if (eq-i64 (full-mask) 511) None (Some "full-mask should equal 511")))
+
+(defn test-pow2 []
+  (if (eq-i64 (pow2 0) 1)
+    (if (eq-i64 (pow2 1) 2)
+      (if (eq-i64 (pow2 3) 8)
+        (if (eq-i64 (pow2 8) 256) None
+          (Some "pow2 8 should equal 256"))
+        (Some "pow2 3 should equal 8"))
+      (Some "pow2 1 should equal 2"))
+    (Some "pow2 0 should equal 1")))
+
+(defn test-bit-set? []
+  ;; full-mask has all bits set; 0 has no bits set
+  (if (bit-set? (full-mask) 1)
+    (if (bit-set? (full-mask) 5)
+      (if (bit-set? (full-mask) 9)
+        (if (not (bit-set? 0 1)) None
+          (Some "bit 1 should not be set in 0"))
+        (Some "bit 9 should be set in full-mask"))
+      (Some "bit 5 should be set in full-mask"))
+    (Some "bit 1 should be set in full-mask")))
+
+(defn test-bit-clear []
+  ;; Clear digit 5 from full mask: 511 - 16 = 495
+  (let [cleared (bit-clear (full-mask) 5)]
+    (if (not (bit-set? cleared 5))
+      (if (bit-set? cleared 4) None
+        (Some "bit 4 should still be set after clearing 5"))
+      (Some "bit 5 should be cleared"))))
+
+(defn test-bit-count []
+  (if (eq-i64 (bit-count (full-mask)) 9)
+    (if (eq-i64 (bit-count 0) 0)
+      ;; single bit: digit 3 = bit 2 = value 4
+      (if (eq-i64 (bit-count 4) 1) None
+        (Some "bit-count of 4 should be 1"))
+      (Some "bit-count of 0 should be 0"))
+    (Some "bit-count of full-mask should be 9")))
+
+(defn test-bit-lowest []
+  (if (eq-i64 (bit-lowest (full-mask)) 1)
+    (if (eq-i64 (bit-lowest 0) 0)
+      ;; mask with only digit 5 set: 2^4 = 16
+      (if (eq-i64 (bit-lowest 16) 5) None
+        (Some "bit-lowest of 16 should be 5"))
+      (Some "bit-lowest of 0 should be 0"))
+    (Some "bit-lowest of full-mask should be 1")))
+
+;; --- Index helpers ---
+
+(defn test-row-of []
+  (if (eq-i64 (row-of 0) 0)
+    (if (eq-i64 (row-of 8) 0)
+      (if (eq-i64 (row-of 9) 1)
+        (if (eq-i64 (row-of 80) 8) None
+          (Some "row-of 80 should be 8"))
+        (Some "row-of 9 should be 1"))
+      (Some "row-of 8 should be 0"))
+    (Some "row-of 0 should be 0")))
+
+(defn test-col-of []
+  (if (eq-i64 (col-of 0) 0)
+    (if (eq-i64 (col-of 8) 8)
+      (if (eq-i64 (col-of 9) 0)
+        (if (eq-i64 (col-of 80) 8) None
+          (Some "col-of 80 should be 8"))
+        (Some "col-of 9 should be 0"))
+      (Some "col-of 8 should be 8"))
+    (Some "col-of 0 should be 0")))
+
+(defn test-box-of []
+  (if (eq-i64 (box-of 0) 0)
+    (if (eq-i64 (box-of 2) 0)
+      (if (eq-i64 (box-of 3) 1)
+        (if (eq-i64 (box-of 27) 3)
+          (if (eq-i64 (box-of 80) 8) None
+            (Some "box-of 80 should be 8"))
+          (Some "box-of 27 should be 3"))
+        (Some "box-of 3 should be 1"))
+      (Some "box-of 2 should be 0"))
+    (Some "box-of 0 should be 0")))
+
+;; --- Peers ---
+
+(defn test-peers-count []
+  ;; Every cell has exactly 20 peers
+  (if (eq-i64 (vec-len (peers 0)) 20)
+    (if (eq-i64 (vec-len (peers 40)) 20) None
+      (Some "cell 40 should have 20 peers"))
+    (Some "cell 0 should have 20 peers")))
+
+;; --- Grid construction ---
+
+(defn test-make-grid-wrong-length []
+  ;; Too short — should return None
+  (match (make-grid "12345")
+    [None None
+     _ (Some "make-grid should reject short strings")]))
+
+;; Helper for hand-building grids (no `let`-recursion shenanigans).
+(defn build-given-grid-helper [v i]
+  (if (eq-i64 i 81) v
+    (build-given-grid-helper
+      (vec-push v (Given (add-i64 (rem-i64 i 9) 1)))
+      (add-i64 i 1))))
+
+(defn build-given-grid []
+  (Grid (build-given-grid-helper [] 0)))
+
+;; Verify cell-at, set-cell, is-solved with a hand-built grid
+(defn test-cell-at-and-set []
+  (let [g (build-given-grid)
+        c0 (cell-at g 0)]
+    (match c0
+      [(Given v) (if (eq-i64 v 1) None
+                   (Some "cell 0 should be Given 1"))
+       _ (Some "cell 0 should be Given")])))
+
+(defn test-is-solved-all-given []
+  ;; A grid of all Given cells is solved
+  (if (is-solved (build-given-grid)) None
+    (Some "all-Given grid should be solved")))
+
+(defn build-grid-with-candidates-helper [v i]
+  (if (eq-i64 i 81) v
+    (if (eq-i64 i 0)
+      (build-grid-with-candidates-helper (vec-push v (Candidates (full-mask))) (add-i64 i 1))
+      (build-grid-with-candidates-helper (vec-push v (Given (add-i64 (rem-i64 i 9) 1))) (add-i64 i 1)))))
+
+(defn test-is-solved-with-candidates []
+  ;; A grid with a Candidates cell is not solved
+  (let [g (Grid (build-grid-with-candidates-helper [] 0))]
+    (if (is-solved g)
+      (Some "grid with Candidates cell should not be solved")
+      None)))
+
+(defn build-all-given-1-helper [v i]
+  (if (eq-i64 i 81) v
+    (build-all-given-1-helper (vec-push v (Given 1)) (add-i64 i 1))))
+
+(defn test-set-cell []
+  ;; set-cell should replace the cell at the given index
+  (let [g (Grid (build-all-given-1-helper [] 0))
+        g2 (set-cell g 5 (Solved 7))
+        c (cell-at g2 5)]
+    (match c
+      [(Solved v) (if (eq-i64 v 7) None
+                    (Some "cell 5 should be Solved 7"))
+       _ (Some "cell 5 should be Solved")])))

@@ -148,5 +148,87 @@
             "</p><br><a href=\"/\">Try again</a></body></html>"))))))
 
 ;; ── Tests ─────────────────────────────────────────────────────────────
-;; FIXME(/int): test submodule disabled — parent↔child typecheck deadlock
-;; (spec §8.3.7 + Decision 30). See grid.cl for full explanation.
+;;
+;; Test functions are top-level `test-*` defns returning `(Option String)`
+;; per repl/spec.md §16.1. Discoverable via `(discover-tests)`,
+;; runnable via `(run-test ...)` — Decision 30 safe pattern (c). No
+;; `(mod test ...)` wrapper, no `(import [super [*]])`.
+
+;; Test that form-page contains <input elements
+(defn test-form-page-has-inputs []
+  (if (contains? (form-page) "<input") None
+    (Some "form-page should contain <input elements")))
+
+;; Test that form-page contains form action
+(defn test-form-page-has-action []
+  (if (contains? (form-page) "/solve") None
+    (Some "form-page should contain /solve action")))
+
+;; Test that form-page contains the table
+(defn test-form-page-has-table []
+  (if (contains? (form-page) "<table") None
+    (Some "form-page should contain <table")))
+
+;; Test that wrap-tag works correctly
+(defn test-wrap-tag []
+  (if (str-eq (wrap-tag "b" "hello") "<b>hello</b>") None
+    (Some "wrap-tag should produce <b>hello</b>")))
+
+;; Test that td produces a cell with class
+(defn test-td []
+  (let [result (td "given" "5")]
+    (if (contains? result "given")
+      (if (contains? result "5") None
+        (Some "td result should contain content '5'"))
+      (Some "td result should contain class 'given'"))))
+
+;; Test that error-page contains the error message
+(defn test-error-page-has-message []
+  (if (contains? (error-page "No solution exists") "No solution exists") None
+    (Some "error-page should contain the supplied message")))
+
+;; Test that error-page contains a link back
+(defn test-error-page-has-link []
+  (if (contains? (error-page "oops") "Try again") None
+    (Some "error-page should contain a 'Try again' link")))
+
+;; Helpers for hand-built grids (avoid `let`-recursion patterns).
+(defn build-all-ones-helper [v i]
+  (if (eq-i64 i 81) v
+    (build-all-ones-helper (vec-push v (Given 1)) (add-i64 i 1))))
+
+(defn make-all-ones-grid []
+  (Grid (build-all-ones-helper [] 0)))
+
+;; Test that solution-page contains digit strings
+(defn test-solution-page-has-digits []
+  (let [g (make-all-ones-grid)]
+    (if (contains? (solution-page g g) "1") None
+      (Some "solution-page should contain digit '1'"))))
+
+;; Test that solution-page has given class for Given cells
+(defn test-solution-page-given-class []
+  (let [g (make-all-ones-grid)]
+    (if (contains? (solution-page g g) "given") None
+      (Some "solution-page should contain 'given' CSS class"))))
+
+;; Build a grid where cell 0 is Given(5), cell 1 is Solved(3), the rest are Given(1).
+(defn build-mixed-helper [v i]
+  (if (eq-i64 i 81) v
+    (if (eq-i64 i 0)
+      (build-mixed-helper (vec-push v (Given 5)) (add-i64 i 1))
+      (if (eq-i64 i 1)
+        (build-mixed-helper (vec-push v (Solved 3)) (add-i64 i 1))
+        (build-mixed-helper (vec-push v (Given 1)) (add-i64 i 1))))))
+
+(defn make-mixed-grid []
+  (Grid (build-mixed-helper [] 0)))
+
+;; Test that solution-page distinguishes Given vs Solved
+(defn test-solution-page-mixed []
+  (let [g (make-mixed-grid)
+        page (solution-page g g)]
+    (if (contains? page "given")
+      (if (contains? page "solved") None
+        (Some "solution-page should contain 'solved' CSS class"))
+      (Some "solution-page should contain 'given' CSS class"))))

@@ -566,3 +566,170 @@ Considered deferring RC operations to epoch boundaries (like Nim). Rejected beca
 - Deterministic destruction is a language design goal.
 - Deferred RC complicates reasoning about when side effects (via destructors/drop glue) occur.
 - The inline atomic approach has acceptable overhead for the current single-threaded model.
+
+## 10. Addendum — String-literal RC residual through `print` (Sprint 58 Wave 3)
+
+**Status**: PRESCRIPTIVE for Sprint 58 Wave 3. This addendum specifies the fix for the FIXME(/backend) at `crates/cranelisp-runtime/src/io.rs:28` carried from Sprint 57 Wave 3. Per `/arch` Sprint 58 review condition 6, this MUST land in Wave 3 alongside other RC work, OR be deferred with explicit rationale and a named regression-test symptom for `/qa`. Disposition selected: **fix in Wave 3** (one-deferral-permitted policy is held in reserve only if implementation surfaces unexpected scope).
+
+### 10.1 The leak
+
+Observable via REPL-compiled `(print "a")` flowing through the IO trampoline. Allocations exceed deallocations by the size of the string literal allocation per call. Sprint 57 Wave 3 closed the trampoline-internal IO-node leak via §3.5.4 (`current_is_fresh` discipline + `dec_shallow_io`); this string-literal leak is in a different code path and was identified as separate at Wave-3 close.
+
+### 10.2 Root cause
+
+The `print` extern at `platforms/stdio/src/lib.rs:18-25` follows the capture-RC pattern:
+
+```rust
+#[unsafe(export_name = "cranelisp_print")]
+pub extern "C" fn print_string(s: CLString) -> CLIO<CLInt> {
+    let owned = s.own();           // inc s's RC, owned drops at thunk-drop
+    CLIO::effect(move || {
+        println!("{}", owned.as_str());
+        CLInt::from(0i64)
+    })
+}
+```
+
+This pattern is correct for the deferred-execution discipline: `s.own()` calls `inc_rc` so the captured `owned: CLOwned<CLString>` keeps the string alive across the gap between `print_string` returning the IO Effect node and the trampoline later forcing the thunk. When the thunk runs and the closure drops, `CLOwned::drop` calls `dec_rc` and the string's RC returns to its pre-capture level.
+
+The leak is at the **input boundary**, not the capture boundary. Decision 24's uniform consuming convention says: every extern with a heap-typed parameter dec's that parameter before return (unless it's returned unchanged or retained as a runtime-owned reference). For `print_string`:
+
+1. The caller (JIT-emitted CLIF for `(print "a")`) emits `compile_consuming_arg_list` for the String literal, which inc's it (or transfers ownership of the literal allocation if it's a temporary). After `print_string` returns, the caller's RC view of the string is balanced — the inc was consumed by transferring to `print_string`.
+2. `print_string` receives `s: CLString` with an extra reference (from the caller's transfer). It calls `s.own()` — inc again — and captures `owned`. So the string now has two references attributable to this call: one from the caller's transfer, one from `s.own()`.
+3. `print_string` returns. The local `s: CLString` drops at end of scope, but `CLString` is `Copy` (it's just an `i64` base pointer wrapper) — its `Drop` is a no-op. The caller's transferred reference is **never** dec'd. **Leak: one reference per `(print "a")` call.**
+4. When the trampoline later forces the Effect thunk, the closure runs `println!`, drops, and `CLOwned::drop` dec's once. That dec balances `s.own()`'s inc — but the original transferred reference from the caller is still leaked.
+
+The pattern works for the *capture* lifetime (between Effect-node creation and thunk-force) but does not honour the *input-boundary* contract that Decision 24 added in Sprint 56. The capture-RC pattern was designed before Decision 24 was unified.
+
+### 10.3 Why the Sprint 57 Wave 3 IO trampoline fix did not close this
+
+Sprint 57 Wave 3 (§3.5.4) targeted the trampoline's internal node leak — Pure/Effect/Bind/Par nodes produced and replaced *during* the trampoline walk, plus continuation closures popped from `cont_stack`. The fix added the `current_is_fresh` discipline + `dec_shallow_io` for trampoline-owned intermediates, and updated `cranelisp_run_io` to call `consume_io_tree(io_ptr)` post-return for the caller's tree.
+
+That fix is correct for IO ADT nodes. It does not extend to *captures* held by Effect-thunk closures — closures are dec'd by the trampoline's `consume_closure` (which runs the embedded drop_glue_ptr per Decision 11), and the drop-glue handles closure-captured heap references. The drop-glue runs `dec_rc` on every captured heap reference; for `print_string`'s closure, the captured `owned: CLOwned<CLString>` calls its own `Drop` which dec's once.
+
+So the trampoline-side and capture-side are both correct. What's wrong is the missing dec on the input parameter `s: CLString` before `print_string` returns — outside both the trampoline's responsibility and the closure's responsibility, in extern-boundary territory per Decision 24.
+
+The Wave-3 audit (§3.3) listed `cranelisp_run_io` and a generic note "Platform DLL functions" but did NOT walk every individual platform extern under Decision 24's lens. `print_string` slipped through because the capture-RC pattern looked locally correct (it balances `s.own()`'s inc with the closure's drop). Decision 24's contract requires the *additional* dec for the caller's transferred reference, which the capture-RC pattern does not provide.
+
+### 10.4 The fix shape
+
+Two equivalent forms; either is acceptable. Pick the one with the smaller code-volume impact across all platform externs (a sweep is required because the same pattern appears wherever a platform fn captures a heap arg into an Effect closure).
+
+**Form A — extern dec's the input after own()**:
+
+```rust
+#[unsafe(export_name = "cranelisp_print")]
+pub extern "C" fn print_string(s: CLString) -> CLIO<CLInt> {
+    let owned = s.own();           // inc — for the capture
+    s.dec_rc();                     // dec — for the caller's transfer (Decision 24)
+    CLIO::effect(move || {
+        println!("{}", owned.as_str());
+        CLInt::from(0i64)
+    })
+}
+```
+
+This is the minimal local change. The `s.dec_rc()` matches the caller's `compile_consuming_arg_list` inc, satisfying Decision 24. The `owned` capture continues to keep the string alive for the deferred thunk-force; its `Drop` dec's at thunk-drop time, balancing `s.own()`. Net references attributable to one call: caller +1, `print_string`-extern -1 + 1 (`own`) - 1 (`Drop` later) = 0.
+
+**Form B — capture-helper takes ownership, extern uses it inline**:
+
+Refactor `s.own()` into `s.into_owned_consuming()` — a method on `CLHeap` that inc's once for the capture AND dec's the caller's transferred ref in one call. The extern stops calling `s.own()`; it calls `into_owned_consuming()`. Net effect identical to Form A; the consuming dec is hidden inside the helper so platform authors can't forget it.
+
+```rust
+impl<T: CLHeap + Copy> T {
+    /// Consuming-convention version of `own()`: caller owns one transferred
+    /// reference (per Decision 24); this helper takes ownership of that
+    /// reference (no inc needed for it) and inc's an additional reference
+    /// for the returned CLOwned. Symmetric: caller's transferred ref +
+    /// CLOwned's inc'd ref = exactly one ref will be dropped by CLOwned::drop.
+    fn into_owned_consuming(self) -> CLOwned<Self> {
+        // No inc — the caller's transferred ref becomes the CLOwned's ref.
+        // Just construct the wrapper directly without the inc that own() does.
+        CLOwned { inner: self }
+    }
+}
+```
+
+```rust
+#[unsafe(export_name = "cranelisp_print")]
+pub extern "C" fn print_string(s: CLString) -> CLIO<CLInt> {
+    let owned = s.into_owned_consuming();
+    CLIO::effect(move || {
+        println!("{}", owned.as_str());
+        CLInt::from(0i64)
+    })
+}
+```
+
+Form B has the architectural advantage of making the capture-RC pattern aware of Decision 24 by construction. Form A is one line per affected extern. Recommend Form B if the platform-extern audit (§10.5) reveals more than 2–3 functions with the capture-Effect pattern; Form A if `print_string` is essentially alone.
+
+### 10.5 Audit — every platform extern that captures a heap arg
+
+Sprint 58 Wave 3 implementation MUST include an audit pass over every `extern "C"` function in `platforms/*/src/lib.rs` AND in the platform-bridge layer of `crates/cranelisp-platform/src/lib.rs`. For each function with a heap-typed parameter (CLString, CLVec-equivalent, etc.):
+
+- If the param is captured into a closure (Effect/Bind continuation): apply Form A or Form B fix.
+- If the param is consumed inline (e.g. printed without capture, as in a hypothetical `print-and-return-int`): add `s.dec_rc()` before return per Decision 24 (no capture-RC pattern at all).
+- If the param is returned unchanged: no fix needed (caller's transferred ref flows out through the return).
+
+Initial pass (verify during implementation):
+
+| Extern | Heap arg | Captures? | Fix |
+|---|---|---|---|
+| `print_string` (`platforms/stdio/src/lib.rs:18`) | `s: CLString` | Yes (into Effect thunk) | Form A or B |
+| `read_line` (`platforms/stdio/src/lib.rs:32`) | none | — | no fix needed |
+| `test-capture::*` (`platforms/test-capture/src/lib.rs`) | TBD — audit | TBD | per row |
+
+The §3.3 audit table in this document MUST gain a "Platform DLL functions" expansion sub-section enumerating each platform function individually after Wave 3 lands.
+
+### 10.6 User-visible regression-test symptom (per /arch Condition 6)
+
+Per `/arch` Sprint 58 review condition 6, the deferral-or-fix policy requires naming the specific user-visible symptom under which the leak manifests, so `/qa` can write a regression test before any deferral.
+
+**Symptom**: when a Cranelisp program executes `(print "hello")` (or any string-emitting platform call) repeatedly under the IO trampoline, `cranelisp_runtime::alloc_count() - dealloc_count()` grows monotonically with the call count. Specifically:
+
+- **Positive coverage** (program runs and prints correctly):
+  ```text
+  Setup:  let allocs_before = cranelisp_runtime::alloc::alloc_count();
+          let deallocs_before = cranelisp_runtime::alloc::dealloc_count();
+  Act:    run a Cranelisp program that does `(do (print "a") (print "b") (print "c"))`,
+          drained through `cranelisp_run_io`.
+  Assert: alloc_count - allocs_before == dealloc_count - deallocs_before.
+          (Pre-fix: alloc delta exceeds dealloc delta by 3 — one leaked CLString
+           reference per print call.)
+  ```
+
+- **Negative coverage** (bytes do not grow unbounded):
+  ```text
+  Setup:  baseline alloc/dealloc counters.
+  Act:    run `(loop 1000 (print "x"))` (or hand-build a 1000-bind chain
+          repeatedly forcing print) through `cranelisp_run_io`.
+  Assert: dealloc_count - allocs_before is within ±1 of alloc_count - allocs_before
+          across the entire run. (Pre-fix: gap grows by ~1000.)
+  ```
+
+`/qa` writes both tests. The negative test is the "headline" diagnostic — catches any future regression where the fix is correct on a single call but breaks on N calls (e.g. if Form B's `into_owned_consuming` accidentally inc's twice, the symptom would invert and dealloc would exceed alloc; the assertion catches that direction too).
+
+The unit-test variant (in `crates/cranelisp-runtime/src/io.rs::tests`) must use a synthetic heap-string-capturing extern to exercise the same code path without depending on the platform DLL — see `decision24_run_io_pure_rc_balanced` for the existing pattern. Naming convention: `decision24_print_string_input_rc_balanced` (positive) + `decision24_print_string_repeated_rc_no_growth` (negative).
+
+### 10.7 Why this is small and Wave-3-scoped
+
+The fix is one line per affected extern (Form A) or one helper-method addition + one-line edit per affected extern (Form B). The audit is an enumeration over a small number of files (`platforms/*/src/lib.rs` plus any platform helpers in `crates/cranelisp-platform/src/lib.rs`). The IO-trampoline code in `crates/cranelisp-runtime/src/io.rs` is unchanged — the trampoline correctly dec's IO ADT nodes per §3.5.4; only the platform-extern boundary needs adjustment. Total estimated work: <1 day for the fix + audit + two regression tests.
+
+### 10.8 Deferral fallback (one-deferral-permitted policy)
+
+If implementation surfaces unexpected scope (e.g. the platform-extern audit reveals 20+ functions all needing rework, OR the capture-RC pattern in `crates/cranelisp-platform/src/lib.rs:CLOwned` requires deeper design work that exceeds Wave 3 budget), the one-deferral-permitted disposition is available. Required artefacts for deferral:
+
+1. The user-visible symptom from §10.6 above (positive + negative regression test) MUST land in `/qa`'s Wave-5 work as `#[ignore]`'d tests with a comment naming the FIXME and the deferral rationale. The tests themselves are NOT `#[ignore]`'d to hide spec violations (per `feedback_failing_not_ignored.md`); they're `#[ignore]`'d only because the symptom is documented as a known leak. `/qa` removes the `#[ignore]` when the fix lands.
+2. The FIXME(/backend) at `io.rs:28` is rewritten to name the deferral sprint and the explicit deferral rationale (not just "still open").
+3. `/sprint` records the deferral in §Outcome → §Deferred with the rationale.
+
+Default disposition: ship the fix in Wave 3. Deferral is held in reserve only if scope discovery during implementation makes Wave 3 untenable.
+
+### 10.9 Cross-references
+
+- `crates/cranelisp-runtime/src/io.rs:28` — the FIXME being closed.
+- `platforms/stdio/src/lib.rs:18-25` — the `print_string` extern.
+- `crates/cranelisp-platform/src/lib.rs:478-482` — `CLHeap::own()` (Form B's `into_owned_consuming` would land here).
+- `design/arch/CLAUDE.md` Decision 24 — the consuming convention contract being enforced.
+- `design/backend/ring2-rc.md` §3.3 — the extern consumption audit table; this addendum's §10.5 audit feeds back into §3.3.
+- `sprints/SPRINT.md` §"Architecture Review" condition 6 — the disposition policy.

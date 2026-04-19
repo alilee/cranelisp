@@ -377,8 +377,9 @@ pub extern "C" fn cranelisp_trace_exit(result: i64, result_str_ptr: i64) -> i64 
 }
 
 /// Extract the `tnanos` field of the first child of the root Trace frame.
-/// Used by `run-tests` to report per-test execution time.
-/// Returns 0 if the trace has no children.
+/// Used by the `/run-tests` slash command and user-level test runners
+/// (composed from `discover-tests` + `run-test` builtins) to report per-test
+/// execution time. Returns 0 if the trace has no children.
 ///
 /// TraceCall heap layout (base-pointer convention):
 /// `[alloc_size(+0) | rc(+8) | tag(+16) | tname(+24) | tparams(+32) | tresult(+40) | tchildren(+48) | tnanos(+56)]`

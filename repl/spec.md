@@ -162,7 +162,9 @@ All REPL output uses a unified format that mirrors Cranelisp type annotation syn
 Where:
 - `:Type` — the fully-qualified type (per §1.4), always present
 - `{value|name}` — either a runtime value (for expression results) or a fully-qualified name (for definitions and lookups)
-- `; {classification} - {docstring}` — optional comment suffix. The classification is the name of the defining special form (`defn`, `deftype`, `deftrait`, `defmacro`, `special form`, `impl`). The docstring is the first line of the symbol's documentation. If the symbol has no docstring, only the classification appears. If there is no classification (literal values), the comment is omitted entirely.
+- `; {classification} - {docstring}` — optional comment suffix. The classification is the name of the defining special form (`defn`, `deftype`, `deftrait`, `defmacro`, `special form`, `impl`) or the symbol-class word `primitive` (used for builtins in the `primitives` module — see §4.1.7). The docstring is the first line of the symbol's documentation. If the symbol has no docstring, only the classification appears. If there is no classification (literal values), the comment is omitted entirely.
+
+For builtins, the docstring is appended on a separate `; <doc>` field after the classification (e.g., `; primitive ; Add`) — this distinguishes the host-implemented description from the user-supplied docstring grammar used by `defn`/`deftype`/etc.
 
 **Related symbols** appear as comment lines below the primary line. Each section names a relationship using language syntax, followed by unqualified symbol names (bare names, since these are in-scope symbols):
 
@@ -308,10 +310,13 @@ Values are runtime results and have no module scope. They are displayed bare.
 
 | Closure | `<closure>` | 1 | [Tested tests/repl_experience::ring1_closure_display_format] |
 | Vec | `[elem1 elem2 ...]` (empty: `[]`) | 1 | [Tested+Neg tests/repl_experience::display_vec_int, tests/repl_experience::display_vec_empty] |
-| List | `(list elem1 elem2 ...)` (empty: `List.Nil`) | 1 | [Tested+Neg tests/repl_experience::display_list_nil, tests/repl_experience::display_list_non_empty_no_truncation_for_small_list] |
-| Seq | `(seq elem1 elem2 ... +more)` (forces up to 20) | 2 | [Tested tests/repl_experience::display_seq_infinite_does_not_hang] |
+| List | generic ADT recursive form (e.g., `(List.Cons 1 (List.Cons 2 List.Nil))`; empty: `List.Nil`) | 1 | [Tested+Neg tests/repl_experience::display_list_nil, tests/repl_experience::display_list_non_empty_no_truncation_for_small_list] |
+| Seq | generic ADT recursive form (e.g., `(Seq.SeqCons h <closure>)`); REPL MUST NOT force-evaluate the lazy tail | 2 | [Tested tests/repl_experience::display_seq_infinite_does_not_hang] |
 
-<!-- FIXME(/spec): The aspirational display formats for List (`(list elem1 elem2 ...)`) and Seq (`(seq elem1 elem2 ... +more)`) do not match current implementation — user-defined List/Seq ADTs display via the generic ADT recursive form (`(List.Cons 1 (List.Cons 2 List.Nil))` and `(Seq.SeqCons h <closure>)`). Since List and Seq are stdlib types (not compiler-seeded), the REPL display layer would need type-specific pretty-printing to emit the spec format. Decide: either promote this to /int as implementation work, or update §1.5 to describe the generic ADT fallback as spec-conformant. Tests above verify elements appear and infinite seqs do not hang; format convergence is tracked here. Filed by /qa during Sprint 57 Wave 5. -->
+`Vec` is a compiler-seeded primitive type, so the REPL knows to render it as `[elem1 elem2 ...]`. `List` and `Seq` are stdlib types defined via `deftype`; the REPL renders them through the generic ADT recursive formatter (Type.Constructor + recursive field formatting). The MUST requirement for `Seq` is termination: the REPL displays the constructor and field shape without forcing the lazy tail thunk, so an infinite sequence does not hang the prompt.
+
+> **Aspirational** (not currently required): A future revision MAY introduce a type-directed pretty-printer that recognises `List` and `Seq` and renders them as `(list elem1 elem2 ...)` and `(seq elem1 elem2 ... +more)` (forcing up to a small bound). This would require either (a) a display protocol/trait the stdlib opts into per type, or (b) compiler-seeded recognition of named types from a known stdlib path. Until that protocol exists, the generic ADT form is normative.
+<!-- FIXME(/int): When the type-directed pretty-printer or display-protocol mechanism is designed (likely in a Ring 4 polish sprint), revisit this section and promote the aspirational forms to MUST. Owning skill: /int (REPL display layer); coordinate with /arch on the protocol design and /stdlib on opt-in for List/Seq. -->
 
 
 ADT fields MUST be recursively formatted according to this table.
@@ -755,7 +760,7 @@ user> str-concat
 :(Fn [primitives/String primitives/String] primitives/String) primitives/str-concat ; primitive ; Concatenate two strings
 ```
 
-<!-- FIXME(/spec): §4.1.7 prose previously said classification was `defn`, but the implementation emits `primitive` and appends the builtin's docstring on a third `; <doc>` field. /qa updated the example output during Sprint 57 Wave 5 after verifying actual REPL behavior. If `primitive` is intentional (it distinguishes builtins from user-defined fns), update the §4.1 classification table accordingly. If `defn` is intentional, that's an /int gap. -->
+The classification word `primitive` (rather than `defn`) is intentional: it distinguishes host-implemented builtins from user-defined functions. The builtin's docstring (sourced from [Appendix A.5](../spec/appendix-a-builtins.md#a5-docstrings-for-builtins-r1)) is appended on a separate `; <doc>` field per §1.1.
 
 
 #### 4.1.8 Trait Methods (including operators) [Tested tests/e2e::e2e_s4_3_operator_plus_feedback]
