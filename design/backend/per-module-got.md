@@ -1,7 +1,7 @@
 # Per-Module GOT Design
 
 **Author:** `/arch`
-**Date:** 2026-03-28 (updated 2026-04-10)
+**Date:** 2026-03-28 (updated 2026-04-19, Sprint 58 Wave 2 close: §9.2/§9.3/§9.4/§9.5 unified one-load shape)
 **Status:** Implemented
 **Audience:** `/backend`, `/int`
 
@@ -331,35 +331,49 @@ This map is analogous to `ObjectCompileInput.fn_to_module` in the object path. T
 
 On aarch64, `global_value(DataId)` in PIC mode lowers to ADRP+LDR with ±4GB range. GOT tables are heap-allocated (`Box<[AtomicPtr; N]>` inside `Arc<GotTable>`) and may be >4GB from loaded object code. ADRP cannot reach them directly.
 
-### 9.2 Solution: Literal Pool Entries
+### 9.2 Solution: Unified one-load GOT shape (Sprint 58 Wave 2)
 
-Each `__cranelisp_got_{module}` data symbol is an 8-byte literal pool entry containing the GOT table's heap address. The entry is co-located with the code:
+**Updated Sprint 58 Wave 2** per Decision 23 (UPDATED with two-GOT framing) and Decision 36 (function bare names + `Linkage::Local`). Sprint 58 Wave 2 close unified the GOT-load shape across JIT and Object modes per `/sprint`'s direction "the same call will be used to load the got base from the literal pool in both jit and object." The previous two-load shape — where `__cranelisp_got_{module}` was a pointer cell containing the GOT table's heap address, requiring an extra load to dereference the pointer — is replaced by a one-load shape in which `__cranelisp_got_{module}` IS the GOT slab base directly.
 
-- **JIT mode**: defined as data in the JIT module (`Jit::define_got_data`), content is the `GotTable::base_ptr()` value. `global_value` materializes the entry address via `movz+movk`.
-- **Object mode**: defined as Export data in the .o's data section (8 bytes, zeroed). The linker patches it with the actual `GotTable` address at load time. ADRP+LDR reaches the entry because it's in the same .o / mmap region.
+In both modes, the symbol address `__cranelisp_got_{module}` IS the slab base. CLIF emits one less load; the same load mechanism resolves in JIT and Object modes:
 
-### 9.3 Call Sequence
+- **JIT mode**: `__cranelisp_got_{module}` is registered with the JIT builder as `JITBuilder::symbol(name, GotTable.base_ptr())` — the symbol address resolves directly to the slab base. There is no pointer-cell indirection. The previous `Jit::define_got_data` helper (which defined a pointer-cell data symbol holding the slab address) is **deleted**; the symbol registration is folded into `extra_symbols` at the three call sites (priority worker, REPL eval, trace-extra-symbols path).
+- **Object mode**: `__cranelisp_got_{module}` is defined inside the per-module `.o` via `CodeFinalizer::define_module_got_data(name, slot_count, slot_funcs)` (the trait method added in Sprint 58 Wave 2 per Decision 23 — see `compile-to-module.md` §5.3/§5.4). The implementation declares the symbol as `Linkage::Export` data of `slot_count * 8` bytes (regular `__DATA` section, NOT `__bss`) with function-address relocation initializers at byte offset `slot * 8` for each defined function. The system linker (`--link` mode) materialises the relocations into actual function addresses at load time. The symbol address IS the slab.
+
+**`__bss` section discipline.** The Object-mode definition uses regular `__DATA` (with explicit zero-init bytes) rather than `__DATA,__bss` (`S_ZEROFILL`). macOS `ld` segfaults on `.o` files containing relocations in a `S_ZEROFILL` section because BSS has no file content for the linker to patch — the data must land in `__DATA,__data` for `ld` to apply the function-address relocations. Cranelift's `desc.define(vec![0u8; slot_count * 8].into_boxed_slice())` produces the correct section affinity; `desc.define_zeroinit(slot_count * 8)` does not.
+
+### 9.3 Call Sequence (unified one-load shape)
 
 ```
-  entry_addr = global_value(__cranelisp_got_{module})  // address of literal pool entry
-  got_base   = load(entry_addr)                         // GOT table base address
-  fn_ptr     = load(got_base + slot * 8)                // function pointer from GOT
+  slab_base = global_value(__cranelisp_got_{module})   // GOT slab base address
+  slot_addr = slab_base + slot * 8                      // address of slot
+  fn_ptr    = load(slot_addr)                           // function pointer from GOT
   call_indirect(fn_ptr)
 ```
 
-On aarch64 this is ADRP+LDR (literal pool) + ADD+LDR (GOT slot) + BLR. Two loads: one to get the GOT base from the literal pool, one to get the function pointer from the GOT. The first load is from co-located data (always reachable); the second is the actual dispatch.
+On aarch64 this is ADRP+LDR (system GOT pages, fetching the slab base address) + LDR (GOT slot) + BLR. **One load** from the slab itself (the actual dispatch); the address materialisation goes through the system's GOT-load relocation mechanism, not through a co-located literal pool entry holding a pointer cell.
+
+How the symbol is registered/defined in each mode (the resolver behind the shared `__cranelisp_got_{module}` reference):
+
+- **JIT mode**: `JITBuilder::symbol(name, GotTable.base_ptr())` — symbol address resolves to slab base directly. No pointer-cell indirection. Cranelift's data-symbol resolution returns `GotTable.base_ptr()` when the JIT finalizer encounters the `Linkage::Import` data reference emitted by `compile_to_module`.
+- **Object mode**: `CodeFinalizer::define_module_got_data(name, slot_count, slot_funcs)` defines `__cranelisp_got_{M}` as `Linkage::Export` data of size `slot_count * 8` bytes (regular `__DATA`, NOT `__bss`) with function-address relocation initializers. Symbol address IS the slab. The system linker patches the slot bytes with the actual function addresses at load time.
+
+This is the canonical illustration of Decision 23's two-GOT model: byte-identical CLIF in both modes, two resolvers behind the same data symbol. The CLIF emitted by `compile_to_module` is mode-agnostic — the FnCompiler does not know which `Module` impl resolves `__cranelisp_got_{M}` at finalize time. JIT mode resolves it to the live `Arc<GotTable>` slab base on `SymbolTable.got` (the SymbolTable GOT — read by `--run`/REPL); Object mode resolves it to the `.o` data section GOT slab the linker materialises (the `.o` data section GOT — read by `--link` mode's system linker, dormant in `--run`/REPL after cache-hit). Cross-references: Decision 23 (byte-identical CLIF — preserved by the unified shape); Decision 36 (function bare names + `Linkage::Local` — relocation initializers in Object mode point at intra-`.o` Local function symbols, which is correct because `.o`-local function symbols cannot collide across `.o`s); `design/arch/interfaces.md` §"Two-GOT model" subsection (the visual reference).
+
+**Sprint 58 Wave 2 history note.** The shape described in §9.2/§9.3 above was OLD (two-load: ADRP+LDR (literal pool) + ADD+LDR (GOT slot) + BLR — first load fetching a pointer cell holding the slab base, second load fetching the function pointer). Sprint 58 Wave 2 close unified this to the one-load shape per `/sprint`'s direction "the same call will be used to load the got base from the literal pool in both jit and object." JIT mode's `Jit::define_got_data` helper was deleted as part of this unification; Object mode gained `CodeFinalizer::define_module_got_data` to publish the slab as a `Linkage::Export` data symbol with function-address relocation initializers.
 
 ### 9.4 Immutability Constraints
 
-- **GOT tables are immovable.** Once allocated, a GOT's base address never changes. Any number of literal pool entries across any number of loaded .o files may hold this address — they cannot all be found and updated.
-- **GOT entries are mutable.** Function pointers in GOT slots are `AtomicPtr` — updated when functions are redefined at the REPL via `store(Release)`.
-- **Literal pool entries are fixed at load time.** Written once when the .o is loaded (linker fixup) or when the JIT module is created (`define_got_data`). Not updated thereafter.
+- **GOT tables are immovable.** Once allocated, a SymbolTable GOT slab's base address never changes. Loaded `.o` files' GOT data symbols hold their slab addresses through the system loader's relocation machinery — JIT-mode resolution writes the slab base into the JIT builder's `extra_symbols` once at module-build time, and Object-mode resolution materialises the `Linkage::Export` data symbol once at link/load time.
+- **GOT entries are mutable.** Function pointers in GOT slots are `AtomicPtr` — updated when functions are redefined at the REPL via `store(Release)` per Decision 31's atomic-swap discipline.
+- **GOT slab base address is fixed at module-build / load time.** In JIT mode, the slab base is registered with the JIT builder via `JITBuilder::symbol(name, GotTable.base_ptr())` once when the module is built. In Object mode, the slab base is the `__cranelisp_got_{M}` `Linkage::Export` data symbol's address inside the `.o`'s `__DATA` section, fixed when the system linker (or our cache `Linker`) loads the `.o`. Not updated thereafter; only slot CONTENTS mutate.
 
 ### 9.5 Unified Codegen
 
-The same Cranelift IR (`global_value` + `load` + `iadd_imm` + `load`) is used for both JIT and object paths. No mode-specific codegen. This means:
-- Object-loaded functions can be redefined at the REPL (the GOT entry is updated, all callers see the new pointer).
-- `--release` AOT compilation can optimize the literal pool load away (inline the GOT base as a link-time constant).
+The same Cranelift IR (`global_value` + `iadd_imm` + `load`) is used for both JIT and object paths — one load to fetch the function pointer from the slot, no mode-specific codegen. This means:
+- Object-loaded functions can be redefined at the REPL (the GOT entry is updated, all callers see the new pointer through the atomic-swap discipline of Decision 31).
+- `--release` AOT compilation can optimize the GOT-base materialisation away when the slab base is a link-time constant (the slot load becomes a single absolute-address load).
+- The CLIF is byte-identical between JIT and Object modes per Decision 23 — the only difference is which `Module` impl resolves `__cranelisp_got_{M}` at finalize time.
 
 ## 10. Risks
 

@@ -586,7 +586,7 @@ Depends on Wave 1. Delivers Step 5a (structural decls on `SymbolTable`) + Step 5
 | /backend | 3 unit tests per `tests/plan/ring4.md §G.11` (cache symmetry, schema-version mismatch, write-then-read) | pending | In `crates/cranelisp-backend/src/cache/`. |
 | /int | 1 unit test per `tests/plan/ring4.md §G.11` (worker cache-write path) + 4 unit tests per `tests/plan/ring4.md §G.10` (writer source-order, prelude-injection-disposition, ModuleStructure-deletion-grep, save.rs round-trip) | pending | Per /int's design docs §3-§5. |
 | /qa | Integration tests: 4 cache round-trip + verify 13 cache flip-greens (9 cache + 3 sprint23 + 1 v4_pipeline) | pending | Per `tests/plan/ring4.md §G.10–G.11`. Test names pinned. |
-| /review | Review Wave 2 code | pending | After build-green; per Sprint 57 pattern. |
+| /review | Review Wave 2 code | done | Wave 2 /review: PASS with 3 Importants — see `design/review/sprint58-wave2-review.md`. |
 
 **Gate criterion**: structural decls populated and round-trip; `CodegenInput` stashing removed; `CACHE_SCHEMA_VERSION = 1` enforced; 13 baseline cache failures cleared; `cargo clippy` clean per-crate (`cranelisp-types`, `cranelisp-backend/src/cache/`, `src/worker.rs`); test count ≥ baseline.
 

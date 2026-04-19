@@ -1,19 +1,20 @@
 # compile_to_module<M: Module> — Unified Compilation Function
 
-<!-- Sprint 58 Wave 2 architectural reconciliation: ACTIONED.
-     The three FIXME points filed by /arch (Decisions 23, 25 updated; 36
-     NEW; 37 NEW) have landed in component A:
+<!-- Sprint 58 Wave 2 architectural reconciliation: COMPLETE.
+     The four FIXME points filed by /arch (Decisions 23 UPDATED, 25 UPDATED,
+     36 NEW, 37 NEW) have all landed:
        (1) Function declaration loop: bare names + Linkage::Local uniformly
-           (Decision 36). §7 below updated; the "Cross-module function
+           (Decision 36). §7 updated; the "Cross-module function
            references (ObjectModule)" paragraph removed.
        (2) __cranelisp_got_{M} Export-data definition emitted inside
            compile_to_module<ObjectModule> via the new CodeFinalizer trait
            method `define_module_got_data` (Module trait extension, option
-           (a)). §5.3/§5.4 below updated.
+           (a)). §5.3/§5.4 updated.
        (3) §12 head paragraph cross-references the two-GOT framing.
-
-     §17 still owes the C8 follow-on (raw-shape return type per CP1
-     arbitration, Decision 35) — separate FIXME.
+       (4) §17.1.1 documents the raw-shape return type per CP1 arbitration
+           (Decision 35 / Layer 2 Option B): compile_to_module returns only
+           CompilationResult; the integration layer constructs Arc<Jit> +
+           Code::Jit after compile_to_module returns.
 -->
 
 Design for replacing all compilation paths — JIT batch, REPL expression, and object file — with a single generic function parameterised by Cranelift module type.
@@ -1190,7 +1191,7 @@ for (sym, func_id) in &result.func_ids {
 }
 ```
 
-For the cache `.o` path (`/int`'s nice worker), the same `compile_to_module` call passes a `&mut ObjectModule`; the caller does NOT wrap it in `Arc<Jit>` (no JIT pages exist) — instead it calls `obj_module.finish().emit()` for `.o` bytes and writes them to disk via the `cache::write_meta` companion call. `result.func_ids` is consulted only to confirm every requested name was compiled; the `Code` enum is not constructed at all because cache-restore re-runs codegen via the JIT path (per §14.3 step [5b]).
+For the cache `.o` path (`/int`'s nice worker), the same `compile_to_module` call passes a `&mut ObjectModule`; the caller does NOT wrap it in `Arc<Jit>` (no JIT pages exist) — instead it calls `obj_module.finish().emit()` for `.o` bytes and writes them to disk via the `cache::write_meta` companion call. `result.func_ids` is consulted only to confirm every requested name was compiled; the `Code` enum is not constructed at fresh-build time on the Object path because the `.o` is written to disk for later reload, not into a session symbol table. On cache-hit (per `module-caching.md` §14.3 updated Sprint 58 Wave 2), the integration layer's cache-loader reads the `.o` via `Linker::load_object`, looks up bare-name function symbols per Decision 36, and constructs `Code::Linker { linker: Arc<Linker>, ptr }` per Defn entry — codegen does NOT re-run on cache-hit.
 
 **What the backend does NOT need to provide for this Layer-2 Option B shape**:
 
@@ -1250,7 +1251,7 @@ The integration-layer migration of `Arc<Jit>` from `kept_jits` to entries is `/i
 
 ### 17.5 Cache coupling (cross-reference to §14)
 
-`module-caching.md` §14.3 step [5b] re-runs codegen via `compile_to_module<JITModule>` for each cache-restored Def with `ast: Some(_)`. The freshly-allocated `Arc<Jit>` from that codegen run lands on `ModuleEntry::Def.code` per §17.3's instantiation. Cache-restore therefore exercises the same Step-5c data path as fresh build — no separate cache-restore code path needs to be written. The `Arc<Jit>` from cache-restore reclaims on redefinition the same way as fresh build's.
+**Updated Sprint 58 Wave 2** per Decision 25's correction. `module-caching.md` §14.3 step [5b] (Wave 2 rewrite) does NOT re-run codegen on cache-hit; it loads the cached `.o` via `Linker::load_object`, looks up bare-name function symbols per Decision 36, and writes the resolved addresses into the SymbolTable GOT slots. The integration layer constructs `Code::Linker { linker: Arc<Linker>, ptr }` per Defn entry on cache-hit (vs `Code::Jit { jit: Arc<Jit>, ptr }` on fresh-build). Both variants land on `ModuleEntry::Def.code` per §17.3's instantiation — the entry holds the appropriate lifetime root for its compilation lineage. The `Arc<Linker>` from cache-restore reclaims on per-module Linker basis (when the last `Code::Linker` clone referencing a particular `Linker` drops); the `Arc<Jit>` from fresh-build reclaims on per-batch JIT basis per Decision 31. Cache-restore therefore does NOT exercise `compile_to_module` — the same Step-5c data path applies, but the writer for `Code::Linker` lives in the integration layer's cache loader, not in `compile_to_module`. See `module-caching.md` §14.3 + §14.6 for the fresh-vs-restore symmetry framing.
 
 ### 17.6 What does NOT change in compile_to_module
 

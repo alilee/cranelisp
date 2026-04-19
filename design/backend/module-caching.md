@@ -1,99 +1,5 @@
 # Module Caching
 
-<!-- FIXME(/backend|/int) Sprint 58 Wave 2 architectural reconciliation (filed by /arch).
-     Component-A status (Sprint 58 Wave 2): the .o data symbol for
-     `__cranelisp_got_{M}` is now defined as Linkage::Export inside
-     `compile_to_module<ObjectModule>` (see compile-to-module.md §5.3
-     and §7 — both updated). Bug B is fixed at source. Cache-hit's
-     `linker.get_symbol(bare_name(s))` lookup per Decision 36 now
-     succeeds uniformly for ALL modules (because every function symbol
-     is bare-Local) — the cache-side dissolution of Bug A is automatic
-     once /int wires component B (cache-hit-into-register_module).
-     The remaining wording rewrites below describe /int's component B
-     work in this doc.
-
-     §14 needs three coupled rewrites — see Decisions 25 (UPDATED), 23
-     (UPDATED with two-GOT framing), and 37 (NEW) in
-     design/arch/CLAUDE.md (Sprint 58 Wave 2):
-
-     (1) §14.3 step [5b] is WRONG.
-         Current text: "If the entry has `ast: Some(_)`: re-run codegen
-         via `compile_to_module<JITModule>` (priority worker) for that
-         single symbol — exactly the same call path as fresh-build."
-         Decision 25 was rewritten Sprint 58 Wave 2: cache-hit LOADS
-         the cached `.o`, does not re-codegen. The cache stores BOTH
-         `.meta.json` AND `.o`. Cache-hit path:
-            (a) deserialise .meta.json → install SymbolTable
-            (b) load .o via Linker::load_object (linker maps native code)
-            (c) for each defined symbol s in symbol_tables[M]:
-                 ptr = linker.get_symbol(bare_name(s))   # Decision 36
-                 symbol_tables[M].got.store_slot(s.got_slot, ptr)
-         Codegen runs ONLY on fresh build (no cached .o). The .o is the
-         regenerated output; the cached symbol table's `got_slot` layout
-         (pinned at typecheck) tells the loader which slots to populate.
-         Rewrite §14.3 step [5b] accordingly. The "trade-off" paragraph
-         at line 1168 (cache-restore in JIT mode pays codegen cost on
-         every restart) becomes obsolete and should be DELETED — there
-         is no codegen cost on cache-hit; the .o-load is the cached path.
-
-     (2) Cache-hit explicit two-GOT model.
-         Add a paragraph at §14.3 explaining: cache-hit touches ONLY the
-         SymbolTable GOT (the in-process Arc<GotTable> on the
-         deserialised SymbolTable). The .o data section GOT (defined as
-         Linkage::Export inside the cached .o per Decision 36 / Bug B
-         fix) remains DORMANT — it is read only in --link mode by the
-         system linker. In --run mode, the SymbolTable GOT is populated
-         by walking defined_symbols(), looking up bare-name addresses
-         via linker.get_symbol(), and writing into the GOT slots; the
-         .o data symbol's defined value is never read. Cross-reference
-         interfaces.md §"Two-GOT model" subsection.
-
-     (3) Cache-hit integration into register_module (Decision 37).
-         §14.3 currently presents cache-restore as a sequenced bullet
-         list (steps [1]-[7]) divorced from the rest of the pipeline.
-         Per Decision 37, cache-hit decision lives INSIDE
-         register_module's recursive flow — there is no parallel cache
-         orchestration. The bulleted sequence is correct as far as it
-         goes, but should be reframed: "register_module(M) attempts
-         cache deserialise first (steps 1-3); on success, install
-         SymbolTable + mark typecheck-complete (step 4) + recurse on
-         imports (step 4.5 — implicit). After typecheck-or-deserialise
-         completes for ALL transitively-reachable modules, codegen
-         phase runs in any order across modules: each codegen worker
-         executes step 6 (load .o; populate GOT). Step 5 (re-resolve
-         platform fn ptrs) and step 7 (install module scope) follow."
-         The "no parallel try_cache_hit_load orchestration" point is
-         load-bearing — Decision 37 deletes the bespoke orchestration.
-
-     §14.4's "deletions" list should add "the bespoke try_cache_hit_load
-     orchestration in src/worker.rs:1169 (replaced by register_module's
-     integrated cache-hit branch per Decision 37)."
-
-     §14.5 cache-write path is correct as-is — both .meta.json and .o
-     are written, and §14.5 step [6] already covers the .o write. The
-     update is to make explicit (in §14.1 or §14.5) that the .o write
-     is NOT optional for any module that has defined symbols — even
-     in JIT-only sessions, the .o is needed for cache-hit on the next
-     run (because cache-hit LOADS the .o per the §14.3 update).
-
-     §14.6's symmetry invariant text needs adjustment: fresh-build
-     populates `code` via compile_to_module<JITModule>; cache-restore
-     populates `code` via Linker::load_object + GOT slot writes. The
-     two paths are SYMMETRIC in what ends up in memory (SymbolTable +
-     populated GOT), but they are NOT symmetric in WHO populates the
-     code — fresh-build has compile_to_module; cache-restore has
-     Linker. Update the §14.6 wording accordingly: "fresh-build path:
-     typecheck populates SymbolTable; compile_to_module populates code
-     (Arc<Jit>) per Defn entry; install_module_scope registers
-     imports/macros/traits. Cache-restore path: deserialise populates
-     SymbolTable; Linker::load_object + GOT-slot writes populate code
-     (Arc<Linker>) per Defn entry; install_module_scope registers
-     imports/macros/traits."
-
-     Owner /backend. Land before Wave 2 closes; coordinates with /int's
-     symbol-table-cache.md FIXME (the producer-side companion).
--->
-
 Design for the Cranelisp reimplementation's module cache system. This covers persistent compilation artifacts, cache invalidation, object file generation, and linking for cached modules.
 
 ## 1. Problem Statement
@@ -1214,52 +1120,108 @@ Sprint 58 Wave 2 ships `CACHE_SCHEMA_VERSION = 1` (the first numbered shape; pre
 
 ### 14.3 Cache-restore (load path)
 
-On cache-hit, the loading path becomes:
+**Updated Sprint 58 Wave 2** per Decisions 25 (cache stores BOTH `.meta.json` AND `.o`; cache-hit LOADS the `.o`, does NOT re-codegen), 36 (function symbols are bare names + `Linkage::Local` uniformly across all modules — `linker.get_symbol(bare_name(s))` lookup is uniformly correct), 37 (cache-hit decision lives INSIDE `register_module`'s normal recursive register-then-recurse-on-imports flow — there is no parallel cache orchestration).
+
+#### Reframing under Decision 37 — recursive `register_module`
+
+Cache-hit is NOT a parallel orchestration codepath. The pre-Sprint-58 `try_cache_hit_load` (`src/worker.rs:1169`) framing — which presented cache-restore as a sequenced bullet list (steps [1]–[7]) divorced from the rest of the pipeline — is dissolved. The canonical recursive flow is one register_module function with a cache-hit-or-fresh-typecheck branch at the head, and a recursive walk over imports, expressed in pseudocode:
+
+```
+register_module(M):
+  if <cache_dir>/M.meta.json exists and schema_version matches:
+    deserialise → install SymbolTable for M → mark typecheck-complete
+  else:
+    parse → typecheck → install SymbolTable for M
+  for each import in SymbolTable[M].imports:
+    register_module(import.module)   # recursive; both branches above are eligible
+                                     # per dep, so a project can mix cached + fresh
+                                     # modules in any combination
+  # Platform decls on M are re-resolved via the existing live-build path.
+```
+
+After typecheck-or-deserialise completes for ALL transitively-reachable modules, codegen phase runs. Per-module codegen workers run in **any order, in parallel** — order-independence is established because the typecheck phase pinned GOT slot LAYOUT in `SymbolTable.symbols[s].got_slot` for every defined symbol; codegen workers fill slot CONTENTS, never read another module's GOT contents at codegen time (the cross-module call mechanism reads `__cranelisp_got_{other_M}` at runtime, not at codegen time). Codegen worker body, branched on whether a cached `.o` exists for the module:
+
+```
+codegen_worker(M):
+  register_symbol("__cranelisp_got_M", &symbol_tables[M].got.base_ptr())
+  Branch on origin:
+    Fresh-build (no cached .o for M):
+      compile_to_module<JITModule>(M, defined_symbols(M), &symbol_tables, jit)
+      → for each defined symbol s: write got_slot[s] = jit.get_finalized_ptr(func_ids[s])
+    Cache-hit (cached .o for M exists):
+      linker.load_object(read(<cache_dir>/M.o))
+      → for each defined symbol s in symbol_tables[M]:
+          ptr = linker.get_symbol(bare_name(s))   # Decision 36
+          if ptr.is_none(): error                  # no swallowed failures
+          symbol_tables[M].got.store_slot(symbol_tables[M].symbols[s].got_slot, ptr)
+```
+
+The cache-hit branch does NOT re-run codegen. The cache stores BOTH `.meta.json` (the serialised `SymbolTable<(), ()>`) AND `.o` (the per-module `ObjectModule` Cranelift output produced at fresh-build time per §14.5). On cache-hit, the `.o` IS the regenerated output; the cached symbol table's `got_slot` layout (pinned at typecheck) tells the loader which slots to populate. **Codegen runs ONLY on fresh build (no cached `.o`).**
+
+**Cache-hit two-GOT model (Decision 23, Wave 2 reconciliation).** Cache-hit touches ONLY the **SymbolTable GOT** (the in-process `Arc<GotTable>` on the deserialised `SymbolTable`). The **`.o` data section GOT** — defined as `Linkage::Export` data symbol `__cranelisp_got_{M}` inside the cached `.o` per Decision 36 / Decision 23 (and emitted by `compile_to_module<ObjectModule>` via `CodeFinalizer::define_module_got_data` per `compile-to-module.md` §5.3/§5.4) — remains DORMANT in `--run`/REPL: it is read only in `--link` mode by the system linker. In `--run`/REPL mode, the SymbolTable GOT is populated by walking `defined_symbols()`, looking up bare-name addresses via `linker.get_symbol()`, and writing into the SymbolTable GOT slots; the `.o` data symbol's defined value is never read. The two GOTs share one CLIF emission shape and differ only in the resolver behind `__cranelisp_got_{M}`: in `--run` mode the cache `Linker` registers `__cranelisp_got_{M}` to the SymbolTable GOT slab base via `register_symbol(...)` (or the equivalent GOT_LOAD relocation handling), and the `.o` data section GOT is bypassed; in `--link` mode the system linker patches the relocation against the `Linkage::Export` data symbol defined in the `.o`. Cross-reference: `design/arch/interfaces.md` §"Two-GOT model" subsection (the visual reference for the same data symbol with two resolvers).
+
+#### Per-step protocol (within `register_module(M)`'s cache-hit branch)
 
 ```text
 [1] Read .meta.json bytes from disk.
 [2] Deserialise via `serde_json::from_slice::<SymbolTable<(), ()>>(bytes)`.
 [3] Check `table.schema_version == CACHE_SCHEMA_VERSION`. Mismatch → return
     `CacheStale::SchemaMismatch { found, expected }`; caller treats as
-    invalidated (same code path as source-mtime change).
+    invalidated (same code path as source-mtime change), which causes
+    register_module to fall through to fresh-typecheck for M.
 [4] Insert the deserialised SymbolTable into the session's
     `tc.symbol_tables: DashMap<ModuleFullPath, SymbolTable<C, L>>` —
     promoting `()` to `C, L` happens at the DashMap insertion site in
     `src/session_v4.rs` (the integration layer; see Step 5c).
-[5] Re-derive runtime state per ModuleEntry::Def in topological order:
-    [5a] If `entry.platform_fn_ptr_target` (i.e. `kind == Primitive { primitive_kind:
-         PlatformEffect, .. }`): re-open the platform DLL named by the persisted
-         `PlatformDecl` (look it up via `symbol_table.platforms`), read its manifest,
-         locate the matching cl_name → fn_ptr, and write into `entry.platform_fn_ptr`.
-         If the DLL is missing or the manifest no longer exports the name →
+[4.5] Recurse on imports — register_module is called for each entry in
+    `SymbolTable[M].imports`, which itself runs the same cache-hit-or-fresh
+    branch. This is the structural recursion that makes Decision 37's
+    "single-pipeline" property hold.
+[5] Re-derive runtime state per ModuleEntry::Def:
+    [5a] If `kind == Primitive { primitive_kind: PlatformEffect, .. }`: re-open
+         the platform DLL named by the persisted `PlatformDecl` (look it up via
+         `symbol_table.platforms`), read its manifest, locate the matching
+         cl_name → fn_ptr, and write into `entry.platform_fn_ptr`. If the DLL
+         is missing or the manifest no longer exports the name →
          `CacheStale::PlatformResolutionFailed { module, symbol }`.
-    [5b] If the entry has `ast: Some(_)`: re-run codegen via `compile_to_module<JITModule>`
-         (priority worker) for that single symbol — exactly the same call path as
-         fresh-build. The freshly-allocated `Arc<Jit>` lives on `entry.code` per
-         Decision 25 + Decision 31 Scenario 2. Do NOT load the .o file for this
-         entry (the .o is the nice-worker product; cache-restore for JIT goes
-         through codegen for parity with fresh build).
-    [5c] If the entry has `ast: None`: nothing to re-derive — it's a primitive,
-         a special form, an Overloaded base (variants carry the bodies), a
-         constrained-fn template (mono specialisations carry the bodies), an
-         Import, a Reexport, a TypeDef, a TraitDecl, a Constructor, a Macro,
-         or an Ambiguous. Each of those categories' runtime needs are handled
-         by their own kind-specific code paths (none require .o loading).
-[6] If --link mode (cache-hit on .o for batch nice-worker output): load the
-    .o via `Linker::load_object` and write the resolved fn ptrs into the
-    session's GOT directly, bypassing JIT codegen. Set the SymbolTable's
-    `linker` field to the freshly-mmap'd Linker handle. (This is the
-    quick-build path of §11.)
-[7] Install module scope (imports, macros, traits) — shared with fresh-build
+    [5b] (Codegen-phase action — runs after all reachable modules have
+         completed the typecheck-or-deserialise phase.) The codegen worker
+         loads the cached `.o` via `Linker::load_object`, looks up function
+         symbols by their bare names per Decision 36, and writes the resolved
+         code addresses into the SymbolTable GOT slots:
+            linker.load_object(read(<cache_dir>/M.o));
+            for each defined symbol s in symbol_tables[M]:
+              ptr = linker.get_symbol(bare_name(s));   // Decision 36
+              if ptr.is_none(): error CacheLoadError { module: M, symbol: s };
+              symbol_tables[M].got.store_slot(
+                  symbol_tables[M].symbols[s].got_slot,
+                  ptr,
+              );
+         Per Decision 31's safety invariant ("a slot that resolves to NULL is
+         reachable from the code path that calls it"), an unresolved symbol
+         MUST surface as a hard error (CacheLoadError) — silently producing
+         an `inmem_done` state with empty GOT slots is a contract violation.
+         The `Code::Linker { linker: Arc<Linker>, ptr }` is constructed at the
+         integration layer (`src/session_v4.rs`) per Decision 35, with the
+         `Arc<Linker>` shared across every entry the linker materialised; see
+         `compile-to-module.md` §17.1.1 for the `Code` enum construction site.
+         Codegen does NOT re-run; the .o IS the regenerated output.
+    [5c] If the entry has `ast: None` and is none of the kinds above: nothing
+         to re-derive — Overloaded base entries (variants carry the bodies),
+         constrained-fn templates (mono specialisations carry the bodies),
+         Import, Reexport, TypeDef, TraitDecl, Constructor, Macro, Ambiguous.
+         Each of those categories' runtime needs are handled by their own
+         kind-specific code paths (none require .o loading).
+[6] Install module scope (imports, macros, traits) — shared with fresh-build
     via `install_module_scope()`. The deserialised SymbolTable's
     structural-decl fields (`imports`/`exports`/`platforms`/`submodules`)
     are the input to the import resolver, so cache-restore and fresh build
     feed the same resolver.
 ```
 
-Step [5b] is the load-bearing simplification: cache-restore for JIT mode does NOT load the .o file. Instead, it re-runs codegen against the deserialised `ast` body. The .o file exists only for `--link` mode (step [6]). The rationale: keeping cache-restore equivalent to fresh-build by going through `compile_to_module` means there is exactly one codegen path, exactly one `Arc<Jit>` lifetime story (Decision 31 Scenario 2 fires consistently), and no separate "load .o into mmap" code path for the dev REPL workflow. The .o file is produced eagerly by the nice worker for `--link` reuse, but the dev workflow does not pay the .o-load cost.
+Steps [1]–[4.5] run on the `register_module` thread that hit the cache; step [5b]'s `.o`-load is the codegen-worker action that runs after typecheck phase completes for all reachable modules. Steps [5a], [5c], [6] are register-time runtime-state derivation that do not depend on codegen having completed.
 
-Trade-off: cache-restore in JIT mode pays codegen cost on every restart. Sketch-comparison evidence is that JIT codegen for a single symbol is sub-millisecond (the priority worker already hits this latency for REPL evals). The cache hit eliminates typecheck cost (the dominant cost for non-trivial modules) and the structural-decl/symbol/scheme rebuild — what's left is pure CLIF emission against pre-typed AST. If profiling reveals codegen cost dominates, a future optimisation can add a per-symbol `.code.bin` artefact to the cache directory; the symbol-table shape does not need to change.
+The trade-off paragraph that previously appeared here — "cache-restore in JIT mode pays codegen cost on every restart" — is **obsolete**. Cache-restore in `--run`/REPL mode pays the `.o`-load cost (mmap + relocation resolution + GOT-slot population), not the codegen cost. The `.o` is the cached output; the codegen step ran once at fresh-build time and was persisted.
 
 ### 14.4 `CodegenInput` stashing path is deleted
 
@@ -1270,7 +1232,8 @@ Concretely deleted from `crates/cranelisp-backend/src/cache/`:
 - `serialize::CacheMetadata` — replaced by the `schema_version` field on `SymbolTable` (or a thin `CacheEnvelope` per §14.1 if serde forward-compat needs it).
 - `serialize::CacheCodegenState` — every field migrates onto the `SymbolTable.symbols` entries. `got_slots` becomes `ModuleEntry::Def.got_slot`. The "param counts for fast lookup" disappear (codegen reads from the AST). `def_codegen` (REPL introspection metadata) was already migrated to the symbol-table entry's introspection fields in earlier sprints.
 - The `CodegenInput` stashing struct (in `src/worker.rs` or `src/session_v4.rs` — owned by `/int`) — its consumers all pull from the symbol table now.
-- `try_load_cached_module()`'s 238-line import-resolution duplication (MED-2) — the cache-restore path of §14.3 step [7] reuses `install_module_scope()` directly.
+- `try_load_cached_module()`'s 238-line import-resolution duplication (MED-2) — the cache-restore path of §14.3 step [6] reuses `install_module_scope()` directly.
+- **The bespoke `try_cache_hit_load` orchestration shape in `src/worker.rs:1169` (Decision 37).** The function's NAME is preserved for call-site compatibility, but its behaviour is transformed: it no longer re-implements dependency discovery or ordering as a parallel orchestration. The Wave 2c implementation ends with a recursive walk over the cached module's imports (`register_transitive_cached_imports`) that itself calls back into the same cache-hit-or-fresh-typecheck branch. Decision 37's "cache-hit decision lives inside `register_module`'s recursive flow" is thereby expressed via the existing handler structure — one recursive pipeline, not two.
 
 ### 14.5 Cache-write path
 
@@ -1286,9 +1249,15 @@ Symmetric to load:
 [3] Set `cloned.schema_version = CACHE_SCHEMA_VERSION`.
 [4] `serde_json::to_vec(&cloned)` → `meta_json_bytes`.
 [5] Atomic write to `<cache_dir>/<module_path>.meta.json` (temp-file-then-rename).
-[6] If batch / --link / nice-worker: separately invoke `compile_to_module<ObjectModule>`
-    on `defined_symbols(symbol_table)` to produce `.o` bytes, atomic-write
-    to `<cache_dir>/<module_path>.o`.
+[6] **MANDATORY for any module with defined symbols** (Decision 25 update,
+    Sprint 58 Wave 2): invoke `compile_to_module<ObjectModule>` on
+    `defined_symbols(symbol_table)` to produce `.o` bytes; atomic-write to
+    `<cache_dir>/<module_path>.o`. The `.o` is NOT optional — even in
+    JIT-only sessions, the `.o` is needed for cache-hit on the next run
+    (because cache-hit LOADS the `.o` per §14.3 step [5b]; codegen does
+    not re-run on cache-hit). Modules with zero defined symbols (e.g.,
+    pure import re-export shells) skip the `.o` write because
+    `defined_symbols()` is empty and there is nothing to compile.
 [7] Update manifest.json (per §3) with the module's source hash and dep
     hashes.
 ```
@@ -1297,15 +1266,15 @@ The cache-write path is single-source-of-truth: the symbol table IS the input. T
 
 ### 14.6 Symmetry invariant (mirrors §8 design principle)
 
-The §8 invariant — "cache-load and fresh-compile MUST produce identical runtime state" — sharpens under §14:
+**Updated Sprint 58 Wave 2** per Decision 25's correction. The §8 invariant — "cache-load and fresh-compile MUST produce identical runtime state" — sharpens under §14, and the symmetry is now in *what ends up in memory*, not in *who populates the code*:
 
-> Fresh-build path: typecheck populates `SymbolTable`; `compile_to_module` populates `code` per Defn entry; `install_module_scope` registers imports/macros/traits.
+> **Fresh-build path**: typecheck populates `SymbolTable` (types, schemes, GOT slot LAYOUT, AST bodies, structural decls); `compile_to_module<JITModule>` populates `code` (`Code::Jit { jit: Arc<Jit>, ptr }`) per Defn entry and writes the resolved `*const u8` into the SymbolTable GOT slots; `install_module_scope` registers imports/macros/traits.
 >
-> Cache-restore path: deserialise populates `SymbolTable`; `compile_to_module` populates `code` per Defn entry (driven by the deserialised `ast`); `install_module_scope` registers imports/macros/traits.
+> **Cache-restore path**: deserialise populates `SymbolTable` (same fields — types, schemes, GOT slot LAYOUT, AST bodies, structural decls — round-tripped from `.meta.json`); `Linker::load_object` mmaps the cached `.o` and resolves bare-name function symbols per Decision 36; the codegen worker writes the resolved addresses into the SymbolTable GOT slots and constructs `Code::Linker { linker: Arc<Linker>, ptr }` per Defn entry (see Decision 35 for the `Code` enum); `install_module_scope` registers imports/macros/traits.
 
-The two paths converge into the same symbol-table shape via the same code (`compile_to_module` + `install_module_scope`). Anything that's true after fresh-build is true after cache-restore by construction — there's no separate "rehydrator" function whose behaviour can drift.
+The two paths are SYMMETRIC in *what ends up in memory* — same `SymbolTable` shape, same populated GOT slots, same module scope — but they are NOT symmetric in *who populates the code*: fresh-build runs `compile_to_module<JITModule>` (codegen produces native code from CLIF; `Code::Jit` is the lifetime root); cache-restore runs `Linker::load_object` (mmap loads pre-compiled native code from the `.o`; `Code::Linker` is the lifetime root). The `.o` file produced at fresh-build time IS the cache-hit codegen output — there is no second codegen run on cache-hit. Anything that is true about the SymbolTable + GOT shape after fresh-build is true after cache-restore by construction; what differs is the lifetime root variant on `ModuleEntry::Def.code` (`Code::Jit` vs `Code::Linker`) and therefore the reclamation discipline (per-batch JIT reclaim per Decision 31 vs per-module Linker mmap reclaim per Decision 35). A REPL session that mixes cached and freshly-evaluated modules in the same `SymbolTable` is a normal mixed state — entries of both `Code` variants coexist.
 
-Test this invariant via round-trip: `serde_json::from_slice::<SymbolTable<(),()>>(serde_json::to_vec(&fresh_table).unwrap())` must equal the original on every field that is not `#[serde(skip)]`. `/backend` writes the unit tests; `/qa` writes the integration tests (cache hit reproduces correct execution).
+Test this invariant via round-trip: `serde_json::from_slice::<SymbolTable<(),()>>(serde_json::to_vec(&fresh_table).unwrap())` must equal the original on every field that is not `#[serde(skip)]`. End-to-end equivalence — fresh-build vs cache-restore — is verified at the integration level: a project compiled fresh and a project compiled cache-hit must produce identical observable behaviour (return values, side effects, IO ordering). `/backend` writes the unit tests; `/qa` writes the integration tests (cache hit reproduces correct execution).
 
 ### 14.7 Failure modes (CacheStale discriminator)
 
@@ -1338,7 +1307,7 @@ This subsection refreshes §2 ("Sketch Comparison") for the Phase-5 persisted sh
 1. `schema_version: u32` envelope (Decision 34) — explicit version handshake.
 2. Structural declarations (`imports`/`exports`/`platforms`/`submodules`) preserved as the **original specification** in source order (Decision 33 / Step 5a) — `src/save.rs::generate_module_source` reads them directly without reconstruction.
 3. Per-symbol resolved entries (`ModuleEntry::Def { ast, scheme, got_slot, callees, … }`, `ModuleEntry::Import { source }`, etc.) — the resolved effects of typecheck.
-4. Runtime fields (`code`, `platform_fn_ptr`, `got`, `linker`) all `#[serde(skip)]` — cache-restore re-derives `code` by re-running codegen against `ast` (per §14.3 step [5b]) and `platform_fn_ptr` by re-resolving the DLL named in the persisted `PlatformDecl` (per Decision 26). The `Arc<Jit>` lives directly on `code` per Decision 31 Scenario 2 (Step 5c activated generics).
+4. Runtime fields (`code`, `platform_fn_ptr`, `got`, `linker`) all `#[serde(skip)]` — cache-restore re-derives `code` by loading the cached `.o` via `Linker::load_object`, looking up function symbols by their bare names per Decision 36, and constructing `Code::Linker { linker: Arc<Linker>, ptr }` (per §14.3 step [5b] and Decision 35); `platform_fn_ptr` is re-derived by re-resolving the DLL named in the persisted `PlatformDecl` (per Decision 26). The `Arc<Jit>` lives directly on `code` for fresh-build entries per Decision 31 Scenario 2 (Step 5c activated generics); cache-hit entries hold `Arc<Linker>` instead. Both variants share the same `*const u8` access pattern via the `Code` enum's accessor.
 
 **Divergence rationale — load-bearing structural separation**: the sketch's lack of separation between "structural specification" and "resolved effects" produced two specific problems that Decision 33 + the Step 5b shape both fix:
 1. **`.cl` regeneration was lossy.** Spec §6.4 requires `(read-source <module>)` to round-trip the original imports/exports/platforms/mods in source order. The sketch reconstructed them by walking `ModuleEntry::Import` chains, which lost grouping (a single `(import [foo [a b c]])` form might have produced three separate `Import` entries depending on the resolution path), source order (the ordering came from HashMap iteration), and the distinction between explicit name lists and `(import [foo [*]])` glob form. Decision 33's structural-decl fields preserve the originals; the resolved entries continue to live as `ModuleEntry::Import`.
@@ -1366,7 +1335,10 @@ The v4 shape is a structural cleanup of the sketch's cache, not a re-design of t
 - `design/arch/CLAUDE.md` Decisions 25, 26, 31, 32, 33, 34 — the architectural foundation for §14's design choices.
 - `design/arch/interfaces.md` §"Symbol Table" + §"Module Entries" — the parameterised `SymbolTable<C, L>` and `ModuleEntry<C>` shapes; the schema-version field.
 - `design/arch/pipeline-v4.md` §9.5 — the §9 target normative form ("the `.meta.json` file is a serialized `SymbolTable`").
-- `design/backend/compile-to-module.md` §17 (Step 5c) — the parameterised signature shape `compile_to_module` consumes; cache-restore step [5b] in §14.3 calls into `compile_to_module<JITModule>`.
+- `design/backend/compile-to-module.md` §17 (Step 5c) — the parameterised signature shape `compile_to_module` consumes. §17.1.1 documents the raw-shape return type per CP1 arbitration (Decision 35 / Layer 2 Option B). §17.5 cross-references back to this §14: cache-restore does NOT call `compile_to_module` (Decision 25 update — codegen ran once at fresh-build time and the `.o` was persisted; cache-hit loads the `.o` via `Linker::load_object`). Fresh-build is the sole caller of `compile_to_module<JITModule>` (or `<ObjectModule>` for the cache `.o` write).
+- `design/backend/per-module-got.md` §9.2/§9.3 — the unified one-load GOT shape (Sprint 58 Wave 2 close): `__cranelisp_got_{M}` symbol address IS the slab base directly in both JIT and Object modes; no pointer-cell indirection.
+- `design/arch/CLAUDE.md` Decisions 23 (UPDATED), 25 (UPDATED), 36 (NEW), 37 (NEW) — the Sprint 58 Wave 2 architectural reconciliation that this §14 implements on the cache side.
+- `design/arch/interfaces.md` §"Two-GOT model" subsection — visual reference for the SymbolTable GOT vs `.o` data section GOT distinction that `--run`/REPL vs `--link` mode exercise differently.
 - `design/typecheck/ast-annotation.md` — the per-category contract for which `ModuleEntry` entries carry `ast: Some(_)`; cache-restore relies on the same contract.
 - `crates/cranelisp-backend/src/cache/mod.rs` — `CACHE_SCHEMA_VERSION` constant location.
 - `crates/cranelisp-backend/src/cache/serialize.rs` — file targeted for rewrite (the `CacheMetadata` / `CacheCodegenState` types either dissolve or shrink to a thin `CacheEnvelope`).
