@@ -472,6 +472,8 @@ For the REPL (Additive strategy), mono defns generated during eval are registere
 
 Default method defns are generated during Pass 1 (signature registration). Their bodies must be checked in Pass 2 like regular defns. The current flow already handles this: `default_method_defns` are accumulated and then fed into the Pass 2 body-checking loop. The change is that after body checking, they get `ast` written to their `ModuleEntry::Def` entry, same as regular defns.
 
+<!-- FIXME(/typecheck): Sprint 57 Wave 2 review I-1 — `MonoDefn.resolutions` and `MonoDefn.expr_types` at `crates/cranelisp-types/src/check.rs:43-50` are Span-keyed side maps retained inside typecheck after the Phase-1 AST-annotation migration. No cross-crate consumer reads them post-Wave-2. The `Defn` inside `MonoDefn` is already annotated by `monomorphise_call` in `traits.rs`, so the side maps are redundant — `annotate_defn_from_maps` could read annotations off AST nodes directly. Either drop the fields (making `MonoDefn` a newtype wrapping `Defn`) or document the retention rationale and schedule elimination. See `design/review/sprint57-wave2-review.md` I-1. -->
+
 ## 6. CheckResult Rename
 
 `CheckResult` currently serves as the boundary type between typecheck and codegen. After Step 1d, it no longer crosses crate boundaries. Its remaining role:
@@ -964,5 +966,261 @@ In addition to the general Wave 0 exit gate (§9.7), Step 4 specifically require
 If `TypecheckProduct` is fully dissolved in the same PR (recommended per §9.8.2), add:
 
 - `cargo check` fails if any code still references `TypecheckProduct`, `typecheck_products`, or `ensure_typecheck_product`. These names no longer exist.
+
+---
+
+## 10. Sprint 57 Wave 1 — Phase 3 G6 and `CheckResult` Slim-Down
+
+**Status (Wave 2 step 4):** LANDED. `CheckResult` is now
+`{ warnings: Vec<Warning>, display: Option<DisplayInfo> }`; the five legacy
+fields (`method_resolutions`, `mono_defns`, `default_method_defns`,
+`constrained_fn_names`, `expr_types`) are retired. See §10.3 for the
+retrospective landing sequence.
+
+Sprint 57 lands Phase 3 (Step 3b — G6, move `code: Option<Code>` onto `ModuleEntry::Def`) and Phase 4 (platform / persistent workers) of `pipeline-v4-roadmap.md`. Phase 3 G6 is the final carrier for all durable typecheck output onto `SymbolTable`: after G6, the `ast` and `code` fields on `ModuleEntry::Def` coexist on the same entry, with typecheck owning `ast` and backend owning `code`. `CheckResult` — which has survived Phase 1 and Phase 2 as a typecheck-internal working aggregate with legacy fields — has now slimmed to exactly the two boundary fields that `src/` actually reads: `warnings` and `display`.
+
+This §10 extends §9 in two ways:
+
+1. **§10.1 (G6 interaction, code-write path).** For every category in the §9.1 authoritative table, confirm the typecheck / backend ownership boundary on `ast` vs `code`. Typecheck never writes `code`; backend never writes `ast`. Both coexist on the same entry without coupling.
+2. **§10.2 (`CheckResult` slim-down plan).** Audit every reader of the five legacy fields (`method_resolutions`, `mono_defns`, `default_method_defns`, `constrained_fn_names`, `expr_types`) across `src/`, `crates/cranelisp-backend/`, and `crates/cranelisp-typecheck/`. Classify each as `cfg(test)-only`, `typecheck-internal only`, or `LIVE BACKEND READER`. Propose the slimmed shape.
+3. **§10.3 (migration order).** Specify the Wave 2 landing order so `/backend` and `/typecheck` changes ship together — no red build window.
+
+### 10.1 G6 Interaction — Code-Write Path on `ModuleEntry::Def`
+
+**Target shape (Decision 25, `design/arch/CLAUDE.md`):** `ModuleEntry::Def.code: Option<Code>` with `#[serde(skip)]`. Written by the priority worker after `compile_to_module` returns. Read by REPL eval, introspection (`/clif`, `/disasm`, `/source`), and the linker. Runtime-only state — cache-hit load restores `ast` from `.meta.json` and leaves `code` as `None` until codegen re-runs.
+
+**Landed shape (Sprint 57 Wave 2 Step 1):** Shape 1 (thin handle) — `Code` lives in `crates/cranelisp-types/src/code.rs` as a minimal pointer-only struct (`pub struct Code { pub ptr: *const u8 }` with `Send + Sync` and `#[serde(skip, default)]` on the pointer), keeping `cranelisp-types` free of the `cranelift_jit::JITModule` / `Arc<Jit>` dependency that would otherwise reach from `cranelisp-backend`. The `Arc<Jit>` lifetime anchor remains in the integration layer (`src/session_v4.rs`) and is managed at the session level per Decision 28 — the session keeps its per-worker `Jit` set alive for as long as any `SymbolTable` holding `Code` entries into those pages is reachable.
+
+**Ownership boundary (hard invariant):**
+
+| Writer | Owns | Read by |
+|---|---|---|
+| `/typecheck` | `ast`, `scheme`, `param_names`, `kind`, `callees`, `got_slot`, `trait_origin` | `/typecheck` (downstream passes), `/backend` (`compile_to_module` reads `ast`), `/int` (introspection reads `scheme`, `docstring`, `callees`) |
+| `/backend` | `code` | `/int` (priority worker stores returned `Code`; REPL eval calls `code.ptr`; introspection reads `code.jit` / `code.ptr` for `/clif` / `/disasm`) |
+
+`/typecheck` MUST NOT touch `code`. `/backend` MUST NOT touch `ast`. The field layout on the struct is what enforces the boundary — no adapter function, no helper that reads or writes across the line.
+
+**Per-category table** — extend §9.1 with the `code` disposition:
+
+| # | Category (from §9.1) | `ast` writer | `code` writer | Both coexist on entry |
+|---|----------------------|--------------|---------------|----------------------|
+| 1 | Regular defn | typecheck (`check_form(CheckBody)`) | backend (priority worker after `compile_to_module`) | yes |
+| 2 | Multi-sig internal variant (`foo__v0`) | N/A — removed before codegen; see §9.3 | N/A — not compiled under this name | no — entry is transient within typecheck |
+| 3 | Multi-sig **mangled** variant (`add$Int+Int`) | typecheck (`register_mangled_variants`, §9.3) | backend (priority worker after `compile_to_module`) | yes |
+| 4 | Mono specialisation (`add$Float+Float`) | typecheck (`register_mono_entry`, §9.4) | backend (priority worker after `compile_to_module`) | yes |
+| 5 | Default method defn (trait decl default) | typecheck (`check_impl_method` default path) | backend (priority worker after `compile_to_module`) | yes |
+| 6 | Trait-impl method (`Display.show$Option$Int`) | typecheck (`check_impl_method` / `check_hkt_impl_method`) | backend (priority worker after `compile_to_module`) | yes |
+| 7 | REPL `__expr` synthetic | typecheck (`check_repl_input_inner`) | backend (one-shot codegen path in REPL eval) | yes (but the entry is typically discarded after eval — REPL additivity strategy per §8.4) |
+
+Rows 1, 3, 4, 5, 6 are the durable Phase-3+4 carriers: typecheck writes `ast` during `check_form`; the priority worker reads `ast`, calls `compile_to_module`, and writes the returned `Code` back onto the same entry. Row 2 is a transient internal name that is removed before codegen (§9.3) — it never carries `code`. Row 7 may be materialised on the symbol table or handled off-table by the REPL eval path per `/int`'s convention (see `design/int/phase2-codegen-convergence.md` §6); either way the same ownership boundary applies.
+
+**Cache-hit interaction.** `try_cache_hit_load` (`src/session_v4.rs`) deserialises a `SymbolTable` from the cache manifest. After Phase 1, `ast` is restored from `.meta.json` along with the rest of the `ModuleEntry::Def` fields. After Phase 3 G6, `code: Option<Code>` starts `None` on the loaded table (per `#[serde(skip)]`); codegen then runs against the restored `ast` to repopulate `code`. Typecheck's invariants do not depend on `code` being populated:
+
+- A module may be typechecked without ever being codegen'd — e.g. if the user quits before running it, or if a dependency is imported but no call-site forces compilation. Typecheck's output is complete with `ast` alone.
+- A module may be loaded from cache with `ast` restored and `code: None`. The priority worker compiles on demand; typecheck does NOT re-run against the cached `ast`.
+- Introspection that needs `code` (e.g. `/disasm`) must either trigger codegen or return "not yet compiled" — it never needs typecheck to fill the gap.
+
+**No typecheck-owned read of `code`.** Across `crates/cranelisp-typecheck/`, `code` MUST NEVER appear as a right-hand-side expression: no `entry.code.as_ref()`, no `st.symbols.get(x).and_then(|e| e.code())` or equivalent. The only legitimate typecheck-side operation on `code` is *not touching it* — leaving it `None` when the typechecker creates a new `ModuleEntry::Def`. This is enforced structurally by the struct field's visibility and by `/review`'s Wave 2 blocker list.
+
+### 10.2 `CheckResult` Slim-Down Plan
+
+Per `/arch` Condition 1 (Sprint 57 §Architecture Review): `CheckResult` slim-down to `{ warnings, display }` lands in Wave 2, paired with G6. The claim is that `method_resolutions`, `mono_defns`, `default_method_defns`, `constrained_fn_names`, and `expr_types` are no longer boundary data post-Phase-1; this section audits the claim by enumerating every reader.
+
+#### 10.2.1 Audit methodology
+
+For each field, `/typecheck` ran the following grep across the tree:
+
+```
+grep -rn '\.<field>' src/ crates/ tests/
+```
+
+Results were classified:
+
+- **cfg(test)-only** — the read sits inside `#[cfg(test)] mod tests` in either `crates/cranelisp-backend/` or `crates/cranelisp-typecheck/`. These are test bridges that pre-date Phase-1 AST annotation and may be rewritten against a locally-defined `TestCheckResult` helper without affecting the boundary shape.
+- **typecheck-internal** — the read is inside `crates/cranelisp-typecheck/` non-test code. These are valid reads — `CheckResult` is typecheck's own working aggregate (or more accurately, the pattern is reading from `CheckState` / `FormCheckResult` / `ModuleCheckAccumulator`, then writing a `CheckResult` at the end). The slim-down does not affect these reads; it only removes the legacy fields from the *outgoing boundary* struct.
+- **LIVE BACKEND READER** — a read in `crates/cranelisp-backend/` non-test code or in `src/` that consumes the field at the typecheck → backend boundary. If any exist, the slim-down blocks on migrating them to AST-node / symbol-table lookups first.
+
+#### 10.2.2 Field-by-field audit
+
+**Field 1: `method_resolutions: HashMap<Span, ResolvedCall>`**
+
+- `crates/cranelisp-backend/src/lib.rs:558, 618, 624, 629, 2394, 2430, 2642, 2648, 2654, 2663, 2846, 2953` — ALL inside `#[cfg(test)] mod tests` (the `mod tests` block starts at line 386). Verified by reading the surrounding context: 558 is inside `test_compile_expr_and_run`; 618/624/629 are inside `test_compile_program_and_run`; 2394+ are inside individual test functions. These reads are part of the `enrich_defn_from_side_maps` / `empty_check` / `test_compile_program_and_run` test scaffolding that bridges hand-built `Defn`s through a `CheckResult` side-map for tests that do NOT run production typecheck.
+- `src/` — **zero** matches for `check_result.method_resolutions` or `check.method_resolutions`.
+- `crates/cranelisp-typecheck/` — 50+ reads, all in non-test code. These are `state.method_resolutions` on `CheckState` (typecheck's internal side-map during inference), `accumulator.method_resolutions` on `ModuleCheckAccumulator` (typecheck's working aggregate across forms), and field reads on `FormCheckResult` (per-form intermediate). These are all typecheck-internal and survive the slim-down unchanged — they live on `CheckState`/`ModuleCheckAccumulator`/`FormCheckResult`, NOT on the outgoing `CheckResult`.
+
+**Classification: cfg(test)-only (backend) + typecheck-internal.** No LIVE BACKEND READER. Safe to remove from `CheckResult`.
+
+**Field 2: `mono_defns: Vec<MonoDefn>`**
+
+- `crates/cranelisp-backend/src/lib.rs:627` — inside `#[cfg(test)]` (the `for mono in &check.mono_defns` loop in `test_compile_program_and_run`).
+- `src/` — **zero** matches for `check.mono_defns` or `check_result.mono_defns`.
+- `crates/cranelisp-typecheck/` — reads inside `finalize_check_result` and the mono-generation path. Typecheck-internal.
+
+Post-Sprint 56, `/arch` Decision 22 and `ast-annotation.md` §9.4 established that each mono specialisation carries its own `ModuleEntry::Def { ast: Some(_), .. }` via `register_mono_entry` before `CheckResult` is constructed. The `CheckResult.mono_defns: Vec<MonoDefn>` field is a duplicate of what's now on the symbol table — preserved only because the Phase-2 PR kept it in place to stay additive (per §9.4 "Wave 0 retains `CheckResult.mono_defns` ... as-is for the dual-write period"). No production code outside test scaffolding reads it.
+
+**Classification: cfg(test)-only (backend) + typecheck-internal.** No LIVE BACKEND READER. Safe to remove from `CheckResult`.
+
+**Field 3: `default_method_defns: Vec<Defn>`**
+
+- `crates/cranelisp-backend/src/lib.rs:622, 2494, 2543` — ALL inside `#[cfg(test)]`.
+- `src/worker.rs:757, 813, 1829` — **these read `accumulator.default_method_defns`, NOT `check_result.default_method_defns`**. `accumulator` is a `ModuleCheckAccumulator` (a typecheck-internal type re-exported from `cranelisp-typecheck`). The reads are on the accumulator during Pass 1 / Pass 2 stitching, which is `/int`'s driving of the typecheck stages — not a backend-side consumption of a boundary field. Verified by `src/worker.rs:114: accumulator: &'a mut ModuleCheckAccumulator`.
+- `crates/cranelisp-typecheck/` — reads inside `finalize_check_result` and the default-method generation path. Typecheck-internal.
+
+Same reasoning as field 2: each default method has its own `ModuleEntry::Def { ast: Some(_), .. }` after Sprint 56 (per Decision 22 and §9.1 table row 5). The `CheckResult.default_method_defns` field duplicates what's on the symbol table.
+
+**Classification: cfg(test)-only (backend) + typecheck-internal.** No LIVE BACKEND READER. Safe to remove from `CheckResult`.
+
+**Field 4: `constrained_fn_names: HashSet<Symbol>`**
+
+- `crates/cranelisp-backend/src/lib.rs:2482` — inside `#[cfg(test)]`.
+- `src/` — **zero** matches.
+- `crates/cranelisp-typecheck/` — reads/writes inside `finalize_check_result` and the `detect_constrained_fns` pass. Typecheck-internal.
+
+Per Decision 22 (`SymbolTable::defined_symbols()`), the set of constrained fn templates is derivable by scanning `SymbolTable` for `ModuleEntry::Def { kind: UserFn { constrained_fn: Some(_) }, .. }`. The old inline scan at `crates/cranelisp-backend/src/lib.rs:95–109` (which computed `constrained_fn_names` from the symbol table directly, NOT from `CheckResult`) is the pattern — the `CheckResult` field is a duplicate source that no production code reads.
+
+**Classification: cfg(test)-only (backend) + typecheck-internal.** No LIVE BACKEND READER. Safe to remove from `CheckResult`.
+
+**Field 5: `expr_types: HashMap<Span, Type>`**
+
+- `crates/cranelisp-backend/src/lib.rs:558, 618, 624, 629, 631, 632, 2663` — ALL inside `#[cfg(test)]`. Line 631/632 is inside the `for mono in &check.mono_defns` fallback (`if mono.expr_types.is_empty() { &check.expr_types } else { &mono.expr_types }`) — also test scaffolding.
+- `src/` — **zero** matches.
+- `crates/cranelisp-typecheck/` — reads/writes inside inference. Typecheck-internal.
+
+Per Phase 1 (G3) and `design/backend/ast-sourced-codegen.md`, every `Expr` node now carries `inferred_type: Option<Box<Type>>`. The backend's heap classification and type-dependent codegen read from AST nodes directly; the `expr_types` side map is not consulted.
+
+**Classification: cfg(test)-only (backend) + typecheck-internal.** No LIVE BACKEND READER. Safe to remove from `CheckResult`.
+
+#### 10.2.3 Audit summary table
+
+| Field | Backend non-test readers | `src/` readers | Typecheck-internal readers | LIVE BACKEND READER? |
+|---|---|---|---|---|
+| `method_resolutions` | 0 (all 12 hits in `mod tests`) | 0 | many (CheckState/FormCheckResult/accumulator) | **no** |
+| `mono_defns` | 0 (1 hit in `mod tests`) | 0 | typecheck-internal | **no** |
+| `default_method_defns` | 0 (3 hits in `mod tests`) | 0 (src reads `accumulator.default_method_defns`, not `CheckResult.default_method_defns`) | typecheck-internal | **no** |
+| `constrained_fn_names` | 0 (1 hit in `mod tests`) | 0 | typecheck-internal | **no** |
+| `expr_types` | 0 (7 hits in `mod tests`) | 0 | typecheck-internal | **no** |
+
+**Verdict: `/arch` Condition 1 is satisfied in full.** All five slim-down targets have zero live backend readers outside `#[cfg(test)]` scaffolding. No field is a slim-down blocker. The slim-down ships in Wave 2 coupled with G6.
+
+#### 10.2.4 Post-slim `CheckResult` shape
+
+`/arch` proposed `{ warnings, display }`. Confirmed — this is the only `src/` reader surface across `src/worker.rs:828` (writes `display`), `src/session_v4.rs:1422, 1578, 1597, 1624, 1634, 2176` (read `warnings` / `display`). No other field on the current `CheckResult` is read outside typecheck.
+
+```rust
+// crates/cranelisp-types/src/check.rs — post-slim shape
+//
+// Transient output of TypeChecker::check. NOT a boundary type — the
+// durable typecheck output lives on SymbolTable entries' `ast`, `scheme`,
+// `callees`, `got_slot`, and `trait_origin` fields. This struct carries
+// only diagnostics and optional REPL display payload.
+#[derive(Debug)]
+pub struct CheckResult {
+    /// Non-fatal warnings accumulated during checking.
+    pub warnings: Vec<Warning>,
+
+    /// Display info for REPL output (last Expr or Defn in the input).
+    /// `None` in batch / module-load mode.
+    pub display: Option<DisplayInfo>,
+}
+```
+
+Other types on `check.rs` to retain (they are independently used):
+
+- `ResolvedCall` — still on `Expr::Apply.resolved_call` (AST annotation); serialised via AST; untouched by slim-down.
+- `MethodResolutions = HashMap<Span, ResolvedCall>` — typecheck-internal type alias still used on `CheckState`; retain.
+- `MonoDefn` — typecheck-internal working type still used in `monomorphise_call` before `register_mono_entry` lifts it to a `ModuleEntry::Def`; retain.
+- `DisplayInfo` — referenced from `CheckResult.display`; retain unchanged.
+- `TypeDefInfo`, `ConstructorInfo`, `FieldInfo` — used by `ModuleEntry::TypeDef` / `ModuleEntry::Constructor`; retain.
+- `ReplSnapshot` — typecheck-owned snapshot/restore mechanism; retain.
+
+**Name decision: keep `CheckResult`, do NOT rename to `CheckOutput`.** §6 previously proposed renaming to `CheckOutput` to signal "not a boundary type". `/arch`'s Sprint 57 review explicitly uses `CheckResult` in its condition statements ("`CheckResult` slim-down"), and `interfaces.md` §"TypeChecker Internal State" already documents the name as the residual typecheck-internal type. Renaming now would churn every `use cranelisp_types::CheckResult` site in `src/worker.rs` and `src/session_v4.rs` (three files, ~15 lines) without a behavioural payoff. The slim-down IS the semantic change; the name can remain. A follow-up rename can be filed as a cosmetic FIXME if desired.
+
+#### 10.2.5 Backend test-scaffolding disposition
+
+The 20+ `#[cfg(test)]` hits in `crates/cranelisp-backend/src/lib.rs` use the full `CheckResult` shape (with all 7 fields) to bridge hand-built `Defn`s through `enrich_defn_from_side_maps` into the post-Phase-2 symbol-table + `compile_to_module` API. After the slim-down, these tests cannot construct the old-shape `CheckResult` from `cranelisp-types` — it no longer has `method_resolutions`, `mono_defns`, etc.
+
+**Resolution (per `/arch` Condition 1):** introduce a crate-internal `TestCheckResult` helper inside `crates/cranelisp-backend/src/lib.rs` under the `#[cfg(test)] mod tests` block:
+
+```rust
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use cranelisp_types::{CheckResult, Defn, ...};  // still uses boundary CheckResult for warnings/display
+
+    /// Test-only aggregate bridging hand-built Defns through side-map
+    /// enrichment. Replaces the retired CheckResult fields that were
+    /// removed from the boundary type in Sprint 57 Wave 2.
+    struct TestCheckResult {
+        method_resolutions: HashMap<Span, ResolvedCall>,
+        mono_defns: Vec<MonoDefn>,
+        default_method_defns: Vec<Defn>,
+        constrained_fn_names: HashSet<Symbol>,
+        expr_types: HashMap<Span, Type>,
+        warnings: Vec<Warning>,
+        display: Option<DisplayInfo>,
+    }
+
+    impl TestCheckResult {
+        fn empty() -> Self { /* ... */ }
+    }
+
+    // enrich_defn_from_side_maps and test_compile_program_and_run
+    // change their `check: &CheckResult` parameter to `check: &TestCheckResult`.
+}
+```
+
+This is a purely internal-to-crate concern — no boundary impact. `/backend` executes the rewrite as part of Wave 2 (they own the test code). It is a mechanical rename: `CheckResult` → `TestCheckResult`, same field list, same field types. The slim-down of the public `CheckResult` and the introduction of the local `TestCheckResult` land in the same PR.
+
+**Alternative considered: leave the legacy fields on `CheckResult` and file a follow-up FIXME.** Rejected. Deferring keeps the full shape alive for no architectural reason — the fields are already dead outside test scaffolding, and `/arch` Condition 1 explicitly scopes the slim-down to Wave 2. A `TestCheckResult` helper is the smaller, localised change; deferring would leave 5 unused fields on the boundary type indefinitely.
+
+#### 10.2.6 `FormCheckResult` disposition
+
+`FormCheckResult` (`crates/cranelisp-typecheck/src/program.rs:242`) is typecheck-internal (the `program.rs` module's per-form intermediate). Its fields `method_resolutions`, `expr_types` etc. are OK to keep — they are typecheck's own working state, not boundary data. `§3.8 FormCheckResult Field Disposition` in this doc already schedules these for eventual removal when annotation fully replaces side maps, but that is not a Sprint 57 deliverable. The slim-down touches ONLY the public `CheckResult` in `crates/cranelisp-types/`.
+
+### 10.3 Migration Order — Wave 2 Contract (Landed in Wave 2 step 4)
+
+**Status:** LANDED. Sprint 57 Wave 2 completed the slim-down in step 4, paired
+with G6 per `/arch` Condition 1. Post-slim shape is `CheckResult { warnings,
+display }` — the five legacy fields are gone from `crates/cranelisp-types/src/check.rs`.
+
+The Wave 2 landing sequence (retrospective):
+
+1. **`/typecheck` (step 1)**: added `code: Option<Code>` to `ModuleEntry::Def` with `#[serde(skip)]`. Additive — green on its own.
+2. **`/backend` (step 2)**: landed `compile_to_module` write of `code` before returning. Relocated all 20+ `#[cfg(test)]` readers of the five legacy `CheckResult` fields into a local `TestCheckResult` helper at `crates/cranelisp-backend/src/lib.rs:537-547`. The helper mirrors the pre-slim shape field-for-field so the backend test suite compiled unchanged against the still-wide public `CheckResult`.
+3. **`/int` (step 3)**: deleted `CodegenProduct` DashMap; priority worker / REPL eval / introspection all read `code` from the symbol table. Migrated 10 read sites.
+4. **`/typecheck` (step 4 — THIS commit)**: deleted the five legacy fields from `CheckResult`. Updated the three construction sites in `crates/cranelisp-typecheck/src/program.rs` — `finalize_check_result_inner` (previously program.rs:1158), `check_program_inner` (previously program.rs:1893), and `build_repl_result` (previously program.rs:2758) — to emit only `warnings` + `display`. Also updated four satellite assignment sites (`result.mono_defns = ...`, `result.default_method_defns = ...`) in the REPL input path (`check_repl_input_inner`) and the multi-sig REPL path (`check_repl_multi_sig`). Removed the FIXME at `crates/cranelisp-types/src/check.rs:1`. Added two `TestFixture` accessors (`constrained_fn_names_set`, `mono_defn_names`, `state_method_resolutions`, `state_expr_types_resolved`, `annotated_resolutions`) plus a `collect_resolutions_from_expr` helper so the ~30 typecheck-crate test assertions that used to read the slim-target fields off `CheckResult` could read from `CheckState` / `SymbolTable` / annotated ASTs instead.
+
+Step 4 landed atomically: `cranelisp-types`, `cranelisp-typecheck` built green in the same commit; workspace tests (`cargo check --workspace --tests`) compiled without touching `crates/cranelisp-backend/src/lib.rs` (the `TestCheckResult` helper was already in place from step 2). No red build window.
+
+**Post-Wave-2 invariant (now enforced):** `CheckResult` on `crates/cranelisp-types/src/check.rs` carries only `warnings: Vec<Warning>` and `display: Option<DisplayInfo>`. The type name remains `CheckResult`; its role is documented on `interfaces.md` §"TypeChecker Internal State" as typecheck-owned transient output — not a backend input. Backend crates do not read `method_resolutions`, `mono_defns`, `default_method_defns`, `constrained_fn_names`, or `expr_types` from any `CheckResult`; all equivalent data is either on annotated AST nodes (`Expr::Apply.resolved_call`, `Expr.inferred_type`) or on `ModuleEntry::Def` entries (`ast`, `kind`, `callees`).
+
+**Wave 2 exit verification (retrospective):**
+
+- `grep -rn 'check\.method_resolutions\|check\.mono_defns\|check\.default_method_defns\|check\.constrained_fn_names\|check\.expr_types\|check_result\.method_resolutions\|check_result\.mono_defns\|check_result\.default_method_defns\|check_result\.constrained_fn_names\|check_result\.expr_types' src/ crates/` returns zero matches outside test scaffolding (`TestCheckResult` uses `test.<field>`, not `check.<field>`).
+- `cargo check -p cranelisp-types`, `-p cranelisp-typecheck`, `cargo check --workspace --tests` all green.
+- `cargo nextest run -p cranelisp-types` 59/59 passing; `-p cranelisp-typecheck` 312/312 passing.
+- `cargo clippy -p cranelisp-types -- -D warnings` and `-p cranelisp-typecheck -- -D warnings` both clean.
+- `src/worker.rs:836`, `src/session_v4.rs:1324, 1348, 1439, 1591, 1610, 1637, 1647, 2189` still compile — they only read `.warnings` / `.display`.
+
+**Dead carriers retained for now:** `MonoDefn.resolutions` and `MonoDefn.expr_types` are still constructed inside `monomorphise_call` (they feed the in-place `annotate_defn_from_maps` call right before `register_mono_entry`). These can be retired in a later cleanup pass once the annotation path is fully collapsed onto `check_defn_body_and_annotate`-style helpers; they are no longer boundary data.
+
+### 10.4 Cross-References (Sprint 57 Wave 1)
+
+Other Wave 1 design docs that reference this §10:
+
+- **`design/backend/compile-to-module.md` §9.x** (`/backend` owner) — the code-write path from `compile_to_module` returning a `CompilationResult` to the priority worker writing `Code` onto `ModuleEntry::Def.code`. This doc (§10.1 above) documents typecheck's non-involvement; the backend doc documents the write itself. // TODO cross-ref §9.x in `design/backend/compile-to-module.md` once `/backend`'s Wave 1 draft lands — `/arch` reconciles during design review.
+- **`design/int/phase2-codegen-convergence.md` G6 extension** (`/int` owner) — read sites for `code` across priority worker, REPL eval, introspection (`/clif`, `/disasm`, `/source`). This doc (§10.1) states the no-typecheck-read-of-code invariant; `/int`'s doc enumerates the backend / int read sites. // TODO cross-ref `/int`'s G6 §9.x extension once drafted.
+
+### 10.5 Sketch Comparison — Post-slim `CheckResult`
+
+The sketch (`sketch/src/typechecker.rs`) has `CheckResult` as the boundary type between typecheck and codegen with equivalent fields: `method_resolutions`, `expr_types`, `mono_defns`, `default_method_defns`, `constrained_fn_names`, `warnings`. The sketch never slimmed it because:
+
+1. The sketch is single-pipeline, single-threaded: aggregating everything into one struct per check was the simplest delivery.
+2. The sketch never introduced per-AST-node annotations (`Expr.inferred_type`, `Expr::Apply.resolved_call`) — it kept Span-keyed side maps end-to-end.
+3. The sketch never factored out `ModuleEntry::Def` with an `ast` field. Codegen read `Program` + `CheckResult`; there was no third source of truth on a symbol table.
+
+The reimplementation diverges on all three: per-node annotations (Sprint 55), mangled/mono entries on `SymbolTable` (Sprint 56), and now the logical consequence — `CheckResult` carries only what didn't move (diagnostics and REPL display). Rationale: `design/arch/CLAUDE.md` Principle 2 (narrow interfaces — `CheckResult` is now minimum surface area) + Principle 7 (single source of truth — resolutions and types live on AST nodes only, not duplicated into a side map at the boundary).
+
+Divergence is justified: the sketch's wider `CheckResult` was a coupling surface; the Phase-3 target shape eliminates it. No cache-serialisation or REPL-additivity concern from the sketch survives — the slim-down is an unambiguous simplification.
 
 If `TypecheckProduct` is only reduced to `{ file_path, source_text }` (minimum viable Step 4), the above checks become Phase 3 Step 3b's gating conditions instead, and §9.8.2's FIXME on `src/session_v4.rs:401` remains open.

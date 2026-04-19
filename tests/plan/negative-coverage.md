@@ -12,7 +12,7 @@ Sprint 16 task D5. Created 2026-03-09.
 | `neg_glob_export_excludes_private` | tests/ring2.rs | 8.7.3 | P1: Module boundaries | PASS |
 | `neg_glob_export_includes_public` | tests/ring2.rs | 8.7.3 | P1: Module boundaries (companion positive) | PASS |
 | `neg_circular_module_dependency` | tests/ring2.rs | 8.10.2 | P1: Module boundaries | PASS |
-| `neg_super_in_root_module_errors` | tests/ring2.rs | 8.3.6 | P1: Module boundaries | PASS |
+| `neg_super_in_root_module_errors` | tests/ring2.rs | 8.3.7 | P1: Module boundaries | PASS |
 | `neg_glob_import_private_not_via_qualified` | tests/ring2.rs | 8.7.3 | P1: Module boundaries | PASS |
 | `neg_private_macro_not_importable` | tests/ring2.rs | 8.7.3 | P1: Module boundaries | PASS |
 | `neg_occurs_check_infinite_type` | tests/ring2.rs | 3.8.2 | P2: Type system invariants | PASS |
@@ -177,7 +177,7 @@ Sprint 16 task D5. Created 2026-03-09.
 | 8.2.6 | `mod` MUST be top-level | - | - | Medium | **GAP** |
 | 8.3.1 | Import of non-public name is compile error | POS | POS | High | OK |
 | 8.3.2 | Glob import excludes private names | POS | POS | High | OK |
-| 8.3.6 | `super` in top-level module MUST error | - | - | High | **GAP** |
+| 8.3.7 | `super` in top-level module MUST error | - | - | High | **GAP** |
 | 8.4.4 | Export MUST NOT re-export private | POS | POS | High | OK |
 | 8.6.4 | Duplicate imports from different sources = error | POS | POS | High | OK |
 | 8.6.4 | Definition over import = error | POS | POS | High | OK |
@@ -245,7 +245,7 @@ Sprint 16 task D5. Created 2026-03-09.
 |---|---|---|---|---|---|
 | P1-HIGH | Glob export MUST NOT include private names | 8.7.3 | `neg_glob_export_excludes_private` | ring2.rs | PASS |
 | P1-HIGH | Circular module dependency MUST error | 8.10.2 | `neg_circular_module_dependency` | ring2.rs | PASS |
-| P1-HIGH | `super` in root module MUST error | 8.3.6 | `neg_super_in_root_module_errors` | ring2.rs | PASS |
+| P1-HIGH | `super` in root module MUST error | 8.3.7 | `neg_super_in_root_module_errors` | ring2.rs | PASS |
 | P1-HIGH | Glob import private not accessible bare or qualified | 8.7.3 | `neg_glob_import_private_not_via_qualified` | ring2.rs | PASS |
 | P1-HIGH | Private macro not importable | 8.7.3 | `neg_private_macro_not_importable` | ring2.rs | PASS |
 | P2-HIGH | Occurs check prevents infinite types | 3.8.2 | `neg_occurs_check_infinite_type` | ring2.rs | PASS |

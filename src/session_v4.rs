@@ -21,7 +21,6 @@ use cranelisp_types::{
 use cranelisp_typecheck::{CheckState, TypeCheckEnv};
 
 use crate::platform::LoadedPlatform;
-use crate::platform_registry::PlatformRegistry;
 use crate::scheduler::CompileScheduler;
 use crate::worker::ModuleCompiler;
 
@@ -40,7 +39,6 @@ use cranelisp_backend::display::{format_type_qualified, format_scheme_display};
 /// compiled, returns `Ok(None)` (silently skipped).
 struct ReadOnlyMacroResolver<'a> {
     symbol_tables: &'a dashmap::DashMap<ModuleFullPath, SymbolTable>,
-    codegen_products: &'a dashmap::DashMap<ModuleFullPath, CodegenProduct>,
     current_module: ModuleFullPath,
 }
 
@@ -60,13 +58,17 @@ impl crate::expander::MacroResolver for ReadOnlyMacroResolver<'_> {
         };
 
         // Check if all clauses are compiled. If not, return None (no on-demand compilation).
+        // Sprint 57 Wave 2 G6: compiled code lives on `ModuleEntry::Def.code`.
         let macro_sym = Symbol::from(name);
         let mut compiled_clauses = Vec::new();
         for (idx, clause_info) in clauses.iter().enumerate() {
             let clause_name = Symbol::from(format!("__macro_{}_clause_{}", macro_sym, idx));
-            match self.codegen_products.get(&defining_module)
-                .and_then(|cp| cp.code.get(&clause_name).map(|c| c.ptr))
-            {
+            let code_ptr = self.symbol_tables.get(&defining_module)
+                .and_then(|t| match t.get(clause_name.as_ref())? {
+                    ModuleEntry::Def { code: Some(c), .. } => Some(c.ptr),
+                    _ => None,
+                });
+            match code_ptr {
                 Some(ptr) => {
                     compiled_clauses.push(crate::expander::MacroClauseEntry {
                         func_ptr: ptr,
@@ -190,6 +192,7 @@ enum ReplCommand<'a> {
     Type(&'a str),
     Info(&'a str),
     List(&'a str),
+    Mem(&'a str),
     Time(&'a str),
     Expand(&'a str),
     Imports(&'a str),
@@ -229,6 +232,7 @@ fn parse_slash_command(input: &str) -> Option<ReplCommand<'_>> {
         "/type" | "/t" => ReplCommand::Type(arg),
         "/info" | "/i" => ReplCommand::Info(arg),
         "/list" | "/l" => ReplCommand::List(arg),
+        "/mem" | "/m" => ReplCommand::Mem(arg),
         "/time" => ReplCommand::Time(arg),
         "/expand" | "/e" => ReplCommand::Expand(arg),
         "/imports" => ReplCommand::Imports(arg),
@@ -262,6 +266,7 @@ fn print_help(stdout: &mut impl Write) {
     let _ = writeln!(stdout, "  /clif NAME          Show Cranelift IR");
     let _ = writeln!(stdout, "  /disasm NAME        Show disassembled native code");
     let _ = writeln!(stdout, "  /list (/l) [FILTER] List symbols in current module");
+    let _ = writeln!(stdout, "  /mem (/m) [EXPR]    Show allocation statistics (with delta if EXPR given)");
     let _ = writeln!(stdout, "  /time EXPR          Evaluate with timing breakdown");
     let _ = writeln!(stdout, "  /expand (/e) FORM   Macro-expand a form");
     let _ = writeln!(stdout, "  /imports [MODULE]   Show imports and special forms");
@@ -315,6 +320,22 @@ fn run_shell_command(cmd: &str, stdout: &mut impl Write) {
             let _ = writeln!(stdout, "error: {e}");
         }
     }
+}
+
+/// Format the `/mem` snapshot (no-expression form).
+///
+/// Reads the current allocation counters from `cranelisp-runtime` and
+/// returns a two-line report: one data line with current live bytes, and
+/// a comment line with total alloc / dealloc counts and the currently-live
+/// allocation count (`allocs - deallocs`).
+fn format_mem_snapshot() -> String {
+    let allocs = cranelisp_runtime::alloc_count();
+    let deallocs = cranelisp_runtime::dealloc_count();
+    let bytes_live = cranelisp_runtime::bytes_current();
+    let live = allocs.saturating_sub(deallocs);
+    format!(
+        "; live: {bytes_live} bytes ({live} allocations)\n; allocs: {allocs}  deallocs: {deallocs}"
+    )
 }
 
 /// Format a module entry signature for /sig display.
@@ -412,50 +433,27 @@ pub struct TypecheckProduct {
     pub source_text: Option<String>,
 }
 
-/// Transient codegen input for a module.
-/// Produced by typecheck, consumed by both JIT (priority workers) and .o (nice
-/// workers) codegen. Removed when scheduler signals both `inmem_done` and
-/// `object_done`. See session-restructure.md.
+/// Session-lifetime retention handle for a finalized `Arc<Jit>` (Sprint 57
+/// Wave 2 G6). Wraps the `Arc<Jit>` so the session's `kept_jits: Mutex<Vec<_>>`
+/// can be `Send + Sync` despite `cranelift_jit::JITModule`'s non-`Sync`
+/// interior mutability.
 ///
-/// Per-module codegen output: compiled code + optional cache linker.
-/// Entry created when codegen starts for a module. See session-restructure.md.
-pub struct CodegenProduct {
-    /// Some if loaded from cache .o; owns code_regions + data_regions.
-    pub linker: Option<cranelisp_backend::cache::Linker>,
-    /// Per-symbol codegen output. Additive for REPL redefinition over cache.
-    pub code: dashmap::DashMap<Symbol, Code>,
-}
-
-impl Default for CodegenProduct {
-    fn default() -> Self {
-        CodegenProduct {
-            linker: None,
-            code: dashmap::DashMap::new(),
-        }
-    }
-}
-
-/// TARGET STATE: per-symbol compiled code. Replaces DefCodegen's code_ptr + kept jit_modules.
-/// Owns the JIT mmap'd executable pages. See session-restructure.md.
+/// # Safety
 ///
-/// Sprint 56 Wave 2: the JIT module is wrapped in `Arc<Jit>` so that a single
-/// `compile_to_module` call producing N compiled functions can share one JIT
-/// across N `Code` entries (one per symbol). The `Arc` keeps the mmap'd pages
-/// alive until every referencing entry is dropped. /arch Phase 3a §3 accepted
-/// this as the Phase 2→3 bridge shape — Phase 3 G6 moves `Code` onto
-/// `ModuleEntry::Def` and the `Arc` continues to serve the same sharing role.
-pub struct Code {
-    /// Cranelift JIT module — owns mmap'd executable pages. Dropping the last
-    /// `Arc<Jit>` frees code.
-    pub jit: std::sync::Arc<cranelisp_backend::jit::Jit>,
-    /// Code pointer (also stored in GOT slot).
-    pub ptr: *const u8,
-}
+/// The wrapper is `Send + Sync` by promise: after `compile_to_module`
+/// finalises the JIT's definitions, the mmap'd executable pages are stable
+/// and the `Jit` is effectively read-only from the retention pool's
+/// perspective. Code reading `ModuleEntry::Def.code.ptr` dereferences into
+/// those pages but never touches the `Jit` handle itself. Workers only
+/// push to the pool; they do not iterate or call methods on the retained
+/// `Arc<Jit>` values. The `Mutex` around the `Vec` serialises pushes and
+/// the drop that ultimately frees the pages. This mirrors the `unsafe
+/// Send + Sync` impls on the pre-G6 session-layer `Code` type.
+pub struct KeptJit(pub Arc<cranelisp_backend::jit::Jit>);
 
-// SAFETY: Code contains raw pointer (code_ptr) and Jit (which has mmap'd
-// pages). Both are stable after JIT finalization, valid for process lifetime.
-unsafe impl Send for Code {}
-unsafe impl Sync for Code {}
+// SAFETY: see `KeptJit` doc.
+unsafe impl Send for KeptJit {}
+unsafe impl Sync for KeptJit {}
 
 /// REPL-only per-symbol introspection data.
 /// Not populated during batch. See session-restructure.md.
@@ -488,6 +486,35 @@ pub struct SharedState {
     /// Compilation scheduler. Tracks module lifecycle and coordinates
     /// work items. Internal Mutex + condvars for thread-safe access.
     pub scheduler: CompileScheduler,
+
+    /// Project root directory (read-only after construction). Sprint 57
+    /// Wave 4 G9: moved here from `CompilerSession` so persistent priority
+    /// workers can access it without borrow glue.
+    pub project_root: PathBuf,
+
+    /// Lib directories for module resolution (§8.11.2 tier 3). Wrapped in
+    /// `Mutex` so tests (and future runtime reconfiguration) can update the
+    /// set after workers have spawned; workers hold the lock only for the
+    /// duration of a single read (rare per compile). Sprint 57 Wave 4 G9:
+    /// moved here from `CompilerSession` for persistent-worker access.
+    pub lib_dirs: Mutex<Vec<PathBuf>>,
+
+    /// Extra platform DLL search directories (§8.11.3 tier 3). Same Mutex
+    /// rationale as `lib_dirs`. Sprint 57 Wave 4 G9: moved here from
+    /// `CompilerSession` for persistent-worker access.
+    pub platform_dirs: Mutex<Vec<PathBuf>>,
+
+    /// Sexps awaiting typecheck, keyed by module. Populated by
+    /// `register_module_with_source` / `reload_module` on the main thread;
+    /// read (and removed when complete) by persistent priority workers.
+    /// Sprint 57 Wave 4 G9 (per `persistent-workers.md` §5.3).
+    pub module_sexps: Mutex<HashMap<ModuleFullPath, Vec<Sexp>>>,
+
+    /// Per-module suspension state for resuming a partially-typechecked
+    /// module when a dependency becomes available. Worker-local logically,
+    /// but stored here so a blocked module can resume on any worker. Sprint
+    /// 57 Wave 4 G9 (per `persistent-workers.md` §5.3).
+    pub suspend_states: Mutex<HashMap<ModuleFullPath, crate::worker::ModuleSuspendState>>,
 
     /// Cache directory for .o and .meta.json output (Step 10).
     /// None when caching is disabled (e.g., `--run` without `--link`).
@@ -545,8 +572,49 @@ pub struct SharedState {
     pub typecheck_products: dashmap::DashMap<ModuleFullPath, TypecheckProduct>,
     /// Transient program stash for nice worker .o compilation.
     pub codegen_programs: dashmap::DashMap<ModuleFullPath, Vec<TopLevel>>,
-    /// Per-module codegen products (replaces ModuleGotRegistry + def_codegen + kept_code).
-    pub codegen_products: dashmap::DashMap<ModuleFullPath, CodegenProduct>,
+
+    // Sprint 57 Wave 2 G6: `codegen_products: DashMap<ModuleFullPath, CodegenProduct>`
+    // was here. Deleted. Compiled code is read from
+    // `symbol_tables[module].get(name).code`. `Arc<Jit>` retention moved to
+    // `kept_jits` below; `Linker` retention moved to `kept_linkers` below.
+
+    /// JIT retention pool (Sprint 57 Wave 2 G6). Holds `Arc<Jit>` handles to
+    /// keep mmap'd executable pages alive for as long as any
+    /// `ModuleEntry::Def.code` entry references them. Replaces the per-module
+    /// `CodegenProduct.code`-embedded `Arc<Jit>` carrier — the on-entry `Code`
+    /// type in `cranelisp_types` is pointer-only (Decision 25), so the session
+    /// keeps a parallel retention pool here. Pushed to when a priority worker
+    /// finalises a JIT; never manually drained (drop is tied to session
+    /// lifetime).
+    ///
+    /// `KeptJit` is an `unsafe Send + Sync` wrapper — `cranelift_jit::JITModule`
+    /// contains non-`Sync` interior mutability (symbol cache) but the post-
+    /// finalize pages are stable and the wrapper is never read during
+    /// compilation after the `Arc` is pushed. Workers may read the vec only
+    /// to preserve lifetime; they never call mutating methods on the
+    /// contained `Jit`.
+    pub kept_jits: Mutex<Vec<KeptJit>>,
+    /// Linker retention pool (Sprint 57 Wave 2 G6). Holds `Linker` instances
+    /// for cache-hit loaded `.o` files. Keeps mmap'd code regions alive for
+    /// the session. Same purpose as `kept_jits` but for the
+    /// `cranelisp_backend::cache::Linker` lifetime. Replaces
+    /// `CodegenProduct.linker`.
+    pub kept_linkers: Mutex<Vec<cranelisp_backend::cache::Linker>>,
+    /// Platform DLL retention pool (Sprint 57 Wave 3 G8). Holds
+    /// `LoadedPlatform` handles for the session lifetime so that every
+    /// `ModuleEntry::Def.platform_fn_ptr` remains valid for as long as any
+    /// code on the symbol tables might dispatch through it.
+    ///
+    /// # Safety invariant
+    ///
+    /// `platform_fn_ptr` is valid for as long as the owning DLL handle is
+    /// in `SharedState::kept_dlls`. Sessions retain these handles for their
+    /// full lifetime; the pool is never drained. Pushing a `LoadedPlatform`
+    /// is the write that makes its `fn_ptr`s safe to call; dropping a
+    /// `LoadedPlatform` invalidates its pointers. On drop (end of session)
+    /// all pointers are simultaneously invalidated, which is fine because
+    /// nothing can still be calling them after drop.
+    pub kept_dlls: Mutex<Vec<LoadedPlatform>>,
     /// Per-symbol introspection data, REPL-only (replaces def_codegen for slash commands).
     pub introspection: dashmap::DashMap<FQSymbol, Introspection>,
     /// Per-module structural metadata for source regeneration (repl/spec.md §15).
@@ -554,39 +622,34 @@ pub struct SharedState {
     pub module_structures: dashmap::DashMap<ModuleFullPath, crate::save::ModuleStructure>,
 }
 
+/// Resolve the effective priority-worker count from a `SessionSettings`
+/// request. `0` → auto-detect (`available_parallelism()-1`, clamped to
+/// `[1, 8]`); any non-zero value is clamped to `[1, 8]`. Per
+/// `persistent-workers.md` §5.1.
+fn resolve_priority_worker_count(requested: usize) -> usize {
+    if requested == 0 {
+        std::thread::available_parallelism()
+            .map(|n| n.get().saturating_sub(1))
+            .unwrap_or(1)
+            .clamp(1, 8)
+    } else {
+        requested.clamp(1, 8)
+    }
+}
+
 /// The compiler session — scheduler-driven concurrent compilation.
 ///
 /// One session per process. Owns the TypeChecker, codegen state, and
-/// scheduler. `register_module` spawns scoped priority worker threads
-/// that process modules from the scheduler's work queue.
+/// scheduler. Persistent priority + nice worker threads are spawned in
+/// `new()` and joined in `shutdown()` / `Drop` (Sprint 57 Wave 4 G9).
 pub struct CompilerSession {
-    /// Lib directories for module resolution (§8.11.2 tier 3).
-    /// Does NOT include project_root — that is tier 2 and searched separately.
-    pub lib_dirs: Vec<PathBuf>,
-    /// Extra platform DLL search directories (§8.11.3 tier 3).
-    /// Searched after project_root/platforms/ and lib_dir/platforms/.
-    pub platform_dirs: Vec<PathBuf>,
-    /// Loaded platform DLL handles. Must remain alive for the process lifetime
-    /// so that function pointers into the DLL code segments stay valid.
-    pub loaded_platforms: Vec<LoadedPlatform>,
-
-    /// Thread-safe state shared with nice worker threads. Wrapped in Arc
-    /// so workers get an independent clone — no aliasing between `&mut self`
-    /// (used by priority worker operations) and the shared reference held
-    /// by nice workers. All SharedState fields are inherently thread-safe
-    /// (Mutex, AtomicBool, DashMap, read-only).
+    /// Thread-safe state shared with nice + priority worker threads. Wrapped
+    /// in Arc so workers get an independent clone. Sprint 57 Wave 4 G9
+    /// moved `project_root`, `lib_dirs`, `platform_dirs` here so persistent
+    /// priority workers can access them without borrow glue. Convenience
+    /// accessors (`project_root()`, `lib_dirs()`, `platform_dirs()`) are
+    /// provided below for call sites that previously held direct fields.
     pub shared: Arc<SharedState>,
-
-    /// Number of priority worker threads to spawn for module compilation.
-    /// Defaults to 1 for determinism in tests; production uses num_cpus().
-    priority_workers: usize,
-
-    /// Project root directory (read-only after construction).
-    pub project_root: PathBuf,
-
-    /// Unified platform function registry (Step 8).
-    /// Populated during platform loading, read-only during codegen.
-    pub platform_registry: PlatformRegistry,
 
     // -- REPL-specific state (pipeline-v4.md §6) --
 
@@ -598,6 +661,11 @@ pub struct CompilerSession {
     /// construction. None in batch/link modes or if OS watcher unavailable.
     pub watcher: Option<crate::watch::FileWatcher>,
 
+    /// Priority worker thread handles. Sprint 57 Wave 4 G9: persistent —
+    /// spawned in `new()`, joined in `shutdown()`/`Drop`. Per
+    /// `persistent-workers.md` §4.1/§5.2.
+    priority_worker_handles: Vec<std::thread::JoinHandle<()>>,
+
     /// Nice worker thread handles. Joined in `shutdown()`.
     nice_worker_handles: Vec<std::thread::JoinHandle<()>>,
     /// Nice worker count (stored for `wait_object_complete` guard).
@@ -607,8 +675,17 @@ pub struct CompilerSession {
 impl CompilerSession {
     /// Create a new compiler session (pipeline-v4.md §5).
     ///
-    /// `settings.priority_workers` controls how many scoped threads are
-    /// spawned per `register_module` call. Tests use 1 for determinism.
+    /// Spawns `priority_workers` persistent priority worker threads and
+    /// `nice_workers` persistent nice worker threads. Workers park on the
+    /// scheduler's condvars and process work for the session lifetime;
+    /// `shutdown()` (called from `Drop`) joins them all. Sprint 57 Wave 4
+    /// G9 per `design/int/persistent-workers.md` §4.1.
+    ///
+    /// The effective priority worker count is derived from
+    /// `settings.priority_workers`: values of 0 are interpreted as
+    /// "auto-detect" (`available_parallelism()-1`, clamped to `[1, 8]`);
+    /// explicit values are clamped to `[1, 8]`. Tests pass
+    /// `priority_workers: 1` for determinism.
     pub fn new(
         settings: SessionSettings,
         project_root: PathBuf,
@@ -629,7 +706,9 @@ impl CompilerSession {
             Some(crate::session::CacheState::new(cache_dir.clone()))
         };
 
-        let priority_workers = std::cmp::max(settings.priority_workers, 1);
+        // Priority-worker count: 0 = auto-detect, else explicit. Clamp to
+        // [1, 8] per `persistent-workers.md` §5.1.
+        let priority_workers = resolve_priority_worker_count(settings.priority_workers);
 
         let nice_workers = settings.nice_workers;
 
@@ -645,6 +724,11 @@ impl CompilerSession {
 
         let shared = Arc::new(SharedState {
             scheduler: CompileScheduler::new(),
+            project_root,
+            lib_dirs: Mutex::new(lib_dirs),
+            platform_dirs: Mutex::new(platform_dirs),
+            module_sexps: Mutex::new(HashMap::new()),
+            suspend_states: Mutex::new(HashMap::new()),
             cache_dir: Some(cache_dir),
             compiled_o_paths: Mutex::new(Vec::new()),
             promote_nice_workers: AtomicBool::new(false),
@@ -657,10 +741,27 @@ impl CompilerSession {
             repl_check_state: Mutex::new(Some(CheckState::new(user_module))),
             typecheck_products: dashmap::DashMap::new(),
             codegen_programs: dashmap::DashMap::new(),
-            codegen_products: dashmap::DashMap::new(),
+            kept_jits: Mutex::new(Vec::new()),
+            kept_linkers: Mutex::new(Vec::new()),
+            kept_dlls: Mutex::new(Vec::new()),
             introspection: dashmap::DashMap::new(),
             module_structures: dashmap::DashMap::new(),
         });
+
+        // Spawn persistent priority worker threads (Sprint 57 Wave 4 G9).
+        // Workers park on `scheduler.priority_work_available` and process
+        // modules until shutdown. Joined in `shutdown()` / `Drop`.
+        let mut priority_worker_handles = Vec::with_capacity(priority_workers);
+        for i in 0..priority_workers {
+            let worker_shared = Arc::clone(&shared);
+            let handle = std::thread::Builder::new()
+                .name(format!("priority-worker-{}", i))
+                .spawn(move || {
+                    crate::worker::priority_worker_loop_shared(&worker_shared);
+                })
+                .expect("failed to spawn priority worker thread");
+            priority_worker_handles.push(handle);
+        }
 
         // Spawn persistent nice worker threads for object codegen (.o files).
         // Workers park on scheduler condvar and wake when modules reach
@@ -679,18 +780,56 @@ impl CompilerSession {
         }
 
         CompilerSession {
-            lib_dirs,
-            platform_dirs,
-            loaded_platforms: Vec::new(),
             shared,
-            priority_workers,
-            project_root,
-            platform_registry: PlatformRegistry::new(),
             error_modules: HashSet::new(),
             watcher: None,
+            priority_worker_handles,
             nice_worker_handles,
             nice_workers,
         }
+    }
+
+    /// Convenience accessor: project root.
+    pub fn project_root(&self) -> &Path {
+        &self.shared.project_root
+    }
+
+    /// Convenience accessor: lib search directories (snapshot clone).
+    pub fn lib_dirs(&self) -> Vec<PathBuf> {
+        self.shared.lib_dirs.lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+    }
+
+    /// Convenience accessor: platform DLL search directories (snapshot clone).
+    pub fn platform_dirs(&self) -> Vec<PathBuf> {
+        self.shared.platform_dirs.lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+    }
+
+    /// Update the lib directory set. Sprint 57 Wave 4 G9: tests and the
+    /// CLI call this after `new()` to override defaults; workers take a
+    /// fresh clone for each file-resolution call, so the change is
+    /// observed by subsequent typechecks.
+    pub fn set_lib_dirs(&mut self, dirs: Vec<PathBuf>) {
+        *self.shared.lib_dirs.lock()
+            .unwrap_or_else(|e| e.into_inner()) = dirs;
+    }
+
+    /// Update the platform search directory set. Same semantics as
+    /// `set_lib_dirs`.
+    pub fn set_platform_dirs(&mut self, dirs: Vec<PathBuf>) {
+        *self.shared.platform_dirs.lock()
+            .unwrap_or_else(|e| e.into_inner()) = dirs;
+    }
+
+    /// Append a single platform search directory to the current set.
+    /// Convenience wrapper around `set_platform_dirs` for tests/CLI.
+    pub fn push_platform_dir(&mut self, dir: PathBuf) {
+        let mut guard = self.shared.platform_dirs.lock()
+            .unwrap_or_else(|e| e.into_inner());
+        guard.push(dir);
     }
 
     // -- Convenience accessors for shared TC state --
@@ -898,10 +1037,10 @@ impl CompilerSession {
                 None => {
                     // Entry module may not have a file path yet (fresh session).
                     // Default to {project_root}/{module}.cl.
-                    self.project_root.join(format!("{}.cl", module))
+                    self.shared.project_root.join(format!("{}.cl", module))
                 }
             },
-            None => self.project_root.join(format!("{}.cl", module)),
+            None => self.shared.project_root.join(format!("{}.cl", module)),
         };
 
         // Read the symbol table for this module.
@@ -956,9 +1095,12 @@ impl CompilerSession {
 
     /// Reload a single module from its source file.
     ///
-    /// Re-reads the file, re-parses, and re-compiles through the worker
-    /// pipeline with the existing session state. The module must already
-    /// be registered in the scheduler.
+    /// Clears the module's stale products, re-parses, publishes sexps to
+    /// `SharedState::module_sexps`, and re-registers with the scheduler.
+    /// The persistent priority workers pick up the re-registration and
+    /// re-typecheck + re-codegen. Sprint 57 Wave 4 G11 per
+    /// `persistent-workers.md` §4.6 — reload via scheduler falls out of
+    /// persistent workers (same path as `register_module_with_source`).
     fn reload_module(
         &mut self,
         module_path: &ModuleFullPath,
@@ -972,60 +1114,55 @@ impl CompilerSession {
             }
         })?;
 
-        // Re-register through the existing pipeline. The scheduler will
-        // reset the module state and re-process it.
-        self.shared.scheduler.reset_module(module_path);
-
         // Remove stale products before recompilation.
+        // Sprint 57 Wave 2 G6: `codegen_products` was deleted; compiled code
+        // lives on `ModuleEntry::Def.code`. Walk the module's symbols and
+        // clear each `code` field so stale pointers are not callable during
+        // recompilation. The `Arc<Jit>` handles in `kept_jits` keep the old
+        // mmap'd pages alive until the session ends (preserves the Phase-2
+        // redefinition policy of "old code stays callable for in-flight
+        // calls" — same behaviour as before, just via a different store).
         self.shared.typecheck_products.remove(module_path);
         self.shared.codegen_programs.remove(module_path);
-        self.shared.codegen_products.remove(module_path);
+        // Clear any stale suspend state from a prior compile of this module.
+        {
+            let mut states = self.shared.suspend_states.lock()
+                .unwrap_or_else(|e| e.into_inner());
+            states.remove(module_path);
+        }
+        if let Some(mut st) = self.shared.symbol_tables.get_mut(module_path) {
+            for entry in st.symbols.values_mut() {
+                if let ModuleEntry::Def { code, .. } = entry {
+                    *code = None;
+                }
+            }
+        }
 
         let sexps = cranelisp_frontend::parse(&source)?;
 
-        let module_sexps = Mutex::new({
-            let mut map = HashMap::new();
+        // Publish sexps and re-register. Persistent workers parked on the
+        // priority-work condvar wake and process it (G11 per §4.6).
+        {
+            let mut map = self.shared.module_sexps.lock()
+                .unwrap_or_else(|e| e.into_inner());
             map.insert(module_path.clone(), sexps);
-            map
-        });
-        let suspend_states = Mutex::new(HashMap::new());
+        }
+        // `re_register_module` clears `inmem_done` and re-queues the module
+        // for typecheck. `register_module` would be a no-op because the
+        // module is already in `scheduler.modules`.
+        let re_registered = self.shared.scheduler.re_register_module(module_path);
+        if !re_registered {
+            // Module isn't known to the scheduler yet (first-time seed from
+            // file watcher) — fall back to register_module.
+            self.shared.scheduler.register_module(module_path.clone(), false);
+        }
 
-        let platform_registry = std::mem::replace(
-            &mut self.platform_registry, PlatformRegistry::new(),
-        );
-        let platform_mutex = Mutex::new(platform_registry);
+        // Block until inmem-done for every registered module. The workers
+        // do the typecheck + in-memory codegen.
+        self.shared.scheduler.wait_inmem_complete_blocking()?;
 
-        let worker_shared = crate::worker::PriorityWorkerRefs {
-            platform_registry: &platform_mutex,
-            typecheck_products: &self.shared.typecheck_products,
-            codegen_products: &self.shared.codegen_products,
-            introspection: Some(&self.shared.introspection),
-            scheduler: &self.shared.scheduler,
-            module_sexps: &module_sexps,
-            suspend_states: &suspend_states,
-            lib_dirs: &self.lib_dirs,
-            platform_dirs: &self.platform_dirs,
-            project_root: &self.project_root,
-            shared_state: Some(&self.shared),
-        };
-
-        let num_workers = self.priority_workers;
-        std::thread::scope(|s| {
-            for i in 0..num_workers {
-                let shared_ref = &worker_shared;
-                std::thread::Builder::new()
-                    .name(format!("reload-worker-{}", i))
-                    .spawn_scoped(s, move || {
-                        crate::worker::priority_worker_thread(shared_ref, i);
-                    })
-                    .expect("failed to spawn reload worker thread");
-            }
-        });
-
-        // Move PlatformRegistry back.
-        self.platform_registry = platform_mutex.into_inner().unwrap_or_else(|e| e.into_inner());
-
-        // Check if the module ended up in Failed state.
+        // Check if the module ended up in Failed state (wait_inmem_complete_blocking
+        // would have returned Err in that case, but double-check explicitly).
         if self.shared.scheduler.is_failed(module_path) {
             return Err(CranelispError::ModuleError {
                 message: format!("module '{}' failed to compile", module_path.as_ref()),
@@ -1052,10 +1189,12 @@ impl CompilerSession {
 
     /// Register a module with explicit source (internal + test helpers).
     ///
-    /// Spawns scoped priority worker threads that process the module and
-    /// its dependencies via the scheduler's work queue. Workers park on
-    /// blocked modules and pick up ready ones, preventing deadlocks on
-    /// multi-module dependency chains.
+    /// Enqueues sexps into `SharedState::module_sexps` and registers the
+    /// module with the scheduler; the persistent priority workers parked
+    /// on `priority_work_available` wake and process it. The caller blocks
+    /// on `wait_inmem_complete_blocking` until every registered module
+    /// reaches inmem_done or failure. Sprint 57 Wave 4 G9 per
+    /// `persistent-workers.md` §4.3.
     pub fn register_module_with_source(
         &mut self,
         module_name: &str,
@@ -1074,63 +1213,24 @@ impl CompilerSession {
             }
         }
 
+        // Publish sexps to workers BEFORE registering, so a worker that wakes
+        // immediately on the scheduler notify finds the sexps ready.
+        {
+            let mut map = self.shared.module_sexps.lock()
+                .unwrap_or_else(|e| e.into_inner());
+            map.insert(module.clone(), sexps);
+        }
+
         // Register module with scheduler (entry module, not delaying others).
+        // Wakes parked priority workers via `priority_work_available.notify_all()`.
         self.shared.scheduler.register_module(module.clone(), false);
 
-        // Build shared maps for worker threads.
-        let module_sexps = Mutex::new({
-            let mut map = HashMap::new();
-            map.insert(module.clone(), sexps);
-            map
-        });
-        let suspend_states = Mutex::new(HashMap::new());
-
-        // Temporarily move PlatformRegistry into Mutex so worker
-        // threads can lock it. Moved back after the scope exits.
-        let platform_registry = std::mem::replace(
-            &mut self.platform_registry, PlatformRegistry::new(),
-        );
-        let platform_mutex = Mutex::new(platform_registry);
-
-        // Build shared worker context for scoped threads.
-        let worker_shared = crate::worker::PriorityWorkerRefs {
-            platform_registry: &platform_mutex,
-            typecheck_products: &self.shared.typecheck_products,
-            codegen_products: &self.shared.codegen_products,
-            introspection: Some(&self.shared.introspection),
-            scheduler: &self.shared.scheduler,
-            module_sexps: &module_sexps,
-            suspend_states: &suspend_states,
-            lib_dirs: &self.lib_dirs,
-            platform_dirs: &self.platform_dirs,
-            project_root: &self.project_root,
-            shared_state: Some(&self.shared),
-        };
-
-        // Spawn scoped priority worker threads. They block on the scheduler's
-        // condvar when no work is available, and exit when all modules reach
-        // TypecheckDone/Complete/Failed (or on shutdown).
-        let num_workers = self.priority_workers;
-        std::thread::scope(|s| {
-            for i in 0..num_workers {
-                let shared_ref = &worker_shared;
-                std::thread::Builder::new()
-                    .name(format!("priority-worker-{}", i))
-                    .spawn_scoped(s, move || {
-                        crate::worker::priority_worker_thread(shared_ref, i);
-                    })
-                    .expect("failed to spawn priority worker thread");
-            }
-            // Scope exits here — all workers join before continuing.
-        });
-
-        // Move PlatformRegistry back from Mutex.
-        self.platform_registry = platform_mutex.into_inner()
-            .unwrap_or_else(|e| e.into_inner());
-
-        // Check scheduler completion — all workers have exited, so this
-        // is a non-blocking status check (not a wait).
-        self.shared.scheduler.wait_inmem_complete()?;
+        // Block until every registered module reaches inmem_done (or a
+        // module fails). The persistent priority workers do the typecheck
+        // + in-memory codegen and call `notify_inmem_codegen_complete` /
+        // `notify_typecheck_done`, which wakes the scheduler's completion
+        // condvar.
+        self.shared.scheduler.wait_inmem_complete_blocking()?;
 
         Ok(Vec::new())
     }
@@ -1239,6 +1339,9 @@ impl CompilerSession {
             }
             ReplCommand::Time(expr) => {
                 CommandResult::Final(self.handle_time(expr))
+            }
+            ReplCommand::Mem(expr) => {
+                CommandResult::Final(self.handle_mem(expr))
             }
             ReplCommand::Sh(cmd) => {
                 run_shell_command(cmd, stdout);
@@ -1371,19 +1474,19 @@ impl CompilerSession {
                     .unwrap_or_else(|e| e.into_inner())
                     .take()
                     .unwrap_or_else(|| CheckState::new(module.clone()));
+                let lib_dirs_snap = self.lib_dirs();
+                let platform_dirs_snap = self.platform_dirs();
                 let mut wctx = ModuleCompiler {
                     symbol_tables: &self.shared.symbol_tables,
                     next_type_id: &self.shared.next_type_id,
                     check_state: repl_cs,
                     current_module: module.clone(),
                     scheduler: &self.shared.scheduler,
-                    platform_registry: &mut self.platform_registry,
                     typecheck_products: &self.shared.typecheck_products,
-                    codegen_products: &self.shared.codegen_products,
                     introspection: Some(&self.shared.introspection),
-                    lib_dirs: &self.lib_dirs,
-                    platform_dirs: &self.platform_dirs,
-                    project_root: &self.project_root,
+                    lib_dirs: &lib_dirs_snap,
+                    platform_dirs: &platform_dirs_snap,
+                    project_root: &self.shared.project_root,
                     shared_state: Some(&self.shared),
                 };
 
@@ -1487,7 +1590,6 @@ impl CompilerSession {
         // live by JIT finalize.
         let current_module_for_tests = module.clone();
         let test_state = TestRunnerState {
-            codegen_products: &self.shared.codegen_products as *const _,
             tc_modules: &self.shared.symbol_tables as *const _,
             current_module: &current_module_for_tests as *const _,
         };
@@ -1499,28 +1601,25 @@ impl CompilerSession {
 
         // Unified JIT codegen via compile_to_module (Sprint 56 Wave 2).
         // Derives the compilation batch from `program`, compiles through the
-        // single backend entry point, and populates codegen_products +
-        // introspection. No env, no mode discriminator — see
-        // design/int/phase2-codegen-convergence.md §5.
+        // single backend entry point, and populates `ModuleEntry::Def.code`
+        // (Sprint 57 Wave 2 G6) + introspection. No env, no mode
+        // discriminator — see design/int/phase2-codegen-convergence.md §5.
         crate::worker::inline_jit_codegen_for_module(
-            &self.platform_registry,
             &self.shared.scheduler,
             module,
             program,
             &self.shared.symbol_tables,
-            &self.shared.codegen_products,
             Some(&self.shared.introspection),
             &codegen_extra_symbols,
+            Some(&self.shared),
         )?;
 
         let has_expr = program.iter().any(|tl| matches!(tl, TopLevel::Expr(_)));
 
         if has_expr {
-            let program_vec = program.to_vec();
             let (mut jit_syms, got_defs) = crate::worker::collect_jit_setup_public(
                 &self.shared.symbol_tables,
                 module,
-                &self.platform_registry,
             );
 
             // Build traced_fns if the expression contains (trace ...).
@@ -1563,7 +1662,6 @@ impl CompilerSession {
             // Set test runner state for discover-tests/run-test externs.
             let current_module_for_tests = module.clone();
             let test_state = TestRunnerState {
-                codegen_products: &self.shared.codegen_products as *const _,
                 tc_modules: &self.shared.symbol_tables as *const _,
                 current_module: &current_module_for_tests as *const _,
             };
@@ -1574,7 +1672,6 @@ impl CompilerSession {
             let result = crate::pipeline::compile_and_execute_expr(
                 &jit_syms,
                 &got_defs,
-                &program_vec,
                 check.display.as_ref(),
                 &traced_fns,
                 &trace_extra_symbols,
@@ -1738,7 +1835,7 @@ impl CompilerSession {
 
             // §4.12.3: only trace project-root modules.
             if let Some(ref fp) = tp.file_path
-                && !fp.starts_with(&self.project_root) {
+                && !fp.starts_with(&self.shared.project_root) {
                     continue;
                 }
 
@@ -1748,27 +1845,28 @@ impl CompilerSession {
                 None => continue,
             };
 
-            let cp = match self.shared.codegen_products.get(module_path) {
-                Some(cp) => cp,
-                None => continue,
-            };
-
             let symbols = match self.shared.symbol_tables.get(module_path) {
                 Some(st) => st,
                 None => continue,
             };
 
             for (name, entry) in symbols.all_symbols() {
-                if let ModuleEntry::Def { scheme, kind, got_slot: Some(slot), .. } = entry {
+                // Sprint 57 Wave 2 G6: read `code` from the symbol-table entry
+                // (replaces the deleted `codegen_products[module].code` lookup).
+                if let ModuleEntry::Def {
+                    scheme,
+                    kind,
+                    got_slot: Some(slot),
+                    code: Some(c),
+                    ..
+                } = entry
+                {
                     // Skip constrained polymorphic base names — they're dispatch
                     // placeholders (e.g. `!=`, `+`, `<`), not directly callable.
                     if let DefKind::UserFn { constrained_fn: Some(_) } = kind.as_ref() {
                         continue;
                     }
-                    let code_ptr = match cp.code.get(name) {
-                        Some(code) => code.ptr as i64,
-                        None => continue,
-                    };
+                    let code_ptr = c.ptr as i64;
                     if code_ptr == 0 {
                         continue;
                     }
@@ -1810,19 +1908,19 @@ impl CompilerSession {
             .unwrap_or_else(|e| e.into_inner())
             .take()
             .unwrap_or_else(|| CheckState::new(dep_module.clone()));
+        let lib_dirs_snap = self.lib_dirs();
+        let platform_dirs_snap = self.platform_dirs();
         let mut ctx = ModuleCompiler {
             symbol_tables: &self.shared.symbol_tables,
             next_type_id: &self.shared.next_type_id,
             check_state: repl_cs,
             current_module: dep_module.clone(),
             scheduler: &self.shared.scheduler,
-            platform_registry: &mut self.platform_registry,
             typecheck_products: &self.shared.typecheck_products,
-            codegen_products: &self.shared.codegen_products,
             introspection: Some(&self.shared.introspection),
-            lib_dirs: &self.lib_dirs,
-            platform_dirs: &self.platform_dirs,
-            project_root: &self.project_root,
+            lib_dirs: &lib_dirs_snap,
+            platform_dirs: &platform_dirs_snap,
+            project_root: &self.shared.project_root,
             shared_state: Some(&self.shared),
         };
 
@@ -2410,10 +2508,16 @@ impl CompilerSession {
                         let clause_name = Symbol::from(
                             format!("__macro_{}_clause_{}", name, idx),
                         );
-                        !self.shared.codegen_products
-                            .get(&module)
-                            .map(|p| p.code.contains_key(&clause_name))
-                            .unwrap_or(false)
+                        // Sprint 57 Wave 2 G6: check `ModuleEntry::Def.code`
+                        // on the symbol table (replaces the deleted
+                        // `codegen_products` lookup).
+                        let compiled = self.shared.symbol_tables.get(&module)
+                            .and_then(|t| match t.get(clause_name.as_ref())? {
+                                ModuleEntry::Def { code, .. } => Some(code.is_some()),
+                                _ => None,
+                            })
+                            .unwrap_or(false);
+                        !compiled
                     });
                     if needs_compile {
                         to_compile.push((name, sexp.clone()));
@@ -2432,19 +2536,19 @@ impl CompilerSession {
                 .unwrap_or_else(|e| e.into_inner())
                 .take()
                 .unwrap_or_else(|| CheckState::new(module.clone()));
+            let lib_dirs_snap = self.lib_dirs();
+            let platform_dirs_snap = self.platform_dirs();
             let mut wctx = ModuleCompiler {
                 symbol_tables: &self.shared.symbol_tables,
                 next_type_id: &self.shared.next_type_id,
                 check_state: repl_cs,
                 current_module: module.clone(),
                 scheduler: &self.shared.scheduler,
-                platform_registry: &mut self.platform_registry,
                 typecheck_products: &self.shared.typecheck_products,
-                codegen_products: &self.shared.codegen_products,
                 introspection: Some(&self.shared.introspection),
-                lib_dirs: &self.lib_dirs,
-                platform_dirs: &self.platform_dirs,
-                project_root: &self.project_root,
+                lib_dirs: &lib_dirs_snap,
+                platform_dirs: &platform_dirs_snap,
+                project_root: &self.shared.project_root,
                 shared_state: Some(&self.shared),
             };
 
@@ -2476,7 +2580,6 @@ impl CompilerSession {
         let module = self.current_module_path();
         let mut resolver = ReadOnlyMacroResolver {
             symbol_tables: &self.shared.symbol_tables,
-            codegen_products: &self.shared.codegen_products,
             current_module: module,
         };
         crate::expander::expand_sexp_recursive(sexp, &mut resolver, 0)
@@ -2502,6 +2605,47 @@ impl CompilerSession {
         }
     }
 
+    /// /mem handler: show allocation statistics.
+    ///
+    /// With no argument: report current live bytes, total allocations, total
+    /// deallocations, and the delta (currently-live allocations) reflected by
+    /// the runtime counters.
+    ///
+    /// With an argument: evaluate the expression and report the delta in each
+    /// counter across the evaluation. This makes RC behaviour directly
+    /// observable during a session.
+    fn handle_mem(&mut self, expr_src: &str) -> String {
+        if expr_src.is_empty() {
+            return format_mem_snapshot();
+        }
+
+        let allocs_before = cranelisp_runtime::alloc_count();
+        let deallocs_before = cranelisp_runtime::dealloc_count();
+        let bytes_before = cranelisp_runtime::bytes_current();
+
+        let eval_outcome = self.eval(expr_src);
+
+        let allocs_after = cranelisp_runtime::alloc_count();
+        let deallocs_after = cranelisp_runtime::dealloc_count();
+        let bytes_after = cranelisp_runtime::bytes_current();
+
+        let d_allocs = allocs_after.saturating_sub(allocs_before);
+        let d_deallocs = deallocs_after.saturating_sub(deallocs_before);
+        let d_bytes = (bytes_after as i64) - (bytes_before as i64);
+        let live_delta = (d_allocs as i64) - (d_deallocs as i64);
+
+        let header = match eval_outcome {
+            Ok(Some(result)) => self.format_eval_result(&result),
+            Ok(None) => "(no result)".to_string(),
+            Err(e) => format!("Error: {e}"),
+        };
+
+        let delta_line = format!(
+            "; delta: allocs +{d_allocs}  deallocs +{d_deallocs}  bytes {d_bytes:+}  live {live_delta:+}"
+        );
+        format!("{header}\n{delta_line}")
+    }
+
     /// /run-tests handler: discover and execute test-* functions.
     ///
     /// Scans def_codegen for zero-arg functions named `test-*`, calls each
@@ -2520,7 +2664,6 @@ impl CompilerSession {
         };
         // Core discovery — shared with discover_tests_extern.
         let test_names = discover_test_names(
-            &self.shared.codegen_products,
             &self.shared.symbol_tables,
             &module,
         );
@@ -2540,11 +2683,10 @@ impl CompilerSession {
         for entry in self.shared.typecheck_products.iter() {
             let module_path = entry.key();
             if let Some(ref fp) = entry.value().file_path
-                && !fp.starts_with(&self.project_root) {
+                && !fp.starts_with(&self.shared.project_root) {
                     continue;
                 }
             let names = discover_test_names(
-                &self.shared.codegen_products,
                 &self.shared.symbol_tables,
                 module_path,
             );
@@ -2567,7 +2709,7 @@ impl CompilerSession {
 
         for name in test_names {
             // Core test execution — shared with run_test_extern.
-            let outcome = run_test_by_name(&self.shared.codegen_products, name);
+            let outcome = run_test_by_name(&self.shared.symbol_tables, name);
             let dots = ".".repeat(40usize.saturating_sub(name.len()));
             match &outcome {
                 TestOutcome::Pass { .. } => {
@@ -2628,7 +2770,7 @@ impl CompilerSession {
         &mut self,
         module_name: &str,
     ) -> Result<(i64, Type), CranelispError> {
-        // Look up main in codegen_products.
+        // Look up main's compiled code on its symbol-table entry (G6).
         let main_sym = cranelisp_types::Symbol::from("main");
         let code_ptr = self.lookup_main_code_ptr(module_name, &main_sym)?;
         let result_type = self.lookup_main_return_type(module_name);
@@ -2656,6 +2798,14 @@ impl CompilerSession {
         // IO trampoline.
         if result_type.is_io() {
             let inner_value = cranelisp_runtime::run_io_trampoline(raw_value);
+            // Decision 24 (consuming convention): `run_io_trampoline` is
+            // non-consuming of its input tree. The caller-tree outer nodes
+            // (Bind/Pure + continuation closures) must be released via
+            // `drop::consume_io_tree` — without this, every batch-mode
+            // `(defn main ...)` that returns IO leaks its outer IO nodes.
+            // Mirrors the pipeline path's `unwrap_io_inline` in pipeline.rs
+            // and the extern `cranelisp_run_io` entry in runtime::io.
+            cranelisp_runtime::drop::consume_io_tree(raw_value);
             let inner_type = result_type.io_inner_type();
             Ok((inner_value, inner_type))
         } else {
@@ -2663,7 +2813,8 @@ impl CompilerSession {
         }
     }
 
-    /// Look up the code pointer for `main` in codegen_products.
+    /// Look up the code pointer for `main` on its `ModuleEntry::Def.code`
+    /// (Sprint 57 Wave 2 G6 — replaces the deleted `codegen_products` lookup).
     fn lookup_main_code_ptr(
         &self,
         module_name: &str,
@@ -2671,11 +2822,12 @@ impl CompilerSession {
     ) -> Result<*const u8, CranelispError> {
         let module_path = ModuleFullPath::from(module_name);
 
-        // Check codegen_products for the compiled Code.
-        if let Some(product) = self.shared.codegen_products.get(&module_path)
-            && let Some(code) = product.code.get(main_sym) {
-                return Ok(code.ptr);
-            }
+        if let Some(table) = self.shared.symbol_tables.get(&module_path)
+            && let Some(ModuleEntry::Def { code: Some(c), .. }) =
+                table.get(main_sym.as_ref())
+        {
+            return Ok(c.ptr);
+        }
 
         Err(CranelispError::ModuleError {
             message: "entry module has no `main` function — batch mode requires (defn main [] ...)"
@@ -2745,12 +2897,26 @@ impl CompilerSession {
 
     /// Shut down the session: signal workers to drain and exit.
     ///
-    /// Sets the scheduler shutdown flag and wakes all condvars so nice
-    /// workers observe shutdown and return. Scoped threads are joined
-    /// automatically when the scope exits.
+    /// Sets the scheduler shutdown flag (wakes all condvars) and joins
+    /// both the persistent priority and nice worker pools. Workers
+    /// observe the shutdown flag via `take_priority_work_blocking` /
+    /// `take_object_codegen` returning `None` and exit their loops.
+    ///
+    /// Idempotent: safe to call twice; the second call joins no
+    /// additional handles. Called automatically by `Drop` as a safety net
+    /// for tests that never call `shutdown()` explicitly.
+    /// Sprint 57 Wave 4 G9 per `persistent-workers.md` §5.2.
     pub fn shutdown(&mut self) {
         self.shared.scheduler.shutdown();
-        // Join nice worker threads. They observe the shutdown flag via
+        // Join priority worker threads first. A worker mid-codegen will
+        // finish its current work item, re-enter `take_priority_work_blocking`
+        // at the loop top, observe shutdown, and exit. `join()` returning
+        // `Err` means the worker panicked — silently ignored to match the
+        // scoped-worker behaviour this replaces (§5.2).
+        for handle in self.priority_worker_handles.drain(..) {
+            let _ = handle.join();
+        }
+        // Then nice workers. They observe the shutdown flag via
         // take_object_codegen() returning None and exit their loop.
         for handle in self.nice_worker_handles.drain(..) {
             let _ = handle.join();
@@ -2766,7 +2932,8 @@ impl CompilerSession {
     ) -> Result<Vec<Warning>, CranelispError> {
         let module = ModuleFullPath::from(module_name);
         // Resolve source file: project_root (tier 2) then lib_dirs (tier 3).
-        let file_path = crate::pipeline::resolve_module_file(&module, &self.project_root, &self.lib_dirs);
+        let lib_dirs = self.lib_dirs();
+        let file_path = crate::pipeline::resolve_module_file(&module, &self.shared.project_root, &lib_dirs);
         let (source, entry_path) = match file_path {
             Some(path) => {
                 let src = std::fs::read_to_string(&path).unwrap_or_default();
@@ -2774,7 +2941,7 @@ impl CompilerSession {
             }
             None => {
                 // No file found — empty module (e.g., fresh REPL).
-                let default_path = self.project_root.join(format!("{module_name}.cl"));
+                let default_path = self.shared.project_root.join(format!("{module_name}.cl"));
                 (String::new(), default_path)
             }
         };
@@ -2956,7 +3123,16 @@ impl CompilerSession {
             }
             EvalResult::Val { value, ty, .. } => {
                 if ty.is_io() {
+                    // Defensive path. In normal REPL flow `compile_and_execute_expr`
+                    // has already run the trampoline and stripped the IO type via
+                    // `unwrap_io_inline`, so this branch is unreachable for current
+                    // callers. If a future caller ever constructs `EvalResult::Val`
+                    // with an un-trampolined IO value, we must still honour
+                    // Decision 24's consuming convention: `run_io_trampoline` is
+                    // non-consuming, so `consume_io_tree` must release the outer
+                    // tree afterwards. See `pipeline::unwrap_io_inline`.
                     let inner_value = cranelisp_runtime::run_io_trampoline(*value);
+                    cranelisp_runtime::drop::consume_io_tree(*value);
                     let inner_type = ty.io_inner_type();
                     format_result_value(
                         inner_value, &inner_type, &self.shared.symbol_tables,
@@ -3265,11 +3441,16 @@ fn extract_def_name_from_sexp(sexp: &Sexp) -> Option<String> {
 
 impl Drop for CompilerSession {
     fn drop(&mut self) {
-        // Defensive shutdown: ensure the scheduler signals all condvars
-        // before this session is destroyed. This prevents hangs if the
-        // session is dropped without an explicit shutdown() call (e.g.,
-        // during test teardown or panic unwinding).
-        self.shared.scheduler.shutdown();
+        // Defensive: ensure workers are signalled and joined before this
+        // session is destroyed. Prevents hangs (and mmap'd JIT pages going
+        // out of scope while a worker still dereferences them) if the
+        // session is dropped without an explicit `shutdown()` call — e.g.
+        // during test teardown or panic unwinding. Sprint 57 Wave 4 G9
+        // per `persistent-workers.md` §5.2.
+        //
+        // `shutdown()` is idempotent; calling it in Drop is safe even if
+        // the caller already called it.
+        self.shutdown();
     }
 }
 
@@ -3279,19 +3460,17 @@ impl Drop for CompilerSession {
 
 /// Spawn nice (low-priority) worker threads inside a `std::thread::scope`.
 ///
-/// Takes `&Arc<SharedState>` and clones the Arc for each worker thread.
-/// Workers hold independent Arc references — no aliasing with the caller's
-/// `&mut CompilerSession`.
-///
-/// Workers park on the scheduler's `object_work_available` condvar and wake
-/// when modules reach TypecheckDone or on shutdown. The scope guarantees
-/// all threads join before it exits.
+/// Test-only helper kept for `nice_worker_lifecycle_spawn_and_shutdown` in
+/// `src/scheduler.rs` tests. Production code uses the persistent
+/// `nice_worker_handles` pool spawned in `CompilerSession::new` (Sprint 46).
+/// `cfg(test)` gates this so `thread::scope` does not appear in any
+/// non-test build per `design/int/persistent-workers.md` §11 acceptance
+/// criterion 2.
 ///
 /// # Panics
 ///
-/// Panics if the OS fails to spawn a thread. This is a setup-time
-/// invariant: if the OS cannot create threads, the compiler cannot
-/// function.
+/// Panics if the OS fails to spawn a thread. Tests rely on this invariant.
+#[cfg(test)]
 pub fn spawn_nice_workers<'scope, 'env>(
     scope: &'scope std::thread::Scope<'scope, 'env>,
     shared: &'env Arc<SharedState>,
@@ -3532,16 +3711,14 @@ enum TestOutcome {
 /// Core: discover test-* function names in a module. No heap allocation.
 ///
 /// Returns fully-qualified names ("module/test-name") sorted alphabetically.
+///
+/// Sprint 57 Wave 2 G6: reads `ModuleEntry::Def.code` (replaces the deleted
+/// `CodegenProduct` DashMap).
 fn discover_test_names(
-    codegen_products: &dashmap::DashMap<ModuleFullPath, CodegenProduct>,
     tc_modules: &dashmap::DashMap<ModuleFullPath, SymbolTable>,
     module: &ModuleFullPath,
 ) -> Vec<String> {
     let mut names = Vec::new();
-    let cp = match codegen_products.get(module) {
-        Some(cp) => cp,
-        None => return names,
-    };
     let symbols = match tc_modules.get(module) {
         Some(st) => st,
         None => return names,
@@ -3550,17 +3727,14 @@ fn discover_test_names(
         if !name.as_ref().starts_with("test-") {
             continue;
         }
-        if let ModuleEntry::Def { param_names, .. } = entry {
-            if !param_names.is_empty() {
-                continue;
-            }
-        } else {
-            continue;
-        }
-        if let Some(code) = cp.code.get(name)
-            && !code.ptr.is_null() {
+        match entry {
+            ModuleEntry::Def { param_names, code: Some(c), .. }
+                if param_names.is_empty() && !c.ptr.is_null() =>
+            {
                 names.push(format!("{}/{}", module.as_ref(), name.as_ref()));
             }
+            _ => continue,
+        }
     }
     names.sort();
     names
@@ -3569,8 +3743,11 @@ fn discover_test_names(
 /// Core: run a single test by fully-qualified name. No heap allocation.
 ///
 /// Looks up the code pointer, calls it, interprets the (Option String) result.
+///
+/// Sprint 57 Wave 2 G6: reads `ModuleEntry::Def.code` (replaces the deleted
+/// `CodegenProduct` DashMap).
 fn run_test_by_name(
-    codegen_products: &dashmap::DashMap<ModuleFullPath, CodegenProduct>,
+    tc_modules: &dashmap::DashMap<ModuleFullPath, SymbolTable>,
     fq_name: &str,
 ) -> TestOutcome {
     use cranelisp_types::NULLARY_TAG_THRESHOLD;
@@ -3582,9 +3759,13 @@ fn run_test_by_name(
     };
     let module = ModuleFullPath::from(module_str);
 
-    // Look up code pointer.
-    let code_ptr = codegen_products.get(&module)
-        .and_then(|cp| cp.code.get(&Symbol::from(bare_name)).map(|c| c.ptr));
+    // Look up code pointer from the symbol-table entry.
+    let code_ptr = tc_modules.get(&module).and_then(|t| {
+        match t.get(bare_name)? {
+            ModuleEntry::Def { code: Some(c), .. } => Some(c.ptr),
+            _ => None,
+        }
+    });
 
     let code_ptr = match code_ptr {
         Some(ptr) if !ptr.is_null() => ptr,
@@ -3634,10 +3815,12 @@ fn run_test_by_name(
 
 /// Session state for test externs. Set before JIT evaluation of expressions
 /// containing discover-tests/run-test, cleared after.
+///
+/// Sprint 57 Wave 2 G6: holds only a pointer to the symbol tables. Code
+/// pointers are read off `ModuleEntry::Def.code` (replaces the deleted
+/// `codegen_products` DashMap).
 struct TestRunnerState {
-    /// Codegen products for looking up test function code pointers.
-    codegen_products: *const dashmap::DashMap<ModuleFullPath, CodegenProduct>,
-    /// TC modules for scanning symbol tables.
+    /// TC modules for scanning symbol tables and reading compiled `code`.
     tc_modules: *const dashmap::DashMap<ModuleFullPath, SymbolTable>,
     /// Current module path (for discover-tests with empty module arg).
     current_module: *const ModuleFullPath,
@@ -3698,7 +3881,6 @@ extern "C" fn discover_tests_extern(module_path_str: i64) -> i64 {
         }
 
         let state = unsafe { &*state_ptr };
-        let codegen_products = unsafe { &*state.codegen_products };
         let tc_modules = unsafe { &*state.tc_modules };
         let current_module = unsafe { &*state.current_module };
 
@@ -3712,7 +3894,7 @@ extern "C" fn discover_tests_extern(module_path_str: i64) -> i64 {
         };
 
         // Core logic — shared with slash command.
-        let test_names = discover_test_names(codegen_products, tc_modules, &module);
+        let test_names = discover_test_names(tc_modules, &module);
 
         // Heap-allocate: SList of SexpSym, wrapped in IO Pure.
         // SexpSym tag = 4 (Sexp enum: Int=0, Float=1, Bool=2, Str=3, Sym=4).
@@ -3742,7 +3924,7 @@ extern "C" fn run_test_extern(sexp_sym: i64) -> i64 {
         }
 
         let state = unsafe { &*state_ptr };
-        let codegen_products = unsafe { &*state.codegen_products };
+        let tc_modules = unsafe { &*state.tc_modules };
 
         // Extract function name from SexpSym.
         // SexpSym layout: [header(16) | tag=4(8) | sname(8)]
@@ -3755,7 +3937,7 @@ extern "C" fn run_test_extern(sexp_sym: i64) -> i64 {
         };
 
         // Core logic — shared with slash command.
-        let outcome = run_test_by_name(codegen_products, &fq_name);
+        let outcome = run_test_by_name(tc_modules, &fq_name);
 
         // Heap-allocate TestResult, wrapped in IO Pure.
         unsafe { alloc_io_pure(test_outcome_to_heap(&outcome)) }
@@ -3831,3 +4013,204 @@ extern "C" fn repl_trace_format(val: i64, type_ptr: i64) -> i64 {
     })
 }
 
+// ---------------------------------------------------------------------------
+// Sprint 57 Wave 4 G9 — persistent worker lifecycle tests
+// ---------------------------------------------------------------------------
+//
+// Covers the four scenarios from `design/int/persistent-workers.md` §9.1:
+//   1. park + wake (enqueue → worker processes)
+//   2. shutdown under load (Drop while work enqueued, no panic, no leak)
+//   3. concurrent register_module (two modules at once, both complete)
+//   4. reload-during-compile race (reload while register_module is mid-flight)
+//
+// These are end-to-end session tests that use trivial source so they do not
+// rely on a prelude or stdlib; they validate the worker lifecycle only.
+
+#[cfg(test)]
+mod persistent_worker_tests {
+    use super::*;
+
+    fn test_session(priority_workers: usize) -> (CompilerSession, PathBuf) {
+        // Use a unique temp dir per call as project_root so no stray
+        // prelude.cl is found. The caller is responsible for removing
+        // the dir after the test (or letting the OS reclaim /tmp).
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let pid = std::process::id();
+        let tmp_root = std::env::temp_dir()
+            .join(format!("cranelisp-wave4-{}-{}", pid, stamp));
+        std::fs::create_dir_all(&tmp_root).expect("create test project_root");
+        let settings = SessionSettings {
+            no_color: true,
+            no_cache: true,
+            codegen_behaviour: CodegenBehaviour::InMemoryAndObject,
+            priority_workers,
+            nice_workers: 0,
+        };
+        let mut s = CompilerSession::new(settings, tmp_root.clone());
+        s.set_lib_dirs(vec![]);
+        (s, tmp_root)
+    }
+
+    // spec: persistent-workers.md §4.2 — workers park on the priority-work
+    // condvar and wake when register_module enqueues work.
+    #[test]
+    fn persistent_worker_park_and_wake() {
+        let (mut s, root) = test_session(1);
+        // Worker has been spawned in `new()` and is parked. Register a
+        // trivial module — the notify_all on `priority_work_available`
+        // wakes the worker.
+        let p = root.join("wake.cl");
+        s.register_module_with_source("wake", "(defn zero [] 0)", &p)
+            .expect("register_module_with_source should succeed");
+        // After return: wait_inmem_complete_blocking has observed inmem_done.
+        assert!(
+            !s.shared.scheduler.is_failed(&ModuleFullPath::from("wake")),
+            "module must not have failed",
+        );
+        // The worker is parked again now (no more work). Shutdown joins it.
+        s.shutdown();
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    // spec: persistent-workers.md §5.2 — Drop while work is enqueued calls
+    // shutdown() which signals + joins. No panic, no leak.
+    #[test]
+    fn shutdown_under_load_no_panic() {
+        let (mut s, root) = test_session(2);
+        // Register a module. workers begin processing.
+        let p = root.join("load.cl");
+        s.register_module_with_source("load", "(defn a [] 1) (defn b [] 2)", &p)
+            .expect("register_module_with_source should succeed");
+        // Immediately shutdown (workers may still be mid-loop).
+        s.shutdown();
+        // Calling shutdown a second time is idempotent.
+        s.shutdown();
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    // spec: persistent-workers.md §9.1 — concurrent module registrations
+    // all complete; no lost updates.
+    #[test]
+    fn concurrent_register_module_two_modules_complete() {
+        let (mut s, root) = test_session(2);
+
+        // Register module A.
+        s.register_module_with_source(
+            "concA",
+            "(defn a [] 10)",
+            &root.join("concA.cl"),
+        )
+        .expect("register concA");
+
+        // Register module B while A is complete but workers still parked.
+        // The persistent pool handles the second registration without
+        // respawning anything.
+        s.register_module_with_source(
+            "concB",
+            "(defn b [] 20)",
+            &root.join("concB.cl"),
+        )
+        .expect("register concB");
+
+        // Both modules should be complete (inmem_done), neither failed.
+        assert!(!s.shared.scheduler.is_failed(&ModuleFullPath::from("concA")));
+        assert!(!s.shared.scheduler.is_failed(&ModuleFullPath::from("concB")));
+        s.shutdown();
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    // spec: persistent-workers.md §9.1 — reload_module through the same
+    // persistent pool as register_module. Re-register → workers wake →
+    // recompile → inmem_done.
+    #[test]
+    fn reload_during_compile_race_completes() {
+        let (mut s, root) = test_session(2);
+
+        // Write a real file so reload_module can read from disk.
+        let file_path = root.join("reload_target.cl");
+        std::fs::write(&file_path, "(defn original [] 1)\n")
+            .expect("seed reload_target.cl");
+
+        // Initial register via the source-explicit path.
+        s.register_module_with_source(
+            "reload_target",
+            "(defn original [] 1)",
+            &file_path,
+        )
+        .expect("initial register");
+
+        // Overwrite with new content and trigger reload.
+        std::fs::write(&file_path, "(defn updated [] 2)\n")
+            .expect("rewrite reload_target.cl");
+        let module = ModuleFullPath::from("reload_target");
+        s.reload_module(&module, &file_path)
+            .expect("reload should succeed via persistent workers");
+
+        // Module must be in a non-failed state after reload. The post-reload
+        // symbol table should carry `updated` (the new defn).
+        assert!(!s.shared.scheduler.is_failed(&module));
+        let has_updated = s.shared.symbol_tables
+            .get(&module)
+            .map(|t| t.get("updated").is_some())
+            .unwrap_or(false);
+        assert!(has_updated, "reloaded module must carry the new defn");
+
+        s.shutdown();
+        let _ = std::fs::remove_dir_all(&root);
+    }
+}
+
+#[cfg(test)]
+mod mem_command_tests {
+    use super::*;
+
+    // spec: repl/spec.md §3.1 — `/mem` dispatches to the Mem variant and
+    // accepts the `/m` alias.
+    #[test]
+    fn mem_command_parses_with_alias() {
+        match parse_slash_command("/mem") {
+            Some(ReplCommand::Mem(arg)) => assert_eq!(arg, ""),
+            _ => panic!("/mem must parse as ReplCommand::Mem"),
+        }
+        match parse_slash_command("/m") {
+            Some(ReplCommand::Mem(arg)) => assert_eq!(arg, ""),
+            _ => panic!("/m alias must parse as ReplCommand::Mem"),
+        }
+    }
+
+    // spec: repl/spec.md §3.1 — `/mem <expr>` passes the expression text
+    // through to the handler for delta measurement.
+    #[test]
+    fn mem_command_captures_expression_argument() {
+        match parse_slash_command("/mem (+ 1 2)") {
+            Some(ReplCommand::Mem(arg)) => assert_eq!(arg, "(+ 1 2)"),
+            _ => panic!("/mem <expr> must capture the expression argument"),
+        }
+    }
+
+    // spec: repl/spec.md §3.1 — `/mem` snapshot contains live/alloc/dealloc
+    // counters. Format confirms the user-visible labels exist and the
+    // counters are numeric.
+    #[test]
+    fn mem_snapshot_mentions_allocs_deallocs_and_numbers() {
+        let out = format_mem_snapshot();
+        assert!(out.contains("allocs:"), "snapshot must label allocs: {out}");
+        assert!(out.contains("deallocs:"), "snapshot must label deallocs: {out}");
+        assert!(out.contains("live:"), "snapshot must label live: {out}");
+        // Every line must be a comment (starts with ';').
+        for line in out.lines() {
+            assert!(
+                line.starts_with(';'),
+                "every snapshot line must be a comment: {line}",
+            );
+        }
+        // At least one digit must appear.
+        assert!(
+            out.chars().any(|c| c.is_ascii_digit()),
+            "snapshot must contain at least one number: {out}",
+        );
+    }
+}

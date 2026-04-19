@@ -24,37 +24,28 @@ use serial_test::serial;
 // spec: 10-io §10.1 — Pure constructor creates IO node, type is (IO Int)
 #[test]
 fn io_pure_int_type() {
+    // Per the Sprint 57 Wave 6 eval contract, IO is trampolined inline: the
+    // returned type is the unwrapped inner type, and value is the final result.
     let (value, ty) = compile_and_run_typed("(defn main [] (Pure 42))");
-    // The type should be IO Int.
-    assert!(ty.is_io(), "expected IO type, got: {:?}", ty);
-    assert_eq!(ty.io_inner_type(), Type::Int);
-    // The raw value is a heap pointer to an IO node. Force it via trampoline.
-    let inner = cranelisp_runtime::run_io_trampoline(value);
-    assert_eq!(inner, 42);
-    cranelisp_runtime::heap_dealloc(value);
+    assert_eq!(ty, Type::Int, "eval must unwrap IO inline; got {ty:?}");
+    assert_eq!(value, 42);
 }
 
 // spec: 10-io §10.2.3 — Pure wraps Bool
 #[test]
 fn io_pure_bool() {
     let (value, ty) = compile_and_run_typed("(defn main [] (Pure true))");
-    assert!(ty.is_io(), "expected IO type, got: {:?}", ty);
-    assert_eq!(ty.io_inner_type(), Type::Bool);
-    let inner = cranelisp_runtime::run_io_trampoline(value);
-    assert_eq!(inner, 1); // true = 1
-    cranelisp_runtime::heap_dealloc(value);
+    assert_eq!(ty, Type::Bool);
+    assert_eq!(value, 1); // true = 1
 }
 
 // spec: 10-io §10.2.3 — Pure wraps String
 #[test]
 fn io_pure_string() {
     let (value, ty) = compile_and_run_typed(r#"(defn main [] (Pure "hello"))"#);
-    assert!(ty.is_io(), "expected IO type, got: {:?}", ty);
-    assert_eq!(ty.io_inner_type(), Type::String);
-    let inner = cranelisp_runtime::run_io_trampoline(value);
-    let s = unsafe { cranelisp_runtime::read_string_as_str(inner) };
+    assert_eq!(ty, Type::String);
+    let s = unsafe { cranelisp_runtime::read_string_as_str(value) };
     assert_eq!(s, "hello");
-    cranelisp_runtime::heap_dealloc(inner);
     cranelisp_runtime::heap_dealloc(value);
 }
 
@@ -81,11 +72,8 @@ fn io_bind_pure_to_pure() {
           (bind (Pure 42) (fn [x] (Pure (add-i64 x 1)))))
     "#;
     let (value, ty) = compile_and_run_typed(src);
-    assert!(ty.is_io(), "expected IO type, got: {:?}", ty);
-    assert_eq!(ty.io_inner_type(), Type::Int);
-    let inner = cranelisp_runtime::run_io_trampoline(value);
-    assert_eq!(inner, 43);
-    cranelisp_runtime::heap_dealloc(value);
+    assert_eq!(ty, Type::Int);
+    assert_eq!(value, 43);
 }
 
 // spec: 10-io §10.3.3 — nested bind chains (bind result as first arg to outer bind)
@@ -98,10 +86,8 @@ fn io_bind_nested_chain() {
                 (fn [y] (Pure (add-i64 y 100)))))
     "#;
     let (value, ty) = compile_and_run_typed(src);
-    assert!(ty.is_io(), "expected IO type, got: {:?}", ty);
-    let inner = cranelisp_runtime::run_io_trampoline(value);
-    assert_eq!(inner, 130); // 10 + 20 + 100
-    cranelisp_runtime::heap_dealloc(value);
+    assert_eq!(ty, Type::Int);
+    assert_eq!(value, 130); // 10 + 20 + 100
 }
 
 // spec: 10-io §10.3.1 — bind with identity continuation
@@ -113,10 +99,8 @@ fn io_bind_identity_continuation() {
           (bind (Pure 77) (fn [x] (Pure x))))
     "#;
     let (value, ty) = compile_and_run_typed(src);
-    assert!(ty.is_io());
-    let inner = cranelisp_runtime::run_io_trampoline(value);
-    assert_eq!(inner, 77);
-    cranelisp_runtime::heap_dealloc(value);
+    assert_eq!(ty, Type::Int);
+    assert_eq!(value, 77);
 }
 
 // spec: 10-io §10.3.1 — bind with computation in continuation
@@ -129,10 +113,8 @@ fn io_bind_continuation_computation() {
                 (fn [x] (Pure (mul-i64 x x)))))
     "#;
     let (value, ty) = compile_and_run_typed(src);
-    assert!(ty.is_io());
-    let inner = cranelisp_runtime::run_io_trampoline(value);
-    assert_eq!(inner, 25); // 5 * 5
-    cranelisp_runtime::heap_dealloc(value);
+    assert_eq!(ty, Type::Int);
+    assert_eq!(value, 25); // 5 * 5
 }
 
 // spec: 10-io §10.3 — bind type: (Fn [(IO a) (Fn [a] (IO b))] (IO b))
@@ -145,11 +127,8 @@ fn io_bind_type_polymorphic() {
           (bind (Pure 42) (fn [x] (Pure (eq-i64 x 42)))))
     "#;
     let (value, ty) = compile_and_run_typed(src);
-    assert!(ty.is_io(), "expected IO type, got: {:?}", ty);
-    assert_eq!(ty.io_inner_type(), Type::Bool);
-    let inner = cranelisp_runtime::run_io_trampoline(value);
-    assert_eq!(inner, 1); // true
-    cranelisp_runtime::heap_dealloc(value);
+    assert_eq!(ty, Type::Bool);
+    assert_eq!(value, 1); // true
 }
 
 // =============================================================================
@@ -183,10 +162,8 @@ fn io_bind_pattern_rejected() {
 fn io_pure_constructor_not_rejected() {
     // Pure should work fine — not internal.
     let (value, ty) = compile_and_run_typed("(defn main [] (Pure 1))");
-    assert!(ty.is_io());
-    let inner = cranelisp_runtime::run_io_trampoline(value);
-    assert_eq!(inner, 1);
-    cranelisp_runtime::heap_dealloc(value);
+    assert_eq!(ty, Type::Int);
+    assert_eq!(value, 1);
 }
 
 // =============================================================================
@@ -196,16 +173,12 @@ fn io_pure_constructor_not_rejected() {
 // spec: 10-io §10.1.1 — IO participates in type inference as ordinary ADT
 #[test]
 fn io_type_inference_pure() {
-    // Pure wraps its argument: Pure 42 :: (IO Int)
+    // Pure wraps its argument: Pure 42 :: (IO Int). After Sprint 57 Wave 6
+    // the eval contract trampolines IO inline and returns the unwrapped
+    // inner type. The IO-wrapped shape is covered by unit tests on the
+    // inference stage; integration tests see the final unwrapped type.
     let (_, ty) = compile_and_run_typed("(defn main [] (Pure 42))");
-    match &ty {
-        Type::ADT(name, args) => {
-            assert_eq!(name.name.as_ref(), "IO");
-            assert_eq!(args.len(), 1);
-            assert_eq!(args[0], Type::Int);
-        }
-        _ => panic!("expected ADT type (IO Int), got: {:?}", ty),
-    }
+    assert_eq!(ty, Type::Int, "eval must unwrap IO inline; got {ty:?}");
 }
 
 // spec: 10-io §10.3 — bind type inference: (IO a) -> (Fn [a] (IO b)) -> (IO b)
@@ -216,14 +189,8 @@ fn io_type_inference_bind() {
           (bind (Pure 42) (fn [x] (Pure (add-i64 x 1)))))
     "#;
     let (_, ty) = compile_and_run_typed(src);
-    match &ty {
-        Type::ADT(name, args) => {
-            assert_eq!(name.name.as_ref(), "IO");
-            assert_eq!(args.len(), 1);
-            assert_eq!(args[0], Type::Int);
-        }
-        _ => panic!("expected ADT type (IO Int), got: {:?}", ty),
-    }
+    // Inner type of the bind's IO result is Int.
+    assert_eq!(ty, Type::Int, "eval must unwrap IO inline; got {ty:?}");
 }
 
 // spec: 10-io §10.7.2 — branch consistency: both branches must be IO
@@ -245,47 +212,42 @@ fn io_branch_consistency_both_io() {
           (if true (Pure 1) (Pure 2)))
     "#;
     let (value, ty) = compile_and_run_typed(src);
-    assert!(ty.is_io());
-    let inner = cranelisp_runtime::run_io_trampoline(value);
-    assert_eq!(inner, 1);
-    cranelisp_runtime::heap_dealloc(value);
+    assert_eq!(ty, Type::Int);
+    assert_eq!(value, 1);
 }
 
 // =============================================================================
 // IO display format at REPL (spec: 10-io §10.6.2)
 // =============================================================================
 
-// spec: 10-io §10.6.2 — REPL evaluates IO expression, type is IO
+// spec: 10-io §10.6.2 — REPL evaluates IO expression, returns forced inner value
 #[test]
 fn io_repl_eval_pure_int() {
     let mut session = repl_session();
     let (value, ty) = repl_eval_typed(&mut session, "(Pure 42)");
-    assert!(ty.is_io(), "expected IO type in REPL, got: {:?}", ty);
-    assert_eq!(ty.io_inner_type(), Type::Int);
-    // Force the IO tree to verify the inner value.
-    let inner = cranelisp_runtime::run_io_trampoline(value);
-    assert_eq!(inner, 42);
+    // Sprint 57 Wave 6: REPL eval unwraps IO inline per §10.6.2 and returns the
+    // forced inner value. The IO type at the source level is covered by inference
+    // unit tests; at the eval boundary the caller sees the final result.
+    assert_eq!(ty, Type::Int);
+    assert_eq!(value, 42);
 }
 
-// spec: 10-io §10.6.2 — REPL evaluates bind expression, type is IO
+// spec: 10-io §10.6.2 — REPL evaluates bind expression, unwraps IO inline
 #[test]
 fn io_repl_eval_bind_result() {
     let mut session = repl_session();
     let (value, ty) = repl_eval_typed(&mut session, "(bind (Pure 10) (fn [x] (Pure (add-i64 x 5))))");
-    assert!(ty.is_io(), "expected IO type in REPL, got: {:?}", ty);
-    let inner = cranelisp_runtime::run_io_trampoline(value);
-    assert_eq!(inner, 15);
+    assert_eq!(ty, Type::Int);
+    assert_eq!(value, 15);
 }
 
-// spec: 10-io §10.2.3 — REPL evaluates Pure Bool
+// spec: 10-io §10.2.3 — REPL evaluates Pure Bool, unwraps IO inline
 #[test]
 fn io_repl_eval_pure_bool() {
     let mut session = repl_session();
     let (value, ty) = repl_eval_typed(&mut session, "(Pure true)");
-    assert!(ty.is_io(), "expected IO type in REPL, got: {:?}", ty);
-    assert_eq!(ty.io_inner_type(), Type::Bool);
-    let inner = cranelisp_runtime::run_io_trampoline(value);
-    assert_eq!(inner, 1); // true
+    assert_eq!(ty, Type::Bool);
+    assert_eq!(value, 1); // true
 }
 
 // =============================================================================
@@ -405,10 +367,8 @@ fn io_triple_bind_chain() {
                                 (fn [c] (Pure (add-i64 c 1000)))))))))
     "#;
     let (value, ty) = compile_and_run_typed(src);
-    assert!(ty.is_io());
-    let inner = cranelisp_runtime::run_io_trampoline(value);
-    assert_eq!(inner, 1111); // 1 + 10 + 100 + 1000
-    cranelisp_runtime::heap_dealloc(value);
+    assert_eq!(ty, Type::Int);
+    assert_eq!(value, 1111); // 1 + 10 + 100 + 1000
 }
 
 // =============================================================================
@@ -427,6 +387,9 @@ fn io_triple_bind_chain() {
 fn io_platform_print_hello_world() {
     // The simplest IO program: print a string via test-capture platform.
     // Uses REPL session which supports (platform ...) loading.
+    // Sprint 57 Wave 6: REPL eval trampolines IO inline and returns the
+    // forced inner value — the print effect has already fired by the time
+    // eval returns. Type is the unwrapped inner type.
     let (mut session, capture) = match repl_session_with_test_capture() {
         Some(pair) => pair,
         None => {
@@ -436,22 +399,22 @@ fn io_platform_print_hello_world() {
     };
 
     capture.reset();
-    let (value, ty) = repl_eval_typed(&mut session, r#"(print "hello")"#);
-    assert!(ty.is_io(), "print should return IO type, got: {:?}", ty);
+    let (_value, ty) = repl_eval_typed(&mut session, r#"(print "hello")"#);
+    // print returns (IO Int); eval unwraps inline to Int.
+    assert_eq!(ty, Type::Int, "print IO must be unwrapped inline; got {ty:?}");
 
-    // Force the IO tree to execute the effect.
-    let _inner = cranelisp_runtime::run_io_trampoline(value);
-
-    // Verify captured output.
+    // Verify captured output — the print effect fired during eval.
     let output = capture.get_output();
     assert_eq!(output, "hello", "captured output should be 'hello', got: '{output}'");
 }
 
-// spec: 10-io §10.9.2 — print returns (IO Int)
+// spec: 10-io §10.9.2 — print returns (IO Int); eval unwraps to Int
 #[test]
 #[serial(test_capture)]
 fn io_print_returns_io_int() {
-    // print :: (Fn [String] (IO Int)) per spec §10.9.2
+    // print :: (Fn [String] (IO Int)) per spec §10.9.2. Sprint 57 Wave 6:
+    // eval unwraps IO inline, so the caller sees the unwrapped inner type.
+    // The IO-wrapped shape is covered by inference unit tests.
     let (mut session, _capture) = match repl_session_with_test_capture() {
         Some(pair) => pair,
         None => {
@@ -461,15 +424,7 @@ fn io_print_returns_io_int() {
     };
 
     let (_, ty) = repl_eval_typed(&mut session, r#"(print "x")"#);
-    assert!(ty.is_io(), "expected IO type, got: {:?}", ty);
-    match &ty {
-        Type::ADT(name, args) => {
-            assert_eq!(name.name.as_ref(), "IO");
-            assert_eq!(args.len(), 1);
-            assert_eq!(args[0], Type::Int, "print inner type should be Int");
-        }
-        _ => panic!("expected ADT type (IO Int), got: {:?}", ty),
-    }
+    assert_eq!(ty, Type::Int, "print IO must be unwrapped inline; got {ty:?}");
 }
 
 // spec: 10-io §10.3.3 — bind chains platform effects
@@ -488,14 +443,14 @@ fn io_bind_print_sequence() {
     capture.reset();
     // bind is a primitives function — import it per spec §8.9.1.
     let _ = session.eval("(import [primitives [bind]])");
-    let (value, ty) = repl_eval_typed(
+    let (_value, ty) = repl_eval_typed(
         &mut session,
         r#"(bind (print "a") (fn [_] (print "b")))"#,
     );
-    assert!(ty.is_io(), "bind of prints should return IO type, got: {:?}", ty);
-
-    // Force the IO tree to execute both effects.
-    let _inner = cranelisp_runtime::run_io_trampoline(value);
+    // Sprint 57 Wave 6: eval unwraps IO inline; both effects have fired by
+    // the time eval returns. Type is the unwrapped inner type (Int from the
+    // terminal (print "b")).
+    assert_eq!(ty, Type::Int, "bind print chain must unwrap to Int; got {ty:?}");
 
     // Verify both prints were captured in order.
     let output = capture.get_output();
@@ -506,7 +461,8 @@ fn io_bind_print_sequence() {
 #[test]
 #[serial(test_capture)]
 fn io_effect_propagation_through_functions() {
-    // A function that calls print inherits IO in its return type.
+    // A function that calls print inherits IO in its return type. Sprint 57
+    // Wave 6: eval unwraps IO inline, so the effect fires during eval.
     let (mut session, capture) = match repl_session_with_test_capture() {
         Some(pair) => pair,
         None => {
@@ -520,13 +476,10 @@ fn io_effect_propagation_through_functions() {
         .unwrap_or_else(|e| panic!("defn greet failed: {e}"));
 
     capture.reset();
-    let (value, ty) = repl_eval_typed(&mut session, r#"(greet "world")"#);
-    assert!(ty.is_io(), "greet should propagate IO, got: {:?}", ty);
+    let (_value, ty) = repl_eval_typed(&mut session, r#"(greet "world")"#);
+    assert_eq!(ty, Type::Int, "greet IO must be unwrapped inline; got {ty:?}");
 
-    // Force the IO tree to execute the effect.
-    let _inner = cranelisp_runtime::run_io_trampoline(value);
-
-    // Verify output.
+    // Verify output — effect fired during eval.
     let output = capture.get_output();
     assert_eq!(output, "world", "captured output should be 'world', got: '{output}'");
 }
@@ -537,7 +490,7 @@ fn io_effect_propagation_through_functions() {
 // Uses test-capture platform with scripted input.
 // =============================================================================
 
-// spec: 10-io §10.9 — read-line returns (IO String) with scripted input
+// spec: 10-io §10.9 — read-line returns (IO String); eval unwraps to String
 #[test]
 #[serial(test_capture)]
 fn io_read_line_returns_io_string() {
@@ -551,16 +504,9 @@ fn io_read_line_returns_io_string() {
 
     capture.set_input(&["hello from input"]);
     let (value, ty) = repl_eval_typed(&mut session, "(read-line)");
-    assert!(ty.is_io(), "read-line should return IO type, got: {:?}", ty);
-    assert_eq!(
-        ty.io_inner_type(),
-        Type::String,
-        "read-line inner type should be String"
-    );
-
-    // Force the IO tree to get the string value.
-    let inner = cranelisp_runtime::run_io_trampoline(value);
-    let s = unsafe { cranelisp_runtime::read_string_as_str(inner) };
+    // Sprint 57 Wave 6: eval unwraps (IO String) inline to String.
+    assert_eq!(ty, Type::String, "read-line IO must be unwrapped inline; got {ty:?}");
+    let s = unsafe { cranelisp_runtime::read_string_as_str(value) };
     assert_eq!(s, "hello from input");
 }
 
@@ -581,12 +527,11 @@ fn io_read_line_bind_print_echo() {
     capture.set_input(&["echo me"]);
     // bind is a primitives function — import it per spec §8.9.1.
     let _ = session.eval("(import [primitives [bind]])");
-    let (value, ty) =
+    let (_value, ty) =
         repl_eval_typed(&mut session, "(bind (read-line) (fn [line] (print line)))");
-    assert!(ty.is_io(), "bind chain should return IO type, got: {:?}", ty);
-
-    // Force the IO tree to execute effects.
-    let _inner = cranelisp_runtime::run_io_trampoline(value);
+    // Sprint 57 Wave 6: eval unwraps IO inline; the terminal (print line)
+    // returns (IO Int), so the bind result unwraps to Int.
+    assert_eq!(ty, Type::Int, "bind read-line→print must unwrap to Int; got {ty:?}");
 
     let output = capture.get_output();
     assert_eq!(
@@ -622,13 +567,12 @@ fn io_do_macro_sequenced_prints() {
     };
 
     capture.reset();
-    // Using do macro (requires stdlib/prelude):
-    let (value, ty) = repl_eval_typed(
+    // Sprint 57 Wave 6: eval unwraps IO inline; all three prints fire during eval.
+    let (_value, ty) = repl_eval_typed(
         &mut session,
         r#"(do (print "a") (print "b") (print "c"))"#,
     );
-    assert!(ty.is_io(), "do should return IO type, got: {:?}", ty);
-    let _inner = cranelisp_runtime::run_io_trampoline(value);
+    assert_eq!(ty, Type::Int, "do of prints must unwrap to Int; got {ty:?}");
     let output = capture.get_output();
     assert_eq!(output, "a\nb\nc", "do should sequence prints in order");
 }
@@ -647,13 +591,109 @@ fn io_do_macro_type_is_last_expression() {
 
     // Pure is a primitives constructor — import it per spec §8.9.1.
     let _ = session.eval("(import [primitives [Pure]])");
-    // (do (print "x") (Pure true)) — last expr is IO Bool
+    // (do (print "x") (Pure true)) — last expr is IO Bool; eval unwraps to Bool.
     let (_, ty) = repl_eval_typed(
         &mut session,
         r#"(do (print "x") (Pure true))"#,
     );
-    assert!(ty.is_io(), "do should return IO type, got: {:?}", ty);
-    assert_eq!(ty.io_inner_type(), Type::Bool, "do type should be IO Bool");
+    assert_eq!(ty, Type::Bool, "do last-expr IO Bool must unwrap to Bool; got {ty:?}");
+}
+
+// spec: 10-io §10.4.1, §10.4.2 — do-chain with Pure terminator: both prints must emit
+// and trampoline must return the Pure inner value without crashing.
+//
+// Regression guard for the ring4b/ring4j demo failure (Sprint 57 Wave 6): the
+// pattern `(do (print "one") (print "two") (Pure 42))` emits the first print
+// but terminates the REPL process before the second. Full spec surface per
+// §10.4.1 requires: (1) ALL intermediate effects execute in source order, and
+// (2) the final Pure inner value is returned.
+#[test]
+#[serial(test_capture)]
+fn io_do_print_sequence_with_pure_terminator_emits_all() {
+    let (mut session, capture) = match repl_session_with_test_capture() {
+        Some(pair) => pair,
+        None => {
+            eprintln!("skipping test: test-capture platform DLL not built");
+            return;
+        }
+    };
+
+    // Pure is a primitives constructor — import it per spec §8.9.1.
+    let _ = session.eval("(import [primitives [Pure]])");
+    capture.reset();
+
+    // Exact demo pattern from repl/demos/ring4b.demo + ring4j.demo.
+    // Sprint 57 Wave 6: eval unwraps IO inline; both prints fire and the
+    // terminal Pure's inner value (42) is returned directly.
+    let (value, ty) = repl_eval_typed(
+        &mut session,
+        r#"(do (print "one") (print "two") (Pure 42))"#,
+    );
+    assert_eq!(ty, Type::Int, "do last-expr IO Int must unwrap to Int; got {ty:?}");
+    assert_eq!(value, 42, "eval must return Pure's inner 42");
+
+    // Both prints must appear, in source order.
+    let output = capture.get_output();
+    assert!(
+        output.contains("one"),
+        "first print 'one' missing from output: {output:?}"
+    );
+    assert!(
+        output.contains("two"),
+        "second print 'two' missing from output — process likely terminated between prints: {output:?}"
+    );
+    assert_eq!(
+        output, "one\ntwo",
+        "do should sequence prints in order, got: {output:?}"
+    );
+}
+
+// spec: 10-io §10.5.1, §10.5.2 — bind!-chain with Pure terminator: both effects must emit
+// and trampoline must return the Pure inner value without crashing.
+//
+// Regression guard companion to `io_do_print_sequence_with_pure_terminator_emits_all`.
+// `bind!` uses the same underlying bind-chain scaffolding as `do`; if the demo
+// crash is bind-chain specific, both forms regress together.
+#[test]
+#[serial(test_capture)]
+fn io_bind_bang_print_sequence_with_pure_terminator_emits_all() {
+    let (mut session, capture) = match repl_session_with_test_capture() {
+        Some(pair) => pair,
+        None => {
+            eprintln!("skipping test: test-capture platform DLL not built");
+            return;
+        }
+    };
+
+    // Pure is a primitives constructor — import it per spec §8.9.1.
+    let _ = session.eval("(import [primitives [Pure]])");
+    capture.reset();
+
+    // bind! equivalent of the do demo pattern — discard two print results,
+    // return Pure(42). Per §10.5.1, expands to nested bind/fn chains.
+    // Sprint 57 Wave 6: eval unwraps IO inline; both prints fire and the
+    // terminal Pure's inner value (42) is returned directly.
+    let (value, ty) = repl_eval_typed(
+        &mut session,
+        r#"(bind! [_ (print "one") _ (print "two")] (Pure 42))"#,
+    );
+    assert_eq!(ty, Type::Int, "bind! body IO Int must unwrap to Int; got {ty:?}");
+    assert_eq!(value, 42, "eval must return Pure's inner 42");
+
+    // Both prints must appear, in source order.
+    let output = capture.get_output();
+    assert!(
+        output.contains("one"),
+        "first print 'one' missing from output: {output:?}"
+    );
+    assert!(
+        output.contains("two"),
+        "second print 'two' missing from output — process likely terminated between prints: {output:?}"
+    );
+    assert_eq!(
+        output, "one\ntwo",
+        "bind! should sequence prints in order, got: {output:?}"
+    );
 }
 
 // =============================================================================
@@ -835,11 +875,12 @@ fn io_trampoline_deep_bind_chain() {
     );
 }
 
-// spec: 10-io §10.8.1 — IO values are data, not forced until trampoline runs
+// spec: 10-io §10.8.1 — IO values are data until forced
 #[test]
 fn io_values_are_deferred_data() {
-    // Binding an IO value in a let does not force it.
+    // Binding an IO value in a let does not force it (at compile time).
     // Both branches of an if can construct IO values without forcing them.
+    // At eval exit, the whole IO tree is trampolined inline.
     let src = r#"
         (defn main []
           (let [io1 (Pure 10)
@@ -847,10 +888,8 @@ fn io_values_are_deferred_data() {
             (bind io1 (fn [x] (bind io2 (fn [y] (Pure (add-i64 x y))))))))
     "#;
     let (value, ty) = compile_and_run_typed(src);
-    assert!(ty.is_io());
-    let inner = cranelisp_runtime::run_io_trampoline(value);
-    assert_eq!(inner, 30);
-    cranelisp_runtime::heap_dealloc(value);
+    assert_eq!(ty, Type::Int);
+    assert_eq!(value, 30);
 }
 
 // spec: 10-io §10.8.3 — effect isolation: only chosen branch's effect is in the tree
@@ -863,10 +902,8 @@ fn io_effect_isolation_if_branches() {
           (choose true (Pure 1) (Pure 2)))
     "#;
     let (value, ty) = compile_and_run_typed(src);
-    assert!(ty.is_io());
-    let inner = cranelisp_runtime::run_io_trampoline(value);
-    assert_eq!(inner, 1);
-    cranelisp_runtime::heap_dealloc(value);
+    assert_eq!(ty, Type::Int);
+    assert_eq!(value, 1);
 }
 
 // spec: 10-io §10.8.3 — effect isolation: false branch chosen
@@ -878,10 +915,8 @@ fn io_effect_isolation_false_branch() {
           (choose false (Pure 1) (Pure 2)))
     "#;
     let (value, ty) = compile_and_run_typed(src);
-    assert!(ty.is_io());
-    let inner = cranelisp_runtime::run_io_trampoline(value);
-    assert_eq!(inner, 2);
-    cranelisp_runtime::heap_dealloc(value);
+    assert_eq!(ty, Type::Int);
+    assert_eq!(value, 2);
 }
 
 // =============================================================================
@@ -900,10 +935,8 @@ fn io_match_arms_all_io() {
              Blue (Pure 3)]))
     "#;
     let (value, ty) = compile_and_run_typed(src);
-    assert!(ty.is_io());
-    let inner = cranelisp_runtime::run_io_trampoline(value);
-    assert_eq!(inner, 1);
-    cranelisp_runtime::heap_dealloc(value);
+    assert_eq!(ty, Type::Int);
+    assert_eq!(value, 1);
 }
 
 // spec: 10-io §10.7.2 — match arms: mixed IO and non-IO is a type error
@@ -931,10 +964,12 @@ fn io_pure_option_none() {
         (deftype (Option a) None (Some [:a val]))
         (defn main [] (Pure None))
     "#;
-    let (value, ty) = compile_and_run_typed(src);
-    assert!(ty.is_io(), "expected IO type, got: {:?}", ty);
-    // IO (Option a) — inner type is an ADT
-    cranelisp_runtime::heap_dealloc(value);
+    let (_value, ty) = compile_and_run_typed(src);
+    // Sprint 57 Wave 6: eval unwraps (IO (Option a)) inline to (Option a).
+    match &ty {
+        Type::ADT(name, _) => assert_eq!(name.name.as_ref(), "Option", "expected Option ADT; got {ty:?}"),
+        _ => panic!("expected Option ADT; got {ty:?}"),
+    }
 }
 
 // spec: 10-io §10.2.3 — Pure wraps Option (Some 42)
@@ -944,9 +979,15 @@ fn io_pure_option_some() {
         (deftype (Option a) None (Some [:a val]))
         (defn main [] (Pure (Some 42)))
     "#;
-    let (value, ty) = compile_and_run_typed(src);
-    assert!(ty.is_io(), "expected IO type, got: {:?}", ty);
-    cranelisp_runtime::heap_dealloc(value);
+    let (_value, ty) = compile_and_run_typed(src);
+    // Sprint 57 Wave 6: eval unwraps (IO (Option Int)) inline to (Option Int).
+    match &ty {
+        Type::ADT(name, args) => {
+            assert_eq!(name.name.as_ref(), "Option");
+            assert_eq!(args, &vec![Type::Int]);
+        }
+        _ => panic!("expected Option ADT; got {ty:?}"),
+    }
 }
 
 // =============================================================================
@@ -965,10 +1006,8 @@ fn io_bind_bang_single_binding_desugared() {
           (bind (Pure 42) (fn [x] (Pure x))))
     "#;
     let (value, ty) = compile_and_run_typed(src);
-    assert!(ty.is_io());
-    let inner = cranelisp_runtime::run_io_trampoline(value);
-    assert_eq!(inner, 42);
-    cranelisp_runtime::heap_dealloc(value);
+    assert_eq!(ty, Type::Int);
+    assert_eq!(value, 42);
 }
 
 // spec: 10-io §10.5.1 — multiple bindings desugared
@@ -984,10 +1023,8 @@ fn io_bind_bang_multiple_bindings_desugared() {
                         (fn [y] (Pure (add-i64 x y)))))))
     "#;
     let (value, ty) = compile_and_run_typed(src);
-    assert!(ty.is_io());
-    let inner = cranelisp_runtime::run_io_trampoline(value);
-    assert_eq!(inner, 30);
-    cranelisp_runtime::heap_dealloc(value);
+    assert_eq!(ty, Type::Int);
+    assert_eq!(value, 30);
 }
 
 // spec: 10-io §10.5.2 — bindings reference earlier bindings
@@ -1003,10 +1040,8 @@ fn io_bind_bang_sequential_reference_desugared() {
                         (fn [y] (Pure y))))))
     "#;
     let (value, ty) = compile_and_run_typed(src);
-    assert!(ty.is_io());
-    let inner = cranelisp_runtime::run_io_trampoline(value);
-    assert_eq!(inner, 10);
-    cranelisp_runtime::heap_dealloc(value);
+    assert_eq!(ty, Type::Int);
+    assert_eq!(value, 10);
 }
 
 // =============================================================================
@@ -1029,24 +1064,21 @@ fn io_do_desugared_three_exprs() {
                         (fn [_] (Pure 3))))))
     "#;
     let (value, ty) = compile_and_run_typed(src);
-    assert!(ty.is_io());
-    let inner = cranelisp_runtime::run_io_trampoline(value);
-    assert_eq!(inner, 3); // last expression's value
-    cranelisp_runtime::heap_dealloc(value);
+    assert_eq!(ty, Type::Int);
+    assert_eq!(value, 3); // last expression's value
 }
 
-// spec: 10-io §10.4.2 — do type is the type of the last expression
+// spec: 10-io §10.4.2 — do type is the type of the last expression; eval unwraps
 #[test]
 fn io_do_type_is_last_expression() {
-    // Last expression returns IO Bool, so the whole do returns IO Bool
+    // Last expression returns IO Bool; eval unwraps to Bool.
     let src = r#"
         (defn main []
           (bind (Pure 1)
                 (fn [_] (Pure true))))
     "#;
     let (_, ty) = compile_and_run_typed(src);
-    assert!(ty.is_io());
-    assert_eq!(ty.io_inner_type(), Type::Bool);
+    assert_eq!(ty, Type::Bool, "last-expr IO Bool must unwrap to Bool; got {ty:?}");
 }
 
 // =============================================================================
@@ -1063,10 +1095,8 @@ fn io_pure_as_user_defined_function() {
         (defn main [] (my-pure 42))
     "#;
     let (value, ty) = compile_and_run_typed(src);
-    assert!(ty.is_io());
-    let inner = cranelisp_runtime::run_io_trampoline(value);
-    assert_eq!(inner, 42);
-    cranelisp_runtime::heap_dealloc(value);
+    assert_eq!(ty, Type::Int);
+    assert_eq!(value, 42);
 }
 
 // spec: 10-io §10.2 — pure can be passed as a higher-order function
@@ -1078,10 +1108,8 @@ fn io_pure_as_higher_order() {
         (defn main [] (apply-to-42 my-pure))
     "#;
     let (value, ty) = compile_and_run_typed(src);
-    assert!(ty.is_io());
-    let inner = cranelisp_runtime::run_io_trampoline(value);
-    assert_eq!(inner, 42);
-    cranelisp_runtime::heap_dealloc(value);
+    assert_eq!(ty, Type::Int);
+    assert_eq!(value, 42);
 }
 
 // =============================================================================
@@ -1098,10 +1126,8 @@ fn io_bind_continuation_captures_scope() {
                   (fn [x] (Pure (add-i64 x offset))))))
     "#;
     let (value, ty) = compile_and_run_typed(src);
-    assert!(ty.is_io());
-    let inner = cranelisp_runtime::run_io_trampoline(value);
-    assert_eq!(inner, 142);
-    cranelisp_runtime::heap_dealloc(value);
+    assert_eq!(ty, Type::Int);
+    assert_eq!(value, 142);
 }
 
 // =============================================================================
@@ -1122,17 +1148,13 @@ fn io_then_combinator_discard_int() {
           (bind (Pure 999) (fn [_] (Pure 42))))
     "#;
     let (value, ty) = compile_and_run_typed(src);
-    assert!(ty.is_io());
-    let inner = cranelisp_runtime::run_io_trampoline(value);
-    assert_eq!(inner, 42);
-    cranelisp_runtime::heap_dealloc(value);
+    assert_eq!(ty, Type::Int);
+    assert_eq!(value, 42);
 }
 
 // spec: 10-io §10.4.1 — then combinator: discard String result (AlwaysHeap)
 // Regression test for Sprint 16 X1: the `_` parameter must be dec'd in the
 // lambda body to avoid leaking the discarded String.
-// NOTE: Cannot use assert_rc_balanced here because IO tree nodes (Pure, Bind)
-// are heap-allocated and not freed by compile_and_run (needs IO-aware RC helper).
 #[test]
 fn io_then_combinator_discard_string() {
     let src = r#"
@@ -1140,10 +1162,8 @@ fn io_then_combinator_discard_string() {
           (bind (Pure "discarded") (fn [_] (Pure 42))))
     "#;
     let (value, ty) = compile_and_run_typed(src);
-    assert!(ty.is_io());
-    let inner = cranelisp_runtime::run_io_trampoline(value);
-    assert_eq!(inner, 42);
-    cranelisp_runtime::heap_dealloc(value);
+    assert_eq!(ty, Type::Int);
+    assert_eq!(value, 42);
 }
 
 // spec: 10-io §10.4.1 — then combinator: discard ADT result (Mixed heap)
@@ -1156,10 +1176,8 @@ fn io_then_combinator_discard_adt() {
           (bind (Pure (Some 99)) (fn [_] (Pure 42))))
     "#;
     let (value, ty) = compile_and_run_typed(src);
-    assert!(ty.is_io());
-    let inner = cranelisp_runtime::run_io_trampoline(value);
-    assert_eq!(inner, 42);
-    cranelisp_runtime::heap_dealloc(value);
+    assert_eq!(ty, Type::Int);
+    assert_eq!(value, 42);
 }
 
 // spec: 10-io §10.4.1 — chained then: two discards in sequence
@@ -1174,15 +1192,12 @@ fn io_then_combinator_chained_discards() {
                         (fn [_] (Pure 0))))))
     "#;
     let (value, ty) = compile_and_run_typed(src);
-    assert!(ty.is_io());
-    let inner = cranelisp_runtime::run_io_trampoline(value);
-    assert_eq!(inner, 0);
-    cranelisp_runtime::heap_dealloc(value);
+    assert_eq!(ty, Type::Int);
+    assert_eq!(value, 0);
 }
 
 // spec: 10-io §10.3 — lambda with unused heap param (non-discard name)
 // Same RC issue as `_` but with a named parameter that happens to be unused.
-// NOTE: Cannot use assert_rc_balanced — IO nodes leak (needs IO-aware RC helper).
 #[test]
 fn io_bind_unused_heap_param() {
     let src = r#"
@@ -1190,10 +1205,8 @@ fn io_bind_unused_heap_param() {
           (bind (Pure "unused") (fn [x] (Pure 77))))
     "#;
     let (value, ty) = compile_and_run_typed(src);
-    assert!(ty.is_io());
-    let inner = cranelisp_runtime::run_io_trampoline(value);
-    assert_eq!(inner, 77);
-    cranelisp_runtime::heap_dealloc(value);
+    assert_eq!(ty, Type::Int);
+    assert_eq!(value, 77);
 }
 
 // =============================================================================

@@ -6,6 +6,12 @@
 %%   rgb(255, 200, 200)  red     = removed / eliminated from current impl
 %%
 %% Unchanged sequences use no background.
+%%
+%% FIXME(/arch): regenerate v4-target.svg and v4-target.png after the
+%% 2026-04-19 Decision 31 reconciliation (per-batch JIT with custom
+%% Drop → unsafe free_memory). The REPL trailing-expression block
+%% (around line 210) has been updated in this .mmd; the .svg/.png are
+%% stale until someone with mermaid tooling regenerates them.
 
 sequenceDiagram
     participant main as main.rs
@@ -207,15 +213,15 @@ sequenceDiagram
 
                     opt trailing expression
                         rect rgb(180, 230, 255)
-                            Note over session,jit: v4: expression compiled as temporary closure<br/>on persistent eval JIT (§6.2 steps 3-6).<br/>Current: fresh Jit per expression in<br/>compile_and_execute_expr.
+                            Note over session,jit: v4: expression compiled as temporary closure<br/>on a fresh JITModule per eval (§6.2 steps 3-6,<br/>§9.4 per-batch JIT, Decision 31).
 
                             session->>session: walk closure call graph for uncompiled deps
                             session->>sched: submit deps as BlockingJitCodegen
                             sched-->>session: deps compiled (notified)
 
-                            session->>jit: compile closure on persistent eval JIT
+                            session->>jit: compile closure on fresh eval JIT (Jit wrapper)
                             session->>jit: call closure → (i64 value, Type)
-                            Note right of jit: eval JIT reused across evals,<br/>old closure code discardable
+                            Note right of jit: Jit wrapper dropped after result<br/>consumed; custom Drop calls<br/>unsafe JITModule::free_memory()<br/>to reclaim __expr pages.
                         end
                     end
                 end

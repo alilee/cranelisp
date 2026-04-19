@@ -1,6 +1,20 @@
 # Cranelisp Language Specification
 
-<!-- FIXME(/qa): Negative-coverage audit — Sprint 56 close prior-ring audit found 100 `[Tested ...]` annotations in spec/ and 11 in repl/spec.md that have not been upgraded to `[Tested+Neg ...]`. Per CLAUDE.md §"Applying Annotations", MUST/MUST NOT requirements should have both positive and negative coverage. A batch pass through high-value sections would help: suggest prioritising module/import boundaries (§8), match exhaustiveness (§6.5), visibility/private variants (§5), trait dispatch (§7), and REPL category boundaries (repl/spec.md §3, §4). Not every `[Tested]` needs upgrading — some describe display formats where "wrong output" is naturally caught — but requirements about what MUST NOT appear (e.g. primitives not leaking into user/, private symbols not visible cross-module, wildcard not required on exhaustive ADTs) deserve explicit negative tests. Filed by /spec during Sprint 56 close prior-ring audit. -->
+<!-- NEG-COVERAGE TRACKING (Sprint 57 Wave 5 disposition — moved from FIXME(/qa) to standing tracker)
+
+Sprint 56 audit found 100 `[Tested ...]` annotations in spec/ and 11 in repl/spec.md without a `[Tested+Neg ...]` counterpart. This is a project-wide backlog — too large for a single wave. Wave 5 resolution: treat this as an ongoing coverage-quality tracker, not a single-point FIXME.
+
+Wave 5 increments: §3.7 HKT, §5.4.2 / §5.4.3 ADT impls, §12.4.2 Lazy Sequences, appendix-a string primitives, repl §1.5 List display, repl §11.1 /expand, repl §4.1.3 related trait impls, repl §4.1.7 primitive lookup — all promoted to `[Tested+Neg ...]` this sprint.
+
+Remaining negative-coverage priority order (for future sprints):
+1. Module/import boundaries (§8) — what MUST NOT leak across modules; prioritize private visibility (§8.5) + super import depth boundary (§8.3.7) + primitives-not-in-user-category absence tests
+2. Match exhaustiveness (§6.5) — non-ADT scrutinee wildcard requirement, ADT non-exhaustive rejection
+3. Visibility / private variants (§5) — `defn-` / `deftype-` / `deftrait-` / `mod-` cross-module negative tests
+4. Trait dispatch (§7) — which types MUST NOT satisfy a trait, ambiguous-dispatch rejection
+5. REPL category boundaries (repl/spec.md §3, §4) — empty categories omitted, primitives absent from user category
+
+Per CLAUDE.md §"Applying Annotations", MUST/MUST NOT requirements should have both positive and negative coverage. Not every `[Tested]` needs upgrading — some describe display formats where "wrong output" is naturally caught. Requirements about what MUST NOT appear deserve explicit negative tests. -->
+
 
 **Version**: 0.1 (Draft)
 

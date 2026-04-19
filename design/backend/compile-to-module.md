@@ -527,6 +527,141 @@ let bytes = obj_module.finish().emit()?;
 | `build_cache_packet` | `cache/object.rs` | Kept (cache write logic) |
 | `process_cache_packet` | `cache/object.rs` | Kept (cache write logic, but simplified — calls `compile_to_module<ObjectModule>` instead of `compile_module_to_object`) |
 
+### 9.1 Phase 3 G6 — `code: Option<Code>` write path (Sprint 57 Wave 2 — LANDED)
+
+Phase 2 (Sprint 56) kept compiled `Code` living in the integration-layer `CodegenProduct` DashMap. §16.7 flagged the Phase 2 → Phase 3 bridge: the field moves onto `ModuleEntry::Def.code` in G6 without changing `compile_to_module`'s contract. This section pins the code-write path as landed in Sprint 57 Wave 2.
+
+**PRESCRIPTIVE for Sprint 57 Wave 2.** `/arch` Decision 25 is the authoritative architectural statement; this subsection specifies the backend-side mechanics. The landed implementation uses **Shape 1** for `Code` — a pointer-only handle whose `Arc<Jit>` lifetime anchor lives in the session's `kept_jits` retention pool (Decision 28) rather than on the entry itself. The subsections below describe Shape 1 throughout.
+
+#### 9.1.1 Signature unchanged
+
+The §2.1 PRESCRIPTIVE signature
+
+```rust
+pub fn compile_to_module<M: Module>(
+    module_path: ModuleFullPath,
+    names: &[Symbol],
+    symbol_tables: &DashMap<ModuleFullPath, SymbolTable>,
+    module: &mut M,
+) -> Result<CompilationResult, CranelispError>
+```
+
+does NOT change. The four-parameter shape from Sprint 56 is the target and remains so. The G6 change is internal to `compile_to_module`: after the backend finalises the module's definitions, it writes each produced `Code` onto the corresponding `ModuleEntry::Def.code` in `symbol_tables[module_path]` before returning.
+
+#### 9.1.2 `Code` shape — Shape 1 (pointer-only)
+
+Per Decision 25 + Decision 28, `Code` is a thin pointer-only handle living in `crates/cranelisp-types/src/code.rs`:
+
+```rust
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub struct Code {
+    #[serde(skip, default = "default_ptr")]
+    pub ptr: *const u8,
+}
+```
+
+`Code` holds only a raw code pointer. The `Arc<Jit>` that owns the mmap'd executable pages (and the DLL handles reopened on cache-hit rehydration) is retained SEPARATELY by the integration layer at `SharedState.kept_jits: Mutex<Vec<KeptJit>>` in `src/session_v4.rs` (Decision 28 — per-worker JIT lifetime is session-bound). Sessions keep their `Arc<Jit>` set alive for as long as any `SymbolTable` holding `Code` entries is reachable, which keeps every `ptr` valid.
+
+The `Serialize`/`Deserialize` derives on `Code` exist only so containers holding `Code` (e.g., `Option<Code>` on `ModuleEntry::Def`) can derive the traits uniformly — the `#[serde(skip)]` attribute on the containing field is what actually enforces the runtime-state discipline. `Code` itself round-trips through a null pointer default on the rare occasions it is serialised.
+
+`unsafe impl Send for Code` and `unsafe impl Sync for Code` hold because `ptr` is an integer address; any thread that reads it must transitively hold a live `Arc<Jit>` via the session, which the session-lifetime guarantee enforces.
+
+`Code` lives in `cranelisp-types` (not the integration layer) because `ModuleEntry::Def.code` is a `types`-crate field. Storing just the pointer avoids a cyclic dependency with `cranelisp-backend::jit::Jit`.
+
+#### 9.1.3 When the write happens — lifecycle
+
+The write happens **after `module.finalize_definitions()` and after reading out the finalised code pointer for each function**, and **before `compile_to_module` returns**. The sequence inside `compile_to_module`:
+
+```text
+1. Declare intrinsics on `module`.
+2. Collect defns by looking up each name in `symbol_tables[module_path]`
+   (§4 lookup loop).
+3. Declare all functions on `module` (Pass 1).
+4. Compile each function body (Pass 2) — populates `FuncId` map + artifacts.
+5. module.finalize_definitions()                   ← finalise happens here
+6. For each name in `names`:                       ← G6 write loop
+     let func_id = func_ids[name];
+     let ptr     = module.get_finalized_function(func_id);
+     symbol_tables[module_path].get_mut(name)
+         .set_code(Some(Code::new(ptr)));
+7. Return CompilationResult { func_ids, artifacts, entry_func_id,
+                              func_arities, warnings }.
+```
+
+The `Arc<Jit>` holding the JIT module's pages alive is retained by the **caller** on `SharedState.kept_jits` (Decision 28) — the caller constructs `Arc::new(jit_module)` once, pushes the `KeptJit` onto the retention pool, and does not thread the Arc into `compile_to_module`. `Code::new(ptr)` takes just the raw pointer; freshness of the pointer is enforced by the session keeping `kept_jits` alive for as long as any `SymbolTable` reads `Code` entries. See §9.1.5 for the object-mode behaviour.
+
+The write happens AFTER `finalize_definitions`, not after `define_function`, because `get_finalized_function` requires finalisation; the raw pointer is only defined once the module's code regions are committed.
+
+Why before return, not at the caller site? Per Decision 25 the symbol table IS the compilation state — the backend owns "I produced this code; it goes here." Returning `CompilationResult` with pointers that the caller then re-routes into the symbol table is the Sprint-56 shape (the bridge) and is what G6 eliminates. After G6, `func_ids` remains on `CompilationResult` only for the caller's immediate needs (entry lookup for `--run` mode, fund-id→jit-name bookkeeping for cache packet serialisation); the durable compiled-code pointer lives on the entry.
+
+**Object mode caveat.** For `ObjectModule`, there is no `get_finalized_function` — the emitted bytes are the output, not runtime code pointers. `Code` is not produced at all (there is nothing to store). The G6 write loop in `compile_to_module` is gated: if `M` is `JITModule`, write; if `M` is `ObjectModule`, skip. This is not a mode parameter — it is a capability difference expressed through the `Module` trait (there is no `get_finalized_function` to call on an `ObjectModule` post-`finish`, so there is nothing to write). See §9.1.5.
+
+#### 9.1.4 Failure semantics — best-effort, caller decides
+
+If function N fails to compile (e.g., a CLIF verifier error, an RC-emission bug), symbols 0..N−1 have already been declared and may already have definitions written to the module. The current Sprint 56 behaviour is for `compile_to_module` to propagate the error without attempting to roll back the module state — the caller is responsible for treating the result as an atomic success/failure at the `CompilationResult` level and not half-committing per-symbol code on the assumption of partial success. G6 preserves this semantics with one extension:
+
+- **If the failure is pre-finalise** (verifier / Pass-2 compilation error, thrown from `compile_body` or `define_function`): `module.finalize_definitions()` is never reached, no `Code` is written to any entry, `compile_to_module` returns `Err(...)`. Symbol-table entries remain at `code: None`. This is the clean path.
+- **If the failure is in finalise itself** (linker error in JIT mode — rare but possible): no entries have been written yet. `compile_to_module` returns `Err(...)`; entries remain at `code: None`.
+- **If a failure happens during the G6 write loop** (step 6 above): this must not fail — it is a trivial pointer-write into a `SymbolTable` entry that the backend already holds by name. The only realistic failure mode is a missing entry or a wrong variant, which is a `defined_symbols()` contract violation and produces a `CodegenError` naming the symbol (same error path as §16.4).
+
+**Recommendation (for `CompilationResult` consumers)**: treat `Err(_)` as atomic. If codegen fails, do not trust partial `code: Some(_)` writes on the caller side; the caller may choose to clear `code` on the affected module's entries or leave them as-is (the entries will be overwritten on re-compile). The typical pattern is to propagate the error to the priority worker, which fails the module and moves on — partial entries from a failed compile remain present but unused because the module is marked failed and no callers look up its code.
+
+No rollback is performed inside `compile_to_module`. Adding rollback would require shadowing the DashMap writes with a pending-set that is atomically committed on success, which is complexity that the caller-decides rule avoids.
+
+#### 9.1.5 Cache-hit interaction
+
+Per Decision 25, `code` is `#[serde(skip)]` — it does not round-trip through the cache. On cache-hit load, the symbol table is restored from the serialised manifest, `ast` is deserialised, and `code` starts `None` for every entry.
+
+Two production paths regenerate `code` from `None`:
+
+- **Eager rehydration** (object-cache hit, JIT link mode). The cached `.o` file is mmap'd and its symbols are resolved via the linker; a `Code::new(ptr)` is constructed around the linker-resolved pointer. Under Shape 1, `Code` holds only the pointer — there is no `jit` field to populate. The linker's page lifetime is anchored on `SharedState.kept_linkers` in the session (analogue of `kept_jits` for linker-resolved code; Decision 28 extends to linkers).
+- **Lazy recompilation** (JIT eval over a cache-hit module). The first call-site lookup finds `code: None`; the priority worker recompiles via `compile_to_module` as if the entry were fresh (its `ast: Some(_)` is already on the entry from cache load). The `compile_to_module` path is identical — in particular, the G6 write loop fills in the `code` field that was `None` after cache load. No special cache-hit logic inside `compile_to_module`.
+
+This means `compile_to_module` is cache-ignorant: it takes a `SymbolTable` with `ast: Some(_)` and `code: None`, produces code, writes `code: Some(_)`. Whether the `ast` came from fresh typecheck or from a serialised cache is the symbol table's concern, not the backend's.
+
+The `#[serde(skip)]` default of `None` is exactly what a cache-hit load produces; no manual `code = None` zero-ing is needed post-load.
+
+#### 9.1.6 Object-mode (`ObjectModule`) behaviour
+
+`ObjectModule` has no finalised runtime pointer — the output is a `Vec<u8>` via `module.finish().emit()`, not mmap'd executable pages. There is nothing to store on `ModuleEntry::Def.code` in object mode.
+
+G6 write loop behaviour in object mode: skip the write entirely. `compile_to_module<ObjectModule>` returns the `CompilationResult` with `func_ids` populated (the caller uses those to verify all expected functions were compiled before writing `.o` bytes) and `artifacts` populated (for introspection capture, if requested). `code` remains `None` on every entry until a later JIT-mode compile or cache-hit mmap-relink writes it.
+
+This keeps the two paths uniform at the signature level — one `compile_to_module` — while the capability difference (get_finalized_function exists on JIT, not on ObjectModule post-emit) naturally gates the write. No runtime mode discriminator in the signature.
+
+#### 9.1.7 Handoff to priority worker (cross-reference `/int`)
+
+The priority worker's post-compile loop (currently in `src/worker.rs` around line 2444, per §9.1.3 above) is the consumer of the write-to-entry contract. After G6 lands, the worker's responsibility is reduced:
+
+- **Before G6 (Sprint 56 shape, described in §11 for reference)**: worker reads `result.func_ids`, calls `jit.get_finalized_ptr(func_id)`, writes into GOT slot, and inserts into `CodegenProduct.code` DashMap.
+- **After G6 (Sprint 57 target)**: worker reads `result.func_ids` (for GOT-slot-population convenience only — the slot write still lives on the worker side per the current boundary), and relies on `compile_to_module` having already populated `ModuleEntry::Def.code`. The `CodegenProduct` DashMap is deleted. GOT-slot population may consolidate onto the backend side as a follow-on micro-change, but is not required by G6 itself.
+
+The authoritative migration table for consumer-side reads (priority worker, REPL eval, `/clif`, `/disasm`, `/source`, introspection) is `/int`'s `design/int/phase2-codegen-convergence.md` G6 extension. `/backend` owns the write side; `/int` owns the read-site migration; the two must agree on ownership of the `Code` pointer's lifecycle. `compile-to-module.md` §9.1 pins the write contract; `phase2-codegen-convergence.md` G6 pins the read migration.
+
+#### 9.1.8 Cross-references
+
+- `/arch` Decision 25 — `design/arch/CLAUDE.md` — the architectural statement of `code: Option<Code>` as `#[serde(skip)]` on `ModuleEntry::Def`. PRESCRIPTIVE source.
+- `/arch` `design/arch/interfaces.md` §"Module Entries" — the `ModuleEntry::Def` shape with the `code` field already landed (Sprint 57 interfaces update).
+- `/arch` `design/arch/pipeline-v4-roadmap.md` §"Phase 3 Step 3b (G6)" — the migration step summary, deferring `SymbolTable<C, L>` generics.
+- `/typecheck` `design/typecheck/ast-annotation.md` §9 — source of `ast` that `compile_to_module` reads. Invariant: for every name in `names`, the entry carries `ast: Some(_)` (§2.1 Wave 0 contract).
+- `/int` `design/int/phase2-codegen-convergence.md` G6 extension — consumer-side read-site migration table (priority worker, REPL eval, introspection, `/clif`, `/disasm`, `/source`).
+- `crates/cranelisp-types/src/code.rs` — landed Shape-1 `Code` definition (pointer-only). The earlier `src/session_v4.rs:447` location held the pre-Shape-1 `{ jit, ptr }` form; that form is retired and the canonical `Code` is now in `cranelisp-types`.
+- `src/session_v4.rs` `SharedState.kept_jits` field — session-side `Arc<Jit>` retention pool (Decision 28) that anchors the lifetime of every `Code::ptr` produced.
+
+#### 9.1.9 Serialization story
+
+`code` is `#[serde(skip)]` on `ModuleEntry::Def`. The default for a skipped field is produced by `Default::default()`; for `Option<Code>` this is `None`. A `SymbolTable` serialised at sprint-close time (or cache-write time) elides `code` from every entry; a `SymbolTable` deserialised from cache sees every entry's `code` as `None`. No custom serde shim, no "reset to None after load" pass.
+
+Under Shape 1, `Code` itself DERIVES `Serialize + Deserialize` so containers holding `Code` can uniformly `derive(Serialize, Deserialize)`. The field-level `#[serde(skip)]` on `ModuleEntry::Def.code` is what enforces the runtime-state boundary — the derive-at-type-level is a container-convenience affordance, not a commitment to persist `Code` across processes. The raw pointer is not meaningfully serialisable; `Code`'s own `Serialize` impl is `#[serde(skip, default = "default_ptr")]` on the `ptr` field, so round-tripping through serde produces a null-pointer placeholder that is only safe inside a `#[serde(skip)]` parent field.
+
+There is no separate serde test needed for G6 beyond the existing cache round-trip test — the field's absence from the wire format is the test.
+
+### 9.2 What G6 eliminates
+
+- `CodegenProduct` DashMap — deleted in full. All downstream code-read sites migrate to `symbol_tables[module].get(name).code`.
+- The post-`compile_to_module` "route code into DashMap" loop on the caller side — collapsed into `compile_to_module` itself.
+- Under Shape 1, the `Arc<Jit>` handle is NOT threaded through `compile_to_module` or stored on `Code`. The caller constructs `Arc::new(jit_module)` once post-finalise and retains it on `SharedState.kept_jits` (Decision 28); `compile_to_module` sees only the raw pointer via `module.get_finalized_function(func_id)` and writes `Code::new(ptr)`. This keeps the `cranelisp-types` crate (where `Code` lives) decoupled from `cranelisp-backend::jit::Jit`.
+
 ## 10. CodegenInput Simplification
 
 Currently `CodegenInput` in `session_v4.rs`:
@@ -953,7 +1088,7 @@ Deletions on the `/int` side (Step 2b) are out of scope for this doc (covered in
 
 Phase 2 keeps `Code` (JIT module + code pointer) living in `CodegenProduct`, the existing integration-layer `DashMap<ModuleFullPath, CodegenProduct>` that holds JIT-module ownership and per-function pointers. `CompilationResult` (see §8) is unchanged — it still carries `func_ids`, `entry_func_id`, `func_arities`, and `warnings`. Per `/arch` review §2 and §6 condition 4, this is an intentional Phase-2→Phase-3 bridge, not interim architecture: moving `Code` onto `ModuleEntry::Def.code` is G6 in `pipeline-v4-roadmap.md` Phase 3, deliberately scoped as a **refactor** (mechanical relocation of a field) rather than a rewrite.
 
-The implication for `/backend`: `CompilationResult` stays as-is for Phase 2. Do not preemptively collapse it into per-entry writes — Phase 3 will collapse it, and conflating the two phases muddies both. The Phase 3 transition will flip the write side (the priority worker writes `code` onto the entry) without changing `compile_to_module`'s contract — `compile_to_module` will still return `CompilationResult`, and the caller will still be responsible for extracting pointers and storing them, only the storage location moves from `CodegenProduct` to `ModuleEntry::Def.code`.
+The implication for `/backend`: `CompilationResult` stays as-is for Phase 2. Do not preemptively collapse it into per-entry writes — Phase 3 will collapse it, and conflating the two phases muddies both. The Phase 3 transition (documented in §9.1 as the PRESCRIPTIVE Sprint 57 target) pushes the `code` write inside `compile_to_module` itself: `CompilationResult` still carries `func_ids`/`entry_func_id`/`func_arities`/`warnings` for callers' immediate needs, but the durable compiled-code pointer lives on `ModuleEntry::Def.code`, written by `compile_to_module` post-finalise and pre-return. The storage location moves from `CodegenProduct` to `ModuleEntry::Def.code`, and the write-site moves from the priority worker into the backend — both changes land together in Sprint 57 Wave 2.
 
 ### 16.8 Relationship to §13
 

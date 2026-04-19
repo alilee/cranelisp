@@ -412,3 +412,119 @@ fn imported_function_as_higher_order_argument() {
     let (value, _ty) = result.unwrap();
     assert_eq!(value, 42);
 }
+
+// =============================================================================
+// 8. Super-import (spec: 08-modules §8.3.7)
+//
+// `super` in an `import` module path resolves to the parent of the containing
+// module (strip the last `.` component). It is rewritten at frontend capture
+// time (arch Decision 30); downstream stages never see the literal "super".
+// Using `super` in a top-level (root) module MUST produce a compile-time error.
+// =============================================================================
+
+// spec: 08-modules §8.3.7 — super import rewrites to parent path end-to-end.
+// Child module `proj.child` uses `(import [super [*]])` to pull all public
+// names from `proj`. The child's resolved imports MUST name the parent
+// path absolutely after the rewrite — no lingering "super" literal is visible
+// post-frontend.
+//
+// The child is used as the entry module so the parent does NOT import or
+// qualify-ref into the child — this avoids the §8.3.7 known mutual-import
+// deadlock while still exercising the super→parent rewrite end-to-end.
+#[test]
+fn super_import_rewrites_to_parent_end_to_end() {
+    use cranelisp_types::{ModuleEntry, ModuleFullPath};
+
+    // Parent `proj.cl` defines `parent-val`. Child `proj/child.cl` uses
+    // `(import [super [*]])` and defines `main` that returns the parent's
+    // value — demonstrating the rewrite resolves to the parent.
+    let dir = create_test_project(&[
+        (
+            "proj.cl",
+            "(defn parent-val [] 42)",
+        ),
+        (
+            "proj/child.cl",
+            "(import [super [*]])\n(defn main [] (parent-val))",
+        ),
+    ]);
+
+    // Drive the pipeline via a session with proj.child as the entry module.
+    // The module-name is fully qualified ("proj.child") so frontend sees the
+    // correct containing_module and rewrites super → "proj".
+    let mut session = helpers::ReplSession::new_for_file(
+        &dir.path().join("proj.cl"),
+        &[],
+    )
+    .expect("session setup");
+    session
+        .register_module("proj.child")
+        .expect("proj.child should register — super must rewrite to parent");
+
+    // Child compiles and its `main` can call the parent's `parent-val` —
+    // proving super resolved to the parent module at every stage.
+    let (value, _ty) = session
+        .trampoline("proj.child")
+        .expect("proj.child main should run — super rewrite makes parent-val visible");
+    assert_eq!(
+        value, 42,
+        "child's main should return parent-val via super-rewritten import"
+    );
+
+    // Verify the rewrite is invisible downstream: no ModuleEntry::Import on
+    // proj.child has source.module == "super". The rewrite MUST have replaced
+    // the literal string with the parent path during frontend extraction
+    // (Decision 30: rewrite at capture time in parse_import_entries).
+    let child_path = ModuleFullPath::from("proj.child");
+    let child_tbl = session
+        .symbol_tables()
+        .get(&child_path)
+        .expect("child module should be registered in symbol_tables");
+    let mut saw_parent_import = false;
+    for (_sym, entry) in child_tbl.all_symbols() {
+        if let ModuleEntry::Import { source } = entry {
+            let src_mod = source.module.as_ref();
+            assert_ne!(
+                src_mod, "super",
+                "super MUST be rewritten — no Import entry may carry the literal 'super'"
+            );
+            if src_mod == "proj" {
+                saw_parent_import = true;
+            }
+        }
+    }
+    assert!(
+        saw_parent_import,
+        "child's resolved imports should name parent absolutely ('proj'), confirming super→parent rewrite applied"
+    );
+}
+
+// spec: 08-modules §8.3.7 — `super` in a top-level (root) module MUST produce
+// a compile-time error. Negative path per spec §8.3.7 final MUST clause.
+#[test]
+fn super_import_at_root_is_rejected_neg() {
+    // Root module `root.cl` has no parent — a `super` import cannot resolve.
+    let dir = create_test_project(&[
+        (
+            "root.cl",
+            "(import [super [*]])\n(defn main [] 0)",
+        ),
+    ]);
+    let result = helpers::batch_run_file(&dir.path().join("root.cl"), &[]);
+    assert!(
+        result.is_err(),
+        "super in root module MUST be rejected per spec §8.3.7"
+    );
+    // Match by substring — frontend error reads:
+    //   "'super' import used in top-level module 'root' (no parent)"
+    let err = result.unwrap_err();
+    let msg = err.message();
+    assert!(
+        msg.contains("super"),
+        "error message should name 'super', got: {msg}"
+    );
+    assert!(
+        msg.contains("top-level") || msg.contains("no parent"),
+        "error message should explain the no-parent condition, got: {msg}"
+    );
+}

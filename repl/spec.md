@@ -151,7 +151,7 @@ Output uses the `:Type value` format — the same colon-prefixed type annotation
 
 ## 1. Display Format
 
-### 1.1 Universal Output Format [R3 S14]
+### 1.1 Universal Output Format [Tested tests/repl_experience::defn_reports_function_type]
 
 All REPL output uses a unified format that mirrors Cranelisp type annotation syntax. The primary line is always:
 
@@ -264,7 +264,7 @@ A function definition MUST NOT display `<closure>` — the user defined a *named
 | deftrait shows trait name | [Tested tests/ring2::repl_deftrait_display] |
 | impl shows `impl Trait for Type` | [Tested tests/ring2::repl_impl_display] |
 | constrained fn shows inline constraints | [Tested tests/ring2::repl_constrained_fn_display] |
-| overloaded fn shows all variants | [R3 S14] |
+| overloaded fn shows all variants | [Tested tests/repl_experience::display_overloaded_fn_shows_all_variants — FAILING: /int gap, only first variant shown] |
 
 **Ring 0**: function definitions, type definitions.
 **Ring 2**: trait declarations, trait implementations, constrained functions.
@@ -292,25 +292,27 @@ Polymorphic type schemes MUST display quantified variables as consecutive lowerc
 :(Fn [:core.numerics/Num a :a] a) core.numerics/+
 ```
 
-<!-- FIXME(/qa): Coverage gaps in §1.5 — rows for `List` (line 311) and `Seq` (line 312) display formats are annotated [R3 S8] but Ring 3 is complete. Need tests that: (a) an empty list displays as `List.Nil`; (b) a non-empty list displays as `(list elem1 elem2 ...)`; (c) a Seq displays as `(seq elem1 elem2 ... +more)` after forcing up to 20 elements (i.e., infinite seq does NOT hang REPL output). Add tests in tests/repl_experience.rs alongside the existing `r1_display_vec_int` test. Filed by /spec during Sprint 56 close prior-ring audit. -->
-### 1.5 Value Display [R3 S8]
+### 1.5 Value Display
 
 Values are runtime results and have no module scope. They are displayed bare.
 
 | Type | Display | Ring | Test |
 |---|---|---|---|
 | `Int` | decimal integer (e.g., `42`, `-7`) | 0 | [Tested tests/repl_experience::display_int_result] |
-| `Bool` | `true` or `false` | 0 | [Tested tests/repl_experience::r0_bool_displays_as_word] |
+| `Bool` | `true` or `false` | 0 | [Tested tests/repl_experience::display_bool_true] |
 | `Float` | decimal float (e.g., `3.14`) | 0 | [Tested tests/repl_experience::display_float_result] |
-| `String` | `"contents"` with escapes | 1 | [Tested tests/repl_experience::r1_display_string_literal] |
+| `String` | `"contents"` with escapes | 1 | [Tested tests/e2e::e2e_s1_2_string_display_qualified] |
 | Nullary constructor | `Type.Ctor` (e.g., `Color.Red`, `Option.None`) | 0 | [Tested tests/e2e::e2e_s1_5_nullary_ctor_dot_notation] |
 | Data constructor (multi-ctor) | `(Type.Ctor field1 field2 ...)` (e.g., `(Option.Some 42)`) | 1 | [Tested tests/e2e::e2e_s1_5_data_ctor_dot_notation] |
-| Data constructor (single-ctor, name matches type) | `(Ctor field1 field2 ...)` (e.g., `(Point 3 4)`) | 1 | [Tested tests/e2e::e2e_ring1_adt_product] |
+| Data constructor (single-ctor, name matches type) | `(Ctor field1 field2 ...)` (e.g., `(Point 3 4)`) | 1 | [Tested tests/ring1::adt_product_construct_and_match] |
 
-| Closure | `<closure>` | 1 | [Tested tests/repl_experience::r1_display_closure_format] |
-| Vec | `[elem1 elem2 ...]` (empty: `[]`) | 1 | [Tested tests/repl_experience::r1_display_vec_int] |
-| List | `(list elem1 elem2 ...)` (empty: `List.Nil`) | 1 | [R3 S8] |
-| Seq | `(seq elem1 elem2 ... +more)` (forces up to 20) | 2 | [R3 S8] |
+| Closure | `<closure>` | 1 | [Tested tests/repl_experience::ring1_closure_display_format] |
+| Vec | `[elem1 elem2 ...]` (empty: `[]`) | 1 | [Tested+Neg tests/repl_experience::display_vec_int, tests/repl_experience::display_vec_empty] |
+| List | `(list elem1 elem2 ...)` (empty: `List.Nil`) | 1 | [Tested+Neg tests/repl_experience::display_list_nil, tests/repl_experience::display_list_non_empty_no_truncation_for_small_list] |
+| Seq | `(seq elem1 elem2 ... +more)` (forces up to 20) | 2 | [Tested tests/repl_experience::display_seq_infinite_does_not_hang] |
+
+<!-- FIXME(/spec): The aspirational display formats for List (`(list elem1 elem2 ...)`) and Seq (`(seq elem1 elem2 ... +more)`) do not match current implementation — user-defined List/Seq ADTs display via the generic ADT recursive form (`(List.Cons 1 (List.Cons 2 List.Nil))` and `(Seq.SeqCons h <closure>)`). Since List and Seq are stdlib types (not compiler-seeded), the REPL display layer would need type-specific pretty-printing to emit the spec format. Decide: either promote this to /int as implementation work, or update §1.5 to describe the generic ADT fallback as spec-conformant. Tests above verify elements appear and infinite seqs do not hang; format convergence is tracked here. Filed by /qa during Sprint 57 Wave 5. -->
+
 
 ADT fields MUST be recursively formatted according to this table.
 
@@ -362,8 +364,9 @@ This enables:
 
 Slash commands provide introspection and navigation. All commands start with `/` and are NOT expressions — they are REPL-only features.
 
-<!-- FIXME(/qa): Traceability gap — §3.1 section heading annotated [R3 S10] is stale. Most rows have individual `[Tested …]` annotations already. The section heading should be updated to match the lowest-coverage child (several rows are still `[R4 S10]` or `[R1]` — these are Ring 4 introspection commands, legitimately pending). Consider replacing the section-heading annotation with a summary or removing it in favour of per-row annotations. Filed by /spec during Sprint 56 close prior-ring audit. -->
-### 3.1 Command Inventory [R3 S10]
+### 3.1 Command Inventory
+
+Per-row annotations below indicate test coverage for each command. Ring 4 introspection commands (`/mem`, `/disasm`, `/time`, `/mod`, `/reload`) are legitimately pending.
 
 | Command | Aliases | Description | Ring | Test |
 |---|---|---|---|---|
@@ -383,8 +386,7 @@ Slash commands provide introspection and navigation. All commands start with `/`
 | `/mod [name]` | — | Switch module namespace | 2 | [R4 S10] |
 | `/imports [module]` | — | Show imports and special forms; filter by source module | 0 | [Tested tests/e2e::e2e_s3_4_imports_special_forms, tests/e2e::e2e_s3_4_imports_empty] |
 | `/exports <module>` | — | List a module's importable public symbols | 2 | [Tested tests/e2e::e2e_s3_5_exports_lists_symbols, tests/e2e::e2e_s3_5_exports_no_arg_usage] |
-| `/mem [expr]` | `/m` | Show allocation statistics | 1 | [R4 S10] |
-<!-- FIXME(/repl): Implement `/mem`. The runtime already exposes the required counters as `pub fn` in `crates/cranelisp-runtime/src/alloc.rs` — `cranelisp_runtime::alloc_count()` and `cranelisp_runtime::dealloc_count()`. They are already used by integration tests (`tests/sketch_port.rs:1463-1510`) and the Sprint 56 Wave 2c extern unit tests. `/mem` with no argument SHOULD print live allocs (`alloc_count - dealloc_count`), total allocs, and total deallocs. `/mem <expr>` SHOULD evaluate the expression and print the delta in each counter across the evaluation — which makes RC behaviour directly observable in a session. Filed by /sprint during Sprint 56 close per user request (2026-04-18). -->
+| `/mem [expr]` | `/m` | Show allocation statistics (see §3.7) | 4 | [R4 S57] |
 | `/run-tests [module]` | `/rt` | Discover and run test functions (see §16) | 4 | [R4] |
 | `/run-all-tests` | — | Run all tests in project (see §16) | 4 | [R4] |
 | `/sh <cmd>` | — | Run a shell command (see §13) | 4 | [R4 S52] |
@@ -534,16 +536,52 @@ Categories follow the same order as `/list`: Modules, Macros, Traits, Types, Fns
 
 For overloaded functions, all variants MUST be listed. For constrained functions, specializations MUST be shown.
 
+### 3.7 `/mem` — Allocation Statistics [R4 S57]
+
+`/mem` reports the runtime allocation counters maintained by `cranelisp-runtime`: total allocations observed, total deallocations, and bytes currently live. The command has two shapes — a **snapshot** (no argument) and a **delta** (with an expression argument). Both are comment lines (`;`-prefixed), consistent with the self-documentation convention in §1.5.
+
+**Snapshot — `/mem`** — MUST emit two comment lines:
+
+```
+user> /mem
+; live: <bytes> bytes (<live-allocs> allocations)
+; allocs: <total-allocs>  deallocs: <total-deallocs>
+```
+
+- `<bytes>` is `cranelisp_runtime::bytes_current()` — sum of currently-live heap allocations in bytes.
+- `<live-allocs>` is `allocs - deallocs` — the number of allocations that have not been freed.
+- `<total-allocs>` and `<total-deallocs>` are the cumulative counters since process start.
+
+The two fields between `allocs:` and `deallocs:` are separated by two spaces. The `(<live-allocs> allocations)` group is singular or plural depending on count (the implementation MAY always use `allocations` for simplicity).
+
+**Delta — `/mem <expr>`** — MUST evaluate the expression, print its formatted result on the first line (per §1.2), then emit one comment delta line:
+
+```
+user> /mem (list 1 2 3)
+:(collections.list/List primitives/Int) (List.Cons 1 (List.Cons 2 (List.Cons 3 List.Nil)))
+; delta: allocs +<d-allocs>  deallocs +<d-deallocs>  bytes <±d-bytes>  live <±d-live>
+```
+
+- `<d-allocs>`, `<d-deallocs>` are non-negative deltas (prefixed `+`).
+- `<d-bytes>` and `<d-live>` are signed deltas (`+`/`-`) because rebinding `it` can release previously-live allocations, making the delta negative.
+- Each field is separated from the next by two spaces.
+
+Evaluation errors MUST still emit the delta line — observation is the point, and a failed allocation is itself interesting data. The header line in the error case uses the standard §5 error format.
+
+`/mem` MUST NOT start the runtime; the counters are valid from process start. An empty runtime reports `; live: 0 bytes (0 allocations)` and `; allocs: 0  deallocs: 0`.
+
+| Requirement | Test |
+|---|---|
+| snapshot emits live + totals | [R4 S57] |
+| delta prints result then delta line | [R4 S57] |
+| signed `bytes` and `live` deltas | [R4 S57] |
+| baseline counters at process start are zero | [R4 S57] |
+
 ## 4. Self-Documentation Contract
 
 Every valid language construct entered at the REPL MUST produce useful feedback. This is the **self-documentation principle** from the project's design principles. All output reinforces the language syntax.
 
-<!-- FIXME(/qa): Coverage gaps within §4.1 rows (all [R3 S14] but Ring 3 is complete):
-  - line 267 / 574: "overloaded fn shows all variants" — need test that bare-symbol lookup of a multi-sig fn (e.g. `map` with Vec and List signatures) emits one line per variant per §1.3
-  - line 624: "related constructors" — need test that bare-type lookup of an ADT includes `; match:` section with constructor names
-  - line 625: "related trait impls" — need test that bare-type lookup includes `; impl:` section with trait names
-  These are §4.1-wide gaps; add tests in tests/repl_experience.rs (integration) or tests/e2e.rs (E2E). Filed by /spec during Sprint 56 close prior-ring audit. -->
-### 4.1 Symbol Lookup — Per-Class Specification [R3 S14]
+### 4.1 Symbol Lookup — Per-Class Specification
 
 Entering a bare symbol name at the REPL MUST produce output following the universal format (§1.1). Every symbol class has a defined response. No valid name MUST produce an opaque error. If a name is unbound, the error MUST say so clearly. [Tested tests/repl_experience::unbound_symbol_clear_error]
 
@@ -578,7 +616,7 @@ user> map
 |---|---|
 | function shows type + name | [Tested tests/e2e::e2e_s4_1_bare_symbol_lookup] |
 | constrained fn shows constraints | [Tested tests/ring2::repl_constrained_fn_display] |
-| overloaded fn shows all variants | [R3 S14] |
+| overloaded fn shows all variants | [Tested tests/repl_experience::display_overloaded_fn_shows_all_variants — FAILING: /int gap, only first variant shown] |
 
 #### 4.1.2 Constructors [Tested tests/e2e::e2e_s1_1_constructor_lookup]
 
@@ -628,8 +666,8 @@ Constructor names under `match:` are unqualified bare names. Trait names under `
 |---|---|
 | builtin types (Int, Bool, Float, String) | [Tested tests/e2e::e2e_s1_1_bare_type_int, tests/e2e::e2e_s1_1_bare_type_bool, tests/e2e::e2e_s1_1_bare_type_float, tests/e2e::e2e_s1_1_bare_type_string] |
 | user-defined type | [Tested tests/e2e::e2e_s1_1_bare_type_user_defined] |
-| related constructors | [R3 S14] |
-| related trait impls | [R3 S14] |
+| related constructors | [Tested tests/repl_experience::display_type_shows_related_constructors] |
+| related trait impls | [Tested+Neg tests/repl_experience::display_type_shows_related_trait_impls, tests/repl_experience::display_type_no_impls_omits_impl_section] |
 
 #### 4.1.4 Traits (deftrait) [Tested tests/e2e::e2e_s4_1_bare_trait_lookup]
 
@@ -705,20 +743,20 @@ Zero-arg macros expand immediately — they do not reach the lookup path.
 | macro shows clause signatures | [Tested tests/ring3_repl::r3_bare_macro_lookup] |
 | multi-clause macro | [Tested tests/ring3_repl::r3_bare_macro_lookup_multi_clause] |
 
-<!-- FIXME(/qa): Coverage gap — §4.1.7 annotated [R3 S14] but Ring 3 is complete. The section itself calls out a "Current gap" (line 713): "implementation skips primitives (DefKind::Primitive returns None). They MUST be shown like any other function." Need tests asserting bare-symbol lookup for primitives like `add-i64`, `str-concat` produces the universal format output per §1.1, §4.1.7. If the implementation gap is still present, the test should fail visibly (per feedback_failing_not_ignored.md). Filed by /spec during Sprint 56 close prior-ring audit. -->
-#### 4.1.7 Primitive Functions [R3 S14]
+#### 4.1.7 Primitive Functions [Tested+Neg tests/e2e.rs::e2e_s4_1_7_primitive_bare_symbol_lookup, tests/e2e.rs::e2e_s4_1_7_neg_primitive_lookup_not_empty]
 
-Primary line only. Classification `defn` (primitives are functions). Primitives are defined in the `primitives` module.
+Primary line only. Classification `primitive` (distinguishes builtins from user-defined `defn`). Primitives are defined in the `primitives` module.
 
 ```
 user> add-i64
-:(Fn [primitives/Int primitives/Int] primitives/Int) primitives/add-i64 ; defn
+:(Fn [primitives/Int primitives/Int] primitives/Int) primitives/add-i64 ; primitive ; Add
 
 user> str-concat
-:(Fn [primitives/String primitives/String] primitives/String) primitives/str-concat ; defn
+:(Fn [primitives/String primitives/String] primitives/String) primitives/str-concat ; primitive ; Concatenate two strings
 ```
 
-**Current gap**: The implementation skips primitives (`DefKind::Primitive` returns `None`). They MUST be shown like any other function.
+<!-- FIXME(/spec): §4.1.7 prose previously said classification was `defn`, but the implementation emits `primitive` and appends the builtin's docstring on a third `; <doc>` field. /qa updated the example output during Sprint 57 Wave 5 after verifying actual REPL behavior. If `primitive` is intentional (it distinguishes builtins from user-defined fns), update the §4.1 classification table accordingly. If `defn` is intentional, that's an /int gap. -->
+
 
 #### 4.1.8 Trait Methods (including operators) [Tested tests/e2e::e2e_s4_3_operator_plus_feedback]
 
@@ -870,8 +908,7 @@ Simple expressions (arithmetic, boolean logic, small function calls) MUST evalua
 
 After displaying a result, the next prompt MUST appear within **10ms**. There MUST be no perceptible delay between result display and prompt readiness.
 
-<!-- FIXME(/qa): Coverage gap — §7.4 Large Output annotated [R3 S8] but no tests found. A SHOULD-level requirement ("REPL SHOULD truncate output") would benefit from at least one test exercising a large Vec (e.g. 1000 elements) and asserting that output is bounded — even if the exact truncation threshold is implementation-defined. Filed by /spec during Sprint 56 close prior-ring audit. -->
-### 7.4 Large Output [R3 S8]
+### 7.4 Large Output [Tested tests/e2e.rs::e2e_s7_4_large_vec_output_is_bounded]
 
 When displaying large values (e.g., a Vec with 1000 elements), the REPL SHOULD truncate output with an indication of the total size rather than flooding the terminal. The truncation threshold is implementation-defined but SHOULD be configurable.
 
@@ -1082,13 +1119,11 @@ The TTY detection result SHOULD be computed once at startup and stored as a bool
 | Fully-qualified names | all output | | | | |
 | `Type.Constructor` notation | yes | | | | |
 
-## 11. Ring 3 REPL Requirements [R3 S11]
-<!-- Partial: §11.2–§11.4 tested, §11.1 (/expand) targeted for S16 -->
+## 11. Ring 3 REPL Requirements [Tested tests/e2e.rs::e2e_s11_1_expand_single_macro]
 
 Ring 3 introduces the macro system. The REPL MUST integrate macros into all existing introspection and display mechanisms so that macros are first-class citizens of the self-documentation experience.
 
-<!-- FIXME(/qa): Traceability gap — §11.1 annotated [R3 S16] but `/expand` tests exist and pass: tests/e2e.rs::e2e_s11_1_expand_single_macro (line 1278), e2e_s11_1_expand_nested_macros (1292), e2e_s11_1_expand_no_macro (1315), e2e_s11_1_neg_expand_non_macro_unchanged (1328). Update §11.1 heading to `[Tested+Neg tests/e2e.rs::e2e_s11_1_expand_single_macro, tests/e2e.rs::e2e_s11_1_neg_expand_non_macro_unchanged]`, and update table rows in §11.5 (lines 1199–1201) likewise. Filed by /spec during Sprint 56 close prior-ring audit. -->
-### 11.1 `/expand` Command [R3 S16]
+### 11.1 `/expand` Command [Tested+Neg tests/e2e.rs::e2e_s11_1_expand_single_macro, tests/e2e.rs::e2e_s11_1_neg_expand_non_macro_unchanged]
 
 The `/expand` (alias `/e`) command MUST accept a single S-expression form, perform recursive macro expansion to a fixed point (per spec Section 9.3.3), and display the fully expanded S-expression WITHOUT evaluating it.
 
@@ -1105,7 +1140,7 @@ If the input form contains no macro calls, `/expand` MUST display it unchanged. 
 
 The output MUST be a valid S-expression string. Fully-qualified constructor names generated by quasiquote expansion (e.g., `macros/SexpSym`) SHOULD be simplified to bare names when they are unambiguous in context.
 
-### 11.2 Macro Introspection [R3 S11]
+### 11.2 Macro Introspection [Tested tests/ring3_repl::r3_list_macros_category_via_symbol_table]
 
 Macros MUST appear in existing REPL introspection commands alongside functions and types.
 
@@ -1206,9 +1241,9 @@ The following test scenarios validate the Ring 3 REPL macro experience. Each MUS
 
 | # | Scenario | Expected Behavior | Spec Reference | Test |
 |---|---|---|---|---|
-| 1 | `/expand` with a single macro | Displays expanded form without evaluation | §11.1, §9.3.2 | [R3 S16] |
-| 2 | `/expand` with nested macros | Displays fully expanded form (recursive to fixed point) | §11.1, §9.3.3 | [R3 S16] |
-| 3 | `/expand` with no macro calls | Displays input unchanged | §11.1 | [R3 S16] |
+| 1 | `/expand` with a single macro | Displays expanded form without evaluation | §11.1, §9.3.2 | [Tested tests/e2e.rs::e2e_s11_1_expand_single_macro] |
+| 2 | `/expand` with nested macros | Displays fully expanded form (recursive to fixed point) | §11.1, §9.3.3 | [Tested tests/e2e.rs::e2e_s11_1_expand_nested_macros] |
+| 3 | `/expand` with no macro calls | Displays input unchanged | §11.1 | [Tested+Neg tests/e2e.rs::e2e_s11_1_expand_no_macro, tests/e2e.rs::e2e_s11_1_neg_expand_non_macro_unchanged] |
 | 4 | `/list` after `defmacro` | Macro appears under "Macros" category | §11.2.1, §3.3 | [Tested tests/ring3_repl::r3_list_macros_category_via_symbol_table] |
 | 5 | `/info` on a multi-clause macro | Shows universal format with clause signatures and docstring | §11.2.2 | [Tested tests/ring3_repl::r3_info_macro_clause_count] |
 | 6 | `/sig` on a variadic macro | Shows universal format with `& rest` clause signature | §11.2.3 | [Tested tests/ring3_repl::r3_sig_macro_variadic] |

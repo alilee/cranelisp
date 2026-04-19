@@ -537,6 +537,11 @@ fn run_tests_mixed_pass_fail() {
 }
 
 // spec: appendix-a-builtins — discover-tests special form returns IO(SList(Sexp))
+//
+// Sprint 57 Wave 6: eval unwraps IO inline, so the caller sees the unwrapped
+// inner type (SList(Sexp)). The IO-wrapped shape at the type-inference level
+// is covered by typecheck unit tests; at the eval boundary we assert the
+// unwrapped inner type.
 #[test]
 #[serial(trace)]
 fn run_tests_discover_tests_form_type() {
@@ -544,16 +549,18 @@ fn run_tests_discover_tests_form_type() {
     repl_eval(&mut s, "(import [primitives [discover-tests]])");
     // Define a test so there's something to discover
     repl_eval(&mut s, "(defn test-ok [] None)");
-    // (discover-tests) returns IO(SList(Sexp))
+    // (discover-tests) : IO(SList Sexp); eval unwraps to (SList Sexp).
     let (_val, ty) = repl_eval_typed(&mut s, "(discover-tests)");
     let ty_str = format!("{:?}", ty);
     assert!(
-        ty_str.contains("IO") && ty_str.contains("SList"),
-        "discover-tests should return IO(SList(Sexp)), got: {ty_str}"
+        ty_str.contains("SList") && !ty_str.contains("IO"),
+        "discover-tests IO(SList Sexp) must unwrap to SList Sexp; got: {ty_str}"
     );
 }
 
 // spec: appendix-a-builtins — run-test special form returns IO(TestResult)
+//
+// Sprint 57 Wave 6: eval unwraps IO inline; caller sees TestResult.
 #[test]
 #[serial(trace)]
 fn run_tests_run_test_form_type() {
@@ -561,11 +568,11 @@ fn run_tests_run_test_form_type() {
     repl_eval(&mut s, "(import [primitives [run-test]])");
     // Define a test function
     repl_eval(&mut s, "(defn test-ok [] None)");
-    // (run-test user/test-ok) takes a qualified name and returns IO(TestResult)
+    // (run-test user/test-ok) : IO(TestResult); eval unwraps to TestResult.
     let (_val, ty) = repl_eval_typed(&mut s, "(run-test user/test-ok)");
     let ty_str = format!("{:?}", ty);
     assert!(
-        ty_str.contains("IO") && ty_str.contains("TestResult"),
-        "run-test should return IO(TestResult), got: {ty_str}"
+        ty_str.contains("TestResult") && !ty_str.contains("IO"),
+        "run-test IO(TestResult) must unwrap to TestResult; got: {ty_str}"
     );
 }

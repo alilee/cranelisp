@@ -2,21 +2,33 @@
 //! bind/lambda forms into `Expr::ParBind` nodes for automatic IO scheduling.
 //!
 //! This pass runs after macro expansion and AST building, before typechecking.
-//! It requires a scheduling class registry populated during platform DLL loading.
+//! It reads each callee's scheduling class directly from the symbol-table
+//! entry (Sprint 57 Wave 3 G8 — `PlatformRegistry` was deleted and
+//! `scheduling_class` moved into `PrimitiveKind::PlatformEffect`).
 //!
 //! Algorithm (per design/int/bind-chain-analysis.md):
 //! 1. Detect the `bind` chain pattern: `Apply(Var("bind"), [io_expr, Lambda([name], body)])`.
 //! 2. Collect the flat list of `(name, io_expr)` steps plus the final body.
-//! 3. Classify each step's scheduling class via the registry.
+//! 3. Classify each step's scheduling class via the symbol tables.
 //! 4. Group data-independent, non-Sequential steps into `ParBind` nodes.
 //! 5. Rebuild the nested expression from the grouped segments.
 
 use std::collections::HashSet;
 
 use cranelisp_platform::SchedulingClass;
-use cranelisp_types::{Defn, Expr, MatchArm, Span, Symbol, TypeExpr, free_vars_expr};
+use cranelisp_types::{
+    DefKind, Defn, Expr, MatchArm, ModuleEntry, ModuleFullPath, PrimitiveKind, Span,
+    Symbol, SymbolTable, TypeExpr, free_vars_expr,
+};
 
-use crate::platform_registry::PlatformRegistry;
+/// Per-module symbol tables used for scheduling-class lookup.
+///
+/// After Sprint 57 Wave 3 G8 `bind_chain_analysis` walks the symbol tables
+/// directly — following `ModuleEntry::Import` chains to the defining
+/// `ModuleEntry::Def` and destructuring `DefKind::Primitive {
+/// primitive_kind: PrimitiveKind::PlatformEffect { scheduling_class }, .. }`
+/// to get the class. This replaces the previous `PlatformRegistry` side map.
+pub type SymbolTables = dashmap::DashMap<ModuleFullPath, SymbolTable>;
 
 // ---------------------------------------------------------------------------
 // Public entry point
@@ -26,28 +38,40 @@ use crate::platform_registry::PlatformRegistry;
 ///
 /// Takes ownership of the body via `std::mem::replace` with a dummy expression,
 /// transforms it, and puts the result back. The dummy is never observed.
-pub fn auto_schedule_defn(defn: &mut Defn, registry: &PlatformRegistry) {
+pub fn auto_schedule_defn(
+    defn: &mut Defn,
+    symbol_tables: &SymbolTables,
+    current_module: &ModuleFullPath,
+) {
     // Single-sig only (multi-sig functions are not auto-scheduled)
     assert!(!defn.is_multi_sig(), "auto_schedule_defn called on multi-sig defn");
     let body = std::mem::replace(
         &mut defn.variants[0].body,
         Expr::BoolLit { value: false, span: defn.span, inferred_type: None },
     );
-    defn.variants[0].body = transform_expr(body, registry);
+    defn.variants[0].body = transform_expr(body, symbol_tables, current_module);
 }
 
 /// Transform bind chains in a standalone expression (REPL eval path).
-pub fn auto_schedule_expr(expr: &mut Expr, registry: &PlatformRegistry) {
+pub fn auto_schedule_expr(
+    expr: &mut Expr,
+    symbol_tables: &SymbolTables,
+    current_module: &ModuleFullPath,
+) {
     let owned = std::mem::replace(
         expr,
         Expr::BoolLit { value: false, span: Span::SYNTHETIC, inferred_type: None },
     );
-    *expr = transform_expr(owned, registry);
+    *expr = transform_expr(owned, symbol_tables, current_module);
 }
 
 /// Transform bind chains in an owned expression (for DefnVariant bodies).
-pub fn auto_schedule_expr_owned(expr: Expr, registry: &PlatformRegistry) -> Expr {
-    transform_expr(expr, registry)
+pub fn auto_schedule_expr_owned(
+    expr: Expr,
+    symbol_tables: &SymbolTables,
+    current_module: &ModuleFullPath,
+) -> Expr {
+    transform_expr(expr, symbol_tables, current_module)
 }
 
 // ---------------------------------------------------------------------------
@@ -55,12 +79,16 @@ pub fn auto_schedule_expr_owned(expr: Expr, registry: &PlatformRegistry) -> Expr
 // ---------------------------------------------------------------------------
 
 /// Recursively transform an expression, optimizing bind chains into ParBind.
-fn transform_expr(expr: Expr, registry: &PlatformRegistry) -> Expr {
+fn transform_expr(
+    expr: Expr,
+    symbol_tables: &SymbolTables,
+    current_module: &ModuleFullPath,
+) -> Expr {
     if is_bind_chain_start(&expr) {
         let (chain, final_body) = collect_bind_chain(expr);
-        rebuild_chain(chain, final_body, registry)
+        rebuild_chain(chain, final_body, symbol_tables, current_module)
     } else {
-        recurse_children(expr, registry)
+        recurse_children(expr, symbol_tables, current_module)
     }
 }
 
@@ -134,25 +162,80 @@ fn collect_bind_chain(expr: Expr) -> (Vec<BindStep>, Expr) {
 /// Falls back to `Sequential` for anything other than a direct platform call.
 /// Only direct calls to platform functions are eligible — wrapper functions
 /// that call platform functions are conservatively treated as sequential.
-fn classify_expr(expr: &Expr, registry: &PlatformRegistry) -> SchedulingClass {
+///
+/// Reads the scheduling class via symbol-table lookup (Sprint 57 Wave 3 G8):
+/// resolves the callee's name in `current_module`, follows Import chains to the
+/// defining `ModuleEntry::Def`, and destructures
+/// `DefKind::Primitive { primitive_kind: PrimitiveKind::PlatformEffect { scheduling_class }, .. }`.
+fn classify_expr(
+    expr: &Expr,
+    symbol_tables: &SymbolTables,
+    current_module: &ModuleFullPath,
+) -> SchedulingClass {
     if let Expr::Apply { callee, .. } = expr
         && let Expr::Var { name, .. } = callee.as_ref()
     {
-        // Direct lookup via PlatformRegistry (bare name match across entries).
-        if let Some(sc) = registry.scheduling_class(name)
-            && sc != SchedulingClass::Sequential
-        {
-            return sc;
-        }
-        // Qualified name fallback: "platform.stdio/print" → "print".
+        // Qualified name "platform.stdio/print": split module/symbol and
+        // look up directly in the defining module.
         if let Some(pos) = name.rfind('/') {
-            let bare = Symbol::from(&name[pos + 1..]);
-            if let Some(sc) = registry.scheduling_class(&bare) {
+            let mod_part = ModuleFullPath::from(&name[..pos]);
+            let sym_part = &name[pos + 1..];
+            if let Some(sc) = scheduling_class_from_table(symbol_tables, &mod_part, sym_part) {
                 return sc;
             }
         }
+        // Bare name: resolve via the current module (follows Import chains).
+        if let Some(sc) = scheduling_class_from_table(symbol_tables, current_module, name.as_ref())
+        {
+            return sc;
+        }
     }
     SchedulingClass::Sequential
+}
+
+/// Resolve `name` in `module` (following Import/Reexport chains) and return
+/// its scheduling class if the entry is a `PlatformEffect` primitive.
+///
+/// Returns `None` if the name is absent, resolves to a non-`PlatformEffect`
+/// entry, or the Import chain does not terminate in a `Def`.
+fn scheduling_class_from_table(
+    symbol_tables: &SymbolTables,
+    module: &ModuleFullPath,
+    name: &str,
+) -> Option<SchedulingClass> {
+    fn walk(
+        tables: &SymbolTables,
+        module: &ModuleFullPath,
+        name: &str,
+        depth: usize,
+    ) -> Option<SchedulingClass> {
+        if depth > 16 {
+            return None;
+        }
+        let table = tables.get(module)?;
+        let entry = table.get(name)?;
+        match entry {
+            ModuleEntry::Def { kind, .. } => {
+                if let DefKind::Primitive {
+                    primitive_kind: PrimitiveKind::PlatformEffect { scheduling_class },
+                    ..
+                } = kind.as_ref()
+                {
+                    Some(*scheduling_class)
+                } else {
+                    None
+                }
+            }
+            ModuleEntry::Import { source } | ModuleEntry::Reexport { source } => {
+                let next_mod = source.module.clone();
+                let next_sym: String = source.symbol.as_ref().to_string();
+                drop(table);
+                walk(tables, &next_mod, &next_sym, depth + 1)
+            }
+            _ => None,
+        }
+    }
+    walk(symbol_tables, module, name, 0)
 }
 
 /// True if none of the names in `bound_names` appear free in `expr`.
@@ -207,14 +290,15 @@ fn flush_par_group(
 fn rebuild_chain(
     chain: Vec<BindStep>,
     final_body: Expr,
-    registry: &PlatformRegistry,
+    symbol_tables: &SymbolTables,
+    current_module: &ModuleFullPath,
 ) -> Expr {
     let mut segments: Vec<Segment> = Vec::new();
     let mut current_par: Vec<BindStep> = Vec::new();
     let mut bound_so_far: HashSet<Symbol> = HashSet::new();
 
     for (name, io_expr, annotation, span) in chain {
-        let sc = classify_expr(&io_expr, registry);
+        let sc = classify_expr(&io_expr, symbol_tables, current_module);
 
         // Names already committed + names in the current parallel group.
         let mut all_bound = bound_so_far.clone();
@@ -243,18 +327,20 @@ fn rebuild_chain(
     );
 
     // Rebuild from right to left: innermost expression is the transformed final_body.
-    let mut result = transform_expr(final_body, registry);
+    let mut result = transform_expr(final_body, symbol_tables, current_module);
     for segment in segments.into_iter().rev() {
         result = match segment {
             Segment::Sequential(name, io_expr, annotation, span) => {
-                let io_expr = transform_expr(io_expr, registry);
+                let io_expr = transform_expr(io_expr, symbol_tables, current_module);
                 make_bind(name, io_expr, annotation, result, span)
             }
             Segment::Parallel(bindings_with_span) => {
                 let span = bindings_with_span[0].2;
                 let bindings: Vec<(Symbol, Expr)> = bindings_with_span
                     .into_iter()
-                    .map(|(name, io_expr, _span)| (name, transform_expr(io_expr, registry)))
+                    .map(|(name, io_expr, _span)| {
+                        (name, transform_expr(io_expr, symbol_tables, current_module))
+                    })
                     .collect();
                 Expr::ParBind {
                     bindings,
@@ -305,45 +391,52 @@ fn make_bind(
 /// Recurse into sub-expressions without touching this node's structure.
 ///
 /// Called for any expression that is not itself a bind chain start.
-fn recurse_children(expr: Expr, registry: &PlatformRegistry) -> Expr {
+fn recurse_children(
+    expr: Expr,
+    symbol_tables: &SymbolTables,
+    current_module: &ModuleFullPath,
+) -> Expr {
     match expr {
         Expr::Let { bindings, body, span, inferred_type } => Expr::Let {
             bindings: bindings
                 .into_iter()
-                .map(|(n, v)| (n, transform_expr(v, registry)))
+                .map(|(n, v)| (n, transform_expr(v, symbol_tables, current_module)))
                 .collect(),
-            body: Box::new(transform_expr(*body, registry)),
+            body: Box::new(transform_expr(*body, symbol_tables, current_module)),
             span,
             inferred_type,
         },
         Expr::If { cond, then_branch, else_branch, span, inferred_type } => Expr::If {
-            cond: Box::new(transform_expr(*cond, registry)),
-            then_branch: Box::new(transform_expr(*then_branch, registry)),
-            else_branch: Box::new(transform_expr(*else_branch, registry)),
+            cond: Box::new(transform_expr(*cond, symbol_tables, current_module)),
+            then_branch: Box::new(transform_expr(*then_branch, symbol_tables, current_module)),
+            else_branch: Box::new(transform_expr(*else_branch, symbol_tables, current_module)),
             span,
             inferred_type,
         },
         Expr::Lambda { params, param_annotations, body, span, inferred_type } => Expr::Lambda {
             params,
             param_annotations,
-            body: Box::new(transform_expr(*body, registry)),
+            body: Box::new(transform_expr(*body, symbol_tables, current_module)),
             span,
             inferred_type,
         },
         Expr::Apply { callee, args, span, resolved_call, inferred_type } => Expr::Apply {
-            callee: Box::new(transform_expr(*callee, registry)),
-            args: args.into_iter().map(|a| transform_expr(a, registry)).collect(),
+            callee: Box::new(transform_expr(*callee, symbol_tables, current_module)),
+            args: args
+                .into_iter()
+                .map(|a| transform_expr(a, symbol_tables, current_module))
+                .collect(),
             span,
             resolved_call,
             inferred_type,
         },
         Expr::Match { scrutinee, arms, span, compiler_generated, inferred_type } => Expr::Match {
-            scrutinee: Box::new(transform_expr(*scrutinee, registry)),
+            scrutinee: Box::new(transform_expr(*scrutinee, symbol_tables, current_module)),
             arms: arms
                 .into_iter()
                 .map(|arm| MatchArm {
                     pattern: arm.pattern,
-                    body: transform_expr(arm.body, registry),
+                    body: transform_expr(arm.body, symbol_tables, current_module),
                     span: arm.span,
                 })
                 .collect(),
@@ -352,28 +445,31 @@ fn recurse_children(expr: Expr, registry: &PlatformRegistry) -> Expr {
             inferred_type,
         },
         Expr::VecLit { elements, span, inferred_type } => Expr::VecLit {
-            elements: elements.into_iter().map(|e| transform_expr(e, registry)).collect(),
+            elements: elements
+                .into_iter()
+                .map(|e| transform_expr(e, symbol_tables, current_module))
+                .collect(),
             span,
             inferred_type,
         },
         Expr::Annotate { annotation, expr, span, inferred_type } => Expr::Annotate {
             annotation,
-            expr: Box::new(transform_expr(*expr, registry)),
+            expr: Box::new(transform_expr(*expr, symbol_tables, current_module)),
             span,
             inferred_type,
         },
         Expr::ParBind { bindings, body, span, inferred_type } => Expr::ParBind {
             bindings: bindings
                 .into_iter()
-                .map(|(n, v)| (n, transform_expr(v, registry)))
+                .map(|(n, v)| (n, transform_expr(v, symbol_tables, current_module)))
                 .collect(),
-            body: Box::new(transform_expr(*body, registry)),
+            body: Box::new(transform_expr(*body, symbol_tables, current_module)),
             span,
             inferred_type,
         },
         Expr::Trace { modules, body, span, inferred_type } => Expr::Trace {
             modules,
-            body: Box::new(transform_expr(*body, registry)),
+            body: Box::new(transform_expr(*body, symbol_tables, current_module)),
             span,
             inferred_type,
         },
@@ -387,28 +483,28 @@ fn recurse_children(expr: Expr, registry: &PlatformRegistry) -> Expr {
 }
 
 // ---------------------------------------------------------------------------
-// Scheduling registry lookup
+// Scheduling lookup (symbol-table path)
 // ---------------------------------------------------------------------------
 
 /// Look up the scheduling class for a platform function name.
 ///
-/// Tries direct lookup first, then strips module qualifiers as a fallback
-/// (e.g., "platform.stdio/print" -> "print").
-pub fn scheduling_of(registry: &PlatformRegistry, name: &str) -> SchedulingClass {
-    let sym = Symbol::from(name);
-    if let Some(sc) = registry.scheduling_class(&sym)
-        && sc != SchedulingClass::Sequential
-    {
-        return sc;
-    }
-    // Qualified name fallback.
+/// Accepts either a qualified form (`platform.stdio/print`) or a bare name
+/// that resolves via the current module's imports. Returns `Sequential` when
+/// the name does not resolve to a `PlatformEffect` primitive.
+pub fn scheduling_of(
+    symbol_tables: &SymbolTables,
+    current_module: &ModuleFullPath,
+    name: &str,
+) -> SchedulingClass {
     if let Some(pos) = name.rfind('/') {
-        let bare = Symbol::from(&name[pos + 1..]);
-        if let Some(sc) = registry.scheduling_class(&bare) {
+        let mod_part = ModuleFullPath::from(&name[..pos]);
+        let sym_part = &name[pos + 1..];
+        if let Some(sc) = scheduling_class_from_table(symbol_tables, &mod_part, sym_part) {
             return sc;
         }
     }
-    SchedulingClass::Sequential
+    scheduling_class_from_table(symbol_tables, current_module, name)
+        .unwrap_or(SchedulingClass::Sequential)
 }
 
 // ---------------------------------------------------------------------------
@@ -418,7 +514,9 @@ pub fn scheduling_of(registry: &PlatformRegistry, name: &str) -> SchedulingClass
 #[cfg(test)]
 mod tests {
     use super::*;
-    use cranelisp_types::Span;
+    use cranelisp_types::{
+        FQSymbol, JitSymbol, PrimitiveKind, Scheme, Span, Symbol, Type, Visibility,
+    };
 
     fn make_var(name: &str) -> Expr {
         Expr::Var { name: Symbol::from(name), span: Span::SYNTHETIC, inferred_type: None }
@@ -457,13 +555,58 @@ mod tests {
         }
     }
 
-    fn commutative_registry() -> PlatformRegistry {
-        use cranelisp_types::{FQSymbol, ModuleFullPath};
-        PlatformRegistry::with_test_entries(vec![
-            (FQSymbol { module: ModuleFullPath::from("platform.test"), symbol: Symbol::from("get-time") }, SchedulingClass::Commutative),
-            (FQSymbol { module: ModuleFullPath::from("platform.test"), symbol: Symbol::from("http-get") }, SchedulingClass::Commutative),
-            (FQSymbol { module: ModuleFullPath::from("platform.test"), symbol: Symbol::from("print") }, SchedulingClass::Sequential),
-        ])
+    fn platform_effect_entry(sc: SchedulingClass) -> ModuleEntry {
+        ModuleEntry::Def {
+            scheme: Scheme {
+                vars: vec![],
+                constraints: std::collections::HashMap::new(),
+                ty: Type::Int,
+            },
+            visibility: Visibility::Public,
+            docstring: None,
+            param_names: vec![],
+            kind: Box::new(DefKind::Primitive {
+                primitive_kind: PrimitiveKind::PlatformEffect { scheduling_class: sc },
+                jit_name: Some(JitSymbol::from("test_fn")),
+            }),
+            callees: Vec::new(),
+            got_slot: None,
+            trait_origin: None,
+            ast: None,
+            code: None,
+            platform_fn_ptr: None,
+        }
+    }
+
+    /// Build a symbol table setup for bind-chain tests. Creates the
+    /// `platform.test` module with entries for `get-time`, `http-get`, and
+    /// `print`, plus a `user` module that imports all three bare.
+    fn commutative_tables() -> (SymbolTables, ModuleFullPath) {
+        let tables: SymbolTables = dashmap::DashMap::new();
+        let user_mod = ModuleFullPath::from("user");
+        let plat_mod = ModuleFullPath::from("platform.test");
+
+        let mut plat = SymbolTable::new(plat_mod.clone());
+        plat.insert(Symbol::from("get-time"), platform_effect_entry(SchedulingClass::Commutative));
+        plat.insert(Symbol::from("http-get"), platform_effect_entry(SchedulingClass::Commutative));
+        plat.insert(Symbol::from("print"), platform_effect_entry(SchedulingClass::Sequential));
+        tables.insert(plat_mod.clone(), plat);
+
+        let mut user = SymbolTable::new(user_mod.clone());
+        for name in &["get-time", "http-get", "print"] {
+            user.insert(
+                Symbol::from(*name),
+                ModuleEntry::Import {
+                    source: FQSymbol {
+                        module: plat_mod.clone(),
+                        symbol: Symbol::from(*name),
+                    },
+                },
+            );
+        }
+        tables.insert(user_mod.clone(), user);
+
+        (tables, user_mod)
     }
 
     // spec: 10-io §10.12.1 — pattern recognition
@@ -503,24 +646,24 @@ mod tests {
     // spec: 10-io §10.12.1 — scheduling classification
     #[test]
     fn test_classify_commutative() {
-        let registry = commutative_registry();
+        let (tables, m) = commutative_tables();
         let expr = make_apply("get-time", vec![]);
-        assert_eq!(classify_expr(&expr, &registry), SchedulingClass::Commutative);
+        assert_eq!(classify_expr(&expr, &tables, &m), SchedulingClass::Commutative);
     }
 
     #[test]
     fn test_classify_sequential_default() {
-        let registry = commutative_registry();
+        let (tables, m) = commutative_tables();
         let expr = make_apply("unknown-fn", vec![]);
-        assert_eq!(classify_expr(&expr, &registry), SchedulingClass::Sequential);
+        assert_eq!(classify_expr(&expr, &tables, &m), SchedulingClass::Sequential);
     }
 
     #[test]
     fn test_classify_qualified_name_fallback() {
-        let registry = commutative_registry();
+        let (tables, m) = commutative_tables();
         let expr = Expr::Apply {
             callee: Box::new(Expr::Var {
-                name: Symbol::from("platform.time/get-time"),
+                name: Symbol::from("platform.test/get-time"),
                 span: Span::SYNTHETIC,
                 inferred_type: None,
             }),
@@ -529,7 +672,7 @@ mod tests {
             resolved_call: None,
             inferred_type: None,
         };
-        assert_eq!(classify_expr(&expr, &registry), SchedulingClass::Commutative);
+        assert_eq!(classify_expr(&expr, &tables, &m), SchedulingClass::Commutative);
     }
 
     // spec: 10-io §10.12.1 — independence check
@@ -550,7 +693,7 @@ mod tests {
     // spec: 10-io §10.12.1 — two commutative independent steps become ParBind
     #[test]
     fn test_two_commutative_independent_become_par_bind() {
-        let registry = commutative_registry();
+        let (tables, m) = commutative_tables();
         // (bind (get-time) (fn [t1] (bind (http-get "url") (fn [t2] body))))
         let inner = make_bind_expr(
             make_apply("http-get", vec![make_var("url")]),
@@ -562,7 +705,7 @@ mod tests {
             "t1",
             inner,
         );
-        let result = transform_expr(expr, &registry);
+        let result = transform_expr(expr, &tables, &m);
         // Should produce a ParBind with 2 bindings.
         match &result {
             Expr::ParBind { bindings, .. } => {
@@ -577,7 +720,7 @@ mod tests {
     // spec: 10-io §10.12.1 — sequential stays sequential
     #[test]
     fn test_sequential_stays_sequential() {
-        let registry = commutative_registry();
+        let (tables, m) = commutative_tables();
         // (bind (print "hi") (fn [_] (bind (print "bye") (fn [_] 0))))
         let inner = make_bind_expr(
             make_apply("print", vec![make_var("s2")]),
@@ -589,7 +732,7 @@ mod tests {
             "_a",
             inner,
         );
-        let result = transform_expr(expr, &registry);
+        let result = transform_expr(expr, &tables, &m);
         // Should remain as nested Apply (no ParBind).
         assert!(!matches!(result, Expr::ParBind { .. }));
     }
@@ -597,7 +740,7 @@ mod tests {
     // spec: 10-io §10.12.1 — dependent commutative stays sequential
     #[test]
     fn test_dependent_commutative_stays_sequential() {
-        let registry = commutative_registry();
+        let (tables, m) = commutative_tables();
         // (bind (get-time) (fn [t1] (bind (http-get t1) (fn [t2] body))))
         // t1 appears free in the second io_expr → dependent → no parallelism.
         let inner = make_bind_expr(
@@ -610,28 +753,30 @@ mod tests {
             "t1",
             inner,
         );
-        let result = transform_expr(expr, &registry);
+        let result = transform_expr(expr, &tables, &m);
         assert!(!matches!(result, Expr::ParBind { .. }));
     }
 
     // spec: 10-io §10.12.1 — single-element group demotion
     #[test]
     fn test_single_element_demoted() {
-        let registry = commutative_registry();
+        let (tables, m) = commutative_tables();
         // Single bind step — should not produce ParBind.
         let expr = make_bind_expr(
             make_apply("get-time", vec![]),
             "t1",
             make_int(0),
         );
-        let result = transform_expr(expr, &registry);
+        let result = transform_expr(expr, &tables, &m);
         assert!(!matches!(result, Expr::ParBind { .. }));
     }
 
-    // spec: 10-io §10.12 — empty registry skips analysis
+    // spec: 10-io §10.12 — empty tables skips analysis
     #[test]
-    fn test_empty_registry_no_transform() {
-        let registry = PlatformRegistry::new();
+    fn test_empty_tables_no_transform() {
+        let tables: SymbolTables = dashmap::DashMap::new();
+        let m = ModuleFullPath::from("user");
+        tables.insert(m.clone(), SymbolTable::new(m.clone()));
         let inner = make_bind_expr(
             make_apply("get-time", vec![]),
             "t2",
@@ -642,26 +787,63 @@ mod tests {
             "t1",
             inner,
         );
-        let result = transform_expr(expr, &registry);
-        // With empty registry, all calls are Sequential → no ParBind.
+        let result = transform_expr(expr, &tables, &m);
+        // With no platform entries, all calls are Sequential → no ParBind.
         assert!(!matches!(result, Expr::ParBind { .. }));
     }
 
     // spec: 10-io §10.12.1 — scheduling_of lookup
     #[test]
     fn test_scheduling_of_bare_name() {
-        let registry = commutative_registry();
-        assert_eq!(scheduling_of(&registry, "get-time"), SchedulingClass::Commutative);
-        assert_eq!(scheduling_of(&registry, "print"), SchedulingClass::Sequential);
-        assert_eq!(scheduling_of(&registry, "unknown"), SchedulingClass::Sequential);
+        let (tables, m) = commutative_tables();
+        assert_eq!(scheduling_of(&tables, &m, "get-time"), SchedulingClass::Commutative);
+        assert_eq!(scheduling_of(&tables, &m, "print"), SchedulingClass::Sequential);
+        assert_eq!(scheduling_of(&tables, &m, "unknown"), SchedulingClass::Sequential);
     }
 
     #[test]
     fn test_scheduling_of_qualified_name() {
-        let registry = commutative_registry();
+        let (tables, m) = commutative_tables();
         assert_eq!(
-            scheduling_of(&registry, "platform.time/get-time"),
+            scheduling_of(&tables, &m, "platform.test/get-time"),
             SchedulingClass::Commutative,
+        );
+    }
+
+    // spec: design/int/platform-registry-removal.md §9.1 —
+    // bind_chain_analysis reads scheduling_class from ModuleEntry::Def
+    // (post-G8 migration: no PlatformRegistry).
+    #[test]
+    fn bind_chain_analysis_reads_scheduling_class_from_entry() {
+        // Only a single platform-effect entry carrying SchedulingClass::Commutative
+        // is needed. Build it minimally and verify the reader path via the
+        // symbol-table lookup.
+        let tables: SymbolTables = dashmap::DashMap::new();
+        let m = ModuleFullPath::from("caller");
+        let plat = ModuleFullPath::from("platform.t");
+        let mut pst = SymbolTable::new(plat.clone());
+        pst.insert(
+            Symbol::from("op"),
+            platform_effect_entry(SchedulingClass::Commutative),
+        );
+        tables.insert(plat.clone(), pst);
+        let mut cst = SymbolTable::new(m.clone());
+        cst.insert(
+            Symbol::from("op"),
+            ModuleEntry::Import {
+                source: FQSymbol { module: plat.clone(), symbol: Symbol::from("op") },
+            },
+        );
+        tables.insert(m.clone(), cst);
+
+        // Classify a direct call to `op` — must pick up the Commutative class
+        // via the Import-chain walk.
+        let expr = make_apply("op", vec![]);
+        assert_eq!(
+            classify_expr(&expr, &tables, &m),
+            SchedulingClass::Commutative,
+            "classify_expr should read SchedulingClass::Commutative through the Import chain \
+             to the PlatformEffect entry"
         );
     }
 }

@@ -29,33 +29,16 @@ pub const IO_EFFECT_RESOURCE_OFFSET: i64 = 16;
 
 /// Scheduling class for a platform function, declared in the platform manifest.
 ///
-/// Controls how `bind!` chains are compiled and how the IO trampoline
-/// schedules parallel execution.
-#[repr(u32)]
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum SchedulingClass {
-    /// Always execute in order relative to other effects -- global shared resource
-    /// (e.g. stdin, stdout, a global log). Never placed in a Par node.
-    #[default]
-    Sequential = 0,
-    /// Fully independent -- no shared state between calls. Always safe to parallelize
-    /// with other Commutative effects (e.g. HTTP requests, time queries, `open`).
-    Commutative = 1,
-    /// Parallel across different resource tokens; sequential within the same token.
-    /// The platform function sets the token via `CLIO::effect_on_resource(token, ...)`.
-    ResourceSerial = 2,
-}
-
-impl SchedulingClass {
-    /// Convert a u32 discriminant to SchedulingClass, defaulting to Sequential on unknown values.
-    pub fn from_u32(v: u32) -> Self {
-        match v {
-            1 => Self::Commutative,
-            2 => Self::ResourceSerial,
-            _ => Self::Sequential,
-        }
-    }
-}
+/// Re-exported from `cranelisp-types` (Sprint 57 Wave 3 step A, Decision 26).
+/// The canonical definition lives at the bottom of the dependency DAG
+/// (`cranelisp_types::scheduling::SchedulingClass`) because it must appear
+/// both on `PrimitiveKind::PlatformEffect` (a `cranelisp-types` variant
+/// field) and in the C-ABI-adjacent surface here. A `cranelisp-types ->
+/// cranelisp-platform` edge would invert the DAG and violate Principle 3.
+///
+/// External consumers (platform DLLs, `declare_platform!` macro users)
+/// continue to import `cranelisp_platform::SchedulingClass` unchanged.
+pub use cranelisp_types::SchedulingClass;
 
 /// Heap header size: `[i64 total_size][i64 rc]` = 16 bytes.
 /// The host allocator returns payload pointer = base + HEAP_HEADER_SIZE.

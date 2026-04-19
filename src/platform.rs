@@ -31,8 +31,13 @@ pub struct LoadedPlatform {
 
 // SAFETY: LoadedPlatform holds a Library handle whose code segment is mapped
 // for the process lifetime (DLLs are never unloaded). Function pointers into
-// the code segment are valid from any thread.
+// the code segment are valid from any thread. The `_library` field is never
+// read after construction — only its drop side effect (unloading the DLL) is
+// load-bearing. `OwnedPlatformFnDescriptor` fields are `String`/`usize`/`*const`
+// and are read-only after manifest parsing. Send+Sync are needed for retention
+// in `SharedState::kept_dlls: Mutex<Vec<LoadedPlatform>>`.
 unsafe impl Send for LoadedPlatform {}
+unsafe impl Sync for LoadedPlatform {}
 
 /// Platform extension for the current OS.
 #[cfg(target_os = "macos")]
@@ -257,13 +262,17 @@ pub fn register_platform_in_tc(
                     },
                     param_names,
                     kind: Box::new(DefKind::Primitive {
-                        primitive_kind: PrimitiveKind::PlatformEffect,
+                        primitive_kind: PrimitiveKind::PlatformEffect {
+                            scheduling_class: desc.scheduling_class,
+                        },
                         jit_name: Some(JitSymbol::from(desc.jit_name.as_str())),
                     }),
                     callees: Vec::new(),
                     got_slot: None,
                     trait_origin: None,
                     ast: None,
+                    code: None,
+                    platform_fn_ptr: None,
                 },
             );
         }
@@ -712,7 +721,7 @@ mod tests {
                 }
                 _ => panic!("expected Fn type for print"),
             }
-            assert!(matches!(kind.as_ref(), DefKind::Primitive { primitive_kind: PrimitiveKind::PlatformEffect, .. }));
+            assert!(matches!(kind.as_ref(), DefKind::Primitive { primitive_kind: PrimitiveKind::PlatformEffect { .. }, .. }));
             assert!(docstring.is_some());
         } else {
             panic!("expected Def entry for print");

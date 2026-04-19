@@ -426,13 +426,21 @@ impl CompileScheduler {
 
     /// Return the highest-priority work item, blocking if none available.
     ///
-    /// Parks on `priority_work_available` condvar when no work is available
-    /// and more work could still arrive (modules in TypecheckWorking or
-    /// TypecheckBlocked). Returns None on shutdown or when all work is
-    /// exhausted.
+    /// Parks on `priority_work_available` condvar when no work is available,
+    /// and only returns `None` when shutdown is signalled. Persistent
+    /// priority workers (Sprint 57 Wave 4 G9) call this in their main loop
+    /// and stay parked for the session lifetime — new modules may be
+    /// registered at any time, so "no pending work" is not a terminal
+    /// condition.
     ///
-    /// Used by spawned priority worker threads (Wave 3+). The inline
-    /// single-threaded loop uses the non-blocking `take_priority_work`.
+    /// Prior to Wave 4, this method also exited on `all_inmem_complete` so
+    /// that scoped-thread workers could finish when the scope had no more
+    /// work. Persistent workers invalidate that exit path: a session may be
+    /// temporarily idle, then receive a new `register_module` /
+    /// `reload_module` request, which must wake the parked worker.
+    ///
+    /// The inline single-threaded loop (`priority_worker_loop` in worker.rs)
+    /// still uses the non-blocking `take_priority_work`.
     pub fn take_priority_work_blocking(&self) -> Option<PriorityWork> {
         let mut state = self.lock();
         loop {
@@ -444,13 +452,9 @@ impl CompileScheduler {
                 return Some(work);
             }
 
-            // Check if all work is exhausted — no more items will arrive.
-            if Self::all_inmem_complete_locked(&state) {
-                return None;
-            }
-
             // No work available — park until woken by register_module,
-            // unblock, notify_typecheck_done, or shutdown.
+            // unblock, notify_typecheck_done, or shutdown. We do NOT exit
+            // on "all work complete" — see Wave 4 doc comment above.
             state = self.priority_work_available.wait(state)
                 .unwrap_or_else(|e| e.into_inner());
         }
@@ -1062,6 +1066,11 @@ impl CompileScheduler {
     /// - All modules TypecheckDone/Complete/Failed: no more work.
     /// - Some modules TypecheckBlocked with nothing to unblock them:
     ///   no active workers means no new notifications will come.
+    ///
+    /// Retained after Sprint 57 Wave 4 G9 removed its only caller — future
+    /// callers (object-codegen exhaustion, hot-flush promotion) may want
+    /// the same check. Kept for documentation + possible re-use.
+    #[allow(dead_code)]
     fn all_inmem_complete_locked(state: &SchedulerState) -> bool {
         // If queues have items, work is available (covered by the
         // try_take logic above, but double-check for completeness).
@@ -1632,6 +1641,11 @@ mod tests {
 
         let shared = Arc::new(crate::session_v4::SharedState {
             scheduler: CompileScheduler::new(),
+            project_root: std::path::PathBuf::new(),
+            lib_dirs: Mutex::new(Vec::new()),
+            platform_dirs: Mutex::new(Vec::new()),
+            module_sexps: Mutex::new(std::collections::HashMap::new()),
+            suspend_states: Mutex::new(std::collections::HashMap::new()),
             cache_dir: None,
             compiled_o_paths: Mutex::new(Vec::new()),
             promote_nice_workers: AtomicBool::new(false),
@@ -1644,7 +1658,9 @@ mod tests {
             repl_check_state: Mutex::new(None),
             typecheck_products: dashmap::DashMap::new(),
             codegen_programs: dashmap::DashMap::new(),
-            codegen_products: dashmap::DashMap::new(),
+            kept_jits: Mutex::new(Vec::new()),
+            kept_linkers: Mutex::new(Vec::new()),
+            kept_dlls: Mutex::new(Vec::new()),
             introspection: dashmap::DashMap::new(),
             module_structures: dashmap::DashMap::new(),
         });

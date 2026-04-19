@@ -139,7 +139,7 @@ The AST builder transforms `Sexp` trees into `Expr` and `TopLevel` AST nodes. Ri
 | `Sexp::Bracket(elems, span)` in expr position | **Rejected** in Ring 0 (clear error: "Vec literals not yet supported") | 1 | 4.10 |
 | `(vec ...)` | **Rejected** in Ring 0 | 1 | 4.10 |
 | `(trace ...)` | **Rejected** in Ring 0 | 4 | 12 |
-| `(run-tests ...)` | **Rejected** in Ring 0 | 4 | N/A |
+
 
 ### 3.2 Annotation Handling
 
@@ -411,7 +411,7 @@ Integration tests (owned by `/qa`) will exercise the full parse-then-build pipel
 
 3. **`desugar.rs`**: Port `desugar_type_def()` from `sketch/src/ast.rs`. Adapt for `Symbol`/`TypeName` newtypes.
 
-4. **`ast_builder.rs`**: Port expression builders from `sketch/src/ast_builder.rs`. Add Ring 0 rejection errors for `Sexp::Str`, `VecLit`, `trace`, `run-tests`, `par-let`. Port and adapt unit tests.
+4. **`ast_builder.rs`**: Port expression builders from `sketch/src/ast_builder.rs`. Add Ring 0 rejection errors for `Sexp::Str`, `VecLit`, `trace`, `par-let`. Port and adapt unit tests.
 
 5. **Wiring**: Update `lib.rs` with public re-exports. Verify `cargo check` passes for the `cranelisp-frontend` crate in isolation.
 

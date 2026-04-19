@@ -33,6 +33,7 @@ Ring 0 does NOT include:
 - Modules (beyond the implicit `"user"` module)
 - Macros
 - IO, trace, run-tests
+<!-- FIXME(/backend): Above line lists `run-tests` as a Ring 4 feature, but the `(run-tests init pass-fn fail-fn)` special form has been retired — replaced by the `discover-tests` / `run-test` builtins (spec/appendix-a-builtins.md §A). Update to list the builtins (or drop run-tests from the line). Also see line 613: `HIGH-4: compile_run_tests is 233 lines` — that deferral is moot because the special form no longer exists; confirm `compile_run_tests` is deleted from the backend tree or update the resolution line. Filed Sprint 57 planning. -->
 - Caching, linking, executable generation
 
 ---

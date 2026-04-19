@@ -204,29 +204,31 @@ impl WorkerJitState {
 
 ## 5. JIT Lifecycle Audit
 
-### Finding
+> **2026-04-19 reconciliation (Decision 31).** This section previously discussed a `JITModule::finish()` API that does not exist in Cranelift 0.116. The canonical framing is now: `Arc<Jit>` on each `ModuleEntry::Def.code`, custom `Drop` on the `Jit` wrapper calls `unsafe JITModule::free_memory()`, per-batch reclaim when the Arc refcount hits zero. The `kept_jits` vector in earlier sections of this document is superseded by that mechanism. The material below is retained for historical context and is no longer the target design.
+
+### Finding (historical)
 
 The `Jit` struct wraps `cranelift_jit::JITModule`. The code calls `self.module.finalize_definitions()` in `Jit::finalize()` (line 451 of `jit.rs`). It does NOT call `JITModule::finish()`.
 
-Cranelift's `JITModule` has two relevant methods:
+**Correction (2026-04-19)**: Cranelift 0.116 does NOT expose a `finish()` method on `JITModule`. The method this section assumed is not present in the version we depend on — grep `cranelift-jit-0.116.1/src/backend.rs` for `fn finish` returns zero matches. The two relevant methods that DO exist are:
+
 - `finalize_definitions()` — patches relocations and makes code executable. Code pointers are valid after this call.
-- `finish()` — consumes the `JITModule`, leaking the underlying code memory so it is never freed. After `finish()`, the returned `ManuallyDrop<JITModule>` can be dropped without invalidating code.
+- `free_memory(self) -> ()` (`unsafe`) — consumes the `JITModule` and frees its executable memory. Documented at `cranelift-jit-0.116.1/src/backend.rs:219` with the contract: "none of the functions from that module are currently executing and none of the `fn` pointers are called afterwards."
 
-Since the codebase calls `finalize_definitions()` but NOT `finish()`, the `JITModule` still owns the code memory. If the `Jit` (and its `JITModule`) is dropped, Cranelift will free the code pages, invalidating all function pointers derived from that JIT instance.
+And critically, `Memory::drop` leaks on purpose (`cranelift-jit-0.116.1/src/memory.rs:269-276`) — the default drop path does NOT free pages. So to actually reclaim executable memory, callers MUST explicitly invoke `unsafe JITModule::free_memory(self)` when the fn-pointer-reachability contract is upheld.
 
-This is why `InMemWorkerState.jit_modules: Vec<Jit>` exists — keeping JIT instances alive prevents their code memory from being freed. The GOT holds raw pointers into this memory.
+### Target mechanism (Decision 31)
 
-### Consequence for Multi-Threaded Workers
+- `Jit` is a thin newtype wrapping `ManuallyDrop<JITModule>` with a custom `Drop` that calls `unsafe JITModule::free_memory()`.
+- Each `ModuleEntry::Def.code` holds `Arc<Jit>` — N functions produced by one `compile_to_module` call share one underlying `Jit`.
+- When every `Code` entry referencing a particular `Arc<Jit>` is dropped (evicted / redefined in the REPL), the Arc refcount reaches zero, the `Jit` `Drop` fires, and `free_memory` reclaims the batch's pages.
+- Safety contract upheld by: (a) every code pointer either lives on a `ModuleEntry::Def.code` (refcount > 0) or is ephemeral; (b) GOT slots are atomically swapped to new code before the old Arc can drop; (c) user-returned `fn` values are heap closures calling through the GOT, not raw code pointers.
 
-Per-worker JIT instances MUST be kept alive for the process lifetime. The `drain_to_shared()` mechanism in Section 4 handles this: after codegen, workers move their JIT instances to `SharedCodegenState.kept_jits`, which lives on `CompilerSession` for the session's lifetime.
+Per-worker batch JITs under this scheme are stack-local during `compile_to_module`; the worker moves the `Arc<Jit>` onto each produced `Code` entry and returns to the priority ladder. There is no `kept_jits` vector, no `drain_to_shared` step, and no need for workers to hold long-lived JIT state.
 
-### Alternative: Call `finish()`
+The earlier `kept_jits`/`drain_to_shared` design (below in this document) is superseded. It was a correct workaround given a misunderstanding of Cranelift's drop semantics (assumed default drop would invalidate pointers); the real behaviour is the opposite — default drop leaks, and explicit `free_memory` is required. The Decision 31 mechanism is the canonical reclaim path.
 
-Calling `JITModule::finish()` would leak the code memory intentionally, allowing JIT instances to be dropped without invalidating pointers. This would eliminate the need for `kept_jits` entirely.
-
-However, this is a `/backend` change to `Jit`, not an `/int` change. The current design (drain to shared) works correctly with the existing `Jit` API. If `/backend` adds a `Jit::finish()` wrapper in the future, `kept_jits` can be removed and `drain_to_shared` simplified to only handle linkers.
-
-**Decision**: Keep the drain-to-shared approach. It works with the current API. File a `FIXME(/backend)` on `jit.rs` noting that calling `JITModule::finish()` after finalization would simplify lifetime management.
+**FIXME(/backend)**: implement the custom `Drop` on `Jit` (in `crates/cranelisp-backend/src/jit.rs`) that calls `unsafe JITModule::free_memory()`. The safety proof is the Arc-refcount-zero + symbol-table-and-GOT-discipline invariant from Decision 31. The previously-filed `FIXME(/backend)` about adding a `Jit::finish()` wrapper is re-aimed at this target.
 
 ## 6. GOT Slot Assignment
 

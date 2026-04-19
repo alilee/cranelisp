@@ -31,7 +31,7 @@ use cranelift_module::FuncId;
 use dashmap::DashMap;
 
 use cranelisp_types::{
-    CranelispError, Defn, ModuleFullPath, Span, Symbol, SymbolTable, Type, Warning,
+    Code, CranelispError, Defn, ModuleFullPath, Span, Symbol, SymbolTable, Type, Warning,
 };
 
 use cranelift::prelude::*;
@@ -78,6 +78,71 @@ pub struct CompilationResult {
     pub warnings: Vec<Warning>,
 }
 
+/// Capability extension for the `Module` trait: post-finalize code access.
+///
+/// `cranelift_module::Module` does NOT expose `finalize_definitions` or
+/// `get_finalized_function` — those are inherent methods on specific
+/// implementations (`JITModule`) and absent from others (`ObjectModule`,
+/// whose output is bytes via `finish().emit()`, not runtime pointers).
+///
+/// Per `design/backend/compile-to-module.md` §9.1.6 and `/arch` Decision 23,
+/// the JIT/Object split is a capability difference expressed on the `Module`
+/// implementation — not a mode parameter on `compile_to_module`. This trait
+/// provides that capability: `JITModule` implements it with the real
+/// operations; `ObjectModule` implements it with no-ops that surface `None`
+/// so the G6 write loop skips the per-entry pointer store in object mode.
+///
+/// Any new `Module` implementation that `compile_to_module` is asked to
+/// target must provide an impl — either the "real" one (if it has runtime
+/// code pointers) or a no-op stub (if it has no post-finalize pointer, e.g.,
+/// an emitter that produces bytes).
+pub trait CodeFinalizer {
+    /// Finalize pending definitions so that code pointers become readable.
+    /// For `JITModule`: patches relocations, makes mmap'd pages executable.
+    /// For `ObjectModule`: no-op (bytes are emitted via a later `finish()`).
+    ///
+    /// Called once per `compile_to_module` invocation after all `define_function`
+    /// calls complete. Implementations that cannot finalize (e.g., already
+    /// finalized) should return an error, not silently succeed.
+    fn finalize_for_code_read(&mut self) -> Result<(), CranelispError>;
+
+    /// Read a finalized code pointer for the given `FuncId`, if this module
+    /// exposes runtime pointers. Returns `None` on implementations that have
+    /// no such concept (`ObjectModule`), which gates the G6 write loop to JIT
+    /// mode only (per §9.1.6).
+    ///
+    /// Only valid after `finalize_for_code_read()` has returned `Ok`.
+    fn try_get_finalized_function(&self, func_id: FuncId) -> Option<*const u8>;
+}
+
+impl CodeFinalizer for cranelift_jit::JITModule {
+    fn finalize_for_code_read(&mut self) -> Result<(), CranelispError> {
+        self.finalize_definitions().map_err(|e| CranelispError::CodegenError {
+            message: format!("failed to finalize JIT definitions: {e}"),
+            span: Span::SYNTHETIC,
+        })
+    }
+
+    fn try_get_finalized_function(&self, func_id: FuncId) -> Option<*const u8> {
+        Some(self.get_finalized_function(func_id))
+    }
+}
+
+impl CodeFinalizer for cranelift_object::ObjectModule {
+    fn finalize_for_code_read(&mut self) -> Result<(), CranelispError> {
+        // No-op: ObjectModule output is bytes via `finish().emit()`, not
+        // runtime code pointers. Finalization happens at byte-emit time, not
+        // here. See §9.1.6 of compile-to-module.md.
+        Ok(())
+    }
+
+    fn try_get_finalized_function(&self, _func_id: FuncId) -> Option<*const u8> {
+        // No runtime pointer exists for object-mode compilation. The G6 write
+        // loop skips the per-entry code write when this returns None.
+        None
+    }
+}
+
 /// Compile the functions named by `names` (all inside `module_path`) into a
 /// Cranelift module.
 ///
@@ -94,7 +159,18 @@ pub struct CompilationResult {
 ///   `JITBuilder::symbol_lookup_fn` for JIT — caller's responsibility)
 /// - Cross-module refs: resolved from `symbol_tables` Import chains
 /// - JIT name prefix: derived from `module_path`
-pub fn compile_to_module<M: Module>(
+///
+/// # G6 write path
+///
+/// After `define_function` completes for every name in `names`, the function
+/// calls `module.finalize_for_code_read()` and — for JIT-capable modules —
+/// reads each finalized code pointer and writes it onto the corresponding
+/// `ModuleEntry::Def.code` in `symbol_tables[module_path]` before returning.
+/// For `ObjectModule`, the capability call returns `None` and the write loop
+/// is skipped (no runtime pointer exists). See §9.1 of
+/// `design/backend/compile-to-module.md` and `/arch` Decision 25 for the
+/// architectural statement.
+pub fn compile_to_module<M: Module + CodeFinalizer>(
     module_path: ModuleFullPath,
     names: &[Symbol],
     symbol_tables: &DashMap<ModuleFullPath, SymbolTable>,
@@ -285,6 +361,61 @@ pub fn compile_to_module<M: Module>(
         })
         .collect();
 
+    // Step 4: Finalize definitions.
+    // For JITModule: patches relocations, makes code pages executable.
+    // For ObjectModule: no-op (bytes emitted at a later `finish()` call).
+    module.finalize_for_code_read()?;
+
+    // Step 5 (G6): Write compiled-code pointers onto ModuleEntry::Def.code.
+    // See design/backend/compile-to-module.md §9.1.3 for the lifecycle
+    // and §9.1.6 for object-mode gating (try_get_finalized_function returns
+    // None for ObjectModule, which is the capability-based skip).
+    //
+    // Failure semantics (§9.1.4): per-symbol writes are best-effort atomic
+    // at the `CompilationResult` level — a missing entry or wrong variant
+    // at this point is a `defined_symbols()` contract violation and produces
+    // a CodegenError naming the offending symbol.
+    {
+        let mut table = symbol_tables.get_mut(&module_path).ok_or_else(|| {
+            CranelispError::CodegenError {
+                message: format!(
+                    "compile_to_module: no symbol table for module '{module_path}' at G6 write"
+                ),
+                span: Span::SYNTHETIC,
+            }
+        })?;
+        for defn in &defns {
+            let Some(&func_id) = func_ids.get(&defn.name) else {
+                continue;
+            };
+            let Some(ptr) = module.try_get_finalized_function(func_id) else {
+                // Object-mode path: no runtime pointer exists; skip the
+                // per-entry write. `code` stays `None` on every entry.
+                break;
+            };
+            let entry = table.symbols.get_mut(defn.name.as_ref()).ok_or_else(|| {
+                CranelispError::CodegenError {
+                    message: format!(
+                        "compile_to_module: symbol '{}' vanished from module '{module_path}' between compile and G6 write",
+                        defn.name
+                    ),
+                    span: defn.span,
+                }
+            })?;
+            if let cranelisp_types::ModuleEntry::Def { code, .. } = entry {
+                *code = Some(Code::new(ptr));
+            } else {
+                return Err(CranelispError::CodegenError {
+                    message: format!(
+                        "compile_to_module: symbol '{}' in module '{module_path}' is not a Def at G6 write (wrong ModuleEntry variant)",
+                        defn.name
+                    ),
+                    span: defn.span,
+                });
+            }
+        }
+    }
+
     Ok(CompilationResult {
         func_ids: result_func_ids,
         artifacts,
@@ -388,12 +519,35 @@ mod tests {
     use super::*;
     use crate::jit::Jit;
     use cranelisp_types::{
-        CheckResult, Defn, DefnVariant, Expr, Program, Span, Symbol, TopLevel, Visibility,
+        Defn, DefnVariant, DisplayInfo, Expr, MethodResolutions, MonoDefn, Program, Span, Symbol,
+        TopLevel, Visibility,
     };
     use std::collections::{HashMap, HashSet};
 
-    fn empty_check() -> CheckResult {
-        CheckResult {
+    /// Test-only aggregate bridging hand-built `Defn`s through side-map
+    /// enrichment to the post-Phase-2 backend API. Carries the fields that
+    /// the boundary `CheckResult` will retire in Wave 2 step 4 (slim-down to
+    /// `{ warnings, display }`).
+    ///
+    /// Rationale: per `design/typecheck/ast-annotation.md` §10.2.5, the 20+
+    /// `#[cfg(test)]` hits that legacy-constructed `CheckResult` literals now
+    /// use this helper so the Wave 2 slim-down can land cleanly without a
+    /// red build window. The shape mirrors the current public `CheckResult`
+    /// field-for-field so the mechanical rewrite is a rename, not a redesign.
+    struct TestCheckResult {
+        method_resolutions: MethodResolutions,
+        constrained_fn_names: HashSet<Symbol>,
+        mono_defns: Vec<MonoDefn>,
+        expr_types: HashMap<Span, Type>,
+        default_method_defns: Vec<Defn>,
+        #[allow(dead_code)]
+        warnings: Vec<Warning>,
+        #[allow(dead_code)]
+        display: Option<DisplayInfo>,
+    }
+
+    fn empty_check() -> TestCheckResult {
+        TestCheckResult {
             method_resolutions: HashMap::new(),
             constrained_fn_names: HashSet::new(),
             mono_defns: Vec::new(),
@@ -528,6 +682,8 @@ mod tests {
             got_slot: None,
             trait_origin: None,
             ast: Some(defn),
+            code: None,
+            platform_fn_ptr: None,
         }
     }
 
@@ -539,7 +695,7 @@ mod tests {
     /// CheckResult-free API).
     fn test_compile_and_run(
         expr: &Expr,
-        check: &CheckResult,
+        check: &TestCheckResult,
         tables: &DashMap<ModuleFullPath, SymbolTable>,
     ) -> Result<i64, CranelispError> {
         let mut defn = Defn {
@@ -575,7 +731,7 @@ mod tests {
             tables,
             jit.jit_module(),
         )?;
-        jit.finalize()?;
+        // Post-G6: `compile_to_module` already finalized the JIT internally.
         let entry_id = result.entry_func_id.ok_or_else(|| CranelispError::CodegenError {
             message: "no entry function".into(),
             span: Span::SYNTHETIC,
@@ -603,7 +759,7 @@ mod tests {
     /// Phase-2 backend API (no `Program`/`CheckResult` parameters).
     fn test_compile_program_and_run(
         program: &[TopLevel],
-        check: &CheckResult,
+        check: &TestCheckResult,
         tables: &DashMap<ModuleFullPath, SymbolTable>,
     ) -> Result<i64, CranelispError> {
         let module = ModuleFullPath::from("user");
@@ -708,7 +864,7 @@ mod tests {
             tables,
             jit.jit_module(),
         )?;
-        jit.finalize()?;
+        // Post-G6: `compile_to_module` already finalized the JIT internally.
         let entry_id = result.entry_func_id.ok_or_else(|| CranelispError::CodegenError {
             message: "no entry function".into(),
             span: Span::SYNTHETIC,
@@ -1181,7 +1337,7 @@ mod tests {
             inferred_type: None,
         };
 
-        let check = CheckResult {
+        let check = TestCheckResult {
             method_resolutions,
             constrained_fn_names: HashSet::new(),
             mono_defns: Vec::new(),
@@ -1347,7 +1503,7 @@ mod tests {
             inferred_type: None,
         };
 
-        let check = CheckResult {
+        let check = TestCheckResult {
             method_resolutions,
             constrained_fn_names: HashSet::new(),
             mono_defns: Vec::new(),
@@ -1414,7 +1570,7 @@ mod tests {
             inferred_type: None,
         };
 
-        let check = CheckResult {
+        let check = TestCheckResult {
             method_resolutions,
             constrained_fn_names: HashSet::new(),
             mono_defns: Vec::new(),
@@ -1479,7 +1635,7 @@ mod tests {
             inferred_type: None,
         };
 
-        let check = CheckResult {
+        let check = TestCheckResult {
             method_resolutions,
             constrained_fn_names: HashSet::new(),
             mono_defns: Vec::new(),
@@ -1545,7 +1701,7 @@ mod tests {
             inferred_type: None,
         };
 
-        let check = CheckResult {
+        let check = TestCheckResult {
             method_resolutions,
             constrained_fn_names: HashSet::new(),
             mono_defns: Vec::new(),
@@ -1631,7 +1787,7 @@ mod tests {
             inferred_type: None,
         };
 
-        let check = CheckResult {
+        let check = TestCheckResult {
             method_resolutions,
             constrained_fn_names: HashSet::new(),
             mono_defns: Vec::new(),
@@ -1703,7 +1859,7 @@ mod tests {
             inferred_type: None,
         };
 
-        let check = CheckResult {
+        let check = TestCheckResult {
             method_resolutions,
             constrained_fn_names: HashSet::new(),
             mono_defns: Vec::new(),
@@ -1768,7 +1924,7 @@ mod tests {
             inferred_type: None,
         };
 
-        let check = CheckResult {
+        let check = TestCheckResult {
             method_resolutions,
             constrained_fn_names: HashSet::new(),
             mono_defns: Vec::new(),
@@ -1822,7 +1978,7 @@ mod tests {
             inferred_type: None,
         };
 
-        let check = CheckResult {
+        let check = TestCheckResult {
             method_resolutions,
             constrained_fn_names: HashSet::new(),
             mono_defns: Vec::new(),
@@ -1936,7 +2092,7 @@ mod tests {
             inferred_type: None,
         };
 
-        let check = CheckResult {
+        let check = TestCheckResult {
             method_resolutions,
             constrained_fn_names: HashSet::new(),
             mono_defns: Vec::new(),
@@ -2007,7 +2163,7 @@ mod tests {
             inferred_type: None,
         };
 
-        let check = CheckResult {
+        let check = TestCheckResult {
             method_resolutions,
             constrained_fn_names: HashSet::new(),
             mono_defns: Vec::new(),
@@ -2080,7 +2236,7 @@ mod tests {
             inferred_type: None,
         };
 
-        let check = CheckResult {
+        let check = TestCheckResult {
             method_resolutions,
             constrained_fn_names: HashSet::new(),
             mono_defns: Vec::new(),
@@ -2151,7 +2307,7 @@ mod tests {
             inferred_type: None,
         };
 
-        let check = CheckResult {
+        let check = TestCheckResult {
             method_resolutions,
             constrained_fn_names: HashSet::new(),
             mono_defns: Vec::new(),
@@ -2219,7 +2375,7 @@ mod tests {
             inferred_type: None,
         };
 
-        let check = CheckResult {
+        let check = TestCheckResult {
             method_resolutions,
             constrained_fn_names: HashSet::new(),
             mono_defns: Vec::new(),
@@ -2265,7 +2421,7 @@ mod tests {
             inferred_type: None,
         };
 
-        let check = CheckResult {
+        let check = TestCheckResult {
             method_resolutions,
             constrained_fn_names: HashSet::new(),
             mono_defns: Vec::new(),
@@ -2720,7 +2876,7 @@ mod tests {
             &tables,
             jit_a.jit_module(),
         ).expect("module A should compile");
-        jit_a.finalize().unwrap();
+        // Post-G6: compile_to_module finalized internally.
 
         // The result should have the function with a module-qualified name.
         assert!(
@@ -2762,12 +2918,123 @@ mod tests {
             &tables,
             jit_b.jit_module(),
         ).expect("module B should compile without collision");
-        jit_b.finalize().unwrap();
+        // Post-G6: compile_to_module finalized internally.
 
         let entry_b = result_b.entry_func_id.expect("should have entry");
         let ptr_b = jit_b.get_finalized_ptr(entry_b);
         let func_b: extern "C" fn() -> i64 = unsafe { std::mem::transmute(ptr_b) };
         assert_eq!(func_b(), 200, "module B's val should return 200");
+    }
+
+    // --- G6 code-write invariants (Sprint 57 Wave 2) ---
+    //
+    // spec: design/backend/compile-to-module.md §9.1.3 — after finalize,
+    // compile_to_module writes each produced code pointer onto the matching
+    // ModuleEntry::Def.code in symbol_tables[module_path].
+    #[test]
+    fn compile_to_module_writes_code_after_finalize() {
+        let defn = Defn {
+            name: Symbol::from("seven"),
+            docstring: None,
+            variants: vec![DefnVariant {
+                params: vec![],
+                param_annotations: vec![],
+                body: Expr::IntLit { value: 7, span: Span::new(0, 1), inferred_type: None },
+                span: Span::new(0, 20),
+            }],
+            visibility: Visibility::Public,
+            span: Span::new(0, 20),
+        };
+
+        let module = ModuleFullPath::from("user");
+        let tables = empty_tables();
+        {
+            let mut st = SymbolTable::new(module.clone());
+            st.insert(defn.name.clone(), make_def_entry(defn.clone()));
+            tables.insert(module.clone(), st);
+        }
+
+        let mut jit = Jit::new().unwrap();
+        let _result = compile_to_module(
+            module.clone(),
+            std::slice::from_ref(&defn.name),
+            &tables,
+            jit.jit_module(),
+        ).expect("JIT compile should succeed");
+
+        // Post-G6 invariant: the entry's `code` field is populated with a
+        // non-null pointer after compile_to_module returns.
+        let guard = tables.get(&module).expect("symbol table present");
+        let entry = guard.get(defn.name.as_ref()).expect("entry present");
+        match entry {
+            ModuleEntry::Def { code, .. } => {
+                let code = code.as_ref().expect(
+                    "G6 write path must populate code: Some(_) after JIT finalize",
+                );
+                assert!(
+                    !code.ptr.is_null(),
+                    "finalized code pointer must be non-null (JIT mode)"
+                );
+            }
+            _ => unreachable!("test inserted a Def entry"),
+        }
+    }
+
+    // spec: design/backend/compile-to-module.md §9.1.6 — ObjectModule has no
+    // post-finalize runtime pointer; the G6 write loop skips the per-entry
+    // store, leaving `code: None`.
+    #[test]
+    fn compile_to_module_object_mode_skips_code_write() {
+        use cranelift_module::default_libcall_names;
+        use cranelift_object::{ObjectBuilder, ObjectModule};
+
+        let defn = Defn {
+            name: Symbol::from("answer"),
+            docstring: None,
+            variants: vec![DefnVariant {
+                params: vec![],
+                param_annotations: vec![],
+                body: Expr::IntLit { value: 42, span: Span::new(0, 2), inferred_type: None },
+                span: Span::new(0, 20),
+            }],
+            visibility: Visibility::Public,
+            span: Span::new(0, 20),
+        };
+
+        let module = ModuleFullPath::from("user");
+        let tables = empty_tables();
+        {
+            let mut st = SymbolTable::new(module.clone());
+            st.insert(defn.name.clone(), make_def_entry(defn.clone()));
+            tables.insert(module.clone(), st);
+        }
+
+        let isa = build_isa(true).unwrap();
+        let obj_builder =
+            ObjectBuilder::new(isa, "test_obj", default_libcall_names()).unwrap();
+        let mut obj_module = ObjectModule::new(obj_builder);
+
+        let _result = compile_to_module(
+            module.clone(),
+            std::slice::from_ref(&defn.name),
+            &tables,
+            &mut obj_module,
+        ).expect("object compile should succeed");
+
+        // Object-mode invariant: `code` remains None because ObjectModule's
+        // `try_get_finalized_function` returns None (no runtime pointer).
+        let guard = tables.get(&module).expect("symbol table present");
+        let entry = guard.get(defn.name.as_ref()).expect("entry present");
+        match entry {
+            ModuleEntry::Def { code, .. } => {
+                assert!(
+                    code.is_none(),
+                    "object-mode compile must not write code onto the entry (got {:?})",
+                    code.as_ref().map(|c| c.ptr)
+                );
+            }
+            _ => unreachable!("test inserted a Def entry"),
+        }
     }
 
     // --- multi-sig defn tests ---
@@ -2879,6 +3146,8 @@ mod tests {
                 got_slot: None,
                 trait_origin: None,
                 ast: None,
+                code: None,
+                platform_fn_ptr: None,
             },
         );
         tables.insert(module_path, table);
@@ -2986,6 +3255,8 @@ mod tests {
                 got_slot: None,
                 trait_origin: None,
                 ast: None,
+                code: None,
+                platform_fn_ptr: None,
             },
         );
         tables.insert(module_path, table);
@@ -3044,7 +3315,7 @@ mod tests {
             inferred_type: None,
         };
 
-        let check = CheckResult {
+        let check = TestCheckResult {
             method_resolutions,
             constrained_fn_names: HashSet::new(),
             mono_defns: Vec::new(),
@@ -3200,6 +3471,8 @@ mod tests {
                     got_slot: None,
                     trait_origin: None,
                     ast: None,
+                    code: None,
+                    platform_fn_ptr: None,
                 },
             );
             tables.insert(module.clone(), st);
@@ -3294,6 +3567,8 @@ mod tests {
                     got_slot: None,
                     trait_origin: None,
                     ast: None,
+                    code: None,
+                    platform_fn_ptr: None,
                 },
             );
             // Mangled variant entry: ast: Some(variant_defn).
@@ -3397,6 +3672,8 @@ mod tests {
                     got_slot: None,
                     trait_origin: None,
                     ast: Some(template_defn),
+                    code: None,
+                    platform_fn_ptr: None,
                 },
             );
             tables.insert(module.clone(), st);

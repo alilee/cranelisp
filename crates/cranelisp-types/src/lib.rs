@@ -8,12 +8,14 @@ pub mod sexp;
 pub mod ast;
 pub mod types;
 pub mod check;
+pub mod code;
 pub mod module;
 pub mod got;
 pub mod heap;
 pub mod pipeline;
 pub mod operator;
 pub mod marshal;
+pub mod scheduling;
 
 // Re-export key types at crate root for convenience.
 pub use span::Span;
@@ -28,6 +30,8 @@ pub use check::{
     CheckResult, ConstructorInfo, DisplayInfo, FieldInfo, MethodResolutions, MonoDefn,
     ReplSnapshot, ResolvedCall, TypeDefInfo,
 };
+pub use code::Code;
+pub use scheduling::SchedulingClass;
 pub use module::{
     ConstrainedFn, DefKind, ExportSpec, ImplSexp, ImportNames, ImportSpec, MacroClauseInfo,
     MacroParam, ModDecl, ModuleEntry, OverloadVariant, PlatformSpec, PrimitiveKind,

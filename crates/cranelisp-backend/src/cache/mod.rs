@@ -486,6 +486,8 @@ mod tests {
                 got_slot: None,
                 trait_origin: None,
                 ast: Some(defn.clone()),
+                code: None,
+                platform_fn_ptr: None,
             },
         );
         tables.insert(module.clone(), st);
@@ -554,6 +556,8 @@ mod tests {
                 got_slot: Some(0),
                 trait_origin: None,
                 ast: None,
+                code: None,
+                platform_fn_ptr: None,
             },
         );
 

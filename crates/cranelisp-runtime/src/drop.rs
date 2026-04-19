@@ -400,6 +400,52 @@ pub fn consume_io_tree(ptr: i64) {
 }
 
 // ---------------------------------------------------------------------------
+// Shallow IO-node dec (Decision 29; design/backend/ring2-rc.md §3.5.4)
+// ---------------------------------------------------------------------------
+
+/// Shallow dec of a single IO ADT node — atomically dec's the RC and, on
+/// last-ref, frees the outer allocation ONLY without walking fields.
+///
+/// This is the IO-trampoline dual of the transitive `consume_io_tree`
+/// (§3.5.4): used when the trampoline releases its reference to a
+/// Pure/Effect/Bind/Par node whose field pointers have already been re-owned
+/// by other holders (Bind's inner → new `current`; Bind's continuation →
+/// `cont_stack`; Par's branches → consumed by rayon dispatch). A transitive
+/// walk here would double-dec those sub-references.
+///
+/// Semantically equivalent to `rc::consume_shallow` (both perform a shallow
+/// last-ref dec + dealloc); this helper is exposed as a distinct primitive
+/// because the caller's ownership story is specific to tree-walking state
+/// machines where fields are transferred elsewhere before the outer node is
+/// released (Decision 29). Reusing `consume_shallow` would work
+/// operationally, but naming it `dec_shallow_io` documents the
+/// ownership-transfer-then-drop pattern at the call site.
+///
+/// Also safe to call on SNil-style bare nullary tags — returns without
+/// touching memory for values below `NULLARY_TAG_THRESHOLD`.
+///
+/// # Safety
+/// `ptr` must be either a valid IO ADT heap pointer with `rc > 0`, or a
+/// bare nullary tag. Fields at offsets 24/32/… must NOT still be owned
+/// solely through this pointer — the caller is asserting that every
+/// heap-typed field has already been re-owned elsewhere.
+pub fn dec_shallow_io(ptr: i64) {
+    if ptr < NULLARY_THRESHOLD {
+        return;
+    }
+    // SAFETY: caller guarantees `ptr` is a valid heap base with rc > 0.
+    let old_rc = unsafe { atomic_dec_rc(ptr) };
+    if old_rc != 1 {
+        return; // other references remain; outer allocation stays live.
+    }
+    std::sync::atomic::fence(Ordering::Acquire);
+    // Last ref — free the outer allocation only. Fields are intentionally
+    // NOT walked; the caller has transferred ownership of every heap-typed
+    // field to another holder (see §3.5.4).
+    unsafe { alloc::dealloc(ptr as *mut u8) };
+}
+
+// ---------------------------------------------------------------------------
 // Closure consumption
 // ---------------------------------------------------------------------------
 
@@ -714,6 +760,90 @@ mod tests {
         write_field(c, 24, 0);
         consume_closure(c);
         assert_eq!(alloc_count() - allocs, 1);
+        assert_eq!(dealloc_count() - deallocs, 1);
+    }
+
+    // spec: design/arch/CLAUDE.md Decision 29 — dec_shallow_io frees outer only
+    #[test]
+    fn dec_shallow_io_frees_outer_only() {
+        let allocs = alloc_count();
+        let deallocs = dealloc_count();
+
+        // Build a Bind node that points at an inner Pure and a continuation
+        // closure. `dec_shallow_io` must free ONLY the Bind node, leaving the
+        // inner Pure and the continuation untouched (they are the
+        // transferred-out subfields, still held by other logical owners).
+        let inner = alloc_slot(16);
+        write_field(inner, TAG_OFFSET, IO_TAG_PURE);
+        write_field(inner, FIELD0_OFFSET, 42);
+
+        let cont = alloc_slot(16);
+        write_field(cont, 16, 0); // code_ptr placeholder
+        write_field(cont, 24, 0); // drop_glue_ptr = 0
+
+        let bind = alloc_slot(24);
+        write_field(bind, TAG_OFFSET, IO_TAG_BIND);
+        write_field(bind, FIELD0_OFFSET, inner);
+        write_field(bind, FIELD1_OFFSET, cont);
+
+        dec_shallow_io(bind);
+
+        // Exactly one alloc was deallocated (the Bind node); inner + cont are
+        // still live and owned by the test.
+        assert_eq!(alloc_count() - allocs, 3, "three allocs expected");
+        assert_eq!(
+            dealloc_count() - deallocs,
+            1,
+            "dec_shallow_io must not walk fields"
+        );
+
+        // Clean up the leftover allocations so the test doesn't leak.
+        unsafe {
+            alloc::dealloc(inner as *mut u8);
+            alloc::dealloc(cont as *mut u8);
+        }
+        assert_eq!(dealloc_count() - deallocs, 3);
+    }
+
+    // spec: design/arch/CLAUDE.md Decision 29 — dec_shallow_io skips nullary tags
+    #[test]
+    fn dec_shallow_io_skips_nullary() {
+        let allocs = alloc_count();
+        let deallocs = dealloc_count();
+        dec_shallow_io(0);
+        dec_shallow_io(1);
+        dec_shallow_io(NULLARY_THRESHOLD - 1);
+        assert_eq!(alloc_count() - allocs, 0);
+        assert_eq!(dealloc_count() - deallocs, 0);
+    }
+
+    // spec: design/arch/CLAUDE.md Decision 29 — dec_shallow_io preserves shared refs
+    #[test]
+    fn dec_shallow_io_preserves_shared_reference() {
+        let allocs = alloc_count();
+        let deallocs = dealloc_count();
+
+        let node = alloc_slot(16);
+        write_field(node, TAG_OFFSET, IO_TAG_PURE);
+        write_field(node, FIELD0_OFFSET, 99);
+
+        // Simulate a second reference (rc: 1 -> 2).
+        unsafe {
+            let rc_ptr = &*((node as *const u8).add(HeapHeader::RC_OFFSET as usize)
+                as *const AtomicI64);
+            rc_ptr.fetch_add(1, Ordering::Release);
+        }
+
+        dec_shallow_io(node); // rc: 2 -> 1, no free
+        assert_eq!(alloc_count() - allocs, 1);
+        assert_eq!(
+            dealloc_count() - deallocs,
+            0,
+            "dec_shallow_io must not free when other refs exist"
+        );
+
+        // Clean up the remaining reference.
+        dec_shallow_io(node);
         assert_eq!(dealloc_count() - deallocs, 1);
     }
 

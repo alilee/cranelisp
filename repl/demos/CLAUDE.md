@@ -101,6 +101,7 @@ The REPL process `chdir`s into this directory, so `.cache` artifacts and any oth
 | `ring4i.demo` | 4I | Higher-kinded types (Functor/fmap), lazy sequences (range-from/iterate/take), terminal styling narrative, checked division panic + recovery, /run-tests |
 | `ring4j.demo` | 4J | Lenient evaluation (parallel independent let bindings, cost heuristic), auto IO scheduling (commutative bind! chains), trait methods as first-class values (§7.6), /run-tests |
 | `ring4n.demo` | 4N | Sprint 56 — multi-sig JIT dispatch (arity and type), /sig/info/list for multi-sig, /clif on mangled variants ($Int, $Int+Int) |
+| `ring4o.demo` | 4O | Sprint 57 — Phase 3+4 convergence: platform fn via symbol table (/sig, /info), cross-module /clif + /disasm, /mem snapshot + delta, persistent workers keeping compile paths warm |
 | `v4a.demo` | — | Pipeline v4 skeleton — --v4 delegates to old pipeline, identical results |
 | `v4b.demo` | — | Pipeline v4 scheduler — primitive-only programs compile through scheduler-driven path |
 | `v4c.demo` | — | Pipeline v4 robust — error recovery (type error + undefined var), platform IO (print, bind), PlatformRegistry |

@@ -406,6 +406,8 @@ mod tests {
             got_slot: None,
             trait_origin: None,
             ast: None,
+            code: None,
+            platform_fn_ptr: None,
         }
     }
 

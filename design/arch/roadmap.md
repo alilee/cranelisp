@@ -117,12 +117,12 @@ For the full reimplementation strategy, skill definitions, and risk analysis, se
 |---|---|---|
 | `/typecheck` | IO ADT typing, lenient evaluation analysis | Ring 3 |
 | `/backend` | IO trampoline, platform DLL loading and effect dispatch, parallel evaluation, module caching, linker, standalone executable generation | Ring 3 |
-| `/qa` | IO tests, platform tests, E2E transcript tests, performance benchmarks, REPL implementation, `run-tests` special form | Ring 4 compiler |
+| `/qa` | IO tests, platform tests, E2E transcript tests, performance benchmarks, REPL implementation, `discover-tests` / `run-test` builtins + `/run-tests` slash command | Ring 4 compiler |
 | `/stdlib` | IO helpers (`pure`, `bind!`, `do`), trace display functions, complete standard library | Ring 4 |
 | `/platform` | Test-capture platform DLL, platform documentation | Ring 4 `/backend` |
 | `/examples` | IO programs, multi-file project examples | Ring 4 `/qa` |
 | `/docs` | Complete tutorials, error message catalog | Ring 4 |
-| `/repl` | Full experience test suite: all slash commands, trace, run-tests, hot-reload, performance benchmarks | Ring 4 compiler |
+| `/repl` | Full experience test suite: all slash commands, trace, `/run-tests`, hot-reload, performance benchmarks | Ring 4 compiler |
 | `/port` | Complete exemplar project with IO, tests, walkthrough document, findings report | Ring 4 `/platform` |
 | `/review` | JIT/cache path parity (single ISA construction), no duplicate code paths between batch and REPL | all above |
 
@@ -136,7 +136,7 @@ For the full reimplementation strategy, skill definitions, and risk analysis, se
 - REPL: all slash commands work (`/sig`, `/doc`, `/type`, `/info`, `/list`, `/expand`, `/mod`, etc.)
 - Hot-reload: file changes auto-reload in REPL
 - `(trace (fib 5))` — execution tracing
-- `(run-tests ...)` — test runner with trace integration
+- `discover-tests` + `run-test` builtins + `/run-tests` slash command — test discovery and execution with trace integration
 - All ~470 portable integration tests from prototype pass
 - All E2E transcript tests pass
 - Performance within 2x of prototype on representative benchmarks

@@ -3,9 +3,9 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 use crate::{
-    ConstructorInfo, Defn, FQSymbol, FQTraitName, FQTypeName, GotTable, ModuleFullPath,
-    ModuleName, Scheme, Sexp, Span, Symbol, TraitDecl, TraitName, Type, TypeDefInfo, TypeName,
-    Visibility,
+    Code, ConstructorInfo, Defn, FQSymbol, FQTraitName, FQTypeName, GotTable, ModuleFullPath,
+    ModuleName, Scheme, SchedulingClass, Sexp, Span, Symbol, TraitDecl, TraitName, Type,
+    TypeDefInfo, TypeName, Visibility,
 };
 
 // --- Symbol Table ---
@@ -143,6 +143,32 @@ pub enum ModuleEntry {
         /// Read by codegen. None for primitives, special forms, and pre-body-check entries.
         #[serde(default)]
         ast: Option<Defn>,
+        /// Compiled-code handle written by the backend after `compile_to_module`
+        /// returns. Runtime-only state (Decision 25 in `design/arch/CLAUDE.md`):
+        /// `#[serde(skip)]` so cache manifests stay pointer-free, and the field
+        /// re-initialises to `None` on cache-hit load. Codegen repopulates it
+        /// on demand. Owner of `Code`: integration layer (per-session Jit set
+        /// holds the backing pages alive per Decision 28).
+        #[serde(skip)]
+        code: Option<Code>,
+        /// Platform-function pointer written during `(platform ...)` form
+        /// processing (Sprint 57 Wave 3 / G8, Decision 26 in
+        /// `design/arch/CLAUDE.md`).
+        ///
+        /// `Some` only when `kind == DefKind::Primitive { primitive_kind:
+        /// PrimitiveKind::PlatformEffect { .. }, .. }`. `None` for every
+        /// non-platform `Def`. Replaces the separate `PlatformRegistry`:
+        /// the IO trampoline and JIT symbol resolution look up platform fn
+        /// ptrs by walking Import chains to the defining `PlatformEffect`
+        /// entry and reading this field.
+        ///
+        /// `#[serde(skip)]` — runtime state. The pointer is valid for as long
+        /// as the owning DLL is loaded; the session retains DLL handles for
+        /// every platform entry. On cache-hit load this field deserialises to
+        /// `None`; it is re-populated by re-opening the DLL referenced by the
+        /// corresponding `PlatformDecl` entry and reading its manifest.
+        #[serde(skip, default)]
+        platform_fn_ptr: Option<*const u8>,
     },
     /// An imported name from another module (Ring 2).
     Import { source: FQSymbol },
@@ -199,6 +225,19 @@ pub enum ModuleEntry {
     /// A bare name that became ambiguous (two different sources registered it, Ring 2).
     Ambiguous,
 }
+
+// SAFETY: `ModuleEntry::Def` carries `platform_fn_ptr: Option<*const u8>`
+// (Sprint 57 Wave 3, Decision 26) and `code: Option<Code>` (Decision 25) —
+// both are raw pointers into DLL code pages or JIT-owned mmap'd executable
+// pages. The pointers are integer handles; transmitting the integer across
+// threads is safe. The backing pages are kept alive at the session level
+// (session's `loaded_platforms` DLL handles and `Arc<Jit>` set), which
+// outlives every `SymbolTable` holding entries that reference them. Threads
+// that dereference `platform_fn_ptr` or `code.ptr` must hold a live handle
+// (directly or transitively via the session) to the owning resource — the
+// session enforces this invariant.
+unsafe impl Send for ModuleEntry {}
+unsafe impl Sync for ModuleEntry {}
 
 impl ModuleEntry {
     /// Returns the callees for this entry, or an empty slice for variants without callees.
@@ -260,8 +299,21 @@ pub enum PrimitiveKind {
     Inline,
     /// Calls an extern Rust function via JIT symbol (Ring 1+)
     Extern,
-    /// Platform effect (dispatched through IO trampoline, Ring 4)
-    PlatformEffect,
+    /// Platform effect (dispatched through IO trampoline, Ring 4).
+    ///
+    /// `scheduling_class` lives on the variant (not on a sibling field on
+    /// `ModuleEntry::Def`) so that only `PlatformEffect` entries can carry
+    /// a scheduling class — ill-formed states ("a user fn with a scheduling
+    /// class") are unrepresentable. See Decision 26 in `design/arch/CLAUDE.md`.
+    ///
+    /// The variant serialises normally: `scheduling_class` is static manifest
+    /// data (re-read from the DLL manifest on cache-hit load via `PlatformDecl`
+    /// reconstruction, not a runtime pointer). Contrast with the sibling
+    /// `ModuleEntry::Def.platform_fn_ptr` which is `#[serde(skip)]` because it
+    /// IS a runtime pointer into the loaded DLL's code pages.
+    PlatformEffect {
+        scheduling_class: SchedulingClass,
+    },
 }
 
 /// One variant of an overloaded (multi-sig) function.
@@ -389,6 +441,8 @@ mod tests {
             got_slot: None,
             trait_origin: None,
             ast,
+            code: None,
+            platform_fn_ptr: None,
         }
     }
 
@@ -605,5 +659,224 @@ mod tests {
 
         // Symbol payload (non-runtime) survives the roundtrip.
         assert!(rt.get("entry").is_some(), "entry must round-trip");
+    }
+
+    // ---- Sprint 57 Wave 2 Step 1 — Decision 25: `code` field on ModuleEntry::Def ----
+
+    // spec: design/arch/CLAUDE.md Decision 25 / design/typecheck/ast-annotation.md §10.1 —
+    //       `code: Option<Code>` present and defaults to None on fresh construction.
+    #[test]
+    fn module_entry_def_has_code_field_none_by_default() {
+        let entry = mk_def(
+            DefKind::UserFn { constrained_fn: None },
+            Some(trivial_defn("fresh")),
+        );
+        match entry {
+            ModuleEntry::Def { code, .. } => {
+                assert!(
+                    code.is_none(),
+                    "freshly constructed ModuleEntry::Def must have code: None; got {:?}",
+                    code
+                );
+            }
+            other => panic!("expected ModuleEntry::Def, got {:?}", other),
+        }
+    }
+
+    // spec: design/arch/CLAUDE.md Decision 25 — #[serde(skip)] on code field; runtime-only,
+    //       never round-trips through the cache manifest.
+    #[test]
+    fn code_serialise_round_trip_skips_field() {
+        let fake_ptr = 0xCAFEF00Dusize as *const u8;
+        let entry = ModuleEntry::Def {
+            scheme: Scheme {
+                vars: vec![],
+                constraints: HashMap::new(),
+                ty: Type::Int,
+            },
+            visibility: Visibility::Public,
+            docstring: None,
+            param_names: vec![],
+            kind: Box::new(DefKind::UserFn { constrained_fn: None }),
+            callees: Vec::new(),
+            got_slot: None,
+            trait_origin: None,
+            ast: Some(trivial_defn("with_code")),
+            code: Some(crate::Code::new(fake_ptr)),
+            platform_fn_ptr: None,
+        };
+
+        let json = serde_json::to_string(&entry).expect("entry must serialize");
+        // Field must not appear in the serialised form.
+        assert!(
+            !json.contains("\"code\""),
+            "serialised form must not contain the `code` field (it is #[serde(skip)]): {}",
+            json
+        );
+        // Raw pointer value must not leak through (hex or decimal representation).
+        assert!(
+            !json.to_lowercase().contains("cafef00d"),
+            "serialised form must not contain the raw pointer value: {}",
+            json
+        );
+
+        let rt: ModuleEntry = serde_json::from_str(&json).expect("entry must deserialize");
+        match rt {
+            ModuleEntry::Def { code, ast, .. } => {
+                assert!(
+                    code.is_none(),
+                    "deserialised ModuleEntry::Def must have code: None (serde(skip)); got {:?}",
+                    code
+                );
+                assert!(
+                    ast.is_some(),
+                    "ast must survive the roundtrip so codegen can repopulate code from it"
+                );
+            }
+            other => panic!("expected ModuleEntry::Def, got {:?}", other),
+        }
+    }
+
+    // ---- Sprint 57 Wave 3 Step A — Decision 26: platform_fn_ptr + scheduling_class ----
+
+    // spec: design/arch/CLAUDE.md Decision 26 — `platform_fn_ptr: Option<*const u8>`
+    //       sibling field on ModuleEntry::Def; defaults to None on fresh construction.
+    #[test]
+    fn platform_fn_ptr_field_defaults_to_none() {
+        let entry = mk_def(
+            DefKind::UserFn { constrained_fn: None },
+            Some(trivial_defn("fresh")),
+        );
+        match entry {
+            ModuleEntry::Def { platform_fn_ptr, .. } => {
+                assert!(
+                    platform_fn_ptr.is_none(),
+                    "freshly constructed ModuleEntry::Def must have platform_fn_ptr: None; got {:?}",
+                    platform_fn_ptr
+                );
+            }
+            other => panic!("expected ModuleEntry::Def, got {:?}", other),
+        }
+    }
+
+    // spec: design/arch/CLAUDE.md Decision 26 (Option B — variant-internal) —
+    //       PrimitiveKind::PlatformEffect { scheduling_class } carries the class
+    //       on the variant itself, not as a sibling field on ModuleEntry::Def.
+    #[test]
+    fn primitive_kind_platform_effect_carries_scheduling_class() {
+        // Build a platform-effect primitive entry.
+        let entry = mk_def(
+            DefKind::Primitive {
+                primitive_kind: PrimitiveKind::PlatformEffect {
+                    scheduling_class: crate::SchedulingClass::Commutative,
+                },
+                jit_name: Some(crate::JitSymbol::from("cranelisp_get_time")),
+            },
+            None,
+        );
+
+        match entry {
+            ModuleEntry::Def { kind, .. } => match *kind {
+                DefKind::Primitive {
+                    primitive_kind: PrimitiveKind::PlatformEffect { scheduling_class },
+                    jit_name,
+                } => {
+                    assert_eq!(
+                        scheduling_class,
+                        crate::SchedulingClass::Commutative,
+                        "scheduling_class must be readable from the variant directly"
+                    );
+                    assert_eq!(
+                        jit_name.as_deref(),
+                        Some("cranelisp_get_time"),
+                        "jit_name remains on DefKind::Primitive alongside primitive_kind"
+                    );
+                }
+                other => panic!(
+                    "expected DefKind::Primitive {{ PlatformEffect {{ .. }} }}, got {:?}",
+                    other
+                ),
+            },
+            other => panic!("expected ModuleEntry::Def, got {:?}", other),
+        }
+    }
+
+    // spec: design/arch/CLAUDE.md Decision 26 — `#[serde(skip)]` on platform_fn_ptr;
+    //       runtime-only, never round-trips through the cache manifest. Also confirms
+    //       the `scheduling_class` inside PrimitiveKind::PlatformEffect DOES round-trip
+    //       (it is static manifest data, not a runtime pointer).
+    #[test]
+    fn platform_fn_ptr_skipped_by_serde() {
+        let fake_ptr = 0xFEEDFACEusize as *const u8;
+        let entry = ModuleEntry::Def {
+            scheme: Scheme {
+                vars: vec![],
+                constraints: HashMap::new(),
+                ty: Type::Int,
+            },
+            visibility: Visibility::Public,
+            docstring: None,
+            param_names: vec![],
+            kind: Box::new(DefKind::Primitive {
+                primitive_kind: PrimitiveKind::PlatformEffect {
+                    scheduling_class: crate::SchedulingClass::ResourceSerial,
+                },
+                jit_name: Some(crate::JitSymbol::from("cranelisp_http_get")),
+            }),
+            callees: Vec::new(),
+            got_slot: None,
+            trait_origin: None,
+            ast: None,
+            code: None,
+            platform_fn_ptr: Some(fake_ptr),
+        };
+
+        let json = serde_json::to_string(&entry).expect("entry must serialize");
+
+        // `platform_fn_ptr` field must not appear in the serialised form.
+        assert!(
+            !json.contains("platform_fn_ptr"),
+            "serialised form must not contain the `platform_fn_ptr` field (it is #[serde(skip)]): {}",
+            json
+        );
+        // Raw pointer value must not leak through (hex or decimal representation).
+        assert!(
+            !json.to_lowercase().contains("feedface"),
+            "serialised form must not contain the raw pointer value: {}",
+            json
+        );
+
+        let rt: ModuleEntry =
+            serde_json::from_str(&json).expect("entry must deserialize");
+        match rt {
+            ModuleEntry::Def { platform_fn_ptr, kind, .. } => {
+                assert!(
+                    platform_fn_ptr.is_none(),
+                    "deserialised ModuleEntry::Def must have platform_fn_ptr: None (serde(skip)); got {:?}",
+                    platform_fn_ptr
+                );
+                // scheduling_class (on the variant) MUST round-trip — it is static
+                // manifest data, not a runtime pointer. Re-reading the DLL manifest
+                // on cache-hit load would re-derive it, but serde carrying it across
+                // avoids an extra DLL read.
+                match *kind {
+                    DefKind::Primitive {
+                        primitive_kind: PrimitiveKind::PlatformEffect { scheduling_class },
+                        ..
+                    } => {
+                        assert_eq!(
+                            scheduling_class,
+                            crate::SchedulingClass::ResourceSerial,
+                            "scheduling_class inside PrimitiveKind::PlatformEffect must survive serde roundtrip"
+                        );
+                    }
+                    other => panic!(
+                        "expected DefKind::Primitive with PlatformEffect, got {:?}",
+                        other
+                    ),
+                }
+            }
+            other => panic!("expected ModuleEntry::Def, got {:?}", other),
+        }
     }
 }

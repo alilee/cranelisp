@@ -259,17 +259,22 @@ pub(crate) fn has_compilable_defns(program: &[cranelisp_types::TopLevel]) -> boo
 #[allow(dead_code)]
 pub(crate) fn apply_bind_chain_analysis(
     program: &mut Program,
-    registry: &crate::platform_registry::PlatformRegistry,
+    symbol_tables: &dashmap::DashMap<ModuleFullPath, cranelisp_types::SymbolTable>,
+    current_module: &ModuleFullPath,
 ) {
     use cranelisp_types::TopLevel;
     for item in program.iter_mut() {
         match item {
             TopLevel::Defn(defn) => {
-                crate::bind_chain_analysis::auto_schedule_defn(defn, registry);
+                crate::bind_chain_analysis::auto_schedule_defn(
+                    defn, symbol_tables, current_module,
+                );
             }
             TopLevel::TraitImpl(impl_) => {
                 for method in impl_.methods.iter_mut() {
-                    crate::bind_chain_analysis::auto_schedule_defn(method, registry);
+                    crate::bind_chain_analysis::auto_schedule_defn(
+                        method, symbol_tables, current_module,
+                    );
                 }
             }
             TopLevel::TraitDecl(_) | TopLevel::TypeDef { .. } | TopLevel::Expr(_) => {}

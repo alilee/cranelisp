@@ -67,7 +67,10 @@ After extraction, the submodule is indistinguishable from one created manually. 
 
 In the REPL, an inline `(mod name ...)` writes the backing file and loads the submodule via the standard file-based path.
 
-### 8.2.3 Private Submodule Declaration
+### 8.2.3 Private Submodule Declaration [Tested+Neg tests/ring2.rs::neg_private_submodule_not_importable_from_peer — FAILING: /int gap, `(mod- ...)` protection not enforced cross-module]
+
+<!-- FIXME(/int): Private submodule enforcement (§8.2.3 MUST NOT) is not yet implemented — `tests/ring2.rs::neg_private_submodule_not_importable_from_peer` asserts that a peer module importing from a `(mod- internal)` declaration MUST fail compilation, but the import currently succeeds (compilation is Ok where it must be Err). Visibility check lives in the import resolver; the path-based `(mod- ...)` marker is parsed but not propagated to the module's visibility flag. Filed by /qa during Sprint 57 Wave 5. -->
+
 
 ```clojure
 (mod- internal)
@@ -196,7 +199,9 @@ Using `super` in a top-level module (one with no parent) MUST produce a compile-
 
 This is the standard way for test submodules to access the code under test.
 
-### 8.3.7 Multiple Module Import
+> **Known limitation — mutual-import deadlock.** `super` is supported for one-directional child → parent imports. If the parent module imports anything (directly or transitively) from a child that uses `(import [super ...])`, the compiler's form-by-form scheduler deadlocks during typechecking: the parent blocks on the child's signatures while the child (via `super`) blocks on the parent's. A conforming implementation MAY reject this configuration with a diagnostic, but MUST NOT silently produce a non-terminating compilation. Authors SHOULD NOT construct parent↔child mutual-import cycles. Test submodules that need to enumerate their parent's symbols SHOULD use the `discover-tests` and `run-test` builtins (see [Appendix A](appendix-a-builtins.md)) — these observe the parent's symbol table at runtime without requiring a `super` import, avoiding the deadlock entirely. See `design/arch/CLAUDE.md` Decision 30 for the underlying pass-order constraint. A future language version may redesign the module-loading pass order to lift this restriction; no timeline is promised.
+
+### 8.3.8 Multiple Module Import
 
 Multiple modules MAY be imported in a single `import` form:
 
@@ -208,7 +213,7 @@ Multiple modules MAY be imported in a single `import` form:
 
 Module-names-list pairs are processed left to right.
 
-### 8.3.8 Placement
+### 8.3.9 Placement
 
 `import` forms MUST appear as top-level forms. They are extracted from the raw S-expression stream before macro expansion. An implementation MUST process `import` before compiling definitions in the same module, so that imported names are available during type checking and code generation.
 
@@ -470,7 +475,7 @@ Private variants of definition forms use a `-` suffix on the form name:
 
 These are special forms, not macros.
 
-### 8.7.3 Private Name Semantics
+### 8.7.3 Private Name Semantics [Tested+Neg tests/ring2.rs::neg_private_name_not_in_glob_import, tests/ring2.rs::neg_glob_import_private_not_via_qualified, tests/ring2.rs::neg_private_macro_not_importable]
 
 A private name:
 
@@ -601,14 +606,13 @@ stdlib/prelude.cl          ; depends on core
 main.cl                 ; depends on prelude (implicit)
 ```
 
-<!-- FIXME(/qa): Traceability gap — §8.11 annotated [R2 S10] but module resolution through project root + lib dirs is exercised by every stdlib test (tests/stdlib.rs lines 36–39, 581–632 — `ReplSession::new_with_prelude(&project_root, &[stdlib_dir])`) and multi-file module tests (tests/modules.rs, tests/v4_pipeline.rs). Consider whether the section should be `[Tested ...]` referencing a representative test, or whether sub-sections §8.11.1–§8.11.5 should be annotated individually. In particular, project-root-shadows-lib-dir ordering (§8.11.2) and Cranelisp.toml precedence (§8.11.4) may be untested — check and add gap annotations. Filed by /spec during Sprint 56 close prior-ring audit. -->
-## 8.11 Search Paths [R2 S10]
+## 8.11 Search Paths
 
-### 8.11.1 Project Root
+### 8.11.1 Project Root [Tested tests/modules.rs::project_root_shadows_stdlib]
 
 The **project root** is the directory containing the entry file (the `.cl` file passed to the compiler or the REPL's working directory). It anchors all relative path resolution for both modules and platform DLLs.
 
-### 8.11.2 Module Resolution Search Order
+### 8.11.2 Module Resolution Search Order [Tested tests/modules.rs::project_root_shadows_stdlib, tests/modules.rs::stdlib_module_compiles_and_runs]
 
 When resolving a module name to a file, the implementation MUST search in this order:
 
@@ -620,7 +624,7 @@ A module in the project root shadows a module with the same name in a lib direct
 
 The standard library is not a special language feature beyond this search mechanism. Modules named `core`, `prelude`, `std`, or anything else are ordinary Cranelisp source files found through the module search order — there is no distinction at the language level between "standard library" modules and user modules.
 
-### 8.11.3 Platform DLL Resolution Search Order
+### 8.11.3 Platform DLL Resolution Search Order [Tested tests/wave3_g8.rs]
 
 When resolving a platform name to a DLL (§8.9.3), the implementation MUST search in this order:
 
@@ -632,7 +636,7 @@ The file extension `.{ext}` is platform-dependent (`.dylib` on macOS, `.so` on L
 
 Platform resolution mirrors module resolution: project root is checked first, then lib directories in order. This means a project can ship platform DLLs alongside its source (`myproject/platforms/custom-io.dylib`), and a standard library can ship platforms alongside its modules (`stdlib/platforms/stdio.dylib`).
 
-### 8.11.4 Lib Directory Configuration
+### 8.11.4 Lib Directory Configuration [Tested tests/e2e.rs::e2e_cranelisp_lib_env_overrides_stdlib (env var); project-config file NOT YET IMPLEMENTED — see FIXME(/int) below]
 
 Lib directory locations are assembled from the following sources, in precedence order:
 
@@ -640,6 +644,9 @@ Lib directory locations are assembled from the following sources, in precedence 
 2. **Project configuration file** (e.g., `Cranelisp.toml`) MAY specify a lib directory list. When present, this takes precedence over environment and defaults.
 3. **`CRANELISP_LIB` environment variable**, if set. A colon-separated list of directory paths. When set (even to empty), it fully controls the default lib directory list — no fallback is applied.
 4. **Default fallback**: When neither a project configuration file nor `CRANELISP_LIB` is present, the implementation SHOULD use `{project_root}/stdlib/` as the sole default lib directory, if that directory exists.
+
+<!-- FIXME(/int): Cranelisp.toml project configuration (§8.11.4 item 2) is spec-documented but not implemented — `src/session.rs::assemble_lib_dirs` only consults `CRANELISP_LIB` and `{project_root}/stdlib/`. A `Cranelisp.toml` in the project root is silently ignored. Either implement the loader (look for `Cranelisp.toml`, parse `lib-dirs` key, prepend to resolution list) or downgrade the spec language to "MAY" in future work. Filed by /qa during Sprint 57 Wave 5 while resolving a /qa traceability FIXME on §8.11. -->
+
 
 If no sources yield any lib directories, the lib directory list is empty. No lib modules (including `prelude` and `core`) will be found. The language still functions — primitives and special forms remain available — but no standard library names are in scope.
 

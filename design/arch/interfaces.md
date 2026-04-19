@@ -877,11 +877,72 @@ pub enum ModuleEntry {
         visibility: Visibility,
         docstring: Option<String>,
         param_names: Vec<Symbol>,
-        kind: DefKind,
+        kind: Box<DefKind>,
         /// Fully qualified callees, populated by finalize_check_result()
         /// from TC-sourced call graph edges. Used by scheduler for
         /// transitive macro dep discovery. See Decision 21.
         callees: Vec<FQSymbol>,
+        /// Module-local GOT slot index (Sprint 56 Wave 0 §9.8 G7). Assigned
+        /// at registration time for user-defined functions. `None` for
+        /// primitives and special forms.
+        got_slot: Option<usize>,
+        /// Trait-method origin (Sprint 56 Decision 21). `Some(trait)` when
+        /// this `Def` is a trait-method impl — replaces the
+        /// `method_to_trait` reverse index on `TraitRegistry`. `None` for
+        /// regular user functions.
+        trait_origin: Option<FQTraitName>,
+        /// Typechecked function body. Written by typecheck after
+        /// `check_form(CheckBody)`, read by codegen. `None` for
+        /// primitives, special forms, `Overloaded` base entries (their
+        /// variants carry the bodies), constrained-fn templates (their
+        /// mono specialisations carry the bodies), and pre-body-check
+        /// entries. Authoritative per-category table:
+        /// `design/typecheck/ast-annotation.md` §6. (Phase 1.)
+        ast: Option<Defn>,
+        /// Compiled code for this symbol (Phase 3 Step 3b — G6).
+        /// Written by the priority worker after `compile_to_module` returns.
+        /// `None` until codegen completes. Carries the raw code pointer
+        /// stored into the GOT slot plus an `Arc<Jit>` shared across every
+        /// `Code` entry produced by the same `compile_to_module` batch.
+        ///
+        /// **Lifetime / reclaim (Decision 31)**: the `Arc<Jit>` is the
+        /// reachability primitive. While any `Code` entry holding an
+        /// `Arc<Jit>` clone is alive, its code pointers are reachable and
+        /// the JIT's executable pages stay mapped. When every sibling entry
+        /// is evicted or redefined, the Arc refcount reaches zero and the
+        /// custom `Drop` on our `Jit` wrapper calls `unsafe
+        /// JITModule::free_memory()` — this is the ONLY way to reclaim
+        /// JIT pages in Cranelift 0.116 (the default drop path leaks on
+        /// purpose; see `pipeline-v4.md` §9.4 for evidence). The safety
+        /// invariant is maintained by: (a) code pointers live here or on
+        /// the stack; (b) GOT slots are atomically swapped to new code
+        /// before the old Arc can drop; (c) user-returned `fn` values are
+        /// heap closures calling through the GOT, not raw code pointers.
+        ///
+        /// `#[serde(skip)]` — runtime state. Cache re-derives it from
+        /// `ast` on cache-hit load. See `pipeline-v4-roadmap.md:198`:
+        /// `SymbolTable<C, L>` generics are deferred; `#[serde(skip)]` on
+        /// this field is the sufficient form. See Decision 25.
+        #[serde(skip)]
+        code: Option<Code>,
+        /// Platform function pointer (Phase 4 Step 4a — G8).
+        /// `Some` only when `kind == DefKind::Primitive { primitive_kind:
+        /// PrimitiveKind::PlatformEffect { scheduling_class }, .. }` —
+        /// written during `(platform …)` form processing. Replaces the
+        /// separate `PlatformRegistry`: the IO trampoline and JIT symbol
+        /// resolution look up platform fn ptrs by walking Import chains
+        /// to the defining `PlatformEffect` entry. `None` for every
+        /// non-platform `Def`.
+        ///
+        /// `scheduling_class` lives INSIDE the `PrimitiveKind::PlatformEffect`
+        /// variant (not as a sibling field here). The asymmetry is
+        /// deliberate — see Decision 26 for rationale.
+        ///
+        /// `#[serde(skip)]` — runtime state. Cache re-derives it from the
+        /// owning `PlatformDecl` on cache-hit load by re-resolving the
+        /// DLL and reading its manifest. See Decision 26.
+        #[serde(skip)]
+        platform_fn_ptr: Option<*const u8>,
     },
     Import { source: FQSymbol },
     Reexport { source: FQSymbol },
@@ -948,7 +1009,14 @@ pub enum DefKind {
 pub enum PrimitiveKind {
     Inline,
     Extern,
-    PlatformEffect,
+    /// Platform DLL effect. `scheduling_class` is a variant field (not a
+    /// sibling on `ModuleEntry::Def`) so that only entries that actually
+    /// carry a scheduling class can have one — see Decision 26. Written
+    /// during `(platform ...)` form processing from the DLL manifest; read
+    /// by `bind_chain_analysis.rs::classify_expr` via an Import-chain walk.
+    PlatformEffect {
+        scheduling_class: cranelisp_platform::SchedulingClass,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1446,7 +1514,7 @@ impl SymbolTable {
 
 The filter is deliberately strict: any `ModuleEntry::Def` with `ast: None` is excluded — whether pre-body-check, primitive, special form, `Overloaded` base, or constrained-fn template. Adding new non-compilable categories never silently breaks codegen, because the `ast.is_some()` clause comes first.
 
-> Note on `ModuleEntry::Def.ast`: The `ast: Option<Defn>` field was introduced in Sprint 55 (Phase 1) so typecheck can deposit annotated bodies directly on symbol-table entries. It is not yet shown in the `ModuleEntry::Def` variant definition earlier in this document — a follow-up edit will add it alongside `scheme`, `visibility`, `kind`, `callees`, and `got_slot`. See `design/typecheck/ast-annotation.md` §6 for the authoritative per-category table of which entries carry `ast: Some(_)`.
+> Note on `ModuleEntry::Def.ast` / `code` / `platform_fn_ptr`: the full set of typecheck- and codegen-populated fields on `ModuleEntry::Def` (`ast`, `code`, `platform_fn_ptr`, `got_slot`, `callees`, `trait_origin`) is now shown in the variant definition above and matches `pipeline-v4.md` §9.1. `ast` arrived in Sprint 55 (Phase 1); `code` lands in Sprint 57 Phase 3 G6; `platform_fn_ptr` lands in Sprint 57 Phase 4 G8. The `code` and `platform_fn_ptr` fields are `#[serde(skip)]` per `pipeline-v4-roadmap.md:198` — runtime-only, re-derivable from the AST (code) or platform manifest (platform_fn_ptr) on cache-hit load. See `design/typecheck/ast-annotation.md` §6 for the authoritative per-category table of which entries carry `ast: Some(_)`.
 
 ---
 

@@ -76,7 +76,7 @@ Inconsistencies fixed:
 - `02-grammar.md §2.2.5` — replaced `when`/`unless` examples (dummy `0` branch) with `my-if` and `my-and`
 - `08-modules.md §8.1.1` — clarified module identity is file-path-based; sibling-file `mod` resolution loads a peer module, not a submodule
 - `08-modules.md §8.3.2` — clarified `[*]` is glob-all; importing `*` operator requires it alongside other names
-- `08-modules.md §8.3.8` — documented that multiple `import` forms accumulate
+- `08-modules.md §8.3.9` — documented that multiple `import` forms accumulate (was §8.3.8 prior to Sprint 57 renumbering)
 - `08-modules.md §8.11` — updated lib search order: project config file takes priority; stdlib is not a special language feature
 - `09-macros.md §9.5` — resolved auto-lifting question: explicit Sexp constructors required; no auto-lifting
 - `09-macros.md §9.6` — removed FIXME; `begin` is a language-level macro expander protocol

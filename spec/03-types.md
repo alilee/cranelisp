@@ -460,8 +460,7 @@ If a constrained function calls another constrained function, the inner call gen
 
 - **No constrained closures**: Closures that capture constrained functions are not supported.
 
-<!-- FIXME(/qa): Traceability gap — §3.7 annotated [R3 S17] but HKT tests exist and pass (tests/ring2.rs::hkt_type_variable_in_trait, hkt_trait_declaration, hkt_impl_bare_constructor, lines 2191–2234). Also neg coverage exists: tests/ring2.rs::neg_hkt_impl_primitive_type_rejected (line 2106). Promote section heading to `[Tested+Neg tests/ring2.rs::hkt_trait_declaration, tests/ring2.rs::neg_hkt_impl_primitive_type_rejected]`. Filed by /spec during Sprint 56 close prior-ring audit. -->
-## 3.7 Higher-Kinded Types [R3 S17]
+## 3.7 Higher-Kinded Types [Tested+Neg tests/ring2.rs::hkt_trait_declaration, tests/ring2.rs::neg_hkt_impl_primitive_type_rejected]
 
 Cranelisp supports **type constructor parameters** in trait declarations. This enables abstractions over type constructors -- types that take type arguments to produce concrete types (e.g., `Option`, `List`).
 

@@ -93,24 +93,23 @@ Extern primitives are called via the foreign function interface.
 
 **String operations**:
 
-<!-- FIXME(/qa): Coverage gap — 11 string primitives are annotated [R3 S14] but Ring 3 is complete: `substring`, `char-at`, `split`, `join`, `replace`, `trim`, `starts-with?`, `ends-with?`, `contains?`, `to-upper`, `to-lower`. These are implemented (see crates/cranelisp-typecheck/src/builtins.rs docstrings lines 1165–1175; exercised transitively through stdlib/text/string.cl) but no integration test in tests/*.rs calls them directly. Add direct primitive tests in tests/ring1.rs alongside existing `str-concat`/`str-eq`/`str-len`/`parse-int` tests (spec invariants: clamping for substring, out-of-bounds char-at, split empty separator, etc.). Filed by /spec during Sprint 56 close prior-ring audit. -->
 | Function | Type | Description |
 |---|---|---|
 | `str-concat` | `(Fn [String String] String)` | Concatenate two strings | [Tested tests/ring1.rs::string_concat]
 | `str-eq` | `(Fn [String String] Bool)` | String equality (byte-wise) | [Tested tests/ring1.rs::string_eq_true]
 | `str-len` | `(Fn [String] Int)` | String length in bytes | [Tested tests/ring1.rs::string_len]
 | `parse-int` | `(Fn [String] (Option Int))` | Parse decimal integer; `None` on failure | [Tested tests/ring1.rs::parse_int_valid]
-| `substring` | `(Fn [String Int Int] String)` | Extract substring from start (inclusive) to end (exclusive); clamps out-of-bounds indices | [R3 S14]
-| `char-at` | `(Fn [String Int] String)` | Character at byte index as single-character string; empty string if out of bounds | [R3 S14]
-| `split` | `(Fn [String String] (Vec String))` | Split string by separator | [R3 S14]
-| `join` | `(Fn [String (Vec String)] String)` | Join strings with separator | [R3 S14]
-| `replace` | `(Fn [String String String] String)` | Replace all occurrences of `from` with `to` | [R3 S14]
-| `trim` | `(Fn [String] String)` | Trim leading and trailing whitespace | [R3 S14]
-| `starts-with?` | `(Fn [String String] Bool)` | Test if string starts with prefix | [R3 S14]
-| `ends-with?` | `(Fn [String String] Bool)` | Test if string ends with suffix | [R3 S14]
-| `contains?` | `(Fn [String String] Bool)` | Test if string contains substring | [R3 S14]
-| `to-upper` | `(Fn [String] String)` | Convert to uppercase | [R3 S14]
-| `to-lower` | `(Fn [String] String)` | Convert to lowercase | [R3 S14]
+| `substring` | `(Fn [String Int Int] String)` | Extract substring from start (inclusive) to end (exclusive); clamps out-of-bounds indices | [Tested+Neg tests/ring1.rs::string_substring_basic, tests/ring1.rs::string_substring_clamps_end]
+| `char-at` | `(Fn [String Int] String)` | Character at byte index as single-character string; empty string if out of bounds | [Tested+Neg tests/ring1.rs::string_char_at_valid_index, tests/ring1.rs::string_char_at_out_of_bounds_empty]
+| `split` | `(Fn [String String] (Vec String))` | Split string by separator | [Tested tests/ring1.rs::string_split_produces_parts]
+| `join` | `(Fn [String (Vec String)] String)` | Join strings with separator | [Tested tests/ring1.rs::string_join_reassembles]
+| `replace` | `(Fn [String String String] String)` | Replace all occurrences of `from` with `to` | [Tested+Neg tests/ring1.rs::string_replace_multiple, tests/ring1.rs::string_replace_missing_needle]
+| `trim` | `(Fn [String] String)` | Trim leading and trailing whitespace | [Tested+Neg tests/ring1.rs::string_trim_whitespace, tests/ring1.rs::string_trim_interior_preserved]
+| `starts-with?` | `(Fn [String String] Bool)` | Test if string starts with prefix | [Tested+Neg tests/ring1.rs::string_starts_with_true, tests/ring1.rs::string_starts_with_false]
+| `ends-with?` | `(Fn [String String] Bool)` | Test if string ends with suffix | [Tested+Neg tests/ring1.rs::string_ends_with_true, tests/ring1.rs::string_ends_with_false]
+| `contains?` | `(Fn [String String] Bool)` | Test if string contains substring | [Tested+Neg tests/ring1.rs::string_contains_true, tests/ring1.rs::string_contains_false]
+| `to-upper` | `(Fn [String] String)` | Convert to uppercase | [Tested tests/ring1.rs::string_to_upper_ascii]
+| `to-lower` | `(Fn [String] String)` | Convert to lowercase | [Tested tests/ring1.rs::string_to_lower_ascii]
 
 **Macro support**:
 
@@ -120,20 +119,19 @@ Extern primitives are called via the foreign function interface.
 
 **Vec operations**:
 
-<!-- FIXME(/qa): Coverage gap — `vec-map` and `vec-reduce` are annotated [R3 S10] but Ring 3 is complete. They are implemented and used in stdlib/collections/vec.cl, but no integration test in tests/*.rs exercises them directly. Add primitive-level tests in tests/ring1.rs (map: empty vec, length preservation, element-wise transform; reduce: empty vec with init, accumulator threading, order left-to-right). Filed by /spec during Sprint 56 close prior-ring audit. -->
+<!-- FIXME(/spec): `vec-map` and `vec-reduce` appear in this primitives table but are NOT primitives — they are implemented in `stdlib/collections/vec.cl` (see `(defn vec-map ...)` at stdlib/collections/vec.cl:18 and `(defn vec-reduce ...)` at :39). Attempting `(vec-map ...)` without importing stdlib yields `undefined variable: vec-map`. These rows should be moved out of appendix-a (which is for builtins / primitives) into §11 (stdlib non-normative). `builtins.rs` has their docstrings but no runtime binding or primitive registration. Filed by /qa during Sprint 57 Wave 5 while resolving the previous FIXME(/qa) on coverage. -->
 | Function | Type | Description |
 |---|---|---|
 | `vec-get` | `(Fn [(Vec a) Int] a)` | Index (bounds-checked; panics on out-of-bounds) | [Tested tests/ring1.rs::vec_get_first]
 | `vec-set` | `(Fn [(Vec a) Int a] (Vec a))` | Return new Vec with element at index replaced | [Tested tests/ring1.rs::vec_set_element]
 | `vec-push` | `(Fn [(Vec a) a] (Vec a))` | Return new Vec with element appended | [Tested tests/ring1.rs::vec_push_appends]
 | `vec-len` | `(Fn [(Vec a)] Int)` | Number of elements | [Tested tests/ring1.rs::vec_len_three]
-| `vec-map` | `(Fn [(Fn [a] b) (Vec a)] (Vec b))` | Map function over elements | [R3 S10]
-| `vec-reduce` | `(Fn [(Fn [b a] b) b (Vec a)] b)` | Left fold over elements | [R3 S10]
+| `vec-map` | `(Fn [(Fn [a] b) (Vec a)] (Vec b))` | Map function over elements (stdlib, NOT a primitive — see FIXME(/spec) above) | [Tested stdlib/collections/vec.cl via tests/stdlib.rs]
+| `vec-reduce` | `(Fn [(Fn [b a] b) b (Vec a)] b)` | Left fold over elements (stdlib, NOT a primitive — see FIXME(/spec) above) | [Tested stdlib/collections/vec.cl via tests/stdlib.rs]
 
 `vec-set` and `vec-push` are semantically pure (return new values). The implementation MAY use copy-on-write when the reference count is 1.
 
-<!-- FIXME(/qa): Section heading annotation `[R3 S10]` is stale — every row of the table below has individual `[Tested …]` annotations. Promote the section heading to `[Tested]` (or `[Tested+Neg]` once negative coverage is added for attempted shadowing of special forms). Filed by /spec during Sprint 56 close prior-ring audit. -->
-## A.4 Special Forms [R3 S10]
+## A.4 Special Forms [Tested]
 
 Special forms are keywords processed directly by the compiler. They are not functions or macros and cannot be shadowed.
 

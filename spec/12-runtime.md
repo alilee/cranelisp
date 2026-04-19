@@ -138,8 +138,7 @@ Cranelisp uses **strict (eager) evaluation**. All sub-expressions are fully eval
 - Both branches of `if` exist but only the selected branch is evaluated.
 - `match` arms are tested top-to-bottom; only the first matching arm's body is evaluated.
 
-<!-- FIXME(/qa): Coverage gap — §12.4.2 is annotated [R3 S17] but Ring 3 is complete. The only test (tests/ring2.rs::lazy_seq_take_from_infinite, line 2243) is a placeholder that asserts `compile_and_run_simple("(defn main [] 0)") == 0` — it does NOT exercise Seq, range-from, take, or thunk-based laziness. Write a real test that constructs a lazy infinite sequence (`range-from`), materializes a finite prefix (`take`), and verifies the remaining sequence is not forced. Filed by /spec during Sprint 56 close prior-ring audit. -->
-### 12.4.2 Lazy Sequences [R3 S17]
+### 12.4.2 Lazy Sequences [Tested+Neg tests/ring2.rs::lazy_seq_take_from_infinite, tests/ring2.rs::lazy_seq_construction_does_not_force_tail]
 
 The `Seq` type provides lazy evaluation through thunks (zero-argument closures). Laziness is explicit and user-controlled — it is NOT a property of the evaluation model itself.
 

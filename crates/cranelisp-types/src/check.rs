@@ -1,9 +1,3 @@
-// FIXME(/typecheck): Phase 5 — slim `CheckResult` (a.k.a. CheckOutput) to typecheck-internal state.
-// Post-Phase-2, `method_resolutions`, `mono_defns`, `default_method_defns`,
-// `constrained_fn_names`, and `expr_types` are duplicate data (canonical source
-// is ModuleEntry.ast + annotated AST nodes). Only `warnings` and `display` remain
-// as boundary data. See design/backend/ast-sourced-codegen.md §3.7.
-
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 
@@ -65,25 +59,23 @@ pub struct DisplayInfo {
     pub scheme: Option<Scheme>,
 }
 
-/// Result of type checking a compilation unit.
-/// Unified boundary type between typecheck and backend — used for both
-/// batch programs and REPL inputs. REPL inputs set `display` to carry
-/// the inferred type/scheme for interactive output.
+/// Transient output of `TypeChecker::check`.
+///
+/// NOT a boundary type — the durable typecheck output lives on `SymbolTable`
+/// entries' `ast`, `scheme`, `callees`, `got_slot`, and `trait_origin` fields.
+/// This struct carries only diagnostics and optional REPL display payload.
+///
+/// Prior to Sprint 57 Wave 2 step 4, this struct also carried
+/// `method_resolutions`, `constrained_fn_names`, `mono_defns`, `expr_types`,
+/// and `default_method_defns`. Those fields were retired once the Phase-1
+/// per-AST-node annotations (`Expr.inferred_type`, `Expr::Apply.resolved_call`)
+/// and Phase-2 `ModuleEntry::Def.ast` became the single source of truth.
+/// See `design/typecheck/ast-annotation.md` §10 for the audit trail.
 #[derive(Debug, Clone)]
 pub struct CheckResult {
-    /// How each call site was resolved (trait dispatch, overload, auto-curry, builtin)
-    pub method_resolutions: MethodResolutions,
-    /// Names of constrained polymorphic functions requiring monomorphisation (Ring 2)
-    pub constrained_fn_names: HashSet<Symbol>,
-    /// Monomorphised function definitions generated during checking (Ring 2)
-    pub mono_defns: Vec<MonoDefn>,
-    /// Type of every expression, keyed by span (for codegen heap classification)
-    pub expr_types: HashMap<Span, Type>,
-    /// Default trait method implementations expanded during checking (Ring 2)
-    pub default_method_defns: Vec<Defn>,
-    /// Non-fatal warnings accumulated during checking
+    /// Non-fatal warnings accumulated during checking.
     pub warnings: Vec<Warning>,
-    /// Display info for REPL output (None in batch mode).
+    /// Display info for REPL output (None in batch / module-load mode).
     pub display: Option<DisplayInfo>,
 }
 

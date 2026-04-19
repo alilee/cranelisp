@@ -44,20 +44,9 @@ The pipeline orchestration layer is complete. What remains is the **data model c
 | File watcher (`src/watch.rs`, init/sync/poll_and_reload) | Done |
 | Old pipeline deleted (~12k+ lines removed) | Done |
 
-<!-- FIXME(/int) Sprint 56 Wave 3 /port verification: exemplar/solver.cl fails to
-     compile with: "module 'super' not found (imported by 'grid.test')".
-     The frontend module_extract captures `(import [super [*]])` as a module
-     path named literally "super" (see crates/cranelisp-frontend/src/module_extract.rs
-     test_import_super). The v4 scheduler/module loader never rewrites this to
-     the parent path. The sketch resolved this in sketch/src/module.rs:1429-1434
-     (strip last dotted component: `math.test` super → `math`). Spec requirement
-     is spec/08-modules.md §8.3.6 lines 183-195 (MUST rewrite; MUST error if
-     parent doesn't exist). This blocks all exemplar modules (grid, solver,
-     html, form each use `(mod test (import [super [*]])...)`). Proposed
-     resolution: add `resolve_super_imports` pass in src/scheduler.rs or
-     src/worker.rs when a module's import_specs are first consumed, rewriting
-     `super` → parent path (via `ModuleFullPath::rsplit_once('.')`) and
-     erroring on root modules. -->
+<!-- Super-import rewrite: arbitrated Sprint 57 Wave 0 — Option A (frontend capture-time).
+     See `design/arch/super-import-arbitration.md`. Implementation owned by `/frontend`
+     in `crates/cranelisp-frontend/src/module_extract.rs`. -->
 
 ### What's NOT Implemented (v4 target gaps)
 
@@ -74,10 +63,11 @@ The audit compares actual code against `pipeline-v4.md` §9. Nine structural gap
 | G7 | GOT table on `TypecheckProduct` | MEDIUM | `TypecheckProduct { got, file_path, source_text }` | `got: GotTable` on `SymbolTable` |
 | G8 | Separate `PlatformRegistry` | MEDIUM | `HashMap<FQSymbol, PlatformFunction>` | Platform fn ptrs on `ModuleEntry::Def` entries |
 | G9 | Scoped priority workers | LOW | Thread scope per `register_module_with_source()` | Session-persistent workers |
-| G10 | Fresh JIT per REPL expression | LOW | `Jit::new_with_symbols()` in `compile_and_execute_expr` | Persistent eval JIT across session |
+| ~~G10~~ | ~~Persistent eval JIT~~ | — | Fresh `JIT` per REPL expression | **Correct target — no work.** See Decision 31: eval compiles on a fresh `JITModule` wrapped in our `Jit` newtype whose custom `Drop` calls `unsafe free_memory()` after the result is consumed. The previously-stated target (persistent eval JIT reused across evals) has been retracted: it assumed `Arc<Jit>` drop would reclaim pages, but Cranelift 0.116 `Memory::drop` leaks on purpose. Per-eval fresh JIT + explicit reclaim is the canonical shape. |
 | G11 | Reload via scoped threads | LOW | `reload_module` spawns scoped worker threads | Re-register through scheduler for persistent workers |
+| G12 | `SymbolTable<C, L>` generics inactive | MEDIUM | Concrete `SymbolTable` + raw `*const u8` on `ModuleEntry::Def.code` + `SharedState.kept_jits` retention pool | `SymbolTable<C: CodeStore, L: LinkerStore>` parameterised per §9.1; `Arc<Jit>` directly on `ModuleEntry::Def.code`; per-redefinition reclaim. See Decision 31 Scenario 2 + Decision 25 rescheduling note. |
 
-Gaps G9–G11 are all consequences of G9 (no persistent priority workers). Once workers are persistent, reload and eval naturally route through them.
+Gaps G9 and G11 are consequences of G9 (no persistent priority workers). Once workers are persistent, reload naturally routes through them. G10 is no longer a gap — see Decision 31. G12 is the new gap that emerged when Decision 31 retired G10: activating the `SymbolTable<C, L>` generics is what lets `Arc<Jit>` live on the entry (Scenario 2 of Decision 31's table) rather than in the session retention pool. Phase 5 Step 5c closes it.
 
 ## Completed Steps
 
@@ -207,13 +197,13 @@ Move platform function pointers onto `ModuleEntry::Def` entries with `PrimitiveK
 
 **Verification**: All platform / IO tests pass. No separate registry.
 
-#### Step 4b: Persistent priority workers (G9, G10, G11)
+#### Step 4b: Persistent priority workers (G9, G11)
 
-Priority workers become session-persistent (spawned in `CompilerSession::new`, parked on condvar). `register_module` enqueues work; workers pick it up. `eval` submits to the scheduler; `reload_module` re-registers via scheduler. Scoped thread spawning eliminated.
+Priority workers become session-persistent (spawned in `CompilerSession::new`, parked on condvar). `register_module` enqueues work; workers pick it up. `eval` submits dependencies to the scheduler; `reload_module` re-registers via scheduler. Scoped thread spawning eliminated.
 
-This also enables the persistent eval JIT (G10) — the eval path submits dependencies as `BlockingJitCodegen` entries, blocks until notified, then compiles the expression on a session-persistent JIT instance.
+Eval's trailing-expression compile (the `__expr` synthetic defn) continues to use a fresh `JITModule` created inline by the eval path — NOT a worker-owned JIT. Per Decision 31, the `Jit` wrapper has a custom `Drop` that calls `unsafe JITModule::free_memory()`, reclaiming the `__expr` batch's pages once eval consumes the result and returns. The dependency compiles submitted to `BlockingJitCodegen` run on worker-owned per-batch JITs under the same reclaim primitive. There is no "persistent eval JIT" — that framing was retracted (see the G10 row in the table above).
 
-**Touches**: `src/session_v4.rs` (worker lifecycle, eval path, reload path), `src/worker.rs` (thread function signature).
+**Touches**: `src/session_v4.rs` (worker lifecycle, eval path, reload path), `src/worker.rs` (thread function signature), `crates/cranelisp-backend/src/jit.rs` (custom `Drop` on `Jit` — depends on Decision 31; /backend implementation).
 
 **Verification**: All tests pass. No `thread::scope` for workers outside of tests.
 
@@ -231,14 +221,26 @@ Add `imports`, `exports`, `platforms`, `submodules` fields to `SymbolTable` for 
 
 **Touches**: `src/worker.rs` (cache write), `crates/cranelisp-backend/src/cache/`.
 
+#### Step 5c: Activate `SymbolTable<C, L>` generics (G12) — completes Decision 31 Scenario 2
+
+Parameterise `SymbolTable` with `C: CodeStore` and `L: LinkerStore` trait bounds per `pipeline-v4.md §9.1`. Move `Arc<Jit>` onto `ModuleEntry::Def.code` directly (as the concrete `C` chosen by the integration layer), replacing the current raw-pointer-plus-`SharedState.kept_jits` retention pool. `SharedState.kept_jits` dissolves for Jit retention — if the `LinkerStore` policy genuinely differs (e.g., object-cache-hit rehydration retains linker-resolved pages at a different granularity), `kept_linkers` may persist in a narrower form; otherwise it dissolves too.
+
+**Rationale.** Decision 31 requires `Arc<Jit>` on the entry so that reclaim fires when the last entry referencing a given batch's JIT drops (Scenario 2: defn redefinition). The generics are the DAG-compatible path to that placement — without them, placing `Arc<Jit>` on `ModuleEntry::Def.code` in `cranelisp-types` would require `cranelisp-types → cranelisp-backend` (inverted dependency, forbidden by Principle 3). The generics keep `cranelisp-types` ignorant of the concrete `Jit` type; the integration layer chooses `C = Arc<Jit>` (or a tiny wrapper) at instantiation. Decision 25's "API cleanliness only" deferral rationale was written before Decision 31 emerged and is no longer operative — see the Decision 25 update for the re-scoping.
+
+**Cost.** ~182 call sites mechanically touch the `SymbolTable` type; most are type-annotation-level changes (adding `<C, L>` or `<_, _>` to a path). No behavioural churn inside the changed sites — the work is largely search-and-replace plus bound plumbing.
+
+**Touches**: `crates/cranelisp-types/src/module.rs` (introduce `CodeStore` + `LinkerStore` traits; re-parameterise `SymbolTable` and `ModuleEntry::Def`); all call sites across `src/`, `crates/cranelisp-typecheck/`, `crates/cranelisp-backend/`, `crates/cranelisp-frontend/`; `src/session_v4.rs` (dissolve `kept_jits`; choose the concrete `C` / `L` types for the session's instantiation).
+
+**Verification**: all tests pass; REPL redefinition with `/mem` shows per-redefinition memory reclaim (Scenario 2 fires on the redefinition, not only at session teardown); the session-wide `kept_jits` pool for Jit entries is gone or empty after redefinitions.
+
+**Ordering.** Step 5c lands alongside 5a and 5b in Phase 5. It is independent of 5a (structural declarations) and 5b (cache serialization) — a generics activation touches type annotations everywhere but not the fields 5a and 5b add — so the three can be scheduled in any order once their shared baseline (Phases 1–4) is green. See Decision 25's updated rejected-alternatives discussion and Decision 31's Scenario 2 scheduling footnote for the cross-references.
+
 ## Deferred (not blocking convergence)
 
 | Item | Reason |
 |------|--------|
-| `SymbolTable<C, L>` generics | API cleanliness. `#[serde(skip)]` on code field is sufficient for now. |
 | `FQTypeName` migration | 182 call sites. Display works via `type_modules` lookup. |
 | BL range fix (linker.rs) | Only manifests on very large codebases. |
-| `Linker` on `SymbolTable` | Depends on generics. Cache-hit `.o` loading works without it. |
 
 ## Dependency Graph
 
@@ -268,12 +270,13 @@ on SymbolTable  on SymbolTable
     └───────┬───────┘
             ▼
         Phase 5:
-        Structural decls + cache
+        Structural decls + cache + generics
             5a: imports/exports
             5b: cache via SymbolTable
+            5c: SymbolTable<C, L> generics (G12 — Decision 31 Scenario 2)
 ```
 
-Phases 3 and 4 are independent and can be done in parallel or either order. Phase 5 depends on both.
+Phases 3 and 4 are independent and can be done in parallel or either order. Phase 5 depends on both. Within Phase 5, 5a / 5b / 5c are independent and may be scheduled in any order.
 
 ## Visual Reference
 

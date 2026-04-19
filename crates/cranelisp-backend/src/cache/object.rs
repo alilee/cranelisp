@@ -465,6 +465,8 @@ mod tests {
                 got_slot: None,
                 trait_origin: None,
                 ast: Some(defn),
+                code: None,
+                platform_fn_ptr: None,
             },
         );
         tables.insert(module.clone(), st);

@@ -2,9 +2,31 @@
 
 Exemplar project for Cranelisp: a Sudoku Solver with Web Platform. Owned by `/port` skill.
 
-## Current State (Sprint 19+)
+## Current State (Sprint 57)
 
-Four pure-core modules implemented, solver.cl has IO output:
+Four pure-core modules implemented, solver.cl has IO output. Validated under the
+reimplementation compiler in Sprint 57 Wave 6 — all four modules compile cleanly
+and the entry module runs through IO to print the puzzle board. The solve step
+segfault is a known pre-existing issue (see Known Issues).
+
+Post-Sprint-57 updates applied to the exemplar:
+- Added explicit `(import [primitives [*]])` to each module. The current prelude
+  does not re-export primitives like `eq-i64`/`add-i64`/`not` — modules that use
+  primitive names directly must import them.
+- Converted `(const full-mask 511)` to `(defn full-mask [] 511)` and updated all
+  call sites to `(full-mask)`. The `const` macro creates a compile-time bare-symbol
+  expansion that is not visible through cross-module glob imports.
+- Disabled the inline `(mod test ...)` submodules in all four files via FIXME
+  comment. These exercised `(import [super [*]])` which deadlocks against the
+  v4 form-by-form scheduler per Decision 30 (see `design/arch/CLAUDE.md`).
+  Wave 0's super-rewrite lands correctly at the frontend boundary, but the
+  full pipeline cannot typecheck parent-child inline submodule pairs because
+  the child's super-import blocks on the parent, and the parent blocks on
+  `(mod test)` until the child is typechecked. Re-enable the test submodules
+  once the scheduler supports sibling super-import, or migrate them to the
+  `discover-tests` / `run-test` builtin pattern per spec §8.3.7 warning.
+
+
 
 | File | Purpose | Status |
 |------|---------|--------|

@@ -154,7 +154,7 @@ Codegen is driven by the scheduler via work queues. All codegen — JIT and obje
 
 When a module's typecheck blocks on a macro that needs compiled functions, the scheduler's priority queue is populated (see `concurrent-pipeline.md` §4). Priority workers claim Ready entries and JIT-compile them:
 
-1. Create a fresh JIT instance for this one function (per-function isolation — see §9.4).
+1. Create a fresh JIT instance for this compile batch (per-batch isolation — see §9.4).
 2. Call `compile_to_module` with the single symbol name. `compile_to_module` reads the symbol's AST body, resolved calls, and type info from the symbol table (see §9.1). It discovers platform symbols and cross-module GOT references internally from the symbol table.
 3. Finalize the JIT, get the code pointer.
 4. Write the code pointer to the symbol's pre-assigned GOT slot (atomic store).
@@ -262,16 +262,18 @@ When the REPL receives source text:
 2. A worker typechecks the forms under the current module's context (resolving names from its imports and local definitions). Typecheck writes results directly onto AST nodes and symbol table entries (§9.1).
 3. If the input contains a trailing expression, that becomes a **temporary closure** — typechecked in the current module's scope but not registered in the GOT or the module's symbol table.
 4. Eval walks the closure's call graph and submits any un-codegenned dependencies to the scheduler as `BlockingJitCodegen` entries, with a notification mechanism so eval knows when they're done. Eval blocks until notified.
-5. Once dependencies are callable, eval JIT-compiles the closure itself using a **persistent eval JIT** — a long-lived JIT instance retained across the session. The closure code from previous evals can be discarded or memoised at eval's discretion. The eval JIT is private to the eval path, outside the scheduler.
-6. Eval calls the closure, gets the result, returns it.
+5. Once dependencies are callable, eval JIT-compiles the closure itself on a **fresh `JITModule` created for this one eval**. That JIT is wrapped in our `Jit` newtype whose custom `Drop` calls `unsafe JITModule::free_memory()` (see Decision 31 and §9.4). The JIT is private to the eval path, outside the scheduler.
+6. Eval calls the closure, gets the result, and lets the `Jit` wrapper drop — reclaiming the `__expr` function's executable memory. The eval JIT does not survive past the call.
 
-The temporary closure is entirely outside the scheduler and GOT. Only its dependencies flow through the priority codegen path. The eval JIT instance is reused across evals — no allocation/teardown per expression.
+The temporary closure is entirely outside the scheduler and GOT. Only its dependencies flow through the priority codegen path.
 
 The REPL does **not** call `wait_all_complete`. It only waits for the closure's dependencies to be compiled (step 4). Background JIT of other definitions and object codegen continue while the result is displayed.
 
 TC snapshot/restore wraps the compilation: on error, the typechecker rolls back to its pre-input state.
 
-**Principle 11 note**: the eval closure's JIT compilation is a deliberate exception to "single pipeline." The closure is temporary (one-shot, not registered in the GOT or module table), has no caching requirement (no `.o`), and has different lifetime semantics (persistent eval JIT reused across evals, not worker-scoped). Routing it through the scheduler would require adding a one-shot work type with special cleanup — complexity that buys nothing since the closure is always compiled synchronously by the eval path after its dependencies are ready. Only the dependencies flow through the scheduler, which is where the parallelism benefit lives.
+**Principle 11 note**: the eval closure's JIT compilation is a deliberate exception to "single pipeline" only in the narrow sense that it is synchronous on the eval path rather than routed through the scheduler's priority codegen queue. The closure is temporary (one-shot, not registered in the GOT or module table), has no caching requirement (no `.o`), and is always compiled by the eval path after its dependencies are ready. It uses the same `Jit`-wrapper-with-custom-`Drop` reclaim primitive as every other JIT batch (Decision 31) — there is no separate "eval JIT" subsystem. Routing the closure through the scheduler would require a one-shot work type with special cleanup; compiling inline is simpler and the parallelism benefit lives in the dependency path.
+
+**Safety for `__expr`**: the custom `Drop → unsafe free_memory()` requires that no function pointer derived from the JIT is reachable when the `Jit` drops (Cranelift 0.116 `cranelift-jit/src/backend.rs:219` contract — see Decision 31). The `__expr` JIT satisfies this because (a) `__expr` is never written into a GOT slot, (b) the eval path consumes the result and returns to the caller in a single synchronous call before dropping the `Jit`, and (c) the language's `fn` values are heap closures that call through the GOT, not raw code pointers — so a returned value cannot smuggle out `__expr`'s address. A post-call assertion-only build may check that no `Arc<Jit>` clones exist before drop, but the language-level invariant is sufficient.
 
 ### 6.3 File Watcher
 
@@ -347,7 +349,7 @@ pub struct SymbolTable<C: CodeStore = (), L: LinkerStore = ()> {
 }
 ```
 
-`CodeStore` and `LinkerStore` are marker traits defined in `cranelisp-types`. `()` implements both trivially. The integration layer uses `SymbolTable<Code, Linker>` where `Code` (per-function JIT) and `Linker` (per-module .o mapping) are defined in the backend or integration crate. Functions that only read types/AST/GOT take `SymbolTable` with the defaults — no generic parameters in their signatures.
+`CodeStore` and `LinkerStore` are marker traits defined in `cranelisp-types`. `()` implements both trivially. The integration layer uses `SymbolTable<Code, Linker>` where `Code` (per-function entry holding an `Arc<Jit>` shared with its batch siblings — see §9.4) and `Linker` (per-module .o mapping) are defined in the backend or integration crate. Functions that only read types/AST/GOT take `SymbolTable` with the defaults — no generic parameters in their signatures.
 
 The `symbols` map carries per-symbol entries. The structural declarations are module-level — they record the original `(import ...)`, `(export ...)`, `(platform ...)`, `(mod ...)` forms for `.cl` regeneration after REPL changes (§6.4). The per-symbol `ModuleEntry::Import` entries are the *resolved effects* of import declarations; the `imports: Vec<ImportDecl>` is the *original specification*.
 
@@ -376,7 +378,7 @@ ModuleEntry::Def {
 
     // --- Compiled code (written by codegen, keeps JIT memory alive) ---
     #[serde(skip)]
-    code: Option<C>,                // per-function JIT instance + code pointer
+    code: Option<C>,                // per-function code pointer + shared Arc<Jit> (see §9.4)
 }
 ```
 
@@ -417,29 +419,71 @@ This is the **only** function that compiles Cranelisp functions into Cranelift I
 - **Platform symbols**: discovered from Import chains that resolve to `PrimitiveKind::PlatformEffect` entries carrying DLL function pointers.
 
 The caller controls granularity:
-- **JIT workers**: pass one symbol name, one fresh `JITModule` → per-function isolation (§9.4)
+- **JIT workers**: pass N symbol names, one fresh `JITModule` → per-batch isolation (§9.4)
 - **Object workers**: pass all symbol names, one `ObjectModule` → per-module `.o` file
 
-### 9.4 Per-Function JIT Isolation
+### 9.4 Per-Batch JIT Isolation
 
-JIT codegen creates one `JITModule` per function. This is by design:
+JIT codegen creates one `JITModule` per `compile_to_module` call (per compile batch). This is by design:
 
-- **REPL replacement**: redefining a function produces a new JIT module. The old module stays alive (keeping old code valid for any in-flight calls) until its `Code` on the `ModuleEntry` is replaced and dropped.
-- **Parallel codegen**: workers compile functions independently without synchronizing on a shared JIT module.
-- **Memory management**: dropping a `Code` frees just that function's executable memory.
+- **REPL replacement**: redefining a function produces a new JIT module for the new batch. The old batch's JIT stays alive (keeping old code valid for any in-flight calls) until every `Code` entry referencing it drops — at which point the `Arc<Jit>` refcount hits zero and the custom `Drop` fires.
+- **Parallel codegen**: workers compile batches independently without synchronizing on a shared JIT module.
+- **Memory management**: a custom `Drop` on our `Jit` wrapper calls `unsafe JITModule::free_memory()`, which frees all executable memory allocated by that JIT. This is the ONLY way to reclaim JIT pages in Cranelift 0.116 — see below. (Decision 31.)
 
-The `Code` type (the generic parameter `C` on `SymbolTable<C, L>` and `ModuleEntry<C>`) owns the JIT module:
+**Cranelift 0.116 behaviour we must work around.** The default `JITModule` drop path does NOT free executable memory:
+
+```rust
+// cranelift-jit-0.116.1/src/memory.rs:269-276
+impl Drop for Memory {
+    fn drop(&mut self) {
+        // leak memory to guarantee validity of function pointers
+        mem::replace(&mut self.allocations, Vec::new())
+            .into_iter()
+            .for_each(mem::forget);
+    }
+}
+```
+
+Cranelift leaks-on-drop by design so that dangling fn pointers can never dereference freed memory. To reclaim, callers must explicitly invoke `JITModule::free_memory(self)` (marked `unsafe` — `cranelift-jit-0.116.1/src/backend.rs:219`) once they know no fn pointer derived from that JIT is reachable. `prepare_for_function_redefine` does NOT reclaim (`cranelift-jit-0.116.1/src/backend.rs:575-596`, with a `FIXME` from Cranelift's own author flagging the missing dealloc).
+
+So the `Jit` wrapper in our backend implements a custom `Drop`:
+
+```rust
+pub struct Jit {
+    module: ManuallyDrop<JITModule>,
+}
+
+impl Drop for Jit {
+    fn drop(&mut self) {
+        // SAFETY: the Arc<Jit> refcount reaching zero is our proof that
+        // no ModuleEntry::Def.code entry retains a code pointer into this
+        // JIT. Combined with the language-level invariant that user-returned
+        // fn values are heap closures calling through the GOT (not raw code
+        // pointers), no fn pointer into this JIT is reachable.
+        let module = unsafe { ManuallyDrop::take(&mut self.module) };
+        unsafe { module.free_memory() };
+    }
+}
+```
+
+The `Code` type (the generic parameter `C` on `SymbolTable<C, L>` and `ModuleEntry<C>`) holds an `Arc<Jit>` so that N compiled functions produced by one `compile_to_module` call share one underlying `Jit`:
 
 ```rust
 pub struct Code {
-    pub jit: Jit,       // owns executable memory
+    pub jit: Arc<Jit>,   // owns executable memory; shared across sibling entries
     pub ptr: *const u8,  // code pointer (into jit's memory)
 }
 ```
 
-Each function's `Code` lives on its `ModuleEntry::Def.code` field — no separate codegen products map. When a REPL eval redefines a function, the new `Code` replaces the old one on the entry; the old JIT drops and its memory is freed. When a cached `.o` is loaded, the `Linker` lives on `SymbolTable.linker` (the `L` parameter) and keeps the mapped code alive for all functions in that module.
+Each function's `Code` lives on its `ModuleEntry::Def.code` field — no separate codegen products map. When a REPL eval redefines a function, the new `Code` (with a new `Arc<Jit>`) replaces the old one on the entry; when every sibling `Code` from the old batch has been replaced or evicted, the last `Arc<Jit>` drops and the `unsafe free_memory()` call reclaims the old batch's pages. When a cached `.o` is loaded, the `Linker` lives on `SymbolTable.linker` (the `L` parameter) and keeps the mapped code alive for all functions in that module.
 
-Each function finds callees via GOT-indirect calls — there are no direct intra-module FuncId calls in JIT mode. This is the cost of per-function isolation: one extra indirection per call. It is acceptable because GOT loads are L1-cached in practice.
+**Safety invariant for `unsafe free_memory()`** (maintained by symbol-table + GOT discipline):
+
+- Every derivative code pointer lives on a `ModuleEntry::Def.code` (which holds an `Arc<Jit>` — refcount > 0 while any such pointer is reachable), OR is ephemeral (stack-local during compile/call, drops before function return), OR is a GOT slot.
+- GOT slots pointing into batch X are updated to point at new code (atomic swap) *before* the old `Arc<Jit>` can drop (the new batch's `Code` write + GOT atomic store happen before the old `Code` is overwritten).
+- Language-level invariant: user-returned `fn` values are heap closures that call into the GOT, not raw code pointers. Eval cannot leak a code address from an `__expr` JIT into a returned value.
+
+Each function finds callees via GOT-indirect calls — there are no direct intra-module FuncId calls in JIT mode. This is the cost of batch isolation: one extra indirection per call. It is acceptable because GOT loads are L1-cached in practice.
 
 ### 9.5 Cache Serialization
 

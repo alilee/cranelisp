@@ -1827,6 +1827,167 @@ impl TestFixture {
         let env = TypeCheckEnv::new(&self.modules, &self.next_id);
         env.generate_default_methods(&self.state, decl, impl_)
     }
+
+    // ---------------------------------------------------------------------
+    // Post-slim CheckResult accessors (Sprint 57 Wave 2 step 4).
+    //
+    // The `CheckResult` boundary type no longer carries `method_resolutions`,
+    // `expr_types`, `constrained_fn_names`, `mono_defns`, or
+    // `default_method_defns` — those live on typecheck-internal state
+    // (`CheckState`, `SymbolTable`) instead. Tests that used to read those
+    // fields off `CheckResult` go through these accessors now.
+    // ---------------------------------------------------------------------
+
+    /// Current `CheckState.method_resolutions` snapshot.
+    ///
+    /// Populated on the `check_program_self` path (single-shot batch); drained
+    /// into annotated ASTs on the `check` path — tests that used
+    /// `tc.check(..)` should use `annotated_resolutions()` instead.
+    pub fn state_method_resolutions(
+        &self,
+    ) -> &std::collections::HashMap<Span, cranelisp_types::ResolvedCall> {
+        &self.state.method_resolutions
+    }
+
+    /// Collect `ResolvedCall`s from annotated AST nodes across all defn bodies
+    /// in the current module. Mirrors what `check()` used to publish via
+    /// `CheckResult.method_resolutions` before the Sprint 57 Wave 2 slim-down.
+    ///
+    /// Walks `ModuleEntry::Def.ast.body` recursively, collecting
+    /// `Expr::Apply.resolved_call` entries keyed by the Apply's span.
+    pub fn annotated_resolutions(
+        &self,
+    ) -> std::collections::HashMap<Span, cranelisp_types::ResolvedCall> {
+        let mut out = std::collections::HashMap::new();
+        for (_name, entry) in self.symbol_table().all_symbols() {
+            if let cranelisp_types::ModuleEntry::Def { ast: Some(defn), .. } = entry {
+                for variant in &defn.variants {
+                    collect_resolutions_from_expr(&variant.body, &mut out);
+                }
+            }
+        }
+        out
+    }
+
+    /// Current `CheckState.expr_types` with final substitution applied.
+    /// Mirrors what `check_program` used to publish via `CheckResult.expr_types`.
+    pub fn state_expr_types_resolved(&self) -> std::collections::HashMap<Span, Type> {
+        self.state
+            .expr_types
+            .iter()
+            .map(|(span, ty)| (*span, apply(&self.state.subst, ty)))
+            .collect()
+    }
+
+    /// Names of all constrained polymorphic functions in the current module.
+    /// Mirrors what `check_program` used to publish via
+    /// `CheckResult.constrained_fn_names`. Derived from `SymbolTable` —
+    /// `ModuleEntry::Def { kind: UserFn { constrained_fn: Some(_) }, .. }`.
+    pub fn constrained_fn_names_set(&self) -> std::collections::HashSet<Symbol> {
+        self.symbol_table()
+            .all_symbols()
+            .filter_map(|(name, entry)| {
+                if let cranelisp_types::ModuleEntry::Def { kind, .. } = entry
+                    && let cranelisp_types::DefKind::UserFn { constrained_fn: Some(_) } =
+                        kind.as_ref()
+                {
+                    return Some(name.clone());
+                }
+                None
+            })
+            .collect()
+    }
+
+    /// Names of all monomorphised specialisation entries registered in the
+    /// current module. Mirrors what `check_program` used to publish via
+    /// `CheckResult.mono_defns` (but only the names — mono entries now carry
+    /// their annotated AST on `ModuleEntry::Def.ast`).
+    ///
+    /// Mono entries are registered as `DefKind::UserFn { constrained_fn: None }`
+    /// with mangled names containing a `$` separator (e.g. `add$Int+Int`).
+    /// Trait-impl methods also use `$` mangling (e.g. `Num.+$Int`), but those
+    /// carry a `.` prefix — excluded here by requiring the name NOT contain a
+    /// `.` before the `$`.
+    pub fn mono_defn_names(&self) -> Vec<Symbol> {
+        self.symbol_table()
+            .all_symbols()
+            .filter_map(|(name, entry)| {
+                if let cranelisp_types::ModuleEntry::Def { kind, .. } = entry
+                    && let cranelisp_types::DefKind::UserFn { constrained_fn: None } =
+                        kind.as_ref()
+                {
+                    let s = name.as_ref();
+                    if let Some(dollar) = s.find('$')
+                        && !s[..dollar].contains('.')
+                    {
+                        return Some(name.clone());
+                    }
+                }
+                None
+            })
+            .collect()
+    }
+}
+
+/// Test helper: walk an `Expr` tree, collecting `resolved_call` annotations
+/// keyed by the Apply span. Used by `TestFixture::annotated_resolutions` to
+/// recover the per-call-site resolutions that `CheckResult.method_resolutions`
+/// used to carry before Sprint 57 Wave 2 step 4.
+#[cfg(test)]
+fn collect_resolutions_from_expr(
+    expr: &cranelisp_types::Expr,
+    out: &mut std::collections::HashMap<Span, cranelisp_types::ResolvedCall>,
+) {
+    use cranelisp_types::Expr;
+    match expr {
+        Expr::Apply { callee, args, span, resolved_call, .. } => {
+            if let Some(r) = resolved_call {
+                out.insert(*span, (**r).clone());
+            }
+            collect_resolutions_from_expr(callee, out);
+            for a in args {
+                collect_resolutions_from_expr(a, out);
+            }
+        }
+        Expr::If { cond, then_branch, else_branch, .. } => {
+            collect_resolutions_from_expr(cond, out);
+            collect_resolutions_from_expr(then_branch, out);
+            collect_resolutions_from_expr(else_branch, out);
+        }
+        Expr::Let { bindings, body, .. } => {
+            for (_, bexpr) in bindings {
+                collect_resolutions_from_expr(bexpr, out);
+            }
+            collect_resolutions_from_expr(body, out);
+        }
+        Expr::Lambda { body, .. } => {
+            collect_resolutions_from_expr(body, out);
+        }
+        Expr::Match { scrutinee, arms, .. } => {
+            collect_resolutions_from_expr(scrutinee, out);
+            for arm in arms {
+                collect_resolutions_from_expr(&arm.body, out);
+            }
+        }
+        Expr::VecLit { elements, .. } => {
+            for e in elements {
+                collect_resolutions_from_expr(e, out);
+            }
+        }
+        Expr::Annotate { expr, .. } => {
+            collect_resolutions_from_expr(expr, out);
+        }
+        Expr::Trace { body, .. } => {
+            collect_resolutions_from_expr(body, out);
+        }
+        Expr::ParBind { bindings, body, .. } => {
+            for (_, bexpr) in bindings {
+                collect_resolutions_from_expr(bexpr, out);
+            }
+            collect_resolutions_from_expr(body, out);
+        }
+        _ => {}
+    }
 }
 
 #[cfg(test)]
@@ -1928,6 +2089,8 @@ mod tests {
                 got_slot: None,
                 trait_origin: None,
                 ast: None,
+                code: None,
+                platform_fn_ptr: None,
             },
         );
 
@@ -1957,6 +2120,8 @@ mod tests {
                     got_slot: None,
                     trait_origin: None,
                     ast: None,
+                    code: None,
+                    platform_fn_ptr: None,
                 },
             );
         }

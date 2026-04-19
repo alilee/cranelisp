@@ -46,7 +46,7 @@ pub fn extract_module_declarations(
                             continue;
                         }
                         "import" => {
-                            let specs = parse_import(elems, *span)?;
+                            let specs = parse_import(elems, *span, &path)?;
                             import_specs.extend(specs);
                             continue;
                         }
@@ -117,8 +117,22 @@ fn parse_mod_decl(elems: &[Sexp], span: Span, is_private: bool) -> Result<ModDec
 /// Parse `(import [module-spec names-list ...])`.
 ///
 /// The bracket contents are pairs: `module-spec names-list module-spec names-list ...`
+// FIXME(/frontend): spec citations in this file reference §8.3.6; the correct
+// section is now §8.3.7 "Super Import" after `/spec` renumbered the duplicate
+// §8.3.7 in Sprint 57 Wave 0. Seven code-comment citations need updating
+// (lines 124, 155, 169, 378, 593, 612, 625). Cosmetic — pointer resolves
+// unambiguously; non-blocking for Wave 0 close. Batch-update in the next
+// /frontend touch.
 /// where module-spec is a symbol, `super`, or `(module alias)`, and names-list is `[names]`.
-fn parse_import(elems: &[Sexp], span: Span) -> Result<Vec<ImportSpec>, CranelispError> {
+///
+/// `containing_module` is the path of the module whose source contains this
+/// import form; it is required to rewrite `super` to the parent module path
+/// per spec §8.3.6.
+fn parse_import(
+    elems: &[Sexp],
+    span: Span,
+    containing_module: &ModuleFullPath,
+) -> Result<Vec<ImportSpec>, CranelispError> {
     if elems.len() != 2 {
         return Err(CranelispError::ModuleError {
             message: "import requires exactly one bracket argument".to_string(),
@@ -138,16 +152,44 @@ fn parse_import(elems: &[Sexp], span: Span) -> Result<Vec<ImportSpec>, Cranelisp
         }
     };
 
-    parse_import_entries(entries, span)
+    parse_import_entries(entries, span, containing_module)
 }
 
 /// Parse pairs of `module-spec names-list` from bracket contents.
-fn parse_import_entries(items: &[Sexp], form_span: Span) -> Result<Vec<ImportSpec>, CranelispError> {
+///
+/// Rewrites `super` module specifiers to the parent of `containing_module`
+/// per spec §8.3.6: inside `a.b.c`, `super` resolves to `a.b`. Using `super`
+/// in a root module produces a compile-time error. After this function
+/// returns, no `ImportSpec.module_path` contains the literal string `"super"`.
+fn parse_import_entries(
+    items: &[Sexp],
+    form_span: Span,
+    containing_module: &ModuleFullPath,
+) -> Result<Vec<ImportSpec>, CranelispError> {
     let mut specs = Vec::new();
     let mut i = 0;
 
     while i < items.len() {
-        let (module_path, alias, mod_span) = parse_module_spec(&items[i])?;
+        let (raw_module_path, alias, mod_span) = parse_module_spec(&items[i])?;
+
+        // Rewrite `super` to the parent module path (spec §8.3.6).
+        let module_path = if raw_module_path == "super" {
+            match containing_module.as_ref().rsplit_once('.') {
+                Some((parent, _)) => parent.to_string(),
+                None => {
+                    return Err(CranelispError::ModuleError {
+                        message: format!(
+                            "'super' import used in top-level module '{}' (no parent)",
+                            containing_module.as_ref()
+                        ),
+                        file: None,
+                        span: mod_span,
+                    });
+                }
+            }
+        } else {
+            raw_module_path
+        };
 
         i += 1;
         if i >= items.len() {
@@ -336,10 +378,19 @@ fn parse_platform(elems: &[Sexp], span: Span) -> Result<PlatformSpec, CranelispE
 ///
 /// The sexp must be a `(import [...])` list form. Used by the v4 worker's
 /// `classify_form` to parse imports during per-form processing.
-pub fn parse_import_sexp(sexp: &Sexp) -> Result<Vec<ImportSpec>, CranelispError> {
+///
+/// `containing_module` is the path of the module whose source contains this
+/// import form; it is required to rewrite `super` to the parent module path
+/// per spec §8.3.6. After this function returns, no
+/// `ImportSpec.module_path` contains the literal string `"super"` — the
+/// frontend-boundary invariant for `ImportSpec`.
+pub fn parse_import_sexp(
+    sexp: &Sexp,
+    containing_module: &ModuleFullPath,
+) -> Result<Vec<ImportSpec>, CranelispError> {
     match sexp {
         Sexp::List(elems, span) if !elems.is_empty() => {
-            parse_import(elems, *span)
+            parse_import(elems, *span, containing_module)
         }
         _ => Err(CranelispError::ModuleError {
             message: "expected (import [...]) form".to_string(),
@@ -545,13 +596,67 @@ mod tests {
         assert_eq!(ms.import_specs[0].names, ImportNames::None);
     }
 
-    // spec: 08-modules §8.3.6 — super import
+    // spec: 08-modules §8.3.6 — super import rewritten to parent module path
+    //
+    // Per the super-import arbitration (design/arch/super-import-arbitration.md),
+    // `super` is rewritten at frontend capture time. After extraction,
+    // `ImportSpec.module_path` never contains the literal string `"super"`.
     #[test]
-    fn test_import_super() {
-        let (ms, _) = extract("(import [super [*]])");
+    fn test_import_super_rewrites_to_parent() {
+        let sexps = parse("(import [super [*]])");
+        let (ms, _) = extract_module_declarations(
+            ModuleFullPath::from("math.test"),
+            sexps,
+        )
+        .expect("extraction failed");
         assert_eq!(ms.import_specs.len(), 1);
-        assert_eq!(&*ms.import_specs[0].module_path, "super");
+        // `super` inside `math.test` resolves to `math`.
+        assert_eq!(&*ms.import_specs[0].module_path, "math");
         assert_eq!(ms.import_specs[0].names, ImportNames::Glob);
+    }
+
+    // spec: 08-modules §8.3.6 — nested super rewrite (a.b.c → a.b)
+    #[test]
+    fn test_import_super_rewrites_nested_parent() {
+        let sexps = parse("(import [super [helper]])");
+        let (ms, _) = extract_module_declarations(
+            ModuleFullPath::from("app.handler.test"),
+            sexps,
+        )
+        .expect("extraction failed");
+        assert_eq!(ms.import_specs.len(), 1);
+        assert_eq!(&*ms.import_specs[0].module_path, "app.handler");
+    }
+
+    // spec: 08-modules §8.3.6 — super at a top-level module is a compile-time error
+    #[test]
+    fn test_import_super_at_root_errors() {
+        let sexps = parse("(import [super [*]])");
+        let result = extract_module_declarations(
+            ModuleFullPath::from("root"),
+            sexps,
+        );
+        let err = result.expect_err("expected error for super at root module");
+        match err {
+            CranelispError::ModuleError { message, .. } => {
+                assert!(
+                    message.contains("super"),
+                    "error message should mention super, got: {}",
+                    message,
+                );
+                assert!(
+                    message.contains("root"),
+                    "error message should name the offending module, got: {}",
+                    message,
+                );
+                assert!(
+                    message.contains("no parent") || message.contains("top-level"),
+                    "error message should explain the no-parent condition, got: {}",
+                    message,
+                );
+            }
+            other => panic!("expected ModuleError, got {:?}", other),
+        }
     }
 
     // spec: 08-modules §8.3.7 — multiple modules in one import form

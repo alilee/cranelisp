@@ -637,6 +637,8 @@ impl TypeCheckEnv<'_> {
                 got_slot: None,
                 trait_origin: None,
                 ast: None,
+                code: None,
+                platform_fn_ptr: None,
             },
         );
 
@@ -1030,8 +1032,12 @@ impl TypeCheckEnv<'_> {
             }
         }
 
-        // Pass 2.5: resolve multi-sig overloads
-        let multi_sig_defns = self.resolve_multi_sig_overloads(state, 
+        // Pass 2.5: resolve multi-sig overloads.
+        // Side effect: registers mangled variants on the symbol table.
+        // The returned Vec<Defn> was carried on CheckResult.default_method_defns
+        // pre-slim; no longer needed — mangled entries live on SymbolTable.
+        let _multi_sig_defns = self.resolve_multi_sig_overloads(
+            state,
             working_program,
             &accumulator.defn_type_vars,
         )?;
@@ -1053,8 +1059,12 @@ impl TypeCheckEnv<'_> {
             }
         }
 
-        // Pass 4: monomorphise constrained function call sites
-        let mono_defns = self.pass4_monomorphise(state, &single_sig_defns, &constrained_fn_names)?;
+        // Pass 4: monomorphise constrained function call sites.
+        // Side effect: registers mono specialisations on the symbol table via
+        // `register_mono_entry` inside `monomorphise_call`. The returned
+        // Vec<MonoDefn> was carried on CheckResult.mono_defns pre-slim; no
+        // longer needed — mono entries live on SymbolTable.
+        let _mono_defns = self.pass4_monomorphise(state, &single_sig_defns, &constrained_fn_names)?;
 
         // Pass 5: overloads and auto-curry already resolved per-defn.
         // Drain any remaining entries (e.g., from mono defn generation).
@@ -1152,16 +1162,13 @@ impl TypeCheckEnv<'_> {
         }
 
         // Build CheckResult from the accumulator (authoritative source).
-        let mut all_default_defns = std::mem::take(&mut accumulator.default_method_defns);
-        all_default_defns.extend(multi_sig_defns);
-
+        // Sprint 57 Wave 2 step 4: CheckResult slimmed to `{ warnings, display }`.
+        // The legacy `method_resolutions` / `expr_types` / `mono_defns` /
+        // `constrained_fn_names` / `default_method_defns` fields were retired —
+        // their data lives on annotated AST nodes and `ModuleEntry::Def` entries
+        // (symbol-table registrations above are the durable carriers).
         let result = CheckResult {
-            method_resolutions: std::mem::take(&mut accumulator.method_resolutions),
-            expr_types: resolved_expr_types,
             warnings: std::mem::take(&mut accumulator.warnings),
-            constrained_fn_names,
-            mono_defns,
-            default_method_defns: all_default_defns,
             display: None,
         };
 
@@ -1455,6 +1462,8 @@ impl TypeCheckEnv<'_> {
                         got_slot: None,
                         trait_origin: None,
                         ast: None,
+                        code: None,
+                        platform_fn_ptr: None,
                     },
                 );
             }
@@ -1606,6 +1615,8 @@ impl TypeCheckEnv<'_> {
                     got_slot: Some(slot),
                     trait_origin: None,
                     ast: annotated_ast,
+                    code: None,
+                    platform_fn_ptr: None,
                 },
             );
 
@@ -1671,6 +1682,8 @@ impl TypeCheckEnv<'_> {
                 got_slot: None,
                 trait_origin: None,
                 ast: None,
+                code: None,
+                platform_fn_ptr: None,
             },
         );
 
@@ -1785,8 +1798,11 @@ impl TypeCheckEnv<'_> {
         // Pass 1: register trait declarations
         self.register_trait_decls_from_program(state, program)?;
 
-        // Pass 1: register trait implementations
-        let default_defns =
+        // Pass 1: register trait implementations.
+        // Side effect: registers default-method defns on the symbol table.
+        // The returned Vec<Defn> was carried on CheckResult.default_method_defns
+        // pre-slim (Sprint 57 Wave 2 step 4); no longer needed.
+        let _default_defns =
             self.register_trait_impls_from_program(state, program)?;
 
         // Pass 1: register function signatures with fresh type variables
@@ -1800,8 +1816,12 @@ impl TypeCheckEnv<'_> {
         let constrained_fn_names =
             self.detect_constrained_fns(state, &defns);
 
-        // Pass 4: monomorphise constrained function call sites
-        let mono_defns = self.pass4_monomorphise(state, &defns, &constrained_fn_names)?;
+        // Pass 4: monomorphise constrained function call sites.
+        // Side effect: registers mono specialisations on the symbol table via
+        // `register_mono_entry` inside `monomorphise_call`. The returned
+        // Vec<MonoDefn> was carried on CheckResult.mono_defns pre-slim; no
+        // longer needed — annotated mono ASTs already live on SymbolTable.
+        let _mono_defns = self.pass4_monomorphise(state, &defns, &constrained_fn_names)?;
 
         // Pass 5: resolve auto-curry sites into method_resolutions
         self.resolve_auto_curry(state);
@@ -1879,23 +1899,17 @@ impl TypeCheckEnv<'_> {
             }
         }
 
-        // Annotate mono defn ASTs
-        let mut mono_defns = mono_defns;
-        for mono in &mut mono_defns {
-            annotate_defn_from_maps(
-                &mut mono.defn,
-                &mono.expr_types,
-                &mono.resolutions,
-            );
-            apply_subst_to_defn(&state.subst, &mut mono.defn);
-        }
+        // Sprint 57 Wave 2 step 4: mono defn ASTs are already annotated by
+        // `monomorphise_call` and written onto the symbol table by
+        // `register_mono_entry` before reaching this point. The previous
+        // re-annotation loop over `mono_defns` only existed to feed
+        // `CheckResult.mono_defns`; the slimmed CheckResult no longer carries
+        // that field. `constrained_fn_names` / `resolved_expr_types` locals
+        // above similarly have no boundary consumer post-slim.
+        let _ = constrained_fn_names;
+        let _ = resolved_expr_types;
 
         Ok(CheckResult {
-            method_resolutions: std::mem::take(&mut state.method_resolutions),
-            constrained_fn_names: constrained_fn_names.clone(),
-            mono_defns,
-            expr_types: resolved_expr_types,
-            default_method_defns: default_defns,
             warnings: std::mem::take(&mut state.warnings),
             display: None,
         })
@@ -1925,12 +1939,13 @@ impl TypeCheckEnv<'_> {
                 // Resolve auto-curry sites before building result.
                 self.resolve_auto_curry(state);
 
-                // Gap 4: scan for constrained-fn calls, monomorphise on demand
-                let mono_defns = self.monomorphise_expr_calls(state, expr)?;
+                // Gap 4: scan for constrained-fn calls, monomorphise on demand.
+                // Side effect: registers mono specialisations on the symbol
+                // table via `register_mono_entry`. Returned Vec<MonoDefn> was
+                // carried on CheckResult.mono_defns pre-slim (Wave 2 step 4).
+                let _mono_defns = self.monomorphise_expr_calls(state, expr)?;
 
-                let mut result = self.build_repl_result(state, resolved, None);
-                result.mono_defns = mono_defns;
-                Ok(result)
+                Ok(self.build_repl_result(state, resolved, None))
             }
 
             TopLevel::Defn(defn) if defn.is_multi_sig() => {
@@ -1943,8 +1958,11 @@ impl TypeCheckEnv<'_> {
                 // Resolve auto-curry sites before building result.
                 self.resolve_auto_curry(state);
 
-                // Scan defn body for constrained-fn calls, monomorphise on demand
-                let mono_defns = self.monomorphise_expr_calls(state, defn.body())?;
+                // Scan defn body for constrained-fn calls, monomorphise on demand.
+                // Side effect: registers mono specialisations on the symbol
+                // table via `register_mono_entry`. Returned Vec<MonoDefn> was
+                // carried on CheckResult.mono_defns pre-slim (Wave 2 step 4).
+                let _mono_defns = self.monomorphise_expr_calls(state, defn.body())?;
 
                 // Step 1b: Annotate AST and write to ModuleEntry::Def.ast (REPL path)
                 {
@@ -1963,9 +1981,7 @@ impl TypeCheckEnv<'_> {
                     }
                 }
 
-                let mut result = self.build_repl_result(state, ty, Some(scheme));
-                result.mono_defns = mono_defns;
-                Ok(result)
+                Ok(self.build_repl_result(state, ty, Some(scheme)))
             }
 
             TopLevel::TypeDef {
@@ -1991,11 +2007,12 @@ impl TypeCheckEnv<'_> {
             }
 
             TopLevel::TraitImpl(impl_) => {
-                let default_defns = self.register_trait_impl(state, impl_)?;
+                // Side effect: default method defns registered on symbol table
+                // via `register_trait_impl`. Returned Vec<Defn> was carried on
+                // CheckResult.default_method_defns pre-slim (Wave 2 step 4).
+                let _default_defns = self.register_trait_impl(state, impl_)?;
                 let ty = Type::Bool; // Placeholder return type for trait impl
-                let mut result = self.build_repl_result(state, ty, None);
-                result.default_method_defns = default_defns;
-                Ok(result)
+                Ok(self.build_repl_result(state, ty, None))
             }
         }
     }
@@ -2187,6 +2204,8 @@ impl TypeCheckEnv<'_> {
                 got_slot,
                 trait_origin: None,
                 ast: existing_ast,
+                code: None,
+                platform_fn_ptr: None,
             },
         );
 
@@ -2425,6 +2444,8 @@ impl TypeCheckEnv<'_> {
                 got_slot: None,
                 trait_origin: None,
                 ast: None,
+                code: None,
+                platform_fn_ptr: None,
             },
         );
 
@@ -2452,9 +2473,12 @@ impl TypeCheckEnv<'_> {
             self.resolve_deferred_trait_calls(state, internal_defn.body());
         }
 
-        // Phase 2.5: Resolve multi-sig overloads (mangle names, register)
+        // Phase 2.5: Resolve multi-sig overloads (mangle names, register).
+        // Side effect: `register_mangled_variants` writes mangled entries onto
+        // the symbol table. Returned Vec<Defn> was carried on
+        // CheckResult.default_method_defns pre-slim (Wave 2 step 4).
         let resolved = self.resolve_variant_types(state, defn, &defn_type_vars)?;
-        let (mangled_defns, resolved_info) =
+        let (_mangled_defns, resolved_info) =
             self.register_mangled_variants(state, defn, &resolved);
         self.register_overloaded_base(state, defn, resolved_info);
 
@@ -2469,9 +2493,7 @@ impl TypeCheckEnv<'_> {
             Type::Int // fallback — shouldn't happen
         };
         let scheme = self.generalize(state, &first_variant_ty);
-        let mut result = self.build_repl_result(state, first_variant_ty, Some(scheme));
-        result.default_method_defns = mangled_defns;
-        Ok(result)
+        Ok(self.build_repl_result(state, first_variant_ty, Some(scheme)))
     }
 
     // --- Monomorphisation passes ---
@@ -2751,17 +2773,19 @@ impl TypeCheckEnv<'_> {
     }
 
     /// Build a CheckResult with display info from the current state (REPL path).
-    fn build_repl_result(&self,
-        state: &mut CheckState, ty: Type, scheme: Option<Scheme>) -> CheckResult {
-        let resolved_expr_types = self.resolve_expr_types(state);
-
+    ///
+    /// Sprint 57 Wave 2 step 4: `CheckResult` slimmed to `{ warnings, display }`;
+    /// typecheck-internal side maps (`method_resolutions`, `expr_types`, etc.)
+    /// live on `CheckState` and are consumed in-place by downstream passes —
+    /// they are no longer drained here.
+    fn build_repl_result(
+        &self,
+        state: &mut CheckState,
+        ty: Type,
+        scheme: Option<Scheme>,
+    ) -> CheckResult {
         CheckResult {
-            method_resolutions: std::mem::take(&mut state.method_resolutions),
-            expr_types: resolved_expr_types,
             warnings: std::mem::take(&mut state.warnings),
-            constrained_fn_names: HashSet::new(),
-            mono_defns: Vec::new(),
-            default_method_defns: Vec::new(),
             display: Some(DisplayInfo { ty, scheme }),
         }
     }
@@ -2826,6 +2850,66 @@ mod tests {
         };
         tc.register_imports_self(&[import_spec]).unwrap();
         tc
+    }
+
+    /// Test helper: walk an Expr tree, recording whether any node carries an
+    /// `inferred_type` annotation and whether all annotations are resolved
+    /// (no `Type::Var`). Used by tests that previously inspected
+    /// `CheckResult.expr_types` — the post-slim equivalent is reading
+    /// `inferred_type` from annotated AST nodes.
+    fn walk_inferred_types(expr: &Expr, any_typed: &mut bool, all_resolved: &mut bool) {
+        if let Some(ty) = expr.inferred_type() {
+            *any_typed = true;
+            if let Type::Var(_) = ty {
+                *all_resolved = false;
+            }
+        }
+        match expr {
+            Expr::Apply { callee, args, .. } => {
+                walk_inferred_types(callee, any_typed, all_resolved);
+                for a in args {
+                    walk_inferred_types(a, any_typed, all_resolved);
+                }
+            }
+            Expr::If { cond, then_branch, else_branch, .. } => {
+                walk_inferred_types(cond, any_typed, all_resolved);
+                walk_inferred_types(then_branch, any_typed, all_resolved);
+                walk_inferred_types(else_branch, any_typed, all_resolved);
+            }
+            Expr::Let { bindings, body, .. } => {
+                for (_, bexpr) in bindings {
+                    walk_inferred_types(bexpr, any_typed, all_resolved);
+                }
+                walk_inferred_types(body, any_typed, all_resolved);
+            }
+            Expr::Lambda { body, .. } => {
+                walk_inferred_types(body, any_typed, all_resolved);
+            }
+            Expr::Match { scrutinee, arms, .. } => {
+                walk_inferred_types(scrutinee, any_typed, all_resolved);
+                for arm in arms {
+                    walk_inferred_types(&arm.body, any_typed, all_resolved);
+                }
+            }
+            Expr::VecLit { elements, .. } => {
+                for e in elements {
+                    walk_inferred_types(e, any_typed, all_resolved);
+                }
+            }
+            Expr::Annotate { expr, .. } => {
+                walk_inferred_types(expr, any_typed, all_resolved);
+            }
+            Expr::Trace { body, .. } => {
+                walk_inferred_types(body, any_typed, all_resolved);
+            }
+            Expr::ParBind { bindings, body, .. } => {
+                for (_, bexpr) in bindings {
+                    walk_inferred_types(bexpr, any_typed, all_resolved);
+                }
+                walk_inferred_types(body, any_typed, all_resolved);
+            }
+            _ => {}
+        }
     }
 
     /// Register a minimal Num trait with `+` method, plus an impl for Int,
@@ -3169,7 +3253,7 @@ mod tests {
             }),
         ];
 
-        let result = tc.check_program_self(&program).unwrap();
+        let _result = tc.check_program_self(&program).unwrap();
 
         if let Some(ModuleEntry::Def { scheme, .. }) = tc.symbol_table().get("is-red") {
             assert_eq!(
@@ -3272,10 +3356,10 @@ mod tests {
             span: span(0, 29),
         })];
 
-        let result = tc.check_program_self(&program).unwrap();
+        let _result = tc.check_program_self(&program).unwrap();
 
         // All expr_types should be resolved (no Var types)
-        for (span, ty) in &result.expr_types {
+        for (span, ty) in &tc.state_expr_types_resolved() {
             if let Type::Var(_) = ty {
                 panic!("unresolved Var in expr_types at {span}");
             }
@@ -3589,11 +3673,12 @@ mod tests {
             span: span(0, 29),
         })];
 
-        let result = tc.check_program_self(&program).unwrap();
+        let _result = tc.check_program_self(&program).unwrap();
 
         // The add-i64 call site should have a BuiltinFn resolution
-        assert!(!result.method_resolutions.is_empty());
-        let resolution = result.method_resolutions.get(&span(15, 28)).unwrap();
+        let method_resolutions = tc.state_method_resolutions();
+        assert!(!method_resolutions.is_empty());
+        let resolution = method_resolutions.get(&span(15, 28)).unwrap();
         match resolution {
             cranelisp_types::ResolvedCall::BuiltinFn { name } => {
                 assert_eq!(name.as_ref(), "add-i64");
@@ -3637,7 +3722,7 @@ mod tests {
             },
         ];
 
-        let result = tc.check_program_self(&program).unwrap();
+        let _result = tc.check_program_self(&program).unwrap();
         assert!(tc.lookup_type_def(&TypeName::from("Option")).is_some());
         assert!(tc.lookup_constructor_type("Some").is_some());
         assert!(tc.lookup_constructor_type("None").is_some());
@@ -3671,7 +3756,7 @@ mod tests {
             visibility: Visibility::Public,
             span: Span::SYNTHETIC,
         };
-        let result = tc.check_repl_input_self(&input).unwrap();
+        let _result = tc.check_repl_input_self(&input).unwrap();
         assert!(tc.lookup_type_def(&TypeName::from("Option")).is_some());
     }
 
@@ -3923,7 +4008,7 @@ mod tests {
             }),
         ];
 
-        let result = tc.check_program_self(&program).unwrap();
+        let _result = tc.check_program_self(&program).unwrap();
 
         // In batch mode, add and main share a substitution during Pass 2.
         // main's (add 3 4) pins add's type vars to Int before generalization.
@@ -3931,11 +4016,11 @@ mod tests {
         // This is correct HM behavior for same-program references.
         // Constrained polymorphism applies across module boundaries.
         assert!(
-            result.constrained_fn_names.is_empty(),
+            tc.constrained_fn_names_set().is_empty(),
             "within same program, add should be monomorphic due to shared subst"
         );
         assert!(
-            result.mono_defns.is_empty(),
+            tc.mono_defn_names().is_empty(),
             "no constrained fns means no mono_defns needed"
         );
 
@@ -3987,17 +4072,18 @@ mod tests {
             span: span(0, 25),
         })];
 
-        let result = tc.check_program_self(&program).unwrap();
+        let _result = tc.check_program_self(&program).unwrap();
 
         assert!(
-            result.constrained_fn_names.contains(&Symbol::from("add")),
+            tc.constrained_fn_names_set().contains(&Symbol::from("add")),
             "add should be in constrained_fn_names"
         );
 
         // No callers, so no mono_defns
+        let mono_names = tc.mono_defn_names();
         assert!(
-            result.mono_defns.is_empty(),
-            "no call sites means no mono_defns"
+            mono_names.is_empty(),
+            "no call sites means no mono_defns, got: {mono_names:?}"
         );
 
         // Check the scheme has Num constraint
@@ -4060,16 +4146,17 @@ mod tests {
             resolved_call: None,
             inferred_type: None,
         });
-        let result = tc.check_repl_input_self(&expr_input).unwrap();
+        let _result = tc.check_repl_input_self(&expr_input).unwrap();
 
-        // Should have mono_defns populated
+        // Should have mono_defns populated (entry on SymbolTable post-slim)
+        let mono_names = tc.mono_defn_names();
         assert!(
-            !result.mono_defns.is_empty(),
+            !mono_names.is_empty(),
             "REPL expr should generate mono_defns for constrained fn calls"
         );
-        assert_eq!(
-            result.mono_defns[0].defn.name.as_ref(),
-            "add$Int+Int",
+        assert!(
+            mono_names.iter().any(|n| n.as_ref() == "add$Int+Int"),
+            "expected add$Int+Int in mono entries, got {mono_names:?}"
         );
     }
 
@@ -4133,16 +4220,17 @@ mod tests {
             visibility: Visibility::Public,
             span: span(180, 209),
         });
-        let result = tc.check_repl_input_self(&main_input).unwrap();
+        let _result = tc.check_repl_input_self(&main_input).unwrap();
 
-        // Should have mono_defns from the defn body scan
+        // Should have mono_defns from the defn body scan (entry on SymbolTable post-slim)
+        let mono_names = tc.mono_defn_names();
         assert!(
-            !result.mono_defns.is_empty(),
+            !mono_names.is_empty(),
             "REPL defn should generate mono_defns for constrained fn calls in body"
         );
-        assert_eq!(
-            result.mono_defns[0].defn.name.as_ref(),
-            "add$Int+Int",
+        assert!(
+            mono_names.iter().any(|n| n.as_ref() == "add$Int+Int"),
+            "expected add$Int+Int in mono entries, got {mono_names:?}"
         );
     }
 
@@ -4177,10 +4265,10 @@ mod tests {
             span: span(0, 29),
         })];
 
-        let result = tc.check_program_self(&program).unwrap();
+        let _result = tc.check_program_self(&program).unwrap();
 
-        assert!(result.constrained_fn_names.is_empty());
-        assert!(result.mono_defns.is_empty());
+        assert!(tc.constrained_fn_names_set().is_empty());
+        assert!(tc.mono_defn_names().is_empty());
     }
 
     // --- Multi-sig defn tests ---
@@ -4278,7 +4366,7 @@ mod tests {
             span(0, 56),
         ))];
 
-        let result = tc.check(&program, &test_ctx(), cranelisp_types::ModuleStrategy::Additive).unwrap();
+        let _result = tc.check(&program, &test_ctx(), cranelisp_types::ModuleStrategy::Additive).unwrap();
 
         // The base name "add" should be registered as Overloaded
         let table_guard = tc.symbol_table();
@@ -4303,10 +4391,16 @@ mod tests {
             "add$Int+Int+Int should be registered"
         );
 
-        // The multi-sig defns should appear in default_method_defns
-        // (currently piggybacking on that field)
+        // The multi-sig defns live on SymbolTable post-slim (Wave 2 step 4).
+        // The `default_method_defns` CheckResult field was retired; the mangled
+        // entries are directly observable on the symbol table instead.
+        let mangled_count = tc
+            .symbol_table()
+            .all_symbols()
+            .filter(|(name, _)| name.as_ref().starts_with("add$"))
+            .count();
         assert_eq!(
-            result.default_method_defns.len(), 2,
+            mangled_count, 2,
             "should produce 2 mangled defns for the backend"
         );
     }
@@ -4361,7 +4455,7 @@ mod tests {
             span(100, 138),
         ))];
 
-        let result = tc.check(&program, &test_ctx(), cranelisp_types::ModuleStrategy::Additive).unwrap();
+        let _result = tc.check(&program, &test_ctx(), cranelisp_types::ModuleStrategy::Additive).unwrap();
 
         // Mangled names should be different: process$Int vs process$Bool
         assert!(
@@ -4373,8 +4467,13 @@ mod tests {
             "process$Bool should be registered"
         );
 
-        // 2 mangled defns produced
-        assert_eq!(result.default_method_defns.len(), 2);
+        // 2 mangled defns produced (observable on SymbolTable post-slim).
+        let mangled_count = tc
+            .symbol_table()
+            .all_symbols()
+            .filter(|(name, _)| name.as_ref().starts_with("process$"))
+            .count();
+        assert_eq!(mangled_count, 2);
     }
 
     // spec: 05-definitions §5.1.2 — duplicate signatures produce an error
@@ -4533,10 +4632,12 @@ mod tests {
         });
 
         let program = vec![multi_defn, call_expr];
-        let result = tc.check(&program, &test_ctx(), cranelisp_types::ModuleStrategy::Additive).unwrap();
+        let _result = tc.check(&program, &test_ctx(), cranelisp_types::ModuleStrategy::Additive).unwrap();
 
-        // The call site should have a SigDispatch resolution to "add$Int+Int"
-        let resolution = result.method_resolutions.get(&call_span);
+        // The call site should have a SigDispatch resolution to "add$Int+Int".
+        // Post-slim (Wave 2 step 4): resolutions live on annotated AST nodes.
+        let resolutions = tc.annotated_resolutions();
+        let resolution = resolutions.get(&call_span);
         assert!(
             resolution.is_some(),
             "call site should have a resolution"
@@ -4760,7 +4861,7 @@ mod tests {
         let ctx = cf_test_ctx();
         let program = vec![TopLevel::Defn(make_inc_defn())];
 
-        let result = tc.check(&program, &ctx, ModuleStrategy::Additive).unwrap();
+        let _result = tc.check(&program, &ctx, ModuleStrategy::Additive).unwrap();
 
         // Verify the function was registered with correct type
         if let Some(ModuleEntry::Def { scheme, .. }) = tc.symbol_table().get("inc") {
@@ -4773,18 +4874,23 @@ mod tests {
             panic!("inc not found in symbol table after check()");
         }
 
-        // Verify expr_types populated (body expressions should be typed)
-        assert!(!result.expr_types.is_empty(), "expr_types should be populated");
-
-        // All expr_types should be resolved (no Var types)
-        for (_span, ty) in &result.expr_types {
-            if let Type::Var(_) = ty {
-                panic!("unresolved Var in expr_types");
+        // Verify annotated ASTs carry inferred types on body expressions.
+        // Post-slim (Wave 2 step 4): `expr_types` is no longer on CheckResult.
+        let mut any_typed = false;
+        let mut all_resolved = true;
+        if let Some(ModuleEntry::Def { ast: Some(defn), .. }) = tc.symbol_table().get("inc") {
+            for variant in &defn.variants {
+                walk_inferred_types(&variant.body, &mut any_typed, &mut all_resolved);
             }
         }
+        assert!(any_typed, "expr_types should be populated on annotated AST");
+        assert!(all_resolved, "all expr_types should be resolved (no Var types)");
 
         // Verify method_resolutions populated (add-i64 call site resolved)
-        assert!(!result.method_resolutions.is_empty(), "method_resolutions should have add-i64 call site");
+        assert!(
+            !tc.annotated_resolutions().is_empty(),
+            "method_resolutions should have add-i64 call site"
+        );
     }
 
     // spec: design/typecheck/check-form-api.md — typedef + defn identity
@@ -4797,7 +4903,7 @@ mod tests {
             TopLevel::Defn(make_is_red_defn()),
         ];
 
-        let result = tc.check(&program, &ctx, ModuleStrategy::Additive).unwrap();
+        let _result = tc.check(&program, &ctx, ModuleStrategy::Additive).unwrap();
 
         // type_defs and constructor_to_type should be populated
         assert!(tc.lookup_type_def(&TypeName::from("Color")).is_some());
@@ -4817,8 +4923,15 @@ mod tests {
             panic!("is-red not found in symbol table");
         }
 
-        // expr_types should be populated
-        assert!(!result.expr_types.is_empty());
+        // expr_types should be populated on annotated AST (post-slim).
+        let mut any_typed = false;
+        let mut _all_resolved = true;
+        if let Some(ModuleEntry::Def { ast: Some(defn), .. }) = tc.symbol_table().get("is-red") {
+            for variant in &defn.variants {
+                walk_inferred_types(&variant.body, &mut any_typed, &mut _all_resolved);
+            }
+        }
+        assert!(any_typed);
     }
 
     // spec: design/typecheck/check-form-api.md — forward reference identity
@@ -4828,7 +4941,7 @@ mod tests {
         let ctx = cf_test_ctx();
         let program = make_forward_ref_program();
 
-        let result = tc.check(&program, &ctx, ModuleStrategy::Additive).unwrap();
+        let _result = tc.check(&program, &ctx, ModuleStrategy::Additive).unwrap();
 
         // Both should be monomorphic Int -> Int
         if let Some(ModuleEntry::Def { scheme, .. }) = tc.symbol_table().get("double") {
@@ -4849,7 +4962,15 @@ mod tests {
             panic!("add-self not found");
         }
 
-        assert!(!result.expr_types.is_empty());
+        // expr_types should be populated on annotated AST (post-slim).
+        let mut any_typed = false;
+        let mut _all_resolved = true;
+        if let Some(ModuleEntry::Def { ast: Some(defn), .. }) = tc.symbol_table().get("add-self") {
+            for variant in &defn.variants {
+                walk_inferred_types(&variant.body, &mut any_typed, &mut _all_resolved);
+            }
+        }
+        assert!(any_typed);
     }
 
     // spec: design/typecheck/check-form-api.md — constrained fn identity
@@ -4882,11 +5003,12 @@ mod tests {
             span(390, 407),
         ))];
 
-        let result = tc.check(&program, &ctx, ModuleStrategy::Additive).unwrap();
+        let _result = tc.check(&program, &ctx, ModuleStrategy::Additive).unwrap();
 
-        // Should be detected as constrained polymorphic
+        // Should be detected as constrained polymorphic (entry on SymbolTable
+        // post-slim; derived from `DefKind::UserFn { constrained_fn: Some(_) }`).
         assert!(
-            result.constrained_fn_names.contains(&Symbol::from("add")),
+            tc.constrained_fn_names_set().contains(&Symbol::from("add")),
             "add should be detected as constrained polymorphic"
         );
     }
@@ -4908,8 +5030,16 @@ mod tests {
         assert!(result.display.is_some());
         assert_eq!(result.display.as_ref().unwrap().ty, Type::Int);
 
-        // expr_types should contain the literal's type
-        assert!(!result.expr_types.is_empty());
+        // expr_types should contain the literal's type. Post-slim (Wave 2
+        // step 4), `__expr` carries its annotated AST on the symbol table.
+        let mut any_typed = false;
+        let mut _all_resolved = true;
+        if let Some(ModuleEntry::Def { ast: Some(defn), .. }) = tc.symbol_table().get("__expr") {
+            for variant in &defn.variants {
+                walk_inferred_types(&variant.body, &mut any_typed, &mut _all_resolved);
+            }
+        }
+        assert!(any_typed, "expr_types should contain the literal's type");
     }
 
     // spec: design/typecheck/check-form-api.md — multi-sig defn identity
@@ -4966,7 +5096,7 @@ mod tests {
             span: span(590, 654),
         })];
 
-        let result = tc.check(&program, &ctx, ModuleStrategy::Additive).unwrap();
+        let _result = tc.check(&program, &ctx, ModuleStrategy::Additive).unwrap();
 
         // The base name should be Overloaded in symbol table
         if let Some(ModuleEntry::Def { kind, .. }) = tc.symbol_table().get("add") {
@@ -4980,8 +5110,17 @@ mod tests {
             panic!("add not found in symbol table");
         }
 
-        // expr_types should be populated from both variant bodies
-        assert!(!result.expr_types.is_empty());
+        // expr_types should be populated from both variant bodies (post-slim).
+        let mut any_typed = false;
+        let mut _all_resolved = true;
+        if let Some(ModuleEntry::Def { ast: Some(defn), .. }) =
+            tc.symbol_table().get("add$Int+Int")
+        {
+            for variant in &defn.variants {
+                walk_inferred_types(&variant.body, &mut any_typed, &mut _all_resolved);
+            }
+        }
+        assert!(any_typed);
     }
 
     // ---- Category 2: Per-Form Basics ----
@@ -5315,14 +5454,26 @@ mod tests {
         assert!(!accumulator.expr_types.is_empty(), "accumulated expr_types should be non-empty");
 
         // Finalize to get final types
-        let result = tc.finalize_check_result(
+        let _result = tc.finalize_check_result(
             &module, &mut accumulator, &program, ModuleStrategy::Replace,
         ).unwrap();
 
-        // After finalization, all expr_types should be resolved
-        for (_span, ty) in &result.expr_types {
-            if let Type::Var(_) = ty {
-                panic!("unresolved Var in expr_types after finalize");
+        // After finalization, all expr_types should be resolved on annotated ASTs.
+        for name in ["double", "add-self"] {
+            if let Some(ModuleEntry::Def { ast: Some(defn), .. }) =
+                tc.symbol_table().get(name)
+            {
+                let mut _any = false;
+                let mut all_resolved = true;
+                for variant in &defn.variants {
+                    walk_inferred_types(&variant.body, &mut _any, &mut all_resolved);
+                }
+                assert!(
+                    all_resolved,
+                    "unresolved Var in expr_types after finalize for {name}"
+                );
+            } else {
+                panic!("{name} should be registered after finalize");
             }
         }
     }
@@ -5619,20 +5770,26 @@ mod tests {
             tc.merge_form_result(&module, &mut accumulator, result);
         }
 
-        let result = tc.finalize_check_result(
+        let _result = tc.finalize_check_result(
             &module, &mut accumulator, &program, ModuleStrategy::Replace,
         ).unwrap();
 
-        // finalize should produce a complete CheckResult
-        assert!(!result.expr_types.is_empty(), "finalized result should have expr_types");
-        assert!(!result.method_resolutions.is_empty(), "finalized result should have method_resolutions");
-
-        // All expr_types should be fully resolved
-        for (_span, ty) in &result.expr_types {
-            if let Type::Var(_) = ty {
-                panic!("unresolved Var in finalized expr_types");
+        // finalize should produce complete annotated ASTs + method resolutions.
+        // Post-slim (Wave 2 step 4): resolutions live on annotated AST nodes;
+        // expr_types live on `Expr::inferred_type`.
+        let mut any_typed = false;
+        let mut all_resolved = true;
+        if let Some(ModuleEntry::Def { ast: Some(defn), .. }) = tc.symbol_table().get("inc") {
+            for variant in &defn.variants {
+                walk_inferred_types(&variant.body, &mut any_typed, &mut all_resolved);
             }
         }
+        assert!(any_typed, "finalized result should have expr_types");
+        assert!(all_resolved, "all expr_types should be fully resolved");
+        assert!(
+            !tc.annotated_resolutions().is_empty(),
+            "finalized result should have method_resolutions"
+        );
     }
 
     // ---- Category 5: Edge Cases ----
@@ -5794,12 +5951,17 @@ mod tests {
             )),
         ];
 
-        let result = tc.check(&program, &ctx, ModuleStrategy::Additive).unwrap();
+        let _result = tc.check(&program, &ctx, ModuleStrategy::Additive).unwrap();
 
-        // All expr_types should be fully resolved
-        for (_span, ty) in &result.expr_types {
-            if let Type::Var(_) = ty {
-                panic!("unresolved Var in expr_types after check()");
+        // All expr_types should be fully resolved on annotated ASTs (post-slim).
+        for (_name, entry) in tc.symbol_table().all_symbols() {
+            if let ModuleEntry::Def { ast: Some(defn), .. } = entry {
+                let mut _any = false;
+                let mut all_resolved = true;
+                for variant in &defn.variants {
+                    walk_inferred_types(&variant.body, &mut _any, &mut all_resolved);
+                }
+                assert!(all_resolved, "unresolved Var in expr_types after check()");
             }
         }
     }
@@ -6117,12 +6279,14 @@ mod tests {
             )),
         ];
 
-        let result = tc.check(&program, &ctx, ModuleStrategy::Additive).unwrap();
+        let _result = tc.check(&program, &ctx, ModuleStrategy::Additive).unwrap();
 
-        // Verify the side map has the trait method resolution
+        // Verify the annotated ASTs carry the trait method resolution.
+        // Post-slim (Wave 2 step 4): resolutions live on AST nodes, not on
+        // a side map inside CheckResult.
         assert!(
-            result.method_resolutions.contains_key(&plus_span),
-            "method_resolutions should have entry for + call"
+            tc.annotated_resolutions().contains_key(&plus_span),
+            "annotated ASTs should carry a resolution for + call"
         );
 
         // Verify the AST has the same resolution

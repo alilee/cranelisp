@@ -215,7 +215,7 @@ The authoritative per-extern table is:
 | `cranelisp_trace_children` | runtime/trace.rs | `trace` | No | No | **DONE**: same as cranelisp_trace_name |
 | `cranelisp_trace_nanos` | runtime/trace.rs | `trace` | No | No | **DONE**: Int return — no inc; `drop::consume_trace_call` on the Trace. |
 | `cranelisp_trace_first_child_nanos` | runtime/trace.rs | `trace` | No | No | **DONE**: Int return — no inc; `drop::consume_trace_call` on the Trace. |
-| `cranelisp_run_io` | runtime/io.rs | `io_ast` (IO ADT) | No | No (evaluates to completion) | **DONE**: after `run_io_trampoline` returns the final value, `drop::consume_io_tree(io_ptr)` releases the whole tree (tag-dispatched: Pure/Effect are leaves, Bind recurses into inner + consumes the continuation closure, Par walks all branches). |
+| `cranelisp_run_io` | runtime/io.rs | `io_ast` (IO ADT) | No | No (evaluates to completion) | **TOP-LEVEL DONE**: after `run_io_trampoline` returns the final value, `drop::consume_io_tree(io_ptr)` releases the whole tree (tag-dispatched: Pure/Effect are leaves, Bind recurses into inner + consumes the continuation closure, Par walks all branches). **INTERNAL-LOOP OPEN (Sprint 57 Phase 4 G8 fix)**: intermediate Pure/Effect/Bind/Par nodes produced or replaced during the trampoline walk, and continuation closures popped from `cont_stack` and invoked, are leaked. See §3.5. |
 | IVar intrinsics | runtime/ivar.rs | various | varies | varies | separately reviewed — IVar code already has RC management for its specific semantics |
 | Platform DLL functions | cranelisp-platform/src/lib.rs | varies per DLL | varies | varies | see platform CLAUDE.md; platform fns are consuming per Decision 24, most already use CLString::own() pattern |
 
@@ -247,6 +247,118 @@ When the callee itself is a temporary expression (e.g., `((make-adder 5) 3)`), t
 
 1. The return value is **protected**: if heap-typed, emit `rc_inc` on the result before dec'ing the closure. This prevents premature deallocation if the result aliases a captured value.
 2. The temporary closure is dec'd via `emit_closure_dec`.
+
+### 3.5 IO Trampoline Intermediate-Node Leak (Sprint 57 Wave 3 — LANDED)
+
+The IO trampoline in `crates/cranelisp-runtime/src/io.rs` is the Ring 4 counterpart to the user-function consuming convention: it executes an IO ADT tree built by the frontend/prelude (Pure / Effect / Bind / Par) and returns the final value. Under Decision 24, the extern entry `cranelisp_run_io(io_ptr)` consumes the **top-level** IO argument via `crate::drop::consume_io_tree(io_ptr)` after the trampoline returns. Before Sprint 57 Wave 3, intermediate Pure/Effect nodes produced by continuations during the walk were leaked: each continuation's returned node became the new `current` and the prior `current` was dropped from the local without a matching dec/dealloc.
+
+Before the Wave 3 fix, this was a real leak, not cosmetic (per `/arch` review condition 6). Every Bind-chain step through a continuation produces a fresh IO node (typically a Pure or Effect) that replaces the previous `current`; the previous `current` — an earlier intermediate produced by an earlier continuation — had no further reference and no matching dec. Under a Ring-4 program doing many binds, the leak was O(binds).
+
+The Wave 3 fix distinguishes **caller-tree** nodes (reachable from the original `io_ptr`, released by the top-level `consume_io_tree`) from **fresh** nodes (produced by continuations during the walk, released inline by the trampoline). See §3.5.4 for the landed implementation.
+
+#### 3.5.1 What `run_io_trampoline` does
+
+`run_io_trampoline(io_ptr: i64) -> i64` walks the IO ADT iteratively with an explicit `cont_stack: Vec<i64>` of continuation closures. On each iteration, it reads `current`'s tag (offset 16) and dispatches:
+
+| Tag | Action | How `current` is replaced |
+|---|---|---|
+| Pure | Read field0 (payload). Pop a continuation or return. | If cont popped: `current = call_continuation(cont_ptr, val)` — the continuation returns a fresh IO node. If no cont: return val to caller (Pure node is not consumed here; dec'd by `cranelisp_run_io` via `consume_io_tree` on the top-level root — but only if `current` IS the top-level root at return time, which it is not after the first continuation). |
+| Effect | Read field0 (thunk ptr), invoke the thunk via `call_effect_thunk`. Pop a continuation or return. | Same as Pure — continuation returns a fresh IO node, or trampoline returns the result value directly. |
+| Bind | Read field0 (inner), field1 (cont). Push cont on stack. | `current = inner` — the Bind node itself has no further use; its inner pointer is now the new current. The Bind node is leaked unless later consumed. |
+| Par | Read count + branch pointers. Dispatch rayon parallel evaluation. Allocate results buffer. Pop a continuation or return. | `current = call_continuation(cont_ptr, results_ptr)` or return results_ptr. |
+
+#### 3.5.2 Where the intermediate nodes come from
+
+Two sources:
+
+1. **Continuation returns.** A Cranelisp continuation is a lambda `(fn [x] <expr>)` where `<expr>` builds and returns an IO value — typically `(pure (+ x 1))` or `(bind <another-io> <next-cont>)`. The returned IO node is a fresh heap allocation at rc=1 (the continuation allocated it via the backend's normal allocation path). The trampoline assigns it into `current` and proceeds. When the NEXT iteration replaces `current` again, the previous IO node — a fresh Pure / Effect / Bind / Par at rc=1 — has no remaining reference.
+
+2. **Bind dispatch.** When `current.tag == IO_TAG_BIND`, the trampoline reads `field0` (inner IO) and `field1` (continuation closure), pushes the closure on `cont_stack`, and replaces `current = inner`. The Bind node itself is now unreferenced by the trampoline. The top-level `consume_io_tree` call in `cranelisp_run_io` does dec the Bind node — but only if the Bind node is still reachable from the top-level root pointer at that time. The dec is only correct for Bind nodes directly on the root's spine; a Bind node produced by a continuation mid-walk is NOT on the root's spine.
+
+Combined effect: every continuation-produced node and every mid-walk Bind node is leaked. The rc=1 reference is never dec'd.
+
+#### 3.5.3 The RC-balance rule
+
+Under Decision 24, the extern `cranelisp_run_io(io_ptr)` is a consuming callee: it fully releases the IO tree handed in. The internal trampoline (`run_io_trampoline`) is a non-consuming helper — it walks the caller-owned tree read-only and dec's only the nodes IT allocates (continuation-produced intermediates). The extern wrapper handles the caller's tree via `consume_io_tree(io_ptr)` post-return.
+
+Stated as an invariant:
+
+- Caller-tree nodes (reachable from the original `io_ptr` by following Bind spines, Par branches, and Bind continuations) are owned by the top-level extern caller. They are released by one transitive `consume_io_tree(io_ptr)` call after the trampoline returns.
+- Fresh nodes (allocated during the trampoline's walk by invoked continuations) are owned by the trampoline. They are released inline via `rc::dec_shallow_io` at the point of replacement, and a final shallow dec on the no-continuation return path.
+- Continuations popped from `cont_stack` carry their parent Bind's freshness. Caller-tree closures are not dec'd by the trampoline (the tree walks them); fresh closures are `consume_closure`-dec'd after invocation (one-shot semantics).
+- The trampoline returns a scalar `i64` — whatever payload the final Pure/Effect/Par yielded. If that payload is a heap pointer (e.g., a String from `Pure "hello"`), its rc is managed by the caller's scope, as for any heap-typed return value.
+
+See §3.5.4 for the landed implementation of these rules.
+
+#### 3.5.4 Fix shape — LANDED Sprint 57 Wave 3
+
+The minimal fix is to dec the replaced node inside each loop iteration WHEN the trampoline owns it (not when the caller does). The earlier formulation of this section proposed unconditional shallow-dec at every replace site — that turned out to double-dec the caller's tree because `cranelisp_run_io` still needs to run `consume_io_tree(io_ptr)` post-return to release the top-level tree (closures embedded in caller-tree Binds are transitively released by that walk). The correct discipline is ownership-aware shallow dec: shallow-dec only the nodes and closures the trampoline itself produced.
+
+**Landed implementation (Approach 4)**. `run_io_trampoline` is non-consuming of `io_ptr`:
+
+- The trampoline tracks `current_is_fresh: bool` — initially false (the caller's tree). It flips to true after the first `call_continuation` (continuation returns a freshly-allocated IO node) and stays true for the rest of that subtree (stepping into a fresh Bind's inner descends to another fresh node because the continuation allocated the whole subtree).
+- At every transition where `current` is replaced (Bind → inner, Pure/Effect/Par pop → continuation result), shallow-dec the old `current` via `rc::dec_shallow_io` **only if `current_is_fresh` was true**.
+- `cont_stack` stores `(cont_ptr, cont_is_fresh)` — the freshness inherited from the enclosing Bind at push time. When popped, `call_continuation(cont_ptr, val, cont_is_fresh)` invokes the closure and, if `cont_is_fresh`, `drop::consume_closure(cont_ptr)` after the call to dec the continuation-produced closure. Caller-tree closures (is_fresh=false) are left alone; `consume_io_tree(io_ptr)` releases them post-return.
+- `cranelisp_run_io(io_ptr)` wrapper: runs the trampoline, then `drop::consume_io_tree(io_ptr)` to transitively release the caller's tree.
+
+**Ownership invariant**. Every IO ADT node is dec'd exactly once:
+- Caller-tree nodes (Pure/Effect/Bind/Par and their cont closures) — released by the post-return `consume_io_tree(io_ptr)` transitive walk.
+- Fresh nodes (allocated by a continuation during the trampoline's walk) — released inline by the trampoline's ownership-aware shallow dec.
+
+The two sets are disjoint: caller-tree nodes are reachable only via `io_ptr`; fresh nodes are reachable only via `current` after the first `call_continuation`. There is no overlap, so no node gets double-dec'd, and none leaks.
+
+**Primitives introduced in Wave 3**:
+
+- `rc::dec_shallow_io(ptr)` — landed in `crates/cranelisp-runtime/src/drop.rs` (Decision 29). Atomically dec's the RC with Release ordering; on last-ref, emits an Acquire fence and deallocs the outer allocation only — no field walk. Safe on bare nullary tags.
+- `call_continuation(cont_ptr, val, cont_is_fresh: bool)` — existing helper gains the freshness flag; when true, invokes `consume_closure(cont_ptr)` post-call.
+
+**Rejected alternatives**:
+
+- **Unconditional shallow-dec at every replace site** (the earlier §3.5.4 recommendation): double-dec's caller-tree closures because `consume_io_tree(io_ptr)` still walks them. The pre-landing analysis missed this because the two dec paths (inline + post-return) were not modelled together.
+- **Track-and-drop** (keep a `Vec<i64>` of owned nodes and dec them at returns): allocates a Vec per trampoline invocation; the `current_is_fresh` bool is a simpler invariant.
+- **Consume io_ptr at the trampoline level** (make `run_io_trampoline` consuming): cleanest in theory but changes the contract of a public Rust function, breaking all direct Rust-level callers (tests in `tests/io.rs` that call `run_io_trampoline` then `heap_dealloc(value)`). Keeping the post-return `consume_io_tree(io_ptr)` at the extern wrapper preserves backward compat.
+
+**Freshness flag is viral within a subtree**. Once set to true (by a continuation returning a fresh node), freshness is inherited by Bind's inner (same continuation allocated both), Par's branches (same), and popped continuations (stored with their enclosing Bind's freshness). Freshness never flips back to false — a fresh subtree cannot contain a caller-tree node.
+
+#### 3.5.5 Why `call_effect_thunk` is NOT affected
+
+`call_effect_thunk` consumes its thunk pointer by design (the `Box<Box<dyn FnOnce>>` is taken out and dropped by the invocation). The Effect node's field0 (thunk ptr) is a raw Rust heap pointer, not a Cranelisp heap allocation with an RC header; it is outside the RC regime and does not interact with this fix. The Effect node's field1 (resource token) is a scalar Int; likewise no RC. Only the Effect node's OWN allocation (the wrapping heap slot with header + tag + thunk_ptr + token) is a Cranelisp heap object requiring an RC-dec — and that dec is the shallow one from §3.5.4.
+
+#### 3.5.6 Par-specific note
+
+`dispatch_par_branches` invokes `run_io_trampoline` recursively on each branch. Under the fix, each recursive trampoline call is itself RC-balanced — every intermediate node produced inside the branch walk is dec'd inline by the branch's own trampoline instance. The outer trampoline then allocates a fresh `results_buf` via `alloc_with_rc` to hold the scalar results; this buffer is passed to the continuation and eventually dec'd by whatever scope owns it (typically the continuation's `pop_scope_with_cleanup`). The outer Par node itself is shallow-dec'd at the point where `current` is replaced with the continuation's return (or at the `return results_ptr` path at the top-level).
+
+#### 3.5.7 Testing — RC balance required, not just "tests pass"
+
+Per `/arch` review condition 6, the acceptance criterion for this fix is NOT "IO platform tests pass" but a real RC-balance integration test. `/qa` owns the integration test; the backend/runtime-side unit test is:
+
+```text
+Setup:  record alloc_count / dealloc_count; build an IO tree with N
+        intermediate Bind steps, each continuation producing a Pure node.
+Act:    call cranelisp_run_io on the root.
+Assert: (alloc_count - baseline) == (dealloc_count - baseline) + returned-heap.
+        For scalar-payload programs, returned-heap == 0, so alloc delta == dealloc delta.
+```
+
+The existing `decision24_run_io_pure_rc_balanced` test (at `io.rs:554`) already exercises the no-continuation path and is balanced. The fix MUST enable analogous tests for bind-chains and par-chains to pass with the same alloc/dealloc invariant.
+
+Pre-existing `test_run_io_deep_bind_chain` (1000 binds) is a natural stress test — under the fix, it must run with `(alloc_count - baseline) == (dealloc_count - baseline)` at the end. Today it leaks 1000+ intermediate nodes; post-fix, zero.
+
+#### 3.5.8 Sketch comparison
+
+The sketch (`sketch/src/intrinsics.rs` line ~157, `IoTask::run()`) has the same trampoline shape and **the same leak**. The sketch operates under a different overall convention (per-call borrowing in the sketch's codegen, per `sketch/docs/codegen.md`) which masked the leak in early Ring 4 prototyping — the sketch did not universally claim that extern entry points consume their heap arguments, so a leak of intermediate IO nodes was not obviously a convention violation. In the reimplementation under Decision 24, the leak IS a convention violation: the trampoline's extern entry commits to consuming, and the internal loop must honour that commitment. The divergence from sketch is: we fix the leak; the sketch did not.
+
+Rationale for divergence: Decision 24's uniform consuming convention makes every extern's RC balance auditable (§3.3 is the audit table). An unaudited leak inside `cranelisp_run_io` breaks the audit's credibility. The sketch's per-call borrowing convention did not have the same audit story, so the sketch could tolerate the leak in practice. The reimplementation cannot.
+
+#### 3.5.9 Cross-references
+
+- `crates/cranelisp-runtime/src/io.rs` — the landed fix (non-consuming trampoline + `current_is_fresh` flag).
+- `crates/cranelisp-runtime/src/drop.rs` — `consume_io_tree` (transitive) for caller-tree release; `consume_closure` for fresh-closure release; `dec_shallow_io` (Decision 29, Wave 3) for fresh IO-node release.
+- `§3.3 Extern Consumption Audit` — the row for `cranelisp_run_io` that describes the top-level `consume_io_tree(io_ptr)` behaviour; remains accurate after the fix.
+- `design/arch/CLAUDE.md` Decision 24 — the uniform consuming convention.
+- `design/arch/CLAUDE.md` Decision 29 — `rc::dec_shallow_io` primitive introduced by the Wave 3 fix.
+- `sprints/SPRINT.md` §"Architecture Review" condition 6 — the `/qa` RC-balance integration test (Wave 3 acceptance criterion).
+- `repl/demos/…` — platform demos that exercise the trampoline (behaviour-preserving; memory behaviour fixed).
 
 ## 4. Drop Glue
 

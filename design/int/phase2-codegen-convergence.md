@@ -5,6 +5,12 @@
 **Scope**: Step 2b — delete `codegen_module_symbols` and route JIT through `compile_to_module`
 **Status**: DRAFT
 
+> **LANDED (Sprint 57 Wave 2)**. This document described Phase-2 interim
+> plans. The final landed shape is in §13 "G6 Extension". `CodegenProduct`
+> has been deleted; references to it in §1–§12 describe the intermediate
+> stage during Wave 2, not the final state.
+
+
 This document covers the integration-layer changes required for Step 2b of Phase 2 codegen convergence. It is the `/int` companion to `/backend`'s `design/backend/compile-to-module.md` (Wave 1 update) and `/typecheck`'s `design/typecheck/ast-annotation.md` (Wave 0 update).
 
 ## 1. Problem Statement
@@ -59,7 +65,16 @@ Authoritative table:
 
 **Principle 7 check**: Single source of truth. The split between env impls was exactly the duplication Principle 7 warns against — two implementations of the same resolution logic, one for JIT and one for object. Step 2b collapses them to one: `compile_to_module` reading `symbol_tables`.
 
-## 4. JITModule Lifetime (Phase 2→3 Bridge)
+## 4. JITModule Lifetime (Phase 2→3 Bridge; see Decision 31 for reclaim)
+
+> **2026-04-19 update (Decision 31 reconciliation).** The core claim of this section — one `JITModule` per `compile_to_module` call — is correct and unchanged. What needs adding is the reclaim story: Cranelift 0.116's default drop leaks, so reclaim requires a custom `Drop` on our `Jit` wrapper that calls `unsafe JITModule::free_memory()`. See `design/arch/CLAUDE.md` Decision 31 and `design/arch/pipeline-v4.md` §9.4 for evidence and canonical framing. Consequences in this section:
+>
+> - (a) The default drop of a `JITModule` (or our `Jit` wrapper that owns one) reclaims nothing — `cranelift-jit-0.116.1/src/memory.rs:269-276` leaks allocations on purpose to guarantee fn-pointer validity. To reclaim, the `Jit` wrapper implements a custom `Drop` that calls `unsafe JITModule::free_memory()`.
+> - (b) The `Arc<JITModule>` wrapping in this section's §5 pseudocode is now the canonical shape, not an optional future-proofing — `Arc<Jit>` on `ModuleEntry::Def.code` tracks batch-level reachability, and when the last clone drops (every sibling `Code` evicted/redefined), the custom `Drop` fires.
+> - (c) The safety invariant for `unsafe free_memory()` is: at Arc-refcount-zero, no fn pointer into that JIT is reachable. Held by the symbol-table discipline (code pointers live on `ModuleEntry::Def.code` whose `Arc<Jit>` keeps refcount > 0) + GOT discipline (atomic slot swap before old Arc drop) + language-level invariant (user `fn` values are heap closures calling through the GOT, never raw code pointers).
+>
+> §4.1–§4.5 below retain Phase 2's scoping decisions. §13 (G6 Extension) and pipeline-v4.md §9.4 describe the landed shape.
+
 
 Per `/arch` review §6 condition 4, the per-function `JITModule` lifetime is explicitly scoped in Phase 2 so the Phase 3 G6 transition is a bounded refactor, not a rewrite. **`/arch` Phase 3a review §3 (Principle 8 Check) confirms** that wrapping the finalised module in `Arc<JITModule>` inside `Code` is NOT interim architecture — the `Arc` stays valid when `Code` moves onto `ModuleEntry::Def` in Phase 3 G6 (multiple entries sharing one finalised JIT module is a legitimate data sharing pattern, not a workaround).
 
@@ -418,3 +433,188 @@ After this design doc is approved and Wave 0 (`/typecheck`) and Wave 1 (`/backen
 - `/qa` — add the tests in §10.3 and re-run the full baseline.
 - `/platform` — confirm platform resolution per §9.4 before 2b.5 deletes `SessionCompilationEnv`.
 - `/review` — review the Step 2b implementation, specifically the inlined codegen block in `priority_worker_loop`/`priority_worker_thread`/`codegen_and_execute` for coherence and the §9 invariants.
+
+---
+
+## 13. G6 Extension — `code: Option<Code>` on `ModuleEntry::Def` (Sprint 57 Phase 3 Step 3b)
+
+**Sprint**: 57 (Phase 3 Step 3b of `pipeline-v4-roadmap.md`).
+**Owner**: `/int`.
+**Status**: Design (Wave 1 prerequisite for Wave 2 implementation).
+
+This section extends the Sprint 56 convergence to complete gap G6 from `pipeline-v4-roadmap.md`: compiled `Code` moves from the `CodegenProduct` DashMap to a `#[serde(skip)] code: Option<Code>` field on `ModuleEntry::Def`. The side map is deleted. `/arch` Decision 25 confirms this is the §9.1 / §9.4 target shape, not an interim — the `SymbolTable<C, L>` generics in `pipeline-v4.md` §9.1 are explicitly deferred (`pipeline-v4-roadmap.md:198`).
+
+### 13.1 What G6 is
+
+One sentence: **Compiled code lives on `ModuleEntry::Def.code` (not in `session.shared.codegen_products`), regenerated from `ast` on cache-hit load, keyed naturally by the same symbol-name lookup as every other per-symbol concern.**
+
+Rust shape (already landed in `interfaces.md`; see `design/arch/interfaces.md:902–913`):
+
+```rust
+ModuleEntry::Def {
+    // … scheme, param_names, kind, callees, got_slot, trait_origin, ast
+    #[serde(skip)]
+    code: Option<Code>,
+    // … platform_fn_ptr (G8)
+}
+```
+
+`Code` is unchanged — the `{ jit: Arc<Jit>, ptr: *const u8 }` struct in `src/session_v4.rs:447`. It stays in the integration layer (`/arch` Decision 25: generics deferred). The `Arc<Jit>` carries the same sharing role it served in Phase 2 — multiple entries produced by one `compile_to_module` call share one finalised JIT module.
+
+### 13.2 Writers — exactly one
+
+The priority worker's `inline_jit_codegen_for_names` (`src/worker.rs:2374`) is the sole writer. After Phase 2 it writes into `codegen_products[module].code` via `product.code.insert(...)` at line 2475. Phase 3 G6 replaces that write with a symbol-table write:
+
+```rust
+// BEFORE (Phase 2):
+let product = codegen_products.entry(module.clone()).or_default();
+for name in names {
+    // …
+    product.code.insert(name.clone(), Code { jit: jit_arc.clone(), ptr });
+}
+
+// AFTER (Phase 3 G6):
+let table_guard = tc_modules.get_mut(module)
+    .ok_or_else(|| /* error: symbol table missing */)?;
+for name in names {
+    // …
+    if let Some(ModuleEntry::Def { code, .. }) = table_guard.get_mut(name.as_ref()) {
+        *code = Some(Code { jit: jit_arc.clone(), ptr });
+    }
+}
+drop(table_guard);
+```
+
+All REPL-eval parallel writes flow through the same path (`codegen_and_execute` → `inline_jit_codegen_for_module` → `inline_jit_codegen_for_names`). No second writer exists — macro-clause compilation reuses `inline_jit_codegen_for_names` (Sprint 56).
+
+**Concurrency invariant**: per the scheduler, at most one priority worker holds write access to a given module's codegen work at any time (§9.1 of the Phase 2 doc). DashMap's per-shard locking on the symbol table is sufficient; `get_mut` contends only with readers of the *same* shard, and readers hold short guards.
+
+### 13.3 Readers — migration table
+
+Every `codegen_products` read migrates to a symbol-table lookup. Exhaustive enumeration of current readers (from grep of `codegen_products` in `src/session_v4.rs`; line numbers current at HEAD, may drift):
+
+| # | Reader | File:line (Phase 2 HEAD) | Today's read | Phase 3 G6 replacement |
+|---|--------|--------------------------|--------------|------------------------|
+| R1 | Priority worker — cross-module symbol pre-registration for `Linkage::Import` resolution during JIT finalize | `src/worker.rs:2399–2413` (`inline_jit_codegen_for_names` step 2b) | Iterates every `codegen_products` entry, collects `(name, ptr)` pairs | Iterates `symbol_tables` entries; for each `ModuleEntry::Def { code: Some(c), .. }` push `(symbol, c.ptr)`. Same pairs, same order. |
+| R2 | REPL eval — trailing-expression JIT | `src/session_v4.rs:1505–1514` (`codegen_and_execute`) | Passes `&self.shared.codegen_products` to `inline_jit_codegen_for_module`; later reads the compiled `__expr` pointer from `codegen_products[module].code["__expr"]` | `inline_jit_codegen_for_module` writes to symbol table (R1's write path). Eval reads `symbol_tables[module].get("__expr")` → `ModuleEntry::Def { code: Some(Code { ptr, .. }), .. }` → `ptr`. |
+| R3 | `/clif`, `/disasm` introspection | `src/session_v4.rs` REPL command handlers (search `codegen_products`) | Reads `codegen_products[module].code[name]` to verify the symbol is compiled, then reads `introspection[fq]` for CLIF/disasm text | Reads `symbol_tables[module].get(name).code.is_some()` for the compiled-check; introspection map unchanged (it stays separate per §9.6 / §13.6 below). |
+| R4 | `/source` introspection | same as R3 | Same presence check, then reads the original source span from the entry's `ast` / `sexp` fields | `symbol_tables[module].get(name).ast` is already the source. The `code.is_some()` check is optional (source exists even before code). |
+| R5 | `main` trampoline — look up entry-module `main` code pointer to call from Rust | `src/session_v4.rs:2666–2680` (`lookup_main_code`) | `codegen_products.get(module).and_then(|cp| cp.code.get("main")).map(|c| c.ptr)` | `symbol_tables.get(module).and_then(\|st\| st.get("main")).and_then(\|e\| match e { ModuleEntry::Def { code: Some(c), .. } => Some(c.ptr), _ => None })`. |
+| R6 | Test runner externs (`discover-tests`, `run-test`) — resolve test fn pointers by FQSymbol | `src/session_v4.rs:3536–3590` (`discover_test_names`, `run_test_by_name`) | Reads `codegen_products[module].code[name].ptr` for each `test-*` fn | Replace with `symbol_tables[module].get(name).code.as_ref().map(\|c\| c.ptr)` — same follow-Import-chain logic kept, just reading a different field. |
+| R7 | `TestRunnerState` pointer passing | `src/session_v4.rs:1490, 1566, 3639, 3701, 3745` | Holds `*const DashMap<ModuleFullPath, CodegenProduct>` so externs can later resolve code pointers | Holds `*const DashMap<ModuleFullPath, SymbolTable>` (already in shared state). Drops the dependency on `codegen_products` entirely. |
+| R8 | `reload_module` — clear prior compiled code before recompile | `src/session_v4.rs:982` | `codegen_products.remove(module_path)` | Walk `symbol_tables[module].all_symbols_mut()` and set `code = None` on each `Def`. Cheaper than an entry-level clear because the GOT slot assignments and AST survive. |
+| R9 | `compile_and_execute_expr` — cache-hit fast path for cross-module pointers | `src/session_v4.rs:3573–3605` (`lookup_code_for_fqsymbol`) | `codegen_products[module].code[name].ptr` | `symbol_tables[module].get(name).code.as_ref().map(\|c\| c.ptr)`. Same follow-Import walk. |
+| R10 | Priority worker — `already_compiled` dedup during `derive_codegen_batch` | `src/worker.rs:2269–2275` | `codegen_products.get(module).map(\|cp\| cp.code.contains_key(name))` | `symbol_tables[module].get(name).and_then(\|e\| match e { ModuleEntry::Def { code, .. } => Some(code.is_some()), _ => None }).unwrap_or(false)`. |
+
+Counts: **10 reader sites** across 2 files. All migrate to the same pattern — `symbol_tables[module].get(name) → ModuleEntry::Def.code`. None require inventing a new API; the lookup is the same follow-Import-chain path already used for `scheme`, `got_slot`, `ast`.
+
+### 13.4 `CodegenProduct` deletion — full field accounting
+
+Current `CodegenProduct` (src/session_v4.rs:422–436):
+
+```rust
+pub struct CodegenProduct {
+    pub linker: Option<cranelisp_backend::cache::Linker>,
+    pub code: dashmap::DashMap<Symbol, Code>,
+}
+```
+
+Two fields, both accounted for:
+
+| Field | Destination |
+|-------|-------------|
+| `code: DashMap<Symbol, Code>` | Moves to `ModuleEntry::Def.code: Option<Code>` (this extension). DashMap disappears — per-symbol storage is keyed by the `symbols` HashMap on `SymbolTable`, which DashMap-shards at the *module* level (not the symbol level). Symbol-level contention inside one module is rare (one worker per module; §9.1 of Phase 2). |
+| `linker: Option<Linker>` | Moves to `SymbolTable.linker: Option<L>` per `pipeline-v4.md` §9.1. `L` stays `()` until Phase 5 cache serialisation work; the field is present in the `pipeline-v4.md` target struct definition already. Phase 3 G6 does NOT land `linker` on `SymbolTable` — it is left on `CodegenProduct` **or** promoted to a sibling field on `SymbolTable` as part of G6 deletion. `/int` recommendation: promote it now (the type is `Option<Linker>`, a simple data move; deferring forces a one-field `CodegenProduct`-shaped struct to survive purely to hold `linker`, which is Principle 7 debt). Decision to confirm in Wave 2 implementation. |
+
+After G6, `CodegenProduct` ceases to exist. `SharedState.codegen_products: DashMap<ModuleFullPath, CodegenProduct>` is deleted. All of the fields on `PriorityWorkerRefs` / `SessionCompilationEnv` / etc. that hold `&codegen_products` are deleted in the same wave (see §13.7 Deletion List).
+
+The `Introspection` data (`clif_ir`, `disasm`, `code_size`) **stays separate** per `pipeline-v4.md` §9.6 and Phase 2 §9.3: `SharedState.introspection: DashMap<FQSymbol, Introspection>` is display-only data, not needed for compilation or caching. It is not moved onto `ModuleEntry::Def`. (Rationale: introspection is REPL-only and FQSymbol-keyed — no value in per-module coupling, and `#[serde(skip)]` alone does not recover serialization cost the way a separate DashMap does.)
+
+### 13.5 Cache-hit interaction — `code = None` is the v4 target shape
+
+When `try_cache_hit_load` restores a module from `.meta.json`, every `ModuleEntry::Def` deserialises with `code: None` because of `#[serde(skip)]` + `Default` (no explicit default needed — `Option::default()` is `None`). This is the **target** shape, not interim — per `/arch` Decision 25 and `pipeline-v4.md` §9.5:
+
+> "A cache hit restores the full compilation state without re-typechecking. […] Together they are sufficient to: […] Load code from `.o` via Linker (JIT demand — macro expansion needs a prelude function)"
+
+Contract: **the first call to a cache-hit symbol's code JIT-compiles from `ast` (or loads from the cached `.o` via Linker, if `SymbolTable.linker` is populated and the platform supports it) and writes `code = Some(_)` on the entry.** The `ast` field is serialised (no `#[serde(skip)]`), so it is present on cache-hit load — regeneration is a pure function of `ast`.
+
+**Edge case — cache hit during REPL cross-module call**: REPL typechecks `(use-prelude-fn ...)`, hits a macro or an IO form that requires a prelude function to be callable. The priority worker's macro-dep handling (§4 of `concurrent-pipeline.md`) looks up the prelude function, sees `code: None`, queues a `BlockingJitCodegen` entry, workers JIT-compile from `ast`, write `code = Some(_)`, unblock the waiting REPL module. No different from a cache-miss path — the only difference is that a cache-miss path had already walked through this after typecheck completed; a cache-hit path walks through it on-demand.
+
+**No second code cache**: `code` is the single place. No "fast path" DashMap survives. The cached `.o` on disk + the symbol-table entries are the only persistent stores.
+
+### 13.6 REPL `__expr` path — confirmed no regression
+
+The Sprint 56 Phase 2 work already deleted the `finalize_module` `__expr` special case (Phase 2 §6 / §7 item 10). `__expr` is a `ModuleEntry::Def` like any other symbol. The Phase 3 G6 extension confirms this shape persists:
+
+1. User types `(+ 1 2)` at the REPL.
+2. REPL registers `__expr` as a synthetic defn on the module's symbol table (`wrap_exprs_as_defns` at worker.rs:2480), `ast: Some(annotated)`.
+3. Priority worker's `inline_jit_codegen_for_module` derives the batch (`derive_codegen_batch`), which naturally includes `__expr` because `ast: Some(_)` and `kind: UserFn { constrained_fn: None }` (it passes `try_push`).
+4. `inline_jit_codegen_for_names` calls `compile_to_module`, finalises the JIT, writes `code = Some(Code { jit: jit_arc, ptr })` **onto the `__expr` entry on the symbol table** (R1/R2 write path).
+5. REPL eval (`codegen_and_execute`) reads the pointer: `symbol_tables[module].get("__expr").code.as_ref().unwrap().ptr` → transmutes to `fn() -> i64` → calls it → formats the result.
+
+No `finalize_module` special case. No `CodegenProduct` key named `__expr`. The word `__expr` should appear only in:
+- the synthetic-defn construction path (`wrap_exprs_as_defns`),
+- `derive_codegen_batch`'s `TopLevel::Expr(_)` arm,
+- the eval read path (one lookup by literal `"__expr"`).
+
+`/qa` integration test `tests/v4_repl_eval/repl_expr_via_symbol_table.rs` (per Phase 2 §10.3) already asserts the symbol-table shape. After G6, it asserts `symbol_tables[module].get("__expr").code.is_some()` as the post-compile invariant. No change to the test surface.
+
+### 13.7 Deletion List — Sprint 57 Wave 2 additions to Phase 2's §7
+
+Items added to the Phase 2 Deletion List:
+
+| # | Item | File:line (approx) | Notes |
+|---|------|--------------------|-------|
+| 17 | `pub struct CodegenProduct` + `impl Default` | `src/session_v4.rs:422–436` | The struct itself. |
+| 18 | `pub codegen_products: DashMap<ModuleFullPath, CodegenProduct>` on `SharedState` | `src/session_v4.rs:549` | The field. |
+| 19 | `codegen_products` construction | `src/session_v4.rs:660` (`SharedState::new`) | Drop the initialiser line. |
+| 20 | `codegen_products.remove(module_path)` in reload | `src/session_v4.rs:982` (`reload_module`) | Replaced by symbol-table walk (R8). |
+| 21 | `PriorityWorkerRefs.codegen_products: &'a DashMap<…>` | `src/worker.rs:116` (and call sites at `src/session_v4.rs:1001, 1099`) | Field deleted; call sites drop the argument. |
+| 22 | `inline_jit_codegen_for_module`/`_for_names` `codegen_products: &DashMap<…>` parameter | `src/worker.rs:2322, 2379` | Parameter removed; readers inside the function switch to symbol-table writes. |
+| 23 | `derive_codegen_batch` `codegen_products: &DashMap<…>` parameter | `src/worker.rs:2193` | Parameter removed; R10 `already_compiled` uses symbol table. |
+| 24 | `TestRunnerState.codegen_products: *const DashMap<…>` | `src/session_v4.rs:3639–3747` | Field deleted; test externs switch to `symbol_tables` lookup (R6, R7). |
+| 25 | `discover_test_names`, `run_test_by_name` — accept symbol tables instead of codegen products | `src/session_v4.rs:3536, 3573` | Signature change; body uses R6 lookup. |
+
+Cross-check: after Wave 2, `grep -n codegen_products src/` should return zero matches outside tests (and possibly a small migration test scaffold that `/qa` may retain). `grep -n CodegenProduct src/` should return zero matches.
+
+### 13.8 Acceptance — Wave 2 gate criteria (additions to SPRINT.md Wave 2)
+
+1. `CodegenProduct` struct, field, constructor, and all reader call sites deleted — confirmed by grep.
+2. Every read of `code` goes through `symbol_tables[module].get(name).code`.
+3. REPL `(+ 1 2)` still produces `3` (R2 round-trips through the symbol-table path).
+4. `/clif`, `/disasm`, `/source` on a user defn still display IR/disasm/source (R3, R4 unchanged because introspection is separate).
+5. `main` trampoline still invokes compiled `main` (R5).
+6. Cache-hit + macro-dep + cross-module call: a cached prelude function's `code` lazily populates on first use (§13.5 contract).
+7. 14-failure baseline preserved or improved. Phase 3 G6 is expected to clear at least the single-module cache failures (`v4_pipeline` cache-hit dep (×1), cache SIGSEGV single-module paths).
+8. `cargo clippy -p cranelisp --all-targets` clean.
+
+### 13.9 Risks (extensions to Phase 2 §9)
+
+**9.7 DashMap → HashMap shard-level contention**. Writing `code` requires `tc_modules.get_mut(module)`, which holds a shard-level write guard. Readers on other modules in different shards are unaffected. Readers on the *same* module (e.g. a nice worker enumerating `defined_symbols()`) contend on the shard-write. Mitigation: the scheduler already serialises priority + nice workers per module via `object_done` / `inmem_done` flags; concurrent writes to the same module do not occur. `/review` confirms during Wave 2: no `get_mut(module)` on the symbol table is held across a `compile_to_module` call (the guard is dropped before and re-acquired for each per-symbol write, or the whole write loop is scoped to a short critical section).
+
+**9.8 REPL redefinition — old `Code` drop**. Replacing `code: Some(old)` with `code: Some(new)` on an entry triggers `old`'s drop. The old `Code` owns an `Arc<Jit>`; when that is the last `Arc` reference, the JIT's mmap'd pages are unmapped. Any in-flight call into those pages would SIGSEGV. Mitigation: today's `CodegenProduct` had the same problem and solved it with shared `Arc<Jit>` — redefinition is either rare (one worker at a time) or explicitly policy-kept (Phase 2 §4 "Redefinition" bullet). G6 preserves this policy by preserving `Arc<Jit>`. No new risk.
+
+**9.9 `code = None` after cache-hit — double-JIT**. Two workers simultaneously seeing `code: None` on the same cached symbol could both JIT-compile it. Mitigation: the scheduler's `jit_reserved` (§3 of `concurrent-pipeline.md`) already prevents this. The `jit_reserved` set is the reservation mechanism — checking `code.is_none()` is only a fast path; the scheduler guarantees exclusivity.
+
+### 13.10 Sketch comparison
+
+The sketch stores compiled code inline on the `CompiledModule` god object (`sketch/src/module.rs` — `def_codegen` map keyed by `Symbol`, plus `kept_code` field on `CompiledModule`). This is the same coupling Decision 9 decomposed: bringing code back onto the per-symbol entry is not a return to the sketch's shape — the sketch had code in the *same struct* as type info + import specs + cache hashes + source text. G6 places code on a per-symbol entry inside a per-module `SymbolTable` keyed by `ModuleFullPath` in a DashMap. The coupling surface is narrower: a reader of `code` holds only that entry's write/read guard, not the whole module's metadata.
+
+The sketch's problem was that every use-site of `CompiledModule` (133 references across 18 files in Decision 9's count) participated in any change to any field of the struct. G6's equivalent test: does a reader of `ast` participate in any change to `code`? Answer: no — both are fields on the same entry, but readers hold independent `Option`-guarded references. The shard-level DashMap contention (§9.7) is the only shared surface, and it is module-level, not struct-level.
+
+**Decision to follow or diverge**: *partial follow*. Sketch's "code on the per-symbol entry" pattern is kept; sketch's "entry on a god-object module struct" pattern is rejected. The sketch's design solved a real problem (one lookup path for symbol state) via a structural anti-pattern (god object); G6 keeps the solution, discards the anti-pattern.
+
+### 13.11 References
+
+- `design/arch/pipeline-v4.md` §9.1 (`SymbolTable` as single store), §9.4 (per-function JIT isolation), §9.5 (cache serialisation — `code` derived from `ast` on hit).
+- `design/arch/pipeline-v4-roadmap.md` Phase 3 Step 3b (G6).
+- `design/arch/interfaces.md:902–913` (`ModuleEntry::Def.code` field already landed).
+- `design/arch/CLAUDE.md` Decision 25.
+- `design/backend/compile-to-module.md` §9.x (code write path — TODO: exact section to be filled by `/backend` Wave 1 update; reference anchor reserved).
+- Phase 2 sections §4 (JITModule lifetime), §7 (Deletion List 1–16), §9 (Risks 9.1–9.6). This extension's deletions append to §7 as items 17–25 and risks append as 9.7–9.9.
+
+### 13.12 Cross-skill TODOs
+
+- **TODO(/backend §9.x)**: `design/backend/compile-to-module.md` §9 update lands the "code-write path" subsection. This extension's §13.2 references that section by number; fill in once `/backend` commits the exact `§9.n` anchor.
+- **TODO(/typecheck §9)**: `design/typecheck/ast-annotation.md` §9 update covers the `code` field on the symbol-table write path. This extension assumes `/typecheck` does NOT write `code` — the field is backend-owned. Confirm this is the design stance; if `/typecheck` needs to write `code: None` at registration time as an explicit default (instead of relying on `Option::default`), §13.2's table updates.
+

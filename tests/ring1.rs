@@ -205,6 +205,156 @@ fn repl_int_to_string() {
 }
 
 // =============================================================================
+// String primitives: substring, char-at, split, join, replace, trim,
+// starts-with?, ends-with?, contains?, to-upper, to-lower (spec: appendix-a-builtins §A.3)
+// These cover the FIXME(/qa) at spec/appendix-a-builtins.md:96.
+// =============================================================================
+
+// spec: appendix-a-builtins §A.3 — substring extracts range [start, end)
+#[test]
+fn string_substring_basic() {
+    let src = r#"(defn main [] (str-len (substring "hello world" 6 11)))"#;
+    assert_eq!(compile_and_run_simple(src), 5);
+}
+
+// spec: appendix-a-builtins §A.3 — substring with matching indices returns empty
+#[test]
+fn string_substring_empty_range() {
+    let src = r#"(defn main [] (str-len (substring "hello" 2 2)))"#;
+    assert_eq!(compile_and_run_simple(src), 0);
+}
+
+// spec: appendix-a-builtins §A.3 — substring clamps out-of-bounds end
+#[test]
+fn string_substring_clamps_end() {
+    // end=100 is past the string end; MUST clamp to string length (5).
+    let src = r#"(defn main [] (str-len (substring "hello" 0 100)))"#;
+    assert_eq!(compile_and_run_simple(src), 5);
+}
+
+// spec: appendix-a-builtins §A.3 — substring clamps out-of-bounds start
+#[test]
+fn string_substring_clamps_start_negative() {
+    // start=-5 is before string start; implementation clamps to 0.
+    let src = r#"(defn main [] (str-len (substring "hello" -5 3)))"#;
+    assert_eq!(compile_and_run_simple(src), 3);
+}
+
+// spec: appendix-a-builtins §A.3 — char-at returns single-character string
+#[test]
+fn string_char_at_valid_index() {
+    let src = r#"(defn main [] (str-eq (char-at "hello" 1) "e"))"#;
+    assert_eq!(compile_and_run_simple(src), 1);
+}
+
+// spec: appendix-a-builtins §A.3 — char-at out-of-bounds returns empty string
+#[test]
+fn string_char_at_out_of_bounds_empty() {
+    // Index 100 is past the string; MUST return empty string (not panic).
+    let src = r#"(defn main [] (str-len (char-at "hello" 100)))"#;
+    assert_eq!(compile_and_run_simple(src), 0);
+}
+
+// spec: appendix-a-builtins §A.3 — trim strips leading/trailing whitespace
+#[test]
+fn string_trim_whitespace() {
+    let src = r#"(defn main [] (str-eq (trim "  hello  ") "hello"))"#;
+    assert_eq!(compile_and_run_simple(src), 1);
+}
+
+// spec: appendix-a-builtins §A.3 — trim preserves interior whitespace
+#[test]
+fn string_trim_interior_preserved() {
+    let src = r#"(defn main [] (str-len (trim "  hi there  ")))"#;
+    assert_eq!(compile_and_run_simple(src), 8); // "hi there"
+}
+
+// spec: appendix-a-builtins §A.3 — to-upper converts ASCII letters
+#[test]
+fn string_to_upper_ascii() {
+    let src = r#"(defn main [] (str-eq (to-upper "hello") "HELLO"))"#;
+    assert_eq!(compile_and_run_simple(src), 1);
+}
+
+// spec: appendix-a-builtins §A.3 — to-lower converts ASCII letters
+#[test]
+fn string_to_lower_ascii() {
+    let src = r#"(defn main [] (str-eq (to-lower "HELLO") "hello"))"#;
+    assert_eq!(compile_and_run_simple(src), 1);
+}
+
+// spec: appendix-a-builtins §A.3 — starts-with? true positive
+#[test]
+fn string_starts_with_true() {
+    let src = r#"(defn main [] (if (starts-with? "hello world" "hello") 1 0))"#;
+    assert_eq!(compile_and_run_simple(src), 1);
+}
+
+// spec: appendix-a-builtins §A.3 — starts-with? false negative (does NOT match non-prefix)
+#[test]
+fn string_starts_with_false() {
+    let src = r#"(defn main [] (if (starts-with? "hello world" "world") 1 0))"#;
+    assert_eq!(compile_and_run_simple(src), 0);
+}
+
+// spec: appendix-a-builtins §A.3 — ends-with? true positive
+#[test]
+fn string_ends_with_true() {
+    let src = r#"(defn main [] (if (ends-with? "hello world" "world") 1 0))"#;
+    assert_eq!(compile_and_run_simple(src), 1);
+}
+
+// spec: appendix-a-builtins §A.3 — ends-with? false negative (does NOT match non-suffix)
+#[test]
+fn string_ends_with_false() {
+    let src = r#"(defn main [] (if (ends-with? "hello world" "hello") 1 0))"#;
+    assert_eq!(compile_and_run_simple(src), 0);
+}
+
+// spec: appendix-a-builtins §A.3 — contains? true positive
+#[test]
+fn string_contains_true() {
+    let src = r#"(defn main [] (if (contains? "hello world" "lo wo") 1 0))"#;
+    assert_eq!(compile_and_run_simple(src), 1);
+}
+
+// spec: appendix-a-builtins §A.3 — contains? false negative
+#[test]
+fn string_contains_false() {
+    let src = r#"(defn main [] (if (contains? "hello world" "xyz") 1 0))"#;
+    assert_eq!(compile_and_run_simple(src), 0);
+}
+
+// spec: appendix-a-builtins §A.3 — replace substitutes all occurrences
+#[test]
+fn string_replace_multiple() {
+    let src = r#"(defn main [] (str-eq (replace "aaa" "a" "bb") "bbbbbb"))"#;
+    assert_eq!(compile_and_run_simple(src), 1);
+}
+
+// spec: appendix-a-builtins §A.3 — replace of missing needle is identity
+#[test]
+fn string_replace_missing_needle() {
+    let src = r#"(defn main [] (str-eq (replace "hello" "xyz" "abc") "hello"))"#;
+    assert_eq!(compile_and_run_simple(src), 1);
+}
+
+// spec: appendix-a-builtins §A.3 — split+join roundtrips a non-empty separator
+// split returns (Vec String), join consumes (Vec String). Using vec-len to observe split output.
+#[test]
+fn string_split_produces_parts() {
+    let src = r#"(defn main [] (vec-len (split "a,b,c" ",")))"#;
+    assert_eq!(compile_and_run_simple(src), 3);
+}
+
+// spec: appendix-a-builtins §A.3 — join reassembles split output
+#[test]
+fn string_join_reassembles() {
+    let src = r#"(defn main [] (str-eq (join "," (split "a,b,c" ",")) "a,b,c"))"#;
+    assert_eq!(compile_and_run_simple(src), 1);
+}
+
+// =============================================================================
 // ADT Products (spec: 03-types, 06-pattern-matching)
 // =============================================================================
 

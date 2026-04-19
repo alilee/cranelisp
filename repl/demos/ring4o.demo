@@ -1,0 +1,66 @@
+; Cranelisp Ring 4O — Sprint 57: Phase 3+4 convergence
+
+; One compile entry point, platform fns on the symbol table, live RC counters
+
+; Platform functions are discoverable through the same symbol-table paths
+; as user code. (platform stdio) loads the DLL; import binds the names.
+
+(platform stdio)
+
+(import [platform.stdio [print]])
+
+; /sig and /info resolve through the symbol table — same path as user defs
+
+/sig print
+
+/info print
+
+; The effect is real; the result is an IO Int (bytes written)
+
+(print "hello, ring 4o")
+
+; Cross-module code lookup: user code reaches the same introspection tools.
+
+(defn square [:Int x] (* x x))
+
+(square 9)
+
+; /clif shows the Cranelift IR that Phase 2 generated for square
+
+/clif square
+
+; /disasm shows the native code the JIT produced — same lookup path
+
+/disasm square
+
+; Live allocation counters (new this sprint). /mem wraps
+; cranelisp_runtime::{alloc_count, dealloc_count, bytes_current}.
+
+/mem
+
+; /mem <expr> measures the delta across one evaluation. Building a List of
+; ten ints allocates ten Cons cells plus transient codegen scratch; the eval
+; result stays live (bound as `it`), so live bytes climb by that structure.
+
+/mem (list 1 2 3 4 5 6 7 8 9 10)
+
+; A second snapshot confirms the previous delta is now part of the baseline
+
+/mem
+
+; A trivial eval adds negligible allocation — deltas make RC behaviour visible.
+
+/mem (+ 1 2)
+
+; Persistent workers (Decision 32) keep codegen threads warm across REPL turns.
+; Repeat compiles reach hot workers; the scheduler reuses the same symbol-table
+; products for every subsequent /clif, /disasm, /sig, /info, and /mem query.
+
+(defn cube [:Int x] (* x (* x x)))
+
+(cube 4)
+
+/clif cube
+
+; Phase 3 put print, square, and cube on one symbol table; Phase 4 accounts
+; for every heap byte. One pipeline, one introspection surface, one RC ledger.

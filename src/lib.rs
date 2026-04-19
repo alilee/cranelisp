@@ -12,7 +12,6 @@ pub mod session;
 pub mod session_v4;
 pub mod pipeline;
 pub mod platform;
-pub mod platform_registry;
 pub mod pretty;
 // repl/ module deleted — v4 REPL is driven by CompilerSession in main.rs + session_v4.rs.
 // FileWatcher extracted to watch.rs; remaining features (save, trace, run-tests) are future work.

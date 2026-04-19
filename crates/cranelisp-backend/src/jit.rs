@@ -169,10 +169,47 @@ fn register_intrinsics(builder: &mut JITBuilder) {
     }
 }
 
+/// Counter incremented once per `Jit::drop` that successfully calls
+/// `unsafe JITModule::free_memory()`. Used by the unit tests below to
+/// confirm the reclaim path executes; also available under
+/// `CRANELISP_JIT_TRACE_RECLAIM=1` as a rough diagnostic.
+///
+/// Decision 31 requires the reclaim path actually runs on every `Jit` drop;
+/// this counter is the observable evidence it does. Nothing in production
+/// code reads it — it exists solely so tests can assert a side effect that
+/// would otherwise be hidden inside Cranelift internals.
+pub(crate) static JIT_FREE_MEMORY_CALL_COUNT: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+
 /// JIT module wrapper. Owns the Cranelift JIT module and provides
 /// function compilation and execution services.
+///
+/// # Memory reclaim (Decision 31)
+///
+/// The `module` field is wrapped in `Option<JITModule>` so that `Drop` can
+/// `take()` it and call `unsafe JITModule::free_memory()`. Cranelift's default
+/// `Memory::drop` intentionally `mem::forget`s every allocation (see
+/// `cranelift-jit-0.116.1/src/memory.rs:269-276`), so reclaiming the mmap'd
+/// executable pages requires the explicit `free_memory` call. The `Option`
+/// is always `Some` during the `Jit`'s useful life and becomes `None` only
+/// inside `Drop`, which is the last thing that happens.
+///
+/// # Safety invariant
+///
+/// `unsafe JITModule::free_memory()` is safe to call only when no function
+/// pointer produced by this JIT is still reachable (`cranelift-jit-0.116.1/src/backend.rs:219`).
+/// Ownership holders (`Arc<Jit>` in `SharedState.kept_jits`, or stack-local
+/// `Jit` instances in REPL eval/backend tests) must ensure this before the
+/// last handle drops. The session holds `Arc<Jit>` for every batch until
+/// session teardown (at which point all derivative GOT slots and
+/// `ModuleEntry::Def.code.ptr` entries are torn down together); stack-local
+/// JIT paths run the compiled function synchronously and drop the `Jit` only
+/// after that call returns. See Decision 31 in `design/arch/CLAUDE.md` for
+/// the full invariant and REPL-redefinition discussion.
 pub struct Jit {
-    module: JITModule,
+    /// Always `Some` during the JIT's useful life. `take()`n in `Drop` to
+    /// invoke `unsafe free_memory()`.
+    module: Option<JITModule>,
     ctx: cranelift::codegen::Context,
     func_ctx: FunctionBuilderContext,
     /// FuncId for `runtime/alloc` — needed by heap emission helpers.
@@ -187,6 +224,26 @@ pub struct Jit {
     vec_new_func_id: Option<FuncId>,
     /// FuncId for `runtime/vec_drop` — needed by Vec drop glue.
     vec_drop_func_id: Option<FuncId>,
+}
+
+impl Drop for Jit {
+    fn drop(&mut self) {
+        if let Some(module) = self.module.take() {
+            JIT_FREE_MEMORY_CALL_COUNT
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            // SAFETY (Decision 31 / `cranelift-jit-0.116.1/src/backend.rs:219`):
+            // `free_memory` requires that no fn pointer derived from this JIT
+            // is called after this point. The invariant is upheld by the
+            // owner of the `Jit` (typically `Arc<Jit>` in
+            // `SharedState.kept_jits`, or a stack-local `Jit` whose compiled
+            // function was already invoked synchronously). See the struct
+            // docs above and Decision 31 in `design/arch/CLAUDE.md` for the
+            // full argument.
+            unsafe {
+                module.free_memory();
+            }
+        }
+    }
 }
 
 impl Jit {
@@ -250,7 +307,7 @@ impl Jit {
         let func_ctx = FunctionBuilderContext::new();
 
         Ok(Jit {
-            module,
+            module: Some(module),
             ctx,
             func_ctx,
             alloc_func_id: None,
@@ -262,6 +319,32 @@ impl Jit {
         })
     }
 
+    /// Access the inner `JITModule` by shared reference.
+    ///
+    /// Panics (via `unreachable!`) only if called after `Drop::drop` has taken
+    /// the module, which cannot happen through the normal API: `&self` cannot
+    /// coexist with `drop`.
+    #[inline]
+    fn module(&self) -> &JITModule {
+        self.module.as_ref().unwrap_or_else(|| {
+            unreachable!(
+                "invariant: Jit::module is Some for the Jit's entire lifetime; \
+                 only Drop::drop moves it out, and &self cannot outlive Drop"
+            )
+        })
+    }
+
+    /// Access the inner `JITModule` by mutable reference.
+    #[inline]
+    fn module_mut(&mut self) -> &mut JITModule {
+        self.module.as_mut().unwrap_or_else(|| {
+            unreachable!(
+                "invariant: Jit::module is Some for the Jit's entire lifetime; \
+                 only Drop::drop moves it out, and &mut self cannot outlive Drop"
+            )
+        })
+    }
+
     /// Declare runtime intrinsics as imported functions in the JIT module.
     ///
     /// Must be called before compiling any function that needs heap operations.
@@ -270,7 +353,7 @@ impl Jit {
     /// Delegates to the generic `declare_intrinsics_generic<M>` and stores
     /// the 6 convenience FuncIds on the Jit struct for `build_compile_context`.
     pub fn declare_intrinsics(&mut self) -> Result<IntrinsicIds, CranelispError> {
-        let generic_ids = declare_intrinsics_generic(&mut self.module)?;
+        let generic_ids = declare_intrinsics_generic(self.module_mut())?;
 
         // Store on self for build_compile_context.
         self.alloc_func_id = generic_ids.alloc;
@@ -300,7 +383,7 @@ impl Jit {
         for defn in defns {
             let sig = self.build_sig(defn.params().len());
             let func_id = self
-                .module
+                .module_mut()
                 .declare_function(&defn.name, Linkage::Export, &sig)
                 .map_err(|e| CranelispError::CodegenError {
                     message: format!("failed to declare function '{}': {e}", defn.name),
@@ -330,7 +413,7 @@ impl Jit {
             let qualified_name = format!("{prefix}/{}", defn.name);
             let sig = self.build_sig(defn.params().len());
             let func_id = self
-                .module
+                .module_mut()
                 .declare_function(&qualified_name, Linkage::Export, &sig)
                 .map_err(|e| CranelispError::CodegenError {
                     message: format!("failed to declare function '{}': {e}", defn.name),
@@ -360,7 +443,7 @@ impl Jit {
         for (name, param_count) in imports {
             let sig = self.build_sig(*param_count);
             let func_id = self
-                .module
+                .module_mut()
                 .declare_function(name, Linkage::Import, &sig)
                 .map_err(|e| CranelispError::CodegenError {
                     message: format!(
@@ -395,11 +478,22 @@ impl Jit {
         // override with the symbol table's ast field — that version has
         // unresolved type variables from the dual-write and lacks post-pass
         // enrichment (resolve_deferred_trait_calls, final substitution).
+        // Split-borrow: `compile_body` needs `&mut self.ctx.func`,
+        // `&mut self.func_ctx`, and `&mut JITModule` simultaneously. Borrowing
+        // the module through a method (`self.module_mut()`) would re-borrow
+        // the whole `Jit` — instead reach into the `Option` field directly.
+        // Panicking in the `None` arm is unreachable: the module is only
+        // `None` inside `Drop::drop`, which cannot coexist with `&mut self`.
+        let module = self.module.as_mut().unwrap_or_else(|| {
+            unreachable!(
+                "invariant: Jit::module is Some for the Jit's entire lifetime"
+            )
+        });
         FnCompiler::compile_body(
             defn,
             &mut self.ctx.func,
             &mut self.func_ctx,
-            &mut self.module,
+            module,
             compile_ctx.clone(),
         )?;
 
@@ -418,7 +512,12 @@ impl Jit {
                 span: defn.span,
             })?;
 
-        self.module
+        let module = self.module.as_mut().unwrap_or_else(|| {
+            unreachable!(
+                "invariant: Jit::module is Some for the Jit's entire lifetime"
+            )
+        });
+        module
             .define_function(func_id, &mut self.ctx)
             .map_err(|e| CranelispError::CodegenError {
                 message: format!("failed to define function '{}': {e}", defn.name),
@@ -435,7 +534,12 @@ impl Jit {
             (None, None)
         };
 
-        self.module.clear_context(&mut self.ctx);
+        let module = self.module.as_mut().unwrap_or_else(|| {
+            unreachable!(
+                "invariant: Jit::module is Some for the Jit's entire lifetime"
+            )
+        });
+        module.clear_context(&mut self.ctx);
 
         Ok(CompileArtifacts { clif_ir, disasm, code_size })
     }
@@ -446,7 +550,8 @@ impl Jit {
     /// Code compiled against this JIT module uses `global_value(DataId)` to get
     /// the entry's address, then `load` to read the GOT base from it.
     pub fn define_got_data(&mut self, name: &str, ptr: *const u8) -> Result<(), CranelispError> {
-        let data_id = self.module
+        let data_id = self
+            .module_mut()
             .declare_data(name, Linkage::Export, false, false)
             .map_err(|e| CranelispError::CodegenError {
                 message: format!("failed to declare GOT data '{name}': {e}"),
@@ -454,7 +559,7 @@ impl Jit {
             })?;
         let mut desc = cranelift_module::DataDescription::new();
         desc.define(Box::new((ptr as u64).to_le_bytes()));
-        self.module
+        self.module_mut()
             .define_data(data_id, &desc)
             .map_err(|e| CranelispError::CodegenError {
                 message: format!("failed to define GOT data '{name}': {e}"),
@@ -499,7 +604,7 @@ impl Jit {
 
     /// Finalize all pending function definitions.
     pub fn finalize(&mut self) -> Result<(), CranelispError> {
-        self.module.finalize_definitions().map_err(|e| {
+        self.module_mut().finalize_definitions().map_err(|e| {
             CranelispError::CodegenError {
                 message: format!("failed to finalize JIT definitions: {e}"),
                 span: Span::SYNTHETIC,
@@ -509,7 +614,7 @@ impl Jit {
 
     /// Get the finalized code pointer for a function by FuncId.
     pub fn get_finalized_ptr(&self, func_id: FuncId) -> *const u8 {
-        self.module.get_finalized_function(func_id)
+        self.module().get_finalized_function(func_id)
     }
 
     /// Finalize definitions and return the code pointer for a named function.
@@ -525,14 +630,14 @@ impl Jit {
         // Re-declare with same signature to get the existing FuncId.
         let sig = self.build_sig(param_count);
         let func_id = self
-            .module
+            .module_mut()
             .declare_function(name, Linkage::Export, &sig)
             .map_err(|e| CranelispError::CodegenError {
                 message: format!("failed to look up function '{}': {e}", name),
                 span: Span::SYNTHETIC,
             })?;
 
-        Ok(self.module.get_finalized_function(func_id))
+        Ok(self.module().get_finalized_function(func_id))
     }
 
     /// Look up a finalized function pointer by name and param count.
@@ -546,24 +651,24 @@ impl Jit {
     ) -> Result<*const u8, CranelispError> {
         let sig = self.build_sig(param_count);
         let func_id = self
-            .module
+            .module_mut()
             .declare_function(name, Linkage::Export, &sig)
             .map_err(|e| CranelispError::CodegenError {
                 message: format!("failed to look up function '{}': {e}", name),
                 span: Span::SYNTHETIC,
             })?;
-        Ok(self.module.get_finalized_function(func_id))
+        Ok(self.module().get_finalized_function(func_id))
     }
 
     /// Get a mutable reference to the inner JIT module.
     /// Needed by FnCompiler for declaring extern functions.
     pub fn jit_module(&mut self) -> &mut JITModule {
-        &mut self.module
+        self.module_mut()
     }
 
     /// Build a Cranelift function signature: all params and return are i64.
     fn build_sig(&self, param_count: usize) -> cranelift::codegen::ir::Signature {
-        let mut sig = self.module.make_signature();
+        let mut sig = self.module().make_signature();
         for _ in 0..param_count {
             sig.params.push(AbiParam::new(types::I64));
         }
@@ -739,6 +844,114 @@ mod tests {
         assert!(
             jit2.is_ok(),
             "new_with_symbols with extra symbol should succeed"
+        );
+    }
+
+    // spec: design/arch/CLAUDE.md Decision 31 — custom `Drop` on `Jit` calls
+    // `unsafe JITModule::free_memory()` to reclaim mmap'd executable pages.
+    // Without this, Cranelift's default `Memory::drop` leaks
+    // (cranelift-jit-0.116.1/src/memory.rs:269-276 — `mem::forget`s every
+    // allocation).
+    #[test]
+    fn drop_runs_without_panic() {
+        // A freshly-constructed JIT with no compiled code must still drop
+        // cleanly — free_memory must tolerate a JIT that has never had
+        // anything finalised.
+        let jit = Jit::new().expect("JIT construction");
+        drop(jit);
+        // Reaching here means the drop path returned without panic.
+    }
+
+    // spec: design/arch/CLAUDE.md Decision 31 — reclaim path executes on drop.
+    #[test]
+    fn drop_invokes_free_memory() {
+        use std::sync::atomic::Ordering;
+
+        let before = JIT_FREE_MEMORY_CALL_COUNT.load(Ordering::Relaxed);
+        {
+            let _jit = Jit::new().expect("JIT construction");
+            // Declaring intrinsics exercises the JIT's declare path so this
+            // isn't a trivial empty-module case. `_jit` drops at end of
+            // scope.
+            let mut jit = _jit;
+            jit.declare_intrinsics().expect("intrinsics declare");
+            drop(jit);
+        }
+        let after = JIT_FREE_MEMORY_CALL_COUNT.load(Ordering::Relaxed);
+        assert_eq!(
+            after, before + 1,
+            "Jit::drop must call free_memory exactly once (counter before={before}, after={after})"
+        );
+    }
+
+    // spec: design/arch/CLAUDE.md Decision 31 — normal compile+call+drop
+    // flow continues to work after the reclaim machinery is in place. This
+    // checks that the `Option<JITModule>` plumbing does not regress the
+    // finalize/get-ptr/call path. We observe the correct return value
+    // **before** drop (post-drop derefs are UB); the drop itself then fires
+    // and must not panic.
+    #[test]
+    fn compile_call_drop_roundtrip() {
+        use cranelisp_types::{Expr, Type, Visibility};
+        use std::sync::atomic::Ordering;
+
+        let mut jit = Jit::new().expect("JIT construction");
+        jit.declare_intrinsics().expect("intrinsics declare");
+
+        // Zero-arg fn returning the literal 42.
+        let name = Symbol::from("trivial_fortytwo");
+        let defn = Defn {
+            name: name.clone(),
+            docstring: None,
+            variants: vec![DefnVariant {
+                params: vec![],
+                param_annotations: vec![],
+                body: Expr::IntLit {
+                    value: 42,
+                    span: Span::SYNTHETIC,
+                    inferred_type: Some(Box::new(Type::Int)),
+                },
+                span: Span::SYNTHETIC,
+            }],
+            visibility: Visibility::Public,
+            span: Span::SYNTHETIC,
+        };
+
+        let func_ids = jit.declare_functions(&[&defn]).expect("declare");
+        let func_arities: HashMap<Symbol, usize> = HashMap::new();
+        let symbol_tables: dashmap::DashMap<
+            cranelisp_types::ModuleFullPath,
+            cranelisp_types::SymbolTable,
+        > = dashmap::DashMap::new();
+        let module_path = cranelisp_types::ModuleFullPath::from("user");
+        symbol_tables.insert(
+            module_path.clone(),
+            cranelisp_types::SymbolTable::new(module_path.clone()),
+        );
+
+        let compile_ctx = jit.build_compile_context(
+            &func_ids,
+            &func_arities,
+            &symbol_tables,
+            module_path,
+        );
+        jit.compile_defn(&defn, compile_ctx).expect("compile");
+        let ptr = jit.finalize_and_get_ptr(&name, 0).expect("finalize");
+        assert!(!ptr.is_null(), "finalized pointer must be non-null");
+
+        // SAFETY: the JIT is still alive (we hold the only handle to it);
+        // the function was just finalized with signature `extern "C" fn() -> i64`.
+        let f: extern "C" fn() -> i64 = unsafe { std::mem::transmute(ptr) };
+        let result = f();
+        assert_eq!(result, 42, "trivial fn must return 42 before drop");
+
+        // Now drop and confirm the reclaim counter incremented.
+        let before = JIT_FREE_MEMORY_CALL_COUNT.load(Ordering::Relaxed);
+        drop(jit);
+        let after = JIT_FREE_MEMORY_CALL_COUNT.load(Ordering::Relaxed);
+        assert_eq!(
+            after, before + 1,
+            "Drop after compile+call must still invoke free_memory"
         );
     }
 

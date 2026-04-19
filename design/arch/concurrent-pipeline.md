@@ -590,7 +590,7 @@ impl CompileScheduler {
 
 The system is deadlock-free because:
 
-1. **The module dependency graph is a DAG.** Circular imports are rejected during dependency resolution (before scheduling begins). Therefore, no two modules can be mutually waiting on each other for typecheck.
+1. **The module dependency graph is a DAG.** Circular imports are rejected during dependency resolution (before scheduling begins). Therefore, no two modules can be mutually waiting on each other for typecheck. *Constraint:* the form-by-form scheduler cannot detect a mutual-import cycle before it deadlocks — two modules that each import from the other will both block on the other's Pass-0. See `CLAUDE.md` Decision 30 for the full constraint statement, the unsafe/safe pattern table, and the canonical test-scaffolding workaround (`discover-tests` + `run-test` rather than `(import [super [*]])` when parent↔child import mutually).
 
 2. **The call graph is acyclic for macro dependencies.** A macro can only call functions defined before it (spec §9.2.5, §9.3.4). Functions can only call functions from imported modules (DAG) or previously-defined same-module functions. No circular codegen waits.
 

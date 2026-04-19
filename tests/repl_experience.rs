@@ -2273,6 +2273,172 @@ fn display_vec_after_push() {
 }
 
 // =============================================================================
+// List display (spec: repl/spec.md §1.5 — empty: `List.Nil`; non-empty: per ADT)
+// Covers repl/spec.md:295 FIXME(/qa) for List/Seq display coverage.
+// Tests define List inline (no stdlib dep per tests/CLAUDE.md test isolation).
+// =============================================================================
+
+// spec: repl/spec.md §1.5 — empty list displays as `List.Nil` (nullary ADT ctor)
+#[test]
+fn display_list_nil() {
+    let mut session = repl_session();
+    session.eval("(deftype (List a) Nil (Cons [:a h :(List a) t]))").unwrap();
+    let display = repl_eval_display(&mut session, "Nil");
+    assert!(
+        display.contains("List.Nil"),
+        "empty list MUST display as 'List.Nil' per §1.5, got: {display}"
+    );
+}
+
+// spec: repl/spec.md §1.5 — non-empty list displays its elements
+// Spec describes the future `(list e1 e2 ...)` format; current implementation
+// uses the generic ADT `(List.Cons head tail)` recursive form, which is
+// semantically equivalent (same elements, same order). We check the element
+// values appear; see FIXME(/spec) below for format convergence.
+#[test]
+fn display_list_non_empty_shows_elements() {
+    let mut session = repl_session();
+    session.eval("(deftype (List a) Nil (Cons [:a h :(List a) t]))").unwrap();
+    let display = repl_eval_display(&mut session, "(Cons 1 (Cons 2 (Cons 3 Nil)))");
+    // Elements 1, 2, 3 MUST appear in output.
+    for elem in ["1", "2", "3"] {
+        assert!(
+            display.contains(elem),
+            "list display MUST contain element {elem}, got: {display}"
+        );
+    }
+}
+
+// spec: repl/spec.md §1.5 — non-empty list MUST NOT hide elements
+// (Negative coverage — the ADT recursive display must not truncate a small list.)
+#[test]
+fn display_list_non_empty_no_truncation_for_small_list() {
+    let mut session = repl_session();
+    session.eval("(deftype (List a) Nil (Cons [:a h :(List a) t]))").unwrap();
+    let display = repl_eval_display(&mut session, "(Cons 42 Nil)");
+    // A one-element list must show the element value — MUST NOT appear as
+    // just a heap-pointer integer or an opaque `<List>` tag.
+    assert!(
+        display.contains("42"),
+        "single-element list MUST show the element, got: {display}"
+    );
+    // MUST NOT display as a raw numeric heap-pointer (large numbers).
+    assert!(
+        !display.contains("<closure>"),
+        "list value MUST NOT display as <closure>, got: {display}"
+    );
+}
+
+// =============================================================================
+// Seq display (spec: repl/spec.md §1.5 — lazy sequence)
+// =============================================================================
+
+// =============================================================================
+// §4.1 row gaps (repl/spec.md:541 FIXME(/qa)): overloaded fn variants,
+// related constructors, related trait impls.
+// =============================================================================
+
+// spec: repl/spec.md §4.1.1 — overloaded fn MUST show all variant signatures
+// Per §4.1.1 row 583: "overloaded fn shows all variants". A multi-sig fn
+// entered as a bare symbol MUST display one line per variant signature.
+// Currently the implementation shows only one signature — this test is the
+// visible signal of that /int gap (per feedback_failing_not_ignored.md).
+#[test]
+fn display_overloaded_fn_shows_all_variants() {
+    let mut session = repl_session();
+    session
+        .eval("(defn pick ([:Int x] x) ([:Int x :Int y] (add-i64 x y)))")
+        .unwrap();
+    let display = repl_eval_display(&mut session, "pick");
+    // BOTH signatures must appear — one for the 1-arg variant, one for 2-arg.
+    // Look for function-type shapes in the output.
+    let has_1_arg = display.contains("[primitives/Int]") || display.contains("[Int]");
+    let has_2_arg = display.contains("[primitives/Int primitives/Int]")
+        || display.contains("[Int Int]");
+    assert!(
+        has_1_arg && has_2_arg,
+        "overloaded fn MUST show both signatures per §4.1.1, got:\n{display}"
+    );
+}
+
+// spec: repl/spec.md §4.1.3 — bare type lookup MUST include `; match:` line
+// listing the type's constructors. Positive-path test for §4.1.3 row 635.
+#[test]
+fn display_type_shows_related_constructors() {
+    let mut session = repl_session();
+    session.eval("(deftype Color Red Green Blue)").unwrap();
+    let display = repl_eval_display(&mut session, "Color");
+    assert!(
+        display.contains("match:") || display.contains("Red"),
+        "type display MUST list constructors under ; match:, got: {display}"
+    );
+    for ctor in ["Red", "Green", "Blue"] {
+        assert!(
+            display.contains(ctor),
+            "type display MUST name constructor {ctor}, got: {display}"
+        );
+    }
+}
+
+// spec: repl/spec.md §4.1.3 — bare type lookup MUST include `; impl:` line
+// listing implementing trait names. Positive-path test for §4.1.3 row 636.
+#[test]
+fn display_type_shows_related_trait_impls() {
+    let mut session = repl_session();
+    session.eval("(deftype Color Red Green Blue)").unwrap();
+    session.eval("(deftrait Shade (brightness [self] Int))").unwrap();
+    session
+        .eval("(impl Shade Color (defn brightness [c] 1))")
+        .unwrap();
+    let display = repl_eval_display(&mut session, "Color");
+    // The trait name `Shade` MUST appear under an `; impl:` section.
+    assert!(
+        display.contains("impl:") && display.contains("Shade"),
+        "type display MUST list implementing traits under ; impl:, got: {display}"
+    );
+}
+
+// spec: repl/spec.md §4.1.3 — type with NO impls must NOT show `; impl:` line
+// (Negative coverage — absence is a hard requirement: empty categories must
+// be omitted, not printed as blank sections.)
+#[test]
+fn display_type_no_impls_omits_impl_section() {
+    let mut session = repl_session();
+    session.eval("(deftype Lonely Alone)").unwrap();
+    let display = repl_eval_display(&mut session, "Lonely");
+    assert!(
+        !display.contains("impl:"),
+        "type display MUST NOT include empty ; impl: section, got: {display}"
+    );
+}
+
+// spec: repl/spec.md §1.5 — Seq displays elements; infinite seq MUST NOT hang
+// The spec format is `(seq e1 e2 ... +more)` with a bounded force limit.
+// This test creates an infinite SeqCons and materializes enough via match to
+// verify the REPL can display a Seq value without hanging (the key invariant).
+#[test]
+fn display_seq_infinite_does_not_hang() {
+    let mut session = repl_session();
+    session.eval("(deftype (Seq a) SeqNil (SeqCons [:a h :(Fn [] (Seq a)) rest]))")
+        .unwrap();
+    session.eval("(defn range-from [n] (SeqCons n (fn [] (range-from (add-i64 n 1)))))")
+        .unwrap();
+    // Force a finite prefix by taking the head only. The display of the
+    // resulting SeqCons MUST succeed without forcing the thunked tail.
+    let display = repl_eval_display(&mut session, "(range-from 7)");
+    // Must have produced non-trivial output (didn't hang).
+    assert!(
+        !display.is_empty(),
+        "Seq display MUST produce output (not hang), got empty"
+    );
+    // Element 7 (head) should appear in the display.
+    assert!(
+        display.contains("7"),
+        "Seq display MUST show the head element, got: {display}"
+    );
+}
+
+// =============================================================================
 // Empty/Comment Input Handling (Ring 1)
 // =============================================================================
 

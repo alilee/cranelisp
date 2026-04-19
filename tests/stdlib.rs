@@ -221,15 +221,16 @@ fn macro_do_returns_last() {
     // do now expands to bind chains (IO semantics).
     // (do (Pure 1) (Pure 2) (Pure 3)) sequences IO actions, returns last.
     // Pure is a primitives constructor — import it per spec §8.9.1.
+    // Sprint 57 Wave 6: eval unwraps IO inline, so the returned type is the
+    // unwrapped inner type (Int) and the value is the final result (3).
     let mut session = SESSION.0.lock().unwrap_or_else(|p| p.into_inner());
     let _ = session.eval("(import [primitives [Pure]])");
     let result = session
         .eval("(do (Pure 1) (Pure 2) (Pure 3))")
         .unwrap_or_else(|e| panic!("eval failed: {e}"));
     let (val, ty) = (result.value(), result.ty().clone());
-    assert!(ty.is_io(), "do should return IO type, got: {:?}", ty);
-    let inner = cranelisp_runtime::run_io_trampoline(val);
-    assert_eq!(inner, 3);
+    assert_eq!(ty, Type::Int, "do last-expr IO Int must unwrap to Int; got {ty:?}");
+    assert_eq!(val, 3);
 }
 
 // spec: spec/09-macros.md §9.5 — when macro with true condition
@@ -448,15 +449,15 @@ fn macro_do_single() {
 fn macro_do_multi() {
     // do with multiple expressions expands to nested bind calls.
     // Pure is a primitives constructor — import it per spec §8.9.1.
+    // Sprint 57 Wave 6: eval unwraps IO inline, returning the final value directly.
     let mut session = SESSION.0.lock().unwrap_or_else(|p| p.into_inner());
     let _ = session.eval("(import [primitives [Pure]])");
     let result = session
         .eval("(do (Pure 1) (Pure 2) (Pure 3) (Pure 42))")
         .unwrap_or_else(|e| panic!("eval failed: {e}"));
     let (val, ty) = (result.value(), result.ty().clone());
-    assert!(ty.is_io(), "do should return IO type, got: {:?}", ty);
-    let inner = cranelisp_runtime::run_io_trampoline(val);
-    assert_eq!(inner, 42);
+    assert_eq!(ty, Type::Int, "do last-expr IO Int must unwrap to Int; got {ty:?}");
+    assert_eq!(val, 42);
 }
 
 // =============================================================================

@@ -210,6 +210,8 @@ impl TypeCheckEnv<'_> {
                     got_slot: None,
                     trait_origin: Some(fq_trait_name.clone()),
                     ast: None,
+                    code: None,
+                    platform_fn_ptr: None,
                 },
             );
 
@@ -271,6 +273,8 @@ impl TypeCheckEnv<'_> {
                 got_slot: None,
                 trait_origin: Some(fq_trait_name),
                 ast: None,
+                code: None,
+                platform_fn_ptr: None,
             },
         );
 
@@ -696,6 +700,8 @@ impl TypeCheckEnv<'_> {
                     got_slot,
                     trait_origin: None,
                     ast: Some(annotated.clone()),
+                    code: None,
+                    platform_fn_ptr: None,
                 },
             );
         }
@@ -847,6 +853,8 @@ impl TypeCheckEnv<'_> {
                     got_slot,
                     trait_origin: None,
                     ast: Some(annotated.clone()),
+                    code: None,
+                    platform_fn_ptr: None,
                 },
             );
         }
@@ -1203,6 +1211,8 @@ impl TypeCheckEnv<'_> {
                 got_slot,
                 trait_origin: None,
                 ast: Some(mono.defn.clone()),
+                code: None,
+                platform_fn_ptr: None,
             },
         );
     }

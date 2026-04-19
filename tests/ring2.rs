@@ -2002,7 +2002,7 @@ fn neg_circular_module_dependency() {
     );
 }
 
-// spec: 08-modules §8.3.6 — super in root module MUST error
+// spec: 08-modules §8.3.7 — super in root module MUST error
 #[test]
 fn neg_super_in_root_module_errors() {
     // Using (import [super [...]]) in the root module should error —
@@ -2036,6 +2036,59 @@ fn neg_glob_import_private_not_via_qualified() {
     assert!(
         result.is_err(),
         "private name MUST NOT be accessible via qualified ref"
+    );
+}
+
+// spec: 08-modules §8.2.3 — private submodule MUST NOT be importable from a peer
+#[test]
+fn neg_private_submodule_not_importable_from_peer() {
+    // A sibling module imports from a `(mod- internal)` declared in another
+    // file. The import MUST be rejected since `internal` is private.
+    // Structure:
+    //   main.cl declares (mod host) (mod consumer)
+    //   main/host.cl declares (mod- internal) with a private submodule
+    //   main/host/internal.cl defines some name
+    //   main/consumer.cl attempts to import [main.host.internal [name]] — MUST error
+    let dir = create_test_project(&[
+        (
+            "main.cl",
+            "(mod host)\n(mod consumer)\n(defn main [] (consumer/run))",
+        ),
+        ("main/host.cl", "(mod- internal)\n(defn public-fn [] 1)"),
+        ("main/host/internal.cl", "(defn private-leaf [] 42)"),
+        (
+            "main/consumer.cl",
+            "(import [main.host.internal [private-leaf]])\n(defn run [] (private-leaf))",
+        ),
+    ]);
+    let result = helpers::batch_run_file(&dir.path().join("main.cl"), &[]);
+    assert!(
+        result.is_err(),
+        "peer MUST NOT import from a private submodule declared with (mod- ...)"
+    );
+}
+
+// spec: 08-modules §8.7.3 — private name MUST NOT be re-exported via [*] glob
+#[test]
+fn neg_private_name_not_in_glob_import() {
+    // A module defines one public and one private name. A peer does
+    // `(import [main.util [*]])` and then tries to call the private name
+    // by bare name — which MUST fail because glob import only re-exports
+    // public names per §8.7.3.
+    let dir = create_test_project(&[
+        (
+            "main.cl",
+            "(mod util)\n(import [main.util [*]])\n(defn main [] (secret))",
+        ),
+        (
+            "main/util.cl",
+            "(defn helper [] 42)\n(defn- secret [] 99)",
+        ),
+    ]);
+    let result = helpers::batch_run_file(&dir.path().join("main.cl"), &[]);
+    assert!(
+        result.is_err(),
+        "glob import [*] MUST NOT include private names"
     );
 }
 
@@ -2180,10 +2233,11 @@ fn neg_multi_sig_bare_value_errors() {
 }
 
 // =============================================================================
-// R3 annotation gap tests — HKT traits (spec: 03-types §3.7, 05-definitions §5.3.2, §5.4.4)
+// HKT traits (spec: 03-types §3.7, 05-definitions §5.3.2, §5.4.4)
 //
-// Higher-kinded type traits are Ring 3 features. These tests document the
-// expected behavior per spec and will be un-ignored when HKT is implemented.
+// Higher-kinded type traits are Ring 3 features. These tests cover the
+// positive path. Negative coverage is provided by
+// `neg_hkt_impl_primitive_type_rejected` above.
 // =============================================================================
 
 // spec: 03-types §3.7 — HKT type variable in trait declaration
@@ -2239,16 +2293,53 @@ fn hkt_impl_bare_constructor() {
 // =============================================================================
 
 // spec: 12-runtime §12.4.2 — lazy sequence thunk-based evaluation
+// Defines Seq inline (stdlib-free) and verifies a thunked tail is only forced
+// when explicitly invoked. Materializing a finite prefix of an "infinite" seq
+// MUST NOT force elements past the prefix.
 #[test]
 fn lazy_seq_take_from_infinite() {
-    // Lazy sequences use thunks to defer evaluation. `range-from` produces
-    // an infinite sequence; `take` materializes the first N elements.
-    // This test will use the multi-sig API once available.
+    // SeqCons holds the head and a thunk :(Fn [] (Seq a)) that produces the rest.
+    // range-from n produces an infinite sequence: n, n+1, n+2, ... by returning
+    // SeqCons n (fn [] (range-from (+ n 1))). The tail closure is NOT called
+    // until someone forces it. take-n materializes the first n elements by
+    // forcing the tail n-1 times; elements past n are never forced.
     let src = r#"
-(defn main [] 0)
+(deftype (Seq a) SeqNil (SeqCons [:a h :(Fn [] (Seq a)) rest]))
+(defn range-from [n]
+  (SeqCons n (fn [] (range-from (add-i64 n 1)))))
+(defn sum-take [s n acc]
+  (if (eq-i64 n 0)
+    acc
+    (match s
+      [SeqNil acc
+       (SeqCons h rest) (sum-take (rest) (sub-i64 n 1) (add-i64 acc h))])))
+(defn main [] (sum-take (range-from 1) 5 0))
 "#;
-    // Placeholder: actual test requires Seq type and lazy infrastructure.
-    assert_eq!(compile_and_run_simple(src), 0);
+    // 1+2+3+4+5 = 15. If laziness were broken, range-from would recurse forever.
+    assert_eq!(compile_and_run_simple(src), 15);
+}
+
+// spec: 12-runtime §12.4.2 — thunked tail is NOT evaluated until forced
+// Negative-coverage companion to lazy_seq_take_from_infinite: verifies the
+// thunk is only forced on demand. Uses a counter-style pattern: if SeqCons's
+// tail thunk were eagerly evaluated, construction of an infinite seq would
+// diverge. Completion of this program is itself the observable assertion.
+#[test]
+fn lazy_seq_construction_does_not_force_tail() {
+    let src = r#"
+(deftype (Seq a) SeqNil (SeqCons [:a h :(Fn [] (Seq a)) rest]))
+(defn range-from [n]
+  (SeqCons n (fn [] (range-from (add-i64 n 1)))))
+(defn main []
+  ; Construct an infinite sequence but consult only its head. If the SeqCons
+  ; tail thunk were forced at construction time, range-from would recurse
+  ; forever and the program would never return. Returning at all proves the
+  ; thunk is held unforced in the SeqCons field.
+  (match (range-from 100)
+    [SeqNil -1
+     (SeqCons h _) h]))
+"#;
+    assert_eq!(compile_and_run_simple(src), 100);
 }
 
 // =============================================================================

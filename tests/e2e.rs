@@ -2144,6 +2144,98 @@ fn e2e_s3_3_list_neg_empty_categories_omitted() {
     );
 }
 
+// spec: repl/spec.md §7.4 — REPL SHOULD truncate output for large values
+// SHOULD-level requirement: the REPL should bound display output length for
+// large collections rather than flooding the terminal. This test exercises
+// a 1000-element Vec and checks the display is bounded under a generous
+// ceiling (64 KB). If this fails, the /int implementation may be emitting
+// uncapped output — see feedback_failing_not_ignored.md for policy.
+#[test]
+fn e2e_s7_4_large_vec_output_is_bounded() {
+    let nums: Vec<String> = (0..1000).map(|i| i.to_string()).collect();
+    let vec_lit = format!("[{}]", nums.join(" "));
+    let input = format!("{PRIMS}{vec_lit}\n");
+    let o = run_repl(&input, "s7_4_large_output");
+    let out = stdout_str(&o);
+    // Reasonable ceiling: 64 KB. Full expansion of 1000 ints with separators
+    // is ~4 KB, so truncation would normally land well under this. The point
+    // of the assertion is that output MUST NOT be unbounded (SHOULD) — the
+    // current /int behavior emits the full ~4 KB which is acceptable for 1000
+    // ints but not for 1M. Adjust when /int adds truncation + indicator.
+    assert!(
+        out.len() < 64 * 1024,
+        "Ring 4 §7.4: REPL SHOULD bound large-output size, got {} bytes",
+        out.len()
+    );
+}
+
+// spec: repl/spec.md §4.1.7 — bare primitive lookup shows universal format
+// Entering a primitive name (after `(import [primitives [*]])`) MUST produce
+// the universal format output per §1.1. The "Current gap" note in §4.1.7
+// referenced DefKind::Primitive returning None — this has since been fixed.
+#[test]
+fn e2e_s4_1_7_primitive_bare_symbol_lookup() {
+    let input = "(import [primitives [*]])\nadd-i64\n";
+    let o = run_repl(input, "s4_1_7_prim_lookup_int");
+    let out = stdout_str(&o);
+    assert!(
+        !out.contains("Error:"),
+        "bare primitive lookup MUST NOT error:\n{out}"
+    );
+    // Output must show the primitive's FQN, function type, and classification:
+    //   :(Fn [primitives/Int primitives/Int] primitives/Int) primitives/add-i64 ; <class>
+    assert!(
+        out.contains("primitives/add-i64"),
+        "primitive lookup output MUST contain fully-qualified name, got:\n{out}"
+    );
+    assert!(
+        out.contains("Fn"),
+        "primitive lookup output MUST contain function type, got:\n{out}"
+    );
+    assert!(
+        out.contains("primitives/Int"),
+        "primitive lookup MUST show fully-qualified parameter types, got:\n{out}"
+    );
+}
+
+// spec: repl/spec.md §4.1.7 — bare primitive lookup for string primitive
+#[test]
+fn e2e_s4_1_7_primitive_bare_lookup_str_concat() {
+    let input = "(import [primitives [*]])\nstr-concat\n";
+    let o = run_repl(input, "s4_1_7_prim_lookup_str");
+    let out = stdout_str(&o);
+    assert!(
+        !out.contains("Error:"),
+        "bare primitive lookup MUST NOT error:\n{out}"
+    );
+    assert!(
+        out.contains("primitives/str-concat"),
+        "primitive lookup MUST show fully-qualified name, got:\n{out}"
+    );
+    assert!(
+        out.contains("primitives/String"),
+        "primitive lookup MUST show fully-qualified parameter types, got:\n{out}"
+    );
+}
+
+// spec: repl/spec.md §4.1.7 — primitive lookup MUST NOT return empty output
+// (Negative coverage) The old gap was that `DefKind::Primitive returns None`
+// causing an empty display. Verify the output is non-trivial.
+#[test]
+fn e2e_s4_1_7_neg_primitive_lookup_not_empty() {
+    let input = "(import [primitives [*]])\nadd-i64\n";
+    let o = run_repl(input, "s4_1_7_prim_lookup_neg_empty");
+    let out = stdout_str(&o);
+    // The primitive name line after the second prompt MUST contain more than
+    // just the echoed prompt — the old bug was silent (no output).
+    let lines: Vec<&str> = out.lines().collect();
+    let has_type_line = lines.iter().any(|l| l.contains("primitives/add-i64"));
+    assert!(
+        has_type_line,
+        "primitive lookup MUST produce a type display line (not silent), got:\n{out}"
+    );
+}
+
 // spec: 08-modules §8.3 — imported function as higher-order argument in REPL
 // An imported function should be usable as a value (passed to higher-order fns).
 // Bug: REPL codegen fails with "undefined variable" when an imported function

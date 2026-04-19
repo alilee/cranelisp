@@ -44,7 +44,8 @@ impl ReplSession {
         };
         let mut session = CompilerSession::new(settings, project_root);
         // Ensure no lib_dirs that might contain a prelude.
-        session.lib_dirs = vec![];
+        // Sprint 57 Wave 4 G9: lib_dirs moved to SharedState; use setter.
+        session.set_lib_dirs(vec![]);
         ReplSession { session }
     }
 
@@ -66,7 +67,8 @@ impl ReplSession {
             nice_workers: 0,
         };
         let mut session = CompilerSession::new(settings, project_root.to_path_buf());
-        session.lib_dirs = lib_dirs.to_vec();
+        // Sprint 57 Wave 4 G9: lib_dirs moved to SharedState; use setter.
+        session.set_lib_dirs(lib_dirs.to_vec());
 
         // Register the user module — this triggers prelude loading via
         // inject_prelude_if_needed in the worker loop.
@@ -151,7 +153,8 @@ impl ReplSession {
             nice_workers: 0,
         };
         let mut session = CompilerSession::new(settings, project_root);
-        session.lib_dirs = all_lib_dirs;
+        // Sprint 57 Wave 4 G9: lib_dirs moved to SharedState; use setter.
+        session.set_lib_dirs(all_lib_dirs);
         Ok(ReplSession { session })
     }
 
@@ -166,7 +169,8 @@ impl ReplSession {
         name: &str,
         source: &str,
     ) -> Result<(), CranelispError> {
-        let path = self.session.project_root.join(format!("{name}.cl"));
+        // Sprint 57 Wave 4 G9: project_root moved to SharedState; use accessor.
+        let path = self.session.project_root().join(format!("{name}.cl"));
         self.session.register_module_with_source(name, source, &path)?;
         Ok(())
     }
@@ -290,7 +294,8 @@ pub fn batch_run_file_cached(
         nice_workers: 1,
     };
     let mut session = cranelisp::session_v4::CompilerSession::new(settings, project_root);
-    session.lib_dirs = all_lib_dirs;
+    // Sprint 57 Wave 4 G9: lib_dirs moved to SharedState; use setter.
+    session.set_lib_dirs(all_lib_dirs);
     let mut s = ReplSession { session };
 
     let module_name = entry_path
@@ -693,7 +698,8 @@ pub fn repl_session_with_test_capture() -> Option<(ReplSession, TestCapture)> {
     let mut session = ReplSession::new_with_prelude(&project_root, &[stdlib_dir])
         .unwrap_or_else(|e| panic!("failed to load prelude: {e}"));
     // Add Cargo build output as a platform search dir so test-capture DLL is found.
-    session.session.platform_dirs.push(manifest_dir.join("target/debug"));
+    // Sprint 57 Wave 4 G9: platform_dirs moved to SharedState; use setter.
+    session.session.push_platform_dir(manifest_dir.join("target/debug"));
     // Load the test-capture platform.
     session
         .eval("(platform test-capture)")
