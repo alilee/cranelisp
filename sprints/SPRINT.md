@@ -660,6 +660,8 @@ Depends on Waves 2 + 3 + 4.
 
 **Gate criterion (sprint close)**: all Phase 5b items in close checklist met; `ring4p.demo` plays cleanly; prior demos regression-free; **≤4 failing** (15 pre-existing − 13 cleared by 5b − 2 cleared by 5d (i)+(ii) + slack); 0 ignored tests for in-scope features; SIGBUS not regressed; Decision 31 Scenario 2 demonstrably active; Conditions 1–8 satisfied.
 
+Wave 6 /review: PASS with 3 Importants — see `design/review/sprint58-wave6-review.md`.
+
 ### Cross-wave notes
 
 - **Parallelism**: Wave 0 cosmetic + Wave 5 prior-ring run throughout. Wave 4 (5d items) may run in parallel with Wave 3 (5c).
