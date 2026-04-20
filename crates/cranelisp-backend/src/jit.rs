@@ -206,14 +206,18 @@ pub fn jit_free_memory_call_count() -> u64 {
 ///
 /// `unsafe JITModule::free_memory()` is safe to call only when no function
 /// pointer produced by this JIT is still reachable (`cranelift-jit-0.116.1/src/backend.rs:219`).
-/// Ownership holders (`Arc<Jit>` in `SharedState.kept_jits`, or stack-local
-/// `Jit` instances in REPL eval/backend tests) must ensure this before the
-/// last handle drops. The session holds `Arc<Jit>` for every batch until
-/// session teardown (at which point all derivative GOT slots and
-/// `ModuleEntry::Def.code.ptr` entries are torn down together); stack-local
-/// JIT paths run the compiled function synchronously and drop the `Jit` only
-/// after that call returns. See Decision 31 in `design/arch/CLAUDE.md` for
-/// the full invariant and REPL-redefinition discussion.
+/// Ownership holders (`Arc<Jit>` cloned per-entry into `Code::Jit { jit, ptr }`
+/// on each `ModuleEntry::Def.code` — Sprint 58 Wave 3b dissolved the
+/// pre-existing `SharedState.kept_jits` side-store — or stack-local `Jit`
+/// instances in REPL eval/backend tests) must ensure this before the last
+/// handle drops. Per Decision 31 Scenario 2, when a REPL user redefines a
+/// defn the prior entry's `Code::Jit` clone drops; once the last clone
+/// referencing a particular `Jit` batch drops (no more entries reference
+/// it), `Arc::drop` triggers `Jit::drop` which calls `free_memory` and
+/// reclaims the per-batch JIT pages. Stack-local JIT paths run the
+/// compiled function synchronously and drop the `Jit` only after that call
+/// returns. See Decision 31 in `design/arch/CLAUDE.md` for the full
+/// invariant and REPL-redefinition discussion.
 pub struct Jit {
     /// Always `Some` during the JIT's useful life. `take()`n in `Drop` to
     /// invoke `unsafe free_memory()`.
@@ -242,11 +246,13 @@ impl Drop for Jit {
             // SAFETY (Decision 31 / `cranelift-jit-0.116.1/src/backend.rs:219`):
             // `free_memory` requires that no fn pointer derived from this JIT
             // is called after this point. The invariant is upheld by the
-            // owner of the `Jit` (typically `Arc<Jit>` in
-            // `SharedState.kept_jits`, or a stack-local `Jit` whose compiled
-            // function was already invoked synchronously). See the struct
-            // docs above and Decision 31 in `design/arch/CLAUDE.md` for the
-            // full argument.
+            // owner of the `Jit` (typically `Arc<Jit>` cloned per-entry into
+            // `Code::Jit { jit, ptr }` on `ModuleEntry::Def.code` — Sprint 58
+            // Wave 3b dissolved the pre-existing `SharedState.kept_jits`
+            // side-store — or a stack-local `Jit` whose compiled function
+            // was already invoked synchronously). See the struct docs above
+            // and Decision 31 in `design/arch/CLAUDE.md` for the full
+            // argument.
             unsafe {
                 module.free_memory();
             }

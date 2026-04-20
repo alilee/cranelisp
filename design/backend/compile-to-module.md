@@ -12,9 +12,18 @@
            (a)). §5.3/§5.4 updated.
        (3) §12 head paragraph cross-references the two-GOT framing.
        (4) §17.1.1 documents the raw-shape return type per CP1 arbitration
-           (Decision 35 / Layer 2 Option B): compile_to_module returns only
-           CompilationResult; the integration layer constructs Arc<Jit> +
-           Code::Jit after compile_to_module returns.
+           (Decision 35 / Layer 2 Option B). Wave 3b superseded the early
+           Wave 2 framing (caller-side finalize + per-symbol pointer
+           extraction): compile_to_module now finalizes internally via
+           CodeFinalizer::finalize_for_code_read and surfaces per-symbol
+           pointers in CompilationResult.code_ptrs. The integration layer
+           wraps the JITModule in Arc<Jit> and constructs Code::Jit { jit,
+           ptr } per defined symbol. See §17.1.1 for the full contract.
+     Sprint 58 Wave 3c update: §17.1 / §17.1.1 / §17.6 rewritten to match
+     the landed code (CompilationResult.code_ptrs, internal finalize,
+     <C, L>-propagating signature). The pre-Wave-3 "caller finalizes"
+     text was replaced — it described the rejected Option-(c) shape that
+     never landed.
 -->
 
 Design for replacing all compilation paths — JIT batch, REPL expression, and object file — with a single generic function parameterised by Cranelift module type.
@@ -1130,84 +1139,116 @@ The implication for `/backend`: `CompilationResult` stays as-is for Phase 2. Do 
 
 **Decisions consumed**: Decision 25 (`code` on `ModuleEntry::Def`), Decision 31 (`Arc<Jit>` lifetime; per-batch reclaim with custom `Drop`), Decision 32 (`CodeStore`/`LinkerStore` empty marker traits with default `()`).
 
-### 17.1 Signature shape — backend POV
+### 17.1 Signature shape — backend POV (Wave 3b landed)
 
-The §2.1 normative signature continues to read:
+The §2.1 normative signature, as landed in Sprint 58 Wave 3b, is:
 
 ```rust
-pub fn compile_to_module<M: Module>(
+pub fn compile_to_module<M, C, L>(
     module_path: ModuleFullPath,
     names: &[Symbol],
-    symbol_tables: &DashMap<ModuleFullPath, SymbolTable>,
+    symbol_tables: &DashMap<ModuleFullPath, SymbolTable<C, L>>,
     module: &mut M,
 ) -> Result<CompilationResult, CranelispError>
+where
+    M: Module + CodeFinalizer,
+    C: cranelisp_types::CodeStore,
+    L: cranelisp_types::LinkerStore,
 ```
 
-Note the `SymbolTable` parameter is the default-generic shape: `SymbolTable` ≡ `SymbolTable<(), ()>`. The backend operates on the typecheck-product shape — `C = ()` and `L = ()` — and never observes `Arc<Jit>` or the linker through this signature. Per Decision 32's blanket-impl design, no explicit `<C: CodeStore, L: LinkerStore>` bound appears at backend signatures.
+The `<C, L>` parameters propagate generically — the backend can be called with any concrete `(C, L)` choice the integration layer instantiates (in practice `SymbolTable<Code, ()>` per Decision 35; default `SymbolTable<(), ()>` for backend's own unit tests). **The backend never reifies `C` or `L`**: it never names the concrete `Code` enum, never calls accessors on `C` (e.g., `c.ptr()`), never writes a `C` value onto an entry. The blanket `CodeStore`/`LinkerStore` impls (Decision 32) admit any `Send + Sync + 'static` choice without further bounds.
 
-**Why backend signatures don't gain `<C, L>`:** the backend's job is to populate the runtime fields (`code`, `platform_fn_ptr`) on Def entries. To do that it needs to read the symbol-table data (AST, scheme, GOT slot) and write into the entry. The data it reads is `<C, L>`-erased — `ast: Option<Defn>`, `scheme: Scheme`, etc. — those fields' types don't depend on `C` or `L`. The fields it writes ARE `<C>`-typed (`code: Option<C>`, `platform_fn_ptr: Option<*const u8>`), but the writes happen at the *integration-layer* call site that already holds the concrete-typed `SymbolTable<Arc<Jit>, Linker>` reference. Backend functions take `&DashMap<ModuleFullPath, SymbolTable<(), ()>>` (or its default-equivalent `&DashMap<ModuleFullPath, SymbolTable>`) and return `CompilationResult`; the `code` write happens on the integration side.
+**Why the `<C, L>` parameters are present even though the backend is generic-blind:** the backend reads `&DashMap<ModuleFullPath, SymbolTable<C, L>>` from the caller, which is the *same* DashMap the integration layer also holds (e.g., `SymbolTable<Code, ()>`). Without the parameters on `compile_to_module`, the integration layer would have to construct a parallel `SymbolTable<(), ()>` view to call backend — which would either copy data (Principle 7 violation: two stores) or require reference-projection acrobatics. With propagated parameters, the integration layer hands its live table to the backend; the backend reads `<C, L>`-erased fields (`ast`, `scheme`, `got_slot`) without observing the storage type.
 
-(If a future change requires `compile_to_module` to write into `ModuleEntry::Def.code` directly — the §16.7 Phase-3 seam — the signature would need to gain the `<C>` parameter so the function knows what type to write. Sprint 58 keeps the §16.7 model: `compile_to_module` returns the function pointer in `CompilationResult`; the integration layer writes it onto the entry. Step 5c does NOT change this contract.)
+**Why the backend never names `Code`** (Decision 35 Layer 2 Option B): putting `Code` construction in backend would require either (i) a `From<RawCode>` bound on `C` plus a backend-defined `RawCode` type used solely for that conversion (Layer 2 Option A — rejected), or (ii) backend importing the integration-layer's `Code` enum (Principle 3 violation — `cranelisp-backend → src/` is the forbidden direction). Layer 2 Option B keeps the conversion local to the one site that knows what `Code` is: `src/worker.rs::inline_jit_codegen_for_names`.
 
-#### 17.1.1 Raw return shape — Decision 35 / Layer 2 Option B (Wave 2 close)
+(If a future change pushes the `code: Some(Code)` write inside `compile_to_module` — the deferred §16.7 Phase-3 seam — the signature would gain a constructor closure or a `From`-style bound; Sprint 58 keeps the caller-writes-after-return contract per Wave 3b.)
 
-Per `design/arch/CLAUDE.md` Decision 35 (CP1 arbitration), Sprint 58 binds **Layer 2 Option B**: the backend stays generic-blind on `Code` storage; the integration layer (`/int`'s `src/session_v4.rs`) constructs `Code::Jit { jit, ptr }` from raw outputs. The backend therefore returns the raw artefacts a JIT-mode caller needs to construct the enum variant; it does NOT name `Code` at all.
+#### 17.1.1 Return shape — Decision 35 / Layer 2 Option B (landed Wave 3b)
 
-The raw artefacts a JIT-mode integration-layer consumer needs are:
+Per `design/arch/CLAUDE.md` Decision 35 (CP1 arbitration), Sprint 58 binds **Layer 2 Option B**: the backend stays generic-blind on `Code` storage; the integration layer constructs `Code::Jit { jit, ptr }` from raw outputs. As landed in Wave 3b, the backend returns the per-symbol code pointers `*const u8` directly inside `CompilationResult`, and finalises definitions internally so the pointers are valid before the function returns. The backend does NOT name `Code` at all.
 
-1. The owned `JITModule` instance whose code pages back the function pointers. The integration layer wraps it in `Arc<cranelisp_backend::jit::Jit>` per Decision 31 Scenario 2 so per-batch reclaim fires when the last `Arc` clone drops.
-2. The per-symbol code pointers (`*const u8`) for each name in the input `names: &[Symbol]` — the same pointers the integration layer writes into `ModuleEntry::Def.code` on the post-call write-site.
-
-**Backend's choice (Sprint 58 Wave 2)**: keep the `<M: Module>` generic on `compile_to_module` and surface the JITModule (and the per-symbol pointers) via the `Module` trait's existing post-finalise interface — i.e. *the backend does NOT take ownership of the JITModule*. The caller passes `&mut module: &mut M`, the caller owns the `M` instance, and the caller calls `module.finalize_definitions()` + `module.get_finalized_function(func_id)` *after* `compile_to_module` returns to extract the per-symbol pointers and to wrap the JITModule itself into the `Arc<Jit>` (Decision 31 + 32). `CompilationResult` continues to carry `func_ids: HashMap<Symbol, FuncId>` and `entry_func_id` — exactly enough information for the caller to call `module.get_finalized_function(func_id)` per-symbol.
-
-In other words: option-(b) of the FIXME — `compile_to_module` returns `(CompilationResult, Arc<Jit>)` — is **rejected**. Option-(a) — `Arc<Jit>` as a field on `CompilationResult` — is also **rejected**. Both require the backend to pre-own the `M` instance, which contradicts the §2.1 normative signature where the caller passes `&mut M`. The chosen shape is option-(c): **the backend hands back FuncIds and the caller owns the Module**; the caller wraps `module` into `Arc<Jit>` *after* `compile_to_module` returns and *before* writing into `ModuleEntry::Def.code`. This keeps `compile_to_module<M: Module>` blind to the storage type that wraps `M`, makes the function callable for both `JITModule` (REPL) and `ObjectModule` (cache write) without knowing which, and keeps the `Arc<Jit>` constructor at the integration layer where the `Code` enum is named.
-
-**Concrete integration-layer flow** (illustrative; `/int` owns the implementation in `src/session_v4.rs`):
+**`CompilationResult` shape** (Wave 3b):
 
 ```rust
-// Integration layer — JIT path (REPL / fresh build).
-let mut jit_module: JITModule = build_jit_module(...);
-let result: CompilationResult = compile_to_module(
-    module_path.clone(),
-    &names,
-    &symbol_tables,
-    &mut jit_module,
+pub struct CompilationResult {
+    pub func_ids: HashMap<Symbol, FuncId>,
+    /// Per-symbol finalised code pointers. Populated for JIT-capable
+    /// modules; empty for `ObjectModule` (capability-based skip via
+    /// `CodeFinalizer::try_get_finalized_function` returning `None`).
+    pub code_ptrs: HashMap<Symbol, *const u8>,
+    pub artifacts: HashMap<Symbol, FunctionArtifacts>,
+    pub entry_func_id: Option<FuncId>,
+    pub func_arities: HashMap<Symbol, usize>,
+    pub warnings: Vec<Warning>,
+}
+
+unsafe impl Send for CompilationResult {}
+unsafe impl Sync for CompilationResult {}
+```
+
+**Lifecycle inside `compile_to_module`**:
+
+1. Declare functions, compile bodies, emit GOT-data symbol per Decision 23/36.
+2. Call `module.finalize_for_code_read()` — the `CodeFinalizer` capability (`crates/cranelisp-backend/src/lib.rs:122-138`). For `JITModule` this performs `finalize_definitions()` + makes pages executable; for `ObjectModule` this is a no-op.
+3. For each defined symbol, call `module.try_get_finalized_function(func_id)` and insert into `code_ptrs`. JIT-mode returns `Some(ptr)`; object-mode returns `None` and the loop breaks (capability is module-wide, not per-symbol — see `crates/cranelisp-backend/src/lib.rs:559-571`).
+4. Return `CompilationResult` with `code_ptrs` populated (JIT) or empty (object).
+
+**Why backend finalises internally** (Wave 3b refinement of the earlier Wave 2 framing): pushing finalize + per-symbol pointer extraction inside `compile_to_module` collapses two responsibilities the caller would otherwise have to discharge in lockstep with backend's internal state (declared FuncIds + signatures). The `CodeFinalizer` trait makes the operation capability-based — `JITModule` exposes the real finalize, `ObjectModule` exposes a no-op stub — so the same `compile_to_module<M, C, L>` body runs end-to-end without a mode discriminator. This is Principle 11 (single pipeline) applied to the finalize step. The integration layer's only post-call work is the lifetime-rooting `Code::Jit { jit, ptr }` construction and the per-entry `*code = Some(...)` write — both of which require the integration-layer-owned `Code` enum and so cannot live in backend.
+
+**Concrete integration-layer flow** (`src/worker.rs::inline_jit_codegen_for_names`, ~line 2731):
+
+```rust
+// 1. Backend compiles + finalises + extracts per-symbol code pointers.
+let result = cranelisp_backend::compile_to_module(
+    module.clone(),
+    names,
+    tc_modules,
+    jit.jit_module(),
 )?;
 
-// Caller owns `jit_module`; finalize + extract pointers, then construct the
-// Arc<Jit> wrapper and Code enum variants.
-jit_module.finalize_definitions()?;
-let jit_arc: Arc<Jit> = Arc::new(Jit::wrap(jit_module));   // Decision 31 wrapper
-for (sym, func_id) in &result.func_ids {
-    let ptr: *const u8 = jit_arc.get_finalized_function(*func_id);
-    let code = Code::Jit { jit: jit_arc.clone(), ptr };
-    symbol_tables
-        .get_mut(&module_path)
-        .unwrap()
-        .symbols
-        .get_mut(sym)
-        .and_then(ModuleEntry::as_def_mut)
-        .map(|d| d.code = Some(code));
+// 2. Wrap the (now-finalised) Jit in Arc per Decision 31 Scenario 2 — the
+//    Arc is the per-batch reclaim primitive.
+let jit_arc = std::sync::Arc::new(jit);
+
+// 3. Per defined symbol: store the pointer in the GOT slot AND construct
+//    Code::Jit { jit, ptr } onto Def.code — the Arc::clone is the
+//    per-entry lifetime root that activates Decision 31 Scenario 2.
+for name in names {
+    let Some(code_ptr) = result.code_ptrs.get(name).copied() else { continue };
+    if let Some(slot) = lookup_got_slot(tc_modules, module, name)
+        && let Some(st) = tc_modules.get(module) {
+        st.got.store_slot(slot, code_ptr);
+    }
+    if let Some(mut st) = tc_modules.get_mut(module)
+        && let Some(entry) = st.symbols.get_mut(name.as_ref())
+        && let cranelisp_types::ModuleEntry::Def { code, .. } = entry {
+        *code = Some(crate::code::Code::jit(
+            std::sync::Arc::clone(&jit_arc),
+            code_ptr,
+        ));
+    }
 }
 ```
 
-For the cache `.o` path (`/int`'s nice worker), the same `compile_to_module` call passes a `&mut ObjectModule`; the caller does NOT wrap it in `Arc<Jit>` (no JIT pages exist) — instead it calls `obj_module.finish().emit()` for `.o` bytes and writes them to disk via the `cache::write_meta` companion call. `result.func_ids` is consulted only to confirm every requested name was compiled; the `Code` enum is not constructed at fresh-build time on the Object path because the `.o` is written to disk for later reload, not into a session symbol table. On cache-hit (per `module-caching.md` §14.3 updated Sprint 58 Wave 2), the integration layer's cache-loader reads the `.o` via `Linker::load_object`, looks up bare-name function symbols per Decision 36, and constructs `Code::Linker { linker: Arc<Linker>, ptr }` per Defn entry — codegen does NOT re-run on cache-hit.
+For the cache `.o` path (nice worker), the same `compile_to_module` call passes a `&mut ObjectModule`. `result.code_ptrs` is empty (object mode has no runtime pointers). The nice worker calls `obj_module.finish().emit()` for `.o` bytes and writes them via `cache::write_meta`; no `Code::Jit` is constructed because the `.o` is destined for disk, not a live session table. On cache-hit (per `module-caching.md` §14.3), the integration layer's cache-loader bypasses `compile_to_module` entirely: it loads the `.o` via `Linker::load_object`, looks up bare-name function symbols per Decision 36, and constructs `Code::Linker { linker: Arc<Linker>, ptr }` per Defn entry.
 
-**What the backend does NOT need to provide for this Layer-2 Option B shape**:
+**Concrete forward-pointers**:
 
-- A return tuple containing `Arc<Jit>` (rejected — the backend doesn't own the `M`).
-- A field on `CompilationResult` carrying `Arc<Jit>` (rejected — same reason).
-- A `Code::Jit` constructor (the enum lives in `/int`'s `session_v4.rs` per Decision 35; the backend is blind to it).
-- A `code: Option<C>` write-into-the-entry callback (Sprint 58 keeps the §16.7 caller-writes-after-return contract; Phase 3's seam to push the write inside `compile_to_module` is deferred to a future sprint and would re-introduce the `<C>` parameter then).
+- `crates/cranelisp-backend/src/lib.rs:66-91` — `CompilationResult` definition with `code_ptrs` field.
+- `crates/cranelisp-backend/src/lib.rs:122-180` — `CodeFinalizer` trait + JIT/Object impls.
+- `crates/cranelisp-backend/src/lib.rs:351-583` — `compile_to_module<M, C, L>` body (finalize + code_ptrs population at lines 540-571).
+- `src/code.rs` — integration-layer `Code` enum (`Code::Jit`, `Code::Linker`) per Decision 35.
+- `src/worker.rs::inline_jit_codegen_for_names` (~line 2672) — the post-call site that wraps the `Jit` in `Arc` and writes `Code::Jit { jit, ptr }` per defined symbol.
 
-**What the backend DOES provide** (unchanged from §8 / §16.7):
+**What backend does NOT do** (preserved invariants from Decision 35 Layer 2 Option B):
 
-- `CompilationResult { func_ids, artifacts, entry_func_id, func_arities, warnings }` — the same shape Sprint 56 Phase 2 landed.
-- The post-finalise pointer extraction is the caller's responsibility via `M::get_finalized_function(func_id)` — a method on the `Module` trait the caller already holds `&mut` to.
+- Backend never names `Code`, `Code::Jit`, or `Code::Linker` (the enum lives in `src/code.rs`).
+- Backend never writes to `ModuleEntry::Def.code` (the integration layer holds the only write-site; backend pattern-matches on `Def { .. }` with the `code` field skipped via `..`).
+- Backend never wraps the `JITModule` in `Arc<Jit>` (the caller owns the `M` instance and constructs the `Arc` after `compile_to_module` returns).
+- `CompilationResult` carries no `Arc<Jit>` field and no return tuple — the `Arc` retention root lives at the integration layer (per-entry on `Code::Jit`).
 
-This is the §17.6 "what does NOT change" entry made explicit: the backend's return shape is unchanged from Sprint 56 Phase 2's `CompilationResult`. The `Arc<Jit>` exposure on the return path that §16.7's pre-Decision-35 framing alluded to (via `kept_jits`) becomes irrelevant because Decision 31 Scenario 2 routes the `Arc<Jit>` through `ModuleEntry::Def.code` directly; the integration layer constructs the `Arc` from the `M` instance it already owns and inserts it into the per-symbol code field. No backend-API surface change is needed to enable Decision 35 Layer 2 Option B.
-
-(Cross-reference: `design/arch/CLAUDE.md` Decision 35 records the rationale for Layer 2 Option B; `design/int/symbol-table-generics.md` documents the concrete integration-layer call-site choices.)
+(Cross-references: `design/arch/CLAUDE.md` Decision 35 records the Layer 2 Option B rationale; `design/int/symbol-table-generics.md` documents the integration-layer call-site choices; `crates/cranelisp-backend/src/lib.rs` tests `compile_to_module_returns_code_ptrs_after_finalize` and `compile_to_module_object_mode_empty_code_ptrs` (lines 3084 and 3144) are the regression-guards for the JIT-populated and object-empty invariants.)
 
 ### 17.2 Backend-internal helper signatures
 
@@ -1245,9 +1286,9 @@ The `Arc<Jit>` choice activates Decision 31 Scenario 2: when a `ModuleEntry::Def
 
 ### 17.4 `Jit` wrapper drop-impl placement
 
-Decision 31 names `crates/cranelisp-backend/src/jit.rs` as the canonical location of the `Jit` wrapper with custom `Drop`. Step 5c does not change the Jit wrapper itself — that landed in Sprint 57 Wave 4 per Decision 31. What changes is where `Arc<Jit>` clones live: previously `SharedState.kept_jits: Mutex<Vec<KeptJit>>` (session-side side-store); after Step 5c, `ModuleEntry::Def.code: Option<Arc<Jit>>` for every Def produced by the same `compile_to_module` batch (entry-side). The `Drop` impl on `Jit` is unchanged — it still calls `unsafe JITModule::free_memory()` when the Arc refcount hits 0.
+Decision 31 names `crates/cranelisp-backend/src/jit.rs` as the canonical location of the `Jit` wrapper with custom `Drop`. Step 5c does not change the Jit wrapper itself — that landed in Sprint 57 Wave 4 per Decision 31. What changes is where `Arc<Jit>` clones live: previously `SharedState.kept_jits: Mutex<Vec<KeptJit>>` (session-side side-store); after Wave 3b, `ModuleEntry::Def.code: Option<Code>` where `Code::Jit { jit: Arc<Jit>, ptr }` for every Def produced by the same `compile_to_module` batch (entry-side; the `Code` enum lives in `src/code.rs` per Decision 35). The `Drop` impl on `Jit` is unchanged — it still calls `unsafe JITModule::free_memory()` when the Arc refcount hits 0.
 
-The integration-layer migration of `Arc<Jit>` from `kept_jits` to entries is `/int`'s responsibility (their Wave-3 work). Backend's side: confirm that the `Jit` wrapper's API surface accepts `Arc<Jit>` storage (it does — `Jit` is `Send + Sync + 'static`, satisfying the blanket `CodeStore` impl) and that nothing in backend code relies on `kept_jits` existing.
+The integration-layer migration of `Arc<Jit>` from `kept_jits` to entries landed in Wave 3b (`/int`'s work). Backend's side: the `Jit` wrapper's API surface accepts `Arc<Jit>` storage (it does — `Jit` is `Send + Sync + 'static`, satisfying the blanket `CodeStore` impl) and nothing in backend code references `kept_jits`. The integration layer holds the only `Arc::new(jit)` call (in `src/worker.rs::inline_jit_codegen_for_names`); backend hands the finalised `M` (a JITModule) back to the caller via the `&mut M` borrow exiting scope.
 
 ### 17.5 Cache coupling (cross-reference to §14)
 
@@ -1256,20 +1297,25 @@ The integration-layer migration of `Arc<Jit>` from `kept_jits` to entries is `/i
 ### 17.6 What does NOT change in compile_to_module
 
 - The four-parameter signature (§2.1 — `module_path`, `names`, `symbol_tables`, `module`) — same.
-- The `<M: Module>` bound — same.
 - The §4 defn-collection loop reading from `symbol_tables[module_path]` — same.
 - The §5 GOT reference encoding (uniform across modes via `__cranelisp_got_{module}` data symbol) — same.
 - The §6 intrinsic declaration via `declare_intrinsics<M: Module>` — same.
-- The §8 `CompilationResult` return type carrying `func_ids`, `entry_func_id`, `func_arities`, `warnings` — same.
-- The §16.7 Phase-3 seam (caller writes `code` onto entries; backend returns the pointer in `CompilationResult`) — same.
-- The return shape per Decision 35 / Layer 2 Option B (§17.1.1) — `compile_to_module` returns only `CompilationResult`; the caller owns the `M` instance and constructs `Arc<Jit>` + `Code::Jit` on the integration side after `compile_to_module` returns. No `Arc<Jit>` is added to `CompilationResult`; no return tuple appears.
+- The integration-layer write-site for `code: Some(Code::Jit { ... })` lives at the *caller* (`src/worker.rs::inline_jit_codegen_for_names`), not inside `compile_to_module` — backend stays generic-blind on `Code`. Per §16.7's Phase-3-seam framing, pushing the `code` write inside backend is deferred and would require re-introducing a `<C>` constructor bound at that future time.
+- No `Arc<Jit>` is added to `CompilationResult`; no return tuple appears. The `Arc<Jit>` lifetime root is constructed at the integration-layer post-call site from the `M` instance the caller already owns.
 
-Step 5c is a type-annotation activation, not a contract change. The contract was deliberately written generic-friendly in earlier sprints (§16.7's "the storage location moves from `CodegenProduct` to `ModuleEntry::Def.code`, and the write-site moves from the priority worker into the backend — both changes land together in Sprint 57 Wave 2" — Sprint 57 landed the field move; Sprint 58 Step 5c lands the generic-parameter activation enabling per-redefinition reclaim).
+**What Wave 3b DID change** (relative to the §16.7 pre-Decision-35 framing):
+- The `<M: Module>` bound on `compile_to_module` widened to `<M, C, L> where M: Module + CodeFinalizer, C: CodeStore, L: LinkerStore`. The `<C, L>` parameters propagate generically; backend never reifies them.
+- `CompilationResult` gained `code_ptrs: HashMap<Symbol, *const u8>` (§17.1.1).
+- `compile_to_module` now finalises definitions internally via the new `CodeFinalizer` trait (§17.1.1 step 2). The earlier "caller finalises" framing was rejected — capability-based internal finalize keeps the function single-pipeline.
 
-### 17.7 Acceptance signals (backend-side)
+Step 5c is a type-annotation activation plus the Decision-35 finalize-and-extract refinement. The contract was deliberately written generic-friendly in earlier sprints (§16.7's "the storage location moves from `CodegenProduct` to `ModuleEntry::Def.code`" — Sprint 57 landed the field move; Sprint 58 Step 5c lands the generic-parameter activation + the `code_ptrs` return shape enabling per-redefinition reclaim).
 
-After Step 5c lands:
-- All backend functions touching `SymbolTable` continue to compile against `SymbolTable<(), ()>` (default-equivalent `SymbolTable`); no new `<C, L>` bounds are introduced into backend signatures.
-- The integration layer's `src/session_v4.rs` instantiates `SymbolTable<Arc<Jit>, Linker>` (or chosen newtype shape) and the type-annotation chain remains coherent (`/int`'s sweep work).
-- `kept_jits` is dissolved (`/int`'s sweep work; backend confirms no backend code referenced it).
+### 17.7 Acceptance signals (backend-side, Wave 3b landed + Wave 3c confirmed)
+
+After Step 5c + Wave 3b land (Wave 3c re-verifies):
+- `compile_to_module<M, C, L>` propagates `<C, L>` to read `SymbolTable<C, L>` but the backend never reifies `C` or `L` (no `Code` constructor calls, no `c.ptr()` accessors, no concrete-type assertions). All `ModuleEntry::Def { .. }` matches in backend use `..` to skip the `code` field.
+- The integration layer's `src/code.rs` defines `Code::Jit { jit: Arc<Jit>, ptr }` and `Code::Linker { linker: Arc<Linker>, ptr }`; `src/worker.rs::inline_jit_codegen_for_names` reads `result.code_ptrs[name]` and constructs `Code::Jit` per defined symbol.
+- `kept_jits` and `kept_linkers` are dissolved; backend confirms no backend code referenced either.
+- Backend regression-guard tests `compile_to_module_returns_code_ptrs_after_finalize` (JIT mode populates `code_ptrs` and does NOT touch `Def.code`) and `compile_to_module_object_mode_empty_code_ptrs` (object mode produces empty `code_ptrs`) live in `crates/cranelisp-backend/src/lib.rs`.
+- `/qa`'s Decision-31-Scenario-2 reclaim test (Wave 3d) shows REPL redefinition triggering JIT page reclaim on the redefinition (not just session teardown).
 - `/qa`'s Decision-31-Scenario-2 reclaim test passes: REPL redefinition shows `/mem` live-bytes drop on the redefinition (not just session teardown).
