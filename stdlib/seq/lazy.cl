@@ -6,12 +6,17 @@
 ;;
 ;; Spec: 12-runtime.md §12.4.2, plan-stdlib.md §3.3
 
-;; Option (None, Some) and List (Nil, Cons) are available via implicit prelude import
+;; This module suppresses the implicit prelude glob (per spec §8.3.6) because
+;; it is part of the stdlib and a project's custom prelude could re-export
+;; from us — that would be a circular dependency. All names must therefore be
+;; resolved through explicit imports.
 
 ;; ── Seq Type ────────────────────────────────────────────────────────────
 
 (import [prelude []])
 (import [primitives [*]])
+(import [collections.list [Nil Cons]])
+(import [fn.option [None Some]])
 
 (deftype (Seq a) "A lazy sequence with thunked tail"
   SeqNil
