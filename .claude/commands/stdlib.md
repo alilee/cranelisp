@@ -157,3 +157,13 @@ Never run commands that discard uncommitted work. Forbidden: stash-discard (`git
 ## Testing ownership
 
 Unit tests (`#[cfg(test)] mod tests` within each crate) belong to the implementing skill. `/qa` owns integration tests in `tests/`. As an implementation skill (you own `stdlib/`), write unit tests for any helper code alongside the implementation. See `memory/feedback_unit_tests_with_dev.md`.
+
+## Defect Handoff (Required Before Wave Close)
+
+When exercising the language to build stdlib surfaces a **defect** in the compiler or runtime — a stdlib function that produces wrong values, type signatures rejected that the spec permits, runtime crashes, REPL/`--run` divergence — `/stdlib`'s work on that wave is **not closed** until `/qa` has authored a narrow integration test that reproduces the defect. The test must be:
+
+- Failing, un-ignored
+- Annotated with `// spec:` naming the spec section the defect violates
+- Annotated with `FIXME(/owning-skill)` pointing to the resolver
+
+Stdlib is a sentinel — it catches real bugs by composing primitives at scale. (Defects in the stdlib code itself are `/stdlib`'s own to fix; this handoff applies to defects in the LANGUAGE, surfaced by stdlib code.) Documentation alone is not closure for defects; the failing test is the durable record + the trigger for compiler-skill resolution. See root `CLAUDE.md` §"Usability Findings and Defects" for the project-wide protocol.

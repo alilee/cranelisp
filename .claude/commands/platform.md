@@ -107,3 +107,13 @@ Never run commands that discard uncommitted work. Forbidden: stash-discard (`git
 ## Testing ownership
 
 Unit tests (`#[cfg(test)] mod tests` within each crate) belong to the implementing skill, not `/qa`. `/qa` owns integration tests in `tests/`. As an implementation skill, write unit tests for your crate during dev. See `memory/feedback_unit_tests_with_dev.md`.
+
+## Defect Handoff (Required Before Wave Close)
+
+When exercising the platform DLL boundary or IO trampoline surfaces a **defect** in the language — ABI contract violations from the compiler side, IO trampoline crashes triggered by valid code, scheduling-class invariants broken by codegen, REPL/`--run` divergence in platform fn resolution — `/platform`'s work on that wave is **not closed** until `/qa` has authored a narrow integration test that reproduces the defect. The test must be:
+
+- Failing, un-ignored
+- Annotated with `// spec:` naming the spec section the defect violates
+- Annotated with `FIXME(/owning-skill)` pointing to the resolver
+
+Platform DLLs are sentinels — they catch real bugs at the language/runtime boundary. (Defects in platform crate code itself are `/platform`'s own to fix; this handoff applies to compiler/runtime defects surfaced by platform code.) Documentation alone is not closure for defects; the failing test is the durable record + the trigger for compiler-skill resolution. See root `CLAUDE.md` §"Usability Findings and Defects" for the project-wide protocol.

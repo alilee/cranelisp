@@ -37,9 +37,19 @@ Candidate categories (to be decided with user input):
 
 - User-proxy skill: exercises the language from an application developer's perspective
 - Begin work once Ring 3 is stable (needs macros, stdlib, modules) — fully active at Ring 4 (needs IO)
-- File usability findings as `FIXME(/skill-name)` comments on the relevant spec or design doc. Typical issues: missing stdlib functions, inference friction, macro limitations, performance at scale, platform API gaps, module boundary friction.
+- File **usability findings** as `FIXME(/skill-name)` comments on the relevant spec or design doc. Typical issues: missing stdlib functions, inference friction, macro limitations, performance at scale, platform API gaps, module boundary friction.
   - Each finding needs: category, severity (blocking/important/deferred), description
 - Coordinates with `/docs` to ensure the exemplar is documented as a learning resource
+
+## Defect Handoff (Required Before Wave Close)
+
+When exemplar verification surfaces a **defect** — runtime crash, batched-vs-single-test divergence, ABI issue, output that does not match the spec, or any other real bug — `/port`'s work on that wave is **not closed** until `/qa` has authored a narrow integration test that reproduces the defect. The test must be:
+
+- Failing, un-ignored
+- Annotated with `// spec:` naming the spec section the defect violates
+- Annotated with `FIXME(/owning-skill)` pointing to the resolver
+
+The exemplar is a stress-test sentinel — it catches real bugs by running the language at application scale. When it catches one, the bug must become a failing test, not just an `exemplar/CLAUDE.md` "Known Issues" entry or a deferred FIXME on a design doc. Documentation alone is not closure for defects; the failing test is the durable record + the trigger for compiler-skill resolution. See root `CLAUDE.md` §"Usability Findings and Defects" for the project-wide protocol.
 
 ## First Steps (Phase B)
 

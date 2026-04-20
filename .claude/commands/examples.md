@@ -96,3 +96,13 @@ Never run commands that discard uncommitted work. Forbidden: stash-discard (`git
 ## Testing ownership
 
 Unit tests (`#[cfg(test)] mod tests` within each crate) belong to the implementing skill, not `/qa`. `/qa` owns integration tests in `tests/`. As an implementation skill, write unit tests for your crate during dev. See `memory/feedback_unit_tests_with_dev.md`.
+
+## Defect Handoff (Required Before Wave Close)
+
+When authoring or running an example surfaces a **defect** — example program crashes, output that does not match what the example claims, behaviour that contradicts the spec, performance that breaks the example's narrative — `/examples` work on that wave is **not closed** until `/qa` has authored a narrow integration test that reproduces the defect. The test must be:
+
+- Failing, un-ignored
+- Annotated with `// spec:` naming the spec section the defect violates
+- Annotated with `FIXME(/owning-skill)` pointing to the resolver
+
+Examples are sentinels — they catch real bugs by exercising the language end-to-end in compact form. Documentation alone is not closure for defects; the failing test is the durable record + the trigger for compiler-skill resolution. See root `CLAUDE.md` §"Usability Findings and Defects" for the project-wide protocol.

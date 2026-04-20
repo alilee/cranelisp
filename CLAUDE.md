@@ -94,9 +94,15 @@ See `sprints/reimplementation.md` for the full strategy:
 - **Sprint coordination**: `/sprint` decomposes rings into delivery increments; `sprints/ROADMAP.md` tracks progress, `sprints/SPRINT.md` contains the current sprint plan. All skills participate in every sprint — later-stage skills do planning and validation work until their implementation phase begins.
 - **Architectural authority**: `/arch` is the final arbiter of design decisions that cross crate or skill boundaries. See `design/arch/CLAUDE.md` for the principles that guide these decisions.
 
-## Usability Findings
+## Usability Findings and Defects
 
-When user-proxy skills (`/stdlib`, `/examples`, `/docs`, `/port`, `/repl`, `/platform`) encounter corner cases, unhelpful errors, inference friction, missing APIs, or ergonomic issues, they file a `FIXME(/skill-name)` comment on the relevant spec, design, or plan document — the same cross-skill protocol described below. This keeps findings in context, discoverable by grep, and owned by the skill that can fix them.
+User-proxy skills (`/stdlib`, `/examples`, `/docs`, `/port`, `/repl`, `/platform`) routinely encounter problems while exercising the language. There are two distinct categories with different handling:
+
+**Usability findings** — corner cases, unhelpful errors, inference friction, missing APIs, ergonomic issues. These are filed as `FIXME(/skill-name)` comments on the relevant spec, design, or plan document — the cross-skill protocol described below. Documentation is sufficient closure.
+
+**Defects** — real compiler bugs, spec violations, runtime crashes, REPL/`--run` divergences, output that does not match the spec. **A user-proxy skill's work is not finished until `/qa` has authored a narrow integration test that reproduces the defect** — failing, un-ignored, with `// spec:` annotation and `FIXME(/owning-skill)` pointing to the resolver. Documentation alone is not closure for defects; the failing test is the durable record + the trigger for compiler-skill resolution. User-proxy skills feed defects to `/qa` for narrow reproduction; `/qa` writes the test; the owning compiler skill resolves it (this sprint or a future one).
+
+The distinction matters because defects without failing tests get lost. A FIXME comment on a design doc captures intent but doesn't prove the issue exists, doesn't catch regression, and doesn't trigger CI. The failing test does all three.
 
 ## Cross-Skill Changes
 

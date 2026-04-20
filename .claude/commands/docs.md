@@ -66,3 +66,13 @@ See `memory/feedback_no_git_stash_agents.md`.
 Unit tests (`#[cfg(test)] mod tests` within each crate) belong to the implementing skill, not `/qa`. `/qa` owns integration tests in `tests/`.
 
 See `memory/feedback_unit_tests_with_dev.md`.
+
+## Defect Handoff (Required Before Wave Close)
+
+When walking through user docs surfaces a **defect** — a documented example that doesn't compile, output that doesn't match what the doc claims, behaviour that contradicts the user-facing description — `/docs` work on that wave is **not closed** until `/qa` has authored a narrow integration test that reproduces the defect. The test must be:
+
+- Failing, un-ignored
+- Annotated with `// spec:` or `// docs:` naming the doc/spec section the defect violates
+- Annotated with `FIXME(/owning-skill)` pointing to the resolver
+
+User docs are sentinels — they catch real bugs by walking through what users actually do. Documentation alone is not closure for defects; the failing test is the durable record + the trigger for compiler-skill resolution. See root `CLAUDE.md` §"Usability Findings and Defects" for the project-wide protocol.

@@ -68,15 +68,24 @@ The spec is the source of truth. If the spec says `:(Fn [Int] Int) user/double` 
 ## Interfaces
 
 - User-proxy skill: exercises the REPL from a developer's perspective
-- Consumes the REPL implementation from `/qa` (which owns `src/repl/`)
-- File usability findings as `FIXME(/skill-name)` comments on the relevant spec or design doc:
+- Consumes the REPL implementation from `/int` (which owns `src/`) and `/qa` (which owns `tests/`)
+- File **usability findings** as `FIXME(/skill-name)` comments on the relevant spec or design doc:
   - Discoverability gaps (new users can't find what's available)
   - Feedback quality issues (opaque errors, missing type display, unhelpful responses)
   - Performance problems (startup, evaluation, module load latency)
   - Reader or expansion surprises at the prompt
   - Pipeline structure that prevents a REPL experience goal
-- Report REPL *implementation* bugs directly to `/qa` (which owns `src/repl/`)
 - Coordinates with `/docs` to ensure tutorial examples work as expected at the REPL
+
+## Defect Handoff (Required Before Wave Close)
+
+When a demo regression sweep, showcase build, or compliance audit surfaces a **defect** — a real compiler bug, runtime crash, output that does not match the spec, or REPL/`--run` divergence — `/repl`'s work on that wave is **not closed** until `/qa` has authored a narrow integration test that reproduces the defect. The test must be:
+
+- Failing, un-ignored
+- Annotated with `// spec:` naming the spec section the defect violates
+- Annotated with `FIXME(/owning-skill)` pointing to the resolver
+
+Demos are sentinels — they catch real bugs by exercising the language end-to-end. When they catch one, the bug must become a failing test, not just a demo-comment or a deferred FIXME on a design doc. Documentation alone is not closure for defects; the failing test is the durable record + the trigger for compiler-skill resolution. See root `CLAUDE.md` §"Usability Findings and Defects" for the project-wide protocol.
 
 ## First Steps (Phase B)
 
