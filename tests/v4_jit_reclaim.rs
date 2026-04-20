@@ -490,3 +490,211 @@ fn decision31_code_linker_session_scope_only() {
     // double-free, use-after-free in the cleanup path), it would
     // surface here as an abort.
 }
+
+// =============================================================================
+// Wave 3b carry-forward invariant — register_defn_signature preserves
+// existing `code` field across a failed redefinition.
+// =============================================================================
+
+// spec: design/arch/CLAUDE.md Decision 31 Scenario 2 +
+//       crates/cranelisp-typecheck/src/program.rs:2184-2232 (the carry-forward
+//       site) + design/review/sprint58-wave3-review.md I-1 (this test's
+//       finding) + design/int/symbol-table-generics.md §2.3 (kept_jits
+//       dissolution).
+//
+// # Invariant being guarded
+//
+// `register_defn_signature` upserts the `ModuleEntry::Def` for a redefined
+// symbol. Pre-Wave-3b, `Arc<Jit>` was retained on `SharedState.kept_jits`
+// (a session-level pool); replacing the entry's `code` field with `None`
+// during typecheck was harmless because the JIT's pages stayed alive at
+// session level via `kept_jits`. Post-Wave-3b, `Arc<Jit>` lives ONLY on
+// `ModuleEntry::Def.code = Some(Code::Jit { jit, ptr })`. If the upsert
+// dropped `code`, the `Arc<Jit>` clone would drop, and — if no other entry
+// referenced the same per-batch JIT — `Jit::drop` would call
+// `unsafe free_memory()` and reclaim the executable pages MID-TYPECHECK.
+// The GOT slot (still pointing at the original code address) would then
+// be dangling. If the redefinition then FAILED typecheck (snapshot/restore
+// reverts the entry's keys), the entry would still appear "good" but its
+// GOT pointer would reference freed pages — the next call to the original
+// `f` would SIGABRT/SIGSEGV.
+//
+// The fix at `program.rs:2184-2232` reads the existing entry's `code`
+// field, then writes the upserted entry with `code: existing_code` —
+// preserving the `Arc<Jit>` clone across the typecheck attempt. On
+// success, codegen overwrites with the fresh `Code::Jit` for the new
+// body. On failure, the carried-forward `code` remains and the GOT slot
+// stays valid.
+//
+// # Strategy chosen
+//
+// Option A (symptom test) hybridised with Option C (direct invariant
+// observation). We can't easily call `register_defn_signature` directly
+// from an integration test (it's private to `cranelisp-typecheck` and
+// requires a `CheckState` fixture). Instead we drive the path through
+// the REPL — the same surface the original review finding (I-1) names —
+// and observe the carry-forward at the level Decision 31 specifies:
+// `Arc<Jit>` identity preservation across a redefinition that triggers
+// typecheck failure.
+//
+// # Assertion shape
+//
+// 1. Define `f`. Capture an `Arc<Jit>` clone from `f`'s `Def.code`.
+//    Snapshot `jit_free_memory_call_count()`.
+// 2. Attempt to redefine `f` with a body that fails typecheck (calls a
+//    nonexistent symbol). The eval MUST return `Err`.
+// 3. Observe — without dropping the captured Arc:
+//    a. The session's `Def.code` for `f` is STILL `Some(Code::Jit { ... })`
+//       (carry-forward preserved the entry's code field; not None).
+//    b. The session-side `Arc<Jit>` is `Arc::ptr_eq` to our captured
+//       first-batch Arc (carry-forward preserved the SAME Arc instance,
+//       not a fresh allocation).
+//    c. `jit_free_memory_call_count()` did NOT increment (the original
+//       JIT batch was not reclaimed mid-typecheck).
+// 4. Call `(f 7)` — must return the ORIGINAL behaviour (`x → x` returns 7).
+//    Pre-fix, this would SIGABRT because the GOT slot would point at freed
+//    pages. Post-fix, it returns 7 because the carry-forward kept the
+//    Arc alive and the GOT slot still references valid code.
+//
+// # How a regression would surface
+//
+// If a future change removes the `code: existing_code` carry-forward at
+// `program.rs:2229` (e.g., by setting `code: None` in the upsert), the
+// failure mode depends on whether any other entry holds the same Arc:
+// - If yes: assertion 3b fails (Arc::ptr_eq holds but for a stale
+//   reason — investigation reveals the upsert dropped the field).
+// - If no (the typical case for a single-defn `f`): the Arc drops to 0
+//   on the upsert; `Jit::drop` fires; assertion 3c fails
+//   (jit_free_memory_call_count incremented mid-typecheck), AND
+//   assertion 4 SIGABRTs when calling `(f 7)` because the GOT slot points
+//   at freed pages.
+//
+// Either branch produces a loud, specific failure that names the
+// invariant. The test is therefore tight enough to catch a regression
+// that drops the carry-forward at `program.rs:2229`.
+#[test]
+fn wave3b_invariant_register_defn_does_not_drop_existing_arc_jit() {
+    let mut session = repl_session();
+    let module = ModuleFullPath::from("user");
+
+    // Step 1: Define f with a body that returns its argument unchanged.
+    session
+        .eval("(defn f [x] x)")
+        .expect("first defn f compiles");
+
+    // Capture an Arc<Jit> clone from f's first batch. This is the
+    // retention root the carry-forward fix protects.
+    let first_code = read_def_code(&session, &module, "f")
+        .expect("first defn f must populate ModuleEntry::Def.code");
+    let first_jit = jit_arc_from_code(&first_code);
+    drop(first_code); // release the local Code clone we used for capture
+
+    let count_before_failed_redef = Arc::strong_count(&first_jit);
+    assert!(
+        count_before_failed_redef >= 2,
+        "expected the session to hold at least one Arc<Jit> clone on f's \
+         entry before the failed redefinition (test holds one too); \
+         strong_count = {count_before_failed_redef}"
+    );
+
+    let reclaim_count_before = jit_free_memory_call_count();
+
+    // Step 2: Attempt to redefine f with a body that fails typecheck.
+    // `does-not-exist-12345` is unbound, so the typechecker will reject
+    // the redefinition body. This is exactly the path the carry-forward
+    // protects — `register_defn_signature` will upsert the Def entry
+    // BEFORE the body check runs, then the body check fails and
+    // snapshot/restore reverts the entry's keys.
+    let err = session.eval("(defn f [x] (does-not-exist-12345 x))");
+    assert!(
+        err.is_err(),
+        "redefinition with unbound callee should fail typecheck; \
+         got Ok(value={})",
+        err.ok().map(|r| r.value()).unwrap_or(0)
+    );
+
+    // Step 3a: f's entry STILL carries Some(Code::Jit { ... }) — the
+    // carry-forward preserved the code field across the failed upsert.
+    let post_code = read_def_code(&session, &module, "f").expect(
+        "after failed redefinition, f's entry MUST still carry \
+         Some(Code::Jit { ... }) — the carry-forward at \
+         crates/cranelisp-typecheck/src/program.rs:2229 should preserve \
+         the existing `code` field. Finding `code: None` here means a \
+         regression dropped the carry-forward.",
+    );
+    let post_jit = jit_arc_from_code(&post_code);
+
+    // Step 3b: the session-side Arc<Jit> is Arc::ptr_eq to our captured
+    // first-batch Arc — the carry-forward preserved the SAME Arc, not a
+    // fresh allocation.
+    assert!(
+        Arc::ptr_eq(&first_jit, &post_jit),
+        "Wave 3b carry-forward invariant violated: after failed redefinition, \
+         f's Arc<Jit> changed identity. Expected the SAME Arc (carry-forward \
+         preserves the existing `code` field at program.rs:2229); got a \
+         different Arc — meaning the upsert dropped or replaced the code \
+         field mid-typecheck. This would dangle the GOT slot if no other \
+         entry referenced the original Arc."
+    );
+    drop(post_code);
+    drop(post_jit);
+
+    // Step 3c: no JIT batch was reclaimed mid-typecheck. Pre-fix, the
+    // upsert with `code: None` would have dropped the Arc to its
+    // session-side count of 0 (only our captured clone keeps it alive
+    // for the test), but the session would have lost its own clone, and
+    // — critically — `Jit::drop` may or may not fire depending on
+    // whether our captured clone holds the count > 0. The strongest
+    // signal here is "the session retains its clone": Arc::strong_count
+    // through `first_jit` should NOT have dropped between
+    // count_before_failed_redef and now.
+    let count_after_failed_redef = Arc::strong_count(&first_jit);
+    assert_eq!(
+        count_after_failed_redef, count_before_failed_redef,
+        "Wave 3b carry-forward invariant violated: after failed \
+         redefinition, the session's Arc<Jit> clone count for f's \
+         original batch changed from {count_before_failed_redef} to \
+         {count_after_failed_redef}. The carry-forward at \
+         program.rs:2229 should preserve the session's Arc clone \
+         intact across a failed typecheck."
+    );
+
+    // Companion signal: the JIT-reclaim counter did not tick. If the
+    // carry-forward were dropped AND no other entry held the Arc, the
+    // session's clone would have dropped on the upsert and (because we
+    // hold the test clone) would not have triggered Jit::drop yet — but
+    // any allocator-level instrumentation would not increment. Asserting
+    // == 0 here primarily guards against a more aggressive future bug
+    // (e.g., dropping the carry-forward AND aggressively releasing
+    // session clones).
+    let reclaim_count_after = jit_free_memory_call_count();
+    assert_eq!(
+        reclaim_count_after, reclaim_count_before,
+        "Wave 3b carry-forward invariant violated: \
+         jit_free_memory_call_count() incremented from \
+         {reclaim_count_before} to {reclaim_count_after} during a \
+         FAILED redefinition. No JIT batch should reclaim during a \
+         typecheck attempt that fails — the carry-forward at \
+         program.rs:2229 keeps the original Arc alive."
+    );
+
+    // Step 4: the original f is still callable and behaves identically.
+    // Pre-fix, this would SIGABRT because the GOT slot would point at
+    // freed JIT pages (assuming no other entry held the Arc and the
+    // session's clone had been dropped on the upsert).
+    let result = session
+        .eval("(f 7)")
+        .expect("after failed redefinition, original f MUST still be callable");
+    assert_eq!(
+        result.value(),
+        7,
+        "after failed redefinition, original f should still return its \
+         argument unchanged (the body `[x] x` was preserved); got {}",
+        result.value()
+    );
+
+    // Final cleanup: drop our captured Arc. The session still holds its
+    // own clone(s), so the underlying Jit is not yet reclaimed — that
+    // happens at session teardown or the next successful redefinition.
+    drop(first_jit);
+}

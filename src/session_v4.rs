@@ -434,27 +434,11 @@ pub struct TypecheckProduct {
     pub source_text: Option<String>,
 }
 
-/// Session-lifetime retention handle for a finalized `Arc<Jit>` (Sprint 57
-/// Wave 2 G6). Wraps the `Arc<Jit>` so the session's `kept_jits: Mutex<Vec<_>>`
-/// can be `Send + Sync` despite `cranelift_jit::JITModule`'s non-`Sync`
-/// interior mutability.
-///
-/// # Safety
-///
-/// The wrapper is `Send + Sync` by promise: after `compile_to_module`
-/// finalises the JIT's definitions, the mmap'd executable pages are stable
-/// and the `Jit` is effectively read-only from the retention pool's
-/// perspective. Code reading `ModuleEntry::Def.code.ptr` dereferences into
-/// those pages but never touches the `Jit` handle itself. Workers only
-/// push to the pool; they do not iterate or call methods on the retained
-/// `Arc<Jit>` values. The `Mutex` around the `Vec` serialises pushes and
-/// the drop that ultimately frees the pages. This mirrors the `unsafe
-/// Send + Sync` impls on the pre-G6 session-layer `Code` type.
-pub struct KeptJit(pub Arc<cranelisp_backend::jit::Jit>);
-
-// SAFETY: see `KeptJit` doc.
-unsafe impl Send for KeptJit {}
-unsafe impl Sync for KeptJit {}
+// Sprint 58 Wave 3b (Decision 35): the `KeptJit` wrapper struct (Sprint 57
+// Wave 2 G6) was deleted along with the `kept_jits` retention pool it served.
+// Its `Send + Sync` rationale lives on at `src/code.rs` for the `Code` enum
+// that subsumed its role (per-entry `Arc<Jit>` retention on `ModuleEntry::Def
+// .code`).
 
 /// REPL-only per-symbol introspection data.
 /// Not populated during batch. See session-restructure.md.
