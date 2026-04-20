@@ -1093,6 +1093,25 @@ Per SPRINT.md Wave 5 framing: integration tests authored in parallel to Waves 2/
 
 ## Known issues / deferred
 
+<!-- FIXME(/qa) — Sprint 58 Wave 6 /repl audit finding: docstring separator divergence.
+     repl/spec.md §1.1 mandates `; {classification} - {docstring}` (DASH separator).
+     `src/session_v4.rs::append_docstring_comment` emits `; {classification} ; {docstring}`
+     (SEMICOLON separator). Affects every `defn`/`deftype`/`deftrait`/`defmacro` display
+     line that carries a docstring — visible in ring4p.demo Wave 6 playback (`pick`
+     line shows `; defn ; Pick first arg` where spec requires `; defn - Pick first arg`).
+     Pre-existing (not a Sprint 58 regression). Add E2E test asserting the dash
+     separator and file FIXME(/int) for the format fix. -->
+
+<!-- FIXME(/qa) — Sprint 58 Wave 6 /repl audit finding: stdlib REPL auto-import broken.
+     repl/showcase ring4i fails on `(import [seq.lazy [...]])` and `(import [num.int [...]])`
+     with "no parsed sexps for module 'seq.lazy'" (worker.rs:3325). Both modules exist
+     under stdlib/; batch invocation of the same import surfaces a content typecheck
+     error instead of the worker's no-sexps error, which suggests a REPL-only
+     auto-load path defect (likely fresh-session module-discovery vs cache-state
+     ordering). Pre-existing — not introduced by Sprint 58, but exposed by the
+     Wave 6 demo regression sweep. Add a minimal E2E test reproducing the gap and
+     file FIXME(/int) once the failure mode is confirmed. -->
+
 - **I-1 (MonoDefn dead-carrier fields)** — `MonoDefn.resolutions`, `MonoDefn.expr_types` are typecheck-internal dead carriers kept from Phase 1 (Sprint 56). Retained as dead state per `/review` Wave 2 I-1 + user approval; deferred to Sprint 58 Phase 5 cleanup. Cross-reference: `design/typecheck/ast-annotation.md` §10.3.
 - **`v4_cache_hit_dependency`** — cross-module cache restore still fails; Phase-5-dependent. Not targeted by Wave 3. Stays in the 14-failure baseline.
 - **`par-bind!` RC-balance coverage** (`v4_platform_rc_balance_par_branches`) — deferred from Wave 3 integration scope; see §G.8 adoption survey for Wave 5 adoption.

@@ -69,6 +69,15 @@ In the REPL, an inline `(mod name ...)` writes the backing file and loads the su
 
 ### 8.2.3 Private Submodule Declaration [Tested+Neg tests/ring2.rs::neg_private_submodule_not_importable_from_peer — FAILING: /int gap, `(mod- ...)` protection not enforced cross-module]
 
+<!-- FIXME(/spec): Sprint 58 Wave 4 Step 5d (i) closed the /int gap. The test
+     `tests/ring2.rs::neg_private_submodule_not_importable_from_peer` now PASSES;
+     the import resolver emits the spec-mandated error
+     "cannot import from private submodule '...': declared private by '...' via
+     (mod- internal); importer '...' is not within the '...' subtree (spec §8.2.3)".
+     ring4p.demo Wave 6 plays the rejection live. Drop the FAILING tag and keep
+     the [Tested+Neg ...] annotation with the test name. Filed by /repl during
+     Sprint 58 Wave 6 audit. -->
+
 <!-- FIXME(/int): Private submodule enforcement (§8.2.3 MUST NOT) is not yet implemented — `tests/ring2.rs::neg_private_submodule_not_importable_from_peer` asserts that a peer module importing from a `(mod- internal)` declaration MUST fail compilation, but the import currently succeeds (compilation is Ok where it must be Err). Visibility check lives in the import resolver; the path-based `(mod- ...)` marker is parsed but not propagated to the module's visibility flag. Filed by /qa during Sprint 57 Wave 5. -->
 
 

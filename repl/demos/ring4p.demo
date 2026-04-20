@@ -1,0 +1,52 @@
+; Cranelisp Ring 4P — Sprint 58 Phase 5: SymbolTable convergence
+
+; Step 5c (HEADLINE) — Decision 31 Scenario 2: per-redefinition JIT reclaim.
+; `Arc<Jit>` lives on `ModuleEntry::Def.code`; redefinition drops the prior
+; clone; `Drop` calls `unsafe free_memory()`. /mem reports the RC heap.
+
+(defn f [:Int x] x)
+
+/sig f
+
+/mem
+
+(defn f [:Int x] (+ x 1))
+
+(f 41)
+
+/mem
+
+; Step 5d (ii) — multi-sig REPL bare-symbol display per repl/spec.md §1.3.
+; The bare name emits one line per variant; same shape as the defn response.
+
+(defn pick "Pick first arg" ([:Int x] x) ([:Int x :Int y] x))
+
+pick
+
+(pick 5)
+
+(pick 5 6)
+
+; Step 5d (iii) — Cranelisp.toml `lib-dirs` precedence (spec §8.11.4 item 2).
+
+/sh printf 'lib-dirs = ["mylib"]\n' > Cranelisp.toml && cat Cranelisp.toml
+
+; Step 5d (i) — private submodule import is rejected (spec §8.2.3). Set up
+; user.cl declaring `(mod host)` + host.cl with `(mod- internal)`, then
+; restart so the fresh REPL parses the new mod structure on load.
+
+/sh mkdir -p user/host && printf '(mod host)\n' > user.cl && printf '(mod- internal)\n' > user/host.cl && printf '(defn private-leaf [] 42)\n' > user/host/internal.cl
+
+/quit
+
+(import [user.host.internal [private-leaf]])
+
+; Step 5b — cache-hit fast restart (Decision 25). The first session populated
+; .cranelisp-cache/; this restart loaded prelude + stdlib from `.meta.json`
+; (serialised SymbolTable) + `.o` (Cranelift output) — no re-typecheck.
+
+/sh ls .cranelisp-cache | head -6
+
+; Phase 5 closes the v4 data-model: structural decls + cache + generics on
+; one `SymbolTable<C, L>`. Per-redefinition reclaim, multi-sig display,
+; project-config lookup, and rejected private imports all flow through one shape.

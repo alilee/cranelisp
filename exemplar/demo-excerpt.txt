@@ -1,0 +1,20 @@
+; Demo excerpt for repl/demos/ring4p.demo — exemplar test scaffolding
+; Wave 0 rewrite per Decision 30 safe pattern (c): top-level test-* defns,
+; no (mod test ...) wrapper. Discovered by /run-tests at exemplar scale.
+;
+; Invocation: cranelisp grid (sets entry_module = grid; loads exemplar/grid.cl)
+;
+; The /run-tests REPL command discovers every test-* function in the
+; module and runs it; each returns (Option String) — None passes, Some
+; reports the failure. 15 grid tests cover bitmask ops, peers, cell
+; access, make-grid validation, and is-solved.
+
+/run-tests grid
+
+; Output:
+;   grid/test-bit-clear ..................... ok
+;   grid/test-bit-count ..................... ok
+;   ...
+;   grid/test-set-cell ...................... ok
+;
+;   15 passed in 3.74ms

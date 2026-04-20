@@ -1878,9 +1878,28 @@ In the REPL, the platform is loaded automatically when you use platform function
 
 ### Library Search Path
 
-When Cranelisp loads modules (like the prelude or standard library), it looks for files in specific directories. By default, it searches `stdlib/` inside the project root. If your project lives outside the Cranelisp source tree, the compiler will not find the standard library automatically.
+When Cranelisp loads modules (like the prelude or standard library), it looks for files in specific directories. The compiler resolves the lib directory list using a precedence chain:
 
-Set the `CRANELISP_LIB` environment variable to tell the compiler where to find library files:
+1. **Project configuration file** -- `Cranelisp.toml` at the project root (highest precedence below explicit programmatic additions).
+2. **`CRANELISP_LIB` environment variable** -- consulted only if no project configuration file is present.
+3. **Default fallback** -- `{project_root}/stdlib/`, used only when neither of the above applies.
+
+#### Project Configuration File
+
+Create a `Cranelisp.toml` at your project root to declare lib directories alongside the source. This is the recommended approach for projects that ship their own libraries or live outside the Cranelisp source tree, because the configuration travels with the project under version control.
+
+```toml
+# Cranelisp.toml
+lib-dirs = ["./vendor/stdlib", "./shared"]
+```
+
+Paths in `lib-dirs` may be relative (resolved against the project root) or absolute. When `Cranelisp.toml` is present, its `lib-dirs` list fully replaces the lower precedence tiers -- the `CRANELISP_LIB` environment variable and the default `stdlib/` fallback are not consulted. An empty `lib-dirs = []` (or a missing `lib-dirs` key) is a valid declaration that no lib directories should be searched.
+
+See `spec/08-modules.md` §8.11.4 for the normative precedence rules.
+
+#### Environment Variable
+
+If no `Cranelisp.toml` is present, set `CRANELISP_LIB` to tell the compiler where to find library files:
 
 ```
 CRANELISP_LIB=/path/to/cranelisp/stdlib cargo run -- --run myproject/main.cl

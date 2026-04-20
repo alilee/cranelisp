@@ -266,7 +266,7 @@ A function definition MUST NOT display `<closure>` — the user defined a *named
 | deftrait shows trait name | [Tested tests/ring2::repl_deftrait_display] |
 | impl shows `impl Trait for Type` | [Tested tests/ring2::repl_impl_display] |
 | constrained fn shows inline constraints | [Tested tests/ring2::repl_constrained_fn_display] |
-| overloaded fn shows all variants | [Tested tests/repl_experience::display_overloaded_fn_shows_all_variants — FAILING: /int gap, only first variant shown] |
+| overloaded fn shows all variants | [Tested tests/repl_experience::display_overloaded_fn_shows_all_variants] |
 
 **Ring 0**: function definitions, type definitions.
 **Ring 2**: trait declarations, trait implementations, constrained functions.
@@ -622,7 +622,7 @@ user> map
 |---|---|
 | function shows type + name | [Tested tests/e2e::e2e_s4_1_bare_symbol_lookup] |
 | constrained fn shows constraints | [Tested tests/ring2::repl_constrained_fn_display] |
-| overloaded fn shows all variants | [Tested tests/repl_experience::display_overloaded_fn_shows_all_variants — FAILING: /int gap, only first variant shown] |
+| overloaded fn shows all variants | [Tested tests/repl_experience::display_overloaded_fn_shows_all_variants] |
 
 #### 4.1.2 Constructors [Tested tests/e2e::e2e_s1_1_constructor_lookup]
 
